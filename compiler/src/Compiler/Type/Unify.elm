@@ -885,33 +885,39 @@ unifyRecord context (RecordStructure fields1 ext1) (RecordStructure fields2 ext2
 
 unifySharedFields : Context -> Dict Name.Name ( IO.Variable, IO.Variable ) -> Dict Name.Name IO.Variable -> IO.Variable -> Unify ()
 unifySharedFields context sharedFields otherFields ext =
-    traverseMaybe unifyField sharedFields
+    traverseAll unifyField sharedFields
         |> andThen
-            (\matchingFields ->
-                if Dict.size sharedFields == Dict.size matchingFields then
-                    merge context (IO.Structure (IO.Record1 (Dict.union matchingFields otherFields) ext))
+            (\result ->
+                case result of
+                    Just matchingFields ->
+                        merge context (IO.Structure (IO.Record1 (Dict.union matchingFields otherFields) ext))
 
-                else
-                    mismatch
+                    Nothing ->
+                        mismatch
             )
 
 
-traverseMaybe : (comparable -> b -> Unify (Maybe c)) -> Dict comparable b -> Unify (Dict comparable c)
-traverseMaybe func =
+{-| Traverse every entry, failing as a whole if `func` declines any of them.
+
+The caller used to reconstruct that verdict by comparing `Dict.size` of the
+input against `Dict.size` of the output — two full tree walks to recover one bit
+that the traversal already knew.
+
+-}
+traverseAll : (comparable -> b -> Unify (Maybe c)) -> Dict comparable b -> Unify (Maybe (Dict comparable c))
+traverseAll func =
     Dict.foldl
         (\a b ->
             andThen
                 (\acc ->
                     map
                         (\maybeC ->
-                            maybeC
-                                |> Maybe.map (\c -> Dict.insert a c acc)
-                                |> Maybe.withDefault acc
+                            Maybe.map2 (\c dict -> Dict.insert a c dict) maybeC acc
                         )
                         (func a b)
                 )
         )
-        (pure Dict.empty)
+        (pure (Just Dict.empty))
 
 
 unifyField : Name.Name -> ( IO.Variable, IO.Variable ) -> Unify (Maybe IO.Variable)

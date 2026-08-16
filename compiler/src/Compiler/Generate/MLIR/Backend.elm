@@ -527,45 +527,47 @@ MonoDefine only in v1: tail-func bases stay under `sretTailFuncs`.
 sretFreshFixpoint : Set.Set Int -> Array (Maybe Mono.MonoNode) -> Int -> Dict.Dict Int Ctx.SretInfo -> Dict.Dict Int Ctx.SretInfo
 sretFreshFixpoint letPos nodes iter table =
     let
-        next =
-            Tuple.second
-                (Array.foldl
-                    (\maybeNode ( sid, acc ) ->
-                        case maybeNode of
-                            Just (Mono.MonoDefine (Mono.MonoClosure cinfo cbody _) monoType) ->
-                                if List.isEmpty cinfo.captures && not (List.isEmpty cinfo.params) && not (Dict.member sid acc) && Set.member sid letPos then
-                                    case closureResultType monoType of
-                                        Mono.MTuple _ ts ->
-                                            let
-                                                ar =
-                                                    List.length ts
+        -- The admission guard already requires `not (Dict.member sid acc)`, so
+        -- an insert is always a new key and "did this round add anything" is
+        -- exactly the flag below. Comparing `Dict.size` against the previous
+        -- table walked both trees to recover the same bit.
+        ( _, added, next ) =
+            Array.foldl
+                (\maybeNode ( sid, grew, acc ) ->
+                    case maybeNode of
+                        Just (Mono.MonoDefine (Mono.MonoClosure cinfo cbody _) monoType) ->
+                            if List.isEmpty cinfo.captures && not (List.isEmpty cinfo.params) && not (Dict.member sid acc) && Set.member sid letPos then
+                                case closureResultType monoType of
+                                    Mono.MTuple _ ts ->
+                                        let
+                                            ar =
+                                                List.length ts
 
-                                                layout =
-                                                    Types.computeTupleLayout ts
+                                            layout =
+                                                Types.computeTupleLayout ts
 
-                                                slotTys =
-                                                    Types.tupleSlotTypes layout
-                                            in
-                                            if (ar == 2 || ar == 3) && sretFreshTailOk acc slotTys cbody then
-                                                ( sid + 1, Dict.insert sid { layout = layout, slotTypes = slotTys } acc )
+                                            slotTys =
+                                                Types.tupleSlotTypes layout
+                                        in
+                                        if (ar == 2 || ar == 3) && sretFreshTailOk acc slotTys cbody then
+                                            ( sid + 1, True, Dict.insert sid { layout = layout, slotTypes = slotTys } acc )
 
-                                            else
-                                                ( sid + 1, acc )
+                                        else
+                                            ( sid + 1, grew, acc )
 
-                                        _ ->
-                                            ( sid + 1, acc )
+                                    _ ->
+                                        ( sid + 1, grew, acc )
 
-                                else
-                                    ( sid + 1, acc )
+                            else
+                                ( sid + 1, grew, acc )
 
-                            _ ->
-                                ( sid + 1, acc )
-                    )
-                    ( 0, table )
-                    nodes
+                        _ ->
+                            ( sid + 1, grew, acc )
                 )
+                ( 0, False, table )
+                nodes
     in
-    if Dict.size next == Dict.size table || iter >= 6 then
+    if not added || iter >= 6 then
         next
 
     else

@@ -258,15 +258,18 @@ fixAlpha flows arr budget =
 
                             cur =
                                 arrAlphaGet u acc
-
-                            new =
-                                Set.union cur bs
                         in
-                        if Set.size new == Set.size cur then
+                        -- `Set.union cur bs` only ever grows, so the old test —
+                        -- build the union, then compare its size against
+                        -- `cur`'s — was a subset check written as one tree
+                        -- allocation plus two full walks, on every flow edge of
+                        -- every sweep. Ask the subset question directly and
+                        -- allocate only when the answer is no.
+                        if subsetOf bs cur then
                             ( acc, ch )
 
                         else
-                            ( Array.set u new acc, True )
+                            ( Array.set u (Set.union cur bs) acc, True )
                     )
                     ( arr, False )
                     flows
@@ -281,6 +284,14 @@ fixAlpha flows arr budget =
 arrAlphaGet : ResVar -> Array (Set Int) -> Set Int
 arrAlphaGet r arr =
     Maybe.withDefault Set.empty (Array.get r arr)
+
+
+{-| Is every member of `small` already in `big`? Allocation-free: `Set.foldl`
+builds nothing, and `&&` skips the membership probe once the answer is settled.
+-}
+subsetOf : Set Int -> Set Int -> Bool
+subsetOf small big =
+    Set.foldl (\x ok -> ok && Set.member x big) True small
 
 
 arrAlphaInsert : ResVar -> Int -> Array (Set Int) -> Array (Set Int)

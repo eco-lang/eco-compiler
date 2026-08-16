@@ -665,6 +665,34 @@ nursery allocation) is therefore live here. `Objects promoted` and `GC time` are
 the source entry recorded `ensure calls` / `old-gen cap` instead; both are captured from Run B
 onward. Old-gen cap was 20,480 MB. Gates: E2E `--target full`, heap-validate tree 1628/1628.
 
+### 2026-08-16 17:11 UTC — Run W: O(n) size checks → the predicates they stood in for (**FLAT — no regression; counters all down, unconditional**)
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| r1 | **3:57.36** | 5,314,540 kB | 226,934,421 | 14,169.60 MB | 909 | 420,155,755 (185.1%) | 12 | 100.46 s | 13,248,429 B |
+| r2 | **3:59.46** | 5,314,416 kB | ≡ | ≡ | 909 | ≡ | 12 | 101.44 s | ≡ |
+
+| axis | Run V off | Run W | Δ |
+|---|---|---|---|
+| wall (r1/r2 mean) | 4:01.61 | 3:58.41 | −1.32% (FLAT) |
+| objects allocated | 227,290,386 | 226,934,421 | −355,965 (−0.16%) |
+| bytes allocated | 14,211.45 MB | 14,169.60 MB | −41.85 MB (−0.29%) |
+| objects promoted | 427,179,257 | 420,155,755 | **−7,023,502 (−1.64%)** |
+| minor / major GC | 914 / 12 | 909 / 12 | −5 / = |
+| binary | 66,497,048 B | 66,489,560 B | −7,488 B |
+| out.mlir | 13,249,278 B | 13,248,429 B | −849 B |
+
+Tiers 1–3 of `plans/redundant-cardinality-computations.md` plus the `CsePurity` `Set Int` →
+`BitSet` switch: twelve sites where an O(n) `Dict.size`/`Set.size`/`List.length` answered a
+yes/no question. Wall −1.32% ⇒ FLAT; the exact counters all move down and promoted −1.64% is
+the one that matters on this workload. Compared against Run V's OFF arm, the matching config.
+NOT an A/B — the change is unconditional, so no second arm exists, and `out.mlir` byte-identity
+is unavailable because the edits are IN the corpus (−849 B emitted, 0.006%, against −0.16% of
+allocation: the allocation delta is the optimization, not the smaller input). Much of the set is
+INERT in this leg — subst skips `sameShapeModuloNumeric`, borrow-off skips `fixAlpha`,
+CSE/template-off skips `CsePurity.analyze`; live are Tier 1, `Local`, `Unify`, `HashMap` and the
+`scc` hoist. Gates: E2E 1675/1675 ×3 legs, elm-tests 13,104/12, licence census 297/592 unmoved.
+
 ---
 
 ## Summary
@@ -698,3 +726,4 @@ never here.
 | T — List.map forward template | 3:48.77 | 228,050,612 obj / 14,062.57 MB |
 | U — map-template follow-ups F-1L…F-5C | 3:53.31 | 227,631,274 obj / 14,185.38 MB |
 | V — map-template round 2 G-0…G-3 | 4:03.36 | 237,455,932 obj / 14,521.69 MB |
+| W — O(n) size checks → predicates, BitSet oracle | 3:58.41 | 226,934,421 obj / 14,169.60 MB |

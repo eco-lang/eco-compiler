@@ -59,6 +59,7 @@ pass makes instead of replicating (and drifting from) them.
 
 import Array
 import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..))
+import Compiler.Data.BitSet as BitSet
 import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
 import Compiler.GlobalOpt.Borrow.LssFacts as LssFacts
@@ -694,7 +695,7 @@ licenseResolvedGlobal env specId member callbackType listType acc =
         Just (LssFacts.MemberStandalone (Mono.OriginGlobal g)) ->
             case resolveSpecFor env g callbackType of
                 Just globalSpecId ->
-                    if Set.member globalSpecId env.purity.safeSpecs then
+                    if BitSet.member globalSpecId env.purity.safeSpecs then
                         licenseWith specId
                             { callee = CalleeSpec globalSpecId
                             , inKind = kindOfElement listType
@@ -1019,7 +1020,7 @@ scanWith purity hooks root =
                             acc
 
                     MonoVarGlobal _ specId _ ->
-                        if Set.member specId purity.safeSpecs then
+                        if BitSet.member specId purity.safeSpecs then
                             acc
 
                         else
@@ -1061,7 +1062,7 @@ calleeVerdict : CsePurity.Oracle -> Hooks -> MonoExpr -> ( Verdict, Edges )
 calleeVerdict purity hooks func =
     case func of
         MonoVarGlobal _ specId _ ->
-            if Set.member specId purity.safeSpecs then
+            if BitSet.member specId purity.safeSpecs then
                 clean
 
             else
@@ -1130,7 +1131,7 @@ argProvenance : CsePurity.Oracle -> Hooks -> MonoExpr -> List Mono.LambdaSetAnno
 argProvenance purity hooks arg annos =
     case arg of
         MonoVarGlobal _ specId _ ->
-            if Set.member specId purity.safeSpecs then
+            if BitSet.member specId purity.safeSpecs then
                 clean
 
             else

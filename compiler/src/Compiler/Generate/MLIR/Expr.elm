@@ -5118,8 +5118,14 @@ detectMutualRecGroup def body =
 
                 scc =
                     computeSCC boundSet forwardGraph firstClosure.name
+
+                -- `Set.size` is a full tree walk, and `scc` does not change
+                -- below this point; three separate calls measured the same set
+                -- three times.
+                sccSize =
+                    Set.size scc
             in
-            if Set.size scc < 2 then
+            if sccSize < 2 then
                 Nothing
 
             else
@@ -5146,7 +5152,7 @@ detectMutualRecGroup def body =
                         List.minimum sccIndices |> Maybe.withDefault 0
 
                     isContiguous =
-                        minIdx == 0 && (maxIdx - minIdx + 1 == Set.size scc)
+                        minIdx == 0 && (maxIdx - minIdx + 1 == sccSize)
                 in
                 if not isContiguous then
                     Nothing
@@ -5154,7 +5160,7 @@ detectMutualRecGroup def body =
                 else
                     let
                         ( members, rest ) =
-                            splitAtIndex (Set.size scc) closureWindow
+                            splitAtIndex sccSize closureWindow
 
                         -- Re-wrap any remaining closure-prefix defs that are
                         -- after the SCC as regular MonoLets, then splice on

@@ -347,11 +347,17 @@ checkAliasFreeVars (A.At aliasRegion (Src.Alias aliasData)) =
                     freeVars =
                         addFreeVars tipe Dict.empty
 
-                    overlap : Int
-                    overlap =
-                        Dict.size (Dict.intersect boundVars freeVars)
+                    -- "The bound vars and the free vars are the same set."
+                    -- Sizing `Dict.intersect boundVars freeVars` answered that
+                    -- by building a third dict and then walking three; with
+                    -- unique keys, equal cardinality plus one-way containment
+                    -- says the same thing and allocates nothing.
+                    sameVars : Bool
+                    sameVars =
+                        (Dict.size boundVars == Dict.size freeVars)
+                            && Dict.foldl (\var _ ok -> ok && Dict.member var freeVars) True boundVars
                 in
-                if Dict.size boundVars == overlap && Dict.size freeVars == overlap then
+                if sameVars then
                     ReportingResult.ok (List.map (Src.c1Value >> A.toValue) aliasData.args)
 
                 else

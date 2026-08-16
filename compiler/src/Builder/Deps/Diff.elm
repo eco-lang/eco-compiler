@@ -451,10 +451,10 @@ moduleChangeMagnitude (ModuleChanges changes) =
 
 changeMagnitude : Changes comparable v -> M.Magnitude
 changeMagnitude (Changes added changed removed) =
-    if Dict.size removed > 0 || Dict.size changed > 0 then
+    if not (Dict.isEmpty removed) || not (Dict.isEmpty changed) then
         M.MAJOR
 
-    else if Dict.size added > 0 then
+    else if not (Dict.isEmpty added) then
         M.MINOR
 
     else

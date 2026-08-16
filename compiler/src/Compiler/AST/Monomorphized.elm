@@ -569,8 +569,7 @@ eqKeyWith annoSensitive a b =
             eqKeyList annoSensitive xsa xsb
 
         ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
-            (Dict.size fieldsA == Dict.size fieldsB)
-                && eqKeyFields annoSensitive (Dict.toList fieldsA) (Dict.toList fieldsB)
+            eqFieldsBy (eqKeyWith annoSensitive) fieldsA fieldsB
 
         ( MCustom _ homeA nameA argsA, MCustom _ homeB nameB argsB ) ->
             nameA == nameB && homeA == homeB && eqKeyList annoSensitive argsA argsB
@@ -602,17 +601,36 @@ eqKeyList annoSensitive xs ys =
             False
 
 
-eqKeyFields : Bool -> List ( Name, MonoType ) -> List ( Name, MonoType ) -> Bool
-eqKeyFields annoSensitive xs ys =
-    case ( xs, ys ) of
-        ( [], [] ) ->
+{-| Do two record field maps have the same keys, with values equal under `eq`?
+
+Shared by `eqKeyWith` and `eqLayout`, which both used to pair up
+`Dict.toList fieldsA` against `Dict.toList fieldsB`. Those two lists cost a cons
+cell per field on EVERY comparison, and both of these run on the hot path —
+`eqKey` backs the hash-keyed MonoType maps and `eqLayout` is the bucket-collision
+confirm. Probing one map against the other allocates nothing.
+
+The cardinality test is load-bearing here, not the redundant guard it was in
+front of the list form: the fold only proves `fieldsA ⊆ fieldsB`, and it is
+equal size plus unique keys that upgrades that to set equality.
+
+-}
+eqFieldsBy : (MonoType -> MonoType -> Bool) -> Dict Name MonoType -> Dict Name MonoType -> Bool
+eqFieldsBy eq fieldsA fieldsB =
+    (Dict.size fieldsA == Dict.size fieldsB)
+        && Dict.foldl
+            (\name ta ok ->
+                ok
+                    && (case Dict.get name fieldsB of
+                            Just tb ->
+                                eq ta tb
+
+                            Nothing ->
+                                False
+                       )
+            )
             True
+            fieldsA
 
-        ( ( na, ta ) :: restX, ( nb, tb ) :: restY ) ->
-            na == nb && eqKeyWith annoSensitive ta tb && eqKeyFields annoSensitive restX restY
-
-        _ ->
-            False
 
 
 -- ============================================================================
@@ -888,8 +906,7 @@ eqLayout a b =
             eqLayoutList xsa xsb
 
         ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
-            (Dict.size fieldsA == Dict.size fieldsB)
-                && eqLayoutFields (Dict.toList fieldsA) (Dict.toList fieldsB)
+            eqFieldsBy eqLayout fieldsA fieldsB
 
         ( MCustom _ homeA nameA argsA, MCustom _ homeB nameB argsB ) ->
             nameA == nameB && homeA == homeB && eqLayoutList argsA argsB
@@ -906,19 +923,6 @@ eqLayoutList xs ys =
 
         ( x :: restX, y :: restY ) ->
             eqLayout x y && eqLayoutList restX restY
-
-        _ ->
-            False
-
-
-eqLayoutFields : List ( Name, MonoType ) -> List ( Name, MonoType ) -> Bool
-eqLayoutFields xs ys =
-    case ( xs, ys ) of
-        ( [], [] ) ->
-            True
-
-        ( ( na, ta ) :: restX, ( nb, tb ) :: restY ) ->
-            na == nb && eqLayout ta tb && eqLayoutFields restX restY
 
         _ ->
             False

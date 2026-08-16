@@ -3573,22 +3573,58 @@ sameShapeModuloNumeric a b =
             True
 
         ( Mono.MFunction _ _ args1 r1, Mono.MFunction _ _ args2 r2 ) ->
-            List.length args1 == List.length args2 && List.all identity (List.map2 sameShapeModuloNumeric args1 args2) && sameShapeModuloNumeric r1 r2
+            allPairs sameShapeModuloNumeric args1 args2 && sameShapeModuloNumeric r1 r2
 
         ( Mono.MList _ e1, Mono.MList _ e2 ) ->
             sameShapeModuloNumeric e1 e2
 
         ( Mono.MTuple _ es1, Mono.MTuple _ es2 ) ->
-            List.length es1 == List.length es2 && List.all identity (List.map2 sameShapeModuloNumeric es1 es2)
+            allPairs sameShapeModuloNumeric es1 es2
 
         ( Mono.MCustom _ h1 n1 args1, Mono.MCustom _ h2 n2 args2 ) ->
-            h1 == h2 && n1 == n2 && List.length args1 == List.length args2 && List.all identity (List.map2 sameShapeModuloNumeric args1 args2)
+            h1 == h2 && n1 == n2 && allPairs sameShapeModuloNumeric args1 args2
 
         ( Mono.MRecord _ f1, Mono.MRecord _ f2 ) ->
-            Dict.keys f1 == Dict.keys f2 && List.all identity (List.map2 sameShapeModuloNumeric (Dict.values f1) (Dict.values f2))
+            (Dict.size f1 == Dict.size f2)
+                && Dict.foldl
+                    (\name t1 ok ->
+                        ok
+                            && (case Dict.get name f2 of
+                                    Just t2 ->
+                                        sameShapeModuloNumeric t1 t2
+
+                                    Nothing ->
+                                        False
+                               )
+                    )
+                    True
+                    f1
 
         _ ->
             a == b
+
+
+{-| Pairwise `&&` over two lists, `False` when their lengths differ.
+
+Replaces `List.length xs == List.length ys && List.all identity (List.map2 f xs ys)`,
+which measured both lists, allocated a `List Bool` at full length, and — the
+part that actually cost — evaluated the recursive `f` for every pair even after
+the first mismatch. The length check cannot just be dropped from that form,
+because `List.map2` truncates silently; matching the two spines together
+subsumes it.
+
+-}
+allPairs : (a -> b -> Bool) -> List a -> List b -> Bool
+allPairs f xs ys =
+    case ( xs, ys ) of
+        ( [], [] ) ->
+            True
+
+        ( x :: restX, y :: restY ) ->
+            f x y && allPairs f restX restY
+
+        _ ->
+            False
 
 
 {-| Is `narrow` a record whose keys are a STRICT subset of record `full`'s keys?

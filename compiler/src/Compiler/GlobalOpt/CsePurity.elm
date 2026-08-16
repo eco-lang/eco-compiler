@@ -35,10 +35,10 @@ so no merge this oracle licenses can change how many log lines are emitted.
 
 import Array
 import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..))
+import Compiler.Data.BitSet as BitSet exposing (BitSet)
 import Compiler.Data.Name exposing (Name)
 import Compiler.GlobalOpt.KernelFacts as KernelFacts
 import Dict exposing (Dict)
-import Set exposing (Set)
 
 
 {-| Two different questions, and conflating them is a miscompile.
@@ -58,15 +58,18 @@ same NaN-sharing class that reverted the MLIR CSE flip in Run R.
 `mergeableSpecs` is therefore the pre-2026-08-15 fixpoint, unchanged, and CSE
 behaviour is bit-identical to before the split.
 
-`Set Int` rather than `Compiler.Data.BitSet`: the fixpoint needs member
-REMOVAL and a membership count, and BitSet exposes neither (`size` is its bit
-capacity, and only `removeGrowing` exists). `analyze` runs once per compile over
-~12k specs, so the log-factor is irrelevant next to getting the fixpoint right.
+Both are `BitSet`, not `Set Int`: spec ids are a dense range `[0, nodeCount)`,
+so each set is allocated at its exact width up front and the fixpoint's inner
+question — "is every callee still safe?" — becomes an array index rather than a
+tree walk. This needed two things of `BitSet`. `remove` already existed and was
+merely unexposed. A cardinality turned out not to be needed at all: `settle`
+detects its own fixpoint with a changed flag, and the only surviving count is
+the census line below, which is cheaper to popcount on demand than to maintain.
 
 -}
 type alias Oracle =
-    { safeSpecs : Set Int
-    , mergeableSpecs : Set Int
+    { safeSpecs : BitSet
+    , mergeableSpecs : BitSet
     }
 
 
@@ -74,7 +77,7 @@ type alias Oracle =
 -}
 safeSpecCount : Oracle -> Int
 safeSpecCount oracle =
-    Set.size oracle.safeSpecs
+    BitSet.count oracle.safeSpecs
 
 
 
@@ -104,7 +107,16 @@ the fixpoint is monotone and terminates: a spec only ever moves safe → unsafe.
 analyze : Mono.MonoGraph -> Oracle
 analyze (Mono.MonoGraph g) =
     let
+        noSpecs =
+            BitSet.fromSize (Array.length g.nodes)
+
         -- Pass 1: direct verdict + callee edges, per spec.
+        --
+        -- The two seeds are accumulated side by side rather than unioned at the
+        -- end. They differ only in whether constructions are in, so seeding
+        -- each spec directly into the sets it belongs to costs one extra
+        -- `insert` on the specs they share, and spares `BitSet` a `union` that
+        -- would have no other caller.
         scan =
             Array.foldl
                 (\maybeNode ( sid, acc ) ->
@@ -147,7 +159,7 @@ analyze (Mono.MonoGraph g) =
                                     -- other.
                                     ( sid + 1
                                     , if isPureConstruction node then
-                                        { acc | constructions = Set.insert sid acc.constructions }
+                                        { acc | safeSeed = BitSet.insert sid acc.safeSeed }
 
                                       else
                                         acc
@@ -160,44 +172,57 @@ analyze (Mono.MonoGraph g) =
                                     in
                                     ( sid + 1
                                     , { acc
-                                        | direct =
-                                            if direct then
-                                                Set.insert sid acc.direct
-
-                                            else
-                                                acc.direct
+                                        | safeSeed = insertIf direct sid acc.safeSeed
+                                        , mergeSeed = insertIf direct sid acc.mergeSeed
                                         , edges = Dict.insert sid callees acc.edges
                                       }
                                     )
                 )
-                ( 0, { direct = Set.empty, constructions = Set.empty, edges = Dict.empty } )
+                ( 0, { safeSeed = noSpecs, mergeSeed = noSpecs, edges = Dict.empty } )
                 g.nodes
                 |> Tuple.second
 
         -- Pass 2: poison to a fixpoint.
+        --
+        -- Termination is a CHANGED FLAG, not a comparison of set sizes. A spec
+        -- only ever moves safe → unsafe, so "did this sweep clear a bit?" is
+        -- already the exact fixpoint test — and it asks nothing of the set
+        -- representation, which is why swapping `Set` for `BitSet` here did not
+        -- need a cardinality operation.
         settle safe =
             let
-                next =
+                ( next, changed ) =
                     Dict.foldl
-                        (\sid callees acc ->
-                            if Set.member sid acc && List.any (\c -> not (Set.member c acc)) callees then
-                                Set.remove sid acc
+                        (\sid callees ( acc, dirty ) ->
+                            if BitSet.member sid acc && List.any (\c -> not (BitSet.member c acc)) callees then
+                                ( BitSet.remove sid acc, True )
 
                             else
-                                acc
+                                ( acc, dirty )
                         )
-                        safe
+                        ( safe, False )
                         scan.edges
             in
-            if Set.size next == Set.size safe then
-                next
+            if changed then
+                settle next
 
             else
-                settle next
+                next
     in
-    { safeSpecs = settle (Set.union scan.direct scan.constructions)
-    , mergeableSpecs = settle scan.direct
+    { safeSpecs = settle scan.safeSeed
+    , mergeableSpecs = settle scan.mergeSeed
     }
+
+
+{-| Seed `sid` into a set when its direct verdict says so.
+-}
+insertIf : Bool -> Int -> BitSet -> BitSet
+insertIf cond sid set =
+    if cond then
+        BitSet.insert sid set
+
+    else
+        set
 
 
 {-| Is this bodiless spec a pure CONSTRUCTION (so, observation-free)?
@@ -287,7 +312,7 @@ isSafeExpr oracle root =
                         kernelCseSafe home name
 
                     MonoVarGlobal _ sid _ ->
-                        Set.member sid oracle.mergeableSpecs
+                        BitSet.member sid oracle.mergeableSpecs
 
                     MonoClosure _ _ _ ->
                         -- Creating a closure is pure, but v1 excludes closures

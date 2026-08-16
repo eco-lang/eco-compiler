@@ -162,14 +162,18 @@ remove hash eq key (HashMap count nextSeq buckets) =
             HashMap count nextSeq buckets
 
         Just bucket ->
-            let
-                kept =
-                    List.filter (\( _, k, _ ) -> not (eq key k)) bucket
-            in
-            if List.length kept == List.length bucket then
+            -- Probe before filtering. Measuring `kept` against `bucket` to find
+            -- out whether anything was dropped walked both lists AFTER building
+            -- `kept`; a miss now costs one short-circuiting scan and allocates
+            -- nothing.
+            if not (List.any (\( _, k, _ ) -> eq key k) bucket) then
                 HashMap count nextSeq buckets
 
             else
+                let
+                    kept =
+                        List.filter (\( _, k, _ ) -> not (eq key k)) bucket
+                in
                 HashMap (count - 1)
                     nextSeq
                     (if List.isEmpty kept then
