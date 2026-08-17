@@ -5,7 +5,7 @@ module Compiler.AST.TypedOptimized exposing
     , Decider(..), Choice(..)
     , GlobalGraph(..), LocalGraph(..), LocalGraphData, Node(..), Main(..), EffectsType(..)
     , emptyGlobalGraph
-    , compareGlobal, toComparableGlobal, toKernelGlobal
+    , compareGlobal, toComparableGlobal, globalHash, toKernelGlobal
     , typeOf, metaOf, tvarOf
     , computeVarSupers, varSupersOfType
     , globalGraphEncoder, globalGraphDecoder, localGraphEncoder, localGraphDecoder
@@ -312,6 +312,36 @@ compareGlobal (Global home1 name1) (Global home2 name2) =
 toComparableGlobal : Global -> String
 toComparableGlobal (Global home name) =
     ModuleName.toComparableCanonical home ++ "." ++ name
+
+
+{-| A cheap structural hash of a `Global`, for `Data.HashMap` keys.
+
+Mechanical twin of `Monomorphized.globalHash` (deliberately duplicated —
+`Monomorphized` imports this module, so the hash cannot be shared from there).
+Like that one it hashes the NAME char-by-char but takes only the LENGTHS of the
+canonical's parts: the module path is what makes `toComparableGlobal` expensive
+to build, and reading three lengths keeps this far cheaper than the ~25-50-char
+comparable string it replaces. Collisions are resolved by `Data.HashMap`'s
+per-bucket `eq`, so a coarse hash costs performance, never correctness.
+
+-}
+globalHash : Global -> Int
+globalHash g =
+    case g of
+        Global (IO.Canonical ( author, project ) modName) name ->
+            globalMixHash
+                (globalMixHash
+                    (globalMixHash (globalMixHash 21 (String.length author)) (String.length project))
+                    (String.length modName)
+                )
+                (String.foldl (\c h -> globalMixHash h (Char.toCode c)) 23 name)
+
+
+globalMixHash : Int -> Int -> Int
+globalMixHash h x =
+    -- 2^26, matching Monomorphized.hashBase: two of these pack into 2^52,
+    -- inside the exact-integer range of both the native i64 and the JS double.
+    modBy 67108864 (h * 33 + modBy 67108864 x + 7)
 
 
 {-| Create a global reference to a kernel function.

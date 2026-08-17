@@ -127,26 +127,23 @@ getOrCreateSpecIdKeyed global keyType storeType registry =
                         ( specId, registry, HitIdentical )
 
                     else
-                        let
-                            joined =
-                                Mono.joinAnnotations storedType storeType
-                        in
-                        if joined == storedType then
-                            -- The join rebuilt the whole tree and changed
-                            -- nothing; `joined` is discarded here. This is the
-                            -- population Phase 4 of
-                            -- plans/lss-set-write-substrate.md removes with a
-                            -- pointer-preserving changed-flag join.
-                            ( specId, registry, HitNoopJoin )
+                        -- Phase 4a: the changed flag replaces the old
+                        -- rebuild-then-compare pair. `False` means the join
+                        -- added nothing to the stored type, and no tree was
+                        -- rebuilt to discover it (was: full-tree rebuild + a
+                        -- second full `==` walk + discard).
+                        case Mono.joinAnnotationsChanged storedType storeType of
+                            ( False, _ ) ->
+                                ( specId, registry, HitNoopJoin )
 
-                        else
-                            ( specId
-                            , { registry
-                                | reverseMapping =
-                                    Array.set specId (Just ( storedGlobal, joined )) registry.reverseMapping
-                              }
-                            , HitChangedJoin
-                            )
+                            ( True, joined ) ->
+                                ( specId
+                                , { registry
+                                    | reverseMapping =
+                                        Array.set specId (Just ( storedGlobal, joined )) registry.reverseMapping
+                                  }
+                                , HitChangedJoin
+                                )
 
                 Nothing ->
                     ( specId, registry, HitIdentical )

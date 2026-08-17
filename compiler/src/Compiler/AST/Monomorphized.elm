@@ -7,7 +7,7 @@ module Compiler.AST.Monomorphized exposing
     , SpecMap, specMapEmpty, specMapGet, specMapMember, specMapInsert
     , specMapSize, specMapIsEmpty, specMapFoldl, specMapToList, specMapValues, specMapRemove, specMapSingleton
     , SpecKeyMap, specKeyMapEmpty, specKeyMapGet, specKeyMapInsert, specKeyMapSize, globalHash
-    , LambdaSetAnno(..), widenSets, eqLayout, shallowLayoutKey, headAnno, unionAnno, singletonHeadMember, joinAnnotations, overlayAnnotations
+    , LambdaSetAnno(..), widenSets, eqLayout, shallowLayoutKey, headAnno, unionAnno, singletonHeadMember, joinAnnotations, joinAnnotationsChanged, overlayAnnotations
     , LambdaId(..)
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry
     , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType, MemberOrigin(..)
@@ -1051,6 +1051,218 @@ joinAnnotations a b =
 
             else
                 widenSets a
+
+
+{-| `joinAnnotations` with pointer-preserving no-op detection (Phase 4a of
+`plans/lss-set-write-substrate.md`).
+
+`( False, t )` means `t` IS the first argument BY POINTER — the second
+contributed nothing, so no node was rebuilt and no hash re-mixed. `joinAnnotations`
+never returns a composite by pointer (every arm calls a smart constructor), so a
+no-op join used to cost a full-tree rebuild plus a second full `==` walk to discover
+it changed nothing, then discard the rebuilt tree. Run B measured that population at
+`noop=4,566` on the registry path and `completion=33,541` unconditional joins.
+
+SOUNDNESS LAW: the flag must NEVER be falsely `False` — a narrower stored annotation
+is the LSS_010 silent miscompile. This implementation is EXACT in both directions:
+the returned tree is structurally what `joinAnnotations` returns, and the flag is
+exactly `result /= a`. Exactness (rather than the weaker "falsely True is sound")
+is deliberate — a falsely-True flag at the registry site writes and marks dirty on
+every hit, and the flush would never converge.
+
+The two directions are kept exact by `annoCovers annoA annoB` deciding precisely
+`unionAnno annoA annoB == annoA`, and by every mismatch arm comparing its widened
+result against `a` instead of assuming widening changed something (`widenSets` is
+identity on an already-`LTop` tree, and on every leaf).
+
+Do NOT be tempted to skip on hash equality: the packed hashes are 26-bit with a
+one-directional contract (see the hashing note above), so collisions are certain at
+self-compile scale and a false skip is the LSS_010 miscompile.
+
+-}
+joinAnnotationsChanged : MonoType -> MonoType -> ( Bool, MonoType )
+joinAnnotationsChanged a b =
+    case ( a, b ) of
+        ( MFunction _ annoA argsA retA, MFunction _ annoB argsB retB ) ->
+            if List.length argsA == List.length argsB then
+                let
+                    ( argsChanged, args ) =
+                        joinListChanged argsA argsB
+
+                    ( retChanged, ret ) =
+                        joinAnnotationsChanged retA retB
+                in
+                if annoCovers annoA annoB then
+                    if argsChanged || retChanged then
+                        -- Annotation stands; only the changed child spines are
+                        -- rebuilt, so unchanged siblings stay pointer-shared.
+                        ( True, mFunction annoA args ret )
+
+                    else
+                        ( False, a )
+
+                else
+                    ( True, mFunction (unionAnno annoA annoB) args ret )
+
+            else
+                joinWidened a
+
+        ( MList _ xa, MList _ xb ) ->
+            case joinAnnotationsChanged xa xb of
+                ( True, x ) ->
+                    ( True, mList x )
+
+                ( False, _ ) ->
+                    ( False, a )
+
+        ( MTuple _ xsa, MTuple _ xsb ) ->
+            if List.length xsa == List.length xsb then
+                case joinListChanged xsa xsb of
+                    ( True, xs ) ->
+                        ( True, mTuple xs )
+
+                    ( False, _ ) ->
+                        ( False, a )
+
+            else
+                joinWidened a
+
+        ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
+            if Dict.keys fieldsA == Dict.keys fieldsB then
+                case joinFieldsChanged fieldsA fieldsB of
+                    ( True, fields ) ->
+                        ( True, mRecord fields )
+
+                    ( False, _ ) ->
+                        ( False, a )
+
+            else
+                joinWidened a
+
+        ( MCustom _ homeA nameA argsA, MCustom _ homeB nameB argsB ) ->
+            if homeA == homeB && nameA == nameB && List.length argsA == List.length argsB then
+                case joinListChanged argsA argsB of
+                    ( True, args ) ->
+                        ( True, mCustom homeA nameA args )
+
+                    ( False, _ ) ->
+                        ( False, a )
+
+            else
+                joinWidened a
+
+        _ ->
+            if a == b then
+                ( False, a )
+
+            else
+                joinWidened a
+
+
+{-| The mismatch fallback: widen the whole type, but report `changed` honestly.
+`widenSets` is identity on leaves and on any tree whose annotations are already
+`LTop`, and those cases must NOT report a change (see the convergence note above).
+-}
+joinWidened : MonoType -> ( Bool, MonoType )
+joinWidened a =
+    let
+        widened =
+            widenSets a
+    in
+    ( widened /= a, widened )
+
+
+{-| Pointwise join of two equal-length child lists, returning the ORIGINAL list
+(by pointer) when no element changed. Collect-and-patch, mirroring
+`TypeSubst.listMapChanged`.
+-}
+joinListChanged : List MonoType -> List MonoType -> ( Bool, List MonoType )
+joinListChanged xsA xsB =
+    joinListChangedHelp xsA xsB xsA False []
+
+
+joinListChangedHelp : List MonoType -> List MonoType -> List MonoType -> Bool -> List MonoType -> ( Bool, List MonoType )
+joinListChangedHelp remA remB original anyChanged acc =
+    case ( remA, remB ) of
+        ( x :: restA, y :: restB ) ->
+            let
+                ( changed, joined ) =
+                    joinAnnotationsChanged x y
+            in
+            joinListChangedHelp restA restB original (anyChanged || changed) (joined :: acc)
+
+        _ ->
+            if anyChanged then
+                ( True, List.reverse acc )
+
+            else
+                ( False, original )
+
+
+{-| Record-field join over an identical key set (guaranteed by the layout-match
+test at the call site), folding only CHANGED values into the ORIGINAL dict so the
+canonical field ordering the hash fold depends on is preserved. Mirrors
+`TypeSubst.dictMapChanged`.
+-}
+joinFieldsChanged : Dict Name MonoType -> Dict Name MonoType -> ( Bool, Dict Name MonoType )
+joinFieldsChanged fieldsA fieldsB =
+    let
+        fold key ta accPair =
+            let
+                ( changed, joined ) =
+                    joinAnnotationsChanged ta (Maybe.withDefault ta (Dict.get key fieldsB))
+            in
+            if changed then
+                ( True, Dict.insert key joined (Tuple.second accPair) )
+
+            else
+                accPair
+    in
+    case Dict.foldl fold ( False, fieldsA ) fieldsA of
+        ( True, newFields ) ->
+            ( True, newFields )
+
+        _ ->
+            ( False, fieldsA )
+
+
+{-| Exactly `unionAnno a b == a`, decided without allocating: `LTop` covers
+everything, `LSet` never covers `LTop`, and `LSet xs` covers `LSet ys` iff the
+ascending `ys` is a subset of the ascending `xs` (one merge-scan, early exit).
+-}
+annoCovers : LambdaSetAnno -> LambdaSetAnno -> Bool
+annoCovers a b =
+    case ( a, b ) of
+        ( LTop, _ ) ->
+            True
+
+        ( LSet _, LTop ) ->
+            False
+
+        ( LSet xs, LSet ys ) ->
+            sortedSubsetOf ys xs
+
+
+{-| `ys ⊆ xs` for ascending, deduplicated int lists. -}
+sortedSubsetOf : List Int -> List Int -> Bool
+sortedSubsetOf ys xs =
+    case ( ys, xs ) of
+        ( [], _ ) ->
+            True
+
+        ( _, [] ) ->
+            False
+
+        ( y :: yRest, x :: xRest ) ->
+            if y == x then
+                sortedSubsetOf yRest xRest
+
+            else if x < y then
+                sortedSubsetOf ys xRest
+
+            else
+                -- y < x: ys is ascending, so y appears nowhere in the rest of xs.
+                False
 
 
 {-| Structure from the FIRST type, lambda-set annotations from the SECOND

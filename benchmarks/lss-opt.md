@@ -258,6 +258,103 @@ full self-compile: the defensive arm is measured dead (one more clean run licens
 deletion). elm-tests 13,104/12 and E2E ×3 1,675/1,675 also ran green on this tree
 (pre-restructure); bootstrap deferred to the final sweep.
 
+### 2026-08-17 — Run D: substrate Phase 3 — ctx-threaded set writes, no S copy per node (plain run)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| p3 | **5:31.10** (331.1 s) | 6,589,376 kB | 1,378 | 14 | 455,009,823 (13,071 MiB) | 130.23 s | 13,727,612 B |
+
+| axis | Run C | Run D |
+|---|---|---|
+| minor GC time | 84.75 s | 83.60 s |
+| major GC time | 33.78 s | 46.61 s |
+| true mutator (wall − GC) | 200.81 s | 200.57 s |
+| set-writes | skip=61,437 flex=144,151 topJoin=5 union=0 slow=0 | skip=61,453 flex=144,188 topJoin=5 union=0 slow=0 **slotsMinted=957,478** |
+
+Pure refactor: `SetWriteCtx` threading removes the full-S copy per set write and per node
+visited by `poisonGo`/`spineGo`; the census gains only the `slotsMinted` rider. vs Run C
+(`out.mlir` 13,728,018 → 13,727,612 B, −406 B, comparable): wall +11.4 s (+3.6%), just above the
+band — but **entirely major GC**, majors 12→14 and major GC time 33.78→46.61 s (+12.83 s), while
+minor GC time FALLS (84.75→83.60 s) and **true mutator is 200.81→200.57 s, i.e. unchanged**.
+Counters first: this is the major-GC trigger lottery, not the refactor. The eliminated S copies
+leave no trace in minors (1375→1378) or promoted (+1.0%) either, so Phase 3 is **cost-neutral** —
+the ~32-field copy per visited node was real but is not something this workload is bound by, and
+the phase's justification is now structural. The rider is the yield: **957,478 slots minted against
+205,646 total set writes ⇒ 78.5% of minted arrow slots are never written**, corroborating Run B's
+78.0% ⊤/unconstrained zonk reads from the mint side and sizing Phase 5, the only phase attacking it.
+
+### 2026-08-17 — Run E: substrate Phase 4a — `joinAnnotationsChanged` rebuild elision (plain run)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| p4a | **5:17.01** (317.0 s) | 6,462,264 kB | 1,377 | 12 | 446,295,895 (12,818 MiB) | 117.01 s | 13,732,605 B |
+
+| axis | Run D | Run E |
+|---|---|---|
+| minor GC time | 83.60 s | 83.30 s |
+| major GC time | 46.61 s | 33.69 s |
+| true mutator (wall − GC) | 200.57 s | 199.70 s |
+| joins | identical=80,889 noop=4,566 changed=3,424 completion=33,539 | identical=80,892 noop=4,565 changed=3,423 completion=33,547 **completionNoop=33,543** |
+
+**The census is the result: 33,543 of 33,547 completion joins add nothing (99.99%)** — only FOUR
+completion joins in the whole self-compile change the stored type. That site was rebuilding a full
+type tree (fresh nodes, re-mixed hashes) and discarding it, unconditionally, per completed
+body-bearing spec; it is now a pointer return. The registry path's `noop=4,565` sheds its
+rebuild-plus-second-`==`-walk too. vs Run D (`out.mlir` 13,727,612 → 13,732,605 B, +4,993 B — the
+new code is in the corpus): **promoted 13,071 → 12,818 MiB (−1.9%)**, majors 14→12, GC time
+130.23→117.01 s, wall −4.3%. Judge on counters: promoted is the durable signal and is now the
+lowest of the three runs (C 12,940 / D 13,071 / E 12,818), which is exactly what eliding tree
+rebuilds should do. The wall and GC-time deltas are inflated by the major count reverting to 12,
+and true mutator is FLAT (200.57→199.70 s), so do not bank the 4.3%.
+
+### 2026-08-17 — Run F: substrate Phase 4b — mint-key memo by Global (plain run)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| p4b | **5:22.92** (322.9 s) | 6,580,920 kB | 1,385 | 12 | 455,273,041 (13,073 MiB) | 118.13 s | 13,747,678 B |
+
+| axis | Run E | Run F |
+|---|---|---|
+| minor GC time | 83.30 s | 83.12 s |
+| major GC time | 33.69 s | 34.99 s |
+| true mutator (wall − GC) | 199.70 s | 204.43 s |
+
+**NO-GO as specified — and this comparison is the clean one: majors are 12 in BOTH runs**, so
+none of the delta is the trigger lottery that muddied C→D→E. Every counter moves the wrong way:
+promoted 12,818 → 13,073 MiB (+2.0%), minors 1377→1385, true mutator 199.70→204.43 s (+2.4%),
+wall +1.9%. `out.mlir` grew 13,732,605 → 13,747,678 B (+15,073 B, +0.11%) — the memo is a fair
+chunk of new compiler source — but 0.11% more corpus cannot buy 2.4% more mutator time. Cause,
+verified after the run: `spineDepthForGlobal` → `declaredArityOf` does
+`DMap.get TOpt.toComparableGlobal g s.env.toptNodes` on the SAME occurrence path (again per
+`Link` hop), so the string the memo exists to eliminate is still built for every arrow-typed
+global. 4b removed the mint key and the `kernelAliasOf` probe, left the third build standing, and
+added two `HashMap` probes plus memo inserts per occurrence. The cost class is real; its owner is
+`env.toptNodes`'s string-keyed `DMap`, not the mint key. Revert or subsume — do not tune.
+
+### 2026-08-17 — Run G: substrate Phase 4c — `env.toptNodes` DMap → HashMap (plain run)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| p4c | **5:11.50** (311.5 s) | 6,196,520 kB | 1,376 | 12 | 444,867,878 (12,784 MiB) | 110.75 s | 13,739,414 B |
+
+| axis | Run E | Run G |
+|---|---|---|
+| minor GC time | 83.30 s | 81.22 s |
+| major GC time | 33.69 s | 29.51 s |
+| true mutator (wall − GC) | 199.70 s | 200.55 s |
+| max RSS | 6,462,264 kB | 6,196,520 kB |
+
+Base is Run E — Run F's tree was reverted. Majors are 12 in both, so this is a clean comparison.
+**The string-build thesis is NOT confirmed on the counters that decide it:** promoted 12,818 →
+12,784 MiB (−0.3%), minors 1377→1376, and true mutator 199.70 → 200.55 s (+0.4%) — all flat, with
+mutator marginally the WRONG way. Wall 317.0 → 311.5 s (−1.7%) is below the 3% band, so by this
+file's rule that is no change detected, not a gain (`out.mlir` 13,732,605 → 13,739,414 B, +6,809 B,
+comparable). So removing ~100k+ per-probe `toComparableGlobal` allocations does not show up in
+solver time: the builds were real but are not what this workload is bound by. **What DID move is
+memory: max RSS −4.1% (−259 MB) and major GC time −12.4% at an unchanged major count**, consistent
+with dropping the ~10-20k materialized comparable-key strings `Data.Map` retains per entry. That is
+a live-heap win, not a time win, and it is the only reason to keep the conversion.
+
 ---
 
 ## Summary
@@ -269,3 +366,7 @@ One row per run, numbers only.
 | A | 326.3 | 1348 | 14 | 12801 |
 | B | 326.8 | 1379 | 13 | 13056 |
 | C | 319.7 | 1375 | 12 | 12940 |
+| D | 331.1 | 1378 | 14 | 13071 |
+| E | 317.0 | 1377 | 12 | 12818 |
+| F | 322.9 | 1385 | 12 | 13073 |
+| G | 311.5 | 1376 | 12 | 12784 |

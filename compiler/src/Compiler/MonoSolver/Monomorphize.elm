@@ -45,6 +45,7 @@ import Compiler.MonoSolver.Engine as Engine exposing (Failure(..), S, WorkItem(.
 import Compiler.MonoSolver.Translate as Translate
 import Compiler.MonoSolver.Zonk as Zonk
 import Compiler.Type.UnionFind as UF
+import Data.HashMap as HashMap
 import Data.Map as DMap
 import Data.Set as EverySet
 import Dict
@@ -215,7 +216,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
 
         -- Substrate census (Phase 1, plans/lss-set-write-substrate.md).
         , "set-writes: skip=" ++ String.fromInt stats.setWriteSkip ++ " flex=" ++ String.fromInt stats.setWriteFlex ++ " topJoin=" ++ String.fromInt stats.setWriteTopJoin ++ " union=" ++ String.fromInt stats.setWriteUnion ++ " slow=" ++ String.fromInt stats.setWriteSlow ++ " slotsMinted=" ++ String.fromInt stats.slotsMinted
-        , "joins: identical=" ++ String.fromInt stats.joinIdenticalHit ++ " noop=" ++ String.fromInt stats.joinNoop ++ " changed=" ++ String.fromInt stats.joinChanged ++ " completion=" ++ String.fromInt stats.completionJoins
+        , "joins: identical=" ++ String.fromInt stats.joinIdenticalHit ++ " noop=" ++ String.fromInt stats.joinNoop ++ " changed=" ++ String.fromInt stats.joinChanged ++ " completion=" ++ String.fromInt stats.completionJoins ++ " completionNoop=" ++ String.fromInt stats.completionJoinNoop
         , "devirtDirect=" ++ String.fromInt stats.devirtDirect ++ " devirtKernel=" ++ String.fromInt stats.devirtKernel ++ " unqualifiedLambdaMints=" ++ String.fromInt stats.unqualifiedLambdaMints
 
         -- Census (2026-07-21): E9.2 guard-decline split (declinedKernelCNumber
@@ -251,7 +252,15 @@ initState lssConfig currentModule nodes annotations globalTypeEnv mvarState =
     , nodeResolution = Dict.empty
     , intern = Intern.empty
     , env =
-        { toptNodes = nodes
+        { -- 4c: one O(n) conversion at init (~10-20k globals) buys a
+          -- string-build-free probe at every occurrence site. `DMap.foldl`
+          -- ignores its ordering argument (Data/Map.elm:240-242); it is passed
+          -- for documentation only.
+          toptNodes =
+            DMap.foldl TOpt.compareGlobal
+                (\g node acc -> HashMap.insert TOpt.globalHash (==) g node acc)
+                HashMap.empty
+                nodes
         , annotations = annotations
         , globalTypeEnv = globalTypeEnv
         , currentModule = currentModule
@@ -564,6 +573,24 @@ processItem specId s =
                                             -- scheme unify — a crash). Keep the demand
                                             -- for those; body-bearing nodes keep the
                                             -- actualType update they need.
+                                            -- Phase 4a: run the completion join
+                                            -- ONCE, keeping its changed flag for
+                                            -- both the registry write and the
+                                            -- census. `Just` exactly when the
+                                            -- join site is live (lss on + a
+                                            -- body-bearing node).
+                                            completionJoin =
+                                                if s1.env.lss.enabled && nodeSupportsRetranslation node then
+                                                    case Registry.lookupSpecKey specId s1.registry of
+                                                        Just ( _, storedT ) ->
+                                                            Just (Mono.joinAnnotationsChanged actualType storedT)
+
+                                                        Nothing ->
+                                                            Just ( False, actualType )
+
+                                                else
+                                                    Nothing
+
                                             registry2 =
                                                 if nodeSupportsRetranslation node then
                                                     -- LSS_010 monotonicity (found by E9): the
@@ -578,19 +605,19 @@ processItem specId s =
                                                     -- with the stored entry. Flag-off the annos
                                                     -- are all LTop — keep the byte-identical
                                                     -- plain update there.
-                                                    if s1.env.lss.enabled then
-                                                        Registry.updateRegistryType specId
-                                                            (case Registry.lookupSpecKey specId s1.registry of
-                                                                Just ( _, storedT ) ->
-                                                                    Mono.joinAnnotations actualType storedT
+                                                    --
+                                                    -- Phase 4a: the changed flag does NOT gate
+                                                    -- this write. `False` means the join result
+                                                    -- IS actualType by pointer, but the registry
+                                                    -- still holds storedT, so the update must run
+                                                    -- either way — the win here is the elided
+                                                    -- rebuild, not an elided write.
+                                                    case completionJoin of
+                                                        Just ( _, joined ) ->
+                                                            Registry.updateRegistryType specId joined s1.registry
 
-                                                                Nothing ->
-                                                                    actualType
-                                                            )
-                                                            s1.registry
-
-                                                    else
-                                                        Registry.updateRegistryType specId actualType s1.registry
+                                                        Nothing ->
+                                                            Registry.updateRegistryType specId actualType s1.registry
 
                                                 else
                                                     s1.registry
@@ -602,15 +629,21 @@ processItem specId s =
                                                 }
 
                                             -- Phase 1 census: count the joins
-                                            -- this site runs unconditionally
-                                            -- (one per completed body-bearing
-                                            -- spec, no short-circuit today).
+                                            -- this site runs (one per completed
+                                            -- body-bearing spec). Phase 4a splits
+                                            -- out the no-op subset, which the
+                                            -- changed flag gives for free:
+                                            -- `completion` stays the total.
                                             s3 =
-                                                if s1.env.lss.enabled && nodeSupportsRetranslation node then
-                                                    Engine.bumpCompletionJoin s2
+                                                case completionJoin of
+                                                    Just ( True, _ ) ->
+                                                        Engine.bumpCompletionJoin s2
 
-                                                else
-                                                    s2
+                                                    Just ( False, _ ) ->
+                                                        Engine.bumpCompletionJoinNoop s2
+
+                                                    Nothing ->
+                                                        s2
                                         in
                                         Ok (finishNode specId monoNode s3)
 
@@ -692,7 +725,7 @@ specializeNode name home node monoType s =
             Engine.runStep (Translate.specializeCtorViaScheme name 0 1 canType monoType) s
 
         TOpt.Link linkedGlobal ->
-            case DMap.get TOpt.toComparableGlobal linkedGlobal s.env.toptNodes of
+            case HashMap.get TOpt.globalHash (==) linkedGlobal s.env.toptNodes of
                 Nothing ->
                     Ok ( Mono.MonoExtern monoType, s )
 
@@ -756,7 +789,7 @@ resolveGlobalNode home name s =
         Nothing ->
             let
                 node =
-                    DMap.get TOpt.toComparableGlobal (TOpt.Global home name) s.env.toptNodes
+                    HashMap.get TOpt.globalHash (==) (TOpt.Global home name) s.env.toptNodes
 
                 annIds =
                     case node of
@@ -1026,7 +1059,7 @@ the 2-char key prefix (`g|`/`c|`/`k|`/`a|`; `l|` lambdas are skipped — resolve
 via the instance index). TOpt.Global payloads convert to Mono.Global here (the
 origin carries Monomorphized's own Global; this site imports TOpt).
 -}
-buildMemberOrigins : DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> Engine.LssMemberTable -> Dict.Dict Int Mono.MemberOrigin
+buildMemberOrigins : HashMap.HashMap TOpt.Global (TOpt.Node TypeIds.MVarId) -> Engine.LssMemberTable -> Dict.Dict Int Mono.MemberOrigin
 buildMemberOrigins toptNodes table =
     Dict.foldl
         (\key mid acc ->
@@ -1082,7 +1115,7 @@ Depth-bounded so a malformed `Link` cycle cannot hang the compiler.
 and is not importable here.)
 
 -}
-globalOrigin : DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.Global -> Mono.MemberOrigin
+globalOrigin : HashMap.HashMap TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.Global -> Mono.MemberOrigin
 globalOrigin toptNodes g =
     if ctorBackedGlobal toptNodes 8 g then
         Mono.OriginCtor (toptToMono g)
@@ -1091,13 +1124,13 @@ globalOrigin toptNodes g =
         Mono.OriginGlobal (toptToMono g)
 
 
-ctorBackedGlobal : DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> Int -> TOpt.Global -> Bool
+ctorBackedGlobal : HashMap.HashMap TOpt.Global (TOpt.Node TypeIds.MVarId) -> Int -> TOpt.Global -> Bool
 ctorBackedGlobal toptNodes fuel g =
     if fuel <= 0 then
         False
 
     else
-        case DMap.get TOpt.toComparableGlobal g toptNodes of
+        case HashMap.get TOpt.globalHash (==) g toptNodes of
             Just (TOpt.Ctor _ _ _) ->
                 True
 

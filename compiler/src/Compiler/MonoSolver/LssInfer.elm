@@ -50,6 +50,7 @@ import Compiler.MonoSolver.Engine as Engine exposing (Failure(..), Step)
 import Compiler.MonoSolver.Store as Store
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.UnionFind as UF
+import Data.HashMap as HashMap
 import Data.Map as DMap
 import Dict as CoreDict exposing (Dict)
 import System.TypeCheck.IO as IO
@@ -82,7 +83,7 @@ signatureFor global s0 =
                 Err (EngineBug ("LssInfer.signatureFor re-entry on in-flight unit member: " ++ gkey))
 
             else
-                case DMap.get TOpt.toComparableGlobal global s0.env.toptNodes of
+                case HashMap.get TOpt.globalHash (==) global s0.env.toptNodes of
                     Just (TOpt.Link target) ->
                         -- Chase links BEFORE unit resolution. A cycle member
                         -- maps as `member -> Link(_M$first group)`, and
@@ -316,7 +317,7 @@ Signature-source types are annotation-first (LSS_006).
 -}
 resolveUnit : TOpt.Global -> Step (List UnitMember)
 resolveUnit ((TOpt.Global home _) as global) s0 =
-    case DMap.get TOpt.toComparableGlobal global s0.env.toptNodes of
+    case HashMap.get TOpt.globalHash (==) global s0.env.toptNodes of
         Nothing ->
             -- Unknown global (e.g. an accessor pseudo-global): trivial.
             Ok ( [ memberOf global Can.TUnit Nothing s0 ], s0 )
@@ -934,7 +935,7 @@ declaredArityOf g fuel s =
         1
 
     else
-        case DMap.get TOpt.toComparableGlobal g s.env.toptNodes of
+        case HashMap.get TOpt.globalHash (==) g s.env.toptNodes of
             Just (TOpt.Ctor _ arity _) ->
                 arity
 
@@ -961,7 +962,7 @@ Operator-as-value canonicalizes to the aliasing GLOBAL (`(::)` becomes
 -}
 kernelAliasOf : TOpt.Global -> Engine.S -> Maybe ( Name, Name, Name )
 kernelAliasOf g s =
-    case DMap.get TOpt.toComparableGlobal g s.env.toptNodes of
+    case HashMap.get TOpt.globalHash (==) g s.env.toptNodes of
         Just (TOpt.Define (TOpt.VarKernel _ kernelPrefix home name _) _ _) ->
             Just ( kernelPrefix, home, name )
 

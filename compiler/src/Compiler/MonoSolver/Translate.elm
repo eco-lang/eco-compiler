@@ -36,6 +36,7 @@ import Compiler.MonoSolver.Store as Store
 import Compiler.MonoSolver.Zonk as Zonk
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.UnionFind as UF
+import Data.HashMap as HashMap
 import Data.Map as DMap
 import Data.Set as EverySet
 import Set
@@ -2174,7 +2175,7 @@ Enum ctors are nullary and excluded by the arity guard anyway.
 -}
 isCtorNode : TOpt.Global -> Engine.S -> Bool
 isCtorNode g s =
-    case DMap.get TOpt.toComparableGlobal g s.env.toptNodes of
+    case HashMap.get TOpt.globalHash (==) g s.env.toptNodes of
         Just (TOpt.Ctor _ _ _) ->
             True
 
@@ -2196,7 +2197,7 @@ flag until the seam fix is proven at self-compile scale.
 -}
 isBodyNode : TOpt.Global -> Engine.S -> Bool
 isBodyNode g s =
-    case DMap.get TOpt.toComparableGlobal g s.env.toptNodes of
+    case HashMap.get TOpt.globalHash (==) g s.env.toptNodes of
         Just (TOpt.Define _ _ _) ->
             True
 
@@ -3122,6 +3123,7 @@ standaloneArgMember key g canVar s =
         (\mid -> LssInfer.injectSpineMemberId (LssInfer.spineDepthForGlobal g s) mid canVar)
         (Engine.standaloneMemberIdFor key g)
         s
+
 
 
 {-| Kernels stay HEAD-ONLY (see `LssInfer`'s kernel arms): `kernelToSig`

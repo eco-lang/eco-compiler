@@ -16,7 +16,7 @@ module Compiler.MonoSolver.Engine exposing
     , memberIdFor, standaloneMemberIdFor, standaloneMemberGlobal, kernelMemberIdFor, standaloneMemberKernel, srcLambdaKey, trivialSignature, emptyLssStats
     , lambdaInstanceMemberId, lambdaInstanceMemberMaybe
     , LssMemberTable, MemberSource(..), emptyMemberTable
-    , bumpWidenedByKernel, bumpCompletionJoin, withScratchStore
+    , bumpWidenedByKernel, bumpCompletionJoin, bumpCompletionJoinNoop, withScratchStore
     , markDirty
     , ItemAux, emptyItemAux, clearedAux, restoredAux, clearResidualReads
     )
@@ -52,6 +52,7 @@ import Compiler.Eco.Config as Config
 import Compiler.Monomorphize.Registry as Registry
 import Compiler.Type.Type as Type
 import Compiler.Type.UnionFind as UF
+import Data.HashMap as HashMap
 import Data.Map as DMap
 import Data.Set as EverySet
 import Dict as CoreDict exposing (Dict)
@@ -135,7 +136,8 @@ type alias LssStats =
     , joinIdenticalHit : Int -- keyed registry hit, demand bit-identical to the stored type (no join ran)
     , joinNoop : Int -- keyed registry hit, join ran and changed nothing (rebuilt tree discarded)
     , joinChanged : Int -- keyed registry hit, join widened the stored type (drives markDirty)
-    , completionJoins : Int -- processItem completion joins (unconditional per body-bearing spec)
+    , completionJoins : Int -- processItem completion joins (one per body-bearing spec)
+    , completionJoinNoop : Int -- Phase 4a: the subset of those that added nothing (changed flag False — no rebuild)
     , widenedSizeHist : CoreDict.Dict Int Int -- SIZE -> count for sets widened by size at zonk (sizeHist is blind on that branch)
     , slotsMinted : Int -- Phase 3 rider: unconstrained FunL slot mints in loadTypeC (LSS_006 population; demand-encoded slots excluded by design — they are born written). Sizes Phase 5's dead-slot case against writes/zonk-visits.
     }
@@ -213,7 +215,7 @@ insertMemberKernel mid k t =
 
 emptyLssStats : LssStats
 emptyLssStats =
-    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0 }
+    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0 }
 
 
 {-| The all-defaults signature for an annotation with `n` arrows.
@@ -331,7 +333,7 @@ bumpWidenedByKernel s =
 updated. Grouped so `S` updates copy one `env` ref rather than five dead ones.
 -}
 type alias Env =
-    { toptNodes : DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId)
+    { toptNodes : HashMap.HashMap TOpt.Global (TOpt.Node TypeIds.MVarId) -- 4c: hash-keyed, NOT DMap — `Data.Map` rebuilds `toComparableGlobal` on every probe, and this map is read per occurrence
     , annotations : TOpt.AnnotationsByGlobal TypeIds.MVarId
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
     , currentModule : IO.Canonical -- entry module; home of every AnonymousLambda
@@ -888,8 +890,8 @@ bumpKeyedHit hit s =
             { s | lssStats = { stats | joinChanged = stats.joinChanged + 1 } }
 
 
-{-| Phase 1 census: one processItem completion join ran (unconditional per
-completed body-bearing spec — no short-circuit exists at that site today).
+{-| Phase 1 census: one processItem completion join ran (one per completed
+body-bearing spec). Phase 4a: this is now the CHANGED half of that population.
 -}
 bumpCompletionJoin : S -> S
 bumpCompletionJoin s =
@@ -898,6 +900,25 @@ bumpCompletionJoin s =
             s.lssStats
     in
     { s | lssStats = { stats | completionJoins = stats.completionJoins + 1 } }
+
+
+{-| Phase 4a census: a completion join that added nothing — the changed flag
+came back `False`, so no tree was rebuilt. Bumps the total too, keeping
+`completionJoins` the invocation count Phase 1 defined it as.
+-}
+bumpCompletionJoinNoop : S -> S
+bumpCompletionJoinNoop s =
+    let
+        stats =
+            s.lssStats
+    in
+    { s
+        | lssStats =
+            { stats
+                | completionJoins = stats.completionJoins + 1
+                , completionJoinNoop = stats.completionJoinNoop + 1
+            }
+    }
 
 
 {-| LSS_010: record that a scheduled spec's stored type was join-widened.

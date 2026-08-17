@@ -11,17 +11,20 @@ concrete-set population further.
 
 **Everything here is solver-internal.** No phase may change any artifact byte.
 
-**Gate structure (restructured 2026-08-17, after Phase 2's gates ran):** per-phase gates
-are the FAST, decisive ones only — type-check, the two-binary identity byte-compare
-(OLD-binary output vs NEW-binary output on the same tree; byte-identity across a SOURCE
-change is unsatisfiable), the census witness-line compare, and the phase's benchmark
-run. The SLOW suites — elm-tests, E2E ×3 legs, bootstrap Stage-8c — run ONCE as a
-**final correctness sweep** (section at the end) after all phases land, not per phase.
-Rationale: every phase is behind the same byte-identity proof, so the suites re-verify
-what the identity gate already established; batching them trades per-phase latency for
-one sweep, with the identity gate as the per-phase safety net. If a phase's identity
-gate FAILS, fix before proceeding — do not stack unverified phases. Precedent that
-Point-mint elision passes the identity gate: E9.3 v1.1 shipped fresh-var elision
+**Gate structure (restructured again 2026-08-17, v2 — supersedes the per-phase-gate
+structure Phases 1-2 ran under):** phases land back-to-back with NO per-phase
+correctness gates. Per phase, only: type-check/build, the phase's single plain benchmark
+run (its row in `benchmarks/lss-opt.md`), and a `cp` of the built binary to `eco-lss-pN`
+— then straight on to the next phase. ALL correctness gates — the two-binary identity
+byte-compare (OLD-binary output vs NEW-binary output on the same tree; byte-identity
+across a SOURCE change is unsatisfiable), the census witness-line compare, elm-tests,
+E2E ×3 legs, bootstrap Stage-8c — run ONCE in the **final gate sweep** (section at the
+end) after Phase 4b lands. Rationale: minimum wall-clock to a fully-benchmarked stack;
+every phase is designed byte-identical, so ONE end-to-end identity proof (pre-series
+binary vs final binary on the final tree) covers the whole series, and the kept
+per-phase binaries form the bisection ladder if it fails. Accepted trade-off: a defect
+surfaces only at the sweep and is attributed by bisection, not immediately. Precedent
+that Point-mint elision passes the identity gate: E9.3 v1.1 shipped fresh-var elision
 byte-identical (`Store.elm:758-759` comment).
 
 **The workload shape these changes exploit** (all verified):
@@ -407,13 +410,55 @@ op (`Engine.elm:609-616`); **`poisonGo` copies `S` per visited node**
    writes; visits ≠ distinct slots) — `slotsMinted` pins it exactly, which is the number
    Phase 5's case rests on.
 
-**Gates:** pure refactor — two-binary identity + witnesses + plain benchmark run
-(Run D row vs Run C). No census movement expected at all (the rider only ADDS a line).
-Suites in the final sweep.
+**Per-phase (fast):** type-check/build; Run D row vs Run C; `cp` the binary to
+`eco-lss-p3`. All correctness gates are in the final sweep. Note for the sweep: this is
+a pure refactor, so NO census movement is expected at all (the rider only ADDS a line) —
+any witness-line or set-write/join-counter movement at the sweep bisects to this phase.
+
+### Phase 3 — LANDED 2026-08-17
+
+All five items in. `SetWriteCtx` (`Store.elm:829-841`) is the shared vehicle —
+`{ store, skip, flex, topJoin, union, needSlow }` — folded into `S` exactly once per
+traversal by `foldSetWrites` (`Store.elm:847-874`). `poisonGoC` (`Store.elm:1002`) and
+`spineGoC` (`LssInfer.elm:1044`) thread it through their worklists, so the S copy per
+VISITED NODE is gone; `unifySlotWithSet` is now a one-line wrapper over
+`unifySlotWithSetC` rebuilding `S` once per call; `applyFactsGo` keeps Step-shape as
+planned. The rider is `LoadCtx.slotsMinted` (`Store.elm:73`, bumped at the FunL mint
+`:199`) folded into `LssStats.slotsMinted` at all four `loadTypeC` boundaries, each
+guarded by `if c.slotsMinted == 0` so the lss-off path pays nothing.
+
+Two semantics notes for the reviewer. (1) The defensive `_` arm no longer runs inline —
+it defers via `needSlow` to the Step-shaped fallback at the traversal boundary, which
+REORDERS such writes to traversal end. Unobservable while the arm stays dead, and Run C
+measured `setWriteSlow=0` across the full self-compile. (2) `unifySlotWithSetC` splits
+Phase 2's single union arm into `SortedSuper` (adopt the caller's `members` list by
+pointer — the union IS that list when `cur ⊆ members`, so no merge allocation) and
+`SortedMixed` (`unionSortedAsc`). Same set, one fewer allocation on the superset case.
+
+**Run D verdict: cost-neutral, and the wall move is not the refactor.** Wall
+319.7→331.1 s (+3.6%) sits just above the band but is entirely major GC (majors 12→14,
+major GC time 33.78→46.61 s), while **minor GC time FALLS (84.75→83.60 s) and true
+mutator is flat at 200.81→200.57 s**. Minors (1375→1378) and promoted (+1.0%) barely
+move. So the eliminated S copies do not register at this granularity: the ~32-field copy
+per visited node was real, but this workload is not bound by it. This is the third
+datapoint in the same pattern as the kernel-boundary and compare-elision series —
+**removing work the workload is not bound by buys nothing.** Keep Phase 3 on structural
+grounds (it makes these traversals cheap to extend and is a prerequisite for touching the
+load layer), not as a measured win.
+
+**The rider is the real finding, and it is large.** `slotsMinted=957,478` against 205,646
+total set writes: **78.5% of minted arrow slots are never written at all.** That
+independently corroborates Run B's 78.0% ⊤/unconstrained zonk reads from the opposite
+side (mint vs read), and pins the number Phase 5's case rests on — the load layer mints
+~4.7 arrow slots for every one that ever receives a fact. Phases 2-4 all optimize the
+write and join paths; none of them reduces this. **Phase 5 is where the remaining
+substrate cost lives**, and Run D says the write-side well is now dry.
 
 ## Phase 4 — `joinAnnotationsChanged` + the mint-key `byGlobal` memo
 
 Two independent sub-phases; land separately. Both are byte-identical by construction.
+(4c added 2026-08-17 after Run F: the string-build class 4b targeted is real but its
+owner is `env.toptNodes` — see 4b's landing note and 4c below.)
 
 ### 4a. Changed-flag annotation join (Run-K `AST_Monomorphized +12 s`)
 
@@ -488,10 +533,49 @@ Implementation discipline is the in-tree collect-and-patch pattern
   `updateRegistryType` must still run with `actualType`. The win at this site is the
   rebuild elision only.
 
-**Gates:** two-binary identity + witnesses; the Phase-1 counters now decompose:
-`joinNoop` converts from "rebuild + double-walk" to near-free, and a new
-`completionJoinNoop` (free from the flag) lands alongside. Run E. Suites in the final
-sweep.
+**Per-phase (fast):** type-check/build; Run E; `cp` the binary to `eco-lss-p4a`. The
+Phase-1 counters decompose here — `joinNoop` converts from "rebuild + double-walk" to
+near-free, and a new `completionJoinNoop` (free from the flag) lands alongside — so read
+those in Run E's census. Correctness gates in the final sweep; this is the phase whose
+SOUNDNESS LAW (never falsely False) the sweep's identity gate actually tests, so if the
+sweep fails, bisect here first.
+
+### Phase 4a — LANDED 2026-08-17
+
+`joinAnnotationsChanged` (`Monomorphized.elm`, next to `joinAnnotations`, which stays for
+its GlobalOpt caller and as the spec) with `joinListChanged` / `joinFieldsChanged` /
+`joinWidened` / `annoCovers` / `sortedSubsetOf`. Consumed at both sites: the registry hit
+path (`Registry.elm`, replacing the join + second `==` walk) and the `processItem`
+completion join (`Monomorphize.elm`, where the flag does NOT gate the write — the registry
+holds `storedT`, so `updateRegistryType` still runs; the win is the elided rebuild only).
+The completion join is now computed ONCE and its flag feeds both the write and the census.
+
+**Stronger than the plan asked for: the flag is EXACT, not merely never-falsely-False.**
+The returned tree is structurally what `joinAnnotations` returns and the flag is exactly
+`result /= a`. Two design points make that hold: `annoCovers annoA annoB` decides precisely
+`unionAnno annoA annoB == annoA` (`LTop` covers all; `LSet` never covers `LTop`; otherwise
+an ascending subset merge-scan), and every mismatch arm routes through `joinWidened`, which
+compares its widened result against `a` rather than assuming widening changed something —
+`widenSets` is identity on leaves and on already-`LTop` trees. Exactness is deliberate and
+load-bearing: the plan's "falsely True is sound, it just costs one spurious
+markDirty/retranslation" is TRUE per event but NOT safe as a steady state — a falsely-True
+flag at the registry site writes and marks dirty on *every* hit of that spec, and the join
+flush would never converge. Do not relax this to a conservative approximation.
+
+**Run E verdict: the census is the result.** `completionNoop=33,543` of `completion=33,547`
+— **99.99% of completion joins add nothing; exactly FOUR change the stored type in the whole
+self-compile.** That site was rebuilding a full type tree (fresh nodes, re-mixed hashes) and
+discarding it, unconditionally, once per completed body-bearing spec. The registry path's
+`noop=4,565` sheds its rebuild-plus-second-`==`-walk as well. Measured effect: **promoted
+13,071 → 12,818 MiB (−1.9%)**, the lowest of Runs C/D/E, which is what rebuild elision should
+do; majors 14→12 and wall −4.3%, but true mutator is FLAT (200.57→199.70 s), so the wall
+figure is mostly the major-count lottery reverting and should not be banked.
+
+**Note for the final sweep.** Run B/D's `completion` counts made this look like a
+33.5k-event *join* population; it is really a 4-event join population wearing 33.5k
+rebuilds. If the sweep's identity gate ever fails, this is the first phase to bisect — it is
+the only one in the series whose correctness rests on a flag rather than on a
+representation.
 
 ### 4b. Mint-key memo (Run-K `AST_TypedOptimized +13.9 s`)
 
@@ -561,8 +645,199 @@ hash-keyed since K4, `Registry.elm:56/94`.)
    (`Engine.elm:348`, gkey per `signatureFor` call at `LssInfer.elm:68-73`) →
    `HashMap TOpt.Global LssSignature`.
 
-**Gates:** two-binary identity + witnesses (id-order preservation is the argument —
-state it in the commit); Run F. Suites in the final sweep.
+**Per-phase (fast):** type-check/build; Run F; `cp` the binary to `eco-lss-p4b`.
+Correctness gates in the final sweep — id-order preservation is the identity argument
+(first occurrence mints in exactly today's order), so state it in the commit and expect
+the sweep's `members` witness line to carry the proof.
+
+### Phase 4b — IMPLEMENTED AND MEASURED 2026-08-17: **NO-GO as specified**
+
+Built exactly as planned: `TOpt.globalHash`, `LssMemberTable.byGlobal`/`byCtorGlobal`
+(nested record, no new S field), `mintStandaloneGlobal`/`mintCtorGlobal` in `LssInfer`,
+the `MintReq` restructure moving key construction BELOW the `canTypeIsArrow` guard, and
+the `Translate` arg-side arms converted to share the same memo. Item 5 (specCountByGlobal
+/ lssSignatures) deliberately not attempted. Type-checks clean; **Run F says revert it.**
+
+**Run F, and it is the cleanest comparison in the series: majors are 12 in BOTH E and F**,
+so nothing here is the trigger lottery. Promoted 12,818 → 13,073 MiB (+2.0%), minors
+1377→1385, true mutator 199.70 → 204.43 s (+2.4%), wall +1.9%. `out.mlir` grew +15,073 B
+(+0.11%) — real, since the memo is new compiler source — but 0.11% more corpus cannot buy
+2.4% more mutator.
+
+**Why, and it is a flaw in the plan's premise, not the implementation.** §4b counted TWO
+`toComparableGlobal` builds per `VarGlobal` occurrence (the mint key and `kernelAliasOf`'s
+probe) and memoized both away. It missed a THIRD on the same path:
+`spineDepthForGlobal` → `declaredArityOf` calls
+`DMap.get TOpt.toComparableGlobal g s.env.toptNodes`, once per occurrence and again per
+`Link` hop. `DMap` re-derives its comparable key on EVERY operation — that is the whole
+reason `Data.HashMap` exists (K4) — so the dominant build survives the memo untouched,
+while the memo adds two `HashMap` probes and an insert per occurrence on top. The net is
+the measured 2.4%.
+
+**The real target is `env.toptNodes`.** It is a `DMap` keyed by `toComparableGlobal` and it
+is consulted on every occurrence by `declaredArityOf`, `kernelAliasOf`, `signatureFor`, and
+the node lookups at `LssInfer.elm:85/185/319`. Converting THAT to
+`HashMap TOpt.Global` with `TOpt.globalHash` (which 4b already built and which is the one
+piece worth keeping) removes every build on the path at once, and makes the mint-key memo
+either unnecessary or nearly free. That is a different, larger change than 4b as written —
+give it its own plan entry and its own run rather than tuning this one.
+
+**Disposition: REVERTED 2026-08-17** (user decision), fully — including `TOpt.globalHash`,
+so the corpus returns to exactly the Run E tree and later rows stay comparable. Do NOT
+carry 4b into the final sweep: it was a measured 2% regression on promoted with the major
+count held constant, and the sweep's identity gate would only have told us it was
+*correct*, not that it was worth having.
+
+`globalHash` is the one piece the `toptNodes` conversion will want back, and there is no
+git in this container, so it is preserved here verbatim rather than lost:
+
+```elm
+{-| A cheap structural hash of a `Global`, for `Data.HashMap` keys. Mechanical twin of
+`Monomorphized.globalHash` (deliberately duplicated — `Monomorphized` imports
+`TypedOptimized`, so the hash cannot be shared from there). Hashes the NAME char-by-char
+but takes only the LENGTHS of the canonical's parts: the module path is what makes
+`toComparableGlobal` expensive. Collisions are resolved by `Data.HashMap`'s per-bucket
+`eq`, so a coarse hash costs performance, never correctness.
+-}
+globalHash : Global -> Int
+globalHash g =
+    case g of
+        Global (IO.Canonical ( author, project ) modName) name ->
+            globalMixHash
+                (globalMixHash
+                    (globalMixHash (globalMixHash 21 (String.length author)) (String.length project))
+                    (String.length modName)
+                )
+                (String.foldl (\c h -> globalMixHash h (Char.toCode c)) 23 name)
+
+
+globalMixHash : Int -> Int -> Int
+globalMixHash h x =
+    -- 2^26, matching Monomorphized.hashBase: two of these pack into 2^52, inside the
+    -- exact-integer range of both the native i64 and the JS double.
+    modBy 67108864 (h * 33 + modBy 67108864 x + 7)
+```
+
+### 4c. Convert `env.toptNodes` from `DMap` to `HashMap TOpt.Global` (supersedes 4b)
+
+**The finding that motivates it (Run F forensics, all verified 2026-08-17):**
+`Data.Map` re-derives its comparable key on EVERY operation —
+`get toComparable targetKey (D dict) = Dict.get (toComparable targetKey) dict`
+(`Data/Map.elm:get`) — and `env.toptNodes` is a `DMap.Dict String TOpt.Global (TOpt.Node
+TypeIds.MVarId)` (`Engine.elm:335`) consulted on the hottest occurrence paths. So every
+probe builds a fresh ~25-50-char `toComparableGlobal` string. 4b memoized two builds per
+`VarGlobal` occurrence and missed the `declaredArityOf`/`kernelAliasOf` probes entirely;
+converting the MAP kills every build at once and needs no memo, no `MintReq` restructure,
+and no per-occurrence bookkeeping.
+
+**The change is one field type, one construction fold, and nine mechanical get sites.**
+Exhaustive grep (2026-08-17): `env.toptNodes` is **get-only** in the solver — no
+`foldl/keys/values/toList/map/filter/union` anywhere — which is what makes this
+byte-identical by construction (`HashMap` iteration is insertion-ordered, but nothing
+ever iterates this map). The subst pipeline's `state.ctx.toptNodes`
+(`Compiler/Monomorphize/State.elm:179`, consumers in `Specialize.elm`) is a DIFFERENT
+map and stays untouched; `TOpt.GlobalGraph`'s own `Data.Map` and the pre-`initState`
+consumers (`EntryPrep.insertFlagsDecoderNode`, `findEntryPointId`, `seedFlagsDecoder` —
+all on the raw `nodesWithIds` value, `Monomorphize.elm:70-105, 332-338`) also stay on
+`DMap`; only the solver Env field converts.
+
+1. **Restore `TOpt.globalHash`** exactly as preserved verbatim above (in
+   `TypedOptimized.elm` next to `toComparableGlobal`; add `globalHash` to the exposing
+   list). `globalMixHash` stays private.
+2. **`Engine.elm:335`**: field becomes
+   `toptNodes : HashMap.HashMap TOpt.Global (TOpt.Node TypeIds.MVarId)`; re-add
+   `import Data.HashMap as HashMap`.
+3. **Construction** — `initState` (`Monomorphize.elm:254`) converts ONCE at init, O(n)
+   over ~10-20k globals (noise against 100k+ occurrence probes saved):
+
+   ```elm
+   { toptNodes =
+       DMap.foldl TOpt.compareGlobal
+           (\g node acc -> HashMap.insert TOpt.globalHash (==) g node acc)
+           HashMap.empty
+           nodes
+   ```
+
+   (`DMap.foldl` ignores its ordering argument — `Data/Map.elm:240-242` — it is passed
+   for documentation only. `initState`'s `nodes` PARAMETER keeps its `DMap` type;
+   `seedFlagsDecoder` consumes that raw value, not the Env field.)
+4. **The nine get sites**, each
+   `DMap.get TOpt.toComparableGlobal g s.env.toptNodes` →
+   `HashMap.get TOpt.globalHash (==) g s.env.toptNodes`:
+   - `LssInfer.elm:85` (`signatureFor` Link chase — cold, per signature miss)
+   - `LssInfer.elm:319` (`resolveUnit` — cold)
+   - `LssInfer.elm:937` (`declaredArityOf` — **HOT: per arrow-typed occurrence via
+     `spineDepthForGlobal`, again per `Link` hop; the Run-F culprit**)
+   - `LssInfer.elm:964` (`kernelAliasOf` — **HOT: per `VarGlobal` occurrence, both the
+     inference walk and the Translate arg arm**)
+   - `Monomorphize.elm:719` (Link chase in node dispatch)
+   - `Monomorphize.elm:783` (`resolveGlobalNode` — D13 memo MISS path only)
+   - `Monomorphize.elm:1124` (`ctorBackedGlobal` — finalization; it and `globalOrigin`/
+     `buildMemberOrigins` take `toptNodes` as a PARAMETER (`:1044, 1054, 1110`), so
+     their parameter types change with it)
+   - `Translate.elm:2177` (`isCtorNode`), `Translate.elm:2199` (`isBodyNode`)
+
+**Identity argument (state it in the commit).** (a) Get-only: no iteration, so
+`HashMap`'s insertion order never leaks. (b) Key equivalence: `toComparableGlobal` is
+injective — module paths may contain dots but Elm value/ctor NAMES cannot, so the final
+`"." ++ name` segment parses unambiguously — hence string-equality ⟺ structural
+`(==)` on `TOpt.Global`, and every lookup returns exactly what it returned before.
+(c) `nodeResolution`, `lssSignatures`, and every other string-keyed memo are untouched.
+Byte-identical by construction; the sweep's identity gate verifies it.
+
+**What this deliberately does NOT do** (each a separate decision AFTER Run G):
+
+- The mint-key build (`"g|" ++ toComparableGlobal g` at `LssInfer.elm:673/677/680` and
+  Translate's arg arms) still runs per occurrence, and `memberIdFor`'s
+  `byKey : Dict String` probe still hashes that string. 4c kills two of the three
+  builds on the occurrence path. If Run G moves, re-try the two cheap remnants of 4b
+  ON TOP of 4c — the below-the-guard `MintReq` move (costless by construction) first,
+  the `byGlobal` memo only with Run G evidence that the remaining build still shows.
+- `resolveGlobalNode` builds its `gkey` per CALL for the `nodeResolution` memo probe
+  (`Monomorphize.elm:773-776`) — per spec resolution, not per occurrence; convert that
+  memo to `HashMap TOpt.Global` only if a profile ever names it.
+- `signatureFor`'s per-call `gkey` (`LssInfer.elm:70-73`) — same deferral (4b item 5).
+
+**Per-phase (fast):** type-check (`build/toolchain/bin/elm make` — seconds); build;
+**Run G** row vs Run E (Run F's tree is reverted; the comparison base is E). `cp` the
+binary to `eco-lss-p4c`. Quote both rows' `out.mlir` (this adds compiler source; expect
+a few KB). **Run G is the clean test of the whole string-build thesis**: if promoted and
+true mutator do not move against E, the `toComparableGlobal` cost class is noise at this
+workload's scale — retire it, do NOT proceed to the 4b remnants, and strike the
+`env.toptNodes` conversion from the sweep set by reverting it too. Correctness gates in
+the final sweep.
+
+#### Phase 4c — IMPLEMENTED AND MEASURED 2026-08-17: thesis REFUTED, memory win only
+
+Built exactly as specified above: `TOpt.globalHash` restored, `Env.toptNodes` retyped, the
+one-shot `DMap.foldl` conversion in `initState`, and all nine get sites converted (plus the
+three `toptNodes`-parameter signatures in `Monomorphize.elm`). Type-checked first pass.
+Re-verified before building: the map is still **get-only** — no `HashMap.foldl/keys/values/
+toList` anywhere — so insertion order cannot leak and the identity argument holds.
+
+**Run G refutes the thesis on the pre-registered criterion.** Majors are 12 in both E and G,
+so nothing is lottery. promoted 12,818 → 12,784 MiB (−0.3%), minors 1377→1376, **true mutator
+199.70 → 200.55 s (+0.4%, marginally the WRONG way)**. Wall −1.7% is below the band and is
+therefore not a gain. Removing ~100k+ per-probe `toComparableGlobal` allocations changes
+nothing measurable in solver time: **the `toComparableGlobal` cost class is retired.** Per the
+criterion above, do NOT attempt the 4b remnants (the `MintReq` move, the `byGlobal` memo) and
+do not open the `nodeResolution` / `lssSignatures` conversions (4b item 5) — they all chase
+the same refuted class. This is the fourth instance of the standing pattern in this track:
+**removing work the workload is not bound by buys nothing.**
+
+**One number did move, and it is not time: max RSS −4.1% (−259 MB), with major GC time
+−12.4% at an unchanged major count.** `Data.Map` stores `Dict comparable (k, v)` — it RETAINS
+a materialized ~25-50-char comparable string per entry, for every global in the program —
+and hash-keying drops all of them from the live heap. That is a live-heap/footprint win, and
+it is the ONLY argument for keeping 4c. It also generalizes: any large, long-lived `DMap`
+keyed by a built string pays the same retention, which is a different (and better-evidenced)
+lead than the per-probe build cost this phase set out to remove.
+
+**Disposition: keep or revert is a footprint-vs-diff-size call, not a performance one.**
+Keeping it costs +6,809 B of corpus and a touched Env type for −259 MB peak RSS; reverting
+returns to the Run E tree, which is byte-verified reproducible (`REVERT_IDENTITY=OK` after
+the 4b revert). Either way the *performance* conclusion is settled and the string-build
+thread is closed.
 
 ## Phase 5 — DEFERRED: lazy leaves + shared callable-free clones (own plan when picked up)
 
@@ -587,33 +862,52 @@ rider to size the dead-slot population exactly.
 
 **`benchmarks/lss-opt.md` is the protocol** — this track created it. Each phase lands
 one PLAIN run (one cold leg, solver+LSS workload, no A/B — these are unflagged changes)
-recorded as the next row: Run C = Phase 2, Run D = Phase 3, Run E/F = Phase 4a/4b.
+recorded as the next row: Run C = Phase 2, Run D = Phase 3, Run E/F = Phase 4a/4b
+(F = the 4b NO-GO, reverted), Run G = Phase 4c.
 Compare against the previous row per that file's rules (quote both rows' `out.mlir`
 sizes; judge counters first, wall second; never quote a wall without its majors). The
-**identity gate is separate from the benchmark**: old binary vs new binary on the SAME
-tree must byte-match (the Phase-1 landing note shows the recipe) — the benchmark rows
-are two different trees and prove nothing about identity.
+benchmark is NOT a correctness gate: its rows are two different trees and prove nothing
+about identity — that argument lives entirely in the final sweep.
 
-## Final correctness sweep (once, after all phases)
+**Keep every phase binary.** After each phase's build, `cp` the compiler to
+`eco-lss-pN` (`p1` from Phase 2's landing already exists and is the series baseline —
+do not delete it). These are the bisection ladder: if the sweep's identity gate fails,
+run the same tree through successive `eco-lss-pN` to attribute the divergence to one
+phase, instead of re-deriving it from a four-phase diff.
 
-Run after Phase 4b lands, against the cumulative tree:
+## Final gate sweep (once, after Phase 4b)
 
-1. elm-tests — expect the 13,104/12 baseline (12 known TYPE_007 failures).
-2. Full E2E ×3 legs: default / `ECO_CSE=1` / `ECO_LIST_MAP_TEMPLATE=1`, purging
+Every correctness gate for Phases 3-4b runs here, against the cumulative tree. Order is
+cheapest-and-most-decisive first — stop and bisect on the first failure rather than
+collecting a full failure set.
+
+1. **Two-binary identity byte-compare** — `eco-lss-p2` (last fully-gated binary) vs the
+   final binary on the SAME tree; outputs must byte-match. This is THE gate: every phase
+   3-4b is byte-identical by construction, so a mismatch means one of them is not
+   substrate-only. Bisect via the `eco-lss-pN` ladder (4a first — see its note).
+2. **Census witness lines** — same recipe, comparing the two runs' `lss.report`. These
+   must be IDENTICAL: `members`, `signatures`, `sets zonked` + size histogram, `widened`
+   (all three counters), `widened sizes`, `join flush`, `joins`. These legitimately MOVE
+   and are the series' evidence: `set-writes`, `joinNoop`/`completionJoinNoop`, and the
+   Phase-3 `slotsMinted` line (new).
+3. elm-tests — expect the 13,104/12 baseline (12 known TYPE_007 failures).
+4. Full E2E ×3 legs: default / `ECO_CSE=1` / `ECO_LIST_MAP_TEMPLATE=1`, purging
    `build/test/*/eco-stuff` between legs — expect 1,675/1,675 each.
-3. Bootstrap (solver+LSS) — Stage-8c fixed point (a NEW fixed point; the corpus grew).
-4. One final identity re-check: the PRE-Phase-2 binary (`eco-lss-p1`, kept) vs the
-   final binary on the final tree — byte-identical proves the whole series was
-   solver-internal end to end, not just each increment.
+5. Bootstrap (solver+LSS) — Stage-8c fixed point (a NEW fixed point; the corpus grew).
+6. One final identity re-check against the series baseline: `eco-lss-p1` (PRE-Phase-2,
+   kept) vs the final binary on the final tree — byte-identical proves the whole series
+   was solver-internal end to end, not just the Phase 3-4b increment.
 
-Partial credit already banked (2026-08-17, before the restructure): Phase 2's tree
-passed elm-tests 13,104/12 and all three E2E legs 1,675/1,675; only the bootstrap was
-cut short. Those results cover Phases 1-2; the sweep re-covers everything.
+Partial credit already banked (2026-08-17, under the old per-phase structure): Phases
+1-2 each passed their own two-binary identity + witness gates at landing, and Phase 2's
+tree passed elm-tests 13,104/12 and all three E2E legs 1,675/1,675; only the bootstrap
+was cut short. That is why step 1 uses `eco-lss-p2` as its reference — steps 3-5 are
+un-run for Phases 3-4b only, but the sweep re-covers everything regardless.
 
 ## Done when
 
-Phases 1-4 landed, each with its identity gate green; the final correctness sweep
-green; the census shows `setWriteSlow = 0` sustained, `joinNoop`/completion joins
+Phases 1-4 landed and each benchmarked with its own row (Runs C-F); the final gate
+sweep green end to end; the census shows `setWriteSlow = 0` sustained, `joinNoop`/completion joins
 converted to pointer-returns, and minors/GC time visibly down across Runs B→F;
 findings and numbers recorded in this file per phase; Phase 5 explicitly re-scoped or
 parked with the post-Phase-4 census attached.
