@@ -563,8 +563,15 @@ zonkSigGo slots n i factsRev s0 =
 
                             fact =
                                 case desc.content of
-                                    IO.Structure (IO.LambdaSet1 top members) ->
-                                        { rep = rep, members = CoreDict.keys members, top = top }
+                                    IO.Structure (IO.LambdaSet1 IO.LsTop) ->
+                                        -- Members are dead under ⊤ at every
+                                        -- fact consumer; carry none.
+                                        { rep = rep, members = [], top = True }
+
+                                    IO.Structure (IO.LambdaSet1 (IO.LsMembers ms)) ->
+                                        -- Phase 2: the store list by pointer
+                                        -- (was CoreDict.keys).
+                                        { rep = rep, members = ms, top = False }
 
                                     _ ->
                                         -- FlexVar: the body contributed nothing.
@@ -1030,8 +1037,14 @@ injectSpineMemberId arity mid v0 s0 =
 
 spineGo : Int -> Int -> Dict Int () -> IO.Variable -> Step ()
 spineGo mid remaining seen v s0 =
+    -- Phase 3: ctx-threaded — one S write-back for the whole spine.
+    Store.foldSetWrites (spineGoC mid remaining seen v (Store.setWriteCtx s0.store)) s0
+
+
+spineGoC : Int -> Int -> Dict Int () -> IO.Variable -> Store.SetWriteCtx -> Store.SetWriteCtx
+spineGoC mid remaining seen v c0 =
     if remaining <= 0 then
-        Ok ( (), s0 )
+        c0
 
     else
         let
@@ -1039,37 +1052,32 @@ spineGo mid remaining seen v s0 =
                 Engine.pointKey v
         in
         if CoreDict.member key seen then
-            Ok ( (), s0 )
+            c0
 
         else
             let
                 ( store1, desc ) =
-                    UF.get v s0.store
+                    UF.get v c0.store
 
-                s1 =
-                    { s0 | store = store1 }
+                c1 =
+                    { c0 | store = store1 }
             in
             case desc.content of
                 IO.Structure (IO.FunL _ res slot) ->
-                    case Store.unifySlotWithSet False [ mid ] slot s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s2 ) ->
-                            -- One arrow consumed: descend the result with one
-                            -- fewer arrow of budget.
-                            spineGo mid (remaining - 1) (CoreDict.insert key () seen) res s2
+                    -- One arrow consumed: descend the result with one fewer
+                    -- arrow of budget.
+                    spineGoC mid (remaining - 1) (CoreDict.insert key () seen) res (Store.unifySlotWithSetC False [ mid ] slot c1)
 
                 IO.Alias _ _ _ real ->
                     -- Transparent alias: chase the aliased Point WITHOUT
                     -- spending budget (same arrow, not a new one). Mono stores
                     -- are alias-expanded at load, so this is defensive.
-                    spineGo mid remaining (CoreDict.insert key () seen) real s1
+                    spineGoC mid remaining (CoreDict.insert key () seen) real c1
 
                 _ ->
                     -- Non-arrow result (ground type / var), or a slotless `Fun1`
                     -- (lss-off — no slot to write): the spine ends here.
-                    Ok ( (), s1 )
+                    c1
 
 
 joinLetUse : LetEnv -> Name -> TOpt.Meta TypeIds.MVarId -> Step ()

@@ -7,6 +7,7 @@ module Compiler.MonoSolver.Store exposing
     , arrowParts
     , arrowSetSlot
     , unifySlotWithSet
+    , SetWriteCtx, setWriteCtx, unifySlotWithSetC, foldSetWrites
     , unifyBestEffort
     , poisonArrowSets
     , monoTypeToVar
@@ -69,6 +70,7 @@ type alias LoadCtx =
     , revMemo : Array (Maybe TypeIds.MVarId)
     , lssOn : Bool -- mint FunL set slots (lambda-set specialization)
     , arrowSlots : List IO.Variable -- minted set slots, REVERSED minting order
+    , slotsMinted : Int -- Phase 3 rider: unconstrained slot mints this load (sizes Phase 5's dead-slot population)
     }
 
 
@@ -77,9 +79,20 @@ loadType canType =
     \s ->
         let
             ( v, c ) =
-                loadTypeC s.env.superStatic canType { store = s.store, memo = s.memo, revMemo = s.revMemo, lssOn = s.env.lss.enabled, arrowSlots = [] }
+                loadTypeC s.env.superStatic canType { store = s.store, memo = s.memo, revMemo = s.revMemo, lssOn = s.env.lss.enabled, arrowSlots = [], slotsMinted = 0 }
         in
-        Ok ( v, { s | store = c.store, memo = c.memo, revMemo = c.revMemo } )
+        Ok
+            ( v
+            , if c.slotsMinted == 0 then
+                { s | store = c.store, memo = c.memo, revMemo = c.revMemo }
+
+              else
+                let
+                    stats =
+                        s.lssStats
+                in
+                { s | store = c.store, memo = c.memo, revMemo = c.revMemo, lssStats = { stats | slotsMinted = stats.slotsMinted + c.slotsMinted } }
+            )
 
 
 {-| `loadType` additionally returning the minted arrow set slots in minting
@@ -93,9 +106,20 @@ loadTypeWithArrows canType =
     \s ->
         let
             ( v, c ) =
-                loadTypeC s.env.superStatic canType { store = s.store, memo = s.memo, revMemo = s.revMemo, lssOn = s.env.lss.enabled, arrowSlots = [] }
+                loadTypeC s.env.superStatic canType { store = s.store, memo = s.memo, revMemo = s.revMemo, lssOn = s.env.lss.enabled, arrowSlots = [], slotsMinted = 0 }
         in
-        Ok ( ( v, Array.fromList (List.reverse c.arrowSlots) ), { s | store = c.store, memo = c.memo, revMemo = c.revMemo } )
+        Ok
+            ( ( v, Array.fromList (List.reverse c.arrowSlots) )
+            , if c.slotsMinted == 0 then
+                { s | store = c.store, memo = c.memo, revMemo = c.revMemo }
+
+              else
+                let
+                    stats =
+                        s.lssStats
+                in
+                { s | store = c.store, memo = c.memo, revMemo = c.revMemo, lssStats = { stats | slotsMinted = stats.slotsMinted + c.slotsMinted } }
+            )
 
 
 {-| `loadTypeIsolated` additionally returning the minted arrow set slots in
@@ -107,9 +131,20 @@ loadTypeIsolatedWithArrows canType =
     \s ->
         let
             ( v, c ) =
-                loadTypeC s.env.superStatic canType { store = s.store, memo = Dict.empty, revMemo = s.revMemo, lssOn = s.env.lss.enabled, arrowSlots = [] }
+                loadTypeC s.env.superStatic canType { store = s.store, memo = Dict.empty, revMemo = s.revMemo, lssOn = s.env.lss.enabled, arrowSlots = [], slotsMinted = 0 }
         in
-        Ok ( ( v, Array.fromList (List.reverse c.arrowSlots) ), { s | store = c.store, revMemo = c.revMemo } )
+        Ok
+            ( ( v, Array.fromList (List.reverse c.arrowSlots) )
+            , if c.slotsMinted == 0 then
+                { s | store = c.store, revMemo = c.revMemo }
+
+              else
+                let
+                    stats =
+                        s.lssStats
+                in
+                { s | store = c.store, revMemo = c.revMemo, lssStats = { stats | slotsMinted = stats.slotsMinted + c.slotsMinted } }
+            )
 
 
 {-| D8: load a scheme with an ISOLATED (empty) memo so its vars do not share
@@ -124,9 +159,20 @@ loadTypeIsolated canType =
     \s ->
         let
             ( v, c ) =
-                loadTypeC s.env.superStatic canType { store = s.store, memo = Dict.empty, revMemo = s.revMemo, lssOn = s.env.lss.enabled, arrowSlots = [] }
+                loadTypeC s.env.superStatic canType { store = s.store, memo = Dict.empty, revMemo = s.revMemo, lssOn = s.env.lss.enabled, arrowSlots = [], slotsMinted = 0 }
         in
-        Ok ( v, { s | store = c.store, revMemo = c.revMemo } )
+        Ok
+            ( v
+            , if c.slotsMinted == 0 then
+                { s | store = c.store, revMemo = c.revMemo }
+
+              else
+                let
+                    stats =
+                        s.lssStats
+                in
+                { s | store = c.store, revMemo = c.revMemo, lssStats = { stats | slotsMinted = stats.slotsMinted + c.slotsMinted } }
+            )
 
 
 loadTypeC : Dict.Dict Int IO.SuperType -> Can.Type TypeIds.MVarId -> LoadCtx -> ( IO.Variable, LoadCtx )
@@ -150,7 +196,7 @@ loadTypeC superStatic canType c0 =
                     ( pSet, c3 ) =
                         freshVarC (IO.FlexVar Nothing) c2
                 in
-                structC (IO.FunL pFrom pTo pSet) { c3 | arrowSlots = pSet :: c3.arrowSlots }
+                structC (IO.FunL pFrom pTo pSet) { c3 | arrowSlots = pSet :: c3.arrowSlots, slotsMinted = c3.slotsMinted + 1 }
 
             else
                 structC (IO.Fun1 pFrom pTo) c2
@@ -496,10 +542,13 @@ monoTypeToVarC lssOn monoType st =
                     setContent =
                         case anno of
                             Mono.LTop ->
-                                IO.LambdaSet1 True Dict.empty
+                                IO.LambdaSet1 IO.LsTop
 
                             Mono.LSet members ->
-                                IO.LambdaSet1 False (Dict.fromList (List.map (\m -> ( m, () )) members))
+                                -- Phase 2: the LSet list IS the store
+                                -- representation — reused by pointer, no
+                                -- Dict.fromList conversion.
+                                IO.LambdaSet1 (IO.LsMembers members)
                 in
                 List.foldl
                     (\argType ( accPoint, stA ) ->
@@ -745,60 +794,196 @@ arrowSetSlot content =
             Nothing
 
 
-{-| Unify a set slot with `LambdaSet1 top members`. Set unification is a
-total join (Unify's LambdaSet1×LambdaSet1 arm) — a mismatch here would be an
-engine bug, so the strict `unifyStep` is correct.
+{-| Unify a set slot with the join of its content and `(top, members)`.
 
-E9.3: read the slot first and SKIP when the join is a no-op — the join
-`(slotTop || top, slotMembers ∪ members)` equals the current content
-exactly when `(slotTop || not top)` and every member is already present.
-This services every injection and every LSS_004 kernel poison, ~90 % of
-which hit an already-⊤ or already-containing slot; the full path allocates
-a fresh Point + descriptor + Dict per call, which the profile showed as
-pure GC churn (plan §E9.3). The skip leaves the store content bit-equal to
-the full path — only the elided fresh var differs.
+Phase 2 (`plans/lss-set-write-substrate.md`): every live case is a DIRECT
+root-descriptor operation — read the root (already done here), compute the
+join, `UF.set` the root. The join is total (no mismatch branch), runs no
+occurs check, and rank/mark are invariant on every MonoSolver path (all mint
+sites use `outermostRank`/`noMark`; `Unify.merge`'s min-rank is a no-op), so
+funneling it through a fresh Point + full `unifyStep` — the pre-Phase-2 slow
+path, 29.9 % of writes in Run B — bought nothing but allocation. `UF.set`
+resolves chains to the root exactly as the FlexVar arm always has.
+
+Counter mapping (§2.5): `skip` = ⊤-absorb + already-⊆; `flex` = adopt into
+an unconstrained slot (⊤-onto-flex included); `topJoin` = ⊤ onto members;
+`union` = real merge (incl. superset adoption); `slow` = the defensive arm
+ONLY. Each bump rides the S copy its arm already makes.
 -}
 unifySlotWithSet : Bool -> List Int -> IO.Variable -> Step ()
 unifySlotWithSet top members slot s0 =
+    -- Phase 3: one thin wrapper over the ctx-threaded engine — a single S
+    -- rebuild per call, exactly as before.
+    foldSetWrites (unifySlotWithSetC top members slot (setWriteCtx s0.store)) s0
+
+
+{-| Phase 3 (`plans/lss-set-write-substrate.md`): store-level set-write
+context. Threads the UF store plus counter DELTAS through a traversal so the
+caller pays ONE ~6-field ctx copy per write and ONE S copy per traversal,
+instead of a full ~32-field S copy per write (`poisonGo` paid one per
+VISITED NODE). `needSlow` collects defensive-arm requests — measured 0 on
+the self-compile (Run C `setWriteSlow=0`) — for the Step-shaped fallback at
+the boundary; deferral reorders any such write to traversal end, which is
+unobservable while the arm stays dead.
+-}
+type alias SetWriteCtx =
+    { store : IO.State
+    , skip : Int
+    , flex : Int
+    , topJoin : Int
+    , union : Int
+    , needSlow : List ( Bool, List Int, IO.Variable )
+    }
+
+
+setWriteCtx : IO.State -> SetWriteCtx
+setWriteCtx store =
+    { store = store, skip = 0, flex = 0, topJoin = 0, union = 0, needSlow = [] }
+
+
+{-| Fold a traversal's writes back into `S` with ONE copy, then run any
+deferred defensive-arm writes through the Step-shaped slow path.
+-}
+foldSetWrites : SetWriteCtx -> Step ()
+foldSetWrites c s0 =
     let
-        ( store1, desc ) =
-            UF.get slot s0.store
+        stats0 =
+            s0.lssStats
 
         s1 =
-            { s0 | store = store1 }
-    in
-    case desc.content of
-        IO.Structure (IO.LambdaSet1 slotTop slotMembers) ->
-            if (slotTop || not top) && List.all (\m -> Dict.member m slotMembers) members then
-                Ok ( (), s1 )
+            if c.skip == 0 && c.flex == 0 && c.topJoin == 0 && c.union == 0 then
+                { s0 | store = c.store }
 
             else
-                unifySlotWithSetSlow top members slot s1
+                { s0
+                    | store = c.store
+                    , lssStats =
+                        { stats0
+                            | setWriteSkip = stats0.setWriteSkip + c.skip
+                            , setWriteFlex = stats0.setWriteFlex + c.flex
+                            , setWriteTopJoin = stats0.setWriteTopJoin + c.topJoin
+                            , setWriteUnion = stats0.setWriteUnion + c.union
+                        }
+                }
+    in
+    case c.needSlow of
+        [] ->
+            Ok ( (), s1 )
+
+        slots ->
+            foldSlowWrites slots s1
+
+
+foldSlowWrites : List ( Bool, List Int, IO.Variable ) -> Step ()
+foldSlowWrites items s0 =
+    case items of
+        [] ->
+            Ok ( (), s0 )
+
+        ( top, members, slot ) :: rest ->
+            case unifySlotWithSetSlow top members slot s0 of
+                Err e ->
+                    Err e
+
+                Ok ( (), s1 ) ->
+                    foldSlowWrites rest s1
+
+
+{-| The set-write engine (join semantics and counter mapping exactly as the
+Phase 2 Step form; see that commit's doc). Total on live content; the
+defensive arm defers to the boundary via `needSlow`.
+-}
+unifySlotWithSetC : Bool -> List Int -> IO.Variable -> SetWriteCtx -> SetWriteCtx
+unifySlotWithSetC top members slot c0 =
+    let
+        ( store1, desc ) =
+            UF.get slot c0.store
+
+        c1 =
+            { c0 | store = store1 }
+    in
+    case desc.content of
+        IO.Structure (IO.LambdaSet1 IO.LsTop) ->
+            -- ⊤ absorbs everything (terminal): pure skip.
+            { c1 | skip = c1.skip + 1 }
+
+        IO.Structure (IO.LambdaSet1 (IO.LsMembers cur)) ->
+            if top then
+                setRootC slot desc IO.lsTopContent { c1 | topJoin = c1.topJoin + 1 }
+
+            else
+                case IO.classifySorted members cur of
+                    IO.SortedEqual ->
+                        { c1 | skip = c1.skip + 1 }
+
+                    IO.SortedSub ->
+                        -- members ⊆ cur (covers members == [] too).
+                        { c1 | skip = c1.skip + 1 }
+
+                    IO.SortedSuper ->
+                        -- cur ⊆ members: the union IS the caller's list —
+                        -- adopt it by pointer, no merge allocation.
+                        setRootC slot desc (IO.Structure (IO.LambdaSet1 (IO.LsMembers members))) { c1 | union = c1.union + 1 }
+
+                    IO.SortedMixed ->
+                        setRootC slot desc (IO.Structure (IO.LambdaSet1 (IO.LsMembers (IO.unionSortedAsc members cur)))) { c1 | union = c1.union + 1 }
 
         IO.FlexVar _ ->
-            -- E9.3 v1.1 — the DOMINANT case: LSS_006 makes loadType mint
+            -- The DOMINANT case (Run B: 70.1 %): LSS_006 makes loadType mint
             -- fresh arrow structure per load, so a set write almost always
-            -- targets an unconstrained flex slot. Adopt the set content
-            -- directly — exactly what unify(flex × LambdaSet1) merges to —
-            -- without the fresh var + full unifyStep.
-            let
-                ( store2, () ) =
-                    UF.set slot { desc | content = IO.Structure (IO.LambdaSet1 top (Dict.fromList (List.map (\m -> ( m, () )) members))) } s1.store
-            in
-            Ok ( (), { s1 | store = store2 } )
+            -- targets an unconstrained flex slot. Adopt the content directly;
+            -- the caller's list is stored AS-IS (ascending at every caller).
+            if top then
+                setRootC slot desc IO.lsTopContent { c1 | flex = c1.flex + 1 }
+
+            else
+                case members of
+                    [] ->
+                        -- (False, []) is bottom: a no-op that keeps the slot
+                        -- unconstrained, preserving LsMembers-non-empty.
+                        { c1 | skip = c1.skip + 1 }
+
+                    _ ->
+                        setRootC slot desc (IO.Structure (IO.LambdaSet1 (IO.LsMembers members))) { c1 | flex = c1.flex + 1 }
 
         _ ->
-            unifySlotWithSetSlow top members slot s1
+            -- DEFENSIVE only: unreachable by closure of the slot-content
+            -- channels (LSS_007); measured 0 (Run C). Deferred to the
+            -- traversal boundary.
+            { c1 | needSlow = ( top, members, slot ) :: c1.needSlow }
+
+
+setRootC : IO.Variable -> IO.Descriptor -> IO.Content -> SetWriteCtx -> SetWriteCtx
+setRootC slot desc content c =
+    let
+        ( store1, () ) =
+            UF.set slot { desc | content = content } c.store
+    in
+    { c | store = store1 }
 
 
 unifySlotWithSetSlow : Bool -> List Int -> IO.Variable -> Step ()
 unifySlotWithSetSlow top members slot s0 =
-    case Engine.freshVar (IO.Structure (IO.LambdaSet1 top (Dict.fromList (List.map (\m -> ( m, () )) members)))) s0 of
+    let
+        stats0 =
+            s0.lssStats
+
+        s1 =
+            { s0 | lssStats = { stats0 | setWriteSlow = stats0.setWriteSlow + 1 } }
+
+        set =
+            if top then
+                IO.LsTop
+
+            else
+                IO.LsMembers members
+    in
+    case Engine.freshVar (IO.Structure (IO.LambdaSet1 set)) s1 of
         Err e ->
             Err e
 
-        Ok ( setVar, s1 ) ->
-            unifyStep slot setVar s1
+        Ok ( setVar, s2 ) ->
+            unifyStep slot setVar s2
 
 
 {-| Poison every arrow set slot reachable in a loaded type structure: kernels
@@ -808,14 +993,17 @@ revisits; store structure is finite.
 -}
 poisonArrowSets : IO.Variable -> Step ()
 poisonArrowSets v0 s0 =
-    poisonGo Dict.empty [ v0 ] s0
+    -- Phase 3: ctx-threaded DFS — one ~6-field ctx copy per visited node and
+    -- ONE S write-back here, where the old shape copied the full S record per
+    -- visited node.
+    foldSetWrites (poisonGoC Dict.empty [ v0 ] (setWriteCtx s0.store)) s0
 
 
-poisonGo : Dict.Dict Int () -> List IO.Variable -> Step ()
-poisonGo seen worklist s0 =
+poisonGoC : Dict.Dict Int () -> List IO.Variable -> SetWriteCtx -> SetWriteCtx
+poisonGoC seen worklist c0 =
     case worklist of
         [] ->
-            Ok ( (), s0 )
+            c0
 
         v :: rest ->
             let
@@ -823,7 +1011,7 @@ poisonGo seen worklist s0 =
                     Engine.pointKey v
             in
             if Dict.member key seen then
-                poisonGo seen rest s0
+                poisonGoC seen rest c0
 
             else
                 let
@@ -831,49 +1019,44 @@ poisonGo seen worklist s0 =
                         Dict.insert key () seen
 
                     ( store1, desc ) =
-                        UF.get v s0.store
+                        UF.get v c0.store
 
-                    s1 =
-                        { s0 | store = store1 }
+                    c1 =
+                        { c0 | store = store1 }
                 in
                 case desc.content of
                     IO.Structure flat ->
                         case flat of
                             IO.FunL a b slot ->
-                                case unifySlotWithSet True [] slot s1 of
-                                    Err e ->
-                                        Err e
-
-                                    Ok ( _, s2 ) ->
-                                        poisonGo seen1 (a :: b :: rest) s2
+                                poisonGoC seen1 (a :: b :: rest) (unifySlotWithSetC True [] slot c1)
 
                             IO.Fun1 a b ->
-                                poisonGo seen1 (a :: b :: rest) s1
+                                poisonGoC seen1 (a :: b :: rest) c1
 
                             IO.App1 _ _ args ->
-                                poisonGo seen1 (args ++ rest) s1
+                                poisonGoC seen1 (args ++ rest) c1
 
                             IO.Record1 fields ext ->
-                                poisonGo seen1 (Dict.values fields ++ (ext :: rest)) s1
+                                poisonGoC seen1 (Dict.values fields ++ (ext :: rest)) c1
 
                             IO.Tuple1 a b cs ->
-                                poisonGo seen1 (a :: b :: cs ++ rest) s1
+                                poisonGoC seen1 (a :: b :: cs ++ rest) c1
 
                             IO.EmptyRecord1 ->
-                                poisonGo seen1 rest s1
+                                poisonGoC seen1 rest c1
 
                             IO.Unit1 ->
-                                poisonGo seen1 rest s1
+                                poisonGoC seen1 rest c1
 
-                            IO.LambdaSet1 _ _ ->
-                                poisonGo seen1 rest s1
+                            IO.LambdaSet1 _ ->
+                                poisonGoC seen1 rest c1
 
                     IO.Alias _ _ _ real ->
-                        poisonGo seen1 (real :: rest) s1
+                        poisonGoC seen1 (real :: rest) c1
 
                     _ ->
                         -- Variables: nothing reachable to poison.
-                        poisonGo seen1 rest s1
+                        poisonGoC seen1 rest c1
 
 
 
@@ -926,6 +1109,11 @@ type alias LssZonkAcc =
     , zonked : Int
     , widenedBySize : Int
     , hist : Dict.Dict Int Int
+
+    -- Phase 1 census (plans/lss-set-write-substrate.md): `hist` is fed only on
+    -- the WITHIN-cap branch, so the sizes of sets that widen are thrown away
+    -- today — exactly the magnitudes the sorted-list worst case needs.
+    , widenedHist : Dict.Dict Int Int
     }
 
 
@@ -935,7 +1123,7 @@ zonkToMono var =
         let
             lssAcc =
                 if s.env.lss.enabled then
-                    Just { maxSetSize = s.env.lss.maxSetSize, zonked = 0, widenedBySize = 0, hist = Dict.empty }
+                    Just { maxSetSize = s.env.lss.maxSetSize, zonked = 0, widenedBySize = 0, hist = Dict.empty, widenedHist = Dict.empty }
 
                 else
                     Nothing
@@ -982,6 +1170,7 @@ foldZonkStats c s =
                             | setsZonked = stats.setsZonked + acc.zonked
                             , widenedBySize = stats.widenedBySize + acc.widenedBySize
                             , sizeHist = Dict.foldl (\k v h -> Dict.insert k (v + Maybe.withDefault 0 (Dict.get k h)) h) stats.sizeHist acc.hist
+                            , widenedSizeHist = Dict.foldl (\k v h -> Dict.insert k (v + Maybe.withDefault 0 (Dict.get k h)) h) stats.widenedSizeHist acc.widenedHist
                         }
                 }
 
@@ -1112,7 +1301,7 @@ zonkFlatC superTable revMemo flat c0 =
                             in
                             Ok (consC (Mono.mFunction anno [ ma ] mb) c3)
 
-        IO.LambdaSet1 _ _ ->
+        IO.LambdaSet1 _ ->
             -- LSS_007: a LambdaSet1 only ever lives inside a FunL set slot,
             -- which is consumed by the FunL arm — reaching here is a bug.
             Err (EngineBug "LambdaSet1 outside an arrow slot in zonkFlatC")
@@ -1156,9 +1345,10 @@ is read only after every unification the item will ever do. Policy:
 
   - unresolved slot (FlexVar) -> LTop (unknown, NOT empty — an empty claim
     would license consumers to treat the arrow as dead)
-  - LambdaSet1 True \_ -> LTop (widened / kernel-facing)
-  - LambdaSet1 False members -> LSet (ascending ids), unless
-    |members| > maxSetSize -> LTop (counted in widenedBySize)
+  - LsTop -> LTop (widened / kernel-facing)
+  - LsMembers members -> LSet members, the store list by pointer (ascending
+    by construction), unless |members| > maxSetSize -> LTop (counted in
+    widenedBySize + widenedSizeHist)
 
 -}
 zonkSetSlot : IO.Variable -> ZonkCtx -> ( Mono.LambdaSetAnno, ZonkCtx )
@@ -1171,23 +1361,33 @@ zonkSetSlot setVar c0 =
             { c0 | store = store1 }
     in
     case desc.content of
-        IO.Structure (IO.LambdaSet1 True _) ->
+        IO.Structure (IO.LambdaSet1 IO.LsTop) ->
             ( Mono.LTop, bumpZonkAcc Nothing c1 )
 
-        IO.Structure (IO.LambdaSet1 False members) ->
+        IO.Structure (IO.LambdaSet1 (IO.LsMembers members)) ->
             let
                 size =
-                    Dict.size members
+                    List.length members
             in
             case c1.lss of
                 Just acc ->
                     if size > acc.maxSetSize then
-                        ( Mono.LTop, { c1 | lss = Just { acc | zonked = acc.zonked + 1, widenedBySize = acc.widenedBySize + 1 } } )
+                        ( Mono.LTop
+                        , { c1
+                            | lss =
+                                Just
+                                    { acc
+                                        | zonked = acc.zonked + 1
+                                        , widenedBySize = acc.widenedBySize + 1
+                                        , widenedHist = Dict.insert size (1 + Maybe.withDefault 0 (Dict.get size acc.widenedHist)) acc.widenedHist
+                                    }
+                          }
+                        )
 
                     else
-                        -- Dict.keys is ascending — LSet stays sorted (key
-                        -- canonicality for toComparableMonoType).
-                        ( Mono.LSet (Dict.keys members), bumpZonkAcc (Just size) c1 )
+                        -- Phase 2: IDENTITY — the store list IS the LSet
+                        -- payload (ascending by construction; was Dict.keys).
+                        ( Mono.LSet members, bumpZonkAcc (Just size) c1 )
 
                 Nothing ->
                     -- A FunL zonked outside an lss-enabled wrapper (e.g. a

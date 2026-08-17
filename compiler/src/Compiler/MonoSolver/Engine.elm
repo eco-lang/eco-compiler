@@ -16,7 +16,7 @@ module Compiler.MonoSolver.Engine exposing
     , memberIdFor, standaloneMemberIdFor, standaloneMemberGlobal, kernelMemberIdFor, standaloneMemberKernel, srcLambdaKey, trivialSignature, emptyLssStats
     , lambdaInstanceMemberId, lambdaInstanceMemberMaybe
     , LssMemberTable, MemberSource(..), emptyMemberTable
-    , bumpWidenedByKernel, withScratchStore
+    , bumpWidenedByKernel, bumpCompletionJoin, withScratchStore
     , markDirty
     , ItemAux, emptyItemAux, clearedAux, restoredAux, clearResidualReads
     )
@@ -119,6 +119,25 @@ type alias LssStats =
     , declinedKernelEmission : Int -- declined by the non-CNumber emission checks (unboxed-scalar tail/result, arg shape)
     , declinedKernelArity : Int -- whitelisted kernel singleton consulted at a non-whitelist-arity site
     , kernelMissHist : CoreDict.Dict String Int -- NON-whitelisted kernel singleton call sites, "home.name" -> count (whitelist growth)
+
+    -- Substrate census (Phase 1 of plans/lss-set-write-substrate.md). Stats
+    -- only — never touches the graph. These size the substrate work: the
+    -- set-write split says how much of the write path the E9.3 fast paths
+    -- already cover (`setWriteSlow` ≈ 0 is the evidence to delete the
+    -- defensive slow arm), the join split separates the wasted rebuild-and-
+    -- discard population from real widening, and `widenedSizeHist` records
+    -- the magnitudes the `widenedBySize` counter throws away.
+    , setWriteSkip : Int -- unifySlotWithSet: no-op (⊤-absorb, or members already ⊆ slot)
+    , setWriteFlex : Int -- unifySlotWithSet: adopted content into an unconstrained FlexVar slot
+    , setWriteTopJoin : Int -- unifySlotWithSet: ⊤ write onto an LsMembers slot — direct set of the shared constant (Phase 2; was slow)
+    , setWriteUnion : Int -- unifySlotWithSet: real member union onto an LsMembers slot — direct root join (Phase 2; was slow)
+    , setWriteSlow : Int -- unifySlotWithSet: the DEFENSIVE arm only (non-FlexVar, non-LambdaSet1 content) — expected 0; sustained 0 is the licence to delete it
+    , joinIdenticalHit : Int -- keyed registry hit, demand bit-identical to the stored type (no join ran)
+    , joinNoop : Int -- keyed registry hit, join ran and changed nothing (rebuilt tree discarded)
+    , joinChanged : Int -- keyed registry hit, join widened the stored type (drives markDirty)
+    , completionJoins : Int -- processItem completion joins (unconditional per body-bearing spec)
+    , widenedSizeHist : CoreDict.Dict Int Int -- SIZE -> count for sets widened by size at zonk (sizeHist is blind on that branch)
+    , slotsMinted : Int -- Phase 3 rider: unconstrained FunL slot mints in loadTypeC (LSS_006 population; demand-encoded slots excluded by design — they are born written). Sizes Phase 5's dead-slot case against writes/zonk-visits.
     }
 
 
@@ -194,7 +213,7 @@ insertMemberKernel mid k t =
 
 emptyLssStats : LssStats
 emptyLssStats =
-    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelMissHist = CoreDict.empty }
+    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0 }
 
 
 {-| The all-defaults signature for an annotation with `n` arrows.
@@ -776,7 +795,7 @@ enqueueSpec global monoType s0 =
 
     else
     let
-        ( ( specId, reg1, storedChanged ), s ) =
+        ( ( specId, reg1, hit ), s2 ) =
             if s0.env.lss.enabled then
                 -- §8.5, keyed=False (M2/M3): keys are today's keys — lambda
                 -- sets never fan out specializations; the stored demand is the
@@ -798,7 +817,13 @@ enqueueSpec global monoType s0 =
                     ( sid, r ) =
                         Registry.getOrCreateSpecId global monoType s0.registry
                 in
-                ( ( sid, r, False ), s0 )
+                ( ( sid, r, Registry.CreatedNew ), s0 )
+
+        s =
+            bumpKeyedHit hit s2
+
+        storedChanged =
+            hit == Registry.HitChangedJoin
     in
         if BitSet.member specId s.scheduled then
             if storedChanged then
@@ -829,6 +854,50 @@ enqueueSpec global monoType s0 =
                     , worklist = SpecializeGlobal specId :: s.worklist
                   }
                 )
+
+
+{-| Phase 1 census (`plans/lss-set-write-substrate.md`): attribute a keyed
+registry probe. `CreatedNew` costs nothing — it is the miss path, which
+always rebuilds `S` anyway, and a counter there would only re-count what
+`registry.nextId` already tracks.
+
+The two HIT-without-change outcomes are the ones worth the record copy: they
+land on the D2 "return S unaltered" path, so this is the one place
+instrumentation adds a copy the un-instrumented compiler does not make. That
+cost is deliberate and bounded — it is exactly the population Phase 4
+removes, and Run B measures it against Run A.
+
+-}
+bumpKeyedHit : Registry.KeyedHit -> S -> S
+bumpKeyedHit hit s =
+    let
+        stats =
+            s.lssStats
+    in
+    case hit of
+        Registry.CreatedNew ->
+            s
+
+        Registry.HitIdentical ->
+            { s | lssStats = { stats | joinIdenticalHit = stats.joinIdenticalHit + 1 } }
+
+        Registry.HitNoopJoin ->
+            { s | lssStats = { stats | joinNoop = stats.joinNoop + 1 } }
+
+        Registry.HitChangedJoin ->
+            { s | lssStats = { stats | joinChanged = stats.joinChanged + 1 } }
+
+
+{-| Phase 1 census: one processItem completion join ran (unconditional per
+completed body-bearing spec — no short-circuit exists at that site today).
+-}
+bumpCompletionJoin : S -> S
+bumpCompletionJoin s =
+    let
+        stats =
+            s.lssStats
+    in
+    { s | lssStats = { stats | completionJoins = stats.completionJoins + 1 } }
 
 
 {-| LSS_010: record that a scheduled spec's stored type was join-widened.
@@ -879,7 +948,7 @@ enqueueSpecKeyed global monoType s0 =
         underBudget =
             count < s0.env.lss.maxSpecsPerGlobal
 
-        ( ( specId, reg1, storedChanged ), s ) =
+        ( ( specId, reg1, hit ), sProbe ) =
             if underBudget then
                 ( Registry.getOrCreateSpecIdKeyed global monoType monoType s0.registry, s0 )
 
@@ -892,6 +961,12 @@ enqueueSpecKeyed global monoType s0 =
                 ( Registry.getOrCreateSpecIdKeyed global keyType monoType s0.registry
                 , withIntern intern1 s0
                 )
+
+        storedChanged =
+            hit == Registry.HitChangedJoin
+
+        s =
+            bumpKeyedHit hit sProbe
 
         created =
             reg1.nextId > s.registry.nextId

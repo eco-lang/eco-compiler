@@ -702,7 +702,7 @@ adjustRankContent youngMark visitMark groupRank content =
                         |> IO.apply (go arg)
                         |> IO.apply (IO.pure max |> IO.apply (go result) |> IO.apply (go setSlot))
 
-                IO.LambdaSet1 _ _ ->
+                IO.LambdaSet1 _ ->
                     -- THEORY: ground member ids never need to get generalized
                     IO.pure Type.outermostRank
 
@@ -1162,7 +1162,7 @@ restoreContent content =
                         |> IO.andThen (\_ -> restore result)
                         |> IO.andThen (\_ -> restore setSlot)
 
-                IO.LambdaSet1 _ _ ->
+                IO.LambdaSet1 _ ->
                     IO.pure ()
 
                 IO.EmptyRecord1 ->
@@ -1211,9 +1211,9 @@ traverseFlatType f flatType =
                 |> IO.apply (f b)
                 |> IO.apply (f s)
 
-        IO.LambdaSet1 top members ->
+        IO.LambdaSet1 ls ->
             -- Ground data: no variables to transform.
-            IO.pure (IO.LambdaSet1 top members)
+            IO.pure (IO.LambdaSet1 ls)
 
         IO.EmptyRecord1 ->
             IO.pure IO.EmptyRecord1

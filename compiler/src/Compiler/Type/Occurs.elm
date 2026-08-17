@@ -79,7 +79,7 @@ occursHelp seen var foundCycle =
                                         |> IO.andThen (occursHelp newSeen b)
                                         |> IO.andThen (occursHelp newSeen a)
 
-                                IO.LambdaSet1 _ _ ->
+                                IO.LambdaSet1 _ ->
                                     -- Ground member ids: no child variables.
                                     IO.pure foundCycle
 

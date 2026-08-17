@@ -1,5 +1,6 @@
 module Compiler.Monomorphize.Registry exposing
-    ( emptyRegistry
+    ( KeyedHit(..)
+    , emptyRegistry
     , getOrCreateSpecId
     , getOrCreateSpecIdKeyed
     , lookupSpecKey
@@ -17,8 +18,10 @@ The registry maintains a bidirectional mapping between specialization keys
 
 # Registry Operations
 
+@docs KeyedHit
 @docs emptyRegistry
 @docs getOrCreateSpecId
+@docs getOrCreateSpecIdKeyed
 @docs lookupSpecKey
 @docs updateRegistryType
 
@@ -30,6 +33,30 @@ import Compiler.AST.Monomorphized as Mono exposing (Global, MonoType, SpecId, Sp
 
 
 -- ====== REGISTRY OPERATIONS ======
+
+
+{-| Outcome of a keyed registry probe.
+
+Phase 1 of `plans/lss-set-write-substrate.md` splits what used to be a bare
+`Bool` (`storedChanged`) into the three hit shapes the census needs: the
+branches already existed inside `getOrCreateSpecIdKeyed`, they simply were
+not distinguishable by the caller. `HitChangedJoin` is the old `True`;
+everything else is the old `False`.
+
+  - `CreatedNew` — key miss, a new SpecId was allocated.
+  - `HitIdentical` — the stored type is bit-identical to the demand; no join
+    ran (the cheapest exit).
+  - `HitNoopJoin` — the join ran, rebuilt a tree, and changed nothing; the
+    result was discarded. Pure waste, and the population Phase 4 targets.
+  - `HitChangedJoin` — the join widened the stored type; the caller must mark
+    the spec dirty (LSS_010).
+
+-}
+type KeyedHit
+    = CreatedNew
+    | HitIdentical
+    | HitNoopJoin
+    | HitChangedJoin
 
 
 {-| Create an empty specialization registry.
@@ -81,11 +108,11 @@ new demand (LSS_010): the single translated node serves every caller that
 hits this key, so its demand-seeded annotations must cover all of them —
 keeping only the first demand lets a singleton set lie about later
 callers' values, which a fast-dispatch stamp turns into a silent
-miscompile. The returned Bool is True when the join CHANGED the stored
-type — the caller must re-translate an already-translated spec.
+miscompile. `HitChangedJoin` means the join CHANGED the stored type — the
+caller must re-translate an already-translated spec.
 
 -}
-getOrCreateSpecIdKeyed : Global -> MonoType -> MonoType -> SpecializationRegistry -> ( SpecId, SpecializationRegistry, Bool )
+getOrCreateSpecIdKeyed : Global -> MonoType -> MonoType -> SpecializationRegistry -> ( SpecId, SpecializationRegistry, KeyedHit )
 getOrCreateSpecIdKeyed global keyType storeType registry =
     let
         key =
@@ -97,7 +124,7 @@ getOrCreateSpecIdKeyed global keyType storeType registry =
                 Just ( storedGlobal, storedType ) ->
                     if storedType == storeType then
                         -- Common case: identical demand — one == walk, no join.
-                        ( specId, registry, False )
+                        ( specId, registry, HitIdentical )
 
                     else
                         let
@@ -105,7 +132,12 @@ getOrCreateSpecIdKeyed global keyType storeType registry =
                                 Mono.joinAnnotations storedType storeType
                         in
                         if joined == storedType then
-                            ( specId, registry, False )
+                            -- The join rebuilt the whole tree and changed
+                            -- nothing; `joined` is discarded here. This is the
+                            -- population Phase 4 of
+                            -- plans/lss-set-write-substrate.md removes with a
+                            -- pointer-preserving changed-flag join.
+                            ( specId, registry, HitNoopJoin )
 
                         else
                             ( specId
@@ -113,11 +145,11 @@ getOrCreateSpecIdKeyed global keyType storeType registry =
                                 | reverseMapping =
                                     Array.set specId (Just ( storedGlobal, joined )) registry.reverseMapping
                               }
-                            , True
+                            , HitChangedJoin
                             )
 
                 Nothing ->
-                    ( specId, registry, False )
+                    ( specId, registry, HitIdentical )
 
         Nothing ->
             let
@@ -129,7 +161,7 @@ getOrCreateSpecIdKeyed global keyType storeType registry =
               , mapping = Mono.specKeyMapInsert key specId registry.mapping
               , reverseMapping = Array.push (Just ( global, storeType )) registry.reverseMapping
               }
-            , False
+            , CreatedNew
             )
 
 

@@ -5,6 +5,7 @@ module System.TypeCheck.IO exposing
     , traverseArrayMaybe, foldMArray
     , Point(..), PointCell(..)
     , Descriptor, Content(..), SuperType(..), Mark(..), Variable, RootedVar, FlatType(..)
+    , LambdaSet(..), SortedRel(..), lsTopContent, classifySorted, unionSortedAsc
     , Canonical(..)
     , makeDescriptor
     , NameState, getNames, putNames, withFreshNames
@@ -641,12 +642,11 @@ type alias RootedVar =
   - `Record1 fields extension`: Record type with named fields and optional extension
   - `Unit1`: The unit type ()
   - `Tuple1 first second rest`: Tuple type (2 or more elements)
-  - `LambdaSet1 top members`: A lambda set — the ONLY legal content of a
+  - `LambdaSet1 set`: A lambda set — the ONLY legal content of a
     `FunL` set slot besides `FlexVar` (LSS_007); it never appears anywhere
     else, and typecheck-phase stores contain neither `FunL` nor
-    `LambdaSet1`. `top = True` is ⊤ (widened/kernel-facing), absorbing
-    under union. Members are ground per-run ids (no Variables inside), so
-    set unification is a total Dict union — it can never mismatch.
+    `LambdaSet1`. Members are ground per-run ids (no Variables inside), so
+    set unification is a total ordered-merge join — it can never mismatch.
 
 -}
 type FlatType
@@ -657,7 +657,118 @@ type FlatType
     | Record1 (CoreDict.Dict String Variable) Variable
     | Unit1
     | Tuple1 Variable Variable (List Variable)
-    | LambdaSet1 Bool (CoreDict.Dict Int ())
+    | LambdaSet1 LambdaSet
+
+
+{-| An LSS lambda set in a `FunL` slot (`plans/lss-set-write-substrate.md`
+Phase 2; formerly `Bool (Dict Int ())`).
+
+`LsMembers` is ascending, deduped, and NON-EMPTY by construction — every
+producer feeds an already-ascending list (a zonked `Mono.LSet`, a signature
+fact, or a singleton injection), mirroring LSS_001 for the in-store form.
+
+`LsTop` is ⊤ (widened/kernel-facing): terminal (nothing un-tops a slot) and
+absorbing under join. Members are DEAD under ⊤ at every reader in the repo
+(audited 2026-08-17, census included), so ⊤ carries none — every poison
+write is a set of the shared `lsTopContent` constant, allocation-free, and
+every join-with-⊤ is a constant return.
+
+-}
+type LambdaSet
+    = LsTop
+    | LsMembers (List Int)
+
+
+{-| THE shared ⊤ content. All top-writes `UF.set` this one value.
+-}
+lsTopContent : Content
+lsTopContent =
+    Structure (LambdaSet1 LsTop)
+
+
+{-| Relation between two ascending member lists, decided in ONE merge-scan:
+O(n+m), zero allocation, early exit to `SortedMixed` once both sides have
+shown an exclusive element. `SortedSuper` = second ⊆ first (strictly);
+`SortedSub` = first ⊆ second (strictly).
+-}
+type SortedRel
+    = SortedEqual
+    | SortedSuper
+    | SortedSub
+    | SortedMixed
+
+
+classifySorted : List Int -> List Int -> SortedRel
+classifySorted =
+    classifySortedGo False False
+
+
+classifySortedGo : Bool -> Bool -> List Int -> List Int -> SortedRel
+classifySortedGo leftOnly rightOnly xs ys =
+    if leftOnly && rightOnly then
+        SortedMixed
+
+    else
+        case ( xs, ys ) of
+            ( [], [] ) ->
+                sortedRelOf leftOnly rightOnly
+
+            ( _ :: _, [] ) ->
+                sortedRelOf True rightOnly
+
+            ( [], _ :: _ ) ->
+                sortedRelOf leftOnly True
+
+            ( x :: xRest, y :: yRest ) ->
+                if x == y then
+                    classifySortedGo leftOnly rightOnly xRest yRest
+
+                else if x < y then
+                    classifySortedGo True rightOnly xRest ys
+
+                else
+                    classifySortedGo leftOnly True xs yRest
+
+
+sortedRelOf : Bool -> Bool -> SortedRel
+sortedRelOf leftOnly rightOnly =
+    if leftOnly then
+        if rightOnly then
+            SortedMixed
+
+        else
+            SortedSuper
+
+    else if rightOnly then
+        SortedSub
+
+    else
+        SortedEqual
+
+
+{-| Ascending dedup merge of two ascending lists; reuses the exhausted
+side's suffix by pointer. Deliberately a twin of `Mono.unionSortedInts` —
+`Monomorphized` imports this module, so the shared copy must live here and
+a cross-import would cycle.
+-}
+unionSortedAsc : List Int -> List Int -> List Int
+unionSortedAsc xs ys =
+    case ( xs, ys ) of
+        ( [], _ ) ->
+            ys
+
+        ( _, [] ) ->
+            xs
+
+        ( x :: xRest, y :: yRest ) ->
+            if x == y then
+                x :: unionSortedAsc xRest yRest
+
+            else if x < y then
+                x :: unionSortedAsc xRest ys
+
+            else
+                y :: unionSortedAsc xs yRest
 
 
 

@@ -748,22 +748,39 @@ unifyStructure ctx flatType content otherContent =
                         |> andThen (\_ -> subUnify res1 res2)
                         |> andThen (\_ -> merge ctx content)
 
-                ( IO.LambdaSet1 top1 members1, IO.LambdaSet1 top2 members2 ) ->
+                ( IO.LambdaSet1 ls1, IO.LambdaSet1 ls2 ) ->
                     -- Join-semilattice union (LSS): TOTAL — set unification
-                    -- never mismatches. Members are ground ids; ⊤ absorbs.
-                    -- E9.3: when one side subsumes the other, merge with that
-                    -- side's content AS-IS — the union would be bit-equal and
-                    -- the per-call Dict.union allocation is the dominant cost
-                    -- of slot×slot unification (plan §E9.3). Sets are ≤8
-                    -- members (widening cap), so the subset test is cheap.
-                    if (top1 || not top2) && Dict.size members2 <= Dict.size members1 && List.all (\m -> Dict.member m members1) (Dict.keys members2) then
-                        merge ctx content
+                    -- never mismatches. Members are ground ids; ⊤ absorbs and
+                    -- carries none (members-under-⊤ are dead at every reader).
+                    -- One O(n+m) merge-scan classifies the pair; subsumption
+                    -- reuses the covering side's content AS-IS, and a real
+                    -- union allocates only the merged spine with suffix
+                    -- sharing. NOTE the ≤8 `maxSetSize` cap is READBACK-only
+                    -- (zonkSetSlot): in-store sets can transiently exceed it
+                    -- (Run B measured a 81-97-member tail), which the linear
+                    -- scan tolerates.
+                    case ( ls1, ls2 ) of
+                        ( IO.LsTop, _ ) ->
+                            merge ctx content
 
-                    else if (top2 || not top1) && Dict.size members1 <= Dict.size members2 && List.all (\m -> Dict.member m members2) (Dict.keys members1) then
-                        merge ctx otherContent
+                        ( _, IO.LsTop ) ->
+                            merge ctx otherContent
 
-                    else
-                        merge ctx (IO.Structure (IO.LambdaSet1 (top1 || top2) (Dict.union members1 members2)))
+                        ( IO.LsMembers m1, IO.LsMembers m2 ) ->
+                            case IO.classifySorted m1 m2 of
+                                IO.SortedEqual ->
+                                    merge ctx content
+
+                                IO.SortedSuper ->
+                                    -- m2 ⊆ m1: side 1's content as-is.
+                                    merge ctx content
+
+                                IO.SortedSub ->
+                                    -- m1 ⊆ m2: side 2's content as-is.
+                                    merge ctx otherContent
+
+                                IO.SortedMixed ->
+                                    merge ctx (IO.Structure (IO.LambdaSet1 (IO.LsMembers (IO.unionSortedAsc m1 m2))))
 
                 ( IO.EmptyRecord1, IO.EmptyRecord1 ) ->
                     merge ctx otherContent

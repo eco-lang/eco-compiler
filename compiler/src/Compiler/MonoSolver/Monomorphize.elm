@@ -185,6 +185,14 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 |> List.map (\( k, n ) -> k ++ "=" ++ String.fromInt n)
                 |> String.join " "
 
+        widenedHistLine =
+            if Dict.isEmpty stats.widenedSizeHist then
+                "(none)"
+
+            else
+                String.join " "
+                    (Dict.foldr (\size count acc -> (String.fromInt size ++ "->" ++ String.fromInt count) :: acc) [] stats.widenedSizeHist)
+
         kernelMissLine =
             if Dict.isEmpty stats.kernelMissHist then
                 "(none)"
@@ -202,7 +210,12 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         , "signatures: " ++ String.fromInt sigCount ++ " memoized (" ++ String.fromInt trivialCount ++ " trivial)"
         , "sets zonked: " ++ String.fromInt stats.setsZonked ++ "; size histogram: " ++ histLine
         , "widened: bySize=" ++ String.fromInt stats.widenedBySize ++ " byKernel=" ++ String.fromInt stats.widenedByKernel ++ " byBudget=" ++ String.fromInt stats.widenedByBudget
+        , "widened sizes: " ++ widenedHistLine
         , "join flush: rounds=" ++ String.fromInt stats.joinRounds ++ " retranslations=" ++ String.fromInt stats.retranslations
+
+        -- Substrate census (Phase 1, plans/lss-set-write-substrate.md).
+        , "set-writes: skip=" ++ String.fromInt stats.setWriteSkip ++ " flex=" ++ String.fromInt stats.setWriteFlex ++ " topJoin=" ++ String.fromInt stats.setWriteTopJoin ++ " union=" ++ String.fromInt stats.setWriteUnion ++ " slow=" ++ String.fromInt stats.setWriteSlow ++ " slotsMinted=" ++ String.fromInt stats.slotsMinted
+        , "joins: identical=" ++ String.fromInt stats.joinIdenticalHit ++ " noop=" ++ String.fromInt stats.joinNoop ++ " changed=" ++ String.fromInt stats.joinChanged ++ " completion=" ++ String.fromInt stats.completionJoins
         , "devirtDirect=" ++ String.fromInt stats.devirtDirect ++ " devirtKernel=" ++ String.fromInt stats.devirtKernel ++ " unqualifiedLambdaMints=" ++ String.fromInt stats.unqualifiedLambdaMints
 
         -- Census (2026-07-21): E9.2 guard-decline split (declinedKernelCNumber
@@ -587,8 +600,19 @@ processItem specId s =
                                                     | registry = registry2
                                                     , lambdaCounter = newLambdaCounter
                                                 }
+
+                                            -- Phase 1 census: count the joins
+                                            -- this site runs unconditionally
+                                            -- (one per completed body-bearing
+                                            -- spec, no short-circuit today).
+                                            s3 =
+                                                if s1.env.lss.enabled && nodeSupportsRetranslation node then
+                                                    Engine.bumpCompletionJoin s2
+
+                                                else
+                                                    s2
                                         in
-                                        Ok (finishNode specId monoNode s2)
+                                        Ok (finishNode specId monoNode s3)
 
 
 {-| MONO_029 stale-read barrier (R2 of

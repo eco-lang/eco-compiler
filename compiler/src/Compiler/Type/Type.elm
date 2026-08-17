@@ -549,7 +549,7 @@ termToCanType term =
                 |> IO.apply (variableToCanType a)
                 |> IO.apply (variableToCanType b)
 
-        LambdaSet1 _ _ ->
+        LambdaSet1 _ ->
             -- Unreachable from well-formed content (LSS_007): a LambdaSet1
             -- only ever lives inside a FunL set slot, which erases above.
             crash "LambdaSet1 outside an arrow slot in variableToCanType"
@@ -753,7 +753,7 @@ termToErrorType term =
                                 )
                     )
 
-        LambdaSet1 _ _ ->
+        LambdaSet1 _ ->
             crash "LambdaSet1 outside an arrow slot in variableToErrorType"
 
         EmptyRecord1 ->
@@ -966,7 +966,7 @@ getVarNames var takenNames =
                                                 -- Set slots carry no names (never rendered).
                                                 getVarNames body takenNames |> IO.andThen (getVarNames arg)
 
-                                            LambdaSet1 _ _ ->
+                                            LambdaSet1 _ ->
                                                 IO.pure takenNames
 
                                             EmptyRecord1 ->
