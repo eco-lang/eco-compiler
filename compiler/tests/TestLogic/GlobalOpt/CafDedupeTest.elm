@@ -186,6 +186,7 @@ baseRegistry n =
                 (\i -> Just ( Mono.Global home ("g" ++ String.fromInt i), strTy ))
                 (List.range 0 (n - 1))
             )
+    , countByGlobal = Dict.empty
     }
 
 
@@ -203,6 +204,7 @@ mkGraph nodes ports =
         , ports = ports
         , flagsDecoder = Nothing
         , lssMemberOrigins = Dict.empty
+        , lssBlockedMembers = Dict.empty
         }
 
 

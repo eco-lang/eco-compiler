@@ -2929,6 +2929,13 @@ unifyParamsCollect funcVar args s0 =
                                     Ok ( maybeLM, s2 ) ->
                                         case maybeLM of
                                             Just _ ->
+                                                -- GAP-9b: fresh-instantiates a local-multi
+                                                -- FUNCTION arg, skipping injectArgLambdaMember
+                                                -- ("no member, no stamp"). One-shot census
+                                                -- 2026-08-18 (Run J): 469 events on the
+                                                -- self-compile — minor vs local-⊤ 7,361; the
+                                                -- per-event counter was removed after the
+                                                -- measurement (plan lss-fidelity-1 §7).
                                                 case instantiate (TOpt.typeOf arg) s2 of
                                                     Err e ->
                                                         Err e

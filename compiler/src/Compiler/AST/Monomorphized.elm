@@ -8,6 +8,7 @@ module Compiler.AST.Monomorphized exposing
     , specMapSize, specMapIsEmpty, specMapFoldl, specMapToList, specMapValues, specMapRemove, specMapSingleton
     , SpecKeyMap, specKeyMapEmpty, specKeyMapGet, specKeyMapInsert, specKeyMapSize, globalHash
     , LambdaSetAnno(..), widenSets, eqLayout, shallowLayoutKey, headAnno, unionAnno, singletonHeadMember, joinAnnotations, joinAnnotationsChanged, overlayAnnotations
+    , typeNodesWithin, collectAnnoMembers
     , LambdaId(..)
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry
     , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType, MemberOrigin(..)
@@ -856,6 +857,97 @@ type LambdaSetAnno
     | LSet (List Int)
 
 
+{-| MONO_030 watchdog: does the type have at most `limit` logical nodes?
+Early-exit budget walk — O(min(limit, size)). K6 hash-consed sharing does
+NOT reduce the logical count (a shared subtree is counted per occurrence,
+deliberately: the pathological growth this guards repeats structure).
+Callers gate the disabled case (`limit == 0`) themselves — a zero limit
+here means "no budget" and returns False on any type.
+-}
+typeNodesWithin : Int -> MonoType -> Bool
+typeNodesWithin limit monoType =
+    typeNodesGo monoType limit >= 0
+
+
+typeNodesGo : MonoType -> Int -> Int
+typeNodesGo monoType budget =
+    if budget <= 0 then
+        -1
+
+    else
+        case monoType of
+            MFunction _ _ args result ->
+                typeNodesGoList args (typeNodesGo result (budget - 1))
+
+            MList _ inner ->
+                typeNodesGo inner (budget - 1)
+
+            MTuple _ elems ->
+                typeNodesGoList elems (budget - 1)
+
+            MRecord _ fields ->
+                Dict.foldl (\_ t b -> typeNodesGoStep t b) (budget - 1) fields
+
+            MCustom _ _ _ args ->
+                typeNodesGoList args (budget - 1)
+
+            _ ->
+                budget - 1
+
+
+typeNodesGoStep : MonoType -> Int -> Int
+typeNodesGoStep t b =
+    if b < 0 then
+        b
+
+    else
+        typeNodesGo t b
+
+
+typeNodesGoList : List MonoType -> Int -> Int
+typeNodesGoList ts b =
+    List.foldl typeNodesGoStep b ts
+
+
+{-| LSS_018 (μ-tie): every member id appearing in any `LSet` annotation of
+the type, in arbitrary order, duplicates possible — callers fold into a set.
+-}
+collectAnnoMembers : MonoType -> List Int
+collectAnnoMembers monoType =
+    collectAnnoGo monoType []
+
+
+collectAnnoGo : MonoType -> List Int -> List Int
+collectAnnoGo monoType acc =
+    case monoType of
+        MFunction _ anno args result ->
+            let
+                acc1 =
+                    case anno of
+                        LSet ms ->
+                            ms ++ acc
+
+                        LTop ->
+                            acc
+            in
+            List.foldl collectAnnoGo (collectAnnoGo result acc1) args
+
+        MList _ inner ->
+            collectAnnoGo inner acc
+
+        MTuple _ elems ->
+            List.foldl collectAnnoGo acc elems
+
+        MRecord _ fields ->
+            Dict.foldl (\_ t a -> collectAnnoGo t a) acc fields
+
+        MCustom _ _ _ args ->
+            List.foldl collectAnnoGo acc args
+
+        _ ->
+            acc
+
+
 {-| Widen every arrow annotation to `LTop`, recursively. Used for
 annotation-insensitive keying/comparison (`eqLayout`, budget-widened
 specialization keys).
@@ -1570,11 +1662,17 @@ type alias SpecId =
 
 
 {-| Registry tracking all function specializations in the program.
+
+`countByGlobal` counts CREATED specs per comparable global (MONO_030): it is
+maintained only on the create/miss branches of the two `Registry` probes —
+never on hits — and feeds the breadth watchdogs of both engines. The output
+graph's rebuilt registry carries it empty (counts are a during-run concern).
 -}
 type alias SpecializationRegistry =
     { nextId : Int
     , mapping : SpecKeyMap SpecId
     , reverseMapping : Array (Maybe ( Global, MonoType ))
+    , countByGlobal : Dict String Int
     }
 
 
@@ -1619,6 +1717,7 @@ type MonoGraph
         , ports : List PortRegistration -- Ports reached during monomorphization; drives @__eco_register_ports emission (PORT_003)
         , flagsDecoder : Maybe SpecId -- The root program's flags decoder (Phase 5); registered at startup like port decoders
         , lssMemberOrigins : Dict Int MemberOrigin -- B3.5: LSS standalone-member origins (mid → global/ctor/kernel/accessor); Dict.empty under subst
+        , lssBlockedMembers : Dict Int () -- LSS_018: μ-tied member ids — AbiCloning force-blocks these (multi-demand instances; never rep-stamp); Dict.empty under subst
         }
 
 

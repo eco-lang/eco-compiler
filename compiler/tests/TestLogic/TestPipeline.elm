@@ -20,6 +20,8 @@ module TestLogic.TestPipeline exposing
     , runToMono
     , runToPostSolve
     , runToTypedOpt
+    , runSolverMonoWithLimits
+    , runSubstMonoWithLimits
     )
 
 {-| Unified test pipeline for the Eco compiler.
@@ -418,6 +420,48 @@ runToGlobalOptLssKeyedOn keyedGlobals srcModule =
                         , monoGraph = monoGraph
                         , optimizedMonoGraph = optimizedMonoGraph
                         }
+
+
+{-| MONO_030 (watchdog tests): run the SOLVER monomorphizer with explicit
+spec limits. The watchdog tests feed the plan §1.1 poly-rec cycle with tiny
+limits and assert the clean `LimitExceeded` failure instead of divergence.
+-}
+runSolverMonoWithLimits : Config.SpecLimits -> Config.LssConfig -> Src.Module -> Result String Mono.MonoGraph
+runSolverMonoWithLimits limits lssConfig srcModule =
+    case runToTypedOpt srcModule of
+        Err e ->
+            Err e
+
+        Ok { canonical, localGraph } ->
+            let
+                globalGraph =
+                    localGraphToGlobalGraph localGraph
+
+                globalTypeEnv =
+                    buildGlobalTypeEnv canonical
+            in
+            Result.map Tuple.first
+                (MonoSolver.monomorphizeWithReport lssConfig limits "main" globalTypeEnv globalGraph)
+
+
+{-| MONO_030 (watchdog tests): the SUBST-engine twin of
+`runSolverMonoWithLimits` (drain-level per-item checks).
+-}
+runSubstMonoWithLimits : Config.SpecLimits -> Src.Module -> Result String Mono.MonoGraph
+runSubstMonoWithLimits limits srcModule =
+    case runToTypedOpt srcModule of
+        Err e ->
+            Err e
+
+        Ok { canonical, localGraph } ->
+            let
+                globalGraph =
+                    localGraphToGlobalGraph localGraph
+
+                globalTypeEnv =
+                    buildGlobalTypeEnv canonical
+            in
+            Monomorphize.monomorphizeWithLimits limits "main" globalTypeEnv globalGraph
 
 
 {-| Solver+LSS through GlobalOpt, returning the GlobalOpt STATS (AbiCloning

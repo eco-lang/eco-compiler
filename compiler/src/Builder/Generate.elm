@@ -795,10 +795,10 @@ selectMonomorphizer : Config.EcoConfig -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGr
 selectMonomorphizer ecoConfig globalTypeEnv typedGraph =
     case ecoConfig.mono.engine of
         Config.EngineSubst ->
-            Result.map (\g -> ( g, Nothing )) (Monomorphize.monomorphize "main" globalTypeEnv typedGraph)
+            Result.map (\g -> ( g, Nothing )) (Monomorphize.monomorphizeWithLimits ecoConfig.mono.limits "main" globalTypeEnv typedGraph)
 
         Config.EngineSolver ->
-            MonoSolver.monomorphizeWithReport ecoConfig.mono.lss "main" globalTypeEnv typedGraph
+            MonoSolver.monomorphizeWithReport ecoConfig.mono.lss ecoConfig.mono.limits "main" globalTypeEnv typedGraph
 
         Config.EngineDiff ->
             -- Diff forces lss off internally; no census.

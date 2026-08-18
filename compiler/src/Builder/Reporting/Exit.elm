@@ -2555,9 +2555,20 @@ toGenerateReport problem =
             Help.report "MONOMORPHIZATION ERROR"
                 Nothing
                 "An error occurred during monomorphization:"
-                [ D.fromChars errorMessage |> D.red |> D.indent 4
-                , "This is likely a compiler bug. Please report it with a minimal reproduction case." |> D.reflow
-                ]
+                ((D.fromChars errorMessage |> D.red |> D.indent 4)
+                    :: (if String.startsWith "specialization " errorMessage then
+                            -- MONO_030 watchdog (both engines' messages start
+                            -- with "specialization "): a diagnosable
+                            -- program/limit condition, NOT a compiler bug —
+                            -- the message already carries the actionable
+                            -- advice, and bug-framing here would train users
+                            -- to file reports for their own poly-rec.
+                            []
+
+                        else
+                            [ "This is likely a compiler bug. Please report it with a minimal reproduction case." |> D.reflow ]
+                       )
+                )
 
         GenerateNativeDriverError errorMessage ->
             Help.report "NATIVE LOWERING ERROR"

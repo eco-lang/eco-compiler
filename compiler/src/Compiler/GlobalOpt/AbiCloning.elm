@@ -531,8 +531,17 @@ flag-off pipeline stays byte-identical.
 abiCloningPass : Mono.MonoGraph -> ( Mono.MonoGraph, AbiCloningStats )
 abiCloningPass ((Mono.MonoGraph record) as graph) =
     let
+        -- LSS_018: μ-tied members are force-blocked — their instances span
+        -- DIFFERENT demands of one recursive family (behaviorally divergent;
+        -- the §11.6 hijack class), so they must never rep-stamp. Blocking at
+        -- the index (not stripping `lssMember` at the instance) is the only
+        -- sound shape per LSS_008: sites decline into generic dispatch and
+        -- count under `declinedBlocked`.
         index =
-            collectInstances graph
+            Dict.foldl
+                (\m () acc -> Dict.insert m { blocked = True, buckets = Dict.empty } acc)
+                (collectInstances graph)
+                record.lssBlockedMembers
     in
     if Dict.isEmpty index then
         ( graph, emptyStats )

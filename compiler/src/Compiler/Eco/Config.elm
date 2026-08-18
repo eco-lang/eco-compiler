@@ -1,7 +1,7 @@
 module Compiler.Eco.Config exposing
     ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig
     , default, decoder, hash, clamp
-    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, ListConfig, LssConfig, MonoConfig, MonoEngine(..), borrowReifyFromString, defaultLss, monoEngineFromString
+    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, ListConfig, LssConfig, MonoConfig, MonoEngine(..), SpecLimits, borrowReifyFromString, defaultLimits, defaultLss, monoEngineFromString
     )
 
 {-| Project-level tunable compiler settings, read from `eco-config.json`
@@ -156,6 +156,37 @@ type alias MonoConfig =
     , diffDump : Bool
     , validate : Bool -- env ECO_MONO_VALIDATE=1, never from JSON: run the MONO_029 layout-agreement validator after mono and FAIL the compile on violations (output-only, excluded from hash — a failed compile is never cached)
     , lss : LssConfig
+    , limits : SpecLimits -- MONO_030 spec watchdogs; failure-only, EXCLUDED from `hash`
+    }
+
+
+{-| MONO_030 spec watchdogs (`plans/lss-fidelity-1-watchdogs-budget-accounting.md`
+§1): loud, clean failures replacing the silent hang/OOM the monomorphizer
+otherwise runs into on polymorphic recursion (expressible in legal Elm through
+annotated mutual cycles — see `plans/monomorphization-plan.md` §3's correction
+note) or unbounded type growth. `0` disables a limit.
+
+Env overrides: `ECO_SPEC_TYPE_NODE_LIMIT` / `ECO_SPEC_BREADTH_LIMIT`.
+
+**Excluded from `hash`**: the watchdogs never change the output of a PASSING
+compile (a failed compile is never cached), so limits are freely tunable
+without invalidating artifact caches — the same class as `report`/`validate`/
+`diffDump`.
+-}
+type alias SpecLimits =
+    { specTypeNodes : Int -- max logical MonoType nodes in one spec's demanded type
+    , specBreadth : Int -- max CREATED specs for one global
+    }
+
+
+{-| Defaults chosen ≥25× the observed self-compile maxima (breadth: 1,939
+specs for `List.foldl` on the Aug-4 census; key sizes ~10³ nodes) so they can
+never false-positive on real programs while still bounding runaways.
+-}
+defaultLimits : SpecLimits
+defaultLimits =
+    { specTypeNodes = 400000
+    , specBreadth = 50000
     }
 
 
@@ -194,6 +225,22 @@ type alias LssConfig =
     -- enabled (hash token `lssSA=1`), and the soundness argument scopes it
     -- to `g|`/`c|` mints — kernels stay head-only.
     , spineArity : Bool
+
+    -- LSS_018 μ-tie (plans/lss-fidelity-1-watchdogs-budget-accounting.md §2):
+    -- a lambda mint whose enclosing spec's demand already carries a qualified
+    -- member of the same raw lambda reuses that id, closing the
+    -- specs→qualified-members→keys spiral WITHOUT the budget, which demotes
+    -- `maxSpecsPerGlobal` from load-bearing terminator to fan-out policy.
+    -- Tied members are AbiCloning-blocked (never rep-stamp — plan §2.4).
+    --
+    -- DEFAULT-ON since 2026-08-18 (B3), on measured evidence: the mechanism
+    -- is proven by a forced-spiral fixture (65 specs → 2 —
+    -- tests/TestLogic/Monomorphize/MuTieTest.elm), while on the self-compile
+    -- the eligible population is ZERO, so enabling it is behavior-neutral
+    -- there (byte-identical MLIR) at unmeasurable cost (wall/GC counters
+    -- identical; benchmarks/lss-opt.md Run M). Artifact-affecting when it
+    -- differs from this default (hash token `lssMU=0` then).
+    , muTie : Bool
     }
 
 
@@ -225,6 +272,7 @@ defaultLss =
     , maxSpecsPerGlobal = 64
     , report = False
     , spineArity = False
+    , muTie = True
     }
 
 
@@ -386,7 +434,7 @@ default =
     , bytesFusion = { enabled = True }
     , logicalTypes = { customMaxFields = 8 }
     , cafMemo = { enabled = True, census = False, dedupe = False, hoist = { enabled = False, minNodes = 3, maxHoists = 8192 } }
-    , mono = { engine = EngineSolver, diffDump = False, validate = False, lss = defaultLss }
+    , mono = { engine = EngineSolver, diffDump = False, validate = False, lss = defaultLss, limits = defaultLimits }
     , borrow = { enabled = False, reify = ROff, report = False, validate = False, oracleOpt = False }
     , list = { chunks = True, consIntrinsic = True, mapTemplate = False, report = False }
 
@@ -564,15 +612,26 @@ string falls back to the default. `diffDump` is env-only (never from JSON).
 monoDecoder : D.Decoder x MonoConfig
 monoDecoder =
     D.pure
-        (\s lss ->
+        (\s lss limits ->
             { engine = Maybe.withDefault default.mono.engine (monoEngineFromString s)
             , diffDump = default.mono.diffDump
             , validate = default.mono.validate
             , lss = lss
+            , limits = limits
             }
         )
         |> D.apply (D.optionalField "engine" D.string "subst")
         |> D.apply (D.optionalField "lss" lssDecoder defaultLss)
+        |> D.apply (D.optionalField "limits" specLimitsDecoder defaultLimits)
+
+
+{-| Decode the `mono.limits` block (MONO_030 watchdogs). Never affects `hash`.
+-}
+specLimitsDecoder : D.Decoder x SpecLimits
+specLimitsDecoder =
+    D.pure SpecLimits
+        |> D.apply (D.optionalField "specTypeNodes" D.int defaultLimits.specTypeNodes)
+        |> D.apply (D.optionalField "specBreadth" D.int defaultLimits.specBreadth)
 
 
 {-| Decode the `mono.lss` block. `report` is env-only in spirit but accepted
@@ -592,6 +651,7 @@ lssDecoder =
         -- insertion anywhere above silently swaps two flags' values and still
         -- type-checks (every field above is a Bool or an Int).
         |> D.apply (D.optionalField "spineArity" D.bool defaultLss.spineArity)
+        |> D.apply (D.optionalField "muTie" D.bool defaultLss.muTie)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -828,6 +888,23 @@ hash cfg =
                         []
                     , if lss.spineArity then
                         [ "lssSA=1" ]
+
+                      else
+                        []
+
+                    -- LSS_018 μ-tie: artifact-affecting under keyed routing
+                    -- (tied member ids change annotations → keys → fan-out).
+                    -- Token when non-default so the default config's hash is
+                    -- stable across the B1→B3 rollout of the default itself.
+                    , if lss.muTie /= defaultLss.muTie then
+                        [ "lssMU="
+                            ++ (if lss.muTie then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
 
                       else
                         []

@@ -5,6 +5,10 @@ module Compiler.Monomorphize.Registry exposing
     , getOrCreateSpecIdKeyed
     , lookupSpecKey
     , updateRegistryType
+    , createdCount
+    , prettyGlobal
+    , breadthLimitMessage
+    , typeNodesLimitMessage
     )
 
 {-| Specialization registry operations for monomorphization.
@@ -29,6 +33,8 @@ The registry maintains a bidirectional mapping between specialization keys
 
 import Array
 import Compiler.AST.Monomorphized as Mono exposing (Global, MonoType, SpecId, SpecializationRegistry)
+import Dict
+import System.TypeCheck.IO as IO
 
 
 
@@ -66,7 +72,25 @@ emptyRegistry =
     { nextId = 0
     , mapping = Mono.specKeyMapEmpty
     , reverseMapping = Array.empty
+    , countByGlobal = Dict.empty
     }
+
+
+{-| MONO_030: bump the created-spec count for a global. Called only on the
+create/miss branches — probe hits never touch it.
+-}
+bumpCountByGlobal : Global -> SpecializationRegistry -> Dict.Dict String Int
+bumpCountByGlobal global registry =
+    Dict.update (Mono.toComparableGlobal global)
+        (\v -> Just (Maybe.withDefault 0 v + 1))
+        registry.countByGlobal
+
+
+{-| The created-spec count for a global (MONO_030 breadth watchdog probe).
+-}
+createdCount : Global -> SpecializationRegistry -> Int
+createdCount global registry =
+    Maybe.withDefault 0 (Dict.get (Mono.toComparableGlobal global) registry.countByGlobal)
 
 
 {-| Get an existing SpecId for a specialization key, or create a new one.
@@ -93,6 +117,7 @@ getOrCreateSpecId global monoType registry =
             , { nextId = specId + 1
               , mapping = Mono.specKeyMapInsert key specId registry.mapping
               , reverseMapping = Array.push (Just ( global, monoType )) registry.reverseMapping
+              , countByGlobal = bumpCountByGlobal global registry
               }
             )
 
@@ -157,9 +182,62 @@ getOrCreateSpecIdKeyed global keyType storeType registry =
             , { nextId = specId + 1
               , mapping = Mono.specKeyMapInsert key specId registry.mapping
               , reverseMapping = Array.push (Just ( global, storeType )) registry.reverseMapping
+              , countByGlobal = bumpCountByGlobal global registry
               }
             , CreatedNew
             )
+
+
+{-| Human-facing rendering of a Global for the watchdog messages —
+`Module.name (author/project)`, not the raw comparable key.
+-}
+prettyGlobal : Global -> String
+prettyGlobal global =
+    case global of
+        Mono.Global (IO.Canonical ( author, project ) moduleName) name ->
+            moduleName ++ "." ++ name ++ " (" ++ author ++ "/" ++ project ++ ")"
+
+        Mono.Accessor field ->
+            "." ++ field
+
+
+{-| MONO_030 watchdog messages (plan §1.6): shared verbatim by the solver's
+`LimitExceeded` failure and the subst engine's drain-level `Err`, so both
+engines present the condition identically. The message must let a user act
+without reading compiler source: it names the global, the limit, and the
+env var that raises it. True source-region attribution would need demand
+provenance the registry does not track (explicit non-goal).
+-}
+breadthLimitMessage : Global -> Int -> Int -> String
+breadthLimitMessage global count limit =
+    "specialization budget exceeded for "
+        ++ prettyGlobal global
+        ++ "\n  "
+        ++ String.fromInt count
+        ++ " specializations created (limit "
+        ++ String.fromInt limit
+        ++ ", ECO_SPEC_BREADTH_LIMIT)"
+        ++ watchdogAdvice
+
+
+typeNodesLimitMessage : Global -> Int -> String
+typeNodesLimitMessage global limit =
+    "specialization type too large for "
+        ++ prettyGlobal global
+        ++ "\n  a demanded type exceeds "
+        ++ String.fromInt limit
+        ++ " logical nodes (ECO_SPEC_TYPE_NODE_LIMIT)"
+        ++ watchdogAdvice
+
+
+watchdogAdvice : String
+watchdogAdvice =
+    "\n  This usually means polymorphic recursion reached the monomorphizer — commonly an"
+        ++ "\n  ANNOTATED, MUTUALLY RECURSIVE cycle whose members call each other at growing"
+        ++ "\n  type instantiations — or unbounded type growth. Break the chain with a concrete"
+        ++ "\n  type annotation at the recursive call site, or raise the limit if the program"
+        ++ "\n  is legitimately this large."
+        ++ "\n  Inspect with ECO_MONO_LSS_REPORT=1 (see \"top specs/global\")."
 
 
 {-| Update the type stored for an existing SpecId in the registry.

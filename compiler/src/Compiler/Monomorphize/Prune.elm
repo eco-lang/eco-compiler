@@ -211,6 +211,7 @@ pruneUnreachableSpecs mvarEnv globalTypeEnv (Mono.MonoGraph record) =
             { nextId = oldReg.nextId
             , mapping = Mono.specKeyMapEmpty
             , reverseMapping = reverseMapping1
+            , countByGlobal = Dict.empty -- MONO_030: during-run counts; not carried into the output graph
             }
 
         -- 4. Recompute ctorShapes from the pruned+closed nodes. Since nodes1 is
@@ -246,4 +247,5 @@ pruneUnreachableSpecs mvarEnv globalTypeEnv (Mono.MonoGraph record) =
         , ports = record.ports
         , flagsDecoder = record.flagsDecoder
         , lssMemberOrigins = record.lssMemberOrigins
+        , lssBlockedMembers = record.lssBlockedMembers
         }

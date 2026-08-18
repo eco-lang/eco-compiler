@@ -1,4 +1,4 @@
-module Compiler.Monomorphize.Monomorphize exposing (monomorphize)
+module Compiler.Monomorphize.Monomorphize exposing (monomorphize, monomorphizeWithLimits)
 
 {-| This module transforms a TypedOptimized.GlobalGraph into a Monomorphized.MonoGraph
 by specializing all polymorphic functions to their concrete type instantiations.
@@ -28,6 +28,7 @@ import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Eco.Config as Config
 import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
 import Compiler.Monomorphize.EntryPrep as EntryPrep
 import Compiler.Monomorphize.MonoTraverse as Traverse
@@ -61,9 +62,25 @@ type alias MonoState =
 
 This is useful for testing when the entry point is not named "main".
 
+MONO_030: this wrapper runs with the default spec watchdogs; the Builder
+calls `monomorphizeWithLimits` with the env-overridable config limits.
+
 -}
 monomorphize : Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
-monomorphize entryPointName globalTypeEnv globalGraph =
+monomorphize =
+    monomorphizeWithLimits Config.defaultLimits
+
+
+{-| `monomorphize` with explicit MONO_030 spec watchdogs. Enforcement is
+drain-level (per work item — `processWorklistPure`): the guarded pathology is
+growth ACROSS items (each spec enqueueing a bigger-typed successor —
+polymorphic recursion through annotated mutual cycles is legal Elm, see
+`plans/monomorphization-plan.md` §3's correction note), so catching it one
+item late changes nothing, and the existing `Result String` driver channel
+carries the error with no threading through `Specialize`'s internals.
+-}
+monomorphizeWithLimits : Config.SpecLimits -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
+monomorphizeWithLimits limits entryPointName globalTypeEnv globalGraph =
     let
         -- Phase 5 (flags): if the entry has type `Program flags model msg`,
         -- synthesize its flags decoder as an extra top-level node BEFORE
@@ -86,11 +103,11 @@ monomorphize entryPointName globalTypeEnv globalGraph =
             Err ("No " ++ entryPointName ++ " function found")
 
         Just ( mainGlobal, mainType ) ->
-            monomorphizeFromEntryWith maybeFlagsGlobal mainGlobal mainType globalTypeEnv nodesWithIds annotationsWithIds mvarEnv
+            monomorphizeFromEntryWith limits maybeFlagsGlobal mainGlobal mainType globalTypeEnv nodesWithIds annotationsWithIds mvarEnv
 
 
-monomorphizeFromEntryWith : Maybe TOpt.Global -> TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> Result String Mono.MonoGraph
-monomorphizeFromEntryWith maybeFlagsGlobal mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
+monomorphizeFromEntryWith : Config.SpecLimits -> Maybe TOpt.Global -> TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> Result String Mono.MonoGraph
+monomorphizeFromEntryWith limits maybeFlagsGlobal mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
     let
         ( stateWithMain, mainSpecIdVal ) =
             initSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv
@@ -130,20 +147,26 @@ monomorphizeFromEntryWith maybeFlagsGlobal mainGlobal mainType globalTypeEnv nod
                             , Just specId
                             )
 
-        finalState =
-            processWorklistPure stateInit
-
-        rawGraph =
-            assembleRawGraphFrom finalState.accum finalState.ctx.lambdaCounter mainSpecIdVal flagsDecoderSpecId
-
-        -- Prune AND close residual number vars in one fused pass (Q3, perf): Prune
-        -- discharges `MVar _ CNumber` → MInt (consulting the FINAL superVars so
-        -- Join-R-tainted vars heal) as it copies live nodes and recomputes
-        -- ctorShapes, so no separate whole-graph closing pass is needed.
-        prunedGraph =
-            Prune.pruneUnreachableSpecs finalState.ctx.mvarEnv finalState.ctx.globalTypeEnv rawGraph
+        result =
+            processWorklistPure limits stateInit
     in
-    Ok prunedGraph
+    case result of
+        Err msg ->
+            Err msg
+
+        Ok finalState ->
+            let
+                rawGraph =
+                    assembleRawGraphFrom finalState.accum finalState.ctx.lambdaCounter mainSpecIdVal flagsDecoderSpecId
+
+                -- Prune AND close residual number vars in one fused pass (Q3, perf): Prune
+                -- discharges `MVar _ CNumber` → MInt (consulting the FINAL superVars so
+                -- Join-R-tainted vars heal) as it copies live nodes and recomputes
+                -- ctorShapes, so no separate whole-graph closing pass is needed.
+                prunedGraph =
+                    Prune.pruneUnreachableSpecs finalState.ctx.mvarEnv finalState.ctx.globalTypeEnv rawGraph
+            in
+            Ok prunedGraph
 
 
 {-| Shared initialization for the specialization worklist.
@@ -263,7 +286,7 @@ assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal flagsDecoderSpecId =
     in
     Mono.MonoGraph
         { nodes = nodesArray
-        , registry = { nextId = finalAccum.registry.nextId, mapping = Mono.specKeyMapEmpty, reverseMapping = finalAccum.registry.reverseMapping }
+        , registry = { nextId = finalAccum.registry.nextId, mapping = Mono.specKeyMapEmpty, reverseMapping = finalAccum.registry.reverseMapping, countByGlobal = Dict.empty }
         , main = mainInfo
         , ctorShapes = Mono.layoutMapEmpty
         , nextLambdaIndex = lambdaCounter
@@ -273,6 +296,7 @@ assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal flagsDecoderSpecId =
         , ports = finalAccum.ports
         , flagsDecoder = flagsDecoderSpecId
         , lssMemberOrigins = Dict.empty -- subst engine: all-LTop, no LSS members
+        , lssBlockedMembers = Dict.empty -- subst engine: no μ-tie (LSS_018 is solver-only)
         }
 
 
@@ -291,15 +315,65 @@ initState =
 
 
 {-| Process all pending specializations until the worklist is empty (pure).
+
+MONO_030 (subst arm): after each item, validate the specs CREATED during it —
+fold `reverseMapping[prevNextId .. nextId)` against the breadth and key-size
+limits. Per-item granularity is sufficient (the pathology is growth across
+items) and keeps the checks out of `Specialize`'s pure tuple plumbing. The
+error text is `Registry`'s shared formatter — identical to the solver's
+`LimitExceeded` presentation.
 -}
-processWorklistPure : MonoState -> MonoState
-processWorklistPure state =
+processWorklistPure : Config.SpecLimits -> MonoState -> Result String MonoState
+processWorklistPure limits state =
     case state.accum.worklist of
         [] ->
-            state
+            Ok state
 
         (SpecializeGlobal specId) :: rest ->
-            processWorklistPure (processOneWorkItem specId rest state)
+            let
+                prevNextId =
+                    state.accum.registry.nextId
+
+                state1 =
+                    processOneWorkItem specId rest state
+            in
+            case checkNewSpecs limits prevNextId state1.accum.registry of
+                Just err ->
+                    Err err
+
+                Nothing ->
+                    processWorklistPure limits state1
+
+
+{-| Validate registry entries `[from .. registry.nextId)` against the
+MONO_030 limits. `Nothing` = all fine. A limit of 0 disables its check.
+-}
+checkNewSpecs : Config.SpecLimits -> Int -> Mono.SpecializationRegistry -> Maybe String
+checkNewSpecs limits from registry =
+    if limits.specBreadth <= 0 && limits.specTypeNodes <= 0 then
+        Nothing
+
+    else if from >= registry.nextId then
+        Nothing
+
+    else
+        case Array.get from registry.reverseMapping |> Maybe.andThen identity of
+            Nothing ->
+                checkNewSpecs limits (from + 1) registry
+
+            Just ( global, monoType ) ->
+                let
+                    count =
+                        Registry.createdCount global registry
+                in
+                if limits.specBreadth > 0 && count > limits.specBreadth then
+                    Just (Registry.breadthLimitMessage global count limits.specBreadth)
+
+                else if limits.specTypeNodes > 0 && not (Mono.typeNodesWithin limits.specTypeNodes monoType) then
+                    Just (Registry.typeNodesLimitMessage global limits.specTypeNodes)
+
+                else
+                    checkNewSpecs limits (from + 1) registry
 
 
 {-| Process a single work item from the worklist.

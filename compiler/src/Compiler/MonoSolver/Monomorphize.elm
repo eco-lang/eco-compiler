@@ -59,16 +59,20 @@ byte-identical to it).
 -}
 monomorphize : Config.LssConfig -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
 monomorphize lssConfig entryPointName globalTypeEnv globalGraph =
-    Result.map Tuple.first (monomorphizeWithReport lssConfig entryPointName globalTypeEnv globalGraph)
+    Result.map Tuple.first (monomorphizeWithReport lssConfig Config.defaultLimits entryPointName globalTypeEnv globalGraph)
 
 
 {-| `monomorphize` additionally returning the rendered LSS census
 (`Just` iff `lss.report`). The report rides the result because this function
 is pure and `compiler/src` cannot use `Debug.toString` — the census is plain
 string concatenation, printed to stderr by the Builder.
+
+Also the MONO_030 limits entry point: the Builder passes
+`ecoConfig.mono.limits` (env-overridable); the plain `monomorphize` wrapper
+defaults them, so test call sites are unchanged.
 -}
-monomorphizeWithReport : Config.LssConfig -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String ( Mono.MonoGraph, Maybe String )
-monomorphizeWithReport lssConfig entryPointName globalTypeEnv globalGraph =
+monomorphizeWithReport : Config.LssConfig -> Config.SpecLimits -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String ( Mono.MonoGraph, Maybe String )
+monomorphizeWithReport lssConfig limits entryPointName globalTypeEnv globalGraph =
     let
         ( graphWithFlags, maybeFlagsGlobal ) =
             EntryPrep.insertFlagsDecoderNode entryPointName globalGraph
@@ -90,7 +94,7 @@ monomorphizeWithReport lssConfig entryPointName globalTypeEnv globalGraph =
 
                 s0 : S
                 s0 =
-                    initState lssConfig mainHome nodesWithIds annotationsWithIds globalTypeEnv mvarState
+                    initState lssConfig limits mainHome nodesWithIds annotationsWithIds globalTypeEnv mvarState
 
                 -- Entry seeding uses an EMPTY super table (matching the original
                 -- engine's `entryPointMonoType Dict.empty`).
@@ -219,6 +223,13 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         , "joins: identical=" ++ String.fromInt stats.joinIdenticalHit ++ " noop=" ++ String.fromInt stats.joinNoop ++ " changed=" ++ String.fromInt stats.joinChanged ++ " completion=" ++ String.fromInt stats.completionJoins ++ " completionNoop=" ++ String.fromInt stats.completionJoinNoop
         , "devirtDirect=" ++ String.fromInt stats.devirtDirect ++ " devirtKernel=" ++ String.fromInt stats.devirtKernel ++ " unqualifiedLambdaMints=" ++ String.fromInt stats.unqualifiedLambdaMints
 
+        -- LSS_018 monitoring, derived FREE from implementation state at
+        -- report time (the per-event fidelity counters were removed after
+        -- their one-shot census — Run J: muTied=0 widenedByLet=672
+        -- localMultiBypass=469; see plan §7). Meaningful under lss.muTie;
+        -- reads 0 flag-off (tables are flag-gated).
+        , "muTie: tied=" ++ String.fromInt (Dict.size sFinal.lssMemberTable.muTied) ++ " qualifiedRecorded=" ++ String.fromInt (Dict.size sFinal.lssMemberTable.lambdaQualified)
+
         -- Census (2026-07-21): E9.2 guard-decline split (declinedKernelCNumber
         -- = the E10.0 `declinedUnsettled` proxy) + the whitelist-growth list.
         , "kernel declines: shape=" ++ String.fromInt stats.declinedKernelShape ++ " cnumber=" ++ String.fromInt stats.declinedKernelCNumber ++ " emission=" ++ String.fromInt stats.declinedKernelEmission ++ " arity=" ++ String.fromInt stats.declinedKernelArity
@@ -232,8 +243,8 @@ renderLssReport sFinal (Mono.MonoGraph g) =
 -- ====== INITIAL STATE ======
 
 
-initState : Config.LssConfig -> IO.Canonical -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> AssignMVarIds.GlobalMVarState -> S
-initState lssConfig currentModule nodes annotations globalTypeEnv mvarState =
+initState : Config.LssConfig -> Config.SpecLimits -> IO.Canonical -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> AssignMVarIds.GlobalMVarState -> S
+initState lssConfig limits currentModule nodes annotations globalTypeEnv mvarState =
     { worklist = []
     , nodes = Array.empty
     , inProgress = BitSet.empty
@@ -268,6 +279,7 @@ initState lssConfig currentModule nodes annotations globalTypeEnv mvarState =
         , lss = lssConfig
         , lssKeyedSet = keyedGlobalSet lssConfig.keyedGlobals
         , lamLabels = mvarState.lamLabels
+        , limits = limits
         }
     , currentGlobal = Nothing
     , store = Engine.freshStore
@@ -481,9 +493,18 @@ processItem specId s =
 
                     -- Fix B (LSS_017): expose the spec being translated to the
                     -- lambda-instance member mints. AFTER resetItem — it
-                    -- rebuilds itemAux.
+                    -- rebuilds itemAux. LSS_018 rides along: the μ-tie scan of
+                    -- the STORED demand for qualified members of raw lambdas
+                    -- (rebuilt per item, so LSS_010 re-translations re-tie
+                    -- against the fully-joined demand — monotone).
                     sItem =
-                        { sItemR | itemAux = { auxR | currentSpecId = Just specId } }
+                        { sItemR
+                            | itemAux =
+                                { auxR
+                                    | currentSpecId = Just specId
+                                    , demandQualified = demandQualifiedFor monoType sItemR
+                                }
+                        }
                 in
                 case global of
                     Mono.Accessor fieldName ->
@@ -646,6 +667,38 @@ processItem specId s =
                                                         s2
                                         in
                                         Ok (finishNode specId monoNode s3)
+
+
+{-| LSS_018 (μ-tie): raw-lambda → smallest qualified member id present in the
+spec's stored demand type. Consulted by `Engine.lambdaInstanceMemberId` on
+routed mints; smallest-id choice makes the canonical family id
+deterministic. Built ONLY under `lss.muTie` — the flag-off default path
+pays no per-item type walk (the one-shot eligible census, Run J, measured
+the population at 0 on the self-compile). The routing predicate is NOT
+re-checked here: the map is only ever read after
+`lambdaInstanceMemberId`'s own routed check.
+-}
+demandQualifiedFor : Mono.MonoType -> S -> Dict.Dict Int Int
+demandQualifiedFor monoType s =
+    if not (s.env.lss.enabled && s.env.lss.muTie) then
+        Dict.empty
+
+    else
+        List.foldl
+            (\mid acc ->
+                case Dict.get mid s.lssMemberTable.lambdaQualified of
+                    Just ( raw, _ ) ->
+                        Dict.update raw
+                            (\cur ->
+                                Just (min mid (Maybe.withDefault mid cur))
+                            )
+                            acc
+
+                    Nothing ->
+                        acc
+            )
+            Dict.empty
+            (Mono.collectAnnoMembers monoType)
 
 
 {-| MONO_029 stale-read barrier (R2 of
@@ -1041,7 +1094,7 @@ assembleRawGraph s mainSpecId flagsDecoderSpecId =
     in
     Mono.MonoGraph
         { nodes = nodesArray
-        , registry = { nextId = nextId, mapping = Mono.specKeyMapEmpty, reverseMapping = s.registry.reverseMapping }
+        , registry = { nextId = nextId, mapping = Mono.specKeyMapEmpty, reverseMapping = s.registry.reverseMapping, countByGlobal = Dict.empty }
         , main = Just (Mono.StaticMain mainSpecId)
         , ctorShapes = Mono.layoutMapEmpty
         , nextLambdaIndex = s.lambdaCounter
@@ -1051,6 +1104,7 @@ assembleRawGraph s mainSpecId flagsDecoderSpecId =
         , ports = s.ports
         , flagsDecoder = flagsDecoderSpecId
         , lssMemberOrigins = buildMemberOrigins s.env.toptNodes s.lssMemberTable
+        , lssBlockedMembers = s.lssMemberTable.muTied
         }
 
 
@@ -1244,3 +1298,10 @@ renderFailure failure =
 
         EngineBug msg ->
             "MonoSolver.bug: " ++ msg
+
+        LimitExceeded msg ->
+            -- MONO_030: a resource watchdog, deliberately NOT framed as a
+            -- compiler bug — the message itself names the limit, the env
+            -- var, and the likely cause (poly-rec via annotated mutual
+            -- cycles is legal Elm).
+            msg

@@ -1615,6 +1615,20 @@ This handles both direct recursion and mutual recursion without needing SCC dete
 
 Elm uses Hindley-Milner type inference which does not support polymorphic recursion. A recursive function's type is monomorphic within its own body. If code type-checks, recursive calls are always at the same type.
 
+> **CORRECTION (2026-08-18): the claim above is false for annotated MUTUAL
+> recursion, and the monomorphizer diverges on it.** Only SELF-recursion is
+> rejected (a def's own annotation is not a scheme for its own body). Each member
+> of an annotated mutually recursive cycle sees the *other* members' annotations
+> as generalized schemes — the standard HM-with-signatures loophole — so a cycle
+> can recurse at a growing instantiation. Verified empirically: a 2-def cycle
+> over `type Nested a = Nil | Deeper a (Nested (List a))` (`depth` calls `helper`,
+> `helper` calls `depth` at `List a`) typechecks, compiles and runs on the JS
+> target, and hangs the native pipeline — the demand chain
+> `Nested Int → Nested (List Int) → …` never terminates, with the LSS budget
+> active (set-widening does not bound type-keyed growth; types never widen per
+> MONO_020/021/024). Fixed by the MONO_030 spec watchdogs — repro fixture and
+> design in `plans/lss-fidelity-1-watchdogs-budget-accounting.md` §1.
+
 ### 4. Kernel Module Boundaries
 
 **Decision:** Defer for now; rely on `eco.value` representation.

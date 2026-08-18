@@ -239,6 +239,7 @@ run cfg (Mono.MonoGraph g) =
             { nextId = ctxFinal.nextId
             , mapping = g.registry.mapping
             , reverseMapping = reverseMappingWithHoists
+            , countByGlobal = g.registry.countByGlobal
             }
     in
     ( Mono.MonoGraph

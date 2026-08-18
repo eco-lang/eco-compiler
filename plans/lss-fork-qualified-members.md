@@ -204,9 +204,15 @@ The annotations and the instance index must live in ONE key space:
    keys, so a recursive flow can spiral (S1 mints Q(L,S1) → keys S2 → mints
    Q(L,S2) → …). The spiral is bounded by the existing M4 budget:
    past `maxSpecsPerGlobal`, keys widen to LTop and the fan-out stops
-   (Engine.elm:712-723). Watch `widenedByBudget` in the census; a
-   materially higher count under all-keying is expected and benign, but a
-   runaway on a specific global is the signal to inspect.
+   (`enqueueSpecKeyed`, Engine.elm:876-894 as of 2026-08-17). Watch
+   `widenedByBudget` in the census; a materially higher count under
+   all-keying is expected and benign, but a runaway on a specific global is
+   the signal to inspect.
+   **AMENDED 2026-08-18:** spiral termination is now owned by **LSS_018's
+   μ-tie** (`plans/lss-fidelity-1-watchdogs-budget-accounting.md` §2) — a
+   mint whose enclosing spec's demand already carries a qualified member of
+   the same raw lambda reuses that id, closing the family without burning
+   budget. The budget remains as fan-out policy only.
 
 ## 7. What the fix recovers (the repro's expected new shape)
 

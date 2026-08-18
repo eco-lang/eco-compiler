@@ -148,6 +148,21 @@ applyEnvOverrides cfg =
                     |> Task.map (\saVal -> applyLssSpineArityOverride saVal cfg4d)
             )
         |> Task.andThen
+            (\cfg4e ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_MU_TIE" |> Task.mapError never)
+                    |> Task.map (\mtVal -> applyLssMuTieOverride mtVal cfg4e)
+            )
+        |> Task.andThen
+            (\cfg4f ->
+                (Utils.envLookupEnv "ECO_SPEC_TYPE_NODE_LIMIT" |> Task.mapError never)
+                    |> Task.map (\tnVal -> applySpecTypeNodeLimitOverride tnVal cfg4f)
+            )
+        |> Task.andThen
+            (\cfg4g ->
+                (Utils.envLookupEnv "ECO_SPEC_BREADTH_LIMIT" |> Task.mapError never)
+                    |> Task.map (\brVal -> applySpecBreadthLimitOverride brVal cfg4g)
+            )
+        |> Task.andThen
             (\cfg5 ->
                 (Utils.envLookupEnv "ECO_MONO_VALIDATE" |> Task.mapError never)
                     |> Task.map (\valVal -> applyValidateOverride valVal cfg5)
@@ -1576,6 +1591,63 @@ updateLss f cfg =
             cfg.mono
     in
     { cfg | mono = { mono | lss = f mono.lss } }
+
+
+updateLimits : (Config.SpecLimits -> Config.SpecLimits) -> EcoConfig -> EcoConfig
+updateLimits f cfg =
+    let
+        mono =
+            cfg.mono
+    in
+    { cfg | mono = { mono | limits = f mono.limits } }
+
+
+{-| `ECO_SPEC_TYPE_NODE_LIMIT=<n>` / `ECO_SPEC_BREADTH_LIMIT=<n>` (MONO_030
+watchdogs): override the spec key-size / per-global breadth limits. `0`
+disables the check. Non-numeric values are ignored (dev knob). Failure-only —
+never participates in `Config.hash` (a failed compile is never cached; a
+passing compile is limit-invisible).
+-}
+applySpecTypeNodeLimitOverride : Maybe String -> EcoConfig -> EcoConfig
+applySpecTypeNodeLimitOverride maybeVal cfg =
+    case Maybe.andThen (String.trim >> String.toInt) maybeVal of
+        Just n ->
+            updateLimits (\l -> { l | specTypeNodes = n }) cfg
+
+        Nothing ->
+            cfg
+
+
+applySpecBreadthLimitOverride : Maybe String -> EcoConfig -> EcoConfig
+applySpecBreadthLimitOverride maybeVal cfg =
+    case Maybe.andThen (String.trim >> String.toInt) maybeVal of
+        Just n ->
+            updateLimits (\l -> { l | specBreadth = n }) cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_MU_TIE=1|true|yes / 0|false|no` (LSS_018): μ-tie the
+qualification spiral's self-similar member family. Unset or unrecognized
+leaves the config/default value. Artifact-affecting when it differs from the
+default — participates in the hash via the `lssMU=` token.
+-}
+applyLssMuTieOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssMuTieOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | muTie = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | muTie = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
 
 
 {-| Clamp out-of-range values and print any resulting warnings to stderr.

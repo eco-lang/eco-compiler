@@ -344,16 +344,168 @@ added two `HashMap` probes plus memo inserts per occurrence. The cost class is r
 | true mutator (wall − GC) | 199.70 s | 200.55 s |
 | max RSS | 6,462,264 kB | 6,196,520 kB |
 
-Base is Run E — Run F's tree was reverted. Majors are 12 in both, so this is a clean comparison.
-**The string-build thesis is NOT confirmed on the counters that decide it:** promoted 12,818 →
-12,784 MiB (−0.3%), minors 1377→1376, and true mutator 199.70 → 200.55 s (+0.4%) — all flat, with
-mutator marginally the WRONG way. Wall 317.0 → 311.5 s (−1.7%) is below the 3% band, so by this
-file's rule that is no change detected, not a gain (`out.mlir` 13,732,605 → 13,739,414 B, +6,809 B,
-comparable). So removing ~100k+ per-probe `toComparableGlobal` allocations does not show up in
-solver time: the builds were real but are not what this workload is bound by. **What DID move is
-memory: max RSS −4.1% (−259 MB) and major GC time −12.4% at an unchanged major count**, consistent
-with dropping the ~10-20k materialized comparable-key strings `Data.Map` retains per entry. That is
-a live-heap win, not a time win, and it is the only reason to keep the conversion.
+Base is Run E — Run F's tree was reverted. Majors are 12 in both (`out.mlir` 13,732,605 →
+13,739,414 B, +6,809 B). Wall 317.0 → 311.5 s decomposes as GC −6.26 s against mutator +0.85 s;
+max RSS −4.1% (−259 MB); major GC −4.18 s at an unchanged major count. **The per-probe build
+thesis is REFUTED**: minor GC cycles — this file's allocation-pressure proxy — move 1377 → 1376
+(0.07%), so the ~100k+ discarded key strings were never meaningful nursery pressure. **The
+retention explanation this entry first offered for the memory numbers is ALSO refuted, on two
+counts** (checked after the fact, not before): ~15-50k entries × ~50-100 B of retained comparable
+key is 1-5 MB, two orders of magnitude short of 259 MB; and `initState` converts a COPY while
+`Builder/Generate.elm:794-801` keeps `typedGraph` — hence the original `DMap` and its strings —
+live across the whole call, so nothing is freed and 4c can only ADD live heap. **Cause of the RSS
+and major-GC movement is therefore UNEXPLAINED and most likely heap-growth/GC-timing variance at
+n=1.** Treat Run G as FLAT. Do not build on either mechanism without a repeat-run variance check.
+
+### 2026-08-17 — Run H: variance re-leg — the UNCHANGED Run-G binary, re-run cold (Phase 5a item 0)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| p4c-again | **5:16.72** (316.7 s) | 6,196,956 kB | 1,376 | 12 | 444,867,878 (12,784 MiB) | 113.91 s | 13,739,414 B |
+
+Same binary and tree as Run G, one purpose-built re-leg to settle whether Run G's memory movement
+was noise. **It was not: max RSS reproduces to 0.007%** (6,196,520 → 6,196,956 kB), every GC
+counter is identical (minors 1376, majors 12, promoted to the object; copied-in-nursery differs by
+4 objects in 1.07B), and the output is byte-identical — RSS is effectively DETERMINISTIC per
+(binary × tree) in this runtime. Two consequences. (1) Run G's −259 MB vs Run E is REAL and
+reproducible; its mechanism stays unknown (the retained-key arithmetic still caps that explanation
+at ~1-5 MB) — plausibly a heap-growth quantization effect where a small live-heap change moves a
+capacity-doubling decision; parked, not worth chasing. (2) The run-to-run noise floor on IDENTICAL
+work is wall ±~1.7% (311.5 vs 316.7 s) and GC time ±~0.7 s — calibration for reading every other
+adjacent-row delta in this file.
+
+### 2026-08-17 — Run I: Phase 5a load-layer sizing census (plain run; counters only)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| p5a | **5:26.99** (327.0 s) | 6,593,176 kB | 1,391 | 13 | 457,742,239 (13,142 MiB) | 121.76 s | 13,742,709 B |
+
+| new census line | value |
+|---|---|
+| points | total=27,931,402 **load=23,826,311** slots=958,411 **poisonLoads=140 poisonPoints=345** items=41,887 |
+| loads | shared=973,097 sharedArrows=8,948 isolated=5,304 isolatedArrows=123,125 |
+
+The sizing census Phase 5 is gated on; analysis and the gate verdict live in the plan's 5a
+findings. Headlines: the load path mints 85.3% of all Points (23.8M of 27.9M; ~21.5 per load,
+~667 per item), the never-written arrow slots are only 4.0% of load-path mints, and the
+"load-purely-to-poison waste class" is **140 loads / 345 Points in the whole self-compile** —
+nil, refuting the plan's `poisonCallBoundary` assumption (the 4,109 kernel poisons walk
+already-loaded types). Total Points = 2.6% of copied-in-nursery events (27.9M / 1,087.8M).
+vs Run H (`out.mlir` +3,295 B): wall +10.3 s, minors 1376→1391, promoted +2.8% — the census's
+own cost, dominated by the now-unconditional per-load `lssStats` fold; a useful natural
+experiment (≈+13M promoted objects moved wall only ~3%) and a candidate to re-guard later.
+`--stats` and perf legs are separate passes, recorded in the plan.
+
+### 2026-08-18 — Run J: lss-fidelity-1 landed — MONO_030 watchdogs + fidelity counters + LSS_018 μ-tie (A/B: muTie off/on)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| off (default) | **5:41.55** (341.6 s) | 5,888,740 kB | 1,406 | 16 | 468,906,390 (13,453 MiB) | 133.86 s | 13,772,597 B |
+| on (ECO_MONO_LSS_MU_TIE=1) | **5:46.75** (346.8 s) | 5,877,232 kB | 1,406 | 16 | 468,906,390 (13,453 MiB) | 136.19 s | 13,772,597 B |
+
+| axis | value (both arms) |
+|---|---|
+| fidelity (NEW) | **muTied=0** widenedByLet=672 localMultiBypass=469 |
+| widened | bySize=462 byKernel=4,109 byBudget=50,904 |
+| signatures | 9,651 memoized (9,651 trivial) |
+| unqualifiedLambdaMints / declinedBlocked / watchdog trips | 0 / 0 / 0 |
+| top specs/global | apR=3,223 foldl=2,049 apL=1,475 foldrHelper=843 foldr=842 |
+| true mutator (wall − GC) | off 207.7 s (Run I: 205.2 s) |
+
+Tree = plan lss-fidelity-1 landed (watchdogs both engines, fidelity counters, μ-tie behind
+`lss.muTie` default-off). vs Run I: `out.mlir` 13,742,709 → 13,772,597 B (+29,888 B — the new
+compiler source IS the corpus), majors 13→16, and wall +14.5 s decomposes as GC +12.1 s with
+true mutator 205.2 → 207.7 s — inside the Run-H ±1.7% noise floor: no regression detected.
+Minors 1391→1406 (+1.1%), promoted +2.4% — consistent with corpus growth + the per-item demand
+scan + per-created-spec checks. **The census is the result: muTied=0 — the μ-tie-eligible
+population is EMPTY on the self-compile**, so `widenedByBudget=50,904` is legitimate fan-out
+(apR/foldl chains), not spiral burn; the fork-plan §6.5 spiral is unrealized here and the guard
+stays armed for pathological workloads. The on arm confirms it mechanically: **byte-identical**
+`out.mlir` (cmp), identical GC counters — flag inert on this workload, LSS_005-clean to default
+on. GAP-9 sizing: 672 + 469 counterless-⊤ events vs `topSiteShapes local=7,361` — minor
+components; plan 3's per-use separation leans PARK. Poly-rec fixture now errors in seconds
+(was: infinite hang — see the plan's §1.1/§7).
+
+### 2026-08-18 — Run K: fidelity-1 census REMOVED — true implementation cost vs the G/H baseline (plain run)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| impl-only | **5:43.84** (343.8 s) | 5,941,520 kB | 1,401 | 16 | 469,383,317 (13,464 MiB) | 133.88 s | 13,770,177 B |
+
+| axis | Run H (baseline) | Run K |
+|---|---|---|
+| out.mlir | 13,739,414 B | 13,770,177 B (+30,763 B, +0.22%) |
+| true mutator (wall − GC) | 202.8 s | 210.0 s (+3.5%) |
+| minor / major GC time | ~81-85 s / 29.5 s | 85.4 s / 48.5 s |
+| max RSS | 6,196,956 kB | 5,941,520 kB (−4.1%) |
+
+Tree = Run J minus its one-shot census (fidelity counters deleted; μ-tie demand scan +
+`lambdaQualified` recording now gated on `lss.muTie`). The census question closes at ZERO: vs
+Run J (`out.mlir` 13,772,597 → 13,770,177 B) wall +2.3 s, minors 1,406→1,401, majors 16=16,
+promoted +0.08% — all inside the Run-H ±1.7% floor. True implementation cost vs G/H: minors
+1,376→1,401 (+1.8%), promoted 12,784→13,464 MiB (+5.3%), majors 12→16 with major-GC time
+29.5→48.5 s carrying most of the +27 s wall; true mutator +3.5%. Attribution: the promoted
+growth is proportionally consistent with this workload's corpus-growth precedent (Run B:
++8.8 KB source → +2.0% promoted; Run I: +3.3 KB → +2.8%; here +30.8 KB → +5.3%) — dominated
+by the implementation source being COMPILED as workload, with the EXECUTING cost
+(per-created-spec `countByGlobal` + `typeNodesWithin` + watchdog check) bounded by the
+residual ≤1-2% mutator, unresolvable at n=1; majors follow promoted occupancy (trigger chain,
+not code slowness). RSS −4.1% vs H is unexplained (same parked class as Run G's −259 MB). No
+frozen H-era corpus exists (no git in this container), so a corpus-controlled A/B is
+unavailable — this is the attribution floor.
+
+### 2026-08-18 — Run M: LSS_018 μ-tie ON (B3 default-flip arm; A/B vs Run K's off arm)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| muTie on | **5:45.60** (345.6 s) | 5,963,236 kB | 1,401 | 16 | 469,398,756 (13,463 MiB) | 133.46 s | 13,770,177 B |
+
+| axis | Run K (off) | Run M (on) |
+|---|---|---|
+| out.mlir | 13,770,177 B | 13,770,177 B — **byte-identical (cmp)** |
+| minor / major GC | 1,401 / 16 | 1,401 / 16 |
+| promoted | 13,464 MiB | 13,463 MiB |
+| max RSS | 5,941,520 kB | 5,963,236 kB (+21.7 MB) |
+| census | `muTie: tied=0 qualifiedRecorded=0` | `muTie: tied=0 qualifiedRecorded=36,650` |
+
+Same binary, workload flag only (`ECO_MONO_LSS_MU_TIE=1`). **The flag is free and
+behavior-neutral on this workload**: byte-identical MLIR, GC counters identical to the
+object, wall +1.8 s (+0.5%, FLAT). The mechanism IS armed — `qualifiedRecorded=36,650`
+is the `lambdaQualified` table the scan consults — and `tied=0` re-confirms the Run-J
+finding that the self-compile has no qualification spiral; the +21.7 MB RSS is that
+table. Not a null result: the tie is proven to work by a forced-spiral fixture
+(`MuTieTest`: 65 specs → 2, where 65 = `maxSpecsPerGlobal` + seed, i.e. flag-off the
+BUDGET is the only terminator). On that evidence `muTie` was flipped DEFAULT-ON (B3) —
+free here, load-bearing on spiral-shaped workloads. Also this run's gate: the fork-plan
+§7 repro (self-compile under all-globals keying) completes, `unqualifiedLambdaMints=0`.
+
+### 2026-08-18 — Run N: F-2A budget sweep, re-run with the spiral μ-tied (one binary, budget the only variable)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| N=64 (shipping; = Run M) | **5:45.60** (345.6 s) | 5,963,236 kB | 1,401 | 16 | 469,398,756 (13,463 MiB) | 133.46 s | 13,770,177 B |
+| N=256 | **5:47.84** (347.8 s) | 5,948,304 kB | 1,416 | 16 | 471,522,185 (13,534 MiB) | 132.72 s | 14,212,878 B |
+| N=1024 | **5:49.07** (349.1 s) | 5,941,128 kB | 1,425 | 16 | 471,161,411 (13,524 MiB) | 134.37 s | 14,711,603 B |
+
+| axis | N=64 | N=256 | N=1024 |
+|---|---|---|---|
+| out.mlir vs N=64 (code-size proxy) | — | +3.21% | +6.84% |
+| wall vs N=64 | — | +0.6% | +1.0% |
+| widened byBudget | 50,904 | 29,185 | 13,935 |
+| muTie tied / qualifiedRecorded | 0 / 36,650 | 0 / 38,246 | 0 / 40,146 |
+
+All three points run `ECO_MONO_LSS_MU_TIE=1` (the B3 default) on one binary, so this is
+the pure fan-out-policy curve now that LSS_018 — not the budget — terminates the
+qualification spiral. **Majors are 16 in all three legs**, so the comparison is free of
+the trigger lottery. Raising the budget buys progressively less relief for a linear-ish
+code-size price: byBudget widening 50,904 → 29,185 → 13,935 while `out.mlir` grows
++3.2% → +6.8%; wall is FLAT throughout (+1.0% at 16× the budget), and at N=1024 there
+are STILL 13,935 widening events, so no budget in this range fully satisfies demand.
+Against the historical F-2A (+4.36% binary, ~+6% mono wall at N=1024): code growth is
+comparable, but the wall cost has essentially vanished — the substrate work since then
+(Runs C/E/G) absorbed it. `tied=0` at every budget re-confirms this workload has no
+spiral. **Decision: `maxSpecsPerGlobal` stays at 64** — this is a measurement, not a
+default change; the curve is the pricing sheet for anyone who wants more fan-out.
 
 ---
 
@@ -370,3 +522,10 @@ One row per run, numbers only.
 | E | 317.0 | 1377 | 12 | 12818 |
 | F | 322.9 | 1385 | 12 | 13073 |
 | G | 311.5 | 1376 | 12 | 12784 |
+| H | 316.7 | 1376 | 12 | 12784 |
+| I | 327.0 | 1391 | 13 | 13142 |
+| J | 341.6 | 1406 | 16 | 13453 |
+| K | 343.8 | 1401 | 16 | 13464 |
+| M | 345.6 | 1401 | 16 | 13463 |
+| N-256 | 347.8 | 1416 | 16 | 13534 |
+| N-1024 | 349.1 | 1425 | 16 | 13524 |

@@ -815,55 +815,254 @@ three `toptNodes`-parameter signatures in `Monomorphize.elm`). Type-checked firs
 Re-verified before building: the map is still **get-only** — no `HashMap.foldl/keys/values/
 toList` anywhere — so insertion order cannot leak and the identity argument holds.
 
-**Run G refutes the thesis on the pre-registered criterion.** Majors are 12 in both E and G,
-so nothing is lottery. promoted 12,818 → 12,784 MiB (−0.3%), minors 1377→1376, **true mutator
-199.70 → 200.55 s (+0.4%, marginally the WRONG way)**. Wall −1.7% is below the band and is
-therefore not a gain. Removing ~100k+ per-probe `toComparableGlobal` allocations changes
-nothing measurable in solver time: **the `toComparableGlobal` cost class is retired.** Per the
-criterion above, do NOT attempt the 4b remnants (the `MintReq` move, the `byGlobal` memo) and
-do not open the `nodeResolution` / `lssSignatures` conversions (4b item 5) — they all chase
-the same refuted class. This is the fourth instance of the standing pattern in this track:
-**removing work the workload is not bound by buys nothing.**
+**Run G: a net win, but NOT by the mechanism this phase was designed around.** Majors are 12
+in both E and G, so nothing here is lottery. Wall 317.0 → 311.5 s decomposes cleanly as
+**GC −6.26 s against mutator +0.85 s** — the entire gain is GC, split major −4.18 s (−12.4%
+at an unchanged major count) and minor −2.08 s, alongside **max RSS −4.1% (−259 MB)**.
 
-**One number did move, and it is not time: max RSS −4.1% (−259 MB), with major GC time
-−12.4% at an unchanged major count.** `Data.Map` stores `Dict comparable (k, v)` — it RETAINS
-a materialized ~25-50-char comparable string per entry, for every global in the program —
-and hash-keying drops all of them from the live heap. That is a live-heap/footprint win, and
-it is the ONLY argument for keeping 4c. It also generalizes: any large, long-lived `DMap`
-keyed by a built string pays the same retention, which is a different (and better-evidenced)
-lead than the per-probe build cost this phase set out to remove.
+**TWO mechanisms were proposed for this phase and BOTH are refuted. Read this before
+building on Run G.**
 
-**Disposition: keep or revert is a footprint-vs-diff-size call, not a performance one.**
-Keeping it costs +6,809 B of corpus and a touched Env type for −259 MB peak RSS; reverting
-returns to the Run E tree, which is byte-verified reproducible (`REVERT_IDENTITY=OK` after
-the 4b revert). Either way the *performance* conclusion is settled and the string-build
-thread is closed.
+(1) The *per-probe build* thesis — that rebuilding `toComparableGlobal` on every `DMap`
+operation was a live cost — is **REFUTED**. `Minor GC cycles` is this track's stated
+allocation-pressure proxy and it moved 1377 → 1376 (0.07%), so the ~100k+ discarded key
+strings were never meaningful nursery pressure; promoted moved −0.3% for the same reason
+(they die young and are never promoted). Do NOT attempt the 4b remnants (the `MintReq` move,
+the `byGlobal` memo) or the `nodeResolution`/`lssSignatures` conversions (4b item 5).
 
-## Phase 5 — DEFERRED: lazy leaves + shared callable-free clones (own plan when picked up)
+(2) The *key-retention* thesis — that `Data.Map`'s `Dict comparable (k, v)` holding a
+materialized 25-50-char key per entry was the memory win — was this note's first explanation
+for RSS −4.1% and major GC −12.4%, and it is **ALSO REFUTED**, on two independent counts.
+**Arithmetic:** ~15-50k globals × ~50-100 B of retained key is **1-5 MB**, two orders of
+magnitude short of the observed 259 MB. **Lifetime:** `initState` converts a COPY into the
+Env, and `Builder/Generate.elm:794-801` holds `typedGraph` — hence the original `DMap` and
+every one of its key strings — live across the entire monomorphization call. Nothing is
+freed; if anything 4c ADDS a second copy of the key set to the live heap.
 
-The load-layer redesign (Roc's `contains_callable` shared clones + lazy `.mono` leaves,
-grounded at `roc/src/postcheck/lambda_solved/solve.zig:113-135, 1355-1376, 2943-2953`)
-attacks what this plan does not: LSS_006 fresh-structure-per-load and the
-load-purely-to-poison waste (`poisonCallBoundary` loads every kernel-call argument's
-full type to walk it, `LssInfer.elm:860-877`). Two verified blockers make it a separate
-design: the store is PER-ITEM (`resetItem` wipes it, Points are dense per-item indices —
-`Engine.elm:967-969, 373` — so cross-item sharing needs a store-lifecycle change), and
-`Record1×Record1` unification REBUILDS content referencing the other side's Points
-(`Unify.elm:886-897`) — shared ground records are content-safe but identity-entangling.
+**So the RSS and major-GC movement is UNEXPLAINED.** With both candidate mechanisms dead,
+the likeliest cause is heap-growth/GC-timing variance, which peak RSS is well known to be
+sensitive to at n=1. **Treat Run G as FLAT** — consistent with the whole `toComparableGlobal`
+cost class being noise at this workload's scale. Before anyone cites Run G's memory numbers,
+run the SAME `eco-lss-p4c` binary a second time and compare RSS against itself; a swing of
+the same order settles it as variance. That is a purpose-built variance check, not a
+"run until it looks good" — record it as such.
 
-**Run B already made the case stronger than anticipated:** 70.1% of set writes land on
-fresh slots and 78.0% of slot zonk-visits read ⊤/unconstrained — the load layer mints
-far more set machinery than facts ever touch, and none of Phases 2-4 reduces the mint
-count. Phase 5 stays sequenced AFTER 2-4 (they are cheaper and independent), but it is
-no longer speculative: draft its plan once Run C/D land, using the Phase-3 `slotsMinted`
-rider to size the dead-slot population exactly.
+**Run H RESOLVED this (2026-08-17): not variance.** The re-leg reproduced max RSS to 0.007%
+with identical counters and byte-identical output — RSS is deterministic per (binary × tree).
+Run G's −259 MB vs Run E is REAL; its mechanism remains unknown (the retention arithmetic
+still caps that story at 1-5 MB; plausibly a small live-heap change moving a heap-growth
+quantization step). The TIME verdict is unchanged — flat — and the disposition stands.
+Parked; do not spend further runs on it.
+
+**Disposition: KEPT (user decision, 2026-08-17)** — on code-quality grounds (the Env no
+longer re-derives a key it does not need), NOT on measured performance. The phase's
+performance conclusion is FLAT.
+
+**Do NOT generalize this to other string-keyed `DMap`s on the strength of Run G.** Beyond the
+dead mechanism there is a hard correctness gate: `Data.HashMap` iterates in INSERTION order
+while `DMap` iterates lexicographically, and the large per-global maps ARE folded —
+`TypedOptimized.elm:1704-1716` folds both `nodes` and `annotations` to build the serialized
+string table, and `Builder/GraphAssembly.elm:135,155` folds nodes — so converting them
+changes artifact bytes. The only conversions that are byte-safe are get-only Env-side views
+like this one, and those are exactly the ones that free nothing.
+
+## Phase 5a — Load-layer sizing census (measure BEFORE designing Phase 5)
+
+**Why this phase exists (added 2026-08-17, after Runs F and G).** Every argument for
+Phase 5 so far is a RATIO: 70.1% of set writes land on fresh slots (Run B), 78.0% of
+slot zonk-visits read ⊤/unconstrained (Run B), 78.5% of minted arrow slots are never
+written (Run D). None is a MAGNITUDE. This track has now had four consecutive phases
+where a compelling ratio met a magnitude and lost (2/3 cost-neutral-or-flat on time,
+4b a regression, 4c's both proposed mechanisms refuted) — and the repo precedent is the
+kernel-boundary census, which measured the whole boundary at 3.26% of CPU and retired
+the activity before more work was spent. 5a buys the magnitudes: against Run G's own
+denominators, 957,478 dead slots stand against 1,065,588,259 copied-in-nursery objects
+— possibly ~0.1% of allocation, possibly several percent once all load-path Points are
+counted. Nobody knows today, and Phase 5 is a store-lifecycle redesign — the most
+expensive thing this plan could green-light. Counters first.
+
+**The three questions, pre-registered so the answers cannot be argued around:**
+
+- **Q1 (Points):** how many Points does a run mint in total, and what share is the load
+  path? (`slotsMinted` counts only arrow SLOTS — a bare `a -> b` mints 4 Points of
+  which the slot is 1, and data-heavy types mint many with no slot at all.)
+- **Q2 (allocation share):** what fraction of the run's OBJECTS is that? Denominators
+  from the same leg's GC dump (`copied-in-nursery`, `promoted`).
+- **Q3 (time share):** how much of the ~200 s true mutator — flat across every run
+  C→G — is monomorphization AT ALL, and what does the profiler name inside it?
+
+### Work items (all stats-only; census lines ADD, no witness line is mutated)
+
+0. **Run H — variance re-leg, rides along free.** Before building the census binary,
+   re-run the UNCHANGED `eco-lss-p4c` binary once, cold, and record the row. This is
+   the purpose-built variance check the 4c note demands: if max RSS / major-GC time
+   swing by the same order as Run G's unexplained −259 MB, Run G's memory movement is
+   settled as noise. One leg, pre-committed — not "runs until it looks good".
+1. **`pointsMinted` (load path):** bump per `freshVarC` (`Store.elm:275-281`) via a
+   `LoadCtx` field, folded into `LssStats` at the four `loadTypeC` boundaries in the
+   SAME S write each boundary already makes (`slotsMinted` discipline,
+   `Store.elm:82-95`). Verify at edit time that `loadVarC` and `structC` both route
+   through `freshVarC` (they appear to; if any arm mints directly, bump there too).
+   Unlike `slotsMinted` this is nonzero on ~every load, so the `== 0` guard never
+   saves the `lssStats` sub-record copy — accepted, one copy per load CALL, the same
+   cost class Phase 1 accepted on the D2 path.
+2. **`pointsTotal` + `items`:** the store's Point indices are dense —
+   `newPointCell` returns `Array.length s.ioRefsPoint` (`Data/IORef.elm:56-61`) — so
+   `Array.length store.ioRefsPoint` at each store WIPE is the finished item's exact
+   total including every Unify-internal mint, at O(1) per item and no per-mint cost.
+   Sample at all places `S.store` is replaced by `freshStore` (exhaustive grep:
+   `resetItem` `Engine.elm:1063-1065`, both swap and restore in `withScratchStore`
+   `Engine.elm:756-775`) plus once at drain end; accumulate `pointsTotal` and bump
+   `items`. Then `pointsTotal − pointsMinted` = the unify/demand-encode residual.
+3. **`poisonLoads` / `poisonPoints`:** at the two load-purely-to-poison sites
+   (`poisonCallBoundary` and `poisonArgList`, `LssInfer.elm` ~850-885 — re-verify
+   lines), count the loads and capture each load's minted Points as the O(1)
+   `Array.length` delta around the `Store.loadType` call. This is the exact size of
+   the class Phase 5's shared clones would eliminate FIRST.
+4. **Load entry-point counts:** one bump in each of the four wrappers
+   (`loadType`/`loadTypeWithArrows`/`loadTypeIsolated`/`loadTypeIsolatedWithArrows`,
+   `Store.elm:77/104/129/157`). The isolated variants are the LSS_006
+   fresh-per-call-site population; the memo-shared variants are not — the split says
+   which of Phase 5's two mechanisms (sharing vs laziness) the workload actually wants.
+5. **Render** as NEW lines in `renderLssReport`:
+   `points: total=N load=N slots=N poisonLoads=N poisonPoints=N items=N` and
+   `loads: shared=N sharedArrows=N isolated=N isolatedArrows=N`.
+6. **Time split, two instruments, separate legs** (never mixed into a benchmark row):
+   coarse — re-run the census binary with `--stats` (`Terminal/Make.elm:101,135`;
+   `FEStats.PhaseMono`, `Builder/Eco/FEStats.elm:61-67`) to split mutator wall into
+   Deps/Local/Mono/InlineSimplify/GlobalOpt/Mlir for free; fine — ONLY if PhaseMono is
+   large, the sampled census per `design_docs/kernel-boundary-reduction.md:45`
+   (`perf record -F 997 --call-graph dwarf`; traps from that census: build-vs-workload
+   config, pgrep self-match) attributing within-mono samples to load/unify/zonk/
+   translate.
+
+**Benchmark:** Run H (variance re-leg, unchanged binary) then Run I (census binary,
+plain run) in `benchmarks/lss-opt.md`; census lines quoted in the Run I entry.
+
+**Decision gate, pre-registered.** Phase 5 gets a design plan ONLY if BOTH hold:
+(a) load-path Points are a material share of run allocation — using
+`loadShare ≈ pointsMinted × k / copied-in-nursery` with k = objects per Point (≥2:
+array cell + descriptor; pin k via an `ECO_INLINE_ALLOC=0` census leg only if the
+answer is borderline), with ~5% as the working materiality bar (the kernel boundary
+was retired at 3.26%); AND (b) PhaseMono is a material share of mutator wall AND the
+profile names load-side symbols inside it. If either fails, Phase 5 is RETIRED, the
+outline below stands as the record of why, and the profile's actual top entries become
+the next lead instead. No implementation may start from an unmet gate.
+
+### Phase 5a — EXECUTED 2026-08-17. Gate verdict: **Phase 5 RETIRED.**
+
+All legs ran: Run H (variance re-leg — resolved separately, see the 4c note), Run I
+(census, `benchmarks/lss-opt.md`), the `--stats` leg, and a perf-sampled leg
+(169,007 samples at 497 Hz, dwarf call-graphs, over the full workload).
+
+**The census (Run I):** `points: total=27,931,402 load=23,826,311 slots=958,411
+poisonLoads=140 poisonPoints=345 items=41,887` / `loads: shared=973,097
+sharedArrows=8,948 isolated=5,304 isolatedArrows=123,125`. Readings: the load path
+mints **85.3% of all Points** (~21.5 per load, ~667 per item); the never-written arrow
+slots that motivated this phase are only **4.0% of load-path mints** — the dead-slot
+ratio rode on a much larger, mostly-necessary mint population; and the
+**load-purely-to-poison class is 140 loads / 345 Points in the entire self-compile** —
+NIL, refuting this plan's `poisonCallBoundary` claim outright (`widenedByKernel=4,109`
+poisons walk already-loaded types; mechanism 2's headline motivation is gone).
+
+**Gate clause (a) — allocation share: FAIL (borderline at best).** Total Points are
+2.6% of copied-in-nursery events (27.9M / 1,087.8M); load-path Points 2.2%. Even at
+k=4-5 objects per mint the band is ~9-13% of copy events, and the series' own natural
+experiment says that scale does not buy wall: Run I's instrumentation itself added
+~+2.8% promoted and moved wall ~3% with a major-count change — and 4c/4b showed
+allocation removals of similar scale buying nothing.
+
+**Gate clause (b) — time share: FAIL on its second half.** `--stats` proved BLIND on
+this workload — `monomorphization 0 ms`; the kernel-package path never routes through
+`FEStats.withPhase` (finding worth its own fix someday). The perf leg answered instead
+(recipe: `sudo sysctl kernel.perf_event_paranoid=1`, then
+`perf record -F 497 --call-graph dwarf` on the workload leg). Time-slicing by the
+first/last samples carrying MonoSolver frames: the mono window spans **149.8 s = 44.0%
+of wall** — material, clause (b) first half passes. But the profile does NOT name the
+load layer: load-path frames appear in **16.3% of window samples = 7.2% of wall**
+(inclusive, memo probes and allocation included), and the load path's own compiled
+code (`Store_*` self) is **3.1% of the window ≈ 1.4% of wall**. Within the mono
+window, self-time decomposes as: **GC/alloc ≈ 43%** (incl. the nursery-clear memset in
+libc and GC helpers), **closure-dispatch machinery ≈ 29%** (`eco_apply_closure_eval`,
+`invokeSaturatedTyped`, and — the single largest line — the per-call
+`RootSet::StackRootRange` vector push at **17.4% of the window**), `Dict_*` 6.6%,
+string compares 2.0%, solver Elm code (Store/LssInfer/Translate/Unify) **≈ 5.9%
+combined**. Caveat recorded: dwarf unwinding breaks at closure trampolines, so
+symbol-level INCLUSIVE numbers for high-level drivers undercount; the window-slice
+method is the trustworthy one.
+
+**Verdict: both clauses fail → Phase 5 is RETIRED as pre-registered.** Best case for
+its two mechanisms was bounded by the 7.2%-of-wall inclusive load layer, against a
+store-lifecycle redesign with three blockers. The outline below stands as the record.
+
+**What the profile names instead (next leads, in order of measured size):**
+1. **Per-call root registration** — `eco_gc_push_stack_range` /
+   `StackRootRange` push_back is ~17% of the mono window and the dispatch family is
+   ~20% of TOTAL wall (`eco_apply_closure_eval` 8.1% + `invokeSaturatedTyped` 4.7% +
+   push_stack_range 3.8% + splice/saturated-call helpers). A runtime-side cheapening
+   of root registration pays everywhere, not just in mono.
+2. GC itself (43% of the mono window, 37% of wall) — the standing target.
+3. `ENABLE_GC_STATS` clock overhead — vdso `clock_gettime` ≈ 3.1% of the window; a
+   build-config cost, already a known open item from the kernel-boundary census.
+4. Generic `Dict_*` traffic (6.6% of window) + string compares (2.0%) — the true
+   residue of the string-key story: COMPARING keys inside `Dict String`, not building
+   them.
+
+**Census-cost note:** Run I vs Run H shows the instrumentation's own price (+10.3 s
+wall, +2.8% promoted), dominated by the now-unconditional per-load `lssStats` fold.
+If the counters stay in-tree, consider re-guarding that fold; if they are removed, the
+`points`/`loads` lines above are the archival record.
+
+## Phase 5 — OUTLINE ONLY: lazy leaves + shared callable-free clones (gated on 5a)
+
+Deliberately not a spec. If 5a's gate passes, this becomes its OWN plan document;
+nothing below is implementation-ready, and nothing may be built from it directly.
+
+- **Goal.** Cut the load-layer mint multiplier. The load path mints fresh structure
+  per load (LSS_006); Run D measured ~4.7 arrow slots minted per slot ever written,
+  and 5a will say how many total Points that ratio rides on.
+- **Mechanism 1 — shared callable-free clones** (Roc's `contains_callable` split,
+  `roc/src/postcheck/lambda_solved/solve.zig:113-135, 1355-1376, 2943-2953`): a type
+  containing no arrows loads to ONE shared instance instead of a fresh copy per load.
+  The SAFE first increment: no arrows ⇒ no slots ⇒ no set writes and no slot aliasing,
+  so blockers 2 and 3 below are sidestepped; even a per-item share (no store-lifecycle
+  change) may pay if 5a's `loads` counters show high loads-per-item.
+- **Mechanism 2 — lazy leaves**: defer materializing a loaded type's structure until
+  something demands it (the poison-only loads walk structure merely to find slots —
+  `poisonPoints` in 5a sizes exactly this).
+- **Blocker 1 — store lifecycle.** The store is per-item: `resetItem` swaps in
+  `freshStore` wholesale and Points are dense per-item Array indices
+  (`Data/IORef.elm:56-61`, `Engine.elm:1063-1065`), so any CROSS-item sharing needs a
+  store-lifecycle redesign — the expensive part, and the reason 5a gates this phase.
+- **Blocker 2 — identity entanglement of shared records.** `Record1×Record1`
+  unification mints fresh Points and cross-links both sides (`Unify.elm:886-897`), so
+  a shared ground clone that reaches unification entangles unrelated items.
+  Callable-free sharing must therefore be confined to types that cannot reach a
+  unification that rebuilds them, or cloned-on-unify.
+- **Blocker 3 — slots carry identity, not just content.** `FunL×FunL` runs
+  `subUnify set1 set2` (`Unify.elm:732-736`): two arrows that unify SHARE a slot, and
+  later facts through one are visible through the other. A lazily-absent slot has
+  nowhere to record that aliasing — lazy slots must materialize on unification as
+  well as on write, or facts are silently dropped (the LSS_010 miscompile class).
+  (Found in this session's review; the original Phase-5 paragraph did not list it.)
+- **Non-mechanism, recorded so nobody re-derives it:** "skip ⊤-writes onto
+  unconstrained slots" is UNSOUND — ⊤ is information (absorb-everything-later); Run C
+  measured 61,375 subsequent concrete writes absorbed by poisoned slots. Poison must
+  always materialize.
+- **Sequencing.** After 5a, and only through its gate. Evidence inventory at gate
+  time: 5a's `points`/`loads`/`poison` lines, PhaseMono share, profile attribution,
+  plus the standing ratios (70.1% / 78.0% / 78.5%) — ratios argue SHAPE, the census
+  argues SIZE, and the gate is decided on size.
 
 ## Measurement protocol (Phases 2-4)
 
 **`benchmarks/lss-opt.md` is the protocol** — this track created it. Each phase lands
 one PLAIN run (one cold leg, solver+LSS workload, no A/B — these are unflagged changes)
 recorded as the next row: Run C = Phase 2, Run D = Phase 3, Run E/F = Phase 4a/4b
-(F = the 4b NO-GO, reverted), Run G = Phase 4c.
+(F = the 4b NO-GO, reverted), Run G = Phase 4c, Run H = variance re-leg of the
+unchanged Run-G binary (Phase 5a item 0), Run I = Phase 5a census binary. The `--stats`
+and perf legs of Phase 5a are NOT benchmark rows — separate passes, per this section's
+testing rule.
 Compare against the previous row per that file's rules (quote both rows' `out.mlir`
 sizes; judge counters first, wall second; never quote a wall without its majors). The
 benchmark is NOT a correctness gate: its rows are two different trees and prove nothing
@@ -906,8 +1105,9 @@ un-run for Phases 3-4b only, but the sweep re-covers everything regardless.
 
 ## Done when
 
-Phases 1-4 landed and each benchmarked with its own row (Runs C-F); the final gate
-sweep green end to end; the census shows `setWriteSlow = 0` sustained, `joinNoop`/completion joins
-converted to pointer-returns, and minors/GC time visibly down across Runs B→F;
-findings and numbers recorded in this file per phase; Phase 5 explicitly re-scoped or
-parked with the post-Phase-4 census attached.
+Phases 1-4 landed/settled, each with its own row (Runs C-G; 4b measured NO-GO and
+reverted, 4c kept on code-quality grounds); the final gate sweep green end to end; the
+census shows `setWriteSlow = 0` sustained and `joinNoop`/completion joins converted to
+pointer-returns; findings and numbers recorded in this file per phase; Phase 5a
+executed (Runs H-I + time legs) and Phase 5's gate decided GO (own plan drafted) or
+NO-GO (retired with the census attached) strictly on 5a's numbers.

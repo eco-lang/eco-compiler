@@ -176,6 +176,7 @@ testGraph =
                     , Just ( Mono.Global home "h", fnTy )
                     , Just ( Mono.Global home "n", fnTy )
                     ]
+            , countByGlobal = Dict.empty
             }
         , ctorShapes = Mono.layoutMapEmpty
         , nextLambdaIndex = 3
@@ -185,4 +186,5 @@ testGraph =
         , ports = []
         , flagsDecoder = Nothing
         , lssMemberOrigins = Dict.empty
+        , lssBlockedMembers = Dict.empty
         }

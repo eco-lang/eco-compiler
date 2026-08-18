@@ -143,6 +143,17 @@ type alias LssStats =
     }
 
 
+
+-- The lss-fidelity-1 one-shot census counters (fidelity.muTied /
+-- widenedByLet / localMultiBypass) were REMOVED 2026-08-18 after their
+-- deliverable run (benchmarks/lss-opt.md Run J: 0 / 672 / 469) so the
+-- default path carries only implementation cost. The μ-tie's live
+-- monitoring signal is derived free at report time from
+-- lssMemberTable.muTied (set size) + AbiCloning's declinedBlocked.
+-- Re-instrument per plans/lss-fidelity-1-watchdogs-budget-accounting.md §7
+-- if a new census is ever needed.
+
+
 {-| What a standalone member REFERS to. A member id is a global/ctor or a
 kernel, never both, so the two reverse maps are arms of one sum rather than
 two dicts over the same id space — one tree, and `buildMemberOrigins`'s
@@ -162,6 +173,8 @@ self-compile.
 type alias LssMemberTable =
     { byKey : CoreDict.Dict String Int
     , sources : CoreDict.Dict Int MemberSource
+    , lambdaQualified : CoreDict.Dict Int ( Int, Int ) -- LSS_018: qualified mid -> (raw lambda id, minting SpecId); written at the Q(L,S) intern
+    , muTied : CoreDict.Dict Int () -- LSS_018: member ids ever the target of a μ-tie — exported as MonoGraph.lssBlockedMembers (AbiCloning force-blocks them)
     }
 
 
@@ -195,7 +208,7 @@ emptyMonoMemo =
 
 emptyMemberTable : LssMemberTable
 emptyMemberTable =
-    { byKey = CoreDict.empty, sources = CoreDict.empty }
+    { byKey = CoreDict.empty, sources = CoreDict.empty, lambdaQualified = CoreDict.empty, muTied = CoreDict.empty }
 
 
 insertMemberKey : String -> Int -> LssMemberTable -> LssMemberTable
@@ -287,7 +300,26 @@ lambdaInstanceMemberId lamId s0 =
         else
             case s0.itemAux.currentSpecId of
                 Just specId ->
-                    memberIdFor ("l|" ++ String.fromInt raw ++ "|" ++ String.fromInt specId) s0
+                    -- LSS_018 μ-tie: if this spec's own STORED demand already
+                    -- carries a qualified member of the same raw lambda, the
+                    -- value being minted IS the value that arrived in the
+                    -- demand — one recursive family. Minting Q(L,S) fresh
+                    -- would only spawn the next family member (the
+                    -- specs→qualified-members→keys spiral); reusing the
+                    -- family id closes it at its second member. Tied ids are
+                    -- recorded in `muTied` and AbiCloning-blocked (plan §2.4 —
+                    -- multi-demand instances are behaviorally divergent and
+                    -- must never rep-stamp). `demandQualified` is built (and
+                    -- `lambdaQualified` recorded) only under `lss.muTie`, so
+                    -- the flag-off path carries zero scan/table cost; the
+                    -- Just arm is unreachable flag-off. The one-shot eligible
+                    -- census measured 0 on the self-compile (Run J).
+                    case CoreDict.get raw s0.itemAux.demandQualified of
+                        Just tiedId ->
+                            Ok ( tiedId, recordMuTied tiedId s0 )
+
+                        Nothing ->
+                            mintQualifiedLambda raw specId s0
 
                 Nothing ->
                     let
@@ -295,6 +327,47 @@ lambdaInstanceMemberId lamId s0 =
                             s0.lssStats
                     in
                     Ok ( raw, { s0 | lssStats = { stats | unqualifiedLambdaMints = stats.unqualifiedLambdaMints + 1 } } )
+
+
+{-| Intern the spec-qualified lambda member `Q(L,S)` and — under `lss.muTie`
+only — record its (raw, spec) identity in `lambdaQualified`, the LSS_018
+reverse map that `processItem`'s demand scan consults. Flag-off skips the
+recording entirely (no map growth on the default path); the insert is
+idempotent (the key encodes both components), so LSS_010 re-translations
+re-record the same pair.
+-}
+mintQualifiedLambda : Int -> Int -> Step Int
+mintQualifiedLambda raw specId s0 =
+    case memberIdFor ("l|" ++ String.fromInt raw ++ "|" ++ String.fromInt specId) s0 of
+        Err e ->
+            Err e
+
+        Ok ( mid, s1 ) ->
+            let
+                table =
+                    s1.lssMemberTable
+            in
+            if not s1.env.lss.muTie || CoreDict.member mid table.lambdaQualified then
+                Ok ( mid, s1 )
+
+            else
+                Ok ( mid, { s1 | lssMemberTable = { table | lambdaQualified = CoreDict.insert mid ( raw, specId ) table.lambdaQualified } } )
+
+
+{-| LSS_018: record a member id as μ-tied (idempotent). The set is exported
+as `MonoGraph.lssBlockedMembers` at assembly.
+-}
+recordMuTied : Int -> S -> S
+recordMuTied tiedId s =
+    let
+        table =
+            s.lssMemberTable
+    in
+    if CoreDict.member tiedId table.muTied then
+        s
+
+    else
+        { s | lssMemberTable = { table | muTied = CoreDict.insert tiedId () table.muTied } }
 
 
 {-| `lambdaInstanceMemberId` lifted over the optional provenance stamp, for
@@ -329,6 +402,39 @@ bumpWidenedByKernel s =
     { s | lssStats = { stats | widenedByKernel = stats.widenedByKernel + 1 } }
 
 
+{-| MONO_030 (solver arm): validate a just-CREATED spec against the breadth
+and key-size watchdogs. `Nothing` = fine; `Just` = the loud failure that
+replaces a silent hang/OOM (poly-rec through annotated mutual cycles is
+legal Elm — plan §1.1). Callers gate on the created path only, so this
+never runs on registry probe hits. A limit of 0 disables its check.
+-}
+checkSpecWatchdogs : Mono.Global -> Mono.MonoType -> Mono.SpecializationRegistry -> S -> Maybe Failure
+checkSpecWatchdogs global monoType reg s =
+    let
+        limits =
+            s.env.limits
+
+        context =
+            case s.currentGlobal of
+                Just g ->
+                    "\n  (reached while specializing " ++ Registry.prettyGlobal g ++ ")"
+
+                Nothing ->
+                    ""
+
+        count =
+            Registry.createdCount global reg
+    in
+    if limits.specBreadth > 0 && count > limits.specBreadth then
+        Just (LimitExceeded (Registry.breadthLimitMessage global count limits.specBreadth ++ context))
+
+    else if limits.specTypeNodes > 0 && not (Mono.typeNodesWithin limits.specTypeNodes monoType) then
+        Just (LimitExceeded (Registry.typeNodesLimitMessage global limits.specTypeNodes ++ context))
+
+    else
+        Nothing
+
+
 {-| M7: the immutable Reader-style context — set once at `initState`, never
 updated. Grouped so `S` updates copy one `env` ref rather than five dead ones.
 -}
@@ -341,6 +447,7 @@ type alias Env =
     , lss : Config.LssConfig -- lambda-set specialization knobs; enabled=False is byte-identical off
     , lssKeyedSet : CoreDict.Dict String () -- E5: comparable gkeys of lss.keyedGlobals (parsed once at initState)
     , lamLabels : CoreDict.Dict Int String -- member id -> "defKey#id" (census rendering only)
+    , limits : Config.SpecLimits -- MONO_030 spec watchdogs (0 = a check disabled); failure-only, hash-excluded
     }
 
 
@@ -431,12 +538,13 @@ type alias ItemAux =
     , ecoResidualKeyReads : List Int
     , loopParams : List ( String, List ( String, Can.Type TypeIds.MVarId ) )
     , currentSpecId : Maybe Int -- Fix B (LSS_017): the SpecId being translated; set by processItem after resetItem, cleared at finishNode. Qualifies lambda-instance member ids for keyed-routed globals.
+    , demandQualified : CoreDict.Dict Int Int -- LSS_018: raw lambda id -> SMALLEST qualified member id present in this spec's STORED demand (built by processItem from the registry type; consulted by lambdaInstanceMemberId's μ-tie)
     }
 
 
 emptyItemAux : ItemAux
 emptyItemAux =
-    { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = [], currentSpecId = Nothing }
+    { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = [], currentSpecId = Nothing, demandQualified = CoreDict.empty }
 
 
 {-| Scratch-store entry: clear ONLY the read lists (scratch Point indices are
@@ -497,12 +605,16 @@ type alias NumberInstance =
 {-| Why a work item was abandoned. All are surfaced as a top-level `Err`
 (never a fallback): `Unsupported` = feature not yet built; `UnifyMismatch` =
 the real unifier rejected something the old engine absorbed silently;
-`EngineBug` = an invariant the engine believes cannot happen.
+`EngineBug` = an invariant the engine believes cannot happen;
+`LimitExceeded` = a MONO_030 resource watchdog tripped — a diagnosable
+program/limit condition, NOT a compiler bug (renderFailure must not frame it
+as one).
 -}
 type Failure
     = Unsupported String
     | UnifyMismatch String
     | EngineBug String
+    | LimitExceeded String
 
 
 
@@ -826,36 +938,60 @@ enqueueSpec global monoType s0 =
 
         storedChanged =
             hit == Registry.HitChangedJoin
-    in
-        if BitSet.member specId s.scheduled then
-            if storedChanged then
-                -- LSS_010: a later demand widened the stored annotations of an
-                -- already-scheduled spec. The node (translated, in flight, or
-                -- pending) was/will be seeded from a NARROWER demand — its
-                -- body annotations could claim a singleton set that lies about
-                -- this caller's values, and a fast-dispatch stamp on such a
-                -- site is a silent miscompile. Mark dirty ONLY — re-translation
-                -- happens in drain-end flush rounds (markDirty), so a spec
-                -- re-translates once per round with its FULLY-joined demand
-                -- instead of once per join (the per-join immediate re-push
-                -- cascaded into hour-scale churn on the self-compile).
-                Ok ( specId, markDirty specId reg1 s )
+
+        -- MONO_030: `hit == CreatedNew` is NOT a reliable created signal on
+        -- the lss-off arm (it labels every probe CreatedNew) — nextId growth
+        -- is, on both arms.
+        watchdog =
+            if reg1.nextId > s0.registry.nextId then
+                checkSpecWatchdogs global monoType reg1 s
 
             else
-                -- D2: already scheduled and stored type unchanged ⇒ the
-                -- registry is the SAME value, so `{ s | registry = reg1 }`
-                -- would copy the whole S to change nothing. Return S unaltered.
-                Ok ( specId, s )
+                Nothing
+    in
+    case watchdog of
+        Just failure ->
+            Err failure
+
+        Nothing ->
+            enqueueSpecCommit specId reg1 storedChanged s
+
+
+{-| The post-watchdog commit tail shared by `enqueueSpec`'s unkeyed/off arm
+and `enqueueSpecKeyed`.
+
+On an already-scheduled hit with a CHANGED join (LSS_010): a later demand
+widened the stored annotations of an already-scheduled spec. The node
+(translated, in flight, or pending) was/will be seeded from a NARROWER
+demand — its body annotations could claim a singleton set that lies about
+this caller's values, and a fast-dispatch stamp on such a site is a silent
+miscompile. Mark dirty ONLY — re-translation happens in drain-end flush
+rounds (markDirty), so a spec re-translates once per round with its
+FULLY-joined demand instead of once per join (the per-join immediate
+re-push cascaded into hour-scale churn on the self-compile).
+
+On an unchanged hit (D2): the registry is the SAME value, so
+`{ s | registry = reg1 }` would copy the whole S to change nothing —
+return S unaltered.
+-}
+enqueueSpecCommit : Mono.SpecId -> Mono.SpecializationRegistry -> Bool -> S -> Result Failure ( Mono.SpecId, S )
+enqueueSpecCommit specId reg1 storedChanged s =
+    if BitSet.member specId s.scheduled then
+        if storedChanged then
+            Ok ( specId, markDirty specId reg1 s )
 
         else
-            Ok
-                ( specId
-                , { s
-                    | registry = reg1
-                    , scheduled = BitSet.insertGrowing specId s.scheduled
-                    , worklist = SpecializeGlobal specId :: s.worklist
-                  }
-                )
+            Ok ( specId, s )
+
+    else
+        Ok
+            ( specId
+            , { s
+                | registry = reg1
+                , scheduled = BitSet.insertGrowing specId s.scheduled
+                , worklist = SpecializeGlobal specId :: s.worklist
+              }
+            )
 
 
 {-| Phase 1 census (`plans/lss-set-write-substrate.md`): attribute a keyed
@@ -1012,22 +1148,22 @@ enqueueSpecKeyed global monoType s0 =
                         { stats0 | widenedByBudget = stats0.widenedByBudget + 1 }
             }
     in
-    if BitSet.member specId s1.scheduled then
-        if storedChanged then
-            -- LSS_010 dirty machinery — mark only; drain-end flush re-pushes.
-            Ok ( specId, markDirty specId s1.registry s1 )
+    -- MONO_030: watchdogs on the created path only (probe hits never check).
+    case
+        (if created then
+            checkSpecWatchdogs global monoType reg1 s1
 
-        else
-            Ok ( specId, s1 )
+         else
+            Nothing
+        )
+    of
+        Just failure ->
+            Err failure
 
-    else
-        Ok
-            ( specId
-            , { s1
-                | scheduled = BitSet.insertGrowing specId s1.scheduled
-                , worklist = SpecializeGlobal specId :: s1.worklist
-              }
-            )
+        Nothing ->
+            -- LSS_010 dirty machinery on a changed join — mark only; the
+            -- drain-end flush re-pushes.
+            enqueueSpecCommit specId s1.registry storedChanged s1
 
 
 

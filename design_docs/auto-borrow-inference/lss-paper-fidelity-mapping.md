@@ -427,6 +427,18 @@ mechanism is the demand-driven equivalent. **Aims served:** 3 marginally, 1 slig
 
 ### GAP-8 — No poly-rec/blowup guard behind Thm 4.1's assumption (aims 2: MEDIUM)
 
+> **AMENDED 2026-08-18 (implementation session of
+> `plans/lss-fidelity-1-watchdogs-budget-accounting.md`):** the "front-end
+> regression" framing below UNDERSTATES the gap. Polymorphic recursion is
+> expressible in legal Elm **today** through annotated MUTUAL cycles (each
+> member sees the others' annotations as generalized schemes; only
+> self-recursion is rejected), and the monomorphizer diverges on it in the
+> default configuration — the budget cannot terminate it because set-widening
+> never touches the TYPE component of keys. Empirical repro:
+> `test/fixtures/polyrec-mutual/` (never add it to a compiled suite);
+> correction note in `plans/monomorphization-plan.md` §3. The watchdogs
+> (MONO_030) are therefore a live-bug fix, not insurance.
+
 **Paper:** inference *provably* never emits polymorphic recursion; specialization
 termination is a theorem. **Eco:** the set-parameter half is enforced (Σ rule, §3.2); the
 type-level half rests on "Elm HM cannot express it" with **zero** enforcement — the drain

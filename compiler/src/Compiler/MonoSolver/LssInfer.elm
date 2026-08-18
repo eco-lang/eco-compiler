@@ -1219,6 +1219,11 @@ joinArrowSetsPairs pairs s0 =
 
 poisonBoth : IO.Variable -> IO.Variable -> Step ()
 poisonBoth a b s0 =
+    -- GAP-9a ⊤ source. One-shot census 2026-08-18 (Run J,
+    -- benchmarks/lss-opt.md): 672 invocations on the self-compile vs
+    -- topSiteShapes local=7,361 — a minor component of the local-⊤ mass;
+    -- the per-event counter was removed after the measurement (plan
+    -- lss-fidelity-1 §7).
     case Store.poisonArrowSets a s0 of
         Err e ->
             Err e
