@@ -1,6 +1,8 @@
 module TestLogic.Monomorphize.ComparableKeyEncodingTest exposing (suite)
 
-{-| Encoding gate for `toComparableMonoType` / `toComparableLayoutKey`.
+{-| Encoding gate for `toComparableMonoType`, and for the LAYOUT-flavour
+contracts (`eqKeyLayout` / `layoutHashOf`) whose shipping string encoder was
+deleted as dead code — `referenceKey False` below is now their sole oracle.
 
 Those two strings are specialization identity (MONO\_005/017/024) and the key
 of every layout-intent dictionary in codegen, so a change to *how* a key is
@@ -40,12 +42,6 @@ suite =
                     |> List.filter (\t -> Mono.toComparableMonoType t /= referenceKey True t)
                     |> List.map Mono.monoTypeToDebugString
                     |> Expect.equalLists []
-        , Test.test "layout flavour matches the work-stack reference over the corpus" <|
-            \_ ->
-                corpus
-                    |> List.filter (\t -> Mono.toComparableLayoutKey t /= referenceKey False t)
-                    |> List.map Mono.monoTypeToDebugString
-                    |> Expect.equalLists []
         , Test.test "golden keys" <|
             \_ ->
                 List.map (\( t, _ ) -> Mono.toComparableMonoType t) goldens
@@ -59,7 +55,7 @@ suite =
                 Expect.equal
                     ( "A[2,5](I->S)", "A(I->S)" )
                     ( Mono.toComparableMonoType setBearing
-                    , Mono.toComparableLayoutKey setBearing
+                    , referenceKey False setBearing
                     )
         , Test.test "the flavours agree on all-LTop types (why flag-off cannot see an annoSensitive slip)" <|
             \_ ->
@@ -69,7 +65,7 @@ suite =
                 in
                 Expect.equal
                     (Mono.toComparableMonoType ltopOnly)
-                    (Mono.toComparableLayoutKey ltopOnly)
+                    (referenceKey False ltopOnly)
         , Test.test "K4: eqKeySpec is EXACTLY specialization-key equality" <|
             \_ ->
                 pairs
@@ -86,7 +82,7 @@ suite =
                     |> List.filter
                         (\( a, b ) ->
                             Mono.eqKeyLayout a b
-                                /= (Mono.toComparableLayoutKey a == Mono.toComparableLayoutKey b)
+                                /= (referenceKey False a == referenceKey False b)
                         )
                     |> List.map describePair
                     |> Expect.equalLists []
@@ -97,7 +93,7 @@ suite =
                         (\( a, b ) ->
                             (Mono.toComparableMonoType a == Mono.toComparableMonoType b)
                                 && (Mono.specHashOf a /= Mono.specHashOf b)
-                                || (Mono.toComparableLayoutKey a == Mono.toComparableLayoutKey b)
+                                || (referenceKey False a == referenceKey False b)
                                 && (Mono.layoutHashOf a /= Mono.layoutHashOf b)
                         )
                     |> List.map describePair
@@ -267,7 +263,7 @@ suite =
                     allKeys =
                         String.concat
                             (List.map Mono.toComparableMonoType corpus
-                                ++ List.map Mono.toComparableLayoutKey corpus
+                                ++ List.map (referenceKey False) corpus
                             )
                 in
                 [ "I", "F", "B", "C", "S", "U", "V0\u{0000}ecovalue", "L(", "T2(", "T4(", "R(", "X", "A(", "A[", "->" ]

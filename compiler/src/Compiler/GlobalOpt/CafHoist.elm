@@ -1,7 +1,7 @@
 module Compiler.GlobalOpt.CafHoist exposing
     ( Stats
     , emptyStats
-    , fingerprintOf
+    , kindTagOf
     , renderStats
     , run
     , typeTouchesBytes
@@ -38,7 +38,8 @@ replaced site), and nothing is minted for nested candidates.
 
 Dedupe (plan DQ2): closure-free subtrees merge by region-zeroed
 STRUCTURAL EQUALITY — collision-impossible — bucketed by a cheap
-fingerprint. Closure-containing subtrees hoist per-site un-deduped
+kind tag and then keyed structurally on the demanded type
+(`Mono.SpecMap`; no type is ever rendered to a String). Closure-containing subtrees hoist per-site un-deduped
 (`MonoClosure.lambdaId` is identity-bearing; verbatim move only).
 
 Exclusions (plan DQ4/DQ6): pkg-`bytes`-typed or -headed candidates
@@ -149,7 +150,7 @@ type alias Candidate =
 type alias Ctx =
     { nextId : Int
     , minted : List ( Mono.MonoExpr, Mono.MonoType ) -- REVERSED mint order
-    , dedupe : Dict String (List ( Mono.MonoExpr, Int )) -- fingerprint -> [(zeroed, specId)]
+    , dedupe : Dict String (Mono.SpecMap (List ( Mono.MonoExpr, Int ))) -- kindTag -> demanded type -> [(zeroed, specId)]
     , stats : Stats
     , maxHoists : Int
     }
@@ -609,10 +610,15 @@ mintOrDedupe ctx cand =
             zeroed =
                 zeroRegions cand.expr
 
-            fp =
-                fingerprintOf cand.expr ty
+            tag =
+                kindTagOf cand.expr
+
+            bucket =
+                Dict.get tag ctx.dedupe
+                    |> Maybe.andThen (Mono.specMapGet ty)
+                    |> Maybe.withDefault []
         in
-        case List.filter (\( z, _ ) -> z == zeroed) (Maybe.withDefault [] (Dict.get fp ctx.dedupe)) of
+        case List.filter (\( z, _ ) -> z == zeroed) bucket of
             ( _, sid ) :: _ ->
                 let
                     stats0 =
@@ -628,7 +634,7 @@ mintOrDedupe ctx cand =
                 ( Mono.MonoVarGlobal A.zero sid ty, { ctx | stats = stats1 } )
 
             [] ->
-                mintOrBudget ctx cand ty (Just ( fp, zeroed ))
+                mintOrBudget ctx cand ty (Just ( tag, zeroed ))
 
 
 mintOrBudget : Ctx -> Candidate -> Mono.MonoType -> Maybe ( String, Mono.MonoExpr ) -> ( Mono.MonoExpr, Ctx )
@@ -655,9 +661,16 @@ mintOrBudget ctx cand ty maybeKey =
 
             dedupe1 =
                 case maybeKey of
-                    Just ( fp, zeroed ) ->
-                        Dict.insert fp
-                            (( zeroed, sid ) :: Maybe.withDefault [] (Dict.get fp ctx.dedupe))
+                    Just ( tag, zeroed ) ->
+                        let
+                            inner =
+                                Maybe.withDefault Mono.specMapEmpty (Dict.get tag ctx.dedupe)
+
+                            prev =
+                                Maybe.withDefault [] (Mono.specMapGet ty inner)
+                        in
+                        Dict.insert tag
+                            (Mono.specMapInsert ty (( zeroed, sid ) :: prev) inner)
                             ctx.dedupe
 
                     Nothing ->
@@ -1184,11 +1197,18 @@ zeroRegionsDecider decider =
                 (zeroRegionsDecider fallback)
 
 
-{-| Cheap bucket key; equality within a bucket is exact (`==` on zeroed
-trees), so this only affects bucket sizes, never correctness.
+{-| Cheap bucket tag for an expression's TOP NODE — the outer half of the
+dedupe key; the type is the inner half and is keyed structurally by
+`Mono.SpecMap`, never rendered (speckey plan §10, the CafHoist follow-on).
+This used to append `Mono.toComparableMonoType ty`, which renders a whole
+type to a String — 4,786 characters for an arrow-free `Context`-shaped type
+(plan §8.6) — once per candidate site.
+
+Equality within a bucket is exact (`==` on zeroed trees), so the tag only
+affects bucket sizes, never correctness.
 -}
-fingerprintOf : Mono.MonoExpr -> Mono.MonoType -> String
-fingerprintOf expr ty =
+kindTagOf : Mono.MonoExpr -> String
+kindTagOf expr =
     let
         kindTag =
             case expr of
@@ -1233,4 +1253,4 @@ fingerprintOf expr ty =
                 _ ->
                     "dyn"
     in
-    kindTag ++ "|" ++ Mono.toComparableMonoType ty
+    kindTag

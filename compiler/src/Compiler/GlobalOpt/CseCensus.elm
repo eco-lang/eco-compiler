@@ -12,7 +12,7 @@ occurrence carries its root→node path; the pair's bucket is read off the two
 path suffixes below their lowest common ancestor.
 
 Equality machinery is reused verbatim from `CafHoist`/`CafDedupe`
-(`fingerprintOf` to bucket, `zeroRegions` + `==` inside the bucket) — this
+(`kindTagOf` + type-keyed `SpecMap` to bucket, `zeroRegions` + `==` inside the bucket) — this
 module invents none of its own.
 
 The `cse-dce:` lines are kernel-opt-11's free ride-along, per that plan's
@@ -76,7 +76,8 @@ type Head
 
 
 type alias Occ =
-    { key : String
+    { key : String -- kind tag only; the demanded type is `ty`, keyed structurally
+    , ty : Mono.MonoType
     , shape : MonoExpr
     , head : Head
     , path : List Step
@@ -363,13 +364,31 @@ scanSpec oracle minCost specName headName sid body inLoop acc0 =
 
         buckets =
             List.foldl
-                (\occ d -> Dict.update occ.key (\m -> Just (occ :: Maybe.withDefault [] m)) d)
+                (\occ d ->
+                    Dict.update occ.key
+                        (\m ->
+                            let
+                                inner =
+                                    Maybe.withDefault Mono.specMapEmpty m
+
+                                prev =
+                                    Maybe.withDefault [] (Mono.specMapGet occ.ty inner)
+                            in
+                            Just (Mono.specMapInsert occ.ty (occ :: prev) inner)
+                        )
+                        d
+                )
                 Dict.empty
                 occs
 
         acc2 =
             Dict.foldl
-                (\_ members a -> classifyBucket headName specName sid inLoop members a)
+                (\_ inner a ->
+                    Mono.specMapFoldl
+                        (\_ members b -> classifyBucket headName specName sid inLoop members b)
+                        a
+                        inner
+                )
                 acc1
                 buckets
     in
@@ -667,7 +686,8 @@ admit oracle minCost expr path ( occs, acc ) =
                 ( occs, { acc | belowMinCost = acc.belowMinCost + 1 } )
 
             else
-                ( { key = CafHoist.fingerprintOf expr ty
+                ( { key = CafHoist.kindTagOf expr
+                  , ty = ty
                   , shape = CafHoist.zeroRegions expr
                   , head = head
                   , path = path

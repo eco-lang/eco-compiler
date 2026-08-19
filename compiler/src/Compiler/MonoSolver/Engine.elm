@@ -187,7 +187,11 @@ ground/closed classification is item-independent):
     `"home.name|argKeys"`;
   - `callMemo` — an open-scheme call at all-ground args:
     `(funcMonoType, resultMonoType, specId)`. D10 caches the specId so a hit
-    skips re-enqueue/re-serialize.
+    skips re-enqueue/re-serialize. Keyed by the callee `Global` plus the
+    synthetic `args -> result` arrow those types already denote
+    (`Mono.SpecKey`), so the probe reads the `specHashOf` Int the node already
+    carries and confirms with `eqKeySpec` — NO string is built
+    (plans/speckey-optimization.md §10.2).
 
 These are ONE `S` field for the same reason `LssMemberTable` is: the engine
 self-hosts and `S` must stay within the native runtime's 32-slot record GC-scan
@@ -197,13 +201,13 @@ cap. Grouping them made room for `S.intern` (K6).
 type alias MonoMemo =
     { schemeMono : CoreDict.Dict String Mono.MonoType
     , kernelAbiMono : CoreDict.Dict String Mono.MonoType
-    , callMemo : CoreDict.Dict String ( Mono.MonoType, Mono.MonoType, Mono.SpecId )
+    , callMemo : Mono.SpecKeyMap ( Mono.MonoType, Mono.MonoType, Mono.SpecId )
     }
 
 
 emptyMonoMemo : MonoMemo
 emptyMonoMemo =
-    { schemeMono = CoreDict.empty, kernelAbiMono = CoreDict.empty, callMemo = CoreDict.empty }
+    { schemeMono = CoreDict.empty, kernelAbiMono = CoreDict.empty, callMemo = Mono.specKeyMapEmpty }
 
 
 emptyMemberTable : LssMemberTable
@@ -414,22 +418,28 @@ checkSpecWatchdogs global monoType reg s =
         limits =
             s.env.limits
 
+        -- THUNKED DELIBERATELY. This function runs on every CREATED spec
+        -- (~41k on a self-compile) and the message is emitted essentially
+        -- never, so the context string must not be built on the passing path.
+        -- Same discipline as `Translate.unifyStepCtx`'s `() -> String`.
+        context : () -> String
         context =
-            case s.currentGlobal of
-                Just g ->
-                    "\n  (reached while specializing " ++ Registry.prettyGlobal g ++ ")"
+            \() ->
+                case s.currentGlobal of
+                    Just g ->
+                        "\n  (reached while specializing " ++ Registry.prettyGlobal g ++ ")"
 
-                Nothing ->
-                    ""
+                    Nothing ->
+                        ""
 
         count =
             Registry.createdCount global reg
     in
     if limits.specBreadth > 0 && count > limits.specBreadth then
-        Just (LimitExceeded (Registry.breadthLimitMessage global count limits.specBreadth ++ context))
+        Just (LimitExceeded (Registry.breadthLimitMessage global count limits.specBreadth ++ context ()))
 
     else if limits.specTypeNodes > 0 && not (Mono.typeNodesWithin limits.specTypeNodes monoType) then
-        Just (LimitExceeded (Registry.typeNodesLimitMessage global limits.specTypeNodes ++ context))
+        Just (LimitExceeded (Registry.typeNodesLimitMessage global limits.specTypeNodes ++ context ()))
 
     else
         Nothing
@@ -587,12 +597,21 @@ type alias NodeResolution =
 
 
 {-| A let-bound value being specialized at multiple monomorphic types
-(number-multi / value-multi). `instances` is keyed by `toComparableMonoType` of
-the demanded type; index 0 keeps the bare name, later ones get `$v<idx>`.
+(number-multi / value-multi). `instances` is keyed by the demanded `MonoType`
+ITSELF (`Mono.SpecMap` — `specHashOf` + `eqKeySpec`, no string built; Phase 3
+site 2, plans/speckey-optimization.md §10.3); index 0 keeps the bare name,
+later ones get `$v<idx>`.
+
+**Iteration order is insertion order**, not the rendered-type lexicographic
+order the old `Dict String` gave. That is observable: `Translate`'s
+`buildLocalDefs` and the two destructor sites emit one def per instance in
+iteration order, so emitted-def order — and therefore SpecId assignment
+order — changes. Accepted by decision (§10.4); names are unaffected because
+`freshName` is assigned from `specMapSize` at INSERT time.
 -}
 type alias NumberMultiEntry =
     { defName : String
-    , instances : CoreDict.Dict String NumberInstance
+    , instances : Mono.SpecMap NumberInstance
     }
 
 
@@ -1220,7 +1239,7 @@ its body (instance discovery is body-first).
 -}
 pushNumberMulti : String -> Step ()
 pushNumberMulti defName s =
-    Ok ( (), { s | numberMulti = { defName = defName, instances = CoreDict.empty } :: s.numberMulti } )
+    Ok ( (), { s | numberMulti = { defName = defName, instances = Mono.specMapEmpty } :: s.numberMulti } )
 
 
 {-| Pop the top number-multi entry after the body is specialized.
@@ -1251,7 +1270,7 @@ numberMultiRootType name s =
     Ok
         ( case List.head (List.filter (\e -> e.defName == name) s.numberMulti) of
             Just entry ->
-                List.head (List.filter (\i -> i.freshName == name) (CoreDict.values entry.instances))
+                List.head (List.filter (\i -> i.freshName == name) (Mono.specMapValues entry.instances))
                     |> Maybe.map .monoType
 
             Nothing ->
@@ -1262,7 +1281,7 @@ numberMultiRootType name s =
 
 {-| Record (or reuse) an instance of a number-multi var at the demanded type,
 returning its per-instance name (`defName` for the first/Int instance, then
-`defName$v<idx>`). Keyed by `toComparableMonoType`.
+`defName$v<idx>`). Keyed structurally on the demanded type (`Mono.SpecMap`).
 -}
 recordNumberInstance : String -> Mono.MonoType -> Step ( String, Mono.MonoType )
 recordNumberInstance name monoType s =
@@ -1274,7 +1293,7 @@ body (each use records the concrete type it is applied at).
 -}
 pushLocalMulti : String -> Step ()
 pushLocalMulti defName s =
-    Ok ( (), { s | localMulti = { defName = defName, instances = CoreDict.empty } :: s.localMulti } )
+    Ok ( (), { s | localMulti = { defName = defName, instances = Mono.specMapEmpty } :: s.localMulti } )
 
 
 popLocalMulti : Step (Maybe NumberMultiEntry)
@@ -1317,27 +1336,27 @@ recordLocalInstance name monoType s =
 
 {-| Shared machinery behind `recordNumberInstance` / `recordLocalInstance`:
 find the entry for `name` in the given stack, get-or-create an instance keyed
-by `toComparableMonoType`, and name it `defName` for index 0 else
-`defName ++ sep ++ idx`.
+by the demanded `MonoType` (`Mono.SpecMap`), and name it `defName` for index 0
+else `defName ++ sep ++ idx`.
 -}
 recordMultiInstance : (S -> List NumberMultiEntry) -> (List NumberMultiEntry -> S -> S) -> String -> String -> Mono.MonoType -> Step ( String, Mono.MonoType )
 recordMultiInstance getStack setStack sep name monoType s =
         let
-            key =
+            update entry =
                 -- Deliberately annotation-SENSITIVE (M4 == audit): local-multi
                 -- instances are specialization-intent — differing lambda sets
                 -- mint separate per-instance bindings (f / f$1), never share.
-                Mono.toComparableMonoType monoType
-
-            update entry =
-                case CoreDict.get key entry.instances of
+                -- `Mono.SpecMap` is the spec flavour (`specHashOf`/`eqKeySpec`),
+                -- which is exactly the `toComparableMonoType` equivalence the
+                -- string key used to give (§10.1).
+                case Mono.specMapGet monoType entry.instances of
                     Just inst ->
                         ( entry, ( inst.freshName, inst.monoType ) )
 
                     Nothing ->
                         let
                             idx =
-                                CoreDict.size entry.instances
+                                Mono.specMapSize entry.instances
 
                             freshName =
                                 if idx == 0 then
@@ -1349,7 +1368,7 @@ recordMultiInstance getStack setStack sep name monoType s =
                             inst =
                                 { freshName = freshName, monoType = monoType }
                         in
-                        ( { entry | instances = CoreDict.insert key inst entry.instances }
+                        ( { entry | instances = Mono.specMapInsert monoType inst entry.instances }
                         , ( freshName, monoType )
                         )
 
@@ -1488,12 +1507,12 @@ putKernelAbi key monoType =
         )
 
 
-lookupCallMemo : String -> Step (Maybe ( Mono.MonoType, Mono.MonoType, Mono.SpecId ))
+lookupCallMemo : Mono.SpecKey -> Step (Maybe ( Mono.MonoType, Mono.MonoType, Mono.SpecId ))
 lookupCallMemo key =
-    getS (\s -> CoreDict.get key s.monoMemo.callMemo)
+    getS (\s -> Mono.specKeyMapGet key s.monoMemo.callMemo)
 
 
-putCallMemo : String -> ( Mono.MonoType, Mono.MonoType, Mono.SpecId ) -> Step ()
+putCallMemo : Mono.SpecKey -> ( Mono.MonoType, Mono.MonoType, Mono.SpecId ) -> Step ()
 putCallMemo key entry =
     modifyS
         (\s ->
@@ -1501,7 +1520,7 @@ putCallMemo key entry =
                 m =
                     s.monoMemo
             in
-            { s | monoMemo = { m | callMemo = CoreDict.insert key entry m.callMemo } }
+            { s | monoMemo = { m | callMemo = Mono.specKeyMapInsert key entry m.callMemo } }
         )
 
 

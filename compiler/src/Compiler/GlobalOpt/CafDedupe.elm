@@ -102,7 +102,11 @@ oneRound : Mono.MonoGraph -> ( Mono.MonoGraph, Stats )
 oneRound ((Mono.MonoGraph g) as graph) =
     let
         -- Pass A: group MonoDefine specs by exact (zeroed body, type).
-        -- Bucketed by a cheap fingerprint; equality within a bucket is `==`.
+        -- Bucketed by a cheap kind tag then structurally by the demanded
+        -- type (`Mono.SpecMap`; no type is rendered to a String — speckey plan
+        -- §10.9); equality within a bucket is `==`. The across-bucket fold
+        -- order does not reach the result: `remap` is keyed by victim specId
+        -- and `groupCount` is a total.
         ( buckets, _ ) =
             Array.foldl
                 (\maybeNode ( acc, sid ) ->
@@ -112,13 +116,17 @@ oneRound ((Mono.MonoGraph g) as graph) =
                                 zeroed =
                                     CafHoist.zeroRegions expr
 
-                                fp =
-                                    CafHoist.fingerprintOf expr ty
+                                tag =
+                                    CafHoist.kindTagOf expr
+
+                                inner =
+                                    Maybe.withDefault Mono.specMapEmpty (Dict.get tag acc)
+
+                                prev =
+                                    Maybe.withDefault [] (Mono.specMapGet ty inner)
                             in
-                            ( Dict.insert fp
-                                (( zeroed, ty, sid )
-                                    :: Maybe.withDefault [] (Dict.get fp acc)
-                                )
+                            ( Dict.insert tag
+                                (Mono.specMapInsert ty (( zeroed, ty, sid ) :: prev) inner)
                                 acc
                             , sid + 1
                             )
@@ -134,8 +142,8 @@ oneRound ((Mono.MonoGraph g) as graph) =
         -- representative (canonical) is the LAST member = smallest specId.
         ( remap, groupCount ) =
             Dict.foldl
-                (\_ members acc ->
-                    classify members acc
+                (\_ inner acc ->
+                    Mono.specMapFoldl (\_ members a -> classify members a) acc inner
                 )
                 ( Dict.empty, 0 )
                 buckets

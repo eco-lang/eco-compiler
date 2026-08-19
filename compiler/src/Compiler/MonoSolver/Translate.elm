@@ -2616,17 +2616,28 @@ translateGlobalCallGroundMemo region funcRegion global funcCanType args callCanT
         (\superStatic ->
             let
                 key =
+                    -- Phase 3 site 1 (plans/speckey-optimization.md §10.2): the
+                    -- key is the callee Global plus the synthetic `args ->
+                    -- result` arrow these types already denote. The probe reads
+                    -- the `specHashOf` Int stored IN the type node and confirms
+                    -- with `eqKeySpec`, which partitions IDENTICALLY to the
+                    -- `toComparableMonoType` concatenation this replaces —
+                    -- pinned by ComparableKeyEncodingTest
+                    -- (`eqKeySpec a b == (toComparableMonoType a == toComparableMonoType b)`).
+                    -- The arg/result MonoTypes were already being built here
+                    -- purely to be rendered; only the rendering is deleted.
+                    --
                     -- Annotation-neutral by construction (M4 == audit):
-                    -- canTypeToMono stamps LTop on every arrow, and lssFastOk
-                    -- gates this memo to trivial-signature callees with
-                    -- arrow-free args, so no set can differ under one key and
-                    -- the cached (funcMonoType, resultMonoType, specId) replay
-                    -- is exact.
-                    TOpt.toComparableGlobal global
-                        ++ "|"
-                        ++ String.join "," (List.map (Mono.toComparableMonoType << Zonk.canTypeToMono superStatic << TOpt.typeOf) args)
-                        ++ "->"
-                        ++ Mono.toComparableMonoType (Zonk.canTypeToMono superStatic callCanType)
+                    -- canTypeToMono stamps LTop on every arrow AND the wrapper
+                    -- arrow is built at LTop, and lssFastOk gates this memo to
+                    -- trivial-signature callees with arrow-free args, so no set
+                    -- can differ under one key and the cached (funcMonoType,
+                    -- resultMonoType, specId) replay is exact.
+                    Mono.SpecKey (toptToMonoGlobal global)
+                        (Mono.mFunction Mono.LTop
+                            (List.map (Zonk.canTypeToMono superStatic << TOpt.typeOf) args)
+                            (Zonk.canTypeToMono superStatic callCanType)
+                        )
             in
             Engine.andThen
                 (\cached ->
@@ -3788,7 +3799,7 @@ translateLet def body letCanType =
                                                 singleInstance =
                                                     case maybeEntry of
                                                         Just entry ->
-                                                            case Dict.values entry.instances of
+                                                            case Mono.specMapValues entry.instances of
                                                                 [ inst ] ->
                                                                     Just inst.monoType
 
@@ -3967,7 +3978,7 @@ buildFloatDefs name defBody maybeEntry =
         Just entry ->
             Engine.traverse
                 (\inst -> Engine.map (\e -> Mono.MonoDef inst.freshName e) (retranslateAt defBody inst.monoType))
-                (Dict.values entry.instances |> List.filter (\inst -> inst.freshName /= name))
+                (Mono.specMapValues entry.instances |> List.filter (\inst -> inst.freshName /= name))
 
         Nothing ->
             Engine.succeed []
@@ -4274,7 +4285,7 @@ specializeNumberDestruct dname path dmeta rootName eagerRootType body meta =
                                         instances =
                                             case maybeEntry of
                                                 Just e ->
-                                                    List.filter (\i -> i.freshName /= dname || dnameUsed) (Dict.values e.instances)
+                                                    List.filter (\i -> i.freshName /= dname || dnameUsed) (Mono.specMapValues e.instances)
 
                                                 Nothing ->
                                                     []
@@ -4849,14 +4860,14 @@ buildLocalDefs : Name -> TOpt.Expr TypeIds.MVarId -> Maybe Engine.NumberMultiEnt
 buildLocalDefs name defBody maybeEntry =
     case maybeEntry of
         Just entry ->
-            if Dict.isEmpty entry.instances then
+            if Mono.specMapIsEmpty entry.instances then
                 -- Unused function: emit its bare def once, at its declared type.
                 Engine.map (\e -> [ Mono.MonoDef name e ]) (translate defBody)
 
             else
                 Engine.traverse
                     (\inst -> Engine.map (\e -> Mono.MonoDef inst.freshName e) (retranslateAt defBody inst.monoType))
-                    (Dict.values entry.instances)
+                    (Mono.specMapValues entry.instances)
 
         Nothing ->
             Engine.succeed []

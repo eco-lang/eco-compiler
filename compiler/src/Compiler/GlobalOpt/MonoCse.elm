@@ -210,15 +210,38 @@ rewriteBody oracle cfg body stats counter =
         occs =
             collect oracle cfg.minCost body [] [] []
 
+        -- Two-level: kind tag (a short String) -> demanded type
+        -- (`Mono.SpecMap`, structural). The type half used to be rendered into
+        -- the String key via `toComparableMonoType`; it is now keyed on the
+        -- `specHashOf` Int the node already carries. The PARTITION is
+        -- unchanged (`eqKeySpec` is exactly comparable-key equality), but the
+        -- inner iteration order is insertion order rather than
+        -- lexicographic-by-rendered-type, which reorders `allGroups` and hence
+        -- which groups survive `dropOverlapping` — see the plan's §10.9.
         buckets =
             List.foldl
-                (\o d -> Dict.update o.key (\m -> Just (o :: Maybe.withDefault [] m)) d)
+                (\o d ->
+                    Dict.update o.key
+                        (\m ->
+                            let
+                                inner =
+                                    Maybe.withDefault Mono.specMapEmpty m
+
+                                prev =
+                                    Maybe.withDefault [] (Mono.specMapGet o.ty inner)
+                            in
+                            Just (Mono.specMapInsert o.ty (o :: prev) inner)
+                        )
+                        d
+                )
                 Dict.empty
                 occs
 
         ( allGroups, stats1, counter1 ) =
             Dict.foldl
-                (\_ members acc -> formGroups cfg members acc)
+                (\_ inner acc ->
+                    Mono.specMapFoldl (\_ members acc2 -> formGroups cfg members acc2) acc inner
+                )
                 ( [], stats, counter )
                 buckets
 
@@ -603,7 +626,7 @@ admit oracle minCost expr path binders =
 
             else
                 Just
-                    { key = CafHoist.fingerprintOf expr ty
+                    { key = CafHoist.kindTagOf expr
                     , shape = CafHoist.zeroRegions expr
                     , orig = expr
                     , ty = ty

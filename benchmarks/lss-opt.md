@@ -507,6 +507,57 @@ comparable, but the wall cost has essentially vanished — the substrate work si
 spiral. **Decision: `maxSpecsPerGlobal` stays at 64** — this is a measurement, not a
 default change; the curve is the pricing sheet for anyone who wants more fan-out.
 
+### 2026-08-18 — Run O: speckey Phase 3 site 1 — `monoMemo.callMemo` Dict String → `Mono.SpecKeyMap` (A/B: pre/post, two binaries, one frozen corpus)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| pre | **5:39.49** (339.5 s) | 5,815,420 kB | 1,402 | 15 | 468,053,855 (13,434 MiB) | 128.39 s | 13,772,811 B |
+| post (site 1) | **5:36.13** (336.1 s) | 5,691,148 kB | 1,402 | 15 | 468,076,607 (13,431 MiB) | 127.75 s | 13,772,811 B |
+
+| axis | pre | post |
+|---|---|---|
+| out.mlir | 13,772,811 B | 13,772,811 B — **byte-identical (cmp)** |
+| minor / major GC time | 84.76 s / 43.61 s | 84.53 s / 43.20 s |
+| every lss census line | identical | identical |
+
+`plans/speckey-optimization.md` §10.2: the M2b ground-memo key stops being a rendered
+string (`gkey ++ "|" ++ arg keys ++ "->" ++ result key`) and becomes
+`Mono.SpecKey global (mFunction LTop args result)`, probed on the `specHashOf` Int the
+node already carries. **Byte-identical output is the gate and it passed** — the
+equivalence relied on (`eqKeySpec` ≡ `toComparableMonoType` equality, pinned by
+ComparableKeyEncodingTest) holds in practice, which is the only cheap detector for a
+key that merges calls it should separate. Counters first: minors 1,402 = 1,402 and
+majors 15 = 15 — an unusually clean pair — promoted +0.005%, so allocation pressure is
+unmoved. Wall −3.4 s (−1.0%) is FLAT by protocol: no regression detected, and no win
+claimed. Max RSS −124 MB (−2.1%) is the one real move; §10.2 predicted it (the memo is
+global and used to retain every key string) but promoted being flat argues against that
+mechanism, so treat it as the Run-G/H parked class, not as confirmation.
+
+### 2026-08-18 — Run P: speckey Phase 3 site 2 — `NumberMultiEntry.instances` Dict String → `Mono.SpecMap` (A/B on one corpus; output change ACCEPTED)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| pre (site 1 only) | **5:38.87** (338.9 s) | 6,747,948 kB | 1,406 | 14 | 475,960,204 (13,649 MiB) | 128.46 s | 13,777,733 B |
+| post (sites 1+2) | **5:40.58** (340.6 s) | 6,740,568 kB | 1,406 | 14 | 475,839,753 (13,645 MiB) | 129.38 s | 13,777,733 B |
+
+| axis | pre | post |
+|---|---|---|
+| out.mlir | 13,777,733 B | 13,777,733 B — same SIZE, **content DIFFERS** (byte 1,907,828) |
+| minor / major GC time | 85.43 s / 43.02 s | 86.26 s / 43.11 s |
+| lss census (all lines) | zonked 485,239; byBudget 50,934; joins 81,128/4,582/3,431; apR 3,224 foldl 2,051 | **identical, every line** |
+
+§10.3. Both arms compile the SAME corpus, so this isolates the binary. **The output
+change is expected and accepted (§10.4): `SpecMap` iterates in insertion order where
+`Dict String` iterated lexicographically by rendered type, and `buildLocalDefs` emits one
+def per instance in iteration order.** Identical byte SIZE with differing content is the
+signature of a pure permutation. **§10.4's prediction that spec counts would shift is
+REFUTED: every lss census counter is identical across the arms** — the reorder changes
+emission order and SpecId assignment order, not the spec population or the LSS analysis.
+Wall +1.7 s (+0.5%) FLAT, minors 1,406 = 1,406, majors 14 = 14, promoted −0.025%. Gates
+for an accepted output change: two cold runs byte-identical to each other
+(deterministic), `ECO_MONO_VALIDATE=1` clean (MONO_029), Stage-4b bootstrap fixed point
+converged, `--target full` 1,675/0, elm-tests 13,118/12 (same 12 pre-existing).
+
 ---
 
 ## Summary
@@ -529,3 +580,5 @@ One row per run, numbers only.
 | M | 345.6 | 1401 | 16 | 13463 |
 | N-256 | 347.8 | 1416 | 16 | 13534 |
 | N-1024 | 349.1 | 1425 | 16 | 13524 |
+| O | 336.1 | 1402 | 15 | 13431 |
+| P | 340.6 | 1406 | 14 | 13645 |

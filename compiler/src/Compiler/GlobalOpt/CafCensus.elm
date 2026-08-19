@@ -41,7 +41,7 @@ type alias Cand =
     , hasDebug : Bool
     , bytesEx : Bool
     , fnType : Bool
-    , dedupeKey : Maybe ( String, Mono.MonoExpr ) -- (fingerprint, zeroed); closure-free only
+    , dedupeKey : Maybe ( String, Mono.MonoType, Mono.MonoExpr ) -- (kind tag, demanded type, zeroed); closure-free only
     }
 
 
@@ -369,7 +369,7 @@ walkExpr expr =
                                 Nothing
 
                             else
-                                Just ( CafHoist.fingerprintOf expr ty, CafHoist.zeroRegions expr )
+                                Just ( CafHoist.kindTagOf expr, ty, CafHoist.zeroRegions expr )
                         }
                 in
                 { sized | cands = [ cand ], layered = sized.layered + 1 }
@@ -495,23 +495,26 @@ report prefix hoistCfg (Mono.MonoGraph g) =
             List.foldl
                 (\c buckets ->
                     case ( eligible c, c.dedupeKey ) of
-                        ( True, Just ( fp, zeroed ) ) ->
+                        ( True, Just ( tag, ty, zeroed ) ) ->
                             let
+                                inner =
+                                    Maybe.withDefault Mono.specMapEmpty (Dict.get tag buckets)
+
                                 bucket =
-                                    Maybe.withDefault [] (Dict.get fp buckets)
+                                    Maybe.withDefault [] (Mono.specMapGet ty inner)
                             in
                             if List.any (\z -> z == zeroed) bucket then
                                 buckets
 
                             else
-                                Dict.insert fp (zeroed :: bucket) buckets
+                                Dict.insert tag (Mono.specMapInsert ty (zeroed :: bucket) inner) buckets
 
                         _ ->
                             buckets
                 )
                 Dict.empty
                 allCands
-                |> Dict.foldl (\_ bucket n -> n + List.length bucket) 0
+                |> Dict.foldl (\_ inner n -> Mono.specMapFoldl (\_ bucket m -> m + List.length bucket) n inner) 0
 
         byKind =
             List.foldl (\c d -> bump c.kind d) Dict.empty allCands

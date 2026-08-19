@@ -18,7 +18,7 @@ module Compiler.AST.Monomorphized exposing
     , Decider(..), MonoChoice(..)
     , ContainerKind(..)
     , typeOf
-    , toComparableSpecKey, toComparableMonoType, toComparableLayoutKey, toComparableGlobal
+    , toComparableMonoType, toComparableGlobal
     , getMonoPathType
     , monoTypeToDebugString
     , resolveNumberType, typeHasResidualNumber
@@ -128,7 +128,7 @@ This module defines the data structures for the monomorphized program
 
 # Comparison and Ordering
 
-@docs toComparableSpecKey, toComparableMonoType, toComparableLayoutKey, toComparableGlobal
+@docs toComparableMonoType, toComparableGlobal
 
 
 # Path Utilities
@@ -286,7 +286,8 @@ walking the type (K4 of `plans/mono-comparable-key-optimization.md`). The two
 hashes mirror the two comparable-key FLAVOURS exactly:
 
   - `specHashOf` corresponds to `toComparableMonoType` (annotation-SENSITIVE);
-  - `layoutHashOf` corresponds to `toComparableLayoutKey` (arrows erased).
+  - `layoutHashOf` is its arrows-erased twin (the layout flavour: two arrows
+    that differ only in their lambda sets hash equal).
 
 The contract is one-directional: **equal keys imply equal hashes**, never the
 converse. These are hashes, not identities, so every hash-keyed lookup MUST
@@ -321,7 +322,8 @@ mixHash h x =
     modBy hashBase (h * 33 + modBy hashBase x + 7)
 
 
-{-| Annotation-INSENSITIVE structural hash — the `toComparableLayoutKey` side.
+{-| Annotation-INSENSITIVE structural hash — the LAYOUT-key side (arrows
+erased). Its reference semantics live in `ComparableKeyEncodingTest`.
 -}
 layoutHashOf : MonoType -> Int
 layoutHashOf mt =
@@ -492,8 +494,8 @@ mCustom canonical name args =
 
 {-| Smart constructor for `MFunction`. See the `hashBase` docs. The lambda-set
 annotation enters the SPEC hash only — the layout hash must agree across
-arrows that differ solely in their sets, exactly as `toComparableLayoutKey`
-does.
+arrows that differ solely in their sets, which is exactly what the
+LAYOUT-key flavour means.
 -}
 mFunction : LambdaSetAnno -> List MonoType -> MonoType -> MonoType
 mFunction anno args ret =
@@ -527,7 +529,8 @@ eqKeySpec a b =
 
 
 {-| Comparable-key equality for the LAYOUT flavour:
-`eqKeyLayout a b == (toComparableLayoutKey a == toComparableLayoutKey b)`.
+`eqKeyLayout` is exactly LAYOUT-key equality (arrows erased); the reference
+encoder it is pinned against lives in `ComparableKeyEncodingTest`.
 
 Do NOT confuse this with `eqLayout`, which is STRICTER: its `a == b` fallback
 distinguishes `MVar` ids that the key erases and separates `MVar _ CNumber`
@@ -640,7 +643,7 @@ eqFieldsBy eq fieldsA fieldsB =
 
 
 {-| A dictionary keyed by `MonoType` under LAYOUT-key semantics — the
-`toComparableLayoutKey` flavour, where arrows compare equal whatever their
+arrows-erased flavour, where arrows compare equal whatever their
 lambda sets. Use it for layout-intent dictionaries: the MLIR type registry,
 `ctorShapes`, pattern container keys.
 -}
@@ -656,8 +659,8 @@ type alias SpecMap v =
 
 
 {-| **The two flavours are the same TYPE but not interchangeable.** A map
-built and read with the layout pair behaves like `toComparableLayoutKey`; one
-built and read with the spec pair behaves like `toComparableMonoType`. Mixing
+built and read with the layout pair erases lambda sets; one built and read
+with the spec pair behaves like `toComparableMonoType`, which keeps them. Mixing
 them merges specialization keys with layout keys — the exact bug the M4 `==`
 audit exists to prevent, and one that is INVISIBLE with the flag off, because
 all-`LTop` graphs key identically under both. Always reach for the `layoutMap*`
@@ -2133,25 +2136,6 @@ toComparableMonoType monoType =
     String.concat (toComparableFragments True monoType [])
 
 
-{-| Annotation-INSENSITIVE comparable key: identical to
-`toComparableMonoType` except every arrow keys as the plain `"A("`
-fragment regardless of its lambda set (M4 `==` audit, design §5.2).
-
-Use this for LAYOUT-intent dictionaries — the MLIR type registry,
-`ctorShapes` build/lookup, pattern container keys: two types with the same
-shape have identical representation whatever their sets (REP\_\* untouched
-by LSS), so a set-bearing key on one side of such a Dict and not the other
-is a silent miss. Keep `toComparableMonoType` for SPECIALIZATION-intent
-keys (the registry under `keyed = True`, per-instance local-multi keys),
-where sets deliberately split entries. Flag-off graphs are all-`LTop`, so
-both functions produce byte-identical strings there.
-
--}
-toComparableLayoutKey : MonoType -> String
-toComparableLayoutKey monoType =
-    String.concat (toComparableFragments False monoType [])
-
-
 {-| Emit the comparable-key fragments for a MonoType in FORWARD order,
 prepended onto `tail`.
 
@@ -2258,7 +2242,7 @@ toComparableFragments annoSensitive mt tail =
                                 "A[" ++ String.join "," (List.map String.fromInt members) ++ "]("
 
                     else
-                        -- toComparableLayoutKey: arrows key uniformly —
+                        -- LAYOUT flavour: arrows key uniformly —
                         -- layout-intent Dicts must not split on sets.
                         "A("
             in
@@ -2279,21 +2263,6 @@ toComparableFragmentsRev annoSensitive types tail =
 
         ty :: rest ->
             toComparableFragmentsRev annoSensitive rest (toComparableFragments annoSensitive ty tail)
-
-
-{-| Convert a specialization key to a single comparable String for use in dictionaries.
-
-Uses compact encoding to avoid intermediate List allocation.
-Parts are separated by \\u{0001}.
-
--}
-toComparableSpecKey : SpecKey -> String
-toComparableSpecKey (SpecKey global monoType) =
-    String.concat
-        [ toComparableGlobal global
-        , "\u{0001}"
-        , toComparableMonoType monoType
-        ]
 
 
 
