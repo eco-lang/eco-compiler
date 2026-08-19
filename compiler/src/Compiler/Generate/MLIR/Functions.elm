@@ -17,6 +17,7 @@ This module handles generation of all function types:
 -}
 
 import Compiler.AST.Monomorphized as Mono
+import Compiler.Data.CtorTag as CtorTag
 import Compiler.Data.Name as Name
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.GlobalOpt.MapTemplate as MapTemplate
@@ -496,34 +497,13 @@ generateNodeInner ctx funcName specId node =
                 ( ctx1, op ) =
                     generateEnum ctx funcName tag monoType maybeCtorName
 
-                -- M4 (plans/caf-memoization-implementation.md): nullary custom
-                -- constructors allocate a fresh object per reference
-                -- (eco.construct.custom size 0) — give them CAF slots too, so
-                -- each enum spec allocates once per process. Well-known
-                -- constants (True/False/Nothing) compile to embedded-constant
-                -- immediates: trivial bodies, a guard would only add cost.
-                -- Sharing is sound: constructed customs are immutable once
-                -- escaped (HEAP_031) and equality/dispatch are tag-based
-                -- (bit-equality even improves on a shared object).
-                isWellKnownConstant =
-                    List.member maybeCtorName [ Just "True", Just "False", Just "Nothing" ]
-
-                cafQualifies =
-                    ctx.ecoConfig.cafMemo.enabled
-                        && not isWellKnownConstant
+                -- No CAF slot (amends M4/CGEN_068): every enum ctor now
+                -- compiles to an embedded null-cons (or legacy well-known)
+                -- constant — a constant-returning body needs no once-guard,
+                -- and a slot would be a second copy of nothing (HEAP_044,
+                -- plans/null-cons-hpointer-embedding.md §5.4).
             in
-            if cafQualifies then
-                let
-                    ( ctx2, globalOp ) =
-                        Ops.ecoGlobal ctx1 (cafSlotName funcName)
-
-                    opTagged =
-                        { op | attrs = Dict.insert "eco.caf_memo" UnitAttr op.attrs }
-                in
-                ( [ globalOp, opTagged ], ctx2 )
-
-            else
-                ( [ op ], ctx1 )
+            ( [ op ], ctx1 )
 
         Mono.MonoExtern monoType ->
             let
@@ -1824,10 +1804,16 @@ generateCtor ctx funcName ctorLayout monoType =
                         Ops.ecoConstantFalse ctx1 resultVar
 
                     _ ->
-                        -- Not a well-known constant, use eco.construct.custom.
-                        -- Zero-arity constructor in a fresh function scope — no
-                        -- in-scope eco.value bindings to track as GC roots.
-                        Ops.ecoConstructCustom ctx1 [] resultVar ctorLayout.tag 0 0 [] constructorName
+                        -- Nullary ctor: embedded null-cons constant carrying
+                        -- the declaration index (HEAP_044/CGEN_079). After
+                        -- P3.0, ctorLayout.tag IS the plain declaration index
+                        -- for every nullary ctor, RBEmpty (= 1) included.
+                        Ops.ecoConstantNullCons ctx1
+                            resultVar
+                            (CtorTag.checkNullConsCapacity
+                                (Name.toElmString ctorLayout.name)
+                                ctorLayout.tag
+                            )
 
             ( ctx3, returnOp ) =
                 Ops.ecoReturn ctx2 resultVar Types.ecoValue
@@ -1917,10 +1903,17 @@ generateEnum ctx funcName tag monoType maybeCtorName =
                     Ops.ecoConstantNothing ctx1 resultVar
 
                 _ ->
-                    -- Not a well-known constant, use eco.construct.custom.
-                    -- Zero-arity constructor in a fresh function scope — no
-                    -- in-scope eco.value bindings to track as GC roots.
-                    Ops.ecoConstructCustom ctx1 [] resultVar tag 0 0 [] maybeCtorName
+                    -- Enum ctor: embedded null-cons constant (HEAP_044,
+                    -- CGEN_079). The incoming tag is already effective
+                    -- (Specialize.elm mints MonoEnum through
+                    -- CtorTag.effective — identity for enums); do NOT apply
+                    -- CtorTag.effective a second time here.
+                    Ops.ecoConstantNullCons ctx1
+                        resultVar
+                        (CtorTag.checkNullConsCapacity
+                            (Maybe.withDefault "<enum>" maybeCtorName)
+                            tag
+                        )
 
         ( ctx3, returnOp ) =
             Ops.ecoReturn ctx2 resultVar Types.ecoValue

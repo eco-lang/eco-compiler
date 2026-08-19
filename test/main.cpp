@@ -776,6 +776,7 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite hpointerLayoutTests("HPointerLayout");
     hpointerLayoutTests.add(testHPointerGoldenWords);
     hpointerLayoutTests.add(testHPointerConstantPredicates);
+    hpointerLayoutTests.add(testHPointerNullConsWords);
     hpointerLayoutTests.add(testHPointerPointerRoundTrip);
     hpointerLayoutTests.add(testHPointerForwardPtrRoundTrip);
     hpointerLayoutTests.add(testHPointerBitsRoundTrip);

@@ -386,8 +386,10 @@ Testing::TestCase testEcoAllocChurnSurvivesManyMinorGCs(
                                               static_cast<uint64_t>(i + 2),
                                               0x15);  // all Int
                         break;
+                // 1 field, not 0: a 0-field heap Custom is not a legal shape
+                // (HEAP_044 — nullary ctors are embedded null-cons constants).
                 case 6: h = eco_alloc_custom(static_cast<uint32_t>(i & 0xFF),
-                                              0, 0);
+                                              1, 0);
                         break;
                 case 7: h = eco_alloc_record(0, 0); break;
                 case 8: h = eco_alloc_string(8); break;
@@ -746,7 +748,9 @@ Testing::TestCase testEcoAllocCustomManyConstructors(
 
         for (size_t i = 0; i < kCustoms; ++i) {
             uint32_t ctor = static_cast<uint32_t>(i % 256);
-            uint32_t fc = static_cast<uint32_t>(i % 5);  // 0..4 fields
+            // 1..5 fields: a 0-field heap Custom is not a legal shape
+            // (HEAP_044 — nullary ctors are embedded null-cons constants).
+            uint32_t fc = static_cast<uint32_t>(i % 5) + 1;
             HPtr h = eco_alloc_custom(ctor, fc, 0);
             GCP_ASSERT(h.toBits() != 0);
             // Initialize boxed fields to Nil so GC scanning never tries to
@@ -796,7 +800,9 @@ Testing::TestCase testOldGenSizeClassChurn(
 
         // Fill old gen with allocations sized to exercise multiple small
         // and medium classes by promoting custom records of varying sizes.
-        const std::vector<uint32_t> field_counts = {0, 1, 4, 8, 16, 24};
+        // No 0-field entry: a 0-field heap Custom is not a legal shape
+        // (HEAP_044 — nullary ctors are embedded null-cons constants).
+        const std::vector<uint32_t> field_counts = {1, 2, 4, 8, 16, 24};
         constexpr size_t kPerClass = 200;
 
         std::vector<HPointer> roots;

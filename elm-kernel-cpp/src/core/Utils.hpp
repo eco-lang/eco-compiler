@@ -14,16 +14,16 @@
 namespace Elm::Kernel::Utils {
 
 // ============================================================================
-// Order Singletons
+// Order Constants
 // ============================================================================
 
-// Allocate the three Order Custom values (LT, EQ, GT) once and store them in
-// rooted slots. Idempotent. Must run after Allocator::initThread() and before
-// any Elm code that might call compare/allocate runs.
+// Order values are embedded null-cons constants (HEAP_044) — no allocation,
+// no rooted slots. Retained as a no-op for the weak-linked init hook.
 void initOrderSingletons();
 
-// Encoded HPointer accessors for the three singletons. Caller may treat the
-// return value as an Elm value — equivalent to a successful `compare` result.
+// Encoded HPointer accessors for the three Order constants. Caller may treat
+// the return value as an Elm value — equivalent to a successful `compare`
+// result.
 uint64_t getOrderLT();
 uint64_t getOrderEQ();
 uint64_t getOrderGT();

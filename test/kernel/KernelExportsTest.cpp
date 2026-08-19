@@ -61,7 +61,9 @@ static void* countFoldEvaluator(void* args[]) {
 // K1: elm_encoder_size agrees with elm_encoder_write_into for leaf encoders.
 static void test_encoder_size_matches_write() {
     initAllocator();
-    HPtr le = eco_alloc_custom_fast(0, 0, 0);  // LE endianness ctor 0
+    // LE endianness is nullary ctor 0 — an embedded null-cons constant
+    // (HEAP_044), never a heap object.
+    HPtr le = HPtr::fromBits(nullConsWordFor(0));
     struct Case { HPtr enc; u32 size; };
     Case cases[] = {
         {Elm_Kernel_Bytes_write_u8(65), 1},
@@ -80,8 +82,10 @@ static void test_encoder_size_matches_write() {
 // K2: encoder honours endianness (BE vs LE) in the emitted bytes.
 static void test_encoder_endianness_bytes() {
     initAllocator();
-    HPtr be = eco_alloc_custom_fast(1, 0, 0);  // BE
-    HPtr le = eco_alloc_custom_fast(0, 0, 0);  // LE
+    // Endianness is a nullary-ctor union: LE = ctor 0, BE = ctor 1 — embedded
+    // null-cons constants (HEAP_044), never heap objects.
+    HPtr be = HPtr::fromBits(nullConsWordFor(1));  // BE
+    HPtr le = HPtr::fromBits(nullConsWordFor(0));  // LE
     HPtr encBE = Elm_Kernel_Bytes_encode(Elm_Kernel_Bytes_write_u16(be, 0x1234));
     TEST_ASSERT(elm_bytebuffer_len(encBE) == 2);
     u8* p = elm_bytebuffer_data(encBE);

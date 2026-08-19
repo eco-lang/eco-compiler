@@ -148,10 +148,10 @@ absolute address; there is no heap_base offset and no shift.
 
 ```cpp
 typedef struct {
-    u64 constant : 2;   // 0=False, 1=True, 2=Empty (meaningful only when ptr_ind==1)
-    u64 ptr_ind  : 1;   // 0 = heap pointer, 1 = embedded constant / enum
+    u64 constant : 2;   // 0=False, 1=True, 2=Empty, 3=NullCons (only when ptr_ind==1)
+    u64 ptr_ind  : 1;   // 0 = heap pointer, 1 = embedded constant
     u64 ptr      : 40;  // absolute 8-byte-aligned heap address (occupies bits [3,42])
-    u64 enum_idx : 10;  // reserved: bare constructor index for a future enum optimization
+    u64 null_cons_idx : 10;  // nullary ctor's declaration index (when constant==3)
     u64 padding  : 11;  // reserved (always 0)
 } HPointer;
 ```
@@ -159,24 +159,34 @@ typedef struct {
 Because the `ptr` field starts at **bit 3** and heap objects are 8-byte aligned
 (their low 3 bits are 0, coinciding with a zero `constant`/`ptr_ind`), the low 43
 bits of the word — `constant ++ ptr_ind ++ ptr` — *are* the address. The heap is
-reserved below 2^43 (8 TB) so `enum_idx`/`padding` are 0 for any pointer. Decode
+reserved below 2^43 (8 TB) so `null_cons_idx`/`padding` are 0 for any pointer. Decode
 is a reinterpret; encode stores the aligned address verbatim.
 
-Golden words: `null = 0x0`, `False = 0x4`, `True = 0x5`, `Empty = 0x6`; a heap
-pointer's word equals its address.
+Golden words: `null = 0x0`, `False = 0x4`, `True = 0x5`, `Empty = 0x6`, a nullary
+constructor `(idx << 43) | 0b111`; a heap pointer's word equals its address.
 
 Key points:
 
 1. **`ptr_ind` discriminates** a pointer (0) from a constant (1). It cannot be
    `constant != 0` because `False` has constant field 0.
-2. **Three embedded constants**: `False`, `True`, and the single merged `Empty`
-   which subsumes Unit, Nil, Nothing, "", and `{}` (the type checker guarantees a
-   merged empty is only produced/matched where its type is expected). Bool's low
-   bit equals the SSA/ABI `i1` value, so box = `(1<<2)|i1`, unbox = `word & 1`.
+2. **Embedded constants**: `False`, `True`, the single merged `Empty` which
+   subsumes Unit, Nil, Nothing, "", and `{}` (the type checker guarantees a
+   merged empty is only produced/matched where its type is expected), and the
+   **null-cons** family. Bool's low bit equals the SSA/ABI `i1` value, so
+   box = `(1<<2)|i1`, unbox = `word & 1`.
 3. **No `heap_base` in the hot path**: `fromPointerRaw`/`toPointerRaw`/`hpToAddr`
    only reinterpret the word. Forwarding pointers (`Forward.forward_ptr`) still
    store `addr >> 3` in 8-byte units (their field cannot sit at bit 3 — bits 0-4
    hold the Tag_Forward tag) but drop the heap_base term.
+4. **Nullary constructors are embedded, not allocated** (`HEAP_044`,
+   `plans/null-cons-hpointer-embedding.md`): constant code 3 carries the ctor's
+   zero-based declaration index verbatim in `null_cons_idx`, so `LT`, `RBEmpty`,
+   and every other field-less constructor is an immediate rather than a 16-byte
+   heap object. Tag extraction (`eco_get_tag`, the open-coded diamond, the
+   `eco.case` lowering) returns those 10 bits, which is what keeps case dispatch
+   representation-agnostic. This is a **single representation**: a live heap
+   `Tag_Custom` with 0 fields is a bug, because equality decides by raw word
+   comparison the moment either operand is embedded.
 
 ## Unified Heap: One Address Space, Per-Thread Regions
 

@@ -32,10 +32,11 @@ module {
     eco.dbg %ctor_mixed : !eco.value
     // CHECK: Ctor5
 
-    // Zero-field ctor with zero scalar bytes
-    %ctor_empty = eco.allocate_ctor {tag = 0 : i64, size = 0 : i64, scalar_bytes = 0 : i64} : !eco.value
+    // Zero-field ctor: embedded null-cons constant (HEAP_044) — the size-0
+    // eco.allocate_ctor form is a verifier error (CGEN_079).
+    %ctor_empty = eco.constant.null_cons 0 : !eco.value
     eco.dbg %ctor_empty : !eco.value
-    // CHECK: Ctor0
+    // CHECK: <ctor 0>
 
     %zero = arith.constant 0 : i64
     return %zero : i64

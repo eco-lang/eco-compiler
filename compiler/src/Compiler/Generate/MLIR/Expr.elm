@@ -680,21 +680,40 @@ generateVarGlobal ctx specId monoType =
                     List.length sig.paramTypes
             in
             if arity == 0 then
-                -- Zero-arity function (thunk): call directly instead of creating a PAP.
-                -- papCreate requires arity > 0 (num_captured < arity invariant).
-                let
-                    resultMlirType =
-                        Types.monoTypeToAbi sig.returnType
+                case Dict.get specId ctx.nullConsBySpec of
+                    Just nullConsTag ->
+                        -- Nullary ctor/enum spec: emit the embedded null-cons
+                        -- constant directly (HEAP_044/CGEN_079) — no call, no
+                        -- CAF-guarded load. A perf layer, not a correctness
+                        -- layer: the spec's func.func still returns the same
+                        -- constant for any reference path not routed here.
+                        let
+                            ( ctx2, constOp ) =
+                                Ops.ecoConstantNullCons ctx1 var nullConsTag
+                        in
+                        { ops = [ constOp ]
+                        , resultVar = var
+                        , resultType = Types.ecoValue
+                        , ctx = ctx2
+                        , isTerminated = False
+                        }
 
-                    ( ctx2, callOp ) =
-                        Ops.ecoCallNamed ctx1 (emitSafepointHints ctx1) var funcName [] resultMlirType
-                in
-                { ops = [ callOp ]
-                , resultVar = var
-                , resultType = resultMlirType
-                , ctx = ctx2
-                , isTerminated = False
-                }
+                    Nothing ->
+                        -- Zero-arity function (thunk): call directly instead of creating a PAP.
+                        -- papCreate requires arity > 0 (num_captured < arity invariant).
+                        let
+                            resultMlirType =
+                                Types.monoTypeToAbi sig.returnType
+
+                            ( ctx2, callOp ) =
+                                Ops.ecoCallNamed ctx1 (emitSafepointHints ctx1) var funcName [] resultMlirType
+                        in
+                        { ops = [ callOp ]
+                        , resultVar = var
+                        , resultType = resultMlirType
+                        , ctx = ctx2
+                        , isTerminated = False
+                        }
 
             else
                 -- Function-typed global with arity > 0: create a closure (papCreate) with no captures

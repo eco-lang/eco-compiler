@@ -1650,6 +1650,12 @@ static void expandGetTagMarkers(Module &m) {
         // i64s (constField), never the ptrtoint result itself.
         Value *ptrInd = b.CreateAnd(b.CreateLShr(bits, 2), 1);
         Value *constField = b.CreateAnd(bits, 3, "eco.constfield");
+        // Null-cons declaration index (HEAP_044): derived i64s in the SAME
+        // block as the ptrtoint — the same acceptance class as constField;
+        // the embedded branch consumes only the derived And result.
+        Value *nullConsIdx = b.CreateAnd(
+            b.CreateLShr(bits, NULL_CONS_SHIFT),
+            ConstantInt::get(i64Ty, NULL_CONS_MAX), "eco.nullconsidx");
         Value *isConst =
             b.CreateICmpNE(ptrInd, ConstantInt::get(i64Ty, 0), "eco.isconst");
 
@@ -1657,14 +1663,21 @@ static void expandGetTagMarkers(Module &m) {
         SplitBlockAndInsertIfThenElse(isConst, ci, &embTerm, &heapTerm);
         BasicBlock *contBB = ci->getParent();
 
-        // Embedded constant: Bool -> i1 value; empty -> CONSTANT_TAG.
+        // Embedded constant: null-cons -> embedded declaration index;
+        // Bool -> i1 value; empty -> CONSTANT_TAG.
         IRBuilder<> tb(embTerm);
         Value *isTrue = tb.CreateICmpEQ(constField, ConstantInt::get(i64Ty, 1));
         Value *isFalse = tb.CreateICmpEQ(constField, ConstantInt::get(i64Ty, 0));
         Value *isBool = tb.CreateOr(isTrue, isFalse);
+        Value *isNullCons = tb.CreateICmpEQ(
+            constField, ConstantInt::get(i64Ty, (uint64_t)Elm::Const_NullCons),
+            "eco.isnullcons");
         Value *embTag = tb.CreateSelect(
-            isBool, tb.CreateZExt(isTrue, i32Ty),
-            ConstantInt::get(i32Ty, (uint64_t)CONSTANT_TAG), "eco.embtag");
+            isNullCons, tb.CreateTrunc(nullConsIdx, i32Ty),
+            tb.CreateSelect(
+                isBool, tb.CreateZExt(isTrue, i32Ty),
+                ConstantInt::get(i32Ty, (uint64_t)CONSTANT_TAG)),
+            "eco.embtag");
         BasicBlock *embBB = embTerm->getParent();
 
         // Heap: resolve (marker), load header, mask tag, discriminate.

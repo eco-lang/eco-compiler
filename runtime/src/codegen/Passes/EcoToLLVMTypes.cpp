@@ -43,6 +43,40 @@ struct ConstantOpLowering : public OpConversionPattern<ConstantOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// eco.constant.null_cons -> i64 constant carrying the ctor index (HEAP_044)
+//===----------------------------------------------------------------------===//
+
+struct ConstantNullConsOpLowering
+    : public OpConversionPattern<ConstantNullConsOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(ConstantNullConsOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto hptrTy = getHPtrLLVMType(*ctx);
+
+        // (idx << 43) | 0b111 — see plans/null-cons-hpointer-embedding.md
+        // §2.1. The op verifier (and the Elm-side capacity crash) bound the
+        // tag; this is the final backstop.
+        int64_t tag = op.getTag();
+        if (tag < 0 || tag > static_cast<int64_t>(value_enc::NullConsMax))
+            llvm::report_fatal_error(
+                "eco.constant.null_cons: ctor index exceeds the 10-bit "
+                "null_cons_idx capacity (HEAP_044)");
+        int64_t encoded =
+            value_enc::encodeNullCons(static_cast<uint64_t>(tag));
+
+        Value i64Val = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, encoded);
+        Value result = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, i64Val);
+        rewriter.replaceOp(op, result);
+        return success();
+    }
+};
+
+//===----------------------------------------------------------------------===//
 // eco.string_literal -> call eco_alloc_string_literal
 //===----------------------------------------------------------------------===//
 
@@ -135,6 +169,7 @@ void eco::detail::populateEcoTypePatterns(
 
     auto *ctx = patterns.getContext();
     patterns.add<ConstantOpLowering>(typeConverter, ctx);
+    patterns.add<ConstantNullConsOpLowering>(typeConverter, ctx);
     patterns.add<StringLiteralOpLowering>(typeConverter, ctx, runtime);
 }
 

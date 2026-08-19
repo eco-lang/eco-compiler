@@ -301,7 +301,7 @@ implemented. `alloc::nothing()` is `empty()` — an *embedded constant*
     words with `ptr_ind == 0`, i.e. **heap pointers to address 0 or 1**, not
     Customs and not embedded constants. The nullary-enum optimisation that would
     make bare ctor indices legal is explicitly **not implemented**
-    (`Heap.hpp:199–207`: `enum_idx : 10` … "always 0 for now"). Anything that
+    (`Heap.hpp:199–207`: `null_cons_idx : 10` … "always 0 for now"). Anything that
     resolves the result — e.g. `endiannessHPointerToBool`
     (`BytesExports.cpp:111–116`), which the `write_*` path uses — will
     dereference garbage. There is also an arity mismatch: the Elm side is

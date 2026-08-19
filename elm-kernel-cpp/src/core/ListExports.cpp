@@ -797,8 +797,9 @@ HPtr Elm_Kernel_List_sortBy(HPtr closure, HPtr list) {
                               /*hpointer_mask=*/~uint64_t(0));
     }
 
-    // Sort indices by keys. `Utils::compare` may allocate (Order Custom);
-    // both elements and keys are still range-rooted from above.
+    // Sort indices by keys. `Utils::compare` returns an embedded Order
+    // constant and does not allocate for it, but the comparison it performs
+    // still walks the heap; both elements and keys stay range-rooted.
     std::vector<size_t> indices(elements.size());
     std::iota(indices.begin(), indices.end(), 0);
     std::stable_sort(indices.begin(), indices.end(), [&](size_t a, size_t b) {
@@ -814,8 +815,9 @@ HPtr Elm_Kernel_List_sortBy(HPtr closure, HPtr list) {
         void* keyB = alloc::isConstant(keys[b]) ? nullptr
                                                 : allocator.resolve(keys[b]);
         HPointer orderHP = Utils::compare(keyA, keyB);
-        Custom* order = static_cast<Custom*>(allocator.resolve(orderHP));
-        return order->ctor == 0;  // LT
+        // Order is an embedded null-cons constant (HEAP_044) — read the ctor
+        // off the word through the single-truth extractor, never resolve it.
+        return eco_get_tag(HPtr::fromHPointer(orderHP)) == 0;  // LT
     });
 
     // Reorder elements AT THEIR ORIGINAL KINDS; the helper pins its working
@@ -869,9 +871,9 @@ HPtr Elm_Kernel_List_sortWith(HPtr closure, HPtr list) {
 
         HPtr cl = HPtr::fromBits(Export::encode(closureHP));
         uint64_t order = callBinaryClosure(cl, Export::encode(aRoot), Export::encode(bRoot));
-        HPointer orderHP = Export::decode(order);
-        Custom* orderVal = static_cast<Custom*>(allocator.resolve(orderHP));
-        bool lt = orderVal->ctor == 0;  // LT means a < b
+        // The user comparator's Order result is an embedded null-cons constant
+        // (HEAP_044) — read the ctor off the word, never resolve it.
+        bool lt = eco_get_tag(HPtr::fromBits(order)) == 0;  // LT means a < b
         rs.restoreStackRangePoint(innerSaved);
         return lt;
     });

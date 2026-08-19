@@ -26,8 +26,12 @@ module {
     %b42 = eco.box %c42 : i64 -> !eco.value
     %just = eco.construct.custom(%b42) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 
-    // Create Maybe.Nothing
-    %nothing = eco.construct.custom() {tag = 0 : i64, size = 0 : i64} : () -> !eco.value
+    // Create the nullary ctor (tag 0) — an embedded null-cons constant
+    // (HEAP_044); eco.construct.custom with size 0 is a verifier error.
+    // (Real Maybe.Nothing compiles to the merged empty 0x6 with the
+    // CONSTANT_TAG branch; this fixture pins the general nullary-ctor
+    // dispatch path through the same eco.case.)
+    %nothing = eco.constant.null_cons 0 : !eco.value
 
     // Default value
     %b99 = eco.box %c99 : i64 -> !eco.value

@@ -12,6 +12,7 @@ in the types.
 
 import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono
+import Compiler.Data.CtorTag as CtorTag
 import Compiler.Eco.Config as Config
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Context as Ctx
@@ -26,6 +27,7 @@ import Compiler.GlobalOpt.Borrow as Borrow
 import Compiler.GlobalOpt.Borrow.Facts as BorrowFacts
 import Compiler.GlobalOpt.MapTemplate as MapTemplate
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
+import Compiler.Monomorphize.Registry as Registry
 import Dict
 import Eco.File
 import Mlir.Bytecode.StreamEncode as StreamEncode
@@ -173,6 +175,7 @@ streamMlirToWriter ecoConfig mode monoGraph0 writeChunk =
                 |> Ctx.withInlineBodies (MonoInlineSimplify.buildBodyLookup monoGraph0)
                 |> Ctx.withEcoConfig ecoConfig
                 |> Ctx.withCtorBySpec (buildCtorBySpec nodes)
+                |> Ctx.withNullConsBySpec (buildNullConsBySpec registry nodes)
                 |> Ctx.withSretPromoted (buildSretPromoted ecoConfig nodes)
                 |> Ctx.withPsplitPromoted (buildPsplitPromoted ecoConfig ctorShapes (buildCtorBySpec nodes) (buildSretPromoted ecoConfig nodes) nodes)
                 |> Ctx.withOracleFacts (deriveOracleFacts ecoConfig monoGraph0)
@@ -296,6 +299,7 @@ streamMlirBytecode ecoConfig mode monoGraph0 target =
                 |> Ctx.withInlineBodies (MonoInlineSimplify.buildBodyLookup monoGraph0)
                 |> Ctx.withEcoConfig ecoConfig
                 |> Ctx.withCtorBySpec (buildCtorBySpec nodes)
+                |> Ctx.withNullConsBySpec (buildNullConsBySpec registry nodes)
                 |> Ctx.withSretPromoted (buildSretPromoted ecoConfig nodes)
                 |> Ctx.withPsplitPromoted (buildPsplitPromoted ecoConfig ctorShapes (buildCtorBySpec nodes) (buildSretPromoted ecoConfig nodes) nodes)
                 |> Ctx.withOracleFacts (deriveOracleFacts ecoConfig monoGraph0)
@@ -1177,6 +1181,49 @@ buildCtorBySpec nodes =
 
                     _ ->
                         ( specId + 1, acc )
+            )
+            ( 0, Dict.empty )
+            nodes
+        )
+
+
+{-| HEAP\_044/CGEN\_079: SpecId → effective tag for every spec that embeds as
+a null-cons constant — nullary `MonoCtor`s and `MonoEnum`s, excluding the
+legacy True/False/Nothing set (their bit patterns predate the mechanism).
+`Expr.generateVarGlobal` consults this to emit the constant directly instead
+of an arity-0 call. Tags are already effective (CtorShape.tag / MonoEnum's
+tag are minted through `CtorTag.effective`); the capacity check runs at the
+emission sites.
+-}
+buildNullConsBySpec : Mono.SpecializationRegistry -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int Int
+buildNullConsBySpec registry nodes =
+    Tuple.second
+        (Array.foldl
+            (\maybeNode ( specId, acc ) ->
+                ( specId + 1
+                , case maybeNode of
+                    Just (Mono.MonoCtor shape _) ->
+                        if List.isEmpty shape.fieldTypes && CtorTag.embedsAsNullCons shape.name shape.tag then
+                            Dict.insert specId shape.tag acc
+
+                        else
+                            acc
+
+                    Just (Mono.MonoEnum tag _) ->
+                        case Registry.lookupSpecKey specId registry of
+                            Just ( Mono.Global _ ctorName, _ ) ->
+                                if CtorTag.embedsAsNullCons ctorName tag then
+                                    Dict.insert specId tag acc
+
+                                else
+                                    acc
+
+                            _ ->
+                                acc
+
+                    _ ->
+                        acc
+                )
             )
             ( 0, Dict.empty )
             nodes

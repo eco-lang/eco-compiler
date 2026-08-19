@@ -104,15 +104,11 @@ enum EncoderTag : u16 {
     ENC_BYTES = 10,
 };
 
-// Endianness type at the kernel boundary: LE = ctor 0, BE = ctor 1.
-// Used once per encoder-construction call. The constructed encoder
-// Custom stores the bool directly in slot 0 (unboxed Int), which lets
-// writeEncoder read the flag without a per-primitive resolve.
+// Endianness type at the kernel boundary: LE = ctor 0, BE = ctor 1. Both are
+// nullary ctors, so the value is an embedded null-cons constant (HEAP_044)
+// carrying the ctor index — no heap object to resolve.
 static bool endiannessHPointerToBool(HPointer endianness) {
-    auto& allocator = Allocator::instance();
-    void* ptr = allocator.resolve(endianness);
-    Custom* c = static_cast<Custom*>(ptr);
-    return c->ctor == 1;
+    return nullConsTagBits(hpBits(endianness)) == 1;
 }
 
 // O(1) per call: leaf primitives encode their width in the case label.

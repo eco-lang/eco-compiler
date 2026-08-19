@@ -185,16 +185,11 @@ static HPointer getOkValue(uint64_t result) {
 // JSON Value ADT - Construction Helpers
 //===----------------------------------------------------------------------===//
 
-// Create a heap-resident JSON null.
+// JSON null — the JSON value ADT's only nullary ctor. Like every nullary
+// constructor it is an embedded null-cons constant (HEAP_044,
+// plans/null-cons-hpointer-embedding.md §2.3), never a heap object.
 static HPointer makeJsonNull() {
-    size_t size = sizeof(Custom);
-    size = (size + 7) & ~7;
-    Custom* c = static_cast<Custom*>(
-        eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
-    c->header.size = 0;
-    c->ctor = CTOR_JSON_NULL;
-    c->unboxed = 0;
-    return Allocator::instance().wrap(c);
+    return hpFromBits(nullConsWordFor(CTOR_JSON_NULL));
 }
 
 // Create a heap-resident JSON bool.
@@ -289,9 +284,11 @@ static HPointer makeJsonObject(HPointer kvList) {
 // JSON Value ADT - Query Helpers
 //===----------------------------------------------------------------------===//
 
-// Get the ctor tag of a heap-resident JSON value.
-// Returns 0 for non-JSON-value inputs (e.g. embedded constants).
+// Get the ctor tag of a JSON value: the embedded null-cons word for JSON null
+// (HEAP_044), the heap Custom's ctor otherwise.
+// Returns 0 for other non-JSON-value inputs (e.g. legacy embedded constants).
 static u16 jsonValueCtor(uint64_t jvalEnc) {
+    if (isNullConsBits(jvalEnc)) return static_cast<u16>(nullConsTagBits(jvalEnc));
     void* ptr = Export::toPtr(jvalEnc);
     if (!ptr) return 0;
     Custom* c = static_cast<Custom*>(ptr);
@@ -401,6 +398,9 @@ static HPointer jsonToHeap(const json& j) {
 static json heapJsonToNlohmann(uint64_t jvalEnc) {
     auto& allocator = Allocator::instance();
 
+    // Embedded CTOR_JSON_NULL — the JSON value ADT's only nullary ctor.
+    if (isNullConsBits(jvalEnc)) return json(nullptr);
+
     void* ptr = Export::toPtr(jvalEnc);
     if (!ptr) return json(nullptr);
 
@@ -461,15 +461,19 @@ static json heapJsonToNlohmann(uint64_t jvalEnc) {
 // Decoder Creation Helpers
 //===----------------------------------------------------------------------===//
 
+// Primitive (nullary) decoders are embedded null-cons constants (HEAP_044) —
+// no allocation, stable across GC.
 static uint64_t makeDecoder0(u16 ctor) {
-    size_t size = sizeof(Custom);
-    size = (size + 7) & ~7;
-    Custom* dec = static_cast<Custom*>(
-        eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
-    dec->header.size = 0;
-    dec->ctor = ctor;
-    dec->unboxed = 0;
-    return Export::encode(Allocator::instance().wrap(dec));
+    return nullConsWordFor(ctor);
+}
+
+// Ctor of a decoder handle: primitive (nullary) decoders are embedded
+// null-cons constants; composite decoders are heap Customs.
+static u16 decoderCtorOf(Allocator& allocator, HPointer decHP) {
+    uint64_t bits = hpBits(decHP);
+    if (isNullConsBits(bits)) return static_cast<u16>(nullConsTagBits(bits));
+    Custom* c = static_cast<Custom*>(allocator.resolve(decHP));
+    return c->ctor;
 }
 
 static uint64_t makeDecoder1(u16 ctor, uint64_t arg) {
@@ -557,6 +561,9 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
 
     // Helpers — always re-resolve after a potential GC.
     auto resolveDecoder = [&]() -> Custom* {
+        // Primitive decoders are embedded null-cons constants (HEAP_044) —
+        // no heap object; their arms below never dereference `decoder`.
+        if (decoderHP.ptr_ind != 0) return nullptr;
         return static_cast<Custom*>(allocator.resolve(decoderHP));
     };
     auto resolveJval = [&]() -> Custom* {
@@ -568,10 +575,20 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
     };
 
     Custom* decoder = resolveDecoder();
+    // Ctor of the decoder / JSON value: from the embedded null-cons word for
+    // the nullary forms (primitive decoders; JSON null), from the heap Custom
+    // otherwise.
+    const u16 dctor = decoder ? decoder->ctor
+                              : static_cast<u16>(isNullConsBits(hpBits(decoderHP))
+                                                     ? nullConsTagBits(hpBits(decoderHP))
+                                                     : 0);
     Custom* jval = resolveJval();
-    u16 jctor = jval ? jval->ctor : 0;
+    u16 jctor = jval ? jval->ctor
+                     : static_cast<u16>(isNullConsBits(hpBits(jvalHP))
+                                            ? nullConsTagBits(hpBits(jvalHP))
+                                            : 0);
 
-    switch (decoder->ctor) {
+    switch (dctor) {
         case DEC_STRING: {
             if (!jval || jctor != CTOR_JSON_STRING) {
                 return makeErr("Expecting a STRING");
@@ -611,7 +628,9 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
         }
 
         case DEC_NULL: {
-            if (!jval || jctor != CTOR_JSON_NULL) {
+            // JSON null is an embedded constant (jval == nullptr, jctor from
+            // the null-cons word) — test the ctor alone.
+            if (jctor != CTOR_JSON_NULL) {
                 return makeErr("Expecting null");
             }
             // `decoder` is still fresh here (no allocations between top-of-fn and now).
@@ -637,8 +656,7 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
             HPointer arrayHP   = jval->values[0].p;
             u8 elemConsKind = 0;  // 0 = boxed
             {
-                Custom* elemDec0 = static_cast<Custom*>(allocator.resolve(elemDecHP));
-                switch (elemDec0->ctor) {
+                switch (decoderCtorOf(allocator, elemDecHP)) {
                     case DEC_INT:   elemConsKind = 1; break;  // unboxed i64
                     case DEC_FLOAT: elemConsKind = 2; break;  // unboxed f64
                     default:        elemConsKind = 0; break;  // boxed HPointer
@@ -745,8 +763,7 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
             // pre-loop, no GC point yet).
             u8 elemKind = 0;  // 0=boxed, 1=Int, 2=Float, 3=Char
             {
-                Custom* elemDec0 = static_cast<Custom*>(allocator.resolve(elemDecHP));
-                switch (elemDec0->ctor) {
+                switch (decoderCtorOf(allocator, elemDecHP)) {
                     case DEC_INT:   elemKind = 1; break;
                     case DEC_FLOAT: elemKind = 2; break;
                     // DEC_STRING / composites stay boxed (kind 0)
@@ -995,8 +1012,7 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
             HPointer valDecHP = decoder->values[0].p;
             u8 valKind;
             {
-                Custom* valDec0 = static_cast<Custom*>(allocator.resolve(valDecHP));
-                switch (valDec0->ctor) {
+                switch (decoderCtorOf(allocator, valDecHP)) {
                     case DEC_INT:   valKind = 1; break;  // unboxed i64
                     case DEC_FLOAT: valKind = 2; break;  // unboxed f64
                     default:        valKind = 0; break;  // boxed HPointer
@@ -1520,10 +1536,13 @@ HPtr Elm_Kernel_Json_map8(HPtr closure, HPtr d1, HPtr d2, HPtr d3, HPtr d4, HPtr
 //===----------------------------------------------------------------------===//
 
 HPtr Elm_Kernel_Json_run(HPtr decoder, HPtr value) {
-    // Value is a heap-resident JSON value (CTOR_JSON_* Custom).
+    // Value is a JSON value (CTOR_JSON_* Custom, or the embedded JSON null).
+    // A primitive decoder is an embedded null-cons constant (HEAP_044);
+    // composite decoders are heap Customs.
     HPointer decoderHP = Export::decode(decoder.toBits());
-    if (decoderHP.ptr_ind != 0 ||
-        !Allocator::instance().resolve(decoderHP)) {
+    if (!isNullConsBits(decoder.toBits()) &&
+        (decoderHP.ptr_ind != 0 ||
+         !Allocator::instance().resolve(decoderHP))) {
         return HPtr::fromBits(makeErr("Invalid decoder"));
     }
     return HPtr::fromBits(runDecoder(decoderHP, value.toBits()));
@@ -1709,14 +1728,10 @@ HPtr Elm_Kernel_Json_wrap_Char(uint16_t value) {
 }
 
 HPtr Elm_Kernel_Json_encodeNull() {
-    size_t size = sizeof(Custom);
-    size = (size + 7) & ~7;
-    Custom* enc = static_cast<Custom*>(
-        eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
-    enc->header.size = 0;
-    enc->ctor = ENC_NULL;
-    enc->unboxed = 0;
-    return HPtr::fromBits(Export::encode(Allocator::instance().wrap(enc)));
+    // ENC_NULL is nullary — an embedded null-cons constant (HEAP_044).
+    // elmToJson's embedded-constant arm renders any non-Bool constant as
+    // JSON null, which is exactly this value's meaning.
+    return HPtr::fromBits(nullConsWordFor(ENC_NULL));
 }
 
 HPtr Elm_Kernel_Json_emptyArray() {

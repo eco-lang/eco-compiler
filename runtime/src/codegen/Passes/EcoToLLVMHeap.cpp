@@ -51,6 +51,15 @@ static_assert(eco::detail::value_enc::TagCons == Elm::Tag_Cons,
               "value_enc::TagCons out of sync with Elm::Tag_Cons");
 static_assert(eco::detail::value_enc::TagCustom == Elm::Tag_Custom,
               "value_enc::TagCustom out of sync with Elm::Tag_Custom");
+// Null-cons embedding (plans/null-cons-hpointer-embedding.md, HEAP_044): the
+// eco.constant.null_cons lowering and the get_tag diamond compose/decode the
+// word from these; they must not drift from the Heap.hpp field layout.
+static_assert(eco::detail::value_enc::NullConsShift == NULL_CONS_SHIFT,
+              "value_enc::NullConsShift out of sync with NULL_CONS_SHIFT");
+static_assert(eco::detail::value_enc::NullConsMax == NULL_CONS_MAX,
+              "value_enc::NullConsMax out of sync with NULL_CONS_MAX");
+static_assert(eco::detail::value_enc::NullCons == Elm::Const_NullCons,
+              "value_enc::NullCons out of sync with Elm::Const_NullCons");
 // Inline nursery allocation (plans/inline-nursery-allocation.md, HEAP_034):
 // the converted lowerings compose full header words from these tags. The
 // bitfield SHIFTS cannot be static_assert-ed (implementation-defined

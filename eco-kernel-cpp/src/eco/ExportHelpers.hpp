@@ -36,16 +36,17 @@ inline HPointer decode(uint64_t val) {
 // Decode uint64_t to raw pointer (for accessing heap objects).
 inline void* toPtr(uint64_t val) {
     HPointer h = decode(val);
-    // Embedded constant (False 0x4 / True 0x5 / Empty 0x6): ptr_ind set with all
-    // higher fields zero. Resolves to no heap object.
-    if (h.ptr_ind != 0 && h.ptr == 0 && h.enum_idx == 0 && h.padding == 0) {
+    // Embedded constant (False 0x4 / True 0x5 / Empty 0x6, or a null-cons word
+    // carrying its ctor index in null_cons_idx — HEAP_044): ptr_ind set with
+    // ptr/padding zero. Resolves to no heap object.
+    if (h.ptr_ind != 0 && h.ptr == 0 && h.padding == 0) {
         return nullptr;
     }
     // Otherwise a heap HPointer: its word IS the absolute address; resolveFast
     // reinterprets it inline (following forwarding only in the rare compaction
-    // window). enum_idx/padding must be zero for a heap pointer.
+    // window). null_cons_idx/padding must be zero for a heap pointer.
 #if ECO_HEAP_VALIDATE
-    assert(h.ptr_ind == 0 && h.enum_idx == 0 && h.padding == 0 &&
+    assert(h.ptr_ind == 0 && h.null_cons_idx == 0 && h.padding == 0 &&
            "Export::toPtr: not a heap pointer (ptr_ind/enum/padding bits set)");
 #endif
     return Allocator::resolveFast(h);

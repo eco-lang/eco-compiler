@@ -187,6 +187,8 @@ typedef enum {
     Const_False = 0, // bit 0 clear
     Const_True  = 1, // bit 0 set
     Const_Empty = 2, // bit 1 set — unifies Unit / EmptyRec / Nil / Nothing / ""
+    Const_NullCons = 3, // nullary ctor; tag in null_cons_idx (bits [43,53)).
+                        // See plans/null-cons-hpointer-embedding.md (HEAP_044).
 } Constant;
 
 // A pointer into the heap, or an embedded constant. Layout (LSB first):
@@ -196,15 +198,16 @@ typedef enum {
 //                            field starts at bit 3, the low 43 bits of the word
 //                            ARE the raw address (its low 3 bits are 0 and land
 //                            in constant/ptr_ind): no heap_base, no shift. Plan D1.
-//   [43-52] enum_idx : 10  — reserved bare constructor index for a future enum
-//                            optimization; always 0 for now. (`enum` is a C++
-//                            keyword, hence `enum_idx`.)
+//   [43-52] null_cons_idx : 10 — the zero-based declaration index of a nullary
+//                            constructor when constant == Const_NullCons
+//                            (HEAP_044); 0 for every other word (pointers and
+//                            the legacy False/True/Empty constants).
 //   [53-63] padding  : 11  — reserved, always 0.
 typedef struct {
     u64 constant : 2;
     u64 ptr_ind  : 1;
     u64 ptr      : POINTER_BITS;
-    u64 enum_idx : 10;
+    u64 null_cons_idx : 10;
     u64 padding  : 11;
 } HPointer;
 static_assert(sizeof(HPointer) == 8, "HPointer must be 64 bits");
@@ -311,7 +314,7 @@ inline HPointer hpFromBits(u64 b) {
 
 // Resolve a heap-pointer HPointer to its raw absolute address. The low
 // POINTER_BITS+3 (= 43) bits of the word are the 8-byte-aligned address itself
-// (constant/ptr_ind are 0 for a pointer, and encode zeroes enum_idx/padding).
+// (constant/ptr_ind are 0 for a pointer, and encode zeroes null_cons_idx/padding).
 // No heap_base, no shift. Only valid when the HPointer is a pointer (ptr_ind==0).
 inline void* hpToAddr(HPointer hp) {
     return reinterpret_cast<void*>(hpBits(hp) & ((1ULL << (POINTER_BITS + 3)) - 1));
@@ -331,17 +334,46 @@ inline bool isEmptyBits(u64 b) {
 
 // For a Bool-constant word, the i1 value (0 = False, 1 = True) — bit 0 of the
 // constant field. Only meaningful when the word is a Bool constant
-// (isConstantBits && !isEmptyBits).
+// (isConstantBits && !isEmptyBits && !isNullConsBits).
 inline u64 boolValueBits(u64 b) {
     return hpFromBits(b).constant & 1u;
 }
 
+// Null-cons embedding (plans/null-cons-hpointer-embedding.md, HEAP_044): a
+// nullary constructor value is the embedded word (idx << 43) | 0b111 —
+// ptr_ind set, constant == Const_NullCons, and the ctor's zero-based
+// declaration index in null_cons_idx. Single representation: after P4 no
+// live heap Tag_Custom with 0 fields exists.
+#define NULL_CONS_SHIFT 43
+#define NULL_CONS_MAX   1023          // 10 bits; the full range is usable
+
+// Is this word an embedded nullary-constructor constant?
+inline bool isNullConsBits(u64 b) {
+    HPointer hp = hpFromBits(b);
+    return hp.ptr_ind != 0 && hp.constant == Const_NullCons;
+}
+
+// The ctor's zero-based declaration index, verbatim.
+// Only valid when isNullConsBits(b).
+inline u32 nullConsTagBits(u64 b) {
+    return static_cast<u32>(hpFromBits(b).null_cons_idx);
+}
+
+// Compose the word for a ctor's declaration index. Callers guarantee
+// idx <= NULL_CONS_MAX (the compiler crashes past capacity at emission).
+inline u64 nullConsWordFor(u32 idx) {
+    return (static_cast<u64>(idx) << NULL_CONS_SHIFT)
+         | (1ULL << PTR_IND_BIT) | Const_NullCons;                  // …0b111
+}
+
 // Reserved constructor tag for embedded "empty" constants (Nil / Nothing / Unit /
 // EmptyRec / EmptyString), which under the merged representation share one bit
-// pattern and can no longer be told apart by constant value. Sits just below the
-// Dict reservations (0xFFFF / 0xFFFE). The compiler emits this tag for
-// embedded-constant constructor branches; the runtime derives it in eco_get_tag
-// and the eco.case lowering. Must stay in sync with
+// pattern and can no longer be told apart by constant value. The reserved set
+// is {0xFFFF RBNode, 0xFFFD CONSTANT_TAG} — RBEmpty reverted to its plain
+// declaration index 1 when it became an embedded null-cons constant
+// (HEAP_044, plans/null-cons-hpointer-embedding.md P3.0). The compiler emits
+// this tag for embedded-constant constructor branches; the runtime derives it
+// in eco_get_tag and the eco.case lowering. Must stay in sync with
 // `Compiler.Data.CtorTag.constantTag` and `value_enc::ConstantTag`. See plan D9.
 #define CONSTANT_TAG 0xFFFD
 

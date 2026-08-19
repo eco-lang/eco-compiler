@@ -17,7 +17,7 @@
 namespace Elm::Kernel::Export {
 
 // Encode HPointer as uint64_t for JIT interface.
-// HPointer layout: [constant:2 | ptr_ind:1 | ptr:40 | enum_idx:10 | padding:11]
+// HPointer layout: [constant:2 | ptr_ind:1 | ptr:40 | null_cons_idx:10 | padding:11]
 inline uint64_t encode(HPointer h) {
     // Use union for type-punning since HPointer is exactly 64 bits
     union { HPointer hp; uint64_t val; } u;
@@ -47,11 +47,12 @@ inline HPointer decode(uint64_t val) {
 inline void* toPtr(uint64_t val) {
     HPointer h = decode(val);
 
-    // Embedded constant (False 0x4 / True 0x5 / Empty 0x6): ptr_ind set with all
-    // higher fields zero, so the word is a tiny value. A real pointer whose
-    // address happens to have bit 2 set is NOT caught here because its ptr /
-    // enum_idx / padding fields are non-zero. Constants resolve to no heap object.
-    if (h.ptr_ind != 0 && h.ptr == 0 && h.enum_idx == 0 && h.padding == 0) {
+    // Embedded constant (False 0x4 / True 0x5 / Empty 0x6, or a null-cons word
+    // carrying its ctor index in null_cons_idx — HEAP_044): ptr_ind set with
+    // ptr/padding zero. A real pointer whose address happens to have bit 2 set
+    // is NOT caught here because its ptr field is non-zero. Constants resolve
+    // to no heap object.
+    if (h.ptr_ind != 0 && h.ptr == 0 && h.padding == 0) {
         return nullptr;
     }
 

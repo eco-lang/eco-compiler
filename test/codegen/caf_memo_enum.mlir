@@ -1,23 +1,19 @@
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 //
-// CAF memoization M4 (plans/caf-memoization-implementation.md): nullary
-// custom constructors. The thunk body is exactly what generateEnum emits
-// for a non-well-known nullary ctor — `eco.construct.custom` with size 0 —
-// which pre-M4 allocated a fresh object per reference. With the guard, the
-// allocation happens once; the second call (after forced minor + major GC)
-// serves the cached object through the rooted slot, and tag dispatch reads
-// the same tag off it.
+// Nullary ctors under HEAP_044 (plans/null-cons-hpointer-embedding.md): the
+// thunk body is exactly what generateEnum emits for a non-well-known nullary
+// ctor — `eco.constant.null_cons` — which replaced the M4 CAF-memoized
+// size-0 allocation (a constant-returning body needs no once-guard, so enum
+// specs no longer carry eco.caf_memo). Both calls — the second after forced
+// minor + major GC — observe the embedded declaration index through
+// eco.get_tag: constants are GC-immune by construction.
 
 module {
-  eco.global @__eco_caf$make_enum
-
   llvm.func @eco_minor_gc()
   llvm.func @eco_major_gc()
 
-  func.func private @make_enum() -> !eco.value attributes { eco.caf_memo } {
-    %marker = arith.constant 555 : i64
-    eco.dbg %marker : i64
-    %v = "eco.construct.custom"() {tag = 7 : i64, size = 0 : i64, unboxed_bitmap = 0 : i64} : () -> !eco.value
+  func.func private @make_enum() -> !eco.value {
+    %v = eco.constant.null_cons 7 : !eco.value
     eco.return %v : !eco.value
   }
 
@@ -37,7 +33,6 @@ module {
   }
 }
 
-// Allocation marker printed ONCE; both calls observe tag 7:
-// CHECK: 555
-// CHECK-NEXT: 7
+// Both calls observe the embedded tag 7:
+// CHECK: 7
 // CHECK-NEXT: 7

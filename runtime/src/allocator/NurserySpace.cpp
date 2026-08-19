@@ -1921,6 +1921,20 @@ void NurserySpace::preEvacuationFromSpaceWalk() {
             std::fflush(stderr);
             std::abort();
         }
+        // Single-representation tripwire (HEAP_044,
+        // plans/null-cons-hpointer-embedding.md §2.3): nullary ctors are
+        // embedded null-cons constants; a heap Tag_Custom with 0 fields
+        // means some construction path missed the embedding.
+        if (h->tag == Tag_Custom && h->size == 0) {
+            std::fprintf(stderr,
+                "[heap-validate] from-space pre-walk: 0-field Tag_Custom at "
+                "obj=%p (ctor=%u) — nullary ctors must be embedded null-cons "
+                "constants (HEAP_044 §2.3)\n",
+                (void*)scan,
+                (unsigned)static_cast<Custom*>(static_cast<void*>(scan))->ctor);
+            std::fflush(stderr);
+            std::abort();
+        }
         scan += sz;
     }
 }

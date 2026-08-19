@@ -266,9 +266,10 @@ inline bool isNothing(HPointer p)   { return isEmpty(p); }
 inline bool isUnit(HPointer p)      { return isEmpty(p); }
 inline bool isEmptyRec(HPointer p)  { return isEmpty(p); }
 
-// Bool-constant predicates.
+// Bool-constant predicates. Bool codes are 0/1 (bit 1 clear); Empty (2) and
+// NullCons (3, HEAP_044) both carry bit 1 and are NOT Bools.
 inline bool isBoolConst(HPointer p) {
-    return p.ptr_ind != 0 && p.constant != Const_Empty;
+    return p.ptr_ind != 0 && (p.constant & 2u) == 0;
 }
 inline bool boolValue(HPointer p) { return (p.constant & 1u) != 0; }
 
@@ -1363,6 +1364,15 @@ inline HPointer tuple3(Unboxable a, Unboxable b, Unboxable c, u32 unboxed_mask) 
 // `unboxed_mask`: 2-bit-per-slot kind bitmap (up to 24 fields, 48 bits used).
 inline HPointer custom(u16 ctor, const std::vector<Unboxable>& values, u64 unboxed_mask) {
     assert((unboxed_mask >> 48) == 0 && "Custom unboxed bitmap overflow (>48 bits)");
+    if (values.empty()) {
+        // Single-representation invariant (plans/null-cons-hpointer-embedding.md
+        // §2.3, HEAP_044): nullary ctors are embedded HPointer constants, never
+        // heap objects — resolveAndCompare/eco.value.eq decide by word
+        // (in)equality the moment either side is embedded, so a heap copy here
+        // would make equal values compare unequal.
+        assert(ctor <= NULL_CONS_MAX && "nullary ctor index exceeds null_cons_idx capacity");
+        return hpFromBits(nullConsWordFor(ctor));
+    }
     size_t total_size = sizeof(Custom) + values.size() * sizeof(Unboxable);
     total_size = (total_size + 7) & ~7;
 

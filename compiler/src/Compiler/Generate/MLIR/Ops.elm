@@ -1,6 +1,6 @@
 module Compiler.Generate.MLIR.Ops exposing
     ( opBuilder, mlirOp, mkRegion, mkRegionTerminatedByOps, funcFunc
-    , ecoConstantUnit, ecoConstantEmptyRec, ecoConstantTrue, ecoConstantFalse, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString
+    , ecoConstantUnit, ecoConstantEmptyRec, ecoConstantTrue, ecoConstantFalse, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString, ecoConstantNullCons
     , ecoConstructList, ecoConstructTuple2, ecoConstructTuple3, ecoConstructRecord, ecoConstructCustom
     , ecoProjectListHead, ecoProjectListTail, ecoProjectTuple2, ecoProjectTuple3, ecoProjectRecord, ecoProjectCustom
     , ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoNullaryOp, ecoTernaryOp, ecoCase, ecoCaseString, ecoGetTag
@@ -25,7 +25,7 @@ in the eco dialect and standard dialects (arith, scf, func).
 
 # Eco Constants
 
-@docs ecoConstantUnit, ecoConstantEmptyRec, ecoConstantTrue, ecoConstantFalse, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString
+@docs ecoConstantUnit, ecoConstantEmptyRec, ecoConstantTrue, ecoConstantFalse, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString, ecoConstantNullCons
 
 
 # Eco Constructors
@@ -182,6 +182,20 @@ ecoConstantEmpty ctx resultVar =
     mlirOp ctx "eco.constant"
         |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
         |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 2))
+        |> opBuilder.build
+
+
+{-| Create an eco.constant.null\_cons op: the embedded HPointer word for a
+nullary constructor, carrying its zero-based declaration index (HEAP\_044,
+plans/null-cons-hpointer-embedding.md §2.1). The caller passes the ctor's
+effective tag through `CtorTag.checkNullConsCapacity` first — indices past
+1023 crash the compile at emission.
+-}
+ecoConstantNullCons : Ctx.Context -> String -> Int -> ( Ctx.Context, MlirOp )
+ecoConstantNullCons ctx resultVar tag =
+    mlirOp ctx "eco.constant.null_cons"
+        |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
+        |> opBuilder.withAttrs (Dict.singleton "tag" (IntAttr Nothing tag))
         |> opBuilder.build
 
 

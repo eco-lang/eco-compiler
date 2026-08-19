@@ -246,18 +246,35 @@ constexpr unsigned PtrIndBit = 2;
 constexpr uint64_t ConstFieldMask = 0x3;
 
 /// Embedded constant kinds (must match the Constant enum in Heap.hpp): bit 0 is
-/// the Bool value, bit 1 is the Empty flag. See plan D3.
+/// the Bool value, bit 1 is the Empty flag; code 3 is the null-cons
+/// discriminant (HEAP_044). See plan D3 and
+/// plans/null-cons-hpointer-embedding.md.
 enum ConstantKind : uint64_t {
     False = 0,
     True  = 1,
     Empty = 2,  // unifies Unit / EmptyRec / Nil / Nothing / ""
+    NullCons = 3,  // nullary ctor; declaration index in bits [43,53)
 };
 
 /// Encode a constant kind into an HPointer word: set ptr_ind (bit 2) and the
-/// 2-bit constant field; ptr / enum_idx / padding are all zero. So False -> 0x4,
+/// 2-bit constant field; ptr / null_cons_idx / padding are all zero. So False -> 0x4,
 /// True -> 0x5, Empty -> 0x6. Plan D6.
 inline int64_t encodeConstant(int kind) {
     return (static_cast<int64_t>(1) << PtrIndBit) | static_cast<int64_t>(kind);
+}
+
+/// Null-cons field layout (HEAP_044). Must match NULL_CONS_SHIFT /
+/// NULL_CONS_MAX in Heap.hpp (static_asserts in EcoToLLVMHeap.cpp).
+constexpr unsigned NullConsShift = 43;
+constexpr uint64_t NullConsMax = 1023;
+
+/// Encode a nullary constructor's zero-based declaration index into its
+/// embedded HPointer word: (idx << 43) | 0b111. Mirrors nullConsWordFor in
+/// Heap.hpp. See plans/null-cons-hpointer-embedding.md §2.1.
+inline int64_t encodeNullCons(uint64_t idx) {
+    return static_cast<int64_t>((idx << NullConsShift)
+                                | (uint64_t{1} << PtrIndBit)
+                                | static_cast<uint64_t>(NullCons));
 }
 
 /// Reserved constructor tag emitted for embedded "empty" constant branches. Must

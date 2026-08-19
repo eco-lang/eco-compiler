@@ -69,12 +69,14 @@ static constexpr u16 RESP_NETWORK      = 2;
 static constexpr u16 RESP_BAD_STATUS   = 3;
 static constexpr u16 RESP_GOOD_STATUS  = 4;
 
-// Dict ctor tags — reserved values the compiler assigns to elm/core Dict
-// (must match CTOR_DICT_* in elm-kernel-cpp/src/core/Utils.cpp).
-//   RBNode_elm_builtin NColor k v left right   (fields 0..4)
-//   RBEmpty_elm_builtin                         (no fields)
+// Dict ctor tags (must match CTOR_DICT_RBNODE in
+// elm-kernel-cpp/src/core/Utils.cpp and Compiler.Data.CtorTag).
+//   RBNode_elm_builtin NColor k v left right   (fields 0..4; reserved 0xFFFF)
+//   RBEmpty_elm_builtin                         (no fields; plain declaration
+//                                               index 1 — embedded null-cons
+//                                               constant, HEAP_044/P3.0)
 static constexpr u16 CTOR_DICT_RBNODE  = 0xFFFF;
-static constexpr u16 CTOR_DICT_RBEMPTY = 0xFFFE;
+static constexpr u16 CTOR_DICT_RBEMPTY = 1;
 
 // ---- Stock Request record field indices (alphabetical canonical order) -----
 //   { allowCookiesFromOtherDomains, body, expect, headers, method, timeout,

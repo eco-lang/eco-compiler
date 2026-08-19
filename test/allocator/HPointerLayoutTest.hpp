@@ -8,6 +8,7 @@
 
 extern Testing::TestCase testHPointerGoldenWords;
 extern Testing::TestCase testHPointerConstantPredicates;
+extern Testing::TestCase testHPointerNullConsWords;
 extern Testing::TestCase testHPointerPointerRoundTrip;
 extern Testing::TestCase testHPointerForwardPtrRoundTrip;
 extern Testing::TestCase testHPointerBitsRoundTrip;

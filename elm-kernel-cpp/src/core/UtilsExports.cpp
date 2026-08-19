@@ -207,14 +207,13 @@ HPtr eco_list_append(HPtr a, HPtr b) {
 }
 
 // ============================================================================
-// Order Singletons
+// Order Constants
 // ============================================================================
 //
-// Three pre-allocated Order Custom values shared by every primitive `compare`
-// call. The encoded HPointer slots are registered as value roots so the GC
-// updates them in place if the underlying object moves; the lowering for
-// eco.{int,float,char}.cmp_order calls these helpers and treats the return
-// value as a regular Elm value.
+// The three Order values are embedded null-cons constants (HEAP_044) — the
+// getters return the constant words; no allocation, no GC roots. The lowering
+// for eco.{int,float,char}.cmp_order calls these helpers and treats the
+// return value as a regular Elm value.
 
 HPtr Eco_Runtime_getOrderLT() { return HPtr::fromBits(Utils::getOrderLT()); }
 HPtr Eco_Runtime_getOrderEQ() { return HPtr::fromBits(Utils::getOrderEQ()); }

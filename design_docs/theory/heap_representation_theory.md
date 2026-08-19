@@ -4,12 +4,17 @@
 > constants described in some sections below are superseded. HPointers now store a
 > raw absolute 8-byte-aligned address (no heap_base offset, no shift; the word is
 > the address), discriminated by a `ptr_ind` bit, and the embedded constants are
-> just three — `False` (0x4), `True` (0x5), and the merged `Empty` (0x6) which
-> subsumes Unit/Nil/Nothing/""/{}. Bool's low bit equals the SSA/ABI `i1` value.
+> `False` (0x4), `True` (0x5), the merged `Empty` (0x6) which subsumes
+> Unit/Nil/Nothing/""/{}, and the **null-cons** family `(idx << 43) | 0b111`
+> (constant code 3) carrying a nullary constructor's zero-based declaration
+> index — so every field-less constructor, `Dict`'s `RBEmpty` and `Order`'s
+> `LT`/`EQ`/`GT` included, is an immediate rather than a heap object, and a live
+> 0-field `Tag_Custom` is a bug (HEAP_044). Bool's low bit equals the SSA/ABI
+> `i1` value.
 > See the "HPointers: Raw Absolute Addresses" section of `THEORY.md`, invariants
-> HEAP_008/010/017/028/029 and REP_CONSTANT_00x, and
-> `plans/hpointer-representation-redesign.md` (Design Decisions D1–D11) for the
-> authoritative description.
+> HEAP_008/010/017/028/029/044, CGEN_079 and REP_CONSTANT_00x, and
+> `plans/hpointer-representation-redesign.md` (Design Decisions D1–D11) plus
+> `plans/null-cons-hpointer-embedding.md` for the authoritative description.
 
 ## Overview
 

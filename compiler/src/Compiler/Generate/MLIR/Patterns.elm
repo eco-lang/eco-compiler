@@ -1242,6 +1242,11 @@ testToTagInt test =
             -- Embedded-constant constructors (Nothing) share the merged empty
             -- bit pattern, so the runtime can only produce the reserved
             -- CONSTANT_TAG for them, not a per-declaration index (see D9).
+            -- EVERY OTHER nullary ctor does carry its declaration index in its
+            -- embedded null-cons word (HEAP_044), and all three tag extractors
+            -- return it — so the `effective` arm below is right for them with
+            -- no special case, which is what keeps dispatch representation-
+            -- agnostic (CGEN_079(c)).
             if CtorTag.isEmbeddedConstantCtor ctorName then
                 CtorTag.constantTag
 

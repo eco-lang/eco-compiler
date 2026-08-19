@@ -147,7 +147,9 @@ static void test_eco_alloc_custom_fields() {
     rc::check("eco_alloc_custom allocates with correct ctor and fields", []() {
         initAllocator();
         uint32_t ctor_tag = *rc::gen::inRange<uint32_t>(0, 100);
-        uint32_t field_count = *rc::gen::inRange<uint32_t>(0, 10);
+        // At least 1 field: a 0-field heap Custom is not a legal shape
+        // (HEAP_044 — nullary ctors are embedded null-cons constants).
+        uint32_t field_count = *rc::gen::inRange<uint32_t>(1, 10);
 
         auto hptr = eco_alloc_custom(ctor_tag, field_count, 0);
         RC_ASSERT(hptr.toBits() != 0);
@@ -410,7 +412,10 @@ static void test_eco_get_custom_ctor() {
         initAllocator();
         uint32_t ctor_tag = *rc::gen::inRange<uint32_t>(0, 1000);
 
-        auto hptr = eco_alloc_custom(ctor_tag, 0, 0);
+        // 1 field: a 0-field heap Custom is not a legal shape (HEAP_044 —
+        // nullary ctors are embedded null-cons constants, and eco_get_tag
+        // reads their index straight off the word).
+        auto hptr = eco_alloc_custom(ctor_tag, 1, 0);
         RC_ASSERT(hptr.toBits() != 0);
 
         RC_ASSERT(eco_get_custom_ctor(hptr) == ctor_tag);

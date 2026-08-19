@@ -454,7 +454,7 @@ private:
     static inline void* fromPointerRaw(HPointer ptr) {
         assert(ptr.ptr_ind == 0 && "Cannot convert an embedded constant HPointer to a pointer");
         // The word IS the raw absolute address (no heap_base, no shift): the ptr
-        // field sits at bit 3, and constant/ptr_ind/enum_idx/padding are 0 for a
+        // field sits at bit 3, and constant/ptr_ind/null_cons_idx/padding are 0 for a
         // pointer, so masking the low 43 bits yields the 8-byte-aligned address.
         return hpToAddr(ptr);
     }
@@ -465,7 +465,7 @@ private:
         // A heap object is 8-byte aligned and lives below 2^43, so its address
         // maps directly onto the word: the low 3 bits (0) become constant/ptr_ind
         // (marking it a pointer), the address bits [3,43) become the ptr field,
-        // and enum_idx/padding are 0. Reinterpreting the address as the word is
+        // and null_cons_idx/padding are 0. Reinterpreting the address as the word is
         // therefore the exact HPointer for it.
         uintptr_t addr = reinterpret_cast<uintptr_t>(obj);
         assert((addr & 0x7ULL) == 0 && "heap object must be 8-byte aligned");

@@ -229,6 +229,11 @@ extern "C" void eco_ensure_nursery_slow(uint64_t n) {
 }
 
 extern "C" HPtr eco_alloc_custom(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
+    // Single-representation backstop (HEAP_044): nullary customs are embedded
+    // null-cons constants; post-CGEN_079 nothing may allocate the 0-field
+    // shape. Mirrors the fast/slow variants below.
+    assert((field_count > 0 || scalar_bytes > 0) &&
+           "0-field custom allocation forbidden (HEAP_044): embed a null-cons constant");
     // Calculate size: Header + ctor/unboxed (8 bytes) + fields
     size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes;
 
@@ -1145,6 +1150,11 @@ extern "C" HPtr eco_allocate(uint64_t size, uint32_t tag) {
 //===----------------------------------------------------------------------===//
 
 extern "C" HPtr eco_alloc_custom_fast(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
+    // Single-representation backstop (HEAP_044): nullary customs are embedded
+    // null-cons constants; post-CGEN_079 the compiler never emits a 0-field
+    // allocation, so reaching here with one is a codegen bug.
+    assert((field_count > 0 || scalar_bytes > 0) &&
+           "0-field custom allocation forbidden (HEAP_044): embed a null-cons constant");
     size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes;
     void* obj = Allocator::instance().allocateFast(size);
     if (!obj) return HPtr::fromBits(0);
@@ -1162,6 +1172,9 @@ extern "C" HPtr eco_alloc_custom_fast(uint32_t ctor_id, uint32_t field_count, ui
 }
 
 extern "C" HPtr eco_alloc_custom_slow(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
+    // Single-representation backstop (HEAP_044) — see eco_alloc_custom_fast.
+    assert((field_count > 0 || scalar_bytes > 0) &&
+           "0-field custom allocation forbidden (HEAP_044): embed a null-cons constant");
     size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes;
     void* obj = Allocator::instance().allocateSlow(size, Tag_Custom);
     if (!obj) return HPtr::fromBits(0);
@@ -2923,7 +2936,12 @@ static bool print_if_constant(uint64_t val) {
     if (!isConstantBits(val)) {
         return false;  // Regular pointer.
     }
-    if (isEmptyBits(val)) {
+    if (isNullConsBits(val)) {
+        // Nullary ctor embedded as a null-cons word (HEAP_044). No type info
+        // here, so print the ctor index; the type-graph-driven printer names
+        // it properly.
+        output_format("<ctor %u>", nullConsTagBits(val));
+    } else if (isEmptyBits(val)) {
         output_text("<empty>");
     } else {
         output_text(boolValueBits(val) ? "True" : "False");
@@ -3746,13 +3764,28 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
         uint32_t first_ctor = typeInfo->data.custom.first_ctor;
         uint32_t ctor_count = typeInfo->data.custom.ctor_count;
 
-        // An embedded constant of a Custom type is that type's nullary
-        // constructor (the ctor with no fields — e.g. Maybe's Nothing). Name it
-        // from the type graph rather than the constant's specific value, so it
-        // still works once all empties share one bit pattern (plan D3). Bool is
-        // a Primitive, not a Custom, so a Custom constant is never a Bool.
+        // An embedded constant of a Custom type is one of that type's nullary
+        // constructors. A null-cons word (HEAP_044) carries its declaration
+        // index — look the ctor up by id. The legacy merged empty (0x6, e.g.
+        // Maybe's Nothing) carries no index, so name the type's first nullary
+        // ctor as before (plan D3). Bool is a Primitive, not a Custom, so a
+        // Custom constant is never a Bool.
         if (isConstantBits(value)) {
             assert(g_type_graph->ctors && "Type graph has no ctors array");
+            if (isNullConsBits(value)) {
+                uint32_t want = nullConsTagBits(value);
+                bool found = false;
+                for (uint32_t ci = 0; ci < ctor_count; ++ci) {
+                    const Elm::EcoCtorInfo* nInfo = &g_type_graph->ctors[first_ctor + ci];
+                    if (nInfo->ctor_id == want) {
+                        output_text(g_type_graph->strings[nInfo->name_index]);
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) output_format("<ctor %u>", want);
+                break;
+            }
             for (uint32_t ci = 0; ci < ctor_count; ++ci) {
                 const Elm::EcoCtorInfo* nInfo = &g_type_graph->ctors[first_ctor + ci];
                 if (nInfo->field_count == 0) {
@@ -4062,12 +4095,18 @@ extern "C" uint32_t eco_get_tag(HPtr val) {
     assert(val.bits != 0 && "eco_get_tag: null HPointer");
     HPointer hp = val.toHPointer();
     // Embedded constant? Derive the ctor tag without needing its type (see D9):
+    //   - a null-cons constant (HEAP_044) -> its embedded declaration index,
+    //     verbatim. MUST be tested first: the fallthrough below reads any
+    //     non-Empty constant as a Bool and would misread a null-cons word.
     //   - any "empty" constant (Nil/Nothing/Unit/EmptyRec/EmptyString) -> the
     //     reserved CONSTANT_TAG; the compiler tags the matching branch the same.
     //   - a Bool constant -> its i1 value (0 = False, 1 = True), matching the
     //     IsBool tag convention (Bool normally dispatches via the i1 path; this
     //     is defense-in-depth).
     if (isConstantBits(val.bits)) {
+        if (isNullConsBits(val.bits)) {
+            return nullConsTagBits(val.bits);
+        }
         if (isEmptyBits(val.bits)) {
             return CONSTANT_TAG;
         }

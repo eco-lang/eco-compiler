@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include "EcoDialect.h"
 #include "EcoTypes.h"
+#include "../allocator/Heap.hpp"  // NULL_CONS_MAX (HEAP_044)
 
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/Builders.h"
@@ -335,7 +336,43 @@ LogicalResult JoinpointOp::verify() {
   return success();
 }
 
+LogicalResult ConstantNullConsOp::verify() {
+  // 10-bit null_cons_idx capacity (HEAP_044). The Elm side crashes first with
+  // a better message (Compiler.Data.CtorTag.checkNullConsCapacity); this is
+  // the MLIR-level backstop.
+  if (getTag() < 0 || getTag() > static_cast<int64_t>(NULL_CONS_MAX)) {
+    return emitOpError("null-cons tag ")
+           << getTag() << " outside the 10-bit null_cons_idx range [0, "
+           << NULL_CONS_MAX << "] (HEAP_044)";
+  }
+  return success();
+}
+
+LogicalResult AllocateCtorOp::verify() {
+  // The 0-field form is forbidden for the same reason as 0-field
+  // eco.construct.custom (CGEN_079 / HEAP_044): nullary ctors are embedded
+  // null-cons constants, never heap objects.
+  if (getSize() == 0 && getScalarBytes() == 0) {
+    return emitOpError(
+        "0-field ctor allocation is forbidden (CGEN_079): nullary "
+        "constructors are embedded null-cons constants — emit "
+        "eco.constant.null_cons instead");
+  }
+  return success();
+}
+
 LogicalResult CustomConstructOp::verify() {
+  // Nullary ctors are embedded null-cons constants (HEAP_044,
+  // plans/null-cons-hpointer-embedding.md §2.3): a 0-field construct would
+  // mint a second (heap) representation and silently break the word-equality
+  // fast paths. The compiler emits eco.constant.null_cons instead.
+  if (getSize() == 0) {
+    return emitOpError(
+        "0-field custom construction is forbidden (CGEN_079): nullary "
+        "constructors are embedded null-cons constants — emit "
+        "eco.constant.null_cons instead");
+  }
+
   // The fields operand list may contain GC live roots appended after the
   // actual fields by EcoGCPrepare. The first `size` entries are fields;
   // any beyond that are live roots (always !eco.value).

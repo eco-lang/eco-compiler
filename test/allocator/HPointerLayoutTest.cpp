@@ -14,6 +14,7 @@
 #include "Allocator.hpp"
 #include "Heap.hpp"
 #include "HeapHelpers.hpp"
+#include "RuntimeExports.h"
 #include "TestHelpers.hpp"
 
 using namespace Elm;
@@ -63,6 +64,50 @@ Testing::TestCase testHPointerConstantPredicates(
         TEST_ASSERT(alloc::isNil(alloc::listNil()));
         TEST_ASSERT(alloc::isEmptyString(alloc::emptyString()));
         TEST_ASSERT(!alloc::isEmpty(alloc::elmTrue()));
+    });
+
+Testing::TestCase testHPointerNullConsWords(
+    "null-cons embedded constants encode/decode/classify (HEAP_044)", []() {
+        // Golden words: (idx << 43) | 0b111 for the corpus-relevant indices —
+        // ctor 0, RBEmpty's declaration index 1, and the 10-bit capacity edge.
+        TEST_ASSERT(nullConsWordFor(0) == 0x7ULL);
+        TEST_ASSERT(nullConsWordFor(1) == ((1ULL << 43) | 0x7ULL));
+        TEST_ASSERT(nullConsWordFor(1023) == ((1023ULL << 43) | 0x7ULL));
+
+        // Distinct from every legacy constant word.
+        TEST_ASSERT(nullConsWordFor(0) != 0x4ULL);
+        TEST_ASSERT(nullConsWordFor(0) != 0x5ULL);
+        TEST_ASSERT(nullConsWordFor(0) != 0x6ULL);
+
+        uint32_t indices[] = {0, 1, 1023};
+        for (uint32_t idx : indices) {
+            uint64_t w = nullConsWordFor(idx);
+            // Classifiers: a constant, specifically a null-cons; NOT the
+            // merged empty; never a heap pointer.
+            TEST_ASSERT(isConstantBits(w));
+            TEST_ASSERT(isNullConsBits(w));
+            TEST_ASSERT(!isEmptyBits(w));
+            // The declaration index round-trips verbatim.
+            TEST_ASSERT(nullConsTagBits(w) == idx);
+            // Both hpBits/hpFromBits directions preserve the word.
+            TEST_ASSERT(hpBits(hpFromBits(w)) == w);
+            // eco_get_tag returns the embedded index (the dispatch contract
+            // shared with the open-coded diamond and the eco.case lowering).
+            TEST_ASSERT(eco_get_tag(HPtr::fromBits(w)) == idx);
+        }
+
+        // Legacy constants are NOT null-cons.
+        TEST_ASSERT(!isNullConsBits(0x4ULL));
+        TEST_ASSERT(!isNullConsBits(0x5ULL));
+        TEST_ASSERT(!isNullConsBits(0x6ULL));
+        TEST_ASSERT(!isNullConsBits(0x0ULL));
+        // Nor is a heap pointer word (ptr_ind == 0).
+        TEST_ASSERT(!isNullConsBits(0x2468AC8ULL));
+
+        // A null-cons word is NOT a Bool constant (isBoolConst must exclude
+        // constant codes 2 and 3, not just Empty).
+        TEST_ASSERT(!alloc::isBoolConst(hpFromBits(nullConsWordFor(0))));
+        TEST_ASSERT(!alloc::isBoolConst(hpFromBits(nullConsWordFor(1023))));
     });
 
 Testing::TestCase testHPointerPointerRoundTrip(

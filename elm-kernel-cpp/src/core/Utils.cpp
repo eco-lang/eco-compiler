@@ -22,47 +22,33 @@ constexpr u16 ORDER_LT = 0;
 constexpr u16 ORDER_EQ = 1;
 constexpr u16 ORDER_GT = 2;
 
-// Pre-allocated Order singletons. Slots hold encoded HPointer Elm values,
-// registered with eco_gc_add_value_root so the GC keeps them live and updates
-// the encoded HPointer in place if the underlying Custom moves.
-static uint64_t ORDER_LT_SINGLETON = 0;
-static uint64_t ORDER_EQ_SINGLETON = 0;
-static uint64_t ORDER_GT_SINGLETON = 0;
-static bool ORDER_SINGLETONS_INITIALIZED = false;
+// Order values are nullary constructors, so they are embedded null-cons
+// constants (plans/null-cons-hpointer-embedding.md, HEAP_044): no allocation,
+// no GC roots, no init. Kept as functions for the kernel/codegen call ABI
+// (Eco_Runtime_getOrder* lowering treats the result as a regular Elm value).
+void initOrderSingletons() {}  // retained for the weak-linked init hook; no-op
 
-void initOrderSingletons() {
-    if (ORDER_SINGLETONS_INITIALIZED) return;
-    HPointer lt = alloc::custom(ORDER_LT, {}, 0);
-    ORDER_LT_SINGLETON = Export::encode(lt);
-    HPointer eq = alloc::custom(ORDER_EQ, {}, 0);
-    ORDER_EQ_SINGLETON = Export::encode(eq);
-    HPointer gt = alloc::custom(ORDER_GT, {}, 0);
-    ORDER_GT_SINGLETON = Export::encode(gt);
-    eco_gc_add_value_root(&ORDER_LT_SINGLETON);
-    eco_gc_add_value_root(&ORDER_EQ_SINGLETON);
-    eco_gc_add_value_root(&ORDER_GT_SINGLETON);
-    ORDER_SINGLETONS_INITIALIZED = true;
-}
-
-uint64_t getOrderLT() { return ORDER_LT_SINGLETON; }
-uint64_t getOrderEQ() { return ORDER_EQ_SINGLETON; }
-uint64_t getOrderGT() { return ORDER_GT_SINGLETON; }
+uint64_t getOrderLT() { return nullConsWordFor(ORDER_LT); }
+uint64_t getOrderEQ() { return nullConsWordFor(ORDER_EQ); }
+uint64_t getOrderGT() { return nullConsWordFor(ORDER_GT); }
 
 // Reserved ctor tags for runtime-recognised types. Must match
 // `Compiler.Data.CtorTag` in the compiler.
 //
-// `Dict.RBNode_elm_builtin` and `Dict.RBEmpty_elm_builtin` are tagged so the
-// runtime can compare two Dicts by content (in-order key/value traversal)
-// instead of by the tree shape that happens to be produced by Elm's LLRB
-// `insertHelp`. Stock Elm JS achieves the same thing via a negative `$` tag.
+// `Dict.RBNode_elm_builtin` is tagged so the runtime can compare two Dicts by
+// content (in-order key/value traversal) instead of by the tree shape that
+// happens to be produced by Elm's LLRB `insertHelp`. Stock Elm JS achieves the
+// same thing via a negative `$` tag. `RBEmpty_elm_builtin` is an embedded
+// null-cons constant carrying its plain declaration index 1 (HEAP_044,
+// plans/null-cons-hpointer-embedding.md P3.0) — it never reaches eqHelp as a
+// heap object, so RBNode alone routes heap-Dict comparisons to dictEq.
 constexpr u16 CTOR_DICT_RBNODE = 0xFFFF;
-constexpr u16 CTOR_DICT_RBEMPTY = 0xFFFE;
 // 0xFFFD is reserved as CONSTANT_TAG (see runtime Heap.hpp / CtorTag.constantTag):
 // the merged-empty ctor tag returned by eco_get_tag for Nil/Nothing/etc. Not used
 // here, but reserved so no runtime-recognised type may reuse it.
 
 static bool isDictCtor(u16 ctor) {
-    return ctor == CTOR_DICT_RBNODE || ctor == CTOR_DICT_RBEMPTY;
+    return ctor == CTOR_DICT_RBNODE;
 }
 
 // ============================================================================
@@ -450,9 +436,9 @@ static int cmp(void* a, void* b) {
 
 HPointer compare(void* a, void* b) {
     int n = cmp(a, b);
-    uint64_t enc = (n < 0) ? ORDER_LT_SINGLETON
-                : (n > 0) ? ORDER_GT_SINGLETON
-                          : ORDER_EQ_SINGLETON;
+    uint64_t enc = (n < 0) ? getOrderLT()
+                : (n > 0) ? getOrderGT()
+                          : getOrderEQ();
     return Export::decode(enc);
 }
 
@@ -656,7 +642,7 @@ static bool eqHelp(void* a, void* b, int depth) {
 
             // Dict equality: compare by content so that two dicts with the
             // same key/value pairs but different insertion-order tree shapes
-            // compare equal. (See notes on CTOR_DICT_RBNODE/CTOR_DICT_RBEMPTY.)
+            // compare equal. (See notes on CTOR_DICT_RBNODE.)
             if (isDictCtor(ac->ctor) || isDictCtor(bc->ctor)) {
                 return dictEq(a, b, depth);
             }
@@ -748,9 +734,9 @@ static bool dictEq(void* a, void* b, int depth) {
     auto& allocator = Allocator::instance();
 
     // Resolve a subtree HPointer to its Custom header. Returns nullptr if the
-    // HPointer is an embedded constant or the resolved tag isn't Custom (the
-    // latter would indicate malformed input, not a normal empty subtree —
-    // RBEmpty is a heap-allocated Custom with ctor == CTOR_DICT_RBEMPTY).
+    // HPointer is an embedded constant — in particular RBEmpty, which is an
+    // embedded null-cons word (HEAP_044), so a constant IS the normal empty
+    // subtree — or if the resolved tag isn't Custom (malformed input).
     auto resolveCustom = [&allocator](HPointer hp) -> Custom* {
         if (alloc::isConstant(hp)) return nullptr;
         void* obj = allocator.resolve(hp);

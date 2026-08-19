@@ -193,7 +193,8 @@ the guard would cost more than the body). Explicitly excluded in v1:
 `MonoPortIncoming`/`MonoPortOutgoing` (also routed through
 `generateDefine`, but tied to the registration preamble — PORT_003;
 stamp the attr only from `generateNodeInner`'s `MonoDefine` arm so ports
-are untouched), and `MonoEnum` nullary constructors (M4, §11). Port
+are untouched). `MonoEnum` nullary constructors were stamped by M4 (§11)
+but are **no longer memoized at all** — see the M4 note. Port
 *decoder* specs (plain `MonoDefine`s per PORT_003) qualify normally.
 
 **DS8 — Compile-time switch, not runtime.** The guard is baked into
@@ -428,7 +429,16 @@ Measurement (M3):
 - **M2 — Full gates flag-on.** Corpus, self-compile fixed point, verifier
   + heap-validate legs, parallel-conversion gate.
 - **M3 — Measure.** §10 measurement plan; decide default.
-- **M4 — Nullary custom constructors. SHIPPED 2026-07-23 (Run T,
+- **M4 — Nullary custom constructors. SHIPPED 2026-07-23, then SUPERSEDED
+  2026-08-19 by null-cons embedding (HEAP_044 / CGEN_079(d),
+  `plans/null-cons-hpointer-embedding.md`): a nullary constructor is now an
+  embedded HPointer constant carrying its declaration index, so its spec
+  body is constant-returning — there is nothing to allocate once, the slot
+  would be a second copy of nothing, and the guard would be pure cost. The
+  `MonoEnum` arm of `generateNodeInner` emits neither the `eco.global` nor
+  the `eco.caf_memo` stamp, and `test/codegen/caf_memo_enum.mlir` now pins
+  the constant form. The M4 result below is retained as the historical
+  record of the intermediate state. ORIGINAL ENTRY: SHIPPED (Run T,
   `benchmarks/runtime-calls.md`): −4.5 % census-on wall on top of Run S,
   minors 760→727 at 9 majors flat, dispatch-neutral; +274 enum slots
   (1,215→1,489); E2E 1634/1634 (new `caf_memo_enum.mlir` fixture) +

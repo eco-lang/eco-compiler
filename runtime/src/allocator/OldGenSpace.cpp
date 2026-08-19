@@ -1822,6 +1822,16 @@ bool OldGenSpace::markOneObject(void* obj, uint32_t block_index) {
     // until fixup completes).
     if (hdr->tag == Tag_Free || hdr->tag == Tag_Forward) return false;
 
+#if ECO_HEAP_VALIDATE
+    // Single-representation tripwire (HEAP_044,
+    // plans/null-cons-hpointer-embedding.md §2.3): nullary ctors are embedded
+    // null-cons constants — a LIVE 0-field Tag_Custom (nursery or old gen)
+    // means some construction path missed the embedding.
+    assert(!(hdr->tag == Tag_Custom && hdr->size == 0) &&
+           "HEAP_044: live 0-field Tag_Custom — nullary ctors must be "
+           "embedded null-cons constants");
+#endif
+
     // Nursery objects: traverse children but never write into the header,
     // and don't attribute bytes (nursery cells aren't tracked in
     // buffer_meta_; only old-gen blocks are). The cycle break lives in

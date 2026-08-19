@@ -1619,6 +1619,9 @@ def Eco_AllocateCtorOp : Eco_Op<"allocate_ctor", [
     DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
 ]> {
   let summary = "Allocate constructor object";
+  // Verifier rejects the 0-field form (size == 0 && scalar_bytes == 0):
+  // nullary ctors are embedded null-cons constants (HEAP_044), never heap
+  // objects — see plans/null-cons-hpointer-embedding.md §2.3.
   let description = [{
     Allocate space for a constructor object with the specified tag and
     field count. This is a specialized allocation for ADT constructors.
@@ -1647,6 +1650,8 @@ def Eco_AllocateCtorOp : Eco_Op<"allocate_ctor", [
     I64Attr:$scalar_bytes
   );
   let results = (outs Eco_Value:$result);
+
+  let hasVerifier = 1;
 
   let assemblyFormat = "(`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($result)";
 }
@@ -1844,7 +1849,7 @@ def Eco_ConstantOp : Eco_Op<"constant", [Pure]> {
     Nil, Nothing, and the empty string all lower to Empty). See plan D3/D6.
 
     Lowering sets ptr_ind (bit 2) and the 2-bit constant field (bits 0-1); the
-    ptr / enum_idx / padding fields are 0. So the words are:
+    ptr / null_cons_idx / padding fields are 0. So the words are:
     - False → 0x4
     - True  → 0x5
     - Empty → 0x6
@@ -1861,6 +1866,28 @@ def Eco_ConstantOp : Eco_Op<"constant", [Pure]> {
   let results = (outs Eco_Value:$result);
 
   let assemblyFormat = "$kind attr-dict `:` type($result)";
+}
+
+def Eco_ConstantNullConsOp : Eco_Op<"constant.null_cons", [Pure]> {
+  let summary = "Embedded nullary-constructor constant";
+  let description = [{
+    Materializes the HPointer word for a nullary constructor:
+    (idx << 43) | 0b111, where idx is the ctor's zero-based declaration
+    index (constant code 3 is the null-cons discriminant, HEAP_044).
+    See plans/null-cons-hpointer-embedding.md §2.1.
+
+    Example:
+    ```mlir
+    %lt = eco.constant.null_cons 0 : !eco.value
+    ```
+  }];
+
+  let arguments = (ins I64Attr:$tag);        // declaration index
+  let results = (outs Eco_Value:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = "$tag attr-dict `:` type($result)";
 }
 
 //===----------------------------------------------------------------------===//
