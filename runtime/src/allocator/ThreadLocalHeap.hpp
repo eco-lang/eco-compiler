@@ -142,7 +142,11 @@ public:
     void minorGC();
 
     /** Triggers a major GC (mark-sweep on old gen). */
-    void majorGC();
+    // `reason` is recorded in the GCStats per-major event log only; it does
+    // not affect collection behaviour. Defaulted so the explicit/forced
+    // callers (eco_entry teardown, RuntimeExports, main.cpp, Allocator) need
+    // no change and land in the log as `forced`.
+    void majorGC(GCStats::MajorReason reason = GCStats::MajorReason::Forced);
 
     // ========== Accessors ==========
 

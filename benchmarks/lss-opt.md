@@ -558,6 +558,88 @@ for an accepted output change: two cold runs byte-identical to each other
 (deterministic), `ECO_MONO_VALIDATE=1` clean (MONO_029), Stage-4b bootstrap fixed point
 converged, `--target full` 1,675/0, elm-tests 13,118/12 (same 12 pre-existing).
 
+### 2026-08-18 — Run Q: speckey §10.9 — dead comparable-key renderers deleted, watchdog context thunked, all five `fingerprintOf` sites hash-keyed (plain run)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| p4 | **5:54.41** (354.4 s) | 5,800,992 kB | 1,407 | 17 | 475,692,159 (13,641 MiB) | 142.05 s | 13,816,872 B |
+
+| axis | Run P (post) | Run Q |
+|---|---|---|
+| out.mlir | 13,777,733 B | 13,816,872 B (+39,139 B, +0.28%) |
+| minor / major GC time | 86.26 s / 43.11 s | 86.51 s / 55.54 s |
+| true mutator (wall − GC) | 211.2 s | 212.3 s |
+| joins identical / zonked / byBudget | 81,128 / 485,239 / 50,934 | 81,337 / 486,727 / 51,232 |
+
+Tree = the two dead comparable-key renderers deleted (`toComparableSpecKey`, `toComparableLayoutKey`;
+the layout oracle moved into `ComparableKeyEncodingTest`), `checkSpecWatchdogs`'s context string
+thunked behind `() ->`, and all five `CafHoist.fingerprintOf` callers (CafHoist, MonoCse, CafDedupe,
+CafCensus, CseCensus) rekeyed kind-tag → `Mono.SpecMap`. **Behaviour is unchanged on a default
+compile** — those five passes are all default-off and the deletions were unreferenced — so every
+census counter moves up in lockstep with the corpus (zonked +0.3%, byBudget +0.6%, apR 3,224→3,230):
+that is the +39,139 B of new source being compiled, not an analysis change. **Wall +13.8 s (+4.1%)
+is above the band and sits almost entirely in major GC**: majors 14→17, major-GC time +12.43 s,
+against minors 1,406→1,407, promoted −0.03% and true mutator 211.2→212.3 s. CORRECTED by Run R:
+this entry first called that "the major-GC lottery" — majors are DETERMINISTIC per (binary × tree),
+so the 14→17 step is caused by this change/corpus, not chance. It is still not code slowness (the
+mutator is flat); it is a heap-occupancy step, and RSS −13.9% is the other half of that same step.
+
+### 2026-08-18 — Run R: variance study — FIVE cold legs of the UNCHANGED Run-Q binary (purpose-built; refutes the "major-GC lottery")
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| v1 | **5:54.41** (354.4 s) | 5,789,864 kB | 1,407 | 17 | 475,692,160 (13,641 MiB) | 142.36 s | 13,816,872 B |
+| v2 | **5:59.80** (359.8 s) | 5,790,036 kB | 1,407 | 17 | 475,692,160 (13,641 MiB) | 144.78 s | 13,816,872 B |
+| v3 | **5:56.78** (356.8 s) | 5,789,888 kB | 1,407 | 17 | 475,692,160 (13,641 MiB) | 143.65 s | 13,816,872 B |
+| v4 | **5:52.00** (352.0 s) | 5,801,084 kB | 1,407 | 17 | 475,692,159 (13,641 MiB) | 140.42 s | 13,816,872 B |
+| v5 | **5:54.17** (354.2 s) | 5,790,208 kB | 1,407 | 17 | 475,692,160 (13,641 MiB) | 141.71 s | 13,816,872 B |
+
+| axis | min | max | range |
+|---|---|---|---|
+| wall | 352.00 s | 359.80 s | 7.80 s (2.19%) |
+| GC time | 140.42 s | 144.78 s | 4.36 s (3.06%) |
+| true mutator (wall − GC) | 211.58 s | 215.02 s | 3.44 s (1.62%) |
+| max RSS | 5,789,864 kB | 5,801,084 kB | 11,220 kB (0.19%) |
+| minors / majors / promoted MiB / out.mlir | 1,407 / 17 / 13,641 / byte-identical across all five (`cmp`) | — | **ZERO** |
+
+Five cold legs, same binary and tree, sources untouched, `eco-stuff` purged before each; Run Q is a
+sixth sample of this configuration and also read 1,407 / 17. **The "major-GC trigger lottery" is
+REFUTED**: majors are 17 in all six, minors 1,407 in all six, promoted identical, and all five
+`out.mlir` are byte-identical to each other. The only object-level wobble is promoted …160 vs …159
+in v4 — one object in 475.7 M — matching Run H's 4-in-1.07 B nursery-copy wobble. GC counters are a
+DETERMINISTIC function of (binary × tree), as Run H claimed at n=2, now at n=6. **Consequence: the
+lottery is the wrong model and Runs D, E, K and Q all lean on it.** Majors are not chance; they are
+a deterministic STEP function of heap occupancy, so a small retention or corpus change really can
+move the count and several seconds of wall with it. "Do not read the whole wall delta as code
+speed" still holds — but the cause is the change, not luck. Noise floor on IDENTICAL work: wall
+±1.1%, GC time 3.06% range, true mutator 1.62%, RSS 0.19% — tighter than Run H's ±1.7% estimate.
+
+### 2026-08-19 — Run S: per-major-GC event log added to GCStats (plain run; instrumentation cost gate)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| gclog | **5:55.47** (355.5 s) | 5,801,160 kB | 1,407 | 17 | 475,692,159 (13,641 MiB) | 142.40 s | 13,816,872 B |
+
+| axis | Run R (5 legs, same Elm corpus) | Run S |
+|---|---|---|
+| wall | 352.00–359.80 s (mean 355.43) | 355.47 s — inside the range |
+| minors / majors / promoted MiB | 1,407 / 17 / 13,641 | 1,407 / 17 / 13,641 |
+| GC time | 140.42–144.78 s | 142.40 s — inside the range |
+| out.mlir | 13,816,872 B | 13,816,872 B (runtime is C++, NOT part of the Elm corpus) |
+| new | — | 17-row major-GC event log at process end |
+
+The change is C++ runtime only (`GCStats` gains a bounded per-major event log: timestamp,
+total/mark/sweep/root split, old-gen before/after, mark-derived garbage, bytes released,
+minors+promoted since the previous major, mark units, trigger reason), so the Elm corpus is
+untouched and `out.mlir` is byte-size identical to Runs Q/R — this is the cleanest
+comparison in the file. **Instrumentation cost is nil**: every counter matches Run R to the
+object and wall/GC time land inside its 5-leg range. Two pre-existing telemetry bugs fixed
+on the way: `MajorGCPhaseProfile::mark_units_done` was declared but never written (now the
+delta of the aggregate work-unit counter across the mark loop), and the minor-side counters
+live in `NurserySpace`'s OWN `GCStats`, so reading them off the ThreadLocalHeap instance
+yielded zero (now passed in). Findings from the log are in the analysis, not here; the
+headline is that **mark is 92.4% of all major-GC time** (51.8 s of 56.1 s).
+
 ---
 
 ## Summary
@@ -582,3 +664,6 @@ One row per run, numbers only.
 | N-1024 | 349.1 | 1425 | 16 | 13524 |
 | O | 336.1 | 1402 | 15 | 13431 |
 | P | 340.6 | 1406 | 14 | 13645 |
+| Q | 354.4 | 1407 | 17 | 13641 |
+| R-v1 | 354.4 | 1407 | 17 | 13641 |
+| S | 355.5 | 1407 | 17 | 13641 |

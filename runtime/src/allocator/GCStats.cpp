@@ -670,6 +670,141 @@ void GCStats::recordFreeListSnapshot() {
 }
 
 // Records completion of a major GC cycle with timing.
+// Time origin for the major-GC event log. Initialised at static-init of this
+// translation unit, i.e. effectively process start: every `start_ns` in the log
+// is relative to this, so the timeline is readable without external clocks.
+static const std::chrono::steady_clock::time_point g_process_start =
+    std::chrono::steady_clock::now();
+
+uint64_t GCStats::nowSinceProcessStartNs() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - g_process_start)
+            .count());
+}
+
+void GCStats::beginMajorGCEvent(MajorReason reason,
+                                uint64_t oldgen_before_bytes,
+                                uint64_t committed_bytes) {
+    pending_major_start_ns     = nowSinceProcessStartNs();
+    pending_major_before_bytes = oldgen_before_bytes;
+    pending_major_committed    = committed_bytes;
+    pending_major_reason       = reason;
+}
+
+void GCStats::recordMajorGCEvent(uint64_t total_ns,
+                                 uint64_t root_scan_ns,
+                                 uint64_t root_push_ns,
+                                 uint64_t mark_ns,
+                                 uint64_t sweep_ns,
+                                 uint64_t capacity_ns,
+                                 uint64_t oldgen_after_bytes,
+                                 uint64_t live_bytes_after,
+                                 uint64_t garbage_bytes,
+                                 uint64_t alldead_bytes_released,
+                                 uint64_t shrink_bytes_released,
+                                 uint64_t mark_units,
+                                 uint64_t mark_stack_peak,
+                                 uint64_t blocks_scanned,
+                                 uint64_t minor_count_now,
+                                 uint64_t promoted_now) {
+    if (major_gc_events_used >= MAJOR_GC_EVENT_CAP) {
+        major_gc_events_dropped++;
+        return;
+    }
+    MajorGCEvent& e = major_gc_events[major_gc_events_used++];
+    e.seq                    = major_gc_count;  // already bumped by recordMajorGCEnd
+    e.start_ns               = pending_major_start_ns;
+    e.total_ns               = total_ns;
+    e.root_scan_ns           = root_scan_ns;
+    e.root_push_ns           = root_push_ns;
+    e.mark_ns                = mark_ns;
+    e.sweep_ns               = sweep_ns;
+    e.capacity_ns            = capacity_ns;
+    e.oldgen_before_bytes    = pending_major_before_bytes;
+    e.oldgen_after_bytes     = oldgen_after_bytes;
+    e.committed_bytes        = pending_major_committed;
+    e.live_bytes_after       = live_bytes_after;
+    e.garbage_bytes          = garbage_bytes;
+    e.alldead_bytes_released = alldead_bytes_released;
+    e.shrink_bytes_released  = shrink_bytes_released;
+    e.mark_units             = mark_units;
+    e.mark_stack_peak        = mark_stack_peak;
+    e.blocks_scanned         = blocks_scanned;
+    e.minors_since_prev      = minor_count_now - last_major_minor_count;
+    e.promoted_since_prev    = promoted_now    - last_major_promoted;
+    e.reason                 = pending_major_reason;
+
+    last_major_minor_count = minor_count_now;
+    last_major_promoted    = promoted_now;
+}
+
+namespace {
+const char* majorReasonName(GCStats::MajorReason r) {
+    switch (r) {
+        case GCStats::MajorReason::Occupancy:       return "occupancy";
+        case GCStats::MajorReason::GlobalPressure:  return "global-pressure";
+        case GCStats::MajorReason::GarbageFraction: return "garbage-frac";
+        case GCStats::MajorReason::AllocFailure:    return "alloc-failure";
+        case GCStats::MajorReason::Forced:          return "forced";
+        case GCStats::MajorReason::Unknown:         break;
+    }
+    return "unknown";
+}
+}  // namespace
+
+void GCStats::printMajorGCEventLog() const {
+    if (major_gc_events_used == 0) {
+        std::cout << "\n  (no major GC events recorded)" << std::endl;
+        return;
+    }
+
+    std::cout << "\nMajor GC Event Log (one row per collection):" << std::endl;
+    std::cout
+        << "     at(s)   total   mark  sweep  roots    reason"
+        << "        before      after    garbage   recovered"
+        << "   minors    promoted    markunits"
+        << std::endl;
+
+    const double MB = 1024.0 * 1024.0;
+    for (size_t i = 0; i < major_gc_events_used; ++i) {
+        const MajorGCEvent& e = major_gc_events[i];
+        // Recovered is the mark-derived garbage the collection identified,
+        // which is the honest "how much did this one find" figure — the
+        // allocator-visible before/after understates it because the sweep is
+        // lazy (see the MajorGCEvent comment).
+        std::cout << "  " << std::fixed << std::setprecision(2)
+                  << std::setw(8) << (e.start_ns / 1.0e9)
+                  << std::setprecision(1)
+                  << std::setw(7) << (e.total_ns / 1.0e6)
+                  << std::setw(7) << (e.mark_ns / 1.0e6)
+                  << std::setw(7) << (e.sweep_ns / 1.0e6)
+                  << std::setw(7) << ((e.root_scan_ns + e.root_push_ns) / 1.0e6)
+                  << "  " << std::setw(15) << std::left
+                  << majorReasonName(e.reason) << std::right
+                  << std::setprecision(1)
+                  << std::setw(9) << (e.oldgen_before_bytes / MB)
+                  << std::setw(11) << (e.oldgen_after_bytes / MB)
+                  << std::setw(11) << (e.garbage_bytes / MB)
+                  << std::setw(12) << ((e.alldead_bytes_released
+                                        + e.shrink_bytes_released) / MB)
+                  << std::setw(9) << e.minors_since_prev
+                  << std::setw(12) << e.promoted_since_prev
+                  << std::setw(13) << e.mark_units
+                  << std::endl;
+    }
+    std::cout << "  (times ms; sizes MB; 'roots' = root scan + push; "
+                 "'after' is post-sweep live; 'recovered' = all-dead + shrink\n"
+                 "   released to the allocator this pause; 'markunits' = objects "
+                 "popped from the mark stack)"
+              << std::endl;
+    if (major_gc_events_dropped > 0) {
+        std::cout << "  NOTE: " << major_gc_events_dropped
+                  << " further majors not logged (cap "
+                  << MAJOR_GC_EVENT_CAP << ")" << std::endl;
+    }
+}
+
 void GCStats::recordMajorGCEnd(uint64_t elapsed_ns) {
     major_gc_count++;
     total_major_gc_time_ns += elapsed_ns;
@@ -788,6 +923,17 @@ void GCStats::combine(const GCStats& other) {
     mark_sweeps_completed += other.mark_sweeps_completed;
     incremental_mark_calls += other.incremental_mark_calls;
     total_incremental_mark_work_units += other.total_incremental_mark_work_units;
+    // Event log: append, then the printer's rows stay in per-thread order.
+    // (Single-mutator compiles never hit this; kept correct for completeness.)
+    for (size_t i = 0; i < other.major_gc_events_used; ++i) {
+        if (major_gc_events_used >= MAJOR_GC_EVENT_CAP) {
+            major_gc_events_dropped++;
+            continue;
+        }
+        major_gc_events[major_gc_events_used++] = other.major_gc_events[i];
+    }
+    major_gc_events_dropped += other.major_gc_events_dropped;
+
     major_gc_occupancy_triggers += other.major_gc_occupancy_triggers;
     major_gc_alloc_failure_triggers += other.major_gc_alloc_failure_triggers;
     major_gc_garbage_triggers += other.major_gc_garbage_triggers;
@@ -1039,6 +1185,8 @@ void GCStats::print() const {
     std::cout << "  Alloc-fail triggers:   " << std::setw(12) << major_gc_alloc_failure_triggers << std::endl;
     std::cout << "  Global-pressure trig.: " << std::setw(12) << major_gc_global_pressure_triggers << std::endl;
     std::cout << "  Garbage-frac triggers: " << std::setw(12) << major_gc_garbage_triggers << std::endl;
+
+    printMajorGCEventLog();
 
     // Old-gen address-space walls (HEAP_043). Two different quantities: the
     // in-use peak is what the GlobalPressure trigger compares against the
@@ -1694,6 +1842,14 @@ void GCStats::reset() {
     mark_sweeps_completed = 0;
     incremental_mark_calls = 0;
     total_incremental_mark_work_units = 0;
+    major_gc_events_used = 0;
+    major_gc_events_dropped = 0;
+    pending_major_start_ns = 0;
+    pending_major_before_bytes = 0;
+    pending_major_committed = 0;
+    pending_major_reason = MajorReason::Unknown;
+    last_major_minor_count = 0;
+    last_major_promoted = 0;
     major_gc_occupancy_triggers = 0;
     major_gc_alloc_failure_triggers = 0;
     major_gc_garbage_triggers = 0;

@@ -76,6 +76,24 @@ recordMajorTriggerReason(GCStats& stats,
 }
 #endif
 
+// Maps the trigger enum onto the event-log reason tag. Separate enums on
+// purpose: the log also has to name causes that never pass through
+// evaluateMajorGCTrigger (hard alloc failure, forced collections).
+static inline GCStats::MajorReason
+majorReasonTag(OldGenSpace::MajorGCTriggerReason reason) {
+    switch (reason) {
+        case OldGenSpace::MajorGCTriggerReason::Occupancy:
+            return GCStats::MajorReason::Occupancy;
+        case OldGenSpace::MajorGCTriggerReason::GlobalPressure:
+            return GCStats::MajorReason::GlobalPressure;
+        case OldGenSpace::MajorGCTriggerReason::GarbageFraction:
+            return GCStats::MajorReason::GarbageFraction;
+        case OldGenSpace::MajorGCTriggerReason::None:
+            break;
+    }
+    return GCStats::MajorReason::Unknown;
+}
+
 // Initializes a freshly-allocated object header for the given tag.
 // `size` is the total aligned byte size returned by the allocator. For
 // variable-size types, hdr->size is overwritten with the per-type element
@@ -333,7 +351,7 @@ void* ThreadLocalHeap::allocateRegionSlow(size_t total) {
 #if ENABLE_GC_STATS
             stats_.major_gc_alloc_failure_triggers++;
 #endif
-            majorGC();
+            majorGC(GCStats::MajorReason::AllocFailure);
             obj = old_gen_.allocate(total);
         }
         if (!obj) {
@@ -361,7 +379,7 @@ void* ThreadLocalHeap::allocateLargePinned(size_t size, Tag tag) {
 #if ENABLE_GC_STATS
         stats_.major_gc_alloc_failure_triggers++;
 #endif
-        majorGC();
+        majorGC(GCStats::MajorReason::AllocFailure);
         obj = old_gen_.allocate(size);
     }
     if (!obj) {
@@ -500,7 +518,7 @@ void ThreadLocalHeap::collectAtSafepoint() {
 #if ENABLE_GC_STATS
             recordMajorTriggerReason(stats_, reason);
 #endif
-            majorGC();
+            majorGC(majorReasonTag(reason));
         }
     }
 }
@@ -525,11 +543,11 @@ void ThreadLocalHeap::minorGC() {
 #if ENABLE_GC_STATS
         recordMajorTriggerReason(stats_, reason);
 #endif
-        majorGC();
+        majorGC(majorReasonTag(reason));
     }
 }
 
-void ThreadLocalHeap::majorGC() {
+void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
     const bool profile_phases = gcPhaseProfileEnabled();
 
     // Dump sizes at major GC so the reproduction log makes it easy to see
@@ -541,6 +559,11 @@ void ThreadLocalHeap::majorGC() {
 
 #if ENABLE_GC_STATS
     auto gc_start = GC_STATS_TIMER_START();
+    // Snapshot the old-gen state BEFORE the pause so the event log can show
+    // what each collection walked into, not just what it left behind.
+    stats_.beginMajorGCEvent(reason,
+                             old_gen_.getAllocatedBytes(),
+                             old_gen_.getCommittedBytes());
 #endif
 
     // Per-phase profiling state (zero-cost when profile_phases is false —
@@ -621,11 +644,11 @@ void ThreadLocalHeap::majorGC() {
     // Continue with marking and sweep.
     Elm::MajorGCPhaseProfile phase_profile;
 #if ENABLE_GC_STATS
-    if (profile_phases) {
-        old_gen_.finishMarkAndSweep(stats_, phase_profile);
-    } else {
-        old_gen_.finishMarkAndSweep(stats_);
-    }
+    // Always take the profiling overload in stats builds: the per-major event
+    // log needs the mark/sweep split, and the extra cost is a handful of clock
+    // reads against a pause measured in tens of milliseconds.
+    (void)profile_phases;
+    old_gen_.finishMarkAndSweep(stats_, phase_profile);
 #else
     if (profile_phases) {
         old_gen_.finishMarkAndSweep(phase_profile);
@@ -639,6 +662,23 @@ void ThreadLocalHeap::majorGC() {
 #if ENABLE_GC_STATS
     uint64_t elapsed_ns = GC_STATS_TIMER_ELAPSED_NS(gc_start);
     GC_STATS_MAJOR_RECORD_GC_END(stats_, elapsed_ns);
+    stats_.recordMajorGCEvent(
+        nsBetween(t_enter, t_done),
+        nsBetween(t_enter, t_after_root_collect),
+        nsBetween(t_after_root_collect, t_after_root_push),
+        phase_profile.mark_ns,
+        phase_profile.sweep_ns,
+        phase_profile.capacity_ns,
+        old_gen_.getAllocatedBytes(),
+        phase_profile.live_bytes_after,
+        phase_profile.garbage_bytes,
+        phase_profile.alldead_bytes_released,
+        phase_profile.shrink_bytes_released,
+        phase_profile.mark_units_done,
+        phase_profile.mark_stack_peak,
+        phase_profile.blocks_scanned,
+        nursery_.getStats().minor_gc_count,
+        nursery_.getStats().objects_promoted);
 #endif
 
     if (profile_phases) {

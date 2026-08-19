@@ -527,6 +527,78 @@ public:
     // Major GC histogram using same bucket configuration as minor GC.
     uint64_t major_time_histogram[HISTOGRAM_BUCKETS] = {0};
 
+    // ========== Per-major-GC event log ==========
+    //
+    // The aggregate counters above answer "how many and how long in total";
+    // they cannot answer "WHEN did majors happen, what tripped each one, and
+    // how much did each recover" — which is what you need to tell a
+    // deterministic occupancy step (benchmarks/lss-opt.md Run R) from code
+    // that genuinely got slower. This log records one row per COMPLETED major
+    // GC and is dumped at process end alongside the rest of the stats.
+    //
+    // Bounded and allocation-free: a fixed array, no growth inside a GC pause.
+    // Overflow past the cap is counted, never silently dropped.
+    static constexpr size_t MAJOR_GC_EVENT_CAP = 512;
+
+    // Why each major GC ran. Mirrors OldGenSpace::MajorGCTriggerReason plus
+    // the two causes that never pass through evaluateMajorGCTrigger: a hard
+    // allocation failure in the old-gen slow path, and an explicit/forced
+    // collection (eco_entry teardown, RuntimeExports, main.cpp).
+    enum class MajorReason : uint8_t {
+        Unknown        = 0,
+        Occupancy      = 1,
+        GlobalPressure = 2,
+        GarbageFraction = 3,
+        AllocFailure   = 4,
+        Forced         = 5,
+    };
+
+    struct MajorGCEvent {
+        uint64_t seq              = 0;  // 1-based collection number
+        uint64_t start_ns         = 0;  // relative to process start
+        uint64_t total_ns         = 0;  // whole pause, matches the histogram
+        uint64_t root_scan_ns     = 0;
+        uint64_t root_push_ns     = 0;
+        uint64_t mark_ns          = 0;
+        uint64_t sweep_ns         = 0;
+        uint64_t capacity_ns      = 0;
+        // Allocator's own view either side of the pause. NOTE the sweep is
+        // LAZY: `after` is what the allocator believes immediately at the end
+        // of the pause, so `before - after` UNDERSTATES what the collection
+        // ultimately reclaims. The mark-derived live/garbage pair below is the
+        // honest measure of what the heap actually contained.
+        uint64_t oldgen_before_bytes = 0;
+        uint64_t oldgen_after_bytes  = 0;
+        uint64_t committed_bytes     = 0;  // old-gen commit at entry
+        // Mark-derived, from MajorGCPhaseProfile.
+        uint64_t live_bytes_after    = 0;
+        uint64_t garbage_bytes       = 0;
+        uint64_t alldead_bytes_released = 0;
+        uint64_t shrink_bytes_released  = 0;
+        // Work done.
+        uint64_t mark_units       = 0;
+        uint64_t mark_stack_peak  = 0;
+        uint64_t blocks_scanned   = 0;
+        // Pacing: what the mutator did since the PREVIOUS major.
+        uint64_t minors_since_prev   = 0;
+        uint64_t promoted_since_prev = 0;
+        MajorReason reason = MajorReason::Unknown;
+    };
+
+    MajorGCEvent major_gc_events[MAJOR_GC_EVENT_CAP];
+    size_t   major_gc_events_used = 0;
+    uint64_t major_gc_events_dropped = 0;
+
+    // Snapshots taken at the START of the current major GC, consumed when it
+    // completes. Set by ThreadLocalHeap::majorGC.
+    uint64_t pending_major_start_ns      = 0;
+    uint64_t pending_major_before_bytes  = 0;
+    uint64_t pending_major_committed     = 0;
+    MajorReason pending_major_reason     = MajorReason::Unknown;
+    // Counter values at the previous major's completion, for the pacing deltas.
+    uint64_t last_major_minor_count      = 0;
+    uint64_t last_major_promoted         = 0;
+
     // ========== Methods ==========
 
     // Records a nursery allocation event (count, bytes, size histogram).
@@ -582,6 +654,41 @@ public:
 
     // Records completion of a major GC cycle with timing.
     void recordMajorGCEnd(uint64_t elapsed_ns);
+
+    // Nanoseconds since process start (the event log's time origin).
+    static uint64_t nowSinceProcessStartNs();
+
+    // Opens an event: call at major-GC entry with the cause and the old-gen
+    // state before the pause. Pairs with recordMajorGCEvent below.
+    void beginMajorGCEvent(MajorReason reason,
+                           uint64_t oldgen_before_bytes,
+                           uint64_t committed_bytes);
+
+    // Closes the event opened by beginMajorGCEvent and appends it to the log.
+    // Call once per completed major GC, after finishMarkAndSweep.
+    void recordMajorGCEvent(uint64_t total_ns,
+                            uint64_t root_scan_ns,
+                            uint64_t root_push_ns,
+                            uint64_t mark_ns,
+                            uint64_t sweep_ns,
+                            uint64_t capacity_ns,
+                            uint64_t oldgen_after_bytes,
+                            uint64_t live_bytes_after,
+                            uint64_t garbage_bytes,
+                            uint64_t alldead_bytes_released,
+                            uint64_t shrink_bytes_released,
+                            uint64_t mark_units,
+                            uint64_t mark_stack_peak,
+                            uint64_t blocks_scanned,
+                            // NurserySpace keeps its OWN GCStats (merged only
+                            // at print time), so the minor-side counters have
+                            // to be handed in — reading them off `this` yields
+                            // zero. Trap paid for on first light.
+                            uint64_t minor_count_now,
+                            uint64_t promoted_now);
+
+    // Prints the per-major-GC event log (one row per collection).
+    void printMajorGCEventLog() const;
 
     // Adds one block's contribution to the residency histogram. Called
     // once per surviving old-gen block at major-GC end (sampled BEFORE

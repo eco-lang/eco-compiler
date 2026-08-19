@@ -2034,6 +2034,11 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats) {
 void OldGenSpace::finishMarkAndSweep(GCStats &stats,
                                      MajorGCPhaseProfile &profile) {
     auto t_mark_start = std::chrono::high_resolution_clock::now();
+    // `mark_units_done` was declared but never written (dead telemetry until
+    // the per-major event log needed it). incrementalMark already accumulates
+    // objects-popped into the aggregate counter, so the per-collection figure
+    // is its delta across this mark loop — no extra work in the mark path.
+    const uint64_t mark_units_before = stats.total_incremental_mark_work_units;
     while (true) {
         if (mark_stack.size() > profile.mark_stack_peak)
             profile.mark_stack_peak = mark_stack.size();
@@ -2041,6 +2046,8 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats,
         profile.mark_iterations++;
         if (!more) break;
     }
+    profile.mark_units_done =
+        stats.total_incremental_mark_work_units - mark_units_before;
     auto t_mark_end = std::chrono::high_resolution_clock::now();
 
     auto t_sweep_start = t_mark_end;
