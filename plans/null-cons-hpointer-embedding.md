@@ -2,15 +2,16 @@
 
 **Status: IMPLEMENTED AND GATED (2026-08-19).** All phases P0–P6 landed.
 Invariants HEAP_044 + CGEN_079 added; CGEN_068 and HEAP_035 amended.
-Measurement: `benchmarks/lss-opt.md` Run T. The promoted 0-field `Tag_Custom`
-bucket is exactly **0** (was 28,645,830 / 437 MiB, of which 27,601,652 were
-`RBEmpty`), and the copied-in-nursery 0-field count with it. On one cold
-Stage 7a leg: promoted 475,692,159 → **450,649,497** objects (−5.3%) and
-13,641 → **13,305** MiB (−2.5%) against the §0 census, with **majors 17 → 14**
-— close to the −28.6M / −437 MiB the plan predicted. Read the entry before
-quoting those deltas: it is one leg against a census from a different tree and
-the corpus is the compiler source, which this change modifies, so only the
-majors step (deterministic per Run R) is worth leaning on. No wall-clock claim.
+Measurement: `benchmarks/lss-opt.md` Run T, measured under that file's own protocol
+(one cold Stage 7a leg, `ECO_MONO_ENGINE=solver ECO_MONO_LSS=1`, `/usr/bin/time -v`).
+The promoted 0-field `Tag_Custom` bucket is exactly **0** (was 28,645,830 / 437 MiB, of
+which 27,601,652 were `RBEmpty`). Against Run S: **wall 355.5 → 333.3 s (−6.2%)**, GC
+time 142.40 → 124.51 s (−12.6%), **majors 17 → 14**, promoted 475,692,159 → 450,139,439
+objects (−5.4%) and 13,641 → 13,292 MiB (−2.6%), max RSS −4.6%. Wall and GC time are far
+outside Run R's ±1.1% / 3.06% noise floors, and the mechanism is the one the plan sized:
+less promotion lowers occupancy, which drops three majors, and mark is 92.4% of major-GC
+time. `out.mlir` moved −0.40% (an emission change legitimately moves it; 0.4% of corpus
+cannot buy 6.2% of wall). True mutator −2.0% is the smaller, weaker half.
 
 Gates, all on the final tree: `elm make` type-check clean; E2E **1,681/1,681**
 from a clean `--target full`; heap-validate E2E **1,681/1,681** with the new

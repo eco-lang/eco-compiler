@@ -9,7 +9,7 @@ module Compiler.MonoSolver.Engine exposing
     , pushNumberMulti, popNumberMulti, isNumberMultiTarget, recordNumberInstance, numberMultiRootType
     , pushLocalMulti, popLocalMulti, isLocalMultiTarget, recordLocalInstance, localVarInfo
     , MonoMemo, emptyMonoMemo
-    , lookupSchemeMono, putSchemeMono, lookupKernelAbi, putKernelAbi
+    , lookupSchemeMono, putSchemeMono
     , lookupCallMemo, putCallMemo
     , consS
     , mvarIdKey, pointKey
@@ -183,8 +183,6 @@ ground/closed classification is item-independent):
 
   - `schemeMono` — a CLOSED (var-free) callee scheme's classification, keyed by
     `TOpt.toComparableGlobal`;
-  - `kernelAbiMono` — a kernel ABI derived at all-ground args, keyed by
-    `"home.name|argKeys"`;
   - `callMemo` — an open-scheme call at all-ground args:
     `(funcMonoType, resultMonoType, specId)`. D10 caches the specId so a hit
     skips re-enqueue/re-serialize. Keyed by the callee `Global` plus the
@@ -200,14 +198,13 @@ cap. Grouping them made room for `S.intern` (K6).
 -}
 type alias MonoMemo =
     { schemeMono : CoreDict.Dict String Mono.MonoType
-    , kernelAbiMono : CoreDict.Dict String Mono.MonoType
     , callMemo : Mono.SpecKeyMap ( Mono.MonoType, Mono.MonoType, Mono.SpecId )
     }
 
 
 emptyMonoMemo : MonoMemo
 emptyMonoMemo =
-    { schemeMono = CoreDict.empty, kernelAbiMono = CoreDict.empty, callMemo = Mono.specKeyMapEmpty }
+    { schemeMono = CoreDict.empty, callMemo = Mono.specKeyMapEmpty }
 
 
 emptyMemberTable : LssMemberTable
@@ -1487,23 +1484,6 @@ putSchemeMono key monoType =
                     s.monoMemo
             in
             { s | monoMemo = { m | schemeMono = CoreDict.insert key monoType m.schemeMono } }
-        )
-
-
-lookupKernelAbi : String -> Step (Maybe Mono.MonoType)
-lookupKernelAbi key =
-    getS (\s -> CoreDict.get key s.monoMemo.kernelAbiMono)
-
-
-putKernelAbi : String -> Mono.MonoType -> Step ()
-putKernelAbi key monoType =
-    modifyS
-        (\s ->
-            let
-                m =
-                    s.monoMemo
-            in
-            { s | monoMemo = { m | kernelAbiMono = CoreDict.insert key monoType m.kernelAbiMono } }
         )
 
 

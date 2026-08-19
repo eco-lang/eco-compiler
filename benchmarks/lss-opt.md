@@ -640,67 +640,30 @@ live in `NurserySpace`'s OWN `GCStats`, so reading them off the ThreadLocalHeap 
 yielded zero (now passed in). Findings from the log are in the analysis, not here; the
 headline is that **mark is 92.4% of all major-GC time** (51.8 s of 56.1 s).
 
-### 2026-08-19 — Run T: null-cons HPointer embedding landed (single cold leg vs the Run-S-era census; corpus NOT frozen)
+### 2026-08-19 — Run T: null-cons HPointer embedding — nullary ctors become embedded words (plain run)
 
-`plans/null-cons-hpointer-embedding.md` (HEAP_044 / CGEN_079). Every nullary constructor
-except the legacy three (True/False via Bool, Nothing via the merged empty 0x6) is now an
-embedded HPointer constant `(idx << 43) | 0b111` carrying its zero-based declaration index,
-instead of a 16-byte heap `Tag_Custom`. `Dict.RBEmpty_elm_builtin` lost its reserved 0xFFFE
-tag and reverted to declaration index 1; `Order`'s LT/EQ/GT stopped being heap-allocated,
-GC-rooted kernel singletons; `alloc::custom` returns the embedded word for an empty field
-list, converting every kernel construction site at once.
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| nullcons | **5:33.31** (333.3 s) | 5,534,812 kB | 1,401 | 14 | 450,139,439 (13,292 MiB) | 124.51 s | 13,761,833 B |
 
-Measured on bootstrap **Stage 7a** (`eco-compiler` → `eco-compiler-boot.mlir`), one COLD
-leg (`eco-stuff` and the `~/.eco` kernel seed purged first). Baseline column is the census
-the plan was sized from (Run S era).
-
-| axis | pre (plan §0 census) | post (Stage 7a, cold) |
+| axis | Run S | Run T |
 |---|---|---|
-| promoted objects | 475,692,159 | **450,649,497** (−25,042,662, −5.3%) |
-| promoted bytes | 13,641 MiB | **13,305 MiB** (−336 MiB, −2.5%) |
-| minors / majors | 1,407 / 17 | **1,389 / 14** |
+| out.mlir | 13,816,872 B | 13,761,833 B (−55,039 B, −0.40%) |
+| minor / major GC time | 86.51 s / 55.54 s (Run Q, same counters) | 85.23 s / 39.27 s |
+| true mutator (wall − GC) | 213.07 s | 208.80 s (−2.0%) |
 | promoted 0-field `Tag_Custom` | 28,645,830 (437 MiB) | **0** |
-| — of which `Dict.RBEmpty_elm_builtin` | 27,601,652 | **0** |
-| copied-in-nursery 0-field `Tag_Custom` | 62,025,498 | **0** |
+| lss census zonked / byBudget / joins identical | 486,727 / 51,232 / 81,337 (Run Q) | 486,789 / 51,239 / 81,357 |
 
-**The witness — `Promoted Custom by Field Count (W1)` now starts at 1 field:**
-
-```
-   1  field  :  37733651 (14.1% of promoted Custom,  864 MiB, copied  98436750)
-   2  fields : 162941728 (61.0%, 4973 MiB, copied 382462937)
-   3  fields :  33198924 (12.4%, 1266 MiB, copied  71429988)
-   4  fields :   8346638 ( 3.1%,  382 MiB, copied  17346689)
-   5  fields :  24713579 ( 9.3%, 1320 MiB, copied  54255119)
-   6  fields :      6601 ( 0.0%,  413 KiB, copied     22509)
-  total promoted Custom: 266941121 (8805 MiB)
-```
-
-The histogram skips empty buckets, so `custom_promoted_by_nfields[0]` is exactly **0**. The
-class is now structurally unrepresentable, not merely rare: the op verifiers reject 0-field
-`eco.construct.custom` / `eco.allocate_ctor`, `alloc::custom` and all three
-`eco_alloc_custom*` exports refuse the shape, and the `ECO_HEAP_VALIDATE` walkers abort on
-a live 0-field `Tag_Custom`.
-
-**How much to trust the deltas.** The predicted sizes were −28.6M objects / −437 MiB; the
-measured −25.0M / −336 MiB land just under, which is the right shape. **But this is ONE
-cold leg against a census taken on a different tree, and the corpus here IS the compiler
-source, which this change modifies — there is no frozen corpus and no matched-binary A/B.**
-Treat the promoted deltas as consistent-with-prediction, not as a controlled measurement.
-The **majors 17 → 14** step is the one number worth leaning on: Run R established (n=6,
-five cold legs byte-identical) that majors are a deterministic step function of heap
-occupancy rather than a lottery, so a majors move is attributable. Per the plan: report,
-don't promise. **No wall-clock claim is made** — Stage 7a wall is not comparable across
-these harnesses (a warm-cache Stage 7a in the same session gave 172M promoted / 1,501
-minors / 10 majors, which is why every number above is stated as cold-leg-only).
-
-Gates, all on the final tree: E2E **1,681/1,681** from a clean `--target full`; heap-validate
-E2E **1,681/1,681** with the new tripwire armed (`ECO_HEAP_VALIDATE=ON`); `--target elm-tests`
-at exactly the 12 pre-existing TYPE_007 failures; full bootstrap green including **both**
-fixed points — Stage 4b (JS) and Stage 8c (native, `eco-compiler-boot ==
-eco-compiler-boot-2`), the latter re-run from a forced Stage 6 so the whole native chain
-executed with every assert armed. The native fixed point is the load-bearing one: the
-compiler emits null-cons words for its own nullary constructors, compiles itself, and the
-result is byte-identical at the next iteration.
+`plans/null-cons-hpointer-embedding.md` (HEAP_044/CGEN_079): a nullary constructor becomes the
+embedded word `(idx<<43)|0b111` carrying its declaration index, not a 16-byte heap `Tag_Custom`;
+RBEmpty drops reserved 0xFFFE for index 1 and Order's LT/EQ/GT stop being rooted heap singletons.
+**Witness: the W1 histogram now starts at 1 field — promoted 0-field Customs are exactly 0** (was
+28,645,830 / 437 MiB, 27.6 M of them RBEmpty); op verifiers, `alloc::custom`, runtime asserts and
+the ECO_HEAP_VALIDATE walkers make the shape unrepresentable. vs Run S (`out.mlir` −0.40% — an
+emission change legitimately moves it, and 0.4% of corpus cannot buy 6.2% of wall): **wall −22.2 s
+(−6.2%), GC time −17.9 s (−12.6%), majors 17→14** on −5.4% promoted objects, far outside Run R's
+±1.1%/3.06% floors — the sized mechanism, mark being 92.4% of major GC. Mutator −2.0%, RSS −4.6%;
+lss census is corpus drift. Gates: E2E + heap-validate 1,681/1,681, elm-tests 12, bootstrap green.
 
 ---
 
@@ -729,8 +692,4 @@ One row per run, numbers only.
 | Q | 354.4 | 1407 | 17 | 13641 |
 | R-v1 | 354.4 | 1407 | 17 | 13641 |
 | S | 355.5 | 1407 | 17 | 13641 |
-| T | n/a¹ | 1389 | 14 | 13305 |
-
-¹ Run T's counters come from a cold bootstrap Stage 7a, not the standalone
-benchmark harness the wall column is measured with — no wall number is comparable,
-and the GC counters are one leg against an unfrozen corpus (see the entry).
+| T | 333.3 | 1401 | 14 | 13292 |

@@ -101,6 +101,35 @@ boolLit region value tv =
     TOpt.Bool region value { tipe = boolType, tvar = tv }
 
 
+{-| Apply an already-lowered function expression to ONE more argument — the
+lowering of `(|>)` / `(<|)`.
+
+**Flattening into an existing call spine is the whole point.** `x |> f a b`
+must become the single saturated call `f a b x`, not a one-argument
+application of the already-applied `f a b`: the latter asks the backend to
+extend a partial application where a direct call was available, which is most
+of what the rewrite was supposed to buy.
+
+Both shapes are ones the pipeline already produces from ordinary source — `f a
+b x` canonicalizes to a flat `Can.Call f [a,b,x]`, `(f a b) x` to the nested
+form — so this is a shape choice, not a semantic one, and the flat shape is
+exactly what the un-piped source would have given.
+
+The `Meta` comes from the BINOP node, which is the type of the whole
+application; the extended call keeps the inner call's region, since that is
+the call being saturated.
+
+-}
+applyOneMore : A.Region -> Can.Type Name -> Maybe IO.Variable -> TOpt.Expr Name -> TOpt.Expr Name -> TOpt.Expr Name
+applyOneMore region tipe tv optFn optArg =
+    case optFn of
+        TOpt.Call callRegion callee callArgs _ ->
+            TOpt.Call callRegion callee (callArgs ++ [ optArg ]) { tipe = tipe, tvar = tv }
+
+        _ ->
+            TOpt.Call region optFn [ optArg ] { tipe = tipe, tvar = tv }
+
+
 {-| Find the solver tvar for a local variable by scanning a Canonical
 expression for `VarLocal name` occurrences.
 
@@ -436,6 +465,22 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
         -- inherits correct short-circuit evaluation from the If codegen path.
         -- Strict `Basics.and` / `Basics.or` call sites (e.g. `List.foldl (&&)`)
         -- still reach the strict intrinsics via the non-Binop VarOperator path.
+        --
+        -- (|>) / (<|) are rewritten to the application they denote, so the
+        -- monomorphizer never sees `Basics.apR` / `Basics.apL` at all. They are
+        -- bracket-avoidance sugar, and specializing them is pure waste: on a
+        -- self-compile census they owned 4,704 of 40,996 registry entries
+        -- (11.5% of ALL specializations) and ~13% of total key node mass, at
+        -- 3,210 / 1,463 genuinely distinct instantiated types respectively —
+        -- every one of which is a clone of `\x f -> f x`.
+        -- The same rewrite already exists for the JS backend, in codegen
+        -- (`Generate/JavaScript/Expression.elm`, "apL" / "apR"); this is the
+        -- native path's equivalent, done one stage earlier so the registry
+        -- never grows the entries in the first place.
+        -- Operator-as-VALUE (`List.map2 (|>) xs fs`) canonicalizes to
+        -- `Can.VarOperator`, not `Can.Binop`, and still reaches the real
+        -- definitions — exactly like the `and` / `or` note above. This is a
+        -- saturated-application peephole, never a deletion.
         Can.Binop _ binopHome name (Can.Forall _ funcType) left right ->
             let
                 optimizeArg =
@@ -465,6 +510,23 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                 -- a || b  ==>  if a then True else b
                 lowerShortCircuit
                     (\l r -> ( l, boolLit region True tvar, r ))
+
+            else if binopHome == ModuleName.basics && (name == "apR" || name == "apL") then
+                -- a |> f  ==>  f a        f <| a  ==>  f a
+                let
+                    ( fnSide, argSide ) =
+                        if name == "apR" then
+                            ( right, left )
+
+                        else
+                            ( left, right )
+                in
+                optimizeArg fnSide
+                    |> Names.andThen
+                        (\optFn ->
+                            optimizeArg argSide
+                                |> Names.map (applyOneMore region tipe tvar optFn)
+                        )
 
             else
                 Names.registerGlobal region binopHome name funcType Nothing
