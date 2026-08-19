@@ -665,6 +665,68 @@ emission change legitimately moves it, and 0.4% of corpus cannot buy 6.2% of wal
 ±1.1%/3.06% floors — the sized mechanism, mark being 92.4% of major GC. Mutator −2.0%, RSS −4.6%;
 lss census is corpus drift. Gates: E2E + heap-validate 1,681/1,681, elm-tests 12, bootstrap green.
 
+### 2026-08-19 — Run U: `|>` / `<|` inlined at typed lowering — `Basics.apR`/`apL` stop being specialized (plain run)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| apRapL | **5:08.56** (308.6 s) | 5,844,072 kB | 1,323 | 12 | 433,092,851 (12,785 MiB) | 108.91 s | 13,585,786 B |
+
+| axis | Run T | Run U |
+|---|---|---|
+| out.mlir | 13,761,833 B | 13,585,786 B (−176,047 B, −1.28%) |
+| minor / major GC time | 85.23 s / 39.27 s | 81.19 s / 27.70 s |
+| true mutator (wall − GC) | 208.79 s | 199.65 s (−4.4%) |
+| top specs/global | (Run J/Q) apR=3,223–3,230 foldl=2,049 apL=1,475 | foldl=2,051 apL=891 foldr=848 foldrHelper=848 Task.andThen=789 |
+| `Basics_apR` / `Basics_apL` symbols in out.mlir | — | 766 / 891 |
+| binary | — | 64,719,424 B |
+
+`(|>)`/`(<|)` are rewritten to the application they denote in `LocalOpt/Typed/Expression.elm`'s
+`Can.Binop` arm, beside the existing `&&`/`||` lowering, so the monomorphizer never registers them;
+the function side flattens into an existing call spine, making `x |> f a b` the saturated `f a b x`.
+An emission change, so `out.mlir` legitimately moves: 13,761,833 → 13,585,786 B (−1.28%). Counters
+first: minors 1,401→1,323 (−5.6%), majors 14→12, promoted 13,292→12,785 MiB (−3.8%) — all three down
+together, far outside Run R's ±1.1%/3.06% floors — with wall −24.7 s (−7.4%), GC time −12.5% (major
+−29.5%) and mutator −4.4%. Census witness: `apR` leaves the top-5 (was #1) and `apL` falls to 891,
+while `foldl` holds at 2,049→2,051 — the rest of the corpus is unmoved. **The residue is a
+benchmark-configuration artifact, not an implementation gap**: 766+891 apR/apL symbols survive
+because the package `typed-artifacts.dat` in `~/.eco` (elm/core 2026-08-13, most others 2026-07-09)
+hold TypedOptimized graphs lowered by pre-change binaries and the protocol forbids deleting that
+cache — only `compiler/src` (6,768 `|>`, 648 `<|`) is re-lowered, so this run UNDERSTATES the change.
+Max RSS +5.6% is the one counter moving the wrong way, unexplained — the parked Run-G/H class.
+Gates ran as a separate pass: `--target full` 1,681/1,681.
+
+### 2026-08-19 — Run V: same tree as U, but `~/.eco` rebuilt so PACKAGE artifacts are re-lowered too (plain run; **baseline break**)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| cold-cache | **5:09.41** (309.4 s) | 5,899,912 kB | 1,314 | 12 | 433,603,188 (12,800 MiB) | 109.67 s | 13,543,058 B |
+
+| axis | Run U | Run V |
+|---|---|---|
+| out.mlir | 13,585,786 B | 13,543,058 B (−42,728 B, −0.31%) |
+| minor / major GC time | 81.19 s / 27.70 s | 80.77 s / 28.89 s |
+| true mutator (wall − GC) | 199.65 s | 199.74 s |
+| `Basics_apR` / `Basics_apL` symbols in out.mlir | 766 / 891 | **0 / 3** |
+| top specs/global | foldl=2,051 apL=891 foldr=848 foldrHelper=848 Task.andThen=789 | foldl=2,051 foldr=848 foldrHelper=848 Task.andThen=789 Bytes.Decode.Decoder=689 |
+| sets zonked / singletons | 405,920 / 85,665 | 365,356 / 64,011 |
+| widened bySize / byBudget | 320 / 41,251 | 43 / 36,648 |
+| joins noop / changed / retranslations | 3,203 / 2,728 / 813 | 2,136 / 1,850 / 590 |
+| devirtDirect / slotsMinted | 5,130 / 852,469 | 3,984 / 826,290 |
+
+`~/.eco` had been deleted, so this run rebuilds it: all 29 package `typed-artifacts.dat` are
+re-lowered by the CURRENT binary (2026-08-19 20:53), applying the `|>`/`<|` rewrite to package code
+— what Run U could not reach. **Witness: apR/apL symbols go 766/891 → 0/3** (the 3 are genuine
+operator-as-value uses); both leave `top specs/global` while `foldl` holds at 2,051. The analysis
+does materially less work — zonked −10.0%, `bySize` widening −86.6%, join noop −33%, changed −32%,
+`devirtDirect` −22%. **None of it reaches the numbers that matter**: vs Run U (13,585,786 →
+13,543,058 B, −0.31%) wall +0.3%, minors 1,323→1,314, majors 12=12, promoted +0.1%, mutator +0.09 s
+— flat on every axis, inside Run R's ±1.1% floor. **This corrects Run U's "understates the change"
+expectation: the mechanism completed exactly as predicted, the performance did not follow.** T→U was
+the whole win; the package-side residue was worth nothing. Confound: the fresh artifacts differ from
+U's July/August ones in EVERY compiler change since, not only apR/apL — not a single-variable A/B.
+**Baseline: rows A–U ran against artifacts frozen 2026-07-09/08-13; V is the first run on a fully
+current corpus and is the new reference row.**
+
 ---
 
 ## Summary
@@ -693,3 +755,5 @@ One row per run, numbers only.
 | R-v1 | 354.4 | 1407 | 17 | 13641 |
 | S | 355.5 | 1407 | 17 | 13641 |
 | T | 333.3 | 1401 | 14 | 13292 |
+| U | 308.6 | 1323 | 12 | 12785 |
+| V | 309.4 | 1314 | 12 | 12800 |
