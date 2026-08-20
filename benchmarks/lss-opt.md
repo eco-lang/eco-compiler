@@ -755,6 +755,59 @@ refines element identity without moving fan-out. vs Run V: majors 12 = 12 (clean
 `LssGroundStandaloneTest`); Stage-8c fixed point byte-identical both flag-on-by-env and default-on;
 elm-tests 13,126/12 (same 12 pre-existing).
 
+### 2026-08-20 — Run X: LSS_020 signature set-flow (lss-fidelity plan 3 Phase D re-census; sigFlow stays DEFAULT-OFF)
+
+Tree = plan 3 Phases A+B landed (`lss.sigFlow`, DEFAULT-OFF). Two instrumented censuses, one
+default-built binary, cold Stage 7a, workload flag varied (mono/AbiCloning legs); plus a Run-M
+dispatch A/B on counters-lowered SOLVER-BUILT binaries (default-built vs sigFlow-built, cold subst
+workload — Run-L convention).
+
+**Mono + AbiCloning census (same binary, workload flag off → on):**
+
+| axis | flag-off | flag-on |
+|---|---|---|
+| signatures | 9,687 memoized (9,687 trivial) | 9,687 memoized (**9,293 trivial — 394 nontrivial, 4.1%**) |
+| sets zonked / member-carrying | 367,603 / 65,601 (17.9%) | 405,826 / 96,909 (23.9%) — **singletons 64,238 → 95,537 (+31,299)** |
+| unconstrained-⊤ share (zonked − Σ sizeHist − bySize) | 301,959 (**82.14%**) | 308,874 (**76.11%**) |
+| sizeHist k=2..8 | 808/303/123/57/35/14/23 | 813/301/129/56/36/14/23 (unmoved) |
+| widened bySize / byKernel / byBudget / bySigSize | 43 / 4,065 / 36,788 / 0 | 43 / 4,142 / 38,737 (+5.3%) / **0** |
+| sigflow widenedByCf | 0 | 5,329 |
+| grounding grounded / deferred | 4,966 / 11 | **12,555** / 11 |
+| join flush rounds / retranslations | 3 / 595 | 3 / 603 |
+| devirtDirect / devirtKernel | 3,989 / 772 | 3,989 / 772 |
+| dispatchUpgraded / stampedStaged / declinedBlocked | 3,571 / 459 / 0 | 3,579 / 453 / 8 |
+| declinedNoInstance (Phase C1) | 1,380 | 1,513 (**+133** — raw-l| sig-transported lambdas, 11 sites each; NOT material) |
+| multiSetSites (GAP-6 gate) | 2->2 3->1 5->1 | **2->2 3->1 5->1 (identical — NO-GO CONFIRMED, M5 doc §6)** |
+| topSiteShapes global/local/kernel | 15,558 / 7,444 / 5,279 | 17,184 / 7,487 / 6,174 |
+| out.mlir (workload) | 13,592,155 B | 13,622,196 B (+30,041 B, +0.22%) |
+
+**Run-M dispatch A/B (counters-lowered, solver-built; cold subst workload; totals sanity
+`sat+fast` IDENTICAL = 1,019,178,565 both — pure tier shift, LSS_005 holds):**
+
+| leg | wall | max RSS | sat | fast | fast coverage |
+|---|---|---|---|---|---|
+| default-built | 4:19.06 | 5,950,236 kB | 934,626,521 | 84,552,044 | **8.30%** |
+| sigFlow-built | 4:17.58 | 5,949,852 kB | 957,233,905 | 61,944,660 | **6.08%** |
+
+**Behavioral gate:** the two binaries emit byte-identical workload out.mlir (LSS_005 PASS).
+
+**Reading + DECISION (sigFlow stays DEFAULT-OFF):** the channel opens exactly as designed —
+394 nontrivial signatures, +31.3k singleton sets, ⊤-share −6.0 points, byBudget +5.3% with
+watchdogs quiet, wall FLAT — but the one live consumer regresses: **fast dispatch coverage
+8.30% → 6.08% (−22.6M stamped events, −26.7% rel)**. This is the plan's Risk-2 "symmetric
+pollution" measured at runtime: symmetric rep-links + honest hubs union per-branch/per-param
+flows, turning honestly-singleton SITES into honest-but-multi DEF-level sets that AbiCloning
+declines. Wall-neutral (dispatch tiers do not govern wall on this workload — consistent with
+the kernel-boundary census lesson), but it degrades the stamp pool the dispatch-value track
+builds on. **The plan §A.2 FromArrow re-open criterion has FIRED** — the recorded path to
+precision-without-pollution is directed/per-site fact application (deferred-constraint flavor),
+a future plan; flipping the default before that exists trades a live asset for a latent one.
+Traps hit: cmake `--target eco-compiler` is a ninja NO-OP under env-only changes — delete
+`bin/eco-compiler` + `bin/eco-compiler.mlir` (and `eco-stuff/`) to force a flavored rebuild;
+the build harness swallows the census stderr (run the binary manually per runtime-calls.md).
+(No summary-table row: the timed pair is counters-lowered + subst-workload, a different
+convention from rows A–W.)
+
 ---
 
 ## Summary

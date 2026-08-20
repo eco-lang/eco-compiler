@@ -31,6 +31,7 @@ import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Compiler.Monomorphize.ResolveAccessorValues as ResolveAccessorValues
 import Compiler.Monomorphize.State as State
 import Compiler.MonoSolver.Engine as Engine exposing (Failure(..), Step)
+import Compiler.MonoSolver.KernelSetFacts as KernelSetFacts
 import Compiler.MonoSolver.LssInfer as LssInfer
 import Compiler.MonoSolver.Store as Store
 import Compiler.MonoSolver.Zonk as Zonk
@@ -3126,6 +3127,16 @@ injectArgLambdaMember arg canVar =
         TOpt.VarBox _ g _ ->
             standaloneArgMember ("c|" ++ TOpt.toComparableGlobal g) g canVar
 
+        TOpt.VarCycle _ home name _ ->
+            -- GAP-7 seam 2 (LSS_020 plan Phase E.2): a cycle member passed as
+            -- a function argument transports its member like any global
+            -- (mirrors the VarGlobal arm WITHOUT the kernel-alias fold —
+            -- `kernelAliasOf` can never return Just for a cycle member:
+            -- Link→Cycle→wildcard). The provisional `g|` id grounds at zonk
+            -- per LSS_019; depth stays in lockstep with the inference side
+            -- through `spineDepthForGlobal` (Cycle-arm-aware since E.1).
+            standaloneArgMember ("g|" ++ TOpt.toComparableGlobal (TOpt.Global home name)) (TOpt.Global home name) canVar
+
         _ ->
             \s -> Ok ( (), s )
 
@@ -3336,26 +3347,149 @@ deriveKernelAbiTypeWith kernelId canFuncType funcVarStep =
                 )
                 (Store.zonkToMono funcVar)
         )
-        (Engine.andThen poisonKernelArrowsThen funcVarStep)
+        (Engine.andThen (poisonKernelArrowsThen kernelId) funcVarStep)
 
 
-{-| LSS_004: arrows crossing the kernel ABI are dynamic. Poison the loaded
-kernel scheme's set slots BEFORE it is zonked or unified with args, so both
-the ABI readback and the item-memo Points shared with the arguments carry ⊤.
+{-| LSS_004, refined by LSS_021 (KernelSetFacts): a ROWLESS kernel poisons
+its whole loaded scheme's set slots (today's behavior); a kernel WITH an
+audited row poisons per-param — `PSFApplies` positions keep their slots (the
+caller's knowledge survives the boundary; the kernel only calls the value),
+`PSFTunnels` positions set-slot-join the result, everything else poisons.
+Both sides of the boundary consult ONE table (`KernelSetFacts` — the
+LSS_006-style two-sided discipline; the inference twin is
+`LssInfer.kernelCallBoundary`).
+
+Ordering note (corrected 2026-08-20, was stale): on the CALL path this runs
+AFTER `unifyParamsWithArgExprs` — `Engine.andThen f step` runs `step` first,
+and `deriveKernelAbiTypeCall`'s step already contains the arg unification —
+so an opaque position's poison deliberately reaches the arg-shared item-memo
+Points, and a skipped position is simply never poisoned (the skip needs no
+ordering assumption). It still runs before the zonk that reads the slots.
 No-op when lss is off.
 -}
-poisonKernelArrowsThen : IO.Variable -> Step IO.Variable
-poisonKernelArrowsThen funcVar s =
+poisonKernelArrowsThen : ( String, String ) -> IO.Variable -> Step IO.Variable
+poisonKernelArrowsThen ( kHome, kName ) funcVar s =
     if s.env.lss.enabled then
-        case Store.poisonArrowSets funcVar s of
-            Err e ->
-                Err e
+        case KernelSetFacts.rowFor kHome kName of
+            Nothing ->
+                case Store.poisonArrowSets funcVar s of
+                    Err e ->
+                        Err e
 
-            Ok ( _, s1 ) ->
-                Ok ( funcVar, Engine.bumpWidenedByKernel s1 )
+                    Ok ( _, s1 ) ->
+                        Ok ( funcVar, Engine.bumpWidenedByKernel s1 )
+
+            Just plan ->
+                case poisonKernelPerParam plan.params [] funcVar False s of
+                    Err e ->
+                        Err e
+
+                    Ok ( maybeOutcome, s1 ) ->
+                        case maybeOutcome of
+                            Nothing ->
+                                -- The spine ended before the row's params ran
+                                -- out (partial/reshaped scheme, or an Alias
+                                -- head — `arrowParts` does not chase them,
+                                -- matching `unifyParamsCollect`): structural
+                                -- arity mismatch ⇒ LSS_004 full poison.
+                                case Store.poisonArrowSets funcVar s1 of
+                                    Err e ->
+                                        Err e
+
+                                    Ok ( _, s2 ) ->
+                                        Ok ( funcVar, Engine.bumpWidenedByKernel s2 )
+
+                            Just ( resVar, tunnelVars, argPoisoned ) ->
+                                let
+                                    resultStep =
+                                        case plan.result of
+                                            KernelSetFacts.PSFOpaque ->
+                                                case Store.poisonArrowSets resVar s1 of
+                                                    Err e ->
+                                                        Err e
+
+                                                    Ok ( _, s2 ) ->
+                                                        Ok ( True, s2 )
+
+                                            _ ->
+                                                Ok ( False, s1 )
+                                in
+                                case resultStep of
+                                    Err e ->
+                                        Err e
+
+                                    Ok ( resPoisoned, s2 ) ->
+                                        case joinKernelTunnels resVar tunnelVars s2 of
+                                            Err e ->
+                                                Err e
+
+                                            Ok ( _, s3 ) ->
+                                                Ok
+                                                    ( funcVar
+                                                    , Engine.bumpKernelFactHit
+                                                        (if argPoisoned || resPoisoned then
+                                                            Engine.bumpWidenedByKernel s3
+
+                                                         else
+                                                            s3
+                                                        )
+                                                    )
 
     else
         Ok ( funcVar, s )
+
+
+{-| Descend the kernel scheme's arrow spine one arrow per declared param,
+applying the row's per-position policy. Returns `Nothing` on an early spine
+end (the caller falls back to full poison). No Alias chase — matches the
+`unifyParamsCollect` precedent (mono stores are alias-expanded at load).
+-}
+poisonKernelPerParam : List KernelSetFacts.ParamSetFlow -> List IO.Variable -> IO.Variable -> Bool -> Step (Maybe ( IO.Variable, List IO.Variable, Bool ))
+poisonKernelPerParam flows tunnelsRev v poisoned s0 =
+    case flows of
+        [] ->
+            Ok ( Just ( v, List.reverse tunnelsRev, poisoned ), s0 )
+
+        flow :: rest ->
+            case Engine.liftIO (UF.get v) s0 of
+                Err e ->
+                    Err e
+
+                Ok ( desc, s1 ) ->
+                    case Store.arrowParts desc.content of
+                        Nothing ->
+                            Ok ( Nothing, s1 )
+
+                        Just ( pParam, pRest ) ->
+                            case flow of
+                                KernelSetFacts.PSFOpaque ->
+                                    case Store.poisonArrowSets pParam s1 of
+                                        Err e ->
+                                            Err e
+
+                                        Ok ( _, s2 ) ->
+                                            poisonKernelPerParam rest tunnelsRev pRest True s2
+
+                                KernelSetFacts.PSFApplies ->
+                                    poisonKernelPerParam rest tunnelsRev pRest poisoned s1
+
+                                KernelSetFacts.PSFTunnels ->
+                                    poisonKernelPerParam rest (pParam :: tunnelsRev) pRest poisoned s1
+
+
+joinKernelTunnels : IO.Variable -> List IO.Variable -> Step ()
+joinKernelTunnels resVar vars s0 =
+    case vars of
+        [] ->
+            Ok ( (), s0 )
+
+        v :: rest ->
+            case LssInfer.joinArrowSetsPlain v resVar s0 of
+                Err e ->
+                    Err e
+
+                Ok ( _, s1 ) ->
+                    joinKernelTunnels resVar rest s1
 
 
 {-| Load a type with a fresh, isolated memo so its vars do not share Points with

@@ -259,6 +259,19 @@ type alias LssConfig =
     -- byte-identical. The feared budget-pressure spiral from finer ids is
     -- unrealized on this workload; plan 1's watchdogs + μ-tie stay armed.
     , groundStandalones : Bool
+
+    -- LSS_020 signature set-flow completion (GAP-2,
+    -- plans/lss-fidelity-3-signature-flow-completion.md §B): the inference
+    -- walk connects ground-typed intra-def flow to signature slots
+    -- (member-root joins, param binding, If/Case hubs, Let rhs joins,
+    -- local-callee call shapes — all set-slot-only), so def signatures stop
+    -- being trivial and callers receive rep links + members. Includes the
+    -- signature-channel maxSetSize widening rider (`widenedBySigSize`).
+    -- Artifact-affecting under keyed routing (signature members reach caller
+    -- instantiations → annotations → keys); hash token `lssSF=` when it
+    -- differs from this default. DEFAULT-OFF pending the plan's Phase D
+    -- re-census.
+    , sigFlow : Bool
     }
 
 
@@ -292,6 +305,7 @@ defaultLss =
     , spineArity = False
     , muTie = True
     , groundStandalones = True
+    , sigFlow = False
     }
 
 
@@ -672,6 +686,7 @@ lssDecoder =
         |> D.apply (D.optionalField "spineArity" D.bool defaultLss.spineArity)
         |> D.apply (D.optionalField "muTie" D.bool defaultLss.muTie)
         |> D.apply (D.optionalField "groundStandalones" D.bool defaultLss.groundStandalones)
+        |> D.apply (D.optionalField "sigFlow" D.bool defaultLss.sigFlow)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -937,6 +952,24 @@ hash cfg =
                     , if lss.groundStandalones /= defaultLss.groundStandalones then
                         [ "lssGS="
                             ++ (if lss.groundStandalones then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- LSS_020 signature set-flow: artifact-affecting under
+                    -- keyed routing (signature members reach caller
+                    -- instantiations → annotations → keys → fan-out). Token
+                    -- when non-default, muTie-style, so the default config's
+                    -- hash is stable across an eventual default flip.
+                    , if lss.sigFlow /= defaultLss.sigFlow then
+                        [ "lssSF="
+                            ++ (if lss.sigFlow then
                                     "1"
 
                                 else

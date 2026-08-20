@@ -158,6 +158,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\gsVal -> applyLssGroundOverride gsVal cfg4e2)
             )
         |> Task.andThen
+            (\cfg4e3 ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_SIG_FLOW" |> Task.mapError never)
+                    |> Task.map (\sfVal -> applyLssSigFlowOverride sfVal cfg4e3)
+            )
+        |> Task.andThen
             (\cfg4f ->
                 (Utils.envLookupEnv "ECO_SPEC_TYPE_NODE_LIMIT" |> Task.mapError never)
                     |> Task.map (\tnVal -> applySpecTypeNodeLimitOverride tnVal cfg4f)
@@ -1670,6 +1675,30 @@ applyLssGroundOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | groundStandalones = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_SIG_FLOW=1|true|yes / 0|false|no` (LSS_020): signature
+set-flow completion — the inference walk connects ground-typed intra-def
+flow to signature slots (plans/lss-fidelity-3-signature-flow-completion.md
+§B). Unset or unrecognized leaves the config/default value.
+Artifact-affecting when it differs from the default — participates in the
+hash via the `lssSF=` token.
+-}
+applyLssSigFlowOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssSigFlowOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | sigFlow = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | sigFlow = False }) cfg
 
             else
                 cfg

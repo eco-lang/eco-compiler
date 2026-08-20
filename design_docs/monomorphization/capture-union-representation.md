@@ -156,3 +156,29 @@ Reopen only if one of these materially changes:
    itself (post-P6 this is doubtful: the U2b sweep showed a 13.5% event
    REDUCTION costing +55% wall — allocation counts do not govern this
    compiler's wall-clock).
+
+## 6. GAP-6 decision gate: NO-GO CONFIRMED post-GAP-2 (2026-08-20)
+
+The mapping doc's honesty caveat — "all of that evidence is *downstream of
+GAP-2*: with trivial signatures, multi-member sets largely cannot form" —
+is now discharged. Plan `lss-fidelity-3-signature-flow-completion.md` Phase
+B (LSS_020, `lss.sigFlow`) opened the signature channel, and the Phase D
+re-census (Run X, `benchmarks/lss-opt.md`) measured the self-compile with
+cross-def set flow LIVE:
+
+- signatures: 9,687/9,687-trivial → 394 nontrivial (4.1%);
+- singleton sets: 64,238 → 95,537 (+48.7% at k=1);
+- **k≥2 sets: 808/303/123/57/35/14/23 → 813/301/129/56/36/14/23 (k=2..8)
+  — statistically unmoved (+0.5% at k=2, ≈1.0% of member-carrying arrows,
+  0.24% of zonked slots);**
+- **AbiCloning `multiSetSites`: `2->2 3->1 5->1` in BOTH flag states — the
+  multi-member consumer-site population did not move at all.**
+
+Multi-member sets remain ≈0-shaped and cold even with the largest
+completeness repair in the register landed. The NO-GO therefore no longer
+rests on evidence "downstream of GAP-2" — it stands on its own. GAP-6 is
+CLOSED; `maxSetSize` stays 8 (the GAP-5 rider fires only when a default-on
+multi-member consumer exists, and none does — the G-1 MapTemplate arm is
+default-off and Borrow's meet is call-site-only). §5's revisit conditions
+remain the reopening criteria, now with condition 1's census available for
+free via `ECO_MONO_LSS_REPORT=1` (`sizeHist` + `multiSetSites`).

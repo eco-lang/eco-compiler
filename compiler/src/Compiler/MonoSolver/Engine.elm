@@ -17,7 +17,8 @@ module Compiler.MonoSolver.Engine exposing
     , lambdaInstanceMemberId, lambdaInstanceMemberMaybe
     , GroundingStats, internMemberKey, groundStandaloneMemberIdFor, groundSetMembers
     , LssMemberTable, MemberSource(..), emptyMemberTable
-    , bumpWidenedByKernel, bumpCompletionJoin, bumpCompletionJoinNoop, withScratchStore
+    , bumpWidenedByKernel, bumpWidenedBySigSize, bumpWidenedByCf, bumpKernelFactHit, bumpCompletionJoin, bumpCompletionJoinNoop, withScratchStore
+    , SigFlowStats
     , markDirty
     , ItemAux, emptyItemAux, clearedAux, restoredAux, clearResidualReads
     )
@@ -142,6 +143,7 @@ type alias LssStats =
     , widenedSizeHist : CoreDict.Dict Int Int -- SIZE -> count for sets widened by size at zonk (sizeHist is blind on that branch)
     , slotsMinted : Int -- Phase 3 rider: unconstrained FunL slot mints in loadTypeC (LSS_006 population; demand-encoded slots excluded by design — they are born written). Sizes Phase 5's dead-slot case against writes/zonk-visits.
     , grounding : GroundingStats -- LSS_019 census (plans/lss-fidelity-2-standalone-member-grounding.md §5); sub-record to stay clear of the 32-slot record GC-scan cap
+    , sigStats : SigFlowStats -- LSS_020 signature-flow census (plans/lss-fidelity-3-signature-flow-completion.md §B.4); sub-record per the same 32-slot rationale
     }
 
 
@@ -153,6 +155,24 @@ frontier — §3.2 detail 1 of the plan). Stats only — never touches the graph
 type alias GroundingStats =
     { grounded : Int
     , deferred : Int
+    }
+
+
+{-| LSS_020 signature-flow census (plan lss-fidelity-3 §B.4).
+
+`widenedBySigSize` is a POLICY counter (a signature arrow's member list
+exceeded `maxSetSize` at readback and widened to ⊤) — bumped
+unconditionally, same class as `widenedBySize`/`widenedByKernel`.
+`widenedByCf` counts poison events inside the sigFlow joins (hub poisons +
+divergence in the new member-root/result/rhs/call-shape joins) and
+`kernelFactHits` counts Phase F fact-row applications — both census-only and
+therefore REPORT-GATED per plan 1 §7.6 (the bump helpers check
+`env.lss.report`; the default path carries only a branch).
+-}
+type alias SigFlowStats =
+    { widenedBySigSize : Int
+    , widenedByCf : Int
+    , kernelFactHits : Int
     }
 
 
@@ -248,7 +268,7 @@ insertMemberProvisional mid g t =
 
 emptyLssStats : LssStats
 emptyLssStats =
-    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 } }
+    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0 } }
 
 
 {-| The all-defaults signature for an annotation with `n` arrows.
@@ -420,6 +440,59 @@ bumpWidenedByKernel s =
             s.lssStats
     in
     { s | lssStats = { stats | widenedByKernel = stats.widenedByKernel + 1 } }
+
+
+{-| LSS_020 (B.4): a signature arrow's member list exceeded `maxSetSize` at
+readback and widened to ⊤. Policy counter — unconditional.
+-}
+bumpWidenedBySigSize : S -> S
+bumpWidenedBySigSize s =
+    let
+        stats =
+            s.lssStats
+
+        sig =
+            stats.sigStats
+    in
+    { s | lssStats = { stats | sigStats = { sig | widenedBySigSize = sig.widenedBySigSize + 1 } } }
+
+
+{-| LSS_020 (B.4): a poison event inside a sigFlow join (hub poison or
+divergence in the new joins). Census-only — REPORT-GATED (plan 1 §7.6).
+-}
+bumpWidenedByCf : S -> S
+bumpWidenedByCf s =
+    if s.env.lss.report then
+        let
+            stats =
+                s.lssStats
+
+            sig =
+                stats.sigStats
+        in
+        { s | lssStats = { stats | sigStats = { sig | widenedByCf = sig.widenedByCf + 1 } } }
+
+    else
+        s
+
+
+{-| LSS_021 (Phase F): a KernelSetFacts row applied at a kernel boundary.
+Census-only — REPORT-GATED (plan 1 §7.6).
+-}
+bumpKernelFactHit : S -> S
+bumpKernelFactHit s =
+    if s.env.lss.report then
+        let
+            stats =
+                s.lssStats
+
+            sig =
+                stats.sigStats
+        in
+        { s | lssStats = { stats | sigStats = { sig | kernelFactHits = sig.kernelFactHits + 1 } } }
+
+    else
+        s
 
 
 {-| MONO_030 (solver arm): validate a just-CREATED spec against the breadth

@@ -214,7 +214,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         , "members: " ++ String.fromInt sFinal.nextMemberId ++ " total (" ++ String.fromInt lambdaCount ++ " source lambdas, " ++ String.fromInt internedCount ++ " interned)"
         , "signatures: " ++ String.fromInt sigCount ++ " memoized (" ++ String.fromInt trivialCount ++ " trivial)"
         , "sets zonked: " ++ String.fromInt stats.setsZonked ++ "; size histogram: " ++ histLine
-        , "widened: bySize=" ++ String.fromInt stats.widenedBySize ++ " byKernel=" ++ String.fromInt stats.widenedByKernel ++ " byBudget=" ++ String.fromInt stats.widenedByBudget
+        , "widened: bySize=" ++ String.fromInt stats.widenedBySize ++ " byKernel=" ++ String.fromInt stats.widenedByKernel ++ " byBudget=" ++ String.fromInt stats.widenedByBudget ++ " bySigSize=" ++ String.fromInt stats.sigStats.widenedBySigSize
         , "widened sizes: " ++ widenedHistLine
         , "join flush: rounds=" ++ String.fromInt stats.joinRounds ++ " retranslations=" ++ String.fromInt stats.retranslations
 
@@ -234,6 +234,12 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         -- (plans/lss-fidelity-2-standalone-member-grounding.md §5):
         -- `deferred` is the residual-arrow precision frontier.
         , "grounding: grounded=" ++ String.fromInt stats.grounding.grounded ++ " deferred=" ++ String.fromInt stats.grounding.deferred
+
+        -- LSS_020 signature-flow census
+        -- (plans/lss-fidelity-3-signature-flow-completion.md §B.4):
+        -- widenedByCf/kernelFactHits are report-gated bumps, so they read 0
+        -- unless ECO_MONO_LSS_REPORT was on for the run.
+        , "sigflow: widenedByCf=" ++ String.fromInt stats.sigStats.widenedByCf ++ " kernelFactHits=" ++ String.fromInt stats.sigStats.kernelFactHits
 
         -- Census (2026-07-21): E9.2 guard-decline split (declinedKernelCNumber
         -- = the E10.0 `declinedUnsettled` proxy) + the whitelist-growth list.

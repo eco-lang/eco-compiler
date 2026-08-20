@@ -583,7 +583,7 @@ rows =
             , resultAliases = [ 1 ]
             , totality = Throws
             , divergence = Just "strict-weak-ordering UB on embedded-constant keys (report 03 #8): the comparator resolves constants to nullptr and relies on Utils::cmp's early returns"
-            , evidence = "elm-kernel-cpp/src/core/ListExports.cpp:677 (comparator :722-736); elm-kernel-cpp/src/core/Utils.cpp:305-306"
+            , evidence = "elm-kernel-cpp/src/core/ListExports.cpp:759 (Elm_Kernel_List_sortBy; comparator :805-825); elm-kernel-cpp/src/core/Utils.cpp:305-306 -- anchors refreshed 2026-08-20 (LSS_021 audit)"
         }
       )
     , ( ( "List", "sortWith" )
@@ -592,7 +592,7 @@ rows =
             , resultAliases = [ 1 ]
             , totality = Throws
             , divergence = Just "strict-weak-ordering UB on embedded-constant keys (report 03 #8): the comparator resolves constants to nullptr and relies on Utils::cmp's early returns"
-            , evidence = "elm-kernel-cpp/src/core/ListExports.cpp:751 (comparator :722-736); elm-kernel-cpp/src/core/Utils.cpp:305-306"
+            , evidence = "elm-kernel-cpp/src/core/ListExports.cpp:832 (Elm_Kernel_List_sortWith; comparator :862-878); elm-kernel-cpp/src/core/Utils.cpp:305-306 -- anchors refreshed 2026-08-20 (LSS_021 audit)"
         }
       )
     , ( ( "String", "all" )

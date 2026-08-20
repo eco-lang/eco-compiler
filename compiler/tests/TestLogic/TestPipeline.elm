@@ -21,6 +21,7 @@ module TestLogic.TestPipeline exposing
     , runToPostSolve
     , runToTypedOpt
     , runSolverMonoWithLimits
+    , runSolverMonoWithReport
     , runSubstMonoWithLimits
     )
 
@@ -442,6 +443,28 @@ runSolverMonoWithLimits limits lssConfig srcModule =
             in
             Result.map Tuple.first
                 (MonoSolver.monomorphizeWithReport lssConfig limits "main" globalTypeEnv globalGraph)
+
+
+{-| LSS_020 (plan lss-fidelity-3 §B.6): `runSolverMonoWithLimits` with the
+LSS census forced on, returning the rendered report alongside the graph so
+tests can assert on counter lines (e.g. `bySigSize=`). Report-gated bumps
+(`widenedByCf`, `kernelFactHits`) are live under this entry point.
+-}
+runSolverMonoWithReport : Config.SpecLimits -> Config.LssConfig -> Src.Module -> Result String ( Mono.MonoGraph, Maybe String )
+runSolverMonoWithReport limits lssConfig srcModule =
+    case runToTypedOpt srcModule of
+        Err e ->
+            Err e
+
+        Ok { canonical, localGraph } ->
+            let
+                globalGraph =
+                    localGraphToGlobalGraph localGraph
+
+                globalTypeEnv =
+                    buildGlobalTypeEnv canonical
+            in
+            MonoSolver.monomorphizeWithReport { lssConfig | report = True } limits "main" globalTypeEnv globalGraph
 
 
 {-| MONO_030 (watchdog tests): the SUBST-engine twin of
