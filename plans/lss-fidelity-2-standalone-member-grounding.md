@@ -1,6 +1,8 @@
 # LSS Fidelity 2 — Standalone Element Identity (GAP-1): Ground `g|`/`c|` Members by Demanded Type at Zonk
 
-**Status: PLAN (2026-08-17).** Second of three plans implementing the gap register of
+**Status: COMPLETE — DEFAULT-ON (2026-08-19).** G1→G3 all landed in one pass;
+results in §9 at the bottom. LSS_019 claimed; LSS_003/LSS_013 amended.
+Second of three plans implementing the gap register of
 `design_docs/auto-borrow-inference/lss-paper-fidelity-mapping.md`. Covers **GAP-1**
 (fidelity: HIGH): standalone set elements are family names — `g|`/`c|` members name a
 *source global*, one id over many SpecIds, where the paper's post-substitution
@@ -305,3 +307,79 @@ plan-3-window items.
 - **Mixed provisional/ground sets in one slot** — legal and expected mid-run;
   rewrite+dedup at every zonk keeps annotations canonical; consumers only ever see
   zonked annotations.
+
+---
+
+## 9. Results (2026-08-19, implementation session)
+
+Implemented exactly as specified in §§2–5; all three gates ran to green in one
+session. Deviations from the letter of the plan, all recorded here:
+
+- Plan 1's `FidelityStats` sub-record no longer exists (its one-shot counters
+  were removed after Run J), so the census counters live in a new 2-field
+  `lssStats.grounding : GroundingStats` sub-record (same report line format).
+- The rewrite core is the pure `Engine.groundSetMembers` (called from
+  `Store.zonkSetSlot` via `groundMembersC`) so the unit tests drive it
+  directly; `Engine.internMemberKey` is the shared pure interning path and
+  `memberIdFor` is re-expressed over it as §2.2 required.
+- Ground keys use the `g|` prefix for `c|` provisionals too (per §3.2's rule);
+  verified safe: `buildMemberOrigins`' `g|` arm resolves ctor-backed globals
+  to `OriginCtor` via `ctorBackedGlobal`, and the E9 devirt distinguishes
+  ctor/fn-global by node shape, never by key prefix.
+
+**G1** (flag off, default): unit tests
+`tests/TestLogic/Monomorphize/LssGroundingTest.elm` 9/9 (pure rewrite:
+concrete-arrow grounding, residual deferral, idempotence, per-arrow-layout
+spine distinctness, dedup, no-growth; pipeline: flag wiring end to end —
+1 origin flag-off vs ≥3 flag-on for a two-layout global). E2E `--target full`
+1,681/1,681. Byte-identity: pre-change (Run V) binary vs post-change binary,
+one frozen corpus, flag off → **byte-identical** (13,557,049 B).
+
+**G2** (flag on via `ECO_MONO_LSS_GROUND=1`, same tree, same binary):
+
+| axis | flag off | flag on |
+|---|---|---|
+| grounding | 0 / 0 | **grounded=4,955 deferred=11** |
+| members interned | 40,374 | 42,738 (+2,364 unique ground ids) |
+| sets zonked / singletons / 2-sets | 366,207 / 64,045 / 805 | 366,222 / 64,047 / 805 |
+| widened bySize / byKernel / byBudget | 43 / 4,061 / 36,691 | 43 / 4,062 / **36,693** |
+| join flush rounds / retranslations | 3 / 590 | **3 / 590** |
+| devirtDirect / devirtKernel | 3,984 / 771 | **3,984 / 771** |
+| dispatchUpgraded / declinedNoInstance | 3,568 / 1,378 | 3,568 / 1,378 |
+| top specs/global | foldl=2,052 … | identical list |
+| out.mlir | 13,557,049 B | 13,557,262 B (+213 B) |
+
+The §8 budget-pressure risk is **unrealized on the self-compile**: finer ids
+moved `widenedByBudget` by +2 events and spec fan-out not at all. The
+deferral frontier is 11 events. E2E flag-on 1,682/1,682 including the new
+`test/elm/src/LssGroundStandaloneTest.elm` (one global + one box ctor at two
+layouts each through recursion-protected HOFs; LSS_005 answers pinned).
+Bootstrap fixed point flag-on: Stage 8c **byte-identical**
+(`eco-compiler-boot == eco-compiler-boot-2`, boot .mlirs 13,557,262 B — also
+the determinism witness for the accepted +213 B output change).
+
+**G3** (default flipped True): E2E 1,682/1,682; bootstrap 8c byte-identical;
+elm-tests 13,126/12 (the same 12 pre-existing POST_010/TYPE_007/golden-
+fingerprint failures, untouched by this change). Benchmark: one cold
+solver+LSS Stage-7a run recorded in `benchmarks/lss-opt.md` (Run W).
+
+**§4's consumer claims, re-checked against the as-built code (2026-08-19) —
+one is WRONG.** §4 asserts that per-layout ids "UNBLOCK the BORROW_006
+standalone-members-resolve-`PUnresolved` item". They do not. Both standalone
+consumers already resolve a `g|` member's spec by `eqLayout`-matching the
+SITE's own type against the registry — `LssFacts.matchGlobal` and
+MapTemplate's `resolveSpecFor` — using the member id only to fetch the
+`Global`. `PUnresolved` / `declinedSpecUnresolved` therefore fire on an EMPTY
+or AMBIGUOUS layout match (≥2 SpecIds of one global at one layout — the
+annotation-keyed clones), never on member identity. A ground id adds no
+resolving power there because its key is `widenSets`-widened by construction,
+so it is isomorphic to the layout `eqLayout` already tests; the layout is not
+even exported (`MemberOrigin` carries only the `Global`). What grounding
+genuinely buys those consumers is **distinguishability**: honest
+singleton-vs-multi determination, and a per-member `meet`/sig table that no
+longer collapses two layouts of one global into one callee. Corrected in
+`plans/borrow-inference-phase6-v2-backlog.md` item 10; the ambiguity class
+needs annotation-sensitive identity and is a separate item.
+
+Follow-ups filed: backlog item 10 (above); MapTemplate G-3 cross-check and
+possible removal of the devirt arity re-derivation remain plan-3-window items.

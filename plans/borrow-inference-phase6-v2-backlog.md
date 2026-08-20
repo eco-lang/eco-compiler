@@ -178,6 +178,31 @@ this.
    kernel audited `PBorrowed` leaves its args borrowed, making them
    escape/stack-promotion candidates. Ceiling is low (low-thousands of
    sites) ⇒ a **standing background item**, not a milestone.
+10. **Standalone-member `PUnresolved`: the cause is layout AMBIGUITY, not
+    member identity** (added 2026-08-19; **corrects** the unblock claimed in
+    `plans/lss-fidelity-2-standalone-member-grounding.md` §4 — LSS_019
+    grounding does NOT reduce this counter). Two findings from reading the
+    as-built code, both against BORROW_006's text:
+    - `OriginGlobal` is NOT blanket-`PUnresolved` any more —
+      `LssFacts.resolveCallee` routes it through `matchGlobal`, which
+      `eqLayout`-matches the SITE's callee type against `globalIndex`.
+      `PUnresolved` fires only on an EMPTY or AMBIGUOUS match, where
+      ambiguous = ≥2 SpecIds of one global at one layout, i.e. exactly the
+      annotation-keyed clones all-globals keying produces (`foldl` alone has
+      ~2,052 specs). MapTemplate's G-3 `resolveSpecFor` has the same shape.
+    - A ground member id therefore adds NO resolving power: its key is
+      `widenSets`-widened by construction (μ-severing, LSS_019), so it
+      carries precisely the layout information `eqLayout` already uses, and
+      the layout is not even exported (`MemberOrigin` carries only the
+      `Global`; the ground key string stays in the compiler's member table).
+    What grounding DOES give Borrow: distinguishability — a multi-member set
+    over one global at two layouts is now two ids, so a per-member `meet` is
+    per-layout-correct instead of collapsing two callees into one, and a
+    sig table may be keyed by member id like `lambdaSigsByMember`.
+    Resolving the ambiguity class needs annotation-SENSITIVE identity
+    (a spec-keyed index), which is a different item. Unmeasured: the 5-way
+    `PoisonCause` split is computed but not emitted (see Design discrepancies
+    below), so the size of each cause is unknown — instrument first.
 
 ## Standing evidence table
 

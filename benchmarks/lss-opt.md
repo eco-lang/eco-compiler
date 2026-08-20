@@ -727,6 +727,34 @@ U's July/August ones in EVERY compiler change since, not only apR/apL — not a 
 **Baseline: rows A–U ran against artifacts frozen 2026-07-09/08-13; V is the first run on a fully
 current corpus and is the new reference row.**
 
+### 2026-08-20 — Run W: LSS_019 standalone-member grounding landed DEFAULT-ON (lss-fidelity plan 2; plain run)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| gs-final | **5:12.23** (312.2 s) | 5,721,288 kB | 1,334 | 12 | 435,983,035 (12,874 MiB) | 111.98 s | 13,557,262 B |
+
+| axis | Run V | Run W |
+|---|---|---|
+| out.mlir | 13,543,058 B | 13,557,262 B (+14,204 B, +0.10%) |
+| minor / major GC time | 80.77 s / 28.89 s | 80.50 s / 31.47 s |
+| true mutator (wall − GC) | 199.7 s | 200.2 s |
+| grounding (NEW) | — | **grounded=4,955 deferred=11** |
+| widened bySize / byKernel / byBudget | 43 / — / 36,648 | 43 / 4,062 / 36,693 |
+| join flush rounds / retranslations | — / 590 | 3 / 590 |
+| devirtDirect / top specs | 3,984 / foldl=2,051 | 3,984 / foldl=2,052 |
+
+Tree = `plans/lss-fidelity-2-standalone-member-grounding.md` COMPLETE, `lss.groundStandalones`
+DEFAULT-ON (G3): provisional `g|`/`c|` members ground to `g|<global>|<widened-arrow-typeKey>` at
+zonk (LSS_019). An analysis change, so `out.mlir` legitimately moves — but the flag itself moves it
+only **+213 B** (same-tree A/B); the rest of the +14,204 B is the implementation source compiled as
+workload. Same-tree flag-off vs flag-on: every downstream counter is UNMOVED (byBudget 36,691→36,693,
+devirt/dispatch identical, foldl=2,052 both) — the §8 budget-pressure risk is unrealized; grounding
+refines element identity without moving fan-out. vs Run V: majors 12 = 12 (clean pair), wall +2.8 s
+(+0.9%) and mutator +0.5 s — FLAT; minors +1.5% / promoted +0.6% track the corpus-growth precedent
+(Runs B/I/K). Gates as a separate pass: flag-off pre-vs-post byte-identical; E2E 1,682/1,682 (new
+`LssGroundStandaloneTest`); Stage-8c fixed point byte-identical both flag-on-by-env and default-on;
+elm-tests 13,126/12 (same 12 pre-existing).
+
 ---
 
 ## Summary
@@ -757,3 +785,4 @@ One row per run, numbers only.
 | T | 333.3 | 1401 | 14 | 13292 |
 | U | 308.6 | 1323 | 12 | 12785 |
 | V | 309.4 | 1314 | 12 | 12800 |
+| W | 312.2 | 1334 | 12 | 12874 |

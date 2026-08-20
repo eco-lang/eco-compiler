@@ -241,6 +241,24 @@ type alias LssConfig =
     -- identical; benchmarks/lss-opt.md Run M). Artifact-affecting when it
     -- differs from this default (hash token `lssMU=0` then).
     , muTie : Bool
+
+    -- LSS_019 standalone-member grounding (GAP-1,
+    -- plans/lss-fidelity-2-standalone-member-grounding.md): a provisional
+    -- `g|`/`c|` member read back from a set slot at a residual-free arrow is
+    -- rewritten at zonk to the ground member `g|<global>|<arrow-typeKey>` —
+    -- element identity becomes (global × instantiation layout), the paper's
+    -- post-substitution element identity. Artifact-affecting under keyed
+    -- routing (member ids → annotations → keyed spec keys → fan-out); hash
+    -- token `lssGS=` when it differs from this default.
+    --
+    -- DEFAULT-ON since 2026-08-19 (G3), on measured evidence: self-compile
+    -- grounded=4,955 / deferred=11 with joinRounds, devirt counters, budget
+    -- widening and spec fan-out all UNMOVED vs flag-off on the same tree
+    -- (byBudget 36,691→36,693; devirtDirect 3,984 both; foldl=2,052 both);
+    -- flag-on E2E 1,682/1,682 and the Stage-8c bootstrap fixed point is
+    -- byte-identical. The feared budget-pressure spiral from finer ids is
+    -- unrealized on this workload; plan 1's watchdogs + μ-tie stay armed.
+    , groundStandalones : Bool
     }
 
 
@@ -273,6 +291,7 @@ defaultLss =
     , report = False
     , spineArity = False
     , muTie = True
+    , groundStandalones = True
     }
 
 
@@ -652,6 +671,7 @@ lssDecoder =
         -- type-checks (every field above is a Bool or an Int).
         |> D.apply (D.optionalField "spineArity" D.bool defaultLss.spineArity)
         |> D.apply (D.optionalField "muTie" D.bool defaultLss.muTie)
+        |> D.apply (D.optionalField "groundStandalones" D.bool defaultLss.groundStandalones)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -899,6 +919,24 @@ hash cfg =
                     , if lss.muTie /= defaultLss.muTie then
                         [ "lssMU="
                             ++ (if lss.muTie then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- LSS_019 grounding: artifact-affecting under keyed
+                    -- routing (ground member ids change annotations → keys →
+                    -- fan-out). Token when non-default, muTie-style, so the
+                    -- default config's hash is stable across the G1→G3
+                    -- rollout of the default itself.
+                    , if lss.groundStandalones /= defaultLss.groundStandalones then
+                        [ "lssGS="
+                            ++ (if lss.groundStandalones then
                                     "1"
 
                                 else

@@ -153,6 +153,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\mtVal -> applyLssMuTieOverride mtVal cfg4e)
             )
         |> Task.andThen
+            (\cfg4e2 ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_GROUND" |> Task.mapError never)
+                    |> Task.map (\gsVal -> applyLssGroundOverride gsVal cfg4e2)
+            )
+        |> Task.andThen
             (\cfg4f ->
                 (Utils.envLookupEnv "ECO_SPEC_TYPE_NODE_LIMIT" |> Task.mapError never)
                     |> Task.map (\tnVal -> applySpecTypeNodeLimitOverride tnVal cfg4f)
@@ -1642,6 +1647,29 @@ applyLssMuTieOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | muTie = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_GROUND=1|true|yes / 0|false|no` (LSS_019): ground
+provisional `g|`/`c|` standalone members to `g|<global>|<arrow-typeKey>` at
+zonk (plans/lss-fidelity-2-standalone-member-grounding.md). Unset or
+unrecognized leaves the config/default value. Artifact-affecting when it
+differs from the default — participates in the hash via the `lssGS=` token.
+-}
+applyLssGroundOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssGroundOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | groundStandalones = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | groundStandalones = False }) cfg
 
             else
                 cfg

@@ -15,6 +15,7 @@ module Compiler.MonoSolver.Engine exposing
     , mvarIdKey, pointKey
     , memberIdFor, standaloneMemberIdFor, standaloneMemberGlobal, kernelMemberIdFor, standaloneMemberKernel, srcLambdaKey, trivialSignature, emptyLssStats
     , lambdaInstanceMemberId, lambdaInstanceMemberMaybe
+    , GroundingStats, internMemberKey, groundStandaloneMemberIdFor, groundSetMembers
     , LssMemberTable, MemberSource(..), emptyMemberTable
     , bumpWidenedByKernel, bumpCompletionJoin, bumpCompletionJoinNoop, withScratchStore
     , markDirty
@@ -140,6 +141,18 @@ type alias LssStats =
     , completionJoinNoop : Int -- Phase 4a: the subset of those that added nothing (changed flag False — no rebuild)
     , widenedSizeHist : CoreDict.Dict Int Int -- SIZE -> count for sets widened by size at zonk (sizeHist is blind on that branch)
     , slotsMinted : Int -- Phase 3 rider: unconstrained FunL slot mints in loadTypeC (LSS_006 population; demand-encoded slots excluded by design — they are born written). Sizes Phase 5's dead-slot case against writes/zonk-visits.
+    , grounding : GroundingStats -- LSS_019 census (plans/lss-fidelity-2-standalone-member-grounding.md §5); sub-record to stay clear of the 32-slot record GC-scan cap
+    }
+
+
+{-| LSS_019 grounding census: `grounded` counts provisional→ground member
+rewrites at zonk; `deferred` counts provisional members kept because the
+arrow being read still carried residual MVars (the recorded precision
+frontier — §3.2 detail 1 of the plan). Stats only — never touches the graph.
+-}
+type alias GroundingStats =
+    { grounded : Int
+    , deferred : Int
     }
 
 
@@ -175,6 +188,7 @@ type alias LssMemberTable =
     , sources : CoreDict.Dict Int MemberSource
     , lambdaQualified : CoreDict.Dict Int ( Int, Int ) -- LSS_018: qualified mid -> (raw lambda id, minting SpecId); written at the Q(L,S) intern
     , muTied : CoreDict.Dict Int () -- LSS_018: member ids ever the target of a μ-tie — exported as MonoGraph.lssBlockedMembers (AbiCloning force-blocks them)
+    , provisionalStandalone : CoreDict.Dict Int TOpt.Global -- LSS_019: ids minted by standaloneMemberIdFor with a "g|"/"c|" key (NOT kernel-alias-folded, NOT ground). Written at the same intern site; the zonk grounding rewrite consults this to decide "rewrite" vs "pass through". Ground ids are NEVER in this dict — that is what makes grounding idempotent.
     }
 
 
@@ -209,7 +223,7 @@ emptyMonoMemo =
 
 emptyMemberTable : LssMemberTable
 emptyMemberTable =
-    { byKey = CoreDict.empty, sources = CoreDict.empty, lambdaQualified = CoreDict.empty, muTied = CoreDict.empty }
+    { byKey = CoreDict.empty, sources = CoreDict.empty, lambdaQualified = CoreDict.empty, muTied = CoreDict.empty, provisionalStandalone = CoreDict.empty }
 
 
 insertMemberKey : String -> Int -> LssMemberTable -> LssMemberTable
@@ -227,9 +241,14 @@ insertMemberKernel mid k t =
     { t | sources = CoreDict.insert mid (SourceKernel k) t.sources }
 
 
+insertMemberProvisional : Int -> TOpt.Global -> LssMemberTable -> LssMemberTable
+insertMemberProvisional mid g t =
+    { t | provisionalStandalone = CoreDict.insert mid g t.provisionalStandalone }
+
+
 emptyLssStats : LssStats
 emptyLssStats =
-    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0 }
+    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 } }
 
 
 {-| The all-defaults signature for an annotation with `n` arrows.
@@ -778,37 +797,47 @@ freshVar content =
     liftIO (UF.fresh (IO.makeDescriptor content Type.outermostRank Type.noMark Nothing))
 
 
+{-| The one member-interning code path (LSS_019 made it pure so `Store`'s
+zonk grounding and the `Step`-level mints share it): key → (id, table',
+nextId'). A hit returns the table and supply UNCHANGED (same pointers), so
+callers can detect the fresh-intern branch as `nextId' /= nextId`.
+-}
+internMemberKey : String -> LssMemberTable -> Int -> ( Int, LssMemberTable, Int )
+internMemberKey key table nextId =
+    case CoreDict.get key table.byKey of
+        Just mid ->
+            ( mid, table, nextId )
+
+        Nothing ->
+            ( nextId, insertMemberKey key nextId table, nextId + 1 )
+
+
 {-| Member id for a non-lambda function value, interned by kind+identity.
 Keys: "g|<global>" (global function ref), "c|<global>" (ctor used as a
-function), "k|home.name" (kernel ref), "a|field" (accessor value). Ids come
-from the same supply as Phase-0 lambda ids (`nextMemberId` is seeded past
+function), "k|home.name" (kernel ref), "a|field" (accessor value),
+"g|<global>|<typeKey>" (LSS_019 ground standalone). Ids come from the same
+supply as Phase-0 lambda ids (`nextMemberId` is seeded past
 `GlobalMVarState.nextLam`), so member ids never collide (LSS_003).
 -}
 memberIdFor : String -> Step Int
 memberIdFor key s =
-    case CoreDict.get key s.lssMemberTable.byKey of
-        Just mid ->
-            Ok ( mid, s )
+    let
+        ( mid, table1, next1 ) =
+            internMemberKey key s.lssMemberTable s.nextMemberId
+    in
+    if next1 == s.nextMemberId then
+        Ok ( mid, s )
 
-        Nothing ->
-            let
-                mid =
-                    s.nextMemberId
-            in
-            Ok
-                ( mid
-                , { s
-                    | lssMemberTable = insertMemberKey key mid s.lssMemberTable
-                    , nextMemberId = mid + 1
-                  }
-                )
+    else
+        Ok ( mid, { s | lssMemberTable = table1, nextMemberId = next1 } )
 
 
 {-| E9: intern a STANDALONE-GLOBAL member ("g|" or "c|" key — named
 globals, ctors incl. `Can.Normal` ones like `List.::`, box/enum ctors) and
 record its Global in the reverse map the devirt consults
-(`standaloneMemberGlobal`). Same interning as `memberIdFor`; the reverse
-insert is idempotent.
+(`standaloneMemberGlobal`) AND in `provisionalStandalone` (LSS_019 — these
+ids are PROVISIONAL: family names awaiting type-keyed grounding at zonk).
+Same interning as `memberIdFor`; the reverse inserts are idempotent.
 -}
 standaloneMemberIdFor : String -> TOpt.Global -> Step Int
 standaloneMemberIdFor key g s0 =
@@ -821,7 +850,7 @@ standaloneMemberIdFor key g s0 =
                 Ok ( mid, s1 )
 
             else
-                Ok ( mid, { s1 | lssMemberTable = insertMemberGlobal mid g s1.lssMemberTable } )
+                Ok ( mid, { s1 | lssMemberTable = insertMemberProvisional mid g (insertMemberGlobal mid g s1.lssMemberTable) } )
 
 
 {-| E9: the Global behind a member id, when the member is a standalone
@@ -838,6 +867,132 @@ standaloneMemberGlobal mid s =
                 Nothing
         , s
         )
+
+
+{-| LSS_019: intern a GROUND standalone member — `g|<global>|<typeKey>`,
+one id per (global × instantiation layout). Pure (callable from `Store`'s
+zonk, which threads no `Step`). Writes `sources` ONLY, never
+`provisionalStandalone`: ground ids pass through the grounding rewrite
+untouched, which is what makes zonk∘encode∘zonk idempotent — the stability
+LSS_010's finite-lattice termination argument consumes. The `typeKey` must
+be the ANNOTATION-WIDENED arrow key (`groundSetMembers` builds it), so a
+set never participates in its own members' identity (μ-severing).
+-}
+groundStandaloneMemberIdFor : TOpt.Global -> String -> LssMemberTable -> Int -> ( Int, LssMemberTable, Int )
+groundStandaloneMemberIdFor g typeKey table nextId =
+    let
+        ( mid, table1, next1 ) =
+            internMemberKey ("g|" ++ TOpt.toComparableGlobal g ++ "|" ++ typeKey) table nextId
+    in
+    if next1 == nextId then
+        ( mid, table1, next1 )
+
+    else
+        ( mid, insertMemberGlobal mid g table1, next1 )
+
+
+{-| LSS_019 (GAP-1 element grounding, plans/lss-fidelity-2-standalone-member-grounding.md §3):
+rewrite each PROVISIONAL standalone member (`g|`/`c|`, recorded in
+`provisionalStandalone`) of a set slot being read back at the arrow
+`paramT -> resultT` to its GROUND member `g|<global>|<widened-arrow-typeKey>`.
+Element identity becomes (global × instantiation layout) — the id-space
+image of the paper's μ-aware substitution for `d⟨σ̄⟩` occurrences in sets.
+
+Three load-bearing details (plan §3.2):
+
+1.  DEFERRAL: a residual-carrying arrow (`containsAnyMVar`) keeps the
+    provisional ids — grounding there would embed per-item residual MVar
+    ids in the key, minting different ids for the same value in different
+    specs (spurious 2-sets). Deferral equals the pre-plan semantics and is
+    convergent under LSS_010 re-translation (a later, more concrete demand
+    grounds it then). Counted as the census's `deferred` — the explicit
+    precision frontier.
+2.  The key is ANNOTATION-WIDENED (`widenSets` before `toComparable`): an
+    arrow's own set cannot participate in its members' identity — that is
+    the μ-circularity, severed by construction.
+3.  The caller applies the maxSetSize policy to the REWRITTEN list (dedup
+    only shrinks; within one slot a provisional maps to exactly one ground
+    id, so per-slot size never grows — cap semantics never regress).
+
+Lambda (`l|`), kernel (`k|`), accessor (`a|`) and already-ground members
+pass through untouched (not in `provisionalStandalone`). Mixed
+provisional/ground sets are legal mid-run; rewrite+dedup at every zonk
+keeps annotations canonical.
+-}
+groundSetMembers : Mono.MonoType -> Mono.MonoType -> List Int -> LssMemberTable -> Int -> { members : List Int, table : LssMemberTable, nextId : Int, grounded : Int, deferred : Int }
+groundSetMembers paramT resultT members table0 nextId0 =
+    if not (List.any (\mid -> CoreDict.member mid table0.provisionalStandalone) members) then
+        -- Fast path (the common case): no provisional member in the slot.
+        { members = members, table = table0, nextId = nextId0, grounded = 0, deferred = 0 }
+
+    else if Mono.containsAnyMVar paramT || Mono.containsAnyMVar resultT then
+        -- Detail 1: deferral at a residual-carrying arrow.
+        { members = members
+        , table = table0
+        , nextId = nextId0
+        , grounded = 0
+        , deferred =
+            List.foldl
+                (\mid n ->
+                    if CoreDict.member mid table0.provisionalStandalone then
+                        n + 1
+
+                    else
+                        n
+                )
+                0
+                members
+        }
+
+    else
+        let
+            -- Detail 2: the annotation-widened arrow key, built ONCE per slot.
+            typeKey =
+                Mono.toComparableMonoType (Mono.widenSets (Mono.mFunction Mono.LTop [ paramT ] resultT))
+
+            rewritten =
+                List.foldl
+                    (\mid acc ->
+                        case CoreDict.get mid acc.table.provisionalStandalone of
+                            Nothing ->
+                                { acc | members = mid :: acc.members }
+
+                            Just g ->
+                                let
+                                    ( mid2, table1, next1 ) =
+                                        groundStandaloneMemberIdFor g typeKey acc.table acc.nextId
+                                in
+                                { members = mid2 :: acc.members
+                                , table = table1
+                                , nextId = next1
+                                , grounded = acc.grounded + 1
+                                , deferred = acc.deferred
+                                }
+                    )
+                    { members = [], table = table0, nextId = nextId0, grounded = 0, deferred = 0 }
+                    members
+        in
+        -- Re-establish LSS_001's ascending-sorted, duplicate-free shape.
+        { members = dedupAscending (List.sort rewritten.members)
+        , table = rewritten.table
+        , nextId = rewritten.nextId
+        , grounded = rewritten.grounded
+        , deferred = rewritten.deferred
+        }
+
+
+dedupAscending : List Int -> List Int
+dedupAscending xs =
+    case xs of
+        a :: ((b :: _) as rest) ->
+            if a == b then
+                dedupAscending rest
+
+            else
+                a :: dedupAscending rest
+
+        _ ->
+            xs
 
 
 {-| E9.2 (LSS_016): intern a KERNEL member ("k|home.name" key — unchanged,

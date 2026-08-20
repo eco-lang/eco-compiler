@@ -230,6 +230,11 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         -- reads 0 flag-off (tables are flag-gated).
         , "muTie: tied=" ++ String.fromInt (Dict.size sFinal.lssMemberTable.muTied) ++ " qualifiedRecorded=" ++ String.fromInt (Dict.size sFinal.lssMemberTable.lambdaQualified)
 
+        -- LSS_019 standalone-member grounding census
+        -- (plans/lss-fidelity-2-standalone-member-grounding.md §5):
+        -- `deferred` is the residual-arrow precision frontier.
+        , "grounding: grounded=" ++ String.fromInt stats.grounding.grounded ++ " deferred=" ++ String.fromInt stats.grounding.deferred
+
         -- Census (2026-07-21): E9.2 guard-decline split (declinedKernelCNumber
         -- = the E10.0 `declinedUnsettled` proxy) + the whitelist-growth list.
         , "kernel declines: shape=" ++ String.fromInt stats.declinedKernelShape ++ " cnumber=" ++ String.fromInt stats.declinedKernelCNumber ++ " emission=" ++ String.fromInt stats.declinedKernelEmission ++ " arity=" ++ String.fromInt stats.declinedKernelArity

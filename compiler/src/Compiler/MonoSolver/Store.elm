@@ -1076,6 +1076,8 @@ type alias ZonkCtx =
     , lss : Maybe LssZonkAcc -- Just iff lss.enabled; keeps the off path lean
     , ecoReads : List IO.Variable -- MONO_029 stale-read barrier: vars read FREE while producing a CEcoValue residual (folded into S.ecoResidualReads)
     , intern : Intern -- K6: hash-cons table, carried in from S and written back once by `zonkToMono`
+    , memberTable : Engine.LssMemberTable -- LSS_019: carried in from S, written back once (zonk grounding interns ground member ids)
+    , nextMemberId : Int -- ditto (grounding may allocate fresh member ids)
     }
 
 
@@ -1114,6 +1116,13 @@ type alias LssZonkAcc =
     -- the WITHIN-cap branch, so the sizes of sets that widen are thrown away
     -- today — exactly the magnitudes the sorted-list worst case needs.
     , widenedHist : Dict.Dict Int Int
+
+    -- LSS_019 standalone-member grounding (plans/lss-fidelity-2-standalone-member-grounding.md):
+    -- the flag gates the whole rewrite (flag-off zonk is allocation-identical
+    -- to pre-plan); the counters fold into `lssStats.grounding`.
+    , groundStandalones : Bool
+    , grounded : Int
+    , groundingDeferred : Int
     }
 
 
@@ -1123,12 +1132,12 @@ zonkToMono var =
         let
             lssAcc =
                 if s.env.lss.enabled then
-                    Just { maxSetSize = s.env.lss.maxSetSize, zonked = 0, widenedBySize = 0, hist = Dict.empty, widenedHist = Dict.empty }
+                    Just { maxSetSize = s.env.lss.maxSetSize, zonked = 0, widenedBySize = 0, hist = Dict.empty, widenedHist = Dict.empty, groundStandalones = s.env.lss.groundStandalones, grounded = 0, groundingDeferred = 0 }
 
                 else
                     Nothing
         in
-        case zonkToMonoC s.superTable s.revMemo var { store = s.store, next = s.nextMVarId, lss = lssAcc, ecoReads = [], intern = s.intern } of
+        case zonkToMonoC s.superTable s.revMemo var { store = s.store, next = s.nextMVarId, lss = lssAcc, ecoReads = [], intern = s.intern, memberTable = s.lssMemberTable, nextMemberId = s.nextMemberId } of
             Err e ->
                 Err e
 
@@ -1137,14 +1146,14 @@ zonkToMono var =
                     s1 =
                         case c.ecoReads of
                             [] ->
-                                { s | store = c.store, nextMVarId = c.next, intern = c.intern }
+                                { s | store = c.store, nextMVarId = c.next, intern = c.intern, lssMemberTable = c.memberTable, nextMemberId = c.nextMemberId }
 
                             reads ->
                                 let
                                     aux0 =
                                         s.itemAux
                                 in
-                                { s | store = c.store, nextMVarId = c.next, intern = c.intern, itemAux = { aux0 | ecoResidualReads = reads ++ aux0.ecoResidualReads } }
+                                { s | store = c.store, nextMVarId = c.next, intern = c.intern, lssMemberTable = c.memberTable, nextMemberId = c.nextMemberId, itemAux = { aux0 | ecoResidualReads = reads ++ aux0.ecoResidualReads } }
                 in
                 Ok ( mt, foldZonkStats c s1 )
 
@@ -1171,6 +1180,14 @@ foldZonkStats c s =
                             , widenedBySize = stats.widenedBySize + acc.widenedBySize
                             , sizeHist = Dict.foldl (\k v h -> Dict.insert k (v + Maybe.withDefault 0 (Dict.get k h)) h) stats.sizeHist acc.hist
                             , widenedSizeHist = Dict.foldl (\k v h -> Dict.insert k (v + Maybe.withDefault 0 (Dict.get k h)) h) stats.widenedSizeHist acc.widenedHist
+                            , grounding =
+                                -- LSS_019 census; the guard keeps flag-off
+                                -- (counters permanently 0) allocation-free.
+                                if acc.grounded == 0 && acc.groundingDeferred == 0 then
+                                    stats.grounding
+
+                                else
+                                    { grounded = stats.grounding.grounded + acc.grounded, deferred = stats.grounding.deferred + acc.groundingDeferred }
                         }
                 }
 
@@ -1297,7 +1314,7 @@ zonkFlatC superTable revMemo flat c0 =
                         Ok ( mb, c2 ) ->
                             let
                                 ( anno, c3 ) =
-                                    zonkSetSlot setVar c2
+                                    zonkSetSlot ma mb setVar c2
                             in
                             Ok (consC (Mono.mFunction anno [ ma ] mb) c3)
 
@@ -1341,18 +1358,28 @@ zonkFlatC superTable revMemo flat c0 =
 
 {-| Read a set slot back to an annotation. THE only producer of `LSet`. Runs
 at item quiescence (zonk is the commit point — MONO_028 discipline), so a set
-is read only after every unification the item will ever do. Policy:
+is read only after every unification the item will ever do. `paramT`/`resultT`
+are the already-zonked param/result of the arrow whose slot this is — the
+demanded instantiation LSS_019's grounding keys on. Policy:
 
   - unresolved slot (FlexVar) -> LTop (unknown, NOT empty — an empty claim
     would license consumers to treat the arrow as dead)
   - LsTop -> LTop (widened / kernel-facing)
-  - LsMembers members -> LSet members, the store list by pointer (ascending
-    by construction), unless |members| > maxSetSize -> LTop (counted in
-    widenedBySize + widenedSizeHist)
+  - LsMembers members -> under `lss.groundStandalones`, provisional `g|`/`c|`
+    members first ground to `g|<global>|<widened-arrow-typeKey>` when the
+    arrow is residual-free (LSS_019; deferral keeps the provisional id) —
+    then LSet members, the store list by pointer (ascending by construction),
+    unless |members| > maxSetSize -> LTop (counted in widenedBySize +
+    widenedSizeHist; the cap applies to the REWRITTEN list — plan §3.2.3)
+
+Ground ids written back into slots by a demand encode (`monoTypeToVarC`)
+pass through the rewrite untouched (not in `provisionalStandalone`), so
+zonk∘encode∘zonk is idempotent — the stability LSS_010's finite-lattice
+argument needs.
 
 -}
-zonkSetSlot : IO.Variable -> ZonkCtx -> ( Mono.LambdaSetAnno, ZonkCtx )
-zonkSetSlot setVar c0 =
+zonkSetSlot : Mono.MonoType -> Mono.MonoType -> IO.Variable -> ZonkCtx -> ( Mono.LambdaSetAnno, ZonkCtx )
+zonkSetSlot paramT resultT setVar c0 =
     let
         ( store1, desc ) =
             UF.get setVar c0.store
@@ -1364,30 +1391,27 @@ zonkSetSlot setVar c0 =
         IO.Structure (IO.LambdaSet1 IO.LsTop) ->
             ( Mono.LTop, bumpZonkAcc Nothing c1 )
 
-        IO.Structure (IO.LambdaSet1 (IO.LsMembers members)) ->
-            let
-                size =
-                    List.length members
-            in
+        IO.Structure (IO.LambdaSet1 (IO.LsMembers members0)) ->
             case c1.lss of
-                Just acc ->
-                    if size > acc.maxSetSize then
-                        ( Mono.LTop
-                        , { c1
-                            | lss =
-                                Just
-                                    { acc
-                                        | zonked = acc.zonked + 1
-                                        , widenedBySize = acc.widenedBySize + 1
-                                        , widenedHist = Dict.insert size (1 + Maybe.withDefault 0 (Dict.get size acc.widenedHist)) acc.widenedHist
-                                    }
-                          }
-                        )
+                Just acc0 ->
+                    let
+                        ( members, c2 ) =
+                            if acc0.groundStandalones then
+                                groundMembersC paramT resultT members0 c1
+
+                            else
+                                ( members0, c1 )
+
+                        size =
+                            List.length members
+                    in
+                    if size > acc0.maxSetSize then
+                        ( Mono.LTop, bumpWidenedAcc size c2 )
 
                     else
                         -- Phase 2: IDENTITY — the store list IS the LSet
                         -- payload (ascending by construction; was Dict.keys).
-                        ( Mono.LSet members, bumpZonkAcc (Just size) c1 )
+                        ( Mono.LSet members, bumpZonkAcc (Just size) c2 )
 
                 Nothing ->
                     -- A FunL zonked outside an lss-enabled wrapper (e.g. a
@@ -1397,6 +1421,53 @@ zonkSetSlot setVar c0 =
         _ ->
             -- FlexVar residual: no information — LTop, never empty.
             ( Mono.LTop, bumpZonkAcc Nothing c1 )
+
+
+{-| LSS_019: run the grounding rewrite against the ctx-threaded member table,
+folding the census riders into the accumulator. The no-event fast path
+returns the ctx UNCHANGED (no copy).
+-}
+groundMembersC : Mono.MonoType -> Mono.MonoType -> List Int -> ZonkCtx -> ( List Int, ZonkCtx )
+groundMembersC paramT resultT members0 c =
+    let
+        r =
+            Engine.groundSetMembers paramT resultT members0 c.memberTable c.nextMemberId
+    in
+    if r.grounded == 0 && r.deferred == 0 then
+        ( members0, c )
+
+    else
+        ( r.members
+        , { c
+            | memberTable = r.table
+            , nextMemberId = r.nextId
+            , lss =
+                Maybe.map
+                    (\acc -> { acc | grounded = acc.grounded + r.grounded, groundingDeferred = acc.groundingDeferred + r.deferred })
+                    c.lss
+          }
+        )
+
+
+{-| The over-cap widening bump (factored from the LsMembers arm; identical
+counters).
+-}
+bumpWidenedAcc : Int -> ZonkCtx -> ZonkCtx
+bumpWidenedAcc size c =
+    case c.lss of
+        Nothing ->
+            c
+
+        Just acc ->
+            { c
+                | lss =
+                    Just
+                        { acc
+                            | zonked = acc.zonked + 1
+                            , widenedBySize = acc.widenedBySize + 1
+                            , widenedHist = Dict.insert size (1 + Maybe.withDefault 0 (Dict.get size acc.widenedHist)) acc.widenedHist
+                        }
+            }
 
 
 bumpZonkAcc : Maybe Int -> ZonkCtx -> ZonkCtx
