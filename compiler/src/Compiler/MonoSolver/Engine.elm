@@ -12,12 +12,12 @@ module Compiler.MonoSolver.Engine exposing
     , lookupSchemeMono, putSchemeMono
     , lookupCallMemo, putCallMemo
     , consS
-    , mvarIdKey, pointKey
+    , mvarIdKey, pointKey, isScalarVar
     , memberIdFor, standaloneMemberIdFor, standaloneMemberGlobal, kernelMemberIdFor, standaloneMemberKernel, srcLambdaKey, trivialSignature, emptyLssStats
     , lambdaInstanceMemberId, lambdaInstanceMemberMaybe
     , GroundingStats, internMemberKey, groundStandaloneMemberIdFor, groundSetMembers
     , LssMemberTable, MemberSource(..), emptyMemberTable
-    , bumpWidenedByKernel, bumpWidenedBySigSize, bumpWidenedByCf, bumpKernelFactHit, bumpCompletionJoin, bumpCompletionJoinNoop, withScratchStore
+    , bumpWidenedByKernel, bumpWidenedBySigSize, bumpWidenedByCf, bumpKernelFactHit, bumpKernelLicensed, bumpCompletionJoin, bumpCompletionJoinNoop, withScratchStore
     , SigFlowStats
     , markDirty
     , ItemAux, emptyItemAux, clearedAux, restoredAux, clearResidualReads
@@ -121,6 +121,7 @@ type alias LssStats =
     , declinedKernelCNumber : Int -- declined by the deep-CNumber emission checks (residual number vars = UNSETTLED site; the E10.0 population)
     , declinedKernelEmission : Int -- declined by the non-CNumber emission checks (unboxed-scalar tail/result, arg shape)
     , declinedKernelArity : Int -- whitelisted kernel singleton consulted at a non-whitelist-arity site
+    , kernelUnsolvedHist : CoreDict.Dict String Int -- ONE-SHOT CENSUS (kernel-intrinsic-annotations): LICENSED kernels whose occurrence verification was REFUSED — i.e. exactly where an intrinsic annotation would pay
     , kernelMissHist : CoreDict.Dict String Int -- NON-whitelisted kernel singleton call sites, "home.name" -> count (whitelist growth)
 
     -- Substrate census (Phase 1 of plans/lss-set-write-substrate.md). Stats
@@ -164,15 +165,24 @@ type alias GroundingStats =
 exceeded `maxSetSize` at readback and widened to ⊤) — bumped
 unconditionally, same class as `widenedBySize`/`widenedByKernel`.
 `widenedByCf` counts poison events inside the sigFlow joins (hub poisons +
-divergence in the new member-root/result/rhs/call-shape joins) and
-`kernelFactHits` counts Phase F fact-row applications — both census-only and
-therefore REPORT-GATED per plan 1 §7.6 (the bump helpers check
-`env.lss.report`; the default path carries only a branch).
+divergence in the new member-root/result/rhs/call-shape joins),
+`kernelFactHits` counts Phase F POSITIONAL fact-row applications and
+`kernelLicensed` (LSS_022) counts boundaries that took the licensed
+`TypeFaithful` pass-through — all census-only and therefore REPORT-GATED per
+plan 1 §7.6 (the bump helpers check `env.lss.report`; the default path
+carries only a branch).
+
+The two kernel counters partition the fact-bearing boundaries: a boundary
+bumps `kernelFactHits` (positional tier) or `kernelLicensed` (license tier),
+never both, and a rowless boundary bumps neither. `widenedByKernel` keeps its
+own meaning — boundaries that actually poisoned — so licensed boundaries
+stop bumping it entirely (plan §3.4).
 -}
 type alias SigFlowStats =
     { widenedBySigSize : Int
     , widenedByCf : Int
     , kernelFactHits : Int
+    , kernelLicensed : Int
     }
 
 
@@ -268,7 +278,7 @@ insertMemberProvisional mid g t =
 
 emptyLssStats : LssStats
 emptyLssStats =
-    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0 } }
+    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0 } }
 
 
 {-| The all-defaults signature for an annotation with `n` arrows.
@@ -476,8 +486,8 @@ bumpWidenedByCf s =
         s
 
 
-{-| LSS_021 (Phase F): a KernelSetFacts row applied at a kernel boundary.
-Census-only — REPORT-GATED (plan 1 §7.6).
+{-| LSS_021 (Phase F): a POSITIONAL KernelSetFacts row applied at a kernel
+boundary. Census-only — REPORT-GATED (plan 1 §7.6).
 -}
 bumpKernelFactHit : S -> S
 bumpKernelFactHit s =
@@ -490,6 +500,27 @@ bumpKernelFactHit s =
                 stats.sigStats
         in
         { s | lssStats = { stats | sigStats = { sig | kernelFactHits = sig.kernelFactHits + 1 } } }
+
+    else
+        s
+
+
+{-| LSS_022: a kernel boundary took the LICENSED (`TypeFaithful`)
+pass-through — no LSS_004 poison on either side. Census-only —
+REPORT-GATED, and disjoint from `bumpKernelFactHit` by construction (one
+boundary takes one tier).
+-}
+bumpKernelLicensed : S -> S
+bumpKernelLicensed s =
+    if s.env.lss.report then
+        let
+            stats =
+                s.lssStats
+
+            sig =
+                stats.sigStats
+        in
+        { s | lssStats = { stats | sigStats = { sig | kernelLicensed = sig.kernelLicensed + 1 } } }
 
     else
         s
@@ -1792,6 +1823,28 @@ mvarIdKey : TypeIds.MVarId -> Int
 mvarIdKey =
     Id.toComparable
 
+
+{-| Ruling R1, operational: can NO function ever occur inside this type
+variable? True only for `number` (Int | Float) and `comparable` (scalars, and
+lists/tuples bottoming out in scalars). `appendable`/`compappend` reach a bare
+element variable through their `List a` arm, so they answer False, as does any
+variable the super table does not know — a miss is conservative, and the
+failure direction is a missing license rather than a wrong one.
+
+Read from the solver's own super table, so this is the typechecker's truth, not
+a guess from a variable's spelling.
+-}
+isScalarVar : S -> TypeIds.MVarId -> Bool
+isScalarVar s mid =
+    case CoreDict.get (mvarIdKey mid) s.superTable of
+        Just IO.Number ->
+            True
+
+        Just IO.Comparable ->
+            True
+
+        _ ->
+            False
 
 pointKey : IO.Variable -> Int
 pointKey (IO.Pt n) =

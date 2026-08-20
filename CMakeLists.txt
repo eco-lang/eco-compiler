@@ -1058,6 +1058,70 @@ endif()
 # compiler's runtime caches alone — that's fine, the bootstrap chain and the
 # Stage 5 stale-.ecot sweep handle staleness themselves.
 
+# ============================================================================
+# LSS_022 kernel parametricity license -- rot guard
+#
+# A `TypeFaithful` row in Compiler/MonoSolver/KernelSetFacts.elm asserts a
+# property of a C++ BODY, and on the strength of it the monomorphizer stops
+# poisoning that kernel's arrow positions. Edit the body, and the assertion
+# can become false with nothing failing -- the symptom is a wrong fast-dispatch
+# stamp, i.e. a miscompile. Elm tests cannot read files, so the guard is a
+# build-tree check: sha256 every audited file, AND cross-check that the
+# manifest's (kernel, file) pairs are exactly the ones the rows declare (so a
+# new licensed row with no manifest entry fails loudly instead of going
+# unguarded forever).
+#
+# It lives HERE, not in test/CMakeLists.txt where the script sits, because
+# test/ is added EXCLUDE_FROM_ALL -- a custom target defined there never joins
+# the default graph and would silently never run. At this level `cmake --build
+# build` runs it, and therefore so do `check` and `full`. It costs
+# milliseconds.
+#
+# The DEPENDS list is read from the manifest at configure time, so touching an
+# audited kernel body re-runs the check without a reconfigure. Adding a NEW
+# licensed row does need a reconfigure to pin its file -- the coverage half of
+# the check is what catches that case.
+# ============================================================================
+set(KERNEL_LICENSE_MANIFEST
+        "${CMAKE_SOURCE_DIR}/compiler/src/Compiler/MonoSolver/kernel-license-manifest.txt")
+set(KERNEL_LICENSE_CHECKER
+        "${CMAKE_SOURCE_DIR}/test/scripts/check-kernel-license-manifest.sh")
+set(KERNEL_LICENSE_DEPS
+        "${KERNEL_LICENSE_CHECKER}"
+        "${CMAKE_SOURCE_DIR}/compiler/src/Compiler/MonoSolver/KernelSetFacts.elm"
+        # The intrinsic ANNOTATION table is the same species of claim about C++
+        # (plans/kernel-intrinsic-annotations.md) and the checker harvests it
+        # alongside the license table, so it is an input here too.
+        "${CMAKE_SOURCE_DIR}/compiler/src/Compiler/Type/KernelIntrinsics.elm")
+if(EXISTS "${KERNEL_LICENSE_MANIFEST}")
+    list(APPEND KERNEL_LICENSE_DEPS "${KERNEL_LICENSE_MANIFEST}")
+    file(STRINGS "${KERNEL_LICENSE_MANIFEST}" _license_lines REGEX "^[0-9a-f]+  [^ ]+  ")
+    foreach(_line IN LISTS _license_lines)
+        # "<sha256>  <repo-relative path>  <Home.name>"
+        string(REGEX REPLACE "^[0-9a-f]+  ([^ ]+)  .*$" "\\1" _licensed_file "${_line}")
+        # Guard, not decoration: file(STRINGS) splits lines at non-ASCII bytes,
+        # so a stray fragment can match a hex-ish pattern and yield a path that
+        # does not exist. Depending on it wedges the build graph with "missing
+        # and no known rule to make it". A path that genuinely IS missing is
+        # caught by the checker itself, with a real message.
+        if(EXISTS "${CMAKE_SOURCE_DIR}/${_licensed_file}")
+            list(APPEND KERNEL_LICENSE_DEPS "${CMAKE_SOURCE_DIR}/${_licensed_file}")
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES KERNEL_LICENSE_DEPS)
+endif()
+
+add_custom_command(
+        OUTPUT "${CMAKE_BINARY_DIR}/kernel-license-manifest.stamp"
+        COMMAND sh "${KERNEL_LICENSE_CHECKER}" "${CMAKE_SOURCE_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E touch "${CMAKE_BINARY_DIR}/kernel-license-manifest.stamp"
+        DEPENDS ${KERNEL_LICENSE_DEPS}
+        COMMENT "Checking LSS_022 kernel license manifest"
+        VERBATIM
+)
+add_custom_target(kernel-license-check ALL
+        DEPENDS "${CMAKE_BINARY_DIR}/kernel-license-manifest.stamp")
+
 # Convenience targets for common workflows.
 
 # Usage: cmake --build build --target rebuild

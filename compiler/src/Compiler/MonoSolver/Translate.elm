@@ -2159,6 +2159,33 @@ recordKernelMiss home name s =
     }
 
 
+{-| Census helper for the above. Separated so nothing but a flag test runs on
+the default path.
+-}
+recordRefusedLicense : ( String, String ) -> Can.Type TypeIds.MVarId -> Engine.S -> Engine.S
+recordRefusedLicense ( kHome, kName ) canFuncType s =
+    case KernelSetFacts.factFor kHome kName of
+        Just (KernelSetFacts.TypeFaithful license) ->
+            if KernelSetFacts.licenseApplies (Engine.isScalarVar s) license canFuncType then
+                s
+
+            else
+                let
+                    stats =
+                        s.lssStats
+                in
+                { s
+                    | lssStats =
+                        { stats
+                            | kernelUnsolvedHist =
+                                Dict.update (kHome ++ "." ++ kName)
+                                    (\v -> Just (Maybe.withDefault 0 v + 1))
+                                    stats.kernelUnsolvedHist
+                        }
+                }
+
+        _ ->
+            s
 {-| Census: a WHITELISTED kernel singleton consulted at a site that does
 not saturate the whitelist-pinned arity. Stats-only.
 -}
@@ -3347,17 +3374,23 @@ deriveKernelAbiTypeWith kernelId canFuncType funcVarStep =
                 )
                 (Store.zonkToMono funcVar)
         )
-        (Engine.andThen (poisonKernelArrowsThen kernelId) funcVarStep)
+        (Engine.andThen (poisonKernelArrowsThen kernelId canFuncType) funcVarStep)
 
 
-{-| LSS_004, refined by LSS_021 (KernelSetFacts): a ROWLESS kernel poisons
-its whole loaded scheme's set slots (today's behavior); a kernel WITH an
-audited row poisons per-param — `PSFApplies` positions keep their slots (the
-caller's knowledge survives the boundary; the kernel only calls the value),
-`PSFTunnels` positions set-slot-join the result, everything else poisons.
-Both sides of the boundary consult ONE table (`KernelSetFacts` — the
-LSS_006-style two-sided discipline; the inference twin is
-`LssInfer.kernelCallBoundary`).
+{-| LSS_004, refined by LSS_021 and LSS_022 (KernelSetFacts): a ROWLESS
+kernel poisons its whole loaded scheme's set slots (today's behavior); a
+`TypeFaithful` (LICENSED) kernel poisons NOTHING and passes the loaded scheme
+straight through; a `Positional` kernel poisons per-param — `PSFApplies`
+positions keep their slots (the caller's knowledge survives the boundary; the
+kernel only calls the value), `PSFTunnels` positions set-slot-join the
+result, everything else poisons. Both sides of the boundary consult ONE table
+(`KernelSetFacts` — the LSS_006-style two-sided discipline; the inference
+twin is `LssInfer.kernelCallBoundary`).
+
+The licensed pass-through is load-bearing precisely BECAUSE of the ordering
+note below: the arg unification has already run, so the unpoisoned shared
+slots carry the caller's real per-site member knowledge into the zonk. That
+is where the license's precision actually lands.
 
 Ordering note (corrected 2026-08-20, was stale): on the CALL path this runs
 AFTER `unifyParamsWithArgExprs` — `Engine.andThen f step` runs `step` first,
@@ -3367,10 +3400,25 @@ Points, and a skipped position is simply never poisoned (the skip needs no
 ordering assumption). It still runs before the zonk that reads the slots.
 No-op when lss is off.
 -}
-poisonKernelArrowsThen : ( String, String ) -> IO.Variable -> Step IO.Variable
-poisonKernelArrowsThen ( kHome, kName ) funcVar s =
+poisonKernelArrowsThen : ( String, String ) -> Can.Type TypeIds.MVarId -> IO.Variable -> Step IO.Variable
+poisonKernelArrowsThen ( kHome, kName ) canFuncType funcVar s0 =
+    let
+        -- CENSUS (report-gated, so the default path carries only the flag
+        -- test): which LICENSED kernels had their occurrence verification
+        -- REFUSED? That is precisely the population an intrinsic annotation
+        -- would pay for — see plans/kernel-intrinsic-annotations.md. Kept
+        -- rather than deleted after its first run because it is the targeting
+        -- instrument for every future row: without it, "annotate the rest"
+        -- means annotating blind, and annotations are fail-stop.
+        s =
+            if s0.env.lss.report then
+                recordRefusedLicense ( kHome, kName ) canFuncType s0
+
+            else
+                s0
+    in
     if s.env.lss.enabled then
-        case KernelSetFacts.rowFor kHome kName of
+        case KernelSetFacts.factFor kHome kName of
             Nothing ->
                 case Store.poisonArrowSets funcVar s of
                     Err e ->
@@ -3379,7 +3427,35 @@ poisonKernelArrowsThen ( kHome, kName ) funcVar s =
                     Ok ( _, s1 ) ->
                         Ok ( funcVar, Engine.bumpWidenedByKernel s1 )
 
-            Just plan ->
+            Just (KernelSetFacts.TypeFaithful license) ->
+                if not (KernelSetFacts.licenseApplies (Engine.isScalarVar s) license canFuncType) then
+                    -- LSS_022 occurrence verification. This side is where the
+                    -- check EARNS its cost: the arg unification has already
+                    -- run (see the ordering note), so a wrongly-applied
+                    -- license would leave the caller's real members standing
+                    -- in a slot the kernel may not honour — the
+                    -- populated-but-incomplete hazard, i.e. a false singleton.
+                    -- Skipping verification here would make the whole tier
+                    -- rest on the Elm annotation never drifting, which the rot
+                    -- manifest cannot see. Fail SAFE to full poison.
+                    case Store.poisonArrowSets funcVar s of
+                        Err e ->
+                            Err e
+
+                        Ok ( _, s1 ) ->
+                            Ok ( funcVar, Engine.bumpWidenedByKernel s1 )
+
+                else
+                    -- Licensed — pass-through. No spine descent, so no
+                    -- arity/shape precondition either: whatever the scheme's
+                    -- shape, leaving every slot alone is exactly "the type IS
+                    -- the flow graph". Unlike the inference twin this arm
+                    -- needs no `scope` split — doing nothing is already the
+                    -- whole implementation, and for an `Inert` row there are
+                    -- no set slots for it to have done anything to.
+                    Ok ( funcVar, Engine.bumpKernelLicensed s )
+
+            Just (KernelSetFacts.Positional plan) ->
                 case poisonKernelPerParam plan.params [] funcVar False s of
                     Err e ->
                         Err e

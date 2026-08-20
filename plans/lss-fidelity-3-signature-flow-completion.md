@@ -1199,28 +1199,41 @@ confirming flag-off inertness at the census level.)
 
 ### Phase D — DONE 2026-08-20 (Run X, `benchmarks/lss-opt.md`) — **sigFlow stays DEFAULT-OFF**
 
-Full numbers archived as Run X. The gating rows: unconstrained-⊤ share
-**82.14% → 76.11%** (member-carrying arrows 17.9% → 23.9%; singletons
-+31,299); k≥2 and `multiSetSites` unmoved (→ Phase G); `widenedBySigSize=0`
-(the B.4 rider never fires on this corpus); `widenedByCf=5,329`;
-`declinedNoInstance` +133 (→ Phase C1); AbiCloning stamps +8/−6. Run-M
-dispatch A/B (counters-lowered solver-built binaries, cold subst workload,
-`sat+fast` identical both legs — pure tier shift; byte-identical workload
-output = LSS_005 behavioral gate PASS): **fast coverage 8.30% → 6.08%
-(−22.6M stamped events, −26.7% rel), wall FLAT (259.1s vs 257.6s), RSS
-flat.**
+Two separate A/B measurements, each under its own file's protocol:
+
+1. **Cost/precision — Run X in `benchmarks/lss-opt.md`** (that track's protocol:
+   both arms BUILT and MEASURED solver+LSS, flag set at build and workload, one
+   cold run per arm). Wall **316.9 → 328.3 s (+3.6%)**, and the census attributes
+   it to the analysis doing more work rather than to slower code (sets zonked
+   +10.4%, slotsMinted +5.1%, flex set-writes +39%, join-noop 2,156 → 22,074);
+   GC agrees — majors 13 = 13, promoted −0.14%, RSS flat, minors +1.5%.
+   Precision rows: 394 signatures nontrivial, singletons 64,311 → 95,620,
+   grounded 5,014 → 12,602, byBudget +5.3% (watchdogs quiet),
+   `widenedBySigSize = 0` (the B.4 rider never fires on this corpus),
+   `widenedByCf = 5,329`, `declinedNoInstance` +133 (→ Phase C1), k≥2 and
+   `multiSetSites` unmoved (→ Phase G), out.mlir +30,042 B (+0.22%).
+   Earlier same-binary workload-flag legs measured the ⊤-share at
+   **82.14% → 76.11%** (member-carrying arrows 17.9% → 23.9%).
+2. **Payoff — Run-M dispatch census** (`benchmarks/runtime-calls.md` protocol:
+   counters-lowered solver-built binaries, cold subst workload so the JOB stays
+   constant while the binary changes; `sat+fast` identical both legs = pure tier
+   shift; byte-identical workload output = LSS_005 behavioral gate PASS):
+   **fast coverage 8.30% → 6.08% (−22.6M stamped events, −26.7% rel).**
 
 **Default-flip decision: NOT FLIPPED.** The precision gain is real and the
-costs are absorbable (byBudget +5.3%, out.mlir +0.22%, wall flat) — but the
+costs are absorbable (byBudget +5.3%, out.mlir +0.22%, wall +3.6% and
+attributable to analysis work) — but the
 one live consumer regresses: symmetric rep-links + honest hubs union
 per-branch/per-param flows, so honestly-singleton SITES read
 honest-but-multi DEF-level sets and AbiCloning declines their stamps. This
 is Risk 2 measured at runtime, and it means **the §A.2 FromArrow re-open
 criterion has FIRED**: the recorded path to precision-without-pollution is
 directed/per-site fact application (the deferred-constraint flavor §A.2
-priced as "the paper's full Q machinery") — file it as its own plan before
-any default flip. Until then `sigFlow` is a fidelity flag: ON for
-census/consumer work (Borrow reads honest sets; grounding 4,966 → 12,555),
+priced as "the paper's full Q machinery") — filed as
+`plans/lss-directed-set-flow.md` (the flip's prerequisite); the Phase F
+expressiveness ceiling's successor is filed as
+`plans/kernel-parametricity-license.md`. Until then `sigFlow` is a fidelity flag: ON for
+census/consumer work (Borrow reads honest sets; grounding 5,014 → 12,602),
 OFF for the shipping stamp pool.
 
 ### Phase C — DONE 2026-08-20 (census C1 + amendment C2)

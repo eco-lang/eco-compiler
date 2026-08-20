@@ -237,14 +237,27 @@ renderLssReport sFinal (Mono.MonoGraph g) =
 
         -- LSS_020 signature-flow census
         -- (plans/lss-fidelity-3-signature-flow-completion.md §B.4):
-        -- widenedByCf/kernelFactHits are report-gated bumps, so they read 0
-        -- unless ECO_MONO_LSS_REPORT was on for the run.
-        , "sigflow: widenedByCf=" ++ String.fromInt stats.sigStats.widenedByCf ++ " kernelFactHits=" ++ String.fromInt stats.sigStats.kernelFactHits
+        -- widenedByCf/kernelFactHits/kernelLicensed are report-gated bumps,
+        -- so they read 0 unless ECO_MONO_LSS_REPORT was on for the run.
+        -- LSS_022: kernelFactHits counts POSITIONAL row applications and
+        -- kernelLicensed counts TypeFaithful pass-throughs — disjoint tiers,
+        -- and only the former can also appear in widenedByKernel.
+        , "sigflow: widenedByCf=" ++ String.fromInt stats.sigStats.widenedByCf ++ " kernelFactHits=" ++ String.fromInt stats.sigStats.kernelFactHits ++ " kernelLicensed=" ++ String.fromInt stats.sigStats.kernelLicensed
 
         -- Census (2026-07-21): E9.2 guard-decline split (declinedKernelCNumber
         -- = the E10.0 `declinedUnsettled` proxy) + the whitelist-growth list.
         , "kernel declines: shape=" ++ String.fromInt stats.declinedKernelShape ++ " cnumber=" ++ String.fromInt stats.declinedKernelCNumber ++ " emission=" ++ String.fromInt stats.declinedKernelEmission ++ " arity=" ++ String.fromInt stats.declinedKernelArity
         , "kernel whitelist misses: " ++ kernelMissLine
+        , "kernel licenses REFUSED at the occurrence: "
+            ++ (if Dict.isEmpty stats.kernelUnsolvedHist then
+                    "(none)"
+
+                else
+                    String.join " "
+                        (List.map (\( k, v ) -> k ++ "=" ++ String.fromInt v)
+                            (List.sortBy (\( _, v ) -> -v) (Dict.toList stats.kernelUnsolvedHist))
+                        )
+               )
         , "top specs/global: " ++ topSpecs
         , "=================="
         ]

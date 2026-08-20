@@ -87,6 +87,7 @@ import Compiler.Type.Constrain.Common as Common exposing (Args, Info(..), RigidT
 import Compiler.Type.Constrain.Typed.NodeIds as NodeIds
 import Compiler.Type.Constrain.Typed.Pattern as Pattern
 import Compiler.Type.Instantiate as Instantiate
+import Compiler.Type.KernelIntrinsics as KernelIntrinsics
 import Compiler.Type.Type as Type exposing (Constraint(..), Type(..))
 import Data.Map as DMap
 import Dict exposing (Dict)
@@ -1501,6 +1502,17 @@ constrainLambdaGroupAWithIds rtv region exprId args body expected =
             )
 
 
+{-| The name `CForeign` reports in a type error for an intrinsic-annotated
+kernel. Rendered fully qualified (`Elm.Kernel.List.fromArray`) because the only
+people who can write a kernel reference are kernel-package authors, and the
+prefix distinguishes the two packages' same-named kernels.
+-}
+kernelErrorName : Name -> Name -> Name -> Name
+kernelErrorName prefix home name =
+    prefix ++ ".Kernel." ++ home ++ "." ++ name
+
+
+
 
 -- ====== GROUP B NODE DISPATCH ======
 
@@ -1521,8 +1533,22 @@ constrainNodeWithIds rtv region node expected =
         Can.VarTopLevel _ name ->
             IO.pure (CLocal region name expected)
 
-        Can.VarKernel _ _ _ ->
-            IO.pure CTrue
+        Can.VarKernel prefix home name ->
+            -- `Elm.Kernel.*` references carry no constraint by default, so a
+            -- kernel is typed entirely by its context: one used INLINE (rather
+            -- than through an eta-free aliasing def) is bounded by NOTHING, and
+            -- `toArray` behaves as `alpha -> beta` with the two sides never
+            -- equated. An INTRINSIC row supplies the missing annotation and
+            -- makes this a `CForeign`, instantiated fresh per occurrence and
+            -- unified with the context exactly as a foreign function's is —
+            -- see `Compiler.Type.KernelIntrinsics` for the table, the
+            -- representation-claim rule, and why it is keyed by PREFIX too.
+            case KernelIntrinsics.lookup prefix home name of
+                Just row ->
+                    IO.pure (CForeign region (kernelErrorName prefix home name) row.annotation expected)
+
+                Nothing ->
+                    IO.pure CTrue
 
         Can.VarForeign _ name annotation ->
             IO.pure (CForeign region name annotation expected)

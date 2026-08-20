@@ -1036,10 +1036,11 @@ walkCall letEnv func args meta s0 =
         TOpt.VarCycle _ home name funcMeta ->
             applyCalleeAt (TOpt.Global home name) funcMeta.tipe args meta s0
 
-        TOpt.VarKernel _ _ home name _ ->
-            -- LSS_021 (Phase F): consult the audited per-param set-flow
-            -- table; no row / arity mismatch keeps LSS_004 full poison.
-            kernelCallBoundary home name args meta s0
+        TOpt.VarKernel _ _ home name funcMeta ->
+            -- LSS_021/LSS_022: consult the audited set-flow table — licensed
+            -- kernels behave like a plain callee, positional rows refine per
+            -- param, no row / arity mismatch keeps LSS_004 full poison.
+            kernelCallBoundary home name funcMeta args meta s0
 
         TOpt.VarDebug _ _ _ _ _ ->
             poisonCallBoundary args meta s0
@@ -1256,78 +1257,147 @@ joinCallArgs v args seen s0 =
                                 Ok ( Nothing, s1 )
 
 
-{-| LSS_021 (Phase F): a kernel call boundary WITH a KernelSetFacts row at
-the exact call arity. Per param: `PSFOpaque` → load + poison (exactly what
-`poisonArgList` would do — same op order, so rowless behavior is unchanged);
-`PSFApplies` → NOTHING (no load; the arg expr is still walked by the Call
-arm's `walkChildren`, so member mints are unchanged — the kernel adds no
-inhabitants and the caller's knowledge survives the boundary);
-`PSFTunnels` → load, then set-slot-join against the result's loaded type.
-Result row per `plan.result`. `widenedByKernel` bumps ONCE iff any position
-poisoned (the counter keeps meaning "boundaries that poisoned");
-`kernelFactHits` records the row application (report-gated).
+{-| A kernel call boundary, resolved against the audited set-flow table.
+
+`TypeFaithful` (LSS_022) is the LICENSED tier. A `Transports` license behaves
+exactly like a plain callee — instantiate the kernel's own occurrence type in
+an isolated memo and unify the call shape, so the type's shared variables
+transport sets with no poison and no bespoke machinery. This is
+`applyCalleeAt`'s non-in-progress path minus the signature facts (a kernel
+has no body and therefore no signature to consult). No arity rule is needed:
+`unifyCallShape` peels one arrow per arg and unifies the residual with the
+call's own type, which is shape-correct for partial and over-application
+alike. An `Inert` license skips the boundary entirely — see the arm.
+
+`Positional` (LSS_021) is the per-param tier, and it IS arity-aligned — a
+mismatch (partial/over application) falls back to full poison. Per param:
+`PSFOpaque` → load + poison (exactly what `poisonArgList` would do — same op
+order, so rowless behavior is unchanged); `PSFApplies` → NOTHING (no load;
+the arg expr is still walked by the Call arm's `walkChildren`, so member
+mints are unchanged — the kernel adds no inhabitants and the caller's
+knowledge survives the boundary); `PSFTunnels` → load, then set-slot-join
+against the result's loaded type. Result row per `plan.result`.
+
+`widenedByKernel` bumps ONCE iff any position poisoned (the counter keeps
+meaning "boundaries that poisoned", so licensed boundaries never bump it);
+`kernelFactHits` records a positional application and `kernelLicensed` a
+licensed one (both report-gated, disjoint).
+
+Honesty class of the licensed result is `WpOpaque` — a call result is
+empty-or-honest and must not mix into hubs, the same contract
+`applyCalleeAt` ships. The known A.1 arg-position leak applies here as
+everywhere on the inference side (arg loads are fresh), so the licensed
+inference path mainly buys rep-linkage into signatures; the full per-site
+member transport happens translation-side, where `deriveKernelAbiTypeCall`
+already unifies the real item-memo arg Points before the (now skipped)
+poison.
 -}
-kernelCallBoundary : Name -> Name -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
-kernelCallBoundary home name args meta s0 =
-    case KernelSetFacts.planFor home name (List.length args) of
+kernelCallBoundary : Name -> Name -> TOpt.Meta TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
+kernelCallBoundary home name funcMeta args meta s0 =
+    case KernelSetFacts.factFor home name of
         Nothing ->
             poisonCallBoundary args meta s0
 
-        Just plan ->
-            case kernelArgsGo plan.params args False [] s0 of
-                Err e ->
-                    Err e
+        Just (KernelSetFacts.TypeFaithful license) ->
+            if not (KernelSetFacts.licenseApplies (Engine.isScalarVar s0) license funcMeta.tipe) then
+                -- LSS_022 occurrence verification: this kernel is used here at
+                -- a type the audit never examined (an `Inert` row whose Elm
+                -- annotation grew a function-capable position, or a declared
+                -- shape the occurrence does not instantiate). Fail SAFE — treat
+                -- it as unaudited and poison, exactly as if no row existed.
+                poisonCallBoundary args meta s0
 
-                Ok ( ( argPoisoned, tunnelsRev ), s1 ) ->
-                    case Store.loadType meta.tipe s1 of
-                        Err e ->
-                            Err e
+            else
+                case license.scope of
+                    KernelSetFacts.Inert ->
+                        -- The `vacuous` class: no arrows and no unconstrained
+                        -- variables anywhere in the kernel's type, so its loaded
+                        -- scheme has ZERO set slots. Poison and transport are
+                        -- both provable no-ops — the boundary is skipped
+                        -- outright rather than instantiated, because ~5 in 6
+                        -- licensed kernels are this class and an instantiation
+                        -- here would be a fixed cost on a hot path buying
+                        -- nothing. `WpNone` is the honest summary: the call
+                        -- contributes no members. Hub mates cannot be harmed by
+                        -- it — `joinCfHub` is `canTypeMentionsArrow`-guarded on
+                        -- the hub type, and an inert call's type is the hub's.
+                        Ok ( WpNone, Engine.bumpKernelLicensed s0 )
 
-                        Ok ( resVar, s2 ) ->
-                            let
-                                resultStep =
-                                    case plan.result of
-                                        KernelSetFacts.PSFOpaque ->
-                                            case Store.poisonArrowSets resVar s2 of
-                                                Err e ->
-                                                    Err e
+                    -- `TransportsAs` behaves identically once verified — the
+                    -- declared shape's only job is to make the license
+                    -- checkable for a kernel the typechecker does not bound.
+                    _ ->
+                        case Store.loadTypeIsolated funcMeta.tipe s0 of
+                            Err e ->
+                                Err e
 
-                                                Ok ( _, s3 ) ->
-                                                    Ok ( True, s3 )
+                            Ok ( funcVar, s1 ) ->
+                                case unifyCallShape funcVar args meta s1 of
+                                    Err e ->
+                                        Err e
 
-                                        _ ->
-                                            Ok ( False, s2 )
-                            in
-                            case resultStep of
-                                Err e ->
-                                    Err e
+                                    Ok ( callVar, s2 ) ->
+                                        Ok ( WpOpaque callVar, Engine.bumpKernelLicensed s2 )
 
-                                Ok ( resPoisoned, s3 ) ->
-                                    case joinTunnels resVar (List.reverse tunnelsRev) s3 of
-                                        Err e ->
-                                            Err e
+        Just (KernelSetFacts.Positional plan) ->
+            if List.length plan.params /= List.length args then
+                poisonCallBoundary args meta s0
 
-                                        Ok ( _, s4 ) ->
-                                            let
-                                                s5 =
-                                                    Engine.bumpKernelFactHit
-                                                        (if argPoisoned || resPoisoned then
-                                                            Engine.bumpWidenedByKernel s4
+            else
+                case kernelArgsGo plan.params args False [] s0 of
+                    Err e ->
+                        Err e
 
-                                                         else
-                                                            s4
-                                                        )
-                                            in
-                                            if resPoisoned then
-                                                -- ⊤ result: honest summary.
-                                                Ok ( WpHonest resVar, s5 )
+                    Ok ( ( argPoisoned, tunnelsRev ), s1 ) ->
+                        case Store.loadType meta.tipe s1 of
+                            Err e ->
+                                Err e
 
-                                            else
-                                                -- Unconstrained result: the
-                                                -- value's inhabitants are
-                                                -- untracked — WpNone (hub
-                                                -- mates must not mix with it).
-                                                Ok ( WpNone, s5 )
+                            Ok ( resVar, s2 ) ->
+                                let
+                                    resultStep =
+                                        case plan.result of
+                                            KernelSetFacts.PSFOpaque ->
+                                                case Store.poisonArrowSets resVar s2 of
+                                                    Err e ->
+                                                        Err e
+
+                                                    Ok ( _, s3 ) ->
+                                                        Ok ( True, s3 )
+
+                                            _ ->
+                                                Ok ( False, s2 )
+                                in
+                                case resultStep of
+                                    Err e ->
+                                        Err e
+
+                                    Ok ( resPoisoned, s3 ) ->
+                                        case joinTunnels resVar (List.reverse tunnelsRev) s3 of
+                                            Err e ->
+                                                Err e
+
+                                            Ok ( _, s4 ) ->
+                                                let
+                                                    s5 =
+                                                        Engine.bumpKernelFactHit
+                                                            (if argPoisoned || resPoisoned then
+                                                                Engine.bumpWidenedByKernel s4
+
+                                                             else
+                                                                s4
+                                                            )
+                                                in
+                                                if resPoisoned then
+                                                    -- ⊤ result: honest summary.
+                                                    Ok ( WpHonest resVar, s5 )
+
+                                                else
+                                                    -- Unconstrained result: the
+                                                    -- value's inhabitants are
+                                                    -- untracked — WpNone (hub
+                                                    -- mates must not mix with it).
+                                                    Ok ( WpNone, s5 )
 
 
 kernelArgsGo : List KernelSetFacts.ParamSetFlow -> List (TOpt.Expr TypeIds.MVarId) -> Bool -> List IO.Variable -> Step ( Bool, List IO.Variable )

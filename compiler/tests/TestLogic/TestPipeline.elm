@@ -19,6 +19,7 @@ module TestLogic.TestPipeline exposing
       -- Low-level helpers (for tests needing fine-grained control)
     , runToMono
     , runToPostSolve
+    , runToTypeCheck
     , runToTypedOpt
     , runSolverMonoWithLimits
     , runSolverMonoWithReport
@@ -620,26 +621,47 @@ globals become `MonoExtern` specs. Kernel-identity recognition (LSS_016 —
 `(::)`-as-value resolving through `List.cons`'s eta-free kernel alias
 `cons = Elm.Kernel.List.cons`) needs the node, so synthesize exactly the
 node production builds for it: `Define (VarKernel "Elm" "List" "cons")`.
+
+LSS_022 (`plans/kernel-parametricity-license.md`) needs the same for a
+kernel that carries ARROWS in its type, otherwise no unit test can reach a
+licensed kernel boundary at all. `aliasedKernels` is therefore a list, not a
+singleton — but it may only ever name kernels that REALLY are eta-free
+aliases in the package source, or the mock env stops mirroring production.
+Both entries below are verified against elm/core 1.0.5 `src/List.elm`
+(`cons` :108, `map2` :439).
 -}
+aliasedKernels : List ( Name, Name )
+aliasedKernels =
+    [ ( "List", "cons" )
+    , ( "List", "map2" )
+    ]
+
+
 kernelAliasNodes : Dict Name I.Interface -> Data.Map.Dict String TOpt.Global (TOpt.Node Name)
 kernelAliasNodes ifaces =
-    case Dict.get "List" ifaces of
-        Just (I.Interface idata) ->
-            case Dict.get "cons" idata.values of
-                Just (Can.Forall _ tipe) ->
-                    Data.Map.singleton TOpt.toComparableGlobal
-                        (TOpt.Global (IO.Canonical idata.home "List") "cons")
-                        (TOpt.Define
-                            (TOpt.VarKernel A.zero "Elm" "List" "cons" { tipe = tipe, tvar = Nothing })
-                            Data.Set.empty
-                            { tipe = tipe, tvar = Nothing }
-                        )
+    List.foldl
+        (\( moduleName, valueName ) acc ->
+            case Dict.get moduleName ifaces of
+                Just (I.Interface idata) ->
+                    case Dict.get valueName idata.values of
+                        Just (Can.Forall _ tipe) ->
+                            Data.Map.insert TOpt.toComparableGlobal
+                                (TOpt.Global (IO.Canonical idata.home moduleName) valueName)
+                                (TOpt.Define
+                                    (TOpt.VarKernel A.zero "Elm" moduleName valueName { tipe = tipe, tvar = Nothing })
+                                    Data.Set.empty
+                                    { tipe = tipe, tvar = Nothing }
+                                )
+                                acc
+
+                        Nothing ->
+                            acc
 
                 Nothing ->
-                    Data.Map.empty
-
-        Nothing ->
-            Data.Map.empty
+                    acc
+        )
+        Data.Map.empty
+        aliasedKernels
 
 
 {-| Build AnnotationsByGlobal from test interfaces.

@@ -755,58 +755,133 @@ refines element identity without moving fan-out. vs Run V: majors 12 = 12 (clean
 `LssGroundStandaloneTest`); Stage-8c fixed point byte-identical both flag-on-by-env and default-on;
 elm-tests 13,126/12 (same 12 pre-existing).
 
-### 2026-08-20 — Run X: LSS_020 signature set-flow (lss-fidelity plan 3 Phase D re-census; sigFlow stays DEFAULT-OFF)
+### 2026-08-20 — Run X: LSS_020 signature set-flow (A/B on `lss.sigFlow`; flag stays DEFAULT-OFF)
 
-Tree = plan 3 Phases A+B landed (`lss.sigFlow`, DEFAULT-OFF). Two instrumented censuses, one
-default-built binary, cold Stage 7a, workload flag varied (mono/AbiCloning legs); plus a Run-M
-dispatch A/B on counters-lowered SOLVER-BUILT binaries (default-built vs sigFlow-built, cold subst
-workload — Run-L convention).
+| arm | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| sf-on | **5:28.25** (328.3 s) | 5,934,344 kB | 1,383 | 13 | 460,821,468 (13,570 MiB) | 117.06 s | 13,633,572 B |
+| sf-off | 5:16.91 (316.9 s) | 5,933,952 kB | 1,363 | 13 | 461,485,430 (13,594 MiB) | 113.29 s | 13,603,530 B |
 
-**Mono + AbiCloning census (same binary, workload flag off → on):**
-
-| axis | flag-off | flag-on |
+| lss census | sf-off | sf-on |
 |---|---|---|
-| signatures | 9,687 memoized (9,687 trivial) | 9,687 memoized (**9,293 trivial — 394 nontrivial, 4.1%**) |
-| sets zonked / member-carrying | 367,603 / 65,601 (17.9%) | 405,826 / 96,909 (23.9%) — **singletons 64,238 → 95,537 (+31,299)** |
-| unconstrained-⊤ share (zonked − Σ sizeHist − bySize) | 301,959 (**82.14%**) | 308,874 (**76.11%**) |
-| sizeHist k=2..8 | 808/303/123/57/35/14/23 | 813/301/129/56/36/14/23 (unmoved) |
-| widened bySize / byKernel / byBudget / bySigSize | 43 / 4,065 / 36,788 / 0 | 43 / 4,142 / 38,737 (+5.3%) / **0** |
-| sigflow widenedByCf | 0 | 5,329 |
-| grounding grounded / deferred | 4,966 / 11 | **12,555** / 11 |
-| join flush rounds / retranslations | 3 / 595 | 3 / 603 |
-| devirtDirect / devirtKernel | 3,989 / 772 | 3,989 / 772 |
-| dispatchUpgraded / stampedStaged / declinedBlocked | 3,571 / 459 / 0 | 3,579 / 453 / 8 |
-| declinedNoInstance (Phase C1) | 1,380 | 1,513 (**+133** — raw-l| sig-transported lambdas, 11 sites each; NOT material) |
-| multiSetSites (GAP-6 gate) | 2->2 3->1 5->1 | **2->2 3->1 5->1 (identical — NO-GO CONFIRMED, M5 doc §6)** |
-| topSiteShapes global/local/kernel | 15,558 / 7,444 / 5,279 | 17,184 / 7,487 / 6,174 |
-| out.mlir (workload) | 13,592,155 B | 13,622,196 B (+30,041 B, +0.22%) |
+| signatures | 9,705 memoized (9,705 trivial) | 9,705 memoized (**9,311 trivial**) |
+| sets zonked; sizeHist k=1 | 367,761; 64,311 | 406,002; 95,620 |
+| sizeHist k=2..8 | 807/303/122/57/35/14/23 | 812/301/128/56/36/14/23 |
+| widened bySize / byKernel / byBudget / bySigSize | 43 / 4,065 / 36,825 / 0 | 43 / 4,142 / 38,775 / 0 |
+| set-writes flex / slotsMinted | 127,347 / 829,785 | 177,264 / 872,099 |
+| joins identical / noop / changed | 75,866 / 2,156 / 1,857 | 68,966 / 22,074 / 1,929 |
+| join flush rounds / retranslations | 3 / 592 | 3 / 600 |
+| grounding grounded / deferred | 5,014 / 11 | 12,602 / 11 |
+| sigflow widenedByCf / kernelFactHits | 0 / 169 | 5,329 / 169 |
+| devirtDirect / dispatchUpgraded / declinedNoInstance | 4,000 / 3,570 / 1,383 | 4,000 / 3,578 / 1,516 |
+| multiSetSites | 2->2 3->1 5->1 | 2->2 3->1 5->1 |
 
-**Run-M dispatch A/B (counters-lowered, solver-built; cold subst workload; totals sanity
-`sat+fast` IDENTICAL = 1,019,178,565 both — pure tier shift, LSS_005 holds):**
+A/B of `lss.sigFlow` (LSS_020, plan lss-fidelity-3): both arms built AND measured solver+LSS, the
+flag set at build and workload so each arm is self-consistent. Analysis change ⇒ `out.mlir` moves
+(+30,042 B), so the wall comparison includes a workload change. Wall +3.6% (316.9→328.3 s) is
+ATTRIBUTABLE to the analysis doing more work, not to slower code: sets zonked +10.4%, slotsMinted
++5.1%, flex set-writes +39%, join-noop 2,156→22,074; GC agrees — majors 13=13, promoted −0.14%, RSS
+flat, only minors +1.5%. Precision lands as designed: 394 signatures nontrivial, singletons
+64,311→95,620, grounded 5,014→12,602, byBudget +5.3% (watchdogs quiet), bySigSize=0; k≥2 and
+multiSetSites UNMOVED (GAP-6 NO-GO confirmed). Not comparable to Run W's row (out.mlir 13,557,262 B
+there vs 13,603,530 here — the corpus grew by plan 3's own source). DEFAULT-OFF stands: Run-M
+(benchmarks/runtime-calls.md) measured fast coverage 8.30%→6.08% — see plans/lss-directed-set-flow.md.
 
-| leg | wall | max RSS | sat | fast | fast coverage |
-|---|---|---|---|---|---|
-| default-built | 4:19.06 | 5,950,236 kB | 934,626,521 | 84,552,044 | **8.30%** |
-| sigFlow-built | 4:17.58 | 5,949,852 kB | 957,233,905 | 61,944,660 | **6.08%** |
+### 2026-08-20 — Run Y: LSS_022 kernel parametricity license — 193 audited KernelSetFacts rows (plain run)
 
-**Behavioral gate:** the two binaries emit byte-identical workload out.mlir (LSS_005 PASS).
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| license | **5:21.65** (321.7 s) | 5,808,140 kB | 1,377 | 13 | 459,839,503 (13,548 MiB) | 116.60 s | 13,695,657 B |
 
-**Reading + DECISION (sigFlow stays DEFAULT-OFF):** the channel opens exactly as designed —
-394 nontrivial signatures, +31.3k singleton sets, ⊤-share −6.0 points, byBudget +5.3% with
-watchdogs quiet, wall FLAT — but the one live consumer regresses: **fast dispatch coverage
-8.30% → 6.08% (−22.6M stamped events, −26.7% rel)**. This is the plan's Risk-2 "symmetric
-pollution" measured at runtime: symmetric rep-links + honest hubs union per-branch/per-param
-flows, turning honestly-singleton SITES into honest-but-multi DEF-level sets that AbiCloning
-declines. Wall-neutral (dispatch tiers do not govern wall on this workload — consistent with
-the kernel-boundary census lesson), but it degrades the stamp pool the dispatch-value track
-builds on. **The plan §A.2 FromArrow re-open criterion has FIRED** — the recorded path to
-precision-without-pollution is directed/per-site fact application (deferred-constraint flavor),
-a future plan; flipping the default before that exists trades a live asset for a latent one.
-Traps hit: cmake `--target eco-compiler` is a ninja NO-OP under env-only changes — delete
-`bin/eco-compiler` + `bin/eco-compiler.mlir` (and `eco-stuff/`) to force a flavored rebuild;
-the build harness swallows the census stderr (run the binary manually per runtime-calls.md).
-(No summary-table row: the timed pair is counters-lowered + subst-workload, a different
-convention from rows A–W.)
+| axis | Run X (sf-off arm) | Run Y |
+|---|---|---|
+| out.mlir | 13,603,530 B | 13,695,657 B (+92,127 B, +0.68%) |
+| widened byKernel | 4,065 | **1,575** |
+| sigflow kernelFactHits / kernelLicensed | 169 / — | 12 / **2,490** |
+| sets zonked; sizeHist k=1 | 367,761; 64,311 | 367,766; **64,311** |
+| devirtDirect / devirtKernel / dispatchUpgraded | 4,000 / — / 3,570 | 4,000 / 772 / 3,570 |
+| widened bySize / byBudget | 43 / 36,825 | 43 / 36,822 |
+| grounding grounded / deferred | 5,014 / 11 | 5,014 / 11 |
+| set-writes flex / slotsMinted | 127,347 / 829,785 | 122,690 / 830,214 |
+| true mutator (wall − GC) | 203.6 s | 205.1 s |
+
+Tree = `plans/kernel-parametricity-license.md` COMPLETE (LSS_022): 193 rows, 192 licensed
+(158 `Inert`, 34 `Transports`) + 1 `Positional`. Unflagged default-path work, so this is a
+PLAIN run compared against Run X's **sf-off** arm — the shipping configuration — not its
+summary row. **The mechanism reconciles exactly: 4,065 − 2,490 = 1,575.** Every licensed
+boundary previously took the rowless full poison and now poisons nothing, so `byKernel`
+becomes a much sharper number (arrow-carrying unlicensed boundaries), which was §7's goal.
+**Precision did NOT follow, and that is the result:** singletons 64,311 → 64,311,
+`devirtDirect`/`dispatchUpgraded` identical to the object, `byBudget` −3, grounding
+identical. The poison removed sat on positions no member reaches here — 158 rows are `Inert`
+(concrete types, zero set slots, poison already a no-op) and the `Transports` rows' only
+member-bearing positions were already `PSFApplies` under the v1 rows. Wall +1.5% on a +0.68%
+corpus with majors 13 = 13 and promoted −0.34% is FLAT: no regression detected, no win
+claimed. `set-writes flex` −3.7% is the one counter that tracks the mechanism.
+
+### 2026-08-20 — Run Z: kernel intrinsic annotations, 3 rows (plain run; **baseline break** — packages re-lowered)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| intrinsics | **5:22.20** (322.2 s) | 6,057,384 kB | 1,381 | 13 | 461,664,545 (13,597 MiB) | 115.99 s | 13,713,430 B |
+
+| axis | Run Y | Run Z |
+|---|---|---|
+| out.mlir | 13,695,657 B | 13,713,430 B (+17,773 B, +0.13%) |
+| package `typed-artifacts.dat` | 2026-08-19 20:53 | **2026-08-20 19:23 (re-lowered)** |
+| widened byKernel | 1,575 | 1,608 |
+| sigflow kernelFactHits / kernelLicensed | 12 / 2,490 | 12 / 2,464 |
+| sets zonked; sizeHist k=1 | 367,766; 64,311 | 368,074; 64,352 |
+| devirtDirect / devirtKernel / dispatchUpgraded | 4,000 / 772 / 3,570 | 4,000 / 772 / 3,570 |
+| widened bySize / byBudget | 43 / 36,822 | 43 / 36,874 |
+| grounding grounded / deferred | 5,014 / 11 | 5,021 / 11 |
+| true mutator (wall − GC) | 205.1 s | 206.2 s |
+
+Tree = `plans/kernel-intrinsic-annotations.md` Phases 1-2: `Can.VarKernel` emits
+`CForeign` for kernels with an intrinsic annotation row (`List.fromArray`,
+`List.toArray`, `Json.addEntry`) instead of `CTrue`. **This row is NOT
+comparable with Run Y and no counter movement here may be attributed to the
+change**: the fail-stop gate requires the packages to be re-lowered, so
+`elm/core` and `elm/json` typed artifacts were regenerated between the two runs
+— the same two-variable break Run V documented. `byKernel` +33 and
+`kernelLicensed` −26 are therefore UNATTRIBUTED. Clean attribution comes from
+the plan's differential probe instead (single variable, identical package
+state): `String.split`/`join` byKernel 10 → 6 with licensed 0 → 4, and
+`Json.Encode.list` 8 → 6 with 3 → 5, control unmoved. Wall +0.5 s, majors
+13 = 13, promoted +0.36%, devirt/dispatch identical to the object: FLAT, no
+regression detected. **Run Z is the new reference row.**
+
+### 2026-08-20 — Run AA: kernel intrinsics Phase 3 + ruling-R1 verification fix (plain run)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| intrinsics-p3 | **5:23.52** (323.5 s) | 5,943,792 kB | 1,366 | 13 | 460,007,743 (13,565 MiB) | 117.51 s | 13,719,384 B |
+
+| axis | Run Z | Run AA |
+|---|---|---|
+| out.mlir | 13,713,430 B | 13,719,384 B (+5,954 B, +0.04%) |
+| widened byKernel | 1,608 | **1,572** |
+| sigflow kernelFactHits / kernelLicensed | 12 / 2,464 | 12 / **2,502** |
+| licenses REFUSED at the occurrence (NEW) | — | 5 (Console.readLine, Env.rawArgs, File.getCwd, Runtime.dirname, Runtime.random) |
+| sets zonked; sizeHist k=1 | 368,074; 64,352 | 368,162; 64,356 |
+| devirtDirect / devirtKernel / dispatchUpgraded | 4,000 / 772 / 3,570 | 3,999 / 772 / 3,570 |
+| widened bySize / byBudget | 43 / 36,874 | 43 / 36,878 |
+| grounding grounded / deferred | 5,021 / 11 | 5,019 / 11 |
+| true mutator (wall − GC) | 206.2 s | 206.0 s |
+
+Tree = `plans/kernel-intrinsic-annotations.md` Phase 3 (fromArray/toArray licensed at
+`List a -> List a`, addEntry upgraded to the full sharing shape, `sameType` tightened to
+variable IDENTITY, shape/annotation sync test) plus the `Json.addField` annotation and the
+**ruling-R1 fix**: `hasFunctionCapable` had answered `True` for every `TVar`, so the `Inert`
+licenses on `Utils.compare/equal/lt/gt/le/ge` and `Basics.add/sub/mul/pow` were refused at
+every polymorphic caller; `Engine.isScalarVar` now reads the solver's super table.
+**36 boundaries move from poisoned to licensed (+38 licensed)** — the direction R1 predicts,
+though modest here because `byKernel` counts BOUNDARIES, not the runtime calls that make
+those kernels hot. Wall +1.3 s, majors 13 = 13, promoted −0.23%, minors −1.1%, mutator
+−0.2 s: FLAT, no regression. Package artifacts were current for both rows (Z 19:23, AA 20:54)
+but re-lowered in between, so this is not single-variable either — the counter direction is
+attributable, the magnitude is not. **The refusal census is this run's real deliverable**
+(see below); it is the first measurement of that counter on a full workload.
 
 ---
 
@@ -839,3 +914,7 @@ One row per run, numbers only.
 | U | 308.6 | 1323 | 12 | 12785 |
 | V | 309.4 | 1314 | 12 | 12800 |
 | W | 312.2 | 1334 | 12 | 12874 |
+| X | 328.3 | 1383 | 13 | 13570 |
+| Y | 321.7 | 1377 | 13 | 13548 |
+| Z | 322.2 | 1381 | 13 | 13597 |
+| AA | 323.5 | 1366 | 13 | 13565 |
