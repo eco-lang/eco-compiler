@@ -1,5 +1,7 @@
 module Compiler.GlobalOpt.KernelFacts exposing
     ( KernelFacts, CallTimeEffect(..), GcAlloc(..), Totality(..), ParamMode(..)
+    , DevirtPolicy(..), ShapeGuard(..), devirtOf
+    , HofAxis(..), mayCallBackIntoElm
     , lookup, lookupSymbol, splitSymbol, rows
     , canTriggerGC, gcLeafEligible, droppable, hoistable
     , gcLeafEligibleFor, droppableFor, hoistableFor
@@ -42,6 +44,8 @@ flat 1 (:1230-1231). §6.C1 leaves this out of v1 — a cost model needs
 measurement, not audit.
 
 @docs KernelFacts, CallTimeEffect, GcAlloc, Totality, ParamMode
+@docs DevirtPolicy, ShapeGuard, devirtOf
+@docs HofAxis, mayCallBackIntoElm
 @docs lookup, lookupSymbol, splitSymbol, rows
 @docs canTriggerGC, gcLeafEligible, droppable, hoistable
 @docs gcLeafEligibleFor, droppableFor, hoistableFor
@@ -79,11 +83,90 @@ type Totality
     | MayDiverge
 
 
+{-| Whether the kernel re-enters Elm through a user closure — THREE-state,
+because the two-state version conflated "audited: it does" with "nobody looked".
+
+That conflation was not academic. `costClass`'s first test is this field, so an
+`unaudited` row (which answered True as a safety default) was priced as a
+higher-order call at `kernelCostHof` = 20, while a kernel with NO ROW AT ALL was
+priced at 6. Measured 2026-08-20: **no row in the table declared the HOF bit
+explicitly**, so every member of `CHof` was there by default — half of them
+kernels like `JsArray.length`, `String.trim` and `Basics.tan` that plainly do not
+re-enter Elm. An unaudited row asserted a cost nobody had measured.
+
+The readings differ by consumer, and that is the point:
+
+  - **Safety** (`canTriggerGC`, the `cseSafe` implication) reads `HofUnknown` as
+    "might", via `mayCallBackIntoElm`. Conservative, unchanged.
+  - **Cost** (`costClass`) reads `HofUnknown` as `CUnknown`, so an unaudited row
+    and a missing row agree on the price. Only `HofYes` reaches `CHof`.
+
+Mirrors `params = []` for the borrow axis: a row says what it knows, and silence
+is not an assertion.
+-}
+type HofAxis
+    = HofUnknown
+    | HofNo
+    | HofYes
+
+
+{-| The SAFETY reading of the HOF axis: unknown counts as "might".
+-}
+mayCallBackIntoElm : KernelFacts -> Bool
+mayCallBackIntoElm f =
+    f.callsBack /= HofNo
+
+
 {-| Borrow mode of one parameter.
 -}
 type ParamMode
     = PBorrowed -- reads only; never stores or returns-by-identity
     | POwned -- may store, return, or hand to unknown code
+
+
+{-| E9.2 kernel devirtualization registration (LSS_016).
+
+`DevirtNo` is the default and means "not registered" — the site keeps its
+indirect call, which is always correct.
+
+`DevirtAt arity guard` registers the kernel, pinning the **Elm-visible call
+arity** (what a site's argument count is compared against — NOT the C++ export
+arity, which differs for compiler-injected operands like `Debug.toString`'s
+`type_id` and for `()`-applied zero-parameter exports).
+
+**What registration actually commits to** (Wave 0 of
+`plans/kernel-devirt-arity-table.md`, LSS_016 as amended): the rewrite itself is
+semantically identity-preserving and needs no purity — it re-emits the same call
+over the same already-translated args, discarding only a var read. What it does
+is make the kernel's IDENTITY visible to three default-on purity-driven
+consumers (`MonoInlineSimplify`'s dead-let gate, `CsePurity`/`MonoCse`, and the
+`eco.cse_safe` MLIR stamp), any of which may then merge or delete the call. So
+registering a kernel promotes THIS ROW's `cseSafe`/`totality` from inert to
+load-bearing at every devirtualized site. Register only when the row's purity
+fields have actually been audited — a row left on the `unaudited` base is safe
+(all three consumers answer False for it) but gains nothing beyond the dispatch
+removal.
+-}
+type DevirtPolicy
+    = DevirtNo
+    | DevirtAt Int ShapeGuard
+
+
+{-| The REP-level precondition on a registered kernel's DERIVED ABI.
+
+`ShapeAny` — every legal ABI variant is safe, because the kernel has no
+suffix-selected typed variants whose layout could disagree with the site.
+
+`ShapeNoUnboxedScalarAt positions` — the named positions must not derive as
+unboxed scalars (0-based argument index; `-1` is the result). This is the
+`List.cons` hazard generalized: an imprecise site derives `cons_Int` with an
+i64 tail, reinterpreting a list pointer as a raw integer, which the CGEN_038
+kernel-declaration registry catches as a signature mismatch. Declining leaves
+the always-correct indirect call.
+-}
+type ShapeGuard
+    = ShapeAny
+    | ShapeNoUnboxedScalarAt (List Int)
 
 
 {-| One audited row.
@@ -94,10 +177,11 @@ type alias KernelFacts =
     , callTimeEffect : CallTimeEffect
     , gcAlloc : GcAlloc
     , cppAlloc : Bool -- C++-heap use; gc-leaf-COMPATIBLE, informational
-    , callsBackIntoElm : Bool -- HOF bit; audited from C++ bodies, NEVER from Elm types
+    , callsBack : HofAxis -- HOF axis; audited from C++ bodies, NEVER from Elm types
     , cseSafe : Bool -- referentially transparent at the Mono level
     , totality : Totality
     , divergence : Maybe String -- A6 ledger note (C++ body vs intrinsic)
+    , devirt : DevirtPolicy -- LSS_016 E9.2 registration; see DevirtPolicy
     , evidence : String -- MANDATORY repo-relative "path.cpp:line" anchor(s)
     }
 
@@ -113,10 +197,11 @@ unaudited =
     , callTimeEffect = EffObservableIO
     , gcAlloc = GcUnbounded
     , cppAlloc = True
-    , callsBackIntoElm = True
+    , callsBack = HofUnknown
     , cseSafe = False
     , totality = MayDiverge
     , divergence = Nothing
+    , devirt = DevirtNo
     , evidence = ""
     }
 
@@ -130,7 +215,7 @@ auditedPure =
     { unaudited
         | callTimeEffect = EffNone
         , cppAlloc = False
-        , callsBackIntoElm = False
+        , callsBack = HofNo
         , cseSafe = True
         , totality = Total
     }
@@ -146,7 +231,7 @@ auditedPure =
 -}
 canTriggerGC : KernelFacts -> Bool
 canTriggerGC f =
-    f.gcAlloc /= GcNone || f.callsBackIntoElm
+    f.gcAlloc /= GcNone || mayCallBackIntoElm f
 
 
 {-| Exactly what the `eco.gc_leaf` declaration attribute means (kernel-opt-08).
@@ -181,7 +266,8 @@ the callee can allocate, and whether it can re-enter Elm.
 type CostClass
     = CGcLeaf -- plain leaf call: no Elm GC, no C++ heap traffic, no callback
     | CAlloc -- allocates on the Elm heap or the C++ heap
-    | CHof -- re-enters Elm through a user closure
+    | CHof -- AUDITED to re-enter Elm through a user closure
+    | CUnknown -- the row's HOF axis is unaudited; use the no-row price
 
 
 {-| Classify for the cost model. Ordered most-expensive-first: re-entering Elm
@@ -189,14 +275,22 @@ dominates allocating, which dominates a plain leaf call.
 -}
 costClass : KernelFacts -> CostClass
 costClass f =
-    if f.callsBackIntoElm then
-        CHof
+    case f.callsBack of
+        HofUnknown ->
+            -- The row asserts nothing about the cost axis, so neither do we:
+            -- the consumer applies the same price it uses for a kernel with no
+            -- row at all. See `HofAxis`.
+            CUnknown
 
-    else if f.gcAlloc /= GcNone || f.cppAlloc then
-        CAlloc
+        HofYes ->
+            CHof
 
-    else
-        CGcLeaf
+        HofNo ->
+            if f.gcAlloc /= GcNone || f.cppAlloc then
+                CAlloc
+
+            else
+                CGcLeaf
 
 
 
@@ -317,6 +411,16 @@ table =
 -- Every anchor was opened and verified in the tree on 2026-08-10.
 
 
+{-| The devirt registration for a kernel — `DevirtNo` for anything unlisted,
+which is the whitelist discipline: an unregistered kernel keeps its indirect
+call.
+-}
+devirtOf : ( Name, Name ) -> DevirtPolicy
+devirtOf key =
+    lookup key
+        |> Maybe.map .devirt
+        |> Maybe.withDefault DevirtNo
+
 {-| The audited rows, in table order. Exposed so tests (and censuses) can walk
 the whole table without a second copy of the keys.
 -}
@@ -329,6 +433,14 @@ rows =
             , gcAlloc = GcNone
             , cppAlloc = True -- dictEq uses std::vector working stacks
             , divergence = Just "depth > 100 returns true (elm-kernel-cpp/src/core/Utils.cpp:560-563): deep unequal values compare equal; cmp has no such cap"
+
+            -- LSS_016 wave 3. `(==) : a -> a -> Bool`, arity 2. Utils.equal IS
+            -- suffix-selecting (equal_Int/_Float/_Char exist), so unboxed
+            -- ARGUMENTS are legitimate -- that is what the variants are for --
+            -- and guarding them would decline exactly the sites the variants
+            -- serve. Every variant returns `HPtr`, so only the RESULT is
+            -- guarded; deep CNumber-freedom rejects the imprecise sites.
+            , devirt = DevirtAt 2 (ShapeNoUnboxedScalarAt [ -1 ])
             , evidence = "elm-kernel-cpp/src/core/UtilsExports.cpp:107-109 (equalRespectingConstants :94-105); elm-kernel-cpp/src/core/Utils.cpp:470-472 (eqHelp :521-734, dictEq :747-797); runtime/src/allocator/StringOps.hpp:1486-1533; runtime/src/allocator/HeapHelpers.hpp:822"
         }
       )
@@ -393,6 +505,12 @@ rows =
       , { auditedPure
             | params = [ PBorrowed ]
             , gcAlloc = GcNone
+
+            -- LSS_016 wave 3. `String.length : String -> Int`, arity 1. The one
+            -- export is `int64_t (HPtr)`: the ARGUMENT must stay boxed, but the
+            -- RESULT is legitimately an unboxed i64, so only position 0 is
+            -- guarded -- guarding the result would decline every site.
+            , devirt = DevirtAt 1 (ShapeNoUnboxedScalarAt [ 0 ])
             , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:18-27; runtime/src/allocator/StringOps.hpp:239-243"
         }
       )
@@ -440,9 +558,109 @@ rows =
       )
 
     -- ── A2: audited pure, allocating (cseSafe, NOT gc-leaf) ──
+    , ( ( "Basics", "not" )
+        -- LSS_016 wave 3, NEW audited row. `Bool -> Bool`, arity 1.
+      , { auditedPure
+            | params = [ PBorrowed ]
+            , gcAlloc = GcNone
+            , cppAlloc = False
+
+            -- Sole export `(HPtr) -> HPtr`, no typed variants, so an
+            -- unboxed-scalar derivation at either end would register a
+            -- colliding declaration. It cannot fire in practice: Bool is boxed
+            -- as the embedded True/False constants per REP_ABI_001, never
+            -- MInt/MFloat/MChar. Guarded anyway, so a REP change is caught.
+            , devirt = DevirtAt 1 (ShapeNoUnboxedScalarAt [ 0, -1 ])
+            , evidence = "elm-kernel-cpp/src/core/BasicsExports.cpp:Elm_Kernel_Basics_not; elm-kernel-cpp/src/core/Basics.cpp:165-167 (return !a); ExportHelpers.hpp:80-82 (elmTrue/elmFalse are EMBEDDED HPointer constants, so nothing is allocated)"
+        }
+      )
+    , ( ( "Basics", "add" )
+        -- LSS_016 wave 3, NEW audited row. `number -> number -> number`,
+        -- arity 2. One row covers all three exports: `lookupSymbol` strips the
+        -- _Int/_Float suffixes, so the facts must hold for the WIDEST of them --
+        -- the boxed root, which allocates a result box.
+      , { auditedPure
+            | params = [ PBorrowed, PBorrowed ]
+            , gcAlloc = GcFixed 1
+            , cppAlloc = False
+
+            -- ShapeAny, deliberately: `add_Int (i64, i64) -> i64` and
+            -- `add_Float (double, double) -> double` exist, so unboxed
+            -- positions are the CORRECT derivation, not a hazard. Guarding
+            -- them would decline exactly the sites the typed variants serve.
+            -- The universal deep-CNumber check is what rejects unsettled
+            -- number sites here.
+            , devirt = DevirtAt 2 ShapeAny
+            , evidence = "elm-kernel-cpp/src/core/BasicsExports.cpp:Elm_Kernel_Basics_add (boxed root: tag test then boxInt(add_Int ..) / boxFloat(add_Float ..) -- ONE box allocated, no C++ heap, no callback); KernelExports.h declares add_Int/add_Float/add"
+        }
+      )
+    , ( ( "Basics", "round" )
+        -- LSS_016 wave 3, NEW audited row. `Float -> Int`, arity 1.
+      , { auditedPure
+            | params = [ PBorrowed ]
+            , gcAlloc = GcNone
+            , cppAlloc = False
+
+            -- ShapeAny is REQUIRED, not merely permitted: the sole export is
+            -- `int64_t (double)`, unboxed in and unboxed out, and the type is
+            -- monomorphic so the ABI always derives that way. A scalar guard
+            -- would decline every site.
+            , devirt = DevirtAt 1 ShapeAny
+            , evidence = "elm-kernel-cpp/src/core/BasicsExports.cpp:Elm_Kernel_Basics_round (return Basics::round(x)); KernelExports.h: int64_t Elm_Kernel_Basics_round(double) is the ONLY export -- no Elm heap value is touched"
+        }
+      )
+    , ( ( "String", "fromList" )
+        -- LSS_016 wave 3, NEW audited row. `List Char -> String`, arity 1.
+        -- Two-pass: count the list, allocate one exact-size String, walk again
+        -- writing chars in. Length-dependent, hence GcUnbounded. `cppAlloc` is
+        -- left at the conservative True: the all-ASCII fast path is
+        -- vector-free by construction (its own comment), but the UTF-16 branch
+        -- below it was not read end-to-end, and over-claiming here would leak
+        -- into gcLeafEligible.
+      , { auditedPure
+            | params = [ PBorrowed ]
+            , gcAlloc = GcUnbounded
+            , cppAlloc = True
+            , devirt = DevirtAt 1 (ShapeNoUnboxedScalarAt [ 0, -1 ])
+            , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:Elm_Kernel_String_fromList; elm-kernel-cpp/src/core/String.cpp:63-81+ (ListCursor count pass, then one exact-size allocation and an allocation-free write walk); sole export (HPtr) -> HPtr"
+        }
+      )
+    , ( ( "Json", "wrap" )
+        -- LSS_016 wave 3, NEW audited row. `a -> Value`, arity 1 at all five of
+        -- its (mutually inconsistent) inline use sites.
+        --
+        -- POwned with resultAliases = [0]: the ENC_BOOL/ENC_STRING branches
+        -- STORE the argument into `enc->values[0].p`, and the final
+        -- "already an encoder" branch returns the argument BY IDENTITY.
+        --
+        -- Separately REJECTED on the set-flow axis (LSS_022) for exactly that
+        -- identity fallthrough, which launders an arbitrary value into the
+        -- opaque `Value`. Different axis, different question: that is about
+        -- whether a FUNCTION value can be retained, this is about whether the
+        -- call is referentially transparent and droppable.
+      , { auditedPure
+            | params = [ POwned ]
+            , resultAliases = [ 0 ]
+            , gcAlloc = GcFixed 1
+            , cppAlloc = False
+
+            -- Suffix-selecting (wrap_Int/wrap_Float exist), so unboxed
+            -- ARGUMENTS are the correct derivation; every variant returns
+            -- `HPtr`, so only the result is guarded.
+            , devirt = DevirtAt 1 (ShapeNoUnboxedScalarAt [ -1 ])
+            , evidence = "elm-kernel-cpp/src/json/JsonExports.cpp:Elm_Kernel_Json_wrap (ENC_BOOL/ENC_STRING/ENC_FLOAT branches each allocate ONE Tag_Custom; string branch stores the arg at values[0].p; final branch returns the arg unchanged). Grep over the whole body: zero eco_apply, zero statics, zero globals"
+        }
+      )
     , ( ( "List", "cons" )
       , { auditedPure
             | gcAlloc = GcFixed 1
+
+            -- LSS_016 v1, migrated here verbatim from Translate's if-else.
+            -- `cons : a -> List a -> List a` — arity 2; the TAIL (index 1) and
+            -- the RESULT must not derive as unboxed scalars, or an imprecise
+            -- site mints `Elm_Kernel_List_cons_Int : (i64, i64) -> i64` and
+            -- reinterprets the tail list pointer as a raw integer.
+            , devirt = DevirtAt 2 (ShapeNoUnboxedScalarAt [ 1, -1 ])
             , evidence = "elm-kernel-cpp/src/core/ListExports.cpp:276-283; runtime/src/allocator/HeapHelpers.hpp:630"
         }
       )
@@ -459,6 +677,11 @@ rows =
             , gcAlloc = GcUnbounded
             , cppAlloc = True
             , divergence = Just "unsupported tag pair silently returns the first argument (elm-kernel-cpp/src/core/Utils.cpp:845-846) instead of failing"
+
+            -- LSS_016 wave 3. `(++) : appendable -> appendable -> appendable`,
+            -- arity 2. Sole export `(HPtr, HPtr) -> HPtr` with no typed
+            -- variants, so all three positions must stay boxed.
+            , devirt = DevirtAt 2 (ShapeNoUnboxedScalarAt [ 0, 1, -1 ])
             , evidence = "elm-kernel-cpp/src/core/Utils.cpp:823-847; runtime/src/allocator/StringOps.hpp:477-537; runtime/src/allocator/ListOps.cpp:262"
         }
       )
@@ -507,12 +730,33 @@ rows =
     , ( ( "Scheduler", "succeed" )
       , { auditedPure
             | gcAlloc = GcFixed 1
+
+            -- LSS_016 wave 2 (plans/kernel-devirt-arity-table.md). `Task.succeed
+            -- : a -> Task x a` (elm/core Task.elm:78, eta-free alias) — arity 1.
+            -- PURITY RE-CONFIRMED before registering, because devirt promotes
+            -- this row's cseSafe/totality from inert to load-bearing:
+            -- `taskSucceed` is `allocTask(Task_Succeed, value, nil, nil, nil)`
+            -- (Scheduler.cpp:123-126) — a plain allocation that touches no
+            -- scheduler state, enqueues nothing and registers nothing globally.
+            -- The exposure is not new in kind: `Task.succeed` is an eta-free
+            -- alias, so ordinary written-out calls already reach this row today.
+            -- Guard: the sole export is `(HPtr) -> HPtr`
+            -- (SchedulerExports.cpp:16) with no typed variants, so an imprecise
+            -- site deriving an unboxed scalar would register a colliding
+            -- `(i64) -> ptr` declaration (CGEN_038) — same hazard as cons.
+            , devirt = DevirtAt 1 (ShapeNoUnboxedScalarAt [ 0, -1 ])
             , evidence = "elm-kernel-cpp/src/core/SchedulerExports.cpp:16-21; runtime/src/platform/Scheduler.cpp:123-126"
         }
       )
     , ( ( "Scheduler", "fail" )
       , { auditedPure
             | gcAlloc = GcFixed 1
+
+            -- LSS_016 wave 2. `Task.fail : x -> Task x a` (Task.elm:92) —
+            -- arity 1. `taskFail` is `allocTask(Task_Fail, error, nil, nil,
+            -- nil)` (Scheduler.cpp:139-142); same re-confirmation and same
+            -- guard as `succeed` above.
+            , devirt = DevirtAt 1 (ShapeNoUnboxedScalarAt [ 0, -1 ])
             , evidence = "elm-kernel-cpp/src/core/SchedulerExports.cpp:23-28; runtime/src/platform/Scheduler.cpp:139-142"
         }
       )
@@ -548,6 +792,12 @@ rows =
       , { unaudited
             | params = [ PBorrowed, PBorrowed, PBorrowed ]
             , resultAliases = [ 1, 2 ]
+
+            -- HOF axis declared EXPLICITLY (LSS_016 wave 3 follow-up). Since
+            -- `HofUnknown` now prices as CUnknown, a genuine higher-order kernel
+            -- must say so or it would be costed like a cheap unknown call.
+            -- Body evidence: JsArrayExports.cpp foldImpl applies the folder per element.
+            , callsBack = HofYes
             , evidence = "elm-kernel-cpp/src/core/JsArrayExports.cpp:651-653; foldImpl :576 (final accumulator returned by identity when it stayed boxed, :636-640)"
         }
       )
@@ -555,6 +805,12 @@ rows =
       , { unaudited
             | params = [ PBorrowed, PBorrowed, PBorrowed ]
             , resultAliases = [ 1, 2 ]
+
+            -- HOF axis declared EXPLICITLY (LSS_016 wave 3 follow-up). Since
+            -- `HofUnknown` now prices as CUnknown, a genuine higher-order kernel
+            -- must say so or it would be costed like a cheap unknown call.
+            -- Body evidence: JsArrayExports.cpp foldImpl applies the folder per element.
+            , callsBack = HofYes
             , evidence = "elm-kernel-cpp/src/core/JsArrayExports.cpp:655-657; foldImpl :576"
         }
       )
@@ -562,18 +818,36 @@ rows =
       , { unaudited
             | params = [ PBorrowed, PBorrowed ]
             , resultAliases = [ 1 ]
+
+            -- HOF axis declared EXPLICITLY (LSS_016 wave 3 follow-up). Since
+            -- `HofUnknown` now prices as CUnknown, a genuine higher-order kernel
+            -- must say so or it would be costed like a cheap unknown call.
+            -- Body evidence: JsArrayExports.cpp applies the mapper per element via eco_apply_closure_eval.
+            , callsBack = HofYes
             , evidence = "elm-kernel-cpp/src/core/JsArrayExports.cpp:463"
         }
       )
     , ( ( "JsArray", "initialize" )
       , { unaudited
-            | evidence = "elm-kernel-cpp/src/core/JsArrayExports.cpp:422 (base export; the ABI variant _Int is :948, same Mono key)"
+            -- HOF axis declared EXPLICITLY (LSS_016 wave 3 follow-up). Since
+            -- `HofUnknown` now prices as CUnknown, a genuine higher-order kernel
+            -- must say so or it would be costed like a cheap unknown call.
+            -- Body evidence: JsArrayExports.cpp applies the generator per index.
+            | callsBack = HofYes
+            , evidence = "elm-kernel-cpp/src/core/JsArrayExports.cpp:422 (base export; the ABI variant _Int is :948, same Mono key)"
         }
       )
     , ( ( "List", "map2" )
       , { unaudited
             | params = [ PBorrowed, PBorrowed, PBorrowed ]
             , resultAliases = [ 1, 2 ]
+
+            -- HOF axis declared EXPLICITLY (LSS_016 wave 3 follow-up). Since
+            -- `HofUnknown` now prices as CUnknown, a genuine higher-order kernel
+            -- must say so or it would be costed like a cheap unknown call.
+            -- Body evidence: ListExports.cpp kernelListMapN applies the callback via eco_apply_closure_eval.
+            , callsBack = HofYes
+
             , evidence = "elm-kernel-cpp/src/core/ListExports.cpp:592-600; kernelListMapN :432"
         }
       )
@@ -583,6 +857,12 @@ rows =
             , resultAliases = [ 1 ]
             , totality = Throws
             , divergence = Just "strict-weak-ordering UB on embedded-constant keys (report 03 #8): the comparator resolves constants to nullptr and relies on Utils::cmp's early returns"
+
+            -- HOF axis declared EXPLICITLY (LSS_016 wave 3 follow-up). Since
+            -- `HofUnknown` now prices as CUnknown, a genuine higher-order kernel
+            -- must say so or it would be costed like a cheap unknown call.
+            -- Body evidence: ListExports.cpp Elm_Kernel_List_sortBy calls the key function per element (callUnaryClosure).
+            , callsBack = HofYes
             , evidence = "elm-kernel-cpp/src/core/ListExports.cpp:759 (Elm_Kernel_List_sortBy; comparator :805-825); elm-kernel-cpp/src/core/Utils.cpp:305-306 -- anchors refreshed 2026-08-20 (LSS_021 audit)"
         }
       )
@@ -592,12 +872,24 @@ rows =
             , resultAliases = [ 1 ]
             , totality = Throws
             , divergence = Just "strict-weak-ordering UB on embedded-constant keys (report 03 #8): the comparator resolves constants to nullptr and relies on Utils::cmp's early returns"
+
+            -- HOF axis declared EXPLICITLY (LSS_016 wave 3 follow-up). Since
+            -- `HofUnknown` now prices as CUnknown, a genuine higher-order kernel
+            -- must say so or it would be costed like a cheap unknown call.
+            -- Body evidence: ListExports.cpp Elm_Kernel_List_sortWith calls the comparator per comparison (callBinaryClosure).
+            , callsBack = HofYes
             , evidence = "elm-kernel-cpp/src/core/ListExports.cpp:832 (Elm_Kernel_List_sortWith; comparator :862-878); elm-kernel-cpp/src/core/Utils.cpp:305-306 -- anchors refreshed 2026-08-20 (LSS_021 audit)"
         }
       )
     , ( ( "String", "all" )
       , { unaudited
             | params = [ PBorrowed, PBorrowed ]
+
+            -- HOF axis declared EXPLICITLY (LSS_016 wave 3 follow-up). Since
+            -- `HofUnknown` now prices as CUnknown, a genuine higher-order kernel
+            -- must say so or it would be costed like a cheap unknown call.
+            -- Body evidence: StringExports.cpp applies the predicate per char.
+            , callsBack = HofYes
             , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:305 (snapshotChars copies; fn args are unboxed Chars)"
         }
       )
@@ -636,6 +928,12 @@ rows =
       , { unaudited
             | params = [ PBorrowed, PBorrowed ]
             , resultAliases = [ 0, 1 ]
+
+            -- HOF axis declared EXPLICITLY (LSS_016 wave 3 follow-up). Since
+            -- `HofUnknown` now prices as CUnknown, a genuine higher-order kernel
+            -- must say so or it would be costed like a cheap unknown call.
+            -- Body evidence: BytesExports.cpp applies the decoder closure via eco_apply_closure_typed.
+            , callsBack = HofYes
             , evidence = "elm-kernel-cpp/src/bytes/BytesExports.cpp:418"
         }
       )
@@ -657,12 +955,23 @@ rows =
       , { unaudited
             | params = [ PBorrowed ]
             , resultAliases = [ 0 ]
+
+            -- LSS_016 wave 3. `String.trim : String -> String`, arity 1; sole
+            -- export `(HPtr) -> HPtr`. Same `unaudited`-base caveat as toLower.
+            , devirt = DevirtAt 1 (ShapeNoUnboxedScalarAt [ 0, -1 ])
             , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:91; runtime/src/allocator/StringOps.hpp:878"
         }
       )
     , ( ( "String", "toLower" )
       , { unaudited
             | params = [ PBorrowed ]
+
+            -- LSS_016 wave 3. `String.toLower : String -> String`, arity 1;
+            -- sole export `(HPtr) -> HPtr`, both ends boxed. NOTE this row sits
+            -- on the `unaudited` base, so cseSafe/droppable stay False: the
+            -- registration buys the dispatch removal only, and no CSE/DCE
+            -- consumer will act on it until the row is properly audited.
+            , devirt = DevirtAt 1 (ShapeNoUnboxedScalarAt [ 0, -1 ])
             , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:86; runtime/src/allocator/StringOps.hpp:801"
         }
       )
@@ -741,8 +1050,65 @@ failure of the compiler, not a latent miscompile. Empty == healthy.
 -}
 validationErrors : List String
 validationErrors =
-    dupKeyErrors ++ List.concatMap rowErrors rows
+    dupKeyErrors
+        ++ List.concatMap rowErrors rows
+        ++ List.concatMap (\( key, facts ) -> devirtErrors key facts) rows
 
+
+{-| LSS_016 registration checks. A wrong arity is a MISCOMPILE (the derived ABI
+misreads arguments), so the two independent statements of a kernel's arity in
+this table are cross-checked against each other rather than trusted separately.
+
+`params = []` deliberately means "borrow axis NOT audited", NOT "zero
+arguments", so it is only compared when non-empty — which is exactly why the
+arity is an explicit field instead of `List.length params`.
+-}
+devirtErrors : ( Name, Name ) -> KernelFacts -> List String
+devirtErrors ( home, name ) facts =
+    let
+        key =
+            home ++ "." ++ name
+    in
+    case facts.devirt of
+        DevirtNo ->
+            []
+
+        DevirtAt arity guard ->
+            (if arity < 0 then
+                [ key ++ ": DevirtAt arity is negative" ]
+
+             else
+                []
+            )
+                ++ (if not (List.isEmpty facts.params) && List.length facts.params /= arity then
+                        [ key
+                            ++ ": DevirtAt "
+                            ++ String.fromInt arity
+                            ++ " disagrees with params ("
+                            ++ String.fromInt (List.length facts.params)
+                            ++ ")"
+                        ]
+
+                    else
+                        []
+                   )
+                ++ (if String.isEmpty facts.evidence then
+                        [ key ++ ": DevirtAt row carries no evidence" ]
+
+                    else
+                        []
+                   )
+                ++ (case guard of
+                        ShapeAny ->
+                            []
+
+                        ShapeNoUnboxedScalarAt positions ->
+                            if List.all (\pos -> pos == -1 || (pos >= 0 && pos < arity)) positions then
+                                []
+
+                            else
+                                [ key ++ ": ShapeNoUnboxedScalarAt position out of range for arity " ++ String.fromInt arity ]
+                   )
 
 dupKeyErrors : List String
 dupKeyErrors =
@@ -772,8 +1138,8 @@ rowErrors ( ( home, name ), f ) =
           check (String.contains ".cpp:" f.evidence || String.contains ".hpp:" f.evidence)
             "evidence must carry at least one <file>.cpp:<line> / .hpp:<line> anchor"
         , -- V2 cseSafe is the strongest claim: no effect, no callback, terminates
-          check (not f.cseSafe || (f.callTimeEffect == EffNone && not f.callsBackIntoElm && f.totality /= MayDiverge))
-            "cseSafe requires EffNone AND not callsBackIntoElm AND totality /= MayDiverge"
+          check (not f.cseSafe || (f.callTimeEffect == EffNone && not (mayCallBackIntoElm f) && f.totality /= MayDiverge))
+            "cseSafe requires EffNone AND callsBack == HofNo AND totality /= MayDiverge"
         , -- V3 a noreturn row cannot be Total
           check (f.callTimeEffect /= EffNoreturn || f.totality /= Total)
             "EffNoreturn requires totality /= Total"
@@ -781,8 +1147,8 @@ rowErrors ( ( home, name ), f ) =
           check (gcBudgetOk f.gcAlloc)
             "GcFixed n requires n > 0 (use GcNone for zero)"
         , -- V5 a callback into Elm can allocate arbitrarily and can diverge
-          check (not f.callsBackIntoElm || (f.gcAlloc == GcUnbounded && f.totality /= Total))
-            "callsBackIntoElm requires GcUnbounded AND totality /= Total"
+          check (f.callsBack /= HofYes || (f.gcAlloc == GcUnbounded && f.totality /= Total))
+            "callsBack == HofYes requires GcUnbounded AND totality /= Total"
         , -- V6 a Throws row must say what it throws
           check (f.totality /= Throws || f.divergence /= Nothing)
             "totality = Throws requires a divergence note"

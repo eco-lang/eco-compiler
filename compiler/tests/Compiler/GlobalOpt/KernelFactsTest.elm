@@ -29,13 +29,20 @@ suite =
                 legacyBorrowGolden
                     |> List.map (\( k, sig ) -> ( k, Just sig ))
                     |> Expect.equal (List.map (\( k, _ ) -> ( k, KernelSigs.lookup k )) legacyBorrowGolden)
-        , Test.test "4. NO key outside those 34 answers the borrow shim" <|
+        , Test.test "4. NO key outside the audited borrow set answers the shim" <|
+            -- The set was EXACTLY the 34 legacy KernelSigs rows, which is what
+            -- made kernel-opt-07's migration inert. LSS_016 wave 3 audited five
+            -- more kernels end-to-end in order to register them for devirt, and
+            -- filling their `params` necessarily extends the borrow shim too --
+            -- a row is read by five consumers, so it cannot be added for one
+            -- axis alone. The five are listed separately from the legacy golden
+            -- so the original inertness claim stays legible.
             \_ ->
                 KF.rows
                     |> List.filter (\( k, _ ) -> KernelSigs.lookup k /= Nothing)
                     |> List.map Tuple.first
                     |> List.sort
-                    |> Expect.equal (List.sort (List.map Tuple.first legacyBorrowGolden))
+                    |> Expect.equal (List.sort (List.map Tuple.first legacyBorrowGolden ++ wave3BorrowAdditions))
         , Test.test "5. lookupSymbol strips the ABI prefix and _Int/_Float/_Char" <|
             \_ ->
                 Expect.equal
@@ -56,7 +63,7 @@ suite =
                     , KF.droppableFor ( "Debug", "log" )
                     ]
         , Test.test "7. the table has the expected size and no duplicate keys" <|
-            \_ -> Expect.equal ( 52, 52 ) ( List.length KF.rows, List.length (uniqueKeys KF.rows) )
+            \_ -> Expect.equal ( 57, 57 ) ( List.length KF.rows, List.length (uniqueKeys KF.rows) )
         ]
 
 
@@ -86,7 +93,15 @@ projection of the table.
 -}
 stampable : List ( String, String )
 stampable =
-    [ ( "Utils", "equal" )
+    -- LSS_016 wave 3 (plans/kernel-devirt-arity-table.md) added two rows that
+    -- are genuinely gc-leaf, so the stampable set legitimately grew. Both were
+    -- audited to register for kernel devirtualization and turned out to
+    -- allocate nothing at all: `Basics.not` returns the EMBEDDED True/False
+    -- constants (ExportHelpers.hpp:80-82) and `Basics.round` never touches an
+    -- Elm heap value (its only export is `int64_t (double)`).
+    [ ( "Basics", "not" )
+    , ( "Basics", "round" )
+    , ( "Utils", "equal" )
     , ( "Utils", "notEqual" )
     , ( "Utils", "compare" )
     , ( "Utils", "lt" )
@@ -100,6 +115,20 @@ stampable =
     , ( "Bytes", "getStringWidth" )
     , ( "Bytes", "width" )
     , ( "Bytes", "decodeFailure" )
+    ]
+
+
+{-| Keys the borrow shim answers because LSS_016 wave 3 audited them, over and
+above the 34 legacy rows. Each was read end-to-end for the devirt registration;
+filling `params` is what brings them into the borrow axis.
+-}
+wave3BorrowAdditions : List ( String, String )
+wave3BorrowAdditions =
+    [ ( "Basics", "not" )
+    , ( "Basics", "add" )
+    , ( "Basics", "round" )
+    , ( "String", "fromList" )
+    , ( "Json", "wrap" )
     ]
 
 

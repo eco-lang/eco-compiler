@@ -26,6 +26,7 @@ import Compiler.Data.Name as Name exposing (Name)
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.Closure as Closure
+import Compiler.GlobalOpt.KernelFacts as KernelFacts
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Compiler.Monomorphize.ResolveAccessorValues as ResolveAccessorValues
@@ -1854,18 +1855,22 @@ type DevirtTarget
     | DevirtKernel Name Name Name
 
 
-{-| E9.2 (LSS_016): kernels a singleton `{k|home.name}` may devirtualize
-to. Kernels have no annotation to arity-check against and may be
-effectful, so the whitelist is the soundness boundary: each entry must be
-pure (a plain allocator/value function) and pins its exact arity here.
+{-| E9.2 (LSS_016): the Elm-visible arity a singleton `{k|home.name}` must
+exactly saturate before it may devirtualize, or `Nothing` for an unregistered
+kernel (which keeps its indirect call).
+
+The registration itself lives in `KernelFacts` — beside the purity evidence
+that devirt makes load-bearing — rather than in an if-else chain here; see
+`KernelFacts.DevirtPolicy` and plans/kernel-devirt-arity-table.md.
 -}
 kernelDevirtArity : Name -> Name -> Maybe Int
 kernelDevirtArity home name =
-    if home == "List" && name == "cons" then
-        Just 2
+    case KernelFacts.devirtOf ( home, name ) of
+        KernelFacts.DevirtAt arity _ ->
+            Just arity
 
-    else
-        Nothing
+        KernelFacts.DevirtNo ->
+            Nothing
 
 
 {-| E9.2 (LSS_016) shape guard: the DERIVED site ABI type must be sane for
@@ -1882,33 +1887,73 @@ indirect call, which is layout-agnostic and always correct.
 -}
 kernelDevirtShapeOk : Name -> Name -> Mono.MonoType -> Bool
 kernelDevirtShapeOk home name funcMonoType =
-    if home == "List" && name == "cons" then
-        case consTailAndResult funcMonoType of
-            Just ( tail, result ) ->
-                not (unboxedScalar tail) && not (unboxedScalar result)
+    case KernelFacts.devirtOf ( home, name ) of
+        KernelFacts.DevirtNo ->
+            False
 
-            Nothing ->
-                False
+        KernelFacts.DevirtAt arity guard ->
+            case guard of
+                KernelFacts.ShapeAny ->
+                    True
+
+                KernelFacts.ShapeNoUnboxedScalarAt positions ->
+                    case peelArrow arity funcMonoType of
+                        Just ( argTypes, resultType ) ->
+                            List.all (\pos -> not (unboxedScalar (atPosition pos argTypes resultType))) positions
+
+                        Nothing ->
+                            False
+
+
+{-| The type at a guard position: `-1` is the result, otherwise the 0-based
+argument. An out-of-range index yields the RESULT, which is the conservative
+answer — a malformed guard declines rather than waving a site through.
+`validationErrors` rejects such rows anyway.
+-}
+atPosition : Int -> List Mono.MonoType -> Mono.MonoType -> Mono.MonoType
+atPosition pos argTypes resultType =
+    if pos < 0 then
+        resultType
 
     else
-        False
+        case List.drop pos argTypes of
+            t :: _ ->
+                t
+
+            [] ->
+                resultType
 
 
-{-| Peel cons's two args off the derived arrow — which arrives CURRIED
-(one arg per `MFunction` level, from the `Can.TLambda` spine) or FLAT
-(site-substituted classify form). Anything else declines (safe).
+{-| Peel `n` arguments off a derived kernel arrow, which arrives CURRIED (one
+arg per `MFunction` level, from the `Can.TLambda` spine) or FLAT (the
+site-substituted classify form), or any mixture. Anything that does not yield
+exactly `n` args declines (safe). Generalizes the v1 `consTailAndResult`.
 -}
-consTailAndResult : Mono.MonoType -> Maybe ( Mono.MonoType, Mono.MonoType )
-consTailAndResult funcMonoType =
-    case funcMonoType of
-        Mono.MFunction _ _ [ _, tail ] result ->
-            Just ( tail, result )
+peelArrow : Int -> Mono.MonoType -> Maybe ( List Mono.MonoType, Mono.MonoType )
+peelArrow n tipe =
+    peelArrowGo n tipe []
 
-        Mono.MFunction _ _ [ _ ] (Mono.MFunction _ _ [ tail ] result) ->
-            Just ( tail, result )
 
-        _ ->
-            Nothing
+peelArrowGo : Int -> Mono.MonoType -> List Mono.MonoType -> Maybe ( List Mono.MonoType, Mono.MonoType )
+peelArrowGo remaining tipe acc =
+    if remaining == 0 then
+        Just ( List.reverse acc, tipe )
+
+    else
+        case tipe of
+            Mono.MFunction _ _ argTypes result ->
+                let
+                    taken =
+                        List.length argTypes
+                in
+                if taken <= remaining then
+                    peelArrowGo (remaining - taken) result (List.reverse argTypes ++ acc)
+
+                else
+                    Nothing
+
+            _ ->
+                Nothing
 
 
 {-| E9.2 (LSS_016) EMISSION guard — the decisive one: codegen derives the
@@ -1923,28 +1968,38 @@ RESULT's mono types must not be unboxed scalars.
 -}
 kernelDevirtEmissionOk : Name -> Name -> List Mono.MonoExpr -> Mono.MonoType -> Bool
 kernelDevirtEmissionOk home name monoArgs resultMonoType =
-    if home == "List" && name == "cons" then
-        case monoArgs of
-            [ headArg, tailArg ] ->
-                not (unboxedScalar (Mono.typeOf tailArg))
-                    && not (unboxedScalar resultMonoType)
-                    -- DEEP CNumber-freedom: a residual number var ANYWHERE in
-                    -- the site's types (observed live: tail `MList (MVar
-                    -- CNumber)` in a generic foldl translation) means the
-                    -- layout is not settled — the demand-closing rewrite can
-                    -- later collapse those positions for a different
-                    -- instantiation (b := Int), leaving this frozen kernel
-                    -- call ill-typed (the (i64,i64)->i64 cons_Int CGEN_038
-                    -- collision). Devirt only fully-settled sites.
-                    && not (containsCNumber (Mono.typeOf headArg))
-                    && not (containsCNumber (Mono.typeOf tailArg))
-                    && not (containsCNumber resultMonoType)
+    case KernelFacts.devirtOf ( home, name ) of
+        KernelFacts.DevirtNo ->
+            False
 
-            _ ->
-                False
+        KernelFacts.DevirtAt arity guard ->
+            let
+                argTypes =
+                    List.map Mono.typeOf monoArgs
 
-    else
-        False
+                shapeOk =
+                    case guard of
+                        KernelFacts.ShapeAny ->
+                            True
+
+                        KernelFacts.ShapeNoUnboxedScalarAt positions ->
+                            List.all (\pos -> not (unboxedScalar (atPosition pos argTypes resultMonoType))) positions
+            in
+            (List.length monoArgs == arity)
+                && shapeOk
+                -- DEEP CNumber-freedom, applied to EVERY registered kernel
+                -- rather than just to cons. A residual number var anywhere in
+                -- the site's types (observed live: tail `MList (MVar CNumber)`
+                -- in a generic foldl translation) means the layout is not
+                -- settled — the demand-closing rewrite can later collapse those
+                -- positions for a different instantiation (b := Int), leaving
+                -- this frozen kernel call ill-typed (the (i64,i64)->i64
+                -- cons_Int CGEN_038 collision). The hazard is sharpest for
+                -- suffix-selecting kernels, but declining an unsettled site
+                -- costs only a dispatch and the `declinedKernelCNumber` census
+                -- measures what it costs. Devirt only fully-settled sites.
+                && not (List.any containsCNumber argTypes)
+                && not (containsCNumber resultMonoType)
 
 
 containsCNumber : Mono.MonoType -> Bool

@@ -1352,9 +1352,19 @@ kernelCallCost cfg home name args resultTy =
             cfg.kernelCostInline
 
         Nothing ->
+            let
+                -- The price of a kernel we know nothing about. A row whose HOF
+                -- axis is `HofUnknown` is in exactly that epistemic state, so
+                -- the two MUST agree — before this was centralized, an
+                -- unaudited row was priced as a higher-order call (20) while a
+                -- missing row was priced at 6.
+                unknownCost : Int
+                unknownCost =
+                    6
+            in
             case KernelFacts.lookup ( home, name ) of
                 Nothing ->
-                    6
+                    unknownCost
 
                 Just facts ->
                     case KernelFacts.costClass facts of
@@ -1366,6 +1376,9 @@ kernelCallCost cfg home name args resultTy =
 
                         KernelFacts.CHof ->
                             cfg.kernelCostHof
+
+                        KernelFacts.CUnknown ->
+                            unknownCost
 
 
 
