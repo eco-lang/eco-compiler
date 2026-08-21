@@ -1,6 +1,6 @@
 module Compiler.GlobalOpt.Borrow.LssFacts exposing
     ( Facts, LambdaRef, MemberInfo(..), CalleeFacts(..), PoisonCause(..)
-    , buildInstances, buildMemberTable, query
+    , buildInstances, buildMemberTable, query, meetSig
     )
 
 {-| LSS handshake facts (borrow-inference B3.5, design §10). Where LSS knows a

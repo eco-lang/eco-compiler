@@ -1,4 +1,4 @@
-module Compiler.GlobalOpt.AbiCloning exposing (AbiCloningStats, abiCloningPass, emptyStats)
+module Compiler.GlobalOpt.AbiCloning exposing (AbiCloningStats, abiCloningPass, emptyStats, instanceFingerprint)
 
 {-| ABI Cloning Pass — LSS singleton dispatch upgrade (design §9.2/§9.3,
 M3.5 interchangeability rule, LSS_009).
@@ -53,6 +53,7 @@ silent miscompile.
 -}
 
 import Array
+import Compiler.AST.DecisionTree.Test as DT
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Id as Id
 import Compiler.Reporting.Annotation exposing (Region)
@@ -88,6 +89,10 @@ import Dict exposing (Dict)
   - declinedAbiMismatch: layout-compatible candidates disagree on capture
     layout (same source lambda capturing differently-typed environment
     per enclosing specialization)
+  - declinedBodyMismatch: LSS_024 fingerprint fence — the group passed the
+    layout and capture-unanimity gates but its instances' verbatim-body
+    fingerprints disagree: behaviorally divergent same-layout clones (the
+    E11 hijack class). Never stamped; generic dispatch stays correct.
 
 -}
 type alias AbiCloningStats =
@@ -120,7 +125,8 @@ type alias AbiCloningStats =
     , declinedShapeChar : Int
     , declinedShapeNonArrow : Int
     , declinedAbiMismatch : Int
-    , multiInstanceGroups : Int -- Fix B probe (LSS_009/LSS_017 verifier): layout groups holding ≥2 distinct lambdaIds. MUST be 0 under qualified members; >0 = clones sharing a member = the §11.6 representative-hijack precondition.
+    , declinedBodyMismatch : Int -- LSS_024 F fence: fingerprint-divergent same-layout groups declined (each one is a fenced E11-class hazard — investigate when non-zero)
+    , multiInstanceGroups : Int -- layout groups holding ≥2 distinct lambdaIds. A MONITORING DELTA, not a zero-gate (amended LSS_017 reading): MonoInlineSimplify mints fresh lambdaIds for verbatim inline copies, and under LSS_024 annotation-only clones legitimately join one group — the representative premise is discharged by fingerprint unanimity, not by this count.
 
     -- Census (2026-07-21, plans/lss-dispatch-value-extraction.md open
     -- questions). Stats-only — never touches the graph; the maps are
@@ -153,6 +159,7 @@ emptyStats =
     , declinedShapeChar = 0
     , declinedShapeNonArrow = 0
     , declinedAbiMismatch = 0
+    , declinedBodyMismatch = 0
     , multiInstanceGroups = 0
     , declineByMember = Dict.empty
     , memberReps = Dict.empty
@@ -199,13 +206,27 @@ deterministic node-walk order (the stamped representative). `unanimous`
 tracks capture-layout agreement across the group; `charFree` tracks the
 absence of Char captures (both checked against `rep` as members join).
 `paramCount` is denormalized for the integer guard.
+
+`fpUnanimous`/`repFp` are the LSS_024 fingerprint fence: representative
+stamps additionally require every joined instance's verbatim-body
+fingerprint (`fpOf` — regions omitted, own lambdaIds positionally numbered,
+annotations/member ids/SpecIds/CallInfo VERBATIM) to equal `rep`'s.
+Fingerprints are computed LAZILY — only when a second DISTINCT lambdaId
+joins a group whose stamp is still live (`unanimous && fpUnanimous`), with
+`rep`'s memoized in `repFp` — so single-instance groups (the vast majority)
+never serialize anything. This replaces LSS_017's id-inequality discharge of
+LSS_009's interchangeable-representative premise with a checkable one:
+fingerprint-equal, layout-unanimous clones are interchangeable (textual
+identity — strictly weaker than the id-inequality premise it replaces).
 -}
 type alias LayoutGroup =
     { rep : Instance
     , paramCount : Int
     , unanimous : Bool
     , charFree : Bool
-    , multi : Bool -- Fix B probe (LSS_009 verifier): ≥2 DISTINCT lambdaIds joined this group. Sound only when instances are verbatim copies sharing one lambdaId — any True is counted in `multiInstanceGroups` (must be 0 under LSS_017 qualified members).
+    , multi : Bool -- ≥2 DISTINCT lambdaIds joined this group (monitoring — see multiInstanceGroups; the flag-on stamp license is unanimous && fpUnanimous, never this flag)
+    , fpUnanimous : Bool -- LSS_024: every instance's fingerprint equals rep's (trivially True single-instance; sticky False; maintained only when the fence is ON — flag-off it stays True and the pass is byte-identical to the pre-LSS_024 tree, INCLUDING the four measured non-verbatim multi-group stamps the fence would decline, see the flag-gating note on abiCloningPass)
+    , repFp : Maybe String -- rep's fingerprint, memoized at the first multi join that needs it
     }
 
 
@@ -214,6 +235,8 @@ type alias Instance =
     , captureTypes : List Mono.MonoType
     , paramTypes : List Mono.MonoType
     , returnType : Mono.MonoType
+    , info : Mono.ClosureInfo -- LSS_024 F fence: closure header reference for the lazy fingerprint
+    , body : Mono.MonoExpr -- LSS_024 F fence: body reference for the lazy fingerprint
     }
 
 
@@ -232,13 +255,13 @@ siteFingerprint params ret =
         ++ Mono.shallowLayoutKey fingerprintDepth ret
 
 
-collectInstances : Mono.MonoGraph -> Dict Int MemberInfo
-collectInstances (Mono.MonoGraph record) =
+collectInstances : Bool -> Mono.MonoGraph -> Dict Int MemberInfo
+collectInstances fpFence (Mono.MonoGraph record) =
     Array.foldl
         (\maybeNode acc ->
             case maybeNode of
                 Just node ->
-                    List.foldl collectGo acc (nodeExprs node)
+                    List.foldl (collectGo fpFence) acc (nodeExprs node)
 
                 Nothing ->
                     acc
@@ -278,8 +301,8 @@ nodeExprs node =
 {-| First-order accumulating walk for the instance index (same de-HOF
 rationale as the stamping walk below).
 -}
-collectGo : Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
-collectGo expr acc =
+collectGo : Bool -> Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
+collectGo fpFence expr acc =
     case expr of
         Mono.MonoClosure closureInfo body tipe ->
             let
@@ -299,10 +322,10 @@ collectGo expr acc =
                                                     present
 
                                                 else
-                                                    Just { mi | buckets = insertInstance closureInfo body mi.buckets }
+                                                    Just { mi | buckets = insertInstance fpFence closureInfo body mi.buckets }
 
                                             Nothing ->
-                                                Just { blocked = False, buckets = insertInstance closureInfo body Dict.empty }
+                                                Just { blocked = False, buckets = insertInstance fpFence closureInfo body Dict.empty }
                                     )
                                     acc
 
@@ -310,42 +333,42 @@ collectGo expr acc =
                             acc
 
                 acc2 =
-                    List.foldl (\( _, e, _ ) a -> collectGo e a) acc1 closureInfo.captures
+                    List.foldl (\( _, e, _ ) a -> collectGo fpFence e a) acc1 closureInfo.captures
             in
-            collectGo body acc2
+            collectGo fpFence body acc2
 
         Mono.MonoCall _ func args _ _ ->
-            List.foldl collectGo (collectGo func acc) args
+            List.foldl (collectGo fpFence) (collectGo fpFence func acc) args
 
         Mono.MonoTailCall _ args _ ->
-            List.foldl (\( _, e ) a -> collectGo e a) acc args
+            List.foldl (\( _, e ) a -> collectGo fpFence e a) acc args
 
         Mono.MonoIf branches final _ ->
-            collectGo final (List.foldl (\( c, t ) a -> collectGo t (collectGo c a)) acc branches)
+            collectGo fpFence final (List.foldl (\( c, t ) a -> collectGo fpFence t (collectGo fpFence c a)) acc branches)
 
         Mono.MonoLet def body _ ->
-            collectGo body (collectGoDef def acc)
+            collectGo fpFence body (collectGoDef fpFence def acc)
 
         Mono.MonoDestruct _ inner _ ->
-            collectGo inner acc
+            collectGo fpFence inner acc
 
         Mono.MonoCase _ _ decider jumps _ ->
-            List.foldl (\( _, e ) a -> collectGo e a) (collectGoDecider decider acc) jumps
+            List.foldl (\( _, e ) a -> collectGo fpFence e a) (collectGoDecider fpFence decider acc) jumps
 
         Mono.MonoList _ items _ ->
-            List.foldl collectGo acc items
+            List.foldl (collectGo fpFence) acc items
 
         Mono.MonoRecordCreate fields _ ->
-            List.foldl (\( _, e ) a -> collectGo e a) acc fields
+            List.foldl (\( _, e ) a -> collectGo fpFence e a) acc fields
 
         Mono.MonoRecordAccess inner _ _ ->
-            collectGo inner acc
+            collectGo fpFence inner acc
 
         Mono.MonoRecordUpdate record updates _ ->
-            List.foldl (\( _, e ) a -> collectGo e a) (collectGo record acc) updates
+            List.foldl (\( _, e ) a -> collectGo fpFence e a) (collectGo fpFence record acc) updates
 
         Mono.MonoTupleCreate _ elements _ ->
-            List.foldl collectGo acc elements
+            List.foldl (collectGo fpFence) acc elements
 
         Mono.MonoLiteral _ _ ->
             acc
@@ -366,34 +389,34 @@ collectGo expr acc =
             acc
 
 
-collectGoDef : Mono.MonoDef -> Dict Int MemberInfo -> Dict Int MemberInfo
-collectGoDef def acc =
+collectGoDef : Bool -> Mono.MonoDef -> Dict Int MemberInfo -> Dict Int MemberInfo
+collectGoDef fpFence def acc =
     case def of
         Mono.MonoDef _ e ->
-            collectGo e acc
+            collectGo fpFence e acc
 
         Mono.MonoTailDef _ _ e ->
-            collectGo e acc
+            collectGo fpFence e acc
 
 
-collectGoDecider : Mono.Decider Mono.MonoChoice -> Dict Int MemberInfo -> Dict Int MemberInfo
-collectGoDecider decider acc =
+collectGoDecider : Bool -> Mono.Decider Mono.MonoChoice -> Dict Int MemberInfo -> Dict Int MemberInfo
+collectGoDecider fpFence decider acc =
     case decider of
         Mono.Leaf (Mono.Inline e) ->
-            collectGo e acc
+            collectGo fpFence e acc
 
         Mono.Leaf (Mono.Jump _) ->
             acc
 
         Mono.Chain _ success failure ->
-            collectGoDecider failure (collectGoDecider success acc)
+            collectGoDecider fpFence failure (collectGoDecider fpFence success acc)
 
         Mono.FanOut _ edges fallback ->
-            collectGoDecider fallback (List.foldl (\( _, d ) a -> collectGoDecider d a) acc edges)
+            collectGoDecider fpFence fallback (List.foldl (\( _, d ) a -> collectGoDecider fpFence d a) acc edges)
 
 
-insertInstance : Mono.ClosureInfo -> Mono.MonoExpr -> Dict String (List LayoutGroup) -> Dict String (List LayoutGroup)
-insertInstance closureInfo body buckets =
+insertInstance : Bool -> Mono.ClosureInfo -> Mono.MonoExpr -> Dict String (List LayoutGroup) -> Dict String (List LayoutGroup)
+insertInstance fpFence closureInfo body buckets =
     let
         paramTypes =
             List.map Tuple.second closureInfo.params
@@ -406,10 +429,12 @@ insertInstance closureInfo body buckets =
             , captureTypes = List.map (\( _, e, _ ) -> Mono.typeOf e) closureInfo.captures
             , paramTypes = paramTypes
             , returnType = returnType
+            , info = closureInfo
+            , body = body
             }
     in
     Dict.update (siteFingerprint paramTypes returnType)
-        (\present -> Just (joinGroup inst (Maybe.withDefault [] present)))
+        (\present -> Just (joinGroup fpFence inst (Maybe.withDefault [] present)))
         buckets
 
 
@@ -419,8 +444,8 @@ capture unanimity and Char-freedom, both with the allocation-free
 `eqLayout`. Order of groups and the identity of `rep` follow the
 deterministic node walk.
 -}
-joinGroup : Instance -> List LayoutGroup -> List LayoutGroup
-joinGroup inst groups =
+joinGroup : Bool -> Instance -> List LayoutGroup -> List LayoutGroup
+joinGroup fpFence inst groups =
     case groups of
         [] ->
             [ { rep = inst
@@ -428,19 +453,54 @@ joinGroup inst groups =
               , unanimous = True
               , charFree = not (List.any ((==) Mono.MChar) inst.captureTypes)
               , multi = False
+              , fpUnanimous = True
+              , repFp = Nothing
               }
             ]
 
         g :: rest ->
             if sameSignatureLayout g.rep inst then
-                { g
-                    | unanimous = g.unanimous && sameCaptureLayout g.rep inst
-                    , multi = g.multi || inst.lambdaId /= g.rep.lambdaId
-                }
-                    :: rest
+                if inst.lambdaId == g.rep.lambdaId then
+                    { g | unanimous = g.unanimous && sameCaptureLayout g.rep inst } :: rest
+
+                else
+                    -- LSS_024 F fence: a DISTINCT lambdaId joined. Maintain
+                    -- fingerprint unanimity LAZILY, and only when the fence
+                    -- is ON: both flags are sticky-False and only consulted
+                    -- together (a stamp needs unanimous && fpUnanimous), so
+                    -- once either is False the serialization is skipped
+                    -- entirely; fence off, fpUnanimous stays True and the
+                    -- pass behaves exactly as before LSS_024.
+                    let
+                        uni1 =
+                            g.unanimous && sameCaptureLayout g.rep inst
+
+                        ( fpU1, repFp1 ) =
+                            if not (fpFence && uni1 && g.fpUnanimous) then
+                                ( g.fpUnanimous, g.repFp )
+
+                            else
+                                let
+                                    rf =
+                                        case g.repFp of
+                                            Just f ->
+                                                f
+
+                                            Nothing ->
+                                                fpOf g.rep
+                                in
+                                ( fpOf inst == rf, Just rf )
+                    in
+                    { g
+                        | unanimous = uni1
+                        , multi = True
+                        , fpUnanimous = fpU1
+                        , repFp = repFp1
+                    }
+                        :: rest
 
             else
-                g :: joinGroup inst rest
+                g :: joinGroup fpFence inst rest
 
 
 sameSignatureLayout : Instance -> Instance -> Bool
@@ -527,9 +587,27 @@ With LSS off (or no singleton sets), the instance index is empty and the
 graph is returned untouched — the pass is inert by construction, so the
 flag-off pipeline stays byte-identical.
 
+`fpFence` (LSS_024, = `lss.layoutQualMembers`): when True, representative
+stamps additionally require verbatim-body fingerprint unanimity across the
+layout group (`bodyMismatch` decline otherwise). The fence is FLAG-GATED
+rather than unconditional by a MEASURED decision (2026-08-21, the plan's
+§4.5 gate): the default tree holds exactly FOUR multi groups whose
+instances are NOT verbatim — local-multi twins in `Dict.map` specs whose
+fingerprints differ only by a sibling qualified-member id (`A[34133]` vs
+`A[34134]`) or by annotation PRECISION on a capture type (`A[18467]` vs
+`A(` LTop) — and today's LSS_017 id-inequality doctrine stamps them.
+Fencing them flag-off would change default artifacts (−4 staged stamps),
+so flag-off keeps HEAD's exact behavior (byte-identity gate PASSES) and
+the fence applies exactly where LSS_024's id sharing makes it load-bearing.
+Those four stamps are a recorded flip-time delta: at any default flip of
+`lss.layoutQualMembers` they become `bodyMismatch` declines, with the
+soundness rationale on their side (textual-identity doctrine; the id
+congruence that could re-admit the sibling-id pair is the plan's parked
+v2, never to be improvised in).
+
 -}
-abiCloningPass : Mono.MonoGraph -> ( Mono.MonoGraph, AbiCloningStats )
-abiCloningPass ((Mono.MonoGraph record) as graph) =
+abiCloningPass : Bool -> Mono.MonoGraph -> ( Mono.MonoGraph, AbiCloningStats )
+abiCloningPass fpFence ((Mono.MonoGraph record) as graph) =
     let
         -- LSS_018: μ-tied members are force-blocked — their instances span
         -- DIFFERENT demands of one recursive family (behaviorally divergent;
@@ -540,7 +618,7 @@ abiCloningPass ((Mono.MonoGraph record) as graph) =
         index =
             Dict.foldl
                 (\m () acc -> Dict.insert m { blocked = True, buckets = Dict.empty } acc)
-                (collectInstances graph)
+                (collectInstances fpFence graph)
                 record.lssBlockedMembers
     in
     if Dict.isEmpty index then
@@ -1370,11 +1448,16 @@ resolveInGroups fargs fret argCount groups memberInfo =
                 if not g.charFree then
                     Decline "char" bumpShapeChar
 
-                else if g.unanimous then
+                else if not g.unanimous then
+                    Decline "abiMismatch" bumpAbiMismatch
+
+                else if g.fpUnanimous then
                     Stamp g.rep
 
                 else
-                    Decline "abiMismatch" bumpAbiMismatch
+                    -- LSS_024 F fence: same-layout clones with divergent
+                    -- verbatim bodies (the E11 class) — never stamp.
+                    Decline "bodyMismatch" bumpBodyMismatch
 
             else
                 resolveInGroups fargs fret argCount rest memberInfo
@@ -1406,11 +1489,14 @@ stagedScan fargs fret groups =
                 if not g.charFree then
                     Decline "char" bumpShapeChar
 
-                else if g.unanimous then
+                else if not g.unanimous then
+                    Decline "abiMismatch" bumpAbiMismatch
+
+                else if g.fpUnanimous then
                     StampStaged g.rep
 
                 else
-                    Decline "abiMismatch" bumpAbiMismatch
+                    Decline "bodyMismatch" bumpBodyMismatch
 
             else
                 stagedScan fargs fret rest
@@ -1445,11 +1531,14 @@ papScan fargs fret argCount groups noMatch =
                     -- code as real captures — same i16 gate (E4c lifts it)
                     Decline "char" bumpShapeChar
 
-                else if g.unanimous then
+                else if not g.unanimous then
+                    Decline "abiMismatch" bumpAbiMismatch
+
+                else if g.fpUnanimous then
                     StampPap g.rep k
 
                 else
-                    Decline "abiMismatch" bumpAbiMismatch
+                    Decline "bodyMismatch" bumpBodyMismatch
 
             else
                 papScan fargs fret argCount rest noMatch
@@ -1557,3 +1646,499 @@ bumpAbiMismatch ctx =
             ctx.stats
     in
     { ctx | stats = { stats | declinedAbiMismatch = stats.declinedAbiMismatch + 1 } }
+
+
+bumpBodyMismatch : StampCtx -> StampCtx
+bumpBodyMismatch ctx =
+    let
+        stats =
+            ctx.stats
+    in
+    { ctx | stats = { stats | declinedBodyMismatch = stats.declinedBodyMismatch + 1 } }
+
+
+
+
+-- ============================================================================
+-- ====== LSS_024 FINGERPRINT (the F fence serializer) ======
+-- ============================================================================
+
+
+{-| Canonical VERBATIM serialization of one closure instance
+(plans/lss-layout-qualified-members.md §2.4): regions are OMITTED (the
+`CafHoist.zeroRegions` intent, achieved by never rendering them), the
+instance's OWN fresh lambdaIds are numbered positionally in first-encounter
+order, and EVERYTHING else is verbatim — annotations (types render through
+the annotation-SENSITIVE `toComparableMonoType`, which is what separates the
+E11 divergent clones), member ids, SpecId references, names, literals, the
+full CallInfo, and full deciders. Two instances with equal fingerprints are
+textually identical clones modulo source position and lambda-supply
+numbering — LSS_009's interchangeability premise, discharged by comparison.
+(Serializer precedent: `MonoSolver.Diff.serNode`; that one is deliberately
+lossy on CallInfo and deciders, which is exactly what this one must not be.)
+
+Fragments accumulate REVERSED onto a list and concatenate once (the
+`toComparableFragments` discipline); the positional lambda map threads
+through as state. Cost discipline: `fpOf` runs only from `joinGroup`'s
+distinct-lambdaId arm while the group's stamp is still live, so
+single-instance groups — the vast majority — never serialize anything.
+-}
+fpOf : Instance -> String
+fpOf inst =
+    instanceFingerprint inst.info inst.body
+
+
+{-| The fingerprint as a standalone entry point, for the OTHER
+representative-premise consumer: `Borrow.buildLambdaSigs` gates its
+per-member representative signature on fingerprint unanimity with exactly
+this function (the §7.2 obligation of plans/lss-layout-qualified-members.md
+— under LSS_024 id sharing, "stored sigs equal by construction" needs the
+same textual-identity discharge as the dispatch stamps).
+-}
+instanceFingerprint : Mono.ClosureInfo -> Mono.MonoExpr -> String
+instanceFingerprint info body =
+    let
+        ( frags, _ ) =
+            fpClosureParts info body ( [], { lamMap = Dict.empty, nextLam = 0, nameMap = Dict.empty, nextName = 0 } )
+    in
+    String.concat (List.reverse frags)
+
+
+{-| A LOCAL name occurrence (binder or reference): positional in
+first-encounter order, so consistently-freshened verbatim copies compare
+equal while structurally divergent reference patterns still differ.
+-}
+fpName : String -> FpState -> FpState
+fpName name ( acc, ctx ) =
+    case Dict.get name ctx.nameMap of
+        Just pos ->
+            ( ("n" ++ String.fromInt pos) :: acc, ctx )
+
+        Nothing ->
+            ( ("n" ++ String.fromInt ctx.nextName) :: acc
+            , { ctx | nameMap = Dict.insert name ctx.nextName ctx.nameMap, nextName = ctx.nextName + 1 }
+            )
+
+
+type alias FpCtx =
+    { lamMap : Dict Int Int -- own lambdaId uid -> position (first-encounter order)
+    , nextLam : Int
+    , nameMap : Dict String Int -- LOCAL names -> position (first-encounter order). MonoInlineSimplify freshens let-bound names in verbatim inline copies (freshenLetBoundNames), so local names — binders AND references — must compare positionally or every inliner copy false-mismatches (measured: 163 lost flag-off stamps). Semantic names (record fields, ctors, globals, kernels) stay verbatim. Aliasing capture-expr OUTER references across copies is sound: captures are per-object runtime VALUES loaded from the actual object — LSS_009's capture-layout unanimity is the gate for those, not the fingerprint.
+    , nextName : Int
+    }
+
+
+type alias FpState =
+    ( List String, FpCtx )
+
+
+fpStr : String -> FpState -> FpState
+fpStr s ( acc, ctx ) =
+    ( s :: acc, ctx )
+
+
+fpTy : Mono.MonoType -> FpState -> FpState
+fpTy t st =
+    fpStr (Mono.toComparableMonoType t) st
+
+
+{-| A lambda DEFINITION occurrence: assign (or reuse) its positional number.
+-}
+fpLam : Mono.LambdaId -> FpState -> FpState
+fpLam (Mono.AnonymousLambda _ uid) ( acc, ctx ) =
+    case Dict.get uid ctx.lamMap of
+        Just pos ->
+            ( ("l" ++ String.fromInt pos) :: acc, ctx )
+
+        Nothing ->
+            ( ("l" ++ String.fromInt ctx.nextLam) :: acc
+            , { ctx | lamMap = Dict.insert uid ctx.nextLam ctx.lamMap, nextLam = ctx.nextLam + 1 }
+            )
+
+
+{-| A lambda REFERENCE (fastEvaluator): positional when it names one of the
+instance's own lambdas, raw otherwise (a foreign reference is identity-
+bearing; rendering it raw can only cause a sound decline).
+-}
+fpLamRef : Mono.LambdaId -> FpState -> FpState
+fpLamRef (Mono.AnonymousLambda _ uid) (( _, ctx ) as st) =
+    case Dict.get uid ctx.lamMap of
+        Just pos ->
+            fpStr ("l" ++ String.fromInt pos) st
+
+        Nothing ->
+            fpStr ("x" ++ String.fromInt uid) st
+
+
+fpClosureParts : Mono.ClosureInfo -> Mono.MonoExpr -> FpState -> FpState
+fpClosureParts info body st =
+    st
+        |> fpStr "Clo("
+        |> fpLam info.lambdaId
+        |> fpStr ";src="
+        |> fpStr
+            (case info.srcLambda of
+                Just sl ->
+                    String.fromInt (Id.toComparable sl)
+
+                Nothing ->
+                    "-"
+            )
+        |> fpStr (";mem=" ++ fpMaybeInt info.lssMember ++ ";caps=[")
+        |> fpCaps info.captures
+        |> fpStr "];params=["
+        |> fpParams info.params
+        |> fpStr ("];ck=" ++ fpClosureKind info.closureKind ++ ";cabi=")
+        |> fpCaptureAbi info.captureAbi
+        |> fpStr ";"
+        |> fpExpr body
+        |> fpStr ")"
+
+
+fpCaps : List ( String, Mono.MonoExpr, Bool ) -> FpState -> FpState
+fpCaps caps st =
+    List.foldl
+        (\( n, e, b ) a ->
+            a
+                |> fpName n
+                |> fpStr
+                    (if b then
+                        "!"
+
+                     else
+                        "="
+                    )
+                |> fpExpr e
+                |> fpStr ","
+        )
+        st
+        caps
+
+
+fpParams : List ( String, Mono.MonoType ) -> FpState -> FpState
+fpParams params st =
+    List.foldl (\( n, t ) a -> a |> fpName n |> fpStr ":" |> fpTy t |> fpStr ",") st params
+
+
+fpMaybeInt : Maybe Int -> String
+fpMaybeInt m =
+    case m of
+        Just i ->
+            String.fromInt i
+
+        Nothing ->
+            "-"
+
+
+fpClosureKind : Mono.MaybeClosureKind -> String
+fpClosureKind mck =
+    case mck of
+        Just (Mono.Known (Mono.ClosureKindId k)) ->
+            "K" ++ String.fromInt k
+
+        Nothing ->
+            "-"
+
+
+fpCaptureAbi : Maybe Mono.CaptureABI -> FpState -> FpState
+fpCaptureAbi mabi st =
+    case mabi of
+        Nothing ->
+            fpStr "-" st
+
+        Just abi ->
+            st
+                |> fpStr "{c="
+                |> fpTys abi.captureTypes
+                |> fpStr ";p="
+                |> fpTys abi.paramTypes
+                |> fpStr ";r="
+                |> fpTy abi.returnType
+                |> fpStr "}"
+
+
+fpTys : List Mono.MonoType -> FpState -> FpState
+fpTys ts st =
+    List.foldl (\t a -> a |> fpTy t |> fpStr ",") st ts
+
+
+fpInts : List Int -> String
+fpInts xs =
+    String.join "," (List.map String.fromInt xs)
+
+
+fpCallInfo : Mono.CallInfo -> FpState -> FpState
+fpCallInfo ci st =
+    st
+        |> fpStr
+            ((case ci.callModel of
+                Mono.FlattenedExternal ->
+                    "FE"
+
+                Mono.StageCurried ->
+                    "SC"
+             )
+                ++ "|sa="
+                ++ fpInts ci.stageArities
+                ++ (if ci.isSingleStageSaturated then
+                        "|s1"
+
+                    else
+                        "|s0"
+                   )
+                ++ "|ir="
+                ++ String.fromInt ci.initialRemaining
+                ++ "|ra="
+                ++ fpInts ci.remainingStageArities
+                ++ "|ck="
+                ++ fpClosureKind ci.closureKind
+                ++ "|ca="
+            )
+        |> fpCaptureAbi ci.captureAbi
+        |> fpStr "|fe="
+        |> (\a ->
+                case ci.fastEvaluator of
+                    Just lid ->
+                        fpLamRef lid a
+
+                    Nothing ->
+                        fpStr "-" a
+           )
+        |> fpStr
+            ("|pp="
+                ++ fpMaybeInt ci.fastPapPrefix
+                ++ "|"
+                ++ (case ci.callKind of
+                        Mono.CallDirectKnownSegmentation ->
+                            "KS"
+
+                        Mono.CallDirectFlat ->
+                            "DF"
+
+                        Mono.CallGenericApply ->
+                            "GA"
+
+                        Mono.CallSegmentationUnknown ->
+                            "SU"
+                   )
+                ++ "|rt="
+            )
+        |> fpTy ci.evaluatorReturnType
+
+
+fpExpr : Mono.MonoExpr -> FpState -> FpState
+fpExpr expr st =
+    case expr of
+        Mono.MonoLiteral lit t ->
+            st |> fpStr ("Li(" ++ fpLit lit ++ "):") |> fpTy t
+
+        Mono.MonoVarLocal name t ->
+            st |> fpStr "VL(" |> fpName name |> fpStr "):" |> fpTy t
+
+        Mono.MonoVarGlobal _ specId t ->
+            st |> fpStr ("VG(" ++ String.fromInt specId ++ "):") |> fpTy t
+
+        Mono.MonoVarKernel _ prefix home name t ->
+            st |> fpStr ("VK(" ++ prefix ++ "." ++ home ++ "." ++ name ++ "):") |> fpTy t
+
+        Mono.MonoList _ items t ->
+            st |> fpStr "Ls[" |> fpExprs items |> fpStr "]:" |> fpTy t
+
+        Mono.MonoClosure info body t ->
+            st |> fpClosureParts info body |> fpStr ":" |> fpTy t
+
+        Mono.MonoCall _ func args t callInfo ->
+            st
+                |> fpStr "Ca("
+                |> fpExpr func
+                |> fpStr ",["
+                |> fpExprs args
+                |> fpStr "];ci="
+                |> fpCallInfo callInfo
+                |> fpStr "):"
+                |> fpTy t
+
+        Mono.MonoTailCall name args t ->
+            st
+                |> fpStr "TC("
+                |> fpName name
+                |> fpStr ",["
+                |> (\a -> List.foldl (\( n, e ) acc -> acc |> fpName n |> fpStr "=" |> fpExpr e |> fpStr ",") a args)
+                |> fpStr "]):"
+                |> fpTy t
+
+        Mono.MonoIf branches final t ->
+            st
+                |> fpStr "If(["
+                |> (\a -> List.foldl (\( c, b ) acc -> acc |> fpExpr c |> fpStr "->" |> fpExpr b |> fpStr ";") a branches)
+                |> fpStr "],"
+                |> fpExpr final
+                |> fpStr "):"
+                |> fpTy t
+
+        Mono.MonoLet def body t ->
+            st |> fpStr "Le(" |> fpDef def |> fpStr "," |> fpExpr body |> fpStr "):" |> fpTy t
+
+        Mono.MonoDestruct dtor body t ->
+            st |> fpStr "De(" |> fpDtor dtor |> fpStr "," |> fpExpr body |> fpStr "):" |> fpTy t
+
+        Mono.MonoCase n1 n2 decider jumps t ->
+            st
+                |> fpStr "Cs("
+                |> fpName n1
+                |> fpStr ","
+                |> fpName n2
+                |> fpStr ","
+                |> fpDecider decider
+                |> fpStr ",j=["
+                |> (\a -> List.foldl (\( i, e ) acc -> acc |> fpStr (String.fromInt i ++ "=") |> fpExpr e |> fpStr ",") a jumps)
+                |> fpStr "]):"
+                |> fpTy t
+
+        Mono.MonoRecordCreate fields t ->
+            st |> fpStr "Rc[" |> fpNamedExprs fields |> fpStr "]:" |> fpTy t
+
+        Mono.MonoRecordAccess record name t ->
+            st |> fpStr "Ra(" |> fpExpr record |> fpStr ("." ++ name ++ "):") |> fpTy t
+
+        Mono.MonoRecordUpdate record updates t ->
+            st |> fpStr "Ru(" |> fpExpr record |> fpStr ",[" |> fpNamedExprs updates |> fpStr "]):" |> fpTy t
+
+        Mono.MonoTupleCreate _ items t ->
+            st |> fpStr "Tu[" |> fpExprs items |> fpStr "]:" |> fpTy t
+
+        Mono.MonoUnit ->
+            fpStr "U" st
+
+        Mono.MonoAccessorValue _ name t ->
+            st |> fpStr ("Av(" ++ name ++ "):") |> fpTy t
+
+
+fpExprs : List Mono.MonoExpr -> FpState -> FpState
+fpExprs items st =
+    List.foldl (\e a -> a |> fpExpr e |> fpStr ",") st items
+
+
+fpNamedExprs : List ( String, Mono.MonoExpr ) -> FpState -> FpState
+fpNamedExprs fields st =
+    List.foldl (\( n, e ) a -> a |> fpStr (n ++ "=") |> fpExpr e |> fpStr ",") st fields
+
+
+fpLit : Mono.Literal -> String
+fpLit lit =
+    case lit of
+        Mono.LBool b ->
+            if b then
+                "BT"
+
+            else
+                "BF"
+
+        Mono.LInt i ->
+            "I" ++ String.fromInt i
+
+        Mono.LFloat f ->
+            "F" ++ String.fromFloat f
+
+        Mono.LChar c ->
+            "C" ++ c
+
+        Mono.LStr s ->
+            "S" ++ s
+
+
+fpDef : Mono.MonoDef -> FpState -> FpState
+fpDef def st =
+    case def of
+        Mono.MonoDef name e ->
+            st |> fpName name |> fpStr "=" |> fpExpr e
+
+        Mono.MonoTailDef name params e ->
+            st |> fpName name |> fpStr "([" |> fpParams params |> fpStr "])=" |> fpExpr e
+
+
+fpDtor : Mono.MonoDestructor -> FpState -> FpState
+fpDtor (Mono.MonoDestructor name path t) st =
+    st |> fpName name |> fpStr "<-" |> fpPath path |> fpStr ":" |> fpTy t
+
+
+fpPath : Mono.MonoPath -> FpState -> FpState
+fpPath path st =
+    case path of
+        Mono.MonoIndex i ck t sub ->
+            st |> fpStr ("Ix" ++ String.fromInt i ++ fpContainer ck ++ ":") |> fpTy t |> fpStr "." |> fpPath sub
+
+        Mono.MonoField name t sub ->
+            st |> fpStr ("Fd" ++ name ++ ":") |> fpTy t |> fpStr "." |> fpPath sub
+
+        Mono.MonoUnbox t sub ->
+            st |> fpStr "Ub:" |> fpTy t |> fpStr "." |> fpPath sub
+
+        Mono.MonoRoot name t ->
+            st |> fpStr "Rt" |> fpName name |> fpStr ":" |> fpTy t
+
+
+fpContainer : Mono.ContainerKind -> String
+fpContainer ck =
+    case ck of
+        Mono.ListContainer ->
+            "@L"
+
+        Mono.Tuple2Container ->
+            "@2"
+
+        Mono.Tuple3Container ->
+            "@3"
+
+        Mono.CustomContainer n ->
+            "@C" ++ n
+
+
+fpDecider : Mono.Decider Mono.MonoChoice -> FpState -> FpState
+fpDecider decider st =
+    case decider of
+        Mono.Leaf choice ->
+            st |> fpStr "Lf(" |> fpChoice choice |> fpStr ")"
+
+        Mono.Chain tests success failure ->
+            st
+                |> fpStr "Ch(["
+                |> (\a -> List.foldl (\( p, t ) acc -> acc |> fpDtPath p |> fpStr ("?" ++ DT.testToComparable t ++ ";")) a tests)
+                |> fpStr "],"
+                |> fpDecider success
+                |> fpStr ","
+                |> fpDecider failure
+                |> fpStr ")"
+
+        Mono.FanOut path edges fallback ->
+            st
+                |> fpStr "Fo("
+                |> fpDtPath path
+                |> fpStr ",["
+                |> (\a -> List.foldl (\( t, d ) acc -> acc |> fpStr (DT.testToComparable t ++ "->") |> fpDecider d |> fpStr ";") a edges)
+                |> fpStr "],"
+                |> fpDecider fallback
+                |> fpStr ")"
+
+
+fpChoice : Mono.MonoChoice -> FpState -> FpState
+fpChoice choice st =
+    case choice of
+        Mono.Inline e ->
+            st |> fpStr "In(" |> fpExpr e |> fpStr ")"
+
+        Mono.Jump j ->
+            fpStr ("Jm" ++ String.fromInt j) st
+
+
+fpDtPath : Mono.MonoDtPath -> FpState -> FpState
+fpDtPath path st =
+    case path of
+        Mono.DtRoot name t ->
+            st |> fpStr "dR" |> fpName name |> fpStr ":" |> fpTy t
+
+        Mono.DtIndex i ck t sub ->
+            st |> fpStr ("dI" ++ String.fromInt i ++ fpContainer ck ++ ":") |> fpTy t |> fpStr "." |> fpDtPath sub
+
+        Mono.DtUnbox t sub ->
+            st |> fpStr "dU:" |> fpTy t |> fpStr "." |> fpDtPath sub

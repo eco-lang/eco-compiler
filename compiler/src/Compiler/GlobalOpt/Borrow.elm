@@ -31,6 +31,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
 import Compiler.Data.BitSet as BitSet
 import Compiler.Eco.Config as Config
+import Compiler.GlobalOpt.AbiCloning as AbiCloning
 import Compiler.GlobalOpt.Borrow.Constrain as C
 import Compiler.GlobalOpt.Borrow.Dsu as Dsu
 import Compiler.GlobalOpt.Borrow.Facts as Facts
@@ -68,6 +69,7 @@ type alias BorrowStats =
     , kernelDefaultedHeapCalls : Int -- B3: kernel misses with heap args
     , sccFixpointBailouts : Int -- B3: expected 0
     , maxSccIter : Int -- B3: max fixpoint iterations observed (design predicts 2-3)
+    , lambdaSigMeets : Int -- LSS_024 fence (amended BORROW_006): members whose instances fingerprint-diverge — their stored sig is the MEET over per-instance sigs, never one representative's
     , capturesForcedOwned : Int
     , nonVarOperandHeapOwnedFresh : Int
     , nonVarOperandHeapBorrowedProducer : Int
@@ -102,6 +104,7 @@ emptyStats =
     , kernelDefaultedHeapCalls = 0
     , sccFixpointBailouts = 0
     , maxSccIter = 0
+    , lambdaSigMeets = 0
     , capturesForcedOwned = 0
     , nonVarOperandHeapOwnedFresh = 0
     , nonVarOperandHeapBorrowedProducer = 0
@@ -160,15 +163,18 @@ runCensus graph =
         ( byMember, _ ) =
             LssFacts.buildInstances nodes
 
+        ( lambdaSigs, sigMeets ) =
+            buildLambdaSigs table byMember
+
         facts =
             { members = LssFacts.buildMemberTable nodes lssMemberOrigins
-            , lambdaSigsByMember = buildLambdaSigs table byMember
+            , lambdaSigsByMember = lambdaSigs
             , globalIndex = buildGlobalIndex registry
             , sigs = sigLookup table
             }
 
         stats0 =
-            { emptyStats | sccFixpointBailouts = bailouts, maxSccIter = maxIter }
+            { emptyStats | sccFixpointBailouts = bailouts, maxSccIter = maxIter, lambdaSigMeets = sigMeets }
 
         stats1 =
             Array.foldl
@@ -187,30 +193,79 @@ runCensus graph =
 
 
 {-| Per-member lambda signatures (B3.5): analyze one representative instance
-of each (non-blocked) member — LSS_009 makes verbatim instances
-interchangeable — with the converged def SigTable and NO lambda routing
-(lambda→lambda calls conservatively poison; sound v1).
+of each (non-blocked) member, with the converged def SigTable and NO lambda
+routing (lambda→lambda calls conservatively poison; sound v1).
+
+LSS_024 fence (the §7.2 obligation of plans/lss-layout-qualified-members.md,
+amended BORROW_006): the representative's sig speaks for the member ONLY
+when the member's instance population is fingerprint-unanimous
+(`AbiCloning.instanceFingerprint` — verbatim bodies modulo positions and
+supply numbering). Under LSS_024 id sharing, same-id instances can be
+behaviorally DIVERGENT (the E11 class), so "stored sigs equal by
+construction" no longer holds by id identity; a divergent member's stored
+sig is instead the MEET of its per-instance sigs — params any-owned-wins,
+result any-borrowed-wins, the pessimistic corner, sound for whichever clone
+actually flows (same argument as the call-site meet; this is a
+CONSTRUCTION-time definition of the member summary, not the forbidden
+call-site write-back — the def fixpoint has already converged when this
+runs). The fence is UNCONDITIONAL (unlike AbiCloning's flag-gated one):
+Borrow has no byte-identity constraint — census numbers may move, and the
+`bopt=1` artifact change is a soundness fix. Fingerprints are computed only
+for multi-instance members (the lazy discipline); single-instance members —
+the vast majority — pay nothing. Returns the sig table and the count of
+members that took the meet (censused `lambdaSigMeets`).
 -}
-buildLambdaSigs : SigTable -> Dict Int (List LssFacts.LambdaRef) -> Dict Int BorrowSig
+buildLambdaSigs : SigTable -> Dict Int (List LssFacts.LambdaRef) -> ( Dict Int BorrowSig, Int )
 buildLambdaSigs table byMember =
     Dict.foldl
-        (\m refs acc ->
+        (\m refs ( acc, meets ) ->
             case refs of
-                ref :: _ ->
-                    let
-                        da =
-                            C.constrainClosureForSig (mkEnv (sigLookup table) Nothing) ref.closureInfo ref.body C.emptyGen
-
-                        solved =
-                            Solve.solve da.gen.next False da.gen.cs
-                    in
-                    Dict.insert m (readbackSig solved da) acc
-
                 [] ->
-                    acc
+                    ( acc, meets )
+
+                ref :: rest ->
+                    if List.isEmpty rest || fpUnanimousRefs ref rest then
+                        ( Dict.insert m (memberInstanceSig table ref) acc, meets )
+
+                    else
+                        ( Dict.insert m
+                            (List.foldl
+                                (\r s -> LssFacts.meetSig s (memberInstanceSig table r))
+                                (memberInstanceSig table ref)
+                                rest
+                            )
+                            acc
+                        , meets + 1
+                        )
         )
-        Dict.empty
+        ( Dict.empty, 0 )
         byMember
+
+
+{-| One instance's borrow signature against the converged def table.
+-}
+memberInstanceSig : SigTable -> LssFacts.LambdaRef -> BorrowSig
+memberInstanceSig table ref =
+    let
+        da =
+            C.constrainClosureForSig (mkEnv (sigLookup table) Nothing) ref.closureInfo ref.body C.emptyGen
+
+        solved =
+            Solve.solve da.gen.next False da.gen.cs
+    in
+    readbackSig solved da
+
+
+{-| Fingerprint unanimity across a member's instances (rep vs the rest;
+short-circuits on the first mismatch).
+-}
+fpUnanimousRefs : LssFacts.LambdaRef -> List LssFacts.LambdaRef -> Bool
+fpUnanimousRefs ref rest =
+    let
+        fp0 =
+            AbiCloning.instanceFingerprint ref.closureInfo ref.body
+    in
+    List.all (\r -> AbiCloning.instanceFingerprint r.closureInfo r.body == fp0) rest
 
 
 type alias SigTable =
@@ -280,7 +335,7 @@ deriveFacts (Mono.MonoGraph { nodes }) =
                 )
 
         byLambda =
-            Dict.map (\_ sig -> distillSig sig) (buildLambdaSigs table byMember)
+            Dict.map (\_ sig -> distillSig sig) (Tuple.first (buildLambdaSigs table byMember))
     in
     { bySpec = bySpec
     , byLambda = byLambda
@@ -1055,6 +1110,8 @@ renderStats s =
         ++ String.fromInt s.poisonedByClosure
         ++ " closureRouted="
         ++ String.fromInt s.closureRouted
+        ++ " lambdaSigMeets="
+        ++ String.fromInt s.lambdaSigMeets
         ++ " poisonedByErased="
         ++ String.fromInt s.poisonedByErased
         ++ " poisonedByKernel="

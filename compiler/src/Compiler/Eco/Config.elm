@@ -269,9 +269,40 @@ type alias LssConfig =
     -- signature-channel maxSetSize widening rider (`widenedBySigSize`).
     -- Artifact-affecting under keyed routing (signature members reach caller
     -- instantiations → annotations → keys); hash token `lssSF=` when it
-    -- differs from this default. DEFAULT-OFF pending the plan's Phase D
-    -- re-census.
+    -- differs from this default.
+    --
+    -- DEFAULT-ON since 2026-08-21 (the lss-directed-set-flow §8.3 flip,
+    -- re-opened and taken after LSS_024): LSS_023's directed edges made the
+    -- mono wall FLAT (lss-opt Run AC) and LSS_024 removed the runtime
+    -- de-stamp that was the flip's only recorded blocker — with
+    -- layoutQualMembers on, the sigFlow arm BEATS the sf-off baseline on
+    -- fast dispatch (runtime-calls Run AC: coverage 8.34% vs 8.32%,
+    -- +192K fast events; sat+fast invariant). Landed as its own battery
+    -- (never coupled with the layoutQualMembers flip): E2E full,
+    -- elm-tests, Stage-4b/8c bootstrap fixed points, same-corpus rail.
     , sigFlow : Bool
+
+    -- LSS_024 layout-qualified lambda-instance members + the AbiCloning
+    -- fingerprint fence (plans/lss-layout-qualified-members.md): a
+    -- keyed-routed lambda mint qualifies by the enclosing spec's immutable
+    -- annotation-widened creation key (`l|<raw>|<widenedKey>`) instead of its
+    -- SpecId, so annotation-only spec splits mint ONE member id and consumer
+    -- slots stay singletons; AbiCloning representative stamps additionally
+    -- require fingerprint unanimity across the group (`bodyMismatch` decline
+    -- otherwise — the E11 same-layout divergent-clone fence). Artifact-
+    -- affecting under keyed routing (member ids → annotations → keys →
+    -- fan-out); hash token `lssLQ=` when it differs from this default.
+    --
+    -- DEFAULT-ON since 2026-08-21 (the plan's §6.4a flip), on measured
+    -- evidence: runtime-calls Run AC — 100.8% of the 23.5M-event sigFlow
+    -- fast-dispatch gap recovered (coverage 6.10%→8.34%, ABOVE the sf-off
+    -- baseline); lss-opt Run AD — wall FLAT, majors identical; full
+    -- battery + Stage-4b/8c bootstrap fixed points. Recorded flip deltas:
+    -- four HEAD-stamped non-verbatim `Dict.map` multi-groups become
+    -- `bodyMismatch` declines (the fence's soundness rationale), and the
+    -- §7.2 Borrow obligation landed with the flip (BORROW_006 fence in
+    -- `Borrow.buildLambdaSigs`, `lambdaSigMeets` census).
+    , layoutQualMembers : Bool
     }
 
 
@@ -305,7 +336,8 @@ defaultLss =
     , spineArity = False
     , muTie = True
     , groundStandalones = True
-    , sigFlow = False
+    , sigFlow = True
+    , layoutQualMembers = True
     }
 
 
@@ -687,6 +719,7 @@ lssDecoder =
         |> D.apply (D.optionalField "muTie" D.bool defaultLss.muTie)
         |> D.apply (D.optionalField "groundStandalones" D.bool defaultLss.groundStandalones)
         |> D.apply (D.optionalField "sigFlow" D.bool defaultLss.sigFlow)
+        |> D.apply (D.optionalField "layoutQualMembers" D.bool defaultLss.layoutQualMembers)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -970,6 +1003,24 @@ hash cfg =
                     , if lss.sigFlow /= defaultLss.sigFlow then
                         [ "lssSF="
                             ++ (if lss.sigFlow then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- LSS_024 layout-qualified members: artifact-affecting
+                    -- under keyed routing (member ids → annotations → keys →
+                    -- fan-out). Token when non-default, muTie-style, so the
+                    -- default config's hash is stable across an eventual
+                    -- default flip.
+                    , if lss.layoutQualMembers /= defaultLss.layoutQualMembers then
+                        [ "lssLQ="
+                            ++ (if lss.layoutQualMembers then
                                     "1"
 
                                 else

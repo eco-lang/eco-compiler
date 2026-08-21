@@ -1,6 +1,129 @@
 # Instance dedup via layout-qualified member identity (the LSS key-split de-stamp fix)
 
-**Status: PROPOSED (2026-08-21). Not started.** Successor to the
+**Status: COMPLETE (2026-08-21, one day). Landed DEFAULT-OFF; all §6
+criteria MET; the §6.4 flip chain is OPEN — see the flip-chain record at the
+end of this header block.** Headline: runtime-calls Run AC measures the fix
+recovering **100.8%** of the 23.5M-event sigFlow fast gap (coverage 6.10% →
+8.34%, ≥85% required), `sat+fast` invariant to the digit, at mono wall FLAT
+with majors identical (lss-opt Run AD). Two as-built corrections to §2.4
+were forced by the gates and are recorded inline there (positional local
+names; flag-gated fence — with a SOUNDNESS FINDING: HEAD stamps four
+non-verbatim `Dict.map` multi-groups that the fence declines).
+
+**§6.4 flip-chain record — EXECUTED (2026-08-21, user-directed, two
+separate landings per the never-couple rule):**
+
+- **(a) `lss.layoutQualMembers` default-flip — LANDED (Landing 1).** The
+  §7.2 Borrow obligation landed WITH it: `Borrow.buildLambdaSigs` carries
+  the same fingerprint fence (representative sig only for
+  fingerprint-unanimous members; divergent members store the MEET over
+  per-instance sigs — `lambdaSigMeets` censused; BORROW_006 amended;
+  BorrowFenceTest's order-independence pin is the meet witness, 5/5).
+  Battery: unit suite 1,217+5/0 under the new default (MuTieTest and
+  LssSigFlowTest now PIN `layoutQualMembers = False` — they test
+  LSS_018/020/023 mechanisms in isolation); E2E `--target full`
+  1,686/1,686; elm-tests 13,186/12-pre-existing; `--target bootstrap`
+  GREEN including Stage-4b (JS) and Stage-8c (native) fixed points;
+  same-corpus rail: the env-flag leg byte-equals the default leg. The
+  recorded artifact delta (four `Dict.map` bodyMismatch declines) is live
+  by default, as decided.
+- **(b) `lss.sigFlow` default-flip — LANDED (Landing 2, separate
+  battery).** Isolation pins added first (`sigFlow = False` in
+  LayoutQualTest, LssGroundingTest, KernelLicenseTest — they pin
+  LSS_024/019/021/022 mechanisms; LssSigFlowTest already pins per arm).
+  Battery: unit suite 1,217/0 under both defaults on; E2E `--target full`
+  1,686/1,686; elm-tests 13,186/12-pre-existing; `--target bootstrap`
+  GREEN (Stage-4b + Stage-8c fixed points with BOTH flags default-on);
+  same-corpus rail (default vs env `SF=1 LQ=1`) byte-identical. LSS_020's
+  row and lss-directed-set-flow §8.3 record the supersession; the default
+  artifact now carries the root-split family's duplicate specs by design
+  (§6.1), paid back at runtime per Run AC.
+
+**Original §6.4 record (pre-flip):**
+
+- **(a) `lss.layoutQualMembers` default-flip — UNBLOCKED.** §6.1 and §6.2
+  both hold. The flip is its own recorded decision requiring: the full
+  battery + Stage-4b/8c bootstrap fixed points (the K6/§14 standard); the
+  §7.2 Borrow obligation (give `Borrow.buildLambdaSigs` the fingerprint
+  gate or record the constraint in BORROW_006 — under LSS_024 stored sigs
+  are NO LONGER "equal by construction" across a member's instances); and
+  acceptance of the recorded flip-time delta: the four HEAD-stamped
+  non-verbatim `Dict.map` groups become `bodyMismatch` declines (soundness
+  rationale on the fence's side).
+- **(b) `lss.sigFlow` §8.3 flip (plans/lss-directed-set-flow.md) —
+  RE-OPENED.** Its only recorded blocker (the runtime de-stamp) is removed
+  WHEN combined with `layoutQualMembers=1`: the sf+lq arm beats the sf-off
+  baseline on fast events. sigFlow default-on remains a separate decision
+  with its own full battery — never couple the two flips in one landing.
+
+Phase 0 record (stop condition did NOT fire; C+F proceeded as specced): Phase 0 record (census artifacts:
+`/work/lss-p0-census-sigflow-on.stderr` raw, `/work/lss-p0-census.txt`
+control-char-sanitized; one cold sigFlow-on JS-loop self-compile,
+instrumentation added and removed same-day per §3; headline counters
+reproduce the recorded arm exactly — stampedStaged=453, declinedBlocked=8,
+declinedNoInstance=1381):
+
+1. **Slot shape CONFIRMED, count = 6.** With the scanExpr gating bypassed,
+   exactly six `System.TypeCheck.IO.andThen` wrapper sites read PURE
+   same-raw qualified-sibling 2-sets `{Q(L,S1),Q(L,S2)}` whose minting
+   specs are precisely the family split pairs: specs 16373/16375 ←
+   `variableToCanType` {16359,16370} (raws 8910/8903), 15850/15851 ←
+   `variableToErrorType` {15811,15860}, 15825/15826 ← `getVarNames`
+   {15813,15821}. Not LTop — honesty poison is NOT the mechanism. Beyond
+   the six: 44 pure same-raw sibling multi-sets total (List.filter/map
+   callbacks inside foldl/foldrHelper specs, Data.Map.foldl, Task.map,
+   `Utils.filterM`, …) — C recovers more than the solver family. The
+   recorded one-multiSet-line census was the under-count the plan
+   predicted (35 multiSet sites in andThen specs alone).
+2. **ROOT-vs-PROPAGATED split.** The family tops are ROOT splits carried
+   by ONE raw-`l|` signature id (raw 9429, < seed 11559): each pair's
+   stored types differ by that raw id's presence AND by set-vs-LTop slot
+   skeleton — sigFlow fact content, so the 2 specs persist under C. BUT
+   their widened creation keys are EQUAL, so C still merges the IDS their
+   bodies mint — the de-stamped slots become singletons anyway (the
+   runtime win does not need the spec merge). `UnionFind.modify` (10→14)
+   is purely PROPAGATED: all 14 specs share one annotation skeleton and
+   the varying ids are 100% lq-qualified (9 distinct raws) — collapses at
+   creation under C. `UnionFind.get` = 2 layout-differing skeletons, stays.
+3. **μ-tie refutation.** `muTied` is EMPTY (tied=0) on this arm — the
+   record sentence "declinedBlocked +8 = the μ-tie firing" is REFUTED.
+   The 8 blocked declines are RAW-range members 9429 (×7 sites:
+   Compile.typeCheck/typeCheckTyped, Solve.solveGo ×4, getFreshVarName)
+   and 5832 (×1, MonoSolver.Translate.currentMVarEnv) — index-level
+   adoption/wrapper blocking of raw-id closures, nothing to do with
+   LSS_018. §6.1 expectation corrected: declinedBlocked UNCHANGED by the
+   fix; the §2.3 equal-id bypass sizes at ~0 on the self-compile (it
+   remains REQUIRED for spiral termination — the MuTieTest fixture is its
+   population). Also live: `Unify.andThen` spec 16266 reads a same-raw
+   6-set over six Unify.andThen specs — the E11-divergent family that F's
+   fingerprint fence exists to decline.
+
+Original header: **PROPOSED (2026-08-21).**
+
+**Phases 1-2 + §6.1 execution record (2026-08-21, same day).** Substrate
+landed as specced with the two §2.4 as-built corrections (local-name
+positionalization; flag-gated fence — both found by the §4.5 gate, both
+recorded inline in §2.4). Gates, all on the final tree: flag-off `out.mlir`
+BYTE-IDENTICAL (two-binary/frozen-corpus, 13,794,917 B); §5.5 determinism ×2
+byte-identical; E2E `--target full` flag-off 1,686/1,686 AND flag-on
+(`ECO_MONO_LSS_LAYOUT_QUAL=1`, purged per-suite eco-stuff) 1,686/1,686;
+elm-tests 13,181 passed / 12 failed, all 12 the documented pre-existing
+TYPE_007/POST_010/golden-constraint families. Unit pins: 19/19
+(LayoutQualTest + AbiCloningFenceTest + MuTieTest) — including: the spiral
+closes at 2 specs under C ALONE (muTie off, nothing blocked); the §2.3
+equal-id bypass (tieBypass counts, muTied stays empty); budget-twin sharing;
+the E11-shaped bodyMismatch pin; and the fence-off arm reproducing HEAD.
+§6.1 (Run AD, benchmarks/lss-opt.md): wall FLAT (+1.5%), majors IDENTICAL
+(13/13/13); `stampedStaged` 453→457 (the six de-stamped wrapper stamps
+recovered; 4 `Dict.map` stamps fenced; +2 new C-enabled staged stamps);
+`layoutQual: mints=75,237 shared=4,538 fallback=0 tieBypass=0`;
+`bodyMismatch=11`/`abiMismatch=3` on united groups; artifact −23.7 KB vs the
+unfixed sigFlow arm (104 of 242 duplicate instances gone);
+`UnionFind.modify` 14→9 with root splits persisting at 2 — the §0
+propagated/root split exactly as the Phase-0 census classified. JS and
+native artifacts byte-identical on all three arms. `layoutQualMembers`
+remains DEFAULT-OFF pending §6.2 (runtime-calls three-leg acceptance) and
+the §6.4 flip decisions. Successor to the
 `plans/lss-directed-set-flow.md` Phase-E residual chain — the fixed-census
 attribution (runtime-calls.md Run AB final addendum,
 `/work/lss-spec-construction-diff.md`) named this the ONLY remaining lever on
@@ -372,6 +495,27 @@ counter to the shape-decline family). Lazy variant if cost shows up:
 fingerprint only members whose `MemberInfo` holds ≥2 distinct-lambdaId
 instances — the unanimity default for singletons is trivially true.
 
+**AS-BUILT CORRECTION (2026-08-21, found by the §4.5 byte-identity gate):
+"names VERBATIM" above is WRONG for LOCAL names.** The first gate run
+FAILED with exactly −163 `singleton_fast` stamps flag-off: MonoInlineSimplify
+freshens let-bound names in its verbatim inline copies
+(`freshenLetBoundNames` — the very mechanism the inliner-dup-names fix
+installed), so name-verbatim fingerprints false-mismatch every inliner copy.
+As built, LOCAL names (params, let/tail defs, destructors, case
+labels/scrutinees, capture slot names, local references) compare
+POSITIONALLY in first-encounter order — the same device as the own-lambdaId
+numbering; SEMANTIC names (record fields, ctors, globals, kernels,
+accessors) and everything identity-bearing (annotations, member ids,
+SpecIds, CallInfo, literals, decider tests) stay verbatim, so the E11
+discrimination (which lives in annotations/SpecIds) is untouched. Aliasing
+capture-EXPR outer references across copies is sound: captures are
+per-object runtime VALUES loaded from the actual closure object — capture
+LAYOUT unanimity (the existing `abiMismatch` fence) is the gate for those,
+per LSS_009's original license. The lazy variant is also as-built: `fpOf`
+runs only from `joinGroup`'s distinct-lambdaId arm while the group's stamp
+is still live (`unanimous && fpUnanimous`), with the rep's fingerprint
+memoized in `repFp`.
+
 Soundness note for the record: under C the clones' inner qualified ids
 AGREE (same widened key), so verbatim annotation comparison is exact — no
 raw-projection or SpecId-congruence is needed in v1. If Phase-3 measurement
@@ -389,6 +533,30 @@ adopted blockers and μ-tied force-blocks sit above the fence and are
 unchanged. Flag-off, `fpUnanimous` is computed but every group is
 single-instance-dominated exactly as today — byte-identity is the gate that
 proves it (§4).
+
+**AS-BUILT CORRECTION 2 (2026-08-21): the fence is FLAG-GATED, not
+unconditional — the §4.5 gate REFUTED the paragraph above.** After the
+local-name positionalization (correction 1), the byte-identity gate still
+failed by exactly 4 stamps: the default tree holds FOUR multi groups whose
+instances are NOT verbatim, all `Dict.map`-spec staged stamps over
+local-multi callback twins. FPDIAG windows (one-shot diagnostics, added
+and removed same-day): two mismatch classes, both ANNOTATION differences —
+(a) a sibling qualified-member id at the same slot (`A[34133]` vs
+`A[34134]`; textually divergent, possibly-identical-behavior clones — the
+id congruence that could prove them equal is this plan's PARKED v2, not to
+be improvised), and (b) annotation PRECISION on a capture type
+(`A[18467]` vs LTop — one twin carries a proof the other lacks; stamping
+the proven rep for the unproven object is the unlicensed-direct-dispatch
+shape). The fence's declines are doctrinally correct — which means HEAD's
+four stamps rest on an unverified verbatim assumption (LSS_017's
+"unique behavioral instance by construction" does not cover multi-instance
+groups). Landing decision, per this plan's own fail-toward-status-quo
+discipline and §6.3's default-byte-identity requirement: `fpUnanimous` is
+maintained and enforced ONLY under `lss.layoutQualMembers` (threaded as
+`abiCloningPass fpFence`), flag-off keeps HEAD's behavior bit-for-bit, and
+the four sites are a RECORDED FLIP-TIME DELTA: any default flip of the
+flag converts them to `bodyMismatch` declines, with the soundness
+rationale on the fence's side.
 
 ### 2.5 Flag, config, census
 

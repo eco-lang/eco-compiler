@@ -163,6 +163,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\sfVal -> applyLssSigFlowOverride sfVal cfg4e3)
             )
         |> Task.andThen
+            (\cfg4e4 ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_LAYOUT_QUAL" |> Task.mapError never)
+                    |> Task.map (\lqVal -> applyLssLayoutQualOverride lqVal cfg4e4)
+            )
+        |> Task.andThen
             (\cfg4f ->
                 (Utils.envLookupEnv "ECO_SPEC_TYPE_NODE_LIMIT" |> Task.mapError never)
                     |> Task.map (\tnVal -> applySpecTypeNodeLimitOverride tnVal cfg4f)
@@ -1699,6 +1704,29 @@ applyLssSigFlowOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | sigFlow = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_LAYOUT_QUAL=1|true|yes / 0|false|no` (LSS_024): layout-
+qualified lambda-instance members + the AbiCloning fingerprint fence
+(plans/lss-layout-qualified-members.md). Unset or unrecognized leaves the
+config/default value. Artifact-affecting when it differs from the default —
+participates in the hash via the `lssLQ=` token.
+-}
+applyLssLayoutQualOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssLayoutQualOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | layoutQualMembers = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | layoutQualMembers = False }) cfg
 
             else
                 cfg

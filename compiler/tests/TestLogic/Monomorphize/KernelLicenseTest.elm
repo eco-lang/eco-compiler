@@ -604,7 +604,10 @@ run srcModule =
         Config.defaultLimits
         -- The license is DEFAULT-PATH behaviour: no flag arm exists. `keyed`
         -- is what stores annotated demands in the registry at all.
-        { defaults | enabled = True, keyed = True }
+        -- sigFlow PINNED OFF: LSS_021/022 kernel-boundary pins in isolation —
+        -- the LSS_023 tunnel selector changes boundary behavior under sigFlow
+        -- (default-on since 2026-08-21).
+        { defaults | enabled = True, keyed = True, sigFlow = False }
         srcModule
 
 

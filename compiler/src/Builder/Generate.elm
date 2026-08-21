@@ -963,7 +963,7 @@ runGlobalOptPhase mapTemplateCfg lssReport listReport borrowCfg cafMemo cseCfg s
         FEStats.PhaseGlobalOpt
         (let
             ( goGraph, goStats ) =
-                MonoGlobalOptimize.globalOptimizeWithStats borrowCfg simplifiedGraph
+                MonoGlobalOptimize.globalOptimizeWithStats mapTemplateCfg.mono.lss.layoutQualMembers borrowCfg simplifiedGraph
 
             -- kernel-opt-13 C2: bounded-scope CSE of pure calls. Runs HERE,
             -- post-annotation, because it adds MonoLet bindings and
@@ -1140,6 +1140,8 @@ runGlobalOptPhase mapTemplateCfg lssReport listReport borrowCfg cafMemo cseCfg s
                                     ++ String.fromInt goStats.abiCloning.declinedShapeNonArrow
                                     ++ ") declinedAbiMismatch="
                                     ++ String.fromInt goStats.abiCloning.declinedAbiMismatch
+                                    ++ " declinedBodyMismatch="
+                                    ++ String.fromInt goStats.abiCloning.declinedBodyMismatch
                                     ++ " multiInstanceGroups="
                                     ++ String.fromInt goStats.abiCloning.multiInstanceGroups
                                     ++ " stampedWrapperInstances="
@@ -1215,29 +1217,30 @@ abiCensusLines abi =
                 |> String.join " "
     in
     String.join "\n"
-        [ "lss census declineByMember top20 (member:count:repSyms): " ++ declineTop
-        , "lss census multiSetSites |set|->sites: "
-            ++ (if String.isEmpty multiHist then
-                    "(none)"
+        ([ "lss census declineByMember top20 (member:count:repSyms): " ++ declineTop
+               , "lss census multiSetSites |set|->sites: "
+                    ++ (if String.isEmpty multiHist then
+                            "(none)"
 
-                else
-                    multiHist
-               )
-        , "lss census multiSetMembers top12 (member:count:repSyms): "
-            ++ (if String.isEmpty multiTop then
-                    "(none)"
+                        else
+                            multiHist
+                       )
+               , "lss census multiSetMembers top12 (member:count:repSyms): "
+                    ++ (if String.isEmpty multiTop then
+                            "(none)"
 
-                else
-                    multiTop
-               )
-        , "lss census topSiteShapes (LTop callee shapes): "
-            ++ (if String.isEmpty shapes then
-                    "(none)"
+                        else
+                            multiTop
+                       )
+               , "lss census topSiteShapes (LTop callee shapes): "
+                    ++ (if String.isEmpty shapes then
+                            "(none)"
 
-                else
-                    shapes
-               )
-        ]
+                        else
+                            shapes
+                       )
+               ]
+        )
 
 
 {-| Stream MLIR output directly to a file, avoiding holding the full text in memory.

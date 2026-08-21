@@ -162,7 +162,11 @@ run muTie =
         Config.defaultLimits
         -- keyed = True (the shipping default) is what routes the mints
         -- through fork qualification in the first place.
-        { defaults | enabled = True, keyed = True, muTie = muTie }
+        -- layoutQualMembers PINNED OFF: this fixture tests LSS_018's tie in
+        -- ISOLATION — under LSS_024 (default-on since 2026-08-21) C alone
+        -- closes the spiral and the flag-off arm's fan-out-to-budget
+        -- expectation would be vacuous (LayoutQualTest pins the C arms).
+        { defaults | enabled = True, keyed = True, muTie = muTie, layoutQualMembers = False }
         spiralModule
         |> Result.map factsOf
 

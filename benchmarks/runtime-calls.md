@@ -1729,3 +1729,35 @@ representative-hijack arc proves same-layout annotation-only clones can
 diverge behaviorally, so id re-sharing without a body-identity fence would
 re-arm a recorded SIGSEGV). Acceptance criteria and the sigFlow flip
 re-open chain are recorded in that plan's §6.
+
+### Run AC — LSS_024 layout-qualified members: the sigFlow de-stamp RECOVERED (2026-08-21): **fix-on fast 88.14M vs baseline 87.95M — 100.8% of the 23.5M gap, coverage 6.10% → 8.34%**
+
+Three counters-lowered builds on one tree (`ECO_LSS_DISPATCH_SITE_COUNTERS=1`
++ the arm's build flags; Stage-5/6 products deleted per arm — env vars are
+not ninja inputs, and a first battery that skipped this produced three
+identical default binaries, `fast=0`, the tell), each running the cold SUBST
+workload with `ECO_DISPATCH_STATS=1`:
+
+| build arm | sat | gen | typed | fast | sat+fast | coverage |
+|---|---|---|---|---|---|---|
+| default (sf-off) | 968,556,147 | 938,499,219 | 30,056,928 | 87,951,365 | 1,056,507,512 | 8.32% |
+| `ECO_MONO_LSS_SIG_FLOW=1` | 992,069,960 | 962,013,027 | 30,056,933 | 64,437,628 | 1,056,507,588 | 6.10% |
+| `SIG_FLOW=1 LAYOUT_QUAL=1` | 968,363,715 | 938,306,787 | 30,056,928 | 88,143,797 | 1,056,507,512 | 8.34% |
+
+The sigFlow de-stamp reproduces at −23,513,737 fast events; the fix restores
++23,706,169 = **100.8% of the gap** (plan §6.2 acceptance ≥85%), landing
+ABOVE the sf-off baseline (+192K — the C-enabled extra stamps).
+`sat+fast` invariant to the digit on the fixed arm (the sf arm's +76 is
+noise-level). Restored per-fp multiset: 14.19M + 5.36M + 2.81M + 0.59M +
+0.37M + tail = 23.7M — the solver-callback family (count-matched; Phase-0
+mono census pinned the six sites to `variableToCanType`/`variableToErrorType`
+/`getVarNames` by spec attribution; the symbols are shared-bucket
+`Terminal_Main_lambda_*$cap` names, so identification is by count, per the
+symbol-aliasing discipline). Workload rail: the three legs' `out.mlir`
+byte-identical. Walls (census-on): 4:31.31 / 4:24.90 / 4:27.11 — flat.
+Insurance: the `LAYOUT_QUAL=1`-built binary self-compiled to completion
+under `ECO_HEAP_VALIDATE=1` (normal exit, zero validation/corruption hits,
+default-flag artifact byte-size exact). Mono-side A/B and gates:
+benchmarks/lss-opt.md Run AD + the plan's execution record.
+`lss.layoutQualMembers` stays DEFAULT-OFF; this run satisfies the plan's
+§6.2 criterion and re-opens the §6.4 flip chain.

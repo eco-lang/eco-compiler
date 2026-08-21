@@ -235,6 +235,13 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         -- `deferred` is the residual-arrow precision frontier.
         , "grounding: grounded=" ++ String.fromInt stats.grounding.grounded ++ " deferred=" ++ String.fromInt stats.grounding.deferred
 
+        -- LSS_024 layout-qualification census
+        -- (plans/lss-layout-qualified-members.md §2.5): `shared` = id reuse
+        -- across distinct enclosing specs (the fix working), `fallback` =
+        -- mints with no captured widened key (expected 0), `tieBypass` =
+        -- §2.3 equal-id μ-tie bypasses. All 0 flag-off.
+        , "layoutQual: mints=" ++ String.fromInt stats.layoutQual.mints ++ " shared=" ++ String.fromInt stats.layoutQual.shared ++ " fallback=" ++ String.fromInt stats.layoutQual.fallback ++ " tieBypass=" ++ String.fromInt stats.layoutQual.tieBypass
+
         -- LSS_020 signature-flow census
         -- (plans/lss-fidelity-3-signature-flow-completion.md §B.4):
         -- widenedByCf/kernelFactHits/kernelLicensed are report-gated bumps,
@@ -363,12 +370,28 @@ seedSpec global monoType s =
     let
         ( specId, reg1 ) =
             Registry.getOrCreateSpecId global monoType s.registry
+
+        -- LSS_024 §2.2: entry-seeded specs are keyed-ROUTED under the
+        -- all-keyed default (the routing predicate is per-mint, not
+        -- per-creation-path), so their bodies' lambda mints consult
+        -- `specWidenedKeys` — capture here too, or every entry-global lambda
+        -- takes the SpecId fallback and "fallback expected 0" is false by
+        -- construction. One pure widenSets for the 1-2 seeded specs; the
+        -- flags-decoder seed arrives through this same function.
+        s1 =
+            if s.env.lss.enabled && s.env.lss.layoutQualMembers then
+                Engine.recordSpecWidenedKey specId
+                    (Mono.toComparableMonoType (Mono.widenSets monoType))
+                    s
+
+            else
+                s
     in
     ( specId
-    , { s
+    , { s1
         | registry = reg1
-        , worklist = SpecializeGlobal specId :: s.worklist
-        , scheduled = BitSet.insertGrowing specId s.scheduled
+        , worklist = SpecializeGlobal specId :: s1.worklist
+        , scheduled = BitSet.insertGrowing specId s1.scheduled
       }
     )
 

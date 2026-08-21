@@ -310,7 +310,9 @@ run ground =
     in
     Pipeline.runSolverMonoWithLimits
         Config.defaultLimits
-        { defaults | enabled = True, keyed = True, groundStandalones = ground }
+        -- sigFlow PINNED OFF: LSS_019 grounding pins in isolation from the
+        -- sigFlow default flip (2026-08-21).
+        { defaults | enabled = True, keyed = True, groundStandalones = ground, sigFlow = False }
         twoLayoutModule
         |> Result.map factsOf
 

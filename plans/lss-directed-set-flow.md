@@ -724,14 +724,33 @@ sharing needs a verbatim-body fence, not layout checks). If its Phase-3
 acceptance holds, its §6.4b re-opens THIS plan's §8.3 flip decision as a
 separate recorded decision.
 
-**Decision per §8.3: the flip stays CLOSED.** `lss.sigFlow` remains
-DEFAULT-OFF. The directed mechanism ships DORMANT as the strictly-better
-substrate — same precision, no analysis-wall cost, half the runtime regression
-— and the fidelity-3 Phase-D blocker is now HALF-discharged with the remaining
-half precisely characterised. Next levers, in order and recorded rather than
-improvised: (1) per-fp census diff (`dispatch-census.sh` over both Run-AB
-logs) to NAME the reshuffled hot sites; (2) Phase H per-use let separation
+**Decision per §8.3, superseded 2026-08-21 (same day, later): FLIPPED.**
+The original decision (kept below for the record) closed the flip on the
+runtime de-stamp residual. That residual was then fixed the same day by
+`plans/lss-layout-qualified-members.md` (LSS_024: 100.8% of the 23.5M-event
+fast gap recovered — runtime-calls Run AC; wall FLAT, majors identical —
+lss-opt Run AD), its §6.4b re-opened this decision as recorded, and the
+user directed both flips. `lss.sigFlow` is DEFAULT-ON since 2026-08-21,
+landed as its OWN battery after (never coupled with) the
+`layoutQualMembers` flip: E2E `--target full` 1,686/1,686, elm-tests
+pre-existing-12 only, `--target bootstrap` green including Stage-4b (JS)
+and Stage-8c (native) fixed points, same-corpus env-flag rail
+byte-identical. With both flags on, the sigFlow arm BEATS the sf-off
+baseline on fast dispatch (8.34% vs 8.32% coverage, +192K events,
+sat+fast invariant to the digit). Of the two next levers recorded below,
+(1) ran (the fixed per-fp census named the sites — see the LSS_024 plan's
+Phase-0 record) and (2) is now planned census-first as
+`plans/lss-per-use-let-separation.md`.
+
+*Original decision (2026-08-21, earlier — superseded above):* the flip
+stays CLOSED; `lss.sigFlow` remains DEFAULT-OFF. The directed mechanism
+ships DORMANT as the strictly-better substrate — same precision, no
+analysis-wall cost, half the runtime regression — and the fidelity-3
+Phase-D blocker is now HALF-discharged with the remaining half precisely
+characterised. Next levers, in order and recorded rather than improvised:
+(1) per-fp census diff (`dispatch-census.sh` over both Run-AB logs) to
+NAME the reshuffled hot sites; (2) Phase H per-use let separation
 (`joinLetUse` stayed union-over-uses, the largest kept-symmetric channel).
 
-Status: **IMPLEMENTED IN FULL (Phases A-E); flip decision recorded: not
-flipped.**
+Status: **IMPLEMENTED IN FULL (Phases A-E); flip decision: FLIPPED
+2026-08-21 (superseding the same-day not-flipped record).**

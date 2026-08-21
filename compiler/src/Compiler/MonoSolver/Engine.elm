@@ -15,7 +15,7 @@ module Compiler.MonoSolver.Engine exposing
     , mvarIdKey, pointKey, isScalarVar
     , memberIdFor, standaloneMemberIdFor, standaloneMemberGlobal, kernelMemberIdFor, standaloneMemberKernel, srcLambdaKey, trivialSignature, emptyLssStats
     , lambdaInstanceMemberId, lambdaInstanceMemberMaybe
-    , GroundingStats, internMemberKey, groundStandaloneMemberIdFor, groundSetMembers
+    , GroundingStats, internMemberKey, groundStandaloneMemberIdFor, groundSetMembers, recordSpecWidenedKey, layoutQualKey
     , LssMemberTable, MemberSource(..), emptyMemberTable
     , bumpWidenedByKernel, bumpWidenedBySigSize, bumpWidenedByCf, bumpKernelFactHit, bumpKernelLicensed, bumpEdgeInstalled, bumpFlowDegraded, bumpCompletionJoin, bumpCompletionJoinNoop, withScratchStore
     , SigFlowStats
@@ -154,6 +154,22 @@ type alias LssStats =
     , slotsMinted : Int -- Phase 3 rider: unconstrained FunL slot mints in loadTypeC (LSS_006 population; demand-encoded slots excluded by design — they are born written). Sizes Phase 5's dead-slot case against writes/zonk-visits.
     , grounding : GroundingStats -- LSS_019 census (plans/lss-fidelity-2-standalone-member-grounding.md §5); sub-record to stay clear of the 32-slot record GC-scan cap
     , sigStats : SigFlowStats -- LSS_020 signature-flow census (plans/lss-fidelity-3-signature-flow-completion.md §B.4); sub-record per the same 32-slot rationale
+    , layoutQual : LayoutQualStats -- LSS_024 census (plans/lss-layout-qualified-members.md §2.5); NESTED per the same 32-slot rationale (LssStats sits at 31 slots with this field)
+    }
+
+
+{-| LSS_024 layout-qualification census: `mints` counts layout-qualified
+lambda mints, `shared` counts id reuse across DISTINCT enclosing specs (the
+fix working — detected via `lambdaQualified`'s first-minter payload, so it
+under-counts when `lss.muTie` is off), `fallback` counts mints whose spec had
+no captured widened key (fell back to SpecId qualification — expected 0),
+`tieBypass` counts §2.3 equal-id μ-tie bypasses. Stats only.
+-}
+type alias LayoutQualStats =
+    { mints : Int
+    , shared : Int
+    , fallback : Int
+    , tieBypass : Int
     }
 
 
@@ -227,9 +243,10 @@ self-compile.
 type alias LssMemberTable =
     { byKey : CoreDict.Dict String Int
     , sources : CoreDict.Dict Int MemberSource
-    , lambdaQualified : CoreDict.Dict Int ( Int, Int ) -- LSS_018: qualified mid -> (raw lambda id, minting SpecId); written at the Q(L,S) intern
+    , lambdaQualified : CoreDict.Dict Int ( Int, Int ) -- LSS_018: qualified mid -> (raw lambda id, FIRST-minting SpecId — first-mint-wins; under LSS_024 layout qualification several specs share one mid, so the payload is diagnostics only); written at the qualified intern
     , muTied : CoreDict.Dict Int () -- LSS_018: member ids ever the target of a μ-tie — exported as MonoGraph.lssBlockedMembers (AbiCloning force-blocks them)
     , provisionalStandalone : CoreDict.Dict Int TOpt.Global -- LSS_019: ids minted by standaloneMemberIdFor with a "g|"/"c|" key (NOT kernel-alias-folded, NOT ground). Written at the same intern site; the zonk grounding rewrite consults this to decide "rewrite" vs "pass through". Ground ids are NEVER in this dict — that is what makes grounding idempotent.
+    , specWidenedKeys : CoreDict.Dict Int String -- LSS_024: SpecId -> the IMMUTABLE annotation-widened creation key (toComparableMonoType of widenSets keyType), captured write-once at spec creation (enqueueSpecKeyed / seedSpec — §2.2 of plans/lss-layout-qualified-members.md). Qualifies lambda mints under lss.layoutQualMembers; a missing entry falls back to SpecId qualification (censused, expected 0).
     }
 
 
@@ -264,7 +281,7 @@ emptyMonoMemo =
 
 emptyMemberTable : LssMemberTable
 emptyMemberTable =
-    { byKey = CoreDict.empty, sources = CoreDict.empty, lambdaQualified = CoreDict.empty, muTied = CoreDict.empty, provisionalStandalone = CoreDict.empty }
+    { byKey = CoreDict.empty, sources = CoreDict.empty, lambdaQualified = CoreDict.empty, muTied = CoreDict.empty, provisionalStandalone = CoreDict.empty, specWidenedKeys = CoreDict.empty }
 
 
 insertMemberKey : String -> Int -> LssMemberTable -> LssMemberTable
@@ -289,7 +306,7 @@ insertMemberProvisional mid g t =
 
 emptyLssStats : LssStats
 emptyLssStats =
-    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0, edgesInstalled = 0, flowDegraded = 0 } }
+    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0, edgesInstalled = 0, flowDegraded = 0 }, layoutQual = { mints = 0, shared = 0, fallback = 0, tieBypass = 0 } }
 
 
 {-| The all-defaults signature for an annotation with `n` arrows.
@@ -361,6 +378,13 @@ lambdaInstanceMemberId lamId s0 =
         else
             case s0.itemAux.currentSpecId of
                 Just specId ->
+                    if s0.env.lss.layoutQualMembers then
+                        -- LSS_024: layout-qualified identity, with the §2.3
+                        -- equal-id μ-tie bypass — see
+                        -- `lambdaMemberLayoutQualified`.
+                        lambdaMemberLayoutQualified raw specId s0
+
+                    else
                     -- LSS_018 μ-tie: if this spec's own STORED demand already
                     -- carries a qualified member of the same raw lambda, the
                     -- value being minted IS the value that arrived in the
@@ -413,6 +437,153 @@ mintQualifiedLambda raw specId s0 =
 
             else
                 Ok ( mid, { s1 | lssMemberTable = { table | lambdaQualified = CoreDict.insert mid ( raw, specId ) table.lambdaQualified } } )
+
+
+{-| LSS_024 (lss.layoutQualMembers): the layout-qualified mint. The member id
+for a keyed-routed lambda instance is `l|<raw>|<widenedKey>` where
+`widenedKey` is the enclosing spec's IMMUTABLE annotation-widened creation
+key (captured write-once at spec creation — `specWidenedKeys`, §2.2 of
+plans/lss-layout-qualified-members.md). Annotation-only spec splits render
+EQUAL widened keys, so their clones intern ONE id and consumer slots stay
+singletons; layout-differing specs stay distinct. A mint whose spec has no
+captured key falls back to TODAY'S SpecId qualification (fail toward the
+status quo, never toward raw ids) and bumps `layoutQual.fallback`
+(expected 0). Fallback-vs-widened collisions are impossible: every
+`toComparableMonoType` rendering starts with a letter code, which a
+bare-integer SpecId suffix never equals.
+
+The μ-tie (LSS_018) interplay is load-bearing (plan §2.3): under layout
+qualification the demand-carried id of a same-layout sibling EQUALS the id
+this mint would intern, and an unmodified tie would record it μ-tied and
+force-block the very stamps the plan recovers. So: when the demand-carried
+id equals the id this mint's key already interned, take the plain mint path
+and record NOTHING in `muTied` (censused as `layoutQual.tieBypass`); only a
+tie to a DIFFERENT id — the genuinely-divergent recursive class — ties,
+records, and blocks exactly as before, preserving LSS_018's
+spiral-termination role (layout qualification strictly reduces id fan-out:
+a generation-2 spiral spec is an annotation-only split of generation 1, so
+its widened key is equal and the mint re-interns the same string).
+-}
+lambdaMemberLayoutQualified : Int -> Int -> Step Int
+lambdaMemberLayoutQualified raw specId s0 =
+    let
+        ( key, isFallback ) =
+            layoutQualKey s0.lssMemberTable.specWidenedKeys raw specId
+    in
+    case CoreDict.get raw s0.itemAux.demandQualified of
+        Just tiedId ->
+            if CoreDict.get key s0.lssMemberTable.byKey == Just tiedId then
+                mintLayoutQualified key raw specId isFallback True s0
+
+            else
+                Ok ( tiedId, recordMuTied tiedId s0 )
+
+        Nothing ->
+            mintLayoutQualified key raw specId isFallback False s0
+
+
+{-| LSS_024: the key a layout-qualified mint interns — `l|<raw>|<widenedKey>`
+when the enclosing spec's creation key was captured, the SpecId FALLBACK
+`l|<raw>|<specId>` otherwise (True in the second component). Pure — exposed
+for the §5.1 unit pins.
+-}
+layoutQualKey : CoreDict.Dict Int String -> Int -> Int -> ( String, Bool )
+layoutQualKey specWidenedKeys raw specId =
+    case CoreDict.get specId specWidenedKeys of
+        Just wkey ->
+            ( "l|" ++ String.fromInt raw ++ "|" ++ wkey, False )
+
+        Nothing ->
+            ( "l|" ++ String.fromInt raw ++ "|" ++ String.fromInt specId, True )
+
+
+{-| The LSS_024 intern + census tail: interns `key`, records the LSS_018
+`lambdaQualified` reverse entry exactly like `mintQualifiedLambda`
+(first-mint-wins — under LSS_024 several specs share one mid, so the payload
+is the FIRST-minting spec, diagnostics only), and bumps the `layoutQual`
+counters. `shared` bumps on a mint whose id's first minter was a DIFFERENT
+spec — id reuse across enclosing specs, the fix working (read from
+`lambdaQualified`, so it under-counts when `lss.muTie` is off).
+-}
+mintLayoutQualified : String -> Int -> Int -> Bool -> Bool -> Step Int
+mintLayoutQualified key raw specId isFallback isTieBypass s0 =
+    case memberIdFor key s0 of
+        Err e ->
+            Err e
+
+        Ok ( mid, s1 ) ->
+            let
+                sharedInc =
+                    case CoreDict.get mid s1.lssMemberTable.lambdaQualified of
+                        Just ( _, firstSpec ) ->
+                            if firstSpec /= specId then
+                                1
+
+                            else
+                                0
+
+                        Nothing ->
+                            0
+
+                stats =
+                    s1.lssStats
+
+                lq =
+                    stats.layoutQual
+
+                s2 =
+                    { s1
+                        | lssStats =
+                            { stats
+                                | layoutQual =
+                                    { mints = lq.mints + 1
+                                    , shared = lq.shared + sharedInc
+                                    , fallback =
+                                        lq.fallback
+                                            + (if isFallback then
+                                                1
+
+                                               else
+                                                0
+                                              )
+                                    , tieBypass =
+                                        lq.tieBypass
+                                            + (if isTieBypass then
+                                                1
+
+                                               else
+                                                0
+                                              )
+                                    }
+                            }
+                    }
+
+                table =
+                    s2.lssMemberTable
+            in
+            if not s2.env.lss.muTie || CoreDict.member mid table.lambdaQualified then
+                Ok ( mid, s2 )
+
+            else
+                Ok ( mid, { s2 | lssMemberTable = { table | lambdaQualified = CoreDict.insert mid ( raw, specId ) table.lambdaQualified } } )
+
+
+{-| LSS_024 §2.2: capture a just-created spec's annotation-widened creation
+key. Write-once and idempotent (SpecIds are create-once; LSS_010
+re-translations re-read the same immutable entry). K6 discipline: the table
+is only written back when it actually grew.
+-}
+recordSpecWidenedKey : Int -> String -> S -> S
+recordSpecWidenedKey specId wkey s =
+    let
+        table =
+            s.lssMemberTable
+    in
+    if CoreDict.member specId table.specWidenedKeys then
+        s
+
+    else
+        { s | lssMemberTable = { table | specWidenedKeys = CoreDict.insert specId wkey table.specWidenedKeys } }
 
 
 {-| LSS_018: record a member id as μ-tied (idempotent). The set is exported
@@ -1429,18 +1600,31 @@ enqueueSpecKeyed global monoType s0 =
         underBudget =
             count < s0.env.lss.maxSpecsPerGlobal
 
-        ( ( specId, reg1, hit ), sProbe ) =
-            if underBudget then
-                ( Registry.getOrCreateSpecIdKeyed global monoType monoType s0.registry, s0 )
-
-            else
-                -- K6: hash-cons the budget-widened key (see `enqueueSpec`).
+        -- LSS_024 §2.2: the annotation-widened key is needed on the
+        -- over-budget arm (it IS the dedup key there — today's behavior)
+        -- and, flag-on, on the under-budget arm too (the capture probe —
+        -- the under-budget create path is exactly the sigFlow-split
+        -- population). Built at most once, K6 hash-consed; the flag-off
+        -- under-budget path skips it entirely (byte-identical).
+        ( maybeWidened, sPre ) =
+            if not underBudget || s0.env.lss.layoutQualMembers then
                 let
                     ( keyType, intern1 ) =
                         Intern.widenSets monoType s0.intern
                 in
-                ( Registry.getOrCreateSpecIdKeyed global keyType monoType s0.registry
-                , withIntern intern1 s0
+                ( Just keyType, withIntern intern1 s0 )
+
+            else
+                ( Nothing, s0 )
+
+        ( ( specId, reg1, hit ), sProbe ) =
+            if underBudget then
+                ( Registry.getOrCreateSpecIdKeyed global monoType monoType sPre.registry, sPre )
+
+            else
+                -- K6: hash-cons the budget-widened key (see `enqueueSpec`).
+                ( Registry.getOrCreateSpecIdKeyed global (Maybe.withDefault monoType maybeWidened) monoType sPre.registry
+                , sPre
                 )
 
         storedChanged =
@@ -1471,11 +1655,23 @@ enqueueSpecKeyed global monoType s0 =
                     else
                         { stats0 | widenedByBudget = stats0.widenedByBudget + 1 }
             }
+
+        -- LSS_024 §2.2: capture the widened creation key for a just-CREATED
+        -- spec, write-once. Both arms record (widenSets is idempotent, so
+        -- budget-widened and annotation-created twins of one global land
+        -- EQUAL widened keys — their lambdas share, per the plan's §5 pins).
+        s2 =
+            case ( created && s.env.lss.layoutQualMembers, maybeWidened ) of
+                ( True, Just keyType ) ->
+                    recordSpecWidenedKey specId (Mono.toComparableMonoType keyType) s1
+
+                _ ->
+                    s1
     in
     -- MONO_030: watchdogs on the created path only (probe hits never check).
     case
         (if created then
-            checkSpecWatchdogs global monoType reg1 s1
+            checkSpecWatchdogs global monoType reg1 s2
 
          else
             Nothing
@@ -1487,7 +1683,7 @@ enqueueSpecKeyed global monoType s0 =
         Nothing ->
             -- LSS_010 dirty machinery on a changed join — mark only; the
             -- drain-end flush re-pushes.
-            enqueueSpecCommit specId s1.registry storedChanged s1
+            enqueueSpecCommit specId s2.registry storedChanged s2
 
 
 

@@ -230,7 +230,7 @@ suite =
                 in
                 case
                     Pipeline.runSolverMonoWithReport Config.defaultLimits
-                        { defaults | enabled = True, keyed = True, sigFlow = True, maxSetSize = 1 }
+                        { defaults | enabled = True, keyed = True, sigFlow = True, maxSetSize = 1, layoutQualMembers = False }
                         mk2Module
                 of
                     Err msg ->
@@ -302,7 +302,7 @@ suite =
                 in
                 case
                     Pipeline.runSolverMonoWithReport Config.defaultLimits
-                        { defaults | enabled = True, keyed = True, sigFlow = True }
+                        { defaults | enabled = True, keyed = True, sigFlow = True, layoutQualMembers = False }
                         choosePairModule
                 of
                     Err msg ->
@@ -394,8 +394,10 @@ run sigFlow srcModule =
     Pipeline.runSolverMonoWithLimits
         Config.defaultLimits
         -- keyed = True (the shipping default) is what stores annotated
-        -- demands in the registry in the first place.
-        { defaults | enabled = True, keyed = True, sigFlow = sigFlow }
+        -- demands in the registry in the first place. layoutQualMembers
+        -- PINNED OFF: these fixtures pin LSS_020/023 mechanisms in
+        -- isolation from LSS_024's id sharing (default-on since 2026-08-21).
+        { defaults | enabled = True, keyed = True, sigFlow = sigFlow, layoutQualMembers = False }
         srcModule
 
 

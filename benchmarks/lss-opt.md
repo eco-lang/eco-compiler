@@ -948,6 +948,27 @@ DEFAULT-OFF pending that gate.
 
 ---
 
+### 2026-08-21 — Run AD: LSS_024 layout-qualified members + fingerprint fence (A/B on `lss.layoutQualMembers`, both arms `lss.sigFlow=1`)
+
+| arm | Wall (s) | Max RSS (kB) | Minor GCs | Major GCs | Promoted (MB) | `out.mlir` (B) | stampedStaged | layoutQual |
+|---|---|---|---|---|---|---|---|---|
+| sf-off reference | 343.1 | 6,381,688 | 1,424 | 13 | 14,244 | 13,794,917 | 459 | inert |
+| sigFlow-on, fix OFF | 343.3 | 6,384,196 | 1,445 | 13 | 14,291 | 13,825,013 | 453 | inert |
+| sigFlow-on, fix ON | 348.4 | 6,428,544 | 1,454 | 13 | 14,369 | 13,801,325 | 457 | mints=75,237 shared=4,538 fallback=0 tieBypass=0 |
+
+Fix-on vs fix-off: wall +1.5% — FLAT; majors IDENTICAL (13 all arms), minors +0.6%.
+`stampedStaged` recovers the full sigFlow de-stamp (453→457 = −6 recovered, −4
+fenced `Dict.map` staged stamps + 2 new C-enabled staged stamps; `declinedBodyMismatch`
+0→11 and `declinedAbiMismatch` 0→3 on united groups — each a fenced E11-class hazard).
+Artifact: the fix removes 104 of sigFlow's 242 duplicate instances (−23.7 KB);
+canonical per-role diff: `UnionFind.modify` 14→9 (propagated splits collapse, one
+BELOW the sf-off baseline of 10), root splits (`variableToCanType` family, raw-id
+9429-carried) persist at 2 by design. Flag-off `out.mlir` byte-identical to the
+pre-change binary's (two-binary/frozen-corpus gate) and JS/native artifacts
+byte-identical on all three arms. Flag DEFAULT-OFF; plan
+`plans/lss-layout-qualified-members.md` (Phase-0 census + two as-built corrections
+recorded there).
+
 ## Summary
 
 One row per run, numbers only.
@@ -983,3 +1004,4 @@ One row per run, numbers only.
 | AA | 323.5 | 1366 | 13 | 13565 |
 | AB | 331.1 | 1385 | 13 | 13547 |
 | AC | 328.4 | 1425 | 13 | 14006 |
+| AD | 348.4 | 1454 | 13 | 14369 |
