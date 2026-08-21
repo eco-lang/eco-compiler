@@ -1,6 +1,6 @@
 # LSS Directed Set Flow — deferred inclusion between set positions (the fired FromArrow re-open)
 
-**Status: PLAN (2026-08-20; lowered from the same-day outline to implementation-ready
+**Status: IMPLEMENTED (2026-08-20/21, Phases A-E; `lss.sigFlow` stays DEFAULT-OFF per the Phase-E decision — see the execution record). Originally: PLAN (2026-08-20; lowered from the same-day outline to implementation-ready
 detail and adversarially verified against HEAD — §0 records where this lowering
 SUPERSEDES the outline, and the verification round's corrections are folded in).**
 Successor to `plans/lss-fidelity-3-signature-flow-completion.md` §A.2 + Phase D: the
@@ -552,3 +552,186 @@ paramArrowAnnos t =
 - **LSS_013 spine-injection interplay:** member writes into `LsFrom` slots
   union into the members field, sources untouched (§2.3 item 1) — spine
   semantics unchanged; no LSS_013 amendment.
+
+---
+
+# EXECUTION RECORD — Phases A-D (2026-08-20)
+
+**Invariant-id correction:** the plan reserved "LSS_022 (verified next free id)";
+that id was taken the same day by the kernel parametricity license
+(`plans/kernel-parametricity-license.md`), so this plan's invariant is
+**LSS_023**. LSS_007/LSS_020/LSS_021 amendments landed as §6 specified.
+
+## Phase A — representation (byte-inert, verified)
+
+`LsFrom (List Int) (List Variable)` + `IO.pointKey`; the Unify 2×2 became 3×3
+exactly as predicted (compile-forced; class merges MERGE edge lists, deduped by
+`IO.pointKey`); `unifySlotWithSetC` gained its MANDATORY explicit arm (member
+writes union into `members`, sources untouched — the LSS_013 interplay; ⊤ drops
+sources); `zonkSetSlot` gained the pull-at-read arm + `resolveSlotMembers`
+(entry-marked DFS, fresh visited per read, no write-back); `addSlotSource`
+(descriptor-preserving, self-edge skip, pointKey dedupe, defensive-arm-to-⊤).
+Comment retirements in IO/Occurs/Solve landed; the §2.3 census reconciled (8
+files, LssInfer's remaining match being the Phase-B site). Gates: E2E
+1685/1685, elm-tests same 12, six fixed probes BYTE-IDENTICAL against the
+pre-change baseline.
+
+## Phase B — signature channel
+
+`ArrowFact.sources` (all five constructors compile-forced through a
+`Result`-shaped fact split in `zonkSigGo`), trivial predicate extended,
+`sigResolveEdges` promote-or-internalize (with `ordinalOf` scanning ALL
+ordinals, unlike `repOrdinal`'s below-i scan), `finishSigFact` applying the B.4
+cap to the RESOLVED list with sources dropped on ⊤, `applyFactsGo` →
+`installSources` installing deferred edges per source ordinal. One deviation
+from §3.2's sketch, recorded: rep-equal ordinals are NOT filtered from
+`sources` at fact creation — `addSlotSource`'s UF-equivalence skip at the
+CALLER makes such an edge a no-op after the rep link unifies the slots, which
+is the same outcome with less machinery. Gates: probes byte-identical flag-off;
+flag-on smoke shows the symmetric channel live (25 nontrivial signatures on the
+Wide probe) with `edges=0` — no producers yet, as § phase-B required.
+
+## Phases C+D — the flips and the pin
+
+`flowArrowSets` (contravariant arg flip, whole-subtree container degrade via
+`degradeToSymmetric` + `storeMentionsArrow` so ground leaves don't pollute the
+counter, defensive-to-poison); flips landed at the hub (`joinAllSig` →
+`flowAllSig`, branch INTO hub), local-callee arg and result, and the kernel
+tunnels behind the sigFlow SELECTOR at both sites (LssInfer.joinTunnels and
+Translate.joinKernelTunnels — the §2.2 gate, since the kernel boundary runs
+flag-off). Census counters `edges=`/`degraded=` on the `sigflow:` line.
+
+**THE depollution pin passes**: chooseHandler's result reads the honest 2-set
+AND the params keep two DISTINCT singletons — the assertion that separates the
+designs (Run X's symmetric arm read 2-sets on the params). Tests 2-6 pass
+UNCHANGED, as §7.2 demanded. New: transitive 3-chain (result 3-set, three
+singleton params through a nested hub); store-level resolver suite
+(`LssDirectedFlowTest`, 5 tests: 2-cycle termination + SCC exactness, ⊤
+short-circuit incl. inside a cycle, diamond dedupe, FlexVar contribution) —
+with one recorded deviation: content is written via `UF.set` rather than
+`addSlotSource` (Step-typed, needs a full S; the installer is exercised
+end-to-end by the pipeline tests); contravariance pin (LTop-or-honest shape on
+the hof-param inner arrows).
+
+**Test 8 correction — the plan's sketch over-promised.** §7.5 expected
+"result-tuple element annos are the symmetric LSet 2"; that is NOT OBSERVABLE
+in either design, because member transport into container LITERALS does not
+exist (`injectArgLambdaMember` is per-direct-argument; the symmetric Run-X arm
+reads LTop here too). The degrade guard protects the JOIN DIRECTION's
+soundness, not new precision. The test asserts the degrade counter fires and
+the elements read ⊤-or-honest; the 2-set claim is struck.
+
+Gates: flag-off probes byte-identical; `--target full` 1685/1685 flag-off AND
+flag-on (fresh `eco-stuff` per leg); elm-tests 13,165 / same 12 pre-existing.
+
+## Phase E — measurements and the flip decision (2026-08-21)
+
+**Measurement 1 (lss-opt.md Run AC), fidelity: HELD, and better than expected.**
+Same-tree A/B: precision reproduces Run X's shape exactly (394 nontrivial
+signatures, singletons 64,431 → 95,854, grounded +7,595, byBudget +5.6% with
+watchdogs quiet) — and **the analysis wall cost is GONE**: sf-on 328.4 s vs
+sf-off 329.6 s (−0.4%, FLAT), where Run X's symmetric arm paid +3.6%. Majors
+13 = 13 both arms. Two §8.1 counter expectations corrected by measurement:
+`joins noop` did NOT drop (22,169 ≈ symmetric's 22,074 — the noops come from
+the KEPT symmetric joins and rep links; only 177 edges exist on this corpus),
+and `declinedNoInstance` +133 persists (the LSS_017 raw-`l|` channel,
+orthogonal to pollution).
+
+**Measurement 2 (runtime-calls.md Run AB), non-regression: FAILED — by half.**
+Re-measured same-tree baseline 8.79% (not the stale 8.30%); directed-built
+7.68%. Directed removes HALF the symmetric regression (−1.11 points vs −2.22)
+and keeps `sat+fast` invariant (+76 in 2.09B) with byte-identical workload
+output. **The residual is not on §8.3's menu**: containers degraded 4 times,
+edges cost nothing, and the absolute fast-event loss (−23.2M) matches
+symmetric's (−22.6M) while mono-time stamp counts barely move in EITHER design.
+The mechanism is stamp RESHUFFLING: sigFlow's extra facts change joined
+registry types → spec keys → AbiCloning layout groups, so a hot-loop site
+loses its stamp while cold sites gain them — stamp-count-flat,
+coverage-negative, invisible to the depollution pin (which passes; the
+chooseHandler shape IS fixed).
+
+**Per-fp diff (2026-08-21, runtime-calls.md Run AB addendum) — the residual
+NAMED.** Matching all ~950 fast-bearing evaluators across arms by exact count:
+439 pairs are pure RENAMES (105.5M events preserved — lambda indices renumber
+between arms, so name-keyed diffs lie). The genuine loss is ONE dominant site:
+`Extract.typesDecoder`'s spec holds a 44.25M-event stamped direct call into the
+inlined `Utils.Bytes.Decode.list/loop` continuation flag-off; flag-on that spec
+is BUILT DIFFERENTLY (structurally different body) and the site does not exist
+in stampable form. The top gainer (16.9M) is a DIFFERENT decoder
+(`Eco.Config.lssDecoder`) acquiring a fresh flag-on stamp. Implicated
+mechanism, consistent with +133 `declinedNoInstance` in BOTH sigFlow designs:
+the shared combinators' signatures transport RAW `l|` lambda ids (LSS_017's
+recorded live channel) into caller slots, missing AbiCloning's instance index
+and/or widening past singleton — "not material" at 133 SITES, 44M EVENTS when
+one site is the artifact-decode loop. Next lever RE-RANKED: LSS_017 v2
+enqueue-time qualification (`plans/lss-fork-qualified-members.md` §8) ahead of
+Phase H, with a per-site decline log as the confirming measurement first.
+
+**Per-site decline log (2026-08-21, `/work/lss-decline-log-analysis.md`) — the
+confirming measurement RAN and REFUTED the re-ranking.** Two corrections:
+(1) the +133 noInstance members are INTERNED-range ids, not raw `l|` (5 of
+1,034 ON-only pairs in the raw range) — they are `g|`-class function globals,
+which have no closure instances BY DEFINITION; the +133 is unexploited E9.1
+(`lss.devirtFnGlobals`) precision, not pollution. LSS_017 v2 is DEPRIORITIZED
+back below Phase H. (2) `Extract.typesDecoder` appears in NEITHER arm's log —
+the 44M loss is not a decline; the spec's body is BUILT differently upstream
+of AbiCloning (spec construction / inlining), so no decline-side fix can
+recover it. Corrected next levers: (a) typesDecoder spec-construction diff
+between arms; (b) one `lss.devirtFnGlobals=1` run on the sf-on arm.
+
+**Spec-construction diff (2026-08-21, `/work/lss-spec-construction-diff.md`)
+— lever (a) RAN; the residual mechanism is now NAMED, and it is not
+typesDecoder.** Global canonical diff of the two arms' artifacts: **zero spec
+bodies restructured** (9,675 roles; the 59 diverged roles differ only by
+instance count, every extra instance a canonical duplicate); typesDecoder
+keeps all five stamps in BOTH arms (confirmed in the Run-AB disassemblies
+too — its identification was dispatch-census symbol aliasing, 859 fps
+printing as one name). The real delta: sigFlow's richer annotations SPLIT
+SPEC KEYS in the solver zonk/UnionFind family (`Type.Type.variableToCanType`
+/ `variableToErrorType` / `getVarNames` off=1→on=2, `UnionFind.modify`
+10→14, plus their `IO.andThen` chains), and a net ~6 andThen callback
+wrappers lose `singleton_fast` (= `stampedStaged −6`): the callback member's
+instance misses the index under the new key → `declinedNoInstance` → stamp
+refused. So part of the +133 is key-split instance misses (needs instance
+dedup or canonical-body stamping), not `g|`-class devirt targets. Final
+lever ranking: (1) fix census symbolization (prerequisite for any future
+attribution); (2) size instance dedup / canonical-body stamping for the
+split family; (3) `lssDF=1` for the fn-global subset. Phase H and LSS_017 v2
+stay deprioritized — neither is implicated. [Refined same day: the hot
+sites' decline mode is slot WIDENING to 2-sets of qualified siblings, not
+index misses — andThen noInstance is 26 = 26 across arms; see the plan
+below.]
+
+**Census fixed + attribution EXACT (2026-08-21).** Root cause of the
+aliasing: awk's numeric comparison of hex-address strings that happen to
+parse (pure digits / `...e0` scientific notation) — symbols were never
+missing. `dispatch-census.sh`/`closure-census.sh` rewritten (explicit
+hex2dec + binary search, `sym+0x<off>` on off-start lookups). Re-symbolized
+Run-AB logs: net unmatched fast = **23,231,541 = the global delta to the
+event**, in FOUR de-stamped solver callbacks — `variableToCanType`'s chain
+19.29M (83%), its adjacent chain 2.79M, `getVarNames`' chain 1.15M. The
+16.9M "lssDecoder gainer" was aliasing too (real gains: 4,818 events).
+Lever (2) is THE lever — the `Type.Type` zonk-family key split alone is the
+whole remaining runtime regression; lever (3) `lssDF=1` deprioritized (no
+event weight). Full record: `/work/lss-spec-construction-diff.md`.
+
+**Plan filed (2026-08-21): `plans/lss-layout-qualified-members.md`** —
+layout-qualified member identity (share ids across annotation-only spec
+splits by qualifying on the widened immutable creation key) PLUS a
+mandatory AbiCloning fingerprint fence (the E11 §11.7 record proves
+same-layout annotation-only clones can be behaviorally divergent, so id
+sharing needs a verbatim-body fence, not layout checks). If its Phase-3
+acceptance holds, its §6.4b re-opens THIS plan's §8.3 flip decision as a
+separate recorded decision.
+
+**Decision per §8.3: the flip stays CLOSED.** `lss.sigFlow` remains
+DEFAULT-OFF. The directed mechanism ships DORMANT as the strictly-better
+substrate — same precision, no analysis-wall cost, half the runtime regression
+— and the fidelity-3 Phase-D blocker is now HALF-discharged with the remaining
+half precisely characterised. Next levers, in order and recorded rather than
+improvised: (1) per-fp census diff (`dispatch-census.sh` over both Run-AB
+logs) to NAME the reshuffled hot sites; (2) Phase H per-use let separation
+(`joinLetUse` stayed union-over-uses, the largest kept-symmetric channel).
+
+Status: **IMPLEMENTED IN FULL (Phases A-E); flip decision recorded: not
+flipped.**

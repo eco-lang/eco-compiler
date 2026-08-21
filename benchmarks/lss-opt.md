@@ -883,6 +883,69 @@ but re-lowered in between, so this is not single-variable either — the counter
 attributable, the magnitude is not. **The refusal census is this run's real deliverable**
 (see below); it is the first measurement of that counter on a full workload.
 
+### 2026-08-20 — Run AB: kernel devirt table complete (13 kernels) + HofAxis cost fix (plain run)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| devirt-table | **5:31.12** (331.1 s) | 5,820,380 kB | 1,385 | 13 | 459,564,513 (13,547 MiB) | 121.14 s | 13,738,965 B |
+
+| axis | Run AA | Run AB |
+|---|---|---|
+| out.mlir | 13,719,384 B | 13,738,965 B (+19,581 B, +0.14%) |
+| devirtKernel | 772 | **928 (+156)** |
+| kernel whitelist misses | 157 sites / 12 kernels | **5 sites / 5 kernels** (all new singletons: Basics.toFloat, Char.toCode, String.toInt, String.words, Utils.compare) |
+| declinedNoInstance (AbiCloning) | 1,383 | **1,247 (−136)** |
+| dispatchUpgraded | 3,570 | 3,603 (+33) |
+| kernel declines arity | 12 | 15 |
+| licenses REFUSED | Console.readLine=1 | +59 at DEVIRT-CREATED boundaries (Basics.not=44, String.length=4, …) |
+| widened byKernel | 1,572 | 1,717 (+145) |
+| true mutator (wall − GC) | 206.0 s | 210.0 s |
+
+Tree = `plans/kernel-devirt-arity-table.md` complete: `devirt : DevirtPolicy` on
+KernelFacts, 13 registered kernels (List.cons + Scheduler.succeed/fail + the ten-kernel scalar
+batch), generic `peelArrow`/shape/emission guards, plus `callsBack : HofAxis` (CUnknown prices
+at the row-less 6; nine genuine HOFs declared HofYes). **The mechanism check passes: misses
+−152 sites and devirtKernel +156 move together**, and the removed dispatches surface downstream
+as `declinedNoInstance` −136 with `dispatchUpgraded` +33. Second-order effect worth naming:
+devirt CREATES kernel boundaries at former indirect sites, whose `canFuncType` is the callee
+VAR's type — often var-typed, so LSS_022 occurrence verification correctly refuses the license
+there and poisons (byKernel +145, refusals +59; sound, and now measured rather than invisible).
+Wall +7.6 s (+2.3%) on a +0.14% corpus with majors 13 = 13, promoted −0.02%, mutator +1.9% —
+below the 3% band: FLAT, no regression detected; the CSE/DCE upside on the 87 Scheduler sites
+did not materialize as wall on this workload.
+
+### 2026-08-20 — Run AC: LSS_023 directed set flow (A/B on `lss.sigFlow`; the Run-X re-measure)
+
+| arm | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| sf-on (directed) | **5:28.39** (328.4 s) | 6,085,036 kB | 1,425 | 13 | 476,139,480 (14,006 MiB) | 116.48 s | 13,793,989 B |
+| sf-off | 5:29.61 (329.6 s) | 6,102,416 kB | 1,405 | 13 | 476,799,186 (14,029 MiB) | 118.33 s | 13,763,893 B |
+
+| lss census | sf-off | sf-on |
+|---|---|---|
+| signatures | 9,781 memoized (9,781 trivial) | 9,781 memoized (**9,387 trivial**) |
+| sets zonked; sizeHist k=1 | 368,746; 64,431 | 407,131; **95,854** |
+| widened bySize / byKernel / byBudget | 43 / 1,717 / 36,930 | 43 / 1,738 / 39,005 |
+| joins identical / noop / changed | 76,520 / 2,168 / 1,861 | 69,590 / 22,169 / 1,933 |
+| sigflow edges / degraded / widenedByCf | 0 / 0 / 0 | **177 / 4** / 5,342 |
+| grounding grounded / deferred | 5,024 / 11 | 12,619 / 11 |
+| dispatchUpgraded / declinedNoInstance / declinedBlocked | 3,604 / 1,248 / 0 | 3,612 / 1,381 / 8 |
+| devirtDirect / devirtKernel | 4,000 / 928 | 4,000 / 928 |
+
+A/B of `plans/lss-directed-set-flow.md` (LSS_023): hub/local-callee/tunnel joins become
+DEFERRED INCLUSIONS (`LsFrom`, pull-at-read) instead of symmetric unification; both arms
+built AND measured solver+LSS on one tree. Precision reproduces Run X's shape exactly —
+394 nontrivial signatures, singletons 64,431 → 95,854 (+31,423), grounded +7,595,
+byBudget +5.6% (watchdogs quiet) — **but the WALL COST IS GONE: −1.2 s (−0.4%, FLAT)
+where Run X's symmetric arm paid +3.6%**, majors 13 = 13, promoted −0.14%. Two §8.1
+expectations corrected by measurement: `joins noop` did NOT drop (22,169 ≈ Run X's
+22,074 — the noops come from the KEPT symmetric joins and rep links, not the flipped
+sites; only 177 edges exist), and `declinedNoInstance` +133 persists (the LSS_017 raw-`l|`
+signature channel, orthogonal to pollution). Mono-time dispatch is +8 upgraded / +8
+blocked; the DECISIVE depollution gate is Run-M's runtime fast coverage (recorded in
+`benchmarks/runtime-calls.md`; Run X measured 8.30% → 6.08% there). Flag stays
+DEFAULT-OFF pending that gate.
+
 ---
 
 ## Summary
@@ -918,3 +981,5 @@ One row per run, numbers only.
 | Y | 321.7 | 1377 | 13 | 13548 |
 | Z | 322.2 | 1381 | 13 | 13597 |
 | AA | 323.5 | 1366 | 13 | 13565 |
+| AB | 331.1 | 1385 | 13 | 13547 |
+| AC | 328.4 | 1425 | 13 | 14006 |

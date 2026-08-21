@@ -1155,7 +1155,7 @@ stampCall index ctx region func args resultType callInfo =
                             , { ctx1 | stats = { stats1 | stampedStaged = stats1.stampedStaged + 1 } }
                             )
 
-                        Decline bump ->
+                        Decline _ bump ->
                             -- census: attribute the decline to the member and
                             -- capture its group reps (the runtime-join key).
                             let
@@ -1285,7 +1285,11 @@ type Resolution
     = Stamp Instance
     | StampPap Instance Int
     | StampStaged Instance
-    | Decline (StampCtx -> StampCtx)
+      -- The String is the decline REASON, labelled at each construction site.
+      -- Currently consumed only by the (removed, re-addable) one-shot per-site
+      -- decline log — see /work/lss-decline-log-analysis.md for the recipe —
+      -- and kept because any future decline investigation needs it on day one.
+    | Decline String (StampCtx -> StampCtx)
 
 
 {-| LSS_009 (+ LSS_011 PAP arm): pick an interchangeable representative for
@@ -1319,16 +1323,16 @@ Dict.get, and one full `eqLayout` confirm per group in the bucket
 resolveRepresentative : Mono.MonoType -> Int -> MemberInfo -> Resolution
 resolveRepresentative calleeType argCount memberInfo =
     if memberInfo.blocked then
-        Decline bumpBlocked
+        Decline "blocked" bumpBlocked
 
     else
         case calleeType of
             Mono.MFunction _ _ fargs fret ->
                 if argCount == 0 then
-                    Decline bumpShapeArityZero
+                    Decline "arityZero" bumpShapeArityZero
 
                 else if argCount < List.length fargs then
-                    Decline bumpShapeArityUnder
+                    Decline "arityUnder" bumpShapeArityUnder
 
                 else if argCount > List.length fargs then
                     -- E2.7 (LSS_014, v2 staged stamping): the site applies
@@ -1352,7 +1356,7 @@ resolveRepresentative calleeType argCount memberInfo =
                             resolveInGroups fargs fret argCount groups memberInfo
 
             _ ->
-                Decline bumpShapeNonArrow
+                Decline "nonArrow" bumpShapeNonArrow
 
 
 resolveInGroups : List Mono.MonoType -> Mono.MonoType -> Int -> List LayoutGroup -> MemberInfo -> Resolution
@@ -1364,13 +1368,13 @@ resolveInGroups fargs fret argCount groups memberInfo =
         g :: rest ->
             if g.paramCount == argCount && eqLayoutLists g.rep.paramTypes fargs && Mono.eqLayout g.rep.returnType fret then
                 if not g.charFree then
-                    Decline bumpShapeChar
+                    Decline "char" bumpShapeChar
 
                 else if g.unanimous then
                     Stamp g.rep
 
                 else
-                    Decline bumpAbiMismatch
+                    Decline "abiMismatch" bumpAbiMismatch
 
             else
                 resolveInGroups fargs fret argCount rest memberInfo
@@ -1385,7 +1389,7 @@ resolveStagedFirstStage : List Mono.MonoType -> Mono.MonoType -> MemberInfo -> R
 resolveStagedFirstStage fargs fret memberInfo =
     case Dict.get (siteFingerprint fargs fret) memberInfo.buckets of
         Nothing ->
-            Decline bumpShapeArityOver
+            Decline "arityOver" bumpShapeArityOver
 
         Just groups ->
             stagedScan fargs fret groups
@@ -1395,18 +1399,18 @@ stagedScan : List Mono.MonoType -> Mono.MonoType -> List LayoutGroup -> Resoluti
 stagedScan fargs fret groups =
     case groups of
         [] ->
-            Decline bumpShapeArityOver
+            Decline "arityOver" bumpShapeArityOver
 
         g :: rest ->
             if g.paramCount == List.length fargs && eqLayoutLists g.rep.paramTypes fargs && Mono.eqLayout g.rep.returnType fret then
                 if not g.charFree then
-                    Decline bumpShapeChar
+                    Decline "char" bumpShapeChar
 
                 else if g.unanimous then
                     StampStaged g.rep
 
                 else
-                    Decline bumpAbiMismatch
+                    Decline "abiMismatch" bumpAbiMismatch
 
             else
                 stagedScan fargs fret rest
@@ -1428,7 +1432,7 @@ papScan : List Mono.MonoType -> Mono.MonoType -> Int -> List LayoutGroup -> (Sta
 papScan fargs fret argCount groups noMatch =
     case groups of
         [] ->
-            Decline noMatch
+            Decline "bucketOrLayoutMiss" noMatch
 
         g :: rest ->
             let
@@ -1439,13 +1443,13 @@ papScan fargs fret argCount groups noMatch =
                 if not g.charFree || List.any ((==) Mono.MChar) (List.take k g.rep.paramTypes) then
                     -- the k prefix slots are loaded by the same capture-load
                     -- code as real captures — same i16 gate (E4c lifts it)
-                    Decline bumpShapeChar
+                    Decline "char" bumpShapeChar
 
                 else if g.unanimous then
                     StampPap g.rep k
 
                 else
-                    Decline bumpAbiMismatch
+                    Decline "abiMismatch" bumpAbiMismatch
 
             else
                 papScan fargs fret argCount rest noMatch

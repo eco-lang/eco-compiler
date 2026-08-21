@@ -7,6 +7,8 @@ module Compiler.MonoSolver.Store exposing
     , arrowParts
     , arrowSetSlot
     , unifySlotWithSet
+    , addSlotSource
+    , resolveSlotMembers
     , SetWriteCtx, setWriteCtx, unifySlotWithSetC, foldSetWrites
     , unifyBestEffort
     , poisonArrowSets
@@ -928,6 +930,29 @@ unifySlotWithSetC top members slot c0 =
                     IO.SortedMixed ->
                         setRootC slot desc (IO.Structure (IO.LambdaSet1 (IO.LsMembers (IO.unionSortedAsc members cur)))) { c1 | union = c1.union + 1 }
 
+        IO.Structure (IO.LambdaSet1 (IO.LsFrom cur srcs)) ->
+            -- LSS_023: a member write onto an edge-carrying slot unions into
+            -- the members field and leaves the SOURCES untouched — LSS_013
+            -- spine injection lands here unchanged. This arm is MANDATORY,
+            -- not defensive: without it the `_` fallback would reroute to
+            -- `needSlow` → `unifyStep`, a silent behavior change. ⊤ absorbs
+            -- and DROPS the sources (⊤ ⊇ everything — sound; also the arm
+            -- that tops a poisoned honesty-hub target, which is what §7's
+            -- `pick` fixture depends on).
+            if top then
+                setRootC slot desc IO.lsTopContent { c1 | topJoin = c1.topJoin + 1 }
+
+            else
+                case IO.classifySorted members cur of
+                    IO.SortedEqual ->
+                        { c1 | skip = c1.skip + 1 }
+
+                    IO.SortedSub ->
+                        { c1 | skip = c1.skip + 1 }
+
+                    _ ->
+                        setRootC slot desc (IO.Structure (IO.LambdaSet1 (IO.LsFrom (IO.unionSortedAsc members cur) srcs))) { c1 | union = c1.union + 1 }
+
         IO.FlexVar _ ->
             -- The DOMINANT case (Run B: 70.1 %): LSS_006 makes loadType mint
             -- fresh arrow structure per load, so a set write almost always
@@ -960,6 +985,67 @@ setRootC slot desc content c =
             UF.set slot { desc | content = content } c.store
     in
     { c | store = store1 }
+
+
+{-| LSS_023: install a deferred inclusion "dst ⊇ src" (both FunL SET SLOTS).
+⊤ dst absorbs (skip). Self-edge (UF-equivalent) skips. Total; never fails.
+Descriptor-preserving: `UF.set` replaces the WHOLE descriptor at the root, so
+this always writes `{ desc | content = … }`, never a fresh descriptor
+(the `setRootC` precedent).
+
+Every caller MUST be `lss.sigFlow`-gated — including the kernel-tunnel
+selector — or `LsFrom` escapes into flag-off stores and falsifies the
+Phase-A inertness gate (plan §2.2).
+-}
+addSlotSource : IO.Variable -> IO.Variable -> Step ()
+addSlotSource src dst s0 =
+    case Engine.liftIO (UF.equivalent src dst) s0 of
+        Err e ->
+            Err e
+
+        Ok ( same, s1 ) ->
+            if same then
+                Ok ( (), s1 )
+
+            else
+                case Engine.liftIO (UF.get dst) s1 of
+                    Err e ->
+                        Err e
+
+                    Ok ( desc, s2 ) ->
+                        let
+                            write content sN =
+                                case Engine.liftIO (UF.set dst { desc | content = content }) sN of
+                                    Err e ->
+                                        Err e
+
+                                    Ok ( (), sM ) ->
+                                        Ok ( (), Engine.bumpEdgeInstalled sM )
+                        in
+                        case desc.content of
+                            IO.Structure (IO.LambdaSet1 IO.LsTop) ->
+                                -- ⊤ ⊇ everything already.
+                                Ok ( (), s2 )
+
+                            IO.FlexVar _ ->
+                                write (IO.Structure (IO.LambdaSet1 (IO.LsFrom [] [ src ]))) s2
+
+                            IO.Structure (IO.LambdaSet1 (IO.LsMembers ms)) ->
+                                write (IO.Structure (IO.LambdaSet1 (IO.LsFrom ms [ src ]))) s2
+
+                            IO.Structure (IO.LambdaSet1 (IO.LsFrom ms ss)) ->
+                                if List.any (\p -> IO.pointKey p == IO.pointKey src) ss then
+                                    Ok ( (), s2 )
+
+                                else
+                                    write (IO.Structure (IO.LambdaSet1 (IO.LsFrom ms (src :: ss)))) s2
+
+                            _ ->
+                                -- Defensive: fail toward ⊤, never toward skip —
+                                -- a dropped edge under-approximates (the
+                                -- miscompile direction). `needSlow`'s precedent
+                                -- defers to a SOUND slow path; ours writes ⊤.
+                                write IO.lsTopContent s2
 
 
 unifySlotWithSetSlow : Bool -> List Int -> IO.Variable -> Step ()
@@ -1418,9 +1504,131 @@ zonkSetSlot paramT resultT setVar c0 =
                     -- direct zonkToMonoC caller): sound fallback.
                     ( Mono.LTop, c1 )
 
+        IO.Structure (IO.LambdaSet1 (IO.LsFrom members0 srcs)) ->
+            -- LSS_023 pull-at-read: resolve the reachable edge graph NOW and
+            -- read the least fixpoint. Do NOT write the resolved value back —
+            -- later reads must re-pull (sources may have grown; collapsing
+            -- would freeze them out). This arm sits BEFORE the wildcard so
+            -- `LsFrom` is never silently eaten as LTop (sound but
+            -- precision-dead — the whole plan's point lost in one arm).
+            case c1.lss of
+                Just acc0 ->
+                    case resolveSlotMembers members0 srcs c1 of
+                        ( Nothing, c2 ) ->
+                            -- A reachable ⊤ absorbs the whole resolution.
+                            ( Mono.LTop, bumpZonkAcc Nothing c2 )
+
+                        ( Just [], c2 ) ->
+                            -- EMPTY resolution = NO INFORMATION. Mirrors the
+                            -- FlexVar policy ("LTop, never empty"): an
+                            -- `LSet []` would claim a provably-dead arrow
+                            -- where symmetric HEAD reads an unconstrained
+                            -- class as LTop.
+                            ( Mono.LTop, bumpZonkAcc Nothing c2 )
+
+                        ( Just ms0, c2 ) ->
+                            -- THEN ground (LSS_019), THEN cap — verbatim the
+                            -- LsMembers tail on the RESOLVED list (resolution
+                            -- precedes grounding: groundMembersC keys on this
+                            -- arrow's already-zonked paramT/resultT).
+                            let
+                                ( members, c3 ) =
+                                    if acc0.groundStandalones then
+                                        groundMembersC paramT resultT ms0 c2
+
+                                    else
+                                        ( ms0, c2 )
+
+                                size =
+                                    List.length members
+                            in
+                            if size > acc0.maxSetSize then
+                                ( Mono.LTop, bumpWidenedAcc size c3 )
+
+                            else
+                                ( Mono.LSet members, bumpZonkAcc (Just size) c3 )
+
+                Nothing ->
+                    ( Mono.LTop, c1 )
+
         _ ->
             -- FlexVar residual: no information — LTop, never empty.
             ( Mono.LTop, bumpZonkAcc Nothing c1 )
+
+
+{-| LSS_023: DFS over a slot's deferred-edge graph, returning the least
+fixpoint of the inclusion system — `Nothing` when a reachable node is ⊤
+(absorbing, short-circuits), else `Just` the ascending union of every
+reachable node's members.
+
+Discipline (each clause is load-bearing — see the plan §3.1):
+
+  - visited is keyed on the RAW `IO.pointKey` of each source Point (UF
+    exposes no root accessor; raw ids are sound and terminating — finitely
+    many recorded Points, each visited once; aliased Points re-read
+    identical class content and re-unioning is idempotent);
+  - marked on ENTRY, before descending — insert-after-descend loops forever
+    on edge cycles;
+  - the visited set is FRESH per zonkSetSlot call (local, not in ZonkCtx);
+  - one-pass DFS union-over-reachables IS the least fixpoint on cycles (a
+    visited-hit contributes []; every SCC node's own members are collected
+    at that node; ⊤ absorbs);
+  - defensive content is treated as ⊤, never as empty — dropping a source's
+    contribution under-approximates, the miscompile direction.
+-}
+resolveSlotMembers : List Int -> List IO.Variable -> ZonkCtx -> ( Maybe (List Int), ZonkCtx )
+resolveSlotMembers members0 srcs c0 =
+    resolveSources srcs [] (Just members0) c0
+
+
+resolveSources : List IO.Variable -> List Int -> Maybe (List Int) -> ZonkCtx -> ( Maybe (List Int), ZonkCtx )
+resolveSources pending visited acc c0 =
+    case ( pending, acc ) of
+        ( _, Nothing ) ->
+            ( Nothing, c0 )
+
+        ( [], _ ) ->
+            ( acc, c0 )
+
+        ( src :: rest, Just accMembers ) ->
+            let
+                key =
+                    IO.pointKey src
+            in
+            if List.member key visited then
+                resolveSources rest visited acc c0
+
+            else
+                let
+                    ( store1, desc ) =
+                        UF.get src c0.store
+
+                    c1 =
+                        { c0 | store = store1 }
+
+                    visited1 =
+                        key :: visited
+                in
+                case desc.content of
+                    IO.Structure (IO.LambdaSet1 IO.LsTop) ->
+                        ( Nothing, c1 )
+
+                    IO.Structure (IO.LambdaSet1 (IO.LsMembers ms)) ->
+                        resolveSources rest visited1 (Just (IO.unionSortedAsc accMembers ms)) c1
+
+                    IO.Structure (IO.LambdaSet1 (IO.LsFrom ms ss)) ->
+                        resolveSources (ss ++ rest) visited1 (Just (IO.unionSortedAsc accMembers ms)) c1
+
+                    IO.FlexVar _ ->
+                        -- Unconstrained source: contributes nothing (its
+                        -- own read would be LTop, but as a SOURCE an empty
+                        -- contribution is exact — the caller's other edges
+                        -- and members still count).
+                        resolveSources rest visited1 acc c1
+
+                    _ ->
+                        -- Defensive: unknown content fails toward ⊤.
+                        ( Nothing, c1 )
 
 
 {-| LSS_019: run the grounding rewrite against the ctx-threaded member table,

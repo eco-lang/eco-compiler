@@ -782,6 +782,27 @@ unifyStructure ctx flatType content otherContent =
                                 IO.SortedMixed ->
                                     merge ctx (IO.Structure (IO.LambdaSet1 (IO.LsMembers (IO.unionSortedAsc m1 m2))))
 
+                        -- LSS_023 (`plans/lss-directed-set-flow.md`): class
+                        -- merges MERGE the deferred edge lists — the union-hook
+                        -- problem is solved by representation, not by hooks.
+                        -- Dedupe uses IO.pointKey (Unify cannot import Engine).
+                        -- The join stays TOTAL.
+                        ( IO.LsFrom m1 s1, IO.LsFrom m2 s2 ) ->
+                            merge ctx
+                                (IO.Structure
+                                    (IO.LambdaSet1
+                                        (IO.LsFrom (IO.unionSortedAsc m1 m2)
+                                            (dedupeSources (s1 ++ s2))
+                                        )
+                                    )
+                                )
+
+                        ( IO.LsFrom m1 s1, IO.LsMembers m2 ) ->
+                            merge ctx (IO.Structure (IO.LambdaSet1 (IO.LsFrom (IO.unionSortedAsc m1 m2) s1)))
+
+                        ( IO.LsMembers m1, IO.LsFrom m2 s2 ) ->
+                            merge ctx (IO.Structure (IO.LambdaSet1 (IO.LsFrom (IO.unionSortedAsc m1 m2) s2)))
+
                 ( IO.EmptyRecord1, IO.EmptyRecord1 ) ->
                     merge ctx otherContent
 
@@ -956,6 +977,34 @@ unifyField _ ( actual, expected ) =
 
 type RecordStructure
     = RecordStructure (Dict Name.Name IO.Variable) IO.Variable
+
+{-| Dedupe an `LsFrom` source list by raw Point index, preserving first
+occurrence. Small lists (edge fan-in per slot); quadratic is fine and
+allocation-light.
+-}
+dedupeSources : List IO.Variable -> List IO.Variable
+dedupeSources sources =
+    dedupeSourcesGo sources []
+
+
+dedupeSourcesGo : List IO.Variable -> List Int -> List IO.Variable
+dedupeSourcesGo sources seen =
+    case sources of
+        [] ->
+            []
+
+        v :: rest ->
+            let
+                k =
+                    IO.pointKey v
+            in
+            if List.member k seen then
+                dedupeSourcesGo rest seen
+
+            else
+                v :: dedupeSourcesGo rest (k :: seen)
+
+
 
 
 gatherFields : Dict Name.Name IO.Variable -> IO.Variable -> IO RecordStructure

@@ -80,7 +80,13 @@ occursHelp seen var foundCycle =
                                         |> IO.andThen (occursHelp newSeen a)
 
                                 IO.LambdaSet1 _ ->
-                                    -- Ground member ids: no child variables.
+                                    -- Ground member ids. Since LSS_023 an
+                                    -- `LsFrom` set MAY carry source Points,
+                                    -- and the occurs check deliberately does
+                                    -- NOT descend into them: inclusion edges
+                                    -- are SET-LATTICE edges, not type
+                                    -- structure — no infinite TYPE can arise
+                                    -- through them.
                                     IO.pure foundCycle
 
                                 IO.EmptyRecord1 ->

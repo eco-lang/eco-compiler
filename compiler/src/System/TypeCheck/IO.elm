@@ -5,7 +5,7 @@ module System.TypeCheck.IO exposing
     , traverseArrayMaybe, foldMArray
     , Point(..), PointCell(..)
     , Descriptor, Content(..), SuperType(..), Mark(..), Variable, RootedVar, FlatType(..)
-    , LambdaSet(..), SortedRel(..), lsTopContent, classifySorted, unionSortedAsc
+    , LambdaSet(..), SortedRel(..), lsTopContent, classifySorted, unionSortedAsc, pointKey
     , Canonical(..)
     , makeDescriptor
     , NameState, getNames, putNames, withFreshNames
@@ -645,8 +645,10 @@ type alias RootedVar =
   - `LambdaSet1 set`: A lambda set — the ONLY legal content of a
     `FunL` set slot besides `FlexVar` (LSS_007); it never appears anywhere
     else, and typecheck-phase stores contain neither `FunL` nor
-    `LambdaSet1`. Members are ground per-run ids (no Variables inside), so
-    set unification is a total ordered-merge join — it can never mismatch.
+    `LambdaSet1`. Members are ground per-run ids. Since LSS_023 a set MAY
+    carry deferred in-edge source Points (`LsFrom` — Variables that are SET
+    SLOTS, not type structure), so "no Variables inside" is retired; the
+    join is STILL total (edge lists merge) and can never mismatch.
 
 -}
 type FlatType
@@ -671,12 +673,40 @@ fact, or a singleton injection), mirroring LSS_001 for the in-store form.
 absorbing under join. Members are DEAD under ⊤ at every reader in the repo
 (audited 2026-08-17, census included), so ⊤ carries none — every poison
 write is a set of the shared `lsTopContent` constant, allocation-free, and
-every join-with-⊤ is a constant return.
+every join-with-⊤ is a constant return. ⊤ also DROPS `LsFrom` sources
+(⊤ ⊇ everything — sound).
+
+`LsFrom members sources` (LSS_023, `plans/lss-directed-set-flow.md`) is a
+set carrying DEFERRED INCLUSION edges: "this slot ⊇ each source slot",
+resolved at READ (zonk) time by a DFS over the reachable edge graph — never
+eagerly, never by a write hook. Invariants:
+
+  - the source list is NON-EMPTY by construction: no transition mints a
+    source-free `LsFrom` (`Store.addSlotSource` only adds; merges carry
+    sources through; ⊤ drops the whole variant). There is deliberately NO
+    collapse rule.
+  - `members` is ascending/deduped but MAY be empty (unlike `LsMembers`).
+  - sources are deduped by `pointKey` at install; UF unions may later alias
+    them — resolution re-dedupes via its visited set.
+  - `LsFrom` is created ONLY under `lss.sigFlow` (every producer is gated,
+    including the kernel-tunnel selector) and NEVER escapes the store:
+    `zonkSetSlot`/`zonkSigGo` resolve it, `Mono.LambdaSetAnno` stays
+    `LTop | LSet`.
 
 -}
 type LambdaSet
     = LsTop
     | LsMembers (List Int)
+    | LsFrom (List Int) (List Variable)
+
+
+{-| The raw index of a Point — the dedupe key for `LsFrom` source lists.
+Twin of `Engine.pointKey`, duplicated here because `Unify` (which merges
+edge lists) cannot import MonoSolver.
+-}
+pointKey : Variable -> Int
+pointKey (Pt n) =
+    n
 
 
 {-| THE shared ⊤ content. All top-writes `UF.set` this one value.

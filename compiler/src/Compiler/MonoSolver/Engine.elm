@@ -17,7 +17,7 @@ module Compiler.MonoSolver.Engine exposing
     , lambdaInstanceMemberId, lambdaInstanceMemberMaybe
     , GroundingStats, internMemberKey, groundStandaloneMemberIdFor, groundSetMembers
     , LssMemberTable, MemberSource(..), emptyMemberTable
-    , bumpWidenedByKernel, bumpWidenedBySigSize, bumpWidenedByCf, bumpKernelFactHit, bumpKernelLicensed, bumpCompletionJoin, bumpCompletionJoinNoop, withScratchStore
+    , bumpWidenedByKernel, bumpWidenedBySigSize, bumpWidenedByCf, bumpKernelFactHit, bumpKernelLicensed, bumpEdgeInstalled, bumpFlowDegraded, bumpCompletionJoin, bumpCompletionJoinNoop, withScratchStore
     , SigFlowStats
     , markDirty
     , ItemAux, emptyItemAux, clearedAux, restoredAux, clearResidualReads
@@ -78,12 +78,21 @@ type WorkItem
     sharing its two arrows).
   - `members`: ids the body itself injects into this arrow's set.
   - `top`: the body forces ⊤ (e.g. the arrow reaches a kernel boundary).
+  - `sources` (LSS_023): ordinals whose sets flow INTO this one — the
+    DIRECTED half of the fact language. `rep` stays genuine UF-equality
+    (same-value chains: for `pass f = f` the param and result ARE one
+    value); `sources` is inclusion, applied by the caller as deferred
+    `Store.addSlotSource` edges and resolved at read. This is the paper's
+    promoted-`ᾱ` half of promote-or-internalize (Fig. 7): a reached
+    signature ordinal is PROMOTED here; a reached non-signature slot is
+    INTERNALIZED into `members`.
 
 -}
 type alias ArrowFact =
     { rep : Int
     , members : List Int
     , top : Bool
+    , sources : List Int
     }
 
 
@@ -183,6 +192,8 @@ type alias SigFlowStats =
     , widenedByCf : Int
     , kernelFactHits : Int
     , kernelLicensed : Int
+    , edgesInstalled : Int -- LSS_023 directed edges installed (report-gated)
+    , flowDegraded : Int -- LSS_023 container subtrees degraded to symmetric AND capable of carrying a set (report-gated)
     }
 
 
@@ -278,14 +289,14 @@ insertMemberProvisional mid g t =
 
 emptyLssStats : LssStats
 emptyLssStats =
-    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0 } }
+    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0, edgesInstalled = 0, flowDegraded = 0 } }
 
 
 {-| The all-defaults signature for an annotation with `n` arrows.
 -}
 trivialSignature : Int -> LssSignature
 trivialSignature n =
-    { arrows = Array.initialize n (\i -> { rep = i, members = [], top = False })
+    { arrows = Array.initialize n (\i -> { rep = i, members = [], top = False, sources = [] })
     , trivial = True
     }
 
@@ -500,6 +511,44 @@ bumpKernelFactHit s =
                 stats.sigStats
         in
         { s | lssStats = { stats | sigStats = { sig | kernelFactHits = sig.kernelFactHits + 1 } } }
+
+    else
+        s
+
+
+{-| LSS_023: a directed inclusion edge was installed (`Store.addSlotSource`).
+Census-only — REPORT-GATED.
+-}
+bumpEdgeInstalled : S -> S
+bumpEdgeInstalled s =
+    if s.env.lss.report then
+        let
+            stats =
+                s.lssStats
+
+            sig =
+                stats.sigStats
+        in
+        { s | lssStats = { stats | sigStats = { sig | edgesInstalled = sig.edgesInstalled + 1 } } }
+
+    else
+        s
+
+
+{-| LSS_023: a directed structural walk degraded a container subtree to the
+symmetric join, and the subtree can carry a set. Census-only — REPORT-GATED.
+-}
+bumpFlowDegraded : S -> S
+bumpFlowDegraded s =
+    if s.env.lss.report then
+        let
+            stats =
+                s.lssStats
+
+            sig =
+                stats.sigStats
+        in
+        { s | lssStats = { stats | sigStats = { sig | flowDegraded = sig.flowDegraded + 1 } } }
 
     else
         s

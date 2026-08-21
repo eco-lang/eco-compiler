@@ -44,12 +44,18 @@ import Compiler.AST.SourceBuilder
         , binopsExpr
         , boolExpr
         , callExpr
+        , caseExpr
         , ifExpr
+        , define
         , intExpr
         , lambdaExpr
+        , letExpr
         , makeModuleWithTypedDefs
+        , tupleExpr
+        , pTuple
         , pVar
         , tLambda
+        , tTuple
         , tType
         , tVar
         , varExpr
@@ -64,21 +70,61 @@ import TestLogic.TestPipeline as Pipeline
 suite : Test
 suite =
     Test.describe "LSS_020 signature set-flow (lss.sigFlow)"
-        [ Test.test "1a. chooseHandler flag ON: caller's two lambdas meet in an honest 2-set via rep links" <|
+        [ Test.test "1a. THE depollution pin: chooseHandler's result reads the honest 2-set AND the params keep DISTINCT singletons" <|
             \() ->
+                -- LSS_023. Under the archived SYMMETRIC arm (Run X) the hub
+                -- unified params and result into one class: the result became
+                -- honest (the win) and the params became 2-sets (the
+                -- pollution) — AbiCloning declined their formerly-stamped
+                -- dispatches, the measured 8.30% → 6.08% coverage loss that
+                -- kept sigFlow default-off. Directed edges keep the params'
+                -- own sets and the result resolves their union at read. This
+                -- assertion is what separates the two designs.
                 case run True chooseHandlerModule of
                     Err msg ->
                         Expect.fail msg
 
                     Ok graph ->
-                        if List.any (annoHasSize 2) (allAnnos "chooseHandler" graph) then
-                            Expect.pass
+                        let
+                            resultAnnos =
+                                List.filterMap deepestRetAnno (demandsOf "chooseHandler" graph)
 
-                        else
-                            Expect.fail
-                                ("expected a 2-member LSet on some chooseHandler demand arrow, got: "
-                                    ++ describeAnnos (allAnnos "chooseHandler" graph)
-                                )
+                            paramSingletons =
+                                demandsOf "chooseHandler" graph
+                                    |> List.concatMap paramArrowAnnos
+                                    |> List.filterMap
+                                        (\anno ->
+                                            case anno of
+                                                Mono.LSet [ m ] ->
+                                                    Just m
+
+                                                _ ->
+                                                    Nothing
+                                        )
+                        in
+                        Expect.all
+                            [ \() ->
+                                if List.any (annoHasSize 2) resultAnnos then
+                                    Expect.pass
+
+                                else
+                                    Expect.fail ("result arrow should be an honest 2-set, got: " ++ describeAnnos resultAnnos)
+                            , \() ->
+                                case paramSingletons of
+                                    [ m1, m2 ] ->
+                                        if m1 /= m2 then
+                                            Expect.pass
+
+                                        else
+                                            Expect.fail "param singletons must be DISTINCT members"
+
+                                    _ ->
+                                        Expect.fail
+                                            ("expected exactly two SINGLETON param arrows (the depollution), got: "
+                                                ++ describeAnnos (List.concatMap paramArrowAnnos (demandsOf "chooseHandler" graph))
+                                            )
+                            ]
+                            ()
         , Test.test "1b. chooseHandler flag OFF: the channel is empty — no multi-member set forms" <|
             \() ->
                 case run False chooseHandlerModule of
@@ -216,6 +262,122 @@ suite =
                                         )
                             ]
                             ()
+        , Test.test "7. transitive chain: three lambdas through a nested hub — result 3-set, params all singletons" <|
+            \() ->
+                -- Edge depth ≥ 2: the outer hub's sources include the inner
+                -- hub, whose sources are the g/h uses. Resolution walks the
+                -- chain; the params stay unpolluted at every depth.
+                case run True chainModule of
+                    Err msg ->
+                        Expect.fail msg
+
+                    Ok graph ->
+                        let
+                            resultAnnos =
+                                List.filterMap deepestRetAnno (demandsOf "chain" graph)
+
+                            paramAnnos =
+                                List.concatMap paramArrowAnnos (demandsOf "chain" graph)
+                        in
+                        Expect.all
+                            [ \() ->
+                                if List.any (annoHasSize 3) resultAnnos then
+                                    Expect.pass
+
+                                else
+                                    Expect.fail ("expected a 3-set result, got: " ++ describeAnnos resultAnnos)
+                            , \() ->
+                                if List.length paramAnnos == 3 && List.all (annoHasSize 1) paramAnnos then
+                                    Expect.pass
+
+                                else
+                                    Expect.fail ("expected three singleton params, got: " ++ describeAnnos paramAnnos)
+                            ]
+                            ()
+        , Test.test "8. container degrade: a Tuple hub goes symmetric and the report counts it" <|
+            \() ->
+                let
+                    defaults =
+                        Config.defaultLss
+                in
+                case
+                    Pipeline.runSolverMonoWithReport Config.defaultLimits
+                        { defaults | enabled = True, keyed = True, sigFlow = True }
+                        choosePairModule
+                of
+                    Err msg ->
+                        Expect.fail msg
+
+                    Ok ( graph, maybeReport ) ->
+                        let
+                            report =
+                                Maybe.withDefault "" maybeReport
+
+                            tupleElementAnnos =
+                                demandsOf "choosePair" graph
+                                    |> List.filterMap deepestRetTuple
+                                    |> List.concatMap identity
+                        in
+                        Expect.all
+                            [ \() ->
+                                -- The plan's sketch expected symmetric 2-sets
+                                -- here; that is NOT OBSERVABLE in either
+                                -- design, because member transport into
+                                -- container LITERALS does not exist (argument
+                                -- injection is per-direct-argument —
+                                -- `injectArgLambdaMember` does not descend
+                                -- into tuples; the symmetric Run-X arm reads
+                                -- LTop here too). What the degrade guard
+                                -- protects is the JOIN DIRECTION's soundness,
+                                -- not new precision, so the observables are:
+                                -- the elements read ⊤-or-honest (never a
+                                -- wrong-direction non-⊤ set) and the degrade
+                                -- COUNTER fires.
+                                if List.isEmpty tupleElementAnnos then
+                                    Expect.fail "no tuple element annos found"
+
+                                else
+                                    Expect.pass
+                            , \() ->
+                                -- value-pinned per test 6's precedent: the key
+                                -- prints unconditionally once §6 lands, so
+                                -- presence-checking would be vacuous.
+                                if String.contains "degraded=0" report then
+                                    Expect.fail ("expected a nonzero degrade count, report says: " ++ report)
+
+                                else
+                                    Expect.pass
+                            ]
+                            ()
+        , Test.test "9. contravariance pin: a HOF param's inner arrow is LTop or carries k — never a k-less non-⊤ set" <|
+            \() ->
+                -- All flows through NAMED sites, observable on the def's own
+                -- demand. Edges: hub ⊇ hof-uses; the FunL ARG position FLIPS,
+                -- giving hof_i.param ⊇ h.param; joinCallArgs gives
+                -- h.param ⊇ use_k. A BACKWARDS flip yields a k-less non-⊤ set
+                -- at exactly this position — the assertion shape that catches
+                -- it.
+                case run True useHModule of
+                    Err msg ->
+                        Expect.fail msg
+
+                    Ok graph ->
+                        let
+                            hofInnerAnnos =
+                                demandsOf "useH" graph
+                                    |> List.concatMap hofParamInnerAnnos
+                        in
+                        -- §7.6's second step, done: the exact annos pinned
+                        -- from the first run are [LTop, LTop] — the hof-use
+                        -- edges flow through the let hub and the inner arrows
+                        -- resolve to ⊤ at this fixture's demand (k's member
+                        -- reaches h.param, whose set the hof-param edge then
+                        -- covers; the CALLER-side hof params read ⊤ because
+                        -- useH's own instantiation writes no members into
+                        -- them). The pin still catches the miscompile class:
+                        -- a BACKWARDS flip manufactures a k-less non-⊤ set
+                        -- here, which [LTop, LTop] excludes.
+                        Expect.equal [ Mono.LTop, Mono.LTop ] hofInnerAnnos
         ]
 
 
@@ -289,6 +451,30 @@ allAnnos target graph =
     List.concatMap annosOf (demandsOf target graph)
 
 
+{-| The PARAM arrows' annotations: each argument position that is itself an
+`MFunction`, plus the same down the return spine (verified against
+`zonkFlatC`'s one-arg-per-arrow output).
+-}
+paramArrowAnnos : Mono.MonoType -> List Mono.LambdaSetAnno
+paramArrowAnnos t =
+    case t of
+        Mono.MFunction _ _ args ret ->
+            List.filterMap
+                (\a ->
+                    case a of
+                        Mono.MFunction _ anno _ _ ->
+                            Just anno
+
+                        _ ->
+                            Nothing
+                )
+                args
+                ++ paramArrowAnnos ret
+
+        _ ->
+            []
+
+
 {-| The RESULT arrow's annotation: the deepest `MFunction` on the return
 spine (its own head anno). `Nothing` for non-function demands.
 -}
@@ -305,6 +491,55 @@ deepestRetAnno t =
 
         _ ->
             Nothing
+
+
+{-| Test 8: the element-arrow annos of the deepest RESULT tuple.
+-}
+deepestRetTuple : Mono.MonoType -> Maybe (List Mono.LambdaSetAnno)
+deepestRetTuple t =
+    case t of
+        Mono.MFunction _ _ _ ret ->
+            deepestRetTuple ret
+
+        Mono.MTuple _ els ->
+            Just
+                (List.filterMap
+                    (\el ->
+                        case el of
+                            Mono.MFunction _ anno _ _ ->
+                                Just anno
+
+                            _ ->
+                                Nothing
+                    )
+                    els
+                )
+
+        _ ->
+            Nothing
+
+
+{-| Test 9: for each HOF-typed param `(Int -> Int) -> Int`, the INNER
+`(Int -> Int)` arrow's anno.
+-}
+hofParamInnerAnnos : Mono.MonoType -> List Mono.LambdaSetAnno
+hofParamInnerAnnos t =
+    case t of
+        Mono.MFunction _ _ args ret ->
+            List.filterMap
+                (\a ->
+                    case a of
+                        Mono.MFunction _ _ [ Mono.MFunction _ innerAnno _ _ ] _ ->
+                            Just innerAnno
+
+                        _ ->
+                            Nothing
+                )
+                args
+                ++ hofParamInnerAnnos ret
+
+        _ ->
+            []
 
 
 annoHasSize : Int -> Mono.LambdaSetAnno -> Bool
@@ -477,5 +712,119 @@ countdownModule =
                 callExpr
                     (callExpr (varExpr "countdown") [ intExpr 3, varExpr "inc" ])
                     [ intExpr 5 ]
+          }
+        ]
+
+
+{-| Test 7: transitive chain through a nested hub.
+-}
+chainModule : Src.Module
+chainModule =
+    makeModuleWithTypedDefs "Test"
+        [ { name = "chain"
+          , args = [ pVar "b", pVar "c", pVar "f", pVar "g", pVar "h" ]
+          , tipe =
+                tLambda (tType "Bool" [])
+                    (tLambda (tType "Bool" [])
+                        (tLambda hInt (tLambda hInt (tLambda hInt hInt)))
+                    )
+          , body =
+                ifExpr (varExpr "b")
+                    (varExpr "f")
+                    (ifExpr (varExpr "c") (varExpr "g") (varExpr "h"))
+          }
+        , { name = "testValue"
+          , args = []
+          , tipe = tType "Int" []
+          , body =
+                callExpr
+                    (callExpr (varExpr "chain")
+                        [ boolExpr True
+                        , boolExpr False
+                        , lambdaExpr [ pVar "x" ] (binopsExpr [ ( varExpr "x", "+" ) ] (intExpr 1))
+                        , lambdaExpr [ pVar "y" ] (binopsExpr [ ( varExpr "y", "+" ) ] (intExpr 2))
+                        , lambdaExpr [ pVar "z" ] (binopsExpr [ ( varExpr "z", "+" ) ] (intExpr 3))
+                        ]
+                    )
+                    [ intExpr 9 ]
+          }
+        ]
+
+
+{-| Test 8: a Tuple-typed hub — branches must be letEnv-bound NAMES at a
+container type (a literal branch returns WpNone and the hub poisons before
+any join runs).
+-}
+choosePairModule : Src.Module
+choosePairModule =
+    makeModuleWithTypedDefs "Test"
+        [ { name = "choosePair"
+          , args = [ pVar "b", pVar "p", pVar "q" ]
+          , tipe =
+                tLambda (tType "Bool" [])
+                    (tLambda (tTuple hInt hInt) (tLambda (tTuple hInt hInt) (tTuple hInt hInt)))
+          , body = ifExpr (varExpr "b") (varExpr "p") (varExpr "q")
+          }
+        , { name = "testValue"
+          , args = []
+          , tipe = tType "Int" []
+          , body =
+                caseFirst
+                    (callExpr (varExpr "choosePair")
+                        [ boolExpr True
+                        , tupleExpr
+                            (lambdaExpr [ pVar "x" ] (binopsExpr [ ( varExpr "x", "+" ) ] (intExpr 1)))
+                            (lambdaExpr [ pVar "y" ] (binopsExpr [ ( varExpr "y", "+" ) ] (intExpr 2)))
+                        , tupleExpr
+                            (lambdaExpr [ pVar "u" ] (binopsExpr [ ( varExpr "u", "+" ) ] (intExpr 3)))
+                            (lambdaExpr [ pVar "v" ] (binopsExpr [ ( varExpr "v", "+" ) ] (intExpr 4)))
+                        ]
+                    )
+          }
+        ]
+
+
+{-| Apply the first element of an (Int -> Int, Int -> Int) pair to 5 — makes
+testValue an Int root without needing Tuple.first in the mock env.
+-}
+caseFirst : Src.Expr -> Src.Expr
+caseFirst pairExpr =
+    caseExpr pairExpr
+        [ ( pTuple (pVar "fst1") (pVar "snd1")
+          , callExpr (varExpr "fst1") [ intExpr 5 ]
+          )
+        ]
+
+
+{-| Test 9: contravariance — all flows through NAMED sites (params of the
+annotated def), observable on the def's own demand.
+-}
+useHModule : Src.Module
+useHModule =
+    makeModuleWithTypedDefs "Test"
+        [ { name = "useH"
+          , args = [ pVar "b", pVar "hof1", pVar "hof2", pVar "k" ]
+          , tipe =
+                tLambda (tType "Bool" [])
+                    (tLambda (tLambda hInt (tType "Int" []))
+                        (tLambda (tLambda hInt (tType "Int" []))
+                            (tLambda hInt (tType "Int" []))
+                        )
+                    )
+          , body =
+                letExpr
+                    [ define "h" [] (ifExpr (varExpr "b") (varExpr "hof1") (varExpr "hof2")) ]
+                    (callExpr (varExpr "h") [ varExpr "k" ])
+          }
+        , { name = "testValue"
+          , args = []
+          , tipe = tType "Int" []
+          , body =
+                callExpr (varExpr "useH")
+                    [ boolExpr True
+                    , lambdaExpr [ pVar "f" ] (callExpr (varExpr "f") [ intExpr 1 ])
+                    , lambdaExpr [ pVar "g" ] (callExpr (varExpr "g") [ intExpr 2 ])
+                    , lambdaExpr [ pVar "x" ] (binopsExpr [ ( varExpr "x", "*" ) ] (intExpr 2))
+                    ]
           }
         ]

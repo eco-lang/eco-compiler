@@ -550,6 +550,8 @@ termToCanType term =
                 |> IO.apply (variableToCanType b)
 
         LambdaSet1 _ ->
+            -- (Also unreachable for LsFrom — LSS_023 — by the same phase
+            -- separation; its source Points never reach this walk.)
             -- Unreachable from well-formed content (LSS_007): a LambdaSet1
             -- only ever lives inside a FunL set slot, which erases above.
             crash "LambdaSet1 outside an arrow slot in variableToCanType"

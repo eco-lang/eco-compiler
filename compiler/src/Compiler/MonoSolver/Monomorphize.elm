@@ -242,7 +242,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         -- LSS_022: kernelFactHits counts POSITIONAL row applications and
         -- kernelLicensed counts TypeFaithful pass-throughs — disjoint tiers,
         -- and only the former can also appear in widenedByKernel.
-        , "sigflow: widenedByCf=" ++ String.fromInt stats.sigStats.widenedByCf ++ " kernelFactHits=" ++ String.fromInt stats.sigStats.kernelFactHits ++ " kernelLicensed=" ++ String.fromInt stats.sigStats.kernelLicensed
+        , "sigflow: widenedByCf=" ++ String.fromInt stats.sigStats.widenedByCf ++ " kernelFactHits=" ++ String.fromInt stats.sigStats.kernelFactHits ++ " kernelLicensed=" ++ String.fromInt stats.sigStats.kernelLicensed ++ " edges=" ++ String.fromInt stats.sigStats.edgesInstalled ++ " degraded=" ++ String.fromInt stats.sigStats.flowDegraded
 
         -- Census (2026-07-21): E9.2 guard-decline split (declinedKernelCNumber
         -- = the E10.0 `declinedUnsettled` proxy) + the whitelist-growth list.

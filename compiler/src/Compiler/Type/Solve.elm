@@ -703,7 +703,10 @@ adjustRankContent youngMark visitMark groupRank content =
                         |> IO.apply (IO.pure max |> IO.apply (go result) |> IO.apply (go setSlot))
 
                 IO.LambdaSet1 _ ->
-                    -- THEORY: ground member ids never need to get generalized
+                    -- THEORY: ground member ids never need to get generalized.
+                    -- (LsFrom's source Points — LSS_023 — are set-lattice
+                    -- edges, not type structure, and are additionally
+                    -- unreachable here per LSS_007's phase separation.)
                     IO.pure Type.outermostRank
 
                 IO.EmptyRecord1 ->
@@ -1212,7 +1215,11 @@ traverseFlatType f flatType =
                 |> IO.apply (f s)
 
         IO.LambdaSet1 ls ->
-            -- Ground data: no variables to transform.
+            -- Ground data: no variables to transform. CONDITIONALLY true since
+            -- LSS_023 (`LsFrom` carries source Points) — but unreachable here:
+            -- LSS_007 keeps typechecking-phase stores free of FunL/LambdaSet1,
+            -- and no MonoSolver module imports Type.Solve, so an `LsFrom` can
+            -- never arrive at this copy.
             IO.pure (IO.LambdaSet1 ls)
 
         IO.EmptyRecord1 ->

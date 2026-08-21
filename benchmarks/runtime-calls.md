@@ -1586,3 +1586,146 @@ allocation (Run R, plans/inline-nursery-allocation.md): every
 statically-sized class, not just cons, at −7.8 % census-on / −9.6 % clean
 wall. The remaining
 `$cap` lever is the 1,711-call mismatched-ABI floor, AbiCloning-family.)
+
+### Run AB — LSS_023 directed set flow, sigFlow dispatch A/B (2026-08-21): **coverage 8.79% → 7.68% — directed removes HALF the symmetric regression, flip stays closed**
+
+Per `plans/lss-directed-set-flow.md` §8.2: two solver-built binaries, both
+lowered with `ECO_LSS_DISPATCH_SITE_COUNTERS=1` (sigFlow ON at build vs OFF, one
+tree), each running the cold SUBST workload so the job is constant while the
+binary changes. Both arms' workload `out.mlir` byte-IDENTICAL (LSS_005 gate);
+`sat+fast` 2,090,271,094 vs 2,090,271,170 (+76 in 2.09B — the known
+object-level wobble class, invariant for all practical purposes).
+
+| arm | sat | gen | typed | fast | coverage (fast/(sat+fast)) |
+|---|---|---|---|---|---|
+| default-built (sf-off) | 1,906,579,007 | 1,877,007,561 | 29,571,446 | **183,692,087** | **8.79%** |
+| directed-built (sf-on) | 1,929,810,624 | 1,900,239,173 | 29,571,451 | **160,460,546** | **7.68%** |
+
+The re-measured baseline is 8.79% (not Run M's 8.30% — the corpus has grown
+fast events since; this is why §8.2 said re-measure both arms). Directed loses
+−1.11 points (−12.6% relative) where symmetric lost −2.22 points (−26.7%
+relative, 8.30 → 6.08): **half the regression is gone, half remains.**
+
+The residual is NOT where the plan's §8.3 menu pointed. Container degrades are
+4 events (nil); edges are 177 (cheap); and the absolute fast-event LOSS
+(−23.2M) matches symmetric's (−22.6M) while mono-time stamp counts barely move
+in BOTH designs (`dispatchUpgraded` +8, `stampedStaged` −6, `declinedBlocked`
++8, `declinedNoInstance` +133 — the LSS_017 raw-`l|` channel). A stamp-count-
+flat, coverage-negative shift means sigFlow reshuffles WHICH sites hold stamps:
+a hot-loop site loses its stamp while cold sites gain them — an effect
+invisible to every mono-time counter and to the depollution pin (which proves
+the chooseHandler shape keeps its params clean, and passes). Naming the moved
+sites needs the per-fp census diff (`benchmarks/dispatch-census.sh` on both
+arms' logs) — recorded as the follow-up, not improvised here.
+
+*Verdict per §8.3:* fidelity HELD (Run AC: precision reproduced at wall −0.4%
+where symmetric paid +3.6%) but non-regression FAILED ⇒ `lss.sigFlow` stays
+DEFAULT-OFF; the directed mechanism ships dormant as the strictly-better
+substrate. Next levers, in order: per-fp diff to name the reshuffled hot sites;
+then Phase H per-use let separation (`joinLetUse` stayed union-over-uses).
+
+#### Run AB addendum — the per-fp diff (2026-08-21): **one site is the whole story, and it is not "declined pollution"**
+
+Symbolizing ALL ~950 fast-bearing evaluators per arm and matching across arms by
+exact count (lambda INDICES renumber between arms — sigFlow mints more
+instances, shifting `Terminal_Main_lambda_<N>` by 10-60 — so a name-keyed diff
+mislabels renames as churn):
+
+- **439 symbol pairs are pure renames** (105.5M fast events, preserved exactly).
+  The "reshuffling" hypothesized from stamp-count-flat counters is mostly this
+  artifact; the real movement is small and concentrated.
+- **The residual loss is ONE dominant site**: `typesDecoder_$_35787`
+  (`Compiler.Elm.Compiler.Type.Extract.typesDecoder` — the typed-artifacts
+  binary-decode path) holds a stamped direct call to `lambda_38086$cap`
+  executed **44.25M times** flag-off; flag-on the site DOES NOT EXIST in that
+  form. That is 67% of the true loss on its own; the rest is a tail of 1-8M
+  sites in the same `Utils.Bytes.Decode.list/loop` machinery.
+- **The biggest gainer is a different decoder**: `lambda_24036→24038$cap`
+  (16.9M), hanging off `Compiler.Eco.Config.lssDecoder` — a fresh flag-on stamp
+  that flag-off could not make. sigFlow gives with one hand (new singletons at
+  chain-internal sites) and takes with the other (the hot inlined loop).
+- **The two arms' typesDecoder spec BODIES differ structurally** (off: the
+  Bytes machinery + canonicalDecoder + fromList inlined; on: a differently
+  factored body through Scheduler_andThen/foldrHelper) — sigFlow's facts change
+  stored demands → spec keys/joins → downstream inlining shapes, so the stamped
+  site was RESTRUCTURED, not merely declined.
+
+**Why the hot stamp exists flag-off and not flag-on (evidence-backed reading):**
+flag-off, the decode driver (`Utils.Bytes.Decode.list`'s `loop`/`listStep`)
+inlines into typesDecoder's OWN spec, where the continuation is locally unique —
+a singleton by direct injection, correctly stampable, 44M direct calls. Flag-on,
+the shared combinators' SIGNATURES transport their body-lambda members into the
+caller's instantiated slots — and per LSS_017 those signature-carried lambda ids
+are RAW `l|` ids, which miss AbiCloning's instance index (`declinedNoInstance`,
++133 sites in both sigFlow designs) and/or widen the slot past singleton. A
+counter that reads "+133 sites, not material" at mono time is 44M EVENTS at
+runtime when one of the 133 is the artifact-decode loop — site counts and event
+counts are different units, and this run is the demonstration.
+
+*Sharpened next levers:* (1) LSS_017's recorded v2 — enqueue-time qualification
+of signature-transported lambda ids (`plans/lss-fork-qualified-members.md` §8) —
+is now the TOP candidate, ahead of Phase H per-use separation: it directly
+un-declines the raw-`l|` class this diff implicates. (2) A per-site decline log
+(site → declined member ids) on the sf-on self-compile would confirm the exact
+decline reason for the typesDecoder loop before building either fix.
+
+*2026-08-21 correction — the decline log RAN and REFUTED lever (1).* Per-site
+decline log (`/work/lss-decline-log-analysis.md`): the noInstance +133 delta is
+INTERNED-range member ids (5 of 1,034 ON-only pairs in the raw-`l|` range), so
+LSS_017 v2 is deprioritized back below Phase H. And `Extract.typesDecoder`
+appears in NEITHER arm's log — the 44M fast-event loss is not an AbiCloning
+decline at all but spec-BODY divergence upstream (construction/inlining).
+Corrected levers: (a) typesDecoder spec-construction diff between arms;
+(b) one `lss.devirtFnGlobals=1` run — the noInstance singletons are `g|`-class
+function globals, exactly E9.1's population (unexploited precision, not
+regression).
+
+*2026-08-21 second correction — the spec-construction diff RAN and REFUTED
+this addendum's site attribution entirely
+(`/work/lss-spec-construction-diff.md`).* A global canonical diff of the two
+arms' artifacts shows **zero spec bodies restructured anywhere** —
+typesDecoder's CAF keeps all five `_fast_evaluator` stamps in BOTH arms
+(verified in this run's own disassemblies: `_$_35787`/`_$_35906`). The
+typesDecoder identification above was census symbol ALIASING:
+`dispatch-census.sh` resolves fps by greatest-lower-bound over nm t/T, and
+859 distinct fps (267M events) print as `lambda_38086$cap` in the off tsv.
+Name-level claims from this census are unsafe; the count-matched rename pairs
+and the global fast/sat totals stand. The real artifact delta: ~130 duplicate
+spec instances (key splits, identical bodies) plus a net ~6 de-stamped
+`System_TypeCheck_IO_andThen` callback wrappers (= `stampedStaged −6`) in the
+solver zonk/UnionFind family (`variableToCanType`, `variableToErrorType`,
+`getVarNames` named 1:1) — sigFlow's richer annotations split spec keys, the
+callback member's instance misses the index under the new key
+(`declinedNoInstance`), the stamp is refused. Corrected levers: fix the
+census symbolization; size instance dedup / canonical-body stamping for the
+split family; `lssDF=1` only for the true-fn-global noInstance subset.
+
+*2026-08-21 final — census symbolization FIXED and the attribution is now
+EXACT.* Root cause of the aliasing: awk compares hex-address strings
+NUMERICALLY when both operands happen to parse ("...17688e0" = scientific
+notation) — the symbols were never missing; every sampled fp resolves at
++0x0 with a correct bisect. `dispatch-census.sh` and `closure-census.sh` now
+convert hex explicitly and binary-search in one awk pass, printing
+`sym+0x<off>`/`<unknown:...>` so imprecision is visible. Re-symbolizing this
+run's logs: unmatched OFF fast 23,236,359 − unmatched ON fast 4,818 = **net
+23,231,541 = the global fast delta to the event**, concentrated in FOUR
+callbacks of the de-stamped solver andThen wrappers:
+`lambda_14620$cap` 19.29M (`variableToCanType` chain, 83% of the loss),
+`lambda_14627$cap` 2.79M (adjacent same-family chain), `lambda_13713/14$cap`
+1.15M (`getVarNames` chain). The "16.9M `Eco.Config.lssDecoder` gainer" was
+also an aliasing artifact. Lever: instance dedup / canonical-body stamping
+for the `Type.Type` zonk family recovers essentially the whole regression;
+`lssDF=1` deprioritized (fn-global slice ≈ no event weight). Full record:
+`/work/lss-spec-construction-diff.md`.
+
+*Refinement + plan filed (2026-08-21 later):* the decline MODE at the hot
+sites is slot WIDENING (2-sets of qualified siblings — the andThen
+noInstance population is 26 = 26 across arms, and the single logged
+multiSet line is an `IO.andThen` 2-set), not an instance-index miss; the
++133 is a separate long tail. The dedup lever is planned as
+`plans/lss-layout-qualified-members.md`: layout-qualified member identity
+(C) + a mandatory AbiCloning fingerprint fence (F — the E11
+representative-hijack arc proves same-layout annotation-only clones can
+diverge behaviorally, so id re-sharing without a body-identity fence would
+re-arm a recorded SIGSEGV). Acceptance criteria and the sigFlow flip
+re-open chain are recorded in that plan's §6.

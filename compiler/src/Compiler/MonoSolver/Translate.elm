@@ -3615,7 +3615,17 @@ joinKernelTunnels resVar vars s0 =
             Ok ( (), s0 )
 
         v :: rest ->
-            case LssInfer.joinArrowSetsPlain v resVar s0 of
+            -- LSS_023 selector — the translation twin of LssInfer's
+            -- `joinTunnels` gate; see the comment there. The kernel boundary
+            -- runs flag-off, so the sigFlow gate must live at the join.
+            case
+                (if s0.env.lss.sigFlow then
+                    LssInfer.flowArrowSetsPlain v resVar s0
+
+                 else
+                    LssInfer.joinArrowSetsPlain v resVar s0
+                )
+            of
                 Err e ->
                     Err e
 

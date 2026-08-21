@@ -7,6 +7,7 @@ module Compiler.MonoSolver.LssInfer exposing
     , kernelAliasOf
     , spineDepthForGlobal
     , joinArrowSetsPlain
+    , flowArrowSetsPlain
     )
 
 {-| Lambda-set signature inference (LSS design §7).
@@ -246,10 +247,45 @@ applyFactsGo facts slots i s0 =
                             Err e
 
                         Ok ( _, s2 ) ->
-                            applyFactsGo facts slots (i + 1) s2
+                            -- LSS_023: install the directed half — for each
+                            -- source ordinal j, "slots[i] ⊇ slots[j]" as a
+                            -- deferred edge. Pull-at-read makes the
+                            -- eager-vs-late ordering irrelevant: this is
+                            -- exactly the deferral that makes directed facts
+                            -- sound where the snapshot read was not, even
+                            -- though applyFacts still precedes arg
+                            -- unification. Missing ordinal → skip (a count
+                            -- mismatch is already poisoned by applyFacts'
+                            -- length guard).
+                            case installSources fact.sources slots slot s2 of
+                                Err e ->
+                                    Err e
+
+                                Ok ( _, s3 ) ->
+                                    applyFactsGo facts slots (i + 1) s3
 
         _ ->
             Ok ( (), s0 )
+
+
+installSources : List Int -> Array IO.Variable -> IO.Variable -> Step ()
+installSources ordinals slots dst s0 =
+    case ordinals of
+        [] ->
+            Ok ( (), s0 )
+
+        j :: rest ->
+            case Array.get j slots of
+                Nothing ->
+                    installSources rest slots dst s0
+
+                Just srcSlot ->
+                    case Store.addSlotSource srcSlot dst s0 of
+                        Err e ->
+                            Err e
+
+                        Ok ( _, s1 ) ->
+                            installSources rest slots dst s1
 
 
 
@@ -611,7 +647,7 @@ zonkSigGo selfId slots n i factsRev s0 =
             trivial =
                 List.all identity
                     (List.indexedMap
-                        (\j f -> f.rep == j && not f.top && List.isEmpty f.members)
+                        (\j f -> f.rep == j && not f.top && List.isEmpty f.members && List.isEmpty f.sources)
                         facts
                     )
         in
@@ -640,7 +676,7 @@ zonkSigGo selfId slots n i factsRev s0 =
                                     IO.Structure (IO.LambdaSet1 IO.LsTop) ->
                                         -- Members are dead under ⊤ at every
                                         -- fact consumer; carry none.
-                                        ( { rep = rep, members = [], top = True }, s2 )
+                                        ( Ok { rep = rep, members = [], top = True, sources = [] }, s2 )
 
                                     IO.Structure (IO.LambdaSet1 (IO.LsMembers ms0)) ->
                                         if s2.env.lss.sigFlow then
@@ -662,23 +698,215 @@ zonkSigGo selfId slots n i factsRev s0 =
                                             -- too (mirrors Store.zonkSetSlot's
                                             -- cap; LSS_005 — widening only).
                                             if List.length ms > s2.env.lss.maxSetSize then
-                                                ( { rep = rep, members = [], top = True }
+                                                ( Ok { rep = rep, members = [], top = True, sources = [] }
                                                 , Engine.bumpWidenedBySigSize s2
                                                 )
 
                                             else
-                                                ( { rep = rep, members = ms, top = False }, s2 )
+                                                ( Ok { rep = rep, members = ms, top = False, sources = [] }, s2 )
 
                                         else
                                             -- Phase 2: the store list by pointer
                                             -- (was CoreDict.keys).
-                                            ( { rep = rep, members = ms0, top = False }, s2 )
+                                            ( Ok { rep = rep, members = ms0, top = False, sources = [] }, s2 )
+
+                                    IO.Structure (IO.LambdaSet1 (IO.LsFrom ms0 srcs)) ->
+                                        -- LSS_023 promote-or-internalize (the
+                                        -- paper's Fig. 7 split, at the id
+                                        -- level): walk the edge graph; a node
+                                        -- UF-equivalent to ANOTHER signature
+                                        -- ordinal is PROMOTED (recorded in
+                                        -- `sources`, not descended — the
+                                        -- caller-side edge delivers its
+                                        -- members); everything else is
+                                        -- INTERNALIZED (members collected,
+                                        -- its own srcs descended).
+                                        if s2.env.lss.sigFlow then
+                                            ( Err ( ms0, srcs ), s2 )
+
+                                        else
+                                            -- Defensive (unreachable while the
+                                            -- §2.2 gating holds — no flag-off
+                                            -- producer exists). MUST NOT read
+                                            -- ms0 as complete: a set claiming
+                                            -- completeness while dropping its
+                                            -- sources' members is the
+                                            -- false-singleton miscompile.
+                                            ( Ok { rep = rep, members = [], top = True, sources = [] }, s2 )
 
                                     _ ->
                                         -- FlexVar: the body contributed nothing.
-                                        ( { rep = rep, members = [], top = False }, s2 )
+                                        ( Ok { rep = rep, members = [], top = False, sources = [] }, s2 )
                         in
-                        zonkSigGo selfId slots n (i + 1) (fact :: factsRev) s3
+                        case fact of
+                            Ok done ->
+                                zonkSigGo selfId slots n (i + 1) (done :: factsRev) s3
+
+                            Err ( ms0, srcs ) ->
+                                case sigResolveEdges selfId slots i ms0 srcs s3 of
+                                    Err e ->
+                                        Err e
+
+                                    Ok ( resolved, s4 ) ->
+                                        let
+                                            ( done, s5 ) =
+                                                finishSigFact rep resolved s4
+                                        in
+                                        zonkSigGo selfId slots n (i + 1) (done :: factsRev) s5
+
+
+{-| LSS_023 §3.2: the edge-graph walk behind `zonkSigGo`'s `LsFrom` arm.
+Same visited discipline as `Store.resolveSlotMembers` (raw pointKey, marked on
+entry, fresh per call); classification per reached node:
+
+  - UF-equivalent to `slots[j]` for some ordinal `j /= i`: PROMOTE — record
+    `j`, do NOT descend (the caller-side edge delivers j's members);
+  - otherwise: INTERNALIZE — collect its members, descend its sources.
+
+A reachable ⊤ short-circuits to `{ top = True, members = [], sources = [] }`.
+The self-id filter (B.1.f) applies to the COLLECTED members; ordinal self
+(and rep-equal ordinals — their equality is already the rep link) are
+dropped from sources.
+-}
+sigResolveEdges : Maybe Int -> Array IO.Variable -> Int -> List Int -> List IO.Variable -> Step { top : Bool, members : List Int, sources : List Int }
+sigResolveEdges selfId slots i ms0 srcs s0 =
+    case sigEdgesGo slots i srcs [] ms0 [] s0 of
+        Err e ->
+            Err e
+
+        Ok ( Nothing, s1 ) ->
+            Ok ( { top = True, members = [], sources = [] }, s1 )
+
+        Ok ( Just ( members, ordinals ), s1 ) ->
+            let
+                filtered =
+                    case selfId of
+                        Just sid ->
+                            List.filter (\mid -> mid /= sid) members
+
+                        Nothing ->
+                            members
+            in
+            Ok ( { top = False, members = filtered, sources = List.sort ordinals }, s1 )
+
+
+sigEdgesGo : Array IO.Variable -> Int -> List IO.Variable -> List Int -> List Int -> List Int -> Step (Maybe ( List Int, List Int ))
+sigEdgesGo slots i pending visited accMembers accOrdinals s0 =
+    case pending of
+        [] ->
+            Ok ( Just ( accMembers, accOrdinals ), s0 )
+
+        src :: rest ->
+            let
+                key =
+                    Engine.pointKey src
+            in
+            if List.member key visited then
+                sigEdgesGo slots i rest visited accMembers accOrdinals s0
+
+            else
+                case ordinalOf slots i src s0 of
+                    Err e ->
+                        Err e
+
+                    Ok ( Just j, s1 ) ->
+                        -- PROMOTE: record the ordinal, do not descend.
+                        sigEdgesGo slots
+                            i
+                            rest
+                            (key :: visited)
+                            accMembers
+                            (if List.member j accOrdinals then
+                                accOrdinals
+
+                             else
+                                j :: accOrdinals
+                            )
+                            s1
+
+                    Ok ( Nothing, s1 ) ->
+                        -- INTERNALIZE.
+                        let
+                            ( store1, desc ) =
+                                UF.get src s1.store
+
+                            s2 =
+                                { s1 | store = store1 }
+
+                            visited1 =
+                                key :: visited
+                        in
+                        case desc.content of
+                            IO.Structure (IO.LambdaSet1 IO.LsTop) ->
+                                Ok ( Nothing, s2 )
+
+                            IO.Structure (IO.LambdaSet1 (IO.LsMembers ms)) ->
+                                sigEdgesGo slots i rest visited1 (IO.unionSortedAsc accMembers ms) accOrdinals s2
+
+                            IO.Structure (IO.LambdaSet1 (IO.LsFrom ms ss)) ->
+                                sigEdgesGo slots i (ss ++ rest) visited1 (IO.unionSortedAsc accMembers ms) accOrdinals s2
+
+                            IO.FlexVar _ ->
+                                sigEdgesGo slots i rest visited1 accMembers accOrdinals s2
+
+                            _ ->
+                                -- Defensive: fail toward ⊤ (§2.3's direction
+                                -- rule).
+                                Ok ( Nothing, s2 )
+
+
+{-| The signature ordinal a Point IS (UF-equivalent to `slots[j]`, `j /= i`),
+scanning ALL ordinals — unlike `repOrdinal`, which scans only below `i`.
+-}
+ordinalOf : Array IO.Variable -> Int -> IO.Variable -> Step (Maybe Int)
+ordinalOf slots i node s0 =
+    ordinalOfGo slots i node 0 s0
+
+
+ordinalOfGo : Array IO.Variable -> Int -> IO.Variable -> Int -> Step (Maybe Int)
+ordinalOfGo slots i node j s0 =
+    if j >= Array.length slots then
+        Ok ( Nothing, s0 )
+
+    else if j == i then
+        ordinalOfGo slots i node (j + 1) s0
+
+    else
+        case Array.get j slots of
+            Nothing ->
+                Ok ( Nothing, s0 )
+
+            Just other ->
+                let
+                    ( store1, eq ) =
+                        UF.equivalent node other s0.store
+
+                    s1 =
+                        { s0 | store = store1 }
+                in
+                if eq then
+                    Ok ( Just j, s1 )
+
+                else
+                    ordinalOfGo slots i node (j + 1) s1
+
+
+{-| The B.4 cap and final shaping for a resolved `LsFrom` fact: over-cap
+resolved members ⇒ ⊤ (sources DROPPED — ⊤ absorbs; `widenedBySigSize`
+bumped), else the members-plus-sources fact.
+-}
+finishSigFact : Int -> { top : Bool, members : List Int, sources : List Int } -> Engine.S -> ( Engine.ArrowFact, Engine.S )
+finishSigFact rep resolved s0 =
+    if resolved.top then
+        ( { rep = rep, members = [], top = True, sources = [] }, s0 )
+
+    else if List.length resolved.members > s0.env.lss.maxSetSize then
+        ( { rep = rep, members = [], top = True, sources = [] }
+        , Engine.bumpWidenedBySigSize s0
+        )
+
+    else
+        ( { rep = rep, members = resolved.members, top = False, sources = resolved.sources }, s0 )
 
 
 {-| The smallest ordinal j < i whose slot is UF-equivalent to this one (i if
@@ -1193,7 +1421,9 @@ localCalleeJoin letEnv name args meta s0 =
                                             Err e
 
                                         Ok ( callVar, s2 ) ->
-                                            case joinArrowSetsSig restVar callVar s2 of
+                                            -- LSS_023 directed: the callee's
+                                            -- residual flows INTO the call.
+                                            case flowArrowSetsSig restVar callVar s2 of
                                                 Err e ->
                                                     Err e
 
@@ -1243,7 +1473,9 @@ joinCallArgs v args seen s0 =
                                             Err e
 
                                         Ok ( argVar, s2 ) ->
-                                            case joinArrowSetsSig argVar pParam s2 of
+                                            -- LSS_023 directed: the argument
+                                            -- flows INTO the param family.
+                                            case flowArrowSetsSig argVar pParam s2 of
                                                 Err e ->
                                                     Err e
 
@@ -1440,7 +1672,20 @@ joinTunnels resVar vars s0 =
             Ok ( (), s0 )
 
         v :: rest ->
-            case joinArrowSets identity v resVar s0 of
+            -- LSS_023 selector: the kernel boundary itself is NOT
+            -- sigFlow-gated (LSS_021 runs flag-off), so the gate lives HERE —
+            -- without it, the first PSFTunnels row would mint `LsFrom`
+            -- flag-off and falsify the Phase-A inertness gate (§2.2). Zero
+            -- tunnel rows ship in this plan; the selector is the enabling
+            -- condition for the sortBy/sortWith refinement later.
+            case
+                (if s0.env.lss.sigFlow then
+                    flowArrowSetsPlain v resVar s0
+
+                 else
+                    joinArrowSets identity v resVar s0
+                )
+            of
                 Err e ->
                     Err e
 
@@ -1907,6 +2152,186 @@ joinArrowSetsSig =
     joinArrowSets Engine.bumpWidenedByCf
 
 
+{-| LSS_023: "values of src flow into dst" — the DIRECTED twin of
+`joinArrowSets` (`plans/lss-directed-set-flow.md` §5.1).
+
+Slot positions get a deferred edge (`Store.addSlotSource`) instead of
+unification. ARG positions FLIP operands — contravariance: dst's callers'
+arguments flow into src's params; the double-flip in nested arg positions is
+correctly covariant. Container positions (App1/Record1/Tuple1) DEGRADE the
+WHOLE subtree to the symmetric join (per-parameter variance unknown;
+symmetric is the sound over-approximation — and `joinArrowSets` never
+resumes a directed spine inside, it recurses only into itself). Alias chase,
+EmptyRecord/Unit accept, mismatch/variable → `poisonBoth onPoison` — all as
+`joinArrowSets`.
+
+**Any FUTURE directed call site must re-argue variance.** A directed walk
+that recursed argument positions co-variantly would install wrong-direction
+edges and UNDER-approximate — the miscompile class.
+-}
+flowArrowSets : (Engine.S -> Engine.S) -> IO.Variable -> IO.Variable -> Step ()
+flowArrowSets onPoison src dst s0 =
+    let
+        ( store1, descS ) =
+            UF.get src s0.store
+
+        ( store2, descD ) =
+            UF.get dst store1
+
+        s1 =
+            { s0 | store = store2 }
+    in
+    case ( descS.content, descD.content ) of
+        ( IO.Structure flatS, IO.Structure flatD ) ->
+            case ( flatS, flatD ) of
+                ( IO.FunL argS resS slotS, IO.FunL argD resD slotD ) ->
+                    case Store.addSlotSource slotS slotD s1 of
+                        Err e ->
+                            Err e
+
+                        Ok ( _, s2 ) ->
+                            case flowArrowSets onPoison resS resD s2 of
+                                Err e ->
+                                    Err e
+
+                                Ok ( _, s3 ) ->
+                                    -- ARG: contravariant flip.
+                                    flowArrowSets onPoison argD argS s3
+
+                ( IO.Fun1 argS resS, IO.Fun1 argD resD ) ->
+                    -- Slotless arrow: same variance, no edge to install.
+                    case flowArrowSets onPoison resS resD s1 of
+                        Err e ->
+                            Err e
+
+                        Ok ( _, s2 ) ->
+                            flowArrowSets onPoison argD argS s2
+
+                ( IO.App1 _ _ _, IO.App1 _ _ _ ) ->
+                    degradeToSymmetric onPoison src dst s1
+
+                ( IO.Tuple1 _ _ _, IO.Tuple1 _ _ _ ) ->
+                    degradeToSymmetric onPoison src dst s1
+
+                ( IO.Record1 _ _, IO.Record1 _ _ ) ->
+                    degradeToSymmetric onPoison src dst s1
+
+                ( IO.EmptyRecord1, _ ) ->
+                    Ok ( (), s1 )
+
+                ( _, IO.EmptyRecord1 ) ->
+                    Ok ( (), s1 )
+
+                ( IO.Unit1, IO.Unit1 ) ->
+                    Ok ( (), s1 )
+
+                _ ->
+                    poisonBoth onPoison src dst s1
+
+        ( IO.Alias _ _ _ realS, _ ) ->
+            flowArrowSets onPoison realS dst s1
+
+        ( _, IO.Alias _ _ _ realD ) ->
+            flowArrowSets onPoison src realD s1
+
+        _ ->
+            -- A variable on either side = a generalized position: poison both.
+            poisonBoth onPoison src dst s1
+
+
+{-| The container degrade: the WHOLE subtree goes symmetric. `flowDegraded`
+bumps only when the degraded pair can actually CARRY a set (arrow-mention in
+the src structure) — ground leaves like `Int` would otherwise dominate the
+counter and make it meaningless.
+-}
+degradeToSymmetric : (Engine.S -> Engine.S) -> IO.Variable -> IO.Variable -> Step ()
+degradeToSymmetric onPoison src dst s0 =
+    case storeMentionsArrow src s0 of
+        Err e ->
+            Err e
+
+        Ok ( carries, s1 ) ->
+            joinArrowSets onPoison src dst
+                (if carries then
+                    Engine.bumpFlowDegraded s1
+
+                 else
+                    s1
+                )
+
+
+{-| Does the store structure under this Point mention an arrow? Bounded
+walk with a visited list (aliases can cycle through records).
+-}
+storeMentionsArrow : IO.Variable -> Engine.S -> Result Engine.Failure ( Bool, Engine.S )
+storeMentionsArrow root s0 =
+    storeMentionsArrowGo [ root ] [] s0
+
+
+storeMentionsArrowGo : List IO.Variable -> List Int -> Engine.S -> Result Engine.Failure ( Bool, Engine.S )
+storeMentionsArrowGo pending visited s0 =
+    case pending of
+        [] ->
+            Ok ( False, s0 )
+
+        v :: rest ->
+            let
+                key =
+                    Engine.pointKey v
+            in
+            if List.member key visited then
+                storeMentionsArrowGo rest visited s0
+
+            else
+                let
+                    ( store1, desc ) =
+                        UF.get v s0.store
+
+                    s1 =
+                        { s0 | store = store1 }
+
+                    visited1 =
+                        key :: visited
+                in
+                case desc.content of
+                    IO.Structure (IO.FunL _ _ _) ->
+                        Ok ( True, s1 )
+
+                    IO.Structure (IO.Fun1 _ _) ->
+                        Ok ( True, s1 )
+
+                    IO.Structure (IO.App1 _ _ args) ->
+                        storeMentionsArrowGo (args ++ rest) visited1 s1
+
+                    IO.Structure (IO.Tuple1 a b more) ->
+                        storeMentionsArrowGo (a :: b :: more ++ rest) visited1 s1
+
+                    IO.Structure (IO.Record1 fields ext) ->
+                        storeMentionsArrowGo (CoreDict.values fields ++ (ext :: rest)) visited1 s1
+
+                    IO.Alias _ _ _ real ->
+                        storeMentionsArrowGo (real :: rest) visited1 s1
+
+                    _ ->
+                        storeMentionsArrowGo rest visited1 s1
+
+
+{-| `flowArrowSets` with sigFlow attribution — the directed twin of
+`joinArrowSetsSig`.
+-}
+flowArrowSetsSig : IO.Variable -> IO.Variable -> Step ()
+flowArrowSetsSig =
+    flowArrowSets Engine.bumpWidenedByCf
+
+
+{-| Set-flow with no poison attribution — the directed twin of
+`joinArrowSetsPlain`, for translation-side consumers (kernel tunnels).
+-}
+flowArrowSetsPlain : IO.Variable -> IO.Variable -> Step ()
+flowArrowSetsPlain =
+    flowArrowSets identity
+
+
 {-| Flag-gated single-source join (Let rhs → letEnv hub; skip on no point).
 -}
 sigFlowJoinInto : IO.Variable -> Maybe IO.Variable -> Step ()
@@ -2086,7 +2511,12 @@ joinCfHub wps meta s0 =
 
             Ok ( hub, s1 ) ->
                 if List.all hubHonest wps then
-                    case joinAllSig hub (List.filterMap wpPoint wps) s1 of
+                    -- LSS_023: DIRECTED — each branch flows INTO the hub
+                    -- (branch → hub), so the branches keep their own sets and
+                    -- the hub resolves their union at read. The symmetric
+                    -- version unified all branches into one class — the Run-X
+                    -- pollution this plan exists to remove.
+                    case flowAllSig hub (List.filterMap wpPoint wps) s1 of
                         Err e ->
                             Err e
 
@@ -2118,19 +2548,20 @@ hubHonest wp =
             False
 
 
-joinAllSig : IO.Variable -> List IO.Variable -> Step ()
-joinAllSig hub pts s0 =
+flowAllSig : IO.Variable -> List IO.Variable -> Step ()
+flowAllSig hub pts s0 =
     case pts of
         [] ->
             Ok ( (), s0 )
 
         p :: rest ->
-            case joinArrowSetsSig hub p s0 of
+            -- branch → hub: p is the SOURCE.
+            case flowArrowSetsSig p hub s0 of
                 Err e ->
                     Err e
 
                 Ok ( _, s1 ) ->
-                    joinAllSig hub rest s1
+                    flowAllSig hub rest s1
 
 
 walkIfPairs : LetEnv -> List ( TOpt.Expr TypeIds.MVarId, TOpt.Expr TypeIds.MVarId ) -> List WalkPoint -> Step (List WalkPoint)
