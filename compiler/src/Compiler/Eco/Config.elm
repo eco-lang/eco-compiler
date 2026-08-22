@@ -308,11 +308,15 @@ type alias LssConfig =
     -- at AbiCloning, rewrite a singleton g|/c| noInstance call site (plain
     -- local callee, exact arity) to a DIRECT call of the lowest-SpecId
     -- eqLayout-matching spec of the member's origin global/ctor — the
-    -- commit-after-settle completion of E9.1's translate-time arm.
-    -- DEFAULT-OFF at landing (2026-08-22); artifact-affecting when on
-    -- (hash token lssDP=1). Built on the reach-completeness criterion —
-    -- the self-compile heat of the population is ≈0.24% upper bound
-    -- (plan §2.R), the point is closing the exploitation gap.
+    -- commit-after-settle completion of E9.1's translate-time arm (LSS_025).
+    -- DEFAULT-ON since 2026-08-22 (user-directed flip, same day as the
+    -- landing battery: devirtPost 86/311/0 census-exact, minor/major GC
+    -- identical across arms, byte-identity + determinism + E2E both arms +
+    -- elm-tests green — lss-opt Run AE; ECO_MONO_LSS_DEVIRT_POST=0 is the
+    -- escape hatch). Built on the reach-completeness criterion — the
+    -- self-compile heat of the population is ≈0.24% upper bound (plan
+    -- §2.R); the point is closing the exploitation gap for workloads that
+    -- pass bare globals/ctors around more than a compiler does.
     , postSettleDevirt : Bool
     }
 
@@ -349,7 +353,7 @@ defaultLss =
     , groundStandalones = True
     , sigFlow = True
     , layoutQualMembers = True
-    , postSettleDevirt = False
+    , postSettleDevirt = True
     }
 
 

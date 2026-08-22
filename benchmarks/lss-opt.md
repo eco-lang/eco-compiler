@@ -984,7 +984,9 @@ pre-change binary's on the same corpus (two-binary gate); flag-on determinism
 ×2 byte-identical; elm-tests 13,192/12-pre-existing (6 new pins); Stage-4b JS
 fixed point held. Built on the reach-completeness criterion — self-compile
 dispatch heat of the population is ≈0.24% upper bound by design
-(plan §2.R.2); no event-recovery claim. Flag DEFAULT-OFF; plan
+(plan §2.R.2); no event-recovery claim. Flag landed DEFAULT-OFF and was
+FLIPPED DEFAULT-ON the same day (user-directed, on this battery alone —
+no separate bootstrap run, recorded in the plan); plan
 `plans/lss-post-settle-fn-global-devirt.md` (LSS_025).
 
 ## Summary

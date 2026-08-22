@@ -1740,10 +1740,11 @@ applyLssLayoutQualOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_MONO_LSS_DEVIRT_POST=1|true|yes / 0|false|no` (E9.5,
+{-| `ECO_MONO_LSS_DEVIRT_POST=1|true|yes / 0|false|no` (E9.5 / LSS_025,
 plans/lss-post-settle-fn-global-devirt.md): post-settle devirt of singleton
-g|/c| noInstance sites at AbiCloning. DEFAULT-OFF; participates in the hash
-via the `lssDP=` token when non-default.
+g|/c| noInstance sites at AbiCloning. DEFAULT-ON since 2026-08-22, so the
+override is bidirectional and `0|false|no` is the escape hatch. Participates
+in the hash via the `lssDP=` token when non-default.
 -}
 applyLssDevirtPostOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssDevirtPostOverride maybeVal cfg =

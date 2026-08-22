@@ -1,8 +1,13 @@
 # Post-settle fn-global devirt (E9.5 — the commit-after-settle completion of E9.1) — census first
 
-**Status: LANDED DEFAULT-OFF (2026-08-22; §4.R has the execution record —
+**Status: SHIPPED DEFAULT-ON (2026-08-22; §4.R has the execution record —
 reach acceptance EXACT: devirtPost 86/311/0 = the census table to the
-digit; neutrality EXACT: minor/major GC identical across arms). The build
+digit; neutrality EXACT: minor/major GC identical across arms). The flip
+to default-on was user-directed the same day, on the landing battery
+alone — explicitly WITHOUT a separate bootstrap run or further testing
+(commissioning decision; the battery already held the Stage-4b JS fixed
+point, E2E both arms, byte-identity and determinism).
+`ECO_MONO_LSS_DEVIRT_POST=0` is the escape hatch. The build itself
 supersedes the 2026-08-21 PARK on a criterion change, recorded below. Phase 0 RAN (§2.R) and its heat verdict stands unchallenged for the
 self-compile: the admissible slice upper-bounds at ≈0.24% of dispatch
 there. The PARK is superseded on a CRITERION change, not a numbers change:
@@ -414,10 +419,18 @@ one cold leg per arm, same tree):**
   runtime-calls event-recovery leg is claimed or required under the
   reach criterion.
 
-**Flip status:** DEFAULT-OFF at landing, per §3. The flip is its own
-recorded decision (full battery incl. bootstrap fixed points, the repo
-standard) — on this evidence there is no self-compile reason to hurry it,
-and the reach benefit accrues to any workload the moment the flag is set.
+**Flip status: FLIPPED DEFAULT-ON same day (user-directed).** The flip was
+taken on the landing battery alone, explicitly without a separate
+bootstrap run or further testing — a recorded commissioning decision
+deviating from the full-flip-battery convention. What the landing battery
+already covered: Stage-4b JS fixed point on the E9.5-bearing tree, E2E
+1,686/1,686 on the flag-on arm (= the new default's behavior), flag-on
+determinism ×2, and GC-counter-identical neutrality. What was NOT re-run
+for the flip: the deeper bootstrap fixed points (Stage 8c) and a
+default-config artifact re-baseline — the first default build will
+exercise both. The muTie-style `/=` hash token keeps the default config's
+hash token-free across the flip; explicitly-off configs now key as
+`lssDP=0`.
 
 ## §5 Risks
 
