@@ -2281,6 +2281,18 @@ micro-candidates above remain unclaimed.
 ## 11.6 E10 — post-settle kernel devirt: relocate to GlobalOpt
 ## (design-first exploration, added 2026-07-20)
 
+**2026-08-21 addendum — the FN-GLOBAL half of commit-after-settle is
+MEASURED-CLOSED** (`plans/lss-post-settle-fn-global-devirt.md` §2.R, E9.5
+Phase 0): the singleton-`g|` noInstance population is 100 of 1,387 (52
+admissible sites, 22 targets), dynamic upper bound ≈0.24% of dispatch with
+the two dominant targets attributed to non-admissible sites — PARKED, no
+build. The same census hands THIS section its Phase-0 seed if re-opened:
+the `k|` noInstance residue is 135 sites (`List.cons` 30,
+`Scheduler.andThen` 21, `Utils.equal` 19) and cons-valued closures carry
+≈10.9M sat on the census leg (≈0.56% at Run-AC scale) — the only warm lead
+in the noInstance population, gated behind the E9.2 decline guards this
+section already names.
+
 **Origin.** The Tier-1 hardening proved translate-time kernel devirt is
 COMMIT-BEFORE-SETTLE: it freezes a layout-committed kernel identity while
 the site may still carry residual `CNumber` vars, and the demand-close (a

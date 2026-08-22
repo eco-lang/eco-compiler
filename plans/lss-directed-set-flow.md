@@ -369,7 +369,7 @@ flowArrowSetsSig = flowArrowSets Engine.bumpWidenedByCf
 | local-callee arg side | `joinArrowSetsSig argVar pParam` (:1245) | `flowArrowSetsSig argVar pParam` |
 | local-callee result side | `joinArrowSetsSig restVar callVar` (:1195) | `flowArrowSetsSig restVar callVar` |
 | kernel PSFTunnels | `joinArrowSets identity v resVar` (:1373) / `LssInfer.joinArrowSetsPlain` (Translate.elm:3487) | **`if s.env.lss.sigFlow then flowArrowSets identity … else joinArrowSets identity …`** at BOTH sites (+ export `flowArrowSetsPlain`). The kernel boundary is NOT sigFlow-gated (LSS_021 runs flag-off), so the gate lives here — without it, the first `PSFTunnels` row would mint `LsFrom` flag-off and break §2.2. Zero tunnel rows ship in THIS plan; the sortBy/sortWith row unlocks after (LSS_021 amendment carries the same warning) |
-| **kept symmetric** (same-value or v1 policy): walkMembers root join (:565), walkFunction result join (:1004 — safe because the hub's in-edges are one-way; no back-path to params), Let/Def rhs (:860), Let/TailDef result (:896), joinLetUse (:1723 — union-over-uses stays the let channel's v1 policy; per-use separation stays Phase-H-parked) | | |
+| **kept symmetric** (same-value or v1 policy): walkMembers root join (:565), walkFunction result join (:1004 — safe because the hub's in-edges are one-way; no back-path to params), Let/Def rhs (:860), Let/TailDef result (:896), joinLetUse (:1723 — union-over-uses stays the let channel's policy. NOT a v1 compromise any more: measured 2026-08-21 (`plans/lss-per-use-let-separation.md` §2.R, both sigFlow arms) the channel moves NO content use→rhs — `intoRhs`/`both` = 0 and both the exact-lower-bound and upper-bound sibling measures are 0/0/0 over 371/2,018 multi-use bindings — so directing this boundary is measurably a no-op, and per-use separation is PARKED on evidence rather than deferred) | | |
 
 Honesty rule UNCHANGED: hubs publish only when every branch is
 `WpHonest`/`WpSelf`, else poison — a directed edge from a blind branch would
@@ -751,6 +751,9 @@ characterised. Next levers, in order and recorded rather than improvised:
 (1) per-fp census diff (`dispatch-census.sh` over both Run-AB logs) to
 NAME the reshuffled hot sites; (2) Phase H per-use let separation
 (`joinLetUse` stayed union-over-uses, the largest kept-symmetric channel).
+*Lever (2) is CLOSED (2026-08-21): its Phase-0 census returned PARK on both
+halves — `plans/lss-per-use-let-separation.md` §2.R. `joinLetUse` remains the
+largest kept-symmetric channel and that is now a measured non-issue.*
 
 Status: **IMPLEMENTED IN FULL (Phases A-E); flip decision: FLIPPED
 2026-08-21 (superseding the same-day not-flipped record).**

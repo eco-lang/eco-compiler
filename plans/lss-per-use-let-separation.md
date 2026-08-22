@@ -1,7 +1,13 @@
 # Per-use let-set separation (Phase H / GAP-9 repair half) — census first
 
-**Status: PROPOSED (2026-08-21, user-commissioned). Census (Phase 0) not
-yet run — and this plan does not proceed past §2 without it.** This is the
+**Status: PARKED on measurement (2026-08-21). Phase 0 RAN — both arms, both
+bounds — and BOTH halves of the repair measure EMPTY. The channel's
+`intoRhs`/`both` are 0 and its `sibling`/`laterGrowth` pollution measures are
+0/0/0 on the sigFlow-on AND sigFlow-off arms, so H.1 has nothing to direct;
+`poisonUseFault` is 0 (every poison is the rhs-at-fault arm §3 says must stay
+symmetric) and each poison destroys 0 rhs set slots, so H.2 has nothing to
+spare. §§3-4 are NOT built. Numbers, method and the refuted priors: §2.R.**
+This is the
 "asymmetric treatment" residue left standing after LSS_023 directed the
 call-site joins: the let channel (`joinLetUse`) still unifies
 symmetrically, so a let-bound function's set is the UNION over all its
@@ -180,7 +186,183 @@ report ONLY as "stale prior" rows.
 material event weight (the report must name the sites and their events,
 LSS_024-Phase-0 style — mechanism pinned per site, not aggregate-only).
 
-## §3 Design sketch (contingent — do not build past Phase 0 without the GO)
+## §2.R Phase 0 — RESULTS (2026-08-21). Verdict: **PARK, both halves.**
+
+One tree, one cold JS self-compile per `lss.sigFlow` arm (fast-census loop),
+on the post-LSS_024 / post-both-flips default tree. All instrumentation
+one-shot and removed after the run (tree verified byte-identical to
+pre-instrumentation afterwards; `elm-tests` 13,186 pass / 12 fail = the
+recorded pre-existing set, and necessarily pre-existing since the sources are
+identical).
+
+Raw dumps: `/work/lss-letuse-census-sfon.txt`,
+`/work/lss-letuse-census-sfoff.txt` — the `LETUSE`/`MSMEM`/`SITE`
+tab-separated lines are the per-site material behind every table below.
+
+### 2.R.1 Method (and the one hole that had to be closed first)
+
+The classifier is a READ-ONLY mirror of `joinArrowSets`' descent, run at
+every `joinLetUse` **before** the real join, so the join it measures is
+unperturbed. Slot resolution is `zonkSetSlot`'s own read-time resolution (a
+verbatim twin of `Store.resolveSources`, so LSS_023 `LsFrom` edge graphs
+resolve exactly as a zonk would) **minus** the LSS_019 grounding rewrite —
+grounding rewrites member identities for annotation emission and would mint
+ids as a side effect of measuring. Provenance (`rhs-bound` vs
+`bindParamsFromSpine` param-bound) is carried on the `LetEnv` entry.
+
+Two independent pollution measures, deliberately bracketing the answer,
+because **one of them alone would have been worthless**:
+
+- **exact lower bound (`sibling*`)** — per rhs slot, the members THIS
+  channel pushed back from earlier uses, intersected with what a later use
+  gains. Never charges the let channel for content another channel
+  delivered.
+- **upper bound (`laterGrowth*`)** — what the SHARED CLASS resolves to at a
+  use, minus what it resolved to at the previous use of the same binding.
+  This measure is REQUIRED: `Store.unifyBestEffort` **merges** the rhs and
+  use slot UF classes at the first use, after which a write through ANY
+  use's point is a write to the binding — and a pre-join snapshot of that
+  use's own slot is structurally blind to it. A first pass that reported
+  `intoRhs = 0` from the snapshot alone was not evidence; only the agreement
+  of both bounds is.
+
+Two recorded honesty caveats: (a) the corpus IS the compiler source, so the
+census code sits in the corpus — measured effect, by re-running the sfon arm
+before and after adding `laterGrowth`: every class count IDENTICAL, only
+`miss` 33,464→33,473 and `skipArrowFree` 40,146→40,165 moved (a handful of
+events; it also witnesses determinism). (b) The sfon `distinct bindings`
+figure is a LOWER count — the sigFlow arrow-free cost guard (:2025-2030)
+retires 40,165 occurrences before they can reach the join, so bindings whose
+every occurrence is arrow-free are never seen.
+
+### 2.R.2 Deliverable 1 — the classified event table
+
+| axis | `sigFlow=1` | `sigFlow=0` |
+|---|---|---|
+| joinLetUse: joined / arrow-free-skipped / letEnv-miss | 2,494 / 40,165 / 33,473 | 9,505 / 0 / 66,627 |
+| of joined: param-bound | 1,448 | 0 |
+| set-slot PAIRS classified | 6,323 | 2,509 |
+| `noop` | 2,946 | 1,819 |
+| `intoUse` (of which ⊤-inherited) | 1,364 (17) | 0 (0) |
+| **`intoRhs`** (of which ⊤-widening) | **0 (0)** | **0 (0)** |
+| **`both`** | **0** | **0** |
+| `poison` | 2,013 | 690 |
+| — `rhsFault` / `shape` / **`useFault`** | 1,988 / 25 / **0** | 665 / 25 / **0** |
+| — rhs slots destroyed (member / flex) | **0 / 0** | **0 / 0** |
+| **sibling pollution, exact lower bound** (events / members / ⊤-inherited) | **0 / 0 / 0** | **0 / 0 / 0** |
+| **sibling pollution, upper bound** (`laterGrowth`: events / members / wentTop) | **0 / 0 / 0** | **0 / 0 / 0** |
+| param-bound slice: noop / intoUse / intoRhs / both / poison | 2,491 / 0 / 0 / 0 / 1,573 | — |
+| distinct bindings / **multi-use** bindings | 1,162 / **371** | 5,207 / **2,018** |
+| uses-per-binding tail | 2→176 … 12→5 | 2→1,237 … 12→10 |
+| `localMultiBypass` (GAP-9b row) | 455 | 455 |
+
+**This is not an empty population.** 371 (sfon) and 2,018 (sfoff) bindings
+are used more than once, with tails out to 12 uses — exactly the shape
+sibling pollution would need. It simply does not occur: no use ever
+contributes to the shared class, at join time or afterwards, on either arm.
+The 1,364 `intoUse` events are purely binding→use — the direction H.1's
+directed edge PRESERVES — so directing this boundary is a no-op by
+construction, not merely a small win.
+
+**H.2 is refuted independently.** `useFault = 0`: every one of the 2,703
+poison events across both arms is either rhs-at-fault (2,653 — the binding
+side is a *variable*, the one arm §3 H.2 itself says must keep poisoning
+both sides) or shape divergence (50). And every poison destroys **zero** rhs
+set slots — when the rhs side is a `FlexVar` there are no arrows beneath it
+to poison. `PoisonUseOnly` would change nothing anywhere.
+
+### 2.R.3 Deliverable 2 — the candidate table (empty), and where the mass is
+
+Consumer-side census re-run on the SAME tree with the `scanExpr` early-exit
+BYPASSED, so the `LSet[2..]`/`LTop` arms finally see every node instead of
+only nodes co-resident with a singleton-head call:
+
+| axis | `sigFlow=1` | `sigFlow=0` |
+|---|---|---|
+| LTop consulted sites, total | 138,322 | 138,272 |
+| — by callee shape: `global` | 89,767 (64.9%) | 89,789 |
+| — `kernel` | 29,209 (21.1%) | 29,126 |
+| — `local` | 17,332 (**12.5%**) | 17,334 |
+| — `callResult` + `recordAccess` (the E0.5 escape proxy) | 1,426 (1.0%) | 1,434 |
+| multi-set consulted sites (2→502 3→158 4→80 5→29 6→18 7→14 8→12) | 813 | 813 |
+| distinct consulted multi-set member ids | 1,603 | 1,603 |
+
+**Candidate set: ∅.** The let channel pollutes 0 member ids, so its
+intersection with the 1,603 consulted multi-set member ids is empty on both
+arms. There is no candidate table to weigh, and therefore nothing for the
+E0.5 escape subtraction to bite on — the row is recorded (1.0% of ⊤ sites
+are explicit escape shapes) but it is vacuous here.
+
+**Mechanism pinned per site** (the §2 GO condition's format, reported for
+the PARK). 348 producer specs are ALSO local-⊤ consumers, covering 10,432 =
+60.2% of local-⊤ sites, and **all 23** multi-set consumer specs are
+let-channel-touched — so the channel does reach the mass. In every one of
+them its only event is poison:
+
+| consumer spec | local-⊤ sites | multi-set member occurrences | let-channel events |
+|---|---|---|---|
+| `List.foldrHelper` | 1,260 | 370 | poison 36, intoUse 0, later 0 |
+| `Compiler.Parse.Primitives.andThen` | 863 | 434 | poison 6, intoUse 0, later 0 |
+| `Bytes.Decode.andThen` | 662 | 12 | poison 2, intoUse 0, later 0 |
+| `Bytes.Decode.map3` / `map2` / `map` | 578 / 541 / 411 | 26 / 140 / 59 | poison 4 / 3 / 2, intoUse 0 |
+| `Compiler.Json.Decode.apply` | 312 | — | poison 2, intoUse 0 |
+| `List.map` | 255 | 184 | poison 2, intoUse 0 |
+| `System.TypeCheck.IO.andThen` | 195 | 90 | poison 3, intoUse 0 |
+| `List.foldl` | 193 | 566 | poison 6, intoUse 0 |
+
+The mechanism is the same at every one: these are HOF/continuation families
+whose `letEnv` entry is a **`bindParamsFromSpine` param**, and the param's
+loaded slot is an unconstrained variable at the divergence point — the
+`rhsFault` arm. Their ⊤ is the **empty signature channel (GAP-2)**, not
+GAP-9's union-over-uses. Per-use separation cannot reach it; the parameter
+never had a set for the uses to pollute.
+
+### 2.R.4 Deliverable 3 — dynamic heat: NOT RUN, and why
+
+Deliverable 3 weighs a candidate population in runtime events. The
+population is empty (2.R.3), so its weight is zero by construction and a
+counters-lowered native leg would be measuring nothing. Recorded rather
+than skipped: no Run-AC count-match and no native leg were performed, and
+the plan's `≥85%`-style acceptance never became applicable.
+
+### 2.R.5 The frozen priors, re-measured — all three were misleading
+
+| prior (FROZEN Run J, 2026-08-18) | re-measured 2026-08-21 | reading |
+|---|---|---|
+| `widenedByLet = 672` | `poison` = **690** (sf-off arm) / 2,013 (sf-on) | The sf-off arm reproduces the historical number on a bigger corpus — the instrumentation is validated against it. But the count was never the interesting quantity: split by fault, **0** of it is recoverable. |
+| `localMultiBypass = 469` | **455**, both arms | Unchanged. Stays a row (§6 non-goal); E4a territory. |
+| `topSiteShapes local = 7,361`, "the dominant residual callee shape" | **17,332 — but only 12.5% of ⊤ sites**; `global` 64.9% and `kernel` 21.1% dominate | **The "dominant" claim is an artifact of the `scanExpr` gate**: the old figure counted only nodes co-resident with a singleton-head call, which biased the shape mix. Un-gated, the ⊤ mass is overwhelmingly global-callee (E9.1 `lss.devirtFnGlobals` territory) and kernel-callee (LSS_004/LSS_021/LSS_022 territory). GAP-9's recorded footprint is corrected accordingly. |
+
+### 2.R.6 What this closes, and what it re-ranks
+
+- **Stop condition fired** (§2, first bullet, in its exact sense): the union
+  moves no content between siblings in either direction, so separation buys
+  nothing. §§3-4 are not built; `lss.letUseDirected` is never created.
+- The join is not pure cost either — 1,364 `intoUse` events are real
+  binding→use flow the sigFlow arm depends on. So the recorded "cheaper
+  follow-up is deleting work" alternative does **not** apply to the join
+  itself; the only deletable work here would be the 33,473+66,627 letEnv
+  misses and the guard, which is a micro-optimization, not a lever.
+- **Re-ranked ahead of this plan**, on this census's own evidence — with
+  a correction recorded 2026-08-21 (same day, follow-up scoping): the ⊤
+  mass is 64.9% `global`-callee and 21.1% `kernel`-callee, **but that
+  table counts EVERY `MonoCall` whose head annotation is ⊤** (`stampCall`
+  consults every call; kernel-callee sites are direct by construction), so
+  it is NOT a dispatch measure and must not be read as one. The
+  dispatch-relevant residue adjacent to it: `lss.devirtFnGlobals` (E9.1)
+  has been DEFAULT-ON since Run L (2026-07-20) — "exploit E9.1" cannot
+  mean flipping it — and the actual unexploited population is the
+  **1,394 `declinedNoInstance` singleton sites** on this tree (this
+  census's un-gated AbiCloning counters), the post-settle/arity classes
+  E9.1's translate-time arm misses. Sized census-first in
+  `plans/lss-post-settle-fn-global-devirt.md` — which PARKED the same day
+  (admissible slice ≈0.24% of dispatch, upper bound). GAP-2's empty signature
+  channel remains underneath the `local` remainder. None of them is this
+  plan.
+
+---
+
+## §3 Design sketch (NOT BUILT — Phase 0 returned PARK; kept for the record)
 
 - **H.1 — the directed boundary.** In `joinLetUse`, replace
   `joinArrowSets identity rhsVar useVar` with the LSS_023 directed walk
@@ -257,14 +439,21 @@ LSS_024-Phase-0 style — mechanism pinned per site, not aggregate-only).
   precision work; the census subtracts it, this plan never touches it.
 - No change to any flag default inside this plan.
 
-## §7 Invariants delta (if built)
+## §7 Invariants delta — NONE (Phase 0 returned PARK)
 
-- NEW LSS_025: directed let-use boundary + PoisonUseOnly, gating and
-  variance obligations as §3.
-- AMEND LSS_023: the kept-symmetric list loses `joinLetUse` (and the
-  §5.2 table's "per-use separation stays Phase-H-parked" note); the
-  "re-argue variance at any new directed site" rule gains this site's
-  argument.
-- Fidelity mapping: GAP-9's repair-half row moves from "leans PARK" to
-  measured GO/PARK with the Phase-0 numbers either way; §3.2's let-flow
-  row cites this plan.
+No invariant changes. Recorded so the intent is not re-derived later:
+
+- **LSS_025 is NOT minted** and its id is NOT reserved — nothing was built.
+- **LSS_023 is UNCHANGED**: `joinLetUse` STAYS on the kept-symmetric list
+  (§5.2 row "kept symmetric"), and the note there is updated from
+  "per-use separation stays Phase-H-parked" to "parked ON MEASUREMENT" with
+  a pointer to §2.R. Symmetric is not a v1 compromise at this site — it is
+  measurably equivalent to directed, because the channel carries no
+  use→rhs content in either bound.
+- **Fidelity mapping GAP-9**: the repair-half row moves from "leans PARK"
+  to **measured PARK**, and its recorded footprint claim
+  ("`topSiteShapes local = 7,361` … the dominant residual callee shape") is
+  CORRECTED by §2.R.5 — un-gated, `local` is 12.5% of ⊤ sites, not the
+  dominant shape. The GAP-9(a) "counterless poison" criticism is
+  DISCHARGED in substance: the poison was counted, and it is 100%
+  rhs-at-fault with zero destroyed slots.

@@ -109,7 +109,7 @@ Assumes MonoInlineSimplify.optimize has already been applied externally.
 -}
 globalOptimize : Mono.MonoGraph -> Mono.MonoGraph
 globalOptimize graph0a =
-    Tuple.first (globalOptimizeWithStats Config.default.mono.lss.layoutQualMembers Config.default.borrow graph0a)
+    Tuple.first (globalOptimizeWithStats Config.default.mono.lss.layoutQualMembers Config.default.mono.lss.postSettleDevirt Config.default.borrow graph0a)
 
 
 {-| GlobalOpt census counters (LSS report, design §9.4 retirement
@@ -126,8 +126,8 @@ type alias GlobalOptStats =
 {-| `globalOptimize` plus the census counters. `fpFence` is LSS_024's
 fingerprint fence (= `lss.layoutQualMembers`) — see `abiCloningPass`.
 -}
-globalOptimizeWithStats : Bool -> Config.BorrowConfig -> Mono.MonoGraph -> ( Mono.MonoGraph, GlobalOptStats )
-globalOptimizeWithStats fpFence borrowCfg graph0a =
+globalOptimizeWithStats : Bool -> Bool -> Config.BorrowConfig -> Mono.MonoGraph -> ( Mono.MonoGraph, GlobalOptStats )
+globalOptimizeWithStats fpFence postSettle borrowCfg graph0a =
     let
         -- Phase 1: Wrap top-level function-typed values in closures
         -- (alias wrappers for globals/kernels, general closures for other exprs).
@@ -147,7 +147,7 @@ globalOptimizeWithStats fpFence borrowCfg graph0a =
         -- identity and Staging's Rewriter is the last pass that replaces
         -- values (wrapper closures, LSS_008).
         ( graph4, abiStats ) =
-            AbiCloning.abiCloningPass fpFence graph3
+            AbiCloning.abiCloningPass fpFence postSettle graph3
 
         -- Phase 5: Annotate call staging metadata (with dynamic slots from solver).
         -- annotateExprCalls preserves the Phase-4 stamps when re-deriving CallInfo.

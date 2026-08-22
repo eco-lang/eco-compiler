@@ -303,6 +303,17 @@ type alias LssConfig =
     -- §7.2 Borrow obligation landed with the flip (BORROW_006 fence in
     -- `Borrow.buildLambdaSigs`, `lambdaSigMeets` census).
     , layoutQualMembers : Bool
+
+    -- E9.5 post-settle devirt (plans/lss-post-settle-fn-global-devirt.md):
+    -- at AbiCloning, rewrite a singleton g|/c| noInstance call site (plain
+    -- local callee, exact arity) to a DIRECT call of the lowest-SpecId
+    -- eqLayout-matching spec of the member's origin global/ctor — the
+    -- commit-after-settle completion of E9.1's translate-time arm.
+    -- DEFAULT-OFF at landing (2026-08-22); artifact-affecting when on
+    -- (hash token lssDP=1). Built on the reach-completeness criterion —
+    -- the self-compile heat of the population is ≈0.24% upper bound
+    -- (plan §2.R), the point is closing the exploitation gap.
+    , postSettleDevirt : Bool
     }
 
 
@@ -338,6 +349,7 @@ defaultLss =
     , groundStandalones = True
     , sigFlow = True
     , layoutQualMembers = True
+    , postSettleDevirt = False
     }
 
 
@@ -720,6 +732,7 @@ lssDecoder =
         |> D.apply (D.optionalField "groundStandalones" D.bool defaultLss.groundStandalones)
         |> D.apply (D.optionalField "sigFlow" D.bool defaultLss.sigFlow)
         |> D.apply (D.optionalField "layoutQualMembers" D.bool defaultLss.layoutQualMembers)
+        |> D.apply (D.optionalField "postSettleDevirt" D.bool defaultLss.postSettleDevirt)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -1021,6 +1034,22 @@ hash cfg =
                     , if lss.layoutQualMembers /= defaultLss.layoutQualMembers then
                         [ "lssLQ="
                             ++ (if lss.layoutQualMembers then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- E9.5 post-settle devirt: artifact-affecting (rewrites
+                    -- call sites to direct form). Token when non-default,
+                    -- layoutQual-style.
+                    , if lss.postSettleDevirt /= defaultLss.postSettleDevirt then
+                        [ "lssDP="
+                            ++ (if lss.postSettleDevirt then
                                     "1"
 
                                 else

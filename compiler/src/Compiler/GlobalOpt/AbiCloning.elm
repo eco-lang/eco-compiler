@@ -126,6 +126,9 @@ type alias AbiCloningStats =
     , declinedShapeNonArrow : Int
     , declinedAbiMismatch : Int
     , declinedBodyMismatch : Int -- LSS_024 F fence: fingerprint-divergent same-layout groups declined (each one is a fenced E11-class hazard — investigate when non-zero)
+    , devirtPostFn : Int -- E9.5 (plans/lss-post-settle-fn-global-devirt.md): noInstance g|-singleton sites rewritten to direct spec calls (flag lss.postSettleDevirt; 0 flag-off)
+    , devirtPostCtor : Int -- E9.5: the c|-singleton (ctor) half of the same rewrite
+    , devirtPostNoSpec : Int -- E9.5: candidate passed every guard but no registry spec eqLayout-matched the site (census expectation ~0 — investigate when it grows)
     , multiInstanceGroups : Int -- layout groups holding ≥2 distinct lambdaIds. A MONITORING DELTA, not a zero-gate (amended LSS_017 reading): MonoInlineSimplify mints fresh lambdaIds for verbatim inline copies, and under LSS_024 annotation-only clones legitimately join one group — the representative premise is discharged by fingerprint unanimity, not by this count.
 
     -- Census (2026-07-21, plans/lss-dispatch-value-extraction.md open
@@ -160,6 +163,9 @@ emptyStats =
     , declinedShapeNonArrow = 0
     , declinedAbiMismatch = 0
     , declinedBodyMismatch = 0
+    , devirtPostFn = 0
+    , devirtPostCtor = 0
+    , devirtPostNoSpec = 0
     , multiInstanceGroups = 0
     , declineByMember = Dict.empty
     , memberReps = Dict.empty
@@ -578,6 +584,16 @@ type alias StampCtx =
     { kindIds : Dict Int Int -- member id -> ClosureKindId int
     , nextKind : Int
     , stats : AbiCloningStats
+
+    -- E9.5 post-settle devirt (plans/lss-post-settle-fn-global-devirt.md
+    -- §3). `origins` resolves a noInstance singleton's member id to its
+    -- standalone target; `specsByGlobal` is the registry inversion the
+    -- eqLayout spec match reads (family gkey -> (SpecId int, spec type)
+    -- pairs). Both are Dict.empty when the flag is off, so the flag-off
+    -- pass carries only two never-consulted empty-dict fields.
+    , postSettle : Bool
+    , origins : Dict Int Mono.MemberOrigin
+    , specsByGlobal : Dict String (List ( Int, Mono.MonoType ))
     }
 
 
@@ -606,8 +622,8 @@ congruence that could re-admit the sibling-id pair is the plan's parked
 v2, never to be improvised in).
 
 -}
-abiCloningPass : Bool -> Mono.MonoGraph -> ( Mono.MonoGraph, AbiCloningStats )
-abiCloningPass fpFence ((Mono.MonoGraph record) as graph) =
+abiCloningPass : Bool -> Bool -> Mono.MonoGraph -> ( Mono.MonoGraph, AbiCloningStats )
+abiCloningPass fpFence postSettle ((Mono.MonoGraph record) as graph) =
     let
         -- LSS_018: μ-tied members are force-blocked — their instances span
         -- DIFFERENT demands of one recursive family (behaviorally divergent;
@@ -621,7 +637,11 @@ abiCloningPass fpFence ((Mono.MonoGraph record) as graph) =
                 (collectInstances fpFence graph)
                 record.lssBlockedMembers
     in
-    if Dict.isEmpty index then
+    if Dict.isEmpty index && not postSettle then
+        -- Inert-by-construction fast exit (LSS off / no singleton members).
+        -- E9.5: flag-on proceeds even with an empty closure index — the
+        -- post-settle rewrite consults the ORIGINS/registry, not instances
+        -- (a graph can hold devirtable g|/c| singletons and no closures).
         ( graph, emptyStats )
 
     else
@@ -630,6 +650,34 @@ abiCloningPass fpFence ((Mono.MonoGraph record) as graph) =
             -- fact, independent of stamping outcomes).
             stats0 =
                 { emptyStats | multiInstanceGroups = countMultiInstanceGroups index }
+
+            -- E9.5: the registry inversion for the post-settle spec match —
+            -- one pass over reverseMapping, flag-on only. SpecId ints come
+            -- from the array index (reverseMapping is SpecId-indexed), so
+            -- ascending fold order means each family list is DESCENDING by
+            -- SpecId; the consumer takes the MINIMUM match, order-free.
+            specsByGlobal =
+                if postSettle then
+                    Tuple.second
+                        (Array.foldl
+                            (\maybeEntry ( i, acc ) ->
+                                case maybeEntry of
+                                    Just ( global, specType ) ->
+                                        ( i + 1
+                                        , Dict.update (Mono.toComparableGlobal global)
+                                            (\v -> Just (( i, specType ) :: Maybe.withDefault [] v))
+                                            acc
+                                        )
+
+                                    Nothing ->
+                                        ( i + 1, acc )
+                            )
+                            ( 0, Dict.empty )
+                            record.registry.reverseMapping
+                        )
+
+                else
+                    Dict.empty
 
             ( nodes1, finalCtx ) =
                 Array.foldl
@@ -645,7 +693,20 @@ abiCloningPass fpFence ((Mono.MonoGraph record) as graph) =
                             Nothing ->
                                 ( Array.push Nothing accNodes, accCtx )
                     )
-                    ( Array.empty, { kindIds = Dict.empty, nextKind = 0, stats = stats0 } )
+                    ( Array.empty
+                    , { kindIds = Dict.empty
+                      , nextKind = 0
+                      , stats = stats0
+                      , postSettle = postSettle
+                      , origins =
+                            if postSettle then
+                                record.lssMemberOrigins
+
+                            else
+                                Dict.empty
+                      , specsByGlobal = specsByGlobal
+                      }
+                    )
                     record.nodes
         in
         ( Mono.MonoGraph { record | nodes = nodes1 }, finalCtx.stats )
@@ -1254,7 +1315,52 @@ stampCall index ctx region func args resultType callInfo =
                             )
 
                 Nothing ->
-                    ( Mono.MonoCall region func args resultType callInfo, bumpNoInstance ctx )
+                    -- E9.5 (plans/lss-post-settle-fn-global-devirt.md §3):
+                    -- the member has NO closure instance. For standalone
+                    -- g|/c| members that is definitional (function globals
+                    -- and ctors have no MonoClosure), and the singleton +
+                    -- plain-var callee + EXACT-arity guards prove the
+                    -- runtime value is the BARE global/ctor — zero captures
+                    -- — so a direct call to any eqLayout-matching spec of
+                    -- the target is observably equivalent (LSS_005; the E11
+                    -- hijack class needs a capture record and cannot arise
+                    -- capture-free). Commit-after-settle: annotations are
+                    -- final here, so this catches exactly the sites
+                    -- translate-time E9/E9.1 committed too early to see.
+                    case postSettleTarget m func (List.length args) ctx of
+                        PsStamp specId isCtor ->
+                            let
+                                stats1 =
+                                    ctx.stats
+
+                                stats2 =
+                                    if isCtor then
+                                        { stats1 | devirtPostCtor = stats1.devirtPostCtor + 1 }
+
+                                    else
+                                        { stats1 | devirtPostFn = stats1.devirtPostFn + 1 }
+                            in
+                            ( Mono.MonoCall region
+                                (Mono.MonoVarGlobal region specId (Mono.typeOf func))
+                                args
+                                resultType
+                                callInfo
+                            , { ctx | stats = stats2 }
+                            )
+
+                        PsNoSpec ->
+                            -- Candidate passed every guard but no registry
+                            -- spec eqLayout-matched (census expectation ~0).
+                            let
+                                statsN =
+                                    ctx.stats
+                            in
+                            ( Mono.MonoCall region func args resultType callInfo
+                            , bumpNoInstance { ctx | stats = { statsN | devirtPostNoSpec = statsN.devirtPostNoSpec + 1 } }
+                            )
+
+                        PsNotCandidate ->
+                            ( Mono.MonoCall region func args resultType callInfo, bumpNoInstance ctx )
 
         Mono.LSet ms ->
             -- census (E3 de-risk): a consulted site carrying a MULTI-member
@@ -1563,6 +1669,91 @@ bumpBlocked ctx =
             ctx.stats
     in
     { ctx | stats = { stats | declinedBlocked = stats.declinedBlocked + 1 } }
+
+
+{-| E9.5 (plans/lss-post-settle-fn-global-devirt.md §3): resolve a
+noInstance singleton to its post-settle direct-call target, or `Nothing`
+(fall through to the ordinary decline).
+
+Guards, every one load-bearing:
+
+  - flag (`ctx.postSettle`) — flag-off this returns before touching state,
+    keeping the pass byte-identical;
+  - member origin is `OriginGlobal`/`OriginCtor` (k| kernels need ABI
+    derivation + the E9.2 guards — E10's arm, not this one; l| lambdas are
+    CAPTURING values, undevirtable without the very instance that is
+    missing; a| accessors measured 0);
+  - callee is a plain `MonoVarLocal` (a var read is effect-and-bottom-free,
+    so replacing it is sound — LSS_015's clause);
+  - EXACT saturation: argCount == the callee type's own arrow arity. With
+    `spineArity = False`, standalone members live on the HEAD arrow only,
+    so a partially-applied value's remaining spine never carries the
+    member; this guard is the belt to that suspender — it proves the value
+    is the zero-capture bare global/ctor;
+  - an `eqLayout` spec of the target exists; the MINIMUM SpecId among
+    matches is chosen (deterministic, order-free — `specsByGlobal` lists
+    are unsorted). Spec choice among same-layout candidates is covered by
+    LSS_005 (capture-free, see the call-site comment).
+
+No `lssBlockedMembers` check: blocked members are INSERTED into the index
+(blocked = True), so they take the `Just` path (`declinedBlocked`) and
+never reach the noInstance arm.
+
+-}
+type PostSettleOutcome
+    = PsStamp Mono.SpecId Bool -- Bool = ctor half (census split)
+    | PsNoSpec -- every guard passed, no eqLayout spec — counted
+    | PsNotCandidate
+
+
+postSettleTarget : Int -> Mono.MonoExpr -> Int -> StampCtx -> PostSettleOutcome
+postSettleTarget m func argCount ctx =
+    if not ctx.postSettle then
+        PsNotCandidate
+
+    else
+        let
+            targetOf origin =
+                case origin of
+                    Mono.OriginGlobal g ->
+                        Just ( g, False )
+
+                    Mono.OriginCtor g ->
+                        Just ( g, True )
+
+                    _ ->
+                        Nothing
+        in
+        case ( func, Dict.get m ctx.origins |> Maybe.andThen targetOf ) of
+            ( Mono.MonoVarLocal _ calleeType, Just ( target, isCtor ) ) ->
+                let
+                    arity =
+                        case calleeType of
+                            Mono.MFunction _ _ params _ ->
+                                List.length params
+
+                            _ ->
+                                0
+                in
+                if arity >= 1 && arity == argCount then
+                    case
+                        Dict.get (Mono.toComparableGlobal target) ctx.specsByGlobal
+                            |> Maybe.withDefault []
+                            |> List.filter (\( _, specType ) -> Mono.eqLayout specType calleeType)
+                            |> List.map Tuple.first
+                            |> List.minimum
+                    of
+                        Just specId ->
+                            PsStamp specId isCtor
+
+                        Nothing ->
+                            PsNoSpec
+
+                else
+                    PsNotCandidate
+
+            _ ->
+                PsNotCandidate
 
 
 bumpNoInstance : StampCtx -> StampCtx

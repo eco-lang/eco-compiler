@@ -963,7 +963,7 @@ runGlobalOptPhase mapTemplateCfg lssReport listReport borrowCfg cafMemo cseCfg s
         FEStats.PhaseGlobalOpt
         (let
             ( goGraph, goStats ) =
-                MonoGlobalOptimize.globalOptimizeWithStats mapTemplateCfg.mono.lss.layoutQualMembers borrowCfg simplifiedGraph
+                MonoGlobalOptimize.globalOptimizeWithStats mapTemplateCfg.mono.lss.layoutQualMembers mapTemplateCfg.mono.lss.postSettleDevirt borrowCfg simplifiedGraph
 
             -- kernel-opt-13 C2: bounded-scope CSE of pure calls. Runs HERE,
             -- post-annotation, because it adds MonoLet bindings and
@@ -1142,6 +1142,12 @@ runGlobalOptPhase mapTemplateCfg lssReport listReport borrowCfg cafMemo cseCfg s
                                     ++ String.fromInt goStats.abiCloning.declinedAbiMismatch
                                     ++ " declinedBodyMismatch="
                                     ++ String.fromInt goStats.abiCloning.declinedBodyMismatch
+                                    ++ " devirtPost(fn/ctor/noSpec)="
+                                    ++ String.fromInt goStats.abiCloning.devirtPostFn
+                                    ++ "/"
+                                    ++ String.fromInt goStats.abiCloning.devirtPostCtor
+                                    ++ "/"
+                                    ++ String.fromInt goStats.abiCloning.devirtPostNoSpec
                                     ++ " multiInstanceGroups="
                                     ++ String.fromInt goStats.abiCloning.multiInstanceGroups
                                     ++ " stampedWrapperInstances="

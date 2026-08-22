@@ -1761,3 +1761,20 @@ default-flag artifact byte-size exact). Mono-side A/B and gates:
 benchmarks/lss-opt.md Run AD + the plan's execution record.
 `lss.layoutQualMembers` stays DEFAULT-OFF; this run satisfies the plan's
 §6.2 criterion and re-opens the §6.4 flip chain.
+
+### Run AD — E9.5 census-only leg (2026-08-21): the noInstance singleton residue has no dispatch weight; **NON-COMPARABLE workload — do not diff against other runs**
+
+One census-on leg of the preserved Run-AC `eco-compiler-sflq` binary
+(counters-lowered, sf+lq semantics = post-flip defaults), cold `eco-stuff`,
+`ECO_DISPATCH_STATS=1`. **The package typed-artifacts cache was cold** (the
+day's test runs), so the workload compiled ≈2× Run AC's: sat=1,939,002,755
+gen=1,908,846,722 typed=30,156,033 fast=187,008,380 distinct=6,818, wall
+6:22 — inflated by design tolerance (the leg only needed an UPPER bound).
+Purpose + verdict: `plans/lss-post-settle-fn-global-devirt.md` §2.R — the
+admissible fn-global (`g|`) noInstance slice upper-bounds at 4.69M sat on
+this leg (≈0.24% at Run-AC scale; mkFlexVar family 298K; `Basics.always`
+population 0), PARK. Side row for the E9.2/E10 track: cons-valued closures
+carry ≈10.9M sat (`List_cons_$_15189` 10.2M + tail) against 30
+`{k|List.cons}` noInstance sites. Full symbolized table:
+`/work/lss-e95-dispatch-upper.tsv` (0 unknown fps, all at symbol starts —
+post-fix `dispatch-census.sh`).

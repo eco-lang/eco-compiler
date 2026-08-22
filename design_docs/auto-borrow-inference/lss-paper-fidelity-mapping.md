@@ -288,8 +288,11 @@ conflated:
 - **Unconstrained-LTop** — a *flow* problem, not a widening problem, and itself
   composite (per the E0.5 verdict, `lss-dispatch-value-extraction.md:286-296`):
   (i) the empty signature channel (GAP-2); (ii) the let-boundary and local-multi
-  transport gaps (GAP-9) — `topSiteShapes local=7,361` is this component's footprint,
-  ⊤-through-locals being the dominant residual callee shape; (iii) an
+  transport gaps (GAP-9) — MEASURED 2026-08-21 and much smaller than recorded:
+  un-gated, ⊤-through-locals is 12.5% of consulted ⊤ sites, not the dominant shape
+  (global-callee 64.9%, kernel-callee 21.1%), and the let boundary's own contribution
+  to it is nil (GAP-9's re-census, `plans/lss-per-use-let-separation.md` §2.R);
+  (iii) an
   **escape-by-soundness** class — IO bind continuations that escape into the returned
   value, where the E0.5 verdict is explicit that "no analysis precision helps" and only
   defunctionalization-style transformation (the shelved E8) would; this component is a
@@ -464,12 +467,45 @@ which **bumps no census counter** (verified: `LssInfer.elm:1211-1218` calls
 aim-1 criterion — an LTop source with no counter. (b) Local-multi function arguments
 bypass member injection entirely (`Translate.elm:2931-2936`, "no member, no stamp");
 E4a's USE-transport (`Translate.elm:4747, 4782`) partially closes it. **Consequence:**
-component (ii) of the unconstrained-LTop mass (§6); `topSiteShapes local=7,361` is its
-measured footprint — the dominant residual callee shape. **Repair:** first
+component (ii) of the unconstrained-LTop mass (§6). **Repair:** first
 instrument (`widenedByLet` counter on `poisonBoth`; a local-multi decline counter), then
 per-use set separation (the design's own "vNext upgrade") sized by the new counters.
 **Cost:** instrumentation trivial; per-use separation medium. **Aims served:** 1
 directly; 3 (the paper's no-⊤ ideal demands every ⊤ be accounted for).
+
+**MEASURED AND CLOSED 2026-08-21 (`plans/lss-per-use-let-separation.md` §2.R) —
+both halves, both `lss.sigFlow` arms.** Two corrections to this row, and the repair
+is PARKED rather than pending:
+
+1. **The footprint claim was an artifact of a census gate.** `topSiteShapes
+   local = 7,361` was counted through AbiCloning's `scanExpr` early exit, which only
+   walks nodes co-resident with a singleton-head call. Un-gated, `local` is
+   **17,332 sites = 12.5%** of the 138,322 consulted ⊤ sites, and the mass is
+   dominated by `global` (89,767 = 64.9%) and `kernel` (29,209 = 21.1%). Caveat on
+   reading those two: the un-gated table counts EVERY `MonoCall` with a ⊤ head
+   annotation — including already-direct calls (kernel-callee sites are direct by
+   construction) — so shape shares are populations, not dispatch weight; the
+   indirect residue adjacent to the `global` share is sized census-first in
+   `plans/lss-post-settle-fn-global-devirt.md` (PARKED same day: ≈0.24% of
+   dispatch, upper bound). Either way `local` is NOT the
+   dominant residual callee shape, and GAP-9 is not where the ⊤ mass lives.
+2. **(a) is now instrumented, and the ⊤ it produces is unrecoverable.** `poisonBoth`
+   at this channel fires 690× sf-off (reproducing the frozen `widenedByLet = 672` on
+   a larger corpus) and 2,013× sf-on — but split by fault it is **100% rhs-at-fault
+   or shape divergence, 0% use-at-fault**, and every event destroys **zero** rhs set
+   slots (the rhs side is a `FlexVar`, with no arrows beneath it to poison). So
+   asymmetric poison (`PoisonUseOnly`) has an empty population, and this row's
+   aim-1 criticism — "an LTop source with no counter" — is DISCHARGED in substance:
+   it is counted, and it is not a precision loss. Union-over-uses likewise moves NO
+   content between siblings: `intoRhs`, `both`, and BOTH the exact-lower-bound and
+   the upper-bound sibling measures are 0 on both arms, over a real multi-use
+   population (371 sf-on / 2,018 sf-off bindings used more than once, tails to 12
+   uses). At the HOF/continuation specs that carry the mass (`List.foldrHelper`,
+   `Bytes.Decode.andThen`, `Compiler.Parse.Primitives.andThen`,
+   `System.TypeCheck.IO.andThen`) the `letEnv` entry is a `bindParamsFromSpine`
+   PARAM whose slot is an unconstrained variable — their ⊤ is **GAP-2's empty
+   signature channel**, which per-use separation cannot reach. (b)
+   `localMultiBypass` re-measures 455 (frozen 469) and stays E4a's.
 
 ### Non-gaps (checked; do not re-open without new evidence)
 

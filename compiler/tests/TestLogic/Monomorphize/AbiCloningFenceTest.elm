@@ -185,7 +185,7 @@ statsOf =
 statsWithFence : Bool -> List Mono.MonoExpr -> AbiCloning.AbiCloningStats
 statsWithFence fence exprs =
     Tuple.second
-        (AbiCloning.abiCloningPass fence
+        (AbiCloning.abiCloningPass fence False
             (Mono.MonoGraph
                 { nodes =
                     Array.fromList

@@ -405,7 +405,7 @@ experiment (≈+13M promoted objects moved wall only ~3%) and a candidate to re-
 
 | axis | value (both arms) |
 |---|---|
-| fidelity (NEW) | **muTied=0** widenedByLet=672 localMultiBypass=469 |
+| fidelity (NEW) | **muTied=0** widenedByLet=672 localMultiBypass=469 — **SUPERSEDED, do not size from this row:** re-censused 2026-08-21 as widenedByLet 690 (sf-off) / 2,013 (sf-on) with 0% of it use-at-fault and 0 slots destroyed, localMultiBypass 455 (`plans/lss-per-use-let-separation.md` §2.R) |
 | widened | bySize=462 byKernel=4,109 byBudget=50,904 |
 | signatures | 9,651 memoized (9,651 trivial) |
 | unqualifiedLambdaMints / declinedBlocked / watchdog trips | 0 / 0 / 0 |
@@ -969,6 +969,24 @@ byte-identical on all three arms. Flag DEFAULT-OFF; plan
 `plans/lss-layout-qualified-members.md` (Phase-0 census + two as-built corrections
 recorded there).
 
+### 2026-08-22 — Run AE: E9.5 post-settle fn-global/ctor devirt (A/B on `lss.postSettleDevirt`, defaults otherwise)
+
+| arm | Wall (s) | Max RSS (kB) | Minor GCs | Major GCs | Promoted | GC/Alloc (s) | `out.mlir` (B) | devirtPost fn/ctor/noSpec |
+|---|---|---|---|---|---|---|---|---|
+| flag OFF | 350.3 (5:50.28) | 6,109,400 | 1,461 | 14 | 485,955,839 (14,351 MiB) | 125.13 | 13,827,927 | 0/0/0 |
+| flag ON | 352.2 (5:52.18) | 6,104,104 | 1,461 | 14 | 486,338,488 (14,367 MiB) | 126.14 | 13,830,780 | **86/311/0** |
+
+Reach acceptance EXACT: devirtPost = the Phase-0 census's admissible table to
+the digit (86 g + 311 c, 0 layout misses); `declinedNoInstance` 1,390→993 =
+−397. Neutrality: minor AND major GC counts IDENTICAL across arms; wall +0.5%
+= FLAT; artifact +2,853 B. Flag-off `out.mlir` byte-identical to the
+pre-change binary's on the same corpus (two-binary gate); flag-on determinism
+×2 byte-identical; elm-tests 13,192/12-pre-existing (6 new pins); Stage-4b JS
+fixed point held. Built on the reach-completeness criterion — self-compile
+dispatch heat of the population is ≈0.24% upper bound by design
+(plan §2.R.2); no event-recovery claim. Flag DEFAULT-OFF; plan
+`plans/lss-post-settle-fn-global-devirt.md` (LSS_025).
+
 ## Summary
 
 One row per run, numbers only.
@@ -1005,3 +1023,4 @@ One row per run, numbers only.
 | AB | 331.1 | 1385 | 13 | 13547 |
 | AC | 328.4 | 1425 | 13 | 14006 |
 | AD | 348.4 | 1454 | 13 | 14369 |
+| AE | 352.2 | 1461 | 14 | 14367 |

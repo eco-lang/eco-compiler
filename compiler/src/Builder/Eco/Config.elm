@@ -168,6 +168,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\lqVal -> applyLssLayoutQualOverride lqVal cfg4e4)
             )
         |> Task.andThen
+            (\cfg4e5 ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_DEVIRT_POST" |> Task.mapError never)
+                    |> Task.map (\dpVal -> applyLssDevirtPostOverride dpVal cfg4e5)
+            )
+        |> Task.andThen
             (\cfg4f ->
                 (Utils.envLookupEnv "ECO_SPEC_TYPE_NODE_LIMIT" |> Task.mapError never)
                     |> Task.map (\tnVal -> applySpecTypeNodeLimitOverride tnVal cfg4f)
@@ -1727,6 +1732,28 @@ applyLssLayoutQualOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | layoutQualMembers = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_DEVIRT_POST=1|true|yes / 0|false|no` (E9.5,
+plans/lss-post-settle-fn-global-devirt.md): post-settle devirt of singleton
+g|/c| noInstance sites at AbiCloning. DEFAULT-OFF; participates in the hash
+via the `lssDP=` token when non-default.
+-}
+applyLssDevirtPostOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssDevirtPostOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | postSettleDevirt = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | postSettleDevirt = False }) cfg
 
             else
                 cfg

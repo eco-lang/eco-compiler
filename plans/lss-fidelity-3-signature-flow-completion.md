@@ -20,7 +20,9 @@ from the 2026-08-17 draft:
 - **GAP-4** — kernel per-param set-flow facts, incremental. Phase F.
 - **GAP-6** — the sum-lowering decision gate (decision procedure, not implementation). Phase G.
 - **GAP-5** — the `maxSetSize` knob. Phase G rider.
-- **GAP-9 (repair half)** — per-use let-set separation. Phase H (leans PARK — see §0.2).
+- **GAP-9 (repair half)** — per-use let-set separation. Phase H: **PARKED on
+  measurement 2026-08-21** (`plans/lss-per-use-let-separation.md` §2.R — both
+  halves measure empty on both sigFlow arms).
 
 Prerequisites: plans 1 and 2 landed (MONO_030 watchdogs + LSS_018 μ-tie guard the
 fan-out this plan creates; LSS_019 grounding makes the members this plan transports
@@ -755,8 +757,8 @@ flag-on vs flag-off same binary, archived in §Results as the next Run letter in
 | `sizeHist` k≥2 mass + `multiSetSiteHist` | report :216 + AbiCloning census | **GAP-6 decision input** |
 | `widenedBySize` / `widenedBySigSize` | report :217 | **GAP-5 decision input** |
 | `widenedByBudget` | report :217 | budget-policy check vs plan 1 B3 (Run N; 36,693 baseline) |
-| `widenedByLet = 672`, `localMultiBypass = 469` | **FROZEN Run J** | **Phase H sizing** (with next row) |
-| `widenedByCf` + `topSiteShapes local` residue | new counter + AbiCloning census (baseline local=7,361, pre-plan-2 era — re-read) | **Phase H sizing** |
+| `widenedByLet = 672`, `localMultiBypass = 469` | **FROZEN Run J** — RE-MEASURED 2026-08-21: 690 (sf-off) / 2,013 (sf-on), and 455 | **Phase H sizing** — DONE, verdict PARK (`plans/lss-per-use-let-separation.md` §2.R) |
+| `widenedByCf` + `topSiteShapes local` residue | new counter + AbiCloning census (baseline local=7,361, pre-plan-2 era — re-read) — RE-MEASURED un-gated 2026-08-21: local=17,332 but only 12.5% of ⊤ sites | **Phase H sizing** — DONE, verdict PARK; the ⊤ mass is global/kernel-callee, not local |
 | `topSiteShapes` split | AbiCloning census (print Generate.elm:1233) | escape-floor vs reachable residue |
 | dispatch stamps (`dispatchUpgraded`, `declinedNoInstance`, `declinedBlocked`) + runtime dispatch census | GlobalOpt census + `benchmarks/runtime-calls.md` Run-M protocol (`ECO_DISPATCH_STATS=1`, counters-lowered binary, cold Stage 7a, non-perturbation gate) | non-regression + payoff (baseline fast coverage 13.22%) |
 
@@ -1008,6 +1010,20 @@ re-census, only then revisit M5"):
    one does.)
 
 ## Phase H — GAP-9 repair: per-use let-set separation (sized, then built or parked)
+
+**OUTCOME 2026-08-21: SIZED, AND PARKED.** The census ran on its own plan
+(`plans/lss-per-use-let-separation.md` §2.R), both `lss.sigFlow` arms, and both
+halves measure empty. H.1: the channel moves no content use→rhs — `intoRhs` and
+`both` are 0, and both the exact-lower-bound and the upper-bound sibling measures
+are 0/0/0, over a real multi-use population (371 sf-on / 2,018 sf-off bindings
+used more than once). H.2: `poisonUseFault = 0` — all 2,703 poison events across
+the two arms are rhs-at-fault (2,653) or shape divergence (50), i.e. exactly the
+arm whose per-arm soundness argument REQUIRES poisoning both sides — and each
+destroys zero rhs set slots. H.1's local-multi half re-measures 455 (frozen 469)
+and stays E4a's. The frozen trigger numbers below are superseded: 672 → 690
+sf-off (validating the instrumentation), and `topSiteShapes local` 7,361 → 17,332
+un-gated but only 12.5% of the ⊤ mass, which is 64.9% global-callee and 21.1%
+kernel-callee. Nothing in this phase was built.
 
 Trigger: the FROZEN Run-J numbers (`widenedByLet = 672`, `localMultiBypass = 469`
 vs `topSiteShapes local = 7,361`) plus Phase D's `widenedByCf` and local-⊤
