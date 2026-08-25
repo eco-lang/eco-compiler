@@ -378,6 +378,11 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 ++ String.fromInt q.reaching
                 ++ " internal="
                 ++ String.fromInt q.internal
+                ++ "(agree="
+                ++ String.fromInt q.internAgree
+                ++ " diverge="
+                ++ String.fromInt q.internDiverge
+                ++ ")"
                 ++ " REPRODUCES="
                 ++ (if qDiverge == 0 then
                         "yes"
@@ -385,6 +390,9 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                     else
                         "NO"
                    )
+
+        qSampleLines =
+            String.join "\n" q.divergeSamples
 
         settledLine =
             "ledger-settled: k1="
@@ -531,6 +539,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         , ledgerLine
         , settledLine
         , qLine
+        , qSampleLines
         , settledArrowLine
         , "widened: bySize=" ++ String.fromInt stats.widenedBySize ++ " byKernel=" ++ String.fromInt stats.widenedByKernel ++ " byBudget=" ++ String.fromInt stats.widenedByBudget ++ " bySigSize=" ++ String.fromInt stats.sigStats.widenedBySigSize
         , "widened sizes: " ++ widenedHistLine

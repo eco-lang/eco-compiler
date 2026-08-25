@@ -214,8 +214,116 @@ applyFacts global sig slots funcVar s0 =
     else if Array.length sig.arrows /= Array.length slots then
         Store.poisonArrowSets funcVar (censusLenGuard global (Array.length sig.arrows) (Array.length slots) s0)
 
+    else if s0.env.lss.qSolve then
+        -- §5.2: INSTANTIATE the scheme. `slots` are already fresh — that is
+        -- the freshening of `ᾱ` — so the three steps are: tie the ordinals
+        -- that share a `rep` into one variable, carry the ⊤ and the LSS_023
+        -- edges (both are facts about positions, not solved sets), then
+        -- re-emit `Q` against the instantiated variables.
+        instantiateScheme sig slots s0
+
     else
         applyFactsGo sig.arrows slots 0 s0
+
+
+{-| §5.2: apply a signature as `d⟨ᾱ⟩ : (Q ⇒ τ)`.
+
+Equivalent to `applyFactsGo` by construction — `residual` is derived from the
+same `members` at generalization and keyed by the `rep` the first pass has
+already unified — but it reads the signature the paper's way round: the use
+gets fresh variables and the CONSTRAINTS, never a pre-solved answer. That is
+the difference §5.3 then exploits, and the reason this is worth landing even
+though it is byte-neutral on its own.
+-}
+instantiateScheme : Engine.LssSignature -> Array IO.Variable -> Step ()
+instantiateScheme sig slots s0 =
+    case schemeTie sig.arrows slots 0 s0 of
+        Err e ->
+            Err e
+
+        Ok ( _, s1 ) ->
+            case schemeFacts sig.arrows slots 0 s1 of
+                Err e ->
+                    Err e
+
+                Ok ( _, s2 ) ->
+                    schemeResidual sig.residual slots s2
+
+
+{-| Step 1: ordinals sharing a `rep` ARE one set variable. -}
+schemeTie : Array Engine.ArrowFact -> Array IO.Variable -> Int -> Step ()
+schemeTie facts slots i s0 =
+    case ( Array.get i facts, Array.get i slots ) of
+        ( Just fact, Just slot ) ->
+            if fact.rep /= i then
+                case Array.get fact.rep slots of
+                    Just repSlot ->
+                        case Store.unifyStep repSlot slot s0 of
+                            Err e ->
+                                Err e
+
+                            Ok ( _, s1 ) ->
+                                schemeTie facts slots (i + 1) s1
+
+                    Nothing ->
+                        schemeTie facts slots (i + 1) s0
+
+            else
+                schemeTie facts slots (i + 1) s0
+
+        _ ->
+            Ok ( (), s0 )
+
+
+{-| Step 2: the facts that are NOT solved member sets — `⊤` (Eco's
+incompleteness marker, §3.6) and the LSS_023 inclusion edges. -}
+schemeFacts : Array Engine.ArrowFact -> Array IO.Variable -> Int -> Step ()
+schemeFacts facts slots i s0 =
+    case ( Array.get i facts, Array.get i slots ) of
+        ( Just fact, Just slot ) ->
+            let
+                afterTop =
+                    if fact.top then
+                        Store.unifySlotWithSet True [] slot s0
+
+                    else
+                        Ok ( (), s0 )
+            in
+            case afterTop of
+                Err e ->
+                    Err e
+
+                Ok ( _, s1 ) ->
+                    case installSources fact.sources slots slot s1 of
+                        Err e ->
+                            Err e
+
+                        Ok ( _, s2 ) ->
+                            schemeFacts facts slots (i + 1) s2
+
+        _ ->
+            Ok ( (), s0 )
+
+
+{-| Step 3: re-emit `Q` — `ℓ… ⋸ α` — against the instantiated variables. -}
+schemeResidual : List ( Int, List Int ) -> Array IO.Variable -> Step ()
+schemeResidual residual slots s0 =
+    case residual of
+        [] ->
+            Ok ( (), s0 )
+
+        ( ordinal, members ) :: rest ->
+            case Array.get ordinal slots of
+                Nothing ->
+                    schemeResidual rest slots s0
+
+                Just slot ->
+                    case Store.unifySlotWithSet False members slot s0 of
+                        Err e ->
+                            Err e
+
+                        Ok ( _, s1 ) ->
+                            schemeResidual rest slots s1
 
 
 {-| LSS_026 census: an arrow-count mismatch poisoned a whole instantiation.
@@ -735,7 +843,51 @@ zonkSigGo selfId slots n i factsRev s0 =
                         facts
                     )
         in
-        Ok ( { arrows = Array.fromList facts, trivial = trivial }, censusSignature n facts trivial s0 )
+        let
+            -- §5.2: `ᾱ` — the DISTINCT set variables. Ordinals sharing a `rep`
+            -- are one variable, so the canonical ones (own `rep`) are the
+            -- quantifier.
+            quantified =
+                List.filterMap
+                    (\( j, f ) ->
+                        if f.rep == j then
+                            Just j
+
+                        else
+                            Nothing
+                    )
+                    (List.indexedMap Tuple.pair facts)
+
+            -- §5.2: `Q` — `ℓ… ⋸ α`, keyed by the CANONICAL ordinal, so a use
+            -- re-emits against the variable rather than against a position.
+            -- Members of a non-canonical ordinal belong to its rep's variable;
+            -- `applyFacts` unifies those slots first, so either key writes the
+            -- same class, but keying canonically is what makes it a constraint
+            -- ON A VARIABLE.
+            residual =
+                List.foldr
+                    (\( j, f ) acc ->
+                        if List.isEmpty f.members then
+                            acc
+
+                        else
+                            let
+                                key =
+                                    if f.rep == j then
+                                        j
+
+                                    else
+                                        f.rep
+                            in
+                            ( key, f.members ) :: acc
+                    )
+                    []
+                    (List.indexedMap Tuple.pair facts)
+        in
+        Ok
+            ( { arrows = Array.fromList facts, trivial = trivial, quantified = quantified, residual = residual }
+            , censusSignature n facts trivial s0
+            )
 
     else
         case Array.get i slots of

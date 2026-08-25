@@ -1454,6 +1454,14 @@ qShadowCensus s =
                                         , internal = prev.internal + counts.internal
                                         , subMerged = prev.subMerged + counts.subMerged
                                         , subUnseen = prev.subUnseen + counts.subUnseen
+                                        , internAgree = prev.internAgree + counts.internAgree
+                                        , internDiverge = prev.internDiverge + counts.internDiverge
+                                        , divergeSamples =
+                                            if List.length prev.divergeSamples >= 40 then
+                                                prev.divergeSamples
+
+                                            else
+                                                prev.divergeSamples ++ counts.samples
                                         , scratchDropped = prev.scratchDropped
                                         }
                                 }
@@ -1729,12 +1737,12 @@ qSolve a =
 
 
 type alias QCounts =
-    { classes : Int, agree : Int, divergeSuper : Int, divergeSub : Int, divergeTop : Int, divergeOther : Int, unresolved : Int, edgeClasses : Int, reaching : Int, internal : Int, subMerged : Int, subUnseen : Int }
+    { classes : Int, agree : Int, divergeSuper : Int, divergeSub : Int, divergeTop : Int, divergeOther : Int, unresolved : Int, edgeClasses : Int, reaching : Int, internal : Int, subMerged : Int, subUnseen : Int, internAgree : Int, internDiverge : Int, samples : List String }
 
 
 qCounts0 : QCounts
 qCounts0 =
-    { classes = 0, agree = 0, divergeSuper = 0, divergeSub = 0, divergeTop = 0, divergeOther = 0, unresolved = 0, edgeClasses = 0, reaching = 0, internal = 0, subMerged = 0, subUnseen = 0 }
+    { classes = 0, agree = 0, divergeSuper = 0, divergeSub = 0, divergeTop = 0, divergeOther = 0, unresolved = 0, edgeClasses = 0, reaching = 0, internal = 0, subMerged = 0, subUnseen = 0, internAgree = 0, internDiverge = 0, samples = [] }
 
 
 qCompare : Dict.Dict Int () -> QAcc -> Dict.Dict Int QAns -> ( QCounts, IO.State )
@@ -1780,24 +1788,79 @@ qCompare sigClasses a solved =
                     ( { c1 | unresolved = c1.unresolved + 1 }, store1 )
 
                 Just ans ->
-                    ( qScore a.allMembers shadow ans c1, store1 )
+                    -- §5.3: score the INTERNAL population separately. Those are
+                    -- the classes the paper would replace with `S(Q,α)`, so
+                    -- whether that substitution is safe is decided by how often
+                    -- the shadow solution equals the eager one THERE, not
+                    -- overall.
+                    ( qScore a.allMembers (not (Dict.member key sigClasses)) shadow ans c1, store1 )
         )
         ( qCounts0, a.store )
         solved
 
 
-qScore : Dict.Dict Int () -> QAns -> QAns -> QCounts -> QCounts
-qScore allMembers shadow eager c =
+qScore : Dict.Dict Int () -> Bool -> QAns -> QAns -> QCounts -> QCounts
+qScore allMembers isInternal shadow eager c0 =
+    let
+        note same acc =
+            let
+                acc1 =
+                    if not isInternal then
+                        acc
+
+                    else if same then
+                        { acc | internAgree = acc.internAgree + 1 }
+
+                    else
+                        { acc | internDiverge = acc.internDiverge + 1 }
+            in
+            if same || List.length acc1.samples >= 40 then
+                acc1
+
+            else
+                { acc1
+                    | samples =
+                        ("QDIV "
+                            ++ (if isInternal then
+                                    "internal"
+
+                                else
+                                    "reaching"
+                               )
+                            ++ " shadow=["
+                            ++ String.join "," (List.map String.fromInt shadow.members)
+                            ++ (if shadow.top then
+                                    "|TOP"
+
+                                else
+                                    ""
+                               )
+                            ++ "] eager=["
+                            ++ String.join "," (List.map String.fromInt eager.members)
+                            ++ (if eager.top then
+                                    "|TOP"
+
+                                else
+                                    ""
+                               )
+                            ++ "]"
+                        )
+                            :: acc1.samples
+                }
+
+        c =
+            c0
+    in
     if shadow.top && eager.top then
-        { c | agree = c.agree + 1 }
+        note True { c | agree = c.agree + 1 }
 
     else if shadow.top /= eager.top then
-        { c | divergeTop = c.divergeTop + 1 }
+        note False { c | divergeTop = c.divergeTop + 1 }
 
     else
         case IO.classifySorted shadow.members eager.members of
             IO.SortedEqual ->
-                { c | agree = c.agree + 1 }
+                note True { c | agree = c.agree + 1 }
 
             IO.SortedSub ->
                 -- shadow ⊊ eager: Q under-records — a write path that is not
@@ -1811,16 +1874,16 @@ qScore allMembers shadow eager c =
                         List.all (\m -> Dict.member m allMembers) missing
                 in
                 if merged then
-                    { c | divergeSub = c.divergeSub + 1, subMerged = c.subMerged + 1 }
+                    note False { c | divergeSub = c.divergeSub + 1, subMerged = c.subMerged + 1 }
 
                 else
-                    { c | divergeSub = c.divergeSub + 1, subUnseen = c.subUnseen + 1 }
+                    note False { c | divergeSub = c.divergeSub + 1, subUnseen = c.subUnseen + 1 }
 
             IO.SortedSuper ->
-                { c | divergeSuper = c.divergeSuper + 1 }
+                note False { c | divergeSuper = c.divergeSuper + 1 }
 
             IO.SortedMixed ->
-                { c | divergeOther = c.divergeOther + 1 }
+                note False { c | divergeOther = c.divergeOther + 1 }
 
 
 {-| The eager answer for one class, as the STORE holds it: `Nothing` when the

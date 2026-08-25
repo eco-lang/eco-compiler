@@ -369,6 +369,23 @@ type alias LssConfig =
     -- 99% of it one de-stamped site), and 2b shares strictly MORE contexts
     -- than 2a. Hash token `lssAR=1`; env `ECO_MONO_LSS_ARROW_ROOTS`.
     , arrowSolverRoots : Bool
+
+    -- §5.2/§5.3 (plans/lss-paper-inclusion-constraints.md): consume the
+    -- signature as the paper's SCHEME `d⟨ᾱ⟩ : (Q ⇒ τ)` rather than as a
+    -- pre-solved answer.
+    --
+    -- Flag-OFF is today's path: `applyFacts` copies `ArrowFact.members` into
+    -- the instantiation's slots, and a def's set variables are committed by
+    -- the eager write that put them there.
+    --
+    -- Flag-ON instantiates: freshen `ᾱ` (the fresh slots), tie the ordinals
+    -- that share a `rep` into one variable, then re-emit `Q` against those
+    -- variables; and at the def boundary internalize the variables that do NOT
+    -- reach the signature to `S(Q,α)`, the paper's minimal solution, instead
+    -- of reading whatever the eager union left behind.
+    --
+    -- DEFAULT-OFF. Hash token `lssQS=1`; env `ECO_MONO_LSS_QSOLVE`.
+    , qSolve : Bool
     }
 
 
@@ -407,6 +424,7 @@ defaultLss =
     , postSettleDevirt = True
     , arrowIdentity = True
     , arrowSolverRoots = False
+    , qSolve = False
     }
 
 
@@ -792,6 +810,7 @@ lssDecoder =
         |> D.apply (D.optionalField "postSettleDevirt" D.bool defaultLss.postSettleDevirt)
         |> D.apply (D.optionalField "arrowIdentity" D.bool defaultLss.arrowIdentity)
         |> D.apply (D.optionalField "arrowSolverRoots" D.bool defaultLss.arrowSolverRoots)
+        |> D.apply (D.optionalField "qSolve" D.bool defaultLss.qSolve)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -1140,6 +1159,21 @@ hash cfg =
                     , if lss.arrowSolverRoots /= defaultLss.arrowSolverRoots then
                         [ "lssAR="
                             ++ (if lss.arrowSolverRoots then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- §5.2/§5.3 scheme instantiation: artifact-affecting when
+                    -- on (it changes what a def's set variables resolve to).
+                    , if lss.qSolve /= defaultLss.qSolve then
+                        [ "lssQS="
+                            ++ (if lss.qSolve then
                                     "1"
 
                                 else

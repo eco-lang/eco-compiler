@@ -108,6 +108,25 @@ annotation type (LSS_006).
 type alias LssSignature =
     { arrows : Array ArrowFact
     , trivial : Bool -- every fact is {rep=self, members=[], top=False}
+
+    -- §5.2 (plans/lss-paper-inclusion-constraints.md): the SCHEME half,
+    -- `d⟨ᾱ⟩ : (Q ⇒ τ)`.
+    --
+    -- `quantified` is `ᾱ` — the CANONICAL ordinals, i.e. those that are their
+    -- own `rep`. Ordinals sharing a `rep` are one set variable, so the
+    -- distinct variables this signature abstracts over are exactly the
+    -- canonical ones; `rep` was always that statement in ordinal form, and
+    -- naming it makes instantiation say what it does.
+    --
+    -- `residual` is `Q` — `ℓ… ⋸ α`, keyed by CANONICAL ordinal. It carries the
+    -- same information `ArrowFact.members` does, in the paper's direction: a
+    -- constraint the USE re-emits against a freshly instantiated α, rather
+    -- than a solved set the use copies. Derived from `members` at
+    -- generalization, so the two agree by construction and the change is
+    -- byte-neutral; what it buys is that the application path stops reading a
+    -- pre-solved answer, which is the precondition for §5.3.
+    , quantified : List Int
+    , residual : List ( Int, List Int )
     }
 
 
@@ -302,12 +321,25 @@ type alias QShadowStats =
     -- never constrained and therefore never entered Q's domain.
     , subMerged : Int
     , subUnseen : Int
+
+    -- §5.3: the same score restricted to the INTERNAL population — the
+    -- classes the paper replaces with `S(Q,α)`. Substituting the shadow
+    -- solution is only safe where it EQUALS the eager one, so this pair, not
+    -- the overall agreement, is what decides whether the eager union can be
+    -- retired.
+    , internAgree : Int
+    , internDiverge : Int
+
+    -- The diverging classes themselves, as member KEY strings, so the cause can
+    -- be TRACED rather than inferred from counters. Report-gated and capped:
+    -- this exists to be read by a human, not to be complete.
+    , divergeSamples : List String
     }
 
 
 emptyQShadowStats : QShadowStats
 emptyQShadowStats =
-    { items = 0, members = 0, tops = 0, edges = 0, classes = 0, agree = 0, divergeSuper = 0, divergeSub = 0, divergeTop = 0, divergeOther = 0, unresolved = 0, edgeClasses = 0, sigRoots = 0, reaching = 0, internal = 0, scratchDropped = 0, subMerged = 0, subUnseen = 0 }
+    { items = 0, members = 0, tops = 0, edges = 0, classes = 0, agree = 0, divergeSuper = 0, divergeSub = 0, divergeTop = 0, divergeOther = 0, unresolved = 0, edgeClasses = 0, sigRoots = 0, reaching = 0, internal = 0, scratchDropped = 0, subMerged = 0, subUnseen = 0, internAgree = 0, internDiverge = 0, divergeSamples = [] }
 
 
 {-| The second ledger: the SAME readbacks as the in-flight one, replayed at
@@ -454,6 +486,8 @@ trivialSignature : Int -> LssSignature
 trivialSignature n =
     { arrows = Array.initialize n (\i -> { rep = i, members = [], top = False, sources = [] })
     , trivial = True
+    , quantified = List.range 0 (n - 1)
+    , residual = []
     }
 
 

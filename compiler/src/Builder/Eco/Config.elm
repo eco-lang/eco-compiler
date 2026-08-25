@@ -183,6 +183,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\arVal -> applyLssArrowRootsOverride arVal cfg4e7)
             )
         |> Task.andThen
+            (\cfg4e8 ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_QSOLVE" |> Task.mapError never)
+                    |> Task.map (\qsVal -> applyLssQSolveOverride qsVal cfg4e8)
+            )
+        |> Task.andThen
             (\cfg4f ->
                 (Utils.envLookupEnv "ECO_SPEC_TYPE_NODE_LIMIT" |> Task.mapError never)
                     |> Task.map (\tnVal -> applySpecTypeNodeLimitOverride tnVal cfg4f)
@@ -1742,6 +1747,30 @@ applyLssLayoutQualOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | layoutQualMembers = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_QSOLVE=1|true|yes / 0|false|no` (§5.2/§5.3,
+plans/lss-paper-inclusion-constraints.md): consume the signature as the paper's
+scheme `d⟨ᾱ⟩ : (Q ⇒ τ)` — instantiate `ᾱ` per use and re-emit `Q` against it,
+and internalize the def's non-reaching set variables to `S(Q,α)` — instead of
+copying a pre-solved member set out of the signature. DEFAULT-OFF. Hash token
+`lssQS=`.
+-}
+applyLssQSolveOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssQSolveOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | qSolve = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | qSolve = False }) cfg
 
             else
                 cfg

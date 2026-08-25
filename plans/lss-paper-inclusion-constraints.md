@@ -786,11 +786,108 @@ is what the phrase actually means once there is a boundary to measure against.
 `LssSignature` becomes `d⟨ᾱ⟩ : (Q ⇒ τ)`; instantiation freshens `ᾱ`. Gate: the
 §0 probe's row 4 (lambdas through `Task.succeed`) reaches `kN ≥ 2`.
 
+#### BUILT 2026-08-25 — LANDED, BYTE-NEUTRAL
+
+`LssSignature` now carries the scheme half beside the facts:
+
+- **`quantified`** — `ᾱ`, the CANONICAL ordinals (those that are their own
+  `rep`). Ordinals sharing a `rep` are one set variable, so the canonical ones
+  are exactly the variables the signature abstracts over. `rep` was always that
+  statement in ordinal form; naming it lets instantiation say what it does.
+- **`residual`** — `Q`, as `ℓ… ⋸ α` keyed by CANONICAL ordinal. Same information
+  `ArrowFact.members` carries, in the paper's direction: a constraint the USE
+  re-emits against a freshly instantiated α, not a solved set the use copies.
+
+`LssInfer.instantiateScheme` (gated by `lss.qSolve`, env `ECO_MONO_LSS_QSOLVE`,
+hash token `lssQS=`) applies a signature the paper's way round, in three steps:
+`schemeTie` unifies the ordinals that share a `rep` into one variable,
+`schemeFacts` carries the two things that are NOT solved sets (⊤, which is
+Eco's incompleteness marker per §3.6, and the LSS_023 edges), and
+`schemeResidual` re-emits `Q`. The slots are already fresh per call — that IS
+the freshening of `ᾱ`.
+
+**MEASURED byte-identical flag-off vs flag-on** across all eight probes,
+including the gate probe. `residual` is derived from the same `members` at
+generalization and keyed by the `rep` `schemeTie` has already unified, so the
+two paths agree by construction; the A/B is the check that the REORDERING
+(all ties, then all facts, then all constraints — rather than interleaved per
+ordinal) is also neutral, which is not obvious and is now measured.
+
+**The stated gate is met but NOT by this phase.** `PTaskLambdas`
+(`[ Task.succeed (\x -> x+1), Task.succeed (\x -> x-1) ]`) reads `kN=5` with the
+2-set `l|104 | l|105` in BOTH arms — §5.A3's arrow-identity flip is what
+delivered it, as §5.A4 recorded. §5.2's value here is structural: the
+application path stops reading a pre-solved answer, which is the precondition
+§5.3 needs. It buys no precision on its own and is not claimed to.
+
 ### §5.3 `S(Q,α)` at generalization; retire the eager union
 
 Move the union from every write to one solve at the boundary. Gate: the §2.5
 ledger's `k1 + kN` does not fall, and `union` becomes a solver statistic rather
 than a write-path one.
+
+#### MEASURED 2026-08-25 — **BLOCKED, and the blocker is a SOUNDNESS condition**
+
+The census was extended to score the partition's two halves separately, because
+`S(Q,α)` is substituted for exactly one of them and overall agreement does not
+decide the question. Self-compile:
+
+```
+partition sigRoots=22824 reaching=51142 internal=58860(agree=58794 diverge=66)
+diverge=66(super=0 sub=56[merged=12 unseen=44] top=10 other=0)
+```
+
+**Every one of the 66 divergences is in the INTERNAL population — the reaching
+half agrees 51,142 / 51,142.** And every divergence is `shadow ⊊ eager`
+(`super=0`, `other=0`). So replacing the internal classes with `S(Q,α)` today
+would DROP members at 66 classes: an under-approximation, which is the
+miscompile direction — a set claiming fewer inhabitants than it has is exactly
+what licenses a wrong devirtualization (LSS_026's whole subject).
+
+**The blocker is §5.1's finding, now priced.** Members reach a slot by two
+routes and only one is a constraint: `Store.monoTypeToVarC` seeds a slot from an
+`LSet` annotation (44 classes), and `Unify.merge` joins two set slots without
+passing `unifySlotWithSetC` (12; the 10 ⊤ cases are the same two causes).
+**§5.3 cannot land until `Q` records both.**
+
+CORRECTED — an earlier draft of this paragraph said neither was a small edit,
+reasoning that `monoTypeToVarC` threads only `IO.State` and that `Unify.merge`
+is shared with the typechecker and cannot see `S`. Both are true of the DEEP
+functions and both are beside the point: each route has a `Step`-level wrapper
+that holds everything needed.
+
+- `Store.monoTypeToVar` (`Store.elm:689`) has the `Mono.MonoType`, the root
+  Point it produced, and `Step`. Walking the type alongside the Points and
+  emitting `ℓ ⋸ α` for every `MFunction` carrying an `LSet` records the seed
+  without touching the recursive encoder at all. The walk already exists —
+  `Store.qSigGo`, written for §5.1's partition.
+- `Store.unifyStep` (`Store.elm:1016`) has both Points and `Step`. Recording
+  each side's set-slot contents as seeds BEFORE unifying covers the merge
+  whichever way it joins them.
+
+So the work is two `Step`-level walks against an existing helper, not surgery on
+the encoder or the shared unifier. **The census says when it is done:
+`internDiverge` must reach 0.**
+
+**Do it for fidelity, not for precision.** `divergeSuper = 0` says `S(Q,α)`
+never exceeds the eager answer, so closing the gap makes `Q` TRUSTWORTHY — which
+§5.4 and §5.5 both need — but it does not make it more informative.
+
+**The gate's second clause is already vacuous, and that is worth knowing.**
+`set-writes: skip=26732 flex=206994 topJoin=1 union=24 slow=0`. The write-path
+union is **24 operations out of 233,751** — 0.01 %. There is no eager union to
+retire. The eager COMMITMENT is `flex=206,994` (88.6 %): adopting a concrete set
+into an unconstrained slot. Any future restatement of §5.3 should target the
+flex adoption, not the union, or it is optimising something that does not
+happen.
+
+**What `S(Q,α)` would buy if the recording gap were closed: nothing.**
+`divergeSuper = 0` over 110,002 classes means the shadow solution NEVER exceeds
+the eager answer, and it equals it 99.94 % of the time. The paper needs
+`S(Q,α)` because it defers everything and has no store to read; Eco computes the
+same sets eagerly and §5.1 proved the two agree. Retiring the eager path would
+relocate WHEN the union happens, not WHAT it computes — and would newly expose
+the 45.9 % of constraints that die inside `withScratchStore`.
 
 ### §5.4 GAP-A — references instantiate, they do not inject
 
