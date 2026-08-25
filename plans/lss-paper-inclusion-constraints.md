@@ -889,6 +889,152 @@ same sets eagerly and §5.1 proved the two agree. Retiring the eager path would
 relocate WHEN the union happens, not WHAT it computes — and would newly expose
 the 45.9 % of constraints that die inside `withScratchStore`.
 
+### §5.6 `Q` IS AN INFERENCE ARTIFACT — it is currently scoped to the wrong phase
+
+**ADDED 2026-08-25, and it supersedes the repair §5.3 was heading for.** Two
+earlier proposals in this register are WITHDRAWN by the finding below: (a)
+"record a seed constraint at `monoTypeToVar` and `unifyStep`", and (b) "make the
+signature channel the only channel by flexing demand annotations". Both were
+aimed at a defect that is not there.
+
+#### §5.6.1 The finding
+
+`LssInfer.resolveSignature` runs the whole inference unit inside a scratch
+store:
+
+```elm
+case Engine.withScratchStore (inferUnitInScratch members) s3 of
+```
+
+`Engine.clearedAux` empties `qLog` on entry and `restoredAux` drops the inner
+log on exit. **So every constraint the INFERENCE phase records is discarded, and
+the census at `finishNode` is scoring the SPECIALIZATION phase instead.** That
+is what `scratchDropped = 106,023` — 45.9 % of all recorded constraints — has
+been measuring all along: not incidental loss, but the entire population the
+paper's `Q` is about.
+
+**This reverses the reading of every divergence.** The members `Q` "under-records"
+arrive when a spec's stored demand type re-enters the store
+(`Translate.demandUnifyVar` → `Store.monoTypeToVar`, `Translate.elm:85`). That is
+not a leak in an inference channel — it is the paper's own `σ̄`, the concrete set
+a specialization is keyed by (Fig. 9 Mono-Used, 146:13). The paper has ground
+sets at specialization too; what it does NOT have is constraints there, because
+`Q` is discharged when inference ends. **Eco was recording `Q` across a phase
+boundary the paper does not cross.**
+
+So the ground-demand channel is NOT to be retired. Retiring it would mean
+ceasing to specialize on lambda sets, since the demand's `LSet` IS the spec key
+— the opposite of what LSS exists to do, and measured at 64 % of fast dispatch
+by Run AK's `keyed=False` arm.
+
+#### §5.6.2 The work — implementation-ready
+
+**Move the census inside the inference scratch store, and keep the existing one
+as a separate line.** They measure different phases and both are worth having.
+
+1. `Engine.LssStats.sigStats` gains `qInfer : QShadowStats` beside `qShadow`.
+   Same record, no new type.
+2. `Store.qInferenceCensus : List IO.Variable -> Engine.S -> Engine.S` — the
+   existing `qShadowCensus` body, with two changes: the signature-reachability
+   set is built from the UNIT'S ROOTS (a list, unioned) rather than from the
+   single `itemAux.qSigRoot`, and the counters land in `qInfer`.
+3. Call it at the end of `LssInfer.inferUnitInScratch`, after `zonkSignatures`
+   and BEFORE returning — the scratch store must still be installed. The roots
+   are already in hand: `loadMemberSlots` returns
+   `List ( String, IO.Variable, Array IO.Variable )`, whose second component is
+   each member's signature root and whose third is its arrow-slot array.
+4. Clear `itemAux.qLog` immediately after consuming it there, so the same
+   constraints are not then counted again as `scratchDropped` on scratch exit.
+   The two censuses must partition the constraints, not overlap.
+5. `Store.qSigClasses` already does the reachability walk and needs only to be
+   folded over several roots instead of one.
+
+#### §5.6.2b MEASURED 2026-08-25 — the gate PASSES
+
+```
+Q-infer:  constraints=106314 (members=105784 tops=353 edges=177) units=5844
+          classes=106300 agree=106261 diverge=0(super=0 sub=0 top=0 other=0)
+          partition reaching=13404 internal=92896(agree=92889 diverge=0)
+          REPRODUCES=yes
+
+Q-shadow: ... diverge=66(sub=56[merged=12 unseen=44] top=10) scratchDropped=0
+          REPRODUCES=NO      <- specialization phase, NOT gated
+```
+
+**Zero divergences over 106,300 classes.** Three independent corroborations that
+the census is now on the right phase, none of which could be arranged by
+accident:
+
+1. **`edges=177` matches `sigflow: edges=177` exactly.** Under the old scoping
+   the census read `edges=0` against the same 177. The LSS_023 edges are
+   installed during inference and were being discarded with the scratch store.
+2. **`scratchDropped` fell to 0.** The constraints are consumed at the inference
+   boundary instead of dying on the way out, so the two censuses now PARTITION
+   the constraints rather than one silently eating the other's.
+3. **`constraints=106314` against the old `scratchDropped=106023`.** The
+   population that was being thrown away IS the population the paper's `Q` is
+   about; the small delta is corpus drift between runs (the corpus is the
+   compiler, and the compiler changed).
+
+The partition also moves, and the new figure is the honest one: **reaching
+13,404 (12.6 %) / internal 92,896 (87.4 %)**, against 46.5/53.5 under the
+wrong-phase scoping. Inference has far more body-internal variables than the
+specialization phase does, which is what one would expect and what the earlier
+number was obscuring.
+
+**The gate stays `REPRODUCES=yes`, but now it means something:** `Q` recorded
+over inference, solved at the inference boundary, must reproduce what inference
+left in the scratch store. A divergence THERE is a genuine defect in `Q`. The
+`finishNode` line becomes a specialization-phase observation and is not gated.
+
+#### §5.6.3 §5.3, re-decided against `Q-infer` — SAFE, and NEUTRAL
+
+**The soundness blocker is CLEARED.** `internal=92896(agree=92889 diverge=0)`:
+over the whole self-compile, the minimal solution `S(Q,α)` never disagrees with
+what inference left in the store for a single internalizable class. The 7
+remainder are `unresolved` — no eager answer to compare — not divergences.
+Substituting `S(Q,α)` cannot drop a member, so it cannot manufacture the false
+singleton that LSS_025's devirt hijacks. The `[42,42,42]` risk recorded under
+the old scoping was an artifact of measuring the specialization phase.
+
+**But the two constraints on the payoff survive the rescoping, and together they
+settle it:**
+
+- `divergeSuper = 0`. The shadow solution NEVER exceeds the eager answer.
+  `S(Q,α)` is at best equal, so it cannot buy precision — it can only relocate
+  when the same set is computed.
+- `set-writes: union=24` of 233,751 — **0.01 %**. There is no eager union to
+  retire. The eager COMMITMENT is `flex=206,994` (88.6 %), adopting a concrete
+  set into an unconstrained slot.
+
+**Verdict: building §5.3 as written is a provably-neutral refactor.** Both of
+its stated gates pass trivially — `k1 + kN` cannot fall when the answers are
+identical, and `union` is already not a write-path phenomenon. Recorded as the
+phase's result rather than built. If §5.3 is ever restated it must target the
+FLEX ADOPTION, not the union, or it optimises something that does not happen.
+
+### §5.7 Make signatures non-trivial — the population, measured
+
+Independently of §5.6, the signature channel says almost nothing. Self-compile,
+9,216 signatures with a body:
+
+| class | count | share | meaning |
+|---|---|---|---|
+| `allflex` | **7,259** | **78.8 %** | HAS arrows, every fact is `{rep=self, members=[], top=False}` |
+| `arrowfree` | 1,546 | 16.8 % | declared type has no arrows — nothing to say, no loss |
+| `carrying` | 333 | 3.6 % | carries members |
+| `hasTop` | 78 | 0.8 % | carries ⊤ |
+
+**The trivial population is NOT dominated by arrow-free defs** — that was worth
+checking before designing around it, and it survived. 78.8 % of signatures have
+arrows and state nothing, which is GAP-2's recorded loss item 1: tyvar positions
+mint no slot, so `always : a -> b -> a` cannot state "result ⊇ param 0".
+
+**ORDER IS LOAD-BEARING.** Any move that reduces what the ground-demand channel
+carries must come AFTER the signature channel demonstrably carries it, or the
+information is deleted rather than relocated. `applyFacts` short-circuits on
+`sig.trivial`, so today 78.8 % of defs would replace a real set with nothing.
+
 ### §5.4 GAP-A — references instantiate, they do not inject
 
 Delete `standaloneMemberWith`'s inject-into-a-freshly-loaded-slot in favour of

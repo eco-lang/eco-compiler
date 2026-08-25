@@ -10,7 +10,7 @@ module Compiler.MonoSolver.Store exposing
     , unifySlotWithSet
     , addSlotSource
     , resolveSlotMembers
-    , SetWriteCtx, setWriteCtx, unifySlotWithSetC, foldSetWrites, qOnFor, qShadowCensus
+    , SetWriteCtx, setWriteCtx, unifySlotWithSetC, foldSetWrites, qOnFor, qShadowCensus, qInferenceCensus
     , unifyBestEffort
     , poisonArrowSets
     , monoTypeToVar
@@ -1385,6 +1385,31 @@ and folding them in here would score policy as constraint-solving error.
 -}
 qShadowCensus : Engine.S -> Engine.S
 qShadowCensus s =
+    qCensusInto False (maybeList s.itemAux.qSigRoot) s
+
+
+{-| §5.6: the same census, run INSIDE the inference scratch store over the
+unit's own signature roots. This is where the paper's `Q` lives — inference —
+and it is the arm the `REPRODUCES` gate is about. `qShadowCensus` scores the
+specialization phase instead, where ground `σ̄` legitimately re-enters.
+-}
+qInferenceCensus : List IO.Variable -> Engine.S -> Engine.S
+qInferenceCensus roots s =
+    qCensusInto True roots s
+
+
+maybeList : Maybe a -> List a
+maybeList m =
+    case m of
+        Just x ->
+            [ x ]
+
+        Nothing ->
+            []
+
+
+qCensusInto : Bool -> List IO.Variable -> Engine.S -> Engine.S
+qCensusInto toInfer roots s =
     if not (qOnFor s) then
         s
 
@@ -1406,7 +1431,16 @@ qShadowCensus s =
                         qSolve acc
 
                     ( sigClasses, storeSig ) =
-                        qSigClasses s.itemAux.qSigRoot acc.store
+                        List.foldl
+                            (\r ( accCls, stAcc ) ->
+                                let
+                                    ( cls, stN ) =
+                                        qSigClasses (Just r) stAcc
+                                in
+                                ( Dict.union cls accCls, stN )
+                            )
+                            ( Dict.empty, acc.store )
+                            roots
 
                     ( counts, store1 ) =
                         qCompare sigClasses { acc | store = storeSig } solved
@@ -1421,14 +1455,13 @@ qShadowCensus s =
                         stats.sigStats
 
                     prev =
-                        sig.qShadow
-                in
-                { s
-                    | lssStats =
-                        { stats
-                            | sigStats =
-                                { sig
-                                    | qShadow =
+                        if toInfer then
+                            sig.qInfer
+
+                        else
+                            sig.qShadow
+
+                    updated =
                                         { items = prev.items + 1
                                         , members = prev.members + acc.nMembers
                                         , tops = prev.tops + acc.nTops
@@ -1443,12 +1476,11 @@ qShadowCensus s =
                                         , edgeClasses = prev.edgeClasses + counts.edgeClasses
                                         , sigRoots =
                                             prev.sigRoots
-                                                + (case s.itemAux.qSigRoot of
-                                                    Just _ ->
-                                                        1
+                                                + (if List.isEmpty roots then
+                                                    0
 
-                                                    Nothing ->
-                                                        0
+                                                   else
+                                                    1
                                                   )
                                         , reaching = prev.reaching + counts.reaching
                                         , internal = prev.internal + counts.internal
@@ -1464,7 +1496,16 @@ qShadowCensus s =
                                                 prev.divergeSamples ++ counts.samples
                                         , scratchDropped = prev.scratchDropped
                                         }
-                                }
+                in
+                { s
+                    | lssStats =
+                        { stats
+                            | sigStats =
+                                if toInfer then
+                                    { sig | qInfer = updated }
+
+                                else
+                                    { sig | qShadow = updated }
                         }
                 }
 

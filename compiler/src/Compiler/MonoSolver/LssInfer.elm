@@ -656,14 +656,45 @@ inferUnitInScratch members s0 =
                     -- pushed 184 signatures into `trivial`, whose
                     -- short-circuits then cost 60 % of grounding, and bought
                     -- 0.000 pp of dispatch coverage.
-                    zonkSignatures
-                        (List.map2
-                            (\m ( gkey, _, slots ) -> ( gkey, selfIdOf m, slots ))
-                            members
-                            loaded
-                        )
-                        []
-                        s2
+                    case
+                        zonkSignatures
+                            (List.map2
+                                (\m ( gkey, _, slots ) -> ( gkey, selfIdOf m, slots ))
+                                members
+                                loaded
+                            )
+                            []
+                            s2
+                    of
+                        Err e ->
+                            Err e
+
+                        Ok ( sigs, s3 ) ->
+                            -- §5.6 (plans/lss-paper-inclusion-constraints.md):
+                            -- score `Q` HERE, while the scratch store is still
+                            -- installed. This is the paper's inference boundary
+                            -- — the unit's constraints are complete and its
+                            -- signature roots are in hand — and it is the arm
+                            -- the REPRODUCES gate is about. `finishNode`'s
+                            -- census sees the SPECIALIZATION phase instead,
+                            -- where a stored demand legitimately re-enters as
+                            -- ground `σ̄`.
+                            --
+                            -- The log is cleared immediately after, so these
+                            -- constraints are not counted a second time as
+                            -- `scratchDropped` when the scratch store unwinds:
+                            -- the two censuses must PARTITION the constraints,
+                            -- not overlap.
+                            let
+                                s4 =
+                                    Store.qInferenceCensus
+                                        (List.map (\( _, root, _ ) -> root) loaded)
+                                        s3
+
+                                aux4 =
+                                    s4.itemAux
+                            in
+                            Ok ( sigs, { s4 | itemAux = { aux4 | qLog = [] } } )
 
 
 loadMemberSlots : List UnitMember -> List ( String, IO.Variable, Array IO.Variable ) -> Step (List ( String, IO.Variable, Array IO.Variable ))

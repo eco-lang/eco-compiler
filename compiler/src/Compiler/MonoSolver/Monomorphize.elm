@@ -328,6 +328,57 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         q =
             stats.sigStats.qShadow
 
+        qi =
+            stats.sigStats.qInfer
+
+        qiDiverge =
+            qi.divergeSuper + qi.divergeSub + qi.divergeTop + qi.divergeOther
+
+        qInferLine =
+            "Q-infer: constraints="
+                ++ String.fromInt (qi.members + qi.tops + qi.edges)
+                ++ " (members="
+                ++ String.fromInt qi.members
+                ++ " tops="
+                ++ String.fromInt qi.tops
+                ++ " edges="
+                ++ String.fromInt qi.edges
+                ++ ") units="
+                ++ String.fromInt qi.items
+                ++ " classes="
+                ++ String.fromInt qi.classes
+                ++ " agree="
+                ++ String.fromInt qi.agree
+                ++ " diverge="
+                ++ String.fromInt qiDiverge
+                ++ "(super="
+                ++ String.fromInt qi.divergeSuper
+                ++ " sub="
+                ++ String.fromInt qi.divergeSub
+                ++ "[merged="
+                ++ String.fromInt qi.subMerged
+                ++ " unseen="
+                ++ String.fromInt qi.subUnseen
+                ++ "] top="
+                ++ String.fromInt qi.divergeTop
+                ++ " other="
+                ++ String.fromInt qi.divergeOther
+                ++ ") | partition reaching="
+                ++ String.fromInt qi.reaching
+                ++ " internal="
+                ++ String.fromInt qi.internal
+                ++ "(agree="
+                ++ String.fromInt qi.internAgree
+                ++ " diverge="
+                ++ String.fromInt qi.internDiverge
+                ++ ") REPRODUCES="
+                ++ (if qiDiverge == 0 then
+                        "yes"
+
+                    else
+                        "NO"
+                   )
+
         qDiverge =
             q.divergeSuper + q.divergeSub + q.divergeTop + q.divergeOther
 
@@ -538,6 +589,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         , "sets zonked: " ++ String.fromInt stats.setsZonked ++ "; size histogram: " ++ histLine
         , ledgerLine
         , settledLine
+        , qInferLine
         , qLine
         , qSampleLines
         , settledArrowLine
