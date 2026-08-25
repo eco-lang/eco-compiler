@@ -53,12 +53,28 @@ import TestLogic.TestPipeline as Pipeline
 suite : Test
 suite =
     Test.describe "LSS_026(a) honest ∅-as-source (pipeline level)"
-        [ Test.test "1. the `g|` variant: `d`'s mixed fact resolves ⊤, never the false singleton" <|
+        [ Test.test "1. the `g|` variant: `d`'s result is never the false singleton" <|
             \() ->
                 -- A standalone-global member GROUNDS at the consuming zonk
                 -- (LSS_019) and IS consumable by the devirts, so a false
                 -- `{g|incr}` here is the representative-hijack MISCOMPILE
                 -- class — the one the runtime fixture caught.
+                --
+                -- UNTIL 2026-08-25 this asserted ⊤, because the A.1 leak left
+                -- `d`'s `f` dangling and ⊤ was the honest reading of a fact
+                -- mixed with an UNCONSTRAINED source. `lss.arrowIdentity` going
+                -- default-on (plans/lss-paper-inclusion-constraints.md §5.A3)
+                -- CLOSED that leak — the arg now shares the param's slot — so
+                -- the source is no longer unconstrained and the fixture no
+                -- longer produces a mixed-with-flex fact at all.
+                --
+                -- What is asserted is therefore the property that actually
+                -- guards the miscompile, and it holds in both readings: the
+                -- result is ⊤, or a set with AT LEAST TWO members. LSS_025's
+                -- post-settle devirt acts on a SINGLETON; `{g|incr}` alone is
+                -- the false completeness claim. For this closed fixture the
+                -- complete inhabitant set is {incr, the caller's lambda} — two
+                -- members — so a singleton here is still exactly the bug.
                 case run mixedSigModule of
                     Err msg ->
                         Expect.fail msg
@@ -69,12 +85,12 @@ suite =
                                 Expect.fail "no demand recorded for `d` — fixture broken"
 
                             annos ->
-                                if List.all ((==) Mono.LTop) annos then
+                                if List.all neverFalselyComplete annos then
                                     Expect.pass
 
                                 else
                                     Expect.fail
-                                        ("a mixed fact must resolve ⊤, got: " ++ describeAnnos annos)
+                                        ("a mixed fact must be ⊤ or a >=2 set, got: " ++ describeAnnos annos)
         , Test.test "2. the `l|` variant behaves identically — the rule is not class-sensitive" <|
             \() ->
                 -- The plan's literal §0.5 text uses a lambda in the else
@@ -92,20 +108,31 @@ suite =
                                 Expect.fail "no demand recorded for `dl` — fixture broken"
 
                             annos ->
-                                if List.all ((==) Mono.LTop) annos then
+                                if List.all neverFalselyComplete annos then
                                     Expect.pass
 
                                 else
                                     Expect.fail
-                                        ("a mixed fact must resolve ⊤, got: " ++ describeAnnos annos)
-        , Test.test "3. the crossing is COUNTED — both fixtures register it" <|
+                                        ("a mixed fact must be ⊤ or a >=2 set, got: " ++ describeAnnos annos)
+        , Test.test "3. the crossing counter is PRESENT and reads what these fixtures now produce" <|
             \() ->
                 -- `topMixedFlex=<sig>/<demand>`. The counter is what let
                 -- Phase 0 size the exposure across a whole self-compile; a
                 -- silent widening would be untrackable.
+                --
+                -- It read `1/0` while the A.1 leak dangled `d`'s `f`. With
+                -- `lss.arrowIdentity` default-on the slot is shared, nothing is
+                -- mixed with an unconstrained source here, and the honest count
+                -- is `0/0`. THE COUNTER ITSELF IS STILL COVERED: the RULE is
+                -- pinned at store level by `LssHonestSourcesTest`, which drives
+                -- `Store.resolveSlotMembers` directly with `honestSources`
+                -- toggled and does not depend on a pipeline fixture reaching
+                -- the crossing. What this test still guards is that the line is
+                -- EMITTED and parses — a dropped counter would read the same as
+                -- a zero one otherwise.
                 case ( runReport mixedSigModule, runReport mixedLambdaModule ) of
                     ( Ok ( _, r1 ), Ok ( _, r2 ) ) ->
-                        Expect.equal ( "topMixedFlex=1/0", "topMixedFlex=1/0" )
+                        Expect.equal ( "topMixedFlex=0/0", "topMixedFlex=0/0" )
                             ( lastWord (reportLine "honestSources:" r1)
                             , lastWord (reportLine "honestSources:" r2)
                             )
@@ -296,6 +323,24 @@ annosOf t =
 
         _ ->
             []
+
+
+{-| The guard LSS_026(a) actually exists for: never a set small enough for a
+consumer to devirtualize on. ⊤ is fine (it claims nothing); a >=2 set is fine
+(no devirt arm takes it); a SINGLETON or an empty set is the false completeness
+claim that hijacks the representative.
+-}
+neverFalselyComplete : Mono.LambdaSetAnno -> Bool
+neverFalselyComplete anno =
+    case anno of
+        Mono.LTop ->
+            True
+
+        Mono.LVar _ ->
+            True
+
+        Mono.LSet members ->
+            List.length members >= 2
 
 
 annoHasSize : Int -> Mono.LambdaSetAnno -> Bool

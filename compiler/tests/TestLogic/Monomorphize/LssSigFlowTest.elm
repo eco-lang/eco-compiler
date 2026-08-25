@@ -377,35 +377,52 @@ suite =
                                 demandsOf "useH" graph
                                     |> List.concatMap hofParamInnerAnnos
                         in
-                        -- §7.6's second step, done. The pinned annos are two
-                        -- set VARIABLES — and the LABEL says
-                        -- exactly what the comment always said: the hof-use
-                        -- edges flow through the let hub and k's member
-                        -- reaches h.param, whose set the hof-param edge then
-                        -- covers, but the CALLER-side hof params are read
-                        -- because `useH`'s own instantiation WRITES NO MEMBERS
-                        -- INTO THEM. That is an absence, not a widening, and
-                        -- since Phase 1b (plans/lss-unknown-elimination.md) the
-                        -- annotation distinguishes the two. Pre-1b it read
-                        -- `LTop` only because `monoTypeToVarC` re-encoded the
-                        -- unwritten demand as explicit poison.
+                        -- The hof-use edges flow through the let hub and k's
+                        -- member reaches h.param, whose set the hof-param edge
+                        -- then covers.
                         --
-                        -- The pin still catches the miscompile class it exists
-                        -- for: a BACKWARDS flip manufactures a k-LESS NON-⊤
-                        -- SET here, and `LVar` excludes an `LSet` exactly as
-                        -- `LTop` did.
+                        -- UNTIL 2026-08-25 these positions read as set
+                        -- VARIABLES, because `useH`'s own instantiation wrote
+                        -- no members into them — an absence, not a widening.
+                        -- `lss.arrowIdentity` going default-on
+                        -- (plans/lss-paper-inclusion-constraints.md §5.A3)
+                        -- closed exactly that absence: it is LSS_006 per-load
+                        -- slot minting, and with the slot shared the write is
+                        -- visible here. MEASURED at the flip: `hofInner` reads
+                        -- `LSet[6], LSet[6]` where hof1's own set is `LSet[4]`,
+                        -- hof2's is `LSet[5]` and k's own is `LSet[6]` — both
+                        -- inner arrows carry EXACTLY k's member.
                         --
-                        -- Phase 3 asserts the SHAPE, not the numbers: the
-                        -- canonical numbering is per-type walk order, so
-                        -- pinning literal ids would make this a churn magnet
-                        -- without adding a claim. What matters is that both
-                        -- positions are variables — and whether they are the
-                        -- SAME variable, which is the paper's α and is pinned
-                        -- explicitly below.
-                        Expect.equal ( 2, True, False )
+                        -- So `List.all isVarAnno` was a PROXY that only
+                        -- discriminated while the position was unwritten. The
+                        -- claim in the title is restated directly, and the
+                        -- numbers stay out of it (canonical member numbering is
+                        -- per-type walk order, so literal ids would be a churn
+                        -- magnet):
+                        --
+                        --   POSITIVE — the inner arrow is unwritten, or it
+                        --   carries what `k` carries. That is the FORWARD flow.
+                        --
+                        --   NEGATIVE — it never carries the hof params' OWN
+                        --   members. That is the miscompile class this pin
+                        --   exists for: a BACKWARDS flip pushes `h`'s set
+                        --   ({hof1, hof2}) into the position instead of k's.
+                        Expect.equal ( 2, True, True )
                             ( List.length hofInnerAnnos
-                            , List.all isVarAnno hofInnerAnnos
-                            , List.any (annoHasSize 1) hofInnerAnnos
+                            , List.all
+                                (\a ->
+                                    isVarAnno a
+                                        || (a == Mono.LTop)
+                                        || List.member a (plainFnParamAnnosOf "useH" graph)
+                                )
+                                hofInnerAnnos
+                            , List.all
+                                (\a ->
+                                    List.all
+                                        (\m -> not (List.member m (backwardsMembers "useH" graph)))
+                                        (membersOf a)
+                                )
+                                hofInnerAnnos
                             )
         ]
 
@@ -568,6 +585,78 @@ hofParamInnerAnnos t =
                 )
                 args
                 ++ hofParamInnerAnnos ret
+
+        _ ->
+            []
+
+
+{-| The annos of the def's PLAIN function params — those whose own parameter
+is not itself a function. In `useHModule` that is `k : Int -> Int`, whose set
+is what the forward flow puts at each hof param's inner arrow.
+-}
+plainFnParamAnnosOf : String -> Mono.MonoGraph -> List Mono.LambdaSetAnno
+plainFnParamAnnosOf target graph =
+    List.concatMap plainFnParamAnnos (demandsOf target graph)
+
+
+plainFnParamAnnos : Mono.MonoType -> List Mono.LambdaSetAnno
+plainFnParamAnnos t =
+    case t of
+        Mono.MFunction _ _ args ret ->
+            List.filterMap
+                (\a ->
+                    case a of
+                        Mono.MFunction _ _ [ Mono.MFunction _ _ _ _ ] _ ->
+                            -- a HOF param, not a plain one
+                            Nothing
+
+                        Mono.MFunction _ anno _ _ ->
+                            Just anno
+
+                        _ ->
+                            Nothing
+                )
+                args
+                ++ plainFnParamAnnos ret
+
+        _ ->
+            []
+
+
+{-| The members a BACKWARDS flip would push into a HOF param's inner arrow:
+the hof params' OWN sets (`h`'s inhabitants).
+-}
+backwardsMembers : String -> Mono.MonoGraph -> List Int
+backwardsMembers target graph =
+    List.concatMap membersOf
+        (List.concatMap hofParamOuterAnnos (demandsOf target graph))
+
+
+hofParamOuterAnnos : Mono.MonoType -> List Mono.LambdaSetAnno
+hofParamOuterAnnos t =
+    case t of
+        Mono.MFunction _ _ args ret ->
+            List.filterMap
+                (\a ->
+                    case a of
+                        Mono.MFunction _ outerAnno [ Mono.MFunction _ _ _ _ ] _ ->
+                            Just outerAnno
+
+                        _ ->
+                            Nothing
+                )
+                args
+                ++ hofParamOuterAnnos ret
+
+        _ ->
+            []
+
+
+membersOf : Mono.LambdaSetAnno -> List Int
+membersOf anno =
+    case anno of
+        Mono.LSet ms ->
+            ms
 
         _ ->
             []

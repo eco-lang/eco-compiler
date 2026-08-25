@@ -2706,6 +2706,16 @@ type alias CallInfo =
     , closureKind : MaybeClosureKind
     , captureAbi : Maybe CaptureABI
     , fastEvaluator : Maybe LambdaId
+
+    -- LSS_031: the stamped instance is a NODE-TOP-LEVEL closure, emitted by
+    -- `Functions.generateNode` under `specIdToFuncName registry <this SpecId>`
+    -- and NEVER under its own `lambdaId`. `Nothing` for a nested closure,
+    -- which IS emitted under its lambdaId (queued via `pendingLambdas`).
+    --
+    -- Carried as a SpecId rather than a resolved symbol so GlobalOpt does not
+    -- have to depend on the MLIR generator's naming; emission holds the
+    -- registry and resolves it there.
+    , fastEvaluatorSpec : Maybe SpecId
     , fastPapPrefix : Maybe Int
     , callKind : CallKind
     , evaluatorReturnType : MonoType
@@ -2725,6 +2735,7 @@ defaultCallInfo =
     , closureKind = Nothing
     , captureAbi = Nothing
     , fastEvaluator = Nothing
+    , fastEvaluatorSpec = Nothing
     , fastPapPrefix = Nothing
     , callKind = CallGenericApply
     , evaluatorReturnType = MUnit

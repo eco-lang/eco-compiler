@@ -1753,9 +1753,10 @@ applyLssLayoutQualOverride maybeVal cfg =
 {-| `ECO_MONO_LSS_ARROW_ROOTS=1|true|yes / 0|false|no` (Phase 2b solver-root
 arrow ids, plans/lss-unknown-elimination.md §4.9): take each arrow's identity
 from its union-find ROOT, so two arrows the type checker unified share a
-lambda-set slot. Requires `ECO_MONO_LSS_ARROW_ID=1` to have any effect — it
-changes WHICH id an arrow gets, not whether slots are memoised at all.
-DEFAULT-OFF. Hash token `lssAR=`.
+lambda-set slot. Requires arrow identity to have any effect — it changes WHICH
+id an arrow gets, not whether slots are memoised at all — and that is now the
+default, so this flag alone is enough to select 2b. DEFAULT-OFF. Hash token
+`lssAR=`.
 -}
 applyLssArrowRootsOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssArrowRootsOverride maybeVal cfg =
@@ -1777,9 +1778,11 @@ applyLssArrowRootsOverride maybeVal cfg =
 {-| `ECO_MONO_LSS_ARROW_ID=1|true|yes / 0|false|no` (Phase 2a arrow identity,
 plans/lss-unknown-elimination.md §4): memoise one lambda-set SLOT per
 `Can.TLambda` occurrence id per item, so repeated loads of the same stamped
-type object share their sets. DEFAULT-OFF, so flag-off stays byte-identical to
-pre-2a and the two-binary rail applies. Participates in the hash via the
-`lssAI=` token when non-default.
+type object share their sets. DEFAULT-ON since 2026-08-25
+(plans/lss-paper-inclusion-constraints.md §5.A3), so the override is
+bidirectional and `0|false|no` is the escape hatch — which still reproduces the
+pre-2a bytes, since flag-off gates the memo rather than the id minting.
+Participates in the hash via the `lssAI=` token when non-default.
 -}
 applyLssArrowIdOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssArrowIdOverride maybeVal cfg =

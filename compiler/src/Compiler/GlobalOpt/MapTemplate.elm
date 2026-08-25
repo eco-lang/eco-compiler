@@ -807,6 +807,11 @@ findCallbackStamp callbackName root =
                                             if
                                                 (name == callbackName)
                                                     && (callInfo.fastPapPrefix == Nothing)
+                                                    -- LSS_031: this template renders the callee
+                                                    -- with `lambdaIdToString`. An instance emitted
+                                                    -- under its SPEC name has no such symbol, so
+                                                    -- decline rather than name a missing function.
+                                                    && (callInfo.fastEvaluatorSpec == Nothing)
                                                     && (List.length args == 1)
                                                     && (List.length abi.paramTypes == 1)
                                             then

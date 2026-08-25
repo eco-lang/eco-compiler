@@ -248,6 +248,15 @@ type alias Instance =
     , returnType : Mono.MonoType
     , info : Mono.ClosureInfo -- LSS_024 F fence: closure header reference for the lazy fingerprint
     , body : Mono.MonoExpr -- LSS_024 F fence: body reference for the lazy fingerprint
+
+    -- LSS_031: `Just specId` when this instance is a NODE-TOP-LEVEL closure —
+    -- one that `Functions.generateNode` emits under
+    -- `specIdToFuncName registry specId`, NEVER under its own `lambdaId`.
+    -- A stamp naming the lambdaId would then reference a symbol that does not
+    -- exist, which is exactly the dangling `_fast_evaluator` LSS_031 records.
+    -- `Nothing` for a nested closure: those are queued through
+    -- `Expr.pendingLambdas` and DO get a function named by their lambdaId.
+    , topLevelSpec : Maybe Mono.SpecId
     }
 
 
@@ -268,17 +277,51 @@ siteFingerprint params ret =
 
 collectInstances : Bool -> Mono.MonoGraph -> Dict Int MemberInfo
 collectInstances fpFence (Mono.MonoGraph record) =
-    Array.foldl
-        (\maybeNode acc ->
-            case maybeNode of
-                Just node ->
-                    List.foldl (collectGo fpFence) acc (nodeExprs node)
+    Tuple.second
+        (Array.foldl
+            (\maybeNode ( specId, acc ) ->
+                case maybeNode of
+                    Just node ->
+                        -- LSS_031: the node is walked with its SpecId in
+                        -- hand, so a top-level closure can record that it is
+                        -- emitted under the spec's name. Everything nested
+                        -- inside is walked with `Nothing` — those are ordinary
+                        -- lambdas named by their lambdaId.
+                        ( specId + 1, collectNode fpFence specId node acc )
 
-                Nothing ->
-                    acc
+                    Nothing ->
+                        ( specId + 1, acc )
+            )
+            ( 0, Dict.empty )
+            record.nodes
         )
-        Dict.empty
-        record.nodes
+
+
+{-| LSS_031: walk a node, recording which of its closures (if any) is emitted
+under the SPEC's name rather than under its own lambdaId.
+
+Exactly the three node kinds that route through `Functions.generateDefine` —
+`MonoDefine` and the two port kinds — hand their whole expression to
+`generateClosureFunc funcName`, so a `MonoClosure` sitting there IS the spec's
+function. `MonoTailFunc` must NOT be included: its params are already split
+out and its expr is the BODY, so a closure there is an ordinary nested lambda
+that `Lambdas.elm` names — attributing the spec to it would swap one wrong
+symbol for another.
+-}
+collectNode : Bool -> Mono.SpecId -> Mono.MonoNode -> Dict Int MemberInfo -> Dict Int MemberInfo
+collectNode fpFence specId node acc =
+    case node of
+        Mono.MonoDefine ((Mono.MonoClosure _ _ _) as expr) _ ->
+            collectClosure fpFence (Just specId) expr acc
+
+        Mono.MonoPortIncoming ((Mono.MonoClosure _ _ _) as expr) _ ->
+            collectClosure fpFence (Just specId) expr acc
+
+        Mono.MonoPortOutgoing ((Mono.MonoClosure _ _ _) as expr) _ ->
+            collectClosure fpFence (Just specId) expr acc
+
+        _ ->
+            List.foldl (collectGo fpFence) acc (nodeExprs node)
 
 
 nodeExprs : Mono.MonoNode -> List Mono.MonoExpr
@@ -315,8 +358,34 @@ rationale as the stamping walk below).
 collectGo : Bool -> Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
 collectGo fpFence expr acc =
     case expr of
+        Mono.MonoClosure _ _ _ ->
+            collectClosure fpFence Nothing expr acc
+
+        _ ->
+            collectOther fpFence expr acc
+
+
+{-| LSS_031: index one closure, recording whether it is a node's TOP-LEVEL
+closure (`Just specId`, emitted under the spec name) or a nested one
+(`Nothing`, emitted under its lambdaId).
+-}
+collectClosure : Bool -> Maybe Mono.SpecId -> Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
+collectClosure fpFence topLevelSpec expr acc =
+    case expr of
         Mono.MonoClosure closureInfo body tipe ->
             let
+                -- LSS_031: `generateNode` emits the spec un-suffixed, so the
+                -- spec name is only usable when the emitter would pick the
+                -- BARE branch. A top-level definition is closed over globals
+                -- only, so this is expected to hold universally; if it ever
+                -- does not, fall back rather than invent a `$cap` symbol.
+                emittedSpec =
+                    if List.isEmpty closureInfo.captures then
+                        topLevelSpec
+
+                    else
+                        Nothing
+
                 acc1 =
                     case instanceMember closureInfo tipe of
                         Just ( m, isAdopted ) ->
@@ -333,10 +402,10 @@ collectGo fpFence expr acc =
                                                     present
 
                                                 else
-                                                    Just { mi | buckets = insertInstance fpFence closureInfo body mi.buckets }
+                                                    Just { mi | buckets = insertInstance fpFence emittedSpec closureInfo body mi.buckets }
 
                                             Nothing ->
-                                                Just { blocked = False, blockedBy = Nothing, buckets = insertInstance fpFence closureInfo body Dict.empty }
+                                                Just { blocked = False, blockedBy = Nothing, buckets = insertInstance fpFence emittedSpec closureInfo body Dict.empty }
                                     )
                                     acc
 
@@ -348,6 +417,18 @@ collectGo fpFence expr acc =
             in
             collectGo fpFence body acc2
 
+        _ ->
+            -- `collectClosure` is only ever called on a closure; this arm
+            -- keeps the match total.
+            acc
+
+
+{-| Every non-closure expression form. Split out of `collectGo` by LSS_031 so
+the closure arm can take a `Maybe SpecId`.
+-}
+collectOther : Bool -> Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
+collectOther fpFence expr acc =
+    case expr of
         Mono.MonoCall _ func args _ _ ->
             List.foldl (collectGo fpFence) (collectGo fpFence func acc) args
 
@@ -399,6 +480,9 @@ collectGo fpFence expr acc =
         Mono.MonoAccessorValue _ _ _ ->
             acc
 
+        Mono.MonoClosure _ _ _ ->
+            collectClosure fpFence Nothing expr acc
+
 
 collectGoDef : Bool -> Mono.MonoDef -> Dict Int MemberInfo -> Dict Int MemberInfo
 collectGoDef fpFence def acc =
@@ -426,8 +510,8 @@ collectGoDecider fpFence decider acc =
             collectGoDecider fpFence fallback (List.foldl (\( _, d ) a -> collectGoDecider fpFence d a) acc edges)
 
 
-insertInstance : Bool -> Mono.ClosureInfo -> Mono.MonoExpr -> Dict String (List LayoutGroup) -> Dict String (List LayoutGroup)
-insertInstance fpFence closureInfo body buckets =
+insertInstance : Bool -> Maybe Mono.SpecId -> Mono.ClosureInfo -> Mono.MonoExpr -> Dict String (List LayoutGroup) -> Dict String (List LayoutGroup)
+insertInstance fpFence emittedSpec closureInfo body buckets =
     let
         paramTypes =
             List.map Tuple.second closureInfo.params
@@ -442,6 +526,7 @@ insertInstance fpFence closureInfo body buckets =
             , returnType = returnType
             , info = closureInfo
             , body = body
+            , topLevelSpec = emittedSpec
             }
     in
     Dict.update (siteFingerprint paramTypes returnType)
@@ -655,6 +740,7 @@ abiCloningPass fpFence postSettle ((Mono.MonoGraph record) as graph) =
             -- fact, independent of stamping outcomes).
             stats0 =
                 { emptyStats
+
                     | multiInstanceGroups = countMultiInstanceGroups index
                     , blockedMembers =
                         Dict.foldr
@@ -1220,6 +1306,7 @@ stampCall index ctx region func args resultType callInfo =
                                                 , returnType = inst.returnType
                                                 }
                                         , fastEvaluator = Just inst.lambdaId
+                                        , fastEvaluatorSpec = inst.topLevelSpec
                                     }
 
                                 stats1 =
@@ -1269,6 +1356,7 @@ stampCall index ctx region func args resultType callInfo =
                                                 , returnType = inst.returnType
                                                 }
                                         , fastEvaluator = Just inst.lambdaId
+                                        , fastEvaluatorSpec = inst.topLevelSpec
                                         , fastPapPrefix = Just k
                                     }
 
@@ -1303,6 +1391,7 @@ stampCall index ctx region func args resultType callInfo =
                                                 , returnType = inst.returnType
                                                 }
                                         , fastEvaluator = Just inst.lambdaId
+                                        , fastEvaluatorSpec = inst.topLevelSpec
                                     }
 
                                 stats1 =

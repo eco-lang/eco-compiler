@@ -279,6 +279,29 @@ hasSelfCapture placeholderVar ops =
 -- ====== HELPER FUNCTIONS ======
 
 
+{-| LSS_031: which SYMBOL the stamped fast evaluator was emitted under.
+
+A node's TOP-LEVEL closure is emitted by `Functions.generateNode` under
+`specIdToFuncName registry specId` and never under its own `lambdaId`; every
+other closure is emitted by `Lambdas.elm` under `lambdaIdToString lambdaId`.
+The stamp carries both so the `_fast_evaluator` symbol names something that
+actually exists.
+-}
+type alias FastRef =
+    ( Mono.LambdaId, Maybe Mono.SpecId )
+
+
+{-| LSS_031: resolve a stamped fast evaluator to its emitted base symbol. -}
+fastRefBaseName : Ctx.Context -> FastRef -> String
+fastRefBaseName ctx ( lambdaId, maybeSpec ) =
+    case maybeSpec of
+        Just specId ->
+            specIdToFuncName ctx.registry specId
+
+        Nothing ->
+            lambdaIdToString lambdaId
+
+
 specIdToFuncName : Mono.SpecializationRegistry -> Mono.SpecId -> String
 specIdToFuncName registry specId =
     case Registry.lookupSpecKey specId registry of
@@ -1905,12 +1928,12 @@ exact-instance stamp (`fastEvaluator` + `captureAbi`, `fastPapPrefix`
 ABSENT — staged PAPs are v3) and applies MORE args than the instance's
 first stage. Emission then splits: fast batch 1, generic remainder.
 -}
-fastDispatchStampStaged : Mono.CallInfo -> List Mono.MonoExpr -> Maybe ( Mono.LambdaId, Mono.CaptureABI )
+fastDispatchStampStaged : Mono.CallInfo -> List Mono.MonoExpr -> Maybe ( FastRef, Mono.CaptureABI )
 fastDispatchStampStaged callInfo args =
     case ( callInfo.fastEvaluator, callInfo.captureAbi, callInfo.fastPapPrefix ) of
         ( Just fastLambdaId, Just abi, Nothing ) ->
             if not (List.isEmpty abi.paramTypes) && List.length args > List.length abi.paramTypes then
-                Just ( fastLambdaId, abi )
+                Just ( ( fastLambdaId, callInfo.fastEvaluatorSpec ), abi )
 
             else
                 Nothing
@@ -1928,8 +1951,8 @@ runtime-computed closure) with ONE generic segmentation-unknown papExtend,
 per the H6.2-L1 cross-stage doctrine. The tail coerces to the site's
 expected ABI result.
 -}
-generateStagedFastDispatchCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.LambdaId -> Mono.CaptureABI -> ExprResult
-generateStagedFastDispatchCall ctx func args resultType fastLambdaId abi =
+generateStagedFastDispatchCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> FastRef -> Mono.CaptureABI -> ExprResult
+generateStagedFastDispatchCall ctx func args resultType fastRef abi =
     let
         stage1Count =
             List.length abi.paramTypes
@@ -1944,7 +1967,7 @@ generateStagedFastDispatchCall ctx func args resultType fastLambdaId abi =
         -- return (an arrow -> !eco.value) so the internal coercion is a
         -- no-op and the result is the intermediate closure.
         innerRes =
-            generateFastDispatchCall ctx func batch1 abi.returnType fastLambdaId abi 0
+            generateFastDispatchCall ctx func batch1 abi.returnType fastRef abi 0
 
         tailRes =
             applySegUnknownToVar innerRes.ctx innerRes.resultVar innerRes.resultType rest resultType
@@ -2088,7 +2111,7 @@ arg-count re-check mirrors the pass's own shape guard (belt and braces —
 the stamp is only ever placed on exactly-stage-saturating calls).
 
 -}
-fastDispatchStamp : Mono.CallInfo -> List Mono.MonoExpr -> Maybe ( Mono.LambdaId, Mono.CaptureABI, Int )
+fastDispatchStamp : Mono.CallInfo -> List Mono.MonoExpr -> Maybe ( FastRef, Mono.CaptureABI, Int )
 fastDispatchStamp callInfo args =
     case ( callInfo.fastEvaluator, callInfo.captureAbi ) of
         ( Just fastLambdaId, Just abi ) ->
@@ -2096,7 +2119,7 @@ fastDispatchStamp callInfo args =
                 -- Third component: the E2 PAP-prefix k (0 for an exact
                 -- instance stamp). The emission needs it to pick the
                 -- bare-vs-$cap symbol from the REAL capture count.
-                Just ( fastLambdaId, abi, Maybe.withDefault 0 callInfo.fastPapPrefix )
+                Just ( ( fastLambdaId, callInfo.fastEvaluatorSpec ), abi, Maybe.withDefault 0 callInfo.fastPapPrefix )
 
             else
                 Nothing
@@ -2128,8 +2151,8 @@ Contract (established by AbiCloning's guards, design §9.3):
     ARE their own fast evaluator — Lambdas.elm emits them un-suffixed).
 
 -}
-generateFastDispatchCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.LambdaId -> Mono.CaptureABI -> Int -> ExprResult
-generateFastDispatchCall ctx func args resultType fastLambdaId abi papPrefix =
+generateFastDispatchCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> FastRef -> Mono.CaptureABI -> Int -> ExprResult
+generateFastDispatchCall ctx func args resultType fastRef abi papPrefix =
     let
         funcResult : ExprResult
         funcResult =
@@ -2165,10 +2188,10 @@ generateFastDispatchCall ctx func args resultType fastLambdaId abi papPrefix =
             -- and a captureless member has no $cap clone (Lambdas.elm emits
             -- it un-suffixed with signature = its params).
             if List.length abi.captureTypes - papPrefix <= 0 then
-                lambdaIdToString fastLambdaId
+                fastRefBaseName ctx fastRef
 
             else
-                lambdaIdToString fastLambdaId ++ "$cap"
+                fastRefBaseName ctx fastRef ++ "$cap"
 
         -- The fast clone's return ABI = the papExtend op's SSA result type
         -- (the C++ saturated branch builds the call with exactly this type).

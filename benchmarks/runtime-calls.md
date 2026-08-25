@@ -1811,3 +1811,62 @@ declines it.** Analysis-side: `multiSetSites` 0 → `2->2`, `declinedBlocked`
 8 → 167, `declinedNoInstance` +120. The flip gate ("no fast-coverage
 regression") FAILS; `lss.arrowIdentity` stays DEFAULT-OFF. Full symbolized
 tables: `/work/.lssue-snapshots/census/disp-{pre1b,aioff,aion}.tsv`.
+
+### Run AL — `lss.arrowIdentity` DEFAULT-ON, the flip (2026-08-25): **kN +266.8%, `var` −12,467, at −0.306 pp fast dispatch — the regression is RECORDED, NOT GATED**
+
+Closes `plans/lss-paper-inclusion-constraints.md` §5.A3. Run AE measured this
+same flag at −0.50 pp and concluded "the flip gate FAILS"; that gate has since
+been retired on the standing directive that **a singleton → multi-set trade is
+not a blocker** (§5.A2) — the analysis is what this arc is fixing, and
+multi-set lowering (`plans/lss-sum-lowering.md`) is what reaps it. The one
+distinction that still blocks is a lowering FAILURE, and that was LSS_031,
+fixed the same day (LSS_036).
+
+**Arms.** One source, one flag. `off` = `ECO_MONO_LSS_ARROW_ID=0` (the old
+default, now the escape hatch); `on` = shipping defaults. Each arm's compiler
+is self-compiled to `.mlir`, lowered with
+`ECO_LSS_DISPATCH_SITE_COUNTERS=1`, and both binaries then run the SAME cold
+workload (the compiler compiling itself) under `ECO_DISPATCH_STATS=1` — Run
+AE's protocol exactly. Both arms produce a byte-identical 14,904,983 B output,
+which is the workload-invariance check: the arms differ in how the compiler
+ITSELF was built, not in what it is asked to do.
+
+| | off | on | Δ |
+|---|---|---|---|
+| sites | 7,195 | 7,243 | +48 |
+| sat | 3,844,236,836 | 3,868,146,024 | +23,909,188 |
+| gen | 3,780,784,592 | 3,804,693,772 | +23,909,180 |
+| fast | 1,080,081,286 | 1,056,289,060 | −23,792,226 |
+| total | 8,705,102,714 | 8,729,128,856 | +24,026,142 |
+| **fast %** | **12.407** | **12.101** | **−0.306 pp** |
+| sat % | 44.161 | 44.313 | +0.152 pp |
+
+The `sat + fast` rail holds to 0.002 % (4,924,318,122 → 4,924,435,084); the
+0.28 % drift in `total` is the two self-compiled compilers doing marginally
+different work, not a counter fault.
+
+**−0.306 pp, not Run AE's −0.50 pp.** The interval since AE landed LSS_024
+(layout-qualified members) and LSS_025 (post-settle devirt), both of which
+recover stamps the shared slot would otherwise lose.
+
+**What the flip BUYS, which is the actual acceptance signal (§5.A3):**
+
+| | off | on | Δ |
+|---|---|---|---|
+| `kN` (multi-member zonks) | 557 | **2,043** | **+266.8 %** |
+| `k1` | 148,348 | 159,147 | +10,799 |
+| `var` (unresolved) | 260,280 | **247,813** | **−12,467** |
+| `top` | 26,644 | 28,207 | +1,563 |
+| multi-set ARROWS | 13 | **100** | +87 |
+| trivial signatures | 9,499 | 9,482 | −17 |
+
+Corpus md5: off `25730f3128b26ab45edebcdc87b55d04` (14,879,228 B), on
+`03ae16a4a743a66e8b7ef74e3e8aa07f` (14,904,983 B). Expected to move — this is
+deliberately an analysis change.
+
+**Watch item worth its own line.** `honestSources: topMixedFlex` reads `0/0`
+off and `1/0` ON at corpus scale — the REVERSE of what the small LSS_026
+fixtures do, where sharing the slot removes their crossing entirely. Arrow
+identity does not retire the honest-∅ rule; it relocates where it fires. Any
+future attempt to delete that rule (§5.5) must re-measure this counter, not
+reason from the fixtures.

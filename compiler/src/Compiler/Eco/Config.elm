@@ -341,12 +341,18 @@ type alias LssConfig =
     -- disjoint slot each time (LSS_006's per-load fragmentation — the reason
     -- ~11 hand-written transport artifacts exist).
     --
-    -- DEFAULT-OFF: the ids are minted unconditionally (harmless — nothing
-    -- reads them when this is off) but the MEMO is gated, so flag-off is
-    -- byte-identical to pre-2a and the two-binary rail applies. Artifact-
-    -- affecting when on (shared slots -> annotations -> keyed spec keys);
-    -- hash token `lssAI=1` then. Escape hatch / opt-in env var:
-    -- `ECO_MONO_LSS_ARROW_ID=1`.
+    -- DEFAULT-ON since 2026-08-25 (plans/lss-paper-inclusion-constraints.md
+    -- §5.A3). §0.3 measured that this switch ALONE closes both transport gaps
+    -- the paper-fidelity work set out to close — the list-literal probe goes
+    -- `kN=0` -> `kN=1` and the Task probe `kN=0` -> `kN=4`, with the members
+    -- exactly the two globals in question — because the mechanism was LSS_006
+    -- slot-disjointness, not a missing set variable.
+    --
+    -- The ids are minted unconditionally (harmless — nothing reads them when
+    -- this is off) but the MEMO is gated, so flag-OFF remains byte-identical
+    -- to pre-2a and the two-binary rail still applies in that direction.
+    -- Artifact-affecting, so the hash token `lssAI=0` now rides the OFF arm.
+    -- Escape hatch: `ECO_MONO_LSS_ARROW_ID=0`.
     , arrowIdentity : Bool
 
     -- Phase 2b solver-root arrow ids (plans/lss-unknown-elimination.md §4.9).
@@ -399,7 +405,7 @@ defaultLss =
     , sigFlow = True
     , layoutQualMembers = True
     , postSettleDevirt = True
-    , arrowIdentity = False
+    , arrowIdentity = True
     , arrowSolverRoots = False
     }
 

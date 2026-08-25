@@ -420,6 +420,70 @@ onto one member id, and AbiCloning picks a representative whose instance does
 not survive pruning (`multiInstanceGroups` and `declinedBodyMismatch` both grow
 under sharing).
 
+**ROOT CAUSE — the hypothesis was WRONG. Nothing is pruned; the symbol was
+never spelled the way the emitter spells it.**
+
+A monomorphized node whose whole expression IS a `MonoClosure` — an ordinary
+top-level `f a b = …` — is emitted by `Functions.generateNode` under
+`specIdToFuncName ctx.registry specId`, the SPEC's name. Its own
+`closureInfo.lambdaId` never becomes an MLIR symbol; only `Lambdas.elm`, which
+emits NESTED closures, names anything `lambda_NNN`.
+
+`AbiCloning.collectGo` did not draw that distinction. It walked every
+`MonoClosure` it met, top-level ones included, and indexed each under
+`closureInfo.lambdaId`. When such an instance became a `LayoutGroup`'s `rep`,
+`StampPap` wrote `fastEvaluator = Just inst.lambdaId` and `Expr.elm` rendered
+it as `lambdaIdToString` — naming a symbol that was never emitted. The verifier
+`PapExtendOp::verifySymbolUses` (`runtime/src/codegen/EcoOps.cpp:64`) is what
+catches it.
+
+So it is not a pruning race and not identity sharing per se. Solver roots merely
+change WHICH instance wins the `rep` election, and under roots-on a top-level
+one starts winning.
+
+MEASURED (self-compile): 17 stamps are both top-level and stamped with
+`arrowSolverRoots=1`; **0 at shipping defaults**, which is exactly why the flag
+being default-off hid it. 25,486 top-level closures carry 25,486 DISTINCT uids,
+so there is no lambdaId collision to blame either.
+
+**FIX (Option B — fix the stamp, not the naming).** Renaming top-level specs to
+their lambdaIds would churn every consumer of the spec name for no gain. Instead
+the stamp now records WHICH symbol the instance was emitted under:
+
+- `Mono.CallInfo` gains `fastEvaluatorSpec : Maybe SpecId`.
+- `AbiCloning.collectInstances` threads the node's `SpecId` through the fold and
+  `collectNode` hands it to the node's top-level closure — for EXACTLY the three
+  node kinds that route through `Functions.generateDefine` (`MonoDefine` and the
+  two port kinds), which hand their whole expression to
+  `generateClosureFunc funcName`. `MonoTailFunc` is deliberately EXCLUDED: its
+  params are already split out and its expr is the BODY, so a closure there is an
+  ordinary nested lambda that `Lambdas.elm` names — attributing the spec to it
+  would swap one wrong symbol for another. Nested closures get `Nothing`,
+  unchanged.
+- `Instance` gains `topLevelSpec`, set only when `closureInfo.captures` is EMPTY
+  — `generateNode` emits the spec un-suffixed, so the spec name is usable only
+  where the emitter takes the bare branch rather than `…$cap`. A top-level
+  definition is closed over globals, so this is expected to hold universally; the
+  guard means a violation degrades to the old behaviour (a loud lowering error)
+  rather than inventing a wrong `$cap` symbol.
+- `Expr.elm`'s fast-dispatch stamp carries `FastRef = ( LambdaId, Maybe SpecId )`
+  and `fastRefBaseName` resolves it via `specIdToFuncName` when the spec is
+  present.
+- `MonoGlobalOptimize`'s stamp-preserving record update carries the new field, or
+  a later rewrite would silently drop it back to the lambdaId spelling.
+
+BYTE-NEUTRAL AT DEFAULTS BY CONSTRUCTION: with roots off nothing sets
+`topLevelSpec`, so `fastEvaluatorSpec` is always `Nothing` and every emitted
+symbol is character-for-character what it was.
+
+**GATED 2026-08-25 — the flag now lowers.** Self-compile with
+`ECO_MONO_LSS_ARROW_ID=1 ECO_MONO_LSS_ARROW_ROOTS=1`: emit `EXIT=0`
+(15,054,203 B of MLIR), lower `EXIT=0` (70,450,536 B binary), and
+`grep -c 'undefined fast evaluator'` = **0**. The only `ld` output is the
+pre-existing stackmap-relocation / DT_TEXTREL warning pair. This is the gate
+LSS_031 itself demanded — a self-compile LOWERING, not E2E — and §5.A3 is no
+longer blocked on it.
+
 #### §5.A2 — the −0.50 pp dispatch regression is ACCEPTED, not fixed here
 
 **STANDING DIRECTIVE, restated because this register keeps re-deriving it as a
@@ -466,12 +530,124 @@ Gates — note what is and is NOT required:
   `multiSetSites` non-trivial. That is the actual acceptance signal for this
   phase.
 
+**DONE 2026-08-25 — FLIPPED. All required gates met; full numbers in
+`benchmarks/runtime-calls.md` Run AL.**
+
+| gate | class | result |
+|---|---|---|
+| self-compile LOWERS | REQUIRED | ✅ both arms `EXIT=0`, **0** `undefined fast evaluator` |
+| E2E `--target full` | REQUIRED | ✅ 1691/1691 |
+| elm-tests at the pre-existing failure set | REQUIRED | ✅ 13,355 / **12** — the same 12 as LSS_035's baseline |
+| ledger/MSET moves right | REQUIRED | ✅ `kN` 557 → **2,043** (+266.8%), multi-set arrows 13 → **100** |
+| dispatch A/B | RECORDED | −0.306 pp (12.407% → 12.101%) — milder than AE's −0.50 pp |
+| corpus md5 | RECORDED | on `03ae16a4a743a66e8b7ef74e3e8aa07f`, off `25730f3128b26ab45edebcdc87b55d04` |
+
+The headline the phase was actually after: **`var` 260,280 → 247,813, −12,467
+positions that were unresolved and now are not.**
+
+**Three unit tests had to be RESTATED, and the reason generalises to anything
+else this arc touches.** `LssSigFlowTest` test 9 and `LssHonestSourcesPipelineTest`
+tests 1–3 asserted that certain positions were UNWRITTEN (`LVar`) or resolved
+`⊤`. Both were PROXIES that only discriminated while LSS_006 per-load slot
+minting left the position dangling — which is precisely the leak this flip
+closes. Each was VERIFIED before being changed, not assumed:
+
+- The contravariance pin's two HOF inner arrows read `LSet[6]`, where hof1's own
+  set is `LSet[4]`, hof2's is `LSet[5]` and `k`'s own is `LSet[6]` — they carry
+  EXACTLY `k`'s member, which is the forward flow the test's own title demands
+  ("*or carries k*"). A backwards flip would have pushed 4/5 in.
+- For `mixedSigModule` the complete inhabitant set of `d`'s result genuinely is
+  `{incr, the one caller's lambda}` — the 2-set now reported.
+- `test/elm/src/LssMixedSigHonestyTest.elm`, the runtime fixture that printed
+  `[42,42,42]` for `[41,42,82]` when this miscompile class last regressed,
+  PASSES.
+
+The restated assertions pin each title's real claim instead of the proxy:
+carries-k AND never-carries-the-hof-params'-own-members; and
+never-a-singleton rather than always-`⊤`.
+
+**WATCH ITEM.** `honestSources: topMixedFlex` reads `0/0` flag-off and `1/0`
+flag-ON at CORPUS scale — the REVERSE of the small fixtures, where sharing the
+slot removes their crossing entirely. Arrow identity RELOCATES where the
+honest-∅ rule fires; it does not retire it. **§5.5 must re-measure this counter
+rather than reason from the fixtures.**
+
 #### §5.A4 — re-measure the gaps
 
 With arrow identity shipped, re-run §0's probe table and the frozen-corpus
 ledger. **This decides whether Phase B is needed at all**, and in what scope.
 Specifically: does anything still fail to transport that is not the
 `Platform.sendToApp` cross-call boundary (which no set variable can cross)?
+
+**DONE 2026-08-25. Answer: exactly ONE shape still fails, and it is §5.4's,
+not §5.2's.**
+
+§0's table re-run at the shipping default against the escape hatch
+(`ECO_MONO_LSS_ARROW_ID=0`). "members" is what the `MSET` line actually names:
+
+| probe | shape | off | on | members formed |
+|---|---|---|---|---|
+| `PGlobals` | `[ incr, decr ]` — globals as bare list elements | `(none)` | **`(none)`** | ✗ **still nothing** |
+| `PContainers` | `[ Just incr, Just decr ]` | `(none)` | 2-set | `g\|incr`, `g\|decr` |
+| `PLambdas` | `[ \x->x+1, \x->x-1 ]` | `(none)` | 2-set | `l\|102`, `l\|103` |
+| `PIdf` | `[ idf λ, idf λ ]` through `idf : a -> a` | `(none)` | 2-set | `l\|102`, `l\|103` |
+| `PPick` | `if b then λ else λ` — cf join | 2 sets, both `?106\|?107` | 3 sets, one CONCRETE | `l\|106`, `l\|107` |
+| `PTaskLambdas` | `[ Task.succeed λ, Task.succeed λ ]` | `(none)` | 2-set | Task-wrapped `l\|104`, `l\|105` |
+| `LssTaskSetProbe` | `[ Task.succeed incr, Task.succeed decr ]` | `(none)` | 2-set | `g\|incr`, `g\|decr` |
+
+Six of seven rows go from NOTHING to the correct concrete 2-set. `PPick` also
+resolves its previously-unresolved member refs (`?106|?107` → named lambdas).
+
+**Three extra probes narrow the survivor to a precise shape:**
+
+| probe | shape | result |
+|---|---|---|
+| `PGlobalsIf` | `if b then incr else decr` — globals, cf join, no literal | **2-set** ✓ |
+| `PGlobalsArg` | `[ idf incr, idf decr ]` — globals as ARGUMENTS | **2-set** ✓ |
+| `PGlobalsTuple` | `( incr, decr )` — globals in a TUPLE literal | `(none)` ✗ |
+| `PGlobals` | `[ incr, decr ]` — globals in a LIST literal | `(none)` ✗ |
+
+**THE SURVIVING GAP, stated exactly:** a GLOBAL reference sitting DIRECTLY in a
+container LITERAL — list or tuple — where no argument-injection hook and no
+control-flow hub also writes the position. Wrap the same global in ANY call
+(`Just incr`, `idf incr`, `Task.succeed incr`) and it transports; put a LAMBDA
+in the same slot and it transports. That is §0.1's diagnosis unchanged:
+`standaloneMemberWith` injects into a freshly-loaded, disjoint slot, and arrow
+identity repairs it only where something else writes the position too.
+
+**VERIFIED it is a failure and not a better outcome** — the trap this register
+has fallen into twice. `PGlobals` and `PLambdas` are the SAME program shape
+differing only in member class, and their ledgers agree everywhere except the
+position at issue:
+
+| | total | k1 | kN | top | var |
+|---|---|---|---|---|---|
+| `PLambdas` | 241 | 61 | **1** | **7** | 172 |
+| `PGlobals` | 241 | 60 | **0** | **9** | 172 |
+
+Same total, same `var`. What `PLambdas` resolves to an honest 2-set,
+`PGlobals` **widens to ⊤**. It is not resolving to singletons.
+
+##### The Phase B decision
+
+- **§5.4 (GAP-A) — PROCEED, and it is now narrowly scoped.** It is the only
+  shape still failing, and the failing predicate is precise enough to target:
+  a standalone global member whose position is a container-literal element.
+- **§5.2 (`ᾱ` in signatures) — its EMPIRICAL motivation is gone.** §0.2.2
+  attributed every failing row to "any set living inside a TYPE VARIABLE has no
+  fact… `List.cons`, `Task.succeed`/`andThen`/`attempt`, `List.map`,
+  `Basics.composeL`, `idf : a -> a`". Every one of those now transports at the
+  shipping default without a set variable existing anywhere. §0.3 consequence 1
+  called this correctly: the operative mechanism was LSS_006 slot
+  disjointness. **This does not settle the FIDELITY argument** — the paper has
+  `α` and Eco does not, and that is a separate and legitimate reason to build
+  it. What is settled is that §0's measured gaps no longer justify it.
+- **§5.1 (`Q` shadow mode) and §5.3 (`S(Q,α)`) exist to SERVE §5.2** and inherit
+  its status.
+- **§5.5 (retire the compensation layer) — DO NOT retire blind.**
+  `honestSources: topMixedFlex` reads `1/0` at corpus scale WITH the flip
+  (0/0 without). The layer is still firing; only the small fixtures stopped
+  reaching it.
 
 ---
 
