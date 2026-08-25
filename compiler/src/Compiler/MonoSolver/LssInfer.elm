@@ -2161,7 +2161,7 @@ injectSpineMemberId arity mid v0 s0 =
 spineGo : Int -> Int -> Dict Int () -> IO.Variable -> Step ()
 spineGo mid remaining seen v s0 =
     -- Phase 3: ctx-threaded — one S write-back for the whole spine.
-    Store.foldSetWrites (spineGoC mid remaining seen v (Store.setWriteCtx s0.store)) s0
+    Store.foldSetWrites (spineGoC mid remaining seen v (Store.setWriteCtx (Store.qOnFor s0) s0.store)) s0
 
 
 spineGoC : Int -> Int -> Dict Int () -> IO.Variable -> Store.SetWriteCtx -> Store.SetWriteCtx

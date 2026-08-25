@@ -708,6 +708,79 @@ answer, how many are deferred past a signature boundary. **Gate: `Q` must
 reproduce the eager answer everywhere the eager answer is defined.** A divergence
 here is a bug in `Q`, not a finding.
 
+#### BUILT AND MEASURED 2026-08-25
+
+Recording sites: `Store.unifySlotWithSetC` (the single point every eager member
+and ⊤ write passes through) and `Store.addSlotSource` (LSS_023 edges, recorded as
+`σ_dst ⊇ σ_src`). Each entry captures the target slot's content BEFORE the write,
+because the eager answer is `seed ⊔ Q` and without the seed an annotation-minted
+slot reads as a spurious divergence. Solved at `finishNode` by grouping on
+`UF.repr` — two slots the solver unified are ONE σ, exactly as they are one
+variable in the paper — and scored against the store, read-only, exactly as
+`rezonkSettled` is. Report-gated throughout.
+
+**INERTNESS PROVEN, not asserted:** the emitted `.mlir` is BYTE-IDENTICAL with
+the census on and off (`PGlobals` `8538a779…`, `LssTaskSetProbe` `5ee6246b…`,
+`PIdf` `ceba0887…`). "Consume nothing" holds.
+
+Self-compile, `ECO_MONO_LSS_REPORT=1`:
+
+```
+Q-shadow: constraints=125289 (members=124512 tops=777 edges=0) items=23579
+          classes=109910 defined=109910 agree=109844
+          diverge=66(super=0 sub=56[merged=12 unseen=44] top=10 other=0)
+          unresolved=0 edgeOnly=0 scratchDropped=106023
+          | partition sigRoots=22808 reaching=51102 internal=58808
+          REPRODUCES=NO
+```
+
+**1. `Q` reproduces the eager answer to 99.94 % — and the 0.06 % residual is
+ONE structural fact, not noise.** Every divergence is `shadow ⊊ eager`: `Q`
+under-records, never over-records (`super=0`, `other=0`). Split by cause:
+
+- `unseen=44` — a slot minted WITH content by `Store.monoTypeToVarC` from an
+  `LSet` annotation and never constrained, so it never entered `Q`'s domain at
+  all; it later unified into a constrained class, whose eager answer then holds
+  members `Q` never saw.
+- `merged=12` — two set slots unified through `Unify.merge`, which joins their
+  contents WITHOUT passing `unifySlotWithSetC`.
+- `top=10` — the same two causes, ⊤-valued.
+
+**So the store has TWO ways to put members in a slot — the eager union and
+ordinary type unification — and only the first is a "constraint" today.** That
+is the finding §5.3 has to act on: making `Q` the solver means the UNIFY path
+must emit constraints too. It is not a disagreement about solving, which is why
+the gate reads `NO` on a recording gap rather than on a semantic one.
+
+**2. 45.9 % of all constraint activity is thrown away inside scratch stores.**
+`scratchDropped=106023` against `125289` that survive — of 231,312 constraints
+recorded, 106,023 die with an `Engine.withScratchStore` Point. Every one of the
+177 LSS_023 edges `sigflow` reports installing is in one, which is exactly why
+the census reads `edges=0`; the two counters agree once the drop is visible, and
+on the probe programs (where `sigflow` independently reports `edges=0`) the
+census reads `edges=0` too. This is the sharpest number the phase produced and
+it is a direct measurement of §3.1's *"REAL deferral, WRONG SCOPE"* row.
+
+**3. The paper's partition is REAL and close to even: 46.5 % / 53.5 %.** Over
+22,808 def roots, 51,102 constrained classes are reached by the def's own
+signature — they would be quantified into `ᾱ` — and 58,808 are not, so they
+would be internalized to `S(Q,α)`. Computed the paper's way: a REACHABILITY walk
+from the def's root type Point (`Translate.demandUnifyRoot`'s `annVar`),
+collecting `FunL` set slots.
+
+**This is the number §5.0b went looking for and could not find.** Ranks measured
+`escaped = 0` over 27 defs and 1,064 variables and concluded the def-level
+partition was empty. It is not empty — ranks asked a SCOPE question, and scope is
+genuinely degenerate here because `withScratchStore` gives every unit a fresh
+store. The paper asks an OCCURRENCE question, and that one has a 46.5 % answer.
+§3.1's correction is now measured rather than argued.
+
+**4. `unresolved=0` is VACUOUS and the metric is withdrawn.** A class that
+received a constraint has by definition been written, so it always has an eager
+answer; the counter can only ever read 0. §5.1's third census item — "deferred
+past a signature boundary" — is answered by the partition in (3) instead, which
+is what the phrase actually means once there is a boundary to measure against.
+
 ### §5.2 Quantified `ᾱ` in signatures
 
 `LssSignature` becomes `d⟨ᾱ⟩ : (Q ⇒ τ)`; instantiation freshens `ᾱ`. Gate: the

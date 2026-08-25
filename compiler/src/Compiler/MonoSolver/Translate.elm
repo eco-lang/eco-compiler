@@ -99,15 +99,31 @@ demandUnifyRoot annCanType demand expr s0 =
             Err e
 
         Ok ( annVar, s1 ) ->
-            if s1.env.lss.enabled && exprIsLambda expr then
+            let
+                -- §5.1: stash the def's root type Point for the shadow-`Q`
+                -- partition. Report-gated, and NOT gated on `exprIsLambda` —
+                -- a non-lambda def's type still carries arrows (`fns = [incr,
+                -- decr]`), and those are exactly the σ the partition is about.
+                sQ =
+                    if s1.env.lss.enabled && s1.env.lss.report then
+                        let
+                            auxQ =
+                                s1.itemAux
+                        in
+                        { s1 | itemAux = { auxQ | qSigRoot = Just annVar } }
+
+                    else
+                        s1
+            in
+            if sQ.env.lss.enabled && exprIsLambda expr then
                 let
                     aux1 =
-                        s1.itemAux
+                        sQ.itemAux
                 in
-                Ok ( (), { s1 | itemAux = { aux1 | lssRootAnn = Just ( annCanType, annVar ) } } )
+                Ok ( (), { sQ | itemAux = { aux1 | lssRootAnn = Just ( annCanType, annVar ) } } )
 
             else
-                Ok ( (), s1 )
+                Ok ( (), sQ )
 
 
 exprIsLambda : TOpt.Expr TypeIds.MVarId -> Bool

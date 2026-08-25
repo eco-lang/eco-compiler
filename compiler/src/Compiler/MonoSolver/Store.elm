@@ -10,7 +10,7 @@ module Compiler.MonoSolver.Store exposing
     , unifySlotWithSet
     , addSlotSource
     , resolveSlotMembers
-    , SetWriteCtx, setWriteCtx, unifySlotWithSetC, foldSetWrites
+    , SetWriteCtx, setWriteCtx, unifySlotWithSetC, foldSetWrites, qOnFor, qShadowCensus
     , unifyBestEffort
     , poisonArrowSets
     , monoTypeToVar
@@ -1120,7 +1120,7 @@ unifySlotWithSet : Bool -> List Int -> IO.Variable -> Step ()
 unifySlotWithSet top members slot s0 =
     -- Phase 3: one thin wrapper over the ctx-threaded engine — a single S
     -- rebuild per call, exactly as before.
-    foldSetWrites (unifySlotWithSetC top members slot (setWriteCtx s0.store)) s0
+    foldSetWrites (unifySlotWithSetC top members slot (setWriteCtx (qOnFor s0) s0.store)) s0
 
 
 {-| Phase 3 (`plans/lss-set-write-substrate.md`): store-level set-write
@@ -1139,12 +1139,65 @@ type alias SetWriteCtx =
     , topJoin : Int
     , union : Int
     , needSlow : List ( Bool, List Int, IO.Variable )
+
+    -- §5.1 `Q` in shadow mode. `qOn` is `lss.report`; with it False nothing is
+    -- appended and the only cost is one Bool in the ctx copy.
+    , qOn : Bool
+    , qLog : List Engine.QEntry
     }
 
 
-setWriteCtx : IO.State -> SetWriteCtx
-setWriteCtx store =
-    { store = store, skip = 0, flex = 0, topJoin = 0, union = 0, needSlow = [] }
+{-| §5.1: the shadow-`Q` gate. Report-gated exactly like `arrowOfSlot` and
+`zonkLog`, so a default build records nothing and every byte-identity rail is
+untouched.
+-}
+qOnFor : Engine.S -> Bool
+qOnFor s =
+    s.env.lss.enabled && s.env.lss.report
+
+
+setWriteCtx : Bool -> IO.State -> SetWriteCtx
+setWriteCtx qOn store =
+    { store = store, skip = 0, flex = 0, topJoin = 0, union = 0, needSlow = [], qOn = qOn, qLog = [] }
+
+
+{-| §5.1: record one inclusion constraint against `slot`, capturing the slot's
+content BEFORE the write (see `Engine.QPre` for why the seed is load-bearing).
+-}
+noteQ : Bool -> List Int -> IO.Variable -> IO.Descriptor -> SetWriteCtx -> SetWriteCtx
+noteQ top members slot desc c =
+    if not c.qOn then
+        c
+
+    else
+        let
+            pre =
+                qPreOf desc
+
+            entry =
+                if top then
+                    Engine.QTop slot pre
+
+                else
+                    Engine.QMembers slot members pre
+        in
+        { c | qLog = entry :: c.qLog }
+
+
+qPreOf : IO.Descriptor -> Engine.QPre
+qPreOf desc =
+    case desc.content of
+        IO.Structure (IO.LambdaSet1 IO.LsTop) ->
+            Engine.PreTop
+
+        IO.Structure (IO.LambdaSet1 (IO.LsMembers ms)) ->
+            Engine.PreMembers ms
+
+        IO.Structure (IO.LambdaSet1 (IO.LsFrom ms _)) ->
+            Engine.PreMembers ms
+
+        _ ->
+            Engine.PreFlex
 
 
 {-| Fold a traversal's writes back into `S` with ONE copy, then run any
@@ -1156,7 +1209,22 @@ foldSetWrites c s0 =
         stats0 =
             s0.lssStats
 
+        -- §5.1: carry the traversal's shadow constraints into the item log.
+        -- Empty (and therefore free) unless `lss.report`.
+        withQ sN =
+            case c.qLog of
+                [] ->
+                    sN
+
+                entries ->
+                    let
+                        aux =
+                            sN.itemAux
+                    in
+                    { sN | itemAux = { aux | qLog = entries ++ aux.qLog } }
+
         s1 =
+            withQ <|
             if c.skip == 0 && c.flex == 0 && c.topJoin == 0 && c.union == 0 then
                 { s0 | store = c.store }
 
@@ -1205,8 +1273,12 @@ unifySlotWithSetC top members slot c0 =
         ( store1, desc ) =
             UF.get slot c0.store
 
+        -- §5.1: `Q` is recorded HERE, before the join, because this is the one
+        -- place that sees the constraint AND the slot's prior content. Every
+        -- arm below (skip / flex / topJoin / union / needSlow) is downstream
+        -- of it, so no eager write can escape the shadow log.
         c1 =
-            { c0 | store = store1 }
+            noteQ top members slot desc { c0 | store = store1 }
     in
     case desc.content of
         IO.Structure (IO.LambdaSet1 IO.LsTop) ->
@@ -1291,6 +1363,530 @@ setRootC slot desc content c =
     { c | store = store1 }
 
 
+{-| §5.1 `Q` IN SHADOW MODE (plans/lss-paper-inclusion-constraints.md): solve
+the item's recorded constraints and compare the result with what the eager
+union actually left in the store.
+
+READ-ONLY, exactly as `rezonkSettled` is: the threaded store (which `UF.repr`
+path-compresses) is DROPPED and only counters cross the boundary. If that ever
+changes, the census becomes a behaviour change wearing a census's clothes and
+every byte-identity rail in the arc is silently invalid.
+
+**Grouping is by `UF.repr` at item end**, which is the whole point: two slots
+the solver unified are ONE σ, exactly as they are one variable in the paper.
+Comparing per raw Point would report unification itself as a divergence.
+
+**The comparison is against the RAW least solution**, not against what
+`zonkSetSlot` hands back. The reader applies policy on top — LSS_026(a)'s
+honest-∅ widening and the `maxSetSize` cap both turn a perfectly good set into
+`⊤` at READ time. Those are consumer decisions, not the eager union's answer,
+and folding them in here would score policy as constraint-solving error.
+
+-}
+qShadowCensus : Engine.S -> Engine.S
+qShadowCensus s =
+    if not (qOnFor s) then
+        s
+
+    else
+        case s.itemAux.qLog of
+            [] ->
+                s
+
+            entries ->
+                let
+                    acc =
+                        -- `entries` is in reverse record order, so folding from
+                        -- the head visits newest first and the OLDEST write of
+                        -- each Point lands last — which is exactly the seed we
+                        -- want (`Dict.insert` overwrites).
+                        List.foldl qStep (qAcc0 s.store) entries
+
+                    solved =
+                        qSolve acc
+
+                    ( sigClasses, storeSig ) =
+                        qSigClasses s.itemAux.qSigRoot acc.store
+
+                    ( counts, store1 ) =
+                        qCompare sigClasses { acc | store = storeSig } solved
+
+                    _ =
+                        store1
+
+                    stats =
+                        s.lssStats
+
+                    sig =
+                        stats.sigStats
+
+                    prev =
+                        sig.qShadow
+                in
+                { s
+                    | lssStats =
+                        { stats
+                            | sigStats =
+                                { sig
+                                    | qShadow =
+                                        { items = prev.items + 1
+                                        , members = prev.members + acc.nMembers
+                                        , tops = prev.tops + acc.nTops
+                                        , edges = prev.edges + acc.nEdges
+                                        , classes = prev.classes + counts.classes
+                                        , agree = prev.agree + counts.agree
+                                        , divergeSuper = prev.divergeSuper + counts.divergeSuper
+                                        , divergeSub = prev.divergeSub + counts.divergeSub
+                                        , divergeTop = prev.divergeTop + counts.divergeTop
+                                        , divergeOther = prev.divergeOther + counts.divergeOther
+                                        , unresolved = prev.unresolved + counts.unresolved
+                                        , edgeClasses = prev.edgeClasses + counts.edgeClasses
+                                        , sigRoots =
+                                            prev.sigRoots
+                                                + (case s.itemAux.qSigRoot of
+                                                    Just _ ->
+                                                        1
+
+                                                    Nothing ->
+                                                        0
+                                                  )
+                                        , reaching = prev.reaching + counts.reaching
+                                        , internal = prev.internal + counts.internal
+                                        , subMerged = prev.subMerged + counts.subMerged
+                                        , subUnseen = prev.subUnseen + counts.subUnseen
+                                        , scratchDropped = prev.scratchDropped
+                                        }
+                                }
+                        }
+                }
+
+
+{-| §5.1 / §3.1: the set-slot classes the def's SIGNATURE reaches.
+
+Walks the root type Point stashed by `Translate.demandUnifyRoot`, collecting
+every `FunL` set slot and mapping it to its `UF.repr` class key. That is the
+paper's partition criterion stated directly — *"variables not reaching the
+signature are internalized"* — and it is deliberately a REACHABILITY walk over
+the type, not a rank test (§5.0b built ranks, measured them, and reverted:
+the paper has one generalization boundary, so Rémy's levels have nothing to
+separate).
+-}
+qSigClasses : Maybe IO.Variable -> IO.State -> ( Dict.Dict Int (), IO.State )
+qSigClasses root store0 =
+    case root of
+        Nothing ->
+            ( Dict.empty, store0 )
+
+        Just v ->
+            let
+                ( _, acc, store1 ) =
+                    qSigGo Dict.empty Dict.empty v store0
+            in
+            ( acc, store1 )
+
+
+qSigGo : Dict.Dict Int () -> Dict.Dict Int () -> IO.Variable -> IO.State -> ( Dict.Dict Int (), Dict.Dict Int (), IO.State )
+qSigGo seen acc v store0 =
+    let
+        raw =
+            Engine.pointKey v
+    in
+    if Dict.member raw seen then
+        ( seen, acc, store0 )
+
+    else
+        let
+            ( store1, desc ) =
+                UF.get v store0
+
+            seen1 =
+                Dict.insert raw () seen
+
+            descend vars st =
+                List.foldl (\x ( sn, an, stn ) -> qSigGo sn an x stn) ( seen1, acc, st ) vars
+        in
+        case desc.content of
+            IO.Structure flat ->
+                case flat of
+                    IO.FunL arg res slot ->
+                        let
+                            ( store2, reprVar ) =
+                                UF.repr slot store1
+
+                            acc1 =
+                                Dict.insert (Engine.pointKey reprVar) () acc
+                        in
+                        List.foldl (\x ( sn, an, stn ) -> qSigGo sn an x stn) ( seen1, acc1, store2 ) [ arg, res, slot ]
+
+                    IO.Fun1 arg res ->
+                        descend [ arg, res ] store1
+
+                    IO.App1 _ _ args ->
+                        descend args store1
+
+                    IO.Record1 fields ext ->
+                        descend (ext :: Dict.values fields) store1
+
+                    IO.Tuple1 a b rest ->
+                        descend (a :: b :: rest) store1
+
+                    IO.EmptyRecord1 ->
+                        ( seen1, acc, store1 )
+
+                    IO.Unit1 ->
+                        ( seen1, acc, store1 )
+
+                    IO.LambdaSet1 _ ->
+                        ( seen1, acc, store1 )
+
+            _ ->
+                ( seen1, acc, store1 )
+
+
+{-| One σ's value in the shadow solution: Eco's `⊤` plus a member set. -}
+type alias QAns =
+    { top : Bool, members : List Int }
+
+
+qBot : QAns
+qBot =
+    { top = False, members = [] }
+
+
+qJoin : QAns -> QAns -> QAns
+qJoin a b =
+    if a.top || b.top then
+        { top = True, members = [] }
+
+    else
+        { top = False, members = IO.unionSortedAsc a.members b.members }
+
+
+qOfPre : Engine.QPre -> QAns
+qOfPre pre =
+    case pre of
+        Engine.PreFlex ->
+            qBot
+
+        Engine.PreTop ->
+            { top = True, members = [] }
+
+        Engine.PreMembers ms ->
+            { top = False, members = ms }
+
+
+type alias QAcc =
+    { store : IO.State
+    , seedByPoint : Dict.Dict Int Engine.QPre -- RAW pointKey -> its content before its first constraint
+    , reprOf : Dict.Dict Int Int -- RAW pointKey -> repr key at item end
+    , reprVar : Dict.Dict Int IO.Variable -- repr key -> that class's representative Point (there is no key -> Point inverse)
+    , direct : Dict.Dict Int QAns -- repr key -> contribution of the ℓ ⋸ σ / ⊤ ⋸ σ constraints
+    , edges : List ( Int, Int ) -- ( dst repr, src repr )
+    , edgeDsts : Dict.Dict Int () -- repr keys that got an edge but no direct member write
+    , nMembers : Int
+    , nTops : Int
+    , nEdges : Int
+
+    -- Every member id this item recorded ANYWHERE, for the divergence split
+    -- below: a member missing from a class but present elsewhere in Q arrived
+    -- by UNIFICATION of two set slots (a path that does not go through
+    -- `unifySlotWithSetC`); a member missing and unseen came from a slot
+    -- minted with content and never constrained at all.
+    , allMembers : Dict.Dict Int ()
+    }
+
+
+qAcc0 : IO.State -> QAcc
+qAcc0 store =
+    { store = store, seedByPoint = Dict.empty, reprOf = Dict.empty, reprVar = Dict.empty, direct = Dict.empty, edges = [], edgeDsts = Dict.empty, nMembers = 0, nTops = 0, nEdges = 0, allMembers = Dict.empty }
+
+
+{-| Resolve a Point to its class key, remembering the mapping and its seed. -}
+qKey : IO.Variable -> Engine.QPre -> QAcc -> ( Int, QAcc )
+qKey v pre a =
+    let
+        ( store1, reprVar ) =
+            UF.repr v a.store
+
+        raw =
+            Engine.pointKey v
+
+        key =
+            Engine.pointKey reprVar
+    in
+    ( key
+    , { a
+        | store = store1
+        , seedByPoint = Dict.insert raw pre a.seedByPoint
+        , allMembers =
+            case pre of
+                Engine.PreMembers ms ->
+                    List.foldl (\m d -> Dict.insert m () d) a.allMembers ms
+
+                _ ->
+                    a.allMembers
+        , reprOf = Dict.insert raw key a.reprOf
+        , reprVar = Dict.insert key reprVar a.reprVar
+      }
+    )
+
+
+qAddDirect : Int -> QAns -> QAcc -> QAcc
+qAddDirect key ans a =
+    { a | direct = Dict.insert key (qJoin ans (Maybe.withDefault qBot (Dict.get key a.direct))) a.direct }
+
+
+qStep : Engine.QEntry -> QAcc -> QAcc
+qStep entry a0 =
+    case entry of
+        Engine.QMembers slot members pre ->
+            let
+                ( key, a1 ) =
+                    qKey slot pre a0
+            in
+            qAddDirect key
+                { top = False, members = members }
+                { a1
+                    | nMembers = a1.nMembers + 1
+                    , allMembers = List.foldl (\m d -> Dict.insert m () d) a1.allMembers members
+                }
+
+        Engine.QTop slot pre ->
+            let
+                ( key, a1 ) =
+                    qKey slot pre a0
+            in
+            qAddDirect key { top = True, members = [] } { a1 | nTops = a1.nTops + 1 }
+
+        Engine.QEdge dst src preDst preSrc ->
+            let
+                ( dstKey, a1 ) =
+                    qKey dst preDst a0
+
+                ( srcKey, a2 ) =
+                    qKey src preSrc a1
+            in
+            { a2
+                | edges = ( dstKey, srcKey ) :: a2.edges
+                , edgeDsts = Dict.insert dstKey () a2.edgeDsts
+                , nEdges = a2.nEdges + 1
+            }
+
+
+{-| The least solution of the recorded constraints:
+`S(α) = seed(α) ⊔ {ℓ | ℓ ⋸ α} ⊔ ⋃ over the edges into α`.
+
+Iterated to a fixpoint. The lattice is finite (flat member ids, plus ⊤) and
+every step is monotone, so it terminates; the round cap is a backstop against a
+malformed log, never a semantic limit, and hitting it can only under-report a
+member — the direction that shows up as `divergeSub`, i.e. loudly.
+-}
+qSolve : QAcc -> Dict.Dict Int QAns
+qSolve a =
+    let
+        base =
+            Dict.foldl
+                (\raw pre acc ->
+                    case Dict.get raw a.reprOf of
+                        Just key ->
+                            Dict.insert key (qJoin (qOfPre pre) (Maybe.withDefault qBot (Dict.get key acc))) acc
+
+                        Nothing ->
+                            acc
+                )
+                a.direct
+                a.seedByPoint
+
+        step cur =
+            List.foldl
+                (\( dstKey, srcKey ) acc ->
+                    case Dict.get srcKey acc of
+                        Just srcAns ->
+                            Dict.insert dstKey (qJoin srcAns (Maybe.withDefault qBot (Dict.get dstKey acc))) acc
+
+                        Nothing ->
+                            acc
+                )
+                cur
+                a.edges
+
+        go n cur =
+            if n <= 0 then
+                cur
+
+            else
+                let
+                    next =
+                        step cur
+                in
+                if next == cur then
+                    cur
+
+                else
+                    go (n - 1) next
+    in
+    go (List.length a.edges + 1) base
+
+
+type alias QCounts =
+    { classes : Int, agree : Int, divergeSuper : Int, divergeSub : Int, divergeTop : Int, divergeOther : Int, unresolved : Int, edgeClasses : Int, reaching : Int, internal : Int, subMerged : Int, subUnseen : Int }
+
+
+qCounts0 : QCounts
+qCounts0 =
+    { classes = 0, agree = 0, divergeSuper = 0, divergeSub = 0, divergeTop = 0, divergeOther = 0, unresolved = 0, edgeClasses = 0, reaching = 0, internal = 0, subMerged = 0, subUnseen = 0 }
+
+
+qCompare : Dict.Dict Int () -> QAcc -> Dict.Dict Int QAns -> ( QCounts, IO.State )
+qCompare sigClasses a solved =
+    Dict.foldl
+        (\key shadow ( c0, store0 ) ->
+            let
+                ( eager, store1 ) =
+                    qEagerAt (Dict.get key a.reprVar) store0
+
+                c1 =
+                    { c0
+                        | classes = c0.classes + 1
+                        , edgeClasses =
+                            if Dict.member key a.edgeDsts && not (Dict.member key a.direct) then
+                                c0.edgeClasses + 1
+
+                            else
+                                c0.edgeClasses
+
+                        -- The paper's partition (§3.1): reached by the
+                        -- signature => quantified into `ᾱ`; not reached =>
+                        -- internalized to `S(Q,α)`.
+                        , reaching =
+                            if Dict.member key sigClasses then
+                                c0.reaching + 1
+
+                            else
+                                c0.reaching
+                        , internal =
+                            if Dict.member key sigClasses then
+                                c0.internal
+
+                            else
+                                c0.internal + 1
+                    }
+            in
+            case eager of
+                Nothing ->
+                    -- Still unconstrained at item end: the eager answer is not
+                    -- DEFINED, so the gate says nothing about it. This is §5.1's
+                    -- third census item — what a per-item store cannot settle.
+                    ( { c1 | unresolved = c1.unresolved + 1 }, store1 )
+
+                Just ans ->
+                    ( qScore a.allMembers shadow ans c1, store1 )
+        )
+        ( qCounts0, a.store )
+        solved
+
+
+qScore : Dict.Dict Int () -> QAns -> QAns -> QCounts -> QCounts
+qScore allMembers shadow eager c =
+    if shadow.top && eager.top then
+        { c | agree = c.agree + 1 }
+
+    else if shadow.top /= eager.top then
+        { c | divergeTop = c.divergeTop + 1 }
+
+    else
+        case IO.classifySorted shadow.members eager.members of
+            IO.SortedEqual ->
+                { c | agree = c.agree + 1 }
+
+            IO.SortedSub ->
+                -- shadow ⊊ eager: Q under-records — a write path that is not
+                -- instrumented. The defect direction that matters, so it is
+                -- split by cause rather than just counted.
+                let
+                    missing =
+                        List.filter (\m -> not (List.member m shadow.members)) eager.members
+
+                    merged =
+                        List.all (\m -> Dict.member m allMembers) missing
+                in
+                if merged then
+                    { c | divergeSub = c.divergeSub + 1, subMerged = c.subMerged + 1 }
+
+                else
+                    { c | divergeSub = c.divergeSub + 1, subUnseen = c.subUnseen + 1 }
+
+            IO.SortedSuper ->
+                { c | divergeSuper = c.divergeSuper + 1 }
+
+            IO.SortedMixed ->
+                { c | divergeOther = c.divergeOther + 1 }
+
+
+{-| The eager answer for one class, as the STORE holds it: `Nothing` when the
+slot is still unconstrained (no answer to compare against), otherwise the raw
+least resolution with `LsFrom` edges pulled exactly as `zonkSetSlot` pulls
+them — minus the read-time policy, per this module's doc above.
+-}
+qEagerAt : Maybe IO.Variable -> IO.State -> ( Maybe QAns, IO.State )
+qEagerAt maybeVar store =
+    case maybeVar of
+        Nothing ->
+            ( Nothing, store )
+
+        Just v ->
+            qEagerGo Dict.empty v store
+
+
+qEagerGo : Dict.Dict Int () -> IO.Variable -> IO.State -> ( Maybe QAns, IO.State )
+qEagerGo seen v store0 =
+    let
+        raw =
+            Engine.pointKey v
+    in
+    if Dict.member raw seen then
+        ( Just qBot, store0 )
+
+    else
+        let
+            ( store1, desc ) =
+                UF.get v store0
+
+            seen1 =
+                Dict.insert raw () seen
+        in
+        case desc.content of
+            IO.Structure (IO.LambdaSet1 IO.LsTop) ->
+                ( Just { top = True, members = [] }, store1 )
+
+            IO.Structure (IO.LambdaSet1 (IO.LsMembers ms)) ->
+                ( Just { top = False, members = ms }, store1 )
+
+            IO.Structure (IO.LambdaSet1 (IO.LsFrom ms srcs)) ->
+                List.foldl
+                    (\src ( accM, stAcc ) ->
+                        case accM of
+                            Nothing ->
+                                ( Nothing, stAcc )
+
+                            Just acc ->
+                                if acc.top then
+                                    ( Just acc, stAcc )
+
+                                else
+                                    let
+                                        ( sub, stN ) =
+                                            qEagerGo seen1 src stAcc
+                                    in
+                                    ( Just (qJoin acc (Maybe.withDefault qBot sub)), stN )
+                    )
+                    ( Just { top = False, members = ms }, store1 )
+                    srcs
+
+            _ ->
+                ( Nothing, store1 )
+
+
 {-| LSS_023: install a deferred inclusion "dst ⊇ src" (both FunL SET SLOTS).
 ⊤ dst absorbs (skip). Self-edge (UF-equivalent) skips. Total; never fails.
 Descriptor-preserving: `UF.set` replaces the WHOLE descriptor at the root, so
@@ -1316,8 +1912,28 @@ addSlotSource src dst s0 =
                     Err e ->
                         Err e
 
-                    Ok ( desc, s2 ) ->
+                    Ok ( desc, s2a ) ->
                         let
+                            -- §5.1: an LSS_023 edge IS a constraint — `σ_dst ⊇
+                            -- σ_src`. Recording it is what lets the shadow
+                            -- solution reproduce a pull-at-read answer, which
+                            -- direct member constraints alone cannot.
+                            s2 =
+                                if qOnFor s2a then
+                                    case Engine.liftIO (UF.get src) s2a of
+                                        Ok ( srcDesc, s2b ) ->
+                                            let
+                                                aux =
+                                                    s2b.itemAux
+                                            in
+                                            { s2b | itemAux = { aux | qLog = Engine.QEdge dst src (qPreOf desc) (qPreOf srcDesc) :: aux.qLog } }
+
+                                        Err _ ->
+                                            s2a
+
+                                else
+                                    s2a
+
                             write content sN =
                                 case Engine.liftIO (UF.set dst { desc | content = content }) sN of
                                     Err e ->
@@ -1386,7 +2002,7 @@ poisonArrowSets v0 s0 =
     -- Phase 3: ctx-threaded DFS — one ~6-field ctx copy per visited node and
     -- ONE S write-back here, where the old shape copied the full S record per
     -- visited node.
-    foldSetWrites (poisonGoC Dict.empty [ v0 ] (setWriteCtx s0.store)) s0
+    foldSetWrites (poisonGoC Dict.empty [ v0 ] (setWriteCtx (qOnFor s0) s0.store)) s0
 
 
 poisonGoC : Dict.Dict Int () -> List IO.Variable -> SetWriteCtx -> SetWriteCtx

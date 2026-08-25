@@ -318,6 +318,74 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         settledSum =
             settledK1 + settledKN + settled.widenedBySize + settled.causeTop + settled.causeVar
 
+        -- §5.1 `Q` IN SHADOW MODE. The GATE is the `REPRODUCES` verdict: `Q`
+        -- must reproduce the eager answer everywhere the eager answer is
+        -- defined, so every `diverge*` bucket is a defect report on the
+        -- RECORDING, not a result about the program. `unresolved` is the
+        -- separate, legitimate population — classes with no eager answer at
+        -- item end, i.e. what a per-item store cannot settle and a def-boundary
+        -- solve could carry.
+        q =
+            stats.sigStats.qShadow
+
+        qDiverge =
+            q.divergeSuper + q.divergeSub + q.divergeTop + q.divergeOther
+
+        qDefined =
+            q.classes - q.unresolved
+
+        qLine =
+            "Q-shadow: constraints="
+                ++ String.fromInt (q.members + q.tops + q.edges)
+                ++ " (members="
+                ++ String.fromInt q.members
+                ++ " tops="
+                ++ String.fromInt q.tops
+                ++ " edges="
+                ++ String.fromInt q.edges
+                ++ ") items="
+                ++ String.fromInt q.items
+                ++ " classes="
+                ++ String.fromInt q.classes
+                ++ " defined="
+                ++ String.fromInt qDefined
+                ++ " agree="
+                ++ String.fromInt q.agree
+                ++ " diverge="
+                ++ String.fromInt qDiverge
+                ++ "(super="
+                ++ String.fromInt q.divergeSuper
+                ++ " sub="
+                ++ String.fromInt q.divergeSub
+                ++ "[merged="
+                ++ String.fromInt q.subMerged
+                ++ " unseen="
+                ++ String.fromInt q.subUnseen
+                ++ "]"
+                ++ " top="
+                ++ String.fromInt q.divergeTop
+                ++ " other="
+                ++ String.fromInt q.divergeOther
+                ++ ") unresolved="
+                ++ String.fromInt q.unresolved
+                ++ " edgeOnly="
+                ++ String.fromInt q.edgeClasses
+                ++ " scratchDropped="
+                ++ String.fromInt q.scratchDropped
+                ++ " | partition sigRoots="
+                ++ String.fromInt q.sigRoots
+                ++ " reaching="
+                ++ String.fromInt q.reaching
+                ++ " internal="
+                ++ String.fromInt q.internal
+                ++ " REPRODUCES="
+                ++ (if qDiverge == 0 then
+                        "yes"
+
+                    else
+                        "NO"
+                   )
+
         settledLine =
             "ledger-settled: k1="
                 ++ String.fromInt settledK1
@@ -462,6 +530,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         , "sets zonked: " ++ String.fromInt stats.setsZonked ++ "; size histogram: " ++ histLine
         , ledgerLine
         , settledLine
+        , qLine
         , settledArrowLine
         , "widened: bySize=" ++ String.fromInt stats.widenedBySize ++ " byKernel=" ++ String.fromInt stats.widenedByKernel ++ " byBudget=" ++ String.fromInt stats.widenedByBudget ++ " bySigSize=" ++ String.fromInt stats.sigStats.widenedBySigSize
         , "widened sizes: " ++ widenedHistLine
@@ -1324,17 +1393,25 @@ finishNode specId monoNode s =
         sSettled =
             Store.rezonkSettled s
 
+        -- §5.1 (plans/lss-paper-inclusion-constraints.md): solve this item's
+        -- shadow `Q` and score it against the store the eager union built.
+        -- Same placement and the same read-only discipline as the re-zonk
+        -- above, and for the same reason: the next `resetItem` throws this
+        -- store away, so item end is the last moment the comparison exists.
+        sQ =
+            Store.qShadowCensus sSettled
+
         aux =
-            sSettled.itemAux
+            sQ.itemAux
     in
-    { sSettled
-        | nodes = arraySetGrowing specId (Just monoNode) sSettled.nodes
-        , inProgress = BitSet.removeGrowing specId sSettled.inProgress
+    { sQ
+        | nodes = arraySetGrowing specId (Just monoNode) sQ.nodes
+        , inProgress = BitSet.removeGrowing specId sQ.inProgress
         , currentGlobal = Nothing
 
         -- Fix B (LSS_017): a mint outside any item must not silently adopt a
         -- stale spec — clear alongside currentGlobal.
-        , itemAux = { aux | currentSpecId = Nothing }
+        , itemAux = { aux | currentSpecId = Nothing, qLog = [] }
     }
 
 

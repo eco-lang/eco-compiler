@@ -23,6 +23,7 @@ module Compiler.MonoSolver.Engine exposing
     , SigFlowStats
     , markDirty
     , ItemAux, emptyItemAux, clearedAux, restoredAux, clearResidualReads
+    , QEntry(..), QPre(..), QShadowStats, emptyQShadowStats
     )
 
 {-| Core state + step monad for the solver-based monomorphizer.
@@ -240,7 +241,73 @@ type alias SigFlowStats =
     -- POST-SETTLE RE-ZONK (plans/lss-post-mono-architecture.md §3.2).
     -- REPORT-GATED; zero unless `lss.report`.
     , settled : SettledStats
+
+    -- §5.1 `Q` IN SHADOW MODE. REPORT-GATED; zero unless `lss.report`.
+    , qShadow : QShadowStats
     }
+
+
+{-| §5.1 (plans/lss-paper-inclusion-constraints.md): what the shadow `Q`
+census found, accumulated across items.
+
+THE GATE THIS EXISTS TO CHECK: *"`Q` must reproduce the eager answer
+everywhere the eager answer is defined. A divergence here is a bug in `Q`, not
+a finding."* So `agree` is the number that should carry everything, and every
+`diverge*` bucket is a defect report on the recording, not a result about the
+program.
+
+The comparison is per SLOT CLASS — constraints are grouped by `UF.repr` at
+item end, so two slots the solver unified are one σ, exactly as they are one
+variable in the paper. `shadow` is the least solution of the recorded
+constraints over that class (`seed ⊔ direct members ⊔ ⋃ over edges`), and
+`eager` is what the store actually holds, with `LsFrom` resolved the way
+`zonkSetSlot` resolves it so the two sides are read alike.
+
+`unresolved` is the third census item §5.1 asks for, stated in terms of the
+only boundary this architecture has: a class whose eager answer is STILL
+unconstrained when the item finishes. Those are the constraints that a solve
+living at the def boundary could carry and a per-item store cannot.
+
+-}
+type alias QShadowStats =
+    { items : Int -- items with at least one recorded constraint
+    , members : Int -- `ℓ ⋸ σ` constraints recorded
+    , tops : Int -- `⊤ ⋸ σ` constraints recorded
+    , edges : Int -- `σ_dst ⊇ σ_src` constraints recorded
+    , classes : Int -- distinct σ (UF classes) in Q's domain at item end
+    , agree : Int -- classes where shadow == eager
+    , divergeSuper : Int -- shadow ⊋ eager  (Q over-approximates: a missed absorb)
+    , divergeSub : Int -- shadow ⊊ eager  (Q under-records: a write path not instrumented)
+    , divergeTop : Int -- one side is ⊤ and the other is not
+    , divergeOther : Int -- incomparable member sets
+    , unresolved : Int -- classes still unconstrained at item end (no eager answer to compare)
+    , edgeClasses : Int -- classes reached only through an edge, not by a direct member write
+
+    -- THE PAPER'S PARTITION, prototyped (§3.1 / §5.3). Of the σ this item
+    -- constrained, how many are REACHED BY THE SIGNATURE (would be quantified
+    -- into `ᾱ`) and how many are not (would be internalized to `S(Q,α)`).
+    -- `sigRoots` counts items where the root type Point was available at all;
+    -- where it is not, both buckets are silently zero, so read them against it.
+    , sigRoots : Int
+    , reaching : Int
+    , internal : Int
+    , scratchDropped : Int -- constraints recorded inside a scratch store and dropped with it (see withScratchStore)
+
+    -- Why a `divergeSub` class under-recorded. `subMerged`: every missing
+    -- member appears elsewhere in this item's Q, so it arrived by UNIFICATION
+    -- of two set slots — `Unify.merge` joins their contents without going
+    -- through `unifySlotWithSetC`, so the class Q built is a strict subset of
+    -- the class the store built. `subUnseen`: the member is nowhere in Q, so
+    -- it came from a slot minted WITH content (an `LSet` annotation) that was
+    -- never constrained and therefore never entered Q's domain.
+    , subMerged : Int
+    , subUnseen : Int
+    }
+
+
+emptyQShadowStats : QShadowStats
+emptyQShadowStats =
+    { items = 0, members = 0, tops = 0, edges = 0, classes = 0, agree = 0, divergeSuper = 0, divergeSub = 0, divergeTop = 0, divergeOther = 0, unresolved = 0, edgeClasses = 0, sigRoots = 0, reaching = 0, internal = 0, scratchDropped = 0, subMerged = 0, subUnseen = 0 }
 
 
 {-| The second ledger: the SAME readbacks as the in-flight one, replayed at
@@ -378,7 +445,7 @@ insertMemberProvisional mid g t =
 
 emptyLssStats : LssStats
 emptyLssStats =
-    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0, edgesInstalled = 0, flowDegraded = 0, multiSetsByArrow = CoreDict.empty, topMixedFlexSig = 0, topMixedFlexDemand = 0, argFlowCensus = CoreDict.empty, settled = emptySettledStats }, layoutQual = { mints = 0, shared = 0, fallback = 0, tieBypass = 0 } }
+    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0, edgesInstalled = 0, flowDegraded = 0, multiSetsByArrow = CoreDict.empty, topMixedFlexSig = 0, topMixedFlexDemand = 0, argFlowCensus = CoreDict.empty, settled = emptySettledStats, qShadow = emptyQShadowStats }, layoutQual = { mints = 0, shared = 0, fallback = 0, tieBypass = 0 } }
 
 
 {-| The all-defaults signature for an annotation with `n` arrows.
@@ -1042,6 +1109,37 @@ type alias S =
     }
 
 
+{-| §5.1 (plans/lss-paper-inclusion-constraints.md): ONE recorded inclusion
+constraint, in the paper's `ℓ ⋸ σ` shape.
+
+SHADOW ONLY — nothing consumes these. They are recorded alongside the eager
+union so the census can ask whether `Q` would reproduce the eager answer, and
+whether anything is left over at the item boundary.
+
+`QPre` is the target slot's content IMMEDIATELY BEFORE the write. Every
+recording site already reads that descriptor, so capturing it is free, and it
+is what makes the comparison well-posed: the eager answer is `seed ⊔ Q`, and
+without the seed a slot minted from an `LSet` annotation would read as a
+spurious divergence.
+-}
+type QEntry
+    = QMembers IO.Variable (List Int) QPre -- ℓ… ⋸ σ
+    | QTop IO.Variable QPre -- ⊤ ⋸ σ (Eco's incompleteness marker; the paper has none)
+    | QEdge IO.Variable IO.Variable QPre QPre -- σ_dst ⊇ σ_src (LSS_023 LsFrom): dst, src, dst's pre, src's pre
+
+    -- The SOURCE's pre is captured as well as the destination's. A slot that
+    -- was seeded from an `LSet` annotation and only ever appears as an edge
+    -- SOURCE receives no constraint of its own, so without its seed the shadow
+    -- solution would under-approximate every destination downstream of it and
+    -- the census would report a divergence that is an artifact of the log.
+
+
+type QPre
+    = PreFlex
+    | PreTop
+    | PreMembers (List Int)
+
+
 type alias ItemAux =
     { lssRootAnn : Maybe ( Can.Type TypeIds.MVarId, IO.Variable )
     , ecoResidualReads : List IO.Variable
@@ -1100,12 +1198,33 @@ type alias ItemAux =
     -- Store-scoped exactly like `arrowMemo`/`arrowOfSlot` (it holds Points),
     -- so it MUST be cleared and restored on every scratch-store swap.
     , zonkLog : List IO.Variable
+
+    -- §5.1 `Q` IN SHADOW MODE (plans/lss-paper-inclusion-constraints.md):
+    -- every inclusion constraint this item recorded, in reverse order.
+    -- REPORT-GATED — empty unless `lss.report`, so the default path pays
+    -- nothing and every byte-identity rail is untouched.
+    --
+    -- Store-scoped exactly like `arrowMemo`/`arrowOfSlot`/`zonkLog` (it holds
+    -- Points), so it MUST be cleared and restored on every scratch-store swap.
+    , qLog : List QEntry
+
+    -- §5.1: the def's ROOT TYPE Point — `demandUnifyRoot`'s `annVar`, the
+    -- annotation loaded into this item's store and unified with the demand.
+    -- The census walks it at item end to collect the set slots the SIGNATURE
+    -- reaches, which is the paper's own partition criterion (§3.1: *"variables
+    -- not reaching the signature are internalized"*). Deliberately NOT gated
+    -- on the expression being a lambda, unlike `lssRootAnn`: `fns = [incr,
+    -- decr]` is not a lambda and its type carries the arrows this whole arc is
+    -- about.
+    --
+    -- REPORT-GATED and store-scoped exactly like `qLog`.
+    , qSigRoot : Maybe IO.Variable
     }
 
 
 emptyItemAux : ItemAux
 emptyItemAux =
-    { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = [], currentSpecId = Nothing, demandQualified = CoreDict.empty, arrowMemo = CoreDict.empty, arrowOfSlot = CoreDict.empty, zonkLog = [] }
+    { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = [], currentSpecId = Nothing, demandQualified = CoreDict.empty, arrowMemo = CoreDict.empty, arrowOfSlot = CoreDict.empty, zonkLog = [], qLog = [], qSigRoot = Nothing }
 
 
 {-| Scratch-store entry: clear ONLY the read lists (scratch Point indices are
@@ -1117,7 +1236,7 @@ miscompile, not a crash.
 -}
 clearedAux : ItemAux -> ItemAux
 clearedAux aux =
-    { aux | ecoResidualReads = [], ecoResidualKeyReads = [], arrowMemo = CoreDict.empty, arrowOfSlot = CoreDict.empty, zonkLog = [] }
+    { aux | ecoResidualReads = [], ecoResidualKeyReads = [], arrowMemo = CoreDict.empty, arrowOfSlot = CoreDict.empty, zonkLog = [], qLog = [], qSigRoot = Nothing }
 
 
 {-| Scratch-store exit: restore the outer read lists, keep everything else
@@ -1125,7 +1244,7 @@ from the inner state (matches the pre-pack behavior field for field).
 -}
 restoredAux : ItemAux -> ItemAux -> ItemAux
 restoredAux outer inner =
-    { inner | ecoResidualReads = outer.ecoResidualReads, ecoResidualKeyReads = outer.ecoResidualKeyReads, arrowMemo = outer.arrowMemo, arrowOfSlot = outer.arrowOfSlot, zonkLog = outer.zonkLog }
+    { inner | ecoResidualReads = outer.ecoResidualReads, ecoResidualKeyReads = outer.ecoResidualKeyReads, arrowMemo = outer.arrowMemo, arrowOfSlot = outer.arrowOfSlot, zonkLog = outer.zonkLog, qLog = outer.qLog, qSigRoot = outer.qSigRoot }
 
 
 {-| Saturation-pass reset (MONO_029 R2): drop the recorded reads before
@@ -1617,8 +1736,31 @@ withScratchStore step s0 =
 
                     else
                         s1
+
+                -- §5.1: the same reconciliation for the shadow `Q`. Constraints
+                -- recorded inside a scratch store name Points that die with it,
+                -- so `restoredAux` drops them — and a dropped constraint is
+                -- INVISIBLE to the census, which would otherwise report
+                -- `edges=0` while `sigflow` independently counts edges
+                -- installed. Count them so the gap explains itself.
+                s3 =
+                    if s2.env.lss.report && not (List.isEmpty s2.itemAux.qLog) then
+                        let
+                            statsQ =
+                                s2.lssStats
+
+                            sigQ =
+                                statsQ.sigStats
+
+                            prevQ =
+                                sigQ.qShadow
+                        in
+                        { s2 | lssStats = { statsQ | sigStats = { sigQ | qShadow = { prevQ | scratchDropped = prevQ.scratchDropped + List.length s2.itemAux.qLog } } } }
+
+                    else
+                        s2
             in
-            Ok ( a, { s2 | store = s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = restoredAux s0.itemAux s2.itemAux } )
+            Ok ( a, { s3 | store = s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = restoredAux s0.itemAux s3.itemAux } )
 
 
 
