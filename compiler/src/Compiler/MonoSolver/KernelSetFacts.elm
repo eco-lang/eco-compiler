@@ -815,6 +815,13 @@ facts =
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_isNaN:216-218 | helpers: Basics.cpp:isNaN:145-147, ExportHelpers.hpp:encodeBoxedBool:80-82 | type: elm/core/1.0.5/src/Basics.elm:811 (Float -> Bool) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure | audited: 2026-08-20"
                 }
           )
+        , ( ( "Basics", "log" )
+          , TypeFaithful
+                { scope = Inert
+                , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
+                , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_log:45-47 | helpers: Basics.cpp:log | type: elm/core/1.0.5/src/Basics.elm (Float -> Float; INFERRED-FROM-USAGE via logBase, R5 vacuous class) | B1: vacuous (no function-capable position) | B2: no store at all | B3: no allocClosure/Tag_Closure | audited: 2026-08-25"
+                }
+          )
         , ( ( "Basics", "modBy" )
           , TypeFaithful
                 { scope = Inert
@@ -976,11 +983,25 @@ facts =
                 , evidence = "class: full | entry: BytesExports.cpp:Elm_Kernel_Bytes_decode:414-463 | B1: apply-only via eco_apply_closure_typed :427, decoder never stored or copied | result opaque: A2 — :434-437 routes on an out-of-band Nothing sentinel the callback's (Int, a) type does not describe | audited: 2026-08-20"
                 }
           )
+        , ( ( "Bytes", "decodeFailure" )
+          , TypeFaithful
+                { scope = Inert
+                , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_decodeFailure:465-467 | type: elm/bytes/1.0.8/src/Bytes/Decode.elm (the failure marker behind `fail : Decoder a`) | B1: vacuous - NO arguments, returns a constant marker; `a` is phantom AND nothing can ever be written to it from here | B2: no store | B3: no allocClosure | audited: 2026-08-25"
+                }
+          )
         , ( ( "Bytes", "encode" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_encode:391-412 | helpers: encoderSize:120-138, writeEncoder:140-274 | type: elm/bytes/1.0.8/src/Bytes/Encode.elm:96 (Encoder -> Bytes) | B1: vacuous (no function-capable position) | B2: result alloc only :403-405 | B3: no closure alloc | audited: 2026-08-20"
+                }
+          )
+        , ( ( "Bytes", "getHostEndianness" )
+          , TypeFaithful
+                { scope = Inert
+                , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_getHostEndianness:299-303 | type: elm/bytes/1.0.8/src/Bytes.elm (Endianness) | B1: vacuous - NO arguments; returns fromBits(isLE ? 0 : 1), a concrete enum | B2: no store | B3: no allocClosure | audited: 2026-08-25"
                 }
           )
         , ( ( "Bytes", "getStringWidth" )
@@ -1431,6 +1452,13 @@ facts =
                 , evidence = "class: vacuous | entry: HttpExports.cpp:Elm_Kernel_Http_pair:664-672 | type: elm/http/2.0.0/src/Http.elm:249,271,286,351,368 -- ALL FIVE visible types (string/bytes/fileBody, string/filePart) confirmed arrow-free AND variable-free | B1: vacuous (no function-capable position) | B2: :666-671 writes only into the returned custom(BODY_PAIR) | B3: none | audited: 2026-08-20"
                 }
           )
+        , ( ( "Http", "toFormData" )
+          , TypeFaithful
+                { scope = Inert
+                , files = [ "elm-kernel-cpp/src/http/HttpExports.cpp" ]
+                , evidence = "class: vacuous | entry: HttpExports.cpp:Elm_Kernel_Http_toFormData:771-777 | type: elm/http/2.0.0/src/Http.elm (List Part -> Body) | B1: vacuous - Part and Body are both CONCRETE, no type variable and no arrow anywhere | B2: no store outside result | B3: no allocClosure | audited: 2026-08-25"
+                }
+          )
         , ( ( "JsArray", "appendN" )
           , TypeFaithful
                 { scope = Transports
@@ -1557,11 +1585,32 @@ facts =
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_addEntry:1761-1793 | type: DECLARED (a -> Value) -> a -> Value -> Value, pinned equal to the intrinsic annotation by KernelLicenseTest; no aliasing def, used partially applied at Json/Encode.elm:162/170/178 | B1: apply-only, eco_apply_closure :1772 is func's ONLY use; entry passed as its arg :1771 | B2: no static/global/task write; arrayHP/encodedHP are StackRootGuard locals :1769-1783 | B3: cons :1782 allocates a LIST CELL over the callback's RETURN, never a closure; no allocClosure/Tag_Closure in file | audited: 2026-08-20"
                 }
           )
+        , ( ( "Json", "decodeArray" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
+                , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_decodeArray:1422-1424 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm (Decoder a -> Decoder (Array a)) | B1: arguments stored VERBATIM into the DEC_ARRAY decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1538-1571) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-25"
+                }
+          )
+        , ( ( "Json", "andThen" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
+                , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_andThen:1454-1456 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm ((a -> Decoder b) -> Decoder a -> Decoder b) | B1: arguments stored VERBATIM into the DEC_ANDTHEN decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1538-1571) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-25"
+                }
+          )
         , ( ( "Json", "decodeBool" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: vacuous | entry: JsonExports.cpp:Elm_Kernel_Json_decodeBool:1402-1404 | helpers: makeDecoder0:466-468 | type: elm/json/1.1.4/src/Json/Decode.elm:86 (Decoder Bool) | B1: vacuous (no function-capable position) | B2: embedded constant, stores nothing | B3: no closure alloc | audited: 2026-08-20"
+                }
+          )
+        , ( ( "Json", "decodeField" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
+                , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_decodeField:1426-1428 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm (String -> Decoder a -> Decoder a) | B1: arguments stored VERBATIM into the DEC_FIELD decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1538-1571) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-25"
                 }
           )
         , ( ( "Json", "decodeFloat" )
@@ -1571,11 +1620,39 @@ facts =
                 , evidence = "class: vacuous | entry: JsonExports.cpp:Elm_Kernel_Json_decodeFloat:1410-1412 | helpers: makeDecoder0:466-468 | type: elm/json/1.1.4/src/Json/Decode.elm:112 (Decoder Float) | B1: vacuous (no function-capable position) | B2: embedded constant, stores nothing | B3: no closure alloc | audited: 2026-08-20"
                 }
           )
+        , ( ( "Json", "decodeIndex" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
+                , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_decodeIndex:1430-1432 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm (Int -> Decoder a -> Decoder a) | B1: arguments stored VERBATIM into the DEC_INDEX decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1538-1571) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-25"
+                }
+          )
         , ( ( "Json", "decodeInt" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: vacuous | entry: JsonExports.cpp:Elm_Kernel_Json_decodeInt:1406-1408 | helpers: makeDecoder0:466-468 | type: elm/json/1.1.4/src/Json/Decode.elm:99 (Decoder Int) | B1: vacuous (no function-capable position) | B2: embedded constant, stores nothing | B3: no closure alloc | audited: 2026-08-20"
+                }
+          )
+        , ( ( "Json", "decodeList" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
+                , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_decodeList:1418-1420 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm (Decoder a -> Decoder (List a)) | B1: arguments stored VERBATIM into the DEC_LIST decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1538-1571) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-25"
+                }
+          )
+        , ( ( "Json", "decodeKeyValuePairs" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
+                , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_decodeKeyValuePairs:1434-1436 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm (Decoder a -> Decoder (List (String, a))) | B1: arguments stored VERBATIM into the DEC_KEYVALUEPAIRS decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1538-1571) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-25"
+                }
+          )
+        , ( ( "Json", "decodeNull" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
+                , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_decodeNull:1414-1416 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm (a -> Decoder a) | B1: arguments stored VERBATIM into the DEC_NULL decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1538-1571) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-25"
                 }
           )
         , ( ( "Json", "decodeString" )
@@ -1618,6 +1695,97 @@ facts =
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: vacuous | entry: JsonExports.cpp:Elm_Kernel_Json_encodeNull:1730-1735 | helpers: none | type: elm/json/1.1.4/src/Json/Encode.elm:141 (Value), nullary, no param | B1: vacuous (no function-capable position) | B2: embedded constant, no alloc | B3: no closure alloc | audited: 2026-08-20"
+                }
+          )
+        , ( ( "Json", "runOnString" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
+                , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_runOnString:1551-1571 | type: elm/json/1.1.4/src/Json/Decode.elm (Decoder a -> String -> Result Error a) | B1: as Json.run, parsing the string first; same argument-threaded, same-call decode | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure | audited: 2026-08-25"
+                }
+          )
+        , ( ( "Json", "run" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
+                , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_run:1538-1549 | type: elm/json/1.1.4/src/Json/Decode.elm (Decoder a -> Value -> Result Error a) | B1: THE consumer that closes the chain - it drives the decode over a decoder passed AS AN ARGUMENT, in THIS call, and the `a` in Decoder a is the `a` in Result Error a. Every callback a combinator stored is applied here, under an argument-threaded type edge | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure | audited: 2026-08-25"
+                }
+          )
+        , ( ( "Json", "oneOf" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
+                , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_oneOf:1458-1460 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm (List (Decoder a) -> Decoder a) | B1: arguments stored VERBATIM into the DEC_ONEOF decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1538-1571) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-25"
+                }
+          )
+        , ( ( "Json", "fail" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
+                , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_fail:1450-1452 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm (String -> Decoder a) | B1: arguments stored VERBATIM into the DEC_FAIL decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1538-1571) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-25"
+                }
+          )
+        , ( ( "Json", "succeed" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
+                , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_succeed:1446-1448 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm (a -> Decoder a) | B1: arguments stored VERBATIM into the DEC_SUCCEED decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1538-1571) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-25"
+                }
+          )
+        , ( ( "Json", "map8" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
+                , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_map8:1529-1532 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm ((a -> b -> c -> d -> e -> f -> g -> h -> value) -> Decoder a -> Decoder b -> Decoder c -> Decoder d -> Decoder e -> Decoder f -> Decoder g -> Decoder h -> Decoder value) | B1: arguments stored VERBATIM into the DEC_MAP8 decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1538-1571) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-25"
+                }
+          )
+        , ( ( "Json", "map7" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
+                , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_map7:1524-1527 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm ((a -> b -> c -> d -> e -> f -> g -> value) -> Decoder a -> Decoder b -> Decoder c -> Decoder d -> Decoder e -> Decoder f -> Decoder g -> Decoder value) | B1: arguments stored VERBATIM into the DEC_MAP7 decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1538-1571) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-25"
+                }
+          )
+        , ( ( "Json", "map6" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
+                , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_map6:1519-1522 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm ((a -> b -> c -> d -> e -> f -> value) -> Decoder a -> Decoder b -> Decoder c -> Decoder d -> Decoder e -> Decoder f -> Decoder value) | B1: arguments stored VERBATIM into the DEC_MAP6 decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1538-1571) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-25"
+                }
+          )
+        , ( ( "Json", "map5" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
+                , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_map5:1514-1517 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm ((a -> b -> c -> d -> e -> value) -> Decoder a -> Decoder b -> Decoder c -> Decoder d -> Decoder e -> Decoder value) | B1: arguments stored VERBATIM into the DEC_MAP5 decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1538-1571) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-25"
+                }
+          )
+        , ( ( "Json", "map4" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
+                , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_map4:1509-1512 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm ((a -> b -> c -> d -> value) -> Decoder a -> Decoder b -> Decoder c -> Decoder d -> Decoder value) | B1: arguments stored VERBATIM into the DEC_MAP4 decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1538-1571) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-25"
+                }
+          )
+        , ( ( "Json", "map3" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
+                , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_map3:1504-1507 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm ((a -> b -> c -> value) -> Decoder a -> Decoder b -> Decoder c -> Decoder value) | B1: arguments stored VERBATIM into the DEC_MAP3 decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1538-1571) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-25"
+                }
+          )
+        , ( ( "Json", "map2" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
+                , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_map2:1499-1502 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm ((a -> b -> value) -> Decoder a -> Decoder b -> Decoder value) | B1: arguments stored VERBATIM into the DEC_MAP2 decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1538-1571) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-25"
+                }
+          )
+        , ( ( "Json", "map1" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
+                , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_map1:1466-1468 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm ((a -> value) -> Decoder a -> Decoder value) | B1: arguments stored VERBATIM into the DEC_MAP1 decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1538-1571) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-25"
                 }
           )
         , ( ( "List", "cons" )
@@ -1683,6 +1851,20 @@ facts =
                 , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_sortWith:832-887 | helpers: listFromPermutation:741 | type: elm/core/1.0.5/src/List.elm:502 | B1: apply-only via eco_apply_closure :873; result = permutation :885 | B2: call-local buffers, roots balanced :868-883 | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
                 }
           )
+        , ( ( "MVar", "drop" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "eco-kernel-cpp/src/eco/MVarExports.cpp", "eco-kernel-cpp/src/eco/MVar.cpp" ]
+                , evidence = "class: cheap | entry: MVarExports.cpp:Eco_Kernel_MVar_drop:63-65 | helpers: MVar.cpp:drop | type: Eco/MVar.elm (MVar a -> Task Never ()) | B1: takes ONLY the unboxed id (uint64_t); `a` does not appear in the result, so no function value can leave | B2: clears the slot; nothing function-valued is read back to Elm | B3: no allocClosure | audited: 2026-08-25"
+                }
+          )
+        , ( ( "MVar", "new" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "eco-kernel-cpp/src/eco/MVarExports.cpp", "eco-kernel-cpp/src/eco/MVar.cpp" ]
+                , evidence = "class: cheap | entry: MVarExports.cpp:Eco_Kernel_MVar_new:25-28 | helpers: MVar.cpp:newEmpty | type: Eco/MVar.elm:42 (Task Never (MVar a)) | B1: makeBinding<mvarNewBody>(unit()) - unit capture; returns a fresh HANDLE. `a` is phantom and NOTHING is ever written to it by this call. Contrast MVar.put/read/take, which stay REJECTED | B2: no store outside the returned Task | B3: binding closure only, payload unit | audited: 2026-08-25"
+                }
+          )
         , ( ( "NativeDriver", "lowerAndLink" )
           , TypeFaithful
                 { scope = Inert
@@ -1746,11 +1928,25 @@ facts =
                 , evidence = "class: vacuous | entry: ParserExports.cpp:Elm_Kernel_Parser_isSubString:195-233 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:1090 | B1: vacuous (no function-capable position) | B2: no cross-call storage; StackRootGuard :203 is call-scoped | B3: grep clean (no allocClosure) | audited: 2026-08-20"
                 }
           )
+        , ( ( "Platform", "batch" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/core/PlatformExports.cpp" ]
+                , evidence = "class: cheap | entry: PlatformExports.cpp:Elm_Kernel_Platform_batch:21-29 | type: elm/core/1.0.5/src/Platform/Sub.elm (List (Sub msg) -> Sub msg) | B1: a STRUCTURAL container - it collects the Subs it is handed and adds, applies and reroutes nothing; `msg` passes through untouched. List.cons-shaped, and List.cons is licensed. Contrast Platform.map, which STORES A TAGGER the effect manager applies at a later unconnected call, and stays REJECTED | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure | audited: 2026-08-25"
+                }
+          )
         , ( ( "Process", "exit" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco/ProcessExports.cpp", "eco-kernel-cpp/src/eco/Process.cpp" ]
                 , evidence = "class: vacuous | entry: ProcessExports.cpp:Eco_Kernel_Process_exit:9-11 | helpers: Process.cpp:exit:227-234 | type: Eco/Process.elm:49 | B1: vacuous (no function-capable position) | B2: nothing captured, nothing stored; ::exit() at :231 | B3: no closure fabricated at all | audited: 2026-08-20"
+                }
+          )
+        , ( ( "Process", "sleep" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/core/ProcessExports.cpp" ]
+                , evidence = "class: cheap | entry: ProcessExports.cpp:Elm_Kernel_Process_sleep:43-52 | type: elm/core/1.0.5/src/Process.elm:93 (Float -> Task x ()) | B1: boxes the Float (allocFloat) and captures THAT; the binding payload is a boxed primitive, never a closure. Result is Task x () - nothing function-capable leaves | B2: no store outside the returned Task | B3: binding closure only, payload a boxed Float | audited: 2026-08-25"
                 }
           )
         , ( ( "Process", "spawn" )
@@ -1795,6 +1991,13 @@ facts =
                 , evidence = "class: vacuous | entry: RegexExports.cpp:Elm_Kernel_Regex_fromStringWith:176-221 | type: elm/regex/1.0.0/src/Regex.elm:82 | B1: vacuous (no function-capable position) | B2: table write :205 stores a srell::regex*, not an Elm value; result Custom is unboxed ints :212 | B3: grep clean (no allocClosure) | audited: 2026-08-20"
                 }
           )
+        , ( ( "Regex", "infinity" )
+          , TypeFaithful
+                { scope = Inert
+                , files = [ "elm-kernel-cpp/src/regex/RegexExports.cpp" ]
+                , evidence = "class: vacuous | entry: RegexExports.cpp:Elm_Kernel_Regex_infinity:171-174 | type: elm/regex/1.0.0 (Float constant; INFERRED-FROM-USAGE, used inline in replaceAtMost, R5 vacuous class) | B1: vacuous - no arguments, returns numeric_limits<double>::infinity() | B2: no store | B3: no allocClosure | audited: 2026-08-25"
+                }
+          )
         , ( ( "Regex", "never" )
           , TypeFaithful
                 { scope = Inert
@@ -1823,11 +2026,25 @@ facts =
                 , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_dirname:9-11 | helpers: Runtime.cpp:dirname:64-67 | type: Eco/Runtime.elm:21 | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :66); s_savedState untouched | B3: binding closure only | audited: 2026-08-20"
                 }
           )
+        , ( ( "Runtime", "loadState" )
+          , TypeFaithful
+                { scope = Inert
+                , files = [ "eco-kernel-cpp/src/eco/RuntimeExports.cpp", "eco-kernel-cpp/src/eco/Runtime.cpp" ]
+                , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_loadState:21-23 | helpers: Runtime.cpp:loadState | type: Eco/Runtime.elm (Task Never Encode.Value) | B1: vacuous - FULLY CONCRETE; the cross-call read is sound for the same reason as saveState | B2: reads runtime state, see B1 | B3: no allocClosure | audited: 2026-08-25"
+                }
+          )
         , ( ( "Runtime", "random" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco/RuntimeExports.cpp", "eco-kernel-cpp/src/eco/Runtime.cpp" ]
                 , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_random:13-15 | helpers: Runtime.cpp:random:69-72 | type: Eco/Runtime.elm:28 | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :71); statics :41-42 are C++ PRNG state | B3: binding closure only | audited: 2026-08-20"
+                }
+          )
+        , ( ( "Runtime", "saveState" )
+          , TypeFaithful
+                { scope = Inert
+                , files = [ "eco-kernel-cpp/src/eco/RuntimeExports.cpp", "eco-kernel-cpp/src/eco/Runtime.cpp" ]
+                , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_saveState:17-19 | helpers: Runtime.cpp:saveState | type: Eco/Runtime.elm (Encode.Value -> Task Never ()) | B1: vacuous - FULLY CONCRETE both ways, so the loaded scheme has zero set slots (R3). It IS cross-call (loadState returns what a different saveState stored) and that is IRRELEVANT: cross-call only disqualifies when the retained position is FUNCTION-CAPABLE | B2: stores into runtime state, see B1 | B3: no allocClosure | audited: 2026-08-25"
                 }
           )
         , ( ( "Scheduler", "andThen" )
@@ -1844,11 +2061,25 @@ facts =
                 , evidence = "class: cheap | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_fail:23-28 | helpers: Scheduler.cpp:taskFail:139-142 | type: elm/core/1.0.5/src/Task.elm:92 (x -> Task x a) | B1: the arg word is stored unchanged (:26, taskFail :141 allocTask(Task_Fail, error, nil, nil, nil)) and handed back at the SAME `x` the type names | B2: the ONLY store is into the Task this call RETURNS (alloc::allocTask, HeapHelpers.hpp:2047-2069, write :2064-2067) - no static, no mailbox, no other call's object; the scheduler reads it back out of THAT SAME Task | B3: no allocClosure/Tag_Closure - allocTask is a record constructor, not a closure mint | audited: 2026-08-25"
                 }
           )
+        , ( ( "Scheduler", "kill" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/core/SchedulerExports.cpp", "runtime/src/platform/Scheduler.cpp" ]
+                , evidence = "class: cheap | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_kill:55-60 | helpers: Scheduler.cpp:killTask | type: elm/core/1.0.5/src/Process.elm:103 (Id -> Task x ()) | B1: captures only a process Id; Id and () are concrete, so nothing function-capable enters or leaves | B2: no store outside the returned Task | B3: binding closure only, payload an Id | audited: 2026-08-25"
+                }
+          )
         , ( ( "Scheduler", "onError" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/SchedulerExports.cpp", "runtime/src/platform/Scheduler.cpp" ]
                 , evidence = "class: full | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_onError:39-46 | helpers: Scheduler.cpp:taskOnError:154-157 | type: elm/core/1.0.5/src/Task.elm:227 ((x -> Task y a) -> Task x a -> Task y a) | B1: both words stored VERBATIM (:42-44, taskOnError :156); the handler is applied to the inner task's error and never substituted, and on the SUCCESS path the inner `a` passes straight through to the result's `a` - both edges are the type's shared variables | B2: the ONLY store is into the Task this call RETURNS (alloc::allocTask, HeapHelpers.hpp:2047-2069, write :2064-2067) - no static, no mailbox, no other call's object; the scheduler reads it back out of THAT SAME Task | B3: no allocClosure/Tag_Closure - allocTask is a record constructor, not a closure mint | audited: 2026-08-25"
+                }
+          )
+        , ( ( "Scheduler", "spawn" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/core/SchedulerExports.cpp", "runtime/src/platform/Scheduler.cpp" ]
+                , evidence = "class: full | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_spawn:48-53 | helpers: Scheduler.cpp:spawnTask:472-474 | type: elm/core/1.0.5/src/Process.elm:82 (Task x a -> Task y Id) | B1: the captured task MAY contain closures, but `a` is ABSENT FROM THE RESULT (Task y Id) - the type creates an EMPTY flow obligation, so there is nothing a licence can get wrong. The scheduler consumes the task; nothing function-valued is handed back to Elm at a typed position | B2: no store outside the returned Task | B3: makeBinding mints a closure, but it lands in Task.callback where no type variable names it | audited: 2026-08-25"
                 }
           )
         , ( ( "Scheduler", "succeed" )
@@ -2059,6 +2290,20 @@ facts =
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_words:83-86 | helpers: String.cpp:words:286-389 (two arms) | type: elm/core/1.0.5/src/String.elm:209 (String -> List String) | B1: vacuous (no function-capable position) | B2: root ranges :321/:372 restored :334/:387 | B3: no closure alloc | audited: 2026-08-20"
+                }
+          )
+        , ( ( "Time", "getZoneName" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/time/TimeExports.cpp" ]
+                , evidence = "class: cheap | entry: TimeExports.cpp:Elm_Kernel_Time_getZoneName:286-293 | type: elm/time/1.0.0/src/Time.elm (Task x ZoneName) | B1: same binding shape as Time.here - unit capture, concrete result | B2: no store outside the returned Task | B3: binding closure only, payload unit | audited: 2026-08-25"
+                }
+          )
+        , ( ( "Time", "here" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/time/TimeExports.cpp" ]
+                , evidence = "class: cheap | entry: TimeExports.cpp:Elm_Kernel_Time_here:279-284 | type: elm/time/1.0.0/src/Time.elm (Task x Zone) | B1: makeBinding<timeHereBody>(unit()) - the ONLY capture is unit; Zone is concrete, so no function value can enter or leave | B2: no store outside the returned Task | B3: mints a binding closure, but it lands in Task.callback where NO type variable names it and its payload is unit | audited: 2026-08-25"
                 }
           )
         , ( ( "Url", "percentDecode" )

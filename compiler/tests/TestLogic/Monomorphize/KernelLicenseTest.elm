@@ -579,11 +579,37 @@ neverLicensable =
       --                    it. `msg` does not appear in the result type at
       --                    all. `sendToApp` also fails A3 (declared `void`).
       --   Process.sleep  — unaudited.
+      -- NARROWED AGAIN 2026-08-25 (Groups 1-4). `Scheduler.spawn` came off:
+      -- its `a` is ABSENT from the result (`Task x a -> Task y Id`), so the
+      -- type's flow obligation is EMPTY and there is nothing a licence can get
+      -- wrong. `Process.sleep` came off: it captures a BOXED FLOAT, not a
+      -- closure. `Scheduler.binding` stays — it is not a `TOpt.VarKernel` on
+      -- any reachable Elm surface, so it is a guard against a future row
+      -- rather than a live refusal.
       ( "Scheduler", "binding" )
-    , ( "Scheduler", "spawn" )
     , ( "Platform", "sendToApp" )
     , ( "Platform", "sendToSelf" )
-    , ( "Process", "sleep" )
+
+    -- `Platform.map` STORES A TAGGER in a Sub that the effect manager applies
+    -- at a later, unconnected call; `Time.setInterval` does the same. Both are
+    -- cross-call. `Platform.batch` is NOT here: it only collects, so it is
+    -- List.cons-shaped and is licensed.
+    , ( "Platform", "map" )
+    , ( "Time", "setInterval" )
+
+    -- `Time.now`'s C++ takes `millisToPosix` — a FUNCTION — and applies it at
+    -- scheduler-step time, but its Elm annotation is `Task x Posix`, arity 0.
+    -- A3 arity mismatch: a function argument the type does not mention.
+    , ( "Time", "now" )
+
+    -- MVar carries values ACROSS CALLS and the Bytes codec does NOT launder
+    -- them: `read decoder (MVar id) = Eco.Kernel.MVar.read id` — the decoder
+    -- is IGNORED and the raw value is returned from the store, so a function
+    -- put in by one call is handed back by another with no type edge.
+    -- `MVar.new`/`drop` are licensed: neither carries a value.
+    , ( "MVar", "put" )
+    , ( "MVar", "read" )
+    , ( "MVar", "take" )
 
     -- The embedding / host boundary.
     , ( "Browser", "application" )
@@ -595,9 +621,11 @@ neverLicensable =
 
     -- Phantom / opaque type parameters: `type Decoder a = Decoder` has no
     -- field backing `a`, so a stored callback is invisible to the type.
-    , ( "Json", "map" )
-    , ( "Json", "andThen" )
-    , ( "Json", "succeed" )
+    -- Json NARROWED 2026-08-25: the combinators store their callback verbatim
+    -- into a Decoder that `Json.run`/`runOnString` then consume AS AN ARGUMENT,
+    -- driving the decode in that same call — argument-threaded, no cross-call
+    -- edge. `wrap` is the one that stays: it retypes an arbitrary value into
+    -- the opaque `Value`, which is type ERASURE, not transport.
     , ( "Json", "wrap" )
 
     -- Inexpressible by construction: `a -> b` with unshared variables.
