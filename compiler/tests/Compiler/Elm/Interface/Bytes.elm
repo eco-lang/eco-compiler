@@ -30,7 +30,7 @@ import System.TypeCheck.IO as IO
 collectFreeVars : Can.Type Name -> Can.FreeVars
 collectFreeVars tipe =
     case tipe of
-        Can.TLambda a b ->
+        Can.TLambda _ a b ->
             Dict.union (collectFreeVars a) (collectFreeVars b)
 
         Can.TVar name ->
@@ -224,54 +224,54 @@ bytesEncodeValues =
     let
         -- encode : Encoder -> Bytes
         encodeType =
-            Can.TLambda encoderType bytesType
+            Can.tLambda encoderType bytesType
 
         -- unsignedInt8 : Int -> Encoder
         u8Type =
-            Can.TLambda intType encoderType
+            Can.tLambda intType encoderType
 
         -- signedInt8 : Int -> Encoder
         i8Type =
-            Can.TLambda intType encoderType
+            Can.tLambda intType encoderType
 
         -- unsignedInt16 : Endianness -> Int -> Encoder
         u16Type =
-            Can.TLambda endiannessType (Can.TLambda intType encoderType)
+            Can.tLambda endiannessType (Can.tLambda intType encoderType)
 
         -- signedInt16 : Endianness -> Int -> Encoder
         i16Type =
-            Can.TLambda endiannessType (Can.TLambda intType encoderType)
+            Can.tLambda endiannessType (Can.tLambda intType encoderType)
 
         -- unsignedInt32 : Endianness -> Int -> Encoder
         u32Type =
-            Can.TLambda endiannessType (Can.TLambda intType encoderType)
+            Can.tLambda endiannessType (Can.tLambda intType encoderType)
 
         -- signedInt32 : Endianness -> Int -> Encoder
         i32Type =
-            Can.TLambda endiannessType (Can.TLambda intType encoderType)
+            Can.tLambda endiannessType (Can.tLambda intType encoderType)
 
         -- float32 : Endianness -> Float -> Encoder
         f32Type =
-            Can.TLambda endiannessType (Can.TLambda floatType encoderType)
+            Can.tLambda endiannessType (Can.tLambda floatType encoderType)
 
         -- float64 : Endianness -> Float -> Encoder
         f64Type =
-            Can.TLambda endiannessType (Can.TLambda floatType encoderType)
+            Can.tLambda endiannessType (Can.tLambda floatType encoderType)
 
         -- bytes : Bytes -> Encoder
         bytesEncType =
-            Can.TLambda bytesType encoderType
+            Can.tLambda bytesType encoderType
 
         -- string : String -> Encoder
         stringEncType =
-            Can.TLambda stringType encoderType
+            Can.tLambda stringType encoderType
 
         -- sequence : List Encoder -> Encoder
         listEncoder =
             Can.TType ModuleName.list "List" [ encoderType ]
 
         sequenceType =
-            Can.TLambda listEncoder encoderType
+            Can.tLambda listEncoder encoderType
     in
     Dict.fromList
         [ ( "encode", mkAnnotation encodeType )
@@ -379,7 +379,7 @@ bytesDecodeValues =
             Can.TType ModuleName.maybe "Maybe" [ aVar ]
 
         decodeType =
-            Can.TLambda decoderA (Can.TLambda bytesType maybeA)
+            Can.tLambda decoderA (Can.tLambda bytesType maybeA)
 
         -- unsignedInt8 : Decoder Int
         -- (zero-arg decoder values)
@@ -397,23 +397,23 @@ bytesDecodeValues =
 
         -- unsignedInt16 : Endianness -> Decoder Int
         endianDecoderInt =
-            Can.TLambda endiannessType decoderInt
+            Can.tLambda endiannessType decoderInt
 
         -- float32 : Endianness -> Decoder Float
         endianDecoderFloat =
-            Can.TLambda endiannessType decoderFloat
+            Can.tLambda endiannessType decoderFloat
 
         -- bytes : Int -> Decoder Bytes
         intToDecoderBytes =
-            Can.TLambda intType decoderBytes
+            Can.tLambda intType decoderBytes
 
         -- string : Int -> Decoder String
         intToDecoderString =
-            Can.TLambda intType decoderString
+            Can.tLambda intType decoderString
 
         -- succeed : a -> Decoder a
         succeedType =
-            Can.TLambda aVar decoderA
+            Can.tLambda aVar decoderA
 
         -- fail : Decoder a
         failType =
@@ -421,32 +421,32 @@ bytesDecodeValues =
 
         -- map : (a -> b) -> Decoder a -> Decoder b
         mapType =
-            Can.TLambda (Can.TLambda aVar bVar) (Can.TLambda decoderA decoderB)
+            Can.tLambda (Can.tLambda aVar bVar) (Can.tLambda decoderA decoderB)
 
         -- map2 : (a -> b -> c) -> Decoder a -> Decoder b -> Decoder c
         map2Type =
-            Can.TLambda (Can.TLambda aVar (Can.TLambda bVar cVar))
-                (Can.TLambda decoderA (Can.TLambda decoderB decoderC))
+            Can.tLambda (Can.tLambda aVar (Can.tLambda bVar cVar))
+                (Can.tLambda decoderA (Can.tLambda decoderB decoderC))
 
         -- map3 : (a -> b -> c -> d) -> Decoder a -> Decoder b -> Decoder c -> Decoder d
         decoderD =
             decoderType dVar
 
         map3Type =
-            Can.TLambda (Can.TLambda aVar (Can.TLambda bVar (Can.TLambda cVar dVar)))
-                (Can.TLambda decoderA (Can.TLambda decoderB (Can.TLambda decoderC decoderD)))
+            Can.tLambda (Can.tLambda aVar (Can.tLambda bVar (Can.tLambda cVar dVar)))
+                (Can.tLambda decoderA (Can.tLambda decoderB (Can.tLambda decoderC decoderD)))
 
         -- map4 : (a -> b -> c -> d -> e) -> Decoder a -> Decoder b -> Decoder c -> Decoder d -> Decoder e
         decoderE =
             decoderType eVar
 
         map4Type =
-            Can.TLambda (Can.TLambda aVar (Can.TLambda bVar (Can.TLambda cVar (Can.TLambda dVar eVar))))
-                (Can.TLambda decoderA (Can.TLambda decoderB (Can.TLambda decoderC (Can.TLambda decoderD decoderE))))
+            Can.tLambda (Can.tLambda aVar (Can.tLambda bVar (Can.tLambda cVar (Can.tLambda dVar eVar))))
+                (Can.tLambda decoderA (Can.tLambda decoderB (Can.tLambda decoderC (Can.tLambda decoderD decoderE))))
 
         -- andThen : (a -> Decoder b) -> Decoder a -> Decoder b
         andThenType =
-            Can.TLambda (Can.TLambda aVar decoderB) (Can.TLambda decoderA decoderB)
+            Can.tLambda (Can.tLambda aVar decoderB) (Can.tLambda decoderA decoderB)
 
         -- loop : (state -> Decoder (Step state a)) -> state -> Decoder a
         stateVar_ =
@@ -456,8 +456,8 @@ bytesDecodeValues =
             Can.TType bytesDecodeHome "Step" [ stateVar_, aVar ]
 
         loopType =
-            Can.TLambda (Can.TLambda stateVar_ (decoderType stepType))
-                (Can.TLambda stateVar_ decoderA)
+            Can.tLambda (Can.tLambda stateVar_ (decoderType stepType))
+                (Can.tLambda stateVar_ decoderA)
     in
     Dict.fromList
         [ ( "decode", mkAnnotation decodeType )

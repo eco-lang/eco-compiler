@@ -28,6 +28,7 @@ The compilation pipeline consists of four phases:
 
 -}
 
+import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
@@ -378,11 +379,50 @@ typeCheckTyped modul canonical =
 
                 kernelEnv =
                     postSolveResult.kernelEnv
+
+                -- Phase 2b (plans/lss-unknown-elimination.md §4.9): stamp every
+                -- arrow with its own union-find ROOT INDEX, here and nowhere
+                -- else, because THIS is the last point where `solverState` is
+                -- live. Downstream, `AssignMVarIds` resolves each
+                -- `(moduleKey, rootIdx)` to a global `ArrowId`, so two arrows
+                -- the type checker unified end up sharing one lambda-set slot.
+                --
+                -- Unconditional, NOT flag-gated: the index rides `Can.Type` and
+                -- therefore the cached artifact, so gating it here would key
+                -- the on-disk format to a mono-time flag. `lss.arrowSolverRoots`
+                -- gates whether AssignMVarIds USES it.
+                --
+                -- The index is meaningless without its module, and the walk
+                -- leaves any subtree it cannot follow in lockstep as `NoArrow`
+                -- (degrading to a Phase-2a occurrence id, never to a wrong id).
+                stampedNodeTypes =
+                    Array.indexedMap
+                        (\i maybeType ->
+                            case ( maybeType, Maybe.withDefault Nothing (Array.get i rootedNodeVars) ) of
+                                ( Just t, Just v ) ->
+                                    Just (SolverRoots.stampArrowRoots solverState t v)
+
+                                _ ->
+                                    maybeType
+                        )
+                        fixedNodeTypes
+
+                stampedAnnotations =
+                    Dict.map
+                        (\defName ann ->
+                            case Dict.get defName rootedAnnotationVars of
+                                Just annotVar ->
+                                    SolverRoots.stampArrowRootsInAnnotation solverState ann annotVar
+
+                                Nothing ->
+                                    ann
+                        )
+                        annotations
             in
             Ok
-                { annotations = annotations
-                , typedCanonical = TCanBuild.fromCanonical canonical fixedNodeTypes rootedNodeVars
-                , nodeTypes = fixedNodeTypes
+                { annotations = stampedAnnotations
+                , typedCanonical = TCanBuild.fromCanonical canonical stampedNodeTypes rootedNodeVars
+                , nodeTypes = stampedNodeTypes
                 , kernelEnv = kernelEnv
                 , nodeVars = rootedNodeVars
                 , annotationVars = rootedAnnotationVars

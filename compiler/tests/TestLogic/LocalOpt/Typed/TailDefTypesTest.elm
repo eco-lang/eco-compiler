@@ -231,7 +231,7 @@ checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
 splitFunctionType : Can.Type Name -> ( List (Can.Type Name), Can.Type Name )
 splitFunctionType tipe =
     case tipe of
-        Can.TLambda arg res ->
+        Can.TLambda _ arg res ->
             let
                 ( restArgs, ret ) =
                     splitFunctionType res
@@ -254,7 +254,7 @@ typesMatch actual expected =
         ( Can.TType home1 name1 args1, Can.TType home2 name2 args2 ) ->
             home1 == home2 && name1 == name2 && List.length args1 == List.length args2
 
-        ( Can.TLambda from1 to1, Can.TLambda from2 to2 ) ->
+        ( Can.TLambda _ from1 to1, Can.TLambda _ from2 to2 ) ->
             typesMatch from1 from2 && typesMatch to1 to2
 
         ( Can.TVar _, _ ) ->
@@ -288,7 +288,7 @@ typeToString tipe =
         Can.TType _ name args ->
             name ++ " " ++ String.join " " (List.map typeToString args)
 
-        Can.TLambda from to ->
+        Can.TLambda _ from to ->
             "(" ++ typeToString from ++ " -> " ++ typeToString to ++ ")"
 
         Can.TUnit ->

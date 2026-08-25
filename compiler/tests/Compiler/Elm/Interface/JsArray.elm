@@ -44,7 +44,7 @@ jsArrayInterface =
 collectFreeVars : Can.Type Name -> Can.FreeVars
 collectFreeVars tipe =
     case tipe of
-        Can.TLambda a b ->
+        Can.TLambda _ a b ->
             Dict.union (collectFreeVars a) (collectFreeVars b)
 
         Can.TVar name ->
@@ -186,44 +186,44 @@ jsArrayValues =
         -- push : a -> JsArray a -> JsArray a
         , ( "push"
           , mkAnnotation
-                (Can.TLambda aVar (Can.TLambda jsArrayA jsArrayA))
+                (Can.tLambda aVar (Can.tLambda jsArrayA jsArrayA))
           )
 
         -- length : JsArray a -> Int
         , ( "length"
           , mkAnnotation
-                (Can.TLambda jsArrayA intType)
+                (Can.tLambda jsArrayA intType)
           )
 
         -- slice : Int -> Int -> JsArray a -> JsArray a
         , ( "slice"
           , mkAnnotation
-                (Can.TLambda intType (Can.TLambda intType (Can.TLambda jsArrayA jsArrayA)))
+                (Can.tLambda intType (Can.tLambda intType (Can.tLambda jsArrayA jsArrayA)))
           )
 
         -- foldl : (a -> b -> b) -> b -> JsArray a -> b
         , ( "foldl"
           , mkAnnotation
-                (Can.TLambda
-                    (Can.TLambda aVar (Can.TLambda bVar bVar))
-                    (Can.TLambda bVar (Can.TLambda jsArrayA bVar))
+                (Can.tLambda
+                    (Can.tLambda aVar (Can.tLambda bVar bVar))
+                    (Can.tLambda bVar (Can.tLambda jsArrayA bVar))
                 )
           )
 
         -- foldr : (a -> b -> b) -> b -> JsArray a -> b
         , ( "foldr"
           , mkAnnotation
-                (Can.TLambda
-                    (Can.TLambda aVar (Can.TLambda bVar bVar))
-                    (Can.TLambda bVar (Can.TLambda jsArrayA bVar))
+                (Can.tLambda
+                    (Can.tLambda aVar (Can.tLambda bVar bVar))
+                    (Can.tLambda bVar (Can.tLambda jsArrayA bVar))
                 )
           )
 
         -- initializeFromList : Int -> List a -> ( JsArray a, List a )
         , ( "initializeFromList"
           , mkAnnotation
-                (Can.TLambda intType
-                    (Can.TLambda listA
+                (Can.tLambda intType
+                    (Can.tLambda listA
                         (Can.TTuple jsArrayA listA [])
                     )
                 )
@@ -232,9 +232,9 @@ jsArrayValues =
         -- map : (a -> b) -> JsArray a -> JsArray b
         , ( "map"
           , mkAnnotation
-                (Can.TLambda
-                    (Can.TLambda aVar bVar)
-                    (Can.TLambda jsArrayA jsArrayB)
+                (Can.tLambda
+                    (Can.tLambda aVar bVar)
+                    (Can.tLambda jsArrayA jsArrayB)
                 )
           )
         ]

@@ -66,7 +66,7 @@ fromType astType =
 extract : Can.Type Name -> Extractor T.Type
 extract astType =
     case astType of
-        Can.TLambda arg result ->
+        Can.TLambda _ arg result ->
             pure T.Lambda
                 |> apply (extract arg)
                 |> apply (extract result)

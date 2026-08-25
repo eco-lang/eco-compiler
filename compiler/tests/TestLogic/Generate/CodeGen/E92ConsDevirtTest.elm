@@ -196,6 +196,9 @@ renderAnno anno =
         Mono.LTop ->
             "LTop"
 
+        Mono.LVar n ->
+            "LVar" ++ String.fromInt n
+
         Mono.LSet ms ->
             "LSet[" ++ String.join "," (List.map String.fromInt ms) ++ "]"
 

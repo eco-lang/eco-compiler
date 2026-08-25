@@ -93,7 +93,7 @@ checkTypeForRankIssues context canType =
             -- For now, just verify basic validity
             []
 
-        Can.TLambda argType resultType ->
+        Can.TLambda _ argType resultType ->
             -- Check for higher-rank polymorphism (which Elm doesn't support)
             checkForHigherRank context argType
                 ++ checkTypeForRankIssues context argType
@@ -148,7 +148,7 @@ checkForHigherRank _ canType =
     -- and the compiler ensures rank-1 inference, we just verify the types
     -- are well-formed.
     case canType of
-        Can.TLambda _ _ ->
+        Can.TLambda _ _ _ ->
             -- Functions in argument position could indicate higher-rank if
             -- their type variables are later instantiated differently.
             -- In practice, Elm prevents this through its inference algorithm.

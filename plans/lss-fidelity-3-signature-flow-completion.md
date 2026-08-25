@@ -200,6 +200,30 @@ call-result Points *empty-or-honest rather than partial* (§B.0); an inference-s
 fix of this leak must re-visit that argument (write into the family/letEnv Point,
 never only the fresh arg load).
 
+> **CLOSED 2026-08-23 by LSS_026(d)** (`plans/lss-gap2-callarg-transport.md`
+> §3.4), under `lss.callArgFlow ∧ lss.sigFlow`, for **global-callee and
+> local-callee** arguments. `walkExpr`'s Call arm now walks the args FIRST and
+> keeps their `WalkPoint`s; `walkCall → applyCalleeAt → unifyCallShape →
+> unifyParamsBestEffort` threads them through, and `flowArgWp` flows each
+> `WpHonest`/`WpOpaque` point INTO the param position (directed,
+> `flowArrowSetsSig`'s orientation) — exactly the "write into the family/letEnv
+> Point" this note demanded, rather than into the fresh arg load. The same step
+> runs in `joinCallArgs` for letEnv-family callees.
+>
+> **Residues that remain open:** the KERNEL boundary (v1 deliberately passes
+> `[]` there — the audited LSS_021/022 rows already define param semantics, so
+> an extra flow would either duplicate or contradict them), and the fresh-load
+> residue at positions the loader never enumerates (tyvar positions mint no
+> slot — the §6 loss item).
+>
+> **And the B.0 premise this note states is now load-bearing in a second way.**
+> "`WpOpaque` is empty-or-honest rather than partial" is exactly what makes it
+> safe to FLOW FROM. That safety used to rest on the leak; it now rests on
+> LSS_026(a) instead, which is the stronger footing: an empty (flex) source no
+> longer vanishes from a members-carrying readback, it widens it to ⊤. So the
+> honesty classes survive the repair of the leak that originally justified
+> them — see the B.0 re-argument below.
+
 ### A.2 On the mapping doc's `FromArrow` proposal — scope decision, recorded
 
 Unchanged from the draft, and re-verified at HEAD: `instantiateLss` applies facts
@@ -266,6 +290,28 @@ Per-arm returns (arms not listed: `_` arm → `walkChildren` then `WpNone`):
   accept `WpHonest` **and** `WpOpaque`; skip on `WpNone`. A single opaque source
   cannot mix members with blindness — its slots are empty-or-honest (A.1 residue
   note), and empty facts are sound.
+
+  > **B.0 RE-ARGUED 2026-08-23 (LSS_026).** The clause above rests on "empty
+  > facts are sound", which in turn rested on the A.1 leak keeping opaque slots
+  > empty rather than partial. LSS_026(d) repairs that leak, so the premise had
+  > to be re-established on its own terms — and it now is, more strongly:
+  > **LSS_026(a) makes empty *sources* honest by construction.** A resolution
+  > that reaches an unconstrained (flex) inflow while carrying members no longer
+  > silently drops it; it resolves ⊤. So accepting a `WpOpaque` point as a
+  > single source cannot manufacture a false completeness claim even once those
+  > points stop being empty. The acceptance rule is unchanged; its justification
+  > moved from "the leak protects us" to "the resolver refuses to claim
+  > completeness it does not have", which is the direction that survives further
+  > repair.
+  >
+  > The hub rule above is untouched: symmetric MIXING of opaque points in a
+  > join stays banned. LSS_026(d) adds only a one-way edge into a callee's param
+  > position, which is not a hub.
+  >
+  > And the shape neither rule can see — a BLIND argument, where no edge is
+  > created at all — is why LSS_026(d) is publish-or-poison rather than
+  > publish-or-skip: `WpNone`/`WpSelf` at an arrow-mentioning argument writes ⊤
+  > to the param position (`argFlowWpPoisoned` counts it).
 
 The refactor itself performs **no new store operations** (returning already-loaded
 Points is free), so it ships ungated; only the joins are flag-gated. Signature

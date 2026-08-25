@@ -18,6 +18,8 @@ module Compiler.MonoSolver.Engine exposing
     , GroundingStats, internMemberKey, groundStandaloneMemberIdFor, groundSetMembers, recordSpecWidenedKey, layoutQualKey
     , LssMemberTable, MemberSource(..), emptyMemberTable
     , bumpWidenedByKernel, bumpWidenedBySigSize, bumpWidenedByCf, bumpKernelFactHit, bumpKernelLicensed, bumpEdgeInstalled, bumpFlowDegraded, bumpCompletionJoin, bumpCompletionJoinNoop, withScratchStore
+    , bumpTopMixedFlexSig, bumpArgFlowCensus
+    , memoizedSignatureTrivial, memberClassOf, membersClass
     , SigFlowStats
     , markDirty
     , ItemAux, emptyItemAux, clearedAux, restoredAux, clearResidualReads
@@ -210,7 +212,77 @@ type alias SigFlowStats =
     , kernelLicensed : Int
     , edgesInstalled : Int -- LSS_023 directed edges installed (report-gated)
     , flowDegraded : Int -- LSS_023 container subtrees degraded to symmetric AND capable of carrying a set (report-gated)
+
+    -- Multi-set census (M3): ArrowId -> the UNION of every member set that
+    -- arrow's slot ever read back with |set| >= 2. REPORT-GATED. Lives here
+    -- rather than on `LssStats` for the 32-slot-cap reason below.
+    --
+    -- Keyed by ARROW, so it answers "how many distinct arrow positions in the
+    -- program carry a multi-member set" — the question `sizeHist` cannot,
+    -- because it counts readbacks. The union is across specs: one polymorphic
+    -- def specialized twice reads the same syntactic arrow twice, and the
+    -- ARROW is the position we are counting.
+    , multiSetsByArrow : CoreDict.Dict Int (List Int)
+
+    -- LSS_026 call-argument set transport (plans/lss-gap2-callarg-transport.md
+    -- §3.1 W0.4). These live HERE, not on `LssStats`, because `LssStats` sits
+    -- at the runtime's 32-slot record GC-scan cap — the same rationale that
+    -- put `grounding`/`sigStats`/`layoutQual` in sub-records.
+    --
+    -- The first four are BEHAVIOR counters for the D1/D2 arms (bumped
+    -- unconditionally — plain ints, artifact-neutral); `topMixedFlex*` are
+    -- D0 policy counters (same class as `widenedBySigSize`); `argFlowCensus`
+    -- is the Phase-0 census keyspace and is REPORT-GATED at every bump.
+    , topMixedFlexSig : Int -- D0: signature-side mixed-fact widenings (members/sources + a dangling FlexVar source)
+    , topMixedFlexDemand : Int -- D0: demand-side mixed-resolution widenings
+    , argFlowCensus : CoreDict.Dict String Int -- Phase-0 census rows (§2.1); populated ONLY under `lss.report`
+
+    -- POST-SETTLE RE-ZONK (plans/lss-post-mono-architecture.md §3.2).
+    -- REPORT-GATED; zero unless `lss.report`.
+    , settled : SettledStats
     }
+
+
+{-| The second ledger: the SAME readbacks as the in-flight one, replayed at
+`finishNode` against the same (now fully written) item store.
+
+Buckets mirror the §2.5 ledger exactly so the two lines subtract:
+`k1 + kN + overcap + top + var == zonked`, and `zonked` must equal the
+in-flight `setsZonked` — same variables, same multiplicity. A mismatch there
+is a BUG in the log (a missed clear on a store swap, or a zonk that ran
+outside any item), not a finding, and the report says so.
+
+`varArrows` is the discriminator §3.2's stop criterion actually needs. A
+readback that is STILL `var` after its item settled is unresolved for one of
+two reasons, and they point opposite ways:
+
+  - the members exist, but in ANOTHER item's store (Eco's per-item store
+    teardown means they can never meet) — a post-mono solve over one global
+    graph WOULD resolve it, so this is the prize;
+  - nothing anywhere ever writes that position (kernel/FFI/port boundary) —
+    no reordering helps, and the ceiling is Eco's setting, not its schedule.
+
+`multiSetsByArrow` is global and survives `resetItem`, so intersecting these
+two keyspaces at report time separates them. Needs arrow identity to be on
+(`arrowOfSlot` is empty otherwise), which is why §3.2 runs an arrow-id arm.
+
+-}
+type alias SettledStats =
+    { items : Int -- items whose log was replayed
+    , zonked : Int -- set slots re-read (must match the in-flight setsZonked)
+    , hist : CoreDict.Dict Int Int -- set-size histogram at item end
+    , widenedBySize : Int
+    , causeTop : Int -- poison + edgeTop
+    , causeVar : Int -- flex + edgeEmpty  <- the population §3.2 is about
+    , varArrows : CoreDict.Dict Int Int -- ArrowId -> still-var readbacks there
+    , setArrows : CoreDict.Dict Int Int -- ArrowId -> concrete readbacks there, ANY size
+    , scratchDropped : Int -- logged readbacks discarded with a scratch store (see withScratchStore)
+    }
+
+
+emptySettledStats : SettledStats
+emptySettledStats =
+    { items = 0, zonked = 0, hist = CoreDict.empty, widenedBySize = 0, causeTop = 0, causeVar = 0, varArrows = CoreDict.empty, setArrows = CoreDict.empty, scratchDropped = 0 }
 
 
 
@@ -306,7 +378,7 @@ insertMemberProvisional mid g t =
 
 emptyLssStats : LssStats
 emptyLssStats =
-    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0, edgesInstalled = 0, flowDegraded = 0 }, layoutQual = { mints = 0, shared = 0, fallback = 0, tieBypass = 0 } }
+    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0, edgesInstalled = 0, flowDegraded = 0, multiSetsByArrow = CoreDict.empty, topMixedFlexSig = 0, topMixedFlexDemand = 0, argFlowCensus = CoreDict.empty, settled = emptySettledStats }, layoutQual = { mints = 0, shared = 0, fallback = 0, tieBypass = 0 } }
 
 
 {-| The all-defaults signature for an annotation with `n` arrows.
@@ -746,6 +818,94 @@ bumpKernelLicensed s =
         s
 
 
+{-| LSS_026 (D0, signature side): a members- or sources-carrying
+internalization crossed a dangling (FlexVar) source and resolved ⊤ rather
+than claiming completeness. POLICY counter — unconditional, same class as
+`widenedBySigSize`.
+-}
+bumpTopMixedFlexSig : S -> S
+bumpTopMixedFlexSig s =
+    let
+        stats =
+            s.lssStats
+
+        sig =
+            stats.sigStats
+    in
+    { s | lssStats = { stats | sigStats = { sig | topMixedFlexSig = sig.topMixedFlexSig + 1 } } }
+
+
+{-| LSS_026 Phase-0 census (§2.1): bump one census key. REPORT-GATED — the
+default path carries only the branch (the `bumpWidenedByCf` precedent).
+-}
+bumpArgFlowCensus : String -> S -> S
+bumpArgFlowCensus key s =
+    if s.env.lss.report then
+        let
+            stats =
+                s.lssStats
+
+            sig =
+                stats.sigStats
+
+            n =
+                Maybe.withDefault 0 (CoreDict.get key sig.argFlowCensus)
+        in
+        { s | lssStats = { stats | sigStats = { sig | argFlowCensus = CoreDict.insert key (n + 1) sig.argFlowCensus } } }
+
+    else
+        s
+
+
+{-| LSS_026 Phase-0 census: is this global's signature ALREADY memoized, and
+is it trivial? A pure READ — the census must never FORCE a signature, because
+signature computation allocates from the shared member-id supply and
+`lss.report` is excluded from the config hash (a report-on run must produce
+the same artifact as a report-off one).
+-}
+memoizedSignatureTrivial : TOpt.Global -> S -> Maybe Bool
+memoizedSignatureTrivial g s =
+    Maybe.map .trivial (CoreDict.get (TOpt.toComparableGlobal g) s.lssSignatures)
+
+
+{-| LSS_026 Phase-0 census: the member CLASS of a member id, as the
+escalation gate needs it (plan §0.5) — `gc` (standalone global/ctor: grounds
+at zonk and IS consumable by LSS_025/E9.1 devirt, so a false one is a
+miscompile), `k` (kernel), `l` (lambda instance: declines at AbiCloning per
+LSS_017, so a false one is merely imprecise). Pure read.
+-}
+memberClassOf : Int -> LssMemberTable -> String
+memberClassOf mid table =
+    case CoreDict.get mid table.sources of
+        Just (SourceGlobal _) ->
+            "gc"
+
+        Just (SourceKernel _) ->
+            "k"
+
+        _ ->
+            "l"
+
+
+{-| LSS_026 Phase-0 census: the coarsest class present in a member list —
+`gc` dominates `k` dominates `l` (the escalation gate asks "does this mixed
+fact carry a STAMPABLE member?").
+-}
+membersClass : List Int -> LssMemberTable -> String
+membersClass members table =
+    if List.any (\m -> memberClassOf m table == "gc") members then
+        "gc"
+
+    else if List.any (\m -> memberClassOf m table == "k") members then
+        "k"
+
+    else if List.isEmpty members then
+        "none"
+
+    else
+        "l"
+
+
 {-| MONO_030 (solver arm): validate a just-CREATED spec against the breadth
 and key-size watchdogs. `Nothing` = fine; `Just` = the loud failure that
 replaces a silent hang/OOM (poly-rec through annotated mutual cycles is
@@ -889,20 +1049,75 @@ type alias ItemAux =
     , loopParams : List ( String, List ( String, Can.Type TypeIds.MVarId ) )
     , currentSpecId : Maybe Int -- Fix B (LSS_017): the SpecId being translated; set by processItem after resetItem, cleared at finishNode. Qualifies lambda-instance member ids for keyed-routed globals.
     , demandQualified : CoreDict.Dict Int Int -- LSS_018: raw lambda id -> SMALLEST qualified member id present in this spec's STORED demand (built by processItem from the registry type; consulted by lambdaInstanceMemberId's μ-tie)
+
+    -- Phase 2a arrow identity (plans/lss-unknown-elimination.md §4.5):
+    -- `Id.toComparable arrowId` -> that arrow's lambda-set SLOT Point IN THIS
+    -- ITEM'S STORE.
+    --
+    -- STORE-SCOPED. It holds Points, so it MUST be cleared on every store
+    -- swap (`clearedAux`) and restored on the way out (`restoredAux`).
+    -- Leaking it into a scratch store aliases low outer Point indices —
+    -- indices are dense from 0 in BOTH stores — and `zonkSigGo` then bakes
+    -- garbage `LambdaSet1` content into a memoised `LssSignature`, which is
+    -- GLOBAL (`S.lssSignatures`) and survives the whole run. Silent
+    -- miscompile, not a crash. The identical hazard is recorded verbatim at
+    -- `Translate.retranslateAt`.
+    --
+    -- `clearResidualReads` must NOT clear it: the saturation pass
+    -- re-translates against the SAME store, so the Points are still valid and
+    -- clearing would silently re-mint and lose sharing mid-item.
+    , arrowMemo : CoreDict.Dict Int IO.Variable
+
+    -- Multi-set census (M3): set-slot `pointKey` -> the `ArrowId` that minted
+    -- it. REPORT-GATED — empty unless `lss.report`, so the default path pays
+    -- nothing and the byte-identity rails are untouched.
+    --
+    -- Recorded in BOTH `arrowIdentity` arms, because the whole point is to key
+    -- multi-member sets by a corpus-stable ARROW rather than by readback:
+    -- `sizeHist` cannot tell 518 distinct 6-member arrows from one hot arrow
+    -- read 518 times (plan §2.5.5), and ArrowIds — minted by `AssignMVarIds`
+    -- from the syntax, independent of any lss flag — are the only key that is
+    -- stable across arms. (Symbol names are NOT: see runtime-calls Run AE.)
+    --
+    -- Store-scoped exactly like `arrowMemo`: it holds `pointKey`s, which are
+    -- dense from 0 in EVERY store, so it MUST be cleared and restored on every
+    -- scratch-store swap.
+    , arrowOfSlot : CoreDict.Dict Int Int
+
+    -- POST-SETTLE RE-ZONK (plans/lss-post-mono-architecture.md §3.2, Item 2):
+    -- every `IO.Variable` handed to `Store.zonkToMono` during this item, in
+    -- reverse call order. REPORT-GATED — empty unless `lss.report`, so the
+    -- default path pays nothing and the byte-identity rails are untouched.
+    --
+    -- The point of the log is that `resetItem` installs a FRESH store per
+    -- work item, so a set slot read during translation can only ever be
+    -- refined by writes that land before that same item finishes. Replaying
+    -- the log at `finishNode` — against the same store, just later — is the
+    -- only "read it after it settles" experiment this architecture admits,
+    -- and it is exactly the one §3.2 needs: same variables, same multiplicity,
+    -- same denominator, only the TIME of the read differs.
+    --
+    -- Store-scoped exactly like `arrowMemo`/`arrowOfSlot` (it holds Points),
+    -- so it MUST be cleared and restored on every scratch-store swap.
+    , zonkLog : List IO.Variable
     }
 
 
 emptyItemAux : ItemAux
 emptyItemAux =
-    { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = [], currentSpecId = Nothing, demandQualified = CoreDict.empty }
+    { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = [], currentSpecId = Nothing, demandQualified = CoreDict.empty, arrowMemo = CoreDict.empty, arrowOfSlot = CoreDict.empty, zonkLog = [] }
 
 
 {-| Scratch-store entry: clear ONLY the read lists (scratch Point indices are
 meaningless against the restored item store); other aux fields flow through.
+
+NOTE for future per-item state: anything holding scratch-store Points MUST be
+added here and to `restoredAux`, or it leaks across the store swap — a silent
+miscompile, not a crash.
 -}
 clearedAux : ItemAux -> ItemAux
 clearedAux aux =
-    { aux | ecoResidualReads = [], ecoResidualKeyReads = [] }
+    { aux | ecoResidualReads = [], ecoResidualKeyReads = [], arrowMemo = CoreDict.empty, arrowOfSlot = CoreDict.empty, zonkLog = [] }
 
 
 {-| Scratch-store exit: restore the outer read lists, keep everything else
@@ -910,7 +1125,7 @@ from the inner state (matches the pre-pack behavior field for field).
 -}
 restoredAux : ItemAux -> ItemAux -> ItemAux
 restoredAux outer inner =
-    { inner | ecoResidualReads = outer.ecoResidualReads, ecoResidualKeyReads = outer.ecoResidualKeyReads }
+    { inner | ecoResidualReads = outer.ecoResidualReads, ecoResidualKeyReads = outer.ecoResidualKeyReads, arrowMemo = outer.arrowMemo, arrowOfSlot = outer.arrowOfSlot, zonkLog = outer.zonkLog }
 
 
 {-| Saturation-pass reset (MONO_029 R2): drop the recorded reads before
@@ -1375,7 +1590,35 @@ withScratchStore step s0 =
             Err e
 
         Ok ( a, s1 ) ->
-            Ok ( a, { s1 | store = s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = restoredAux s0.itemAux s1.itemAux } )
+            let
+                -- §3.2 reconciliation: readbacks made INSIDE the scratch store
+                -- are counted by the in-flight ledger but can never be
+                -- replayed — `restoredAux` drops the inner log because those
+                -- Points die with the scratch store. Count them, so
+                -- `settled.zonked + scratchDropped == setsZonked` closes and a
+                -- MATCHES shortfall is reconciled rather than assumed.
+                --
+                -- This counts LOGGED READBACK CALLS, not set slots, so it is a
+                -- lower bound on the slot shortfall; it identifies the cause,
+                -- it does not have to close the arithmetic exactly.
+                s2 =
+                    if s1.env.lss.report && not (List.isEmpty s1.itemAux.zonkLog) then
+                        let
+                            stats =
+                                s1.lssStats
+
+                            sig =
+                                stats.sigStats
+
+                            prev =
+                                sig.settled
+                        in
+                        { s1 | lssStats = { stats | sigStats = { sig | settled = { prev | scratchDropped = prev.scratchDropped + List.length s1.itemAux.zonkLog } } } }
+
+                    else
+                        s1
+            in
+            Ok ( a, { s2 | store = s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = restoredAux s0.itemAux s2.itemAux } )
 
 
 

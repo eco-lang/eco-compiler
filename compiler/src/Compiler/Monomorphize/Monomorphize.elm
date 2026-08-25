@@ -93,7 +93,7 @@ monomorphizeWithLimits limits entryPointName globalTypeEnv globalGraph =
 
         -- Phase 0: Assign globally unique MVarIds to all type variables
         ( TOpt.GlobalGraph nodesWithIds _ annotationsWithIds _ _, mvarState ) =
-            AssignMVarIds.assignIds graphWithFlags
+            AssignMVarIds.assignIds False graphWithFlags
 
         mvarEnv =
             State.initMVarEnv mvarState.nextId mvarState.superVars

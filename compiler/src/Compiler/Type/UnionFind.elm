@@ -1,4 +1,4 @@
-module Compiler.Type.UnionFind exposing (fresh, get, set, modify, union, equivalent, redundant)
+module Compiler.Type.UnionFind exposing (fresh, repr, get, set, modify, union, equivalent, redundant)
 
 {-| Union-Find data structure for efficient type unification.
 

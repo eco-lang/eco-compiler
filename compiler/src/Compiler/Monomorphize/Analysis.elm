@@ -485,8 +485,17 @@ convertCanTypeNameToMVarId nameToId canType =
                 Nothing ->
                     Utils.Crash.crash "Analysis" "convertCanTypeNameToMVarId" ("Unbound type variable: " ++ name)
 
-        Can.TLambda from to ->
-            Can.TLambda (convertCanTypeNameToMVarId nameToId from) (convertCanTypeNameToMVarId nameToId to)
+        Can.TLambda _ from to ->
+            -- Phase 2a §4.7: `NoArrow`. The input is a `Can.Type Name`, so
+            -- there is no id to carry, and there is no supply here to mint one.
+            --
+            -- INVARIANT: the output of this function must never reach
+            -- `Store.loadType*`. It does not today — three callers, all
+            -- subst-engine, except `Translate.instantiateUnionType`, whose
+            -- output goes to `Zonk.canTypeToMonoWithI` (storeless). If it ever
+            -- does, `loadTypeC`'s `akey == 0` guard keeps it SOUND (always
+            -- miss, never record) at the cost of no sharing.
+            Can.tLambda (convertCanTypeNameToMVarId nameToId from) (convertCanTypeNameToMVarId nameToId to)
 
         Can.TType canonical name args ->
             Can.TType canonical name (List.map (convertCanTypeNameToMVarId nameToId) args)

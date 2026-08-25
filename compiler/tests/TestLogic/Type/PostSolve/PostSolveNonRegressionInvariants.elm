@@ -221,7 +221,7 @@ alphaEq a b =
         ( Can.TType h1 n1 as1, Can.TType h2 n2 as2 ) ->
             h1 == h2 && n1 == n2 && alphaEqList as1 as2
 
-        ( Can.TLambda a1 r1, Can.TLambda a2 r2 ) ->
+        ( Can.TLambda _ a1 r1, Can.TLambda _ a2 r2 ) ->
             alphaEq a1 a2 && alphaEq r1 r2
 
         ( Can.TRecord fields1 ext1, Can.TRecord fields2 ext2 ) ->
@@ -336,7 +336,7 @@ freeTypeVars tipe =
                 EverySet.empty
                 args
 
-        Can.TLambda a b ->
+        Can.TLambda _ a b ->
             EverySet.union (freeTypeVars a) (freeTypeVars b)
 
         Can.TRecord fields ext ->
@@ -693,7 +693,7 @@ typeToString tipe =
                 ++ String.join ", " (List.map typeToString args)
                 ++ "]"
 
-        Can.TLambda a b ->
+        Can.TLambda _ a b ->
             "TLambda (" ++ typeToString a ++ " -> " ++ typeToString b ++ ")"
 
         Can.TRecord _ ext ->

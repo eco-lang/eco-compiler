@@ -111,7 +111,7 @@ checkForInfiniteType context seenVars canType =
             else
                 []
 
-        Can.TLambda argType resultType ->
+        Can.TLambda _ argType resultType ->
             checkForInfiniteType context seenVars argType
                 ++ checkForInfiniteType context seenVars resultType
 

@@ -85,7 +85,7 @@ checkTypeForSyntheticVars context canType =
             else
                 []
 
-        Can.TLambda argType resultType ->
+        Can.TLambda _ argType resultType ->
             checkTypeForSyntheticVars context argType
                 ++ checkTypeForSyntheticVars context resultType
 

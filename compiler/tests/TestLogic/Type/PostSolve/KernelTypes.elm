@@ -84,7 +84,7 @@ checkKernelTypeWellFormed context canType =
             else
                 []
 
-        Can.TLambda argType resultType ->
+        Can.TLambda _ argType resultType ->
             checkKernelTypeWellFormed (context ++ " arg") argType
                 ++ checkKernelTypeWellFormed (context ++ " result") resultType
 

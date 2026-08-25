@@ -541,7 +541,7 @@ alphaEq a b =
             -- within the same package (e.g., Basics.String vs String.String)
             canonicalTypesEqual h1 n1 h2 n2 && alphaEqList as1 as2
 
-        ( Can.TLambda a1 r1, Can.TLambda a2 r2 ) ->
+        ( Can.TLambda _ a1 r1, Can.TLambda _ a2 r2 ) ->
             alphaEq a1 a2 && alphaEq r1 r2
 
         ( Can.TRecord fields1 ext1, Can.TRecord fields2 ext2 ) ->
@@ -714,9 +714,9 @@ oneWayUnify schemeVars schemeT instanceT subst =
                 _ ->
                     Nothing
 
-        Can.TLambda a b ->
+        Can.TLambda _ a b ->
             case instanceT of
-                Can.TLambda a2 b2 ->
+                Can.TLambda _ a2 b2 ->
                     oneWayUnify schemeVars a a2 subst
                         |> Maybe.andThen (oneWayUnify schemeVars b b2)
 
@@ -924,7 +924,7 @@ typeToString tipe =
             else
                 prefix ++ name ++ " " ++ String.join " " (List.map typeToStringParens args)
 
-        Can.TLambda a b ->
+        Can.TLambda _ a b ->
             typeToStringParens a ++ " -> " ++ typeToString b
 
         Can.TRecord fields ext ->
@@ -954,7 +954,7 @@ typeToString tipe =
 typeToStringParens : Can.Type Name -> String
 typeToStringParens tipe =
     case tipe of
-        Can.TLambda _ _ ->
+        Can.TLambda _ _ _ ->
             "(" ++ typeToString tipe ++ ")"
 
         Can.TType _ _ (_ :: _) ->

@@ -44,7 +44,7 @@ listBinops =
 
         -- a -> List a -> List a
         consType =
-            Can.TLambda aVar (Can.TLambda listA listA)
+            Can.tLambda aVar (Can.tLambda listA listA)
 
         consBinop =
             I.Binop
@@ -64,7 +64,7 @@ listBinops =
 collectFreeVars : Can.Type Name -> Can.FreeVars
 collectFreeVars tipe =
     case tipe of
-        Can.TLambda a b ->
+        Can.TLambda _ a b ->
             Dict.union (collectFreeVars a) (collectFreeVars b)
 
         Can.TVar name ->
@@ -146,70 +146,70 @@ listValues =
 
         -- cons : a -> List a -> List a
         consType =
-            Can.TLambda aVar (Can.TLambda listA listA)
+            Can.tLambda aVar (Can.tLambda listA listA)
 
         -- map : (a -> b) -> List a -> List b
         mapType =
-            Can.TLambda (Can.TLambda aVar bVar) (Can.TLambda listA listB)
+            Can.tLambda (Can.tLambda aVar bVar) (Can.tLambda listA listB)
 
         -- map2 : (a -> b -> c) -> List a -> List b -> List c
         listC =
             Can.TType ModuleName.list "List" [ cVar ]
 
         map2Type =
-            Can.TLambda
-                (Can.TLambda aVar (Can.TLambda bVar cVar))
-                (Can.TLambda listA (Can.TLambda listB listC))
+            Can.tLambda
+                (Can.tLambda aVar (Can.tLambda bVar cVar))
+                (Can.tLambda listA (Can.tLambda listB listC))
 
         -- foldr : (a -> b -> b) -> b -> List a -> b
         foldrType =
-            Can.TLambda
-                (Can.TLambda aVar (Can.TLambda bVar bVar))
-                (Can.TLambda bVar (Can.TLambda listA bVar))
+            Can.tLambda
+                (Can.tLambda aVar (Can.tLambda bVar bVar))
+                (Can.tLambda bVar (Can.tLambda listA bVar))
 
         -- foldl : (a -> b -> b) -> b -> List a -> b
         foldlType =
-            Can.TLambda
-                (Can.TLambda aVar (Can.TLambda bVar bVar))
-                (Can.TLambda bVar (Can.TLambda listA bVar))
+            Can.tLambda
+                (Can.tLambda aVar (Can.tLambda bVar bVar))
+                (Can.tLambda bVar (Can.tLambda listA bVar))
 
         -- reverse : List a -> List a
         reverseType =
-            Can.TLambda listA listA
+            Can.tLambda listA listA
 
         -- range : Int -> Int -> List Int
         listInt =
             Can.TType ModuleName.list "List" [ intType ]
 
         rangeType =
-            Can.TLambda intType (Can.TLambda intType listInt)
+            Can.tLambda intType (Can.tLambda intType listInt)
 
         -- length : List a -> Int
         lengthType =
-            Can.TLambda listA intType
+            Can.tLambda listA intType
 
         -- concat : List (List a) -> List a
         concatType =
-            Can.TLambda listListA listA
+            Can.tLambda listListA listA
 
         -- drop : Int -> List a -> List a
         dropType =
-            Can.TLambda intType (Can.TLambda listA listA)
+            Can.tLambda intType (Can.tLambda listA listA)
 
         -- filter : (a -> Bool) -> List a -> List a
         boolType =
             Can.TType ModuleName.basics "Bool" []
 
         filterType =
-            Can.TLambda (Can.TLambda aVar boolType) (Can.TLambda listA listA)
+            Can.tLambda (Can.tLambda aVar boolType) (Can.tLambda listA listA)
 
         -- any : (a -> Bool) -> List a -> Bool
         anyType =
-            Can.TLambda (Can.TLambda aVar boolType) (Can.TLambda listA boolType)
+            Can.tLambda (Can.tLambda aVar boolType) (Can.tLambda listA boolType)
 
         -- all : (a -> Bool) -> List a -> Bool
         allType =
-            Can.TLambda (Can.TLambda aVar boolType) (Can.TLambda listA boolType)
+            Can.tLambda (Can.tLambda aVar boolType) (Can.tLambda listA boolType)
     in
     Dict.fromList
         [ ( "cons", mkAnnotation consType )

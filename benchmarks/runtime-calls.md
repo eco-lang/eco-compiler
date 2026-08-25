@@ -1778,3 +1778,36 @@ carry ≈10.9M sat (`List_cons_$_15189` 10.2M + tail) against 30
 `{k|List.cons}` noInstance sites. Full symbolized table:
 `/work/lss-e95-dispatch-upper.tsv` (0 unknown fps, all at symbol starts —
 post-fix `dispatch-census.sh`).
+
+### Run AE — Phase 1b + arrow identity, dispatch A/B (2026-08-24): **1b is dispatch-NEUTRAL (−0.003 pp); `lss.arrowIdentity` costs −0.50 pp, and 99.0% of it is ONE de-stamped site**
+
+Three counters-lowered builds (`ECO_LSS_DISPATCH_SITE_COUNTERS=1` applied to
+each arm's already-emitted `.mlir` from `benchmarks/lss-opt.md` Run AH — the
+lowering, not the compile, is what the `fast` counter needs), each running the
+cold **solver+LSS** workload with `ECO_DISPATCH_STATS=1`:
+
+| build arm | sat | gen | typed | fast | sat+fast | coverage |
+|---|---|---|---|---|---|---|
+| pre-1b (Phase 1a) | 1,812,897,282 | 1,782,258,808 | 30,638,474 | 513,488,797 | 2,326,386,079 | 22.072% |
+| Phase 1b (`arrowIdentity` OFF) | 1,812,971,230 | 1,782,332,761 | 30,638,469 | 513,414,773 | 2,326,386,003 | 22.069% |
+| Phase 2a (`arrowIdentity` ON) | 1,824,632,934 | 1,793,994,465 | 30,638,469 | 501,784,644 | 2,326,417,578 | **21.569%** |
+| *(reference: `/work/lss-budget-512-dispatch.tsv`, 2026-08-22 corpus)* | 1,706,191,988 | 1,676,174,329 | 30,017,659 | 484,270,958 | 2,190,462,946 | 22.108% |
+
+**1b: fast −74,024 of 513M, coverage −0.003 pp, `typed` −5, `sat+fast` −76 —
+NEUTRAL.** Its +43% concrete-resolution gain (Run AH) reaches the runtime not at
+all, which is §2.5's thesis measured: the consumer is singleton-only.
+**2a: fast −11,630,129, gen +11,661,704, `typed` EXACTLY 0 — the LSS_026
+callArgFlow signature reproduced to 0.2%** (that arm: −11,651,310 / +11,651,310
+/ 0 / −0.51 pp). Unlike that arm, this one is ATTRIBUTED. Names cannot be
+joined across arms (lambda renumbering — 1,214 symbols "lose" and 1,199 "gain"
+under a naive join, all renames), so the rename-proof method is the MULTISET
+difference of per-site `fast` counts: **6 magnitudes vanish, and one of them is
+11,515,632 = 99.0% of the loss** (`lambda_15169$cap`, `sat=0 fast=11.5M`
+flag-off — a closure reached ONLY by static stamp). Flag-on that exact
+magnitude reappears as `gen` on `lambda_15217$cap`/`15219$cap`, with
+`15215`/`15223` at 11,459,306: **the shared slot unions what per-load minting
+kept apart, the singleton becomes a multi-member set, and every devirt arm
+declines it.** Analysis-side: `multiSetSites` 0 → `2->2`, `declinedBlocked`
+8 → 167, `declinedNoInstance` +120. The flip gate ("no fast-coverage
+regression") FAILS; `lss.arrowIdentity` stays DEFAULT-OFF. Full symbolized
+tables: `/work/.lssue-snapshots/census/disp-{pre1b,aioff,aion}.tsv`.

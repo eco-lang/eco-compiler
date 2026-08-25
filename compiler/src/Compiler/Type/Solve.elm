@@ -932,7 +932,7 @@ srcTypeToVar rank pools flexVars srcType =
             srcTypeToVar rank pools flexVars
     in
     case srcType of
-        Can.TLambda argument result ->
+        Can.TLambda _ argument result ->
             go argument
                 |> IO.andThen
                     (\argVar ->

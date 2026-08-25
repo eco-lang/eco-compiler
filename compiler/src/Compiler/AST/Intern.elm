@@ -221,6 +221,15 @@ probeRO mt m intern =
 {-| EXACT structural equality — deliberately `==`, not `eqKeySpec`. See the
 module docs: the key equivalences merge structures that must not be
 substituted for one another.
+
+Consequence of the Phase-1/3 `LTop`/`LVar` split
+(`plans/lss-unknown-elimination.md`), noted so it is not mistaken for a bug:
+`==` separates the two ⊤ labels, so an `LTop`-labelled and an
+`LVar`-labelled twin of one structure become two intern entries. Since Phase 3
+they also hash differently (`Mono.annoHash` separates `LVar n` from `LTop`), so
+they land in different buckets rather than colliding in one — cheaper than the
+Phase-1 situation, and still not an artifact change.
+
 -}
 eqExact : MonoType -> MonoType -> Bool
 eqExact a b =

@@ -6,6 +6,7 @@ module Compiler.MonoSolver.LssInfer exposing
     , injectSpineMemberId
     , kernelAliasOf
     , spineDepthForGlobal
+    , declaredArityOf
     , joinArrowSetsPlain
     , flowArrowSetsPlain
     )
@@ -127,7 +128,7 @@ instantiateWithSignature global funcCanType s0 =
                     Err e
 
                 Ok ( ( funcVar, slots ), s2 ) ->
-                    case applyFacts sig slots funcVar s2 of
+                    case applyFacts global sig slots funcVar s2 of
                         Err e ->
                             Err e
 
@@ -196,17 +197,38 @@ sigSourceTypeFor global fallbackType s =
 
 {-| Apply per-ordinal facts to freshly minted slots. Count mismatch ⇒ poison
 everything (sound fallback; see module doc).
+
+LSS_026 census (plan §2.6 row 6): the mismatch branch is REPORT-COUNTED per
+callee. Note the guard order — `sig.trivial` short-circuits FIRST, so a
+trivial-signature callee can never reach the poison no matter how far its
+occurrence type diverges from its annotation. The population that CAN reach
+it is exactly the non-trivial one, i.e. the callees whose facts the GAP-2
+transport exists to deliver, which is why this counter is a direct read on
+the transport's yield rather than a curiosity.
 -}
-applyFacts : Engine.LssSignature -> Array IO.Variable -> IO.Variable -> Step ()
-applyFacts sig slots funcVar s0 =
+applyFacts : TOpt.Global -> Engine.LssSignature -> Array IO.Variable -> IO.Variable -> Step ()
+applyFacts global sig slots funcVar s0 =
     if sig.trivial then
         Ok ( (), s0 )
 
     else if Array.length sig.arrows /= Array.length slots then
-        Store.poisonArrowSets funcVar s0
+        Store.poisonArrowSets funcVar (censusLenGuard global (Array.length sig.arrows) (Array.length slots) s0)
 
     else
         applyFactsGo sig.arrows slots 0 s0
+
+
+{-| LSS_026 census: an arrow-count mismatch poisoned a whole instantiation.
+`shape=<sigN>-><slotsN>` records the direction (occurrence GREW arrows vs
+shrank), which is what distinguishes "annotation is more general than the
+use" from a genuine pairing bug. Report-gated.
+-}
+censusLenGuard : TOpt.Global -> Int -> Int -> Engine.S -> Engine.S
+censusLenGuard global sigN slotsN s =
+    s
+        |> Engine.bumpArgFlowCensus "poison|lenGuard|all"
+        |> Engine.bumpArgFlowCensus ("poison|lenGuard|" ++ TOpt.toComparableGlobal global)
+        |> Engine.bumpArgFlowCensus ("poison|lenGuardShape|" ++ String.fromInt sigN ++ "->" ++ String.fromInt slotsN)
 
 
 applyFactsGo : Array Engine.ArrowFact -> Array IO.Variable -> Int -> Step ()
@@ -521,6 +543,11 @@ inferUnitInScratch members s0 =
                     Err e
 
                 Ok ( _, s2 ) ->
+                    -- LSS_026 §11.2(i) defaulted a WRAP-CLASS member's
+                    -- head-arrow fact here. MEASURED NO-GO (plan §11.5): it
+                    -- pushed 184 signatures into `trivial`, whose
+                    -- short-circuits then cost 60 % of grounding, and bought
+                    -- 0.000 pp of dispatch coverage.
                     zonkSignatures
                         (List.map2
                             (\m ( gkey, _, slots ) -> ( gkey, selfIdOf m, slots ))
@@ -577,7 +604,12 @@ walkMembers pairs s0 =
         ( m, ( _, root, _ ) ) :: rest ->
             case m.body of
                 Nothing ->
-                    walkMembers rest s0
+                    -- LSS_026 census (plan §2.1 row 3): a BODY-LESS unit
+                    -- member (Ctor/Enum/Box/Manager/Kernel/port). Its
+                    -- signature is trivial HONESTLY — there is no body that
+                    -- could have contributed — so it must not be counted
+                    -- against the producer-side transport population.
+                    walkMembers rest (Engine.bumpArgFlowCensus "sig|bodyless" s0)
 
                 Just body ->
                     if s0.env.lss.sigFlow then
@@ -629,7 +661,59 @@ zonkSignatures pending acc s0 =
                     Err e
 
                 Ok ( sig, s1 ) ->
-                    zonkSignatures rest (( gkey, sig ) :: acc) s1
+                    zonkSignatures rest (( gkey, sig ) :: acc) (censusSigFacts gkey sig s1)
+
+
+{-| LSS_026 census (plan §2.6 "sigfacts"): dump every NON-default fact of a
+non-trivial signature, one key per (def, ordinal). This is what turns "551
+reachable sites" into "which POSITIONS carry what, per producer" — D1
+connects the arg-callee's residual spine, so a producer whose members sit
+only at its own param ordinals yields nothing at the position the consumer
+reads. Report-gated; ~321 carrying signatures on the self-compile, a few
+ordinals each.
+-}
+censusSigFacts : String -> Engine.LssSignature -> Engine.S -> Engine.S
+censusSigFacts gkey sig s =
+    if not s.env.lss.report || sig.trivial then
+        s
+
+    else
+        List.foldl
+            (\( i, f ) acc ->
+                if f.rep == i && not f.top && List.isEmpty f.members && List.isEmpty f.sources then
+                    acc
+
+                else
+                    Engine.bumpArgFlowCensus
+                        ("sigfacts|"
+                            ++ gkey
+                            ++ "|"
+                            ++ String.fromInt i
+                            ++ "|m="
+                            ++ String.fromInt (List.length f.members)
+                            ++ ","
+                            ++ Engine.membersClass f.members s.lssMemberTable
+                            ++ "|s="
+                            ++ String.fromInt (List.length f.sources)
+                            ++ "|t="
+                            ++ (if f.top then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                            ++ "|r="
+                            ++ (if f.rep == i then
+                                    "-"
+
+                                else
+                                    String.fromInt f.rep
+                               )
+                        )
+                        acc
+            )
+            s
+            (List.indexedMap Tuple.pair (Array.toList sig.arrows))
 
 
 zonkOneSignature : Maybe Int -> Array IO.Variable -> Step Engine.LssSignature
@@ -651,7 +735,7 @@ zonkSigGo selfId slots n i factsRev s0 =
                         facts
                     )
         in
-        Ok ( { arrows = Array.fromList facts, trivial = trivial }, s0 )
+        Ok ( { arrows = Array.fromList facts, trivial = trivial }, censusSignature n facts trivial s0 )
 
     else
         case Array.get i slots of
@@ -755,6 +839,45 @@ zonkSigGo selfId slots n i factsRev s0 =
                                         zonkSigGo selfId slots n (i + 1) (done :: factsRev) s5
 
 
+{-| LSS_026 census (plan §2.1 row 3): classify a finished signature so
+Phase 0 can decompose the trivial mass instead of reporting one number.
+
+  - `sig|arrowfree` — no arrow slots at all (a value def): trivial by
+    construction, nothing a transport could ever add.
+  - `sig|allflex` — has arrows, every fact default: the body contributed
+    nothing to ANY slot. This is the bucket GAP-2's producer side is about.
+  - `sig|hasTop` — carries at least one ⊤ fact (poisoned or widened).
+  - `sig|carrying` — carries members and/or promoted sources: the
+    non-trivial population whose facts the transport can deliver.
+
+`sig|arrows=<n>` gives the arity distribution. Report-gated.
+
+-}
+censusSignature : Int -> List Engine.ArrowFact -> Bool -> Engine.S -> Engine.S
+censusSignature n facts trivial s =
+    if not s.env.lss.report then
+        s
+
+    else
+        let
+            klass =
+                if n == 0 then
+                    "arrowfree"
+
+                else if trivial then
+                    "allflex"
+
+                else if List.any .top facts then
+                    "hasTop"
+
+                else
+                    "carrying"
+        in
+        s
+            |> Engine.bumpArgFlowCensus ("sig|" ++ klass)
+            |> Engine.bumpArgFlowCensus ("sig|arrows=" ++ String.fromInt n)
+
+
 {-| LSS_023 §3.2: the edge-graph walk behind `zonkSigGo`'s `LsFrom` arm.
 Same visited discipline as `Store.resolveSlotMembers` (raw pointKey, marked on
 entry, fresh per call); classification per reached node:
@@ -770,14 +893,14 @@ dropped from sources.
 -}
 sigResolveEdges : Maybe Int -> Array IO.Variable -> Int -> List Int -> List IO.Variable -> Step { top : Bool, members : List Int, sources : List Int }
 sigResolveEdges selfId slots i ms0 srcs s0 =
-    case sigEdgesGo slots i srcs [] ms0 [] s0 of
+    case sigEdgesGo slots i srcs [] ms0 [] False s0 of
         Err e ->
             Err e
 
-        Ok ( Nothing, s1 ) ->
+        Ok ( ( Nothing, _ ), s1 ) ->
             Ok ( { top = True, members = [], sources = [] }, s1 )
 
-        Ok ( Just ( members, ordinals ), s1 ) ->
+        Ok ( ( Just ( members, ordinals ), sawFlex ), s1 ) ->
             let
                 filtered =
                     case selfId of
@@ -787,14 +910,59 @@ sigResolveEdges selfId slots i ms0 srcs s0 =
                         Nothing ->
                             members
             in
-            Ok ( { top = False, members = filtered, sources = List.sort ordinals }, s1 )
+            if sawFlex && not (List.isEmpty filtered && List.isEmpty ordinals) then
+                -- LSS_026(a), signature side: this internalization crossed a
+                -- DANGLING (FlexVar) inflow — an untracked inhabitant
+                -- channel — while carrying members or promoted ordinals. The
+                -- fact would claim completeness it does not have (plan §0.5:
+                -- `pick`/`d`), so it resolves ⊤.
+                --
+                -- UNCONDITIONAL since 2026-08-23. The plan shipped this
+                -- flag-gated because the Phase-0 census found zero crossings
+                -- on the self-compile; the escalation trigger was a runtime
+                -- witness instead — `test/elm/src/LssMixedSigHonestyTest.elm`
+                -- miscompiles at the shipping default without the rule (a
+                -- false `{g|incr}` singleton that LSS_025's post-settle
+                -- devirt trusts, turning `d ident` into `incr`). Plan §0.5's
+                -- own escalation criterion: `gc` exposure ⇒ unconditional,
+                -- ahead of D1/D2. Cost on the self-compile is nil BECAUSE the
+                -- census is zero there — this is a pure soundness fix, not a
+                -- precision trade.
+                --
+                -- A promoted-ordinals-only fact is NOT exempt: the
+                -- caller-side edges deliver the ordinals' members, but the
+                -- dangling inflow is in NEITHER channel.
+                --
+                -- The all-empty case keeps today's empty fact (consumers
+                -- write nothing, the slot stays flex and reads ⊤ — sound,
+                -- and it preserves the trivial-signature mass).
+                Ok
+                    ( { top = True, members = [], sources = [] }
+                    , censusMixedSig filtered (Engine.bumpTopMixedFlexSig s1)
+                    )
+
+            else
+                Ok ( { top = False, members = filtered, sources = List.sort ordinals }, s1 )
 
 
-sigEdgesGo : Array IO.Variable -> Int -> List IO.Variable -> List Int -> List Int -> List Int -> Step (Maybe ( List Int, List Int ))
-sigEdgesGo slots i pending visited accMembers accOrdinals s0 =
+{-| LSS_026 census (plan §2.1 row 2, signature side): count a mixed fact and
+the coarsest class of member it carries. `gc` members ground (LSS_019) and
+are consumable by LSS_025 post-settle devirt / E9.1 — a false one is the
+representative-hijack miscompile class, so a nonzero `mixed|sig|gc` is the
+plan's escalation gate. Report-gated.
+-}
+censusMixedSig : List Int -> Engine.S -> Engine.S
+censusMixedSig members s =
+    s
+        |> Engine.bumpArgFlowCensus "mixed|sig"
+        |> Engine.bumpArgFlowCensus ("mixed|sig|" ++ Engine.membersClass members s.lssMemberTable)
+
+
+sigEdgesGo : Array IO.Variable -> Int -> List IO.Variable -> List Int -> List Int -> List Int -> Bool -> Step (Maybe ( List Int, List Int ), Bool)
+sigEdgesGo slots i pending visited accMembers accOrdinals sawFlex s0 =
     case pending of
         [] ->
-            Ok ( Just ( accMembers, accOrdinals ), s0 )
+            Ok ( ( Just ( accMembers, accOrdinals ), sawFlex ), s0 )
 
         src :: rest ->
             let
@@ -802,7 +970,7 @@ sigEdgesGo slots i pending visited accMembers accOrdinals s0 =
                     Engine.pointKey src
             in
             if List.member key visited then
-                sigEdgesGo slots i rest visited accMembers accOrdinals s0
+                sigEdgesGo slots i rest visited accMembers accOrdinals sawFlex s0
 
             else
                 case ordinalOf slots i src s0 of
@@ -822,6 +990,7 @@ sigEdgesGo slots i pending visited accMembers accOrdinals s0 =
                              else
                                 j :: accOrdinals
                             )
+                            sawFlex
                             s1
 
                     Ok ( Nothing, s1 ) ->
@@ -838,21 +1007,24 @@ sigEdgesGo slots i pending visited accMembers accOrdinals s0 =
                         in
                         case desc.content of
                             IO.Structure (IO.LambdaSet1 IO.LsTop) ->
-                                Ok ( Nothing, s2 )
+                                Ok ( ( Nothing, sawFlex ), s2 )
 
                             IO.Structure (IO.LambdaSet1 (IO.LsMembers ms)) ->
-                                sigEdgesGo slots i rest visited1 (IO.unionSortedAsc accMembers ms) accOrdinals s2
+                                sigEdgesGo slots i rest visited1 (IO.unionSortedAsc accMembers ms) accOrdinals sawFlex s2
 
                             IO.Structure (IO.LambdaSet1 (IO.LsFrom ms ss)) ->
-                                sigEdgesGo slots i (ss ++ rest) visited1 (IO.unionSortedAsc accMembers ms) accOrdinals s2
+                                sigEdgesGo slots i (ss ++ rest) visited1 (IO.unionSortedAsc accMembers ms) accOrdinals sawFlex s2
 
                             IO.FlexVar _ ->
-                                sigEdgesGo slots i rest visited1 accMembers accOrdinals s2
+                                -- LSS_026(a): a dangling inflow. Contributes
+                                -- no members, but the crossing is recorded —
+                                -- `sigResolveEdges` applies the policy.
+                                sigEdgesGo slots i rest visited1 accMembers accOrdinals True s2
 
                             _ ->
                                 -- Defensive: fail toward ⊤ (§2.3's direction
                                 -- rule).
-                                Ok ( Nothing, s2 )
+                                Ok ( ( Nothing, sawFlex ), s2 )
 
 
 {-| The signature ordinal a Point IS (UF-equivalent to `slots[j]`, `j /= i`),
@@ -1824,6 +1996,22 @@ declaredArityGo sought g fuel s =
             Just (TOpt.TrackedDefine _ (TOpt.Function _ params _ _) _ _) ->
                 List.length params
 
+            -- `TrackedFunction` bodies were MISSING here until 2026-08-23,
+            -- and that is the shape `LocalOpt.Typed.Module.addDefNode` emits
+            -- for a def with parameters — so this walk silently floored the
+            -- DOMINANT def shape at 1. Dormant at the default
+            -- `spineArity = False` (`spineDepthForGlobal` returns 1 without
+            -- consulting this), which is why it went unnoticed; it would
+            -- have under-deepened nearly every standalone spine injection
+            -- the moment that flag was flipped. Found by the LSS_026
+            -- saturation census reading `Basics.composeL` (3 source params)
+            -- as arity 1.
+            Just (TOpt.Define (TOpt.TrackedFunction _ params _ _) _ _) ->
+                List.length params
+
+            Just (TOpt.TrackedDefine _ (TOpt.TrackedFunction _ params _ _) _ _) ->
+                List.length params
+
             Just (TOpt.Cycle _ valueDefs funcDefs _) ->
                 cycleDefArity sought valueDefs funcDefs
 
@@ -2402,7 +2590,7 @@ poisonBoth onPoison a b s0 =
 canTypeIsArrow : Can.Type TypeIds.MVarId -> Bool
 canTypeIsArrow t =
     case t of
-        Can.TLambda _ _ ->
+        Can.TLambda _ _ _ ->
             True
 
         Can.TAlias _ _ _ (Can.Filled real) ->
@@ -2421,7 +2609,7 @@ generalized, where a join would only poison.
 canTypeMentionsArrow : Can.Type TypeIds.MVarId -> Bool
 canTypeMentionsArrow t =
     case t of
-        Can.TLambda _ _ ->
+        Can.TLambda _ _ _ ->
             True
 
         Can.TVar _ ->

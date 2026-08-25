@@ -139,7 +139,9 @@ type alias AbiCloningStats =
     , multiSetSiteHist : Dict Int Int -- E3 de-risk: |set| -> consulted call sites carrying a MULTI-member set
     , multiSetMembers : Dict Int Int -- E3 de-risk: member id -> occurrences across multi-set sites
     , topSiteShapes : Dict String Int -- E8 split: LTop-annotated call sites by callee-expression shape (escape proxy: recordAccess/callResult vs local/global)
+    , varSiteShapes : Dict String Int -- Phase 1a/3 (plans/lss-unknown-elimination.md §2.5, plans/lss-set-variable.md): the same census for LVar-annotated sites — the "still a variable" half of what used to be one undifferentiated ⊤ population. Same shape keys as topSiteShapes; same TRAP (stampCall consults EVERY call, so these are SITE counts, not dispatch weight).
     , stampedWrapperInstances : Int -- E7 trigger: stamped sites whose representative is a staging wrapper (collision signal)
+    , blockedMembers : List ( Int, Maybe Mono.LambdaId ) -- LSS_026 §11 census: every blocked member with its BLOCKER instance (the adopting synthetic closure; Nothing = μ-tie / no attribution). Print-only, never consulted by stamping. The instrument that named `Compiler_Type_Type_lambda_41139` as the 146-site blocker — member IDS shift with the corpus, the SYMBOL is the stable join key, which is why the blocker travels with the id. (It did NOT explain the de-stamp — see §11.5 — but it is what made that refutable.) Cost: one Dict fold over the index per COMPILE, alongside the existing `countMultiInstanceGroups` fold; nothing per site.
     }
 
 
@@ -172,7 +174,9 @@ emptyStats =
     , multiSetSiteHist = Dict.empty
     , multiSetMembers = Dict.empty
     , topSiteShapes = Dict.empty
+    , varSiteShapes = Dict.empty
     , stampedWrapperInstances = 0
+    , blockedMembers = []
     }
 
 
@@ -203,6 +207,7 @@ member lists (the 2026-07-12 profiling findings).
 -}
 type alias MemberInfo =
     { blocked : Bool
+    , blockedBy : Maybe Mono.LambdaId -- census attribution: the ADOPTING/blocking instance's lambdaId (its home names the wrapped def for GlobalOpt wrappers). Nothing for μ-tie blocks (no instance did it) and for unblocked members. Print-only — never consulted by stamping.
     , buckets : Dict String (List LayoutGroup)
     }
 
@@ -317,7 +322,7 @@ collectGo fpFence expr acc =
                         Just ( m, isAdopted ) ->
                             if isAdopted || isWrapperHome closureInfo.lambdaId then
                                 -- Blocked members never stamp; drop any buckets.
-                                Dict.insert m { blocked = True, buckets = Dict.empty } acc
+                                Dict.insert m { blocked = True, blockedBy = Just closureInfo.lambdaId, buckets = Dict.empty } acc
 
                             else
                                 Dict.update m
@@ -331,7 +336,7 @@ collectGo fpFence expr acc =
                                                     Just { mi | buckets = insertInstance fpFence closureInfo body mi.buckets }
 
                                             Nothing ->
-                                                Just { blocked = False, buckets = insertInstance fpFence closureInfo body Dict.empty }
+                                                Just { blocked = False, blockedBy = Nothing, buckets = insertInstance fpFence closureInfo body Dict.empty }
                                     )
                                     acc
 
@@ -633,7 +638,7 @@ abiCloningPass fpFence postSettle ((Mono.MonoGraph record) as graph) =
         -- count under `declinedBlocked`.
         index =
             Dict.foldl
-                (\m () acc -> Dict.insert m { blocked = True, buckets = Dict.empty } acc)
+                (\m () acc -> Dict.insert m { blocked = True, blockedBy = Nothing, buckets = Dict.empty } acc)
                 (collectInstances fpFence graph)
                 record.lssBlockedMembers
     in
@@ -649,7 +654,20 @@ abiCloningPass fpFence postSettle ((Mono.MonoGraph record) as graph) =
             -- Fix B probe: count multi-instance groups up front (index-time
             -- fact, independent of stamping outcomes).
             stats0 =
-                { emptyStats | multiInstanceGroups = countMultiInstanceGroups index }
+                { emptyStats
+                    | multiInstanceGroups = countMultiInstanceGroups index
+                    , blockedMembers =
+                        Dict.foldr
+                            (\m mi acc ->
+                                if mi.blocked then
+                                    ( m, mi.blockedBy ) :: acc
+
+                                else
+                                    acc
+                            )
+                            []
+                            index
+                }
 
             -- E9.5: the registry inversion for the post-settle spec match —
             -- one pass over reverseMapping, flag-on only. SpecId ints come
@@ -1398,6 +1416,22 @@ stampCall index ctx region func args resultType callInfo =
             in
             ( Mono.MonoCall region func args resultType callInfo
             , { ctx | stats = { stats0 | topSiteShapes = bumpDictStr (calleeShape func) stats0.topSiteShapes } }
+            )
+
+        Mono.LVar _ ->
+            -- Same NON-STAMP as LTop — a variable names no members, so there is
+            -- nothing to devirtualize — but censused separately so the ⊤-site
+            -- population stays split into "widened" and "still a variable"
+            -- (plans/lss-unknown-elimination.md §2.5).
+            --
+            -- TRAP, previously recorded: `stampCall` consults EVERY call, so
+            -- both of these are SITE censuses, not dispatch weight.
+            let
+                stats0 =
+                    ctx.stats
+            in
+            ( Mono.MonoCall region func args resultType callInfo
+            , { ctx | stats = { stats0 | varSiteShapes = bumpDictStr (calleeShape func) stats0.varSiteShapes } }
             )
 
 

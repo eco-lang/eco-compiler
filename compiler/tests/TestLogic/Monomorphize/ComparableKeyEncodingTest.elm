@@ -350,6 +350,14 @@ goldens =
       , "Xelm\u{0000}core\u{0000}Result\u{0000}Result(IS)"
       )
     , ( Mono.mFunction LTop [ MInt ] MString, "A(I->S)" )
+
+    -- Phase 3: a set VARIABLE gets its OWN fragment carrying the canonical
+    -- number, and that literal string IS the assertion. `LVar` must NOT key as
+    -- `LTop` (they encode differently — a flex slot versus poison, so merging
+    -- them would let a stored ⊤ poison a variable demand), and two variables
+    -- must key apart, which is what makes `(α → α)` and `(α → β)` distinct.
+    , ( Mono.mFunction (LVar 0) [ MInt ] MString, "Av0(I->S)" )
+    , ( Mono.mFunction (LVar 1) [ MInt ] MString, "Av1(I->S)" )
     , ( Mono.mFunction LTop [ MInt, MFloat ] MUnit, "A(FI->U)" )
     , ( Mono.mFunction LTop [] MInt, "A(->I)" )
     , ( Mono.mFunction (LSet [ 1, 2 ]) [ MInt ] MString, "A[1,2](I->S)" )
@@ -376,6 +384,17 @@ handwritten =
            , Mono.mCustom (IO.Canonical ( "author", "project" ) "Deep.Module.Name") "Tree" [ Mono.mCustom (IO.Canonical ( "author", "project" ) "Deep.Module.Name") "Tree" [ MInt ] ]
            , Mono.mFunction (LSet [ 9 ]) [ Mono.mFunction LTop [ MInt ] MInt ] (Mono.mList (MVar (mvarId 1) CEcoValue))
            , Mono.mFunction LTop [ Mono.mRecord (Dict.fromList [ ( "f", Mono.mFunction (LSet [ 3, 4, 5 ]) [ MChar ] MBool ) ]) ] MUnit
+
+           -- Phase 1a near-misses: the `handwritten x handwritten` block in
+           -- `pairs` is where same-shape/different-annotation pairs are
+           -- concentrated, so these put LVar-vs-LTop, LVar-vs-LSet AND
+           -- LVar-vs-a-DIFFERENT-LVar in front of both K4 differential tests.
+           -- The last pair is the Phase 3 one: `(α → α)` versus `(α → β)`.
+           , Mono.mFunction (LVar 0) [ Mono.mFunction LTop [ MInt ] MInt ] (Mono.mList (MVar (mvarId 1) CEcoValue))
+           , Mono.mFunction (LSet [ 9 ]) [ Mono.mFunction (LVar 0) [ MInt ] MInt ] (Mono.mList (MVar (mvarId 1) CEcoValue))
+           , Mono.mFunction (LVar 0) [ Mono.mFunction (LVar 0) [ MChar ] MBool ] MUnit
+           , Mono.mFunction (LVar 0) [ Mono.mFunction (LVar 1) [ MChar ] MBool ] MUnit
+           , Mono.mFunction (LVar 0) [ Mono.mRecord (Dict.fromList [ ( "f", Mono.mFunction (LVar 0) [ MChar ] MBool ) ]) ] MUnit
            ]
 
 
@@ -550,9 +569,15 @@ nameAt seed =
             "Wrapper"
 
 
+{-| Phase 1a/3: a set VARIABLE is drawn here on purpose. This is a CONSTRUCTOR site,
+so the Elm compiler will never force it — and without it the K4 differential
+tests (`eqKeySpec` vs the key encoder, and equal-keys-imply-equal-hashes) pass
+VACUOUSLY with a broken `Mono.annoHash` or a broken `Mono.annoKeyEq`, both of
+which compile cleanly when wrong.
+-}
 annoAt : Int -> LambdaSetAnno
 annoAt seed =
-    case modBy 4 seed of
+    case modBy 5 seed of
         0 ->
             LTop
 
@@ -561,6 +586,9 @@ annoAt seed =
 
         2 ->
             LSet [ 7 ]
+
+        3 ->
+            LVar (modBy 3 seed)
 
         _ ->
             LSet [ 1, 2, 3 ]
@@ -665,6 +693,9 @@ referenceHelper annoSensitive work acc =
                                 case anno of
                                     LTop ->
                                         "A("
+
+                                    LVar n ->
+                                        "Av" ++ String.fromInt n ++ "("
 
                                     LSet members ->
                                         "A[" ++ String.join "," (List.map String.fromInt members) ++ "]("

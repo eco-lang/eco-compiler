@@ -269,7 +269,7 @@ display qualified type names.
 canToDoc : L.Localizer -> Context -> Can.Type Name -> D.Doc
 canToDoc localizer context tipe =
     case tipe of
-        Can.TLambda arg1 result ->
+        Can.TLambda _ arg1 result ->
             let
                 ( arg2, rest ) =
                     collectArgs result
@@ -303,7 +303,7 @@ canFieldToDoc localizer ( name, tipe ) =
 collectArgs : Can.Type Name -> ( Can.Type Name, List (Can.Type Name) )
 collectArgs tipe =
     case tipe of
-        Can.TLambda a rest ->
+        Can.TLambda _ a rest ->
             let
                 ( b, cs ) =
                     collectArgs rest

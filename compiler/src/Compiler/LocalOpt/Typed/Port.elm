@@ -39,7 +39,7 @@ toEncoder tipe =
         Can.TAlias _ _ args alias ->
             toEncoder (Type.dealias args alias)
 
-        Can.TLambda _ _ ->
+        Can.TLambda _ _ _ ->
             crash "toEncoder: function"
 
         Can.TVar _ ->
@@ -51,7 +51,7 @@ toEncoder tipe =
                     (\null ->
                         let
                             funcType =
-                                Can.TLambda Can.TUnit (Can.TType ModuleName.jsonEncode "Value" [])
+                                Can.tLambda Can.TUnit (Can.TType ModuleName.jsonEncode "Value" [])
                         in
                         TOpt.Function Nothing [ ( Name.dollar, Can.TUnit ) ] null { tipe = funcType, tvar = Nothing }
                     )
@@ -75,7 +75,7 @@ toEncoder tipe =
                         encode "string"
 
                     else if name == Name.value then
-                        Names.registerGlobal A.zero ModuleName.basics Name.identity_ (Can.TLambda tipe tipe) Nothing
+                        Names.registerGlobal A.zero ModuleName.basics Name.identity_ (Can.tLambda tipe tipe) Nothing
 
                     else if name == Name.bytes then
                         encodeBytes
@@ -133,7 +133,7 @@ toEncoder tipe =
                                             Can.TType ModuleName.list "List" [ Can.TTuple (Can.TType ModuleName.basics "String" []) valueType [] ]
 
                                         funcType =
-                                            Can.TLambda tipe valueType
+                                            Can.tLambda tipe valueType
                                     in
                                     Names.registerFieldList (Dict.keys fields)
                                         (TOpt.Function Nothing [ ( Name.dollar, tipe ) ]
@@ -168,7 +168,7 @@ encodeMaybe tipe =
                                     (\destruct ->
                                         let
                                             funcType =
-                                                Can.TLambda maybeType valueType
+                                                Can.tLambda maybeType valueType
                                         in
                                         TOpt.Function Nothing [ ( Name.dollar, maybeType ) ]
                                             (TOpt.Call A.zero
@@ -197,7 +197,7 @@ encodeList tipe =
                 toEncoder tipe
                     |> Names.map
                         (\encoder ->
-                            TOpt.Call A.zero list [ encoder ] { tipe = Can.TLambda (Can.TType ModuleName.list "List" [ tipe ]) valueType, tvar = Nothing }
+                            TOpt.Call A.zero list [ encoder ] { tipe = Can.tLambda (Can.TType ModuleName.list "List" [ tipe ]) valueType, tvar = Nothing }
                         )
             )
 
@@ -214,7 +214,7 @@ encodeArray tipe =
                 toEncoder tipe
                     |> Names.map
                         (\encoder ->
-                            TOpt.Call A.zero array [ encoder ] { tipe = Can.TLambda (Can.TType ModuleName.array "Array" [ tipe ]) valueType, tvar = Nothing }
+                            TOpt.Call A.zero array [ encoder ] { tipe = Can.tLambda (Can.TType ModuleName.array "Array" [ tipe ]) valueType, tvar = Nothing }
                         )
             )
 
@@ -261,7 +261,7 @@ encodeTuple a b cs =
     encode "list"
         |> Names.andThen
             (\list ->
-                Names.registerGlobal A.zero ModuleName.basics Name.identity_ (Can.TLambda listValueType listValueType) Nothing
+                Names.registerGlobal A.zero ModuleName.basics Name.identity_ (Can.tLambda listValueType listValueType) Nothing
                     |> Names.andThen
                         (\identity ->
                             encodeArg "a" a
@@ -288,7 +288,7 @@ encodeTuple a b cs =
                                                             (\args ->
                                                                 let
                                                                     funcType =
-                                                                        Can.TLambda tupleType valueType
+                                                                        Can.tLambda tupleType valueType
                                                                 in
                                                                 TOpt.Function Nothing [ ( Name.dollar, tupleType ) ]
                                                                     (let_ "a"
@@ -340,7 +340,7 @@ toFlagsDecoder tipe =
 toDecoder : Can.Type Name -> Names.Tracker (TOpt.Expr Name)
 toDecoder tipe =
     case tipe of
-        Can.TLambda _ _ ->
+        Can.TLambda _ _ _ ->
             crash "functions should not be allowed through input ports"
 
         Can.TVar _ ->
@@ -410,7 +410,7 @@ decodeMaybe tipe =
     Names.registerGlobal A.zero ModuleName.maybe "Nothing" maybeType Nothing
         |> Names.andThen
             (\nothing ->
-                Names.registerGlobal A.zero ModuleName.maybe "Just" (Can.TLambda tipe maybeType) Nothing
+                Names.registerGlobal A.zero ModuleName.maybe "Just" (Can.tLambda tipe maybeType) Nothing
                     |> Names.andThen
                         (\just ->
                             decode "oneOf"
@@ -551,7 +551,7 @@ indexAndThen i tipe decoder =
                                     (\typeDecoder ->
                                         let
                                             funcType =
-                                                Can.TLambda tipe decoderResultType
+                                                Can.tLambda tipe decoderResultType
 
                                             subDecoderType =
                                                 Can.TType ModuleName.jsonDecode "Decoder" [ tipe ]
@@ -610,7 +610,7 @@ fieldAndThen decoder ( key, Can.FieldType _ tipe ) =
                                     (\typeDecoder ->
                                         let
                                             funcType =
-                                                Can.TLambda tipe decoderResultType
+                                                Can.tLambda tipe decoderResultType
 
                                             subDecoderType =
                                                 Can.TType ModuleName.jsonDecode "Decoder" [ tipe ]

@@ -66,7 +66,7 @@ type alias Annotations =
 -}
 buildFunctionType : List (Can.Type Name) -> Can.Type Name -> Can.Type Name
 buildFunctionType argTypes resultType =
-    List.foldr Can.TLambda resultType argTypes
+    List.foldr Can.tLambda resultType argTypes
 
 
 {-| Peel n argument types from a function type to get the result type.
@@ -78,7 +78,7 @@ peelFunctionType n tipe =
 
     else
         case tipe of
-            Can.TLambda _ result ->
+            Can.TLambda _ _ result ->
                 peelFunctionType (n - 1) result
 
             _ ->

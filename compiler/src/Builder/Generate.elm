@@ -1221,9 +1221,42 @@ abiCensusLines abi =
                 |> List.sortBy (\( _, c ) -> negate c)
                 |> List.map (\( k, c ) -> k ++ "=" ++ String.fromInt c)
                 |> String.join " "
+
+        -- Phase 1a/3: the "still a variable" half of the old undifferentiated
+        -- ⊤ site population (plans/lss-unknown-elimination.md §2.5).
+        unknownShapes =
+            Dict.toList abi.varSiteShapes
+                |> List.sortBy (\( _, c ) -> negate c)
+                |> List.map (\( k, c ) -> k ++ "=" ++ String.fromInt c)
+                |> String.join " "
+
+        -- LSS_026 §11: blocked members with their blocker instance — the
+        -- adopting synthetic closure's symbol names the wrapped def.
+        blockedLine =
+            abi.blockedMembers
+                |> List.map
+                    (\( mid, maybeBlocker ) ->
+                        String.fromInt mid
+                            ++ ":"
+                            ++ (case maybeBlocker of
+                                    Just lid ->
+                                        lambdaSym lid
+
+                                    Nothing ->
+                                        "(mu-tie)"
+                               )
+                    )
+                |> String.join " "
     in
     String.join "\n"
         ([ "lss census declineByMember top20 (member:count:repSyms): " ++ declineTop
+               , "lss census blockedMembers (member:blockerSym): "
+                    ++ (if String.isEmpty blockedLine then
+                            "(none)"
+
+                        else
+                            blockedLine
+                       )
                , "lss census multiSetSites |set|->sites: "
                     ++ (if String.isEmpty multiHist then
                             "(none)"
@@ -1244,6 +1277,13 @@ abiCensusLines abi =
 
                         else
                             shapes
+                       )
+               , "lss census varSiteShapes (LVar callee shapes): "
+                    ++ (if String.isEmpty unknownShapes then
+                            "(none)"
+
+                        else
+                            unknownShapes
                        )
                ]
         )

@@ -4,6 +4,7 @@ module Compiler.MonoSolver.Store exposing
     , loadTypeIsolated
     , loadTypeWithArrows
     , loadTypeIsolatedWithArrows
+    , LoadCtx, loadTypeC, testLoadCtx
     , arrowParts
     , arrowSetSlot
     , unifySlotWithSet
@@ -15,6 +16,7 @@ module Compiler.MonoSolver.Store exposing
     , monoTypeToVar
     , unifyStep
     , zonkToMono
+    , rezonkSettled
     )
 
 {-| The solver store operations: load a canonical type into the union-find,
@@ -33,6 +35,7 @@ a concrete type resolves the whole class. This is why loading `add`'s
 defaults numbers; the shared Prune close does that (MONO_028).
 
 @docs loadType, monoTypeToVar, unifyStep, zonkToMono
+@docs rezonkSettled
 
 -}
 
@@ -73,7 +76,144 @@ type alias LoadCtx =
     , lssOn : Bool -- mint FunL set slots (lambda-set specialization)
     , arrowSlots : List IO.Variable -- minted set slots, REVERSED minting order
     , slotsMinted : Int -- Phase 3 rider: unconstrained slot mints this load (sizes Phase 5's dead-slot population)
+    , arrowIdOn : Bool -- Phase 2a: consult/record `arrowMemo` (lss.arrowIdentity). OFF -> mint a fresh slot per arrow POSITION, exactly as before.
+    , arrowMemo : Dict.Dict Int IO.Variable -- Phase 2a: `Id.toComparable arrowId` -> that arrow's SET SLOT Point. SLOT ONLY, never the FunL node — see `loadTypeC`.
+    , censusOn : Bool -- multi-set census (M3): mirror of `env.lss.report`. Gates `arrowOfSlot` ONLY; nothing else reads it.
+    , arrowMintOn : Bool -- Phase 2a/2b: are ArrowIds meaningful at all? (`lss.enabled` — ids are minted unconditionally by AssignMVarIds, so this is really "is the census worth keeping".)
+    , arrowOfSlot : Dict.Dict Int Int -- multi-set census (M3): set-slot pointKey -> ArrowId. Report-gated; recorded in BOTH arrowIdentity arms.
     }
+
+
+{-| A `LoadCtx` over a fresh store, for tests that drive `loadTypeC` directly
+(the `LssDirectedFlowTest` precedent: store-level semantics are pinned at the
+store level rather than through a pipeline fixture). `sharedArrowMemo` selects
+the seed the four `Step`-typed entry points differ on — pass an item's memo to
+model `loadType`/`loadTypeWithArrows`, `Dict.empty` to model the two isolated
+entries.
+-}
+testLoadCtx : Bool -> Bool -> Dict.Dict Int IO.Variable -> IO.State -> LoadCtx
+testLoadCtx lssOn arrowIdOn sharedArrowMemo store =
+    { store = store
+    , memo = Dict.empty
+    , revMemo = Array.empty
+    , lssOn = lssOn
+    , arrowSlots = []
+    , slotsMinted = 0
+    , arrowIdOn = arrowIdOn
+    , arrowMemo = sharedArrowMemo
+    , censusOn = False
+    , arrowMintOn = lssOn
+    , arrowOfSlot = Dict.empty
+    }
+
+
+{-| The SHARED-memo load seed: the item's var memo AND the item's arrow memo
+(Phase 2a §4.4).
+-}
+sharedLoadCtx : Engine.S -> LoadCtx
+sharedLoadCtx s =
+    { store = s.store
+    , memo = s.memo
+    , revMemo = s.revMemo
+    , lssOn = s.env.lss.enabled
+    , arrowSlots = []
+    , slotsMinted = 0
+    , arrowIdOn = s.env.lss.arrowIdentity
+    , arrowMemo = s.itemAux.arrowMemo
+    , censusOn = s.env.lss.report
+    , arrowMintOn = s.env.lss.enabled
+    , arrowOfSlot = s.itemAux.arrowOfSlot
+    }
+
+
+{-| The ISOLATED load seed — a fresh per-call-site instantiation.
+
+**H1, the collapse hazard (Phase 2a §4.4): `arrowMemo` is `Dict.empty` here,
+and the result is NEVER written back.** `LssInfer.sigSourceTypeFor` and the
+call path read the SAME annotation value out of `s.env.annotations`, so
+threading the item's arrow memo into an isolated load would make every call
+site of an annotated `f` unify into ONE lambda set — monomorphic set analysis,
+maximal imprecision, and `applyFacts` degenerating to self-unification. The
+asymmetry mirrors the one these entries already have for `memo`.
+
+-}
+isolatedLoadCtx : Engine.S -> LoadCtx
+isolatedLoadCtx s =
+    { store = s.store
+    , memo = Dict.empty
+    , revMemo = s.revMemo
+    , lssOn = s.env.lss.enabled
+    , arrowSlots = []
+    , slotsMinted = 0
+    , arrowIdOn = s.env.lss.arrowIdentity
+    , arrowMemo = Dict.empty
+    , censusOn = s.env.lss.report
+
+    -- The census map is NOT isolated: an isolated load mints slots in the
+    -- ITEM's store, and the census only ever reads it to name a slot. Sharing
+    -- it costs nothing and keeps per-call-site instantiations attributable to
+    -- their arrow — which is exactly the population the census exists to see.
+    , arrowMintOn = s.env.lss.enabled
+    , arrowOfSlot = s.itemAux.arrowOfSlot
+    }
+
+
+{-| Write a SHARED load back: store, memos, the mint counter, and the item's
+arrow memo. Flag-off this is byte-for-byte the previous single record update.
+-}
+writeBackShared : LoadCtx -> Engine.S -> Engine.S
+writeBackShared c s =
+    let
+        s1 =
+            if c.slotsMinted == 0 then
+                { s | store = c.store, memo = c.memo, revMemo = c.revMemo }
+
+            else
+                let
+                    stats =
+                        s.lssStats
+                in
+                { s | store = c.store, memo = c.memo, revMemo = c.revMemo, lssStats = { stats | slotsMinted = stats.slotsMinted + c.slotsMinted } }
+    in
+    if c.arrowIdOn || c.censusOn then
+        let
+            aux =
+                s1.itemAux
+        in
+        { s1 | itemAux = { aux | arrowMemo = c.arrowMemo, arrowOfSlot = c.arrowOfSlot } }
+
+    else
+        s1
+
+
+{-| Write an ISOLATED load back: store, revMemo, the mint counter — and
+NEITHER memo (§4.4's H1).
+-}
+writeBackIsolated : LoadCtx -> Engine.S -> Engine.S
+writeBackIsolated c s =
+    let
+        s1 =
+            if c.slotsMinted == 0 then
+                { s | store = c.store, revMemo = c.revMemo }
+
+            else
+                let
+                    stats =
+                        s.lssStats
+                in
+                { s | store = c.store, revMemo = c.revMemo, lssStats = { stats | slotsMinted = stats.slotsMinted + c.slotsMinted } }
+    in
+    -- NEITHER memo goes out (§4.4's H1) — but the census map does, so an
+    -- isolated instantiation's slots can still be named by their arrow.
+    if c.censusOn then
+        let
+            aux =
+                s1.itemAux
+        in
+        { s1 | itemAux = { aux | arrowOfSlot = c.arrowOfSlot } }
+
+    else
+        s1
 
 
 loadType : Can.Type TypeIds.MVarId -> Step IO.Variable
@@ -81,20 +221,9 @@ loadType canType =
     \s ->
         let
             ( v, c ) =
-                loadTypeC s.env.superStatic canType { store = s.store, memo = s.memo, revMemo = s.revMemo, lssOn = s.env.lss.enabled, arrowSlots = [], slotsMinted = 0 }
+                loadTypeC s.env.superStatic canType (sharedLoadCtx s)
         in
-        Ok
-            ( v
-            , if c.slotsMinted == 0 then
-                { s | store = c.store, memo = c.memo, revMemo = c.revMemo }
-
-              else
-                let
-                    stats =
-                        s.lssStats
-                in
-                { s | store = c.store, memo = c.memo, revMemo = c.revMemo, lssStats = { stats | slotsMinted = stats.slotsMinted + c.slotsMinted } }
-            )
+        Ok ( v, writeBackShared c s )
 
 
 {-| `loadType` additionally returning the minted arrow set slots in minting
@@ -108,20 +237,9 @@ loadTypeWithArrows canType =
     \s ->
         let
             ( v, c ) =
-                loadTypeC s.env.superStatic canType { store = s.store, memo = s.memo, revMemo = s.revMemo, lssOn = s.env.lss.enabled, arrowSlots = [], slotsMinted = 0 }
+                loadTypeC s.env.superStatic canType (sharedLoadCtx s)
         in
-        Ok
-            ( ( v, Array.fromList (List.reverse c.arrowSlots) )
-            , if c.slotsMinted == 0 then
-                { s | store = c.store, memo = c.memo, revMemo = c.revMemo }
-
-              else
-                let
-                    stats =
-                        s.lssStats
-                in
-                { s | store = c.store, memo = c.memo, revMemo = c.revMemo, lssStats = { stats | slotsMinted = stats.slotsMinted + c.slotsMinted } }
-            )
+        Ok ( ( v, Array.fromList (List.reverse c.arrowSlots) ), writeBackShared c s )
 
 
 {-| `loadTypeIsolated` additionally returning the minted arrow set slots in
@@ -133,20 +251,9 @@ loadTypeIsolatedWithArrows canType =
     \s ->
         let
             ( v, c ) =
-                loadTypeC s.env.superStatic canType { store = s.store, memo = Dict.empty, revMemo = s.revMemo, lssOn = s.env.lss.enabled, arrowSlots = [], slotsMinted = 0 }
+                loadTypeC s.env.superStatic canType (isolatedLoadCtx s)
         in
-        Ok
-            ( ( v, Array.fromList (List.reverse c.arrowSlots) )
-            , if c.slotsMinted == 0 then
-                { s | store = c.store, revMemo = c.revMemo }
-
-              else
-                let
-                    stats =
-                        s.lssStats
-                in
-                { s | store = c.store, revMemo = c.revMemo, lssStats = { stats | slotsMinted = stats.slotsMinted + c.slotsMinted } }
-            )
+        Ok ( ( v, Array.fromList (List.reverse c.arrowSlots) ), writeBackIsolated c s )
 
 
 {-| D8: load a scheme with an ISOLATED (empty) memo so its vars do not share
@@ -161,20 +268,9 @@ loadTypeIsolated canType =
     \s ->
         let
             ( v, c ) =
-                loadTypeC s.env.superStatic canType { store = s.store, memo = Dict.empty, revMemo = s.revMemo, lssOn = s.env.lss.enabled, arrowSlots = [], slotsMinted = 0 }
+                loadTypeC s.env.superStatic canType (isolatedLoadCtx s)
         in
-        Ok
-            ( v
-            , if c.slotsMinted == 0 then
-                { s | store = c.store, revMemo = c.revMemo }
-
-              else
-                let
-                    stats =
-                        s.lssStats
-                in
-                { s | store = c.store, revMemo = c.revMemo, lssStats = { stats | slotsMinted = stats.slotsMinted + c.slotsMinted } }
-            )
+        Ok ( v, writeBackIsolated c s )
 
 
 loadTypeC : Dict.Dict Int IO.SuperType -> Can.Type TypeIds.MVarId -> LoadCtx -> ( IO.Variable, LoadCtx )
@@ -183,7 +279,7 @@ loadTypeC superStatic canType c0 =
         Can.TVar mvarId ->
             loadVarC superStatic mvarId c0
 
-        Can.TLambda from to ->
+        Can.TLambda arrowSlot from to ->
             let
                 ( pFrom, c1 ) =
                     loadTypeC superStatic from c0
@@ -193,12 +289,102 @@ loadTypeC superStatic canType c0 =
             in
             if c2.lssOn then
                 -- LSS: slot every arrow. The unconstrained FlexVar slot reads
-                -- back LTop at zonk; ordinals = minting order (LSS_006).
+                -- back as UNKNOWN at zonk; ordinals = arrow POSITION in
+                -- `arrowSlots` (LSS_006).
+                --
+                -- Phase 2a (`plans/lss-unknown-elimination.md` §4.2/§4.3): with
+                -- `arrowIdentity` on, a repeated load of the SAME stamped type
+                -- object reuses the slot the first load minted, so lambda sets
+                -- travel with the type instead of fragmenting per load.
+                --
+                -- MEMOISE THE SET SLOT ONLY, NEVER THE `FunL` NODE. The
+                -- structure Point must still be minted per load: `from`/`to`
+                -- can resolve to different Points on different loads (leaf-memo
+                -- differences, alias binding in the `TAlias Holey` arm below),
+                -- and sharing the node would union unrelated argument types.
+                --
+                -- The hit/miss contract, all four rows load-bearing:
+                --
+                --   event               arrowSlots  slotsMinted  arrowMemo
+                --   miss (id on)        push        +1           insert
+                --   HIT  (id on)        push        unchanged    unchanged
+                --   NoArrow (id on)   push        +1           NEVER insert
+                --   id off              push        +1           untouched
+                --
+                -- A hit that SKIPPED `arrowSlots` would shorten the ordinal
+                -- array and `LssInfer.applyFacts` poisons the whole
+                -- instantiation on a length mismatch — SILENTLY, because
+                -- `censusLenGuard` is report-gated. A hit that BUMPED
+                -- `slotsMinted` would corrupt the mint counter feeding the
+                -- dead-slot census.
+                --
+                -- NEW AND EXPECTED: the ordinal array can now hold the SAME
+                -- Point twice. `applyFactsGo`/`repOrdinal` cope (repOrdinal
+                -- already reports the smallest UF-equivalent ordinal), but
+                -- `LssSignature.trivial` goes false more often, reducing the
+                -- `trivial` short-circuit rate. Expect a small COMPILE-TIME
+                -- cost and do not misread it as a precision change.
                 let
-                    ( pSet, c3 ) =
-                        freshVarC (IO.FlexVar Nothing) c2
+                    -- Phase 2a/2b: the arrow's global identity, or 0 when the
+                    -- slot is unstamped. `SolverRoot` cannot appear here — it
+                    -- is resolved to `Arrow` by `AssignMVarIds`, and this is a
+                    -- `Can.Type MVarId`.
+                    akey =
+                        case arrowSlot of
+                            TypeIds.Arrow aid ->
+                                Id.toComparable aid + 1
+
+                            _ ->
+                                0
+
+                    -- Multi-set census (M3): name this slot by its ARROW, so
+                    -- the zonk can report per-POSITION rather than
+                    -- per-readback (plan §2.5.5). Report-gated, and
+                    -- `NoArrow` (0) is never recorded — it names nothing.
+                    -- Recorded in BOTH `arrowIdentity` arms: the ArrowId comes
+                    -- from `AssignMVarIds` and is flag-independent, which is
+                    -- what makes it a valid cross-arm join key.
+                    noteArrow pSet cIn =
+                        if cIn.censusOn && akey /= 0 then
+                            { cIn | arrowOfSlot = Dict.insert (Engine.pointKey pSet) akey cIn.arrowOfSlot }
+
+                        else
+                            cIn
+
+                    mintFresh cIn =
+                        let
+                            ( pSet, cOut ) =
+                                freshVarC (IO.FlexVar Nothing) cIn
+                        in
+                        structC (IO.FunL pFrom pTo pSet)
+                            (noteArrow pSet { cOut | arrowSlots = pSet :: cOut.arrowSlots, slotsMinted = cOut.slotsMinted + 1 })
                 in
-                structC (IO.FunL pFrom pTo pSet) { c3 | arrowSlots = pSet :: c3.arrowSlots, slotsMinted = c3.slotsMinted + 1 }
+                if not c2.arrowIdOn || akey == 0 then
+                    -- Flag off, or `NoArrow` (an arrow built outside
+                    -- `AssignMVarIds`): ALWAYS miss, NEVER record in
+                    -- `arrowMemo` — otherwise every unstamped arrow in a type
+                    -- collapses into one slot.
+                    mintFresh c2
+
+                else
+                    case Dict.get akey c2.arrowMemo of
+                        Just pSet ->
+                            structC (IO.FunL pFrom pTo pSet)
+                                (noteArrow pSet { c2 | arrowSlots = pSet :: c2.arrowSlots })
+
+                        Nothing ->
+                            let
+                                ( pSet, c3 ) =
+                                    freshVarC (IO.FlexVar Nothing) c2
+                            in
+                            structC (IO.FunL pFrom pTo pSet)
+                                (noteArrow pSet
+                                    { c3
+                                        | arrowSlots = pSet :: c3.arrowSlots
+                                        , slotsMinted = c3.slotsMinted + 1
+                                        , arrowMemo = Dict.insert akey pSet c3.arrowMemo
+                                    }
+                                )
 
             else
                 structC (IO.Fun1 pFrom pTo) c2
@@ -435,6 +621,66 @@ normalizePrimHome canonical name =
 -- ====== ENCODE: MonoType -> concrete store Point ======
 
 
+{-| PHASE 3 pre-pass: mint ONE store slot per distinct set VARIABLE in a type.
+
+`monoTypeToVarC` then resolves every `LVar n` to that slot, which is what
+carries the paper's α across the annotation round trip: two arrows the store
+unified zonk to the same `n` (`varNumberFor`), so re-encoding gives them one
+slot again.
+
+A PRE-PASS rather than threaded state, deliberately: the encoder threads
+`IO.State` only, and a read-only map keeps it that way — no state-threading
+change at any of its call sites.
+
+-}
+mintVarSlots : Bool -> Mono.MonoType -> IO.State -> ( Dict.Dict Int IO.Variable, IO.State )
+mintVarSlots lssOn monoType st =
+    if not lssOn then
+        ( Dict.empty, st )
+
+    else
+        collectVarSlots monoType ( Dict.empty, st )
+
+
+collectVarSlots : Mono.MonoType -> ( Dict.Dict Int IO.Variable, IO.State ) -> ( Dict.Dict Int IO.Variable, IO.State )
+collectVarSlots monoType soFar =
+    case monoType of
+        Mono.MFunction _ anno args result ->
+            let
+                afterAnno =
+                    case ( anno, soFar ) of
+                        ( Mono.LVar n, ( acc, st ) ) ->
+                            if Dict.member n acc then
+                                soFar
+
+                            else
+                                let
+                                    ( pSet, st1 ) =
+                                        freshVarS (IO.FlexVar Nothing) st
+                                in
+                                ( Dict.insert n pSet acc, st1 )
+
+                        _ ->
+                            soFar
+            in
+            List.foldl collectVarSlots (collectVarSlots result afterAnno) args
+
+        Mono.MList _ inner ->
+            collectVarSlots inner soFar
+
+        Mono.MTuple _ elems ->
+            List.foldl collectVarSlots soFar elems
+
+        Mono.MRecord _ fields ->
+            Dict.foldl (\_ t a -> collectVarSlots t a) soFar fields
+
+        Mono.MCustom _ _ _ args ->
+            List.foldl collectVarSlots soFar args
+
+        _ ->
+            soFar
+
+
 {-| Encode a demanded MonoType as concrete store structure, the dual of the
 `zonkToMono` classification. M6.0: threads only the store (`monoTypeToVar` mints
 structure Points but touches neither memo nor revMemo), writing `S` back once
@@ -444,8 +690,11 @@ monoTypeToVar : Mono.MonoType -> Step IO.Variable
 monoTypeToVar monoType =
     \s ->
         let
+            ( varSlots, storeWithVars ) =
+                mintVarSlots s.env.lss.enabled monoType s.store
+
             ( v, store1 ) =
-                monoTypeToVarC s.env.lss.enabled monoType s.store
+                monoTypeToVarC s.env.lss.enabled varSlots monoType storeWithVars
         in
         Ok ( v, { s | store = store1 } )
 
@@ -464,8 +713,8 @@ structS flat st =
     freshVarS (IO.Structure flat) st
 
 
-monoTypeToVarC : Bool -> Mono.MonoType -> IO.State -> ( IO.Variable, IO.State )
-monoTypeToVarC lssOn monoType st =
+monoTypeToVarC : Bool -> Dict.Dict Int IO.Variable -> Mono.MonoType -> IO.State -> ( IO.Variable, IO.State )
+monoTypeToVarC lssOn varSlots monoType st =
     case monoType of
         Mono.MInt ->
             structS (IO.App1 ModuleName.basics "Int" []) st
@@ -488,7 +737,7 @@ monoTypeToVarC lssOn monoType st =
         Mono.MList _ inner ->
             let
                 ( p, st1 ) =
-                    monoTypeToVarC lssOn inner st
+                    monoTypeToVarC lssOn varSlots inner st
             in
             structS (IO.App1 ModuleName.list "List" [ p ]) st1
 
@@ -497,13 +746,13 @@ monoTypeToVarC lssOn monoType st =
                 a :: b :: rest ->
                     let
                         ( pa, st1 ) =
-                            monoTypeToVarC lssOn a st
+                            monoTypeToVarC lssOn varSlots a st
 
                         ( pb, st2 ) =
-                            monoTypeToVarC lssOn b st1
+                            monoTypeToVarC lssOn varSlots b st1
 
                         ( pRest, st3 ) =
-                            monoListToVarC lssOn rest st2
+                            monoListToVarC lssOn varSlots rest st2
                     in
                     structS (IO.Tuple1 pa pb pRest) st3
 
@@ -514,7 +763,7 @@ monoTypeToVarC lssOn monoType st =
         Mono.MRecord _ fields ->
             let
                 ( pFields, st1 ) =
-                    recordFieldPointsC lssOn (Dict.toList fields) st
+                    recordFieldPointsC lssOn varSlots (Dict.toList fields) st
 
                 ( ext, st2 ) =
                     structS IO.EmptyRecord1 st1
@@ -524,7 +773,7 @@ monoTypeToVarC lssOn monoType st =
         Mono.MCustom _ home name args ->
             let
                 ( pArgs, st1 ) =
-                    monoListToVarC lssOn args st
+                    monoListToVarC lssOn varSlots args st
             in
             structS (IO.App1 home name pArgs) st1
 
@@ -533,33 +782,88 @@ monoTypeToVarC lssOn monoType st =
             -- Under lss, fold into FunL whose slots carry the annotation's
             -- content. Deliberate asymmetry with zonkSetSlot: a DEMAND's LTop
             -- encodes as top=True (poison — "some caller was widened, this
-            -- arrow must stay dynamic"), while an unconstrained slot merely
-            -- READS BACK as LTop without ever having poisoned anything.
+            -- arrow must stay dynamic"), while an UNKNOWN annotation encodes
+            -- as an untouched slot, exactly as `loadTypeC` mints one.
             let
                 ( pResult, st1 ) =
-                    monoTypeToVarC lssOn result st
+                    monoTypeToVarC lssOn varSlots result st
             in
             if lssOn then
                 let
-                    setContent =
+                    -- The store CONTENT every set slot of this arrow spine is
+                    -- minted with.
+                    --
+                    -- PHASE 1b (plans/lss-unknown-elimination.md §3.4): this
+                    -- site used to re-encode an unknown annotation as an
+                    -- explicit `LsTop`, and that was HOP 3 of the laundering
+                    -- chain in §0.1 — an unconstrained slot reads back as
+                    -- unknown, the all-⊤ demand keys onto one shared key per
+                    -- type shape, and the re-encode turns "never written" into
+                    -- terminal, absorbing poison that the body then inherits
+                    -- and re-exports through its own call demands. It bypassed
+                    -- `unifySlotWithSetC` entirely, which is why
+                    -- `setWriteTopJoin` read 2 against 152,890 `causePoison`
+                    -- readbacks.
+                    --
+                    -- Minting a bare `FlexVar` keeps the slot RECOVERABLE: a
+                    -- later LSS_010 join or a retranslation can still fill it,
+                    -- where poison is terminal. LSS_007 holds unchanged — a
+                    -- `FunL` slot holding a bare `FlexVar` is already the
+                    -- normal case (`loadTypeC` mints exactly that) — but this
+                    -- is the first time the DEMAND path produces one.
+                    --
+                    -- `Mono.unionAnno`/`annoCovers` flip to the height-2
+                    -- lattice in the same commit as this line, and must never
+                    -- be separated from it in either order: once the two ⊤
+                    -- labels carry different ENCODINGS, keep-first would let a
+                    -- stored `LUnknown` absorb a genuinely-poisoned `LTop`
+                    -- demand and seed a bare flex slot where a caller demanded
+                    -- poison.
+                    slotContent =
                         case anno of
                             Mono.LTop ->
-                                IO.LambdaSet1 IO.LsTop
+                                IO.Structure (IO.LambdaSet1 IO.LsTop)
+
+                            Mono.LVar _ ->
+                                -- Fallback only: reached when the pre-pass
+                                -- minted no slot for this variable. Fresh flex
+                                -- loses SHARING, never soundness.
+                                IO.FlexVar Nothing
 
                             Mono.LSet members ->
                                 -- Phase 2: the LSet list IS the store
                                 -- representation — reused by pointer, no
                                 -- Dict.fromList conversion.
-                                IO.LambdaSet1 (IO.LsMembers members)
+                                IO.Structure (IO.LambdaSet1 (IO.LsMembers members))
+
+                    -- PHASE 3 (plans/lss-set-variable.md): a set VARIABLE
+                    -- resolves to the ONE slot `mintVarSlots` made for it, so
+                    -- every arrow carrying `LVar n` in this type shares a slot.
+                    -- THAT is what makes the annotation round trip PRESERVE a
+                    -- store unification instead of destroying it — Phase 1's
+                    -- anonymous `LUnknown` minted a fresh slot per arrow and
+                    -- lost the sharing every single time.
+                    mintSlot stA =
+                        case anno of
+                            Mono.LVar n ->
+                                case Dict.get n varSlots of
+                                    Just pSet ->
+                                        ( pSet, stA )
+
+                                    Nothing ->
+                                        freshVarS slotContent stA
+
+                            _ ->
+                                freshVarS slotContent stA
                 in
                 List.foldl
                     (\argType ( accPoint, stA ) ->
                         let
                             ( pa, stA1 ) =
-                                monoTypeToVarC lssOn argType stA
+                                monoTypeToVarC lssOn varSlots argType stA
 
                             ( pSet, stA2 ) =
-                                freshVarS (IO.Structure setContent) stA1
+                                mintSlot stA1
                         in
                         structS (IO.FunL pa accPoint pSet) stA2
                     )
@@ -571,7 +875,7 @@ monoTypeToVarC lssOn monoType st =
                     (\argType ( accPoint, stA ) ->
                         let
                             ( pa, stA1 ) =
-                                monoTypeToVarC lssOn argType stA
+                                monoTypeToVarC lssOn varSlots argType stA
                         in
                         structS (IO.Fun1 pa accPoint) stA1
                     )
@@ -585,8 +889,8 @@ monoTypeToVarC lssOn monoType st =
             freshVarS (IO.FlexVar Nothing) st
 
 
-monoListToVarC : Bool -> List Mono.MonoType -> IO.State -> ( List IO.Variable, IO.State )
-monoListToVarC lssOn types st =
+monoListToVarC : Bool -> Dict.Dict Int IO.Variable -> List Mono.MonoType -> IO.State -> ( List IO.Variable, IO.State )
+monoListToVarC lssOn varSlots types st =
     case types of
         [] ->
             ( [], st )
@@ -594,21 +898,21 @@ monoListToVarC lssOn types st =
         t :: rest ->
             let
                 ( p, st1 ) =
-                    monoTypeToVarC lssOn t st
+                    monoTypeToVarC lssOn varSlots t st
 
                 ( ps, st2 ) =
-                    monoListToVarC lssOn rest st1
+                    monoListToVarC lssOn varSlots rest st1
             in
             ( p :: ps, st2 )
 
 
-recordFieldPointsC : Bool -> List ( String, Mono.MonoType ) -> IO.State -> ( Dict.Dict String IO.Variable, IO.State )
-recordFieldPointsC lssOn fields st =
+recordFieldPointsC : Bool -> Dict.Dict Int IO.Variable -> List ( String, Mono.MonoType ) -> IO.State -> ( Dict.Dict String IO.Variable, IO.State )
+recordFieldPointsC lssOn varSlots fields st =
     List.foldl
         (\( k, t ) ( acc, stA ) ->
             let
                 ( pt, stA1 ) =
-                    monoTypeToVarC lssOn t stA
+                    monoTypeToVarC lssOn varSlots t stA
             in
             ( Dict.insert k pt acc, stA1 )
         )
@@ -1164,6 +1468,19 @@ type alias ZonkCtx =
     , intern : Intern -- K6: hash-cons table, carried in from S and written back once by `zonkToMono`
     , memberTable : Engine.LssMemberTable -- LSS_019: carried in from S, written back once (zonk grounding interns ground member ids)
     , nextMemberId : Int -- ditto (grounding may allocate fresh member ids)
+    , arrowOf : Dict.Dict Int Int -- multi-set census (M3): set-slot pointKey -> ArrowId, carried in from `itemAux.arrowOfSlot`. READ-ONLY here. Empty unless `lss.report`.
+
+    -- PHASE 3 (plans/lss-set-variable.md): the canonical numbering of set
+    -- VARIABLES for the type currently being zonked. `pointKey (repr slot) ->
+    -- n`, allocated in walk order, RESET per `zonkToMono` call because the
+    -- numbering is scoped to one `MonoType`.
+    --
+    -- This is what gives the paper's α its identity across the annotation
+    -- round trip: two arrows the store UNIFIED share a repr, so they get the
+    -- SAME n, so `monoTypeToVarC` mints ONE slot for both when the annotation
+    -- is re-encoded. Phase 1's anonymous `LUnknown` lost exactly that.
+    , varOf : Dict.Dict Int Int
+    , nextVar : Int
     }
 
 
@@ -1209,7 +1526,98 @@ type alias LssZonkAcc =
     , groundStandalones : Bool
     , grounded : Int
     , groundingDeferred : Int
+
+    -- LSS_026(a) honest sources (plans/lss-gap2-callarg-transport.md §3.2):
+    -- members reached over a DANGLING (FlexVar) source resolve ⊤, never a
+    -- set. ESCALATED to unconditional 2026-08-23 — `honestSources` is seeded
+    -- True by `zonkToMono` and the field survives only so the store-level
+    -- pins (`LssHonestSourcesTest`) can assert BOTH directions of the rule.
+    -- The escalation trigger was a runtime witness, not the census: the
+    -- self-compile measures zero crossings (`mixed|sig` = `mixed|demand` =
+    -- 0), but `test/elm/src/LssMixedSigHonestyTest.elm` miscompiles at the
+    -- shipping default without the rule — a false `{g|incr}` singleton that
+    -- LSS_025's post-settle devirt then trusts. Plan §0.5's own criterion.
+    -- `mixedFlexGc` still classifies the crossings: a `gc` member grounds
+    -- (LSS_019) and is devirt-consumable, where a lambda id merely declines
+    -- (LSS_017).
+    , honestSources : Bool
+    , mixedFlex : Int
+    , mixedFlexGc : Int
+
+    -- LSS_026 zonk-cause census (plan §2.1 row "zc|"): WHY did each set
+    -- slot read back what it read? `censusOn` mirrors `env.lss.report`
+    -- (ZonkCtx has no `S`); all six counters stay 0 when it is off, so the
+    -- default path pays a Bool test per readback. The consumer attribution
+    -- happens at `foldZonkStats` (where `currentGlobal` is in scope) —
+    -- within one `zonkToMono` call every readback belongs to one consumer.
+    --   causeSet       LsMembers within cap  -> LSet (the win case)
+    --   causePoison    explicit LsTop        -> LTop (widened/kernel/demand-encoded)
+    --   causeFlex      FlexVar residual      -> LUnknown (nothing ever written — the GAP-2 class)
+    --   causeEdgeSet   LsFrom resolved to a set within cap
+    --   causeEdgeEmpty LsFrom resolved empty -> LUnknown
+    --   causeEdgeTop   LsFrom absorbed by a reachable ⊤ -> LTop
+    --   causeUnknown   the LUnknown total = causeFlex + causeEdgeEmpty
+    -- (over-cap reads of either arm are already `widenedBySize` — the
+    -- seventh cause, not duplicated here.)
+    --
+    -- Phase 1 (plans/lss-unknown-elimination.md §3.2) keeps the OLD counters
+    -- bumped alongside `causeUnknown` on purpose: the `zc|` rows stay joinable
+    -- against the pre-split baseline and against
+    -- plans/lss-gap2-callarg-transport.md. `causeUnknown` is a strict superset
+    -- for the §2.5 ledger. Drop the overlap only after Phase 2 lands.
+    --
+    -- SUB-HAZARD not to lose: `resolveSlotMembers` returns `Nothing` under
+    -- LSS_026(a)'s honest-∅ rule and lands on `causeEdgeTop`, where it is
+    -- indistinguishable from a real reachable-⊤ absorb. That IS a genuine
+    -- soundness widening so `LTop` is right — but it means the ledger's `top`
+    -- bucket silently contains the honest-∅ population. Split it with its own
+    -- counter if a phase's measurement comes out ambiguous.
+    , censusOn : Bool
+    , causeSet : Int
+    , causePoison : Int
+    , causeFlex : Int
+    , causeEdgeSet : Int
+    , causeEdgeEmpty : Int
+    , causeEdgeTop : Int
+    , causeUnknown : Int
+
+    -- Multi-set census (M3): ArrowId -> the members read back at that arrow,
+    -- for |set| >= 2 only. Report-gated (`censusOn`). Folded into
+    -- `lssStats.sigStats.multiSetsByArrow` at `foldZonkStats`.
+    , multiSets : Dict.Dict Int (List Int)
+
+    -- POST-SETTLE RE-ZONK (plans/lss-post-mono-architecture.md §3.2): the dual
+    -- of `multiSets` — ArrowId -> how many readbacks at that arrow came back a
+    -- VARIABLE. Report-gated, and (unlike `multiSets`) consumed ONLY by
+    -- `rezonkSettled`; `foldZonkStats` deliberately drops the in-flight copy,
+    -- because a mid-translation var says nothing — the question is which
+    -- arrows are still var once the item has finished writing.
+    , varArrows : Dict.Dict Int Int
+
+    -- The universe `varArrows` is scored against: every arrow that read back a
+    -- CONCRETE set, of ANY size. It has to be its own table rather than a
+    -- reuse of `multiSets`, which is gated at |set| >= 2 — an arrow resolved
+    -- to a SINGLETON somewhere else is still "known elsewhere", and scoring it
+    -- against the multi-set table alone would misfile it as unconstrained and
+    -- overstate the kernel-boundary ceiling.
+    , setArrows : Dict.Dict Int Int
     }
+
+
+{-| LSS_026 zonk-cause census: bump one cause counter, only under report.
+-}
+bumpCauseC : (LssZonkAcc -> LssZonkAcc) -> ZonkCtx -> ZonkCtx
+bumpCauseC f c =
+    case c.lss of
+        Just acc ->
+            if acc.censusOn then
+                { c | lss = Just (f acc) }
+
+            else
+                c
+
+        Nothing ->
+            c
 
 
 zonkToMono : IO.Variable -> Step Mono.MonoType
@@ -1218,12 +1626,12 @@ zonkToMono var =
         let
             lssAcc =
                 if s.env.lss.enabled then
-                    Just { maxSetSize = s.env.lss.maxSetSize, zonked = 0, widenedBySize = 0, hist = Dict.empty, widenedHist = Dict.empty, groundStandalones = s.env.lss.groundStandalones, grounded = 0, groundingDeferred = 0 }
+                    Just { maxSetSize = s.env.lss.maxSetSize, zonked = 0, widenedBySize = 0, hist = Dict.empty, widenedHist = Dict.empty, groundStandalones = s.env.lss.groundStandalones, grounded = 0, groundingDeferred = 0, honestSources = True, mixedFlex = 0, mixedFlexGc = 0, censusOn = s.env.lss.report, causeSet = 0, causePoison = 0, causeFlex = 0, causeEdgeSet = 0, causeEdgeEmpty = 0, causeEdgeTop = 0, causeUnknown = 0, multiSets = Dict.empty, varArrows = Dict.empty, setArrows = Dict.empty }
 
                 else
                     Nothing
         in
-        case zonkToMonoC s.superTable s.revMemo var { store = s.store, next = s.nextMVarId, lss = lssAcc, ecoReads = [], intern = s.intern, memberTable = s.lssMemberTable, nextMemberId = s.nextMemberId } of
+        case zonkToMonoC s.superTable s.revMemo var { store = s.store, next = s.nextMVarId, lss = lssAcc, ecoReads = [], intern = s.intern, memberTable = s.lssMemberTable, nextMemberId = s.nextMemberId, arrowOf = s.itemAux.arrowOfSlot, varOf = Dict.empty, nextVar = 0 } of
             Err e ->
                 Err e
 
@@ -1240,8 +1648,135 @@ zonkToMono var =
                                         s.itemAux
                                 in
                                 { s | store = c.store, nextMVarId = c.next, intern = c.intern, lssMemberTable = c.memberTable, nextMemberId = c.nextMemberId, itemAux = { aux0 | ecoResidualReads = reads ++ aux0.ecoResidualReads } }
+
+                    -- §3.2: log the variable so `rezonkSettled` can replay this
+                    -- exact readback at `finishNode`. Report-gated, so the
+                    -- default path pays nothing. `rezonkSettled` calls
+                    -- `zonkToMonoC` directly and therefore never re-enters here
+                    -- — the log cannot feed itself.
+                    s2 =
+                        if s.env.lss.report then
+                            let
+                                aux1 =
+                                    s1.itemAux
+                            in
+                            { s1 | itemAux = { aux1 | zonkLog = var :: aux1.zonkLog } }
+
+                        else
+                            s1
                 in
-                Ok ( mt, foldZonkStats c s1 )
+                Ok ( mt, foldZonkStats c s2 )
+
+
+{-| POST-SETTLE RE-ZONK (plans/lss-post-mono-architecture.md §3.2, Item 2).
+
+Replay every readback this item made, against the same store, at
+`finishNode` — i.e. after the item has finished writing. Accumulate a SECOND
+ledger from the results and change nothing else.
+
+READ-ONLY BY CONSTRUCTION, and that is load-bearing: this is a measurement,
+and if it wrote back it would be a behaviour change wearing a census's
+clothes. `zonkToMonoC` does mutate its `ZonkCtx` — path compression, residual
+MVarId stamping, member interning — so the discipline is that the final ctx is
+DROPPED entirely and only `ctx.lss` is read. The ctx is still threaded ACROSS
+the fold, because sequential zonks share a store in the real run too and the
+replay should differ from it in TIME only.
+
+Why this is the right experiment for Eco specifically: `Engine.resetItem`
+installs a fresh store per work item, so a set slot read during translation
+can only ever be refined by writes landing before that same item finishes.
+There is no long-lived store to "settle" into. Replaying at `finishNode` is
+therefore not an approximation of the post-mono read — it is the complete
+upper bound on what reading later can buy WITHIN the current architecture.
+Whatever this does not recover is, by construction, only reachable by a solve
+that outlives the item — which is what the plan proposes.
+
+-}
+rezonkSettled : Engine.S -> Engine.S
+rezonkSettled s =
+    if not (s.env.lss.enabled && s.env.lss.report) then
+        s
+
+    else
+        case s.itemAux.zonkLog of
+            [] ->
+                s
+
+            log ->
+                let
+                    acc0 =
+                        { maxSetSize = s.env.lss.maxSetSize, zonked = 0, widenedBySize = 0, hist = Dict.empty, widenedHist = Dict.empty, groundStandalones = s.env.lss.groundStandalones, grounded = 0, groundingDeferred = 0, honestSources = True, mixedFlex = 0, mixedFlexGc = 0, censusOn = True, causeSet = 0, causePoison = 0, causeFlex = 0, causeEdgeSet = 0, causeEdgeEmpty = 0, causeEdgeTop = 0, causeUnknown = 0, multiSets = Dict.empty, varArrows = Dict.empty, setArrows = Dict.empty }
+
+                    ctxN =
+                        List.foldl
+                            (\v c ->
+                                -- `varOf`/`nextVar` are scoped to ONE zonked
+                                -- MonoType (they are the Phase-3 variable
+                                -- numbering), so they reset per readback
+                                -- exactly as `zonkToMono` resets them per call.
+                                -- `ecoReads` is cleared too: it is the MONO_029
+                                -- stale-read barrier's accumulator, it is
+                                -- dropped with the ctx, and letting it grow
+                                -- across 400k+ replayed readbacks retains a
+                                -- list nothing will ever look at.
+                                case zonkToMonoC s.superTable s.revMemo v { c | varOf = Dict.empty, nextVar = 0, ecoReads = [] } of
+                                    Ok ( _, c1 ) ->
+                                        c1
+
+                                    Err _ ->
+                                        -- A replay that fails is dropped, never
+                                        -- fatal: a census must not be able to
+                                        -- fail a build.
+                                        c
+                            )
+                            { store = s.store, next = s.nextMVarId, lss = Just acc0, ecoReads = [], intern = s.intern, memberTable = s.lssMemberTable, nextMemberId = s.nextMemberId, arrowOf = s.itemAux.arrowOfSlot, varOf = Dict.empty, nextVar = 0 }
+                            log
+                in
+                case ctxN.lss of
+                    Nothing ->
+                        s
+
+                    Just acc ->
+                        let
+                            stats =
+                                s.lssStats
+
+                            sig =
+                                stats.sigStats
+
+                            prev =
+                                sig.settled
+                        in
+                        -- NOTE what is NOT written: `ctxN.store`, `ctxN.next`,
+                        -- `ctxN.intern`, `ctxN.memberTable`, `ctxN.nextMemberId`,
+                        -- `ctxN.ecoReads`. Only counters cross this line.
+                        { s
+                            | lssStats =
+                                { stats
+                                    | sigStats =
+                                        { sig
+                                            | settled =
+                                                { items = prev.items + 1
+                                                , zonked = prev.zonked + acc.zonked
+                                                , hist = Dict.foldl (\k v h -> Dict.insert k (v + Maybe.withDefault 0 (Dict.get k h)) h) prev.hist acc.hist
+                                                , widenedBySize = prev.widenedBySize + acc.widenedBySize
+                                                , causeTop = prev.causeTop + acc.causePoison + acc.causeEdgeTop
+                                                , causeVar = prev.causeVar + acc.causeFlex + acc.causeEdgeEmpty
+                                                , varArrows =
+                                                    Dict.foldl
+                                                        (\akey n tbl -> Dict.insert akey (n + Maybe.withDefault 0 (Dict.get akey tbl)) tbl)
+                                                        prev.varArrows
+                                                        acc.varArrows
+                                                , setArrows =
+                                                    Dict.foldl
+                                                        (\akey n tbl -> Dict.insert akey (n + Maybe.withDefault 0 (Dict.get akey tbl)) tbl)
+                                                        prev.setArrows
+                                                        acc.setArrows
+                                                , scratchDropped = prev.scratchDropped
+                                                }
+                                        }
+                                }
+                        }
 
 
 foldZonkStats : ZonkCtx -> Engine.S -> Engine.S
@@ -1251,13 +1786,16 @@ foldZonkStats c s =
             s
 
         Just acc ->
-            if acc.zonked == 0 && acc.widenedBySize == 0 then
+            if acc.zonked == 0 && acc.widenedBySize == 0 && acc.mixedFlex == 0 then
                 s
 
             else
                 let
                     stats =
                         s.lssStats
+
+                    sig =
+                        stats.sigStats
                 in
                 { s
                     | lssStats =
@@ -1274,8 +1812,120 @@ foldZonkStats c s =
 
                                 else
                                     { grounded = stats.grounding.grounded + acc.grounded, deferred = stats.grounding.deferred + acc.groundingDeferred }
+                            , sigStats =
+                                -- LSS_026(a) demand-side mixed resolutions
+                                -- (plan §2.1 row 2) + the zonk-cause census
+                                -- (row "zc|"). The consumer attribution
+                                -- happens HERE because `currentGlobal` is
+                                -- only in scope at the fold, not in ZonkCtx;
+                                -- every readback of one zonkToMono call
+                                -- belongs to one consumer. Cause counters
+                                -- are nonzero only under report (censusOn),
+                                -- so the default path never touches the dict.
+                                let
+                                    causesTotal =
+                                        -- `causeUnknown` overlaps causeFlex +
+                                        -- causeEdgeEmpty today, so it cannot
+                                        -- change whether this is zero. Summed
+                                        -- anyway so that the day the old
+                                        -- counters retire, an item whose ONLY
+                                        -- readbacks were unknowns still emits
+                                        -- its `zc|<gkey>|…` block instead of
+                                        -- vanishing from the census entirely.
+                                        acc.causeSet + acc.causePoison + acc.causeFlex + acc.causeEdgeSet + acc.causeEdgeEmpty + acc.causeEdgeTop + acc.causeUnknown
+                                in
+                                if acc.mixedFlex == 0 && causesTotal == 0 && Dict.isEmpty acc.multiSets then
+                                    sig
+
+                                else
+                                    { sig
+                                        | topMixedFlexDemand = sig.topMixedFlexDemand + acc.mixedFlex
+
+                                        -- M3: union this call's per-arrow
+                                        -- multi-sets into the global table.
+                                        -- Empty unless report-gated.
+                                        , multiSetsByArrow =
+                                            Dict.foldl
+                                                (\akey ms tbl ->
+                                                    Dict.insert akey (unionSortedMembers ms (Maybe.withDefault [] (Dict.get akey tbl))) tbl
+                                                )
+                                                sig.multiSetsByArrow
+                                                acc.multiSets
+                                        , argFlowCensus =
+                                            let
+                                                afterMixed =
+                                                    if s.env.lss.report && acc.mixedFlex > 0 then
+                                                        bumpCensusKey "mixed|demand"
+                                                            acc.mixedFlex
+                                                            (bumpCensusKey "mixed|demand|gc" acc.mixedFlexGc sig.argFlowCensus)
+
+                                                    else
+                                                        sig.argFlowCensus
+                                            in
+                                            if causesTotal == 0 then
+                                                afterMixed
+
+                                            else
+                                                let
+                                                    gkey =
+                                                        case s.currentGlobal of
+                                                            Just g ->
+                                                                Mono.toComparableGlobal g
+
+                                                            Nothing ->
+                                                                "(none)"
+                                                in
+                                                afterMixed
+                                                    |> bumpCensusKey "zc|all|set" acc.causeSet
+                                                    |> bumpCensusKey "zc|all|poison" acc.causePoison
+                                                    |> bumpCensusKey "zc|all|flex" acc.causeFlex
+                                                    |> bumpCensusKey "zc|all|edgeSet" acc.causeEdgeSet
+                                                    |> bumpCensusKey "zc|all|edgeEmpty" acc.causeEdgeEmpty
+                                                    |> bumpCensusKey "zc|all|edgeTop" acc.causeEdgeTop
+                                                    |> bumpCensusKey "zc|all|unknown" acc.causeUnknown
+                                                    |> bumpCensusKey ("zc|" ++ gkey ++ "|set") acc.causeSet
+                                                    |> bumpCensusKey ("zc|" ++ gkey ++ "|poison") acc.causePoison
+                                                    |> bumpCensusKey ("zc|" ++ gkey ++ "|flex") acc.causeFlex
+                                                    |> bumpCensusKey ("zc|" ++ gkey ++ "|edgeSet") acc.causeEdgeSet
+                                                    |> bumpCensusKey ("zc|" ++ gkey ++ "|edgeEmpty") acc.causeEdgeEmpty
+                                                    |> bumpCensusKey ("zc|" ++ gkey ++ "|edgeTop") acc.causeEdgeTop
+                                                    |> bumpCensusKey ("zc|" ++ gkey ++ "|unknown") acc.causeUnknown
+                                                    -- M1: the same per-consumer
+                                                    -- census, split by SET SIZE
+                                                    -- rather than by cause, so a
+                                                    -- multi-set can be attributed
+                                                    -- to the global that carries
+                                                    -- it. `zc|…|set` already gives
+                                                    -- the total; these break it up.
+                                                    |> (\census0 ->
+                                                            Dict.foldl
+                                                                (\size n acc2 ->
+                                                                    if size < 2 then
+                                                                        acc2
+
+                                                                    else
+                                                                        acc2
+                                                                            |> bumpCensusKey ("zc|all|k" ++ String.fromInt size) n
+                                                                            |> bumpCensusKey ("zc|" ++ gkey ++ "|k" ++ String.fromInt size) n
+                                                                )
+                                                                census0
+                                                                acc.hist
+                                                       )
+                                    }
                         }
                 }
+
+
+{-| LSS_026 census: add `n` to a key (no-op at `n == 0`, so the flag-off /
+report-off path never grows the dict).
+-}
+bumpCensusKey : String -> Int -> Dict.Dict String Int -> Dict.Dict String Int
+bumpCensusKey key n census =
+    if n == 0 then
+        census
+
+    else
+        Dict.insert key (n + Maybe.withDefault 0 (Dict.get key census)) census
 
 
 zonkToMonoC : Dict.Dict Int IO.SuperType -> Array (Maybe TypeIds.MVarId) -> IO.Variable -> ZonkCtx -> Result Failure ( Mono.MonoType, ZonkCtx )
@@ -1442,6 +2092,173 @@ zonkFlatC superTable revMemo flat c0 =
                                     Ok (consC (Mono.mTuple (ma :: mb :: mRest)) c3)
 
 
+{-| PHASE 3: the canonical number for this set slot's VARIABLE, within the type
+being zonked (`plans/lss-set-variable.md`).
+
+Keyed by the slot's union-find REPRESENTATIVE, which is the whole point: two
+arrows the store unified are one variable and must read back the same `n`, so
+that re-encoding the annotation (`monoTypeToVarC`) mints ONE slot for both. An
+unwritten arrow that shares nothing gets its own fresh `n`.
+
+Numbering is by first encounter in the zonk's walk, which is determined by the
+type's structure — so two structurally identical types number identically, and
+`LVar n` can safely be part of the comparable key. That is what lets
+`(α → α)` and `(α → β)` key DIFFERENTLY while two call sites with the same
+sharing pattern key together.
+
+-}
+varNumberFor : IO.Variable -> ZonkCtx -> ( Int, ZonkCtx )
+varNumberFor setVar c =
+    let
+        ( store1, reprVar ) =
+            UF.repr setVar c.store
+
+        key =
+            Engine.pointKey reprVar
+    in
+    case Dict.get key c.varOf of
+        Just n ->
+            ( n, { c | store = store1 } )
+
+        Nothing ->
+            ( c.nextVar
+            , { c | store = store1, varOf = Dict.insert key c.nextVar c.varOf, nextVar = c.nextVar + 1 }
+            )
+
+{-| Multi-set census (M3): record a `|set| >= 2` readback against the ARROW that
+minted this slot, so the report can count distinct arrow POSITIONS rather than
+readbacks (plan §2.5.5 — `sizeHist` cannot tell 518 distinct 6-member arrows
+from one hot arrow read 518 times).
+
+Report-gated at both ends: the map is empty unless `lss.report`, so an unknown
+slot is simply not recorded. Merging is a UNION across readbacks of the same
+arrow — one polymorphic def specialized twice reads the same syntactic arrow
+twice, and the ARROW is the position being counted.
+-}
+noteMultiSet : IO.Variable -> List Int -> ZonkCtx -> ZonkCtx
+noteMultiSet setVar members c =
+    case c.lss of
+        Just acc ->
+            if not acc.censusOn || List.length members < 2 then
+                c
+
+            else
+                let
+                    -- The slot that gets ZONKED is often not the slot that was
+                    -- MINTED: a loaded arrow and a demand-encoded arrow unify,
+                    -- and the surviving `FunL` structure carries whichever
+                    -- `pSet` won. Only the LOADED side ever has an ArrowId
+                    -- (`monoTypeToVarC` builds from `Mono.MonoType`, which has
+                    -- no arrows ids at all), so the lookup must go through the
+                    -- union-find class, not the raw Point.
+                    ( store1, reprVar ) =
+                        UF.repr setVar c.store
+
+                    hit =
+                        case Dict.get (Engine.pointKey reprVar) c.arrowOf of
+                            Just a ->
+                                Just a
+
+                            Nothing ->
+                                Dict.get (Engine.pointKey setVar) c.arrowOf
+                in
+                case hit of
+                    Nothing ->
+                        { c | store = store1 }
+
+                    Just akey ->
+                        { c
+                            | store = store1
+                            , lss =
+                                Just
+                                    { acc
+                                        | multiSets =
+                                            Dict.insert akey
+                                                (unionSortedMembers members (Maybe.withDefault [] (Dict.get akey acc.multiSets)))
+                                                acc.multiSets
+                                    }
+                        }
+
+        Nothing ->
+            c
+
+
+{-| The dual of `noteMultiSet` (plans/lss-post-mono-architecture.md §3.2):
+attribute a VARIABLE readback to the arrow whose slot produced it.
+
+Same union-find lookup and the same reason for it — the slot that gets zonked
+is often not the slot that was minted, and only the loaded side carries an
+ArrowId — so the two censuses key the same arrow the same way and their
+keyspaces subtract. That is the whole point: after the item settles,
+`varArrows ∩ multiSetsByArrow` is the population that a post-mono solve over
+one global graph would resolve and Eco's per-item store cannot, while
+`varArrows \ multiSetsByArrow` is unconstrained everywhere and no reordering
+reaches it.
+
+-}
+noteArrowClass : Bool -> IO.Variable -> ZonkCtx -> ZonkCtx
+noteArrowClass resolved setVar c =
+    case c.lss of
+        Just acc ->
+            if not acc.censusOn then
+                c
+
+            else
+                let
+                    ( store1, reprVar ) =
+                        UF.repr setVar c.store
+
+                    hit =
+                        case Dict.get (Engine.pointKey reprVar) c.arrowOf of
+                            Just a ->
+                                Just a
+
+                            Nothing ->
+                                Dict.get (Engine.pointKey setVar) c.arrowOf
+                in
+                case hit of
+                    Nothing ->
+                        { c | store = store1 }
+
+                    Just akey ->
+                        { c
+                            | store = store1
+                            , lss =
+                                Just
+                                    (if resolved then
+                                        { acc | setArrows = Dict.insert akey (1 + Maybe.withDefault 0 (Dict.get akey acc.setArrows)) acc.setArrows }
+
+                                     else
+                                        { acc | varArrows = Dict.insert akey (1 + Maybe.withDefault 0 (Dict.get akey acc.varArrows)) acc.varArrows }
+                                    )
+                        }
+
+        Nothing ->
+            c
+
+
+{-| Ascending union of two ascending, deduplicated member lists. -}
+unionSortedMembers : List Int -> List Int -> List Int
+unionSortedMembers xs ys =
+    case ( xs, ys ) of
+        ( [], _ ) ->
+            ys
+
+        ( _, [] ) ->
+            xs
+
+        ( x :: xr, y :: yr ) ->
+            if x == y then
+                x :: unionSortedMembers xr yr
+
+            else if x < y then
+                x :: unionSortedMembers xr ys
+
+            else
+                y :: unionSortedMembers xs yr
+
+
+
 {-| Read a set slot back to an annotation. THE only producer of `LSet`. Runs
 at item quiescence (zonk is the commit point — MONO_028 discipline), so a set
 is read only after every unification the item will ever do. `paramT`/`resultT`
@@ -1475,7 +2292,7 @@ zonkSetSlot paramT resultT setVar c0 =
     in
     case desc.content of
         IO.Structure (IO.LambdaSet1 IO.LsTop) ->
-            ( Mono.LTop, bumpZonkAcc Nothing c1 )
+            ( Mono.LTop, bumpCauseC (\a -> { a | causePoison = a.causePoison + 1 }) (bumpZonkAcc Nothing c1) )
 
         IO.Structure (IO.LambdaSet1 (IO.LsMembers members0)) ->
             case c1.lss of
@@ -1497,7 +2314,7 @@ zonkSetSlot paramT resultT setVar c0 =
                     else
                         -- Phase 2: IDENTITY — the store list IS the LSet
                         -- payload (ascending by construction; was Dict.keys).
-                        ( Mono.LSet members, bumpZonkAcc (Just size) c2 )
+                        ( Mono.LSet members, noteArrowClass True setVar (noteMultiSet setVar members (bumpCauseC (\a -> { a | causeSet = a.causeSet + 1 }) (bumpZonkAcc (Just size) c2))) )
 
                 Nothing ->
                     -- A FunL zonked outside an lss-enabled wrapper (e.g. a
@@ -1516,15 +2333,31 @@ zonkSetSlot paramT resultT setVar c0 =
                     case resolveSlotMembers members0 srcs c1 of
                         ( Nothing, c2 ) ->
                             -- A reachable ⊤ absorbs the whole resolution.
-                            ( Mono.LTop, bumpZonkAcc Nothing c2 )
+                            ( Mono.LTop, bumpCauseC (\a -> { a | causeEdgeTop = a.causeEdgeTop + 1 }) (bumpZonkAcc Nothing c2) )
 
                         ( Just [], c2 ) ->
                             -- EMPTY resolution = NO INFORMATION. Mirrors the
-                            -- FlexVar policy ("LTop, never empty"): an
-                            -- `LSet []` would claim a provably-dead arrow
-                            -- where symmetric HEAD reads an unconstrained
-                            -- class as LTop.
-                            ( Mono.LTop, bumpZonkAcc Nothing c2 )
+                            -- FlexVar policy ("never empty"): an `LSet []`
+                            -- would claim a provably-dead arrow where
+                            -- symmetric HEAD reads an unconstrained class as
+                            -- unknown.
+                            --
+                            -- Phase 1: one of the TWO `LUnknown` producers.
+                            -- Nothing was ever written anywhere in this slot's
+                            -- reachable edge graph — that is an absence, not a
+                            -- widening. Both the old counter and `causeUnknown`
+                            -- are bumped so the `zc|` rows stay joinable
+                            -- against the pre-split baseline.
+                            let
+                                ( vn, c2v ) =
+                                    varNumberFor setVar c2
+                            in
+                            ( Mono.LVar vn
+                            , noteArrowClass False setVar
+                                (bumpCauseC (\a -> { a | causeEdgeEmpty = a.causeEdgeEmpty + 1, causeUnknown = a.causeUnknown + 1 })
+                                    (bumpZonkAcc Nothing c2v)
+                                )
+                            )
 
                         ( Just ms0, c2 ) ->
                             -- THEN ground (LSS_019), THEN cap — verbatim the
@@ -1546,20 +2379,47 @@ zonkSetSlot paramT resultT setVar c0 =
                                 ( Mono.LTop, bumpWidenedAcc size c3 )
 
                             else
-                                ( Mono.LSet members, bumpZonkAcc (Just size) c3 )
+                                ( Mono.LSet members, noteArrowClass True setVar (noteMultiSet setVar members (bumpCauseC (\a -> { a | causeEdgeSet = a.causeEdgeSet + 1 }) (bumpZonkAcc (Just size) c3))) )
 
                 Nothing ->
                     ( Mono.LTop, c1 )
 
         _ ->
-            -- FlexVar residual: no information — LTop, never empty.
-            ( Mono.LTop, bumpZonkAcc Nothing c1 )
+            -- FlexVar residual: no information — never empty.
+            --
+            -- Phase 1: the OTHER (and by far the larger) `LUnknown` producer.
+            -- The slot was never written by anything, ever — 52.3% of
+            -- everything that used to read back as ⊤. Calling that "widened"
+            -- made the acceptable share of ⊤ unmeasurable, which is what
+            -- plans/lss-unknown-elimination.md Phase 1 exists to fix.
+            let
+                ( vn, c1v ) =
+                    varNumberFor setVar c1
+            in
+            ( Mono.LVar vn
+            , noteArrowClass False setVar
+                (bumpCauseC (\a -> { a | causeFlex = a.causeFlex + 1, causeUnknown = a.causeUnknown + 1 })
+                    (bumpZonkAcc Nothing c1v)
+                )
+            )
 
 
-{-| LSS_023: DFS over a slot's deferred-edge graph, returning the least
-fixpoint of the inclusion system — `Nothing` when a reachable node is ⊤
-(absorbing, short-circuits), else `Just` the ascending union of every
+{-| LSS_023 + LSS_026: DFS over a slot's deferred-edge graph, returning the
+least fixpoint of the inclusion system — `Nothing` when a reachable node is
+⊤ (absorbing, short-circuits), else `Just` the ascending union of every
 reachable node's members.
+
+LSS_026(a) — the honest-sources rule. A reached source that is still an
+unconstrained `FlexVar` contributes no members, and PRE-LSS_026 that was
+read as exact ("the caller's other edges and members still count"). It is
+exact only under write-completeness of every inflow to that source, which
+the A.1 arg-load leak violates by construction: an unconnected instantiation
+param slot dangles as FlexVar, so a members-carrying resolution over it
+claims COMPLETENESS it does not have (`Mono.LSet` is a completeness claim —
+plan §0.5). This walk therefore reports whether it crossed such a source,
+and `resolveSlotMembers` widens a members-carrying resolution to ⊤ under
+the flag. Census-wise the crossing is counted either way, so Phase 0 can
+size the exposure before the policy ships.
 
 Discipline (each clause is load-bearing — see the plan §3.1):
 
@@ -1578,17 +2438,84 @@ Discipline (each clause is load-bearing — see the plan §3.1):
 -}
 resolveSlotMembers : List Int -> List IO.Variable -> ZonkCtx -> ( Maybe (List Int), ZonkCtx )
 resolveSlotMembers members0 srcs c0 =
-    resolveSources srcs [] (Just members0) c0
+    case resolveSources srcs [] False (Just members0) c0 of
+        ( Nothing, _, c1 ) ->
+            ( Nothing, c1 )
+
+        ( Just ms, sawFlex, c1 ) ->
+            if sawFlex && not (List.isEmpty ms) then
+                -- LSS_026(a): members PLUS a dangling inflow. The set is
+                -- INCOMPLETE but would read as complete — the false-set
+                -- (miscompile) direction. `honestSourcesOn` is True in every
+                -- production zonk (the rule is UNCONDITIONAL since the
+                -- 2026-08-23 escalation); the branch survives so the
+                -- store-level pins can assert what the pre-rule reader did.
+                ( if honestSourcesOn c1 then
+                    Nothing
+
+                  else
+                    Just ms
+                , bumpMixedFlexDemand ms c1
+                )
+
+            else
+                -- `Just [] + sawFlex` is NOT mixed: the empty-resolution arm
+                -- already reads LTop (no completeness claimed), so there is
+                -- nothing to widen and nothing to count.
+                ( Just ms, c1 )
 
 
-resolveSources : List IO.Variable -> List Int -> Maybe (List Int) -> ZonkCtx -> ( Maybe (List Int), ZonkCtx )
-resolveSources pending visited acc c0 =
+{-| LSS_026(a): is the honest-sources policy live? `zonkToMono` seeds it True
+unconditionally (`ZonkCtx` has no `S`, hence the field rather than a direct
+read); only the store-level pins ever seed it False, to assert the shape the
+rule exists to reject.
+-}
+honestSourcesOn : ZonkCtx -> Bool
+honestSourcesOn c =
+    case c.lss of
+        Just acc ->
+            acc.honestSources
+
+        Nothing ->
+            False
+
+
+{-| LSS_026 census (plan §2.1 row 2, demand side): count a mixed resolution
+and the coarsest member class it carries — `gc` members are the ones that
+GROUND (LSS_019) and are consumable by LSS_025/E9.1 devirt, so they are the
+escalation gate. Counters ride the zonk accumulator and fold into
+`sigStats` at `zonkToMono`'s exit.
+-}
+bumpMixedFlexDemand : List Int -> ZonkCtx -> ZonkCtx
+bumpMixedFlexDemand members c =
+    case c.lss of
+        Just acc ->
+            { c
+                | lss =
+                    Just
+                        { acc
+                            | mixedFlex = acc.mixedFlex + 1
+                            , mixedFlexGc =
+                                if Engine.membersClass members c.memberTable == "gc" then
+                                    acc.mixedFlexGc + 1
+
+                                else
+                                    acc.mixedFlexGc
+                        }
+            }
+
+        Nothing ->
+            c
+
+
+resolveSources : List IO.Variable -> List Int -> Bool -> Maybe (List Int) -> ZonkCtx -> ( Maybe (List Int), Bool, ZonkCtx )
+resolveSources pending visited sawFlex acc c0 =
     case ( pending, acc ) of
         ( _, Nothing ) ->
-            ( Nothing, c0 )
+            ( Nothing, sawFlex, c0 )
 
         ( [], _ ) ->
-            ( acc, c0 )
+            ( acc, sawFlex, c0 )
 
         ( src :: rest, Just accMembers ) ->
             let
@@ -1596,7 +2523,7 @@ resolveSources pending visited acc c0 =
                     IO.pointKey src
             in
             if List.member key visited then
-                resolveSources rest visited acc c0
+                resolveSources rest visited sawFlex acc c0
 
             else
                 let
@@ -1611,24 +2538,26 @@ resolveSources pending visited acc c0 =
                 in
                 case desc.content of
                     IO.Structure (IO.LambdaSet1 IO.LsTop) ->
-                        ( Nothing, c1 )
+                        ( Nothing, sawFlex, c1 )
 
                     IO.Structure (IO.LambdaSet1 (IO.LsMembers ms)) ->
-                        resolveSources rest visited1 (Just (IO.unionSortedAsc accMembers ms)) c1
+                        resolveSources rest visited1 sawFlex (Just (IO.unionSortedAsc accMembers ms)) c1
 
                     IO.Structure (IO.LambdaSet1 (IO.LsFrom ms ss)) ->
-                        resolveSources (ss ++ rest) visited1 (Just (IO.unionSortedAsc accMembers ms)) c1
+                        resolveSources (ss ++ rest) visited1 sawFlex (Just (IO.unionSortedAsc accMembers ms)) c1
 
                     IO.FlexVar _ ->
-                        -- Unconstrained source: contributes nothing (its
-                        -- own read would be LTop, but as a SOURCE an empty
-                        -- contribution is exact — the caller's other edges
-                        -- and members still count).
-                        resolveSources rest visited1 acc c1
+                        -- LSS_026(a): an unconstrained source contributes no
+                        -- members NOW, but it is an UNTRACKED inflow — the
+                        -- pre-LSS_026 reading of this as exact holds only
+                        -- under write-completeness, which A.1's unconnected
+                        -- instantiation params violate. Record the crossing;
+                        -- `resolveSlotMembers` applies the policy.
+                        resolveSources rest visited1 True acc c1
 
                     _ ->
                         -- Defensive: unknown content fails toward ⊤.
-                        ( Nothing, c1 )
+                        ( Nothing, sawFlex, c1 )
 
 
 {-| LSS_019: run the grounding rewrite against the ctx-threaded member table,
@@ -1868,7 +2797,7 @@ classifyGo s aliasSubst canType =
                                 residual ->
                                     Ok ( residual, s )
 
-        Can.TLambda from to ->
+        Can.TLambda _ from to ->
             case classifyGo s aliasSubst from of
                 Err e ->
                     Err e

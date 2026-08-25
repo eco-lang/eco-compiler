@@ -95,7 +95,7 @@ alphaEqStrictHelp state t1 t2 =
             else
                 Nothing
 
-        ( Can.TLambda a1 b1, Can.TLambda a2 b2 ) ->
+        ( Can.TLambda _ a1 b1, Can.TLambda _ a2 b2 ) ->
             alphaEqStrictHelp state a1 a2
                 |> Maybe.andThen (\s -> alphaEqStrictHelp s b1 b2)
 
@@ -338,8 +338,8 @@ applySubst subst tipe =
         Can.TType home name args ->
             Can.TType home name (List.map (applySubst subst) args)
 
-        Can.TLambda a b ->
-            Can.TLambda (applySubst subst a) (applySubst subst b)
+        Can.TLambda _ a b ->
+            Can.tLambda (applySubst subst a) (applySubst subst b)
 
         Can.TRecord fields ext ->
             Can.TRecord

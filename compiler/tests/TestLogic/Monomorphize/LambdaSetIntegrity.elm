@@ -1,4 +1,4 @@
-module TestLogic.Monomorphize.LambdaSetIntegrity exposing (expectLambdaSetIntegrity)
+module TestLogic.Monomorphize.LambdaSetIntegrity exposing (expectLambdaSetIntegrity, expectLambdaSetIntegrityArrowId)
 
 {-| Test logic for invariant LSS\_002: lowering totality of lambda sets.
 
@@ -27,8 +27,29 @@ import TestLogic.TestPipeline as Pipeline
 head annotation.
 -}
 expectLambdaSetIntegrity : Src.Module -> Expect.Expectation
-expectLambdaSetIntegrity srcModule =
-    case Pipeline.runToGlobalOptLssOn srcModule of
+expectLambdaSetIntegrity =
+    integrityWith Pipeline.runToGlobalOptLssOn
+
+
+{-| LSS\_002 under **Phase 2a arrow identity**
+(`plans/lss-unknown-elimination.md` §4).
+
+This is the point of the arm: `lss.arrowIdentity` makes repeated loads of one
+stamped type object SHARE a set slot, and the failure mode of a sharing bug is
+a LOST MEMBER — a closure instance whose own identity is missing from the set
+its arrow claims. That is exactly what LSS_002 asserts, over the whole
+SourceIR corpus, through the real pipeline. A spurious member here would be a
+MISCOMPILE; a lost one is what slot sharing can plausibly cause.
+
+-}
+expectLambdaSetIntegrityArrowId : Src.Module -> Expect.Expectation
+expectLambdaSetIntegrityArrowId =
+    integrityWith Pipeline.runToGlobalOptLssArrowIdOn
+
+
+integrityWith : (Src.Module -> Result String Pipeline.GlobalOptArtifacts) -> Src.Module -> Expect.Expectation
+integrityWith runner srcModule =
+    case runner srcModule of
         Err msg ->
             Expect.fail msg
 
@@ -119,6 +140,12 @@ checkOne specId expr acc =
                     in
                     case Mono.headAnno closType of
                         Mono.LTop ->
+                            acc
+
+                        Mono.LVar _ ->
+                            -- Satisfies LSS_002 exactly as LTop does: a
+                            -- variable claims nothing, so it cannot fail to
+                            -- contain the minted member.
                             acc
 
                         Mono.LSet members ->

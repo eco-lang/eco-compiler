@@ -73,7 +73,7 @@ canTypeToMonoWithI superVars subst canType intern0 =
                         _ ->
                             ( Mono.MVar mvarId Mono.CEcoValue, intern0 )
 
-        Can.TLambda from to ->
+        Can.TLambda _ from to ->
             lambdaChain superVars subst [ from ] to intern0
 
         Can.TType canonical name args ->
@@ -206,7 +206,7 @@ exactly as `TypeSubst.applySubstLambdaChain` does (a -> b -> c becomes
 lambdaChain : Dict Int IO.SuperType -> Dict Int Mono.MonoType -> List (Can.Type TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Intern -> ( Mono.MonoType, Intern )
 lambdaChain superVars subst argsAcc to intern0 =
     case to of
-        Can.TLambda from innerTo ->
+        Can.TLambda _ from innerTo ->
             lambdaChain superVars subst (from :: argsAcc) innerTo intern0
 
         _ ->

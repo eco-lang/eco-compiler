@@ -461,16 +461,26 @@ resultElemKind specType =
 
 classifyBody : Env -> Int -> Name -> Mono.MonoType -> Mono.MonoType -> Int -> MonoExpr -> Templates -> Templates
 classifyBody env specId callbackName callbackType listType resultKind body acc =
-    case Mono.headAnno callbackType of
-        Mono.LTop ->
-            -- Unknown or widened set. Also the whole subst-engine population:
-            -- `headAnno` is never `LSet` there, so subst compiles decline
-            -- uniformly and the counter separates the two causes.
+    let
+        -- Shared by the LTop and LVar arms so the two can never drift.
+        -- Unknown or widened set. Also the whole subst-engine population:
+        -- `headAnno` is never `LSet` there, so subst compiles decline
+        -- uniformly and the counter separates the two causes.
+        declineTopLike () =
             if Dict.isEmpty env.info then
                 bump (\s -> { s | declinedEngine = s.declinedEngine + 1 }) acc
 
             else
                 bump (\s -> { s | declinedWidened = s.declinedWidened + 1 }) acc
+    in
+    case Mono.headAnno callbackType of
+        Mono.LTop ->
+            declineTopLike ()
+
+        Mono.LVar _ ->
+            -- A variable is as unlicensable as a widened set: the template
+            -- needs a NAMED callback, and a variable names nothing yet.
+            declineTopLike ()
 
         Mono.LSet [ member ] ->
             case debugFreedom env member of
@@ -1086,6 +1096,10 @@ calleeVerdict purity hooks func =
                 Mono.LTop ->
                     poison (PoisonHigherOrder HOLocalLTop)
 
+                Mono.LVar _ ->
+                    -- Same verdict as LTop: an unnamed higher-order local.
+                    poison (PoisonHigherOrder HOLocalLTop)
+
         MonoClosure _ body _ ->
             -- An immediately-applied lambda: its captures resolve against the
             -- table through their own annotations, by the same walk.
@@ -1164,6 +1178,11 @@ argProvenance purity hooks arg annos =
                     else
                         case anno of
                             Mono.LTop ->
+                                ( PoisonArgTaint ArgLTop, Tuple.second acc )
+
+                            Mono.LVar _ ->
+                                -- Same taint as LTop: the argument carries an
+                                -- arrow whose inhabitants are not named yet.
                                 ( PoisonArgTaint ArgLTop, Tuple.second acc )
 
                             Mono.LSet ms ->

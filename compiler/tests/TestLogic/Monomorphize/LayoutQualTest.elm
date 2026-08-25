@@ -82,6 +82,17 @@ purePins =
             Expect.equal
                 (widenedKey (arrowWith (Mono.LSet [ 101 ])))
                 (widenedKey (arrowWith (Mono.LSet [ 202, 303 ])))
+    , Test.test "Phase 1a/3: a set VARIABLE widens to the SAME key as LTop (1a-T7 direct pin)" <|
+        \() ->
+            -- `Mono.widenSets` stamps LTop, never LVar, and that is what
+            -- keeps the five widened-string-key derivations byte-identical
+            -- across the label split (LSS_024 specWidenedKeys, LSS_019 ground
+            -- member ids, the LSS_024 F-fence fingerprint, the keyed=False
+            -- widened registry key, and the budget-widened key). A drift here
+            -- produces a different registry key with NO compile error.
+            Expect.equal
+                (widenedKey (arrowWith Mono.LTop))
+                (widenedKey (arrowWith (Mono.LVar 0)))
     , Test.test "layout differences survive widening: distinct keys" <|
         \() ->
             Expect.notEqual

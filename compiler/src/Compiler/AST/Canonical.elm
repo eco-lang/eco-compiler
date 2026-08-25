@@ -4,6 +4,7 @@ module Compiler.AST.Canonical exposing
     , Def(..), Decls(..)
     , Pattern, PatternInfo, Pattern_(..), PatternCtorArg(..)
     , Type(..), Annotation(..), FreeVars, AliasType(..), FieldType(..), fieldsToList
+    , tLambda, noArrow
     , Union(..), UnionData, Alias(..), Ctor(..), CtorData, CtorOpts(..), Binop(..)
     , annotationEncoder, annotationDecoder
     , typeEncoder, typeDecoder
@@ -102,6 +103,7 @@ import Bytes.Decode
 import Bytes.Encode
 import Compiler.AST.Source as Src
 import Compiler.AST.StringTable as StringTable exposing (StringTable)
+import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.Utils.Binop as Binop
 import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Index as Index
@@ -293,7 +295,8 @@ type alias FreeVars =
 
 {-| Canonical type representation.
 
-  - `TLambda` - Function type (a -> b)
+  - `TLambda` - Function type (a -> b), carrying its `TypeIds.ArrowSlot`
+    (see `tLambda` / `noArrow`)
   - `TVar` - Type variable
   - `TType` - Named type with arguments (e.g., List Int)
   - `TRecord` - Record type with optional extension variable
@@ -303,13 +306,66 @@ type alias FreeVars =
 
 -}
 type Type id
-    = TLambda (Type id) (Type id)
+    = TLambda TypeIds.ArrowSlot (Type id) (Type id)
     | TVar id
     | TType IO.Canonical Name (List (Type id))
     | TRecord (Dict Name (FieldType id)) (Maybe id)
     | TUnit
     | TTuple (Type id) (Type id) (List (Type id))
     | TAlias IO.Canonical Name (List ( id, Type id )) (AliasType id)
+
+
+{-| Wire encoding of an arrow slot: `0` = none, `idx + 1` = a solver root.
+
+`Arrow` cannot occur — the codec is `Can.Type Name` only — and encodes as `0`
+rather than crashing, because a wrong-phase value should degrade to "no
+identity" (an occurrence id downstream), never to a WRONG identity.
+-}
+arrowSlotToInt : TypeIds.ArrowSlot -> Int
+arrowSlotToInt slot =
+    case slot of
+        TypeIds.SolverRoot idx ->
+            idx + 1
+
+        _ ->
+            0
+
+
+arrowSlotFromInt : Int -> TypeIds.ArrowSlot
+arrowSlotFromInt raw =
+    if raw <= 0 then
+        TypeIds.NoArrow
+
+    else
+        TypeIds.SolverRoot (raw - 1)
+
+
+{-| Build an arrow with **no** identity in its arrow slot.
+
+Route every construction site through this rather than `TLambda` directly, so
+an identity-policy change is one edit instead of two hundred. Only two sites
+may name a slot explicitly: `Compiler.Compile`, which stamps `SolverRoot` while
+the solver state is live (Phase 2b), and `AssignMVarIds.rewriteCanType`, which
+resolves those to global `Arrow` ids.
+
+**INVARIANT (`plans/lss-unknown-elimination.md` §4.6c, amended by Phase 2b):**
+a `Can.Type Name` carries `NoArrow` or `SolverRoot`, NEVER `Arrow`; a
+`Can.Type MVarId` carries `NoArrow` or `Arrow`, never `SolverRoot`. `PostSolve`
+works on `Can.Type Name`, so its whole-tree `existing == t` can now be split by
+a `SolverRoot` difference where it previously could not — see the note there.
+
+-}
+tLambda : Type id -> Type id -> Type id
+tLambda =
+    TLambda TypeIds.NoArrow
+
+
+{-| Re-export of `TypeIds.NoArrow` so pattern-heavy modules that already import
+`Compiler.AST.Canonical as Can` do not need a second import.
+-}
+noArrow : TypeIds.ArrowSlot
+noArrow =
+    TypeIds.NoArrow
 
 
 {-| Tracks whether a type alias has been fully expanded.
@@ -613,9 +669,20 @@ typeDecoder =
 typeEncoderS : StringTable -> Type Name -> Bytes.Encode.Encoder
 typeEncoderS st type_ =
     case type_ of
-        TLambda a b ->
+        TLambda slot a b ->
+            -- Phase 2b: the arrow's SOLVER ROOT INDEX must cross this boundary.
+            -- `Compiler.Compile` stamps it while `solverState` is live, and
+            -- `AssignMVarIds` — which runs on the reassembled GlobalGraph, i.e.
+            -- on the far side of this codec — is what resolves it to a global
+            -- `ArrowId`. Encoded as `0` for "none" and `idx + 1` otherwise, so
+            -- the common unstamped case is a single zero byte.
+            --
+            -- `Arrow` is unrepresentable here BY CONSTRUCTION: this codec is
+            -- `Can.Type Name` only, and `Arrow` ids exist only in
+            -- `Can.Type MVarId`. It encodes as `0` if it ever appears.
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 0
+                , BE.int (arrowSlotToInt slot)
                 , typeEncoderS st a
                 , typeEncoderS st b
                 ]
@@ -671,7 +738,8 @@ typeDecoderS st =
             (\idx ->
                 case idx of
                     0 ->
-                        Bytes.Decode.map2 TLambda
+                        Bytes.Decode.map3 (\raw a b -> TLambda (arrowSlotFromInt raw) a b)
+                            BD.int
                             (typeDecoderS st)
                             (typeDecoderS st)
 
@@ -1533,7 +1601,7 @@ collectStringsFromAnnotation (Forall freeVars tipe) acc =
 collectStringsFromType : Type Name -> Set String -> Set String
 collectStringsFromType type_ acc =
     case type_ of
-        TLambda a b ->
+        TLambda _ a b ->
             acc
                 |> collectStringsFromType a
                 |> collectStringsFromType b

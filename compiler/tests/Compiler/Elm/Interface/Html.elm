@@ -78,4 +78,4 @@ textAnnotation =
         htmlType =
             Can.TType ModuleName.virtualDom "Node" [ Can.TVar "msg" ]
     in
-    Can.Forall (Dict.singleton "msg" ()) (Can.TLambda stringType htmlType)
+    Can.Forall (Dict.singleton "msg" ()) (Can.tLambda stringType htmlType)

@@ -417,7 +417,7 @@ unifyHelp env canType monoType subst =
         ( Can.TType (IO.Canonical ( "elm", "core" ) "String") "String" [], Mono.MString ) ->
             ( subst, env )
 
-        ( Can.TLambda from to, Mono.MFunction _ anno args ret ) ->
+        ( Can.TLambda _ from to, Mono.MFunction _ anno args ret ) ->
             case args of
                 [] ->
                     ( subst, env )
@@ -605,10 +605,10 @@ unifyArgsOnly env canFuncType argTypes subst =
             ( subst, env )
 
         -- Fast path: single argument (most common for curried Elm)
-        ( Can.TLambda from _, [ singleArg ] ) ->
+        ( Can.TLambda _ from _, [ singleArg ] ) ->
             unifyHelp env from singleArg subst
 
-        ( Can.TLambda from to, arg0 :: rest ) ->
+        ( Can.TLambda _ from to, arg0 :: rest ) ->
             let
                 ( subst1, env1 ) =
                     unifyHelp env from arg0 subst
@@ -834,7 +834,7 @@ applySubstPureI env subst canType intern =
                         Mono.CEcoValue ->
                             ( Mono.MVar mvarId constraint, intern )
 
-        Can.TLambda from to ->
+        Can.TLambda _ from to ->
             applySubstLambdaChainI env subst [ from ] to intern
 
         Can.TType canonical name args ->
@@ -1097,7 +1097,7 @@ collectMVarIdsFromMonoHelp monoType (( acc, seen ) as pair) =
 applySubstLambdaChainI : MVarEnv -> Substitution -> List (Can.Type MVarId) -> Can.Type MVarId -> Intern -> ( Mono.MonoType, Intern )
 applySubstLambdaChainI env subst argsAcc to intern =
     case to of
-        Can.TLambda from innerTo ->
+        Can.TLambda _ from innerTo ->
             applySubstLambdaChainI env subst (from :: argsAcc) innerTo intern
 
         _ ->
@@ -1277,8 +1277,30 @@ renameMVarIdsInCanType renameMap canType =
                 Nothing ->
                     canType
 
-        Can.TLambda from to ->
-            Can.TLambda
+        Can.TLambda aid from to ->
+            -- ⚠️ THIS CLONES ARROW IDS (Phase 2a §4.7, and the register's
+            -- "clone rule"). The function exists to FRESHEN — `buildSchemeInfo`
+            -- / `refreshSchemeInfo` call it precisely to stop stale MVar
+            -- bindings leaking into a new call site that reuses a cached
+            -- scheme. Copying the arrow ids into the "fresh" copy is the same
+            -- defect one level up: an `arrowMemo` load would resolve the
+            -- original and the instantiation to ONE slot, i.e. every call site
+            -- of a cached scheme would share one lambda set.
+            --
+            -- SOUND ONLY WHILE this output never reaches `Store.loadType*`.
+            -- It does not today: this module is the SUBST engine, nothing
+            -- under `Compiler/MonoSolver/` imports it, and the subst engine
+            -- has no `Store` and no `arrowMemo`. Preserving (rather than
+            -- dropping to `NoArrow`) keeps the function honest about what it
+            -- renames — it renames MVarIds, nothing else.
+            --
+            -- The moment the solver routes through it, or this helper is
+            -- reused for solver-side instantiation, it MUST thread an
+            -- `ArrowId` supply and mint fresh ids per `TLambda`. The supply's
+            -- natural home is `MVarEnv` (`Monomorphize/State.elm`), which is
+            -- already threaded through both callers and already carries the
+            -- MVarId supply.
+            Can.TLambda aid
                 (renameMVarIdsInCanType renameMap from)
                 (renameMVarIdsInCanType renameMap to)
 
@@ -1371,7 +1393,7 @@ collectMVarIdsHelp canType (( acc, seen ) as pair) =
             else
                 ( mvarId :: acc, Set.insert key seen )
 
-        Can.TLambda from to ->
+        Can.TLambda _ from to ->
             collectMVarIdsHelp from (collectMVarIdsHelp to pair)
 
         Can.TType _ _ args ->
@@ -1426,7 +1448,7 @@ collectMVarIdsHelp canType (( acc, seen ) as pair) =
 flattenTLambda : Can.Type MVarId -> List (Can.Type MVarId) -> ( List (Can.Type MVarId), Can.Type MVarId )
 flattenTLambda canType acc =
     case canType of
-        Can.TLambda from to ->
+        Can.TLambda _ from to ->
             flattenTLambda to (from :: acc)
 
         Can.TAlias _ _ _ (Can.Filled inner) ->
@@ -1591,6 +1613,11 @@ buildCurriedFuncType schemeArgs resolvedArgs resultMono =
 
 {-| Build a curried Can.Type chain: args ++ result → TLambda arg0 (TLambda arg1 ... result).
 When args is empty, returns result unchanged.
+
+Phase 2a §4.7: `NoArrow` on every arrow — this is a NEW spine (the
+partial-application residual), so no original id exists to carry. Subst engine
+only; nothing under `Compiler/MonoSolver/` reaches it.
+
 -}
 buildCurriedCanType : List (Can.Type MVarId) -> Can.Type MVarId -> Can.Type MVarId
 buildCurriedCanType args result =
@@ -1599,7 +1626,7 @@ buildCurriedCanType args result =
             result
 
         first :: rest ->
-            Can.TLambda first (buildCurriedCanType rest result)
+            Can.tLambda first (buildCurriedCanType rest result)
 
 
 

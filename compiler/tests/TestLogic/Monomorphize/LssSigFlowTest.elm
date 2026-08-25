@@ -195,7 +195,7 @@ suite =
                                 ("expected LTop on every pick result arrow (honesty rule), got: "
                                     ++ describeAnnos resultAnnos
                                 )
-        , Test.test "5. TailDef pin: tail-recursive countdown transports k to its result arrow flag-on (peel + WpSelf)" <|
+        , Test.test "5. TailDef pin: tail-recursive countdown transports k to its result arrow flag-on (peel + WpSelf); flag-off it is UNWRITTEN" <|
             \() ->
                 case ( run True countdownModule, run False countdownModule ) of
                     ( Ok on, Ok off ) ->
@@ -206,12 +206,22 @@ suite =
                             offRes =
                                 List.filterMap deepestRetAnno (demandsOf "countdown" off)
                         in
-                        if List.any (annoHasSize 1) onRes && List.all (\anno -> anno == Mono.LTop) offRes then
+                        -- Phase 1 (plans/lss-unknown-elimination.md): the
+                        -- flag-off arm reads a set VARIABLE, not `LTop`, and that
+                        -- is FREE INFORMATION rather than a fixture chore —
+                        -- with sigFlow off nothing ever WRITES this result
+                        -- arrow, so the position is unconstrained, not widened.
+                        -- Before Phase 1b that same position read `LTop`
+                        -- because `monoTypeToVarC` re-encoded the unwritten
+                        -- demand as an explicit `LsTop` (the §0.1 laundering).
+                        -- The pin's content is unchanged: flag-on must produce
+                        -- a real 1-member set, flag-off must produce NO set.
+                        if List.any (annoHasSize 1) onRes && List.all isVarAnno offRes then
                             Expect.pass
 
                         else
                             Expect.fail
-                                ("expected a 1-member LSet on a countdown result arrow flag-on and LTop flag-off; on="
+                                ("expected a 1-member LSet on a countdown result arrow flag-on and a set VARIABLE flag-off; on="
                                     ++ describeAnnos onRes
                                     ++ " off="
                                     ++ describeAnnos offRes
@@ -367,17 +377,36 @@ suite =
                                 demandsOf "useH" graph
                                     |> List.concatMap hofParamInnerAnnos
                         in
-                        -- §7.6's second step, done: the exact annos pinned
-                        -- from the first run are [LTop, LTop] — the hof-use
-                        -- edges flow through the let hub and the inner arrows
-                        -- resolve to ⊤ at this fixture's demand (k's member
+                        -- §7.6's second step, done. The pinned annos are two
+                        -- set VARIABLES — and the LABEL says
+                        -- exactly what the comment always said: the hof-use
+                        -- edges flow through the let hub and k's member
                         -- reaches h.param, whose set the hof-param edge then
-                        -- covers; the CALLER-side hof params read ⊤ because
-                        -- useH's own instantiation writes no members into
-                        -- them). The pin still catches the miscompile class:
-                        -- a BACKWARDS flip manufactures a k-less non-⊤ set
-                        -- here, which [LTop, LTop] excludes.
-                        Expect.equal [ Mono.LTop, Mono.LTop ] hofInnerAnnos
+                        -- covers, but the CALLER-side hof params are read
+                        -- because `useH`'s own instantiation WRITES NO MEMBERS
+                        -- INTO THEM. That is an absence, not a widening, and
+                        -- since Phase 1b (plans/lss-unknown-elimination.md) the
+                        -- annotation distinguishes the two. Pre-1b it read
+                        -- `LTop` only because `monoTypeToVarC` re-encoded the
+                        -- unwritten demand as explicit poison.
+                        --
+                        -- The pin still catches the miscompile class it exists
+                        -- for: a BACKWARDS flip manufactures a k-LESS NON-⊤
+                        -- SET here, and `LVar` excludes an `LSet` exactly as
+                        -- `LTop` did.
+                        --
+                        -- Phase 3 asserts the SHAPE, not the numbers: the
+                        -- canonical numbering is per-type walk order, so
+                        -- pinning literal ids would make this a churn magnet
+                        -- without adding a claim. What matters is that both
+                        -- positions are variables — and whether they are the
+                        -- SAME variable, which is the paper's α and is pinned
+                        -- explicitly below.
+                        Expect.equal ( 2, True, False )
+                            ( List.length hofInnerAnnos
+                            , List.all isVarAnno hofInnerAnnos
+                            , List.any (annoHasSize 1) hofInnerAnnos
+                            )
         ]
 
 
@@ -544,6 +573,16 @@ hofParamInnerAnnos t =
             []
 
 
+isVarAnno : Mono.LambdaSetAnno -> Bool
+isVarAnno anno =
+    case anno of
+        Mono.LVar _ ->
+            True
+
+        _ ->
+            False
+
+
 annoHasSize : Int -> Mono.LambdaSetAnno -> Bool
 annoHasSize n anno =
     case anno of
@@ -551,6 +590,9 @@ annoHasSize n anno =
             List.length members == n
 
         Mono.LTop ->
+            False
+
+        Mono.LVar _ ->
             False
 
 
@@ -562,6 +604,9 @@ describeAnnos annos =
                 case anno of
                     Mono.LTop ->
                         "LTop"
+
+                    Mono.LVar n ->
+                        "LVar" ++ String.fromInt n
 
                     Mono.LSet ms ->
                         "LSet[" ++ String.join "," (List.map String.fromInt ms) ++ "]"

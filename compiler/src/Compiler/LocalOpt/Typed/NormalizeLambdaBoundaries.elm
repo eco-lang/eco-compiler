@@ -873,7 +873,7 @@ peelLambdaTypes count tipe =
 
     else
         case tipe of
-            Can.TLambda _ result ->
+            Can.TLambda _ _ result ->
                 peelLambdaTypes (count - 1) result
 
             _ ->

@@ -840,7 +840,7 @@ addDef types def =
             let
                 tipe : Can.Type Name
                 tipe =
-                    List.foldr Can.TLambda resultType (List.map Tuple.second typedArgs)
+                    List.foldr Can.tLambda resultType (List.map Tuple.second typedArgs)
             in
             Dict.insert name (Ok tipe) types
 

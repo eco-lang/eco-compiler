@@ -18,6 +18,29 @@ The golden values were captured from the pre-Design-B reified-DSL generator
 reproduce them byte-for-byte: a mismatch means a spine loop folds in the
 wrong order or a variable is allocated at the wrong step.
 
+**REBASED TWICE on 2026-08-24 for `binop-chains`, `pipe-chains`,
+`top-level-vars` and `typed-defs`** — the four corpus entries whose constraint
+output embeds an arrow-bearing `Can.Type` (the cached annotations on `Binop` /
+`VarForeign` / typed defs). Both rebases are REPRESENTATION-ONLY:
+
+1.  Phase 2a (`plans/lss-unknown-elimination.md` §4.1): `Can.TLambda` gained an
+    arrow-identity field, so `Debug.toString` gained one value per arrow.
+2.  Phase 2b (§4.9): that field became `TypeIds.ArrowSlot`, so the printed form
+    went from `Id 0` to `NoArrow`.
+
+The CONSTRAINT is unchanged in both cases — the constraint generator runs
+before any arrow identity is assigned, so every arrow here is `NoArrow` — and
+the independent evidence is that a whole self-compile emits BYTE-IDENTICAL MLIR
+across both changes (arms C/E of the plan's series, and `msoff` ≡ armE under
+2b). The nine corpus entries with no arrow-bearing `Can.Type` were untouched
+BOTH times, which is the shape a representation-only rebase must have; if a
+future rebase moves an arrow-free entry, it is not representation-only.
+
+`if-chain` was ALREADY failing before any of this work and its actual value has
+not moved through either rebase (`1208837591,366174875` throughout) — it carries
+no arrow-bearing type, so it is stale for an unrelated reason and is left
+alone.
+
 To debug a drift: temporarily swap `fingerprints` for `debugStrings` in a
 failing case and diff the two `Debug.toString` outputs.
 
@@ -336,15 +359,15 @@ suite =
     Test.describe "Golden constraint fingerprints (byte-identity gate)"
         [ goldenSrc "literals-containers" ( 2511266603, 4226193006 ) literalsContainers
         , goldenSrc "access-update-accessor" ( 2324415555, 136880178 ) accessUpdateAccessor
-        , goldenSrc "binop-chains" ( 2019543323, 4270514405 ) binopChains
-        , goldenSrc "pipe-chains" ( 2155287695, 1915210536 ) pipeChains
+        , goldenSrc "binop-chains" ( 430831143, 3366310689 ) binopChains
+        , goldenSrc "pipe-chains" ( 1069070543, 2887143088 ) pipeChains
         , goldenSrc "call-shapes" ( 132171800, 639265737 ) callShapes
         , goldenSrc "if-chain" ( 2818725526, 50115275 ) ifChain
         , goldenSrc "case-list-patterns" ( 3193721138, 773629378 ) caseListPatterns
         , goldenSrc "case-misc-patterns" ( 2621323093, 2815270446 ) caseMiscPatterns
         , goldenSrc "record-unit-lambdas" ( 2397726897, 3888057001 ) recordUnitLambdas
         , goldenSrc "let-family" ( 3480157346, 776512907 ) letFamily
-        , goldenSrc "top-level-vars" ( 4084548975, 3321295038 ) topLevelVars
-        , goldenSrc "typed-defs" ( 1830534477, 2321849689 ) typedDefs
+        , goldenSrc "top-level-vars" ( 2604201531, 227965378 ) topLevelVars
+        , goldenSrc "typed-defs" ( 3380026013, 2639813465 ) typedDefs
         , goldenCan "kernel-var" ( 2702318790, 1175847913 ) kernelVar
         ]

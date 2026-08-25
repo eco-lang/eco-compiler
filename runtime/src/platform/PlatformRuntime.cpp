@@ -688,9 +688,19 @@ static void* workerSendToAppEvaluator(void* rawArgs[]) {
     // Extract tuple fields
     void* pairPtr = resolveHP(pair);
     if (!pairPtr) return reinterpret_cast<void*>(encodeHP(Elm::alloc::unit()));
+    // Same unboxed-slot hazard as `initWorker`'s init tuple — see the comment
+    // there. `update : Msg -> Model -> ( Model, Cmd Msg )` returns the model in
+    // slot a, and for an unboxed model type that slot is a raw scalar.
     Tuple2* tuple = static_cast<Tuple2*>(pairPtr);
-    HPointer newModel = tuple->a.p;
-    HPointer newCmd = tuple->b.p;
+    const u32 updModelKind = tuple->header.unboxed & 0x3;
+    const u32 updCmdKind = (tuple->header.unboxed >> 2) & 0x3;
+    Elm::Unboxable updModelSlot = tuple->a;
+    HPointer newModel = Elm::alloc::boxElement(updModelSlot, updModelKind);
+
+    pairPtr = resolveHP(pair);
+    if (!pairPtr) return reinterpret_cast<void*>(encodeHP(Elm::alloc::unit()));
+    tuple = static_cast<Tuple2*>(pairPtr);
+    HPointer newCmd = Elm::alloc::boxElement(tuple->b, updCmdKind);
 
     // Update model storage
     runtime.setModelStorage(encodeHP(newModel));
@@ -806,9 +816,33 @@ HPointer PlatformRuntime::initWorker(HPointer impl) {
     // otherwise become stale by the time we hand it to enqueueEffects.
     void* pairPtr = resolveHP(initPair);
     if (!pairPtr) return emptyRecord();
+
+    // The model slot may be UNBOXED. `( Int, Cmd msg )` stores a raw i64 in
+    // slot a and says so in `header.unboxed` (2 bits per slot, 00=boxed HPointer,
+    // 01=Int, 10=Float, 11=Char). Reading `.p` unconditionally reinterprets
+    // that scalar as a pointer: for `init _ = ( 0, … )` the word is literally
+    // 0, and the first thing that resolves it — `callClosure1(subscriptionsFn,
+    // model)` → spliceArgsForSaturatedCall → Allocator::resolve — dereferences
+    // it and SIGSEGVs. Record and embedded-constant models hid this for years
+    // because they really are pointers.
+    //
+    // Box it: the platform boundary is all-boxed both ways — `callClosure1/2`
+    // hand the model back to Elm through the all-boxed arg layout, and
+    // HEAP_035 forbids a slot holding a raw scalar from ever entering the root
+    // set, which `modelStorage_` does two lines below.
+    //
+    // `boxElement` ALLOCATES for an unboxed kind, which can move `initTuple`,
+    // so `initPair` is re-resolved before slot b is read.
     Tuple2* initTuple = static_cast<Tuple2*>(pairPtr);
-    HPointer model = initTuple->a.p;
-    HPointer cmd0 = initTuple->b.p;
+    const u32 initModelKind = initTuple->header.unboxed & 0x3;
+    const u32 initCmdKind = (initTuple->header.unboxed >> 2) & 0x3;
+    Elm::Unboxable initModelSlot = initTuple->a;
+    HPointer model = Elm::alloc::boxElement(initModelSlot, initModelKind);
+
+    pairPtr = resolveHP(initPair);
+    if (!pairPtr) return emptyRecord();
+    initTuple = static_cast<Tuple2*>(pairPtr);
+    HPointer cmd0 = Elm::alloc::boxElement(initTuple->b, initCmdKind);
 
     // Phase 3: Set up model storage as a GC root
     modelStorage_ = encodeHP(model);

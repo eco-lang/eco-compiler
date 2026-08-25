@@ -73,7 +73,7 @@ for unbound names.
 fromSrcType : FreeVars -> Can.Type Name -> IO Type
 fromSrcType freeVars sourceType =
     case sourceType of
-        Can.TLambda arg result ->
+        Can.TLambda _ arg result ->
             IO.pure FunN
                 |> IO.apply (fromSrcType freeVars arg)
                 |> IO.apply (fromSrcType freeVars result)

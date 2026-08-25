@@ -109,7 +109,7 @@ basicsUnions =
 collectFreeVars : Can.Type Name -> Can.FreeVars
 collectFreeVars tipe =
     case tipe of
-        Can.TLambda a b ->
+        Can.TLambda _ a b ->
             Dict.union (collectFreeVars a) (collectFreeVars b)
 
         Can.TVar name ->
@@ -192,42 +192,42 @@ standardBinops =
 
         -- Number -> Number -> Number
         numBinType =
-            Can.TLambda numberVar (Can.TLambda numberVar numberVar)
+            Can.tLambda numberVar (Can.tLambda numberVar numberVar)
 
         -- a -> a -> Bool
         eqType =
-            Can.TLambda aVar (Can.TLambda aVar boolType)
+            Can.tLambda aVar (Can.tLambda aVar boolType)
 
         -- comparable -> comparable -> Bool
         compType =
-            Can.TLambda comparableVar (Can.TLambda comparableVar boolType)
+            Can.tLambda comparableVar (Can.tLambda comparableVar boolType)
 
         -- appendable -> appendable -> appendable
         appendType =
-            Can.TLambda appendableVar (Can.TLambda appendableVar appendableVar)
+            Can.tLambda appendableVar (Can.tLambda appendableVar appendableVar)
 
         -- Bool -> Bool -> Bool
         boolBinType =
-            Can.TLambda boolType (Can.TLambda boolType boolType)
+            Can.tLambda boolType (Can.tLambda boolType boolType)
 
         -- a -> (a -> b) -> b (for |>)
         pipeRType =
-            Can.TLambda aVar (Can.TLambda (Can.TLambda aVar bVar) bVar)
+            Can.tLambda aVar (Can.tLambda (Can.tLambda aVar bVar) bVar)
 
         -- (a -> b) -> a -> b (for <|)
         pipeLType =
-            Can.TLambda (Can.TLambda aVar bVar) (Can.TLambda aVar bVar)
+            Can.tLambda (Can.tLambda aVar bVar) (Can.tLambda aVar bVar)
 
         cVar =
             Can.TVar "c"
 
         -- (a -> b) -> (b -> c) -> (a -> c) (for >>)
         composeRType =
-            Can.TLambda (Can.TLambda aVar bVar) (Can.TLambda (Can.TLambda bVar cVar) (Can.TLambda aVar cVar))
+            Can.tLambda (Can.tLambda aVar bVar) (Can.tLambda (Can.tLambda bVar cVar) (Can.tLambda aVar cVar))
 
         -- (b -> c) -> (a -> b) -> (a -> c) (for <<)
         composeLType =
-            Can.TLambda (Can.TLambda bVar cVar) (Can.TLambda (Can.TLambda aVar bVar) (Can.TLambda aVar cVar))
+            Can.tLambda (Can.tLambda bVar cVar) (Can.tLambda (Can.tLambda aVar bVar) (Can.tLambda aVar cVar))
     in
     Dict.fromList
         [ -- Arithmetic (precedence 6-7)
@@ -486,32 +486,32 @@ basicsValues =
     Dict.fromList
         [ -- remainderBy : Int -> Int -> Int
           ( "remainderBy"
-          , mkAnnotation (Can.TLambda intType (Can.TLambda intType intType))
+          , mkAnnotation (Can.tLambda intType (Can.tLambda intType intType))
           )
 
         -- ceiling : Float -> Int
         , ( "ceiling"
-          , mkAnnotation (Can.TLambda floatType intType)
+          , mkAnnotation (Can.tLambda floatType intType)
           )
 
         -- floor : Float -> Int
         , ( "floor"
-          , mkAnnotation (Can.TLambda floatType intType)
+          , mkAnnotation (Can.tLambda floatType intType)
           )
 
         -- logBase : Float -> Float -> Float
         , ( "logBase"
-          , mkAnnotation (Can.TLambda floatType (Can.TLambda floatType floatType))
+          , mkAnnotation (Can.tLambda floatType (Can.tLambda floatType floatType))
           )
 
         -- toFloat : Int -> Float
         , ( "toFloat"
-          , mkAnnotation (Can.TLambda intType floatType)
+          , mkAnnotation (Can.tLambda intType floatType)
           )
 
         -- always : a -> b -> a
         , ( "always"
-          , mkAnnotation (Can.TLambda aVar (Can.TLambda bVar aVar))
+          , mkAnnotation (Can.tLambda aVar (Can.tLambda bVar aVar))
           )
 
         -- max : comparable -> comparable -> comparable
@@ -520,27 +520,27 @@ basicsValues =
                 comparableVar =
                     Can.TVar "comparable"
             in
-            mkAnnotation (Can.TLambda comparableVar (Can.TLambda comparableVar comparableVar))
+            mkAnnotation (Can.tLambda comparableVar (Can.tLambda comparableVar comparableVar))
           )
 
         -- identity : a -> a
         , ( "identity"
-          , mkAnnotation (Can.TLambda aVar aVar)
+          , mkAnnotation (Can.tLambda aVar aVar)
           )
 
         -- not : Bool -> Bool
         , ( "not"
-          , mkAnnotation (Can.TLambda boolType boolType)
+          , mkAnnotation (Can.tLambda boolType boolType)
           )
 
         -- negate : number -> number
         , ( "negate"
-          , mkAnnotation (Can.TLambda numberVar numberVar)
+          , mkAnnotation (Can.tLambda numberVar numberVar)
           )
 
         -- abs : number -> number
         , ( "abs"
-          , mkAnnotation (Can.TLambda numberVar numberVar)
+          , mkAnnotation (Can.tLambda numberVar numberVar)
           )
 
         -- Float constants and math functions
@@ -556,62 +556,62 @@ basicsValues =
 
         -- sqrt : Float -> Float
         , ( "sqrt"
-          , mkAnnotation (Can.TLambda floatType floatType)
+          , mkAnnotation (Can.tLambda floatType floatType)
           )
 
         -- sin : Float -> Float
         , ( "sin"
-          , mkAnnotation (Can.TLambda floatType floatType)
+          , mkAnnotation (Can.tLambda floatType floatType)
           )
 
         -- cos : Float -> Float
         , ( "cos"
-          , mkAnnotation (Can.TLambda floatType floatType)
+          , mkAnnotation (Can.tLambda floatType floatType)
           )
 
         -- tan : Float -> Float
         , ( "tan"
-          , mkAnnotation (Can.TLambda floatType floatType)
+          , mkAnnotation (Can.tLambda floatType floatType)
           )
 
         -- asin : Float -> Float
         , ( "asin"
-          , mkAnnotation (Can.TLambda floatType floatType)
+          , mkAnnotation (Can.tLambda floatType floatType)
           )
 
         -- acos : Float -> Float
         , ( "acos"
-          , mkAnnotation (Can.TLambda floatType floatType)
+          , mkAnnotation (Can.tLambda floatType floatType)
           )
 
         -- atan : Float -> Float
         , ( "atan"
-          , mkAnnotation (Can.TLambda floatType floatType)
+          , mkAnnotation (Can.tLambda floatType floatType)
           )
 
         -- atan2 : Float -> Float -> Float
         , ( "atan2"
-          , mkAnnotation (Can.TLambda floatType (Can.TLambda floatType floatType))
+          , mkAnnotation (Can.tLambda floatType (Can.tLambda floatType floatType))
           )
 
         -- round : Float -> Int
         , ( "round"
-          , mkAnnotation (Can.TLambda floatType intType)
+          , mkAnnotation (Can.tLambda floatType intType)
           )
 
         -- truncate : Float -> Int
         , ( "truncate"
-          , mkAnnotation (Can.TLambda floatType intType)
+          , mkAnnotation (Can.tLambda floatType intType)
           )
 
         -- isNaN : Float -> Bool
         , ( "isNaN"
-          , mkAnnotation (Can.TLambda floatType boolType)
+          , mkAnnotation (Can.tLambda floatType boolType)
           )
 
         -- isInfinite : Float -> Bool
         , ( "isInfinite"
-          , mkAnnotation (Can.TLambda floatType boolType)
+          , mkAnnotation (Can.tLambda floatType boolType)
           )
 
         -- min : comparable -> comparable -> comparable
@@ -620,12 +620,12 @@ basicsValues =
                 comparableVar =
                     Can.TVar "comparable"
             in
-            mkAnnotation (Can.TLambda comparableVar (Can.TLambda comparableVar comparableVar))
+            mkAnnotation (Can.tLambda comparableVar (Can.tLambda comparableVar comparableVar))
           )
 
         -- clamp : number -> number -> number -> number
         , ( "clamp"
-          , mkAnnotation (Can.TLambda numberVar (Can.TLambda numberVar (Can.TLambda numberVar numberVar)))
+          , mkAnnotation (Can.tLambda numberVar (Can.tLambda numberVar (Can.tLambda numberVar numberVar)))
           )
 
         -- compare : comparable -> comparable -> Order
@@ -637,6 +637,6 @@ basicsValues =
                 orderType =
                     Can.TType ModuleName.basics "Order" []
             in
-            mkAnnotation (Can.TLambda comparableVar (Can.TLambda comparableVar orderType))
+            mkAnnotation (Can.tLambda comparableVar (Can.tLambda comparableVar orderType))
           )
         ]

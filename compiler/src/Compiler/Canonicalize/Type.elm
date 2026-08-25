@@ -89,7 +89,7 @@ canonicalize env (A.At typeRegion tipe) =
                 |> ReportingResult.andThen (canonicalizeType env typeRegion name (List.map Tuple.second args))
 
         Src.TLambda ( _, a ) ( _, b ) ->
-            ReportingResult.map Can.TLambda (canonicalize env a)
+            ReportingResult.map Can.tLambda (canonicalize env a)
                 |> ReportingResult.apply (canonicalize env b)
 
         Src.TRecord fields maybeExt _ ->
@@ -183,7 +183,7 @@ checkArity expected region name args answer =
 addFreeVars : Dict Name.Name () -> Can.Type Name -> Dict Name.Name ()
 addFreeVars freeVars tipe =
     case tipe of
-        Can.TLambda arg result ->
+        Can.TLambda _ arg result ->
             addFreeVars (addFreeVars freeVars result) arg
 
         Can.TVar var ->

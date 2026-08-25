@@ -7,7 +7,7 @@ module Compiler.AST.Monomorphized exposing
     , SpecMap, specMapEmpty, specMapGet, specMapMember, specMapInsert
     , specMapSize, specMapIsEmpty, specMapFoldl, specMapToList, specMapValues, specMapRemove, specMapSingleton
     , SpecKeyMap, specKeyMapEmpty, specKeyMapGet, specKeyMapInsert, specKeyMapSize, globalHash
-    , LambdaSetAnno(..), widenSets, eqLayout, shallowLayoutKey, headAnno, unionAnno, singletonHeadMember, joinAnnotations, joinAnnotationsChanged, overlayAnnotations
+    , LambdaSetAnno(..), widenSets, eqModuloTopLabel, eqLayout, shallowLayoutKey, headAnno, unionAnno, singletonHeadMember, joinAnnotations, joinAnnotationsChanged, overlayAnnotations
     , typeNodesWithin, collectAnnoMembers
     , LambdaId(..)
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry
@@ -409,11 +409,30 @@ leafKeyTag mt =
             0
 
 
+{-| **`annoHash`, `toComparableFragments` and `annoKeyEq` must agree exactly.**
+
+`annoHash` feeds `mFunction`'s `specSeed` → `specHashOf` → the HashMap bucket
+in `Mono.specKeyMapGet` (`Registry.elm:107`). A hash that separates two
+annotations the key encoder MERGES puts them in different buckets, `eqKeySpec`
+is never consulted, and the registry mints a DUPLICATE SpecId per position —
+silent spec fan-out until MONO_030's `specBreadth` trips. A hash that MERGES two
+the encoder separates is harmless (a bucket collision the confirm rejects).
+**It compiles cleanly either way**, so the three functions are written to be
+read side by side.
+
+Phase 3: `LVar n` hashes by `n`, and NOT as `LTop`. The two are genuinely
+different — a variable encodes as a fresh flex slot and ⊤ as poison — so
+merging their keys would let a stored ⊤ poison a variable demand.
+
+-}
 annoHash : LambdaSetAnno -> Int
 annoHash anno =
     case anno of
         LTop ->
             3
+
+        LVar n ->
+            mixHash 17 n
 
         LSet members ->
             List.foldl (\m h -> mixHash h m) 5 members
@@ -579,7 +598,7 @@ eqKeyWith annoSensitive a b =
             nameA == nameB && homeA == homeB && eqKeyList annoSensitive argsA argsB
 
         ( MFunction _ annoA argsA retA, MFunction _ annoB argsB retB ) ->
-            (not annoSensitive || annoA == annoB)
+            (not annoSensitive || annoKeyEq annoA annoB)
                 && eqKeyList annoSensitive argsA argsB
                 && eqKeyWith annoSensitive retA retB
 
@@ -590,6 +609,37 @@ eqKeyWith annoSensitive a b =
                     leafKeyTag a
             in
             tagA /= 0 && tagA == leafKeyTag b
+
+
+{-| Key-flavour equality of two arrow annotations: the confirm-side half of the
+law stated on `annoHash`, and it must decide EXACTLY what
+`toComparableFragments` decides.
+
+Phase 3 makes this plain structural equality: `LTop` matches only `LTop`,
+`LVar i` only `LVar i`, `LSet xs` only `LSet xs`. It stays a named function
+rather than `==` because the law is worth a place to hang the comment, and
+because a future annotation carrying a non-key payload would need it again.
+
+`identicalOr`'s `a == b` fast path stays sound: `==` is now exactly this on the
+annotation, and strictly stronger overall (it also separates `MVar` ids the key
+merges), which is the safe direction — it can only send a pair into the
+structural walk, never past it.
+
+-}
+annoKeyEq : LambdaSetAnno -> LambdaSetAnno -> Bool
+annoKeyEq a b =
+    case ( a, b ) of
+        ( LSet xs, LSet ys ) ->
+            xs == ys
+
+        ( LVar i, LVar j ) ->
+            i == j
+
+        ( LTop, LTop ) ->
+            True
+
+        _ ->
+            False
 
 
 eqKeyList : Bool -> List MonoType -> List MonoType -> Bool
@@ -847,16 +897,60 @@ specMapValues m =
 -- ============================================================================
 
 
-{-| The lambda-set fact on an arrow. `LTop` = statically unknown or
-deliberately widened — exactly today's world; the whole existing pipeline
-(boxed closures, papCreate/papExtend, CallGenericApply) is the correct
-lowering of `LTop`. `LSet` is a non-empty, ascending-sorted list of member
-ids (Phase-0 lambda ids + engine-interned globals/ctors/kernels/accessors);
-an unconstrained residual zonks to `LTop`, never to an empty set, so
-`LSet []` is unrepresentable by construction (LSS_001).
+{-| The lambda-set fact on an arrow.
+
+`LTop` = **genuinely widened**: a kernel/FFI boundary (LSS_004/021/022), the
+`maxSetSize`/`maxSpecsPerGlobal` budget cap, or a soundness fallback. The whole
+existing pipeline (boxed closures, papCreate/papExtend, CallGenericApply) is
+the correct lowering of it.
+
+`LVar n` = **the paper's α**: a set VARIABLE, "to be determined", not a
+commitment. Phase 3 (`plans/lss-set-variable.md`); it replaces Phase 1's
+anonymous `LUnknown`, and the difference is IDENTITY. `LUnknown` could say
+"nothing was written here" but not "these two arrows are the SAME unknown", so
+a store unification between two slots was DESTROYED by the annotation round
+trip: both read back `LUnknown`, and re-encoding minted two independent fresh
+slots. `LVar n` survives the round trip — `Store.monoTypeToVarC` mints ONE slot
+per distinct `n` — which is exactly `ℱ(t₁→t₂) = ℱ(t₁) --α--> ℱ(t₂)`.
+
+**`n` is scoped to the enclosing `MonoType` and CANONICALLY numbered** in the
+zonk's walk order (`Store.zonkSetSlot`, keyed by union-find repr). Two types may
+both use `LVar 0` for unrelated arrows; what matters is the SHARING PATTERN
+within one type, and canonical numbering makes that pattern part of the
+comparable key — so `(α → α)` and `(α → β)` key DIFFERENTLY, as they must,
+while two call sites with the same pattern key together. Instantiation is the
+re-encoding: each spec has a fresh store, so `monoTypeToVarC` minting per spec
+IS per-use instantiation. That is why Phase 3 needs no `Pools`.
+
+`LTop` = **genuinely widened, and after Phase 3 it means exactly ONE thing: the
+INCOMPLETENESS MARKER.** A kernel/FFI boundary (LSS_004/021/022), the
+`maxSetSize`/`maxSpecsPerGlobal` budget, or a soundness absorption — the places
+Eco's constraint system is not complete and the paper's least-solution rule
+therefore does not apply. ⊤-as-unknown died in Phase 1; ⊤-as-join-result
+survives only where two DIFFERENT variables or a variable and a concrete set
+meet (see `unionAnno`), which is the residue sum lowering would remove.
+
+`LSet` is a non-empty, ascending-sorted list of member ids (Phase-0 lambda ids
++ engine-interned globals/ctors/kernels/accessors); an unconstrained residual
+zonks to `LVar`, never to an empty set, so `LSet []` is unrepresentable by
+construction (LSS_001).
+
+**Key law.** `LVar` keys by its CANONICAL NUMBER, not by identity-erasure:
+`LVar i` and `LVar j` are the same key point iff `i == j`, and `LVar` is NEVER
+the same key point as `LTop` (they encode differently — a flex slot versus
+poison — so merging them would let a stored ⊤ poison a variable demand).
+`annoHash`, `toComparableFragments` and `annoKeyEq` must agree on this or the
+registry mints duplicate SpecIds with no compile error — see `annoHash`.
+
+**Consumers that are not the analysis treat `LVar` exactly as `LTop`:** it names
+no members, so nothing devirtualises and every multi-member arrow lowers to
+generic dispatch. Sum lowering is what changes that
+(`plans/lss-set-variable.md` §2), and it is deliberately NOT part of Phase 3.
+
 -}
 type LambdaSetAnno
     = LTop
+    | LVar Int
     | LSet (List Int)
 
 
@@ -932,6 +1026,11 @@ collectAnnoGo monoType acc =
 
                         LTop ->
                             acc
+
+                        LVar _ ->
+                            -- Contributes no members to the LSS_018 μ-tie,
+                            -- identically to LTop: a variable names nothing yet.
+                            acc
             in
             List.foldl collectAnnoGo (collectAnnoGo result acc1) args
 
@@ -951,9 +1050,124 @@ collectAnnoGo monoType acc =
             acc
 
 
+{-| Whole-tree equality **treating the two ⊤ labels as one point**
+(`plans/lss-unknown-elimination.md` Phase 1a).
+
+Callers that ask "are these two types literally the same?" as a fast path must
+not be split by a pure `LTop`-vs-`LVar` difference. The concrete case is a
+storeless `classify` result (all `LTop` by design — §3.2 of the
+unknown-elimination plan) compared against a store-zonked type (which carries
+`LVar` at unwritten arrows): plain `==` reports "different" for what is, to
+that caller, the same type. Note this is deliberately LOOSER than the KEY law
+(`annoKeyEq`), which does separate them — the key must, because they encode
+differently; a "did anything really change" fast path must not.
+
+Exactness matters here, which is why this normalises and then uses `==` rather
+than walking structurally: Elm's `==` on `Dict` is structural over the red-black
+TREE, and `Dict.map` preserves that shape, so `normalizeTopLabels a ==
+normalizeTopLabels b` is EXACTLY `a == b` on everything except the labels. A
+hand-written size-plus-probe walk would make more records compare equal than
+`==` does.
+
+Allocation-free in the common case: `a == b` decides it whenever neither side
+carries `LVar`, and the normalisation only runs when one does.
+
+-}
+eqModuloTopLabel : MonoType -> MonoType -> Bool
+eqModuloTopLabel a b =
+    (a == b)
+        || ((hasUnknownAnno a || hasUnknownAnno b)
+                && (normalizeTopLabels a == normalizeTopLabels b)
+           )
+
+
+{-| Does any arrow in the type carry `LVar`? Zero-allocation short-circuit
+guard for `eqModuloTopLabel` (the `TypeSubst.hasStaleConstraint` idiom).
+-}
+hasUnknownAnno : MonoType -> Bool
+hasUnknownAnno monoType =
+    case monoType of
+        MFunction _ anno args result ->
+            isVarAnno anno
+                || List.any hasUnknownAnno args
+                || hasUnknownAnno result
+
+        MList _ inner ->
+            hasUnknownAnno inner
+
+        MTuple _ elems ->
+            List.any hasUnknownAnno elems
+
+        MRecord _ fields ->
+            Dict.foldl (\_ t acc -> acc || hasUnknownAnno t) False fields
+
+        MCustom _ _ _ args ->
+            List.any hasUnknownAnno args
+
+        _ ->
+            False
+
+
+{-| Rewrite every `LVar` arrow annotation to `LTop`, keeping `LSet`s and
+record field-map tree shape intact. NOT `widenSets`, which erases sets too.
+-}
+
+
+isVarAnno : LambdaSetAnno -> Bool
+isVarAnno anno =
+    case anno of
+        LVar _ ->
+            True
+
+        _ ->
+            False
+normalizeTopLabels : MonoType -> MonoType
+normalizeTopLabels monoType =
+    case monoType of
+        MFunction _ anno args result ->
+            mFunction
+                (case anno of
+                    LVar _ ->
+                        LTop
+
+                    other ->
+                        other
+                )
+                (List.map normalizeTopLabels args)
+                (normalizeTopLabels result)
+
+        MList _ inner ->
+            mList (normalizeTopLabels inner)
+
+        MTuple _ elems ->
+            mTuple (List.map normalizeTopLabels elems)
+
+        MRecord _ fields ->
+            mRecord (Dict.map (\_ t -> normalizeTopLabels t) fields)
+
+        MCustom _ home name args ->
+            mCustom home name (List.map normalizeTopLabels args)
+
+        _ ->
+            monoType
+
+
 {-| Widen every arrow annotation to `LTop`, recursively. Used for
 annotation-insensitive keying/comparison (`eqLayout`, budget-widened
 specialization keys).
+
+**Stamps `LTop`, never `LVar` — deliberately, and this is load-bearing.**
+This is the normaliser that keeps five string-key derivations byte-identical
+across the label split: LSS_024 `specWidenedKeys` (`Engine.elm`), LSS_019
+ground member ids, the LSS_024 F-fence fingerprint (`AbiCloning.elm`), the
+`keyed = False` widened registry key, and the budget-widened key. It must stay
+in lockstep with `Intern.widenSets`, which carries the same warning: a
+divergence produces a different widened structure and therefore a different
+registry key, with NO compile error — the bootstrap is the only gate.
+
+`joinWidened` is correct unchanged: an `LVar` tree widens to an `LTop`
+tree, so `widened /= a` reports `True` and it terminates in one step.
+
 -}
 widenSets : MonoType -> MonoType
 widenSets monoType =
@@ -1321,9 +1535,18 @@ joinFieldsChanged fieldsA fieldsB =
             ( False, fieldsA )
 
 
-{-| Exactly `unionAnno a b == a`, decided without allocating: `LTop` covers
-everything, `LSet` never covers `LTop`, and `LSet xs` covers `LSet ys` iff the
-ascending `ys` is a subset of the ascending `xs` (one merge-scan, early exit).
+{-| Exactly `unionAnno a b == a`, decided without allocating: either ⊤ label
+covers everything, `LSet` never covers a ⊤ label, and `LSet xs` covers
+`LSet ys` iff the ascending `ys` is a subset of the ascending `xs` (one
+merge-scan, early exit).
+
+**This must stay EXACT against `unionAnno` — see the soundness law on
+`joinAnnotationsChanged`.** All pairs under the Phase-3 lattice:
+`(LTop,·) → LTop == a` ✓T; `(LVar i,LVar i) → LVar i == a` ✓T;
+`(LVar i,LVar j) i/=j → LTop /= LVar i` ✓F; `(LVar,LTop) → LTop /= LVar` ✓F;
+`(LVar,LSet) → LTop /= LVar` ✓F; `(LSet,·non-LSet) → LTop /= LSet` ✓F;
+`(LSet xs,LSet ys) → subset` unchanged.
+
 -}
 annoCovers : LambdaSetAnno -> LambdaSetAnno -> Bool
 annoCovers a b =
@@ -1331,7 +1554,16 @@ annoCovers a b =
         ( LTop, _ ) ->
             True
 
+        ( LVar i, LVar j ) ->
+            i == j
+
+        ( LVar _, _ ) ->
+            False
+
         ( LSet _, LTop ) ->
+            False
+
+        ( LSet _, LVar _ ) ->
             False
 
         ( LSet xs, LSet ys ) ->
@@ -1362,10 +1594,17 @@ sortedSubsetOf ys xs =
 
 {-| Structure from the FIRST type, lambda-set annotations from the SECOND
 where the layouts agree pointwise (keep the first's annotation on any
-mismatch). NOT a join: `unionAnno` treats `LTop` as absorbing, but here
-the first type is a storeless classification whose annotations are all
-`LTop` placeholders — the store zonk's sets must REPLACE them, not be
-absorbed by them.
+mismatch). NOT a join: `unionAnno` treats ⊤ as absorbing, but here the first
+type is a storeless classification whose annotations are all `LTop`
+placeholders — the store zonk's sets must REPLACE them, not be absorbed by
+them.
+
+(Phase 1 note: the storeless classifiers deliberately still stamp `LTop`, not
+`LVar` — see §3.2 of plans/lss-unknown-elimination.md. Their output is
+unconditionally discarded HERE in the solver path, so relabelling it would
+relabel nothing; and in the subst path it is the ENTIRE population, so
+relabelling it would silently zero `MapTemplate.declinedEngine`, whose whole
+purpose is to separate the subst population from real widening.)
 
 This is the M3-transport ABI guard: binder/param/node types must keep the
 byte-path `classify` STRUCTURE (the storeless classification is the ABI
@@ -1438,6 +1677,35 @@ singletonHeadMember monoType =
 
 {-| Join two annotations: the least annotation covering both. `LTop`
 absorbs; sets union (kept ascending-sorted for key canonicality).
+
+**Phase 3 — the join is now the honest residue of NOT having sum lowering, and
+nothing more.**
+
+The paper has no join operator at all: its α is never joined, it is GROUNDED,
+because an arrow's set becomes a tagged union and one code path serves every
+member. Eco has no such consumer yet (`plans/lss-set-variable.md` §2), so where
+two callers must share ONE specialization, that spec has to COMMIT to a single
+annotation — and this is that commitment.
+
+What survives, and why each arm is what it is:
+
+  - `LVar i ∪ LVar i` = `LVar i`. The SAME variable: nothing to decide. This is
+    the arm Phase 3 exists to create — Phase 1's anonymous `LUnknown` could not
+    tell "the same unknown" from "another unknown" and had to widen.
+  - `LVar i ∪ LVar j`, i ≠ j → `LTop`. Two DIFFERENT variables meeting at one
+    stored position. The paper would UNIFY them; a lattice join cannot, because
+    it has no store to write the substitution into. **This is a measurable
+    precision loss and it is the honest one to count** (see the `joinToTop`
+    census).
+  - `LVar ∪ LSet` → `LTop`. A variable is not a commitment to ∅, so keeping the
+    set would claim inhabitants the variable does not have; and keeping the
+    variable would drop members that do exist.
+  - `LTop` absorbs, as ever — it is the incompleteness marker.
+
+**This table and `Store.monoTypeToVarC`'s mint must stay in step**: the encoding
+(`LVar` → a fresh flex slot per distinct id, `LTop` → poison) is what makes
+these arms sound.
+
 -}
 unionAnno : LambdaSetAnno -> LambdaSetAnno -> LambdaSetAnno
 unionAnno a b =
@@ -1446,6 +1714,19 @@ unionAnno a b =
             LTop
 
         ( _, LTop ) ->
+            LTop
+
+        ( LVar i, LVar j ) ->
+            if i == j then
+                LVar i
+
+            else
+                LTop
+
+        ( LVar _, LSet _ ) ->
+            LTop
+
+        ( LSet _, LVar _ ) ->
             LTop
 
         ( LSet xs, LSet ys ) ->
@@ -2231,12 +2512,18 @@ toComparableFragments annoSensitive mt tail =
         MFunction _ anno args ret ->
             let
                 -- LTop must keep today's exact "A(" fragment so that
-                -- all-LTop graphs key byte-identically (M1 gate).
+                -- all-LTop graphs key byte-identically (M1 gate). Phase 3:
+                -- `LVar n` gets its OWN fragment carrying the canonical
+                -- number, so the SHARING PATTERN is part of the key —
+                -- `(α → α)` and `(α → β)` must not key alike.
                 annoKey =
                     if annoSensitive then
                         case anno of
                             LTop ->
                                 "A("
+
+                            LVar n ->
+                                "Av" ++ String.fromInt n ++ "("
 
                             LSet members ->
                                 "A[" ++ String.join "," (List.map String.fromInt members) ++ "]("

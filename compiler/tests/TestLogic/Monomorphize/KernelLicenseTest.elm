@@ -506,7 +506,7 @@ cCon =
 
 cFun : Can.Type String -> Can.Type String -> Can.Type String
 cFun =
-    Can.TLambda
+    Can.tLambda
 
 
 cUnit : Can.Type String
@@ -554,13 +554,32 @@ tripwire. Each entry is a REJECTED verdict from the 2026-08-20 survey.
 -}
 neverLicensable : List ( String, String )
 neverLicensable =
-    [ -- Task / Process / effect managers: the callback lands in the Task
-      -- object (Scheduler.cpp allocTask).
-      ( "Scheduler", "andThen" )
-    , ( "Scheduler", "onError" )
-    , ( "Scheduler", "binding" )
-    , ( "Scheduler", "succeed" )
-    , ( "Scheduler", "fail" )
+    [ -- Task / Process / effect managers.
+      --
+      -- NARROWED 2026-08-25. This list used to read "the callback lands in
+      -- the Task object (Scheduler.cpp allocTask)" and included
+      -- `succeed`/`fail`/`andThen`/`onError`. That reasoning was wrong:
+      -- storing into the Task you RETURN is not retention the set analysis
+      -- cares about — the scheduler reads the value back out of THAT SAME
+      -- Task, and the type's shared variables describe the edge exactly
+      -- (`a -> Task x a`, `(a -> Task x b) -> Task x a -> Task x b`). It is
+      -- `JsArray.singleton`, which has been licensed since the first audit.
+      -- Those four now carry `Transports` rows; see the CROSS-CALL predicate
+      -- in `KernelSetFacts`'s REJECTED section.
+      --
+      -- What stays here stays for a REASON, not by inertia:
+      --   binding/spawn  — mint a C++ closure through TaskBinding.hpp
+      --                    `makeBinding`. OPEN, not decided: the minted
+      --                    closure lands where no type variable names it, so
+      --                    predicate 3 fires mechanically rather than on a
+      --                    demonstrated hazard. Audit before licensing.
+      --   sendToApp/Self — genuinely CROSS-CALL: `rawSend` pushes the message
+      --                    into a process mailbox (Scheduler.cpp:476-484) and
+      --                    a DIFFERENT call's `update`/`onSelfMsg` receives
+      --                    it. `msg` does not appear in the result type at
+      --                    all. `sendToApp` also fails A3 (declared `void`).
+      --   Process.sleep  — unaudited.
+      ( "Scheduler", "binding" )
     , ( "Scheduler", "spawn" )
     , ( "Platform", "sendToApp" )
     , ( "Platform", "sendToSelf" )
@@ -688,6 +707,9 @@ annoHasSize n anno =
         Mono.LTop ->
             False
 
+        Mono.LVar _ ->
+            False
+
 
 describeAnnos : List Mono.LambdaSetAnno -> String
 describeAnnos annos =
@@ -697,6 +719,9 @@ describeAnnos annos =
                 case anno of
                     Mono.LTop ->
                         "LTop"
+
+                    Mono.LVar n ->
+                        "LVar" ++ String.fromInt n
 
                     Mono.LSet ms ->
                         "LSet[" ++ String.join "," (List.map String.fromInt ms) ++ "]"

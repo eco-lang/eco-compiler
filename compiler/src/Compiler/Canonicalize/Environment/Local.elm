@@ -488,7 +488,7 @@ toRecordCtor home name vars fields =
         alias : Can.Type Name
         alias =
             List.foldr
-                (\( _, t1 ) t2 -> Can.TLambda t1 t2)
+                (\( _, t1 ) t2 -> Can.tLambda t1 t2)
                 (Can.TAlias home name avars (Can.Filled (Can.TRecord fields Nothing)))
                 (Can.fieldsToList fields)
     in

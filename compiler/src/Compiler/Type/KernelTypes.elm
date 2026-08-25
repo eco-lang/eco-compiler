@@ -86,4 +86,4 @@ insertFirstUsage home name tipe env =
 -}
 buildFunctionType : List (Can.Type Name) -> Can.Type Name -> Can.Type Name
 buildFunctionType argTypes resultType =
-    List.foldr Can.TLambda resultType argTypes
+    List.foldr Can.tLambda resultType argTypes

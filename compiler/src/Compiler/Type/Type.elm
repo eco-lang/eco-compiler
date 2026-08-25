@@ -539,13 +539,13 @@ termToCanType term =
                 |> IO.map (Can.TType home name)
 
         Fun1 a b ->
-            IO.pure Can.TLambda
+            IO.pure Can.tLambda
                 |> IO.apply (variableToCanType a)
                 |> IO.apply (variableToCanType b)
 
         FunL a b _ ->
             -- Erasure: canonical types never see lambda sets.
-            IO.pure Can.TLambda
+            IO.pure Can.tLambda
                 |> IO.apply (variableToCanType a)
                 |> IO.apply (variableToCanType b)
 

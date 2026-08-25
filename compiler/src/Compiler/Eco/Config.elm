@@ -205,6 +205,21 @@ slots are minted in solver stores. Only meaningful under `EngineSolver`;
     already True.
   - `maxSetSize`: a zonked set larger than this widens to `LTop`.
   - `maxSpecsPerGlobal`: registry budget; past it, NEW demands key set-widened.
+    **512 since 2026-08-23** (was 64). Since LSS\_018 μ-tie the budget is
+    fan-out POLICY, not a termination requirement (see `muTie` below), so it
+    is free to be set where precision stops improving. Measured by the
+    2026-08-22 budget sweep (`/work/lss-knob-sweeps-report.md`): fast-dispatch
+    coverage rises 6.56 % → 22.11 % from budget 1 → 512 and is then FLAT to
+    4096 (22.11/22.44/22.47/22.47) — 512 is the knee, and the mono wall is
+    flat across the whole 1→4096 range (within the ±2.3 % noise floor). The
+    GAP-2 Phase-0 census (2026-08-23,
+    `plans/lss-gap2-callarg-transport.md` §2.6) independently confirms the
+    ceiling: the per-consumer keyed fan-out forecast peaks at 184
+    (`Task.andThen`) with four consumers above 64 and NONE above 512, so at
+    64 the hottest monadic families were running over budget and absorbing
+    new precision permanently (`join(⊤,{m}) = ⊤`, `HitNoopJoin`). Artifact-
+    affecting; hash token `lssB=<n>` when non-default, so a build pinned to
+    the old 64 keys its own cache entries.
   - `report`: render an LSS census to stderr after mono (excluded from `hash`,
     like `diffDump` — output-only).
 
@@ -318,6 +333,36 @@ type alias LssConfig =
     -- §2.R); the point is closing the exploitation gap for workloads that
     -- pass bare globals/ctors around more than a compiler does.
     , postSettleDevirt : Bool
+
+    -- Phase 2a arrow identity (plans/lss-unknown-elimination.md §4):
+    -- `Can.TLambda` carries a per-OCCURRENCE `ArrowId`, and `Store.loadTypeC`
+    -- memoises one SET SLOT per id per item, so repeated loads of the SAME
+    -- stamped type object share their lambda-set slots instead of minting a
+    -- disjoint slot each time (LSS_006's per-load fragmentation — the reason
+    -- ~11 hand-written transport artifacts exist).
+    --
+    -- DEFAULT-OFF: the ids are minted unconditionally (harmless — nothing
+    -- reads them when this is off) but the MEMO is gated, so flag-off is
+    -- byte-identical to pre-2a and the two-binary rail applies. Artifact-
+    -- affecting when on (shared slots -> annotations -> keyed spec keys);
+    -- hash token `lssAI=1` then. Escape hatch / opt-in env var:
+    -- `ECO_MONO_LSS_ARROW_ID=1`.
+    , arrowIdentity : Bool
+
+    -- Phase 2b solver-root arrow ids (plans/lss-unknown-elimination.md §4.9).
+    -- Requires `arrowIdentity`. Instead of one id per SYNTACTIC arrow
+    -- occurrence, take the id from the arrow's union-find ROOT — so two arrows
+    -- the type checker UNIFIED share a lambda-set slot. EXP-2a measured why
+    -- this matters: a def's annotation and its body node's type are
+    -- structurally-equal DISTINCT objects 97.5% of the time (§10.4), so
+    -- occurrence ids cannot tie them and solver identity can.
+    --
+    -- DEFAULT-OFF, and it should stay off until Phase 3: §10.9 measured that
+    -- slot sharing WITHOUT a per-use set variable trades the context
+    -- sensitivity that manufactures usable singletons (−0.50 pp fast dispatch,
+    -- 99% of it one de-stamped site), and 2b shares strictly MORE contexts
+    -- than 2a. Hash token `lssAR=1`; env `ECO_MONO_LSS_ARROW_ROOTS`.
+    , arrowSolverRoots : Bool
     }
 
 
@@ -346,7 +391,7 @@ defaultLss =
     , keyedGlobals = defaultKeyedGlobals
     , devirtFnGlobals = True
     , maxSetSize = 8
-    , maxSpecsPerGlobal = 64
+    , maxSpecsPerGlobal = 512
     , report = False
     , spineArity = False
     , muTie = True
@@ -354,6 +399,8 @@ defaultLss =
     , sigFlow = True
     , layoutQualMembers = True
     , postSettleDevirt = True
+    , arrowIdentity = False
+    , arrowSolverRoots = False
     }
 
 
@@ -737,6 +784,8 @@ lssDecoder =
         |> D.apply (D.optionalField "sigFlow" D.bool defaultLss.sigFlow)
         |> D.apply (D.optionalField "layoutQualMembers" D.bool defaultLss.layoutQualMembers)
         |> D.apply (D.optionalField "postSettleDevirt" D.bool defaultLss.postSettleDevirt)
+        |> D.apply (D.optionalField "arrowIdentity" D.bool defaultLss.arrowIdentity)
+        |> D.apply (D.optionalField "arrowSolverRoots" D.bool defaultLss.arrowSolverRoots)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -1063,6 +1112,38 @@ hash cfg =
 
                       else
                         []
+
+                    -- Phase 2a arrow identity: artifact-affecting when on
+                    -- (shared set slots reach annotations and therefore keyed
+                    -- spec keys). Token when non-default.
+                    , if lss.arrowIdentity /= defaultLss.arrowIdentity then
+                        [ "lssAI="
+                            ++ (if lss.arrowIdentity then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- Phase 2b solver-root arrow ids: artifact-affecting when
+                    -- on (arrows the type checker unified share one set slot).
+                    , if lss.arrowSolverRoots /= defaultLss.arrowSolverRoots then
+                        [ "lssAR="
+                            ++ (if lss.arrowSolverRoots then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
                     ]
                )
             -- Chunked-list token appears ONLY when enabled (the default since

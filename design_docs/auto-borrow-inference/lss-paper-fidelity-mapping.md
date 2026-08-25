@@ -110,7 +110,7 @@ Verdict key: **FAITHFUL** (same mechanism, possibly different clothes) · **PART
 | abstraction target set `(λ…) as σ` ("the set σ contains at least the lambda currently being constructed") | 146:7 | member injected into the slot by total join; LSS_002 (tested) is exactly the containment: every reachable closure's head annotation is `LTop` or contains its member | `LssInfer.elm:134-150`, `invariants.csv:609` | **FAITHFUL** — with LSS_002 as the tested totality witness |
 | element identity across partial application — none needed: L^src has no currying; each staged lambda is its own set element with its own σ | Fig. 1, 146:5 | LSS_013 spine injection: a member id is written on **every result-spine arrow** of the value's type, bounded by declared arity, argument arrows never — "a PAP of member m is m" (design OQ4) | `invariants.csv:619`, `LssInfer.elm:996-1072` | **DIVERGENT** — Eco extends what an element *denotes* (value provenance through partial application) because curried Elm demands it; sound via total join; no paper counterpart |
 | inclusion constraints `ℓ ⋸ σ`, constraint set Q | Fig. 2/3 | none accumulated — `unifySlotWithSet` eagerly unions members into slots | `Store.elm:748-801` | **PARTIAL** — eager solving computes the paper's minimal solution `S(Q,α)`, but only because signatures are ground (GAP-2); nothing is deferrable |
-| polymorphic def signature `d⟨ᾱ⟩ : (Q ⇒ τ)` | Fig. 2, 146:7 | `LssSignature = {arrows : Array ArrowFact, trivial}`; `ArrowFact = {rep, members, top}` — **ground** | `Engine.elm:80-96` | **ABSENT** as polymorphism; `rep` is the one surviving trace of α — §3.2 |
+| polymorphic def signature `d⟨ᾱ⟩ : (Q ⇒ τ)` | Fig. 2, 146:7 | `LssSignature = {arrows : Array ArrowFact, trivial}`; `ArrowFact = {rep, members, top, sources : List Int}` — `sources` is the ordinal-indexed **flows-into** channel (LSS_023) | `Engine.elm` `ArrowFact` | **PARTIAL** (was ABSENT): `sources` IS the landed promoted-ᾱ, restricted to loader-enumerated ordinals; `rep` remains the equality half. Application-side internalization was attempted as LSS_026 D1/D2 and DELETED 2026-08-24 (built, measured: −0.51 pp fast dispatch, +2.68% wall, zero consumable gain). Losses: tyvar positions mint no slot, so `always : a -> b -> a` cannot state "result ⊇ param 0" — §6 loss item 1 of the plan |
 
 ### 3.2 Inference
 
@@ -327,6 +327,55 @@ full gate battery and a bootstrap fixed point. **Aims served:** 3 directly; 1 in
 
 ### GAP-2 — No lambda-set polymorphism in signatures (completeness: HIGH)
 
+**STATUS 2026-08-23: the signature half LANDED; the transport half landed
+flag-gated. Full detail and measurements in
+`plans/lss-gap2-callarg-transport.md`.** The original register text below
+predates LSS_023/026 and is kept for provenance, with three corrections
+stated first.
+
+1. **The FromArrow half already landed (LSS_023).** `ArrowFact` is
+   `{ rep, members, top, sources : List Int }` — `sources` IS the
+   ordinal-indexed flows-into channel this entry asked for, i.e. the landed
+   promoted-ᾱ. It is recorded by `zonkSigGo`'s promote-or-internalize walk,
+   installed at call sites by `applyFactsGo → installSources →
+   Store.addSlotSource`, and resolved pull-at-read. So §3.1's "ABSENT as
+   polymorphism" row should now read `sources`, not nothing.
+2. **The size-cap rider is discharged** — `widenedBySigSize` +
+   `finishSigFact`.
+3. **"8,673/8,673 trivial" is stale.** The sigFlow-era decomposition of
+   11,538 zonk events is 62.6% `allflex` (arrow slots, empty body
+   contribution), 20.7% body-less, 13.3% arrow-free, **2.8% carrying**, 0.6%
+   `hasTop`. The channel is no longer empty — but at 2.8% the PRODUCER side,
+   not the transport hop, is the ceiling. That re-ranking is this gap's main
+   measured result.
+
+**What was still missing, and what shipped for it.** The remaining hole was
+the paper's TIU-App half for arguments that are themselves CALLS: the
+argument's own instantiation residual was never connected to the parameter
+slot the consumer had unified, because `argUnifyVar` loads the argument type
+FRESH and two loads share only leaf MVarIds (LSS_006). LSS_026 closes it —
+was attempted as `Translate.connectArgFlow` + `LssInfer.flowArgWp` under
+`lss.callArgFlow`, and **deleted 2026-08-24** — it worked, and cost −0.51 pp
+fast dispatch and +2.68% wall for no consumable gain. The root cause is not
+the missing hop: sets do not travel with types at all, because `Can.TLambda`
+carries no identity, so every such repair is hand-reconnection. See
+`lss-why-the-fidelity-program-failed.md` and the successor plan
+`plans/lss-unknown-elimination.md`. Population:
+3,916 call-shaped arrow arguments, of which 551 have a fact-carrying
+arg-callee and 403 carry actual members; 78.6% of the reachable ones sit at
+five monadic consumers (`IO.andThen`, `Engine.andThen`, `IO.map`,
+`IO.apply`, `Engine.map`).
+
+**A soundness seam found while repairing it (LSS_026(a), unconditional).**
+Reading a terminal FlexVar source as an ∅ contribution is exact only under
+write-completeness, which the A.1 arg-load leak violates — so a
+members-carrying resolution over a dangling inflow published a false
+COMPLETE set, and LSS_025's post-settle devirt trusted it. Witness and fix:
+`test/elm/src/LssMixedSigHonestyTest.elm`. Zero occurrences on the
+self-compile; a real miscompile in ordinary Elm.
+
+<details><summary>Original register text (superseded above)</summary>
+
 **Paper:** `d⟨ᾱ⟩ : (Q ⇒ τ)`; the signature channel carries symbolic set flow between
 defs; internalization keeps only signature-reaching variables polymorphic. **Eco:**
 `ArrowFact` is ground `{rep, members, top}`; only `rep` survives of α (the
@@ -347,6 +396,8 @@ dormant while signatures are trivial, it goes live the moment this repair lands,
 widening policy must be extended to the signature channel in the same change. **Cost:**
 inference-layer redesign; the largest item here, and the prerequisite for GAP-6's
 evidence to mean anything. **Aims served:** 1 and 3.
+
+</details>
 
 ### GAP-3 — The budget is load-bearing (aims 2+3: HIGH)
 

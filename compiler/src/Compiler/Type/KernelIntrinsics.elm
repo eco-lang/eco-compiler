@@ -163,8 +163,8 @@ intrinsics =
           , { annotation =
                 -- (a -> Value) -> a -> Value -> Value
                 forall [ "a" ]
-                    (Can.TLambda (Can.TLambda (tVar "a") tValue)
-                        (Can.TLambda (tVar "a") (Can.TLambda tValue tValue))
+                    (Can.tLambda (Can.tLambda (tVar "a") tValue)
+                        (Can.tLambda (tVar "a") (Can.tLambda tValue tValue))
                     )
             , useSites = "elm/json 1.1.3+1.1.4 Json/Encode.elm:162 (list), :170 (array), :178 (set) -- all `List/Array/Set.foldl (addEntry func) (emptyArray ()) entries` with func : a -> Value from the enclosing annotation; b unifies to Value, which emptyArray/wrap absorb (both CTrue). No other reference in any installed package."
             , evidence = "JsonExports.cpp:Elm_Kernel_Json_addEntry:1761-1793 applies func to entry via eco_apply_closure :1772 and conses the RETURN onto the accumulator's list :1782, rebuilding an ENC_ARRAY Custom :1786-1791; the accumulator IS the Value representation (emptyArray :1745-1754 allocates ctor=ENC_ARRAY). audited: 2026-08-20"
@@ -175,8 +175,8 @@ intrinsics =
           , { annotation =
                 -- String -> Value -> Value -> Value
                 forall []
-                    (Can.TLambda tString
-                        (Can.TLambda tValue (Can.TLambda tValue tValue))
+                    (Can.tLambda tString
+                        (Can.tLambda tValue (Can.tLambda tValue tValue))
                     )
             , useSites = "elm/json 1.1.3+1.1.4 Json/Encode.elm:202 (object), :224 (dict) -- both `foldl (\\k v obj -> addField k v obj) (emptyObject ()) ...` where k is String (object destructures List (String, Value); dict applies toKey : k -> String) and v is Value (the pair's second, or toValue : v -> Value). The accumulator unifies to Value, which emptyObject/wrap absorb (both CTrue). No other reference in any installed package."
             , evidence = "JsonExports.cpp:Elm_Kernel_Json_addField:1795-1840 builds a (key, value) Tuple2 :1810-1819 and conses it onto the object's field list, rebuilding an ENC_OBJECT Custom; key is a String, value is an already-encoded Value, and the accumulator/result are the ENC_OBJECT representation of Value (emptyObject :1735-1744 allocates ctor=ENC_OBJECT). audited: 2026-08-20"
@@ -186,7 +186,7 @@ intrinsics =
         , ( ( "Elm", "List", "fromArray" )
           , { annotation =
                 -- List a -> List a  (NOT the JS `Array a -> List a`)
-                forall [ "a" ] (Can.TLambda (tList (tVar "a")) (tList (tVar "a")))
+                forall [ "a" ] (Can.tLambda (tList (tVar "a")) (tList (tVar "a")))
             , useSites = "elm/core 1.0.5 String.elm:191 (split) only -- `fromArray (Elm.Kernel.String.split sep string)` at a = String. No other reference in any installed package."
             , evidence = "ListExports.cpp:Elm_Kernel_List_fromArray:306-354 is a PASS-THROUGH in eco: embedded constants :309-313 and Tag_Cons/Tag_ConsChunk :326-330 return the ARGUMENT by identity, and its own comment :321-325 records that Elm_Kernel_String_split already returns a proper list -- StringOps::split builds alloc::cons chains (StringOps.cpp:839-853). The JS type Array a -> List a would be a layout lie here. audited: 2026-08-20"
             , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
@@ -195,7 +195,7 @@ intrinsics =
         , ( ( "Elm", "List", "toArray" )
           , { annotation =
                 -- List a -> List a  (NOT the JS `List a -> Array a`)
-                forall [ "a" ] (Can.TLambda (tList (tVar "a")) (tList (tVar "a")))
+                forall [ "a" ] (Can.tLambda (tList (tVar "a")) (tList (tVar "a")))
             , useSites = "elm/core 1.0.5 String.elm:202 (join) only -- `Elm.Kernel.String.join sep (toArray chunks)` at a = String. No other reference in any installed package."
             , evidence = "ListExports.cpp:Elm_Kernel_List_toArray:356-392 is a PASS-THROUGH in eco: embedded constants :362-366 and Tag_Cons/Tag_ConsChunk :369-374 return the ARGUMENT by identity, and the consumer StringOps::join takes a cons list (StringOps.cpp:659). audited: 2026-08-20"
             , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]

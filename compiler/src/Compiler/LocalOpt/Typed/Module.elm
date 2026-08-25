@@ -57,7 +57,7 @@ peelFunctionType n tipe =
 
     else
         case tipe of
-            Can.TLambda _ result ->
+            Can.TLambda _ _ result ->
                 peelFunctionType (n - 1) result
 
             _ ->
@@ -153,7 +153,7 @@ addCtorNode home typeName unionData (Can.Ctor c) ( nodes, ann ) =
 
         ctorType : Can.Type Name
         ctorType =
-            List.foldr Can.TLambda resultType c.args
+            List.foldr Can.tLambda resultType c.args
 
         node : TOpt.Node Name
         node =
@@ -206,7 +206,7 @@ addAlias home _ name (Can.Alias vars tipe) ((TOpt.LocalGraph data) as graph) =
                 funcType : Can.Type Name
                 funcType =
                     List.foldr
-                        (\( _, fieldType ) acc -> Can.TLambda fieldType acc)
+                        (\( _, fieldType ) acc -> Can.tLambda fieldType acc)
                         tipe
                         fieldList
 

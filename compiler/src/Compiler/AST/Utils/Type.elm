@@ -36,7 +36,7 @@ For example, `(a -> b -> c)` becomes `[a, b, c]`.
 delambda : Type Name -> List (Type Name)
 delambda tipe =
     case tipe of
-        TLambda arg result ->
+        TLambda _ arg result ->
             arg :: delambda result
 
         _ ->
@@ -63,8 +63,12 @@ dealias args aliasType =
 dealiasHelp : Dict Name (Type Name) -> Type Name -> Type Name
 dealiasHelp typeTable tipe =
     case tipe of
-        TLambda a b ->
-            TLambda
+        TLambda aid a b ->
+            -- PRESERVE the arrow id: dealiasing rewrites the alias structure,
+            -- it does not create a new arrow. (These rebuild `Type Name`, so
+            -- today the id is always `NoArrow` — preservation is what stays
+            -- correct if ids are ever stamped earlier.)
+            TLambda aid
                 (dealiasHelp typeTable a)
                 (dealiasHelp typeTable b)
 
@@ -105,8 +109,9 @@ dealiasField typeTable (FieldType index tipe) =
 deepDealias : Type Name -> Type Name
 deepDealias tipe =
     case tipe of
-        TLambda a b ->
-            TLambda (deepDealias a) (deepDealias b)
+        TLambda aid a b ->
+            -- PRESERVE, as in `dealiasHelp`.
+            TLambda aid (deepDealias a) (deepDealias b)
 
         TVar _ ->
             tipe

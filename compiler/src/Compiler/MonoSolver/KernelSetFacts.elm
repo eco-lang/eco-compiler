@@ -99,17 +99,60 @@ The 2026-08-20 survey covered all 338 kernel entry points across
 every refusal, and they are worth applying MECHANICALLY, before any prose
 reasoning:
 
-**1. Nullary-constructor carriers.** The package source declares these as
-constructors with NO fields, so their type parameters are PHANTOM while the
-C++ fills them with payload: `type Task err ok = Task` (Platform.elm:83),
-`Cmd msg` (Cmd.elm:47), `Sub msg` (Sub.elm:49), `Program` (:42), `ProcessId`
-(:90), `Decoder a` (Json/Decode.elm:62), `Body`/`Part`/`Expect msg`/
-`Resolver x a` (Http.elm:218/341/396/852). A kernel with a free
-unconstrained variable whose payload passes through one of these is storing
-into a position the type cannot describe — refuse. This is the single
-sharpest citation in the audit: `Http.expect` putting two closures into a
-`Resolver x a`, and every `Json.Decode` combinator (`map*`, `andThen`,
-`field`, …) putting a callback into a fieldless `Decoder`.
+**1. CROSS-CALL retention — a value one call stores that a DIFFERENT call
+reads.** This is the predicate; fieldless-ness is not.
+
+CORRECTED 2026-08-25. This rule previously read "nullary-constructor
+carriers: `type Task err ok = Task` (Platform.elm:83), `Cmd msg`, `Sub msg`,
+`Decoder a`, `Expect msg`, `Resolver x a` … declare NO fields, so their type
+parameters are PHANTOM while the C++ fills them with payload — refuse."
+**That over-refuses, and it is why `Scheduler.succeed/fail/andThen/onError`
+sat on the REJECTED list until 2026-08-25 with no soundness fact behind
+them.** Passing a value THROUGH an opaque carrier is not retention in any
+sense the analysis cares about: `Task.succeed f` hands back exactly `f`, and
+`a` is the SAME type variable in the parameter and in `Task x a`, so ordinary
+unification carries the set across. It is structurally
+`JsArray.singleton : a -> JsArray a`, which has been licensed `Transports`
+since the original audit. The two differ only in whether the Elm declaration
+happens to name a field (`type JsArray a = JsArray a` does,
+`type Task err ok = Task` does not) — a syntactic difference with no
+consequence for set flow, because nothing in Elm can construct or match a
+bare `Task` (`Platform` exposes `Task`, NOT `Task(..)`) and mono therefore
+never forms a representation for it at all.
+
+What actually disqualifies is an edge the TYPE cannot name, and the sharp
+form of that is CROSS-CALL: the value goes into runtime storage on call A and
+comes back out at a position reached by call B, so no amount of variable
+sharing in A's type describes where it went.
+
+  - **Refuse:** `Platform.sendToApp`/`sendToSelf` — `rawSend`
+    (`Scheduler.cpp:476-484`) does `mailboxPushBack` + `enqueue`, and the
+    message re-emerges at a DIFFERENT call's `update`/`onSelfMsg`.
+    (`sendToApp` independently fails A3: declared `void` in
+    `PlatformExports.cpp:44` against `Router msg a -> msg -> Task x ()`.)
+  - **Refuse:** `MVar.read`/`take` — the canonical case; their result comes
+    from a different call's `put`, so C1 has no incoming edge at all.
+  - **Refuse:** effect managers, ports, TSFN/JS registration, VirtualDom's
+    `static vnodeRegistry` — all the same shape.
+  - **License:** `Scheduler.succeed`/`fail`/`andThen`/`onError` — the only
+    store is into the Task THIS call returns, and the scheduler reads it back
+    out of THAT SAME Task. Same rule that licenses `List.cons` and
+    `JsArray.push`, whose B2 wording has always been "no store OUTSIDE
+    RESULT", not "no store".
+
+    E2E-gated by `test/elm/src/KernelLicenseTaskTest.elm`: two distinct
+    functions stored in a Task's `a` and taken back out through `andThen`,
+    both meeting at one shared call site, plus `onError`'s success and failure
+    edges — each CHECK chosen so a false singleton prints a DIFFERENT NUMBER.
+    Landing it first required fixing an unrelated `Platform.worker` defect it
+    tripped over (`plans/task-perform-value-msg-segfault.md`).
+
+The genuinely fieldless-driven refusals stand on their own evidence and are
+NOT re-opened by this correction — but they must now cite the real reason:
+`Http.expect` puts two closures into a `Resolver x a` that the HTTP runtime
+retrieves on a LATER callback; every `Json.Decode` combinator's callback is
+re-entered by a decode driver walking a value the type does not relate to the
+combinator's own arguments.
 
 **2. Type erasure into an opaque parameterless type.** `Json.wrap`'s identity
 fall-through (`JsonExports.cpp:1683`) retypes an arbitrary argument as the
@@ -138,7 +181,18 @@ That false positive had been blocking `List.sortBy`, whose grant reaches
 
 Named classes that follow from the above:
 
-  - **Task / Process / effect managers.** The callback lands in the returned
+  - **Task / Process / effect managers.** NARROWED 2026-08-25 — see the
+    CROSS-CALL correction above. `Scheduler.succeed/fail/andThen/onError` are
+    now LICENSED (`Transports`): storing into the Task you return is not
+    retention, and the scheduler reads the value back out of that same Task.
+    What remains refused here is the mailbox/router surface
+    (`sendToApp`/`sendToSelf`/effect managers), which IS cross-call, and
+    `spawn`/`kill`, which route through `TaskBinding.hpp` `makeBinding` and
+    mint a C++ closure — OPEN, not decided: the minted closure lands in
+    `t->callback` where no type variable names it, and `spawn`'s `a` does not
+    appear in its result at all, so predicate 3 fires here mechanically
+    rather than on a demonstrated hazard. Audit them properly before either
+    licensing or citing them. The callback lands in the returned
     Task — stored through `Elm::alloc::allocTask`
     (`runtime/src/allocator/HeapHelpers.hpp:2047-2069`, the write at :2065),
     called from `Scheduler.cpp:123-162`: `taskSucceed` :123-126, `taskFail`
@@ -362,7 +416,7 @@ that is precisely the case where the type cannot describe what the C++ stores.
 isInertType : (id -> Bool) -> Can.Type id -> Bool
 isInertType isScalarVar tipe =
     case tipe of
-        Can.TLambda arg result ->
+        Can.TLambda _ arg result ->
             not (hasFunctionCapable isScalarVar arg) && isInertType isScalarVar result
 
         _ ->
@@ -375,7 +429,7 @@ hasFunctionCapable isScalarVar tipe =
         Can.TVar v ->
             not (isScalarVar v)
 
-        Can.TLambda _ _ ->
+        Can.TLambda _ _ _ ->
             True
 
         Can.TType _ _ args ->
@@ -438,7 +492,7 @@ shapeOfAnnotation tipe =
         Can.TVar name ->
             Just (TsVar name)
 
-        Can.TLambda arg result ->
+        Can.TLambda _ arg result ->
             Maybe.map2 TsFun (shapeOfAnnotation arg) (shapeOfAnnotation result)
 
         Can.TType _ name args ->
@@ -493,7 +547,7 @@ matchShapeGo pending bindings =
                             else
                                 False
 
-                ( TsFun p r, Can.TLambda p2 r2 ) ->
+                ( TsFun p r, Can.TLambda _ p2 r2 ) ->
                     matchShapeGo (( p, p2 ) :: ( r, r2 ) :: rest) bindings
 
                 ( TsCon name args, Can.TType _ name2 args2 ) ->
@@ -547,6 +601,18 @@ intrinsic annotations (TYPE_KERNEL_001) the positions ARE solved, so the
 identity comparison is both meaningful and satisfiable. Sound in either
 direction — matching only GATES a license, it never creates sharing — but the
 strict rule is the one that makes a declared shape mean what it says.
+
+**ARROW ids are bound to `_` and MUST STAY THAT WAY (Phase 2a §4.6b).** The
+strict-identity rule above is about `TVar` — SOLVER identity — and it does NOT
+transfer to arrows, which carry per-OCCURRENCE identity. This function is
+called from `matchShapeGo` with `id = MVarId` in production, where two
+occurrence types legitimately carry DIFFERENT arrow ids for the same shape.
+Anyone who "fixes" a compile error here by *comparing* the ids silently kills
+the `TsVar` consistency check for every function-typed binding and un-licenses
+every `TypeFaithful` kernel row — with no test failure loud enough to say so.
+The function is already structural (destructure and recurse, never `==` on a
+node), so binding them to `_` preserves behaviour exactly.
+
 -}
 sameType : Can.Type id -> Can.Type id -> Bool
 sameType a b =
@@ -557,7 +623,7 @@ sameType a b =
         ( Can.TVar v1, Can.TVar v2 ) ->
             v1 == v2
 
-        ( Can.TLambda p1 r1, Can.TLambda p2 r2 ) ->
+        ( Can.TLambda _ p1 r1, Can.TLambda _ p2 r2 ) ->
             sameType p1 p2 && sameType r1 r2
 
         ( Can.TType _ n1 a1, Can.TType _ n2 a2 ) ->
@@ -1762,6 +1828,34 @@ facts =
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco/RuntimeExports.cpp", "eco-kernel-cpp/src/eco/Runtime.cpp" ]
                 , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_random:13-15 | helpers: Runtime.cpp:random:69-72 | type: Eco/Runtime.elm:28 | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :71); statics :41-42 are C++ PRNG state | B3: binding closure only | audited: 2026-08-20"
+                }
+          )
+        , ( ( "Scheduler", "andThen" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/core/SchedulerExports.cpp", "runtime/src/platform/Scheduler.cpp" ]
+                , evidence = "class: full | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_andThen:30-37 | helpers: Scheduler.cpp:taskAndThen:149-152 | type: elm/core/1.0.5/src/Task.elm:207 ((a -> Task x b) -> Task x a -> Task x b) | B1: BOTH words stored VERBATIM (:33-35 decode, taskAndThen :151 allocTask(Task_AndThen, nil, callback, nil, task)); the scheduler later applies THAT callback to THAT task's value - the callback is never substituted, wrapped or re-created, so param1's `a` = param2's `a` and param1's result `Task x b` = the result, exactly as the type's variable-sharing graph states | B2: the ONLY store is into the Task this call RETURNS (alloc::allocTask, HeapHelpers.hpp:2047-2069, write :2064-2067) - no static, no mailbox, no other call's object; the scheduler reads it back out of THAT SAME Task | B3: no allocClosure/Tag_Closure - allocTask is a record constructor, not a closure mint | audited: 2026-08-25"
+                }
+          )
+        , ( ( "Scheduler", "fail" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/core/SchedulerExports.cpp", "runtime/src/platform/Scheduler.cpp" ]
+                , evidence = "class: cheap | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_fail:23-28 | helpers: Scheduler.cpp:taskFail:139-142 | type: elm/core/1.0.5/src/Task.elm:92 (x -> Task x a) | B1: the arg word is stored unchanged (:26, taskFail :141 allocTask(Task_Fail, error, nil, nil, nil)) and handed back at the SAME `x` the type names | B2: the ONLY store is into the Task this call RETURNS (alloc::allocTask, HeapHelpers.hpp:2047-2069, write :2064-2067) - no static, no mailbox, no other call's object; the scheduler reads it back out of THAT SAME Task | B3: no allocClosure/Tag_Closure - allocTask is a record constructor, not a closure mint | audited: 2026-08-25"
+                }
+          )
+        , ( ( "Scheduler", "onError" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/core/SchedulerExports.cpp", "runtime/src/platform/Scheduler.cpp" ]
+                , evidence = "class: full | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_onError:39-46 | helpers: Scheduler.cpp:taskOnError:154-157 | type: elm/core/1.0.5/src/Task.elm:227 ((x -> Task y a) -> Task x a -> Task y a) | B1: both words stored VERBATIM (:42-44, taskOnError :156); the handler is applied to the inner task's error and never substituted, and on the SUCCESS path the inner `a` passes straight through to the result's `a` - both edges are the type's shared variables | B2: the ONLY store is into the Task this call RETURNS (alloc::allocTask, HeapHelpers.hpp:2047-2069, write :2064-2067) - no static, no mailbox, no other call's object; the scheduler reads it back out of THAT SAME Task | B3: no allocClosure/Tag_Closure - allocTask is a record constructor, not a closure mint | audited: 2026-08-25"
+                }
+          )
+        , ( ( "Scheduler", "succeed" )
+          , TypeFaithful
+                { scope = Transports
+                , files = [ "elm-kernel-cpp/src/core/SchedulerExports.cpp", "runtime/src/platform/Scheduler.cpp" ]
+                , evidence = "class: cheap | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_succeed:16-21 | helpers: Scheduler.cpp:taskSucceed:123-126 | type: elm/core/1.0.5/src/Task.elm:78 (a -> Task x a) | B1: the arg word is stored unchanged (:18, taskSucceed :125 allocTask(Task_Succeed, value, nil, nil, nil)) and handed back at the SAME `a` the type names - structurally JsArray.singleton with an opaque carrier | B2: the ONLY store is into the Task this call RETURNS (alloc::allocTask, HeapHelpers.hpp:2047-2069, write :2064-2067) - no static, no mailbox, no other call's object; the scheduler reads it back out of THAT SAME Task | B3: no allocClosure/Tag_Closure - allocTask is a record constructor, not a closure mint | audited: 2026-08-25"
                 }
           )
         , ( ( "String", "all" )

@@ -1127,7 +1127,7 @@ gatherTypedArgsWithIds env name state srcArgs tipe index revTypedArgs =
 
         srcArg :: otherSrcArgs ->
             case Type.iteratedDealias tipe of
-                Can.TLambda argType resultType ->
+                Can.TLambda _ argType resultType ->
                     Pattern.canonicalizeWithIds env state srcArg
                         |> ReportingResult.andThen
                             (\( arg, stateAfterArg ) ->
@@ -1464,7 +1464,7 @@ toVarCtor name ctor =
 
                 tipe : Can.Type Name
                 tipe =
-                    List.foldr Can.TLambda result args
+                    List.foldr Can.tLambda result args
             in
             Can.VarCtor unionData.opts home name index (Can.Forall freeVars tipe)
 

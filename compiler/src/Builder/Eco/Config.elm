@@ -173,6 +173,16 @@ applyEnvOverrides cfg =
                     |> Task.map (\dpVal -> applyLssDevirtPostOverride dpVal cfg4e5)
             )
         |> Task.andThen
+            (\cfg4e6 ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_ARROW_ID" |> Task.mapError never)
+                    |> Task.map (\aiVal -> applyLssArrowIdOverride aiVal cfg4e6)
+            )
+        |> Task.andThen
+            (\cfg4e7 ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_ARROW_ROOTS" |> Task.mapError never)
+                    |> Task.map (\arVal -> applyLssArrowRootsOverride arVal cfg4e7)
+            )
+        |> Task.andThen
             (\cfg4f ->
                 (Utils.envLookupEnv "ECO_SPEC_TYPE_NODE_LIMIT" |> Task.mapError never)
                     |> Task.map (\tnVal -> applySpecTypeNodeLimitOverride tnVal cfg4f)
@@ -1732,6 +1742,54 @@ applyLssLayoutQualOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | layoutQualMembers = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_ARROW_ROOTS=1|true|yes / 0|false|no` (Phase 2b solver-root
+arrow ids, plans/lss-unknown-elimination.md §4.9): take each arrow's identity
+from its union-find ROOT, so two arrows the type checker unified share a
+lambda-set slot. Requires `ECO_MONO_LSS_ARROW_ID=1` to have any effect — it
+changes WHICH id an arrow gets, not whether slots are memoised at all.
+DEFAULT-OFF. Hash token `lssAR=`.
+-}
+applyLssArrowRootsOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssArrowRootsOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | arrowSolverRoots = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | arrowSolverRoots = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_ARROW_ID=1|true|yes / 0|false|no` (Phase 2a arrow identity,
+plans/lss-unknown-elimination.md §4): memoise one lambda-set SLOT per
+`Can.TLambda` occurrence id per item, so repeated loads of the same stamped
+type object share their sets. DEFAULT-OFF, so flag-off stays byte-identical to
+pre-2a and the two-binary rail applies. Participates in the hash via the
+`lssAI=` token when non-default.
+-}
+applyLssArrowIdOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssArrowIdOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | arrowIdentity = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | arrowIdentity = False }) cfg
 
             else
                 cfg

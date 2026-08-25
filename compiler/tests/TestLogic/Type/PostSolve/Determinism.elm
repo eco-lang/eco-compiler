@@ -101,7 +101,7 @@ typesStructurallyEqual type1 type2 =
         ( Can.TVar name1, Can.TVar name2 ) ->
             name1 == name2
 
-        ( Can.TLambda arg1 result1, Can.TLambda arg2 result2 ) ->
+        ( Can.TLambda _ arg1 result1, Can.TLambda _ arg2 result2 ) ->
             typesStructurallyEqual arg1 arg2 && typesStructurallyEqual result1 result2
 
         ( Can.TType mod1 name1 args1, Can.TType mod2 name2 args2 ) ->

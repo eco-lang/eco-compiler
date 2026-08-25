@@ -324,7 +324,7 @@ collectFreeVars tipe =
         Can.TVar name ->
             Set.singleton name
 
-        Can.TLambda a b ->
+        Can.TLambda _ a b ->
             Set.union (collectFreeVars a) (collectFreeVars b)
 
         Can.TType _ _ args ->

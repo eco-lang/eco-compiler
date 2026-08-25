@@ -403,7 +403,7 @@ updateLocalMultiStack defName funcMonoType callSubst stack =
 typeContainsLambda : Can.Type MVarId -> Bool
 typeContainsLambda canType =
     case canType of
-        Can.TLambda _ _ ->
+        Can.TLambda _ _ _ ->
             True
 
         Can.TType _ _ args ->
@@ -3263,7 +3263,7 @@ specializeExpr expr subst state =
                     getDefCanonicalType def
             in
             case defCanType of
-                Can.TLambda _ _ ->
+                Can.TLambda _ _ _ ->
                     -- Function def: demand-driven local multi-specialization.
                     -- Push a fresh entry onto the localMulti stack for this defName.
                     let
@@ -5317,12 +5317,15 @@ specializeArg intern mvarEnv subst ( locName, canType ) =
 
 
 {-| Build a function type from a list of arguments and a return type.
+
+Phase 2a §4.7: `NoArrow` on every arrow — a NEW spine, subst engine only.
+
 -}
 buildFuncType : List ( A.Located Name, Can.Type MVarId ) -> Can.Type MVarId -> Can.Type MVarId
 buildFuncType args returnType =
     List.foldr
         (\( _, argType ) acc ->
-            Can.TLambda argType acc
+            Can.tLambda argType acc
         )
         returnType
         args

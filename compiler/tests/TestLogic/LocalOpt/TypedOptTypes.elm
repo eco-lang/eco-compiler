@@ -313,7 +313,7 @@ For now, we perform basic structural checks.
 checkTypeWellFormed : String -> Can.Type Name -> List String
 checkTypeWellFormed context canType =
     case canType of
-        Can.TLambda argType resultType ->
+        Can.TLambda _ argType resultType ->
             checkTypeWellFormed context argType
                 ++ checkTypeWellFormed context resultType
 

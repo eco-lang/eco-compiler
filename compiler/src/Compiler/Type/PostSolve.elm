@@ -987,7 +987,12 @@ unifyHelp subst schemeType concreteType =
             else
                 Nothing
 
-        ( Can.TLambda arg1 res1, Can.TLambda arg2 res2 ) ->
+        -- Mechanical `_` (Phase 2a §4.6c): this walk is structural — it
+        -- destructures and recurses, never `==` on a node — so binding the ids
+        -- to `_` preserves behaviour exactly. Do NOT "fix" it by comparing
+        -- them: arrows have OCCURRENCE identity, not solver identity, and two
+        -- structurally-equal occurrence types legitimately differ.
+        ( Can.TLambda _ arg1 res1, Can.TLambda _ arg2 res2 ) ->
             case unifyHelp subst arg1 arg2 of
                 Nothing ->
                     Nothing
@@ -1102,8 +1107,16 @@ applySubst subst tipe =
         Can.TType home name args ->
             Can.TType home name (List.map (applySubst subst) args)
 
-        Can.TLambda arg res ->
-            Can.TLambda (applySubst subst arg) (applySubst subst res)
+        Can.TLambda aid arg res ->
+            -- PRESERVE the arrow id (Phase 2a §4.6d): there is no id supply
+            -- threaded here, and preservation is what stays correct if ids are
+            -- ever stamped before AssignMVarIds. Today this is always
+            -- `NoArrow` — `applySubst` works on `Can.Type Name`.
+            --
+            -- Watch the `TVar` arm above under any such earlier stamping:
+            -- `Dict.get v subst` splices ONE substituted type object into
+            -- multiple positions, cloning its arrow ids.
+            Can.TLambda aid (applySubst subst arg) (applySubst subst res)
 
         Can.TTuple a b cs ->
             Can.TTuple
@@ -1141,7 +1154,7 @@ and the final result type.
 peelFunctionType : Can.Type Name -> ( List (Can.Type Name), Can.Type Name )
 peelFunctionType tipe =
     case tipe of
-        Can.TLambda arg res ->
+        Can.TLambda _ arg res ->
             let
                 ( restArgs, finalResult ) =
                     peelFunctionType res

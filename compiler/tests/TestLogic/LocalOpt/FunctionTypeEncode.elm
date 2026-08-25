@@ -207,7 +207,7 @@ functionTypeMatches paramTypes fnType =
             -- No more params, any type is valid for the result
             True
 
-        ( _ :: restParams, Can.TLambda _ restType ) ->
+        ( _ :: restParams, Can.TLambda _ _ restType ) ->
             -- Check rest of params (we don't strictly compare types as that would
             -- require full type equality, just verify structure)
             functionTypeMatches restParams restType

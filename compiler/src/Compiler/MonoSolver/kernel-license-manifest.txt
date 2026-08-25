@@ -256,6 +256,14 @@ ff99c281015dae40b96240f48f6b5089596037ea4538bb8deaedcfaa1731b429  eco-kernel-cpp
 a4b3153e17582b270b1ada83307956f715b3453b498e33451e92a8924349ef7d  eco-kernel-cpp/src/eco/RuntimeExports.cpp  Runtime.dirname
 ff99c281015dae40b96240f48f6b5089596037ea4538bb8deaedcfaa1731b429  eco-kernel-cpp/src/eco/Runtime.cpp  Runtime.random
 a4b3153e17582b270b1ada83307956f715b3453b498e33451e92a8924349ef7d  eco-kernel-cpp/src/eco/RuntimeExports.cpp  Runtime.random
+569c4873ea89940e200be306bdf39acec4b39de0adb732fef17d2dcc03aeb656  elm-kernel-cpp/src/core/SchedulerExports.cpp  Scheduler.andThen
+ad575850fc54986d195213768455a89e6b044848ddf4ecde662b79013a2e9591  runtime/src/platform/Scheduler.cpp  Scheduler.andThen
+569c4873ea89940e200be306bdf39acec4b39de0adb732fef17d2dcc03aeb656  elm-kernel-cpp/src/core/SchedulerExports.cpp  Scheduler.fail
+ad575850fc54986d195213768455a89e6b044848ddf4ecde662b79013a2e9591  runtime/src/platform/Scheduler.cpp  Scheduler.fail
+569c4873ea89940e200be306bdf39acec4b39de0adb732fef17d2dcc03aeb656  elm-kernel-cpp/src/core/SchedulerExports.cpp  Scheduler.onError
+ad575850fc54986d195213768455a89e6b044848ddf4ecde662b79013a2e9591  runtime/src/platform/Scheduler.cpp  Scheduler.onError
+569c4873ea89940e200be306bdf39acec4b39de0adb732fef17d2dcc03aeb656  elm-kernel-cpp/src/core/SchedulerExports.cpp  Scheduler.succeed
+ad575850fc54986d195213768455a89e6b044848ddf4ecde662b79013a2e9591  runtime/src/platform/Scheduler.cpp  Scheduler.succeed
 e6266096b6ae9917d132fe3f73cba1a7885d67e722f22df080d7c2bb20ae7431  elm-kernel-cpp/src/core/StringExports.cpp  String.all
 e6266096b6ae9917d132fe3f73cba1a7885d67e722f22df080d7c2bb20ae7431  elm-kernel-cpp/src/core/StringExports.cpp  String.any
 259b731fc2bb2de1b459979a57b02632a8dfd720c2eae226b8ea392f6c8618a3  elm-kernel-cpp/src/core/String.cpp  String.append

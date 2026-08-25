@@ -165,7 +165,18 @@ Initial release: `0.1.0`.
 -}
 compiler : Version
 compiler =
-    Version 0 1 0
+    -- BUMPED 0.1.0 -> 0.1.1 on 2026-08-24 for the Phase 2b ARTIFACT FORMAT
+    -- CHANGE (plans/lss-unknown-elimination.md §4.9 step 3): `Can.TLambda` now
+    -- carries its solver-root index across `typeEncoderS`/`typeDecoderS`, so
+    -- every cached `.eci` / typed-artifact written by an older compiler would
+    -- decode SHORT — and the recorded failure mode for that is silent, not
+    -- loud (a mis-decoded artifact surfaces later as "no annotation entry" in
+    -- mono, not as a decode error). This constant keys `Stuff.compilerVersion`,
+    -- which keys BOTH `<root>/eco-stuff/<version>` and
+    -- `~/.eco/<version>/packages/...`, so bumping it invalidates every cache in
+    -- one move. Cost, and it is unavoidable: one full package rebuild on every
+    -- developer and CI machine.
+    Version 0 1 1
 
 
 {-| The version of the Elm compiler this implementation targets: 0.19.1.

@@ -32,6 +32,8 @@ type alias GlobalMVarState =
     , rootEnv : Dict ( String, Int ) TypeIds.MVarId
     , nextLam : TypeIds.SrcLambdaId -- LSS: source-lambda id supply; seeds the engine's member interning
     , lamLabels : Dict Int String -- LSS: member id -> "defKey#id" (census rendering only)
+    , nextArrow : TypeIds.ArrowId -- Phase 2a: per-OCCURRENCE arrow identity supply (plans/lss-unknown-elimination.md §4.2). No side table: `lamLabels` exists only for census rendering and has no arrow analogue.
+    , arrowRootEnv : Dict ( String, Int ) TypeIds.ArrowId -- Phase 2b: (moduleKey, solver root index) -> global ArrowId. EXACT mirror of `rootEnv`, and module-scoped for the same reason: each module's solve numbers its `Pt` from zero, so a raw index is only meaningful with its home module.
     }
 
 
@@ -51,6 +53,7 @@ type alias Ctx =
     , varSupers : Dict Name IO.SuperType
     , moduleKey : String
     , defKey : String -- enclosing global's comparable key (lambda-label rendering)
+    , useSolverRoots : Bool -- Phase 2b (lss.arrowSolverRoots): resolve `SolverRoot` slots through `arrowRootEnv` instead of minting a fresh occurrence id. OFF = exactly Phase 2a.
     }
 
 
@@ -87,6 +90,62 @@ freshLamId ctx =
     )
 
 
+{-| Mint a fresh arrow identity (Phase 2a,
+`plans/lss-unknown-elimination.md` §4.2).
+
+Same `Ctx`-in/`Ctx`-out shape as `freshLamId` so the consuming arm stays a plain
+state thread. **This is the ONLY site that mints an `ArrowId`** — every
+`Can.Type Name` therefore carries `TypeIds.NoArrow`, which is what makes
+`PostSolve`'s whole-tree `existing == t` safe (§4.6c).
+
+-}
+freshArrowId : Ctx -> ( TypeIds.ArrowId, Ctx )
+freshArrowId ctx =
+    let
+        st =
+            ctx.state
+
+        arrowId =
+            st.nextArrow
+    in
+    ( arrowId, { ctx | state = { st | nextArrow = Id.succ arrowId } } )
+
+
+{-| Phase 2b: look up or allocate the global `ArrowId` for a solver-rooted
+arrow. **Exact mirror of `ensureMVarIdForRoot`, including the module scoping.**
+
+Two arrows the type checker UNIFIED share a union-find root and therefore get
+the same `ArrowId` — which is the whole point: a def's annotation arrow and its
+body node's arrow are structurally-equal DISTINCT objects (measured: 97.5% of
+the time, `plans/lss-unknown-elimination.md` §10.4), so per-occurrence ids
+cannot tie them and solver identity can.
+
+`( moduleKey, rootIdx )` because each module's solve numbers its `Pt` from zero;
+without scoping, unrelated arrows in different modules collide on a raw index —
+which would be a FALSE union of two lambda sets, not merely lost sharing.
+
+-}
+ensureArrowIdForRoot : Int -> Ctx -> ( TypeIds.ArrowId, Ctx )
+ensureArrowIdForRoot rootIdx ctx =
+    let
+        key =
+            ( ctx.moduleKey, rootIdx )
+    in
+    case Dict.get key ctx.state.arrowRootEnv of
+        Just arrowId ->
+            ( arrowId, ctx )
+
+        Nothing ->
+            let
+                ( arrowId, ctx1 ) =
+                    freshArrowId ctx
+
+                st =
+                    ctx1.state
+            in
+            ( arrowId, { ctx1 | state = { st | arrowRootEnv = Dict.insert key arrowId st.arrowRootEnv } } )
+
+
 {-| Run a function with a fresh binding-local SchemeEnv, then discard the
 binding-local env and restore the outer env, keeping only the evolved global state.
 -}
@@ -111,8 +170,8 @@ withFreshBinding outerCtx work =
 {-| Assign globally unique MVarIds to all type variables in a GlobalGraph.
 Returns the rewritten graph and the final allocator state (for initializing MVarEnv).
 -}
-assignIds : TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph TypeIds.MVarId, GlobalMVarState )
-assignIds (TOpt.GlobalGraph nodes fields annotations allSchemeRoots varSupers) =
+assignIds : Bool -> TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph TypeIds.MVarId, GlobalMVarState )
+assignIds useSolverRoots (TOpt.GlobalGraph nodes fields annotations allSchemeRoots varSupers) =
     let
         state0 =
             { nextId = TypeIds.firstMVarId
@@ -120,16 +179,18 @@ assignIds (TOpt.GlobalGraph nodes fields annotations allSchemeRoots varSupers) =
             , rootEnv = Dict.empty
             , nextLam = TypeIds.firstSrcLambdaId
             , lamLabels = Dict.empty
+            , nextArrow = TypeIds.firstArrowId
+            , arrowRootEnv = Dict.empty
             }
 
         dummyCompare _ _ =
             EQ
 
         ( newAnnotations, state1 ) =
-            rewriteAnnotationsByGlobal varSupers allSchemeRoots annotations state0
+            rewriteAnnotationsByGlobal useSolverRoots varSupers allSchemeRoots annotations state0
 
         ( newNodes, state2 ) =
-            rewriteNodes dummyCompare varSupers allSchemeRoots nodes state1
+            rewriteNodes useSolverRoots dummyCompare varSupers allSchemeRoots nodes state1
     in
     ( TOpt.GlobalGraph newNodes fields newAnnotations allSchemeRoots varSupers, state2 )
 
@@ -142,11 +203,12 @@ assignIdsToType canType =
     let
         ctx =
             { env = Dict.empty
-            , state = { nextId = TypeIds.firstMVarId, superVars = Dict.empty, rootEnv = Dict.empty, nextLam = TypeIds.firstSrcLambdaId, lamLabels = Dict.empty }
+            , state = { nextId = TypeIds.firstMVarId, superVars = Dict.empty, rootEnv = Dict.empty, nextLam = TypeIds.firstSrcLambdaId, lamLabels = Dict.empty, nextArrow = TypeIds.firstArrowId, arrowRootEnv = Dict.empty }
             , schemeRootsForDef = Dict.empty
             , varSupers = TOpt.varSupersOfType canType
             , moduleKey = ""
             , defKey = ""
+            , useSolverRoots = False
             }
 
         ( newType, ctx1 ) =
@@ -269,12 +331,13 @@ ensureBinder name ctx =
 {-| Rewrite annotations keyed by Global (for GlobalGraph).
 -}
 rewriteAnnotationsByGlobal :
-    Dict Name IO.SuperType
+    Bool
+    -> Dict Name IO.SuperType
     -> TOpt.SchemeRootsByGlobal
     -> TOpt.AnnotationsByGlobal Name
     -> GlobalMVarState
     -> ( TOpt.AnnotationsByGlobal TypeIds.MVarId, GlobalMVarState )
-rewriteAnnotationsByGlobal varSupers allSchemeRoots annotations state =
+rewriteAnnotationsByGlobal useSolverRoots varSupers allSchemeRoots annotations state =
     let
         dummyCompare _ _ =
             EQ
@@ -287,7 +350,7 @@ rewriteAnnotationsByGlobal varSupers allSchemeRoots annotations state =
                         |> Maybe.withDefault Dict.empty
 
                 ( newAnn, st1 ) =
-                    rewriteAnnotation varSupers (moduleKeyOf global) schemeRootsForDef ann st
+                    rewriteAnnotation useSolverRoots varSupers (moduleKeyOf global) schemeRootsForDef ann st
             in
             ( DMap.insert TOpt.toComparableGlobal global newAnn acc, st1 )
         )
@@ -306,13 +369,14 @@ moduleKeyOf global =
 
 
 rewriteAnnotation :
-    Dict Name IO.SuperType
+    Bool
+    -> Dict Name IO.SuperType
     -> String
     -> SolverRoots.SchemeRootsForDef
     -> Can.Annotation Name
     -> GlobalMVarState
     -> ( Can.Annotation TypeIds.MVarId, GlobalMVarState )
-rewriteAnnotation varSupers moduleKey schemeRootsForDef (Can.Forall freeVars tipe) state =
+rewriteAnnotation useSolverRoots varSupers moduleKey schemeRootsForDef (Can.Forall freeVars tipe) state =
     let
         ctx0 =
             { env = Dict.empty
@@ -321,6 +385,7 @@ rewriteAnnotation varSupers moduleKey schemeRootsForDef (Can.Forall freeVars tip
             , varSupers = varSupers
             , moduleKey = moduleKey
             , defKey = "" -- annotations contain no lambdas; label context unused
+            , useSolverRoots = useSolverRoots
             }
 
         -- Pre-seed the binder env (and rootEnv) via the shared dispatch so the
@@ -341,13 +406,14 @@ rewriteAnnotation varSupers moduleKey schemeRootsForDef (Can.Forall freeVars tip
 
 
 rewriteNodes :
-    (TOpt.Global -> TOpt.Global -> Order)
+    Bool
+    -> (TOpt.Global -> TOpt.Global -> Order)
     -> Dict Name IO.SuperType
     -> TOpt.SchemeRootsByGlobal
     -> DMap.Dict String TOpt.Global (TOpt.Node Name)
     -> GlobalMVarState
     -> ( DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId), GlobalMVarState )
-rewriteNodes cmp varSupers allSchemeRoots nodes state =
+rewriteNodes useSolverRoots cmp varSupers allSchemeRoots nodes state =
     DMap.foldl cmp
         (\global node ( acc, st ) ->
             let
@@ -364,6 +430,7 @@ rewriteNodes cmp varSupers allSchemeRoots nodes state =
                     , varSupers = varSupers
                     , moduleKey = moduleKeyOf global
                     , defKey = TOpt.toComparableGlobal global
+                    , useSolverRoots = useSolverRoots
                     }
 
                 ( newNode, ctx1 ) =
@@ -1049,15 +1116,40 @@ rewriteCanType ctx canType =
             in
             ( Can.TVar mvarId, ctx1 )
 
-        Can.TLambda from to ->
+        Can.TLambda slot from to ->
+            -- Resolve this arrow's identity in PRE-order (before descending).
+            -- `Store.loadTypeC` consumes its SLOTS post-order; the two orders
+            -- are independent — the ordinal contract is defined by
+            -- `arrowSlots`, not by id order — but one is picked deliberately
+            -- and written down, because an id-keyed `ArrowFact` wants a stable
+            -- walkable order.
             let
+                ( arrowId, ctx0 ) =
+                    case slot of
+                        TypeIds.SolverRoot rootIdx ->
+                            -- Phase 2b: the type checker's own identity. Two
+                            -- arrows it unified land on one ArrowId.
+                            if ctx.useSolverRoots then
+                                ensureArrowIdForRoot rootIdx ctx
+
+                            else
+                                freshArrowId ctx
+
+                        _ ->
+                            -- Phase 2a fallback: per syntactic OCCURRENCE.
+                            -- Also the only path for types built after the
+                            -- solve (they carry `NoArrow`), and the reason
+                            -- 2b degrades rather than breaks where the
+                            -- lockstep stamp walk lost the solver var.
+                            freshArrowId ctx
+
                 ( newFrom, ctx1 ) =
-                    rewriteCanType ctx from
+                    rewriteCanType ctx0 from
 
                 ( newTo, ctx2 ) =
                     rewriteCanType ctx1 to
             in
-            ( Can.TLambda newFrom newTo, ctx2 )
+            ( Can.TLambda (TypeIds.Arrow arrowId) newFrom newTo, ctx2 )
 
         Can.TType canonical name args ->
             let

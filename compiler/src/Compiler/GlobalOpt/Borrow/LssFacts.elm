@@ -236,6 +236,11 @@ query facts calleeType =
         Mono.LTop ->
             Poison PTop
 
+        Mono.LVar _ ->
+            -- A set VARIABLE: to be determined, so it names no members yet.
+            -- Exactly as unusable as a genuine ⊤ for the borrow oracle.
+            Poison PTop
+
         Mono.LSet [ m ] ->
             resolveMember facts calleeType m
 

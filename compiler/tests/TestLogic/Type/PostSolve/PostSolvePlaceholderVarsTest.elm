@@ -184,7 +184,7 @@ including nested TLambdas.
 collectFuncPositionVars : Can.Type Name -> EverySet String String
 collectFuncPositionVars tipe =
     case tipe of
-        Can.TLambda arg result ->
+        Can.TLambda _ arg result ->
             -- Both arg and result are in function position
             EverySet.union
                 (Helpers.freeTypeVars arg)
@@ -372,7 +372,7 @@ typeToString tipe =
                 ++ String.join ", " (List.map typeToString args)
                 ++ "]"
 
-        Can.TLambda a b ->
+        Can.TLambda _ a b ->
             "TLambda (" ++ typeToString a ++ " -> " ++ typeToString b ++ ")"
 
         Can.TRecord _ ext ->

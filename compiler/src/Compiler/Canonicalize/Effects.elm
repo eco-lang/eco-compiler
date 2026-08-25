@@ -147,7 +147,7 @@ canonicalizePort env (Src.Port _ ( _, A.At region portName ) tipe) =
 
                         else if home == ModuleName.sub && name == Name.sub then
                             case revArgs of
-                                [ Can.TLambda incomingType (Can.TVar msg1) ] ->
+                                [ Can.TLambda _ incomingType (Can.TVar msg1) ] ->
                                     case msg of
                                         Can.TVar msg2 ->
                                             if msg1 == msg2 then
@@ -267,7 +267,7 @@ checkPayload tipe =
         Can.TVar name ->
             Err ( tipe, Error.TypeVariable name )
 
-        Can.TLambda _ _ ->
+        Can.TLambda _ _ _ ->
             Err ( tipe, Error.Function )
 
         Can.TRecord _ (Just _) ->

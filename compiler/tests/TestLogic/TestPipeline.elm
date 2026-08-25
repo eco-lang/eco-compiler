@@ -13,6 +13,7 @@ module TestLogic.TestPipeline exposing
     , expectMonomorphization
     , runToGlobalOpt
     , runToGlobalOptLssOn
+    , runToGlobalOptLssArrowIdOn
     , runToGlobalOptLssKeyedOn
     , runToGlobalOptLssOnStats
     , runToMlir
@@ -369,13 +370,29 @@ runToGlobalOptLssOn =
     runToGlobalOptLssKeyedOn []
 
 
+{-| `runToGlobalOptLssOn` with **Phase 2a arrow identity ON**
+(`plans/lss-unknown-elimination.md` §4). Exists so LSS_002 totality — the best
+whole-pipeline check that SLOT SHARING has not lost a member — is checked on
+the flag-on path too. The flag ships default-off, so without this arm the whole
+arrow-memo code path would be untested by the unit suite.
+-}
+runToGlobalOptLssArrowIdOn : Src.Module -> Result String GlobalOptArtifacts
+runToGlobalOptLssArrowIdOn =
+    runToGlobalOptLssKeyedWith True []
+
+
 {-| Like `runToGlobalOptLssOn` but with E5 selective keying: the listed
 globals (user format `author/project:Module.Name.value`; the fixture package
 is `eco/example`, module `Test`) key their specializations per annotated
 type, fanning out one spec per call-site lambda set.
 -}
 runToGlobalOptLssKeyedOn : List String -> Src.Module -> Result String GlobalOptArtifacts
-runToGlobalOptLssKeyedOn keyedGlobals srcModule =
+runToGlobalOptLssKeyedOn =
+    runToGlobalOptLssKeyedWith False
+
+
+runToGlobalOptLssKeyedWith : Bool -> List String -> Src.Module -> Result String GlobalOptArtifacts
+runToGlobalOptLssKeyedWith arrowIdentity keyedGlobals srcModule =
     case runToTypedOpt srcModule of
         Err e ->
             Err e
@@ -397,7 +414,7 @@ runToGlobalOptLssKeyedOn keyedGlobals srcModule =
                     -- baseline). The shipping default is keyed = True
                     -- (post-Fix-B) — tests must not silently track it or the
                     -- E5 keyed-vs-unkeyed contrast pin loses its baseline leg.
-                    { defaultLss | enabled = True, keyed = False, keyedGlobals = keyedGlobals }
+                    { defaultLss | enabled = True, keyed = False, keyedGlobals = keyedGlobals, arrowIdentity = arrowIdentity }
             in
             case MonoSolver.monomorphize lssOn "main" globalTypeEnv globalGraph of
                 Err monoErr ->
@@ -760,7 +777,7 @@ addCtorAnnotations home typeName (Can.Union unionData) acc =
                     Can.TType home typeName (List.map Can.TVar unionData.vars)
 
                 ctorType =
-                    List.foldr Can.TLambda resultType c.args
+                    List.foldr Can.tLambda resultType c.args
 
                 freeVars =
                     List.foldl (\v dict -> Dict.insert v () dict) Dict.empty unionData.vars

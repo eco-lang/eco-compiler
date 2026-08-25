@@ -149,7 +149,7 @@ checkLambdaStructuralType exprNode nodeTypes =
 isTLambda : Can.Type Name -> Bool
 isTLambda tipe =
     case tipe of
-        Can.TLambda _ _ ->
+        Can.TLambda _ _ _ ->
             True
 
         _ ->
@@ -185,7 +185,7 @@ computeExpectedLambdaType lambdaId patterns bodyId nodeTypes =
                     LambdaTypeError errorMsg
 
                 Ok argTypes ->
-                    LambdaTypeOk (List.foldr Can.TLambda bodyType argTypes)
+                    LambdaTypeOk (List.foldr Can.tLambda bodyType argTypes)
 
 
 {-| Collect all pattern types, failing on first error.
@@ -301,7 +301,7 @@ bijectiveAlphaEqHelp renaming a b =
             else
                 Err ("TType mismatch: " ++ n1 ++ " vs " ++ n2)
 
-        ( Can.TLambda a1 r1, Can.TLambda a2 r2 ) ->
+        ( Can.TLambda _ a1 r1, Can.TLambda _ a2 r2 ) ->
             case bijectiveAlphaEqHelp renaming a1 a2 of
                 Err e ->
                     Err e
@@ -498,7 +498,7 @@ typeToString tipe =
                 ++ String.join ", " (List.map typeToString args)
                 ++ "]"
 
-        Can.TLambda a b ->
+        Can.TLambda _ a b ->
             "TLambda (" ++ typeToString a ++ " -> " ++ typeToString b ++ ")"
 
         Can.TRecord _ ext ->

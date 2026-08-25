@@ -52,14 +52,14 @@ intType =
 -}
 intBinopType : Can.Type Name
 intBinopType =
-    Can.TLambda intType (Can.TLambda intType intType)
+    Can.tLambda intType (Can.tLambda intType intType)
 
 
 {-| Int -> Int
 -}
 intUnaryType : Can.Type Name
 intUnaryType =
-    Can.TLambda intType intType
+    Can.tLambda intType intType
 
 
 

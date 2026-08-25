@@ -396,7 +396,7 @@ freeTypeVars tipe =
                 EverySet.empty
                 args
 
-        Can.TLambda a b ->
+        Can.TLambda _ a b ->
             EverySet.union (freeTypeVars a) (freeTypeVars b)
 
         Can.TRecord fields ext ->

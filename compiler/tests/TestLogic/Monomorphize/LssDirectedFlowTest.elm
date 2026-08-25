@@ -23,6 +23,7 @@ captures the threaded state with an inline `\\st -> ( st, st )` and builds the
 -}
 
 import Compiler.AST.Intern as Intern
+import Dict
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.MonoSolver.Engine as Engine
 import Compiler.MonoSolver.Store as Store
@@ -186,5 +187,8 @@ resolveAt st members sources =
         , intern = Intern.empty
         , memberTable = Engine.emptyMemberTable
         , nextMemberId = 0
+        , arrowOf = Dict.empty
+        , varOf = Dict.empty
+        , nextVar = 0
         }
         |> Tuple.first

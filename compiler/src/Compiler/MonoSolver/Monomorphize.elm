@@ -42,6 +42,7 @@ import Compiler.Monomorphize.Registry as Registry
 import Compiler.Monomorphize.ResolveAccessorValues as ResolveAccessorValues
 import Compiler.Monomorphize.State as State
 import Compiler.MonoSolver.Engine as Engine exposing (Failure(..), S, WorkItem(..))
+import Compiler.MonoSolver.Store as Store
 import Compiler.MonoSolver.Translate as Translate
 import Compiler.MonoSolver.Zonk as Zonk
 import Compiler.Type.UnionFind as UF
@@ -78,7 +79,7 @@ monomorphizeWithReport lssConfig limits entryPointName globalTypeEnv globalGraph
             EntryPrep.insertFlagsDecoderNode entryPointName globalGraph
 
         ( TOpt.GlobalGraph nodesWithIds _ annotationsWithIds _ _, mvarState ) =
-            AssignMVarIds.assignIds graphWithFlags
+            AssignMVarIds.assignIds lssConfig.arrowSolverRoots graphWithFlags
     in
     case EntryPrep.findEntryPointId entryPointName nodesWithIds of
         Nothing ->
@@ -208,12 +209,260 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                     |> List.take 12
                     |> List.map (\( k, n ) -> k ++ "=" ++ String.fromInt n)
                     |> String.join " "
+
+        -- ===== The resolution ledger (plans/lss-unknown-elimination.md §2.5)
+        --
+        -- The acceptance metric for the unknown-elimination arc: what fraction
+        -- of arrow positions the analysis can give a CONCRETE answer for, and
+        -- how many of those answers are genuinely multi-member. Derived
+        -- entirely from counters that already exist — no new instrumentation:
+        --
+        --   concrete k=1 = sizeHist[1]
+        --   concrete k>=2 = sum over k>=2 of sizeHist[k]
+        --   over-cap     = widenedBySize   (resolved, then discarded by maxSetSize)
+        --   top          = causePoison + causeEdgeTop
+        --   var          = causeFlex   + causeEdgeEmpty   (Phase 3: LVar)
+        --   ------------------------------------------
+        --   total        = setsZonked
+        --
+        -- and the identity `sum sizeHist == causeSet + causeEdgeSet` closes it.
+        --
+        -- RECONCILES is the point of the line: it is a self-check that fires
+        -- the moment a new zonk cause arm is added to `Store.LssZonkAcc`
+        -- without being wired in here. Any new arm MUST land in exactly one of
+        -- the five buckets above.
+        --
+        -- CAVEAT that must ride with every quote of these numbers: the `zc|`
+        -- cause counters are gated by `censusOn = env.lss.report`
+        -- (`Store.bumpCauseC`) and read 0 without ECO_MONO_LSS_REPORT=1.
+        -- `sizeHist`/`widenedBySize` are unconditional. This whole report only
+        -- renders under `lss.report`, so the line is always self-consistent —
+        -- but never compare it against an arm measured with the flag off.
+        --
+        -- SECOND CAVEAT (§2.5.5): these are per-ZONK-READBACK counts, not per
+        -- distinct arrow position. A hot slot read 50 times counts 50 times.
+        -- Sound as a relative signal across arms of the same corpus; NOT an
+        -- answer to "how many positions did we resolve".
+        censusAt key =
+            Maybe.withDefault 0 (Dict.get key stats.sigStats.argFlowCensus)
+
+        ledgerK1 =
+            Maybe.withDefault 0 (Dict.get 1 stats.sizeHist)
+
+        ledgerKN =
+            Dict.foldl
+                (\size count acc ->
+                    if size >= 2 then
+                        acc + count
+
+                    else
+                        acc
+                )
+                0
+                stats.sizeHist
+
+        ledgerTop =
+            censusAt "zc|all|poison" + censusAt "zc|all|edgeTop"
+
+        -- Phase 3: this bucket is `LVar` — a set VARIABLE, "to be determined".
+        -- It was Phase 1's `LUnknown`, and before that it was silently inside
+        -- `top`. The census keys keep their historical names so the rows stay
+        -- joinable against every earlier arm.
+        ledgerUnknown =
+            censusAt "zc|all|flex" + censusAt "zc|all|edgeEmpty"
+
+        ledgerSum =
+            ledgerK1 + ledgerKN + stats.widenedBySize + ledgerTop + ledgerUnknown
+
+        multiSetArrowHist =
+            let
+                h =
+                    Dict.foldl (\_ ms acc -> Dict.insert (List.length ms) (1 + Maybe.withDefault 0 (Dict.get (List.length ms) acc)) acc) Dict.empty stats.sigStats.multiSetsByArrow
+            in
+            if Dict.isEmpty h then
+                "(none)"
+
+            else
+                String.join " " (Dict.foldr (\k v acc -> (String.fromInt k ++ "->" ++ String.fromInt v) :: acc) [] h)
+
+        -- ===== The SETTLED ledger (plans/lss-post-mono-architecture.md §3.2)
+        --
+        -- The same readbacks as `ledgerLine`, replayed at `finishNode` — after
+        -- the item finished writing rather than during. Same variables, same
+        -- multiplicity, so `total` must MATCH the in-flight `setsZonked` and
+        -- only the buckets may move. `MATCHES=NO` means the log lost readbacks
+        -- (a missed clear on a store swap, or a zonk outside any item) and the
+        -- deltas below are then meaningless — a bug signal, not a finding.
+        --
+        -- Because `resetItem` gives every work item a FRESH store, this is not
+        -- an approximation of a post-mono read: it is the complete UPPER BOUND
+        -- on what reading-later can buy inside the current architecture.
+        settled =
+            stats.sigStats.settled
+
+        settledK1 =
+            Maybe.withDefault 0 (Dict.get 1 settled.hist)
+
+        settledKN =
+            Dict.foldl
+                (\size count acc ->
+                    if size >= 2 then
+                        acc + count
+
+                    else
+                        acc
+                )
+                0
+                settled.hist
+
+        settledSum =
+            settledK1 + settledKN + settled.widenedBySize + settled.causeTop + settled.causeVar
+
+        settledLine =
+            "ledger-settled: k1="
+                ++ String.fromInt settledK1
+                ++ " kN="
+                ++ String.fromInt settledKN
+                ++ " overcap="
+                ++ String.fromInt settled.widenedBySize
+                ++ " top="
+                ++ String.fromInt settled.causeTop
+                ++ " var="
+                ++ String.fromInt settled.causeVar
+                ++ " total="
+                ++ String.fromInt settled.zonked
+                ++ " items="
+                ++ String.fromInt settled.items
+                ++ " RECONCILES="
+                ++ (if settledSum == settled.zonked then
+                        "yes"
+
+                    else
+                        "NO(" ++ String.fromInt settledSum ++ ")"
+                   )
+                ++ " MATCHES="
+                ++ (if settled.zonked == stats.setsZonked then
+                        "yes"
+
+                    else
+                        -- A shortfall is EXPECTED, not automatically a bug:
+                        -- readbacks made inside a scratch store
+                        -- (`Engine.withScratchStore`) are counted in-flight but
+                        -- cannot be replayed — those Points die with the
+                        -- scratch store. `scratchCalls` is how many logged
+                        -- readback CALLS were dropped that way; if the
+                        -- shortfall tracks it, the ledger is reconciled and
+                        -- only an UNEXPLAINED shortfall is a log bug.
+                        "NO(inflight="
+                            ++ String.fromInt stats.setsZonked
+                            ++ " short="
+                            ++ String.fromInt (stats.setsZonked - settled.zonked)
+                            ++ " scratchCalls="
+                            ++ String.fromInt settled.scratchDropped
+                            ++ ")"
+                   )
+                ++ " dVar="
+                ++ String.fromInt (settled.causeVar - ledgerUnknown)
+                ++ " dK1="
+                ++ String.fromInt (settledK1 - ledgerK1)
+                ++ " dKN="
+                ++ String.fromInt (settledKN - ledgerKN)
+
+        -- §3.2's actual stop criterion. Of the arrows still reading back a
+        -- VARIABLE after their item settled, how many have members recorded —
+        -- from some OTHER item — in the global `multiSetsByArrow` table?
+        --
+        --   known    the information exists in the program but not in this
+        --            item's store, which per-item teardown can never fix and a
+        --            solve over one global graph would. This is the prize.
+        --   unknown  nothing anywhere writes that arrow (kernel/FFI/port/Debug
+        --            boundary). No reordering reaches it; the ceiling is Eco's
+        --            setting, not its schedule.
+        --
+        -- Reads 0/0 unless arrow identity is on — `arrowOfSlot` is empty
+        -- otherwise, so there is no key to attribute a readback to.
+        -- Scored against `setArrows` — every arrow that read back a CONCRETE
+        -- set of ANY size, anywhere in the run — NOT against
+        -- `multiSetsByArrow`, which is gated at |set| >= 2. An arrow resolved
+        -- to a SINGLETON in another item is still known elsewhere; scoring it
+        -- against the multi-set table alone would misfile it as unconstrained
+        -- and overstate the kernel-boundary ceiling.
+        settledKnownElsewhere =
+            Dict.foldl
+                (\akey n ( known, unknown ) ->
+                    if Dict.member akey settled.setArrows then
+                        ( known + n, unknown )
+
+                    else
+                        ( known, unknown + n )
+                )
+                ( 0, 0 )
+                settled.varArrows
+
+        settledArrowLine =
+            let
+                ( known, unknown ) =
+                    settledKnownElsewhere
+
+                knownArrows =
+                    Dict.foldl
+                        (\akey _ n ->
+                            if Dict.member akey settled.setArrows then
+                                n + 1
+
+                            else
+                                n
+                        )
+                        0
+                        settled.varArrows
+            in
+            "settled-var-arrows: varArrows="
+                ++ String.fromInt (Dict.size settled.varArrows)
+                ++ " setArrows="
+                ++ String.fromInt (Dict.size settled.setArrows)
+                ++ " attributed="
+                ++ String.fromInt (known + unknown)
+                ++ " ofVar="
+                ++ String.fromInt settled.causeVar
+                ++ " knownElsewhere="
+                ++ String.fromInt known
+                ++ "/"
+                ++ String.fromInt knownArrows
+                ++ "arr unknownEverywhere="
+                ++ String.fromInt unknown
+                ++ "/"
+                ++ String.fromInt (Dict.size settled.varArrows - knownArrows)
+                ++ "arr"
+
+        ledgerLine =
+            "ledger: k1="
+                ++ String.fromInt ledgerK1
+                ++ " kN="
+                ++ String.fromInt ledgerKN
+                ++ " overcap="
+                ++ String.fromInt stats.widenedBySize
+                ++ " top="
+                ++ String.fromInt ledgerTop
+                ++ " var="
+                ++ String.fromInt ledgerUnknown
+                ++ " total="
+                ++ String.fromInt stats.setsZonked
+                ++ " RECONCILES="
+                ++ (if ledgerSum == stats.setsZonked then
+                        "yes"
+
+                    else
+                        "NO(" ++ String.fromInt ledgerSum ++ ")"
+                   )
     in
     String.join "\n"
         [ "=== LSS census ==="
         , "members: " ++ String.fromInt sFinal.nextMemberId ++ " total (" ++ String.fromInt lambdaCount ++ " source lambdas, " ++ String.fromInt internedCount ++ " interned)"
         , "signatures: " ++ String.fromInt sigCount ++ " memoized (" ++ String.fromInt trivialCount ++ " trivial)"
         , "sets zonked: " ++ String.fromInt stats.setsZonked ++ "; size histogram: " ++ histLine
+        , ledgerLine
+        , settledLine
+        , settledArrowLine
         , "widened: bySize=" ++ String.fromInt stats.widenedBySize ++ " byKernel=" ++ String.fromInt stats.widenedByKernel ++ " byBudget=" ++ String.fromInt stats.widenedByBudget ++ " bySigSize=" ++ String.fromInt stats.sigStats.widenedBySigSize
         , "widened sizes: " ++ widenedHistLine
         , "join flush: rounds=" ++ String.fromInt stats.joinRounds ++ " retranslations=" ++ String.fromInt stats.retranslations
@@ -251,6 +500,22 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         -- and only the former can also appear in widenedByKernel.
         , "sigflow: widenedByCf=" ++ String.fromInt stats.sigStats.widenedByCf ++ " kernelFactHits=" ++ String.fromInt stats.sigStats.kernelFactHits ++ " kernelLicensed=" ++ String.fromInt stats.sigStats.kernelLicensed ++ " edges=" ++ String.fromInt stats.sigStats.edgesInstalled ++ " degraded=" ++ String.fromInt stats.sigStats.flowDegraded
 
+        -- LSS_026(a) honest ∅-as-source: how often a members-carrying
+        -- resolution crossed a dangling (FlexVar) inflow and was widened to
+        -- ⊤ rather than published as a false-COMPLETE set — signature side /
+        -- demand side. Unconditional policy counters. The `ARGF` block below
+        -- is the LSS census and is report-gated.
+        , "honestSources: topMixedFlex=" ++ String.fromInt stats.sigStats.topMixedFlexSig ++ "/" ++ String.fromInt stats.sigStats.topMixedFlexDemand
+
+        -- Multi-set census (M3): distinct ARROW POSITIONS carrying a
+        -- multi-member set, which is the question `sizeHist`'s per-readback
+        -- counting cannot answer. `readbacks` is the ledger's kN for contrast:
+        -- positions << readbacks means a few hot arrows, positions ~ readbacks
+        -- means a broad population.
+        , "multisets: arrows=" ++ String.fromInt (Dict.size stats.sigStats.multiSetsByArrow) ++ " readbacks=" ++ String.fromInt ledgerKN ++ " byK=" ++ multiSetArrowHist
+        , argFlowCensusBlock stats.sigStats.argFlowCensus
+        , multiSetCensusBlock stats.sigStats.multiSetsByArrow sFinal.lssMemberTable
+
         -- Census (2026-07-21): E9.2 guard-decline split (declinedKernelCNumber
         -- = the E10.0 `declinedUnsettled` proxy) + the whitelist-growth list.
         , "kernel declines: shape=" ++ String.fromInt stats.declinedKernelShape ++ " cnumber=" ++ String.fromInt stats.declinedKernelCNumber ++ " emission=" ++ String.fromInt stats.declinedKernelEmission ++ " arity=" ++ String.fromInt stats.declinedKernelArity
@@ -268,6 +533,64 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         , "top specs/global: " ++ topSpecs
         , "=================="
         ]
+
+
+{-| Multi-set census dump (M3). One `MSET\t<arrowId>\t<size>\t<memberKeys>`
+line per ARROW that ever read back a multi-member set, sorted by arrow id so
+two runs of the same tree produce byte-identical blocks.
+
+**Keyed by ArrowId, and members rendered as KEYS, both deliberately.** ArrowIds
+are minted by `AssignMVarIds` from the syntax and do not depend on any lss
+flag, so they are the one identity that JOINS ACROSS ARMS — unlike symbol
+names (`lambda_N` renumbers; runtime-calls Run AE) and unlike member ids
+(`internMemberKey` assigns them in mint order, which differs per arm). The
+member KEY string is stable, so an offline join can ask the question the
+whole census exists for: is this multi-set present in BOTH arms — structural,
+the analysis found genuine alternatives — or does it appear only when slot
+sharing is on, i.e. merge-induced?
+
+Empty (a single marker line) when the run was not report-gated.
+-}
+multiSetCensusBlock : Dict.Dict Int (List Int) -> Engine.LssMemberTable -> String
+multiSetCensusBlock byArrow memberTable =
+    if Dict.isEmpty byArrow then
+        "MSET\t(none)\t0\t"
+
+    else
+        let
+            keyOf =
+                Dict.foldl (\k mid acc -> Dict.insert mid k acc) Dict.empty memberTable.byKey
+        in
+        String.join "\n"
+            (List.map
+                (\( akey, members ) ->
+                    "MSET\t"
+                        ++ String.fromInt akey
+                        ++ "\t"
+                        ++ String.fromInt (List.length members)
+                        ++ "\t"
+                        ++ String.join "|" (List.map (\m -> Maybe.withDefault ("?" ++ String.fromInt m) (Dict.get m keyOf)) members)
+                )
+                (Dict.toList byArrow)
+            )
+
+
+{-| LSS_026 Phase-0 census dump (plans/lss-gap2-callarg-transport.md §2.1):
+one `ARGF\t<key>\t<count>` line per key, sorted by key so two runs of the
+same tree produce byte-identical blocks (the census rail — compare as
+multisets, never by line index). Empty (a single marker line) when the run
+was not report-gated.
+-}
+argFlowCensusBlock : Dict.Dict String Int -> String
+argFlowCensusBlock census =
+    if Dict.isEmpty census then
+        "ARGF\t(none)\t0"
+
+    else
+        String.join "\n"
+            (List.map (\( k, v ) -> "ARGF\t" ++ k ++ "\t" ++ String.fromInt v)
+                (List.sortBy Tuple.first (Dict.toList census))
+            )
 
 
 
@@ -941,6 +1264,14 @@ defineFrom annCanType expr demand s =
                     Err e
 
                 Ok ( monoExpr, s2 ) ->
+                    -- LSS_026 §11 tried widening a WRAP-CLASS def's head
+                    -- annotation here (the adoption input of
+                    -- `Mono.singletonHeadMember`). MEASURED NO-GO — see the
+                    -- plan's §11.5: it removed ALL adoption-blocking
+                    -- (`declinedBlocked` 156 → 0) and moved dispatch coverage
+                    -- by 0.000 pp, while costing 19 k singleton sets and 60 %
+                    -- of grounding. Do not re-attempt without first
+                    -- establishing what the fast→gen conversion actually is.
                     Ok ( Mono.MonoDefine monoExpr (Mono.typeOf monoExpr), s2 )
 
 
@@ -982,12 +1313,23 @@ finishNode specId monoNode s =
     -- A join that landed mid-translation left the spec's dirty mark set;
     -- the drain-end flush re-pushes it (LSS_010) — no per-item re-push.
     let
+        -- §3.2 (plans/lss-post-mono-architecture.md): replay this item's
+        -- readbacks NOW — same store, same variables, same multiplicity, just
+        -- after the item finished writing instead of during. Report-gated and
+        -- read-only; the next `resetItem` discards this store, so this is the
+        -- last moment the experiment is possible at all.
+        --
+        -- BEFORE the itemAux update below, because `rezonkSettled` reads
+        -- `itemAux.zonkLog` and `itemAux.arrowOfSlot`.
+        sSettled =
+            Store.rezonkSettled s
+
         aux =
-            s.itemAux
+            sSettled.itemAux
     in
-    { s
-        | nodes = arraySetGrowing specId (Just monoNode) s.nodes
-        , inProgress = BitSet.removeGrowing specId s.inProgress
+    { sSettled
+        | nodes = arraySetGrowing specId (Just monoNode) sSettled.nodes
+        , inProgress = BitSet.removeGrowing specId sSettled.inProgress
         , currentGlobal = Nothing
 
         -- Fix B (LSS_017): a mint outside any item must not silently adopt a

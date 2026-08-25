@@ -34,7 +34,7 @@ tupleInterface =
 collectFreeVars : Can.Type Name -> Can.FreeVars
 collectFreeVars tipe =
     case tipe of
-        Can.TLambda a b ->
+        Can.TLambda _ a b ->
             Dict.union (collectFreeVars a) (collectFreeVars b)
 
         Can.TVar name ->
@@ -153,45 +153,45 @@ tupleValues =
     Dict.fromList
         [ -- pair : a -> b -> ( a, b )
           ( "pair"
-          , mkAnnotation (Can.TLambda aVar (Can.TLambda bVar tupleAB))
+          , mkAnnotation (Can.tLambda aVar (Can.tLambda bVar tupleAB))
           )
 
         -- first : ( a, b ) -> a
         , ( "first"
-          , mkAnnotation (Can.TLambda tupleAB aVar)
+          , mkAnnotation (Can.tLambda tupleAB aVar)
           )
 
         -- second : ( a, b ) -> b
         , ( "second"
-          , mkAnnotation (Can.TLambda tupleAB bVar)
+          , mkAnnotation (Can.tLambda tupleAB bVar)
           )
 
         -- mapFirst : (a -> x) -> ( a, b ) -> ( x, b )
         , ( "mapFirst"
           , mkAnnotation
-                (Can.TLambda
-                    (Can.TLambda aVar xVar)
-                    (Can.TLambda tupleAB tupleXB)
+                (Can.tLambda
+                    (Can.tLambda aVar xVar)
+                    (Can.tLambda tupleAB tupleXB)
                 )
           )
 
         -- mapSecond : (b -> y) -> ( a, b ) -> ( a, y )
         , ( "mapSecond"
           , mkAnnotation
-                (Can.TLambda
-                    (Can.TLambda bVar yVar)
-                    (Can.TLambda tupleAB tupleAY)
+                (Can.tLambda
+                    (Can.tLambda bVar yVar)
+                    (Can.tLambda tupleAB tupleAY)
                 )
           )
 
         -- mapBoth : (a -> x) -> (b -> y) -> ( a, b ) -> ( x, y )
         , ( "mapBoth"
           , mkAnnotation
-                (Can.TLambda
-                    (Can.TLambda aVar xVar)
-                    (Can.TLambda
-                        (Can.TLambda bVar yVar)
-                        (Can.TLambda tupleAB tupleXY)
+                (Can.tLambda
+                    (Can.tLambda aVar xVar)
+                    (Can.tLambda
+                        (Can.tLambda bVar yVar)
+                        (Can.tLambda tupleAB tupleXY)
                     )
                 )
           )

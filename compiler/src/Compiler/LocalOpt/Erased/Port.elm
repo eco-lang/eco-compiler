@@ -57,7 +57,7 @@ toEncoder tipe =
         Can.TAlias _ _ args alias ->
             toEncoder (Type.dealias args alias)
 
-        Can.TLambda _ _ ->
+        Can.TLambda _ _ _ ->
             crash "toEncoder: function"
 
         Can.TVar _ ->
@@ -276,7 +276,7 @@ Produces an optimized expression that converts JSON to Elm values for incoming p
 toDecoder : Can.Type Name -> Names.Tracker Opt.Expr
 toDecoder tipe =
     case tipe of
-        Can.TLambda _ _ ->
+        Can.TLambda _ _ _ ->
             crash "functions should not be allowed through input ports"
 
         Can.TVar _ ->

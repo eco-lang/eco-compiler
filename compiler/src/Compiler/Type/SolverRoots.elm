@@ -2,6 +2,7 @@ module Compiler.Type.SolverRoots exposing
     ( AllSchemeRoots, SchemeRootsForDef
     , normalizeNodeVars, normalizeAnnotationVars, normalizeAllSchemeRoots
     , extractBinderRootsFromInferred
+    , stampArrowRoots, stampArrowRootsInAnnotation
     )
 
 {-| Normalize solver variables to their union-find roots after solving.
@@ -14,11 +15,13 @@ that the solver proved equivalent always map to the same root index.
 @docs AllSchemeRoots, SchemeRootsForDef
 @docs normalizeNodeVars, normalizeAnnotationVars, normalizeAllSchemeRoots
 @docs extractBinderRootsFromInferred
+@docs stampArrowRoots, stampArrowRootsInAnnotation
 
 -}
 
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
+import Compiler.AST.TypeIds as TypeIds
 import Compiler.Data.Name as Name
 import Compiler.Type.SolverSnapshot as SolverSnapshot exposing (SolverState)
 import Dict exposing (Dict)
@@ -152,7 +155,7 @@ walkTypeForBinders state canType var acc =
             -- Leaf: record the binder name -> rooted var (with super) mapping
             Dict.insert name { var = rootVar, super = superOfRoot state rootVar } acc
 
-        Can.TLambda argType resType ->
+        Can.TLambda _ argType resType ->
             case lookupFlatType state rootIdx of
                 Just (IO.Fun1 argVar resVar) ->
                     acc
@@ -228,6 +231,132 @@ walkTypeForBinders state canType var acc =
 
                 _ ->
                     acc
+
+
+
+{-| **Phase 2b (`plans/lss-unknown-elimination.md` §4.9): give every arrow the
+identity the type checker already computed for it.**
+
+Walks a `Can.Type` in lockstep with its solver variable — the SAME descent
+`walkTypeForBinders` uses, arm for arm — and rewrites each `Can.TLambda`'s
+arrow slot to `TypeIds.SolverRoot rootIdx`, the arrow's own union-find root
+index. Two arrows the solver UNIFIED therefore carry the same index, which is
+exactly what per-occurrence ids (Phase 2a) cannot express: EXP-2a measured that
+a def's annotation and its body node's type are structurally-equal DISTINCT
+objects 97.5% of the time.
+
+**The index is MODULE-LOCAL.** Each module's solve numbers its `Pt` from zero,
+so it is only meaningful paired with the home module of the global that carries
+it. `AssignMVarIds.ensureArrowIdForRoot` does that pairing, mirroring
+`ensureMVarIdForRoot` — and that scoping is load-bearing, not hygiene: an
+unscoped raw index would FALSELY union two unrelated lambda sets.
+
+**Where the lockstep is lost, the subtree is left alone** (`NoArrow`), and
+`AssignMVarIds` falls back to a fresh occurrence id. So 2b degrades to 2a
+locally rather than failing — which is why the alias/mismatch arms below simply
+return `canType`.
+
+-}
+stampArrowRoots : SolverState -> Can.Type Name.Name -> IO.Variable -> Can.Type Name.Name
+stampArrowRoots state canType var =
+    let
+        rootVar =
+            SolverSnapshot.resolveVariable state var
+
+        (IO.Pt rootIdx) =
+            rootVar
+    in
+    case canType of
+        Can.TVar _ ->
+            canType
+
+        Can.TLambda _ argType resType ->
+            case lookupFlatType state rootIdx of
+                Just (IO.Fun1 argVar resVar) ->
+                    Can.TLambda (TypeIds.SolverRoot rootIdx)
+                        (stampArrowRoots state argType argVar)
+                        (stampArrowRoots state resType resVar)
+
+                _ ->
+                    canType
+
+        Can.TType home name args ->
+            case lookupFlatType state rootIdx of
+                Just (IO.App1 _ _ childVars) ->
+                    Can.TType home name (stampArrowRootsList state args childVars)
+
+                _ ->
+                    canType
+
+        Can.TRecord fields maybeExt ->
+            case lookupFlatType state rootIdx of
+                Just (IO.Record1 fieldVars _) ->
+                    Can.TRecord
+                        (Dict.map
+                            (\fieldName (Can.FieldType idx fieldType) ->
+                                case Dict.get fieldName fieldVars of
+                                    Just fieldVar ->
+                                        Can.FieldType idx (stampArrowRoots state fieldType fieldVar)
+
+                                    Nothing ->
+                                        Can.FieldType idx fieldType
+                            )
+                            fields
+                        )
+                        maybeExt
+
+                _ ->
+                    canType
+
+        Can.TTuple a b rest ->
+            case lookupFlatType state rootIdx of
+                Just (IO.Tuple1 aVar bVar restVars) ->
+                    Can.TTuple
+                        (stampArrowRoots state a aVar)
+                        (stampArrowRoots state b bVar)
+                        (stampArrowRootsList state rest restVars)
+
+                _ ->
+                    canType
+
+        Can.TUnit ->
+            canType
+
+        Can.TAlias home name args (Can.Filled innerType) ->
+            -- Aliases are transparent; the solver var is the SAME var.
+            Can.TAlias home name args (Can.Filled (stampArrowRoots state innerType var))
+
+        Can.TAlias home name args (Can.Holey innerType) ->
+            case lookupContent state rootIdx of
+                Just (IO.Alias _ _ solverAliasArgs _) ->
+                    Can.TAlias home
+                        name
+                        (List.map2
+                            (\( argName, canArg ) ( _, solverVar ) -> ( argName, stampArrowRoots state canArg solverVar ))
+                            args
+                            solverAliasArgs
+                        )
+                        (Can.Holey innerType)
+
+                _ ->
+                    canType
+
+
+stampArrowRootsList : SolverState -> List (Can.Type Name.Name) -> List IO.Variable -> List (Can.Type Name.Name)
+stampArrowRootsList state types vars =
+    case ( types, vars ) of
+        ( t :: ts, v :: vs ) ->
+            stampArrowRoots state t v :: stampArrowRootsList state ts vs
+
+        _ ->
+            -- Length mismatch: the lockstep is lost, leave the rest alone.
+            types
+
+
+{-| `stampArrowRoots` over a def's annotation. -}
+stampArrowRootsInAnnotation : SolverState -> Can.Annotation Name.Name -> IO.Variable -> Can.Annotation Name.Name
+stampArrowRootsInAnnotation state (Can.Forall freeVars tipe) annotVar =
+    Can.Forall freeVars (stampArrowRoots state tipe annotVar)
 
 
 {-| Walk parallel lists of Can.Types and solver variables.

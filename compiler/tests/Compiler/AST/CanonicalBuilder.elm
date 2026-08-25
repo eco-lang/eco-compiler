@@ -144,7 +144,7 @@ extractFreeTypeVars tipe =
         Can.TVar name ->
             Dict.singleton name ()
 
-        Can.TLambda arg result ->
+        Can.TLambda _ arg result ->
             Dict.union (extractFreeTypeVars arg) (extractFreeTypeVars result)
 
         Can.TType _ _ args ->
@@ -343,7 +343,7 @@ tupleType a b rest =
 -}
 funType : Can.Type Name -> Can.Type Name -> Can.Type Name
 funType from to =
-    Can.TLambda from to
+    Can.tLambda from to
 
 
 {-| Type variable.
@@ -389,4 +389,4 @@ stringType =
 -}
 tFunc : List (Can.Type Name) -> Can.Type Name -> Can.Type Name
 tFunc args result =
-    List.foldr Can.TLambda result args
+    List.foldr Can.tLambda result args

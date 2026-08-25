@@ -259,7 +259,7 @@ aliasToTypeHelp home name (Can.Alias vars tipe) =
                 alias_ : Can.Type Name
                 alias_ =
                     List.foldr
-                        (\( _, t1 ) t2 -> Can.TLambda t1 t2)
+                        (\( _, t1 ) t2 -> Can.tLambda t1 t2)
                         (Can.TAlias home name avars (Can.Filled tipe))
                         (Can.fieldsToList fields)
             in

@@ -335,7 +335,7 @@ typeToString tipe =
                 ++ String.join ", " (List.map typeToString args)
                 ++ "]"
 
-        Can.TLambda a b ->
+        Can.TLambda _ a b ->
             "TLambda (" ++ typeToString a ++ " -> " ++ typeToString b ++ ")"
 
         Can.TRecord _ ext ->

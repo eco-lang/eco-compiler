@@ -229,7 +229,7 @@ hasAnyFreeVar canType =
         Can.TVar _ ->
             True
 
-        Can.TLambda from to ->
+        Can.TLambda _ from to ->
             hasAnyFreeVar from || hasAnyFreeVar to
 
         Can.TType _ _ args ->
@@ -279,7 +279,7 @@ freeVarIdsHelp canType (( acc, seen ) as pair) =
             else
                 ( mvarId :: acc, Set.insert key seen )
 
-        Can.TLambda from to ->
+        Can.TLambda _ from to ->
             freeVarIdsHelp to (freeVarIdsHelp from pair)
 
         Can.TType _ _ args ->
@@ -343,7 +343,7 @@ canTypeToMonoType_preserveVars env canType =
             -- Directly reuse the MVarId, force CEcoValue constraint for ABI
             ( Mono.MVar mvarId Mono.CEcoValue, env )
 
-        Can.TLambda from to ->
+        Can.TLambda _ from to ->
             let
                 ( fromMono, env1 ) =
                     canTypeToMonoType_preserveVars env from
