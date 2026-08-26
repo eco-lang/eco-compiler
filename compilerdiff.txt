@@ -1,0 +1,186 @@
+diff --git a/compiler/src/Compiler/AST/Monomorphized.elm b/compiler/src/Compiler/AST/Monomorphized.elm
+index 45eeb6cd..446d2b89 100644
+--- a/compiler/src/Compiler/AST/Monomorphized.elm
++++ b/compiler/src/Compiler/AST/Monomorphized.elm
+@@ -9,6 +9,7 @@ module Compiler.AST.Monomorphized exposing
+     , SpecKeyMap, specKeyMapEmpty, specKeyMapGet, specKeyMapInsert, specKeyMapSize, globalHash
+     , LambdaSetAnno(..), widenSets, eqModuloTopLabel, eqLayout, shallowLayoutKey, headAnno, unionAnno, singletonHeadMember, joinAnnotations, joinAnnotationsChanged, overlayAnnotations
+     , typeNodesWithin, collectAnnoMembers
++    , AnnoCoverage, emptyAnnoCoverage, annoCoverage
+     , LambdaId(..)
+     , Global(..), SpecKey(..), SpecId, SpecializationRegistry
+     , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType, MemberOrigin(..)
+@@ -1050,6 +1051,75 @@ collectAnnoGo monoType acc =
+             acc
+ 
+ 
++{-| LSS ARTIFACT COVERAGE (2026-08-26): classify every arrow's lambda-set
++annotation in a `MonoType` as concrete (`k1`/`kN`), variable (`var`) or widened
++(`top`).
++
++**Why this exists beside the §2.5 ledger.** The ledger counts zonk READBACKS,
++so a hot slot read 50 times counts 50 times, and its denominator (`setsZonked`)
++moves whenever the analysis does more or less work — a more capable analysis
++reads more, which makes the ratio hard to compare across arms and, worse, makes
++"suppress readbacks" a way to improve the number. This counts POSITIONS in the
++emitted artifact instead: one tally per arrow per specialization. It is what the
++backend actually sees, and it is the honest answer to "how much of the program's
++lambda-set structure do we know".
++
++`var` and `top` are BOTH uncovered. They differ for diagnosis (⊤ = information
++we had and destroyed; `LVar` = information we never had) but not for coverage,
++and every consumer that is not the analysis treats `LVar` exactly as `LTop`.
++
++-}
++type alias AnnoCoverage =
++    { k1 : Int, kN : Int, var : Int, top : Int }
++
++
++emptyAnnoCoverage : AnnoCoverage
++emptyAnnoCoverage =
++    { k1 = 0, kN = 0, var = 0, top = 0 }
++
++
++annoCoverage : MonoType -> AnnoCoverage -> AnnoCoverage
++annoCoverage monoType acc =
++    case monoType of
++        MFunction _ anno args result ->
++            let
++                acc1 =
++                    case anno of
++                        LSet ms ->
++                            case ms of
++                                [ _ ] ->
++                                    { acc | k1 = acc.k1 + 1 }
++
++                                _ ->
++                                    -- `LSet []` is unrepresentable by
++                                    -- construction (LSS_001), so this is the
++                                    -- genuine multi-member case.
++                                    { acc | kN = acc.kN + 1 }
++
++                        LVar _ ->
++                            { acc | var = acc.var + 1 }
++
++                        LTop ->
++                            { acc | top = acc.top + 1 }
++            in
++            List.foldl annoCoverage (annoCoverage result acc1) args
++
++        MList _ inner ->
++            annoCoverage inner acc
++
++        MTuple _ elems ->
++            List.foldl annoCoverage acc elems
++
++        MRecord _ fields ->
++            Dict.foldl (\_ t a -> annoCoverage t a) acc fields
++
++        MCustom _ _ _ args ->
++            List.foldl annoCoverage acc args
++
++        _ ->
++            acc
++
++
+ {-| Whole-tree equality **treating the two ⊤ labels as one point**
+ (`plans/lss-unknown-elimination.md` Phase 1a).
+ 
+diff --git a/compiler/src/Compiler/Eco/Config.elm b/compiler/src/Compiler/Eco/Config.elm
+index 4c53f68e..04ef97be 100644
+--- a/compiler/src/Compiler/Eco/Config.elm
++++ b/compiler/src/Compiler/Eco/Config.elm
+@@ -393,7 +393,18 @@ type alias LssConfig =
+     -- on `lssFastOk`; `translateVarRef` did not, which poisoned every bare
+     -- reference's arrows before a member could reach them.
+     --
+-    -- DEFAULT-OFF. Hash token `lssRI=1`; env `ECO_MONO_LSS_REF_IDENTITY`.
++    -- DEFAULT-ON since 2026-08-26, on the day's full battery: analysis
++    -- coverage +7.14 pp at artifact positions (16.59% -> 23.73%, `coverage:`
++    -- census line — the largest single completeness gain measured in this
++    -- arc), `top` positions -7,754, `kN` positions 682 -> 2,276; mono wall
++    -- +0.60% = FLAT (lss-opt Run AN — Run AM's +4.3% was the Q verifier
++    -- billing the census, not the change); runtime dispatch NEUTRAL to the
++    -- event (-274 fast of 560M, one spec split, runtime-calls Run AO);
++    -- self-compile lowers both arms (0 undefined fast evaluator); E2E
++    -- `--target full` 1,691/1,691 with every test freshly compiled flag-on;
++    -- elm-tests 13,355/12 = the pre-existing failure set exactly. Escape
++    -- hatch `ECO_MONO_LSS_REF_IDENTITY=0`; hash token `lssRI=0` now rides
++    -- the OFF arm.
+     , refIdentity : Bool
+ 
+     -- §5.1/§5.6 shadow `Q` (plans/lss-paper-inclusion-constraints.md): record
+@@ -450,7 +461,7 @@ defaultLss =
+     , arrowIdentity = True
+     , arrowSolverRoots = False
+     , qSolve = False
+-    , refIdentity = False
++    , refIdentity = True
+     , qCensus = False
+     }
+ 
+diff --git a/compiler/src/Compiler/MonoSolver/Monomorphize.elm b/compiler/src/Compiler/MonoSolver/Monomorphize.elm
+index 82be74c0..5ceba5cb 100644
+--- a/compiler/src/Compiler/MonoSolver/Monomorphize.elm
++++ b/compiler/src/Compiler/MonoSolver/Monomorphize.elm
+@@ -561,6 +561,52 @@ renderLssReport sFinal (Mono.MonoGraph g) =
+                 ++ String.fromInt (Dict.size settled.varArrows - knownArrows)
+                 ++ "arr"
+ 
++        -- ARTIFACT COVERAGE (2026-08-26): the position-based completeness
++        -- metric. One tally per arrow per SPECIALIZATION, taken from the
++        -- registry's stored types — i.e. the signature of every specialized
++        -- function in the emitted program. Unlike the ledger below this has a
++        -- FIXED denominator (it does not move with how many times the analysis
++        -- reads a slot), which is what makes it gateable.
++        coverage =
++            Array.foldl
++                (\entry acc ->
++                    case entry of
++                        Just ( _, monoType ) ->
++                            Mono.annoCoverage monoType acc
++
++                        Nothing ->
++                            acc
++                )
++                Mono.emptyAnnoCoverage
++                g.registry.reverseMapping
++
++        coverageLine =
++            let
++                concrete =
++                    coverage.k1 + coverage.kN
++
++                positions =
++                    concrete + coverage.var + coverage.top
++            in
++            "coverage: positions="
++                ++ String.fromInt positions
++                ++ " k1="
++                ++ String.fromInt coverage.k1
++                ++ " kN="
++                ++ String.fromInt coverage.kN
++                ++ " var="
++                ++ String.fromInt coverage.var
++                ++ " top="
++                ++ String.fromInt coverage.top
++                ++ " coveredBp="
++                ++ String.fromInt
++                    (if positions == 0 then
++                        0
++
++                     else
++                        (10000 * concrete) // positions
++                    )
++
+         ledgerLine =
+             "ledger: k1="
+                 ++ String.fromInt ledgerK1
+@@ -587,6 +633,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
+         , "members: " ++ String.fromInt sFinal.nextMemberId ++ " total (" ++ String.fromInt lambdaCount ++ " source lambdas, " ++ String.fromInt internedCount ++ " interned)"
+         , "signatures: " ++ String.fromInt sigCount ++ " memoized (" ++ String.fromInt trivialCount ++ " trivial)"
+         , "sets zonked: " ++ String.fromInt stats.setsZonked ++ "; size histogram: " ++ histLine
++        , coverageLine
+         , ledgerLine
+         , settledLine
+         ]

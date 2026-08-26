@@ -9,6 +9,7 @@ module Compiler.AST.Monomorphized exposing
     , SpecKeyMap, specKeyMapEmpty, specKeyMapGet, specKeyMapInsert, specKeyMapSize, globalHash
     , LambdaSetAnno(..), widenSets, eqModuloTopLabel, eqLayout, shallowLayoutKey, headAnno, unionAnno, singletonHeadMember, joinAnnotations, joinAnnotationsChanged, overlayAnnotations
     , typeNodesWithin, collectAnnoMembers
+    , AnnoCoverage, emptyAnnoCoverage, annoCoverage
     , LambdaId(..)
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry
     , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType, MemberOrigin(..)
@@ -1045,6 +1046,75 @@ collectAnnoGo monoType acc =
 
         MCustom _ _ _ args ->
             List.foldl collectAnnoGo acc args
+
+        _ ->
+            acc
+
+
+{-| LSS ARTIFACT COVERAGE (2026-08-26): classify every arrow's lambda-set
+annotation in a `MonoType` as concrete (`k1`/`kN`), variable (`var`) or widened
+(`top`).
+
+**Why this exists beside the §2.5 ledger.** The ledger counts zonk READBACKS,
+so a hot slot read 50 times counts 50 times, and its denominator (`setsZonked`)
+moves whenever the analysis does more or less work — a more capable analysis
+reads more, which makes the ratio hard to compare across arms and, worse, makes
+"suppress readbacks" a way to improve the number. This counts POSITIONS in the
+emitted artifact instead: one tally per arrow per specialization. It is what the
+backend actually sees, and it is the honest answer to "how much of the program's
+lambda-set structure do we know".
+
+`var` and `top` are BOTH uncovered. They differ for diagnosis (⊤ = information
+we had and destroyed; `LVar` = information we never had) but not for coverage,
+and every consumer that is not the analysis treats `LVar` exactly as `LTop`.
+
+-}
+type alias AnnoCoverage =
+    { k1 : Int, kN : Int, var : Int, top : Int }
+
+
+emptyAnnoCoverage : AnnoCoverage
+emptyAnnoCoverage =
+    { k1 = 0, kN = 0, var = 0, top = 0 }
+
+
+annoCoverage : MonoType -> AnnoCoverage -> AnnoCoverage
+annoCoverage monoType acc =
+    case monoType of
+        MFunction _ anno args result ->
+            let
+                acc1 =
+                    case anno of
+                        LSet ms ->
+                            case ms of
+                                [ _ ] ->
+                                    { acc | k1 = acc.k1 + 1 }
+
+                                _ ->
+                                    -- `LSet []` is unrepresentable by
+                                    -- construction (LSS_001), so this is the
+                                    -- genuine multi-member case.
+                                    { acc | kN = acc.kN + 1 }
+
+                        LVar _ ->
+                            { acc | var = acc.var + 1 }
+
+                        LTop ->
+                            { acc | top = acc.top + 1 }
+            in
+            List.foldl annoCoverage (annoCoverage result acc1) args
+
+        MList _ inner ->
+            annoCoverage inner acc
+
+        MTuple _ elems ->
+            List.foldl annoCoverage acc elems
+
+        MRecord _ fields ->
+            Dict.foldl (\_ t a -> annoCoverage t a) acc fields
+
+        MCustom _ _ _ args ->
+            List.foldl annoCoverage acc args
 
         _ ->
             acc

@@ -393,7 +393,18 @@ type alias LssConfig =
     -- on `lssFastOk`; `translateVarRef` did not, which poisoned every bare
     -- reference's arrows before a member could reach them.
     --
-    -- DEFAULT-OFF. Hash token `lssRI=1`; env `ECO_MONO_LSS_REF_IDENTITY`.
+    -- DEFAULT-ON since 2026-08-26, on the day's full battery: analysis
+    -- coverage +7.14 pp at artifact positions (16.59% -> 23.73%, `coverage:`
+    -- census line — the largest single completeness gain measured in this
+    -- arc), `top` positions -7,754, `kN` positions 682 -> 2,276; mono wall
+    -- +0.60% = FLAT (lss-opt Run AN — Run AM's +4.3% was the Q verifier
+    -- billing the census, not the change); runtime dispatch NEUTRAL to the
+    -- event (-274 fast of 560M, one spec split, runtime-calls Run AO);
+    -- self-compile lowers both arms (0 undefined fast evaluator); E2E
+    -- `--target full` 1,691/1,691 with every test freshly compiled flag-on;
+    -- elm-tests 13,355/12 = the pre-existing failure set exactly. Escape
+    -- hatch `ECO_MONO_LSS_REF_IDENTITY=0`; hash token `lssRI=0` now rides
+    -- the OFF arm.
     , refIdentity : Bool
 
     -- §5.1/§5.6 shadow `Q` (plans/lss-paper-inclusion-constraints.md): record
@@ -450,7 +461,7 @@ defaultLss =
     , arrowIdentity = True
     , arrowSolverRoots = False
     , qSolve = False
-    , refIdentity = False
+    , refIdentity = True
     , qCensus = False
     }
 

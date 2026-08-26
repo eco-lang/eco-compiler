@@ -1870,3 +1870,42 @@ fixtures do, where sharing the slot removes their crossing entirely. Arrow
 identity does not retire the honest-∅ rule; it relocates where it fires. Any
 future attempt to delete that rule (§5.5) must re-measure this counter, not
 reason from the fixtures.
+
+### Run AO — HEAD-defaults reference census + `lss.refIdentity` A/B (2026-08-26): **refIdentity is dispatch-NEUTRAL (−274 fast events of 560 M, −0.000 pp); the whole moved mass is ONE stamped site SPLITTING, events conserved to the unit**
+
+Two counters-lowered binaries, each `ECO_LSS_DISPATCH_SITE_COUNTERS=1` applied
+to a `.mlir` Run AN already emitted (the lowering, not the compile, is what
+`fast` needs); both then run the SAME cold workload under
+`ECO_DISPATCH_STATS=1`, shipping-default env in BOTH arms — the arms differ in
+how the compiler ITSELF was built, not in what it is asked to do (Run AL's
+protocol). No `ECO_MONO_LSS_REPORT`: the census would add its own dispatch
+events to the measured workload.
+
+| arm | sites | sat | gen | typed | fast | sat+fast | fast % |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| defaults (`AN-off-out.mlir`) | 7,250 | 2,054,438,220 | 2,020,546,889 | 33,891,331 | 560,216,099 | 2,614,654,319 | **21.426** |
+| `refIdentity` (`AN-on-out.mlir`) | 7,273 | 2,054,438,418 | 2,020,547,092 | 33,891,326 | 560,215,825 | 2,614,654,243 | **21.426** |
+| Δ | +23 | +198 | +203 | −5 | **−274** | −76 | **−0.000 pp** |
+
+| vs the 2026-08-22 budget-512 reference (`/work/lss-budget-512-dispatch.tsv`) | sat | gen | typed | fast | sat+fast | fast % |
+|---|---:|---:|---:|---:|---:|---:|
+| Aug-22, budget-512 sweep | 1,706,191,988 | 1,676,174,329 | 30,017,659 | 484,270,958 | 2,190,462,946 | 22.108 |
+| HEAD defaults (this run) | 2,054,438,220 | 2,020,546,889 | 33,891,331 | 560,216,099 | 2,614,654,319 | 21.426 |
+
+Both arms produce a byte-identical 14,971,156 B output (`57aaf2eb…`, = Run
+AN-off), which is the workload-invariance check, and both walls are 7:02.7 /
+7:04.8. **`refIdentity`'s +36,637 concrete resolutions (Run AM) reach the
+runtime not at all** — the Run-AE Phase-1b verdict again, and for the same
+reason: the consumer is singleton-only. Attribution is exact by the multiset
+method (names do not join across arms): the residue is 2,282,967 events off
+vs 2,282,693 on, and its head is **2,182,143 → 1,687,507 + 494,636 = 2,182,143
+to the unit** — one hot stamped closure splits into two stamped closures
+(`lambda_29377` → `lambda_29423` + `lambda_29370`; all three rows carry
+`sat=0`, i.e. reached ONLY by static stamp in both arms, so this is a spec
+split and not a de-stamp anywhere). **The −0.682 pp against the Aug-22
+reference is NOT attributable**: `sat+fast` is +19.4 % while `out.mlir` moved
+only +4.2 % (14,370,158 → 14,971,156 B), so that column is a different corpus
+doing more work per compile; the one comparable slice of it is Run AL's
+recorded −0.306 pp for the `arrowIdentity` flip. Full symbolized tables (all
+rows, 0 unknown fps): `/work/lss-head-defaults-dispatch.tsv`,
+`/work/lss-head-refidentity-dispatch.tsv`.

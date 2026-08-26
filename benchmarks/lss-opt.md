@@ -1167,6 +1167,33 @@ RSS within 68 MB), so those belong to the binary and the corpus alone. Deliberat
 protocol's command sets `ECO_MONO_LSS_REPORT=1` and this run drops it, so there are no lss census
 counters — that is the point of the run, and Run AM carries them.
 
+### 2026-08-26 — Run AO: `lss.refIdentity` DEFAULT-ON, the flip + the ANALYSIS-COVERAGE counter (plain run at the new defaults; census ON — wall NOT comparable to census-off rows)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| flip defaults | 6:56.95 (417.0 s, census-on) | 10,981,884 kB | 1,814 | 9 | 591,529,717 (17,743 MiB) | 134.51 s | 15,258,422 B (`0f0b86d6…`) |
+
+| NEW `coverage:` line (artifact positions — THE progress gate as of 2026-08-26) | positions | k1 | kN | var | top | covered |
+|---|---:|---:|---:|---:|---:|---:|
+| old defaults (`cov-def`) | 127,957 | 20,558 | 682 | 37,237 | 69,480 | **16.59 %** |
+| new defaults (this run; = `cov-ri` to the digit) | 132,113 | 29,087 | 2,276 | 39,024 | 61,726 | **23.73 %** |
+
+Two changes land together: `Mono.annoCoverage` + the `coverage:` census line
+(position-based analysis-coverage metric — the gate; a hot slot no longer
+counts 50×, and the denominator cannot be gamed by suppressing readbacks), and
+the `lss.refIdentity` default flip: **+7.14 pp analysis coverage**, the arc's
+largest completeness gain, on the day's full battery (Run AN wall FLAT +0.60 %;
+runtime-calls Run AO dispatch NEUTRAL −274 of 560 M; E2E full flag-on
+1,691/1,691 with the harness cache forced cold; elm-tests 13,355/12 = baseline
+BOTH via env-flag AND re-run on the flipped tree — 39 test sites consume
+`Config.default*` as a constant, which the env arm cannot reach). The
+confirmation census is bit-identical to the env-flag arm (positions/k1/kN to
+the digit) — flag-via-env ≡ flag-via-constant. Census-on wall/GC: NOT
+comparable to census-off rows (the protocol's Run-AM lesson); majors 9 = 9 vs
+Run AN. Position metric vs readback ledger INVERT on the ⊤/var diagnosis (⊤ =
+54→47 % of positions but 6→4 % of readbacks); always name the metric. Escape
+hatch `ECO_MONO_LSS_REF_IDENTITY=0` (`lssRI=0` rides the OFF arm).
+
 ---
 
 ## Summary
@@ -1216,3 +1243,4 @@ One row per run, numbers only.
 | AM-on | 415.1 | 1844 | 9 | 17770 |
 | AN-off | 390.9 | 1735 | 9 | 17542 |
 | AN-on | 393.3 | 1775 | 9 | 17698 |
+| AO | 417.0 | 1814 | 9 | 17743 |

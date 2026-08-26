@@ -561,6 +561,52 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 ++ String.fromInt (Dict.size settled.varArrows - knownArrows)
                 ++ "arr"
 
+        -- ARTIFACT COVERAGE (2026-08-26): the position-based completeness
+        -- metric. One tally per arrow per SPECIALIZATION, taken from the
+        -- registry's stored types — i.e. the signature of every specialized
+        -- function in the emitted program. Unlike the ledger below this has a
+        -- FIXED denominator (it does not move with how many times the analysis
+        -- reads a slot), which is what makes it gateable.
+        coverage =
+            Array.foldl
+                (\entry acc ->
+                    case entry of
+                        Just ( _, monoType ) ->
+                            Mono.annoCoverage monoType acc
+
+                        Nothing ->
+                            acc
+                )
+                Mono.emptyAnnoCoverage
+                g.registry.reverseMapping
+
+        coverageLine =
+            let
+                concrete =
+                    coverage.k1 + coverage.kN
+
+                positions =
+                    concrete + coverage.var + coverage.top
+            in
+            "coverage: positions="
+                ++ String.fromInt positions
+                ++ " k1="
+                ++ String.fromInt coverage.k1
+                ++ " kN="
+                ++ String.fromInt coverage.kN
+                ++ " var="
+                ++ String.fromInt coverage.var
+                ++ " top="
+                ++ String.fromInt coverage.top
+                ++ " coveredBp="
+                ++ String.fromInt
+                    (if positions == 0 then
+                        0
+
+                     else
+                        (10000 * concrete) // positions
+                    )
+
         ledgerLine =
             "ledger: k1="
                 ++ String.fromInt ledgerK1
@@ -587,6 +633,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         , "members: " ++ String.fromInt sFinal.nextMemberId ++ " total (" ++ String.fromInt lambdaCount ++ " source lambdas, " ++ String.fromInt internedCount ++ " interned)"
         , "signatures: " ++ String.fromInt sigCount ++ " memoized (" ++ String.fromInt trivialCount ++ " trivial)"
         , "sets zonked: " ++ String.fromInt stats.setsZonked ++ "; size histogram: " ++ histLine
+        , coverageLine
         , ledgerLine
         , settledLine
         ]

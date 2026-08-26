@@ -1328,9 +1328,18 @@ consulted. `var` rising alongside is the correct direction: a position moved
 from ⊤ (a false claim of "poisoned/unknown") to an honest unconstrained
 variable, and `k1 + kN` rose by 36,637 on top of that.
 
-**REMAINING GATES before this can go default-on:** elm-tests at the pre-existing
-failure set and E2E `--target full`, both with the flag ON — neither suite has
-seen this path. The self-compile lowering gate (LSS_031's rule) is already met.
+**GATES MET AND FLIPPED DEFAULT-ON, 2026-08-26 (same day).** E2E
+`--target full` flag-on: **1,691 / 1,691**, with the harness cache forced cold
+(`touch test/elm/src/*.elm` — the recorded env-blind-cache trap) so every test
+program compiled fresh under the flag (`0 cached` on every sub-suite).
+elm-tests flag-on: **13,355 / 12** — the pre-existing failure set exactly
+(if-chain + 11 node-type-scoping). Dispatch: runtime-calls Run AO, NEUTRAL
+(−274 fast of 560 M, one spec split, events conserved). Analysis coverage
+(gate 0): **+7.14 pp at artifact positions** (16.59 % → 23.73 %) — the largest
+single completeness gain measured in this arc, double the readback delta,
+because the position metric exposes the storeless-⊤ stamps the ledger flattered
+(⊤ = 54.3 % of positions at old defaults). Escape hatch
+`ECO_MONO_LSS_REF_IDENTITY=0`; `lssRI=0` now rides the OFF arm.
 
 **NO NEW CARRY-FORWARD IS NEEDED.** The registry demand type and
 `Engine.lssSignatures` already carry information across items. Nothing needs to
@@ -1356,12 +1365,31 @@ Only once `Q` is the solver: the ~11 transport hooks, ⊤-as-join-result,
 
 ## §6 Gates
 
+0. **THE PROGRESS GATE (SUPERSEDES GATE 3's OLD CLAUSE — user-directed,
+   2026-08-26): ANALYSIS COVERAGE MUST RISE.** *Completeness first,
+   exploitation later.* `coverage = (k1 + kN) / positions` over arrow positions
+   in the emitted artifact; `LVar` and `LTop` are both UNCOVERED. Emitted as the
+   `coverage:` census line (`Mono.annoCoverage`, added 2026-08-26). **A `kN` set
+   counts exactly as much as a `k1` set** — which inverts this register's
+   long-standing tension, where every precision gain that converted a singleton
+   into a 2-set scored as a regression. Baseline at HEAD, ARTIFACT POSITIONS
+   (the gate metric, measured 2026-08-26): defaults **16.59 %**
+   (127,957 positions, ⊤ 54.3 % / var 29.1 %), `+refIdentity` **23.73 %**
+   (+7.14 pp). Per-readback ledger for continuity with older entries only:
+   36.71 % / 40.28 % / 41.37 %. Note the metrics DISAGREE on the diagnosis —
+   at positions ⊤ dominates, at readbacks var does; the position figure is the
+   gate. Full statement: `plans/lss-solver-root-signature-identity.md` §4
+   gate 0.
 1. §2.5 ledger `RECONCILES=yes`; **headline is `kN` RISING and `var` falling**.
 2. `MSET`/`multiSetSites` — `LssTaskSetProbe` is the named pin.
-3. Dispatch census A/B with the `sat + fast` invariance rail
-   (`benchmarks/runtime-calls.md` Run AE protocol). Coverage must not regress:
-   this plan ADDS sets, and a correct 2-set is worse than a singleton under a
-   singleton-only consumer (`plans/lss-sum-lowering.md` is the consumer).
+3. Fast-dispatch census A/B with the `sat + fast` invariance rail
+   (`benchmarks/runtime-calls.md` Run AE protocol). ~~Coverage must not
+   regress~~ — **RECORDED, NOT GATED, as of 2026-08-26.** A fall in
+   fast-dispatch coverage that buys a rise in ANALYSIS coverage (gate 0) is an
+   accepted trade; `plans/lss-sum-lowering.md` is the consumer that reaps it
+   later. **Terminology:** "coverage" is now ambiguous in this register — say
+   **analysis coverage** (gate 0) or **fast-dispatch coverage** (this gate),
+   never bare "coverage".
 4. elm-tests at the pre-existing failure set; E2E `--target full`.
 5. **SELF-COMPILE LOWERING, every arm** — LSS_031's lesson: E2E passed
    1,687/1,687 with `arrowSolverRoots=1` while its self-compile did not lower,
