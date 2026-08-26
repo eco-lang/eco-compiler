@@ -198,6 +198,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\qcVal -> applyLssQCensusOverride qcVal cfg4ec)
             )
         |> Task.andThen
+            (\cfg4ed ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_PAP_MEMBERS" |> Task.mapError never)
+                    |> Task.map (\pmVal -> applyLssPapMembersOverride pmVal cfg4ed)
+            )
+        |> Task.andThen
             (\cfg4f ->
                 (Utils.envLookupEnv "ECO_SPEC_TYPE_NODE_LIMIT" |> Task.mapError never)
                     |> Task.map (\tnVal -> applySpecTypeNodeLimitOverride tnVal cfg4f)
@@ -1802,6 +1807,29 @@ applyLssQCensusOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | qCensus = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_PAP_MEMBERS=1|true|yes / 0|false|no`
+(plans/lss-injection-completeness.md): inject the callee's member on the
+RESIDUAL arrows of a partial application of a known global — the one producer
+form that injects nothing today (P0 census: 3,624 self-compile positions).
+DEFAULT-OFF. Hash token `lssPM=`.
+-}
+applyLssPapMembersOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssPapMembersOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | papMembers = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | papMembers = False }) cfg
 
             else
                 cfg

@@ -319,6 +319,170 @@ recordFieldCanType f t =
 
 translate : TOpt.Expr TypeIds.MVarId -> Step Mono.MonoExpr
 translate expr s0 =
+    -- Injection-totality census (plans/lss-injection-completeness.md §2.1):
+    -- one report-gated classification per translated node. Behavior-free by
+    -- construction — `censusProducer` only bumps counters, and reads
+    -- signature state without forcing it.
+    case translateDispatch expr s0 of
+        Err e ->
+            Err e
+
+        Ok ( monoExpr, s1 ) ->
+            Ok ( monoExpr, censusProducer expr s1 )
+
+
+{-| Injection-totality census (plans/lss-injection-completeness.md §2.1).
+REPORT-GATED; one head-arrow test per node when on, nothing when off.
+
+Classifies every expression whose type's HEAD is an arrow — i.e. every
+position holding a function VALUE — by producer form. `inj|papKnown|*` is the
+headline: partial applications of known globals, the one producer form that
+injects no lambda-set member today (the `arrowSolverRoots` false-singleton
+class). Verdicts are FORM-derived, not write-provenance-derived: `papKnown`
+IS the none-population by construction, and `callResult|trivial` is the
+"totality unproven" bucket (a trivial-signature callee carries no fact at its
+result ordinal).
+
+Reads triviality via `Engine.memoizedSignatureTrivial` ONLY — forcing a
+signature here would move member-id allocation order, and `report` is
+excluded from the config hash (the `censusArgs` lesson above).
+-}
+censusProducer : TOpt.Expr TypeIds.MVarId -> Engine.S -> Engine.S
+censusProducer expr s =
+    if not (s.env.lss.report && s.env.lss.enabled && headIsArrow (TOpt.typeOf expr)) then
+        s
+
+    else
+        Engine.bumpArgFlowCensus ("inj|" ++ producerKey expr s) s
+
+
+{-| Is the HEAD of this canonical type an arrow (following aliases)?
+Head-position only — the type of a value that IS a function — unlike
+`canTypeHasArrow`, which finds arrows anywhere inside.
+-}
+headIsArrow : Can.Type TypeIds.MVarId -> Bool
+headIsArrow t =
+    case t of
+        Can.TLambda _ _ _ ->
+            True
+
+        Can.TAlias _ _ _ (Can.Filled real) ->
+            headIsArrow real
+
+        Can.TAlias _ _ _ (Can.Holey real) ->
+            headIsArrow real
+
+        _ ->
+            False
+
+
+producerKey : TOpt.Expr TypeIds.MVarId -> Engine.S -> String
+producerKey expr s =
+    case expr of
+        TOpt.Function _ _ _ _ ->
+            "lambda"
+
+        TOpt.TrackedFunction _ _ _ _ ->
+            "lambda"
+
+        TOpt.VarGlobal _ _ _ ->
+            "ref"
+
+        TOpt.VarEnum _ _ _ _ ->
+            "ref"
+
+        TOpt.VarBox _ _ _ ->
+            "ref"
+
+        TOpt.VarCycle _ _ _ _ ->
+            "ref"
+
+        TOpt.VarKernel _ _ _ _ _ ->
+            "kernel"
+
+        TOpt.VarLocal _ _ ->
+            "local"
+
+        TOpt.TrackedVarLocal _ _ _ ->
+            "local"
+
+        TOpt.Call _ func args _ ->
+            censusCallKey func (List.length args) s
+
+        TOpt.If _ _ _ ->
+            "branch"
+
+        TOpt.Case _ _ _ _ _ ->
+            "branch"
+
+        TOpt.Let _ _ _ ->
+            "let"
+
+        TOpt.Destruct _ _ _ ->
+            "let"
+
+        TOpt.Accessor _ _ _ ->
+            "accessor"
+
+        TOpt.Access _ _ _ _ ->
+            "read"
+
+        _ ->
+            "other"
+
+
+censusCallKey : TOpt.Expr TypeIds.MVarId -> Int -> Engine.S -> String
+censusCallKey func supplied s =
+    case censusCallGlobal func of
+        Just g ->
+            let
+                declared =
+                    LssInfer.declaredArityOf g 8 s
+            in
+            if declared > supplied then
+                "papKnown|d" ++ String.fromInt (declared - supplied)
+
+            else
+                case Engine.memoizedSignatureTrivial g s of
+                    Just True ->
+                        "callResult|trivial"
+
+                    Just False ->
+                        "callResult|nontrivial"
+
+                    Nothing ->
+                        "callResult|unmemoized"
+
+        Nothing ->
+            case func of
+                TOpt.VarKernel _ _ _ _ _ ->
+                    "callKernel"
+
+                _ ->
+                    "callUnknownCallee"
+
+
+censusCallGlobal : TOpt.Expr TypeIds.MVarId -> Maybe TOpt.Global
+censusCallGlobal func =
+    case func of
+        TOpt.VarGlobal _ g _ ->
+            Just g
+
+        TOpt.VarEnum _ g _ _ ->
+            Just g
+
+        TOpt.VarBox _ g _ ->
+            Just g
+
+        TOpt.VarCycle _ home name _ ->
+            Just (TOpt.Global home name)
+
+        _ ->
+            Nothing
+
+
+translateDispatch : TOpt.Expr TypeIds.MVarId -> Step Mono.MonoExpr
+translateDispatch expr s0 =
     case expr of
         TOpt.Bool _ v _ ->
             Ok ( (Mono.MonoLiteral (Mono.LBool v) Mono.MBool), s0 )
@@ -2562,7 +2726,7 @@ translateGlobalCall region funcRegion global funcCanType args callCanType s =
                     Err e
 
                 Ok ( fastOk, s0 ) ->
-                    if not fastOk then
+                    if not fastOk || needsPapSlow global args callCanType s0 then
                         translateGlobalCallSlow region funcRegion global funcCanType args callCanType s0
 
                     else if groundCanType funcCanType then
@@ -2584,6 +2748,30 @@ translateGlobalCall region funcRegion global funcCanType args callCanType s =
 
         else
             translateGlobalCallSlow region funcRegion global funcCanType args callCanType s
+
+
+{-| Injection completeness (plans/lss-injection-completeness.md §2.3): must
+this call take the SLOW path so its residual arrows can carry the callee's
+member?
+
+`lssFastOk` inspects the ARGUMENTS for arrows but never the RESULT, so a
+partial application with ground args — `(::) x` exactly, the shape that
+manufactured the `arrowSolverRoots` false singleton — takes the M2b
+ground-memo fast path today. The fast paths never mint store structure, so
+there is no slot to inject into: the injection would silently never fire on
+its motivating case. Route partials to the slow path instead.
+
+The `canTypeHasArrow callCanType` pre-filter runs first and is cheap: a call
+whose RESULT mentions no arrow cannot be a partial application of a
+function-typed residual, so the arity walk only runs on candidate sites.
+Flag-off this is one Bool test.
+-}
+needsPapSlow : TOpt.Global -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Engine.S -> Bool
+needsPapSlow global args callCanType s =
+    s.env.lss.enabled
+        && s.env.lss.papMembers
+        && canTypeHasArrow callCanType
+        && LssInfer.declaredArityOf global 8 s > List.length args
 
 
 {-| May this call take the cached fast paths under LSS? `sigTrivial` forces
@@ -3009,7 +3197,7 @@ translateGlobalCallSlow region funcRegion global funcCanType args callCanType s0
                         Err e
 
                     Ok ( argStash, s2 ) ->
-                        case unifyResultWithExpected funcVar argCount callCanType s2 of
+                        case unifyResultThenInjectPap funcVar argCount callCanType global s2 of
                             Err e ->
                                 Err e
 
@@ -3739,6 +3927,135 @@ standaloneArgKernelMember key k canVar =
     Engine.andThen
         (\mid -> LssInfer.injectSpineMemberId 1 mid canVar)
         (Engine.kernelMemberIdFor key k)
+
+
+{-| `unifyResultWithExpected` followed by the PAP residual injection, in that
+order, as one step — so the injection lands after the call's result has been
+unified with the expected type (the residual Points are then the ones the
+demand will be read from) and BEFORE `Store.zonkToMono funcVar`. Sequenced as
+a composed step rather than another level of case-nesting purely for
+readability; the ordering is the load-bearing part.
+-}
+unifyResultThenInjectPap : IO.Variable -> Int -> Can.Type TypeIds.MVarId -> TOpt.Global -> Step ()
+unifyResultThenInjectPap funcVar argCount callCanType global s0 =
+    case unifyResultWithExpected funcVar argCount callCanType s0 of
+        Err e ->
+            Err e
+
+        Ok ( _, s1 ) ->
+            injectPapMember global funcVar argCount s1
+
+
+{-| INJECTION COMPLETENESS (plans/lss-injection-completeness.md §2.3): a
+PARTIAL application of a known global is a PAP of that global, so the callee's
+member is SOUND on the residual arrows — LSS_013's arity bound licenses
+exactly this ("a PAP of member m is m", design OQ4). Every residual arrow
+within the declared arity holds a further partial application of the SAME
+global, which is why the member is valid at depth `declared - supplied` and
+not merely at the head.
+
+This is the one producer form that injected nothing before: P0's
+injection-totality census measured 3,624 such positions on the self-compile
+(83 % at residual depth 1), and that hole is what let a one-sided branch join
+publish `{identity}` as a COMPLETE set — the false singleton behind the
+`arrowSolverRoots` miscompile. The paper has no such hole: L^src is
+curry-free, so `(::) x` is necessarily a λ there and `𝒬` injects every λ.
+
+**IDENTITY: a PAP gets its OWN member id, NEVER the callee's `g|`/`k|` one.**
+This is the correction that made the first implementation of this function a
+MISCOMPILE, and it is a fidelity point, not a workaround. `g|X` is registered
+as `SourceGlobal X` (`Engine.standaloneMemberIdFor`), which puts it in the
+STAMPABLE class: devirt reads it as "this value IS X" and rewrites the site to
+a direct call of X's spec. A partial application is NOT X — it is X with `k`
+arguments already bound — so that rewrite drops the captured arguments. The
+observed failure was exactly this: `IO.traverseList (IO.traverseTuple f) args`
+made devirt call `traverseTuple`'s 2-arity spec with one argument, and
+monomorphization died on `demandUnify` with an arity mismatch.
+
+The paper has no such conflation: L^src is curry-free, so `(::) x` is its own
+λ with its OWN set element, distinct from `cons`'s. `p|<global>|<supplied>`
+is that element. It is minted through `Engine.memberIdFor` WITHOUT a
+`SourceGlobal`/`SourceKernel` registration, so `memberClassOf` reports the
+declining class `l` and no devirt arm can act on it — while it still occupies
+the set, which is the entire point: a one-sided join becomes an honest >=2 set
+and the FALSE SINGLETON that motivated this plan cannot form.
+
+**Depth is HEAD-ONLY, and that is also identity-driven.** At the residual head
+the value is the PAP with `supplied` args bound; one arrow deeper it is a
+DIFFERENT PAP (`supplied + 1` bound) and therefore a different element, which
+`p|<global>|<supplied>` would misname. Injecting one id down a spine is what
+`g|` may do (every residual of an unapplied global is still that global) and
+what a PAP may not. Deeper residual arrows are left uninjected and COUNTED
+(`papInject|deep`) — honest residue; 83 % of sites are depth 1 (P0 census), and
+a per-arrow `p|<global>|<supplied+i>` walk is the clean generalization if the
+residue justifies it.
+
+No-ops when lss or the flag is off, when the call is saturated or
+over-applied, or when the residual Point is opaque at that depth — an
+uninjected position is exactly today's behaviour, so every fallback is sound.
+-}
+injectPapMember : TOpt.Global -> IO.Variable -> Int -> Step ()
+injectPapMember global funcVar argCount s0 =
+    if not (s0.env.lss.enabled && s0.env.lss.papMembers) then
+        Ok ( (), s0 )
+
+    else
+        let
+            declared =
+                LssInfer.declaredArityOf global 8 s0
+        in
+        if declared <= argCount then
+            Ok ( (), s0 )
+
+        else
+            case resultVarAfter funcVar argCount s0 of
+                Err e ->
+                    Err e
+
+                Ok ( Nothing, s1 ) ->
+                    -- Opaque at this depth (over-applied or not an arrow
+                    -- spine): nothing to inject into. COUNTED, not silently
+                    -- absorbed — this is the honest residue of the totality
+                    -- claim, and a form census cannot see it.
+                    Ok ( (), Engine.bumpArgFlowCensus "papInject|opaque" s1 )
+
+                Ok ( Just residualVar, s1 ) ->
+                    -- The injection-FIRED counters. The P0 form census counts
+                    -- syntactic partial applications and cannot fall once they
+                    -- start injecting; only the write site can answer "did the
+                    -- member actually land". Gate: `papInject|pap` against the
+                    -- form census's `papKnown`, with `opaque`/`deep` reported
+                    -- as the residue.
+                    let
+                        residualDepth =
+                            declared - argCount
+
+                        s2 =
+                            Engine.bumpArgFlowCensus "papInject|pap" s1
+
+                        s3 =
+                            if residualDepth > 1 then
+                                Engine.bumpArgFlowCensus
+                                    ("papInject|deep|d" ++ String.fromInt residualDepth)
+                                    s2
+
+                            else
+                                s2
+                    in
+                    Engine.andThen
+                        (\mid -> LssInfer.injectSpineMemberId 1 mid residualVar)
+                        (Engine.memberIdFor (papMemberKey global argCount))
+                        s3
+
+
+{-| The PAP element's key: `p|<global>|<supplied>`. Distinct per (global,
+arity-prefix) because those ARE distinct values — and distinct from the
+callee's own `g|`/`k|` key, which denotes the unapplied global and licenses a
+direct-call rewrite that a PAP cannot support.
+-}
+papMemberKey : TOpt.Global -> Int -> String
+papMemberKey global argCount =
+    "p|" ++ TOpt.toComparableGlobal global ++ "|" ++ String.fromInt argCount
 
 
 {-| Best-effort unify `canVar` with environment-derived structure for `arg`.

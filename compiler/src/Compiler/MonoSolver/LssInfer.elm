@@ -1664,7 +1664,7 @@ applyCalleeAt g funcFallbackType args meta s0 =
                         Err e
 
                     Ok ( callVar, s2 ) ->
-                        Ok ( WpOpaque callVar, s2 )
+                        injectPapMemberInfer g (List.length args) callVar s2
 
     else
         case instantiateWithSignature g srcType s0 of
@@ -1677,7 +1677,53 @@ applyCalleeAt g funcFallbackType args meta s0 =
                         Err e
 
                     Ok ( callVar, s2 ) ->
-                        Ok ( WpOpaque callVar, s2 )
+                        injectPapMemberInfer g (List.length args) callVar s2
+
+
+{-| INJECTION COMPLETENESS, inference side (the twin of
+`Translate.injectPapMember`; plans/lss-injection-completeness.md §2.4).
+
+`unifyCallShape` returns the call's OWN loaded Point — for a partial
+application that Point IS the residual type, already unified with the
+instantiation's remaining arrows by `unifyParamsBestEffort`. So unlike the
+translate side there is no spine to descend: inject straight into `callVar`.
+
+Without this twin the two sides fall out of lockstep: a def whose body RETURNS
+a partial application would carry the member in its specialization demand but
+not at its signature's residual ordinal, so callers of that def would not see
+it.
+
+**Identity and depth follow `Translate.injectPapMember` exactly** — a distinct
+`p|<global>|<supplied>` element (NEVER the callee's `g|`/`k|` id, which
+denotes the unapplied global and licenses a direct-call rewrite a PAP cannot
+support), injected HEAD-ONLY because one arrow deeper is a different PAP and
+therefore a different element. That function's docs carry the full argument
+and the miscompile it was corrected from.
+
+Returns the `WalkPoint` unchanged — this is a pure store write.
+-}
+injectPapMemberInfer : TOpt.Global -> Int -> IO.Variable -> Step WalkPoint
+injectPapMemberInfer g argCount callVar s0 =
+    if not (s0.env.lss.enabled && s0.env.lss.papMembers) then
+        Ok ( WpOpaque callVar, s0 )
+
+    else if declaredArityOf g 8 s0 <= argCount then
+        Ok ( WpOpaque callVar, s0 )
+
+    else
+        let
+            injected =
+                Engine.andThen
+                    (\mid -> injectSpineMemberId 1 mid callVar)
+                    (Engine.memberIdFor ("p|" ++ TOpt.toComparableGlobal g ++ "|" ++ String.fromInt argCount))
+                    s0
+        in
+        case injected of
+            Err e ->
+                Err e
+
+            Ok ( _, s1 ) ->
+                Ok ( WpOpaque callVar, s1 )
 
 
 {-| Unify a callee instantiation's params against the args and its residual

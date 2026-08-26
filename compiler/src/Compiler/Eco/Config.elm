@@ -422,6 +422,24 @@ type alias LssConfig =
     --
     -- DEFAULT-OFF. Hash token `lssQC=1`; env `ECO_MONO_LSS_QCENSUS`.
     , qCensus : Bool
+
+    -- INJECTION COMPLETENESS (plans/lss-injection-completeness.md): a PARTIAL
+    -- application of a known global is a PAP of that global, so the callee's
+    -- member is sound on the residual arrows (LSS_013's arity bound: "a PAP of
+    -- member m is m"). It is the ONE producer form that injects nothing today
+    -- — P0's injection-totality census measured 3,624 such positions on the
+    -- self-compile, ≥84 % of the whole totality gap — and that hole is what
+    -- manufactured the `arrowSolverRoots` false singleton that compiled
+    -- `Task.map f` into the identity map.
+    --
+    -- This is the paper's own soundness mechanism, not a mitigation: L^src has
+    -- no currying, so `(::) x` is necessarily a λ there and `𝒬` injects EVERY
+    -- λ (Fig. 6) — the false singleton cannot form, and no ⊤-widening is
+    -- needed. Injecting here restores that property.
+    --
+    -- Artifact-affecting (members → annotations → keyed spec keys → fan-out).
+    -- DEFAULT-OFF. Hash token `lssPM=1`; env `ECO_MONO_LSS_PAP_MEMBERS`.
+    , papMembers : Bool
     }
 
 
@@ -463,6 +481,7 @@ defaultLss =
     , qSolve = False
     , refIdentity = True
     , qCensus = False
+    , papMembers = False
     }
 
 
@@ -851,6 +870,7 @@ lssDecoder =
         |> D.apply (D.optionalField "qSolve" D.bool defaultLss.qSolve)
         |> D.apply (D.optionalField "refIdentity" D.bool defaultLss.refIdentity)
         |> D.apply (D.optionalField "qCensus" D.bool defaultLss.qCensus)
+        |> D.apply (D.optionalField "papMembers" D.bool defaultLss.papMembers)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -1242,6 +1262,21 @@ hash cfg =
                     , if lss.qCensus /= defaultLss.qCensus then
                         [ "lssQC="
                             ++ (if lss.qCensus then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- Injection completeness: PAP residual members are
+                    -- artifact-affecting (members → annotations → keys).
+                    , if lss.papMembers /= defaultLss.papMembers then
+                        [ "lssPM="
+                            ++ (if lss.papMembers then
                                     "1"
 
                                 else
