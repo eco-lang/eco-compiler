@@ -193,6 +193,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\riVal -> applyLssRefIdentityOverride riVal cfg4eb)
             )
         |> Task.andThen
+            (\cfg4ec ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_QCENSUS" |> Task.mapError never)
+                    |> Task.map (\qcVal -> applyLssQCensusOverride qcVal cfg4ec)
+            )
+        |> Task.andThen
             (\cfg4f ->
                 (Utils.envLookupEnv "ECO_SPEC_TYPE_NODE_LIMIT" |> Task.mapError never)
                     |> Task.map (\tnVal -> applySpecTypeNodeLimitOverride tnVal cfg4f)
@@ -1774,6 +1779,29 @@ applyLssRefIdentityOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | refIdentity = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_QCENSUS=1|true|yes / 0|false|no` (§5.1/§5.6 shadow `Q`): record
+every inclusion constraint the solver emits, solve it at the inference boundary
+and score it against the store. Split from `lss.report` because the benchmark
+protocol mandates the latter and this is not free. DEFAULT-OFF. Hash token
+`lssQC=`.
+-}
+applyLssQCensusOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssQCensusOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | qCensus = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | qCensus = False }) cfg
 
             else
                 cfg

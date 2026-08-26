@@ -105,7 +105,7 @@ demandUnifyRoot annCanType demand expr s0 =
                 -- a non-lambda def's type still carries arrows (`fns = [incr,
                 -- decr]`), and those are exactly the σ the partition is about.
                 sQ =
-                    if s1.env.lss.enabled && s1.env.lss.report then
+                    if s1.env.lss.enabled && s1.env.lss.qCensus then
                         let
                             auxQ =
                                 s1.itemAux

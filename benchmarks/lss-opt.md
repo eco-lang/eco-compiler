@@ -1115,75 +1115,59 @@ transport artifacts need Phase 2b, not 2a. 1a and 1b ship unconditionally;
 **`lss.arrowIdentity` ships DEFAULT-OFF** (the flip still wants the runtime
 dispatch A/B). Plan §10 carries the full results; LSS_027–LSS_030 are new.
 
-### 2026-08-24 — Run AI: Phase 2b solver-root arrow ids + the multi-set census (three arms, ONE binary, one frozen corpus; `plans/lss-unknown-elimination.md` §11)
+### 2026-08-26 — Run AM: GAP-A closed — store-aware classification of bare global references (A/B on `lss.refIdentity`)
 
-| arm | arrows with k≥2 | kN readbacks | k=1 | top | unknown | total | completeness | `md5(out.mlir)` |
-|---|---:|---:|---:|---:|---:|---:|---:|---|
-| Phase 1b (`arrowIdentity=0`) | **13** | 545 | 144,875 | 29,379 | 249,087 | 423,893 | 34.24 % | `641d1180…` ≡ Run AH armE |
-| Phase 2a (`arrowIdentity=1`) | **100** | 2,005 | 155,729 | 30,919 | 237,057 | 425,717 | 37.05 % | `870eb594…` ≡ Run AH armF |
-| Phase 2b (`+ arrowSolverRoots=1`) | **1,009** | 4,302 | 165,854 | 29,644 | 243,922 | 443,729 | **38.35 %** | `d62dd3c7…` |
+| arm | Wall (s) | Max RSS (kB) | Minor GCs | Major GCs | Promoted | GC/Alloc (s) | `out.mlir` (B) |
+|---|---|---|---|---|---|---|---|
+| off | 398.0 (6:37.97) | 10,810,944 | 1,788 | **9** | 586,605,408 (17,565 MiB) | 129.91 | 14,965,780 |
+| on | 415.1 (6:55.06) | 11,053,816 | 1,844 | **9** | 592,471,774 (17,770 MiB) | 132.45 | 15,247,547 |
 
-| | 1b | 2a | 2b |
-|---|---:|---:|---:|
-| `rootAnn\|hitExact` / `hit` (EXP-2a) | 567 / 22,653 | 567 / 22,703 | **22,816 / 22,883 = 99.7 %** |
-| signatures memoized (trivial) | 9,850 (9,456) | 9,850 (9,439) | 9,850 (**8,480**) |
-| `multiSetSites` | (none) | `2->2` | **31 sites** (`2->20 3->4 4->4 5->1 6->1 7->1`) |
-| `declinedNoInstance` / `declinedBlocked` | 1,084 / 8 | 1,204 / 167 | **6,695** / 182 |
-| `dispatchUpgraded` / `retranslations` | 4,764 / 439 | 4,763 / 443 | 4,745 / 436 |
+| §2.5 ledger | k=1 | k≥2 | over-cap | top | var | total |
+|---|---:|---:|---:|---:|---:|---:|
+| off | 159,735 | 2,047 | 7 | 28,304 | 250,624 | 440,717 |
+| on | **195,033** | **3,386** | 7 | **20,816** | 273,390 | 492,632 |
 
-Counters first. **2b ties what occurrence ids could not, exactly as EXP-2a
-predicted: `hitExact` 2.5 % → 99.7 %**, and **959 signatures stop being
-trivial** — the first movement of GAP-2's own success metric in the register.
-Completeness 34.24 % → 38.35 %. **Both byte-identity rails pass to the digit**:
-the 2b binary, carrying the `ArrowSlot` refactor, the solver-root stamping and
-the ARTIFACT FORMAT CHANGE (`V.compiler` 0.1.0→0.1.1, which keys every cache),
-reproduces armE exactly flag-off and armF exactly in the 2a arm — the whole
-change is inert until its own flag turns on. elm-tests at the pre-existing
-failure set (4 golden constraint fingerprints rebased, representation-only: the
-arrow slot's printed form went `Id 0` → `NoArrow`, and the 9 arrow-free corpus
-entries were untouched, which is the shape such a rebase must have); E2E
-1,687/1,687. **The consumer-side warning is loud and it decides the flag:**
-`declinedNoInstance` ×5.6 is §5.2 Q4 (raw `l\|` members with no closure
-instance — LSS_017-v2 is now a MEASURED prerequisite), and 31 multi-set call
-sites are 31 sites a singleton-only consumer declines. **`lss.arrowSolverRoots`
-ships DEFAULT-OFF and must stay off until Phase 3** (LSS_027's rule: sharing
-without a per-use set variable trades usable singletons, and 2b shares strictly
-more contexts than 2a). Census method + its two traps: LSS_033. Phase 3 plan
-with its blocker: `plans/lss-set-variable.md` §2.
+| census | `union` | slotsMinted | retranslations | multi-set arrows | widened byBudget |
+|---|---:|---:|---:|---:|---:|
+| off | 24 | 836,761 | 313 | 100 | 9,379 |
+| on | 1,342 | 854,948 | 591 | 728 | 9,050 |
 
-### 2026-08-24 — Run AJ: Phase 3, the lambda-set VARIABLE (`LVar`) — three arms, one binary, one frozen corpus; `plans/lss-set-variable.md` §8
+`Store.classifyGo` stamps `Mono.LTop` on every arrow ("storeless classification stamps LTop") and
+`translateVarRef` used it for every bare global reference. `translateGlobalCall` gates that
+classifier on `lssFastOk`; the reference path did not, so a bare reference's arrows were ⊤ before
+any member could reach them. `Translate.classifyRef` adds the gate. ANALYSIS change: `out.mlir`
+moves (`fe1eeffb…` → `360e4655…`, +1.9 %); retranslations 313 → 591, `union` 24 → 1,342, zonks
++11.8 %, `top` −26.5 %, `var` rises, `k1 + kN` +36,637. **WALL HERE IS CENSUS-DISTORTED — USE RUN
+AN** (+0.60 %): the protocol's mandatory `ECO_MONO_LSS_REPORT=1` ran the §5.1/§5.6 `Q` verifier
+inside the measured work and its cost scales with constraints recorded, so it billed the `on` arm
+more. Majors 14 → 9 and RSS 6.4 → 10.8 GB vs AH are the binary and corpus, NOT the census (AN holds
+both with it off) and not this flag (9 = 9). The ledger and census columns above stand.
 
-| arm | k=1 | k≥2 | top | var | total | completeness | arrows k≥2 | retrans |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| pre-P3 `arrowIdentity=0` | 144,875 | 545 | 29,379 | 249,087 | 423,893 | 34.31 % | 13 | 439 |
-| **P3 `arrowIdentity=0`** | 147,708 | 557 | 30,095 | 254,211 | 432,578 | 34.28 % | 13 | **310** |
-| pre-P3 `arrowIdentity=1` | 155,729 | 2,005 | 30,919 | 237,057 | 425,717 | 37.05 % | 100 | 443 |
-| **P3 `arrowIdentity=1`** | 158,502 | 2,043 | 31,640 | 241,758 | 433,950 | 37.03 % | 100 | **312** |
-| pre-P3 `+ arrowSolverRoots` | 165,854 | 4,302 | 29,644 | 243,922 | 443,729 | 38.35 % | 1,009 | 436 |
-| **P3 `+ arrowSolverRoots`** | 167,966 | 4,377 | 30,517 | 247,266 | 450,133 | 38.30 % | 1,009 | **331** |
+### 2026-08-26 — Run AN: Run AM re-measured with the census OFF — the compile-time cost of `classifyRef` (A/B on `lss.refIdentity`; NO report, NO `lss.qCensus`)
 
-Counters first, and the honest reading is mixed. **What Phase 3 demonstrably
-buys is `retranslations` −24 % to −30 % in EVERY arm** — exactly the
-`LVar i ∪ LVar i = LVar i` arm doing its job: joins that used to report `changed`,
-because two anonymous `LUnknown`s could not be recognised as one variable, now
-report no-change and `enqueueSpecKeyed` stops forcing a re-translation. That is
-direct evidence the variable's IDENTITY survives the annotation round trip,
-which is the whole mechanism (`Store.varNumberFor` numbers by union-find repr;
-`Store.mintVarSlots` mints ONE slot per distinct `n` on re-encode — Phase 1
-minted a fresh slot per arrow and destroyed the unification every time).
-**What it does NOT buy: completeness is FLAT** (±0.05 pp — concrete rises
-+2,833/+2,773/+2,112 at k=1 and +12/+38/+75 at k≥2, but total readbacks rise
-proportionally more), and `multiSetSites` is IDENTICAL in every arm
-(`(none)`/`2->2`/31 sites), as are the distinct multi-set arrow counts. The
-sharing Phase 3 preserves was not the bottleneck here — a third independent
-confirmation that the PRODUCER side is the ceiling. Key law changed with it:
-`LVar n` hashes by `n` and emits `Av<n>(`, so `(α → α)` and `(α → β)` key apart
-while equal sharing patterns key together. Unconditional (no flag, no
-byte-identity rail — an analysis change, like 1b). elm-tests **13,355/12**
-pre-existing, and the golden constraint fingerprints did NOT move, which is the
-right signal: `LambdaSetAnno` is a `MonoType` concern and cannot reach
-constraint generation. E2E **1,687/1,687**. LSS_002 totality green under both
-`arrowIdentity` arms.
+| arm | Wall (s) | Max RSS (kB) | Minor GCs | Major GCs | Promoted | GC/Alloc (s) | `out.mlir` (B) |
+|---|---|---|---|---|---|---|---|
+| off | 390.9 (6:30.94) | 10,743,008 | 1,735 | **9** | 585,903,264 (17,542 MiB) | 129.56 | 14,971,156 |
+| on | 393.3 (6:33.30) | 10,990,044 | 1,775 | **9** | 590,364,101 (17,698 MiB) | 129.58 | 15,252,923 |
+
+| against Run AM (same A/B, census ON in both arms) | AM off | AM on | AM Δ | AN off | AN on | AN Δ |
+|---|---|---|---|---|---|---|
+| Wall (s) | 398.0 | 415.1 | **+4.3 %** | 390.9 | 393.3 | **+0.60 %** |
+| Max RSS (kB) | 10,810,944 | 11,053,816 | — | 10,743,008 | 10,990,044 | — |
+| Major GCs | 9 | 9 | 0 | 9 | 9 | 0 |
+
+**+0.60 % is FLAT** — below the ≳3 % threshold, so: no regression detected. `classifyRef` costs
+essentially nothing in compile time. **Run AM's +4.3 % was the census, not the change.** The `Q`
+verifier's cost scales with the number of constraints recorded, and this fix RAISES that count, so
+it charged the `on` arm more than the `off` arm and amplified a flat delta into an apparent
+regression — census in both arms is not the same as census-neutral when the census bills per unit
+of analysis output. **REFUTED by this run, and it was my hypothesis:** AM's entry blamed the census
+for majors 14 → 9 and RSS 6.4 → 10.8 GB. Both are unchanged here with the census OFF (majors 9,
+RSS within 68 MB), so those belong to the binary and the corpus alone. Deliberate deviation: the
+protocol's command sets `ECO_MONO_LSS_REPORT=1` and this run drops it, so there are no lss census
+counters — that is the point of the run, and Run AM carries them.
+
+---
 
 ## Summary
 
@@ -1228,220 +1212,7 @@ One row per run, numbers only.
 | AH-pre1b | 351.6 | 1506 | 14 | 14765 |
 | AH-1b | 361.5 | 1531 | 14 | 14817 |
 | AH-2a-on | 364.0 | 1535 | 14 | 14794 |
-
-### Run AK — Phase 0 of `plans/lss-post-mono-architecture.md` (2026-08-24): **intra-item settling recovers EXACTLY ZERO without arrow identity and is only non-zero WITH it; 43.6% of the attributed `var` population is known ELSEWHERE in the run**
-
-Frozen corpus (`/work/.lssue-snapshots/src-1a`), ONE binary
-(`/work/.lssue-snapshots/eco-boot-ph0.js` = HEAD + the §3.2 settled ledger,
-LSS_035), four env arms. The settled ledger replays every readback the item
-made at `finishNode` — same variables, same multiplicity, same store, later.
-
-**Rail first, and it is the strongest form available.** Arm Ap's IN-FLIGHT
-ledger is identical to the pre-change arm A (`k1=147708 kN=557 overcap=7
-top=30095 var=254211 total=432578`) **and the emitted `.mlir` is BYTE-IDENTICAL**
-— `c9ae525e2601518c50696d2929ab40b8`, 14,786,349 B, on both the pre-change
-binary and the instrumented one. So the replay is read-only in fact, not only by
-intent: `noteArrowClass`'s new `UF.repr` calls on the two `var` arms are path
-compression, which is observationally inert down to the last emitted byte.
-
-| arm | env | in-flight `var` | settled `var` | unexplained |
-|---|---|---|---|---|
-| Ap | *(defaults)* | 254,211 / 432,578 = 58.77% | 249,519 / 425,251 = 58.68% | **0** |
-| B | `LSS=unkeyed` | 238,511 / 401,852 = 59.35% | 233,973 / 394,800 = 59.26% | **0** |
-| C | `unkeyed`, `KEYED_GLOBALS=,` | 236,790 / 398,338 = 59.44% | 232,252 / 391,286 = 59.36% | **0** |
-| D | `ARROW_ID=1 ARROW_ROOTS=1` | 247,266 / 450,133 = 54.93% | 243,288 / 442,589 = 54.97% | **0** |
-
-**The delta is entirely the readbacks that could not be replayed.** `MATCHES=NO`
-short by 7,327 (1.7%) — readbacks made inside a scratch store
-(`Engine.withScratchStore`), whose Points die with it — and the bucket deltas
-sum to exactly that: `−2535 (k1) + 0 (kN) + 0 (overcap) − 100 (top) − 4692
-(var) = −7,327`. **Zero unexplained: every replayed readback returned the
-IDENTICAL classification.** Not one variable became a set by being read later.
-
-That is not a null result, it is the answer to §3.2's question, and the reason
-is structural: `Engine.resetItem` installs `store = freshStore` per work item,
-so the only settling window is inside one spec's translation — and translation
-already walks the body in order, so a later read has nothing later to see. There
-is no long-lived store to settle into (plan §3.2.0).
-
-**The discriminator MUST be read on the arrow-identity arm.** At shipping
-defaults the join key is broken: arrow ids exist without any lss flag, but
-without `arrowSolverRoots` they are PER-OCCURRENCE, so the same syntactic arrow
-reached from two items gets two ids and "did this resolve elsewhere" always
-answers no. Arm D closes that hole and moves the answer 5×:
-
-| arm | arrow ids | attributed | knownElsewhere | unknownEverywhere | known / ALL readbacks |
-|---|---|---|---|---|---|
-| Ap (defaults) | per-occurrence | 203,687 | 16,866 = **8.3%** (619 arr) | 186,821 = 91.7% (10,119) | 3.9% |
-| D (`ARROW_ID=1 ARROW_ROOTS=1`) | solver-root | 207,485 | 90,523 = **43.6%** (5,222 arr) | 116,962 = 56.4% (3,845) | **20.1%** |
-
-**Arm Ap's 91.7% is an artifact of the broken key, not a finding.** With a
-stable key, **43.6% of the attributed `var` population sits at arrows that DO
-resolve elsewhere in the run** — 90,523 readbacks, 20.1% of all readbacks:
-information that exists in the program and is lost to the per-item store, not
-information that was never written.
-
-**Arm D also shows the FIRST non-zero settling effect measured in this arc.**
-Where Ap/B/C have every bucket delta ≤ 0 (summing exactly to the un-replayable
-shortfall — i.e. every replay identical), arm D has `kN +231` and `top +109`
-going UP, still reconciling to −7,544 exactly. Readbacks genuinely changed class
-on re-read. The mechanism is one line away in the same census: `set-writes …
-union=2225` in D against **`union=0`** in Ap — arrow identity is what makes
-arrows SHARE a slot, sharing is what lets one arrow's write reach another, and
-that is what creates a settling window at all. Without it each slot is private
-and there is nothing to accumulate.
-
-CAVEAT that must ride with the 43.6%: it bounds "the SAME constraint system,
-joined across items". A post-mono 0CFA builds constraints from the monomorphic
-program directly rather than by unification during translation, so it is a
-different system and this is neither an upper nor a lower bound on it.
-
-#### Run AK, §3.1 — the `unkeyed` A/B: the producer side is a WIN, the consumer side is the bill
-
-Same binary, same corpus, four arms:
-
-| metric | Ap *(defaults)* | B `unkeyed` | C `unkeyed`+no keyedGlobals | D `ARROW_ID+ROOTS` |
-|---|---|---|---|---|
-| emitted `.mlir` | 14,786,349 | 13,310,051 (**−10.0%**) | 13,243,069 (−10.4%) | 14,960,794 (+1.2%) |
-| lowered binary | 69,361,392 | 64,384,280 (**−7.2%**) | *(pending)* | — |
-| interned members | 53,048 | 25,486 (**−52.0%**) | — | 54,066 |
-| sets zonked | 432,578 | 401,852 (−7.1%) | 398,338 | 450,133 |
-| `k1` (singletons) | 147,708 | 131,487 (**−11.0%**) | 129,170 | 167,966 |
-| `kN` (multi-member) | 557 | 1,864 (**+234%**) | 1,950 | **4,377 (+686%)** |
-| **multi-set ARROWS** | **13** | **302 (×23)** | 302 | **1,009 (×78)** |
-| **multi-set SITES** | **(none)** | **2→5 5→2 6→1** = 8 | 8 | **2→20 3→4 4→4 5→1 6→1 7→1** = 31 |
-| `dispatchUpgraded` | 4,785 | 3,201 (**−33.1%**) | 3,136 (−34.5%) | 4,758 (−0.6%) |
-| `retranslations` | 310 | **1,249 (×4.0)** | — | 331 |
-| `widened byBudget` | 9,191 | 5,095 (−44.6%) | — | 9,424 |
-| `declinedNoInstance` | 1,088 | 876 | 860 | **6,778 (×6.2)** |
-
-**Producer side — `keyed=False` is what CREATES multi-sets, as §2 predicted, and
-the population is SMALL-set dominated.** 13 → 302 arrows, and **229 of the 302
-(75.8%) have unions within `maxSetSize`=8** — directly sum-lowerable. That
-REFUTES the structural estimate in §3.3/§0 that hub sizes (140/423/504) would
-dominate: those hubs were what survived a keying regime that had already
-collapsed everything else into singletons. It also buys −10.0% MLIR, −7.2%
-binary and −52% interned members.
-
-**Consumer side — the bill is 1,584 devirt stamps (−33.1%)** against 8 new
-multi-set call sites. Sum lowering consumes SITES, not arrows, so on the static
-count the replacement rate is poor; the dynamic census decides whether the lost
-stamps carry traffic.
-
-**The 4 default `keyedGlobals` (the elm/core fold chain) are nearly free to drop
-statically**: B→C is −0.50% MLIR, −2,317 `k1`, and multi-set arrows UNCHANGED at
-302. Their documented value (−143.7 M dispatches, `Config.elm:407`) is dynamic,
-so C-vs-B is a dispatch question, not a census one.
-
-**Arm D is the "have both" arm on the static count** — it keeps essentially all
-the devirt stamps (4,758 vs 4,785, −0.6%) AND gains 1,009 multi-set arrows and
-31 multi-set sites. Its costs are `declinedNoInstance` ×6.2 (the LSS_017-v2
-problem, LSS_030) and the UNFIXED self-compile lowering defect (LSS_031) — this
-arm's `.mlir` is a census artifact, not a shippable build.
-
-**PREDICTION CORRECTED.** Plan §6 step 1 claimed `retranslations` would approach
-0 under `keyed=False`. Measured: **310 → 1,249 (×4.0)**, `joins changed` 694 →
-2,976 (×4.3). `keyed=True` SEPARATES demands into distinct specs so no join is
-needed; `keyed=False` merges them and makes the LSS_010 join the ONLY
-reconciling mechanism. Step 1 alone makes the join MORE load-bearing. It dies at
-step 3, when the solve leaves translation — not here.
-
-#### Run AK, §3.1 dispatch A/B — **the hole is ENORMOUS: fast coverage 22.09% → 7.94%, −14.16 pp, −63.9% of fast dispatch**
-
-Protocol = Run AE: each arm's already-emitted `.mlir` lowered with
-`ECO_LSS_DISPATCH_SITE_COUNTERS=1`, then ONE fixed cold workload (compile the
-frozen corpus) under `ECO_DISPATCH_STATS=1`, report OFF so the §3.2 replay is
-inert.
-
-| arm | sat | gen | typed | fast | sat+fast | coverage | distinct |
-|---|---|---|---|---|---|---|---|
-| **Ap** *(keyed, today)* | 1,759,058,978 | 1,728,613,222 | 30,445,756 | 498,842,453 | 2,257,901,431 | **22.093%** | 7,189 |
-| **B** *(`unkeyed`)* | 2,089,697,880 | 2,059,133,587 | 30,564,293 | 180,129,295 | 2,269,827,175 | **7.936%** | 6,364 |
-| **C** *(`unkeyed`, no `keyedGlobals`)* | 2,090,678,599 | 2,060,114,306 | 30,564,293 | 179,996,808 | 2,270,675,407 | **7.927%** | 6,344 |
-
-```
-fast     −318,713,158  (−63.9%)      gen +330,520,365 (+19.1%)
-coverage −14.157 pp    (22.093% → 7.936%)
-sat+fast +11,925,744   (+0.53%)  ← invariance rail
-```
-
-Two rails hold. Arm Ap's **22.093%** reproduces Run AE's 22.069/22.072% — same
-workload, same answer. And all three arms' compiler OUTPUT is **byte-identical**
-(`52a668e5d83786026b8fabbfd46d046d`, the corpus's canonical hash from the Run-AH
-series), so keyed and unkeyed are semantically the same compiler and the gap is
-purely a performance property. (`sat+fast` drifts 0.53% here rather than Run
-AE's 1e-7 because these arms differ far more than 1b-vs-2a did — the spec
-population itself changed.)
-
-**WHY it is this bad, and it is not "we lost multi-sets to a singleton-only
-consumer".** Unkeying destroys **16,221** `k1` readbacks and creates only
-**1,307** `kN` readbacks — a **12.4 : 1 destruction-to-conversion ratio**. The
-lost singletons do NOT become honest multi-sets; they become `var`/`top`. Only
-**8 call sites** end up carrying a multi-member set that sum lowering could
-consume, against 1,584 lost devirt stamps. **`keyed = False` alone converts
-information into UNKNOWNS, not into feedstock.**
-
-**CONSEQUENCE FOR §6's SEQUENCING — this is the actionable result.** Step 1
-(flip `keyed`) CANNOT ship ahead of steps 2–3 (build and consume the post-mono
-solve), and no amount of sum lowering rescues it either, because the population
-sum lowering would consume is not the population that was lost. The solve is
-precisely the thing that would turn those 16,221 readbacks into resolved sets
-instead of unknowns. Steps 1–3 are ONE change or they are nothing.
-
-**Arm C — the `defaultKeyedGlobals` whitelist does NOT reproduce its recorded
-value at HEAD.** Dropping the four elm/core folds (`List.foldl/foldr/
-foldrHelper/map`) from an already-unkeyed build costs **fast −132,487
-(−0.07%)**, coverage 7.936% → 7.927% (**−0.009 pp**). The comment at
-`Compiler/Eco/Config.elm:407` records **−143.7 M dispatches** for adding exactly
-that whitelist — three orders of magnitude more. Not necessarily a regression in
-that measurement: it was taken on a different workload and before LSS_024,
-LSS_025 and `sigFlow` went default-on, any of which could have absorbed the win.
-But **on this workload at HEAD the whitelist is worth ~0.07% of fast dispatch**,
-so `defaultKeyedGlobals` should be re-priced before it is relied on again.
-FOLLOW-UP, not a conclusion.
-
-**Gates (LSS_035 instrumentation).** E2E `--target full` **885/885, EXIT=0**;
-elm-tests **13,355 passed / 12 failed = the pre-existing baseline unchanged**
-(`if-chain` + 11 POST_010 node-type-scoping tests, none lambda-set related);
-self-compile lowers EXIT=0 on the shipping-default arm; and the byte-identity
-rail above. TRAP for the next person adding an `LssZonkAcc` field:
-`compiler/tests/TestLogic/Monomorphize/LssHonestSourcesTest.elm` constructs the
-accumulator as a RECORD LITERAL, so a new field breaks elm-tests at COMPILE time
-while E2E stays green.
-
-### Run AM — GAP-A closed: store-aware classification of bare global references (2026-08-26): **`top` −26.5%, `kN` +65.4%, multi-set arrows 100 → 728**
-
-`plans/lss-paper-inclusion-constraints.md` §5.4.5. `Store.classifyGo`'s
-`Can.TLambda` arm stamps `Mono.LTop` on every arrow — "storeless classification
-stamps LTop" — and `Translate.translateVarRef` used it unconditionally for every
-bare `VarGlobal`/`VarEnum`/`VarBox`/`VarCycle`. `translateGlobalCall` already
-GATES that classifier on `lssFastOk`; the reference path did not, so a bare
-reference's arrows were poisoned to ⊤ before any member could reach them.
-
-`Translate.classifyRef` adds the same gate: lss on + the type mentions an arrow
-⇒ load, inject the referent's identity via `injectArgLambdaMember`, zonk from
-the store. Flag `lss.refIdentity` / `ECO_MONO_LSS_REF_IDENTITY` / `lssRI=`,
-DEFAULT-OFF.
-
-| | off | on | delta |
-|---|---|---|---|
-| `k1` | 159,735 | 195,033 | +35,298 |
-| `kN` | 2,047 | 3,386 | **+65.4 %** |
-| `top` | 28,304 | 20,816 | **−26.5 %** |
-| `var` | 250,624 | 273,390 | +22,766 |
-| multi-set arrows | 100 | 728 | +628 % |
-| `.mlir` | 14,965,780 B | 15,247,547 B | +1.9 % |
-| lower | EXIT=0, 0 errors | EXIT=0, 0 errors | — |
-
-md5 `fe1eeffb0f4557efd223434feacb41b2` → `360e46553389711c55e18e1c77cb7cdc`.
-
-**Read `top` and `var` together.** `top` falls because storeless ⊤ stamps are
-replaced by real readbacks; `var` rises because those positions are now honestly
-unconstrained rather than falsely poisoned. `k1 + kN` rose 36,637 on top of both.
-
-**Probe evidence** — `[ incr, decr ]` emits `MSET … 2 g|…incr | g|…decr`, the
-exact set §5.4's gate names, where it previously emitted nothing. `PLambdas` is
-unchanged (no regression on the shape that already worked).
-
-NOT YET GATED: elm-tests and E2E with the flag ON. Self-compile lowering (the
-LSS_031 rule) passes on both arms.
+| AM-off | 398.0 | 1788 | 9 | 17565 |
+| AM-on | 415.1 | 1844 | 9 | 17770 |
+| AN-off | 390.9 | 1735 | 9 | 17542 |
+| AN-on | 393.3 | 1775 | 9 | 17698 |

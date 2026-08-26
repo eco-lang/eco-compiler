@@ -1153,7 +1153,7 @@ untouched.
 -}
 qOnFor : Engine.S -> Bool
 qOnFor s =
-    s.env.lss.enabled && s.env.lss.report
+    s.env.lss.enabled && s.env.lss.qCensus
 
 
 setWriteCtx : Bool -> IO.State -> SetWriteCtx

@@ -395,6 +395,22 @@ type alias LssConfig =
     --
     -- DEFAULT-OFF. Hash token `lssRI=1`; env `ECO_MONO_LSS_REF_IDENTITY`.
     , refIdentity : Bool
+
+    -- §5.1/§5.6 shadow `Q` (plans/lss-paper-inclusion-constraints.md): record
+    -- every `ℓ ⋸ σ` the solver emits, solve it at the inference boundary, and
+    -- score it against what the eager path left in the store.
+    --
+    -- SPLIT FROM `report` 2026-08-26. It used to ride `lss.report`, and the
+    -- benchmark protocol MANDATES `ECO_MONO_LSS_REPORT=1` — so every timed run
+    -- paid for recording ~106k constraints per compile plus a solve and a
+    -- reachability walk per inference unit, inside the measured wall/RSS/GC.
+    --
+    -- This is a VERIFIER, not a census to read once: it is the standing guard
+    -- on LSS_037 — every path that puts a member in a slot must be a recorded
+    -- constraint. Turn it on when a write path changes.
+    --
+    -- DEFAULT-OFF. Hash token `lssQC=1`; env `ECO_MONO_LSS_QCENSUS`.
+    , qCensus : Bool
     }
 
 
@@ -435,6 +451,7 @@ defaultLss =
     , arrowSolverRoots = False
     , qSolve = False
     , refIdentity = False
+    , qCensus = False
     }
 
 
@@ -822,6 +839,7 @@ lssDecoder =
         |> D.apply (D.optionalField "arrowSolverRoots" D.bool defaultLss.arrowSolverRoots)
         |> D.apply (D.optionalField "qSolve" D.bool defaultLss.qSolve)
         |> D.apply (D.optionalField "refIdentity" D.bool defaultLss.refIdentity)
+        |> D.apply (D.optionalField "qCensus" D.bool defaultLss.qCensus)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -1198,6 +1216,21 @@ hash cfg =
                     , if lss.refIdentity /= defaultLss.refIdentity then
                         [ "lssRI="
                             ++ (if lss.refIdentity then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- §5.1/§5.6 shadow Q: read-only, but it rides the config
+                    -- hash so a verifier run cannot reuse a non-verifier cache.
+                    , if lss.qCensus /= defaultLss.qCensus then
+                        [ "lssQC="
+                            ++ (if lss.qCensus then
                                     "1"
 
                                 else

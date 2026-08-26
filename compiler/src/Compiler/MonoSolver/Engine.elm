@@ -1785,7 +1785,7 @@ withScratchStore step s0 =
                 -- `edges=0` while `sigflow` independently counts edges
                 -- installed. Count them so the gap explains itself.
                 s3 =
-                    if s2.env.lss.report && not (List.isEmpty s2.itemAux.qLog) then
+                    if s2.env.lss.qCensus && not (List.isEmpty s2.itemAux.qLog) then
                         let
                             statsQ =
                                 s2.lssStats

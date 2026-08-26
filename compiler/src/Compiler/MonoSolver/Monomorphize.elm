@@ -583,16 +583,24 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                    )
     in
     String.join "\n"
-        [ "=== LSS census ==="
+        ([ "=== LSS census ==="
         , "members: " ++ String.fromInt sFinal.nextMemberId ++ " total (" ++ String.fromInt lambdaCount ++ " source lambdas, " ++ String.fromInt internedCount ++ " interned)"
         , "signatures: " ++ String.fromInt sigCount ++ " memoized (" ++ String.fromInt trivialCount ++ " trivial)"
         , "sets zonked: " ++ String.fromInt stats.setsZonked ++ "; size histogram: " ++ histLine
         , ledgerLine
         , settledLine
-        , qInferLine
-        , qLine
-        , qSampleLines
-        , settledArrowLine
+        ]
+            ++ (if sFinal.env.lss.qCensus then
+                    -- §5.1/§5.6: the shadow-`Q` verifier lines appear only when
+                    -- the verifier RAN. Printing them under `lss.report` alone
+                    -- would render all-zero counters as `REPRODUCES=yes`, which
+                    -- reads as a passing check that never executed.
+                    [ qInferLine, qLine, qSampleLines ]
+
+                else
+                    []
+               )
+            ++ [ settledArrowLine
         , "widened: bySize=" ++ String.fromInt stats.widenedBySize ++ " byKernel=" ++ String.fromInt stats.widenedByKernel ++ " byBudget=" ++ String.fromInt stats.widenedByBudget ++ " bySigSize=" ++ String.fromInt stats.sigStats.widenedBySigSize
         , "widened sizes: " ++ widenedHistLine
         , "join flush: rounds=" ++ String.fromInt stats.joinRounds ++ " retranslations=" ++ String.fromInt stats.retranslations
@@ -663,6 +671,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         , "top specs/global: " ++ topSpecs
         , "=================="
         ]
+        )
 
 
 {-| Multi-set census dump (M3). One `MSET\t<arrowId>\t<size>\t<memberKeys>`
