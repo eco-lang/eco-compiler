@@ -188,6 +188,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\qsVal -> applyLssQSolveOverride qsVal cfg4e8)
             )
         |> Task.andThen
+            (\cfg4eb ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_REF_IDENTITY" |> Task.mapError never)
+                    |> Task.map (\riVal -> applyLssRefIdentityOverride riVal cfg4eb)
+            )
+        |> Task.andThen
             (\cfg4f ->
                 (Utils.envLookupEnv "ECO_SPEC_TYPE_NODE_LIMIT" |> Task.mapError never)
                     |> Task.map (\tnVal -> applySpecTypeNodeLimitOverride tnVal cfg4f)
@@ -1747,6 +1752,28 @@ applyLssLayoutQualOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | layoutQualMembers = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_REF_IDENTITY=1|true|yes / 0|false|no` (§5.4 GAP-A): classify a
+bare global reference store-aware when its type mentions an arrow, instead of
+with the storeless classifier that stamps LTop on every arrow. DEFAULT-OFF.
+Hash token `lssRI=`.
+-}
+applyLssRefIdentityOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssRefIdentityOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | refIdentity = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | refIdentity = False }) cfg
 
             else
                 cfg

@@ -1408,3 +1408,40 @@ rail above. TRAP for the next person adding an `LssZonkAcc` field:
 `compiler/tests/TestLogic/Monomorphize/LssHonestSourcesTest.elm` constructs the
 accumulator as a RECORD LITERAL, so a new field breaks elm-tests at COMPILE time
 while E2E stays green.
+
+### Run AM — GAP-A closed: store-aware classification of bare global references (2026-08-26): **`top` −26.5%, `kN` +65.4%, multi-set arrows 100 → 728**
+
+`plans/lss-paper-inclusion-constraints.md` §5.4.5. `Store.classifyGo`'s
+`Can.TLambda` arm stamps `Mono.LTop` on every arrow — "storeless classification
+stamps LTop" — and `Translate.translateVarRef` used it unconditionally for every
+bare `VarGlobal`/`VarEnum`/`VarBox`/`VarCycle`. `translateGlobalCall` already
+GATES that classifier on `lssFastOk`; the reference path did not, so a bare
+reference's arrows were poisoned to ⊤ before any member could reach them.
+
+`Translate.classifyRef` adds the same gate: lss on + the type mentions an arrow
+⇒ load, inject the referent's identity via `injectArgLambdaMember`, zonk from
+the store. Flag `lss.refIdentity` / `ECO_MONO_LSS_REF_IDENTITY` / `lssRI=`,
+DEFAULT-OFF.
+
+| | off | on | delta |
+|---|---|---|---|
+| `k1` | 159,735 | 195,033 | +35,298 |
+| `kN` | 2,047 | 3,386 | **+65.4 %** |
+| `top` | 28,304 | 20,816 | **−26.5 %** |
+| `var` | 250,624 | 273,390 | +22,766 |
+| multi-set arrows | 100 | 728 | +628 % |
+| `.mlir` | 14,965,780 B | 15,247,547 B | +1.9 % |
+| lower | EXIT=0, 0 errors | EXIT=0, 0 errors | — |
+
+md5 `fe1eeffb0f4557efd223434feacb41b2` → `360e46553389711c55e18e1c77cb7cdc`.
+
+**Read `top` and `var` together.** `top` falls because storeless ⊤ stamps are
+replaced by real readbacks; `var` rises because those positions are now honestly
+unconstrained rather than falsely poisoned. `k1 + kN` rose 36,637 on top of both.
+
+**Probe evidence** — `[ incr, decr ]` emits `MSET … 2 g|…incr | g|…decr`, the
+exact set §5.4's gate names, where it previously emitted nothing. `PLambdas` is
+unchanged (no regression on the shape that already worked).
+
+NOT YET GATED: elm-tests and E2E with the flag ON. Self-compile lowering (the
+LSS_031 rule) passes on both arms.

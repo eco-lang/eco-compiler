@@ -1131,6 +1131,215 @@ step is to TRACE one `[ incr, decr ]` element from `standaloneMemberWith`'s
 `funcVar` to the cons argument's Point and find where they fail to meet — not
 another signature-side hypothesis.
 
+#### §5.4.2 TRACED 2026-08-26 — **GAP-A is not in `LssInfer` at all**
+
+The trace was run to the point where it contradicted the plan, and it does.
+
+**Step 1 — the discard.** `walkExpr`'s wildcard arm covers `TOpt.List` and
+`TOpt.Tuple`, and `walkChildren : ... -> Step ()` returns UNIT: every child's
+`WalkPoint` is thrown away. So a child's injected identity can only reach the
+container's element position by landing in a slot the position already shares.
+That looked like the answer.
+
+**Step 2 — it is not, because the arm never runs on the failing program.** A
+census of every member body `walkMembers` walks, on `PBareGlobals`, lists
+`elm/core:*` and `elm/json:*` and **nothing from the module under compilation**.
+No `fns`, no `incr`, no `decr`. LSS inference walks a def's body only when its
+signature is DEMANDED by a caller (`preResolveCallees`); a top-level `fns` in
+the program being compiled never is.
+
+So `LssInfer.standaloneMemberWith` — which §0.1 names as GAP-A's cause — is
+never reached for `[ incr, decr ]`. **§0.1's attribution is wrong for this
+shape.** The `zc|…PBareGlobals.incr|…` rows that made it look otherwise are
+ZONK causes, emitted from translation, not inference.
+
+**Consequence: the sets that DO form here come from TRANSLATION.** `PLambdas`
+succeeds because `Translate` injects lambda-instance members as it walks the
+body (`injectArgLambdaMember`, `lambdaInstanceMemberId`, LSS_013 spine
+injection). GAP-A is the absence of the equivalent for a `g|` standalone
+reference in a container literal, **in `Translate.elm`**.
+
+**Everything ruled out so far, so the next attempt does not repeat one:**
+
+| candidate | verdict |
+|---|---|
+| the self id filtered out of signatures (§5.4.1) | NO-GO, reverted |
+| solver-root arrow identity sharing the slot | no effect — all three probes byte-identical off/roots |
+| `walkChildren` discarding element points | real, but the arm never runs here |
+| `unifyParamsBestEffort`'s second load of the arg type | not the path — 3 events, none with a global arg |
+
+#### §5.4.3 TRACED FURTHER — the missing injection is real, and it is not enough
+
+Translation was instrumented next, and the trace produced a REAL missing
+mechanism plus a second wall behind it.
+
+**The missing mechanism.** `Translate.translateVarRef` handles every bare
+`VarGlobal`/`VarEnum`/`VarBox`/`VarCycle` reference and does exactly two things:
+`classify canType` and `Engine.enqueueSpec`. **It injects no member.** The
+identity is injected only at ARGUMENT positions, by
+`injectArgLambdaMember` → `standaloneArgMember "g|…"`. That is the whole
+asymmetry:
+
+| shape | why it behaves as it does |
+|---|---|
+| `[ \x -> x+1, … ]` | `specializeLambda` → `classify` → `classifyLambdaHead` injects the lambda's member |
+| `[ Just incr, … ]`, `[ idf incr, … ]`, `[ Task.succeed incr, … ]` | `incr` is a call ARGUMENT → `injectArgLambdaMember` fires |
+| `if b then incr else decr` | `pick` is CALLED, so its signature is demanded, so inference walks it and `joinCfHub` joins the branches |
+| **`[ incr, decr ]`, `( incr, decr )`** | bare reference, not an argument, inside a value nobody calls → **neither path fires** |
+
+**Adding the injection works — and still does not fix it.** Injecting the
+reference's member in `translateVarRef` (reusing `injectArgLambdaMember`, so the
+kernel-alias fold stays identical) demonstrably puts members in the store:
+`refId|ok|members1` ×2 and `refId|ok|members2` ×1 on `PBareGlobals`. The set
+FORMS. But `kN` stays 0, and combining it with `arrowSolverRoots` changes
+nothing either. Reordering the `TOpt.List` arm so the list type is classified
+AFTER its elements are translated — the annotation was being snapshotted before
+the members existed — also changes nothing.
+
+**The second wall, measured.** The zonk-cause census is decisive:
+
+```
+PLambdas       zc|…PLambdas fns|k2    1     <- fns's type IS zonked, yields a 2-set
+PBareGlobals   (no zc|…fns rows at all)     <- no set readback during fns's translation
+```
+
+`PBareGlobals`'s rows are for `incr` and `decr`, which are their OWN SPECS with
+their own item stores. `Engine.resetItem` installs a fresh store per spec, so
+the members injected while translating `fns` live in `fns`'s store, and the
+readback that would publish them happens in a different one.
+
+**So GAP-A is a per-item-store boundary problem, not a missing-label problem.**
+The label can be minted, injected, and present in the store, and still not be
+readable where it is needed, because the reader is a different work item. That
+is the same architectural fact §5.6 found from the other side — inference
+constraints dying with a scratch store — and it is why `[ incr, decr ]` resists
+every local repair.
+
+BOTH EXPERIMENTS REVERTED (the injection and the reordering): each was measured
+as no-effect on the target, and a default-off flag that moves nothing is dead
+weight. **Do not rebuild either without first solving the store boundary.**
+
+**NEXT — and it is no longer a `Translate` question:** establish where a set for
+`fns`'s element position could be READ at all, given `fns`, `incr` and `decr`
+are three separate items with three separate stores. Compare against `PLambdas`,
+where the members are minted INSIDE `fns`'s own item because the lambdas are
+part of `fns`'s body. That asymmetry — members owned by the item that reads them
+vs members owned by another item — is the thing to fix, and it is the same
+question `plans/lss-post-mono-architecture.md` was written to answer.
+
+#### §5.4.4 ROOT CAUSE — `translateVarRef` classifies STORELESSLY, and the storeless classifier stamps `⊤`
+
+`Store.classifyGo`'s `Can.TLambda` arm, in the compiler's own words:
+
+```elm
+-- One arrow per MFunction, mirroring zonkFlat's Fun1 arm
+-- (GlobalOpt flattens later per GOPT_016). Storeless
+-- classification stamps LTop (sound-but-imprecise;
+-- fast paths gate on signature triviality in M2).
+Ok (Engine.consS (Mono.mFunction Mono.LTop [ mFrom ] mTo) s2)
+```
+
+`Translate.classify` IS `Store.classifyDirect` — "read-only classification: no
+store minting" — so **every arrow it returns is `⊤` by construction**. And
+`translateVarRef`, the path for every bare `VarGlobal`/`VarEnum`/`VarBox`/
+`VarCycle`, calls exactly that.
+
+**So the element position is POISONED before any label could reach it.** That
+is why all three repairs measured inert: they worked hard to get a member into a
+SLOT, and on this path the annotation never comes from a slot at all.
+
+**The evidence, and it is unambiguous.** Censusing what each spec is registered
+with (`annoSketch` over the `MonoType` at `enqueueSpecKeyed`):
+
+```
+PBareGlobals   specType|…incr|T      specType|…decr|T      specType|…fns|[T]
+PLambdas                                                    specType|…fns|[T]
+PNoKernel      specType|…applyAll|V[T][]   and  V[V][]
+```
+
+`V` (an `LVar`) appears elsewhere in the same run, so `T` here is genuine
+poison, not "unwritten". And `fns` registers `[T]` in the WORKING case too —
+which kills the write-back theory: `PLambdas`'s 2-set does not live on the
+registry entry at all, it lives on the lambda closure types inside `fns`'s body
+(`zc|…fns|k2`).
+
+**Why the two working shapes work, stated exactly:**
+
+- a LAMBDA goes through `classifyLambdaHead`, not storeless `classify`;
+- a call ARGUMENT goes through `translateGlobalCallSlow`, and
+  `translateGlobalCall` **gates** its storeless fast path on `lssFastOk` —
+  *"the cached/storeless fast classifications stamp LTop, which is exact only
+  when the callee's signature is trivial AND no argument type mentions an
+  arrow"*.
+
+**THE DEFECT IN ONE LINE: `translateGlobalCall` gates the storeless classifier;
+`translateVarRef` does not.** A bare reference takes the imprecise path
+unconditionally, including when its own type is an arrow that a set could
+inhabit.
+
+**THE FIX.** Give `translateVarRef` the same gate: when lss is on and the
+reference's type mentions an arrow, classify STORE-AWARE — load the type, inject
+the referent's identity (`injectArgLambdaMember`, so the kernel-alias fold stays
+identical to the argument path), and zonk the result from the store — instead of
+stamping `⊤`. That is §5.4's own title, "references instantiate, they do not
+inject", read the right way round: the injection was never the missing half; the
+storeless classification was.
+
+#### §5.4.5 FIXED 2026-08-26 — `classifyRef`, and it is the largest single move in this arc
+
+`Translate.classifyRef` gates the storeless classifier exactly as
+`translateGlobalCall` already gated it. When lss is on and the reference's type
+mentions an arrow, a bare global reference is classified STORE-AWARE: load the
+type, inject the referent's identity via `injectArgLambdaMember` (so the
+`g|`/`c|`/`k|` dispatch and the kernel-alias fold stay identical to the argument
+path — LSS_016), then zonk the answer back out of the store. Arrow-free
+references keep the cheap path and are byte-identical.
+
+Flag `lss.refIdentity` (`ECO_MONO_LSS_REF_IDENTITY`, hash token `lssRI=`),
+DEFAULT-OFF pending the suites.
+
+**GAP-A's headline case is CLOSED.** `PBareGlobals` (`[ incr, decr ]`) now emits
+`MSET 4649 2 g|…incr | g|…decr` — the exact set §5.4's gate names — where it
+previously emitted nothing.
+
+| probe | `kN` | `top` | `{incr,decr}` |
+|---|---|---|---|
+| `PBareGlobals` `[ incr, decr ]` | 0 → **3** | 9 → **7** | 0 → **2** |
+| `PGlobalsTuple` `( incr, decr )` | 0 → **2** | 9 → **7** | — |
+| `PLambdas` (control) | 1 → 1 | 7 → 7 | unchanged |
+| `LssTaskSetProbe` | 4 → **8** | 17 → **7** | 1 → **2** |
+
+**Self-compile, both arms, and BOTH LOWER:**
+
+| | off | on | delta |
+|---|---|---|---|
+| `k1` | 159,735 | 195,033 | +35,298 |
+| **`kN`** | 2,047 | **3,386** | **+65.4 %** |
+| **`top`** | 28,304 | **20,816** | **−26.5 %** |
+| `var` | 250,624 | 273,390 | +22,766 |
+| multi-set ARROWS | 100 | **728** | +628 % |
+| lower | `EXIT=0`, 0 undefined-fast-evaluator | `EXIT=0`, 0 | ✓ |
+
+`.mlir` 14,965,780 → 15,247,547 B (+1.9 %); md5 `fe1eeffb…` → `360e4655…`.
+
+**`top` falling by a quarter is the fix's signature, not a side effect** — those
+28,304 were substantially storeless ⊤ stamps on positions that had never been
+consulted. `var` rising alongside is the correct direction: a position moved
+from ⊤ (a false claim of "poisoned/unknown") to an honest unconstrained
+variable, and `k1 + kN` rose by 36,637 on top of that.
+
+**REMAINING GATES before this can go default-on:** elm-tests at the pre-existing
+failure set and E2E `--target full`, both with the flag ON — neither suite has
+seen this path. The self-compile lowering gate (LSS_031's rule) is already met.
+
+**NO NEW CARRY-FORWARD IS NEEDED.** The registry demand type and
+`Engine.lssSignatures` already carry information across items. Nothing needs to
+travel; the reference site needs to READ the store instead of stamping `⊤`. Find where a list
+literal's elements are translated and whether a `g|` member is injected into
+the element's slot; compare against the lambda path that works. All four
+eliminations above were inference-side, which is why none of them moved the
+number.
+
 **METHOD NOTE, fourth occurrence in this register.** Two intermediate readings
 of this experiment were WRONG and both were tooling, not reasoning: `grep`
 without `-a` in later stages of a pipe silently suppresses matches on

@@ -417,16 +417,16 @@ translate expr s0 =
             translate (TOpt.VarLocal name meta) s0
 
         TOpt.VarGlobal region global meta ->
-            translateVarRef region global meta.tipe s0
+            translateVarRef expr region global meta.tipe s0
 
         TOpt.VarEnum region global _ meta ->
-            translateVarRef region global meta.tipe s0
+            translateVarRef expr region global meta.tipe s0
 
         TOpt.VarBox region global meta ->
-            translateVarRef region global meta.tipe s0
+            translateVarRef expr region global meta.tipe s0
 
         TOpt.VarCycle region canonical name meta ->
-            translateVarRef region (TOpt.Global canonical name) meta.tipe s0
+            translateVarRef expr region (TOpt.Global canonical name) meta.tipe s0
 
         TOpt.VarKernel region kernelPrefix home name meta ->
             case deriveKernelAbiTypeRef ( home, name ) meta.tipe s0 of
@@ -1553,11 +1553,11 @@ allocLambdaId =
 {-| A standalone reference to a global value/ctor/box → `MonoVarGlobal SpecId`.
 Mirrors the VarGlobal/VarEnum/VarBox arms (enqueue with the node's own type).
 -}
-translateVarRef : A.Region -> TOpt.Global -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
-translateVarRef region global canType s0 =
+translateVarRef : TOpt.Expr TypeIds.MVarId -> A.Region -> TOpt.Global -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
+translateVarRef refExpr region global canType s0 =
     -- M6: direct state-passing (desugared andThen/map). Fires on every global
     -- reference; monad-law-preserving → byte-identical.
-        case classify canType s0 of
+        case classifyRef refExpr canType s0 of
             Err e ->
                 Err e
 
@@ -1568,6 +1568,54 @@ translateVarRef region global canType s0 =
 
                     Ok ( specId, s2 ) ->
                         Ok ( Mono.MonoVarGlobal region specId monoType, s2 )
+
+
+{-| §5.4 (GAP-A): classify a bare global reference's type.
+
+`classify` is `Store.classifyDirect` — read-only, no store minting — and its
+`Can.TLambda` arm stamps `Mono.LTop` on EVERY arrow by construction
+("storeless classification stamps LTop"). `translateGlobalCall` knows this and
+GATES its storeless fast path on `lssFastOk`; `translateVarRef` did not, so a
+bare reference's arrows came back ⊤ unconditionally — poisoned before any
+member could reach them. That, not a missing injection, is why
+`[ incr, decr ]` and `( incr, decr )` produced no set while
+`[ \x -> x+1, … ]` (which goes through `classifyLambdaHead`) and
+`[ idf incr, … ]` (a call ARGUMENT, behind the gate) both did.
+
+Flag-on takes the store-aware route for exactly the references that can carry
+a set: load the type, inject the referent's identity — via
+`injectArgLambdaMember`, so the `g|`/`c|`/`k|` dispatch and the kernel-alias
+fold stay identical to the argument path (LSS_016: a split `g|`/`k|` identity
+joins to a 2-set and kills every singleton consumer) — then read the answer
+back out of the store.
+
+The guard is `canTypeMentionsArrow`: an arrow-free reference cannot inhabit a
+lambda set, so it keeps the cheap path and stays byte-identical.
+-}
+classifyRef : TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
+classifyRef refExpr canType s0 =
+    if not (s0.env.lss.enabled && s0.env.lss.refIdentity && LssInfer.canTypeMentionsArrow canType) then
+        classify canType s0
+
+    else
+        case Store.loadType canType s0 of
+            Err _ ->
+                -- A reference type that will not load is not a reason to fail
+                -- the build; fall back to the storeless answer.
+                classify canType s0
+
+            Ok ( canVar, s1 ) ->
+                case injectArgLambdaMember refExpr canVar s1 of
+                    Err _ ->
+                        classify canType s1
+
+                    Ok ( _, s2 ) ->
+                        case Store.zonkToMono canVar s2 of
+                            Err _ ->
+                                classify canType s2
+
+                            Ok ( monoType, s3 ) ->
+                                Ok ( monoType, s3 )
 
 
 monoTypeMentionsEco : Mono.MonoType -> Bool
@@ -1842,7 +1890,7 @@ translateIndirectCallBody region func args callCanType =
                                                 (classify callCanType)
                                         )
                                         (Engine.andThen
-                                            (\_ -> translateVarRef region ctorGlobal (TOpt.typeOf func))
+                                            (\_ -> translateVarRef func region ctorGlobal (TOpt.typeOf func))
                                             bumpDevirtDirect
                                         )
 

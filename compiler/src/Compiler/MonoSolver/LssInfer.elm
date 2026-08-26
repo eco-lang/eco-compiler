@@ -4,6 +4,7 @@ module Compiler.MonoSolver.LssInfer exposing
     , injectLambdaMember
     , injectLambdaMemberQualified
     , injectSpineMemberId
+    , canTypeMentionsArrow
     , kernelAliasOf
     , spineDepthForGlobal
     , declaredArityOf

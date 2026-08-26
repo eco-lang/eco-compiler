@@ -386,6 +386,15 @@ type alias LssConfig =
     --
     -- DEFAULT-OFF. Hash token `lssQS=1`; env `ECO_MONO_LSS_QSOLVE`.
     , qSolve : Bool
+
+    -- §5.4 (GAP-A): classify a bare global reference STORE-AWARE when its type
+    -- mentions an arrow, instead of with the storeless classifier that stamps
+    -- LTop on every arrow. `translateGlobalCall` already gates that classifier
+    -- on `lssFastOk`; `translateVarRef` did not, which poisoned every bare
+    -- reference's arrows before a member could reach them.
+    --
+    -- DEFAULT-OFF. Hash token `lssRI=1`; env `ECO_MONO_LSS_REF_IDENTITY`.
+    , refIdentity : Bool
     }
 
 
@@ -425,6 +434,7 @@ defaultLss =
     , arrowIdentity = True
     , arrowSolverRoots = False
     , qSolve = False
+    , refIdentity = False
     }
 
 
@@ -811,6 +821,7 @@ lssDecoder =
         |> D.apply (D.optionalField "arrowIdentity" D.bool defaultLss.arrowIdentity)
         |> D.apply (D.optionalField "arrowSolverRoots" D.bool defaultLss.arrowSolverRoots)
         |> D.apply (D.optionalField "qSolve" D.bool defaultLss.qSolve)
+        |> D.apply (D.optionalField "refIdentity" D.bool defaultLss.refIdentity)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -1174,6 +1185,19 @@ hash cfg =
                     , if lss.qSolve /= defaultLss.qSolve then
                         [ "lssQS="
                             ++ (if lss.qSolve then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    , if lss.refIdentity /= defaultLss.refIdentity then
+                        [ "lssRI="
+                            ++ (if lss.refIdentity then
                                     "1"
 
                                 else
