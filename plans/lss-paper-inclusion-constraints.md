@@ -1013,6 +1013,20 @@ identical, and `union` is already not a write-path phenomenon. Recorded as the
 phase's result rather than built. If §5.3 is ever restated it must target the
 FLEX ADOPTION, not the union, or it optimises something that does not happen.
 
+#### §5.6.4 GATED 2026-08-25 — §5.1, §5.2 and §5.6 together
+
+| gate | result |
+|---|---|
+| E2E `--target full` | **1691 / 1691**, `EXIT=0` |
+| elm-tests | **13,355 passed / 12 failed** — the pre-existing baseline, the same 12 (if-chain + 11 POST_010/TYPE_007 node-type-scoping) |
+| self-compile LOWERS | `emit EXIT=0` (14,959,837 B), `lower EXIT=0` (70,298,448 B), **0** `undefined fast evaluator` |
+
+The lowering gate is LSS_031's standing rule and is not optional for anything
+touching the signature path: E2E passed 1,687/1,687 with the bad `_fast_evaluator`
+stamp because its corpus is small programs. Byte-identity rails were already in
+place for §5.2 (flag-off vs flag-on across eight probes) and §5.1 (report-on vs
+report-off), so these three close the suites rather than the rails.
+
 ### §5.7 Make signatures non-trivial — the population, measured
 
 Independently of §5.6, the signature channel says almost nothing. Self-compile,
@@ -1035,6 +1049,40 @@ carries must come AFTER the signature channel demonstrably carries it, or the
 information is deleted rather than relocated. `applyFacts` short-circuits on
 `sig.trivial`, so today 78.8 % of defs would replace a real set with nothing.
 
+#### §5.7.1 TESTED 2026-08-25 — **`allflex` is a NON-LOSS. Do not build this.**
+
+The population is real; the LOSS is not. Six probes, all at shipping defaults:
+
+| probe | shape | own 2-set? |
+|---|---|---|
+| `PAlways` | GAP-2's literal case: `always : a -> b -> a` | **YES** |
+| `PWrap` | through a record field: `wrap : a -> { v : a }` | **YES** |
+| `PAlwaysCross` | `always` used at TWO types, one memoized signature serving both | **YES** |
+| `PThread` | two polymorphic hops: `always (idf incr) True` | **YES** |
+| `PMapPolyLam` | `List.map idf [ \x -> x+1, \x -> x-1 ]` | **YES** |
+| `PMapPoly` | `List.map idf [ incr, decr ]` | no — **but see below** |
+
+`PAlways`'s signature is confirmed `allflex`: `sigfacts` dumps every NON-DEFAULT
+fact and `always` produces no row at all. **The set transports anyway.**
+
+`PMapPoly` is the only failure and it is NOT this phase's. Swapping the bare
+globals for lambdas over the SAME `idf` hop (`PMapPolyLam`) transports, and
+dropping the hop entirely while keeping the bare globals (`PBareGlobals`,
+`[ incr, decr ]`) still fails. The failing ingredient is the container literal
+of GLOBALS — §5.4's GAP-A — not the polymorphic hop.
+
+**Why there is nothing to fix, and it is the paper's own reason.** The two
+occurrences of `a` in `a -> b -> a` are the SAME type variable. Instantiating it
+makes both the same arrow carrying the same set slot, so "result ⊇ param 0"
+holds by ordinary unification and the signature never has to state it — exactly
+*"unification only ever equates set variables"* (§1, 146:6–11). What makes the
+slot shared is `lss.arrowIdentity`, default-on since §5.A3.
+
+**So GAP-2's loss item 1 is CLOSED by §5.A3, not outstanding.** The 78.8 %
+`allflex` figure measures signatures that have nothing to say because the TYPE
+already says it — which is the paper's design, not a shortfall against it.
+Recorded here so the count is not mistaken for a defect a third time.
+
 ### §5.4 GAP-A — references instantiate, they do not inject
 
 Delete `standaloneMemberWith`'s inject-into-a-freshly-loaded-slot in favour of
@@ -1042,6 +1090,53 @@ the label arriving with the instantiated signature. Gate: `[ incr, decr ]`
 reaches `kN = 2`; `LssTaskSetProbe` reaches `multiSetSites ≥ 1`.
 
 Decide μ here, on evidence (§3.4).
+
+#### §5.4.1 TRIED, MEASURED, REVERTED — the self-id filter is NOT GAP-A's cause
+
+**HYPOTHESIS.** LSS_020's B.1.f filter drops the def's own member at signature
+readback, and its recorded rationale says the identity reaches callers *"via the
+`g|` standalone spine injection"* instead — i.e. by the very INJECTION §0.1
+blames. So: keep the identity in the signature (the paper's TIU-Lam,
+`ℓ_d ⋸ α` on the def's own arrow), and a reference INSTANTIATES it rather than
+injecting into a freshly-loaded, disjoint slot.
+
+Built behind `lss.selfIdInSig` (`ECO_MONO_LSS_SELFID`, `lssSI=`), in two
+variants: keeping the raw `l|` body-lambda id, and — since the paper's element
+denotes THE DEF, which in Eco's vocabulary is the `g|` member — substituting the
+`g|` id for it.
+
+**RESULT: NO-GO. Both variants leave GAP-A exactly where it was.**
+
+| probe | off | on (either variant) |
+|---|---|---|
+| `PBareGlobals` `[ incr, decr ]` | no `{incr,decr}` set | **still no `{incr,decr}` set** |
+| `PGlobalsTuple` `( incr, decr )` | nothing | **unchanged** |
+| `LssTaskSetProbe` | set present | set present |
+
+The flag is not inert — `PBareGlobals` gains 10 multi-set arrows and `var` falls
+172 → 153 — but every one of those is some OTHER def's identity now riding its
+signature (`Basics.composeL`, `List.foldrHelper`). **The position GAP-A is about
+gains nothing.** So the identity riding the signature does not reach that
+position either, and the filter is not the blocker.
+
+REVERTED, on §5.0b's precedent: a measured NO-GO flag is neither byte-neutral
+nor carrying its weight. **Do not rebuild it.**
+
+**What this rules out, which is the value here.** GAP-A is NOT "the label is
+missing from the signature channel". The label is available; it still does not
+land. That points back at §0.1's literal claim — `Store.loadType` inside
+`standaloneMemberWith` mints a slot disjoint from the position, and the
+returned `WpHonest funcVar` is not unified with the element's slot. The next
+step is to TRACE one `[ incr, decr ]` element from `standaloneMemberWith`'s
+`funcVar` to the cons argument's Point and find where they fail to meet — not
+another signature-side hypothesis.
+
+**METHOD NOTE, fourth occurrence in this register.** Two intermediate readings
+of this experiment were WRONG and both were tooling, not reasoning: `grep`
+without `-a` in later stages of a pipe silently suppresses matches on
+binary-looking input, which produced a false "the flag destroyed
+`LssTaskSetProbe`'s set" and a false "no set is formed". Put `-a` on EVERY grep
+in a census pipeline.
 
 ### §5.5 Retire the compensation layer
 
