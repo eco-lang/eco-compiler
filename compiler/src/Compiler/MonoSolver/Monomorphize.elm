@@ -819,6 +819,7 @@ initState lssConfig limits currentModule nodes annotations globalTypeEnv mvarSta
         , lss = lssConfig
         , lssKeyedSet = keyedGlobalSet lssConfig.keyedGlobals
         , lamLabels = mvarState.lamLabels
+        , arrowRootOf = mvarState.arrowRootOf
         , limits = limits
         }
     , currentGlobal = Nothing
@@ -835,6 +836,7 @@ initState lssConfig limits currentModule nodes annotations globalTypeEnv mvarSta
     , dirtyList = []
     , specCountByGlobal = Dict.empty
     , itemAux = Engine.emptyItemAux
+    , scratchRootKeys = False
     }
 
 

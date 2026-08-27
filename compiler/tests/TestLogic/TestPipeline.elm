@@ -73,6 +73,7 @@ import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
+import Compiler.Type.SolverRoots as SolverRoots
 import Compiler.TypedCanonical.Build as TCanBuild
 import Data.Map
 import Data.Set
@@ -273,17 +274,58 @@ runToTypedOpt srcModule =
         Err e ->
             Err e
 
-        Ok { canonical, annotations, nodeTypesPost, kernelEnv, nodeVars, annotationVars } ->
+        Ok { canonical, annotations, nodeTypesPost, kernelEnv, nodeVars, solverState, annotationVars } ->
             let
+                -- ARROW SOLVER ROOTS — mirror `Compiler.Compile`, which stamps
+                -- them here while the solver state is still live. Without this
+                -- the harness produced types whose arrows all carried
+                -- `NoArrow`, so every root-identity feature
+                -- (`lss.arrowSolverRoots`, `lss.sigRootIdentity`, Phase 2b)
+                -- was STRUCTURALLY INERT in every pipeline test — a test could
+                -- turn the flag on, pass, and have verified nothing.
+                --
+                -- Behaviour-neutral at default flags: `AssignMVarIds` mints a
+                -- fresh occurrence id and stamps `Arrow` for `SolverRoot` and
+                -- `NoArrow` alike unless a root-identity flag is on.
+                rootedNodeVars =
+                    SolverRoots.normalizeNodeVars solverState nodeVars
+
+                rootedAnnotationVars =
+                    SolverRoots.normalizeAnnotationVars solverState annotationVars
+
+                stampedNodeTypes =
+                    Array.indexedMap
+                        (\i maybeType ->
+                            case ( maybeType, Maybe.withDefault Nothing (Array.get i rootedNodeVars) ) of
+                                ( Just t, Just v ) ->
+                                    Just (SolverRoots.stampArrowRoots solverState t v)
+
+                                _ ->
+                                    maybeType
+                        )
+                        nodeTypesPost
+
+                stampedAnnotations =
+                    Dict.map
+                        (\defName ann ->
+                            case Dict.get defName rootedAnnotationVars of
+                                Just annotVar ->
+                                    SolverRoots.stampArrowRootsInAnnotation solverState ann annotVar
+
+                                Nothing ->
+                                    ann
+                        )
+                        annotations
+
                 typedModule =
-                    TCanBuild.fromCanonical canonical nodeTypesPost nodeVars
+                    TCanBuild.fromCanonical canonical stampedNodeTypes rootedNodeVars
             in
-            case RResult.run (TypedOptimize.optimizeTyped annotations nodeTypesPost nodeVars kernelEnv annotationVars Dict.empty typedModule) of
+            case RResult.run (TypedOptimize.optimizeTyped stampedAnnotations stampedNodeTypes rootedNodeVars kernelEnv rootedAnnotationVars Dict.empty typedModule) of
                 ( _, Ok localGraph ) ->
                     Ok
                         { canonical = canonical
-                        , annotations = annotations
-                        , nodeTypes = nodeTypesPost
+                        , annotations = stampedAnnotations
+                        , nodeTypes = stampedNodeTypes
                         , kernelEnv = kernelEnv
                         , localGraph = localGraph
                         }

@@ -4,7 +4,7 @@ module Compiler.MonoSolver.Store exposing
     , loadTypeIsolated
     , loadTypeWithArrows
     , loadTypeIsolatedWithArrows
-    , LoadCtx, loadTypeC, testLoadCtx
+    , LoadCtx, loadTypeC, testLoadCtx, testLoadCtxRoots
     , arrowParts
     , arrowSetSlot
     , unifySlotWithSet
@@ -81,6 +81,8 @@ type alias LoadCtx =
     , censusOn : Bool -- multi-set census (M3): mirror of `env.lss.report`. Gates `arrowOfSlot` ONLY; nothing else reads it.
     , arrowMintOn : Bool -- Phase 2a/2b: are ArrowIds meaningful at all? (`lss.enabled` — ids are minted unconditionally by AssignMVarIds, so this is really "is the census worth keeping".)
     , arrowOfSlot : Dict.Dict Int Int -- multi-set census (M3): set-slot pointKey -> ArrowId. Report-gated; recorded in BOTH arrowIdentity arms.
+    , arrowKeyRoots : Bool -- `lss.sigRootIdentity` (§2.2): translate the MEMO key through `arrowRootOf`, so solver-unified arrows share a slot. True ONLY inside the inference scratch store (`S.scratchRootKeys`); the census key stays the OCCURRENCE id regardless — see `loadTypeC`.
+    , arrowRootOf : Dict.Dict Int Int -- `Id.toComparable occArrowId` -> NEGATIVE solver-root key (the AssignMVarIds side table, via `env.arrowRootOf`). Negative keys cannot collide with occurrence memo keys (>= 1) or the 0 "unstamped" sentinel.
     }
 
 
@@ -104,7 +106,22 @@ testLoadCtx lssOn arrowIdOn sharedArrowMemo store =
     , censusOn = False
     , arrowMintOn = lssOn
     , arrowOfSlot = Dict.empty
+    , arrowKeyRoots = False
+    , arrowRootOf = Dict.empty
     }
+
+
+{-| `testLoadCtx` with the `lss.sigRootIdentity` fields live: a root side
+table plus the scratch flag, for pinning root-keyed memoisation at the store
+level (plans/lss-solver-root-signature-identity.md §3.1 pin 1).
+-}
+testLoadCtxRoots : Dict.Dict Int Int -> Bool -> Bool -> Dict.Dict Int IO.Variable -> IO.State -> LoadCtx
+testLoadCtxRoots rootOf keyRoots arrowIdOn sharedArrowMemo store =
+    let
+        base =
+            testLoadCtx True arrowIdOn sharedArrowMemo store
+    in
+    { base | arrowKeyRoots = keyRoots, arrowRootOf = rootOf }
 
 
 {-| The SHARED-memo load seed: the item's var memo AND the item's arrow memo
@@ -123,6 +140,14 @@ sharedLoadCtx s =
     , censusOn = s.env.lss.report
     , arrowMintOn = s.env.lss.enabled
     , arrowOfSlot = s.itemAux.arrowOfSlot
+
+    -- `lss.sigRootIdentity`: `scratchRootKeys` is True only inside the
+    -- inference scratch (set/restored by `withScratchStore`), so shared loads
+    -- key the arrow memo by solver root there and by occurrence everywhere
+    -- else. No second conjunct needed — the flag is folded in at the scratch
+    -- boundary.
+    , arrowKeyRoots = s.scratchRootKeys
+    , arrowRootOf = s.env.arrowRootOf
     }
 
 
@@ -155,6 +180,13 @@ isolatedLoadCtx s =
     -- their arrow — which is exactly the population the census exists to see.
     , arrowMintOn = s.env.lss.enabled
     , arrowOfSlot = s.itemAux.arrowOfSlot
+
+    -- `lss.sigRootIdentity` does NOT reach isolated loads, even inside the
+    -- scratch: an isolated load IS the per-use freshening (the paper's
+    -- `τ[ᾱ↦β̄]`), and root-keying it would be the H1 collapse above by
+    -- another door.
+    , arrowKeyRoots = False
+    , arrowRootOf = Dict.empty
     }
 
 
@@ -329,7 +361,13 @@ loadTypeC superStatic canType c0 =
                     -- slot is unstamped. `SolverRoot` cannot appear here — it
                     -- is resolved to `Arrow` by `AssignMVarIds`, and this is a
                     -- `Can.Type MVarId`.
-                    akey =
+                    -- The CENSUS key: always the occurrence id (0 = the
+                    -- `NoArrow` "unstamped" sentinel). `noteArrow` and the
+                    -- MSET census key on corpus-stable occurrence ArrowIds —
+                    -- the Run-AE lesson — so root keying must never leak in
+                    -- here (plans/lss-solver-root-signature-identity.md
+                    -- §2.4b: memo key ≠ census key, two values).
+                    occKey =
                         case arrowSlot of
                             TypeIds.Arrow aid ->
                                 Id.toComparable aid + 1
@@ -337,16 +375,40 @@ loadTypeC superStatic canType c0 =
                             _ ->
                                 0
 
+                    -- The MEMO key: root-translated ONLY inside the
+                    -- inference scratch under `lss.sigRootIdentity` (§2.2).
+                    -- Two occurrences the SOLVER unified then share a slot —
+                    -- the paper's `ζ = 𝓔(ξ)` — which is what lets a def's
+                    -- body members reach its annotation ordinals and its
+                    -- signature conduct. Root keys are NEGATIVE by
+                    -- construction, so they can never collide with
+                    -- occurrence keys (>= 1) or the 0 sentinel, and
+                    -- `memoKey == 0` iff `occKey == 0`.
+                    memoKey =
+                        if c2.arrowKeyRoots && occKey /= 0 then
+                            case Dict.get (occKey - 1) c2.arrowRootOf of
+                                Just rootKey ->
+                                    rootKey
+
+                                Nothing ->
+                                    occKey
+
+                        else
+                            occKey
+
                     -- Multi-set census (M3): name this slot by its ARROW, so
                     -- the zonk can report per-POSITION rather than
                     -- per-readback (plan §2.5.5). Report-gated, and
                     -- `NoArrow` (0) is never recorded — it names nothing.
                     -- Recorded in BOTH `arrowIdentity` arms: the ArrowId comes
                     -- from `AssignMVarIds` and is flag-independent, which is
-                    -- what makes it a valid cross-arm join key.
+                    -- what makes it a valid cross-arm join key. Under root
+                    -- keying a shared slot is attributed to its LAST-loaded
+                    -- occurrence (Dict.insert overwrites) — an attribution
+                    -- smear the census reader must know about, not a defect.
                     noteArrow pSet cIn =
-                        if cIn.censusOn && akey /= 0 then
-                            { cIn | arrowOfSlot = Dict.insert (Engine.pointKey pSet) akey cIn.arrowOfSlot }
+                        if cIn.censusOn && occKey /= 0 then
+                            { cIn | arrowOfSlot = Dict.insert (Engine.pointKey pSet) occKey cIn.arrowOfSlot }
 
                         else
                             cIn
@@ -359,7 +421,7 @@ loadTypeC superStatic canType c0 =
                         structC (IO.FunL pFrom pTo pSet)
                             (noteArrow pSet { cOut | arrowSlots = pSet :: cOut.arrowSlots, slotsMinted = cOut.slotsMinted + 1 })
                 in
-                if not c2.arrowIdOn || akey == 0 then
+                if not c2.arrowIdOn || memoKey == 0 then
                     -- Flag off, or `NoArrow` (an arrow built outside
                     -- `AssignMVarIds`): ALWAYS miss, NEVER record in
                     -- `arrowMemo` — otherwise every unstamped arrow in a type
@@ -367,7 +429,7 @@ loadTypeC superStatic canType c0 =
                     mintFresh c2
 
                 else
-                    case Dict.get akey c2.arrowMemo of
+                    case Dict.get memoKey c2.arrowMemo of
                         Just pSet ->
                             structC (IO.FunL pFrom pTo pSet)
                                 (noteArrow pSet { c2 | arrowSlots = pSet :: c2.arrowSlots })
@@ -382,7 +444,7 @@ loadTypeC superStatic canType c0 =
                                     { c3
                                         | arrowSlots = pSet :: c3.arrowSlots
                                         , slotsMinted = c3.slotsMinted + 1
-                                        , arrowMemo = Dict.insert akey pSet c3.arrowMemo
+                                        , arrowMemo = Dict.insert memoKey pSet c3.arrowMemo
                                     }
                                 )
 

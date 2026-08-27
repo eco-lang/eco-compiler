@@ -203,6 +203,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\pmVal -> applyLssPapMembersOverride pmVal cfg4ed)
             )
         |> Task.andThen
+            (\cfg4ee ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_SIG_ROOT_ID" |> Task.mapError never)
+                    |> Task.map (\srVal -> applyLssSigRootIdentityOverride srVal cfg4ee)
+            )
+        |> Task.andThen
             (\cfg4f ->
                 (Utils.envLookupEnv "ECO_SPEC_TYPE_NODE_LIMIT" |> Task.mapError never)
                     |> Task.map (\tnVal -> applySpecTypeNodeLimitOverride tnVal cfg4f)
@@ -1830,6 +1835,32 @@ applyLssPapMembersOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | papMembers = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_SIG_ROOT_ID=1|true|yes / 0|false|no`
+(plans/lss-solver-root-signature-identity.md): inside the INFERENCE scratch
+store only, key an arrow's set slot by the type checker's union-find ROOT
+instead of by syntactic occurrence — tying a def's annotation arrows to its
+body's, so its signature carries the facts its body proves. REQUIRES
+`papMembers` (root-shared classes export through signatures; an
+injection-incomplete class publishes a false singleton to every caller).
+DEFAULT-OFF. Hash token `lssSR=`.
+-}
+applyLssSigRootIdentityOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssSigRootIdentityOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | sigRootIdentity = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | sigRootIdentity = False }) cfg
 
             else
                 cfg

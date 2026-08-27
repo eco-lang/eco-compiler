@@ -440,6 +440,39 @@ type alias LssConfig =
     -- Artifact-affecting (members → annotations → keyed spec keys → fan-out).
     -- DEFAULT-OFF. Hash token `lssPM=1`; env `ECO_MONO_LSS_PAP_MEMBERS`.
     , papMembers : Bool
+
+    -- SOLVER-ROOT SIGNATURE IDENTITY
+    -- (plans/lss-solver-root-signature-identity.md): inside the INFERENCE
+    -- scratch store only, key an arrow's lambda-set slot by the type
+    -- checker's union-find ROOT instead of by syntactic occurrence. A def's
+    -- annotation arrow and its body node's arrow are structurally-equal
+    -- DISTINCT objects 97.5 % of the time, so occurrence identity cannot tie
+    -- them: the body's members land in slots `zonkSigGo` never reads, and the
+    -- signature comes back `allflex`. Tying them is what makes a def's
+    -- signature conduct — MEASURED for this flag on the self-compile
+    -- (2026-08-27): `sigfacts` 751 -> 1,825 rows over 857 newly-carrying
+    -- defs, analysis coverage 27.85 % -> 28.72 % (+0.87 pp), ⊤ −1,445
+    -- positions and `kN` +953, `out.mlir` −228,690 B. Fast dispatch is
+    -- UNCHANGED (21.200 % both arms, −7 events of 571 M) and wall is flat, so
+    -- the completeness gain costs nothing at runtime.
+    --
+    -- This is the paper's inference step (3): `ζ = 𝓔(ξ)`, the lambda-set
+    -- equalities implied by the type equalities (146:10). Eco reads them off
+    -- the checker's own solve rather than re-deriving them, and confines the
+    -- substitution to inference so the specialization phase keeps
+    -- per-occurrence identity and per-call-site instantiation — which is what
+    -- `arrowSolverRoots` (2b) gives up, and why that flag costs context
+    -- sensitivity.
+    --
+    -- REQUIRES `papMembers`: root-shared classes export through signatures,
+    -- so an injection-INCOMPLETE class publishes a false singleton to every
+    -- caller. That combination is the recorded identity-map miscompile; it
+    -- may be run only as a deliberate negative probe, and this flag must not
+    -- go default-on before `papMembers` does.
+    --
+    -- Artifact-affecting. DEFAULT-OFF. Hash token `lssSR=1`; env
+    -- `ECO_MONO_LSS_SIG_ROOT_ID`.
+    , sigRootIdentity : Bool
     }
 
 
@@ -482,6 +515,7 @@ defaultLss =
     , refIdentity = True
     , qCensus = False
     , papMembers = False
+    , sigRootIdentity = False
     }
 
 
@@ -871,6 +905,7 @@ lssDecoder =
         |> D.apply (D.optionalField "refIdentity" D.bool defaultLss.refIdentity)
         |> D.apply (D.optionalField "qCensus" D.bool defaultLss.qCensus)
         |> D.apply (D.optionalField "papMembers" D.bool defaultLss.papMembers)
+        |> D.apply (D.optionalField "sigRootIdentity" D.bool defaultLss.sigRootIdentity)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -1277,6 +1312,22 @@ hash cfg =
                     , if lss.papMembers /= defaultLss.papMembers then
                         [ "lssPM="
                             ++ (if lss.papMembers then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- Solver-root signature identity: ties a def's annotation
+                    -- arrows to its body's, so signatures carry facts they did
+                    -- not before — annotations move, keys move.
+                    , if lss.sigRootIdentity /= defaultLss.sigRootIdentity then
+                        [ "lssSR="
+                            ++ (if lss.sigRootIdentity then
                                     "1"
 
                                 else

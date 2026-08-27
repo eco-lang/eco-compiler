@@ -1065,6 +1065,7 @@ type alias Env =
     , lss : Config.LssConfig -- lambda-set specialization knobs; enabled=False is byte-identical off
     , lssKeyedSet : CoreDict.Dict String () -- E5: comparable gkeys of lss.keyedGlobals (parsed once at initState)
     , lamLabels : CoreDict.Dict Int String -- member id -> "defKey#id" (census rendering only)
+    , arrowRootOf : CoreDict.Dict Int Int -- `lss.sigRootIdentity`: `Id.toComparable occArrowId` -> NEGATIVE solver-root key (AssignMVarIds side table). Read ONLY by `Store.loadTypeC`'s memo key, and only inside the inference scratch store — see plans/lss-solver-root-signature-identity.md §2.2.
     , limits : Config.SpecLimits -- MONO_030 spec watchdogs (0 = a check disabled); failure-only, hash-excluded
     }
 
@@ -1147,6 +1148,17 @@ type alias S =
     --   recursive-call args to loop params (the TCO transform rebuilds that
     --   call chain with a fresh id family).
     , itemAux : ItemAux
+
+    -- `lss.sigRootIdentity` (plans/lss-solver-root-signature-identity.md
+    -- §2.2): True exactly while the INFERENCE scratch store is installed and
+    -- the flag is on — set/restored by `withScratchStore` (its single call
+    -- site is `LssInfer.resolveSignature`'s unit pass). `Store.sharedLoadCtx`
+    -- reads it into `LoadCtx.arrowKeyRoots`, which keys the arrow memo by
+    -- solver ROOT instead of by occurrence. Carried on `S` rather than
+    -- `ItemAux` deliberately: `clearedAux` resets aux fields to their
+    -- DEFAULTS on scratch entry, which is the wrong polarity for a flag that
+    -- must be ON inside the scratch and OFF outside it.
+    , scratchRootKeys : Bool
     }
 
 
@@ -1743,7 +1755,12 @@ withScratchStore step s0 =
             -- residual reads made inside the scratch must not be scanned at
             -- item end (scratch re-translation is itself a re-translation
             -- mechanism; its staleness is out of scope for MONO_029 v1).
-            { s0 | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty, itemAux = clearedAux s0.itemAux }
+            --
+            -- `scratchRootKeys` (lss.sigRootIdentity §2.2): root-keyed arrow
+            -- memoisation is scoped to EXACTLY this window — signature
+            -- inference — so the specialization phase keeps per-occurrence
+            -- identity and per-call-site instantiation.
+            { s0 | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty, itemAux = clearedAux s0.itemAux, scratchRootKeys = s0.env.lss.sigRootIdentity }
     in
     case step sFresh of
         Err e ->
@@ -1801,7 +1818,7 @@ withScratchStore step s0 =
                     else
                         s2
             in
-            Ok ( a, { s3 | store = s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = restoredAux s0.itemAux s3.itemAux } )
+            Ok ( a, { s3 | store = s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = restoredAux s0.itemAux s3.itemAux, scratchRootKeys = s0.scratchRootKeys } )
 
 
 

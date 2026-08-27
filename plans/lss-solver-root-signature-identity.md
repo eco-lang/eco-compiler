@@ -205,6 +205,156 @@ Either way the artifact is a gift: a small, deterministic, reproducible
 miscompile in a flag that is default-off, which is the easiest conditions this
 kind of bug is ever found under.
 
+**RESOLVED 2026-08-26** — the answer was neither branch as posed. The defect was
+INJECTION INCOMPLETENESS, not root identity: partial applications injected no
+member, so root sharing merged a producer set that was missing an inhabitant
+and published a false singleton. Root identity was the AMPLIFIER, not the
+cause. `lss.papMembers` closes it (`plans/lss-injection-completeness.md`), the
+roots arm now runs, and §2 proceeds with `papMembers` as a hard co-requirement
+rather than a recommendation.
+
+### §0.7 MEASURED — P1 and P2 as built (2026-08-27)
+
+Self-compile, `ECO_MONO_ENGINE=solver ECO_MONO_LSS=1 ECO_MONO_LSS_REPORT=1`,
+both arms carrying `ECO_MONO_LSS_PAP_MEMBERS=1` so only `SIG_ROOT_ID` moves.
+
+| | flag-off | flag-on | delta |
+|---|---:|---:|---:|
+| **analysis coverage** | **27.85 %** | **28.72 %** | **+0.87 pp** |
+| positions | 133,913 | 133,652 | −261 |
+| k1 | 32,457 | 32,600 | +143 |
+| kN | 4,841 | 5,794 | **+953** |
+| var | 37,016 | 37,104 | +88 |
+| top | 59,599 | 58,154 | **−1,445** |
+| `sigfacts` rows | 751 | 1,825 | **×2.43** |
+| defs carrying facts | 712 | 1,569 | +857 |
+| non-trivial signatures | 712 | 1,569 | +857 |
+| `out.mlir` bytes | 15,320,374 | 15,091,684 | −228,690 |
+
+Gate 1 (`sigfacts` ≥ 1,400) MET at 1,825. Gate 2 met in the intended
+direction — the movement is ⊤ → `kN`, which is exactly the predicted mechanism
+(a def's body members reach its annotation ordinals, so positions the storeless
+classifier had stamped ⊤ acquire named inhabitants). `var` is flat-to-slightly-up
+(+88, +0.2 %): root identity does not manufacture information where the checker
+had none, and was never predicted to.
+
+**Read `kN` +953 against `k1` +143 deliberately.** Under gate 0 both count, and
+the gain is dominated by MULTI-member sets. On the retired dispatch criterion
+this same change would have scored as a regression — which is the inversion
+gate 0 was adopted to correct, showing up here in its first measurement.
+
+Byte-identity: flag-off reproduces the frozen-corpus reference `.mlir`
+(`2d51917dbc9f6c6a33432e5111a9ea58`) both at P1 (side table built, never read)
+and at P2 (key split in place, `arrowKeyRoots=False`). The occurrence-id supply
+is untouched by construction — root keys are negative — so this is structural,
+not luck.
+
+Remaining P2 gates: lowering clean (`0 undefined fast evaluator`, 164.95 s);
+gate 5b PASSES — the flag-on binary ran a real self-compile for the full 200 s
+probe and died only to the timeout, having allocated 819 MB across 758,310
+objects and completed CAF promotion (the recorded miscompile died at 0.92 s).
+E2E at defaults 1,691/1,691.
+
+**Gate 8 — Q, both arms (the QCENSUS lines live inside `renderLssReport`, so
+`ECO_MONO_LSS_QCENSUS=1` needs `ECO_MONO_LSS_REPORT=1` beside it; without it
+the verifier RUNS and prints nothing, which is silence, not a pass — the first
+attempt at this leg made exactly that mistake):**
+
+| | flag-off | flag-on |
+|---|---:|---:|
+| `Q-infer` classes | 110,031 | 98,686 |
+| `Q-infer` agree | 109,993 | 98,649 |
+| `Q-infer` diverge | **0** | **0** |
+| `Q-infer` REPRODUCES | **yes** | **yes** |
+| partition reaching / internal | 13,655 / 96,376 | 13,812 / 84,874 |
+| `Q-shadow` diverge | 79 (sub=79, merged=16, unseen=63) | 79 (sub=79, merged=16, unseen=63) |
+
+`Q-infer` reproduces exactly in both arms, which is the gate. The `Q-shadow`
+79 is **identical in both arms down to its breakdown**, so it is PRE-EXISTING
+and this change neither causes nor worsens it — the A/B is what establishes
+that, and a flag-on-only reading would have looked like a new defect.
+
+The `Q-infer` class count falling 110,031 → 98,686 (−11,345, −10.3 %) is the
+mechanism measured directly: root identity merges arrow classes, and internal
+classes absorb the whole drop (96,376 → 84,874) while reaching classes hold
+(13,655 → 13,812). §2.4b predicted no structural update to `Q` would be needed
+and none was; the re-run was mandatory anyway because slot CONTENTS change even
+though the write paths do not.
+
+### §0.9 P3 — FAST-DISPATCH A/B: EXACTLY NEUTRAL (Run AO rail, recorded not gated)
+
+Two counters-lowered binaries (`ECO_LSS_DISPATCH_SITE_COUNTERS=1` applied to the
+P2 `.mlir`s), both run on the SAME cold self-compile with shipping-default env
+and no `ECO_MONO_LSS_REPORT` — the arms differ in how the compiler was BUILT,
+not in what it is asked to do.
+
+| arm | distinct | sat | gen | typed | fast | sat+fast | **fast %** | wall |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| flag-off | 7,303 | 2,122,654,764 | 2,088,223,890 | 34,430,874 | 571,069,994 | 2,693,724,758 | **21.200** | 7:24.09 |
+| flag-on | 7,216 | 2,122,654,695 | 2,088,223,826 | 34,430,869 | 571,069,987 | 2,693,724,682 | **21.200** | 7:23.48 |
+| Δ | −87 | −69 | −64 | −5 | **−7** | −76 | **−0.000 pp** |
+
+**The trade gate 0 was written to accept did not have to be made.** Analysis
+coverage rises +0.87 pp for −7 fast events out of 571 million, `fast %` equal to
+three decimals, and wall flat (−0.6 s of 7 min). Both arms emit a byte-identical
+`.mlir` for the workload, which is the invariance check that makes the counter
+comparison admissible. `distinct` −87 (fewer distinct evaluator fps reached)
+lines up with the −228,690 B artifact: slightly less spec duplication, same
+dispatch behaviour.
+
+Measurement trap recorded: the runtime prints its OWN totals line before the
+per-fp rows (read that, never re-sum the rows), and mawk's `printf "%d"`
+TRUNCATES TO 32 BITS — `sat+fast` first printed as exactly 2147483647. Use
+`%.0f` for every counter.
+
+**P4 is NOT triggered, and the reason is the interesting part.** The mechanism
+counters moved as §4 gate 4 asked to have reported beside the dispatch numbers:
+
+| counter | flag-off | flag-on | Δ |
+|---|---:|---:|---:|
+| `declinedNoInstance` | 16,372 | 21,051 | **+4,679 (+28.6 %)** |
+| `declinedBlocked` | 5,638 | 5,494 | −144 |
+| `dispatchUpgraded` | 4,803 | 4,797 | −6 |
+| `stampedStaged` | 680 | 680 | 0 |
+
+P4's condition was "the `declinedNoInstance` rise DOMINATING", meaning the
+coverage gain being paid for in dispatch. It is not: dispatch is flat to the
+unit and `stampedStaged` did not move at all. So the +4,679 are positions that
+**now NAME a member but have no INSTANCE available to exploit it** — they were
+not converting to fast dispatch before either. That is precisely the shape the
+user's "completeness first, reap the 2-set benefit later" directive predicted:
+the analysis now knows more than the consumer can currently use, and the
++4,679 is a measure of the UNEXPLOITED surface (LSS_017/LSS_024 member-instance
+territory), not of a regression. Do not respond to it by reverting transport.
+
+### §0.8 HARNESS GAP FOUND — pipeline tests could not see solver roots AT ALL
+
+`TestLogic.TestPipeline.runToTypedOpt` passed `Dict.empty` for scheme roots and
+never performed the arrow-root stamping that `Compiler.Compile` does while the
+solver state is live. Every type reaching monomorphization in a test therefore
+carried `NoArrow` on every arrow, so `arrowRootOf` was necessarily EMPTY and
+**every root-identity feature was structurally inert in every pipeline test** —
+`lss.sigRootIdentity`, `lss.arrowSolverRoots`, and Phase 2b alike. A test could
+turn any of them on, pass, and have verified nothing at all.
+
+Found by writing §3.1's pins: the store-level pins (which drive `loadTypeC`
+directly) passed, and the two pipeline-level pins failed with "root identity
+changed nothing at the consumer" — the flag reading as a no-op in a harness
+that could not supply its input.
+
+Fixed in `runToTypedOpt` by mirroring `Compile.elm`'s block: normalize node and
+annotation vars to their union-find roots, stamp both, and thread the stamped
+values onward. **Behaviour-neutral at default flags** — `AssignMVarIds` mints a
+fresh occurrence id and stamps `Arrow` for `SolverRoot` and `NoArrow` alike
+unless a root-identity flag is on — so it cannot move any existing expectation,
+which is what makes it safe to land inside this plan rather than as its own
+change.
+
+The general lesson, for the register: **a flag-gated test proves nothing until
+one arm is shown to differ from the other.** Both pipeline pins here were
+written as off-vs-on differential assertions, which is the only reason the gap
+surfaced instead of being papered over by three green tests.
+
 ---
 
 ## §1 Why not simply flip `arrowSolverRoots`
@@ -236,80 +386,222 @@ Three measured reasons, in order of severity:
 
 ## §2 The design
 
-### §2.1 Mint both identities; stamp the occurrence one
+### §2.1 Mint both identities; stamp the occurrence one — IMPLEMENTATION (all anchors verified 2026-08-27)
 
-In `AssignMVarIds.rewriteCanType`'s `Can.TLambda` arm, unconditionally:
+**Flag first** (`lss.sigRootIdentity`, env `ECO_MONO_LSS_SIG_ROOT_ID`, hash
+token `lssSR=` — verified free): the exact five-site checklist proven by
+`lss.papMembers` yesterday — `Config.elm` `LssConfig` field + doc (cite this
+plan; DEFAULT-OFF; artifact-affecting) → `defaultLss` `= False` → `lssDecoder`
+**append at the very END** (the chain is positional; the file's own "APPEND
+ONLY, and LAST" warning) → the hash-token block emitting `lssSR=1|0` on
+`/= default` → `Builder/Eco/Config.elm` `applyLssSigRootIdentityOverride`
+(copy `applyLssPapMembersOverride` with the field swapped) + one
+`Utils.envLookupEnv "ECO_MONO_LSS_SIG_ROOT_ID"` row in the Task chain.
 
-- take `freshArrowId` as today → `occId`, and stamp `Can.TLambda (Arrow occId)`
-  exactly as the current default does (so the stamped graph is unchanged, and
-  every flag-off rail still holds byte-for-byte);
-- **additionally**, when the slot is `TypeIds.SolverRoot rootIdx`, resolve
-  `ensureArrowIdForRoot rootIdx` → `rootId` and record `occId ↦ rootId` in a new
-  `GlobalMVarState.arrowRootOf : Dict Int Int`.
+**State** — `AssignMVarIds.GlobalMVarState` (`AssignMVarIds.elm:29-37`) gains
+three fields; only the last is consumed downstream:
 
-`ensureArrowIdForRoot` already exists; the table is partial by construction —
-arrows that lost solver provenance simply have no entry, and the tie degrades to
-today's behaviour there, exactly as §0.1's "degrades rather than breaks" row
-describes.
+```elm
+    , rootKeyEnv : Dict ( String, Int ) Int -- (moduleKey, solver root idx) -> NEGATIVE root key. Pass-internal; mirrors arrowRootEnv's module scoping ("unrelated arrows in different modules collide on a raw index — a FALSE union").
+    , nextRootKey : Int                     -- next negative key; starts at -1, decrements. Pass-internal.
+    , arrowRootOf : Dict Int Int            -- Id.toComparable occId -> root key (NEGATIVE). The side table the memo consults.
+```
 
-**AMENDED after the adversarial pass (2026-08-26): allocate root keys from a
-SEPARATE key space, NOT the shared ArrowId supply.** If `ensureArrowIdForRoot`
-draws from `nextArrow`, every table miss shifts the numbering of all later
-occurrence ids versus today's defaults. Occurrence ids are compared for
-equality in at least one artifact-relevant fast path
-(`Translate.elm:2668`'s `==`-then-`stripArrowIds` fallback), so renumbering is
-at best a cost perturbation and at worst a P1 byte-identity failure to debug
-for no reason. The memo key is just an `Int`: derive the root key as a value
-disjoint from all occurrence keys (e.g. negated, offset by the supply bound, or
-a second counter). Then P1's byte-identity gate tests the threading alone, and
-occId numbering is byte-stable by construction.
+Seed all three in BOTH `state0` initializers (`:176-184` and the second at
+`:206`): `Dict.empty / -1 / Dict.empty`.
 
-`initState` lifts `arrowRootOf` into `env` beside `lamLabels`, which is the
-established pattern for exactly this kind of pre-pass side table.
+**The build** — in `rewriteCanType`'s `Can.TLambda` arm
+(`AssignMVarIds.elm:1119-1152`), the `TypeIds.SolverRoot rootIdx` branch's
+NON-`useSolverRoots` path currently just calls `freshArrowId ctx`. It becomes:
 
-### §2.2 Key the arrow memo by root — ONLY in the inference scratch store
+```elm
+TypeIds.SolverRoot rootIdx ->
+    if ctx.useSolverRoots then
+        ensureArrowIdForRoot rootIdx ctx
 
-`LoadCtx` gains one field, `arrowKeyRoots : Bool` (or, equivalently, the table
-plus a flag). `Store.loadTypeC`'s `TLambda` arm computes its memo key as
-`rootOf arrowId` when the flag is set and the table has an entry, and
-`arrowId` otherwise.
+    else
+        -- Side table for `lss.sigRootIdentity`
+        -- (plans/lss-solver-root-signature-identity.md §2.1): stamp the
+        -- OCCURRENCE id exactly as before — the graph is byte-identical —
+        -- and additionally record occId -> rootKey, where root keys come
+        -- from their OWN NEGATIVE supply. Drawing them from `nextArrow`
+        -- would shift every later occId's number; occurrence ids feed an
+        -- `==` fast path (`Translate.sameCanTypeIgnoringArrows`), so
+        -- numbering stays byte-stable by construction instead of by test.
+        let
+            ( arrowId, ctx1 ) =
+                freshArrowId ctx
 
-Set it **True in `sharedLoadCtx` only while the inference scratch store is
-installed**, and False everywhere else.
+            key =
+                ( ctx1.moduleKey, rootIdx )
 
-**The scoping predicate is exact, not approximate — VERIFIED.**
-`Engine.withScratchStore` has exactly **one call site in the entire compiler**:
-`LssInfer.elm:457`, `Engine.withScratchStore (inferUnitInScratch members) s3`.
-So "inside the scratch store" and "computing a signature" are the same
-condition, and the flag can simply ride `withScratchStore`'s entry/exit — which
-already swaps `store`, `memo`, `revMemo` and `itemAux` and restores them, so the
-restore path is written and tested. Carry the flag on `S` rather than on
-`itemAux`: `clearedAux` sets aux fields to their *defaults* on entry, which is
-the wrong polarity for a flag that must be ON inside.
+            st1 =
+                ctx1.state
 
-**Nothing else changes.** In particular:
+            ( rootKey, st2 ) =
+                case Dict.get key st1.rootKeyEnv of
+                    Just rk ->
+                        ( rk, st1 )
 
-- `isolatedLoadCtx` keeps `arrowMemo = Dict.empty`. This is not incidental — its
-  own doc records the **H1 collapse hazard**: *"`LssInfer.sigSourceTypeFor` and
-  the call path read the SAME annotation value out of `s.env.annotations`, so
-  threading the item's arrow memo into an isolated load would make every call
-  site of an annotated `f` unify into ONE lambda set — monomorphic set analysis,
-  maximal imprecision."* The per-use freshening this plan's title depends on IS
-  that emptiness. Do not touch it.
-- The translate/specialization path keeps per-occurrence keying, so the demand
-  channel and the spec keys are unaffected.
+                    Nothing ->
+                        ( st1.nextRootKey
+                        , { st1
+                            | rootKeyEnv = Dict.insert key st1.nextRootKey st1.rootKeyEnv
+                            , nextRootKey = st1.nextRootKey - 1
+                          }
+                        )
+        in
+        ( arrowId
+        , { ctx1
+            | state =
+                { st2 | arrowRootOf = Dict.insert (Id.toComparable arrowId) rootKey st2.arrowRootOf }
+          }
+        )
+```
 
-### §2.3 The hazard that DOES apply, and why it is a precision question not a soundness one
+The table is partial by construction — `NoArrow` slots (types built after the
+solve) take the plain `freshArrowId` path and get no entry, so the tie degrades
+to today's behaviour there ("degrades rather than breaks", §0.1). Under
+`useSolverRoots` (2b) the stamped id is already shared and the table is not
+built — 2b's semantics are untouched.
 
-Root keying inside the unit merges not only annotation↔body but also any two
-*body* arrows the solver unified — e.g. two uses of a local whose results were
-unified. Members from use A can then reach the annotation ordinal via use B.
+**Threading** — `Engine.Env` (`Engine.elm:1059-1069`) gains
+`arrowRootOf : CoreDict.Dict Int Int` beside `lamLabels` (the established
+side-table slot); `Monomorphize.initState` (`:787`, env built `:805-822`)
+copies `mvarState.arrowRootOf` in. `rootKeyEnv`/`nextRootKey` are deliberately
+NOT lifted — they are pass-internal.
 
-That is an **over-approximation**: the set gains members it might not need. Over
--approximating a lambda set is sound (more members ⇒ more dispatch, never wrong
-dispatch); it is exactly how `LTop` is sound. It is also the likely source of
-part of the measured `kN` 3,386 → 6,136, and therefore of the
-`declinedNoInstance` rise. It must be measured, not argued away.
+### §2.2 Key the arrow memo by root — ONLY in the inference scratch store — IMPLEMENTATION
+
+**The scratch flag.** Add `scratchRootKeys : Bool` to `Engine.S` (default
+`False` in the initial state). It rides `withScratchStore`
+(`Engine.elm:1737-1803`), whose entry/exit are the ONLY places it changes —
+verified single call site: `LssInfer.elm:457`. Carry it on `S`, not `itemAux`:
+`clearedAux` resets aux fields to their DEFAULTS on scratch entry, the wrong
+polarity for a flag that must be ON inside.
+
+```elm
+-- entry (the sFresh record update, :1746):
+{ s0 | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty
+     , itemAux = clearedAux s0.itemAux
+     , scratchRootKeys = s0.env.lss.sigRootIdentity }
+
+-- exit (the final Ok, :1803):
+Ok ( a, { s3 | store = s0.store, memo = s0.memo, revMemo = s0.revMemo
+             , itemAux = restoredAux s0.itemAux s3.itemAux
+             , scratchRootKeys = s0.scratchRootKeys } )
+```
+
+(The `Err e` arm aborts the whole monomorphization — no restore needed.)
+
+**`Store.LoadCtx`** gains two fields:
+
+```elm
+    , arrowKeyRoots : Bool                    -- sigRootIdentity, inside the inference scratch only
+    , arrowRootOf : Dict.Dict Int Int         -- Id.toComparable occId -> NEGATIVE root key (env side table)
+```
+
+Constructors:
+
+- `sharedLoadCtx` (`Store.elm:114-127`):
+  `arrowKeyRoots = s.scratchRootKeys, arrowRootOf = s.env.arrowRootOf`.
+  (`scratchRootKeys` is only ever True when the flag is on, so no second
+  conjunct is needed.)
+- `isolatedLoadCtx` (`:140-158`): `False, Dict.empty` — **untouched
+  semantics.** Its own doc records the H1 collapse hazard (*"threading the
+  item's arrow memo into an isolated load would make every call site of an
+  annotated `f` unify into ONE lambda set — monomorphic set analysis, maximal
+  imprecision"*); the per-use freshening this plan's title depends on IS that
+  emptiness.
+- `testLoadCtx` (`:96-112`): keep its signature (one caller,
+  `ArrowIdentityTest.elm:122`) and default the fields `False, Dict.empty`; add
+  `testLoadCtxRoots : Dict.Dict Int Int -> Bool -> Bool -> Dict.Dict Int IO.Variable -> IO.State -> LoadCtx`
+  for the §4 store-level pin.
+
+**The key split in the `TLambda` arm** (`Store.elm:327-390`). Today one `akey`
+serves both the memo and the census (`noteArrow`). §2.4b requires them to
+DIVERGE — the census must keep the occurrence id or the MSET cross-arm join
+silently breaks. Replace the `akey` binding with:
+
+```elm
+-- The census key: ALWAYS the occurrence id (0 = unstamped sentinel).
+-- `noteArrow` and the MSET census key on corpus-stable occurrence ArrowIds
+-- (the Run-AE lesson); root keying must not leak into them.
+occKey =
+    case arrowSlot of
+        TypeIds.Arrow aid ->
+            Id.toComparable aid + 1
+
+        _ ->
+            0
+
+-- The memo key: root-translated ONLY inside the inference scratch under
+-- `lss.sigRootIdentity`. Root keys are NEGATIVE by construction, so they
+-- can never collide with occurrence keys (>= 1) or the 0 sentinel.
+memoKey =
+    if c2.arrowKeyRoots && occKey /= 0 then
+        case Dict.get (occKey - 1) c2.arrowRootOf of
+            Just rootKey ->
+                rootKey
+
+            Nothing ->
+                occKey
+
+    else
+        occKey
+```
+
+Then, mechanically: `noteArrow` keeps `occKey`; the guard
+`if not c2.arrowIdOn || akey == 0` becomes `memoKey == 0` (equivalent — a zero
+memoKey occurs iff occKey is 0); `Dict.get`/`Dict.insert` on `c2.arrowMemo`
+use `memoKey`. **The hit/miss contract is untouched** — a HIT still pushes to
+`arrowSlots` and leaves `slotsMinted` alone (`Store.elm:306-326`, "all four
+rows load-bearing"), which is what makes root keying ordinal-safe by existing
+design, including the same-Point-twice case (`repOrdinal` copes; `trivial`
+goes false more often — a compile-time cost, not a precision change).
+
+**Nothing else changes**: the translate/specialization path keeps
+per-occurrence keying (the demand channel and spec keys are unaffected), and
+`itemAux.arrowMemo`'s store-scoping lifecycle (`clearedAux`/`restoredAux`/
+`resetItem`) is untouched — only the KEY computation changed, and the memo is
+cleared at both scratch boundaries, so occurrence-keyed and root-keyed entries
+never coexist in one dict.
+
+### §2.3 The hazard that DOES apply — REWRITTEN 2026-08-26/27, because the original claim was REFUTED by a miscompile
+
+The original text called unit-internal merging "a precision question, not a
+soundness one", on the argument that sharing only ever ADDS members. **The
+`arrowSolverRoots` crash refuted that**: sharing is over-approximation only
+when every producer flowing into the merged class INJECTED a member. With a
+non-injecting producer in the class, sharing delivers an
+UNDER-approximated set (a false singleton) to consumers that per-occurrence
+fragmentation used to quarantine — devirt then acts on it, and `Task.map f`
+compiled to the identity map. The full invariant, argument and repair are in
+§3 P0 and `plans/lss-injection-completeness.md`.
+
+Consequences for THIS plan, both binding:
+
+1. **`lss.sigRootIdentity` REQUIRES `lss.papMembers`.** Root-keyed inference
+   exports the merged classes' sets through signatures (`applyFacts` writes
+   them into caller slots), so an injection-incomplete class reproduces the
+   false singleton at every caller — §0.6's outcome (b), measured. Every
+   flag-on battery in §3 carries `ECO_MONO_LSS_PAP_MEMBERS=1`, and
+   `sigRootIdentity` may not flip default-on before (or without)
+   `papMembers`. Enforce in review, not in code — the flags stay orthogonal
+   so the A/B arms remain expressible.
+2. **The residue of injection totality is this plan's residual risk**, sized
+   by the census: `callUnknownCallee` ≤533 (unknown-callee partials,
+   deferred), `papInject|deep` 600 (depth ≥2 residual arrows, head-only
+   today), `callResult|trivial` 137. A merged class touching one of these can
+   still under-approximate. The backstops are gate 5b (the lowered binary
+   must RUN) and the P3 probe; if either trips, the repair is extending
+   injection (per the totality programme), not weakening the sharing.
+
+What remains true from the original: merged classes also gain members they
+did not need (use A's member reaching use B's ordinal) — THAT part is genuine
+over-approximation, is sound, and is the likely source of part of the
+measured `kN` 3,386 → 6,136 and the `declinedNoInstance` rise. Measured, not
+argued away, via the §3 batteries.
 
 ### §2.4a Paper fidelity — this IS the paper's step (3), scoped to inference
 
@@ -577,21 +869,164 @@ gate too.
 `--target full` + elm-tests are at the pre-existing failure set with the flag
 on. Only then do P1–P4 open.
 
-**P1 — the side table, inert.** `arrowRootOf` built and threaded, nothing reads
-it. **Gate: byte-identical `.mlir`.** Proves the minting change is neutral.
+**P1 — the side table, inert.** Edits: the §2.1 checklist EXCEPT the flag
+consumers — `GlobalMVarState` three fields + both `state0` seeds, the
+`SolverRoot` branch build, `Env.arrowRootOf`, `initState` threading, and the
+`Config`/`Builder` flag plumbing (dead until P2). Nothing reads the table.
+
+Battery (one build + two cold legs, ~35 min; the P0-census recipe verbatim):
+
+```bash
+BK=build/compiler/build-kernel
+rm -f "$BK/bin/eco-compiler.mlir" "$BK/bin/eco-compiler"; rm -rf "$BK/eco-stuff"
+ECO_MONO_ENGINE=solver ECO_MONO_LSS=1 ECO_BORROW=1 ECO_AGG_PROMOTE=1 \
+    cmake --build build --target eco-compiler
+# cold leg at defaults → out.mlir must be BYTE-IDENTICAL to the pre-change
+# leg on the same corpus (two-binary rail: keep the pre-change binary's leg
+# output; env vars are not ninja inputs — the rm above is load-bearing).
+```
+
+**Gate: byte-identical `out.mlir` at defaults.** This is exactly what the
+negative-key-space amendment buys: occId numbering is untouched, so the gate
+tests the THREADING alone. A diff here means the build accidentally consumed
+the table (or the supply) — stop and bisect the P1 edit, nothing else is in
+play.
 
 **P2 — root keying in the inference scratch store, flag-gated default-off.**
-Flag `lss.sigRootIdentity`, env `ECO_MONO_LSS_SIG_ROOT_ID`, hash token `lssSR=`.
-**Gates: flag-off byte-identity; flag-on `sigfacts` ≥ 1,400.** That single
-number decides H-MAIN.
+Edits: the §2.2 set — `S.scratchRootKeys` + the two `withScratchStore` record
+updates, the two `LoadCtx` fields + three constructors + `testLoadCtxRoots`,
+and the `occKey`/`memoKey` split in the `TLambda` arm (census keeps `occKey`).
 
-**P3 — the full battery** (§4), and the flip decision. Expect to be arguing
-reach against a small dispatch cost; the §0.3 prediction is on record so the
-argument is settled by the numbers rather than re-litigated.
+Battery, in order (every flag-on leg carries `ECO_MONO_LSS_PAP_MEMBERS=1` —
+§2.3 consequence 1, non-negotiable):
 
-**P4 — only if P3 shows the `declinedNoInstance` rise dominating:** the repair is
-member INSTANCE availability (LSS_017/LSS_024 territory), not less transport.
-Do not respond by reverting the transport.
+1. **Flag-off byte-identity** vs the P1 leg (same corpus, same binary rules).
+2. **Flag-on census leg** (`ECO_MONO_LSS_REPORT=1 ECO_MONO_LSS_PAP_MEMBERS=1
+   ECO_MONO_LSS_SIG_ROOT_ID=1`): `sigfacts` row count is the H-MAIN decider —
+   **≥ 1,400 expected** (424 baseline; 1,502 under full roots); `coverage:`
+   and the ledger recorded beside it; `RECONCILES=yes`.
+3. **Gate 5b**: lower the flag-on `out.mlir`
+   (`/work/build/runtime/src/codegen/eco-boot-native <mlir> -o <bin>`), assert
+   0 `undefined fast evaluator`, then **RUN the binary on a `make`** (the
+   `timeout 200` probe; 124 = pass). This is the gate the miscompile class
+   taught us; it is cheap and non-negotiable.
+4. **Q verifier leg** (`ECO_MONO_LSS_QCENSUS=1`, flag-on): `Q-infer`
+   `REPRODUCES=yes`, `diverge=0` (§2.4b: no structural update needed, the
+   re-run is the proof), plus the `qSolve` A/B re-run (byte-equivalence of
+   `instantiateScheme` vs `applyFactsGo` under coarser rep classes).
+5. elm-tests at the pre-existing set; E2E `--target full` flag-off
+   (**rebuild after** — `--target full` deletes `bin/eco-compiler`).
+
+**P3 — the reach/coverage battery and the flip decision.** Fast-dispatch A/B
+on the Run-AO rail (counters-lowered arms, `sat + fast` invariance) —
+RECORDED, NOT GATED per §4 gate 0; report `stampedStaged` /
+`declinedNoInstance` beside it (the trade's mechanism). Analysis-coverage A/B
+at positions is the decision number. Wall/GC row per `benchmarks/lss-opt.md`
+(analysis change: `out.mlir` moves, say so, no cross-corpus wall claims). The
+§0.3 prediction is on record — `sigfacts` ≈ 1,400–1,500, `kN` up, `var` down,
+dispatch flat-to-−0.3 pp — so the flip argument is settled by numbers. Flip
+ordering constraint: **not before `papMembers`** (§2.3).
+
+**P4 — only if P3 shows the `declinedNoInstance` rise dominating:** the repair
+is member INSTANCE availability (LSS_017/LSS_024 territory), not less
+transport. Do not respond by reverting the transport.
+
+### §3.2 THE FLIP DECISION — measured 2026-08-27, RECOMMENDED, NOT TAKEN
+
+Every gate is green (§4 scorecard below), so the decision is settled by
+numbers rather than judgement. **Recommendation: flip both, in this order —
+`lss.papMembers` first, then `lss.sigRootIdentity`.** The ordering is not
+stylistic: §2.3 makes injection completeness a SOUNDNESS pre-condition of root
+sharing, and the recorded miscompile is what happens if the order is reversed.
+
+Expected effect on shipped defaults: analysis coverage **≈ 23.7 % → ≈ 28.7 %
+(+5.0 pp)** — `papMembers` +4.2 pp, `sigRootIdentity` +0.87 pp on top of it —
+at flat dispatch, flat wall, and a smaller artifact.
+
+It is RECOMMENDED and not taken because flipping changes the shipped
+compiler's default output, and because the `papMembers` half of it belongs to
+`plans/lss-injection-completeness.md`, which deliberately landed that flag
+default-off. Both are one-line edits in `Compiler/Eco/Config.elm`
+(`defaultLss`), and the evidence they need is now complete:
+
+| evidence | status |
+|---|---|
+| analysis coverage rises | +0.87 pp (28.72 % vs 27.85 %), beats the 27.90 % bar |
+| flag-off byte-identity | reproduces `2d51917d…` at P1 and P2 |
+| lowering + RUN (gate 5b) | clean lower, binary survives a real 200 s compile |
+| `Q` fidelity | `REPRODUCES=yes`, `diverge=0`, both arms |
+| elm-tests | pre-existing failure set only |
+| E2E at defaults | 1,691/1,691 |
+| **E2E with BOTH flags on** | **1,691/1,691** (596 sources touched — the harness cache is env-blind) |
+| fast dispatch | 21.200 % both arms, −7 events of 571 M |
+
+One prediction in §0.3 MISSED and is corrected here: `var` was predicted to
+fall and instead was flat-to-slightly-up (+88, +0.2 %). Root identity moves ⊤
+into named sets; it does not manufacture information the checker never had.
+The `kN`/⊤ movement carried the whole gain.
+
+### §3.1 Unit pins (write in P1/P2, run with every battery)
+
+1. **Store-level (the mechanism guarantee; `ArrowIdentityTest` precedent —
+   drive `Store.loadTypeC` with `testLoadCtxRoots`):** two `Can.TLambda`s with
+   DISTINCT occurrence ids whose `arrowRootOf` maps both to one negative key
+   → `arrowKeyRoots=True` yields ONE slot Point (pointKey equality),
+   `False` yields two; a pair with NO table entry yields two under both; the
+   hit still pushes `arrowSlots` (ordinal count 2) and leaves `slotsMinted`
+   at 1 for the shared case — the `Store.elm:306-326` contract, pinned.
+2. **AssignMVarIds-level:** a module whose annotation and body arrows the
+   solver unified produces `arrowRootOf` entries mapping two distinct occIds
+   to ONE negative key; `nextArrow` after the pass equals the pre-change
+   value for the same module (numbering stability, unit-level — the corpus
+   gate is P1's byte-identity).
+3. **Pipeline-level (goal-shaped):** flag-on, a fixture def's signature
+   carries a body member at an annotation ordinal that flag-off reads
+   `allflex`. **WRITTEN, and the instrument had to be corrected twice —
+   record both, they generalise.**
+
+   *First instrument, WRONG:* assert at a consumer's parameter annotation
+   (the `LssPapMembersTest` reading). It does not discriminate — the
+   call-argument transport already carries a member to a consumer's parameter
+   within one module, so BOTH arms name one and the signature change is
+   invisible. Measured: `[LTop, LSet 1 1]` off and on for the
+   returned-lambda fixture, `[LTop, LSet 2 1 2]` for the branch fixture.
+
+   *Second instrument, and the right one:* assert on `sigfacts` itself, via
+   `runSolverMonoWithReport` (which forces `report = True`) and the `ARGF`
+   block in the returned census string. Count rows that NAME a member
+   (`m=` non-zero); flag-on must exceed flag-off. This is the unit-scale form
+   of gate 1 on the same counter, so a unit regression and a corpus
+   regression read identically — and it asserts where the claim lives (the
+   SIGNATURE), rather than somewhere the claim happens to be visible.
+
+   The lesson: **pick the instrument the claim is stated in.** The claim was
+   always about signatures; reading a consumer's annotation was reading a
+   downstream consequence that another mechanism also produces.
+
+   *Then the FIXTURE had to be corrected too — and this pin is NOT LANDED.*
+   Three instruments were built and all three measured NEGATIVE:
+
+   | attempt | reading | what it establishes |
+   |---|---|---|
+   | consumer's parameter annotation | `[LTop, LSet 1 1]` off AND on | wrong instrument: call-argument transport already names a member there |
+   | `sigfacts`, producer RETURNS a lambda | `Test.mkStep\|0\|m=1,l` off AND on | a def whose body IS a lambda already names itself at ordinal 0 |
+   | `sigfacts`, producer IS the value (`applyTo double 3`) | ZERO rows off AND on | at fixture scale every signature is TRIVIAL and `censusSigFacts` skips those |
+
+   Together they BOUND where the effect lives: it needs a def whose signature
+   is non-trivial AND whose identity arrives from outside its own item — a
+   cross-item property a synthetic single-module fixture does not reproduce.
+   That is what §3.1 predicted ("resist minimization from first principles"),
+   so the sanctioned fallback stands: **the CORPUS `sigfacts` gate is the
+   transport gate**, 751 → 1,825 rows over 857 newly-carrying defs.
+
+   `LssSigRootIdentityTest` therefore lands with SEVEN passing pins — five at
+   the store, one at the side table, one co-gate — and a comment block carrying
+   the three negative results so the next person does not re-derive them. The
+   negatives are not failures to hide; they are the measured boundary of the
+   mechanism.
+4. **The co-gate pin:** the `LssPapMembersTest` `joinModule` shape run with
+   `sigRootIdentity = True, papMembers = True` still yields no singleton at
+   the consumer (the §2.3 co-requirement, pinned where the crash lived).
 
 ---
 
@@ -635,8 +1070,15 @@ Do not respond by reverting the transport.
 
    Per-readback ledger, same arms, kept for cross-arm continuity with older
    entries (NOT the gate): defaults 36.71 % / `+refIdentity` 40.28 % /
-   `+refId +arrowSolverRoots` 41.37 % (roots arm has no position figure — its
-   artifact miscompiles, §0.5).
+   `+refId +arrowSolverRoots` 41.37 %.
+
+   **UPDATED 2026-08-26/27:** `refIdentity` has since FLIPPED default-on, and
+   `+papMembers` measures **27.90 %** at positions (`+4.2 pp` over the new
+   defaults — `plans/lss-injection-completeness.md` P1). So THIS plan's gate-0
+   comparison runs against the `papMembers`-on arm (its §2.3 co-requirement
+   anyway): the flag-on leg must beat **27.90 %**. The roots artifact now RUNS
+   (§3 P0 exit criterion met), so position figures for root-shared arms are
+   measurable again.
 
    **NAME COLLISION — resolve it in every future entry.** "Coverage" already
    meant *fast-dispatch coverage* (`fast / (sat + fast)`) in
@@ -677,6 +1119,11 @@ Do not respond by reverting the transport.
    byte-identity) at the same time — `residual`/`quantified` derivation now
    sees coarser rep classes and the reordering-neutrality argument must be
    re-measured, not carried over.
+9. **Every flag-on arm carries `ECO_MONO_LSS_PAP_MEMBERS=1`, and the flip is
+   ordered after `papMembers`'s** (§2.3 consequence 1). A `sigRootIdentity`-on
+   / `papMembers`-off arm is the measured recipe for the identity-map
+   miscompile through the signature channel; it may be run ONLY as a
+   deliberate negative probe, never as a battery arm.
 
 ---
 
