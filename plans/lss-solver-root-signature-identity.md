@@ -1,7 +1,23 @@
 # LSS: solver-root signature identity, with per-use instantiation
 
-**Status: BLOCKED (2026-08-26) on §0.6 — `arrowSolverRoots` produces a
-MISCOMPILED compiler at HEAD.** The arm lowers cleanly (`Exit status: 0`, zero
+**Status: UNBLOCKED (2026-08-26 late) — the P0 exit criterion is MET.** The
+`+arrowSolverRoots +papMembers` arm emits, lowers (0 undefined fast
+evaluators) and **RUNS** — 29/29 dependencies, `Compiling (162)`, stopped only
+by the deliberate timeout. Two rounds were needed
+(`plans/lss-injection-completeness.md` carries both post-mortems): (1) PAP
+injection with the corrected `p|<global>|<supplied>` identity — the drafted
+`g|`-reuse itself miscompiled via a stampable-class devirt; (2) the
+`declaredArityGo` kernel-alias arm — `(::)`'s `Define (VarKernel …)` node
+floored at arity 1, so `(::) x` classified saturated and the injection never
+fired on the motivating shape (the SECOND missing-arm defect in that walk).
+The false singleton now reads `{g|identity, p|List.cons|1}` and the
+identity-map devirt cannot form. **P1–P4 of §3 are open**, gated on this plan's
+own batteries; note `lss.papMembers` is still DEFAULT-OFF, so root-sharing
+work must carry it (or its flip) explicitly.
+
+Prior statuses, for the record: STILL BLOCKED after R1's first round (the
+kernel-alias arity gap); before that BLOCKED on §0.6 — `arrowSolverRoots`
+produces a MISCOMPILED compiler at HEAD. The arm lowers cleanly (`Exit status: 0`, zero
 `undefined fast evaluator`) and the resulting binary then crashes 0.92 s into
 any `make`, reproducibly, 3/3. Diagnose that before building anything here;
 §2 reuses the same root identity and may inherit the defect. Design and evidence

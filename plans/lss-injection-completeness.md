@@ -416,6 +416,53 @@ evaluators) and **the lowered binary RUNS** — 29/29 dependencies, reached
 on 1,691 programs — this is what stands in for the byte-identity rail the
 corpus change made unsatisfiable).
 
+#### P2 FIRST RUN FAILED (2026-08-26) — root cause: `declaredArityGo` floors KERNEL-ALIAS globals at 1, so `(::) x` was never classified partial
+
+The `+arrowSolverRoots +papMembers` arm still crashed identically (25/29,
+`badInside`), and the artifact still carried the identity-map defect — three
+`Utils_Task_Extra_apply → Task_map` instantiations with capture-less
+`\a -> succeed a` wrappers. Root cause: `(::)`'s node is
+`Define (TOpt.VarKernel …)` (the E9.2 kernel-alias shape), which
+`declaredArityGo` had NO arm for — the wildcard floored it at 1, so
+`(::) x` read declared=1 = supplied ⇒ "saturated" ⇒ `needsPapSlow` never
+routed it and `injectPapMember` never fired ON THE EXACT SHAPE THAT MOTIVATED
+THE PLAN. This is the SECOND missing-arm defect in the same walk
+(TrackedFunction, 2026-08-23, was the first).
+
+**And the totality census inherited the blindness**: `inj|papKnown` uses the
+same `declaredArityOf`, so kernel-alias partials were excluded from BOTH the
+counter and the injector — `papInject|pap == papKnown` held exactly while
+both undercounted. A totality instrument that shares a classifier with the
+mechanism it audits can only prove self-consistency, not totality.
+
+Fix: `declaredArityGo` arms for `Define/TrackedDefine (VarKernel …)` returning
+`canTypeArrowSpine kernelMeta.tipe` — a kernel's declared arity IS its type's
+arrow spine (kernels are uncurried at their C++ ABI arity, so the spine count
+is exact for them; general non-Function defs keep the sound floor, since a
+returned lambda would overcount there).
+
+#### P2 PASSES with the arity fix (2026-08-26) — the miscompile class is DEAD at its origin
+
+With the kernel-alias arm in place: `papKnown` d1 grows 3,020 → 3,081 (the
+`(::) x` class ENTERS the classification, +77 sites total) and
+`papInject|pap = 3,681` matches the new population exactly. The
+`+arrowSolverRoots +papMembers` arm then: **emits clean, lowers clean
+(0 undefined fast evaluators), and RUNS — `Verifying dependencies (29/29)` →
+`Compiling (162)`, stopped only by the deliberate 200 s timeout.** The crash
+that died at 25/29 in 0.92 s across three reproductions and two binaries runs
+past its crash point with roots ON. The false singleton that compiled
+`Task.map f` into the identity map cannot form: the one-sided join now reads
+`{g|identity, p|List.cons|1}`.
+
+This is the exit criterion `plans/lss-solver-root-signature-identity.md` §3 P0
+names — R1-as-totality delivered it, with no widening guard involved.
+
+**Diagnostic trap (2nd occurrence of a false artifact reading):** the first
+artifact query for capture-less `Task_map` wrappers reported 0/424 because the
+regex demanded `num_captured` BEFORE `function` — MLIR prints attributes
+alphabetically, `function` first. Never encode attribute order in an artifact
+grep; match per-attribute.
+
 **TRAP hit while running this battery, worth the line: `--target full` DELETES
 `bin/eco-compiler`.** Any gate sequence that runs E2E before a census or probe
 leg must rebuild in between, or those legs die with exit 127 and look like

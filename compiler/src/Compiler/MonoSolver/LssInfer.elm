@@ -2245,8 +2245,47 @@ declaredArityGo sought g fuel s =
             Just (TOpt.Cycle _ valueDefs funcDefs _) ->
                 cycleDefArity sought valueDefs funcDefs
 
+            -- KERNEL-ALIAS defines (`(::)` → VarGlobal List.cons, node =
+            -- Define (VarKernel …)) fell through the wildcard and floored at
+            -- 1 — the SECOND missing-arm defect in this walk (TrackedFunction
+            -- was the first, 2026-08-23). Consequence: `(::) x` read
+            -- declared=1 = supplied → "saturated" → the papMembers injection
+            -- never fired on the exact shape that motivated it, and the
+            -- injection-totality census inherited the same blindness (it
+            -- shares this walk), so `papInject == papKnown` held while both
+            -- excluded every kernel-alias partial. A kernel's declared arity
+            -- IS its type's arrow spine — kernels are uncurried at their
+            -- declared C++ ABI arity, so the spine count is exact for them
+            -- (unlike general defs, where a returned lambda would overcount;
+            -- those keep the sound floor).
+            Just (TOpt.Define (TOpt.VarKernel _ _ _ _ kernelMeta) _ _) ->
+                canTypeArrowSpine kernelMeta.tipe
+
+            Just (TOpt.TrackedDefine _ (TOpt.VarKernel _ _ _ _ kernelMeta) _ _) ->
+                canTypeArrowSpine kernelMeta.tipe
+
             _ ->
                 1
+
+
+{-| The length of a canonical type's outer arrow spine (aliases followed).
+`a -> b -> c` = 2. Used for kernel-alias arity, where the spine IS the
+declared arity.
+-}
+canTypeArrowSpine : Can.Type TypeIds.MVarId -> Int
+canTypeArrowSpine t =
+    case t of
+        Can.TLambda _ _ to ->
+            1 + canTypeArrowSpine to
+
+        Can.TAlias _ _ _ (Can.Filled real) ->
+            canTypeArrowSpine real
+
+        Can.TAlias _ _ _ (Can.Holey real) ->
+            canTypeArrowSpine real
+
+        _ ->
+            0
 
 
 {-| Dig a cycle unit's def list for the sought member's declared param
