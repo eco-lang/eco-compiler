@@ -443,7 +443,34 @@ run sigFlow srcModule =
         -- demands in the registry in the first place. layoutQualMembers
         -- PINNED OFF: these fixtures pin LSS_020/023 mechanisms in
         -- isolation from LSS_024's id sharing (default-on since 2026-08-21).
-        { defaults | enabled = True, keyed = True, sigFlow = sigFlow, layoutQualMembers = False }
+        --
+        -- `papMembers` / `sigRootIdentity` PINNED OFF for the same reason,
+        -- and it is load-bearing here rather than tidy-minded. Every test
+        -- driven through this harness is DIFFERENTIAL — it compares
+        -- `sigFlow` on against off — and `sigRootIdentity` opens a SECOND
+        -- channel to the same place: it ties a def's annotation arrows to
+        -- its body's, so signatures conduct members whether or not `sigFlow`
+        -- is on. Inheriting it (default-on since 2026-08-27) put that
+        -- channel in BOTH arms, which collapsed the differentials: test 1b's
+        -- "the channel is empty" absence stopped holding, test 2's 2-member
+        -- set appeared flag-OFF too, and test 3's negative control stopped
+        -- being identical because root identity makes signatures non-trivial
+        -- (self-compile: 9,243 trivial -> 8,386) and that control's premise
+        -- is a trivial signature.
+        --
+        -- The general rule, paid for twice now: A DIFFERENTIAL TEST MUST PIN
+        -- EVERY FLAG THAT OVERLAPS THE ONE IT TOGGLES. Tests 6 and 8 below
+        -- are deliberately NOT pinned — they assert absolute counter values
+        -- under a single config rather than a difference, so a second
+        -- channel does not invalidate them.
+        { defaults
+            | enabled = True
+            , keyed = True
+            , sigFlow = sigFlow
+            , layoutQualMembers = False
+            , papMembers = False
+            , sigRootIdentity = False
+        }
         srcModule
 
 

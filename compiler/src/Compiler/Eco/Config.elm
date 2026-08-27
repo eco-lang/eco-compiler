@@ -438,7 +438,12 @@ type alias LssConfig =
     -- needed. Injecting here restores that property.
     --
     -- Artifact-affecting (members → annotations → keyed spec keys → fan-out).
-    -- DEFAULT-OFF. Hash token `lssPM=1`; env `ECO_MONO_LSS_PAP_MEMBERS`.
+    -- DEFAULT-ON since 2026-08-27: +4.20 pp analysis coverage, all gates green
+    -- (E2E 1,691/1,691, `Q` REPRODUCES, elm-tests at the pre-existing set).
+    -- Flipped TOGETHER WITH `sigRootIdentity`, and it must never be the one
+    -- turned off while that stays on — see the REQUIRES note there; the pair
+    -- is a soundness constraint, not a preference. Escape hatch
+    -- `ECO_MONO_LSS_PAP_MEMBERS=0`; hash token `lssPM=0` now rides the OFF arm.
     , papMembers : Bool
 
     -- SOLVER-ROOT SIGNATURE IDENTITY
@@ -467,11 +472,13 @@ type alias LssConfig =
     -- REQUIRES `papMembers`: root-shared classes export through signatures,
     -- so an injection-INCOMPLETE class publishes a false singleton to every
     -- caller. That combination is the recorded identity-map miscompile; it
-    -- may be run only as a deliberate negative probe, and this flag must not
-    -- go default-on before `papMembers` does.
+    -- may be run only as a deliberate negative probe. Both went default-on
+    -- together, and disabling `papMembers` while leaving this ON re-creates
+    -- exactly that miscompile — so if you turn one off, turn off both.
     --
-    -- Artifact-affecting. DEFAULT-OFF. Hash token `lssSR=1`; env
-    -- `ECO_MONO_LSS_SIG_ROOT_ID`.
+    -- Artifact-affecting. DEFAULT-ON since 2026-08-27. Escape hatch
+    -- `ECO_MONO_LSS_SIG_ROOT_ID=0`; hash token `lssSR=0` now rides the OFF
+    -- arm; env `ECO_MONO_LSS_SIG_ROOT_ID`.
     , sigRootIdentity : Bool
     }
 
@@ -514,8 +521,8 @@ defaultLss =
     , qSolve = False
     , refIdentity = True
     , qCensus = False
-    , papMembers = False
-    , sigRootIdentity = False
+    , papMembers = True
+    , sigRootIdentity = True
     }
 
 

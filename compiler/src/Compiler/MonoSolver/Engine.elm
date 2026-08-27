@@ -1760,7 +1760,18 @@ withScratchStore step s0 =
             -- memoisation is scoped to EXACTLY this window — signature
             -- inference — so the specialization phase keeps per-occurrence
             -- identity and per-call-site instantiation.
-            { s0 | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty, itemAux = clearedAux s0.itemAux, scratchRootKeys = s0.env.lss.sigRootIdentity }
+            --
+            -- The `papMembers` conjunct ENFORCES the co-requirement rather than
+            -- documenting it. Root sharing merges producer sets that occurrence
+            -- identity kept apart, so a class is trustworthy only if every
+            -- producer flowing into it injected a member; without PAP injection
+            -- a one-sided join publishes a false singleton, devirt believes it,
+            -- and `Task.map f` compiles to the identity map. Both flags went
+            -- default-on together, but `ECO_MONO_LSS_PAP_MEMBERS=0` alone would
+            -- otherwise reach that miscompile through a single env var — so the
+            -- unsound pairing is made unreachable here, at the one place the
+            -- flag is read, instead of at each config path that can produce it.
+            { s0 | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty, itemAux = clearedAux s0.itemAux, scratchRootKeys = s0.env.lss.sigRootIdentity && s0.env.lss.papMembers }
     in
     case step sFresh of
         Err e ->

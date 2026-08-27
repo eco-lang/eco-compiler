@@ -1823,8 +1823,10 @@ applyLssQCensusOverride maybeVal cfg =
 {-| `ECO_MONO_LSS_PAP_MEMBERS=1|true|yes / 0|false|no`
 (plans/lss-injection-completeness.md): inject the callee's member on the
 RESIDUAL arrows of a partial application of a known global — the one producer
-form that injects nothing today (P0 census: 3,624 self-compile positions).
-DEFAULT-OFF. Hash token `lssPM=`.
+form that injected nothing before it (P0 census: 3,624 self-compile positions).
+DEFAULT-ON since 2026-08-27, flipped together with `sigRootIdentity`; setting
+this to 0 while `ECO_MONO_LSS_SIG_ROOT_ID` stays on re-creates the recorded
+identity-map miscompile, so turn off BOTH or neither. Hash token `lssPM=`.
 -}
 applyLssPapMembersOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssPapMembersOverride maybeVal cfg =
@@ -1850,7 +1852,7 @@ instead of by syntactic occurrence — tying a def's annotation arrows to its
 body's, so its signature carries the facts its body proves. REQUIRES
 `papMembers` (root-shared classes export through signatures; an
 injection-incomplete class publishes a false singleton to every caller).
-DEFAULT-OFF. Hash token `lssSR=`.
+DEFAULT-ON since 2026-08-27. Hash token `lssSR=`.
 -}
 applyLssSigRootIdentityOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssSigRootIdentityOverride maybeVal cfg =

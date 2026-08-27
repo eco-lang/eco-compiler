@@ -182,7 +182,19 @@ lssConfig papMembers =
         defaults =
             Config.defaultLss
     in
-    { defaults | enabled = True, keyed = True, papMembers = papMembers }
+    -- `sigRootIdentity` moves WITH `papMembers`, never independently. Both went
+    -- default-on together on 2026-08-27, and inheriting the default here would
+    -- leave the flag-off arm running root identity WITHOUT injection
+    -- completeness — which is not merely an odd configuration, it is precisely
+    -- the pairing that published the false singleton and compiled `Task.map`
+    -- into the identity map. The isolation this test needs is of `papMembers`,
+    -- so the co-flag has to follow it.
+    { defaults
+        | enabled = True
+        , keyed = True
+        , papMembers = papMembers
+        , sigRootIdentity = papMembers
+    }
 
 
 

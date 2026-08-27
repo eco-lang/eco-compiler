@@ -931,23 +931,87 @@ ordering constraint: **not before `papMembers`** (§2.3).
 is member INSTANCE availability (LSS_017/LSS_024 territory), not less
 transport. Do not respond by reverting the transport.
 
-### §3.2 THE FLIP DECISION — measured 2026-08-27, RECOMMENDED, NOT TAKEN
+### §3.2a GATE DESIGN TRAP — byte-identity is UNSATISFIABLE for a default flip
 
-Every gate is green (§4 scorecard below), so the decision is settled by
-numbers rather than judgement. **Recommendation: flip both, in this order —
-`lss.papMembers` first, then `lss.sigRootIdentity`.** The ordering is not
-stylistic: §2.3 makes injection completeness a SOUNDNESS pre-condition of root
-sharing, and the recorded miscompile is what happens if the order is reversed.
+The first flip gate written here was "compiling at the new defaults must
+reproduce the measured flag-on `.mlir` byte-for-byte". It reported DIFFER (79
+bytes larger, 11,089 diff lines), and **the gate was wrong, not the flip.**
+
+The workload is the compiler compiling ITSELF. Flipping a default edits
+`defaultLss` in the compiler's own source, so the two `Bool` literals appear in
+the emitted artifact — the first textual difference is literally
+`"arith.constant"() {value = false}` becoming `{value = true}` twice. The
+`Engine.elm` co-requirement guard shows up too: `&& s0.env.lss.papMembers`
+makes `withScratchStore` project one more field from the config record, which
+changes its codegen and renumbers everything downstream.
+
+**A source change to the compiler cannot be gated on byte-identity of a
+self-compile.** The right equivalence for a default flip is the ANALYSIS, and
+it held exactly: `coverage: positions=133652 k1=32600 kN=5794 var=37104
+top=58154 coveredBp=2872`, `sigfacts` 1,825, `signatures: 9955 memoized (8386
+trivial)` — every field identical to the flag-on P2 leg. The exactness is
+meaningful rather than lucky, because two `Bool` literals and one `&&`
+introduce no arrow positions, so the 133,652-position population is genuinely
+unchanged.
+
+### §3.2 THE FLIP DECISION — measured 2026-08-27, TAKEN 2026-08-27
+
+**FLIPPED 2026-08-27, both together, at the user's direction.** `defaultLss`
+now carries `papMembers = True, sigRootIdentity = True`.
+
+Three changes rode with the flip, and the last two are the ones a reviewer
+should look at hardest:
+
+1. Doc comments on both flags and both env overrides now record DEFAULT-ON and
+   that the hash tokens `lssPM=0` / `lssSR=0` ride the OFF arm (the
+   `arrowIdentity` / `refIdentity` precedent).
+2. **The co-requirement is now ENFORCED, not documented.**
+   `Engine.withScratchStore` sets `scratchRootKeys = sigRootIdentity &&
+   papMembers`. Before the flip the unsound pairing needed two deliberate env
+   vars; after it, `ECO_MONO_LSS_PAP_MEMBERS=0` ALONE would have reached it —
+   one env var away from the recorded identity-map miscompile. The guard sits
+   at the single place the flag is read, so it covers every config path (env,
+   JSON, future call sites) rather than each path that can produce the pairing.
+3. **Two test suites had to be repaired by the flip, for two DIFFERENT
+   reasons.** This is the part that generalises, and it cost a full
+   elm-tests cycle to learn the second half.
+
+   *`LssPapMembersTest` — a SOUNDNESS pairing.* It set `papMembers` explicitly
+   and INHERITED `sigRootIdentity`, so after the flip its flag-off arm would
+   have run root identity without injection completeness — the test isolating
+   `papMembers` would itself have been running the miscompile configuration.
+   Its `lssConfig` now moves `sigRootIdentity` with `papMembers`.
+
+   *`LssSigFlowTest` — an OVERLAPPING CHANNEL.* Its harness toggles `sigFlow`
+   and inherited both new flags into BOTH arms. `sigRootIdentity` opens a
+   second channel to the same place `sigFlow` does (signatures conducting
+   members), so the differentials collapsed and three tests failed at the new
+   defaults: 1b's "the channel is empty" ABSENCE stopped holding, 2's 2-member
+   set appeared in the flag-OFF arm as well, and 3's negative control stopped
+   being identical because root identity makes signatures non-trivial
+   (9,243 → 8,386) and that control's premise is a trivial signature. Fixed by
+   pinning both flags OFF in the harness — the remedy the file already used
+   for `layoutQualMembers` when LSS_024 went default-on in Aug 2021's flip.
+
+   **The rule, now paid for twice: a DIFFERENTIAL test must pin EVERY flag
+   that overlaps the one it toggles, and a test pinning one flag of a
+   CO-REQUIRED pair must pin both.** Absolute tests (asserting a counter under
+   one config, like this file's tests 6 and 8) do not need pinning and were
+   deliberately left alone. The failure mode is silent in the dangerous
+   direction: a collapsed differential still COMPILES and can still PASS if
+   the assertion happens to be satisfied by the second channel.
+
+The ordering constraint was honoured by flipping them together, which is the
+only ordering that is safe at every intermediate state: §2.3 makes injection
+completeness a SOUNDNESS pre-condition of root sharing, so `sigRootIdentity`
+must never be on while `papMembers` is off — and flipping them in two separate
+commits would leave exactly that window open between them.
 
 Expected effect on shipped defaults: analysis coverage **≈ 23.7 % → ≈ 28.7 %
 (+5.0 pp)** — `papMembers` +4.2 pp, `sigRootIdentity` +0.87 pp on top of it —
 at flat dispatch, flat wall, and a smaller artifact.
 
-It is RECOMMENDED and not taken because flipping changes the shipped
-compiler's default output, and because the `papMembers` half of it belongs to
-`plans/lss-injection-completeness.md`, which deliberately landed that flag
-default-off. Both are one-line edits in `Compiler/Eco/Config.elm`
-(`defaultLss`), and the evidence they need is now complete:
+The evidence supporting the flip, gathered before it was taken:
 
 | evidence | status |
 |---|---|
@@ -959,6 +1023,43 @@ default-off. Both are one-line edits in `Compiler/Eco/Config.elm`
 | E2E at defaults | 1,691/1,691 |
 | **E2E with BOTH flags on** | **1,691/1,691** (596 sources touched — the harness cache is env-blind) |
 | fast dispatch | 21.200 % both arms, −7 events of 571 M |
+
+Re-verified AT the new defaults (§3.2a explains why the equivalence is the
+analysis and not the bytes): `coverage: positions=133652 k1=32600 kN=5794
+var=37104 top=58154 coveredBp=2872`, `sigfacts` 1,825, `signatures: 9955
+memoized (8386 trivial)` — every field identical to the flag-on leg. Gate 5
+clean, gate 5b passes, `Q-infer` `REPRODUCES=yes diverge=0` with
+`classes=98686` (identical to the flag-on leg), E2E 1,691/1,691.
+
+**FULL CLEAN BOOTSTRAP, 2026-08-27.** `build/` deleted and `~/.eco` moved
+aside (SHA-pinned toolchain download cache preserved), reconfigured from
+scratch, whole `eco-compiler-boot → eco-compiler-boot-2 → eco-compiler` chain
+rebuilt in 17m47s to a 70,325,136-byte binary, and a fresh 8.7 MB `~/.eco`
+resolved from nothing. Self-compiled with **no LSS env overrides at all** —
+so the flags come from `defaultLss` alone — and reproduced the expected
+configuration to the field: `coveredBp=2872`, `sigfacts` 1,825, `signatures:
+9955 memoized (8386 trivial)`, ledger `RECONCILES=yes`. elm-tests
+13,367/12 = the pre-existing set exactly; E2E `--target full` 1,691/1,691.
+
+**Build-command trap found doing it.** `cmake --build build` with NO target
+builds only the JS bootstrap (`guida.js`, 280 modules) — it does NOT build the
+native compiler, despite CLAUDE.md calling it "Build all targets". The first
+bootstrap attempt therefore reported `build exit=0` and then died at the
+self-compile with exit 127. **An exit-0 build that produced no binary is a
+green that means nothing**; the script survives it only because it checks for
+the artefact and RUNS it rather than trusting the build's status. Use
+`--target eco-compiler`, which drives the whole boot chain.
+
+The injection-totality census re-run at the new defaults also confirms the gap
+is closed from BOTH sides: `inj|papKnown` = 3,624 and `papInject|pap` = 3,624,
+matching per depth (d1 3,038 / d2 536 / d3 44 / d4 1 / d5 5). Note the depth
+SPLIT moved from the P0 table (d1 was 3,020, d2 552, d3 46) because the
+kernel-alias arity fix pulled `(::) x`-shaped sites into d1 — the identical
+3,624 total is coincidence, not invariance. `callResult|trivial`, the
+"totality unproven" bucket, fell 137 → 31, which is `sigfacts` 751 → 1,825
+seen from the other end. The standing caveat still applies: census and
+mechanism share `declaredArityOf`, so this agreement proves totality GIVEN the
+classifier — what changed is that the classifier is now correct.
 
 One prediction in §0.3 MISSED and is corrected here: `var` was predicted to
 fall and instead was flat-to-slightly-up (+88, +0.2 %). Root identity moves ⊤
