@@ -194,6 +194,13 @@ lssConfig papMembers =
         , keyed = True
         , papMembers = papMembers
         , sigRootIdentity = papMembers
+
+        -- regIdentity PINNED OFF (differential-overlap rule): the
+        -- registration stamp puts sets — including honest SINGLETONS like
+        -- {g|useIt} — at spec heads, and this file's `allAnnos` readers scan
+        -- heads too, so test 1's no-singleton assertion would trip on an
+        -- honest self-identity rather than the false-completeness it pins.
+        , regIdentity = False
     }
 
 

@@ -208,6 +208,16 @@ applyEnvOverrides cfg =
                     |> Task.map (\srVal -> applyLssSigRootIdentityOverride srVal cfg4ee)
             )
         |> Task.andThen
+            (\cfg4ef ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_ARROW_CENSUS" |> Task.mapError never)
+                    |> Task.map (\acVal -> applyLssArrowCensusOverride acVal cfg4ef)
+            )
+        |> Task.andThen
+            (\cfg4eg ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_REG_IDENTITY" |> Task.mapError never)
+                    |> Task.map (\rgVal -> applyLssRegIdentityOverride rgVal cfg4eg)
+            )
+        |> Task.andThen
             (\cfg4f ->
                 (Utils.envLookupEnv "ECO_SPEC_TYPE_NODE_LIMIT" |> Task.mapError never)
                     |> Task.map (\tnVal -> applySpecTypeNodeLimitOverride tnVal cfg4f)
@@ -1863,6 +1873,58 @@ applyLssSigRootIdentityOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | sigRootIdentity = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_ARROW_CENSUS=1|true|yes / 0|false|no`
+(plans/lss-provenance-ratio-census.md §7): mark every arrow peeled by an
+argument, so `var`/`set` arrows split into applied and never-applied. Costs a
+union-find `repr` and two counter bumps PER APPLICATION, which is why it is not
+under `report` — the benchmark protocol mandates `report`, and `qCensus` was
+split out for exactly this reason. REQUIRES `report` as well: the `ArrowId`
+comes from `arrowOfSlot`, which only exists under `report`. DEFAULT-OFF. Hash
+token `lssAC=`.
+-}
+applyLssArrowCensusOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssArrowCensusOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | arrowCensus = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | arrowCensus = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_REG_IDENTITY=1|true|yes / 0|false|no`
+(plans/lss-registration-self-identity.md): stamp tautological self/PAP members
+onto the leading spine of every solver demand at spec registration. The member
+ids are the same ones the reference paths mint, the depth is bounded by
+declared arity (LSS_013), and the stamp rides EVERY demand because the LSS_010
+join collapses LSet-vs-LVar to ⊤ (AR-11). Artifact-affecting. DEFAULT-ON
+since 2026-08-28 (+51.66 pp analysis coverage, dispatch exactly neutral).
+Hash token `lssRG=`.
+-}
+applyLssRegIdentityOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssRegIdentityOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | regIdentity = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | regIdentity = False }) cfg
 
             else
                 cfg

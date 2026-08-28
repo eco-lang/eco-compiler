@@ -18,7 +18,7 @@ module Compiler.MonoSolver.Engine exposing
     , GroundingStats, internMemberKey, groundStandaloneMemberIdFor, groundSetMembers, recordSpecWidenedKey, layoutQualKey
     , LssMemberTable, MemberSource(..), emptyMemberTable
     , bumpWidenedByKernel, bumpWidenedBySigSize, bumpWidenedByCf, bumpKernelFactHit, bumpKernelLicensed, bumpEdgeInstalled, bumpFlowDegraded, bumpCompletionJoin, bumpCompletionJoinNoop, withScratchStore
-    , bumpTopMixedFlexSig, bumpArgFlowCensus
+    , bumpTopMixedFlexSig, bumpArgFlowCensus, bumpAppliedArrow
     , memoizedSignatureTrivial, memberClassOf, membersClass
     , SigFlowStats
     , markDirty
@@ -243,6 +243,15 @@ type alias SigFlowStats =
     -- def specialized twice reads the same syntactic arrow twice, and the
     -- ARROW is the position we are counting.
     , multiSetsByArrow : CoreDict.Dict Int (List Int)
+
+    -- LIVENESS census (plans/lss-provenance-ratio-census.md §7): ArrowId ->
+    -- times this arrow was PEELED BY AN ARGUMENT at a call site. Not a proxy
+    -- for application — peeling an arrow into (param, rest) IS application.
+    -- Global and surviving `resetItem` for `multiSetsByArrow`'s reason, and
+    -- keyed the same way (via `itemAux.arrowOfSlot`) so the var/set/applied
+    -- keyspaces intersect exactly. Report-gated: `arrowOfSlot` is only
+    -- populated under `lss.report`, so this reads empty with the flag off.
+    , appliedArrows : CoreDict.Dict Int Int
 
     -- LSS_026 call-argument set transport (plans/lss-gap2-callarg-transport.md
     -- §3.1 W0.4). These live HERE, not on `LssStats`, because `LssStats` sits
@@ -484,7 +493,7 @@ insertMemberProvisional mid g t =
 
 emptyLssStats : LssStats
 emptyLssStats =
-    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0, edgesInstalled = 0, flowDegraded = 0, multiSetsByArrow = CoreDict.empty, topMixedFlexSig = 0, topMixedFlexDemand = 0, argFlowCensus = CoreDict.empty, settled = emptySettledStats, qShadow = emptyQShadowStats, qInfer = emptyQShadowStats }, layoutQual = { mints = 0, shared = 0, fallback = 0, tieBypass = 0 } }
+    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0, edgesInstalled = 0, flowDegraded = 0, multiSetsByArrow = CoreDict.empty, appliedArrows = CoreDict.empty, topMixedFlexSig = 0, topMixedFlexDemand = 0, argFlowCensus = CoreDict.empty, settled = emptySettledStats, qShadow = emptyQShadowStats, qInfer = emptyQShadowStats }, layoutQual = { mints = 0, shared = 0, fallback = 0, tieBypass = 0 } }
 
 
 {-| The all-defaults signature for an annotation with `n` arrows.
@@ -965,6 +974,32 @@ bumpArgFlowCensus key s =
         s
 
 
+{-| Liveness census (plans/lss-provenance-ratio-census.md §7): record that the
+arrow with this `ArrowId` was PEELED BY AN ARGUMENT — i.e. applied.
+
+Report-gated for the same reason as `bumpArgFlowCensus`, and additionally inert
+without it: the caller resolves the `ArrowId` through `itemAux.arrowOfSlot`,
+which is only populated under `lss.report`.
+-}
+bumpAppliedArrow : Int -> S -> S
+bumpAppliedArrow aid s =
+    if s.env.lss.report then
+        let
+            stats =
+                s.lssStats
+
+            sig =
+                stats.sigStats
+
+            n =
+                Maybe.withDefault 0 (CoreDict.get aid sig.appliedArrows)
+        in
+        { s | lssStats = { stats | sigStats = { sig | appliedArrows = CoreDict.insert aid (n + 1) sig.appliedArrows } } }
+
+    else
+        s
+
+
 {-| LSS_026 Phase-0 census: is this global's signature ALREADY memoized, and
 is it trivial? A pure READ — the census must never FORCE a signature, because
 signature computation allocates from the shared member-id supply and
@@ -1066,6 +1101,27 @@ type alias Env =
     , lssKeyedSet : CoreDict.Dict String () -- E5: comparable gkeys of lss.keyedGlobals (parsed once at initState)
     , lamLabels : CoreDict.Dict Int String -- member id -> "defKey#id" (census rendering only)
     , arrowRootOf : CoreDict.Dict Int Int -- `lss.sigRootIdentity`: `Id.toComparable occArrowId` -> NEGATIVE solver-root key (AssignMVarIds side table). Read ONLY by `Store.loadTypeC`'s memo key, and only inside the inference scratch store — see plans/lss-solver-root-signature-identity.md §2.2.
+
+    -- PROVENANCE CENSUS (plans/lss-provenance-ratio-census.md): the two
+    -- denominators `arrowRootOf` cannot supply about itself. `arrowTotal` is
+    -- every arrow occurrence AssignMVarIds stamped; `arrowRootClasses` is the
+    -- number of distinct solver-root classes those arrows fell into. With
+    -- `Dict.size arrowRootOf` they give the layer-1 fidelity ratio — how much
+    -- of the paper's `ζ = 𝓔(ξ)` survived into LSS — which is the one layer the
+    -- shadow `Q` verifier is STRUCTURALLY blind to, since `Q` re-solves the
+    -- constraints we emitted and a constraint never emitted is not in its
+    -- input. Census rendering ONLY; nothing reads these during solving.
+    , arrowTotal : Int
+    , arrowRootClasses : Int
+
+    -- Stamping-walk census (§8): how the lost provenance is DISTRIBUTED.
+    -- `partial` types prove mid-walk abandonment; `none` types are never-walked
+    -- or root-failed and no repair to the walk reaches them.
+    , stampTypesAll : Int
+    , stampTypesNone : Int
+    , stampTypesPartial : Int
+    , stampArrowsInNone : Int
+    , stampArrowsUnstampedInPartial : Int
     , limits : Config.SpecLimits -- MONO_030 spec watchdogs (0 = a check disabled); failure-only, hash-excluded
     }
 

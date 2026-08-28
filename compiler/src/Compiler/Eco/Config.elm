@@ -480,6 +480,52 @@ type alias LssConfig =
     -- `ECO_MONO_LSS_SIG_ROOT_ID=0`; hash token `lssSR=0` now rides the OFF
     -- arm; env `ECO_MONO_LSS_SIG_ROOT_ID`.
     , sigRootIdentity : Bool
+
+    -- ARROW LIVENESS CENSUS (plans/lss-provenance-ratio-census.md §7): mark
+    -- every arrow PEELED BY AN ARGUMENT, so `var`/`set` arrows can be split
+    -- into applied and never-applied.
+    --
+    -- SPLIT FROM `report` for `qCensus`'s reason, which this repository has
+    -- already paid for once: the benchmark protocol MANDATES
+    -- `ECO_MONO_LSS_REPORT=1`, so anything left under `report` is billed to
+    -- every timed run. This one costs a union-find `repr`, two dict lookups
+    -- and two counter bumps PER APPLICATION — 512,757 applications on one
+    -- self-compile.
+    --
+    -- REQUIRES `report`: the `ArrowId` comes from `itemAux.arrowOfSlot`, which
+    -- `Store` populates only under `report`. With `report` off this census can
+    -- name nothing, so both must be set. The `liveness:` line prints ONLY when
+    -- this flag is on — all-zero counters under `report` alone would read as a
+    -- census that ran and found nothing, which is exactly the misreading the
+    -- `qCensus` split exists to prevent.
+    --
+    -- Read-only: no artifact effect. DEFAULT-OFF. Hash token `lssAC=1`; env
+    -- `ECO_MONO_LSS_ARROW_CENSUS`.
+    , arrowCensus : Bool
+
+    -- REGISTRATION SELF-IDENTITY (plans/lss-registration-self-identity.md):
+    -- stamp the tautological self/PAP members onto the leading spine of every
+    -- solver demand at spec registration. The value at spec-g's spine
+    -- position d IS g's spec applied to d arguments — the global is literally
+    -- in the registry key — yet 93.7 % of all ⊤ positions (54,631 of 58,287,
+    -- census 2026-08-27) were exactly these, because `classify`'s placeholder
+    -- ⊤ rides demands into the registry and the LSS_010 join absorbs
+    -- (⊤ ∪ x = ⊤, and LSet ∪ LVar = ⊤ too — Monomorphized.unionAnno).
+    --
+    -- Member ids are the SAME ones the reference paths mint (kernel-alias
+    -- fold k|, ctor c|, plain/cycle g|, PAP depths p|<g>|<d>), so every join
+    -- with an existing injection is idempotent — the E9.2 one-identity rule.
+    -- Depth is bounded by declaredArity (LSS_013): returned closures are
+    -- never claimed.
+    --
+    -- Artifact-affecting (stored types and keyed spec keys move).
+    -- DEFAULT-ON since 2026-08-28: analysis coverage 28.60 % -> 80.26 %
+    -- (+51.66 pp, the arc's largest completeness win) at EXACTLY neutral
+    -- dispatch (fast% 21.308 both arms, -7 events of 606 M) and flat wall;
+    -- Q-infer byte-identical; E2E 1,706/1,706 both arms. Escape hatch
+    -- `ECO_MONO_LSS_REG_IDENTITY=0`; hash token `lssRG=0` now rides the OFF
+    -- arm.
+    , regIdentity : Bool
     }
 
 
@@ -523,6 +569,8 @@ defaultLss =
     , qCensus = False
     , papMembers = True
     , sigRootIdentity = True
+    , arrowCensus = False
+    , regIdentity = True
     }
 
 
@@ -913,6 +961,8 @@ lssDecoder =
         |> D.apply (D.optionalField "qCensus" D.bool defaultLss.qCensus)
         |> D.apply (D.optionalField "papMembers" D.bool defaultLss.papMembers)
         |> D.apply (D.optionalField "sigRootIdentity" D.bool defaultLss.sigRootIdentity)
+        |> D.apply (D.optionalField "arrowCensus" D.bool defaultLss.arrowCensus)
+        |> D.apply (D.optionalField "regIdentity" D.bool defaultLss.regIdentity)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -1335,6 +1385,37 @@ hash cfg =
                     , if lss.sigRootIdentity /= defaultLss.sigRootIdentity then
                         [ "lssSR="
                             ++ (if lss.sigRootIdentity then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- Liveness census: read-only, but it rides the hash so a
+                    -- census run cannot reuse a non-census cache (`qCensus`'s
+                    -- rule).
+                    , if lss.arrowCensus /= defaultLss.arrowCensus then
+                        [ "lssAC="
+                            ++ (if lss.arrowCensus then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- Registration self-identity: artifact-affecting (stored
+                    -- types and keyed spec keys move).
+                    , if lss.regIdentity /= defaultLss.regIdentity then
+                        [ "lssRG="
+                            ++ (if lss.regIdentity then
                                     "1"
 
                                 else

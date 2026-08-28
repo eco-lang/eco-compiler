@@ -54,8 +54,10 @@ import Compiler.Type.Solve as Type
 import Compiler.Type.SolverRoots as SolverRoots
 import Compiler.TypedCanonical.Build as TCanBuild
 import Dict
+import System.IO
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
+import Utils.Main as Utils
 
 
 
@@ -201,8 +203,19 @@ compileTyped pkg ifaces modul =
                             |> Task.andThen
                                 (\tcResult ->
                                     case tcResult of
-                                        Ok { annotations, typedCanonical, nodeTypes, kernelEnv, nodeVars, annotationVars, allSchemeRoots } ->
-                                            phase modName "nitpick"
+                                        Ok { annotations, typedCanonical, nodeTypes, kernelEnv, nodeVars, annotationVars, allSchemeRoots, stampWalked, stampSkipped, annWalked, annSkipped } ->
+                                            -- Stamping-guard census (§8.3.2),
+                                            -- env-gated so it costs one env
+                                            -- read per module and prints
+                                            -- nothing on a normal build. One
+                                            -- line PER MODULE, summed
+                                            -- externally: the alternative was
+                                            -- plumbing a counter from the
+                                            -- type-check phase to a report
+                                            -- rendered in the mono phase.
+                                            emitStampGuard modName stampWalked stampSkipped annWalked annSkipped
+                                                |> Task.andThen
+                                                    (\_ -> phase modName "nitpick")
                                                 |> Task.map (\_ -> nitpick canonical)
                                                 |> Task.andThen
                                                     (\nitpickResult ->
@@ -304,6 +317,17 @@ typeCheckTyped :
             , kernelEnv : KernelTypes.KernelTypeEnv
             , annotationVars : Dict.Dict Name TypeCheck.Variable
             , allSchemeRoots : SolverRoots.AllSchemeRoots
+
+            -- Stamping-guard census (plans/lss-provenance-ratio-census.md
+            -- §8.3.2): how many node types ENTERED the arrow-root walk versus
+            -- were skipped for want of a solver variable. This is the one
+            -- number that splits the `stampwalk:` census's `none` bucket into
+            -- "the walk failed at the root" (repairable) and "the walk never
+            -- ran" (not repairable by fixing the walk).
+            , stampWalked : Int
+            , stampSkipped : Int
+            , annWalked : Int
+            , annSkipped : Int
             }
 typeCheckTyped modul canonical =
     let
@@ -407,6 +431,33 @@ typeCheckTyped modul canonical =
                         )
                         fixedNodeTypes
 
+                -- Census of THIS guard (§8.3.2). The `( Just t, Just v )` arm
+                -- is the only one that enters the walk; everything else is a
+                -- node the walk never saw, which no repair to
+                -- `stampArrowRoots` can reach. Counted over the same array and
+                -- with the same condition as the stamping above, so the two
+                -- cannot drift.
+                stampGuardCounts =
+                    Array.foldl
+                        (\( maybeType, maybeVar ) ( walked, skipped ) ->
+                            case ( maybeType, maybeVar ) of
+                                ( Just _, Just _ ) ->
+                                    ( walked + 1, skipped )
+
+                                ( Just _, Nothing ) ->
+                                    ( walked, skipped + 1 )
+
+                                _ ->
+                                    ( walked, skipped )
+                        )
+                        ( 0, 0 )
+                        (Array.indexedMap
+                            (\i maybeType ->
+                                ( maybeType, Maybe.withDefault Nothing (Array.get i rootedNodeVars) )
+                            )
+                            fixedNodeTypes
+                        )
+
                 stampedAnnotations =
                     Dict.map
                         (\defName ann ->
@@ -418,6 +469,24 @@ typeCheckTyped modul canonical =
                                     ann
                         )
                         annotations
+
+                -- The SECOND stamping guard (§8.3.2). Censused separately from
+                -- the node-type guard because a skip here has the same
+                -- consequence — a type the walk never entered — and the two
+                -- populations are very different sizes (annotations are
+                -- per-def; node types are per-expression).
+                annGuardCounts =
+                    Dict.foldl
+                        (\defName _ ( walked, skipped ) ->
+                            case Dict.get defName rootedAnnotationVars of
+                                Just _ ->
+                                    ( walked + 1, skipped )
+
+                                Nothing ->
+                                    ( walked, skipped + 1 )
+                        )
+                        ( 0, 0 )
+                        annotations
             in
             Ok
                 { annotations = stampedAnnotations
@@ -427,11 +496,61 @@ typeCheckTyped modul canonical =
                 , nodeVars = rootedNodeVars
                 , annotationVars = rootedAnnotationVars
                 , allSchemeRoots = normalizedSchemeRoots
+                , stampWalked = Tuple.first stampGuardCounts
+                , stampSkipped = Tuple.second stampGuardCounts
+                , annWalked = Tuple.first annGuardCounts
+                , annSkipped = Tuple.second annGuardCounts
                 }
 
 
 
 -- Verifies pattern match exhaustiveness and detects redundant patterns.
+
+
+
+{-| Stamping-guard census (plans/lss-provenance-ratio-census.md §8.3.2).
+
+Splits the `stampwalk:` census's `none` bucket, which conflates two populations
+needing opposite work: a type the walk ENTERED and failed at the root (a walk
+failure, repairable by fixing `stampArrowRoots`) versus one it never entered for
+want of a solver variable (not repairable there at all).
+
+Emitted per module on stderr rather than plumbed to the LSS report, because the
+count arises in the TYPE-CHECK phase and that report renders in the MONO phase;
+threading it would touch `Compile`, `Build` and `Generate` for a diagnostic. Sum
+the lines externally.
+
+`ECO_STAMP_GUARD_CENSUS=1`. Off by default, so a normal build pays one env read
+per module and prints nothing.
+
+-}
+emitStampGuard : Name -> Int -> Int -> Int -> Int -> Task Never ()
+emitStampGuard modName walked skipped annW annS =
+    Utils.envLookupEnv "ECO_STAMP_GUARD_CENSUS"
+        |> Task.andThen
+            (\maybeVal ->
+                case maybeVal of
+                    Just v ->
+                        if v == "1" || v == "true" || v == "yes" then
+                            System.IO.writeLn System.IO.stderr
+                                ("[stampguard] walked="
+                                    ++ String.fromInt walked
+                                    ++ " skipped="
+                                    ++ String.fromInt skipped
+                                    ++ " annWalked="
+                                    ++ String.fromInt annW
+                                    ++ " annSkipped="
+                                    ++ String.fromInt annS
+                                    ++ " module="
+                                    ++ modName
+                                )
+
+                        else
+                            Task.succeed ()
+
+                    Nothing ->
+                        Task.succeed ()
+            )
 
 
 nitpick : Can.Module -> Result E.Error ()

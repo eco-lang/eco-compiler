@@ -10,6 +10,7 @@ module Compiler.MonoSolver.LssInfer exposing
     , declaredArityOf
     , joinArrowSetsPlain
     , flowArrowSetsPlain
+    , noteApplied
     )
 
 {-| Lambda-set signature inference (LSS design §7).
@@ -1753,6 +1754,70 @@ unifyCallShape funcVar args meta s0 =
                             Ok ( callVar, s3 )
 
 
+{-| Liveness census (plans/lss-provenance-ratio-census.md §7): this arrow is
+being peeled into (param, rest) because an argument is being passed to it — so
+it is APPLIED. Not a proxy for application; this IS the application.
+
+The `ArrowId` lookup goes through the union-find CLASS, not the raw Point, for
+`noteMultiSet`'s reason: the slot that survives a unification is often not the
+slot that was minted, and only the loaded side ever carries an ArrowId. Using
+the raw Point would silently miss every arrow that unified with a
+demand-encoded one — the same keyspace discipline the multi-set census uses,
+which is what lets var/set/applied intersect exactly.
+
+Report-gated twice over: `bumpAppliedArrow` checks `lss.report`, and
+`arrowOfSlot` is empty without it anyway.
+
+-}
+noteApplied : IO.Content -> Engine.S -> Engine.S
+noteApplied content s =
+    if not s.env.lss.arrowCensus then
+        -- Gated on its OWN flag, not `report` (§7.7): this runs per
+        -- APPLICATION — 512,757 times on one self-compile — and the benchmark
+        -- protocol mandates `report`, so leaving it there bills every timed
+        -- run. `qCensus` was split out for precisely this reason.
+        s
+
+    else
+        -- POSITIVE CONTROL (§7.6). Every call of this function IS an
+        -- application — we are peeling an arrow precisely because an argument
+        -- is being passed — so `apply|attempt` is a ground-truth denominator
+        -- that assumes NO relationship between resolution and application.
+        -- That is what the first control got wrong: it presumed concrete
+        -- arrows are concrete BECAUSE called, which is false for a function
+        -- held in a record field or returned and never invoked.
+        --
+        -- The split then says exactly where applications are lost:
+        --   noSlot     — the content was not a `FunL` (no set slot to name)
+        --   noArrowId  — a slot, but `arrowOfSlot` cannot name it
+        --   hit        — named, and counted in `appliedArrows`
+        -- A high hit rate means `appliedArrows` is a FAIR sample of the
+        -- applications on hooked paths, and a low set-overlap is then a real
+        -- property rather than an instrument artefact.
+        let
+            sA =
+                Engine.bumpArgFlowCensus "apply|attempt" s
+        in
+        case Store.arrowSetSlot content of
+            Nothing ->
+                Engine.bumpArgFlowCensus "apply|noSlot" sA
+
+            Just pSet ->
+                let
+                    ( store1, reprVar ) =
+                        UF.repr pSet sA.store
+
+                    s1 =
+                        { sA | store = store1 }
+                in
+                case CoreDict.get (Engine.pointKey reprVar) s1.itemAux.arrowOfSlot of
+                    Nothing ->
+                        Engine.bumpArgFlowCensus "apply|noArrowId" s1
+
+                    Just aid ->
+                        Engine.bumpArgFlowCensus "apply|hit" (Engine.bumpAppliedArrow aid s1)
+
+
 unifyParamsBestEffort : IO.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Step IO.Variable
 unifyParamsBestEffort funcVar args s0 =
     case args of
@@ -1769,7 +1834,7 @@ unifyParamsBestEffort funcVar args s0 =
             in
             case Store.arrowParts desc.content of
                 Just ( pParam, pRest ) ->
-                    case Store.loadType (TOpt.typeOf arg) s1 of
+                    case Store.loadType (TOpt.typeOf arg) (noteApplied desc.content s1) of
                         Err e ->
                             Err e
 

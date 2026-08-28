@@ -470,6 +470,13 @@ run sigFlow srcModule =
             , layoutQualMembers = False
             , papMembers = False
             , sigRootIdentity = False
+
+            -- regIdentity (default-on since 2026-08-28) PINNED OFF, fourth
+            -- instance of the differential-overlap rule: the registration
+            -- stamp writes head/spine annos, and this harness's readers scan
+            -- ALL annos of a def's demands — the channel would sit in both
+            -- arms of the sigFlow differential.
+            , regIdentity = False
         }
         srcModule
 

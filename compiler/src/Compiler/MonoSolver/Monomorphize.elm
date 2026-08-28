@@ -79,7 +79,7 @@ monomorphizeWithReport lssConfig limits entryPointName globalTypeEnv globalGraph
             EntryPrep.insertFlagsDecoderNode entryPointName globalGraph
 
         ( TOpt.GlobalGraph nodesWithIds _ annotationsWithIds _ _, mvarState ) =
-            AssignMVarIds.assignIds lssConfig.arrowSolverRoots graphWithFlags
+            AssignMVarIds.assignIds lssConfig.arrowSolverRoots lssConfig.arrowCensus graphWithFlags
     in
     case EntryPrep.findEntryPointId entryPointName nodesWithIds of
         Nothing ->
@@ -103,8 +103,22 @@ monomorphizeWithReport lssConfig limits entryPointName globalTypeEnv globalGraph
                 mainMonoType =
                     Zonk.canTypeToMono Dict.empty mainType
 
+                -- Registration self-identity (AR-7): the seeds bypass
+                -- `enqueueSpec`, so they stamp here or not at all. Main and
+                -- the flags decoder are non-arrow types today, making this a
+                -- structural no-op — but AR-11 says an unstamped demand
+                -- ⊤-collapses a stored type, so the route exists for the day
+                -- an entry global IS an arrow. The Err fallback keeps the
+                -- seed unstamped; sound (entry globals have no other
+                -- callers to join with), and unreachable while the types
+                -- are non-arrows.
                 ( mainSpecId, s1 ) =
-                    seedSpec (toptToMonoGlobal mainGlobal) mainMonoType s0
+                    case Translate.stampSelfSpine mainGlobal mainMonoType s0 of
+                        Ok ( stampedMain, s0b ) ->
+                            seedSpec (toptToMonoGlobal mainGlobal) stampedMain s0b
+
+                        Err _ ->
+                            seedSpec (toptToMonoGlobal mainGlobal) mainMonoType s0
 
                 ( maybeFlagsSpecId, s2 ) =
                     seedFlagsDecoder maybeFlagsGlobal nodesWithIds s1
@@ -607,6 +621,291 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                         (10000 * concrete) // positions
                     )
 
+        -- PROVENANCE (plans/lss-provenance-ratio-census.md): layer-1 fidelity —
+        -- how much of the paper's `ζ = 𝓔(ξ)` survived into LSS at all. An arrow
+        -- reaches `AssignMVarIds` either carrying `SolverRoot` (the checker's
+        -- identity survived) or `NoArrow` (the lockstep stamping walk lost it,
+        -- or it was built after the solve). Only the first kind can participate
+        -- in an 𝓔 equality, so `withRoot / arrows` bounds from ABOVE how much of
+        -- the paper's constraint generation we are capable of reproducing.
+        --
+        -- This is the layer the shadow `Q` verifier CANNOT see: `Q` re-solves
+        -- the constraints we emitted, so a constraint never emitted is absent
+        -- from its input and from its verdict. `REPRODUCES=yes` is evidence
+        -- about solving only.
+        --
+        -- `tieBp` is the necessary companion: provenance alone is not
+        -- information. If every arrow sat in its own root class, 𝓔 would be the
+        -- identity relation and a perfect `provBp` would be worth nothing.
+        -- `tieBp` is the share of provenance-carrying arrows that share a class
+        -- with at least one other arrow — the part that can actually tie.
+        --
+        -- UPPER BOUND, not a prediction: tying two slots that are both empty
+        -- changes nothing, so `1 - prov` bounds the damage rather than
+        -- forecasting a coverage gain. And the denominator is PROGRAM arrows at
+        -- AssignMVarIds time, NOT the artifact positions `coverage:` counts —
+        -- different populations, never divide one into the other.
+        provenanceLine =
+            let
+                arrows =
+                    sFinal.env.arrowTotal
+
+                withRoot =
+                    Dict.size sFinal.env.arrowRootOf
+
+                rootClasses =
+                    sFinal.env.arrowRootClasses
+
+                bp num den =
+                    if den <= 0 then
+                        0
+
+                    else
+                        (10000 * num) // den
+            in
+            "provenance: arrows="
+                ++ String.fromInt arrows
+                ++ " withRoot="
+                ++ String.fromInt withRoot
+                ++ " rootClasses="
+                ++ String.fromInt rootClasses
+                ++ " provBp="
+                ++ String.fromInt (bp withRoot arrows)
+                ++ " tieBp="
+                ++ String.fromInt (bp (withRoot - rootClasses) withRoot)
+                ++ " SANE="
+                ++ (if
+                        arrows
+                            >= withRoot
+                            && withRoot
+                            >= rootClasses
+                            && rootClasses
+                            >= 0
+                            && (withRoot == 0)
+                            == (rootClasses == 0)
+                    then
+                        "yes"
+
+                    else
+                        "NO"
+                   )
+
+        -- POSITION ATTRIBUTION (plans/lss-ctor-arrow-identity.md §3 P0): one row
+        -- per UNCOVERED arrow position, naming the global and the structural
+        -- path to the arrow. The aggregate `coverage:` line says HOW MANY
+        -- positions are uncovered; this says WHICH — which is what makes a
+        -- prediction like "the ctor spine ordinals will flip" falsifiable
+        -- BEFORE any mechanism is built.
+        --
+        -- A path-carrying SIBLING of `Mono.annoCoverage` rather than an
+        -- extension of it: that walker runs over every registry entry on every
+        -- compile and must stay allocation-free.
+        --
+        -- Path syntax: `a<n>` argument n, `r` result, `l` list element,
+        -- `t<n>` tuple slot, `f:<name>` record field, `c<n>` custom-type arg.
+        -- The arrow itself is the position; its path is where it sits.
+        --
+        -- Report-gated AND flag-gated (rides `lss.arrowCensus`): probe-scale
+        -- output is a dozen rows, self-compile scale is tens of thousands.
+        posRows =
+            let
+                go path monoType acc =
+                    case monoType of
+                        Mono.MFunction _ anno args result ->
+                            let
+                                acc1 =
+                                    case anno of
+                                        Mono.LSet _ ->
+                                            acc
+
+                                        Mono.LVar _ ->
+                                            ( path, "var" ) :: acc
+
+                                        Mono.LTop ->
+                                            ( path, "top" ) :: acc
+
+                                accR =
+                                    go (path ++ "/r") result acc1
+                            in
+                            List.foldl
+                                (\( i, a ) accA ->
+                                    go (path ++ "/a" ++ String.fromInt i) a accA
+                                )
+                                accR
+                                (List.indexedMap Tuple.pair args)
+
+                        Mono.MList _ inner ->
+                            go (path ++ "/l") inner acc
+
+                        Mono.MTuple _ elems ->
+                            List.foldl
+                                (\( i, e ) accE ->
+                                    go (path ++ "/t" ++ String.fromInt i) e accE
+                                )
+                                acc
+                                (List.indexedMap Tuple.pair elems)
+
+                        Mono.MRecord _ fields ->
+                            Dict.foldl (\fname t a -> go (path ++ "/f:" ++ fname) t a) acc fields
+
+                        Mono.MCustom _ _ _ args ->
+                            List.foldl
+                                (\( i, a ) accA ->
+                                    go (path ++ "/c" ++ String.fromInt i) a accA
+                                )
+                                acc
+                                (List.indexedMap Tuple.pair args)
+
+                        _ ->
+                            acc
+            in
+            Array.foldl
+                (\entry acc ->
+                    case entry of
+                        Just ( key, monoType ) ->
+                            let
+                                gname =
+                                    case key of
+                                        Mono.Global _ n ->
+                                            n
+
+                                        _ ->
+                                            "?"
+                            in
+                            List.map (\( pth, kind ) -> "pos|" ++ gname ++ "|" ++ pth ++ "|" ++ kind)
+                                (go "" monoType [])
+                                ++ acc
+
+                        Nothing ->
+                            acc
+                )
+                []
+                g.registry.reverseMapping
+
+        posLine =
+            String.join "\n" (List.sort posRows)
+
+        -- LIVENESS (plans/lss-provenance-ratio-census.md §7): of the arrows
+        -- that read back as `var`, how many are ever APPLIED?
+        --
+        --   var AND applied   = a real call site whose target we cannot name.
+        --                       The paper would have a set here; genuine
+        --                       incompleteness, and the honest numerator.
+        --   var NOT applied   = a function-typed position never invoked. `var`
+        --                       is defensible and the paper would not have
+        --                       needed a set — arguably not ours to count.
+        --
+        -- `controlBp` is NOT decoration and must be read FIRST. Concrete arrows
+        -- are overwhelmingly ones we resolved because they are called, so if
+        -- they do not register as applied the hook is not seeing applications
+        -- and the var split above means NOTHING. A low control invalidates the
+        -- finding; it does not become the finding.
+        livenessLine =
+            let
+                applied =
+                    stats.sigStats.appliedArrows
+
+                countIn arrows =
+                    Dict.foldl
+                        (\akey _ n ->
+                            if Dict.member akey applied then
+                                n + 1
+
+                            else
+                                n
+                        )
+                        0
+                        arrows
+
+                varApplied =
+                    countIn settled.varArrows
+
+                setApplied =
+                    countIn settled.setArrows
+
+                bp num den =
+                    if den <= 0 then
+                        0
+
+                    else
+                        (10000 * num) // den
+            in
+            "liveness: attempts="
+                ++ String.fromInt (censusAt "apply|attempt")
+                ++ " hit="
+                ++ String.fromInt (censusAt "apply|hit")
+                ++ " noSlot="
+                ++ String.fromInt (censusAt "apply|noSlot")
+                ++ " noArrowId="
+                ++ String.fromInt (censusAt "apply|noArrowId")
+                ++ " hitBp="
+                ++ String.fromInt (bp (censusAt "apply|hit") (censusAt "apply|attempt"))
+                ++ " | appliedArrows="
+                ++ String.fromInt (Dict.size applied)
+                ++ " varArrows="
+                ++ String.fromInt (Dict.size settled.varArrows)
+                ++ " varApplied="
+                ++ String.fromInt varApplied
+                ++ " setArrows="
+                ++ String.fromInt (Dict.size settled.setArrows)
+                ++ " setApplied="
+                ++ String.fromInt setApplied
+                ++ " liveBp="
+                ++ String.fromInt (bp varApplied (Dict.size settled.varArrows))
+                ++ " controlBp="
+                ++ String.fromInt (bp setApplied (Dict.size settled.setArrows))
+
+        -- STAMPING-WALK CENSUS (plans/lss-provenance-ratio-census.md §8):
+        -- WHERE the provenance loss happens. `SolverRoots.stampArrowRoots`
+        -- returns a node unstamped AND unrecursed on a lockstep mismatch, so
+        -- one failure sheds a whole subtree — meaning the `provenance:` loss
+        -- could be a few big abandonments or many small ones, which call for
+        -- opposite fixes.
+        --
+        --   partial — SOME arrows stamped, some not. The walk ran, descended,
+        --             and broke: provable mid-walk abandonment. Repairing the
+        --             walk reaches these.
+        --   none    — NO arrow stamped. Never walked, or failed at the root.
+        --             Repairing the walk does NOT reach these; the target
+        --             would be post-solve type construction instead.
+        --
+        -- RECONCILES against the `provenance:` line: the two lost populations
+        -- must sum to `arrows - withRoot`. A mismatch means the census wrapper
+        -- missed a top-level `rewriteCanType` call site, so the line says so
+        -- rather than being quietly believed.
+        stampWalkLine =
+            let
+                lost =
+                    sFinal.env.stampArrowsInNone + sFinal.env.stampArrowsUnstampedInPartial
+
+                expected =
+                    sFinal.env.arrowTotal - Dict.size sFinal.env.arrowRootOf
+            in
+            "stampwalk: types="
+                ++ String.fromInt
+                    (sFinal.env.stampTypesAll + sFinal.env.stampTypesNone + sFinal.env.stampTypesPartial)
+                ++ " all="
+                ++ String.fromInt sFinal.env.stampTypesAll
+                ++ " none="
+                ++ String.fromInt sFinal.env.stampTypesNone
+                ++ " partial="
+                ++ String.fromInt sFinal.env.stampTypesPartial
+                ++ " | arrowsNone="
+                ++ String.fromInt sFinal.env.stampArrowsInNone
+                ++ " arrowsPartialUnstamped="
+                ++ String.fromInt sFinal.env.stampArrowsUnstampedInPartial
+                ++ " lostTotal="
+                ++ String.fromInt lost
+                ++ " expected="
+                ++ String.fromInt expected
+                ++ " RECONCILES="
+                ++ (if lost == expected then
+                        "yes"
+
+                    else
+                        "NO"
+                   )
+
         ledgerLine =
             "ledger: k1="
                 ++ String.fromInt ledgerK1
@@ -634,9 +933,20 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         , "signatures: " ++ String.fromInt sigCount ++ " memoized (" ++ String.fromInt trivialCount ++ " trivial)"
         , "sets zonked: " ++ String.fromInt stats.setsZonked ++ "; size histogram: " ++ histLine
         , coverageLine
+        , provenanceLine
         , ledgerLine
         , settledLine
         ]
+            -- §7.7: the liveness line appears ONLY when its own flag ran the
+            -- census. Under `report` alone the counters are all zero, and a
+            -- zero row reads as "measured, found nothing" rather than "never
+            -- executed" — the `qCensus` misreading, one flag along.
+            ++ (if sFinal.env.lss.arrowCensus then
+                    [ stampWalkLine, livenessLine, posLine ]
+
+                else
+                    []
+               )
             ++ (if sFinal.env.lss.qCensus then
                     -- §5.1/§5.6: the shadow-`Q` verifier lines appear only when
                     -- the verifier RAN. Printing them under `lss.report` alone
@@ -820,6 +1130,20 @@ initState lssConfig limits currentModule nodes annotations globalTypeEnv mvarSta
         , lssKeyedSet = keyedGlobalSet lssConfig.keyedGlobals
         , lamLabels = mvarState.lamLabels
         , arrowRootOf = mvarState.arrowRootOf
+
+        -- Provenance census denominators, read once here rather than
+        -- recomputed: `nextArrow` less its origin is every arrow occurrence
+        -- stamped, and the negative root-key supply starts at -1 and
+        -- decrements, so `-nextRootKey - 1` is the number of distinct solver
+        -- root classes minted.
+        , arrowTotal =
+            Id.toComparable mvarState.nextArrow - Id.toComparable TypeIds.firstArrowId
+        , arrowRootClasses = -mvarState.nextRootKey - 1
+        , stampTypesAll = mvarState.typesAll
+        , stampTypesNone = mvarState.typesNone
+        , stampTypesPartial = mvarState.typesPartial
+        , stampArrowsInNone = mvarState.arrowsInNone
+        , stampArrowsUnstampedInPartial = mvarState.arrowsUnstampedInPartial
         , limits = limits
         }
     , currentGlobal = Nothing
@@ -924,7 +1248,12 @@ seedFlagsDecoder maybeFlagsGlobal nodes s =
                             Zonk.canTypeToMono Dict.empty decoderTipe
 
                         ( specId, s1 ) =
-                            seedSpec (toptToMonoGlobal flagsGlobal) decoderMonoType s
+                            case Translate.stampSelfSpine flagsGlobal decoderMonoType s of
+                                Ok ( stampedDec, sb ) ->
+                                    seedSpec (toptToMonoGlobal flagsGlobal) stampedDec sb
+
+                                Err _ ->
+                                    seedSpec (toptToMonoGlobal flagsGlobal) decoderMonoType s
                     in
                     ( Just specId, s1 )
 

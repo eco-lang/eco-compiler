@@ -1,4 +1,4 @@
-module Compiler.MonoSolver.Translate exposing (translate, demandUnify, demandUnifyRoot, specializeCtorViaScheme, enumNode, specializeCycle, specializePort, canKindDebug, monoKindDebug)
+module Compiler.MonoSolver.Translate exposing (translate, demandUnify, demandUnifyRoot, specializeCtorViaScheme, enumNode, specializeCycle, specializePort, canKindDebug, monoKindDebug, stampSelfSpine)
 
 {-| Translate a TypedOptimized expression into a monomorphized expression — the
 M1 (monomorphic-spine) arms, ported from `Specialize.specializeExpr`.
@@ -1726,7 +1726,7 @@ translateVarRef refExpr region global canType s0 =
                 Err e
 
             Ok ( monoType, s1 ) ->
-                case Engine.enqueueSpec (toptToMonoGlobal global) monoType s1 of
+                case enqueueSpecStamped global monoType s1 of
                     Err e ->
                         Err e
 
@@ -3034,7 +3034,7 @@ translateGlobalCallFast region funcRegion global funcCanType args callCanType =
                                                     resultMonoType
                                                     Mono.defaultCallInfo
                                             )
-                                            (Engine.enqueueSpec (toptToMonoGlobal global) funcMonoType)
+                                            (enqueueSpecStamped global funcMonoType)
                                     )
                                     (Engine.traverse translate args)
                             )
@@ -3130,7 +3130,7 @@ translateGlobalCallGroundMemo region funcRegion global funcCanType args callCanT
                                                                                         )
                                                                                         (Engine.putCallMemo key ( funcMonoType, resultMonoType, specId ))
                                                                                 )
-                                                                                (Engine.enqueueSpec (toptToMonoGlobal global) funcMonoType)
+                                                                                (enqueueSpecStamped global funcMonoType)
                                                                         )
                                                                         (Engine.traverse translate args)
                                                                 )
@@ -3160,7 +3160,7 @@ emitCall region funcRegion global funcMonoType resultMonoType args s0 =
                 Err e
 
             Ok ( monoArgs, s1 ) ->
-                case Engine.enqueueSpec (toptToMonoGlobal global) funcMonoType s1 of
+                case enqueueSpecStamped global funcMonoType s1 of
                     Err e ->
                         Err e
 
@@ -3231,7 +3231,7 @@ translateGlobalCallSlow region funcRegion global funcCanType args callCanType s0
                                                                 Err e
 
                                                             Ok ( resultMonoType, s6 ) ->
-                                                                case Engine.enqueueSpec (toptToMonoGlobal global) funcMonoType s6 of
+                                                                case enqueueSpecStamped global funcMonoType s6 of
                                                                     Err e ->
                                                                         Err e
 
@@ -3639,7 +3639,9 @@ unifyParamsCollect funcVar args s0 =
                     Ok ( desc, s1 ) ->
                         case Store.arrowParts desc.content of
                             Just ( pParam, pRest ) ->
-                                case localMultiArgName arg s1 of
+                                -- Liveness census (§7): one arrow peeled per
+                                -- call argument — this IS the application.
+                                case localMultiArgName arg (noteAppliedS desc.content s1) of
                                     Err e ->
                                         Err e
 
@@ -4056,6 +4058,135 @@ direct-call rewrite that a PAP cannot support.
 papMemberKey : TOpt.Global -> Int -> String
 papMemberKey global argCount =
     "p|" ++ TOpt.toComparableGlobal global ++ "|" ++ String.fromInt argCount
+
+
+{-| Registration self-identity (plans/lss-registration-self-identity.md §1.1):
+the member id for depth d of global g's spine — the SAME ids every other
+injection path mints, which is the whole soundness story:
+
+  - depth 0 follows the E9.2 reference-path chooser exactly: kernel-alias fold
+    to the k| kernel member (ONE identity — "a split g|/k| identity would join
+    to a 2-set and kill singleton consumers"), Ctor/Enum/Box to c|, everything
+    else (Define/TrackedDefine/Link/Cycle) to g|.
+  - depth d > 0 is the p|<g>|<d> PAP member `papMembers` mints (LSS_013: a PAP
+    of member m IS m, at its own DISTINCT declining identity per depth).
+
+`Nothing` = this global has no standalone identity here (raw kernels, managers,
+ports) — the stamp skips the whole global and the census counts it.
+-}
+memberIdForDepth : TOpt.Global -> Int -> Step (Maybe Int)
+memberIdForDepth g d s0 =
+    if d > 0 then
+        Engine.map Just (Engine.memberIdFor (papMemberKey g d)) s0
+
+    else
+        case LssInfer.kernelAliasOf g s0 of
+            Just ( kernelPrefix, home, name ) ->
+                Engine.map Just
+                    (Engine.kernelMemberIdFor ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name ))
+                    s0
+
+            Nothing ->
+                case HashMap.get TOpt.globalHash (==) g s0.env.toptNodes of
+                    Just (TOpt.Ctor _ _ _) ->
+                        Engine.map Just (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) s0
+
+                    Just (TOpt.Enum _ _) ->
+                        Engine.map Just (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) s0
+
+                    Just (TOpt.Box _) ->
+                        Engine.map Just (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) s0
+
+                    Just (TOpt.Kernel _ _) ->
+                        Ok ( Nothing, s0 )
+
+                    Just (TOpt.Manager _) ->
+                        Ok ( Nothing, s0 )
+
+                    Just (TOpt.PortIncoming _ _ _) ->
+                        Ok ( Nothing, s0 )
+
+                    Just (TOpt.PortOutgoing _ _ _) ->
+                        Ok ( Nothing, s0 )
+
+                    Just _ ->
+                        Engine.map Just (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal g) g) s0
+
+                    Nothing ->
+                        Ok ( Nothing, s0 )
+
+
+{-| Registration self-identity: stamp the leading spine of a DEMAND for
+global g with g's own tautological members, depths 0..declaredArity-1.
+
+Stamps onto ⊤ and `LVar` only — NEVER over an existing `LSet` (AR-4: an
+existing set is either the same id, making the join idempotent anyway, or a
+defect signal that overwriting would hide). Applied to EVERY demand before it
+reaches the registry, because the LSS_010 join collapses LSet-vs-LVar to ⊤
+(`Monomorphized.unionAnno`, AR-11) — a single unstamped demand would erase
+the benefit for every caller of the spec.
+
+Depth is bounded by `declaredArityOf`, not spine length: arrow
+`declaredArity + 1` belongs to the RETURNED value (LSS_013), which is body
+dataflow this plan must not claim.
+-}
+stampSelfSpine : TOpt.Global -> Mono.MonoType -> Step Mono.MonoType
+stampSelfSpine g monoType s0 =
+    if not (s0.env.lss.enabled && s0.env.lss.regIdentity) then
+        Ok ( monoType, s0 )
+
+    else
+        stampSpineGo g (LssInfer.declaredArityOf g 8 s0) 0 monoType s0
+
+
+stampSpineGo : TOpt.Global -> Int -> Int -> Mono.MonoType -> Step Mono.MonoType
+stampSpineGo g arity d monoType s0 =
+    if d >= arity then
+        Ok ( monoType, s0 )
+
+    else
+        case monoType of
+            Mono.MFunction _ anno args ret ->
+                case memberIdForDepth g d s0 of
+                    Err e ->
+                        Err e
+
+                    Ok ( Nothing, s1 ) ->
+                        Ok ( monoType, Engine.bumpArgFlowCensus "regid|noId" s1 )
+
+                    Ok ( Just mid, s1 ) ->
+                        let
+                            ( anno2, s2 ) =
+                                case anno of
+                                    Mono.LSet _ ->
+                                        ( anno, Engine.bumpArgFlowCensus "regid|alreadySet" s1 )
+
+                                    _ ->
+                                        ( Mono.LSet [ mid ], Engine.bumpArgFlowCensus "regid|stamped" s1 )
+                        in
+                        case stampSpineGo g arity (d + 1) ret s2 of
+                            Err e ->
+                                Err e
+
+                            Ok ( ret2, s3 ) ->
+                                Ok ( Mono.mFunction anno2 args ret2, s3 )
+
+            _ ->
+                Ok ( monoType, s0 )
+
+
+{-| `Engine.enqueueSpec` with the registration self-identity stamp applied
+first, so the keyed path's key, the LSS_010 join, and the stored type all see
+the same stamped demand.
+-}
+enqueueSpecStamped : TOpt.Global -> Mono.MonoType -> Step Mono.SpecId
+enqueueSpecStamped global monoType s0 =
+    case stampSelfSpine global monoType s0 of
+        Err e ->
+            Err e
+
+        Ok ( stamped, s1 ) ->
+            Engine.enqueueSpec (toptToMonoGlobal global) stamped s1
 
 
 {-| Best-effort unify `canVar` with environment-derived structure for `arg`.
@@ -4586,12 +4717,41 @@ resultVarAfter funcVar n =
             (\desc ->
                 case Store.arrowParts desc.content of
                     Just ( _, pRest ) ->
-                        resultVarAfter pRest (n - 1)
+                        -- Liveness census: peeling to find the result of an
+                        -- n-argument application is an APPLICATION of this
+                        -- arrow (plans/lss-provenance-ratio-census.md §7).
+                        Engine.andThen (\_ -> resultVarAfter pRest (n - 1))
+                            (noteAppliedStep desc.content)
 
                     Nothing ->
                         Engine.succeed Nothing
             )
             (Engine.liftIO (UF.get funcVar))
+
+
+{-| Liveness census (plans/lss-provenance-ratio-census.md §7) — the `Step`-typed
+twin of `LssInfer.noteApplied`, for the Translate-side application paths.
+
+`LssInfer`'s copy hooks `localCalleeJoin`, which turned out to serve exactly ONE
+call shape (a letEnv-bound local callee); measured alone it saw only 10.76 % of
+concrete arrows, which is why the control ratio exists and why it is read before
+the finding. The general paths are here.
+
+The `ArrowId` lookup goes through the union-find CLASS for `noteMultiSet`'s
+reason: the surviving slot after a unification is often not the minted one, and
+only the loaded side carries an ArrowId.
+
+-}
+noteAppliedS : IO.Content -> Engine.S -> Engine.S
+noteAppliedS =
+    LssInfer.noteApplied
+
+
+{-| `Step`-typed wrapper on `noteAppliedS`, for composition with `andThen`.
+-}
+noteAppliedStep : IO.Content -> Step ()
+noteAppliedStep content s =
+    Ok ( (), noteAppliedS content s )
 
 
 {-| Build an `MVarEnv` for the KernelAbi helpers (which read super info; they

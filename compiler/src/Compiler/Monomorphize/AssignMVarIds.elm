@@ -51,6 +51,20 @@ type alias GlobalMVarState =
     , rootKeyEnv : Dict ( String, Int ) Int -- (moduleKey, solver root index) -> negative root key; module-scoped for `arrowRootEnv`'s reason (a raw index across modules would be a FALSE union)
     , nextRootKey : Int -- next negative root key; starts at -1 and decrements
     , arrowRootOf : Dict Int Int -- `Id.toComparable occId` -> negative root key. Partial: arrows that lost solver provenance have no entry and degrade to occurrence identity.
+
+    -- STAMPING-WALK CENSUS (plans/lss-provenance-ratio-census.md §8). The walk
+    -- in `SolverRoots.stampArrowRoots` abandons a WHOLE SUBTREE on a lockstep
+    -- mismatch, so "23,670 arrows lost" could be a few big abandonments or
+    -- twenty thousand small ones. These classify each TOP-LEVEL type by whether
+    -- the walk stamped all / none / some of its arrows — and "some" is
+    -- unambiguous proof the walk ran, descended, and then broke.
+    , stampCensusOn : Bool -- §8: gates the per-type classification below (cheap, but not free: two record updates per top-level type)
+    , arrowsStamped : Int -- arrows that took the SolverRoot arm
+    , typesAll : Int -- every arrow stamped
+    , typesNone : Int -- no arrow stamped: never walked, or failed at the root
+    , typesPartial : Int -- MID-WALK ABANDONMENT, provably
+    , arrowsInNone : Int
+    , arrowsUnstampedInPartial : Int
     }
 
 
@@ -197,7 +211,7 @@ recordRootKey rootIdx ( arrowId, ctx ) =
                     )
     in
     ( arrowId
-    , { ctx | state = { st1 | arrowRootOf = Dict.insert (Id.toComparable arrowId) rootKey st1.arrowRootOf } }
+    , { ctx | state = { st1 | arrowRootOf = Dict.insert (Id.toComparable arrowId) rootKey st1.arrowRootOf, arrowsStamped = st1.arrowsStamped + 1 } }
     )
 
 
@@ -225,8 +239,8 @@ withFreshBinding outerCtx work =
 {-| Assign globally unique MVarIds to all type variables in a GlobalGraph.
 Returns the rewritten graph and the final allocator state (for initializing MVarEnv).
 -}
-assignIds : Bool -> TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph TypeIds.MVarId, GlobalMVarState )
-assignIds useSolverRoots (TOpt.GlobalGraph nodes fields annotations allSchemeRoots varSupers) =
+assignIds : Bool -> Bool -> TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph TypeIds.MVarId, GlobalMVarState )
+assignIds useSolverRoots censusOn (TOpt.GlobalGraph nodes fields annotations allSchemeRoots varSupers) =
     let
         state0 =
             { nextId = TypeIds.firstMVarId
@@ -239,6 +253,13 @@ assignIds useSolverRoots (TOpt.GlobalGraph nodes fields annotations allSchemeRoo
             , rootKeyEnv = Dict.empty
             , nextRootKey = -1
             , arrowRootOf = Dict.empty
+            , stampCensusOn = censusOn
+            , arrowsStamped = 0
+            , typesAll = 0
+            , typesNone = 0
+            , typesPartial = 0
+            , arrowsInNone = 0
+            , arrowsUnstampedInPartial = 0
             }
 
         dummyCompare _ _ =
@@ -261,7 +282,7 @@ assignIdsToType canType =
     let
         ctx =
             { env = Dict.empty
-            , state = { nextId = TypeIds.firstMVarId, superVars = Dict.empty, rootEnv = Dict.empty, nextLam = TypeIds.firstSrcLambdaId, lamLabels = Dict.empty, nextArrow = TypeIds.firstArrowId, arrowRootEnv = Dict.empty, rootKeyEnv = Dict.empty, nextRootKey = -1, arrowRootOf = Dict.empty }
+            , state = { nextId = TypeIds.firstMVarId, superVars = Dict.empty, rootEnv = Dict.empty, nextLam = TypeIds.firstSrcLambdaId, lamLabels = Dict.empty, nextArrow = TypeIds.firstArrowId, arrowRootEnv = Dict.empty, rootKeyEnv = Dict.empty, nextRootKey = -1, arrowRootOf = Dict.empty, stampCensusOn = False, arrowsStamped = 0, typesAll = 0, typesNone = 0, typesPartial = 0, arrowsInNone = 0, arrowsUnstampedInPartial = 0 }
             , schemeRootsForDef = Dict.empty
             , varSupers = TOpt.varSupersOfType canType
             , moduleKey = ""
@@ -270,7 +291,7 @@ assignIdsToType canType =
             }
 
         ( newType, ctx1 ) =
-            rewriteCanType ctx canType
+            rewriteCanTypeTop ctx canType
     in
     ( newType, ctx1.state )
 
@@ -452,7 +473,7 @@ rewriteAnnotation useSolverRoots varSupers moduleKey schemeRootsForDef (Can.Fora
             Dict.foldl (\name _ c -> Tuple.second (ensureBinder name c)) ctx0 freeVars
 
         ( newType, ctx1 ) =
-            rewriteCanType ctxSeeded tipe
+            rewriteCanTypeTop ctxSeeded tipe
     in
     ( Can.Forall freeVars newType, ctx1.state )
 
@@ -526,21 +547,21 @@ rewriteNode ctx node =
         TOpt.Ctor index arity canType ->
             let
                 ( newType, ctx1 ) =
-                    rewriteCanType ctx canType
+                    rewriteCanTypeTop ctx canType
             in
             ( TOpt.Ctor index arity newType, ctx1 )
 
         TOpt.Enum index canType ->
             let
                 ( newType, ctx1 ) =
-                    rewriteCanType ctx canType
+                    rewriteCanTypeTop ctx canType
             in
             ( TOpt.Enum index newType, ctx1 )
 
         TOpt.Box canType ->
             let
                 ( newType, ctx1 ) =
-                    rewriteCanType ctx canType
+                    rewriteCanTypeTop ctx canType
             in
             ( TOpt.Box newType, ctx1 )
 
@@ -594,7 +615,7 @@ rewriteMeta : Ctx -> TOpt.Meta Name -> ( TOpt.Meta TypeIds.MVarId, Ctx )
 rewriteMeta ctx meta =
     let
         ( newType, ctx1 ) =
-            rewriteCanType ctx meta.tipe
+            rewriteCanTypeTop ctx meta.tipe
     in
     ( { tipe = newType, tvar = meta.tvar }, ctx1 )
 
@@ -957,7 +978,7 @@ rewriteTypedArgs ctx args =
         (\( name, tipe ) ( acc, c ) ->
             let
                 ( newType, c1 ) =
-                    rewriteCanType c tipe
+                    rewriteCanTypeTop c tipe
             in
             ( ( name, newType ) :: acc, c1 )
         )
@@ -972,7 +993,7 @@ rewriteTrackedArgs ctx args =
         (\( locName, tipe ) ( acc, c ) ->
             let
                 ( newType, c1 ) =
-                    rewriteCanType c tipe
+                    rewriteCanTypeTop c tipe
             in
             ( ( locName, newType ) :: acc, c1 )
         )
@@ -1054,7 +1075,7 @@ rewriteDef outerCtx def =
                 (\bindingCtx ->
                     let
                         ( newType, bindingCtx1 ) =
-                            rewriteCanType bindingCtx canType
+                            rewriteCanTypeTop bindingCtx canType
 
                         ( newBody, bindingCtx2 ) =
                             rewriteExpr bindingCtx1 body
@@ -1067,7 +1088,7 @@ rewriteDef outerCtx def =
                 (\bindingCtx ->
                     let
                         ( newType, bindingCtx1 ) =
-                            rewriteCanType bindingCtx canType
+                            rewriteCanTypeTop bindingCtx canType
 
                         ( newArgs, bindingCtx2 ) =
                             rewriteTrackedArgs bindingCtx1 args
@@ -1162,6 +1183,78 @@ rewriteJumps ctx jumps =
 -- ============================================================================
 -- CANONICAL TYPE REWRITING
 -- ============================================================================
+
+
+{-| Stamping-walk census (plans/lss-provenance-ratio-census.md §8): classify one
+TOP-LEVEL type by how much of it `SolverRoots.stampArrowRoots` managed to stamp.
+
+The walk returns a node unstamped AND unrecursed on a lockstep mismatch, so a
+single failure sheds an entire subtree. Reading the stamped OUTPUT recovers the
+split that matters without any cross-phase plumbing:
+
+  - some stamped, some not => the walk RAN, DESCENDED, and then BROKE. Provable
+    mid-walk abandonment.
+  - none stamped => never walked, or failed at the very root. No repair to the
+    walk can help this population.
+
+Deltas come from `nextArrow` and `arrowsStamped`, never `Dict.size arrowRootOf`
+— `Dict.size` is O(n) in Elm and would make the pass quadratic.
+
+MUST wrap only the EXTERNAL call sites. Wrapping the recursive calls inside
+`rewriteCanType` would count every subtree as its own "type" and the
+`RECONCILES` check would still pass, silently measuring the wrong population.
+
+-}
+rewriteCanTypeTop : Ctx -> Can.Type Name -> ( Can.Type TypeIds.MVarId, Ctx )
+rewriteCanTypeTop ctx canType =
+    let
+        arrowsBefore =
+            Id.toComparable ctx.state.nextArrow
+
+        stampedBefore =
+            ctx.state.arrowsStamped
+
+        ( out, ctx1 ) =
+            rewriteCanType ctx canType
+
+        st =
+            ctx1.state
+
+        arrows =
+            Id.toComparable st.nextArrow - arrowsBefore
+
+        stamped =
+            st.arrowsStamped - stampedBefore
+    in
+    if not st.stampCensusOn || arrows == 0 then
+        -- Census off, or no arrows at all: not part of the population.
+        ( out, ctx1 )
+
+    else if stamped == arrows then
+        ( out, { ctx1 | state = { st | typesAll = st.typesAll + 1 } } )
+
+    else if stamped == 0 then
+        ( out
+        , { ctx1
+            | state =
+                { st
+                    | typesNone = st.typesNone + 1
+                    , arrowsInNone = st.arrowsInNone + arrows
+                }
+          }
+        )
+
+    else
+        ( out
+        , { ctx1
+            | state =
+                { st
+                    | typesPartial = st.typesPartial + 1
+                    , arrowsUnstampedInPartial =
+                        st.arrowsUnstampedInPartial + (arrows - stamped)
+                }
+          }
+        )
 
 
 rewriteCanType : Ctx -> Can.Type Name -> ( Can.Type TypeIds.MVarId, Ctx )

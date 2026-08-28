@@ -201,7 +201,7 @@ tablePins =
                 Ok { globalGraph } ->
                     let
                         ( _, st ) =
-                            AssignMVarIds.assignIds False globalGraph
+                            AssignMVarIds.assignIds False False globalGraph
 
                         values =
                             Dict.values st.arrowRootOf
@@ -384,6 +384,12 @@ lssConfig sigRootIdentity =
         , keyed = True
         , papMembers = True
         , sigRootIdentity = sigRootIdentity
+
+        -- regIdentity PINNED OFF (differential-overlap rule): the co-gate
+        -- pin scans all of `useIt`'s annos including its spec's HEAD, where
+        -- the registration stamp writes an honest singleton/2-set that is
+        -- not the false-completeness the pin exists to catch.
+        , regIdentity = False
     }
 
 
