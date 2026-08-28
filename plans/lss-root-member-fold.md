@@ -9,7 +9,9 @@ defaults' covered positions are kN, a large share exactly these pairs, and
 singleton-only consumers (fast-call stamping, devirt) cannot use them.
 
 **Flag:** `lss.rootFold` (`ECO_MONO_LSS_ROOT_FOLD`, hash token `lssRF=`),
-DEFAULT-OFF. Artifact-affecting (member-id allocation order and set contents
+DEFAULT-ON since 2026-08-28 (user-directed flip; escape hatch
+`ECO_MONO_LSS_ROOT_FOLD=0`, hash token `lssRF=0` rides the OFF arm).
+Artifact-affecting (member-id allocation order and set contents
 move). **This is the first plan of the arc whose HEADLINE metric is dispatch,
 not coverage** — coverage is unchanged by construction (kN→k1 is
 gate-0-neutral). *(Metric corrected post-measurement, §4.1: the headline is

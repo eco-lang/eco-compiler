@@ -51,12 +51,16 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/MDBuilder.h"
+#include "llvm/ADT/StringMap.h"                    // call-census name cache
+#include "llvm/Transforms/Utils/ModuleUtils.h"     // appendToGlobalCtors (call-census)
 #include "llvm/Transforms/Utils/BasicBlockUtils.h" // SplitBlockAndInsertIfThen
 #include "../allocator/Heap.hpp"                   // TAG_BITS, Elm::Tag_Forward
 
 #include <cstddef>  // offsetof (kernel-opt-04 header-size probe)
 #include <cstdint>
 
+#include <array>    // call-census bucket filter
+#include <cstring>  // strcmp (call-census env gate)
 #include <atomic>
 #include <mutex>
 #include <optional>
@@ -186,7 +190,268 @@ void dumpIRTo(const Module &m, const std::string &path, const char *tag) {
     }
 }
 
+//===----------------------------------------------------------------------===//
+// Call-kind survivor census (plans/call-survivor-census.md).
+//
+// Counts SURVIVING call instructions — what remains after every inliner and
+// DCE has run — as opposed to the MLIR-lowering-time `fast` counter, which is
+// emitted in the caller before the call and therefore survives when
+// runCapInlinePrepass inlines the call away (a LOGICAL count). Instrumented
+// here, at the emitObjectFile funnel, every AOT path (serial, whole-module,
+// both parallel-split variants, single-object inline pipeline) is covered
+// after its last IR transformation.
+//
+// Gated on ECO_CALL_CENSUS at lowering time: unset => zero IR emitted, the
+// binary is bit-identical to an uninstrumented build. The value "1"/"all"
+// counts every bucket; a comma list ("elm,cap,helper") counts only those
+// buckets (the rest still get static site tallies). The census workflow is
+// the only consumer — never set this under the E2E harness (env-blind
+// binary cache, same rule as ECO_LSS_DISPATCH_SITE_COUNTERS).
+//
+// Buckets (enum MIRRORED in runtime/src/allocator/RuntimeExports.cpp — keep
+// in sync):
+//   elm      generated Elm code (defined here or a cross-partition decl)
+//   kernel   Elm_Kernel_* / Eco_Kernel_* boundary calls
+//   cap      surviving direct calls to *$cap fast clones (survivor `fast`)
+//   helper   the 6 dispatch-trampoline entries — one of these plus one
+//            runtime-internal indirect call is ONE logical dispatch, so they
+//            must never be summed with the other buckets as "calls"
+//   runtime  other eco_*/__eco_*/elm_*/Eco_Runtime_* helpers (alloc, proj,
+//            stores, pap-extend — which never dispatches)
+//   extern   libm/libc
+//   indirect non-constant callee — expected ~0 in generated code
+//===----------------------------------------------------------------------===//
+
+enum CallCensusKind : uint8_t {
+    CK_Elm = 0, CK_Kernel, CK_Cap, CK_Helper,
+    CK_Runtime, CK_Extern, CK_Indirect, CK_COUNT
+};
+
+const char *callCensusKindName(uint8_t k) {
+    switch (k) {
+    case CK_Elm:      return "elm";
+    case CK_Kernel:   return "kernel";
+    case CK_Cap:      return "cap";
+    case CK_Helper:   return "helper";
+    case CK_Runtime:  return "runtime";
+    case CK_Extern:   return "extern";
+    case CK_Indirect: return "indirect";
+    }
+    return "?";
+}
+
+bool callCensusEnabled() {
+    static const bool on = [] {
+        const char *e = ::getenv("ECO_CALL_CENSUS");
+        return e && *e && std::strcmp(e, "0") != 0;
+    }();
+    return on;
+}
+
+// Bucket filter from the env value. "1"/"all" => everything; otherwise a
+// comma list of bucket names. An unrecognised token counts nothing (loud in
+// the static line: counted=0).
+bool callCensusKindCounted(uint8_t k) {
+    static const auto counted = [] {
+        std::array<bool, CK_COUNT> c{};
+        const char *e = ::getenv("ECO_CALL_CENSUS");
+        StringRef v = e ? e : "";
+        if (v.empty() || v == "1" || v == "all") {
+            c.fill(true);
+            return c;
+        }
+        SmallVector<StringRef> toks;
+        v.split(toks, ',', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
+        for (StringRef tok : toks)
+            for (uint8_t i = 0; i < CK_COUNT; ++i)
+                if (tok.trim() == callCensusKindName(i))
+                    c[i] = true;
+        return c;
+    }();
+    return counted[k];
+}
+
+// The dispatch-machinery entry points emitted into generated code
+// (EcoToLLVMClosures.cpp: emitInlineClosureCall / the generic funnel).
+// eco_pap_extend is deliberately ABSENT: it never dispatches
+// (RuntimeExports.cpp "No dispatch here — this grows a PAP") => runtime.
+bool callCensusIsTrampoline(StringRef n) {
+    return n == "eco_apply_closure" || n == "eco_apply_closure_eval" ||
+           n == "eco_apply_closure_typed" ||
+           n == "eco_apply_segmentation_unknown" ||
+           n == "eco_closure_call_saturated" ||
+           n == "eco_closure_call_saturated_eval";
+}
+
+bool callCensusIsExtern(StringRef n) {
+    static const std::set<std::string> externs = {
+        "acos", "asin", "atan", "atan2", "sin", "cos", "tan", "exp",
+        "log", "log2", "log10", "pow", "fmod", "floor", "ceil", "sqrt",
+        "fabs", "trunc", "round", "ldexp",
+        "memcpy", "memset", "memmove", "memcmp", "malloc", "free"};
+    return externs.count(n.str()) != 0;
+}
+
+// Classify a RESOLVED call target (statepoint-unwrapped, casts stripped).
+// By NAME, never isDeclaration(): after the partition split a cross-partition
+// Elm callee is a declaration in the calling partition (plan AR-4).
+uint8_t callCensusClassify(const Function *fn) {
+    if (!fn)
+        return CK_Indirect;
+    StringRef n = fn->getName();
+    if (callCensusIsTrampoline(n))
+        return CK_Helper;
+    if (n.ends_with("$cap"))
+        return CK_Cap;
+    if (n.starts_with("Elm_Kernel_") || n.starts_with("Eco_Kernel_"))
+        return CK_Kernel;
+    if (n.starts_with("eco_") || n.starts_with("__eco_") ||
+        n.starts_with("elm_") || n.starts_with("Eco_Runtime_"))
+        return CK_Runtime;
+    if (callCensusIsExtern(n))
+        return CK_Extern;
+    return CK_Elm;
+}
+
+// Instrument one (partition) module. Runs concurrently on disjoint modules in
+// disjoint LLVMContexts from the split workers; the only shared state is the
+// mutex-guarded stderr tally. The increment is a plain non-atomic
+// load/add/store (single-mutator workload; census-grade under future
+// threads), touches no GC pointer (safe before a statepoint), and inserting
+// BEFORE a call is legal even for musttail (constraints only bind what
+// follows the call).
+void instrumentCallCensus(Module &m) {
+    if (m.getNamedGlobal("__eco_census_counts"))
+        return; // idempotence guard
+
+    struct Site {
+        CallBase *cb;
+        const Function *callee; // null => indirect
+        uint8_t kind;
+    };
+    std::vector<Site> sites;
+    uint64_t staticTally[CK_COUNT] = {};
+    uint64_t skippedIntrinsics = 0;
+
+    // Pass 1 — collect (mutating while iterating a BB is the classic
+    // invalidation bug; all insertion happens in pass 3).
+    for (Function &f : m) {
+        if (f.isDeclaration())
+            continue;
+        for (BasicBlock &bb : f)
+            for (Instruction &inst : bb) {
+                auto *cb = dyn_cast<CallBase>(&inst);
+                if (!cb || cb->isInlineAsm())
+                    continue;
+                // RS4GC-wrapped calls carry the real callee inside the
+                // statepoint; unwrap BEFORE the intrinsic skip. Never use
+                // getCalledFunction(): it returns null on the fast form's
+                // deliberate site-derived function-type mismatch.
+                const Value *target;
+                if (auto *sp = dyn_cast<GCStatepointInst>(cb))
+                    target = sp->getActualCalledOperand()
+                                 ->stripPointerCastsAndAliases();
+                else
+                    target = cb->getCalledOperand()
+                                 ->stripPointerCastsAndAliases();
+                const Function *fn = dyn_cast<Function>(target);
+                if (fn && (fn->isIntrinsic() ||
+                           fn->getName().starts_with("llvm."))) {
+                    ++skippedIntrinsics; // gc.relocate/result, memcpy, ...
+                    continue;
+                }
+                uint8_t kind = callCensusClassify(fn);
+                ++staticTally[kind];
+                if (callCensusKindCounted(kind))
+                    sites.push_back({cb, fn, kind});
+            }
+    }
+
+    // Static tally line (per partition; awk-summable), under a mutex — the
+    // split workers run this concurrently.
+    {
+        static std::mutex tallyMu;
+        std::lock_guard<std::mutex> lock(tallyMu);
+        errs() << "[call-census] partition sites:";
+        for (uint8_t k = 0; k < CK_COUNT; ++k)
+            errs() << " " << callCensusKindName(k) << "=" << staticTally[k];
+        errs() << " skipped_intrinsics=" << skippedIntrinsics
+               << " counted=" << sites.size() << "\n";
+    }
+    if (sites.empty())
+        return; // empty filler partitions register nothing
+
+    // Pass 2 — materialize tables + the registration ctor. All private;
+    // liveness is rooted by the ctor's call into the runtime (AR-8).
+    LLVMContext &ctx = m.getContext();
+    auto *i64Ty = Type::getInt64Ty(ctx);
+    auto *i8Ty = Type::getInt8Ty(ctx);
+    auto *ptrTy = PointerType::get(ctx, 0);
+    const uint64_t n = sites.size();
+
+    auto *countsTy = ArrayType::get(i64Ty, n);
+    auto *counts = new GlobalVariable(
+        m, countsTy, /*isConstant=*/false, GlobalValue::PrivateLinkage,
+        ConstantAggregateZero::get(countsTy), "__eco_census_counts");
+    counts->setAlignment(Align(8));
+
+    StringMap<Constant *> nameCache;
+    auto nameStr = [&](StringRef s) -> Constant * {
+        auto it = nameCache.find(s);
+        if (it != nameCache.end())
+            return it->second;
+        Constant *data = ConstantDataArray::getString(ctx, s, true);
+        auto *gv = new GlobalVariable(m, data->getType(), /*isConstant=*/true,
+                                      GlobalValue::PrivateLinkage, data,
+                                      "__eco_census_str");
+        gv->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+        nameCache[s] = gv;
+        return gv;
+    };
+
+    SmallVector<Constant *> nameConsts, kindConsts;
+    nameConsts.reserve(n);
+    kindConsts.reserve(n);
+    for (const Site &s : sites) {
+        nameConsts.push_back(
+            nameStr(s.callee ? s.callee->getName() : StringRef("<indirect>")));
+        kindConsts.push_back(ConstantInt::get(i8Ty, s.kind));
+    }
+    auto *namesTy = ArrayType::get(ptrTy, n);
+    auto *names = new GlobalVariable(
+        m, namesTy, /*isConstant=*/true, GlobalValue::PrivateLinkage,
+        ConstantArray::get(namesTy, nameConsts), "__eco_census_names");
+    auto *kindsTy = ArrayType::get(i8Ty, n);
+    auto *kinds = new GlobalVariable(
+        m, kindsTy, /*isConstant=*/true, GlobalValue::PrivateLinkage,
+        ConstantArray::get(kindsTy, kindConsts), "__eco_census_kinds");
+
+    FunctionCallee reg = m.getOrInsertFunction(
+        "eco_call_census_register",
+        FunctionType::get(Type::getVoidTy(ctx), {ptrTy, ptrTy, ptrTy, i64Ty},
+                          /*isVarArg=*/false));
+
+    auto *ctorTy = FunctionType::get(Type::getVoidTy(ctx), false);
+    Function *ctor = Function::Create(ctorTy, GlobalValue::PrivateLinkage,
+                                      "__eco_census_ctor", &m);
+    IRBuilder<> cb(BasicBlock::Create(ctx, "entry", ctor));
+    cb.CreateCall(reg, {counts, names, kinds, ConstantInt::get(i64Ty, n)});
+    cb.CreateRetVoid();
+    appendToGlobalCtors(m, ctor, /*Priority=*/65535);
+
+    // Pass 3 — the increments, immediately before each surviving call.
+    for (uint64_t i = 0; i < n; ++i) {
+        IRBuilder<> ib(sites[i].cb);
+        Value *slot = ib.CreateConstInBoundsGEP2_64(countsTy, counts, 0, i);
+        Value *cur = ib.CreateLoad(i64Ty, slot);
+        Value *inc = ib.CreateAdd(cur, ConstantInt::get(i64Ty, 1));
+        ib.CreateStore(inc, slot);
+    }
+}
+
 Error emitObjectFile(Module &m, TargetMachine &tm, const std::string &path) {
+    if (callCensusEnabled())
+        instrumentCallCensus(m);
     std::error_code ec;
     raw_fd_ostream dest(path, ec, sys::fs::OF_None);
     if (ec)

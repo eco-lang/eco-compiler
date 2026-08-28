@@ -25,6 +25,7 @@
 #include <cstring>
 #include <unistd.h>
 #include <deque>
+#include <map>  // call-census row merge
 #include <new>
 #include <sstream>
 #include <string>
@@ -1046,6 +1047,103 @@ extern "C" void eco_dispatch_stats_dump(void) { dispatchStatsDumpImpl(); }
 extern "C" void eco_dispatch_stats_fast(void* evaluator_fp) {
     dispatchStatsRecord(evaluator_fp, DispatchKind::Fast);
 }
+
+// ---- Call-kind survivor census (plans/call-survivor-census.md) -------------
+//
+// The backend's instrumentCallCensus (EcoBackend.cpp, under ECO_CALL_CENSUS at
+// lowering time) gives every SURVIVING call instruction in generated code a
+// per-site i64 slot plus name/kind tables, and registers each partition's
+// tables here from a llvm.global_ctors constructor. Counters increment
+// unconditionally in an instrumented binary; only the exit dump is gated (on
+// ECO_DISPATCH_STATS, the census workflow's runtime knob).
+//
+// Kind enum MIRRORED from the backend's CallCensusKind — keep in sync.
+namespace {
+
+constexpr int kCallCensusKinds = 7;
+const char* const kCallCensusKindNames[kCallCensusKinds] = {
+    "elm", "kernel", "cap", "helper", "runtime", "extern", "indirect"};
+
+struct CallCensusTable {
+    const uint64_t* counts;
+    const char* const* names;
+    const uint8_t* kinds;
+    uint64_t n;
+};
+
+// Function-local static: constructors run pre-main, serial — no SIOF, no lock.
+std::vector<CallCensusTable>& callCensusTables() {
+    static std::vector<CallCensusTable> tables;
+    return tables;
+}
+
+std::atomic<bool> g_call_census_dumped{false};
+
+void callCensusDumpImpl() {
+    if (g_call_census_dumped.exchange(true)) return;
+    const char* e = std::getenv("ECO_DISPATCH_STATS");
+    if (!e || !*e || std::strcmp(e, "0") == 0) return;
+    const auto& tables = callCensusTables();
+    if (tables.empty()) return;
+
+    uint64_t perKind[kCallCensusKinds] = {};
+    uint64_t sites = 0;
+    // Merge rows by callee name — cross-partition callees appear in several
+    // tables, and inlining duplicates sites within one.
+    std::map<std::string, std::pair<uint8_t, uint64_t>> rows;
+    for (const CallCensusTable& t : tables) {
+        sites += t.n;
+        for (uint64_t i = 0; i < t.n; ++i) {
+            uint8_t k = t.kinds[i];
+            uint64_t c = t.counts[i];
+            if (k < kCallCensusKinds) perKind[k] += c;
+            auto& row = rows[t.names[i]];
+            row.first = k;
+            row.second += c;
+        }
+    }
+
+    std::fprintf(stderr, "[call-census]");
+    for (int k = 0; k < kCallCensusKinds; ++k)
+        std::fprintf(stderr, " %s=%llu", kCallCensusKindNames[k],
+                     static_cast<unsigned long long>(perKind[k]));
+    std::fprintf(stderr, " sites=%llu tables=%zu\n",
+                 static_cast<unsigned long long>(sites), tables.size());
+
+    // Every row (grep/awk is the consumer), sorted count-desc, name-asc for
+    // determinism.
+    std::vector<const std::pair<const std::string, std::pair<uint8_t, uint64_t>>*>
+        sorted;
+    sorted.reserve(rows.size());
+    for (const auto& kv : rows) sorted.push_back(&kv);
+    std::sort(sorted.begin(), sorted.end(), [](const auto* a, const auto* b) {
+        if (a->second.second != b->second.second)
+            return a->second.second > b->second.second;
+        return a->first < b->first;
+    });
+    for (const auto* kv : sorted)
+        std::fprintf(stderr, "[call-census] row kind=%s name=%s count=%llu\n",
+                     kCallCensusKindNames[kv->second.first % kCallCensusKinds],
+                     kv->first.c_str(),
+                     static_cast<unsigned long long>(kv->second.second));
+    std::fflush(stderr);
+}
+
+} // anonymous namespace
+
+// Called from each instrumented partition's llvm.global_ctors constructor,
+// pre-main, serial.
+extern "C" void eco_call_census_register(const void* counts, const void* names,
+                                         const void* kinds, uint64_t n) {
+    auto& tables = callCensusTables();
+    if (tables.empty()) std::atexit(callCensusDumpImpl);
+    tables.push_back({static_cast<const uint64_t*>(counts),
+                      static_cast<const char* const*>(names),
+                      static_cast<const uint8_t*>(kinds), n});
+}
+
+// Manual/embedder hook: dump the call census now (idempotent).
+extern "C" void eco_call_census_dump(void) { callCensusDumpImpl(); }
 
 extern "C" HPtr eco_alloc_closure_k(void* func_ptr, uint32_t num_captures,
                                     uint8_t result_kind) {
