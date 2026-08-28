@@ -4,6 +4,8 @@ module Compiler.MonoSolver.LssInfer exposing
     , injectLambdaMember
     , injectLambdaMemberQualified
     , injectSpineMemberId
+    , injectPapSuccessors
+    , papMemberKey
     , canTypeMentionsArrow
     , kernelAliasOf
     , spineDepthForGlobal
@@ -1387,17 +1389,27 @@ walkExpr letEnv expr s0 =
                     -- the full sig against a residual param row), so keeping
                     -- `k|` members off inner arrows makes that hazard
                     -- unreachable by construction.
-                    standaloneMemberWith (\_ -> 1) (Engine.kernelMemberIdFor ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name )) meta s0
+                    -- refPapSpine: successors key by the ALIAS global —
+                    -- the k| head is untouched (kernelToSig hazard is k|-only).
+                    withPapSuccessors g
+                        (standaloneMemberWith (\_ -> 1) (Engine.kernelMemberIdFor ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name )) meta)
+                        s0
 
                 Nothing ->
-                    standaloneMemberWith (spineDepthForGlobal g) (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal g) g) meta s0
+                    withPapSuccessors g
+                        (standaloneMemberWith (spineDepthForGlobal g) (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal g) g) meta)
+                        s0
 
         TOpt.VarEnum _ g _ meta ->
             -- E9: ctor mints register the Global for devirt lookup.
-            standaloneMemberWith (spineDepthForGlobal g) (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) meta s0
+            withPapSuccessors g
+                (standaloneMemberWith (spineDepthForGlobal g) (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) meta)
+                s0
 
         TOpt.VarBox _ g meta ->
-            standaloneMemberWith (spineDepthForGlobal g) (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) meta s0
+            withPapSuccessors g
+                (standaloneMemberWith (spineDepthForGlobal g) (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) meta)
+                s0
 
         TOpt.VarCycle _ home name meta ->
             -- GAP-7 seam 1 (LSS_020 plan Phase E.1): cycle members resolve
@@ -1408,7 +1420,9 @@ walkExpr letEnv expr s0 =
             -- behavior). The translation-side twin gained its VarCycle arm
             -- in the same change (Translate.injectArgLambdaMember), so both
             -- sides deepen in lockstep through `spineDepthForGlobal`.
-            standaloneMemberWith (spineDepthForGlobal (TOpt.Global home name)) (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal (TOpt.Global home name)) (TOpt.Global home name)) meta s0
+            withPapSuccessors (TOpt.Global home name)
+                (standaloneMemberWith (spineDepthForGlobal (TOpt.Global home name)) (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal (TOpt.Global home name)) (TOpt.Global home name)) meta)
+                s0
 
         TOpt.VarKernel _ kernelPrefix home name meta ->
             -- E9.2: kernel mints register (prefix, home, name) for devirt
@@ -2455,6 +2469,175 @@ standaloneMemberWith depthOf mint meta s0 =
 
     else
         Ok ( WpNone, s0 )
+
+
+{-| Sequence the successor walk after a mint arm, on the loaded variable the
+arm returns (`WpHonest`). `WpNone` (arrow-free reference) has nothing to walk.
+-}
+withPapSuccessors : TOpt.Global -> Step WalkPoint -> Step WalkPoint
+withPapSuccessors g step s0 =
+    case step s0 of
+        Err e ->
+            Err e
+
+        Ok ( wp, s1 ) ->
+            case wp of
+                WpHonest funcVar ->
+                    case injectPapSuccessors g funcVar s1 of
+                        Err e ->
+                            Err e
+
+                        Ok ( _, s2 ) ->
+                            Ok ( wp, s2 )
+
+                _ ->
+                    Ok ( wp, s1 )
+
+
+{-| The PAP element's key: `p|<global>|<supplied>` — moved here from
+`Translate` (plans/lss-ref-pap-spine.md §4.2) so both injection sides mint
+through ONE definition. Distinct per (global, arity-prefix) because those ARE
+distinct values — and distinct from the callee's own `g|`/`k|` key, which
+denotes the unapplied global and licenses a direct-call rewrite that a PAP
+cannot support.
+-}
+papMemberKey : TOpt.Global -> Int -> String
+papMemberKey global argCount =
+    "p|" ++ TOpt.toComparableGlobal global ++ "|" ++ String.fromInt argCount
+
+
+{-| Reference-spine PAP successors (plans/lss-ref-pap-spine.md, `lss.refPapSpine`):
+after a standalone reference's HEAD member, write the PAP successor members
+down the loaded type's result spine — depth d in 1..declaredArity-1 gets
+`p|<g>|<d>`, the SAME id `Translate.injectPapMember` (producer partial
+applications) and `Translate.memberIdForDepth` (registration self-identity)
+mint, so the three paths unify at every join (E9.2 one-identity).
+
+This is the paper's 𝒬 applied to the nested λs of the conceptually-curried
+global at its instantiation: Eco's runtime value at spine depth d IS the PAP
+object, and `p|g|d` is its established identity. LSS_013 bounds the walk at
+declaredArity — the arrow past the last parameter belongs to the value the
+BODY produces, which is the body tie's to claim, never this walk's.
+
+The walk mirrors `spineGoC` (alias-chasing, seen-guarded, ctx-threaded), but
+writes a DIFFERENT member per depth, into the RESULT arrow's own slot.
+-}
+injectPapSuccessors : TOpt.Global -> IO.Variable -> Step ()
+injectPapSuccessors g v0 s0 =
+    if not (s0.env.lss.enabled && s0.env.lss.refPapSpine) then
+        Ok ( (), s0 )
+
+    else
+        let
+            arity =
+                declaredArityOf g 8 s0
+        in
+        if arity <= 1 then
+            Ok ( (), Engine.bumpArgFlowCensus "refspine|arity1" s0 )
+
+        else
+            -- Mint the successor ids first (Step-level interning), then one
+            -- ctx-threaded store pass writes them at their depths.
+            case mintPapSuccessorIds g 1 arity [] s0 of
+                Err e ->
+                    Err e
+
+                Ok ( midsRev, s1 ) ->
+                    Store.foldSetWrites
+                        (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
+                        (Engine.bumpArgFlowCensus "refspine|inject" s1)
+
+
+mintPapSuccessorIds : TOpt.Global -> Int -> Int -> List Int -> Step (List Int)
+mintPapSuccessorIds g d arity acc s0 =
+    if d >= arity then
+        Ok ( acc, s0 )
+
+    else
+        case Engine.memberIdFor (papMemberKey g d) s0 of
+            Err e ->
+                Err e
+
+            Ok ( mid, s1 ) ->
+                mintPapSuccessorIds g (d + 1) arity (mid :: acc) s1
+
+
+{-| `mids` is depth-ordered (head = the member for the value ONE application
+in). `v` is the arrow at the previous depth; step into its result, write the
+head member into the result's own arrow slot, recurse with the tail.
+-}
+papSuccGoC : List Int -> Dict Int () -> IO.Variable -> Store.SetWriteCtx -> Store.SetWriteCtx
+papSuccGoC mids seen v c0 =
+    case mids of
+        [] ->
+            c0
+
+        mid :: rest ->
+            let
+                key =
+                    Engine.pointKey v
+            in
+            if CoreDict.member key seen then
+                c0
+
+            else
+                let
+                    ( store1, desc ) =
+                        UF.get v c0.store
+
+                    c1 =
+                        { c0 | store = store1 }
+
+                    seen1 =
+                        CoreDict.insert key () seen
+                in
+                case desc.content of
+                    IO.Structure (IO.FunL _ res _) ->
+                        -- Step into the result value; write there if it is
+                        -- itself an arrow (chasing aliases first).
+                        papSuccWrite mid rest seen1 res c1
+
+                    IO.Alias _ _ _ real ->
+                        -- Transparent alias: chase without consuming a depth.
+                        papSuccGoC mids seen1 real c1
+
+                    _ ->
+                        -- Not an arrow (ground/var/slotless Fun1): spine ends.
+                        c1
+
+
+papSuccWrite : Int -> List Int -> Dict Int () -> IO.Variable -> Store.SetWriteCtx -> Store.SetWriteCtx
+papSuccWrite mid rest seen res c0 =
+    let
+        key =
+            Engine.pointKey res
+    in
+    if CoreDict.member key seen then
+        c0
+
+    else
+        let
+            ( store1, desc ) =
+                UF.get res c0.store
+
+            c1 =
+                { c0 | store = store1 }
+
+            seen1 =
+                CoreDict.insert key () seen
+        in
+        case desc.content of
+            IO.Structure (IO.FunL _ _ slot) ->
+                -- The result IS an arrow: this member names it; continue the
+                -- walk FROM it for the next depth.
+                papSuccGoC rest seen1 res (Store.unifySlotWithSetC False [ mid ] slot c1)
+
+            IO.Alias _ _ _ real ->
+                papSuccWrite mid rest seen1 real c1
+
+            _ ->
+                -- Result is not an arrow (fully-ground tail): spine ends.
+                c1
 
 
 {-| LSS_013 (spine injection): a member id names not just the value's own head

@@ -223,6 +223,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\rfVal -> applyLssRootFoldOverride rfVal cfg4eh)
             )
         |> Task.andThen
+            (\cfg4ei ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_REF_PAP_SPINE" |> Task.mapError never)
+                    |> Task.map (\rpVal -> applyLssRefPapSpineOverride rpVal cfg4ei)
+            )
+        |> Task.andThen
             (\cfg4f ->
                 (Utils.envLookupEnv "ECO_SPEC_TYPE_NODE_LIMIT" |> Task.mapError never)
                     |> Task.map (\tnVal -> applySpecTypeNodeLimitOverride tnVal cfg4f)
@@ -1954,6 +1959,31 @@ applyLssRootFoldOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | rootFold = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_REF_PAP_SPINE=1|true|yes / 0|false|no`
+(plans/lss-ref-pap-spine.md): at standalone-reference injections, also write
+the PAP successors `p|<global>|<d>` down the loaded type's result spine
+(d in 1..declaredArity-1) — the same ids papMembers' producer injection and
+regIdentity's registration stamp mint, so the three paths unify. Targets the
+/a0/r argument-spine var population (58 % of all var, census 2026-08-28).
+Artifact-affecting. DEFAULT-OFF. Hash token `lssRP=`.
+-}
+applyLssRefPapSpineOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssRefPapSpineOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | refPapSpine = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | refPapSpine = False }) cfg
 
             else
                 cfg

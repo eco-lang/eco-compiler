@@ -551,6 +551,29 @@ type alias LssConfig =
     -- count — so `fast %` (+0.353 pp) understates this ~4.7×. Escape hatch
     -- `ECO_MONO_LSS_ROOT_FOLD=0`; hash token `lssRF=0` now rides the OFF arm.
     , rootFold : Bool
+
+    -- REFERENCE-SPINE PAP SUCCESSORS (plans/lss-ref-pap-spine.md): at every
+    -- standalone-reference injection (VarGlobal plain + kernel-alias,
+    -- VarCycle, VarEnum, VarBox — both Translate and LssInfer mint arms),
+    -- after the head member, also write the PAP successors down the loaded
+    -- type's result spine: depth d in 1..declaredArity-1 gets
+    -- `p|<global>|<d>` — the SAME ids `injectPapMember` (papMembers) and
+    -- `memberIdForDepth` (regIdentity) mint, so all three paths unify (the
+    -- E9.2 one-identity rule). This is the paper's 𝒬 applied to the nested
+    -- λs of the conceptually-curried global at its instantiation, with
+    -- transport left to ordinary unification; LSS_013 stops the walk at
+    -- declaredArity (beyond it the arrows belong to the body's result).
+    -- Targets the largest surviving var population: /a0/r-shaped
+    -- argument-spine PAPs, 58 % of all var (census 2026-08-28).
+    --
+    -- NOT `spineArity`: that dormant flag injects the SAME g| member at
+    -- every depth — a conflated identity that papMembers rejected (g| is
+    -- stampable; a PAP is not) and that would split against papMembers'
+    -- p| producer mints. The two flags are mutually exclusive by intent.
+    --
+    -- Artifact-affecting (annotations and keyed spec keys move).
+    -- DEFAULT-OFF. Hash token `lssRP=1`; env `ECO_MONO_LSS_REF_PAP_SPINE`.
+    , refPapSpine : Bool
     }
 
 
@@ -597,6 +620,7 @@ defaultLss =
     , arrowCensus = False
     , regIdentity = True
     , rootFold = True
+    , refPapSpine = False
     }
 
 
@@ -990,6 +1014,7 @@ lssDecoder =
         |> D.apply (D.optionalField "arrowCensus" D.bool defaultLss.arrowCensus)
         |> D.apply (D.optionalField "regIdentity" D.bool defaultLss.regIdentity)
         |> D.apply (D.optionalField "rootFold" D.bool defaultLss.rootFold)
+        |> D.apply (D.optionalField "refPapSpine" D.bool defaultLss.refPapSpine)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -1458,6 +1483,21 @@ hash cfg =
                     , if lss.rootFold /= defaultLss.rootFold then
                         [ "lssRF="
                             ++ (if lss.rootFold then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- Reference-spine PAP successors: artifact-affecting
+                    -- (annotations and keyed spec keys move).
+                    , if lss.refPapSpine /= defaultLss.refPapSpine then
+                        [ "lssRP="
+                            ++ (if lss.refPapSpine then
                                     "1"
 
                                 else

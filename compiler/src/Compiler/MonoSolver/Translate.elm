@@ -3903,20 +3903,35 @@ injectArgLambdaMember arg canVar =
             -- value — mint the kernel member (one identity; a split g|/k|
             -- identity would join to a 2-set and kill singleton consumers),
             -- registered for the kernel devirt's reverse lookup.
+            -- refPapSpine (plans/lss-ref-pap-spine.md): after the head
+            -- member, the PAP successors p|g|d ride the result spine. The
+            -- kernel-alias HEAD stays k| (kernelToSig's inner-arrow hazard is
+            -- a k|-member hazard); the successors key by the ALIAS global,
+            -- matching injectPapMember's producer key for the same values.
             (\s ->
-                case LssInfer.kernelAliasOf g s of
-                    Just ( kernelPrefix, home, name ) ->
-                        standaloneArgKernelMember ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name ) canVar s
+                case
+                    (case LssInfer.kernelAliasOf g s of
+                        Just ( kernelPrefix, home, name ) ->
+                            standaloneArgKernelMember ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name ) canVar s
 
-                    Nothing ->
-                        standaloneArgMember ("g|" ++ TOpt.toComparableGlobal g) g canVar s
+                        Nothing ->
+                            standaloneArgMember ("g|" ++ TOpt.toComparableGlobal g) g canVar s
+                    )
+                of
+                    Err e ->
+                        Err e
+
+                    Ok ( _, s1 ) ->
+                        LssInfer.injectPapSuccessors g canVar s1
             )
 
         TOpt.VarEnum _ g _ _ ->
-            standaloneArgMember ("c|" ++ TOpt.toComparableGlobal g) g canVar
+            Engine.andThen (\_ -> LssInfer.injectPapSuccessors g canVar)
+                (standaloneArgMember ("c|" ++ TOpt.toComparableGlobal g) g canVar)
 
         TOpt.VarBox _ g _ ->
-            standaloneArgMember ("c|" ++ TOpt.toComparableGlobal g) g canVar
+            Engine.andThen (\_ -> LssInfer.injectPapSuccessors g canVar)
+                (standaloneArgMember ("c|" ++ TOpt.toComparableGlobal g) g canVar)
 
         TOpt.VarCycle _ home name _ ->
             -- GAP-7 seam 2 (LSS_020 plan Phase E.2): a cycle member passed as
@@ -3926,7 +3941,8 @@ injectArgLambdaMember arg canVar =
             -- Link→Cycle→wildcard). The provisional `g|` id grounds at zonk
             -- per LSS_019; depth stays in lockstep with the inference side
             -- through `spineDepthForGlobal` (Cycle-arm-aware since E.1).
-            standaloneArgMember ("g|" ++ TOpt.toComparableGlobal (TOpt.Global home name)) (TOpt.Global home name) canVar
+            Engine.andThen (\_ -> LssInfer.injectPapSuccessors (TOpt.Global home name) canVar)
+                (standaloneArgMember ("g|" ++ TOpt.toComparableGlobal (TOpt.Global home name)) (TOpt.Global home name) canVar)
 
         _ ->
             \s -> Ok ( (), s )
@@ -4072,18 +4088,8 @@ injectPapMember global funcVar argCount s0 =
                     in
                     Engine.andThen
                         (\mid -> LssInfer.injectSpineMemberId 1 mid residualVar)
-                        (Engine.memberIdFor (papMemberKey global argCount))
+                        (Engine.memberIdFor (LssInfer.papMemberKey global argCount))
                         s3
-
-
-{-| The PAP element's key: `p|<global>|<supplied>`. Distinct per (global,
-arity-prefix) because those ARE distinct values — and distinct from the
-callee's own `g|`/`k|` key, which denotes the unapplied global and licenses a
-direct-call rewrite that a PAP cannot support.
--}
-papMemberKey : TOpt.Global -> Int -> String
-papMemberKey global argCount =
-    "p|" ++ TOpt.toComparableGlobal global ++ "|" ++ String.fromInt argCount
 
 
 {-| Registration self-identity (plans/lss-registration-self-identity.md §1.1):
@@ -4103,7 +4109,7 @@ ports) — the stamp skips the whole global and the census counts it.
 memberIdForDepth : TOpt.Global -> Int -> Maybe String -> Step (Maybe Int)
 memberIdForDepth g d groundKey s0 =
     if d > 0 then
-        Engine.map Just (Engine.memberIdFor (papMemberKey g d)) s0
+        Engine.map Just (Engine.memberIdFor (LssInfer.papMemberKey g d)) s0
 
     else
         case LssInfer.kernelAliasOf g s0 of

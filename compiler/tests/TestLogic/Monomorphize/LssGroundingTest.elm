@@ -311,8 +311,13 @@ run ground =
     Pipeline.runSolverMonoWithLimits
         Config.defaultLimits
         -- sigFlow PINNED OFF: LSS_019 grounding pins in isolation from the
-        -- sigFlow default flip (2026-08-21).
-        { defaults | enabled = True, keyed = True, groundStandalones = ground, sigFlow = False }
+        -- sigFlow default flip (2026-08-21). rootFold PINNED OFF (2026-08-28,
+        -- same isolation rule, 5th occurrence of the overlapping-flag
+        -- pattern): the fold interns one GROUND g| id per demanded layout at
+        -- the lambda mint itself, so the flag-off arm's "exactly one family
+        -- id" pin — which is about GROUNDING, not folding — broke when
+        -- rootFold went default-on.
+        { defaults | enabled = True, keyed = True, groundStandalones = ground, sigFlow = False, rootFold = False }
         twoLayoutModule
         |> Result.map factsOf
 
