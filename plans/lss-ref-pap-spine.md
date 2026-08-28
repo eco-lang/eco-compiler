@@ -1,8 +1,8 @@
 # Reference-spine PAP successors — `lss.refPapSpine`
 
-**Status: IMPLEMENTED 2026-08-28 — P0 gates PASSED (probe var 2→0; self-compile
-coverage 80.03 %→83.10 %, var −3,795, top −132). Battery in flight. Default-off;
-flip decision with the user.**
+**Status: COMPLETE + FLIPPED DEFAULT-ON 2026-08-28 (user decision, same-day
+build-and-flip). Same-source coverage 79.85 %→83.10 % at EXACTLY neutral
+dispatch. Escape hatch `ECO_MONO_LSS_REF_PAP_SPINE=0`.**
 Date: 2026-08-28. Follows `memory/lss-remaining-unknowns-census.md` (the Aug 28
 census that identified this as the one remaining lever with mass) and
 `test/elm/src/LssGapReturnedClosure.elm` (the probe that isolated the shape).
@@ -316,6 +316,22 @@ off-vs-on DIFFERENTIALS (the TestPipeline lesson), config
   new class.
 - Trap re-recorded: the flag-on `--target full` arm DELETES
   `bin/eco-compiler`; rebuild before any subsequent census run.
+
+### 5.2 Dispatch neutrality (2026-08-28) — EXACT
+
+Run-AO-style pair, both artifacts from current source (flag-off `out-qoff.mlir`
+vs flag-on `out-refspine.mlir`), lowered and run on the same cold self-compile:
+
+| | off-built | on-built | delta |
+|---|---:|---:|---:|
+| `sat` | 2,226,821,617 | 2,226,828,952 | +7,335 (3e-6 — registry-jitter band) |
+| `typed` | 35,468,926 | 35,468,926 | **0 exact** |
+| wall | 7:31.58 | 7:26.86 | noise |
+| workload outputs | | | **BYTE-IDENTICAL** |
+
+AR-2 confirmed: `p|` members decline devirt; +3.07 pp coverage moved ZERO
+dispatch decisions. Also proves the flag-on-built compiler is a correct
+compiler (byte-identical workload output).
 
 ### 5.1 P0 results (2026-08-28)
 

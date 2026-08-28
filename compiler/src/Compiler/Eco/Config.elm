@@ -572,7 +572,15 @@ type alias LssConfig =
     -- p| producer mints. The two flags are mutually exclusive by intent.
     --
     -- Artifact-affecting (annotations and keyed spec keys move).
-    -- DEFAULT-OFF. Hash token `lssRP=1`; env `ECO_MONO_LSS_REF_PAP_SPINE`.
+    -- DEFAULT-ON since 2026-08-28 (same-day build and flip, user decision):
+    -- same-source coverage 79.85 % -> 83.10 % (+3.25 pp, var -4,104, top
+    -- -134) at EXACTLY neutral dispatch (typed delta 0, sat +7,335 of
+    -- 2.23 B = jitter, workload outputs byte-identical) and REDUCED spec
+    -- fan-out (List.foldl created specs 2,540 -> 2,137 — concrete p| key
+    -- fragments merge demands that per-type var numbering keyed apart).
+    -- E2E 1,707/1,707 both arms; Q-infer diverge=0 both arms. Escape hatch
+    -- `ECO_MONO_LSS_REF_PAP_SPINE=0`; hash token `lssRP=0` now rides the
+    -- OFF arm.
     , refPapSpine : Bool
     }
 
@@ -620,7 +628,7 @@ defaultLss =
     , arrowCensus = False
     , regIdentity = True
     , rootFold = True
-    , refPapSpine = False
+    , refPapSpine = True
     }
 
 

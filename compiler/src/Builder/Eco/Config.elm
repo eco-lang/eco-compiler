@@ -1973,7 +1973,8 @@ the PAP successors `p|<global>|<d>` down the loaded type's result spine
 (d in 1..declaredArity-1) — the same ids papMembers' producer injection and
 regIdentity's registration stamp mint, so the three paths unify. Targets the
 /a0/r argument-spine var population (58 % of all var, census 2026-08-28).
-Artifact-affecting. DEFAULT-OFF. Hash token `lssRP=`.
+Artifact-affecting. DEFAULT-ON since 2026-08-28 (+3.25 pp coverage,
+dispatch exactly neutral). Hash token `lssRP=`.
 -}
 applyLssRefPapSpineOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssRefPapSpineOverride maybeVal cfg =
