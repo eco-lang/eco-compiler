@@ -147,6 +147,33 @@ void Allocator::dumpHeapState([[maybe_unused]] const char* label,
 // Thread-local heap pointer for fast access.
 constinit thread_local ThreadLocalHeap* Allocator::tl_heap_ = nullptr;
 
+// Codegen-visible cache of `tl_heap_->getNursery().bumpState()`
+// (plans/inline-bump-state-tls.md). Holds exactly what eco_bump_state()
+// returns, so expandInlineAllocs can read the nursery bump state with a TLS
+// load instead of a call — 10.46 B calls on one self-compile per the survivor
+// census. `extern "C"`: the backend references this symbol by name, so it must
+// not be mangled. constinit + initial-exec for the same reasons as `tl_heap_`
+// (no dynamic-init guard, no __tls_get_addr call under -fPIC).
+//
+// The address is thread-stable: `nursery_` is a direct member of
+// ThreadLocalHeap and `bump_` a direct member of NurserySpace, so `&bump_`
+// never moves for the heap's lifetime — only its contents change, and the
+// inline expansion re-loads those per allocation.
+//
+// NEVER assign this outside Allocator::setThreadHeap: a value that disagrees
+// with `tl_heap_` is heap corruption, not a wrong statistic.
+extern "C" constinit thread_local void* eco_tl_bump_state
+    __attribute__((tls_model("initial-exec"))) = nullptr;
+
+// The ONLY writer of `tl_heap_`. Keeping both in one function is what makes
+// the compiled-code bump-state cache correct by construction rather than by
+// remembering to update two things at four call sites.
+void Allocator::setThreadHeap(ThreadLocalHeap* h) {
+    tl_heap_ = h;
+    eco_tl_bump_state = h ? static_cast<void*>(h->getNursery().bumpState())
+                          : nullptr;
+}
+
 Allocator::Allocator() :
     heap_base(nullptr), heap_reserved(0),
     old_gen_committed(0), old_gen_in_use_bytes_(0), old_gen_in_use_peak_(0),
@@ -264,7 +291,7 @@ void Allocator::initThread() {
     // Double-check after acquiring lock.
     auto thread_id = std::this_thread::get_id();
     if (thread_heaps_.find(thread_id) != thread_heaps_.end()) {
-        tl_heap_ = thread_heaps_[thread_id].get();
+        setThreadHeap(thread_heaps_[thread_id].get());
         return;
     }
 
@@ -279,7 +306,7 @@ void Allocator::initThread() {
         &config_
     );
 
-    tl_heap_ = heap.get();
+    setThreadHeap(heap.get());
     thread_heaps_[thread_id] = std::move(heap);
 }
 
@@ -303,7 +330,7 @@ void Allocator::cleanupThread() {
         thread_heaps_.erase(it);
     }
 
-    tl_heap_ = nullptr;
+    setThreadHeap(nullptr);
 }
 
 // Slow path for `getRootSet()` — used by external callers that may run
@@ -817,7 +844,7 @@ void Allocator::reset(const HeapConfig* new_config) {
 
     // Clear all thread heaps.
     thread_heaps_.clear();
-    tl_heap_ = nullptr;
+    setThreadHeap(nullptr);
 
     // Reset committed memory tracking.
     old_gen_committed = 0;

@@ -1211,6 +1211,59 @@ struct CapHoistDecisions {
     }
 };
 
+//===----------------------------------------------------------------------===//
+// Bump-state access (plans/inline-bump-state-tls.md)
+//
+// Both bump-state consumers — the HEAP_034 allocation diamond
+// (expandInlineAllocs) and the CGEN_074 hoisted capacity check
+// (applyCapacityHoisting) — need the address of the calling thread's
+// {ptr, end} struct. `eco_bump_state()`'s body is already call-free, but it
+// lives in EcoRuntimeStatic, invisible to LLVM here (no LTO), so every use
+// paid a call/ret plus the caller-saved clobber a call forces at the site.
+// The survivor census measured 10,462,396,845 of them on one self-compile —
+// the largest single row in the census.
+//
+// `eco_tl_bump_state` (defined in Allocator.cpp) caches exactly what
+// eco_bump_state() returns and is written only by Allocator::setThreadHeap,
+// so it cannot drift from `tl_heap_`. Caching the ADDRESS is sound because it
+// is thread-stable (`nursery_` is a direct member of ThreadLocalHeap, `bump_`
+// a direct member of NurserySpace, so `&bump_` never moves); the CONTENTS are
+// still re-loaded per use, exactly as before.
+//
+// NOT for the JIT: ORC cannot resolve an initial-exec TLS reference from
+// JIT'd code, so callers pass allowTls=false there and keep the call.
+//===----------------------------------------------------------------------===//
+
+static bool bumpStateInlineEnabled() {
+    static const bool on = [] {
+        const char *e = ::getenv("ECO_INLINE_BUMP_STATE");
+        return !(e && e[0] == '0' && e[1] == '\0');
+    }();
+    return on;
+}
+
+static GlobalVariable *getOrCreateBumpStateTls(Module &m) {
+    if (auto *gv = m.getGlobalVariable("eco_tl_bump_state", /*AllowInternal=*/true))
+        return gv;
+    auto *gv = new GlobalVariable(
+        m, PointerType::get(m.getContext(), 0), /*isConstant=*/false,
+        GlobalValue::ExternalLinkage, /*Initializer=*/nullptr,
+        "eco_tl_bump_state", /*InsertBefore=*/nullptr,
+        GlobalValue::InitialExecTLSModel);
+    gv->setAlignment(Align(8));
+    return gv;
+}
+
+// Emit the bump-state address at `b`'s insert point. `tls` non-null selects
+// the TLS load; otherwise the runtime call is kept.
+static Value *emitBumpStateAddr(IRBuilder<> &b, GlobalVariable *tls,
+                                FunctionCallee bumpStateCallee) {
+    if (!tls)
+        return b.CreateCall(bumpStateCallee, {}, "eco.bump.state");
+    Value *slot = b.CreateThreadLocalAddress(tls);
+    return b.CreateAlignedLoad(b.getPtrTy(0), slot, Align(8), "eco.bump.state");
+}
+
 // Inline nursery allocation (plans/inline-nursery-allocation.md, HEAP_034).
 // Expand each `__eco_alloc_inline(SIZE)` marker call into the bump-pointer
 // fast/slow diamond:
@@ -1256,8 +1309,13 @@ struct CapHoistDecisions {
 // for markers whose capacity was already guaranteed by a dominating ensure:
 // bump with no end-load, no compare, no slow edge and no phi. Null / empty
 // (the default, ECO_ALLOC_HOIST unset) means every marker keeps its diamond.
+//
+// `allowTls` (plans/inline-bump-state-tls.md) selects how `%state` is
+// obtained: a TLS load of `eco_tl_bump_state` (AOT) or the
+// `eco_bump_state()` call (JIT, or ECO_INLINE_BUMP_STATE=0).
 static void expandInlineAllocs(Module &m,
-                               const CapHoistDecisions *decisions = nullptr) {
+                               const CapHoistDecisions *decisions = nullptr,
+                               bool allowTls = false) {
     Function *marker = m.getFunction("__eco_alloc_inline");
     if (!marker || marker->use_empty())
         return;
@@ -1284,6 +1342,26 @@ static void expandInlineAllocs(Module &m,
         bs->setSpeculatable();
         bs->addFnAttr("gc-leaf-function");
     }
+
+    // plans/inline-bump-state-tls.md: read the bump-state address straight out
+    // of TLS instead of calling into the runtime for it. eco_bump_state's body
+    // is already call-free, but it lives in EcoRuntimeStatic — invisible to
+    // LLVM here (no LTO) — so every allocation paid a call/ret plus the
+    // caller-saved clobber a call forces at each allocation site. The survivor
+    // census measured 10,462,396,845 of them on one self-compile: the largest
+    // single row in the whole census.
+    //
+    // `eco_tl_bump_state` (Allocator.cpp) caches exactly what eco_bump_state()
+    // returns and is written only by Allocator::setThreadHeap, so it cannot
+    // drift from tl_heap_. The address is thread-stable (nursery_ and bump_ are
+    // both direct members), so caching the ADDRESS is sound; its CONTENTS still
+    // get re-loaded per allocation below, exactly as before.
+    //
+    // NOT for the JIT: ORC cannot resolve an initial-exec TLS reference from
+    // JIT'd code, so `allowTls` is false there and the call is kept.
+    const bool useTlsBumpState = allowTls && bumpStateInlineEnabled();
+    GlobalVariable *bumpStateTls =
+        useTlsBumpState ? getOrCreateBumpStateTls(m) : nullptr;
 
     // eco_alloc_inline_slow(i64) -> ptr addrspace(1). Deliberately NOT
     // gc-leaf: this is the ONE statepoint of an inline-allocated construct
@@ -1321,7 +1399,7 @@ static void expandInlineAllocs(Module &m,
                                "must be a constant, 8-aligned, in (0, 4096]");
 
         IRBuilder<> b(ci);
-        Value *state = b.CreateCall(bumpStateCallee, {}, "eco.bump.state");
+        Value *state = emitBumpStateAddr(b, bumpStateTls, bumpStateCallee);
         Value *top = b.CreateAlignedLoad(as1, state, Align(8), "eco.bump.top");
 
         // Covered marker (CGEN_074): unchecked bump. The guarantee comes from
@@ -2313,7 +2391,8 @@ struct CapHoistRun {
 } // namespace
 
 static void applyCapacityHoisting(Module &m, CapHoistMode mode,
-                                  CapHoistDecisions *decisions) {
+                                  CapHoistDecisions *decisions,
+                                  bool allowTls = false) {
     Function *markerFn = m.getFunction("__eco_alloc_inline");
     TargetLibraryInfoImpl TLII(m.getTargetTriple());
     TargetLibraryInfo TLI(TLII);
@@ -2724,6 +2803,8 @@ static void applyCapacityHoisting(Module &m, CapHoistMode mode,
 
         // Same declaration + attributes expandInlineAllocs installs; whichever
         // pass runs first wins and the other's getOrInsertFunction finds it.
+        // Kept even under the TLS path: it is the JIT / ECO_INLINE_BUMP_STATE=0
+        // fallback that emitBumpStateAddr falls back to.
         FunctionCallee bumpStateCallee = m.getOrInsertFunction(
             "eco_bump_state", FunctionType::get(as0, {}, /*isVarArg=*/false));
         if (auto *bs = dyn_cast<Function>(bumpStateCallee.getCallee())) {
@@ -2733,6 +2814,11 @@ static void applyCapacityHoisting(Module &m, CapHoistMode mode,
             bs->setSpeculatable();
             bs->addFnAttr("gc-leaf-function");
         }
+        // plans/inline-bump-state-tls.md: the hoisted ensure reads the bump
+        // state too, so it takes the same TLS path as the alloc diamond.
+        GlobalVariable *bumpStateTls =
+            (allowTls && bumpStateInlineEnabled()) ? getOrCreateBumpStateTls(m)
+                                                   : nullptr;
 
         // eco_ensure_nursery_slow(i64) -> void (HEAP_041). Deliberately NOT
         // gc-leaf: it is the ONE statepoint of a covered region, and it must
@@ -2753,7 +2839,7 @@ static void applyCapacityHoisting(Module &m, CapHoistMode mode,
 
         for (const CapHoistRun &run : runs) {
             IRBuilder<> b(run.head);
-            Value *state = b.CreateCall(bumpStateCallee, {}, "eco.bump.state");
+            Value *state = emitBumpStateAddr(b, bumpStateTls, bumpStateCallee);
             Value *top = b.CreateAlignedLoad(as1, state, Align(8), "eco.ens.top");
             Value *endp =
                 b.CreateGEP(i8Ty, state, {b.getInt64(8)}, "eco.ens.endp");
@@ -3055,7 +3141,9 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
                        "ECO_GCFREE_LEAF (stamp mode); it is currently off\n";
         } else {
             MaybeScope s(job.stats, "  capacity-hoist analysis (serial)");
-            applyCapacityHoisting(m, capHoistMode(), &capHoist);
+            applyCapacityHoisting(
+                m, capHoistMode(), &capHoist,
+                /*allowTls=*/job.kind == BackendKind::EmitObjectFile);
         }
     }
 
@@ -3065,7 +3153,10 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     // for bodyIsGCCallFree in the barriers-off fallback config).
     // CGEN_074's decisions select the unchecked form per marker; empty when
     // hoisting is off or census-only.
-    expandInlineAllocs(m, &capHoist);
+    // TLS bump-state only for AOT object emission: ORC cannot resolve an
+    // initial-exec TLS reference from JIT'd code (plans/inline-bump-state-tls.md).
+    expandInlineAllocs(m, &capHoist,
+                       /*allowTls=*/job.kind == BackendKind::EmitObjectFile);
 
     // E1.3: `$cap` inline prepass — must precede EVERY RS4GC flavour (serial,
     // deferred, and per-partition; all are downstream of this point). Skipped

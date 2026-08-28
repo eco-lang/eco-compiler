@@ -161,7 +161,15 @@ HPtr eco_alloc_cons_uninit(uint32_t head_kind);
 //===----------------------------------------------------------------------===//
 
 // Address of the calling thread's nursery bump state {ptr at +0, end at +8}.
+// Kept for the JIT (which cannot resolve initial-exec TLS from JIT'd code) and
+// as the ECO_INLINE_BUMP_STATE=0 escape; AOT codegen reads the TLS cache below
+// directly (plans/inline-bump-state-tls.md).
 void* eco_bump_state(void);
+// TLS cache of the same address, published for expandInlineAllocs so the
+// allocation fast path costs a TLS load instead of a call. Maintained ONLY by
+// Allocator::setThreadHeap. Declared here for documentation and the symbol
+// map — compiled code references it by name, not through this header.
+extern thread_local void* eco_tl_bump_state;
 // Inline-bump slow path: minor GC; returns UNINITIALIZED
 // storage — caller stores header + all fields before its next safepoint.
 HPtr eco_alloc_inline_slow(uint64_t size);

@@ -361,6 +361,11 @@ private:
     static constinit thread_local ThreadLocalHeap* tl_heap_
         __attribute__((tls_model("initial-exec")));
 
+    // Sets `tl_heap_` AND the codegen-visible `eco_tl_bump_state` cache
+    // (plans/inline-bump-state-tls.md). The SOLE writer of `tl_heap_` —
+    // assign it directly and compiled code keeps bumping a stale nursery.
+    static void setThreadHeap(ThreadLocalHeap* h);
+
     // ========== Internal Methods ==========
 
     // Returns the calling thread's heap, or nullptr if not initialized.
