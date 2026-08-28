@@ -1663,14 +1663,40 @@ classifyLambdaHead arity srcLam canType s0 =
 
                     Nothing ->
                         ( Nothing, Engine.bumpArgFlowCensus "rootAnn|absent" s0 )
+            -- `lss.rootFold` (plans/lss-root-member-fold.md §1.2): the
+            -- stashed-root path IS the def's root lambda — record
+            -- `srcLam -> global` so the mint moments below folds it to the
+            -- ground standalone key. Kernel-alias globals are skipped HERE
+            -- (Engine cannot import `kernelAliasOf` — the import cycle):
+            -- folding one would re-create the g|/k| split E9.2 removes.
+            s0c =
+                case ( s0b.env.lss.rootFold, maybeRootVar, ( srcLam, s0b.currentGlobal ) ) of
+                    ( True, Just _, ( Just lamId, Just (Mono.Global home name) ) ) ->
+                        let
+                            g =
+                                TOpt.Global home name
+                        in
+                        case LssInfer.kernelAliasOf g s0b of
+                            Just _ ->
+                                Engine.bumpArgFlowCensus "rootFold|kernelSkip" s0b
+
+                            Nothing ->
+                                let
+                                    tbl =
+                                        s0b.lssMemberTable
+                                in
+                                { s0b | lssMemberTable = { tbl | rootLamOf = Dict.insert (Engine.srcLambdaKey lamId) g tbl.rootLamOf } }
+
+                    _ ->
+                        s0b
         in
         case
             (case maybeRootVar of
                 Just annVar ->
-                    Ok ( annVar, s0b )
+                    Ok ( annVar, s0c )
 
                 Nothing ->
-                    Store.loadType canType s0b
+                    Store.loadType canType s0c
             )
         of
             Err e ->
@@ -4074,8 +4100,8 @@ injection path mints, which is the whole soundness story:
 `Nothing` = this global has no standalone identity here (raw kernels, managers,
 ports) — the stamp skips the whole global and the census counts it.
 -}
-memberIdForDepth : TOpt.Global -> Int -> Step (Maybe Int)
-memberIdForDepth g d s0 =
+memberIdForDepth : TOpt.Global -> Int -> Maybe String -> Step (Maybe Int)
+memberIdForDepth g d groundKey s0 =
     if d > 0 then
         Engine.map Just (Engine.memberIdFor (papMemberKey g d)) s0
 
@@ -4110,7 +4136,20 @@ memberIdForDepth g d s0 =
                         Ok ( Nothing, s0 )
 
                     Just _ ->
-                        Engine.map Just (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal g) g) s0
+                        case groundKey of
+                            Just tk ->
+                                -- `lss.rootFold` §1.3: mint the GROUND id
+                                -- directly — the same string the folded root
+                                -- mint and LSS_019 reference grounding
+                                -- produce, so all three converge on one id.
+                                let
+                                    ( mid, table1, next1 ) =
+                                        Engine.groundStandaloneMemberIdFor g tk s0.lssMemberTable s0.nextMemberId
+                                in
+                                Ok ( Just mid, { s0 | lssMemberTable = table1, nextMemberId = next1 } )
+
+                            Nothing ->
+                                Engine.map Just (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal g) g) s0
 
                     Nothing ->
                         Ok ( Nothing, s0 )
@@ -4136,18 +4175,40 @@ stampSelfSpine g monoType s0 =
         Ok ( monoType, s0 )
 
     else
-        stampSpineGo g (LssInfer.declaredArityOf g 8 s0) 0 monoType s0
+        let
+            -- §1.3: the head's ground qualifier is the widened whole type —
+            -- pure `Mono.widenSets`, string-equal to the spec's captured
+            -- creation key (`widenSets` ⊤-widens every anno, so stamped and
+            -- unstamped demands render identically). Only built flag-on.
+            groundKey =
+                if s0.env.lss.rootFold then
+                    Just (Mono.toComparableMonoType (Mono.widenSets monoType))
+
+                else
+                    Nothing
+        in
+        stampSpineGo g groundKey (LssInfer.declaredArityOf g 8 s0) 0 monoType s0
 
 
-stampSpineGo : TOpt.Global -> Int -> Int -> Mono.MonoType -> Step Mono.MonoType
-stampSpineGo g arity d monoType s0 =
+stampSpineGo : TOpt.Global -> Maybe String -> Int -> Int -> Mono.MonoType -> Step Mono.MonoType
+stampSpineGo g groundKey arity d monoType s0 =
     if d >= arity then
         Ok ( monoType, s0 )
 
     else
         case monoType of
             Mono.MFunction _ anno args ret ->
-                case memberIdForDepth g d s0 of
+                case
+                    memberIdForDepth g
+                        d
+                        (if d == 0 then
+                            groundKey
+
+                         else
+                            Nothing
+                        )
+                        s0
+                of
                     Err e ->
                         Err e
 
@@ -4164,7 +4225,7 @@ stampSpineGo g arity d monoType s0 =
                                     _ ->
                                         ( Mono.LSet [ mid ], Engine.bumpArgFlowCensus "regid|stamped" s1 )
                         in
-                        case stampSpineGo g arity (d + 1) ret s2 of
+                        case stampSpineGo g groundKey arity (d + 1) ret s2 of
                             Err e ->
                                 Err e
 

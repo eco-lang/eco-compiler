@@ -434,6 +434,7 @@ type alias LssMemberTable =
     , muTied : CoreDict.Dict Int () -- LSS_018: member ids ever the target of a μ-tie — exported as MonoGraph.lssBlockedMembers (AbiCloning force-blocks them)
     , provisionalStandalone : CoreDict.Dict Int TOpt.Global -- LSS_019: ids minted by standaloneMemberIdFor with a "g|"/"c|" key (NOT kernel-alias-folded, NOT ground). Written at the same intern site; the zonk grounding rewrite consults this to decide "rewrite" vs "pass through". Ground ids are NEVER in this dict — that is what makes grounding idempotent.
     , specWidenedKeys : CoreDict.Dict Int String -- LSS_024: SpecId -> the IMMUTABLE annotation-widened creation key (toComparableMonoType of widenSets keyType), captured write-once at spec creation (enqueueSpecKeyed / seedSpec — §2.2 of plans/lss-layout-qualified-members.md). Qualifies lambda mints under lss.layoutQualMembers; a missing entry falls back to SpecId qualification (censused, expected 0).
+    , rootLamOf : CoreDict.Dict Int TOpt.Global -- `lss.rootFold` (plans/lss-root-member-fold.md §1.2): raw SrcLambdaId -> the global whose def-ROOT lambda it is. Populated by `Translate.classifyLambdaHead` on the stashed-root path, flag-on only, kernel-alias globals excluded THERE (folding one would re-create the g|/k| split E9.2 removes). A miss mints `l|` exactly as today. Lives on the member table, not S — S sits at the runtime's 32-slot record GC-scan cap (the grounding/sigStats/layoutQual rationale).
     }
 
 
@@ -468,7 +469,7 @@ emptyMonoMemo =
 
 emptyMemberTable : LssMemberTable
 emptyMemberTable =
-    { byKey = CoreDict.empty, sources = CoreDict.empty, lambdaQualified = CoreDict.empty, muTied = CoreDict.empty, provisionalStandalone = CoreDict.empty, specWidenedKeys = CoreDict.empty }
+    { byKey = CoreDict.empty, sources = CoreDict.empty, lambdaQualified = CoreDict.empty, muTied = CoreDict.empty, provisionalStandalone = CoreDict.empty, specWidenedKeys = CoreDict.empty, rootLamOf = CoreDict.empty }
 
 
 insertMemberKey : String -> Int -> LssMemberTable -> LssMemberTable
@@ -656,19 +657,44 @@ its widened key is equal and the mint re-interns the same string).
 lambdaMemberLayoutQualified : Int -> Int -> Step Int
 lambdaMemberLayoutQualified raw specId s0 =
     let
-        ( key, isFallback ) =
+        ( plainKey, isFallback ) =
             layoutQualKey s0.lssMemberTable.specWidenedKeys raw specId
+
+        -- `lss.rootFold` (plans/lss-root-member-fold.md §1.1): a def's ROOT
+        -- lambda interns the GROUND STANDALONE key of its global instead of
+        -- the `l|` key — same qualifier tail, so the string equals what
+        -- LSS_019 grounding produces from a reference and what the
+        -- `regIdentity` head stamp mints. One string ⇒ one id ⇒ the
+        -- `{l|, g|}` head pairs collapse to singletons. Interning is
+        -- get-or-create by key and EVERY consumer (injection, closure
+        -- instance lookup, μ-tie comparison) recomputes the key through this
+        -- function, so mint and lookup cannot disagree.
+        ( key, foldedTo ) =
+            if s0.env.lss.rootFold then
+                case CoreDict.get raw s0.lssMemberTable.rootLamOf of
+                    Just g ->
+                        ( "g|"
+                            ++ TOpt.toComparableGlobal g
+                            ++ String.dropLeft (String.length ("l|" ++ String.fromInt raw)) plainKey
+                        , Just g
+                        )
+
+                    Nothing ->
+                        ( plainKey, Nothing )
+
+            else
+                ( plainKey, Nothing )
     in
     case CoreDict.get raw s0.itemAux.demandQualified of
         Just tiedId ->
             if CoreDict.get key s0.lssMemberTable.byKey == Just tiedId then
-                mintLayoutQualified key raw specId isFallback True s0
+                mintLayoutQualifiedFold foldedTo key raw specId isFallback True s0
 
             else
                 Ok ( tiedId, recordMuTied tiedId s0 )
 
         Nothing ->
-            mintLayoutQualified key raw specId isFallback False s0
+            mintLayoutQualifiedFold foldedTo key raw specId isFallback False s0
 
 
 {-| LSS_024: the key a layout-qualified mint interns — `l|<raw>|<widenedKey>`
@@ -684,6 +710,33 @@ layoutQualKey specWidenedKeys raw specId =
 
         Nothing ->
             ( "l|" ++ String.fromInt raw ++ "|" ++ String.fromInt specId, True )
+
+
+{-| `lss.rootFold`: the mint tail, plus `SourceGlobal` registration when the
+id was FOLDED — the folded id denotes the global, and devirt's reverse lookup
+(and the stampable-class licensing) read `sources`. Ground ids never enter
+`provisionalStandalone` (LSS_019 idempotence).
+-}
+mintLayoutQualifiedFold : Maybe TOpt.Global -> String -> Int -> Int -> Bool -> Bool -> Step Int
+mintLayoutQualifiedFold foldedTo key raw specId isFallback isTieBypass s0 =
+    case mintLayoutQualified key raw specId isFallback isTieBypass s0 of
+        Err e ->
+            Err e
+
+        Ok ( mid, s1 ) ->
+            case foldedTo of
+                Just g ->
+                    if CoreDict.member mid s1.lssMemberTable.sources then
+                        Ok ( mid, bumpArgFlowCensus "rootFold|folded" s1 )
+
+                    else
+                        Ok ( mid
+                           , bumpArgFlowCensus "rootFold|folded"
+                                { s1 | lssMemberTable = insertMemberGlobal mid g s1.lssMemberTable }
+                           )
+
+                Nothing ->
+                    Ok ( mid, s1 )
 
 
 {-| The LSS_024 intern + census tail: interns `key`, records the LSS_018

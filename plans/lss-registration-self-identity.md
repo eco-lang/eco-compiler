@@ -495,7 +495,12 @@ it cost nothing to acquire.
    and `LssSigRootIdentityTest` (same reader in its co-gate).
    `LssRegIdentityTest` itself needed nothing — its harness sets the flag
    EXPLICITLY from the pin's parameter in both arms.
-3. Flip battery: frozen-corpus equivalence (pre-flip binary env-forced ON vs
-   new-defaults binary, byte-compare — satisfiable because the workload is the
-   frozen corpus, §3.2a of the sigRoot plan), census at defaults, elm-tests,
-   E2E at defaults. Results recorded below on completion.
+3. Flip battery — ALL GREEN (2026-08-28):
+   - frozen-corpus equivalence: pre-flip binary env-forced ON vs new-defaults
+     binary with no env — **byte-IDENTICAL** (the flip lands exactly the
+     measured configuration);
+   - census at defaults: `positions=132994 k1=51085 kN=55664 var=16545
+     top=9700 coveredBp=8026` — field-for-field the measured flag-on leg;
+   - elm-tests: 13,372 / the pre-existing 12 EXACTLY (the preemptive pinning
+     held — zero new failures);
+   - E2E at defaults: **1,706/1,706**.

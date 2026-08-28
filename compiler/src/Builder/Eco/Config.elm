@@ -218,6 +218,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\rgVal -> applyLssRegIdentityOverride rgVal cfg4eg)
             )
         |> Task.andThen
+            (\cfg4eh ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_ROOT_FOLD" |> Task.mapError never)
+                    |> Task.map (\rfVal -> applyLssRootFoldOverride rfVal cfg4eh)
+            )
+        |> Task.andThen
             (\cfg4f ->
                 (Utils.envLookupEnv "ECO_SPEC_TYPE_NODE_LIMIT" |> Task.mapError never)
                     |> Task.map (\tnVal -> applySpecTypeNodeLimitOverride tnVal cfg4f)
@@ -1925,6 +1930,30 @@ applyLssRegIdentityOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | regIdentity = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_ROOT_FOLD=1|true|yes / 0|false|no`
+(plans/lss-root-member-fold.md): intern a def's ROOT lambda member under its
+global's GROUND STANDALONE key, so the `{l|, g|}` split-identity pairs the
+`regIdentity` stamp exposed collapse to singletons at heads. Kernel-alias
+roots never fold. Artifact-affecting. DEFAULT-ON since 2026-08-28 (25.86 M
+indirect dispatches eliminated, −1.165 %). Hash token `lssRF=`.
+-}
+applyLssRootFoldOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssRootFoldOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | rootFold = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | rootFold = False }) cfg
 
             else
                 cfg

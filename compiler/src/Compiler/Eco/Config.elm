@@ -526,6 +526,31 @@ type alias LssConfig =
     -- `ECO_MONO_LSS_REG_IDENTITY=0`; hash token `lssRG=0` now rides the OFF
     -- arm.
     , regIdentity : Bool
+
+    -- ROOT-MEMBER FOLD (plans/lss-root-member-fold.md): a top-level def
+    -- carries TWO member ids — its body-root lambda's `l|` id and its
+    -- standalone `g|` id — and wherever both flow to one position (which
+    -- `regIdentity` made common at spec heads) the set is a sound but
+    -- singleton-consumer-useless 2-set. Under this flag the def's ROOT
+    -- lambda interns the GROUND STANDALONE key (`g|<global>|<layout>`)
+    -- instead of `l|<raw>|<layout>` — the E9.2 identity fold applied to
+    -- plain defs — and the `regIdentity` head stamp mints the same ground
+    -- key directly. One string, one id, singletons at heads.
+    --
+    -- Kernel-alias roots are NEVER folded (that would re-create the g|/k|
+    -- split E9.2 removes); deep-spine `{l|, p|}` pairs remain by design
+    -- (`p|` is the declining class). Artifact-affecting (member-id
+    -- allocation order moves).
+    --
+    -- DEFAULT-ON since 2026-08-28: k1 +25,209 / kN −25,792 (46,062 folded
+    -- mints, coverage flat by construction) and the arc's FIRST dispatch
+    -- win — sat 2,219,899,146 -> 2,194,042,291, i.e. 25,856,855 indirect
+    -- dispatches eliminated (−1.165 %) against byte-identical workload
+    -- output. Only 5,556,617 of those became stamped `$cap` calls; the other
+    -- 20,300,238 became DIRECT calls, which the dispatch census does not
+    -- count — so `fast %` (+0.353 pp) understates this ~4.7×. Escape hatch
+    -- `ECO_MONO_LSS_ROOT_FOLD=0`; hash token `lssRF=0` now rides the OFF arm.
+    , rootFold : Bool
     }
 
 
@@ -571,6 +596,7 @@ defaultLss =
     , sigRootIdentity = True
     , arrowCensus = False
     , regIdentity = True
+    , rootFold = True
     }
 
 
@@ -963,6 +989,7 @@ lssDecoder =
         |> D.apply (D.optionalField "sigRootIdentity" D.bool defaultLss.sigRootIdentity)
         |> D.apply (D.optionalField "arrowCensus" D.bool defaultLss.arrowCensus)
         |> D.apply (D.optionalField "regIdentity" D.bool defaultLss.regIdentity)
+        |> D.apply (D.optionalField "rootFold" D.bool defaultLss.rootFold)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -1416,6 +1443,21 @@ hash cfg =
                     , if lss.regIdentity /= defaultLss.regIdentity then
                         [ "lssRG="
                             ++ (if lss.regIdentity then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- Root-member fold: artifact-affecting (member-id
+                    -- allocation order and set contents move).
+                    , if lss.rootFold /= defaultLss.rootFold then
+                        [ "lssRF="
+                            ++ (if lss.rootFold then
                                     "1"
 
                                 else
