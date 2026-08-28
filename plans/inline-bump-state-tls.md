@@ -1,6 +1,7 @@
 # Inline the nursery bump-state TLS read — `ECO_INLINE_BUMP_STATE`
 
-**Status: IMPLEMENTED 2026-08-28; E2E 1,706/1,706; census A/B in flight.**
+**Status: COMPLETE 2026-08-28 — correct and structurally better, but WALL IS FLAT
+(−0.03 %). §3's 2–3 % prediction did not materialise; see §4.2.**
 Lead surfaced by the survivor call census
 (`plans/call-survivor-census.md` §4.1): `eco_bump_state` is the single largest
 row in the whole census at **10,462,396,845 surviving calls**.
@@ -145,6 +146,57 @@ teardown, so the claim would be false.
 - `eco-boot-native` spells the IR dump `--dump-pre-rs4gc-ir=<path>` (no
   `--dump-post-rs4gc-ir`), and dumping the full compiler module is too slow to
   be a check — use a small `build/test/elm-core/eco-stuff/mlir/*.mlir`.
+
+## 4.2 RESULTS — a clean negative on wall, a clean positive on structure
+
+Two cold self-compiles per leg, same stored `eco-compiler.mlir` re-lowered each
+way, same workload. **Census-OFF (the honest wall A/B):**
+
+| | pre-change | post-change | delta |
+|---|---:|---:|---:|
+| wall | 7:29.00 | 7:28.85 | **−0.15 s (−0.03 %) = FLAT** |
+| `sat` | 2,219,899,087 | 2,219,899,087 | 0 (identical) |
+| output | 14,978,231 B | 14,978,231 B | BYTE-IDENTICAL |
+
+**Census-ON**, same pair: 7:39.34 → 7:31.46, and that −7.88 s is NOT the
+optimization — roughly 3.4 s is the census itself getting cheaper (10.46 B
+sites stopped being calls, so they stopped being instrumented), and the rest
+does not survive into the census-off comparison. Quoting the census-on delta
+as the win would have been a measurement error; it was caught by running the
+census-off leg rather than reasoning about it.
+
+What DID move, all verified:
+
+- `runtime` bucket 20,741,222,712 → 10,278,727,421, i.e. **−10,462,495,291** —
+  matching the measured `eco_bump_state` count (10,462,396,845) to within
+  98,446 events (~1e-5 run jitter). The row is gone.
+- **`elm` −73,153,799 (−0.91 %)**, far outside jitter: dropping a call from
+  every allocation site made bodies smaller and more inlinable, so LLVM
+  inlined away Elm calls it previously could not. Unpredicted second-order win.
+- Surviving call sites 553,757 → 429,759 (−22.4 %).
+- E2E 1,706/1,706; self-compile output byte-identical on every leg.
+
+**Why flat — the §3 counter-risk was the right worry.** `eco_bump_state` was
+`memory(none)` + `speculatable`, so LLVM CSE'd and hoisted it; plain TLS loads
+are re-issued after any opaque call. The small-module probe showed the shape
+directly (12 calls → 13 TLS fetches, §4.1). We traded fewer-but-costlier
+fetches for more-but-cheaper ones and the two roughly cancelled. On top of
+that the deleted call was already a perfectly-predicted direct call to a
+6-instruction leaf, which an out-of-order core hides, and the self-compile is
+GC- and memory-bound (135 s of 460 s in the allocator alone), so ALU/call
+cycles on the allocation path are not the critical resource.
+
+**Disposition: ship.** It is correct (E2E green, byte-identical output),
+deletes 10.46 B call instructions and 124 k call sites, and improves inlining
+by 73 M calls — the same "ships for the deleted calls, not a measured win"
+basis as `stringLengthOp` (wall −0.12 %) and `appendSplit` (wall +0.80 %),
+both default-on in `Config.elm` on exactly this reasoning. `ECO_INLINE_BUMP_STATE=0`
+is the escape hatch if a future workload disagrees.
+
+**Lesson for the next census-driven lead:** a large *count* is not a large
+*cost*. The census ranks by events, and the top row was a cheap, well-predicted,
+already-CSE'd call in a memory-bound phase. Rank candidates by
+events × per-event cost × criticality, not events alone.
 
 ## 5. Out of scope
 
