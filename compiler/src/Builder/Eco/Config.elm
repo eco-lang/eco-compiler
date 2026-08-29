@@ -228,6 +228,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\rpVal -> applyLssRefPapSpineOverride rpVal cfg4ei)
             )
         |> Task.andThen
+            (\cfg4ej ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_INJ_TOTAL" |> Task.mapError never)
+                    |> Task.map (\itVal -> applyLssInjTotalOverride itVal cfg4ej)
+            )
+        |> Task.andThen
             (\cfg4f ->
                 (Utils.envLookupEnv "ECO_SPEC_TYPE_NODE_LIMIT" |> Task.mapError never)
                     |> Task.map (\tnVal -> applySpecTypeNodeLimitOverride tnVal cfg4f)
@@ -1985,6 +1990,29 @@ applyLssRefPapSpineOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | refPapSpine = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_INJ_TOTAL=1|true|yes / 0|false|no`
+(plans/lss-coverage-four-levers.md): the three injection-totality completion
+levers — completion-join head re-stamp, deep-PAP successor completion, and the
+Accessor/bare-VarKernel argument arms. Artifact-affecting. DEFAULT-ON since
+2026-08-29 (+4.97 pp coverage, dispatch exactly neutral). Hash token `lssIT=`.
+-}
+applyLssInjTotalOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssInjTotalOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | injTotal = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | injTotal = False }) cfg
 
             else
                 cfg

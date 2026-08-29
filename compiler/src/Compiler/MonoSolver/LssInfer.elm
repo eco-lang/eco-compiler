@@ -5,6 +5,7 @@ module Compiler.MonoSolver.LssInfer exposing
     , injectLambdaMemberQualified
     , injectSpineMemberId
     , injectPapSuccessors
+    , injectPapSuccessorsFrom
     , papMemberKey
     , canTypeMentionsArrow
     , kernelAliasOf
@@ -1738,7 +1739,14 @@ injectPapMemberInfer g argCount callVar s0 =
                 Err e
 
             Ok ( _, s1 ) ->
-                Ok ( WpOpaque callVar, s1 )
+                -- L2 (lss.injTotal): finish the deep residual — twin of the
+                -- Translate producer site, same keys, same walk.
+                case injectPapSuccessorsFrom g (argCount + 1) callVar s1 of
+                    Err e ->
+                        Err e
+
+                    Ok ( _, s2 ) ->
+                        Ok ( WpOpaque callVar, s2 )
 
 
 {-| Unify a callee instantiation's params against the args and its residual
@@ -2504,6 +2512,38 @@ cannot support.
 papMemberKey : TOpt.Global -> Int -> String
 papMemberKey global argCount =
     "p|" ++ TOpt.toComparableGlobal global ++ "|" ++ String.fromInt argCount
+
+
+{-| L2, deep-PAP successor completion (plans/lss-coverage-four-levers.md
+§1.2, `lss.injTotal`): finish `injectPapMember`'s residual. The producer
+injection writes `p|g|supplied` at the residual HEAD only; the depths past it
+(`papInject|deep`, 584 sites on a self-compile) hold further PAPs of the SAME
+global and get `p|g|d` for d in startDepth..arity-1 — the identical walk and
+identical keys as the reference-spine successors, entered one level down.
+Caller passes startDepth = supplied + 1 and the residual head variable.
+-}
+injectPapSuccessorsFrom : TOpt.Global -> Int -> IO.Variable -> Step ()
+injectPapSuccessorsFrom g startDepth v0 s0 =
+    if not (s0.env.lss.enabled && s0.env.lss.injTotal) then
+        Ok ( (), s0 )
+
+    else
+        let
+            arity =
+                declaredArityOf g 8 s0
+        in
+        if startDepth >= arity then
+            Ok ( (), s0 )
+
+        else
+            case mintPapSuccessorIds g startDepth arity [] s0 of
+                Err e ->
+                    Err e
+
+                Ok ( midsRev, s1 ) ->
+                    Store.foldSetWrites
+                        (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
+                        (Engine.bumpArgFlowCensus "papInject|deepDone" s1)
 
 
 {-| Reference-spine PAP successors (plans/lss-ref-pap-spine.md, `lss.refPapSpine`):

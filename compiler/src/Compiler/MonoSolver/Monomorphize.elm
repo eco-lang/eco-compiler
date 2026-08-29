@@ -715,8 +715,18 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                             let
                                 acc1 =
                                     case anno of
+                                        Mono.LSet [ _ ] ->
+                                            -- L4 P0 instrument
+                                            -- (plans/lss-coverage-four-levers.md
+                                            -- §1.4): covered positions emit too,
+                                            -- so the transport candidate set —
+                                            -- (global, path) LSet in one spec,
+                                            -- LVar in another — is computable
+                                            -- post-hoc from one census log.
+                                            ( path, "k1" ) :: acc
+
                                         Mono.LSet _ ->
-                                            acc
+                                            ( path, "kN" ) :: acc
 
                                         Mono.LVar _ ->
                                             ( path, "var" ) :: acc
@@ -1490,8 +1500,44 @@ processItem specId s =
                                             completionJoin =
                                                 if s1.env.lss.enabled && nodeSupportsRetranslation node then
                                                     case Registry.lookupSpecKey specId s1.registry of
-                                                        Just ( _, storedT ) ->
-                                                            Just (Mono.joinAnnotationsChanged actualType storedT)
+                                                        Just ( specKey, storedT ) ->
+                                                            let
+                                                                ( changedJ, joined0 ) =
+                                                                    Mono.joinAnnotationsChanged actualType storedT
+
+                                                                -- L1 (plans/lss-coverage-four-levers.md
+                                                                -- §1.1): re-stamp the self spine on the
+                                                                -- FINALIZED stored type. Heals the two
+                                                                -- head-⊤ manufacturers (the kernel-ABI
+                                                                -- rebuild's hardcoded ⊤ — whose store is
+                                                                -- never read, so no store-side fix can
+                                                                -- work — and the slot-split LSet∪LVar=⊤
+                                                                -- join). stampSpineGo is idempotent and
+                                                                -- never overwrites an LSet, so the write
+                                                                -- stays monotone; the changed flag is
+                                                                -- deliberately NOT recomputed (AR-2: the
+                                                                -- stamp enriches future demands and the
+                                                                -- census, it does not need a re-flush).
+                                                                joined1 =
+                                                                    if s1.env.lss.injTotal then
+                                                                        case specKey of
+                                                                            Mono.Global sgHome sgName ->
+                                                                                case Translate.stampSelfSpine (TOpt.Global sgHome sgName) joined0 s1 of
+                                                                                    Ok ( stamped, _ ) ->
+                                                                                        stamped
+
+                                                                                    Err _ ->
+                                                                                        joined0
+
+                                                                            _ ->
+                                                                                -- Accessor keys: no self
+                                                                                -- global to stamp (AR-3).
+                                                                                joined0
+
+                                                                    else
+                                                                        joined0
+                                                            in
+                                                            Just ( changedJ, joined1 )
 
                                                         Nothing ->
                                                             Just ( False, actualType )

@@ -3944,6 +3944,32 @@ injectArgLambdaMember arg canVar =
             Engine.andThen (\_ -> LssInfer.injectPapSuccessors (TOpt.Global home name) canVar)
                 (standaloneArgMember ("g|" ++ TOpt.toComparableGlobal (TOpt.Global home name)) (TOpt.Global home name) canVar)
 
+        TOpt.Accessor _ field _ ->
+            -- L3 (lss.injTotal, plans/lss-coverage-four-levers.md §1.3): the
+            -- inference side has minted `a|<field>` for accessor references
+            -- since POST-001; the translate side silently no-op'd — the S.10
+            -- lockstep asymmetry. Head-only (".field" is an arity-1 chomper).
+            \s ->
+                if s.env.lss.injTotal then
+                    Engine.andThen
+                        (\mid -> LssInfer.injectSpineMemberId 1 mid canVar)
+                        (Engine.memberIdFor ("a|" ++ field))
+                        (Engine.bumpArgFlowCensus "argArm|accessor" s)
+
+                else
+                    Ok ( (), s )
+
+        TOpt.VarKernel _ kernelPrefix home name _ ->
+            -- L3: a BARE kernel reference as a function argument (kernel shim
+            -- modules) — the same k| identity the kernel-ALIAS VarGlobal arm
+            -- mints, head-only per the kernelToSig rule.
+            \s ->
+                if s.env.lss.injTotal then
+                    standaloneArgKernelMember ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name ) canVar (Engine.bumpArgFlowCensus "argArm|kernel" s)
+
+                else
+                    Ok ( (), s )
+
         _ ->
             \s -> Ok ( (), s )
 
@@ -4086,10 +4112,20 @@ injectPapMember global funcVar argCount s0 =
                             else
                                 s2
                     in
-                    Engine.andThen
-                        (\mid -> LssInfer.injectSpineMemberId 1 mid residualVar)
-                        (Engine.memberIdFor (LssInfer.papMemberKey global argCount))
-                        s3
+                    case
+                        Engine.andThen
+                            (\mid -> LssInfer.injectSpineMemberId 1 mid residualVar)
+                            (Engine.memberIdFor (LssInfer.papMemberKey global argCount))
+                            s3
+                    of
+                        Err e ->
+                            Err e
+
+                        Ok ( _, s4 ) ->
+                            -- L2 (lss.injTotal, plans/lss-coverage-four-levers.md
+                            -- §1.2): finish the counted papInject|deep residue —
+                            -- p|g|d for the depths past the residual head.
+                            LssInfer.injectPapSuccessorsFrom global (argCount + 1) residualVar s4
 
 
 {-| Registration self-identity (plans/lss-registration-self-identity.md §1.1):

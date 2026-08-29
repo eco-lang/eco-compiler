@@ -14,14 +14,16 @@ time (annotation arrow and body arrow are distinct objects), and the slot then z
 `LVar` — never written, no boundary, no widening. The lambda is plainly visible in the
 source, which is exactly why `var` (recoverable) and not ⊤ (terminal) is the honest label.
 
-**(2) The kernel-alias head — expected `top` at `""`.** `List.foldl` is a kernel alias,
-and `regIdentity` DOES stamp its head: `memberIdForDepth` at d=0 routes through
-`kernelAliasOf` to mint `k|List.foldl` (self-compile census: regid|stamped=192,420,
-regid|alreadySet=56,745, regid|noId=**0** — nothing is skipped). Yet 2,997 head arrows
-read back ⊤ on a self-compile, all owned by kernel-backed names (andThen 899, cons 658,
-succeed 303, foldl 144, ...), and head-`var` is exactly 0 — so the stamp is being
-DESTROYED downstream, not omitted. LSS_004 poisons every arrow of a kernel crossing
-including the alias's own head, whose identity is the one thing that is not in doubt.
+**(2) The kernel-adjacent head — expected `top` at `""`.** CORRECTED 2026-08-28: the
+first version of this doc blamed LSS_004 poison; code review refuted that — the census
+kernels are Transports-LICENSED and skip poison entirely, and `List.foldl` is real Elm,
+not a kernel alias (the census "foldl" rows are JsArray/String.foldl; `pos|` drops the
+module). The head ⊤ has two real manufacturers: (A) `deriveKernelAbiTypeWith` DISCARDS
+the store zonk for PreserveVars non-suffix kernels and rebuilds from the canonical type
+via `canTypeToMonoType_preserveVars`, which hardcodes LTop on every arrow; (B) the
+demand/body slot split — occurrence-keyed slots mean the body VarKernel's head slot is
+never the stamped one, reads LVar, and the completion join LSet ∪ LVar = LTop (AR-11)
+finishes it. regid|noId=0 still holds: the stamp is minted, then out-joined.
 
 Read the outcome with:
 ECO_MONO_LSS_REPORT=1 ECO_MONO_LSS_ARROW_CENSUS=1 ... 2>&1 | grep '^pos|'

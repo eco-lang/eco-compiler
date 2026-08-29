@@ -582,6 +582,27 @@ type alias LssConfig =
     -- `ECO_MONO_LSS_REF_PAP_SPINE=0`; hash token `lssRP=0` now rides the
     -- OFF arm.
     , refPapSpine : Bool
+
+    -- INJECTION TOTALITY COMPLETION (plans/lss-coverage-four-levers.md):
+    -- three levers finishing the paper's total-𝒬 under one flag —
+    -- L1 completion-join head re-stamp (heals the kernel-ABI rebuild's
+    -- hardcoded ⊤ and the slot-split LSet∪LVar=⊤ join at the ONE place the
+    -- stored type is finalized; stampSelfSpine is idempotent and never
+    -- overwrites an LSet), L2 deep-PAP successor completion (injectPapMember
+    -- stops at the residual head; the papSuccGoC walk finishes depths
+    -- supplied+1..arity-1 — the counted papInject|deep residue), L3 the
+    -- missing Accessor and bare-VarKernel arms in injectArgLambdaMember
+    -- (S.10 lockstep with the inference mints). Attribution via census
+    -- counters restamp|*, papInject|deepDone, argArm|*.
+    --
+    -- Artifact-affecting. DEFAULT-ON since 2026-08-29 (user decision):
+    -- coverage 83.10 % -> 88.07 % (+4.97 pp; top -62 %, its L1 lever healing
+    -- ~2x its 2,997-head target) at EXACTLY neutral dispatch (typed -5,
+    -- sat -69 of 2.24 B = jitter, workload outputs byte-identical), join
+    -- rounds/retranslations unchanged. E2E 1,711/1,711 both arms; Q-infer
+    -- diverge=0 both arms. Escape hatch `ECO_MONO_LSS_INJ_TOTAL=0`; hash
+    -- token `lssIT=0` now rides the OFF arm.
+    , injTotal : Bool
     }
 
 
@@ -629,6 +650,7 @@ defaultLss =
     , regIdentity = True
     , rootFold = True
     , refPapSpine = True
+    , injTotal = True
     }
 
 
@@ -1023,6 +1045,7 @@ lssDecoder =
         |> D.apply (D.optionalField "regIdentity" D.bool defaultLss.regIdentity)
         |> D.apply (D.optionalField "rootFold" D.bool defaultLss.rootFold)
         |> D.apply (D.optionalField "refPapSpine" D.bool defaultLss.refPapSpine)
+        |> D.apply (D.optionalField "injTotal" D.bool defaultLss.injTotal)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -1506,6 +1529,21 @@ hash cfg =
                     , if lss.refPapSpine /= defaultLss.refPapSpine then
                         [ "lssRP="
                             ++ (if lss.refPapSpine then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- Injection-totality completion: artifact-affecting
+                    -- (stored types and member allocation move).
+                    , if lss.injTotal /= defaultLss.injTotal then
+                        [ "lssIT="
+                            ++ (if lss.injTotal then
                                     "1"
 
                                 else
