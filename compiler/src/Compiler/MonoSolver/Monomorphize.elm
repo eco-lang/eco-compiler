@@ -42,7 +42,9 @@ import Compiler.Monomorphize.Registry as Registry
 import Compiler.Monomorphize.ResolveAccessorValues as ResolveAccessorValues
 import Compiler.Monomorphize.State as State
 import Compiler.MonoSolver.Engine as Engine exposing (Failure(..), S, WorkItem(..))
+import Compiler.MonoSolver.KernelSetFacts as KernelSetFacts
 import Compiler.MonoSolver.Store as Store
+import Compiler.MonoSolver.LssInfer as LssInfer
 import Compiler.MonoSolver.Translate as Translate
 import Compiler.MonoSolver.Zonk as Zonk
 import Compiler.Type.UnionFind as UF
@@ -1505,6 +1507,50 @@ processItem specId s =
                                                                 ( changedJ, joined0 ) =
                                                                     Mono.joinAnnotationsChanged actualType storedT
 
+                                                                -- P0 join-collision census
+                                                                -- (plans/lss-provenance-join-and-demand-sigs.md
+                                                                -- §4.1, site 1): cells on the RAW
+                                                                -- pair, BEFORE the L1 re-stamp, so
+                                                                -- the census sees the collisions
+                                                                -- the stamp currently masks.
+                                                                -- aVar = the body zonk was ignorant;
+                                                                -- sVar = every demand was ignorant.
+                                                                censusCells =
+                                                                    if s1.env.lss.report then
+                                                                        case specKey of
+                                                                            Mono.Global jcHome jcName ->
+                                                                                Mono.joinCollisionCells
+                                                                                    (LssInfer.declaredArityOf (TOpt.Global jcHome jcName) 8 s1)
+                                                                                    actualType
+                                                                                    storedT
+
+                                                                            _ ->
+                                                                                []
+
+                                                                    else
+                                                                        []
+
+                                                                -- P1 restatement-⊤ recovery
+                                                                -- (plans/lss-provenance-join-and-demand-sigs.md
+                                                                -- §4.3): licensed kernel-alias
+                                                                -- nodes only. Where the join
+                                                                -- reads ⊤ but the stored type
+                                                                -- held a complete LSet, the ⊤
+                                                                -- is the ABI rebuild's
+                                                                -- placeholder restating an
+                                                                -- ignorance the license already
+                                                                -- discharges — recover the
+                                                                -- stored set. Runs BEFORE the
+                                                                -- L1 stamp (AR-P1-5: the stamp
+                                                                -- never overwrites an LSet, so
+                                                                -- the pair is idempotent).
+                                                                ( joinedR, recoveredN ) =
+                                                                    if s1.env.lss.rsTop && licensedKernelAliasNode node s1 then
+                                                                        Mono.recoverStoredSets joined0 storedT
+
+                                                                    else
+                                                                        ( joined0, 0 )
+
                                                                 -- L1 (plans/lss-coverage-four-levers.md
                                                                 -- §1.1): re-stamp the self spine on the
                                                                 -- FINALIZED stored type. Heals the two
@@ -1522,25 +1568,31 @@ processItem specId s =
                                                                     if s1.env.lss.injTotal then
                                                                         case specKey of
                                                                             Mono.Global sgHome sgName ->
-                                                                                case Translate.stampSelfSpine (TOpt.Global sgHome sgName) joined0 s1 of
+                                                                                case Translate.stampSelfSpine (TOpt.Global sgHome sgName) joinedR s1 of
                                                                                     Ok ( stamped, _ ) ->
                                                                                         stamped
 
                                                                                     Err _ ->
-                                                                                        joined0
+                                                                                        joinedR
 
                                                                             _ ->
                                                                                 -- Accessor keys: no self
                                                                                 -- global to stamp (AR-3).
-                                                                                joined0
+                                                                                joinedR
 
                                                                     else
-                                                                        joined0
+                                                                        joinedR
+
+                                                                -- P1 census: one cell per
+                                                                -- recovered position (report-
+                                                                -- gated inside the bump).
+                                                                censusCells1 =
+                                                                    List.repeat recoveredN "rsTop|recovered" ++ censusCells
                                                             in
-                                                            Just ( changedJ, joined1 )
+                                                            Just ( changedJ, joined1, censusCells1 )
 
                                                         Nothing ->
-                                                            Just ( False, actualType )
+                                                            Just ( False, actualType, [] )
 
                                                 else
                                                     Nothing
@@ -1567,7 +1619,7 @@ processItem specId s =
                                                     -- either way — the win here is the elided
                                                     -- rebuild, not an elided write.
                                                     case completionJoin of
-                                                        Just ( _, joined ) ->
+                                                        Just ( _, joined, _ ) ->
                                                             Registry.updateRegistryType specId joined s1.registry
 
                                                         Nothing ->
@@ -1590,16 +1642,25 @@ processItem specId s =
                                             -- `completion` stays the total.
                                             s3 =
                                                 case completionJoin of
-                                                    Just ( True, _ ) ->
+                                                    Just ( True, _, _ ) ->
                                                         Engine.bumpCompletionJoin s2
 
-                                                    Just ( False, _ ) ->
+                                                    Just ( False, _, _ ) ->
                                                         Engine.bumpCompletionJoinNoop s2
 
                                                     Nothing ->
                                                         s2
+
+                                            -- P0 site-1 cell bumps.
+                                            s4 =
+                                                case completionJoin of
+                                                    Just ( _, _, cells ) ->
+                                                        List.foldl Engine.bumpArgFlowCensus s3 cells
+
+                                                    Nothing ->
+                                                        s3
                                         in
-                                        Ok (finishNode specId monoNode s3)
+                                        Ok (finishNode specId monoNode s4)
 
 
 {-| LSS_018 (μ-tie): raw-lambda → smallest qualified member id present in the
@@ -1866,6 +1927,46 @@ nodeSupportsRetranslation node =
             -- The linked target is Define/Cycle in practice; allowing the
             -- chase is safe (specializeNode recurses into the target).
             True
+
+        _ ->
+            False
+
+
+{-| P1 (plans/lss-provenance-join-and-demand-sigs.md §4.3, AR-P1-2): is this
+node an eta-free KERNEL ALIAS whose kernel carries a `TypeFaithful` license
+that APPLIES at the alias's occurrence type? This is the sole node class
+where restatement-⊤ recovery is sound: the alias body contributes no members
+of its own (the ⊤s on its actual side are the kernel-ABI rebuild's
+placeholders), and the license is the audited proof the kernel fabricates no
+function inhabitants beyond its type's variable sharing — so a stored `LSet`
+(every demand agreed on a complete set) really is complete. Link-chased like
+`LssInfer.kernelAliasOf`, but keeps the body meta for the occurrence check.
+-}
+licensedKernelAliasNode : TOpt.Node TypeIds.MVarId -> S -> Bool
+licensedKernelAliasNode nd s =
+    let
+        licensed kHome kName kMeta =
+            case KernelSetFacts.factFor kHome kName of
+                Just (KernelSetFacts.TypeFaithful license) ->
+                    KernelSetFacts.licenseApplies (Engine.isScalarVar s) license kMeta.tipe
+
+                _ ->
+                    False
+    in
+    case nd of
+        TOpt.Define (TOpt.VarKernel _ _ kHome kName kMeta) _ _ ->
+            licensed kHome kName kMeta
+
+        TOpt.TrackedDefine _ (TOpt.VarKernel _ _ kHome kName kMeta) _ _ ->
+            licensed kHome kName kMeta
+
+        TOpt.Link target ->
+            case HashMap.get TOpt.globalHash (==) target s.env.toptNodes of
+                Just nd2 ->
+                    licensedKernelAliasNode nd2 s
+
+                Nothing ->
+                    False
 
         _ ->
             False

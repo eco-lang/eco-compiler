@@ -603,6 +603,38 @@ type alias LssConfig =
     -- diverge=0 both arms. Escape hatch `ECO_MONO_LSS_INJ_TOTAL=0`; hash
     -- token `lssIT=0` now rides the OFF arm.
     , injTotal : Bool
+
+    -- M2 ARG-POINT TRANSPORT (plans/lss-coverage-four-levers.md §7.2-REVISED):
+    -- walk call args first and unify the WALKED points with callee params
+    -- (the A.1 leak), plus the ctor-call shape unify (H1). IMPLEMENTED but
+    -- the micro-gate FAILED (probe /c0 rows unchanged; armEntered=3 but all
+    -- walked points WpNone — partial ctor apps do not reach the Call arm in
+    -- the expected form, and non-arrow-typed args carry no point). Kept
+    -- DEFAULT-OFF pending the JS-loop diagnosis; separate from injTotal so
+    -- the VALIDATED L1-L3 behavior ships without this unproven piece.
+    -- Env `ECO_MONO_LSS_ARG_POINTS`; hash token `lssAP=1`.
+    , argPoints : Bool
+
+    -- P1 RESTATEMENT-⊤ RECOVERY (plans/lss-provenance-join-and-demand-sigs.md
+    -- §4.3): at the completion join, for LICENSED kernel-alias nodes only
+    -- (Define whose body is a bare VarKernel with a TypeFaithful row whose
+    -- license applies at the alias's type), positions where the JOINED type
+    -- reads ⊤ but the STORED type held a complete LSet recover the stored
+    -- set. The actual side's ⊤s there are the kernel-ABI rebuild's
+    -- placeholders, not observations; the license is the audited proof the
+    -- kernel adds no function inhabitants, so the demands' set is complete
+    -- (AR-P1-2). Targets the aTop|nested join-collision mass (P0: 1,516
+    -- cells). Census counter `rsTop|recovered`.
+    --
+    -- Artifact-affecting (stored registry types move, hence retranslation
+    -- demand keys and spec keys). DEFAULT-ON since 2026-08-29 (user
+    -- decision): same-binary env A/B coverage 87.64 % -> 88.76 % (+1.12 pp),
+    -- top 3,668 -> 2,153 (-1,515 = 99.9 % of the 1,516-cell P0 target,
+    -- landing as k1 +1,454 / kN +61), var untouched by design. E2E
+    -- 1,714/1,714 BOTH arms; elm-tests at the known-12 baseline. Escape
+    -- hatch `ECO_MONO_LSS_RS_TOP=0`; hash token `lssRT=0` now rides the
+    -- OFF arm.
+    , rsTop : Bool
     }
 
 
@@ -651,6 +683,8 @@ defaultLss =
     , rootFold = True
     , refPapSpine = True
     , injTotal = True
+    , argPoints = False
+    , rsTop = True
     }
 
 
@@ -1046,6 +1080,8 @@ lssDecoder =
         |> D.apply (D.optionalField "rootFold" D.bool defaultLss.rootFold)
         |> D.apply (D.optionalField "refPapSpine" D.bool defaultLss.refPapSpine)
         |> D.apply (D.optionalField "injTotal" D.bool defaultLss.injTotal)
+        |> D.apply (D.optionalField "argPoints" D.bool defaultLss.argPoints)
+        |> D.apply (D.optionalField "rsTop" D.bool defaultLss.rsTop)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -1544,6 +1580,36 @@ hash cfg =
                     , if lss.injTotal /= defaultLss.injTotal then
                         [ "lssIT="
                             ++ (if lss.injTotal then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- M2 arg-point transport: artifact-affecting when on.
+                    , if lss.argPoints /= defaultLss.argPoints then
+                        [ "lssAP="
+                            ++ (if lss.argPoints then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- P1 restatement-⊤ recovery: artifact-affecting when on
+                    -- (stored registry types move, hence retranslation
+                    -- demand keys and spec keys).
+                    , if lss.rsTop /= defaultLss.rsTop then
+                        [ "lssRT="
+                            ++ (if lss.rsTop then
                                     "1"
 
                                 else

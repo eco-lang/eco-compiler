@@ -10,6 +10,8 @@ module Compiler.AST.Monomorphized exposing
     , LambdaSetAnno(..), widenSets, eqModuloTopLabel, eqLayout, shallowLayoutKey, headAnno, unionAnno, singletonHeadMember, joinAnnotations, joinAnnotationsChanged, overlayAnnotations
     , typeNodesWithin, collectAnnoMembers
     , AnnoCoverage, emptyAnnoCoverage, annoCoverage
+    , joinCollisionCells
+    , recoverStoredSets
     , LambdaId(..)
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry
     , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType, MemberOrigin(..)
@@ -1076,6 +1078,199 @@ type alias AnnoCoverage =
 emptyAnnoCoverage : AnnoCoverage
 emptyAnnoCoverage =
     { k1 = 0, kN = 0, var = 0, top = 0 }
+
+
+{-| P1 restatement-⊤ recovery (plans/lss-provenance-join-and-demand-sigs.md
+§4.3): where the JOINED type reads ⊤ and the STORED type held a complete set,
+restore the stored set. Callers gate on the licensed-kernel-alias node class
+(AR-P1-2) — for that class the actual side's ⊤s are ABI-rebuild placeholders
+and the license excludes kernel-fabricated inhabitants, so the demands' set
+is complete. Returns the recovered type and the number of positions restored.
+Structural walk mirrors `widenSets`; on divergence, keeps the joined side.
+-}
+recoverStoredSets : MonoType -> MonoType -> ( MonoType, Int )
+recoverStoredSets joined stored =
+    case ( joined, stored ) of
+        ( MFunction _ annoJ argsJ resJ, MFunction _ annoS argsS resS ) ->
+            let
+                ( anno1, n0 ) =
+                    case ( annoJ, annoS ) of
+                        ( LTop, LSet ms ) ->
+                            ( LSet ms, 1 )
+
+                        _ ->
+                            ( annoJ, 0 )
+
+                ( args1, nA ) =
+                    List.foldr
+                        (\( aj, asx ) ( accL, accN ) ->
+                            let
+                                ( a1, n1 ) =
+                                    recoverStoredSets aj asx
+                            in
+                            ( a1 :: accL, accN + n1 )
+                        )
+                        ( [], 0 )
+                        (List.map2 Tuple.pair argsJ argsS)
+
+                ( res1, nR ) =
+                    recoverStoredSets resJ resS
+            in
+            ( mFunction anno1 args1 res1, n0 + nA + nR )
+
+        ( MList _ xj, MList _ xs ) ->
+            let
+                ( x1, n ) =
+                    recoverStoredSets xj xs
+            in
+            ( mList x1, n )
+
+        ( MTuple _ xsJ, MTuple _ xsS ) ->
+            let
+                ( xs1, n ) =
+                    List.foldr
+                        (\( a, b ) ( accL, accN ) ->
+                            let
+                                ( x1, n1 ) =
+                                    recoverStoredSets a b
+                            in
+                            ( x1 :: accL, accN + n1 )
+                        )
+                        ( [], 0 )
+                        (List.map2 Tuple.pair xsJ xsS)
+            in
+            ( mTuple xs1, n )
+
+        ( MRecord _ fj, MRecord _ fs ) ->
+            let
+                ( f1, n ) =
+                    Dict.foldl
+                        (\k vj ( accD, accN ) ->
+                            case Dict.get k fs of
+                                Just vs ->
+                                    let
+                                        ( v1, n1 ) =
+                                            recoverStoredSets vj vs
+                                    in
+                                    ( Dict.insert k v1 accD, accN + n1 )
+
+                                Nothing ->
+                                    ( Dict.insert k vj accD, accN )
+                        )
+                        ( Dict.empty, 0 )
+                        fj
+            in
+            ( mRecord f1, n )
+
+        ( MCustom _ home name xsJ, MCustom _ _ _ xsS ) ->
+            let
+                ( xs1, n ) =
+                    List.foldr
+                        (\( a, b ) ( accL, accN ) ->
+                            let
+                                ( x1, n1 ) =
+                                    recoverStoredSets a b
+                            in
+                            ( x1 :: accL, accN + n1 )
+                        )
+                        ( [], 0 )
+                        (List.map2 Tuple.pair xsJ xsS)
+            in
+            ( mCustom home name xs1, n )
+
+        _ ->
+            ( joined, 0 )
+
+
+{-| P0 join-collision census (plans/lss-provenance-join-and-demand-sigs.md
+§4.1): walk two structurally-equal types in parallel (MONO_020 — types never
+widen, so a completion join's actual/stored pair always aligns; on any
+structural divergence the walk stops that branch) and emit one cell key per
+(LSet, LVar) collision and per (LSet, LTop) context pair, classified by
+WHERE the position sits:
+
+  head    spine depth 0, not nested
+  spine   spine depth 1..arity-1, not nested
+  tail    spine depth >= arity, not nested (the returned-value chain)
+  nested  inside an arrow argument or any container payload
+
+`side` names which input held the var/top: the FIRST type is `a` (the
+completion join's actualType / a joining demand), the SECOND is `s` (the
+stored type). Report-gated at the call sites; this function is pure.
+-}
+joinCollisionCells : Int -> MonoType -> MonoType -> List String
+joinCollisionCells arity ta tb =
+    let
+        posName depth nested =
+            if nested then
+                "nested"
+
+            else if depth == 0 then
+                "head"
+
+            else if depth < arity then
+                "spine"
+
+            else
+                "tail"
+
+        cellOf pos annoA annoB =
+            case ( annoA, annoB ) of
+                ( LSet _, LVar _ ) ->
+                    [ "jc|sVar|" ++ pos ]
+
+                ( LVar _, LSet _ ) ->
+                    [ "jc|aVar|" ++ pos ]
+
+                ( LSet _, LTop ) ->
+                    [ "jc|sTop|" ++ pos ]
+
+                ( LTop, LSet _ ) ->
+                    [ "jc|aTop|" ++ pos ]
+
+                _ ->
+                    []
+
+        go depth nested a b acc =
+            case ( a, b ) of
+                ( MFunction _ annoA argsA resA, MFunction _ annoB argsB resB ) ->
+                    let
+                        acc1 =
+                            cellOf (posName depth nested) annoA annoB ++ acc
+
+                        accArgs =
+                            List.foldl (\( x, y ) accX -> go 0 True x y accX)
+                                acc1
+                                (List.map2 Tuple.pair argsA argsB)
+                    in
+                    go (depth + 1) nested resA resB accArgs
+
+                ( MList _ xa, MList _ xb ) ->
+                    go 0 True xa xb acc
+
+                ( MTuple _ xsA, MTuple _ xsB ) ->
+                    List.foldl (\( x, y ) accX -> go 0 True x y accX) acc (List.map2 Tuple.pair xsA xsB)
+
+                ( MRecord _ fa, MRecord _ fb ) ->
+                    Dict.foldl
+                        (\k va accX ->
+                            case Dict.get k fb of
+                                Just vb ->
+                                    go 0 True va vb accX
+
+                                Nothing ->
+                                    accX
+                        )
+                        acc
+                        fa
+
+                ( MCustom _ _ _ xsA, MCustom _ _ _ xsB ) ->
+                    List.foldl (\( x, y ) accX -> go 0 True x y accX) acc (List.map2 Tuple.pair xsA xsB)
+
+                _ ->
+                    acc
+    in
+    go 0 False ta tb []
 
 
 annoCoverage : MonoType -> AnnoCoverage -> AnnoCoverage

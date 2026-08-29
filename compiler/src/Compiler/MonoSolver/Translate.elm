@@ -3922,7 +3922,54 @@ injectArgLambdaMember arg canVar =
                         Err e
 
                     Ok ( _, s1 ) ->
-                        LssInfer.injectPapSuccessors g canVar s1
+                        case LssInfer.injectPapSuccessors g canVar s1 of
+                            Err e ->
+                                Err e
+
+                            Ok ( _, s2 ) ->
+                                -- M3.3 (plans/lss-coverage-four-levers.md §7.4-M3):
+                                -- a REFERENCE is a use of the def's scheme, and
+                                -- the paper instantiates a scheme at EVERY use.
+                                -- Signatures were previously requested only from
+                                -- CALL sites, so a container-typed reference
+                                -- (`consume2 makePair2`) never triggered the
+                                -- referent's signature walk — its payload facts
+                                -- were never computed, let alone transported.
+                                -- Instantiate the referent's signature (facts
+                                -- applied) and unify with the reference's own
+                                -- loaded type so the facts land on this item's
+                                -- Points. Gated: container-typed refs only (an
+                                -- arrow-typed reference's identity is already
+                                -- injected above; calls already instantiate).
+                                if s2.env.lss.argPoints && not (LssInfer.canTypeIsArrow (TOpt.typeOf arg)) && LssInfer.canTypeMentionsArrow (TOpt.typeOf arg) then
+                                    -- B1 fact gate (plans/lss-provenance-join-and-demand-sigs.md
+                                    -- §4.1): sig.trivial IS "every fact is default" —
+                                    -- an empty signature transports nothing, and the
+                                    -- instantiate+unify would only churn the demand's
+                                    -- var numbering (hence its SpecKey). Skip it.
+                                    case LssInfer.signatureFor g s2 of
+                                        Err e ->
+                                            Err e
+
+                                        Ok ( sig0, s2b ) ->
+                                            if sig0.trivial then
+                                                Ok ( (), Engine.bumpArgFlowCensus "argpt|refSigSkipTrivial" s2b )
+
+                                            else
+                                                case LssInfer.instantiateWithSignature g (LssInfer.sigSourceTypeFor g (TOpt.typeOf arg) s2b) s2b of
+                                                    Err e ->
+                                                        Err e
+
+                                                    Ok ( instVar, s3 ) ->
+                                                        case Store.unifyBestEffort instVar canVar (Engine.bumpArgFlowCensus "argpt|refSigLive" s3) of
+                                                            Err e ->
+                                                                Err e
+
+                                                            Ok ( _, s4 ) ->
+                                                                Ok ( (), s4 )
+
+                                else
+                                    Ok ( (), s2 )
             )
 
         TOpt.VarEnum _ g _ _ ->

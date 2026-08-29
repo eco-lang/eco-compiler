@@ -301,3 +301,294 @@ completion definition.
   (3e-8 — jitter), `typed` −5, **workload outputs BYTE-IDENTICAL**, wall
   within noise. Exactly neutral, as predicted (registry heads are not
   devirt inputs).
+
+---
+
+## 7. Lever 4 — the transport mechanism (design + implementation)
+
+**Added 2026-08-29, after the §6.2 GO-for-design verdict.**
+
+### 7.1 What the evidence already pins down
+
+Facts established before this section (code + probes, not conjecture):
+
+1. **The sig channel transports ctor-payload arrows end-to-end for Elm-bodied
+   defs.** `loadTypeC` slots EVERY arrow, nested-in-type-args included
+   (`Store.elm:314-335`, "LSS: slot every arrow"), and `loadTypeWithArrows`'s
+   ordinal array (`:267-274`) therefore covers `/c<n>`-nested arrows. Probe
+   `LssGapCtorTypeArgFn`: `mk`'s body-built payload member reaches `run`'s
+   `/a0/c1` across defs — producer body walk → nested-ordinal fact →
+   `applyFacts` at the consumer instantiation. There is NO structural hole in
+   the channel.
+2. **Direct call sites of licensed kernel combinators transport via type
+   sharing.** The licensed `Transports` arm loads the type and runs
+   `unifyCallShape` (inference, `LssInfer.elm:2049-2060`) and the translation
+   side unifies real item-memo arg Points before the skipped poison
+   (`kernelCallBoundary` doc). A shared annotation TVar (`value` in
+   `map : (a -> value) -> Decoder a -> Decoder value`) makes the callback's
+   result arrow and the result payload arrow ONE Point — so a site whose
+   callback carries a member (post-refPapSpine) covers its own demand.
+3. **Sibling-spec copying is unsound** (§6.2): different specs of `map` exist
+   BECAUSE their callbacks differ.
+
+Therefore the transportable-var mass (8,195 positions owned by
+map/andThen/apply/Decoder — kernel-BACKED combinators) can only come from
+sites where the transport chain breaks. The prime suspect: **kernel-alias
+defs have EMPTY signatures.** `signatureFor` summarizes what a def's BODY
+contributes; a kernel-alias body (`map = Elm.Kernel.Json.map1`) is a
+`VarKernel`, contributes nothing, and the signature reads trivial/allflex.
+When `map`'s CALL sits inside another polymorphic def (`andMap f d = map …`),
+the enclosing def's signature must convey the param↔result linkage upward —
+and an empty `map` signature drops it, so the chain dies one hop from the
+direct site.
+
+### 7.2-REVISED (P0 outcome): M1 is DEAD; the mechanism is M2 — close the
+inference-side arg leak + the trivial-callee skip
+
+P0 refuted M1's premise twice over. The kernel-pipeline probe AND an all-Elm
+control fail IDENTICALLY (`makePair|/c0|top`, `consume|/a0/c0|var`, with the
+Elm combinator `mapB` itself fully covered incl. `/r/r/c0`) — kernels are
+exonerated. A direct-construction probe (`makePair2 = Box (Pair 1)`) fails
+too (`/c0|var`, `sig|allflex`), with the payload ORDINAL present. The
+signature scratch never receives the member. Two verified holes, both in
+`LssInfer`, both inference-side only (translation-side transport works —
+which is exactly why producers know locally and their sigs still say
+nothing):
+
+- **H2 — the A.1 arg leak, literal.** `TOpt.Call` walks `walkCall` FIRST
+  (`LssInfer.elm:1367`) and the arg EXPRESSIONS after (`walkChildren`,
+  `:1372`); `unifyParamsBestEffort` fresh-loads `TOpt.typeOf arg` (`:~2050`)
+  BEFORE any member exists, and the walked args' points are discarded. The
+  member minted during the later walk lands in a class never connected to
+  the callee's param.
+- **H1 — the trivial-callee short-circuit.** Ctors get `trivialSignature`
+  (bodyless, `resolveUnit` doc `:494`), and the trivial guard short-circuits
+  the apply/unify — so a ctor call never runs the shape unify at all: the
+  payload member cannot enter the call's own type, hence never reaches the
+  enclosing def's annotation slots.
+
+**M2**: (a) restructure the Call arm to walk args first, collecting
+WalkPoints, and unify `pParam` with the WALKED point (fallback to the type
+load only for `WpNone`); (b) for trivial-signature callees whose type
+mentions arrows (ctors with function payloads), still run the shape unify —
+facts-free instantiation, transport by unification. Scope: `applyCalleeAt` +
+`kernelCallBoundary`'s licensed arm; `localCalleeJoin` explicitly OUT
+(its §7.4 family-Point discipline is separate; its doc already anticipates
+this fix as future work). Rides `lss.injTotal`.
+
+Paper fidelity of M2 is immediate: the paper never "loads a type twice" —
+an argument's annotated type IS the unified type; H2 is a pure Eco
+implementation artifact severing 𝒬's output from the instantiation, and H1
+is a missing instantiation for ctor schemes (the paper instantiates every
+constructor's ∀-type like any function). M2 removes both divergences.
+
+Additional AR items:
+- **AR-18 — order change moves member-id allocation order** (args walked
+  before callee): artifact-affecting, flag-gated, same class as every
+  injection change; keys stable per demand.
+- **AR-19 — no double-walk**: the restructure must remove args from the
+  post-`walkCall` `walkChildren` (func stays); double member writes are
+  idempotent (LSS_005 total-join) but census counters would double.
+- **AR-20 — poison ordering**: rowless/refused kernel paths poison AFTER the
+  arg walk under the restructure; ⊤ absorbs the just-written members —
+  identical final state to today (poison-after-inject is the recorded-safe
+  direction).
+- **AR-21 — cost**: one avoided fresh type load per arg with a walked point;
+  the trivial-callee unify is guarded by `canTypeMentionsArrow` (ctor calls
+  with arrow-free types — the overwhelming majority — keep the short
+  circuit).
+
+### 7.3-STATUS (2026-08-29): M2 implemented, micro-gate FAILED, re-gated
+DEFAULT-OFF under `lss.argPoints` pending diagnosis
+
+M2 was implemented in full (walkArgsCollect / walkCallWith / applyCalleeAtWith
+/ unifyParamsWithPoints / kernelCallBoundaryWith + the VarEnum/VarBox ctor
+arms) and the reproducers re-run at defaults. **Both probes unchanged**
+(`makePair2|/c0|var`, `decodePair|/c0|top`). Instrumentation trail (temp
+counters, since removed):
+
+- `argleak|armEntered = 3` — the restructured Call arm runs for the three
+  def-body top-level calls only; the NESTED `Pair 1` call never re-enters it,
+  so at TOpt level the partial ctor application is evidently NOT a plain
+  `Call` by the time the sig walk sees it (eta-expansion into `Function`?
+  LocalOpt rewrite? — undiagnosed).
+- `argleak|ptJust = 0 / ptNone = 4` — every collected point is `WpNone`:
+  additionally, args whose TYPE is not a top-level arrow (Box-value carriers,
+  e.g. `makePair2` passed as an argument) return `WpNone` from
+  `standaloneMemberWith`'s `canTypeIsArrow` guard even though their type
+  CONTAINS arrows — a second, independent reason the point transport starves.
+
+Because `injTotal` is now default-ON, leaving unvalidated M2 code live at
+defaults was unacceptable: M2's three gates were moved to a NEW flag
+`lss.argPoints` (env `ECO_MONO_LSS_ARG_POINTS`, token `lssAP`, DEFAULT-OFF),
+returning defaults to the fully-validated L1-L3 state. Diagnosis plan for the
+next session: the JS fast loop (run the compiler's Elm under node) with
+prints at the walkExpr arms to identify (a) the actual TOpt form of a partial
+ctor application in the sig walk, (b) the right point for container-typed
+args (the walked `meta.tipe` load rather than `WpNone`). The H1/H2 analysis
+stands; the delivery mechanism needs the two answers above.
+
+### 7.4-M3 (2026-08-29, the JS-loop answers + final mechanism)
+
+The fast loop (guida.js under node, `Debug.log` in `walkArgsCollect`) answered
+both open questions in three 60-second cycles:
+
+- **(a) Partial ctor applications reach the sig walk as LET-BOUND LOCALS.**
+  `Box (Pair 1)` is normalized to `let _v0 = Pair 1 in Box _v0` before the
+  walk; the arg is `TrackedVarLocal _v0`, NOT a `Call` and NOT a lambda. The
+  H1 ctor arm and H2 threading were necessary but aimed one binding upstream
+  of where the value actually flows.
+- **(the real point-killer)** `joinLetUse` FINDS `_v0` in letEnv — and then
+  its cost guard (`sigFlow && not (canTypeMentionsArrow meta.tipe)`) returns
+  `WpNone`, because a local USE's occurrence type is syntactically an
+  unsolved MVar even when the solver knows it is an arrow. The guard was
+  written to skip a slot-join load; it also discards the family point that
+  is already in hand, free.
+- **(b)** confirmed: container-typed reference args return `WpNone` from
+  `standaloneMemberWith`'s `canTypeIsArrow` gate despite arrows inside.
+
+**M3 (all under `lss.argPoints`, keeping M2's H1 arm + H2 threading):**
+
+1. `joinLetUse` guard arm: return `Ok ( WpHonest rhsVar, s0 )` — hand back
+   the FAMILY point without the load. Soundness: the §7.4 v1 policy already
+   states "all uses of a let-bound function share one set (union over uses —
+   sound)"; handing the hub to the param unify is the same sharing. A
+   generalized local used at clashing types degrades through
+   `unifyBestEffort`/`joinArrowSets`' divergence-poison — the sound
+   direction (LSS_005 widening only; a cross-use union can never create a
+   false singleton).
+2. `walkExpr` reference arms (VarGlobal/VarCycle): when the occurrence type
+   is not a top-level arrow but `canTypeMentionsArrow`, return
+   `instantiateWithSignature`'s point (facts applied) instead of `WpNone` —
+   container-typed references then transport their signature facts (payload
+   ordinals included) into consumer params.
+
+Paper fidelity: (1) is let-polymorphism's monomorphic-share case done the
+way the paper's store does it (one value, one type, one ζ); (2) is scheme
+instantiation at a USE — the paper instantiates every referenced def's
+scheme wherever its value flows, argument positions included; returning
+`WpNone` there was the infidelity.
+
+### 7.5-VERDICT (2026-08-29): M3 probe-PROVEN, scale-NEGATIVE — lever 4
+closes as NO-GO at defaults, mechanism preserved under `lss.argPoints`
+
+M3 (family-point handoff in `joinLetUse` + signature instantiation for
+container-typed references, both sides) was verified end-to-end on the probe:
+`consume2|/a0/c0` flips var→**k1** (`argpt|refSig` fires; the referent's
+signature walk is triggered by the REFERENCE, the payload fact publishes and
+transports across the item boundary — the first time this chain has ever
+closed). The producer's own spec shifts var→⊤ (one demand path still
+arrives ignorant — residual, unpursued).
+
+**Self-compile A/B: NET NEGATIVE.** vs the certified 88.07 % baseline:
+coverage −0.21 pp (87.86 %), var +332, positions +422, k1 +62,
+`argpt|refSig=815`, `argpt|refInst=586`. The consumer-side wins are real but
+outweighed: forcing signature computation at every container-typed reference
+pulls new walked units into the registry whose own uncovered deep positions
+exceed the recovered ones on this corpus.
+
+**Disposition (P3 rule): NO-GO for a default flip.** `lss.argPoints` stays
+DEFAULT-OFF carrying the complete, probe-proven mechanism (M2 threading + H1
+ctor arm + M3.1 family-point + M3.2/M3.3 reference instantiation) for future
+work — e.g. a demand-driven variant that instantiates reference signatures
+only where a consumer position is otherwise unresolved, which would keep the
+wins without the dilution. The lever-4 investigation is COMPLETE: mechanism
+identified via the JS fast loop (three 60-second cycles: let-bound PAPs, the
+joinLetUse guard as point-killer, references never requesting signatures),
+implemented, and measured. The measurement, not the implementation, made the
+decision — which is what this plan's phase structure is for.
+
+### 7.2-ORIGINAL (superseded): license-derived rep-linkage signatures (M1)
+
+For a kernel-alias def carrying a `TypeFaithful { scope = Transports }` (or
+verified `TransportsAs`) license, derive its signature FROM ITS ANNOTATION
+instead of its (bodyless) body: load the annotation in the signature scratch
+store — TVar memoization then gives shared ordinals the SAME rep — and
+publish the resulting `ArrowFact`s. These facts carry **rep linkage, no
+members** (`members = [], top = False`, shared `rep`): `applyFacts` at a
+consumer instantiation then UNIFIES the linked slots, and members flow
+through ordinary unification exactly as at a direct site. No member is ever
+claimed that the license's variable-sharing graph does not imply.
+
+Scope guard: ONLY for defs whose `kernelAliasOf` is licensed AND
+`licenseApplies` verifies at the def's own annotation. Refused/rowless/Inert
+kernels keep their empty signatures (Inert has no arrows to link).
+
+### 7.3 Paper fidelity
+
+In the paper every function — including an opaque-but-parametric one — has a
+scheme `∀ᾱ,ζ̄. τ` whose set variables ζ̄ appear at EVERY arrow of τ, shared
+wherever τ shares them; instantiation composes these schemes through nested
+polymorphic calls, which is precisely how a set reaches
+`Decoder (Int −ζ→ Pair)` two hops from where the callback was supplied. Eco's
+sig channel IS its scheme mechanism; a kernel-alias def with an empty
+signature is a scheme with its ζ̄ erased — a hole the paper does not have.
+M1 restores exactly the paper's scheme for these defs: the license is the
+parametricity proof that the annotation's sharing graph IS the kernel's set
+flow ("the shared a/b/c Points ARE the flow edges" — the LSS_022 audit), so
+publishing rep linkage derived from the annotation asserts nothing beyond
+what the license already certifies. Technique differs (rep-linked ArrowFacts
+for scheme ζ̄); the judgment is the paper's.
+
+### 7.4 Adversarial review
+
+- **AR-13 — soundness: linkage-only facts cannot create false singletons.**
+  A rep-linkage fact unifies slots; it writes no members. A false singleton
+  would need a member write, which comes only from the existing (audited)
+  injection paths. Worst case is over-UNIFICATION (two slots merged that the
+  kernel does not actually connect) — excluded by deriving linkage from the
+  SAME annotation type the licensed call-site transport already unifies
+  through; M1 adds no edges the direct-site path does not already create.
+- **AR-14 — the `sig.trivial` early-out** (`applyFacts`:
+  `if sig.trivial then Ok`) must not swallow M1's facts: a linkage-only
+  signature has empty members everywhere and could classify as trivial.
+  P0 must read `signatureFor`'s trivial computation and the fact publication
+  path for kernel-alias defs; the implementation point is exactly where
+  triviality is decided.
+- **AR-15 — cost.** Signatures are memoized per global (`S.lssSignatures`);
+  M1 adds one annotation load per licensed kernel-alias def (~66 Transports
+  rows reachable), not per call. Negligible.
+- **AR-16 — the ordinal contract (LSS_006) binds M1.** Facts pair with
+  consumer loads BY MINTING ORDER over the SIGNATURE SOURCE type; M1 must use
+  the same source-type selection (`stored annotation if present, else
+  meta.tipe`) as `signatureFor` does today, or ordinals shear.
+- **AR-17 — what M1 does NOT claim.** Data-threaded cross-item flows (a
+  Decoder built in item A, carried through a record field, consumed in item
+  C with no connecting call chain) remain uncovered — that residue is the
+  genuinely architectural remainder; P0 sizes it as the gap between the
+  probe-verified mechanism and the 8,195 bound, and it is OUT of this
+  lever's scope (recorded, not attempted).
+
+### 7.5 P0 (measure before building)
+
+1. Read `signatureFor`'s kernel-alias handling + trivial computation
+   (AR-14): confirm empty-signature behavior and locate the publication
+   point.
+2. Probe `LssGapKernelPipeline`: an `andMap`-style Elm def whose body calls
+   a LICENSED kernel combinator with its own parameter as the callback
+   (`step f d = Json.Decode.map f d`), consumed one hop away with a known
+   callback. Expectation flag-off-of-M1: consumer `/c`-payload var (the
+   chain dies at step's empty signature); an Elm-bodied control (`stepE`
+   implemented without kernels) covered.
+3. If (2)'s kernel arm is ALREADY covered, M1's premise is wrong — stop,
+   re-attribute from the probe, adjust (the §P3 rule).
+
+### 7.6 Lowering (contingent details verified in P0)
+
+- New: `LssInfer.licenseLinkageSignature : TOpt.Global -> meta -> Step (Maybe Sig)`
+  — guard `kernelAliasOf` + `factFor` `Transports`/verified `TransportsAs` +
+  `licenseApplies` at the def's annotation; on pass,
+  `Store.loadTypeIsolatedWithArrows` over the signature source type in the
+  scratch context, `sigArrowFact` per ordinal (members empty, reps live),
+  marked NON-trivial.
+- Wire into `signatureFor`'s kernel-alias/allflex path so consumers pick it
+  up through the existing memo + `instantiateWithSignature`/`applyFacts` —
+  no consumer-side changes.
+- Flag: rides `lss.injTotal` (same family — completing the scheme the same
+  way L1-L3 complete 𝒬); census counter `sig|linkage` per published
+  linkage signature.
+- Tests: differential pin in `LssInjTotalTest` mirroring the P0 probe shape
+  if fixture-expressible (kernel aliases need `makeKernelModule` — else the
+  E2E probe is the differential).
+- Battery: census A/B (the 8,195-bound owners must move: map/andThen/apply
+  var falls), elm-tests, E2E both arms, Q-infer, dispatch pair if ≥2 pp.

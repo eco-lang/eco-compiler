@@ -420,8 +420,14 @@ void PortRuntime::drainPendingSends() {
                       name + "': " + json);
         }
         {
+            // The Json kernel rewraps the escaping Ok so a primitive payload
+            // sits UNBOXED in the slot (MONO_013 rewrap at Json_runOnString);
+            // the taggers are applied via boxed closure calls, so re-box per
+            // the slot's 2-bit kind.
             void* okPtr = resolveHP(resultHP);
-            payload = static_cast<Custom*>(okPtr)->values[0].p;
+            Custom* ok = static_cast<Custom*>(okPtr);
+            const u32 payloadKind = ok->unboxed & 0x3;
+            payload = Elm::alloc::boxElement(ok->values[0], payloadKind);
         }
 
         // Apply each subscribed (composed) tagger to the decoded payload

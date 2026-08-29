@@ -233,6 +233,16 @@ applyEnvOverrides cfg =
                     |> Task.map (\itVal -> applyLssInjTotalOverride itVal cfg4ej)
             )
         |> Task.andThen
+            (\cfg4ek ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_ARG_POINTS" |> Task.mapError never)
+                    |> Task.map (\apVal -> applyLssArgPointsOverride apVal cfg4ek)
+            )
+        |> Task.andThen
+            (\cfg4el ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_RS_TOP" |> Task.mapError never)
+                    |> Task.map (\rtVal -> applyLssRsTopOverride rtVal cfg4el)
+            )
+        |> Task.andThen
             (\cfg4f ->
                 (Utils.envLookupEnv "ECO_SPEC_TYPE_NODE_LIMIT" |> Task.mapError never)
                     |> Task.map (\tnVal -> applySpecTypeNodeLimitOverride tnVal cfg4f)
@@ -2013,6 +2023,50 @@ applyLssInjTotalOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | injTotal = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_RS_TOP=1|true|yes / 0|false|no` (P1,
+plans/lss-provenance-join-and-demand-sigs.md §4.3): restatement-⊤ recovery at
+the completion join for licensed kernel-alias nodes. DEFAULT-ON since
+2026-08-29 (+1.12 pp coverage, dispatch-safe class). Hash token `lssRT=`.
+-}
+applyLssRsTopOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssRsTopOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | rsTop = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | rsTop = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_ARG_POINTS=1|true|yes / 0|false|no` (M2,
+plans/lss-coverage-four-levers.md §7.2-REVISED): arg-point transport +
+ctor-call shape unify. DEFAULT-OFF (micro-gate failed; under diagnosis).
+Hash token `lssAP=`.
+-}
+applyLssArgPointsOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssArgPointsOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | argPoints = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | argPoints = False }) cfg
 
             else
                 cfg

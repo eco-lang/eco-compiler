@@ -746,7 +746,15 @@ HPointer PlatformRuntime::decodeFlags(const std::string& json) {
         std::fflush(stderr);
         std::abort();
     }
-    flags = static_cast<Custom*>(ptr)->values[0].p;
+    // The Json kernel rewraps the escaping Ok so a primitive payload sits
+    // UNBOXED in the slot (MONO_013 rewrap at Json_runOnString); the flags
+    // value continues to `init` through a boxed closure call, so re-box per
+    // the slot's 2-bit kind.
+    {
+        Custom* ok = static_cast<Custom*>(ptr);
+        const u32 flagsKind = ok->unboxed & 0x3;
+        flags = Elm::alloc::boxElement(ok->values[0], flagsKind);
+    }
     return flags;
 }
 

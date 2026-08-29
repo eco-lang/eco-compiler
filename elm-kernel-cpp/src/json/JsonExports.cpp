@@ -1535,6 +1535,57 @@ HPtr Elm_Kernel_Json_map8(HPtr closure, HPtr d1, HPtr d2, HPtr d3, HPtr d4, HPtr
 // Running Decoders
 //===----------------------------------------------------------------------===//
 
+//===----------------------------------------------------------------------===//
+// Escape-boundary rewrap (MONO_013 / MONO_029 / REP_HEAP_002)
+//===----------------------------------------------------------------------===//
+// Heap slot layout is a STATIC function of the monomorphized type: for
+// `Result Error Int` the Ok payload slot is an unboxed i64 (kind 01) and the
+// compiled reader consults only the CtorLayout — never header.unboxed. Every
+// maker in this file stores the Ok payload BOXED (primitives cross the kernel
+// ABI as Tag_Int/Tag_Float/Tag_Char boxes), which is what the kernel-internal
+// readers (getOkValue, the combinator recursion) and the C++ platform callers
+// expect — but wrong the moment the Result escapes to compiled Elm code. At
+// the two escape points (Json_run / Json_runOnString) a boxed-primitive Ok
+// payload is therefore re-stored unboxed with its 2-bit kind. Embedded
+// constants (Bool/empties), strings, customs and Err payloads already match
+// the static layout and pass through untouched. The C++ platform callers
+// (PlatformRuntime::decodeFlags, PortRuntime receive) read the payload back
+// kind-aware via boxElement.
+static uint64_t rewrapEscapingResult(uint64_t result) {
+    void* ptr = Export::toPtr(result);
+    if (!ptr) return result;
+    Custom* c = static_cast<Custom*>(ptr);
+    if (c->ctor != 0 || c->header.size != 1 || (c->unboxed & 0x3) != 0) {
+        return result;
+    }
+    HPointer payload = c->values[0].p;
+    if (isConstant(payload)) return result;
+    void* p = Allocator::instance().resolve(payload);
+    if (!p) return result;
+    Header* h = static_cast<Header*>(p);
+    // The raw scalar is extracted BEFORE the allocation below, and the old
+    // box + Ok pair are dead after the rebuild — no rooting needed.
+    Unboxable v;
+    u64 kind;
+    switch (h->tag) {
+        case Tag_Int:
+            v.i = static_cast<ElmInt*>(p)->value;
+            kind = 1;
+            break;
+        case Tag_Float:
+            v.f = static_cast<ElmFloat*>(p)->value;
+            kind = 2;
+            break;
+        case Tag_Char:
+            v.c = static_cast<ElmChar*>(p)->value;
+            kind = 3;
+            break;
+        default:
+            return result;
+    }
+    return Export::encode(alloc::custom(0, { v }, kind));
+}
+
 HPtr Elm_Kernel_Json_run(HPtr decoder, HPtr value) {
     // Value is a JSON value (CTOR_JSON_* Custom, or the embedded JSON null).
     // A primitive decoder is an embedded null-cons constant (HEAP_044);
@@ -1545,7 +1596,29 @@ HPtr Elm_Kernel_Json_run(HPtr decoder, HPtr value) {
          !Allocator::instance().resolve(decoderHP))) {
         return HPtr::fromBits(makeErr("Invalid decoder"));
     }
-    return HPtr::fromBits(runDecoder(decoderHP, value.toBits()));
+    uint64_t valueBits = value.toBits();
+    // Family bridge (HEAP_046 sibling, fixed 2026-08-29): a Value built by
+    // Json.Encode arrives as an ENC_* Custom (Json_wrap's family), but
+    // runDecoder dispatches on the CTOR_JSON_* family — so every decodeValue
+    // over an encoder-built value silently returned Err. Convert through the
+    // existing nlohmann bridge; decoder-family values (ctor >= 100) and the
+    // embedded JSON null pass through. The type system guarantees a heap
+    // Custom here is one of the two Value families.
+    if (!isConstantBits(valueBits)) {
+        void* vptr = Export::toPtr(valueBits);
+        if (vptr) {
+            Header* vh = static_cast<Header*>(vptr);
+            if (vh->tag == Tag_Custom &&
+                static_cast<Custom*>(vptr)->ctor <= ENC_OBJECT) {
+                json j = elmToJson(valueBits);
+                // jsonToHeap allocates; the decoder must be rooted across it.
+                StackRootGuard guard(&decoderHP);
+                valueBits = Export::encode(jsonToHeap(j));
+            }
+        }
+    }
+    return HPtr::fromBits(
+        rewrapEscapingResult(runDecoder(decoderHP, valueBits)));
 }
 
 HPtr Elm_Kernel_Json_runOnString(HPtr decoder, HPtr jsonString) {
@@ -1564,7 +1637,8 @@ HPtr Elm_Kernel_Json_runOnString(HPtr decoder, HPtr jsonString) {
             heapJson = jsonToHeap(jval);
         }
 
-        return HPtr::fromBits(runDecoder(decoderHP, Export::encode(heapJson)));
+        return HPtr::fromBits(
+            rewrapEscapingResult(runDecoder(decoderHP, Export::encode(heapJson))));
     } catch (const json::parse_error& e) {
         return HPtr::fromBits(makeErr(std::string("Problem with the given value:\n\n") + e.what()));
     }

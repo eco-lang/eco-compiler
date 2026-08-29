@@ -1,6 +1,7 @@
 module Compiler.MonoSolver.LssInfer exposing
     ( signatureFor
     , instantiateWithSignature
+    , sigSourceTypeFor
     , injectLambdaMember
     , injectLambdaMemberQualified
     , injectSpineMemberId
@@ -8,6 +9,7 @@ module Compiler.MonoSolver.LssInfer exposing
     , injectPapSuccessorsFrom
     , papMemberKey
     , canTypeMentionsArrow
+    , canTypeIsArrow
     , kernelAliasOf
     , spineDepthForGlobal
     , declaredArityOf
@@ -1364,17 +1366,42 @@ walkExpr letEnv expr s0 =
             walkFunction (List.map (\( locName, _ ) -> A.toValue locName) params) srcLam body meta letEnv s0
 
         TOpt.Call _ func args meta ->
-            case walkCall letEnv func args meta s0 of
-                Err e ->
-                    Err e
+            if s0.env.lss.enabled && s0.env.lss.argPoints then
+                -- M2/H2 (plans/lss-coverage-four-levers.md §7.2-REVISED):
+                -- walk the ARG EXPRESSIONS FIRST, keep their WalkPoints, and
+                -- hand them to the callee unify — the historical order walked
+                -- args AFTER the params were unified against fresh type
+                -- loads, so every member the arg walk minted was discarded
+                -- (the A.1 leak). Args are NOT re-walked below (AR-19).
+                case walkArgsCollect letEnv args s0 of
+                    Err e ->
+                        Err e
 
-                Ok ( wp, s1 ) ->
-                    case walkChildren letEnv (func :: args) s1 of
-                        Err e ->
-                            Err e
+                    Ok ( ptArgs, s1 ) ->
+                        case walkCallWith letEnv func ptArgs meta s1 of
+                            Err e ->
+                                Err e
 
-                        Ok ( _, s2 ) ->
-                            Ok ( wp, s2 )
+                            Ok ( wp, s2 ) ->
+                                case walkChildren letEnv [ func ] s2 of
+                                    Err e ->
+                                        Err e
+
+                                    Ok ( _, s3 ) ->
+                                        Ok ( wp, s3 )
+
+            else
+                case walkCall letEnv func args meta s0 of
+                    Err e ->
+                        Err e
+
+                    Ok ( wp, s1 ) ->
+                        case walkChildren letEnv (func :: args) s1 of
+                            Err e ->
+                                Err e
+
+                            Ok ( _, s2 ) ->
+                                Ok ( wp, s2 )
 
         TOpt.VarGlobal _ g meta ->
             case kernelAliasOf g s0 of
@@ -1397,9 +1424,46 @@ walkExpr letEnv expr s0 =
                         s0
 
                 Nothing ->
-                    withPapSuccessors g
-                        (standaloneMemberWith (spineDepthForGlobal g) (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal g) g) meta)
-                        s0
+                    case
+                        withPapSuccessors g
+                            (standaloneMemberWith (spineDepthForGlobal g) (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal g) g) meta)
+                            s0
+                    of
+                        Err e ->
+                            Err e
+
+                        Ok ( WpNone, s1 ) ->
+                            -- M3 (plans/lss-coverage-four-levers.md §7.4-M3):
+                            -- a CONTAINER-typed reference (Box/Decoder value —
+                            -- not itself an arrow, but arrows inside) used to
+                            -- return no point, starving the arg transport. A
+                            -- reference IS a use of the def's scheme: hand
+                            -- back its signature instantiation, facts applied
+                            -- (payload ordinals included).
+                            if s1.env.lss.argPoints && canTypeMentionsArrow meta.tipe then
+                                -- B1 fact gate: skip trivial (nothing to
+                                -- transport; unify = pure key churn).
+                                case signatureFor g s1 of
+                                    Err e ->
+                                        Err e
+
+                                    Ok ( sig0, s1b ) ->
+                                        if sig0.trivial then
+                                            Ok ( WpNone, Engine.bumpArgFlowCensus "argpt|refInstSkip" s1b )
+
+                                        else
+                                            case instantiateWithSignature g (sigSourceTypeFor g meta.tipe s1b) s1b of
+                                                Err e ->
+                                                    Err e
+
+                                                Ok ( instVar, s2 ) ->
+                                                    Ok ( WpHonest instVar, Engine.bumpArgFlowCensus "argpt|refInst" s2 )
+
+                            else
+                                Ok ( WpNone, s1 )
+
+                        okOther ->
+                            okOther
 
         TOpt.VarEnum _ g _ meta ->
             -- E9: ctor mints register the Global for devirt lookup.
@@ -1628,19 +1692,150 @@ letEnv family — NEVER whole-type unification of the shared family Point
 (§7.4). Anything else: children only (the caller recurses via walkChildren).
 -}
 walkCall : LetEnv -> TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
-walkCall letEnv func args meta s0 =
+walkCall letEnv func args meta =
+    walkCallWith letEnv func (List.map (\a -> ( Nothing, a )) args) meta
+
+
+{-| Walk each argument EXPRESSION, keeping its WalkPoint (M2/H2). -}
+walkArgsCollect : LetEnv -> List (TOpt.Expr TypeIds.MVarId) -> Step (List ( Maybe IO.Variable, TOpt.Expr TypeIds.MVarId ))
+walkArgsCollect letEnv args s0 =
+    case args of
+        [] ->
+            Ok ( [], s0 )
+
+        a :: rest ->
+            case walkExpr letEnv a s0 of
+                Err e ->
+                    Err e
+
+                Ok ( wp, s1 ) ->
+                    case walkArgsCollect letEnv rest s1 of
+                        Err e ->
+                            Err e
+
+                        Ok ( ptRest, s2 ) ->
+                            Ok ( ( wpPoint wp, a ) :: ptRest, s2 )
+
+
+{-| TEMP diagnosis helper (lever-4 M3). -}
+exprTag : TOpt.Expr TypeIds.MVarId -> String
+exprTag e =
+    case e of
+        TOpt.Bool _ _ _ ->
+            "Bool"
+
+        TOpt.Chr _ _ _ ->
+            "Chr"
+
+        TOpt.Str _ _ _ ->
+            "Str"
+
+        TOpt.Int _ _ _ ->
+            "Int"
+
+        TOpt.Float _ _ _ ->
+            "Float"
+
+        TOpt.VarLocal n _ ->
+            "VarLocal:" ++ n
+
+        TOpt.TrackedVarLocal _ n _ ->
+            "TrackedVarLocal:" ++ n
+
+        TOpt.VarGlobal _ (TOpt.Global _ n) _ ->
+            "VarGlobal:" ++ n
+
+        TOpt.VarEnum _ (TOpt.Global _ n) _ _ ->
+            "VarEnum:" ++ n
+
+        TOpt.VarBox _ (TOpt.Global _ n) _ ->
+            "VarBox:" ++ n
+
+        TOpt.VarCycle _ _ n _ ->
+            "VarCycle:" ++ n
+
+        TOpt.VarDebug _ _ _ _ _ ->
+            "VarDebug"
+
+        TOpt.VarKernel _ _ _ n _ ->
+            "VarKernel:" ++ n
+
+        TOpt.List _ _ _ ->
+            "List"
+
+        TOpt.Function _ _ _ _ ->
+            "Function"
+
+        TOpt.TrackedFunction _ _ _ _ ->
+            "TrackedFunction"
+
+        TOpt.Call _ f _ _ ->
+            "Call(" ++ exprTag f ++ ")"
+
+        TOpt.TailCall _ _ _ ->
+            "TailCall"
+
+        TOpt.If _ _ _ ->
+            "If"
+
+        TOpt.Let d b _ ->
+            (case d of
+                TOpt.Def _ n r _ ->
+                    "Let(" ++ n ++ "=" ++ exprTag r ++ ")(" ++ exprTag b ++ ")"
+
+                _ ->
+                    "Let(TailDef)(" ++ exprTag b ++ ")"
+            )
+
+        TOpt.Destruct _ _ _ ->
+            "Destruct"
+
+        TOpt.Case _ _ _ _ _ ->
+            "Case"
+
+        TOpt.Accessor _ _ _ ->
+            "Accessor"
+
+        TOpt.Access _ _ _ _ ->
+            "Access"
+
+        TOpt.Update _ _ _ _ ->
+            "Update"
+
+        TOpt.Record _ _ ->
+            "Record"
+
+        TOpt.TrackedRecord _ _ _ ->
+            "TrackedRecord"
+
+        TOpt.Unit _ ->
+            "Unit"
+
+        TOpt.Tuple _ _ _ _ _ ->
+            "Tuple"
+
+        TOpt.Shader _ _ _ _ ->
+            "Shader"
+
+
+walkCallWith : LetEnv -> TOpt.Expr TypeIds.MVarId -> List ( Maybe IO.Variable, TOpt.Expr TypeIds.MVarId ) -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
+walkCallWith letEnv func ptArgs meta s0 =
+    let
+        args =
+            List.map Tuple.second ptArgs
+    in
     case func of
         TOpt.VarGlobal _ g funcMeta ->
-            applyCalleeAt g funcMeta.tipe args meta s0
+            applyCalleeAtWith g funcMeta.tipe ptArgs meta s0
 
         TOpt.VarCycle _ home name funcMeta ->
-            applyCalleeAt (TOpt.Global home name) funcMeta.tipe args meta s0
+            applyCalleeAtWith (TOpt.Global home name) funcMeta.tipe ptArgs meta s0
 
         TOpt.VarKernel _ _ home name funcMeta ->
             -- LSS_021/LSS_022: consult the audited set-flow table — licensed
             -- kernels behave like a plain callee, positional rows refine per
             -- param, no row / arity mismatch keeps LSS_004 full poison.
-            kernelCallBoundary home name funcMeta args meta s0
+            kernelCallBoundaryWith home name funcMeta ptArgs meta s0
 
         TOpt.VarDebug _ _ _ _ _ ->
             poisonCallBoundary args meta s0
@@ -1651,12 +1846,38 @@ walkCall letEnv func args meta s0 =
         TOpt.TrackedVarLocal _ name _ ->
             localCalleeJoin letEnv name args meta s0
 
+        TOpt.VarEnum _ g _ funcMeta ->
+            -- M2/H1: ctor calls previously fell to WpNone — no shape unify,
+            -- so payload members never entered the call's own type. Bodyless
+            -- ctors have trivial signatures; the instantiation+unify is the
+            -- transport (facts-free). Gated HERE, not only at the Call arm,
+            -- because walkCall delegates to walkCallWith unconditionally and
+            -- flag-off must stay byte-identical.
+            if s0.env.lss.argPoints then
+                applyCalleeAtWith g funcMeta.tipe ptArgs meta s0
+
+            else
+                Ok ( WpNone, s0 )
+
+        TOpt.VarBox _ g funcMeta ->
+            if s0.env.lss.argPoints then
+                applyCalleeAtWith g funcMeta.tipe ptArgs meta s0
+
+            else
+                Ok ( WpNone, s0 )
+
         _ ->
             Ok ( WpNone, s0 )
 
 
 applyCalleeAt : TOpt.Global -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
-applyCalleeAt g funcFallbackType args meta s0 =
+applyCalleeAt g funcFallbackType args meta =
+    applyCalleeAtWith g funcFallbackType (List.map (\a -> ( Nothing, a )) args) meta
+
+
+{-| `applyCalleeAt` with walked arg points (M2/H2). -}
+applyCalleeAtWith : TOpt.Global -> Can.Type TypeIds.MVarId -> List ( Maybe IO.Variable, TOpt.Expr TypeIds.MVarId ) -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
+applyCalleeAtWith g funcFallbackType args meta s0 =
     let
         gkey =
             TOpt.toComparableGlobal g
@@ -1675,7 +1896,7 @@ applyCalleeAt g funcFallbackType args meta s0 =
                 Err e
 
             Ok ( funcVar, s1 ) ->
-                case unifyCallShape funcVar args meta s1 of
+                case unifyCallShapeWith funcVar args meta s1 of
                     Err e ->
                         Err e
 
@@ -1688,7 +1909,7 @@ applyCalleeAt g funcFallbackType args meta s0 =
                 Err e
 
             Ok ( funcVar, s1 ) ->
-                case unifyCallShape funcVar args meta s1 of
+                case unifyCallShapeWith funcVar args meta s1 of
                     Err e ->
                         Err e
 
@@ -1757,8 +1978,14 @@ whole-type best-effort unify here must never target a shared letEnv family
 Point (§7.4; local callees go through `joinCallArgs` instead).
 -}
 unifyCallShape : IO.Variable -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Step IO.Variable
-unifyCallShape funcVar args meta s0 =
-    case unifyParamsBestEffort funcVar args s0 of
+unifyCallShape funcVar args meta =
+    unifyCallShapeWith funcVar (List.map (\a -> ( Nothing, a )) args) meta
+
+
+{-| `unifyCallShape` with walked arg points (M2/H2). -}
+unifyCallShapeWith : IO.Variable -> List ( Maybe IO.Variable, TOpt.Expr TypeIds.MVarId ) -> TOpt.Meta TypeIds.MVarId -> Step IO.Variable
+unifyCallShapeWith funcVar args meta s0 =
+    case unifyParamsWithPoints funcVar args s0 of
         Err e ->
             Err e
 
@@ -1842,11 +2069,24 @@ noteApplied content s =
 
 unifyParamsBestEffort : IO.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Step IO.Variable
 unifyParamsBestEffort funcVar args s0 =
+    unifyParamsWithPoints funcVar (List.map (\a -> ( Nothing, a )) args) s0
+
+
+{-| M2/H2 (plans/lss-coverage-four-levers.md §7.2-REVISED): the A.1 arg leak,
+closed. The historical form fresh-loads each arg's TYPE, so members the arg
+WALK minted (standalone refs, PAP producers, lambdas) sat in a class never
+connected to the callee's param — signatures then read allflex at every
+position the args should have fed. When the Call arm hands us the WALKED
+point, unify THAT with the param; the fresh type load remains the fallback
+for point-less args (WpNone class).
+-}
+unifyParamsWithPoints : IO.Variable -> List ( Maybe IO.Variable, TOpt.Expr TypeIds.MVarId ) -> Step IO.Variable
+unifyParamsWithPoints funcVar args s0 =
     case args of
         [] ->
             Ok ( funcVar, s0 )
 
-        arg :: rest ->
+        ( maybePt, arg ) :: rest ->
             let
                 ( store1, desc ) =
                     UF.get funcVar s0.store
@@ -1856,7 +2096,16 @@ unifyParamsBestEffort funcVar args s0 =
             in
             case Store.arrowParts desc.content of
                 Just ( pParam, pRest ) ->
-                    case Store.loadType (TOpt.typeOf arg) (noteApplied desc.content s1) of
+                    let
+                        argVarStep sA =
+                            case maybePt of
+                                Just walked ->
+                                    Ok ( walked, Engine.bumpArgFlowCensus "argleak|walked" (noteApplied desc.content sA) )
+
+                                Nothing ->
+                                    Store.loadType (TOpt.typeOf arg) (noteApplied desc.content sA)
+                    in
+                    case argVarStep s1 of
                         Err e ->
                             Err e
 
@@ -1866,7 +2115,7 @@ unifyParamsBestEffort funcVar args s0 =
                                     Err e
 
                                 Ok ( _, s3 ) ->
-                                    unifyParamsBestEffort pRest rest s3
+                                    unifyParamsWithPoints pRest rest s3
 
                 Nothing ->
                     -- Over-applied or opaque at this depth: stop.
@@ -2014,7 +2263,20 @@ already unifies the real item-memo arg Points before the (now skipped)
 poison.
 -}
 kernelCallBoundary : Name -> Name -> TOpt.Meta TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
-kernelCallBoundary home name funcMeta args meta s0 =
+kernelCallBoundary home name funcMeta args meta =
+    kernelCallBoundaryWith home name funcMeta (List.map (\a -> ( Nothing, a )) args) meta
+
+
+{-| `kernelCallBoundary` with walked arg points (M2/H2) — only the licensed
+Transports/TransportsAs arm consumes them; poison arms ignore them (the walk
+already ran; poison-after-inject is the recorded-safe order).
+-}
+kernelCallBoundaryWith : Name -> Name -> TOpt.Meta TypeIds.MVarId -> List ( Maybe IO.Variable, TOpt.Expr TypeIds.MVarId ) -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
+kernelCallBoundaryWith home name funcMeta ptArgs meta s0 =
+    let
+        args =
+            List.map Tuple.second ptArgs
+    in
     case KernelSetFacts.factFor home name of
         Nothing ->
             poisonCallBoundary args meta s0
@@ -2053,7 +2315,7 @@ kernelCallBoundary home name funcMeta args meta s0 =
                                 Err e
 
                             Ok ( funcVar, s1 ) ->
-                                case unifyCallShape funcVar args meta s1 of
+                                case unifyCallShapeWith funcVar ptArgs meta s1 of
                                     Err e ->
                                         Err e
 
@@ -2772,7 +3034,22 @@ joinLetUse letEnv name meta s0 =
                 -- bound into letEnv an unguarded load would fire at every
                 -- bound-name occurrence program-wide; an arrow-free join
                 -- writes no slots, so skipping it is semantics-free.
-                Ok ( WpNone, s0 )
+                --
+                -- M3 (plans/lss-coverage-four-levers.md §7.4-M3): a local
+                -- USE's occurrence type is often a syntactically-unsolved
+                -- MVar even when the solver knows it is an arrow, so this
+                -- guard used to discard the FAMILY point it already held —
+                -- the point-killer behind let-bound partial applications
+                -- reading var at consumer payloads. Hand the hub back
+                -- (no load): §7.4's v1 policy already shares one set across
+                -- a let binding's uses, and a cross-use union can never
+                -- create a false singleton (LSS_005, widening only).
+                (if s0.env.lss.argPoints then
+                    Ok ( WpHonest rhsVar, s0 )
+
+                 else
+                    Ok ( WpNone, s0 )
+                )
 
             else
                 case Store.loadType meta.tipe s0 of
