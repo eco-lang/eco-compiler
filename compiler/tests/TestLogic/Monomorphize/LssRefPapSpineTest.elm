@@ -342,7 +342,7 @@ annoSize a =
         Mono.LVar _ ->
             -1
 
-        Mono.LTop ->
+        Mono.LTop _ ->
             -2
 
 
@@ -353,7 +353,7 @@ describe annos =
             (List.map
                 (\a ->
                     case a of
-                        Mono.LTop ->
+                        Mono.LTop _ ->
                             "LTop"
 
                         Mono.LVar n ->

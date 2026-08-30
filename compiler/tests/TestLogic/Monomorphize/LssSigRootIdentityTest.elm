@@ -446,7 +446,7 @@ annosOf t =
 neverFalselyComplete : Mono.LambdaSetAnno -> Bool
 neverFalselyComplete anno =
     case anno of
-        Mono.LTop ->
+        Mono.LTop _ ->
             True
 
         Mono.LVar _ ->
@@ -464,7 +464,7 @@ describeAnnos annos =
 describeAnno : Mono.LambdaSetAnno -> String
 describeAnno anno =
     case anno of
-        Mono.LTop ->
+        Mono.LTop _ ->
             "LTop"
 
         Mono.LVar n ->

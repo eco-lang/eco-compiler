@@ -203,23 +203,29 @@ slots are minted in solver stores. Only meaningful under `EngineSolver`;
     `author/project:Module.Name.value`, e.g. `elm/core:List.foldl`); the
     engine converts to comparable gkeys at init. Irrelevant when `keyed` is
     already True.
-  - `maxSetSize`: a zonked set larger than this widens to `LTop`.
-  - `maxSpecsPerGlobal`: registry budget; past it, NEW demands key set-widened.
-    **512 since 2026-08-23** (was 64). Since LSS\_018 μ-tie the budget is
-    fan-out POLICY, not a termination requirement (see `muTie` below), so it
-    is free to be set where precision stops improving. Measured by the
-    2026-08-22 budget sweep (`/work/lss-knob-sweeps-report.md`): fast-dispatch
-    coverage rises 6.56 % → 22.11 % from budget 1 → 512 and is then FLAT to
-    4096 (22.11/22.44/22.47/22.47) — 512 is the knee, and the mono wall is
-    flat across the whole 1→4096 range (within the ±2.3 % noise floor). The
-    GAP-2 Phase-0 census (2026-08-23,
-    `plans/lss-gap2-callarg-transport.md` §2.6) independently confirms the
-    ceiling: the per-consumer keyed fan-out forecast peaks at 184
-    (`Task.andThen`) with four consumers above 64 and NONE above 512, so at
-    64 the hottest monadic families were running over budget and absorbing
-    new precision permanently (`join(⊤,{m}) = ⊤`, `HitNoopJoin`). Artifact-
-    affecting; hash token `lssB=<n>` when non-default, so a build pinned to
-    the old 64 keys its own cache entries.
+  - `maxSetSize`: a zonked set larger than this widens to `LTop`;
+    **0 = UNLIMITED, and 0 is the DEFAULT since 2026-08-29** (was 8, user
+    decision): a whole self-compile produces exactly 8 oversize sets
+    (6×9, 1×12, 1×21), so the limit bought nothing and cost precision
+    (plans/lss-provenance-join-and-demand-sigs.md §4.7).
+    `ECO_MONO_LSS_MAX_SET_SIZE` overrides; enforced at the two
+    Store readback caps and the two signature-channel B.4 riders.
+  - `maxSpecsPerGlobal`: registry budget; past it, NEW demands key set-widened;
+    **0 = UNLIMITED, and 0 is the DEFAULT since 2026-08-29** (was 512 since
+    2026-08-23, 64 before; user decision). The §4.7 same-binary A/B killed
+    all 8,818 budget-widen events for ZERO wall/RSS cost, positions +5,584,
+    coverage ratio +0.44 pp, top −31 — budget widening is KEY-MINTING
+    policy, not a ⊤ manufacturer, and since LSS\_018 μ-tie the budget is
+    fan-out POLICY, not a termination requirement (see `muTie` below).
+    History: the 2026-08-22 sweep (`/work/lss-knob-sweeps-report.md`) showed
+    dispatch flat 512→4096; the elm-aws-codegen pathological-workload class
+    (§11.7 census note) was the reason to keep a backstop — that class is now
+    the WATCH ITEM for this raise, and `ECO_MONO_LSS_MAX_SPECS` restores any
+    budget without a rebuild. NOTE: pre-2026-08-29 experiments that set the
+    budget to 0 meant ZERO budget (everything widened) — that configuration
+    is now spelled `ECO_MONO_LSS_MAX_SPECS=1`-ish, not 0. Artifact-affecting;
+    hash token `lssB=<n>` when non-default, so a build pinned to another
+    budget keys its own cache entries.
   - `report`: render an LSS census to stderr after mono (excluded from `hash`,
     like `diffDump` — output-only).
 
@@ -653,7 +659,9 @@ free at run time (Run M, `benchmarks/runtime-calls.md`: coverage 6.81 % →
 13.22 %, identical total events, wall parity). `ECO_MONO_LSS=unkeyed` restores
 the selective-whitelist mode (`keyedGlobals`); `ECO_MONO_LSS=0` disables LSS
 entirely. Watch item: the elm-aws-codegen pathological-workload class (§11.7
-census note) — the M4 `maxSpecsPerGlobal` budget is the backstop.
+census note) — since the 2026-08-29 no-limits defaults the M4
+`maxSpecsPerGlobal` budget no longer engages by default; if that class
+regresses, `ECO_MONO_LSS_MAX_SPECS` restores a budget without a rebuild.
 
 -}
 defaultLss : LssConfig
@@ -662,8 +670,8 @@ defaultLss =
     , keyed = True
     , keyedGlobals = defaultKeyedGlobals
     , devirtFnGlobals = True
-    , maxSetSize = 8
-    , maxSpecsPerGlobal = 512
+    , maxSetSize = 0
+    , maxSpecsPerGlobal = 0
     , report = False
     , spineArity = False
     , muTie = True

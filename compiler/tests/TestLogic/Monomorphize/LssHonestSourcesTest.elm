@@ -142,7 +142,7 @@ recorded).
 topFixture : Bool -> Outcome
 topFixture honest =
     runResolve honest Engine.emptyMemberTable [ 4 ] <|
-        \_ -> mintOne (IO.Structure (IO.LambdaSet1 IO.LsTop))
+        \_ -> mintOne (IO.Structure (IO.LambdaSet1 (IO.LsTop 7)))
 
 
 {-| A ⊇ B, B ⊇ A, both carrying members and NO flex: the LssDirectedFlowTest

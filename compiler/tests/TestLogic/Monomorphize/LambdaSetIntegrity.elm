@@ -139,7 +139,7 @@ checkOne specId expr acc =
                                     Id.toComparable m
                     in
                     case Mono.headAnno closType of
-                        Mono.LTop ->
+                        Mono.LTop _ ->
                             acc
 
                         Mono.LVar _ ->

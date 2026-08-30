@@ -1080,7 +1080,7 @@ specializePortBody incoming expr canType requestedMonoType =
                                                     Mono.MonoLiteral (Mono.LStr portName) Mono.MString
 
                                                 leafKernel valueType =
-                                                    Mono.MonoVarKernel region "Elm" "Platform" "leaf" (Mono.mFunction Mono.LTop [ Mono.MString, valueType ] resultType)
+                                                    Mono.MonoVarKernel region "Elm" "Platform" "leaf" (Mono.mFunction Mono.topSynth [ Mono.MString, valueType ] resultType)
 
                                                 closureInfo =
                                                     { lambdaId = lambdaId
@@ -3106,7 +3106,7 @@ translateGlobalCallGroundMemo region funcRegion global funcCanType args callCanT
                     -- can differ under one key and the cached (funcMonoType,
                     -- resultMonoType, specId) replay is exact.
                     Mono.SpecKey (toptToMonoGlobal global)
-                        (Mono.mFunction Mono.LTop
+                        (Mono.mFunction Mono.topDecl
                             (List.map (Zonk.canTypeToMono superStatic << TOpt.typeOf) args)
                             (Zonk.canTypeToMono superStatic callCanType)
                         )

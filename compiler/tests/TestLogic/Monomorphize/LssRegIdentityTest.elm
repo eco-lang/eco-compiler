@@ -421,7 +421,7 @@ paramAnnos target graph =
 
 isTop : Mono.LambdaSetAnno -> Bool
 isTop a =
-    a == Mono.LTop
+    Mono.isTopAnno a
 
 
 isSingleton : Mono.LambdaSetAnno -> Bool
@@ -459,7 +459,7 @@ isSet a =
 neverFalselyComplete : Mono.LambdaSetAnno -> Bool
 neverFalselyComplete anno =
     case anno of
-        Mono.LTop ->
+        Mono.LTop _ ->
             True
 
         Mono.LVar _ ->
@@ -487,7 +487,7 @@ describeMaybe m =
 describeAnno : Mono.LambdaSetAnno -> String
 describeAnno anno =
     case anno of
-        Mono.LTop ->
+        Mono.LTop _ ->
             "LTop"
 
         Mono.LVar n ->

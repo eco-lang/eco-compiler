@@ -133,6 +133,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\budgetVal -> applyLssBudgetOverride budgetVal cfg4)
             )
         |> Task.andThen
+            (\cfg4a ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_MAX_SET_SIZE" |> Task.mapError never)
+                    |> Task.map (\setVal -> applyLssMaxSetSizeOverride setVal cfg4a)
+            )
+        |> Task.andThen
             (\cfg4b ->
                 (Utils.envLookupEnv "ECO_MONO_LSS_KEYED_GLOBALS" |> Task.mapError never)
                     |> Task.andThen (\kgVal -> applyLssKeyedGlobalsOverride kgVal cfg4b)
@@ -1265,17 +1270,34 @@ applyLssOverride maybeVal cfg =
 
 
 {-| `ECO_MONO_LSS_MAX_SPECS=<n>`: override `mono.lss.maxSpecsPerGlobal`
-(the keyed-mode spec budget, design §8.5). Test/tuning knob — a tiny value
-forces the budget-exhausted widened-key + LSS\_010-join fallback so the
-mixed-mode path can be exercised deliberately. Non-numeric values are
-ignored. Participates in the config hash via the `lssB=` token, so
-eco-stuff artifacts never alias across budgets.
+(the keyed-mode spec budget, design §8.5). **0 = UNLIMITED — the default
+since 2026-08-29.** Test/tuning knob — a tiny value (1, not 0) forces the
+budget-exhausted widened-key + LSS\_010-join fallback so the mixed-mode
+path can be exercised deliberately. Non-numeric values are ignored.
+Participates in the config hash via the `lssB=` token, so eco-stuff
+artifacts never alias across budgets.
 -}
 applyLssBudgetOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssBudgetOverride maybeVal cfg =
     case Maybe.andThen (String.trim >> String.toInt) maybeVal of
         Just n ->
             updateLss (\lss -> { lss | maxSpecsPerGlobal = n }) cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_MAX_SET_SIZE=<n>`: override `mono.lss.maxSetSize` (a zonked
+set larger than this widens to `LTop`). **0 = UNLIMITED — the default since
+2026-08-29** (plans/lss-provenance-join-and-demand-sigs.md §4.7). Non-numeric
+values are ignored. Participates in the config hash via the existing
+non-default `maxSetSize` token, so eco-stuff artifacts never alias.
+-}
+applyLssMaxSetSizeOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssMaxSetSizeOverride maybeVal cfg =
+    case Maybe.andThen (String.trim >> String.toInt) maybeVal of
+        Just n ->
+            updateLss (\lss -> { lss | maxSetSize = n }) cfg
 
         Nothing ->
             cfg

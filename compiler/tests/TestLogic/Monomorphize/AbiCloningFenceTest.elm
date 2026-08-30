@@ -57,7 +57,7 @@ suite =
                         statsOf
                             [ mkClosure 1 member [] (annoBody 777) (annoRet 777)
                             , mkClosure 2 member [] (annoBody 778) (annoRet 778)
-                            , callSite (intFn Mono.LTop)
+                            , callSite (intFn Mono.topLegacy)
                             ]
                 in
                 Expect.all
@@ -74,7 +74,7 @@ suite =
                         statsWithFence False
                             [ mkClosure 1 member [] (annoBody 777) (annoRet 777)
                             , mkClosure 2 member [] (annoBody 778) (annoRet 778)
-                            , callSite (intFn Mono.LTop)
+                            , callSite (intFn Mono.topLegacy)
                             ]
                 in
                 Expect.all

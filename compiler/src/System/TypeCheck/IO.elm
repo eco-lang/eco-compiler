@@ -5,7 +5,7 @@ module System.TypeCheck.IO exposing
     , traverseArrayMaybe, foldMArray
     , Point(..), PointCell(..)
     , Descriptor, Content(..), SuperType(..), Mark(..), Variable, RootedVar, FlatType(..)
-    , LambdaSet(..), SortedRel(..), lsTopContent, classifySorted, unionSortedAsc, pointKey
+    , LambdaSet(..), SortedRel(..), lsTopContent, lsTopContentK, classifySorted, unionSortedAsc, pointKey
     , Canonical(..)
     , makeDescriptor
     , NameState, getNames, putNames, withFreshNames
@@ -695,7 +695,7 @@ eagerly, never by a write hook. Invariants:
 
 -}
 type LambdaSet
-    = LsTop
+    = LsTop Int
     | LsMembers (List Int)
     | LsFrom (List Int) (List Variable)
 
@@ -709,11 +709,72 @@ pointKey (Pt n) =
     n
 
 
-{-| THE shared ⊤ content. All top-writes `UF.set` this one value.
+{-| Shared ⊤ contents, one CAF per provenance kind so every top-write stays
+allocation-free (the §4.9 provenance kinds; codes mirror
+`Mono.tkPoison..tkLegacy` = 0..7 — this module cannot import Mono). The
+kind is census metadata ONLY: every store reader treats all `LsTop` values
+identically, and the ⊤-⊤ unify merge takes `min` (priority).
+
+`lsTopContent` keeps its historical name as the LEGACY-kind constant for
+sites with no better attribution.
 -}
 lsTopContent : Content
 lsTopContent =
-    Structure (LambdaSet1 LsTop)
+    Structure (LambdaSet1 (LsTop 7))
+
+
+lsTopPoison : Content
+lsTopPoison =
+    Structure (LambdaSet1 (LsTop 0))
+
+
+lsTopConflict : Content
+lsTopConflict =
+    Structure (LambdaSet1 (LsTop 1))
+
+
+lsTopWiden : Content
+lsTopWiden =
+    Structure (LambdaSet1 (LsTop 2))
+
+
+lsTopEdge : Content
+lsTopEdge =
+    Structure (LambdaSet1 (LsTop 3))
+
+
+lsTopAbi : Content
+lsTopAbi =
+    Structure (LambdaSet1 (LsTop 4))
+
+
+lsTopDecl : Content
+lsTopDecl =
+    Structure (LambdaSet1 (LsTop 5))
+
+
+lsTopContentK : Int -> Content
+lsTopContentK k =
+    if k <= 0 then
+        lsTopPoison
+
+    else if k == 1 then
+        lsTopConflict
+
+    else if k == 2 then
+        lsTopWiden
+
+    else if k == 3 then
+        lsTopEdge
+
+    else if k == 4 then
+        lsTopAbi
+
+    else if k == 5 then
+        lsTopDecl
+
+    else
+        lsTopContent
 
 
 {-| Relation between two ascending member lists, decided in ONE merge-scan:

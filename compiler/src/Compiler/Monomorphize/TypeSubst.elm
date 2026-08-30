@@ -1107,7 +1107,7 @@ applySubstLambdaChainI env subst argsAcc to intern =
                         ( argMono, i1 ) =
                             applySubstPureI env subst argType i
                     in
-                    Intern.hashCons (Mono.mFunction Mono.LTop [ argMono ] acc) i1
+                    Intern.hashCons (Mono.mFunction Mono.topDecl [ argMono ] acc) i1
                 )
                 (applySubstPureI env subst to intern)
                 argsAcc
@@ -1539,7 +1539,7 @@ unifyCallSiteDirectWithExpected intern env schemeArgTypes schemeResultType argMo
 
                         expectedResidualMono =
                             List.foldr
-                                (\argMono acc -> Mono.mFunction Mono.LTop [ argMono ] acc)
+                                (\argMono acc -> Mono.mFunction Mono.topDecl [ argMono ] acc)
                                 callResultMono
                                 surplusArgMonos
                     in
@@ -1605,7 +1605,7 @@ buildCurriedFuncType : List (Can.Type MVarId) -> List Mono.MonoType -> Mono.Mono
 buildCurriedFuncType schemeArgs resolvedArgs resultMono =
     case ( schemeArgs, resolvedArgs ) of
         ( _ :: schemeRest, arg :: argRest ) ->
-            Mono.mFunction Mono.LTop [ arg ] (buildCurriedFuncType schemeRest argRest resultMono)
+            Mono.mFunction Mono.topDecl [ arg ] (buildCurriedFuncType schemeRest argRest resultMono)
 
         _ ->
             resultMono

@@ -474,7 +474,7 @@ classifyBody env specId callbackName callbackType listType resultKind body acc =
                 bump (\s -> { s | declinedWidened = s.declinedWidened + 1 }) acc
     in
     case Mono.headAnno callbackType of
-        Mono.LTop ->
+        Mono.LTop _ ->
             declineTopLike ()
 
         Mono.LVar _ ->
@@ -1098,7 +1098,7 @@ calleeVerdict purity hooks func =
                 Mono.LSet ms ->
                     hooks.calleeSet ms
 
-                Mono.LTop ->
+                Mono.LTop _ ->
                     poison (PoisonHigherOrder HOLocalLTop)
 
                 Mono.LVar _ ->
@@ -1182,7 +1182,7 @@ argProvenance purity hooks arg annos =
 
                     else
                         case anno of
-                            Mono.LTop ->
+                            Mono.LTop _ ->
                                 ( PoisonArgTaint ArgLTop, Tuple.second acc )
 
                             Mono.LVar _ ->
@@ -1238,7 +1238,7 @@ arrowAnnos ty =
             List.concatMap arrowAnnos args
 
         Mono.MVar _ _ ->
-            [ Mono.LTop ]
+            [ Mono.topSynth ]
 
         _ ->
             []

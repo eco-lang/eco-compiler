@@ -233,7 +233,7 @@ isWrapperHome (Mono.AnonymousLambda home _) =
 query : Facts -> Mono.MonoType -> CalleeFacts
 query facts calleeType =
     case Mono.headAnno calleeType of
-        Mono.LTop ->
+        Mono.LTop _ ->
             Poison PTop
 
         Mono.LVar _ ->

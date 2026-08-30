@@ -127,7 +127,7 @@ suite =
                             Engine.groundSetMembers Mono.MInt Mono.MInt [ midA ] t1 n1
 
                         rHead =
-                            Engine.groundSetMembers Mono.MInt (Mono.mFunction Mono.LTop [ Mono.MInt ] Mono.MInt) [ midA ] rInner.table rInner.nextId
+                            Engine.groundSetMembers Mono.MInt (Mono.mFunction Mono.topLegacy [ Mono.MInt ] Mono.MInt) [ midA ] rInner.table rInner.nextId
                     in
                     case ( rInner.members, rHead.members ) of
                         ( [ idInner ], [ idHead ] ) ->

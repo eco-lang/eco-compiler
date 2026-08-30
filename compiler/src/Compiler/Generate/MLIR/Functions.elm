@@ -370,7 +370,7 @@ listShuntCall kernelName params resultTy =
     let
         kernelTy : Mono.MonoType
         kernelTy =
-            Mono.mFunction Mono.LTop (List.map Tuple.second params) resultTy
+            Mono.mFunction Mono.topSynth (List.map Tuple.second params) resultTy
 
         defaultInfo : Mono.CallInfo
         defaultInfo =

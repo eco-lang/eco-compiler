@@ -53,6 +53,7 @@ slot of the instantiation (⊤ loses precision, never soundness).
 
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
+import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name exposing (Name)
@@ -291,7 +292,7 @@ schemeFacts facts slots i s0 =
             let
                 afterTop =
                     if fact.top then
-                        Store.unifySlotWithSet True [] slot s0
+                        Store.unifySlotWithSet (Just fact.topKind) [] slot s0
 
                     else
                         Ok ( (), s0 )
@@ -325,7 +326,7 @@ schemeResidual residual slots s0 =
                     schemeResidual rest slots s0
 
                 Just slot ->
-                    case Store.unifySlotWithSet False members slot s0 of
+                    case Store.unifySlotWithSet Nothing members slot s0 of
                         Err e ->
                             Err e
 
@@ -371,10 +372,10 @@ applyFactsGo facts slots i s0 =
                     let
                         afterSet =
                             if fact.top then
-                                Store.unifySlotWithSet True [] slot s1
+                                Store.unifySlotWithSet (Just fact.topKind) [] slot s1
 
                             else if not (List.isEmpty fact.members) then
-                                Store.unifySlotWithSet False fact.members slot s1
+                                Store.unifySlotWithSet Nothing fact.members slot s1
 
                             else
                                 Ok ( (), s1 )
@@ -947,10 +948,11 @@ zonkSigGo selfId slots n i factsRev s0 =
 
                             ( fact, s3 ) =
                                 case desc.content of
-                                    IO.Structure (IO.LambdaSet1 IO.LsTop) ->
+                                    IO.Structure (IO.LambdaSet1 (IO.LsTop tpK)) ->
                                         -- Members are dead under ⊤ at every
-                                        -- fact consumer; carry none.
-                                        ( Ok { rep = rep, members = [], top = True, sources = [] }, s2 )
+                                        -- fact consumer; carry none. §4.9:
+                                        -- the birth kind rides the fact.
+                                        ( Ok { rep = rep, members = [], top = True, topKind = tpK, sources = [] }, s2 )
 
                                     IO.Structure (IO.LambdaSet1 (IO.LsMembers ms0)) ->
                                         if s2.env.lss.sigFlow then
@@ -971,18 +973,19 @@ zonkSigGo selfId slots n i factsRev s0 =
                                             -- applies to the signature channel
                                             -- too (mirrors Store.zonkSetSlot's
                                             -- cap; LSS_005 — widening only).
-                                            if List.length ms > s2.env.lss.maxSetSize then
-                                                ( Ok { rep = rep, members = [], top = True, sources = [] }
+                                            -- 0 = UNLIMITED (2026-08-29).
+                                            if s2.env.lss.maxSetSize > 0 && List.length ms > s2.env.lss.maxSetSize then
+                                                ( Ok { rep = rep, members = [], top = True, topKind = Mono.tkWiden, sources = [] }
                                                 , Engine.bumpWidenedBySigSize s2
                                                 )
 
                                             else
-                                                ( Ok { rep = rep, members = ms, top = False, sources = [] }, s2 )
+                                                ( Ok { rep = rep, members = ms, top = False, topKind = Mono.tkLegacy, sources = [] }, s2 )
 
                                         else
                                             -- Phase 2: the store list by pointer
                                             -- (was CoreDict.keys).
-                                            ( Ok { rep = rep, members = ms0, top = False, sources = [] }, s2 )
+                                            ( Ok { rep = rep, members = ms0, top = False, topKind = Mono.tkLegacy, sources = [] }, s2 )
 
                                     IO.Structure (IO.LambdaSet1 (IO.LsFrom ms0 srcs)) ->
                                         -- LSS_023 promote-or-internalize (the
@@ -1006,11 +1009,11 @@ zonkSigGo selfId slots n i factsRev s0 =
                                             -- completeness while dropping its
                                             -- sources' members is the
                                             -- false-singleton miscompile.
-                                            ( Ok { rep = rep, members = [], top = True, sources = [] }, s2 )
+                                            ( Ok { rep = rep, members = [], top = True, topKind = Mono.tkEdge, sources = [] }, s2 )
 
                                     _ ->
                                         -- FlexVar: the body contributed nothing.
-                                        ( Ok { rep = rep, members = [], top = False, sources = [] }, s2 )
+                                        ( Ok { rep = rep, members = [], top = False, topKind = Mono.tkLegacy, sources = [] }, s2 )
                         in
                         case fact of
                             Ok done ->
@@ -1196,7 +1199,7 @@ sigEdgesGo slots i pending visited accMembers accOrdinals sawFlex s0 =
                                 key :: visited
                         in
                         case desc.content of
-                            IO.Structure (IO.LambdaSet1 IO.LsTop) ->
+                            IO.Structure (IO.LambdaSet1 (IO.LsTop _)) ->
                                 Ok ( ( Nothing, sawFlex ), s2 )
 
                             IO.Structure (IO.LambdaSet1 (IO.LsMembers ms)) ->
@@ -1260,15 +1263,16 @@ bumped), else the members-plus-sources fact.
 finishSigFact : Int -> { top : Bool, members : List Int, sources : List Int } -> Engine.S -> ( Engine.ArrowFact, Engine.S )
 finishSigFact rep resolved s0 =
     if resolved.top then
-        ( { rep = rep, members = [], top = True, sources = [] }, s0 )
+        -- §4.9: an edge-resolved ⊤ (the DFS ⊤ marker drops the birth kind).
+        ( { rep = rep, members = [], top = True, topKind = Mono.tkEdge, sources = [] }, s0 )
 
-    else if List.length resolved.members > s0.env.lss.maxSetSize then
-        ( { rep = rep, members = [], top = True, sources = [] }
+    else if s0.env.lss.maxSetSize > 0 && List.length resolved.members > s0.env.lss.maxSetSize then
+        ( { rep = rep, members = [], top = True, topKind = Mono.tkWiden, sources = [] }
         , Engine.bumpWidenedBySigSize s0
         )
 
     else
-        ( { rep = rep, members = resolved.members, top = False, sources = resolved.sources }, s0 )
+        ( { rep = rep, members = resolved.members, top = False, topKind = Mono.tkLegacy, sources = resolved.sources }, s0 )
 
 
 {-| The smallest ordinal j < i whose slot is UF-equivalent to this one (i if
@@ -2932,7 +2936,7 @@ papSuccWrite mid rest seen res c0 =
             IO.Structure (IO.FunL _ _ slot) ->
                 -- The result IS an arrow: this member names it; continue the
                 -- walk FROM it for the next depth.
-                papSuccGoC rest seen1 res (Store.unifySlotWithSetC False [ mid ] slot c1)
+                papSuccGoC rest seen1 res (Store.unifySlotWithSetC Nothing [ mid ] slot c1)
 
             IO.Alias _ _ _ real ->
                 papSuccWrite mid rest seen1 real c1
@@ -3008,7 +3012,7 @@ spineGoC mid remaining seen v c0 =
                 IO.Structure (IO.FunL _ res slot) ->
                     -- One arrow consumed: descend the result with one fewer
                     -- arrow of budget.
-                    spineGoC mid (remaining - 1) (CoreDict.insert key () seen) res (Store.unifySlotWithSetC False [ mid ] slot c1)
+                    spineGoC mid (remaining - 1) (CoreDict.insert key () seen) res (Store.unifySlotWithSetC Nothing [ mid ] slot c1)
 
                 IO.Alias _ _ _ real ->
                     -- Transparent alias: chase the aliased Point WITHOUT

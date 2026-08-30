@@ -175,7 +175,7 @@ checkMonoTailFuncType funcName (Mono.MonoGraph data) =
 
                 -- Under stage-aware design, Int -> Int -> Int becomes nested MFunction
                 expectedMonoType =
-                    Mono.mFunction Mono.LTop [ Mono.MInt ] (Mono.mFunction Mono.LTop [ Mono.MInt ] Mono.MInt)
+                    Mono.mFunction Mono.topLegacy [ Mono.MInt ] (Mono.mFunction Mono.topLegacy [ Mono.MInt ] Mono.MInt)
 
                 -- Check argument types
                 argTypeErrors =

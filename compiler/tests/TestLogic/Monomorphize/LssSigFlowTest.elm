@@ -187,7 +187,7 @@ suite =
                         if List.isEmpty resultAnnos then
                             Expect.fail "no pick demands found"
 
-                        else if List.all (\anno -> anno == Mono.LTop) resultAnnos then
+                        else if List.all Mono.isTopAnno resultAnnos then
                             Expect.pass
 
                         else
@@ -262,7 +262,7 @@ suite =
                                 else
                                     Expect.fail ("expected bySigSize=1 in the report, got: " ++ report)
                             , \() ->
-                                if List.all (\anno -> anno == Mono.LTop) resultAnnos && not (List.isEmpty resultAnnos) then
+                                if List.all Mono.isTopAnno resultAnnos && not (List.isEmpty resultAnnos) then
                                     Expect.pass
 
                                 else
@@ -412,7 +412,7 @@ suite =
                             , List.all
                                 (\a ->
                                     isVarAnno a
-                                        || (a == Mono.LTop)
+                                        || (Mono.isTopAnno a)
                                         || List.member a (plainFnParamAnnosOf "useH" graph)
                                 )
                                 hofInnerAnnos
@@ -712,7 +712,7 @@ annoHasSize n anno =
         Mono.LSet members ->
             List.length members == n
 
-        Mono.LTop ->
+        Mono.LTop _ ->
             False
 
         Mono.LVar _ ->
@@ -725,7 +725,7 @@ describeAnnos annos =
         (List.map
             (\anno ->
                 case anno of
-                    Mono.LTop ->
+                    Mono.LTop _ ->
                         "LTop"
 
                     Mono.LVar n ->

@@ -95,6 +95,12 @@ type alias ArrowFact =
     { rep : Int
     , members : List Int
     , top : Bool
+
+    -- §4.9 ⊤ provenance: the birth kind of the ⊤ this fact transports
+    -- (meaningful only when `top = True`; `Mono.tkLegacy` otherwise). Rides
+    -- the signature channel so an instantiated ⊤ keeps its cause instead of
+    -- being re-manufactured as unattributed at every application site.
+    , topKind : Int
     , sources : List Int
     }
 
@@ -501,7 +507,7 @@ emptyLssStats =
 -}
 trivialSignature : Int -> LssSignature
 trivialSignature n =
-    { arrows = Array.initialize n (\i -> { rep = i, members = [], top = False, sources = [] })
+    { arrows = Array.initialize n (\i -> { rep = i, members = [], top = False, topKind = Mono.tkLegacy, sources = [] })
     , trivial = True
     , quantified = List.range 0 (n - 1)
     , residual = []
@@ -1768,7 +1774,7 @@ groundSetMembers paramT resultT members table0 nextId0 =
         let
             -- Detail 2: the annotation-widened arrow key, built ONCE per slot.
             typeKey =
-                Mono.toComparableMonoType (Mono.widenSets (Mono.mFunction Mono.LTop [ paramT ] resultT))
+                Mono.toComparableMonoType (Mono.widenSets (Mono.mFunction Mono.topWiden [ paramT ] resultT))
 
             rewritten =
                 List.foldl
@@ -2160,8 +2166,11 @@ enqueueSpecKeyed global monoType s0 =
         count =
             Maybe.withDefault 0 (CoreDict.get gkey s0.specCountByGlobal)
 
+        -- 0 (or negative) = UNLIMITED (2026-08-29): the budget is fan-out
+        -- POLICY since LSS_018 μ-tie, and the no-limits default expresses
+        -- "no policy" as 0 rather than a sentinel magnitude.
         underBudget =
-            count < s0.env.lss.maxSpecsPerGlobal
+            s0.env.lss.maxSpecsPerGlobal <= 0 || count < s0.env.lss.maxSpecsPerGlobal
 
         -- LSS_024 §2.2: the annotation-widened key is needed on the
         -- over-budget arm (it IS the dedup key there — today's behavior)

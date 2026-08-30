@@ -217,7 +217,7 @@ checkClosureParams ctx keyMonoType closureParams bodyType =
 
                         expectedBodyType =
                             -- Compared via monoTypeEq, which ignores annotations.
-                            Mono.mFunction Mono.LTop remainingKeyParams keyResultType
+                            Mono.mFunction Mono.topLegacy remainingKeyParams keyResultType
 
                         ( bodyParamTypes, bodyResultType ) =
                             flattenMFunction bodyType

@@ -278,7 +278,7 @@ computeBranchNormalization funcTypes =
                             List.foldl Mono.unionAnno first rest
 
                         [] ->
-                            Mono.LTop
+                            Mono.topLegacy
 
                 canonicalType =
                     Mono.buildSegmentedFunctionType canonicalAnno flatArgs flatRet canonicalSeg
@@ -607,7 +607,7 @@ ensureCallableForNode home expr monoType ctx =
 
                         flattenedFuncType =
                             -- Kernel-facing arrow: LTop (LSS_004).
-                            Mono.mFunction Mono.LTop kernelFlatArgTypes kernelFlatRetType
+                            Mono.mFunction Mono.topSynth kernelFlatArgTypes kernelFlatRetType
                     in
                     makeAliasClosureGO home
                         (Mono.MonoVarKernel region kernelPrefix kernelHome name kernelAbiType)

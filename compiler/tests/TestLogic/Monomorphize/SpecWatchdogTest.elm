@@ -63,7 +63,7 @@ suite =
                 \() ->
                     let
                         fn =
-                            Mono.mFunction Mono.LTop [ Mono.MInt, Mono.MString ] Mono.MBool
+                            Mono.mFunction Mono.topLegacy [ Mono.MInt, Mono.MString ] Mono.MBool
                     in
                     Expect.equal ( True, False )
                         ( Mono.typeNodesWithin 4 fn, Mono.typeNodesWithin 3 fn )

@@ -103,7 +103,7 @@ strTy =
 
 fnTy : Mono.MonoType
 fnTy =
-    Mono.mFunction Mono.LTop [ strTy ] strTy
+    Mono.mFunction Mono.topLegacy [ strTy ] strTy
 
 
 closedCall : Mono.MonoExpr

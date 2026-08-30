@@ -25,7 +25,10 @@ TYPE never changes (`Int -> Int` throughout): the fan-out is driven purely
 by member identity, which is precisely the specs→qualified-members→keys
 spiral of the fork plan §6.5.
 
-Flag-off, only `maxSpecsPerGlobal` stops it. Flag-on, S2 reuses `Q(L,S1)`,
+Flag-off, only `maxSpecsPerGlobal` stops it — so this harness PINS
+`maxSpecsPerGlobal = 64` (and `maxSetSize = 8`): the shipping defaults became
+0 = UNLIMITED on 2026-08-29, under which the flag-off arm has no terminator
+at all (the 6th overlapping-flag-pin occurrence). Flag-on, S2 reuses `Q(L,S1)`,
 its outgoing demand equals its incoming one, the registry probe hits, and
 the family closes at its second member — the termination property LSS_018
 claims, with the budget demoted to fan-out policy.
@@ -76,9 +79,9 @@ suite =
                             , \f ->
                                 -- The spiral is real AND the budget is its
                                 -- ONLY terminator (plan §2.1): measured 65
-                                -- specs of `loop` = maxSpecsPerGlobal (64)
+                                -- specs of `loop` = the PINNED budget (64)
                                 -- + the seed, where the TYPE alone needs 1.
-                                if f.loopSpecs >= Config.defaultLss.maxSpecsPerGlobal then
+                                if f.loopSpecs >= pinnedBudget then
                                     Expect.pass
 
                                 else
@@ -152,6 +155,14 @@ type alias Facts =
     }
 
 
+{-| The flag-off arm's terminator. Pinned in-harness because the shipping
+default budget is 0 = UNLIMITED since 2026-08-29.
+-}
+pinnedBudget : Int
+pinnedBudget =
+    64
+
+
 run : Bool -> Result String Facts
 run muTie =
     let
@@ -166,7 +177,7 @@ run muTie =
         -- ISOLATION — under LSS_024 (default-on since 2026-08-21) C alone
         -- closes the spiral and the flag-off arm's fan-out-to-budget
         -- expectation would be vacuous (LayoutQualTest pins the C arms).
-        { defaults | enabled = True, keyed = True, muTie = muTie, layoutQualMembers = False }
+        { defaults | enabled = True, keyed = True, muTie = muTie, layoutQualMembers = False, maxSpecsPerGlobal = pinnedBudget, maxSetSize = 8 }
         spiralModule
         |> Result.map factsOf
 

@@ -1496,7 +1496,7 @@ stampCall index ctx region func args resultType callInfo =
             in
             ( Mono.MonoCall region func args resultType callInfo, { ctx | stats = statsMembers } )
 
-        Mono.LTop ->
+        Mono.LTop _ ->
             -- census (E8 split): an unknowable-callee site — classify the
             -- callee expression shape (escape proxy).
             let

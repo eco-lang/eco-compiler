@@ -333,7 +333,7 @@ claim that hijacks the representative.
 neverFalselyComplete : Mono.LambdaSetAnno -> Bool
 neverFalselyComplete anno =
     case anno of
-        Mono.LTop ->
+        Mono.LTop _ ->
             True
 
         Mono.LVar _ ->
@@ -349,7 +349,7 @@ annoHasSize n anno =
         Mono.LSet members ->
             List.length members == n
 
-        Mono.LTop ->
+        Mono.LTop _ ->
             False
 
         Mono.LVar _ ->
@@ -362,7 +362,7 @@ describeAnnos annos =
         (List.map
             (\anno ->
                 case anno of
-                    Mono.LTop ->
+                    Mono.LTop _ ->
                         "LTop"
 
                     Mono.LVar n ->

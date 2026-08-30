@@ -709,68 +709,70 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         --
         -- Report-gated AND flag-gated (rides `lss.arrowCensus`): probe-scale
         -- output is a dozen rows, self-compile scale is tens of thousands.
+        posWalk path monoType acc =
+            case monoType of
+                Mono.MFunction _ anno args result ->
+                    let
+                        acc1 =
+                            case anno of
+                                Mono.LSet [ _ ] ->
+                                    -- L4 P0 instrument
+                                    -- (plans/lss-coverage-four-levers.md
+                                    -- §1.4): covered positions emit too,
+                                    -- so the transport candidate set —
+                                    -- (global, path) LSet in one spec,
+                                    -- LVar in another — is computable
+                                    -- post-hoc from one census log.
+                                    ( path, "k1" ) :: acc
+
+                                Mono.LSet _ ->
+                                    ( path, "kN" ) :: acc
+
+                                Mono.LVar _ ->
+                                    ( path, "var" ) :: acc
+
+                                Mono.LTop tpK ->
+                                    -- §4.9: pos| rows carry the birth kind
+                                    -- (`top@abi` etc.) — position-level
+                                    -- provenance in one census log.
+                                    ( path, "top@" ++ Mono.topKindLabel tpK ) :: acc
+
+                        accR =
+                            posWalk (path ++ "/r") result acc1
+                    in
+                    List.foldl
+                        (\( i, a ) accA ->
+                            posWalk (path ++ "/a" ++ String.fromInt i) a accA
+                        )
+                        accR
+                        (List.indexedMap Tuple.pair args)
+
+                Mono.MList _ inner ->
+                    posWalk (path ++ "/l") inner acc
+
+                Mono.MTuple _ elems ->
+                    List.foldl
+                        (\( i, e ) accE ->
+                            posWalk (path ++ "/t" ++ String.fromInt i) e accE
+                        )
+                        acc
+                        (List.indexedMap Tuple.pair elems)
+
+                Mono.MRecord _ fields ->
+                    Dict.foldl (\fname t a -> posWalk (path ++ "/f:" ++ fname) t a) acc fields
+
+                Mono.MCustom _ _ _ args ->
+                    List.foldl
+                        (\( i, a ) accA ->
+                            posWalk (path ++ "/c" ++ String.fromInt i) a accA
+                        )
+                        acc
+                        (List.indexedMap Tuple.pair args)
+
+                _ ->
+                    acc
+
         posRows =
-            let
-                go path monoType acc =
-                    case monoType of
-                        Mono.MFunction _ anno args result ->
-                            let
-                                acc1 =
-                                    case anno of
-                                        Mono.LSet [ _ ] ->
-                                            -- L4 P0 instrument
-                                            -- (plans/lss-coverage-four-levers.md
-                                            -- §1.4): covered positions emit too,
-                                            -- so the transport candidate set —
-                                            -- (global, path) LSet in one spec,
-                                            -- LVar in another — is computable
-                                            -- post-hoc from one census log.
-                                            ( path, "k1" ) :: acc
-
-                                        Mono.LSet _ ->
-                                            ( path, "kN" ) :: acc
-
-                                        Mono.LVar _ ->
-                                            ( path, "var" ) :: acc
-
-                                        Mono.LTop ->
-                                            ( path, "top" ) :: acc
-
-                                accR =
-                                    go (path ++ "/r") result acc1
-                            in
-                            List.foldl
-                                (\( i, a ) accA ->
-                                    go (path ++ "/a" ++ String.fromInt i) a accA
-                                )
-                                accR
-                                (List.indexedMap Tuple.pair args)
-
-                        Mono.MList _ inner ->
-                            go (path ++ "/l") inner acc
-
-                        Mono.MTuple _ elems ->
-                            List.foldl
-                                (\( i, e ) accE ->
-                                    go (path ++ "/t" ++ String.fromInt i) e accE
-                                )
-                                acc
-                                (List.indexedMap Tuple.pair elems)
-
-                        Mono.MRecord _ fields ->
-                            Dict.foldl (\fname t a -> go (path ++ "/f:" ++ fname) t a) acc fields
-
-                        Mono.MCustom _ _ _ args ->
-                            List.foldl
-                                (\( i, a ) accA ->
-                                    go (path ++ "/c" ++ String.fromInt i) a accA
-                                )
-                                acc
-                                (List.indexedMap Tuple.pair args)
-
-                        _ ->
-                            acc
-            in
             Array.foldl
                 (\entry acc ->
                     case entry of
@@ -785,7 +787,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                                             "?"
                             in
                             List.map (\( pth, kind ) -> "pos|" ++ gname ++ "|" ++ pth ++ "|" ++ kind)
-                                (go "" monoType [])
+                                (posWalk "" monoType [])
                                 ++ acc
 
                         Nothing ->
@@ -796,6 +798,148 @@ renderLssReport sFinal (Mono.MonoGraph g) =
 
         posLine =
             String.join "\n" (List.sort posRows)
+
+        -- ⊤ SITE SPLIT (plans/lss-provenance-join-and-demand-sigs.md §4.6):
+        -- with rsTop healing the recoverable placeholder class at licensed
+        -- kernel-alias joins, the SURVIVING ⊤s are an undifferentiated mix.
+        -- Classify each final-registry ⊤ position by its NODE class — the
+        -- census attributes by SITE (which mechanism could still reach it),
+        -- not by HISTORY (placeholder-vs-poison transport needs the Part-A
+        -- provenance bit).
+        --   licAlias   licensed kernel alias whose stored side stayed ⊤ —
+        --              the demands never established a set: inherited-unknown
+        --              (transported poison OR a genuinely unknown callback).
+        --   refAlias   TypeFaithful row exists but the license refused this
+        --              occurrence type (LSS_022 fail-safe).
+        --   unlicAlias kernel alias with NO row — recoverable by audit.
+        --   elm/cycle  ⊤ manufactured or absorbed in an Elm body (conflict
+        --              joins, widening, transported poison).
+        --   ctor/port/manager/accessor/none — the rest, named.
+        topSiteClassOf key =
+            case key of
+                Mono.Global tsHome tsName ->
+                    topSiteClassOfGlobal (TOpt.Global tsHome tsName)
+
+                _ ->
+                    "accessor"
+
+        topSiteClassOfGlobal tsGlobal =
+            case HashMap.get TOpt.globalHash (==) tsGlobal sFinal.env.toptNodes of
+                Nothing ->
+                    "none"
+
+                Just node ->
+                    case LssInfer.kernelAliasOf tsGlobal sFinal of
+                        Just ( _, kHome, kName ) ->
+                            if licensedKernelAliasNode node sFinal then
+                                "licAlias"
+
+                            else
+                                case KernelSetFacts.factFor kHome kName of
+                                    Just _ ->
+                                        "refAlias"
+
+                                    Nothing ->
+                                        "unlicAlias"
+
+                        Nothing ->
+                            case node of
+                                TOpt.Define _ _ _ ->
+                                    "elm"
+
+                                TOpt.TrackedDefine _ _ _ _ ->
+                                    "elm"
+
+                                TOpt.Cycle _ _ _ _ ->
+                                    "cycle"
+
+                                TOpt.Ctor _ _ _ ->
+                                    "ctor"
+
+                                TOpt.Enum _ _ ->
+                                    "ctor"
+
+                                TOpt.Box _ ->
+                                    "ctor"
+
+                                TOpt.Kernel _ _ ->
+                                    "kernelDef"
+
+                                TOpt.Manager _ ->
+                                    "manager"
+
+                                TOpt.PortIncoming _ _ _ ->
+                                    "port"
+
+                                TOpt.PortOutgoing _ _ _ ->
+                                    "port"
+
+                                TOpt.Link target ->
+                                    -- Chase to the linked target's class
+                                    -- (kernelAliasOf already chased the
+                                    -- ALIAS case; this attributes the rest).
+                                    topSiteClassOfGlobal target
+
+        topPosClassOf pth =
+            if pth == "" then
+                "head"
+
+            else if List.all (\seg -> seg == "r") (List.filter (\x -> x /= "") (String.split "/" pth)) then
+                "spine"
+
+            else
+                "nested"
+
+        topSiteAndKindCounts =
+            Array.foldl
+                (\entry acc ->
+                    case entry of
+                        Just ( key, monoType ) ->
+                            case List.filter (\( _, kind ) -> String.startsWith "top" kind) (posWalk "" monoType []) of
+                                [] ->
+                                    acc
+
+                                tops ->
+                                    let
+                                        cls =
+                                            topSiteClassOf key
+                                    in
+                                    List.foldl
+                                        (\( pth, kindTag ) ( accSite, accKind ) ->
+                                            let
+                                                kindLabel =
+                                                    String.dropLeft 4 kindTag
+
+                                                bump k d =
+                                                    Dict.update k (\v -> Just (Maybe.withDefault 0 v + 1)) d
+                                            in
+                                            ( bump (cls ++ "|" ++ topPosClassOf pth) accSite
+                                            , bump (kindLabel ++ "|" ++ cls) accKind
+                                            )
+                                        )
+                                        acc
+                                        tops
+
+                        Nothing ->
+                            acc
+                )
+                ( Dict.empty, Dict.empty )
+                g.registry.reverseMapping
+
+        topSiteLine =
+            "top sites: "
+                ++ String.join " "
+                    (List.map (\( k, v ) -> k ++ "=" ++ String.fromInt v)
+                        (Dict.toList (Tuple.first topSiteAndKindCounts))
+                    )
+
+        -- §4.9: WHY (birth kind) × WHERE (node class) for every surviving ⊤.
+        topKindLine =
+            "top kinds: "
+                ++ String.join " "
+                    (List.map (\( k, v ) -> k ++ "=" ++ String.fromInt v)
+                        (Dict.toList (Tuple.second topSiteAndKindCounts))
+                    )
 
         -- LIVENESS (plans/lss-provenance-ratio-census.md §7): of the arrows
         -- that read back as `var`, how many are ever APPLIED?
@@ -954,7 +1098,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
             -- zero row reads as "measured, found nothing" rather than "never
             -- executed" — the `qCensus` misreading, one flag along.
             ++ (if sFinal.env.lss.arrowCensus then
-                    [ stampWalkLine, livenessLine, posLine ]
+                    [ stampWalkLine, livenessLine, topSiteLine, topKindLine, posLine ]
 
                 else
                     []

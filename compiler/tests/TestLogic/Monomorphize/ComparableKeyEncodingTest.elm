@@ -61,7 +61,7 @@ suite =
             \_ ->
                 let
                     ltopOnly =
-                        Mono.mFunction LTop [ Mono.mList MInt ] (Mono.mTuple [ MString, MFloat ])
+                        Mono.mFunction (LTop 7) [ Mono.mList MInt ] (Mono.mTuple [ MString, MFloat ])
                 in
                 Expect.equal
                     (Mono.toComparableMonoType ltopOnly)
@@ -349,7 +349,7 @@ goldens =
     , ( Mono.mCustom (IO.Canonical ( "elm", "core" ) "Result") "Result" [ MString, MInt ]
       , "Xelm\u{0000}core\u{0000}Result\u{0000}Result(IS)"
       )
-    , ( Mono.mFunction LTop [ MInt ] MString, "A(I->S)" )
+    , ( Mono.mFunction (LTop 7) [ MInt ] MString, "A(I->S)" )
 
     -- Phase 3: a set VARIABLE gets its OWN fragment carrying the canonical
     -- number, and that literal string IS the assertion. `LVar` must NOT key as
@@ -358,8 +358,8 @@ goldens =
     -- must key apart, which is what makes `(α → α)` and `(α → β)` distinct.
     , ( Mono.mFunction (LVar 0) [ MInt ] MString, "Av0(I->S)" )
     , ( Mono.mFunction (LVar 1) [ MInt ] MString, "Av1(I->S)" )
-    , ( Mono.mFunction LTop [ MInt, MFloat ] MUnit, "A(FI->U)" )
-    , ( Mono.mFunction LTop [] MInt, "A(->I)" )
+    , ( Mono.mFunction (LTop 7) [ MInt, MFloat ] MUnit, "A(FI->U)" )
+    , ( Mono.mFunction (LTop 7) [] MInt, "A(->I)" )
     , ( Mono.mFunction (LSet [ 1, 2 ]) [ MInt ] MString, "A[1,2](I->S)" )
     , ( Mono.mFunction (LSet []) [] MUnit, "A[](->U)" )
     ]
@@ -382,15 +382,15 @@ handwritten =
            , Mono.mRecord (Dict.fromList [ ( "z", MInt ), ( "y", MFloat ), ( "x", MString ), ( "w", MUnit ) ])
            , Mono.mRecord (Dict.fromList [ ( "nested", Mono.mRecord (Dict.fromList [ ( "b", Mono.mList MInt ), ( "a", Mono.mTuple [ MBool, MChar ] ) ]) ) ])
            , Mono.mCustom (IO.Canonical ( "author", "project" ) "Deep.Module.Name") "Tree" [ Mono.mCustom (IO.Canonical ( "author", "project" ) "Deep.Module.Name") "Tree" [ MInt ] ]
-           , Mono.mFunction (LSet [ 9 ]) [ Mono.mFunction LTop [ MInt ] MInt ] (Mono.mList (MVar (mvarId 1) CEcoValue))
-           , Mono.mFunction LTop [ Mono.mRecord (Dict.fromList [ ( "f", Mono.mFunction (LSet [ 3, 4, 5 ]) [ MChar ] MBool ) ]) ] MUnit
+           , Mono.mFunction (LSet [ 9 ]) [ Mono.mFunction (LTop 7) [ MInt ] MInt ] (Mono.mList (MVar (mvarId 1) CEcoValue))
+           , Mono.mFunction (LTop 7) [ Mono.mRecord (Dict.fromList [ ( "f", Mono.mFunction (LSet [ 3, 4, 5 ]) [ MChar ] MBool ) ]) ] MUnit
 
            -- Phase 1a near-misses: the `handwritten x handwritten` block in
            -- `pairs` is where same-shape/different-annotation pairs are
            -- concentrated, so these put LVar-vs-LTop, LVar-vs-LSet AND
            -- LVar-vs-a-DIFFERENT-LVar in front of both K4 differential tests.
            -- The last pair is the Phase 3 one: `(α → α)` versus `(α → β)`.
-           , Mono.mFunction (LVar 0) [ Mono.mFunction LTop [ MInt ] MInt ] (Mono.mList (MVar (mvarId 1) CEcoValue))
+           , Mono.mFunction (LVar 0) [ Mono.mFunction (LTop 7) [ MInt ] MInt ] (Mono.mList (MVar (mvarId 1) CEcoValue))
            , Mono.mFunction (LSet [ 9 ]) [ Mono.mFunction (LVar 0) [ MInt ] MInt ] (Mono.mList (MVar (mvarId 1) CEcoValue))
            , Mono.mFunction (LVar 0) [ Mono.mFunction (LVar 0) [ MChar ] MBool ] MUnit
            , Mono.mFunction (LVar 0) [ Mono.mFunction (LVar 1) [ MChar ] MBool ] MUnit
@@ -579,7 +579,9 @@ annoAt : Int -> LambdaSetAnno
 annoAt seed =
     case modBy 5 seed of
         0 ->
-            LTop
+            -- §4.9: vary the kind with the seed — the key/hash laws must
+            -- hold ACROSS provenance kinds (kind-blind by construction).
+            LTop (modBy 8 seed)
 
         1 ->
             LSet []
@@ -691,7 +693,7 @@ referenceHelper annoSensitive work acc =
                         annoKey =
                             if annoSensitive then
                                 case anno of
-                                    LTop ->
+                                    LTop _ ->
                                         "A("
 
                                     LVar n ->

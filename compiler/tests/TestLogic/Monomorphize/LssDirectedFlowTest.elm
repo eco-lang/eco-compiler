@@ -76,7 +76,7 @@ suite =
                             (mint (IO.FlexVar Nothing)
                                 |> IO.andThen
                                     (\a ->
-                                        mint (IO.Structure (IO.LambdaSet1 IO.LsTop))
+                                        mint (IO.Structure (IO.LambdaSet1 (IO.LsTop 7)))
                                             |> IO.andThen
                                                 (\b ->
                                                     UF.set a (desc (lsFrom [ 1 ] [ b ]))
@@ -103,7 +103,7 @@ suite =
                                                             (\c ->
                                                                 UF.set a (desc (lsFrom [ 1 ] [ b ]))
                                                                     |> IO.andThen (\_ -> UF.set b (desc (lsFrom [ 2 ] [ c ])))
-                                                                    |> IO.andThen (\_ -> UF.set c (desc (IO.Structure (IO.LambdaSet1 IO.LsTop))))
+                                                                    |> IO.andThen (\_ -> UF.set c (desc (IO.Structure (IO.LambdaSet1 (IO.LsTop 7)))))
                                                                     |> IO.andThen (\_ -> captureState |> IO.map (\st -> resolveAt st [ 1 ] [ b ]))
                                                             )
                                                 )

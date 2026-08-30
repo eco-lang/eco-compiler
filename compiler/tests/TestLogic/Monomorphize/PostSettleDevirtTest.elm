@@ -187,12 +187,12 @@ intFnMember =
 -}
 intFnPlain : Mono.MonoType
 intFnPlain =
-    Mono.mFunction Mono.LTop [ Mono.MInt ] Mono.MInt
+    Mono.mFunction Mono.topLegacy [ Mono.MInt ] Mono.MInt
 
 
 floatFn : Mono.MonoType
 floatFn =
-    Mono.mFunction Mono.LTop [ Mono.MFloat ] Mono.MFloat
+    Mono.mFunction Mono.topLegacy [ Mono.MFloat ] Mono.MFloat
 
 
 {-| A 2-parameter target (for the under-application pin): the value's type
@@ -200,7 +200,7 @@ at the site still shows both remaining params, the site passes ONE arg.
 -}
 intFn2 : Mono.MonoType
 intFn2 =
-    Mono.mFunction Mono.LTop [ Mono.MInt, Mono.MInt ] Mono.MInt
+    Mono.mFunction Mono.topLegacy [ Mono.MInt, Mono.MInt ] Mono.MInt
 
 
 intFn2use : Mono.MonoType

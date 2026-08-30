@@ -67,7 +67,7 @@ suite =
 -}
 arrowWith : Mono.LambdaSetAnno -> Mono.MonoType
 arrowWith anno =
-    Mono.mFunction Mono.LTop [ Mono.mFunction anno [ Mono.MInt ] Mono.MInt ] Mono.MInt
+    Mono.mFunction Mono.topLegacy [ Mono.mFunction anno [ Mono.MInt ] Mono.MInt ] Mono.MInt
 
 
 widenedKey : Mono.MonoType -> String
@@ -91,13 +91,13 @@ purePins =
             -- widened registry key, and the budget-widened key). A drift here
             -- produces a different registry key with NO compile error.
             Expect.equal
-                (widenedKey (arrowWith Mono.LTop))
+                (widenedKey (arrowWith Mono.topLegacy))
                 (widenedKey (arrowWith (Mono.LVar 0)))
     , Test.test "layout differences survive widening: distinct keys" <|
         \() ->
             Expect.notEqual
                 (widenedKey (arrowWith (Mono.LSet [ 101 ])))
-                (widenedKey (Mono.mFunction Mono.LTop [ Mono.mFunction Mono.LTop [ Mono.MFloat ] Mono.MInt ] Mono.MInt))
+                (widenedKey (Mono.mFunction Mono.topLegacy [ Mono.mFunction Mono.topLegacy [ Mono.MFloat ] Mono.MInt ] Mono.MInt))
     , Test.test "layoutQualKey: captured key qualifies by the widened key" <|
         \() ->
             Expect.equal ( "l|42|A(I->I)", False )
@@ -110,7 +110,7 @@ purePins =
         \() ->
             -- every toComparableMonoType rendering starts with a letter code;
             -- a bare-integer SpecId suffix can never equal one.
-            case String.uncons (widenedKey (arrowWith Mono.LTop)) of
+            case String.uncons (widenedKey (arrowWith Mono.topLegacy)) of
                 Just ( c, _ ) ->
                     Expect.equal False (Char.isDigit c)
 

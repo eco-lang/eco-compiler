@@ -760,10 +760,21 @@ unifyStructure ctx flatType content otherContent =
                     -- (Run B measured a 81-97-member tail), which the linear
                     -- scan tolerates.
                     case ( ls1, ls2 ) of
-                        ( IO.LsTop, _ ) ->
+                        -- §4.9 provenance: (⊤,⊤) takes the higher-priority
+                        -- kind (min code) via the shared per-kind CAFs —
+                        -- still allocation-free; absorption keeps the
+                        -- surviving ⊤'s birth kind.
+                        ( IO.LsTop p1, IO.LsTop p2 ) ->
+                            if p1 <= p2 then
+                                merge ctx content
+
+                            else
+                                merge ctx otherContent
+
+                        ( IO.LsTop _, _ ) ->
                             merge ctx content
 
-                        ( _, IO.LsTop ) ->
+                        ( _, IO.LsTop _ ) ->
                             merge ctx otherContent
 
                         ( IO.LsMembers m1, IO.LsMembers m2 ) ->

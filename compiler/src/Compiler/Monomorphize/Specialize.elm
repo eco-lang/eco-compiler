@@ -1807,7 +1807,7 @@ specializePortNode incoming expr canType requestedMonoType state =
                 "Elm"
                 "Platform"
                 "leaf"
-                (Mono.mFunction Mono.LTop [ Mono.MString, valueType ] resultType)
+                (Mono.mFunction Mono.topDecl [ Mono.MString, valueType ] resultType)
 
         closureInfo =
             { lambdaId = lambdaId
@@ -4338,7 +4338,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
                             Mono.mRecord fields
 
                         accessorMonoType =
-                            Mono.mFunction Mono.LTop [ recordType ] fieldType
+                            Mono.mFunction Mono.topDecl [ recordType ] fieldType
 
                         accessorGlobal =
                             Mono.Accessor fieldName
@@ -4364,7 +4364,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
                             Mono.mRecord fields
 
                         accessorMonoType =
-                            Mono.mFunction Mono.LTop [ recordType ] fieldType
+                            Mono.mFunction Mono.topDecl [ recordType ] fieldType
 
                         accessorGlobal =
                             Mono.Accessor fieldName
@@ -5284,7 +5284,7 @@ monoDefExprType monoDef =
         Mono.MonoTailDef _ monoArgs monoExpr ->
             -- For TailDef, construct the function type from args and body return type.
             List.foldr
-                (\( _, argType ) acc -> Mono.mFunction Mono.LTop [ argType ] acc)
+                (\( _, argType ) acc -> Mono.mFunction Mono.topDecl [ argType ] acc)
                 (Mono.typeOf monoExpr)
                 monoArgs
 

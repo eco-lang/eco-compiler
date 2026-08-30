@@ -278,7 +278,7 @@ widenSets monoType intern0 =
                 ( result1, i2 ) =
                     widenSets result i1
             in
-            hashCons (Mono.mFunction Mono.LTop args1 result1) i2
+            hashCons (Mono.mFunction Mono.topWiden args1 result1) i2
 
         Mono.MList _ inner ->
             let

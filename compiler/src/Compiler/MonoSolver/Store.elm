@@ -883,8 +883,10 @@ monoTypeToVarC lssOn varSlots monoType st =
                     -- poison.
                     slotContent =
                         case anno of
-                            Mono.LTop ->
-                                IO.Structure (IO.LambdaSet1 IO.LsTop)
+                            Mono.LTop tpK ->
+                                -- §4.9: transport the ⊤ kind into the store
+                                -- via the shared per-kind CAF contents.
+                                IO.lsTopContentK tpK
 
                             Mono.LVar _ ->
                                 -- Fallback only: reached when the pre-pass
@@ -1178,7 +1180,7 @@ an unconstrained slot (⊤-onto-flex included); `topJoin` = ⊤ onto members;
 `union` = real merge (incl. superset adoption); `slow` = the defensive arm
 ONLY. Each bump rides the S copy its arm already makes.
 -}
-unifySlotWithSet : Bool -> List Int -> IO.Variable -> Step ()
+unifySlotWithSet : Maybe Int -> List Int -> IO.Variable -> Step ()
 unifySlotWithSet top members slot s0 =
     -- Phase 3: one thin wrapper over the ctx-threaded engine — a single S
     -- rebuild per call, exactly as before.
@@ -1200,7 +1202,7 @@ type alias SetWriteCtx =
     , flex : Int
     , topJoin : Int
     , union : Int
-    , needSlow : List ( Bool, List Int, IO.Variable )
+    , needSlow : List ( Maybe Int, List Int, IO.Variable )
 
     -- §5.1 `Q` in shadow mode. `qOn` is `lss.report`; with it False nothing is
     -- appended and the only cost is one Bool in the ctx copy.
@@ -1249,7 +1251,7 @@ noteQ top members slot desc c =
 qPreOf : IO.Descriptor -> Engine.QPre
 qPreOf desc =
     case desc.content of
-        IO.Structure (IO.LambdaSet1 IO.LsTop) ->
+        IO.Structure (IO.LambdaSet1 (IO.LsTop _)) ->
             Engine.PreTop
 
         IO.Structure (IO.LambdaSet1 (IO.LsMembers ms)) ->
@@ -1310,7 +1312,7 @@ foldSetWrites c s0 =
             foldSlowWrites slots s1
 
 
-foldSlowWrites : List ( Bool, List Int, IO.Variable ) -> Step ()
+foldSlowWrites : List ( Maybe Int, List Int, IO.Variable ) -> Step ()
 foldSlowWrites items s0 =
     case items of
         [] ->
@@ -1329,7 +1331,7 @@ foldSlowWrites items s0 =
 Phase 2 Step form; see that commit's doc). Total on live content; the
 defensive arm defers to the boundary via `needSlow`.
 -}
-unifySlotWithSetC : Bool -> List Int -> IO.Variable -> SetWriteCtx -> SetWriteCtx
+unifySlotWithSetC : Maybe Int -> List Int -> IO.Variable -> SetWriteCtx -> SetWriteCtx
 unifySlotWithSetC top members slot c0 =
     let
         ( store1, desc ) =
@@ -1340,33 +1342,36 @@ unifySlotWithSetC top members slot c0 =
         -- arm below (skip / flex / topJoin / union / needSlow) is downstream
         -- of it, so no eager write can escape the shadow log.
         c1 =
-            noteQ top members slot desc { c0 | store = store1 }
+            noteQ (top /= Nothing) members slot desc { c0 | store = store1 }
     in
     case desc.content of
-        IO.Structure (IO.LambdaSet1 IO.LsTop) ->
-            -- ⊤ absorbs everything (terminal): pure skip.
+        IO.Structure (IO.LambdaSet1 (IO.LsTop _)) ->
+            -- ⊤ absorbs everything (terminal): pure skip. Kind-wise this is
+            -- FIRST-⊤-WINS (no in-store priority rewrite on the hot skip
+            -- arm — §4.9 records the census consequence).
             { c1 | skip = c1.skip + 1 }
 
         IO.Structure (IO.LambdaSet1 (IO.LsMembers cur)) ->
-            if top then
-                setRootC slot desc IO.lsTopContent { c1 | topJoin = c1.topJoin + 1 }
+            case top of
+                Just topK ->
+                    setRootC slot desc (IO.lsTopContentK topK) { c1 | topJoin = c1.topJoin + 1 }
 
-            else
-                case IO.classifySorted members cur of
-                    IO.SortedEqual ->
-                        { c1 | skip = c1.skip + 1 }
+                Nothing ->
+                    case IO.classifySorted members cur of
+                        IO.SortedEqual ->
+                            { c1 | skip = c1.skip + 1 }
 
-                    IO.SortedSub ->
-                        -- members ⊆ cur (covers members == [] too).
-                        { c1 | skip = c1.skip + 1 }
+                        IO.SortedSub ->
+                            -- members ⊆ cur (covers members == [] too).
+                            { c1 | skip = c1.skip + 1 }
 
-                    IO.SortedSuper ->
-                        -- cur ⊆ members: the union IS the caller's list —
-                        -- adopt it by pointer, no merge allocation.
-                        setRootC slot desc (IO.Structure (IO.LambdaSet1 (IO.LsMembers members))) { c1 | union = c1.union + 1 }
+                        IO.SortedSuper ->
+                            -- cur ⊆ members: the union IS the caller's list —
+                            -- adopt it by pointer, no merge allocation.
+                            setRootC slot desc (IO.Structure (IO.LambdaSet1 (IO.LsMembers members))) { c1 | union = c1.union + 1 }
 
-                    IO.SortedMixed ->
-                        setRootC slot desc (IO.Structure (IO.LambdaSet1 (IO.LsMembers (IO.unionSortedAsc members cur)))) { c1 | union = c1.union + 1 }
+                        IO.SortedMixed ->
+                            setRootC slot desc (IO.Structure (IO.LambdaSet1 (IO.LsMembers (IO.unionSortedAsc members cur)))) { c1 | union = c1.union + 1 }
 
         IO.Structure (IO.LambdaSet1 (IO.LsFrom cur srcs)) ->
             -- LSS_023: a member write onto an edge-carrying slot unions into
@@ -1377,37 +1382,40 @@ unifySlotWithSetC top members slot c0 =
             -- and DROPS the sources (⊤ ⊇ everything — sound; also the arm
             -- that tops a poisoned honesty-hub target, which is what §7's
             -- `pick` fixture depends on).
-            if top then
-                setRootC slot desc IO.lsTopContent { c1 | topJoin = c1.topJoin + 1 }
+            case top of
+                Just topK ->
+                    setRootC slot desc (IO.lsTopContentK topK) { c1 | topJoin = c1.topJoin + 1 }
 
-            else
-                case IO.classifySorted members cur of
-                    IO.SortedEqual ->
-                        { c1 | skip = c1.skip + 1 }
+                Nothing ->
+                    case IO.classifySorted members cur of
+                        IO.SortedEqual ->
+                            { c1 | skip = c1.skip + 1 }
 
-                    IO.SortedSub ->
-                        { c1 | skip = c1.skip + 1 }
+                        IO.SortedSub ->
+                            { c1 | skip = c1.skip + 1 }
 
-                    _ ->
-                        setRootC slot desc (IO.Structure (IO.LambdaSet1 (IO.LsFrom (IO.unionSortedAsc members cur) srcs))) { c1 | union = c1.union + 1 }
+                        _ ->
+                            setRootC slot desc (IO.Structure (IO.LambdaSet1 (IO.LsFrom (IO.unionSortedAsc members cur) srcs))) { c1 | union = c1.union + 1 }
 
         IO.FlexVar _ ->
             -- The DOMINANT case (Run B: 70.1 %): LSS_006 makes loadType mint
             -- fresh arrow structure per load, so a set write almost always
             -- targets an unconstrained flex slot. Adopt the content directly;
             -- the caller's list is stored AS-IS (ascending at every caller).
-            if top then
-                setRootC slot desc IO.lsTopContent { c1 | flex = c1.flex + 1 }
+            case top of
+                Just topK ->
+                    setRootC slot desc (IO.lsTopContentK topK) { c1 | flex = c1.flex + 1 }
 
-            else
-                case members of
-                    [] ->
-                        -- (False, []) is bottom: a no-op that keeps the slot
-                        -- unconstrained, preserving LsMembers-non-empty.
-                        { c1 | skip = c1.skip + 1 }
+                Nothing ->
+                    case members of
+                        [] ->
+                            -- (Nothing, []) is bottom: a no-op that keeps the
+                            -- slot unconstrained, preserving
+                            -- LsMembers-non-empty.
+                            { c1 | skip = c1.skip + 1 }
 
-                    _ ->
-                        setRootC slot desc (IO.Structure (IO.LambdaSet1 (IO.LsMembers members))) { c1 | flex = c1.flex + 1 }
+                        _ ->
+                            setRootC slot desc (IO.Structure (IO.LambdaSet1 (IO.LsMembers members))) { c1 | flex = c1.flex + 1 }
 
         _ ->
             -- DEFENSIVE only: unreachable by closure of the slot-content
@@ -2022,7 +2030,7 @@ qEagerGo seen v store0 =
                 Dict.insert raw () seen
         in
         case desc.content of
-            IO.Structure (IO.LambdaSet1 IO.LsTop) ->
+            IO.Structure (IO.LambdaSet1 (IO.LsTop _)) ->
                 ( Just { top = True, members = [] }, store1 )
 
             IO.Structure (IO.LambdaSet1 (IO.LsMembers ms)) ->
@@ -2109,7 +2117,7 @@ addSlotSource src dst s0 =
                                         Ok ( (), Engine.bumpEdgeInstalled sM )
                         in
                         case desc.content of
-                            IO.Structure (IO.LambdaSet1 IO.LsTop) ->
+                            IO.Structure (IO.LambdaSet1 (IO.LsTop _)) ->
                                 -- ⊤ ⊇ everything already.
                                 Ok ( (), s2 )
 
@@ -2134,7 +2142,7 @@ addSlotSource src dst s0 =
                                 write IO.lsTopContent s2
 
 
-unifySlotWithSetSlow : Bool -> List Int -> IO.Variable -> Step ()
+unifySlotWithSetSlow : Maybe Int -> List Int -> IO.Variable -> Step ()
 unifySlotWithSetSlow top members slot s0 =
     let
         stats0 =
@@ -2144,11 +2152,12 @@ unifySlotWithSetSlow top members slot s0 =
             { s0 | lssStats = { stats0 | setWriteSlow = stats0.setWriteSlow + 1 } }
 
         set =
-            if top then
-                IO.LsTop
+            case top of
+                Just topK ->
+                    IO.LsTop topK
 
-            else
-                IO.LsMembers members
+                Nothing ->
+                    IO.LsMembers members
     in
     case Engine.freshVar (IO.Structure (IO.LambdaSet1 set)) s1 of
         Err e ->
@@ -2200,7 +2209,8 @@ poisonGoC seen worklist c0 =
                     IO.Structure flat ->
                         case flat of
                             IO.FunL a b slot ->
-                                poisonGoC seen1 (a :: b :: rest) (unifySlotWithSetC True [] slot c1)
+                                -- LSS_004 boundary poison: §4.9 tkPoison.
+                                poisonGoC seen1 (a :: b :: rest) (unifySlotWithSetC (Just Mono.tkPoison) [] slot c1)
 
                             IO.Fun1 a b ->
                                 poisonGoC seen1 (a :: b :: rest) c1
@@ -2817,7 +2827,7 @@ zonkFlatC superTable revMemo flat c0 =
                             Err e
 
                         Ok ( mb, c2 ) ->
-                            Ok (consC (Mono.mFunction Mono.LTop [ ma ] mb) c2)
+                            Ok (consC (Mono.mFunction Mono.topDecl [ ma ] mb) c2)
 
         IO.FunL a b setVar ->
             case zonkToMonoC superTable revMemo a c0 of
@@ -3073,8 +3083,11 @@ zonkSetSlot paramT resultT setVar c0 =
             { c0 | store = store1 }
     in
     case desc.content of
-        IO.Structure (IO.LambdaSet1 IO.LsTop) ->
-            ( Mono.LTop, bumpCauseC (\a -> { a | causePoison = a.causePoison + 1 }) (bumpZonkAcc Nothing c1) )
+        IO.Structure (IO.LambdaSet1 (IO.LsTop tpK)) ->
+            -- §4.9: the stored ⊤'s birth kind rides out to the Mono anno
+            -- (the `causePoison` counter name is historical — it counts
+            -- explicit-⊤ readbacks of every kind).
+            ( Mono.topOfKind tpK, bumpCauseC (\a -> { a | causePoison = a.causePoison + 1 }) (bumpZonkAcc Nothing c1) )
 
         IO.Structure (IO.LambdaSet1 (IO.LsMembers members0)) ->
             case c1.lss of
@@ -3090,8 +3103,9 @@ zonkSetSlot paramT resultT setVar c0 =
                         size =
                             List.length members
                     in
-                    if size > acc0.maxSetSize then
-                        ( Mono.LTop, bumpWidenedAcc size c2 )
+                    -- maxSetSize 0 = UNLIMITED (2026-08-29).
+                    if acc0.maxSetSize > 0 && size > acc0.maxSetSize then
+                        ( Mono.topWiden, bumpWidenedAcc size c2 )
 
                     else
                         -- Phase 2: IDENTITY — the store list IS the LSet
@@ -3101,7 +3115,7 @@ zonkSetSlot paramT resultT setVar c0 =
                 Nothing ->
                     -- A FunL zonked outside an lss-enabled wrapper (e.g. a
                     -- direct zonkToMonoC caller): sound fallback.
-                    ( Mono.LTop, c1 )
+                    ( Mono.topEdge, c1 )
 
         IO.Structure (IO.LambdaSet1 (IO.LsFrom members0 srcs)) ->
             -- LSS_023 pull-at-read: resolve the reachable edge graph NOW and
@@ -3115,7 +3129,7 @@ zonkSetSlot paramT resultT setVar c0 =
                     case resolveSlotMembers members0 srcs c1 of
                         ( Nothing, c2 ) ->
                             -- A reachable ⊤ absorbs the whole resolution.
-                            ( Mono.LTop, bumpCauseC (\a -> { a | causeEdgeTop = a.causeEdgeTop + 1 }) (bumpZonkAcc Nothing c2) )
+                            ( Mono.topEdge, bumpCauseC (\a -> { a | causeEdgeTop = a.causeEdgeTop + 1 }) (bumpZonkAcc Nothing c2) )
 
                         ( Just [], c2 ) ->
                             -- EMPTY resolution = NO INFORMATION. Mirrors the
@@ -3157,14 +3171,14 @@ zonkSetSlot paramT resultT setVar c0 =
                                 size =
                                     List.length members
                             in
-                            if size > acc0.maxSetSize then
-                                ( Mono.LTop, bumpWidenedAcc size c3 )
+                            if acc0.maxSetSize > 0 && size > acc0.maxSetSize then
+                                ( Mono.topWiden, bumpWidenedAcc size c3 )
 
                             else
                                 ( Mono.LSet members, noteArrowClass True setVar (noteMultiSet setVar members (bumpCauseC (\a -> { a | causeEdgeSet = a.causeEdgeSet + 1 }) (bumpZonkAcc (Just size) c3))) )
 
                 Nothing ->
-                    ( Mono.LTop, c1 )
+                    ( Mono.topEdge, c1 )
 
         _ ->
             -- FlexVar residual: no information — never empty.
@@ -3319,7 +3333,7 @@ resolveSources pending visited sawFlex acc c0 =
                         key :: visited
                 in
                 case desc.content of
-                    IO.Structure (IO.LambdaSet1 IO.LsTop) ->
+                    IO.Structure (IO.LambdaSet1 (IO.LsTop _)) ->
                         ( Nothing, sawFlex, c1 )
 
                     IO.Structure (IO.LambdaSet1 (IO.LsMembers ms)) ->
@@ -3594,7 +3608,7 @@ classifyGo s aliasSubst canType =
                             -- (GlobalOpt flattens later per GOPT_016). Storeless
                             -- classification stamps LTop (sound-but-imprecise;
                             -- fast paths gate on signature triviality in M2).
-                            Ok (Engine.consS (Mono.mFunction Mono.LTop [ mFrom ] mTo) s2)
+                            Ok (Engine.consS (Mono.mFunction Mono.topDecl [ mFrom ] mTo) s2)
 
         Can.TType canonical name args ->
             case classifyList s aliasSubst args of

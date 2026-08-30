@@ -430,6 +430,183 @@ kind-aware reads in PlatformRuntime/PortRuntime), invariant HEAP_046 added,
 31 kernel-license rows re-audited (manifest green), regression pin
 test/elm/src/JsonDecodeScalarResult.elm. E2E 1,714/1,714.
 
+## 4.6 ⊤ site-split census (2026-08-29, shipped — rides `lss.arrowCensus`)
+
+`top sites:` line added to the census: every final-registry ⊤ position is
+classified by NODE class (Link-chased). At the new defaults
+(positions=134,828, coverage 88.76 %, top=2,154):
+
+| class | n | % of top | reading |
+|-------|---|----------|---------|
+| ctor\|nested | 856 | 39.7 % | ⊤ inside CTOR demand types — bodyless members, no write path targets ctor slots (lss-ctor-arrow-identity.md territory). Placeholder-like. |
+| elm (725 nested + 80 spine) | 805 | 37.4 % | manufactured/absorbed in Elm bodies — widening (byBudget=8,816 events dominates) + conflict joins + transported poison. |
+| cycle (171 nested + 58 spine) | 229 | 10.6 % | same class, mutual-recursion groups. |
+| licAlias\|nested | 222 | 10.3 % | licensed aliases whose stored side never got a set — inherited-unknown; Part-A provenance would split transported-poison vs never-known. |
+| accessor | 38 | 1.8 % | accessor-keyed specs (37 head). |
+| unlicAlias\|nested | 4 | 0.2 % | **kernel licensing as a lever is EXHAUSTED.** |
+| refAlias | 0 | — | no refused-license tops. |
+
+Limits: the census attributes by SITE (which mechanism could still reach the
+position), NOT by HISTORY — whether a ⊤ that arrived at a licAlias/elm site
+was BORN placeholder or poison needs the Part-A provenance bit; this table
+bounds Part A's direct payoff at ~222 positions plus an unmeasurable
+transported fraction of elm/cycle. Lever ranking now falsifiable:
+ctor (856) > elm+cycle poison pool (1,034) > licAlias (222) ≫ licensing (4).
+
+## 4.7 Limits factored out (2026-08-29, same-binary A/B; new env
+`ECO_MONO_LSS_MAX_SET_SIZE` added alongside `ECO_MONO_LSS_MAX_SPECS`)
+
+Arm `nolim` = budget 512→1,000,000 + setSize 8→100,000. All limit widening
+eliminated (byBudget 8,818→0, bySize 8→0, bySigSize 5→0; byKernel 343→344
+remains — kernel class, not a limit). Cost: wall 7:28.34→7:27.65 (FREE),
+peak RSS +0.4 %.
+
+| | base | nolim | Δ |
+|---|---|---|---|
+| positions | 134,836 | 140,420 | +5,584 (budget no longer folds demands into shared widened keys) |
+| top | 2,154 | 2,123 | **−31 (−1.4 %)** |
+| coverage | 87.64→88.76 % | 89.20 % | +0.44 pp (k1 +6,363, kN −786) |
+| top sites moved | — | elm\|nested −10, cycle\|nested −21 | ctor 856, licAlias 222, accessor 38, unlicAlias 4 ALL UNCHANGED |
+
+**Findings.** (1) The limits are STRUCTURALLY IRRELEVANT to the residual ⊤:
+31 of 2,154 positions (1.4 %) trace to them; the §4.6 lever ranking is
+unchanged with them factored out (ctor 856 = 40.3 %, elm+cycle 1,003 =
+47.2 %, licAlias 222 = 10.5 %). Confirms and sharpens the Aug-28 refutation
+at the new baseline. (2) **CORRECTION to §4.6's reading:** byBudget=8,818
+looked like the dominant ⊤ manufacturer — it is NOT. Budget widening acts at
+KEY MINTING (fan-out policy: demands share a widened spec key); it almost
+never poisons the stored registry type. The elm/cycle pool is conflict-join
+and transport manufacture, not limit widening. (3) The set-size limit is
+nearly never binding: the whole compile has 8 oversize sets (6×9, 1×12,
+1×21). (4) Un-budgeted self-compile is wall-neutral with +0.44 pp coverage
+ratio — a default-raise is a plausible follow-up but the budget is the M4
+pathological-workload backstop (elm-aws-codegen class), so it needs that
+workload measured first, plus a dispatch leg.
+
+## 4.8 No-limits SHIPPED as the default, spelled `0 = UNLIMITED` (2026-08-29)
+
+User decisions, two steps: first the sentinel raise (100000/1000000), then
+the cleaner rule — **`maxSetSize = 0` and `maxSpecsPerGlobal = 0` mean
+UNLIMITED, and 0 is now the default for both.** The rule is enforced at all
+five consultation sites: `Engine.enqueueSpecKeyed` (budget), the two
+`Store` readback caps, and the two signature-channel B.4 riders in
+`LssInfer`. `ECO_MONO_LSS_MAX_SPECS` / `ECO_MONO_LSS_MAX_SET_SIZE` (the
+latter added this arc) restore any budget without a rebuild; non-zero
+values still ride the `lssB=`/`maxSetSize` hash tokens.
+
+Validation at the 0-defaults: census byte-identical to the §4.7 `nolim` arm
+(positions=140,420, coverage 89.20 %, top=2,123, `widened: bySize=0
+byKernel=344 byBudget=0 bySigSize=0` — the 0-rule provably engages), wall
+7:24 / RSS 10.2 GB (unchanged), E2E 1,714/1,714, elm-tests 13,387/12
+(known baseline). MuTieTest needed its budget PINNED in-harness
+(`pinnedBudget = 64`, `maxSetSize = 8`) — the flag-off spiral's ONLY
+terminator was the budget, so 0 = unlimited left it un-terminated (the 6th
+overlapping-flag-pin occurrence). SEMANTIC NOTE: pre-2026-08-29 the
+budget-0 experiment meant ZERO budget; that configuration is now spelled
+with a tiny non-zero value.
+
+Standing watch item: the elm-aws-codegen pathological-workload class — the
+budget backstop no longer engages by default; if that class regresses, set
+`ECO_MONO_LSS_MAX_SPECS`.
+
+## 4.9 Part A v2 IMPLEMENTATION: the ⊤ provenance KIND (2026-08-30)
+
+User-directed: not a bit — a KIND indicator on every ⊤, transported through
+joins and the store, then a kind×site cross-census of the remaining 2,123.
+
+**Taxonomy** (Int codes; JOIN = `min` — lower code = higher evidentiary
+priority, so a position that ever saw real poison reads poison):
+
+| code | kind | birth site |
+|------|------|-----------|
+| 0 | tkPoison | LSS_004 kernel-boundary poison (unlicensed/refused/shape-declined) |
+| 1 | tkConflict | disagreement joins — LVar≠LVar, LVar×LSet (unionAnno + store unify) |
+| 2 | tkWiden | maxSetSize / budget / sigSize / kernel widening caps |
+| 3 | tkEdge | store readback fallbacks (edge Nothing / unresolvable slot) |
+| 4 | tkAbi | kernel-ABI rebuild placeholder (hardcoded ⊤, store discarded) |
+| 5 | tkDecl | declaration/classify placeholder (storeless classify, loadTypeC) |
+| 6 | tkSynth | post-mono synthesized types (GlobalOpt/MapTemplate) — census-invisible |
+| 7 | tkLegacy | unattributed catch-all (transitional; census shows the residue) |
+
+**Neutrality invariants (the M3 lesson — provenance must be observationally
+inert at defaults):**
+
+- `annoHash`: `LTop _ -> 3` — spec hashes kind-blind by construction.
+- `toComparableMonoType`: `LTop _ -> "A("` — SpecKeys kind-blind (no key
+  dilution, the exact M3 failure mode).
+- `eqModuloTopLabel`: `normalizeTopLabels` additionally canonicalizes every
+  ⊤ kind (LVar → ⊤canon and ⊤k → ⊤canon); the allocation-free guard extends
+  to "carries a non-canonical ⊤". Raw `==` fast paths stay sound: unequal
+  kinds fall through to the normalized comparison.
+- `joinAnnotationsChanged`: the `annoCovers` fast-arm keeps the LEFT ⊤
+  pointer-shared (no kind merge there — convergent by construction; kinds
+  are therefore FIRST-⊤-WINS at covers arms, priority-merged in `unionAnno`
+  — the census reads this as a lower bound, noted honestly).
+- Store `LsTop` → `LsTop Int` with EIGHT shared per-kind CAF contents
+  (allocation-free writes preserved); Unify's absorb arms gain a
+  (⊤,⊤) → min-merge case.
+- GATE: at defaults the census totals (top/k1/kN/var), join
+  rounds/retranslations must be IDENTICAL to the §4.8 baseline; E2E +
+  elm-tests green.
+
+**Tagging strategy:** bare `LTop` constructions start as `topLegacy`; the
+arc's KNOWN manufacturers get true kinds (deriveKernelAbiType ⊤ → tkAbi,
+poisonCallBoundary → tkPoison, storeless classify → tkDecl, unionAnno
+conflict arms → tkConflict, widen caps → tkWiden, readback edges → tkEdge).
+tkLegacy volume in the census = the honest not-yet-attributed residue.
+
+**Census:** `top kinds:` line + `topkind|<kind>|<siteclass>` cross rows
+(rides `lss.arrowCensus`) — kind = WHY it was born, site = WHERE it sits.
+
+## 4.10 Part A v2 SHIPPED + the kind×site census (2026-08-30)
+
+**Implementation landed** exactly per §4.9: `LTop Int` (+ per-kind CAFs
+`topPoison..topLegacy`, `topOfKind`, `topKindLabel`), store `LsTop Int` with
+8 shared CAF contents (`IO.lsTopContentK`), Unify (⊤,⊤) min-merge,
+`unifySlotWithSet` takes `Maybe Int` (Just kind = ⊤ write),
+`poisonArrowSets` writes tkPoison, `ArrowFact.topKind` rides the signature
+channel, zonk readback transports the kind out, `eqModuloTopLabel`
+canonicalizes kinds, `annoHash`/`toComparableMonoType` kind-blind. pos| rows
+now read `top@<kind>`; census adds `top kinds:` (kind×site).
+
+**Neutrality gates — ALL GREEN:** three probe artifacts BYTE-IDENTICAL
+across the change (same config hash, same .mlir bytes); coverage ratio
+8920bp unchanged; join flush rounds=0 retranslations=0 changed=0 — same as
+baseline (no oscillation); wall 7:30 / RSS 10.26 GB unchanged.
+
+**THE ANSWER — kind×site for all top=2,125 (ZERO legacy/edge/widen/synth —
+every surviving ⊤ has a real birth kind):**
+
+| kind | total | % | split by site |
+|------|-------|---|---------------|
+| decl (classify/declaration placeholder) | 1,233 | 58.0 % | ctor 549, elm 489, cycle 142, accessor 38, licAlias 15 |
+| poison (LSS_004 kernel boundary) | 570 | 26.8 % | ctor 307, elm 195, cycle 65, licAlias 3 |
+| abi (kernel-ABI rebuild placeholder) | 210 | 9.9 % | licAlias 206, unlicAlias 4 |
+| conflict (LVar/LSet disagreement join) | 112 | 5.3 % | elm 111, cycle 1 |
+
+Readings: (1) **placeholder classes (decl+abi) = 1,443 = 67.9 %** of the
+residual ⊤ — never-observed, in-principle recoverable by write paths
+(ctor-identity plan = the decl|ctor 549 + much of decl|elm); (2) **genuine
+poison = 570 = 26.8 %**, and 307 of it sits INSIDE ctor payload demand
+types (kernel-boundary ⊤ transported into ctor slots — licensing can't
+shrink it further, unlicAlias=4); (3) conflict joins (the no-sum-lowering
+residue, Part C's target) are only 112 = 5.3 %; (4) the licAlias bucket
+decomposes as 206 abi-placeholder + 15 decl + 3 poison — the sTop residue
+at licensed aliases is almost entirely the ABI rebuild's own placeholder
+surviving because no demand ever knew better (NOT transported poison).
+
+Caveat recorded from §4.9: covers-arm joins are first-⊤-wins and the
+in-store skip arm does not kind-merge, so kinds are a deterministic
+lower-bound attribution, not a full history lattice.
+
+**Suite gates:** E2E 1,714/1,714; elm-tests 13,387/12 (known baseline)
+after two test-side updates that are themselves new pins:
+MonomorphizeTest's KernelAbi fixtures now expect `topAbi` (pinning the
+derivation's kind), and ComparableKeyEncodingTest's fuzz generator varies
+the ⊤ kind with the seed — the key/hash law tests now actively verify
+kind-blindness (`annoHash`/`toComparableMonoType` must not split on
+provenance).
+
 ## 5. Known traps to carry in (from this arc's records)
 
 - Killed background tasks can lose queued file writes — verify edits landed

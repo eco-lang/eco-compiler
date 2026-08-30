@@ -8,6 +8,8 @@ module Compiler.AST.Monomorphized exposing
     , specMapSize, specMapIsEmpty, specMapFoldl, specMapToList, specMapValues, specMapRemove, specMapSingleton
     , SpecKeyMap, specKeyMapEmpty, specKeyMapGet, specKeyMapInsert, specKeyMapSize, globalHash
     , LambdaSetAnno(..), widenSets, eqModuloTopLabel, eqLayout, shallowLayoutKey, headAnno, unionAnno, singletonHeadMember, joinAnnotations, joinAnnotationsChanged, overlayAnnotations
+    , tkPoison, tkConflict, tkWiden, tkEdge, tkAbi, tkDecl, tkSynth, tkLegacy, isTopAnno
+    , topPoison, topConflict, topWiden, topEdge, topAbi, topDecl, topSynth, topLegacy, topOfKind, topKindLabel
     , typeNodesWithin, collectAnnoMembers
     , AnnoCoverage, emptyAnnoCoverage, annoCoverage
     , joinCollisionCells
@@ -431,7 +433,8 @@ merging their keys would let a stored ⊤ poison a variable demand.
 annoHash : LambdaSetAnno -> Int
 annoHash anno =
     case anno of
-        LTop ->
+        -- Kind-blind (§4.9): provenance must never split a hash bucket.
+        LTop _ ->
             3
 
         LVar n ->
@@ -638,7 +641,8 @@ annoKeyEq a b =
         ( LVar i, LVar j ) ->
             i == j
 
-        ( LTop, LTop ) ->
+        ( LTop _, LTop _ ) ->
+            -- Kind-blind (§4.9): provenance never splits equality.
             True
 
         _ ->
@@ -952,9 +956,167 @@ generic dispatch. Sum lowering is what changes that
 
 -}
 type LambdaSetAnno
-    = LTop
+    = LTop Int
     | LVar Int
     | LSet (List Int)
+
+
+{-| ⊤ provenance kinds (plans/lss-provenance-join-and-demand-sigs.md §4.9).
+Census-only metadata: every semantic reading of a `LambdaSetAnno` is
+kind-blind (`annoHash`/`toComparableMonoType`/`annoCovers` ignore the code;
+`eqModuloTopLabel` canonicalizes it), so two ⊤s of different kinds never
+split a spec key, an intern bucket, or a devirt decision. JOIN = `min`:
+lower code = higher evidentiary priority, so a position that ever saw real
+poison keeps reading poison.
+-}
+tkPoison : Int
+tkPoison =
+    0
+
+
+tkConflict : Int
+tkConflict =
+    1
+
+
+tkWiden : Int
+tkWiden =
+    2
+
+
+tkEdge : Int
+tkEdge =
+    3
+
+
+tkAbi : Int
+tkAbi =
+    4
+
+
+tkDecl : Int
+tkDecl =
+    5
+
+
+tkSynth : Int
+tkSynth =
+    6
+
+
+tkLegacy : Int
+tkLegacy =
+    7
+
+
+{-| Shared ⊤ values, one CAF per kind — construction sites reuse these so a
+⊤ write allocates nothing.
+-}
+topPoison : LambdaSetAnno
+topPoison =
+    LTop 0
+
+
+topConflict : LambdaSetAnno
+topConflict =
+    LTop 1
+
+
+topWiden : LambdaSetAnno
+topWiden =
+    LTop 2
+
+
+topEdge : LambdaSetAnno
+topEdge =
+    LTop 3
+
+
+topAbi : LambdaSetAnno
+topAbi =
+    LTop 4
+
+
+topDecl : LambdaSetAnno
+topDecl =
+    LTop 5
+
+
+topSynth : LambdaSetAnno
+topSynth =
+    LTop 6
+
+
+topLegacy : LambdaSetAnno
+topLegacy =
+    LTop 7
+
+
+{-| Kind-blind ⊤ test — the `== LTop` replacement for callers that must not
+split on provenance (§4.9).
+-}
+isTopAnno : LambdaSetAnno -> Bool
+isTopAnno anno =
+    case anno of
+        LTop _ ->
+            True
+
+        _ ->
+            False
+
+
+topOfKind : Int -> LambdaSetAnno
+topOfKind k =
+    if k <= 0 then
+        topPoison
+
+    else if k == 1 then
+        topConflict
+
+    else if k == 2 then
+        topWiden
+
+    else if k == 3 then
+        topEdge
+
+    else if k == 4 then
+        topAbi
+
+    else if k == 5 then
+        topDecl
+
+    else if k == 6 then
+        topSynth
+
+    else
+        topLegacy
+
+
+topKindLabel : Int -> String
+topKindLabel k =
+    if k <= 0 then
+        "poison"
+
+    else if k == 1 then
+        "conflict"
+
+    else if k == 2 then
+        "widen"
+
+    else if k == 3 then
+        "edge"
+
+    else if k == 4 then
+        "abi"
+
+    else if k == 5 then
+        "decl"
+
+    else if k == 6 then
+        "synth"
+
+    else
+        "legacy"
 
 
 {-| MONO_030 watchdog: does the type have at most `limit` logical nodes?
@@ -1027,7 +1189,7 @@ collectAnnoGo monoType acc =
                         LSet ms ->
                             ms ++ acc
 
-                        LTop ->
+                        LTop _ ->
                             acc
 
                         LVar _ ->
@@ -1095,7 +1257,7 @@ recoverStoredSets joined stored =
             let
                 ( anno1, n0 ) =
                     case ( annoJ, annoS ) of
-                        ( LTop, LSet ms ) ->
+                        ( LTop _, LSet ms ) ->
                             ( LSet ms, 1 )
 
                         _ ->
@@ -1222,10 +1384,10 @@ joinCollisionCells arity ta tb =
                 ( LVar _, LSet _ ) ->
                     [ "jc|aVar|" ++ pos ]
 
-                ( LSet _, LTop ) ->
+                ( LSet _, LTop _ ) ->
                     [ "jc|sTop|" ++ pos ]
 
-                ( LTop, LSet _ ) ->
+                ( LTop _, LSet _ ) ->
                     [ "jc|aTop|" ++ pos ]
 
                 _ ->
@@ -1294,7 +1456,7 @@ annoCoverage monoType acc =
                         LVar _ ->
                             { acc | var = acc.var + 1 }
 
-                        LTop ->
+                        LTop _ ->
                             { acc | top = acc.top + 1 }
             in
             List.foldl annoCoverage (annoCoverage result acc1) args
@@ -1384,6 +1546,12 @@ isVarAnno anno =
         LVar _ ->
             True
 
+        LTop k ->
+            -- §4.9: a non-canonical ⊤ kind must also route
+            -- `eqModuloTopLabel` through the normaliser — plain `==` would
+            -- split two semantically-equal ⊤s on their birth kinds.
+            k /= tkLegacy
+
         _ ->
             False
 normalizeTopLabels : MonoType -> MonoType
@@ -1393,7 +1561,12 @@ normalizeTopLabels monoType =
             mFunction
                 (case anno of
                     LVar _ ->
-                        LTop
+                        topLegacy
+
+                    LTop _ ->
+                        -- §4.9: kinds are census metadata; the eq
+                        -- normaliser canonicalizes them away.
+                        topLegacy
 
                     other ->
                         other
@@ -1438,7 +1611,7 @@ widenSets : MonoType -> MonoType
 widenSets monoType =
     case monoType of
         MFunction _ _ args result ->
-            mFunction LTop (List.map widenSets args) (widenSets result)
+            mFunction topWiden (List.map widenSets args) (widenSets result)
 
         MList _ inner ->
             mList (widenSets inner)
@@ -1562,7 +1735,7 @@ shallowLayoutKey depth monoType =
                 "A" ++ String.fromInt (List.length args) ++ "(" ++ String.join "," (List.map (shallowLayoutKey (depth - 1)) args) ++ "->" ++ shallowLayoutKey (depth - 1) ret ++ ")"
 
 
-{-| The head arrow's annotation; `LTop` for non-function types.
+{-| The head arrow's annotation; ⊤ for non-function types.
 -}
 headAnno : MonoType -> LambdaSetAnno
 headAnno monoType =
@@ -1571,7 +1744,7 @@ headAnno monoType =
             anno
 
         _ ->
-            LTop
+            topLegacy
 
 
 {-| Pointwise annotation join of two layout-identical types (LSS_010).
@@ -1816,7 +1989,7 @@ merge-scan, early exit).
 annoCovers : LambdaSetAnno -> LambdaSetAnno -> Bool
 annoCovers a b =
     case ( a, b ) of
-        ( LTop, _ ) ->
+        ( LTop _, _ ) ->
             True
 
         ( LVar i, LVar j ) ->
@@ -1825,7 +1998,7 @@ annoCovers a b =
         ( LVar _, _ ) ->
             False
 
-        ( LSet _, LTop ) ->
+        ( LSet _, LTop _ ) ->
             False
 
         ( LSet _, LVar _ ) ->
@@ -1975,24 +2148,31 @@ these arms sound.
 unionAnno : LambdaSetAnno -> LambdaSetAnno -> LambdaSetAnno
 unionAnno a b =
     case ( a, b ) of
-        ( LTop, _ ) ->
-            LTop
+        -- §4.9: (⊤,⊤) priority-merges kinds (min = strongest evidence);
+        -- absorption keeps the surviving ⊤'s birth kind; the disagreement
+        -- arms are tkConflict MANUFACTURE sites (the honest residue of not
+        -- having sum lowering).
+        ( LTop mergeP, LTop mergeQ ) ->
+            topOfKind (min mergeP mergeQ)
 
-        ( _, LTop ) ->
-            LTop
+        ( LTop _, _ ) ->
+            a
+
+        ( _, LTop _ ) ->
+            b
 
         ( LVar i, LVar j ) ->
             if i == j then
                 LVar i
 
             else
-                LTop
+                topConflict
 
         ( LVar _, LSet _ ) ->
-            LTop
+            topConflict
 
         ( LSet _, LVar _ ) ->
-            LTop
+            topConflict
 
         ( LSet xs, LSet ys ) ->
             LSet (unionSortedInts xs ys)
@@ -2784,7 +2964,9 @@ toComparableFragments annoSensitive mt tail =
                 annoKey =
                     if annoSensitive then
                         case anno of
-                            LTop ->
+                            -- Kind-blind (§4.9): SpecKeys must never split
+                            -- on provenance (the M3 dilution lesson).
+                            LTop _ ->
                                 "A("
 
                             LVar n ->

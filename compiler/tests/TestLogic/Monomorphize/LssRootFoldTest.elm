@@ -117,7 +117,7 @@ suite =
                                 Expect.pass
 
                             heads ->
-                                if List.all (\a -> a == Mono.LTop || sizeAtMost 2 a) heads then
+                                if List.all (\a -> Mono.isTopAnno a || sizeAtMost 2 a) heads then
                                     Expect.pass
 
                                 else
@@ -411,14 +411,14 @@ annoSize a =
         Mono.LVar _ ->
             -1
 
-        Mono.LTop ->
+        Mono.LTop _ ->
             -2
 
 
 neverFalselyComplete : Mono.LambdaSetAnno -> Bool
 neverFalselyComplete anno =
     case anno of
-        Mono.LTop ->
+        Mono.LTop _ ->
             True
 
         Mono.LVar _ ->
@@ -435,7 +435,7 @@ describe annos =
             (List.map
                 (\a ->
                     case a of
-                        Mono.LTop ->
+                        Mono.LTop _ ->
                             "LTop"
 
                         Mono.LVar n ->

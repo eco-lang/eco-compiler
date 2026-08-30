@@ -2076,7 +2076,7 @@ loopifyCall ctx region info qualifying args resultType =
                     )
 
         loopFnType =
-            Mono.mFunction Mono.LTop (List.map Tuple.second newParams) resultType
+            Mono.mFunction Mono.topSynth (List.map Tuple.second newParams) resultType
 
         invocation =
             MonoCall region (MonoVarLocal sF loopFnType) remainingArgs resultType Mono.defaultCallInfo
@@ -3128,10 +3128,10 @@ residualClosureType remainingParams resultType =
                 resultType
 
             else
-                Mono.mFunction Mono.LTop (List.map Tuple.second remainingParams) resultType
+                Mono.mFunction Mono.topSynth (List.map Tuple.second remainingParams) resultType
 
         _ ->
-            Mono.mFunction Mono.LTop (List.map Tuple.second remainingParams) resultType
+            Mono.mFunction Mono.topSynth (List.map Tuple.second remainingParams) resultType
 
 
 wrapInLets : List Binding -> MonoExpr -> Mono.MonoType -> MonoExpr

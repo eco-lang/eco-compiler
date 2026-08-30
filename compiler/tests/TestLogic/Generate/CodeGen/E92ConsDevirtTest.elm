@@ -193,7 +193,7 @@ consNodeKeys (TOpt.GlobalGraph nodes _ _ _ _) =
 renderAnno : Mono.LambdaSetAnno -> String
 renderAnno anno =
     case anno of
-        Mono.LTop ->
+        Mono.LTop _ ->
             "LTop"
 
         Mono.LVar n ->
