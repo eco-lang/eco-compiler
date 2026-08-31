@@ -670,6 +670,27 @@ type alias LssConfig =
     -- the OFF arm.
     -- Env `ECO_MONO_LSS_DESTR_ANNO`; hash token `lssDA=`.
     , destrAnno : Bool
+
+    -- Var chain-root writes, Phase 1 (plans/lss-var-chain-roots.md §3):
+    -- post-drain settle sweep writing the PAP successor member into flex
+    -- result slots of pap-able singleton/kN heads, strictly within
+    -- declared arity. Sound unconditionally (type-level identity;
+    -- beyond-arity results belong to the body, LSS_013). DEFAULT-ON since
+    -- 2026-08-31 (with varCtorRows: var −19.2 %, coverage +1.91 pp, ⊤
+    -- unchanged, accounting exact, all gates green — §4.4). Escape hatch
+    -- `ECO_MONO_LSS_VAR_SUCC=0`; hash token `lssVS=0` rides the OFF arm.
+    , varSucc : Bool
+
+    -- Var chain-root writes, Phase 2b (plans/lss-var-chain-roots.md §3):
+    -- post-drain ctor-row var payload writes from the sibling-spec cell
+    -- union, gated on the all-sets completeness rule (zero ⊤ contributors
+    -- AND zero flex-marked construction vars at the cell — AR-V2/AR-V10;
+    -- runs BEFORE the destrAnno ⊤-heal so the contamination evidence is
+    -- still honest). DEFAULT-ON since 2026-08-31 (§4.4; flex gate
+    -- protected 1,563 positions). Escape hatch
+    -- `ECO_MONO_LSS_VAR_CTOR_ROWS=0`; hash token `lssVC=0` rides the OFF
+    -- arm.
+    , varCtorRows : Bool
     }
 
 
@@ -723,6 +744,8 @@ defaultLss =
     , argPoints = False
     , rsTop = True
     , destrAnno = True
+    , varSucc = True
+    , varCtorRows = True
     }
 
 
@@ -1121,6 +1144,8 @@ lssDecoder =
         |> D.apply (D.optionalField "argPoints" D.bool defaultLss.argPoints)
         |> D.apply (D.optionalField "rsTop" D.bool defaultLss.rsTop)
         |> D.apply (D.optionalField "destrAnno" D.bool defaultLss.destrAnno)
+        |> D.apply (D.optionalField "varSucc" D.bool defaultLss.varSucc)
+        |> D.apply (D.optionalField "varCtorRows" D.bool defaultLss.varCtorRows)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -1664,6 +1689,35 @@ hash cfg =
                     , if lss.destrAnno /= defaultLss.destrAnno then
                         [ "lssDA="
                             ++ (if lss.destrAnno then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- Var successor writes: artifact-affecting when on
+                    -- (registry row annotations move).
+                    , if lss.varSucc /= defaultLss.varSucc then
+                        [ "lssVS="
+                            ++ (if lss.varSucc then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- Ctor-row var writes: artifact-affecting when on.
+                    , if lss.varCtorRows /= defaultLss.varCtorRows then
+                        [ "lssVC="
+                            ++ (if lss.varCtorRows then
                                     "1"
 
                                 else

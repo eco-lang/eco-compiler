@@ -1,6 +1,16 @@
 # Ctor payload-arrow transport — v2, rebuilt from the provenance census
 
-**Status:** REBUILT 2026-08-30 from the bare concept, superseding the 2026-08-27
+**Status: CLOSED 2026-08-31 — superseded by `plans/lss-var-chain-roots.md`.**
+Shipped from this plan: `lss.destrAnno` (Fix A + settleCtorRows Fix B,
+default-on, §9.7–9.9); the ⊤ caller-attribution machinery (§9.3); the §12
+var chain-root attribution and its census instruments (spec-idx pos rows +
+k1 member naming) — which became the successor plan's evidence base. Parked
+exploitation recorded here: raise-with-identity-forwarding (§11.1) and sum
+lowering (§11). The §12.2 mechanism sketch (M-A/M-B/M-C/M-D) is superseded
+by the successor plan's reviewed phases — read THAT plan, not §12.2, for
+the attack order.
+
+**Original status:** REBUILT 2026-08-30 from the bare concept, superseding the 2026-08-27
 plan (its still-binding findings are carried over in §6; its P1 "identity side
 table" and P2 "declaration-site c| injection" are DEMOTED to one candidate
 component (§3 P2.c) — the census shows the mass is elsewhere). Adversarial
@@ -1189,8 +1199,344 @@ the differential now PASSES** at the known baseline.
 1,717/1,717; elm-tests 13,390/12 (known baseline, differential included) —
 no overlapping-flag pin broke this time. Shipped-default coverage is now
 89.61 %; the remaining ⊤ book: poison 570, decl residue (clsDestr elm/cycle
-303 + clsLet 174 + clsMisc/clsLocal 46), abi 216, conflict 112. Dispatch
-A/B still unrun (recorded-not-gated when it is).
+303 + clsLet 174 + clsMisc/clsLocal 46), abi 216, conflict 112. ### §9.9 Dispatch A/B (Run-AO rail, 2026-08-31) — EXACTLY NEUTRAL
+
+Protocol: counters applied at LOWERING
+(`ECO_LSS_DISPATCH_SITE_COUNTERS=1`) to the two self-compile artifacts from
+§9.7's battery; each resulting compiler then runs the SAME cold workload
+(self-compile of `Terminal/Main.elm`) under `ECO_DISPATCH_STATS=1` with
+SHIPPING-DEFAULT env — the arms differ in how each compiler was BUILT, not
+in what it does at run time.
+
+| | off-built | on-built | Δ |
+|---|---|---|---|
+| **sat** (the headline) | 2,290,875,173 | 2,290,875,104 | **−69 (−0.000003 %)** |
+| gen | 2,254,164,532 | 2,254,164,468 | −64 |
+| typed | 36,710,641 | 36,710,636 | −5 |
+| fast | 633,840,372 | 633,840,365 | −7 |
+| **distinct sites** | 7,322 | **7,293** | **−29** |
+| RSS | 10.06 GB | 10.04 GB | −0.16 % |
+
+**Verdict: exactly neutral**, joining `refIdentity`/`refPapSpine`/`injTotal`.
+`destrAnno` buys analysis completeness (⊤ −32 %, k1 +1,129) at zero dispatch
+cost AND zero dispatch benefit.
+
+**The one real signal is `distinct`:** 29 fewer distinct closure-evaluator
+sites participate in dynamic dispatch, for only ~69 events — i.e. the devirt
+DID fire, on sites averaging ~2 events per run. That is exactly what the
+heal profile predicts: the mass is `Eerr`/`Cerr` (528 of 1,052 ctor
+positions), the PARSER'S ERROR constructors, which are cold by construction
+in a successful compile. Precision landed where the program does not spend
+time.
+
+**Protocol check passed:** the two runs' workload outputs are BYTE-IDENTICAL,
+confirming both arms performed identical analysis at run time (the flag is
+default-on for both since the flip) — the comparison isolates build-time
+effects, as the rail requires.
+
+**Wall inconclusive here** (7:54.7 on vs 8:01.0 off = −1.3 %), and it
+contradicts the clean §9.7 measurement (+2.4 %); both sit inside the
+recorded ±2.3 % noise floor, and these runs carry dispatch instrumentation.
+Treat §9.7's +2.4 % as the estimate and neither as a finding.
+
+**What this means for the arc's direction.** Three consecutive precision
+mechanisms have now measured dispatch-neutral. The gap is not analysis
+completeness any more — it is that **nothing consumes multi-member or
+newly-completed sets**: GAP-6 (no sum lowering; multi-member sets have no
+dispatch consumer) is the binding constraint, and the healed positions are
+cold besides. A future precision mechanism should be justified by a NAMED
+hot consumer, or by the exploitation work (LPartial / use-site feeding /
+sum lowering), not by coverage.
+
+**The liveness census quantifies WHY (2026-08-31 read of the same run).**
+`liveness: attempts=512,565 hit=512,565 hitBp=10000` — the positive control
+passes, so the hook names 100 % of the applications it sees and the split
+below is a real property (the naive control's premise "concrete BECAUSE
+called" was refuted Aug 27; a low `controlBp` is the correct reading of a
+working instrument, not an artefact).
+
+| population | arrows | applied | rate |
+|---|---:|---:|---:|
+| **var** | 17,532 | 7,485 | **42.7 %** |
+| **set (covered)** | 24,425 | 2,515 | **10.3 %** |
+
+**Var arrows are applied at 4× the rate of covered ones.** Against the Aug-27
+baseline (var 8,248/20,815; set 1,601/14,405 — cross-BUILD, so indicative
+only): the arc added ~10,020 set arrows and only ~914 of them are ever
+applied — **~9 % of newly-resolved arrows sit on called paths**. That is the
+quantitative statement behind three consecutive dispatch-neutral results:
+precision has been landing preferentially on arrows the program never calls.
+It also bounds the remaining opportunity — ≥7,485 var arrows ARE live call
+sites with no nameable target (genuine incompleteness, the honest numerator),
+while 7,645 of 17,645 applied arrows (43.3 %) are in NEITHER bucket
+(applied but never zonked) and remain unattributed.
+
+## §11 THE HOT-CONSUMER MAP (2026-08-31) — task A of the live-var dig, and
+## it redirects the arc
+
+Symbolized all 7,293 dispatch-stats rows (fp rebased via the printed
+`eco_alloc_closure` anchor against `nm eco-disp-on`; rows key by TARGET
+evaluator) and mapped anonymous lambdas to their producing function via the
+MLIR's `papCreate` nesting (12,775 lambda→producer edges).
+
+**Generic dispatch by producer family (of 2.29 B sat events):**
+
+| family | events | share |
+|---|---:|---:|
+| `System.TypeCheck.IO.andThen` (returned k-closures) | 483.8 M | 21.1 % |
+| unattributed nested lambdas (mostly the same family's continuations) | 550.5 M | 24.0 % |
+| `Data.IORef.readPointCell` (ONE lambda: 14939) | 228.9 M | 10.0 % |
+| `System.TypeCheck.IO.map` | 180.6 M | 7.9 % |
+| `newPointCell`/`writePointCell`/`traverseList` | 121.4 M | 5.3 % |
+| `Compiler.Type.Unify` monad (andThen/pure/merge/…) | ≈117 M | 5.1 % |
+| `UnionFind.fresh` | 43.8 M | 1.9 % |
+
+**≈44 % of ALL generic dispatch is the compiler's own `System.TypeCheck.IO`
+state monad** (likely well over 50 % counting the unattributed
+continuations), plus ~5 % the Unify monad. The whole effectful compiler
+funnels through one bind chain.
+
+**The refutation:** the census readings at these producers are NOT var —
+`readPointCell|/r` = **k1** (the 228.9 M-event target is a KNOWN SINGLETON),
+`andThen` head/callback k1, `andThen|/r` = **kN 2,030 rows vs k1 1,094**.
+The analysis already knows these sets. The dispatch persists because
+(1) each hot `andThen` spec's io/k positions aggregate MANY step-closures →
+honest kN → **GAP-6: multi-member sets have no dispatch consumer**; and
+(2) where a producer's row IS k1 (`readPointCell|/r`), the knowledge does
+not reach the generic apply site inside the shared `andThen` spec as a
+singleton — the site's own slot unions everything piped through it.
+
+**Verdict on the B/C/D chain (the user's "provided they continue to make
+sense" gate): they do not.** B/C asked "which live vars would pay if
+transported" — but transporting them lands in kN at shared monadic specs,
+which nothing consumes; the demand side is answered without them. D's
+never-zonked bucket is measurement debt, not opportunity, under the same
+constraint. All three closed unrun, with this section as the reason.
+
+**What WOULD pay, in order of expected leverage:**
+1. **Bind-inlining / monad-inlining of `System.TypeCheck.IO`** — the classic
+   fix: inline `andThen` so each continuation is statically known at its
+   apply site; ~1 B events in scope. (MonoInlineSimplify exists; andThen may
+   be blacklisted or too large — sizing needed.)
+2. **Sum lowering for small kN** (GAP-6 proper): dispatch a member-switch
+   for 2-3-member sets at hot sites — the paper's §5.2 `match`, gated by the
+   M5 NO-GO's census being re-examined at TODAY's set quality.
+3. **`readPointCell`-class singleton devirt through shared specs**: the k1
+   exists at the producer; a per-call-site split (keying or inlining of the
+   one-line accessor) recovers it.
+
+### §11.1 LEVER 1 SIZED (2026-08-31): bind-inlining does NOT reach the
+### hot rows — in either of its existing mechanized forms
+
+**Form A — inliner whitelist (`inline.whitelist` / cost bypass): structurally
+dead, no measurement spent.** The HOF-elimination arc already dug this hole
+(memory `eco-hof-elimination-plan.md`, H6.0/H6.2 Jul 2026): `andThen f ma`'s
+mono body is ONE `papCreate` (the arity-3 continuation lambda capturing
+`f`,`ma`); every reference in today's artifact is a *direct static
+`eco.call`* of the arity-2 spec (431 call lines over 334 surviving specs —
+none of the dispatch is at these sites). Inlining the mint moves an
+allocation into the caller; the dispatch lives in the generic applications
+`ma s0` / `f a s1` of CAPTURED values inside the continuation, which
+substitution cannot reach — H6.0's "stored-continuation class, NOT
+inliner-reachable". Today's `ECO_INLINE_REPORT` confirms the population is
+still escape-dominated: `fnres-specs=1,473`, applied 663 vs
+returned+arg+let 1,462.
+
+**Form B — U2b arity raising (`ECO_ARITY_RAISE=1`, ARM=0 ceiling), the
+mechanism built FOR this shape (sound since Jul 16, parked on wall):
+measured on the Run-AO dispatch rail, and it MISSES the target.**
+Raised build: `raised=1,164`, staged population 1,473→311, partialMerges
++1,370, closuresRemaining −6.2 %. Correctness: the raised compiler's output
+is BYTE-IDENTICAL to the same-source defaults output (`930ecb…` both; the
+first md5 check against Aug-28 `don-out.mlir` differed only because the
+source moved — always regenerate the control on today's source).
+
+| counter | defaults arm | raised arm | delta |
+|---|---:|---:|---:|
+| sat (generic) | 2,290,875,104 | 2,597,608,906 | **+306.7 M (+13.4 %)** |
+| fast (LSS devirt) | 633,840,365 | **0** | −633.8 M |
+| typed | 36,710,636 | 34,598,787 | −2.1 M |
+| sat+fast total | 2,924.7 M | 2,597.6 M | **−327.1 M (−11.2 %)** |
+| wall | 7:54.73 | 8:01.23 | +1.4 % (≤ noise) |
+
+Three findings:
+1. **The hot IO-monad rows are EVENT-IDENTICAL across arms** — top site
+   228,876,195 (the `readPointCell` lambda) and #2 93,578,155 to the digit.
+   Raising collapses only `fnres-applied` sites; the bind chain's
+   applications are of *captured* continuations at escaping sites, which
+   raising converts to PAPs but still applies generically. The −327 M net
+   came from elsewhere (the applied minority + merge fixpoint).
+2. **Raising ZEROES the LSS fast path** (fast 634 M→0, distinct sites
+   −449): raised closures clear `srcLambda`/`closureKind`/`captureAbi` by
+   design (LSS_009 — must not impersonate the source member), so every
+   devirt/fast site degrades to slow generic. Any raise-based lever must
+   first teach LSS to mint members for raised workers, or it fights the
+   whole LSS arc.
+3. **July's +55 % wall did not reproduce** on today's rail (+1.4 %, inside
+   the ±2.3 % floor) — that number came from a different-scale protocol.
+   Wall is NOT the blocker anymore; *reach* is.
+
+**Verdict: lever 1 CLOSED as mechanized.** Neither substitution (form A)
+nor arity raising (form B) reaches the captured-continuation applications
+that carry the ≈1.26 B IO/Unify-monad events. What can reach them:
+(a) **lever 2, sum lowering** — the consumer-side fix needs no producer
+restructuring at all (the sets at those sites are honest kN); (b) a
+capture-aware collapse (defunctionalization — the paper's own escape);
+(c) restructuring `System.TypeCheck.IO` itself (hand-eta `andThen`/`pure`/
+`apply` the way `map`/`foldrM` already are — changes the member from an
+anonymous mint to `p|andThen|2` but does not shrink the set; only worth
+bundling with (a)).
+
+**Follow-up recorded (user question, 2026-08-31): could raising KEEP or
+FORWARD member identity instead of clearing it?** Yes, mechanically — and
+it would convert form B from "fights LSS" to "composes with LSS":
+clearing exists because the OLD member (the continuation mint lambda)
+describes a value with a different ABI than the raised shape, and a
+stampable stale member is the papMembers miscompile class (devirt drops
+captured args). But the raise transform is 1:1 and deterministic: the
+value that was "the closure `andThen`'s body mints" IS, post-raise, "a
+PAP of raised-`andThen` with 2 of 3 args supplied" — which is EXACTLY
+what a `p|<global>|<supplied>` member already describes, ABI included
+(papMembers models the uniform PAP splice). So a sound forwarding pass
+is: for each raised spec X (old arity k), rewrite every stamped set
+replacing X's mint-lambda member with `p|X|k` (layout-qualified per
+LSS_024), and stamp the PAP values that `annotateCallStaging` re-derives
+at old-arity call sites with the same member. Raising runs post-mono
+(after LSS), so this is a GlobalOpt-side annotation rewrite, not an
+engine change. Expected effect: restores the 634 M fast events while
+keeping the −327 M net, i.e. form B would become the first strictly-
+positive dispatch composition of the arc. PARKED as exploitation — the
+arc's present focus is COVERAGE over var (see §12), and this only pays
+at exploitation time.
+
+**Re-centering (user directive, 2026-08-31): the arc returns to raising
+LSS coverage over `var` — understanding why each var position is never
+written and how it can carry an ACCURATE set.** Sum lowering and the
+raise-forwarding above are deferred exploitation. The §11 B/C/D closure
+was evaluated against *dispatch* payoff; under the coverage framing the
+var questions reopen — as §12.
+
+## §12 THE VAR DIG (2026-08-31, in progress) — why 13,389 positions are
+## never written, and how they can carry accurate sets
+
+Offline attribution from the shipped-default census log (`dab-on.log`,
+142,904 pos rows), before any new instrument:
+
+**Structure (path classes):**
+- **c-path var = 7,636 (57.0 %)** — ctor payload chains; the §1 Decoder-
+  family territory, deep rungs (`/c1/r^n` to depth 10; 5,418 at depth ≥ 6).
+- **pure argument-spine `/aN/r+` = 3,281 (24.5 %)** — successors of heads:
+  if `/a0` holds `{g|X}` then `/a0/r` is `{p|X|1}` by construction (the
+  Aug-28 finding). Together: **81.5 % of ALL var in two structural classes.**
+
+**Knowability (mirror over (global,path) cells):** 8,531 var (63.7 %) sit
+in MIXED cells where sibling specs of the same (global,path) DO hold a set
+(e.g. `foldl|/a0/r`: 162 var vs 2,894 set — 95 % of siblings know);
+4,858 (36.3 %) in 809 pure-var cells (dominated by the deep Decoder rungs).
+Mirror = the channel CAN carry, NOT that the sibling's set is this spec's
+answer (sibling-copy is unsound — Aug 28).
+
+**Parent-cell coverage (cell-granularity approximation):** parent fully
+known 12.6 % / parent fully var 26.4 % (chain interiors — fixing roots may
+cascade) / MIXED 56.6 % — unresolvable at cell granularity.
+
+**Identity concentration:** 13,389 instances = 7,895 distinct never-written
+`entry.vn` (1.70 positions per missing write) across 2,957 entries.
+
+**Instrument shipped:** pos rows now carry the registry spec index as a
+5th field on EVERY row (previously var-only), making per-INSTANCE
+parent/child pairing decidable from one census log — "is the head KNOWN
+in the same spec whose `/r` is var?" is the exact candidate count for a
+sound spine-successor mechanism.
+
+### §12.1 Per-instance parent pairing (varpos.sh, 2026-08-31)
+
+Coverage line on today's source: positions=141,044 k1=95,563 kN=30,903
+var=13,389 top=1,189 (89.66 %; ⊤ keeps drifting down with source).
+
+| parent (same spec instance) | var count | share |
+|---|---:|---:|
+| **k1** — sound successor-injection candidates | 2,769 | 20.7 % |
+| kN | 115 | 0.9 % |
+| **var** — chain interior | 9,332 | 69.7 % |
+| top | 114 | 0.9 % |
+| non-arrow hop (ctor/record/tuple between arrows) | 971 | 7.3 % |
+| root (no parent path) | 88 | 0.7 % |
+
+Chain interiors DOMINATE (69.7 %) — the var pool is mostly ~1.7-deep
+chains hanging from ≈4,057 roots. Chain roots by global: andThen 771,
+map 450, foldl 282, apply 204, map3 197, Decoder 165, Ok 152 … (top-14 =
+72 % of roots — same monadic/applicative family as everything else in
+this arc). Restricted to c-paths: 6,610 of 7,636 c-path vars are chain
+interiors and only 165 have a known parent — the Decoder family's payload
+arrows hang from combinator-spec rows, so **c-path var is downstream of
+the same roots, not an independent class.**
+
+Reading: write the ≈2,884 root positions (2,769 parent-k1 + 115
+parent-kN) and, if the store transports through the chains (refPapSpine
+precedent), up to 9,332 interiors follow. The mechanism's soundness
+question is within-vs-beyond declared arity at each parent member —
+measured next (varpos2.sh: k1 rows now NAME their singleton member,
+`k1:g;X` / `k1:p;X;k`, so the split is offline-computable).
+
+### §12.2 FULL chain-root attribution — every var assigned a cause class
+### (varpos2.sh, 2026-08-31)
+
+k1 rows now name their singleton; climbing each var chain to its root and
+attributing the WHOLE chain mass to the root's (member-kind × hop) class:
+
+| chain-root class | var mass | share | mechanism |
+|---|---:|---:|---|
+| inside DATA — 97 % ctor-payload (5,956; tuple 121 / record 56 / list 30) | 6,163 | 46.0 % | **M-C** construction-site payload flow (this plan's L-chain) |
+| `k1:p → /r` PAP-successor | 2,426 | 18.1 % | **M-A** successor write `{p\|X\|k}→{p\|X\|k+1}` — mechanical |
+| `k1:l → /r` known-LAMBDA result | 1,412 | 10.5 % | **M-B** lambda-result transport (k1-gated, unlike argFeedback) |
+| rooted at ⊤ | 1,142 | 8.5 % | blocked behind the ⊤ book (poison/abi/decl) |
+| `k1:g → /aN` argument of known global | 861 | 6.4 % | **M-D** argFeedback channel, now gateable to k1-parent cells |
+| `k1:c → /aN` ctor-argument arrow | 634 | 4.7 % | M-C adjacent (construction flow) |
+| `k1:g → /r` global result | 383 | 2.9 % | M-A (within arity) / sig route beyond |
+| registry-row root / kN-rooted / misc | 368 | 2.7 % | — |
+
+Top parent members of the M-A class are curried CTOR/record-alias PAPs
+and multi-arg globals (`p|Dict.insert|1→/r` 65, `p|TTuple|1→/r` 37, the
+Config record family 22×5, `p|Eerr|2→/a0` …) — overwhelmingly WITHIN
+declared arity, i.e. the successor member exists by construction.
+
+**The answer to "why is var never written":** three writes are missing —
+(1) nothing writes the PAP-successor member at `/r` of a known
+partial-application spine (M-A; refPapSpine did exactly this for
+reference spines — this is its completion to all positions); (2) nothing
+transports a KNOWN lambda's own result set from its body to positions
+that hold the lambda (M-B); (3) nothing carries a construction site's
+arrow sets into ctor payload positions read elsewhere (M-C — the reason
+this plan exists; `settleCtorRows` now does the ⊤ analog at ctor ROWS,
+but var slots need a STORE write, not an annotation join, to avoid the
+L7 `unionAnno(LSet,LVar)=⊤` tax). Chain interiors (69.7 % of the pool)
+are expected to follow their roots through store unification (refPapSpine
+precedent) — every mechanism's realized yield multiplies through the
+chains and must be measured, not assumed.
+
+**Proposed order (size × tractability):** M-A first (mechanical, sound,
+precedent, ~2,800 direct + cascade), M-B second (1,412 + cascade), M-C
+redesigned third (biggest at ~6,800 but needs the construction-flow
+design), M-D last (reverted machinery, needs the k1 gate to avoid the
+churn that killed argFeedback). Success metric per L1: k1/kN at the
+named chain-root cells (`andThen` 771, `map` 450, `foldl` 282 roots…),
+never bare coverage.
+
+**Working hypotheses to falsify (in order):**
+1. The `/aN/r+` class is spine-deepening residue: the papInject/refPapSpine
+   successor machinery covers reference spines but not demand-side argument
+   spines to full depth (deepDone=786 was L2's count; the residue was ~600
+   sites in Aug-28's estimate, now measurable per instance).
+2. The c-path class needs the ctor payload transport chain (§0's
+   L-in/L-mirror/L-across/L-out); `settleCtorRows` (Fix B) now heals ⊤ at
+   ctor rows — the analogous var question is whether the sibling-spec
+   demand union can be fed to var rows too (union-over-specs is
+   widening-only = sound; but LVar-vs-union needs care: unionAnno(LSet,
+   LVar)=⊤ — the L7 tax — so the write must be a STORE write to the flex
+   slot, not an annotation join).
+3. Chain interiors (26.4 %) resolve for free once roots are written
+   (unification transports through the store — refPapSpine precedent).
 
 ## §10 CONSOLIDATED LEARNING (2026-08-30) — what this arc actually established
 

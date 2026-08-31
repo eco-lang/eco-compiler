@@ -240,7 +240,10 @@ runWith refPapSpine srcModule =
             Config.defaultLss
     in
     Pipeline.runSolverMonoWithLimits Config.defaultLimits
-        { defaults | enabled = True, keyed = True, refPapSpine = refPapSpine }
+        -- varSucc/varCtorRows pinned OFF (2026-08-31): they write the very
+        -- /a0/r position this differential's off-arm asserts as LVar — the
+        -- overlapping-flag pin rule.
+        { defaults | enabled = True, keyed = True, refPapSpine = refPapSpine, varSucc = False, varCtorRows = False }
         srcModule
 
 

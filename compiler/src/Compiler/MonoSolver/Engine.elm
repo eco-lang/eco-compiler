@@ -18,7 +18,7 @@ module Compiler.MonoSolver.Engine exposing
     , GroundingStats, internMemberKey, groundStandaloneMemberIdFor, groundSetMembers, recordSpecWidenedKey, layoutQualKey
     , LssMemberTable, MemberSource(..), emptyMemberTable
     , bumpWidenedByKernel, bumpWidenedBySigSize, bumpWidenedByCf, bumpKernelFactHit, bumpKernelLicensed, bumpEdgeInstalled, bumpFlowDegraded, bumpCompletionJoin, bumpCompletionJoinNoop, withScratchStore
-    , bumpTopMixedFlexSig, bumpArgFlowCensus, bumpAppliedArrow
+    , bumpTopMixedFlexSig, bumpArgFlowCensus, bumpAppliedArrow, markFlexCtorSpec
     , memoizedSignatureTrivial, memberClassOf, membersClass
     , SigFlowStats
     , markDirty
@@ -169,6 +169,7 @@ type alias LssSignature =
 -}
 type alias LssStats =
     { setsZonked : Int
+    , flexCtorSpecs : CoreDict.Dict Int () -- Phase 2b (plans/lss-var-chain-roots.md §3): ctor SPECS demanded by a slow-path construction whose translated arg carried a FLEX arrow — a real inhabitant may hide behind that spec's var payload row, so settleVarCtorRows must not settle-write cells where such a spec still shows var
     , joinRounds : Int -- LSS_010 drain-end flush rounds
     , retranslations : Int -- specs re-translated across all flush rounds
     , widenedBySize : Int
@@ -529,7 +530,7 @@ insertMemberProvisional mid g t =
 
 emptyLssStats : LssStats
 emptyLssStats =
-    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0, edgesInstalled = 0, flowDegraded = 0, multiSetsByArrow = CoreDict.empty, appliedArrows = CoreDict.empty, topMixedFlexSig = 0, topMixedFlexDemand = 0, argFlowCensus = CoreDict.empty, settled = emptySettledStats, qShadow = emptyQShadowStats, qInfer = emptyQShadowStats }, layoutQual = { mints = 0, shared = 0, fallback = 0, tieBypass = 0 } }
+    { setsZonked = 0, flexCtorSpecs = CoreDict.empty, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0, edgesInstalled = 0, flowDegraded = 0, multiSetsByArrow = CoreDict.empty, appliedArrows = CoreDict.empty, topMixedFlexSig = 0, topMixedFlexDemand = 0, argFlowCensus = CoreDict.empty, settled = emptySettledStats, qShadow = emptyQShadowStats, qInfer = emptyQShadowStats }, layoutQual = { mints = 0, shared = 0, fallback = 0, tieBypass = 0 } }
 
 
 {-| The all-defaults signature for an annotation with `n` arrows.
@@ -1038,6 +1039,21 @@ bumpTopMixedFlexSig s =
             stats.sigStats
     in
     { s | lssStats = { stats | sigStats = { sig | topMixedFlexSig = sig.topMixedFlexSig + 1 } } }
+
+
+{-| Phase 2b flex-construction mark (plans/lss-var-chain-roots.md §3): the
+slow path records the ctor SPEC whenever a construction's translated arg
+carries a flex arrow. Bookkeeping only — never touches the graph. NOT
+report-gated: `settleVarCtorRows` (flag-gated) is the sole reader, and the
+mark must exist whenever that pass runs.
+-}
+markFlexCtorSpec : Int -> S -> S
+markFlexCtorSpec specId s =
+    let
+        stats =
+            s.lssStats
+    in
+    { s | lssStats = { stats | flexCtorSpecs = CoreDict.insert specId () stats.flexCtorSpecs } }
 
 
 {-| LSS_026 Phase-0 census (§2.1): bump one census key. REPORT-GATED — the

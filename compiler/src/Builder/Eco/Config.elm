@@ -253,6 +253,16 @@ applyEnvOverrides cfg =
                     |> Task.map (\daVal -> applyLssDestrAnnoOverride daVal cfg4en)
             )
         |> Task.andThen
+            (\cfg4eo ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_VAR_SUCC" |> Task.mapError never)
+                    |> Task.map (\vsVal -> applyLssVarSuccOverride vsVal cfg4eo)
+            )
+        |> Task.andThen
+            (\cfg4ep ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_VAR_CTOR_ROWS" |> Task.mapError never)
+                    |> Task.map (\vcVal -> applyLssVarCtorRowsOverride vcVal cfg4ep)
+            )
+        |> Task.andThen
             (\cfg4f ->
                 (Utils.envLookupEnv "ECO_SPEC_TYPE_NODE_LIMIT" |> Task.mapError never)
                     |> Task.map (\tnVal -> applySpecTypeNodeLimitOverride tnVal cfg4f)
@@ -2073,6 +2083,50 @@ applyLssDestrAnnoOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | destrAnno = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_VAR_SUCC=1|true|yes / 0|false|no`
+(plans/lss-var-chain-roots.md §3 Phase 1): post-drain PAP-successor writes
+into flex result slots, within declared arity. DEFAULT-OFF. Hash token
+`lssVS=`.
+-}
+applyLssVarSuccOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssVarSuccOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | varSucc = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | varSucc = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_VAR_CTOR_ROWS=1|true|yes / 0|false|no`
+(plans/lss-var-chain-roots.md §3 Phase 2b): ctor-row var payload writes from
+the sibling-spec cell union under the all-sets completeness rule.
+DEFAULT-OFF. Hash token `lssVC=`.
+-}
+applyLssVarCtorRowsOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssVarCtorRowsOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | varCtorRows = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | varCtorRows = False }) cfg
 
             else
                 cfg

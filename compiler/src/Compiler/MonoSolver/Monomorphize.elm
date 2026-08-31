@@ -142,8 +142,13 @@ monomorphizeWithReport lssConfig limits entryPointName globalTypeEnv globalGraph
                         -- construction has contributed, so union-widening
                         -- (AR-D2) holds and the pass is a single order-free
                         -- sweep.
+                        -- Settle order is LOAD-BEARING
+                        -- (plans/lss-var-chain-roots.md §3): var ctor-row
+                        -- writes read ⊤ contamination HONESTLY, so they run
+                        -- BEFORE the ⊤-heal erases it; successor writes run
+                        -- last to extend heads either pass creates.
                         sFinal =
-                            settleCtorRows sDrained
+                            settleVarSuccessors (settleCtorRows (settleVarCtorRows sDrained))
 
                         graph =
                             pruneGraph sFinal (assembleRawGraph sFinal mainSpecId maybeFlagsSpecId)
@@ -238,7 +243,12 @@ settleCtorRows s =
                                             Just u ->
                                                 let
                                                     enriched =
-                                                        Mono.enrichAnnotations monoType u
+                                                        -- AR-V1 retrofit (plans/lss-var-chain-roots.md §6):
+                                                        -- the ⊤-heal must never flip an LVar slot — its
+                                                        -- union drops ⊤ contributors, which is the
+                                                        -- false-set class on never-written positions.
+                                                        -- Var writes go through settleVarCtorRows' gate.
+                                                        Mono.enrichAnnotationsTopOnly monoType u
                                                 in
                                                 if enriched == monoType then
                                                     ( idx + 1, reg )
@@ -260,6 +270,542 @@ settleCtorRows s =
                     )
         in
         { s | registry = registry1 }
+
+
+{-| Phase 2b (plans/lss-var-chain-roots.md §3, `lss.varCtorRows`): write var
+payload slots on ctor registry rows from the sibling-spec CELL union, under
+the all-sets completeness rule.
+
+Cells are keyed by (ctor global, POSITION PATH) across ALL sibling specs —
+path-keyed rather than structural on purpose: sibling specs of one ctor can
+have structurally different types, and a ⊤ in a differently-shaped sibling
+must still contaminate the cell (a structural pairwise union would silently
+miss it).
+
+The write rule (AR-D2 inheritance): a var slot may take the cell's set
+union iff the cell saw ZERO ⊤ contributors. Var contributors are benign —
+`lssFastOk` guarantees every Elm construction carrying an arrow reaches the
+slow path and leaves a mark (set or honest ⊤) on some sibling row, and
+kernel routes are marked at the boundary by the LSS_021/022 license or the
+LSS_004 poison — so an all-var-and-sets cell's union covers every possible
+inhabitant. A ⊤ contributor means unknown inhabitants: skip.
+
+ORDER IS LOAD-BEARING: this pass MUST run BEFORE `settleCtorRows`' ⊤-heal —
+the heal rewrites ⊤ positions to sets and would erase the contamination
+evidence this gate reads.
+-}
+settleVarCtorRows : S -> S
+settleVarCtorRows s =
+    if not (s.env.lss.enabled && s.env.lss.varCtorRows) then
+        s
+
+    else
+        let
+            isCtorGlobal key =
+                case key of
+                    Mono.Global vcHome vcName ->
+                        case HashMap.get TOpt.globalHash (==) (TOpt.Global vcHome vcName) s.env.toptNodes of
+                            Just (TOpt.Ctor _ _ _) ->
+                                True
+
+                            Just (TOpt.Box _) ->
+                                True
+
+                            _ ->
+                                False
+
+                    _ ->
+                        False
+
+            gkeyOf key =
+                case key of
+                    Mono.Global _ vcName ->
+                        vcName
+
+                    _ ->
+                        "?"
+
+            moduleOf key =
+                case key of
+                    Mono.Global (IO.Canonical _ vcModule) _ ->
+                        vcModule
+
+                    _ ->
+                        "?"
+
+            -- pass 1: path-keyed cells over all sibling rows of each ctor
+            -- global. `flexVar` = a var contribution from a spec the slow
+            -- path marked as a flex-transporting CONSTRUCTION — a real
+            -- inhabitant may hide behind it (the wrap-class hazard, §3);
+            -- destructure-only var siblings stay benign.
+            emptyCell =
+                { top = False, flexVar = False, sets = Nothing }
+
+            collectCell marked anno cell =
+                case anno of
+                    Mono.LTop _ ->
+                        { cell | top = True }
+
+                    Mono.LSet ms ->
+                        { cell | sets = Just (Mono.unionSortedInts ms (Maybe.withDefault [] cell.sets)) }
+
+                    Mono.LVar _ ->
+                        if marked then
+                            { cell | flexVar = True }
+
+                        else
+                            cell
+
+            collectWalk marked gname path t acc =
+                case t of
+                    Mono.MFunction _ anno args result ->
+                        let
+                            acc1 =
+                                Dict.update (gname ++ "|" ++ path)
+                                    (\v -> Just (collectCell marked anno (Maybe.withDefault emptyCell v)))
+                                    acc
+
+                            accR =
+                                collectWalk marked gname (path ++ "/r") result acc1
+                        in
+                        List.foldl
+                            (\( i, a ) accA -> collectWalk marked gname (path ++ "/a" ++ String.fromInt i) a accA)
+                            accR
+                            (List.indexedMap Tuple.pair args)
+
+                    Mono.MList _ inner ->
+                        collectWalk marked gname (path ++ "/l") inner acc
+
+                    Mono.MTuple _ elems ->
+                        List.foldl
+                            (\( i, e ) accE -> collectWalk marked gname (path ++ "/t" ++ String.fromInt i) e accE)
+                            acc
+                            (List.indexedMap Tuple.pair elems)
+
+                    Mono.MRecord _ fields ->
+                        Dict.foldl (\fname ft a -> collectWalk marked gname (path ++ "/f:" ++ fname) ft a) acc fields
+
+                    Mono.MCustom _ _ _ args ->
+                        List.foldl
+                            (\( i, a ) accA -> collectWalk marked gname (path ++ "/c" ++ String.fromInt i) a accA)
+                            acc
+                            (List.indexedMap Tuple.pair args)
+
+                    _ ->
+                        acc
+
+            cells =
+                Tuple.second
+                    (Array.foldl
+                        (\entry ( idx, acc ) ->
+                            case entry of
+                                Just ( key, monoType ) ->
+                                    if isCtorGlobal key then
+                                        ( idx + 1
+                                        , collectWalk (Dict.member idx s.lssStats.flexCtorSpecs)
+                                            (gkeyOf key)
+                                            ""
+                                            monoType
+                                            acc
+                                        )
+
+                                    else
+                                        ( idx + 1, acc )
+
+                                Nothing ->
+                                    ( idx + 1, acc )
+                        )
+                        ( 0, Dict.empty )
+                        s.registry.reverseMapping
+                    )
+
+            -- pass 2: rewrite var slots from complete cells. Returns the
+            -- rewritten type plus (wrote, skipTop, skipNoInfo) deltas.
+            rewriteWalk gname path t st =
+                case t of
+                    Mono.MFunction _ anno args result ->
+                        let
+                            ( args1, st1 ) =
+                                List.foldr
+                                    (\( i, a ) ( accL, accSt ) ->
+                                        let
+                                            ( a1, accSt1 ) =
+                                                rewriteWalk gname (path ++ "/a" ++ String.fromInt i) a accSt
+                                        in
+                                        ( a1 :: accL, accSt1 )
+                                    )
+                                    ( [], st )
+                                    (List.indexedMap Tuple.pair args)
+
+                            ( result1, st2 ) =
+                                rewriteWalk gname (path ++ "/r") result st1
+
+                            ( anno1, st3 ) =
+                                case anno of
+                                    Mono.LVar _ ->
+                                        case Dict.get (gname ++ "|" ++ path) cells of
+                                            Just cell ->
+                                                if cell.top then
+                                                    ( anno, { st2 | skipTop = st2.skipTop + 1 } )
+
+                                                else if cell.flexVar then
+                                                    ( anno, { st2 | skipFlexVar = st2.skipFlexVar + 1 } )
+
+                                                else
+                                                    case cell.sets of
+                                                        Just union ->
+                                                            ( Mono.LSet union, { st2 | wrote = st2.wrote + 1 } )
+
+                                                        Nothing ->
+                                                            ( anno, { st2 | skipNoInfo = st2.skipNoInfo + 1 } )
+
+                                            Nothing ->
+                                                ( anno, { st2 | skipNoInfo = st2.skipNoInfo + 1 } )
+
+                                    _ ->
+                                        ( anno, st2 )
+                        in
+                        ( Mono.mFunction anno1 args1 result1, st3 )
+
+                    Mono.MList _ inner ->
+                        let
+                            ( inner1, st1 ) =
+                                rewriteWalk gname (path ++ "/l") inner st
+                        in
+                        ( Mono.mList inner1, st1 )
+
+                    Mono.MTuple _ elems ->
+                        let
+                            ( elems1, st1 ) =
+                                List.foldr
+                                    (\( i, e ) ( accL, accSt ) ->
+                                        let
+                                            ( e1, accSt1 ) =
+                                                rewriteWalk gname (path ++ "/t" ++ String.fromInt i) e accSt
+                                        in
+                                        ( e1 :: accL, accSt1 )
+                                    )
+                                    ( [], st )
+                                    (List.indexedMap Tuple.pair elems)
+                        in
+                        ( Mono.mTuple elems1, st1 )
+
+                    Mono.MRecord _ fields ->
+                        let
+                            ( fields1, st1 ) =
+                                Dict.foldl
+                                    (\fname ft ( accD, accSt ) ->
+                                        let
+                                            ( ft1, accSt1 ) =
+                                                rewriteWalk gname (path ++ "/f:" ++ fname) ft accSt
+                                        in
+                                        ( Dict.insert fname ft1 accD, accSt1 )
+                                    )
+                                    ( Dict.empty, st )
+                                    fields
+                        in
+                        ( Mono.mRecord fields1, st1 )
+
+                    Mono.MCustom _ vcHome vcName args ->
+                        let
+                            ( args1, st1 ) =
+                                List.foldr
+                                    (\( i, a ) ( accL, accSt ) ->
+                                        let
+                                            ( a1, accSt1 ) =
+                                                rewriteWalk gname (path ++ "/c" ++ String.fromInt i) a accSt
+                                        in
+                                        ( a1 :: accL, accSt1 )
+                                    )
+                                    ( [], st )
+                                    (List.indexedMap Tuple.pair args)
+                        in
+                        ( Mono.mCustom vcHome vcName args1, st1 )
+
+                    _ ->
+                        ( t, st )
+
+            ( registry1, totals ) =
+                Tuple.second
+                    (Array.foldl
+                        (\entry ( idx, ( reg, tAcc ) ) ->
+                            case entry of
+                                Just ( key, monoType ) ->
+                                    if isCtorGlobal key then
+                                        let
+                                            ( rewritten, stEnd ) =
+                                                rewriteWalk (gkeyOf key)
+                                                    ""
+                                                    monoType
+                                                    { wrote = 0, skipTop = 0, skipFlexVar = 0, skipNoInfo = 0 }
+
+                                            tAcc1 =
+                                                { wrote = tAcc.wrote + stEnd.wrote
+                                                , skipTop = tAcc.skipTop + stEnd.skipTop
+                                                , skipFlexVar = tAcc.skipFlexVar + stEnd.skipFlexVar
+                                                , skipNoInfo = tAcc.skipNoInfo + stEnd.skipNoInfo
+                                                , byModule =
+                                                    if stEnd.wrote > 0 then
+                                                        Dict.update (moduleOf key)
+                                                            (\c -> Just (stEnd.wrote + Maybe.withDefault 0 c))
+                                                            tAcc.byModule
+
+                                                    else
+                                                        tAcc.byModule
+                                                }
+                                        in
+                                        if stEnd.wrote > 0 then
+                                            ( idx + 1, ( Registry.updateRegistryType idx rewritten reg, tAcc1 ) )
+
+                                        else
+                                            ( idx + 1, ( reg, tAcc1 ) )
+
+                                    else
+                                        ( idx + 1, ( reg, tAcc ) )
+
+                                Nothing ->
+                                    ( idx + 1, ( reg, tAcc ) )
+                        )
+                        ( 0, ( s.registry, { wrote = 0, skipTop = 0, skipFlexVar = 0, skipNoInfo = 0, byModule = Dict.empty } ) )
+                        s.registry.reverseMapping
+                    )
+
+            bumpN key n acc =
+                List.foldl (\_ a -> Engine.bumpArgFlowCensus key a) acc (List.repeat n ())
+
+            s1 =
+                { s | registry = registry1 }
+                    |> bumpN "varctor|wrote" totals.wrote
+                    |> bumpN "varctor|skipTop" totals.skipTop
+                    |> bumpN "varctor|skipFlexVar" totals.skipFlexVar
+                    |> bumpN "varctor|skipNoInfo" totals.skipNoInfo
+        in
+        -- per-module write attribution (Phase 2a audit channel: an elm/*
+        -- module gaining writes is the flag to re-examine the kernel
+        -- boundary argument).
+        Dict.foldl (\m n acc -> bumpN ("varctor|mod|" ++ m) n acc) s1 totals.byModule
+
+
+{-| Phase 1 (plans/lss-var-chain-roots.md §3, `lss.varSucc`): post-drain
+successor writes. At any row position whose arrow holds a pap-able set
+(every member `p|X|k` / `g|X` / `c|X`) and whose RESULT arrow slot is flex,
+write the member-wise successor set `{p|X|k+j}` (j = args consumed at this
+arrow), STRICTLY within declared arity — the arrow past the last parameter
+belongs to the value the body produces (LSS_013), never this pass.
+
+Sound unconditionally: the claim is type-level identity (the only value
+obtainable by further-partially-applying a `p|X|k` value is `p|X|k+j`),
+wherever the application happens, including inside kernels. All-or-nothing
+per position: one member without a defined successor and the position is
+skipped — a partial successor set would exclude real inhabitants.
+
+Successor ids ride `LssInfer.papMemberKey`, the SAME key `injectPapMember`
+and `injectPapSuccessors` mint, so all paths unify (E9.2 one-identity).
+Bounded rounds: a write at depth d exposes the head for depth d+1 in the
+next round (the intra-row chains behind the census's 69.7 % interior mass).
+-}
+settleVarSuccessors : S -> S
+settleVarSuccessors s0 =
+    if not (s0.env.lss.enabled && s0.env.lss.varSucc) then
+        s0
+
+    else
+        varSuccRounds 8 s0
+
+
+varSuccRounds : Int -> S -> S
+varSuccRounds fuel s =
+    let
+        midKeys =
+            Dict.foldl (\k mid acc -> Dict.insert mid k acc) Dict.empty s.lssMemberTable.byKey
+
+        compGlobals =
+            HashMap.foldl
+                (\vsG _ acc -> Dict.insert (TOpt.toComparableGlobal vsG) vsG acc)
+                Dict.empty
+                s.env.toptNodes
+
+        -- Successor member ids for every member of `ms` at an arrow
+        -- consuming `j` args; Nothing unless ALL are defined and within
+        -- arity. Threads S (interning may mint).
+        succSetFor j ms sIn =
+            List.foldl
+                (\m ( maybeAcc, sAcc ) ->
+                    case maybeAcc of
+                        Nothing ->
+                            ( Nothing, sAcc )
+
+                        Just acc ->
+                            case Dict.get m midKeys of
+                                Nothing ->
+                                    ( Nothing, Engine.bumpArgFlowCensus "varsucc|skipNoSucc" sAcc )
+
+                                Just mkey ->
+                                    let
+                                        papable =
+                                            case String.split "|" mkey of
+                                                "p" :: gstr :: dstr :: _ ->
+                                                    Maybe.map2 Tuple.pair (Dict.get gstr compGlobals) (String.toInt dstr)
+
+                                                "g" :: gstr :: _ ->
+                                                    Maybe.map (\vsG -> ( vsG, 0 )) (Dict.get gstr compGlobals)
+
+                                                "c" :: gstr :: _ ->
+                                                    Maybe.map (\vsG -> ( vsG, 0 )) (Dict.get gstr compGlobals)
+
+                                                _ ->
+                                                    Nothing
+                                    in
+                                    case papable of
+                                        Nothing ->
+                                            ( Nothing, Engine.bumpArgFlowCensus "varsucc|skipNoSucc" sAcc )
+
+                                        Just ( vsG, d ) ->
+                                            if d + j < LssInfer.declaredArityOf vsG 8 sAcc then
+                                                case Engine.memberIdFor (LssInfer.papMemberKey vsG (d + j)) sAcc of
+                                                    Ok ( mid, sAcc1 ) ->
+                                                        ( Just (Mono.unionSortedInts [ mid ] acc), sAcc1 )
+
+                                                    Err _ ->
+                                                        ( Nothing, Engine.bumpArgFlowCensus "varsucc|mintErr" sAcc )
+
+                                            else
+                                                ( Nothing, Engine.bumpArgFlowCensus "varsucc|skipBeyond" sAcc )
+                )
+                ( Just [], sIn )
+                ms
+
+        succType t sIn =
+            case t of
+                Mono.MFunction _ anno args result ->
+                    let
+                        ( args1, sA, chA ) =
+                            List.foldr
+                                (\a ( accL, accS, accCh ) ->
+                                    let
+                                        ( a1, accS1, ch1 ) =
+                                            succType a accS
+                                    in
+                                    ( a1 :: accL, accS1, accCh || ch1 )
+                                )
+                                ( [], sIn, False )
+                                args
+
+                        ( result1, sR, chR ) =
+                            succType result sA
+                    in
+                    case ( anno, result1 ) of
+                        ( Mono.LSet ms, Mono.MFunction _ (Mono.LVar _) rArgs rRes ) ->
+                            case succSetFor (List.length args) ms sR of
+                                ( Just succ, sW ) ->
+                                    ( Mono.mFunction anno args1 (Mono.mFunction (Mono.LSet succ) rArgs rRes)
+                                    , Engine.bumpArgFlowCensus
+                                        (if List.length ms == 1 then
+                                            "varsucc|wrote1"
+
+                                         else
+                                            "varsucc|wroteN"
+                                        )
+                                        sW
+                                    , True
+                                    )
+
+                                ( Nothing, sW ) ->
+                                    ( Mono.mFunction anno args1 result1, sW, chA || chR )
+
+                        _ ->
+                            ( Mono.mFunction anno args1 result1, sR, chA || chR )
+
+                Mono.MList _ inner ->
+                    let
+                        ( inner1, s1, ch ) =
+                            succType inner sIn
+                    in
+                    ( Mono.mList inner1, s1, ch )
+
+                Mono.MTuple _ elems ->
+                    let
+                        ( elems1, s1, ch ) =
+                            List.foldr
+                                (\e ( accL, accS, accCh ) ->
+                                    let
+                                        ( e1, accS1, ch1 ) =
+                                            succType e accS
+                                    in
+                                    ( e1 :: accL, accS1, accCh || ch1 )
+                                )
+                                ( [], sIn, False )
+                                elems
+                    in
+                    ( Mono.mTuple elems1, s1, ch )
+
+                Mono.MRecord _ fields ->
+                    let
+                        ( fields1, s1, ch ) =
+                            Dict.foldl
+                                (\fname ft ( accD, accS, accCh ) ->
+                                    let
+                                        ( ft1, accS1, ch1 ) =
+                                            succType ft accS
+                                    in
+                                    ( Dict.insert fname ft1 accD, accS1, accCh || ch1 )
+                                )
+                                ( Dict.empty, sIn, False )
+                                fields
+                    in
+                    ( Mono.mRecord fields1, s1, ch )
+
+                Mono.MCustom _ vsHome vsName args ->
+                    let
+                        ( args1, s1, ch ) =
+                            List.foldr
+                                (\a ( accL, accS, accCh ) ->
+                                    let
+                                        ( a1, accS1, ch1 ) =
+                                            succType a accS
+                                    in
+                                    ( a1 :: accL, accS1, accCh || ch1 )
+                                )
+                                ( [], sIn, False )
+                                args
+                    in
+                    ( Mono.mCustom vsHome vsName args1, s1, ch )
+
+                _ ->
+                    ( t, sIn, False )
+
+        ( sEnd, changed ) =
+            Tuple.second
+                (Array.foldl
+                    (\entry ( idx, ( sAcc, chAcc ) ) ->
+                        case entry of
+                            Just ( _, monoType ) ->
+                                let
+                                    ( rewritten, sAcc1, ch ) =
+                                        succType monoType sAcc
+                                in
+                                if ch then
+                                    ( idx + 1
+                                    , ( { sAcc1 | registry = Registry.updateRegistryType idx rewritten sAcc1.registry }
+                                      , True
+                                      )
+                                    )
+
+                                else
+                                    ( idx + 1, ( sAcc1, chAcc ) )
+
+                            Nothing ->
+                                ( idx + 1, ( sAcc, chAcc ) )
+                    )
+                    ( 0, ( s, False ) )
+                    s.registry.reverseMapping
+                )
+    in
+    if changed && fuel > 1 then
+        varSuccRounds (fuel - 1) (Engine.bumpArgFlowCensus "varsucc|rounds" sEnd)
+
+    else
+        Engine.bumpArgFlowCensus "varsucc|rounds" sEnd
 
 
 {-| The LSS census (design §8.6): member counts, set-size histogram, widening
@@ -827,13 +1373,19 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         --
         -- Report-gated AND flag-gated (rides `lss.arrowCensus`): probe-scale
         -- output is a dozen rows, self-compile scale is tens of thousands.
+        -- §12 var dig: member-id → key string (`g|…`/`p|…|k`/`l|…`), so k1
+        -- rows can NAME their singleton — the within-vs-beyond-arity split
+        -- of the successor-injection candidates is decidable offline.
+        memberKeyOf =
+            Dict.foldl (\k mid acc -> Dict.insert mid k acc) Dict.empty sFinal.lssMemberTable.byKey
+
         posWalk path monoType acc =
             case monoType of
                 Mono.MFunction _ anno args result ->
                     let
                         acc1 =
                             case anno of
-                                Mono.LSet [ _ ] ->
+                                Mono.LSet [ m ] ->
                                     -- L4 P0 instrument
                                     -- (plans/lss-coverage-four-levers.md
                                     -- §1.4): covered positions emit too,
@@ -841,7 +1393,19 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                                     -- (global, path) LSet in one spec,
                                     -- LVar in another — is computable
                                     -- post-hoc from one census log.
-                                    ( path, "k1" ) :: acc
+                                    ( path
+                                      -- member key `|`s become `;` so the
+                                      -- row stays 5 `|`-fields.
+                                    , "k1:"
+                                        ++ (case Dict.get m memberKeyOf of
+                                                Just mk ->
+                                                    String.replace "|" ";" mk
+
+                                                Nothing ->
+                                                    "m" ++ String.fromInt m
+                                           )
+                                    )
+                                        :: acc
 
                                 Mono.LSet _ ->
                                     ( path, "kN" ) :: acc
@@ -924,7 +1488,13 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                                             kind
                                 in
                                 ( idx + 1
-                                , List.map (\( pth, kind ) -> "pos|" ++ gname ++ "|" ++ pth ++ "|" ++ qualify kind)
+                                  -- 5th field = registry spec index on EVERY
+                                  -- row (var rows already embed it via
+                                  -- `qualify`): per-INSTANCE parent/child
+                                  -- pairing — "is the head KNOWN in the same
+                                  -- spec whose /r is var?" — is decidable
+                                  -- from one census log (§12 var dig).
+                                , List.map (\( pth, kind ) -> "pos|" ++ gname ++ "|" ++ pth ++ "|" ++ qualify kind ++ "|" ++ String.fromInt idx)
                                     (posWalk "" monoType [])
                                     ++ acc
                                 )
@@ -938,6 +1508,528 @@ renderLssReport sFinal (Mono.MonoGraph g) =
 
         posLine =
             String.join "\n" (List.sort posRows)
+
+        -- §4 P0 (plans/lss-var-chain-roots.md): varfix counters, measured
+        -- BEFORE any mechanism is built. Deliberately independent of any
+        -- future write path — a census must not share a classifier with its
+        -- mechanism (the Aug-26 audit-census rule).
+        varfixComparableGlobals =
+            HashMap.foldl
+                (\vfG _ acc -> Dict.insert (TOpt.toComparableGlobal vfG) vfG acc)
+                Dict.empty
+                sFinal.env.toptNodes
+
+        -- Just (global, suppliedCount) for pap-able members (p|/g|/c|);
+        -- Nothing for l|/k|/a|/unresolved — no successor semantics.
+        varfixPapable mid =
+            case Dict.get mid memberKeyOf of
+                Nothing ->
+                    Nothing
+
+                Just mkey ->
+                    case String.split "|" mkey of
+                        "p" :: gstr :: dstr :: _ ->
+                            Maybe.map2 Tuple.pair
+                                (Dict.get gstr varfixComparableGlobals)
+                                (String.toInt dstr)
+
+                        "g" :: gstr :: _ ->
+                            Maybe.map (\vfG -> ( vfG, 0 )) (Dict.get gstr varfixComparableGlobals)
+
+                        "c" :: gstr :: _ ->
+                            Maybe.map (\vfG -> ( vfG, 0 )) (Dict.get gstr varfixComparableGlobals)
+
+                        _ ->
+                            Nothing
+
+        -- M-A candidate walk: every arrow position holding a SET whose
+        -- result-arrow slot is flex. Classify: 0 = all members pap-able and
+        -- STRICTLY within declared arity (the sound successor write), 1 =
+        -- all pap-able but some at/past arity (body-owned result, LSS_013),
+        -- 2 = some member without successor semantics.
+        varfixWalk rowG t acc =
+            case t of
+                Mono.MFunction _ anno args result ->
+                    let
+                        accCand =
+                            case ( anno, result ) of
+                                ( Mono.LSet ms, Mono.MFunction _ (Mono.LVar _) _ _ ) ->
+                                    let
+                                        j =
+                                            List.length args
+
+                                        verdict m =
+                                            case varfixPapable m of
+                                                Nothing ->
+                                                    2
+
+                                                Just ( vfG, d ) ->
+                                                    if d + j < LssInfer.declaredArityOf vfG 8 sFinal then
+                                                        0
+
+                                                    else
+                                                        1
+
+                                        worst =
+                                            List.foldl (\m w -> max w (verdict m)) 0 ms
+                                    in
+                                    if worst == 0 then
+                                        if List.length ms == 1 then
+                                            { acc
+                                                | would1 = acc.would1 + 1
+                                                , byG = Dict.update rowG (\c -> Just (1 + Maybe.withDefault 0 c)) acc.byG
+                                            }
+
+                                        else
+                                            { acc
+                                                | wouldN = acc.wouldN + 1
+                                                , byG = Dict.update rowG (\c -> Just (1 + Maybe.withDefault 0 c)) acc.byG
+                                            }
+
+                                    else if worst == 1 then
+                                        { acc | beyond = acc.beyond + 1 }
+
+                                    else
+                                        { acc | noSucc = acc.noSucc + 1 }
+
+                                _ ->
+                                    acc
+                    in
+                    varfixWalk rowG result (List.foldl (varfixWalk rowG) accCand args)
+
+                Mono.MList _ inner ->
+                    varfixWalk rowG inner acc
+
+                Mono.MTuple _ elems ->
+                    List.foldl (varfixWalk rowG) acc elems
+
+                Mono.MRecord _ fields ->
+                    Dict.foldl (\_ ft a -> varfixWalk rowG ft a) acc fields
+
+                Mono.MCustom _ _ _ args ->
+                    List.foldl (varfixWalk rowG) acc args
+
+                _ ->
+                    acc
+
+        -- AR-V1 hazard: replicate SHIPPED settleCtorRows behaviour (union
+        -- via enrichAnnotations, ⊤-gated rows) and count LVar→LSet flips it
+        -- would perform TODAY without a completeness gate.
+        varfixIsCtor rowKey =
+            case rowKey of
+                Mono.Global vfHome vfName ->
+                    case HashMap.get TOpt.globalHash (==) (TOpt.Global vfHome vfName) sFinal.env.toptNodes of
+                        Just (TOpt.Ctor _ _ _) ->
+                            True
+
+                        Just (TOpt.Box _) ->
+                            True
+
+                        _ ->
+                            False
+
+                _ ->
+                    False
+
+        varfixGname rowKey =
+            case rowKey of
+                Mono.Global _ vfName ->
+                    vfName
+
+                _ ->
+                    "?"
+
+        varfixCtorUnions =
+            Array.foldl
+                (\entry acc ->
+                    case entry of
+                        Just ( rowKey, mt ) ->
+                            if varfixIsCtor rowKey then
+                                Dict.update (varfixGname rowKey)
+                                    (\v ->
+                                        Just
+                                            (case v of
+                                                Just u ->
+                                                    Mono.enrichAnnotations u mt
+
+                                                Nothing ->
+                                                    mt
+                                            )
+                                    )
+                                    acc
+
+                            else
+                                acc
+
+                        Nothing ->
+                            acc
+                )
+                Dict.empty
+                g.registry.reverseMapping
+
+        varfixCountFlips ta tb =
+            case ( ta, tb ) of
+                ( Mono.MFunction _ annoA argsA resA, Mono.MFunction _ annoB argsB resB ) ->
+                    (case ( annoA, annoB ) of
+                        ( Mono.LVar _, Mono.LSet _ ) ->
+                            1
+
+                        _ ->
+                            0
+                    )
+                        + varfixCountFlips resA resB
+                        + List.sum (List.map2 varfixCountFlips argsA argsB)
+
+                ( Mono.MList _ xa, Mono.MList _ xb ) ->
+                    varfixCountFlips xa xb
+
+                ( Mono.MTuple _ xsa, Mono.MTuple _ xsb ) ->
+                    List.sum (List.map2 varfixCountFlips xsa xsb)
+
+                ( Mono.MRecord _ fa, Mono.MRecord _ fb ) ->
+                    Dict.foldl
+                        (\fk fta n ->
+                            n
+                                + (case Dict.get fk fb of
+                                    Just ftb ->
+                                        varfixCountFlips fta ftb
+
+                                    Nothing ->
+                                        0
+                                  )
+                        )
+                        0
+                        fa
+
+                ( Mono.MCustom _ _ _ xsa, Mono.MCustom _ _ _ xsb ) ->
+                    List.sum (List.map2 varfixCountFlips xsa xsb)
+
+                _ ->
+                    0
+
+        varfixLine =
+            let
+                mA =
+                    Array.foldl
+                        (\entry acc ->
+                            case entry of
+                                Just ( rowKey, mt ) ->
+                                    varfixWalk (varfixGname rowKey) mt acc
+
+                                Nothing ->
+                                    acc
+                        )
+                        { would1 = 0, wouldN = 0, beyond = 0, noSucc = 0, byG = Dict.empty }
+                        g.registry.reverseMapping
+
+                flips =
+                    Array.foldl
+                        (\entry n ->
+                            case entry of
+                                Just ( rowKey, mt ) ->
+                                    if varfixIsCtor rowKey && Mono.hasTopAnno mt then
+                                        case Dict.get (varfixGname rowKey) varfixCtorUnions of
+                                            Just u ->
+                                                n + varfixCountFlips mt (Mono.enrichAnnotations mt u)
+
+                                            Nothing ->
+                                                n
+
+                                    else
+                                        n
+
+                                Nothing ->
+                                    n
+                        )
+                        0
+                        g.registry.reverseMapping
+
+                topG =
+                    Dict.toList mA.byG
+                        |> List.sortBy (\( _, n ) -> negate n)
+                        |> List.take 10
+                        |> List.map (\( gn, n ) -> gn ++ "=" ++ String.fromInt n)
+                        |> String.join " "
+            in
+            "varfix: mA|would1="
+                ++ String.fromInt mA.would1
+                ++ " mA|wouldN="
+                ++ String.fromInt mA.wouldN
+                ++ " mA|beyond="
+                ++ String.fromInt mA.beyond
+                ++ " mA|noSucc="
+                ++ String.fromInt mA.noSucc
+                ++ " hazard|fixBvarflip="
+                ++ String.fromInt flips
+                ++ "\nvarfixg: "
+                ++ topG
+
+        -- ===== Phase 3 P0 (plans/lss-var-chain-roots.md §3, task #63) =====
+        -- M-row result-side enrichment: for every var position whose NEAREST
+        -- enclosing set-headed arrow has all-g|/c| members, could the union
+        -- over the member globals' registry rows supply a set at the aligned
+        -- sub-path? Result-side descent ONLY: an /aN hop CLEARS the context
+        -- (consumer-fed positions carry the AR-V6 escape hazard); a fresh
+        -- head inside an arg opens its own context. STRICT completeness:
+        -- any ⊤ OR any var contribution at the cell contaminates (function
+        -- results have no pass-through mark, unlike ctor rows' flex mark).
+        vf3RowsByG =
+            Array.foldl
+                (\entry acc ->
+                    case entry of
+                        Just ( Mono.Global vHome vName, mt ) ->
+                            Dict.update (TOpt.toComparableGlobal (TOpt.Global vHome vName))
+                                (\v -> Just (mt :: Maybe.withDefault [] v))
+                                acc
+
+                        _ ->
+                            acc
+                )
+                Dict.empty
+                g.registry.reverseMapping
+
+        vf3EmptyCell =
+            { top = False, var = False, sets = Nothing }
+
+        vf3CellWalk path t acc =
+            case t of
+                Mono.MFunction _ anno args result ->
+                    let
+                        acc1 =
+                            Dict.update path
+                                (\v ->
+                                    let
+                                        c =
+                                            Maybe.withDefault vf3EmptyCell v
+                                    in
+                                    Just
+                                        (case anno of
+                                            Mono.LTop _ ->
+                                                { c | top = True }
+
+                                            Mono.LVar _ ->
+                                                { c | var = True }
+
+                                            Mono.LSet ms ->
+                                                { c | sets = Just (Mono.unionSortedInts ms (Maybe.withDefault [] c.sets)) }
+                                        )
+                                )
+                                acc
+
+                        accR =
+                            vf3CellWalk (path ++ "/r") result acc1
+                    in
+                    List.foldl (\( i, a ) aa -> vf3CellWalk (path ++ "/a" ++ String.fromInt i) a aa)
+                        accR
+                        (List.indexedMap Tuple.pair args)
+
+                Mono.MList _ inner ->
+                    vf3CellWalk (path ++ "/l") inner acc
+
+                Mono.MTuple _ elems ->
+                    List.foldl (\( i, e ) aa -> vf3CellWalk (path ++ "/t" ++ String.fromInt i) e aa)
+                        acc
+                        (List.indexedMap Tuple.pair elems)
+
+                Mono.MRecord _ fields ->
+                    Dict.foldl (\fn ft aa -> vf3CellWalk (path ++ "/f:" ++ fn) ft aa) acc fields
+
+                Mono.MCustom _ _ _ args ->
+                    List.foldl (\( i, a ) aa -> vf3CellWalk (path ++ "/c" ++ String.fromInt i) a aa)
+                        acc
+                        (List.indexedMap Tuple.pair args)
+
+                _ ->
+                    acc
+
+        vf3MergeCell ca cb =
+            { top = ca.top || cb.top
+            , var = ca.var || cb.var
+            , sets =
+                case ( ca.sets, cb.sets ) of
+                    ( Just xs, Just ys ) ->
+                        Just (Mono.unionSortedInts xs ys)
+
+                    ( Just xs, Nothing ) ->
+                        Just xs
+
+                    ( Nothing, s ) ->
+                        s
+            }
+
+        vf3CellmapFor gstr cache =
+            case Dict.get gstr cache of
+                Just cached ->
+                    ( cached, cache )
+
+                Nothing ->
+                    let
+                        built =
+                            Maybe.map (List.foldl (vf3CellWalk "") Dict.empty)
+                                (Dict.get gstr vf3RowsByG)
+                    in
+                    ( built, Dict.insert gstr built cache )
+
+        vf3HeadCtx ms cache0 =
+            List.foldl
+                (\m ( res, c ) ->
+                    case res of
+                        Err e ->
+                            ( Err e, c )
+
+                        Ok acc ->
+                            case Dict.get m memberKeyOf of
+                                Nothing ->
+                                    ( Err "otherHead", c )
+
+                                Just mkey ->
+                                    case String.split "|" mkey of
+                                        "g" :: gstr :: _ ->
+                                            vf3AddMap gstr acc c
+
+                                        "c" :: gstr :: _ ->
+                                            vf3AddMap gstr acc c
+
+                                        "p" :: _ ->
+                                            ( Err "papHead", c )
+
+                                        _ ->
+                                            ( Err "otherHead", c )
+                )
+                ( Ok Dict.empty, cache0 )
+                ms
+
+        vf3AddMap gstr acc cache0 =
+            case vf3CellmapFor gstr cache0 of
+                ( Nothing, c1 ) ->
+                    ( Err "headNoRows", c1 )
+
+                ( Just cm, c1 ) ->
+                    ( Ok (Dict.foldl (\k cell a -> Dict.update k (\v -> Just (vf3MergeCell (Maybe.withDefault vf3EmptyCell v) cell)) a) acc cm), c1 )
+
+        vf3Bump cls tally =
+            { tally | cls = Dict.update cls (\v -> Just (1 + Maybe.withDefault 0 v)) tally.cls }
+
+        vf3Scan rowG t ctx ( tally, cache ) =
+            case t of
+                Mono.MFunction _ anno args result ->
+                    let
+                        tally1 =
+                            case anno of
+                                Mono.LVar _ ->
+                                    case ctx of
+                                        Nothing ->
+                                            vf3Bump "noHead" tally
+
+                                        Just ( Err cls, _ ) ->
+                                            vf3Bump cls tally
+
+                                        Just ( Ok cm, rp ) ->
+                                            case Dict.get rp cm of
+                                                Nothing ->
+                                                    vf3Bump "shapeMiss" tally
+
+                                                Just cell ->
+                                                    if cell.top then
+                                                        vf3Bump "contamTop" tally
+
+                                                    else if cell.var then
+                                                        vf3Bump "contamVar" tally
+
+                                                    else
+                                                        case cell.sets of
+                                                            Just _ ->
+                                                                let
+                                                                    t2 =
+                                                                        vf3Bump "would" tally
+                                                                in
+                                                                { t2 | byG = Dict.update rowG (\v -> Just (1 + Maybe.withDefault 0 v)) t2.byG }
+
+                                                            Nothing ->
+                                                                vf3Bump "noInfo" tally
+
+                                _ ->
+                                    tally
+
+                        ( resultCtx, cache1 ) =
+                            case anno of
+                                Mono.LSet ms ->
+                                    let
+                                        ( r, c ) =
+                                            vf3HeadCtx ms cache
+                                    in
+                                    ( Just ( r, "/r" ), c )
+
+                                _ ->
+                                    ( Maybe.map (\( r, p ) -> ( r, p ++ "/r" )) ctx, cache )
+
+                        acc2 =
+                            vf3Scan rowG result resultCtx ( tally1, cache1 )
+                    in
+                    List.foldl (\a aa -> vf3Scan rowG a Nothing aa) acc2 args
+
+                Mono.MList _ inner ->
+                    vf3Scan rowG inner (Maybe.map (\( r, p ) -> ( r, p ++ "/l" )) ctx) ( tally, cache )
+
+                Mono.MTuple _ elems ->
+                    List.foldl
+                        (\( i, e ) aa -> vf3Scan rowG e (Maybe.map (\( r, p ) -> ( r, p ++ "/t" ++ String.fromInt i )) ctx) aa)
+                        ( tally, cache )
+                        (List.indexedMap Tuple.pair elems)
+
+                Mono.MRecord _ fields ->
+                    Dict.foldl
+                        (\fn ft aa -> vf3Scan rowG ft (Maybe.map (\( r, p ) -> ( r, p ++ "/f:" ++ fn )) ctx) aa)
+                        ( tally, cache )
+                        fields
+
+                Mono.MCustom _ _ _ args ->
+                    List.foldl
+                        (\( i, a ) aa -> vf3Scan rowG a (Maybe.map (\( r, p ) -> ( r, p ++ "/c" ++ String.fromInt i )) ctx) aa)
+                        ( tally, cache )
+                        (List.indexedMap Tuple.pair args)
+
+                _ ->
+                    ( tally, cache )
+
+        varfix3Line =
+            let
+                ( vf3T, _ ) =
+                    Array.foldl
+                        (\entry acc ->
+                            case entry of
+                                Just ( rowKey, mt ) ->
+                                    vf3Scan
+                                        (case rowKey of
+                                            Mono.Global _ vf3n ->
+                                                vf3n
+
+                                            _ ->
+                                                "?"
+                                        )
+                                        mt
+                                        Nothing
+                                        acc
+
+                                Nothing ->
+                                    acc
+                        )
+                        ( { cls = Dict.empty, byG = Dict.empty }, Dict.empty )
+                        g.registry.reverseMapping
+
+                clsLine =
+                    Dict.toList vf3T.cls
+                        |> List.map (\( k, n ) -> k ++ "=" ++ String.fromInt n)
+                        |> String.join " "
+
+                gLine =
+                    Dict.toList vf3T.byG
+                        |> List.sortBy (\( _, n ) -> negate n)
+                        |> List.take 12
+                        |> List.map (\( gn, n ) -> gn ++ "=" ++ String.fromInt n)
+                        |> String.join " "
+            in
+            "varfix3: " ++ clsLine ++ "\nvarfix3g: " ++ gLine
 
         -- ⊤ SITE SPLIT (plans/lss-provenance-join-and-demand-sigs.md §4.6):
         -- with rsTop healing the recoverable placeholder class at licensed
@@ -1378,7 +2470,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
             -- zero row reads as "measured, found nothing" rather than "never
             -- executed" — the `qCensus` misreading, one flag along.
             ++ (if sFinal.env.lss.arrowCensus then
-                    [ stampWalkLine, livenessLine, topSiteLine, topKindLine, destrBendLine, posLine ]
+                    [ stampWalkLine, livenessLine, topSiteLine, topKindLine, destrBendLine, varfixLine, varfix3Line, posLine ]
 
                 else
                     []

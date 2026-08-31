@@ -3273,7 +3273,25 @@ translateGlobalCallSlow region funcRegion global funcCanType args callCanType s0
                                                                     Err e ->
                                                                         Err e
 
-                                                                    Ok ( specId, s7 ) ->
+                                                                    Ok ( specId, s7pre ) ->
+                                                                        let
+                                                                            -- Phase 2b flex-construction mark
+                                                                            -- (plans/lss-var-chain-roots.md §3): a ctor
+                                                                            -- construction transporting an UNRESOLVED
+                                                                            -- flex arrow may hide a real inhabitant
+                                                                            -- behind this spec's var payload row.
+                                                                            s7 =
+                                                                                if
+                                                                                    s7pre.env.lss.enabled
+                                                                                        && not (List.isEmpty monoArgs)
+                                                                                        && List.any (Mono.hasVarAnno << Mono.typeOf) monoArgs
+                                                                                        && isCtorNode global s7pre
+                                                                                then
+                                                                                    Engine.markFlexCtorSpec specId s7pre
+
+                                                                                else
+                                                                                    s7pre
+                                                                        in
                                                                         Ok
                                                                             ( Mono.MonoCall region
                                                                                 (Mono.MonoVarGlobal funcRegion specId funcMonoType)

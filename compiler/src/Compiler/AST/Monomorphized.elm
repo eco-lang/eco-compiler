@@ -10,7 +10,7 @@ module Compiler.AST.Monomorphized exposing
     , LambdaSetAnno(..), widenSets, eqModuloTopLabel, eqLayout, shallowLayoutKey, headAnno, unionAnno, singletonHeadMember, joinAnnotations, joinAnnotationsChanged, overlayAnnotations
     , tkPoison, tkConflict, tkWiden, tkEdge, tkAbi, tkDeclZonk, tkDeclStoreC, tkDeclStoreS, tkDeclOther, tkSynth, tkLegacy, isTopAnno
     , tkClassCase, tkClassIf, tkClassLocal, tkClassLit, tkClassParam, tkClassDestr, tkClassLambda, tkClassCall, tkClassLet, tkClassMisc
-    , enrichAnnotations, hasTopAnno
+    , enrichAnnotations, enrichAnnotationsTopOnly, hasTopAnno, hasVarAnno, unionSortedInts
     , topPoison, topConflict, topWiden, topEdge, topAbi, topDeclZonk, topDeclStoreC, topDeclStoreS, topDeclOther, topSynth, topLegacy, topOfKind, topKindLabel
     , topClassCase, topClassIf, topClassLocal, topClassLit, topClassParam, topClassDestr, topClassLambda, topClassCall, topClassLet, topClassMisc
     , typeNodesWithin, collectAnnoMembers
@@ -1481,37 +1481,63 @@ the merge only ever adds knowledge. Structure comes from the first argument
 unchanged.
 -}
 enrichAnnotations : MonoType -> MonoType -> MonoType
-enrichAnnotations structural annoSource =
+enrichAnnotations =
+    enrichAnnotationsWith enrichAnno
+
+
+{-| `enrichAnnotations` restricted to ⊤-position gains: an `LVar` base
+NEVER flips to a set. This is the AR-V1 retrofit
+(plans/lss-var-chain-roots.md §6): the ⊤-heal's union silently drops ⊤
+contributors (`enrichAnno (LSet, LTop) → LSet`), which is fine for
+widening-only ⊤ recovery but is the false-set miscompile class if it
+writes a NEVER-WRITTEN (var) slot. Var writes go exclusively through the
+completeness-gated settle pass (`lss.varCtorRows`).
+-}
+enrichAnnotationsTopOnly : MonoType -> MonoType -> MonoType
+enrichAnnotationsTopOnly =
+    enrichAnnotationsWith
+        (\a b ->
+            case a of
+                LVar _ ->
+                    a
+
+                _ ->
+                    enrichAnno a b
+        )
+
+
+enrichAnnotationsWith : (LambdaSetAnno -> LambdaSetAnno -> LambdaSetAnno) -> MonoType -> MonoType -> MonoType
+enrichAnnotationsWith merge structural annoSource =
     case ( structural, annoSource ) of
         ( MFunction _ annoA argsA retA, MFunction _ annoB argsB retB ) ->
             if List.length argsA == List.length argsB then
-                mFunction (enrichAnno annoA annoB)
-                    (List.map2 enrichAnnotations argsA argsB)
-                    (enrichAnnotations retA retB)
+                mFunction (merge annoA annoB)
+                    (List.map2 (enrichAnnotationsWith merge) argsA argsB)
+                    (enrichAnnotationsWith merge retA retB)
 
             else
                 structural
 
         ( MList _ xa, MList _ xb ) ->
-            mList (enrichAnnotations xa xb)
+            mList (enrichAnnotationsWith merge xa xb)
 
         ( MTuple _ xsa, MTuple _ xsb ) ->
             if List.length xsa == List.length xsb then
-                mTuple (List.map2 enrichAnnotations xsa xsb)
+                mTuple (List.map2 (enrichAnnotationsWith merge) xsa xsb)
 
             else
                 structural
 
         ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
             if Dict.keys fieldsA == Dict.keys fieldsB then
-                mRecord (Dict.map (\k ta -> enrichAnnotations ta (Maybe.withDefault ta (Dict.get k fieldsB))) fieldsA)
+                mRecord (Dict.map (\k ta -> enrichAnnotationsWith merge ta (Maybe.withDefault ta (Dict.get k fieldsB))) fieldsA)
 
             else
                 structural
 
         ( MCustom _ homeA nameA argsA, MCustom _ homeB nameB argsB ) ->
             if homeA == homeB && nameA == nameB && List.length argsA == List.length argsB then
-                mCustom homeA nameA (List.map2 enrichAnnotations argsA argsB)
+                mCustom homeA nameA (List.map2 (enrichAnnotationsWith merge) argsA argsB)
 
             else
                 structural
@@ -1534,6 +1560,41 @@ enrichAnno a b =
 
         _ ->
             a
+
+
+{-| Does any arrow in the type carry an UNRESOLVED set variable? Used by
+the Phase-2b flex-construction mark (plans/lss-var-chain-roots.md §3): a
+ctor construction transporting a flex arrow may hide a real inhabitant
+behind a var row, so its spec's var cells must not be settle-written.
+-}
+hasVarAnno : MonoType -> Bool
+hasVarAnno monoType =
+    case monoType of
+        MFunction _ anno args result ->
+            (case anno of
+                LVar _ ->
+                    True
+
+                _ ->
+                    False
+            )
+                || hasVarAnno result
+                || List.any hasVarAnno args
+
+        MList _ inner ->
+            hasVarAnno inner
+
+        MTuple _ elems ->
+            List.any hasVarAnno elems
+
+        MRecord _ fields ->
+            Dict.foldl (\_ t a -> a || hasVarAnno t) False fields
+
+        MCustom _ _ _ args ->
+            List.any hasVarAnno args
+
+        _ ->
+            False
 
 
 {-| Does any arrow in the type carry ⊤? Zero-allocation guard for the
