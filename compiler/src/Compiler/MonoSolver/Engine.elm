@@ -12,7 +12,7 @@ module Compiler.MonoSolver.Engine exposing
     , lookupSchemeMono, putSchemeMono
     , lookupCallMemo, putCallMemo
     , consS
-    , mvarIdKey, pointKey, isScalarVar
+    , mvarIdKey, pointKey, isScalarVar, specIdsForGlobal
     , memberIdFor, standaloneMemberIdFor, standaloneMemberGlobal, kernelMemberIdFor, standaloneMemberKernel, srcLambdaKey, trivialSignature, emptyLssStats
     , lambdaInstanceMemberId, lambdaInstanceMemberMaybe
     , GroundingStats, internMemberKey, groundStandaloneMemberIdFor, groundSetMembers, recordSpecWidenedKey, layoutQualKey
@@ -72,6 +72,35 @@ import System.TypeCheck.IO as IO
 -}
 type WorkItem
     = SpecializeGlobal Mono.SpecId
+
+
+{-| Per-global spec tally: count for the M4 budget (O(1) read on the enqueue
+hot path) and the created spec ids for the `lss.destrAnno` ctor-demand-union
+read (plans/lss-ctor-arrow-identity.md §9.6). Ids are prepended, newest
+first.
+-}
+type alias SpecTally =
+    { count : Int
+    , ids : List Int
+    }
+
+
+emptySpecTally : SpecTally
+emptySpecTally =
+    { count = 0, ids = [] }
+
+
+{-| The created-spec ids for a global (comparable key), newest first. Empty
+when unkeyed (the tally is maintained only under `lss.keyed`).
+-}
+specIdsForGlobal : String -> S -> List Int
+specIdsForGlobal gkey s =
+    case CoreDict.get gkey s.specCountByGlobal of
+        Just tally ->
+            tally.ids
+
+        Nothing ->
+            []
 
 
 {-| One annotation arrow's LSS facts (design §7.1):
@@ -1196,7 +1225,7 @@ type alias S =
     , scheduled : BitSet
     , dirtySpecs : BitSet -- LSS_010: specs whose stored type was annotation-JOINED after scheduling; re-translated at drain-end flush rounds (flag-off: never set)
     , dirtyList : List Mono.SpecId -- enumeration twin of dirtySpecs (BitSet has no iteration); duplicate-free via the bit check; consumed by the drain-end flush
-    , specCountByGlobal : CoreDict.Dict String Int -- M4 keyed budget: specs created per global (only maintained under lss.keyed; consulted by underBudget)
+    , specCountByGlobal : CoreDict.Dict String SpecTally -- M4 keyed budget: specs created per global (only maintained under lss.keyed; consulted by underBudget). §9.6: the tally also carries the CREATED spec ids so the destructor-side ctor-demand-union read (lss.destrAnno Fix B) is O(specs-of-this-global), not O(registry)
     , registry : Mono.SpecializationRegistry
     , ports : List Mono.PortRegistration
     , lambdaCounter : Int
@@ -2163,8 +2192,11 @@ enqueueSpecKeyed global monoType s0 =
         gkey =
             Mono.toComparableGlobal global
 
+        tally =
+            Maybe.withDefault emptySpecTally (CoreDict.get gkey s0.specCountByGlobal)
+
         count =
-            Maybe.withDefault 0 (CoreDict.get gkey s0.specCountByGlobal)
+            tally.count
 
         -- 0 (or negative) = UNLIMITED (2026-08-29): the budget is fan-out
         -- POLICY since LSS_018 μ-tie, and the no-limits default expresses
@@ -2216,7 +2248,7 @@ enqueueSpecKeyed global monoType s0 =
                 | registry = reg1
                 , specCountByGlobal =
                     if created then
-                        CoreDict.insert gkey (count + 1) s.specCountByGlobal
+                        CoreDict.insert gkey { count = count + 1, ids = specId :: tally.ids } s.specCountByGlobal
 
                     else
                         s.specCountByGlobal

@@ -248,6 +248,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\rtVal -> applyLssRsTopOverride rtVal cfg4el)
             )
         |> Task.andThen
+            (\cfg4en ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_DESTR_ANNO" |> Task.mapError never)
+                    |> Task.map (\daVal -> applyLssDestrAnnoOverride daVal cfg4en)
+            )
+        |> Task.andThen
             (\cfg4f ->
                 (Utils.envLookupEnv "ECO_SPEC_TYPE_NODE_LIMIT" |> Task.mapError never)
                     |> Task.map (\tnVal -> applySpecTypeNodeLimitOverride tnVal cfg4f)
@@ -2045,6 +2050,29 @@ applyLssInjTotalOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | injTotal = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_DESTR_ANNO=1|true|yes / 0|false|no`
+(plans/lss-ctor-arrow-identity.md §9.5): destructor-bound types take the
+projection's annotations (Fix A) and ctor registry entries recover from the
+sibling-spec demand union at settle (Fix B). DEFAULT-ON since 2026-08-31
+(top −32 %, Eerr/Cerr healed, all gates green). Hash token `lssDA=`.
+-}
+applyLssDestrAnnoOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssDestrAnnoOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | destrAnno = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | destrAnno = False }) cfg
 
             else
                 cfg

@@ -10,6 +10,7 @@ module Compiler.MonoSolver.LssInfer exposing
     , papMemberKey
     , canTypeMentionsArrow
     , canTypeIsArrow
+    , canTypeArrowDepth
     , kernelAliasOf
     , spineDepthForGlobal
     , declaredArityOf
@@ -3423,6 +3424,25 @@ poisonBoth onPoison a b s0 =
 
                 Ok ( _, s2 ) ->
                     Ok ( (), onPoison s2 )
+
+
+{-| P0 sizing instrument (plans/lss-ctor-arrow-identity.md §8.1): how many
+LEADING arrows does this type have? `a -> (Int -> b)` is 2. Compared against
+the depth an injection actually covers, this decides whether a deeper
+nameable position EXISTS at an argument — the `/a0/r`-class the census says
+holds the mass.
+-}
+canTypeArrowDepth : Can.Type TypeIds.MVarId -> Int
+canTypeArrowDepth t =
+    case t of
+        Can.TLambda _ _ res ->
+            1 + canTypeArrowDepth res
+
+        Can.TAlias _ _ _ (Can.Filled real) ->
+            canTypeArrowDepth real
+
+        _ ->
+            0
 
 
 canTypeIsArrow : Can.Type TypeIds.MVarId -> Bool

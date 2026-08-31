@@ -2827,7 +2827,7 @@ zonkFlatC superTable revMemo flat c0 =
                             Err e
 
                         Ok ( mb, c2 ) ->
-                            Ok (consC (Mono.mFunction Mono.topDecl [ ma ] mb) c2)
+                            Ok (consC (Mono.mFunction Mono.topDeclStoreC [ ma ] mb) c2)
 
         IO.FunL a b setVar ->
             case zonkToMonoC superTable revMemo a c0 of
@@ -3553,13 +3553,13 @@ MonoType), and cannot affect the Number-taint harvest (a classify-only var never
 unifies, so it can only ever carry its static super, which `superTable` already
 holds from `initState`).
 -}
-classifyDirect : Can.Type TypeIds.MVarId -> Step Mono.MonoType
-classifyDirect canType s =
-    classifyGo s Dict.empty canType
+classifyDirect : Int -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
+classifyDirect topKind canType s =
+    classifyGo topKind s Dict.empty canType
 
 
-classifyGo : Engine.S -> Dict.Dict Int Mono.MonoType -> Can.Type TypeIds.MVarId -> Result Failure ( Mono.MonoType, Engine.S )
-classifyGo s aliasSubst canType =
+classifyGo : Int -> Engine.S -> Dict.Dict Int Mono.MonoType -> Can.Type TypeIds.MVarId -> Result Failure ( Mono.MonoType, Engine.S )
+classifyGo topKind s aliasSubst canType =
     case canType of
         Can.TVar mvarId ->
             let
@@ -3594,12 +3594,12 @@ classifyGo s aliasSubst canType =
                                     Ok ( residual, s )
 
         Can.TLambda _ from to ->
-            case classifyGo s aliasSubst from of
+            case classifyGo topKind s aliasSubst from of
                 Err e ->
                     Err e
 
                 Ok ( mFrom, s1 ) ->
-                    case classifyGo s1 aliasSubst to of
+                    case classifyGo topKind s1 aliasSubst to of
                         Err e ->
                             Err e
 
@@ -3608,10 +3608,10 @@ classifyGo s aliasSubst canType =
                             -- (GlobalOpt flattens later per GOPT_016). Storeless
                             -- classification stamps LTop (sound-but-imprecise;
                             -- fast paths gate on signature triviality in M2).
-                            Ok (Engine.consS (Mono.mFunction Mono.topDecl [ mFrom ] mTo) s2)
+                            Ok (Engine.consS (Mono.mFunction (Mono.topOfKind topKind) [ mFrom ] mTo) s2)
 
         Can.TType canonical name args ->
-            case classifyList s aliasSubst args of
+            case classifyList topKind s aliasSubst args of
                 Err e ->
                     Err e
 
@@ -3619,12 +3619,12 @@ classifyGo s aliasSubst canType =
                     Ok (Engine.consS (classifyApp canonical name mArgs) s1)
 
         Can.TRecord fields maybeExtension ->
-            case classifyRecordExt s aliasSubst maybeExtension of
+            case classifyRecordExt topKind s aliasSubst maybeExtension of
                 Err e ->
                     Err e
 
                 Ok ( baseFields, s1 ) ->
-                    case classifyRecordFields s1 aliasSubst (Dict.toList fields) baseFields of
+                    case classifyRecordFields topKind s1 aliasSubst (Dict.toList fields) baseFields of
                         Err e ->
                             Err e
 
@@ -3635,17 +3635,17 @@ classifyGo s aliasSubst canType =
             Ok ( Mono.MUnit, s )
 
         Can.TTuple a b rest ->
-            case classifyGo s aliasSubst a of
+            case classifyGo topKind s aliasSubst a of
                 Err e ->
                     Err e
 
                 Ok ( ma, s1 ) ->
-                    case classifyGo s1 aliasSubst b of
+                    case classifyGo topKind s1 aliasSubst b of
                         Err e ->
                             Err e
 
                         Ok ( mb, s2 ) ->
-                            case classifyList s2 aliasSubst rest of
+                            case classifyList topKind s2 aliasSubst rest of
                                 Err e ->
                                     Err e
 
@@ -3653,33 +3653,33 @@ classifyGo s aliasSubst canType =
                                     Ok (Engine.consS (Mono.mTuple (ma :: mb :: mRest)) s3)
 
         Can.TAlias _ _ _ (Can.Filled inner) ->
-            classifyGo s aliasSubst inner
+            classifyGo topKind s aliasSubst inner
 
         Can.TAlias _ _ args (Can.Holey inner) ->
             -- Alias args are classified in the OUTER scope (mirrors
             -- Zonk.canTypeToMonoWith's Holey arm), then the body under the extended
             -- substitution.
-            case classifyAliasArgs s aliasSubst args aliasSubst of
+            case classifyAliasArgs topKind s aliasSubst args aliasSubst of
                 Err e ->
                     Err e
 
                 Ok ( newSubst, s1 ) ->
-                    classifyGo s1 newSubst inner
+                    classifyGo topKind s1 newSubst inner
 
 
-classifyList : Engine.S -> Dict.Dict Int Mono.MonoType -> List (Can.Type TypeIds.MVarId) -> Result Failure ( List Mono.MonoType, Engine.S )
-classifyList s aliasSubst types =
+classifyList : Int -> Engine.S -> Dict.Dict Int Mono.MonoType -> List (Can.Type TypeIds.MVarId) -> Result Failure ( List Mono.MonoType, Engine.S )
+classifyList topKind s aliasSubst types =
     case types of
         [] ->
             Ok ( [], s )
 
         t :: rest ->
-            case classifyGo s aliasSubst t of
+            case classifyGo topKind s aliasSubst t of
                 Err e ->
                     Err e
 
                 Ok ( m, s1 ) ->
-                    case classifyList s1 aliasSubst rest of
+                    case classifyList topKind s1 aliasSubst rest of
                         Err e ->
                             Err e
 
@@ -3687,29 +3687,29 @@ classifyList s aliasSubst types =
                             Ok ( m :: ms, s2 )
 
 
-classifyAliasArgs : Engine.S -> Dict.Dict Int Mono.MonoType -> List ( TypeIds.MVarId, Can.Type TypeIds.MVarId ) -> Dict.Dict Int Mono.MonoType -> Result Failure ( Dict.Dict Int Mono.MonoType, Engine.S )
-classifyAliasArgs s outerSubst args acc =
+classifyAliasArgs : Int -> Engine.S -> Dict.Dict Int Mono.MonoType -> List ( TypeIds.MVarId, Can.Type TypeIds.MVarId ) -> Dict.Dict Int Mono.MonoType -> Result Failure ( Dict.Dict Int Mono.MonoType, Engine.S )
+classifyAliasArgs topKind s outerSubst args acc =
     case args of
         [] ->
             Ok ( acc, s )
 
         ( paramId, t ) :: rest ->
-            case classifyGo s outerSubst t of
+            case classifyGo topKind s outerSubst t of
                 Err e ->
                     Err e
 
                 Ok ( mt, s1 ) ->
-                    classifyAliasArgs s1 outerSubst rest (Dict.insert (Engine.mvarIdKey paramId) mt acc)
+                    classifyAliasArgs topKind s1 outerSubst rest (Dict.insert (Engine.mvarIdKey paramId) mt acc)
 
 
-classifyRecordExt : Engine.S -> Dict.Dict Int Mono.MonoType -> Maybe TypeIds.MVarId -> Result Failure ( Dict.Dict String Mono.MonoType, Engine.S )
-classifyRecordExt s aliasSubst maybeExtension =
+classifyRecordExt : Int -> Engine.S -> Dict.Dict Int Mono.MonoType -> Maybe TypeIds.MVarId -> Result Failure ( Dict.Dict String Mono.MonoType, Engine.S )
+classifyRecordExt topKind s aliasSubst maybeExtension =
     case maybeExtension of
         Nothing ->
             Ok ( Dict.empty, s )
 
         Just extVar ->
-            case classifyGo s aliasSubst (Can.TVar extVar) of
+            case classifyGo topKind s aliasSubst (Can.TVar extVar) of
                 Err e ->
                     Err e
 
@@ -3724,19 +3724,19 @@ classifyRecordExt s aliasSubst maybeExtension =
                             Ok ( Dict.empty, s1 )
 
 
-classifyRecordFields : Engine.S -> Dict.Dict Int Mono.MonoType -> List ( String, Can.FieldType TypeIds.MVarId ) -> Dict.Dict String Mono.MonoType -> Result Failure ( Dict.Dict String Mono.MonoType, Engine.S )
-classifyRecordFields s aliasSubst fields base =
+classifyRecordFields : Int -> Engine.S -> Dict.Dict Int Mono.MonoType -> List ( String, Can.FieldType TypeIds.MVarId ) -> Dict.Dict String Mono.MonoType -> Result Failure ( Dict.Dict String Mono.MonoType, Engine.S )
+classifyRecordFields topKind s aliasSubst fields base =
     case fields of
         [] ->
             Ok ( base, s )
 
         ( k, Can.FieldType _ t ) :: rest ->
-            case classifyGo s aliasSubst t of
+            case classifyGo topKind s aliasSubst t of
                 Err e ->
                     Err e
 
                 Ok ( mt, s1 ) ->
-                    classifyRecordFields s1 aliasSubst rest (Dict.insert k mt base)
+                    classifyRecordFields topKind s1 aliasSubst rest (Dict.insert k mt base)
 
 
 {-| The residual for a memo-miss var: `MVar id CNumber` if the (static ∪

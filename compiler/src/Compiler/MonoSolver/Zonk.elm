@@ -221,7 +221,7 @@ lambdaChain superVars subst argsAcc to intern0 =
                         ( mArg, i1 ) =
                             canTypeToMonoWithI superVars subst argType i0
                     in
-                    Intern.hashCons (Mono.mFunction Mono.topDecl [ mArg ] acc) i1
+                    Intern.hashCons (Mono.mFunction Mono.topDeclZonk [ mArg ] acc) i1
                 )
                 ( resultType, intern1 )
                 argsAcc

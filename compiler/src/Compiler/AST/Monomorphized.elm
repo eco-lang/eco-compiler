@@ -8,8 +8,11 @@ module Compiler.AST.Monomorphized exposing
     , specMapSize, specMapIsEmpty, specMapFoldl, specMapToList, specMapValues, specMapRemove, specMapSingleton
     , SpecKeyMap, specKeyMapEmpty, specKeyMapGet, specKeyMapInsert, specKeyMapSize, globalHash
     , LambdaSetAnno(..), widenSets, eqModuloTopLabel, eqLayout, shallowLayoutKey, headAnno, unionAnno, singletonHeadMember, joinAnnotations, joinAnnotationsChanged, overlayAnnotations
-    , tkPoison, tkConflict, tkWiden, tkEdge, tkAbi, tkDecl, tkSynth, tkLegacy, isTopAnno
-    , topPoison, topConflict, topWiden, topEdge, topAbi, topDecl, topSynth, topLegacy, topOfKind, topKindLabel
+    , tkPoison, tkConflict, tkWiden, tkEdge, tkAbi, tkDeclZonk, tkDeclStoreC, tkDeclStoreS, tkDeclOther, tkSynth, tkLegacy, isTopAnno
+    , tkClassCase, tkClassIf, tkClassLocal, tkClassLit, tkClassParam, tkClassDestr, tkClassLambda, tkClassCall, tkClassLet, tkClassMisc
+    , enrichAnnotations, hasTopAnno
+    , topPoison, topConflict, topWiden, topEdge, topAbi, topDeclZonk, topDeclStoreC, topDeclStoreS, topDeclOther, topSynth, topLegacy, topOfKind, topKindLabel
+    , topClassCase, topClassIf, topClassLocal, topClassLit, topClassParam, topClassDestr, topClassLambda, topClassCall, topClassLet, topClassMisc
     , typeNodesWithin, collectAnnoMembers
     , AnnoCoverage, emptyAnnoCoverage, annoCoverage
     , joinCollisionCells
@@ -994,19 +997,95 @@ tkAbi =
     4
 
 
-tkDecl : Int
-tkDecl =
+{-| The `decl` family, split by MANUFACTURING SITE (2026-08-30): a
+declaration/classify placeholder is the single largest ⊤ class (58 % of the
+residual), so "where was it stamped" is the question that decides whether
+prevention is feasible. The four sites are structurally different code paths
+and were previously indistinguishable under one code.
+-}
+tkDeclZonk : Int
+tkDeclZonk =
     5
+
+
+tkDeclStoreC : Int
+tkDeclStoreC =
+    6
+
+
+tkDeclStoreS : Int
+tkDeclStoreS =
+    7
+
+
+tkDeclOther : Int
+tkDeclOther =
+    8
 
 
 tkSynth : Int
 tkSynth =
-    6
+    9
 
 
 tkLegacy : Int
 tkLegacy =
-    7
+    10
+
+
+{-| `classify` (Store.classifyGo) is the sole manufacturer of surviving decl
+⊤s (§9), but it is a shared utility with ~23 call sites. These codes attribute
+a stamped ⊤ to its CALLER CLASS, which is what decides whether a store-aware
+alternative exists at that site.
+-}
+tkClassCase : Int
+tkClassCase =
+    11
+
+
+tkClassIf : Int
+tkClassIf =
+    12
+
+
+tkClassLocal : Int
+tkClassLocal =
+    13
+
+
+tkClassLit : Int
+tkClassLit =
+    14
+
+
+tkClassParam : Int
+tkClassParam =
+    15
+
+
+tkClassDestr : Int
+tkClassDestr =
+    16
+
+
+tkClassLambda : Int
+tkClassLambda =
+    17
+
+
+tkClassCall : Int
+tkClassCall =
+    18
+
+
+tkClassLet : Int
+tkClassLet =
+    19
+
+
+tkClassMisc : Int
+tkClassMisc =
+    20
 
 
 {-| Shared ⊤ values, one CAF per kind — construction sites reuse these so a
@@ -1037,19 +1116,84 @@ topAbi =
     LTop 4
 
 
-topDecl : LambdaSetAnno
-topDecl =
+topDeclZonk : LambdaSetAnno
+topDeclZonk =
     LTop 5
+
+
+topDeclStoreC : LambdaSetAnno
+topDeclStoreC =
+    LTop 6
+
+
+topDeclStoreS : LambdaSetAnno
+topDeclStoreS =
+    LTop 7
+
+
+topDeclOther : LambdaSetAnno
+topDeclOther =
+    LTop 8
 
 
 topSynth : LambdaSetAnno
 topSynth =
-    LTop 6
+    LTop 9
 
 
 topLegacy : LambdaSetAnno
 topLegacy =
-    LTop 7
+    LTop 10
+
+
+topClassCase : LambdaSetAnno
+topClassCase =
+    LTop 11
+
+
+topClassIf : LambdaSetAnno
+topClassIf =
+    LTop 12
+
+
+topClassLocal : LambdaSetAnno
+topClassLocal =
+    LTop 13
+
+
+topClassLit : LambdaSetAnno
+topClassLit =
+    LTop 14
+
+
+topClassParam : LambdaSetAnno
+topClassParam =
+    LTop 15
+
+
+topClassDestr : LambdaSetAnno
+topClassDestr =
+    LTop 16
+
+
+topClassLambda : LambdaSetAnno
+topClassLambda =
+    LTop 17
+
+
+topClassCall : LambdaSetAnno
+topClassCall =
+    LTop 18
+
+
+topClassLet : LambdaSetAnno
+topClassLet =
+    LTop 19
+
+
+topClassMisc : LambdaSetAnno
+topClassMisc =
+    LTop 20
 
 
 {-| Kind-blind ⊤ test — the `== LTop` replacement for callers that must not
@@ -1083,10 +1227,49 @@ topOfKind k =
         topAbi
 
     else if k == 5 then
-        topDecl
+        topDeclZonk
 
     else if k == 6 then
+        topDeclStoreC
+
+    else if k == 7 then
+        topDeclStoreS
+
+    else if k == 8 then
+        topDeclOther
+
+    else if k == 9 then
         topSynth
+
+    else if k == 11 then
+        topClassCase
+
+    else if k == 12 then
+        topClassIf
+
+    else if k == 13 then
+        topClassLocal
+
+    else if k == 14 then
+        topClassLit
+
+    else if k == 15 then
+        topClassParam
+
+    else if k == 16 then
+        topClassDestr
+
+    else if k == 17 then
+        topClassLambda
+
+    else if k == 18 then
+        topClassCall
+
+    else if k == 19 then
+        topClassLet
+
+    else if k == 20 then
+        topClassMisc
 
     else
         topLegacy
@@ -1110,10 +1293,49 @@ topKindLabel k =
         "abi"
 
     else if k == 5 then
-        "decl"
+        "declZonk"
 
     else if k == 6 then
+        "declStoreC"
+
+    else if k == 7 then
+        "declStoreS"
+
+    else if k == 8 then
+        "declOther"
+
+    else if k == 9 then
         "synth"
+
+    else if k == 11 then
+        "clsCase"
+
+    else if k == 12 then
+        "clsIf"
+
+    else if k == 13 then
+        "clsLocal"
+
+    else if k == 14 then
+        "clsLit"
+
+    else if k == 15 then
+        "clsParam"
+
+    else if k == 16 then
+        "clsDestr"
+
+    else if k == 17 then
+        "clsLambda"
+
+    else if k == 18 then
+        "clsCall"
+
+    else if k == 19 then
+        "clsLet"
+
+    else if k == 20 then
+        "clsMisc"
 
     else
         "legacy"
@@ -1240,6 +1462,104 @@ type alias AnnoCoverage =
 emptyAnnoCoverage : AnnoCoverage
 emptyAnnoCoverage =
     { k1 = 0, kN = 0, var = 0, top = 0 }
+
+
+{-| PRECISION-MONOTONE annotation merge (plans/lss-ctor-arrow-identity.md
+§9.6 step 1 — re-landed from the argFeedback arc, §8.4-IMPLEMENTED). Unlike
+`overlayAnnotations` (which REPLACES, because its source is a storeless
+all-⊤ classification) and unlike `unionAnno` (where ⊤ absorbs), this keeps
+whichever side actually names members and unions when both do:
+
+    (LSet xs, LSet ys) -> LSet (xs ∪ ys)
+    (LSet xs, _)       -> LSet xs
+    (_, LSet ys)       -> LSet ys
+    otherwise          -> the structural side's annotation
+
+So a set can never be downgraded to `var`/⊤ and a ⊤ can never absorb a set —
+the merge only ever adds knowledge. Structure comes from the first argument
+(the ABI truth, per `overlayAnnotations`' guard); any shape mismatch keeps it
+unchanged.
+-}
+enrichAnnotations : MonoType -> MonoType -> MonoType
+enrichAnnotations structural annoSource =
+    case ( structural, annoSource ) of
+        ( MFunction _ annoA argsA retA, MFunction _ annoB argsB retB ) ->
+            if List.length argsA == List.length argsB then
+                mFunction (enrichAnno annoA annoB)
+                    (List.map2 enrichAnnotations argsA argsB)
+                    (enrichAnnotations retA retB)
+
+            else
+                structural
+
+        ( MList _ xa, MList _ xb ) ->
+            mList (enrichAnnotations xa xb)
+
+        ( MTuple _ xsa, MTuple _ xsb ) ->
+            if List.length xsa == List.length xsb then
+                mTuple (List.map2 enrichAnnotations xsa xsb)
+
+            else
+                structural
+
+        ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
+            if Dict.keys fieldsA == Dict.keys fieldsB then
+                mRecord (Dict.map (\k ta -> enrichAnnotations ta (Maybe.withDefault ta (Dict.get k fieldsB))) fieldsA)
+
+            else
+                structural
+
+        ( MCustom _ homeA nameA argsA, MCustom _ homeB nameB argsB ) ->
+            if homeA == homeB && nameA == nameB && List.length argsA == List.length argsB then
+                mCustom homeA nameA (List.map2 enrichAnnotations argsA argsB)
+
+            else
+                structural
+
+        _ ->
+            structural
+
+
+enrichAnno : LambdaSetAnno -> LambdaSetAnno -> LambdaSetAnno
+enrichAnno a b =
+    case ( a, b ) of
+        ( LSet xs, LSet ys ) ->
+            LSet (unionSortedInts xs ys)
+
+        ( LSet _, _ ) ->
+            a
+
+        ( _, LSet _ ) ->
+            b
+
+        _ ->
+            a
+
+
+{-| Does any arrow in the type carry ⊤? Zero-allocation guard for the
+destructor instruments (skip the registry scan when there is nothing to
+recover).
+-}
+hasTopAnno : MonoType -> Bool
+hasTopAnno monoType =
+    case monoType of
+        MFunction _ anno args result ->
+            isTopAnno anno || hasTopAnno result || List.any hasTopAnno args
+
+        MList _ inner ->
+            hasTopAnno inner
+
+        MTuple _ elems ->
+            List.any hasTopAnno elems
+
+        MRecord _ fields ->
+            Dict.foldl (\_ t a -> a || hasTopAnno t) False fields
+
+        MCustom _ _ _ args ->
+            List.any hasTopAnno args
+
+        _ ->
+            False
 
 
 {-| P1 restatement-⊤ recovery (plans/lss-provenance-join-and-demand-sigs.md

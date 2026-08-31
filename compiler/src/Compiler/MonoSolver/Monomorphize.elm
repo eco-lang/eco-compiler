@@ -129,8 +129,22 @@ monomorphizeWithReport lssConfig limits entryPointName globalTypeEnv globalGraph
                 Err failure ->
                     Err (renderFailure failure)
 
-                Ok sFinal ->
+                Ok sDrained ->
                     let
+                        -- lss.destrAnno FIX B (plans/lss-ctor-arrow-identity.md
+                        -- §9.8): ctor registry rows recover their ⊤ field
+                        -- annotations from the COMPLETE union of the ctor's
+                        -- specs' demands. Post-drain is load-bearing for
+                        -- soundness: a translation-time read sees a PARTIAL
+                        -- union, and a set stamped from it excludes
+                        -- constructions that have not happened yet — the
+                        -- false-singleton miscompile class. Here every
+                        -- construction has contributed, so union-widening
+                        -- (AR-D2) holds and the pass is a single order-free
+                        -- sweep.
+                        sFinal =
+                            settleCtorRows sDrained
+
                         graph =
                             pruneGraph sFinal (assembleRawGraph sFinal mainSpecId maybeFlagsSpecId)
 
@@ -142,6 +156,110 @@ monomorphizeWithReport lssConfig limits entryPointName globalTypeEnv globalGraph
                                 Nothing
                     in
                     Ok ( graph, report )
+
+
+{-| lss.destrAnno FIX B — the post-drain ctor-row settle (§9.8). For every
+registry entry whose node is a `TOpt.Ctor`/`Box` and whose stored type still
+carries ⊤: enrich its annotations from the set-biased union of ALL entries of
+the same ctor global (`Mono.enrichAnnotations`-folded — a ⊤ contributes
+nothing, sets union). Precision-monotone, structure untouched (MONO_029),
+complete-union sound (AR-D2). One sweep; no fixpoint needed — the unions are
+final. No-op flag-off and for globals with a single all-⊤ entry.
+-}
+settleCtorRows : S -> S
+settleCtorRows s =
+    if not (s.env.lss.enabled && s.env.lss.destrAnno) then
+        s
+
+    else
+        let
+            isCtorGlobal key =
+                case key of
+                    Mono.Global scHome scName ->
+                        case HashMap.get TOpt.globalHash (==) (TOpt.Global scHome scName) s.env.toptNodes of
+                            Just (TOpt.Ctor _ _ _) ->
+                                True
+
+                            Just (TOpt.Box _) ->
+                                True
+
+                            _ ->
+                                False
+
+                    _ ->
+                        False
+
+            gkeyOf key =
+                case key of
+                    Mono.Global scHome scName ->
+                        Mono.toComparableGlobal (Mono.Global scHome scName)
+
+                    _ ->
+                        "?"
+
+            -- pass 1: set-biased unions per ctor global
+            unions =
+                Array.foldl
+                    (\entry acc ->
+                        case entry of
+                            Just ( key, monoType ) ->
+                                if isCtorGlobal key then
+                                    Dict.update (gkeyOf key)
+                                        (\v ->
+                                            Just
+                                                (case v of
+                                                    Just u ->
+                                                        Mono.enrichAnnotations u monoType
+
+                                                    Nothing ->
+                                                        monoType
+                                                )
+                                        )
+                                        acc
+
+                                else
+                                    acc
+
+                            Nothing ->
+                                acc
+                    )
+                    Dict.empty
+                    s.registry.reverseMapping
+
+            -- pass 2: enrich ⊤-carrying ctor rows from their union
+            registry1 =
+                Tuple.second
+                    (Array.foldl
+                        (\entry ( idx, reg ) ->
+                            case entry of
+                                Just ( key, monoType ) ->
+                                    if isCtorGlobal key && Mono.hasTopAnno monoType then
+                                        case Dict.get (gkeyOf key) unions of
+                                            Just u ->
+                                                let
+                                                    enriched =
+                                                        Mono.enrichAnnotations monoType u
+                                                in
+                                                if enriched == monoType then
+                                                    ( idx + 1, reg )
+
+                                                else
+                                                    ( idx + 1, Registry.updateRegistryType idx enriched reg )
+
+                                            Nothing ->
+                                                ( idx + 1, reg )
+
+                                    else
+                                        ( idx + 1, reg )
+
+                                Nothing ->
+                                    ( idx + 1, reg )
+                        )
+                        ( 0, s.registry )
+                        s.registry.reverseMapping
+                    )
+        in
+        { s | registry = registry1 }
 
 
 {-| The LSS census (design §8.6): member counts, set-size histogram, widening
@@ -728,8 +846,16 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                                 Mono.LSet _ ->
                                     ( path, "kN" ) :: acc
 
-                                Mono.LVar _ ->
-                                    ( path, "var" ) :: acc
+                                Mono.LVar vn ->
+                                    -- P0.a (plans/lss-ctor-arrow-identity.md
+                                    -- §8.1): the zonked flex id, so the
+                                    -- MIRROR hypothesis (one write filling
+                                    -- several positions) is decidable from
+                                    -- one census log. Ids are canonical per
+                                    -- SLOT within ONE entry's zonk only
+                                    -- (AR-v2-7), so the row builder prefixes
+                                    -- the entry index.
+                                    ( path, "var@" ++ String.fromInt vn ) :: acc
 
                                 Mono.LTop tpK ->
                                     -- §4.9: pos| rows carry the birth kind
@@ -773,28 +899,42 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                     acc
 
         posRows =
-            Array.foldl
-                (\entry acc ->
-                    case entry of
-                        Just ( key, monoType ) ->
-                            let
-                                gname =
-                                    case key of
-                                        Mono.Global _ n ->
-                                            n
+            Tuple.second
+                (Array.foldl
+                    (\entry ( idx, acc ) ->
+                        case entry of
+                            Just ( key, monoType ) ->
+                                let
+                                    gname =
+                                        case key of
+                                            Mono.Global _ n ->
+                                                n
 
-                                        _ ->
-                                            "?"
-                            in
-                            List.map (\( pth, kind ) -> "pos|" ++ gname ++ "|" ++ pth ++ "|" ++ kind)
-                                (posWalk "" monoType [])
-                                ++ acc
+                                            _ ->
+                                                "?"
 
-                        Nothing ->
-                            acc
+                                    -- P0.a: qualify var ids by ENTRY — a flex
+                                    -- number is canonical only within the
+                                    -- entry that zonked it.
+                                    qualify kind =
+                                        if String.startsWith "var@" kind then
+                                            "var@" ++ String.fromInt idx ++ "." ++ String.dropLeft 4 kind
+
+                                        else
+                                            kind
+                                in
+                                ( idx + 1
+                                , List.map (\( pth, kind ) -> "pos|" ++ gname ++ "|" ++ pth ++ "|" ++ qualify kind)
+                                    (posWalk "" monoType [])
+                                    ++ acc
+                                )
+
+                            Nothing ->
+                                ( idx + 1, acc )
+                    )
+                    ( 0, [] )
+                    g.registry.reverseMapping
                 )
-                []
-                g.registry.reverseMapping
 
         posLine =
             String.join "\n" (List.sort posRows)
@@ -925,6 +1065,146 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 )
                 ( Dict.empty, Dict.empty )
                 g.registry.reverseMapping
+
+        -- §9.6 step 4 — Fix B's P0, the END-OF-RUN half. For every ctor-node
+        -- registry entry, compare it position-wise against the set-biased
+        -- union of ALL entries of the same ctor global (self included — a ⊤
+        -- contributes nothing under the enrich fold). `top,k1` counts the
+        -- positions a completion-time/late recovery could flip to a
+        -- singleton: the order-free CEILING, against `destrBnow`'s
+        -- translation-time floor. GO for building Fix B: k1+kN ≥ 300 (§9.6).
+        ctorGlobalKeyOf key =
+            case key of
+                Mono.Global cgHome cgName ->
+                    if topSiteClassOf key == "ctor" then
+                        Just (TOpt.toComparableGlobal (TOpt.Global cgHome cgName))
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+
+        ctorUnions =
+            Array.foldl
+                (\entry acc ->
+                    case entry of
+                        Just ( key, monoType ) ->
+                            case ctorGlobalKeyOf key of
+                                Just gk ->
+                                    Dict.update gk
+                                        (\v ->
+                                            Just
+                                                (case v of
+                                                    Just u ->
+                                                        Mono.enrichAnnotations u monoType
+
+                                                    Nothing ->
+                                                        monoType
+                                                )
+                                        )
+                                        acc
+
+                                Nothing ->
+                                    acc
+
+                        Nothing ->
+                            acc
+                )
+                Dict.empty
+                g.registry.reverseMapping
+
+        destrBendCounts =
+            Array.foldl
+                (\entry acc ->
+                    case entry of
+                        Just ( key, monoType ) ->
+                            case ctorGlobalKeyOf key of
+                                Just gk ->
+                                    case Dict.get gk ctorUnions of
+                                        Just u ->
+                                            countTopCells monoType u acc
+
+                                        Nothing ->
+                                            acc
+
+                                Nothing ->
+                                    acc
+
+                        Nothing ->
+                            acc
+                )
+                ( 0, 0, 0 )
+                g.registry.reverseMapping
+
+        countTopCells a b acc =
+            case ( a, b ) of
+                ( Mono.MFunction _ annoA argsA retA, Mono.MFunction _ annoB argsB retB ) ->
+                    if List.length argsA == List.length argsB then
+                        List.foldl (\( x, y ) ac -> countTopCells x y ac)
+                            (countTopCells retA retB (countTopCell annoA annoB acc))
+                            (List.map2 Tuple.pair argsA argsB)
+
+                    else
+                        acc
+
+                ( Mono.MList _ xa, Mono.MList _ xb ) ->
+                    countTopCells xa xb acc
+
+                ( Mono.MTuple _ xsa, Mono.MTuple _ xsb ) ->
+                    if List.length xsa == List.length xsb then
+                        List.foldl (\( x, y ) ac -> countTopCells x y ac) acc (List.map2 Tuple.pair xsa xsb)
+
+                    else
+                        acc
+
+                ( Mono.MRecord _ fa, Mono.MRecord _ fb ) ->
+                    Dict.foldl
+                        (\k va ac ->
+                            case Dict.get k fb of
+                                Just vb ->
+                                    countTopCells va vb ac
+
+                                Nothing ->
+                                    ac
+                        )
+                        acc
+                        fa
+
+                ( Mono.MCustom _ _ _ xsa, Mono.MCustom _ _ _ xsb ) ->
+                    if List.length xsa == List.length xsb then
+                        List.foldl (\( x, y ) ac -> countTopCells x y ac) acc (List.map2 Tuple.pair xsa xsb)
+
+                    else
+                        acc
+
+                _ ->
+                    acc
+
+        countTopCell annoA annoB acc =
+            let
+                ( nK1, nKN, nNo ) =
+                    acc
+            in
+            case ( annoA, annoB ) of
+                ( Mono.LTop _, Mono.LSet [ _ ] ) ->
+                    ( nK1 + 1, nKN, nNo )
+
+                ( Mono.LTop _, Mono.LSet _ ) ->
+                    ( nK1, nKN + 1, nNo )
+
+                ( Mono.LTop _, _ ) ->
+                    ( nK1, nKN, nNo + 1 )
+
+                _ ->
+                    acc
+
+        destrBendLine =
+            let
+                ( bK1, bKN, bNo ) =
+                    destrBendCounts
+            in
+            "destrBend: k1=" ++ String.fromInt bK1 ++ " kN=" ++ String.fromInt bKN ++ " no=" ++ String.fromInt bNo
 
         topSiteLine =
             "top sites: "
@@ -1098,7 +1378,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
             -- zero row reads as "measured, found nothing" rather than "never
             -- executed" — the `qCensus` misreading, one flag along.
             ++ (if sFinal.env.lss.arrowCensus then
-                    [ stampWalkLine, livenessLine, topSiteLine, topKindLine, posLine ]
+                    [ stampWalkLine, livenessLine, topSiteLine, topKindLine, destrBendLine, posLine ]
 
                 else
                     []

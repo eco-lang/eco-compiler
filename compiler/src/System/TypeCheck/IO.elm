@@ -720,7 +720,7 @@ sites with no better attribution.
 -}
 lsTopContent : Content
 lsTopContent =
-    Structure (LambdaSet1 (LsTop 7))
+    Structure (LambdaSet1 (LsTop 10))
 
 
 lsTopPoison : Content
@@ -748,9 +748,112 @@ lsTopAbi =
     Structure (LambdaSet1 (LsTop 4))
 
 
-lsTopDecl : Content
-lsTopDecl =
+lsTopDeclZonk : Content
+lsTopDeclZonk =
     Structure (LambdaSet1 (LsTop 5))
+
+
+lsTopDeclScheme : Content
+lsTopDeclScheme =
+    Structure (LambdaSet1 (LsTop 6))
+
+
+lsTopDeclKey : Content
+lsTopDeclKey =
+    Structure (LambdaSet1 (LsTop 7))
+
+
+lsTopDeclSpec : Content
+lsTopDeclSpec =
+    Structure (LambdaSet1 (LsTop 8))
+
+
+lsTopSynth : Content
+lsTopSynth =
+    Structure (LambdaSet1 (LsTop 9))
+
+
+lsTopCls11 : Content
+lsTopCls11 =
+    Structure (LambdaSet1 (LsTop 11))
+
+
+lsTopCls12 : Content
+lsTopCls12 =
+    Structure (LambdaSet1 (LsTop 12))
+
+
+lsTopCls13 : Content
+lsTopCls13 =
+    Structure (LambdaSet1 (LsTop 13))
+
+
+lsTopCls14 : Content
+lsTopCls14 =
+    Structure (LambdaSet1 (LsTop 14))
+
+
+lsTopCls15 : Content
+lsTopCls15 =
+    Structure (LambdaSet1 (LsTop 15))
+
+
+lsTopCls16 : Content
+lsTopCls16 =
+    Structure (LambdaSet1 (LsTop 16))
+
+
+lsTopCls17 : Content
+lsTopCls17 =
+    Structure (LambdaSet1 (LsTop 17))
+
+
+lsTopCls18 : Content
+lsTopCls18 =
+    Structure (LambdaSet1 (LsTop 18))
+
+
+lsTopCls19 : Content
+lsTopCls19 =
+    Structure (LambdaSet1 (LsTop 19))
+
+
+lsTopCls20 : Content
+lsTopCls20 =
+    Structure (LambdaSet1 (LsTop 20))
+
+
+lsTopClassK : Int -> Content
+lsTopClassK k =
+    if k == 11 then
+        lsTopCls11
+
+    else if k == 12 then
+        lsTopCls12
+
+    else if k == 13 then
+        lsTopCls13
+
+    else if k == 14 then
+        lsTopCls14
+
+    else if k == 15 then
+        lsTopCls15
+
+    else if k == 16 then
+        lsTopCls16
+
+    else if k == 17 then
+        lsTopCls17
+
+    else if k == 18 then
+        lsTopCls18
+
+    else if k == 19 then
+        lsTopCls19
+
+    else
+        lsTopCls20
 
 
 lsTopContentK : Int -> Content
@@ -771,7 +874,24 @@ lsTopContentK k =
         lsTopAbi
 
     else if k == 5 then
-        lsTopDecl
+        lsTopDeclZonk
+
+    else if k == 6 then
+        lsTopDeclScheme
+
+    else if k == 7 then
+        lsTopDeclKey
+
+    else if k == 8 then
+        lsTopDeclSpec
+
+    else if k == 9 then
+        lsTopSynth
+
+    else if k >= 11 && k <= 20 then
+        -- §9.3 classify-caller attribution codes; one shared CAF each so
+        -- the store write stays allocation-free.
+        lsTopClassK k
 
     else
         lsTopContent

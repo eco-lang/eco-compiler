@@ -641,6 +641,35 @@ type alias LssConfig =
     -- hatch `ECO_MONO_LSS_RS_TOP=0`; hash token `lssRT=0` now rides the
     -- OFF arm.
     , rsTop : Bool
+
+    -- DESTRUCTOR ANNOTATIONS (plans/lss-ctor-arrow-identity.md §9.5/§9.6):
+    -- two paper-restoring repairs of the pattern-match path, one flag.
+    -- FIX A: `specializeDestructor` merges the PROJECTED type's annotations
+    -- (the root's varEnv type pushed down the path — the paper's TIU
+    -- substitution through the ctor's instantiated scheme) into the
+    -- storeless-classified bound type, precision-monotonically
+    -- (`Mono.enrichAnnotations` — a set can never be downgraded, a ⊤ can
+    -- never absorb one). Heals the type-argument-borne channel
+    -- (`destranno top|k1` = 125 events + the downstream cascade).
+    -- FIX B: at the final registry settle, a ctor entry's ⊤ field positions
+    -- recover from the set-biased UNION of the same ctor's other specs'
+    -- demands — the paper's single global-store solution reassembled from
+    -- Eco's keyed shards; union-over-specs can only WIDEN, so the
+    -- aggregation is conservative (AR-D2). Ceiling measured by the
+    -- `destrBend:` census line.
+    -- Artifact-affecting (varEnv-bound types move, hence demand keys).
+    -- DEFAULT-ON since 2026-08-31 (user decision): same-binary env A/B
+    -- top 2,133 -> 1,457 (-676, -32 % — the largest single ⊤ cut of the
+    -- arc), Eerr k1 1515->2028 / ⊤ 264->2, Cerr k1 1196->1724 / ⊤ 264->4,
+    -- conflict-⊤ EXACTLY unchanged, var untouched, coverage
+    -- 88.99 % -> 89.61 %, wall +2.4 %. VALIDATE leg clean; E2E 1,717/1,717
+    -- both arms; elm-tests at the known-12 baseline including the
+    -- LssDestrAnnoTest differential — which also caught (and §9.8 fixed)
+    -- the partial-union false-singleton window before this flip. Escape
+    -- hatch `ECO_MONO_LSS_DESTR_ANNO=0`; hash token `lssDA=0` now rides
+    -- the OFF arm.
+    -- Env `ECO_MONO_LSS_DESTR_ANNO`; hash token `lssDA=`.
+    , destrAnno : Bool
     }
 
 
@@ -693,6 +722,7 @@ defaultLss =
     , injTotal = True
     , argPoints = False
     , rsTop = True
+    , destrAnno = True
     }
 
 
@@ -1090,6 +1120,7 @@ lssDecoder =
         |> D.apply (D.optionalField "injTotal" D.bool defaultLss.injTotal)
         |> D.apply (D.optionalField "argPoints" D.bool defaultLss.argPoints)
         |> D.apply (D.optionalField "rsTop" D.bool defaultLss.rsTop)
+        |> D.apply (D.optionalField "destrAnno" D.bool defaultLss.destrAnno)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -1618,6 +1649,21 @@ hash cfg =
                     , if lss.rsTop /= defaultLss.rsTop then
                         [ "lssRT="
                             ++ (if lss.rsTop then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- Destructor annotations: artifact-affecting when on
+                    -- (varEnv-bound types move, hence demand keys).
+                    , if lss.destrAnno /= defaultLss.destrAnno then
+                        [ "lssDA="
+                            ++ (if lss.destrAnno then
                                     "1"
 
                                 else
