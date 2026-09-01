@@ -691,6 +691,36 @@ type alias LssConfig =
     -- `ECO_MONO_LSS_VAR_CTOR_ROWS=0`; hash token `lssVC=0` rides the OFF
     -- arm.
     , varCtorRows : Bool
+
+    -- Var chain-root writes, Phase 4v2 (plans/lss-var-chain-roots.md §8.2):
+    -- post-drain enrichment of `l|`-headed var positions from the
+    -- LAMBDA-HOME table — each qualified lambda's settled result type, read
+    -- off the closure NODES (`ClosureInfo.lssMember` + the body's type),
+    -- which is the only place a lambda's result set exists (rows record spec
+    -- params and results, never interior values). Strict cells (⊤ or var
+    -- blocks), all-or-nothing across members, and an ARITY guard: the use
+    -- site's arrow must consume exactly as many args as the recorded
+    -- closure has params, or the relative paths mean different things.
+    -- DEFAULT-ON since 2026-09-01 (597 writes, 587 of them k1, landing on
+    -- the monadic-continuation family: andThen var −328; all gates green —
+    -- §8.5). Escape hatch `ECO_MONO_LSS_VAR_LAMBDA=0`; hash token `lssVL=0`
+    -- rides the OFF arm.
+    , varLambda : Bool
+
+    -- Var chain-root writes, Phase 3v2 (plans/lss-var-chain-roots.md §8.1):
+    -- post-drain enrichment of var positions under a GLOBAL-headed set, from
+    -- the union over the member globals' registry rows ALIGNED to the head's
+    -- offset (a `p|X|k` value is X's type with k args consumed). Strict
+    -- cells, all-or-nothing across members, arg-count agreement, and partial
+    -- stages refused (measured 0 corpus-wide).
+    -- DEFAULT-OFF PERMANENTLY (2026-09-01, §8.5): built and measured at 5
+    -- writes. The class its census predicted (617) fails the structural
+    -- agreement check — the member global's own rows disagree on argument
+    -- count at the aligned offset — and that guard cannot be relaxed without
+    -- dropping inhabitants. Kept in tree as the recorded refutation, and for
+    -- `rowAlignPrefix`, which any future offset-aligned mechanism reuses.
+    -- Env `ECO_MONO_LSS_VAR_ROW_ENRICH`; hash token `lssVR=`.
+    , varRowEnrich : Bool
     }
 
 
@@ -746,6 +776,8 @@ defaultLss =
     , destrAnno = True
     , varSucc = True
     , varCtorRows = True
+    , varLambda = True
+    , varRowEnrich = False
     }
 
 
@@ -1146,6 +1178,8 @@ lssDecoder =
         |> D.apply (D.optionalField "destrAnno" D.bool defaultLss.destrAnno)
         |> D.apply (D.optionalField "varSucc" D.bool defaultLss.varSucc)
         |> D.apply (D.optionalField "varCtorRows" D.bool defaultLss.varCtorRows)
+        |> D.apply (D.optionalField "varLambda" D.bool defaultLss.varLambda)
+        |> D.apply (D.optionalField "varRowEnrich" D.bool defaultLss.varRowEnrich)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -1718,6 +1752,34 @@ hash cfg =
                     , if lss.varCtorRows /= defaultLss.varCtorRows then
                         [ "lssVC="
                             ++ (if lss.varCtorRows then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- Lambda-home var writes: artifact-affecting when on.
+                    , if lss.varLambda /= defaultLss.varLambda then
+                        [ "lssVL="
+                            ++ (if lss.varLambda then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- Offset row-enrichment var writes: artifact-affecting.
+                    , if lss.varRowEnrich /= defaultLss.varRowEnrich then
+                        [ "lssVR="
+                            ++ (if lss.varRowEnrich then
                                     "1"
 
                                 else

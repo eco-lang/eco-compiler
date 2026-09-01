@@ -373,7 +373,9 @@ for g\| heads has no gap to close. The residual book's real shapes are
 the p\|-offset class (v2, alignment work), the lambda-authority class
 (#64), and the arg-side/no-context mass (#65's license question).
 Phase 3 v1 CLOSED unbuilt; its census machinery (varfix3) stays as the
-class tracker.
+class tracker. **The two successor mechanisms are designed in §8**
+(Phase 3v2 offset alignment, Phase 4v2 lambda-home authority), each
+with its own P0 gate.
 
 ### §4.2 P0 phase verdicts
 
@@ -541,3 +543,328 @@ completeness-tracking helper, never `enrichAnnotations` (AR-V2); (2) the
 AR-V1 retrofit is quantified by P0 and, if exposed, ships first. The
 mechanism most likely to disappoint is the cascade assumption (AR-V8) —
 it is measured in Phase 1 before anything else is built on it.
+
+---
+
+## §8 THE POST-FLIP QUEUE — v2 designs for the two largest residual
+## classes (2026-08-31, from the §4.5 exhaustive classification)
+
+The §4.5 varfix3 classification reordered the queue on measured mass.
+Neither item below existed as a designed mechanism before this section:
+old Phase 3 (strict g|/c| row enrichment) is CLOSED with `would=0`, and
+old Phase 4 (position-agreement lambda union) is CLOSED with
+`writable=65`. These are their successors, each with its own P0 gate.
+
+### §4.6 ORDER 3 — the "fuel cap" was a TRAVERSAL DEFECT (2026-08-31)
+
+The §4.4 loose end ("8 rounds hit the cap while still writing") was not a
+tuning knob. Bumping fuel to 16 wrote +374 more and **still reported
+`rounds=16`** — the fixpoint was not converging, it was crawling. Two
+defects in the Phase-1 walk each limited a chain to ONE depth per round:
+
+1. **Bottom-up traversal.** `succType` descended into `result` BEFORE
+   deciding the parent arrow's write, so a depth-d chain needed d rounds.
+2. **Round-start key snapshot.** `midKeys` (mid → member key) was built
+   once per round, so a successor member minted during the pass could not
+   be resolved in that same pass — the next link had no key to read.
+
+Fixed together: decide the write, then walk the REWRITTEN result
+(top-down), and thread `( S, midKeys )` so a freshly minted successor is
+immediately resolvable. Same write rule, same soundness — order only.
+
+| | shipped (8, bottom-up) | fuel 16 only | **top-down + threaded keys** |
+|---|---:|---:|---:|
+| `varsucc\|rounds` | 8 (capped) | 16 (capped) | **2 (converged)** |
+| `varsucc\|wrote1` | 1,478 | 1,852 | **2,090** |
+| var | 11,424 | 11,050 | **10,812** |
+| k1 | 97,975 | 98,349 | **98,587** |
+| coverage | 91.14 % | — | **91.56 %** |
+| wall | 12:59 | 12:59 | 12:50 (marginally faster — fewer rounds) |
+
+**+612 writes over the shipped default, every one landing in k1, and the
+accounting is again exact (2,090 − 1,478 = 612 = the var delta).** The
+shipped Phase 1 was under-delivering by 29 % on a traversal-order bug
+that the round counter had been reporting all along — the loose end was
+worth chasing rather than closing with a constant. Fuel stays at 16 as a
+runaway backstop only; convergence is now by exhaustion (monotone: each
+round either writes, strictly shrinking a finite population, or stops).
+
+### §5.2 GATE POLICY REVISED (user directive, 2026-08-31)
+
+**GO gates drop to 50 (§8.1) and 80 (§8.2), and future P0 gates should be
+sized the same way: "any small improvement", not a fixed large floor.**
+Rationale, in the user's framing: there may only be small improvements
+left to make. The plan's early gates (1,500 / 1,000 / 800 / 500) were
+calibrated against the ORIGINAL 13,389-position pool, where a mechanism
+worth building had to move thousands. After four mechanisms have landed
+(successors, ctor rows, the traversal fix, and the ⊤-heal retrofit), the
+residue is by construction made of smaller classes — so a gate sized for
+the old pool now rejects everything that remains, which is the wrong
+answer when the writes are sound and the marginal build cost is an extra
+arm on an existing pass. Both outstanding mechanisms clear the revised
+bar (`pwould` 617 ≥ 50, `lwould` 568 ≥ 80); §8.2 is a GO on its own gate,
+not a concession. The gate that still binds is SOUNDNESS, not size: no
+mechanism ships without its completeness rule, its guards, and the
+accounting identity (writes == var delta).
+
+### §8.4 SETTLE ORDER IS A PRECISION DECISION (measured, 2026-08-31)
+
+The per-flag battery arms caught a regression that a combined arm would
+have hidden. With `varRowEnrich` running BEFORE `varSucc` (the order in
+which it was first wired):
+
+| arm | var | k1 | kN | writes |
+|---|---:|---:|---:|---:|
+| base | 11,543 | 99,022 | 32,194 | — |
+| `varLambda` | 10,946 (−597) | +587 | +10 | 597 |
+| `varRowEnrich` | 11,538 (**−5**) | **−1,269** | **+1,274** | 2,129 |
+
+2,129 writes for a net var movement of 5, and ~1,270 positions converted
+k1 → kN: the argFeedback churn signature exactly (L1). Cause: the two
+passes target the SAME parent class (pap-able heads), and the coarse
+row-union claimed positions the exact successor write would otherwise
+have filled with a singleton `p|X|k+j`. Both writes are sound; one is
+precise and the other widened, and whichever runs first wins the slot.
+
+**Rule adopted: the settle chain is ordered by PRECISION, not by
+dependency.** `varSucc` (exact type-level identity) → `varLambda`
+(single-body authority) → `varRowEnrich` (cross-spec union, coarsest) →
+`varSucc` again, so spines extend from heads the coarse passes just
+created. `varLambda` never collided: its `l|`-headed parents are not
+pap-able, so the successor sweep skips them — which is why its arm shows
+597 writes with 587 landing in k1.
+
+**Methodology note:** this is the third time this arc that per-mechanism
+attribution changed a verdict a combined measurement would have passed.
+Always give each mechanism its own arm.
+
+### §8.5 RESULTS AT THE CORRECTED ORDER — and Phase 3v2's real verdict
+
+Four arms, one binary, same source (base var = 11,543 / k1 = 99,022):
+
+| arm | writes | var | k1 | kN |
+|---|---:|---:|---:|---:|
+| base | — | 11,543 | 99,022 | 32,194 |
+| `varLambda` | 597 | 10,946 (−597) | +587 | +10 |
+| `varRowEnrich` | **5** | 11,538 (−5) | **unchanged** | +5 |
+| both | 602 | 10,941 (−602) | +587 | +15 |
+
+Perfectly additive (597 + 5 = 602 = the var delta, exact), no interaction,
+and the base arm is identical to the pre-reorder base — so running
+`varSucc` twice is idempotent on the default path, as its own convergence
+implies.
+
+**§8.2 / ORDER 5 — SHIPPABLE. 597 writes, 587 of them k1.** Landing
+squarely on the monadic-continuation family: `andThen` var 2,093 → 1,765
+(−328, k1 +320), `foldr` −43, `map` −38, `foldl` −27, `pure` −22 — the
+same `System.TypeCheck.IO` chain §11 identified as ≈44–50 % of generic
+dispatch (coverage there has never converted to a dispatch win while
+GAP-6 binds, so this is a completeness gain, not a perf claim).
+
+**§8.1 / ORDER 4 — NO-GO. Built, measured, 5 writes.** The census's
+`pwould = 617` was an OVERCOUNT: it verified that an aligned cell existed
+and was clean, but never that the use site and the rows structurally
+AGREE. The pass adds that check — every row of the member global must
+expose the same argument count at the aligned offset, and the use site's
+arrow must match it — and ~99 % of the class fails it. The guard cannot
+be relaxed: dropping disagreeing rows from the union would drop their
+inhabitants too, which is an under-approximation and the false-singleton
+miscompile class. So the 617 positions are real var that row unions
+CANNOT soundly reach, because X's own specs do not structurally agree at
+the aligned offset. Cost side: `varRowEnrich` also measured ≈ +36 s wall
+(+4.6 %) for those 5 writes.
+
+**Disposition:** `lss.varRowEnrich` stays DEFAULT-OFF permanently, kept
+in tree as the measured refutation (and because its `rowAlignPrefix` is
+the alignment primitive a future mechanism would reuse). Recorded rather
+than deleted, per the arc's habit of keeping refutations findable.
+OPEN QUESTION for anyone revisiting: the pass does not yet distinguish
+"rows disagree with each other" from "use site disagrees with the rows" —
+one counter would say which, and only the second kind could conceivably
+be repaired by aligning against the use site's own spine.
+
+### §8.0 P0 RESULTS FOR §8.1/§8.2 + THE ORDER-6 SPLIT (2026-08-31)
+
+One census run (shipped defaults + the extended `varfix3`) settled all
+three questions. **The classification remains exhaustive: the classes sum
+to 11,424 = the var total to the digit**, and each predecessor bucket
+splits exactly (old `papHead` 2,926 = pure-pap 701 + mixed 2,225; old
+`otherHead` 3,339 = lambda 3,307 + kernel/accessor 32; old `contamVar`
+987 = shared 643 + isolated 344).
+
+*Baseline note:* var 11,426 → 11,424 and positions +144 vs the previous
+run — the compiler compiles ITSELF, so adding census code grew the
+corpus. The census is report-gated and cannot affect analysis; this is
+the documented same-day source-drift trap, not a perturbation.
+
+| class | count | reading |
+|---|---:|---|
+| `pwould` | **617** | §8.1 GO (gate ≥ 500) |
+| `lwould` | **568** | §8.2 below its ≥ 800 gate — see verdict |
+| `mixwould` | 2 | mixed-kind heads, negligible |
+| `noHead` | 3,937 | unchanged; Phase-5 territory |
+| `lshapeMiss` | 1,101 | lambda cellmap has no cell at the path — the v2 refinement (per-instantiation keying instead of merge-by-mid) |
+| `contamVarShared` (all tags) | 3,515 | DEFINITE pass-through |
+| `contamVarIso` (all tags) | 1,120 | no recorded route — a bound, not a license (§8.3) |
+| `contamTop` (all tags) | 532 | the ⊤ book |
+| `otherHead` | 32 | kernel/accessor heads only |
+
+**§8.1 VERDICT: GO — `pwould = 617`.** Top globals: `p|map` 216,
+`p|Ok` 144, `p|apply` 108, `p|andThen` 72, `p|pure` 72. Two structural
+findings from the alignment itself: **no `alignFail` and no `pp` (partial
+stage) classes appeared at all** — every `p|X|k` aligned, and k never
+split a stage in the whole corpus. Partial-stage re-indexing is therefore
+UNNECESSARY (measured 0), which removes the fiddliest piece of §8.1's
+design; the alignment walk still gets its unit pins, but the
+partial-stage case is dead code to be omitted, not built.
+
+**§8.2 VERDICT (as revised by §5.2's gate policy): GO — `lwould = 568`
+against the revised ≥ 80 bar.** The paragraph below records the original
+≥ 800 reasoning as it stood when measured.
+
+**§8.2 as first measured: the mechanism VALIDATED, the yield BELOW its
+then-gate.**
+`lNoRecord` never fired — **every `l|` head in the corpus found a table
+entry** (30,544 mids recorded), which confirms the closure-node source is
+the right authority and answers lowering question (1) empirically: the
+store is not needed, the nodes persist. Table quality: 1,768 mids have an
+arrow result, 1,267 clean / 501 contaminated. But `lwould = 568 < 800`.
+Recorded as a NO-GO **on the pre-registered gate**, with the honest
+qualifier that the gate assumed a STANDALONE build: §8.2's write pass is
+the same settle machinery §8.1 now requires, so its marginal cost is an
+extra arm in a pass being built anyway. Recommendation is to build both
+together (1,185 direct writes plus cascade) — but that is a re-gate, so
+it is the user's call, not a silent pass.
+
+**ORDER 6 (§8.3 below): pass-through DOMINATES.** Of the 987 g|/c| var
+contaminations, **643 (65 %) are definite pass-through** and 344 (35 %)
+isolated; corpus-wide 3,515 vs 1,120. The mark costs NO new state.
+
+### §8.3 ORDER 6 — the contamVar pass-through mark (DESIGNED + MEASURED)
+
+**The test, and why it needs nothing new.** `LVar` ids are canonical per
+slot within ONE entry's zonk (AR-v2-7). So within a single row, an id
+appearing at BOTH a result-side position and an ARGUMENT position means
+the body threads that parameter through to the result — a caller's lambda
+is a real inhabitant, and the cell must stay blocked. No `ArrowFact.rep`
+consultation, no new marks, no threading: a row-local walk over data the
+census already holds. (Ids are NOT comparable across rows; the test is
+strictly intra-row, which is exactly the scope it needs.)
+
+**The honest limit — the isolated share is a BOUND, not a license.**
+"No recorded inhabitant route" is not "no route": transport failure is
+the very phenomenon this plan studies, so an isolated var may still hide
+a real inhabitant whose set never arrived (a callee result that failed to
+transport into the slot). Writing the sibling union there would exclude
+it — the false-singleton class. Therefore:
+- **shared (3,515) ⇒ block. Sound, cheap, and it is the majority.**
+- **isolated (1,120) ⇒ still block**, but now with a measured ceiling on
+  what a stronger argument could unlock.
+- Unlocking requires a body-completeness mark — the function-result
+  analog of `flexCtorSpecs`: a spec is result-complete when nothing
+  var/⊤-annotated flowed into its result during translation. That is new
+  translation-side state and is NOT justified by 1,120 positions today.
+
+**Disposition:** the sharing test is adopted as the strict rule's
+EXPLANATION (it says which blocks are principled) and as a census
+classifier. No mechanism is built for the isolated share; the class is
+parked with its number. ORDER 6 closes.
+
+### §8.1 Phase 3v2 — papHead OFFSET ALIGNMENT (class mass 2,926, 25.6 %)
+
+**The class.** Var positions whose nearest set-headed context is
+`{p|X|k}`. `varSucc` already writes their within-arity `/r` HEADS; the
+residue is everything the head identity alone cannot determine: the
+beyond-arity result region (X's body result — `varsucc|skipBeyond`
+events), data payloads inside results, and deeper spine content. All of
+that IS determined by X's bodies, and X's registry rows carry it — the
+v1 census just refused every `p|` head because alignment was unbuilt.
+
+**The mechanism.** A `{p|X|k}` value's type is X's type after consuming
+k arg slots. Align the use position against the row union by walking the
+row's curried spine consuming k args (a stage of j args consumes
+min(j, remaining); a stage split mid-way re-indexes the remaining args),
+then parallel-walk under the SAME rules as v1: result-side descent only
+— the value's own remaining `/aN` are X's params k+1.. = consumer-fed
+(AR-V6), and args of arrows inside the body result are fed by whoever
+applies those returned closures, so only `/r` and data hops descend —
+and the STRICT all-sets cell rule (any ⊤ or var contributor blocks; no
+pass-through mark exists for function results).
+
+**Soundness.** Identical to v1 M-row: the aligned region is
+body-determined; union-over-specs is the unsplit-store value; writes are
+supersets. The only new surface is the alignment itself — a mis-aligned
+path would enrich from the WRONG cell, so the alignment walk must be
+pinned by unit tests on staged shapes (1-arg stages, n-ary stages, and
+the partial-stage re-index case) before any corpus write.
+
+**Honest prior.** v1's `would=0` for `g|` heads showed transport already
+delivers whatever rows uniformly know — the same may hold here, since a
+`g|X` head's cellmap ALREADY covered X's beyond-arity region and yielded
+nothing. The difference: `p|`-headed USE positions were never measured
+at all (v1 classed them unexamined), and their heads arrived via
+channels (producer PAP injection, settle successors) that carry NO deep
+content. Whether the deep content is also already-delivered is exactly
+what the P0 answers. Expectation is NOT would≈2,926; it is "finally a
+number".
+
+**P0 (census-only, extends varfix3):** teach `vf3HeadCtx`'s `"p"` arm to
+build the offset cellmap instead of `Err "papHead"`. Report:
+`would / contamVar / contamTop / noInfo / alignPartial` (k splits a
+stage — measure how often before deciding whether partial-stage
+re-indexing is worth building) `/ alignFail`. GO gate: `would ≥ 500`
+after the alignPartial split is known. NO-GO closes the class into the
+contam/noInfo books like v1 did.
+
+### §8.2 Phase 4v2 — the LAMBDA-HOME AUTHORITY (class mass 3,339,
+### 29.2 % — the largest addressable class, twice-confirmed bottleneck)
+
+**Why v1 died and what that means.** The mB P0 measured near-universal
+agreement but `writable=65`: for 683 mids NO readback position anywhere
+knows the result. §4.5 re-confirmed independently (`otherHead=3,339`).
+The knowledge is not mis-transported — it never survives the item. A
+lambda minted and consumed interiorly (let-bound, passed inline) appears
+in NO registry row type: rows record spec params/results, not interior
+values. The lambda's full inferred type exists exactly once — in the
+host item's store at translation — and is discarded at `resetItem`.
+
+**The mechanism: record the lambda's settled type at item completion.**
+A side table `lambdaHomes : Dict mid MonoType-cellmap` in Engine state:
+at each item's completion join (the one order-free window — the same
+argument that placed Fix B and the settle passes post-drain), zonk the
+type of every qualified lambda mid minted in that item and union-merge
+it into the table with the completeness-tracking fold (⊤/var
+contributors mark the cell, sets union). Under LSS_024 several specs
+share one mid; the merge across instantiations is the unsplit-store
+union — sound as a superset because every result closure of ANY
+instantiation is minted in the lambda's one body and lands in some
+instantiation's recorded type (a var/⊤ result at ANY instantiation
+contaminates the cell, so incomplete instantiations block rather than
+lie). Then a settle pass (`lss.varLambda`) enriches `l|`-headed var
+positions from the table — result-side descent only, strict cells, kN
+heads all-or-nothing across members (mixing with `g|/c|` members unions
+their row cellmaps; any `k|/a|` member blocks).
+
+**Lowering questions to answer BEFORE building (the P0's second half):**
+(1) WHERE at item completion is `mid → IO.Variable` still available —
+`specializeLambda`'s registration? the completion-join walk? — the
+record hook must not retain store Points past the item (record the
+ZONKED MonoType, never the variable). (2) Memory: one MonoType per mid
+(≈35k mids corpus-wide from `internedCount`) — acceptable, but measure
+RSS. (3) The table is compile-local Engine state — nothing rides the
+typed-artifacts codec (the AR-1 precedent).
+
+**P0 (two steps, recording is behavior-neutral):**
+- Step A: build the RECORDING half only + a census line —
+  `varlam|midsRecorded / cleanResult / contamResult / noRecord` — plus
+  the would-count: `l|`-headed var positions whose table cell is clean.
+  Recording is bookkeeping (no graph writes), so step A can ship
+  ungated. **GO gate for step B: would ≥ 800** (a quarter of the class).
+- Step B: the settle write pass, default-off, its own battery, flip with
+  the user.
+
+**Order:** §8.1's P0 first (census-only, one run, zero new state), then
+§8.2 step A — both P0s can share one census run once §8.1's arm is
+extended. The remaining §4.5 classes stay parked: `noHead` 3,939 behind
+the Phase-5 license question, `contamVar` 987 behind a pass-through
+mark, `contamTop` 235 behind the ⊤ book.

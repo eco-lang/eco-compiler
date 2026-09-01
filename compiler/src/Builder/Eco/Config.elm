@@ -263,6 +263,16 @@ applyEnvOverrides cfg =
                     |> Task.map (\vcVal -> applyLssVarCtorRowsOverride vcVal cfg4ep)
             )
         |> Task.andThen
+            (\cfg4eq ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_VAR_LAMBDA" |> Task.mapError never)
+                    |> Task.map (\vlVal -> applyLssVarLambdaOverride vlVal cfg4eq)
+            )
+        |> Task.andThen
+            (\cfg4er ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_VAR_ROW_ENRICH" |> Task.mapError never)
+                    |> Task.map (\vrVal -> applyLssVarRowEnrichOverride vrVal cfg4er)
+            )
+        |> Task.andThen
             (\cfg4f ->
                 (Utils.envLookupEnv "ECO_SPEC_TYPE_NODE_LIMIT" |> Task.mapError never)
                     |> Task.map (\tnVal -> applySpecTypeNodeLimitOverride tnVal cfg4f)
@@ -2127,6 +2137,49 @@ applyLssVarCtorRowsOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | varCtorRows = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_VAR_ROW_ENRICH=1|true|yes / 0|false|no`
+(plans/lss-var-chain-roots.md §8.1 Phase 3v2): enrich var positions under a
+global-headed set from the member globals' rows, aligned to the head's
+offset. DEFAULT-OFF. Hash token `lssVR=`.
+-}
+applyLssVarRowEnrichOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssVarRowEnrichOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | varRowEnrich = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | varRowEnrich = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_VAR_LAMBDA=1|true|yes / 0|false|no`
+(plans/lss-var-chain-roots.md §8.2 Phase 4v2): enrich `l|`-headed var
+positions from the lambda-home table. DEFAULT-OFF. Hash token `lssVL=`.
+-}
+applyLssVarLambdaOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssVarLambdaOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | varLambda = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | varLambda = False }) cfg
 
             else
                 cfg
