@@ -339,6 +339,9 @@ neverFalselyComplete anno =
         Mono.LVar _ ->
             True
 
+        Mono.LPartial _ ->
+            True
+
         Mono.LSet members ->
             List.length members >= 2
 
@@ -353,6 +356,9 @@ annoHasSize n anno =
             False
 
         Mono.LVar _ ->
+            False
+
+        Mono.LPartial _ ->
             False
 
 
@@ -370,6 +376,9 @@ describeAnnos annos =
 
                     Mono.LSet ms ->
                         "LSet[" ++ String.join "," (List.map String.fromInt ms) ++ "]"
+
+                    Mono.LPartial ms ->
+                        "LPartial[" ++ String.join "," (List.map String.fromInt ms) ++ "]"
             )
             annos
         )

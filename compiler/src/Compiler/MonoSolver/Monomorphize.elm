@@ -147,29 +147,20 @@ monomorphizeWithReport lssConfig limits entryPointName globalTypeEnv globalGraph
                         -- writes read ⊤ contamination HONESTLY, so they run
                         -- BEFORE the ⊤-heal erases it; successor writes run
                         -- last to extend heads either pass creates.
-                        -- varLambda sits after the ⊤-heal (so it never
-                        -- competes with a healed position) and BEFORE the
-                        -- successor sweep, whose spine walk can then extend
-                        -- from any head varLambda just wrote.
-                        -- PRECISION ORDER (measured, not assumed): the
-                        -- successor sweep claims its positions FIRST, because
-                        -- it and `varRowEnrich` target the same parent class
-                        -- (pap-able heads) and the successor write is exact —
-                        -- a singleton `p|X|k+j` — where the row union is a
-                        -- widened superset. Running the coarse pass first
-                        -- measured var −5 for k1 −1,269 / kN +1,274: pure
-                        -- churn of the argFeedback kind (§8.4). Coarse passes
-                        -- then fill what remains, and a SECOND successor
-                        -- sweep extends spines from the heads they just
-                        -- created. (`varLambda` does not collide — its
-                        -- `l|`-headed parents are never pap-able, so the
-                        -- successor sweep skips them.)
+                        -- PRECISION ORDER (measured, §8.4/§8.5): exact
+                        -- writes claim their slots before widened ones —
+                        -- coarse-first measured as pure churn (k1 −1,269 for
+                        -- var −5) when a since-removed row-union pass ran
+                        -- ahead of the successor sweep. varLambda sits after
+                        -- the ⊤-heal (never competes with a healed position)
+                        -- and does not collide with the successor sweep (its
+                        -- `l|`-headed parents are never pap-able); the
+                        -- TRAILING successor sweep extends spines from any
+                        -- pap-able head varLambda just wrote.
                         sFinal =
                             settleVarSuccessors
-                                (settleVarRowEnrich
-                                    (settleVarLambda
-                                        (settleVarSuccessors (settleCtorRows (settleVarCtorRows sDrained)))
-                                    )
+                                (settleVarLambda
+                                    (settleVarSuccessors (settleCtorRows (settleVarCtorRows sDrained)))
                                 )
 
                         graph =
@@ -370,6 +361,12 @@ settleVarCtorRows s =
 
                     Mono.LSet ms ->
                         { cell | sets = Just (Mono.unionSortedInts ms (Maybe.withDefault [] cell.sets)) }
+
+                    -- lss-lpartial §2: a lower bound admits unknown
+                    -- inhabitants — contaminates like a MARKED var,
+                    -- regardless of the flex mark.
+                    Mono.LPartial _ ->
+                        { cell | flexVar = True }
 
                     Mono.LVar _ ->
                         if marked then
@@ -835,347 +832,6 @@ settleVarLambda s =
             |> bumpN "varlam|mids" (Dict.size homes)
 
 
-{-| Phase 3v2 (plans/lss-var-chain-roots.md §8.1, `lss.varRowEnrich`): enrich
-var positions whose nearest enclosing set head resolves to GLOBALS, from the
-union over those globals' registry rows — ALIGNED to the head's offset.
-
-A `{p|X|k}` value's type is X's type with k arguments consumed, so its own
-`/r` is the row's `prefix ++ "/r"` where `prefix` is reached by walking k
-args down the row's curried spine. `g|X`/`c|X` are the same rule at k = 0
-(and measured `would = 0` — transport already delivers what rows uniformly
-know; they are included only because excluding them would be a special
-case, not because they pay).
-
-Guards, mirroring `settleVarLambda`:
-
-  - STRICT CELLS: ⊤ or var anywhere in the merged cell blocks. Union over
-    ALL of X's rows is the paper's unsplit global-store view, so a clean
-    cell is a superset of the position's inhabitants.
-  - ALL-OR-NOTHING across members; a member that is not a global (lambda,
-    kernel, accessor) blocks the position.
-  - ARG-COUNT AGREEMENT: every row must expose the same argument count at
-    the aligned prefix, and the use site's arrow must match it. Mono can
-    re-arity a value (staged vs flat), and a mismatch would make the same
-    relative path denote different nodes.
-  - PARTIAL STAGES REFUSED: a k that splits a stage mid-way is rejected
-    outright. The P0 measured ZERO such alignments corpus-wide, so this
-    costs nothing and removes the case that would need arg re-indexing.
-
-Reads a SNAPSHOT of the rows and writes after — one order-free pass, the
-AR-D2 discipline (a mid-pass read would see partially-written rows).
--}
-settleVarRowEnrich : S -> S
-settleVarRowEnrich s =
-    if not (s.env.lss.enabled && s.env.lss.varRowEnrich) then
-        s
-
-    else
-        let
-            memberKeyOf =
-                Dict.foldl (\k mid acc -> Dict.insert mid k acc) Dict.empty s.lssMemberTable.byKey
-
-            rowsByG =
-                Array.foldl
-                    (\entry acc ->
-                        case entry of
-                            Just ( Mono.Global vrHome vrName, mt ) ->
-                                Dict.update (TOpt.toComparableGlobal (TOpt.Global vrHome vrName))
-                                    (\v -> Just (mt :: Maybe.withDefault [] v))
-                                    acc
-
-                            _ ->
-                                acc
-                    )
-                    Dict.empty
-                    s.registry.reverseMapping
-
-            -- member id -> ( comparable global, args already supplied )
-            memberTarget m =
-                case Dict.get m memberKeyOf of
-                    Nothing ->
-                        Nothing
-
-                    Just mkey ->
-                        case String.split "|" mkey of
-                            "p" :: gstr :: dstr :: _ ->
-                                Maybe.map (\d -> ( gstr, d )) (String.toInt dstr)
-
-                            "g" :: gstr :: _ ->
-                                Just ( gstr, 0 )
-
-                            "c" :: gstr :: _ ->
-                                Just ( gstr, 0 )
-
-                            _ ->
-                                Nothing
-
-            offsetCellsFor gstr k cache0 =
-                let
-                    ck =
-                        gstr ++ "#" ++ String.fromInt k
-                in
-                case Dict.get ck cache0 of
-                    Just cached ->
-                        ( cached, cache0 )
-
-                    Nothing ->
-                        let
-                            built =
-                                case Dict.get gstr rowsByG of
-                                    Nothing ->
-                                        Nothing
-
-                                    Just rows ->
-                                        List.foldl
-                                            (\row acc ->
-                                                case acc of
-                                                    Nothing ->
-                                                        Nothing
-
-                                                    Just ( cm, mArgs ) ->
-                                                        case rowAlignPrefix row k "" of
-                                                            Nothing ->
-                                                                Nothing
-
-                                                            Just ( prefix, nargs ) ->
-                                                                if mArgs /= Nothing && mArgs /= Just nargs then
-                                                                    Nothing
-
-                                                                else
-                                                                    let
-                                                                        plen =
-                                                                            String.length prefix
-
-                                                                        rekeyed =
-                                                                            Dict.foldl
-                                                                                (\key cell d ->
-                                                                                    if String.startsWith prefix key then
-                                                                                        Dict.insert (String.dropLeft plen key) cell d
-
-                                                                                    else
-                                                                                        d
-                                                                                )
-                                                                                Dict.empty
-                                                                                (varCellWalk (varArgIds False row Dict.empty) "" row Dict.empty)
-                                                                    in
-                                                                    Just ( varMapMerge cm rekeyed, Just nargs )
-                                            )
-                                            (Just ( Dict.empty, Nothing ))
-                                            rows
-                        in
-                        ( built, Dict.insert ck built cache0 )
-
-            openCtx ms nargs cache0 =
-                List.foldl
-                    (\m ( acc, c ) ->
-                        case acc of
-                            Nothing ->
-                                ( Nothing, c )
-
-                            Just cm ->
-                                case memberTarget m of
-                                    Nothing ->
-                                        ( Nothing, c )
-
-                                    Just ( gstr, k ) ->
-                                        case offsetCellsFor gstr k c of
-                                            ( Nothing, c1 ) ->
-                                                ( Nothing, c1 )
-
-                                            ( Just ( cells, mArgs ), c1 ) ->
-                                                if mArgs == Just nargs then
-                                                    ( Just (varMapMerge cm cells), c1 )
-
-                                                else
-                                                    ( Nothing, c1 )
-                    )
-                    ( Just Dict.empty, cache0 )
-                    ms
-
-            rewrite t ctx st =
-                case t of
-                    Mono.MFunction _ anno args result ->
-                        let
-                            ( anno1, st1 ) =
-                                case ( anno, ctx ) of
-                                    ( Mono.LVar _, Just ( cm, rp ) ) ->
-                                        case Dict.get rp cm of
-                                            Just cell ->
-                                                if cell.top || cell.var then
-                                                    ( anno, { st | blocked = st.blocked + 1 } )
-
-                                                else
-                                                    case cell.sets of
-                                                        Just ss ->
-                                                            ( Mono.LSet ss, { st | wrote = st.wrote + 1 } )
-
-                                                        Nothing ->
-                                                            ( anno, st )
-
-                                            Nothing ->
-                                                ( anno, st )
-
-                                    _ ->
-                                        ( anno, st )
-
-                            ( ctxR, st2 ) =
-                                case anno of
-                                    Mono.LSet ms ->
-                                        let
-                                            ( opened, c1 ) =
-                                                openCtx ms (List.length args) st1.cache
-                                        in
-                                        ( Maybe.map (\cm -> ( cm, "/r" )) opened, { st1 | cache = c1 } )
-
-                                    _ ->
-                                        ( Maybe.map (\( cm, rp ) -> ( cm, rp ++ "/r" )) ctx, st1 )
-
-                            ( result1, st3 ) =
-                                rewrite result ctxR st2
-
-                            ( args1, st4 ) =
-                                List.foldr
-                                    (\a ( accL, accSt ) ->
-                                        let
-                                            ( a1, accSt1 ) =
-                                                rewrite a Nothing accSt
-                                        in
-                                        ( a1 :: accL, accSt1 )
-                                    )
-                                    ( [], st3 )
-                                    args
-                        in
-                        ( Mono.mFunction anno1 args1 result1, st4 )
-
-                    Mono.MList _ inner ->
-                        let
-                            ( inner1, st1 ) =
-                                rewrite inner (Maybe.map (\( cm, rp ) -> ( cm, rp ++ "/l" )) ctx) st
-                        in
-                        ( Mono.mList inner1, st1 )
-
-                    Mono.MTuple _ elems ->
-                        let
-                            ( elems1, st1 ) =
-                                List.foldr
-                                    (\( i, e ) ( accL, accSt ) ->
-                                        let
-                                            ( e1, accSt1 ) =
-                                                rewrite e
-                                                    (Maybe.map (\( cm, rp ) -> ( cm, rp ++ "/t" ++ String.fromInt i )) ctx)
-                                                    accSt
-                                        in
-                                        ( e1 :: accL, accSt1 )
-                                    )
-                                    ( [], st )
-                                    (List.indexedMap Tuple.pair elems)
-                        in
-                        ( Mono.mTuple elems1, st1 )
-
-                    Mono.MRecord _ fields ->
-                        let
-                            ( fields1, st1 ) =
-                                Dict.foldl
-                                    (\fn ft ( accD, accSt ) ->
-                                        let
-                                            ( ft1, accSt1 ) =
-                                                rewrite ft
-                                                    (Maybe.map (\( cm, rp ) -> ( cm, rp ++ "/f:" ++ fn )) ctx)
-                                                    accSt
-                                        in
-                                        ( Dict.insert fn ft1 accD, accSt1 )
-                                    )
-                                    ( Dict.empty, st )
-                                    fields
-                        in
-                        ( Mono.mRecord fields1, st1 )
-
-                    Mono.MCustom _ vrHome vrName args ->
-                        let
-                            ( args1, st1 ) =
-                                List.foldr
-                                    (\( i, a ) ( accL, accSt ) ->
-                                        let
-                                            ( a1, accSt1 ) =
-                                                rewrite a
-                                                    (Maybe.map (\( cm, rp ) -> ( cm, rp ++ "/c" ++ String.fromInt i )) ctx)
-                                                    accSt
-                                        in
-                                        ( a1 :: accL, accSt1 )
-                                    )
-                                    ( [], st )
-                                    (List.indexedMap Tuple.pair args)
-                        in
-                        ( Mono.mCustom vrHome vrName args1, st1 )
-
-                    _ ->
-                        ( t, st )
-
-            ( registry1, totals ) =
-                Tuple.second
-                    (Array.foldl
-                        (\entry ( idx, ( reg, tAcc ) ) ->
-                            case entry of
-                                Just ( _, monoType ) ->
-                                    let
-                                        ( rewritten, stEnd ) =
-                                            rewrite monoType Nothing { wrote = 0, blocked = 0, cache = tAcc.cache }
-                                    in
-                                    if stEnd.wrote > 0 then
-                                        ( idx + 1
-                                        , ( Registry.updateRegistryType idx rewritten reg
-                                          , { wrote = tAcc.wrote + stEnd.wrote, blocked = tAcc.blocked + stEnd.blocked, cache = stEnd.cache }
-                                          )
-                                        )
-
-                                    else
-                                        ( idx + 1
-                                        , ( reg
-                                          , { wrote = tAcc.wrote + stEnd.wrote, blocked = tAcc.blocked + stEnd.blocked, cache = stEnd.cache }
-                                          )
-                                        )
-
-                                Nothing ->
-                                    ( idx + 1, ( reg, tAcc ) )
-                        )
-                        ( 0, ( s.registry, { wrote = 0, blocked = 0, cache = Dict.empty } ) )
-                        s.registry.reverseMapping
-                    )
-
-            bumpN key n acc =
-                List.foldl (\_ a -> Engine.bumpArgFlowCensus key a) acc (List.repeat n ())
-        in
-        { s | registry = registry1 }
-            |> bumpN "varrow|wrote" totals.wrote
-            |> bumpN "varrow|blocked" totals.blocked
-
-
-{-| Walk k arguments down a row's curried result spine, returning the path
-PREFIX at which a `p|X|k` value's own type sits and the argument count of the
-arrow there. `Nothing` when k splits a stage (measured 0 corpus-wide — see
-§8.0) or runs out of arrows.
--}
-rowAlignPrefix : Mono.MonoType -> Int -> String -> Maybe ( String, Int )
-rowAlignPrefix t k prefix =
-    case t of
-        Mono.MFunction _ _ args result ->
-            let
-                j =
-                    List.length args
-            in
-            if k == 0 then
-                Just ( prefix, j )
-
-            else if k >= j then
-                rowAlignPrefix result (k - j) (prefix ++ "/r")
-
-            else
-                Nothing
-
-        _ ->
-            Nothing
-
-
 {-| The lambda-home table: mid → ( parameter count, cells of the body's type
 keyed RELATIVE to the lambda's own arrow, so `/r` is its result ).
 
@@ -1410,6 +1066,10 @@ varCellWalk argIds path t acc =
                                         { c | top = True }
 
                                     Mono.LVar _ ->
+                                        { c | var = True }
+
+                                    -- lss-lpartial §2: contaminates as var.
+                                    Mono.LPartial _ ->
                                         { c | var = True }
 
                                     Mono.LSet ms ->
@@ -2156,8 +1816,11 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 concrete =
                     coverage.k1 + coverage.kN
 
+                -- `part` counts as UNCOVERED (a lower bound is not
+                -- consumable) but is reported separately: partials are
+                -- settle-recoverable where ⊤ never was.
                 positions =
-                    concrete + coverage.var + coverage.top
+                    concrete + coverage.var + coverage.top + coverage.part
             in
             "coverage: positions="
                 ++ String.fromInt positions
@@ -2169,6 +1832,8 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 ++ String.fromInt coverage.var
                 ++ " top="
                 ++ String.fromInt coverage.top
+                ++ " part="
+                ++ String.fromInt coverage.part
                 ++ " coveredBp="
                 ++ String.fromInt
                     (if positions == 0 then
@@ -2300,6 +1965,11 @@ renderLssReport sFinal (Mono.MonoGraph g) =
 
                                 Mono.LSet _ ->
                                     ( path, "kN" ) :: acc
+
+                                Mono.LPartial ms ->
+                                    -- lss-lpartial: member count rides the
+                                    -- row so partial richness is visible.
+                                    ( path, "part@" ++ String.fromInt (List.length ms) ) :: acc
 
                                 Mono.LVar vn ->
                                     -- P0.a (plans/lss-ctor-arrow-identity.md
@@ -2738,6 +2408,11 @@ renderLssReport sFinal (Mono.MonoGraph g) =
 
                                             Mono.LVar n ->
                                                 { c | var = True, varShared = c.varShared || Dict.member n argIds }
+
+                                            -- lss-lpartial §2: contaminates
+                                            -- as var (not shared — no id).
+                                            Mono.LPartial _ ->
+                                                { c | var = True }
 
                                             Mono.LSet ms ->
                                                 { c | sets = Just (Mono.unionSortedInts ms (Maybe.withDefault [] c.sets)) }
@@ -3285,6 +2960,232 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                         vf3LambdaHomes
                     )
 
+        -- ===== §9 P0 (plans/lss-var-chain-roots.md, flow-repair arc) =====
+        -- Correlate every residual var position with the SIGNATURE channel
+        -- of its row's global. Signatures (`d⟨ᾱ⟩ : (Q ⇒ τ)` in the paper) are
+        -- how flow crosses the item boundary; a var position means that
+        -- channel failed to deliver. The discriminating question: did it fail
+        -- because the signature carries NOTHING (trivial — recording-side
+        -- loss, hypothesis H-R1), or because the row has arrows the scheme
+        -- never had (born at type-variable instantiation — the paper's
+        -- α-positions, reachable only through Q inclusion constraints,
+        -- hypothesis H-R2)? `extra` = row arrow count > signature arrow
+        -- count, the cheap structural proxy for the α-born class.
+        sigArrowCountOf t n =
+            case t of
+                Mono.MFunction _ _ args result ->
+                    List.foldl (\a acc -> sigArrowCountOf a acc)
+                        (sigArrowCountOf result (n + 1))
+                        args
+
+                Mono.MList _ inner ->
+                    sigArrowCountOf inner n
+
+                Mono.MTuple _ elems ->
+                    List.foldl (\e acc -> sigArrowCountOf e acc) n elems
+
+                Mono.MRecord _ fields ->
+                    Dict.foldl (\_ ft acc -> sigArrowCountOf ft acc) n fields
+
+                Mono.MCustom _ _ _ args ->
+                    List.foldl (\a acc -> sigArrowCountOf a acc) n args
+
+                _ ->
+                    n
+
+        sigVarCountOf t n =
+            case t of
+                Mono.MFunction _ anno args result ->
+                    List.foldl (\a acc -> sigVarCountOf a acc)
+                        (sigVarCountOf result
+                            (case anno of
+                                Mono.LVar _ ->
+                                    n + 1
+
+                                _ ->
+                                    n
+                            )
+                        )
+                        args
+
+                Mono.MList _ inner ->
+                    sigVarCountOf inner n
+
+                Mono.MTuple _ elems ->
+                    List.foldl (\e acc -> sigVarCountOf e acc) n elems
+
+                Mono.MRecord _ fields ->
+                    Dict.foldl (\_ ft acc -> sigVarCountOf ft acc) n fields
+
+                Mono.MCustom _ _ _ args ->
+                    List.foldl (\a acc -> sigVarCountOf a acc) n args
+
+                _ ->
+                    n
+
+        sigfactLine =
+            let
+                tallied =
+                    Array.foldl
+                        (\entry acc ->
+                            case entry of
+                                Just ( Mono.Global sfHome sfName, mt ) ->
+                                    let
+                                        nvar =
+                                            sigVarCountOf mt 0
+                                    in
+                                    if nvar == 0 then
+                                        acc
+
+                                    else
+                                        let
+                                            nRowArrows =
+                                                sigArrowCountOf mt 0
+
+                                            bump k n a =
+                                                Dict.update k (\v -> Just (n + Maybe.withDefault 0 v)) a
+
+                                            perG =
+                                                Dict.update sfName
+                                                    (\v ->
+                                                        let
+                                                            cur =
+                                                                Maybe.withDefault { vars = 0, rows = 0 } v
+                                                        in
+                                                        Just { vars = cur.vars + nvar, rows = cur.rows + 1 }
+                                                    )
+                                                    acc.perG
+                                        in
+                                        case Dict.get (TOpt.toComparableGlobal (TOpt.Global sfHome sfName)) sFinal.lssSignatures of
+                                            Nothing ->
+                                                { acc | cells = bump "noSig" nvar acc.cells, perG = perG }
+
+                                            Just sig ->
+                                                let
+                                                    nSigArrows =
+                                                        Array.length sig.arrows
+
+                                                    factArrows =
+                                                        Array.foldl
+                                                            (\f n ->
+                                                                if f.members /= [] || f.top then
+                                                                    n + 1
+
+                                                                else
+                                                                    n
+                                                            )
+                                                            0
+                                                            sig.arrows
+
+                                                    shapeTag =
+                                                        if nRowArrows > nSigArrows then
+                                                            "|extra"
+
+                                                        else
+                                                            "|eq"
+
+                                                    sigTag =
+                                                        if sig.trivial then
+                                                            "trivial"
+
+                                                        else
+                                                            "facts"
+
+                                                    cells1 =
+                                                        bump (sigTag ++ shapeTag) nvar acc.cells
+
+                                                    cells2 =
+                                                        if not sig.trivial && List.isEmpty sig.residual then
+                                                            bump "factsNoQ" nvar cells1
+
+                                                        else
+                                                            cells1
+
+                                                    cells3 =
+                                                        if not sig.trivial && factArrows == 0 then
+                                                            bump "factsRepOnly" nvar cells2
+
+                                                        else
+                                                            cells2
+                                                in
+                                                { acc | cells = cells3, perG = perG }
+
+                                Just ( Mono.Accessor _, mt ) ->
+                                    let
+                                        nvar =
+                                            sigVarCountOf mt 0
+                                    in
+                                    if nvar == 0 then
+                                        acc
+
+                                    else
+                                        { acc
+                                            | cells =
+                                                Dict.update "accessorRow"
+                                                    (\v -> Just (nvar + Maybe.withDefault 0 v))
+                                                    acc.cells
+                                        }
+
+                                Nothing ->
+                                    acc
+                        )
+                        { cells = Dict.empty, perG = Dict.empty }
+                        g.registry.reverseMapping
+
+                cellsLine =
+                    Dict.toList tallied.cells
+                        |> List.map (\( k, n ) -> k ++ "=" ++ String.fromInt n)
+                        |> String.join " "
+
+                topLine =
+                    Dict.toList tallied.perG
+                        |> List.sortBy (\( _, r ) -> negate r.vars)
+                        |> List.take 10
+                        |> List.map
+                            (\( gn, r ) ->
+                                let
+                                    -- Name-only aggregation is ambiguous
+                                    -- across homes; report sig detail from
+                                    -- the FIRST key ending ".name" (TOpt
+                                    -- comparable format).
+                                    sigDesc =
+                                        Dict.foldl
+                                            (\k sig found ->
+                                                if found == "" && String.endsWith ("." ++ gn) k then
+                                                    (if sig.trivial then
+                                                        "triv"
+
+                                                     else
+                                                        "facts"
+                                                    )
+                                                        ++ ":"
+                                                        ++ String.fromInt (Array.length sig.arrows)
+                                                        ++ "a/"
+                                                        ++ String.fromInt (List.length sig.residual)
+                                                        ++ "q"
+
+                                                else
+                                                    found
+                                            )
+                                            ""
+                                            sFinal.lssSignatures
+                                in
+                                gn
+                                    ++ "="
+                                    ++ String.fromInt r.vars
+                                    ++ "("
+                                    ++ (if sigDesc == "" then
+                                            "noSig"
+
+                                        else
+                                            sigDesc
+                                       )
+                                    ++ ")"
+                            )
+                        |> String.join " "
+            in
+            "sigfact: " ++ cellsLine ++ "\nsigfactg: " ++ topLine
+
         -- ⊤ SITE SPLIT (plans/lss-provenance-join-and-demand-sigs.md §4.6):
         -- with rsTop healing the recoverable placeholder class at licensed
         -- kernel-alias joins, the SURVIVING ⊤s are an undifferentiated mix.
@@ -3724,7 +3625,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
             -- zero row reads as "measured, found nothing" rather than "never
             -- executed" — the `qCensus` misreading, one flag along.
             ++ (if sFinal.env.lss.arrowCensus then
-                    [ stampWalkLine, livenessLine, topSiteLine, topKindLine, destrBendLine, varfixLine, varfix3Line, posLine ]
+                    [ stampWalkLine, livenessLine, topSiteLine, topKindLine, destrBendLine, varfixLine, varfix3Line, sigfactLine, posLine ]
 
                 else
                     []

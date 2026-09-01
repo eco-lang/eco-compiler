@@ -241,6 +241,11 @@ query facts calleeType =
             -- Exactly as unusable as a genuine ⊤ for the borrow oracle.
             Poison PTop
 
+        Mono.LPartial _ ->
+            -- A LOWER bound (lss-lpartial §2): unknown inhabitants may
+            -- exist, so the oracle must not reason from the listed members.
+            Poison PTop
+
         Mono.LSet [ m ] ->
             resolveMember facts calleeType m
 

@@ -718,6 +718,9 @@ annoHasSize n anno =
         Mono.LVar _ ->
             False
 
+        Mono.LPartial _ ->
+            False
+
 
 describeAnnos : List Mono.LambdaSetAnno -> String
 describeAnnos annos =
@@ -733,6 +736,9 @@ describeAnnos annos =
 
                     Mono.LSet ms ->
                         "LSet[" ++ String.join "," (List.map String.fromInt ms) ++ "]"
+
+                    Mono.LPartial ms ->
+                        "LPartial[" ++ String.join "," (List.map String.fromInt ms) ++ "]"
             )
             annos
         )

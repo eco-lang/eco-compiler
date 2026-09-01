@@ -202,6 +202,9 @@ renderAnno anno =
         Mono.LSet ms ->
             "LSet[" ++ String.join "," (List.map String.fromInt ms) ++ "]"
 
+        Mono.LPartial ms ->
+            "LPartial[" ++ String.join "," (List.map String.fromInt ms) ++ "]"
+
 
 kernelConsCallCount : Mono.MonoGraph -> Int
 kernelConsCallCount (Mono.MonoGraph data) =

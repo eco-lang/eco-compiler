@@ -414,6 +414,9 @@ annoSize a =
         Mono.LTop _ ->
             -2
 
+        Mono.LPartial _ ->
+            -3
+
 
 neverFalselyComplete : Mono.LambdaSetAnno -> Bool
 neverFalselyComplete anno =
@@ -422,6 +425,9 @@ neverFalselyComplete anno =
             True
 
         Mono.LVar _ ->
+            True
+
+        Mono.LPartial _ ->
             True
 
         Mono.LSet ms ->
@@ -443,6 +449,9 @@ describe annos =
 
                         Mono.LSet ms ->
                             "LSet " ++ String.fromInt (List.length ms)
+
+                        Mono.LPartial ms ->
+                            "LPartial " ++ String.fromInt (List.length ms)
                 )
                 annos
             )

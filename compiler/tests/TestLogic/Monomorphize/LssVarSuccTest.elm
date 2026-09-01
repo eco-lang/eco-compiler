@@ -208,3 +208,6 @@ describeAnno a =
 
         Mono.LSet ms ->
             "LSet " ++ String.fromInt (List.length ms)
+
+        Mono.LPartial ms ->
+            "LPartial " ++ String.fromInt (List.length ms)

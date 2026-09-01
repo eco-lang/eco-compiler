@@ -1549,7 +1549,7 @@ and `captureAbi` are placeholder `Nothing` at mono time (filled by GlobalOpt).
 specializeLambda : Maybe TypeIds.SrcLambdaId -> List ( Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 specializeLambda srcLam params body canType =
     Engine.andThen
-        (\monoType0 ->
+        (\( monoType0, maybeHeadVar ) ->
             Engine.andThen
                 (\classifiedParams ->
                     let
@@ -1572,24 +1572,53 @@ specializeLambda srcLam params body canType =
                         (\maybeMember ->
                             Engine.andThen
                                 (\lambdaId ->
-                                    Engine.map
-                                        (\monoBody ->
-                                            Mono.MonoClosure
-                                                { lambdaId = lambdaId
-                                                , srcLambda = srcLam
+                                    Engine.andThen
+                                        (\monoBody s ->
+                                            case
+                                                -- M1 flowConnect v2, PRODUCER half
+                                                -- (plans/lss-var-chain-roots.md §9.10):
+                                                -- `monoType0` was zonked BEFORE the body
+                                                -- was translated (v1's null). Unify the
+                                                -- body's solved type into the kept head
+                                                -- variable's RESULT slot and re-zonk —
+                                                -- the paper's T-Abs identity (closure
+                                                -- type contains the body's type),
+                                                -- reconstructed in the ONE store world.
+                                                -- v1.1's annotation-level enrich here
+                                                -- measured +46 conflict-⊤ (§9.9, L7's
+                                                -- third confirmation) — diverged copies
+                                                -- are the one thing this must not make.
+                                                (case ( s.env.lss.enabled && s.env.lss.flowConnect, maybeHeadVar ) of
+                                                    ( True, Just headVar ) ->
+                                                        connectLambdaResult (List.length params) headVar monoBody monoType0 s
 
-                                                -- Fix B (LSS_017): the id this instance was minted
-                                                -- under (spec-qualified when keyed-routed) — the
-                                                -- interning is idempotent, so this re-reads the id
-                                                -- classifyLambdaHead already injected.
-                                                , lssMember = maybeMember
-                                                , captures = Closure.computeClosureCaptures monoParams monoBody
-                                                , params = monoParams
-                                                , closureKind = Nothing
-                                                , captureAbi = Nothing
-                                                }
-                                                monoBody
-                                                monoType0
+                                                    _ ->
+                                                        Ok ( monoType0, s )
+                                                )
+                                            of
+                                                Err e ->
+                                                    Err e
+
+                                                Ok ( monoType1, s1 ) ->
+                                                    Ok
+                                                        ( Mono.MonoClosure
+                                                            { lambdaId = lambdaId
+                                                            , srcLambda = srcLam
+
+                                                            -- Fix B (LSS_017): the id this instance was minted
+                                                            -- under (spec-qualified when keyed-routed) — the
+                                                            -- interning is idempotent, so this re-reads the id
+                                                            -- classifyLambdaHead already injected.
+                                                            , lssMember = maybeMember
+                                                            , captures = Closure.computeClosureCaptures monoParams monoBody
+                                                            , params = monoParams
+                                                            , closureKind = Nothing
+                                                            , captureAbi = Nothing
+                                                            }
+                                                            monoBody
+                                                            monoType1
+                                                        , s1
+                                                        )
                                         )
                                         (Engine.scoped (Engine.andThen (\_ -> translate body) (insertVars monoParams)))
                                 )
@@ -1618,7 +1647,7 @@ def's binder/param types and every param-use call site zonks LTop. The
 zonked structure is identical either way (leaf demand flow is memo-shared);
 only annotations gain content — lss-off byte-identity untouched.
 -}
-classifyLambdaHead : Int -> Maybe TypeIds.SrcLambdaId -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
+classifyLambdaHead : Int -> Maybe TypeIds.SrcLambdaId -> Can.Type TypeIds.MVarId -> Step ( Mono.MonoType, Maybe IO.Variable )
 classifyLambdaHead arity srcLam canType s0 =
     if s0.env.lss.enabled then
         let
@@ -1737,10 +1766,23 @@ classifyLambdaHead arity srcLam canType s0 =
                                         Err e
 
                                     Ok ( classified, s4 ) ->
-                                        Ok ( Mono.overlayAnnotations classified zonked, s4 )
+                                        -- M1 v2 (flow-repair §9.10): the loaded
+                                        -- variable rides along so the caller can
+                                        -- unify the body's solved type into its
+                                        -- result slot POST-body and re-zonk —
+                                        -- restoring the paper's T-Abs identity
+                                        -- (closure type ⊇ body type) in the ONE
+                                        -- store world, where v1.1's annotation
+                                        -- copy manufactured conflict-⊤.
+                                        Ok ( ( Mono.overlayAnnotations classified zonked, Just funcVar ), s4 )
 
     else
-        classifyAs Mono.tkClassLambda canType s0
+        case classifyAs Mono.tkClassLambda canType s0 of
+            Err e ->
+                Err e
+
+            Ok ( classified, s1 ) ->
+                Ok ( ( classified, Nothing ), s1 )
 
 
 allocLambdaId : Step Mono.LambdaId
@@ -3673,6 +3715,13 @@ by `translateArgsWith`.
 type ArgStash
     = StashNone
     | StashLocalMulti IO.Variable
+      -- Flow repair M1 (plans/lss-var-chain-roots.md §9.5, `lss.flowConnect`):
+      -- the param's own store variable, stashed for LAMBDA-LITERAL args so
+      -- the arg's fully-translated type (heads AND interiors, the body's
+      -- solved sets) can be unified back into it after translation — the
+      -- App-rule σ-transport at the one edge Translate never rebuilt
+      -- (`argUnifyVar`'s fresh load carries only the head injection).
+    | StashParam IO.Variable
 
 
 {-| Like `unifyParamsWithArgExprs` but returns, per arg, what the argument's
@@ -3744,7 +3793,19 @@ unifyParamsCollect funcVar args s0 =
                                                                         Err e
 
                                                                     Ok ( restStash, s5 ) ->
-                                                                        Ok ( StashNone :: restStash, s5 )
+                                                                        let
+                                                                            -- M1 flowConnect: stash the param
+                                                                            -- var for lambda-literal args so
+                                                                            -- `translateArgsWith` can write the
+                                                                            -- translated type back into it.
+                                                                            entry =
+                                                                                if s5.env.lss.enabled && s5.env.lss.flowConnect && isLambdaLiteral arg then
+                                                                                    StashParam pParam
+
+                                                                                else
+                                                                                    StashNone
+                                                                        in
+                                                                        Ok ( entry :: restStash, s5 )
 
                             Nothing ->
                                 -- Over-applied or opaque callee spine: no
@@ -3836,10 +3897,259 @@ translateArgsWith stash args =
                                     Ok ( ( freshName, instType ), s2 ) ->
                                         Ok ( Mono.MonoVarLocal freshName instType, s2 )
 
+                ( StashParam pParam, _ ) ->
+                    -- M1 flowConnect (plans/lss-var-chain-roots.md §9.5): the
+                    -- lambda's fully-translated type carries its body's solved
+                    -- sets; encode it (annotations faithful — the enrichFromEnv
+                    -- helper) and unify into the param slot. STORE unification:
+                    -- both sides share the slot afterwards, so the L7
+                    -- `unionAnno (LSet, LVar)` conflict path cannot arise
+                    -- (AR-F2), and re-runs are idempotent (set ∪ set, AR-F4).
+                    \s0 ->
+                        case translate arg s0 of
+                            Err e ->
+                                Err e
+
+                            Ok ( monoArg, s1 ) ->
+                                case Mono.typeOf monoArg of
+                                    Mono.MFunction _ _ _ _ ->
+                                        connectParamArg pParam monoArg (Mono.typeOf monoArg) s1
+
+                                    _ ->
+                                        -- A lambda literal's type is an arrow
+                                        -- by construction; anything else means
+                                        -- the translation reshaped it — skip,
+                                        -- counted.
+                                        Ok ( monoArg, Engine.bumpArgFlowCensus "flow|connNoop" s1 )
+
                 _ ->
                     translate arg
         )
         (List.map2 Tuple.pair stash args)
+
+
+{-| lss-lpartial §2 (the flowConnect amendment): strip ⊤ from a type about
+to be ENCODED into the store, replacing each with a DISTINCT fresh set
+variable (negative ids — disjoint from zonk ids, and distinct so the
+encode's var-slot sharing cannot alias unrelated positions). Under
+lower-bound semantics this is the paper's channel: a Q-constraint carries
+members only — there is no ⊤ to transport. This is what turned v2's ⊤ +703
+(`topCarried` 280) into no-ops at the target slots.
+-}
+deTopAnnos : Mono.MonoType -> Mono.MonoType
+deTopAnnos t =
+    Tuple.first (deTopGo t -1)
+
+
+deTopGo : Mono.MonoType -> Int -> ( Mono.MonoType, Int )
+deTopGo t nextId =
+    case t of
+        Mono.MFunction _ anno args result ->
+            let
+                ( anno1, n1 ) =
+                    case anno of
+                        Mono.LTop _ ->
+                            ( Mono.LVar nextId, nextId - 1 )
+
+                        _ ->
+                            ( anno, nextId )
+
+                ( args1, n2 ) =
+                    List.foldr
+                        (\a ( accL, accN ) ->
+                            let
+                                ( a1, accN1 ) =
+                                    deTopGo a accN
+                            in
+                            ( a1 :: accL, accN1 )
+                        )
+                        ( [], n1 )
+                        args
+
+                ( result1, n3 ) =
+                    deTopGo result n2
+            in
+            ( Mono.mFunction anno1 args1 result1, n3 )
+
+        Mono.MList _ inner ->
+            let
+                ( inner1, n1 ) =
+                    deTopGo inner nextId
+            in
+            ( Mono.mList inner1, n1 )
+
+        Mono.MTuple _ elems ->
+            let
+                ( elems1, n1 ) =
+                    List.foldr
+                        (\e ( accL, accN ) ->
+                            let
+                                ( e1, accN1 ) =
+                                    deTopGo e accN
+                            in
+                            ( e1 :: accL, accN1 )
+                        )
+                        ( [], nextId )
+                        elems
+            in
+            ( Mono.mTuple elems1, n1 )
+
+        Mono.MRecord _ fields ->
+            let
+                ( fields1, n1 ) =
+                    Dict.foldl
+                        (\fn ft ( accD, accN ) ->
+                            let
+                                ( ft1, accN1 ) =
+                                    deTopGo ft accN
+                            in
+                            ( Dict.insert fn ft1 accD, accN1 )
+                        )
+                        ( Dict.empty, nextId )
+                        fields
+            in
+            ( Mono.mRecord fields1, n1 )
+
+        Mono.MCustom _ dtHome dtName args ->
+            let
+                ( args1, n1 ) =
+                    List.foldr
+                        (\a ( accL, accN ) ->
+                            let
+                                ( a1, accN1 ) =
+                                    deTopGo a accN
+                            in
+                            ( a1 :: accL, accN1 )
+                        )
+                        ( [], nextId )
+                        args
+            in
+            ( Mono.mCustom dtHome dtName args1, n1 )
+
+        _ ->
+            ( t, nextId )
+
+
+{-| The M1 write-back proper, split out so the stash arm stays readable.
+-}
+connectParamArg : IO.Variable -> Mono.MonoExpr -> Mono.MonoType -> Step Mono.MonoExpr
+connectParamArg pParam monoArg argType s1 =
+    case Store.monoTypeToVar (deTopAnnos argType) s1 of
+        Err e ->
+            Err e
+
+        Ok ( argTypeVar, s2 ) ->
+            case unifyStepBestEffort pParam argTypeVar s2 of
+                Err e ->
+                    Err e
+
+                Ok ( _, s3 ) ->
+                    Ok
+                        ( monoArg
+                        , Engine.bumpArgFlowCensus "flow|connLam"
+                            (if Mono.hasTopAnno argType then
+                                Engine.bumpArgFlowCensus "flow|topCarried" s3
+
+                             else
+                                s3
+                            )
+                        )
+
+
+
+
+{-| M1 v2 producer half (plans/lss-var-chain-roots.md §9.10): peel exactly
+`nparams` parameter slots down the kept head variable's spine, unify the
+body's solved type into the RESULT variable there (`monoTypeToVar` encodes
+the body's annotations faithfully — the enrichFromEnv discipline), then
+re-zonk and overlay onto the classified structure (the ABI guard, same as
+the first zonk). ONE store world: the closure's type and every slot its
+value was unified with now agree by construction — no diverged annotation
+copies for `unionAnno` to meet (v1.1's +46 conflict-⊤, §9.9). Peel failure
+(reshaped spine) keeps the pre-body type, counted.
+-}
+connectLambdaResult : Int -> IO.Variable -> Mono.MonoExpr -> Mono.MonoType -> Step Mono.MonoType
+connectLambdaResult nparams headVar monoBody monoType0 s0 =
+    case peelParamsVar nparams headVar s0 of
+        Err e ->
+            Err e
+
+        Ok ( maybeResVar, s1 ) ->
+            case maybeResVar of
+                Nothing ->
+                    Ok ( monoType0, Engine.bumpArgFlowCensus "flow|lamResPeelMiss" s1 )
+
+                Just resVar ->
+                    case Store.monoTypeToVar (deTopAnnos (Mono.typeOf monoBody)) s1 of
+                        Err e ->
+                            Err e
+
+                        Ok ( bodyVar, s2 ) ->
+                            case unifyStepBestEffort resVar bodyVar s2 of
+                                Err e ->
+                                    Err e
+
+                                Ok ( _, s3 ) ->
+                                    case Store.zonkToMono headVar s3 of
+                                        Err e ->
+                                            Err e
+
+                                        Ok ( zonked2, s4 ) ->
+                                            let
+                                                monoType1 =
+                                                    Mono.overlayAnnotations monoType0 zonked2
+                                            in
+                                            if monoType1 == monoType0 then
+                                                Ok ( monoType0, Engine.bumpArgFlowCensus "flow|lamResSame" s4 )
+
+                                            else
+                                                Ok ( monoType1, Engine.bumpArgFlowCensus "flow|lamResEnrich" s4 )
+
+
+{-| Step into a lambda-type variable past exactly `n` parameter slots
+(`Store.arrowParts` peels one param per call, matching the closure's param
+list 1:1 — the `unifyParamsCollect` discipline), chasing transparent
+aliases without consuming depth (the `papSuccGoC` discipline). `Nothing`
+when the spine ends early.
+-}
+peelParamsVar : Int -> IO.Variable -> Step (Maybe IO.Variable)
+peelParamsVar n v s0 =
+    if n <= 0 then
+        Ok ( Just v, s0 )
+
+    else
+        case Engine.liftIO (UF.get v) s0 of
+            Err e ->
+                Err e
+
+            Ok ( desc, s1 ) ->
+                case desc.content of
+                    IO.Alias _ _ _ real ->
+                        peelParamsVar n real s1
+
+                    _ ->
+                        case Store.arrowParts desc.content of
+                            Just ( _, pRest ) ->
+                                peelParamsVar (n - 1) pRest s1
+
+                            Nothing ->
+                                Ok ( Nothing, s1 )
+
+
+{-| Is the argument a lambda literal? (The M1 flowConnect trigger — only
+literals carry a body whose translation solves interior sets in-item.)
+-}
+isLambdaLiteral : TOpt.Expr TypeIds.MVarId -> Bool
+isLambdaLiteral arg =
+    case arg of
+        TOpt.Function _ _ _ _ ->
+            True
+
+        TOpt.TrackedFunction _ _ _ _ ->
+            True
+
+        _ ->
+            False
 
 
 {-| `Just name` when the arg is a direct reference to a local-multi FUNCTION.
@@ -6696,6 +7006,9 @@ annoCellLabel anno =
 
         Mono.LTop _ ->
             "top"
+
+        Mono.LPartial _ ->
+            "part"
 
 
 inferCaseType : List ( Int, Mono.MonoExpr ) -> Mono.Decider Mono.MonoChoice -> Mono.MonoType -> Mono.MonoType

@@ -381,6 +381,9 @@ neverFalselyComplete anno =
         Mono.LVar _ ->
             True
 
+        Mono.LPartial _ ->
+            True
+
         Mono.LSet ms ->
             List.length ms >= 2
 
@@ -410,4 +413,7 @@ describeAnno anno =
             "LVar " ++ String.fromInt n
 
         Mono.LSet ms ->
-            "LSet " ++ String.fromInt (List.length ms) ++ String.concat (List.map (\m -> " " ++ String.fromInt m) ms)
+            "LSet " ++ String.fromInt (List.length ms)
+
+        Mono.LPartial ms ->
+            "LPartial " ++ String.fromInt (List.length ms) ++ String.concat (List.map (\m -> " " ++ String.fromInt m) ms)

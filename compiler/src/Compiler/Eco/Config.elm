@@ -707,20 +707,19 @@ type alias LssConfig =
     -- rides the OFF arm.
     , varLambda : Bool
 
-    -- Var chain-root writes, Phase 3v2 (plans/lss-var-chain-roots.md §8.1):
-    -- post-drain enrichment of var positions under a GLOBAL-headed set, from
-    -- the union over the member globals' registry rows ALIGNED to the head's
-    -- offset (a `p|X|k` value is X's type with k args consumed). Strict
-    -- cells, all-or-nothing across members, arg-count agreement, and partial
-    -- stages refused (measured 0 corpus-wide).
-    -- DEFAULT-OFF PERMANENTLY (2026-09-01, §8.5): built and measured at 5
-    -- writes. The class its census predicted (617) fails the structural
-    -- agreement check — the member global's own rows disagree on argument
-    -- count at the aligned offset — and that guard cannot be relaxed without
-    -- dropping inhabitants. Kept in tree as the recorded refutation, and for
-    -- `rowAlignPrefix`, which any future offset-aligned mechanism reuses.
-    -- Env `ECO_MONO_LSS_VAR_ROW_ENRICH`; hash token `lssVR=`.
-    , varRowEnrich : Bool
+    -- Flow repair M1 (plans/lss-var-chain-roots.md §9.5-9.7): deep argument
+    -- write-back for LAMBDA-LITERAL args. After the arg is translated (its
+    -- MonoType then carries the body's solved sets), unify it into the
+    -- callee's param STORE variable — the paper's App-rule σ-transport
+    -- re-tied at the one edge Translate never rebuilt. Store unification,
+    -- not annotation enrichment: both sides SHARE the slot, so the L7
+    -- `unionAnno (LSet, LVar) → ⊤conflict` path cannot arise (AR-F2).
+    -- DEFAULT-ON since 2026-09-01 under the COVERAGE metric
+    -- (lss-lpartial §8): var −80 / ⊤ −1 / +0.02 pp on the LPartial
+    -- lattice, where pre-LPartial it manufactured +703 ⊤. Wall +2.6 %
+    -- accepted by user decision. Escape hatch `ECO_MONO_LSS_FLOW_CONNECT=0`;
+    -- hash token `lssFC=0` rides the OFF arm.
+    , flowConnect : Bool
     }
 
 
@@ -777,7 +776,7 @@ defaultLss =
     , varSucc = True
     , varCtorRows = True
     , varLambda = True
-    , varRowEnrich = False
+    , flowConnect = True
     }
 
 
@@ -1179,8 +1178,7 @@ lssDecoder =
         |> D.apply (D.optionalField "varSucc" D.bool defaultLss.varSucc)
         |> D.apply (D.optionalField "varCtorRows" D.bool defaultLss.varCtorRows)
         |> D.apply (D.optionalField "varLambda" D.bool defaultLss.varLambda)
-        |> D.apply (D.optionalField "varRowEnrich" D.bool defaultLss.varRowEnrich)
-
+        |> D.apply (D.optionalField "flowConnect" D.bool defaultLss.flowConnect)
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
 decoder and the `ECO_MONO_ENGINE` env override. `Nothing` on an unknown value.
@@ -1776,10 +1774,11 @@ hash cfg =
                       else
                         []
 
-                    -- Offset row-enrichment var writes: artifact-affecting.
-                    , if lss.varRowEnrich /= defaultLss.varRowEnrich then
-                        [ "lssVR="
-                            ++ (if lss.varRowEnrich then
+                    -- Flow-connect write-back: artifact-affecting (demand
+                    -- types move, hence SpecKeys — AR-F3).
+                    , if lss.flowConnect /= defaultLss.flowConnect then
+                        [ "lssFC="
+                            ++ (if lss.flowConnect then
                                     "1"
 
                                 else

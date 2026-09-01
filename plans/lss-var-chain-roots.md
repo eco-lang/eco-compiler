@@ -1,6 +1,10 @@
 # LSS var elimination — chain-root writes
 
-**Status: PLANNED + adversarially reviewed (2026-08-31). P0 not yet run.**
+**Status (2026-09-01): Phases 1/2/4v2 SHIPPED DEFAULT-ON (varSucc,
+varCtorRows, varLambda); Phase 3 v1+v2 REFUTED and REMOVED (§8.5); the
+live arc is §9 FLOW REPAIR — recover lost edges instead of settle
+reconstruction. §§0–5 below are the original 2026-08-31 plan, kept for
+the record; results live in §4.x, §8.x, §9.**
 
 Successor plan to `lss-ctor-arrow-identity.md` (CLOSED — see its §13), which
 ends with the var pool fully attributed (§12–§12.2 there). This plan turns
@@ -674,14 +678,108 @@ CANNOT soundly reach, because X's own specs do not structurally agree at
 the aligned offset. Cost side: `varRowEnrich` also measured ≈ +36 s wall
 (+4.6 %) for those 5 writes.
 
-**Disposition:** `lss.varRowEnrich` stays DEFAULT-OFF permanently, kept
-in tree as the measured refutation (and because its `rowAlignPrefix` is
-the alignment primitive a future mechanism would reuse). Recorded rather
-than deleted, per the arc's habit of keeping refutations findable.
+**Disposition (revised 2026-09-01, user directive):** `lss.varRowEnrich`
+is REMOVED from the tree entirely — flag, env override, hash token,
+`settleVarRowEnrich`, and `rowAlignPrefix` (~380 lines). The refutation
+lives HERE, not in dead code; the successor direction (§8.6/§9) does not
+reuse the alignment primitive, so keeping it would be inventory, not
+insurance. The settle chain is now varSucc → varLambda → varSucc.
 OPEN QUESTION for anyone revisiting: the pass does not yet distinguish
 "rows disagree with each other" from "use site disagrees with the rows" —
 one counter would say which, and only the second kind could conceivably
 be repaired by aligning against the use site's own spine.
+
+### §8.6 IF NOT ROW UNIONS, THEN WHAT? — techniques that could reach the
+### 617 (design note, 2026-09-01)
+
+**The lesson the two mechanisms taught together: AUTHORITY BEATS
+AGGREGATION.** `varLambda` wrote 597 because it read ONE authoritative
+source — the lambda's own body, the single place its result is decided.
+`varRowEnrich` wrote 5 because it aggregated over every spec of a global
+and then needed them to agree. Mono has already SPLIT each global into
+specs whose flattened arities differ by demand (staged vs flat — the H6
+arc), so "X's rows" is not one authority, it is many disagreeing ones.
+Every candidate below is a way of recovering a single authority.
+
+**1. Spec-resolved reading (removes the union entirely — strongest).**
+If the use site can name WHICH spec of X its value came from, there is
+nothing to union: read that spec's row. Today `p|X|k` names the global
+and the supplied count, not the spec; LSS_024 already layout-qualifies
+member ids, and `AbiCloning`'s devirt already picks a spec at a site by
+`eqLayout` matching. Reusing that resolution here (or qualifying `p|`
+members per instantiation) is the exact analog of what made `varLambda`
+work, and it is the same refinement `lshapeMiss = 1,101` points at on the
+lambda side. Cost: member-identity changes are invasive but precedented.
+
+**2. Use-site-compatible filtering (cheap; ONE measurement decides).**
+Keep only the rows structurally compatible with the use site instead of
+demanding global agreement. This is NOT the unsound relaxation refuted
+above: dropping rows arbitrarily drops inhabitants, but mono is
+type-correct, so a row whose shape differs from the use site's describes
+values that cannot sit at that position at all — non-inhabitants, not
+lost ones. THE RISK, which must be measured before building: staged/flat
+re-arity means one logical value can appear at two arities, and then a
+genuine inhabitant looks incompatible. The counter named in the OPEN
+QUESTION above (rows-vs-rows versus rows-vs-use-site) is exactly what
+separates the safe case from the unsafe one.
+
+**3. Restore the flow edge — PROBED, and the finding reframes the whole
+question.** A scratch fixture (`compose2 g f = \x -> g (f x)`, i.e. two
+params with a body-returned lambda, consumed by `List.map`) run through
+the unit pipeline at shipped defaults gives:
+
+    compose2 :: ((.)-{4}->.)-{5}->((.)-{4}->.)-{5+6}->(.)-{1}->.
+    map      :: ((.)-{1}->.)-VAR1->([.])-VAR0->[.]
+
+The body-returned lambda is member `{1}` in `compose2`'s own row — and it
+ARRIVES at `List.map`'s `/a0` as `{1}`. **The flow mechanism is not
+missing; it already works, and it is doing the heavy lifting.** The
+beyond-arity result that the union could not reconstruct is delivered by
+unification directly, with no alignment and no aggregation.
+
+That reframes the residual: these positions are not "a class flow cannot
+reach", they are "a class where the flow that normally reaches them was
+LOST". Where does it get lost? Inside one item there is ONE store and
+unification connects everything — which is exactly why §5.1 found that
+one-module fixtures cannot manufacture the var classes at all (the same
+fact from the other side). Across items the connection must be
+re-established through SIGNATURES (`ArrowFact` / sigFlow), and the
+provenance work measured signatures as **84 % trivial** — carrying no
+facts. So the corpus's var residue is, on this reading, mostly the
+signature channel failing to carry what the paper's `d⟨ᾱ⟩ : (Q ⇒ τ)`
+carries by construction.
+
+**Why staged currying stops mattering under flow.** The union had to
+align paths across differently-shaped rows, which is where the shapes
+collided. Flow never matches shapes: it connects one slot to another at
+the moment both are known to be the same value. `add3 1` in a
+flat-consuming caller and `add3 1` in a staged-consuming caller are
+simply two positions, each unified with its own instantiation; they never
+have to agree with each other, so the disagreement that killed §8.1
+cannot arise. The shape problem was manufactured BY the reconstruction,
+not by the program.
+
+**The honest limit:** flow yields the CORRECT set, not necessarily a
+singleton. Where two instantiations merge into one shared spec (the §11
+`andThen` aggregation), the honest answer is multi-member — which is
+precisely GAP-6 again, and another reason sum lowering is the standing
+next lever rather than more precision work.
+
+**Next step if this is picked up:** measure what signature facts carry at
+the residual positions (are they trivial because the callee's own row is
+var, or because the fact never installs?). That is a census question, not
+a mechanism question, and it is the cheapest way to size the real lever.
+
+**What will NOT help:** relaxing the agreement guard (unsound — the
+refutation stands), and further census refinement (the class is already
+exhaustively classified; more counters would only re-describe it).
+
+**The honest possibility to hold open:** part of the 617 may be
+unreachable by ANY technique because the disagreement is real — different
+inhabitants at one member — in which case the sound answer is a
+multi-member set, not a singleton. That is a coverage gain with no
+dispatch value while GAP-6 binds, which is a reason to spend the effort
+on sum lowering before spending it here.
 
 ### §8.0 P0 RESULTS FOR §8.1/§8.2 + THE ORDER-6 SPLIT (2026-08-31)
 
@@ -868,3 +966,546 @@ typed-artifacts codec (the AR-1 precedent).
 extended. The remaining §4.5 classes stay parked: `noHead` 3,939 behind
 the Phase-5 license question, `contamVar` 987 behind a pass-through
 mark, `contamTop` 235 behind the ⊤ book.
+
+---
+
+## §9 THE FLOW-REPAIR ARC (user directive, 2026-09-01) — recover lost
+## edges instead of reconstructing at settle
+
+**Standing directive:** tackle the residue (the 617 papHead class and
+more) by REPAIRING FLOW — the paper's mechanism, where a use site's set
+arrives by unification along the real producer→use edge — rather than by
+further settle-time reconstruction. The §8.6 probe proved the mechanism
+already works where the edge survives (`compose2`'s body-lambda `{1}`
+arrives at `List.map`'s param with no union and no alignment); the
+residue is where the edge is LOST. Three deliverables: (a) measure what
+the signature channel actually carries at the residual positions, (b)
+pin the edge-losing code shapes as fixtures, (c) design the repair from
+the paper's signature discipline.
+
+### §9.1 The pinned examples (LssFlowEdgeLossTest.elm) — and what the
+### probes FALSIFIED on the way to them
+
+The first fixture design assumed the loss was mono-vs-poly (an
+α-instantiation story). Three scratch probes falsified that for this
+shape and replaced it with something sharper. ONE consumer, two
+producers, settle repairs OFF:
+
+    useStep f seed = (f seed) 2            -- consumes a 2-stage function
+
+    mkAdderC u = \a -> \b -> a + b + u     -- producer C: 1 declared param
+    useStep (mkAdderC 1) 5                 --   CALL-RESULT argument
+
+    mkAdder = \a -> \b -> a + b            -- producer V: 0 params (a VALUE)
+    useStep mkAdder 5                      --   BARE-REFERENCE argument
+
+Measured rows (settle off):
+
+    mkAdderC :: (.)-{5}->(.)-{1}->(.)-{2}->.       full member spine
+    useStep  :: ((.)-{1}->(.)-{2}->.)-...           arrives INTACT   (test 1)
+
+    mkAdder  :: (.)-{4}->(.)-VAR->.                 the PRODUCER'S OWN row
+    useStep  :: ((.)-{4}->(.)-VAR->.)-...           shares that var  (test 2)
+
+**Finding 1 — flow is not the failure here.** In the failing case the
+producer's own row lacks the inner member, and the consumer faithfully
+shares the same variable. Flow delivered; there was NOTHING TO DELIVER.
+
+**Finding 2 — the missing thing is a producer-side IDENTITY.** Producer
+V's nested lambdas are collapsed by mono-uncurry into ONE two-arg
+closure. The intermediate stage value — that closure with one argument
+supplied, a LAMBDA-PAP — has no name in the member algebra: it is not an
+`l|` member (not a whole lambda) and not a `p|g|k` member (its base is
+not a global). The paper never meets this case because it never
+uncurries — every λ keeps its own label and every stage is a λ. This is
+also exactly what `varsucc|skipNoSucc` counts at corpus scale (1,900
+events per round), and why the `l|`-parent chain class exists.
+
+**Finding 3 — settle already covers the fixture at defaults** (test 3):
+the folded root head is pap-able, so `varSucc` mints `p|mkAdder|1` and
+writes it consistently in BOTH rows. The arc's success metric is test 2
+flipping to sets WITH settle off — inference itself minting/delivering
+the stage identity — at which point the pins expire loudly by design.
+
+**Where the α/Q reading still stands:** this fixture no longer evidences
+it, but the corpus-level `facts|extra` cell of the §9.2 census still
+measures the α-born class directly; the hypothesis is unproven either
+way until those numbers land. The candidate repairs now include a third:
+**mint lambda-PAP stage identities at inference time** (`p|l:<mid>|k`
+members — the uncurry-aware completion of the paper's per-λ labels),
+which would make producer V's row carry its stages the way producer C's
+already does.
+
+### §9.2 P0 — the sigfact census (built, arrowCensus-gated)
+
+For every residual var position, correlate with the row global's
+signature. Cells (`sigfact:` line):
+
+- `noSig` — the row's global was never inferred (no signature at all).
+- `trivial|eq` / `trivial|extra` — signature exists but carries nothing
+  (`trivial`), with the row having equal / MORE arrows than the scheme.
+  Dominance here = hypothesis **H-R1**: the recording side loses facts.
+- `facts|eq` — non-trivial signature, same arrow population: the channel
+  carries facts yet the position stayed var — transport/apply defect.
+- `facts|extra` — non-trivial signature, row has arrows the scheme never
+  had: the **α-born class** (H-R2) — per-arrow facts can never cover
+  these; only the Q route can.
+- `factsNoQ` — non-trivial but `residual` empty: the Q half is unbuilt
+  for this global's quantified variables.
+- `factsRepOnly` — non-trivial purely by rep-linkage (no member/⊤ facts).
+
+Plus `sigfactg:` — the top var-hosting globals with their signature shape
+(`facts:12a/3q` = 12 scheme arrows, 3 Q constraints).
+
+**The decision rule:** H-R1 dominant → fix signature RECORDING (facts
+recorded before the def's knowledge settles; re-derive at completion).
+H-R2 dominant → build the instantiation edge: when a type variable is
+instantiated with an arrow-bearing type at a call, the fresh arrows must
+unify with the CALLER's arrows for that value (the paper's Q-instantiation;
+Eco's `residual` field is the prepared seam — §5.2/§5.3 of
+plans/lss-paper-inclusion-constraints.md were built for exactly this).
+Mixed → both, ordered by mass.
+
+### §9.3 What repair must preserve
+
+- **No settle reconstruction as the fix.** varLambda/varSucc/varCtorRows
+  stay (they are sound and shipped), but the arc's goal is that inference
+  delivers and the settle passes decay into no-ops — measurable as their
+  `wrote` counters FALLING while var falls too.
+- **The paper's discipline:** sets travel by unification at the moment
+  the connection is real; nothing is matched by shape after the fact
+  (§8.6's lesson — the shape problem was manufactured BY reconstruction).
+- **Keying stability:** signature/instantiation changes move demand
+  types, which move SpecKeys — expect cache-disjoint A/B legs and re-run
+  the MuTie/overlap pins (the §4.5 pin-casualty lesson).
+- **Honest ceiling:** flow yields the CORRECT set, not always a
+  singleton; shared specs still aggregate (GAP-6). Success metric stays
+  k1/kN at named cells + settle-counter decay, never bare coverage.
+
+### §9.4 P0 RESULTS (2026-09-01) — the sigfact census decides the arc
+
+Post-removal, post-flip defaults (varLambda now ON): positions=143,576,
+k1=99,593, **var=10,574**, top=1,225 — coverage **92.02 %**. Settle
+counters: varsucc 2,107 (3 rounds), varctor 1,263, varlam 597. Gates:
+E2E 1,717/1,717; elm-tests 13,400 / the standing 12, zero new (the
+corrected §9.1 pins pass). The sigfact classification is EXHAUSTIVE:
+294 + 95 + 1,330 + 8,855 = 10,574 exactly.
+
+| cell | var | share | reading |
+|---|---:|---:|---|
+| `trivial\|extra` | **8,855** | **83.7 %** | trivial sig AND instantiation-born arrows present |
+| `trivial\|eq` | 1,330 | 12.6 % | trivial sig, same arrow population |
+| `facts\|eq` | 294 | 2.8 % | channel carries facts, position still var |
+| `facts\|extra` | 95 | 0.9 % | non-trivial sig + α-born arrows |
+| `factsNoQ` | 7 | — | negligible |
+
+Per-global: map=2,867, andThen=1,705, apply=1,470, Ok=1,436,
+Decoder=790, Err=517, foldl=377 — ALL `triv:<n>a/0q` (trivial signature,
+zero Q constraints).
+
+**Interpretation — H-R1 (recording loss) is REFUTED as the main story,
+with a twist.** A trivial signature at `map : (a -> b) -> List a ->
+List b` is not a recording defect: it is the CORRECT signature for a
+polymorphic HOF — its sets are CALLER-SUPPLIED per use, exactly the
+paper's `α` with `Q` empty at the definition. The channel is not broken;
+it is correctly empty, and the loss is on the APPLICATION side: the
+caller's concrete knowledge never reaches the arrows born when its
+instantiation meets the scheme (heads arrive — `argUnifyVar` — depth
+does not). 96.3 % of residual var sits at trivially-signed globals; the
+dominant 8,855 have instantiation-born arrows to boot.
+
+**The repair, named (next design):**
+1. **Deep instantiation connection** (the 8,855): when demand
+   instantiation binds a type variable to an arrow-bearing type, unify
+   the instantiation's fresh arrows with the arrows the CALLER holds for
+   that value — deep, in the STORE (the paper's α-instantiation done
+   fully; not annotation enrichment, which was argFeedback's churn).
+   Shared specs then aggregate callers into honest kN by store union —
+   correct by construction. The §8.6 probe and §9.1 test 1 show exactly
+   this working where the connection exists.
+2. **Lambda-PAP stage identities** (§9.1's finding; lives in
+   `trivial|eq`): mint `p|l:<mid>|k` members so uncurried stage values
+   have names, as every λ does in the paper.
+3. `facts|*` (389): transport/apply defects, small — after 1 and 2.
+
+### §9.5 DESIGN — the three repairs, grounded in the delivery matrix
+
+The §9.4 numbers plus a code walk of the argument edge give a precise
+picture of what each argument FORM delivers into a callee's param slot
+today. `unifyParamsCollect` (Translate.elm) already unifies
+`pParam ↔ argVar` DEEP — the store connection exists; the question is
+what `argVar` carries, and it carries only what `argUnifyVar` puts there:
+a FRESH `Store.loadType` of the arg's Can type (LSS_006 — structure with
+unconstrained slots) plus per-form injections:
+
+| arg form | delivered today | hole |
+|---|---|---|
+| local (`VarLocal`) | DEEP — `enrichFromEnv` unifies `monoTypeToVar boundType` into the load | only as good as the bound annotation (`enrich\|bare`); local-multi skipped by design |
+| call result | DEEP — the inner call's own instantiation carries its sig facts into the value (§9.1 test 1: `{1},{2}` arrive) | — |
+| reference (`VarGlobal`) | head member (`g\|/k\|`) + `p\|g\|d` successors WITHIN `declaredArityOf` | 0-param values (arity walk sees 0 → no successors); body-owned content beyond arity |
+| **lambda literal** | **HEAD member only** (`injectArgLambdaMemberQualified`) | **the entire interior** — the lambda's result arrows stay fresh flex; the body's solved knowledge never reaches `canVar` |
+
+The 8,855 `trivial|extra` positions live at `map`/`andThen`/`apply`/
+`Ok`/`Decoder` — HOF and ctor rows whose arguments are overwhelmingly
+lambda literals and references. The dominant hole is the lambda-literal
+interior; the reference hole is §9.1's producer-identity case.
+
+**Mechanism 1 — deep argument write-back (`lss.flowConnect`).** After a
+lambda-literal argument is TRANSLATED (its MonoType then carries the
+body's solved sets — heads, interiors, payload annotations), unify
+`monoTypeToVar (Mono.typeOf monoArg)` into the param's store variable.
+This is `enrichFromEnv`'s exact pattern (store-level, deep) applied at
+the position where argFeedback tried annotation enrichment and churned.
+Why the store version cannot reproduce the churn: argFeedback created
+ANNOTATION copies (`enrichAnnotations`) on one side only, so later joins
+met `LSet × LVar` at `unionAnno` — which is ⊤conflict (the +45, L7). A
+store unify makes the two sides SHARE the slot: the flex adopts the set,
+later readers see one variable, and `unionAnno` never meets the split
+pair. Cross-caller aggregation at shared specs happens by store-join
+union — honest kN, correct by construction. ⊤ in the lambda's interior
+is NOT sanitized (argFeedback's `deTopAnnos` was an annotation-layer
+necessity): the store join is the lattice's honest join, ⊤ provenance
+rides `LsTop` kinds, and the var→⊤ conversions it may cause are measured
+(`flow|topCarried`), not hidden.
+
+Plumbing: `unifyParamsCollect` runs BEFORE args are translated, so the
+param variable must be carried across — re-land the reverted
+argFeedback's stash shape as a third `ArgStash` variant
+(`StashParam IO.Variable`), stashed for lambda-literal args only in v1,
+consumed in `translateArgsWith` after the arg's translation.
+
+**Mechanism 2 — stage identities for uncurried lambdas
+(`lss.lamStages`).** §9.1's producer hole: a multi-param lambda with a
+STAGED type has interior stage values (the lambda applied to k < nparams
+args — lambda-PAPs) that no member names; `varsucc|skipNoSucc` counts
+the consequence. Mint `p|l:<qualifiedMid>|k` members for k in
+1..nparams−1, written down the lambda's own type spine at
+classification time — the uncurry-aware completion of the paper's
+per-λ labels (`injectPapSuccessors`' exact shape, lambda-based key).
+Where mono KEEPS lambdas nested, the inner λ's own `l|` mid is the
+identity and mechanism 1 delivers it — no new name; the new kind exists
+ONLY where collapse erased the inner λ.
+
+**Mechanism 3 — `facts|*` (389).** Untouched until 1+2 land; re-census.
+
+### §9.6 ADVERSARIAL REVIEW — against the code and the paper
+
+**AR-F1 (paper, mechanism 1: FAITHFUL — this is the application rule).**
+In L^annot the argument's type CARRIES its σ into TIU at the
+application; Eco's Can.Type has no set slots, so Translate re-derives
+connections, and the lambda-literal edge is simply one it never rebuilt.
+The write-back restores exactly the σ-transport the paper's `App` rule
+performs. It is NOT an approximation being added; it is a lost edge
+being re-tied. The one adaptation is ⊤ (the paper has none): letting it
+flow through the join is the §4.9-consistent choice (⊤ only ever widens,
+never licenses).
+
+**AR-F2 (code, mechanism 1): the anti-churn claim is structural, and
+verifiable.** The L7 conflict manufacturer is `unionAnno (LSet, LVar) →
+topConflict` at ANNOTATION joins of diverged copies. Store-level
+`unifyStepBestEffort` resolves flex×set by adoption (the transport
+everything else relies on — enrichFromEnv precedent) — no conflict path
+exists. VERIFY IN BATTERY: `conflict` ⊤-kind count must not grow.
+
+**AR-F3 (code, mechanism 1): ORDER. The write-back races nothing.** It
+runs inside the same item's translation, before the call's
+`funcMonoType` zonk (`Store.zonkToMono funcVar` happens after
+`translateArgsWith` — verified order in `translateGlobalCallSlow`), so
+the demand type the spec is keyed on already includes the written sets.
+CONSEQUENCE, load-bearing: SpecKeys move ⇒ artifact-affecting flag, hash
+token, cache-disjoint A/B arms, and the overlapping-flag pin sweep
+(LssInjTotal/LssRefPapSpine class — expect casualties, budget for them).
+
+**AR-F4 (code, mechanism 1): translation-time reads vs AR-D2.** The
+destrAnno lesson said translation-time reads of AGGREGATES see partial
+state. This mechanism reads NO aggregate: it reads the just-translated
+argument's own MonoType — complete by construction the moment the
+translation returns (the lambda's body was fully translated to produce
+it). AR-D2 does not apply. What DOES apply is idempotence under
+retranslation (LSS_010 flush rounds re-run items): the write-back must
+be idempotent — set∪set = set, same slot — it is, by store-join
+semantics.
+
+**AR-F5 (code, mechanism 1): scope honesty.** v1 connects LAMBDA
+LITERALS only. Local-multi args stay skipped (469 events, recorded);
+`enrich|bare` locals stay (the leak|letAnno class); references beyond
+arity stay (mechanism 2 / §9.1). The battery must therefore be judged on
+the named HOF cells (`map`/`andThen`/`apply` var), NOT on total var.
+
+**AR-F6 (paper, mechanism 2: FAITHFUL-adapted, with a completeness
+obligation).** The paper labels every λ and never uncurries; stage
+values do not exist there. `p|l:<mid>|k` extends the label algebra to a
+value class the paper cannot express but Eco's runtime genuinely has
+(the PAP of a collapsed lambda). The class is well-defined (all k-arg
+PAPs of that λ). BUT the papMembers invariant binds: **injection
+completeness**. A set containing `p|l:m|1` claims to cover ALL
+inhabitants of its position; any route that constructs the stage value
+WITHOUT minting the id makes downstream sets false — and settle's
+strict-cell mechanisms (varLambda/varCtorRows) TRUST sets as complete,
+so this is a real miscompile-adjacent hazard even while devirt ignores
+originless members. Construction routes: (i) flowing the staged lambda
+itself (covered by minting on the lambda's own spine), (ii) PARTIAL
+APPLICATION of a lambda-valued expression at a call site (the
+`injectPapMember` producer path covers GLOBAL partials only today).
+v1 MUST cover both or not ship. The P0 sizes route (ii).
+
+**AR-F7 (code, mechanism 2): the split-identity hazard is live TODAY and
+the design must not widen it.** At shipped defaults, `varLambda` names
+§9.1's stage value by the INNER lambda's mid ({7}), while a
+p|-successor would name it `p|·|1` — two names for one value class
+split sets and kill singletons at joins (the reason "spineArity" was
+rejected in the refPapSpine arc, and the rootFold precedent: fold
+identities at the root). RULE: nested-visible inner λ ⇒ the `l|` mid IS
+the name (mechanism 1 delivers it); `p|l:` mints ONLY when no inner λ
+exists (collapsed). The two cases are disjoint by construction —
+verified per-lambda by whether the TOpt body is itself a Function
+literal. A probe must confirm TOpt's actual shape for `\a -> \b -> e`
+(collapsed vs nested) before the mint site is coded.
+
+**AR-F8 (code, mechanism 2): devirt on stage members.**
+`buildMemberOrigins` dispatches on `g|/c|/k|/a|` prefixes; `p|` and
+`p|l:` fall through → no origin → `stampCall`/devirtPost cannot act —
+safe-by-absence, same as `p|g|k` today. No AbiCloning change needed in
+v1. Recorded ceiling: stage singletons are coverage without dispatch
+value until a consumer exists (GAP-6 again).
+
+**AR-F9 (both, the success metric).** The §9.3 charter: settle counters
+must DECAY (varLambda's 597 and varSucc's writes should shrink as
+inference delivers the same knowledge earlier) while var falls and ⊤
+holds. A mechanism that only re-labels who writes (settle → inference)
+with no var/k1 movement is a wash UNLESS the settle passes can then be
+simplified — state that explicitly as an acceptable second-order win,
+but the gate is var/k1 at the named cells.
+
+**Net verdict: APPROVED to build in this order — mechanism 1 alone
+first (it needs no new member kind and its battery is decisive), then
+mechanism 2 behind its own flag once its P0 (route-(ii) sizing + TOpt
+shape probe) answers AR-F6/F7.**
+
+### §9.7 LOWERING — implementation-ready
+
+**Mechanism 1 (`lss.flowConnect`, env `ECO_MONO_LSS_FLOW_CONNECT`,
+token `lssFC=`, default OFF):**
+
+1. `Compiler/Eco/Config.elm` + `Builder/Eco/Config.elm`: flag, default
+   False, decoder field, hash token, env override (the varLambda
+   boilerplate exactly).
+2. `Translate.elm` `ArgStash`: add `StashParam IO.Variable`. In
+   `unifyParamsCollect`'s `Nothing`-localMulti arm, when the flag is on
+   AND the arg is a `Function`/`TrackedFunction` literal, return
+   `StashParam pParam` instead of `StashNone` (everything else
+   unchanged).
+3. `translateArgsWith`: on `StashParam pParam`, translate the arg as
+   today, then `Store.monoTypeToVar (Mono.typeOf monoArg)` and
+   `unifyStepBestEffort pParam thatVar`. Census (report-gated):
+   `flow|connLam` per write, `flow|topCarried` when the arg MonoType
+   `hasTopAnno`, `flow|connNoop` when the arg MonoType has no arrows.
+4. Battery (the standing template): same-binary env A/B; judge on
+   `map`/`andThen`/`apply`/`pure`/`foldr` named-cell var/k1, `conflict`
+   ⊤-kind non-growth (AR-F2), settle-counter DECAY (AR-F9), VALIDATE,
+   E2E both arms, elm-tests with the overlapping-flag sweep (AR-F3:
+   expect pin casualties; fix by pinning `flowConnect = False` in
+   differentials that assert LVars at connected positions —
+   LssFlowEdgeLossTest test 2 is the FIRST candidate: its pin must add
+   the flag-off pin or flip its expectation, per its own design).
+5. Flip decision with the user on the battery numbers.
+
+**Mechanism 2 (`lss.lamStages`, token `lssLS=`, default OFF) — gated on
+its own P0, built only after mechanism 1's battery:**
+
+P0 (census-only, one run): (a) TOpt shape probe — count multi-param
+`Function` literals whose Can type is staged deeper than their param
+count vs nested `Function`-in-`Function` bodies (`flow|stagedLam` /
+`flow|nestedLam`); (b) route-(ii) sizing — partial applications whose
+callee expression is lambda-valued (`flow|lamPartialApp`). GO requires
+(a) collapsed-form count material (≥ 200) AND (b) small enough to cover
+completely, else the mechanism is incomplete-by-construction (AR-F6)
+and stays unbuilt.
+
+Build (on GO): mint in `classifyLambdaHead`'s site down the lambda's own
+spine (`papSuccGoC` pattern, key `"p|l:" ++ qualifiedMid ++ "|" ++ k`),
+PLUS the route-(ii) producer mint at `injectPapMember`'s lambda-valued
+analog. `memberTarget`/`varfixPapable` parsers in Monomorphize gain the
+`p|l:` arm (successor semantics: within the LAMBDA's nparams). AR-F7
+guard: mint only when the TOpt body is NOT itself a Function literal.
+
+**Sequencing:** M1 P0-battery → M1 flip decision → M2 P0 → M2 build →
+re-census → mechanism 3 triage on the new residue.
+
+### §9.8 M1 v1 MEASURED NULL — the broken link was one hop further in
+### (2026-09-01)
+
+The first build of M1 (param write-back only) measured EXACTLY NULL:
+`flow|connLam = 8,555` write-backs fired and the on-arm was
+BYTE-IDENTICAL to the off-arm (var 10,946 = 10,946, every named cell
+flat, settle counters identical, conflict identical). The mechanism
+transported faithfully — but the lambda's own MonoType carries only its
+HEAD: `specializeLambda` zonks `monoType0` via `classifyLambdaHead`
+BEFORE `translate body` runs, so the body's solved result sets never
+reach the closure's type, and the write-back shipped 8,555 head-only
+types the head injection had already delivered. The §9.5 delivery
+matrix named the right hole (lambda interiors) but the wrong edge: the
+break is INSIDE the producer, not at the argument edge — the same
+producer-side lesson §9.1 taught for `mkAdder`, one level up. (The
+argFeedback root-cause note said exactly this — "specializeLambda has
+the same gap" — and the reverted `enrichLambdaResult` was its fix; the
+review missed that the store write-back DEPENDS on it.)
+
+**v1.1 = both halves under one flag** (the destrAnno Fix A+B precedent):
+the PRODUCER half enriches the closure's own result region from its
+just-translated body (`enrichClosureResult` — descend exactly `nparams`
+stages, then `enrichAnnotations`; producer truth, no aggregate, AR-D2
+clean, idempotent), and the existing param write-back transports it.
+Nested lambdas cascade naturally: an inner closure's enriched type is
+part of the outer body's type, which enriches the outer closure in turn.
+EXPECTED if right: `varlam|wrote` 597 DECAYS (AR-F9's signal — the
+settle pass reconstructs exactly this knowledge today) and the andThen/
+map cells move at inference. The annotation-vs-store churn question
+(this half IS annotation-level, like the reverted enrichLambdaResult)
+is answered by the battery's AR-F2 conflict gate: if `conflict|elm`
+grows, the half must move to store level (keep the loaded var in
+classifyLambdaHead, unify post-body, re-zonk).
+
+### §9.9 M1 v1.1 BATTERY (2026-09-01) — thesis PROVEN, join discipline
+### WRONG; the pre-registered AR-F2 gate fired
+
+Same-binary env A/B, both halves on (`flow|connLam` 8,555 transports,
+`flow|lamResEnrich` 1,301 producer enrichments of 37,233 closures):
+
+| | off | on | delta |
+|---|---:|---:|---:|
+| var | 10,946 | 10,870 | −76 |
+| k1 | 99,640 | 99,036 | **−604** |
+| kN | 32,212 | 32,881 | +669 |
+| top | 1,227 | 1,272 | **+45** |
+| `conflict` ⊤-kind | 112 | **158** | **+46 — AR-F2 FIRED** |
+| `varlam\|wrote` | 597 | **61** | **−90 % — AR-F9 signal, the thesis** |
+| wall | 13:08 | 13:26 | +2.3 % |
+
+Soundness gates ALL green: VALIDATE ok, E2E 1,717/1,717 both arms,
+elm-tests 13,400/standing 12, zero new failures, 20/20 unit pins.
+
+**Reading.** The flow-repair thesis is PROVEN: inference now delivers
+90 % of what the `varLambda` settle pass was reconstructing — the
+knowledge reaches the right slots by real flow. But the producer half is
+ANNOTATION-level (`enrichAnnotations` on the closure's type), and it
+reproduced argFeedback's exact churn signature at the exact place §9.8
+pre-registered: +46 conflict-⊤ (historic argFeedback: +45), k1 −604
+with kN +669 (`andThen` k1 −481/kN +487), ⊤ +45. Diverged annotation
+copies meet `unionAnno (LSet, LVar)` at later joins — L7, third
+confirmation. The +2.3 % wall is also over the §5 budget.
+
+**DECISION (presented 2026-09-01): NO FLIP for v1.1.** The
+pre-registered remedy stands: move the producer half to STORE level —
+`classifyLambdaHead` keeps the loaded variable instead of zonking it
+away, the body's type is unified into its result slot POST-body
+(`monoTypeToVar` + unify, the same discipline as the transport half),
+and the closure type is zonked once at the end. Both sides then share
+slots; no diverged copies exist for `unionAnno` to meet. v1.1 stays in
+tree flag-off as the measured stepping stone.
+
+### §9.10 v2 STATUS + PAPER JUSTIFICATION (user Q&A, 2026-09-01)
+
+**Flag status: the store-level producer half COMPLETES `lss.flowConnect`
+— same mechanism, same flag, no fork.** The mechanism has two halves.
+The transport half (`StashParam` write-back into the callee's param
+slot) is already store-level, measured conflict-clean alone (v1's null
+arm: zero conflict growth), and stays as built. The producer half is
+what v2 REPLACES: v1.1's annotation-level `enrichClosureResult` is
+superseded by the store version — the RECORD of v1.1 stays (§9.8/§9.9,
+the stepping stone that proved the thesis and located the fault), the
+code does not. Flag stays default-off until v2's battery passes AR-F2;
+then the flip decision returns to the user. flowConnect is therefore
+BUILT-BUT-INCOMPLETE, not parked and not forked.
+
+**Paper justification: v2 REMOVES a deviation rather than adding one.**
+In L^annot the gap cannot exist, by the shape of the abstraction rule:
+
+    Γ, a:Int ⊢ body : τ_body
+    ─────────────────────────────  (T-Abs)
+    Γ ⊢ λa.body : Int --{ℓ}--> τ_body
+
+The body's type — with all its sets — is a literal SUB-TERM of the
+closure's type. There is no transport step to get wrong. Worked example
+(`mkAdder = \a -> (\b -> a + b)`):
+
+- PAPER: inner λ gets ℓ₂ ⇒ `Int --{ℓ₂}--> Int`; T-Abs makes the outer
+  `Int --{ℓ₁}--> (Int --{ℓ₂}--> Int)` — the inner set is in the outer
+  type by rule shape.
+- ECO TODAY: `classifyLambdaHead` loads the Can type fresh (slots
+  s1, s2), injects the head into s1, ZONKS immediately — s2 still flex
+  at snapshot ⇒ `Int -{ℓ₁}-> (Int -VAR-> Int)`. The inner member mints
+  into a DIFFERENT load's slot during body translation, after the
+  freeze. This is the broken T-Abs identity — what §9.1's probe and
+  v1's null both measured.
+- ECO v2: keep (s1, s2) alive; translate the body; unify the body's
+  solved type into s2; zonk ONCE ⇒ the paper's T-Abs type,
+  reconstructed by late unification instead of by rule shape — the
+  standing "faithful to the analysis even if the method differs" clause
+  applied literally.
+
+v1.1 deviated MORE than today's code in one respect: it created a
+SECOND COPY of the truth (annotation enrichment), where the paper has
+one world — one σ-variable per position. Two copies meeting later is
+what manufactured the +46 conflict-⊤; v2 is the return to the one-world
+discipline, which is the structural reason the conflicts cannot recur.
+
+**Residual deviations that remain even after v2 (pre-existing,
+recorded):** (a) the ZONK CUTOFF — Eco snapshots the closure type at
+construction; knowledge arriving later does not retroactively update
+the snapshot (the paper's σ stay live to the end of inference); Eco
+compensates at demand joins, where positions re-join. (b) ⊤ — the paper
+has none; the store join may honestly widen to ⊤ where the body carries
+it (measured by `flow|topCarried`).
+
+### §9.11 M1 v2 (STORE-LEVEL) MEASURED — the structural claim REFUTED;
+### flow repair is BLOCKED BEHIND THE JOIN LATTICE (2026-09-01)
+
+v2 battery (same-binary A/B; store-level producer half via
+`connectLambdaResult`/`peelParamsVar`, `classifyLambdaHead` keeping its
+variable):
+
+| | off | v1.1 on | v2 on |
+|---|---:|---:|---:|
+| var | 10,947 | −76 | −692 |
+| k1 | 99,644 | −604 | **−672** |
+| kN | 32,214 | +669 | +660 |
+| top | 1,227 | +45 | **+703** (`topCarried` 280) |
+| `conflict` | 112 | +46 | **+46 — IDENTICAL** |
+| `varlam\|wrote` | 597→ | 61 | **45** |
+| coverage (bp) | 9,154 | +3 | **±0 — EXACTLY FLAT** |
+| wall | — | +2.3 % | +4.4 % |
+
+Soundness gates all green (VALIDATE, E2E 1,717 both arms, elm-tests
+13,400/standing 12, 20/20 pins). `lamResEnrich` 1,752, `peelMiss` 8.
+
+**Finding 1 — the §9.10 structural claim is REFUTED.** The store version
+manufactures the IDENTICAL +46 conflict-⊤. The conflicts never came from
+diverged annotation copies within an item; they arise at CROSS-SITE
+DEMAND JOINS — two call sites sharing a SpecKey, one arriving with a set
+and the other still var, `unionAnno (LSet, LVar) = ⊤conflict`. That is
+L7 in its ORIGINAL form ("precision added asymmetrically manufactures
+⊤"), and no within-item discipline — annotation or store — can touch it.
+
+**Finding 2 — honest ⊤ transport is expensive.** 280 lambda types carry
+⊤ (their bodies touch ⊤-classed values); raw unification spreads it:
+⊤ +703, var −692, coverage EXACTLY flat. Flow relabels var→kN/⊤ and
+dilutes k1. Under L1 this is not a win at any threshold.
+
+**Finding 3 — the settle passes were never a workaround.** Their strict
+completeness gates (skip any ⊤/var-contaminated cell) are precisely what
+raw TIU flow LACKS in a lattice with ⊤ and spec sharing. The paper can
+afford raw flow because it has neither. `varLambda`'s 597 writes were
+the GATED subset of exactly the knowledge flowConnect transports
+ungated — same source, filtered at the read. Settle-time reconstruction
+IS the ⊤-adapted form of the paper's transport.
+
+**DECISION (2026-09-01): NO FLIP for v2 either; M1 closes REFUTED-AS-NET
+-WIN.** Both flags' code stays (default-off) with this section as the
+record. The arc's blocking dependency is now NAMED: the join lattice —
+`unionAnno`'s LSet×LVar→⊤ and ⊤-absorption at asymmetric joins. That is
+**LPartial, the provenance plan's Part C**, deferred since 2026-08-29
+and now twice implicated (argFeedback's +45, flowConnect's +46 twice).
+Any future flow-repair or M2 stage-identity work feeds the same joins
+and pays the same tax until LPartial (or an equivalent
+asymmetry-tolerant join) exists.

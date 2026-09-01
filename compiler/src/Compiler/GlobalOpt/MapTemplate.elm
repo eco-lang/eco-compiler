@@ -482,6 +482,11 @@ classifyBody env specId callbackName callbackType listType resultKind body acc =
             -- needs a NAMED callback, and a variable names nothing yet.
             declineTopLike ()
 
+        Mono.LPartial _ ->
+            -- A lower bound never licenses (lss-lpartial §2): the listed
+            -- members may not be all of them.
+            declineTopLike ()
+
         Mono.LSet [ member ] ->
             case debugFreedom env member of
                 Clean ->
@@ -1105,6 +1110,11 @@ calleeVerdict purity hooks func =
                     -- Same verdict as LTop: an unnamed higher-order local.
                     poison (PoisonHigherOrder HOLocalLTop)
 
+                Mono.LPartial _ ->
+                    -- A lower bound admits unknown inhabitants (lss-lpartial
+                    -- §2) — same verdict as LTop for the template's purposes.
+                    poison (PoisonHigherOrder HOLocalLTop)
+
         MonoClosure _ body _ ->
             -- An immediately-applied lambda: its captures resolve against the
             -- table through their own annotations, by the same walk.
@@ -1188,6 +1198,11 @@ argProvenance purity hooks arg annos =
                             Mono.LVar _ ->
                                 -- Same taint as LTop: the argument carries an
                                 -- arrow whose inhabitants are not named yet.
+                                ( PoisonArgTaint ArgLTop, Tuple.second acc )
+
+                            Mono.LPartial _ ->
+                                -- Lower bound: unknown inhabitants may exist
+                                -- (lss-lpartial §2) — same taint as LTop.
                                 ( PoisonArgTaint ArgLTop, Tuple.second acc )
 
                             Mono.LSet ms ->

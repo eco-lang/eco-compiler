@@ -268,9 +268,9 @@ applyEnvOverrides cfg =
                     |> Task.map (\vlVal -> applyLssVarLambdaOverride vlVal cfg4eq)
             )
         |> Task.andThen
-            (\cfg4er ->
-                (Utils.envLookupEnv "ECO_MONO_LSS_VAR_ROW_ENRICH" |> Task.mapError never)
-                    |> Task.map (\vrVal -> applyLssVarRowEnrichOverride vrVal cfg4er)
+            (\cfg4es ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_FLOW_CONNECT" |> Task.mapError never)
+                    |> Task.map (\fcVal -> applyLssFlowConnectOverride fcVal cfg4es)
             )
         |> Task.andThen
             (\cfg4f ->
@@ -2145,20 +2145,20 @@ applyLssVarCtorRowsOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_MONO_LSS_VAR_ROW_ENRICH=1|true|yes / 0|false|no`
-(plans/lss-var-chain-roots.md §8.1 Phase 3v2): enrich var positions under a
-global-headed set from the member globals' rows, aligned to the head's
-offset. DEFAULT-OFF. Hash token `lssVR=`.
+{-| `ECO_MONO_LSS_FLOW_CONNECT=1|true|yes / 0|false|no`
+(plans/lss-var-chain-roots.md §9.5 M1): deep write-back of translated
+lambda-literal argument types into the callee's param store variable.
+DEFAULT-OFF. Hash token `lssFC=`.
 -}
-applyLssVarRowEnrichOverride : Maybe String -> EcoConfig -> EcoConfig
-applyLssVarRowEnrichOverride maybeVal cfg =
+applyLssFlowConnectOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssFlowConnectOverride maybeVal cfg =
     case Maybe.map (String.toLower << String.trim) maybeVal of
         Just v ->
             if List.member v [ "1", "true", "yes" ] then
-                updateLss (\lss -> { lss | varRowEnrich = True }) cfg
+                updateLss (\lss -> { lss | flowConnect = True }) cfg
 
             else if List.member v [ "0", "false", "no" ] then
-                updateLss (\lss -> { lss | varRowEnrich = False }) cfg
+                updateLss (\lss -> { lss | flowConnect = False }) cfg
 
             else
                 cfg

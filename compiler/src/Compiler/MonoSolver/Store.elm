@@ -900,6 +900,16 @@ monoTypeToVarC lssOn varSlots monoType st =
                                 -- Dict.fromList conversion.
                                 IO.Structure (IO.LambdaSet1 (IO.LsMembers members))
 
+                            Mono.LPartial _ ->
+                                -- lss-lpartial §2/AR-P4: the store keeps
+                                -- COMPLETE semantics in v1 — a lower bound
+                                -- re-enters as fresh flex (members dropped at
+                                -- this boundary; encoding them as LsMembers
+                                -- would claim completeness). Partials are
+                                -- terminal observations at the annotation
+                                -- layer.
+                                IO.FlexVar Nothing
+
                     -- PHASE 3 (plans/lss-set-variable.md): a set VARIABLE
                     -- resolves to the ONE slot `mintVarSlots` made for it, so
                     -- every arrow carrying `LVar n` in this type shares a slot.

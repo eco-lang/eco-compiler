@@ -702,6 +702,10 @@ referenceHelper annoSensitive work acc =
                                     LSet members ->
                                         "A[" ++ String.join "," (List.map String.fromInt members) ++ "]("
 
+                                    LPartial members ->
+                                        -- identity-blind with LSet (lss-lpartial §2)
+                                        "A[" ++ String.join "," (List.map String.fromInt members) ++ "]("
+
                             else
                                 "A("
 

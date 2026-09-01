@@ -129,6 +129,7 @@ type alias AbiCloningStats =
     , devirtPostFn : Int -- E9.5 (plans/lss-post-settle-fn-global-devirt.md): noInstance g|-singleton sites rewritten to direct spec calls (flag lss.postSettleDevirt; 0 flag-off)
     , devirtPostCtor : Int -- E9.5: the c|-singleton (ctor) half of the same rewrite
     , devirtPostNoSpec : Int -- E9.5: candidate passed every guard but no registry spec eqLayout-matched the site (census expectation ~0 — investigate when it grows)
+    , devirtPartialDeclined : Int -- lss-lpartial AR-P2: LPartial-headed sites the stamp DECLINED (a lower bound is never a singleton) — the observable devirt guard
     , multiInstanceGroups : Int -- layout groups holding ≥2 distinct lambdaIds. A MONITORING DELTA, not a zero-gate (amended LSS_017 reading): MonoInlineSimplify mints fresh lambdaIds for verbatim inline copies, and under LSS_024 annotation-only clones legitimately join one group — the representative premise is discharged by fingerprint unanimity, not by this count.
 
     -- Census (2026-07-21, plans/lss-dispatch-value-extraction.md open
@@ -168,6 +169,7 @@ emptyStats =
     , devirtPostFn = 0
     , devirtPostCtor = 0
     , devirtPostNoSpec = 0
+    , devirtPartialDeclined = 0
     , multiInstanceGroups = 0
     , declineByMember = Dict.empty
     , memberReps = Dict.empty
@@ -1505,6 +1507,20 @@ stampCall index ctx region func args resultType callInfo =
             in
             ( Mono.MonoCall region func args resultType callInfo
             , { ctx | stats = { stats0 | topSiteShapes = bumpDictStr (calleeShape func) stats0.topSiteShapes } }
+            )
+
+        Mono.LPartial _ ->
+            -- AR-P2 (lss-lpartial §3), THE devirt guard: a LOWER bound is
+            -- never a singleton — stamping it would direct-call one member
+            -- while an unrecorded inhabitant may exist (the arrowSolverRoots
+            -- false-singleton class). NON-STAMP, censused so the guard is
+            -- observable.
+            let
+                stats0p =
+                    ctx.stats
+            in
+            ( Mono.MonoCall region func args resultType callInfo
+            , { ctx | stats = { stats0p | devirtPartialDeclined = stats0p.devirtPartialDeclined + 1 } }
             )
 
         Mono.LVar _ ->

@@ -10,7 +10,7 @@ module Compiler.AST.Monomorphized exposing
     , LambdaSetAnno(..), widenSets, eqModuloTopLabel, eqLayout, shallowLayoutKey, headAnno, unionAnno, singletonHeadMember, joinAnnotations, joinAnnotationsChanged, overlayAnnotations
     , tkPoison, tkConflict, tkWiden, tkEdge, tkAbi, tkDeclZonk, tkDeclStoreC, tkDeclStoreS, tkDeclOther, tkSynth, tkLegacy, isTopAnno
     , tkClassCase, tkClassIf, tkClassLocal, tkClassLit, tkClassParam, tkClassDestr, tkClassLambda, tkClassCall, tkClassLet, tkClassMisc
-    , enrichAnnotations, enrichAnnotationsTopOnly, hasTopAnno, hasVarAnno, unionSortedInts
+    , enrichAnnotations, enrichAnnotationsTopOnly, hasTopAnno, hasVarAnno, unionSortedInts, annoCovers
     , topPoison, topConflict, topWiden, topEdge, topAbi, topDeclZonk, topDeclStoreC, topDeclStoreS, topDeclOther, topSynth, topLegacy, topOfKind, topKindLabel
     , topClassCase, topClassIf, topClassLocal, topClassLit, topClassParam, topClassDestr, topClassLambda, topClassCall, topClassLet, topClassMisc
     , typeNodesWithin, collectAnnoMembers
@@ -444,6 +444,12 @@ annoHash anno =
             mixHash 17 n
 
         LSet members ->
+            List.foldl (\m h -> mixHash h m) 5 members
+
+        -- Identity-blind with LSet (lss-lpartial §2): partiality is consumer
+        -- metadata, never identity — SpecKeys must not split on it (the
+        -- topKind precedent, and the B1 key-churn lesson).
+        LPartial members ->
             List.foldl (\m h -> mixHash h m) 5 members
 
 
@@ -962,6 +968,18 @@ type LambdaSetAnno
     = LTop Int
     | LVar Int
     | LSet (List Int)
+      -- LPartial (plans/lss-lpartial-asymmetric-join.md): the paper's
+      -- Q-accumulation state — "at least these members; possibly more", a
+      -- LOWER bound. Born at asymmetric joins (a complete set meeting an
+      -- unwritten var — formerly the ⊤conflict manufacturer, thrice
+      -- measured at +45/+46/+46). Three consumer rules: IDENTITY-BLIND
+      -- (hashing/keys treat it as LSet — the topKind precedent), LOWER
+      -- BOUND at joins/enrichment (never upgrades itself to LSet; a
+      -- complete side does NOT restore completeness — AR-P6), and GUARDED
+      -- at devirt/settle/successors (never a singleton, contaminates
+      -- strict cells). Promotion to LSet (the paper's internalization) is
+      -- deferred v2 work.
+    | LPartial (List Int)
 
 
 {-| ⊤ provenance kinds (plans/lss-provenance-join-and-demand-sigs.md §4.9).
@@ -1418,6 +1436,10 @@ collectAnnoGo monoType acc =
                             -- Contributes no members to the LSS_018 μ-tie,
                             -- identically to LTop: a variable names nothing yet.
                             acc
+
+                        LPartial ms ->
+                            -- Lower-bound members are REAL members.
+                            ms ++ acc
             in
             List.foldl collectAnnoGo (collectAnnoGo result acc1) args
 
@@ -1456,12 +1478,12 @@ and every consumer that is not the analysis treats `LVar` exactly as `LTop`.
 
 -}
 type alias AnnoCoverage =
-    { k1 : Int, kN : Int, var : Int, top : Int }
+    { k1 : Int, kN : Int, var : Int, top : Int, part : Int }
 
 
 emptyAnnoCoverage : AnnoCoverage
 emptyAnnoCoverage =
-    { k1 = 0, kN = 0, var = 0, top = 0 }
+    { k1 = 0, kN = 0, var = 0, top = 0, part = 0 }
 
 
 {-| PRECISION-MONOTONE annotation merge (plans/lss-ctor-arrow-identity.md
@@ -1552,6 +1574,28 @@ enrichAnno a b =
         ( LSet xs, LSet ys ) ->
             LSet (unionSortedInts xs ys)
 
+        -- LPartial arms (AR-P6, lss-lpartial §2): any partial participant
+        -- keeps the result partial — a complete side does NOT restore
+        -- completeness; a ⊤ base is NOT demoted to partial (the heal reads
+        -- a partial as insufficient evidence).
+        ( LPartial xs, LPartial ys ) ->
+            LPartial (unionSortedInts xs ys)
+
+        ( LPartial xs, LSet ys ) ->
+            LPartial (unionSortedInts xs ys)
+
+        ( LSet xs, LPartial ys ) ->
+            LPartial (unionSortedInts xs ys)
+
+        ( LPartial _, _ ) ->
+            a
+
+        ( LVar _, LPartial _ ) ->
+            b
+
+        ( LTop _, LPartial _ ) ->
+            a
+
         ( LSet _, _ ) ->
             a
 
@@ -1573,6 +1617,11 @@ hasVarAnno monoType =
         MFunction _ anno args result ->
             (case anno of
                 LVar _ ->
+                    True
+
+                LPartial _ ->
+                    -- A lower bound admits unknown flows — var-like for the
+                    -- flex-construction mark and every contamination gate.
                     True
 
                 _ ->
@@ -1839,6 +1888,9 @@ annoCoverage monoType acc =
 
                         LTop _ ->
                             { acc | top = acc.top + 1 }
+
+                        LPartial _ ->
+                            { acc | part = acc.part + 1 }
             in
             List.foldl annoCoverage (annoCoverage result acc1) args
 
@@ -2373,6 +2425,28 @@ annoCovers a b =
         ( LTop _, _ ) ->
             True
 
+        -- LPartial arms — EXACT against `unionAnno` (the LSS_010 law: covers
+        -- must decide precisely `unionAnno a b == a`; blanket-False here
+        -- made the changed flag falsely True and the flush oscillate — the
+        -- 100-round watchdog caught it on flowConnect's first LPartial
+        -- battery). union(LPartial xs, LVar) = a; union with a subset
+        -- partial/set = a; ⊤ absorbs (≠ a); set/var bases always CHANGE
+        -- when a partial arrives.
+        ( LPartial xs, LVar _ ) ->
+            True
+
+        ( LPartial xs, LPartial ys ) ->
+            sortedSubsetOf ys xs
+
+        ( LPartial xs, LSet ys ) ->
+            sortedSubsetOf ys xs
+
+        ( LPartial _, LTop _ ) ->
+            False
+
+        ( _, LPartial _ ) ->
+            False
+
         ( LVar i, LVar j ) ->
             i == j
 
@@ -2549,11 +2623,34 @@ unionAnno a b =
             else
                 topConflict
 
-        ( LVar _, LSet _ ) ->
-            topConflict
+        -- THE LPartial producer rule (lss-lpartial §2): a complete set
+        -- meeting an unwritten var is an ASYMMETRIC join — the var side may
+        -- carry unrecorded inhabitants, so completeness is lost, but the
+        -- members are not. Formerly `topConflict` (the L7 tax: argFeedback
+        -- +45, flowConnect +46 twice).
+        ( LVar _, LSet ys ) ->
+            LPartial ys
 
-        ( LSet _, LVar _ ) ->
-            topConflict
+        ( LSet xs, LVar _ ) ->
+            LPartial xs
+
+        -- Derived arms: any partial participant keeps the result partial
+        -- (AR-P6 — a complete side does NOT restore completeness); ⊤ was
+        -- absorbed by the arms above.
+        ( LPartial xs, LPartial ys ) ->
+            LPartial (unionSortedInts xs ys)
+
+        ( LPartial xs, LSet ys ) ->
+            LPartial (unionSortedInts xs ys)
+
+        ( LSet xs, LPartial ys ) ->
+            LPartial (unionSortedInts xs ys)
+
+        ( LPartial xs, LVar _ ) ->
+            LPartial xs
+
+        ( LVar _, LPartial ys ) ->
+            LPartial ys
 
         ( LSet xs, LSet ys ) ->
             LSet (unionSortedInts xs ys)
@@ -3354,6 +3451,10 @@ toComparableFragments annoSensitive mt tail =
                                 "Av" ++ String.fromInt n ++ "("
 
                             LSet members ->
+                                "A[" ++ String.join "," (List.map String.fromInt members) ++ "]("
+
+                            -- Identity-blind with LSet (lss-lpartial §2).
+                            LPartial members ->
                                 "A[" ++ String.join "," (List.map String.fromInt members) ++ "]("
 
                     else
