@@ -1628,7 +1628,7 @@ specializeLambda srcLam params body canType =
                 )
                 (Engine.traverse (\( name, paramCanType ) -> Engine.map (\mt -> ( name, mt )) (classifyAs Mono.tkClassParam paramCanType)) params)
         )
-        (classifyLambdaHead (List.length params) srcLam canType)
+        (Engine.andThen (\_ -> classifyLambdaHead (List.length params) srcLam canType) (m2ShapeCensus params body))
 
 
 {-| The lambda's head type. lss off: exactly the storeless `classify` (the
@@ -2036,7 +2036,24 @@ translateIndirectCall region func args callCanType s0 =
                 Err e
 
             Ok ( _, s1 ) ->
-                translateIndirectCallBody region func args callCanType s1
+                let
+                    -- M2 route-(ii) tracker (lss-var-chain-roots §9.14 —
+                    -- M2 closed UNBUILT): an INDIRECT call applying fewer
+                    -- args than the callee's arrow depth constructs a PAP of
+                    -- a non-global value. Kept as the class tracker for the
+                    -- construction-anchored repair that could one day reach
+                    -- the 142 stage holes. Report-gated.
+                    s1b =
+                        if not s1.env.lss.report then
+                            s1
+
+                        else if List.length args < LssInfer.canTypeArrowDepth (TOpt.typeOf func) then
+                            Engine.bumpArgFlowCensus "m2|lamPartialApp" s1
+
+                        else
+                            Engine.bumpArgFlowCensus "m2|indirectSat" s1
+                in
+                translateIndirectCallBody region func args callCanType s1b
 
 
 appShapeConnect : TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step ()
@@ -4150,6 +4167,42 @@ isLambdaLiteral arg =
 
         _ ->
             False
+
+
+{-| M2 P0 shape census (lss-var-chain-roots §9.7 / lss-lpartial follow-on):
+classify every lambda literal by the AR-F7 predicate — COLLAPSED multi-param
+lambdas (stage identities needed; the §9.1 producer hole) vs NESTED bodies
+(the inner λ keeps its own `l|` mid; minting a stage id there would split
+identity). Report-gated. Historical: this census decided the M2 GO that
+§9.13/§9.14 then overturned (LSS_013 already names collapsed stages; the
+24k here are translations of ALREADY-NAMED stages) — kept as the
+population tracker, with that reading correction attached.
+-}
+m2ShapeCensus : List ( Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Step ()
+m2ShapeCensus params body s =
+    if not s.env.lss.report then
+        Ok ( (), s )
+
+    else
+        let
+            nested =
+                isLambdaLiteral body
+
+            key =
+                if List.length params >= 2 then
+                    if nested then
+                        "m2|stagedNested"
+
+                    else
+                        "m2|stagedLam"
+
+                else if nested then
+                    "m2|nestedLam"
+
+                else
+                    "m2|plainLam"
+        in
+        Ok ( (), Engine.bumpArgFlowCensus key s )
 
 
 {-| `Just name` when the arg is a direct reference to a local-multi FUNCTION.

@@ -2867,6 +2867,93 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 _ ->
                     ( tally, cache )
 
+        -- M2 P0 REFINEMENT (lss-var-chain-roots §9.12 follow-on): LSS_013
+        -- already spine-injects a lambda's OWN mid across its within-arity
+        -- stage arrows, so M2's real residue is the HOLES — l|-singleton
+        -- heads whose /r is still var. Split them by the lambda's param
+        -- count (from the closure nodes, the varLambda authority):
+        -- arity ≥ 2 ⇒ a genuine uncovered STAGE (spine-completion
+        -- territory); arity 1 ⇒ /r is the BODY's result (varLambda/
+        -- flowConnect territory, not a stage); noHome ⇒ mid unresolvable.
+        m2Homes =
+            lambdaHomesOf g.nodes
+
+        m2StageWalk t acc =
+            case t of
+                Mono.MFunction _ anno args result ->
+                    let
+                        acc1 =
+                            case ( anno, result ) of
+                                ( Mono.LSet [ m ], Mono.MFunction _ (Mono.LVar _) _ _ ) ->
+                                    case Dict.get m memberKeyOf of
+                                        Just mk ->
+                                            if String.startsWith "l|" mk then
+                                                case Dict.get m m2Homes of
+                                                    Just home ->
+                                                        case home.arity of
+                                                            Just a2 ->
+                                                                if a2 >= 2 then
+                                                                    { acc | stageVar = acc.stageVar + 1 }
+
+                                                                else
+                                                                    { acc | bodyVar = acc.bodyVar + 1 }
+
+                                                            Nothing ->
+                                                                { acc | arityMix = acc.arityMix + 1 }
+
+                                                    Nothing ->
+                                                        { acc | noHome = acc.noHome + 1 }
+
+                                            else
+                                                acc
+
+                                        Nothing ->
+                                            acc
+
+                                _ ->
+                                    acc
+                    in
+                    List.foldl m2StageWalk (m2StageWalk result acc1) args
+
+                Mono.MList _ inner ->
+                    m2StageWalk inner acc
+
+                Mono.MTuple _ elems ->
+                    List.foldl m2StageWalk acc elems
+
+                Mono.MRecord _ fields ->
+                    Dict.foldl (\_ ft a -> m2StageWalk ft a) acc fields
+
+                Mono.MCustom _ _ _ args ->
+                    List.foldl m2StageWalk acc args
+
+                _ ->
+                    acc
+
+        m2StageLine =
+            let
+                t =
+                    Array.foldl
+                        (\entry acc ->
+                            case entry of
+                                Just ( _, mt ) ->
+                                    m2StageWalk mt acc
+
+                                Nothing ->
+                                    acc
+                        )
+                        { stageVar = 0, bodyVar = 0, arityMix = 0, noHome = 0 }
+                        g.registry.reverseMapping
+            in
+            "m2stage: stageVar="
+                ++ String.fromInt t.stageVar
+                ++ " bodyVar="
+                ++ String.fromInt t.bodyVar
+                ++ " arityMix="
+                ++ String.fromInt t.arityMix
+                ++ " noHome="
+                ++ String.fromInt t.noHome
+
         varfix3Line =
             let
                 ( vf3T, _ ) =
@@ -3625,7 +3712,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
             -- zero row reads as "measured, found nothing" rather than "never
             -- executed" — the `qCensus` misreading, one flag along.
             ++ (if sFinal.env.lss.arrowCensus then
-                    [ stampWalkLine, livenessLine, topSiteLine, topKindLine, destrBendLine, varfixLine, varfix3Line, sigfactLine, posLine ]
+                    [ stampWalkLine, livenessLine, topSiteLine, topKindLine, destrBendLine, varfixLine, varfix3Line, sigfactLine, m2StageLine, posLine ]
 
                 else
                     []

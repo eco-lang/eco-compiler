@@ -1509,3 +1509,157 @@ and now twice implicated (argFeedback's +45, flowConnect's +46 twice).
 Any future flow-repair or M2 stage-identity work feeds the same joins
 and pays the same tax until LPartial (or an equivalent
 asymmetry-tolerant join) exists.
+
+### §9.12 M2 P0 RESULTS (2026-09-01, on the repaired lattice) — GO
+
+`m2|` census, post-LPartial post-flowConnect defaults:
+
+| counter | count | meaning |
+|---|---:|---|
+| `stagedLam` | **24,046** | collapsed multi-param lambda translations (≥2 params, body NOT a lambda) — each has nparams−1 stage values with NO member identity |
+| `stagedNested` | 586 | multi-param AND lambda body — mint param stages only (AR-F7) |
+| `nestedLam` | 110 | 1-param nested — inner λ keeps its own mid, NO mint |
+| `plainLam` | 12,512 | 1-param plain — out of scope |
+| `lamPartialApp` | **491** | route-(ii): indirect partial applications constructing lambda-PAPs |
+| `indirectSat` | 44,964 | saturated indirect calls (denominator) |
+
+**Gate (a): GO by two orders of magnitude** (24,046 vs the ≥200 bar).
+The collapsed shape is the overwhelmingly dominant multi-param form —
+the AR-F7 split-identity hazard is confined to the 696 nested-body
+translations, where the guard simply skips.
+
+**Gate (b): 491 route-(ii) sites — bounded and coverable.** Two
+lattice-era refinements to AR-F6's original "both routes or unbuilt":
+(1) at sites where the callee head IS a known `l|` singleton, mint —
+matching the existing `p|g|k` discipline exactly (which also only mints
+at head-known sites); (2) at unknown-head sites the constructed value
+flows as var, and under LPartial an annotation join with a stage-set
+degrades to an HONEST partial instead of a false set — the lattice
+absorbs route incompleteness at the annotation layer. The store-level
+adoption background remains what it has always been for every member
+class (p|g|k included); M2 inherits, not worsens, it.
+
+**Yield expectation, honestly:** 24k is TRANSLATION events (per-spec,
+duplicated), not positions. The var-book classes M2 writes into are the
+lambda-headed residue (§9.4 otherHead ≈ 3,339 mass; the old `k1:l → /r`
+chain class 1,412) — expect hundreds-to-low-thousands of var
+eliminations, measured not assumed. The writes land at INFERENCE (the
+lambda's own spine), so they flow everywhere the lambda flows and are
+LPartial-safe at asymmetric joins.
+
+### §9.13 M2 MID-BUILD CORRECTION (2026-09-01) — LSS_013 already names
+### collapsed stages; the design pivots from minting to HOLE-FILLING
+
+Partway into the M2 build, `papSuccWrite`'s LSS_013 docstring stopped
+it: **the shipped convention is that a lambda's within-arity stage
+arrows carry the lambda's OWN mid** — "a partial application of member
+m is still m"; `classifyLambdaHead`/`injectLambdaMemberQualified`
+spine-inject across the first `arity` arrows already. Consequences:
+
+1. The P0's 24,046 `stagedLam` events are NOT 24,046 nameless-stage
+   sites — most of those stages are already named by LSS_013 injection.
+   The gate-(a) GO was a misread of the count's meaning.
+2. Distinct `p|l:<mid>|k` members would UNION with the existing own-mid
+   spine writes wherever both land — {l|m, p|l:m|1} two-sets on
+   currently-COVERED arrows: an identity split against the lambda's own
+   mid (AR-F7's hazard, one level up), k1 damage with no gain.
+3. M2's real residue is the HOLES — l|-singleton heads whose `/r` is
+   still var, i.e. positions where the LSS_013 injection or its
+   transport did not land — and the paper/-convention-faithful fill is
+   the lambda's OWN mid (write-if-flex, never union), not a new kind.
+
+The `m2stage:` refinement census (report+arrowCensus-gated, like all M2
+census work) splits exactly this: `stageVar` = l|-head, var `/r`, home
+arity ≥ 2 (a genuine stage hole; the revised mechanism's target);
+`bodyVar` = arity 1 (the `/r` is the BODY's result — varLambda/
+flowConnect territory, NOT a stage); `arityMix`/`noHome` = unusable.
+DECISION RULE: material `stageVar` ⇒ build the hole-fill (own-mid,
+write-if-flex) + battery; `stageVar` ≈ 0 ⇒ M2 closes NO-GO with this
+section as the finding (the class it targeted is already covered by
+LSS_013 + varLambda + flowConnect).
+
+**BUILD TRAP RECORDED (2026-09-01): `Config.LssConfig` is AT the 32-slot
+record cap.** Adding `lamStages` as field 33 broke Stage 6 with
+`'eco.construct.record' op field_count (33) exceeds Record's 32-slot GC
+scan limit` (flowConnect had landed on exactly 32). The flag was removed
+— it gated nothing yet — and the AbiCloning stats record was
+preventively re-bundled (`devirtPost` sub-record, 33→30 there). THE NEXT
+LSS FLAG MUST bundle: either a `varWrites` sub-record collecting the
+var-arc flags (succ/ctorRows/lambda/flowConnect + future) or an
+equivalent — one slot for the family, headroom restored. Same lesson as
+Engine.S (lss-root-member-fold): flat records at the GC-scan cap fail at
+BOOTSTRAP time, in the native lowering, not at typecheck.
+
+### §9.14 M2 CLOSES NO-GO (2026-09-01) — the class is 142, and no sound
+### mechanism exists for it under the shipped naming convention
+
+The `m2stage:` refinement census (post-LPartial, post-flowConnect
+defaults): **stageVar = 142, bodyVar = 274**, arityMix/noHome = 0.
+
+- The genuine stage-hole class — l|-singleton heads of arity ≥ 2 whose
+  `/r` is still var despite LSS_013's spine injection — is **142
+  positions**, not the P0's misread 24,046. The 24k were translation
+  EVENTS of already-named stages.
+- bodyVar 274 = arity-1 heads with var results — `varLambda`'s own
+  blocked-cell residue, not stages.
+
+**And the 142 cannot be filled soundly at settle.** The own-mid fill
+(LSS_013-consistent) is AMBIGUOUS on row fragments: a `{m}`-headed arrow
+in a consumer row could be stage 0 of the whole lambda or a stage-k PAP,
+and the two demand different fill depths. The killer case is the LSS_013
+docstring's own example one level up: an arity-2 lambda whose body
+RETURNS a closure — at a stage-1 fragment, "fill one arrow deep" writes
+`m` onto the returned closure's arrow (`q`'s, not `m`'s): a false
+member, the exact trap LSS_013's arity bound exists to prevent. The
+shipped injection avoids this only because it writes at the lambda's OWN
+load, anchored at stage 0 by construction, and lets unification
+transport. Distinct per-stage ids (the original M2) would anchor
+correctly but SPLIT identity against LSS_013's shipped own-mid writes
+(§9.13). Both designs are dead; the census cannot even guarantee all
+142 are stages (the same fragment ambiguity applies to the counter).
+
+**DISPOSITION: M2 closed unbuilt.** The `lamStages` flag is already
+removed (the 32-slot cap forced it out before the verdict — fitting).
+The 142 stay in the var book, reachable in principle only by
+construction-anchored inference repairs (the flowConnect family, which
+anchors at the lambda's own translation). The census machinery
+(`m2|`/`m2stage:` counters, report-gated) stays as the class tracker.
+The instructive arc: P0 gate GO on a big number → mid-build invariant
+check shrank it 170× → soundness analysis closed it. The gates worked,
+in the right order, before any unsound write shipped.
+
+### §9.15 THE SHAPES, PINNED AS E2E CODE (2026-09-02) —
+### test/elm/src/LssGapLambdaStages.elm
+
+The three §9.13/§9.14 shapes now exist as a small E2E probe with CHECKs,
+compiled and measured: (1) `mkAdd3v` — the arity-2-lambda-returning-a-
+closure anchoring killer; (2) `useStage` — the stage fragment crossing a
+definition boundary; (3) `pickyWrap`/`pick` — the two-branch result that
+generates the varLambda blocked-cell shape. MEASURED at probe scale:
+100 % covered, var = 0, ⊤ = 0, and every position SOUNDLY named — the
+stage fragment arrives as `k1:p|mkAdd3v|1` (the p|g|k successor anchors
+it, because the lambda is globally rooted), q's arrow carries the INNER
+lambda's own mid (flowConnect's producer half delivered it), and the
+two-branch result reads an honest 2-member kN, not a false singleton.
+Emitted MLIR: direct calls + papCreates throughout, no generic apply.
+
+CONSEQUENCE FOR THE BOOK: the corpus 142/274 are these exact row shapes
+with their transport broken across item/spec boundaries — the probe rows
+are the reference picture of what construction-anchored repairs should
+restore. The probe doubles as a REGRESSION pin: if these rows ever go
+var/⊤ at probe scale, an in-item mechanism broke.
+
+### §9.16 SUCCESSOR PLAN COMMISSIONED (2026-09-02) —
+### plans/lss-stage-anchor-writers.md
+
+The construction-anchored route §9.14 named is now written up as its own
+plan: ONE new birth-time fact (mid → {arity, qSpine}, recorded at
+injectLambdaMemberQualified where both are exact) makes stage/fragment
+alignment decidable ANYWHERE via r = T − s — defusing the §9.14
+alignment killer — and feeds TWO writers: rowFill (the m2stage census
+promoted to a settle writer) and papSite (the l|-head counterpart of the
+shipped p|g|d papSucc machinery at the m2|lamPartialApp site). Own-mid
+per LSS_013 throughout; no new member ids. P0 gate: rowWould + siteL1
+≥ 50 (small-gates policy). Config restructure comes FIRST (LssConfig at
+the 32-slot cap — settle flags fold into a sub-record). ORDER 6's
+re-census follows that plan's outcome either way.

@@ -1143,11 +1143,11 @@ runGlobalOptPhase mapTemplateCfg lssReport listReport borrowCfg cafMemo cseCfg s
                                     ++ " declinedBodyMismatch="
                                     ++ String.fromInt goStats.abiCloning.declinedBodyMismatch
                                     ++ " devirtPost(fn/ctor/noSpec)="
-                                    ++ String.fromInt goStats.abiCloning.devirtPostFn
+                                    ++ String.fromInt goStats.abiCloning.devirtPost.fn
                                     ++ "/"
-                                    ++ String.fromInt goStats.abiCloning.devirtPostCtor
+                                    ++ String.fromInt goStats.abiCloning.devirtPost.ctor
                                     ++ "/"
-                                    ++ String.fromInt goStats.abiCloning.devirtPostNoSpec
+                                    ++ String.fromInt goStats.abiCloning.devirtPost.noSpec
                                     ++ " multiInstanceGroups="
                                     ++ String.fromInt goStats.abiCloning.multiInstanceGroups
                                     ++ " stampedWrapperInstances="

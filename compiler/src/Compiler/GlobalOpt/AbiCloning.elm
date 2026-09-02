@@ -126,10 +126,15 @@ type alias AbiCloningStats =
     , declinedShapeNonArrow : Int
     , declinedAbiMismatch : Int
     , declinedBodyMismatch : Int -- LSS_024 F fence: fingerprint-divergent same-layout groups declined (each one is a fenced E11-class hazard — investigate when non-zero)
-    , devirtPostFn : Int -- E9.5 (plans/lss-post-settle-fn-global-devirt.md): noInstance g|-singleton sites rewritten to direct spec calls (flag lss.postSettleDevirt; 0 flag-off)
-    , devirtPostCtor : Int -- E9.5: the c|-singleton (ctor) half of the same rewrite
-    , devirtPostNoSpec : Int -- E9.5: candidate passed every guard but no registry spec eqLayout-matched the site (census expectation ~0 — investigate when it grows)
-    , devirtPartialDeclined : Int -- lss-lpartial AR-P2: LPartial-headed sites the stamp DECLINED (a lower bound is never a singleton) — the observable devirt guard
+    -- E9.5 + lss-lpartial counters bundled in ONE field: the flat stats
+    -- record sits at the 32-slot GC-scan cap (the Engine.S lesson) — a
+    -- nested record is a single slot.
+    -- fn/ctor: noInstance singleton sites rewritten to direct calls
+    -- (flag lss.postSettleDevirt; 0 flag-off). noSpec: candidate passed
+    -- every guard but no registry spec eqLayout-matched (expect ~0).
+    -- partialDeclined (lss-lpartial AR-P2): LPartial-headed sites the
+    -- stamp DECLINED — the observable devirt guard.
+    , devirtPost : { fn : Int, ctor : Int, noSpec : Int, partialDeclined : Int }
     , multiInstanceGroups : Int -- layout groups holding ≥2 distinct lambdaIds. A MONITORING DELTA, not a zero-gate (amended LSS_017 reading): MonoInlineSimplify mints fresh lambdaIds for verbatim inline copies, and under LSS_024 annotation-only clones legitimately join one group — the representative premise is discharged by fingerprint unanimity, not by this count.
 
     -- Census (2026-07-21, plans/lss-dispatch-value-extraction.md open
@@ -166,10 +171,7 @@ emptyStats =
     , declinedShapeNonArrow = 0
     , declinedAbiMismatch = 0
     , declinedBodyMismatch = 0
-    , devirtPostFn = 0
-    , devirtPostCtor = 0
-    , devirtPostNoSpec = 0
-    , devirtPartialDeclined = 0
+    , devirtPost = { fn = 0, ctor = 0, noSpec = 0, partialDeclined = 0 }
     , multiInstanceGroups = 0
     , declineByMember = Dict.empty
     , memberReps = Dict.empty
@@ -1444,10 +1446,20 @@ stampCall index ctx region func args resultType callInfo =
 
                                 stats2 =
                                     if isCtor then
-                                        { stats1 | devirtPostCtor = stats1.devirtPostCtor + 1 }
+                                        (let
+                                            dp1 =
+                                                stats1.devirtPost
+                                         in
+                                         { stats1 | devirtPost = { dp1 | ctor = dp1.ctor + 1 } }
+                                        )
 
                                     else
-                                        { stats1 | devirtPostFn = stats1.devirtPostFn + 1 }
+                                        (let
+                                            dp1 =
+                                                stats1.devirtPost
+                                         in
+                                         { stats1 | devirtPost = { dp1 | fn = dp1.fn + 1 } }
+                                        )
                             in
                             ( Mono.MonoCall region
                                 (Mono.MonoVarGlobal region specId (Mono.typeOf func))
@@ -1465,7 +1477,13 @@ stampCall index ctx region func args resultType callInfo =
                                     ctx.stats
                             in
                             ( Mono.MonoCall region func args resultType callInfo
-                            , bumpNoInstance { ctx | stats = { statsN | devirtPostNoSpec = statsN.devirtPostNoSpec + 1 } }
+                            , bumpNoInstance
+                                (let
+                                    dpN =
+                                        statsN.devirtPost
+                                 in
+                                 { ctx | stats = { statsN | devirtPost = { dpN | noSpec = dpN.noSpec + 1 } } }
+                                )
                             )
 
                         PsNotCandidate ->
@@ -1520,7 +1538,12 @@ stampCall index ctx region func args resultType callInfo =
                     ctx.stats
             in
             ( Mono.MonoCall region func args resultType callInfo
-            , { ctx | stats = { stats0p | devirtPartialDeclined = stats0p.devirtPartialDeclined + 1 } }
+            , (let
+                dp0 =
+                    stats0p.devirtPost
+               in
+               { ctx | stats = { stats0p | devirtPost = { dp0 | partialDeclined = dp0.partialDeclined + 1 } } }
+              )
             )
 
         Mono.LVar _ ->
