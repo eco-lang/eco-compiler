@@ -134,7 +134,7 @@ runWith varSucc srcModule =
             Config.defaultLss
     in
     Pipeline.runSolverMonoWithLimits Config.defaultLimits
-        { defaults | enabled = True, keyed = True, varSucc = varSucc }
+        { defaults | enabled = True, keyed = True, settle = (\st -> { st | varSucc = varSucc }) defaults.settle }
         srcModule
 
 

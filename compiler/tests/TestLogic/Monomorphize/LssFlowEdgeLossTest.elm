@@ -226,7 +226,7 @@ runBare srcModule =
         -- IS one now — the day it flipped, test 2's lost edge healed at
         -- inference (the loud expiry this suite was designed for; see the
         -- module doc's postscript).
-        { d | enabled = True, keyed = True, varSucc = False, varCtorRows = False, varLambda = False, flowConnect = False }
+        { d | enabled = True, keyed = True, flowConnect = False, settle = { varSucc = False, varCtorRows = False, varLambda = False } }
         srcModule
 
 

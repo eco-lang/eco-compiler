@@ -285,7 +285,7 @@ settleCtorRows s =
         { s | registry = registry1 }
 
 
-{-| Phase 2b (plans/lss-var-chain-roots.md §3, `lss.varCtorRows`): write var
+{-| Phase 2b (plans/lss-var-chain-roots.md §3, `lss.settle.varCtorRows`): write var
 payload slots on ctor registry rows from the sibling-spec CELL union, under
 the all-sets completeness rule.
 
@@ -309,7 +309,7 @@ evidence this gate reads.
 -}
 settleVarCtorRows : S -> S
 settleVarCtorRows s =
-    if not (s.env.lss.enabled && s.env.lss.varCtorRows) then
+    if not (s.env.lss.enabled && s.env.lss.settle.varCtorRows) then
         s
 
     else
@@ -605,7 +605,7 @@ settleVarCtorRows s =
         Dict.foldl (\m n acc -> bumpN ("varctor|mod|" ++ m) n acc) s1 totals.byModule
 
 
-{-| Phase 4v2 (plans/lss-var-chain-roots.md §8.2, `lss.varLambda`): enrich
+{-| Phase 4v2 (plans/lss-var-chain-roots.md §8.2, `lss.settle.varLambda`): enrich
 `l|`-headed var positions from the LAMBDA-HOME table.
 
 A lambda's result set exists in exactly one place — the type of its BODY in
@@ -639,7 +639,7 @@ classifier with its mechanism (the Aug-26 audit rule), which keeps its
 -}
 settleVarLambda : S -> S
 settleVarLambda s =
-    if not (s.env.lss.enabled && s.env.lss.varLambda) then
+    if not (s.env.lss.enabled && s.env.lss.settle.varLambda) then
         s
 
     else
@@ -1105,7 +1105,7 @@ varCellWalk argIds path t acc =
             acc
 
 
-{-| Phase 1 (plans/lss-var-chain-roots.md §3, `lss.varSucc`): post-drain
+{-| Phase 1 (plans/lss-var-chain-roots.md §3, `lss.settle.varSucc`): post-drain
 successor writes. At any row position whose arrow holds a pap-able set
 (every member `p|X|k` / `g|X` / `c|X`) and whose RESULT arrow slot is flex,
 write the member-wise successor set `{p|X|k+j}` (j = args consumed at this
@@ -1125,7 +1125,7 @@ next round (the intra-row chains behind the census's 69.7 % interior mass).
 -}
 settleVarSuccessors : S -> S
 settleVarSuccessors s0 =
-    if not (s0.env.lss.enabled && s0.env.lss.varSucc) then
+    if not (s0.env.lss.enabled && s0.env.lss.settle.varSucc) then
         s0
 
     else

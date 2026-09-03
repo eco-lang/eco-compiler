@@ -49,9 +49,9 @@ suite =
                             [ callSite 1 intRet ]
                 in
                 Expect.all
-                    [ \( _, s ) -> Expect.equal 1 s.devirtPostFn
-                    , \( _, s ) -> Expect.equal 0 s.devirtPostCtor
-                    , \( _, s ) -> Expect.equal 0 s.devirtPostNoSpec
+                    [ \( _, s ) -> Expect.equal 1 s.devirtPost.fn
+                    , \( _, s ) -> Expect.equal 0 s.devirtPost.ctor
+                    , \( _, s ) -> Expect.equal 0 s.devirtPost.noSpec
                     , \( _, s ) -> Expect.equal 0 s.declinedNoInstance
                     , \( g, _ ) -> Expect.equal (Just 0) (firstCalleeSpec g)
                     ]
@@ -66,8 +66,8 @@ suite =
                             [ callSite 1 intRet ]
                 in
                 Expect.all
-                    [ \( _, s ) -> Expect.equal 0 s.devirtPostFn
-                    , \( _, s ) -> Expect.equal 1 s.devirtPostCtor
+                    [ \( _, s ) -> Expect.equal 0 s.devirtPost.fn
+                    , \( _, s ) -> Expect.equal 1 s.devirtPost.ctor
                     , \( _, s ) -> Expect.equal 0 s.declinedNoInstance
                     , \( g, _ ) -> Expect.equal (Just 0) (firstCalleeSpec g)
                     ]
@@ -82,8 +82,8 @@ suite =
                             [ callSiteTyped 1 intFn2use intRet ]
                 in
                 Expect.all
-                    [ \( _, s ) -> Expect.equal 0 s.devirtPostFn
-                    , \( _, s ) -> Expect.equal 0 s.devirtPostNoSpec
+                    [ \( _, s ) -> Expect.equal 0 s.devirtPost.fn
+                    , \( _, s ) -> Expect.equal 0 s.devirtPost.noSpec
                     , \( _, s ) -> Expect.equal 1 s.declinedNoInstance
                     , \( g, _ ) -> Expect.equal Nothing (firstCalleeSpec g)
                     ]
@@ -98,8 +98,8 @@ suite =
                             [ callSite 1 intRet ]
                 in
                 Expect.all
-                    [ \( _, s ) -> Expect.equal 0 s.devirtPostFn
-                    , \( _, s ) -> Expect.equal 1 s.devirtPostNoSpec
+                    [ \( _, s ) -> Expect.equal 0 s.devirtPost.fn
+                    , \( _, s ) -> Expect.equal 1 s.devirtPost.noSpec
                     , \( _, s ) -> Expect.equal 1 s.declinedNoInstance
                     , \( g, _ ) -> Expect.equal Nothing (firstCalleeSpec g)
                     ]
@@ -117,9 +117,9 @@ suite =
                             [ dummyClosure, callSite 1 intRet ]
                 in
                 Expect.all
-                    [ \( _, s ) -> Expect.equal 0 s.devirtPostFn
-                    , \( _, s ) -> Expect.equal 0 s.devirtPostCtor
-                    , \( _, s ) -> Expect.equal 0 s.devirtPostNoSpec
+                    [ \( _, s ) -> Expect.equal 0 s.devirtPost.fn
+                    , \( _, s ) -> Expect.equal 0 s.devirtPost.ctor
+                    , \( _, s ) -> Expect.equal 0 s.devirtPost.noSpec
                     , \( _, s ) -> Expect.equal 1 s.declinedNoInstance
                     , \( g, _ ) -> Expect.equal Nothing (firstCalleeSpec g)
                     ]
@@ -139,7 +139,7 @@ suite =
                             [ callSite 1 intRet ]
                 in
                 Expect.all
-                    [ \( _, s ) -> Expect.equal 1 s.devirtPostFn
+                    [ \( _, s ) -> Expect.equal 1 s.devirtPost.fn
                     , \( g, _ ) -> Expect.equal (Just 1) (firstCalleeSpec g)
                     ]
                     ( graph, stats )

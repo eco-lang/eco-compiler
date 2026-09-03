@@ -273,6 +273,16 @@ applyEnvOverrides cfg =
                     |> Task.map (\fcVal -> applyLssFlowConnectOverride fcVal cfg4es)
             )
         |> Task.andThen
+            (\cfg4et ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_STAGE_ANCHOR_ROW_FILL" |> Task.mapError never)
+                    |> Task.map (\srVal -> applyLssStageAnchorRowFillOverride srVal cfg4et)
+            )
+        |> Task.andThen
+            (\cfg4eu ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_STAGE_ANCHOR_DEMAND_FILL" |> Task.mapError never)
+                    |> Task.map (\sdVal -> applyLssStageAnchorDemandFillOverride sdVal cfg4eu)
+            )
+        |> Task.andThen
             (\cfg4f ->
                 (Utils.envLookupEnv "ECO_SPEC_TYPE_NODE_LIMIT" |> Task.mapError never)
                     |> Task.map (\tnVal -> applySpecTypeNodeLimitOverride tnVal cfg4f)
@@ -1730,6 +1740,16 @@ updateLss f cfg =
     { cfg | mono = { mono | lss = f mono.lss } }
 
 
+updateLssSettle : (Config.LssSettleConfig -> Config.LssSettleConfig) -> EcoConfig -> EcoConfig
+updateLssSettle f =
+    updateLss (\lss -> { lss | settle = f lss.settle })
+
+
+updateLssStageAnchor : (Config.LssStageAnchorConfig -> Config.LssStageAnchorConfig) -> EcoConfig -> EcoConfig
+updateLssStageAnchor f =
+    updateLss (\lss -> { lss | stageAnchor = f lss.stageAnchor })
+
+
 updateLimits : (Config.SpecLimits -> Config.SpecLimits) -> EcoConfig -> EcoConfig
 updateLimits f cfg =
     let
@@ -2103,18 +2123,19 @@ applyLssDestrAnnoOverride maybeVal cfg =
 
 {-| `ECO_MONO_LSS_VAR_SUCC=1|true|yes / 0|false|no`
 (plans/lss-var-chain-roots.md §3 Phase 1): post-drain PAP-successor writes
-into flex result slots, within declared arity. DEFAULT-OFF. Hash token
-`lssVS=`.
+into flex result slots, within declared arity. DEFAULT-ON since 2026-08-31.
+Hash token `lssVS=`. Lives in the `settle` sub-record since 2026-09-02
+(the 32-slot bundling — plans/lss-stage-anchor-writers.md §3L ORDER 0).
 -}
 applyLssVarSuccOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssVarSuccOverride maybeVal cfg =
     case Maybe.map (String.toLower << String.trim) maybeVal of
         Just v ->
             if List.member v [ "1", "true", "yes" ] then
-                updateLss (\lss -> { lss | varSucc = True }) cfg
+                updateLssSettle (\st -> { st | varSucc = True }) cfg
 
             else if List.member v [ "0", "false", "no" ] then
-                updateLss (\lss -> { lss | varSucc = False }) cfg
+                updateLssSettle (\st -> { st | varSucc = False }) cfg
 
             else
                 cfg
@@ -2126,17 +2147,18 @@ applyLssVarSuccOverride maybeVal cfg =
 {-| `ECO_MONO_LSS_VAR_CTOR_ROWS=1|true|yes / 0|false|no`
 (plans/lss-var-chain-roots.md §3 Phase 2b): ctor-row var payload writes from
 the sibling-spec cell union under the all-sets completeness rule.
-DEFAULT-OFF. Hash token `lssVC=`.
+DEFAULT-ON since 2026-08-31. Hash token `lssVC=`. In the `settle`
+sub-record since 2026-09-02.
 -}
 applyLssVarCtorRowsOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssVarCtorRowsOverride maybeVal cfg =
     case Maybe.map (String.toLower << String.trim) maybeVal of
         Just v ->
             if List.member v [ "1", "true", "yes" ] then
-                updateLss (\lss -> { lss | varCtorRows = True }) cfg
+                updateLssSettle (\st -> { st | varCtorRows = True }) cfg
 
             else if List.member v [ "0", "false", "no" ] then
-                updateLss (\lss -> { lss | varCtorRows = False }) cfg
+                updateLssSettle (\st -> { st | varCtorRows = False }) cfg
 
             else
                 cfg
@@ -2169,17 +2191,63 @@ applyLssFlowConnectOverride maybeVal cfg =
 
 {-| `ECO_MONO_LSS_VAR_LAMBDA=1|true|yes / 0|false|no`
 (plans/lss-var-chain-roots.md §8.2 Phase 4v2): enrich `l|`-headed var
-positions from the lambda-home table. DEFAULT-OFF. Hash token `lssVL=`.
+positions from the lambda-home table. DEFAULT-ON since 2026-09-01. Hash
+token `lssVL=`. In the `settle` sub-record since 2026-09-02.
 -}
 applyLssVarLambdaOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssVarLambdaOverride maybeVal cfg =
     case Maybe.map (String.toLower << String.trim) maybeVal of
         Just v ->
             if List.member v [ "1", "true", "yes" ] then
-                updateLss (\lss -> { lss | varLambda = True }) cfg
+                updateLssSettle (\st -> { st | varLambda = True }) cfg
 
             else if List.member v [ "0", "false", "no" ] then
-                updateLss (\lss -> { lss | varLambda = False }) cfg
+                updateLssSettle (\st -> { st | varLambda = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_STAGE_ANCHOR_ROW_FILL=1|true|yes / 0|false|no`
+(plans/lss-stage-anchor-writers.md §3 W2): post-drain settle fill of var
+interior cells under `l|`-singleton heads, bounded by r = T − s over the
+birth-time qSpine fact. DEFAULT-OFF. Hash token `lssSAr=`.
+-}
+applyLssStageAnchorRowFillOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssStageAnchorRowFillOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLssStageAnchor (\sa -> { sa | rowFill = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLssStageAnchor (\sa -> { sa | rowFill = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_STAGE_ANCHOR_DEMAND_FILL=1|true|yes / 0|false|no`
+(plans/lss-stage-anchor-writers.md §3 W1): the same fill applied to every
+demand pre-registry and at the completion join (the stampSelfSpine
+architecture; keyed-routed globals decline). DEFAULT-OFF. Hash token
+`lssSAd=`.
+-}
+applyLssStageAnchorDemandFillOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssStageAnchorDemandFillOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLssStageAnchor (\sa -> { sa | demandFill = True }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLssStageAnchor (\sa -> { sa | demandFill = False }) cfg
 
             else
                 cfg

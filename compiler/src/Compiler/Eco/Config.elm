@@ -1,7 +1,7 @@
 module Compiler.Eco.Config exposing
     ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig
     , default, decoder, hash, clamp
-    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, ListConfig, LssConfig, MonoConfig, MonoEngine(..), SpecLimits, borrowReifyFromString, defaultLimits, defaultLss, monoEngineFromString
+    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, ListConfig, LssConfig, LssSettleConfig, LssStageAnchorConfig, MonoConfig, MonoEngine(..), SpecLimits, borrowReifyFromString, defaultLimits, defaultLss, monoEngineFromString
     )
 
 {-| Project-level tunable compiler settings, read from `eco-config.json`
@@ -671,42 +671,6 @@ type alias LssConfig =
     -- Env `ECO_MONO_LSS_DESTR_ANNO`; hash token `lssDA=`.
     , destrAnno : Bool
 
-    -- Var chain-root writes, Phase 1 (plans/lss-var-chain-roots.md §3):
-    -- post-drain settle sweep writing the PAP successor member into flex
-    -- result slots of pap-able singleton/kN heads, strictly within
-    -- declared arity. Sound unconditionally (type-level identity;
-    -- beyond-arity results belong to the body, LSS_013). DEFAULT-ON since
-    -- 2026-08-31 (with varCtorRows: var −19.2 %, coverage +1.91 pp, ⊤
-    -- unchanged, accounting exact, all gates green — §4.4). Escape hatch
-    -- `ECO_MONO_LSS_VAR_SUCC=0`; hash token `lssVS=0` rides the OFF arm.
-    , varSucc : Bool
-
-    -- Var chain-root writes, Phase 2b (plans/lss-var-chain-roots.md §3):
-    -- post-drain ctor-row var payload writes from the sibling-spec cell
-    -- union, gated on the all-sets completeness rule (zero ⊤ contributors
-    -- AND zero flex-marked construction vars at the cell — AR-V2/AR-V10;
-    -- runs BEFORE the destrAnno ⊤-heal so the contamination evidence is
-    -- still honest). DEFAULT-ON since 2026-08-31 (§4.4; flex gate
-    -- protected 1,563 positions). Escape hatch
-    -- `ECO_MONO_LSS_VAR_CTOR_ROWS=0`; hash token `lssVC=0` rides the OFF
-    -- arm.
-    , varCtorRows : Bool
-
-    -- Var chain-root writes, Phase 4v2 (plans/lss-var-chain-roots.md §8.2):
-    -- post-drain enrichment of `l|`-headed var positions from the
-    -- LAMBDA-HOME table — each qualified lambda's settled result type, read
-    -- off the closure NODES (`ClosureInfo.lssMember` + the body's type),
-    -- which is the only place a lambda's result set exists (rows record spec
-    -- params and results, never interior values). Strict cells (⊤ or var
-    -- blocks), all-or-nothing across members, and an ARITY guard: the use
-    -- site's arrow must consume exactly as many args as the recorded
-    -- closure has params, or the relative paths mean different things.
-    -- DEFAULT-ON since 2026-09-01 (597 writes, 587 of them k1, landing on
-    -- the monadic-continuation family: andThen var −328; all gates green —
-    -- §8.5). Escape hatch `ECO_MONO_LSS_VAR_LAMBDA=0`; hash token `lssVL=0`
-    -- rides the OFF arm.
-    , varLambda : Bool
-
     -- Flow repair M1 (plans/lss-var-chain-roots.md §9.5-9.7): deep argument
     -- write-back for LAMBDA-LITERAL args. After the arg is translated (its
     -- MonoType then carries the body's solved sets), unify it into the
@@ -720,6 +684,76 @@ type alias LssConfig =
     -- accepted by user decision. Escape hatch `ECO_MONO_LSS_FLOW_CONNECT=0`;
     -- hash token `lssFC=0` rides the OFF arm.
     , flowConnect : Bool
+
+    -- The post-drain settle-writer family (var chain-root arc), bundled
+    -- into a sub-record because `LssConfig` sits AT the runtime's 32-slot
+    -- record GC-scan cap (parent plan §9.13 trap: `lamStages` as field 33
+    -- broke Stage 6 native lowering at BOOTSTRAP — same lesson as
+    -- Engine.S). Per-flag docs live on `LssSettleConfig`; env vars, JSON
+    -- keys and hash tokens (lssVS/lssVC/lssVL) are per-flag and UNCHANGED
+    -- by the bundling (tokens are independent of record shape).
+    , settle : LssSettleConfig
+
+    -- Stage-anchor writers (plans/lss-stage-anchor-writers.md §3): the
+    -- construction-anchored `l|` own-mid fill family — rowFill (post-drain
+    -- settle over registry rows) and demandFill (demand + completion-join
+    -- fill on the stampSelfSpine architecture). Per-flag docs on
+    -- `LssStageAnchorConfig`. Env ECO_MONO_LSS_STAGE_ANCHOR_ROW_FILL /
+    -- _DEMAND_FILL; hash tokens lssSAr= / lssSAd= ride the non-default arm.
+    , stageAnchor : LssStageAnchorConfig
+    }
+
+
+{-| Post-drain settle writers (one flag per mechanism — the §8.4/§8.5
+lesson: per-mechanism arms catch what combined arms pass).
+
+  - `varSucc` — var chain-root writes, Phase 1 (plans/lss-var-chain-roots.md
+    §3): post-drain settle sweep writing the PAP successor member into flex
+    result slots of pap-able singleton/kN heads, strictly within declared
+    arity. Sound unconditionally (type-level identity; beyond-arity results
+    belong to the body, LSS_013). DEFAULT-ON since 2026-08-31 (with
+    varCtorRows: var −19.2 %, coverage +1.91 pp, ⊤ unchanged, accounting
+    exact, all gates green — §4.4). Escape hatch `ECO_MONO_LSS_VAR_SUCC=0`;
+    hash token `lssVS=0` rides the OFF arm.
+  - `varCtorRows` — Phase 2b (§3): post-drain ctor-row var payload writes
+    from the sibling-spec cell union, gated on the all-sets completeness
+    rule (zero ⊤ contributors AND zero flex-marked construction vars at the
+    cell — AR-V2/AR-V10; runs BEFORE the destrAnno ⊤-heal so the
+    contamination evidence is still honest). DEFAULT-ON since 2026-08-31
+    (§4.4; flex gate protected 1,563 positions). Escape hatch
+    `ECO_MONO_LSS_VAR_CTOR_ROWS=0`; hash token `lssVC=0` rides the OFF arm.
+  - `varLambda` — Phase 4v2 (§8.2): post-drain enrichment of `l|`-headed
+    var positions from the LAMBDA-HOME table — each qualified lambda's
+    settled result type, read off the closure NODES (`ClosureInfo.lssMember`
+    + the body's type), which is the only place a lambda's result set
+    exists. Strict cells (⊤ or var blocks), all-or-nothing across members,
+    and an ARITY guard. DEFAULT-ON since 2026-09-01 (597 writes, 587 k1,
+    andThen var −328; all gates green — §8.5). Escape hatch
+    `ECO_MONO_LSS_VAR_LAMBDA=0`; hash token `lssVL=0` rides the OFF arm.
+
+-}
+type alias LssSettleConfig =
+    { varSucc : Bool
+    , varCtorRows : Bool
+    , varLambda : Bool
+    }
+
+
+{-| Stage-anchor writers (plans/lss-stage-anchor-writers.md §3): both fill
+`l|`-singleton-headed rows' var interior cells with the lambda's OWN mid
+(LSS_013), bounded by the alignment theorem r = T − s over the birth-time
+qSpine fact.
+
+  - `rowFill` — W2: the post-drain settle pass over registry rows.
+  - `demandFill` — W1: the demand + completion-join fill (the
+    stampSelfSpine architecture; keyed-routed globals decline).
+
+Both DEFAULT-OFF until the ORDER 4 battery presents a flip decision.
+
+-}
+type alias LssStageAnchorConfig =
+    { rowFill : Bool
+    , demandFill : Bool
     }
 
 
@@ -773,10 +807,9 @@ defaultLss =
     , argPoints = False
     , rsTop = True
     , destrAnno = True
-    , varSucc = True
-    , varCtorRows = True
-    , varLambda = True
     , flowConnect = True
+    , settle = { varSucc = True, varCtorRows = True, varLambda = True }
+    , stageAnchor = { rowFill = False, demandFill = False }
     }
 
 
@@ -1175,10 +1208,31 @@ lssDecoder =
         |> D.apply (D.optionalField "argPoints" D.bool defaultLss.argPoints)
         |> D.apply (D.optionalField "rsTop" D.bool defaultLss.rsTop)
         |> D.apply (D.optionalField "destrAnno" D.bool defaultLss.destrAnno)
-        |> D.apply (D.optionalField "varSucc" D.bool defaultLss.varSucc)
-        |> D.apply (D.optionalField "varCtorRows" D.bool defaultLss.varCtorRows)
-        |> D.apply (D.optionalField "varLambda" D.bool defaultLss.varLambda)
         |> D.apply (D.optionalField "flowConnect" D.bool defaultLss.flowConnect)
+        |> D.apply lssSettleDecoder
+        |> D.apply lssStageAnchorDecoder
+
+
+{-| Decode the settle sub-record from the SAME flat JSON keys the fields had
+before the sub-record bundling (2026-09-02, plans/lss-stage-anchor-writers.md
+§3L ORDER 0) — the eco-config.json schema is unchanged by the restructure.
+-}
+lssSettleDecoder : D.Decoder x LssSettleConfig
+lssSettleDecoder =
+    D.pure LssSettleConfig
+        |> D.apply (D.optionalField "varSucc" D.bool defaultLss.settle.varSucc)
+        |> D.apply (D.optionalField "varCtorRows" D.bool defaultLss.settle.varCtorRows)
+        |> D.apply (D.optionalField "varLambda" D.bool defaultLss.settle.varLambda)
+
+
+{-| Flat keys, prefixed — new with the sub-record (no schema history to keep).
+-}
+lssStageAnchorDecoder : D.Decoder x LssStageAnchorConfig
+lssStageAnchorDecoder =
+    D.pure LssStageAnchorConfig
+        |> D.apply (D.optionalField "stageAnchorRowFill" D.bool defaultLss.stageAnchor.rowFill)
+        |> D.apply (D.optionalField "stageAnchorDemandFill" D.bool defaultLss.stageAnchor.demandFill)
+
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
 decoder and the `ECO_MONO_ENGINE` env override. `Nothing` on an unknown value.
@@ -1733,9 +1787,9 @@ hash cfg =
 
                     -- Var successor writes: artifact-affecting when on
                     -- (registry row annotations move).
-                    , if lss.varSucc /= defaultLss.varSucc then
+                    , if lss.settle.varSucc /= defaultLss.settle.varSucc then
                         [ "lssVS="
-                            ++ (if lss.varSucc then
+                            ++ (if lss.settle.varSucc then
                                     "1"
 
                                 else
@@ -1747,9 +1801,9 @@ hash cfg =
                         []
 
                     -- Ctor-row var writes: artifact-affecting when on.
-                    , if lss.varCtorRows /= defaultLss.varCtorRows then
+                    , if lss.settle.varCtorRows /= defaultLss.settle.varCtorRows then
                         [ "lssVC="
-                            ++ (if lss.varCtorRows then
+                            ++ (if lss.settle.varCtorRows then
                                     "1"
 
                                 else
@@ -1761,9 +1815,9 @@ hash cfg =
                         []
 
                     -- Lambda-home var writes: artifact-affecting when on.
-                    , if lss.varLambda /= defaultLss.varLambda then
+                    , if lss.settle.varLambda /= defaultLss.settle.varLambda then
                         [ "lssVL="
-                            ++ (if lss.varLambda then
+                            ++ (if lss.settle.varLambda then
                                     "1"
 
                                 else
@@ -1779,6 +1833,36 @@ hash cfg =
                     , if lss.flowConnect /= defaultLss.flowConnect then
                         [ "lssFC="
                             ++ (if lss.flowConnect then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- Stage-anchor rowFill: artifact-affecting when on
+                    -- (registry row annotations move).
+                    , if lss.stageAnchor.rowFill /= defaultLss.stageAnchor.rowFill then
+                        [ "lssSAr="
+                            ++ (if lss.stageAnchor.rowFill then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- Stage-anchor demandFill: artifact-affecting when on
+                    -- (demand/registry annotations move mid-drain).
+                    , if lss.stageAnchor.demandFill /= defaultLss.stageAnchor.demandFill then
+                        [ "lssSAd="
+                            ++ (if lss.stageAnchor.demandFill then
                                     "1"
 
                                 else

@@ -284,7 +284,7 @@ runWith varCtorRows srcModule =
     Pipeline.runSolverMonoWithLimits Config.defaultLimits
         -- destrAnno pinned ON explicitly: it owns the settle ORDER this
         -- flag interlocks with (var writes before the ⊤-heal).
-        { defaults | enabled = True, keyed = True, destrAnno = True, varCtorRows = varCtorRows }
+        { defaults | enabled = True, keyed = True, destrAnno = True, settle = (\st -> { st | varCtorRows = varCtorRows }) defaults.settle }
         srcModule
 
 

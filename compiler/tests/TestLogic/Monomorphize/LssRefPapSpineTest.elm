@@ -243,7 +243,7 @@ runWith refPapSpine srcModule =
         -- varSucc/varCtorRows pinned OFF (2026-08-31): they write the very
         -- /a0/r position this differential's off-arm asserts as LVar — the
         -- overlapping-flag pin rule.
-        { defaults | enabled = True, keyed = True, refPapSpine = refPapSpine, varSucc = False, varCtorRows = False }
+        { defaults | enabled = True, keyed = True, refPapSpine = refPapSpine, settle = (\st -> { st | varSucc = False, varCtorRows = False }) defaults.settle }
         srcModule
 
 
