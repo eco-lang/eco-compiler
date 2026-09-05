@@ -176,6 +176,7 @@ streamMlirToWriter ecoConfig mode monoGraph0 writeChunk =
                 |> Ctx.withEcoConfig ecoConfig
                 |> Ctx.withCtorBySpec (buildCtorBySpec nodes)
                 |> Ctx.withNullConsBySpec (buildNullConsBySpec registry nodes)
+                |> Ctx.withConstCtorBySpec (buildConstCtorBySpec registry nodes)
                 |> Ctx.withSretPromoted (buildSretPromoted ecoConfig nodes)
                 |> Ctx.withPsplitPromoted (buildPsplitPromoted ecoConfig ctorShapes (buildCtorBySpec nodes) (buildSretPromoted ecoConfig nodes) nodes)
                 |> Ctx.withOracleFacts (deriveOracleFacts ecoConfig monoGraph0)
@@ -300,6 +301,7 @@ streamMlirBytecode ecoConfig mode monoGraph0 target =
                 |> Ctx.withEcoConfig ecoConfig
                 |> Ctx.withCtorBySpec (buildCtorBySpec nodes)
                 |> Ctx.withNullConsBySpec (buildNullConsBySpec registry nodes)
+                |> Ctx.withConstCtorBySpec (buildConstCtorBySpec registry nodes)
                 |> Ctx.withSretPromoted (buildSretPromoted ecoConfig nodes)
                 |> Ctx.withPsplitPromoted (buildPsplitPromoted ecoConfig ctorShapes (buildCtorBySpec nodes) (buildSretPromoted ecoConfig nodes) nodes)
                 |> Ctx.withOracleFacts (deriveOracleFacts ecoConfig monoGraph0)
@@ -1181,6 +1183,58 @@ buildCtorBySpec nodes =
 
                     _ ->
                         ( specId + 1, acc )
+            )
+            ( 0, Dict.empty )
+            nodes
+        )
+
+
+{-| SpecId -> ctor name for nullary specs that embed as a WELL-KNOWN constant.
+
+`CtorTag.embedsAsNullCons` excludes `Nothing` / `True` / `False` from
+`buildNullConsBySpec` because they predate the null-cons mechanism and carry no
+declaration-index tag — `Nothing` IS the merged Empty (REP_CONSTANT_001,
+`eco.constant` kind 2). Their spec still compiles to a func.func whose whole
+body is that constant, so every reference paid an arity-0 CALL to fetch a
+compile-time constant (7,913 call sites across 436 duplicate `Maybe_Nothing`
+specs on the self-compile). This map lets `generateVarGlobal` emit the constant
+directly, exactly as it already does for null-cons ctors.
+
+Scoped to `Nothing`: its result is a custom type, so the ABI is always
+`!eco.value` and the folded constant matches the call's result type. `True` /
+`False` are Bool-typed and reach codegen through `Test.IsBool` paths with their
+own ABI handling (CGEN_009), so they are deliberately left alone.
+
+-}
+buildConstCtorBySpec : Mono.SpecializationRegistry -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int String
+buildConstCtorBySpec registry nodes =
+    Tuple.second
+        (Array.foldl
+            (\maybeNode ( specId, acc ) ->
+                ( specId + 1
+                , case maybeNode of
+                    Just (Mono.MonoCtor shape _) ->
+                        if List.isEmpty shape.fieldTypes && shape.name == "Nothing" then
+                            Dict.insert specId "Nothing" acc
+
+                        else
+                            acc
+
+                    Just (Mono.MonoEnum _ _) ->
+                        case Registry.lookupSpecKey specId registry of
+                            Just ( Mono.Global _ ctorName, _ ) ->
+                                if ctorName == "Nothing" then
+                                    Dict.insert specId "Nothing" acc
+
+                                else
+                                    acc
+
+                            _ ->
+                                acc
+
+                    _ ->
+                        acc
+                )
             )
             ( 0, Dict.empty )
             nodes

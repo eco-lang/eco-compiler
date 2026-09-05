@@ -1,7 +1,7 @@
 module Compiler.Generate.MLIR.Context exposing
     ( SplitParamInfo, SplitSpec(..), SretInfo, withSretPromoted, PsplitInfo, SlotPlan, withPsplitPromoted
     , Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
-    , initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withNullConsBySpec, withOracleFacts, withMapTemplates
+    , initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withNullConsBySpec, withConstCtorBySpec, withOracleFacts, withMapTemplates
     , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, liveEcoValueVars, resetDefinedSsaVars
     , getOrCreateTypeIdForMonoType, registerKernelCall
     , buildSignatures, kernelFuncSignatureFromType, residualResultType
@@ -222,6 +222,7 @@ type alias Context =
     , inlineBodies : Dict.Dict Int ( List ( Name.Name, Mono.MonoType ), Mono.MonoExpr )
     , ctorBySpec : Dict.Dict Int Mono.CtorShape -- U-T1.3.2: SpecId -> ctor shape for saturated-ctor-call promotion (make.custom)
     , nullConsBySpec : Dict.Dict Int Int -- HEAP_044/CGEN_079: SpecId -> effective tag for nullary-ctor/enum specs that embed as null-cons constants; generateVarGlobal emits the constant instead of the arity-0 call (a perf layer — the specs' func.funcs still return the same constant)
+    , constCtorBySpec : Dict.Dict Int String -- REP_CONSTANT_001/CGEN_019: SpecId -> ctor name for nullary specs that embed as a WELL-KNOWN constant (`Nothing` = the merged Empty), which `CtorTag.embedsAsNullCons` excludes from `nullConsBySpec` because they carry no null-cons tag. Same perf layer: generateVarGlobal emits `eco.constant` instead of the arity-0 call.
     , fwdRefdLetNames : Set.Set String -- U-T1.3.2 precise sibling recovery: names of the CURRENT let chain referenced by an EARLIER sibling's RHS (closure-mediated forward refs); computed once per chain head in generateLet, restored on chain exit
     , tailRecLetBody : Maybe Mono.MonoExpr -- U-T1.3.2t: TailRec.compileLetStep emits lets through a synthetic MonoUnit-body wrapper; this carries the REAL loop-body suffix so the promotion hook's escape walk can vet actual uses (Nothing everywhere else; cleared before nested emission)
     , splitAggParams : Dict.Dict String SplitParamInfo
@@ -318,6 +319,7 @@ initContext mode registry signatures initialCtorShapes =
     , inlineBodies = Dict.empty
     , ctorBySpec = Dict.empty
     , nullConsBySpec = Dict.empty
+    , constCtorBySpec = Dict.empty
     , fwdRefdLetNames = Set.empty
     , tailRecLetBody = Nothing
     , splitAggParams = Dict.empty
@@ -355,6 +357,13 @@ ctor/enum specs that embed as null-cons constants (built from the graph's
 withNullConsBySpec : Dict.Dict Int Int -> Context -> Context
 withNullConsBySpec d ctx =
     { ctx | nullConsBySpec = d }
+
+
+{-| Install the well-known-constant nullary ctor map (see `constCtorBySpec`).
+-}
+withConstCtorBySpec : Dict.Dict Int String -> Context -> Context
+withConstCtorBySpec d ctx =
+    { ctx | constCtorBySpec = d }
 
 
 {-| Install the effective eco-config on a freshly-initialised Context.

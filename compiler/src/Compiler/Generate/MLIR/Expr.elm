@@ -722,21 +722,45 @@ generateVarGlobal ctx specId monoType =
                         }
 
                     Nothing ->
-                        -- Zero-arity function (thunk): call directly instead of creating a PAP.
-                        -- papCreate requires arity > 0 (num_captured < arity invariant).
-                        let
-                            resultMlirType =
-                                Types.monoTypeToAbi sig.returnType
+                        case Dict.get specId ctx.constCtorBySpec of
+                            Just _ ->
+                                -- Nullary ctor whose value is a WELL-KNOWN embedded
+                                -- constant (`Nothing` = the merged Empty,
+                                -- REP_CONSTANT_001 / CGEN_019). Excluded from
+                                -- `nullConsBySpec` because it carries no null-cons
+                                -- tag, so without this arm every reference paid an
+                                -- arity-0 CALL to a func.func whose entire body is
+                                -- that constant. Same perf layer as the null-cons
+                                -- arm above: the spec's func.func still exists and
+                                -- still returns the same value for any path not
+                                -- routed here.
+                                let
+                                    ( ctx2, constOp ) =
+                                        Ops.ecoConstantNothing ctx1 var
+                                in
+                                { ops = [ constOp ]
+                                , resultVar = var
+                                , resultType = Types.ecoValue
+                                , ctx = ctx2
+                                , isTerminated = False
+                                }
 
-                            ( ctx2, callOp ) =
-                                Ops.ecoCallNamed ctx1 (emitSafepointHints ctx1) var funcName [] resultMlirType
-                        in
-                        { ops = [ callOp ]
-                        , resultVar = var
-                        , resultType = resultMlirType
-                        , ctx = ctx2
-                        , isTerminated = False
-                        }
+                            Nothing ->
+                                -- Zero-arity function (thunk): call directly instead of creating a PAP.
+                                -- papCreate requires arity > 0 (num_captured < arity invariant).
+                                let
+                                    resultMlirType =
+                                        Types.monoTypeToAbi sig.returnType
+
+                                    ( ctx2, callOp ) =
+                                        Ops.ecoCallNamed ctx1 (emitSafepointHints ctx1) var funcName [] resultMlirType
+                                in
+                                { ops = [ callOp ]
+                                , resultVar = var
+                                , resultType = resultMlirType
+                                , ctx = ctx2
+                                , isTerminated = False
+                                }
 
             else
                 -- Function-typed global with arity > 0: create a closure (papCreate) with no captures

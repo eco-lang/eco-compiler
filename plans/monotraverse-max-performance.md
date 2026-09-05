@@ -298,15 +298,41 @@ traversal in particular is simply cold — 247 K visits on a 223 K-line compile,
 | **B2** dead `papCreate` after HOF elimination | **CLEAN NEGATIVE.** Disassembled `_tail_mono_inline_49213_350603$cap` in the `ECO_INLINE_ALLOC=0` binary: 752 bytes, calls only `foldExprAccFirst` and `eco_follow_forward`, **zero allocation calls**. The MLIR `papCreate` is DCE'd before machine code and never cost anything. |
 | **B3** `refEq` primitive | **Not needed** for T1, and not cheaply available: the pointer fast path lives in the `__eco_value_eq` diamond, which `EcoBackend.cpp:1815` records as never emitted ("Nothing emits eco.value.eq today"), so `==` goes to the structural kernel compare. |
 
-### 6.6 New finding worth its own ticket
+### 6.6 Follow-up, now IMPLEMENTED — fold `Nothing` references to the constant
 
-`Nothing` compiles to **`eco.call @Maybe_Nothing_$_34440`** — a memoized CAF call,
-not an embedded constant. `[]`, `True`, `False` ARE embedded HPointer constants
-(`plans/null-cons-hpointer-embedding.md`, wall −6.2 %). Extending that embedding
-to nullary constructors of small sums would turn a call + cached load into a
-constant materialisation on **every `Maybe`-returning hot path in the compiler**,
-of which T1 just created one per unchanged node. Strictly bigger than anything
-left in this plan.
+**Correction to the first reading of this.** `Nothing` is NOT "a CAF call rather
+than an embedded constant": REP_CONSTANT_001 and CGEN_019 both list it as an
+embedded constant, and it IS one — `Maybe_Nothing_$_63`'s entire body is
+`eco.constant {kind = 2}` (the merged `Empty`, word `0x6`). The waste was that a
+*reference* to it emitted an **arity-0 call to fetch a compile-time constant**:
+on the self-compile, **7,913 call sites across 436 duplicate `Maybe_Nothing`
+specs**.
+
+The fold already existed for every OTHER nullary ctor —
+`Expr.generateVarGlobal` consults `Ctx.nullConsBySpec` and emits the constant
+inline (HEAP_044/CGEN_079, `plans/null-cons-hpointer-embedding.md`). `Nothing`
+was excluded from that map by construction: `CtorTag.embedsAsNullCons` is
+`not (isEmbeddedConstantCtor name)`, because the legacy three (`Nothing`,
+`True`, `False`) carry no null-cons declaration-index tag. So the reference fell
+through to the call arm.
+
+**Change** (three files, mirroring the existing null-cons layer exactly):
+`Ctx.constCtorBySpec : Dict Int String` (a 28th field — the record was at 27,
+under the 32-slot cap), `Backend.buildConstCtorBySpec` populating it for nullary
+`MonoCtor`/`MonoEnum` specs named `Nothing`, and a new arm in
+`generateVarGlobal` emitting `Ops.ecoConstantNothing` instead of
+`Ops.ecoCallNamed`. Purely an emission change: the spec's `func.func` still
+exists and still returns the same value for any path not routed here, and the
+constant is bit-identical to what the call returned.
+
+Scoped to `Nothing` deliberately. `True`/`False` are Bool-typed and reach
+codegen through `Test.IsBool` with their own ABI handling (CGEN_009), so folding
+them needs a separate look at the result-type match; `Nothing`'s result is a
+custom type and is always `!eco.value`, matching the folded constant.
+
+Verified: a Maybe-heavy probe goes from **3 `Maybe_Nothing` calls to 0**, and
+**`--target full` is 1,718 / 1,718**. Per the brief this one was implemented and
+E2E-checked only — not benchmarked or A/B'd.
 
 ### 6.7 Verdict
 
