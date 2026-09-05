@@ -268,9 +268,10 @@ merge props content =
             props.desc2
     in
     Unify
-        (\vars ->
-            UF.union props.var1 props.var2 (IO.makeDescriptor content (min desc1Props.rank desc2Props.rank) Type.noMark Nothing)
-                |> IO.map (Ok << UnifyOk vars)
+        (\vars s0 ->
+            ( UF.unionS props.var1 props.var2 (IO.makeDescriptor content (min desc1Props.rank desc2Props.rank) Type.noMark Nothing) s0
+            , Ok (UnifyOk vars ())
+            )
         )
 
 
@@ -292,27 +293,34 @@ fresh props content =
 
 guardedUnify : IO.Variable -> IO.Variable -> Unify ()
 guardedUnify left right =
+    -- THE hot path of unification. Threads the union-find state directly
+    -- (plans/io-monad-dispatch-reduction.md P3): `UF.equivalent left right` and
+    -- the two `UF.get`s were each a PARTIAL application, so each built a PAP
+    -- that `andThen` then had to dispatch through — 141 M dispatches to the
+    -- `UnionFind` IO wrappers across the self-compile, `UF.get` alone 80.8 M.
+    -- Saturated `equivalentS`/`getS` calls are direct, and the three `andThen`s
+    -- disappear with them. `Unify` wraps `List Variable -> IO a`, and
+    -- `IO a = State -> ( State, a )`, so taking `s0` here is just eta-expansion.
     Unify
-        (\vars ->
-            UF.equivalent left right
-                |> IO.andThen
-                    (\equivalent ->
-                        if equivalent then
-                            IO.pure (Ok (UnifyOk vars ()))
+        (\vars s0 ->
+            let
+                ( equivalent, s1 ) =
+                    UF.equivalentS s0 left right
+            in
+            if equivalent then
+                ( s1, Ok (UnifyOk vars ()) )
 
-                        else
-                            UF.get left
-                                |> IO.andThen
-                                    (\leftDesc ->
-                                        UF.get right
-                                            |> IO.andThen
-                                                (\rightDesc ->
-                                                    case actuallyUnify (makeContext left leftDesc right rightDesc) of
-                                                        Unify k ->
-                                                            k vars
-                                                )
-                                    )
-                    )
+            else
+                let
+                    ( leftDesc, s2 ) =
+                        UF.getS s1 left
+
+                    ( rightDesc, s3 ) =
+                        UF.getS s2 right
+                in
+                case actuallyUnify (makeContext left leftDesc right rightDesc) of
+                    Unify k ->
+                        k vars s3
         )
 
 

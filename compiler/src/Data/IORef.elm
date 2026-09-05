@@ -1,6 +1,7 @@
 module Data.IORef exposing
     ( IORef(..)
     , newPointCell, readPointCell, writePointCell
+    , newPointCellS, readPointCellS, writePointCellS
     , newIORefMVector, readIORefMVector, writeIORefMVector, modifyIORefMVector
     )
 
@@ -25,6 +26,7 @@ two. The `MVector` family is a genuinely separate store and is untouched.
 # Union-find cells
 
 @docs newPointCell, readPointCell, writePointCell
+@docs newPointCellS, readPointCellS, writePointCellS
 
 
 # Mutable vectors
@@ -54,24 +56,19 @@ ONE `Array.push` where the pre-merge code did three.
 
 -}
 newPointCell : Int -> IO.Descriptor -> IO Int
-newPointCell weight desc =
-    \s ->
-        ( { s | ioRefsPoint = Array.push (IO.Root weight desc) s.ioRefsPoint }
-        , Array.length s.ioRefsPoint
-        )
+newPointCell weight desc s =
+    let
+        ( ref, s1 ) =
+            newPointCellS weight desc s
+    in
+    ( s1, ref )
 
 
 {-| Read a union-find cell by Point index, crashing if not found.
 -}
 readPointCell : Int -> IO IO.PointCell
-readPointCell ref =
-    \s ->
-        case Array.get ref s.ioRefsPoint of
-            Just cell ->
-                ( s, cell )
-
-            Nothing ->
-                crash "Data.IORef.readPointCell: could not find entry"
+readPointCell ref s =
+    ( s, readPointCellS s ref )
 
 
 {-| Write a union-find cell by Point index.
@@ -83,8 +80,39 @@ weight behind a helper.
 
 -}
 writePointCell : Int -> IO.PointCell -> IO ()
-writePointCell ref cell =
-    \s -> ( { s | ioRefsPoint = Array.set ref cell s.ioRefsPoint }, () )
+writePointCell ref cell s =
+    ( writePointCellS ref cell s, () )
+
+
+{-| Direct state-passing forms of the three cell primitives
+(plans/io-monad-dispatch-reduction.md P1).
+
+`readPointCellS` is the important one: reading a cell does NOT change the state,
+so it needs no state threading, no result tuple and no `andThen` at all — it is
+an array index. The `IO`-shaped versions above are kept for callers outside the
+union-find hot path and are defined in terms of these.
+
+-}
+readPointCellS : IO.State -> Int -> IO.PointCell
+readPointCellS s ref =
+    case Array.get ref s.ioRefsPoint of
+        Just cell ->
+            cell
+
+        Nothing ->
+            crash "Data.IORef.readPointCell: could not find entry"
+
+
+writePointCellS : Int -> IO.PointCell -> IO.State -> IO.State
+writePointCellS ref cell s =
+    { s | ioRefsPoint = Array.set ref cell s.ioRefsPoint }
+
+
+newPointCellS : Int -> IO.Descriptor -> IO.State -> ( Int, IO.State )
+newPointCellS weight desc s =
+    ( Array.length s.ioRefsPoint
+    , { s | ioRefsPoint = Array.push (IO.Root weight desc) s.ioRefsPoint }
+    )
 
 
 {-| Create a new IORef holding a mutable vector (array).

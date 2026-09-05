@@ -271,13 +271,16 @@ function to produce the next IO action.
 
 -}
 andThen : (a -> IO b) -> IO a -> IO b
-andThen f ma =
-    \s0 ->
-        let
-            ( s1, a ) =
-                ma s0
-        in
-        f a s1
+andThen f ma s0 =
+    -- P0 (plans/io-monad-dispatch-reduction.md): spelled with its state
+    -- parameter, like `map` above. Point-free (`andThen f ma = \s0 -> ...`) this
+    -- allocates a closure for EVERY andThen node; saturated, the closure is only
+    -- built where the result is genuinely passed around as an `IO b` value.
+    let
+        ( s1, a ) =
+            ma s0
+    in
+    f a s1
 
 
 {-| Fold over a list from right to left with an IO-producing function.
