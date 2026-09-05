@@ -3952,6 +3952,20 @@ encode's var-slot sharing cannot alias unrelated positions). Under
 lower-bound semantics this is the paper's channel: a Q-constraint carries
 members only — there is no ⊤ to transport. This is what turned v2's ⊤ +703
 (`topCarried` 280) into no-ops at the target slots.
+
+SCOPE CONTRACT (audited 2026-09-05, `DEFECTS_DO_NOT_FORGET.md` §1). The supply
+is seeded at `-1` on EVERY call, so these ids are distinct only WITHIN one
+returned type — call this twice and both types start again at `LVar -1`. That
+is sufficient, and ONLY sufficient, because the result must be handed straight
+to `Store.monoTypeToVar`, whose `mintVarSlots` pre-pass builds the
+`LVar n -> slot` map fresh from `Dict.empty` for that one type; an id's whole
+lifetime is that single encode. Both call sites do exactly that.
+
+So do NOT retain a de-topped type as an annotation, and do not let one reach
+`Mono.unionAnno`, `annoCovers` or `annoKeyEq` — those compare `LVar` by NUMBER,
+and ids from two different calls collide by construction. A new caller that
+needs ids to survive the encode must take a supply as a parameter instead.
+
 -}
 deTopAnnos : Mono.MonoType -> Mono.MonoType
 deTopAnnos t =

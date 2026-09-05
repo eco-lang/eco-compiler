@@ -199,10 +199,10 @@ compileTyped pkg ifaces modul =
                                 TypeEnv.fromCanonical canonical
                         in
                         phase modName "type-check"
-                            |> Task.map (\_ -> typeCheckTyped modul canonical)
+                            |> Task.andThen (\_ -> stampGuardEnabled)
                             |> Task.andThen
-                                (\tcResult ->
-                                    case tcResult of
+                                (\census ->
+                                    case typeCheckTyped modul canonical census of
                                         Ok { annotations, typedCanonical, nodeTypes, kernelEnv, nodeVars, annotationVars, allSchemeRoots, stampWalked, stampSkipped, annWalked, annSkipped } ->
                                             -- Stamping-guard census (§8.3.2),
                                             -- env-gated so it costs one env
@@ -213,7 +213,7 @@ compileTyped pkg ifaces modul =
                                             -- plumbing a counter from the
                                             -- type-check phase to a report
                                             -- rendered in the mono phase.
-                                            emitStampGuard modName stampWalked stampSkipped annWalked annSkipped
+                                            emitStampGuard census modName stampWalked stampSkipped annWalked annSkipped
                                                 |> Task.andThen
                                                     (\_ -> phase modName "nitpick")
                                                 |> Task.map (\_ -> nitpick canonical)
@@ -307,6 +307,7 @@ kernel function types for typed optimization.
 typeCheckTyped :
     Src.Module
     -> Can.Module
+    -> Bool
     ->
         Result
             E.Error
@@ -329,7 +330,7 @@ typeCheckTyped :
             , annWalked : Int
             , annSkipped : Int
             }
-typeCheckTyped modul canonical =
+typeCheckTyped modul canonical census =
     let
         ioResult =
             TypeTyped.constrainWithIds canonical
@@ -437,26 +438,42 @@ typeCheckTyped modul canonical =
                 -- `stampArrowRoots` can reach. Counted over the same array and
                 -- with the same condition as the stamping above, so the two
                 -- cannot drift.
+                --
+                -- Gated on `census` and allocation-free. It used to run on
+                -- every compile of every module and to build a whole second
+                -- array — one `( maybeType, maybeVar )` tuple per expression
+                -- node — just to fold it down to two Ints that a normal build
+                -- never prints. The indexed loop below reads both arrays in
+                -- place; its Int accumulators are unboxed and its tuple result
+                -- is multi-value, so nothing is allocated.
                 stampGuardCounts =
-                    Array.foldl
-                        (\( maybeType, maybeVar ) ( walked, skipped ) ->
-                            case ( maybeType, maybeVar ) of
-                                ( Just _, Just _ ) ->
-                                    ( walked + 1, skipped )
+                    if census then
+                        stampGuardGo 0 0 0
 
-                                ( Just _, Nothing ) ->
-                                    ( walked, skipped + 1 )
-
-                                _ ->
-                                    ( walked, skipped )
-                        )
+                    else
                         ( 0, 0 )
-                        (Array.indexedMap
-                            (\i maybeType ->
-                                ( maybeType, Maybe.withDefault Nothing (Array.get i rootedNodeVars) )
-                            )
-                            fixedNodeTypes
-                        )
+
+                nodeTypeCount : Int
+                nodeTypeCount =
+                    Array.length fixedNodeTypes
+
+                stampGuardGo : Int -> Int -> Int -> ( Int, Int )
+                stampGuardGo i walked skipped =
+                    if i >= nodeTypeCount then
+                        ( walked, skipped )
+
+                    else
+                        case Maybe.withDefault Nothing (Array.get i fixedNodeTypes) of
+                            Nothing ->
+                                stampGuardGo (i + 1) walked skipped
+
+                            Just _ ->
+                                case Maybe.withDefault Nothing (Array.get i rootedNodeVars) of
+                                    Just _ ->
+                                        stampGuardGo (i + 1) (walked + 1) skipped
+
+                                    Nothing ->
+                                        stampGuardGo (i + 1) walked (skipped + 1)
 
                 stampedAnnotations =
                     Dict.map
@@ -476,17 +493,21 @@ typeCheckTyped modul canonical =
                 -- populations are very different sizes (annotations are
                 -- per-def; node types are per-expression).
                 annGuardCounts =
-                    Dict.foldl
-                        (\defName _ ( walked, skipped ) ->
-                            case Dict.get defName rootedAnnotationVars of
-                                Just _ ->
-                                    ( walked + 1, skipped )
+                    if census then
+                        Dict.foldl
+                            (\defName _ ( walked, skipped ) ->
+                                case Dict.get defName rootedAnnotationVars of
+                                    Just _ ->
+                                        ( walked + 1, skipped )
 
-                                Nothing ->
-                                    ( walked, skipped + 1 )
-                        )
+                                    Nothing ->
+                                        ( walked, skipped + 1 )
+                            )
+                            ( 0, 0 )
+                            annotations
+
+                    else
                         ( 0, 0 )
-                        annotations
             in
             Ok
                 { annotations = stampedAnnotations
@@ -524,32 +545,41 @@ the lines externally.
 per module and prints nothing.
 
 -}
-emitStampGuard : Name -> Int -> Int -> Int -> Int -> Task Never ()
-emitStampGuard modName walked skipped annW annS =
+emitStampGuard : Bool -> Name -> Int -> Int -> Int -> Int -> Task Never ()
+emitStampGuard census modName walked skipped annW annS =
+    if census then
+        System.IO.writeLn System.IO.stderr
+            ("[stampguard] walked="
+                ++ String.fromInt walked
+                ++ " skipped="
+                ++ String.fromInt skipped
+                ++ " annWalked="
+                ++ String.fromInt annW
+                ++ " annSkipped="
+                ++ String.fromInt annS
+                ++ " module="
+                ++ modName
+            )
+
+    else
+        Task.succeed ()
+
+
+{-| Read `ECO_STAMP_GUARD_CENSUS` once per module. The flag now gates the
+COUNTING as well as the printing: off (the default) the two guard censuses are
+not computed at all, so a normal build pays this env read and nothing else.
+-}
+stampGuardEnabled : Task Never Bool
+stampGuardEnabled =
     Utils.envLookupEnv "ECO_STAMP_GUARD_CENSUS"
-        |> Task.andThen
+        |> Task.map
             (\maybeVal ->
                 case maybeVal of
                     Just v ->
-                        if v == "1" || v == "true" || v == "yes" then
-                            System.IO.writeLn System.IO.stderr
-                                ("[stampguard] walked="
-                                    ++ String.fromInt walked
-                                    ++ " skipped="
-                                    ++ String.fromInt skipped
-                                    ++ " annWalked="
-                                    ++ String.fromInt annW
-                                    ++ " annSkipped="
-                                    ++ String.fromInt annS
-                                    ++ " module="
-                                    ++ modName
-                                )
-
-                        else
-                            Task.succeed ()
+                        v == "1" || v == "true" || v == "yes"
 
                     Nothing ->
-                        Task.succeed ()
+                        False
             )
 
 
