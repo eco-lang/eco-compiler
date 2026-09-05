@@ -18,7 +18,7 @@ module Compiler.MonoSolver.Engine exposing
     , GroundingStats, internMemberKey, groundStandaloneMemberIdFor, groundSetMembers, recordSpecWidenedKey, layoutQualKey
     , LssMemberTable, MemberSource(..), emptyMemberTable
     , bumpWidenedByKernel, bumpWidenedBySigSize, bumpWidenedByCf, bumpKernelFactHit, bumpKernelLicensed, bumpEdgeInstalled, bumpFlowDegraded, bumpCompletionJoin, bumpCompletionJoinNoop, withScratchStore
-    , bumpTopMixedFlexSig, bumpArgFlowCensus, bumpAppliedArrow, markFlexCtorSpec
+    , bumpTopMixedFlexSig, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpAppliedArrow, markFlexCtorSpec
     , memoizedSignatureTrivial, memberClassOf, membersClass
     , SigFlowStats
     , markDirty
@@ -1077,6 +1077,28 @@ bumpArgFlowCensus key s =
     else
         s
 
+{-| `bumpArgFlowCensus` by an arbitrary delta (report-gated the same way):
+for cells that count nodes/visits rather than events.
+-}
+bumpArgFlowCensusBy : String -> Int -> S -> S
+bumpArgFlowCensusBy key delta s =
+    if s.env.lss.report then
+        let
+            stats =
+                s.lssStats
+
+            sig =
+                stats.sigStats
+
+            n =
+                Maybe.withDefault 0 (CoreDict.get key sig.argFlowCensus)
+        in
+        { s | lssStats = { stats | sigStats = { sig | argFlowCensus = CoreDict.insert key (n + delta) sig.argFlowCensus } } }
+
+    else
+        s
+
+
 
 {-| Liveness census (plans/lss-provenance-ratio-census.md §7): record that the
 arrow with this `ArrowId` was PEELED BY AN ARGUMENT — i.e. applied.
@@ -1499,6 +1521,7 @@ order — changes. Accepted by decision (§10.4); names are unaffected because
 type alias NumberMultiEntry =
     { defName : String
     , instances : Mono.SpecMap NumberInstance
+    , pendingEnrich : CoreDict.Dict String ( String, Mono.MonoType ) -- E4a deferral (Translate.flushLocalMultiEnrich): instance name -> (its let's defName, the instance RHS type) of let-functions nested in THIS entry's body whose use-site overlay is owed to the outermost let-function's single walk; always empty on the numberMulti stack
     }
 
 
@@ -2360,7 +2383,7 @@ its body (instance discovery is body-first).
 -}
 pushNumberMulti : String -> Step ()
 pushNumberMulti defName s =
-    Ok ( (), { s | numberMulti = { defName = defName, instances = Mono.specMapEmpty } :: s.numberMulti } )
+    Ok ( (), { s | numberMulti = { defName = defName, instances = Mono.specMapEmpty, pendingEnrich = CoreDict.empty } :: s.numberMulti } )
 
 
 {-| Pop the top number-multi entry after the body is specialized.
@@ -2414,7 +2437,7 @@ body (each use records the concrete type it is applied at).
 -}
 pushLocalMulti : String -> Step ()
 pushLocalMulti defName s =
-    Ok ( (), { s | localMulti = { defName = defName, instances = Mono.specMapEmpty } :: s.localMulti } )
+    Ok ( (), { s | localMulti = { defName = defName, instances = Mono.specMapEmpty, pendingEnrich = CoreDict.empty } :: s.localMulti } )
 
 
 popLocalMulti : Step (Maybe NumberMultiEntry)

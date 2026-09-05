@@ -5687,9 +5687,9 @@ translateLet def body letCanType =
                     Engine.andThen
                         (\declType ->
                             Engine.andThen
-                                (\monoBody ->
+                                (\monoBody0 ->
                                     Engine.andThen
-                                        (\maybeEntry ->
+                                        (\( maybeEntry, monoBody ) ->
                                             let
                                                 singleInstance =
                                                     case maybeEntry of
@@ -5754,7 +5754,13 @@ translateLet def body letCanType =
                                                         Engine.succeed ()
                                                 )
                                         )
-                                        Engine.popLocalMulti
+                                        -- E4a deferral: let-functions nested in this body owe their
+                                        -- use-site overlay to the outermost let-function; a tail def
+                                        -- pushes the same stack, so it must flush (or pass up) too.
+                                        (Engine.andThen
+                                            (\maybeEntry -> Engine.map (\b -> ( maybeEntry, b )) (flushLocalMultiEnrich name maybeEntry [] monoBody0))
+                                            Engine.popLocalMulti
+                                        )
                                 )
                                 (Engine.scoped
                                     (Engine.andThen (\_ -> translate body) (Engine.insertVar name declType))
@@ -6645,10 +6651,12 @@ translateLocalMultiLet name defBody body letCanType =
                         Engine.andThen
                             (\instanceDefs ->
                                 Engine.andThen
-                                    (\lssOn ->
+                                    (\monoBody1 ->
                                         Engine.map
                                             (\letType0 ->
                                                 let
+                                                    -- letType stays computed from the UN-enriched
+                                                    -- body (its branch choice must not move flag-on).
                                                     letType =
                                                         if
                                                             Mono.containsAnyMVar letType0
@@ -6658,21 +6666,18 @@ translateLocalMultiLet name defBody body letCanType =
 
                                                         else
                                                             letType0
-
-                                                    -- E4a (plan §9.1): transport the per-instance
-                                                    -- re-translated defs' lambda-set annos to the
-                                                    -- already-emitted USE sites. letType stays
-                                                    -- computed from the un-enriched body (its
-                                                    -- branch choice must not move flag-on).
-                                                    monoBody1 =
-                                                        enrichLocalMultiUses lssOn instanceDefs monoBody
                                                 in
                                                 List.foldl (\d acc -> Mono.MonoLet d acc (Mono.typeOf acc)) monoBody1 (List.reverse instanceDefs)
                                                     |> retypeLet letType
                                             )
                                             (classifyAs Mono.tkClassLet letCanType)
                                     )
-                                    (\s -> Ok ( s.env.lss.enabled, s ))
+                                    -- E4a (plan §9.1): transport the per-instance re-translated
+                                    -- defs' lambda-set annos to the already-emitted USE sites —
+                                    -- walked now if this is the outermost let-function of the
+                                    -- item, else owed to the enclosing one's single walk
+                                    -- (`flushLocalMultiEnrich`).
+                                    (flushLocalMultiEnrich name maybeEntry instanceDefs monoBody)
                             )
                             (buildLocalDefs name defBody maybeEntry)
                     )
@@ -6707,48 +6712,499 @@ their own re-translated type, so precision is per-instance).
 back on mismatch — worst case an untransported `LTop`, sound widening), and
 Elm's no-shadowing rule plus `$`-suffixed freshNames make the name-keyed
 rewrite safe. lss-off: identity, so flag-off output is byte-identical.
+
+DEFERRED TO THE OUTERMOST LET-FUNCTION (2026-09-04, the Aug-26 → Sep-3
+self-compile regression). The overlay used to run at EVERY let-function's
+completion as a generic `MonoTraverse.traverseExpr` over the whole let body —
+a PAP, a tuple and a rebuilt node per visited node, and a body nested under
+k let-functions rebuilt k times over. On the Sep-3 self-compile that was
+3.34e9 traversal dispatches (68 % of the program's dispatch) from 764 calls,
+at a 2.47 % hit rate. Now:
+
+  - a let-function whose completion finds an ENCLOSING let-function on the
+    `localMulti` stack does not walk: it records its instance names in the
+    enclosing entry's `pendingEnrich` (inherited pendings cascade upward);
+  - the OUTERMOST let-function walks its body ONCE (`overlayLocalMultiUses`):
+    a direct walk that allocates nothing on unchanged paths, binds each
+    recorded group's `instance -> typeOf rhs` at the group's own `MonoLet`
+    chain (lexically scoped, so a sibling scope reusing a name binds its own
+    value) and overlays exactly the uses the per-let walks used to.
+
+The tree is the SAME one the per-let scheme built: own-group names are not
+overlaid inside the group's own RHSs (the old walk covered the body only),
+inherited names are (the old enclosing walk covered everything), and the
+non-outermost members of a chain carry `typeOf` of the own-overlaid body
+exactly as the completion-time fold computed it.
+
 -}
-enrichLocalMultiUses : Bool -> List Mono.MonoDef -> Mono.MonoExpr -> Mono.MonoExpr
-enrichLocalMultiUses lssOn instanceDefs monoBody =
-    if not lssOn then
-        monoBody
+flushLocalMultiEnrich : Name -> Maybe Engine.NumberMultiEntry -> List Mono.MonoDef -> Mono.MonoExpr -> Step Mono.MonoExpr
+flushLocalMultiEnrich defName maybeEntry instanceDefs monoBody s0 =
+    if not s0.env.lss.enabled then
+        Ok ( monoBody, s0 )
 
     else
         let
-            annoByName =
-                List.filterMap
-                    (\d ->
+            inherited =
+                case maybeEntry of
+                    Just entry ->
+                        entry.pendingEnrich
+
+                    Nothing ->
+                        Dict.empty
+
+            -- This let's own instance bindings (`f`, `f$1`, …). Walking now,
+            -- they seed the environment directly (the chain is not wrapped
+            -- around `monoBody` yet); deferring, the enclosing walk finds
+            -- them at the chain.
+            own =
+                List.foldl
+                    (\d acc ->
                         case d of
                             Mono.MonoDef n rhs ->
-                                Just ( n, Mono.typeOf rhs )
+                                Dict.insert n ( defName, Mono.typeOf rhs ) acc
 
                             Mono.MonoTailDef _ _ _ ->
-                                Nothing
+                                acc
                     )
+                    Dict.empty
                     instanceDefs
-                    |> Dict.fromList
+
+            pending =
+                Dict.union own inherited
         in
-        if Dict.isEmpty annoByName then
-            monoBody
+        if Dict.isEmpty pending then
+            Ok ( monoBody, s0 )
 
         else
-            MonoTraverse.traverseExpr
-                (\() e ->
-                    case e of
-                        Mono.MonoVarLocal n t ->
-                            case Dict.get n annoByName of
-                                Just src ->
-                                    ( Mono.MonoVarLocal n (Mono.overlayAnnotations t src), () )
+            case s0.localMulti of
+                top :: rest ->
+                    -- Nested: the enclosing let-function's walk covers this body.
+                    Ok ( monoBody, { s0 | localMulti = { top | pendingEnrich = Dict.union pending top.pendingEnrich } :: rest } )
 
-                                Nothing ->
-                                    ( e, () )
+                [] ->
+                    let
+                        rootEnv =
+                            Dict.map (\_ ( _, t ) -> t) own
+                    in
+                    Ok ( overlayLocalMultiUses pending rootEnv monoBody, enrichCensus pending rootEnv monoBody s0 )
 
-                        _ ->
-                            ( e, () )
+
+{-| The single walk. `groups`: recorded instance name -> (its let's defName,
+the instance RHS type as recorded); `env`: the bindings in scope at the root.
+-}
+overlayLocalMultiUses : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> Mono.MonoExpr -> Mono.MonoExpr
+overlayLocalMultiUses groups env root =
+    Maybe.withDefault root (olmExpr groups env root)
+
+
+{-| One node. `Nothing` = the subtree is unchanged (nothing is allocated on
+that path); `Just` = a rebuilt subtree.
+-}
+olmExpr : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> Mono.MonoExpr -> Maybe Mono.MonoExpr
+olmExpr groups env expr =
+    case expr of
+        Mono.MonoVarLocal n t ->
+            case Dict.get n env of
+                Just src ->
+                    Just (Mono.MonoVarLocal n (Mono.overlayAnnotations t src))
+
+                Nothing ->
+                    Nothing
+
+        Mono.MonoLet def body t ->
+            case olmChain groups expr of
+                Just ( members, innerBody ) ->
+                    Just (olmGroup groups env members innerBody)
+
+                Nothing ->
+                    case ( olmDef groups env def, olmExpr groups env body ) of
+                        ( Nothing, Nothing ) ->
+                            Nothing
+
+                        ( md, mb ) ->
+                            Just (Mono.MonoLet (Maybe.withDefault def md) (Maybe.withDefault body mb) t)
+
+        Mono.MonoClosure info body t ->
+            case ( olmCaptures groups env info.captures, olmExpr groups env body ) of
+                ( Nothing, Nothing ) ->
+                    Nothing
+
+                ( mc, mb ) ->
+                    Just (Mono.MonoClosure { info | captures = Maybe.withDefault info.captures mc } (Maybe.withDefault body mb) t)
+
+        Mono.MonoCall region func args t info ->
+            case ( olmExpr groups env func, olmList groups env args ) of
+                ( Nothing, Nothing ) ->
+                    Nothing
+
+                ( mf, ma ) ->
+                    Just (Mono.MonoCall region (Maybe.withDefault func mf) (Maybe.withDefault args ma) t info)
+
+        Mono.MonoTailCall name args t ->
+            Maybe.map (\a -> Mono.MonoTailCall name a t) (olmNamed groups env args)
+
+        Mono.MonoIf branches final t ->
+            case ( olmBranches groups env branches, olmExpr groups env final ) of
+                ( Nothing, Nothing ) ->
+                    Nothing
+
+                ( mb, mf ) ->
+                    Just (Mono.MonoIf (Maybe.withDefault branches mb) (Maybe.withDefault final mf) t)
+
+        Mono.MonoDestruct path inner t ->
+            Maybe.map (\i -> Mono.MonoDestruct path i t) (olmExpr groups env inner)
+
+        Mono.MonoCase label scrutinee decider jumps t ->
+            case ( olmDecider groups env decider, olmNamed groups env jumps ) of
+                ( Nothing, Nothing ) ->
+                    Nothing
+
+                ( md, mj ) ->
+                    Just (Mono.MonoCase label scrutinee (Maybe.withDefault decider md) (Maybe.withDefault jumps mj) t)
+
+        Mono.MonoList region items t ->
+            Maybe.map (\i -> Mono.MonoList region i t) (olmList groups env items)
+
+        Mono.MonoRecordCreate fields t ->
+            Maybe.map (\f -> Mono.MonoRecordCreate f t) (olmNamed groups env fields)
+
+        Mono.MonoRecordAccess inner field t ->
+            Maybe.map (\i -> Mono.MonoRecordAccess i field t) (olmExpr groups env inner)
+
+        Mono.MonoRecordUpdate record updates t ->
+            case ( olmExpr groups env record, olmNamed groups env updates ) of
+                ( Nothing, Nothing ) ->
+                    Nothing
+
+                ( mr, mu ) ->
+                    Just (Mono.MonoRecordUpdate (Maybe.withDefault record mr) (Maybe.withDefault updates mu) t)
+
+        Mono.MonoTupleCreate region elements t ->
+            Maybe.map (\e -> Mono.MonoTupleCreate region e t) (olmList groups env elements)
+
+        Mono.MonoLiteral _ _ ->
+            Nothing
+
+        Mono.MonoVarGlobal _ _ _ ->
+            Nothing
+
+        Mono.MonoVarKernel _ _ _ _ _ ->
+            Nothing
+
+        Mono.MonoUnit ->
+            Nothing
+
+        Mono.MonoAccessorValue _ _ _ ->
+            Nothing
+
+
+{-| The maximal chain of instance-def `MonoLet`s of ONE recorded group
+starting at this node (top-first), with the body under the chain. A `MonoLet`
+is a member when its def name is a recorded instance of the same group AND
+its RHS type is the very type recorded at completion (a name reused in a
+sibling scope binds its own, different value). `Nothing`: no chain here.
+-}
+olmChain : Dict.Dict String ( String, Mono.MonoType ) -> Mono.MonoExpr -> Maybe ( List ( Name, Mono.MonoExpr, Mono.MonoType ), Mono.MonoExpr )
+olmChain groups expr =
+    case expr of
+        Mono.MonoLet (Mono.MonoDef n rhs) body t ->
+            case Dict.get n groups of
+                Just ( group, recordedType ) ->
+                    if Mono.typeOf rhs == recordedType then
+                        Just (olmChainGo groups group body [ ( n, rhs, t ) ])
+
+                    else
+                        Nothing
+
+                Nothing ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+olmChainGo : Dict.Dict String ( String, Mono.MonoType ) -> String -> Mono.MonoExpr -> List ( Name, Mono.MonoExpr, Mono.MonoType ) -> ( List ( Name, Mono.MonoExpr, Mono.MonoType ), Mono.MonoExpr )
+olmChainGo groups group expr acc =
+    case expr of
+        Mono.MonoLet (Mono.MonoDef n rhs) body t ->
+            case Dict.get n groups of
+                Just ( g, recordedType ) ->
+                    if g == group && Mono.typeOf rhs == recordedType then
+                        olmChainGo groups group body (( n, rhs, t ) :: acc)
+
+                    else
+                        ( List.reverse acc, expr )
+
+                Nothing ->
+                    ( List.reverse acc, expr )
+
+        _ ->
+            ( List.reverse acc, expr )
+
+
+{-| Rebuild one group's chain: the RHSs see the OUTER bindings only (the
+per-let walk never covered its own instance RHSs), the body sees the group's
+own bindings too; non-top members carry `typeOf` of the own-overlaid body,
+as the completion-time fold computed it.
+-}
+olmGroup : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> List ( Name, Mono.MonoExpr, Mono.MonoType ) -> Mono.MonoExpr -> Mono.MonoExpr
+olmGroup groups env members innerBody =
+    let
+        own =
+            List.foldl (\( n, rhs, _ ) acc -> Dict.insert n (Mono.typeOf rhs) acc) Dict.empty members
+
+        newBody =
+            Maybe.withDefault innerBody (olmExpr groups (Dict.union own env) innerBody)
+
+        memberType =
+            case innerBody of
+                Mono.MonoVarLocal n t ->
+                    case Dict.get n own of
+                        Just src ->
+                            Mono.overlayAnnotations t src
+
+                        Nothing ->
+                            t
+
+                other ->
+                    Mono.typeOf other
+    in
+    olmRebuild groups env members newBody memberType True
+
+
+olmRebuild : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> List ( Name, Mono.MonoExpr, Mono.MonoType ) -> Mono.MonoExpr -> Mono.MonoType -> Bool -> Mono.MonoExpr
+olmRebuild groups env members body memberType isTop =
+    case members of
+        [] ->
+            body
+
+        ( n, rhs, tOrig ) :: rest ->
+            Mono.MonoLet
+                (Mono.MonoDef n (Maybe.withDefault rhs (olmExpr groups env rhs)))
+                (olmRebuild groups env rest body memberType False)
+                (if isTop then
+                    tOrig
+
+                 else
+                    memberType
                 )
-                ()
-                monoBody
-                |> Tuple.first
+
+
+olmDef : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> Mono.MonoDef -> Maybe Mono.MonoDef
+olmDef groups env def =
+    case def of
+        Mono.MonoDef n rhs ->
+            Maybe.map (Mono.MonoDef n) (olmExpr groups env rhs)
+
+        Mono.MonoTailDef n params rhs ->
+            Maybe.map (Mono.MonoTailDef n params) (olmExpr groups env rhs)
+
+
+olmList : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> List Mono.MonoExpr -> Maybe (List Mono.MonoExpr)
+olmList groups env items =
+    case items of
+        [] ->
+            Nothing
+
+        x :: xs ->
+            case ( olmExpr groups env x, olmList groups env xs ) of
+                ( Nothing, Nothing ) ->
+                    Nothing
+
+                ( mx, mxs ) ->
+                    Just (Maybe.withDefault x mx :: Maybe.withDefault xs mxs)
+
+
+olmNamed : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> List ( k, Mono.MonoExpr ) -> Maybe (List ( k, Mono.MonoExpr ))
+olmNamed groups env items =
+    case items of
+        [] ->
+            Nothing
+
+        ( k, x ) :: xs ->
+            case ( olmExpr groups env x, olmNamed groups env xs ) of
+                ( Nothing, Nothing ) ->
+                    Nothing
+
+                ( mx, mxs ) ->
+                    Just (( k, Maybe.withDefault x mx ) :: Maybe.withDefault xs mxs)
+
+
+olmCaptures : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> List ( Name, Mono.MonoExpr, a ) -> Maybe (List ( Name, Mono.MonoExpr, a ))
+olmCaptures groups env items =
+    case items of
+        [] ->
+            Nothing
+
+        ( n, x, t ) :: xs ->
+            case ( olmExpr groups env x, olmCaptures groups env xs ) of
+                ( Nothing, Nothing ) ->
+                    Nothing
+
+                ( mx, mxs ) ->
+                    Just (( n, Maybe.withDefault x mx, t ) :: Maybe.withDefault xs mxs)
+
+
+olmBranches : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> List ( Mono.MonoExpr, Mono.MonoExpr ) -> Maybe (List ( Mono.MonoExpr, Mono.MonoExpr ))
+olmBranches groups env items =
+    case items of
+        [] ->
+            Nothing
+
+        ( c, x ) :: xs ->
+            case ( olmExpr groups env c, olmExpr groups env x, olmBranches groups env xs ) of
+                ( Nothing, Nothing, Nothing ) ->
+                    Nothing
+
+                ( mc, mx, mxs ) ->
+                    Just (( Maybe.withDefault c mc, Maybe.withDefault x mx ) :: Maybe.withDefault xs mxs)
+
+
+olmDecider : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> Mono.Decider Mono.MonoChoice -> Maybe (Mono.Decider Mono.MonoChoice)
+olmDecider groups env decider =
+    case decider of
+        Mono.Leaf (Mono.Inline e) ->
+            Maybe.map (\e1 -> Mono.Leaf (Mono.Inline e1)) (olmExpr groups env e)
+
+        Mono.Leaf (Mono.Jump _) ->
+            Nothing
+
+        Mono.Chain test success failure ->
+            case ( olmDecider groups env success, olmDecider groups env failure ) of
+                ( Nothing, Nothing ) ->
+                    Nothing
+
+                ( ms, mf ) ->
+                    Just (Mono.Chain test (Maybe.withDefault success ms) (Maybe.withDefault failure mf))
+
+        Mono.FanOut path edges fallback ->
+            case ( olmEdges groups env edges, olmDecider groups env fallback ) of
+                ( Nothing, Nothing ) ->
+                    Nothing
+
+                ( me, mf ) ->
+                    Just (Mono.FanOut path (Maybe.withDefault edges me) (Maybe.withDefault fallback mf))
+
+
+olmEdges : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> List ( a, Mono.Decider Mono.MonoChoice ) -> Maybe (List ( a, Mono.Decider Mono.MonoChoice ))
+olmEdges groups env edges =
+    case edges of
+        [] ->
+            Nothing
+
+        ( test, d ) :: rest ->
+            case ( olmDecider groups env d, olmEdges groups env rest ) of
+                ( Nothing, Nothing ) ->
+                    Nothing
+
+                ( md, mr ) ->
+                    Just (( test, Maybe.withDefault d md ) :: Maybe.withDefault rest mr)
+
+
+{-| Report-gated (`lss.report`) census of what the single walk replaced —
+the mechanism behind the Aug-26 → Sep-3 regression:
+
+    e4a|walks       outermost walks
+    e4a|nodes       nodes those walks visited (the new cost)
+    e4a|oldVisits   nodes the per-let scheme visited: Σ over every group
+                    of its body size (each body once per enclosing group)
+    e4a|groups      instance-def chains covered
+    e4a|depth|<d>   walks whose deepest chain nesting is d
+    e4a|item|<g>    oldVisits per global for the worst offenders (≥ 1e6)
+
+-}
+enrichCensus : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> Mono.MonoExpr -> Engine.S -> Engine.S
+enrichCensus groups rootEnv body s =
+    if not s.env.lss.report then
+        s
+
+    else
+        let
+            ownGroup =
+                if Dict.isEmpty rootEnv then
+                    0
+
+                else
+                    1
+
+            ( size, st ) =
+                enrichCensusGo groups (1 + ownGroup) body { old = 0, groups = 0, maxDepth = 0 }
+
+            -- the flushing let is itself a group whose old walk covered `body`
+            old =
+                st.old + ownGroup * size
+
+            depth =
+                max st.maxDepth ownGroup
+
+            itemKey =
+                case s.currentGlobal of
+                    Just g ->
+                        Mono.toComparableGlobal g
+
+                    Nothing ->
+                        "?"
+        in
+        s
+            |> Engine.bumpArgFlowCensusBy "e4a|walks" 1
+            |> Engine.bumpArgFlowCensusBy "e4a|nodes" size
+            |> Engine.bumpArgFlowCensusBy "e4a|oldVisits" old
+            |> Engine.bumpArgFlowCensusBy "e4a|groups" (st.groups + ownGroup)
+            |> Engine.bumpArgFlowCensusBy ("e4a|depth|" ++ String.fromInt depth) 1
+            |> (if old >= 1000000 then
+                    Engine.bumpArgFlowCensusBy ("e4a|item|" ++ itemKey) old
+
+                else
+                    identity
+               )
+
+
+type alias EnrichCensus =
+    { old : Int, groups : Int, maxDepth : Int }
+
+
+{-| Subtree size (MonoExpr nodes, as `traverseExpr` counted them) plus the
+census over the chains inside; `depth` = chains enclosing this node + 1.
+-}
+enrichCensusGo : Dict.Dict String ( String, Mono.MonoType ) -> Int -> Mono.MonoExpr -> EnrichCensus -> ( Int, EnrichCensus )
+enrichCensusGo groups depth expr st =
+    case olmChain groups expr of
+        Just ( members, innerBody ) ->
+            let
+                ( rhsSize, st1 ) =
+                    List.foldl
+                        (\( _, rhs, _ ) ( n, a ) ->
+                            let
+                                ( m, a1 ) =
+                                    enrichCensusGo groups depth rhs a
+                            in
+                            ( n + m, a1 )
+                        )
+                        ( 0, st )
+                        members
+
+                ( bodySize, st2 ) =
+                    enrichCensusGo groups (depth + 1) innerBody st1
+            in
+            ( List.length members + rhsSize + bodySize
+            , { st2 | old = st2.old + bodySize, groups = st2.groups + 1, maxDepth = max st2.maxDepth depth }
+            )
+
+        Nothing ->
+            let
+                ( childSum, st1 ) =
+                    List.foldl
+                        (\c ( n, a ) ->
+                            let
+                                ( m, a1 ) =
+                                    enrichCensusGo groups depth c a
+                            in
+                            ( n + m, a1 )
+                        )
+                        ( 0, st )
+                        (MonoTraverse.childrenOf expr)
+            in
+            ( 1 + childSum, st1 )
 
 
 buildLocalDefs : Name -> TOpt.Expr TypeIds.MVarId -> Maybe Engine.NumberMultiEntry -> Step (List Mono.MonoDef)

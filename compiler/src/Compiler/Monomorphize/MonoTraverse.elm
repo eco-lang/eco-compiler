@@ -2,6 +2,7 @@ module Compiler.Monomorphize.MonoTraverse exposing
     ( traverseExpr
     , foldExpr
     , mapNodeTypes, anyNodeType
+    , childrenOf
     )
 
 {-| Generic AST traversal abstractions for MonoExpr.
@@ -42,18 +43,29 @@ import Compiler.AST.Monomorphized as Mono exposing (CallInfo, CaptureABI, Closur
 
 {-| Context-threaded transformation over expressions.
 The context is threaded through in evaluation order (left to right).
-Transformation is applied bottom-up (children first).
+Transformation is applied bottom-up (children first), EXACTLY ONCE per node.
+
+`f` is the user callback everywhere below: the children walk recurses through
+`traverseExpr f` as a saturated direct call, so no `traverseExpr f` PAP is
+built per node, and the def / decider / choice helpers apply the SAME single
+lift. (Until 2026-09-04 `traverseExprChildren` received the lifted function
+and `traverseDef`/`traverseDecider`/`traverseChoice` lifted it again, so every
+let-RHS and case-branch subtree was walked by `traverseExpr (traverseExpr f)`
+— exponential in let/case nesting, and `f` ran once per path. That was the
+Aug-26 → Sep-3 self-compile regression: `plans/e4a-deferred-overlay.md`,
+`DEFECTS_DO_NOT_FORGET.md` §3.)
+
 -}
 traverseExpr : (ctx -> MonoExpr -> ( MonoExpr, ctx )) -> ctx -> MonoExpr -> ( MonoExpr, ctx )
 traverseExpr f ctx expr =
     let
         ( mapped, ctx1 ) =
-            traverseExprChildren (traverseExpr f) ctx expr
+            traverseExprChildren f ctx expr
     in
     f ctx1 mapped
 
 
-{-| Traverse definitions with context.
+{-| Traverse a definition's RHS.
 -}
 traverseDef : (ctx -> MonoExpr -> ( MonoExpr, ctx )) -> ctx -> MonoDef -> ( MonoDef, ctx )
 traverseDef f ctx def =
@@ -73,7 +85,8 @@ traverseDef f ctx def =
             ( MonoTailDef name params newBound, ctx1 )
 
 
-{-| Traverse deciders with context.
+{-| Traverse a decider's inline choices (success before failure, edges before
+the fallback).
 -}
 traverseDecider : (ctx -> MonoExpr -> ( MonoExpr, ctx )) -> ctx -> Decider MonoChoice -> ( Decider MonoChoice, ctx )
 traverseDecider f ctx decider =
@@ -97,20 +110,8 @@ traverseDecider f ctx decider =
 
         FanOut path edges fallback ->
             let
-                ( newEdgesRev, ctx1 ) =
-                    List.foldl
-                        (\( test, d ) ( acc, c ) ->
-                            let
-                                ( newD, c1 ) =
-                                    traverseDecider f c d
-                            in
-                            ( ( test, newD ) :: acc, c1 )
-                        )
-                        ( [], ctx )
-                        edges
-
-                newEdges =
-                    List.reverse newEdgesRev
+                ( newEdges, ctx1 ) =
+                    traverseEdges f ctx edges
 
                 ( newFallback, ctx2 ) =
                     traverseDecider f ctx1 fallback
@@ -118,8 +119,23 @@ traverseDecider f ctx decider =
             ( FanOut path newEdges newFallback, ctx2 )
 
 
-{-| Traverse choices with context.
--}
+traverseEdges : (ctx -> MonoExpr -> ( MonoExpr, ctx )) -> ctx -> List ( a, Decider MonoChoice ) -> ( List ( a, Decider MonoChoice ), ctx )
+traverseEdges f ctx edges =
+    case edges of
+        [] ->
+            ( [], ctx )
+
+        ( test, d ) :: rest ->
+            let
+                ( newD, ctx1 ) =
+                    traverseDecider f ctx d
+
+                ( newRest, ctx2 ) =
+                    traverseEdges f ctx1 rest
+            in
+            ( ( test, newD ) :: newRest, ctx2 )
+
+
 traverseChoice : (ctx -> MonoExpr -> ( MonoExpr, ctx )) -> ctx -> MonoChoice -> ( MonoChoice, ctx )
 traverseChoice f ctx choice =
     case choice of
@@ -294,7 +310,8 @@ foldChoiceAccFirst f acc choice =
 -- ============================================================================
 
 
-{-| Traverse direct children with context threading.
+{-| Traverse direct children with context threading; `f` is the user
+callback, recursion is `traverseExpr f` (a direct saturated call).
 -}
 traverseExprChildren : (ctx -> MonoExpr -> ( MonoExpr, ctx )) -> ctx -> MonoExpr -> ( MonoExpr, ctx )
 traverseExprChildren f ctx expr =
@@ -302,67 +319,37 @@ traverseExprChildren f ctx expr =
         MonoClosure info body closureType ->
             let
                 ( newCaptures, ctx1 ) =
-                    traverseList
-                        (\c ( n, e, t ) ->
-                            let
-                                ( e1, c1 ) =
-                                    f c e
-                            in
-                            ( ( n, e1, t ), c1 )
-                        )
-                        ctx
-                        info.captures
+                    traverseCaptures f ctx info.captures
 
                 ( newBody, ctx2 ) =
-                    f ctx1 body
+                    traverseExpr f ctx1 body
             in
             ( MonoClosure { info | captures = newCaptures } newBody closureType, ctx2 )
 
         MonoCall region func args resultType callInfo ->
             let
                 ( newFunc, ctx1 ) =
-                    f ctx func
+                    traverseExpr f ctx func
 
                 ( newArgs, ctx2 ) =
-                    traverseList f ctx1 args
+                    traverseExprs f ctx1 args
             in
             ( MonoCall region newFunc newArgs resultType callInfo, ctx2 )
 
         MonoTailCall name args resultType ->
             let
                 ( newArgs, ctx1 ) =
-                    traverseList
-                        (\c ( n, e ) ->
-                            let
-                                ( e1, c1 ) =
-                                    f c e
-                            in
-                            ( ( n, e1 ), c1 )
-                        )
-                        ctx
-                        args
+                    traverseKeyed f ctx args
             in
             ( MonoTailCall name newArgs resultType, ctx1 )
 
         MonoIf branches final resultType ->
             let
                 ( newBranches, ctx1 ) =
-                    traverseList
-                        (\c ( cond, then_ ) ->
-                            let
-                                ( newCond, c1 ) =
-                                    f c cond
-
-                                ( newThen, c2 ) =
-                                    f c1 then_
-                            in
-                            ( ( newCond, newThen ), c2 )
-                        )
-                        ctx
-                        branches
+                    traverseBranches f ctx branches
 
                 ( newFinal, ctx2 ) =
-                    f ctx1 final
+                    traverseExpr f ctx1 final
             in
             ( MonoIf newBranches newFinal resultType, ctx2 )
 
@@ -372,14 +359,14 @@ traverseExprChildren f ctx expr =
                     traverseDef f ctx def
 
                 ( newBody, ctx2 ) =
-                    f ctx1 body
+                    traverseExpr f ctx1 body
             in
             ( MonoLet newDef newBody resultType, ctx2 )
 
         MonoDestruct path inner resultType ->
             let
                 ( newInner, ctx1 ) =
-                    f ctx inner
+                    traverseExpr f ctx inner
             in
             ( MonoDestruct path newInner resultType, ctx1 )
 
@@ -389,72 +376,45 @@ traverseExprChildren f ctx expr =
                     traverseDecider f ctx decider
 
                 ( newJumps, ctx2 ) =
-                    traverseList
-                        (\c ( i, e ) ->
-                            let
-                                ( e1, c1 ) =
-                                    f c e
-                            in
-                            ( ( i, e1 ), c1 )
-                        )
-                        ctx1
-                        jumps
+                    traverseKeyed f ctx1 jumps
             in
             ( MonoCase label scrutinee newDecider newJumps resultType, ctx2 )
 
         MonoList region items resultType ->
             let
                 ( newItems, ctx1 ) =
-                    traverseList f ctx items
+                    traverseExprs f ctx items
             in
             ( MonoList region newItems resultType, ctx1 )
 
         MonoRecordCreate fields resultType ->
             let
                 ( newFields, ctx1 ) =
-                    traverseList
-                        (\c ( n, e ) ->
-                            let
-                                ( e1, c1 ) =
-                                    f c e
-                            in
-                            ( ( n, e1 ), c1 )
-                        )
-                        ctx
-                        fields
+                    traverseKeyed f ctx fields
             in
             ( MonoRecordCreate newFields resultType, ctx1 )
 
         MonoRecordAccess inner field resultType ->
             let
                 ( newInner, ctx1 ) =
-                    f ctx inner
+                    traverseExpr f ctx inner
             in
             ( MonoRecordAccess newInner field resultType, ctx1 )
 
         MonoRecordUpdate record updates resultType ->
             let
                 ( newRecord, ctx1 ) =
-                    f ctx record
+                    traverseExpr f ctx record
 
                 ( newUpdates, ctx2 ) =
-                    traverseList
-                        (\c ( n, e ) ->
-                            let
-                                ( e1, c1 ) =
-                                    f c e
-                            in
-                            ( ( n, e1 ), c1 )
-                        )
-                        ctx1
-                        updates
+                    traverseKeyed f ctx1 updates
             in
             ( MonoRecordUpdate newRecord newUpdates resultType, ctx2 )
 
         MonoTupleCreate region elements resultType ->
             let
                 ( newElements, ctx1 ) =
-                    traverseList f ctx elements
+                    traverseExprs f ctx elements
             in
             ( MonoTupleCreate region newElements resultType, ctx1 )
 
@@ -478,24 +438,169 @@ traverseExprChildren f ctx expr =
             ( expr, ctx )
 
 
-{-| Helper for threading context through a list.
+{-| The list helpers recurse through `traverseExpr f` directly (no PAP per
+item) and thread the context left to right.
 -}
-traverseList : (ctx -> a -> ( b, ctx )) -> ctx -> List a -> ( List b, ctx )
-traverseList f ctx list =
-    let
-        ( revAcc, finalCtx ) =
-            List.foldl
-                (\item ( acc, c ) ->
-                    let
-                        ( newItem, c1 ) =
-                            f c item
-                    in
-                    ( newItem :: acc, c1 )
-                )
-                ( [], ctx )
-                list
-    in
-    ( List.reverse revAcc, finalCtx )
+traverseExprs : (ctx -> MonoExpr -> ( MonoExpr, ctx )) -> ctx -> List MonoExpr -> ( List MonoExpr, ctx )
+traverseExprs f ctx items =
+    case items of
+        [] ->
+            ( [], ctx )
+
+        e :: rest ->
+            let
+                ( e1, ctx1 ) =
+                    traverseExpr f ctx e
+
+                ( rest1, ctx2 ) =
+                    traverseExprs f ctx1 rest
+            in
+            ( e1 :: rest1, ctx2 )
+
+
+traverseKeyed : (ctx -> MonoExpr -> ( MonoExpr, ctx )) -> ctx -> List ( k, MonoExpr ) -> ( List ( k, MonoExpr ), ctx )
+traverseKeyed f ctx items =
+    case items of
+        [] ->
+            ( [], ctx )
+
+        ( k, e ) :: rest ->
+            let
+                ( e1, ctx1 ) =
+                    traverseExpr f ctx e
+
+                ( rest1, ctx2 ) =
+                    traverseKeyed f ctx1 rest
+            in
+            ( ( k, e1 ) :: rest1, ctx2 )
+
+
+traverseCaptures : (ctx -> MonoExpr -> ( MonoExpr, ctx )) -> ctx -> List ( n, MonoExpr, a ) -> ( List ( n, MonoExpr, a ), ctx )
+traverseCaptures f ctx items =
+    case items of
+        [] ->
+            ( [], ctx )
+
+        ( n, e, t ) :: rest ->
+            let
+                ( e1, ctx1 ) =
+                    traverseExpr f ctx e
+
+                ( rest1, ctx2 ) =
+                    traverseCaptures f ctx1 rest
+            in
+            ( ( n, e1, t ) :: rest1, ctx2 )
+
+
+traverseBranches : (ctx -> MonoExpr -> ( MonoExpr, ctx )) -> ctx -> List ( MonoExpr, MonoExpr ) -> ( List ( MonoExpr, MonoExpr ), ctx )
+traverseBranches f ctx items =
+    case items of
+        [] ->
+            ( [], ctx )
+
+        ( cond, then_ ) :: rest ->
+            let
+                ( cond1, ctx1 ) =
+                    traverseExpr f ctx cond
+
+                ( then1, ctx2 ) =
+                    traverseExpr f ctx1 then_
+
+                ( rest1, ctx3 ) =
+                    traverseBranches f ctx2 rest
+            in
+            ( ( cond1, then1 ) :: rest1, ctx3 )
+
+
+{-| The DIRECT sub-expressions of a node, in evaluation order (a `MonoDef`'s
+RHS, a decider's inline choices, jump bodies, captures...). Lets a caller
+write its own recursion — e.g. one that needs each child's SUBTREE result
+rather than a flat fold — without re-enumerating the constructors.
+-}
+childrenOf : MonoExpr -> List MonoExpr
+childrenOf expr =
+    case expr of
+        MonoClosure info body _ ->
+            List.map (\( _, e, _ ) -> e) info.captures ++ [ body ]
+
+        MonoCall _ func args _ _ ->
+            func :: args
+
+        MonoTailCall _ args _ ->
+            List.map Tuple.second args
+
+        MonoIf branches final _ ->
+            List.concatMap (\( c, t ) -> [ c, t ]) branches ++ [ final ]
+
+        MonoLet def body _ ->
+            [ defBody def, body ]
+
+        MonoDestruct _ inner _ ->
+            [ inner ]
+
+        MonoCase _ _ decider jumps _ ->
+            deciderExprs decider (List.map Tuple.second jumps)
+
+        MonoList _ items _ ->
+            items
+
+        MonoRecordCreate fields _ ->
+            List.map Tuple.second fields
+
+        MonoRecordAccess inner _ _ ->
+            [ inner ]
+
+        MonoRecordUpdate record updates _ ->
+            record :: List.map Tuple.second updates
+
+        MonoTupleCreate _ elements _ ->
+            elements
+
+        MonoLiteral _ _ ->
+            []
+
+        MonoVarLocal _ _ ->
+            []
+
+        MonoVarGlobal _ _ _ ->
+            []
+
+        MonoVarKernel _ _ _ _ _ ->
+            []
+
+        MonoUnit ->
+            []
+
+        MonoAccessorValue _ _ _ ->
+            []
+
+
+defBody : MonoDef -> MonoExpr
+defBody def =
+    case def of
+        MonoDef _ e ->
+            e
+
+        MonoTailDef _ _ e ->
+            e
+
+
+{-| Inline choice bodies of a decider, prepended (in order) to `rest`.
+-}
+deciderExprs : Decider MonoChoice -> List MonoExpr -> List MonoExpr
+deciderExprs decider rest =
+    case decider of
+        Leaf (Inline e) ->
+            e :: rest
+
+        Leaf (Jump _) ->
+            rest
+
+        Chain _ success failure ->
+            deciderExprs success (deciderExprs failure rest)
+
+        FanOut _ edges fallback ->
+            List.foldr (\( _, d ) acc -> deciderExprs d acc) (deciderExprs fallback rest) edges
 
 
 
