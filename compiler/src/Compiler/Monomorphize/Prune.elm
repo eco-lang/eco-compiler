@@ -118,13 +118,16 @@ pruneUnreachableSpecs mvarEnv globalTypeEnv (Mono.MonoGraph record) =
         isNum mvarId =
             State.isNumberVar mvarId mvarEnv
 
+        -- Spelled with their parameter: point-free these are declared arity 1
+        -- and defined with none, so each is a PAP that the whole-graph walks
+        -- below apply indirectly once per type they visit.
         closeType : Mono.MonoType -> Mono.MonoType
-        closeType =
-            Mono.resolveNumberType isNum
+        closeType t =
+            Mono.resolveNumberType isNum t
 
         hasResidualType : Mono.MonoType -> Bool
-        hasResidualType =
-            Mono.typeHasResidualNumber isNum
+        hasResidualType t =
+            Mono.typeHasResidualNumber isNum t
 
         closeNode : Mono.MonoNode -> Mono.MonoNode
         closeNode node =

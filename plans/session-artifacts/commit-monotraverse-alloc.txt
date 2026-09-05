@@ -1,0 +1,24 @@
+Return the original subtree from traverseExpr when a callback changes nothing
+
+traverseExpr's callback now returns `( Maybe MonoExpr, ctx )`, where `Nothing` means "I did not
+change this node". Its two callers rewrite a few percent of what they visit - remapLambdaIds only
+closures, resolveFusedLets only fused vars - so rebuilding every node cost a fresh node, its list
+cells and a 13-slot ClosureInfo copy per visit, all of it immediately garbage. The walk now rebuilds
+only above an actual change: an untouched subtree is returned as-is and allocates nothing, the
+ClosureInfo record is copied only when captures move, and `Jump` is no longer re-allocated. Add
+`mapExpr` for callbacks that need no context, and give remapLambdaIds its parameters (point-free it
+built a PAP at every call site).
+
+Spell foldExpr with its arguments and walk its nine list children by direct tail recursion instead
+of `List.foldl (\e a -> ...)`, and do the same for anyExprType. Point-free, foldExpr is declared
+arity 3 and defined with one parameter, so each of its ~29 call sites paid a papCreate plus a
+papExtend and an indirect entry; `List.any (anyExprType p)` built a PAP per visited node with a list
+child. Eta-expand Prune's closeType and hasResidualType for the same reason.
+
+Measured on a frozen 223,536-line compiler corpus, with ECO_INLINE_ALLOC=0 for honest allocation
+counts: the family's indirect dispatches fall 533,821 -> 7,101 (anyExprType 336,684 -> 0, foldExpr
+190,036 -> 0), objects allocated 9,786,232,317 -> 9,785,717,133, and traverseExpr gains a $sret twin
+so its result tuple stops touching the heap. Output is byte-identical on both corpora, the bootstrap
+fixed point holds, and the wall is flat: a uprobe visit census puts the whole family at 4.2M node
+visits against 9.8 billion objects allocated, which bounds anything done here. See
+plans/monotraverse-max-performance.md §6 for the numbers and why there is no headroom left.

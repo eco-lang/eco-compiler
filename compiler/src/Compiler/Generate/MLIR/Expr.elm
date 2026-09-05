@@ -2912,17 +2912,17 @@ bfExprCompiler fusedLets monoExpr compilerCtx =
 
 resolveFusedLets : Dict.Dict Name.Name Mono.MonoExpr -> Ctx.Context -> Mono.MonoExpr -> Mono.MonoExpr
 resolveFusedLets fusedLets ctx expr =
-    MonoTraverse.traverseExpr
-        (\() e ->
+    MonoTraverse.mapExpr
+        (\e ->
             case e of
                 Mono.MonoVarLocal name _ ->
                     if Dict.member name ctx.varMappings then
-                        ( e, () )
+                        Nothing
 
                     else
                         case Dict.get name fusedLets of
                             Just bound ->
-                                ( resolveFusedLets fusedLets ctx bound, () )
+                                Just (resolveFusedLets fusedLets ctx bound)
 
                             Nothing ->
                                 -- Reification also PULLS IN inlined spec
@@ -2932,17 +2932,15 @@ resolveFusedLets fusedLets ctx expr =
                                 -- them only on this rare miss path.
                                 case findLetInInlineBodies name ctx of
                                     Just bound ->
-                                        ( resolveFusedLets fusedLets ctx bound, () )
+                                        Just (resolveFusedLets fusedLets ctx bound)
 
                                     Nothing ->
-                                        ( e, () )
+                                        Nothing
 
                 _ ->
-                    ( e, () )
+                    Nothing
         )
-        ()
         expr
-        |> Tuple.first
 
 
 findLetInInlineBodies : Name.Name -> Ctx.Context -> Maybe Mono.MonoExpr

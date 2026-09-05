@@ -2443,7 +2443,7 @@ freshLambdaIdForSpec ctx specId =
 {-| Generate a fresh lambda ID for a closure.
 This is called after children are processed, so nested closures get IDs first.
 -}
-remapClosureLambdaId : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
+remapClosureLambdaId : RewriteCtx -> MonoExpr -> ( Maybe MonoExpr, RewriteCtx )
 remapClosureLambdaId ctx expr =
     case expr of
         MonoClosure info body closureType ->
@@ -2459,18 +2459,23 @@ remapClosureLambdaId ctx expr =
                 newInfo =
                     { info | lambdaId = newLambdaId }
             in
-            ( MonoClosure newInfo body closureType, ctx1 )
+            ( Just (MonoClosure newInfo body closureType), ctx1 )
 
         _ ->
-            ( expr, ctx )
+            -- `Nothing`: every non-closure node is left exactly as it was, so
+            -- the traversal keeps the original subtree instead of copying it.
+            ( Nothing, ctx )
 
 
 {-| Remap all lambda IDs in an expression to fresh values.
 This is necessary when inlining to avoid duplicate lambda function names in MLIR.
 -}
 remapLambdaIds : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
-remapLambdaIds =
-    Traverse.traverseExpr remapClosureLambdaId
+remapLambdaIds ctx expr =
+    -- Spelled with its parameters: point-free it is declared arity 2 and
+    -- defined with none, so every call site built a PAP instead of making a
+    -- saturated call.
+    Traverse.traverseExpr remapClosureLambdaId ctx expr
 
 
 {-| A binding created during beta reduction or inlining.

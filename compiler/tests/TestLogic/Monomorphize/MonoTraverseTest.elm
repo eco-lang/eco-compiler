@@ -40,7 +40,7 @@ suite =
                     ( _, seen ) =
                         MonoTraverse.traverseExpr
                             (\acc e ->
-                                ( e
+                                ( Nothing
                                 , case e of
                                     Mono.MonoLiteral (Mono.LInt n) _ ->
                                         acc ++ [ String.fromInt n ]
@@ -62,13 +62,65 @@ suite =
                             tree
                 in
                 Expect.equal seen [ "1", "2", "3", "4", "5", "list", "if", "let" ]
+        , Test.test "5b. every rebuild path propagates a change to the root" <|
+            \() ->
+                -- Bump every Int literal by 1 through a tree that exercises
+                -- let RHSs, case branches (Chain and FanOut), jumps, tuples and
+                -- ifs. If any constructor arm dropped a rebuilt child, or kept
+                -- the original when a child changed, the sum would not move by
+                -- exactly the number of literals.
+                let
+                    tree =
+                        mixed 6
+
+                    ( bumped, _ ) =
+                        MonoTraverse.traverseExpr
+                            (\c e ->
+                                case e of
+                                    Mono.MonoLiteral (Mono.LInt n) t ->
+                                        ( Just (Mono.MonoLiteral (Mono.LInt (n + 1)) t), c )
+
+                                    _ ->
+                                        ( Nothing, c )
+                            )
+                            ()
+                            tree
+                in
+                Expect.equal ( sumLits bumped, countLits bumped )
+                    ( sumLits tree + countLits tree, countLits tree )
+        , Test.test "5c. mapExpr rewrites without a context" <|
+            \() ->
+                let
+                    tree =
+                        mixed 4
+
+                    bumped =
+                        MonoTraverse.mapExpr
+                            (\e ->
+                                case e of
+                                    Mono.MonoLiteral (Mono.LInt n) t ->
+                                        Just (Mono.MonoLiteral (Mono.LInt (n + 1)) t)
+
+                                    _ ->
+                                        Nothing
+                            )
+                            tree
+                in
+                Expect.equal (sumLits bumped) (sumLits tree + countLits tree)
+        , Test.test "5d. a callback that never changes anything returns the input tree" <|
+            \() ->
+                let
+                    tree =
+                        mixed 5
+                in
+                Expect.equal (MonoTraverse.mapExpr (\_ -> Nothing) tree) tree
         , Test.test "5. identity callback returns the same tree" <|
             \() ->
                 let
                     tree =
                         mixed 5
                 in
-                Expect.equal (Tuple.first (MonoTraverse.traverseExpr (\c e -> ( e, c )) () tree)) tree
+                Expect.equal (Tuple.first (MonoTraverse.traverseExpr (\c _ -> ( Nothing, c )) () tree)) tree
         ]
 
 
@@ -76,7 +128,7 @@ expectOnce : Mono.MonoExpr -> Expect.Expectation
 expectOnce tree =
     let
         visits =
-            Tuple.second (MonoTraverse.traverseExpr (\n e -> ( e, n + 1 )) 0 tree)
+            Tuple.second (MonoTraverse.traverseExpr (\n _ -> ( Nothing, n + 1 )) 0 tree)
 
         nodes =
             size tree
@@ -85,6 +137,34 @@ expectOnce tree =
             MonoTraverse.foldExpr (\_ n -> n + 1) 0 tree
     in
     Expect.equal ( visits, folded ) ( nodes, nodes )
+
+
+sumLits : Mono.MonoExpr -> Int
+sumLits =
+    MonoTraverse.foldExpr
+        (\e acc ->
+            case e of
+                Mono.MonoLiteral (Mono.LInt n) _ ->
+                    acc + n
+
+                _ ->
+                    acc
+        )
+        0
+
+
+countLits : Mono.MonoExpr -> Int
+countLits =
+    MonoTraverse.foldExpr
+        (\e acc ->
+            case e of
+                Mono.MonoLiteral (Mono.LInt _) _ ->
+                    acc + 1
+
+                _ ->
+                    acc
+        )
+        0
 
 
 size : Mono.MonoExpr -> Int
