@@ -963,7 +963,7 @@ runGlobalOptPhase mapTemplateCfg lssReport listReport borrowCfg cafMemo cseCfg s
         FEStats.PhaseGlobalOpt
         (let
             ( goGraph, goStats ) =
-                MonoGlobalOptimize.globalOptimizeWithStats mapTemplateCfg.mono.lss.layoutQualMembers mapTemplateCfg.mono.lss.postSettleDevirt borrowCfg simplifiedGraph
+                MonoGlobalOptimize.globalOptimizeWithStats mapTemplateCfg.mono.lss.layoutQualMembers mapTemplateCfg.mono.lss.postSettleDevirt mapTemplateCfg.mono.lss.stamp.flatPeel borrowCfg simplifiedGraph
 
             -- kernel-opt-13 C2: bounded-scope CSE of pure calls. Runs HERE,
             -- post-annotation, because it adds MonoLet bindings and
@@ -1230,6 +1230,47 @@ abiCensusLines abi =
                 |> List.map (\( k, c ) -> k ++ "=" ++ String.fromInt c)
                 |> String.join " "
 
+        -- P0 census (plans/lss-instance-qualified-members.md §2): layout-group
+        -- instance histogram; "div<n>" = a FINGERPRINT-DIVERGENT group, i.e.
+        -- one member id indexing n behaviourally different bodies.
+        iqHist =
+            Dict.toList abi.instQual.hist
+                |> List.sortBy (\( _, c ) -> negate c)
+                |> List.map (\( k, c ) -> k ++ "=" ++ String.fromInt c)
+                |> String.join " "
+
+        -- The go/no-go table: per HOST global, how its consulted call sites
+        -- resolved. `bodyMismatch` is the class instance qualification fixes;
+        -- `multi<n>` is a genuinely multi-member set, which it does not.
+        iqHosts =
+            Dict.toList abi.instQual.byHost
+                |> List.filter (\( k, _ ) -> not (String.endsWith "|stamped" k))
+                |> List.sortBy (\( _, c ) -> negate c)
+                |> List.take 60
+                |> List.map (\( k, c ) -> k ++ "=" ++ String.fromInt c)
+                |> String.join " "
+
+        iqMismatchHosts =
+            byReason "|bodyMismatch" 40
+
+        -- arityOver is 34.8 % of all declines and hosts every hot fold
+        -- callback (plans/lss-instance-qualified-members.md §12.5). Its own
+        -- line, wide, because it is the successor target and the JOIN KEY for
+        -- the caller-attributed dynamic census.
+        iqArityOverHosts =
+            byReason "|arityOver" 80
+
+        iqNoInstanceHosts =
+            byReason "|noInstance" 40
+
+        byReason suffix n =
+            Dict.toList abi.instQual.byHost
+                |> List.filter (\( k, _ ) -> String.endsWith suffix k)
+                |> List.sortBy (\( _, c ) -> negate c)
+                |> List.take n
+                |> List.map (\( k, c ) -> k ++ "=" ++ String.fromInt c)
+                |> String.join " "
+
         -- LSS_026 §11: blocked members with their blocker instance — the
         -- adopting synthetic closure's symbol names the wrapped def.
         blockedLine =
@@ -1277,6 +1318,58 @@ abiCensusLines abi =
 
                         else
                             shapes
+                       )
+               , "lss census instQual divergentGroups: " ++ String.fromInt abi.instQual.divergentGroups
+               , "lss census instQual groupHist (instances->groups, div=fp-divergent): "
+                    ++ (if String.isEmpty iqHist then
+                            "(none)"
+
+                        else
+                            iqHist
+                       )
+               , "lss census instQual bodyMismatch by host top40: "
+                    ++ (if String.isEmpty iqMismatchHosts then
+                            "(none)"
+
+                        else
+                            iqMismatchHosts
+                       )
+               , "lss census instQual flatStamped: " ++ String.fromInt abi.instQual.flatStamped
+               , "lss census instQual overApply shape (firstStage->argCount|peel|reason): "
+                    ++ (let
+                            sh =
+                                Dict.toList abi.instQual.shape
+                                    |> List.sortBy (\( _, c ) -> negate c)
+                                    |> List.take 40
+                                    |> List.map (\( k, c ) -> k ++ "=" ++ String.fromInt c)
+                                    |> String.join " "
+                        in
+                        if String.isEmpty sh then
+                            "(none)"
+
+                        else
+                            sh
+                       )
+               , "lss census instQual arityOver by host top80: "
+                    ++ (if String.isEmpty iqArityOverHosts then
+                            "(none)"
+
+                        else
+                            iqArityOverHosts
+                       )
+               , "lss census instQual noInstance by host top40: "
+                    ++ (if String.isEmpty iqNoInstanceHosts then
+                            "(none)"
+
+                        else
+                            iqNoInstanceHosts
+                       )
+               , "lss census instQual declines by host top60: "
+                    ++ (if String.isEmpty iqHosts then
+                            "(none)"
+
+                        else
+                            iqHosts
                        )
                , "lss census varSiteShapes (LVar callee shapes): "
                     ++ (if String.isEmpty unknownShapes then

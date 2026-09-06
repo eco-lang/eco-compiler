@@ -1,7 +1,7 @@
 module Compiler.Eco.Config exposing
     ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig
     , default, decoder, hash, clamp
-    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, ListConfig, LssConfig, LssSettleConfig, LssStageAnchorConfig, MonoConfig, MonoEngine(..), SpecLimits, borrowReifyFromString, defaultLimits, defaultLss, monoEngineFromString
+    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, ListConfig, LssConfig, LssSettleConfig, LssStampConfig, LssStageAnchorConfig, MonoConfig, MonoEngine(..), SpecLimits, borrowReifyFromString, defaultLimits, defaultLss, monoEngineFromString
     )
 
 {-| Project-level tunable compiler settings, read from `eco-config.json`
@@ -701,6 +701,14 @@ type alias LssConfig =
     -- `LssStageAnchorConfig`. Env ECO_MONO_LSS_STAGE_ANCHOR_ROW_FILL /
     -- _DEMAND_FILL; hash tokens lssSAr= / lssSAd= ride the non-default arm.
     , stageAnchor : LssStageAnchorConfig
+
+    -- Instance-qualified lambda members
+    -- (plans/lss-instance-qualified-members.md). Sub-record, not a bare flag:
+    -- `LssConfig` is at the 32-slot record GC-scan cap with this field, so the
+    -- NEXT knob must go inside a sub-record too. Env
+    -- ECO_MONO_LSS_INSTANCE_QUAL / _MAX; hash tokens lssIQ= / lssIQM= ride the
+    -- non-default arm.
+    , stamp : LssStampConfig
     }
 
 
@@ -757,6 +765,46 @@ type alias LssStageAnchorConfig =
     }
 
 
+{-| Instance-qualified lambda members (plans/lss-instance-qualified-members.md).
+
+`enabled`: a lambda instance minted while re-translating the RHS of a
+LOCAL-MULTI instance carries that instance's identity in its member id, on top
+of LSS_017's source lambda and LSS_024's enclosing-spec widened key. Local-multi
+instance keying is annotation-SENSITIVE (`Engine.recordMultiInstance`) while
+member qualification was not, so two instances of one let-function shared ONE
+member id — a singleton set indexing two different bodies, which AbiCloning
+correctly refuses to stamp (`declinedBodyMismatch`) rather than miscompile.
+
+`maxInstances`: the hard cap. The discriminator is the instance ORDINAL, not
+its type — a type hash would put annotations back into member ids and reopen
+the specs -> members -> keys spiral LSS_018 exists to close. The ordinal keeps
+that spiral bounded but not provably absent: an annotation split mints an
+instance, whose new member id can drive a further split. Beyond the cap a mint
+takes today's key (fence declines, status quo), so termination is structural.
+0 means unlimited — do not ship it.
+
+`flatPeel` (Fix A, §15.1 of the plan): at an OVER-APPLYING call site — the
+site applies its args flat while the callee TYPE is curried, which
+`Store.classifyGo` makes it for every arrow ("one arrow per MFunction") — peel
+the type's stages until the accumulated parameter count EQUALS the site's arg
+count, and match the instance against THAT list instead of against the type's
+one-parameter first stage.
+
+The type is representation-AGNOSTIC: an arrow is inhabited by a flat n-param
+closure, by a curried chain and by PAPs alike, and `classifyGo` runs before any
+closure has flowed there. The INSTANCE is the only representation authority, so
+the comparison belongs against the instance. That is why this is a comparison
+fix and not a representation change.
+
+Measured at 33.2 % of the compiler's generic dispatch (plan §13).
+-}
+type alias LssStampConfig =
+    { enabled : Bool
+    , maxInstances : Int
+    , flatPeel : Bool
+    }
+
+
 {-| The built-in LSS defaults (budgets per the design doc).
 
 `enabled = True` means **solver implies LSS** (H3, 2026-07-14): the solver
@@ -810,6 +858,7 @@ defaultLss =
     , flowConnect = True
     , settle = { varSucc = True, varCtorRows = True, varLambda = True }
     , stageAnchor = { rowFill = False, demandFill = False }
+    , stamp = { enabled = True, maxInstances = 8, flatPeel = True }
     }
 
 
@@ -1211,6 +1260,7 @@ lssDecoder =
         |> D.apply (D.optionalField "flowConnect" D.bool defaultLss.flowConnect)
         |> D.apply lssSettleDecoder
         |> D.apply lssStageAnchorDecoder
+        |> D.apply lssInstanceQualDecoder
 
 
 {-| Decode the settle sub-record from the SAME flat JSON keys the fields had
@@ -1232,6 +1282,16 @@ lssStageAnchorDecoder =
     D.pure LssStageAnchorConfig
         |> D.apply (D.optionalField "stageAnchorRowFill" D.bool defaultLss.stageAnchor.rowFill)
         |> D.apply (D.optionalField "stageAnchorDemandFill" D.bool defaultLss.stageAnchor.demandFill)
+
+
+{-| Flat keys, prefixed — new with the sub-record (no schema history to keep).
+-}
+lssInstanceQualDecoder : D.Decoder x LssStampConfig
+lssInstanceQualDecoder =
+    D.pure LssStampConfig
+        |> D.apply (D.optionalField "instanceQual" D.bool defaultLss.stamp.enabled)
+        |> D.apply (D.optionalField "instanceQualMaxInstances" D.int defaultLss.stamp.maxInstances)
+        |> D.apply (D.optionalField "flatPeel" D.bool defaultLss.stamp.flatPeel)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -1515,6 +1575,47 @@ hash cfg =
                     , if lss.sigFlow /= defaultLss.sigFlow then
                         [ "lssSF="
                             ++ (if lss.sigFlow then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- Instance-qualified members: artifact-affecting for
+                    -- exactly the LSS_024 reason (member ids → annotations →
+                    -- keyed spec keys → fan-out). Env vars are NOT ninja
+                    -- inputs and the harness cache is env-blind, so without
+                    -- these tokens an A/B serves stale artifacts and both arms
+                    -- measure the same binary.
+                    , if lss.stamp.enabled /= defaultLss.stamp.enabled then
+                        [ "lssIQ="
+                            ++ (if lss.stamp.enabled then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+                    , if lss.stamp.maxInstances /= defaultLss.stamp.maxInstances then
+                        [ "lssIQM=" ++ String.fromInt lss.stamp.maxInstances ]
+
+                      else
+                        []
+
+                    -- Fix A: artifact-affecting (it changes WHICH sites get
+                    -- stamped, hence CallInfo, hence emitted MLIR). Env vars
+                    -- are not ninja inputs and the harness cache is env-blind,
+                    -- so without this token an A/B serves stale artifacts.
+                    , if lss.stamp.flatPeel /= defaultLss.stamp.flatPeel then
+                        [ "lssFP="
+                            ++ (if lss.stamp.flatPeel then
                                     "1"
 
                                 else

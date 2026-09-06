@@ -3755,6 +3755,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         -- mints with no captured widened key (expected 0), `tieBypass` =
         -- §2.3 equal-id μ-tie bypasses. All 0 flag-off.
         , "layoutQual: mints=" ++ String.fromInt stats.layoutQual.mints ++ " shared=" ++ String.fromInt stats.layoutQual.shared ++ " fallback=" ++ String.fromInt stats.layoutQual.fallback ++ " tieBypass=" ++ String.fromInt stats.layoutQual.tieBypass
+        , "instanceQual: applied=" ++ String.fromInt stats.layoutQual.instApplied ++ " capped=" ++ String.fromInt stats.layoutQual.instCapped ++ " rootSkip=" ++ String.fromInt stats.layoutQual.instRootSkip
 
         -- LSS_020 signature-flow census
         -- (plans/lss-fidelity-3-signature-flow-completion.md §B.4):

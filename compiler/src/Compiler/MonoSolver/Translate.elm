@@ -5903,16 +5903,47 @@ buildFloatDefs name defBody maybeEntry =
 (so the demand's concretization doesn't contaminate the surrounding item);
 `varEnv` and global state (registry/worklist) are kept so it can reference outer
 locals and enqueue its callees.
+
+Carries the enclosing instance tag unchanged — this is the NUMBER-multi entry
+point (`buildFloatDefs`), which deliberately does NOT instance-qualify
+(plans/lss-instance-qualified-members.md §3.7): Int and Float instances differ
+in LAYOUT, so AbiCloning already separates them into different buckets and
+already stamps them. Qualifying them would mint member ids and split specs for
+nothing.
 -}
 retranslateAt : TOpt.Expr TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoExpr
 retranslateAt defBody instType s0 =
+    retranslateWithTag s0.itemAux.currentLocalInstance defBody instType s0
+
+
+{-| `retranslateAt` for a LOCAL-multi instance: the re-translation runs under
+the instance's own composed tag, so lambdas minted inside it carry member ids
+distinct from the same source lambda's ids in sibling instances
+(plans/lss-instance-qualified-members.md §3). Flag-off, and past the §3.3 cap,
+this is exactly `retranslateAt`.
+-}
+retranslateAtInstance : Int -> TOpt.Expr TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoExpr
+retranslateAtInstance ord defBody instType s0 =
+    case Engine.localInstanceTagFor ord s0 of
+        Err e ->
+            Err e
+
+        Ok ( instTag, s1 ) ->
+            retranslateWithTag instTag defBody instType s1
+
+
+retranslateWithTag : Int -> TOpt.Expr TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoExpr
+retranslateWithTag instTag defBody instType s0 =
     let
+        clearedA =
+            Engine.clearedAux s0.itemAux
+
         sFresh =
             -- The MONO_029 read lists are stashed like the store: scratch
             -- Point indices are meaningless against the restored item store
             -- (leaking them aliases low outer point indices and livelocks the
             -- saturation loop — found by the R0 census on elm-parser).
-            { s0 | store = Engine.freshStore, memo = Dict.empty, revMemo = Array.empty, itemAux = Engine.clearedAux s0.itemAux }
+            { s0 | store = Engine.freshStore, memo = Dict.empty, revMemo = Array.empty, itemAux = { clearedA | currentLocalInstance = instTag } }
 
         step =
             Engine.andThen (\_ -> translate defBody) (demandUnifyRoot (TOpt.typeOf defBody) instType defBody)
@@ -7230,9 +7261,16 @@ buildLocalDefs name defBody maybeEntry =
                 Engine.map (\e -> [ Mono.MonoDef name e ]) (translate defBody)
 
             else
+                -- The ORDINAL is the discriminator
+                -- (plans/lss-instance-qualified-members.md §3.1). `SpecMap`
+                -- iterates in INSERTION order and `freshName` is assigned from
+                -- `specMapSize` at insert, so this index is exactly the `$N`
+                -- already in the emitted binding name — if it were unstable the
+                -- def names would already be unstable, which is the whole
+                -- stability argument, and it costs nothing new.
                 Engine.traverse
-                    (\inst -> Engine.map (\e -> Mono.MonoDef inst.freshName e) (retranslateAt defBody inst.monoType))
-                    (Mono.specMapValues entry.instances)
+                    (\( ord, inst ) -> Engine.map (\e -> Mono.MonoDef inst.freshName e) (retranslateAtInstance ord defBody inst.monoType))
+                    (List.indexedMap Tuple.pair (Mono.specMapValues entry.instances))
 
         Nothing ->
             Engine.succeed []

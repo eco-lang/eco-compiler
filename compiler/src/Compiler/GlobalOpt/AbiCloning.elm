@@ -1,4 +1,4 @@
-module Compiler.GlobalOpt.AbiCloning exposing (AbiCloningStats, abiCloningPass, emptyStats, instanceFingerprint)
+module Compiler.GlobalOpt.AbiCloning exposing (AbiCloningStats, abiCloningPass, emptyStats, instanceFingerprint, peelStages)
 
 {-| ABI Cloning Pass — LSS singleton dispatch upgrade (design §9.2/§9.3,
 M3.5 interchangeability rule, LSS_009).
@@ -147,6 +147,7 @@ type alias AbiCloningStats =
     , topSiteShapes : Dict String Int -- E8 split: LTop-annotated call sites by callee-expression shape (escape proxy: recordAccess/callResult vs local/global)
     , varSiteShapes : Dict String Int -- Phase 1a/3 (plans/lss-unknown-elimination.md §2.5, plans/lss-set-variable.md): the same census for LVar-annotated sites — the "still a variable" half of what used to be one undifferentiated ⊤ population. Same shape keys as topSiteShapes; same TRAP (stampCall consults EVERY call, so these are SITE counts, not dispatch weight).
     , stampedWrapperInstances : Int -- E7 trigger: stamped sites whose representative is a staging wrapper (collision signal)
+    , instQual : { hist : Dict String Int, divergentGroups : Int, byHost : Dict String Int, flatStamped : Int, shape : Dict String Int } -- P0 census (plans/lss-instance-qualified-members.md §2). `hist`: "<n>" -> layout groups holding n instances, plus "div<n>" for the fingerprint-DIVERGENT ones. `divergentGroups`: groups with multi && not fpUnanimous — the target class (a divergent group shares one member id across behaviourally different bodies, which is the local-multi instance-blindness this plan closes; inliner copies are verbatim and land in the unanimous bucket). `byHost`: "<host global>|<reason>" at every consulted site — the join key against the runtime dispatch census. One nested record because the flat stats record is near the 32-slot GC-scan cap.
     , blockedMembers : List ( Int, Maybe Mono.LambdaId ) -- LSS_026 §11 census: every blocked member with its BLOCKER instance (the adopting synthetic closure; Nothing = μ-tie / no attribution). Print-only, never consulted by stamping. The instrument that named `Compiler_Type_Type_lambda_41139` as the 146-site blocker — member IDS shift with the corpus, the SYMBOL is the stable join key, which is why the blocker travels with the id. (It did NOT explain the de-stamp — see §11.5 — but it is what made that refutable.) Cost: one Dict fold over the index per COMPILE, alongside the existing `countMultiInstanceGroups` fold; nothing per site.
     }
 
@@ -180,6 +181,7 @@ emptyStats =
     , topSiteShapes = Dict.empty
     , varSiteShapes = Dict.empty
     , stampedWrapperInstances = 0
+    , instQual = { hist = Dict.empty, divergentGroups = 0, byHost = Dict.empty, flatStamped = 0, shape = Dict.empty }
     , blockedMembers = []
     }
 
@@ -242,6 +244,7 @@ type alias LayoutGroup =
     , multi : Bool -- ≥2 DISTINCT lambdaIds joined this group (monitoring — see multiInstanceGroups; the flag-on stamp license is unanimous && fpUnanimous, never this flag)
     , fpUnanimous : Bool -- LSS_024: every instance's fingerprint equals rep's (trivially True single-instance; sticky False; maintained only when the fence is ON — flag-off it stays True and the pass is byte-identical to the pre-LSS_024 tree, INCLUDING the four measured non-verbatim multi-group stamps the fence would decline, see the flag-gating note on abiCloningPass)
     , repFp : Maybe String -- rep's fingerprint, memoized at the first multi join that needs it
+    , count : Int -- P0 census only (plans/lss-instance-qualified-members.md §2.1): instances joined into this group. Never consulted by stamping.
     }
 
 
@@ -555,13 +558,14 @@ joinGroup fpFence inst groups =
               , multi = False
               , fpUnanimous = True
               , repFp = Nothing
+              , count = 1
               }
             ]
 
         g :: rest ->
             if sameSignatureLayout g.rep inst then
                 if inst.lambdaId == g.rep.lambdaId then
-                    { g | unanimous = g.unanimous && sameCaptureLayout g.rep inst } :: rest
+                    { g | unanimous = g.unanimous && sameCaptureLayout g.rep inst, count = g.count + 1 } :: rest
 
                 else
                     -- LSS_024 F fence: a DISTINCT lambdaId joined. Maintain
@@ -596,6 +600,7 @@ joinGroup fpFence inst groups =
                         , multi = True
                         , fpUnanimous = fpU1
                         , repFp = repFp1
+                        , count = g.count + 1
                     }
                         :: rest
 
@@ -688,6 +693,17 @@ type alias StampCtx =
     , postSettle : Bool
     , origins : Dict Int Mono.MemberOrigin
     , specsByGlobal : Dict String (List ( Int, Mono.MonoType ))
+
+    -- Fix A (plan §15.1): peel an over-applying site's curried callee type to
+    -- its own arg count before matching. Flag-gated because it changes WHICH
+    -- sites get stamped, hence CallInfo, hence emitted MLIR.
+    , flatPeel : Bool
+
+    -- P0 census: the global whose spec the walk is currently inside, so a
+    -- decline can be attributed to the HOST function (`elm/core:Dict.foldl`)
+    -- rather than to an anonymous member id. Set per node from the registry's
+    -- SpecId-indexed `reverseMapping`; "?" when the node has no entry.
+    , hostGlobal : String
     }
 
 
@@ -716,8 +732,8 @@ congruence that could re-admit the sibling-id pair is the plan's parked
 v2, never to be improvised in).
 
 -}
-abiCloningPass : Bool -> Bool -> Mono.MonoGraph -> ( Mono.MonoGraph, AbiCloningStats )
-abiCloningPass fpFence postSettle ((Mono.MonoGraph record) as graph) =
+abiCloningPass : Bool -> Bool -> Bool -> Mono.MonoGraph -> ( Mono.MonoGraph, AbiCloningStats )
+abiCloningPass fpFence postSettle flatPeel ((Mono.MonoGraph record) as graph) =
     let
         -- LSS_018: μ-tied members are force-blocked — their instances span
         -- DIFFERENT demands of one recursive family (behaviorally divergent;
@@ -742,10 +758,14 @@ abiCloningPass fpFence postSettle ((Mono.MonoGraph record) as graph) =
         let
             -- Fix B probe: count multi-instance groups up front (index-time
             -- fact, independent of stamping outcomes).
+            groupCensus =
+                instQualGroupCensus index
+
             stats0 =
                 { emptyStats
 
                     | multiInstanceGroups = countMultiInstanceGroups index
+                    , instQual = { hist = groupCensus.hist, divergentGroups = groupCensus.divergentGroups, byHost = Dict.empty, flatStamped = 0, shape = Dict.empty }
                     , blockedMembers =
                         Dict.foldr
                             (\m mi acc ->
@@ -787,21 +807,25 @@ abiCloningPass fpFence postSettle ((Mono.MonoGraph record) as graph) =
                 else
                     Dict.empty
 
-            ( nodes1, finalCtx ) =
+            -- P0 census: the walk is SpecId-indexed (nodes and
+            -- reverseMapping share the index), so the host global is one
+            -- array read per node — cheap enough to be unconditional, like
+            -- every other census map in this record.
+            ( ( nodes1, _ ), finalCtx ) =
                 Array.foldl
-                    (\maybeNode ( accNodes, accCtx ) ->
+                    (\maybeNode ( ( accNodes, specId ), accCtx ) ->
                         case maybeNode of
                             Just node ->
                                 let
                                     ( newNode, ctx1 ) =
-                                        stampNode index accCtx node
+                                        stampNode index { accCtx | hostGlobal = hostGlobalAt record.registry.reverseMapping specId } node
                                 in
-                                ( Array.push (Just newNode) accNodes, ctx1 )
+                                ( ( Array.push (Just newNode) accNodes, specId + 1 ), ctx1 )
 
                             Nothing ->
-                                ( Array.push Nothing accNodes, accCtx )
+                                ( ( Array.push Nothing accNodes, specId + 1 ), accCtx )
                     )
-                    ( Array.empty
+                    ( ( Array.empty, 0 )
                     , { kindIds = Dict.empty
                       , nextKind = 0
                       , stats = stats0
@@ -813,11 +837,76 @@ abiCloningPass fpFence postSettle ((Mono.MonoGraph record) as graph) =
                             else
                                 Dict.empty
                       , specsByGlobal = specsByGlobal
+                      , flatPeel = flatPeel
+                      , hostGlobal = "?"
                       }
                     )
                     record.nodes
         in
         ( Mono.MonoGraph { record | nodes = nodes1 }, finalCtx.stats )
+
+
+{-| P0 census: the global a SpecId belongs to, for decline attribution.
+-}
+hostGlobalAt : Array.Array (Maybe ( Mono.Global, Mono.MonoType )) -> Int -> String
+hostGlobalAt reverseMapping specId =
+    case Array.get specId reverseMapping of
+        Just (Just ( global, _ )) ->
+            Mono.toComparableGlobal global
+
+        _ ->
+            "?"
+
+
+{-| P0 census (plans/lss-instance-qualified-members.md §2.1): the layout-group
+instance histogram, plus the count of FINGERPRINT-DIVERGENT groups.
+
+A divergent group (`multi && not fpUnanimous`) is one member id indexing two
+behaviourally different bodies. Because the member id already carries the
+source lambda and the enclosing spec (LSS_017/LSS_024), divergence implies the
+bodies came from ONE source lambda re-translated per local-multi instance —
+inliner copies are verbatim and stay unanimous. That is the population this
+plan's instance qualification splits, and its size is the go/no-go number.
+
+Keys: `"<n>"` for a group of n instances, `"div<n>"` for a divergent one.
+-}
+instQualGroupCensus : Dict Int MemberInfo -> { hist : Dict String Int, divergentGroups : Int }
+instQualGroupCensus index =
+    Dict.foldl
+        (\_ mi acc ->
+            Dict.foldl
+                (\_ groups acc2 ->
+                    List.foldl
+                        (\g a ->
+                            let
+                                divergent =
+                                    g.multi && not g.fpUnanimous
+                            in
+                            { hist =
+                                bumpDictStr
+                                    (if divergent then
+                                        "div" ++ String.fromInt g.count
+
+                                     else
+                                        String.fromInt g.count
+                                    )
+                                    a.hist
+                            , divergentGroups =
+                                if divergent then
+                                    a.divergentGroups + 1
+
+                                else
+                                    a.divergentGroups
+                            }
+                        )
+                        acc2
+                        groups
+                )
+                acc
+                mi.buckets
+        )
+        { hist = Dict.empty, divergentGroups = 0 }
+        index
 
 
 countMultiInstanceGroups : Dict Int MemberInfo -> Int
@@ -1294,7 +1383,7 @@ stampCall index ctx region func args resultType callInfo =
         Mono.LSet [ m ] ->
             case Dict.get m index of
                 Just memberInfo ->
-                    case resolveRepresentative (Mono.typeOf func) (List.length args) memberInfo of
+                    case resolveRepresentative ctx.flatPeel (Mono.typeOf func) (List.length args) memberInfo of
                         Stamp inst ->
                             let
                                 ( kindId, ctx1 ) =
@@ -1325,13 +1414,58 @@ stampCall index ctx region func args resultType callInfo =
                                         0
                             in
                             ( Mono.MonoCall region func args resultType stamped
-                            , { ctx1
-                                | stats =
-                                    { stats1
-                                        | dispatchUpgraded = stats1.dispatchUpgraded + 1
-                                        , stampedWrapperInstances = stats1.stampedWrapperInstances + wrapperInc
-                                    }
-                              }
+                            , bumpHost "stamped"
+                                { ctx1
+                                    | stats =
+                                        { stats1
+                                            | dispatchUpgraded = stats1.dispatchUpgraded + 1
+                                            , stampedWrapperInstances = stats1.stampedWrapperInstances + wrapperInc
+                                        }
+                                }
+                            )
+
+                        StampFlat inst ->
+                            -- Fix A: identical stamp to the exact arm. The
+                            -- site applies argCount args and the instance
+                            -- takes argCount params, so `Expr.fastDispatchStamp`
+                            -- (which compares |args| against
+                            -- |captureAbi.paramTypes| and NEVER looks at the
+                            -- callee's curried type) matches and emits
+                            -- `singleton_fast`. `generateStagedFastDispatchCall`
+                            -- is not reached — this is not a staged call.
+                            let
+                                ( kindIdF, ctxF ) =
+                                    kindIdFor m ctx
+
+                                statsF =
+                                    ctxF.stats
+
+                                iqF =
+                                    statsF.instQual
+                            in
+                            ( Mono.MonoCall region
+                                func
+                                args
+                                resultType
+                                { callInfo
+                                    | closureKind = Just (Mono.Known (Mono.ClosureKindId kindIdF))
+                                    , captureAbi =
+                                        Just
+                                            { captureTypes = inst.captureTypes
+                                            , paramTypes = inst.paramTypes
+                                            , returnType = inst.returnType
+                                            }
+                                    , fastEvaluator = Just inst.lambdaId
+                                    , fastEvaluatorSpec = inst.topLevelSpec
+                                }
+                            , bumpHost "stampedFlat"
+                                { ctxF
+                                    | stats =
+                                        { statsF
+                                            | dispatchUpgraded = statsF.dispatchUpgraded + 1
+                                            , instQual = { iqF | flatStamped = iqF.flatStamped + 1 }
+                                        }
+                                }
                             )
 
                         StampPap inst k ->
@@ -1405,12 +1539,13 @@ stampCall index ctx region func args resultType callInfo =
                             , { ctx1 | stats = { stats1 | stampedStaged = stats1.stampedStaged + 1 } }
                             )
 
-                        Decline _ bump ->
+                        Decline reason bump ->
                             -- census: attribute the decline to the member and
-                            -- capture its group reps (the runtime-join key).
+                            -- capture its group reps (the runtime-join key),
+                            -- and (P0) to the HOST global with its reason.
                             let
                                 ctxB =
-                                    bump ctx
+                                    bumpShape (Mono.typeOf func) (List.length args) reason (bumpHost reason (bump ctx))
 
                                 statsB =
                                     ctxB.stats
@@ -1477,17 +1612,22 @@ stampCall index ctx region func args resultType callInfo =
                                     ctx.stats
                             in
                             ( Mono.MonoCall region func args resultType callInfo
-                            , bumpNoInstance
-                                (let
-                                    dpN =
-                                        statsN.devirtPost
-                                 in
-                                 { ctx | stats = { statsN | devirtPost = { dpN | noSpec = dpN.noSpec + 1 } } }
+                            , bumpHost "noInstanceNoSpec"
+                                (bumpNoInstance
+                                    (let
+                                        dpN =
+                                            statsN.devirtPost
+                                     in
+                                     { ctx | stats = { statsN | devirtPost = { dpN | noSpec = dpN.noSpec + 1 } } }
+                                    )
                                 )
                             )
 
                         PsNotCandidate ->
-                            ( Mono.MonoCall region func args resultType callInfo, bumpNoInstance ctx )
+                            -- P0 census: noInstance is the single biggest
+                            -- decline class (45.5 % on the self-compile), so it
+                            -- gets host attribution too.
+                            ( Mono.MonoCall region func args resultType callInfo, bumpHost "noInstance" (bumpNoInstance ctx) )
 
         Mono.LSet ms ->
             -- census (E3 de-risk): a consulted site carrying a MULTI-member
@@ -1514,7 +1654,9 @@ stampCall index ctx region func args resultType callInfo =
                         { stats0 | multiSetSiteHist = bumpDict (List.length ms) stats0.multiSetSiteHist }
                         ms
             in
-            ( Mono.MonoCall region func args resultType callInfo, { ctx | stats = statsMembers } )
+            ( Mono.MonoCall region func args resultType callInfo
+            , bumpHost ("multi" ++ String.fromInt (List.length ms)) { ctx | stats = statsMembers }
+            )
 
         Mono.LTop _ ->
             -- census (E8 split): an unknowable-callee site — classify the
@@ -1561,6 +1703,66 @@ stampCall index ctx region func args resultType callInfo =
             ( Mono.MonoCall region func args resultType callInfo
             , { ctx | stats = { stats0 | varSiteShapes = bumpDictStr (calleeShape func) stats0.varSiteShapes } }
             )
+
+
+{-| Plan §17.4 step 0: for an OVER-APPLYING decline, record
+`"<firstStageArity>-><argCount>|<peelOutcome>"`.
+
+This is what sizes Fix A. `exact` means the peel lands on the arg count and the
+flattened match is at least POSSIBLE (the bucket may still miss); `miss` means
+the type runs out of arrow or a stage overshoots, and no amount of peeling can
+help that site. Recorded on declines only, which flag-off is all of them.
+-}
+bumpShape : Mono.MonoType -> Int -> String -> StampCtx -> StampCtx
+bumpShape calleeType argCount reason ctx =
+    case calleeType of
+        Mono.MFunction _ _ fargs _ ->
+            if argCount <= List.length fargs then
+                ctx
+
+            else
+                let
+                    key =
+                        String.fromInt (List.length fargs)
+                            ++ "->"
+                            ++ String.fromInt argCount
+                            ++ "|"
+                            ++ (case peelStages argCount calleeType of
+                                    Just _ ->
+                                        "exact"
+
+                                    Nothing ->
+                                        "miss"
+                               )
+                            ++ "|"
+                            ++ reason
+
+                    st =
+                        ctx.stats
+
+                    iq =
+                        st.instQual
+                in
+                { ctx | stats = { st | instQual = { iq | shape = bumpDictStr key iq.shape } } }
+
+        _ ->
+            ctx
+
+
+{-| P0 census: attribute one consulted site to its HOST global and outcome —
+`"elm/core:Dict.foldl|bodyMismatch"`. The host is what joins to the runtime
+dispatch census; a member id does not survive a recompile, a global does.
+-}
+bumpHost : String -> StampCtx -> StampCtx
+bumpHost outcome ctx =
+    let
+        st =
+            ctx.stats
+
+        iq =
+            st.instQual
+    in
+    { ctx | stats = { st | instQual = { iq | byHost = bumpDictStr (ctx.hostGlobal ++ "|" ++ outcome) iq.byHost } } }
 
 
 {-| Census helpers (2026-07-21). Stats-only.
@@ -1631,6 +1833,11 @@ type Resolution
     = Stamp Instance
     | StampPap Instance Int
     | StampStaged Instance
+      -- Fix A: an OVER-APPLYING site whose peeled (flattened) view matches an
+      -- instance exactly, so the call SATURATES that instance and is stamped
+      -- like the exact path — `Stamp`'s fields verbatim, no staging. Separate
+      -- constructor only so the census can count it.
+    | StampFlat Instance
       -- The String is the decline REASON, labelled at each construction site.
       -- Currently consumed only by the (removed, re-addable) one-shot per-site
       -- decline log — see /work/lss-decline-log-analysis.md for the recipe —
@@ -1666,8 +1873,8 @@ Dict.get, and one full `eqLayout` confirm per group in the bucket
     same code).
 
 -}
-resolveRepresentative : Mono.MonoType -> Int -> MemberInfo -> Resolution
-resolveRepresentative calleeType argCount memberInfo =
+resolveRepresentative : Bool -> Mono.MonoType -> Int -> MemberInfo -> Resolution
+resolveRepresentative flatPeel calleeType argCount memberInfo =
     if memberInfo.blocked then
         Decline "blocked" bumpBlocked
 
@@ -1681,17 +1888,38 @@ resolveRepresentative calleeType argCount memberInfo =
                     Decline "arityUnder" bumpShapeArityUnder
 
                 else if argCount > List.length fargs then
-                    -- E2.7 (LSS_014, v2 staged stamping): the site applies
-                    -- MORE args than its callee type's first stage — a flat
-                    -- multi-stage call. If an instance matches the site's
-                    -- FIRST stage exactly (params + return, layout-wise),
-                    -- the runtime callee IS that instance (LSS_009) and
-                    -- applying |inst.paramTypes| args saturates the
-                    -- instance's own stage — stamp batch 1; emission applies
-                    -- the remainder generically to the intermediate. Misses
-                    -- keep the Over census bucket. No PAP fallback here (an
-                    -- over-applied PAP is v3).
-                    resolveStagedFirstStage fargs fret memberInfo
+                    -- Fix A (plan §14/§15.1): the site applies its args FLAT
+                    -- while the callee TYPE is curried — `Store.classifyGo`
+                    -- builds ONE parameter per `MFunction` stage for EVERY
+                    -- arrow, so this branch fires for every HOF whose callback
+                    -- takes 2+ arguments (the whole fold family: 33.2 % of the
+                    -- compiler's generic dispatch, measured). The type is
+                    -- representation-AGNOSTIC — an arrow is inhabited by a
+                    -- flat n-param closure, a curried chain and PAPs alike —
+                    -- so it cannot license a stamp. The INSTANCE is the
+                    -- representation authority: peel the type to the site's
+                    -- own arg count and match against THAT.
+                    case flattenedResolution flatPeel argCount calleeType memberInfo of
+                        Just resolution ->
+                            resolution
+
+                        Nothing ->
+                            -- E2.7 (LSS_014, v2 staged stamping): the site
+                            -- applies MORE args than its callee type's first
+                            -- stage — a flat multi-stage call. If an instance
+                            -- matches the site's FIRST stage exactly (params +
+                            -- return, layout-wise), the runtime callee IS that
+                            -- instance (LSS_009) and applying
+                            -- |inst.paramTypes| args saturates the instance's
+                            -- own stage — stamp batch 1; emission applies the
+                            -- remainder generically to the intermediate.
+                            -- Misses keep the Over census bucket. No PAP
+                            -- fallback here (an over-applied PAP is v3).
+                            --
+                            -- Reached only when the peel found no exact
+                            -- landing, so today's decline attribution is
+                            -- preserved unchanged (review B3).
+                            resolveStagedFirstStage fargs fret memberInfo
 
                 else
                     case Dict.get (siteFingerprint fargs fret) memberInfo.buckets of
@@ -1768,6 +1996,115 @@ stagedScan fargs fret groups =
 
             else
                 stagedScan fargs fret rest
+
+
+{-| Fix A (plan §17.1): accumulate the callee type's stages until the parameter
+count reaches `want`, returning the flattened parameter list and that stage's
+return type.
+
+`Nothing` when the type runs out of arrow before reaching `want`, or when a
+stage OVERSHOOTS it — peel-until-EQUAL, never peel-n-times. Overshoot is not
+theoretical: `zonkFlat` and `MonoInlineSimplify.flattenArrowOnce` both emit
+multi-parameter `MFunction`s, so a stage may carry more than one parameter.
+
+The intermediate stages' lambda-set annotations are dropped. They never
+materialise at runtime — a flat call never dispatches through them — which is
+the same trade `flattenArrowOnce` documents as "annotation soundness over
+precision", except that here nothing reads them at all.
+
+Pure and total; exposed for the unit pins.
+-}
+peelStages : Int -> Mono.MonoType -> Maybe ( List Mono.MonoType, Mono.MonoType )
+peelStages want ty =
+    peelGo want 0 [] ty
+
+
+peelGo : Int -> Int -> List (List Mono.MonoType) -> Mono.MonoType -> Maybe ( List Mono.MonoType, Mono.MonoType )
+peelGo want have acc ty =
+    case ty of
+        Mono.MFunction _ _ params ret ->
+            let
+                have1 =
+                    have + List.length params
+
+                acc1 =
+                    params :: acc
+            in
+            if have1 == want then
+                Just ( List.concat (List.reverse acc1), ret )
+
+            else if have1 > want then
+                Nothing
+
+            else
+                peelGo want have1 acc1 ret
+
+        _ ->
+            Nothing
+
+
+{-| Fix A: the flattened-view match for an over-applying site.
+
+`Just` only when the peel lands EXACTLY on `argCount` AND a layout group
+carries that full parameter list; the gates are then the exact path's, in the
+exact path's order.
+
+A DEDICATED scan rather than `resolveInGroups`, because that function falls
+through to `resolvePapSuffix` and a PAP suffix must never satisfy a flattened
+match (plan review B2/B11): the whole licence here is that the flowing value is
+an n-parameter closure which the n-argument call SATURATES, so `remaining_arity
+== argCount` (CGEN_052) holds by the instance's own shape. A k-dropped suffix
+match would stamp a saturating call on a value that is not saturated.
+-}
+flattenedResolution : Bool -> Int -> Mono.MonoType -> MemberInfo -> Maybe Resolution
+flattenedResolution flatPeel argCount calleeType memberInfo =
+    if not flatPeel then
+        Nothing
+
+    else
+        case peelStages argCount calleeType of
+            Nothing ->
+                Nothing
+
+            Just ( flatArgs, flatRet ) ->
+                case Dict.get (siteFingerprint flatArgs flatRet) memberInfo.buckets of
+                    Nothing ->
+                        Nothing
+
+                    Just groups ->
+                        flattenedScan argCount flatArgs flatRet groups
+
+
+flattenedScan : Int -> List Mono.MonoType -> Mono.MonoType -> List LayoutGroup -> Maybe Resolution
+flattenedScan argCount flatArgs flatRet groups =
+    case groups of
+        [] ->
+            Nothing
+
+        g :: rest ->
+            if g.paramCount == argCount && eqLayoutLists g.rep.paramTypes flatArgs && Mono.eqLayout g.rep.returnType flatRet then
+                Just
+                    (if not g.charFree then
+                        Decline "char" bumpShapeChar
+
+                     else if not g.unanimous then
+                        Decline "abiMismatch" bumpAbiMismatch
+
+                     else if g.fpUnanimous then
+                        StampFlat g.rep
+
+                     else
+                        -- Plan §15.0, THE STACKED GUARD: Fix A gets the site
+                        -- past the arity check and it lands HERE unless
+                        -- `lss.stamp.enabled` (instance qualification) is also
+                        -- on. At `Dict_foldl_$_32636` — 100 M dispatches, the
+                        -- largest single site in the compiler — that is
+                        -- exactly what happens. Measure A in BOTH arms.
+                        Decline "bodyMismatch" bumpBodyMismatch
+                    )
+
+            else
+                flattenedScan argCount flatArgs flatRet rest
 
 
 {-| E2 (LSS_011): the PAP-suffix match. The site saturates its own callee

@@ -283,6 +283,7 @@ run : Bool -> Dict.Dict Int Mono.MemberOrigin -> Mono.SpecializationRegistry -> 
 run flag memberOrigins registry exprs =
     AbiCloning.abiCloningPass True
         flag
+        False
         (Mono.MonoGraph
             { nodes =
                 Array.fromList

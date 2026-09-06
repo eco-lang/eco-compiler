@@ -101,11 +101,37 @@ purePins =
     , Test.test "layoutQualKey: captured key qualifies by the widened key" <|
         \() ->
             Expect.equal ( "l|42|A(I->I)", False )
-                (Engine.layoutQualKey (Dict.fromList [ ( 7, "A(I->I)" ) ]) 42 7)
+                (Engine.layoutQualKey (Dict.fromList [ ( 7, "A(I->I)" ) ]) 42 0 7)
     , Test.test "layoutQualKey: missing capture falls back to SpecId qualification" <|
         \() ->
             Expect.equal ( "l|42|8", True )
-                (Engine.layoutQualKey (Dict.fromList [ ( 7, "A(I->I)" ) ]) 42 8)
+                (Engine.layoutQualKey (Dict.fromList [ ( 7, "A(I->I)" ) ]) 42 0 8)
+    , Test.test "layoutQualKey: instance tag 0 reproduces the pre-instanceQual string byte for byte" <|
+        \() ->
+            -- the flag-off byte-identity rail
+            -- (plans/lss-instance-qualified-members.md §3.4)
+            Expect.equal ( "l|42|A(I->I)", False )
+                (Engine.layoutQualKey (Dict.fromList [ ( 7, "A(I->I)" ) ]) 42 0 7)
+    , Test.test "layoutQualKey: a non-zero instance tag appends an unambiguous #-marked component" <|
+        \() ->
+            Expect.equal ( "l|42|A(I->I)|#513", False )
+                (Engine.layoutQualKey (Dict.fromList [ ( 7, "A(I->I)" ) ]) 42 513 7)
+    , Test.test "layoutQualKey: distinct instance tags never collide with each other or with the untagged key" <|
+        \() ->
+            let
+                keys =
+                    List.map (\t -> Tuple.first (Engine.layoutQualKey (Dict.fromList [ ( 7, "A(I->I)" ) ]) 42 t 7)) [ 0, 1, 2, 513 ]
+            in
+            Expect.equal 4 (List.length (List.foldl (\k acc -> if List.member k acc then acc else k :: acc) [] keys))
+    , Test.test "mixTag: composition, not overwrite — the same ordinal under different outer tags differs" <|
+        \() ->
+            -- plans/lss-instance-qualified-members.md §3.2: an inner
+            -- let-function's instance 1 inside outer instance 0 must not
+            -- collide with the same ordinal inside outer instance 1.
+            Expect.notEqual (Engine.mixTag (Engine.mixTag 0 0) 1) (Engine.mixTag (Engine.mixTag 0 1) 1)
+    , Test.test "mixTag: a leading ordinal 0 is not absorbed into the no-instance sentinel" <|
+        \() ->
+            Expect.notEqual 0 (Engine.mixTag 0 0)
     , Test.test "fallback-vs-widened collisions impossible: widened keys never start with a digit" <|
         \() ->
             -- every toComparableMonoType rendering starts with a letter code;

@@ -173,6 +173,21 @@ applyEnvOverrides cfg =
                     |> Task.map (\lqVal -> applyLssLayoutQualOverride lqVal cfg4e4)
             )
         |> Task.andThen
+            (\cfg4e4b ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_INSTANCE_QUAL" |> Task.mapError never)
+                    |> Task.map (\iqVal -> applyLssInstanceQualOverride iqVal cfg4e4b)
+            )
+        |> Task.andThen
+            (\cfg4e4c ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_INSTANCE_QUAL_MAX" |> Task.mapError never)
+                    |> Task.map (\iqmVal -> applyLssInstanceQualMaxOverride iqmVal cfg4e4c)
+            )
+        |> Task.andThen
+            (\cfg4e4d ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_FLAT_PEEL" |> Task.mapError never)
+                    |> Task.map (\fpVal -> applyLssFlatPeelOverride fpVal cfg4e4d)
+            )
+        |> Task.andThen
             (\cfg4e5 ->
                 (Utils.envLookupEnv "ECO_MONO_LSS_DEVIRT_POST" |> Task.mapError never)
                     |> Task.map (\dpVal -> applyLssDevirtPostOverride dpVal cfg4e5)
@@ -1846,6 +1861,77 @@ applyLssSigFlowOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | sigFlow = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+setStampEnabled : Bool -> Config.LssStampConfig -> Config.LssStampConfig
+setStampEnabled v c =
+    { c | enabled = v }
+
+
+setStampFlatPeel : Bool -> Config.LssStampConfig -> Config.LssStampConfig
+setStampFlatPeel v c =
+    { c | flatPeel = v }
+
+
+{-| `ECO_MONO_LSS_FLAT_PEEL=1|true|yes / 0|false|no` (Fix A, plan §15.1): at an
+OVER-APPLYING call site, peel the curried callee type to the site's own arg
+count and match the instance against that, instead of against the type's
+one-parameter first stage. Artifact-affecting; hash token `lssFP=`.
+-}
+applyLssFlatPeelOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssFlatPeelOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | stamp = setStampFlatPeel True lss.stamp }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | stamp = setStampFlatPeel False lss.stamp }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_INSTANCE_QUAL=1|true|yes / 0|false|no`: instance-qualified
+lambda members (plans/lss-instance-qualified-members.md). Artifact-affecting;
+participates in the hash via `lssIQ=`.
+-}
+applyLssInstanceQualOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssInstanceQualOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | stamp = setStampEnabled True lss.stamp }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | stamp = setStampEnabled False lss.stamp }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_INSTANCE_QUAL_MAX=<int>`: the §3.3 hard cap on how many
+local-multi instances of one let-function get distinct member ids. 0 =
+unlimited (unbounded fan-out risk — measurement only). Hash token `lssIQM=`.
+-}
+applyLssInstanceQualMaxOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssInstanceQualMaxOverride maybeVal cfg =
+    case Maybe.andThen (String.toInt << String.trim) maybeVal of
+        Just n ->
+            if n >= 0 then
+                updateLss (\lss -> { lss | stamp = { enabled = lss.stamp.enabled, maxInstances = n, flatPeel = lss.stamp.flatPeel } }) cfg
 
             else
                 cfg
