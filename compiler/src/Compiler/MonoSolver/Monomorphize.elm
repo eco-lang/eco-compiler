@@ -4924,6 +4924,17 @@ assembleRawGraph s mainSpecId flagsDecoderSpecId =
         , ports = s.ports
         , flagsDecoder = flagsDecoderSpecId
         , lssMemberOrigins = buildMemberOrigins s.env.toptNodes s.lssMemberTable
+        , lssMemberKinds =
+            -- CENSUS ONLY, report-gated: invert the interned key table to
+            -- member-id -> key PREFIX. `lssMemberOrigins` records standalone
+            -- members only, so a member missing from it may be a lambda (l|),
+            -- a PAP (p|) or an instance that was pruned - and the census
+            -- cannot tell those apart without this.
+            if s.env.lss.report then
+                Dict.foldl (\key mid acc -> Dict.insert mid (String.left 1 key) acc) Dict.empty s.lssMemberTable.byKey
+
+            else
+                Dict.empty
         , lssBlockedMembers = s.lssMemberTable.muTied
         }
 

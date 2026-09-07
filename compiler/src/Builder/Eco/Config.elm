@@ -1874,6 +1874,11 @@ setStampEnabled v c =
     { c | enabled = v }
 
 
+setStampMax : Int -> Config.LssStampConfig -> Config.LssStampConfig
+setStampMax n c =
+    { c | maxInstances = n }
+
+
 setStampFlatPeel : Bool -> Config.LssStampConfig -> Config.LssStampConfig
 setStampFlatPeel v c =
     { c | flatPeel = v }
@@ -1931,7 +1936,7 @@ applyLssInstanceQualMaxOverride maybeVal cfg =
     case Maybe.andThen (String.toInt << String.trim) maybeVal of
         Just n ->
             if n >= 0 then
-                updateLss (\lss -> { lss | stamp = { enabled = lss.stamp.enabled, maxInstances = n, flatPeel = lss.stamp.flatPeel } }) cfg
+                updateLss (\lss -> { lss | stamp = setStampMax n lss.stamp }) cfg
 
             else
                 cfg

@@ -136,5 +136,6 @@ graphOf exprs =
         , ports = []
         , flagsDecoder = Nothing
         , lssMemberOrigins = Dict.empty
+        , lssMemberKinds = Dict.empty
         , lssBlockedMembers = Dict.empty
         }

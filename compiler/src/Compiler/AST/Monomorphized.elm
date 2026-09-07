@@ -2924,6 +2924,7 @@ type MonoGraph
         , ports : List PortRegistration -- Ports reached during monomorphization; drives @__eco_register_ports emission (PORT_003)
         , flagsDecoder : Maybe SpecId -- The root program's flags decoder (Phase 5); registered at startup like port decoders
         , lssMemberOrigins : Dict Int MemberOrigin -- B3.5: LSS standalone-member origins (mid → global/ctor/kernel/accessor); Dict.empty under subst
+        , lssMemberKinds : Dict Int String -- CENSUS ONLY (plans/lss-no-instance-declines.md): member id -> its interned key's 1-char PREFIX (l/g/c/k/a/p). Populated ONLY under lss.report; Dict.empty otherwise and under subst. Exists because `lssMemberOrigins` covers standalone members only, so a member ABSENT from it could be a lambda, a PAP, or a pruned instance - and those want different repairs.
         , lssBlockedMembers : Dict Int () -- LSS_018: μ-tied member ids — AbiCloning force-blocks these (multi-demand instances; never rep-stamp); Dict.empty under subst
         }
 

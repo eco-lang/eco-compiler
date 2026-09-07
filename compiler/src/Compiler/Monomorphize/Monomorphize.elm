@@ -296,6 +296,7 @@ assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal flagsDecoderSpecId =
         , ports = finalAccum.ports
         , flagsDecoder = flagsDecoderSpecId
         , lssMemberOrigins = Dict.empty -- subst engine: all-LTop, no LSS members
+        , lssMemberKinds = Dict.empty -- subst engine: no LSS members
         , lssBlockedMembers = Dict.empty -- subst engine: no μ-tie (LSS_018 is solver-only)
         }
 

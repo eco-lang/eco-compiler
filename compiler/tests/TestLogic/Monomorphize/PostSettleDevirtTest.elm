@@ -303,6 +303,7 @@ run flag memberOrigins registry exprs =
             , ports = []
             , flagsDecoder = Nothing
             , lssMemberOrigins = memberOrigins
+            , lssMemberKinds = Dict.empty
             , lssBlockedMembers = Dict.empty
             }
         )

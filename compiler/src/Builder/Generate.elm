@@ -1334,6 +1334,69 @@ abiCensusLines abi =
                         else
                             iqMismatchHosts
                        )
+               , "lss census instQual noInstance GUARD TOTALS (no take - the bodyMismatch census lost its hottest host to a take-80): "
+                    ++ (let
+                            -- key is `<host>|<why>` and `why` itself contains
+                            -- `|` (e.g. `g3over|1->2|peelable`), so drop the
+                            -- FIRST segment and rejoin the rest.
+                            whyOf k =
+                                String.join "|" (List.drop 1 (String.split "|" k))
+
+                            tot =
+                                Dict.foldl
+                                    (\k c acc -> Dict.update (whyOf k) (\v -> Just (Maybe.withDefault 0 v + c)) acc)
+                                    Dict.empty
+                                    abi.instQual.niGuard
+                        in
+                        Dict.toList tot
+                            |> List.sortBy (\( _, c ) -> negate c)
+                            |> List.map (\( k, c ) -> k ++ "=" ++ String.fromInt c)
+                            |> String.join " "
+                       )
+               , "lss census instQual noInstance by host+guard top80: "
+                    ++ (let
+                            g =
+                                Dict.toList abi.instQual.niGuard
+                                    |> List.sortBy (\( _, c ) -> negate c)
+                                    |> List.take 80
+                                    |> List.map (\( k, c ) -> k ++ "=" ++ String.fromInt c)
+                                    |> String.join " "
+                        in
+                        if String.isEmpty g then
+                            "(none)"
+
+                        else
+                            g
+                       )
+               , "lss census instQual bodyMismatch kinds (kind|instances -> groups): "
+                    ++ (let
+                            k =
+                                Dict.toList abi.instQual.bmKinds
+                                    |> List.sortBy (\( _, c ) -> negate c)
+                                    |> List.map (\( x, c ) -> x ++ "=" ++ String.fromInt c)
+                                    |> String.join " "
+                        in
+                        if String.isEmpty k then
+                            "(none)"
+
+                        else
+                            k
+                       )
+               , "lss census instQual bodyMismatch sites top80 (host|specId|kind): "
+                    ++ (let
+                            b =
+                                Dict.toList abi.instQual.bmSites
+                                    |> List.sortBy (\( _, c ) -> negate c)
+                                    |> List.take 80
+                                    |> List.map (\( x, c ) -> x ++ "=" ++ String.fromInt c)
+                                    |> String.join " "
+                        in
+                        if String.isEmpty b then
+                            "(none)"
+
+                        else
+                            b
+                       )
                , "lss census instQual flatStamped: " ++ String.fromInt abi.instQual.flatStamped
                , "lss census instQual overApply shape (firstStage->argCount|peel|reason): "
                     ++ (let

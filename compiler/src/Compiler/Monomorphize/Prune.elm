@@ -250,5 +250,6 @@ pruneUnreachableSpecs mvarEnv globalTypeEnv (Mono.MonoGraph record) =
         , ports = record.ports
         , flagsDecoder = record.flagsDecoder
         , lssMemberOrigins = record.lssMemberOrigins
+        , lssMemberKinds = record.lssMemberKinds
         , lssBlockedMembers = record.lssBlockedMembers
         }

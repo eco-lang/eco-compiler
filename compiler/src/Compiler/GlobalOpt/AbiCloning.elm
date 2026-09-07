@@ -58,6 +58,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Id as Id
 import Compiler.Reporting.Annotation exposing (Region)
 import Compiler.GlobalOpt.Staging.Rewriter as Rewriter
+import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Dict exposing (Dict)
 
 
@@ -147,7 +148,7 @@ type alias AbiCloningStats =
     , topSiteShapes : Dict String Int -- E8 split: LTop-annotated call sites by callee-expression shape (escape proxy: recordAccess/callResult vs local/global)
     , varSiteShapes : Dict String Int -- Phase 1a/3 (plans/lss-unknown-elimination.md §2.5, plans/lss-set-variable.md): the same census for LVar-annotated sites — the "still a variable" half of what used to be one undifferentiated ⊤ population. Same shape keys as topSiteShapes; same TRAP (stampCall consults EVERY call, so these are SITE counts, not dispatch weight).
     , stampedWrapperInstances : Int -- E7 trigger: stamped sites whose representative is a staging wrapper (collision signal)
-    , instQual : { hist : Dict String Int, divergentGroups : Int, byHost : Dict String Int, flatStamped : Int, shape : Dict String Int } -- P0 census (plans/lss-instance-qualified-members.md §2). `hist`: "<n>" -> layout groups holding n instances, plus "div<n>" for the fingerprint-DIVERGENT ones. `divergentGroups`: groups with multi && not fpUnanimous — the target class (a divergent group shares one member id across behaviourally different bodies, which is the local-multi instance-blindness this plan closes; inliner copies are verbatim and land in the unanimous bucket). `byHost`: "<host global>|<reason>" at every consulted site — the join key against the runtime dispatch census. One nested record because the flat stats record is near the 32-slot GC-scan cap.
+    , instQual : { hist : Dict String Int, divergentGroups : Int, byHost : Dict String Int, flatStamped : Int, shape : Dict String Int, bmSites : Dict String Int, bmKinds : Dict String Int, niGuard : Dict String Int } -- P0 census (plans/lss-instance-qualified-members.md §2). `hist`: "<n>" -> layout groups holding n instances, plus "div<n>" for the fingerprint-DIVERGENT ones. `divergentGroups`: groups with multi && not fpUnanimous — the target class (a divergent group shares one member id across behaviourally different bodies, which is the local-multi instance-blindness this plan closes; inliner copies are verbatim and land in the unanimous bucket). `byHost`: "<host global>|<reason>" at every consulted site — the join key against the runtime dispatch census. One nested record because the flat stats record is near the 32-slot GC-scan cap.
     , blockedMembers : List ( Int, Maybe Mono.LambdaId ) -- LSS_026 §11 census: every blocked member with its BLOCKER instance (the adopting synthetic closure; Nothing = μ-tie / no attribution). Print-only, never consulted by stamping. The instrument that named `Compiler_Type_Type_lambda_41139` as the 146-site blocker — member IDS shift with the corpus, the SYMBOL is the stable join key, which is why the blocker travels with the id. (It did NOT explain the de-stamp — see §11.5 — but it is what made that refutable.) Cost: one Dict fold over the index per COMPILE, alongside the existing `countMultiInstanceGroups` fold; nothing per site.
     }
 
@@ -181,7 +182,7 @@ emptyStats =
     , topSiteShapes = Dict.empty
     , varSiteShapes = Dict.empty
     , stampedWrapperInstances = 0
-    , instQual = { hist = Dict.empty, divergentGroups = 0, byHost = Dict.empty, flatStamped = 0, shape = Dict.empty }
+    , instQual = { hist = Dict.empty, divergentGroups = 0, byHost = Dict.empty, flatStamped = 0, shape = Dict.empty, bmSites = Dict.empty, bmKinds = Dict.empty, niGuard = Dict.empty }
     , blockedMembers = []
     }
 
@@ -245,6 +246,15 @@ type alias LayoutGroup =
     , fpUnanimous : Bool -- LSS_024: every instance's fingerprint equals rep's (trivially True single-instance; sticky False; maintained only when the fence is ON — flag-off it stays True and the pass is byte-identical to the pre-LSS_024 tree, INCLUDING the four measured non-verbatim multi-group stamps the fence would decline, see the flag-gating note on abiCloningPass)
     , repFp : Maybe String -- rep's fingerprint, memoized at the first multi join that needs it
     , count : Int -- P0 census only (plans/lss-instance-qualified-members.md §2.1): instances joined into this group. Never consulted by stamping.
+
+    -- P0 census (plans/lss-body-mismatch-declines.md §3): WHY this group's
+    -- fingerprints diverge, computed once at the join that first detects it.
+    -- "" = unanimous. "annoOnly" = the two bodies are identical once lambda-set
+    -- ANNOTATIONS are widened away, so they differ only in which member their
+    -- inner sites name — the population option 4.A could convert.
+    -- "structural" = genuinely different code; only 4.B reaches those.
+    -- Never consulted by stamping.
+    , divergeKind : String
     }
 
 
@@ -265,6 +275,53 @@ type alias Instance =
     -- `Expr.pendingLambdas` and DO get a function named by their lambdaId.
     , topLevelSpec : Maybe Mono.SpecId
     }
+
+
+{-| P0 census (plans/lss-body-mismatch-declines.md §3): WHY two instances of
+one member fingerprint differently.
+
+The whole of option 4.A rests on the answer. Rather than diffing fingerprint
+strings positionally, compute a SECOND fingerprint with every lambda-set
+annotation widened away (`Mono.widenSets`) and ask whether THAT one agrees:
+
+  - agrees  -> `"annoOnly"`. The bodies are the same code modulo which member
+    an inner annotation names. Those inner annotations are not inert — each
+    drives its own site's stamping decision — but if the stamps end up equal
+    (or both absent) the emitted code is identical, which is exactly what 4.A
+    exploits.
+  - differs -> `"structural"`. Genuinely different code; no identity repair
+    reaches it, only 4.B's runtime guard.
+
+Runs at most ONCE per group (the caller gates on `fpUnanimous` going False for
+the first time), so the cost is bounded by the divergent-group count (1,758 on
+the self-compile), not by instances.
+-}
+classifyDivergence : Instance -> Instance -> String
+classifyDivergence rep inst =
+    if blindFingerprint rep == blindFingerprint inst then
+        "annoOnly"
+
+    else
+        "structural"
+
+
+{-| The fingerprint with every lambda-set annotation in the BODY widened away.
+
+`MonoTraverse.mapNodeTypes` walks a `MonoNode`, so the body is wrapped in a
+throwaway `MonoDefine` and unwrapped. Deliberately BODY-ONLY: `ClosureInfo`'s
+param and capture types keep their annotations, which is sound for this
+question because a group whose CAPTURE layouts disagree is fenced one guard
+earlier as `abiMismatch` and never reaches here. A classifier, not a soundness
+gate — nothing consults it.
+-}
+blindFingerprint : Instance -> String
+blindFingerprint i =
+    case MonoTraverse.mapNodeTypes Mono.widenSets (Mono.MonoDefine i.body (Mono.typeOf i.body)) of
+        Mono.MonoDefine widened _ ->
+            instanceFingerprint i.info widened
+
+        _ ->
+            instanceFingerprint i.info i.body
 
 
 {-| Fingerprint depth: enough to separate real-world layout families
@@ -559,6 +616,7 @@ joinGroup fpFence inst groups =
               , fpUnanimous = True
               , repFp = Nothing
               , count = 1
+              , divergeKind = ""
               }
             ]
 
@@ -594,6 +652,16 @@ joinGroup fpFence inst groups =
                                                 fpOf g.rep
                                 in
                                 ( fpOf inst == rf, Just rf )
+
+                        -- P0 census: classify the FIRST divergence only (the
+                        -- flag is sticky-False, so later joins re-enter with
+                        -- fpUnanimous already False and skip the work).
+                        kind1 =
+                            if fpU1 || not (String.isEmpty g.divergeKind) then
+                                g.divergeKind
+
+                            else
+                                classifyDivergence g.rep inst
                     in
                     { g
                         | unanimous = uni1
@@ -601,6 +669,7 @@ joinGroup fpFence inst groups =
                         , fpUnanimous = fpU1
                         , repFp = repFp1
                         , count = g.count + 1
+                        , divergeKind = kind1
                     }
                         :: rest
 
@@ -703,7 +772,20 @@ type alias StampCtx =
     -- decline can be attributed to the HOST function (`elm/core:Dict.foldl`)
     -- rather than to an anonymous member id. Set per node from the registry's
     -- SpecId-indexed `reverseMapping`; "?" when the node has no entry.
+    --
+    -- `hostSpecId` is REQUIRED alongside it
+    -- (plans/lss-body-mismatch-declines.md §2.1): the join key against the
+    -- caller-attributed dynamic census is the emitted symbol
+    -- `<Module>_<name>_$_<specid>`, and a host-global key cannot tell a 100 M
+    -- spec from a cold one — the mistake this arc has now made three times.
     , hostGlobal : String
+    , hostSpecId : Int
+
+    -- CENSUS ONLY: member id -> interned key prefix, report-gated upstream and
+    -- Dict.empty otherwise. Splits `g1absent` into the classes that want
+    -- different repairs (a lambda whose instance was pruned vs a PAP member,
+    -- which never has one by construction).
+    , memberKinds : Dict Int String
     }
 
 
@@ -765,7 +847,7 @@ abiCloningPass fpFence postSettle flatPeel ((Mono.MonoGraph record) as graph) =
                 { emptyStats
 
                     | multiInstanceGroups = countMultiInstanceGroups index
-                    , instQual = { hist = groupCensus.hist, divergentGroups = groupCensus.divergentGroups, byHost = Dict.empty, flatStamped = 0, shape = Dict.empty }
+                    , instQual = { hist = groupCensus.hist, divergentGroups = groupCensus.divergentGroups, byHost = Dict.empty, flatStamped = 0, shape = Dict.empty, bmSites = Dict.empty, bmKinds = groupCensus.kinds, niGuard = Dict.empty }
                     , blockedMembers =
                         Dict.foldr
                             (\m mi acc ->
@@ -818,7 +900,7 @@ abiCloningPass fpFence postSettle flatPeel ((Mono.MonoGraph record) as graph) =
                             Just node ->
                                 let
                                     ( newNode, ctx1 ) =
-                                        stampNode index { accCtx | hostGlobal = hostGlobalAt record.registry.reverseMapping specId } node
+                                        stampNode index { accCtx | hostGlobal = hostGlobalAt record.registry.reverseMapping specId, hostSpecId = specId } node
                                 in
                                 ( ( Array.push (Just newNode) accNodes, specId + 1 ), ctx1 )
 
@@ -839,6 +921,8 @@ abiCloningPass fpFence postSettle flatPeel ((Mono.MonoGraph record) as graph) =
                       , specsByGlobal = specsByGlobal
                       , flatPeel = flatPeel
                       , hostGlobal = "?"
+                      , hostSpecId = -1
+                      , memberKinds = record.lssMemberKinds
                       }
                     )
                     record.nodes
@@ -870,7 +954,7 @@ plan's instance qualification splits, and its size is the go/no-go number.
 
 Keys: `"<n>"` for a group of n instances, `"div<n>"` for a divergent one.
 -}
-instQualGroupCensus : Dict Int MemberInfo -> { hist : Dict String Int, divergentGroups : Int }
+instQualGroupCensus : Dict Int MemberInfo -> { hist : Dict String Int, divergentGroups : Int, kinds : Dict String Int }
 instQualGroupCensus index =
     Dict.foldl
         (\_ mi acc ->
@@ -897,6 +981,22 @@ instQualGroupCensus index =
 
                                 else
                                     a.divergentGroups
+                            , kinds =
+                                if divergent then
+                                    bumpDictStr
+                                        ((if String.isEmpty g.divergeKind then
+                                            "unclassified"
+
+                                          else
+                                            g.divergeKind
+                                         )
+                                            ++ "|n"
+                                            ++ String.fromInt g.count
+                                        )
+                                        a.kinds
+
+                                else
+                                    a.kinds
                             }
                         )
                         acc2
@@ -905,7 +1005,7 @@ instQualGroupCensus index =
                 acc
                 mi.buckets
         )
-        { hist = Dict.empty, divergentGroups = 0 }
+        { hist = Dict.empty, divergentGroups = 0, kinds = Dict.empty }
         index
 
 
@@ -1623,11 +1723,13 @@ stampCall index ctx region func args resultType callInfo =
                                 )
                             )
 
-                        PsNotCandidate ->
+                        PsNotCandidate why ->
                             -- P0 census: noInstance is the single biggest
                             -- decline class (45.5 % on the self-compile), so it
-                            -- gets host attribution too.
-                            ( Mono.MonoCall region func args resultType callInfo, bumpHost "noInstance" (bumpNoInstance ctx) )
+                            -- gets host attribution AND a per-guard reason.
+                            ( Mono.MonoCall region func args resultType callInfo
+                            , bumpNiGuard why (bumpHost "noInstance" (bumpNoInstance ctx))
+                            )
 
         Mono.LSet ms ->
             -- census (E3 de-risk): a consulted site carrying a MULTI-member
@@ -1747,6 +1849,54 @@ bumpShape calleeType argCount reason ctx =
 
         _ ->
             ctx
+
+
+{-| P0 census (plans/lss-no-instance-declines.md §8.4): record ONE `noInstance`
+decline against its host global and the GUARD that rejected it.
+
+Keyed `<host>|<why>`; `why` is built by `postSettleTarget`, which is the single
+source of truth for the guard order (G1 origin, G2 callee shape, G3 arity, G4
+spec match). The order is deliberate: it makes "passed G1 and G2, failed G3"
+exactly the population R1 would convert.
+-}
+bumpNiGuard : String -> StampCtx -> StampCtx
+bumpNiGuard why ctx =
+    let
+        st =
+            ctx.stats
+
+        iq =
+            st.instQual
+    in
+    { ctx | stats = { st | instQual = { iq | niGuard = bumpDictStr (ctx.hostGlobal ++ "|" ++ why) iq.niGuard } } }
+
+
+{-| P0 census: record ONE `bodyMismatch` decline against the emitted spec
+symbol plus the group's divergence kind. Keyed `<host>|<specId>|<kind>` — the
+SpecId is what joins to the dynamic census (§2.1).
+-}
+bumpBmSite : String -> StampCtx -> StampCtx
+bumpBmSite kind ctx =
+    let
+        st =
+            ctx.stats
+
+        iq =
+            st.instQual
+
+        key =
+            ctx.hostGlobal
+                ++ "|"
+                ++ String.fromInt ctx.hostSpecId
+                ++ "|"
+                ++ (if String.isEmpty kind then
+                        "unclassified"
+
+                    else
+                        kind
+                   )
+    in
+    { ctx | stats = { st | instQual = { iq | bmSites = bumpDictStr key iq.bmSites } } }
 
 
 {-| P0 census: attribute one consulted site to its HOST global and outcome —
@@ -1953,7 +2103,7 @@ resolveInGroups fargs fret argCount groups memberInfo =
                 else
                     -- LSS_024 F fence: same-layout clones with divergent
                     -- verbatim bodies (the E11 class) — never stamp.
-                    Decline "bodyMismatch" bumpBodyMismatch
+                    Decline "bodyMismatch" (bumpBmSite g.divergeKind << bumpBodyMismatch)
 
             else
                 resolveInGroups fargs fret argCount rest memberInfo
@@ -2100,7 +2250,7 @@ flattenedScan argCount flatArgs flatRet groups =
                         -- on. At `Dict_foldl_$_32636` — 100 M dispatches, the
                         -- largest single site in the compiler — that is
                         -- exactly what happens. Measure A in BOTH arms.
-                        Decline "bodyMismatch" bumpBodyMismatch
+                        Decline "bodyMismatch" (bumpBmSite g.divergeKind << bumpBodyMismatch)
                     )
 
             else
@@ -2202,57 +2352,179 @@ never reach the noInstance arm.
 type PostSettleOutcome
     = PsStamp Mono.SpecId Bool -- Bool = ctor half (census split)
     | PsNoSpec -- every guard passed, no eqLayout spec — counted
-    | PsNotCandidate
+      -- P0 census (plans/lss-no-instance-declines.md §8.1): the reason travels
+      -- with the rejection. A separate "why did it fail" function would
+      -- duplicate the guard logic and drift from it.
+    | PsNotCandidate String
 
 
 postSettleTarget : Int -> Mono.MonoExpr -> Int -> StampCtx -> PostSettleOutcome
 postSettleTarget m func argCount ctx =
     if not ctx.postSettle then
-        PsNotCandidate
+        PsNotCandidate "off"
 
     else
-        let
-            targetOf origin =
-                case origin of
-                    Mono.OriginGlobal g ->
-                        Just ( g, False )
+        case Dict.get m ctx.origins of
+            Nothing ->
+                -- No origin recorded at all. `lssMemberOrigins` covers
+                -- STANDALONE members only, so this is a lambda (`l|`), a PAP
+                -- (`p|`) or something else with no instance in the index —
+                -- classes that want different repairs, hence the prefix split.
+                PsNotCandidate ("g1absent" ++ Maybe.withDefault "?" (Dict.get m ctx.memberKinds))
 
-                    Mono.OriginCtor g ->
-                        Just ( g, True )
+            Just origin ->
+                case originTarget origin of
+                    Nothing ->
+                        -- A kernel or accessor member. Both name a KNOWN
+                        -- symbol and both are capture-free, which is the
+                        -- property E9.5's soundness argument actually rests on
+                        -- — so this is a candidate population (R2), not a hard
+                        -- no.
+                        PsNotCandidate ("g1" ++ originKindName origin)
 
-                    _ ->
-                        Nothing
-        in
-        case ( func, Dict.get m ctx.origins |> Maybe.andThen targetOf ) of
-            ( Mono.MonoVarLocal _ calleeType, Just ( target, isCtor ) ) ->
-                let
-                    arity =
-                        case calleeType of
-                            Mono.MFunction _ _ params _ ->
-                                List.length params
+                    Just ( target, isCtor ) ->
+                        case func of
+                            Mono.MonoVarLocal _ calleeType ->
+                                postSettleArity target isCtor calleeType argCount ctx
 
                             _ ->
-                                0
-                in
-                if arity >= 1 && arity == argCount then
-                    case
-                        Dict.get (Mono.toComparableGlobal target) ctx.specsByGlobal
-                            |> Maybe.withDefault []
-                            |> List.filter (\( _, specType ) -> Mono.eqLayout specType calleeType)
-                            |> List.map Tuple.first
-                            |> List.minimum
-                    of
-                        Just specId ->
-                            PsStamp specId isCtor
+                                -- `g2global` is the SUCCESS case counted as a
+                                -- failure, not a missed opportunity: keying
+                                -- splits the HOF per lambda set and
+                                -- monomorphization then substitutes the global
+                                -- straight into the specialized body, so the
+                                -- callee is a `MonoVarGlobal` that ALREADY
+                                -- lowers to a direct `eco.call`. AbiCloning
+                                -- consults every call site and records
+                                -- "couldn't stamp" for calls that need no
+                                -- stamping. Verified by probe 2026-09-07: a
+                                -- recursive HOF at two sites with two
+                                -- non-inlinable globals emits
+                                -- `eco.call @Main_slowInc_$_3` directly, with
+                                -- `declinedNoInstance=2 g2global=2`.
+                                --
+                                -- An earlier "R3" admitted this shape and was
+                                -- REMOVED: it rewrote 10,193 sites, changed 43
+                                -- of them (picking an equivalent lower-numbered
+                                -- spec), and moved dispatch by exactly zero.
+                                PsNotCandidate ("g2" ++ calleeShape func)
 
-                        Nothing ->
-                            PsNoSpec
 
-                else
-                    PsNotCandidate
+{-| G1: the two origin kinds E9.5 can name a direct call to today.
+-}
+originTarget : Mono.MemberOrigin -> Maybe ( Mono.Global, Bool )
+originTarget origin =
+    case origin of
+        Mono.OriginGlobal g ->
+            Just ( g, False )
+
+        Mono.OriginCtor g ->
+            Just ( g, True )
+
+        _ ->
+            Nothing
+
+
+originKindName : Mono.MemberOrigin -> String
+originKindName origin =
+    case origin of
+        Mono.OriginKernel _ _ ->
+            "kernel"
+
+        Mono.OriginAccessor _ ->
+            "accessor"
+
+        _ ->
+            "other"
+
+
+{-| G3, and the reason this census exists.
+
+LSS_039 established that `Store.classifyGo` gives every arrow ONE parameter per
+`MFunction` stage, so a callback of arity n has a callee type whose first stage
+is 1 while the call applies n arguments flat. `resolveRepresentative` was fixed
+to peel. **This function holds an INDEPENDENT COPY of that same comparison and
+was not fixed** — so every `noInstance` site whose callback takes 2+ arguments
+lands in `g3over`.
+
+The key records the `<firstStage>-><argCount>` shape and whether `peelStages`
+would land exactly, so `g3over|…|peelable` IS the set R1 would convert. That
+sizes the repair instead of merely naming it.
+-}
+postSettleArity : Mono.Global -> Bool -> Mono.MonoType -> Int -> StampCtx -> PostSettleOutcome
+postSettleArity target isCtor calleeType argCount ctx =
+    let
+        firstStage =
+            case calleeType of
+                Mono.MFunction _ _ params _ ->
+                    List.length params
+
+                _ ->
+                    0
+    in
+    if firstStage >= 1 && firstStage == argCount then
+        matchSpec target isCtor calleeType ctx
+
+    else if argCount > firstStage then
+        -- R1 (plans/lss-no-instance-declines.md §9.4): the SAME
+        -- curried-type-vs-flat-call defect LSS_039 fixed on the instance path,
+        -- on this path's independent copy. `Store.classifyGo` gives every arrow
+        -- one parameter per stage, so a callback of arity n has a first stage
+        -- of 1 while the call applies n arguments flat.
+        --
+        -- Peel to the site's own argument count and match the registry spec
+        -- against THAT. The census measured 2,026 sites here once R3 lets them
+        -- reach this guard, every one of them peelable.
+        --
+        -- `matchSpec` still applies `eqLayout` against the FULL callee type, so
+        -- the G4 fence is untouched: peeling decides whether the site is
+        -- eligible, never whether the target matches.
+        --
+        -- Rides `lss.stamp.flatPeel`: it IS that mechanism — "peel curried
+        -- callee types at stamping guards" — applied to this path's copy,
+        -- rather than a second independent flag for the same idea.
+        --
+        -- UNVERIFIED ASSUMPTION, deliberately left for the measurement:
+        -- `matchSpec` compares the spec's type against the UNPEELED callee
+        -- type. If the registry stores globals curried (as `classifyGo` builds
+        -- them) that matches and R1 converts; if it stores them flattened, the
+        -- eqLayout fails and these sites land on `PsNoSpec` instead. Watch
+        -- `devirtPost.noSpec`: a jump of roughly the g3over population means
+        -- the comparison needs the peeled view too.
+        case ( ctx.flatPeel, peelStages argCount calleeType ) of
+            ( True, Just _ ) ->
+                matchSpec target isCtor calleeType ctx
 
             _ ->
                 PsNotCandidate
+                    ("g3over|"
+                        ++ String.fromInt firstStage
+                        ++ "->"
+                        ++ String.fromInt argCount
+                        ++ "|unpeelable"
+                    )
+
+    else
+        PsNotCandidate ("g3under|" ++ String.fromInt firstStage ++ "->" ++ String.fromInt argCount)
+
+
+{-| G4: the registry spec of the target whose layout matches the site.
+Unchanged from the original; `PsNoSpec` has measured 0 since E9.5 shipped.
+-}
+matchSpec : Mono.Global -> Bool -> Mono.MonoType -> StampCtx -> PostSettleOutcome
+matchSpec target isCtor calleeType ctx =
+    case
+        Dict.get (Mono.toComparableGlobal target) ctx.specsByGlobal
+            |> Maybe.withDefault []
+            |> List.filter (\( _, specType ) -> Mono.eqLayout specType calleeType)
+            |> List.map Tuple.first
+            |> List.minimum
+    of
+        Just specId ->
+            PsStamp specId isCtor
+
+        Nothing ->
+            PsNoSpec
 
 
 bumpNoInstance : StampCtx -> StampCtx

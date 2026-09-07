@@ -809,7 +809,7 @@ flattenArrowOnce ty =
 optimize : Config.InlineConfig -> MonoGraph -> ( MonoGraph, Metrics )
 optimize inlineConfig graph =
     let
-        (MonoGraph { nodes, main, registry, ctorShapes, nextLambdaIndex, callEdges, ports, flagsDecoder, lssMemberOrigins, lssBlockedMembers }) =
+        (MonoGraph { nodes, main, registry, ctorShapes, nextLambdaIndex, callEdges, ports, flagsDecoder, lssMemberOrigins, lssMemberKinds, lssBlockedMembers }) =
             graph
 
         ( raisedNodes, raiseCounters ) =
@@ -862,7 +862,7 @@ optimize inlineConfig graph =
     -- Call a separate function so `nodes` (Array) goes out of scope
     -- and becomes GC-eligible. Only `nodesList` is passed forward (the
     -- raise counters are plain Ints — no graph state retained).
-    optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder lssMemberOrigins lssBlockedMembers
+    optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder lssMemberOrigins lssMemberKinds lssBlockedMembers
         |> Tuple.mapSecond
             (\m ->
                 { m
@@ -881,9 +881,10 @@ optimizeNodes :
     -> List Mono.PortRegistration
     -> Maybe Mono.SpecId
     -> Dict Int Mono.MemberOrigin
+    -> Dict Int String
     -> Dict Int ()
     -> ( MonoGraph, Metrics )
-optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder lssMemberOrigins lssBlockedMembers =
+optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder lssMemberOrigins lssMemberKinds lssBlockedMembers =
     let
         ( optimizedNodesList, finalCtx, _ ) =
             List.foldl
@@ -920,6 +921,7 @@ optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder lssMembe
         , ports = ports
         , flagsDecoder = flagsDecoder
         , lssMemberOrigins = lssMemberOrigins
+        , lssMemberKinds = lssMemberKinds
         , lssBlockedMembers = lssBlockedMembers
         }
     , metrics

@@ -224,7 +224,8 @@ statsWith flatPeel exprs =
                 , ports = []
                 , flagsDecoder = Nothing
                 , lssMemberOrigins = Dict.empty
-                , lssBlockedMembers = Dict.empty
+                , lssMemberKinds = Dict.empty
+            , lssBlockedMembers = Dict.empty
                 }
             )
         )
