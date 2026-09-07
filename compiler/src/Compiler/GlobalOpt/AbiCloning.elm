@@ -2548,6 +2548,14 @@ papResolve g k func argCount ctx =
                                 no "papShapeMiss" firstStage
 
                         _ ->
+                            -- P5: `p|` is layout-blind, so two specs of the
+                            -- same global can both match. Stamping either
+                            -- could load slot 0 with the wrong kind — or, for
+                            -- the 177 same-layout copies measured in plan
+                            -- §11.2.2, call a copy whose inner stamps expect
+                            -- a different lambda in the bound argument (E11).
+                            -- Two censuses closed both repairs; this decline
+                            -- is the guard working.
                             no "papAmbiguous" firstStage
 
         _ ->

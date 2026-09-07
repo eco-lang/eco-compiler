@@ -893,3 +893,66 @@ the OLD binary's output with the NEW binary's output on the same source and
 "failed" by exactly the 88 new stamps. A new stamping arm needs one more
 generation before the fixed-point comparison is between two compilers that
 both carry it.
+
+### 11.2.1 P0 result — v1 is a NO-GO (2026-09-07)
+
+`papAmbiguous` split on the flag-on self-compile (census-only change in
+`papResolve`, key `papAmbiguous-kindDiffers` / `-sameLayout`):
+
+| class | sites | v1 (layout-qualified key) |
+|---|---|---|
+| `kindDiffers` — matching specs' k-prefix layouts differ | **24** | converts |
+| `sameLayout` — identical prefix layouts, copies differ only in annotations | **177** | cannot; must stay declined (E11) |
+
+§11.2's own gate said "worth converting only if `kindDiffers` dominates". It is
+12 % of the class. Against that, the mint-side change is wider than §11.2
+counted: seven sites mint or re-derive `p|<g>|<d>` — `injectPapMember` and
+its successor walk, `injectPapMemberInfer` and its walk, `stampSpineGo`
+(registration self-identity), `injectPapSuccessors` (reference spine), and
+`settleVarSuccessors`, which parses the predecessor's key string and would
+have to append the layouts of the params consumed at that arrow. And the
+inference-time twin mints BEFORE the types Translate sees are resolved: a key
+that differs between the two (flex at inference, `Int` at translate) puts a
+phantom second member into every `p|` set, and every currently-stamping site
+— the −164 M — stops stamping. Twenty-four sites do not buy that. **v1 is
+closed unbuilt; the census split stays (it is `lss.stamp.census`-gated).**
+
+What the 177 are: same-layout copies of one global — LSS_024 layout-qualified
+specs that differ only in lambda-set annotations somewhere in their type. If
+the difference sits in the RESIDUAL positions (site args or return), the site
+already knows its own annotated residual and could pick the unique candidate
+whose annotated `(drop k params, ret)` equals it — a consumer-side refinement
+that touches no mint. If the difference sits in the BOUND-argument positions,
+nothing short of the SpecId separates them. Sizing that split is the next
+census (§11.2.2); it is one more line in `papResolve`.
+
+### 11.2.2 The consumer-side route converts nothing — §11.2 CLOSED UNBUILT
+
+Second census, same binary class, splitting the 177 `sameLayout` sites by
+whether the site's own ANNOTATED residual `(fargs, fret)` equals exactly one
+candidate's annotated `(drop k params, ret)`:
+
+| class | sites |
+|---|---|
+| `residualUnique` — the residual picks one copy | **0** |
+| `residualNone` | 0 |
+| `residualMany` — every copy's residual equals the site's | **177** |
+
+So the copies differ ONLY in the bound-argument positions: the bound value is,
+or contains, a function whose lambda set differs between the copies. That is
+the E11 hijack class by definition — copy A's inner call sites may be
+direct-stamped for lambda A while the object holds lambda B — and the correct
+verdict for those sites is the one P5 already gives. Nothing short of the
+SpecId at mint time separates them, and that is the same seven-site
+identity change as v1, carrying the same phantom-member hazard, for the same
+177 sites.
+
+**Verdict.** v1 converts 24 sites at a seven-site identity risk; the
+consumer-side refinement converts 0; v2 would convert the 177 at the same
+risk. `papAmbiguous` is the guard doing its job. Closed unbuilt on two
+censuses. The two census sub-splits were removed again once they had
+answered their question (the rule from the bodyMismatch cleanup);
+`papAmbiguous` is a single counter.
+
+Final `p|` residual after this plan: 201 ambiguous (correctly declined), 88
+`papShapeMiss`, 4 `papChar`; 2,135 of 2,418 stamped.
