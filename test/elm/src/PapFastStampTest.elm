@@ -33,6 +33,46 @@ import Html exposing (text)
 -- CHECK: k2: [13, 14, 15]
 -- CHECK: boxed: [7, 8, 9]
 -- CHECK: tuple: [9, 11, 13]
+-- CHECK: ctor1: [11, 12, 15]
+-- CHECK: ctor2: [7, 8, 9]
+
+
+{-| §11.1: constructors are partially applied too, and a constructor spec is a
+real function of its fields. `Rect 2` (k = 1) and `Rect 2 True` (k = 2) flow
+into helpers whose call sites carry `{p|Rect|1}` / `{p|Rect|2}`. The fields
+mix an unboxed Int, a Bool (always `!eco.value` in a heap field) and a boxed
+list, so a wrong slot kind or a wrong field ABI shows up as a wrong number.
+-}
+type Shape
+    = Rect Int Bool (List Int)
+    | Circle Int
+
+
+measure : Shape -> Int
+measure s =
+    case s of
+        Rect w flag xs ->
+            w
+                + List.sum xs
+                + (if flag then
+                    1
+
+                   else
+                    0
+                  )
+
+        Circle r ->
+            r
+
+
+applyR1 : (Bool -> List Int -> Shape) -> Int -> Shape
+applyR1 f n =
+    f (modBy 2 n == 0) [ n, n ]
+
+
+applyR2 : (List Int -> Shape) -> Int -> Shape
+applyR2 f n =
+    f [ n ]
 
 
 add : Int -> Int -> Int
@@ -70,7 +110,7 @@ applyT f n =
     f n
 
 
-run : Int -> { k1 : Int, k2 : Int, boxed : Int, tuple : Int }
+run : Int -> { k1 : Int, k2 : Int, boxed : Int, tuple : Int, ctor1 : Int, ctor2 : Int }
 run n =
     let
         ( x, y ) =
@@ -80,6 +120,8 @@ run n =
     , k2 = applyI (add3 4 5) n
     , boxed = String.length (applyS (tag "abc") n)
     , tuple = x + y
+    , ctor1 = measure (applyR1 (Rect 2) n)
+    , ctor2 = measure (applyR2 (Rect 2 True) n)
     }
 
 
@@ -104,5 +146,11 @@ main =
 
         _ =
             Debug.log "tuple" (List.map .tuple results)
+
+        _ =
+            Debug.log "ctor1" (List.map .ctor1 results)
+
+        _ =
+            Debug.log "ctor2" (List.map .ctor2 results)
     in
     text "done"

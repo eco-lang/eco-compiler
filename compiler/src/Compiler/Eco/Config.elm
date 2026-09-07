@@ -849,8 +849,14 @@ type alias LssStampConfig =
     -- indices, so it is inert unless `postSettleDevirt` is on.
     --
     -- Artifact-affecting (changes which sites are stamped, hence CallInfo,
-    -- hence emitted MLIR). Hash token `lssPF=`; env `ECO_MONO_LSS_PAP_FAST`.
-    -- DEFAULT-OFF until measured (plan §7).
+    -- hence emitted MLIR). Hash token `lssPF=`; env `ECO_MONO_LSS_PAP_FAST`
+    -- (`=0` is the escape hatch, riding `lssPF=0`).
+    --
+    -- DEFAULT-ON since 2026-09-07 (plan §10): 2,041 of 2,418 `p|` sites stamp
+    -- on the self-compile, generic dispatch −164 M (−14.96 %) on identical
+    -- input with byte-identical output; `.mlir` +0.13 %, RSS flat, protocol
+    -- wall FLAT (benchmarks/lss-opt.md Run AP) — flipped on the dispatch
+    -- counter, the same basis as LSS_025.
     , papFast : Bool
     }
 
@@ -908,7 +914,7 @@ defaultLss =
     , flowConnect = True
     , settle = { varSucc = True, varCtorRows = True, varLambda = True }
     , stageAnchor = { rowFill = False, demandFill = False }
-    , stamp = { enabled = True, maxInstances = 8, flatPeel = True, census = False, papFast = False }
+    , stamp = { enabled = True, maxInstances = 8, flatPeel = True, census = False, papFast = True }
     }
 
 

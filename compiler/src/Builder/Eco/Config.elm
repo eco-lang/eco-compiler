@@ -1912,7 +1912,7 @@ setStampPapFast v c =
 plans/lss-pap-fast-stamp.md): FAST-stamp call sites whose callee is a
 `p|<global>|<k>` partial-application member, loading the k bound arguments
 out of the PAP object as LSS\_011 does for closures. Artifact-affecting; hash
-token `lssPF=`. DEFAULT-OFF.
+token `lssPF=`. DEFAULT-ON since 2026-09-07; `=0` is the escape hatch.
 -}
 applyLssPapFastOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssPapFastOverride maybeVal cfg =

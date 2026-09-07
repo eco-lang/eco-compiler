@@ -209,6 +209,59 @@ suite =
                             (Maybe.andThen (\ci -> ci.captureAbi) (firstCallInfo g))
                     ]
                     ()
+        , Test.test "8. §11.1 CONSTRUCTOR PAP: a MonoCtor spec within the typed-slot bound STAMPS" <|
+            \() ->
+                -- `Rect : Int -> Float -> Shape`, value `Rect 2` (k = 1). The
+                -- ctor spec is a real func.func of its fields; the row is the
+                -- field list and the return is the custom type.
+                let
+                    reg =
+                        registryOf [ Nothing, Just ( rectGlobal, fn [ Mono.MInt, Mono.MFloat ] shapeTy ) ]
+
+                    nodes =
+                        [ ctorSpec [ Mono.MInt, Mono.MFloat ] ]
+
+                    site =
+                        papSite 1 (fn1 [ Mono.MFloat ] shapeTy) 1
+
+                    ( g, st ) =
+                        run True (origins [ ( pap, Mono.OriginPap rectGlobal 1 ) ]) reg nodes [ site ]
+                in
+                Expect.all
+                    [ \_ -> Expect.equal 1 st.stampedPapGlobal
+                    , \_ -> Expect.equal (Just 1) (Maybe.andThen (\ci -> ci.fastPapPrefix) (firstCallInfo g))
+                    , \_ ->
+                        Expect.equal
+                            (Just { captureTypes = [ Mono.MInt ], paramTypes = [ Mono.MFloat ], returnType = shapeTy })
+                            (Maybe.andThen (\ci -> ci.captureAbi) (firstCallInfo g))
+                    , \_ -> Expect.equal True (calleeIsLocal g)
+                    ]
+                    ()
+        , Test.test "9. §11.1 GUARD: a constructor wider than 24 fields DECLINES (tail fields are boxed)" <|
+            \() ->
+                -- `computeCtorLayout` leaves fields at index >= 24 boxed; the
+                -- fast call would pass them unboxed. 25 Int fields, k = 1.
+                let
+                    fields =
+                        List.repeat 25 Mono.MInt
+
+                    reg =
+                        registryOf [ Nothing, Just ( rectGlobal, fn fields shapeTy ) ]
+
+                    nodes =
+                        [ ctorSpec fields ]
+
+                    site =
+                        papSite 24 (fn1 (List.repeat 24 Mono.MInt) shapeTy) 1
+
+                    ( _, st ) =
+                        run True (origins [ ( pap, Mono.OriginPap rectGlobal 1 ) ]) reg nodes [ site ]
+                in
+                Expect.all
+                    [ \_ -> Expect.equal 0 st.stampedPapGlobal
+                    , \_ -> Expect.equal 1 st.declinedNoInstance
+                    ]
+                    ()
         ]
 
 
@@ -231,6 +284,30 @@ home =
 addGlobal : Mono.Global
 addGlobal =
     Mono.Global home "add"
+
+
+rectGlobal : Mono.Global
+rectGlobal =
+    Mono.Global home "Rect"
+
+
+{-| The custom type a constructor spec returns. Any non-function layout will
+do for these pins; `eqLayout` compares it against the site's return.
+-}
+shapeTy : Mono.MonoType
+shapeTy =
+    Mono.mList Mono.MFloat
+
+
+{-| A registry SPEC node of a constructor: `MonoCtor shape ty`, the node kind
+`specFunctionRow` reads the row off in §11.1 (fields = `shape.fieldTypes`,
+return = the decomposed result of `ty`).
+-}
+ctorSpec : List Mono.MonoType -> Mono.MonoNode
+ctorSpec fieldTys =
+    Mono.MonoCtor
+        { name = "Rect", tag = 0, fieldTypes = fieldTys }
+        (fn fieldTys shapeTy)
 
 
 fn : List Mono.MonoType -> Mono.MonoType -> Mono.MonoType

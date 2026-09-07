@@ -727,7 +727,8 @@ working; nothing reads past it today.
 ## 10. Built and measured (2026-09-07)
 
 Everything in §6 is built, under `lss.stamp.papFast` (`ECO_MONO_LSS_PAP_FAST`,
-hash token `lssPF=`), **DEFAULT-OFF** pending the flip decision below.
+hash token `lssPF=`), **DEFAULT-ON since 2026-09-07** (§10.4; E2E re-run on
+the flipped tree, §10.6).
 `papResolve` is ONE function returning both the stamp target and the census
 key, so the guard chain that was measured in §9 is the guard chain that ships.
 
@@ -757,7 +758,18 @@ byte-identical output** (semantic equivalence), under the caller-attributed
 |---|---|---|---|
 | unstamped (`eco-pf`) | 1,098,197,360 | 16:29.80 | 13.46 GB |
 | stamped (`eco-pfon`) | 933,960,160 | 15:13.56 | 13.45 GB |
-| delta | **−164,237,200 (−14.96 %)** | −7.7 % (N=1) | flat |
+| delta | **−164,237,200 (−14.96 %)** | −7.7 % (N=1, PROBE-INFLATED — retracted, see below) | flat |
+
+**Protocol benchmark (`benchmarks/lss-opt.md` Run AP, no probe, census flags
+off, one cold run per arm):** wall 7:47.85 → 7:45.69 (467.9 → 465.7 s) =
+**FLAT** by the protocol's 3 % bar; minors 2,096 = 2,096, majors 8 = 8,
+promoted +0.07 %; every LSS analysis counter identical to the digit. The
+−7.7 % above was measured under the `eco_apply_closure_eval` uprobe, which
+taxes each of the 1.1 G dispatches and so exaggerates the benefit of removing
+them — it is retracted as a wall figure. By the repo's wall model
+(47.7 ns/dispatch, `memory: dispatch-source-census-io-monad`), −164 M
+dispatches is ~7.8 s of 468 s, ~1.7 % — sub-noise by construction. The
+dispatch count is exact; the wall on this workload is not a signal.
 
 Where it came from (name-keyed — the two binaries are different programs):
 
@@ -801,8 +813,10 @@ wrong, not because the reasoning from a correct census would have been.
 §7's three deciders: `stampedPapGlobal` 2,041 / 2,418 ✓; `papAmbiguous +
 papNonFn` = 306, not a ceiling ✓; lowered-binary dispatch −14.96 % ✓. Cost
 side: `.mlir` +0.13 %, Stage-6 lowering time unchanged to the second, RSS
-flat. The flip to DEFAULT-ON is recommended; it is the user's call, as it was
-for LSS_038/LSS_039.
+flat, protocol wall FLAT (Run AP). The flip to DEFAULT-ON is recommended on
+the dispatch counter — the same basis as LSS_025's flip, which was also
+dispatch-positive and wall-neutral; it is the user's call, as it was for
+LSS_038/LSS_039.
 
 ### 10.5 Housekeeping in the same change
 
@@ -812,3 +826,70 @@ for LSS_038/LSS_039.
 twice, §9 of that plan). `LssConfig` is at the 32-slot GC-scan cap: both new
 flags live in `LssStampConfig`, and a 33rd top-level field fails at Stage-6
 lowering, not at typecheck.
+
+### 10.6 Flipped DEFAULT-ON (2026-09-07)
+
+`defaultLss.stamp.papFast = True`; `ECO_MONO_LSS_PAP_FAST=0` is the escape
+hatch and rides `lssPF=0` in the config hash. Gates re-run on the flipped tree
+with NO env var set (the harness cache is env/mtime-blind, so `test/elm/src`
+was touched and every `eco-stuff` cache deleted first):
+
+| gate | result |
+|---|---|
+| E2E, default flags | **1,720 / 1,720**; the fixture's harness artifact carries a `_pap_prefix` stamp with nothing in the environment — the default is live |
+| elm-tests, flipped tree | 13,453 / 12 = baseline (39 test sites consume `Config.default*` as a constant, which an env-flag arm cannot reach — this run reaches them) |
+| protocol benchmark | Run AP, `benchmarks/lss-opt.md`: wall FLAT, minors/majors identical, analysis counters identical |
+
+### 11.1.1 Built (2026-09-07)
+
+`specFunctionRow` gains the `MonoCtor shape ty` arm: row = `shape.fieldTypes`
+(the same list `generateCtor` builds the `func.func` parameters from — source
+order, `computeCtorLayout` does not reorder), return = the decomposed result
+of `ty`; declines constructors wider than `ctorTypedSlotCap = 24`. Rides
+`papFast`; no new flag.
+
+| self-compile | before | after |
+|---|---|---|
+| `stampedPapGlobal` | 2,041 | **2,135** (+94) |
+| `papNonFn` | 131 | **0** |
+| `papAmbiguous` | 175 | 201 (+26) |
+| `papShapeMiss` | 77 | 88 (+11) |
+| `declinedNoInstance` | 14,203 | 14,109 |
+
+The 131 redistribute exactly: 94 stamp, 26 become ambiguous (two ctor specs
+of one constructor with the same residual layout — `Json.Decode.Field` has
+three live specs), 11 shape-miss. So P5 does its job on constructors too.
+
+The 94 new stamps in the compiler's own code, read off the text diff of the
+pre-fix and post-fix compilers' outputs on the same source: **88 hunks, every
+one a `segmentation_unknown` papExtend becoming `singleton_fast` with a
+constructor spec as `_fast_evaluator`** — `Json.Decode.Field_$_30649` ×15,
+`Field_$_28507` ×10, `Field_$_2138` ×9, `Failure`, `DecodeProblem`,
+`IO.App1`, `JavaScript.Builder.ExprInfix`, and twelve `Language.GLSL.Syntax`
+constructors. Nothing else in the artifact moved.
+
+Gates: flag-off (`ECO_MONO_LSS_PAP_FAST=0`) byte-identical between the
+pre-fix and post-fix binaries on the same source; post-fix compiler is a
+bootstrap fixed point; zero undefined `_fast_evaluator`; `PapFastStampTest`
+gains `Rect Int Bool (List Int)` at k=1 and k=2 (an unboxed Int, a Bool that
+is `!eco.value` in a heap field, a boxed list) — identical across arms, all
+six CHECK lines pass, seven sites stamped. Pins 8 (ctor stamps) and 9 (25
+fields declines) in `AbiCloningPapFastPassTest`. E2E on the post-fix tree at
+default flags **1,720 / 1,720**; elm-tests **13,455 / 12** (baseline + the two
+pins).
+
+**Payoff, honestly cold.** Dispatch A/B (pre-fix vs post-fix compiler,
+identical input and flags, under the caller-attributed uprobe): 933,925,039 →
+933,006,001 = **−919,038 (−0.10 %)**, essentially all at `IO.map`
+(−897,742 — constructor callbacks in the JSON decoders, `IO.map (Field name)`
+and kin); the remaining rows are `$psplit`/`$sret` renumbering noise that nets
+to zero. The two arms' outputs are byte-identical to `ctA`/`ctB` respectively,
+so the artifact delta IS the 88 stamps and nothing else. Protocol run: Run AQ
+in `benchmarks/lss-opt.md`. This was a mechanism completion; the plan said so
+before it was built, and the number agrees.
+
+A trap recorded for the next person: the first "fixed point" check compared
+the OLD binary's output with the NEW binary's output on the same source and
+"failed" by exactly the 88 new stamps. A new stamping arm needs one more
+generation before the fixed-point comparison is between two compilers that
+both carry it.

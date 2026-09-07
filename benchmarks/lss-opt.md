@@ -1194,6 +1194,53 @@ Run AN. Position metric vs readback ledger INVERT on the ⊤/var diagnosis (⊤ 
 54→47 % of positions but 6→4 % of readbacks); always name the metric. Escape
 hatch `ECO_MONO_LSS_REF_IDENTITY=0` (`lssRI=0` rides the OFF arm).
 
+### 2026-09-07 — Run AP: `lss.stamp.papFast` A/B (LSS_040 `p|` fast stamp; census flags off)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| off | **7:47.85** (467.9 s) | 13,468,660 kB | 2,096 | 8 | 730,494,135 (21,898 MiB) | 145.68 s | 15,501,076 B (`e8f4ffaa…`) |
+| on | **7:45.69** (465.7 s) | 13,491,280 kB | 2,096 | 8 | 730,994,140 (21,912 MiB) | 144.02 s | 15,521,029 B (`f5f1ddc2…`) |
+
+| axis | off | on |
+|---|---|---|
+| `stampedPapGlobal` / `declinedNoInstance` | 0 / 16,244 | 2,041 / 14,203 |
+| `coverage` positions / k1 / kN | 144,749 / 99,510 / 33,114 | identical |
+| `set-writes` slotsMinted / `widened` byKernel / `join flush` | 827,391 / 345 / rounds=0 retranslations=0 | identical |
+
+Wall −0.46 % — FLAT (below the 3 % bar); minors and majors identical, promoted +0.07 %. Every LSS
+analysis counter is identical to the digit, so this is a STAMPING change, not an analysis change:
+`out.mlir` legitimately differs (+0.13 %; 2,041 `p|` sites gain an E2-shaped fast stamp). The
+dispatch win is real and exact — −164,237,200 generic dispatches (−14.96 %) by caller-attributed
+uprobe count on identical input (`plans/lss-pap-fast-stamp.md` §10.2) — but at the wall model's
+47.7 ns/dispatch that is ~7.8 s of 468 s (~1.7 %), sub-noise by construction. The −7.7 % seen under
+the probe is probe-inflated (the uprobe taxes each of the 1.1 G dispatches) and is retracted as a
+wall figure. Binaries are native fixed-point lowerings of the current tree (each arm reproduces its
+own input byte-for-byte), standing in for the JS Stage-5 `eco-compiler` target that converges to
+the same bytes. No regression detected; the flip decision rests on the dispatch counter, not wall.
+
+### 2026-09-07 — Run AQ: `p|` fast stamp, constructor arm (plan §11.1; plain run, papFast default on)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| ctor arm | **7:37.97** (458.0 s) | 13,476,776 kB | 2,096 | 8 | 730,950,758 (21,911 MiB) | 143.25 s | 15,522,491 B (fixed point) |
+
+| axis | AP-on | AQ |
+|---|---|---|
+| `stampedPapGlobal` / `papNonFn` | 2,041 / 131 | 2,135 / 0 |
+| `coverage` positions / k1 / kN | 144,749 / 99,510 / 33,114 | identical |
+| `set-writes` flex / slotsMinted | 218,035 / 827,391 | 218,045 / 827,406 |
+
+Plain run: `specFunctionRow` admits constructor specs (≤ 24 fields) as `p|` fast-stamp targets,
+under the already-default `papFast`. Against AP-on (465.7 s) wall is −1.7 % — FLAT; minors and
+majors identical, promoted +0.0 %. `out.mlir` moved +1,462 B on AP-on's 15,521,029 B: 88 new
+constructor stamps in the compiler's own code (text-diff verified, every hunk `segmentation_unknown`
+→ `singleton_fast` with a ctor spec evaluator) PLUS the arm's own source, so the corpus moved and the
+wall is not cross-row attributable — and the analysis counters that moved (+10 flex writes, +15
+slots) are that source growth, not an analysis change. Dispatch A/B on identical input (uprobe):
+933,925,039 → 933,006,001 = −919,038 (−0.10 %), all at `IO.map` (JSON-decoder ctor callbacks) —
+cold, as `plans/lss-pap-fast-stamp.md` §11.1 predicted; a mechanism completion, not a win.
+No regression detected.
+
 ---
 
 ## Summary
@@ -1244,3 +1291,6 @@ One row per run, numbers only.
 | AN-off | 390.9 | 1735 | 9 | 17542 |
 | AN-on | 393.3 | 1775 | 9 | 17698 |
 | AO | 417.0 | 1814 | 9 | 17743 |
+| AP-off | 467.9 | 2096 | 8 | 21898 |
+| AP-on | 465.7 | 2096 | 8 | 21912 |
+| AQ | 458.0 | 2096 | 8 | 21911 |

@@ -2438,8 +2438,9 @@ for both its VERDICT and its census key so the two cannot drift.
   - P1 callee shape: `MonoVarLocal` only (a var read is effect-and-bottom-free);
   - P2 flat residual: `peelStages argCount calleeType` must land (LSS\_039 — the
     residual type is curried, the call is flat);
-  - P3 function target: `specFunctionRow` is `Nothing` for a `MonoCtor` / CAF /
-    extern node, which is a layout descriptor, not callable code;
+  - P3 callable target: `specFunctionRow` is `Nothing` for a CAF / extern /
+    port node, or a constructor wider than 24 fields (§11.1); constructor
+    specs within that bound are callable code and resolve like functions;
   - P4 shape: `|specParams| == k + |fargs|`, `drop k specParams` eqLayout `fargs`,
     `specRet` eqLayout `fret`;
   - P5 UNIQUENESS, never minimum: `p|<g>|<k>` is layout-blind, so two specs of
@@ -2561,9 +2562,11 @@ papCensusKey g k func argCount ctx =
 
 
 {-| The flat parameter row and return type of a spec, when its node is
-CALLABLE CODE. `Nothing` for a `MonoCtor` (a layout descriptor), a value CAF,
-an extern, or a port — a fast call naming one of those would jump into
-something that is not a function.
+CALLABLE CODE: a closure, a tail function, or (plan §11.1) a constructor with
+at most 24 fields. `Nothing` for a value CAF, an extern, a port, or a wider
+constructor — a fast call naming one of those would jump into something that
+is not a function, or into one whose tail fields the call would pass at the
+wrong ABI.
 
 Mirrors `insertInstance`'s derivation (params from the closure/tailfunc, return
 from `Mono.typeOf body`) so the census and the instance path agree.
@@ -2578,8 +2581,39 @@ specFunctionRow specId ctx =
         Just (Just (Mono.MonoTailFunc params body _)) ->
             Just ( List.map Tuple.second params, Mono.typeOf body )
 
+        Just (Just (Mono.MonoCtor shape ty)) ->
+            -- Plan §11.1: a constructor spec with fields IS callable code —
+            -- `Functions.generateCtor` emits `func.func @Ctor_$_N(fields at
+            -- ABI) -> !eco.value` whose body is one `eco.construct.custom`.
+            -- Its parameter row is the field list (the same
+            -- `ctorLayout.fields` the func.func is built from); the return
+            -- is the custom type. Nullary ctors have an empty row and can
+            -- never satisfy P4's `k + |fargs| >= 1`.
+            --
+            -- GUARD: `computeCtorLayout` leaves fields at index >= 24 BOXED
+            -- while the fast call passes every Int/Float/Char unboxed, so a
+            -- wider ctor would mismatch on the tail — decline it (expected
+            -- residue 0). Within the bound the two agree: `canUnbox` and
+            -- `monoTypeToAbi` unbox exactly MInt/MFloat/MChar, and no
+            -- `MVar _ CNumber` survives into a spec (Monomorphized.elm §"No
+            -- MVar CNumber may remain").
+            if List.length shape.fieldTypes > ctorTypedSlotCap then
+                Nothing
+
+            else
+                Just ( shape.fieldTypes, Tuple.second (Mono.decomposeFunctionType ty) )
+
         _ ->
             Nothing
+
+
+{-| `Types.computeCtorLayout`'s typed-slot bound (fields at index >= 24 stay
+boxed). Kept as a literal here rather than imported: AbiCloning is a GlobalOpt
+pass and does not depend on the MLIR generator.
+-}
+ctorTypedSlotCap : Int
+ctorTypedSlotCap =
+    24
 
 
 {-| G3, and the reason this census exists.
