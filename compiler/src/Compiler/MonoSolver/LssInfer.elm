@@ -1957,7 +1957,7 @@ injectPapMemberInfer g argCount callVar s0 =
             injected =
                 Engine.andThen
                     (\mid -> injectSpineMemberId 1 mid callVar)
-                    (Engine.memberIdFor ("p|" ++ TOpt.toComparableGlobal g ++ "|" ++ String.fromInt argCount))
+                    (Engine.papMemberIdFor g argCount)
                     s0
         in
         case injected of
@@ -2777,8 +2777,8 @@ denotes the unapplied global and licenses a direct-call rewrite that a PAP
 cannot support.
 -}
 papMemberKey : TOpt.Global -> Int -> String
-papMemberKey global argCount =
-    "p|" ++ TOpt.toComparableGlobal global ++ "|" ++ String.fromInt argCount
+papMemberKey =
+    Engine.papMemberKey
 
 
 {-| L2, deep-PAP successor completion (plans/lss-coverage-four-levers.md
@@ -2861,7 +2861,7 @@ mintPapSuccessorIds g d arity acc s0 =
         Ok ( acc, s0 )
 
     else
-        case Engine.memberIdFor (papMemberKey g d) s0 of
+        case Engine.papMemberIdFor g d s0 of
             Err e ->
                 Err e
 

@@ -301,6 +301,14 @@ resolveMember facts calleeType m =
                 Mono.OriginAccessor _ ->
                     Routed (accessorSig calleeType)
 
+                Mono.OriginPap _ _ ->
+                    -- A partial application's borrow signature is the
+                    -- global's with its first `supplied` params already
+                    -- consumed. Not derived here (v1 scope, BORROW_006's
+                    -- standalone-v2 note); an unresolved member is the
+                    -- all-owned boundary, which is sound.
+                    Poison PUnresolved
+
                 Mono.OriginGlobal g ->
                     case matchGlobal facts g calleeType of
                         Just specId ->

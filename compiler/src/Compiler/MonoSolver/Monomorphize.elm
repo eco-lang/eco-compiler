@@ -1191,7 +1191,7 @@ varSuccRounds fuel s =
                                                     succKey =
                                                         LssInfer.papMemberKey vsG (d + j)
                                                 in
-                                                case Engine.memberIdFor succKey sAcc of
+                                                case Engine.papMemberIdFor vsG (d + j) sAcc of
                                                     Ok ( mid, sAcc1 ) ->
                                                         ( Just (Mono.unionSortedInts [ mid ] acc)
                                                         , ( sAcc1, Dict.insert mid succKey keysAcc )
@@ -4975,6 +4975,14 @@ buildMemberOrigins toptNodes table =
 
                 "a|" ->
                     Dict.insert mid (Mono.OriginAccessor (String.dropLeft 2 key)) acc
+
+                "p|" ->
+                    case Dict.get mid table.sources of
+                        Just (Engine.SourcePap g supplied) ->
+                            Dict.insert mid (Mono.OriginPap (toptToMono g) supplied) acc
+
+                        _ ->
+                            acc
 
                 _ ->
                     acc

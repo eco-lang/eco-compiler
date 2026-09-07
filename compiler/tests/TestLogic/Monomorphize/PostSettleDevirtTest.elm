@@ -284,6 +284,7 @@ run flag memberOrigins registry exprs =
     AbiCloning.abiCloningPass True
         flag
         False
+        True
         (Mono.MonoGraph
             { nodes =
                 Array.fromList

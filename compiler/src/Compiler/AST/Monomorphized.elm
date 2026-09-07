@@ -2938,6 +2938,7 @@ type MemberOrigin
     | OriginKernel Name Name -- k| members (home, name; prefix dropped)
     | OriginCtor Global -- c| members
     | OriginAccessor Name -- a| members (field name)
+    | OriginPap Global Int -- p| members: the partially-applied global and the number of arguments already SUPPLIED. Deliberately NOT resolvable by any DIRECT-call arm (plans/lss-pap-fast-stamp.md §1.3, Translate.injectPapMember): rewriting a PAP to a direct call of the global's spec drops the bound arguments, which is a recorded miscompile. It exists so a PAP can be named at all — for the census, and for the FAST stamp that loads those arguments back out of the object instead of reconstructing them.
 
 
 {-| One port registration collected during monomorphization.

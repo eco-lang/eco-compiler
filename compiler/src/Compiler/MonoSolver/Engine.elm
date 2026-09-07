@@ -14,6 +14,7 @@ module Compiler.MonoSolver.Engine exposing
     , consS
     , mvarIdKey, pointKey, isScalarVar, specIdsForGlobal
     , memberIdFor, standaloneMemberIdFor, standaloneMemberGlobal, kernelMemberIdFor, standaloneMemberKernel, srcLambdaKey, trivialSignature, emptyLssStats
+    , papMemberKey, papMemberIdFor
     , lambdaInstanceMemberId, lambdaInstanceMemberMaybe
     , GroundingStats, internMemberKey, groundStandaloneMemberIdFor, groundSetMembers, recordSpecWidenedKey, layoutQualKey
     , mixTag, localInstanceTagFor
@@ -468,6 +469,7 @@ prefix dispatch reads it with a single lookup.
 type MemberSource
     = SourceGlobal TOpt.Global
     | SourceKernel ( String, String, String )
+    | SourcePap TOpt.Global Int -- p| members: (global, supplied). Registered so the graph can NAME a partial application; see `papMemberIdFor` for why this must never promote it into the stampable class.
 
 
 {-| Interned non-lambda member ids (§3.3 keys) + the E9/E9.2 standalone
@@ -1295,6 +1297,15 @@ memberClassOf mid table =
         Just (SourceKernel _) ->
             "k"
 
+        Just (SourcePap _ _) ->
+            -- EXPLICIT, not the default arm: registering a source for `p|`
+            -- must NOT promote it out of the declining class. Every DIRECT
+            -- consumer (E9/E9.1/E9.5 devirt) keys on this, and a direct
+            -- rewrite of a partial application drops its bound arguments —
+            -- the recorded miscompile behind `Translate.injectPapMember`.
+            -- Written out so a future reader cannot "tidy" it into "gc".
+            "l"
+
         _ ->
             "l"
 
@@ -1878,6 +1889,44 @@ memberIdFor key s =
 
     else
         Ok ( mid, { s | lssMemberTable = table1, nextMemberId = next1 } )
+
+
+{-| The interned key for a partial application of `global` with `argCount`
+arguments already supplied. ONE definition, because five sites mint it
+(`Translate.injectPapMember` and its successor walk, `LssInfer`'s inference
+twin and ITS successor walk, and `Monomorphize`'s varsucc successor ids) and
+two of them used to build the string independently — the same two-site drift
+that produced the LSS_017 raw-vs-qualified split.
+-}
+papMemberKey : TOpt.Global -> Int -> String
+papMemberKey global argCount =
+    "p|" ++ TOpt.toComparableGlobal global ++ "|" ++ String.fromInt argCount
+
+
+{-| Intern a `p|` member AND record its `SourcePap` origin.
+
+Deliberately NOT `insertMemberProvisional`: LSS_019 grounding rewrites members
+found in `provisionalStandalone`, and a PAP element must keep the identity its
+injection gave it (`p|<g>|<supplied>` — one arrow deeper is a DIFFERENT PAP).
+The source registration exists only so the graph can NAME the global and the
+supplied count; `memberClassOf` keeps the member in the declining class.
+-}
+papMemberIdFor : TOpt.Global -> Int -> Step Int
+papMemberIdFor global argCount s0 =
+    case memberIdFor (papMemberKey global argCount) s0 of
+        Err e ->
+            Err e
+
+        Ok ( mid, s1 ) ->
+            if CoreDict.member mid s1.lssMemberTable.sources then
+                Ok ( mid, s1 )
+
+            else
+                let
+                    t =
+                        s1.lssMemberTable
+                in
+                Ok ( mid, { s1 | lssMemberTable = { t | sources = CoreDict.insert mid (SourcePap global argCount) t.sources } } )
 
 
 {-| E9: intern a STANDALONE-GLOBAL member ("g|" or "c|" key — named

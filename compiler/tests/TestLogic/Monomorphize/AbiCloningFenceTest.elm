@@ -1,6 +1,6 @@
 module TestLogic.Monomorphize.AbiCloningFenceTest exposing (suite)
 
-{-| LSS_024 — the AbiCloning fingerprint fence (F), unit pins
+{-| LSS\_024 — the AbiCloning fingerprint fence (F), unit pins
 (`plans/lss-layout-qualified-members.md` §5.3).
 
 The pass is driven directly on hand-built `MonoGraph`s holding two closure
@@ -179,13 +179,16 @@ statsOf =
     statsWithFence True
 
 
-{-| The pass with the LSS_024 fence toggled — `True` in every fence pin;
+{-| The pass with the LSS\_024 fence toggled — `True` in every fence pin;
 `False` documents the preserved flag-off (HEAD) behavior.
 -}
 statsWithFence : Bool -> List Mono.MonoExpr -> AbiCloning.AbiCloningStats
 statsWithFence fence exprs =
     Tuple.second
-        (AbiCloning.abiCloningPass fence False False
+        (AbiCloning.abiCloningPass fence
+            False
+            False
+            True
             (Mono.MonoGraph
                 { nodes =
                     Array.fromList
@@ -211,7 +214,7 @@ statsWithFence fence exprs =
                 , flagsDecoder = Nothing
                 , lssMemberOrigins = Dict.empty
                 , lssMemberKinds = Dict.empty
-            , lssBlockedMembers = Dict.empty
+                , lssBlockedMembers = Dict.empty
                 }
             )
         )

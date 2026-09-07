@@ -1346,6 +1346,12 @@ standaloneVerdict origin =
         Mono.OriginGlobal _ ->
             PoisonUnresolved UnresolvedGlobal
 
+        Mono.OriginPap _ _ ->
+            -- Same verdict as OriginGlobal and for the same reason: the
+            -- template cannot tell whether the underlying global's body
+            -- reaches Debug.
+            PoisonUnresolved UnresolvedGlobal
+
 
 {-| Propagate poison along the edges to a fixed point.
 

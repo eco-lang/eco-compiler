@@ -293,9 +293,93 @@ Four for four in this arc. Treat it as the rule, not the surprise.
 
 ### 8.5 Verdict
 
-**Closed unbuilt.** 4.A refuted, 4.B (runtime guard) cannot justify a
+**Closed unbuilt.** (Weight re-measured untruncated in §9 — 0.97 %, verdict unchanged.) 4.A refuted, 4.B (runtime guard) cannot justify a
 compare-and-branch at 1,194 sites for single-digit millions, 4.C already priced
 and rejected (+5,568 `noInstance`, +3.3 % `.mlir` for +276 stamps).
 
 Successor: `plans/lss-no-instance-declines.md` — 16,224 sites, the largest
 remaining decline class, and the census above already shows where its weight is.
+
+## 9. Re-measured untruncated (2026-09-07) — verdict UNCHANGED, figure 2x
+
+§8's numbers came off a `List.take 80` on the `bmSites` report line, **ranked
+by site count**. That is the truncation defect that hid
+`System.TypeCheck.IO.andThen` (284 M, 25.94 % of dispatch) from two other
+censuses, so §8's `0.48 %` was untrustworthy on its face and had to be redone.
+
+Re-run: `eco-bm3`, built from the current source with both LSS_038/LSS_039
+flags on, `bmSites` take raised to 400,000 (untruncated) plus a new
+UNTRUNCATED TOTALS line. `cmp bin/bm3.mlir bin/bm3c-out.mlir` — **FIXED
+POINT**, so the per-`SpecId` join is valid (§8.4).
+
+### 9.1 The truncation was real but the hidden hosts are cold
+
+Untruncated: **263 `(host, specId)` keys / 1,173 sites / 43 host globals** —
+the take-80 was showing about a third of the keys. Every one of the recovered
+hosts is cold: 31 of the 43 hosts have **zero** measured generic dispatch.
+
+**`IO.andThen` is not a `bodyMismatch` host at all** — not truncated away, not
+present. Its declines are elsewhere. The three `Parse.Primitives.andThen` and
+one `Reporting.Result.andThen` keys that *are* present carry 0 dispatch.
+
+### 9.2 The corrected weight
+
+| bound | dispatch | share of 1,097,024,427 |
+|---|---|---|
+| host-level UB (§8's shape, all 43 hosts) | 69,592,343 | 6.34 % |
+| **per-spec (76 of 263 keys carry any dispatch)** | **10,619,712** | **0.97 %** |
+| per-site (the n hottest live sites per spec) | 10,439,368 | 0.95 % |
+
+The per-site line barely moves the per-spec one because in every hot
+`foldrHelper` spec the bm site count (10) already **exceeds** the number of
+live generic sites (7): *all* of those specs' generic dispatch is at
+`bodyMismatch` sites. So **0.97 % is close to exact, not merely an upper
+bound** — the first figure in this arc that is.
+
+§8's `0.48 %` was low by 2x. It was not low by 10x, as the `p|` census turned
+out to be. The host-level UB stays uninformative for the usual reason:
+`Dict.foldl` contributes 2.58 % of it with **0 %** of its weight in a
+`bodyMismatch` spec, and only 27 % of `foldrHelper`'s 3.15 % is.
+
+### 9.3 Verdict: still closed unbuilt
+
+10.6 M against §7's ~50 M bar. `structural` is still 1,173 / 1,173 with zero
+`annoOnly`, so **4.A is still refuted** by its own premise, and 4.B still has
+to buy a compare-and-branch at 1,173 sites for under 1 %.
+
+The re-measurement is worth having anyway: it is the first *tight* weight in
+this arc, and it retires the open worry that §8's closure rested on a
+truncated line.
+
+## 10. Census removed (2026-09-07)
+
+With the verdict settled twice, the `bodyMismatch` census was deleted rather
+than left behind a flag. Removed from `AbiCloning.elm`: `classifyDivergence`,
+`blindFingerprint`, `instQualGroupCensus`, `bumpBmSite`, the `Group.divergeKind`
+field, and the `instQual` fields `hist` / `divergentGroups` / `bmSites` /
+`bmKinds`; and six report lines from `Generate.elm`.
+
+`fpUnanimous` and `repFp` STAY — they are LSS_024's fingerprint fence, which is
+what *produces* the `bodyMismatch` decline. Only the classifier of an already
+made decision went. `declinedBodyMismatch` stays as a scalar counter.
+
+The reason is not cost — at ~43,000 sites the census was a rounding error
+against 9.8 B objects per self-compile. It is that a census which is *wrong*
+closes plans: this week produced two silent defects (§9, and
+`memory: census-join-and-truncation-defects`) that each reported 0.00 % where
+the truth was 284 M. Instrumentation for a question that is answered is a
+liability, not an asset.
+
+**The surviving census is now behind `lss.census`** (`ECO_MONO_LSS_CENSUS=1`,
+hash token `lssCen=`, DEFAULT-OFF) — `byHost`, `niGuard`, `shape`, `papSites`.
+Split from `lss.report` for `qCensus`'s reason (`Compiler/Eco/Config.elm`): the
+benchmark protocol mandates `ECO_MONO_LSS_REPORT=1`, so anything billed under
+`report` distorts every timed run.
+
+The line is drawn at ALLOCATION, not at "census": the scalar counters
+(`dispatchUpgraded`, `declined*`, `stamped*`) are field increments and stay
+unconditional, because they are the A/B gate numbers every benchmark reports —
+gating them would stop a timed run from stating its own result.
+
+**TRAP, and it is the §8.4 trap again:** with `lss.census` off the Dicts read
+EMPTY. A census binary must be BUILT AND RUN with the flag on.

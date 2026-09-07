@@ -1,7 +1,7 @@
 module Compiler.Eco.Config exposing
     ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig
     , default, decoder, hash, clamp
-    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, ListConfig, LssConfig, LssSettleConfig, LssStampConfig, LssStageAnchorConfig, MonoConfig, MonoEngine(..), SpecLimits, borrowReifyFromString, defaultLimits, defaultLss, monoEngineFromString
+    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, ListConfig, LssConfig, LssSettleConfig, LssStageAnchorConfig, LssStampConfig, MonoConfig, MonoEngine(..), SpecLimits, borrowReifyFromString, defaultLimits, defaultLss, monoEngineFromString
     )
 
 {-| Project-level tunable compiler settings, read from `eco-config.json`
@@ -160,7 +160,7 @@ type alias MonoConfig =
     }
 
 
-{-| MONO_030 spec watchdogs (`plans/lss-fidelity-1-watchdogs-budget-accounting.md`
+{-| MONO\_030 spec watchdogs (`plans/lss-fidelity-1-watchdogs-budget-accounting.md`
 §1): loud, clean failures replacing the silent hang/OOM the monomorphizer
 otherwise runs into on polymorphic recursion (expressible in legal Elm through
 annotated mutual cycles — see `plans/monomorphization-plan.md` §3's correction
@@ -172,6 +172,7 @@ Env overrides: `ECO_SPEC_TYPE_NODE_LIMIT` / `ECO_SPEC_BREADTH_LIMIT`.
 compile (a failed compile is never cached), so limits are freely tunable
 without invalidating artifact caches — the same class as `report`/`validate`/
 `diffDump`.
+
 -}
 type alias SpecLimits =
     { specTypeNodes : Int -- max logical MonoType nodes in one spec's demanded type
@@ -719,7 +720,7 @@ lesson: per-mechanism arms catch what combined arms pass).
     §3): post-drain settle sweep writing the PAP successor member into flex
     result slots of pap-able singleton/kN heads, strictly within declared
     arity. Sound unconditionally (type-level identity; beyond-arity results
-    belong to the body, LSS_013). DEFAULT-ON since 2026-08-31 (with
+    belong to the body, LSS\_013). DEFAULT-ON since 2026-08-31 (with
     varCtorRows: var −19.2 %, coverage +1.91 pp, ⊤ unchanged, accounting
     exact, all gates green — §4.4). Escape hatch `ECO_MONO_LSS_VAR_SUCC=0`;
     hash token `lssVS=0` rides the OFF arm.
@@ -733,11 +734,11 @@ lesson: per-mechanism arms catch what combined arms pass).
   - `varLambda` — Phase 4v2 (§8.2): post-drain enrichment of `l|`-headed
     var positions from the LAMBDA-HOME table — each qualified lambda's
     settled result type, read off the closure NODES (`ClosureInfo.lssMember`
-    + the body's type), which is the only place a lambda's result set
-    exists. Strict cells (⊤ or var blocks), all-or-nothing across members,
-    and an ARITY guard. DEFAULT-ON since 2026-09-01 (597 writes, 587 k1,
-    andThen var −328; all gates green — §8.5). Escape hatch
-    `ECO_MONO_LSS_VAR_LAMBDA=0`; hash token `lssVL=0` rides the OFF arm.
+      - the body's type), which is the only place a lambda's result set
+        exists. Strict cells (⊤ or var blocks), all-or-nothing across members,
+        and an ARITY guard. DEFAULT-ON since 2026-09-01 (597 writes, 587 k1,
+        andThen var −328; all gates green — §8.5). Escape hatch
+        `ECO_MONO_LSS_VAR_LAMBDA=0`; hash token `lssVL=0` rides the OFF arm.
 
 -}
 type alias LssSettleConfig =
@@ -749,7 +750,7 @@ type alias LssSettleConfig =
 
 {-| Stage-anchor writers (plans/lss-stage-anchor-writers.md §3): both fill
 `l|`-singleton-headed rows' var interior cells with the lambda's OWN mid
-(LSS_013), bounded by the alignment theorem r = T − s over the birth-time
+(LSS\_013), bounded by the alignment theorem r = T − s over the birth-time
 qSpine fact.
 
   - `rowFill` — W2: the post-drain settle pass over registry rows.
@@ -769,7 +770,7 @@ type alias LssStageAnchorConfig =
 
 `enabled`: a lambda instance minted while re-translating the RHS of a
 LOCAL-MULTI instance carries that instance's identity in its member id, on top
-of LSS_017's source lambda and LSS_024's enclosing-spec widened key. Local-multi
+of LSS\_017's source lambda and LSS\_024's enclosing-spec widened key. Local-multi
 instance keying is annotation-SENSITIVE (`Engine.recordMultiInstance`) while
 member qualification was not, so two instances of one let-function shared ONE
 member id — a singleton set indexing two different bodies, which AbiCloning
@@ -777,7 +778,7 @@ correctly refuses to stamp (`declinedBodyMismatch`) rather than miscompile.
 
 `maxInstances`: the hard cap. The discriminator is the instance ORDINAL, not
 its type — a type hash would put annotations back into member ids and reopen
-the specs -> members -> keys spiral LSS_018 exists to close. The ordinal keeps
+the specs -> members -> keys spiral LSS\_018 exists to close. The ordinal keeps
 that spiral bounded but not provably absent: an annotation split mints an
 instance, whose new member id can drive a further split. Beyond the cap a mint
 takes today's key (fence declines, status quo), so termination is structural.
@@ -797,11 +798,46 @@ the comparison belongs against the instance. That is why this is a comparison
 fix and not a representation change.
 
 Measured at 33.2 % of the compiler's generic dispatch (plan §13).
+
 -}
+
+
+
+-- `census` — ABICLONING PER-SITE CENSUS (`AbiCloning.StampCtx.census`): the
+-- String-keyed Dicts that attribute every consulted call site to its HOST
+-- global and its outcome — `byHost`, `niGuard`, `shape`, `papSites`. These
+-- are the join keys against the caller-attributed runtime dispatch census,
+-- and they are how every plan in the LSS decline arc was sized.
+--
+-- SPLIT FROM `report` for `qCensus`'s reason, now twice paid: the
+-- benchmark protocol MANDATES `ECO_MONO_LSS_REPORT=1`, so anything left
+-- under `report` is billed to every timed run. This one builds a String
+-- key and inserts a Dict node at ~43,000 AbiCloning sites per
+-- self-compile.
+--
+-- The SCALAR counters beside them (`dispatchUpgraded`, `declined*`,
+-- `stamped*`) are field increments with no allocation and stay
+-- unconditional — they are the A/B gate numbers every benchmark reports,
+-- so gating them would stop a timed run from stating its own result.
+--
+-- TRAP: with this off the census Dicts read EMPTY, so a census binary must
+-- be BUILT AND RUN with it on. Joining a static census against a binary
+-- compiled without it is the error recorded in
+-- plans/lss-body-mismatch-declines.md §8.4.
+--
+-- DEFAULT-OFF. Hash token `lssCen=1`; env `ECO_MONO_LSS_CENSUS`.
+--
+-- Lives HERE and not on `LssConfig` because `LssConfig` is AT the 32-slot
+-- record GC-scan cap: a 33rd top-level field lowers to
+-- `eco.construct.record field_count (33)` and the backend verifier
+-- rejects it. Every future LSS flag goes in a sub-record for this reason.
+
+
 type alias LssStampConfig =
     { enabled : Bool
     , maxInstances : Int
     , flatPeel : Bool
+    , census : Bool
     }
 
 
@@ -858,7 +894,7 @@ defaultLss =
     , flowConnect = True
     , settle = { varSucc = True, varCtorRows = True, varLambda = True }
     , stageAnchor = { rowFill = False, demandFill = False }
-    , stamp = { enabled = True, maxInstances = 8, flatPeel = True }
+    , stamp = { enabled = True, maxInstances = 8, flatPeel = True, census = False }
     }
 
 
@@ -1211,7 +1247,7 @@ monoDecoder =
         |> D.apply (D.optionalField "limits" specLimitsDecoder defaultLimits)
 
 
-{-| Decode the `mono.limits` block (MONO_030 watchdogs). Never affects `hash`.
+{-| Decode the `mono.limits` block (MONO\_030 watchdogs). Never affects `hash`.
 -}
 specLimitsDecoder : D.Decoder x SpecLimits
 specLimitsDecoder =
@@ -1292,6 +1328,7 @@ lssInstanceQualDecoder =
         |> D.apply (D.optionalField "instanceQual" D.bool defaultLss.stamp.enabled)
         |> D.apply (D.optionalField "instanceQualMaxInstances" D.int defaultLss.stamp.maxInstances)
         |> D.apply (D.optionalField "flatPeel" D.bool defaultLss.stamp.flatPeel)
+        |> D.apply (D.optionalField "census" D.bool defaultLss.stamp.census)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -1705,7 +1742,6 @@ hash cfg =
 
                       else
                         []
-
                     , if lss.refIdentity /= defaultLss.refIdentity then
                         [ "lssRI="
                             ++ (if lss.refIdentity then
@@ -1724,6 +1760,22 @@ hash cfg =
                     , if lss.qCensus /= defaultLss.qCensus then
                         [ "lssQC="
                             ++ (if lss.qCensus then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- Census collection changes no output, but it changes the
+                    -- work done, so a census build must not reuse a
+                    -- non-census cache entry (and vice versa).
+                    , if lss.stamp.census /= defaultLss.stamp.census then
+                        [ "lssCen="
+                            ++ (if lss.stamp.census then
                                     "1"
 
                                 else
@@ -1973,8 +2025,6 @@ hash cfg =
 
                       else
                         []
-
-
                     ]
                )
             -- Chunked-list token appears ONLY when enabled (the default since

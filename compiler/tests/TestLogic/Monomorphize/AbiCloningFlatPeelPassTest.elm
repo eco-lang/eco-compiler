@@ -200,6 +200,7 @@ statsWith flatPeel exprs =
         (AbiCloning.abiCloningPass True
             False
             flatPeel
+            True
             (Mono.MonoGraph
                 { nodes =
                     Array.fromList
@@ -225,7 +226,7 @@ statsWith flatPeel exprs =
                 , flagsDecoder = Nothing
                 , lssMemberOrigins = Dict.empty
                 , lssMemberKinds = Dict.empty
-            , lssBlockedMembers = Dict.empty
+                , lssBlockedMembers = Dict.empty
                 }
             )
         )

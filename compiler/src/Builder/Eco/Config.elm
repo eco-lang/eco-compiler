@@ -218,6 +218,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\qcVal -> applyLssQCensusOverride qcVal cfg4ec)
             )
         |> Task.andThen
+            (\cfg4ecc ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_CENSUS" |> Task.mapError never)
+                    |> Task.map (\cenVal -> applyLssCensusOverride cenVal cfg4ecc)
+            )
+        |> Task.andThen
             (\cfg4ed ->
                 (Utils.envLookupEnv "ECO_MONO_LSS_PAP_MEMBERS" |> Task.mapError never)
                     |> Task.map (\pmVal -> applyLssPapMembersOverride pmVal cfg4ed)
@@ -1774,7 +1779,7 @@ updateLimits f cfg =
     { cfg | mono = { mono | limits = f mono.limits } }
 
 
-{-| `ECO_SPEC_TYPE_NODE_LIMIT=<n>` / `ECO_SPEC_BREADTH_LIMIT=<n>` (MONO_030
+{-| `ECO_SPEC_TYPE_NODE_LIMIT=<n>` / `ECO_SPEC_BREADTH_LIMIT=<n>` (MONO\_030
 watchdogs): override the spec key-size / per-global breadth limits. `0`
 disables the check. Non-numeric values are ignored (dev knob). Failure-only —
 never participates in `Config.hash` (a failed compile is never cached; a
@@ -1800,7 +1805,7 @@ applySpecBreadthLimitOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_MONO_LSS_MU_TIE=1|true|yes / 0|false|no` (LSS_018): μ-tie the
+{-| `ECO_MONO_LSS_MU_TIE=1|true|yes / 0|false|no` (LSS\_018): μ-tie the
 qualification spiral's self-similar member family. Unset or unrecognized
 leaves the config/default value. Artifact-affecting when it differs from the
 default — participates in the hash via the `lssMU=` token.
@@ -1822,7 +1827,7 @@ applyLssMuTieOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_MONO_LSS_GROUND=1|true|yes / 0|false|no` (LSS_019): ground
+{-| `ECO_MONO_LSS_GROUND=1|true|yes / 0|false|no` (LSS\_019): ground
 provisional `g|`/`c|` standalone members to `g|<global>|<arrow-typeKey>` at
 zonk (plans/lss-fidelity-2-standalone-member-grounding.md). Unset or
 unrecognized leaves the config/default value. Artifact-affecting when it
@@ -1845,7 +1850,7 @@ applyLssGroundOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_MONO_LSS_SIG_FLOW=1|true|yes / 0|false|no` (LSS_020): signature
+{-| `ECO_MONO_LSS_SIG_FLOW=1|true|yes / 0|false|no` (LSS\_020): signature
 set-flow completion — the inference walk connects ground-typed intra-def
 flow to signature slots (plans/lss-fidelity-3-signature-flow-completion.md
 §B). Unset or unrecognized leaves the config/default value.
@@ -1882,6 +1887,15 @@ setStampMax n c =
 setStampFlatPeel : Bool -> Config.LssStampConfig -> Config.LssStampConfig
 setStampFlatPeel v c =
     { c | flatPeel = v }
+
+
+{-| Record UPDATE, never a literal: a literal here silently stops compiling the
+moment `LssStampConfig` gains a field, and `elm-test-rs` will NOT catch it
+because nothing under `TestLogic` imports `Builder.*`.
+-}
+setStampCensus : Bool -> Config.LssStampConfig -> Config.LssStampConfig
+setStampCensus v c =
+    { c | census = v }
 
 
 {-| `ECO_MONO_LSS_FLAT_PEEL=1|true|yes / 0|false|no` (Fix A, plan §15.1): at an
@@ -1945,7 +1959,7 @@ applyLssInstanceQualMaxOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_MONO_LSS_LAYOUT_QUAL=1|true|yes / 0|false|no` (LSS_024): layout-
+{-| `ECO_MONO_LSS_LAYOUT_QUAL=1|true|yes / 0|false|no` (LSS\_024): layout-
 qualified lambda-instance members + the AbiCloning fingerprint fence
 (plans/lss-layout-qualified-members.md). Unset or unrecognized leaves the
 config/default value. Artifact-affecting when it differs from the default —
@@ -2005,6 +2019,37 @@ applyLssQCensusOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | qCensus = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_CENSUS=1|true|yes / 0|false|no`: collect the AbiCloning
+per-site census Dicts (`byHost`, `niGuard`, `shape`, `papSites`) — the join
+keys against the caller-attributed runtime dispatch census.
+
+Split from `lss.report` for `qCensus`'s reason: the benchmark protocol mandates
+`ECO_MONO_LSS_REPORT=1`, so anything under `report` is billed to every timed
+run, and this one builds a String key plus a Dict insert at ~43,000 sites per
+self-compile. The scalar counters are unaffected and stay on.
+
+With this OFF the census Dicts read empty, so a census binary must be built and
+run with it ON — see plans/lss-body-mismatch-declines.md §8.4 for the join
+error this prevents. DEFAULT-OFF. Hash token `lssCen=`.
+
+-}
+applyLssCensusOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssCensusOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | stamp = setStampCensus True lss.stamp }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | stamp = setStampCensus False lss.stamp }) cfg
 
             else
                 cfg
@@ -2094,7 +2139,7 @@ applyLssArrowCensusOverride maybeVal cfg =
 (plans/lss-registration-self-identity.md): stamp tautological self/PAP members
 onto the leading spine of every solver demand at spec registration. The member
 ids are the same ones the reference paths mint, the depth is bounded by
-declared arity (LSS_013), and the stamp rides EVERY demand because the LSS_010
+declared arity (LSS\_013), and the stamp rides EVERY demand because the LSS\_010
 join collapses LSet-vs-LVar to ⊤ (AR-11). Artifact-affecting. DEFAULT-ON
 since 2026-08-28 (+51.66 pp analysis coverage, dispatch exactly neutral).
 Hash token `lssRG=`.
@@ -2466,7 +2511,7 @@ applyLssArrowIdOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_MONO_LSS_DEVIRT_POST=1|true|yes / 0|false|no` (E9.5 / LSS_025,
+{-| `ECO_MONO_LSS_DEVIRT_POST=1|true|yes / 0|false|no` (E9.5 / LSS\_025,
 plans/lss-post-settle-fn-global-devirt.md): post-settle devirt of singleton
 g|/c| noInstance sites at AbiCloning. DEFAULT-ON since 2026-08-22, so the
 override is bidirectional and `0|false|no` is the escape hatch. Participates

@@ -4636,7 +4636,7 @@ injectPapMember global funcVar argCount s0 =
                     case
                         Engine.andThen
                             (\mid -> LssInfer.injectSpineMemberId 1 mid residualVar)
-                            (Engine.memberIdFor (LssInfer.papMemberKey global argCount))
+                            (Engine.papMemberIdFor global argCount)
                             s3
                     of
                         Err e ->
@@ -4666,7 +4666,7 @@ ports) — the stamp skips the whole global and the census counts it.
 memberIdForDepth : TOpt.Global -> Int -> Maybe String -> Step (Maybe Int)
 memberIdForDepth g d groundKey s0 =
     if d > 0 then
-        Engine.map Just (Engine.memberIdFor (LssInfer.papMemberKey g d)) s0
+        Engine.map Just (Engine.papMemberIdFor g d) s0
 
     else
         case LssInfer.kernelAliasOf g s0 of

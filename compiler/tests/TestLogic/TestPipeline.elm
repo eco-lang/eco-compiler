@@ -11,10 +11,13 @@ module TestLogic.TestPipeline exposing
     , expectCoverageRun
     , expectMLIRGeneration
     , expectMonomorphization
+    , runSolverMonoWithLimits
+    , runSolverMonoWithReport
+    , runSubstMonoWithLimits
     , runToGlobalOpt
-    , runToGlobalOptLssOn
     , runToGlobalOptLssArrowIdOn
     , runToGlobalOptLssKeyedOn
+    , runToGlobalOptLssOn
     , runToGlobalOptLssOnStats
     , runToMlir
       -- Low-level helpers (for tests needing fine-grained control)
@@ -22,9 +25,6 @@ module TestLogic.TestPipeline exposing
     , runToPostSolve
     , runToTypeCheck
     , runToTypedOpt
-    , runSolverMonoWithLimits
-    , runSolverMonoWithReport
-    , runSubstMonoWithLimits
     )
 
 {-| Unified test pipeline for the Eco compiler.
@@ -65,8 +65,8 @@ import Compiler.Generate.Mode as Mode
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.LocalOpt.Typed.Module as TypedOptimize
-import Compiler.Monomorphize.Monomorphize as Monomorphize
 import Compiler.MonoSolver.Monomorphize as MonoSolver
+import Compiler.Monomorphize.Monomorphize as Monomorphize
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Result as RResult
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
@@ -413,7 +413,7 @@ runToGlobalOptLssOn =
 
 
 {-| `runToGlobalOptLssOn` with **Phase 2a arrow identity ON**
-(`plans/lss-unknown-elimination.md` §4). Exists so LSS_002 totality — the best
+(`plans/lss-unknown-elimination.md` §4). Exists so LSS\_002 totality — the best
 whole-pipeline check that SLOT SHARING has not lost a member — is checked on
 the flag-on path too. The flag ships default-off, so without this arm the whole
 arrow-memo code path would be untested by the unit suite.
@@ -483,7 +483,7 @@ runToGlobalOptLssKeyedWith arrowIdentity keyedGlobals srcModule =
                         }
 
 
-{-| MONO_030 (watchdog tests): run the SOLVER monomorphizer with explicit
+{-| MONO\_030 (watchdog tests): run the SOLVER monomorphizer with explicit
 spec limits. The watchdog tests feed the plan §1.1 poly-rec cycle with tiny
 limits and assert the clean `LimitExceeded` failure instead of divergence.
 -}
@@ -505,7 +505,7 @@ runSolverMonoWithLimits limits lssConfig srcModule =
                 (MonoSolver.monomorphizeWithReport lssConfig limits "main" globalTypeEnv globalGraph)
 
 
-{-| LSS_020 (plan lss-fidelity-3 §B.6): `runSolverMonoWithLimits` with the
+{-| LSS\_020 (plan lss-fidelity-3 §B.6): `runSolverMonoWithLimits` with the
 LSS census forced on, returning the rendered report alongside the graph so
 tests can assert on counter lines (e.g. `bySigSize=`). Report-gated bumps
 (`widenedByCf`, `kernelFactHits`) are live under this entry point.
@@ -527,7 +527,7 @@ runSolverMonoWithReport limits lssConfig srcModule =
             MonoSolver.monomorphizeWithReport { lssConfig | report = True } limits "main" globalTypeEnv globalGraph
 
 
-{-| MONO_030 (watchdog tests): the SUBST-engine twin of
+{-| MONO\_030 (watchdog tests): the SUBST-engine twin of
 `runSolverMonoWithLimits` (drain-level per-item checks).
 -}
 runSubstMonoWithLimits : Config.SpecLimits -> Src.Module -> Result String Mono.MonoGraph
@@ -581,7 +581,7 @@ runToGlobalOptLssOnStats srcModule =
                             MonoInlineSimplify.optimize Config.default.inline monoGraph
 
                         ( _, stats ) =
-                            MonoGlobalOptimize.globalOptimizeWithStats lssOn.layoutQualMembers Config.default.mono.lss.postSettleDevirt lssOn.stamp.flatPeel Config.default.borrow simplifiedGraph
+                            MonoGlobalOptimize.globalOptimizeWithStats lssOn.layoutQualMembers Config.default.mono.lss.postSettleDevirt lssOn.stamp.flatPeel True Config.default.borrow simplifiedGraph
                     in
                     Ok stats
 
@@ -676,18 +676,19 @@ localGraphToGlobalGraph localGraph =
 
 {-| E9.2 unit-env fidelity: production dependency graphs carry real TOpt
 nodes; this mock env synthesizes annotations only, so node-less dependency
-globals become `MonoExtern` specs. Kernel-identity recognition (LSS_016 —
+globals become `MonoExtern` specs. Kernel-identity recognition (LSS\_016 —
 `(::)`-as-value resolving through `List.cons`'s eta-free kernel alias
 `cons = Elm.Kernel.List.cons`) needs the node, so synthesize exactly the
 node production builds for it: `Define (VarKernel "Elm" "List" "cons")`.
 
-LSS_022 (`plans/kernel-parametricity-license.md`) needs the same for a
+LSS\_022 (`plans/kernel-parametricity-license.md`) needs the same for a
 kernel that carries ARROWS in its type, otherwise no unit test can reach a
 licensed kernel boundary at all. `aliasedKernels` is therefore a list, not a
 singleton — but it may only ever name kernels that REALLY are eta-free
 aliases in the package source, or the mock env stops mirroring production.
 Both entries below are verified against elm/core 1.0.5 `src/List.elm`
 (`cons` :108, `map2` :439).
+
 -}
 aliasedKernels : List ( Name, Name )
 aliasedKernels =

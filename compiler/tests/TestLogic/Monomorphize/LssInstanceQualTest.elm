@@ -11,7 +11,7 @@ instance-aware: both re-translations happen inside ONE spec of the enclosing
 global, so a lambda in that RHS minted the SAME member id in both.
 
 The consumer then sees a singleton `LSet [m]` indexing two behaviourally
-different bodies. AbiCloning refuses to stamp it (LSS_024's fingerprint fence,
+different bodies. AbiCloning refuses to stamp it (LSS\_024's fingerprint fence,
 `declinedBodyMismatch`) — correctly, because stamping would be the E11
 representative hijack — and the call stays a generic dispatch.
 
@@ -273,12 +273,19 @@ runWithMax on maxInstances srcModule =
     let
         defaults =
             Config.defaultLss
+
+        stampDefaults =
+            Config.defaultLss.stamp
     in
     Pipeline.runSolverMonoWithLimits Config.defaultLimits
         { defaults
             | enabled = True
             , keyed = True
-            , stamp = { enabled = on, maxInstances = maxInstances, flatPeel = Config.defaultLss.stamp.flatPeel }
+            , stamp =
+                -- Record UPDATE, not a literal: a literal breaks the moment
+                -- `LssStampConfig` gains a field, and nothing here would say so
+                -- until a self-build.
+                { stampDefaults | enabled = on, maxInstances = maxInstances }
         }
         srcModule
 
