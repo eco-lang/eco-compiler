@@ -581,7 +581,7 @@ runToGlobalOptLssOnStats srcModule =
                             MonoInlineSimplify.optimize Config.default.inline monoGraph
 
                         ( _, stats ) =
-                            MonoGlobalOptimize.globalOptimizeWithStats lssOn.layoutQualMembers Config.default.mono.lss.postSettleDevirt lssOn.stamp.flatPeel True Config.default.borrow simplifiedGraph
+                            MonoGlobalOptimize.globalOptimizeWithStats lssOn.layoutQualMembers Config.default.mono.lss.postSettleDevirt lssOn.stamp.flatPeel True lssOn.stamp.papFast Config.default.borrow simplifiedGraph
                     in
                     Ok stats
 

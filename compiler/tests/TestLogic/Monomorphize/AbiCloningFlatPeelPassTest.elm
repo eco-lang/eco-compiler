@@ -201,6 +201,7 @@ statsWith flatPeel exprs =
             False
             flatPeel
             True
+            False
             (Mono.MonoGraph
                 { nodes =
                     Array.fromList

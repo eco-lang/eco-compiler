@@ -189,6 +189,7 @@ statsWithFence fence exprs =
             False
             False
             True
+            False
             (Mono.MonoGraph
                 { nodes =
                     Array.fromList

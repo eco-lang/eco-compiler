@@ -102,6 +102,7 @@ import Dict exposing (Dict)
 type alias AbiCloningStats =
     { dispatchUpgraded : Int
     , stampedPapPrefix : Int
+    , stampedPapGlobal : Int -- LSS_040: E2-shaped FAST stamps at `p|` (PAP-of-global) members under lss.stamp.papFast
     , stampedStaged : Int
 
     -- ^ E2.7 (LSS_014): over-applying sites whose first stage matched an
@@ -162,6 +163,7 @@ emptyStats : AbiCloningStats
 emptyStats =
     { dispatchUpgraded = 0
     , stampedPapPrefix = 0
+    , stampedPapGlobal = 0
     , stampedStaged = 0
     , declinedBlocked = 0
     , declinedNoInstance = 0
@@ -738,6 +740,11 @@ type alias StampCtx =
     -- output — only what the report can say afterwards. The scalar counters
     -- are unaffected and always collected.
     , census : Bool
+
+    -- LSS_040 (`lss.stamp.papFast`): resolve `p|` PAP-of-global members to a
+    -- FAST stamp on the noInstance path. Rides E9.5's indices (`origins`,
+    -- `specsByGlobal` are populated only under `postSettle`).
+    , papFast : Bool
     }
 
 
@@ -766,8 +773,8 @@ congruence that could re-admit the sibling-id pair is the plan's parked
 v2, never to be improvised in).
 
 -}
-abiCloningPass : Bool -> Bool -> Bool -> Bool -> Mono.MonoGraph -> ( Mono.MonoGraph, AbiCloningStats )
-abiCloningPass fpFence postSettle flatPeel census ((Mono.MonoGraph record) as graph) =
+abiCloningPass : Bool -> Bool -> Bool -> Bool -> Bool -> Mono.MonoGraph -> ( Mono.MonoGraph, AbiCloningStats )
+abiCloningPass fpFence postSettle flatPeel census papFast ((Mono.MonoGraph record) as graph) =
     let
         -- LSS_018: μ-tied members are force-blocked — their instances span
         -- DIFFERENT demands of one recursive family (behaviorally divergent;
@@ -867,6 +874,7 @@ abiCloningPass fpFence postSettle flatPeel census ((Mono.MonoGraph record) as gr
                       , specsByGlobal = specsByGlobal
                       , flatPeel = flatPeel
                       , census = census
+                      , papFast = papFast
                       , hostGlobal = "?"
                       , hostSpecId = -1
                       , specNodes = record.nodes
@@ -1602,6 +1610,50 @@ stampCall index ctx region func args resultType callInfo =
                                 )
                             )
 
+                        PsStampPap target ->
+                            -- LSS_040 (plans/lss-pap-fast-stamp.md §3.4): the
+                            -- flowing value is a k-applied PAP of the UNIQUE
+                            -- matching spec of a global. Its filled slots are
+                            -- exactly the k bound arguments (a global has no
+                            -- captures), so the E2 emission path — the SAME
+                            -- one `StampPap` uses for PAPs of closures — loads
+                            -- them back out of the object (`captureTypes`) and
+                            -- calls the spec's bare symbol with the full row.
+                            -- The callee expression is UNTOUCHED: nothing is
+                            -- reconstructed at the site, which is exactly why
+                            -- this is sound where the DIRECT rewrite that
+                            -- `injectPapMember` forbids is not (it dropped the
+                            -- bound args — the recorded traverseTuple
+                            -- miscompile). Bare symbol: |captureTypes| - k = 0
+                            -- selects it in `Expr.generateFastDispatchCall`,
+                            -- and `fastEvaluatorSpec = Just specId` resolves it
+                            -- through `specIdToFuncName` (LSS_031).
+                            let
+                                ( kindId, ctx1 ) =
+                                    kindIdFor m ctx
+
+                                stamped =
+                                    { callInfo
+                                        | closureKind = Just (Mono.Known (Mono.ClosureKindId kindId))
+                                        , captureAbi =
+                                            Just
+                                                { captureTypes = target.captureTypes
+                                                , paramTypes = target.paramTypes
+                                                , returnType = target.returnType
+                                                }
+                                        , fastEvaluator = Just target.sentinel
+                                        , fastEvaluatorSpec = Just target.specId
+                                        , fastPapPrefix = Just target.k
+                                    }
+
+                                stats1 =
+                                    ctx1.stats
+                            in
+                            ( Mono.MonoCall region func args resultType stamped
+                            , bumpHost "stampedPapGlobal"
+                                { ctx1 | stats = { stats1 | stampedPapGlobal = stats1.stampedPapGlobal + 1 } }
+                            )
+
                         PsNotCandidate why ->
                             -- P0 census: noInstance is the single biggest
                             -- decline class (45.5 % on the self-compile), so it
@@ -2254,6 +2306,32 @@ type PostSettleOutcome
       -- with the rejection. A separate "why did it fail" function would
       -- duplicate the guard logic and drift from it.
     | PsNotCandidate String
+    | PsStampPap PapTarget -- LSS_040: a `p|` member resolved to a FAST stamp (never a direct rewrite)
+
+
+{-| LSS\_040 (plans/lss-pap-fast-stamp.md §3.2): everything the `p|` FAST stamp
+needs, computed once by `papResolve`. `captureTypes`/`paramTypes` are the
+UNIQUE matching spec's full parameter row split at `k`: the PAP object's filled
+slots are exactly the `k` bound arguments (a global has no captures), and the
+E2 emission path loads `captureTypes` out of the object and calls the spec's
+bare symbol with `[slots…, site args…]` — the spec's whole row.
+
+`sentinel` is the `fastEvaluator` the emission path requires to be non-Nothing;
+a spec has no lambda, so it is `AnonymousLambda home (negate specId - 1)` — a
+uid no mint produces (uids are >= 0). Every reader is audited in §3.6:
+`Expr.fastRefBaseName` ignores it because `fastEvaluatorSpec = Just specId`
+wins; `MapTemplate` declines on that same field; the AbiCloning fingerprint
+renders it as text (`x-N`, per-run consistent).
+
+-}
+type alias PapTarget =
+    { specId : Mono.SpecId
+    , k : Int
+    , captureTypes : List Mono.MonoType
+    , paramTypes : List Mono.MonoType
+    , returnType : Mono.MonoType
+    , sentinel : Mono.LambdaId
+    }
 
 
 postSettleTarget : Int -> Mono.MonoExpr -> Int -> StampCtx -> PostSettleOutcome
@@ -2271,13 +2349,22 @@ postSettleTarget m func argCount ctx =
                 PsNotCandidate ("g1absent" ++ Maybe.withDefault "?" (Dict.get m ctx.memberKinds))
 
             Just (Mono.OriginPap g k) ->
-                -- P0 CENSUS ONLY (plans/lss-pap-fast-stamp.md §2.2). Runs the
-                -- §3.3 guard chain decision-for-decision and records WHERE it
-                -- would land, then declines exactly as before. No behaviour
-                -- change: `papCensusKey` is prefixed `g1absentp` so the
-                -- existing counter is unmoved and the flag-off byte-identity
-                -- rail holds by construction.
-                PsNotCandidate (papCensusKey g k func argCount ctx)
+                -- LSS_040 (plans/lss-pap-fast-stamp.md §3.2). ONE guard chain
+                -- serves both the census and the stamp: `papResolve` returns
+                -- the target when every §3.3 guard passes AND the census key
+                -- either way, so what was measured is what ships. Flag-off
+                -- the key is still `g1absentp|…`, so the existing counter is
+                -- unmoved and the byte-identity rail holds by construction.
+                case papResolve g k func argCount ctx of
+                    ( Just target, _ ) ->
+                        if ctx.papFast then
+                            PsStampPap target
+
+                        else
+                            PsNotCandidate (papCensusKey g k func argCount ctx)
+
+                    ( Nothing, key ) ->
+                        PsNotCandidate key
 
             Just origin ->
                 case originTarget origin of
@@ -2345,22 +2432,36 @@ originKindName origin =
             "other"
 
 
-{-| P0 census for `p|` partial-application members
-(plans/lss-pap-fast-stamp.md §2.2). This is `resolvePapGlobal`'s guard chain —
-P1 callee shape, P2 residual peel, P3 function target, P4 shape, P5
-UNIQUENESS, P6 Char — run for its VERDICT rather than its stamp, so the
-measurement is of the mechanism that would actually ship rather than something
-adjacent to it.
+{-| LSS\_040: the `p|` guard chain (plans/lss-pap-fast-stamp.md §3.3), run ONCE
+for both its VERDICT and its census key so the two cannot drift.
 
-Key shape: `g1absentp|<verdict>|k=<k>|site=<firstStage>-><argCount>`. The
-`g1absentp` prefix keeps the existing guard totals comparable across runs.
+  - P1 callee shape: `MonoVarLocal` only (a var read is effect-and-bottom-free);
+  - P2 flat residual: `peelStages argCount calleeType` must land (LSS\_039 — the
+    residual type is curried, the call is flat);
+  - P3 function target: `specFunctionRow` is `Nothing` for a `MonoCtor` / CAF /
+    extern node, which is a layout descriptor, not callable code;
+  - P4 shape: `|specParams| == k + |fargs|`, `drop k specParams` eqLayout `fargs`,
+    `specRet` eqLayout `fret`;
+  - P5 UNIQUENESS, never minimum: `p|<g>|<k>` is layout-blind, so two specs of
+    `g` can both match — stamping either could load slot 0 with the WRONG KIND.
+    Two or more matches decline `papAmbiguous`;
+  - P6 Char: no `MChar` in `take k specParams` (LSS\_011's own gate — the k
+    prefix is loaded by the capture-load path);
+  - P7 is vacuous: a global has no captures, so LSS\_009's capture-layout
+    unanimity has nothing to disagree about — the objects differ only in the
+    VALUES in their slots, which are loaded, never assumed.
+
+Key shape: `g1absentp|<verdict>|k=<k>|site=<firstStage>-><argCount>`.
 
 -}
-papCensusKey : Mono.Global -> Int -> Mono.MonoExpr -> Int -> StampCtx -> String
-papCensusKey g k func argCount ctx =
+papResolve : Mono.Global -> Int -> Mono.MonoExpr -> Int -> StampCtx -> ( Maybe PapTarget, String )
+papResolve g k func argCount ctx =
     let
         shape firstStage =
             "|k=" ++ String.fromInt k ++ "|site=" ++ String.fromInt firstStage ++ "->" ++ String.fromInt argCount
+
+        no reason firstStage =
+            ( Nothing, "g1absentp|" ++ reason ++ shape firstStage )
     in
     case func of
         Mono.MonoVarLocal _ calleeType ->
@@ -2375,7 +2476,7 @@ papCensusKey g k func argCount ctx =
             in
             case peelStages argCount calleeType of
                 Nothing ->
-                    "g1absentp|unpeelable" ++ shape firstStage
+                    no "unpeelable" firstStage
 
                 Just ( fargs, fret ) ->
                     let
@@ -2396,7 +2497,7 @@ papCensusKey g k func argCount ctx =
                                                     && eqLayoutLists (List.drop k params) fargs
                                                     && Mono.eqLayout ret fret
                                             then
-                                                Just ( specId, params )
+                                                Just ( specId, params, ret )
 
                                             else
                                                 Nothing
@@ -2410,34 +2511,53 @@ papCensusKey g k func argCount ctx =
                             List.any (\( _, row ) -> row == Nothing) rows
                     in
                     case matches of
-                        [ ( _, params ) ] ->
+                        [ ( specId, params, ret ) ] ->
                             if List.any ((==) Mono.MChar) (List.take k params) then
-                                "g1absentp|papChar" ++ shape firstStage
+                                no "papChar" firstStage
 
                             else
-                                -- THE CONVERTIBLE SET.
-                                "g1absentp|WOULDSTAMP" ++ shape firstStage
+                                case g of
+                                    Mono.Global home _ ->
+                                        -- THE CONVERTIBLE SET.
+                                        ( Just
+                                            { specId = specId
+                                            , k = k
+                                            , captureTypes = List.take k params
+                                            , paramTypes = List.drop k params
+                                            , returnType = ret
+                                            , sentinel = Mono.AnonymousLambda home (negate specId - 1)
+                                            }
+                                        , "g1absentp|WOULDSTAMP" ++ shape firstStage
+                                        )
+
+                                    Mono.Accessor _ ->
+                                        -- An accessor takes one argument, so a
+                                        -- k >= 1 PAP of one is saturated, not a
+                                        -- PAP; defensive, expected 0.
+                                        no "papAccessor" firstStage
 
                         [] ->
                             if List.isEmpty specs then
-                                "g1absentp|papNoSpec" ++ shape firstStage
+                                no "papNoSpec" firstStage
 
                             else if nonFn then
-                                -- P3: every candidate spec is a ctor / CAF /
-                                -- extern node — not callable code.
-                                "g1absentp|papNonFn" ++ shape firstStage
+                                no "papNonFn" firstStage
 
                             else
-                                "g1absentp|papShapeMiss" ++ shape firstStage
+                                no "papShapeMiss" firstStage
 
                         _ ->
-                            -- P5: `p|` is layout-blind, so two specs of the
-                            -- same global can both match. Stamping either
-                            -- could load slot 0 with the wrong kind.
-                            "g1absentp|papAmbiguous" ++ shape firstStage
+                            no "papAmbiguous" firstStage
 
         _ ->
-            "g1absentp|papCallee-" ++ calleeShape func
+            ( Nothing, "g1absentp|papCallee-" ++ calleeShape func )
+
+
+{-| The census key alone (the second half of `papResolve`).
+-}
+papCensusKey : Mono.Global -> Int -> Mono.MonoExpr -> Int -> StampCtx -> String
+papCensusKey g k func argCount ctx =
+    Tuple.second (papResolve g k func argCount ctx)
 
 
 {-| The flat parameter row and return type of a spec, when its node is

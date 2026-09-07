@@ -223,6 +223,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\cenVal -> applyLssCensusOverride cenVal cfg4ecc)
             )
         |> Task.andThen
+            (\cfg4ecd ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_PAP_FAST" |> Task.mapError never)
+                    |> Task.map (\pfVal -> applyLssPapFastOverride pfVal cfg4ecd)
+            )
+        |> Task.andThen
             (\cfg4ed ->
                 (Utils.envLookupEnv "ECO_MONO_LSS_PAP_MEMBERS" |> Task.mapError never)
                     |> Task.map (\pmVal -> applyLssPapMembersOverride pmVal cfg4ed)
@@ -1896,6 +1901,34 @@ because nothing under `TestLogic` imports `Builder.*`.
 setStampCensus : Bool -> Config.LssStampConfig -> Config.LssStampConfig
 setStampCensus v c =
     { c | census = v }
+
+
+setStampPapFast : Bool -> Config.LssStampConfig -> Config.LssStampConfig
+setStampPapFast v c =
+    { c | papFast = v }
+
+
+{-| `ECO_MONO_LSS_PAP_FAST=1|true|yes / 0|false|no` (LSS\_040,
+plans/lss-pap-fast-stamp.md): FAST-stamp call sites whose callee is a
+`p|<global>|<k>` partial-application member, loading the k bound arguments
+out of the PAP object as LSS\_011 does for closures. Artifact-affecting; hash
+token `lssPF=`. DEFAULT-OFF.
+-}
+applyLssPapFastOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssPapFastOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | stamp = setStampPapFast True lss.stamp }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | stamp = setStampPapFast False lss.stamp }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
 
 
 {-| `ECO_MONO_LSS_FLAT_PEEL=1|true|yes / 0|false|no` (Fix A, plan §15.1): at an

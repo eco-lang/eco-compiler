@@ -245,10 +245,13 @@ the same curried-type-vs-flat-call defect LSS_039 fixed. `fargs` below is the
 peeled list, `fret` the peeled return.
 
 **P3 — a function target.** `nodes[specId]` must be `MonoDefine (MonoClosure
-info body _)` or `MonoTailFunc params body _`. **A `MonoCtor` node is not
+info body _)` or `MonoTailFunc params body _`. ~~**A `MonoCtor` node is not
 callable code** — `emitFastClosureCall @ctorSpec` would jump into a layout
-descriptor. Constructor PAPs (`Just`-style) are DECLINED in v1 as
-`papNonFn` and counted; P0 item 3 says whether they need their own arm.
+descriptor.~~ **CORRECTED 2026-09-07 (§11.1): a ctor spec with fields IS
+emitted as a real `func.func` whose body is one `eco.construct.custom`
+(`Functions.generateCtor`).** v1 still declines constructor PAPs as `papNonFn`
+only because `specFunctionRow` cannot read a row off a `MonoCtor` node; §11.1
+is the one-arm fix.
 `specParams` is `info.params` / `params`; `specRet` is `Mono.typeOf body` (the
 same derivation `insertInstance` uses).
 
@@ -604,3 +607,208 @@ between building this and closing it.
 The honest next step before §3.2 is the one-line `hostSpecId` fix and a
 re-measure, so the decision rests on a precise number rather than a bound that
 has run 6-7x hot every time it has been checked.
+
+---
+
+## 11. Follow-ups: the two residual classes (2026-09-07)
+
+With `papFast` on, 2,041 of 2,418 `p|` sites stamp. The 387 that still decline:
+
+| reason | sites | by k |
+|---|---|---|
+| `papAmbiguous` | 175 (45.2 %) | k=1: 123, k=2: 46, k=3: 2, k=4: 4 |
+| `papNonFn` | 131 (33.9 %) | k=1: 111, k=2: 16, k=3: 3, k=4: 1 |
+| `papShapeMiss` | 77 (19.9 %) | k=1: 59, k=2: 12, k=3: 3, k=4: 3 |
+| `papChar` | 4 (1.0 %) | k=1: 4 |
+
+Both of the big two are fixable, and both fixes are smaller than this plan
+first assumed. Neither is built.
+
+### 11.1 `papNonFn` — constructor PAPs are a one-arm fix
+
+**The premise in §3.3 P3 was wrong.** A constructor spec with fields is
+emitted as callable code: `Functions.generateCtor` produces
+`func.func @Rect_$_N(%arg0, %arg1) -> !eco.value` whose entire body is one
+`eco.construct.custom` and a return. It is `specFunctionRow` that cannot see
+this — a `MonoCtor` node carries no `params`/`body`, so the row lookup
+returns `Nothing` and P3 declines. The PAP object of a constructor is built by
+the same `papCreate @Ctor_$_N` + `papExtend` path as a function's, so its
+evaluator IS that function and its slots ARE the bound fields.
+
+The "special kind of call that compiles down to allocating the shape" already
+exists for the saturated DIRECT case (`Expr.elm:3646`, `generateCustomCreateHeap`
+— an inline allocation, no call). For the PAP case the fast stamp is the
+right tool unchanged: `emitFastClosureCall @Rect_$_N(slot0, w)` is exactly the
+call the object would make anyway minus the dispatch, and the E1.2/E1.3 fold
+rebuilds it as a direct LLVM call that the AlwaysInliner can fold into the
+caller — the allocation lands inline through existing machinery.
+
+**Fix:**
+
+```elm
+specFunctionRow specId ctx =
+    case Array.get specId ctx.specNodes of
+        ...
+        Just (Just (Mono.MonoCtor _ ty)) ->
+            -- the same derivation generateCtor uses
+            Just (Mono.decomposeFunctionType ty)
+```
+
+**Guard, found by reading `computeCtorLayout`:** a ctor field is unboxed only
+when `canUnbox ty && idx < 24` (`maxTypedSlots`), while the fast call passes
+every `Int`/`Float`/`Char` at `monoTypeToAbi` (always unboxed). A constructor
+with more than 24 fields would mismatch on the tail. The arm must decline
+those — or, cleaner, compute the ctor layout and require every field's ABI to
+equal `monoTypeToAbi` of its type. Nullary constructors are constants and can
+never be a PAP; enum constructors are `MonoEnum`, not `MonoCtor`, and are not
+reached.
+
+**Gate:** a ctor-PAP fixture in `PapFastStampTest.elm` with an `Int`, a `Bool`
+and a boxed field, k = 1 and k = 2, both arms identical; `papNonFn` on the
+self-compile 131 → 0 (the >24-field residue is expected to be 0). Rides
+`papFast` — it is a completion of the same mechanism, not a new one.
+
+### 11.2 `papAmbiguous` — qualify the `p|` member by the bound arguments' layout
+
+**What the mint site has in hand.** `Translate.injectPapMember global funcVar
+argCount` (and its twin in `LssInfer`, both through the shared
+`Engine.papMemberIdFor`) holds the global, `k`, and `funcVar` — the callee's
+union-find variable, from which the FULL monomorphic callee type is readable
+(`resultVarAfter` already walks that spine). So the types of the `k` bound
+arguments are available at the moment the id is minted. What is NOT
+available is a SpecId: specs are enqueued by `(global, full type)` elsewhere
+and numbered in enqueue order.
+
+**Fix v1 — LSS_024's move applied to `p|`:** extend the key with the LAYOUT
+of the bound arguments,
+
+```
+p|<global>|<k>|<shallowLayoutKey of bound arg 1>,…,<bound arg k>
+```
+
+and carry the same layouts on the origin (`OriginPap g k boundLayouts`) so
+`papResolve` adds one clause to P4: `eqLayoutLists (take k params)
+boundLayouts`. `describe 3` and `describe 1.5` then mint DIFFERENT members
+(`…|I` vs `…|F`) and each resolves to exactly one spec. This closes the
+slot-KIND hazard — reading a float's bits as an integer, or misleading the GC
+about a pointer — which is the dangerous half of the ambiguity.
+
+The key stays free of member ids and SpecIds, so it cannot reopen LSS_018's
+type-in-key spiral; `shallowLayoutKey` is annotation-blind, so the layout read
+at translate time is already final even though lambda-set annotations settle
+later.
+
+**What v1 deliberately does not fix, and must not:** two copies of the global
+whose bound-argument layouts are EQUAL — `List Int` vs `List String` in slot
+0 — stay ambiguous and stay declined. Same-layout copies are not
+interchangeable when the bound value is or contains a function: copy 1's
+inner call site may be direct-stamped for lambda A while the object holds
+lambda B. That is the E11 hijack class. Only qualifying by the copy itself
+resolves it, which needs the SpecId at mint time — v2, and only if the residue
+justifies it.
+
+**P0 for v1 (one census line, flag-on binary):** split `papAmbiguous` into
+`kindDiffers` (the matching specs' `take k params` differ in layout — v1
+converts these) and `sameLayout` (v1 cannot). That sizes v1 before it is
+built; the 175 are worth converting only if `kindDiffers` dominates.
+
+**Cost and gating:** the key change happens in Translate/LssInfer, UPSTREAM of
+AbiCloning — it alters member identity, hence set contents, hence potentially
+stamps elsewhere and LSS analysis volume (more members). It therefore needs
+its OWN flag (`lss.stamp.papLayoutKey`, hash token, default off) with the
+flag-off byte-identity rail, not a ride on `papFast`. Both mint sites must
+compute the identical key — the shared `papMemberIdFor` takes the layouts as
+an argument so neither can drift (the LSS_017 two-site lesson). Every consumer
+that parses `p|` keys by splitting on `|` and reading segment 3 as `k` keeps
+working; nothing reads past it today.
+
+---
+
+## 10. Built and measured (2026-09-07)
+
+Everything in §6 is built, under `lss.stamp.papFast` (`ECO_MONO_LSS_PAP_FAST`,
+hash token `lssPF=`), **DEFAULT-OFF** pending the flip decision below.
+`papResolve` is ONE function returning both the stamp target and the census
+key, so the guard chain that was measured in §9 is the guard chain that ships.
+
+### 10.1 Gates
+
+| gate | result |
+|---|---|
+| flag-off byte-identity | pre-papFast binary and papFast binary emit **byte-identical** `.mlir` on the same source; bootstrap fixed point |
+| unit | `AbiCloningPapFastPassTest` 7/7 (differential, P5 ambiguity, P3 non-function, P6 Char, P2 residual peel, P4 shape miss, k=2); suite 13,453 / 12 = baseline + 7 |
+| lowering (LSS_031) | flag-on self-compile lowers, **zero undefined `_fast_evaluator`** (the one `undefined` grep hit is the `UndefinedFunctionPass` timing line, present identically flag-off) |
+| runtime fixture | `PapFastStampTest`: k=1, k=2, boxed return, tuple return — all four sites stamp (`stampedPapGlobal=4`), all four values correct and **identical across arms**. R4's return-ABI question is answered by execution, and by reading: the bare spec symbol keeps its un-promoted signature (`$sret`/`$psplit` are separate workers behind a shim) and `generateTailFunc` emits the same params→return shape |
+| bootstrap, flag on | the flag-on compiler reproduces its own input: **fixed point** |
+| E2E, both arms | **1,720 / 1,720** flag-off and flag-on (1,719 + `PapFastStampTest`). The flag-on arm is proven live: the fixture's harness artifact carries a `_pap_prefix` stamp, which only the new code under the flag can produce |
+
+### 10.2 Payoff
+
+Self-compile, `stampedPapGlobal = 2,041` of 2,418 `p|` sites (84.4 % — the P0
+census said 84.1 % `WOULDSTAMP`). `declinedNoInstance` 16,236 → 14,203. `.mlir`
++0.13 % (15,501,076 → 15,521,029 bytes). Residual 387 sites, all four classes
+counted (§11).
+
+Dispatch A/B: the unstamped and stamped compilers, **same input, same flags,
+byte-identical output** (semantic equivalence), under the caller-attributed
+`eco_apply_closure_eval` uprobe:
+
+| | generic dispatch | wall (under probe) | peak RSS |
+|---|---|---|---|
+| unstamped (`eco-pf`) | 1,098,197,360 | 16:29.80 | 13.46 GB |
+| stamped (`eco-pfon`) | 933,960,160 | 15:13.56 | 13.45 GB |
+| delta | **−164,237,200 (−14.96 %)** | −7.7 % (N=1) | flat |
+
+Where it came from (name-keyed — the two binaries are different programs):
+
+| host | unstamped | stamped | delta |
+|---|---|---|---|
+| `System.TypeCheck.IO.map` | 152,199,040 | 99,907,468 | −52,291,572 |
+| `System.TypeCheck.IO.andThen` | 285,373,734 | 234,749,067 | −50,624,667 |
+| `List.any` | 19,259,305 | 3,279,488 | −15,979,817 |
+| `Maybe.map` | 13,259,522 | 182 | −13,259,340 |
+| `List.foldrHelper` | 31,993,377 | 23,749,195 | −8,244,182 |
+| `List.maybeCons` | 6,137,762 | 43,832 | −6,093,930 |
+
+No host got worse (the tail of the join is +0). The IO monad's callbacks are
+PAPs of globals — `IO.map (f x)`, `andThen (k a)` — which is why the two
+monad hosts carry 63 % of the win, and why `List.any` and `Maybe.map`, noted
+earlier as "take 1-arg callbacks so something else blocks them", were blocked
+by exactly this. By class: elm-spec rows −148.4 M, elm-lambda rows −11.5 M,
+runtime rows −4.3 M; `eco_apply_closure_eval`'s self-attributed 91.98 M is
+identical in both arms.
+
+### 10.3 The "upper bound" was not one — the take defect, fourth occurrence
+
+§9.2's per-spec bound of 111,283,652 (10.14 %) was read off the
+`pap WOULDSTAMP by host+spec top400` line — a `List.take 400` **ranked by site
+count**. The 2,041 sites fragment across far more than 400 `(host, spec)`
+keys, and the dropped tail held hot single-site specs. The realized −164 M
+exceeds the "bound" by 48 %. This is the defect that hid `IO.andThen` from
+two censuses and understated `bodyMismatch` by 2×; here it ran the other
+way. The `papSites` line is still `List.take 400` — now census-gated
+(§10.5) but NOT yet untruncated; that is a one-constant change for the next
+census pass, and the memory entry records the rule: a weight-joined report
+line must never be truncated.
+
+§8's honest expectation was 5–10 M. The measured win is ~20× that, and the
+plan proceeded "as a mechanism completion" on the user's decision against the
+weight argument. The weight argument was wrong because its census was
+wrong, not because the reasoning from a correct census would have been.
+
+### 10.4 The flip
+
+§7's three deciders: `stampedPapGlobal` 2,041 / 2,418 ✓; `papAmbiguous +
+papNonFn` = 306, not a ceiling ✓; lowered-binary dispatch −14.96 % ✓. Cost
+side: `.mlir` +0.13 %, Stage-6 lowering time unchanged to the second, RSS
+flat. The flip to DEFAULT-ON is recommended; it is the user's call, as it was
+for LSS_038/LSS_039.
+
+### 10.5 Housekeeping in the same change
+
+`lss.stamp.census` (`ECO_MONO_LSS_CENSUS`) gates every per-site census Dict —
+`byHost`, `niGuard`, `shape`, `papSites` — split from `lss.report` for the
+`qCensus` reason. The bodyMismatch census was deleted (its plan is closed
+twice, §9 of that plan). `LssConfig` is at the 32-slot GC-scan cap: both new
+flags live in `LssStampConfig`, and a 33rd top-level field fails at Stage-6
+lowering, not at typecheck.

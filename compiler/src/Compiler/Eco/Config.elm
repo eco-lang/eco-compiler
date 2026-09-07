@@ -838,6 +838,20 @@ type alias LssStampConfig =
     , maxInstances : Int
     , flatPeel : Bool
     , census : Bool
+
+    -- `papFast` — LSS_040 (plans/lss-pap-fast-stamp.md): FAST-stamp call sites
+    -- whose callee is a `p|<global>|<k>` member, a k-applied partial
+    -- application of a global. The `p|` fence (Translate.injectPapMember)
+    -- forbids a DIRECT rewrite — it drops the bound arguments, the recorded
+    -- traverseTuple miscompile. A FAST stamp keeps the heap object and loads
+    -- the bound arguments out of it exactly as LSS_011 does for PAPs of
+    -- closures; nothing is reconstructed, so nothing is dropped. Rides E9.5's
+    -- indices, so it is inert unless `postSettleDevirt` is on.
+    --
+    -- Artifact-affecting (changes which sites are stamped, hence CallInfo,
+    -- hence emitted MLIR). Hash token `lssPF=`; env `ECO_MONO_LSS_PAP_FAST`.
+    -- DEFAULT-OFF until measured (plan §7).
+    , papFast : Bool
     }
 
 
@@ -894,7 +908,7 @@ defaultLss =
     , flowConnect = True
     , settle = { varSucc = True, varCtorRows = True, varLambda = True }
     , stageAnchor = { rowFill = False, demandFill = False }
-    , stamp = { enabled = True, maxInstances = 8, flatPeel = True, census = False }
+    , stamp = { enabled = True, maxInstances = 8, flatPeel = True, census = False, papFast = False }
     }
 
 
@@ -1329,6 +1343,7 @@ lssInstanceQualDecoder =
         |> D.apply (D.optionalField "instanceQualMaxInstances" D.int defaultLss.stamp.maxInstances)
         |> D.apply (D.optionalField "flatPeel" D.bool defaultLss.stamp.flatPeel)
         |> D.apply (D.optionalField "census" D.bool defaultLss.stamp.census)
+        |> D.apply (D.optionalField "papFast" D.bool defaultLss.stamp.papFast)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -1776,6 +1791,20 @@ hash cfg =
                     , if lss.stamp.census /= defaultLss.stamp.census then
                         [ "lssCen="
                             ++ (if lss.stamp.census then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- LSS_040 p| fast stamp: artifact-affecting.
+                    , if lss.stamp.papFast /= defaultLss.stamp.papFast then
+                        [ "lssPF="
+                            ++ (if lss.stamp.papFast then
                                     "1"
 
                                 else
