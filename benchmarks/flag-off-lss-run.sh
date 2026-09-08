@@ -4,29 +4,30 @@
 #   flag-off-lss-run.sh setup       build bin/eco-std (subst reference compiler)
 #   flag-off-lss-run.sh <N>         run iteration for flag N (31..1)
 #   flag-off-lss-run.sh <N> --force run a skipped (no-op) iteration anyway
-#   flag-off-lss-run.sh all         run every effective iteration, 31 -> 1
+#   flag-off-lss-run.sh all         run every effective iteration, 34 -> 1
 #
 # Flags N..31 are off for iteration N. Records land in
 # benchmarks/flag-off-lss-loop.tsv and are rendered as a table into
-# /work/flag-off-lss-results.md after every run.
+# benchmarks/flag-off-lss-results.md after every run.
 set -uo pipefail
 
 WORK=/work
 BK=$WORK/build/compiler/build-kernel
 BOOT=$WORK/build/runtime/src/codegen/eco-boot-native
 ENTRY=$WORK/compiler/src/Terminal/Main.elm
-SEED=$BK/bin/eco-native-probe
+SEED=$BK/bin/eco-ct2                 # newest fixed-point native compiler
 STD=$BK/bin/eco-std
 RESULTS=$WORK/benchmarks/flag-off-lss-loop.tsv
-TABLE=$WORK/flag-off-lss-results.md
+TABLE=$WORK/benchmarks/flag-off-lss-results.md
 
 # Iterations that cannot change the configuration, so they are SKIPPED:
 #   30 23 15 14 7  booleans already default-off in defaultLss
 #   4  2           numeric caps where 0 already IS "no limit"
-# 31 is also a no-op but is KEPT: it is the all-defaults baseline pair every
-# later iteration is read against. `--force` runs a skipped one anyway.
+# 34 is the all-defaults baseline pair every later iteration is read against
+# (34 = papFast, default ON since 2026-09-07, so unlike the old 31 it is a REAL
+# iteration; 31 is kept as well). `--force` runs a skipped one anyway.
 SKIP="30 23 15 14 7 4 2"
-EFFECTIVE="31 29 28 27 26 25 24 22 21 20 19 18 17 16 13 12 11 10 9 8 6 5 3 1"
+EFFECTIVE="35 34 33 32 31 29 28 27 26 25 24 22 21 20 19 18 17 16 13 12 11 10 9 8 6 5 3 1"
 
 # Flag N -> "VAR=value" applied when flag N and below-in-index are off.
 # Index 4 and 2 are numeric caps already at their off value (0 = unlimited);
@@ -34,6 +35,10 @@ EFFECTIVE="31 29 28 27 26 25 24 22 21 20 19 18 17 16 13 12 11 10 9 8 6 5 3 1"
 # nothing, so those iterations re-run the previous configuration.
 off_env_for() {
     case "$1" in
+        35) echo "" ;;                      # all flags ON: the <none> baseline
+        34) echo "ECO_MONO_LSS_PAP_FAST=0" ;;
+        33) echo "ECO_MONO_LSS_FLAT_PEEL=0" ;;
+        32) echo "ECO_MONO_LSS_INSTANCE_QUAL=0" ;;
         31) echo "ECO_MONO_LSS_STAGE_ANCHOR_DEMAND_FILL=0" ;;
         30) echo "ECO_MONO_LSS_STAGE_ANCHOR_ROW_FILL=0" ;;
         29) echo "ECO_MONO_LSS_FLOW_CONNECT=0" ;;
@@ -70,6 +75,9 @@ off_env_for() {
 
 flag_name_for() {
     case "$1" in
+        35) echo "<none>" ;;
+        34) echo stamp.papFast ;;           33) echo stamp.flatPeel ;;
+        32) echo instanceQual ;;
         31) echo stageAnchor.demandFill ;;  30) echo stageAnchor.rowFill ;;
         29) echo flowConnect ;;             28) echo settle.varLambda ;;
         27) echo settle.varCtorRows ;;      26) echo settle.varSucc ;;
@@ -89,10 +97,11 @@ flag_name_for() {
     esac
 }
 
-# Cumulative off-set for iteration N: flags 31 down to N.
+# Cumulative off-set for iteration N: flags 35 down to N. Iteration 35 emits
+# nothing — it is the all-flags-ON reference the whole loop is read against.
 cumulative_env() {
     local n=$1 i e
-    for (( i = 31; i >= n; i-- )); do
+    for (( i = 35; i >= n; i-- )); do
         e=$(off_env_for "$i")
         [ -n "$e" ] && printf '%s\n' "$e"
     done
@@ -144,7 +153,7 @@ record() {  # iter flagname run tag offset
     render_table
 }
 
-# Render the TSV as a markdown table in /work/flag-off-lss-results.md. One row
+# Render the TSV as a markdown table in benchmarks/flag-off-lss-results.md. One row
 # per compiler run, standard above optimized within each iteration, newest
 # iteration last. Rewritten from scratch each time so it is always consistent
 # with the TSV.
@@ -164,8 +173,9 @@ render_table() {
         echo
         echo "| Iter | Flag turned off | Run | Wall | Max RSS (MB) | Minor GC | Major GC | Promoted (MiB) |"
         echo "|-----:|-----------------|-----|-----:|-------------:|---------:|---------:|---------------:|"
-        awk -F'\t' 'NR>1 {printf "| %s | `%s` | %s | %s | %s | %s | %s | %s |\n", \
-            $1, $2, $3, $5, $6, $7, $8, $9}' "$RESULTS"
+        tail -n +2 "$RESULTS" | sort -k1,1nr -s \
+          | awk -F'\t' '{printf "| %s | `%s` | %s | %s | %s | %s | %s | %s |\n", \
+            $1, $2, $3, $5, $6, $7, $8, $9}'
         echo
         echo "## Reference build (setup)"
         echo
@@ -182,7 +192,8 @@ render_table() {
         echo
         echo "| Iter | Off-set |"
         echo "|-----:|---------|"
-        awk -F'\t' 'NR>1 && !seen[$1]++ {printf "| %s | %s |\n", $1, $10}' "$RESULTS"
+        tail -n +2 "$RESULTS" | sort -k1,1nr -s \
+          | awk -F'\t' '!seen[$1]++ {printf "| %s | %s |\n", $1, $10}'
     } > "$TABLE"
 }
 

@@ -34,9 +34,9 @@ the bootstrap fixed-point property), so a slightly stale seed is fine.
 
 ## 1. The loop
 
-Work **backwards from flag 31 to flag 1** of the LSS flag list. Once a flag is
+Work **backwards from flag 34 to flag 1** of the LSS flag list. Once a flag is
 turned off it **stays off** for every later iteration, so iteration N runs with
-flags N..31 off.
+flags N..34 off.
 
 For each flag N:
 
@@ -78,7 +78,7 @@ each.
 **Record them in tabular form in a file under `/work/`.** The runner does this
 automatically, on every recorded run:
 
-- `/work/flag-off-lss-results.md` — the table to read. One row per compiler
+- `benchmarks/flag-off-lss-results.md` — the table to read. One row per compiler
   run (standard then optimized within each iteration), plus the reference
   build's row and the cumulative off-set per iteration. Regenerated from
   scratch after every run, so it never drifts from the data.
@@ -108,6 +108,10 @@ Order = order added to the codebase. Iteration N turns off row N.
 
 | N | Flag | Off switch | Default |
 |---|------|-----------|---------|
+| 35 | *(none — all flags ON)* | *no env; the reference pair* | — |
+| 34 | `stamp.papFast` | `ECO_MONO_LSS_PAP_FAST=0` | on |
+| 33 | `stamp.flatPeel` | `ECO_MONO_LSS_FLAT_PEEL=0` | on |
+| 32 | `instanceQual` | `ECO_MONO_LSS_INSTANCE_QUAL=0` | on |
 | 31 | `stageAnchor.demandFill` | `ECO_MONO_LSS_STAGE_ANCHOR_DEMAND_FILL=0` | **off** |
 | 30 | `stageAnchor.rowFill` | `ECO_MONO_LSS_STAGE_ANCHOR_ROW_FILL=0` | **off** |
 | 29 | `flowConnect` | `ECO_MONO_LSS_FLOW_CONNECT=0` | on |
@@ -157,14 +161,25 @@ previous configuration:
 **Decision: skip them.** The runner refuses them with an explanation;
 `flag-off-lss-run.sh <N> --force` measures one anyway.
 
-**Exception: 31 is kept.** It is a no-op like the rest, but its pair is the
-all-defaults baseline that every later iteration is read against — without it
-the first recorded level is "defaults minus flowConnect" and there is no
-reference point. It is also the setup check that proves the harness works.
+**Exception: 31 is kept.** It is a no-op like the rest, but it is the setup
+check that proves the harness works. The all-defaults baseline pair is now
+iteration **34** (`stamp.papFast`, default-on since 2026-09-07), which unlike
+the old 31 is a real iteration.
 
-That leaves 24 iterations:
+**Iteration 35 is the all-flags-ON reference pair** (off-set `<none>`): the
+compiler as shipped. Every other iteration is read against it, and its
+`optimized` row is the fully-LSS-optimized compiler — the one carrying
+LSS_038/039/040 — self-compiling.
 
-    31 29 28 27 26 25 24 22 21 20 19 18 17 16 13 12 11 10 9 8 6 5 3 1
+**2026-09-07 — flags 32/33/34 added.** `instanceQual` (LSS_038),
+`stamp.flatPeel` (LSS_039) and `stamp.papFast` (LSS_040) shipped default-on
+after the first run of this experiment, so the loop now starts at 34.
+`stamp.census` is deliberately NOT a row: it is census collection, default-off,
+and the protocol requires all censuses off anyway.
+
+That leaves 28 iterations:
+
+    35 34 33 32 31 29 28 27 26 25 24 22 21 20 19 18 17 16 13 12 11 10 9 8 6 5 3 1
 
 The cost of skipping: identical repeat configurations were the experiment's
 only noise estimate, so there is no measured run-to-run variance to compare
@@ -188,7 +203,10 @@ to get a same-config repeat.
   counts by an order of magnitude, and majors are one of the recorded metrics.
 - Nothing else heavy on the machine while a run is in flight.
 - Compare only same-source arms. Same-day baselines drift; every number here
-  must come from this one source tree at HEAD (`218d1c77`).
+  must come from ONE source tree. **The 2026-09-04 run's data is archived in
+  `benchmarks/flag-off-lss-loop-2026-09-04.tsv` and is NOT comparable
+  row-by-row to the current TSV** — that tree predates LSS_038/039/040, and
+  the corpus (the compiler's own source) has grown since.
 
 ## 5. Provenance
 
