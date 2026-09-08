@@ -1241,6 +1241,34 @@ slots) are that source growth, not an analysis change. Dispatch A/B on identical
 cold, as `plans/lss-pap-fast-stamp.md` §11.1 predicted; a mechanism completion, not a win.
 No regression detected.
 
+### 2026-09-08 — Run AR: `inline.partialHof` A/B (partial inlining for hof-budget candidates)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| off | **7:47.95** (467.9 s) | 13,641,640 kB | 2,097 | 9 | 733,410,246 (21,984 MiB) | 150.70 s | 15,528,371 B |
+| on | **7:57.91** (477.9 s) | 13,682,940 kB | 2,097 | 9 | 734,192,666 (22,005 MiB) | 153.02 s | 15,528,371 B |
+
+| axis | off | on |
+|---|---|---|
+| generic dispatch (caller-attributed uprobe, separate runs) | 917,598,281 | 833,712,706 (**−9.14 %**) |
+| `System.TypeCheck.IO.andThen` / `.map` papCreate sites | 367 / 148 | 0 / 0 |
+| inlined / closuresRemaining | 65,858 / 16,464 | 66,971 / 17,472 |
+| compiler `.mlir` (the binary's own code) | 15,528,371 B | 15,770,718 B (+1.56 %) |
+
+New flag `inline.partialHof` (`ECO_INLINE_PARTIAL_HOF=1`, hash token `phof=`, DEFAULT-OFF) lifts the
+exact-call-sites-only refusal for candidates admitted via `hofThreshold`. It is the general form of a
+codebase-specific whitelist experiment: `IO.andThen` is 2-of-3 arguments at all 367 of its sites, so
+exact-only means never, and the monad's bind was the single largest generic-dispatch source
+(`/work/direct-call-decline-census.md`). Both arms emit BYTE-IDENTICAL output, and minors/majors are
+identical to the digit — the counters say allocation pressure did not move. Wall +2.1 % is FLAT by
+this file's 3 % bar and its sign is against the flag; no regression detected, and no win either. The
+−83.9 M dispatches are real and were reproduced independently by the whitelist route (−80.4 M), but
+at the wall model's 47.7 ns/dispatch that is ~4.0 s of 468 s (~0.9 %) — inside the noise, so the
+dispatch removed was cheap dispatch, plausibly offset by +1.56 % code and +1,008 residual closures.
+NOT recommended for a default flip on this evidence. `ECO_INLINE_THRESHOLD=<n>` was added alongside
+(env for the existing `inline.threshold`); at 20 it misses `andThen` entirely (cost > 20), inlines
+18,374 unrelated specs, and costs +5.04 % dispatch — the blunt sibling, kept only as a tuning knob.
+
 ---
 
 ## Summary
@@ -1294,3 +1322,5 @@ One row per run, numbers only.
 | AP-off | 467.9 | 2096 | 8 | 21898 |
 | AP-on | 465.7 | 2096 | 8 | 21912 |
 | AQ | 458.0 | 2096 | 8 | 21911 |
+| AR-off | 467.9 | 2097 | 9 | 21984 |
+| AR-on | 477.9 | 2097 | 9 | 22005 |

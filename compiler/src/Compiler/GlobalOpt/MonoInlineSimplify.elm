@@ -2300,16 +2300,35 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
                                             -- runs for candidates over the
                                             -- general threshold (the common
                                             -- case stays one int compare).
-                                            withinBudget =
+                                            -- Admitted ONLY by the hof budget:
+                                            -- over the general threshold, but
+                                            -- under `hofThreshold` with a
+                                            -- called function parameter. This
+                                            -- is the IO-monad-bind class.
+                                            hofAdmitted =
                                                 cost
-                                                    <= inlineConfig.threshold
-                                                    || (cost
-                                                            <= hofBudget
-                                                            && hasCalledFunctionParam params body
-                                                       )
+                                                    > inlineConfig.threshold
+                                                    && cost
+                                                    <= hofBudget
+                                                    && hasCalledFunctionParam params body
 
+                                            withinBudget =
+                                                cost <= inlineConfig.threshold || hofAdmitted
+
+                                            -- `partialHof` lifts the
+                                            -- exact-sites-only refusal for the
+                                            -- hof-admitted class (see the flag
+                                            -- doc in Compiler.Eco.Config). It
+                                            -- is the general form of the
+                                            -- measured whitelist win: `andThen`
+                                            -- is 2-of-3 arguments at all 367 of
+                                            -- its sites, so exact-only means
+                                            -- never.
                                             exactOnly =
-                                                cost > inlineConfig.threshold && not whitelisted
+                                                cost
+                                                    > inlineConfig.threshold
+                                                    && not whitelisted
+                                                    && not (inlineConfig.partialHof && hofAdmitted)
                                         in
                                         if blacklisted || (not withinBudget && not whitelisted) then
                                             ( accDict, specId + 1 )

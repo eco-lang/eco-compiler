@@ -353,6 +353,16 @@ applyEnvOverrides cfg =
                     |> Task.map (\armVal -> applyRaiseMinAppliedOverride armVal cfg11)
             )
         |> Task.andThen
+            (\cfgPh ->
+                (Utils.envLookupEnv "ECO_INLINE_PARTIAL_HOF" |> Task.mapError never)
+                    |> Task.map (\phVal -> applyInlinePartialHofOverride phVal cfgPh)
+            )
+        |> Task.andThen
+            (\cfgThr ->
+                (Utils.envLookupEnv "ECO_INLINE_THRESHOLD" |> Task.mapError never)
+                    |> Task.map (\thrVal -> applyInlineThresholdOverride thrVal cfgThr)
+            )
+        |> Task.andThen
             (\cfg12 ->
                 (Utils.envLookupEnv "ECO_CAF_MEMO" |> Task.mapError never)
                     |> Task.map (\cmVal -> applyCafMemoOverride cmVal cfg12)
@@ -1705,6 +1715,66 @@ applyRaiseMinAppliedOverride maybeVal cfg =
                     cfg.inline
             in
             { cfg | inline = { inline | raiseAppliedShareMin = clamp 0 100 n } }
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_INLINE_PARTIAL_HOF=1|true|yes`: let a candidate admitted via
+`inline.hofThreshold` inline at a STRICTLY-PARTIAL call site too, instead of
+only at exact (saturated) ones.
+
+This is the single gate keeping the IO monad's bind out of the inliner:
+`andThen f ma` supplies 2 of 3 arguments at all 367 of its sites, so it is
+never an exact call. Forcing it in via the whitelist measured **-8.77 %**
+generic dispatch (/work/direct-call-decline-census.md), and this is the
+general, non-codebase-specific form of that.
+
+The refusal it lifts exists because a partial rebuild's re-staged closure once
+tripped the runtime typed-apply arity assert when a caller over-applied it —
+so treat a crash or a wrong answer under this flag as that class, not as a new
+bug. Artifact-affecting; hash token `phof=`. DEFAULT-OFF.
+
+-}
+applyInlinePartialHofOverride : Maybe String -> EcoConfig -> EcoConfig
+applyInlinePartialHofOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            let
+                inline =
+                    cfg.inline
+            in
+            if List.member v [ "1", "true", "yes" ] then
+                { cfg | inline = { inline | partialHof = True } }
+
+            else if List.member v [ "0", "false", "no" ] then
+                { cfg | inline = { inline | partialHof = False } }
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_INLINE_THRESHOLD=<n>`: override `inline.threshold`, the general
+inlining cost budget (default 10).
+
+Raising it past a spec's cost flips that spec out of `exactOnly`, which
+permits PARTIAL inlining — so this is the blunt instrument whose targeted
+sibling is `ECO_INLINE_PARTIAL_HOF`. Already in the config hash as `thr=`, so
+each value is cache-disjoint without a new token. Experiment/tuning knob.
+
+-}
+applyInlineThresholdOverride : Maybe String -> EcoConfig -> EcoConfig
+applyInlineThresholdOverride maybeVal cfg =
+    case Maybe.andThen (String.toInt << String.trim) maybeVal of
+        Just n ->
+            let
+                inline =
+                    cfg.inline
+            in
+            { cfg | inline = { inline | threshold = max 0 n } }
 
         Nothing ->
             cfg

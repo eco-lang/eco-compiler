@@ -970,6 +970,20 @@ type alias InlineConfig =
     , loopify : Bool
     , arityRaise : Bool
     , raiseAppliedShareMin : Int
+
+    -- PARTIAL-HOF INLINING (2026-09-08). `exactOnly` refuses to inline a
+    -- candidate admitted via `hofThreshold` at a STRICTLY-PARTIAL call site,
+    -- because the partial rebuild's re-staged closure once tripped the runtime
+    -- typed-apply arity assert when a caller over-applied it. That refusal is
+    -- what keeps the IO monad's bind out of the inliner: `andThen f ma` is 2
+    -- of 3 arguments at all 367 of its sites, so it is never an exact call and
+    -- never inlines (/work/direct-call-decline-census.md; measured -8.77%
+    -- generic dispatch when forced via the whitelist).
+    --
+    -- ON lifts the refusal for hof-admitted candidates ONLY (whitelisted and
+    -- under-threshold candidates already inline partially). Artifact-affecting;
+    -- hash token `phof=1`; env `ECO_INLINE_PARTIAL_HOF=1`. DEFAULT-OFF.
+    , partialHof : Bool
     , report : Bool
     , kernelFactsDce : Bool -- kernel-opt-11 (a): let the dead-binding gate drop a dead kernel call whose KernelFacts row is `droppable` (cseSafe AND totality == Total, and every argument pure). DEFAULT-ON since 2026-08-12 (realizable ceiling on the whole 261-module self-compile is FOUR sites, of which 2 realize -- it ships for the enabling value and for ending the isPureExpr/CafHoist contradiction, NOT for a measured win); env kill switch ECO_KERNEL_FACTS_DCE=0; artifact-affecting (hash token "kfdce=1"). Widens ONLY MonoInlineSimplify's dead-let gate -- the H2.5/H6.1 partial-forward guards keep the legacy all-calls-impure predicate
     , kernelCostClasses : Bool -- kernel-opt-11 (b): price a kernel call from its derived KernelFacts cost class (and from whether it lowers to an inline op) instead of the flat 6-per-call the inliner uses today. DEFAULT-ON since 2026-08-12 (changes real inlining decisions -- emitted .mlir +1,341 B, letDCE 498->441 -- wall FLAT at +0.56%); env kill switch ECO_KERNEL_COST_CLASSES=0; artifact-affecting (hash token "kcc=<i>/<g>/<a>/<h>", the whole vector, so every A/B leg is cache-disjoint). Independent of kernelFactsDce ON PURPOSE -- DCE deletes work, cost classes move inliner thresholds, and a shared flag would make per-constant attribution impossible
@@ -1060,6 +1074,7 @@ default =
         -- H6.2.5 Lever 2: 0 = raise everything (pre-Lever-2 behaviour).
         -- The M3 census sweep picks any nonzero default.
         , raiseAppliedShareMin = 0
+        , partialHof = False
         , report = False
         , kernelFactsDce = True
 
@@ -1173,6 +1188,7 @@ inlineDecoder =
         |> D.apply (D.optionalField "loopify" D.bool default.inline.loopify)
         |> D.apply (D.optionalField "arityRaise" D.bool default.inline.arityRaise)
         |> D.apply (D.optionalField "raiseAppliedShareMin" D.int default.inline.raiseAppliedShareMin)
+        |> D.apply (D.optionalField "partialHof" D.bool default.inline.partialHof)
         |> D.apply (D.optionalField "report" D.bool default.inline.report)
         |> D.apply (D.optionalField "kernelFactsDce" D.bool default.inline.kernelFactsDce)
         |> D.apply (D.optionalField "kernelCostClasses" D.bool default.inline.kernelCostClasses)
@@ -1408,6 +1424,13 @@ hash cfg =
     String.join "|"
         ([ "v1"
          , "thr=" ++ String.fromInt cfg.inline.threshold
+         , "phof="
+            ++ (if cfg.inline.partialHof then
+                    "1"
+
+                else
+                    "0"
+               )
          , "wl=" ++ String.join "," cfg.inline.whitelist
          , "bl=" ++ String.join "," cfg.inline.blacklist
          , "mpf=" ++ String.fromInt cfg.inline.maxPerFunction
