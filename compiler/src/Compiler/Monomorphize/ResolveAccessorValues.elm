@@ -25,8 +25,8 @@ import Compiler.AST.Monomorphized as Mono
         , MonoExpr(..)
         , MonoType(..)
         )
+import Compiler.Elm.ModuleName as ModuleName
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 
 
 
@@ -65,7 +65,7 @@ accessorTypeNeedsDefer monoType =
 Applies data-flow analysis with context-rooted closure fallback.
 Returns ( rewrittenExpr, updatedLambdaCounter ).
 -}
-rewriteExprBody : IO.Canonical -> Int -> Maybe MonoType -> MonoExpr -> ( MonoExpr, Int )
+rewriteExprBody : ModuleName.Canonical -> Int -> Maybe MonoType -> MonoExpr -> ( MonoExpr, Int )
 rewriteExprBody home lambdaCounter maybeExpectedType expr =
     let
         ( afterDataFlow, _, finalCounter ) =
@@ -78,7 +78,7 @@ rewriteExprBody home lambdaCounter maybeExpectedType expr =
 Nodes without expression bodies (MonoCtor, MonoEnum, MonoExtern, MonoManagerLeaf)
 are returned unchanged.
 -}
-rewriteNode : IO.Canonical -> Int -> Mono.MonoNode -> ( Mono.MonoNode, Int )
+rewriteNode : ModuleName.Canonical -> Int -> Mono.MonoNode -> ( Mono.MonoNode, Int )
 rewriteNode home lambdaCounter node =
     case node of
         Mono.MonoDefine expr monoType ->
@@ -211,7 +211,7 @@ maybeAccessorSigFromExpected expectedType =
 
 {-| Build a closure fallback from a fully concrete expected type.
 -}
-buildAccessorClosure : IO.Canonical -> Int -> String -> MonoType -> MonoType -> MonoType -> ( MonoExpr, Int )
+buildAccessorClosure : ModuleName.Canonical -> Int -> String -> MonoType -> MonoType -> MonoType -> ( MonoExpr, Int )
 buildAccessorClosure home counter fieldName recordType fieldType expectedType =
     let
         lambdaId =
@@ -239,9 +239,9 @@ buildAccessorClosure home counter fieldName recordType fieldType expectedType =
 
 
 {-| Forward data-flow analysis with context-rooted closure fallback.
-Threads IO.Canonical and lambda counter for closure generation.
+Threads ModuleName.Canonical and lambda counter for closure generation.
 -}
-rewriteExpr : IO.Canonical -> Int -> Env -> Maybe MonoType -> MonoExpr -> ( MonoExpr, ValueInfo, Int )
+rewriteExpr : ModuleName.Canonical -> Int -> Env -> Maybe MonoType -> MonoExpr -> ( MonoExpr, ValueInfo, Int )
 rewriteExpr home counter env maybeExpected expr =
     case expr of
         MonoAccessorValue _ fieldName _ ->
@@ -612,7 +612,7 @@ rewriteExpr home counter env maybeExpected expr =
             ( MonoTailCall name (List.reverse newArgsRev) t, VI_Unknown, c1 )
 
 
-rewriteDecider : IO.Canonical -> Int -> Env -> Maybe MonoType -> Decider MonoChoice -> ( Decider MonoChoice, Int )
+rewriteDecider : ModuleName.Canonical -> Int -> Env -> Maybe MonoType -> Decider MonoChoice -> ( Decider MonoChoice, Int )
 rewriteDecider home counter env maybeExpected decider =
     case decider of
         Leaf choice ->
@@ -652,7 +652,7 @@ rewriteDecider home counter env maybeExpected decider =
             ( FanOut path (List.reverse newEdgesRev) fallback1, c3 )
 
 
-rewriteChoice : IO.Canonical -> Int -> Env -> Maybe MonoType -> MonoChoice -> ( MonoChoice, Int )
+rewriteChoice : ModuleName.Canonical -> Int -> Env -> Maybe MonoType -> MonoChoice -> ( MonoChoice, Int )
 rewriteChoice home counter env maybeExpected choice =
     case choice of
         Inline e ->

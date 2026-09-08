@@ -35,8 +35,9 @@ operations for unifying type variables and checking equivalence.
 
 -}
 
+import Compiler.Type.Vars as Vars exposing (Descriptor)
 import Data.IORef as IORef
-import System.TypeCheck.IO as IO exposing (Descriptor, IO)
+import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Crash exposing (crash)
 
 
@@ -47,7 +48,7 @@ import Utils.Crash exposing (crash)
 {-| Create a fresh union-find point containing the given descriptor.
 This initializes a new singleton set with weight 1.
 -}
-fresh : IO.Descriptor -> IO IO.Point
+fresh : Vars.Descriptor -> IO Vars.Point
 fresh value s =
     let
         ( point, s1 ) =
@@ -56,7 +57,7 @@ fresh value s =
     ( s1, point )
 
 
-repr : IO.Point -> IO IO.Point
+repr : Vars.Point -> IO Vars.Point
 repr point s =
     let
         ( root, s1 ) =
@@ -67,7 +68,7 @@ repr point s =
 
 {-| Get the descriptor stored in a union-find point.
 -}
-get : IO.Point -> IO Descriptor
+get : Vars.Point -> IO Descriptor
 get point s =
     let
         ( desc, s1 ) =
@@ -78,7 +79,7 @@ get point s =
 
 {-| Set the descriptor stored in a union-find point.
 -}
-set : IO.Point -> Descriptor -> IO ()
+set : Vars.Point -> Descriptor -> IO ()
 set point newDesc s =
     ( setS point newDesc s, () )
 
@@ -86,7 +87,7 @@ set point newDesc s =
 {-| Modify the descriptor stored in a union-find point using a transformation function.
 Follows links to modify the representative element's descriptor in place.
 -}
-modify : IO.Point -> (Descriptor -> Descriptor) -> IO ()
+modify : Vars.Point -> (Descriptor -> Descriptor) -> IO ()
 modify point func s =
     ( modifyS point func s, () )
 
@@ -95,7 +96,7 @@ modify point func s =
 Uses weighted union to keep the tree balanced - the lighter tree becomes a child of the heavier tree.
 If the points are already equivalent, just updates the descriptor.
 -}
-union : IO.Point -> IO.Point -> IO.Descriptor -> IO ()
+union : Vars.Point -> Vars.Point -> Vars.Descriptor -> IO ()
 union p1 p2 newDesc s =
     ( unionS p1 p2 newDesc s, () )
 
@@ -103,7 +104,7 @@ union p1 p2 newDesc s =
 {-| Check if two union-find points are in the same equivalence class.
 Returns True if they share the same representative element.
 -}
-equivalent : IO.Point -> IO.Point -> IO Bool
+equivalent : Vars.Point -> Vars.Point -> IO Bool
 equivalent p1 p2 s =
     let
         ( eq, s1 ) =
@@ -115,7 +116,7 @@ equivalent p1 p2 s =
 {-| Check if a union-find point is redundant (i.e., it is a link to another point).
 Returns True if the point has been merged into another equivalence class.
 -}
-redundant : IO.Point -> IO Bool
+redundant : Vars.Point -> IO Bool
 redundant point s =
     ( s, redundantQ s point )
 
@@ -144,25 +145,25 @@ redundant point s =
 
 {-| Allocate a fresh point. Writes (pushes a cell).
 -}
-freshS : IO.Descriptor -> IO.State -> ( IO.Point, IO.State )
+freshS : Vars.Descriptor -> IO.State -> ( Vars.Point, IO.State )
 freshS value s =
     let
         ( ref, s1 ) =
             IORef.newPointCellS 1 value s
     in
-    ( IO.Pt ref, s1 )
+    ( Vars.Pt ref, s1 )
 
 
 {-| Find the representative, compressing the path behind it (so this WRITES;
 it is not a pure query).
 -}
-reprS : IO.State -> IO.Point -> ( IO.Point, IO.State )
-reprS s ((IO.Pt ref) as point) =
+reprS : IO.State -> Vars.Point -> ( Vars.Point, IO.State )
+reprS s ((Vars.Pt ref) as point) =
     case IORef.readPointCellS s ref of
-        IO.Root _ _ ->
+        Vars.Root _ _ ->
             ( point, s )
 
-        IO.Chain ((IO.Pt ref1) as point1) ->
+        Vars.Chain ((Vars.Pt ref1) as point1) ->
             let
                 ( point2, s1 ) =
                     reprS s point1
@@ -178,18 +179,18 @@ reprS s ((IO.Pt ref) as point) =
 common case — and only falls through to `reprS` (which compresses, and so
 writes) for a chain two or more deep.
 -}
-getS : IO.State -> IO.Point -> ( Descriptor, IO.State )
-getS s ((IO.Pt ref) as point) =
+getS : IO.State -> Vars.Point -> ( Descriptor, IO.State )
+getS s ((Vars.Pt ref) as point) =
     case IORef.readPointCellS s ref of
-        IO.Root _ desc ->
+        Vars.Root _ desc ->
             ( desc, s )
 
-        IO.Chain (IO.Pt ref1) ->
+        Vars.Chain (Vars.Pt ref1) ->
             case IORef.readPointCellS s ref1 of
-                IO.Root _ desc ->
+                Vars.Root _ desc ->
                     ( desc, s )
 
-                IO.Chain _ ->
+                Vars.Chain _ ->
                     let
                         ( newPoint, s1 ) =
                             reprS s point
@@ -197,18 +198,18 @@ getS s ((IO.Pt ref) as point) =
                     getS s1 newPoint
 
 
-setS : IO.Point -> Descriptor -> IO.State -> IO.State
-setS ((IO.Pt ref) as point) newDesc s =
+setS : Vars.Point -> Descriptor -> IO.State -> IO.State
+setS ((Vars.Pt ref) as point) newDesc s =
     case IORef.readPointCellS s ref of
-        IO.Root w _ ->
-            IORef.writePointCellS ref (IO.Root w newDesc) s
+        Vars.Root w _ ->
+            IORef.writePointCellS ref (Vars.Root w newDesc) s
 
-        IO.Chain (IO.Pt ref1) ->
+        Vars.Chain (Vars.Pt ref1) ->
             case IORef.readPointCellS s ref1 of
-                IO.Root w _ ->
-                    IORef.writePointCellS ref1 (IO.Root w newDesc) s
+                Vars.Root w _ ->
+                    IORef.writePointCellS ref1 (Vars.Root w newDesc) s
 
-                IO.Chain _ ->
+                Vars.Chain _ ->
                     let
                         ( newPoint, s1 ) =
                             reprS s point
@@ -216,18 +217,18 @@ setS ((IO.Pt ref) as point) newDesc s =
                     setS newPoint newDesc s1
 
 
-modifyS : IO.Point -> (Descriptor -> Descriptor) -> IO.State -> IO.State
-modifyS ((IO.Pt ref) as point) func s =
+modifyS : Vars.Point -> (Descriptor -> Descriptor) -> IO.State -> IO.State
+modifyS ((Vars.Pt ref) as point) func s =
     case IORef.readPointCellS s ref of
-        IO.Root w desc ->
-            IORef.writePointCellS ref (IO.Root w (func desc)) s
+        Vars.Root w desc ->
+            IORef.writePointCellS ref (Vars.Root w (func desc)) s
 
-        IO.Chain (IO.Pt ref1) ->
+        Vars.Chain (Vars.Pt ref1) ->
             case IORef.readPointCellS s ref1 of
-                IO.Root w desc ->
-                    IORef.writePointCellS ref1 (IO.Root w (func desc)) s
+                Vars.Root w desc ->
+                    IORef.writePointCellS ref1 (Vars.Root w (func desc)) s
 
-                IO.Chain _ ->
+                Vars.Chain _ ->
                     let
                         ( newPoint, s1 ) =
                             reprS s point
@@ -235,23 +236,23 @@ modifyS ((IO.Pt ref) as point) func s =
                     modifyS newPoint func s1
 
 
-unionS : IO.Point -> IO.Point -> IO.Descriptor -> IO.State -> IO.State
+unionS : Vars.Point -> Vars.Point -> Vars.Descriptor -> IO.State -> IO.State
 unionS p1 p2 newDesc s =
     let
-        ( (IO.Pt ref1) as point1, s1 ) =
+        ( (Vars.Pt ref1) as point1, s1 ) =
             reprS s p1
 
-        ( (IO.Pt ref2) as point2, s2 ) =
+        ( (Vars.Pt ref2) as point2, s2 ) =
             reprS s1 p2
     in
     case ( IORef.readPointCellS s2 ref1, IORef.readPointCellS s2 ref2 ) of
-        ( IO.Root weight1 _, IO.Root weight2 _ ) ->
+        ( Vars.Root weight1 _, Vars.Root weight2 _ ) ->
             if point1 == point2 then
                 -- Descriptor-only update. The whole cell is rewritten now, so it
                 -- must carry the EXISTING weight: writing newWeight here would
                 -- double a self-union's weight and change the union-by-weight
                 -- tree shape.
-                IORef.writePointCellS ref1 (IO.Root weight1 newDesc) s2
+                IORef.writePointCellS ref1 (Vars.Root weight1 newDesc) s2
 
             else
                 let
@@ -261,19 +262,19 @@ unionS p1 p2 newDesc s =
                 in
                 if weight1 >= weight2 then
                     s2
-                        |> IORef.writePointCellS ref2 (IO.Chain point1)
-                        |> IORef.writePointCellS ref1 (IO.Root newWeight newDesc)
+                        |> IORef.writePointCellS ref2 (Vars.Chain point1)
+                        |> IORef.writePointCellS ref1 (Vars.Root newWeight newDesc)
 
                 else
                     s2
-                        |> IORef.writePointCellS ref1 (IO.Chain point2)
-                        |> IORef.writePointCellS ref2 (IO.Root newWeight newDesc)
+                        |> IORef.writePointCellS ref1 (Vars.Chain point2)
+                        |> IORef.writePointCellS ref2 (Vars.Root newWeight newDesc)
 
         _ ->
             crash "Unexpected pattern"
 
 
-equivalentS : IO.State -> IO.Point -> IO.Point -> ( Bool, IO.State )
+equivalentS : IO.State -> Vars.Point -> Vars.Point -> ( Bool, IO.State )
 equivalentS s p1 p2 =
     let
         ( v1, s1 ) =
@@ -288,11 +289,11 @@ equivalentS s p1 p2 =
 {-| A genuine query: reads one cell and changes nothing, so it takes no state
 result at all.
 -}
-redundantQ : IO.State -> IO.Point -> Bool
-redundantQ s (IO.Pt ref) =
+redundantQ : IO.State -> Vars.Point -> Bool
+redundantQ s (Vars.Pt ref) =
     case IORef.readPointCellS s ref of
-        IO.Root _ _ ->
+        Vars.Root _ _ ->
             False
 
-        IO.Chain _ ->
+        Vars.Chain _ ->
             True

@@ -38,9 +38,9 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.State as State
+import Compiler.Type.Vars as Vars
 import Dict
 import Expect
-import System.TypeCheck.IO as IO
 import Test exposing (Test)
 
 
@@ -91,7 +91,7 @@ isNumberVar n env =
 all super constraints (not just number) are exported from the solver into the
 side table, keyed by MVarId rather than derived from names.
 -}
-superOfNthVar : Int -> State.MVarEnv -> Maybe IO.SuperType
+superOfNthVar : Int -> State.MVarEnv -> Maybe Vars.SuperType
 superOfNthVar n env =
     Dict.get (Id.toComparable (nthMVarId n)) env.superVars
 
@@ -165,7 +165,7 @@ superConstraintExportTests =
                         convertForTest (varType "number")
                 in
                 Expect.equal ( superOfNthVar 0 env, isNumberVar 0 env )
-                    ( Just IO.Number, True )
+                    ( Just Vars.Number, True )
         , Test.test "comparable var records Comparable and is not a CNumber var" <|
             \_ ->
                 let
@@ -173,7 +173,7 @@ superConstraintExportTests =
                         convertForTest (varType "comparable")
                 in
                 Expect.equal ( superOfNthVar 0 env, isNumberVar 0 env )
-                    ( Just IO.Comparable, False )
+                    ( Just Vars.Comparable, False )
         , Test.test "appendable var records Appendable and is not a CNumber var" <|
             \_ ->
                 let
@@ -181,7 +181,7 @@ superConstraintExportTests =
                         convertForTest (varType "appendable")
                 in
                 Expect.equal ( superOfNthVar 0 env, isNumberVar 0 env )
-                    ( Just IO.Appendable, False )
+                    ( Just Vars.Appendable, False )
         , Test.test "compappend var records CompAppend and is not a CNumber var" <|
             \_ ->
                 let
@@ -189,7 +189,7 @@ superConstraintExportTests =
                         convertForTest (varType "compappend")
                 in
                 Expect.equal ( superOfNthVar 0 env, isNumberVar 0 env )
-                    ( Just IO.CompAppend, False )
+                    ( Just Vars.CompAppend, False )
         , Test.test "plain type variable carries no super constraint" <|
             \_ ->
                 let

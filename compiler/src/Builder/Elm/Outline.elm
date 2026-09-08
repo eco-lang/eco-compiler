@@ -71,7 +71,6 @@ import Compiler.Parse.Primitives as P
 import Data.Map as DataMap
 import Dict exposing (Dict)
 import System.IO exposing (FilePath)
-import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -394,7 +393,7 @@ isDup paths =
 {-| Recursively discovers all module file paths in the project and its dependencies.
 Returns a dictionary mapping canonical module names to their file paths.
 -}
-getAllModulePaths : FilePath -> Task Never (DataMap.Dict String TypeCheck.Canonical FilePath)
+getAllModulePaths : FilePath -> Task Never (DataMap.Dict String ModuleName.Canonical FilePath)
 getAllModulePaths root =
     read root
         |> Task.andThen
@@ -427,7 +426,7 @@ getAllModulePaths root =
             )
 
 
-getAllModulePathsHelper : Pkg.Name -> List FilePath -> Dict Pkg.Name V.Version -> Task Never (DataMap.Dict String TypeCheck.Canonical FilePath)
+getAllModulePathsHelper : Pkg.Name -> List FilePath -> Dict Pkg.Name V.Version -> Task Never (DataMap.Dict String ModuleName.Canonical FilePath)
 getAllModulePathsHelper packageName packageSrcDirs deps =
     Utils.listTraverse recursiveFindFiles packageSrcDirs
         |> Task.andThen
@@ -439,10 +438,10 @@ getAllModulePathsHelper packageName packageSrcDirs deps =
                                 |> Task.map
                                     (\dependencyMaps ->
                                         let
-                                            asMap : DataMap.Dict String TypeCheck.Canonical FilePath
+                                            asMap : DataMap.Dict String ModuleName.Canonical FilePath
                                             asMap =
                                                 List.concat files
-                                                    |> List.map (\( root, fp ) -> ( TypeCheck.Canonical packageName (moduleNameFromFilePath root fp), fp ))
+                                                    |> List.map (\( root, fp ) -> ( ModuleName.Canonical packageName (moduleNameFromFilePath root fp), fp ))
                                                     |> DataMap.fromList ModuleName.toComparableCanonical
                                         in
                                         Dict.foldr (\_ -> DataMap.union) asMap dependencyMaps

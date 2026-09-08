@@ -1,13 +1,13 @@
 module Compiler.Generate.MLIR.Context exposing
-    ( SplitParamInfo, SplitSpec(..), SretInfo, withSretPromoted, PsplitInfo, SlotPlan, withPsplitPromoted
-    , Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
-    , initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withNullConsBySpec, withConstCtorBySpec, withOracleFacts, withMapTemplates
+    ( Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
+    , initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withOracleFacts, withMapTemplates
     , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, liveEcoValueVars, resetDefinedSsaVars
     , getOrCreateTypeIdForMonoType, registerKernelCall
-    , buildSignatures, kernelFuncSignatureFromType, residualResultType
+    , buildSignatures, kernelFuncSignatureFromType
     , isTypeVar, hasKernelImplementation
     , KernelDeclInfo
     , registerKernelInstance
+    , PsplitInfo, SlotPlan, SplitParamInfo, SplitSpec(..), SretInfo, residualResultType, withConstCtorBySpec, withNullConsBySpec, withPsplitPromoted, withSretPromoted
     )
 
 {-| MLIR code generation context.
@@ -61,12 +61,12 @@ import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
 import Compiler.Eco.Config as Config
-import Compiler.GlobalOpt.KernelFacts as KernelFacts
-import Compiler.GlobalOpt.MapTemplate as MapTemplate
 import Compiler.Generate.MLIR.KernelAbi as KernelAbi
-import Compiler.GlobalOpt.Borrow.Facts as BorrowFacts
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.Generate.Mode as Mode
+import Compiler.GlobalOpt.Borrow.Facts as BorrowFacts
+import Compiler.GlobalOpt.KernelFacts as KernelFacts
+import Compiler.GlobalOpt.MapTemplate as MapTemplate
 import Dict
 import Mlir.Mlir exposing (MlirOp, MlirType)
 import Set
@@ -527,7 +527,6 @@ getOrCreateTypeIdForMonoType monoType ctx =
                             (current :: toRegister)
                             (Mono.layoutMapInsert current () queued)
                             c
-
     in
     case Mono.layoutMapGet monoType ctx.typeRegistry.typeIds of
         Just typeId ->
@@ -827,6 +826,7 @@ than it has value params — e.g. `mk : Int -> (Int -> Int)` defined as
 (`Int`), mistyping the spec as returning `Int` when it actually returns the closure
 `Int -> Int`. Drop exactly the consumed params so any residual arrows survive as a
 function-typed result. When params == args this is the ordinary leaf return type.
+
 -}
 residualResultType : Int -> Mono.MonoType -> Mono.MonoType
 residualResultType numParams monoType =

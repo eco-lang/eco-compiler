@@ -1,9 +1,16 @@
 module Compiler.GlobalOpt.Borrow.Constrain exposing
-    ( Constraints, Get, Occ, Reason(..)
-    , Gen, emptyGen
-    , Env, emptyEnv
+    ( Constraints
+    , DefAnalysis
+    , Env
+    , Gen
+    , Get
+    , Occ
+    , Reason(..)
+    , constrainClosureForSig
+    , constrainDef
     , constrainNode
-    , DefAnalysis, constrainDef, constrainClosureForSig
+    , emptyEnv
+    , emptyGen
     )
 
 {-| Borrow-inference constraint generation (design §7.5, §8). A Design-B
@@ -388,7 +395,9 @@ shapeClass rty =
 
 type alias Env =
     { vars : Dict Name RTy
-    , sigs : Mono.SpecId -> Maybe BorrowSig -- B3: interprocedural signatures (Nothing = unsolved/poison)
+    , sigs :
+        Mono.SpecId
+        -> Maybe BorrowSig -- B3: interprocedural signatures (Nothing = unsolved/poison)
     , lssFacts : Maybe LssFacts.Facts -- B3.5: LSS singleton-set routing (Nothing = no routing)
     }
 

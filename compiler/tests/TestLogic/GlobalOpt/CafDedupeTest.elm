@@ -9,11 +9,11 @@ cascade.
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.BitSet as BitSet
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.GlobalOpt.CafDedupe as CafDedupe
 import Compiler.Reporting.Annotation as A
 import Dict
 import Expect
-import System.TypeCheck.IO as IO
 import Test exposing (Test)
 
 
@@ -118,9 +118,9 @@ suite =
 -- ====== SYNTHETIC GRAPHS ======
 
 
-home : IO.Canonical
+home : ModuleName.Canonical
 home =
-    IO.Canonical ( "author", "proj" ) "M"
+    ModuleName.Canonical ( "author", "proj" ) "M"
 
 
 strTy : Mono.MonoType
@@ -234,7 +234,7 @@ distinctGraph =
 
 
 {-| Equal zeroed bodies but different define types must NOT merge
-(FORBID_OPT_003: layouts must be identical; type equality is the proxy).
+(FORBID\_OPT\_003: layouts must be identical; type equality is the proxy).
 -}
 typeSplitGraph : Mono.MonoGraph
 typeSplitGraph =

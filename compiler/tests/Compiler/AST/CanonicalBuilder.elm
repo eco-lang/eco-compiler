@@ -45,10 +45,10 @@ For Source AST builders, use Compiler.AST.SourceBuilder.
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 
 
 
@@ -72,7 +72,7 @@ makeModule name expr =
             Can.Declare def Can.SaveTheEnvironment
 
         home =
-            IO.Canonical Pkg.core "Test"
+            ModuleName.Canonical Pkg.core "Test"
     in
     Can.Module
         { name = home
@@ -92,7 +92,7 @@ makeModuleWithDecls : Can.Decls -> Can.Module
 makeModuleWithDecls decls =
     let
         home =
-            IO.Canonical Pkg.core "Test"
+            ModuleName.Canonical Pkg.core "Test"
     in
     Can.Module
         { name = home
@@ -274,7 +274,7 @@ varKernelExpr id home name =
 {-| Create a foreign variable reference (VarForeign).
 Used for references to functions from other modules with type annotations.
 -}
-varForeignExpr : Int -> IO.Canonical -> Name.Name -> Can.Annotation Name -> Can.Expr
+varForeignExpr : Int -> ModuleName.Canonical -> Name.Name -> Can.Annotation Name -> Can.Expr
 varForeignExpr id home name annotation =
     makeExpr id (Can.VarForeign home name annotation)
 
@@ -322,14 +322,14 @@ pVar id name =
 -}
 intType : Can.Type Name
 intType =
-    Can.TType (IO.Canonical Pkg.core "Basics") "Int" []
+    Can.TType (ModuleName.Canonical Pkg.core "Basics") "Int" []
 
 
 {-| List type.
 -}
 listType : Can.Type Name -> Can.Type Name
 listType elemType =
-    Can.TType (IO.Canonical Pkg.core "List") "List" [ elemType ]
+    Can.TType (ModuleName.Canonical Pkg.core "List") "List" [ elemType ]
 
 
 {-| Tuple type.
@@ -357,28 +357,28 @@ varType name =
 -}
 floatType : Can.Type Name
 floatType =
-    Can.TType (IO.Canonical Pkg.core "Basics") "Float" []
+    Can.TType (ModuleName.Canonical Pkg.core "Basics") "Float" []
 
 
 {-| Bool type.
 -}
 boolType : Can.Type Name
 boolType =
-    Can.TType (IO.Canonical Pkg.core "Basics") "Bool" []
+    Can.TType (ModuleName.Canonical Pkg.core "Basics") "Bool" []
 
 
 {-| Char type.
 -}
 charType : Can.Type Name
 charType =
-    Can.TType (IO.Canonical Pkg.core "Char") "Char" []
+    Can.TType (ModuleName.Canonical Pkg.core "Char") "Char" []
 
 
 {-| String type.
 -}
 stringType : Can.Type Name
 stringType =
-    Can.TType (IO.Canonical Pkg.core "String") "String" []
+    Can.TType (ModuleName.Canonical Pkg.core "String") "String" []
 
 
 {-| Create a multi-argument function type (curried).

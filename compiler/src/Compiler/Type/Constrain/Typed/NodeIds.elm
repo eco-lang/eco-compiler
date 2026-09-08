@@ -42,6 +42,7 @@ generator needs no explicit state threading.
 
 import Array exposing (Array)
 import Compiler.Data.Name as Name
+import Compiler.Type.Vars as Vars
 import Data.Set as EverySet
 import Dict
 import System.TypeCheck.IO as IO exposing (IO)
@@ -50,7 +51,7 @@ import System.TypeCheck.IO as IO exposing (IO)
 {-| Mapping from definition names to their forall binder → solver variable mappings.
 -}
 type alias SchemeBinderVars =
-    Dict.Dict Name.Name (Dict.Dict Name.Name IO.Variable)
+    Dict.Dict Name.Name (Dict.Dict Name.Name Vars.Variable)
 
 
 {-| Mapping from node IDs to solver variables.
@@ -60,7 +61,7 @@ and the value is the solver variable representing its type.
 
 -}
 type alias NodeVarMap =
-    Array (Maybe IO.Variable)
+    Array (Maybe Vars.Variable)
 
 
 {-| State for tracking node ID to variable mappings during constraint generation.
@@ -106,7 +107,7 @@ Negative IDs (used for placeholder nodes like synthesized patterns)
 are skipped to avoid polluting the mapping.
 
 -}
-recordNodeVar : Int -> IO.Variable -> IO ()
+recordNodeVar : Int -> Vars.Variable -> IO ()
 recordNodeVar id var =
     IO.modifyNodeIds
         (\state ->
@@ -128,7 +129,7 @@ The ID is also added to `syntheticExprIds` so tests can identify which
 expression IDs had placeholder variables that PostSolve should fill.
 
 -}
-recordSyntheticExprVar : Int -> IO.Variable -> IO ()
+recordSyntheticExprVar : Int -> Vars.Variable -> IO ()
 recordSyntheticExprVar id var =
     IO.modifyNodeIds
         (\state ->
@@ -146,7 +147,7 @@ recordSyntheticExprVar id var =
 
 {-| Record the forall binder → solver variable mapping for a definition.
 -}
-recordSchemeBinders : Name.Name -> Dict.Dict Name.Name IO.Variable -> IO ()
+recordSchemeBinders : Name.Name -> Dict.Dict Name.Name Vars.Variable -> IO ()
 recordSchemeBinders defName binders =
     IO.modifyNodeIds
         (\state ->

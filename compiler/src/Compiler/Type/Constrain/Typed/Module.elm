@@ -23,6 +23,7 @@ import Compiler.Type.Constrain.Typed.Expression as Expr
 import Compiler.Type.Constrain.Typed.NodeIds as NodeIds
 import Compiler.Type.Instantiate as Instantiate
 import Compiler.Type.Type as Type exposing (Constraint(..), Type(..), mkFlexVar, nameToRigid)
+import Compiler.Type.Vars as Vars
 import Data.Map as DMap
 import Dict
 import System.TypeCheck.IO as IO exposing (IO)
@@ -204,7 +205,7 @@ letPortWithVars name port_ makeConstraint =
 -- ====== Effect Manager Helpers with ID Tracking ======
 
 
-letCmdWithVars : IO.Canonical -> Name -> Constraint -> IO Constraint
+letCmdWithVars : ModuleName.Canonical -> Name -> Constraint -> IO Constraint
 letCmdWithVars home tipe constraint =
     mkFlexVar
         |> IO.map
@@ -226,7 +227,7 @@ letCmdWithVars home tipe constraint =
             )
 
 
-letSubWithVars : IO.Canonical -> Name -> Constraint -> IO Constraint
+letSubWithVars : ModuleName.Canonical -> Name -> Constraint -> IO Constraint
 letSubWithVars home tipe constraint =
     mkFlexVar
         |> IO.map
@@ -248,7 +249,7 @@ letSubWithVars home tipe constraint =
             )
 
 
-constrainEffectsWithIds : IO.Canonical -> A.Region -> A.Region -> A.Region -> Can.Manager -> IO Constraint
+constrainEffectsWithIds : ModuleName.Canonical -> A.Region -> A.Region -> A.Region -> Can.Manager -> IO Constraint
 constrainEffectsWithIds home r0 r1 r2 manager =
     mkFlexVar
         |> IO.andThen
@@ -350,7 +351,7 @@ constrainEffectsWithIds home r0 r1 r2 manager =
             )
 
 
-checkMapWithIds : Can.Manager -> IO.Canonical -> List IO.Variable -> Constraint -> IO Constraint
+checkMapWithIds : Can.Manager -> ModuleName.Canonical -> List Vars.Variable -> Constraint -> IO Constraint
 checkMapWithIds manager home vars effectCons =
     case manager of
         Can.Cmd cmd ->
@@ -367,7 +368,7 @@ checkMapWithIds manager home vars effectCons =
                 |> IO.map (CLet [] vars Dict.empty effectCons)
 
 
-checkMapHelperWithIds : Name -> IO.Canonical -> Name -> Constraint -> IO Constraint
+checkMapHelperWithIds : Name -> ModuleName.Canonical -> Name -> Constraint -> IO Constraint
 checkMapHelperWithIds name home tipe constraint =
     mkFlexVar
         |> IO.andThen
@@ -389,7 +390,7 @@ checkMapHelperWithIds name home tipe constraint =
             )
 
 
-effectList : IO.Canonical -> Name -> Type -> Type
+effectList : ModuleName.Canonical -> Name -> Type -> Type
 effectList home name msg =
     AppN ModuleName.list Name.list [ AppN home name [ msg ] ]
 
@@ -404,6 +405,6 @@ router msg self =
     AppN ModuleName.platform Name.router [ msg, self ]
 
 
-toMapType : IO.Canonical -> Name -> Type -> Type -> Type
+toMapType : ModuleName.Canonical -> Name -> Type -> Type -> Type
 toMapType home tipe a b =
     Type.funType (Type.funType a b) (Type.funType (AppN home tipe [ a ]) (AppN home tipe [ b ]))

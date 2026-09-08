@@ -11,8 +11,9 @@ Operations include creation, reading, writing, modification, and growing vectors
 
 import Array exposing (Array)
 import Array.Extra as Array
+import Compiler.Type.Vars as Vars exposing (Variable)
 import Data.IORef as IORef exposing (IORef)
-import System.TypeCheck.IO as IO exposing (IO, Variable)
+import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Crash exposing (crash)
 
 

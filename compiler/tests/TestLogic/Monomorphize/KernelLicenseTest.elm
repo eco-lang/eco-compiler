@@ -1,11 +1,11 @@
 module TestLogic.Monomorphize.KernelLicenseTest exposing (suite)
 
-{-| LSS_022 — the kernel parametricity license
+{-| LSS\_022 — the kernel parametricity license
 (`plans/kernel-parametricity-license.md`).
 
 A `TypeFaithful` row asserts that a kernel's set flow is exactly its Elm
 type's variable-sharing graph, and on the strength of that assertion BOTH
-consumers skip the LSS_004 poison. The failure asymmetry is brutal and
+consumers skip the LSS\_004 poison. The failure asymmetry is brutal and
 one-directional: a missing license costs precision, a wrong one licenses a
 false singleton and therefore a wrong direct-call stamp — a miscompile. So
 these tests come in two kinds, and the second kind is the important one:
@@ -33,6 +33,7 @@ the E2E fixture `test/elm/src/KernelLicenseTest.elm`.
 -}
 
 import Array
+import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
@@ -49,11 +50,10 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.AST.Canonical as Can
 import Compiler.Eco.Config as Config
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.MonoSolver.KernelSetFacts as KernelSetFacts
 import Compiler.Type.KernelIntrinsics as KernelIntrinsics
-import System.TypeCheck.IO as IO
 import Dict
 import Expect
 import Test exposing (Test)
@@ -486,12 +486,13 @@ annotationType (Can.Forall _ tipe) =
     tipe
 
 
+
 -- ====== Can.Type FIXTURES (for the pure verification tests) ======
 
 
-testHome : IO.Canonical
+testHome : ModuleName.Canonical
 testHome =
-    IO.Canonical ( "elm", "core" ) "Test"
+    ModuleName.Canonical ( "elm", "core" ) "Test"
 
 
 cVar : String -> Can.Type String
@@ -785,13 +786,14 @@ tListOf el =
 
 {-| Test 1: `consInc = List.cons inc` applies ONE of `cons`'s two params.
 Positional rows are arity-aligned, so a boundary in this shape falls back to
-LSS_004 full poison; a license has no positions to align, so unification
+LSS\_004 full poison; a license has no positions to align, so unification
 against however many args are present carries `g|inc` through anyway.
 
 `inc` is a NAMED GLOBAL in direct argument position on purpose. Members are
 injected per argument EXPRESSION (`Translate.injectArgLambdaMember` via
 `argUnifyVar`), so a global nested inside a list literal contributes nothing
 and could not pin anything.
+
 -}
 partialKernelModule : Src.Module
 partialKernelModule =

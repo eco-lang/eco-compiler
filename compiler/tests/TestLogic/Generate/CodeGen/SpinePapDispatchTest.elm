@@ -1,6 +1,6 @@
 module TestLogic.Generate.CodeGen.SpinePapDispatchTest exposing (suite)
 
-{-| LSS_013 spine injection + E4a local-multi use transport — activation pins.
+{-| LSS\_013 spine injection + E4a local-multi use transport — activation pins.
 
 Fixture (mirrors `test/elm/src/HofPapPrefixDispatchTest.elm` in the SourceIR
 DSL): a capture-carrying 2-param lambda literal flows into a recursion-
@@ -9,20 +9,20 @@ protected HOF `applyPartial` (never inlined — SCC recursion guard). Inside,
 
 The transport chain (plan §S.9) has three links, each pinned here:
 
-1. SPINE (LSS_013): the lambda's member lands on the INNER arrow of its type,
-   so the call `f 10` peels one arrow and its result — the let-binding `g` —
-   carries `LSet [m]`. Pinned by the letdef assertion (RED under head-only
-   injection).
-2. INDIRECT-CALL-RESULT transport (`Translate.indirectResultAnno`): part of
-   the same letdef assertion (the set must survive the `f 10` call boundary).
-3. E4a local-multi USE transport (`Translate.enrichLocalMultiUses`, plan
-   §9.1): `g` is a function-typed (local-multi) let, whose use sites are
-   emitted from fresh all-`LTop` instantiations; E4a overlays the instance
-   def's annos back onto them. Pinned by the use-site assertion (a call whose
-   CALLEE `MonoVarLocal` carries a singleton `LSet` head) and by the STAMP
-   assertion (`callInfo.fastPapPrefix == Just 1` — the E2 StampPap fired on
-   `g acc`/`g 1`; the pipeline output is post-AbiCloning so stamps are
-   visible). Both RED without E4a, GREEN with it.
+1.  SPINE (LSS\_013): the lambda's member lands on the INNER arrow of its type,
+    so the call `f 10` peels one arrow and its result — the let-binding `g` —
+    carries `LSet [m]`. Pinned by the letdef assertion (RED under head-only
+    injection).
+2.  INDIRECT-CALL-RESULT transport (`Translate.indirectResultAnno`): part of
+    the same letdef assertion (the set must survive the `f 10` call boundary).
+3.  E4a local-multi USE transport (`Translate.enrichLocalMultiUses`, plan
+    §9.1): `g` is a function-typed (local-multi) let, whose use sites are
+    emitted from fresh all-`LTop` instantiations; E4a overlays the instance
+    def's annos back onto them. Pinned by the use-site assertion (a call whose
+    CALLEE `MonoVarLocal` carries a singleton `LSet` head) and by the STAMP
+    assertion (`callInfo.fastPapPrefix == Just 1` — the E2 StampPap fired on
+    `g acc`/`g 1`; the pipeline output is post-AbiCloning so stamps are
+    visible). Both RED without E4a, GREEN with it.
 
 -}
 
@@ -108,8 +108,8 @@ fixtureModule =
 
 
 {-| applyPartial f n acc =
-        if n <= 0 then acc
-        else let g = f 10 in applyPartial f (n - 1) (g acc + g 1)
+if n <= 0 then acc
+else let g = f 10 in applyPartial f (n - 1) (g acc + g 1)
 -}
 applyPartialDef : TypedDef
 applyPartialDef =
@@ -134,7 +134,8 @@ applyPartialDef =
     }
 
 
-{-| testValue = let step = 7 in applyPartial (\a b -> a*100 + b*10 + step) 2 3 -}
+{-| testValue = let step = 7 in applyPartial (\\a b -> a\_100 + b\_10 + step) 2 3
+-}
 testValueDef : TypedDef
 testValueDef =
     { name = "testValue"

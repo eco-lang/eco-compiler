@@ -25,8 +25,8 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.LocalOpt.Typed.DecisionTree as DT
+import Compiler.Type.Vars as Vars
 import Prelude
-import System.TypeCheck.IO as IO
 import Utils.Crash exposing (crash)
 
 
@@ -38,7 +38,7 @@ import Utils.Crash exposing (crash)
 Takes a temporary variable name, the root variable being matched, the pattern-matched branches,
 and the result type. Returns an optimized Case expression with decision tree and inline/jump choices.
 -}
-optimize : Name.Name -> Name.Name -> List ( Can.Pattern, TOpt.Expr Name ) -> Can.Type Name -> Maybe IO.Variable -> TOpt.Expr Name
+optimize : Name.Name -> Name.Name -> List ( Can.Pattern, TOpt.Expr Name ) -> Can.Type Name -> Maybe Vars.Variable -> TOpt.Expr Name
 optimize temp root optBranches resultType tvar =
     let
         ( patterns, indexedBranches ) =

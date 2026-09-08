@@ -1,4 +1,7 @@
-module Compiler.Monomorphize.Monomorphize exposing (monomorphize, monomorphizeWithLimits)
+module Compiler.Monomorphize.Monomorphize exposing
+    ( monomorphize
+    , monomorphizeWithLimits
+    )
 
 {-| This module transforms a TypedOptimized.GlobalGraph into a Monomorphized.MonoGraph
 by specializing all polymorphic functions to their concrete type instantiations.
@@ -29,6 +32,7 @@ import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Eco.Config as Config
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
 import Compiler.Monomorphize.EntryPrep as EntryPrep
 import Compiler.Monomorphize.MonoTraverse as Traverse
@@ -40,7 +44,6 @@ import Compiler.Monomorphize.State as State exposing (WorkItem(..))
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Data.Map as DMap
 import Dict
-import System.TypeCheck.IO as IO
 import Utils.Crash
 
 
@@ -62,7 +65,7 @@ type alias MonoState =
 
 This is useful for testing when the entry point is not named "main".
 
-MONO_030: this wrapper runs with the default spec watchdogs; the Builder
+MONO\_030: this wrapper runs with the default spec watchdogs; the Builder
 calls `monomorphizeWithLimits` with the env-overridable config limits.
 
 -}
@@ -71,7 +74,7 @@ monomorphize =
     monomorphizeWithLimits Config.defaultLimits
 
 
-{-| `monomorphize` with explicit MONO_030 spec watchdogs. Enforcement is
+{-| `monomorphize` with explicit MONO\_030 spec watchdogs. Enforcement is
 drain-level (per work item — `processWorklistPure`): the guarded pathology is
 growth ACROSS items (each spec enqueueing a bigger-typed successor —
 polymorphic recursion through annotated mutual cycles is legal Elm, see
@@ -178,7 +181,7 @@ initSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
         mainMonoType =
             entryPointMonoType Dict.empty mainType
 
-        currentModule : IO.Canonical
+        currentModule : ModuleName.Canonical
         currentModule =
             case mainGlobal of
                 TOpt.Global canonical _ ->
@@ -307,9 +310,10 @@ assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal flagsDecoderSpecId =
 
 {-| Initialize the monomorphization state.
 -}
-initState : IO.Canonical -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> State.MVarEnv -> MonoState
+initState : ModuleName.Canonical -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> State.MVarEnv -> MonoState
 initState =
     State.initState
+
 
 
 -- ========== WORKLIST PROCESSING ==========
@@ -317,12 +321,13 @@ initState =
 
 {-| Process all pending specializations until the worklist is empty (pure).
 
-MONO_030 (subst arm): after each item, validate the specs CREATED during it —
+MONO\_030 (subst arm): after each item, validate the specs CREATED during it —
 fold `reverseMapping[prevNextId .. nextId)` against the breadth and key-size
 limits. Per-item granularity is sufficient (the pathology is growth across
 items) and keeps the checks out of `Specialize`'s pure tuple plumbing. The
 error text is `Registry`'s shared formatter — identical to the solver's
 `LimitExceeded` presentation.
+
 -}
 processWorklistPure : Config.SpecLimits -> MonoState -> Result String MonoState
 processWorklistPure limits state =
@@ -347,7 +352,7 @@ processWorklistPure limits state =
 
 
 {-| Validate registry entries `[from .. registry.nextId)` against the
-MONO_030 limits. `Nothing` = all fine. A limit of 0 disables its check.
+MONO\_030 limits. `Nothing` = all fine. A limit of 0 disables its check.
 -}
 checkNewSpecs : Config.SpecLimits -> Int -> Mono.SpecializationRegistry -> Maybe String
 checkNewSpecs limits from registry =

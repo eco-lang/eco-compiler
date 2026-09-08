@@ -17,7 +17,6 @@ import Compiler.AST.Source as Src
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
-import System.TypeCheck.IO as IO
 
 
 
@@ -43,8 +42,8 @@ defaults =
     ]
 
 
-import_ : IO.Canonical -> Maybe Name -> Src.Exposing -> Src.Import
-import_ (IO.Canonical _ name) maybeAlias exposing_ =
+import_ : ModuleName.Canonical -> Maybe Name -> Src.Exposing -> Src.Import
+import_ (ModuleName.Canonical _ name) maybeAlias exposing_ =
     Src.Import ( [], A.At A.zero name ) (Maybe.map (\alias_ -> ( ( [], [] ), alias_ )) maybeAlias) ( ( [], [] ), exposing_ )
 
 

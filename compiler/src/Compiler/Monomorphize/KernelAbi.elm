@@ -55,11 +55,11 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds exposing (MVarId)
 import Compiler.Data.Id as Id
 import Compiler.Data.Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Monomorphize.State exposing (MVarEnv)
 import Data.Set as EverySet exposing (EverySet)
 import Dict
 import Set exposing (Set)
-import System.TypeCheck.IO as IO
 
 
 
@@ -400,7 +400,7 @@ canTypeToMonoType_preserveVars env canType =
 
 {-| Helper for converting TType nodes with shared logic.
 -}
-convertTType : (MVarEnv -> Can.Type MVarId -> ( Mono.MonoType, MVarEnv )) -> MVarEnv -> IO.Canonical -> Name -> List (Can.Type MVarId) -> ( Mono.MonoType, MVarEnv )
+convertTType : (MVarEnv -> Can.Type MVarId -> ( Mono.MonoType, MVarEnv )) -> MVarEnv -> ModuleName.Canonical -> Name -> List (Can.Type MVarId) -> ( Mono.MonoType, MVarEnv )
 convertTType convert env canonical name args =
     let
         ( revMonoArgs, env1 ) =
@@ -420,7 +420,7 @@ convertTType convert env canonical name args =
 
         isElmCore =
             case canonical of
-                IO.Canonical ( "elm", "core" ) _ ->
+                ModuleName.Canonical ( "elm", "core" ) _ ->
                     True
 
                 _ ->

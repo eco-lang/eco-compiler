@@ -54,11 +54,12 @@ import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet exposing (BitSet)
 import Compiler.Data.Id as Id
 import Compiler.Data.Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Monomorphize.Registry as Registry
+import Compiler.Type.Vars as Vars
 import Data.Map as DataMap
 import Dict exposing (Dict)
 import Set
-import System.TypeCheck.IO as IO
 
 
 {-| Precomputed metadata about a polymorphic function's type scheme.
@@ -89,13 +90,13 @@ All MVarIds are globally unique sequential Ints from a single supplier.
 -}
 type alias MVarEnv =
     { nextId : MVarId
-    , superVars : Dict Int IO.SuperType -- MVarIds with a super constraint
+    , superVars : Dict Int Vars.SuperType -- MVarIds with a super constraint
     }
 
 
 {-| Create an MVarEnv from an initial state (produced by AssignMVarIds).
 -}
-initMVarEnv : MVarId -> Dict Int IO.SuperType -> MVarEnv
+initMVarEnv : MVarId -> Dict Int Vars.SuperType -> MVarEnv
 initMVarEnv nextId superVars =
     { nextId = nextId
     , superVars = superVars
@@ -114,7 +115,7 @@ freshMVar constraint env =
         newSuperVars =
             case constraint of
                 Mono.CNumber ->
-                    Dict.insert (Id.toComparable currentId) IO.Number env.superVars
+                    Dict.insert (Id.toComparable currentId) Vars.Number env.superVars
 
                 Mono.CEcoValue ->
                     env.superVars
@@ -130,11 +131,11 @@ freshMVar constraint env =
 -}
 isNumberVar : MVarId -> MVarEnv -> Bool
 isNumberVar mvarId env =
-    -- Direct case-match avoids allocating the `Just IO.Number` box that
-    -- `== Just IO.Number` builds on every probe — this is the highest-frequency
+    -- Direct case-match avoids allocating the `Just Vars.Number` box that
+    -- `== Just Vars.Number` builds on every probe — this is the highest-frequency
     -- side-table lookup in monomorphization (constraintOf / refreshConstraints).
     case Dict.get (Id.toComparable mvarId) env.superVars of
-        Just IO.Number ->
+        Just Vars.Number ->
             True
 
         _ ->
@@ -153,7 +154,7 @@ longer heal — still resolve to Int at the closing pass, and so key-time
 -}
 taintNumber : MVarId -> MVarEnv -> MVarEnv
 taintNumber mvarId env =
-    { env | superVars = Dict.insert (Id.toComparable mvarId) IO.Number env.superVars }
+    { env | superVars = Dict.insert (Id.toComparable mvarId) Vars.Number env.superVars }
 
 
 {-| Global accumulator fields that grow monotonically during monomorphization.
@@ -175,7 +176,7 @@ type alias SpecAccum =
 Updated by varEnv push/pop, localMulti push/pop, currentGlobal set.
 -}
 type alias SpecContext =
-    { currentModule : IO.Canonical
+    { currentModule : ModuleName.Canonical
     , toptNodes : DataMap.Dict String TOpt.Global (TOpt.Node MVarId)
     , currentGlobal : Maybe Mono.Global
     , currentFreeVars : Can.FreeVars
@@ -349,7 +350,7 @@ type alias ValueMultiState =
 
 {-| Initialize the monomorphization state.
 -}
-initState : IO.Canonical -> DataMap.Dict String TOpt.Global (TOpt.Node MVarId) -> TOpt.AnnotationsByGlobal MVarId -> TypeEnv.GlobalTypeEnv -> MVarEnv -> MonoState
+initState : ModuleName.Canonical -> DataMap.Dict String TOpt.Global (TOpt.Node MVarId) -> TOpt.AnnotationsByGlobal MVarId -> TypeEnv.GlobalTypeEnv -> MVarEnv -> MonoState
 initState currentModule toptNodes annotations globalTypeEnv mvarEnv =
     { accum =
         { worklist = []

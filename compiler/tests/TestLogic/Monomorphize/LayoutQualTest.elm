@@ -1,6 +1,6 @@
 module TestLogic.Monomorphize.LayoutQualTest exposing (suite)
 
-{-| LSS_024 — layout-qualified lambda-instance members
+{-| LSS\_024 — layout-qualified lambda-instance members
 (`plans/lss-layout-qualified-members.md` §5.1/§5.2 pins).
 
 Three groups:
@@ -122,7 +122,20 @@ purePins =
                 keys =
                     List.map (\t -> Tuple.first (Engine.layoutQualKey (Dict.fromList [ ( 7, "A(I->I)" ) ]) 42 t 7)) [ 0, 1, 2, 513 ]
             in
-            Expect.equal 4 (List.length (List.foldl (\k acc -> if List.member k acc then acc else k :: acc) [] keys))
+            Expect.equal 4
+                (List.length
+                    (List.foldl
+                        (\k acc ->
+                            if List.member k acc then
+                                acc
+
+                            else
+                                k :: acc
+                        )
+                        []
+                        keys
+                    )
+                )
     , Test.test "mixTag: composition, not overwrite — the same ordinal under different outer tags differs" <|
         \() ->
             -- plans/lss-instance-qualified-members.md §3.2: an inner
@@ -467,7 +480,7 @@ spiralValueDef =
 same-layout key split of `mid` ({g|inc} vs {g|dec} on `f`'s arrow); each
 `mid` spec mints its own copy of the inner lambda, which flows to the
 shared `applyHof`. The inner lambdas are the same source lambda at the same
-layouts, so under LSS_024 both specs intern ONE member id. (The clones are
+layouts, so under LSS\_024 both specs intern ONE member id. (The clones are
 E11-DIVERGENT — they capture different `f`s — which is the consumer-side
 fence's problem, deliberately not this mono-level test's: stamping is
 AbiCloning's, exercised in the fence unit tests.)

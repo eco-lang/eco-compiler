@@ -42,7 +42,6 @@ import Compiler.Elm.ModuleName as ModuleName
 import Data.Map
 import Dict exposing (Dict)
 import Set exposing (Set)
-import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
@@ -54,17 +53,17 @@ import Utils.Bytes.Encode as BE
 {-| Per-module type environment containing union and alias definitions.
 -}
 type alias ModuleTypeEnv =
-    { home : IO.Canonical
+    { home : ModuleName.Canonical
     , unions : Dict Name Can.Union
     , aliases : Dict Name Can.Alias
     }
 
 
 {-| Global type environment mapping canonical module names to their type environments.
-Uses `List String` as the comparable key for `IO.Canonical`.
+Uses `List String` as the comparable key for `ModuleName.Canonical`.
 -}
 type alias GlobalTypeEnv =
-    Data.Map.Dict String IO.Canonical ModuleTypeEnv
+    Data.Map.Dict String ModuleName.Canonical ModuleTypeEnv
 
 
 
@@ -89,7 +88,7 @@ a ModuleTypeEnv suitable for monomorphization lookups.
 -}
 fromInterface : ModuleName.Raw -> I.Interface -> ModuleTypeEnv
 fromInterface moduleName (I.Interface data) =
-    { home = IO.Canonical data.home moduleName
+    { home = ModuleName.Canonical data.home moduleName
     , unions = Dict.map (\_ iUnion -> I.extractUnion iUnion) data.unions
     , aliases = Dict.map (\_ iAlias -> I.extractAlias iAlias) data.aliases
     }

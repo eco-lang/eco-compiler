@@ -52,6 +52,7 @@ import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Type
 import Compiler.Type.SolverRoots as SolverRoots
+import Compiler.Type.Vars as Vars
 import Compiler.TypedCanonical.Build as TCanBuild
 import Dict
 import System.IO
@@ -316,7 +317,7 @@ typeCheckTyped :
             , nodeTypes : TCan.ExprTypes
             , nodeVars : TCan.ExprVars
             , kernelEnv : KernelTypes.KernelTypeEnv
-            , annotationVars : Dict.Dict Name TypeCheck.Variable
+            , annotationVars : Dict.Dict Name Vars.Variable
             , allSchemeRoots : SolverRoots.AllSchemeRoots
 
             -- Stamping-guard census (plans/lss-provenance-ratio-census.md
@@ -528,7 +529,6 @@ typeCheckTyped modul canonical census =
 -- Verifies pattern match exhaustiveness and detects redundant patterns.
 
 
-
 {-| Stamping-guard census (plans/lss-provenance-ratio-census.md §8.3.2).
 
 Splits the `stampwalk:` census's `none` bucket, which conflates two populations
@@ -612,7 +612,7 @@ optimize modul annotations canonical =
 -- Performs typed optimization from a TypedCanonical module.
 
 
-typedOptimizeFromTyped : Src.Module -> Dict.Dict Name.Name (Can.Annotation Name) -> TCan.ExprTypes -> TCan.ExprVars -> KernelTypes.KernelTypeEnv -> Dict.Dict Name.Name TypeCheck.Variable -> SolverRoots.AllSchemeRoots -> TCan.Module -> Result E.Error (TOpt.LocalGraph Name)
+typedOptimizeFromTyped : Src.Module -> Dict.Dict Name.Name (Can.Annotation Name) -> TCan.ExprTypes -> TCan.ExprVars -> KernelTypes.KernelTypeEnv -> Dict.Dict Name.Name Vars.Variable -> SolverRoots.AllSchemeRoots -> TCan.Module -> Result E.Error (TOpt.LocalGraph Name)
 typedOptimizeFromTyped modul annotations nodeTypes nodeVars kernelEnv annotationVars allSchemeRoots tcanModule =
     case Tuple.second (ReportingResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars allSchemeRoots tcanModule)) of
         Ok localGraph ->

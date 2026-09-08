@@ -89,6 +89,7 @@ import Compiler.Type.Constrain.Typed.Pattern as Pattern
 import Compiler.Type.Instantiate as Instantiate
 import Compiler.Type.KernelIntrinsics as KernelIntrinsics
 import Compiler.Type.Type as Type exposing (Constraint(..), Type(..))
+import Compiler.Type.Vars as Vars
 import Data.Map as DMap
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO exposing (IO)
@@ -139,7 +140,7 @@ constrainDefWithIds rtv def bodyCon =
                 |> IO.andThen
                     (\newRigidsDMap ->
                         let
-                            newRigids : Dict Name IO.Variable
+                            newRigids : Dict Name Vars.Variable
                             newRigids =
                                 Dict.fromList (DMap.toList compare newRigidsDMap)
 
@@ -244,7 +245,7 @@ recDefsHelpWithIds rtv defs bodyCon rigidInfo flexInfo =
                         |> IO.andThen
                             (\newRigidsDMap ->
                                 let
-                                    newRigids : Dict Name IO.Variable
+                                    newRigids : Dict Name Vars.Variable
                                     newRigids =
                                         Dict.fromList (DMap.toList compare newRigidsDMap)
 
@@ -565,7 +566,7 @@ type LetPayload
 
 type alias LetFrame =
     { region : A.Region
-    , exprVar : IO.Variable
+    , exprVar : Vars.Variable
     , payload : LetPayload
     , expected : E.Expected Type
     }
@@ -668,9 +669,9 @@ type alias BinopLevel =
     { region : A.Region
     , op : Name
     , opCon : Constraint
-    , leftVar : IO.Variable
-    , rightVar : IO.Variable
-    , answerVar : IO.Variable
+    , leftVar : Vars.Variable
+    , rightVar : Vars.Variable
+    , answerVar : Vars.Variable
     , answerType : Type
     , expected : E.Expected Type
     }
@@ -833,8 +834,8 @@ type alias CallLevel =
     { region : A.Region
     , funcRegion : A.Region
     , maybeName : MaybeName
-    , funcVar : IO.Variable
-    , resultVar : IO.Variable
+    , funcVar : Vars.Variable
+    , resultVar : Vars.Variable
     , funcType : Type
     , resultType : Type
     , numArgs : Int
@@ -844,7 +845,7 @@ type alias CallLevel =
 
 type CallFrame
     = CallDeferArgs CallLevel (List Can.Expr)
-    | CallLastArg CallLevel Constraint (List IO.Variable) (List Type) (List Constraint) IO.Variable Type
+    | CallLastArg CallLevel Constraint (List Vars.Variable) (List Type) (List Constraint) Vars.Variable Type
 
 
 isCallNode : Can.Expr -> Bool
@@ -857,7 +858,7 @@ isCallNode (A.At _ info) =
             False
 
 
-assembleCall : CallLevel -> Constraint -> List IO.Variable -> List Type -> List Constraint -> Constraint
+assembleCall : CallLevel -> Constraint -> List Vars.Variable -> List Type -> List Constraint -> Constraint
 assembleCall level funcCon argVars argTypes argCons =
     let
         arityType : Type
@@ -961,7 +962,7 @@ callSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
             ( s1, ( con, frames ) )
 
 
-callSpineArgsGo : RigidTypeVar -> CallLevel -> Constraint -> Index.ZeroBased -> List Can.Expr -> List IO.Variable -> List Type -> List Constraint -> IO.State -> ( IO.State, CallArgsOutcome )
+callSpineArgsGo : RigidTypeVar -> CallLevel -> Constraint -> Index.ZeroBased -> List Can.Expr -> List Vars.Variable -> List Type -> List Constraint -> IO.State -> ( IO.State, CallArgsOutcome )
 callSpineArgsGo rtv level funcCon index remaining accVars accTypes accCons s0 =
     case remaining of
         [] ->
@@ -1048,10 +1049,10 @@ constrainCallArgsWithIds :
     -> CallLevel
     -> Index.ZeroBased
     -> List Can.Expr
-    -> List IO.Variable
+    -> List Vars.Variable
     -> List Type
     -> List Constraint
-    -> IO ( List IO.Variable, List Type, List Constraint )
+    -> IO ( List Vars.Variable, List Type, List Constraint )
 constrainCallArgsWithIds rtv level index args accVars accTypes accCons =
     case args of
         [] ->
@@ -1140,68 +1141,68 @@ ifSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
                     constrainExprsWithIds rtv conditions boolExpect [] s0
 
                 ( s2, ( mkExpected, assemble ) ) =
-                        (case expected of
-                            FromAnnotation name arity _ tipe ->
-                                -- Record ID with the expected type (tipe is the type var)
-                                (case tipe of
-                                    VarN v ->
-                                        NodeIds.recordNodeVar exprInfo.id v
-                                            |> IO.map (\() -> Nothing)
+                    (case expected of
+                        FromAnnotation name arity _ tipe ->
+                            -- Record ID with the expected type (tipe is the type var)
+                            (case tipe of
+                                VarN v ->
+                                    NodeIds.recordNodeVar exprInfo.id v
+                                        |> IO.map (\() -> Nothing)
 
-                                    _ ->
-                                        -- Need to create a var for tracking, and constrain it to equal the annotation type
-                                        Type.mkFlexVar
-                                            |> IO.andThen
-                                                (\v ->
-                                                    NodeIds.recordNodeVar exprInfo.id v
-                                                        |> IO.map (\() -> Just v)
-                                                )
-                                )
-                                    |> IO.map
-                                        (\maybeFlexVar ->
-                                            ( \index -> FromAnnotation name arity (TypedIfBranch index) tipe
-                                            , \branchCons ->
-                                                case maybeFlexVar of
-                                                    Just flexVar ->
-                                                        Type.exists [ flexVar ]
+                                _ ->
+                                    -- Need to create a var for tracking, and constrain it to equal the annotation type
+                                    Type.mkFlexVar
+                                        |> IO.andThen
+                                            (\v ->
+                                                NodeIds.recordNodeVar exprInfo.id v
+                                                    |> IO.map (\() -> Just v)
+                                            )
+                            )
+                                |> IO.map
+                                    (\maybeFlexVar ->
+                                        ( \index -> FromAnnotation name arity (TypedIfBranch index) tipe
+                                        , \branchCons ->
+                                            case maybeFlexVar of
+                                                Just flexVar ->
+                                                    Type.exists [ flexVar ]
+                                                        (CAnd
+                                                            [ CAnd condCons
+                                                            , CAnd branchCons
+                                                            , CEqual region If (VarN flexVar) (NoExpectation tipe)
+                                                            ]
+                                                        )
+
+                                                Nothing ->
+                                                    CAnd (CAnd condCons :: branchCons)
+                                        )
+                                    )
+
+                        _ ->
+                            Type.mkFlexVar
+                                |> IO.andThen
+                                    (\branchVar ->
+                                        -- Record branchVar for this if expression
+                                        NodeIds.recordNodeVar exprInfo.id branchVar
+                                            |> IO.map
+                                                (\() ->
+                                                    let
+                                                        branchType : Type
+                                                        branchType =
+                                                            VarN branchVar
+                                                    in
+                                                    ( \index -> FromContext region (IfBranch index) branchType
+                                                    , \branchCons ->
+                                                        Type.exists [ branchVar ]
                                                             (CAnd
                                                                 [ CAnd condCons
                                                                 , CAnd branchCons
-                                                                , CEqual region If (VarN flexVar) (NoExpectation tipe)
+                                                                , CEqual region If branchType expected
                                                                 ]
                                                             )
-
-                                                    Nothing ->
-                                                        CAnd (CAnd condCons :: branchCons)
-                                            )
-                                        )
-
-                            _ ->
-                                Type.mkFlexVar
-                                    |> IO.andThen
-                                        (\branchVar ->
-                                            -- Record branchVar for this if expression
-                                            NodeIds.recordNodeVar exprInfo.id branchVar
-                                                |> IO.map
-                                                    (\() ->
-                                                        let
-                                                            branchType : Type
-                                                            branchType =
-                                                                VarN branchVar
-                                                        in
-                                                        ( \index -> FromContext region (IfBranch index) branchType
-                                                        , \branchCons ->
-                                                            Type.exists [ branchVar ]
-                                                                (CAnd
-                                                                    [ CAnd condCons
-                                                                    , CAnd branchCons
-                                                                    , CEqual region If branchType expected
-                                                                    ]
-                                                                )
-                                                        )
                                                     )
-                                        )
-                        )
+                                                )
+                                    )
+                    )
                         s1
 
                 ( s3, outcome ) =
@@ -1260,8 +1261,8 @@ type alias AccessFrame =
     { region : A.Region
     , field : Name
     , fieldType : Type
-    , fieldVar : IO.Variable
-    , extVar : IO.Variable
+    , fieldVar : Vars.Variable
+    , extVar : Vars.Variable
     , expected : E.Expected Type
     }
 
@@ -1510,7 +1511,6 @@ prefix distinguishes the two packages' same-named kernels.
 kernelErrorName : Name -> Name -> Name -> Name
 kernelErrorName prefix home name =
     prefix ++ ".Kernel." ++ home ++ "." ++ name
-
 
 
 
@@ -2130,7 +2130,7 @@ constrainRecordWithIds rtv region fields expected =
         |> IO.map
             (\fieldResults ->
                 let
-                    dict : DMap.Dict String (A.Located Name) ( IO.Variable, Type, Constraint )
+                    dict : DMap.Dict String (A.Located Name) ( Vars.Variable, Type, Constraint )
                     dict =
                         DMap.fromList A.toValue fieldResults
 
@@ -2146,7 +2146,7 @@ constrainRecordWithIds rtv region fields expected =
                     recordCon =
                         CEqual region Record recordType expected
 
-                    vars : List IO.Variable
+                    vars : List Vars.Variable
                     vars =
                         DMap.foldr A.compareLocated (\_ ( v, _, _ ) vs -> v :: vs) [] dict
 
@@ -2158,7 +2158,7 @@ constrainRecordWithIds rtv region fields expected =
             )
 
 
-constrainFieldsWithIds : RigidTypeVar -> List ( A.Located Name, Can.Expr ) -> List ( A.Located Name, ( IO.Variable, Type, Constraint ) ) -> IO (List ( A.Located Name, ( IO.Variable, Type, Constraint ) ))
+constrainFieldsWithIds : RigidTypeVar -> List ( A.Located Name, Can.Expr ) -> List ( A.Located Name, ( Vars.Variable, Type, Constraint ) ) -> IO (List ( A.Located Name, ( Vars.Variable, Type, Constraint ) ))
 constrainFieldsWithIds rtv fields acc =
     case fields of
         [] ->
@@ -2206,7 +2206,7 @@ constrainUpdateWithIds rtv region exprId expr locatedFields expected =
                                             |> IO.andThen
                                                 (\fieldResults ->
                                                     let
-                                                        fieldDict : Dict Name ( IO.Variable, Type, Constraint )
+                                                        fieldDict : Dict Name ( Vars.Variable, Type, Constraint )
                                                         fieldDict =
                                                             Dict.fromList fieldResults
 
@@ -2226,7 +2226,7 @@ constrainUpdateWithIds rtv region exprId expr locatedFields expected =
                                                         recordCon =
                                                             CEqual region Record recordType expected
 
-                                                        vars : List IO.Variable
+                                                        vars : List Vars.Variable
                                                         vars =
                                                             Dict.foldr (\_ ( v, _, _ ) vs -> v :: vs) [ recordVar, extVar ] fieldDict
 
@@ -2245,7 +2245,7 @@ constrainUpdateWithIds rtv region exprId expr locatedFields expected =
             )
 
 
-constrainUpdateFieldsWithIds : RigidTypeVar -> A.Region -> List ( Name, Can.FieldUpdate ) -> List ( Name, ( IO.Variable, Type, Constraint ) ) -> IO (List ( Name, ( IO.Variable, Type, Constraint ) ))
+constrainUpdateFieldsWithIds : RigidTypeVar -> A.Region -> List ( Name, Can.FieldUpdate ) -> List ( Name, ( Vars.Variable, Type, Constraint ) ) -> IO (List ( Name, ( Vars.Variable, Type, Constraint ) ))
 constrainUpdateFieldsWithIds rtv _ fields acc =
     case fields of
         [] ->
@@ -2315,7 +2315,7 @@ constrainTupleWithIds rtv region a b cs expected =
             )
 
 
-constrainTupleRestWithIds : RigidTypeVar -> A.Region -> List Can.Expr -> List Constraint -> List IO.Variable -> IO ( List Constraint, List IO.Variable )
+constrainTupleRestWithIds : RigidTypeVar -> A.Region -> List Can.Expr -> List Constraint -> List Vars.Variable -> IO ( List Constraint, List Vars.Variable )
 constrainTupleRestWithIds rtv _ cs accCons accVars =
     case cs of
         [] ->

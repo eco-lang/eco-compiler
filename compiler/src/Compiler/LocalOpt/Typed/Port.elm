@@ -136,7 +136,8 @@ toEncoder tipe =
                                             Can.tLambda tipe valueType
                                     in
                                     Names.registerFieldList (Dict.keys fields)
-                                        (TOpt.Function Nothing [ ( Name.dollar, tipe ) ]
+                                        (TOpt.Function Nothing
+                                            [ ( Name.dollar, tipe ) ]
                                             (TOpt.Call A.zero object [ TOpt.List A.zero keyValuePairs { tipe = listType, tvar = Nothing } ] { tipe = valueType, tvar = Nothing })
                                             { tipe = funcType, tvar = Nothing }
                                         )
@@ -170,7 +171,8 @@ encodeMaybe tipe =
                                             funcType =
                                                 Can.tLambda maybeType valueType
                                         in
-                                        TOpt.Function Nothing [ ( Name.dollar, maybeType ) ]
+                                        TOpt.Function Nothing
+                                            [ ( Name.dollar, maybeType ) ]
                                             (TOpt.Call A.zero
                                                 destruct
                                                 [ null
@@ -290,7 +292,8 @@ encodeTuple a b cs =
                                                                     funcType =
                                                                         Can.tLambda tupleType valueType
                                                                 in
-                                                                TOpt.Function Nothing [ ( Name.dollar, tupleType ) ]
+                                                                TOpt.Function Nothing
+                                                                    [ ( Name.dollar, tupleType ) ]
                                                                     (let_ "a"
                                                                         a
                                                                         Index.first

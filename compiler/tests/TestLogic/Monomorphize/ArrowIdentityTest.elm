@@ -45,8 +45,10 @@ import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.Data.Id as Id
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.MonoSolver.Engine as Engine
 import Compiler.MonoSolver.Store as Store
+import Compiler.Type.Vars as Vars
 import Dict
 import Expect
 import System.TypeCheck.IO as IO
@@ -68,7 +70,7 @@ suite =
 
 intType : Can.Type TypeIds.MVarId
 intType =
-    Can.TType (IO.Canonical ( "elm", "core" ) "Basics") "Int" []
+    Can.TType (ModuleName.Canonical ( "elm", "core" ) "Basics") "Int" []
 
 
 {-| `arrowWith aid` is `Int -> Int` stamped with `aid`.
@@ -109,13 +111,13 @@ tuples at three.
 type alias Loaded =
     { keys : List Int -- ordinal slot Points, by `Engine.pointKey`
     , minted : Int
-    , memo : Dict.Dict Int IO.Variable
-    , slots : Array.Array IO.Variable
+    , memo : Dict.Dict Int Vars.Variable
+    , slots : Array.Array Vars.Variable
     , store : IO.State
     }
 
 
-loadInto : Bool -> Dict.Dict Int IO.Variable -> Can.Type TypeIds.MVarId -> IO.State -> Loaded
+loadInto : Bool -> Dict.Dict Int Vars.Variable -> Can.Type TypeIds.MVarId -> IO.State -> Loaded
 loadInto arrowIdOn seedMemo canType store =
     let
         ( _, c ) =
@@ -134,7 +136,7 @@ loadInto arrowIdOn seedMemo canType store =
     }
 
 
-loadFresh : Bool -> Dict.Dict Int IO.Variable -> Can.Type TypeIds.MVarId -> Loaded
+loadFresh : Bool -> Dict.Dict Int Vars.Variable -> Can.Type TypeIds.MVarId -> Loaded
 loadFresh arrowIdOn seedMemo canType =
     loadInto arrowIdOn seedMemo canType Engine.freshStore
 
@@ -235,7 +237,7 @@ arrow memo" and "a slot the scratch pass minted against ITS OWN store". The
 Points are opaque here — the property under test is about the DICT, not about
 what it names.
 -}
-samplePoints : Maybe ( IO.Variable, IO.Variable )
+samplePoints : Maybe ( Vars.Variable, Vars.Variable )
 samplePoints =
     let
         r =
@@ -244,7 +246,7 @@ samplePoints =
     Maybe.map2 Tuple.pair (Array.get 0 r.slots) (Array.get 1 r.slots)
 
 
-withSamples : (IO.Variable -> IO.Variable -> Expect.Expectation) -> Expect.Expectation
+withSamples : (Vars.Variable -> Vars.Variable -> Expect.Expectation) -> Expect.Expectation
 withSamples k =
     case samplePoints of
         Just ( a, b ) ->
@@ -254,7 +256,7 @@ withSamples k =
             Expect.fail "fixture broken: the two-arrow load did not mint two slots"
 
 
-auxWith : Dict.Dict Int IO.Variable -> Engine.ItemAux
+auxWith : Dict.Dict Int Vars.Variable -> Engine.ItemAux
 auxWith memo =
     let
         aux =

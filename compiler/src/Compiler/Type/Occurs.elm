@@ -20,6 +20,7 @@ tracking which variables have been seen.
 -}
 
 import Compiler.Type.UnionFind as UF
+import Compiler.Type.Vars as Vars
 import Dict
 import System.TypeCheck.IO as IO exposing (IO)
 
@@ -34,12 +35,12 @@ Returns True if a cycle is detected (the variable appears in its own structure),
 False otherwise. This is used during type unification to prevent infinite types.
 
 -}
-occurs : IO.Variable -> IO Bool
+occurs : Vars.Variable -> IO Bool
 occurs var =
     occursHelp [] var False
 
 
-occursHelp : List IO.Variable -> IO.Variable -> Bool -> IO Bool
+occursHelp : List Vars.Variable -> Vars.Variable -> Bool -> IO Bool
 occursHelp seen var foundCycle =
     if List.member var seen then
         IO.pure True
@@ -49,37 +50,37 @@ occursHelp seen var foundCycle =
             |> IO.andThen
                 (\props ->
                     case props.content of
-                        IO.FlexVar _ ->
+                        Vars.FlexVar _ ->
                             IO.pure foundCycle
 
-                        IO.FlexSuper _ _ ->
+                        Vars.FlexSuper _ _ ->
                             IO.pure foundCycle
 
-                        IO.RigidVar _ ->
+                        Vars.RigidVar _ ->
                             IO.pure foundCycle
 
-                        IO.RigidSuper _ _ ->
+                        Vars.RigidSuper _ _ ->
                             IO.pure foundCycle
 
-                        IO.Structure term ->
+                        Vars.Structure term ->
                             let
-                                newSeen : List IO.Variable
+                                newSeen : List Vars.Variable
                                 newSeen =
                                     var :: seen
                             in
                             case term of
-                                IO.App1 _ _ args ->
+                                Vars.App1 _ _ args ->
                                     IO.foldrM (occursHelp newSeen) foundCycle args
 
-                                IO.Fun1 a b ->
+                                Vars.Fun1 a b ->
                                     occursHelp newSeen b foundCycle |> IO.andThen (occursHelp newSeen a)
 
-                                IO.FunL a b s ->
+                                Vars.FunL a b s ->
                                     occursHelp newSeen s foundCycle
                                         |> IO.andThen (occursHelp newSeen b)
                                         |> IO.andThen (occursHelp newSeen a)
 
-                                IO.LambdaSet1 _ ->
+                                Vars.LambdaSet1 _ ->
                                     -- Ground member ids. Since LSS_023 an
                                     -- `LsFrom` set MAY carry source Points,
                                     -- and the occurs check deliberately does
@@ -89,21 +90,21 @@ occursHelp seen var foundCycle =
                                     -- through them.
                                     IO.pure foundCycle
 
-                                IO.EmptyRecord1 ->
+                                Vars.EmptyRecord1 ->
                                     IO.pure foundCycle
 
-                                IO.Record1 fields ext ->
+                                Vars.Record1 fields ext ->
                                     IO.foldrM (occursHelp newSeen) foundCycle (Dict.values fields) |> IO.andThen (occursHelp newSeen ext)
 
-                                IO.Unit1 ->
+                                Vars.Unit1 ->
                                     IO.pure foundCycle
 
-                                IO.Tuple1 a b cs ->
+                                Vars.Tuple1 a b cs ->
                                     IO.foldrM (occursHelp newSeen) foundCycle cs |> IO.andThen (occursHelp newSeen b) |> IO.andThen (occursHelp newSeen a)
 
-                        IO.Alias _ _ args _ ->
+                        Vars.Alias _ _ args _ ->
                             IO.foldrM (occursHelp (var :: seen)) foundCycle (List.map Tuple.second args)
 
-                        IO.Error ->
+                        Vars.Error ->
                             IO.pure foundCycle
                 )

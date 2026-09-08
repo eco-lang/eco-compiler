@@ -90,6 +90,7 @@ import Compiler.Type.Constrain.Typed.Module as TypeTyped
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Type
+import Compiler.Type.Vars as Vars
 import Compiler.TypedCanonical.Build as TCanBuild
 import Data.Map
 import Dict exposing (Dict)
@@ -150,8 +151,8 @@ type alias TypeCheckTypedResult =
     , typedCanonical : TCan.Module
     , nodeTypes : TCan.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
-    , nodeVars : Array (Maybe TypeCheck.Variable)
-    , annotationVars : Dict Name.Name TypeCheck.Variable
+    , nodeVars : Array (Maybe Vars.Variable)
+    , annotationVars : Dict Name.Name Vars.Variable
     }
 
 
@@ -469,7 +470,7 @@ optimizeErased annotations canonical =
 Preserves full type information throughout the optimization process.
 
 -}
-optimizeTyped : Dict Name.Name (Can.Annotation Name) -> TCan.ExprTypes -> TCan.ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name TypeCheck.Variable -> TCan.Module -> Result (OneOrMore.OneOrMore MainError.Error) (TOpt.LocalGraph Name)
+optimizeTyped : Dict Name.Name (Can.Annotation Name) -> TCan.ExprTypes -> TCan.ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> TCan.Module -> Result (OneOrMore.OneOrMore MainError.Error) (TOpt.LocalGraph Name)
 optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule =
     Tuple.second (RResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars Dict.empty tcanModule))
 

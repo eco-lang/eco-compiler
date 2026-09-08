@@ -43,7 +43,6 @@ import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult
 import Compiler.Reporting.Warning as W
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 import Utils.Crash exposing (crash)
 
 
@@ -75,9 +74,9 @@ Transforms a source AST module into a canonical AST module by:
 canonicalize : Pkg.Name -> Dict ModuleName.Raw I.Interface -> Src.Module -> MResult i (List W.Warning) Can.Module
 canonicalize pkg ifaces ((Src.Module srcData) as modul) =
     let
-        home : IO.Canonical
+        home : ModuleName.Canonical
         home =
-            IO.Canonical pkg (Src.getName modul)
+            ModuleName.Canonical pkg (Src.getName modul)
 
         cbinops : Dict Name Can.Binop
         cbinops =

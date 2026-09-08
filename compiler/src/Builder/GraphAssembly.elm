@@ -25,11 +25,11 @@ import Compiler.AST.Optimized as Opt
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.Kernel as K
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Data.Map
 import Data.Set as EverySet
 import Dict
-import System.TypeCheck.IO as IO
 
 
 
@@ -102,7 +102,7 @@ addKernelDep chunk deps =
 
 toKernelGlobal : Name.Name -> Opt.Global
 toKernelGlobal shortName =
-    Opt.Global (IO.Canonical Pkg.kernel shortName) Name.dollar
+    Opt.Global (ModuleName.Canonical Pkg.kernel shortName) Name.dollar
 
 
 

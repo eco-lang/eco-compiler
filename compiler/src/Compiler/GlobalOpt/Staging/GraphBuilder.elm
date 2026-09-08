@@ -104,6 +104,7 @@ Safe because GraphBuilder never reads `ProducerInfo` — it reconstructs produce
 directly from the AST — so the two folds are independent left-folds over the same array and
 merge with no visitation-order dependency. The `nodeId` counter and per-node steps are
 identical to the originals, so the resulting `ProducerInfo`/`StagingGraph` are byte-identical.
+
 -}
 buildStagingGraphFused : Mono.MonoGraph -> ( ProducerInfo, StagingGraph )
 buildStagingGraphFused (Mono.MonoGraph mono) =

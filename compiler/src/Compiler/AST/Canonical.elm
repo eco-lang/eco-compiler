@@ -4,7 +4,6 @@ module Compiler.AST.Canonical exposing
     , Def(..), Decls(..)
     , Pattern, PatternInfo, Pattern_(..), PatternCtorArg(..)
     , Type(..), Annotation(..), FreeVars, AliasType(..), FieldType(..), fieldsToList
-    , tLambda, noArrow
     , Union(..), UnionData, Alias(..), Ctor(..), CtorData, CtorOpts(..), Binop(..)
     , annotationEncoder, annotationDecoder
     , typeEncoder, typeDecoder
@@ -17,6 +16,7 @@ module Compiler.AST.Canonical exposing
     , unionEncoderS, unionDecoderS
     , collectStringsFromAnnotation, collectStringsFromType
     , collectStringsFromUnion
+    , noArrow, tLambda
     )
 
 {-| The Canonical AST represents Elm code after name resolution.
@@ -113,7 +113,6 @@ import Compiler.Reporting.Annotation as A
 import Data.Map
 import Dict exposing (Dict)
 import Set exposing (Set)
-import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
@@ -143,19 +142,19 @@ Many variants include cached type annotations for efficient type inference.
 -}
 type Expr_
     = VarLocal Name
-    | VarTopLevel IO.Canonical Name
+    | VarTopLevel ModuleName.Canonical Name
     | VarKernel Name Name Name
-    | VarForeign IO.Canonical Name (Annotation Name)
-    | VarCtor CtorOpts IO.Canonical Name Index.ZeroBased (Annotation Name)
-    | VarDebug IO.Canonical Name (Annotation Name)
-    | VarOperator Name IO.Canonical Name (Annotation Name) -- CACHE real name for optimization
+    | VarForeign ModuleName.Canonical Name (Annotation Name)
+    | VarCtor CtorOpts ModuleName.Canonical Name Index.ZeroBased (Annotation Name)
+    | VarDebug ModuleName.Canonical Name (Annotation Name)
+    | VarOperator Name ModuleName.Canonical Name (Annotation Name) -- CACHE real name for optimization
     | Chr String
     | Str String
     | Int Int
     | Float Float
     | List (List Expr)
     | Negate Expr
-    | Binop Name IO.Canonical Name (Annotation Name) Expr Expr -- CACHE real name for optimization
+    | Binop Name ModuleName.Canonical Name (Annotation Name) Expr Expr -- CACHE real name for optimization
     | Lambda (List Pattern) Expr
     | Call Expr (List Expr)
     | If (List ( Expr, Expr )) Expr
@@ -254,7 +253,7 @@ type Pattern_
         -- CACHE p_index to replace p_name in PROD code gen
         -- CACHE p_opts to allocate less in PROD code gen
         -- CACHE p_alts and p_numAlts for exhaustiveness checker
-        { home : IO.Canonical
+        { home : ModuleName.Canonical
         , type_ : Name
         , union : Union
         , name : Name
@@ -308,11 +307,11 @@ type alias FreeVars =
 type Type id
     = TLambda TypeIds.ArrowSlot (Type id) (Type id)
     | TVar id
-    | TType IO.Canonical Name (List (Type id))
+    | TType ModuleName.Canonical Name (List (Type id))
     | TRecord (Dict Name (FieldType id)) (Maybe id)
     | TUnit
     | TTuple (Type id) (Type id) (List (Type id))
-    | TAlias IO.Canonical Name (List ( id, Type id )) (AliasType id)
+    | TAlias ModuleName.Canonical Name (List ( id, Type id )) (AliasType id)
 
 
 {-| Wire encoding of an arrow slot: `0` = none, `idx + 1` = a solver root.
@@ -320,6 +319,7 @@ type Type id
 `Arrow` cannot occur — the codec is `Can.Type Name` only — and encodes as `0`
 rather than crashing, because a wrong-phase value should degrade to "no
 identity" (an occurrence id downstream), never to a WRONG identity.
+
 -}
 arrowSlotToInt : TypeIds.ArrowSlot -> Int
 arrowSlotToInt slot =
@@ -414,7 +414,7 @@ fieldsToList fields =
 {-| Internal data for a canonical module.
 -}
 type alias ModuleData =
-    { name : IO.Canonical
+    { name : ModuleName.Canonical
     , exports : Exports
     , docs : Src.Docs
     , decls : Decls

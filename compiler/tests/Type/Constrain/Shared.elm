@@ -16,6 +16,7 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Type.Constrain.Erased.Module as ConstrainErased
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.Solve as Solve
+import Compiler.Type.Vars as Vars
 import Data.Map
 import Dict exposing (Dict)
 import Expect
@@ -134,10 +135,10 @@ runWithIdsPath :
                 Int
                 { annotations : Dict Name.Name (Can.Annotation Name)
                 , nodeTypes : Array.Array (Maybe (Can.Type Name))
-                , nodeVars : Array.Array (Maybe IO.Variable)
-                , annotationVars : Dict Name.Name IO.Variable
+                , nodeVars : Array.Array (Maybe Vars.Variable)
+                , annotationVars : Dict Name.Name Vars.Variable
                 , solverState :
-                    { cells : Array.Array IO.PointCell
+                    { cells : Array.Array Vars.PointCell
                     }
                 }
             )

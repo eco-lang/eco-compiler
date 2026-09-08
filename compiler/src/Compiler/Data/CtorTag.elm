@@ -1,4 +1,7 @@
-module Compiler.Data.CtorTag exposing (checkNullConsCapacity, constantTag, effective, embedsAsNullCons, isEmbeddedConstantCtor, nullConsCapacity)
+module Compiler.Data.CtorTag exposing
+    ( effective
+    , checkNullConsCapacity, constantTag, embedsAsNullCons, isEmbeddedConstantCtor, nullConsCapacity
+    )
 
 {-| Runtime ctor-tag conventions shared between monomorphization (which sets
 `CtorShape.tag` used at construction time) and code generation (which emits the
@@ -21,7 +24,6 @@ by content (in-order key/value traversal) instead of by tree shape.
 import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import System.TypeCheck.IO as IO
 import Utils.Crash exposing (crash)
 
 
@@ -35,7 +37,7 @@ import Utils.Crash exposing (crash)
 
 `RBEmpty_elm_builtin` is deliberately NOT reserved: it is nullary, so it
 compiles to an embedded null-cons constant carrying its plain declaration
-index 1 (HEAP_044, plans/null-cons-hpointer-embedding.md P3.0). The reserved
+index 1 (HEAP\_044, plans/null-cons-hpointer-embedding.md P3.0). The reserved
 set is {0xFFFF RBNode, 0xFFFD constantTag}.
 
 -}
@@ -135,7 +137,7 @@ Constructors in runtime-recognised types (currently `Dict`) use reserved tag
 values so the runtime can dispatch to a type-specific implementation.
 
 -}
-effective : IO.Canonical -> Name -> Index.ZeroBased -> Int
+effective : ModuleName.Canonical -> Name -> Index.ZeroBased -> Int
 effective home name index =
     if home == ModuleName.dict then
         if name == "RBNode_elm_builtin" then

@@ -5,10 +5,7 @@ module Compiler.Monomorphize.Registry exposing
     , getOrCreateSpecIdKeyed
     , lookupSpecKey
     , updateRegistryType
-    , createdCount
-    , prettyGlobal
-    , breadthLimitMessage
-    , typeNodesLimitMessage
+    , breadthLimitMessage, createdCount, prettyGlobal, typeNodesLimitMessage
     )
 
 {-| Specialization registry operations for monomorphization.
@@ -33,8 +30,8 @@ The registry maintains a bidirectional mapping between specialization keys
 
 import Array
 import Compiler.AST.Monomorphized as Mono exposing (Global, MonoType, SpecId, SpecializationRegistry)
+import Compiler.Elm.ModuleName as ModuleName
 import Dict
-import System.TypeCheck.IO as IO
 
 
 
@@ -55,7 +52,7 @@ everything else is the old `False`.
   - `HitNoopJoin` — the join ran, rebuilt a tree, and changed nothing; the
     result was discarded. Pure waste, and the population Phase 4 targets.
   - `HitChangedJoin` — the join widened the stored type; the caller must mark
-    the spec dirty (LSS_010).
+    the spec dirty (LSS\_010).
 
 -}
 type KeyedHit
@@ -76,7 +73,7 @@ emptyRegistry =
     }
 
 
-{-| MONO_030: bump the created-spec count for a global. Called only on the
+{-| MONO\_030: bump the created-spec count for a global. Called only on the
 create/miss branches — probe hits never touch it.
 -}
 bumpCountByGlobal : Global -> SpecializationRegistry -> Dict.Dict String Int
@@ -86,7 +83,7 @@ bumpCountByGlobal global registry =
         registry.countByGlobal
 
 
-{-| The created-spec count for a global (MONO_030 breadth watchdog probe).
+{-| The created-spec count for a global (MONO\_030 breadth watchdog probe).
 -}
 createdCount : Global -> SpecializationRegistry -> Int
 createdCount global registry =
@@ -126,10 +123,10 @@ getOrCreateSpecId global monoType registry =
 while the reverse mapping stores `storeType`. LSS `keyed = False` semantics
 (design §8.5): keys are annotation-widened so lambda sets never fan out
 specializations, while the stored demand keeps its annotations (types never
-widen — MONO_020/021/024).
+widen — MONO\_020/021/024).
 
 On a key hit the stored type becomes the annotation JOIN of itself and the
-new demand (LSS_010): the single translated node serves every caller that
+new demand (LSS\_010): the single translated node serves every caller that
 hits this key, so its demand-seeded annotations must cover all of them —
 keeping only the first demand lets a singleton set lie about later
 callers' values, which a fast-dispatch stamp turns into a silent
@@ -194,14 +191,14 @@ getOrCreateSpecIdKeyed global keyType storeType registry =
 prettyGlobal : Global -> String
 prettyGlobal global =
     case global of
-        Mono.Global (IO.Canonical ( author, project ) moduleName) name ->
+        Mono.Global (ModuleName.Canonical ( author, project ) moduleName) name ->
             moduleName ++ "." ++ name ++ " (" ++ author ++ "/" ++ project ++ ")"
 
         Mono.Accessor field ->
             "." ++ field
 
 
-{-| MONO_030 watchdog messages (plan §1.6): shared verbatim by the solver's
+{-| MONO\_030 watchdog messages (plan §1.6): shared verbatim by the solver's
 `LimitExceeded` failure and the subst engine's drain-level `Err`, so both
 engines present the condition identically. The message must let a user act
 without reading compiler source: it names the global, the limit, and the

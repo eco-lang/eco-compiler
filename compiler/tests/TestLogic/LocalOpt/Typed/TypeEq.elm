@@ -17,8 +17,8 @@ This is critical for catching MONO\_018-class bugs where:
 
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 
 
 
@@ -372,6 +372,6 @@ In Elm, types like String can appear as both Basics.String and String.String
 within the same package. For type checking, these are equivalent.
 
 -}
-canonicalTypesEqual : IO.Canonical -> String -> IO.Canonical -> String -> Bool
-canonicalTypesEqual (IO.Canonical pkg1 _) name1 (IO.Canonical pkg2 _) name2 =
+canonicalTypesEqual : ModuleName.Canonical -> String -> ModuleName.Canonical -> String -> Bool
+canonicalTypesEqual (ModuleName.Canonical pkg1 _) name1 (ModuleName.Canonical pkg2 _) name2 =
     pkg1 == pkg2 && name1 == name2

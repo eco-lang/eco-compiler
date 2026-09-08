@@ -47,6 +47,7 @@ import Compiler.Type.Constrain.Common as Common exposing (State(..), extractVarF
 import Compiler.Type.Constrain.Typed.NodeIds as NodeIds
 import Compiler.Type.Instantiate as Instantiate
 import Compiler.Type.Type as Type exposing (Type)
+import Compiler.Type.Vars as Vars
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO exposing (IO)
 
@@ -295,7 +296,7 @@ addHelpWithIds region patternNode expectation state =
 head pattern and close the level once the deeper tail is done.
 -}
 type alias ConsFrame =
-    { entryVar : IO.Variable
+    { entryVar : Vars.Variable
     , entryType : Type
     , listType : Type
     , region : A.Region
@@ -468,7 +469,7 @@ addTupleWithIds region a b cs expectation state =
             )
 
 
-addTupleRestWithIds : List Can.Pattern -> List IO.Variable -> State -> IO ( List IO.Variable, State )
+addTupleRestWithIds : List Can.Pattern -> List Vars.Variable -> State -> IO ( List Vars.Variable, State )
 addTupleRestWithIds cs accVars state =
     case cs of
         [] ->
@@ -488,7 +489,7 @@ simpleAddWithIds pattern patternType state =
     addWithIds pattern (E.PNoExpectation patternType) state
 
 
-addCtorWithIds : A.Region -> IO.Canonical -> Name.Name -> List Name.Name -> Name.Name -> List Can.PatternCtorArg -> E.PExpected Type -> State -> IO State
+addCtorWithIds : A.Region -> ModuleName.Canonical -> Name.Name -> List Name.Name -> Name.Name -> List Can.PatternCtorArg -> E.PExpected Type -> State -> IO State
 addCtorWithIds region home typeName typeVarNames ctorName args expectation state =
     IO.traverseList (\name -> IO.map (Tuple.pair name) (Type.nameToFlex name)) typeVarNames
         |> IO.andThen

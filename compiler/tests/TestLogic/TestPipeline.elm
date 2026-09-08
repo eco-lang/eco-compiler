@@ -74,6 +74,7 @@ import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
 import Compiler.Type.SolverRoots as SolverRoots
+import Compiler.Type.Vars as Vars
 import Compiler.TypedCanonical.Build as TCanBuild
 import Data.Map
 import Data.Set
@@ -102,9 +103,9 @@ type alias TypeCheckArtifacts =
     { canonical : Can.Module
     , annotations : Dict Name.Name (Can.Annotation Name)
     , nodeTypes : Array (Maybe (Can.Type Name)) -- Pre-PostSolve
-    , nodeVars : Array (Maybe IO.Variable)
-    , solverState : { cells : Array IO.PointCell }
-    , annotationVars : Dict Name.Name IO.Variable
+    , nodeVars : Array (Maybe Vars.Variable)
+    , solverState : { cells : Array Vars.PointCell }
+    , annotationVars : Dict Name.Name Vars.Variable
     }
 
 
@@ -116,9 +117,9 @@ type alias PostSolveArtifacts =
     , nodeTypesPre : PostSolve.NodeTypes -- Before PostSolve
     , nodeTypesPost : PostSolve.NodeTypes -- After PostSolve
     , kernelEnv : KernelTypes.KernelTypeEnv
-    , nodeVars : Array (Maybe IO.Variable)
-    , solverState : { cells : Array IO.PointCell }
-    , annotationVars : Dict Name.Name IO.Variable
+    , nodeVars : Array (Maybe Vars.Variable)
+    , solverState : { cells : Array Vars.PointCell }
+    , annotationVars : Dict Name.Name Vars.Variable
     }
 
 
@@ -629,7 +630,7 @@ runToMlir srcModule =
 
 {-| Run type checking with expression ID tracking.
 -}
-runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict Name.Name (Can.Annotation Name), nodeTypes : Array (Maybe (Can.Type Name)), nodeVars : Array (Maybe IO.Variable), solverState : { cells : Array IO.PointCell }, annotationVars : Dict Name.Name IO.Variable })
+runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict Name.Name (Can.Annotation Name), nodeTypes : Array (Maybe (Can.Type Name)), nodeVars : Array (Maybe Vars.Variable), solverState : { cells : Array Vars.PointCell }, annotationVars : Dict Name.Name Vars.Variable })
 runWithIdsTypeCheck modul =
     ConstrainTyped.constrainWithIds modul
         |> IO.andThen
@@ -706,7 +707,7 @@ kernelAliasNodes ifaces =
                     case Dict.get valueName idata.values of
                         Just (Can.Forall _ tipe) ->
                             Data.Map.insert TOpt.toComparableGlobal
-                                (TOpt.Global (IO.Canonical idata.home moduleName) valueName)
+                                (TOpt.Global (ModuleName.Canonical idata.home moduleName) valueName)
                                 (TOpt.Define
                                     (TOpt.VarKernel A.zero "Elm" moduleName valueName { tipe = tipe, tvar = Nothing })
                                     Data.Set.empty
@@ -742,7 +743,7 @@ interfaceAnnotations ifaces =
         (\moduleName (I.Interface idata) acc ->
             let
                 home =
-                    IO.Canonical idata.home moduleName
+                    ModuleName.Canonical idata.home moduleName
             in
             acc
                 |> addValueAnnotations home idata.values
@@ -755,7 +756,7 @@ interfaceAnnotations ifaces =
 
 {-| Add annotations for interface function values.
 -}
-addValueAnnotations : IO.Canonical -> Dict Name (Can.Annotation Name) -> Data.Map.Dict String TOpt.Global (Can.Annotation Name) -> Data.Map.Dict String TOpt.Global (Can.Annotation Name)
+addValueAnnotations : ModuleName.Canonical -> Dict Name (Can.Annotation Name) -> Data.Map.Dict String TOpt.Global (Can.Annotation Name) -> Data.Map.Dict String TOpt.Global (Can.Annotation Name)
 addValueAnnotations home values acc =
     Dict.foldl
         (\name ann a ->
@@ -770,7 +771,7 @@ addValueAnnotations home values acc =
 Binops have a function name (e.g. "add" for +) and an annotation.
 
 -}
-addBinopAnnotations : IO.Canonical -> Dict Name I.Binop -> Data.Map.Dict String TOpt.Global (Can.Annotation Name) -> Data.Map.Dict String TOpt.Global (Can.Annotation Name)
+addBinopAnnotations : ModuleName.Canonical -> Dict Name I.Binop -> Data.Map.Dict String TOpt.Global (Can.Annotation Name) -> Data.Map.Dict String TOpt.Global (Can.Annotation Name)
 addBinopAnnotations home binops acc =
     Dict.foldl
         (\_ (I.Binop bdata) a ->
@@ -787,7 +788,7 @@ type from its args and the result type, then wraps it in Can.Forall with the
 union's type variables as free vars.
 
 -}
-addUnionAnnotations : IO.Canonical -> Dict Name I.Union -> Data.Map.Dict String TOpt.Global (Can.Annotation Name) -> Data.Map.Dict String TOpt.Global (Can.Annotation Name)
+addUnionAnnotations : ModuleName.Canonical -> Dict Name I.Union -> Data.Map.Dict String TOpt.Global (Can.Annotation Name) -> Data.Map.Dict String TOpt.Global (Can.Annotation Name)
 addUnionAnnotations home unions acc =
     Dict.foldl
         (\typeName iUnion a ->
@@ -811,7 +812,7 @@ addUnionAnnotations home unions acc =
 
 {-| Add annotations for each constructor in a union type.
 -}
-addCtorAnnotations : IO.Canonical -> Name -> Can.Union -> Data.Map.Dict String TOpt.Global (Can.Annotation Name) -> Data.Map.Dict String TOpt.Global (Can.Annotation Name)
+addCtorAnnotations : ModuleName.Canonical -> Name -> Can.Union -> Data.Map.Dict String TOpt.Global (Can.Annotation Name) -> Data.Map.Dict String TOpt.Global (Can.Annotation Name)
 addCtorAnnotations home typeName (Can.Union unionData) acc =
     List.foldl
         (\(Can.Ctor c) a ->

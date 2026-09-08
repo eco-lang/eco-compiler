@@ -11,6 +11,7 @@ module Compiler.Elm.ModuleName exposing
     , canonicalEncoder, canonicalDecoder, rawEncoder, rawDecoder
     , canonicalEncoderS, canonicalDecoderS
     , collectStringsFromCanonical
+    , Canonical(..)
     )
 
 {-| Utilities for working with Elm module names in their raw and canonical forms.
@@ -87,7 +88,6 @@ import Compiler.Json.Encode as E
 import Compiler.Parse.Primitives as P
 import Compiler.Parse.Variable as Var
 import Set exposing (Set)
-import System.TypeCheck.IO exposing (Canonical(..))
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
@@ -101,6 +101,16 @@ Examples: "List", "Dict.Extra", "Html.Attributes"
 -}
 type alias Raw =
     Name
+
+
+{-| A canonical module name referencing a type.
+
+Contains the package name (as a tuple) and the module name within that package.
+Used to uniquely identify types across different packages.
+
+-}
+type Canonical
+    = Canonical ( String, String ) String
 
 
 {-| Convert a raw module name to a file path by replacing dots with slashes.

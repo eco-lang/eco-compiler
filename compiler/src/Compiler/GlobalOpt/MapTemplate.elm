@@ -21,8 +21,10 @@ PROVEN Debug-free keeps today's lowering — declining is always sound.
 
 1.  `CsePurity.analyze` — the per-spec transitive fixpoint. Answers
     Debug-freedom for a callback that resolves to a global spec.
+
 2.  A per-closure-INSTANCE extension. An inline lambda has no spec id, so its
     body is walked here and its global references are looked up in (1).
+
 3.  **A higher-order poison arm, in TWO positions.** `CsePurity.scanBody`
     collects only `MonoVarGlobal` callees and treats `MonoVarLocal` as inert,
     so a function value reaching a call site contributes no poison at all.
@@ -76,7 +78,7 @@ emission owns that, because it owns `lambdaIdToString`. `captureTypes` is the
 instance's capture row in slot order; emission projects them out of the
 closure parameter once, before the loop.
 
-`inKind` / `outKind` are 2-bit slot kinds (REP_HEAP_002) for the input element
+`inKind` / `outKind` are 2-bit slot kinds (REP\_HEAP\_002) for the input element
 and the callback result.
 
 -}
@@ -144,7 +146,6 @@ type alias Stats =
     -- `argTaintCauses`: a re-partition of one Gate-3 term, never part of the
     -- sum. Only `global` is addressable (G-3).
     , unresolvedCauses : UnresolvedCauses
-
     }
 
 
@@ -299,7 +300,6 @@ report { stats } =
                     ++ String.fromInt stats.unresolvedCauses.missing
                     ++ "}"
            )
-
 
 
 
@@ -1392,7 +1392,6 @@ settle entries =
                 start
                 edges
 
-
         {- An ARGUMENT edge's poison is F-4's decline, whatever the
            depended-on member's own cause was — except genuine `Debug`
            reachability, which keeps its own name so `declinedDebug` stays
@@ -1469,7 +1468,7 @@ channel the licence walk uses.
 
 Cheap syntactic approximation of the mono cost model's `CAlloc` oracle, used
 ONLY to size the statepoint-free-loop pool (Goal 3) in the census. Nothing in
-emission or expansion consults it — the gc-leaf stamp is CGEN_072's business
+emission or expansion consults it — the gc-leaf stamp is CGEN\_072's business
 (clause (a)'s poison list is authoritative) and the template never queries it.
 It is an under-approximation in both directions: it does not see allocation
 inside called globals, and it counts an `eco.box` of a projected scalar as

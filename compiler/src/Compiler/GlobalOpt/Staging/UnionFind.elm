@@ -26,9 +26,9 @@ This module provides:
 
 import Array
 import Compiler.AST.Monomorphized as Mono
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.GlobalOpt.Staging.Types exposing (Node(..), NodeId, ProducerId(..), SlotId(..), StagingGraph, Uf)
 import Dict
-import System.TypeCheck.IO as IO
 
 
 
@@ -94,7 +94,7 @@ slotIdToKey sid =
 lambdaIdToKey : Mono.LambdaId -> String
 lambdaIdToKey lambdaId =
     case lambdaId of
-        Mono.AnonymousLambda (IO.Canonical ( author, pkg ) modName) idx ->
+        Mono.AnonymousLambda (ModuleName.Canonical ( author, pkg ) modName) idx ->
             author ++ "/" ++ pkg ++ "/" ++ modName ++ ":" ++ String.fromInt idx
 
 

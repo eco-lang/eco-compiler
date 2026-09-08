@@ -25,8 +25,8 @@ Two consequences, and the second is the one that matters:
 **Canonicalisation is by EXACT structure (`==`), never by comparable-key
 equality.** The key equivalences deliberately merge distinct structures —
 `MVar _ CNumber` keys as `MInt` (D4), `MVar` ids are erased (MONO\_003) — so
-canonicalising by them would hand back a type that is *keyed* the same but
-*shaped* differently, silently changing what the compiler emits. The bucket
+canonicalising by them would hand back a type that is _keyed_ the same but
+_shaped_ differently, silently changing what the compiler emits. The bucket
 hash is `specHashOf` (equal structure implies equal hash, which is all a hash
 must promise); `==` decides.
 

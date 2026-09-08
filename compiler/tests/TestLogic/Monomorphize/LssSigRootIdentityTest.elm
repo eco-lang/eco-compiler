@@ -46,12 +46,12 @@ import Compiler.AST.SourceBuilder
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.Data.Id as Id
 import Compiler.Eco.Config as Config
-import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.MonoSolver.Engine as Engine
 import Compiler.MonoSolver.Store as Store
+import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
 import Dict
 import Expect
-import System.TypeCheck.IO as IO
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
@@ -71,7 +71,7 @@ suite =
 
 intType : Can.Type TypeIds.MVarId
 intType =
-    Can.TType (IO.Canonical ( "elm", "core" ) "Basics") "Int" []
+    Can.TType (ModuleName.Canonical ( "elm", "core" ) "Basics") "Int" []
 
 
 arrowWith : TypeIds.ArrowSlot -> Can.Type TypeIds.MVarId

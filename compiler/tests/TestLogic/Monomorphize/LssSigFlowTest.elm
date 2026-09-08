@@ -1,6 +1,6 @@
 module TestLogic.Monomorphize.LssSigFlowTest exposing (suite)
 
-{-| LSS_020 — signature set-flow completion (GAP-2,
+{-| LSS\_020 — signature set-flow completion (GAP-2,
 `plans/lss-fidelity-3-signature-flow-completion.md` §B).
 
 Under `lss.sigFlow` the inference walk connects ground-typed intra-def flow
@@ -45,19 +45,19 @@ import Compiler.AST.SourceBuilder
         , boolExpr
         , callExpr
         , caseExpr
-        , ifExpr
         , define
+        , ifExpr
         , intExpr
         , lambdaExpr
         , letExpr
         , makeModuleWithTypedDefs
-        , tupleExpr
         , pTuple
         , pVar
         , tLambda
         , tTuple
         , tType
         , tVar
+        , tupleExpr
         , varExpr
         )
 import Compiler.Eco.Config as Config
@@ -412,7 +412,7 @@ suite =
                             , List.all
                                 (\a ->
                                     isVarAnno a
-                                        || (Mono.isTopAnno a)
+                                        || Mono.isTopAnno a
                                         || List.member a (plainFnParamAnnosOf "useH" graph)
                                 )
                                 hofInnerAnnos

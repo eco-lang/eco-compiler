@@ -103,6 +103,7 @@ The readings differ by consumer, and that is the point:
 
 Mirrors `params = []` for the borrow axis: a row says what it knows, and silence
 is not an assertion.
+
 -}
 type HofAxis
     = HofUnknown
@@ -124,7 +125,7 @@ type ParamMode
     | POwned -- may store, return, or hand to unknown code
 
 
-{-| E9.2 kernel devirtualization registration (LSS_016).
+{-| E9.2 kernel devirtualization registration (LSS\_016).
 
 `DevirtNo` is the default and means "not registered" — the site keeps its
 indirect call, which is always correct.
@@ -135,7 +136,7 @@ arity, which differs for compiler-injected operands like `Debug.toString`'s
 `type_id` and for `()`-applied zero-parameter exports).
 
 **What registration actually commits to** (Wave 0 of
-`plans/kernel-devirt-arity-table.md`, LSS_016 as amended): the rewrite itself is
+`plans/kernel-devirt-arity-table.md`, LSS\_016 as amended): the rewrite itself is
 semantically identity-preserving and needs no purity — it re-emits the same call
 over the same already-translated args, discarding only a var read. What it does
 is make the kernel's IDENTITY visible to three default-on purity-driven
@@ -146,6 +147,7 @@ load-bearing at every devirtualized site. Register only when the row's purity
 fields have actually been audited — a row left on the `unaudited` base is safe
 (all three consumers answer False for it) but gains nothing beyond the dispatch
 removal.
+
 -}
 type DevirtPolicy
     = DevirtNo
@@ -160,9 +162,10 @@ suffix-selected typed variants whose layout could disagree with the site.
 `ShapeNoUnboxedScalarAt positions` — the named positions must not derive as
 unboxed scalars (0-based argument index; `-1` is the result). This is the
 `List.cons` hazard generalized: an imprecise site derives `cons_Int` with an
-i64 tail, reinterpreting a list pointer as a raw integer, which the CGEN_038
+i64 tail, reinterpreting a list pointer as a raw integer, which the CGEN\_038
 kernel-declaration registry catches as a signature mismatch. Declining leaves
 the always-correct indirect call.
+
 -}
 type ShapeGuard
     = ShapeAny
@@ -420,6 +423,7 @@ devirtOf key =
     lookup key
         |> Maybe.map .devirt
         |> Maybe.withDefault DevirtNo
+
 
 {-| The audited rows, in table order. Exposed so tests (and censuses) can walk
 the whole table without a second copy of the keys.
@@ -829,10 +833,10 @@ rows =
       )
     , ( ( "JsArray", "initialize" )
       , { unaudited
-            -- HOF axis declared EXPLICITLY (LSS_016 wave 3 follow-up). Since
-            -- `HofUnknown` now prices as CUnknown, a genuine higher-order kernel
-            -- must say so or it would be costed like a cheap unknown call.
-            -- Body evidence: JsArrayExports.cpp applies the generator per index.
+          -- HOF axis declared EXPLICITLY (LSS_016 wave 3 follow-up). Since
+          -- `HofUnknown` now prices as CUnknown, a genuine higher-order kernel
+          -- must say so or it would be costed like a cheap unknown call.
+          -- Body evidence: JsArrayExports.cpp applies the generator per index.
             | callsBack = HofYes
             , evidence = "elm-kernel-cpp/src/core/JsArrayExports.cpp:422 (base export; the ABI variant _Int is :948, same Mono key)"
         }
@@ -847,7 +851,6 @@ rows =
             -- must say so or it would be costed like a cheap unknown call.
             -- Body evidence: ListExports.cpp kernelListMapN applies the callback via eco_apply_closure_eval.
             , callsBack = HofYes
-
             , evidence = "elm-kernel-cpp/src/core/ListExports.cpp:592-600; kernelListMapN :432"
         }
       )
@@ -1055,13 +1058,14 @@ validationErrors =
         ++ List.concatMap (\( key, facts ) -> devirtErrors key facts) rows
 
 
-{-| LSS_016 registration checks. A wrong arity is a MISCOMPILE (the derived ABI
+{-| LSS\_016 registration checks. A wrong arity is a MISCOMPILE (the derived ABI
 misreads arguments), so the two independent statements of a kernel's arity in
 this table are cross-checked against each other rather than trusted separately.
 
 `params = []` deliberately means "borrow axis NOT audited", NOT "zero
 arguments", so it is only compared when non-empty — which is exactly why the
 arity is an explicit field instead of `List.length params`.
+
 -}
 devirtErrors : ( Name, Name ) -> KernelFacts -> List String
 devirtErrors ( home, name ) facts =
@@ -1109,6 +1113,7 @@ devirtErrors ( home, name ) facts =
                             else
                                 [ key ++ ": ShapeNoUnboxedScalarAt position out of range for arity " ++ String.fromInt arity ]
                    )
+
 
 dupKeyErrors : List String
 dupKeyErrors =

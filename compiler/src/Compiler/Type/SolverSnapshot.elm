@@ -15,28 +15,28 @@ IO monad.
 -}
 
 import Array exposing (Array)
-import System.TypeCheck.IO as IO
+import Compiler.Type.Vars as Vars
 
 
 {-| A type variable from the solver's union-find.
 -}
 type alias TypeVar =
-    IO.Variable
+    Vars.Variable
 
 
 {-| Snapshot of the solver's mutable arrays at the time of capture.
 -}
 type alias SolverState =
-    { cells : Array IO.PointCell
+    { cells : Array Vars.PointCell
     }
 
 
-resolveVariableHelp : Array IO.PointCell -> TypeVar -> TypeVar
+resolveVariableHelp : Array Vars.PointCell -> TypeVar -> TypeVar
 resolveVariableHelp cells var =
     case var of
-        IO.Pt idx ->
+        Vars.Pt idx ->
             case Array.get idx cells of
-                Just (IO.Chain parent) ->
+                Just (Vars.Chain parent) ->
                     resolveVariableHelp cells parent
 
                 _ ->

@@ -87,7 +87,6 @@ import Compiler.Reporting.Render.Type.Localizer as L
 import Data.Map
 import Dict exposing (Dict)
 import System.IO exposing (FilePath, MVar)
-import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
 import Utils.Main as Utils
@@ -122,7 +121,7 @@ debug backend withSourceMaps leadingLines root maybeBuildDir details (Build.Arti
         |> Task.andThen (generateDebugOutput backend withSourceMaps leadingLines root artifacts.pkg artifacts.roots)
 
 
-loadTypesAndFinalize : FilePath -> Maybe String -> Data.Map.Dict String TypeCheck.Canonical I.DependencyInterface -> List Build.Module -> LoadingObjects -> Task Exit.Generate ( Objects, Extract.Types )
+loadTypesAndFinalize : FilePath -> Maybe String -> Data.Map.Dict String ModuleName.Canonical I.DependencyInterface -> List Build.Module -> LoadingObjects -> Task Exit.Generate ( Objects, Extract.Types )
 loadTypesAndFinalize root maybeBuildDir ifaces modules loading =
     loadTypes root maybeBuildDir ifaces modules
         |> Task.andThen (finalizeObjectsWithTypes loading)
@@ -150,7 +149,7 @@ generateDebugOutput backend withSourceMaps leadingLines root pkg roots ( objects
         |> Task.map (generateWithBackend backend leadingLines mode graph mains)
 
 
-generateWithBackend : CodeGen.CodeGen -> Int -> Mode.Mode -> Opt.GlobalGraph -> Data.Map.Dict String TypeCheck.Canonical Opt.Main -> CodeGen.SourceMaps -> CodeGen.Output
+generateWithBackend : CodeGen.CodeGen -> Int -> Mode.Mode -> Opt.GlobalGraph -> Data.Map.Dict String ModuleName.Canonical Opt.Main -> CodeGen.SourceMaps -> CodeGen.Output
 generateWithBackend backend leadingLines mode graph mains sourceMaps =
     backend.generate
         { sourceMaps = sourceMaps
@@ -238,7 +237,7 @@ repl backend root details ansi (Build.ReplArtifacts replArtifacts) name =
         |> Task.map (generateReplOutput backend ansi replArtifacts.localizer replArtifacts.home name replArtifacts.annotations)
 
 
-generateReplOutput : CodeGen.CodeGen -> Bool -> L.Localizer -> TypeCheck.Canonical -> N.Name -> Dict N.Name (Can.Annotation Name) -> Objects -> CodeGen.Output
+generateReplOutput : CodeGen.CodeGen -> Bool -> L.Localizer -> ModuleName.Canonical -> N.Name -> Dict N.Name (Can.Annotation Name) -> Objects -> CodeGen.Output
 generateReplOutput backend ansi localizer home name annotations objects =
     let
         graph : Opt.GlobalGraph
@@ -273,17 +272,17 @@ checkForDebugUses (Objects _ locals) =
 -- ====== GATHER MAINS ======
 
 
-gatherMains : Pkg.Name -> Objects -> NE.Nonempty Build.Root -> Data.Map.Dict String TypeCheck.Canonical Opt.Main
+gatherMains : Pkg.Name -> Objects -> NE.Nonempty Build.Root -> Data.Map.Dict String ModuleName.Canonical Opt.Main
 gatherMains pkg (Objects _ locals) roots =
     Data.Map.fromList ModuleName.toComparableCanonical (List.filterMap (lookupMain pkg locals) (NE.toList roots))
 
 
-lookupMain : Pkg.Name -> Dict ModuleName.Raw Opt.LocalGraph -> Build.Root -> Maybe ( TypeCheck.Canonical, Opt.Main )
+lookupMain : Pkg.Name -> Dict ModuleName.Raw Opt.LocalGraph -> Build.Root -> Maybe ( ModuleName.Canonical, Opt.Main )
 lookupMain pkg locals root =
     let
-        toPair : N.Name -> Opt.LocalGraph -> Maybe ( TypeCheck.Canonical, Opt.Main )
+        toPair : N.Name -> Opt.LocalGraph -> Maybe ( ModuleName.Canonical, Opt.Main )
         toPair name (Opt.LocalGraph maybeMain _ _) =
-            Maybe.map (Tuple.pair (TypeCheck.Canonical pkg name)) maybeMain
+            Maybe.map (Tuple.pair (ModuleName.Canonical pkg name)) maybeMain
     in
     case root of
         Build.Inside name ->
@@ -404,7 +403,7 @@ objectsToGlobalGraph (Objects globals locals) =
 -- ====== LOAD TYPES ======
 
 
-loadTypes : FilePath -> Maybe String -> Data.Map.Dict String TypeCheck.Canonical I.DependencyInterface -> List Build.Module -> Task Exit.Generate Extract.Types
+loadTypes : FilePath -> Maybe String -> Data.Map.Dict String ModuleName.Canonical I.DependencyInterface -> List Build.Module -> Task Exit.Generate Extract.Types
 loadTypes root maybeBuildDir ifaces modules =
     let
         -- Partition: Fresh modules already have interfaces in memory
@@ -431,7 +430,7 @@ loadTypes root maybeBuildDir ifaces modules =
         )
 
 
-collectAndMergeTypes : Data.Map.Dict String TypeCheck.Canonical I.DependencyInterface -> List Extract.Types -> List (MVar (Maybe Extract.Types)) -> Task Never (Result Exit.Generate Extract.Types)
+collectAndMergeTypes : Data.Map.Dict String ModuleName.Canonical I.DependencyInterface -> List Extract.Types -> List (MVar (Maybe Extract.Types)) -> Task Never (Result Exit.Generate Extract.Types)
 collectAndMergeTypes ifaces freshTypes mvars =
     let
         foreigns : Extract.Types

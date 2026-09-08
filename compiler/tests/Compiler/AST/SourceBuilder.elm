@@ -31,6 +31,7 @@ module Compiler.AST.SourceBuilder exposing
     , makePortModule
       -- Fuzzers
     , negateExpr
+    , opExpr
     , pAlias
     , pAnything
     , pChr
@@ -47,7 +48,6 @@ module Compiler.AST.SourceBuilder exposing
     , parensExpr
       -- Module builders
     , qualVarExpr
-    , opExpr
     , recordExpr
     , strExpr
       -- Type builders

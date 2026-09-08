@@ -1,14 +1,14 @@
 module TestLogic.Monomorphize.LssGroundingTest exposing (suite)
 
-{-| LSS_019 — standalone-member grounding (GAP-1,
+{-| LSS\_019 — standalone-member grounding (GAP-1,
 `plans/lss-fidelity-2-standalone-member-grounding.md`).
 
 Two layers:
 
 1.  PURE tests against `Engine.groundSetMembers` — the zonk-time rewrite
     itself: provisional→ground at a concrete arrow, deferral at a residual
-    arrow, idempotence (ground ids pass through untouched — the LSS_010
-    stability property), per-arrow-layout distinctness (the LSS_013 spine
+    arrow, idempotence (ground ids pass through untouched — the LSS\_010
+    stability property), per-arrow-layout distinctness (the LSS\_013 spine
     reading: a PAP stage's identity is (global × stage layout)), dedup of
     {provisional, its-own-ground}, and the no-growth property that makes
     rewrite-before-cap safe (plan §3.2 detail 3).
@@ -40,10 +40,10 @@ import Compiler.AST.SourceBuilder
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Eco.Config as Config
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.MonoSolver.Engine as Engine
 import Dict
 import Expect
-import System.TypeCheck.IO as IO
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
@@ -254,9 +254,9 @@ suite =
 -- ====== PURE FIXTURES ======
 
 
-homeM : IO.Canonical
+homeM : ModuleName.Canonical
 homeM =
-    IO.Canonical ( "author", "pkg" ) "M"
+    ModuleName.Canonical ( "author", "pkg" ) "M"
 
 
 gA : TOpt.Global

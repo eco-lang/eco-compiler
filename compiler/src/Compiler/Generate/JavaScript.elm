@@ -40,7 +40,6 @@ import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
 import Json.Encode as Encode
 import Maybe.Extra as Maybe
-import System.TypeCheck.IO as IO
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
@@ -137,7 +136,7 @@ generateSourceMaps sourceMaps leadingLines state =
 
 {-| Add a module's main function to the generation state.
 -}
-addMain : Mode.Mode -> Graph -> IO.Canonical -> Opt.Main -> State -> State
+addMain : Mode.Mode -> Graph -> ModuleName.Canonical -> Opt.Main -> State -> State
 addMain mode graph home _ state =
     addGlobal mode graph state (Opt.Global home "main")
 
@@ -167,7 +166,7 @@ Produces code that evaluates an expression and prints its value and type
 to the console, formatted for terminal display with optional ANSI colors.
 
 -}
-generateForRepl : Bool -> L.Localizer -> Opt.GlobalGraph -> IO.Canonical -> Name.Name -> Can.Annotation Name -> String
+generateForRepl : Bool -> L.Localizer -> Opt.GlobalGraph -> ModuleName.Canonical -> Name.Name -> Can.Annotation Name -> String
 generateForRepl ansi localizer (Opt.GlobalGraph graph _) home name (Can.Forall _ tipe) =
     let
         mode : Mode.Mode
@@ -190,7 +189,7 @@ generateForRepl ansi localizer (Opt.GlobalGraph graph _) home name (Can.Forall _
 
 {-| Generate code to print a REPL value with its type annotation to the console.
 -}
-print : Bool -> L.Localizer -> IO.Canonical -> Name.Name -> Can.Type Name -> String
+print : Bool -> L.Localizer -> ModuleName.Canonical -> Name.Name -> Can.Type Name -> String
 print ansi localizer home name tipe =
     let
         value : JsName.Name
@@ -241,7 +240,7 @@ Similar to generateForRepl but outputs via postMessage for use in browser
 environments. Returns a message object with name, value, and type fields.
 
 -}
-generateForReplEndpoint : L.Localizer -> Opt.GlobalGraph -> IO.Canonical -> Maybe Name.Name -> Can.Annotation Name -> String
+generateForReplEndpoint : L.Localizer -> Opt.GlobalGraph -> ModuleName.Canonical -> Maybe Name.Name -> Can.Annotation Name -> String
 generateForReplEndpoint localizer (Opt.GlobalGraph graph _) home maybeName (Can.Forall _ tipe) =
     let
         name : Name.Name
@@ -267,7 +266,7 @@ generateForReplEndpoint localizer (Opt.GlobalGraph graph _) home maybeName (Can.
 
 {-| Generate code to send a REPL value and type via postMessage for web workers.
 -}
-postMessage : L.Localizer -> IO.Canonical -> Maybe Name.Name -> Can.Type Name -> String
+postMessage : L.Localizer -> ModuleName.Canonical -> Maybe Name.Name -> Can.Type Name -> String
 postMessage localizer home maybeName tipe =
     let
         name : Name.Name
@@ -471,7 +470,7 @@ trackedVar (A.Region startPos _) (Opt.Global home name) code =
 {-| Check if a global is the Elm debugger module.
 -}
 isDebugger : Opt.Global -> Bool
-isDebugger (Opt.Global (IO.Canonical _ home) _) =
+isDebugger (Opt.Global (ModuleName.Canonical _ home) _) =
     home == Name.debugger
 
 
@@ -482,7 +481,7 @@ isDebugger (Opt.Global (IO.Canonical _ home) _) =
 {-| Generate JavaScript for mutually recursive definitions (cycles).
 -}
 generateCycle : Mode.Mode -> Opt.Global -> List Name.Name -> List ( Name.Name, Opt.Expr ) -> List Opt.Def -> JS.Stmt
-generateCycle mode (Opt.Global ((IO.Canonical _ module_) as home) _) names values functions =
+generateCycle mode (Opt.Global ((ModuleName.Canonical _ module_) as home) _) names values functions =
     JS.Block
         [ List.map (generateCycleFunc mode home) functions |> JS.Block
         , List.map (generateSafeCycle mode home) values |> JS.Block
@@ -512,7 +511,7 @@ generateCycle mode (Opt.Global ((IO.Canonical _ module_) as home) _) names value
 
 {-| Generate JavaScript for a function definition within a cycle.
 -}
-generateCycleFunc : Mode.Mode -> IO.Canonical -> Opt.Def -> JS.Stmt
+generateCycleFunc : Mode.Mode -> ModuleName.Canonical -> Opt.Def -> JS.Stmt
 generateCycleFunc mode home def =
     case def of
         Opt.Def _ name expr ->
@@ -524,14 +523,14 @@ generateCycleFunc mode home def =
 
 {-| Generate a thunk wrapper for a value definition within a cycle.
 -}
-generateSafeCycle : Mode.Mode -> IO.Canonical -> ( Name.Name, Opt.Expr ) -> JS.Stmt
+generateSafeCycle : Mode.Mode -> ModuleName.Canonical -> ( Name.Name, Opt.Expr ) -> JS.Stmt
 generateSafeCycle mode home ( name, expr ) =
     Expr.codeToStmtList (Expr.generate mode home expr) |> JS.FunctionStmt (JsName.fromCycle home name) []
 
 
 {-| Generate the real cycle definition that calls the thunk wrapper.
 -}
-generateRealCycle : IO.Canonical -> ( Name.Name, expr ) -> JS.Stmt
+generateRealCycle : ModuleName.Canonical -> ( Name.Name, expr ) -> JS.Stmt
 generateRealCycle home ( name, _ ) =
     let
         safeName : JsName.Name
@@ -682,7 +681,7 @@ generatePort mode (Opt.Global home name) makePort converter =
 {-| Generate JavaScript for an effect manager (commands/subscriptions/both).
 -}
 generateManager : Mode.Mode -> Graph -> Opt.Global -> Opt.EffectsType -> State -> State
-generateManager mode graph (Opt.Global ((IO.Canonical _ moduleName) as home) _) effectsType state =
+generateManager mode graph (Opt.Global ((ModuleName.Canonical _ moduleName) as home) _) effectsType state =
     let
         managerLVar : JS.LValue
         managerLVar =
@@ -702,8 +701,8 @@ generateManager mode graph (Opt.Global ((IO.Canonical _ moduleName) as home) _) 
 
 {-| Generate a leaf effect manager registration statement.
 -}
-generateLeaf : IO.Canonical -> Name.Name -> JS.Stmt
-generateLeaf ((IO.Canonical _ moduleName) as home) name =
+generateLeaf : ModuleName.Canonical -> Name.Name -> JS.Stmt
+generateLeaf ((ModuleName.Canonical _ moduleName) as home) name =
     JS.ExprCall leaf [ JS.ExprString moduleName ] |> JS.Var (JsName.fromGlobal home name)
 
 
@@ -716,7 +715,7 @@ leaf =
 
 {-| Helper to generate effect manager dependencies, arguments, and statements.
 -}
-generateManagerHelp : IO.Canonical -> Opt.EffectsType -> ( List Opt.Global, List JS.Expr, List JS.Stmt )
+generateManagerHelp : ModuleName.Canonical -> Opt.EffectsType -> ( List Opt.Global, List JS.Expr, List JS.Stmt )
 generateManagerHelp home effectsType =
     let
         dep : Name.Name -> Opt.Global
@@ -816,7 +815,7 @@ addSubTrie mode end ( name, trie ) =
 {-| A trie structure for organizing modules by their dotted name segments.
 -}
 type Trie
-    = Trie (Maybe ( IO.Canonical, Opt.Main )) (Dict Name.Name Trie)
+    = Trie (Maybe ( ModuleName.Canonical, Opt.Main )) (Dict Name.Name Trie)
 
 
 {-| Create an empty trie with no modules.
@@ -828,14 +827,14 @@ emptyTrie =
 
 {-| Add a module and its main function to the trie.
 -}
-addToTrie : IO.Canonical -> Opt.Main -> Trie -> Trie
-addToTrie ((IO.Canonical _ moduleName) as home) main trie =
+addToTrie : ModuleName.Canonical -> Opt.Main -> Trie -> Trie
+addToTrie ((ModuleName.Canonical _ moduleName) as home) main trie =
     segmentsToTrie home (Name.splitDots moduleName) main |> merge trie
 
 
 {-| Build a trie from a module's name segments and main function.
 -}
-segmentsToTrie : IO.Canonical -> List Name.Name -> Opt.Main -> Trie
+segmentsToTrie : ModuleName.Canonical -> List Name.Name -> Opt.Main -> Trie
 segmentsToTrie home segments main =
     case segments of
         [] ->

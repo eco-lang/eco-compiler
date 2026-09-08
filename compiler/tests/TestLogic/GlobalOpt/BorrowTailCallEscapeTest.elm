@@ -1,6 +1,6 @@
 module TestLogic.GlobalOpt.BorrowTailCallEscapeTest exposing (suite)
 
-{-| BORROW_005 scaffold (borrow-inference Phase 3, §U3.3): a `MonoTailCall`'s
+{-| BORROW\_005 scaffold (borrow-inference Phase 3, §U3.3): a `MonoTailCall`'s
 heap-typed args must be escape-seeded so their approximate lifetime never ends
 at or before the tail call — the analysis fact Phase 5 relies on to never
 place a drop after a tail call.

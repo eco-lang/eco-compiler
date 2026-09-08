@@ -7,7 +7,7 @@ A position holding a pap-able singleton `{p|X|k}` whose result-arrow slot
 is flex is the P0's largest sound class (1,030 direct): the only value
 obtainable by further-partially-applying a `p|X|k` value is `p|X|k+j`, so
 the settle sweep may write the successor member — strictly WITHIN declared
-arity (the arrow past the last parameter belongs to the body, LSS_013).
+arity (the arrow past the last parameter belongs to the body, LSS\_013).
 
 Fixture: `add3` (arity 3) partially applied to one arg and passed to a
 HOF. The HOF's param row then holds the head `{p|add3|1}` (the demand

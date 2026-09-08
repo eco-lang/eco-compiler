@@ -22,11 +22,11 @@ instances of ONE member id plus one consulting singleton call site:
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.BitSet as BitSet
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.GlobalOpt.AbiCloning as AbiCloning
 import Compiler.Reporting.Annotation as A
 import Dict
 import Expect
-import System.TypeCheck.IO as IO
 import Test exposing (Test)
 
 
@@ -110,9 +110,9 @@ member =
     99991
 
 
-home : IO.Canonical
+home : ModuleName.Canonical
 home =
-    IO.Canonical ( "author", "proj" ) "M"
+    ModuleName.Canonical ( "author", "proj" ) "M"
 
 
 intFn : Mono.LambdaSetAnno -> Mono.MonoType

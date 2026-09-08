@@ -21,9 +21,9 @@ to substitute chunk loop templates (behind `list.chunks`).
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 
 
 {-| The recognized elm/core List combinators, grouped by the template class
@@ -225,7 +225,7 @@ recognize (Mono.MonoGraph { registry }) =
         |> List.foldl
             (\( specId, entry ) acc ->
                 case entry of
-                    Just ( Mono.Global (IO.Canonical pkg "List") name, _ ) ->
+                    Just ( Mono.Global (ModuleName.Canonical pkg "List") name, _ ) ->
                         if pkg == Pkg.core then
                             case Dict.get name table of
                                 Just comb ->

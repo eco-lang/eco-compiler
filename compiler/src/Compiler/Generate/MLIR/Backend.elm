@@ -21,12 +21,12 @@ import Compiler.Generate.MLIR.Functions as Functions
 import Compiler.Generate.MLIR.Lambdas as Lambdas
 import Compiler.Generate.MLIR.TypeTable as TypeTable
 import Compiler.Generate.MLIR.Types as Types
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Compiler.Generate.Mode as Mode
 import Compiler.GlobalOpt.Borrow as Borrow
 import Compiler.GlobalOpt.Borrow.Facts as BorrowFacts
 import Compiler.GlobalOpt.MapTemplate as MapTemplate
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
+import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Compiler.Monomorphize.Registry as Registry
 import Dict
 import Eco.File
@@ -405,12 +405,12 @@ streamNodesCollectEncode ctx0 remaining tables =
 
 {-| U-T1.3.3 result-promotion selection (census-revised rule,
 plans/opt-tier1-aggregate-promotion.md): a spec is promoted iff
-  (a) it is a zero-capture function whose result is a tuple2/3,
-  (b) every RESULT-spine leaf of its body is a tuple literal of that
-      arity (spine = let/destruct bodies + case branches; MonoIf is a
-      recorded v1 scope cut), and
-  (c) at least one LET-BOUND direct call site exists somewhere in the
-      graph (otherwise the worker+shim would be pure overhead).
+(a) it is a zero-capture function whose result is a tuple2/3,
+(b) every RESULT-spine leaf of its body is a tuple literal of that
+arity (spine = let/destruct bodies + case branches; MonoIf is a
+recorded v1 scope cut), and
+(c) at least one LET-BOUND direct call site exists somewhere in the
+graph (otherwise the worker+shim would be pure overhead).
 Leaf-ness is NOT required — the census measured it empty and it buys no
 soundness. Workers/shims emit in `Functions.generateSretWorkerAndShim`;
 sites migrate per-site in `Expr.trySretLetBinding`.
@@ -512,6 +512,7 @@ buildSretPromoted config nodes =
                     )
                     Set.empty
                     nodes
+
             base =
                 Dict.filter (\specId _ -> Set.member specId calledInLetPosition) candidates
         in
@@ -803,134 +804,134 @@ psplitFixpoint ctorShapes ctorBySpec sretPromoted nodes iter prev =
 psplitOnePass : Mono.LayoutMap (List Mono.CtorShape) -> Dict.Dict Int Mono.CtorShape -> Dict.Dict Int Ctx.SretInfo -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int Ctx.PsplitInfo -> Dict.Dict Int Ctx.PsplitInfo
 psplitOnePass ctorShapes ctorBySpec sretPromoted nodes prev =
     let
-            planForParam ( name, monoTy ) body =
-                case monoTy of
-                    Mono.MTuple _ ts ->
+        planForParam ( name, monoTy ) body =
+            case monoTy of
+                Mono.MTuple _ ts ->
+                    let
+                        ar =
+                            List.length ts
+                    in
+                    if ar == 2 || ar == 3 then
                         let
-                            ar =
-                                List.length ts
+                            layout =
+                                Types.computeTupleLayout ts
+
+                            kind =
+                                if ar == 2 then
+                                    Mono.Tuple2Container
+
+                                else
+                                    Mono.Tuple3Container
                         in
-                        if (ar == 2 || ar == 3) then
-                            let
-                                layout =
-                                    Types.computeTupleLayout ts
-
-                                kind =
-                                    if ar == 2 then
-                                        Mono.Tuple2Container
-
-                                    else
-                                        Mono.Tuple3Container
-                            in
-                            if Expr.paramSplitAdmissible prev kind name body then
-                                Just { spec = Ctx.SplitTuple layout, slotTypes = Types.tupleSlotTypes layout }
-
-                            else
-                                Nothing
+                        if Expr.paramSplitAdmissible prev kind name body then
+                            Just { spec = Ctx.SplitTuple layout, slotTypes = Types.tupleSlotTypes layout }
 
                         else
                             Nothing
 
-                    Mono.MCustom _ _ _ _ ->
-                        case Mono.layoutMapGet monoTy ctorShapes of
-                            Just [ shape ] ->
-                                if List.length shape.fieldTypes >= 2 && List.length shape.fieldTypes <= 6 then
-                                    let
-                                        clayout =
-                                            Types.computeCtorLayout shape
-                                    in
-                                    if Expr.paramSplitAdmissible prev (Mono.CustomContainer shape.name) name body then
-                                        Just { spec = Ctx.SplitCtor clayout, slotTypes = Types.ctorSlotTypes clayout }
+                    else
+                        Nothing
 
-                                    else
-                                        Nothing
+                Mono.MCustom _ _ _ _ ->
+                    case Mono.layoutMapGet monoTy ctorShapes of
+                        Just [ shape ] ->
+                            if List.length shape.fieldTypes >= 2 && List.length shape.fieldTypes <= 6 then
+                                let
+                                    clayout =
+                                        Types.computeCtorLayout shape
+                                in
+                                if Expr.paramSplitAdmissible prev (Mono.CustomContainer shape.name) name body then
+                                    Just { spec = Ctx.SplitCtor clayout, slotTypes = Types.ctorSlotTypes clayout }
 
                                 else
                                     Nothing
 
-                            _ ->
+                            else
                                 Nothing
 
-                    _ ->
-                        Nothing
+                        _ ->
+                            Nothing
 
-            candidates =
-                Tuple.second
-                    (Array.foldl
-                        (\maybeNode ( specId, acc ) ->
-                            case maybeNode of
-                                Just (Mono.MonoDefine (Mono.MonoClosure cinfo cbody _) _) ->
-                                    if
-                                        List.isEmpty cinfo.captures
-                                            && not (List.isEmpty cinfo.params)
-                                            && not (Dict.member specId sretPromoted)
-                                    then
-                                        let
-                                            plans =
-                                                List.map (\p -> planForParam p cbody) cinfo.params
-                                        in
-                                        if List.any ((/=) Nothing) plans then
-                                            ( specId + 1, Dict.insert specId { paramPlans = plans } acc )
+                _ ->
+                    Nothing
 
-                                        else
-                                            ( specId + 1, acc )
+        candidates =
+            Tuple.second
+                (Array.foldl
+                    (\maybeNode ( specId, acc ) ->
+                        case maybeNode of
+                            Just (Mono.MonoDefine (Mono.MonoClosure cinfo cbody _) _) ->
+                                if
+                                    List.isEmpty cinfo.captures
+                                        && not (List.isEmpty cinfo.params)
+                                        && not (Dict.member specId sretPromoted)
+                                then
+                                    let
+                                        plans =
+                                            List.map (\p -> planForParam p cbody) cinfo.params
+                                    in
+                                    if List.any ((/=) Nothing) plans then
+                                        ( specId + 1, Dict.insert specId { paramPlans = plans } acc )
 
                                     else
                                         ( specId + 1, acc )
 
-                                _ ->
+                                else
                                     ( specId + 1, acc )
-                        )
-                        ( 0, Dict.empty )
-                        nodes
+
+                            _ ->
+                                ( specId + 1, acc )
                     )
+                    ( 0, Dict.empty )
+                    nodes
+                )
 
-            -- U-T1.3.7: seed the binder-shape dict with the node's own
-            -- params that round N-1 already split — inside the (future)
-            -- worker they are slot-form, so passing one to a callee's
-            -- admitted position is a free, migrating site.
-            seedShapes specId node =
-                case ( Dict.get specId prev, node ) of
-                    ( Just info, Mono.MonoDefine (Mono.MonoClosure cinfo _ _) _ ) ->
-                        List.map2 Tuple.pair cinfo.params info.paramPlans
-                            |> List.foldl
-                                (\( ( pname, _ ), mPlan ) sh ->
-                                    case mPlan of
-                                        Just plan ->
-                                            Dict.insert pname (psplitPlanShape plan) sh
+        -- U-T1.3.7: seed the binder-shape dict with the node's own
+        -- params that round N-1 already split — inside the (future)
+        -- worker they are slot-form, so passing one to a callee's
+        -- admitted position is a free, migrating site.
+        seedShapes specId node =
+            case ( Dict.get specId prev, node ) of
+                ( Just info, Mono.MonoDefine (Mono.MonoClosure cinfo _ _) _ ) ->
+                    List.map2 Tuple.pair cinfo.params info.paramPlans
+                        |> List.foldl
+                            (\( ( pname, _ ), mPlan ) sh ->
+                                case mPlan of
+                                    Just plan ->
+                                        Dict.insert pname (psplitPlanShape plan) sh
 
-                                        Nothing ->
-                                            sh
+                                    Nothing ->
+                                        sh
+                            )
+                            Dict.empty
+
+                _ ->
+                    Dict.empty
+
+        justified =
+            Tuple.second
+                (Array.foldl
+                    (\maybeNode ( specId, acc ) ->
+                        case maybeNode of
+                            Just node ->
+                                ( specId + 1
+                                , nodeExprs node
+                                    |> List.foldl
+                                        (\e acc2 ->
+                                            Tuple.second
+                                                (psplitScanExpr ctorBySpec sretPromoted candidates e ( seedShapes specId node, acc2 ))
+                                        )
+                                        acc
                                 )
-                                Dict.empty
 
-                    _ ->
-                        Dict.empty
-
-            justified =
-                Tuple.second
-                    (Array.foldl
-                        (\maybeNode ( specId, acc ) ->
-                            case maybeNode of
-                                Just node ->
-                                    ( specId + 1
-                                    , nodeExprs node
-                                        |> List.foldl
-                                            (\e acc2 ->
-                                                Tuple.second
-                                                    (psplitScanExpr ctorBySpec sretPromoted candidates e ( seedShapes specId node, acc2 ))
-                                            )
-                                            acc
-                                    )
-
-                                Nothing ->
-                                    ( specId + 1, acc )
-                        )
-                        ( 0, Set.empty )
-                        nodes
+                            Nothing ->
+                                ( specId + 1, acc )
                     )
-        in
-        Dict.filter (\specId _ -> Set.member specId justified) candidates
+                    ( 0, Set.empty )
+                    nodes
+                )
+    in
+    Dict.filter (\specId _ -> Set.member specId justified) candidates
 
 
 psplitPlanShape : Ctx.SlotPlan -> ( String, Int )
@@ -1090,11 +1091,17 @@ psplitScanDecider ctorBySpec sretPromoted candidates decider acc =
             acc
 
         Mono.Chain _ success failure ->
-            psplitScanDecider ctorBySpec sretPromoted candidates failure
+            psplitScanDecider ctorBySpec
+                sretPromoted
+                candidates
+                failure
                 (psplitScanDecider ctorBySpec sretPromoted candidates success acc)
 
         Mono.FanOut _ edges fallback ->
-            psplitScanDecider ctorBySpec sretPromoted candidates fallback
+            psplitScanDecider ctorBySpec
+                sretPromoted
+                candidates
+                fallback
                 (List.foldl (\( _, d ) a -> psplitScanDecider ctorBySpec sretPromoted candidates d a) acc edges)
 
 
@@ -1193,7 +1200,7 @@ buildCtorBySpec nodes =
 
 `CtorTag.embedsAsNullCons` excludes `Nothing` / `True` / `False` from
 `buildNullConsBySpec` because they predate the null-cons mechanism and carry no
-declaration-index tag — `Nothing` IS the merged Empty (REP_CONSTANT_001,
+declaration-index tag — `Nothing` IS the merged Empty (REP\_CONSTANT\_001,
 `eco.constant` kind 2). Their spec still compiles to a func.func whose whole
 body is that constant, so every reference paid an arity-0 CALL to fetch a
 compile-time constant (7,913 call sites across 436 duplicate `Maybe_Nothing`
@@ -1203,7 +1210,7 @@ directly, exactly as it already does for null-cons ctors.
 Scoped to `Nothing`: its result is a custom type, so the ABI is always
 `!eco.value` and the folded constant matches the call's result type. `True` /
 `False` are Bool-typed and reach codegen through `Test.IsBool` paths with their
-own ABI handling (CGEN_009), so they are deliberately left alone.
+own ABI handling (CGEN\_009), so they are deliberately left alone.
 
 -}
 buildConstCtorBySpec : Mono.SpecializationRegistry -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int String

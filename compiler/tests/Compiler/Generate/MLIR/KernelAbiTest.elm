@@ -16,10 +16,10 @@ through the intrinsic path.
 -}
 
 import Compiler.AST.Monomorphized as Mono
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Generate.MLIR.KernelAbi as KernelAbi
 import Expect
 import Mlir.Mlir as Mlir
-import System.TypeCheck.IO as IO
 import Test exposing (Test, describe, test)
 
 
@@ -501,9 +501,9 @@ boolType =
     Mono.MBool
 
 
-elmCoreBasics : IO.Canonical
+elmCoreBasics : ModuleName.Canonical
 elmCoreBasics =
-    IO.Canonical ( "elm", "core" ) "Basics"
+    ModuleName.Canonical ( "elm", "core" ) "Basics"
 
 
 ecoValue : Mlir.MlirType

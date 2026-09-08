@@ -1,7 +1,7 @@
 module TestLogic.Monomorphize.BorrowFenceTest exposing (suite)
 
-{-| LSS_024 — the Borrow fence (the §7.2 obligation of
-`plans/lss-layout-qualified-members.md`, amended BORROW_006).
+{-| LSS\_024 — the Borrow fence (the §7.2 obligation of
+`plans/lss-layout-qualified-members.md`, amended BORROW\_006).
 
 `Borrow.buildLambdaSigs` may store one representative's `BorrowSig` for a
 member only when the member's instances are fingerprint-unanimous; a
@@ -25,13 +25,13 @@ member id with a heap-typed (String) parameter:
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.BitSet as BitSet
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.GlobalOpt.Borrow as Borrow
 import Compiler.GlobalOpt.Borrow.Facts as Facts
 import Compiler.Reporting.Annotation as A
 import Dict
 import Expect
 import Set
-import System.TypeCheck.IO as IO
 import Test exposing (Test)
 
 
@@ -71,9 +71,9 @@ member =
     88881
 
 
-home : IO.Canonical
+home : ModuleName.Canonical
 home =
-    IO.Canonical ( "author", "proj" ) "M"
+    ModuleName.Canonical ( "author", "proj" ) "M"
 
 
 {-| Returns its String param — the param escapes into the result (owned).

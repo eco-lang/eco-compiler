@@ -25,8 +25,8 @@ import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
         , callExpr
-        , ctorExpr
         , caseExpr
+        , ctorExpr
         , intExpr
         , lambdaExpr
         , makeModuleWithTypedDefsUnionsAliases

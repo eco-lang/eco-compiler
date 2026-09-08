@@ -196,7 +196,8 @@ modelTest =
 
 opsFuzzer : Fuzzer (List ( Int, Int ))
 opsFuzzer =
-    Fuzz.listOfLengthBetween 0 24
+    Fuzz.listOfLengthBetween 0
+        24
         (Fuzz.pair (Fuzz.intRange 0 11) (Fuzz.intRange 0 11))
 
 

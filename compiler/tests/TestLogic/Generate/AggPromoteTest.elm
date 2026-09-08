@@ -16,8 +16,8 @@ import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.SourceBuilder as B
 import Compiler.Generate.MLIR.Expr as Expr
-import Expect
 import Dict
+import Expect
 import Set
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
@@ -242,9 +242,9 @@ findTupleLet expr =
             Nothing
 
 
-{-| good a b = let t = (a*2, b*3); (x, y) = t in x + y
-bad a b = let t = (a*2, b*3) in t -- escapes via return
-passed a b = let t = (a*2, b*3) in useTuple t -- escapes into a call
+{-| good a b = let t = (a\_2, b\_3); (x, y) = t in x + y
+bad a b = let t = (a\_2, b\_3) in t -- escapes via return
+passed a b = let t = (a\_2, b\_3) in useTuple t -- escapes into a call
 useTuple p = case p of (x, y) -> x + y
 -}
 fixtureModule =
@@ -315,6 +315,7 @@ fixtureModule =
                     ]
                     (B.callExpr (B.varExpr "useTuple") [ B.varExpr "t" ])
                 )
+
         ctorGoodBody =
             B.letExpr [ B.define "p" [] (B.callExpr (B.ctorExpr "MkPair") [ B.varExpr "a", B.varExpr "b" ]) ]
                 (B.caseExpr (B.varExpr "p")

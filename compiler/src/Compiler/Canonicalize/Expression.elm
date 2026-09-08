@@ -51,7 +51,6 @@ import Data.Map
 import Data.Set as EverySet
 import Dict exposing (Dict)
 import Prelude
-import System.TypeCheck.IO as IO
 import Utils.Main as Utils
 
 
@@ -1426,7 +1425,7 @@ findVarQual region env prefix name =
 
         Nothing ->
             let
-                (IO.Canonical pkg _) =
+                (ModuleName.Canonical pkg _) =
                     env.home
             in
             if Name.isKernel prefix && Pkg.isKernel pkg then

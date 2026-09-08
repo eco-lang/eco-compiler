@@ -23,6 +23,7 @@ canonicalize → constrain → solve) for the let axis lives in
 import Compiler.AST.Canonical as Can
 import Compiler.AST.CanonicalBuilder as CB
 import Compiler.Data.Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Expect
@@ -54,9 +55,9 @@ expectGenerationCompletes canonical =
 -- ====== NODE FABRICATION HELPERS ======
 
 
-basics : IO.Canonical
+basics : ModuleName.Canonical
 basics =
-    IO.Canonical ( "elm", "core" ) "Basics"
+    ModuleName.Canonical ( "elm", "core" ) "Basics"
 
 
 makeExpr : Int -> Can.Expr_ -> Can.Expr

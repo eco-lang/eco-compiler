@@ -49,7 +49,6 @@ import Compiler.Monomorphize.State as State exposing (MVarEnv, Substitution)
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Data.Map
 import Dict
-import System.TypeCheck.IO as IO
 import Utils.Crash
 
 
@@ -378,7 +377,7 @@ collectAllCustomTypes nodes =
 
 {-| Look up a union in GlobalTypeEnv by module and name.
 -}
-lookupUnion : TypeEnv.GlobalTypeEnv -> IO.Canonical -> Name -> Maybe Can.Union
+lookupUnion : TypeEnv.GlobalTypeEnv -> ModuleName.Canonical -> Name -> Maybe Can.Union
 lookupUnion typeEnv canonical typeName =
     case Data.Map.get ModuleName.toComparableCanonical canonical typeEnv of
         Nothing ->
@@ -399,7 +398,7 @@ Uses TypeSubst.applySubst to convert Can.Type Name to MonoType.
 runtime tags to constructors of types the runtime recognises (e.g. `Dict`).
 
 -}
-buildCompleteCtorShapes : IO.Canonical -> MVarEnv -> List Name -> List Mono.MonoType -> List Can.Ctor -> ( List Mono.CtorShape, MVarEnv )
+buildCompleteCtorShapes : ModuleName.Canonical -> MVarEnv -> List Name -> List Mono.MonoType -> List Can.Ctor -> ( List Mono.CtorShape, MVarEnv )
 buildCompleteCtorShapes home env vars monoArgs alts =
     let
         -- Allocate fresh MVarIds for each type parameter name and build the substitution
@@ -454,7 +453,7 @@ then applies the Int-keyed substitution.
 (see `Compiler.Data.CtorTag`).
 
 -}
-buildCtorShapeFromUnion : IO.Canonical -> MVarEnv -> Substitution -> Dict.Dict Name TypeIds.MVarId -> Can.Ctor -> ( Mono.CtorShape, MVarEnv )
+buildCtorShapeFromUnion : ModuleName.Canonical -> MVarEnv -> Substitution -> Dict.Dict Name TypeIds.MVarId -> Can.Ctor -> ( Mono.CtorShape, MVarEnv )
 buildCtorShapeFromUnion home env subst nameToId (Can.Ctor ctorData) =
     let
         monoFieldTypes =
@@ -582,7 +581,6 @@ computeCtorShapesForGraph globalTypeEnv nodes =
 
                 _ ->
                     acc
-
     in
     Mono.layoutMapFoldl (\monoType _ acc -> processCustomType monoType acc)
         Mono.layoutMapEmpty

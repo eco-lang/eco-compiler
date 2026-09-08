@@ -6,7 +6,7 @@ Runs the original engine and the solver engine on the identical input and
 compares their `MonoGraph` output by a **canonical serialization**: node
 structure rendered deeply, with every embedded type run through
 `Mono.toComparableMonoType` — which erases residual `MVar` ids (layout-erased
-`CEcoValue`s legitimately differ between engines, MONO_003) and canonicalizes
+`CEcoValue`s legitimately differ between engines, MONO\_003) and canonicalizes
 record-field dict ordering. This is more reliable than structural `==`, whose
 `Dict`/`Array` equality is insertion-order sensitive.
 
@@ -20,7 +20,7 @@ the harness greps for:
 `--optimize` note: `compiler/src` is compiled with `--optimize`, so
 `Debug.toString` is unavailable — hence the hand-written serializer.
 
-This is a comparison harness, not a fallback: neither engine's *output* is ever
+This is a comparison harness, not a fallback: neither engine's _output_ is ever
 built from the other. It imports the original driver's public `monomorphize` to
 run it (the point of A/B); the solver engine proper never does.
 
@@ -264,7 +264,12 @@ serExpr expr =
                 ++ "."
                 ++ name
                 ++ "):"
-                ++ (if home == "Debug" then "<debug-abi>" else ty t)
+                ++ (if home == "Debug" then
+                        "<debug-abi>"
+
+                    else
+                        ty t
+                   )
 
         Mono.MonoList _ exprs t ->
             "List[" ++ serExprs exprs ++ "]:" ++ ty t

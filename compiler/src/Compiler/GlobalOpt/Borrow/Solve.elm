@@ -1,7 +1,12 @@
 module Compiler.GlobalOpt.Borrow.Solve exposing
     ( Solved
+    , accessMode
+    , alphaOf
+    , ltAOf
+    , ltPOf
+    , reifiedOwned
     , solve
-    , accessMode, storageOwnedOf, reifiedOwned, ltAOf, ltPOf, alphaOf
+    , storageOwnedOf
     )
 
 {-| Staged borrow solving (design §9), two-index-space model (§7.1): the DSU

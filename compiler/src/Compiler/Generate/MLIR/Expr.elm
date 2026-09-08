@@ -5,8 +5,7 @@ module Compiler.Generate.MLIR.Expr exposing
     , emitSafepointHints
     , createDummyValue
     , collectLetBoundNames, addPlaceholderMappings
-    , tupleBinderPromotable, aggBinderPromotableWith, paramSplitAdmissible, scanChainForwardRefs
-    , lambdaIdToString
+    , aggBinderPromotableWith, lambdaIdToString, paramSplitAdmissible, scanChainForwardRefs, tupleBinderPromotable
     )
 
 {-| Expression generation for the MLIR backend.
@@ -52,6 +51,7 @@ import Array exposing (Array)
 import Compiler.AST.DecisionTree.Test as Test
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.MLIR.BytesFusion.Emit as BFEmit
 import Compiler.Generate.MLIR.BytesFusion.Reify as BFReify
@@ -59,12 +59,12 @@ import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Intrinsics as Intrinsics
 import Compiler.Generate.MLIR.KernelAbi as KernelAbi
 import Compiler.Generate.MLIR.Names as Names
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Compiler.Monomorphize.Closure as Closure
+import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Compiler.Monomorphize.Registry as Registry
 import Dict
 import Hex
@@ -72,7 +72,6 @@ import List.Extra as ListX
 import Mlir.Mlir exposing (MlirAttr(..), MlirBlock, MlirOp, MlirRegion(..), MlirType(..))
 import OrderedDict
 import Set
-import System.TypeCheck.IO as IO
 import Utils.Crash exposing (crash)
 
 
@@ -279,19 +278,21 @@ hasSelfCapture placeholderVar ops =
 -- ====== HELPER FUNCTIONS ======
 
 
-{-| LSS_031: which SYMBOL the stamped fast evaluator was emitted under.
+{-| LSS\_031: which SYMBOL the stamped fast evaluator was emitted under.
 
 A node's TOP-LEVEL closure is emitted by `Functions.generateNode` under
 `specIdToFuncName registry specId` and never under its own `lambdaId`; every
 other closure is emitted by `Lambdas.elm` under `lambdaIdToString lambdaId`.
 The stamp carries both so the `_fast_evaluator` symbol names something that
 actually exists.
+
 -}
 type alias FastRef =
     ( Mono.LambdaId, Maybe Mono.SpecId )
 
 
-{-| LSS_031: resolve a stamped fast evaluator to its emitted base symbol. -}
+{-| LSS\_031: resolve a stamped fast evaluator to its emitted base symbol.
+-}
 fastRefBaseName : Ctx.Context -> FastRef -> String
 fastRefBaseName ctx ( lambdaId, maybeSpec ) =
     case maybeSpec of
@@ -374,6 +375,7 @@ may see it; every other node CLEARS it before compiling its subtree —
 emitted bodies contain inline-grafted code the selection walk never saw,
 and a leaked flag would make-promote a tuple whose consumer is a boxed
 sink (the `eco.papExtend` aggregate-operand incident).
+
 -}
 generateExpr : Ctx.Context -> Mono.MonoExpr -> ExprResult
 generateExpr ctx0 expr =
@@ -1379,6 +1381,7 @@ final arm silently passes a mismatched primitive through ("no boxing solution
 plain flag checks — their classifiers already pinned the saturated mono shapes, and
 String and List both cross every ABI as `!eco.value`, so there is no SSA-type
 disagreement to test for.
+
 -}
 gateIntrinsic : Ctx.Context -> List ( String, MlirType ) -> Intrinsics.Intrinsic -> Maybe Intrinsics.Intrinsic
 gateIntrinsic ctx argsWithTypes intrinsic =
@@ -1947,7 +1950,7 @@ generateUnknownSegmentationCall ctx func args resultType _ =
     }
 
 
-{-| E2.7 (LSS_014): the staged-stamp match. `Just` iff the call carries an
+{-| E2.7 (LSS\_014): the staged-stamp match. `Just` iff the call carries an
 exact-instance stamp (`fastEvaluator` + `captureAbi`, `fastPapPrefix`
 ABSENT — staged PAPs are v3) and applies MORE args than the instance's
 first stage. Emission then splits: fast batch 1, generic remainder.
@@ -1966,7 +1969,7 @@ fastDispatchStampStaged callInfo args =
             Nothing
 
 
-{-| E2.7 (LSS_014): staged fast dispatch. The site applies more args than
+{-| E2.7 (LSS\_014): staged fast dispatch. The site applies more args than
 the stamped instance's first stage: emit the EXACT fast dispatch for batch 1
 (exactly `|abi.paramTypes|` args — saturating the instance's own stage, the
 same `remaining_arity` truthfulness contract as v1), then apply the
@@ -2164,7 +2167,7 @@ Contract (established by AbiCloning's guards, design §9.3):
   - the runtime value IS the instance (unique reachable instance of the
     singleton member; PAP forms excluded by the first-stage arity check);
   - `remaining_arity == List.length args` — the call exactly saturates
-    the instance's stage, so CGEN_052's truthfulness obligation is met by
+    the instance's stage, so CGEN\_052's truthfulness obligation is met by
     the instance's own shape;
   - args are passed at the fast clone's param ABI
     (`monoTypeToAbi abi.paramTypes`), captures load per
@@ -3289,7 +3292,7 @@ tryBytesEncodeFusion ctx func args =
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
                     case Registry.lookupSpecKey specId ctx.registry of
-                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _ ) ->
+                        Just ( Mono.Global (ModuleName.Canonical pkg moduleName) name, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Encode" && name == "encode" then
                                 case args of
                                     [ encoderExpr ] ->
@@ -3622,11 +3625,11 @@ emitPsplitSlotArg ctx plan arg =
 {-| U-T1.3.2c ctor-call inlining (plans/opt-tier1-aggregate-promotion.md):
 a SATURATED direct call to a constructor emits `eco.construct.custom`
 directly in the caller — the call overhead vanishes and the construct
-gains the caller's HEAP_034 inline-alloc diamond. Slot preparation is the
+gains the caller's HEAP\_034 inline-alloc diamond. Slot preparation is the
 same per-field ABI coercion the ctor function's own body performs
 (`Functions.generateCtor`), so tag, bitmap, and heap layout are identical
-(CGEN_020/026). Nullary ctors are EXCLUDED: their calls resolve to
-CAF-memoized / interned singletons (CGEN_068) — a fresh construct would
+(CGEN\_020/026). Nullary ctors are EXCLUDED: their calls resolve to
+CAF-memoized / interned singletons (CGEN\_068) — a fresh construct would
 ADD allocation. Applies at every saturated call position; promotable
 LET-BOUND candidates never reach here (the T1.3.1 hook intercepts them
 upstream and emits `eco.make.custom`).
@@ -3678,7 +3681,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                 maybeCoreInfo : Maybe ( String, String )
                 maybeCoreInfo =
                     case Registry.lookupSpecKey specId ctx.registry of
-                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _ ) ->
+                        Just ( Mono.Global (ModuleName.Canonical pkg moduleName) name, _ ) ->
                             if pkg == Pkg.core then
                                 Just ( moduleName, name )
 
@@ -3696,7 +3699,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                 maybeBytesEncodeArg : Maybe Mono.MonoExpr
                 maybeBytesEncodeArg =
                     case Registry.lookupSpecKey specId ctx.registry of
-                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _ ) ->
+                        Just ( Mono.Global (ModuleName.Canonical pkg moduleName) name, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Encode" && name == "encode" then
                                 case args of
                                     [ encoderExpr ] ->
@@ -3715,7 +3718,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                 maybeBytesDecodeArgs : Maybe ( Mono.MonoExpr, Mono.MonoExpr )
                 maybeBytesDecodeArgs =
                     case Registry.lookupSpecKey specId ctx.registry of
-                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _ ) ->
+                        Just ( Mono.Global (ModuleName.Canonical pkg moduleName) name, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Decode" && name == "decode" then
                                 case args of
                                     [ decoderExpr, bytesExpr ] ->
@@ -7349,6 +7352,7 @@ exempted and the alias set threads scope-wise through let bodies.
 Emission needs no alias handling: `generateLetSingle`'s no-ops alias path
 propagates the aggregate result type through `let a = t` bindings, and the
 dual-form projection keys off the root variable's context type.
+
 -}
 tupleBinderPromotable : Dict.Dict Name.Name Ctx.SplitParamInfo -> Dict.Dict Int Ctx.PsplitInfo -> Set.Set Name.Name -> Name.Name -> Mono.MonoType -> Mono.MonoExpr -> Bool
 tupleBinderPromotable splitParams psplitTable fwdRefd name tupleType body =
@@ -7436,7 +7440,7 @@ aggBinderPromotableWith kind name body =
 
 
 {-| U-T1.3.3 DECOMPOSED YIELDS (the old pass's proven shape, recorded in
-CGEN_064 Phase 3.4#1): an aggregate case RESULT would become a
+CGEN\_064 Phase 3.4#1): an aggregate case RESULT would become a
 struct-typed block argument crossing block boundaries — RS4GC rejects
 pointer-carrying first-class aggregates in its liveness sets. So a case
 on the result spine instead declares N SCALAR results: each alternative
@@ -7881,7 +7885,6 @@ psplitAllowPositions kind table =
         table
 
 
-
 isFunctionMonoType : Mono.MonoType -> Bool
 isFunctionMonoType ty =
     case ty of
@@ -8237,7 +8240,7 @@ isCustomKind kind =
 `eco.make.tuple2/3` producing `!eco.tuple2/3<...>` — no heap allocation,
 no GC-root hints (the result is not an `!eco.value`; its boxed elements'
 liveness is handled by RS4GC after SROA scalarises the struct —
-REP_AGG_001, pinned by `test/codegen/value_sroa_statepoint_llvm.mlir`).
+REP\_AGG\_001, pinned by `test/codegen/value_sroa_statepoint_llvm.mlir`).
 Element preparation (ordering, per-slot boxing discipline) mirrors
 `generateTupleCreate` exactly, so slot types agree with what the dual-form
 projection in `Patterns.generateMonoPath` expects.

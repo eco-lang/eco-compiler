@@ -1,4 +1,7 @@
-module Compiler.MonoSolver.Monomorphize exposing (monomorphize, monomorphizeWithReport)
+module Compiler.MonoSolver.Monomorphize exposing
+    ( monomorphize
+    , monomorphizeWithReport
+    )
 
 {-| The solver-based monomorphizer (Architecture C) — a drop-in replacement for
 `Compiler.Monomorphize.Monomorphize`, using the type checker's real HM
@@ -33,6 +36,13 @@ import Compiler.Data.CtorTag as CtorTag
 import Compiler.Data.Id as Id
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Eco.Config as Config
+import Compiler.Elm.ModuleName as ModuleName
+import Compiler.MonoSolver.Engine as Engine exposing (Failure(..), S, WorkItem(..))
+import Compiler.MonoSolver.KernelSetFacts as KernelSetFacts
+import Compiler.MonoSolver.LssInfer as LssInfer
+import Compiler.MonoSolver.Store as Store
+import Compiler.MonoSolver.Translate as Translate
+import Compiler.MonoSolver.Zonk as Zonk
 import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
 import Compiler.Monomorphize.EntryPrep as EntryPrep
 import Compiler.Monomorphize.KernelAbi as KernelAbi
@@ -41,13 +51,8 @@ import Compiler.Monomorphize.Prune as Prune
 import Compiler.Monomorphize.Registry as Registry
 import Compiler.Monomorphize.ResolveAccessorValues as ResolveAccessorValues
 import Compiler.Monomorphize.State as State
-import Compiler.MonoSolver.Engine as Engine exposing (Failure(..), S, WorkItem(..))
-import Compiler.MonoSolver.KernelSetFacts as KernelSetFacts
-import Compiler.MonoSolver.Store as Store
-import Compiler.MonoSolver.LssInfer as LssInfer
-import Compiler.MonoSolver.Translate as Translate
-import Compiler.MonoSolver.Zonk as Zonk
 import Compiler.Type.UnionFind as UF
+import Compiler.Type.Vars as Vars
 import Data.HashMap as HashMap
 import Data.Map as DMap
 import Data.Set as EverySet
@@ -70,9 +75,10 @@ monomorphize lssConfig entryPointName globalTypeEnv globalGraph =
 is pure and `compiler/src` cannot use `Debug.toString` — the census is plain
 string concatenation, printed to stderr by the Builder.
 
-Also the MONO_030 limits entry point: the Builder passes
+Also the MONO\_030 limits entry point: the Builder passes
 `ecoConfig.mono.limits` (env-overridable); the plain `monomorphize` wrapper
 defaults them, so test call sites are unchanged.
+
 -}
 monomorphizeWithReport : Config.LssConfig -> Config.SpecLimits -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String ( Mono.MonoGraph, Maybe String )
 monomorphizeWithReport lssConfig limits entryPointName globalTypeEnv globalGraph =
@@ -89,7 +95,7 @@ monomorphizeWithReport lssConfig limits entryPointName globalTypeEnv globalGraph
 
         Just ( mainGlobal, mainType ) ->
             let
-                mainHome : IO.Canonical
+                mainHome : ModuleName.Canonical
                 mainHome =
                     case mainGlobal of
                         TOpt.Global home _ ->
@@ -180,7 +186,7 @@ monomorphizeWithReport lssConfig limits entryPointName globalTypeEnv globalGraph
 registry entry whose node is a `TOpt.Ctor`/`Box` and whose stored type still
 carries ⊤: enrich its annotations from the set-biased union of ALL entries of
 the same ctor global (`Mono.enrichAnnotations`-folded — a ⊤ contributes
-nothing, sets union). Precision-monotone, structure untouched (MONO_029),
+nothing, sets union). Precision-monotone, structure untouched (MONO\_029),
 complete-union sound (AR-D2). One sweep; no fixpoint needed — the unions are
 final. No-op flag-off and for globals with a single all-⊤ entry.
 -}
@@ -299,13 +305,14 @@ The write rule (AR-D2 inheritance): a var slot may take the cell's set
 union iff the cell saw ZERO ⊤ contributors. Var contributors are benign —
 `lssFastOk` guarantees every Elm construction carrying an arrow reaches the
 slow path and leaves a mark (set or honest ⊤) on some sibling row, and
-kernel routes are marked at the boundary by the LSS_021/022 license or the
-LSS_004 poison — so an all-var-and-sets cell's union covers every possible
+kernel routes are marked at the boundary by the LSS\_021/022 license or the
+LSS\_004 poison — so an all-var-and-sets cell's union covers every possible
 inhabitant. A ⊤ contributor means unknown inhabitants: skip.
 
 ORDER IS LOAD-BEARING: this pass MUST run BEFORE `settleCtorRows`' ⊤-heal —
 the heal rewrites ⊤ positions to sets and would erase the contamination
 evidence this gate reads.
+
 -}
 settleVarCtorRows : S -> S
 settleVarCtorRows s =
@@ -340,7 +347,7 @@ settleVarCtorRows s =
 
             moduleOf key =
                 case key of
-                    Mono.Global (IO.Canonical _ vcModule) _ ->
+                    Mono.Global (ModuleName.Canonical _ vcModule) _ ->
                         vcModule
 
                     _ ->
@@ -636,6 +643,7 @@ Deliberately an INDEPENDENT implementation of the cellmap walk from the
 `varfix3` census that measured this class: the census must not share a
 classifier with its mechanism (the Aug-26 audit rule), which keeps its
 `lwould = 568` a genuine upper bound — this pass must write no more.
+
 -}
 settleVarLambda : S -> S
 settleVarLambda s =
@@ -835,11 +843,12 @@ settleVarLambda s =
 {-| The lambda-home table: mid → ( parameter count, cells of the body's type
 keyed RELATIVE to the lambda's own arrow, so `/r` is its result ).
 
-Several closures may share one mid (LSS_024). Merging their cells is the
+Several closures may share one mid (LSS\_024). Merging their cells is the
 unsplit-store union — a superset, and a ⊤/var at ANY instantiation
 contaminates rather than lies. Arity disagreement across instantiations makes
 the entry unusable (`arity = Nothing`), since the relative paths would not
 denote the same nodes.
+
 -}
 lambdaHomesOf : Array (Maybe Mono.MonoNode) -> Dict.Dict Int { arity : Maybe Int, cells : Dict.Dict String VarCell }
 lambdaHomesOf nodes =
@@ -1110,7 +1119,7 @@ successor writes. At any row position whose arrow holds a pap-able set
 (every member `p|X|k` / `g|X` / `c|X`) and whose RESULT arrow slot is flex,
 write the member-wise successor set `{p|X|k+j}` (j = args consumed at this
 arrow), STRICTLY within declared arity — the arrow past the last parameter
-belongs to the value the body produces (LSS_013), never this pass.
+belongs to the value the body produces (LSS\_013), never this pass.
 
 Sound unconditionally: the claim is type-level identity (the only value
 obtainable by further-partially-applying a `p|X|k` value is `p|X|k+j`),
@@ -1122,6 +1131,7 @@ Successor ids ride `LssInfer.papMemberKey`, the SAME key `injectPapMember`
 and `injectPapSuccessors` mint, so all paths unify (E9.2 one-identity).
 Bounded rounds: a write at depth d exposes the head for depth d+1 in the
 next round (the intra-row chains behind the census's 69.7 % interior mass).
+
 -}
 settleVarSuccessors : S -> S
 settleVarSuccessors s0 =
@@ -3699,14 +3709,14 @@ renderLssReport sFinal (Mono.MonoGraph g) =
     in
     String.join "\n"
         ([ "=== LSS census ==="
-        , "members: " ++ String.fromInt sFinal.nextMemberId ++ " total (" ++ String.fromInt lambdaCount ++ " source lambdas, " ++ String.fromInt internedCount ++ " interned)"
-        , "signatures: " ++ String.fromInt sigCount ++ " memoized (" ++ String.fromInt trivialCount ++ " trivial)"
-        , "sets zonked: " ++ String.fromInt stats.setsZonked ++ "; size histogram: " ++ histLine
-        , coverageLine
-        , provenanceLine
-        , ledgerLine
-        , settledLine
-        ]
+         , "members: " ++ String.fromInt sFinal.nextMemberId ++ " total (" ++ String.fromInt lambdaCount ++ " source lambdas, " ++ String.fromInt internedCount ++ " interned)"
+         , "signatures: " ++ String.fromInt sigCount ++ " memoized (" ++ String.fromInt trivialCount ++ " trivial)"
+         , "sets zonked: " ++ String.fromInt stats.setsZonked ++ "; size histogram: " ++ histLine
+         , coverageLine
+         , provenanceLine
+         , ledgerLine
+         , settledLine
+         ]
             -- §7.7: the liveness line appears ONLY when its own flag ran the
             -- census. Under `report` alone the counters are all zero, and a
             -- zero row reads as "measured, found nothing" rather than "never
@@ -3728,77 +3738,77 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                     []
                )
             ++ [ settledArrowLine
-        , "widened: bySize=" ++ String.fromInt stats.widenedBySize ++ " byKernel=" ++ String.fromInt stats.widenedByKernel ++ " byBudget=" ++ String.fromInt stats.widenedByBudget ++ " bySigSize=" ++ String.fromInt stats.sigStats.widenedBySigSize
-        , "widened sizes: " ++ widenedHistLine
-        , "join flush: rounds=" ++ String.fromInt stats.joinRounds ++ " retranslations=" ++ String.fromInt stats.retranslations
+               , "widened: bySize=" ++ String.fromInt stats.widenedBySize ++ " byKernel=" ++ String.fromInt stats.widenedByKernel ++ " byBudget=" ++ String.fromInt stats.widenedByBudget ++ " bySigSize=" ++ String.fromInt stats.sigStats.widenedBySigSize
+               , "widened sizes: " ++ widenedHistLine
+               , "join flush: rounds=" ++ String.fromInt stats.joinRounds ++ " retranslations=" ++ String.fromInt stats.retranslations
 
-        -- Substrate census (Phase 1, plans/lss-set-write-substrate.md).
-        , "set-writes: skip=" ++ String.fromInt stats.setWriteSkip ++ " flex=" ++ String.fromInt stats.setWriteFlex ++ " topJoin=" ++ String.fromInt stats.setWriteTopJoin ++ " union=" ++ String.fromInt stats.setWriteUnion ++ " slow=" ++ String.fromInt stats.setWriteSlow ++ " slotsMinted=" ++ String.fromInt stats.slotsMinted
-        , "joins: identical=" ++ String.fromInt stats.joinIdenticalHit ++ " noop=" ++ String.fromInt stats.joinNoop ++ " changed=" ++ String.fromInt stats.joinChanged ++ " completion=" ++ String.fromInt stats.completionJoins ++ " completionNoop=" ++ String.fromInt stats.completionJoinNoop
-        , "devirtDirect=" ++ String.fromInt stats.devirtDirect ++ " devirtKernel=" ++ String.fromInt stats.devirtKernel ++ " unqualifiedLambdaMints=" ++ String.fromInt stats.unqualifiedLambdaMints
+               -- Substrate census (Phase 1, plans/lss-set-write-substrate.md).
+               , "set-writes: skip=" ++ String.fromInt stats.setWriteSkip ++ " flex=" ++ String.fromInt stats.setWriteFlex ++ " topJoin=" ++ String.fromInt stats.setWriteTopJoin ++ " union=" ++ String.fromInt stats.setWriteUnion ++ " slow=" ++ String.fromInt stats.setWriteSlow ++ " slotsMinted=" ++ String.fromInt stats.slotsMinted
+               , "joins: identical=" ++ String.fromInt stats.joinIdenticalHit ++ " noop=" ++ String.fromInt stats.joinNoop ++ " changed=" ++ String.fromInt stats.joinChanged ++ " completion=" ++ String.fromInt stats.completionJoins ++ " completionNoop=" ++ String.fromInt stats.completionJoinNoop
+               , "devirtDirect=" ++ String.fromInt stats.devirtDirect ++ " devirtKernel=" ++ String.fromInt stats.devirtKernel ++ " unqualifiedLambdaMints=" ++ String.fromInt stats.unqualifiedLambdaMints
 
-        -- LSS_018 monitoring, derived FREE from implementation state at
-        -- report time (the per-event fidelity counters were removed after
-        -- their one-shot census — Run J: muTied=0 widenedByLet=672
-        -- localMultiBypass=469; see plan §7). Meaningful under lss.muTie;
-        -- reads 0 flag-off (tables are flag-gated).
-        , "muTie: tied=" ++ String.fromInt (Dict.size sFinal.lssMemberTable.muTied) ++ " qualifiedRecorded=" ++ String.fromInt (Dict.size sFinal.lssMemberTable.lambdaQualified)
+               -- LSS_018 monitoring, derived FREE from implementation state at
+               -- report time (the per-event fidelity counters were removed after
+               -- their one-shot census — Run J: muTied=0 widenedByLet=672
+               -- localMultiBypass=469; see plan §7). Meaningful under lss.muTie;
+               -- reads 0 flag-off (tables are flag-gated).
+               , "muTie: tied=" ++ String.fromInt (Dict.size sFinal.lssMemberTable.muTied) ++ " qualifiedRecorded=" ++ String.fromInt (Dict.size sFinal.lssMemberTable.lambdaQualified)
 
-        -- LSS_019 standalone-member grounding census
-        -- (plans/lss-fidelity-2-standalone-member-grounding.md §5):
-        -- `deferred` is the residual-arrow precision frontier.
-        , "grounding: grounded=" ++ String.fromInt stats.grounding.grounded ++ " deferred=" ++ String.fromInt stats.grounding.deferred
+               -- LSS_019 standalone-member grounding census
+               -- (plans/lss-fidelity-2-standalone-member-grounding.md §5):
+               -- `deferred` is the residual-arrow precision frontier.
+               , "grounding: grounded=" ++ String.fromInt stats.grounding.grounded ++ " deferred=" ++ String.fromInt stats.grounding.deferred
 
-        -- LSS_024 layout-qualification census
-        -- (plans/lss-layout-qualified-members.md §2.5): `shared` = id reuse
-        -- across distinct enclosing specs (the fix working), `fallback` =
-        -- mints with no captured widened key (expected 0), `tieBypass` =
-        -- §2.3 equal-id μ-tie bypasses. All 0 flag-off.
-        , "layoutQual: mints=" ++ String.fromInt stats.layoutQual.mints ++ " shared=" ++ String.fromInt stats.layoutQual.shared ++ " fallback=" ++ String.fromInt stats.layoutQual.fallback ++ " tieBypass=" ++ String.fromInt stats.layoutQual.tieBypass
-        , "instanceQual: applied=" ++ String.fromInt stats.layoutQual.instApplied ++ " capped=" ++ String.fromInt stats.layoutQual.instCapped ++ " rootSkip=" ++ String.fromInt stats.layoutQual.instRootSkip
+               -- LSS_024 layout-qualification census
+               -- (plans/lss-layout-qualified-members.md §2.5): `shared` = id reuse
+               -- across distinct enclosing specs (the fix working), `fallback` =
+               -- mints with no captured widened key (expected 0), `tieBypass` =
+               -- §2.3 equal-id μ-tie bypasses. All 0 flag-off.
+               , "layoutQual: mints=" ++ String.fromInt stats.layoutQual.mints ++ " shared=" ++ String.fromInt stats.layoutQual.shared ++ " fallback=" ++ String.fromInt stats.layoutQual.fallback ++ " tieBypass=" ++ String.fromInt stats.layoutQual.tieBypass
+               , "instanceQual: applied=" ++ String.fromInt stats.layoutQual.instApplied ++ " capped=" ++ String.fromInt stats.layoutQual.instCapped ++ " rootSkip=" ++ String.fromInt stats.layoutQual.instRootSkip
 
-        -- LSS_020 signature-flow census
-        -- (plans/lss-fidelity-3-signature-flow-completion.md §B.4):
-        -- widenedByCf/kernelFactHits/kernelLicensed are report-gated bumps,
-        -- so they read 0 unless ECO_MONO_LSS_REPORT was on for the run.
-        -- LSS_022: kernelFactHits counts POSITIONAL row applications and
-        -- kernelLicensed counts TypeFaithful pass-throughs — disjoint tiers,
-        -- and only the former can also appear in widenedByKernel.
-        , "sigflow: widenedByCf=" ++ String.fromInt stats.sigStats.widenedByCf ++ " kernelFactHits=" ++ String.fromInt stats.sigStats.kernelFactHits ++ " kernelLicensed=" ++ String.fromInt stats.sigStats.kernelLicensed ++ " edges=" ++ String.fromInt stats.sigStats.edgesInstalled ++ " degraded=" ++ String.fromInt stats.sigStats.flowDegraded
+               -- LSS_020 signature-flow census
+               -- (plans/lss-fidelity-3-signature-flow-completion.md §B.4):
+               -- widenedByCf/kernelFactHits/kernelLicensed are report-gated bumps,
+               -- so they read 0 unless ECO_MONO_LSS_REPORT was on for the run.
+               -- LSS_022: kernelFactHits counts POSITIONAL row applications and
+               -- kernelLicensed counts TypeFaithful pass-throughs — disjoint tiers,
+               -- and only the former can also appear in widenedByKernel.
+               , "sigflow: widenedByCf=" ++ String.fromInt stats.sigStats.widenedByCf ++ " kernelFactHits=" ++ String.fromInt stats.sigStats.kernelFactHits ++ " kernelLicensed=" ++ String.fromInt stats.sigStats.kernelLicensed ++ " edges=" ++ String.fromInt stats.sigStats.edgesInstalled ++ " degraded=" ++ String.fromInt stats.sigStats.flowDegraded
 
-        -- LSS_026(a) honest ∅-as-source: how often a members-carrying
-        -- resolution crossed a dangling (FlexVar) inflow and was widened to
-        -- ⊤ rather than published as a false-COMPLETE set — signature side /
-        -- demand side. Unconditional policy counters. The `ARGF` block below
-        -- is the LSS census and is report-gated.
-        , "honestSources: topMixedFlex=" ++ String.fromInt stats.sigStats.topMixedFlexSig ++ "/" ++ String.fromInt stats.sigStats.topMixedFlexDemand
+               -- LSS_026(a) honest ∅-as-source: how often a members-carrying
+               -- resolution crossed a dangling (FlexVar) inflow and was widened to
+               -- ⊤ rather than published as a false-COMPLETE set — signature side /
+               -- demand side. Unconditional policy counters. The `ARGF` block below
+               -- is the LSS census and is report-gated.
+               , "honestSources: topMixedFlex=" ++ String.fromInt stats.sigStats.topMixedFlexSig ++ "/" ++ String.fromInt stats.sigStats.topMixedFlexDemand
 
-        -- Multi-set census (M3): distinct ARROW POSITIONS carrying a
-        -- multi-member set, which is the question `sizeHist`'s per-readback
-        -- counting cannot answer. `readbacks` is the ledger's kN for contrast:
-        -- positions << readbacks means a few hot arrows, positions ~ readbacks
-        -- means a broad population.
-        , "multisets: arrows=" ++ String.fromInt (Dict.size stats.sigStats.multiSetsByArrow) ++ " readbacks=" ++ String.fromInt ledgerKN ++ " byK=" ++ multiSetArrowHist
-        , argFlowCensusBlock stats.sigStats.argFlowCensus
-        , multiSetCensusBlock stats.sigStats.multiSetsByArrow sFinal.lssMemberTable
+               -- Multi-set census (M3): distinct ARROW POSITIONS carrying a
+               -- multi-member set, which is the question `sizeHist`'s per-readback
+               -- counting cannot answer. `readbacks` is the ledger's kN for contrast:
+               -- positions << readbacks means a few hot arrows, positions ~ readbacks
+               -- means a broad population.
+               , "multisets: arrows=" ++ String.fromInt (Dict.size stats.sigStats.multiSetsByArrow) ++ " readbacks=" ++ String.fromInt ledgerKN ++ " byK=" ++ multiSetArrowHist
+               , argFlowCensusBlock stats.sigStats.argFlowCensus
+               , multiSetCensusBlock stats.sigStats.multiSetsByArrow sFinal.lssMemberTable
 
-        -- Census (2026-07-21): E9.2 guard-decline split (declinedKernelCNumber
-        -- = the E10.0 `declinedUnsettled` proxy) + the whitelist-growth list.
-        , "kernel declines: shape=" ++ String.fromInt stats.declinedKernelShape ++ " cnumber=" ++ String.fromInt stats.declinedKernelCNumber ++ " emission=" ++ String.fromInt stats.declinedKernelEmission ++ " arity=" ++ String.fromInt stats.declinedKernelArity
-        , "kernel whitelist misses: " ++ kernelMissLine
-        , "kernel licenses REFUSED at the occurrence: "
-            ++ (if Dict.isEmpty stats.kernelUnsolvedHist then
-                    "(none)"
+               -- Census (2026-07-21): E9.2 guard-decline split (declinedKernelCNumber
+               -- = the E10.0 `declinedUnsettled` proxy) + the whitelist-growth list.
+               , "kernel declines: shape=" ++ String.fromInt stats.declinedKernelShape ++ " cnumber=" ++ String.fromInt stats.declinedKernelCNumber ++ " emission=" ++ String.fromInt stats.declinedKernelEmission ++ " arity=" ++ String.fromInt stats.declinedKernelArity
+               , "kernel whitelist misses: " ++ kernelMissLine
+               , "kernel licenses REFUSED at the occurrence: "
+                    ++ (if Dict.isEmpty stats.kernelUnsolvedHist then
+                            "(none)"
 
-                else
-                    String.join " "
-                        (List.map (\( k, v ) -> k ++ "=" ++ String.fromInt v)
-                            (List.sortBy (\( _, v ) -> -v) (Dict.toList stats.kernelUnsolvedHist))
-                        )
-               )
-        , "top specs/global: " ++ topSpecs
-        , "=================="
-        ]
+                        else
+                            String.join " "
+                                (List.map (\( k, v ) -> k ++ "=" ++ String.fromInt v)
+                                    (List.sortBy (\( _, v ) -> -v) (Dict.toList stats.kernelUnsolvedHist))
+                                )
+                       )
+               , "top specs/global: " ++ topSpecs
+               , "=================="
+               ]
         )
 
 
@@ -3817,6 +3827,7 @@ the analysis found genuine alternatives — or does it appear only when slot
 sharing is on, i.e. merge-induced?
 
 Empty (a single marker line) when the run was not report-gated.
+
 -}
 multiSetCensusBlock : Dict.Dict Int (List Int) -> Engine.LssMemberTable -> String
 multiSetCensusBlock byArrow memberTable =
@@ -3842,7 +3853,7 @@ multiSetCensusBlock byArrow memberTable =
             )
 
 
-{-| LSS_026 Phase-0 census dump (plans/lss-gap2-callarg-transport.md §2.1):
+{-| LSS\_026 Phase-0 census dump (plans/lss-gap2-callarg-transport.md §2.1):
 one `ARGF\t<key>\t<count>` line per key, sorted by key so two runs of the
 same tree produce byte-identical blocks (the census rail — compare as
 multisets, never by line index). Empty (a single marker line) when the run
@@ -3864,7 +3875,7 @@ argFlowCensusBlock census =
 -- ====== INITIAL STATE ======
 
 
-initState : Config.LssConfig -> Config.SpecLimits -> IO.Canonical -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> AssignMVarIds.GlobalMVarState -> S
+initState : Config.LssConfig -> Config.SpecLimits -> ModuleName.Canonical -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> AssignMVarIds.GlobalMVarState -> S
 initState lssConfig limits currentModule nodes annotations globalTypeEnv mvarState =
     { worklist = []
     , nodes = Array.empty
@@ -3926,7 +3937,6 @@ initState lssConfig limits currentModule nodes annotations globalTypeEnv mvarSta
     , localMulti = []
     , derivedDestructors = Dict.empty
     , localCanTypes = Dict.empty
-
     , dirtySpecs = BitSet.empty
     , dirtyList = []
     , specCountByGlobal = Dict.empty
@@ -3960,7 +3970,7 @@ parseKeyedGlobal entry =
                     else
                         Just
                             (Mono.Global
-                                (IO.Canonical ( author, project ) (String.join "." (List.reverse revModSegs)))
+                                (ModuleName.Canonical ( author, project ) (String.join "." (List.reverse revModSegs)))
                                 valueName
                             )
 
@@ -4094,7 +4104,7 @@ drain s =
                     drain s1
 
 
-{-| LSS_010 flush-round cap. Real programs stabilize in a handful of
+{-| LSS\_010 flush-round cap. Real programs stabilize in a handful of
 rounds (set-flow chain depth); triple digits means something is
 oscillating and must fail loudly rather than spin.
 -}
@@ -4222,207 +4232,207 @@ processItem specId s =
                                         )
 
                                 else
-                                case specializeNodeSaturating 1 name home node monoType sItem2 of
-                                    Err e ->
-                                        Err e
+                                    case specializeNodeSaturating 1 name home node monoType sItem2 of
+                                        Err e ->
+                                            Err e
 
-                                    Ok ( monoNode0, s1raw ) ->
-                                        let
-                                            -- Harvest Join-R number taints from this item's store into
-                                            -- the global super table before the store is discarded —
-                                            -- EXCLUDING the node's own annotation vars (per-spec, memoized).
-                                            s1 =
-                                                Engine.harvestSuperTableExcept resolution.annIds s1raw
+                                        Ok ( monoNode0, s1raw ) ->
+                                            let
+                                                -- Harvest Join-R number taints from this item's store into
+                                                -- the global super table before the store is discarded —
+                                                -- EXCLUDING the node's own annotation vars (per-spec, memoized).
+                                                s1 =
+                                                    Engine.harvestSuperTableExcept resolution.annIds s1raw
 
-                                            ( monoNode, newLambdaCounter ) =
-                                                ResolveAccessorValues.rewriteNode home s1.lambdaCounter monoNode0
+                                                ( monoNode, newLambdaCounter ) =
+                                                    ResolveAccessorValues.rewriteNode home s1.lambdaCounter monoNode0
 
-                                            actualType =
-                                                Mono.nodeType monoNode
+                                                actualType =
+                                                    Mono.nodeType monoNode
 
-                                            -- LSS_010 registry-join invariant (found by
-                                            -- E9): for a NON-body node (ctor/enum/box/
-                                            -- kernel/manager) `nodeType` is the VALUE/
-                                            -- result type, and overwriting the stored
-                                            -- FUNCTION-typed demand with it makes every
-                                            -- later same-key enqueue mismatch-join —
-                                            -- storedChanged oscillates and the flush
-                                            -- never converges (and a re-translation
-                                            -- would feed the value type to the ctor
-                                            -- scheme unify — a crash). Keep the demand
-                                            -- for those; body-bearing nodes keep the
-                                            -- actualType update they need.
-                                            -- Phase 4a: run the completion join
-                                            -- ONCE, keeping its changed flag for
-                                            -- both the registry write and the
-                                            -- census. `Just` exactly when the
-                                            -- join site is live (lss on + a
-                                            -- body-bearing node).
-                                            completionJoin =
-                                                if s1.env.lss.enabled && nodeSupportsRetranslation node then
-                                                    case Registry.lookupSpecKey specId s1.registry of
-                                                        Just ( specKey, storedT ) ->
-                                                            let
-                                                                ( changedJ, joined0 ) =
-                                                                    Mono.joinAnnotationsChanged actualType storedT
+                                                -- LSS_010 registry-join invariant (found by
+                                                -- E9): for a NON-body node (ctor/enum/box/
+                                                -- kernel/manager) `nodeType` is the VALUE/
+                                                -- result type, and overwriting the stored
+                                                -- FUNCTION-typed demand with it makes every
+                                                -- later same-key enqueue mismatch-join —
+                                                -- storedChanged oscillates and the flush
+                                                -- never converges (and a re-translation
+                                                -- would feed the value type to the ctor
+                                                -- scheme unify — a crash). Keep the demand
+                                                -- for those; body-bearing nodes keep the
+                                                -- actualType update they need.
+                                                -- Phase 4a: run the completion join
+                                                -- ONCE, keeping its changed flag for
+                                                -- both the registry write and the
+                                                -- census. `Just` exactly when the
+                                                -- join site is live (lss on + a
+                                                -- body-bearing node).
+                                                completionJoin =
+                                                    if s1.env.lss.enabled && nodeSupportsRetranslation node then
+                                                        case Registry.lookupSpecKey specId s1.registry of
+                                                            Just ( specKey, storedT ) ->
+                                                                let
+                                                                    ( changedJ, joined0 ) =
+                                                                        Mono.joinAnnotationsChanged actualType storedT
 
-                                                                -- P0 join-collision census
-                                                                -- (plans/lss-provenance-join-and-demand-sigs.md
-                                                                -- §4.1, site 1): cells on the RAW
-                                                                -- pair, BEFORE the L1 re-stamp, so
-                                                                -- the census sees the collisions
-                                                                -- the stamp currently masks.
-                                                                -- aVar = the body zonk was ignorant;
-                                                                -- sVar = every demand was ignorant.
-                                                                censusCells =
-                                                                    if s1.env.lss.report then
-                                                                        case specKey of
-                                                                            Mono.Global jcHome jcName ->
-                                                                                Mono.joinCollisionCells
-                                                                                    (LssInfer.declaredArityOf (TOpt.Global jcHome jcName) 8 s1)
-                                                                                    actualType
-                                                                                    storedT
+                                                                    -- P0 join-collision census
+                                                                    -- (plans/lss-provenance-join-and-demand-sigs.md
+                                                                    -- §4.1, site 1): cells on the RAW
+                                                                    -- pair, BEFORE the L1 re-stamp, so
+                                                                    -- the census sees the collisions
+                                                                    -- the stamp currently masks.
+                                                                    -- aVar = the body zonk was ignorant;
+                                                                    -- sVar = every demand was ignorant.
+                                                                    censusCells =
+                                                                        if s1.env.lss.report then
+                                                                            case specKey of
+                                                                                Mono.Global jcHome jcName ->
+                                                                                    Mono.joinCollisionCells
+                                                                                        (LssInfer.declaredArityOf (TOpt.Global jcHome jcName) 8 s1)
+                                                                                        actualType
+                                                                                        storedT
 
-                                                                            _ ->
-                                                                                []
+                                                                                _ ->
+                                                                                    []
 
-                                                                    else
-                                                                        []
+                                                                        else
+                                                                            []
 
-                                                                -- P1 restatement-⊤ recovery
-                                                                -- (plans/lss-provenance-join-and-demand-sigs.md
-                                                                -- §4.3): licensed kernel-alias
-                                                                -- nodes only. Where the join
-                                                                -- reads ⊤ but the stored type
-                                                                -- held a complete LSet, the ⊤
-                                                                -- is the ABI rebuild's
-                                                                -- placeholder restating an
-                                                                -- ignorance the license already
-                                                                -- discharges — recover the
-                                                                -- stored set. Runs BEFORE the
-                                                                -- L1 stamp (AR-P1-5: the stamp
-                                                                -- never overwrites an LSet, so
-                                                                -- the pair is idempotent).
-                                                                ( joinedR, recoveredN ) =
-                                                                    if s1.env.lss.rsTop && licensedKernelAliasNode node s1 then
-                                                                        Mono.recoverStoredSets joined0 storedT
+                                                                    -- P1 restatement-⊤ recovery
+                                                                    -- (plans/lss-provenance-join-and-demand-sigs.md
+                                                                    -- §4.3): licensed kernel-alias
+                                                                    -- nodes only. Where the join
+                                                                    -- reads ⊤ but the stored type
+                                                                    -- held a complete LSet, the ⊤
+                                                                    -- is the ABI rebuild's
+                                                                    -- placeholder restating an
+                                                                    -- ignorance the license already
+                                                                    -- discharges — recover the
+                                                                    -- stored set. Runs BEFORE the
+                                                                    -- L1 stamp (AR-P1-5: the stamp
+                                                                    -- never overwrites an LSet, so
+                                                                    -- the pair is idempotent).
+                                                                    ( joinedR, recoveredN ) =
+                                                                        if s1.env.lss.rsTop && licensedKernelAliasNode node s1 then
+                                                                            Mono.recoverStoredSets joined0 storedT
 
-                                                                    else
-                                                                        ( joined0, 0 )
+                                                                        else
+                                                                            ( joined0, 0 )
 
-                                                                -- L1 (plans/lss-coverage-four-levers.md
-                                                                -- §1.1): re-stamp the self spine on the
-                                                                -- FINALIZED stored type. Heals the two
-                                                                -- head-⊤ manufacturers (the kernel-ABI
-                                                                -- rebuild's hardcoded ⊤ — whose store is
-                                                                -- never read, so no store-side fix can
-                                                                -- work — and the slot-split LSet∪LVar=⊤
-                                                                -- join). stampSpineGo is idempotent and
-                                                                -- never overwrites an LSet, so the write
-                                                                -- stays monotone; the changed flag is
-                                                                -- deliberately NOT recomputed (AR-2: the
-                                                                -- stamp enriches future demands and the
-                                                                -- census, it does not need a re-flush).
-                                                                joined1 =
-                                                                    if s1.env.lss.injTotal then
-                                                                        case specKey of
-                                                                            Mono.Global sgHome sgName ->
-                                                                                case Translate.stampSelfSpine (TOpt.Global sgHome sgName) joinedR s1 of
-                                                                                    Ok ( stamped, _ ) ->
-                                                                                        stamped
+                                                                    -- L1 (plans/lss-coverage-four-levers.md
+                                                                    -- §1.1): re-stamp the self spine on the
+                                                                    -- FINALIZED stored type. Heals the two
+                                                                    -- head-⊤ manufacturers (the kernel-ABI
+                                                                    -- rebuild's hardcoded ⊤ — whose store is
+                                                                    -- never read, so no store-side fix can
+                                                                    -- work — and the slot-split LSet∪LVar=⊤
+                                                                    -- join). stampSpineGo is idempotent and
+                                                                    -- never overwrites an LSet, so the write
+                                                                    -- stays monotone; the changed flag is
+                                                                    -- deliberately NOT recomputed (AR-2: the
+                                                                    -- stamp enriches future demands and the
+                                                                    -- census, it does not need a re-flush).
+                                                                    joined1 =
+                                                                        if s1.env.lss.injTotal then
+                                                                            case specKey of
+                                                                                Mono.Global sgHome sgName ->
+                                                                                    case Translate.stampSelfSpine (TOpt.Global sgHome sgName) joinedR s1 of
+                                                                                        Ok ( stamped, _ ) ->
+                                                                                            stamped
 
-                                                                                    Err _ ->
-                                                                                        joinedR
+                                                                                        Err _ ->
+                                                                                            joinedR
 
-                                                                            _ ->
-                                                                                -- Accessor keys: no self
-                                                                                -- global to stamp (AR-3).
-                                                                                joinedR
+                                                                                _ ->
+                                                                                    -- Accessor keys: no self
+                                                                                    -- global to stamp (AR-3).
+                                                                                    joinedR
 
-                                                                    else
-                                                                        joinedR
+                                                                        else
+                                                                            joinedR
 
-                                                                -- P1 census: one cell per
-                                                                -- recovered position (report-
-                                                                -- gated inside the bump).
-                                                                censusCells1 =
-                                                                    List.repeat recoveredN "rsTop|recovered" ++ censusCells
-                                                            in
-                                                            Just ( changedJ, joined1, censusCells1 )
+                                                                    -- P1 census: one cell per
+                                                                    -- recovered position (report-
+                                                                    -- gated inside the bump).
+                                                                    censusCells1 =
+                                                                        List.repeat recoveredN "rsTop|recovered" ++ censusCells
+                                                                in
+                                                                Just ( changedJ, joined1, censusCells1 )
 
-                                                        Nothing ->
-                                                            Just ( False, actualType, [] )
+                                                            Nothing ->
+                                                                Just ( False, actualType, [] )
 
-                                                else
-                                                    Nothing
+                                                    else
+                                                        Nothing
 
-                                            registry2 =
-                                                if nodeSupportsRetranslation node then
-                                                    -- LSS_010 monotonicity (found by E9): the
-                                                    -- registry entry is the JOIN of every
-                                                    -- admitted demand's annotations; a plain
-                                                    -- actualType overwrite DISCARDS demand-side
-                                                    -- members the body's own zonk doesn't carry
-                                                    -- (arg-side injected globals), so join-grow /
-                                                    -- update-shrink ping-pongs the flush forever
-                                                    -- ("registry/actualType oscillation").
-                                                    -- Structure from actualType, annos UNIONED
-                                                    -- with the stored entry. Flag-off the annos
-                                                    -- are all LTop — keep the byte-identical
-                                                    -- plain update there.
-                                                    --
-                                                    -- Phase 4a: the changed flag does NOT gate
-                                                    -- this write. `False` means the join result
-                                                    -- IS actualType by pointer, but the registry
-                                                    -- still holds storedT, so the update must run
-                                                    -- either way — the win here is the elided
-                                                    -- rebuild, not an elided write.
+                                                registry2 =
+                                                    if nodeSupportsRetranslation node then
+                                                        -- LSS_010 monotonicity (found by E9): the
+                                                        -- registry entry is the JOIN of every
+                                                        -- admitted demand's annotations; a plain
+                                                        -- actualType overwrite DISCARDS demand-side
+                                                        -- members the body's own zonk doesn't carry
+                                                        -- (arg-side injected globals), so join-grow /
+                                                        -- update-shrink ping-pongs the flush forever
+                                                        -- ("registry/actualType oscillation").
+                                                        -- Structure from actualType, annos UNIONED
+                                                        -- with the stored entry. Flag-off the annos
+                                                        -- are all LTop — keep the byte-identical
+                                                        -- plain update there.
+                                                        --
+                                                        -- Phase 4a: the changed flag does NOT gate
+                                                        -- this write. `False` means the join result
+                                                        -- IS actualType by pointer, but the registry
+                                                        -- still holds storedT, so the update must run
+                                                        -- either way — the win here is the elided
+                                                        -- rebuild, not an elided write.
+                                                        case completionJoin of
+                                                            Just ( _, joined, _ ) ->
+                                                                Registry.updateRegistryType specId joined s1.registry
+
+                                                            Nothing ->
+                                                                Registry.updateRegistryType specId actualType s1.registry
+
+                                                    else
+                                                        s1.registry
+
+                                                s2 =
+                                                    { s1
+                                                        | registry = registry2
+                                                        , lambdaCounter = newLambdaCounter
+                                                    }
+
+                                                -- Phase 1 census: count the joins
+                                                -- this site runs (one per completed
+                                                -- body-bearing spec). Phase 4a splits
+                                                -- out the no-op subset, which the
+                                                -- changed flag gives for free:
+                                                -- `completion` stays the total.
+                                                s3 =
                                                     case completionJoin of
-                                                        Just ( _, joined, _ ) ->
-                                                            Registry.updateRegistryType specId joined s1.registry
+                                                        Just ( True, _, _ ) ->
+                                                            Engine.bumpCompletionJoin s2
+
+                                                        Just ( False, _, _ ) ->
+                                                            Engine.bumpCompletionJoinNoop s2
 
                                                         Nothing ->
-                                                            Registry.updateRegistryType specId actualType s1.registry
+                                                            s2
 
-                                                else
-                                                    s1.registry
+                                                -- P0 site-1 cell bumps.
+                                                s4 =
+                                                    case completionJoin of
+                                                        Just ( _, _, cells ) ->
+                                                            List.foldl Engine.bumpArgFlowCensus s3 cells
 
-                                            s2 =
-                                                { s1
-                                                    | registry = registry2
-                                                    , lambdaCounter = newLambdaCounter
-                                                }
-
-                                            -- Phase 1 census: count the joins
-                                            -- this site runs (one per completed
-                                            -- body-bearing spec). Phase 4a splits
-                                            -- out the no-op subset, which the
-                                            -- changed flag gives for free:
-                                            -- `completion` stays the total.
-                                            s3 =
-                                                case completionJoin of
-                                                    Just ( True, _, _ ) ->
-                                                        Engine.bumpCompletionJoin s2
-
-                                                    Just ( False, _, _ ) ->
-                                                        Engine.bumpCompletionJoinNoop s2
-
-                                                    Nothing ->
-                                                        s2
-
-                                            -- P0 site-1 cell bumps.
-                                            s4 =
-                                                case completionJoin of
-                                                    Just ( _, _, cells ) ->
-                                                        List.foldl Engine.bumpArgFlowCensus s3 cells
-
-                                                    Nothing ->
-                                                        s3
-                                        in
-                                        Ok (finishNode specId monoNode s4)
+                                                        Nothing ->
+                                                            s3
+                                            in
+                                            Ok (finishNode specId monoNode s4)
 
 
-{-| LSS_018 (μ-tie): raw-lambda → smallest qualified member id present in the
+{-| LSS\_018 (μ-tie): raw-lambda → smallest qualified member id present in the
 spec's stored demand type. Consulted by `Engine.lambdaInstanceMemberId` on
 routed mints; smallest-id choice makes the canonical family id
 deterministic. Built ONLY under `lss.muTie` — the flag-off default path
@@ -4454,7 +4464,7 @@ demandQualifiedFor monoType s =
             (Mono.collectAnnoMembers monoType)
 
 
-{-| MONO_029 stale-read barrier (R2 of
+{-| MONO\_029 stale-read barrier (R2 of
 plans/solver-layout-connectivity-reconciliation.md): translate the item and, if
 any recorded CEcoValue residual was read from a var the translation LATER
 bound (read-before-saturation), re-translate immediately AGAINST THE SAME
@@ -4470,8 +4480,9 @@ loud EngineBug. Side effects of discarded passes are benign: `enqueueSpec` is
 key-idempotent (a spec enqueued under a since-healed erased key may survive as
 an unreferenced spec and is pruned), and multi-instance stacks are re-pushed
 per pass.
+
 -}
-specializeNodeSaturating : Int -> Name -> IO.Canonical -> TOpt.Node TypeIds.MVarId -> Mono.MonoType -> S -> Result Failure ( Mono.MonoNode, S )
+specializeNodeSaturating : Int -> Name -> ModuleName.Canonical -> TOpt.Node TypeIds.MVarId -> Mono.MonoType -> S -> Result Failure ( Mono.MonoNode, S )
 specializeNodeSaturating attempt name home node monoType s =
     case specializeNode name home node monoType s of
         Err e ->
@@ -4508,7 +4519,7 @@ maxSaturationPasses =
 {-| Specialize one top-level node. `name`/`home` identify the definition (used
 for ctor tags and to follow links to their target's name/home).
 -}
-specializeNode : Name -> IO.Canonical -> TOpt.Node TypeIds.MVarId -> Mono.MonoType -> S -> Result Failure ( Mono.MonoNode, S )
+specializeNode : Name -> ModuleName.Canonical -> TOpt.Node TypeIds.MVarId -> Mono.MonoType -> S -> Result Failure ( Mono.MonoNode, S )
 specializeNode name home node monoType s =
     case node of
         TOpt.Define expr _ meta ->
@@ -4542,7 +4553,7 @@ specializeNode name home node monoType s =
 
         TOpt.Manager _ ->
             case home of
-                IO.Canonical _ modName ->
+                ModuleName.Canonical _ modName ->
                     Ok ( Mono.MonoManagerLeaf (Name.toElmString modName) monoType, s )
 
         TOpt.Cycle _ valueDefs funcDefs _ ->
@@ -4582,7 +4593,7 @@ of the immutable `toptNodes`, so a global with N specializations resolves once a
 the DMap descent + `freeVarIds` walk are skipped for the other N-1. The memo lives
 in `S.nodeResolution` (survives `resetItem`); byte-identical to recomputing.
 -}
-resolveGlobalNode : IO.Canonical -> Name -> S -> ( Engine.NodeResolution, S )
+resolveGlobalNode : ModuleName.Canonical -> Name -> S -> ( Engine.NodeResolution, S )
 resolveGlobalNode home name s =
     let
         gkey =
@@ -4658,7 +4669,7 @@ defineFrom annCanType expr demand s =
                     Ok ( Mono.MonoDefine monoExpr (Mono.typeOf monoExpr), s2 )
 
 
-{-| LSS_010 re-translation eligibility: only body-bearing nodes can be
+{-| LSS\_010 re-translation eligibility: only body-bearing nodes can be
 meaningfully re-translated with a joined demand. Ctor/enum/box/kernel/
 manager specs are shape-derived — and their registry type is rewritten to
 the node's VALUE type at finishNode, which the ctor-scheme unify rejects.
@@ -4796,7 +4807,7 @@ staleResidualRead s =
             s.itemAux.ecoResidualKeyReads
 
 
-staleVarRead : S -> IO.Variable -> Bool
+staleVarRead : S -> Vars.Variable -> Bool
 staleVarRead s var =
     varResolvedNow s.store var
         && (case Maybe.andThen identity (Array.get (Engine.pointKey var) s.revMemo) of
@@ -4817,23 +4828,23 @@ staleVarRead s var =
            )
 
 
-varResolvedNow : IO.State -> IO.Variable -> Bool
+varResolvedNow : IO.State -> Vars.Variable -> Bool
 varResolvedNow store var =
     let
         ( _, desc ) =
             UF.get var store
     in
     case desc.content of
-        IO.Structure _ ->
+        Vars.Structure _ ->
             True
 
-        IO.Alias _ _ _ _ ->
+        Vars.Alias _ _ _ _ ->
             True
 
-        IO.FlexSuper IO.Number _ ->
+        Vars.FlexSuper Vars.Number _ ->
             True
 
-        IO.RigidSuper IO.Number _ ->
+        Vars.RigidSuper Vars.Number _ ->
             True
 
         _ ->

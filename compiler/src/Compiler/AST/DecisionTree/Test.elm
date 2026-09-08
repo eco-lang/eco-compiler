@@ -24,7 +24,6 @@ import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
 import Set exposing (Set)
-import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
@@ -42,7 +41,7 @@ import Utils.Bytes.Encode as BE
 
 -}
 type Test
-    = IsCtor IO.Canonical Name.Name Index.ZeroBased Int Can.CtorOpts
+    = IsCtor ModuleName.Canonical Name.Name Index.ZeroBased Int Can.CtorOpts
     | IsCons
     | IsNil
     | IsTuple
@@ -57,7 +56,7 @@ type Test
 testToComparable : Test -> String
 testToComparable test =
     case test of
-        IsCtor (IO.Canonical ( author, pkg ) moduleName) name zeroBased numAlts opts ->
+        IsCtor (ModuleName.Canonical ( author, pkg ) moduleName) name zeroBased numAlts opts ->
             String.concat
                 [ "C"
                 , author

@@ -8,14 +8,14 @@ This module provides functions for converting Elm names to MLIR-safe identifiers
 
 -}
 
-import System.TypeCheck.IO as IO
+import Compiler.Elm.ModuleName as ModuleName
 
 
-{-| Convert an IO.Canonical name to an MLIR-safe string.
+{-| Convert an ModuleName.Canonical name to an MLIR-safe string.
 Replaces dots with underscores.
 -}
-canonicalToMLIRName : IO.Canonical -> String
-canonicalToMLIRName (IO.Canonical _ moduleName) =
+canonicalToMLIRName : ModuleName.Canonical -> String
+canonicalToMLIRName (ModuleName.Canonical _ moduleName) =
     moduleName
         |> String.replace "." "_"
 

@@ -1,6 +1,15 @@
 module Compiler.GlobalOpt.Borrow.Lifetime exposing
-    ( Step(..), Path, Life(..), Lifetime(..)
-    , fromPath, join, joinAll, eq, leq, endsBefore, onBoundary
+    ( Life(..)
+    , Lifetime(..)
+    , Path
+    , Step(..)
+    , endsBefore
+    , eq
+    , fromPath
+    , join
+    , joinAll
+    , leq
+    , onBoundary
     )
 
 {-| Lifetime-lattice algebra for borrow inference (design §7.4).

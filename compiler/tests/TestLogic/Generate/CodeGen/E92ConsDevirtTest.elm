@@ -1,13 +1,20 @@
 module TestLogic.Generate.CodeGen.E92ConsDevirtTest exposing (suite)
 
-{-| E9.2 / LSS_016 kernel devirtualization — activation pin.
+{-| E9.2 / LSS\_016 kernel devirtualization — activation pin.
 
 Fixture: `(::)` — the kernel value `TOpt.VarKernel "List" "cons"` after the
 optimizer's cons special-casing — passed as a function value to a
 recursion-protected HOF:
 
-    applyCons f n = if n <= 0 then f (n + 3) [] else applyCons f (n - 1)
-    testValue = applyCons (::) 2
+    applyCons f n =
+        if n <= 0 then
+            f (n + 3) []
+
+        else
+            applyCons f (n - 1)
+
+    testValue =
+        applyCons (::) 2
 
 The `f (n+3) []` site is an indirect call whose callee var carries the
 singleton {k|List.cons}; E9.2 rewrites it to the direct kernel call form a
@@ -95,7 +102,8 @@ fixtureModule =
         []
 
 
-{-| applyCons f n = if n <= 0 then f (n + 3) [] else applyCons f (n - 1) -}
+{-| applyCons f n = if n <= 0 then f (n + 3) [] else applyCons f (n - 1)
+-}
 applyConsDef : TypedDef
 applyConsDef =
     { name = "applyCons"
@@ -117,7 +125,8 @@ applyConsDef =
     }
 
 
-{-| testValue = applyCons (::) 2 -}
+{-| testValue = applyCons (::) 2
+-}
 testValueDef : TypedDef
 testValueDef =
     { name = "testValue"

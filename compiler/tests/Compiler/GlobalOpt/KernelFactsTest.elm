@@ -118,7 +118,7 @@ stampable =
     ]
 
 
-{-| Keys the borrow shim answers because LSS_016 wave 3 audited them, over and
+{-| Keys the borrow shim answers because LSS\_016 wave 3 audited them, over and
 above the 34 legacy rows. Each was read end-to-end for the devirt registration;
 filling `params` is what brings them into the borrow axis.
 -}

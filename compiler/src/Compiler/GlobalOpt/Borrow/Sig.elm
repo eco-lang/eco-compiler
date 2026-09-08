@@ -1,6 +1,10 @@
 module Compiler.GlobalOpt.Borrow.Sig exposing
-    ( BorrowSig, SigTy, ResPos
-    , optimisticSig, allOwnedSig, sigEq
+    ( BorrowSig
+    , ResPos
+    , SigTy
+    , allOwnedSig
+    , optimisticSig
+    , sigEq
     , uniformSigTy
     )
 
@@ -10,7 +14,7 @@ all-owned poison.
 
 Position convention: a `SigTy` carries modes positionally, indexed by the
 pre-order mint order of `freshRTy`/`Rty.allRes` (§7.3). Sound because every
-pairing site zips *ground, equal* MonoTypes, so re-minting `freshRTy` from
+pairing site zips _ground, equal_ MonoTypes, so re-minting `freshRTy` from
 `shape` at a call site reproduces the same resource ordering. Signatures are
 pure data — no ResVars stored.
 

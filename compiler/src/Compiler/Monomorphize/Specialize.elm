@@ -25,6 +25,7 @@ import Compiler.Data.CtorTag as CtorTag
 import Compiler.Data.Id as Id
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.Closure as Closure
@@ -39,7 +40,6 @@ import Data.Map
 import Data.Set as EverySet
 import Dict
 import Set
-import System.TypeCheck.IO as IO
 import Utils.Crash
 
 
@@ -1682,7 +1682,7 @@ specializeNode ctorName node requestedMonoType state =
             let
                 homeModuleName =
                     case state.ctx.currentGlobal of
-                        Just (Mono.Global (IO.Canonical _ modName) _) ->
+                        Just (Mono.Global (ModuleName.Canonical _ modName) _) ->
                             Name.toElmString modName
 
                         _ ->
@@ -1955,7 +1955,7 @@ specializeCycle _ valueDefs funcDefs requestedMonoType state =
 {-| Specialize a single (Name, Expr) pair inside a value-only cycle.
 -}
 specializeValueInCycle :
-    IO.Canonical
+    ModuleName.Canonical
     -> Name
     -> Mono.MonoType
     -> Substitution
@@ -2027,7 +2027,7 @@ a real MonoNode instead of falling back to MonoExtern.
 
 -}
 specializeFunctionCycle :
-    IO.Canonical
+    ModuleName.Canonical
     -> Name
     -> List ( Name, TOpt.Expr MVarId )
     -> List (TOpt.Def MVarId)
@@ -2124,7 +2124,7 @@ specializeFunctionCycle requestedCanonical requestedName valueDefs funcDefs requ
 
 
 specializeFunc :
-    IO.Canonical
+    ModuleName.Canonical
     -> Name
     -> Mono.MonoType
     -> Substitution
@@ -4816,7 +4816,7 @@ debugGlobal mg =
         Nothing ->
             "Nothing"
 
-        Just (Mono.Global (IO.Canonical _ modName) name) ->
+        Just (Mono.Global (ModuleName.Canonical _ modName) name) ->
             Name.toElmString modName ++ "." ++ name
 
         Just (Mono.Accessor name) ->

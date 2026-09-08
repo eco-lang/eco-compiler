@@ -3,13 +3,10 @@ module System.TypeCheck.IO exposing
     , IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMapWithKey, forM_, mapM_
     , mapM, traverseList, traverseTuple
     , traverseArrayMaybe, foldMArray
-    , Point(..), PointCell(..)
-    , Descriptor, Content(..), SuperType(..), Mark(..), Variable, RootedVar, FlatType(..)
-    , LambdaSet(..), SortedRel(..), lsTopContent, lsTopContentK, classifySorted, unionSortedAsc, pointKey
-    , Canonical(..)
     , makeDescriptor
     , NameState, getNames, putNames, withFreshNames
     , NodeIdState, getNodeIds, modifyNodeIds, withNodeIds
+    , classifySorted, lsTopContent, lsTopContentK, pointKey, unionSortedAsc
     )
 
 {-| IO monad and state threading for type inference.
@@ -32,21 +29,6 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 @docs traverseArrayMaybe, foldMArray
 
 
-# Point
-
-@docs Point, PointCell
-
-
-# Compiler.Type.Type
-
-@docs Descriptor, Content, SuperType, Mark, Variable, RootedVar, FlatType
-
-
-# Compiler.Elm.ModuleName
-
-@docs Canonical
-
-
 # Descriptor Utilities
 
 @docs makeDescriptor
@@ -64,6 +46,7 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 -}
 
 import Array exposing (Array)
+import Compiler.Type.Vars as Vars exposing (Content(..), Descriptor, FlatType(..), LambdaSet(..), Mark(..), Point(..), PointCell(..), RootedVar, SortedRel(..), SuperType(..), Variable)
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import Dict as CoreDict
@@ -92,9 +75,6 @@ unsafePerformIO ioA =
 -- `*Go` iterators, and the expression/pattern/decl spine walks), which the compiler
 -- TCO's to while-loops (still stack-safe) while dropping the per-iteration
 -- `Step`/loop-state-tuple/closure allocations.
-
-
-
 -- ====== THE IO MONAD ======
 
 
@@ -489,61 +469,7 @@ foldMArray f b arr =
 
 
 -- ====== POINT ======
-
-
-{-| A reference to a type variable in the union-find structure.
-
-Points are integer indices into the `ioRefsPoint` array in the State.
-Used to implement path compression and union-by-rank for type unification.
-
--}
-type Point
-    = Pt Int
-
-
-{-| The union-find cell for a Point.
-
-  - `Root weight descriptor`: a root, carrying its weight and its descriptor
-    INLINE
-  - `Chain parent`: a non-root node pointing at its parent
-
-kernel-opt-02 replaced the former `PointInfo = Info Int Int | Link Point` plus
-the separate `ioRefsWeight`/`ioRefsDescriptor` arrays with this single cell. The
-three arrays were index-synchronised — only `UnionFind.fresh` ever grew them, one
-element each — so `Info w d` stored two copies of the point's own index. The
-merge preserves the numeric Point ids exactly.
-
--}
-type PointCell
-    = Root Int Descriptor
-    | Chain Point
-
-
-
 -- ====== DESCRIPTORS ======
-
-
-{-| A type descriptor containing information about a type variable.
-
-Descriptors are stored inline in the `ioRefsPoint` cell of their root Point.
-Each descriptor contains the actual type content, rank for generalization,
-marking for traversal algorithms, and an optional copy field for cloning.
-
-Formerly a single-constructor wrapper; collapsed to a bare record alias so it is
-read/written directly on the hot union-find path with no box or wrap/unwrap.
-
-  - `content`: The actual type information (flex var, rigid var, structure, etc.)
-  - `rank`: Used for let-generalization and determining type variable scope
-  - `mark`: Used by traversal algorithms to avoid revisiting nodes
-  - `copy`: Optional reference to a copied variable during cloning operations
-
--}
-type alias Descriptor =
-    { content : Content
-    , rank : Int
-    , mark : Mark
-    , copy : Maybe Variable
-    }
 
 
 {-| Construct a Descriptor from its component properties.
@@ -553,154 +479,9 @@ makeDescriptor content rank mark copy =
     { content = content, rank = rank, mark = mark, copy = copy }
 
 
-{-| The content of a type descriptor.
-
-  - `FlexVar name`: A flexible type variable (can be unified with anything)
-  - `FlexSuper supertype name`: A flexible variable constrained by a supertype
-  - `RigidVar name`: A rigid type variable (cannot be unified)
-  - `RigidSuper supertype name`: A rigid variable constrained by a supertype
-  - `Structure type`: A concrete type structure (function, record, etc.)
-  - `Alias canonical name args realType`: A type alias with its expansion
-  - `Error`: Represents a type error
-
--}
-type Content
-    = FlexVar (Maybe String)
-    | FlexSuper SuperType (Maybe String)
-    | RigidVar String
-    | RigidSuper SuperType String
-    | Structure FlatType
-    | Alias Canonical String (List ( String, Variable )) Variable
-    | Error
-
-
-{-| Supertypes that constrain type variables.
-
-  - `Number`: Can be Int or Float
-  - `Comparable`: Can be compared with (<), (>), etc.
-  - `Appendable`: Can be concatenated with (++)
-  - `CompAppend`: Both comparable and appendable
-
--}
-type SuperType
-    = Number
-    | Comparable
-    | Appendable
-    | CompAppend
-
-
 
 -- ====== MARKS ======
-
-
-{-| A mark used for graph traversal algorithms.
-
-Marks prevent infinite loops when traversing cyclic type structures.
-Each traversal uses a unique mark value to identify visited nodes.
-
--}
-type Mark
-    = Mark Int
-
-
-
 -- ====== TYPE PRIMITIVES ======
-
-
-{-| A type variable is represented as a Point.
-
-Variables are the fundamental unit of type inference, connected through
-the union-find structure and associated with Descriptors.
-
--}
-type alias Variable =
-    Point
-
-
-{-| A union-find root variable together with the super constraint recorded on
-its root descriptor at snapshot time.
-
-The `super` is solver truth about the ROOT — it is read from the root's
-`Content` (`FlexSuper`/`RigidSuper`) at normalization time, independent of
-whichever type-variable name happens to refer to that root. This is what lets
-downstream passes recover `number`/`comparable`/`appendable`/`compappend`
-without re-parsing variable names.
-
--}
-type alias RootedVar =
-    { var : Variable
-    , super : Maybe SuperType
-    }
-
-
-{-| The flattened representation of concrete type structures.
-
-  - `App1 module name args`: Type constructor application (e.g., List Int)
-  - `Fun1 arg result`: Function type (no lambda-set slot)
-  - `FunL arg result setSlot`: Function type WITH a lambda-set slot. Minted
-    ONLY by MonoSolver stores with `lss.enabled`; the typechecking phase
-    never constructs it. `Fun1` retains the meaning "arrow with no set
-    slot" so the lss-off path is allocation-identical to today.
-  - `EmptyRecord1`: The empty record type {}
-  - `Record1 fields extension`: Record type with named fields and optional extension
-  - `Unit1`: The unit type ()
-  - `Tuple1 first second rest`: Tuple type (2 or more elements)
-  - `LambdaSet1 set`: A lambda set — the ONLY legal content of a
-    `FunL` set slot besides `FlexVar` (LSS_007); it never appears anywhere
-    else, and typecheck-phase stores contain neither `FunL` nor
-    `LambdaSet1`. Members are ground per-run ids. Since LSS_023 a set MAY
-    carry deferred in-edge source Points (`LsFrom` — Variables that are SET
-    SLOTS, not type structure), so "no Variables inside" is retired; the
-    join is STILL total (edge lists merge) and can never mismatch.
-
--}
-type FlatType
-    = App1 Canonical String (List Variable)
-    | Fun1 Variable Variable
-    | FunL Variable Variable Variable
-    | EmptyRecord1
-    | Record1 (CoreDict.Dict String Variable) Variable
-    | Unit1
-    | Tuple1 Variable Variable (List Variable)
-    | LambdaSet1 LambdaSet
-
-
-{-| An LSS lambda set in a `FunL` slot (`plans/lss-set-write-substrate.md`
-Phase 2; formerly `Bool (Dict Int ())`).
-
-`LsMembers` is ascending, deduped, and NON-EMPTY by construction — every
-producer feeds an already-ascending list (a zonked `Mono.LSet`, a signature
-fact, or a singleton injection), mirroring LSS_001 for the in-store form.
-
-`LsTop` is ⊤ (widened/kernel-facing): terminal (nothing un-tops a slot) and
-absorbing under join. Members are DEAD under ⊤ at every reader in the repo
-(audited 2026-08-17, census included), so ⊤ carries none — every poison
-write is a set of the shared `lsTopContent` constant, allocation-free, and
-every join-with-⊤ is a constant return. ⊤ also DROPS `LsFrom` sources
-(⊤ ⊇ everything — sound).
-
-`LsFrom members sources` (LSS_023, `plans/lss-directed-set-flow.md`) is a
-set carrying DEFERRED INCLUSION edges: "this slot ⊇ each source slot",
-resolved at READ (zonk) time by a DFS over the reachable edge graph — never
-eagerly, never by a write hook. Invariants:
-
-  - the source list is NON-EMPTY by construction: no transition mints a
-    source-free `LsFrom` (`Store.addSlotSource` only adds; merges carry
-    sources through; ⊤ drops the whole variant). There is deliberately NO
-    collapse rule.
-  - `members` is ascending/deduped but MAY be empty (unlike `LsMembers`).
-  - sources are deduped by `pointKey` at install; UF unions may later alias
-    them — resolution re-dedupes via its visited set.
-  - `LsFrom` is created ONLY under `lss.sigFlow` (every producer is gated,
-    including the kernel-tunnel selector) and NEVER escapes the store:
-    `zonkSetSlot`/`zonkSigGo` resolve it, `Mono.LambdaSetAnno` stays
-    `LTop | LSet`.
-
--}
-type LambdaSet
-    = LsTop Int
-    | LsMembers (List Int)
-    | LsFrom (List Int) (List Variable)
 
 
 {-| The raw index of a Point — the dedupe key for `LsFrom` source lists.
@@ -720,6 +501,7 @@ identically, and the ⊤-⊤ unify merge takes `min` (priority).
 
 `lsTopContent` keeps its historical name as the LEGACY-kind constant for
 sites with no better attribution.
+
 -}
 lsTopContent : Content
 lsTopContent =
@@ -900,18 +682,6 @@ lsTopContentK k =
         lsTopContent
 
 
-{-| Relation between two ascending member lists, decided in ONE merge-scan:
-O(n+m), zero allocation, early exit to `SortedMixed` once both sides have
-shown an exclusive element. `SortedSuper` = second ⊆ first (strictly);
-`SortedSub` = first ⊆ second (strictly).
--}
-type SortedRel
-    = SortedEqual
-    | SortedSuper
-    | SortedSub
-    | SortedMixed
-
-
 classifySorted : List Int -> List Int -> SortedRel
 classifySorted =
     classifySortedGo False False
@@ -987,13 +757,3 @@ unionSortedAsc xs ys =
 
 
 -- ====== CANONICAL ======
-
-
-{-| A canonical module name referencing a type.
-
-Contains the package name (as a tuple) and the module name within that package.
-Used to uniquely identify types across different packages.
-
--}
-type Canonical
-    = Canonical ( String, String ) String

@@ -57,10 +57,10 @@ looked up, never iterated for output.
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Dict exposing (Dict)
 import Set exposing (Set)
-import System.TypeCheck.IO as IO
 import Utils.Crash
 
 
@@ -224,7 +224,7 @@ run cfg (Mono.MonoGraph g) =
                     ( Array.push
                         (Just
                             ( Mono.Global
-                                (IO.Canonical ( "eco", "hoisted" ) "CafHoist")
+                                (ModuleName.Canonical ( "eco", "hoisted" ) "CafHoist")
                                 ("hoist_" ++ String.fromInt ordinal)
                             , ty
                             )
@@ -1028,7 +1028,7 @@ fusion's operands; the strict reifier does not look through bare globals.
 typeTouchesBytes : Mono.MonoType -> Bool
 typeTouchesBytes t =
     case t of
-        Mono.MCustom _ (IO.Canonical pkg _) _ args ->
+        Mono.MCustom _ (ModuleName.Canonical pkg _) _ args ->
             pkg == ( "elm", "bytes" ) || List.any typeTouchesBytes args
 
         Mono.MList _ inner ->
@@ -1206,6 +1206,7 @@ type to a String — 4,786 characters for an arrow-free `Context`-shaped type
 
 Equality within a bucket is exact (`==` on zeroed trees), so the tag only
 affects bucket sizes, never correctness.
+
 -}
 kindTagOf : Mono.MonoExpr -> String
 kindTagOf expr =

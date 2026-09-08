@@ -19,22 +19,22 @@ This module handles generation of all function types:
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.CtorTag as CtorTag
 import Compiler.Data.Name as Name
+import Compiler.Elm.ModuleName as ModuleName
+import Compiler.Elm.Package as Pkg
 import Compiler.Generate.MLIR.Context as Ctx
-import Compiler.GlobalOpt.MapTemplate as MapTemplate
 import Compiler.Generate.MLIR.Expr as Expr
 import Compiler.Generate.MLIR.LogicalTypes as LogicalTypes
 import Compiler.Generate.MLIR.Names as Names
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.TailRec as TailRec
 import Compiler.Generate.MLIR.Types as Types
-import Compiler.Elm.Package as Pkg
-import Utils.Crash exposing (crash)
+import Compiler.GlobalOpt.MapTemplate as MapTemplate
 import Compiler.Monomorphize.Registry as Registry
 import Compiler.Reporting.Annotation as A
 import Dict
 import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion, MlirType(..), Visibility(..))
 import Set
-import System.TypeCheck.IO as IO
+import Utils.Crash exposing (crash)
 
 
 
@@ -324,7 +324,7 @@ listChunksShunt ctx specId node =
 
     else
         case Registry.lookupSpecKey specId ctx.registry of
-            Just ( Mono.Global (IO.Canonical pkg "List") name, _ ) ->
+            Just ( Mono.Global (ModuleName.Canonical pkg "List") name, _ ) ->
                 if pkg == Pkg.core then
                     case Dict.get name listShuntKernels of
                         Just arity ->
@@ -573,16 +573,17 @@ cafSlotName funcName =
 
 {-| Does this nullary value thunk get a memoization slot?
 
-v1 scope (design_docs/caf-memoization-design.md DS5): `!eco.value` ABI
+v1 scope (design\_docs/caf-memoization-design.md DS5): `!eco.value` ABI
 results only — a slot holding a raw scalar (i64 Int, f64, i16 Char) must
 never be GC-rooted (the root scan would misread it as a heap address).
 Slots are no longer pre-registered (the rooting walk skips `__eco_caf$`;
-eco_caf_promote roots on decline, HEAP_036), but the scalar exclusion
+eco\_caf\_promote roots on decline, HEAP\_036), but the scalar exclusion
 stands: a declined scalar slot would still be rooted. Slot value 0 is
 the uninitialized sentinel; no valid `!eco.value` word is 0 (pointers are
 nonzero, embedded constants are 0x4/0x5/0x6). Trivial single-node bodies
 (scalar/string literal, unit) are skipped — the guard would cost more than
 the body.
+
 -}
 cafMemoQualifies : Ctx.Context -> Mono.MonoExpr -> Mono.MonoType -> Bool
 cafMemoQualifies ctx expr monoType =
@@ -618,9 +619,8 @@ have been FIXED at the source:
 A Task is an immutable request for IO, fulfilled once per execution — so a
 memoized CAF holding one is sound (pinned by MVarSharedNewTaskTest and the
 MVar E2E suite).
+
 -}
-
-
 generateDefine : Ctx.Context -> String -> Bool -> Mono.MonoExpr -> Mono.MonoType -> Maybe Ctx.SretInfo -> Maybe Ctx.PsplitInfo -> ( List MlirOp, Ctx.Context )
 generateDefine ctx funcName cafEligible expr monoType maybeSret maybePsplit =
     case expr of
@@ -823,6 +823,7 @@ Declines to the caller (returning `Nothing`) rather than emitting something
 half-formed if the parameter row is not the expected `(f, xs)` shape — the
 `gateIntrinsic` discipline: a declining gate always falls through to today's
 untouched path.
+
 -}
 generateMapTemplateBody : Ctx.Context -> String -> MapTemplate.Info -> Mono.ClosureInfo -> Mono.MonoType -> Maybe ( List MlirOp, Ctx.Context )
 generateMapTemplateBody ctx funcName info closureInfo monoType =
@@ -1000,7 +1001,7 @@ generateMapTemplateBody ctx funcName info closureInfo monoType =
 {-| U-T1.3.3 result promotion: the `$sret` worker compiles the REAL body
 with `sretTailLayout` set (result-spine tuple literals emit the SSA
 make-form; result-spine cases declare aggregate results), coerces the
-final value to the aggregate (from_heap for boxed fallback shapes),
+final value to the aggregate (from\_heap for boxed fallback shapes),
 projects each slot, and multi-returns. The C++ SretFuncOpLowering gives
 any multi-result func.func the (slot ptr, args...) -> void ABI. The shim
 re-boxes: multi-call the worker, construct the tuple, return.

@@ -5,7 +5,7 @@ module TestLogic.Monomorphize.LssPapMembersTest exposing (suite)
 
 **What is being pinned, and why it is a soundness test rather than a precision
 one.** A PARTIAL application of a known global is a PAP of that global, so the
-callee's member is sound on the residual arrows (LSS_013's arity bound: "a PAP
+callee's member is sound on the residual arrows (LSS\_013's arity bound: "a PAP
 of member m is m"). Before this flag it was the ONE producer form that injected
 nothing — P0's injection-totality census measured 3,624 such positions on the
 self-compile — and that hole is what let a one-sided branch join publish a

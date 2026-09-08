@@ -1,6 +1,6 @@
 module TestLogic.Monomorphize.SpecWatchdogTest exposing (suite)
 
-{-| MONO_030 spec watchdogs
+{-| MONO\_030 spec watchdogs
 (`plans/lss-fidelity-1-watchdogs-budget-accounting.md` §1).
 
 The poly-rec fixture is the plan §1.1 repro: an ANNOTATED, MUTUALLY RECURSIVE
@@ -17,6 +17,7 @@ Limits are chosen so exactly one check can trip per test: `specBreadth = 8`
 with the node check disabled, and `specTypeNodes = 40` with the breadth
 check disabled (the demand type at round k is `Nested (List^k Int) -> Int`,
 ≈ k+4 nodes, so the depth arm trips after a few dozen fast rounds).
+
 -}
 
 import Compiler.AST.Monomorphized as Mono
@@ -39,10 +40,10 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.Eco.Config as Config
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Monomorphize.Registry as Registry
 import Dict
 import Expect exposing (Expectation)
-import System.TypeCheck.IO as IO
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
@@ -82,7 +83,7 @@ suite =
                 \() ->
                     let
                         g =
-                            Mono.Global (IO.Canonical ( "eco", "example" ) "Test") "f"
+                            Mono.Global (ModuleName.Canonical ( "eco", "example" ) "Test") "f"
 
                         ( _, reg1 ) =
                             Registry.getOrCreateSpecId g Mono.MInt Registry.emptyRegistry
@@ -174,22 +175,31 @@ expectErrContaining needles result =
 
 {-| The §1.1 repro, DSL form:
 
-    type Nested a = Nil | Deeper a (Nested (List a))
+    type Nested a
+        = Nil
+        | Deeper a (Nested (List a))
 
     depth : Nested a -> Int
-    depth n = case n of
-        Nil -> 0
-        Deeper _ rest -> helper rest
+    depth n =
+        case n of
+            Nil ->
+                0
+
+            Deeper _ rest ->
+                helper rest
 
     helper : Nested (List a) -> Int
-    helper n = depth n
+    helper n =
+        depth n
 
     testValue : Int
-    testValue = depth (Deeper 1 Nil)
+    testValue =
+        depth (Deeper 1 Nil)
 
 (`testValue` is the SourceIR test standard's root — the harness synthesizes
 `main` around it. The `1 +` of the plan's source-file fixture is dropped —
 only the demand chain matters, not the arithmetic.)
+
 -}
 polyRecModule : Src.Module
 polyRecModule =

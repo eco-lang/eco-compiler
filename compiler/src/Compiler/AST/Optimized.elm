@@ -66,7 +66,6 @@ import Compiler.Reporting.Annotation as A
 import Data.Map
 import Data.Set exposing (EverySet)
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
@@ -88,8 +87,8 @@ type Expr
     | VarGlobal A.Region Global
     | VarEnum A.Region Global Index.ZeroBased
     | VarBox A.Region Global
-    | VarCycle A.Region IO.Canonical Name
-    | VarDebug A.Region Name IO.Canonical (Maybe Name)
+    | VarCycle A.Region ModuleName.Canonical Name
+    | VarDebug A.Region Name ModuleName.Canonical (Maybe Name)
     | VarKernel A.Region Name Name Name
     | List A.Region (List Expr)
     | Function (List Name) Expr
@@ -113,7 +112,7 @@ type Expr
 {-| A reference to a top-level definition in a module.
 -}
 type Global
-    = Global IO.Canonical Name
+    = Global ModuleName.Canonical Name
 
 
 {-| Compare two globals for ordering.
@@ -250,7 +249,7 @@ empty =
 -}
 toKernelGlobal : Name.Name -> Global
 toKernelGlobal shortName =
-    Global (IO.Canonical Pkg.kernel shortName) Name.dollar
+    Global (ModuleName.Canonical Pkg.kernel shortName) Name.dollar
 
 
 

@@ -1,25 +1,14 @@
 module Compiler.AST.Monomorphized exposing
     ( MonoType(..), Literal(..), Constraint(..)
-    , mList, mTuple, mRecord, mCustom, mFunction
     , layoutHashOf, specHashOf, eqKeySpec, eqKeyLayout
     , LayoutMap, layoutMapEmpty, layoutMapGet, layoutMapMember, layoutMapInsert
     , layoutMapSize, layoutMapIsEmpty, layoutMapFoldl, layoutMapMap, layoutMapToList, layoutMapValues, layoutMapFromList
     , SpecMap, specMapEmpty, specMapGet, specMapMember, specMapInsert
     , specMapSize, specMapIsEmpty, specMapFoldl, specMapToList, specMapValues, specMapRemove, specMapSingleton
     , SpecKeyMap, specKeyMapEmpty, specKeyMapGet, specKeyMapInsert, specKeyMapSize, globalHash
-    , LambdaSetAnno(..), widenSets, eqModuloTopLabel, eqLayout, shallowLayoutKey, headAnno, unionAnno, singletonHeadMember, joinAnnotations, joinAnnotationsChanged, overlayAnnotations
-    , tkPoison, tkConflict, tkWiden, tkEdge, tkAbi, tkDeclZonk, tkDeclStoreC, tkDeclStoreS, tkDeclOther, tkSynth, tkLegacy, isTopAnno
-    , tkClassCase, tkClassIf, tkClassLocal, tkClassLit, tkClassParam, tkClassDestr, tkClassLambda, tkClassCall, tkClassLet, tkClassMisc
-    , enrichAnnotations, enrichAnnotationsTopOnly, hasTopAnno, hasVarAnno, unionSortedInts, annoCovers
-    , topPoison, topConflict, topWiden, topEdge, topAbi, topDeclZonk, topDeclStoreC, topDeclStoreS, topDeclOther, topSynth, topLegacy, topOfKind, topKindLabel
-    , topClassCase, topClassIf, topClassLocal, topClassLit, topClassParam, topClassDestr, topClassLambda, topClassCall, topClassLet, topClassMisc
-    , typeNodesWithin, collectAnnoMembers
-    , AnnoCoverage, emptyAnnoCoverage, annoCoverage
-    , joinCollisionCells
-    , recoverStoredSets
     , LambdaId(..)
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry
-    , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType, MemberOrigin(..)
+    , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType
     , PortRegistration
     , MonoExpr(..), ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..)
     , MonoDtPath(..), dtPathType
@@ -37,9 +26,10 @@ module Compiler.AST.Monomorphized exposing
     , ClosureKindId(..), ClosureKind(..), MaybeClosureKind
     , CaptureABI
     , containsAnyMVar, resultTypeOf
-    -- Typed closure calling (ABI cloning)
-    -- Call staging metadata
-    -- Staging/Segmentation helpers
+    , AnnoCoverage, LambdaSetAnno(..), MemberOrigin(..), annoCoverage, annoCovers, collectAnnoMembers, emptyAnnoCoverage, enrichAnnotations, enrichAnnotationsTopOnly, eqLayout, eqModuloTopLabel, hasTopAnno, hasVarAnno, headAnno, isTopAnno, joinAnnotations, joinAnnotationsChanged, joinCollisionCells, mCustom, mFunction, mList, mRecord, mTuple, overlayAnnotations, recoverStoredSets, shallowLayoutKey, singletonHeadMember, tkAbi, tkClassCall, tkClassCase, tkClassDestr, tkClassIf, tkClassLambda, tkClassLet, tkClassLit, tkClassLocal, tkClassMisc, tkClassParam, tkConflict, tkDeclOther, tkDeclStoreC, tkDeclStoreS, tkDeclZonk, tkEdge, tkLegacy, tkPoison, tkSynth, tkWiden, topAbi, topClassCall, topClassCase, topClassDestr, topClassIf, topClassLambda, topClassLet, topClassLit, topClassLocal, topClassMisc, topClassParam, topConflict, topDeclOther, topDeclStoreC, topDeclStoreS, topDeclZonk, topEdge, topKindLabel, topLegacy, topOfKind, topPoison, topSynth, topWiden, typeNodesWithin, unionAnno, unionSortedInts, widenSets
+      -- Typed closure calling (ABI cloning)
+      -- Call staging metadata
+      -- Staging/Segmentation helpers
     )
 
 {-| Monomorphized AST for backends that can optimize using concrete types.
@@ -182,16 +172,16 @@ This module defines the data structures for the monomorphized program
 -}
 
 import Array exposing (Array)
+import Char
 import Compiler.AST.DecisionTree.Test as DT
 import Compiler.AST.TypeIds as TypeIds exposing (MVarId)
 import Compiler.Data.BitSet exposing (BitSet)
 import Compiler.Data.Id as Id
 import Compiler.Data.Name exposing (Name)
-import Char
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation exposing (Region)
 import Data.HashMap as HashMap
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 
 
 
@@ -243,7 +233,7 @@ type MonoType
     | MList Int MonoType
     | MTuple Int (List MonoType) -- Element types (layout computed at codegen)
     | MRecord Int (Dict Name MonoType) -- Field name -> type (layout computed at codegen)
-    | MCustom Int IO.Canonical Name (List MonoType)
+    | MCustom Int ModuleName.Canonical Name (List MonoType)
     | MFunction Int LambdaSetAnno (List MonoType) MonoType
     | MVar MVarId Constraint
 
@@ -423,7 +413,7 @@ leafKeyTag mt =
 in `Mono.specKeyMapGet` (`Registry.elm:107`). A hash that separates two
 annotations the key encoder MERGES puts them in different buckets, `eqKeySpec`
 is never consulted, and the registry mints a DUPLICATE SpecId per position —
-silent spec fan-out until MONO_030's `specBreadth` trips. A hash that MERGES two
+silent spec fan-out until MONO\_030's `specBreadth` trips. A hash that MERGES two
 the encoder separates is harmless (a bucket collision the confirm rejects).
 **It compiles cleanly either way**, so the three functions are written to be
 read side by side.
@@ -500,10 +490,10 @@ of the canonical and the type name enter the hash — hashing the characters
 would put a string walk on every construction, and the eq functions compare
 the names themselves when a bucket collides.
 -}
-mCustom : IO.Canonical -> Name -> List MonoType -> MonoType
+mCustom : ModuleName.Canonical -> Name -> List MonoType -> MonoType
 mCustom canonical name args =
     let
-        (IO.Canonical ( author, project ) modName) =
+        (ModuleName.Canonical ( author, project ) modName) =
             canonical
 
         seed =
@@ -795,7 +785,7 @@ contributes its lengths only. Cheaper either way than the string
 globalHash : Global -> Int
 globalHash g =
     case g of
-        Global (IO.Canonical ( author, project ) modName) name ->
+        Global (ModuleName.Canonical ( author, project ) modName) name ->
             mixHash
                 (mixHash
                     (mixHash (mixHash 21 (String.length author)) (String.length project))
@@ -908,6 +898,7 @@ specMapValues m =
     HashMap.values m
 
 
+
 -- ============================================================================
 -- ====== LAMBDA SETS ======
 -- ============================================================================
@@ -915,7 +906,7 @@ specMapValues m =
 
 {-| The lambda-set fact on an arrow.
 
-`LTop` = **genuinely widened**: a kernel/FFI boundary (LSS_004/021/022), the
+`LTop` = **genuinely widened**: a kernel/FFI boundary (LSS\_004/021/022), the
 `maxSetSize`/`maxSpecsPerGlobal` budget cap, or a soundness fallback. The whole
 existing pipeline (boxed closures, papCreate/papExtend, CallGenericApply) is
 the correct lowering of it.
@@ -939,7 +930,7 @@ re-encoding: each spec has a fresh store, so `monoTypeToVarC` minting per spec
 IS per-use instantiation. That is why Phase 3 needs no `Pools`.
 
 `LTop` = **genuinely widened, and after Phase 3 it means exactly ONE thing: the
-INCOMPLETENESS MARKER.** A kernel/FFI boundary (LSS_004/021/022), the
+INCOMPLETENESS MARKER.** A kernel/FFI boundary (LSS\_004/021/022), the
 `maxSetSize`/`maxSpecsPerGlobal` budget, or a soundness absorption — the places
 Eco's constraint system is not complete and the paper's least-solution rule
 therefore does not apply. ⊤-as-unknown died in Phase 1; ⊤-as-join-result
@@ -947,9 +938,10 @@ survives only where two DIFFERENT variables or a variable and a concrete set
 meet (see `unionAnno`), which is the residue sum lowering would remove.
 
 `LSet` is a non-empty, ascending-sorted list of member ids (Phase-0 lambda ids
-+ engine-interned globals/ctors/kernels/accessors); an unconstrained residual
-zonks to `LVar`, never to an empty set, so `LSet []` is unrepresentable by
-construction (LSS_001).
+
+  - engine-interned globals/ctors/kernels/accessors); an unconstrained residual
+    zonks to `LVar`, never to an empty set, so `LSet []` is unrepresentable by
+    construction (LSS\_001).
 
 **Key law.** `LVar` keys by its CANONICAL NUMBER, not by identity-erasure:
 `LVar i` and `LVar j` are the same key point iff `i == j`, and `LVar` is NEVER
@@ -1359,7 +1351,7 @@ topKindLabel k =
         "legacy"
 
 
-{-| MONO_030 watchdog: does the type have at most `limit` logical nodes?
+{-| MONO\_030 watchdog: does the type have at most `limit` logical nodes?
 Early-exit budget walk — O(min(limit, size)). K6 hash-consed sharing does
 NOT reduce the logical count (a shared subtree is counted per occurrence,
 deliberately: the pathological growth this guards repeats structure).
@@ -1411,7 +1403,7 @@ typeNodesGoList ts b =
     List.foldl typeNodesGoStep b ts
 
 
-{-| LSS_018 (μ-tie): every member id appearing in any `LSet` annotation of
+{-| LSS\_018 (μ-tie): every member id appearing in any `LSet` annotation of
 the type, in arbitrary order, duplicates possible — callers fold into a set.
 -}
 collectAnnoMembers : MonoType -> List Int
@@ -1501,6 +1493,7 @@ So a set can never be downgraded to `var`/⊤ and a ⊤ can never absorb a set �
 the merge only ever adds knowledge. Structure comes from the first argument
 (the ABI truth, per `overlayAnnotations`' guard); any shape mismatch keeps it
 unchanged.
+
 -}
 enrichAnnotations : MonoType -> MonoType -> MonoType
 enrichAnnotations =
@@ -1775,20 +1768,21 @@ recoverStoredSets joined stored =
 
 
 {-| P0 join-collision census (plans/lss-provenance-join-and-demand-sigs.md
-§4.1): walk two structurally-equal types in parallel (MONO_020 — types never
+§4.1): walk two structurally-equal types in parallel (MONO\_020 — types never
 widen, so a completion join's actual/stored pair always aligns; on any
 structural divergence the walk stops that branch) and emit one cell key per
 (LSet, LVar) collision and per (LSet, LTop) context pair, classified by
 WHERE the position sits:
 
-  head    spine depth 0, not nested
-  spine   spine depth 1..arity-1, not nested
-  tail    spine depth >= arity, not nested (the returned-value chain)
-  nested  inside an arrow argument or any container payload
+head spine depth 0, not nested
+spine spine depth 1..arity-1, not nested
+tail spine depth >= arity, not nested (the returned-value chain)
+nested inside an arrow argument or any container payload
 
 `side` names which input held the var/top: the FIRST type is `a` (the
 completion join's actualType / a joining demand), the SECOND is `s` (the
 stored type). Report-gated at the call sites; this function is pure.
+
 -}
 joinCollisionCells : Int -> MonoType -> MonoType -> List String
 joinCollisionCells arity ta tb =
@@ -1971,8 +1965,6 @@ hasUnknownAnno monoType =
 {-| Rewrite every `LVar` arrow annotation to `LTop`, keeping `LSet`s and
 record field-map tree shape intact. NOT `widenSets`, which erases sets too.
 -}
-
-
 isVarAnno : LambdaSetAnno -> Bool
 isVarAnno anno =
     case anno of
@@ -1987,6 +1979,8 @@ isVarAnno anno =
 
         _ ->
             False
+
+
 normalizeTopLabels : MonoType -> MonoType
 normalizeTopLabels monoType =
     case monoType of
@@ -2029,8 +2023,8 @@ specialization keys).
 
 **Stamps `LTop`, never `LVar` — deliberately, and this is load-bearing.**
 This is the normaliser that keeps five string-key derivations byte-identical
-across the label split: LSS_024 `specWidenedKeys` (`Engine.elm`), LSS_019
-ground member ids, the LSS_024 F-fence fingerprint (`AbiCloning.elm`), the
+across the label split: LSS\_024 `specWidenedKeys` (`Engine.elm`), LSS\_019
+ground member ids, the LSS\_024 F-fence fingerprint (`AbiCloning.elm`), the
 `keyed = False` widened registry key, and the budget-widened key. It must stay
 in lockstep with `Intern.widenSets`, which carries the same warning: a
 divergence produces a different widened structure and therefore a different
@@ -2065,7 +2059,7 @@ widenSets monoType =
 {-| Annotation-insensitive structural equality. Layout comparisons must not
 become set-sensitive: two types with the same shape but different lambda
 sets have identical representation (an arrow is a boxed closure value
-regardless of its set — REP_* untouched by LSS).
+regardless of its set — REP\_\* untouched by LSS).
 
 Allocation-free with early exit (M3.5/M4 scale discipline): the widenSets
 formulation copies both types per call, which is ruinous on
@@ -2120,6 +2114,7 @@ in the key grammar `I F B C S U V L( T<n>( R<n>( X<name><n>( A<n>( -> , )`).
 It was formerly U+2026 (`…`), a non-ASCII code point that forced the whole
 key to UTF-16 and made every subsequent ASCII fragment append widen — see
 `utf8-widen-cliff-solver-2026-07-31.md`. ASCII keeps the append path UTF-8.
+
 -}
 shallowLayoutKey : Int -> MonoType -> String
 shallowLayoutKey depth monoType =
@@ -2180,7 +2175,7 @@ headAnno monoType =
             topLegacy
 
 
-{-| Pointwise annotation join of two layout-identical types (LSS_010).
+{-| Pointwise annotation join of two layout-identical types (LSS\_010).
 
 Used on spec-registry key hits under widened keys: the stored type must be
 the JOIN of every admitted demand's annotations, because the (single)
@@ -2244,7 +2239,7 @@ it changed nothing, then discard the rebuilt tree. Run B measured that populatio
 `noop=4,566` on the registry path and `completion=33,541` unconditional joins.
 
 SOUNDNESS LAW: the flag must NEVER be falsely `False` — a narrower stored annotation
-is the LSS_010 silent miscompile. This implementation is EXACT in both directions:
+is the LSS\_010 silent miscompile. This implementation is EXACT in both directions:
 the returned tree is structurally what `joinAnnotations` returns, and the flag is
 exactly `result /= a`. Exactness (rather than the weaker "falsely True is sound")
 is deliberate — a falsely-True flag at the registry site writes and marks dirty on
@@ -2257,7 +2252,7 @@ identity on an already-`LTop` tree, and on every leaf).
 
 Do NOT be tempted to skip on hash equality: the packed hashes are 26-bit with a
 one-directional contract (see the hashing note above), so collisions are certain at
-self-compile scale and a false skip is the LSS_010 miscompile.
+self-compile scale and a false skip is the LSS\_010 miscompile.
 
 -}
 joinAnnotationsChanged : MonoType -> MonoType -> ( Bool, MonoType )
@@ -2463,7 +2458,8 @@ annoCovers a b =
             sortedSubsetOf ys xs
 
 
-{-| `ys ⊆ xs` for ascending, deduplicated int lists. -}
+{-| `ys ⊆ xs` for ascending, deduplicated int lists.
+-}
 sortedSubsetOf : List Int -> List Int -> Bool
 sortedSubsetOf ys xs =
     case ( ys, xs ) of
@@ -2550,7 +2546,7 @@ overlayAnnotations structural annoSource =
 
 Every GlobalOpt-synthesized closure whose provenance is unknown (alias /
 general wrappers from wrapTopLevelCallables) must adopt this identity as
-its `srcLambda` (LSS_008): its type claims exactly one member, so the
+its `srcLambda` (LSS\_008): its type claims exactly one member, so the
 wrapper must register as an instance of that member — instance
 MULTIPLICITY is what keeps AbiCloning's singleton upgrade sound. A
 synthesized closure hiding under `srcLambda = Nothing` while its type
@@ -2839,7 +2835,7 @@ containsAnyMVarList types =
 {-| Identifier for lambda functions in lambda sets, distinguishing named functions from closures.
 -}
 type LambdaId
-    = AnonymousLambda IO.Canonical Int
+    = AnonymousLambda ModuleName.Canonical Int
 
 
 
@@ -2852,7 +2848,7 @@ type LambdaId
 global for record field accessors (.field).
 -}
 type Global
-    = Global IO.Canonical Name
+    = Global ModuleName.Canonical Name
     | Accessor Name
 
 
@@ -2870,10 +2866,11 @@ type alias SpecId =
 
 {-| Registry tracking all function specializations in the program.
 
-`countByGlobal` counts CREATED specs per comparable global (MONO_030): it is
+`countByGlobal` counts CREATED specs per comparable global (MONO\_030): it is
 maintained only on the create/miss branches of the two `Registry` probes —
 never on hits — and feeds the breadth watchdogs of both engines. The output
 graph's rebuilt registry carries it empty (counts are a during-run concern).
+
 -}
 type alias SpecializationRegistry =
     { nextId : Int
@@ -3310,7 +3307,7 @@ toComparableGlobal global =
     case global of
         Global home name ->
             let
-                (IO.Canonical ( author, project ) modName) =
+                (ModuleName.Canonical ( author, project ) modName) =
                     home
             in
             String.concat [ "G", author, "\u{0000}", project, "\u{0000}", modName, "\u{0000}", name ]
@@ -3420,7 +3417,7 @@ toComparableFragments annoSensitive mt tail =
 
         MCustom _ canonical name args ->
             let
-                (IO.Canonical ( author, project ) modName) =
+                (ModuleName.Canonical ( author, project ) modName) =
                     canonical
             in
             "X"
@@ -3618,7 +3615,7 @@ Extended for typed closure calling:
     saturating typed papExtend. Only consulted on the
     CallGenericApply/CallSegmentationUnknown emission paths — sites the
     staging solver could not type; advisory metadata everywhere else.
-  - fastPapPrefix: E2 PAP-shape stamp (LSS_011). `Just k` when the stamped
+  - fastPapPrefix: E2 PAP-shape stamp (LSS\_011). `Just k` when the stamped
     callee value is a PAP of the fastEvaluator instance holding k applied
     args: `captureAbi.captureTypes` then equals the instance's REAL
     captures ++ its first k param types (the PAP's filled value slots, in
@@ -3773,6 +3770,7 @@ callable share provenance (PAP results keep the underlying callee's member),
 so re-segmenting a type must not lose or invent set facts. Callers derive
 `anno` from the original type's head arrow (`headAnno`), joining branch
 annotations (`unionAnno`) where several types merge.
+
 -}
 buildSegmentedFunctionType : LambdaSetAnno -> List MonoType -> MonoType -> Segmentation -> MonoType
 buildSegmentedFunctionType anno flatArgs finalRet seg =

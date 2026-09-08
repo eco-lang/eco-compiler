@@ -7,10 +7,9 @@ import Compiler.AST.Canonical as Can
 import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.Interface as I
-import Compiler.Elm.ModuleName as ModuleName
+import Compiler.Elm.ModuleName as ModuleName exposing (Canonical(..))
 import Compiler.Elm.Package as Pkg
 import Dict exposing (Dict)
-import System.TypeCheck.IO exposing (Canonical(..))
 
 
 {-| Canonical module name for Elm.JsArray (kernel module).

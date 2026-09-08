@@ -29,11 +29,11 @@ import Compiler.LocalOpt.Typed.Case as Case
 import Compiler.LocalOpt.Typed.Names as Names
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.KernelTypes as KernelTypes
+import Compiler.Type.Vars as Vars
 import Compiler.TypedCanonical.Build as TCanBuild
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 import Utils.Crash
 import Utils.Main as Utils
 
@@ -96,7 +96,7 @@ boolType =
 Threading the outer `tvar` keeps the synthesized node mapped to the same
 solver variable as the surrounding expression.
 -}
-boolLit : A.Region -> Bool -> Maybe IO.Variable -> TOpt.Expr Name
+boolLit : A.Region -> Bool -> Maybe Vars.Variable -> TOpt.Expr Name
 boolLit region value tv =
     TOpt.Bool region value { tipe = boolType, tvar = tv }
 
@@ -120,7 +120,7 @@ application; the extended call keeps the inner call's region, since that is
 the call being saturated.
 
 -}
-applyOneMore : A.Region -> Can.Type Name -> Maybe IO.Variable -> TOpt.Expr Name -> TOpt.Expr Name -> TOpt.Expr Name
+applyOneMore : A.Region -> Can.Type Name -> Maybe Vars.Variable -> TOpt.Expr Name -> TOpt.Expr Name -> TOpt.Expr Name
 applyOneMore region tipe tv optFn optArg =
     case optFn of
         TOpt.Call callRegion callee callArgs _ ->
@@ -145,7 +145,7 @@ Note: canonicalization forbids name shadowing, so all VarLocal occurrences
 of targetName within a scope refer to the same binding.
 
 -}
-findVarLocalTvar : Name -> ExprVars -> Can.Expr -> Maybe IO.Variable
+findVarLocalTvar : Name -> ExprVars -> Can.Expr -> Maybe Vars.Variable
 findVarLocalTvar targetName exprVars (A.At _ info) =
     case info.node of
         Can.VarLocal name ->
@@ -299,7 +299,7 @@ findVarLocalTvar targetName exprVars (A.At _ info) =
             firstJust2 targetName exprVars boundExpr body
 
 
-findVarLocalTvarInDef : Name -> ExprVars -> Can.Def -> Maybe IO.Variable
+findVarLocalTvarInDef : Name -> ExprVars -> Can.Def -> Maybe Vars.Variable
 findVarLocalTvarInDef targetName exprVars def =
     case def of
         Can.Def _ _ body ->
@@ -311,7 +311,7 @@ findVarLocalTvarInDef targetName exprVars def =
 
 {-| Helper: return first Just from two expressions
 -}
-firstJust2 : Name -> ExprVars -> Can.Expr -> Can.Expr -> Maybe IO.Variable
+firstJust2 : Name -> ExprVars -> Can.Expr -> Can.Expr -> Maybe Vars.Variable
 firstJust2 targetName exprVars a b =
     case findVarLocalTvar targetName exprVars a of
         Just v ->
@@ -323,7 +323,7 @@ firstJust2 targetName exprVars a b =
 
 {-| Helper: return first Just from a list of expressions
 -}
-firstJustList : Name -> ExprVars -> List Can.Expr -> Maybe IO.Variable
+firstJustList : Name -> ExprVars -> List Can.Expr -> Maybe Vars.Variable
 firstJustList targetName exprVars exprs =
     case exprs of
         [] ->
@@ -340,7 +340,7 @@ firstJustList targetName exprVars exprs =
 
 {-| Helper: return first Just from mapping over a list
 -}
-firstJustMap : (a -> Maybe IO.Variable) -> List a -> Maybe IO.Variable
+firstJustMap : (a -> Maybe Vars.Variable) -> List a -> Maybe Vars.Variable
 firstJustMap f list =
     case list of
         [] ->
@@ -372,14 +372,14 @@ The `home` parameter is needed to create `VarCycle` references for local recursi
 definitions.
 
 -}
-optimize : KernelTypes.KernelTypeEnv -> Annotations -> ExprTypes -> ExprVars -> IO.Canonical -> Cycle -> TCan.Expr -> Names.Tracker (TOpt.Expr Name)
+optimize : KernelTypes.KernelTypeEnv -> Annotations -> ExprTypes -> ExprVars -> ModuleName.Canonical -> Cycle -> TCan.Expr -> Names.Tracker (TOpt.Expr Name)
 optimize kernelEnv annotations exprTypes exprVars home cycle (A.At region texpr) =
     case texpr of
         TCan.TypedExpr { expr, tipe, tvar } ->
             optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tvar expr
 
 
-optimizeExpr : KernelTypes.KernelTypeEnv -> Annotations -> ExprTypes -> ExprVars -> IO.Canonical -> Cycle -> A.Region -> Can.Type Name -> Maybe IO.Variable -> Can.Expr_ -> Names.Tracker (TOpt.Expr Name)
+optimizeExpr : KernelTypes.KernelTypeEnv -> Annotations -> ExprTypes -> ExprVars -> ModuleName.Canonical -> Cycle -> A.Region -> Can.Type Name -> Maybe Vars.Variable -> Can.Expr_ -> Names.Tracker (TOpt.Expr Name)
 optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tvar expr =
     case expr of
         Can.VarLocal name ->
@@ -847,7 +847,7 @@ optimizeTail :
     -> Annotations
     -> ExprTypes
     -> ExprVars
-    -> IO.Canonical
+    -> ModuleName.Canonical
     -> Cycle
     -> Name
     -> List ( A.Located Name, Can.Type Name )
@@ -865,14 +865,14 @@ optimizeTailExpr :
     -> Annotations
     -> ExprTypes
     -> ExprVars
-    -> IO.Canonical
+    -> ModuleName.Canonical
     -> Cycle
     -> Name
     -> List ( A.Located Name, Can.Type Name )
     -> Can.Type Name
     -> A.Region
     -> Can.Type Name
-    -> Maybe IO.Variable
+    -> Maybe Vars.Variable
     -> Can.Expr_
     -> Names.Tracker (TOpt.Expr Name)
 optimizeTailExpr kernelEnv annotations exprTypes exprVars home cycle rootName argNames resultType region tipe tvar expr =
@@ -1110,11 +1110,11 @@ optimizeDef :
     -> Annotations
     -> ExprTypes
     -> ExprVars
-    -> IO.Canonical
+    -> ModuleName.Canonical
     -> Cycle
     -> Can.Def
     -> Can.Type Name
-    -> Maybe IO.Variable
+    -> Maybe Vars.Variable
     -> TOpt.Expr Name
     -> Names.Tracker (TOpt.Expr Name)
 optimizeDef kernelEnv annotations exprTypes exprVars home cycle def resultType defNodeTvar body =
@@ -1131,20 +1131,20 @@ optimizeDefHelp :
     -> Annotations
     -> ExprTypes
     -> ExprVars
-    -> IO.Canonical
+    -> ModuleName.Canonical
     -> Cycle
     -> A.Region
     -> Name
     -> List Can.Pattern
     -> Can.Expr
     -> Can.Type Name
-    -> Maybe IO.Variable
+    -> Maybe Vars.Variable
     -> TOpt.Expr Name
     -> Names.Tracker (TOpt.Expr Name)
 optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name args expr resultType defNodeTvar body =
     let
         -- Extract the definition body's tvar from exprVars
-        defBodyTvar : Maybe IO.Variable
+        defBodyTvar : Maybe Vars.Variable
         defBodyTvar =
             Array.get (A.toValue expr).id exprVars |> Maybe.andThen identity
 
@@ -1152,7 +1152,7 @@ optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name 
         --   1. Caller-provided tvar (from continuation-body scan for non-recursive let)
         --   2. Self-call scan of def RHS (for multi-def LetRec with direct self-recursion)
         --   3. defBodyTvar (body/return type — last resort)
-        funcTvar : Maybe IO.Variable
+        funcTvar : Maybe Vars.Variable
         funcTvar =
             case defNodeTvar of
                 Just _ ->
@@ -1167,7 +1167,7 @@ optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name 
                             defBodyTvar
 
         -- The Let expression's tvar is the tvar of the continuation body
-        letTvar : Maybe IO.Variable
+        letTvar : Maybe Vars.Variable
         letTvar =
             TOpt.tvarOf body
     in
@@ -1235,7 +1235,7 @@ optimizePotentialTailCallDef :
     -> Annotations
     -> ExprTypes
     -> ExprVars
-    -> IO.Canonical
+    -> ModuleName.Canonical
     -> Cycle
     -> Can.Def
     -> Names.Tracker (TOpt.Def Name)
@@ -1280,19 +1280,19 @@ optimizePotentialTailCall :
     -> Annotations
     -> ExprTypes
     -> ExprVars
-    -> IO.Canonical
+    -> ModuleName.Canonical
     -> Cycle
     -> A.Region
     -> Name
     -> List Can.Pattern
     -> TCan.Expr
     -> Can.Type Name
-    -> Dict Name IO.Variable
+    -> Dict Name Vars.Variable
     -> Names.Tracker (TOpt.Def Name)
 optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle region name args body defType annotationVars =
     let
         -- Extract the body's tvar from the TCan.Expr
-        bodyTvar : Maybe IO.Variable
+        bodyTvar : Maybe Vars.Variable
         bodyTvar =
             case A.toValue body of
                 TCan.TypedExpr info ->
@@ -1300,7 +1300,7 @@ optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle re
 
         -- For function definitions, look up the annotation-level solver variable
         -- from the solver's Env to get the full function type variable.
-        nodeTvar : Maybe IO.Variable
+        nodeTvar : Maybe Vars.Variable
         nodeTvar =
             case Dict.get name annotationVars of
                 Just var ->
@@ -1424,7 +1424,7 @@ lookupPatternType exprTypes patId location =
 {-| Look up a pattern's type variable from the exprVars dictionary.
 Returns Nothing for synthetic patterns (negative IDs).
 -}
-lookupPatternVar : ExprVars -> Int -> Maybe IO.Variable
+lookupPatternVar : ExprVars -> Int -> Maybe Vars.Variable
 lookupPatternVar exprVars patId =
     if patId < 0 then
         Nothing

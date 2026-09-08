@@ -23,8 +23,9 @@ are maintained by the algorithm.
 -}
 
 import Array exposing (Array)
+import Compiler.Type.Vars as Vars exposing (Variable)
 import Data.IORef as IORef exposing (IORef)
-import System.TypeCheck.IO as IO exposing (IO, Variable)
+import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Crash exposing (crash)
 
 
@@ -56,7 +57,7 @@ unsafeInit =
 
 {-| Apply an indexed monadic action to each element in the vector, discarding results.
 -}
-imapM_ : (Int -> List Variable -> IO b) -> IORef (Array (Maybe (List IO.Variable))) -> IO ()
+imapM_ : (Int -> List Variable -> IO b) -> IORef (Array (Maybe (List Vars.Variable))) -> IO ()
 imapM_ action ioRef =
     IORef.readIORefMVector ioRef
         |> IO.andThen
@@ -83,14 +84,14 @@ imapM_ action ioRef =
             )
 
 
-mapM_ : (List IO.Variable -> IO b) -> IORef (Array (Maybe (List IO.Variable))) -> IO ()
+mapM_ : (List Vars.Variable -> IO b) -> IORef (Array (Maybe (List Vars.Variable))) -> IO ()
 mapM_ action ioRef =
     imapM_ (\_ -> action) ioRef
 
 
 {-| Apply a monadic action to each element in the vector, discarding results (flipped argument order).
 -}
-forM_ : IORef (Array (Maybe (List IO.Variable))) -> (List IO.Variable -> IO b) -> IO ()
+forM_ : IORef (Array (Maybe (List Vars.Variable))) -> (List Vars.Variable -> IO b) -> IO ()
 forM_ ioRef action =
     mapM_ action ioRef
 

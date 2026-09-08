@@ -47,10 +47,10 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds exposing (MVarId)
 import Compiler.Data.Id as Id
 import Compiler.Data.Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Monomorphize.State as State exposing (MVarEnv, SchemeInfo, Substitution)
 import Dict
 import Set exposing (Set)
-import System.TypeCheck.IO as IO
 import Tuple
 
 
@@ -402,19 +402,19 @@ unifyHelp env canType monoType subst =
                             insertBindingSafe env mvarId monoType subst
 
         -- Handle primitive types from elm/core that map to specialized MonoTypes
-        ( Can.TType (IO.Canonical ( "elm", "core" ) "Basics") "Int" [], Mono.MInt ) ->
+        ( Can.TType (ModuleName.Canonical ( "elm", "core" ) "Basics") "Int" [], Mono.MInt ) ->
             ( subst, env )
 
-        ( Can.TType (IO.Canonical ( "elm", "core" ) "Basics") "Float" [], Mono.MFloat ) ->
+        ( Can.TType (ModuleName.Canonical ( "elm", "core" ) "Basics") "Float" [], Mono.MFloat ) ->
             ( subst, env )
 
-        ( Can.TType (IO.Canonical ( "elm", "core" ) "Basics") "Bool" [], Mono.MBool ) ->
+        ( Can.TType (ModuleName.Canonical ( "elm", "core" ) "Basics") "Bool" [], Mono.MBool ) ->
             ( subst, env )
 
-        ( Can.TType (IO.Canonical ( "elm", "core" ) "Char") "Char" [], Mono.MChar ) ->
+        ( Can.TType (ModuleName.Canonical ( "elm", "core" ) "Char") "Char" [], Mono.MChar ) ->
             ( subst, env )
 
-        ( Can.TType (IO.Canonical ( "elm", "core" ) "String") "String" [], Mono.MString ) ->
+        ( Can.TType (ModuleName.Canonical ( "elm", "core" ) "String") "String" [], Mono.MString ) ->
             ( subst, env )
 
         ( Can.TLambda _ from to, Mono.MFunction _ anno args ret ) ->
@@ -844,7 +844,7 @@ applySubstPureI env subst canType intern =
 
                 isElmCore =
                     case canonical of
-                        IO.Canonical ( "elm", "core" ) _ ->
+                        ModuleName.Canonical ( "elm", "core" ) _ ->
                             True
 
                         _ ->

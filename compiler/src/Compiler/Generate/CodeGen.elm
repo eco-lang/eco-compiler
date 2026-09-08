@@ -40,10 +40,10 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Optimized as Opt
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Generate.Mode as Mode
 import Compiler.Reporting.Render.Type.Localizer as L
 import Data.Map exposing (Dict)
-import System.TypeCheck.IO as IO
 
 
 
@@ -83,7 +83,7 @@ type alias CodeGen =
         { ansi : Bool
         , localizer : L.Localizer
         , graph : Opt.GlobalGraph
-        , home : IO.Canonical
+        , home : ModuleName.Canonical
         , name : Name.Name
         , annotation : Can.Annotation Name
         }
@@ -93,7 +93,7 @@ type alias CodeGen =
     , generateForReplEndpoint :
         { localizer : L.Localizer
         , graph : Opt.GlobalGraph
-        , home : IO.Canonical
+        , home : ModuleName.Canonical
         , maybeName : Maybe Name.Name
         , annotation : Can.Annotation Name
         }
@@ -108,7 +108,7 @@ type alias CodeGen =
 {-| Map from module names to their main entry points for standard optimized AST.
 -}
 type alias Mains =
-    Dict String IO.Canonical Opt.Main
+    Dict String ModuleName.Canonical Opt.Main
 
 
 
@@ -119,7 +119,7 @@ type alias Mains =
 -}
 type SourceMaps
     = NoSourceMaps
-    | SourceMaps (Dict String IO.Canonical String)
+    | SourceMaps (Dict String ModuleName.Canonical String)
 
 
 

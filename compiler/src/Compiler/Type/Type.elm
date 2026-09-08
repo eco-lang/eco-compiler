@@ -72,9 +72,10 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Type as E
 import Compiler.Type.Error as ET
 import Compiler.Type.UnionFind as UF
+import Compiler.Type.Vars as Vars exposing (Content(..), Descriptor, FlatType(..), Mark(..), SuperType(..), Variable)
 import Dict exposing (Dict)
 import Maybe.Extra as Maybe
-import System.TypeCheck.IO as IO exposing (Content(..), Descriptor, FlatType(..), IO, Mark(..), NameState, SuperType(..), Variable)
+import System.TypeCheck.IO as IO exposing (IO, NameState)
 import Utils.Crash exposing (crash)
 
 
@@ -123,9 +124,9 @@ through union-find operations.
 
 -}
 type Type
-    = AliasN IO.Canonical Name (List ( Name, Type )) Type
+    = AliasN ModuleName.Canonical Name (List ( Name, Type )) Type
     | VarN Variable
-    | AppN IO.Canonical Name (List Type)
+    | AppN ModuleName.Canonical Name (List Type)
     | FunN Type Type
     | EmptyRecordN
     | RecordN (Dict Name Type) Type

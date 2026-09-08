@@ -45,7 +45,6 @@ import Compiler.Elm.ModuleName as ModuleName
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 import Utils.Crash exposing (crash)
@@ -104,8 +103,8 @@ extract astType =
                     )
 
 
-toPublicName : IO.Canonical -> Name.Name -> Name.Name
-toPublicName (IO.Canonical _ home) name =
+toPublicName : ModuleName.Canonical -> Name.Name -> Name.Name
+toPublicName (ModuleName.Canonical _ home) name =
     Name.sepBy '.' home name
 
 
@@ -120,7 +119,7 @@ type Types
     = -- PERF profile Opt.Global representation
       -- current representation needs less allocation
       -- but maybe the lookup is much worse
-      Types (Data.Map.Dict String IO.Canonical Types_)
+      Types (Data.Map.Dict String ModuleName.Canonical Types_)
 
 
 {-| Type information for a single module, containing unions and aliases.
@@ -152,12 +151,12 @@ merge (Types types1) (Types types2) =
 -}
 fromInterface : ModuleName.Raw -> I.Interface -> Types
 fromInterface name (I.Interface iface) =
-    Types_ (Dict.map (\_ -> I.extractUnion) iface.unions) (Dict.map (\_ -> I.extractAlias) iface.aliases) |> Data.Map.singleton ModuleName.toComparableCanonical (IO.Canonical iface.home name) |> Types
+    Types_ (Dict.map (\_ -> I.extractUnion) iface.unions) (Dict.map (\_ -> I.extractAlias) iface.aliases) |> Data.Map.singleton ModuleName.toComparableCanonical (ModuleName.Canonical iface.home name) |> Types
 
 
 {-| Extracts type information from a dependency interface (either public or private).
 -}
-fromDependencyInterface : IO.Canonical -> I.DependencyInterface -> Types
+fromDependencyInterface : ModuleName.Canonical -> I.DependencyInterface -> Types
 fromDependencyInterface home di =
     Types
         (Data.Map.singleton ModuleName.toComparableCanonical home <|

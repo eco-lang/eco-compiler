@@ -5,10 +5,11 @@ module Compiler.AST.TypedOptimized exposing
     , Decider(..), Choice(..)
     , GlobalGraph(..), LocalGraph(..), LocalGraphData, Node(..), Main(..), EffectsType(..)
     , emptyGlobalGraph
-    , compareGlobal, toComparableGlobal, globalHash, toKernelGlobal
+    , compareGlobal, toComparableGlobal, toKernelGlobal
     , typeOf, metaOf, tvarOf
     , computeVarSupers, varSupersOfType
     , globalGraphEncoder, globalGraphDecoder, localGraphEncoder, localGraphDecoder
+    , globalHash
     )
 
 {-| TypedOptimized AST - like Optimized but preserves type information.
@@ -89,11 +90,11 @@ import Compiler.Elm.Kernel as K
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
+import Compiler.Type.Vars as Vars
 import Data.Map
 import Data.Set exposing (EverySet)
 import Dict exposing (Dict)
 import Set exposing (Set)
-import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
@@ -120,7 +121,7 @@ type alias AnnotationsByGlobal id =
 Used in GlobalGraph to avoid cross-module name collisions.
 -}
 type alias SchemeRootsByGlobal =
-    Data.Map.Dict String Global (Dict Name IO.RootedVar)
+    Data.Map.Dict String Global (Dict Name Vars.RootedVar)
 
 
 
@@ -132,7 +133,7 @@ The `tvar` field preserves the solver's union-find variable for MonoDirect monom
 -}
 type alias Meta id =
     { tipe : Can.Type id
-    , tvar : Maybe IO.Variable
+    , tvar : Maybe Vars.Variable
     }
 
 
@@ -154,8 +155,8 @@ type Expr id
     | VarGlobal A.Region Global (Meta id)
     | VarEnum A.Region Global Index.ZeroBased (Meta id)
     | VarBox A.Region Global (Meta id)
-    | VarCycle A.Region IO.Canonical Name (Meta id)
-    | VarDebug A.Region Name IO.Canonical (Maybe Name) (Meta id)
+    | VarCycle A.Region ModuleName.Canonical Name (Meta id)
+    | VarDebug A.Region Name ModuleName.Canonical (Maybe Name) (Meta id)
     | VarKernel A.Region Name Name Name (Meta id)
     | List A.Region (List (Expr id)) (Meta id)
     | Function (Maybe TypeIds.SrcLambdaId) (List ( Name, Can.Type id )) (Expr id) (Meta id) -- source-lambda id (LSS member identity; NOT persisted), params with types, body, function type
@@ -281,7 +282,7 @@ metaOf expr =
 
 {-| Extract the solver variable from any expression (if available).
 -}
-tvarOf : Expr id -> Maybe IO.Variable
+tvarOf : Expr id -> Maybe Vars.Variable
 tvarOf expr =
     (metaOf expr).tvar
 
@@ -289,7 +290,7 @@ tvarOf expr =
 {-| A reference to a top-level definition in a module.
 -}
 type Global
-    = Global IO.Canonical Name
+    = Global ModuleName.Canonical Name
 
 
 {-| Compare two global references for ordering.
@@ -328,7 +329,7 @@ per-bucket `eq`, so a coarse hash costs performance, never correctness.
 globalHash : Global -> Int
 globalHash g =
     case g of
-        Global (IO.Canonical ( author, project ) modName) name ->
+        Global (ModuleName.Canonical ( author, project ) modName) name ->
             globalMixHash
                 (globalMixHash
                     (globalMixHash (globalMixHash 21 (String.length author)) (String.length project))
@@ -348,7 +349,7 @@ globalMixHash h x =
 -}
 toKernelGlobal : Name.Name -> Global
 toKernelGlobal shortName =
-    Global (IO.Canonical Pkg.kernel shortName) Name.dollar
+    Global (ModuleName.Canonical Pkg.kernel shortName) Name.dollar
 
 
 
@@ -359,7 +360,7 @@ toKernelGlobal shortName =
 -}
 type Def id
     = Def A.Region Name (Expr id) (Can.Type id) -- name, body, type of the definition
-    | TailDef A.Region Name (List ( A.Located Name, Can.Type id )) (Expr id) (Can.Type id) (Maybe IO.Variable) -- name, typed args, body, type of the definition, tvar
+    | TailDef A.Region Name (List ( A.Located Name, Can.Type id )) (Expr id) (Can.Type id) (Maybe Vars.Variable) -- name, typed args, body, type of the definition, tvar
 
 
 {-| Destructuring pattern that extracts a value from a data structure.
@@ -419,7 +420,7 @@ type Choice id
 {-| A graph of all top-level definitions across multiple modules.
 -}
 type GlobalGraph id
-    = GlobalGraph (Data.Map.Dict String Global (Node id)) (Dict Name Int) (AnnotationsByGlobal id) SchemeRootsByGlobal (Dict Name IO.SuperType)
+    = GlobalGraph (Data.Map.Dict String Global (Node id)) (Dict Name Int) (AnnotationsByGlobal id) SchemeRootsByGlobal (Dict Name Vars.SuperType)
 
 
 
@@ -433,8 +434,8 @@ type alias LocalGraphData id =
     , nodes : Data.Map.Dict String Global (Node id)
     , fields : Dict Name Int
     , annotations : Annotations id
-    , schemeRoots : Dict Name (Dict Name IO.RootedVar)
-    , varSupers : Dict Name IO.SuperType
+    , schemeRoots : Dict Name (Dict Name Vars.RootedVar)
+    , varSupers : Dict Name Vars.SuperType
     }
 
 
@@ -888,7 +889,7 @@ exprEncoderS st expr =
 
         VarDebug region name _ _ meta ->
             -- Per ECOT_001: home and unhandledValueName are NOT serialized.
-            -- They are reconstructed on decode as (IO.Canonical Pkg.core Name.debug)
+            -- They are reconstructed on decode as (ModuleName.Canonical Pkg.core Name.debug)
             -- and Nothing respectively; Specialize hardcodes "Elm" "Debug" anyway.
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 11
@@ -1129,7 +1130,7 @@ exprDecoderS st =
                         -- Per ECOT_001: reconstruct home and unhandledValueName locally.
                         Bytes.Decode.map3
                             (\region name meta ->
-                                VarDebug region name (IO.Canonical Pkg.core Name.debug) Nothing meta
+                                VarDebug region name (ModuleName.Canonical Pkg.core Name.debug) Nothing meta
                             )
                             A.regionDecoder
                             (StringTable.stringDec st)
@@ -1278,7 +1279,7 @@ defEncoderS st def =
                     Nothing ->
                         Bytes.Encode.unsignedInt8 0
 
-                    Just (IO.Pt n) ->
+                    Just (Vars.Pt n) ->
                         Bytes.Encode.sequence
                             [ Bytes.Encode.unsignedInt8 1
                             , Bytes.Encode.signedInt32 Bytes.BE n
@@ -1316,7 +1317,7 @@ defDecoderS st =
                                                         Bytes.Decode.succeed (tailDefFn Nothing)
 
                                                     _ ->
-                                                        Bytes.Decode.map (\n -> tailDefFn (Just (IO.Pt n)))
+                                                        Bytes.Decode.map (\n -> tailDefFn (Just (Vars.Pt n)))
                                                             (Bytes.Decode.signedInt32 Bytes.BE)
                                             )
                                 )
@@ -1573,57 +1574,57 @@ formatVersionDecoder =
 -- ====== SCHEME ROOTS ENCODERS/DECODERS ======
 
 
-variableEncoder : IO.Variable -> Bytes.Encode.Encoder
-variableEncoder (IO.Pt idx) =
+variableEncoder : Vars.Variable -> Bytes.Encode.Encoder
+variableEncoder (Vars.Pt idx) =
     Bytes.Encode.signedInt32 Bytes.BE idx
 
 
-variableDecoder : Bytes.Decode.Decoder IO.Variable
+variableDecoder : Bytes.Decode.Decoder Vars.Variable
 variableDecoder =
-    Bytes.Decode.map IO.Pt (Bytes.Decode.signedInt32 Bytes.BE)
+    Bytes.Decode.map Vars.Pt (Bytes.Decode.signedInt32 Bytes.BE)
 
 
 {-| Encode an optional super constraint as one byte (0 = none).
 -}
-maybeSuperToByte : Maybe IO.SuperType -> Int
+maybeSuperToByte : Maybe Vars.SuperType -> Int
 maybeSuperToByte ms =
     case ms of
         Nothing ->
             0
 
-        Just IO.Number ->
+        Just Vars.Number ->
             1
 
-        Just IO.Comparable ->
+        Just Vars.Comparable ->
             2
 
-        Just IO.Appendable ->
+        Just Vars.Appendable ->
             3
 
-        Just IO.CompAppend ->
+        Just Vars.CompAppend ->
             4
 
 
-byteToMaybeSuper : Int -> Maybe IO.SuperType
+byteToMaybeSuper : Int -> Maybe Vars.SuperType
 byteToMaybeSuper b =
     case b of
         1 ->
-            Just IO.Number
+            Just Vars.Number
 
         2 ->
-            Just IO.Comparable
+            Just Vars.Comparable
 
         3 ->
-            Just IO.Appendable
+            Just Vars.Appendable
 
         4 ->
-            Just IO.CompAppend
+            Just Vars.CompAppend
 
         _ ->
             Nothing
 
 
-rootedVarEncoder : IO.RootedVar -> Bytes.Encode.Encoder
+rootedVarEncoder : Vars.RootedVar -> Bytes.Encode.Encoder
 rootedVarEncoder rv =
     Bytes.Encode.sequence
         [ variableEncoder rv.var
@@ -1631,29 +1632,29 @@ rootedVarEncoder rv =
         ]
 
 
-rootedVarDecoder : Bytes.Decode.Decoder IO.RootedVar
+rootedVarDecoder : Bytes.Decode.Decoder Vars.RootedVar
 rootedVarDecoder =
     Bytes.Decode.map2 (\v b -> { var = v, super = byteToMaybeSuper b })
         variableDecoder
         Bytes.Decode.unsignedInt8
 
 
-schemeRootsForDefEncoderS : StringTable -> Dict Name IO.RootedVar -> Bytes.Encode.Encoder
+schemeRootsForDefEncoderS : StringTable -> Dict Name Vars.RootedVar -> Bytes.Encode.Encoder
 schemeRootsForDefEncoderS st roots =
     BE.stdDict (StringTable.string st) rootedVarEncoder roots
 
 
-schemeRootsForDefDecoderS : StringTable -> Bytes.Decode.Decoder (Dict Name IO.RootedVar)
+schemeRootsForDefDecoderS : StringTable -> Bytes.Decode.Decoder (Dict Name Vars.RootedVar)
 schemeRootsForDefDecoderS st =
     BD.stdDict (StringTable.stringDec st) rootedVarDecoder
 
 
-schemeRootsEncoderS : StringTable -> Dict Name (Dict Name IO.RootedVar) -> Bytes.Encode.Encoder
+schemeRootsEncoderS : StringTable -> Dict Name (Dict Name Vars.RootedVar) -> Bytes.Encode.Encoder
 schemeRootsEncoderS st allRoots =
     BE.stdDict (StringTable.string st) (schemeRootsForDefEncoderS st) allRoots
 
 
-schemeRootsDecoderS : StringTable -> Bytes.Decode.Decoder (Dict Name (Dict Name IO.RootedVar))
+schemeRootsDecoderS : StringTable -> Bytes.Decode.Decoder (Dict Name (Dict Name Vars.RootedVar))
 schemeRootsDecoderS st =
     BD.stdDict (StringTable.stringDec st) (schemeRootsForDefDecoderS st)
 
@@ -1662,22 +1663,22 @@ schemeRootsDecoderS st =
 -- ====== VAR SUPERS ENCODERS/DECODERS ======
 
 
-superValueEncoder : IO.SuperType -> Bytes.Encode.Encoder
+superValueEncoder : Vars.SuperType -> Bytes.Encode.Encoder
 superValueEncoder s =
     Bytes.Encode.unsignedInt8 (maybeSuperToByte (Just s))
 
 
-superValueDecoder : Bytes.Decode.Decoder IO.SuperType
+superValueDecoder : Bytes.Decode.Decoder Vars.SuperType
 superValueDecoder =
-    Bytes.Decode.map (\b -> Maybe.withDefault IO.Number (byteToMaybeSuper b)) Bytes.Decode.unsignedInt8
+    Bytes.Decode.map (\b -> Maybe.withDefault Vars.Number (byteToMaybeSuper b)) Bytes.Decode.unsignedInt8
 
 
-varSupersEncoderS : StringTable -> Dict Name IO.SuperType -> Bytes.Encode.Encoder
+varSupersEncoderS : StringTable -> Dict Name Vars.SuperType -> Bytes.Encode.Encoder
 varSupersEncoderS st vs =
     BE.stdDict (StringTable.string st) superValueEncoder vs
 
 
-varSupersDecoderS : StringTable -> Bytes.Decode.Decoder (Dict Name IO.SuperType)
+varSupersDecoderS : StringTable -> Bytes.Decode.Decoder (Dict Name Vars.SuperType)
 varSupersDecoderS st =
     BD.stdDict (StringTable.stringDec st) superValueDecoder
 
@@ -1739,7 +1740,7 @@ collectStringsFromGlobalAnnotationPair g ann acc =
         |> Can.collectStringsFromAnnotation ann
 
 
-collectStringsFromSchemeRoots : Dict Name (Dict Name IO.RootedVar) -> Set String -> Set String
+collectStringsFromSchemeRoots : Dict Name (Dict Name Vars.RootedVar) -> Set String -> Set String
 collectStringsFromSchemeRoots roots acc =
     Dict.foldl
         (\k inner a ->
@@ -1772,25 +1773,25 @@ channel; monomorphization consumes the resulting `varSupers` / `RootedVar.super`
 data, never the names themselves. Mirrors `Compiler.Type.Type.toSuper`.
 
 -}
-superOfName : Name -> Maybe IO.SuperType
+superOfName : Name -> Maybe Vars.SuperType
 superOfName name =
     if Name.isNumberType name then
-        Just IO.Number
+        Just Vars.Number
 
     else if Name.isComparableType name then
-        Just IO.Comparable
+        Just Vars.Comparable
 
     else if Name.isAppendableType name then
-        Just IO.Appendable
+        Just Vars.Appendable
 
     else if Name.isCompappendType name then
-        Just IO.CompAppend
+        Just Vars.CompAppend
 
     else
         Nothing
 
 
-insertSuperOfName : Name -> Dict Name IO.SuperType -> Dict Name IO.SuperType
+insertSuperOfName : Name -> Dict Name Vars.SuperType -> Dict Name Vars.SuperType
 insertSuperOfName name acc =
     case superOfName name of
         Just s ->
@@ -1805,7 +1806,7 @@ name it emits and keeping those that carry a super constraint. Complete by
 construction: it reuses the same collector the encoder uses, so every type
 variable in the graph is covered.
 -}
-computeVarSupers : LocalGraph Name -> Dict Name IO.SuperType
+computeVarSupers : LocalGraph Name -> Dict Name Vars.SuperType
 computeVarSupers graph =
     Set.foldl insertSuperOfName Dict.empty (collectStringsFromLocalGraph graph Set.empty)
 
@@ -1813,7 +1814,7 @@ computeVarSupers graph =
 {-| Compute a `varSupers` map for a single standalone canonical type (used by
 `AssignMVarIds.assignIdsToType`, the test-only single-type entry point).
 -}
-varSupersOfType : Can.Type Name -> Dict Name IO.SuperType
+varSupersOfType : Can.Type Name -> Dict Name Vars.SuperType
 varSupersOfType tipe =
     Set.foldl insertSuperOfName Dict.empty (Can.collectStringsFromType tipe Set.empty)
 

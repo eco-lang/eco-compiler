@@ -84,7 +84,6 @@ import Data.Map
 import Data.Set as EverySet
 import Dict exposing (Dict)
 import System.IO exposing (FilePath, MVar(..))
-import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -352,7 +351,7 @@ type Module
 {-| Map of dependency module interfaces needed for type checking.
 -}
 type alias Dependencies =
-    Data.Map.Dict String TypeCheck.Canonical I.DependencyInterface
+    Data.Map.Dict String ModuleName.Canonical I.DependencyInterface
 
 
 {-| Build a project by compiling modules from specific file paths (e.g., for application builds).
@@ -778,7 +777,7 @@ checkModule ((Env envData) as env) foreigns resultsMVar name status =
                 Error.BadSyntax err |> Error.Module name path time source |> RProblem |> Task.succeed
 
             SForeign home ->
-                case Utils.find ModuleName.toComparableCanonical (TypeCheck.Canonical home name) foreigns of
+                case Utils.find ModuleName.toComparableCanonical (ModuleName.Canonical home name) foreigns of
                     I.Public iface ->
                         Task.succeed (RForeign iface)
 
@@ -1927,7 +1926,7 @@ toDocs result =
 {-| Data contained within REPL build artifacts.
 -}
 type alias ReplArtifactsData =
-    { home : TypeCheck.Canonical
+    { home : ModuleName.Canonical
     , modules : List Module
     , localizer : L.Localizer
     , annotations : Dict Name.Name (Can.Annotation Name)
@@ -2045,7 +2044,7 @@ finalizeReplArtifacts ((Env envData) as env) source ((Src.Module srcData) as mod
                         case result of
                             Ok (Compile.Artifacts ((Can.Module canData) as canonical) annotations objects) ->
                                 let
-                                    h : TypeCheck.Canonical
+                                    h : ModuleName.Canonical
                                     h =
                                         canData.name
 

@@ -1,6 +1,13 @@
 module Compiler.GlobalOpt.Borrow.LssFacts exposing
-    ( Facts, LambdaRef, MemberInfo(..), CalleeFacts(..), PoisonCause(..)
-    , buildInstances, buildMemberTable, query, meetSig
+    ( CalleeFacts(..)
+    , Facts
+    , LambdaRef
+    , MemberInfo(..)
+    , PoisonCause(..)
+    , buildInstances
+    , buildMemberTable
+    , meetSig
+    , query
     )
 
 {-| LSS handshake facts (borrow-inference B3.5, design §10). Where LSS knows a
@@ -203,7 +210,7 @@ collectClosure specId expr acc =
 
 
 {-| Duplicated from `AbiCloning.instanceMember` (not exported): prefer the
-minted-under member id (Fix B / LSS_017), else the raw srcLambda, else the
+minted-under member id (Fix B / LSS\_017), else the raw srcLambda, else the
 singleton head member (adopted).
 -}
 instanceMember : Mono.ClosureInfo -> Mono.MonoType -> Maybe ( Int, Bool )

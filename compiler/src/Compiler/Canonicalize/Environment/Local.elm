@@ -20,12 +20,12 @@ import Compiler.Canonicalize.Environment.Dups as Dups
 import Compiler.Canonicalize.Type as Type
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Graph as Graph
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 import Utils.Main as Utils
 
 
@@ -161,7 +161,7 @@ addTypes (Src.Module srcData) env =
             )
 
 
-addUnion : IO.Canonical -> Env.Exposed Env.Type -> A.Located Src.Union -> LResult i w (Env.Exposed Env.Type)
+addUnion : ModuleName.Canonical -> Env.Exposed Env.Type -> A.Located Src.Union -> LResult i w (Env.Exposed Env.Type)
 addUnion home types ((A.At _ (Src.Union ( _, A.At _ name ) _ _)) as union) =
     ReportingResult.map
         (\arity ->
@@ -478,7 +478,7 @@ canonicalizeAlias ({ home } as env) (A.At _ (Src.Alias aliasData)) =
             )
 
 
-toRecordCtor : IO.Canonical -> Name.Name -> List Name.Name -> Dict Name.Name (Can.FieldType Name) -> Env.Ctor
+toRecordCtor : ModuleName.Canonical -> Name.Name -> List Name.Name -> Dict Name.Name (Can.FieldType Name) -> Env.Ctor
 toRecordCtor home name vars fields =
     let
         avars : List ( Name, Can.Type Name )
@@ -544,6 +544,6 @@ toOpts ctors =
                 Can.Normal
 
 
-toCtor : IO.Canonical -> Name.Name -> Can.Union -> A.Located Can.Ctor -> CtorDups
+toCtor : ModuleName.Canonical -> Name.Name -> Can.Union -> A.Located Can.Ctor -> CtorDups
 toCtor home typeName union (A.At region (Can.Ctor c)) =
     Env.Ctor home typeName union c.index c.args |> Env.Specific home |> Dups.one c.name region

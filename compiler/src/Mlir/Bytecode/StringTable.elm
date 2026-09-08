@@ -278,8 +278,9 @@ no backslash at all, so short-circuit those: it skips a pointless per-Char
 toList/fromList rebuild of every string, and — on the native runtime — keeps
 the original zero-copy UTF-8 representation alive into BE.string's memcpy path
 (the rebuild used to convert the whole string section to UTF-16; see
-design_docs/utf8-widen-attribution.md). Content is identical either way: the
+design\_docs/utf8-widen-attribution.md). Content is identical either way: the
 loop is an identity copy for backslash-free input.
+
 -}
 unescapeString : String -> String
 unescapeString s =
@@ -399,7 +400,7 @@ for strings and their data").
 function `BE.string` itself uses to size its output, on both the native and
 JS runtimes (native: O(1) header read for UTF-8 heap forms; a hand-rolled
 `String.foldl` here would widen every UTF-8 table string and — worse — count
-a *lone* surrogate half as 2 bytes where `BE.string` writes 3 WTF-8 bytes,
+a _lone_ surrogate half as 2 bytes where `BE.string` writes 3 WTF-8 bytes,
 silently corrupting the section). Paired astral surrogates need no special
 casing: width and data come from the same codec.
 

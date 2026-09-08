@@ -1,14 +1,24 @@
 module TestLogic.Generate.CodeGen.E9CtorDevirtTest exposing (suite)
 
-{-| E9 / LSS_015 ctor devirtualization — activation pin.
+{-| E9 / LSS\_015 ctor devirtualization — activation pin.
 
 Fixture: a `Can.Normal` two-arg ctor (the `List.::` analog — general ctors
 become `VarGlobal`/"g|" members, NOT VarEnum/VarBox) passed as a function
 value to a recursion-protected HOF:
 
-    type Pair = P Int Int | Q
-    applyP f n = if n <= 0 then f (n + 3) (n + 4) else applyP f (n - 1)
-    testValue = unwrap (applyP P 2)
+    type Pair
+        = P Int Int
+        | Q
+
+    applyP f n =
+        if n <= 0 then
+            f (n + 3) (n + 4)
+
+        else
+            applyP f (n - 1)
+
+    testValue =
+        unwrap (applyP P 2)
 
 The `f (n+3) (n+4)` site is an indirect call whose callee var carries the
 singleton {g|Test.P}; E9 rewrites the callee to the ctor reference, so the
@@ -96,7 +106,8 @@ fixtureModule =
         []
 
 
-{-| applyP f n = if n <= 0 then f (n + 3) (n + 4) else applyP f (n - 1) -}
+{-| applyP f n = if n <= 0 then f (n + 3) (n + 4) else applyP f (n - 1)
+-}
 applyPDef : TypedDef
 applyPDef =
     { name = "applyP"
@@ -118,7 +129,8 @@ applyPDef =
     }
 
 
-{-| testValue = case applyP P 2 of P a b -> a + b; Q -> 0 - 1 -}
+{-| testValue = case applyP P 2 of P a b -> a + b; Q -> 0 - 1
+-}
 testValueDef : TypedDef
 testValueDef =
     { name = "testValue"

@@ -1,5 +1,4 @@
-module Compiler.GlobalOpt.Borrow.Dsu exposing
-    ( Dsu, empty, size, grow, find, findRoot, union )
+module Compiler.GlobalOpt.Borrow.Dsu exposing (Dsu, empty, find, findRoot, grow, size, union)
 
 {-| Pure Int-keyed union-find (disjoint-set) with NO payloads — a quotient
 structure over `ResVar`s minted densely from 0 per def-analysis (design

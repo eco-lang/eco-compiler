@@ -23,7 +23,6 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
@@ -44,7 +43,7 @@ Processes each import declaration to build the environment with:
   - Special handling for kernel imports in kernel packages
 
 -}
-createInitialEnv : IO.Canonical -> Dict ModuleName.Raw I.Interface -> List Src.Import -> FResult i w Env.Env
+createInitialEnv : ModuleName.Canonical -> Dict ModuleName.Raw I.Interface -> List Src.Import -> FResult i w Env.Env
 createInitialEnv home ifaces imports =
     Utils.foldM (addImport ifaces) emptyState (toSafeImports home imports)
         |> ReportingResult.map
@@ -99,8 +98,8 @@ emptyTypes =
 -- ====== TO SAFE IMPORTS ======
 
 
-toSafeImports : IO.Canonical -> List Src.Import -> List Src.Import
-toSafeImports (IO.Canonical package _) imports =
+toSafeImports : ModuleName.Canonical -> List Src.Import -> List Src.Import
+toSafeImports (ModuleName.Canonical package _) imports =
     if Pkg.isKernel package then
         List.filter isNormal imports
 
@@ -136,9 +135,9 @@ addImport ifaces state (Src.Import ( _, A.At _ name ) maybeAlias ( _, exposing_ 
         prefix =
             Maybe.withDefault name (Maybe.map Src.c2Value maybeAlias)
 
-        home : IO.Canonical
+        home : ModuleName.Canonical
         home =
-            IO.Canonical iface.home name
+            ModuleName.Canonical iface.home name
 
         rawTypeInfo : Dict Name ( Env.Type, Env.Exposed Env.Ctor )
         rawTypeInfo =
@@ -220,12 +219,12 @@ addQualified prefix exposed qualified =
 -- ====== UNION ======
 
 
-unionToType : IO.Canonical -> Name -> I.Union -> Maybe ( Env.Type, Env.Exposed Env.Ctor )
+unionToType : ModuleName.Canonical -> Name -> I.Union -> Maybe ( Env.Type, Env.Exposed Env.Ctor )
 unionToType home name union =
     Maybe.map (unionToTypeHelp home name) (I.toPublicUnion union)
 
 
-unionToTypeHelp : IO.Canonical -> Name -> Can.Union -> ( Env.Type, Env.Exposed Env.Ctor )
+unionToTypeHelp : ModuleName.Canonical -> Name -> Can.Union -> ( Env.Type, Env.Exposed Env.Ctor )
 unionToTypeHelp home name ((Can.Union unionData) as union) =
     let
         addCtor : Can.Ctor -> Dict Name (Env.Info Env.Ctor) -> Dict Name (Env.Info Env.Ctor)
@@ -241,12 +240,12 @@ unionToTypeHelp home name ((Can.Union unionData) as union) =
 -- ====== ALIAS ======
 
 
-aliasToType : IO.Canonical -> Name -> I.Alias -> Maybe ( Env.Type, Env.Exposed Env.Ctor )
+aliasToType : ModuleName.Canonical -> Name -> I.Alias -> Maybe ( Env.Type, Env.Exposed Env.Ctor )
 aliasToType home name alias =
     Maybe.map (aliasToTypeHelp home name) (I.toPublicAlias alias)
 
 
-aliasToTypeHelp : IO.Canonical -> Name -> Can.Alias -> ( Env.Type, Env.Exposed Env.Ctor )
+aliasToTypeHelp : ModuleName.Canonical -> Name -> Can.Alias -> ( Env.Type, Env.Exposed Env.Ctor )
 aliasToTypeHelp home name (Can.Alias vars tipe) =
     ( Env.Alias (List.length vars) home vars tipe
     , case tipe of
@@ -274,7 +273,7 @@ aliasToTypeHelp home name (Can.Alias vars tipe) =
 -- ====== BINOP ======
 
 
-binopToBinop : IO.Canonical -> Name -> I.Binop -> Env.Info Env.Binop
+binopToBinop : ModuleName.Canonical -> Name -> I.Binop -> Env.Info Env.Binop
 binopToBinop home op (I.Binop data) =
     Env.Specific home (Env.Binop { op = op, home = home, name = data.name, annotation = data.annotation, associativity = data.associativity, precedence = data.precedence })
 
@@ -284,7 +283,7 @@ binopToBinop home op (I.Binop data) =
 
 
 addExposedValue :
-    IO.Canonical
+    ModuleName.Canonical
     -> Env.Exposed (Can.Annotation Name)
     -> Dict Name ( Env.Type, Env.Exposed Env.Ctor )
     -> Dict Name I.Binop

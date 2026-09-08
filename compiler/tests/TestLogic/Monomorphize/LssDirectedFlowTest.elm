@@ -1,6 +1,6 @@
 module TestLogic.Monomorphize.LssDirectedFlowTest exposing (suite)
 
-{-| LSS_023 — directed set flow, store level
+{-| LSS\_023 — directed set flow, store level
 (`plans/lss-directed-set-flow.md` §7 test 4).
 
 Legal Elm cannot reach an `LsFrom` CYCLE through the §5.2 flip sites (mutual
@@ -23,12 +23,13 @@ captures the threaded state with an inline `\\st -> ( st, st )` and builds the
 -}
 
 import Compiler.AST.Intern as Intern
-import Dict
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.MonoSolver.Engine as Engine
 import Compiler.MonoSolver.Store as Store
 import Compiler.Type.Type as Type
 import Compiler.Type.UnionFind as UF
+import Compiler.Type.Vars as Vars
+import Dict
 import Expect
 import System.TypeCheck.IO as IO
 import Test exposing (Test)
@@ -45,10 +46,10 @@ suite =
                 let
                     ( resA, resB ) =
                         IO.unsafePerformIO
-                            (mint (IO.FlexVar Nothing)
+                            (mint (Vars.FlexVar Nothing)
                                 |> IO.andThen
                                     (\a ->
-                                        mint (IO.FlexVar Nothing)
+                                        mint (Vars.FlexVar Nothing)
                                             |> IO.andThen
                                                 (\b ->
                                                     UF.set a (desc (lsFrom [ 1 ] [ b ]))
@@ -73,10 +74,10 @@ suite =
                 let
                     res =
                         IO.unsafePerformIO
-                            (mint (IO.FlexVar Nothing)
+                            (mint (Vars.FlexVar Nothing)
                                 |> IO.andThen
                                     (\a ->
-                                        mint (IO.Structure (IO.LambdaSet1 (IO.LsTop 7)))
+                                        mint (Vars.Structure (Vars.LambdaSet1 (Vars.LsTop 7)))
                                             |> IO.andThen
                                                 (\b ->
                                                     UF.set a (desc (lsFrom [ 1 ] [ b ]))
@@ -92,18 +93,18 @@ suite =
                 let
                     res =
                         IO.unsafePerformIO
-                            (mint (IO.FlexVar Nothing)
+                            (mint (Vars.FlexVar Nothing)
                                 |> IO.andThen
                                     (\a ->
-                                        mint (IO.FlexVar Nothing)
+                                        mint (Vars.FlexVar Nothing)
                                             |> IO.andThen
                                                 (\b ->
-                                                    mint (IO.FlexVar Nothing)
+                                                    mint (Vars.FlexVar Nothing)
                                                         |> IO.andThen
                                                             (\c ->
                                                                 UF.set a (desc (lsFrom [ 1 ] [ b ]))
                                                                     |> IO.andThen (\_ -> UF.set b (desc (lsFrom [ 2 ] [ c ])))
-                                                                    |> IO.andThen (\_ -> UF.set c (desc (IO.Structure (IO.LambdaSet1 (IO.LsTop 7)))))
+                                                                    |> IO.andThen (\_ -> UF.set c (desc (Vars.Structure (Vars.LambdaSet1 (Vars.LsTop 7)))))
                                                                     |> IO.andThen (\_ -> captureState |> IO.map (\st -> resolveAt st [ 1 ] [ b ]))
                                                             )
                                                 )
@@ -117,13 +118,13 @@ suite =
                 let
                     res =
                         IO.unsafePerformIO
-                            (mint (IO.FlexVar Nothing)
+                            (mint (Vars.FlexVar Nothing)
                                 |> IO.andThen
                                     (\b ->
-                                        mint (IO.FlexVar Nothing)
+                                        mint (Vars.FlexVar Nothing)
                                             |> IO.andThen
                                                 (\c ->
-                                                    mint (IO.Structure (IO.LambdaSet1 (IO.LsMembers [ 9 ])))
+                                                    mint (Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers [ 9 ])))
                                                         |> IO.andThen
                                                             (\d ->
                                                                 UF.set b (desc (lsFrom [ 3 ] [ d ]))
@@ -140,7 +141,7 @@ suite =
                 let
                     res =
                         IO.unsafePerformIO
-                            (mint (IO.FlexVar Nothing)
+                            (mint (Vars.FlexVar Nothing)
                                 |> IO.andThen
                                     (\b -> captureState |> IO.map (\st -> resolveAt st [ 7 ] [ b ]))
                             )
@@ -153,19 +154,19 @@ suite =
 -- ====== HARNESS ======
 
 
-mint : IO.Content -> IO.IO IO.Variable
+mint : Vars.Content -> IO.IO Vars.Variable
 mint content =
     UF.fresh (desc content)
 
 
-desc : IO.Content -> IO.Descriptor
+desc : Vars.Content -> Vars.Descriptor
 desc content =
     IO.makeDescriptor content Type.noRank Type.noMark Nothing
 
 
-lsFrom : List Int -> List IO.Variable -> IO.Content
+lsFrom : List Int -> List Vars.Variable -> Vars.Content
 lsFrom members sources =
-    IO.Structure (IO.LambdaSet1 (IO.LsFrom members sources))
+    Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom members sources))
 
 
 captureState : IO.IO IO.State
@@ -176,7 +177,7 @@ captureState =
 {-| Run the resolver against a captured store. Only `store` is read by
 `resolveSlotMembers`; the other `ZonkCtx` fields are inert placeholders.
 -}
-resolveAt : IO.State -> List Int -> List IO.Variable -> Maybe (List Int)
+resolveAt : IO.State -> List Int -> List Vars.Variable -> Maybe (List Int)
 resolveAt st members sources =
     Store.resolveSlotMembers members
         sources

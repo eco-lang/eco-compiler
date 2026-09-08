@@ -5,7 +5,7 @@ contracts (`eqKeyLayout` / `layoutHashOf`) whose shipping string encoder was
 deleted as dead code — `referenceKey False` below is now their sole oracle.
 
 Those two strings are specialization identity (MONO\_005/017/024) and the key
-of every layout-intent dictionary in codegen, so a change to *how* a key is
+of every layout-intent dictionary in codegen, so a change to _how_ a key is
 built must leave the emitted bytes untouched. This suite pins that two ways:
 
   - **Differential.** `referenceKey` below is the previous explicit-work-stack
@@ -22,14 +22,14 @@ invisible unless a lambda-set-bearing type is tested (§6 of
 
 -}
 
+import Bitwise
 import Compiler.AST.Intern as Intern
 import Compiler.AST.Monomorphized as Mono exposing (Constraint(..), LambdaSetAnno(..), MonoType(..))
 import Compiler.AST.TypeIds as TypeIds exposing (MVarId)
-import Bitwise
 import Compiler.Data.Id as Id
+import Compiler.Elm.ModuleName as ModuleName
 import Dict
 import Expect
-import System.TypeCheck.IO as IO
 import Test exposing (Test)
 
 
@@ -343,10 +343,10 @@ goldens =
     -- Record fields likewise, in DESCENDING field-name order.
     , ( Mono.mRecord (Dict.fromList [ ( "a", MInt ), ( "b", MString ) ]), "R(bSaI)" )
     , ( Mono.mRecord Dict.empty, "R()" )
-    , ( Mono.mCustom (IO.Canonical ( "elm", "core" ) "Maybe") "Maybe" [ MInt ]
+    , ( Mono.mCustom (ModuleName.Canonical ( "elm", "core" ) "Maybe") "Maybe" [ MInt ]
       , "Xelm\u{0000}core\u{0000}Maybe\u{0000}Maybe(I)"
       )
-    , ( Mono.mCustom (IO.Canonical ( "elm", "core" ) "Result") "Result" [ MString, MInt ]
+    , ( Mono.mCustom (ModuleName.Canonical ( "elm", "core" ) "Result") "Result" [ MString, MInt ]
       , "Xelm\u{0000}core\u{0000}Result\u{0000}Result(IS)"
       )
     , ( Mono.mFunction (LTop 7) [ MInt ] MString, "A(I->S)" )
@@ -381,7 +381,7 @@ handwritten =
            , Mono.mTuple [ MInt, MInt, MInt, MInt, MInt, MInt ]
            , Mono.mRecord (Dict.fromList [ ( "z", MInt ), ( "y", MFloat ), ( "x", MString ), ( "w", MUnit ) ])
            , Mono.mRecord (Dict.fromList [ ( "nested", Mono.mRecord (Dict.fromList [ ( "b", Mono.mList MInt ), ( "a", Mono.mTuple [ MBool, MChar ] ) ]) ) ])
-           , Mono.mCustom (IO.Canonical ( "author", "project" ) "Deep.Module.Name") "Tree" [ Mono.mCustom (IO.Canonical ( "author", "project" ) "Deep.Module.Name") "Tree" [ MInt ] ]
+           , Mono.mCustom (ModuleName.Canonical ( "author", "project" ) "Deep.Module.Name") "Tree" [ Mono.mCustom (ModuleName.Canonical ( "author", "project" ) "Deep.Module.Name") "Tree" [ MInt ] ]
            , Mono.mFunction (LSet [ 9 ]) [ Mono.mFunction (LTop 7) [ MInt ] MInt ] (Mono.mList (MVar (mvarId 1) CEcoValue))
            , Mono.mFunction (LTop 7) [ Mono.mRecord (Dict.fromList [ ( "f", Mono.mFunction (LSet [ 3, 4, 5 ]) [ MChar ] MBool ) ]) ] MUnit
 
@@ -543,17 +543,17 @@ fieldNames =
     [ "b", "a", "d", "c" ]
 
 
-canonicalAt : Int -> IO.Canonical
+canonicalAt : Int -> ModuleName.Canonical
 canonicalAt seed =
     case modBy 3 seed of
         0 ->
-            IO.Canonical ( "elm", "core" ) "Maybe"
+            ModuleName.Canonical ( "elm", "core" ) "Maybe"
 
         1 ->
-            IO.Canonical ( "author", "project" ) "Some.Nested.Module"
+            ModuleName.Canonical ( "author", "project" ) "Some.Nested.Module"
 
         _ ->
-            IO.Canonical ( "eco", "kernel" ) "Eco.Kernel"
+            ModuleName.Canonical ( "eco", "kernel" ) "Eco.Kernel"
 
 
 nameAt : Int -> String
@@ -680,7 +680,7 @@ referenceHelper annoSensitive work acc =
 
                 MCustom _ canonical name args ->
                     let
-                        (IO.Canonical ( author, project ) modName) =
+                        (ModuleName.Canonical ( author, project ) modName) =
                             canonical
 
                         newWork =

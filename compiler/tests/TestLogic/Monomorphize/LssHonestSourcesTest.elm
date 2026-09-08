@@ -1,6 +1,6 @@
 module TestLogic.Monomorphize.LssHonestSourcesTest exposing (suite)
 
-{-| LSS_026(a) — honest ∅-as-source, demand side
+{-| LSS\_026(a) — honest ∅-as-source, demand side
 (`plans/lss-gap2-callarg-transport.md` §3.2(a), Phase 1).
 
 `Store.resolveSources` reads a terminal `FlexVar` SOURCE as an ∅
@@ -8,11 +8,11 @@ contribution. That is exact ONLY under write-completeness of every inflow to
 the source slot — and A.1's disconnected instantiation params are precisely a
 write-INCOMPLETE population, so a members-carrying resolution reached OVER a
 dangling FlexVar claims a completeness it does not have (`Mono.LSet` IS a
-completeness claim). LSS_026(a) widens exactly that case to ⊤.
+completeness claim). LSS\_026(a) widens exactly that case to ⊤.
 
 These tests own the RESOLVER semantics of that rule, at the store level, on a
 hand-built store — the `LssDirectedFlowTest` precedent (which owns the
-pre-LSS_026 half: cycles, SCC exactness, ⊤ short-circuit, diamond dedupe).
+pre-LSS\_026 half: cycles, SCC exactness, ⊤ short-circuit, diamond dedupe).
 `resolveSlotMembers` reads only `store`, `lss` and `memberTable` from its
 `ZonkCtx`, so the fixture builds the record directly and toggles
 `lss.honestSources` — the field `zonkToMono` seeds True in every production
@@ -37,18 +37,20 @@ The four cases are the plan's §5 Phase-1 list:
 Plus the census riders, which are FLAG-INDEPENDENT by design (§2.1b): the
 `mixedFlex` counter must bump in both arms, and `mixedFlexGc` only when the
 carried members include a standalone global/ctor — the escalation class,
-since a `gc` member grounds (LSS_019) and is devirt-consumable (LSS_025),
-where a raw lambda id merely declines (LSS_017).
+since a `gc` member grounds (LSS\_019) and is devirt-consumable (LSS\_025),
+where a raw lambda id merely declines (LSS\_017).
 
 -}
 
 import Compiler.AST.Intern as Intern
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.TypedOptimized as TOpt
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.MonoSolver.Engine as Engine
 import Compiler.MonoSolver.Store as Store
 import Compiler.Type.Type as Type
 import Compiler.Type.UnionFind as UF
+import Compiler.Type.Vars as Vars
 import Dict
 import Expect
 import System.TypeCheck.IO as IO
@@ -116,7 +118,7 @@ suite =
 mixedFixture : Bool -> Outcome
 mixedFixture honest =
     runResolve honest Engine.emptyMemberTable [ 4 ] <|
-        \_ -> mintOne (IO.FlexVar Nothing)
+        \_ -> mintOne (Vars.FlexVar Nothing)
 
 
 {-| No members anywhere, one dangling flex: the empty-resolution arm.
@@ -124,7 +126,7 @@ mixedFixture honest =
 emptyFixture : Bool -> Outcome
 emptyFixture honest =
     runResolve honest Engine.emptyMemberTable [] <|
-        \_ -> mintOne (IO.FlexVar Nothing)
+        \_ -> mintOne (Vars.FlexVar Nothing)
 
 
 {-| members `[4]` plus a source that is WRITTEN (`{9}`): no crossing.
@@ -132,7 +134,7 @@ emptyFixture honest =
 writtenFixture : Bool -> Outcome
 writtenFixture honest =
     runResolve honest Engine.emptyMemberTable [ 4 ] <|
-        \_ -> mintOne (IO.Structure (IO.LambdaSet1 (IO.LsMembers [ 9 ])))
+        \_ -> mintOne (Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers [ 9 ])))
 
 
 {-| members `[4]` plus a reachable ⊤ — absorption must win over the mixed
@@ -142,7 +144,7 @@ recorded).
 topFixture : Bool -> Outcome
 topFixture honest =
     runResolve honest Engine.emptyMemberTable [ 4 ] <|
-        \_ -> mintOne (IO.Structure (IO.LambdaSet1 (IO.LsTop 7)))
+        \_ -> mintOne (Vars.Structure (Vars.LambdaSet1 (Vars.LsTop 7)))
 
 
 {-| A ⊇ B, B ⊇ A, both carrying members and NO flex: the LssDirectedFlowTest
@@ -152,7 +154,7 @@ cycleFixture : Bool -> Outcome
 cycleFixture honest =
     runResolve honest Engine.emptyMemberTable [ 1 ] <|
         \_ ->
-            UF.fresh (desc (IO.FlexVar Nothing))
+            UF.fresh (desc (Vars.FlexVar Nothing))
                 |> IO.andThen
                     (\b ->
                         UF.fresh (desc (lsFrom [ 2 ] [ b ]))
@@ -171,10 +173,10 @@ cycleFlexFixture : Bool -> Outcome
 cycleFlexFixture honest =
     runResolve honest Engine.emptyMemberTable [ 1 ] <|
         \_ ->
-            UF.fresh (desc (IO.FlexVar Nothing))
+            UF.fresh (desc (Vars.FlexVar Nothing))
                 |> IO.andThen
                     (\dangling ->
-                        UF.fresh (desc (IO.FlexVar Nothing))
+                        UF.fresh (desc (Vars.FlexVar Nothing))
                             |> IO.andThen
                                 (\b ->
                                     UF.fresh (desc (lsFrom [ 2 ] [ b ]))
@@ -193,7 +195,7 @@ as `SourceGlobal`) — the escalation class.
 gcFixture : Bool -> Outcome
 gcFixture honest =
     runResolve honest gcMemberTable [ 4 ] <|
-        \_ -> mintOne (IO.FlexVar Nothing)
+        \_ -> mintOne (Vars.FlexVar Nothing)
 
 
 gcMemberTable : Engine.LssMemberTable
@@ -205,7 +207,7 @@ gcMemberTable =
     { t
         | sources =
             Dict.insert 4
-                (Engine.SourceGlobal (TOpt.Global (IO.Canonical ( "author", "project" ) "Test") "target"))
+                (Engine.SourceGlobal (TOpt.Global (ModuleName.Canonical ( "author", "project" ) "Test") "target"))
                 t.sources
     }
 
@@ -227,7 +229,7 @@ type alias Outcome =
 {-| Build a store with `mkSources`, then resolve `members0` over the sources it
 returns, with `honestSources` set to `honest`.
 -}
-runResolve : Bool -> Engine.LssMemberTable -> List Int -> (() -> IO.IO (List IO.Variable)) -> Outcome
+runResolve : Bool -> Engine.LssMemberTable -> List Int -> (() -> IO.IO (List Vars.Variable)) -> Outcome
 runResolve honest table members0 mkSources =
     IO.unsafePerformIO
         (mkSources ()
@@ -249,19 +251,19 @@ runResolve honest table members0 mkSources =
         )
 
 
-mintOne : IO.Content -> IO.IO (List IO.Variable)
+mintOne : Vars.Content -> IO.IO (List Vars.Variable)
 mintOne content =
     UF.fresh (desc content) |> IO.map (\v -> [ v ])
 
 
-desc : IO.Content -> IO.Descriptor
+desc : Vars.Content -> Vars.Descriptor
 desc content =
     IO.makeDescriptor content Type.noRank Type.noMark Nothing
 
 
-lsFrom : List Int -> List IO.Variable -> IO.Content
+lsFrom : List Int -> List Vars.Variable -> Vars.Content
 lsFrom members sources =
-    IO.Structure (IO.LambdaSet1 (IO.LsFrom members sources))
+    Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom members sources))
 
 
 captureState : IO.IO IO.State
@@ -329,7 +331,7 @@ type alias ZonkCtxShape =
     { store : IO.State
     , next : TypeIds.MVarId
     , lss : Maybe LssAccShape
-    , ecoReads : List IO.Variable
+    , ecoReads : List Vars.Variable
     , intern : Intern.Intern
     , memberTable : Engine.LssMemberTable
     , nextMemberId : Int

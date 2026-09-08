@@ -6,7 +6,7 @@ module TestLogic.Canonicalize.GlobalNames exposing
 {-| Test logic for invariant CANON\_001: Global names are fully qualified.
 
 For every non-local variable reference (VarForeign, VarKernel, VarCtor, VarOperator,
-VarTopLevel, VarDebug), assert its `home` is an `IO.Canonical` referring to a valid
+VarTopLevel, VarDebug), assert its `home` is an `ModuleName.Canonical` referring to a valid
 module structure; assert local variables are always `VarLocal` and never carry `home`.
 
 -}
@@ -16,12 +16,12 @@ import Compiler.AST.Source as Src
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as CanError
 import Compiler.Reporting.Result as Result
 import Data.Map as DMap
 import Expect
-import System.TypeCheck.IO as IO
 
 
 {-| Main test expectation: canonicalize the module and verify all global names are qualified.
@@ -125,12 +125,12 @@ collectExprIssues (A.At _ { node }) =
 Checks:
 
   - VarLocal: Should not have a home (correct by construction)
-  - VarTopLevel: home must be valid IO.Canonical
-  - VarKernel: Uses kernel module naming (no IO.Canonical home)
-  - VarForeign: home must be valid IO.Canonical
-  - VarCtor: home must be valid IO.Canonical
-  - VarDebug: home must be valid IO.Canonical
-  - VarOperator: home must be valid IO.Canonical
+  - VarTopLevel: home must be valid ModuleName.Canonical
+  - VarKernel: Uses kernel module naming (no ModuleName.Canonical home)
+  - VarForeign: home must be valid ModuleName.Canonical
+  - VarCtor: home must be valid ModuleName.Canonical
+  - VarDebug: home must be valid ModuleName.Canonical
+  - VarOperator: home must be valid ModuleName.Canonical
 
 -}
 collectExprNodeIssues : Can.Expr_ -> List String
@@ -144,7 +144,7 @@ collectExprNodeIssues node =
             validateHome "VarTopLevel" name home
 
         Can.VarKernel _ _ _ ->
-            -- VarKernel uses kernel module naming, no IO.Canonical home to validate
+            -- VarKernel uses kernel module naming, no ModuleName.Canonical home to validate
             []
 
         Can.VarForeign home name _ ->
@@ -309,18 +309,18 @@ collectPatternNodeIssues node =
                     args
 
 
-{-| Validate that an IO.Canonical home is properly structured.
+{-| Validate that an ModuleName.Canonical home is properly structured.
 
-A valid IO.Canonical has:
+A valid ModuleName.Canonical has:
 
   - A package tuple (author, project) with non-empty strings
   - A non-empty module name
 
 -}
-validateHome : String -> String -> IO.Canonical -> List String
+validateHome : String -> String -> ModuleName.Canonical -> List String
 validateHome context name home =
     case home of
-        IO.Canonical ( author, project ) moduleName ->
+        ModuleName.Canonical ( author, project ) moduleName ->
             []
                 |> addIssueIf (String.isEmpty author)
                     (context ++ " '" ++ name ++ "': empty package author")

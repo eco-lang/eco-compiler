@@ -27,6 +27,7 @@ import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Id as Id
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.GlobalOpt.KernelFacts as KernelFacts
 import Compiler.MonoSolver.Engine as Engine exposing (Failure(..), Step)
 import Compiler.MonoSolver.KernelSetFacts as KernelSetFacts
@@ -41,6 +42,7 @@ import Compiler.Monomorphize.ResolveAccessorValues as ResolveAccessorValues
 import Compiler.Monomorphize.State as State
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.UnionFind as UF
+import Compiler.Type.Vars as Vars
 import Data.HashMap as HashMap
 import Data.Map as DMap
 import Data.Set as EverySet
@@ -92,7 +94,7 @@ reuse THE seeded var: `Store.loadType` mints fresh arrow structure per load
 annotation shares nothing and the demand's lambda-set content would be
 unreachable from the def's binder types.
 -}
-demandUnifyVar : Can.Type TypeIds.MVarId -> Mono.MonoType -> Step IO.Variable
+demandUnifyVar : Can.Type TypeIds.MVarId -> Mono.MonoType -> Step Vars.Variable
 demandUnifyVar annCanType demand =
     Engine.andThen
         (\annVar ->
@@ -1187,9 +1189,9 @@ connectEncoderType expr portCanType =
                                 (\resVar ->
                                     Engine.andThen
                                         (\funVar -> unifyStepBestEffort encVar funVar)
-                                        (Engine.freshVar (IO.Structure (IO.Fun1 payloadVar resVar)))
+                                        (Engine.freshVar (Vars.Structure (Vars.Fun1 payloadVar resVar)))
                                 )
-                                (Engine.freshVar (IO.FlexVar Nothing))
+                                (Engine.freshVar (Vars.FlexVar Nothing))
                         )
                         (Store.loadType payloadCan)
                 )
@@ -1692,7 +1694,7 @@ zonked structure is identical either way (leaf demand flow is memo-shared);
 only annotations gain content — lss-off byte-identity untouched.
 
 -}
-classifyLambdaHead : Int -> Maybe TypeIds.SrcLambdaId -> Can.Type TypeIds.MVarId -> Step ( Mono.MonoType, Maybe IO.Variable )
+classifyLambdaHead : Int -> Maybe TypeIds.SrcLambdaId -> Can.Type TypeIds.MVarId -> Step ( Mono.MonoType, Maybe Vars.Variable )
 classifyLambdaHead arity srcLam canType s0 =
     if s0.env.lss.enabled then
         let
@@ -2035,7 +2037,7 @@ translateLocalMultiCall region name funcCanType args callCanType s0 =
                                     -- via this function's own
                                     -- `unifyResultWithExpected`). Same
                                     -- report-gated, read-only fold.
-                                    case censusArgs (TOpt.Global (IO.Canonical ( "local", "local" ) "local") name) args s3b of
+                                    case censusArgs (TOpt.Global (ModuleName.Canonical ( "local", "local" ) "local") name) args s3b of
                                         Err e ->
                                             Err e
 
@@ -2152,7 +2154,7 @@ appShapeConnect func args callCanType =
         (Store.loadType (TOpt.typeOf func))
 
 
-buildAppVar : List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step IO.Variable
+buildAppVar : List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Vars.Variable
 buildAppVar args callCanType =
     case args of
         [] ->
@@ -2162,7 +2164,7 @@ buildAppVar args callCanType =
             Engine.andThen
                 (\argVar ->
                     Engine.andThen
-                        (\restVar -> Engine.freshVar (IO.Structure (IO.Fun1 argVar restVar)))
+                        (\restVar -> Engine.freshVar (Vars.Structure (Vars.Fun1 argVar restVar)))
                         (buildAppVar rest callCanType)
                 )
                 (Store.loadType (TOpt.typeOf arg))
@@ -3734,7 +3736,7 @@ a higher-order arg whose curried structure doesn't line up with the kernel's
 declared param must not abort — it simply leaves the ABI non-concrete (which the
 PreserveVars-else path then boxes as CEcoValue).
 -}
-unifyParamsBestEffort : IO.Variable -> List (Can.Type TypeIds.MVarId) -> Step ()
+unifyParamsBestEffort : Vars.Variable -> List (Can.Type TypeIds.MVarId) -> Step ()
 unifyParamsBestEffort funcVar argCanTypes =
     case argCanTypes of
         [] ->
@@ -3768,7 +3770,7 @@ generalization — without this, a body-internal call like `Tuple.second tup`
 inside a re-translated local function keys its callee at the NARROW record type
 and mis-lays-out fields (RecordNarrow).
 -}
-unifyParamsWithArgExprs : IO.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Step ()
+unifyParamsWithArgExprs : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Step ()
 unifyParamsWithArgExprs funcVar args =
     Engine.map (\_ -> ()) (unifyParamsCollect funcVar args)
 
@@ -3788,21 +3790,21 @@ by `translateArgsWith`.
 -}
 type ArgStash
     = StashNone
-    | StashLocalMulti IO.Variable
+    | StashLocalMulti Vars.Variable
       -- Flow repair M1 (plans/lss-var-chain-roots.md §9.5, `lss.flowConnect`):
       -- the param's own store variable, stashed for LAMBDA-LITERAL args so
       -- the arg's fully-translated type (heads AND interiors, the body's
       -- solved sets) can be unified back into it after translation — the
       -- App-rule σ-transport at the one edge Translate never rebuilt
       -- (`argUnifyVar`'s fresh load carries only the head injection).
-    | StashParam IO.Variable
+    | StashParam Vars.Variable
 
 
 {-| Like `unifyParamsWithArgExprs` but returns, per arg, what the argument's
 translation needs to know about the position it was unified into (see
 `ArgStash`).
 -}
-unifyParamsCollect : IO.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Step (List ArgStash)
+unifyParamsCollect : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Step (List ArgStash)
 unifyParamsCollect funcVar args s0 =
     case args of
         [] ->
@@ -4120,7 +4122,7 @@ deTopGo t nextId =
 
 {-| The M1 write-back proper, split out so the stash arm stays readable.
 -}
-connectParamArg : IO.Variable -> Mono.MonoExpr -> Mono.MonoType -> Step Mono.MonoExpr
+connectParamArg : Vars.Variable -> Mono.MonoExpr -> Mono.MonoType -> Step Mono.MonoExpr
 connectParamArg pParam monoArg argType s1 =
     case Store.monoTypeToVar (deTopAnnos argType) s1 of
         Err e ->
@@ -4154,7 +4156,7 @@ value was unified with now agree by construction — no diverged annotation
 copies for `unionAnno` to meet (v1.1's +46 conflict-⊤, §9.9). Peel failure
 (reshaped spine) keeps the pre-body type, counted.
 -}
-connectLambdaResult : Int -> IO.Variable -> Mono.MonoExpr -> Mono.MonoType -> Step Mono.MonoType
+connectLambdaResult : Int -> Vars.Variable -> Mono.MonoExpr -> Mono.MonoType -> Step Mono.MonoType
 connectLambdaResult nparams headVar monoBody monoType0 s0 =
     case peelParamsVar nparams headVar s0 of
         Err e ->
@@ -4198,7 +4200,7 @@ list 1:1 — the `unifyParamsCollect` discipline), chasing transparent
 aliases without consuming depth (the `papSuccGoC` discipline). `Nothing`
 when the spine ends early.
 -}
-peelParamsVar : Int -> IO.Variable -> Step (Maybe IO.Variable)
+peelParamsVar : Int -> Vars.Variable -> Step (Maybe Vars.Variable)
 peelParamsVar n v s0 =
     if n <= 0 then
         Ok ( Just v, s0 )
@@ -4210,7 +4212,7 @@ peelParamsVar n v s0 =
 
             Ok ( desc, s1 ) ->
                 case desc.content of
-                    IO.Alias _ _ _ real ->
+                    Vars.Alias _ _ _ real ->
                         peelParamsVar n real s1
 
                     _ ->
@@ -4305,7 +4307,7 @@ concrete type of a lambda param / destructor-bound / let-bound local — the use
 canonical type may still be a narrow row-polymorphic generalization). Tuple
 literals recurse so a `( 0, outer )` arg carries `outer`'s full record type.
 -}
-argUnifyVar : TOpt.Expr TypeIds.MVarId -> Step IO.Variable
+argUnifyVar : TOpt.Expr TypeIds.MVarId -> Step Vars.Variable
 argUnifyVar arg s0 =
     -- M6: direct state-passing (desugared andThen) → byte-identical.
     case Store.loadType (TOpt.typeOf arg) s0 of
@@ -4388,7 +4390,7 @@ argDeepCensus arg s =
             Ok ( (), Engine.bumpArgFlowCensus ("argdeep|" ++ form ++ "|flat") s )
 
 
-injectArgLambdaMember : TOpt.Expr TypeIds.MVarId -> IO.Variable -> Step ()
+injectArgLambdaMember : TOpt.Expr TypeIds.MVarId -> Vars.Variable -> Step ()
 injectArgLambdaMember arg canVar =
     Engine.andThen (\_ -> injectArgLambdaMemberGo arg canVar) (argDeepCensus arg)
 
@@ -4409,7 +4411,7 @@ targets; local-multi args (fresh-instantiated stash vars) remain a known
 precision gap in v1 — safe: no member, no stamp.
 
 -}
-injectArgLambdaMemberGo : TOpt.Expr TypeIds.MVarId -> IO.Variable -> Step ()
+injectArgLambdaMemberGo : TOpt.Expr TypeIds.MVarId -> Vars.Variable -> Step ()
 injectArgLambdaMemberGo arg canVar =
     case arg of
         TOpt.Function srcLam params _ _ ->
@@ -4553,7 +4555,7 @@ The depth must match its LssInfer counterpart exactly — a member injected to
 different depths on the two sides would name different arrow sets for the same
 value.
 -}
-standaloneArgMember : String -> TOpt.Global -> IO.Variable -> Step ()
+standaloneArgMember : String -> TOpt.Global -> Vars.Variable -> Step ()
 standaloneArgMember key g canVar s =
     Engine.andThen
         (\mid -> LssInfer.injectSpineMemberId (LssInfer.spineDepthForGlobal g s) mid canVar)
@@ -4565,7 +4567,7 @@ standaloneArgMember key g canVar s =
 misaligns at inner arrows, and keeping `k|` members off them makes that
 hazard unreachable.
 -}
-standaloneArgKernelMember : String -> ( Name, Name, Name ) -> IO.Variable -> Step ()
+standaloneArgKernelMember : String -> ( Name, Name, Name ) -> Vars.Variable -> Step ()
 standaloneArgKernelMember key k canVar =
     Engine.andThen
         (\mid -> LssInfer.injectSpineMemberId 1 mid canVar)
@@ -4579,7 +4581,7 @@ demand will be read from) and BEFORE `Store.zonkToMono funcVar`. Sequenced as
 a composed step rather than another level of case-nesting purely for
 readability; the ordering is the load-bearing part.
 -}
-unifyResultThenInjectPap : IO.Variable -> Int -> Can.Type TypeIds.MVarId -> TOpt.Global -> Step ()
+unifyResultThenInjectPap : Vars.Variable -> Int -> Can.Type TypeIds.MVarId -> TOpt.Global -> Step ()
 unifyResultThenInjectPap funcVar argCount callCanType global s0 =
     case unifyResultWithExpected funcVar argCount callCanType s0 of
         Err e ->
@@ -4644,7 +4646,7 @@ over-applied, or when the residual Point is opaque at that depth — an
 uninjected position is exactly today's behaviour, so every fallback is sound.
 
 -}
-injectPapMember : TOpt.Global -> IO.Variable -> Int -> Step ()
+injectPapMember : TOpt.Global -> Vars.Variable -> Int -> Step ()
 injectPapMember global funcVar argCount s0 =
     if not (s0.env.lss.enabled && s0.env.lss.papMembers) then
         Ok ( (), s0 )
@@ -4876,7 +4878,7 @@ enqueueSpecStamped global monoType s0 =
 
 {-| Best-effort unify `canVar` with environment-derived structure for `arg`.
 -}
-enrichFromEnv : TOpt.Expr TypeIds.MVarId -> IO.Variable -> Step ()
+enrichFromEnv : TOpt.Expr TypeIds.MVarId -> Vars.Variable -> Step ()
 enrichFromEnv arg canVar s0 =
     case accessedLocalName arg of
         Just localName ->
@@ -4940,7 +4942,7 @@ enrichFromEnv arg canVar s0 =
 
                         Ok ( desc, s1 ) ->
                             case desc.content of
-                                IO.Structure (IO.Tuple1 pa pb pRest) ->
+                                Vars.Structure (Vars.Tuple1 pa pb pRest) ->
                                     case enrichFromEnv a pa s1 of
                                         Err e ->
                                             Err e
@@ -4975,7 +4977,7 @@ deriveKernelAbiTypeRef kernelId canFuncType =
     deriveKernelAbiTypeWith kernelId canFuncType (Store.loadType canFuncType)
 
 
-deriveKernelAbiTypeWith : ( String, String ) -> Can.Type TypeIds.MVarId -> Step IO.Variable -> Step Mono.MonoType
+deriveKernelAbiTypeWith : ( String, String ) -> Can.Type TypeIds.MVarId -> Step Vars.Variable -> Step Mono.MonoType
 deriveKernelAbiTypeWith kernelId canFuncType funcVarStep =
     Engine.andThen
         (\funcVar ->
@@ -5099,7 +5101,7 @@ ordering assumption). It still runs before the zonk that reads the slots.
 No-op when lss is off.
 
 -}
-poisonKernelArrowsThen : ( String, String ) -> Can.Type TypeIds.MVarId -> IO.Variable -> Step IO.Variable
+poisonKernelArrowsThen : ( String, String ) -> Can.Type TypeIds.MVarId -> Vars.Variable -> Step Vars.Variable
 poisonKernelArrowsThen ( kHome, kName ) canFuncType funcVar s0 =
     let
         -- CENSUS (report-gated, so the default path carries only the flag
@@ -5219,7 +5221,7 @@ applying the row's per-position policy. Returns `Nothing` on an early spine
 end (the caller falls back to full poison). No Alias chase — matches the
 `unifyParamsCollect` precedent (mono stores are alias-expanded at load).
 -}
-poisonKernelPerParam : List KernelSetFacts.ParamSetFlow -> List IO.Variable -> IO.Variable -> Bool -> Step (Maybe ( IO.Variable, List IO.Variable, Bool ))
+poisonKernelPerParam : List KernelSetFacts.ParamSetFlow -> List Vars.Variable -> Vars.Variable -> Bool -> Step (Maybe ( Vars.Variable, List Vars.Variable, Bool ))
 poisonKernelPerParam flows tunnelsRev v poisoned s0 =
     case flows of
         [] ->
@@ -5252,7 +5254,7 @@ poisonKernelPerParam flows tunnelsRev v poisoned s0 =
                                     poisonKernelPerParam rest (pParam :: tunnelsRev) pRest poisoned s1
 
 
-joinKernelTunnels : IO.Variable -> List IO.Variable -> Step ()
+joinKernelTunnels : Vars.Variable -> List Vars.Variable -> Step ()
 joinKernelTunnels resVar vars s0 =
     case vars of
         [] ->
@@ -5280,7 +5282,7 @@ joinKernelTunnels resVar vars s0 =
 the surrounding item (a fresh scheme instantiation). The minted Points persist
 in the store; the item memo is restored afterward.
 -}
-instantiate : Can.Type TypeIds.MVarId -> Step IO.Variable
+instantiate : Can.Type TypeIds.MVarId -> Step Vars.Variable
 instantiate canType =
     -- D8: one S-write instead of three (see Store.loadTypeIsolated).
     Store.loadTypeIsolated canType
@@ -5291,7 +5293,7 @@ instantiation's arrow slots (design §8.4). lss-off = exactly `instantiate`.
 `funcCanType` is already annotation-sourced by `translateCall` (LSS\_006's
 other half — the signature side enumerates the same source).
 -}
-instantiateLss : TOpt.Global -> Can.Type TypeIds.MVarId -> Step IO.Variable
+instantiateLss : TOpt.Global -> Can.Type TypeIds.MVarId -> Step Vars.Variable
 instantiateLss global funcCanType s =
     if s.env.lss.enabled then
         LssInfer.instantiateWithSignature global funcCanType s
@@ -5304,7 +5306,7 @@ instantiateLss global funcCanType s =
 its argument's canonical type (loaded through the item memo, preserving the
 source structure). Stops when args run out or the callee is over-applied.
 -}
-unifyParamsWithArgs : IO.Variable -> List (Can.Type TypeIds.MVarId) -> Step ()
+unifyParamsWithArgs : Vars.Variable -> List (Can.Type TypeIds.MVarId) -> Step ()
 unifyParamsWithArgs funcVar argCanTypes =
     case argCanTypes of
         [] ->
@@ -5330,7 +5332,7 @@ unifyParamsWithArgs funcVar argCanTypes =
                 (Engine.liftIO (UF.get funcVar))
 
 
-unifyStepCtx : (() -> String) -> IO.Variable -> IO.Variable -> Step ()
+unifyStepCtx : (() -> String) -> Vars.Variable -> Vars.Variable -> Step ()
 unifyStepCtx ctx v1 v2 s =
     -- D3: `ctx` is a THUNK — the diagnostic string (recursive `canKind`/`monoKind`
     -- type walks) is built ONLY on a mismatch (a compile-aborting failure), not on
@@ -5350,7 +5352,7 @@ unifyStepCtx ctx v1 v2 s =
 result/param unification where a higher-order arg's curried shape needn't line up
 (the residual then boxes to CEcoValue, matching the erased ABI).
 -}
-unifyStepBestEffort : IO.Variable -> IO.Variable -> Step ()
+unifyStepBestEffort : Vars.Variable -> Vars.Variable -> Step ()
 unifyStepBestEffort v1 v2 s =
     case Store.unifyStep v1 v2 s of
         Ok ( _, s1 ) ->
@@ -5395,7 +5397,7 @@ canKind canType =
 expected call type — the "WithExpected" part of the original poly call path,
 needed for return-polymorphic callees.
 -}
-unifyResultWithExpected : IO.Variable -> Int -> Can.Type TypeIds.MVarId -> Step ()
+unifyResultWithExpected : Vars.Variable -> Int -> Can.Type TypeIds.MVarId -> Step ()
 unifyResultWithExpected funcVar argCount callCanType =
     Engine.andThen
         (\maybeResultVar ->
@@ -5409,7 +5411,7 @@ unifyResultWithExpected funcVar argCount callCanType =
         (resultVarAfter funcVar argCount)
 
 
-resultVarAfter : IO.Variable -> Int -> Step (Maybe IO.Variable)
+resultVarAfter : Vars.Variable -> Int -> Step (Maybe Vars.Variable)
 resultVarAfter funcVar n =
     if n <= 0 then
         Engine.succeed (Just funcVar)
@@ -5444,14 +5446,14 @@ reason: the surviving slot after a unification is often not the minted one, and
 only the loaded side carries an ArrowId.
 
 -}
-noteAppliedS : IO.Content -> Engine.S -> Engine.S
+noteAppliedS : Vars.Content -> Engine.S -> Engine.S
 noteAppliedS =
     LssInfer.noteApplied
 
 
 {-| `Step`-typed wrapper on `noteAppliedS`, for composition with `andThen`.
 -}
-noteAppliedStep : IO.Content -> Step ()
+noteAppliedStep : Vars.Content -> Step ()
 noteAppliedStep content s =
     Ok ( (), noteAppliedS content s )
 
@@ -6033,7 +6035,7 @@ hasNumberVar : Can.Type TypeIds.MVarId -> Step Bool
 hasNumberVar defCanType =
     Engine.map
         (\superTable ->
-            List.any (\id -> Dict.get (Id.toComparable id) superTable == Just IO.Number) (KernelAbi.freeVarIds defCanType [])
+            List.any (\id -> Dict.get (Id.toComparable id) superTable == Just Vars.Number) (KernelAbi.freeVarIds defCanType [])
         )
         (Engine.getS .superTable)
 
@@ -7606,7 +7608,7 @@ between differently-instantiated specs fall back to the accumulator
 (`enrichAnnotations` keeps the structural side) — an UNDER-approximation,
 which is the safe direction for a GO/NO-GO floor.
 -}
-ctorFieldUnion : IO.Canonical -> Name -> Int -> Engine.S -> Maybe Mono.MonoType
+ctorFieldUnion : ModuleName.Canonical -> Name -> Int -> Engine.S -> Maybe Mono.MonoType
 ctorFieldUnion ctorHome ctorName fieldIx s =
     let
         gkey =

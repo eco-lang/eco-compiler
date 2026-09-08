@@ -27,13 +27,13 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.KernelTypes as KernelTypes
 import Data.Map
 import Data.Set as EverySet
 import Dict exposing (Dict)
 import Expect
-import System.TypeCheck.IO as IO
 import TestLogic.LocalOpt.Typed.TypeEq as TypeEq
 import TestLogic.TestPipeline as Pipeline
 
@@ -119,7 +119,7 @@ checkLocalGraph env (TOpt.LocalGraph data) =
 globalToString : TOpt.Global -> String
 globalToString (TOpt.Global home name) =
     case home of
-        IO.Canonical _ moduleName ->
+        ModuleName.Canonical _ moduleName ->
             moduleName ++ "." ++ name
 
 
@@ -584,8 +584,8 @@ within the same package (elm/core). For type preservation checking, these
 should be considered equivalent.
 
 -}
-canonicalTypesEqual : IO.Canonical -> String -> IO.Canonical -> String -> Bool
-canonicalTypesEqual (IO.Canonical pkg1 _) name1 (IO.Canonical pkg2 _) name2 =
+canonicalTypesEqual : ModuleName.Canonical -> String -> ModuleName.Canonical -> String -> Bool
+canonicalTypesEqual (ModuleName.Canonical pkg1 _) name1 (ModuleName.Canonical pkg2 _) name2 =
     -- Same package and same type name (ignoring module)
     pkg1 == pkg2 && name1 == name2
 
@@ -913,7 +913,7 @@ typeToString tipe =
         Can.TVar name ->
             name
 
-        Can.TType (IO.Canonical pkg mod) name args ->
+        Can.TType (ModuleName.Canonical pkg mod) name args ->
             let
                 prefix =
                     Tuple.first pkg ++ "/" ++ Tuple.second pkg ++ ":" ++ mod ++ "."
@@ -947,7 +947,7 @@ typeToString tipe =
         Can.TTuple a b cs ->
             "( " ++ String.join ", " (List.map typeToString (a :: b :: cs)) ++ " )"
 
-        Can.TAlias (IO.Canonical pkg mod) name _ _ ->
+        Can.TAlias (ModuleName.Canonical pkg mod) name _ _ ->
             Tuple.first pkg ++ "/" ++ Tuple.second pkg ++ ":" ++ mod ++ "." ++ name ++ " (alias)"
 
 

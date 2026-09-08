@@ -57,7 +57,6 @@ import Control.Loop exposing (Step(..))
 import Data.Map as DataMap
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 
 
 
@@ -160,7 +159,7 @@ Creates a VarGlobal expression referencing the function/value and adds it to the
 dependency set so the code generator knows to import it.
 
 -}
-registerGlobal : A.Region -> IO.Canonical -> Name -> Tracker Opt.Expr
+registerGlobal : A.Region -> ModuleName.Canonical -> Name -> Tracker Opt.Expr
 registerGlobal region home name =
     Tracker <|
         \uid deps fields ->
@@ -178,7 +177,7 @@ Debug functions are special-cased to support conditional compilation and removal
 in production builds. The home module is tracked for context.
 
 -}
-registerDebug : Name -> IO.Canonical -> A.Region -> Tracker Opt.Expr
+registerDebug : Name -> ModuleName.Canonical -> A.Region -> Tracker Opt.Expr
 registerDebug name home region =
     Tracker <|
         \uid deps fields ->
@@ -199,7 +198,7 @@ Handles three cases based on constructor options:
   - Unbox: Single-argument constructor, returns VarBox and registers identity dependency
 
 -}
-registerCtor : A.Region -> IO.Canonical -> A.Located Name -> Index.ZeroBased -> Can.CtorOpts -> Tracker Opt.Expr
+registerCtor : A.Region -> ModuleName.Canonical -> A.Located Name -> Index.ZeroBased -> Can.CtorOpts -> Tracker Opt.Expr
 registerCtor region home (A.At _ name) index opts =
     Tracker <|
         \uid deps fields ->

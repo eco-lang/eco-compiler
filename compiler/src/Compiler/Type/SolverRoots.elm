@@ -24,15 +24,15 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.Data.Name as Name
 import Compiler.Type.SolverSnapshot as SolverSnapshot exposing (SolverState)
+import Compiler.Type.Vars as Vars
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 
 
 {-| Per-def mapping from forall binder names to their rooted solver variables,
 each carrying the super constraint read from its root descriptor.
 -}
 type alias SchemeRootsForDef =
-    Dict Name.Name IO.RootedVar
+    Dict Name.Name Vars.RootedVar
 
 
 {-| Mapping from definition names to their per-binder solver roots.
@@ -47,17 +47,17 @@ Returns the `SuperType` when the root is a (flex or rigid) super variable, and
 `Nothing` otherwise. This is solver truth about the ROOT — not a name lookup.
 
 -}
-superOfRoot : SolverState -> IO.Variable -> Maybe IO.SuperType
+superOfRoot : SolverState -> Vars.Variable -> Maybe Vars.SuperType
 superOfRoot state rootVar =
     let
-        (IO.Pt rootIdx) =
+        (Vars.Pt rootIdx) =
             rootVar
     in
     case lookupContent state rootIdx of
-        Just (IO.FlexSuper s _) ->
+        Just (Vars.FlexSuper s _) ->
             Just s
 
-        Just (IO.RigidSuper s _) ->
+        Just (Vars.RigidSuper s _) ->
             Just s
 
         _ ->
@@ -66,7 +66,7 @@ superOfRoot state rootVar =
 
 {-| Resolve a variable to its root and pair it with the root's super.
 -}
-rootedVarOf : SolverState -> IO.Variable -> IO.RootedVar
+rootedVarOf : SolverState -> Vars.Variable -> Vars.RootedVar
 rootedVarOf state var =
     let
         rootVar =
@@ -77,7 +77,7 @@ rootedVarOf state var =
 
 {-| Resolve each node variable to its union-find root.
 -}
-normalizeNodeVars : SolverState -> Array (Maybe IO.Variable) -> Array (Maybe IO.Variable)
+normalizeNodeVars : SolverState -> Array (Maybe Vars.Variable) -> Array (Maybe Vars.Variable)
 normalizeNodeVars state nodeVars =
     Array.map
         (\maybeVar ->
@@ -93,7 +93,7 @@ normalizeNodeVars state nodeVars =
 
 {-| Resolve each annotation variable to its union-find root.
 -}
-normalizeAnnotationVars : SolverState -> Dict Name.Name IO.Variable -> Dict Name.Name IO.Variable
+normalizeAnnotationVars : SolverState -> Dict Name.Name Vars.Variable -> Dict Name.Name Vars.Variable
 normalizeAnnotationVars state annotationVars =
     Dict.map (\_ var -> SolverSnapshot.resolveVariable state var) annotationVars
 
@@ -101,7 +101,7 @@ normalizeAnnotationVars state annotationVars =
 {-| Normalize all binder variables (raw solver vars) to their union-find roots,
 attaching each root's super constraint.
 -}
-normalizeAllSchemeRoots : SolverState -> Dict Name.Name (Dict Name.Name IO.Variable) -> AllSchemeRoots
+normalizeAllSchemeRoots : SolverState -> Dict Name.Name (Dict Name.Name Vars.Variable) -> AllSchemeRoots
 normalizeAllSchemeRoots state allRoots =
     Dict.map
         (\_ schemeRoots ->
@@ -120,7 +120,7 @@ in the descriptor tree and resolves it to its union-find root.
 extractBinderRootsFromInferred :
     SolverState
     -> Can.Annotation Name.Name
-    -> IO.Variable
+    -> Vars.Variable
     -> SchemeRootsForDef
 extractBinderRootsFromInferred state (Can.Forall freeVars tipe) annotVar =
     if Dict.isEmpty freeVars then
@@ -139,7 +139,7 @@ extractBinderRootsFromInferred state (Can.Forall freeVars tipe) annotVar =
 walkTypeForBinders :
     SolverState
     -> Can.Type Name.Name
-    -> IO.Variable
+    -> Vars.Variable
     -> SchemeRootsForDef
     -> SchemeRootsForDef
 walkTypeForBinders state canType var acc =
@@ -147,7 +147,7 @@ walkTypeForBinders state canType var acc =
         rootVar =
             SolverSnapshot.resolveVariable state var
 
-        (IO.Pt rootIdx) =
+        (Vars.Pt rootIdx) =
             rootVar
     in
     case canType of
@@ -157,7 +157,7 @@ walkTypeForBinders state canType var acc =
 
         Can.TLambda _ argType resType ->
             case lookupFlatType state rootIdx of
-                Just (IO.Fun1 argVar resVar) ->
+                Just (Vars.Fun1 argVar resVar) ->
                     acc
                         |> walkTypeForBinders state argType argVar
                         |> walkTypeForBinders state resType resVar
@@ -167,7 +167,7 @@ walkTypeForBinders state canType var acc =
 
         Can.TType _ _ args ->
             case lookupFlatType state rootIdx of
-                Just (IO.App1 _ _ childVars) ->
+                Just (Vars.App1 _ _ childVars) ->
                     walkTypeListForBinders state args childVars acc
 
                 _ ->
@@ -175,7 +175,7 @@ walkTypeForBinders state canType var acc =
 
         Can.TRecord fields maybeExt ->
             case lookupFlatType state rootIdx of
-                Just (IO.Record1 fieldVars extVar) ->
+                Just (Vars.Record1 fieldVars extVar) ->
                     let
                         accAfterFields =
                             Dict.foldl
@@ -202,7 +202,7 @@ walkTypeForBinders state canType var acc =
 
         Can.TTuple a b rest ->
             case lookupFlatType state rootIdx of
-                Just (IO.Tuple1 aVar bVar restVars) ->
+                Just (Vars.Tuple1 aVar bVar restVars) ->
                     acc
                         |> walkTypeForBinders state a aVar
                         |> walkTypeForBinders state b bVar
@@ -221,7 +221,7 @@ walkTypeForBinders state canType var acc =
         Can.TAlias _ _ args (Can.Holey _) ->
             -- For holey aliases, walk the alias args against the solver's alias args
             case lookupContent state rootIdx of
-                Just (IO.Alias _ _ solverAliasArgs _) ->
+                Just (Vars.Alias _ _ solverAliasArgs _) ->
                     List.foldl
                         (\( ( _, canArg ), ( _, solverVar ) ) a ->
                             walkTypeForBinders state canArg solverVar a
@@ -231,7 +231,6 @@ walkTypeForBinders state canType var acc =
 
                 _ ->
                     acc
-
 
 
 {-| **Phase 2b (`plans/lss-unknown-elimination.md` §4.9): give every arrow the
@@ -257,13 +256,13 @@ locally rather than failing — which is why the alias/mismatch arms below simpl
 return `canType`.
 
 -}
-stampArrowRoots : SolverState -> Can.Type Name.Name -> IO.Variable -> Can.Type Name.Name
+stampArrowRoots : SolverState -> Can.Type Name.Name -> Vars.Variable -> Can.Type Name.Name
 stampArrowRoots state canType var =
     let
         rootVar =
             SolverSnapshot.resolveVariable state var
 
-        (IO.Pt rootIdx) =
+        (Vars.Pt rootIdx) =
             rootVar
     in
     case canType of
@@ -272,7 +271,7 @@ stampArrowRoots state canType var =
 
         Can.TLambda _ argType resType ->
             case lookupFlatType state rootIdx of
-                Just (IO.Fun1 argVar resVar) ->
+                Just (Vars.Fun1 argVar resVar) ->
                     Can.TLambda (TypeIds.SolverRoot rootIdx)
                         (stampArrowRoots state argType argVar)
                         (stampArrowRoots state resType resVar)
@@ -282,7 +281,7 @@ stampArrowRoots state canType var =
 
         Can.TType home name args ->
             case lookupFlatType state rootIdx of
-                Just (IO.App1 _ _ childVars) ->
+                Just (Vars.App1 _ _ childVars) ->
                     Can.TType home name (stampArrowRootsList state args childVars)
 
                 _ ->
@@ -290,7 +289,7 @@ stampArrowRoots state canType var =
 
         Can.TRecord fields maybeExt ->
             case lookupFlatType state rootIdx of
-                Just (IO.Record1 fieldVars _) ->
+                Just (Vars.Record1 fieldVars _) ->
                     Can.TRecord
                         (Dict.map
                             (\fieldName (Can.FieldType idx fieldType) ->
@@ -310,7 +309,7 @@ stampArrowRoots state canType var =
 
         Can.TTuple a b rest ->
             case lookupFlatType state rootIdx of
-                Just (IO.Tuple1 aVar bVar restVars) ->
+                Just (Vars.Tuple1 aVar bVar restVars) ->
                     Can.TTuple
                         (stampArrowRoots state a aVar)
                         (stampArrowRoots state b bVar)
@@ -328,7 +327,7 @@ stampArrowRoots state canType var =
 
         Can.TAlias home name args (Can.Holey innerType) ->
             case lookupContent state rootIdx of
-                Just (IO.Alias _ _ solverAliasArgs _) ->
+                Just (Vars.Alias _ _ solverAliasArgs _) ->
                     Can.TAlias home
                         name
                         (List.map2
@@ -342,7 +341,7 @@ stampArrowRoots state canType var =
                     canType
 
 
-stampArrowRootsList : SolverState -> List (Can.Type Name.Name) -> List IO.Variable -> List (Can.Type Name.Name)
+stampArrowRootsList : SolverState -> List (Can.Type Name.Name) -> List Vars.Variable -> List (Can.Type Name.Name)
 stampArrowRootsList state types vars =
     case ( types, vars ) of
         ( t :: ts, v :: vs ) ->
@@ -353,8 +352,9 @@ stampArrowRootsList state types vars =
             types
 
 
-{-| `stampArrowRoots` over a def's annotation. -}
-stampArrowRootsInAnnotation : SolverState -> Can.Annotation Name.Name -> IO.Variable -> Can.Annotation Name.Name
+{-| `stampArrowRoots` over a def's annotation.
+-}
+stampArrowRootsInAnnotation : SolverState -> Can.Annotation Name.Name -> Vars.Variable -> Can.Annotation Name.Name
 stampArrowRootsInAnnotation state (Can.Forall freeVars tipe) annotVar =
     Can.Forall freeVars (stampArrowRoots state tipe annotVar)
 
@@ -364,7 +364,7 @@ stampArrowRootsInAnnotation state (Can.Forall freeVars tipe) annotVar =
 walkTypeListForBinders :
     SolverState
     -> List (Can.Type Name.Name)
-    -> List IO.Variable
+    -> List Vars.Variable
     -> SchemeRootsForDef
     -> SchemeRootsForDef
 walkTypeListForBinders state types vars acc =
@@ -378,10 +378,10 @@ walkTypeListForBinders state types vars acc =
 
 {-| Look up the Content of a solver variable by its root index.
 -}
-lookupContent : SolverState -> Int -> Maybe IO.Content
+lookupContent : SolverState -> Int -> Maybe Vars.Content
 lookupContent state rootIdx =
     case Array.get rootIdx state.cells of
-        Just (IO.Root _ props) ->
+        Just (Vars.Root _ props) ->
             Just props.content
 
         _ ->
@@ -394,16 +394,16 @@ lookupContent state rootIdx =
 
 {-| Look up the FlatType for a solver variable, unwrapping through Alias content.
 -}
-lookupFlatType : SolverState -> Int -> Maybe IO.FlatType
+lookupFlatType : SolverState -> Int -> Maybe Vars.FlatType
 lookupFlatType state rootIdx =
     case lookupContent state rootIdx of
-        Just (IO.Structure flatType) ->
+        Just (Vars.Structure flatType) ->
             Just flatType
 
-        Just (IO.Alias _ _ _ innerVar) ->
+        Just (Vars.Alias _ _ _ innerVar) ->
             -- Unwrap alias and look at the inner variable
             let
-                (IO.Pt innerIdx) =
+                (Vars.Pt innerIdx) =
                     SolverSnapshot.resolveVariable state innerVar
             in
             lookupFlatType state innerIdx

@@ -1,4 +1,7 @@
-module Compiler.AST.TypeIds exposing (MVarPh, MVarId, firstMVarId, LamPh, SrcLambdaId, firstSrcLambdaId, ArrowPh, ArrowId, firstArrowId, ArrowSlot(..))
+module Compiler.AST.TypeIds exposing
+    ( MVarPh, MVarId, firstMVarId, LamPh, SrcLambdaId, firstSrcLambdaId
+    , ArrowPh, ArrowId, firstArrowId, ArrowSlot(..)
+    )
 
 {-| Phantom-typed identifiers for type variables and monomorphization variables.
 
@@ -38,7 +41,7 @@ type LamPh
 {-| Per-run identity of a source-level function value: a syntactic lambda
 (stamped by `AssignMVarIds` in Phase-0) or an interned non-lambda function
 value (MonoSolver engine interning). Dense from 0; the two producers share
-one supply (LSS_003).
+one supply (LSS\_003).
 -}
 type alias SrcLambdaId =
     Id LamPh
@@ -64,7 +67,7 @@ The paper's `ℱ(t₁→t₂) = ℱ(t₁) --α--> ℱ(t₂)` assigns one lambda-
 arrow of a type. Eco's existing type identity is entirely NAME-based
 (`AssignMVarIds.ensureBinder` resolves `TVar name` through `schemeRootsForDef`),
 and **arrows have no name** — so before this id, every load of an arrow minted a
-DISJOINT set slot and the sets could not travel with the type. That is LSS_006's
+DISJOINT set slot and the sets could not travel with the type. That is LSS\_006's
 per-load fragmentation, and it is what ~11 hand-written transport artifacts
 exist to bridge.
 
@@ -98,7 +101,7 @@ impossible to confuse:
     arrow memo** — recording it would collapse every unstamped arrow of a type
     into one slot, the exact unsoundness structural keying would have. It is a
     nullary constructor, so it is an embedded constant and costs no allocation
-    (REP_CONSTANT_001) — which is why this is a union rather than a `Maybe`.
+    (REP\_CONSTANT\_001) — which is why this is a union rather than a `Maybe`.
 
   - `SolverRoot idx` — **Phase 2b, `Can.Type Name` only.** The union-find root
     index of this arrow in the OWNING MODULE's solve, stamped by

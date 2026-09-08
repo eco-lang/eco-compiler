@@ -2,10 +2,11 @@ module Compiler.Generate.MLIR.Types exposing
     ( ecoValue, ecoInt, ecoFloat, ecoChar
     , monoTypeToAbi, monoTypeToOperand
     , mlirTypeToString
-    , isFunctionType, countTotalArity, isEcoValueType, isAggTupleType, isAggCustomType, isAggValueType
+    , isFunctionType, countTotalArity, isEcoValueType
     , isUnboxable, mlirTypeToKind, bitmapSetKind
     , RecordLayout, FieldInfo, TupleLayout, CtorLayout
-    , computeRecordLayout, computeTupleLayout, computeCtorLayout, tupleSlotTypes, ctorSlotTypes
+    , computeRecordLayout, computeTupleLayout, computeCtorLayout
+    , ctorSlotTypes, isAggCustomType, isAggTupleType, isAggValueType, tupleSlotTypes
     )
 
 {-| MLIR type definitions and conversions.
@@ -504,6 +505,7 @@ bootstrap pipelines compute identical bitmaps.
 
 Slots at index >= `maxTypedSlots` are left boxed (00); callers must demote
 such fields to boxed storage (see computeRecordLayout/computeCtorLayout).
+
 -}
 bitmapSetKind : Int -> Int -> Int -> Int
 bitmapSetKind bitmap index kind =

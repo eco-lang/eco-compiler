@@ -5,8 +5,15 @@ module TestLogic.Generate.CodeGen.E5KeyedDispatchTest exposing (suite)
 Fixture: a recursion-protected HOF `applyBoth` (SCC guard blocks inlining)
 called with TWO different lambda literals at the SAME type:
 
-    applyBoth f n acc = if n <= 0 then acc else applyBoth f (n-1) (f acc)
-    testValue = applyBoth (\a -> a*2) 2 1 + applyBoth (\b -> b+7) 2 1
+    applyBoth f n acc =
+        if n <= 0 then
+            acc
+
+        else
+            applyBoth f (n - 1) (f acc)
+
+    testValue =
+        applyBoth (\a -> a * 2) 2 1 + applyBoth (\b -> b + 7) 2 1
 
 UNKEYED (plain solver+LSS): both call sites demand one spec of `applyBoth`
 at the shared type; the spec's `f` param carries the JOINED 2-member set —
@@ -156,7 +163,8 @@ applyBothDef =
     }
 
 
-{-| testValue = applyBoth (\a -> a*2) 2 1 + applyBoth (\b -> b+7) 2 1 -}
+{-| testValue = applyBoth (\\a -> a\*2) 2 1 + applyBoth (\\b -> b+7) 2 1
+-}
 testValueDef : TypedDef
 testValueDef =
     { name = "testValue"

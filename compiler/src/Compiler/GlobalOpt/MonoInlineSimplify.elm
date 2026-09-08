@@ -28,6 +28,7 @@ import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..), MonoGraph(..),
 import Compiler.Data.BitSet as BitSet
 import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Generate.MLIR.Intrinsics as Intrinsics
 import Compiler.GlobalOpt.KernelFacts as KernelFacts
 import Compiler.Graph as Graph
@@ -35,7 +36,6 @@ import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.MonoTraverse as Traverse
 import Compiler.Reporting.Annotation as A exposing (Region)
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 
 
 
@@ -1050,7 +1050,7 @@ Format is "Module.name" where Module is the module path.
 globalToQualifiedName : Mono.Global -> Maybe String
 globalToQualifiedName global =
     case global of
-        Mono.Global (IO.Canonical _ moduleName) name ->
+        Mono.Global (ModuleName.Canonical _ moduleName) name ->
             Just (moduleName ++ "." ++ name)
 
         Mono.Accessor _ ->
@@ -2414,7 +2414,7 @@ freshVar ctx =
 
 {-| Generate a fresh lambda ID to avoid duplicate lambda names when inlining.
 -}
-freshLambdaId : RewriteCtx -> IO.Canonical -> ( Mono.LambdaId, RewriteCtx )
+freshLambdaId : RewriteCtx -> ModuleName.Canonical -> ( Mono.LambdaId, RewriteCtx )
 freshLambdaId ctx home =
     ( Mono.AnonymousLambda home ctx.lambdaCounter
     , { ctx | lambdaCounter = ctx.lambdaCounter + 1 }
@@ -2433,11 +2433,11 @@ freshLambdaIdForSpec ctx specId =
 
                 Just ( Mono.Accessor _, _ ) ->
                     -- Accessor doesn't have a home, use a placeholder
-                    IO.Canonical ( "", "" ) ""
+                    ModuleName.Canonical ( "", "" ) ""
 
                 Nothing ->
                     -- Fallback if not found
-                    IO.Canonical ( "", "" ) ""
+                    ModuleName.Canonical ( "", "" ) ""
     in
     freshLambdaId ctx home
 

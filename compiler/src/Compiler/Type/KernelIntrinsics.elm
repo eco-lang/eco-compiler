@@ -1,9 +1,4 @@
-module Compiler.Type.KernelIntrinsics exposing
-    ( Row
-    , lookup
-    , rows
-    , auditedFiles
-    )
+module Compiler.Type.KernelIntrinsics exposing (Row, lookup, rows, auditedFiles)
 
 {-| Compiler-internal type annotations for `Elm.Kernel.*` / `Eco.Kernel.*`
 references (`plans/kernel-intrinsic-annotations.md`).
@@ -102,6 +97,7 @@ import Dict exposing (Dict)
 `useSites` is not a comment: it is the fail-stop evidence (every occurrence in
 every installed package, verified to instantiate the annotation). `evidence`
 cites the C++ that fixes the heap contract. `files` feeds the rot manifest.
+
 -}
 type alias Row =
     { annotation : Can.Annotation Name
@@ -226,7 +222,6 @@ tList el =
 tString : Can.Type Name
 tString =
     Can.TType ModuleName.string "String" []
-
 
 
 tValue : Can.Type Name

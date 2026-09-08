@@ -1,6 +1,6 @@
 module TestLogic.Monomorphize.LssHonestSourcesPipelineTest exposing (suite)
 
-{-| LSS_026(a) — honest ∅-as-source, PIPELINE level.
+{-| LSS\_026(a) — honest ∅-as-source, PIPELINE level.
 
 The store-level semantics of the rule — including the pre-rule reading, which
 is the RED half — live in `LssHonestSourcesTest`, which drives
@@ -18,10 +18,10 @@ instantiation slot (the A.1 arg-position leak), so the slot dangles as an
 unconstrained FlexVar. Reading that dangling inflow as an ∅ contribution
 makes `d`'s result read `LSet [g|incr]` — a COMPLETENESS claim that is false.
 
-It is not a hypothetical: LSS_025's post-settle devirt acts on such a
+It is not a hypothetical: LSS\_025's post-settle devirt acts on such a
 singleton, and `test/elm/src/LssMixedSigHonestyTest.elm` printed
 `[42, 42, 42]` for `[41, 42, 82]` at the shipping default before the rule
-went unconditional. That is why LSS_026(a) is **not** behind a flag, and why
+went unconditional. That is why LSS\_026(a) is **not** behind a flag, and why
 these tests take no flag argument.
 
 -}
@@ -195,7 +195,7 @@ suite =
 
 {-| `sigFlow` ON (without it there are no sources to be honest about);
 `layoutQualMembers` pinned OFF for the same reason `LssSigFlowTest` pins it
-off — these fixtures pin LSS_026(a) in isolation from LSS_024's id sharing.
+off — these fixtures pin LSS\_026(a) in isolation from LSS\_024's id sharing.
 -}
 run : Src.Module -> Result String Mono.MonoGraph
 run srcModule =
@@ -325,7 +325,7 @@ annosOf t =
             []
 
 
-{-| The guard LSS_026(a) actually exists for: never a set small enough for a
+{-| The guard LSS\_026(a) actually exists for: never a set small enough for a
 consumer to devirtualize on. ⊤ is fine (it claims nothing); a >=2 set is fine
 (no devirt arm takes it); a SINGLETON or an empty set is the false completeness
 claim that hijacks the representative.

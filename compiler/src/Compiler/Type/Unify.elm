@@ -19,6 +19,7 @@ import Compiler.Type.Error as Error
 import Compiler.Type.Occurs as Occurs
 import Compiler.Type.Type as Type
 import Compiler.Type.UnionFind as UF
+import Compiler.Type.Vars as Vars
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO exposing (IO)
 
@@ -35,8 +36,8 @@ types for error reporting.
 
 -}
 type Answer
-    = AnswerOk (List IO.Variable)
-    | AnswerErr (List IO.Variable) Error.Type Error.Type
+    = AnswerOk (List Vars.Variable)
+    | AnswerErr (List Vars.Variable) Error.Type Error.Type
 
 
 {-| Attempts to unify two type variables.
@@ -47,7 +48,7 @@ merge equivalent variables and handles all type constructors including
 functions, records, tuples, and type aliases.
 
 -}
-unify : IO.Variable -> IO.Variable -> IO Answer
+unify : Vars.Variable -> Vars.Variable -> IO Answer
 unify v1 v2 =
     case guardedUnify v1 v2 of
         Unify k ->
@@ -72,14 +73,14 @@ unify v1 v2 =
                     )
 
 
-onSuccess : List IO.Variable -> () -> IO Answer
+onSuccess : List Vars.Variable -> () -> IO Answer
 onSuccess vars () =
     IO.pure (AnswerOk vars)
 
 
-errorDescriptor : IO.Descriptor
+errorDescriptor : Vars.Descriptor
 errorDescriptor =
-    IO.makeDescriptor IO.Error Type.noRank Type.noMark Nothing
+    IO.makeDescriptor Vars.Error Type.noRank Type.noMark Nothing
 
 
 
@@ -87,15 +88,15 @@ errorDescriptor =
 
 
 type Unify a
-    = Unify (List IO.Variable -> IO (Result UnifyErr (UnifyOk a)))
+    = Unify (List Vars.Variable -> IO (Result UnifyErr (UnifyOk a)))
 
 
 type UnifyOk a
-    = UnifyOk (List IO.Variable) a
+    = UnifyOk (List Vars.Variable) a
 
 
 type UnifyErr
-    = UnifyErr (List IO.Variable) ()
+    = UnifyErr (List Vars.Variable) ()
 
 
 map : (a -> b) -> Unify a -> Unify b
@@ -134,7 +135,7 @@ andThen callback (Unify ka) =
                     )
 
 
-register : IO IO.Variable -> Unify IO.Variable
+register : IO Vars.Variable -> Unify Vars.Variable
 register mkVar =
     Unify
         (\vars ->
@@ -234,16 +235,16 @@ zipAllWithM_ f xs ys =
 
 
 type alias Context =
-    { var1 : IO.Variable
-    , desc1 : IO.Descriptor
-    , var2 : IO.Variable
-    , desc2 : IO.Descriptor
+    { var1 : Vars.Variable
+    , desc1 : Vars.Descriptor
+    , var2 : Vars.Variable
+    , desc2 : Vars.Descriptor
     }
 
 
 {-| Helper to construct Context with positional args
 -}
-makeContext : IO.Variable -> IO.Descriptor -> IO.Variable -> IO.Descriptor -> Context
+makeContext : Vars.Variable -> Vars.Descriptor -> Vars.Variable -> Vars.Descriptor -> Context
 makeContext var1 desc1 var2 desc2 =
     { var1 = var1, desc1 = desc1, var2 = var2, desc2 = desc2 }
 
@@ -258,7 +259,7 @@ reorient props =
 -- merge : Context -> UF.Content -> Unify ( UF.Point UF.Descriptor, UF.Point UF.Descriptor )
 
 
-merge : Context -> IO.Content -> Unify ()
+merge : Context -> Vars.Content -> Unify ()
 merge props content =
     let
         desc1Props =
@@ -275,7 +276,7 @@ merge props content =
         )
 
 
-fresh : Context -> IO.Content -> Unify IO.Variable
+fresh : Context -> Vars.Content -> Unify Vars.Variable
 fresh props content =
     let
         desc1Props =
@@ -291,7 +292,7 @@ fresh props content =
 -- ====== ACTUALLY UNIFY THINGS ======
 
 
-guardedUnify : IO.Variable -> IO.Variable -> Unify ()
+guardedUnify : Vars.Variable -> Vars.Variable -> Unify ()
 guardedUnify left right =
     -- THE hot path of unification. Threads the union-find state directly
     -- (plans/io-monad-dispatch-reduction.md P3): `UF.equivalent left right` and
@@ -324,12 +325,12 @@ guardedUnify left right =
         )
 
 
-subUnify : IO.Variable -> IO.Variable -> Unify ()
+subUnify : Vars.Variable -> Vars.Variable -> Unify ()
 subUnify var1 var2 =
     guardedUnify var1 var2
 
 
-subUnifyTuple : List IO.Variable -> List IO.Variable -> Context -> IO.Content -> Unify ()
+subUnifyTuple : List Vars.Variable -> List Vars.Variable -> Context -> Vars.Content -> Unify ()
 subUnifyTuple cs zs context otherContent =
     zipWithM_ subUnify cs zs
         |> andThen (\_ -> merge context otherContent)
@@ -351,41 +352,41 @@ actuallyUnify ctx =
             desc2Props.content
     in
     case firstContent of
-        IO.FlexVar _ ->
+        Vars.FlexVar _ ->
             unifyFlex ctx firstContent secondContent
 
-        IO.FlexSuper super _ ->
+        Vars.FlexSuper super _ ->
             unifyFlexSuper ctx super firstContent secondContent
 
-        IO.RigidVar _ ->
+        Vars.RigidVar _ ->
             unifyRigid ctx Nothing firstContent secondContent
 
-        IO.RigidSuper super _ ->
+        Vars.RigidSuper super _ ->
             unifyRigid ctx (Just super) firstContent secondContent
 
-        IO.Alias home name args realVar ->
+        Vars.Alias home name args realVar ->
             unifyAlias ctx home name args realVar secondContent
 
-        IO.Structure flatType ->
+        Vars.Structure flatType ->
             unifyStructure ctx flatType firstContent secondContent
 
-        IO.Error ->
+        Vars.Error ->
             -- If there was an error, just pretend it is okay. This lets us avoid
             -- "cascading" errors where one problem manifests as multiple message.
-            merge ctx IO.Error
+            merge ctx Vars.Error
 
 
 
 -- ====== UNIFY FLEXIBLE VARIABLES ======
 
 
-unifyFlex : Context -> IO.Content -> IO.Content -> Unify ()
+unifyFlex : Context -> Vars.Content -> Vars.Content -> Unify ()
 unifyFlex context content otherContent =
     case otherContent of
-        IO.Error ->
-            merge context IO.Error
+        Vars.Error ->
+            merge context Vars.Error
 
-        IO.FlexVar maybeName ->
+        Vars.FlexVar maybeName ->
             merge context <|
                 case maybeName of
                     Nothing ->
@@ -394,19 +395,19 @@ unifyFlex context content otherContent =
                     Just _ ->
                         otherContent
 
-        IO.FlexSuper _ _ ->
+        Vars.FlexSuper _ _ ->
             merge context otherContent
 
-        IO.RigidVar _ ->
+        Vars.RigidVar _ ->
             merge context otherContent
 
-        IO.RigidSuper _ _ ->
+        Vars.RigidSuper _ _ ->
             merge context otherContent
 
-        IO.Alias _ _ _ _ ->
+        Vars.Alias _ _ _ _ ->
             merge context otherContent
 
-        IO.Structure _ ->
+        Vars.Structure _ ->
             merge context otherContent
 
 
@@ -414,13 +415,13 @@ unifyFlex context content otherContent =
 -- ====== UNIFY RIGID VARIABLES ======
 
 
-unifyRigid : Context -> Maybe IO.SuperType -> IO.Content -> IO.Content -> Unify ()
+unifyRigid : Context -> Maybe Vars.SuperType -> Vars.Content -> Vars.Content -> Unify ()
 unifyRigid context maybeSuper content otherContent =
     case otherContent of
-        IO.FlexVar _ ->
+        Vars.FlexVar _ ->
             merge context content
 
-        IO.FlexSuper otherSuper _ ->
+        Vars.FlexSuper otherSuper _ ->
             case maybeSuper of
                 Just super ->
                     if combineRigidSupers super otherSuper then
@@ -432,190 +433,190 @@ unifyRigid context maybeSuper content otherContent =
                 Nothing ->
                     mismatch
 
-        IO.RigidVar _ ->
+        Vars.RigidVar _ ->
             mismatch
 
-        IO.RigidSuper _ _ ->
+        Vars.RigidSuper _ _ ->
             mismatch
 
-        IO.Alias _ _ _ _ ->
+        Vars.Alias _ _ _ _ ->
             mismatch
 
-        IO.Structure _ ->
+        Vars.Structure _ ->
             mismatch
 
-        IO.Error ->
-            merge context IO.Error
+        Vars.Error ->
+            merge context Vars.Error
 
 
 
 -- ====== UNIFY SUPER VARIABLES ======
 
 
-unifyFlexSuper : Context -> IO.SuperType -> IO.Content -> IO.Content -> Unify ()
+unifyFlexSuper : Context -> Vars.SuperType -> Vars.Content -> Vars.Content -> Unify ()
 unifyFlexSuper ctx super content otherContent =
     let
         first =
             ctx.var1
     in
     case otherContent of
-        IO.Structure flatType ->
+        Vars.Structure flatType ->
             unifyFlexSuperStructure ctx super flatType
 
-        IO.RigidVar _ ->
+        Vars.RigidVar _ ->
             mismatch
 
-        IO.RigidSuper otherSuper _ ->
+        Vars.RigidSuper otherSuper _ ->
             if combineRigidSupers otherSuper super then
                 merge ctx otherContent
 
             else
                 mismatch
 
-        IO.FlexVar _ ->
+        Vars.FlexVar _ ->
             merge ctx content
 
-        IO.FlexSuper otherSuper _ ->
+        Vars.FlexSuper otherSuper _ ->
             case super of
-                IO.Number ->
+                Vars.Number ->
                     case otherSuper of
-                        IO.Number ->
+                        Vars.Number ->
                             merge ctx content
 
-                        IO.Comparable ->
+                        Vars.Comparable ->
                             merge ctx content
 
-                        IO.Appendable ->
+                        Vars.Appendable ->
                             mismatch
 
-                        IO.CompAppend ->
+                        Vars.CompAppend ->
                             mismatch
 
-                IO.Comparable ->
+                Vars.Comparable ->
                     case otherSuper of
-                        IO.Comparable ->
+                        Vars.Comparable ->
                             merge ctx otherContent
 
-                        IO.Number ->
+                        Vars.Number ->
                             merge ctx otherContent
 
-                        IO.Appendable ->
-                            Type.unnamedFlexSuper IO.CompAppend |> merge ctx
+                        Vars.Appendable ->
+                            Type.unnamedFlexSuper Vars.CompAppend |> merge ctx
 
-                        IO.CompAppend ->
+                        Vars.CompAppend ->
                             merge ctx otherContent
 
-                IO.Appendable ->
+                Vars.Appendable ->
                     case otherSuper of
-                        IO.Appendable ->
+                        Vars.Appendable ->
                             merge ctx otherContent
 
-                        IO.Comparable ->
-                            Type.unnamedFlexSuper IO.CompAppend |> merge ctx
+                        Vars.Comparable ->
+                            Type.unnamedFlexSuper Vars.CompAppend |> merge ctx
 
-                        IO.CompAppend ->
+                        Vars.CompAppend ->
                             merge ctx otherContent
 
-                        IO.Number ->
+                        Vars.Number ->
                             mismatch
 
-                IO.CompAppend ->
+                Vars.CompAppend ->
                     case otherSuper of
-                        IO.Comparable ->
+                        Vars.Comparable ->
                             merge ctx content
 
-                        IO.Appendable ->
+                        Vars.Appendable ->
                             merge ctx content
 
-                        IO.CompAppend ->
+                        Vars.CompAppend ->
                             merge ctx content
 
-                        IO.Number ->
+                        Vars.Number ->
                             mismatch
 
-        IO.Alias _ _ _ realVar ->
+        Vars.Alias _ _ _ realVar ->
             subUnify first realVar
 
-        IO.Error ->
-            merge ctx IO.Error
+        Vars.Error ->
+            merge ctx Vars.Error
 
 
-combineRigidSupers : IO.SuperType -> IO.SuperType -> Bool
+combineRigidSupers : Vars.SuperType -> Vars.SuperType -> Bool
 combineRigidSupers rigid flex =
     rigid
         == flex
-        || (rigid == IO.Number && flex == IO.Comparable)
-        || (rigid == IO.CompAppend && (flex == IO.Comparable || flex == IO.Appendable))
+        || (rigid == Vars.Number && flex == Vars.Comparable)
+        || (rigid == Vars.CompAppend && (flex == Vars.Comparable || flex == Vars.Appendable))
 
 
-atomMatchesSuper : IO.SuperType -> IO.Canonical -> Name.Name -> Bool
+atomMatchesSuper : Vars.SuperType -> ModuleName.Canonical -> Name.Name -> Bool
 atomMatchesSuper super home name =
     case super of
-        IO.Number ->
+        Vars.Number ->
             isNumber home name
 
-        IO.Comparable ->
+        Vars.Comparable ->
             isNumber home name || Error.isString home name || Error.isChar home name
 
-        IO.Appendable ->
+        Vars.Appendable ->
             Error.isString home name
 
-        IO.CompAppend ->
+        Vars.CompAppend ->
             Error.isString home name
 
 
-isNumber : IO.Canonical -> Name.Name -> Bool
+isNumber : ModuleName.Canonical -> Name.Name -> Bool
 isNumber home name =
     (home == ModuleName.basics)
         && (name == Name.int || name == Name.float)
 
 
-unifyFlexSuperStructure : Context -> IO.SuperType -> IO.FlatType -> Unify ()
+unifyFlexSuperStructure : Context -> Vars.SuperType -> Vars.FlatType -> Unify ()
 unifyFlexSuperStructure context super flatType =
     case flatType of
-        IO.App1 home name [] ->
+        Vars.App1 home name [] ->
             if atomMatchesSuper super home name then
-                merge context (IO.Structure flatType)
+                merge context (Vars.Structure flatType)
 
             else
                 mismatch
 
-        IO.App1 home name [ variable ] ->
+        Vars.App1 home name [ variable ] ->
             if home == ModuleName.list && name == Name.list then
                 case super of
-                    IO.Number ->
+                    Vars.Number ->
                         mismatch
 
-                    IO.Appendable ->
-                        merge context (IO.Structure flatType)
+                    Vars.Appendable ->
+                        merge context (Vars.Structure flatType)
 
-                    IO.Comparable ->
+                    Vars.Comparable ->
                         comparableOccursCheck context
                             |> andThen (\_ -> unifyComparableRecursive variable)
-                            |> andThen (\_ -> merge context (IO.Structure flatType))
+                            |> andThen (\_ -> merge context (Vars.Structure flatType))
 
-                    IO.CompAppend ->
+                    Vars.CompAppend ->
                         comparableOccursCheck context
                             |> andThen (\_ -> unifyComparableRecursive variable)
-                            |> andThen (\_ -> merge context (IO.Structure flatType))
+                            |> andThen (\_ -> merge context (Vars.Structure flatType))
 
             else
                 mismatch
 
-        IO.Tuple1 a b cs ->
+        Vars.Tuple1 a b cs ->
             case super of
-                IO.Number ->
+                Vars.Number ->
                     mismatch
 
-                IO.Appendable ->
+                Vars.Appendable ->
                     mismatch
 
-                IO.Comparable ->
+                Vars.Comparable ->
                     comparableOccursCheck context
                         |> andThen (\_ -> forEach_ (a :: b :: cs) unifyComparableRecursive)
-                        |> andThen (\_ -> merge context (IO.Structure flatType))
+                        |> andThen (\_ -> merge context (Vars.Structure flatType))
 
-                IO.CompAppend ->
+                Vars.CompAppend ->
                     mismatch
 
         _ ->
@@ -643,13 +644,13 @@ comparableOccursCheck props =
         )
 
 
-unifyComparableRecursive : IO.Variable -> Unify ()
+unifyComparableRecursive : Vars.Variable -> Unify ()
 unifyComparableRecursive var =
     register
         (UF.get var
             |> IO.andThen
                 (\descProps ->
-                    UF.fresh (IO.makeDescriptor (Type.unnamedFlexSuper IO.Comparable) descProps.rank Type.noMark Nothing)
+                    UF.fresh (IO.makeDescriptor (Type.unnamedFlexSuper Vars.Comparable) descProps.rank Type.noMark Nothing)
                 )
         )
         |> andThen (\compVar -> guardedUnify compVar var)
@@ -659,26 +660,26 @@ unifyComparableRecursive var =
 -- ====== UNIFY ALIASES ======
 
 
-unifyAlias : Context -> IO.Canonical -> Name.Name -> List ( Name.Name, IO.Variable ) -> IO.Variable -> IO.Content -> Unify ()
+unifyAlias : Context -> ModuleName.Canonical -> Name.Name -> List ( Name.Name, Vars.Variable ) -> Vars.Variable -> Vars.Content -> Unify ()
 unifyAlias ctx home name args realVar otherContent =
     let
         second =
             ctx.var2
     in
     case otherContent of
-        IO.FlexVar _ ->
-            merge ctx (IO.Alias home name args realVar)
+        Vars.FlexVar _ ->
+            merge ctx (Vars.Alias home name args realVar)
 
-        IO.FlexSuper _ _ ->
+        Vars.FlexSuper _ _ ->
             subUnify realVar second
 
-        IO.RigidVar _ ->
+        Vars.RigidVar _ ->
             subUnify realVar second
 
-        IO.RigidSuper _ _ ->
+        Vars.RigidSuper _ _ ->
             subUnify realVar second
 
-        IO.Alias otherHome otherName otherArgs otherRealVar ->
+        Vars.Alias otherHome otherName otherArgs otherRealVar ->
             if name == otherName && home == otherHome then
                 zipAllWithM_ subUnify (List.map Tuple.second args) (List.map Tuple.second otherArgs)
                     |> andThen (\_ -> merge ctx otherContent)
@@ -686,18 +687,18 @@ unifyAlias ctx home name args realVar otherContent =
             else
                 subUnify realVar otherRealVar
 
-        IO.Structure _ ->
+        Vars.Structure _ ->
             subUnify realVar second
 
-        IO.Error ->
-            merge ctx IO.Error
+        Vars.Error ->
+            merge ctx Vars.Error
 
 
 
 -- ====== UNIFY STRUCTURES ======
 
 
-unifyStructure : Context -> IO.FlatType -> IO.Content -> IO.Content -> Unify ()
+unifyStructure : Context -> Vars.FlatType -> Vars.Content -> Vars.Content -> Unify ()
 unifyStructure ctx flatType content otherContent =
     let
         first =
@@ -707,24 +708,24 @@ unifyStructure ctx flatType content otherContent =
             ctx.var2
     in
     case otherContent of
-        IO.FlexVar _ ->
+        Vars.FlexVar _ ->
             merge ctx content
 
-        IO.FlexSuper super _ ->
+        Vars.FlexSuper super _ ->
             unifyFlexSuperStructure (reorient ctx) super flatType
 
-        IO.RigidVar _ ->
+        Vars.RigidVar _ ->
             mismatch
 
-        IO.RigidSuper _ _ ->
+        Vars.RigidSuper _ _ ->
             mismatch
 
-        IO.Alias _ _ _ realVar ->
+        Vars.Alias _ _ _ realVar ->
             subUnify first realVar
 
-        IO.Structure otherFlatType ->
+        Vars.Structure otherFlatType ->
             case ( flatType, otherFlatType ) of
-                ( IO.App1 home name args, IO.App1 otherHome otherName otherArgs ) ->
+                ( Vars.App1 home name args, Vars.App1 otherHome otherName otherArgs ) ->
                     if home == otherHome && name == otherName then
                         zipAllWithM_ subUnify args otherArgs
                             |> andThen (\_ -> merge ctx otherContent)
@@ -732,12 +733,12 @@ unifyStructure ctx flatType content otherContent =
                     else
                         mismatch
 
-                ( IO.Fun1 arg1 res1, IO.Fun1 arg2 res2 ) ->
+                ( Vars.Fun1 arg1 res1, Vars.Fun1 arg2 res2 ) ->
                     subUnify arg1 arg2
                         |> andThen (\_ -> subUnify res1 res2)
                         |> andThen (\_ -> merge ctx otherContent)
 
-                ( IO.FunL arg1 res1 set1, IO.FunL arg2 res2 set2 ) ->
+                ( Vars.FunL arg1 res1 set1, Vars.FunL arg2 res2 set2 ) ->
                     subUnify arg1 arg2
                         |> andThen (\_ -> subUnify res1 res2)
                         |> andThen (\_ -> subUnify set1 set2)
@@ -746,17 +747,17 @@ unifyStructure ctx flatType content otherContent =
                 -- Mixed arrows: unify the type structure, keep the slotted
                 -- side. Legal only transiently (a demand encoded before lss
                 -- gating); semantically Fun1 ≡ FunL with an unconstrained slot.
-                ( IO.Fun1 arg1 res1, IO.FunL arg2 res2 _ ) ->
+                ( Vars.Fun1 arg1 res1, Vars.FunL arg2 res2 _ ) ->
                     subUnify arg1 arg2
                         |> andThen (\_ -> subUnify res1 res2)
                         |> andThen (\_ -> merge ctx otherContent)
 
-                ( IO.FunL arg1 res1 _, IO.Fun1 arg2 res2 ) ->
+                ( Vars.FunL arg1 res1 _, Vars.Fun1 arg2 res2 ) ->
                     subUnify arg1 arg2
                         |> andThen (\_ -> subUnify res1 res2)
                         |> andThen (\_ -> merge ctx content)
 
-                ( IO.LambdaSet1 ls1, IO.LambdaSet1 ls2 ) ->
+                ( Vars.LambdaSet1 ls1, Vars.LambdaSet1 ls2 ) ->
                     -- Join-semilattice union (LSS): TOTAL — set unification
                     -- never mismatches. Members are ground ids; ⊤ absorbs and
                     -- carries none (members-under-⊤ are dead at every reader).
@@ -772,74 +773,74 @@ unifyStructure ctx flatType content otherContent =
                         -- kind (min code) via the shared per-kind CAFs —
                         -- still allocation-free; absorption keeps the
                         -- surviving ⊤'s birth kind.
-                        ( IO.LsTop p1, IO.LsTop p2 ) ->
+                        ( Vars.LsTop p1, Vars.LsTop p2 ) ->
                             if p1 <= p2 then
                                 merge ctx content
 
                             else
                                 merge ctx otherContent
 
-                        ( IO.LsTop _, _ ) ->
+                        ( Vars.LsTop _, _ ) ->
                             merge ctx content
 
-                        ( _, IO.LsTop _ ) ->
+                        ( _, Vars.LsTop _ ) ->
                             merge ctx otherContent
 
-                        ( IO.LsMembers m1, IO.LsMembers m2 ) ->
+                        ( Vars.LsMembers m1, Vars.LsMembers m2 ) ->
                             case IO.classifySorted m1 m2 of
-                                IO.SortedEqual ->
+                                Vars.SortedEqual ->
                                     merge ctx content
 
-                                IO.SortedSuper ->
+                                Vars.SortedSuper ->
                                     -- m2 ⊆ m1: side 1's content as-is.
                                     merge ctx content
 
-                                IO.SortedSub ->
+                                Vars.SortedSub ->
                                     -- m1 ⊆ m2: side 2's content as-is.
                                     merge ctx otherContent
 
-                                IO.SortedMixed ->
-                                    merge ctx (IO.Structure (IO.LambdaSet1 (IO.LsMembers (IO.unionSortedAsc m1 m2))))
+                                Vars.SortedMixed ->
+                                    merge ctx (Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers (IO.unionSortedAsc m1 m2))))
 
                         -- LSS_023 (`plans/lss-directed-set-flow.md`): class
                         -- merges MERGE the deferred edge lists — the union-hook
                         -- problem is solved by representation, not by hooks.
                         -- Dedupe uses IO.pointKey (Unify cannot import Engine).
                         -- The join stays TOTAL.
-                        ( IO.LsFrom m1 s1, IO.LsFrom m2 s2 ) ->
+                        ( Vars.LsFrom m1 s1, Vars.LsFrom m2 s2 ) ->
                             merge ctx
-                                (IO.Structure
-                                    (IO.LambdaSet1
-                                        (IO.LsFrom (IO.unionSortedAsc m1 m2)
+                                (Vars.Structure
+                                    (Vars.LambdaSet1
+                                        (Vars.LsFrom (IO.unionSortedAsc m1 m2)
                                             (dedupeSources (s1 ++ s2))
                                         )
                                     )
                                 )
 
-                        ( IO.LsFrom m1 s1, IO.LsMembers m2 ) ->
-                            merge ctx (IO.Structure (IO.LambdaSet1 (IO.LsFrom (IO.unionSortedAsc m1 m2) s1)))
+                        ( Vars.LsFrom m1 s1, Vars.LsMembers m2 ) ->
+                            merge ctx (Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom (IO.unionSortedAsc m1 m2) s1)))
 
-                        ( IO.LsMembers m1, IO.LsFrom m2 s2 ) ->
-                            merge ctx (IO.Structure (IO.LambdaSet1 (IO.LsFrom (IO.unionSortedAsc m1 m2) s2)))
+                        ( Vars.LsMembers m1, Vars.LsFrom m2 s2 ) ->
+                            merge ctx (Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom (IO.unionSortedAsc m1 m2) s2)))
 
-                ( IO.EmptyRecord1, IO.EmptyRecord1 ) ->
+                ( Vars.EmptyRecord1, Vars.EmptyRecord1 ) ->
                     merge ctx otherContent
 
-                ( IO.Record1 fields ext, IO.EmptyRecord1 ) ->
+                ( Vars.Record1 fields ext, Vars.EmptyRecord1 ) ->
                     if Dict.isEmpty fields then
                         subUnify ext second
 
                     else
                         mismatch
 
-                ( IO.EmptyRecord1, IO.Record1 fields ext ) ->
+                ( Vars.EmptyRecord1, Vars.Record1 fields ext ) ->
                     if Dict.isEmpty fields then
                         subUnify first ext
 
                     else
                         mismatch
 
-                ( IO.Record1 fields1 ext1, IO.Record1 fields2 ext2 ) ->
+                ( Vars.Record1 fields1 ext1, Vars.Record1 fields2 ext2 ) ->
                     Unify
                         (\vars ->
                             gatherFields fields1 ext1
@@ -855,19 +856,19 @@ unifyStructure ctx flatType content otherContent =
                                     )
                         )
 
-                ( IO.Tuple1 a b cs, IO.Tuple1 x y zs ) ->
+                ( Vars.Tuple1 a b cs, Vars.Tuple1 x y zs ) ->
                     subUnify a x
                         |> andThen (\_ -> subUnify b y)
                         |> andThen (\_ -> subUnifyTuple cs zs ctx otherContent)
 
-                ( IO.Unit1, IO.Unit1 ) ->
+                ( Vars.Unit1, Vars.Unit1 ) ->
                     merge ctx otherContent
 
                 _ ->
                     mismatch
 
-        IO.Error ->
-            merge ctx IO.Error
+        Vars.Error ->
+            merge ctx Vars.Error
 
 
 
@@ -878,7 +879,7 @@ unifyStructure ctx flatType content otherContent =
 unifyRecord : Context -> RecordStructure -> RecordStructure -> Unify ()
 unifyRecord context (RecordStructure fields1 ext1) (RecordStructure fields2 ext2) =
     let
-        sharedFields : Dict Name.Name ( IO.Variable, IO.Variable )
+        sharedFields : Dict Name.Name ( Vars.Variable, Vars.Variable )
         sharedFields =
             Dict.merge
                 (\_ _ acc -> acc)
@@ -888,11 +889,11 @@ unifyRecord context (RecordStructure fields1 ext1) (RecordStructure fields2 ext2
                 fields2
                 Dict.empty
 
-        uniqueFields1 : Dict Name.Name IO.Variable
+        uniqueFields1 : Dict Name.Name Vars.Variable
         uniqueFields1 =
             Dict.diff fields1 fields2
 
-        uniqueFields2 : Dict Name.Name IO.Variable
+        uniqueFields2 : Dict Name.Name Vars.Variable
         uniqueFields2 =
             Dict.diff fields2 fields1
     in
@@ -902,7 +903,7 @@ unifyRecord context (RecordStructure fields1 ext1) (RecordStructure fields2 ext2
                 |> andThen (\_ -> unifySharedFields context sharedFields Dict.empty ext1)
 
         else
-            fresh context (IO.Structure (IO.Record1 uniqueFields2 ext2))
+            fresh context (Vars.Structure (Vars.Record1 uniqueFields2 ext2))
                 |> andThen
                     (\subRecord ->
                         subUnify ext1 subRecord
@@ -910,7 +911,7 @@ unifyRecord context (RecordStructure fields1 ext1) (RecordStructure fields2 ext2
                     )
 
     else if Dict.isEmpty uniqueFields2 then
-        fresh context (IO.Structure (IO.Record1 uniqueFields1 ext1))
+        fresh context (Vars.Structure (Vars.Record1 uniqueFields1 ext1))
             |> andThen
                 (\subRecord ->
                     subUnify subRecord ext2
@@ -919,17 +920,17 @@ unifyRecord context (RecordStructure fields1 ext1) (RecordStructure fields2 ext2
 
     else
         let
-            otherFields : Dict Name.Name IO.Variable
+            otherFields : Dict Name.Name Vars.Variable
             otherFields =
                 Dict.union uniqueFields1 uniqueFields2
         in
         fresh context Type.unnamedFlexVar
             |> andThen
                 (\ext ->
-                    fresh context (IO.Structure (IO.Record1 uniqueFields1 ext))
+                    fresh context (Vars.Structure (Vars.Record1 uniqueFields1 ext))
                         |> andThen
                             (\sub1 ->
-                                fresh context (IO.Structure (IO.Record1 uniqueFields2 ext))
+                                fresh context (Vars.Structure (Vars.Record1 uniqueFields2 ext))
                                     |> andThen
                                         (\sub2 ->
                                             subUnify ext1 sub2
@@ -940,14 +941,14 @@ unifyRecord context (RecordStructure fields1 ext1) (RecordStructure fields2 ext2
                 )
 
 
-unifySharedFields : Context -> Dict Name.Name ( IO.Variable, IO.Variable ) -> Dict Name.Name IO.Variable -> IO.Variable -> Unify ()
+unifySharedFields : Context -> Dict Name.Name ( Vars.Variable, Vars.Variable ) -> Dict Name.Name Vars.Variable -> Vars.Variable -> Unify ()
 unifySharedFields context sharedFields otherFields ext =
     traverseAll unifyField sharedFields
         |> andThen
             (\result ->
                 case result of
                     Just matchingFields ->
-                        merge context (IO.Structure (IO.Record1 (Dict.union matchingFields otherFields) ext))
+                        merge context (Vars.Structure (Vars.Record1 (Dict.union matchingFields otherFields) ext))
 
                     Nothing ->
                         mismatch
@@ -977,7 +978,7 @@ traverseAll func =
         (pure (Just Dict.empty))
 
 
-unifyField : Name.Name -> ( IO.Variable, IO.Variable ) -> Unify (Maybe IO.Variable)
+unifyField : Name.Name -> ( Vars.Variable, Vars.Variable ) -> Unify (Maybe Vars.Variable)
 unifyField _ ( actual, expected ) =
     try (subUnify actual expected)
         |> map
@@ -995,18 +996,19 @@ unifyField _ ( actual, expected ) =
 
 
 type RecordStructure
-    = RecordStructure (Dict Name.Name IO.Variable) IO.Variable
+    = RecordStructure (Dict Name.Name Vars.Variable) Vars.Variable
+
 
 {-| Dedupe an `LsFrom` source list by raw Point index, preserving first
 occurrence. Small lists (edge fan-in per slot); quadratic is fine and
 allocation-light.
 -}
-dedupeSources : List IO.Variable -> List IO.Variable
+dedupeSources : List Vars.Variable -> List Vars.Variable
 dedupeSources sources =
     dedupeSourcesGo sources []
 
 
-dedupeSourcesGo : List IO.Variable -> List Int -> List IO.Variable
+dedupeSourcesGo : List Vars.Variable -> List Int -> List Vars.Variable
 dedupeSourcesGo sources seen =
     case sources of
         [] ->
@@ -1024,18 +1026,16 @@ dedupeSourcesGo sources seen =
                 v :: dedupeSourcesGo rest (k :: seen)
 
 
-
-
-gatherFields : Dict Name.Name IO.Variable -> IO.Variable -> IO RecordStructure
+gatherFields : Dict Name.Name Vars.Variable -> Vars.Variable -> IO RecordStructure
 gatherFields fields variable =
     UF.get variable
         |> IO.andThen
             (\descProps ->
                 case descProps.content of
-                    IO.Structure (IO.Record1 subFields subExt) ->
+                    Vars.Structure (Vars.Record1 subFields subExt) ->
                         gatherFields (Dict.union fields subFields) subExt
 
-                    IO.Alias _ _ _ var ->
+                    Vars.Alias _ _ _ var ->
                         -- TODO may be dropping useful alias info here
                         gatherFields fields var
 

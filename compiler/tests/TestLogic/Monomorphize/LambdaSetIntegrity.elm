@@ -37,7 +37,7 @@ expectLambdaSetIntegrity =
 This is the point of the arm: `lss.arrowIdentity` makes repeated loads of one
 stamped type object SHARE a set slot, and the failure mode of a sharing bug is
 a LOST MEMBER — a closure instance whose own identity is missing from the set
-its arrow claims. That is exactly what LSS_002 asserts, over the whole
+its arrow claims. That is exactly what LSS\_002 asserts, over the whole
 SourceIR corpus, through the real pipeline. A spurious member here would be a
 MISCOMPILE; a lost one is what slot sharing can plausibly cause.
 

@@ -1,12 +1,19 @@
 module TestLogic.Generate.CodeGen.E2V2StagedDispatchTest exposing (suite)
 
-{-| E2.7 / LSS_014 staged stamping — activation pin.
+{-| E2.7 / LSS\_014 staged stamping — activation pin.
 
 Fixture: a CURRIED lambda literal (`\a -> \b -> a*10 + b`, stage arities
 [1,1]) flows into a recursion-protected HOF whose body OVER-applies it:
 
-    applyStaged f n acc = if n <= 0 then acc else f 10 (applyStaged f (n-1) acc)
-    testValue = applyStaged (\a -> \b -> a*10 + b) 2 3
+    applyStaged f n acc =
+        if n <= 0 then
+            acc
+
+        else
+            f 10 (applyStaged f (n - 1) acc)
+
+    testValue =
+        applyStaged (\a -> \b -> a * 10 + b) 2 3
 
 The site `f 10 (…)` applies 2 args over the instance's 1-param first stage —
 v1 declines it (`declinedShapeArityOver`); E2.7 stamps it (same fields as the
@@ -81,7 +88,8 @@ fixtureModule =
     makeModuleWithTypedDefs "Test" [ applyStagedDef, testValueDef ]
 
 
-{-| applyStaged f n acc = if n <= 0 then acc else f 10 (applyStaged f (n-1) acc) -}
+{-| applyStaged f n acc = if n <= 0 then acc else f 10 (applyStaged f (n-1) acc)
+-}
 applyStagedDef : TypedDef
 applyStagedDef =
     { name = "applyStaged"
@@ -103,7 +111,8 @@ applyStagedDef =
     }
 
 
-{-| testValue = applyStaged (\a -> \b -> a*10 + b) 2 3 -}
+{-| testValue = applyStaged (\\a -> \\b -> a\*10 + b) 2 3
+-}
 testValueDef : TypedDef
 testValueDef =
     { name = "testValue"

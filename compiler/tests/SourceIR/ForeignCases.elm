@@ -24,9 +24,9 @@ import Compiler.AST.CanonicalBuilder
         , varType
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Expect exposing (Expectation)
-import System.TypeCheck.IO as IO
 import Test exposing (Test)
 
 
@@ -68,7 +68,7 @@ varForeignIdentity expectFn _ =
             makeAnnotation [ "a" ] (funType (varType "a") (varType "a"))
 
         home =
-            IO.Canonical Pkg.core "Basics"
+            ModuleName.Canonical Pkg.core "Basics"
 
         modul =
             makeModule "testValue"
@@ -88,7 +88,7 @@ varForeignConst expectFn _ =
                 (funType (varType "a") (funType (varType "b") (varType "a")))
 
         home =
-            IO.Canonical Pkg.core "Basics"
+            ModuleName.Canonical Pkg.core "Basics"
 
         modul =
             makeModule "testValue"
@@ -120,7 +120,7 @@ callIdentityOnInt expectFn _ =
             makeAnnotation [ "a" ] (funType (varType "a") (varType "a"))
 
         home =
-            IO.Canonical Pkg.core "Basics"
+            ModuleName.Canonical Pkg.core "Basics"
 
         modul =
             makeModule "testValue"
@@ -143,7 +143,7 @@ callConstOnIntAndInt expectFn _ =
                 (funType (varType "a") (funType (varType "b") (varType "a")))
 
         home =
-            IO.Canonical Pkg.core "Basics"
+            ModuleName.Canonical Pkg.core "Basics"
 
         modul =
             makeModule "testValue"
@@ -182,7 +182,7 @@ typedDefUsingForeignIdentity expectFn _ =
             makeAnnotation [ "c" ] (funType (varType "c") (varType "c"))
 
         home =
-            IO.Canonical Pkg.core "Basics"
+            ModuleName.Canonical Pkg.core "Basics"
 
         -- apply f x = identity (f x)
         applyDef =
@@ -221,7 +221,7 @@ nestedForeignCalls expectFn _ =
             makeAnnotation [ "a" ] (funType (varType "a") (varType "a"))
 
         home =
-            IO.Canonical Pkg.core "Basics"
+            ModuleName.Canonical Pkg.core "Basics"
 
         modul =
             makeModule "testValue"

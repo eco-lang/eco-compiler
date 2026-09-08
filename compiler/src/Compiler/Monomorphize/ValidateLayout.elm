@@ -1,6 +1,6 @@
 module Compiler.Monomorphize.ValidateLayout exposing (validate)
 
-{-| MONO_029 layout-agreement validator (R0 of
+{-| MONO\_029 layout-agreement validator (R0 of
 plans/solver-layout-connectivity-reconciliation.md). Engine-agnostic,
 opt-in via `ECO_MONO_VALIDATE=1`: walks the final MonoGraph and reports
 layout-disagreeing views of one runtime value. Heap slot layout is a pure
@@ -28,7 +28,7 @@ derefs the field; the whole E2E corpus compiles CORRECTLY under
 all-globals keying), which a per-node boxedness check cannot distinguish
 from the malign concrete-raw-vs-concrete-boxed case, while the real
 crash (self-compile-scale solver Unify pattern) never surfaces as a
-call-boundary field flip at all. MONO_029 is enforced by engine
+call-boundary field flip at all. MONO\_029 is enforced by engine
 connectivity (R1/R2), not a per-node validator, for exactly this reason.
 
 @docs validate
@@ -248,7 +248,7 @@ violation specId msg acc =
 
 {-| The heap/ABI representation class of a recorded type: raw i64 / raw f64 /
 raw u16, or a boxed word. Everything not Int/Float/Char is boxed (REP rules;
-Bool is boxed True/False constants; erased residuals are boxed per MONO_003).
+Bool is boxed True/False constants; erased residuals are boxed per MONO\_003).
 CNumber residuals close to MInt in Prune, so post-prune they read as raw-int.
 -}
 type AbiKind

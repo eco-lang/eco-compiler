@@ -49,9 +49,9 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Type as E
 import Compiler.Type.Type as Type exposing (Constraint, Type(..))
+import Compiler.Type.Vars as Vars
 import Data.Map as DataMap
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 
 
 
@@ -66,7 +66,7 @@ and constraints stored in reverse order for efficient appending.
 
 -}
 type State
-    = State Header (List IO.Variable) (List Constraint)
+    = State Header (List Vars.Variable) (List Constraint)
 
 
 {-| Header maps variable names to their types with source locations.
@@ -200,7 +200,7 @@ patternNeedsConstraint node =
 {-| Try to extract a variable from a type.
 Returns Just var if the type is VarN var, Nothing otherwise.
 -}
-extractVarFromType : Type -> Maybe IO.Variable
+extractVarFromType : Type -> Maybe Vars.Variable
 extractVarFromType tipe =
     case tipe of
         Type.VarN v ->
@@ -224,7 +224,7 @@ function type, result type, and pattern state from argument patterns.
 
 -}
 type alias Args =
-    { vars : List IO.Variable
+    { vars : List Vars.Variable
     , tipe : Type
     , result : Type
     , state : State
@@ -234,7 +234,7 @@ type alias Args =
 {-| Construct an Args value from its components: type variables, function type,
 result type, and pattern state.
 -}
-makeArgs : List IO.Variable -> Type -> Type -> State -> Args
+makeArgs : List Vars.Variable -> Type -> Type -> State -> Args
 makeArgs vars tipe result state =
     { vars = vars, tipe = tipe, result = result, state = state }
 
@@ -267,7 +267,7 @@ Tracks type variables, constraints, and type headers for both rigid (typed)
 and flexible (untyped) definitions.
 -}
 type Info
-    = Info (List IO.Variable) (List Constraint) (Dict Name (A.Located Type))
+    = Info (List Vars.Variable) (List Constraint) (Dict Name (A.Located Type))
 
 
 

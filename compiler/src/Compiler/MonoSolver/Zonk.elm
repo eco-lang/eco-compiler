@@ -9,7 +9,7 @@ empty substitution, which the A/B gate verifies against the original engine.
 
 Number/comparable residuals are stamped from the `superVars` table (solver
 truth exported by `AssignMVarIds`), never eagerly defaulted — the shared Prune
-close discharges `MVar _ CNumber → MInt` at the end (MONO_028). The internal
+close discharges `MVar _ CNumber → MInt` at the end (MONO\_028). The internal
 `subst` accumulator carries only alias parameters (the `Holey` case), matching
 `applySubstPure`'s alias handling.
 
@@ -32,32 +32,33 @@ import Compiler.AST.Intern as Intern exposing (Intern)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.Data.Id as Id
+import Compiler.Elm.ModuleName as ModuleName
+import Compiler.Type.Vars as Vars
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 
 
 {-| Classify a canonical type into a monomorphized type. `superVars` maps an
 MVarId (by `Id.toComparable`) to its super constraint; a var with `Number`
 becomes a `CNumber` residual, anything else a `CEcoValue` residual.
 -}
-canTypeToMono : Dict Int IO.SuperType -> Can.Type TypeIds.MVarId -> Mono.MonoType
+canTypeToMono : Dict Int Vars.SuperType -> Can.Type TypeIds.MVarId -> Mono.MonoType
 canTypeToMono superVars canType =
     Tuple.first (canTypeToMonoWithI superVars Dict.empty canType Intern.disabled)
 
 
 {-| `canTypeToMono` threading the K6 hash-cons table.
 -}
-canTypeToMonoI : Dict Int IO.SuperType -> Can.Type TypeIds.MVarId -> Intern -> ( Mono.MonoType, Intern )
+canTypeToMonoI : Dict Int Vars.SuperType -> Can.Type TypeIds.MVarId -> Intern -> ( Mono.MonoType, Intern )
 canTypeToMonoI superVars canType intern =
     canTypeToMonoWithI superVars Dict.empty canType intern
 
 
-canTypeToMonoWith : Dict Int IO.SuperType -> Dict Int Mono.MonoType -> Can.Type TypeIds.MVarId -> Mono.MonoType
+canTypeToMonoWith : Dict Int Vars.SuperType -> Dict Int Mono.MonoType -> Can.Type TypeIds.MVarId -> Mono.MonoType
 canTypeToMonoWith superVars subst canType =
     Tuple.first (canTypeToMonoWithI superVars subst canType Intern.disabled)
 
 
-canTypeToMonoWithI : Dict Int IO.SuperType -> Dict Int Mono.MonoType -> Can.Type TypeIds.MVarId -> Intern -> ( Mono.MonoType, Intern )
+canTypeToMonoWithI : Dict Int Vars.SuperType -> Dict Int Mono.MonoType -> Can.Type TypeIds.MVarId -> Intern -> ( Mono.MonoType, Intern )
 canTypeToMonoWithI superVars subst canType intern0 =
     case canType of
         Can.TVar mvarId ->
@@ -67,7 +68,7 @@ canTypeToMonoWithI superVars subst canType intern0 =
 
                 Nothing ->
                     case Dict.get (Id.toComparable mvarId) superVars of
-                        Just IO.Number ->
+                        Just Vars.Number ->
                             ( Mono.MVar mvarId Mono.CNumber, intern0 )
 
                         _ ->
@@ -83,7 +84,7 @@ canTypeToMonoWithI superVars subst canType intern0 =
 
                 isElmCore =
                     case canonical of
-                        IO.Canonical ( "elm", "core" ) _ ->
+                        ModuleName.Canonical ( "elm", "core" ) _ ->
                             True
 
                         _ ->
@@ -182,7 +183,7 @@ canTypeToMonoWithI superVars subst canType intern0 =
 {-| `List.map (canTypeToMonoWith …)` threading the table — same element order,
 same left-to-right conversion order.
 -}
-listToMono : Dict Int IO.SuperType -> Dict Int Mono.MonoType -> List (Can.Type TypeIds.MVarId) -> Intern -> ( List Mono.MonoType, Intern )
+listToMono : Dict Int Vars.SuperType -> Dict Int Mono.MonoType -> List (Can.Type TypeIds.MVarId) -> Intern -> ( List Mono.MonoType, Intern )
 listToMono superVars subst types intern0 =
     case types of
         [] ->
@@ -201,9 +202,9 @@ listToMono superVars subst types intern0 =
 
 {-| Collect a run of `TLambda`s into a nested one-arg-per-arrow `Mono.mFunction`,
 exactly as `TypeSubst.applySubstLambdaChain` does (a -> b -> c becomes
-`Mono.mFunction [a] (Mono.mFunction [b] c)`; GlobalOpt flattens later per GOPT_016).
+`Mono.mFunction [a] (Mono.mFunction [b] c)`; GlobalOpt flattens later per GOPT\_016).
 -}
-lambdaChain : Dict Int IO.SuperType -> Dict Int Mono.MonoType -> List (Can.Type TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Intern -> ( Mono.MonoType, Intern )
+lambdaChain : Dict Int Vars.SuperType -> Dict Int Mono.MonoType -> List (Can.Type TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Intern -> ( Mono.MonoType, Intern )
 lambdaChain superVars subst argsAcc to intern0 =
     case to of
         Can.TLambda _ from innerTo ->

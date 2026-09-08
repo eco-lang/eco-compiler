@@ -1,4 +1,7 @@
-module Compiler.GlobalOpt.Staging.Rewriter exposing (applyStagingSolution, wrapperHome)
+module Compiler.GlobalOpt.Staging.Rewriter exposing
+    ( applyStagingSolution
+    , wrapperHome
+    )
 
 {-| Applies the staging solution to rewrite the MonoGraph.
 
@@ -17,19 +20,19 @@ This module:
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.GlobalOpt.MonoReturnArity as MonoReturnArity
 import Compiler.GlobalOpt.Staging.Types exposing (ProducerId(..), ProducerInfo, Segmentation, StagingSolution)
 import Compiler.GlobalOpt.Staging.UnionFind exposing (producerIdToKey)
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Reporting.Annotation as A
 import Dict
-import System.TypeCheck.IO as IO
 import Utils.Crash exposing (crash)
 
 
 type alias RewriteCtx =
     { lambdaCounter : Int
-    , home : IO.Canonical
+    , home : ModuleName.Canonical
     , wrappersInserted : Int -- census: wrapClosureToCanonical invocations (design §9.4 retirement criterion)
     }
 
@@ -43,13 +46,13 @@ initRewriteCtx (Mono.MonoGraph record) =
 
 
 {-| The synthetic `LambdaId` home of every closure this rewriter creates.
-AbiCloning keys its blocker classification on it (LSS_009): wrapper stages
-carry the wrappee's `srcLambda` (LSS_008) but are NOT the member's code —
+AbiCloning keys its blocker classification on it (LSS\_009): wrapper stages
+carry the wrappee's `srcLambda` (LSS\_008) but are NOT the member's code —
 they must never be picked as interchangeable representatives.
 -}
-wrapperHome : IO.Canonical
+wrapperHome : ModuleName.Canonical
 wrapperHome =
-    IO.Canonical ( "eco", "internal" ) "GlobalOpt"
+    ModuleName.Canonical ( "eco", "internal" ) "GlobalOpt"
 
 
 freshLambdaId : RewriteCtx -> ( Mono.LambdaId, RewriteCtx )
@@ -541,7 +544,7 @@ wrapClosureToCanonical originalInfo originalBody originalType canonType canonica
 
 {-| Build nested closures that implement the canonical staging.
 
-Every wrapper stage propagates the wrappee's `srcLambda` (LSS_008,
+Every wrapper stage propagates the wrappee's `srcLambda` (LSS\_008,
 design §9.3): the stage types all carry the original head annotation
 (buildSegmentedFunctionType replicates it), so the wrapper stages ARE
 additional reachable instances of that member — hiding their provenance

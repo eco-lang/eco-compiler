@@ -18,12 +18,12 @@ decision trees are properly compiled.
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Compiler.Reporting.Annotation as A
 import Data.Map
 import Dict
 import Expect
-import System.TypeCheck.IO as IO
 import TestLogic.TestPipeline as Pipeline
 
 
@@ -96,7 +96,7 @@ collectNestedPatternChecks (TOpt.LocalGraph data) =
 globalToString : TOpt.Global -> String
 globalToString (TOpt.Global home name) =
     case home of
-        IO.Canonical _ moduleName ->
+        ModuleName.Canonical _ moduleName ->
             moduleName ++ "." ++ name
 
 

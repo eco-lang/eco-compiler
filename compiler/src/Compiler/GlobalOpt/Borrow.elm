@@ -1,7 +1,10 @@
 module Compiler.GlobalOpt.Borrow exposing
-    ( BorrowStats, emptyStats, run, renderStats
-    , deriveFacts
+    ( BorrowStats
     , analyzeDefForTest
+    , deriveFacts
+    , emptyStats
+    , renderStats
+    , run
     )
 
 {-| Borrow-inference driver (GlobalOpt Phase 6).
@@ -28,8 +31,8 @@ import (`Constrain` imports `Sig`; `Solve` imports `Constrain`).
 
 import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono
-import Compiler.Data.Name exposing (Name)
 import Compiler.Data.BitSet as BitSet
+import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
 import Compiler.GlobalOpt.AbiCloning as AbiCloning
 import Compiler.GlobalOpt.Borrow.Constrain as C
@@ -196,11 +199,11 @@ runCensus graph =
 of each (non-blocked) member, with the converged def SigTable and NO lambda
 routing (lambda→lambda calls conservatively poison; sound v1).
 
-LSS_024 fence (the §7.2 obligation of plans/lss-layout-qualified-members.md,
-amended BORROW_006): the representative's sig speaks for the member ONLY
+LSS\_024 fence (the §7.2 obligation of plans/lss-layout-qualified-members.md,
+amended BORROW\_006): the representative's sig speaks for the member ONLY
 when the member's instance population is fingerprint-unanimous
 (`AbiCloning.instanceFingerprint` — verbatim bodies modulo positions and
-supply numbering). Under LSS_024 id sharing, same-id instances can be
+supply numbering). Under LSS\_024 id sharing, same-id instances can be
 behaviorally DIVERGENT (the E11 class), so "stored sigs equal by
 construction" no longer holds by id identity; a divergent member's stored
 sig is instead the MEET of its per-instance sigs — params any-owned-wins,
@@ -214,6 +217,7 @@ Borrow has no byte-identity constraint — census numbers may move, and the
 for multi-instance members (the lazy discipline); single-instance members —
 the vast majority — pay nothing. Returns the sig table and the count of
 members that took the meet (censused `lambdaSigMeets`).
+
 -}
 buildLambdaSigs : SigTable -> Dict Int (List LssFacts.LambdaRef) -> ( Dict Int BorrowSig, Int )
 buildLambdaSigs table byMember =
@@ -309,6 +313,7 @@ Called at MLIR-emission time on the FINAL graph (post CafDedupe/CafHoist —
 those passes mutate the graph after GlobalOpt Phase 6, so facts derived
 inside the phase would be stale by emission). Keyed by SpecId / LSS member
 id only, so the facts carry no per-def state.
+
 -}
 deriveFacts : Mono.MonoGraph -> Facts.OracleFacts
 deriveFacts (Mono.MonoGraph { nodes }) =

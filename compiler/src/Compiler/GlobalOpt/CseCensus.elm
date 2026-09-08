@@ -23,11 +23,11 @@ Phase 0.
 import Array
 import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..))
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.GlobalOpt.CafHoist as CafHoist
 import Compiler.GlobalOpt.CsePurity as CsePurity
 import Compiler.GlobalOpt.KernelFacts as KernelFacts
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 
 
 {-| One step of a root→node path.
@@ -165,7 +165,7 @@ report label minCost ((Mono.MonoGraph g) as graph) =
 
         specName sid =
             case Array.get sid g.registry.reverseMapping |> Maybe.andThen identity of
-                Just ( Mono.Global (IO.Canonical _ moduleName) n, _ ) ->
+                Just ( Mono.Global (ModuleName.Canonical _ moduleName) n, _ ) ->
                     moduleName ++ "." ++ Name.toElmString n
 
                 Just ( Mono.Accessor f, _ ) ->

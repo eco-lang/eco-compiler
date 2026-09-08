@@ -48,9 +48,9 @@ temporary variables used during code generation.
 
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
+import Compiler.Elm.ModuleName as ModuleName
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 
 
 
@@ -106,7 +106,7 @@ fromLocalHumanReadable name =
 Encodes the module's canonical name (author, project, module path) with the value name,
 using dollar signs as separators to ensure uniqueness.
 -}
-fromGlobal : IO.Canonical -> Name.Name -> Name
+fromGlobal : ModuleName.Canonical -> Name.Name -> Name
 fromGlobal home name =
     homeToBuilder home ++ usd ++ name
 
@@ -114,15 +114,15 @@ fromGlobal home name =
 {-| Convert a globally-qualified Elm name to a human-readable JavaScript name.
 Uses dot-separated module.name format for debugging output.
 -}
-fromGlobalHumanReadable : IO.Canonical -> Name.Name -> Name
-fromGlobalHumanReadable (IO.Canonical _ moduleName) name =
+fromGlobalHumanReadable : ModuleName.Canonical -> Name.Name -> Name
+fromGlobalHumanReadable (ModuleName.Canonical _ moduleName) name =
     moduleName ++ "." ++ name
 
 
 {-| Generate a name for a cyclic definition in the module dependency graph.
 Marks the value with $cyclic$ to distinguish it from regular global names.
 -}
-fromCycle : IO.Canonical -> Name.Name -> Name
+fromCycle : ModuleName.Canonical -> Name.Name -> Name
 fromCycle home name =
     homeToBuilder home ++ "$cyclic$" ++ name
 
@@ -135,8 +135,8 @@ fromKernel home name =
     "_" ++ home ++ "_" ++ name
 
 
-homeToBuilder : IO.Canonical -> String
-homeToBuilder (IO.Canonical ( author, project ) home) =
+homeToBuilder : ModuleName.Canonical -> String
+homeToBuilder (ModuleName.Canonical ( author, project ) home) =
     usd
         ++ String.replace "-" "_" author
         ++ usd

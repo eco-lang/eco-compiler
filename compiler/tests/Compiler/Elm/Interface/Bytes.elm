@@ -18,7 +18,6 @@ import Compiler.Elm.Interface as I
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 
 
 
@@ -77,19 +76,19 @@ mkAnnotation tipe =
     Can.Forall (collectFreeVars tipe) tipe
 
 
-bytesHome : IO.Canonical
+bytesHome : ModuleName.Canonical
 bytesHome =
-    IO.Canonical Pkg.bytes "Bytes"
+    ModuleName.Canonical Pkg.bytes "Bytes"
 
 
-bytesEncodeHome : IO.Canonical
+bytesEncodeHome : ModuleName.Canonical
 bytesEncodeHome =
-    IO.Canonical Pkg.bytes "Bytes.Encode"
+    ModuleName.Canonical Pkg.bytes "Bytes.Encode"
 
 
-bytesDecodeHome : IO.Canonical
+bytesDecodeHome : ModuleName.Canonical
 bytesDecodeHome =
-    IO.Canonical Pkg.bytes "Bytes.Decode"
+    ModuleName.Canonical Pkg.bytes "Bytes.Decode"
 
 
 

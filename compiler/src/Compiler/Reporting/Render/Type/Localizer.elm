@@ -43,7 +43,6 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Doc as D
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
@@ -85,7 +84,7 @@ empty =
 {-| Converts a qualified type name to a Doc using the shortest unambiguous form
 based on the import context (bare name, aliased name, or fully qualified).
 -}
-toDoc : Localizer -> IO.Canonical -> Name -> D.Doc
+toDoc : Localizer -> ModuleName.Canonical -> Name -> D.Doc
 toDoc localizer home name =
     D.fromChars (toChars localizer home name)
 
@@ -93,8 +92,8 @@ toDoc localizer home name =
 {-| Converts a qualified type name to a String using the shortest unambiguous form
 based on the import context (bare name, aliased name, or fully qualified).
 -}
-toChars : Localizer -> IO.Canonical -> Name -> String
-toChars (Localizer localizer) ((IO.Canonical _ home) as moduleName) name =
+toChars : Localizer -> ModuleName.Canonical -> Name -> String
+toChars (Localizer localizer) ((ModuleName.Canonical _ home) as moduleName) name =
     case Dict.get home localizer of
         Nothing ->
             home ++ "." ++ name

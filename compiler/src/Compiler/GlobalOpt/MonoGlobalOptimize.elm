@@ -26,6 +26,7 @@ import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.GlobalOpt.AbiCloning as AbiCloning
 import Compiler.GlobalOpt.Borrow as Borrow
 import Compiler.GlobalOpt.MonoReturnArity as MonoReturnArity
@@ -34,7 +35,6 @@ import Compiler.Monomorphize.Closure as Closure
 import Compiler.Reporting.Annotation as A
 import Dict exposing (Dict)
 import Set exposing (Set)
-import System.TypeCheck.IO as IO
 
 
 
@@ -56,7 +56,7 @@ initGlobalCtx (Mono.MonoGraph record) =
     }
 
 
-freshLambdaId : IO.Canonical -> GlobalCtx -> ( Mono.LambdaId, GlobalCtx )
+freshLambdaId : ModuleName.Canonical -> GlobalCtx -> ( Mono.LambdaId, GlobalCtx )
 freshLambdaId home ctx =
     ( Mono.AnonymousLambda home ctx.lambdaCounter
     , { ctx | lambdaCounter = ctx.lambdaCounter + 1 }
@@ -182,7 +182,7 @@ globalOptimizeWithStats fpFence postSettle flatPeel census papFast borrowCfg gra
 -- SPEC HOME LOOKUP
 
 
-specHome : Mono.SpecializationRegistry -> Int -> IO.Canonical
+specHome : Mono.SpecializationRegistry -> Int -> ModuleName.Canonical
 specHome registry specId =
     case Array.get specId registry.reverseMapping |> Maybe.andThen identity of
         Just ( global, _ ) ->
@@ -191,10 +191,10 @@ specHome registry specId =
                     home
 
                 Mono.Accessor _ ->
-                    IO.Canonical ( "eco", "accessor" ) "Accessor"
+                    ModuleName.Canonical ( "eco", "accessor" ) "Accessor"
 
         Nothing ->
-            IO.Canonical ( "eco", "global-optimize" ) "GlobalOptimize"
+            ModuleName.Canonical ( "eco", "global-optimize" ) "GlobalOptimize"
 
 
 
@@ -301,7 +301,7 @@ If normalization info is provided and the expression is function-typed with
 non-matching segmentation, wraps it with a canonical-ABI closure.
 -}
 processBranchResult :
-    IO.Canonical
+    ModuleName.Canonical
     -> Maybe BranchNormalizationInfo
     -> Mono.MonoExpr
     -> GlobalCtx
@@ -332,7 +332,7 @@ processBranchResult home maybeNorm expr ctx =
 {-| Process a decider tree, recursing into leaves and optionally normalizing function-typed results.
 -}
 processDeciderForAbi :
-    IO.Canonical
+    ModuleName.Canonical
     -> Maybe BranchNormalizationInfo
     -> Mono.Decider Mono.MonoChoice
     -> GlobalCtx
@@ -384,7 +384,7 @@ processDeciderForAbi home normInfo dec ctx =
 {-| Process jump branches, recursing and optionally normalizing function-typed results.
 -}
 processJumpsForAbi :
-    IO.Canonical
+    ModuleName.Canonical
     -> Maybe BranchNormalizationInfo
     -> List ( Int, Mono.MonoExpr )
     -> GlobalCtx
@@ -487,7 +487,7 @@ buildNestedCallsGO region calleeExpr params =
 Used for wrapping MonoVarGlobal and MonoVarKernel in closures.
 -}
 makeAliasClosureGO :
-    IO.Canonical
+    ModuleName.Canonical
     -> Mono.MonoExpr
     -> List Mono.MonoType
     -> Mono.MonoType
@@ -531,7 +531,7 @@ makeAliasClosureGO home calleeExpr argTypes retType funcType ctx =
 Used for wrapping non-closure, non-global expressions.
 -}
 makeGeneralClosureGO :
-    IO.Canonical
+    ModuleName.Canonical
     -> Mono.MonoExpr
     -> List Mono.MonoType
     -> Mono.MonoType
@@ -576,7 +576,7 @@ This wraps bare MonoVarGlobal/MonoVarKernel in closures.
 Called during ABI normalization, BEFORE rewriteExprForAbi.
 -}
 ensureCallableForNode :
-    IO.Canonical
+    ModuleName.Canonical
     -> Mono.MonoExpr
     -> Mono.MonoType
     -> GlobalCtx
@@ -636,7 +636,7 @@ ensureCallableForNode home expr monoType ctx =
 
 
 buildAbiWrapperGO :
-    IO.Canonical
+    ModuleName.Canonical
     -> Mono.MonoType
     -> Mono.MonoExpr
     -> GlobalCtx
@@ -719,7 +719,7 @@ buildAbiWrapperGO home targetType calleeExpr ctx0 =
 -- MonoCase and MonoIf (the ABI normalization targets).
 
 
-rewriteExprForAbi : IO.Canonical -> Mono.MonoExpr -> GlobalCtx -> ( Mono.MonoExpr, GlobalCtx )
+rewriteExprForAbi : ModuleName.Canonical -> Mono.MonoExpr -> GlobalCtx -> ( Mono.MonoExpr, GlobalCtx )
 rewriteExprForAbi home expr ctx =
     case expr of
         -- ABI normalization targets - use dedicated handlers
@@ -895,7 +895,7 @@ rewriteExprForAbi home expr ctx =
             ( expr, ctx )
 
 
-rewriteDefForAbi : IO.Canonical -> Mono.MonoDef -> GlobalCtx -> ( Mono.MonoDef, GlobalCtx )
+rewriteDefForAbi : ModuleName.Canonical -> Mono.MonoDef -> GlobalCtx -> ( Mono.MonoDef, GlobalCtx )
 rewriteDefForAbi home def ctx =
     case def of
         Mono.MonoDef name bound ->
@@ -918,7 +918,7 @@ rewriteDefForAbi home def ctx =
 
 
 rewriteCaseForAbi :
-    IO.Canonical
+    ModuleName.Canonical
     -> Name
     -> Name
     -> Mono.Decider Mono.MonoChoice
@@ -956,7 +956,7 @@ rewriteCaseForAbi home scrutName scrutTypeName decider branches resultType ctx0 
 
 
 rewriteIfForAbi :
-    IO.Canonical
+    ModuleName.Canonical
     -> List ( Mono.MonoExpr, Mono.MonoExpr )
     -> Mono.MonoExpr
     -> Mono.MonoType
@@ -1056,7 +1056,7 @@ wrapTopLevelCallables (Mono.MonoGraph record0) =
 
 
 wrapNodeCallables :
-    IO.Canonical
+    ModuleName.Canonical
     -> Mono.MonoNode
     -> GlobalCtx
     -> ( Mono.MonoNode, GlobalCtx )

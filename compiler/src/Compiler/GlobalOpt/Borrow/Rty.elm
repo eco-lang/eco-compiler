@@ -1,12 +1,17 @@
 module Compiler.GlobalOpt.Borrow.Rty exposing
-    ( ResVar, RTy(..)
-    , freshRTy, zipRTy, topRes, allRes, rcManaged
+    ( RTy(..)
+    , ResVar
+    , allRes
+    , freshRTy
+    , rcManaged
+    , topRes
+    , zipRTy
     )
 
 {-| Resource-typed skeleton of a `MonoType` (borrow inference, design §7.3).
 
 Each heap position (§7.2 resource) carries one `ResVar` (dense `Int`, minted
-from 0 per def-analysis). Scalars carry none (BORROW_001). The ResVar supply
+from 0 per def-analysis). Scalars carry none (BORROW\_001). The ResVar supply
 is a bare `Int` counter threaded through `freshRTy` — NOT the `Gen` record —
 so `Rty` imports nothing from `Constrain` (breaking a `Rty → Constrain → Rty`
 cycle). The walker (`Constrain`) lifts the counter through `Gen.next`.

@@ -27,6 +27,7 @@ import Compiler.Reporting.Error.Type as TypeError
 import Compiler.Reporting.Result as Result
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.Solve as Solve
+import Compiler.Type.Vars as Vars
 import Dict
 import Expect
 import System.TypeCheck.IO as IO
@@ -115,10 +116,10 @@ runTypeCheck :
                 (NE.Nonempty TypeError.Error)
                 { annotations : Dict.Dict String (Can.Annotation Name)
                 , nodeTypes : Array.Array (Maybe (Can.Type Name))
-                , nodeVars : Array.Array (Maybe IO.Variable)
-                , annotationVars : Dict.Dict String IO.Variable
+                , nodeVars : Array.Array (Maybe Vars.Variable)
+                , annotationVars : Dict.Dict String Vars.Variable
                 , solverState :
-                    { cells : Array.Array IO.PointCell
+                    { cells : Array.Array Vars.PointCell
                     }
                 }
             )

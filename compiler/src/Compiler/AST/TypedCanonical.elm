@@ -37,9 +37,10 @@ import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.Data.Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
+import Compiler.Type.Vars as Vars
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 
 
 
@@ -58,7 +59,7 @@ type Expr_
     = TypedExpr
         { expr : Can.Expr_
         , tipe : Can.Type Name
-        , tvar : Maybe IO.Variable
+        , tvar : Maybe Vars.Variable
         }
 
 
@@ -97,7 +98,7 @@ type Decls
 {-| Internal data for a typed canonical module.
 -}
 type alias ModuleData =
-    { name : IO.Canonical
+    { name : ModuleName.Canonical
     , exports : Can.Exports
     , docs : Src.Docs
     , decls : Decls
@@ -146,7 +147,7 @@ enabling the MonoDirect monomorphizer to query types directly via the solver.
 
 -}
 type alias ExprVars =
-    Array (Maybe IO.Variable)
+    Array (Maybe Vars.Variable)
 
 
 

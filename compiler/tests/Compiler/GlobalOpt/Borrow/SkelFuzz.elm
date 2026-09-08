@@ -1,8 +1,13 @@
 module Compiler.GlobalOpt.Borrow.SkelFuzz exposing
     ( Skel(..)
-    , skelFuzzer, allSkels
-    , leafPaths, allProbes, executions, fromPaths
-    , refEndsBefore, refOnBoundary
+    , allProbes
+    , allSkels
+    , executions
+    , fromPaths
+    , leafPaths
+    , refEndsBefore
+    , refOnBoundary
+    , skelFuzzer
     , subsets
     )
 

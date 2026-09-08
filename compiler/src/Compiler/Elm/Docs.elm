@@ -60,7 +60,6 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Docs as E
 import Compiler.Reporting.Result as ReportingResult
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 import Utils.Crash exposing (crash)
@@ -653,8 +652,8 @@ checkDefs exportDict overview comments (Can.Module canData) =
             Ok (List.foldr (\( _, fn ) acc -> fn acc) (emptyModule canData.name overview) inserters)
 
 
-emptyModule : IO.Canonical -> Src.Comment -> Module
-emptyModule (IO.Canonical _ name) (Src.Comment overview) =
+emptyModule : ModuleName.Canonical -> Src.Comment -> Module
+emptyModule (ModuleName.Canonical _ name) (Src.Comment overview) =
     Module { name = name, comment = Json.fromComment overview, unions = Dict.empty, aliases = Dict.empty, values = Dict.empty, binops = Dict.empty }
 
 

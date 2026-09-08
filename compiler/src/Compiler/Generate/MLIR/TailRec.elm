@@ -33,9 +33,9 @@ import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Dict
-import Set
 import Mlir.Mlir exposing (MlirOp, MlirRegion(..), MlirType(..))
 import OrderedDict
+import Set
 import Utils.Crash exposing (crash)
 
 
@@ -580,7 +580,7 @@ splitArgPolicy ctx spec pName body =
         classes =
             List.map classify argsAt
     in
-    (not (List.isEmpty argsAt))
+    not (List.isEmpty argsAt)
         && List.all (\c -> c /= Nothing) classes
         && List.member (Just True) classes
 
@@ -645,7 +645,10 @@ scanSplitPolicyDecider ctx spec pName decider acc =
             acc
 
         Mono.Chain _ success failure ->
-            scanSplitPolicyDecider ctx spec pName failure
+            scanSplitPolicyDecider ctx
+                spec
+                pName
+                failure
                 (scanSplitPolicyDecider ctx spec pName success acc)
 
         Mono.FanOut _ edges fallback ->
@@ -1125,7 +1128,6 @@ compileBaseReturnStep ctx loopSpec expr =
         }
 
 
-
 {-| Invariant guard (kept from the 2026-07 solver self-compile bug hunt):
 crash with function/branch context when an alternative's yield operand
 types disagree with the loop state types the eco.case will declare. A
@@ -1161,6 +1163,7 @@ checkedYieldOperands loopSpec label operands =
                     ++ " but loop state declares "
                     ++ Types.mlirTypeToString exp
                 )
+
 
 
 -- ============================================================================

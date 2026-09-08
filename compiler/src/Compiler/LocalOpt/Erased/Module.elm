@@ -46,7 +46,6 @@ import Compiler.Reporting.Warning as W
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 import Utils.Crash exposing (crash)
 
 
@@ -90,7 +89,7 @@ type alias Nodes =
 -- and adding its constructors as optimized nodes.
 
 
-addUnions : IO.Canonical -> Dict Name.Name Can.Union -> Opt.LocalGraph -> Opt.LocalGraph
+addUnions : ModuleName.Canonical -> Dict Name.Name Can.Union -> Opt.LocalGraph -> Opt.LocalGraph
 addUnions home unions (Opt.LocalGraph main nodes fields) =
     Opt.LocalGraph main (Dict.foldr (\_ -> addUnion home) nodes unions) fields
 
@@ -99,7 +98,7 @@ addUnions home unions (Opt.LocalGraph main nodes fields) =
 -- Processes a single union type and adds all its constructor alternatives to the nodes dictionary.
 
 
-addUnion : IO.Canonical -> Can.Union -> Nodes -> Nodes
+addUnion : ModuleName.Canonical -> Can.Union -> Nodes -> Nodes
 addUnion home (Can.Union unionData) nodes =
     List.foldl (addCtorNode home unionData.opts) nodes unionData.alts
 
@@ -109,7 +108,7 @@ addUnion home (Can.Union unionData) nodes =
 -- The node type depends on constructor options: Normal (with arity), Unbox (newtype wrapper), or Enum.
 
 
-addCtorNode : IO.Canonical -> Can.CtorOpts -> Can.Ctor -> Nodes -> Nodes
+addCtorNode : ModuleName.Canonical -> Can.CtorOpts -> Can.Ctor -> Nodes -> Nodes
 addCtorNode home opts (Can.Ctor c) nodes =
     let
         node : Opt.Node
@@ -133,7 +132,7 @@ addCtorNode home opts (Can.Ctor c) nodes =
 -- Only record aliases generate actual code; other aliases are purely compile-time.
 
 
-addAliases : IO.Canonical -> Dict Name.Name Can.Alias -> Opt.LocalGraph -> Opt.LocalGraph
+addAliases : ModuleName.Canonical -> Dict Name.Name Can.Alias -> Opt.LocalGraph -> Opt.LocalGraph
 addAliases home aliases graph =
     Dict.foldr (addAlias home) graph aliases
 
@@ -143,7 +142,7 @@ addAliases home aliases graph =
 -- Record aliases become constructor functions that build records from their fields.
 
 
-addAlias : IO.Canonical -> Name.Name -> Can.Alias -> Opt.LocalGraph -> Opt.LocalGraph
+addAlias : ModuleName.Canonical -> Name.Name -> Can.Alias -> Opt.LocalGraph -> Opt.LocalGraph
 addAlias home name (Can.Alias _ tipe) ((Opt.LocalGraph main nodes fieldCounts) as graph) =
     case tipe of
         Can.TRecord fields Nothing ->
@@ -180,7 +179,7 @@ addRecordCtorField name _ fields =
 -- Effect managers register special $fx$ nodes and link command/subscription exports.
 
 
-addEffects : IO.Canonical -> Can.Effects -> Opt.LocalGraph -> Opt.LocalGraph
+addEffects : ModuleName.Canonical -> Can.Effects -> Opt.LocalGraph -> Opt.LocalGraph
 addEffects home effects ((Opt.LocalGraph main nodes fields) as graph) =
     case effects of
         Can.NoEffects ->
@@ -227,7 +226,7 @@ addEffects home effects ((Opt.LocalGraph main nodes fields) as graph) =
 -- Incoming ports generate decoders for JS→Elm values, outgoing ports generate encoders for Elm→JS.
 
 
-addPort : IO.Canonical -> Name.Name -> Can.Port -> Opt.LocalGraph -> Opt.LocalGraph
+addPort : ModuleName.Canonical -> Name.Name -> Can.Port -> Opt.LocalGraph -> Opt.LocalGraph
 addPort home name port_ graph =
     case port_ of
         Can.Incoming { payload } ->
@@ -277,7 +276,7 @@ mergeFieldCounts a b =
 -- mutually recursive definition groups.
 
 
-addDecls : IO.Canonical -> Annotations -> Can.Decls -> Opt.LocalGraph -> MResult i (List W.Warning) Opt.LocalGraph
+addDecls : ModuleName.Canonical -> Annotations -> Can.Decls -> Opt.LocalGraph -> MResult i (List W.Warning) Opt.LocalGraph
 addDecls home annotations decls graph =
     ReportingResult.loop (addDeclsHelp home annotations) ( decls, graph )
 
@@ -287,7 +286,7 @@ addDecls home annotations decls graph =
 -- Rejects recursive groups containing 'main' which must be a single top-level definition.
 
 
-addDeclsHelp : IO.Canonical -> Annotations -> ( Can.Decls, Opt.LocalGraph ) -> MResult i (List W.Warning) (ReportingResult.Step ( Can.Decls, Opt.LocalGraph ) Opt.LocalGraph)
+addDeclsHelp : ModuleName.Canonical -> Annotations -> ( Can.Decls, Opt.LocalGraph ) -> MResult i (List W.Warning) (ReportingResult.Step ( Can.Decls, Opt.LocalGraph ) Opt.LocalGraph)
 addDeclsHelp home annotations ( decls, graph ) =
     case decls of
         Can.Declare def subDecls ->
@@ -359,7 +358,7 @@ defToName def =
 -- Handles both regular definitions and 'main' which requires special validation.
 
 
-addDef : IO.Canonical -> Annotations -> Can.Def -> Opt.LocalGraph -> MResult i (List W.Warning) Opt.LocalGraph
+addDef : ModuleName.Canonical -> Annotations -> Can.Def -> Opt.LocalGraph -> MResult i (List W.Warning) Opt.LocalGraph
 addDef home annotations def graph =
     case def of
         Can.Def (A.At region name) args body ->
@@ -379,7 +378,7 @@ addDef home annotations def graph =
 -- The 'main' function must have a valid Platform.Program or VirtualDom.Node type.
 
 
-addDefHelp : A.Region -> Annotations -> IO.Canonical -> Name.Name -> List Can.Pattern -> Can.Expr -> Opt.LocalGraph -> MResult i w Opt.LocalGraph
+addDefHelp : A.Region -> Annotations -> ModuleName.Canonical -> Name.Name -> List Can.Pattern -> Can.Expr -> Opt.LocalGraph -> MResult i w Opt.LocalGraph
 addDefHelp region annotations home name args body ((Opt.LocalGraph _ nodes fieldCounts) as graph) =
     if name /= Name.main_ then
         ReportingResult.ok (addDefNode home region name args body EverySet.empty graph)
@@ -422,7 +421,7 @@ addDefHelp region annotations home name args body ((Opt.LocalGraph _ nodes field
 -- Functions with arguments get pattern destructuring; zero-arg definitions are plain values.
 
 
-addDefNode : IO.Canonical -> A.Region -> Name.Name -> List Can.Pattern -> Can.Expr -> EverySet String Opt.Global -> Opt.LocalGraph -> Opt.LocalGraph
+addDefNode : ModuleName.Canonical -> A.Region -> Name.Name -> List Can.Pattern -> Can.Expr -> EverySet String Opt.Global -> Opt.LocalGraph -> Opt.LocalGraph
 addDefNode home region name args body mainDeps graph =
     let
         ( deps, fields, def ) =
@@ -462,7 +461,7 @@ type State
 -- All definitions in the group are linked to a shared cycle that contains the optimized forms.
 
 
-addRecDefs : IO.Canonical -> List Can.Def -> Opt.LocalGraph -> Opt.LocalGraph
+addRecDefs : ModuleName.Canonical -> List Can.Def -> Opt.LocalGraph -> Opt.LocalGraph
 addRecDefs home defs (Opt.LocalGraph main nodes fieldCounts) =
     let
         names : List Name.Name
@@ -534,7 +533,7 @@ addValueName def names =
 -- Creates a link node pointing to the shared cycle for each definition in the group.
 
 
-addLink : IO.Canonical -> Opt.Node -> Can.Def -> Data.Map.Dict String Opt.Global Opt.Node -> Data.Map.Dict String Opt.Global Opt.Node
+addLink : ModuleName.Canonical -> Opt.Node -> Can.Def -> Data.Map.Dict String Opt.Global Opt.Node -> Data.Map.Dict String Opt.Global Opt.Node
 addLink home link def links =
     case def of
         Can.Def (A.At _ name) _ _ ->

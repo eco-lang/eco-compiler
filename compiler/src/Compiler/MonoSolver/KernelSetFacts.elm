@@ -1,51 +1,42 @@
 module Compiler.MonoSolver.KernelSetFacts exposing
-    ( ParamSetFlow(..)
-    , KernelPlan
-    , LicenseScope(..)
-    , TypeShape(..)
-    , License
-    , licenseApplies
-    , shapeOfAnnotation
-    , KernelSetFact(..)
-    , factFor
-    , licensedFiles
-    , rows
+    ( ParamSetFlow(..), KernelPlan, LicenseScope(..), TypeShape(..), License, KernelSetFact(..)
+    , factFor, licenseApplies, shapeOfAnnotation, licensedFiles, rows
     )
 
-{-| LSS_021/LSS_022 — per-kernel SET-FLOW facts (GAP-4,
+{-| LSS\_021/LSS\_022 — per-kernel SET-FLOW facts (GAP-4,
 `plans/lss-fidelity-3-signature-flow-completion.md` Phase F for the
 positional v1, `plans/kernel-parametricity-license.md` for the license
 tier).
 
 **Three tiers, strongest first.**
 
-1.  `TypeFaithful` (LSS_022, the *parametricity license*): an audit has
+1.  `TypeFaithful` (LSS\_022, the _parametricity license_): an audit has
     established that every function value entering or leaving this kernel
     flows only along the paths its Elm TYPE's variable-sharing graph
     describes, that the kernel retains nothing across the call, and that it
     introduces no function-valued inhabitants of its own. Both consumers
-    then skip the LSS_004 poison ENTIRELY and let ordinary instantiation +
+    then skip the LSS\_004 poison ENTIRELY and let ordinary instantiation +
     unification do all the transport — the shared `a`/`b`/`c` Points in
     `(a -> b -> c) -> List a -> List b -> List c` ARE the flow edges. No
     positions, so no arity rule: a partial kernel application unifies
     against however many args are present and is shape-correct by
     construction.
 
-2.  `Positional` (LSS_021, v1): a per-parameter, arity-aligned row saying
+2.  `Positional` (LSS\_021, v1): a per-parameter, arity-aligned row saying
     which functional params the kernel merely APPLIES (`PSFApplies` — their
     arrow slots need no poison), which TUNNEL to the result (`PSFTunnels`),
     and which stay OPAQUE (`PSFOpaque` — poison). Used where the license
     could not be granted for the whole surface but some positions are
     certifiable.
 
-3.  No row at all ⇒ LSS_004 full poison. That is the default for every
+3.  No row at all ⇒ LSS\_004 full poison. That is the default for every
     unaudited kernel, every arity-mismatched or early-spine boundary, and
     every REJECTED kernel below.
 
 **Why removing poison is the safe direction.** An unconstrained FunL slot
 reads back `LTop` at zonk (`Store.zonkSetSlot`'s FlexVar arm), so a licensed
 position that receives no flow still reads ⊤ — never a false empty set. The
-only hazard is a *populated-but-incomplete* set: caller knowledge flows in,
+only hazard is a _populated-but-incomplete_ set: caller knowledge flows in,
 the kernel secretly adds or reroutes an inhabitant the type does not account
 for, and a downstream singleton consumer stamps the wrong function. That is
 exactly what the §2 checklist excludes.
@@ -57,7 +48,7 @@ stands alone; this one is the set-flow axis, that one the borrow axis.
 
 Both consumers — `LssInfer.kernelCallBoundary` (inference side) and
 `Translate.poisonKernelArrowsThen` (translation side) — consult THIS module
-through the single entry point `factFor`: the LSS_006-style two-sided
+through the single entry point `factFor`: the LSS\_006-style two-sided
 discipline; the sides must never disagree about which arrows poison.
 
 
@@ -79,7 +70,7 @@ discipline; the sides must never disagree about which arrows poison.
     live; C1 is usually vacuous ("result inert").
   - `full` — arrows in the type. The whole checklist runs.
 
-**Soundness rule (unchanged from LSS_021, widened by LSS_022):** a wrong
+**Soundness rule (unchanged from LSS\_021, widened by LSS\_022):** a wrong
 license is a false-singleton miscompile — the same failure class as a wrong
 `PSFApplies`, widened to every position at once. A missing license costs only
 precision. Any checklist doubt ⇒ `Positional` or no row at all.
@@ -130,10 +121,13 @@ sharing in A's type describes where it went.
     message re-emerges at a DIFFERENT call's `update`/`onSelfMsg`.
     (`sendToApp` independently fails A3: declared `void` in
     `PlatformExports.cpp:44` against `Router msg a -> msg -> Task x ()`.)
+
   - **Refuse:** `MVar.read`/`take` — the canonical case; their result comes
     from a different call's `put`, so C1 has no incoming edge at all.
+
   - **Refuse:** effect managers, ports, TSFN/JS registration, VirtualDom's
     `static vnodeRegistry` — all the same shape.
+
   - **License:** `Scheduler.succeed`/`fail`/`andThen`/`onError` — the only
     store is into the Task THIS call returns, and the scheduler reads it back
     out of THAT SAME Task. Same rule that licenses `List.cons` and
@@ -163,7 +157,7 @@ could make either licensable.
 
 **3. Kernel-authored closure allocation reaching a type-visible position.**
 Transient PAPs built INSIDE `eco_apply_closure_eval` under
-under/over-saturation are sanctioned (they are the LSS_013-covered
+under/over-saturation are sanctioned (they are the LSS\_013-covered
 inhabitants); a kernel minting its own closure launders an identity the
 analysis has no member id for. The audited fabrication surface is wider than
 earlier drafts of the plan recorded, and a grep must cover `runtime/` too:
@@ -201,7 +195,7 @@ Named classes that follow from the above:
     :159-162. (`Scheduler::allocTask` does not exist as a member — earlier
     drafts cited it; the free `alloc::allocTask` above is the real store.)
   - **Ports and the embedding boundary.** `specializePort` poison is separate
-    LSS_004 territory; TSFN/JS registration retains callbacks off-heap.
+    LSS\_004 territory; TSFN/JS registration retains callbacks off-heap.
   - **VirtualDom and Browser, wholesale.** Not merely event handlers:
     `VirtualDom.cpp:390` holds a never-freed `static std::vector<VNodePtr>
     vnodeRegistry` and EVERY VNode-producing kernel returns a `Custom` holding
@@ -237,7 +231,7 @@ retained and the kernels are licensable on this axis under the `Inert` rule.
 
 ## Two hazards this table cannot detect by itself
 
-  - **Elm-annotation drift.** A row is a claim about the C++ *and* the type.
+  - **Elm-annotation drift.** A row is a claim about the C++ _and_ the type.
     The rot manifest hashes C++ only, so an `Inert` row whose Elm annotation
     later gains an arrow or a type variable becomes a claim nobody re-checked.
     Treat an annotation change to a licensed kernel as a re-audit trigger.
@@ -306,7 +300,7 @@ constructor, so each carries its own obligation:
     concrete `Task`-returning one). It is also the ONLY guard against
     Elm-annotation drift: the rot manifest hashes C++ and cannot see a
     signature growing an arrow, but this check can, and turns it back into
-    LSS_004 poison instead of a silent wrong claim.
+    LSS\_004 poison instead of a silent wrong claim.
 
   - **`Transports`** — real function values cross the boundary and the type's
     shared variables are the edges. Used where the kernel HAS an aliasing
@@ -333,6 +327,7 @@ and lists/tuples that bottom out in scalars) cannot; `appendable` and
 Roughly five in six licensed kernels are `Inert`, so the inference side must
 not pay a scheme instantiation for them — that would be a fixed cost on a hot
 path buying exactly nothing.
+
 -}
 type LicenseScope
     = Inert
@@ -352,6 +347,7 @@ unreadable, and kernel references are legal only inside kernel-package source,
 so the names in play are unambiguous. It costs nothing in soundness that
 matters — a same-named type from another module would still have to be an
 opaque box to the C++, which is the only property the audits rely on.
+
 -}
 type TypeShape
     = TsVar String
@@ -366,6 +362,7 @@ depends on — what the rot manifest pins. Globally-sanctioned runtime
 machinery is deliberately absent (see the module doc). An empty `files` list
 is a bug: it means the row claims an audit of nothing, and a unit test fails
 on it.
+
 -}
 type alias License =
     { scope : LicenseScope
@@ -375,7 +372,7 @@ type alias License =
 
 
 {-| May this license be applied to THIS occurrence? `False` ⇒ the consumer
-falls back to LSS_004 full poison — fail-safe, never fail-stop: a kernel used
+falls back to LSS\_004 full poison — fail-safe, never fail-stop: a kernel used
 at a type the audit never examined is simply treated as unaudited.
 -}
 licenseApplies : (id -> Bool) -> License -> Can.Type id -> Bool
@@ -412,6 +409,7 @@ inhabit. Everything reachable from an argument or from the final result is
 checked with `hasFunctionCapable`, which is deliberately blunt — ANY variable
 counts, including a phantom parameter of a nullary-constructor carrier, since
 that is precisely the case where the type cannot describe what the C++ stores.
+
 -}
 isInertType : (id -> Bool) -> Can.Type id -> Bool
 isInertType isScalarVar tipe =
@@ -485,6 +483,7 @@ kernel can be pinned equal by a test rather than kept in sync by hand — the tw
 tables live in different subsystems (`MonoSolver` and `Type`) and would
 otherwise drift silently, with the failure mode being a license that quietly
 stops applying.
+
 -}
 shapeOfAnnotation : Can.Type Name -> Maybe TypeShape
 shapeOfAnnotation tipe =
@@ -513,7 +512,6 @@ traverseShapes types =
 
         t :: rest ->
             Maybe.map2 (::) (shapeOfAnnotation t) (traverseShapes rest)
-
 
 
 {-| One-way match: is `occurrence` an instance of `shape`? A `TsVar` matches
@@ -597,7 +595,7 @@ rule (any `TVar` equals any `TVar`) makes every repeated-variable claim in a
 shape VACUOUS — `(a -> b) -> a -> ...` would accept an occurrence whose two `a`
 positions are unrelated variables, i.e. it would assert sharing while checking
 none. That was tolerable only while occurrence types were unsolved mush; with
-intrinsic annotations (TYPE_KERNEL_001) the positions ARE solved, so the
+intrinsic annotations (TYPE\_KERNEL\_001) the positions ARE solved, so the
 identity comparison is both meaningful and satisfiable. Sound in either
 direction — matching only GATES a license, it never creates sharing — but the
 strict rule is the one that makes a declared shape mean what it says.
@@ -607,7 +605,7 @@ strict-identity rule above is about `TVar` — SOLVER identity — and it does N
 transfer to arrows, which carry per-OCCURRENCE identity. This function is
 called from `matchShapeGo` with `id = MVarId` in production, where two
 occurrence types legitimately carry DIFFERENT arrow ids for the same shape.
-Anyone who "fixes" a compile error here by *comparing* the ids silently kills
+Anyone who "fixes" a compile error here by _comparing_ the ids silently kills
 the `TsVar` consistency check for every function-typed binding and un-licenses
 every `TypeFaithful` kernel row — with no test failure loud enough to say so.
 The function is already structural (destructure and recurse, never `==` on a
@@ -637,14 +635,14 @@ sameType a b =
 
 
 {-| One audited row. `Nothing` from `factFor` is the third, unrepresented
-tier: LSS_004 full poison.
+tier: LSS\_004 full poison.
 -}
 type KernelSetFact
     = TypeFaithful License
     | Positional KernelPlan
 
 
-{-| The audited fact for a kernel, or `Nothing` = unlicensed ⇒ LSS_004 full
+{-| The audited fact for a kernel, or `Nothing` = unlicensed ⇒ LSS\_004 full
 poison.
 
 Note the tiers differ in how the CONSUMER must qualify the answer.
@@ -653,6 +651,7 @@ align, so partial and over-application are handled by ordinary unification.
 `Positional` is arity-aligned and the consumer must fall back to full poison
 when the call arity (inference side) or the loaded scheme's spine
 (translation side) does not match `List.length plan.params`.
+
 -}
 factFor : Name -> Name -> Maybe KernelSetFact
 factFor home name =
@@ -2390,4 +2389,3 @@ tsList el =
 tsValue : TypeShape
 tsValue =
     TsCon "Value" []
-

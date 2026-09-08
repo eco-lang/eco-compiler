@@ -1,22 +1,7 @@
 module Compiler.MonoSolver.Store exposing
-    ( classifyDirect
-    , loadType
-    , loadTypeIsolated
-    , loadTypeWithArrows
-    , loadTypeIsolatedWithArrows
-    , LoadCtx, loadTypeC, testLoadCtx, testLoadCtxRoots
-    , arrowParts
-    , arrowSetSlot
-    , unifySlotWithSet
-    , addSlotSource
-    , resolveSlotMembers
-    , SetWriteCtx, setWriteCtx, unifySlotWithSetC, foldSetWrites, qOnFor, qShadowCensus, qInferenceCensus
-    , unifyBestEffort
-    , poisonArrowSets
-    , monoTypeToVar
-    , unifyStep
-    , zonkToMono
+    ( loadType, monoTypeToVar, unifyStep, zonkToMono
     , rezonkSettled
+    , LoadCtx, SetWriteCtx, addSlotSource, arrowParts, arrowSetSlot, classifyDirect, foldSetWrites, loadTypeC, loadTypeIsolated, loadTypeIsolatedWithArrows, loadTypeWithArrows, poisonArrowSets, qInferenceCensus, qOnFor, qShadowCensus, resolveSlotMembers, setWriteCtx, testLoadCtx, testLoadCtxRoots, unifyBestEffort, unifySlotWithSet, unifySlotWithSetC
     )
 
 {-| The solver store operations: load a canonical type into the union-find,
@@ -32,13 +17,14 @@ a concrete type resolves the whole class. This is why loading `add`'s
 `zonkToMono` reads a Point back, stamping residuals from live store content:
 `FlexSuper Number → MVar id CNumber`, other residuals → `MVar id CEcoValue`
 (the id taken from the first MVarId that minted the Point — `revMemo`). It never
-defaults numbers; the shared Prune close does that (MONO_028).
+defaults numbers; the shared Prune close does that (MONO\_028).
 
 @docs loadType, monoTypeToVar, unifyStep, zonkToMono
 @docs rezonkSettled
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Intern as Intern exposing (Intern)
 import Compiler.AST.Monomorphized as Mono
@@ -48,9 +34,9 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.MonoSolver.Engine as Engine exposing (Failure(..), Step)
 import Compiler.Type.Error as TErr
 import Compiler.Type.Type as Type
-import Compiler.Type.UnionFind as UF
 import Compiler.Type.Unify as Unify
-import Array exposing (Array)
+import Compiler.Type.UnionFind as UF
+import Compiler.Type.Vars as Vars
 import Dict
 import System.TypeCheck.IO as IO
 
@@ -71,13 +57,13 @@ order, same memo/revMemo updates), only cheaper.
 -}
 type alias LoadCtx =
     { store : IO.State
-    , memo : Dict.Dict Int IO.Variable
+    , memo : Dict.Dict Int Vars.Variable
     , revMemo : Array (Maybe TypeIds.MVarId)
     , lssOn : Bool -- mint FunL set slots (lambda-set specialization)
-    , arrowSlots : List IO.Variable -- minted set slots, REVERSED minting order
+    , arrowSlots : List Vars.Variable -- minted set slots, REVERSED minting order
     , slotsMinted : Int -- Phase 3 rider: unconstrained slot mints this load (sizes Phase 5's dead-slot population)
     , arrowIdOn : Bool -- Phase 2a: consult/record `arrowMemo` (lss.arrowIdentity). OFF -> mint a fresh slot per arrow POSITION, exactly as before.
-    , arrowMemo : Dict.Dict Int IO.Variable -- Phase 2a: `Id.toComparable arrowId` -> that arrow's SET SLOT Point. SLOT ONLY, never the FunL node — see `loadTypeC`.
+    , arrowMemo : Dict.Dict Int Vars.Variable -- Phase 2a: `Id.toComparable arrowId` -> that arrow's SET SLOT Point. SLOT ONLY, never the FunL node — see `loadTypeC`.
     , censusOn : Bool -- multi-set census (M3): mirror of `env.lss.report`. Gates `arrowOfSlot` ONLY; nothing else reads it.
     , arrowMintOn : Bool -- Phase 2a/2b: are ArrowIds meaningful at all? (`lss.enabled` — ids are minted unconditionally by AssignMVarIds, so this is really "is the census worth keeping".)
     , arrowOfSlot : Dict.Dict Int Int -- multi-set census (M3): set-slot pointKey -> ArrowId. Report-gated; recorded in BOTH arrowIdentity arms.
@@ -93,7 +79,7 @@ the seed the four `Step`-typed entry points differ on — pass an item's memo to
 model `loadType`/`loadTypeWithArrows`, `Dict.empty` to model the two isolated
 entries.
 -}
-testLoadCtx : Bool -> Bool -> Dict.Dict Int IO.Variable -> IO.State -> LoadCtx
+testLoadCtx : Bool -> Bool -> Dict.Dict Int Vars.Variable -> IO.State -> LoadCtx
 testLoadCtx lssOn arrowIdOn sharedArrowMemo store =
     { store = store
     , memo = Dict.empty
@@ -115,7 +101,7 @@ testLoadCtx lssOn arrowIdOn sharedArrowMemo store =
 table plus the scratch flag, for pinning root-keyed memoisation at the store
 level (plans/lss-solver-root-signature-identity.md §3.1 pin 1).
 -}
-testLoadCtxRoots : Dict.Dict Int Int -> Bool -> Bool -> Dict.Dict Int IO.Variable -> IO.State -> LoadCtx
+testLoadCtxRoots : Dict.Dict Int Int -> Bool -> Bool -> Dict.Dict Int Vars.Variable -> IO.State -> LoadCtx
 testLoadCtxRoots rootOf keyRoots arrowIdOn sharedArrowMemo store =
     let
         base =
@@ -248,7 +234,7 @@ writeBackIsolated c s =
         s1
 
 
-loadType : Can.Type TypeIds.MVarId -> Step IO.Variable
+loadType : Can.Type TypeIds.MVarId -> Step Vars.Variable
 loadType canType =
     \s ->
         let
@@ -260,11 +246,11 @@ loadType canType =
 
 {-| `loadType` additionally returning the minted arrow set slots in minting
 order. **This function (with its isolated sibling) DEFINES arrow ordinals**
-(LSS_006): `LssSignature.arrows` and fact application both index by position
+(LSS\_006): `LssSignature.arrows` and fact application both index by position
 in this array. Shared item memo — unit members loaded through one memo share
 annotation Points (the Σ self-reference rule).
 -}
-loadTypeWithArrows : Can.Type TypeIds.MVarId -> Step ( IO.Variable, Array IO.Variable )
+loadTypeWithArrows : Can.Type TypeIds.MVarId -> Step ( Vars.Variable, Array Vars.Variable )
 loadTypeWithArrows canType =
     \s ->
         let
@@ -278,7 +264,7 @@ loadTypeWithArrows canType =
 minting order (fresh per-call-site instantiation; see `loadTypeWithArrows`
 for the ordinal contract).
 -}
-loadTypeIsolatedWithArrows : Can.Type TypeIds.MVarId -> Step ( IO.Variable, Array IO.Variable )
+loadTypeIsolatedWithArrows : Can.Type TypeIds.MVarId -> Step ( Vars.Variable, Array Vars.Variable )
 loadTypeIsolatedWithArrows canType =
     \s ->
         let
@@ -295,7 +281,7 @@ internal write, memo-restore) with a single write: the isolated memo is threaded
 internally and discarded, and `s.memo` is never touched. Byte-identical (same
 Points minted in the same order; store + revMemo updated; memo unchanged).
 -}
-loadTypeIsolated : Can.Type TypeIds.MVarId -> Step IO.Variable
+loadTypeIsolated : Can.Type TypeIds.MVarId -> Step Vars.Variable
 loadTypeIsolated canType =
     \s ->
         let
@@ -305,7 +291,7 @@ loadTypeIsolated canType =
         Ok ( v, writeBackIsolated c s )
 
 
-loadTypeC : Dict.Dict Int IO.SuperType -> Can.Type TypeIds.MVarId -> LoadCtx -> ( IO.Variable, LoadCtx )
+loadTypeC : Dict.Dict Int Vars.SuperType -> Can.Type TypeIds.MVarId -> LoadCtx -> ( Vars.Variable, LoadCtx )
 loadTypeC superStatic canType c0 =
     case canType of
         Can.TVar mvarId ->
@@ -416,9 +402,9 @@ loadTypeC superStatic canType c0 =
                     mintFresh cIn =
                         let
                             ( pSet, cOut ) =
-                                freshVarC (IO.FlexVar Nothing) cIn
+                                freshVarC (Vars.FlexVar Nothing) cIn
                         in
-                        structC (IO.FunL pFrom pTo pSet)
+                        structC (Vars.FunL pFrom pTo pSet)
                             (noteArrow pSet { cOut | arrowSlots = pSet :: cOut.arrowSlots, slotsMinted = cOut.slotsMinted + 1 })
                 in
                 if not c2.arrowIdOn || memoKey == 0 then
@@ -431,15 +417,15 @@ loadTypeC superStatic canType c0 =
                 else
                     case Dict.get memoKey c2.arrowMemo of
                         Just pSet ->
-                            structC (IO.FunL pFrom pTo pSet)
+                            structC (Vars.FunL pFrom pTo pSet)
                                 (noteArrow pSet { c2 | arrowSlots = pSet :: c2.arrowSlots })
 
                         Nothing ->
                             let
                                 ( pSet, c3 ) =
-                                    freshVarC (IO.FlexVar Nothing) c2
+                                    freshVarC (Vars.FlexVar Nothing) c2
                             in
-                            structC (IO.FunL pFrom pTo pSet)
+                            structC (Vars.FunL pFrom pTo pSet)
                                 (noteArrow pSet
                                     { c3
                                         | arrowSlots = pSet :: c3.arrowSlots
@@ -449,14 +435,14 @@ loadTypeC superStatic canType c0 =
                                 )
 
             else
-                structC (IO.Fun1 pFrom pTo) c2
+                structC (Vars.Fun1 pFrom pTo) c2
 
         Can.TType canonical name args ->
             let
                 ( pArgs, c1 ) =
                     loadListC superStatic args c0
             in
-            structC (IO.App1 (normalizePrimHome canonical name) name pArgs) c1
+            structC (Vars.App1 (normalizePrimHome canonical name) name pArgs) c1
 
         Can.TRecord fields maybeExtension ->
             let
@@ -466,10 +452,10 @@ loadTypeC superStatic canType c0 =
                 ( pFields, c2 ) =
                     loadRecordFieldsC superStatic (Dict.toList fields) c1
             in
-            structC (IO.Record1 pFields pExt) c2
+            structC (Vars.Record1 pFields pExt) c2
 
         Can.TUnit ->
-            structC IO.Unit1 c0
+            structC Vars.Unit1 c0
 
         Can.TTuple a b rest ->
             let
@@ -482,7 +468,7 @@ loadTypeC superStatic canType c0 =
                 ( pRest, c3 ) =
                     loadListC superStatic rest c2
             in
-            structC (IO.Tuple1 pa pb pRest) c3
+            structC (Vars.Tuple1 pa pb pRest) c3
 
         Can.TAlias _ _ _ (Can.Filled inner) ->
             loadTypeC superStatic inner c0
@@ -522,7 +508,7 @@ loadTypeC superStatic canType c0 =
             ( pInner, { c3 | memo = restoredMemo } )
 
 
-freshVarC : IO.Content -> LoadCtx -> ( IO.Variable, LoadCtx )
+freshVarC : Vars.Content -> LoadCtx -> ( Vars.Variable, LoadCtx )
 freshVarC content c =
     let
         ( store1, pt ) =
@@ -531,15 +517,15 @@ freshVarC content c =
     ( pt, { c | store = store1 } )
 
 
-structC : IO.FlatType -> LoadCtx -> ( IO.Variable, LoadCtx )
+structC : Vars.FlatType -> LoadCtx -> ( Vars.Variable, LoadCtx )
 structC flat c =
-    freshVarC (IO.Structure flat) c
+    freshVarC (Vars.Structure flat) c
 
 
 {-| Load or reuse the Point for a type variable, minting from the STATIC super
 truth only (see the Step-era note; taint is consulted at zonk time, never here).
 -}
-loadVarC : Dict.Dict Int IO.SuperType -> TypeIds.MVarId -> LoadCtx -> ( IO.Variable, LoadCtx )
+loadVarC : Dict.Dict Int Vars.SuperType -> TypeIds.MVarId -> LoadCtx -> ( Vars.Variable, LoadCtx )
 loadVarC superStatic mvarId c =
     let
         key =
@@ -554,10 +540,10 @@ loadVarC superStatic mvarId c =
                 content =
                     case Dict.get key superStatic of
                         Just superType ->
-                            IO.FlexSuper superType Nothing
+                            Vars.FlexSuper superType Nothing
 
                         Nothing ->
-                            IO.FlexVar Nothing
+                            Vars.FlexVar Nothing
 
                 ( pt, c1 ) =
                     freshVarC content c
@@ -565,7 +551,7 @@ loadVarC superStatic mvarId c =
             ( pt, recordVarC key mvarId pt c1 )
 
 
-recordVarC : Int -> TypeIds.MVarId -> IO.Variable -> LoadCtx -> LoadCtx
+recordVarC : Int -> TypeIds.MVarId -> Vars.Variable -> LoadCtx -> LoadCtx
 recordVarC key mvarId pt c =
     { c
         | memo = Dict.insert key pt c.memo
@@ -597,7 +583,7 @@ revMemoSetIfAbsent pk mvarId arr =
                 Array.append arr (Array.push (Just mvarId) (Array.repeat (pk - len) Nothing))
 
 
-loadListC : Dict.Dict Int IO.SuperType -> List (Can.Type TypeIds.MVarId) -> LoadCtx -> ( List IO.Variable, LoadCtx )
+loadListC : Dict.Dict Int Vars.SuperType -> List (Can.Type TypeIds.MVarId) -> LoadCtx -> ( List Vars.Variable, LoadCtx )
 loadListC superStatic types c0 =
     case types of
         [] ->
@@ -614,17 +600,17 @@ loadListC superStatic types c0 =
             ( p :: ps, c2 )
 
 
-loadRecordExtC : Dict.Dict Int IO.SuperType -> Maybe TypeIds.MVarId -> LoadCtx -> ( IO.Variable, LoadCtx )
+loadRecordExtC : Dict.Dict Int Vars.SuperType -> Maybe TypeIds.MVarId -> LoadCtx -> ( Vars.Variable, LoadCtx )
 loadRecordExtC superStatic maybeExtension c =
     case maybeExtension of
         Just extMvarId ->
             loadVarC superStatic extMvarId c
 
         Nothing ->
-            structC IO.EmptyRecord1 c
+            structC Vars.EmptyRecord1 c
 
 
-loadRecordFieldsC : Dict.Dict Int IO.SuperType -> List ( String, Can.FieldType TypeIds.MVarId ) -> LoadCtx -> ( Dict.Dict String IO.Variable, LoadCtx )
+loadRecordFieldsC : Dict.Dict Int Vars.SuperType -> List ( String, Can.FieldType TypeIds.MVarId ) -> LoadCtx -> ( Dict.Dict String Vars.Variable, LoadCtx )
 loadRecordFieldsC superStatic fields c0 =
     List.foldl
         (\( k, Can.FieldType _ t ) ( acc, c ) ->
@@ -645,10 +631,10 @@ same type there. Without this, `Unify` (which compares App1 homes) would reject
 those benign home differences. Non-primitive (custom) elm/core types keep their
 real home, which is needed for `Mono.mCustom`.
 -}
-normalizePrimHome : IO.Canonical -> String -> IO.Canonical
+normalizePrimHome : ModuleName.Canonical -> String -> ModuleName.Canonical
 normalizePrimHome canonical name =
     case canonical of
-        IO.Canonical ( "elm", "core" ) _ ->
+        ModuleName.Canonical ( "elm", "core" ) _ ->
             case name of
                 "Int" ->
                     ModuleName.basics
@@ -680,6 +666,7 @@ normalizePrimHome canonical name =
             canonical
 
 
+
 -- ====== ENCODE: MonoType -> concrete store Point ======
 
 
@@ -695,7 +682,7 @@ A PRE-PASS rather than threaded state, deliberately: the encoder threads
 change at any of its call sites.
 
 -}
-mintVarSlots : Bool -> Mono.MonoType -> IO.State -> ( Dict.Dict Int IO.Variable, IO.State )
+mintVarSlots : Bool -> Mono.MonoType -> IO.State -> ( Dict.Dict Int Vars.Variable, IO.State )
 mintVarSlots lssOn monoType st =
     if not lssOn then
         ( Dict.empty, st )
@@ -704,7 +691,7 @@ mintVarSlots lssOn monoType st =
         collectVarSlots monoType ( Dict.empty, st )
 
 
-collectVarSlots : Mono.MonoType -> ( Dict.Dict Int IO.Variable, IO.State ) -> ( Dict.Dict Int IO.Variable, IO.State )
+collectVarSlots : Mono.MonoType -> ( Dict.Dict Int Vars.Variable, IO.State ) -> ( Dict.Dict Int Vars.Variable, IO.State )
 collectVarSlots monoType soFar =
     case monoType of
         Mono.MFunction _ anno args result ->
@@ -718,7 +705,7 @@ collectVarSlots monoType soFar =
                             else
                                 let
                                     ( pSet, st1 ) =
-                                        freshVarS (IO.FlexVar Nothing) st
+                                        freshVarS (Vars.FlexVar Nothing) st
                                 in
                                 ( Dict.insert n pSet acc, st1 )
 
@@ -748,7 +735,7 @@ collectVarSlots monoType soFar =
 structure Points but touches neither memo nor revMemo), writing `S` back once
 instead of once per node. Byte-identical (same Points minted in the same order).
 -}
-monoTypeToVar : Mono.MonoType -> Step IO.Variable
+monoTypeToVar : Mono.MonoType -> Step Vars.Variable
 monoTypeToVar monoType =
     \s ->
         let
@@ -761,7 +748,7 @@ monoTypeToVar monoType =
         Ok ( v, { s | store = store1 } )
 
 
-freshVarS : IO.Content -> IO.State -> ( IO.Variable, IO.State )
+freshVarS : Vars.Content -> IO.State -> ( Vars.Variable, IO.State )
 freshVarS content st =
     let
         ( store1, pt ) =
@@ -770,38 +757,38 @@ freshVarS content st =
     ( pt, store1 )
 
 
-structS : IO.FlatType -> IO.State -> ( IO.Variable, IO.State )
+structS : Vars.FlatType -> IO.State -> ( Vars.Variable, IO.State )
 structS flat st =
-    freshVarS (IO.Structure flat) st
+    freshVarS (Vars.Structure flat) st
 
 
-monoTypeToVarC : Bool -> Dict.Dict Int IO.Variable -> Mono.MonoType -> IO.State -> ( IO.Variable, IO.State )
+monoTypeToVarC : Bool -> Dict.Dict Int Vars.Variable -> Mono.MonoType -> IO.State -> ( Vars.Variable, IO.State )
 monoTypeToVarC lssOn varSlots monoType st =
     case monoType of
         Mono.MInt ->
-            structS (IO.App1 ModuleName.basics "Int" []) st
+            structS (Vars.App1 ModuleName.basics "Int" []) st
 
         Mono.MFloat ->
-            structS (IO.App1 ModuleName.basics "Float" []) st
+            structS (Vars.App1 ModuleName.basics "Float" []) st
 
         Mono.MBool ->
-            structS (IO.App1 ModuleName.basics "Bool" []) st
+            structS (Vars.App1 ModuleName.basics "Bool" []) st
 
         Mono.MChar ->
-            structS (IO.App1 ModuleName.char "Char" []) st
+            structS (Vars.App1 ModuleName.char "Char" []) st
 
         Mono.MString ->
-            structS (IO.App1 ModuleName.string "String" []) st
+            structS (Vars.App1 ModuleName.string "String" []) st
 
         Mono.MUnit ->
-            structS IO.Unit1 st
+            structS Vars.Unit1 st
 
         Mono.MList _ inner ->
             let
                 ( p, st1 ) =
                     monoTypeToVarC lssOn varSlots inner st
             in
-            structS (IO.App1 ModuleName.list "List" [ p ]) st1
+            structS (Vars.App1 ModuleName.list "List" [ p ]) st1
 
         Mono.MTuple _ elems ->
             case elems of
@@ -816,11 +803,11 @@ monoTypeToVarC lssOn varSlots monoType st =
                         ( pRest, st3 ) =
                             monoListToVarC lssOn varSlots rest st2
                     in
-                    structS (IO.Tuple1 pa pb pRest) st3
+                    structS (Vars.Tuple1 pa pb pRest) st3
 
                 _ ->
                     -- Degenerate tuple; encode as a fresh var rather than crash.
-                    freshVarS (IO.FlexVar Nothing) st
+                    freshVarS (Vars.FlexVar Nothing) st
 
         Mono.MRecord _ fields ->
             let
@@ -828,16 +815,16 @@ monoTypeToVarC lssOn varSlots monoType st =
                     recordFieldPointsC lssOn varSlots (Dict.toList fields) st
 
                 ( ext, st2 ) =
-                    structS IO.EmptyRecord1 st1
+                    structS Vars.EmptyRecord1 st1
             in
-            structS (IO.Record1 pFields ext) st2
+            structS (Vars.Record1 pFields ext) st2
 
         Mono.MCustom _ home name args ->
             let
                 ( pArgs, st1 ) =
                     monoListToVarC lssOn varSlots args st
             in
-            structS (IO.App1 home name pArgs) st1
+            structS (Vars.App1 home name pArgs) st1
 
         Mono.MFunction _ anno args result ->
             -- Fold args right-to-left into nested Fun1 (one arg per arrow).
@@ -892,13 +879,13 @@ monoTypeToVarC lssOn varSlots monoType st =
                                 -- Fallback only: reached when the pre-pass
                                 -- minted no slot for this variable. Fresh flex
                                 -- loses SHARING, never soundness.
-                                IO.FlexVar Nothing
+                                Vars.FlexVar Nothing
 
                             Mono.LSet members ->
                                 -- Phase 2: the LSet list IS the store
                                 -- representation — reused by pointer, no
                                 -- Dict.fromList conversion.
-                                IO.Structure (IO.LambdaSet1 (IO.LsMembers members))
+                                Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers members))
 
                             Mono.LPartial _ ->
                                 -- lss-lpartial §2/AR-P4: the store keeps
@@ -908,7 +895,7 @@ monoTypeToVarC lssOn varSlots monoType st =
                                 -- would claim completeness). Partials are
                                 -- terminal observations at the annotation
                                 -- layer.
-                                IO.FlexVar Nothing
+                                Vars.FlexVar Nothing
 
                     -- PHASE 3 (plans/lss-set-variable.md): a set VARIABLE
                     -- resolves to the ONE slot `mintVarSlots` made for it, so
@@ -939,7 +926,7 @@ monoTypeToVarC lssOn varSlots monoType st =
                             ( pSet, stA2 ) =
                                 mintSlot stA1
                         in
-                        structS (IO.FunL pa accPoint pSet) stA2
+                        structS (Vars.FunL pa accPoint pSet) stA2
                     )
                     ( pResult, st1 )
                     (List.reverse args)
@@ -951,19 +938,19 @@ monoTypeToVarC lssOn varSlots monoType st =
                             ( pa, stA1 ) =
                                 monoTypeToVarC lssOn varSlots argType stA
                         in
-                        structS (IO.Fun1 pa accPoint) stA1
+                        structS (Vars.Fun1 pa accPoint) stA1
                     )
                     ( pResult, st1 )
                     (List.reverse args)
 
         Mono.MVar _ Mono.CNumber ->
-            freshVarS (IO.FlexSuper IO.Number Nothing) st
+            freshVarS (Vars.FlexSuper Vars.Number Nothing) st
 
         Mono.MVar _ Mono.CEcoValue ->
-            freshVarS (IO.FlexVar Nothing) st
+            freshVarS (Vars.FlexVar Nothing) st
 
 
-monoListToVarC : Bool -> Dict.Dict Int IO.Variable -> List Mono.MonoType -> IO.State -> ( List IO.Variable, IO.State )
+monoListToVarC : Bool -> Dict.Dict Int Vars.Variable -> List Mono.MonoType -> IO.State -> ( List Vars.Variable, IO.State )
 monoListToVarC lssOn varSlots types st =
     case types of
         [] ->
@@ -980,7 +967,7 @@ monoListToVarC lssOn varSlots types st =
             ( p :: ps, st2 )
 
 
-recordFieldPointsC : Bool -> Dict.Dict Int IO.Variable -> List ( String, Mono.MonoType ) -> IO.State -> ( Dict.Dict String IO.Variable, IO.State )
+recordFieldPointsC : Bool -> Dict.Dict Int Vars.Variable -> List ( String, Mono.MonoType ) -> IO.State -> ( Dict.Dict String Vars.Variable, IO.State )
 recordFieldPointsC lssOn varSlots fields st =
     List.foldl
         (\( k, t ) ( acc, stA ) ->
@@ -992,6 +979,7 @@ recordFieldPointsC lssOn varSlots fields st =
         )
         ( Dict.empty, st )
         fields
+
 
 
 -- ====== UNIFY ======
@@ -1087,7 +1075,7 @@ errKind t =
             "Alias:" ++ n
 
 
-unifyStep : IO.Variable -> IO.Variable -> Step ()
+unifyStep : Vars.Variable -> Vars.Variable -> Step ()
 unifyStep v1 v2 =
     Engine.andThen
         (\answer ->
@@ -1097,7 +1085,7 @@ unifyStep v1 v2 =
 
                 Unify.AnswerErr _ t1 t2 ->
                     -- Diagnostic context: the spec being translated + flush state
-                    (\s ->
+                    \s ->
                         Engine.fail
                             (UnifyMismatch
                                 ("unify-fail "
@@ -1120,7 +1108,6 @@ unifyStep v1 v2 =
                                 )
                             )
                             s
-                    )
         )
         (Engine.liftIO (Unify.unify v1 v2))
 
@@ -1130,7 +1117,7 @@ unifyStep v1 v2 =
 simply not kept). Used by the LSS inference walk, where structural failure
 means "no set flow here", never "abort the item".
 -}
-unifyBestEffort : IO.Variable -> IO.Variable -> Step ()
+unifyBestEffort : Vars.Variable -> Vars.Variable -> Step ()
 unifyBestEffort v1 v2 s =
     case unifyStep v1 v2 s of
         Ok ( _, s1 ) ->
@@ -1148,13 +1135,13 @@ unifyBestEffort v1 v2 s =
 single dispatch point that lets param-walkers handle `Fun1` and `FunL`
 uniformly (identical Fun1 semantics when lss is off).
 -}
-arrowParts : IO.Content -> Maybe ( IO.Variable, IO.Variable )
+arrowParts : Vars.Content -> Maybe ( Vars.Variable, Vars.Variable )
 arrowParts content =
     case content of
-        IO.Structure (IO.Fun1 pParam pRest) ->
+        Vars.Structure (Vars.Fun1 pParam pRest) ->
             Just ( pParam, pRest )
 
-        IO.Structure (IO.FunL pParam pRest _) ->
+        Vars.Structure (Vars.FunL pParam pRest _) ->
             Just ( pParam, pRest )
 
         _ ->
@@ -1164,10 +1151,10 @@ arrowParts content =
 {-| The set slot of a slotted arrow's content (Nothing for `Fun1` — no slot
 to constrain — and for non-arrows).
 -}
-arrowSetSlot : IO.Content -> Maybe IO.Variable
+arrowSetSlot : Vars.Content -> Maybe Vars.Variable
 arrowSetSlot content =
     case content of
-        IO.Structure (IO.FunL _ _ slot) ->
+        Vars.Structure (Vars.FunL _ _ slot) ->
             Just slot
 
         _ ->
@@ -1189,8 +1176,9 @@ Counter mapping (§2.5): `skip` = ⊤-absorb + already-⊆; `flex` = adopt into
 an unconstrained slot (⊤-onto-flex included); `topJoin` = ⊤ onto members;
 `union` = real merge (incl. superset adoption); `slow` = the defensive arm
 ONLY. Each bump rides the S copy its arm already makes.
+
 -}
-unifySlotWithSet : Maybe Int -> List Int -> IO.Variable -> Step ()
+unifySlotWithSet : Maybe Int -> List Int -> Vars.Variable -> Step ()
 unifySlotWithSet top members slot s0 =
     -- Phase 3: one thin wrapper over the ctx-threaded engine — a single S
     -- rebuild per call, exactly as before.
@@ -1212,7 +1200,7 @@ type alias SetWriteCtx =
     , flex : Int
     , topJoin : Int
     , union : Int
-    , needSlow : List ( Maybe Int, List Int, IO.Variable )
+    , needSlow : List ( Maybe Int, List Int, Vars.Variable )
 
     -- §5.1 `Q` in shadow mode. `qOn` is `lss.report`; with it False nothing is
     -- appended and the only cost is one Bool in the ctx copy.
@@ -1238,7 +1226,7 @@ setWriteCtx qOn store =
 {-| §5.1: record one inclusion constraint against `slot`, capturing the slot's
 content BEFORE the write (see `Engine.QPre` for why the seed is load-bearing).
 -}
-noteQ : Bool -> List Int -> IO.Variable -> IO.Descriptor -> SetWriteCtx -> SetWriteCtx
+noteQ : Bool -> List Int -> Vars.Variable -> Vars.Descriptor -> SetWriteCtx -> SetWriteCtx
 noteQ top members slot desc c =
     if not c.qOn then
         c
@@ -1258,16 +1246,16 @@ noteQ top members slot desc c =
         { c | qLog = entry :: c.qLog }
 
 
-qPreOf : IO.Descriptor -> Engine.QPre
+qPreOf : Vars.Descriptor -> Engine.QPre
 qPreOf desc =
     case desc.content of
-        IO.Structure (IO.LambdaSet1 (IO.LsTop _)) ->
+        Vars.Structure (Vars.LambdaSet1 (Vars.LsTop _)) ->
             Engine.PreTop
 
-        IO.Structure (IO.LambdaSet1 (IO.LsMembers ms)) ->
+        Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers ms)) ->
             Engine.PreMembers ms
 
-        IO.Structure (IO.LambdaSet1 (IO.LsFrom ms _)) ->
+        Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom ms _)) ->
             Engine.PreMembers ms
 
         _ ->
@@ -1299,20 +1287,20 @@ foldSetWrites c s0 =
 
         s1 =
             withQ <|
-            if c.skip == 0 && c.flex == 0 && c.topJoin == 0 && c.union == 0 then
-                { s0 | store = c.store }
+                if c.skip == 0 && c.flex == 0 && c.topJoin == 0 && c.union == 0 then
+                    { s0 | store = c.store }
 
-            else
-                { s0
-                    | store = c.store
-                    , lssStats =
-                        { stats0
-                            | setWriteSkip = stats0.setWriteSkip + c.skip
-                            , setWriteFlex = stats0.setWriteFlex + c.flex
-                            , setWriteTopJoin = stats0.setWriteTopJoin + c.topJoin
-                            , setWriteUnion = stats0.setWriteUnion + c.union
-                        }
-                }
+                else
+                    { s0
+                        | store = c.store
+                        , lssStats =
+                            { stats0
+                                | setWriteSkip = stats0.setWriteSkip + c.skip
+                                , setWriteFlex = stats0.setWriteFlex + c.flex
+                                , setWriteTopJoin = stats0.setWriteTopJoin + c.topJoin
+                                , setWriteUnion = stats0.setWriteUnion + c.union
+                            }
+                    }
     in
     case c.needSlow of
         [] ->
@@ -1322,7 +1310,7 @@ foldSetWrites c s0 =
             foldSlowWrites slots s1
 
 
-foldSlowWrites : List ( Maybe Int, List Int, IO.Variable ) -> Step ()
+foldSlowWrites : List ( Maybe Int, List Int, Vars.Variable ) -> Step ()
 foldSlowWrites items s0 =
     case items of
         [] ->
@@ -1341,7 +1329,7 @@ foldSlowWrites items s0 =
 Phase 2 Step form; see that commit's doc). Total on live content; the
 defensive arm defers to the boundary via `needSlow`.
 -}
-unifySlotWithSetC : Maybe Int -> List Int -> IO.Variable -> SetWriteCtx -> SetWriteCtx
+unifySlotWithSetC : Maybe Int -> List Int -> Vars.Variable -> SetWriteCtx -> SetWriteCtx
 unifySlotWithSetC top members slot c0 =
     let
         ( store1, desc ) =
@@ -1355,35 +1343,35 @@ unifySlotWithSetC top members slot c0 =
             noteQ (top /= Nothing) members slot desc { c0 | store = store1 }
     in
     case desc.content of
-        IO.Structure (IO.LambdaSet1 (IO.LsTop _)) ->
+        Vars.Structure (Vars.LambdaSet1 (Vars.LsTop _)) ->
             -- ⊤ absorbs everything (terminal): pure skip. Kind-wise this is
             -- FIRST-⊤-WINS (no in-store priority rewrite on the hot skip
             -- arm — §4.9 records the census consequence).
             { c1 | skip = c1.skip + 1 }
 
-        IO.Structure (IO.LambdaSet1 (IO.LsMembers cur)) ->
+        Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers cur)) ->
             case top of
                 Just topK ->
                     setRootC slot desc (IO.lsTopContentK topK) { c1 | topJoin = c1.topJoin + 1 }
 
                 Nothing ->
                     case IO.classifySorted members cur of
-                        IO.SortedEqual ->
+                        Vars.SortedEqual ->
                             { c1 | skip = c1.skip + 1 }
 
-                        IO.SortedSub ->
+                        Vars.SortedSub ->
                             -- members ⊆ cur (covers members == [] too).
                             { c1 | skip = c1.skip + 1 }
 
-                        IO.SortedSuper ->
+                        Vars.SortedSuper ->
                             -- cur ⊆ members: the union IS the caller's list —
                             -- adopt it by pointer, no merge allocation.
-                            setRootC slot desc (IO.Structure (IO.LambdaSet1 (IO.LsMembers members))) { c1 | union = c1.union + 1 }
+                            setRootC slot desc (Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers members))) { c1 | union = c1.union + 1 }
 
-                        IO.SortedMixed ->
-                            setRootC slot desc (IO.Structure (IO.LambdaSet1 (IO.LsMembers (IO.unionSortedAsc members cur)))) { c1 | union = c1.union + 1 }
+                        Vars.SortedMixed ->
+                            setRootC slot desc (Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers (IO.unionSortedAsc members cur)))) { c1 | union = c1.union + 1 }
 
-        IO.Structure (IO.LambdaSet1 (IO.LsFrom cur srcs)) ->
+        Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom cur srcs)) ->
             -- LSS_023: a member write onto an edge-carrying slot unions into
             -- the members field and leaves the SOURCES untouched — LSS_013
             -- spine injection lands here unchanged. This arm is MANDATORY,
@@ -1398,16 +1386,16 @@ unifySlotWithSetC top members slot c0 =
 
                 Nothing ->
                     case IO.classifySorted members cur of
-                        IO.SortedEqual ->
+                        Vars.SortedEqual ->
                             { c1 | skip = c1.skip + 1 }
 
-                        IO.SortedSub ->
+                        Vars.SortedSub ->
                             { c1 | skip = c1.skip + 1 }
 
                         _ ->
-                            setRootC slot desc (IO.Structure (IO.LambdaSet1 (IO.LsFrom (IO.unionSortedAsc members cur) srcs))) { c1 | union = c1.union + 1 }
+                            setRootC slot desc (Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom (IO.unionSortedAsc members cur) srcs))) { c1 | union = c1.union + 1 }
 
-        IO.FlexVar _ ->
+        Vars.FlexVar _ ->
             -- The DOMINANT case (Run B: 70.1 %): LSS_006 makes loadType mint
             -- fresh arrow structure per load, so a set write almost always
             -- targets an unconstrained flex slot. Adopt the content directly;
@@ -1425,7 +1413,7 @@ unifySlotWithSetC top members slot c0 =
                             { c1 | skip = c1.skip + 1 }
 
                         _ ->
-                            setRootC slot desc (IO.Structure (IO.LambdaSet1 (IO.LsMembers members))) { c1 | flex = c1.flex + 1 }
+                            setRootC slot desc (Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers members))) { c1 | flex = c1.flex + 1 }
 
         _ ->
             -- DEFENSIVE only: unreachable by closure of the slot-content
@@ -1434,7 +1422,7 @@ unifySlotWithSetC top members slot c0 =
             { c1 | needSlow = ( top, members, slot ) :: c1.needSlow }
 
 
-setRootC : IO.Variable -> IO.Descriptor -> IO.Content -> SetWriteCtx -> SetWriteCtx
+setRootC : Vars.Variable -> Vars.Descriptor -> Vars.Content -> SetWriteCtx -> SetWriteCtx
 setRootC slot desc content c =
     let
         ( store1, () ) =
@@ -1457,7 +1445,7 @@ the solver unified are ONE σ, exactly as they are one variable in the paper.
 Comparing per raw Point would report unification itself as a divergence.
 
 **The comparison is against the RAW least solution**, not against what
-`zonkSetSlot` hands back. The reader applies policy on top — LSS_026(a)'s
+`zonkSetSlot` hands back. The reader applies policy on top — LSS\_026(a)'s
 honest-∅ widening and the `maxSetSize` cap both turn a perfectly good set into
 `⊤` at READ time. Those are consumer decisions, not the eager union's answer,
 and folding them in here would score policy as constraint-solving error.
@@ -1473,7 +1461,7 @@ unit's own signature roots. This is where the paper's `Q` lives — inference �
 and it is the arm the `REPRODUCES` gate is about. `qShadowCensus` scores the
 specialization phase instead, where ground `σ̄` legitimately re-enters.
 -}
-qInferenceCensus : List IO.Variable -> Engine.S -> Engine.S
+qInferenceCensus : List Vars.Variable -> Engine.S -> Engine.S
 qInferenceCensus roots s =
     qCensusInto True roots s
 
@@ -1488,7 +1476,7 @@ maybeList m =
             []
 
 
-qCensusInto : Bool -> List IO.Variable -> Engine.S -> Engine.S
+qCensusInto : Bool -> List Vars.Variable -> Engine.S -> Engine.S
 qCensusInto toInfer roots s =
     if not (qOnFor s) then
         s
@@ -1542,40 +1530,40 @@ qCensusInto toInfer roots s =
                             sig.qShadow
 
                     updated =
-                                        { items = prev.items + 1
-                                        , members = prev.members + acc.nMembers
-                                        , tops = prev.tops + acc.nTops
-                                        , edges = prev.edges + acc.nEdges
-                                        , classes = prev.classes + counts.classes
-                                        , agree = prev.agree + counts.agree
-                                        , divergeSuper = prev.divergeSuper + counts.divergeSuper
-                                        , divergeSub = prev.divergeSub + counts.divergeSub
-                                        , divergeTop = prev.divergeTop + counts.divergeTop
-                                        , divergeOther = prev.divergeOther + counts.divergeOther
-                                        , unresolved = prev.unresolved + counts.unresolved
-                                        , edgeClasses = prev.edgeClasses + counts.edgeClasses
-                                        , sigRoots =
-                                            prev.sigRoots
-                                                + (if List.isEmpty roots then
-                                                    0
+                        { items = prev.items + 1
+                        , members = prev.members + acc.nMembers
+                        , tops = prev.tops + acc.nTops
+                        , edges = prev.edges + acc.nEdges
+                        , classes = prev.classes + counts.classes
+                        , agree = prev.agree + counts.agree
+                        , divergeSuper = prev.divergeSuper + counts.divergeSuper
+                        , divergeSub = prev.divergeSub + counts.divergeSub
+                        , divergeTop = prev.divergeTop + counts.divergeTop
+                        , divergeOther = prev.divergeOther + counts.divergeOther
+                        , unresolved = prev.unresolved + counts.unresolved
+                        , edgeClasses = prev.edgeClasses + counts.edgeClasses
+                        , sigRoots =
+                            prev.sigRoots
+                                + (if List.isEmpty roots then
+                                    0
 
-                                                   else
-                                                    1
-                                                  )
-                                        , reaching = prev.reaching + counts.reaching
-                                        , internal = prev.internal + counts.internal
-                                        , subMerged = prev.subMerged + counts.subMerged
-                                        , subUnseen = prev.subUnseen + counts.subUnseen
-                                        , internAgree = prev.internAgree + counts.internAgree
-                                        , internDiverge = prev.internDiverge + counts.internDiverge
-                                        , divergeSamples =
-                                            if List.length prev.divergeSamples >= 40 then
-                                                prev.divergeSamples
+                                   else
+                                    1
+                                  )
+                        , reaching = prev.reaching + counts.reaching
+                        , internal = prev.internal + counts.internal
+                        , subMerged = prev.subMerged + counts.subMerged
+                        , subUnseen = prev.subUnseen + counts.subUnseen
+                        , internAgree = prev.internAgree + counts.internAgree
+                        , internDiverge = prev.internDiverge + counts.internDiverge
+                        , divergeSamples =
+                            if List.length prev.divergeSamples >= 40 then
+                                prev.divergeSamples
 
-                                            else
-                                                prev.divergeSamples ++ counts.samples
-                                        , scratchDropped = prev.scratchDropped
-                                        }
+                            else
+                                prev.divergeSamples ++ counts.samples
+                        , scratchDropped = prev.scratchDropped
+                        }
                 in
                 { s
                     | lssStats =
@@ -1594,13 +1582,14 @@ qCensusInto toInfer roots s =
 
 Walks the root type Point stashed by `Translate.demandUnifyRoot`, collecting
 every `FunL` set slot and mapping it to its `UF.repr` class key. That is the
-paper's partition criterion stated directly — *"variables not reaching the
-signature are internalized"* — and it is deliberately a REACHABILITY walk over
+paper's partition criterion stated directly — _"variables not reaching the
+signature are internalized"_ — and it is deliberately a REACHABILITY walk over
 the type, not a rank test (§5.0b built ranks, measured them, and reverted:
 the paper has one generalization boundary, so Rémy's levels have nothing to
 separate).
+
 -}
-qSigClasses : Maybe IO.Variable -> IO.State -> ( Dict.Dict Int (), IO.State )
+qSigClasses : Maybe Vars.Variable -> IO.State -> ( Dict.Dict Int (), IO.State )
 qSigClasses root store0 =
     case root of
         Nothing ->
@@ -1614,7 +1603,7 @@ qSigClasses root store0 =
             ( acc, store1 )
 
 
-qSigGo : Dict.Dict Int () -> Dict.Dict Int () -> IO.Variable -> IO.State -> ( Dict.Dict Int (), Dict.Dict Int (), IO.State )
+qSigGo : Dict.Dict Int () -> Dict.Dict Int () -> Vars.Variable -> IO.State -> ( Dict.Dict Int (), Dict.Dict Int (), IO.State )
 qSigGo seen acc v store0 =
     let
         raw =
@@ -1635,9 +1624,9 @@ qSigGo seen acc v store0 =
                 List.foldl (\x ( sn, an, stn ) -> qSigGo sn an x stn) ( seen1, acc, st ) vars
         in
         case desc.content of
-            IO.Structure flat ->
+            Vars.Structure flat ->
                 case flat of
-                    IO.FunL arg res slot ->
+                    Vars.FunL arg res slot ->
                         let
                             ( store2, reprVar ) =
                                 UF.repr slot store1
@@ -1647,32 +1636,33 @@ qSigGo seen acc v store0 =
                         in
                         List.foldl (\x ( sn, an, stn ) -> qSigGo sn an x stn) ( seen1, acc1, store2 ) [ arg, res, slot ]
 
-                    IO.Fun1 arg res ->
+                    Vars.Fun1 arg res ->
                         descend [ arg, res ] store1
 
-                    IO.App1 _ _ args ->
+                    Vars.App1 _ _ args ->
                         descend args store1
 
-                    IO.Record1 fields ext ->
+                    Vars.Record1 fields ext ->
                         descend (ext :: Dict.values fields) store1
 
-                    IO.Tuple1 a b rest ->
+                    Vars.Tuple1 a b rest ->
                         descend (a :: b :: rest) store1
 
-                    IO.EmptyRecord1 ->
+                    Vars.EmptyRecord1 ->
                         ( seen1, acc, store1 )
 
-                    IO.Unit1 ->
+                    Vars.Unit1 ->
                         ( seen1, acc, store1 )
 
-                    IO.LambdaSet1 _ ->
+                    Vars.LambdaSet1 _ ->
                         ( seen1, acc, store1 )
 
             _ ->
                 ( seen1, acc, store1 )
 
 
-{-| One σ's value in the shadow solution: Eco's `⊤` plus a member set. -}
+{-| One σ's value in the shadow solution: Eco's `⊤` plus a member set.
+-}
 type alias QAns =
     { top : Bool, members : List Int }
 
@@ -1708,7 +1698,7 @@ type alias QAcc =
     { store : IO.State
     , seedByPoint : Dict.Dict Int Engine.QPre -- RAW pointKey -> its content before its first constraint
     , reprOf : Dict.Dict Int Int -- RAW pointKey -> repr key at item end
-    , reprVar : Dict.Dict Int IO.Variable -- repr key -> that class's representative Point (there is no key -> Point inverse)
+    , reprVar : Dict.Dict Int Vars.Variable -- repr key -> that class's representative Point (there is no key -> Point inverse)
     , direct : Dict.Dict Int QAns -- repr key -> contribution of the ℓ ⋸ σ / ⊤ ⋸ σ constraints
     , edges : List ( Int, Int ) -- ( dst repr, src repr )
     , edgeDsts : Dict.Dict Int () -- repr keys that got an edge but no direct member write
@@ -1730,8 +1720,9 @@ qAcc0 store =
     { store = store, seedByPoint = Dict.empty, reprOf = Dict.empty, reprVar = Dict.empty, direct = Dict.empty, edges = [], edgeDsts = Dict.empty, nMembers = 0, nTops = 0, nEdges = 0, allMembers = Dict.empty }
 
 
-{-| Resolve a Point to its class key, remembering the mapping and its seed. -}
-qKey : IO.Variable -> Engine.QPre -> QAcc -> ( Int, QAcc )
+{-| Resolve a Point to its class key, remembering the mapping and its seed.
+-}
+qKey : Vars.Variable -> Engine.QPre -> QAcc -> ( Int, QAcc )
 qKey v pre a =
     let
         ( store1, reprVar ) =
@@ -1809,6 +1800,7 @@ Iterated to a fixpoint. The lattice is finite (flat member ids, plus ⊤) and
 every step is monotone, so it terminates; the round cap is a backstop against a
 malformed log, never a semantic limit, and hitting it can only under-report a
 member — the direction that shows up as `divergeSub`, i.e. loudly.
+
 -}
 qSolve : QAcc -> Dict.Dict Int QAns
 qSolve a =
@@ -1980,10 +1972,10 @@ qScore allMembers isInternal shadow eager c0 =
 
     else
         case IO.classifySorted shadow.members eager.members of
-            IO.SortedEqual ->
+            Vars.SortedEqual ->
                 note True { c | agree = c.agree + 1 }
 
-            IO.SortedSub ->
+            Vars.SortedSub ->
                 -- shadow ⊊ eager: Q under-records — a write path that is not
                 -- instrumented. The defect direction that matters, so it is
                 -- split by cause rather than just counted.
@@ -2000,10 +1992,10 @@ qScore allMembers isInternal shadow eager c0 =
                 else
                     note False { c | divergeSub = c.divergeSub + 1, subUnseen = c.subUnseen + 1 }
 
-            IO.SortedSuper ->
+            Vars.SortedSuper ->
                 note False { c | divergeSuper = c.divergeSuper + 1 }
 
-            IO.SortedMixed ->
+            Vars.SortedMixed ->
                 note False { c | divergeOther = c.divergeOther + 1 }
 
 
@@ -2012,7 +2004,7 @@ slot is still unconstrained (no answer to compare against), otherwise the raw
 least resolution with `LsFrom` edges pulled exactly as `zonkSetSlot` pulls
 them — minus the read-time policy, per this module's doc above.
 -}
-qEagerAt : Maybe IO.Variable -> IO.State -> ( Maybe QAns, IO.State )
+qEagerAt : Maybe Vars.Variable -> IO.State -> ( Maybe QAns, IO.State )
 qEagerAt maybeVar store =
     case maybeVar of
         Nothing ->
@@ -2022,7 +2014,7 @@ qEagerAt maybeVar store =
             qEagerGo Dict.empty v store
 
 
-qEagerGo : Dict.Dict Int () -> IO.Variable -> IO.State -> ( Maybe QAns, IO.State )
+qEagerGo : Dict.Dict Int () -> Vars.Variable -> IO.State -> ( Maybe QAns, IO.State )
 qEagerGo seen v store0 =
     let
         raw =
@@ -2040,13 +2032,13 @@ qEagerGo seen v store0 =
                 Dict.insert raw () seen
         in
         case desc.content of
-            IO.Structure (IO.LambdaSet1 (IO.LsTop _)) ->
+            Vars.Structure (Vars.LambdaSet1 (Vars.LsTop _)) ->
                 ( Just { top = True, members = [] }, store1 )
 
-            IO.Structure (IO.LambdaSet1 (IO.LsMembers ms)) ->
+            Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers ms)) ->
                 ( Just { top = False, members = ms }, store1 )
 
-            IO.Structure (IO.LambdaSet1 (IO.LsFrom ms srcs)) ->
+            Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom ms srcs)) ->
                 List.foldl
                     (\src ( accM, stAcc ) ->
                         case accM of
@@ -2071,7 +2063,7 @@ qEagerGo seen v store0 =
                 ( Nothing, store1 )
 
 
-{-| LSS_023: install a deferred inclusion "dst ⊇ src" (both FunL SET SLOTS).
+{-| LSS\_023: install a deferred inclusion "dst ⊇ src" (both FunL SET SLOTS).
 ⊤ dst absorbs (skip). Self-edge (UF-equivalent) skips. Total; never fails.
 Descriptor-preserving: `UF.set` replaces the WHOLE descriptor at the root, so
 this always writes `{ desc | content = … }`, never a fresh descriptor
@@ -2080,8 +2072,9 @@ this always writes `{ desc | content = … }`, never a fresh descriptor
 Every caller MUST be `lss.sigFlow`-gated — including the kernel-tunnel
 selector — or `LsFrom` escapes into flag-off stores and falsifies the
 Phase-A inertness gate (plan §2.2).
+
 -}
-addSlotSource : IO.Variable -> IO.Variable -> Step ()
+addSlotSource : Vars.Variable -> Vars.Variable -> Step ()
 addSlotSource src dst s0 =
     case Engine.liftIO (UF.equivalent src dst) s0 of
         Err e ->
@@ -2127,22 +2120,22 @@ addSlotSource src dst s0 =
                                         Ok ( (), Engine.bumpEdgeInstalled sM )
                         in
                         case desc.content of
-                            IO.Structure (IO.LambdaSet1 (IO.LsTop _)) ->
+                            Vars.Structure (Vars.LambdaSet1 (Vars.LsTop _)) ->
                                 -- ⊤ ⊇ everything already.
                                 Ok ( (), s2 )
 
-                            IO.FlexVar _ ->
-                                write (IO.Structure (IO.LambdaSet1 (IO.LsFrom [] [ src ]))) s2
+                            Vars.FlexVar _ ->
+                                write (Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom [] [ src ]))) s2
 
-                            IO.Structure (IO.LambdaSet1 (IO.LsMembers ms)) ->
-                                write (IO.Structure (IO.LambdaSet1 (IO.LsFrom ms [ src ]))) s2
+                            Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers ms)) ->
+                                write (Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom ms [ src ]))) s2
 
-                            IO.Structure (IO.LambdaSet1 (IO.LsFrom ms ss)) ->
+                            Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom ms ss)) ->
                                 if List.any (\p -> IO.pointKey p == IO.pointKey src) ss then
                                     Ok ( (), s2 )
 
                                 else
-                                    write (IO.Structure (IO.LambdaSet1 (IO.LsFrom ms (src :: ss)))) s2
+                                    write (Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom ms (src :: ss)))) s2
 
                             _ ->
                                 -- Defensive: fail toward ⊤, never toward skip —
@@ -2152,7 +2145,7 @@ addSlotSource src dst s0 =
                                 write IO.lsTopContent s2
 
 
-unifySlotWithSetSlow : Maybe Int -> List Int -> IO.Variable -> Step ()
+unifySlotWithSetSlow : Maybe Int -> List Int -> Vars.Variable -> Step ()
 unifySlotWithSetSlow top members slot s0 =
     let
         stats0 =
@@ -2164,12 +2157,12 @@ unifySlotWithSetSlow top members slot s0 =
         set =
             case top of
                 Just topK ->
-                    IO.LsTop topK
+                    Vars.LsTop topK
 
                 Nothing ->
-                    IO.LsMembers members
+                    Vars.LsMembers members
     in
-    case Engine.freshVar (IO.Structure (IO.LambdaSet1 set)) s1 of
+    case Engine.freshVar (Vars.Structure (Vars.LambdaSet1 set)) s1 of
         Err e ->
             Err e
 
@@ -2179,10 +2172,10 @@ unifySlotWithSetSlow top members slot s0 =
 
 {-| Poison every arrow set slot reachable in a loaded type structure: kernels
 apply closures through the generic runtime path, so any arrow crossing the
-kernel/port ABI is dynamic (LSS_004). Point-indexed `seen` set guards against
+kernel/port ABI is dynamic (LSS\_004). Point-indexed `seen` set guards against
 revisits; store structure is finite.
 -}
-poisonArrowSets : IO.Variable -> Step ()
+poisonArrowSets : Vars.Variable -> Step ()
 poisonArrowSets v0 s0 =
     -- Phase 3: ctx-threaded DFS — one ~6-field ctx copy per visited node and
     -- ONE S write-back here, where the old shape copied the full S record per
@@ -2190,7 +2183,7 @@ poisonArrowSets v0 s0 =
     foldSetWrites (poisonGoC Dict.empty [ v0 ] (setWriteCtx (qOnFor s0) s0.store)) s0
 
 
-poisonGoC : Dict.Dict Int () -> List IO.Variable -> SetWriteCtx -> SetWriteCtx
+poisonGoC : Dict.Dict Int () -> List Vars.Variable -> SetWriteCtx -> SetWriteCtx
 poisonGoC seen worklist c0 =
     case worklist of
         [] ->
@@ -2216,34 +2209,34 @@ poisonGoC seen worklist c0 =
                         { c0 | store = store1 }
                 in
                 case desc.content of
-                    IO.Structure flat ->
+                    Vars.Structure flat ->
                         case flat of
-                            IO.FunL a b slot ->
+                            Vars.FunL a b slot ->
                                 -- LSS_004 boundary poison: §4.9 tkPoison.
                                 poisonGoC seen1 (a :: b :: rest) (unifySlotWithSetC (Just Mono.tkPoison) [] slot c1)
 
-                            IO.Fun1 a b ->
+                            Vars.Fun1 a b ->
                                 poisonGoC seen1 (a :: b :: rest) c1
 
-                            IO.App1 _ _ args ->
+                            Vars.App1 _ _ args ->
                                 poisonGoC seen1 (args ++ rest) c1
 
-                            IO.Record1 fields ext ->
+                            Vars.Record1 fields ext ->
                                 poisonGoC seen1 (Dict.values fields ++ (ext :: rest)) c1
 
-                            IO.Tuple1 a b cs ->
+                            Vars.Tuple1 a b cs ->
                                 poisonGoC seen1 (a :: b :: cs ++ rest) c1
 
-                            IO.EmptyRecord1 ->
+                            Vars.EmptyRecord1 ->
                                 poisonGoC seen1 rest c1
 
-                            IO.Unit1 ->
+                            Vars.Unit1 ->
                                 poisonGoC seen1 rest c1
 
-                            IO.LambdaSet1 _ ->
+                            Vars.LambdaSet1 _ ->
                                 poisonGoC seen1 rest c1
 
-                    IO.Alias _ _ _ real ->
+                    Vars.Alias _ _ _ real ->
                         poisonGoC seen1 (real :: rest) c1
 
                     _ ->
@@ -2266,7 +2259,7 @@ type alias ZonkCtx =
     { store : IO.State
     , next : TypeIds.MVarId
     , lss : Maybe LssZonkAcc -- Just iff lss.enabled; keeps the off path lean
-    , ecoReads : List IO.Variable -- MONO_029 stale-read barrier: vars read FREE while producing a CEcoValue residual (folded into S.ecoResidualReads)
+    , ecoReads : List Vars.Variable -- MONO_029 stale-read barrier: vars read FREE while producing a CEcoValue residual (folded into S.ecoResidualReads)
     , intern : Intern -- K6: hash-cons table, carried in from S and written back once by `zonkToMono`
     , memberTable : Engine.LssMemberTable -- LSS_019: carried in from S, written back once (zonk grounding interns ground member ids)
     , nextMemberId : Int -- ditto (grounding may allocate fresh member ids)
@@ -2406,7 +2399,7 @@ type alias LssZonkAcc =
     }
 
 
-{-| LSS_026 zonk-cause census: bump one cause counter, only under report.
+{-| LSS\_026 zonk-cause census: bump one cause counter, only under report.
 -}
 bumpCauseC : (LssZonkAcc -> LssZonkAcc) -> ZonkCtx -> ZonkCtx
 bumpCauseC f c =
@@ -2422,7 +2415,7 @@ bumpCauseC f c =
             c
 
 
-zonkToMono : IO.Variable -> Step Mono.MonoType
+zonkToMono : Vars.Variable -> Step Mono.MonoType
 zonkToMono var =
     \s ->
         let
@@ -2718,7 +2711,7 @@ foldZonkStats c s =
                 }
 
 
-{-| LSS_026 census: add `n` to a key (no-op at `n == 0`, so the flag-off /
+{-| LSS\_026 census: add `n` to a key (no-op at `n == 0`, so the flag-off /
 report-off path never grows the dict).
 -}
 bumpCensusKey : String -> Int -> Dict.Dict String Int -> Dict.Dict String Int
@@ -2730,7 +2723,7 @@ bumpCensusKey key n census =
         Dict.insert key (n + Maybe.withDefault 0 (Dict.get key census)) census
 
 
-zonkToMonoC : Dict.Dict Int IO.SuperType -> Array (Maybe TypeIds.MVarId) -> IO.Variable -> ZonkCtx -> Result Failure ( Mono.MonoType, ZonkCtx )
+zonkToMonoC : Dict.Dict Int Vars.SuperType -> Array (Maybe TypeIds.MVarId) -> Vars.Variable -> ZonkCtx -> Result Failure ( Mono.MonoType, ZonkCtx )
 zonkToMonoC superTable revMemo var c0 =
     let
         ( store1, desc ) =
@@ -2740,50 +2733,50 @@ zonkToMonoC superTable revMemo var c0 =
             { c0 | store = store1 }
     in
     case desc.content of
-        IO.Structure flat ->
+        Vars.Structure flat ->
             zonkFlatC superTable revMemo flat c1
 
-        IO.Alias _ _ _ real ->
+        Vars.Alias _ _ _ real ->
             zonkToMonoC superTable revMemo real c1
 
-        IO.FlexSuper IO.Number _ ->
+        Vars.FlexSuper Vars.Number _ ->
             let
                 ( mid, c2 ) =
                     residualIdC revMemo var c1
             in
             Ok ( Mono.MVar mid Mono.CNumber, c2 )
 
-        IO.FlexSuper _ _ ->
+        Vars.FlexSuper _ _ ->
             residualWithTaintC superTable revMemo var c1
 
-        IO.FlexVar _ ->
+        Vars.FlexVar _ ->
             residualWithTaintC superTable revMemo var c1
 
-        IO.RigidVar _ ->
+        Vars.RigidVar _ ->
             residualWithTaintC superTable revMemo var c1
 
-        IO.RigidSuper IO.Number _ ->
+        Vars.RigidSuper Vars.Number _ ->
             let
                 ( mid, c2 ) =
                     residualIdC revMemo var c1
             in
             Ok ( Mono.MVar mid Mono.CNumber, c2 )
 
-        IO.RigidSuper _ _ ->
+        Vars.RigidSuper _ _ ->
             residualWithTaintC superTable revMemo var c1
 
-        IO.Error ->
+        Vars.Error ->
             Err (EngineBug "Error content encountered in zonkToMono")
 
 
-residualWithTaintC : Dict.Dict Int IO.SuperType -> Array (Maybe TypeIds.MVarId) -> IO.Variable -> ZonkCtx -> Result Failure ( Mono.MonoType, ZonkCtx )
+residualWithTaintC : Dict.Dict Int Vars.SuperType -> Array (Maybe TypeIds.MVarId) -> Vars.Variable -> ZonkCtx -> Result Failure ( Mono.MonoType, ZonkCtx )
 residualWithTaintC superTable revMemo var c0 =
     let
         ( mid, c1 ) =
             residualIdC revMemo var c0
     in
     case Dict.get (Engine.mvarIdKey mid) superTable of
-        Just IO.Number ->
+        Just Vars.Number ->
             Ok ( Mono.MVar mid Mono.CNumber, c1 )
 
         _ ->
@@ -2803,7 +2796,7 @@ residualWithTaintC superTable revMemo var c0 =
                     Ok ( Mono.MVar mid Mono.CEcoValue, c1 )
 
 
-residualIdC : Array (Maybe TypeIds.MVarId) -> IO.Variable -> ZonkCtx -> ( TypeIds.MVarId, ZonkCtx )
+residualIdC : Array (Maybe TypeIds.MVarId) -> Vars.Variable -> ZonkCtx -> ( TypeIds.MVarId, ZonkCtx )
 residualIdC revMemo var c =
     -- A2: point-indexed Array lookup (== the former `Dict.get pk`); a Nothing slot
     -- or out-of-range index means "not recorded" and mints a fresh id.
@@ -2815,10 +2808,10 @@ residualIdC revMemo var c =
             ( c.next, { c | next = Id.succ c.next } )
 
 
-zonkFlatC : Dict.Dict Int IO.SuperType -> Array (Maybe TypeIds.MVarId) -> IO.FlatType -> ZonkCtx -> Result Failure ( Mono.MonoType, ZonkCtx )
+zonkFlatC : Dict.Dict Int Vars.SuperType -> Array (Maybe TypeIds.MVarId) -> Vars.FlatType -> ZonkCtx -> Result Failure ( Mono.MonoType, ZonkCtx )
 zonkFlatC superTable revMemo flat c0 =
     case flat of
-        IO.App1 canonical name args ->
+        Vars.App1 canonical name args ->
             case zonkListC superTable revMemo args c0 of
                 Err e ->
                     Err e
@@ -2826,7 +2819,7 @@ zonkFlatC superTable revMemo flat c0 =
                 Ok ( mArgs, c1 ) ->
                     Ok (classifyAppC canonical name mArgs c1)
 
-        IO.Fun1 a b ->
+        Vars.Fun1 a b ->
             case zonkToMonoC superTable revMemo a c0 of
                 Err e ->
                     Err e
@@ -2839,7 +2832,7 @@ zonkFlatC superTable revMemo flat c0 =
                         Ok ( mb, c2 ) ->
                             Ok (consC (Mono.mFunction Mono.topDeclStoreC [ ma ] mb) c2)
 
-        IO.FunL a b setVar ->
+        Vars.FunL a b setVar ->
             case zonkToMonoC superTable revMemo a c0 of
                 Err e ->
                     Err e
@@ -2856,15 +2849,15 @@ zonkFlatC superTable revMemo flat c0 =
                             in
                             Ok (consC (Mono.mFunction anno [ ma ] mb) c3)
 
-        IO.LambdaSet1 _ ->
+        Vars.LambdaSet1 _ ->
             -- LSS_007: a LambdaSet1 only ever lives inside a FunL set slot,
             -- which is consumed by the FunL arm — reaching here is a bug.
             Err (EngineBug "LambdaSet1 outside an arrow slot in zonkFlatC")
 
-        IO.EmptyRecord1 ->
+        Vars.EmptyRecord1 ->
             Ok (consC (Mono.mRecord Dict.empty) c0)
 
-        IO.Record1 fields ext ->
+        Vars.Record1 fields ext ->
             case zonkRecordExtC superTable revMemo ext c0 of
                 Err e ->
                     Err e
@@ -2872,10 +2865,10 @@ zonkFlatC superTable revMemo flat c0 =
                 Ok ( baseFields, c1 ) ->
                     zonkRecordFieldsC superTable revMemo (Dict.toList fields) baseFields c1
 
-        IO.Unit1 ->
+        Vars.Unit1 ->
             Ok ( Mono.MUnit, c0 )
 
-        IO.Tuple1 a b rest ->
+        Vars.Tuple1 a b rest ->
             case zonkToMonoC superTable revMemo a c0 of
                 Err e ->
                     Err e
@@ -2909,7 +2902,7 @@ type's structure — so two structurally identical types number identically, and
 sharing pattern key together.
 
 -}
-varNumberFor : IO.Variable -> ZonkCtx -> ( Int, ZonkCtx )
+varNumberFor : Vars.Variable -> ZonkCtx -> ( Int, ZonkCtx )
 varNumberFor setVar c =
     let
         ( store1, reprVar ) =
@@ -2927,6 +2920,7 @@ varNumberFor setVar c =
             , { c | store = store1, varOf = Dict.insert key c.nextVar c.varOf, nextVar = c.nextVar + 1 }
             )
 
+
 {-| Multi-set census (M3): record a `|set| >= 2` readback against the ARROW that
 minted this slot, so the report can count distinct arrow POSITIONS rather than
 readbacks (plan §2.5.5 — `sizeHist` cannot tell 518 distinct 6-member arrows
@@ -2936,8 +2930,9 @@ Report-gated at both ends: the map is empty unless `lss.report`, so an unknown
 slot is simply not recorded. Merging is a UNION across readbacks of the same
 arrow — one polymorphic def specialized twice reads the same syntactic arrow
 twice, and the ARROW is the position being counted.
+
 -}
-noteMultiSet : IO.Variable -> List Int -> ZonkCtx -> ZonkCtx
+noteMultiSet : Vars.Variable -> List Int -> ZonkCtx -> ZonkCtx
 noteMultiSet setVar members c =
     case c.lss of
         Just acc ->
@@ -2998,7 +2993,7 @@ one global graph would resolve and Eco's per-item store cannot, while
 reaches it.
 
 -}
-noteArrowClass : Bool -> IO.Variable -> ZonkCtx -> ZonkCtx
+noteArrowClass : Bool -> Vars.Variable -> ZonkCtx -> ZonkCtx
 noteArrowClass resolved setVar c =
     case c.lss of
         Just acc ->
@@ -3039,7 +3034,8 @@ noteArrowClass resolved setVar c =
             c
 
 
-{-| Ascending union of two ascending, deduplicated member lists. -}
+{-| Ascending union of two ascending, deduplicated member lists.
+-}
 unionSortedMembers : List Int -> List Int -> List Int
 unionSortedMembers xs ys =
     case ( xs, ys ) of
@@ -3060,30 +3056,29 @@ unionSortedMembers xs ys =
                 y :: unionSortedMembers xs yr
 
 
-
 {-| Read a set slot back to an annotation. THE only producer of `LSet`. Runs
-at item quiescence (zonk is the commit point — MONO_028 discipline), so a set
+at item quiescence (zonk is the commit point — MONO\_028 discipline), so a set
 is read only after every unification the item will ever do. `paramT`/`resultT`
 are the already-zonked param/result of the arrow whose slot this is — the
-demanded instantiation LSS_019's grounding keys on. Policy:
+demanded instantiation LSS\_019's grounding keys on. Policy:
 
   - unresolved slot (FlexVar) -> LTop (unknown, NOT empty — an empty claim
     would license consumers to treat the arrow as dead)
   - LsTop -> LTop (widened / kernel-facing)
   - LsMembers members -> under `lss.groundStandalones`, provisional `g|`/`c|`
     members first ground to `g|<global>|<widened-arrow-typeKey>` when the
-    arrow is residual-free (LSS_019; deferral keeps the provisional id) —
+    arrow is residual-free (LSS\_019; deferral keeps the provisional id) —
     then LSet members, the store list by pointer (ascending by construction),
     unless |members| > maxSetSize -> LTop (counted in widenedBySize +
     widenedSizeHist; the cap applies to the REWRITTEN list — plan §3.2.3)
 
 Ground ids written back into slots by a demand encode (`monoTypeToVarC`)
 pass through the rewrite untouched (not in `provisionalStandalone`), so
-zonk∘encode∘zonk is idempotent — the stability LSS_010's finite-lattice
+zonk∘encode∘zonk is idempotent — the stability LSS\_010's finite-lattice
 argument needs.
 
 -}
-zonkSetSlot : Mono.MonoType -> Mono.MonoType -> IO.Variable -> ZonkCtx -> ( Mono.LambdaSetAnno, ZonkCtx )
+zonkSetSlot : Mono.MonoType -> Mono.MonoType -> Vars.Variable -> ZonkCtx -> ( Mono.LambdaSetAnno, ZonkCtx )
 zonkSetSlot paramT resultT setVar c0 =
     let
         ( store1, desc ) =
@@ -3093,13 +3088,13 @@ zonkSetSlot paramT resultT setVar c0 =
             { c0 | store = store1 }
     in
     case desc.content of
-        IO.Structure (IO.LambdaSet1 (IO.LsTop tpK)) ->
+        Vars.Structure (Vars.LambdaSet1 (Vars.LsTop tpK)) ->
             -- §4.9: the stored ⊤'s birth kind rides out to the Mono anno
             -- (the `causePoison` counter name is historical — it counts
             -- explicit-⊤ readbacks of every kind).
             ( Mono.topOfKind tpK, bumpCauseC (\a -> { a | causePoison = a.causePoison + 1 }) (bumpZonkAcc Nothing c1) )
 
-        IO.Structure (IO.LambdaSet1 (IO.LsMembers members0)) ->
+        Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers members0)) ->
             case c1.lss of
                 Just acc0 ->
                     let
@@ -3127,7 +3122,7 @@ zonkSetSlot paramT resultT setVar c0 =
                     -- direct zonkToMonoC caller): sound fallback.
                     ( Mono.topEdge, c1 )
 
-        IO.Structure (IO.LambdaSet1 (IO.LsFrom members0 srcs)) ->
+        Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom members0 srcs)) ->
             -- LSS_023 pull-at-read: resolve the reachable edge graph NOW and
             -- read the least fixpoint. Do NOT write the resolved value back —
             -- later reads must re-pull (sources may have grown; collapsing
@@ -3159,7 +3154,8 @@ zonkSetSlot paramT resultT setVar c0 =
                                     varNumberFor setVar c2
                             in
                             ( Mono.LVar vn
-                            , noteArrowClass False setVar
+                            , noteArrowClass False
+                                setVar
                                 (bumpCauseC (\a -> { a | causeEdgeEmpty = a.causeEdgeEmpty + 1, causeUnknown = a.causeUnknown + 1 })
                                     (bumpZonkAcc Nothing c2v)
                                 )
@@ -3203,20 +3199,21 @@ zonkSetSlot paramT resultT setVar c0 =
                     varNumberFor setVar c1
             in
             ( Mono.LVar vn
-            , noteArrowClass False setVar
+            , noteArrowClass False
+                setVar
                 (bumpCauseC (\a -> { a | causeFlex = a.causeFlex + 1, causeUnknown = a.causeUnknown + 1 })
                     (bumpZonkAcc Nothing c1v)
                 )
             )
 
 
-{-| LSS_023 + LSS_026: DFS over a slot's deferred-edge graph, returning the
+{-| LSS\_023 + LSS\_026: DFS over a slot's deferred-edge graph, returning the
 least fixpoint of the inclusion system — `Nothing` when a reachable node is
 ⊤ (absorbing, short-circuits), else `Just` the ascending union of every
 reachable node's members.
 
-LSS_026(a) — the honest-sources rule. A reached source that is still an
-unconstrained `FlexVar` contributes no members, and PRE-LSS_026 that was
+LSS\_026(a) — the honest-sources rule. A reached source that is still an
+unconstrained `FlexVar` contributes no members, and PRE-LSS\_026 that was
 read as exact ("the caller's other edges and members still count"). It is
 exact only under write-completeness of every inflow to that source, which
 the A.1 arg-load leak violates by construction: an unconnected instantiation
@@ -3241,8 +3238,9 @@ Discipline (each clause is load-bearing — see the plan §3.1):
     at that node; ⊤ absorbs);
   - defensive content is treated as ⊤, never as empty — dropping a source's
     contribution under-approximates, the miscompile direction.
+
 -}
-resolveSlotMembers : List Int -> List IO.Variable -> ZonkCtx -> ( Maybe (List Int), ZonkCtx )
+resolveSlotMembers : List Int -> List Vars.Variable -> ZonkCtx -> ( Maybe (List Int), ZonkCtx )
 resolveSlotMembers members0 srcs c0 =
     case resolveSources srcs [] False (Just members0) c0 of
         ( Nothing, _, c1 ) ->
@@ -3271,7 +3269,7 @@ resolveSlotMembers members0 srcs c0 =
                 ( Just ms, c1 )
 
 
-{-| LSS_026(a): is the honest-sources policy live? `zonkToMono` seeds it True
+{-| LSS\_026(a): is the honest-sources policy live? `zonkToMono` seeds it True
 unconditionally (`ZonkCtx` has no `S`, hence the field rather than a direct
 read); only the store-level pins ever seed it False, to assert the shape the
 rule exists to reject.
@@ -3286,9 +3284,9 @@ honestSourcesOn c =
             False
 
 
-{-| LSS_026 census (plan §2.1 row 2, demand side): count a mixed resolution
+{-| LSS\_026 census (plan §2.1 row 2, demand side): count a mixed resolution
 and the coarsest member class it carries — `gc` members are the ones that
-GROUND (LSS_019) and are consumable by LSS_025/E9.1 devirt, so they are the
+GROUND (LSS\_019) and are consumable by LSS\_025/E9.1 devirt, so they are the
 escalation gate. Counters ride the zonk accumulator and fold into
 `sigStats` at `zonkToMono`'s exit.
 -}
@@ -3314,7 +3312,7 @@ bumpMixedFlexDemand members c =
             c
 
 
-resolveSources : List IO.Variable -> List Int -> Bool -> Maybe (List Int) -> ZonkCtx -> ( Maybe (List Int), Bool, ZonkCtx )
+resolveSources : List Vars.Variable -> List Int -> Bool -> Maybe (List Int) -> ZonkCtx -> ( Maybe (List Int), Bool, ZonkCtx )
 resolveSources pending visited sawFlex acc c0 =
     case ( pending, acc ) of
         ( _, Nothing ) ->
@@ -3343,16 +3341,16 @@ resolveSources pending visited sawFlex acc c0 =
                         key :: visited
                 in
                 case desc.content of
-                    IO.Structure (IO.LambdaSet1 (IO.LsTop _)) ->
+                    Vars.Structure (Vars.LambdaSet1 (Vars.LsTop _)) ->
                         ( Nothing, sawFlex, c1 )
 
-                    IO.Structure (IO.LambdaSet1 (IO.LsMembers ms)) ->
+                    Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers ms)) ->
                         resolveSources rest visited1 sawFlex (Just (IO.unionSortedAsc accMembers ms)) c1
 
-                    IO.Structure (IO.LambdaSet1 (IO.LsFrom ms ss)) ->
+                    Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom ms ss)) ->
                         resolveSources (ss ++ rest) visited1 sawFlex (Just (IO.unionSortedAsc accMembers ms)) c1
 
-                    IO.FlexVar _ ->
+                    Vars.FlexVar _ ->
                         -- LSS_026(a): an unconstrained source contributes no
                         -- members NOW, but it is an UNTRACKED inflow — the
                         -- pre-LSS_026 reading of this as exact holds only
@@ -3366,7 +3364,7 @@ resolveSources pending visited sawFlex acc c0 =
                         ( Nothing, sawFlex, c1 )
 
 
-{-| LSS_019: run the grounding rewrite against the ctx-threaded member table,
+{-| LSS\_019: run the grounding rewrite against the ctx-threaded member table,
 folding the census riders into the accumulator. The no-event fast path
 returns the ctx UNCHANGED (no copy).
 -}
@@ -3428,7 +3426,7 @@ bumpZonkAcc maybeSize c =
                     { c | lss = Just { acc | zonked = acc.zonked + 1, hist = Dict.insert size (1 + Maybe.withDefault 0 (Dict.get size acc.hist)) acc.hist } }
 
 
-zonkListC : Dict.Dict Int IO.SuperType -> Array (Maybe TypeIds.MVarId) -> List IO.Variable -> ZonkCtx -> Result Failure ( List Mono.MonoType, ZonkCtx )
+zonkListC : Dict.Dict Int Vars.SuperType -> Array (Maybe TypeIds.MVarId) -> List Vars.Variable -> ZonkCtx -> Result Failure ( List Mono.MonoType, ZonkCtx )
 zonkListC superTable revMemo vars c0 =
     case vars of
         [] ->
@@ -3448,7 +3446,7 @@ zonkListC superTable revMemo vars c0 =
                             Ok ( m :: ms, c2 )
 
 
-zonkRecordFieldsC : Dict.Dict Int IO.SuperType -> Array (Maybe TypeIds.MVarId) -> List ( String, IO.Variable ) -> Dict.Dict String Mono.MonoType -> ZonkCtx -> Result Failure ( Mono.MonoType, ZonkCtx )
+zonkRecordFieldsC : Dict.Dict Int Vars.SuperType -> Array (Maybe TypeIds.MVarId) -> List ( String, Vars.Variable ) -> Dict.Dict String Mono.MonoType -> ZonkCtx -> Result Failure ( Mono.MonoType, ZonkCtx )
 zonkRecordFieldsC superTable revMemo fields base c0 =
     case fields of
         [] ->
@@ -3463,8 +3461,9 @@ zonkRecordFieldsC superTable revMemo fields base c0 =
                     zonkRecordFieldsC superTable revMemo rest (Dict.insert k v base) c1
 
 
-{-| Extract the base-field dict from a record extension tail. -}
-zonkRecordExtC : Dict.Dict Int IO.SuperType -> Array (Maybe TypeIds.MVarId) -> IO.Variable -> ZonkCtx -> Result Failure ( Dict.Dict String Mono.MonoType, ZonkCtx )
+{-| Extract the base-field dict from a record extension tail.
+-}
+zonkRecordExtC : Dict.Dict Int Vars.SuperType -> Array (Maybe TypeIds.MVarId) -> Vars.Variable -> ZonkCtx -> Result Failure ( Dict.Dict String Mono.MonoType, ZonkCtx )
 zonkRecordExtC superTable revMemo ext c0 =
     case zonkToMonoC superTable revMemo ext c0 of
         Err e ->
@@ -3484,17 +3483,17 @@ zonkRecordExtC superTable revMemo ext c0 =
 through `Intern.hashCons` untouched, so this costs one branch on the primitive
 arms.
 -}
-classifyAppC : IO.Canonical -> String -> List Mono.MonoType -> ZonkCtx -> ( Mono.MonoType, ZonkCtx )
+classifyAppC : ModuleName.Canonical -> String -> List Mono.MonoType -> ZonkCtx -> ( Mono.MonoType, ZonkCtx )
 classifyAppC canonical name args c =
     consC (classifyApp canonical name args) c
 
 
-classifyApp : IO.Canonical -> String -> List Mono.MonoType -> Mono.MonoType
+classifyApp : ModuleName.Canonical -> String -> List Mono.MonoType -> Mono.MonoType
 classifyApp canonical name args =
     let
         isElmCore =
             case canonical of
-                IO.Canonical ( "elm", "core" ) _ ->
+                ModuleName.Canonical ( "elm", "core" ) _ ->
                     True
 
                 _ ->
@@ -3532,12 +3531,10 @@ classifyApp canonical name args =
         Mono.mCustom canonical name args
 
 
+
 -- residual classification (taint + id allocation) now lives in the
 -- bundle-threaded `residualWithTaintC`/`residualIdC` above (M6.0-b); the
 -- `M1 classifyDirect` miss path uses `residualForVar` directly.
-
-
-
 -- ====== CLASSIFY DIRECT: Can.Type -> MonoType without minting store structure ======
 
 
@@ -3562,6 +3559,7 @@ store use changes only the internal Point index (never reflected in the output
 MonoType), and cannot affect the Number-taint harvest (a classify-only var never
 unifies, so it can only ever carry its static super, which `superTable` already
 holds from `initState`).
+
 -}
 classifyDirect : Int -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
 classifyDirect topKind canType s =
@@ -3759,7 +3757,7 @@ identically for these vars, one `superTable` lookup reproduces both branches.
 residualForVar : TypeIds.MVarId -> Engine.S -> Mono.MonoType
 residualForVar mvarId s =
     case Dict.get (Engine.mvarIdKey mvarId) s.superTable of
-        Just IO.Number ->
+        Just Vars.Number ->
             Mono.MVar mvarId Mono.CNumber
 
         _ ->

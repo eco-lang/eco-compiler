@@ -95,7 +95,6 @@ import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
 import Result.Extra
 import System.IO exposing (FilePath, MVar)
-import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -269,7 +268,7 @@ type Extras
 {-| Type interfaces for all dependency modules, indexed by canonical module name.
 -}
 type alias Interfaces =
-    EveryDict.Dict String TypeCheck.Canonical I.DependencyInterface
+    EveryDict.Dict String ModuleName.Canonical I.DependencyInterface
 
 
 
@@ -875,7 +874,7 @@ addInterfaces directDeps pkg (Artifacts ifaces _) dependencyInterfaces =
     EveryDict.union
         dependencyInterfaces
         (EveryDict.fromList ModuleName.toComparableCanonical
-            (List.map (Tuple.mapFirst (TypeCheck.Canonical pkg))
+            (List.map (Tuple.mapFirst (ModuleName.Canonical pkg))
                 (Dict.toList
                     (if Dict.member pkg directDeps then
                         ifaces

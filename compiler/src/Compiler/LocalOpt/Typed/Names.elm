@@ -60,10 +60,10 @@ import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
+import Compiler.Type.Vars as Vars
 import Control.Loop exposing (Step(..))
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 import Utils.Crash exposing (crash)
 
 
@@ -170,7 +170,7 @@ Creates a VarGlobal expression referencing the function/value and adds it to the
 dependency set so the code generator knows to import it.
 
 -}
-registerGlobal : A.Region -> IO.Canonical -> Name -> Can.Type Name -> Maybe IO.Variable -> Tracker (TOpt.Expr Name)
+registerGlobal : A.Region -> ModuleName.Canonical -> Name -> Can.Type Name -> Maybe Vars.Variable -> Tracker (TOpt.Expr Name)
 registerGlobal region home name itype tvar =
     Tracker <|
         \uid deps fields locals ->
@@ -188,7 +188,7 @@ Debug functions are special-cased to support conditional compilation and removal
 in production builds. The home module is tracked for context.
 
 -}
-registerDebug : Name -> IO.Canonical -> A.Region -> Can.Type Name -> Maybe IO.Variable -> Tracker (TOpt.Expr Name)
+registerDebug : Name -> ModuleName.Canonical -> A.Region -> Can.Type Name -> Maybe Vars.Variable -> Tracker (TOpt.Expr Name)
 registerDebug name home region itype tvar =
     Tracker <|
         \uid deps fields locals ->
@@ -209,7 +209,7 @@ Handles three cases based on constructor options:
   - Unbox: Single-argument constructor, returns VarBox and registers identity dependency
 
 -}
-registerCtor : A.Region -> IO.Canonical -> A.Located Name -> Index.ZeroBased -> Can.CtorOpts -> Can.Type Name -> Maybe IO.Variable -> Tracker (TOpt.Expr Name)
+registerCtor : A.Region -> ModuleName.Canonical -> A.Located Name -> Index.ZeroBased -> Can.CtorOpts -> Can.Type Name -> Maybe Vars.Variable -> Tracker (TOpt.Expr Name)
 registerCtor region home (A.At _ name) index opts itype tvar =
     Tracker <|
         \uid deps fields locals ->

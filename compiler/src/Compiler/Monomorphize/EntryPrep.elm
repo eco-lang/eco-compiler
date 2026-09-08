@@ -1,9 +1,4 @@
-module Compiler.Monomorphize.EntryPrep exposing
-    ( flagsDecoderName
-    , insertFlagsDecoderNode
-    , findEntryPointId
-    , findNodeAnnotationType
-    )
+module Compiler.Monomorphize.EntryPrep exposing (flagsDecoderName, insertFlagsDecoderNode, findEntryPointId, findNodeAnnotationType)
 
 {-| Engine-agnostic monomorphization input preparation, shared by the two
 monomorphizer drivers (`Compiler.Monomorphize.Monomorphize` and
@@ -26,7 +21,6 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.LocalOpt.Typed.Names as Names
 import Compiler.LocalOpt.Typed.Port as Port
 import Data.Map as DMap
-import System.TypeCheck.IO as IO
 
 
 {-| The synthetic Global holding the root program's flags decoder. The `$`
@@ -50,7 +44,7 @@ entry's home module. Non-Program entries (test value mains) get none.
 insertFlagsDecoderNode : Name -> TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph Name, Maybe TOpt.Global )
 insertFlagsDecoderNode entryPointName ((TOpt.GlobalGraph nodes fields annots roots varSupers) as graph) =
     let
-        entryMeta : Maybe ( IO.Canonical, Can.Type Name )
+        entryMeta : Maybe ( ModuleName.Canonical, Can.Type Name )
         entryMeta =
             DMap.foldl TOpt.compareGlobal
                 (\global node acc ->

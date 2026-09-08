@@ -53,11 +53,11 @@ Based on the language-ecmascript package structure for correct JavaScript syntax
 -- They did the hard work of reading the spec to figure out
 -- how all the types should fit together.
 
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Generate.JavaScript.Name as Name
 import Compiler.Json.Encode as Json
 import Compiler.Reporting.Annotation as A
 import Maybe.Extra as Maybe
-import System.TypeCheck.IO as IO
 
 
 
@@ -74,30 +74,30 @@ untracked variants for performance.
 -}
 type Expr
     = ExprString String
-    | ExprTrackedString IO.Canonical A.Position String
-    | ExprTrackedFloat IO.Canonical A.Position String
+    | ExprTrackedString ModuleName.Canonical A.Position String
+    | ExprTrackedFloat ModuleName.Canonical A.Position String
     | ExprInt Int
-    | ExprTrackedInt IO.Canonical A.Position Int
+    | ExprTrackedInt ModuleName.Canonical A.Position Int
     | ExprBool Bool
-    | ExprTrackedBool IO.Canonical A.Position Bool
+    | ExprTrackedBool ModuleName.Canonical A.Position Bool
     | ExprJson Json.Value
     | ExprArray (List Expr)
-    | ExprTrackedArray IO.Canonical A.Region (List Expr)
+    | ExprTrackedArray ModuleName.Canonical A.Region (List Expr)
     | ExprObject (List ( Name.Name, Expr ))
-    | ExprTrackedObject IO.Canonical A.Region (List ( A.Located Name.Name, Expr ))
+    | ExprTrackedObject ModuleName.Canonical A.Region (List ( A.Located Name.Name, Expr ))
     | ExprRef Name.Name
-    | ExprTrackedRef IO.Canonical A.Position Name.Name Name.Name
+    | ExprTrackedRef ModuleName.Canonical A.Position Name.Name Name.Name
     | ExprAccess Expr Name.Name
-    | ExprTrackedAccess Expr IO.Canonical A.Position Name.Name
+    | ExprTrackedAccess Expr ModuleName.Canonical A.Position Name.Name
     | ExprIndex Expr Expr
     | ExprPrefix PrefixOp Expr
     | ExprInfix InfixOp Expr Expr
     | ExprIf Expr Expr Expr
     | ExprAssign LValue Expr
     | ExprCall Expr (List Expr)
-    | ExprTrackedNormalCall IO.Canonical A.Position Expr Expr (List Expr)
+    | ExprTrackedNormalCall ModuleName.Canonical A.Position Expr Expr (List Expr)
     | ExprFunction (Maybe Name.Name) (List Name.Name) (List Stmt)
-    | ExprTrackedFunction IO.Canonical (List (A.Located Name.Name)) (List Stmt)
+    | ExprTrackedFunction ModuleName.Canonical (List (A.Located Name.Name)) (List Stmt)
 
 
 {-| Left-hand side value in an assignment expression.
@@ -134,7 +134,7 @@ type Stmt
     | Throw Expr
     | Return Expr
     | Var Name.Name Expr
-    | TrackedVar IO.Canonical A.Position Name.Name Name.Name Expr
+    | TrackedVar ModuleName.Canonical A.Position Name.Name Name.Name Expr
     | Vars (List ( Name.Name, Expr ))
     | FunctionStmt Name.Name (List Name.Name) (List Stmt)
 
@@ -924,7 +924,7 @@ fromFieldLines level ( _, expr ) =
     fromExprLines level expr
 
 
-trackedFromField : Level -> IO.Canonical -> ( A.Located Name.Name, Expr ) -> Builder -> Builder
+trackedFromField : Level -> ModuleName.Canonical -> ( A.Located Name.Name, Expr ) -> Builder -> Builder
 trackedFromField level moduleName ( A.At (A.Region start end) field, expr ) builder =
     builder
         |> addName moduleName start field field
@@ -1108,7 +1108,7 @@ before mangling.
 type alias MappingData =
     { srcLine : Int
     , srcCol : Int
-    , srcModule : IO.Canonical
+    , srcModule : ModuleName.Canonical
     , srcName : Maybe Name.Name
     , genLine : Int
     , genCol : Int
@@ -1182,7 +1182,7 @@ addByteString str (Builder b) =
         Builder { b | revBuilders = b.revBuilders ++ str, currentLine = b.currentLine + bsLines, currentCol = 1 }
 
 
-addTrackedByteString : IO.Canonical -> A.Position -> String -> Builder -> Builder
+addTrackedByteString : ModuleName.Canonical -> A.Position -> String -> Builder -> Builder
 addTrackedByteString moduleName (A.Position line col) str (Builder b) =
     let
         bsLines : Int
@@ -1206,7 +1206,7 @@ addTrackedByteString moduleName (A.Position line col) str (Builder b) =
         Builder { b | revBuilders = b.revBuilders ++ str, currentLine = b.currentLine + bsLines, currentCol = 1, mappings = newMappings }
 
 
-addName : IO.Canonical -> A.Position -> Name.Name -> Name.Name -> Builder -> Builder
+addName : ModuleName.Canonical -> A.Position -> Name.Name -> Name.Name -> Builder -> Builder
 addName moduleName (A.Position line col) name genName (Builder b) =
     let
         size : Int
@@ -1223,7 +1223,7 @@ addName moduleName (A.Position line col) name genName (Builder b) =
         }
 
 
-addTrackedDot : IO.Canonical -> A.Position -> Builder -> Builder
+addTrackedDot : ModuleName.Canonical -> A.Position -> Builder -> Builder
 addTrackedDot moduleName (A.Position line col) (Builder b) =
     Builder
         { b

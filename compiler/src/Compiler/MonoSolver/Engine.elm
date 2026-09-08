@@ -1,31 +1,11 @@
 module Compiler.MonoSolver.Engine exposing
-    ( S, Env, Step, Failure(..), WorkItem(..), NumberMultiEntry, NumberInstance, NodeResolution
-    , ArrowFact, LssSignature, LssStats
+    ( S, Step, Failure(..), WorkItem(..)
     , succeed, fail, andThen, map, map2, traverse, foldlS
     , getS, modifyS, liftIO, runStep
     , freshVar, enqueueSpec
-    , freshStore, resetItem, harvestSuperTable, harvestSuperTableExcept
-    , insertVar, lookupVar, scoped
-    , pushNumberMulti, popNumberMulti, isNumberMultiTarget, recordNumberInstance, numberMultiRootType
-    , pushLocalMulti, popLocalMulti, isLocalMultiTarget, recordLocalInstance, localVarInfo
-    , MonoMemo, emptyMonoMemo
-    , lookupSchemeMono, putSchemeMono
-    , lookupCallMemo, putCallMemo
-    , consS
-    , mvarIdKey, pointKey, isScalarVar, specIdsForGlobal
-    , memberIdFor, standaloneMemberIdFor, standaloneMemberGlobal, kernelMemberIdFor, standaloneMemberKernel, srcLambdaKey, trivialSignature, emptyLssStats
-    , papMemberKey, papMemberIdFor
-    , lambdaInstanceMemberId, lambdaInstanceMemberMaybe
-    , GroundingStats, internMemberKey, groundStandaloneMemberIdFor, groundSetMembers, recordSpecWidenedKey, layoutQualKey
-    , mixTag, localInstanceTagFor
-    , LssMemberTable, MemberSource(..), emptyMemberTable
-    , bumpWidenedByKernel, bumpWidenedBySigSize, bumpWidenedByCf, bumpKernelFactHit, bumpKernelLicensed, bumpEdgeInstalled, bumpFlowDegraded, bumpCompletionJoin, bumpCompletionJoinNoop, withScratchStore
-    , bumpTopMixedFlexSig, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpAppliedArrow, markFlexCtorSpec
-    , memoizedSignatureTrivial, memberClassOf, membersClass
-    , SigFlowStats
-    , markDirty
-    , ItemAux, emptyItemAux, clearedAux, restoredAux, clearResidualReads
-    , QEntry(..), QPre(..), QShadowStats, emptyQShadowStats
+    , freshStore, resetItem
+    , mvarIdKey, pointKey
+    , ArrowFact, Env, GroundingStats, ItemAux, LssMemberTable, LssSignature, LssStats, MemberSource(..), MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry(..), QPre(..), QShadowStats, SigFlowStats, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, emptyQShadowStats, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTable, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isNumberMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, lambdaInstanceMemberMaybe, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markDirty, markFlexCtorSpec, memberClassOf, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, numberMultiRootType, papMemberIdFor, papMemberKey, popLocalMulti, popNumberMulti, pushLocalMulti, pushNumberMulti, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withScratchStore
     )
 
 {-| Core state + step monad for the solver-based monomorphizer.
@@ -56,9 +36,11 @@ import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet exposing (BitSet)
 import Compiler.Data.Id as Id
 import Compiler.Eco.Config as Config
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Monomorphize.Registry as Registry
 import Compiler.Type.Type as Type
 import Compiler.Type.UnionFind as UF
+import Compiler.Type.Vars as Vars
 import Data.HashMap as HashMap
 import Data.Map as DMap
 import Data.Set as EverySet
@@ -112,7 +94,7 @@ specIdsForGlobal gkey s =
     sharing its two arrows).
   - `members`: ids the body itself injects into this arrow's set.
   - `top`: the body forces ⊤ (e.g. the arrow reaches a kernel boundary).
-  - `sources` (LSS_023): ordinals whose sets flow INTO this one — the
+  - `sources` (LSS\_023): ordinals whose sets flow INTO this one — the
     DIRECTED half of the fact language. `rep` stays genuine UF-equality
     (same-value chains: for `pass f = f` the param and result ARE one
     value); `sources` is inclusion, applied by the caller as deferred
@@ -140,7 +122,7 @@ type alias ArrowFact =
 arrows of a fresh instantiation of the def's annotation type, indexed by
 ARROW ORDINAL — position in the slot array minted by
 `Store.loadTypeIsolatedWithArrows`/`loadTypeWithArrows` over the SAME
-annotation type (LSS_006).
+annotation type (LSS\_006).
 -}
 type alias LssSignature =
     { arrows : Array ArrowFact
@@ -218,7 +200,7 @@ type alias LssStats =
     }
 
 
-{-| LSS_024 layout-qualification census: `mints` counts layout-qualified
+{-| LSS\_024 layout-qualification census: `mints` counts layout-qualified
 lambda mints, `shared` counts id reuse across DISTINCT enclosing specs (the
 fix working — detected via `lambdaQualified`'s first-minter payload, so it
 under-counts when `lss.muTie` is off), `fallback` counts mints whose spec had
@@ -245,7 +227,7 @@ type alias LayoutQualStats =
     }
 
 
-{-| LSS_019 grounding census: `grounded` counts provisional→ground member
+{-| LSS\_019 grounding census: `grounded` counts provisional→ground member
 rewrites at zonk; `deferred` counts provisional members kept because the
 arrow being read still carried residual MVars (the recorded precision
 frontier — §3.2 detail 1 of the plan). Stats only — never touches the graph.
@@ -256,7 +238,7 @@ type alias GroundingStats =
     }
 
 
-{-| LSS_020 signature-flow census (plan lss-fidelity-3 §B.4).
+{-| LSS\_020 signature-flow census (plan lss-fidelity-3 §B.4).
 
 `widenedBySigSize` is a POLICY counter (a signature arrow's member list
 exceeded `maxSetSize` at readback and widened to ⊤) — bumped
@@ -264,7 +246,7 @@ unconditionally, same class as `widenedBySize`/`widenedByKernel`.
 `widenedByCf` counts poison events inside the sigFlow joins (hub poisons +
 divergence in the new member-root/result/rhs/call-shape joins),
 `kernelFactHits` counts Phase F POSITIONAL fact-row applications and
-`kernelLicensed` (LSS_022) counts boundaries that took the licensed
+`kernelLicensed` (LSS\_022) counts boundaries that took the licensed
 `TypeFaithful` pass-through — all census-only and therefore REPORT-GATED per
 plan 1 §7.6 (the bump helpers check `env.lss.report`; the default path
 carries only a branch).
@@ -274,6 +256,7 @@ bumps `kernelFactHits` (positional tier) or `kernelLicensed` (license tier),
 never both, and a rowless boundary bumps neither. `widenedByKernel` keeps its
 own meaning — boundaries that actually poisoned — so licensed boundaries
 stop bumping it entirely (plan §3.4).
+
 -}
 type alias SigFlowStats =
     { widenedBySigSize : Int
@@ -335,9 +318,9 @@ type alias SigFlowStats =
 {-| §5.1 (plans/lss-paper-inclusion-constraints.md): what the shadow `Q`
 census found, accumulated across items.
 
-THE GATE THIS EXISTS TO CHECK: *"`Q` must reproduce the eager answer
+THE GATE THIS EXISTS TO CHECK: _"`Q` must reproduce the eager answer
 everywhere the eager answer is defined. A divergence here is a bug in `Q`, not
-a finding."* So `agree` is the number that should carry everything, and every
+a finding."_ So `agree` is the number that should carry everything, and every
 `diverge*` bucket is a defect report on the recording, not a result about the
 program.
 
@@ -575,6 +558,7 @@ must not collide with the same ordinal inside outer instance 1.
 `+ 1` so a leading ordinal 0 is not absorbed into the 0 = "no instance"
 sentinel. A composed value CAN land on 0 by collision, which degrades to
 today's shared id — the fence then declines, exactly as it does now.
+
 -}
 mixTag : Int -> Int -> Int
 mixTag tag ord =
@@ -596,6 +580,7 @@ classes — K-1 tagged plus the shared untagged one.
 A capped or first re-translation CARRIES the outer tag rather than clearing
 it: the ENCLOSING instance's identity is still valid, only this level stops
 splitting.
+
 -}
 localInstanceTagFor : Int -> Step Int
 localInstanceTagFor ord s =
@@ -624,7 +609,7 @@ bumpInstanceQual f s =
 
 {-| The instance tag a mint of source lambda `raw` should be qualified by, and
 the reasons it may be declined (§3.5): `rootFold` folds a def's ROOT lambda
-onto its global's GROUND key, which LSS_019 grounding reproduces from a
+onto its global's GROUND key, which LSS\_019 grounding reproduces from a
 reference with no instance component — qualifying it would silently break the
 `{l|, g|}` singleton collapse.
 -}
@@ -640,7 +625,7 @@ instanceQualTagFor raw s =
         Ok ( s.itemAux.currentLocalInstance, s )
 
 
-{-| The LSS_018 μ-tie lookup/record key: the raw lambda id, or the raw id mixed
+{-| The LSS\_018 μ-tie lookup/record key: the raw lambda id, or the raw id mixed
 with the instance tag under instance qualification (§3.6).
 -}
 qualifiedRawKey : Int -> Int -> Int
@@ -667,7 +652,7 @@ withInstTag instTag key =
         key ++ "|#" ++ String.fromInt instTag
 
 
-{-| Fix B (LSS_017): the member id for a lambda INSTANCE minted during
+{-| Fix B (LSS\_017): the member id for a lambda INSTANCE minted during
 translation. When the defining global routes through the keyed spec path
 (the same predicate `enqueueSpec` uses), the id is qualified by the
 enclosing SpecId — interned as `l|<lam>|<spec>` — so keyed clones of one
@@ -676,7 +661,7 @@ at singleton consumers (the §11.6 representative-hijack root cause:
 `plans/lss-fork-qualified-members.md`). Non-keyed-routed globals keep the
 raw id: their spec keys are annotation-insensitive (`widenSets` /
 lss-off), so same-layout duplicate instances are impossible and raw stays
-sound AND byte-identical. Interning is idempotent, so LSS_010 dirty-flush
+sound AND byte-identical. Interning is idempotent, so LSS\_010 dirty-flush
 re-translations of a spec re-mint the same id.
 
 A translation-phase mint under keyed routing with no current spec falls
@@ -687,6 +672,7 @@ Inference-phase signature mints (`LssInfer.walkExpr`) deliberately do NOT
 use this: signatures are per-unit and pre-spec; their raw members carry no
 instances post-Fix-B, so signature-transported singletons decline at
 AbiCloning (unstampable-but-sound).
+
 -}
 lambdaInstanceMemberId : TypeIds.SrcLambdaId -> Step Int
 lambdaInstanceMemberId lamId s0 =
@@ -747,39 +733,39 @@ lambdaInstanceMemberGo raw instTag specId s0 =
         lambdaMemberLayoutQualified raw instTag specId s0
 
     else
-    -- LSS_018 μ-tie: if this spec's own STORED demand already
-    -- carries a qualified member of the same raw lambda, the
-    -- value being minted IS the value that arrived in the
-    -- demand — one recursive family. Minting Q(L,S) fresh
-    -- would only spawn the next family member (the
-    -- specs→qualified-members→keys spiral); reusing the
-    -- family id closes it at its second member. Tied ids are
-    -- recorded in `muTied` and AbiCloning-blocked (plan §2.4 —
-    -- multi-demand instances are behaviorally divergent and
-    -- must never rep-stamp). `demandQualified` is built (and
-    -- `lambdaQualified` recorded) only under `lss.muTie`, so
-    -- the flag-off path carries zero scan/table cost; the
-    -- Just arm is unreachable flag-off. The one-shot eligible
-    -- census measured 0 on the self-compile (Run J).
-    --
-    -- The lookup key is instance-QUALIFIED (§3.6): keyed by the
-    -- bare raw id, a mint inside local-multi instance B finds
-    -- instance A's id, ties to it and force-blocks exactly the
-    -- stamps this plan recovers — an "implemented, no effect"
-    -- failure that looks like the mechanism not working.
-    case CoreDict.get (qualifiedRawKey raw instTag) s0.itemAux.demandQualified of
-        Just tiedId ->
-            Ok ( tiedId, recordMuTied tiedId s0 )
+        -- LSS_018 μ-tie: if this spec's own STORED demand already
+        -- carries a qualified member of the same raw lambda, the
+        -- value being minted IS the value that arrived in the
+        -- demand — one recursive family. Minting Q(L,S) fresh
+        -- would only spawn the next family member (the
+        -- specs→qualified-members→keys spiral); reusing the
+        -- family id closes it at its second member. Tied ids are
+        -- recorded in `muTied` and AbiCloning-blocked (plan §2.4 —
+        -- multi-demand instances are behaviorally divergent and
+        -- must never rep-stamp). `demandQualified` is built (and
+        -- `lambdaQualified` recorded) only under `lss.muTie`, so
+        -- the flag-off path carries zero scan/table cost; the
+        -- Just arm is unreachable flag-off. The one-shot eligible
+        -- census measured 0 on the self-compile (Run J).
+        --
+        -- The lookup key is instance-QUALIFIED (§3.6): keyed by the
+        -- bare raw id, a mint inside local-multi instance B finds
+        -- instance A's id, ties to it and force-blocks exactly the
+        -- stamps this plan recovers — an "implemented, no effect"
+        -- failure that looks like the mechanism not working.
+        case CoreDict.get (qualifiedRawKey raw instTag) s0.itemAux.demandQualified of
+            Just tiedId ->
+                Ok ( tiedId, recordMuTied tiedId s0 )
 
-        Nothing ->
-            mintQualifiedLambda raw instTag specId s0
+            Nothing ->
+                mintQualifiedLambda raw instTag specId s0
 
 
 {-| Intern the spec-qualified lambda member `Q(L,S)` and — under `lss.muTie`
-only — record its (raw, spec) identity in `lambdaQualified`, the LSS_018
+only — record its (raw, spec) identity in `lambdaQualified`, the LSS\_018
 reverse map that `processItem`'s demand scan consults. Flag-off skips the
 recording entirely (no map growth on the default path); the insert is
-idempotent (the key encodes both components), so LSS_010 re-translations
+idempotent (the key encodes both components), so LSS\_010 re-translations
 re-record the same pair.
 -}
 mintQualifiedLambda : Int -> Int -> Int -> Step Int
@@ -800,7 +786,7 @@ mintQualifiedLambda raw instTag specId s0 =
                 Ok ( mid, { s1 | lssMemberTable = { table | lambdaQualified = CoreDict.insert mid ( qualifiedRawKey raw instTag, specId ) table.lambdaQualified } } )
 
 
-{-| LSS_024 (lss.layoutQualMembers): the layout-qualified mint. The member id
+{-| LSS\_024 (lss.layoutQualMembers): the layout-qualified mint. The member id
 for a keyed-routed lambda instance is `l|<raw>|<widenedKey>` where
 `widenedKey` is the enclosing spec's IMMUTABLE annotation-widened creation
 key (captured write-once at spec creation — `specWidenedKeys`, §2.2 of
@@ -813,17 +799,18 @@ status quo, never toward raw ids) and bumps `layoutQual.fallback`
 `toComparableMonoType` rendering starts with a letter code, which a
 bare-integer SpecId suffix never equals.
 
-The μ-tie (LSS_018) interplay is load-bearing (plan §2.3): under layout
+The μ-tie (LSS\_018) interplay is load-bearing (plan §2.3): under layout
 qualification the demand-carried id of a same-layout sibling EQUALS the id
 this mint would intern, and an unmodified tie would record it μ-tied and
 force-block the very stamps the plan recovers. So: when the demand-carried
 id equals the id this mint's key already interned, take the plain mint path
 and record NOTHING in `muTied` (censused as `layoutQual.tieBypass`); only a
 tie to a DIFFERENT id — the genuinely-divergent recursive class — ties,
-records, and blocks exactly as before, preserving LSS_018's
+records, and blocks exactly as before, preserving LSS\_018's
 spiral-termination role (layout qualification strictly reduces id fan-out:
 a generation-2 spiral spec is an annotation-only split of generation 1, so
 its widened key is equal and the mint re-interns the same string).
+
 -}
 lambdaMemberLayoutQualified : Int -> Int -> Int -> Step Int
 lambdaMemberLayoutQualified raw instTag specId s0 =
@@ -868,7 +855,7 @@ lambdaMemberLayoutQualified raw instTag specId s0 =
             mintLayoutQualifiedFold foldedTo key raw instTag specId isFallback False s0
 
 
-{-| LSS_024: the key a layout-qualified mint interns — `l|<raw>|<widenedKey>`
+{-| LSS\_024: the key a layout-qualified mint interns — `l|<raw>|<widenedKey>`
 when the enclosing spec's creation key was captured, the SpecId FALLBACK
 `l|<raw>|<specId>` otherwise (True in the second component). Pure — exposed
 for the §5.1 unit pins.
@@ -886,7 +873,7 @@ layoutQualKey specWidenedKeys raw instTag specId =
 {-| `lss.rootFold`: the mint tail, plus `SourceGlobal` registration when the
 id was FOLDED — the folded id denotes the global, and devirt's reverse lookup
 (and the stampable-class licensing) read `sources`. Ground ids never enter
-`provisionalStandalone` (LSS_019 idempotence).
+`provisionalStandalone` (LSS\_019 idempotence).
 -}
 mintLayoutQualifiedFold : Maybe TOpt.Global -> String -> Int -> Int -> Int -> Bool -> Bool -> Step Int
 mintLayoutQualifiedFold foldedTo key raw instTag specId isFallback isTieBypass s0 =
@@ -901,18 +888,19 @@ mintLayoutQualifiedFold foldedTo key raw instTag specId isFallback isTieBypass s
                         Ok ( mid, bumpArgFlowCensus "rootFold|folded" s1 )
 
                     else
-                        Ok ( mid
-                           , bumpArgFlowCensus "rootFold|folded"
+                        Ok
+                            ( mid
+                            , bumpArgFlowCensus "rootFold|folded"
                                 { s1 | lssMemberTable = insertMemberGlobal mid g s1.lssMemberTable }
-                           )
+                            )
 
                 Nothing ->
                     Ok ( mid, s1 )
 
 
-{-| The LSS_024 intern + census tail: interns `key`, records the LSS_018
+{-| The LSS\_024 intern + census tail: interns `key`, records the LSS\_018
 `lambdaQualified` reverse entry exactly like `mintQualifiedLambda`
-(first-mint-wins — under LSS_024 several specs share one mid, so the payload
+(first-mint-wins — under LSS\_024 several specs share one mid, so the payload
 is the FIRST-minting spec, diagnostics only), and bumps the `layoutQual`
 counters. `shared` bumps on a mint whose id's first minter was a DIFFERENT
 spec — id reuse across enclosing specs, the fix working (read from
@@ -991,8 +979,8 @@ mintLayoutQualified key raw instTag specId isFallback isTieBypass s0 =
                 Ok ( mid, { s2 | lssMemberTable = { table | lambdaQualified = CoreDict.insert mid ( qualifiedRawKey raw instTag, specId ) table.lambdaQualified } } )
 
 
-{-| LSS_024 §2.2: capture a just-created spec's annotation-widened creation
-key. Write-once and idempotent (SpecIds are create-once; LSS_010
+{-| LSS\_024 §2.2: capture a just-created spec's annotation-widened creation
+key. Write-once and idempotent (SpecIds are create-once; LSS\_010
 re-translations re-read the same immutable entry). K6 discipline: the table
 is only written back when it actually grew.
 -}
@@ -1009,7 +997,7 @@ recordSpecWidenedKey specId wkey s =
         { s | lssMemberTable = { table | specWidenedKeys = CoreDict.insert specId wkey table.specWidenedKeys } }
 
 
-{-| LSS_018: record a member id as μ-tied (idempotent). The set is exported
+{-| LSS\_018: record a member id as μ-tied (idempotent). The set is exported
 as `MonoGraph.lssBlockedMembers` at assembly.
 -}
 recordMuTied : Int -> S -> S
@@ -1057,7 +1045,7 @@ bumpWidenedByKernel s =
     { s | lssStats = { stats | widenedByKernel = stats.widenedByKernel + 1 } }
 
 
-{-| LSS_020 (B.4): a signature arrow's member list exceeded `maxSetSize` at
+{-| LSS\_020 (B.4): a signature arrow's member list exceeded `maxSetSize` at
 readback and widened to ⊤. Policy counter — unconditional.
 -}
 bumpWidenedBySigSize : S -> S
@@ -1072,7 +1060,7 @@ bumpWidenedBySigSize s =
     { s | lssStats = { stats | sigStats = { sig | widenedBySigSize = sig.widenedBySigSize + 1 } } }
 
 
-{-| LSS_020 (B.4): a poison event inside a sigFlow join (hub poison or
+{-| LSS\_020 (B.4): a poison event inside a sigFlow join (hub poison or
 divergence in the new joins). Census-only — REPORT-GATED (plan 1 §7.6).
 -}
 bumpWidenedByCf : S -> S
@@ -1091,7 +1079,7 @@ bumpWidenedByCf s =
         s
 
 
-{-| LSS_021 (Phase F): a POSITIONAL KernelSetFacts row applied at a kernel
+{-| LSS\_021 (Phase F): a POSITIONAL KernelSetFacts row applied at a kernel
 boundary. Census-only — REPORT-GATED (plan 1 §7.6).
 -}
 bumpKernelFactHit : S -> S
@@ -1110,7 +1098,7 @@ bumpKernelFactHit s =
         s
 
 
-{-| LSS_023: a directed inclusion edge was installed (`Store.addSlotSource`).
+{-| LSS\_023: a directed inclusion edge was installed (`Store.addSlotSource`).
 Census-only — REPORT-GATED.
 -}
 bumpEdgeInstalled : S -> S
@@ -1129,7 +1117,7 @@ bumpEdgeInstalled s =
         s
 
 
-{-| LSS_023: a directed structural walk degraded a container subtree to the
+{-| LSS\_023: a directed structural walk degraded a container subtree to the
 symmetric join, and the subtree can carry a set. Census-only — REPORT-GATED.
 -}
 bumpFlowDegraded : S -> S
@@ -1148,8 +1136,8 @@ bumpFlowDegraded s =
         s
 
 
-{-| LSS_022: a kernel boundary took the LICENSED (`TypeFaithful`)
-pass-through — no LSS_004 poison on either side. Census-only —
+{-| LSS\_022: a kernel boundary took the LICENSED (`TypeFaithful`)
+pass-through — no LSS\_004 poison on either side. Census-only —
 REPORT-GATED, and disjoint from `bumpKernelFactHit` by construction (one
 boundary takes one tier).
 -}
@@ -1169,7 +1157,7 @@ bumpKernelLicensed s =
         s
 
 
-{-| LSS_026 (D0, signature side): a members- or sources-carrying
+{-| LSS\_026 (D0, signature side): a members- or sources-carrying
 internalization crossed a dangling (FlexVar) source and resolved ⊤ rather
 than claiming completeness. POLICY counter — unconditional, same class as
 `widenedBySigSize`.
@@ -1201,7 +1189,7 @@ markFlexCtorSpec specId s =
     { s | lssStats = { stats | flexCtorSpecs = CoreDict.insert specId () stats.flexCtorSpecs } }
 
 
-{-| LSS_026 Phase-0 census (§2.1): bump one census key. REPORT-GATED — the
+{-| LSS\_026 Phase-0 census (§2.1): bump one census key. REPORT-GATED — the
 default path carries only the branch (the `bumpWidenedByCf` precedent).
 -}
 bumpArgFlowCensus : String -> S -> S
@@ -1221,6 +1209,7 @@ bumpArgFlowCensus key s =
 
     else
         s
+
 
 {-| `bumpArgFlowCensus` by an arbitrary delta (report-gated the same way):
 for cells that count nodes/visits rather than events.
@@ -1244,13 +1233,13 @@ bumpArgFlowCensusBy key delta s =
         s
 
 
-
 {-| Liveness census (plans/lss-provenance-ratio-census.md §7): record that the
 arrow with this `ArrowId` was PEELED BY AN ARGUMENT — i.e. applied.
 
 Report-gated for the same reason as `bumpArgFlowCensus`, and additionally inert
 without it: the caller resolves the `ArrowId` through `itemAux.arrowOfSlot`,
 which is only populated under `lss.report`.
+
 -}
 bumpAppliedArrow : Int -> S -> S
 bumpAppliedArrow aid s =
@@ -1271,7 +1260,7 @@ bumpAppliedArrow aid s =
         s
 
 
-{-| LSS_026 Phase-0 census: is this global's signature ALREADY memoized, and
+{-| LSS\_026 Phase-0 census: is this global's signature ALREADY memoized, and
 is it trivial? A pure READ — the census must never FORCE a signature, because
 signature computation allocates from the shared member-id supply and
 `lss.report` is excluded from the config hash (a report-on run must produce
@@ -1282,11 +1271,11 @@ memoizedSignatureTrivial g s =
     Maybe.map .trivial (CoreDict.get (TOpt.toComparableGlobal g) s.lssSignatures)
 
 
-{-| LSS_026 Phase-0 census: the member CLASS of a member id, as the
+{-| LSS\_026 Phase-0 census: the member CLASS of a member id, as the
 escalation gate needs it (plan §0.5) — `gc` (standalone global/ctor: grounds
-at zonk and IS consumable by LSS_025/E9.1 devirt, so a false one is a
+at zonk and IS consumable by LSS\_025/E9.1 devirt, so a false one is a
 miscompile), `k` (kernel), `l` (lambda instance: declines at AbiCloning per
-LSS_017, so a false one is merely imprecise). Pure read.
+LSS\_017, so a false one is merely imprecise). Pure read.
 -}
 memberClassOf : Int -> LssMemberTable -> String
 memberClassOf mid table =
@@ -1310,7 +1299,7 @@ memberClassOf mid table =
             "l"
 
 
-{-| LSS_026 Phase-0 census: the coarsest class present in a member list —
+{-| LSS\_026 Phase-0 census: the coarsest class present in a member list —
 `gc` dominates `k` dominates `l` (the escalation gate asks "does this mixed
 fact carry a STAMPABLE member?").
 -}
@@ -1329,7 +1318,7 @@ membersClass members table =
         "l"
 
 
-{-| MONO_030 (solver arm): validate a just-CREATED spec against the breadth
+{-| MONO\_030 (solver arm): validate a just-CREATED spec against the breadth
 and key-size watchdogs. `Nothing` = fine; `Just` = the loud failure that
 replaces a silent hang/OOM (poly-rec through annotated mutual cycles is
 legal Elm — plan §1.1). Callers gate on the created path only, so this
@@ -1375,8 +1364,8 @@ type alias Env =
     { toptNodes : HashMap.HashMap TOpt.Global (TOpt.Node TypeIds.MVarId) -- 4c: hash-keyed, NOT DMap — `Data.Map` rebuilds `toComparableGlobal` on every probe, and this map is read per occurrence
     , annotations : TOpt.AnnotationsByGlobal TypeIds.MVarId
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
-    , currentModule : IO.Canonical -- entry module; home of every AnonymousLambda
-    , superStatic : Dict Int IO.SuperType -- static solver truth ONLY (loadVar)
+    , currentModule : ModuleName.Canonical -- entry module; home of every AnonymousLambda
+    , superStatic : Dict Int Vars.SuperType -- static solver truth ONLY (loadVar)
     , lss : Config.LssConfig -- lambda-set specialization knobs; enabled=False is byte-identical off
     , lssKeyedSet : CoreDict.Dict String () -- E5: comparable gkeys of lss.keyedGlobals (parsed once at initState)
     , lamLabels : CoreDict.Dict Int String -- member id -> "defKey#id" (census rendering only)
@@ -1424,7 +1413,7 @@ type alias S =
 
     -- Number/super truth: seeded from AssignMVarIds' superVars, read by
     -- loadType when minting a var, and fed to shared Prune at the end.
-    , superTable : Dict Int IO.SuperType -- static solver truth + Join-R harvested number-taint (zonk/key/Prune)
+    , superTable : Dict Int Vars.SuperType -- static solver truth + Join-R harvested number-taint (zonk/key/Prune)
     , nextMVarId : TypeIds.MVarId
 
     -- LSS (all GLOBAL — survive resetItem; signatures/members are per-run facts)
@@ -1433,7 +1422,6 @@ type alias S =
     , lssMemberTable : LssMemberTable -- interned non-lambda member ids + E9 devirt reverse map (ONE field: S self-hosts and must stay within the runtime's 32-slot record scan cap)
     , nextMemberId : Int -- shared supply, seeded past GlobalMVarState.nextLam
     , lssStats : LssStats
-
     , monoMemo : MonoMemo -- the three classification memos (ONE field: see `MonoMemo` — S is at the runtime's 32-slot record scan cap)
     , nodeResolution : CoreDict.Dict String NodeResolution -- D13: per-GLOBAL node lookup + annotation-id set, keyed by TOpt.toComparableGlobal. Depends only on the immutable toptNodes, so it survives resetItem; a global with N specs resolves once instead of N times.
 
@@ -1452,13 +1440,14 @@ type alias S =
 
     -- Per-work-item solver state
     , store : IO.State
-    , memo : Dict Int IO.Variable -- MVarId (Id.toComparable) -> Point
+    , memo : Dict Int Vars.Variable -- MVarId (Id.toComparable) -> Point
     , revMemo : Array (Maybe TypeIds.MVarId) -- A2: Point index -> first MVarId that minted it. Point indices are DENSE from 0 in a fresh per-item store, so an Array (indexed by point) replaces the former Dict Int — O(log32) point-keyed reads with no `_Utils_cmp`, sparse structure-point slots hold Nothing.
     , varEnv : CoreDict.Dict String Mono.MonoType -- local variable name -> monomorphized type
     , numberMulti : List NumberMultiEntry -- stack of let-bound number vars being multi-specialized
     , localMulti : List NumberMultiEntry -- stack of let-bound FUNCTIONS being multi-specialized (f, f$1, …)
     , derivedDestructors : CoreDict.Dict String (Can.Type TypeIds.MVarId) -- destructor-bound name -> the destructor's canType (bridges a derived fn's call back to its root's type vars)
     , localCanTypes : CoreDict.Dict String (Can.Type TypeIds.MVarId) -- let-bound name -> its RHS canType (destructor root slot lookup)
+
     -- Per-item auxiliary state, grouped into ONE field: compiled Record heap
     -- objects have a 32-slot GC scan limit and S sits exactly at it — adding
     -- a top-level field to S breaks the native self-compile at MLIR parse
@@ -1510,17 +1499,20 @@ recording site already reads that descriptor, so capturing it is free, and it
 is what makes the comparison well-posed: the eager answer is `seed ⊔ Q`, and
 without the seed a slot minted from an `LSet` annotation would read as a
 spurious divergence.
+
 -}
 type QEntry
-    = QMembers IO.Variable (List Int) QPre -- ℓ… ⋸ σ
-    | QTop IO.Variable QPre -- ⊤ ⋸ σ (Eco's incompleteness marker; the paper has none)
-    | QEdge IO.Variable IO.Variable QPre QPre -- σ_dst ⊇ σ_src (LSS_023 LsFrom): dst, src, dst's pre, src's pre
+    = QMembers Vars.Variable (List Int) QPre -- ℓ… ⋸ σ
+    | QTop Vars.Variable QPre -- ⊤ ⋸ σ (Eco's incompleteness marker; the paper has none)
+    | QEdge Vars.Variable Vars.Variable QPre QPre -- σ_dst ⊇ σ_src (LSS_023 LsFrom): dst, src, dst's pre, src's pre
 
-    -- The SOURCE's pre is captured as well as the destination's. A slot that
-    -- was seeded from an `LSet` annotation and only ever appears as an edge
-    -- SOURCE receives no constraint of its own, so without its seed the shadow
-    -- solution would under-approximate every destination downstream of it and
-    -- the census would report a divergence that is an artifact of the log.
+
+
+-- The SOURCE's pre is captured as well as the destination's. A slot that
+-- was seeded from an `LSet` annotation and only ever appears as an edge
+-- SOURCE receives no constraint of its own, so without its seed the shadow
+-- solution would under-approximate every destination downstream of it and
+-- the census would report a divergence that is an artifact of the log.
 
 
 type QPre
@@ -1530,8 +1522,8 @@ type QPre
 
 
 type alias ItemAux =
-    { lssRootAnn : Maybe ( Can.Type TypeIds.MVarId, IO.Variable )
-    , ecoResidualReads : List IO.Variable
+    { lssRootAnn : Maybe ( Can.Type TypeIds.MVarId, Vars.Variable )
+    , ecoResidualReads : List Vars.Variable
     , ecoResidualKeyReads : List Int
     , loopParams : List ( String, List ( String, Can.Type TypeIds.MVarId ) )
     , currentSpecId : Maybe Int -- Fix B (LSS_017): the SpecId being translated; set by processItem after resetItem, cleared at finishNode. Qualifies lambda-instance member ids for keyed-routed globals.
@@ -1564,7 +1556,7 @@ type alias ItemAux =
     -- `clearResidualReads` must NOT clear it: the saturation pass
     -- re-translates against the SAME store, so the Points are still valid and
     -- clearing would silently re-mint and lose sharing mid-item.
-    , arrowMemo : CoreDict.Dict Int IO.Variable
+    , arrowMemo : CoreDict.Dict Int Vars.Variable
 
     -- Multi-set census (M3): set-slot `pointKey` -> the `ArrowId` that minted
     -- it. REPORT-GATED — empty unless `lss.report`, so the default path pays
@@ -1583,7 +1575,7 @@ type alias ItemAux =
     , arrowOfSlot : CoreDict.Dict Int Int
 
     -- POST-SETTLE RE-ZONK (plans/lss-post-mono-architecture.md §3.2, Item 2):
-    -- every `IO.Variable` handed to `Store.zonkToMono` during this item, in
+    -- every `Vars.Variable` handed to `Store.zonkToMono` during this item, in
     -- reverse call order. REPORT-GATED — empty unless `lss.report`, so the
     -- default path pays nothing and the byte-identity rails are untouched.
     --
@@ -1597,7 +1589,7 @@ type alias ItemAux =
     --
     -- Store-scoped exactly like `arrowMemo`/`arrowOfSlot` (it holds Points),
     -- so it MUST be cleared and restored on every scratch-store swap.
-    , zonkLog : List IO.Variable
+    , zonkLog : List Vars.Variable
 
     -- §5.1 `Q` IN SHADOW MODE (plans/lss-paper-inclusion-constraints.md):
     -- every inclusion constraint this item recorded, in reverse order.
@@ -1618,7 +1610,7 @@ type alias ItemAux =
     -- about.
     --
     -- REPORT-GATED and store-scoped exactly like `qLog`.
-    , qSigRoot : Maybe IO.Variable
+    , qSigRoot : Maybe Vars.Variable
     }
 
 
@@ -1633,6 +1625,7 @@ meaningless against the restored item store); other aux fields flow through.
 NOTE for future per-item state: anything holding scratch-store Points MUST be
 added here and to `restoredAux`, or it leaks across the store swap — a silent
 miscompile, not a crash.
+
 -}
 clearedAux : ItemAux -> ItemAux
 clearedAux aux =
@@ -1647,7 +1640,7 @@ restoredAux outer inner =
     { inner | ecoResidualReads = outer.ecoResidualReads, ecoResidualKeyReads = outer.ecoResidualKeyReads, arrowMemo = outer.arrowMemo, arrowOfSlot = outer.arrowOfSlot, zonkLog = outer.zonkLog, qLog = outer.qLog, qSigRoot = outer.qSigRoot, currentLocalInstance = outer.currentLocalInstance }
 
 
-{-| Saturation-pass reset (MONO_029 R2): drop the recorded reads before
+{-| Saturation-pass reset (MONO\_029 R2): drop the recorded reads before
 re-translating against the same store.
 -}
 clearResidualReads : S -> S
@@ -1682,6 +1675,7 @@ order the old `Dict String` gave. That is observable: `Translate`'s
 iteration order, so emitted-def order — and therefore SpecId assignment
 order — changes. Accepted by decision (§10.4); names are unaffected because
 `freshName` is assigned from `specMapSize` at INSERT time.
+
 -}
 type alias NumberMultiEntry =
     { defName : String
@@ -1700,7 +1694,7 @@ type alias NumberInstance =
 (never a fallback): `Unsupported` = feature not yet built; `UnifyMismatch` =
 the real unifier rejected something the old engine absorbed silently;
 `EngineBug` = an invariant the engine believes cannot happen;
-`LimitExceeded` = a MONO_030 resource watchdog tripped — a diagnosable
+`LimitExceeded` = a MONO\_030 resource watchdog tripped — a diagnosable
 program/limit condition, NOT a compiler bug (renderFailure must not frame it
 as one).
 -}
@@ -1851,12 +1845,12 @@ liftIO io =
 engine rank (`outermostRank`). No generalization happens, so any fixed rank is
 safe (`Unify.merge` uses `min`, `Occurs` ignores rank).
 -}
-freshVar : IO.Content -> Step IO.Variable
+freshVar : Vars.Content -> Step Vars.Variable
 freshVar content =
     liftIO (UF.fresh (IO.makeDescriptor content Type.outermostRank Type.noMark Nothing))
 
 
-{-| The one member-interning code path (LSS_019 made it pure so `Store`'s
+{-| The one member-interning code path (LSS\_019 made it pure so `Store`'s
 zonk grounding and the `Step`-level mints share it): key → (id, table',
 nextId'). A hit returns the table and supply UNCHANGED (same pointers), so
 callers can detect the fresh-intern branch as `nextId' /= nextId`.
@@ -1874,9 +1868,9 @@ internMemberKey key table nextId =
 {-| Member id for a non-lambda function value, interned by kind+identity.
 Keys: "g|<global>" (global function ref), "c|<global>" (ctor used as a
 function), "k|home.name" (kernel ref), "a|field" (accessor value),
-"g|<global>|<typeKey>" (LSS_019 ground standalone). Ids come from the same
+"g|<global>|<typeKey>" (LSS\_019 ground standalone). Ids come from the same
 supply as Phase-0 lambda ids (`nextMemberId` is seeded past
-`GlobalMVarState.nextLam`), so member ids never collide (LSS_003).
+`GlobalMVarState.nextLam`), so member ids never collide (LSS\_003).
 -}
 memberIdFor : String -> Step Int
 memberIdFor key s =
@@ -1896,7 +1890,7 @@ arguments already supplied. ONE definition, because five sites mint it
 (`Translate.injectPapMember` and its successor walk, `LssInfer`'s inference
 twin and ITS successor walk, and `Monomorphize`'s varsucc successor ids) and
 two of them used to build the string independently — the same two-site drift
-that produced the LSS_017 raw-vs-qualified split.
+that produced the LSS\_017 raw-vs-qualified split.
 -}
 papMemberKey : TOpt.Global -> Int -> String
 papMemberKey global argCount =
@@ -1905,11 +1899,12 @@ papMemberKey global argCount =
 
 {-| Intern a `p|` member AND record its `SourcePap` origin.
 
-Deliberately NOT `insertMemberProvisional`: LSS_019 grounding rewrites members
+Deliberately NOT `insertMemberProvisional`: LSS\_019 grounding rewrites members
 found in `provisionalStandalone`, and a PAP element must keep the identity its
 injection gave it (`p|<g>|<supplied>` — one arrow deeper is a DIFFERENT PAP).
 The source registration exists only so the graph can NAME the global and the
 supplied count; `memberClassOf` keeps the member in the declining class.
+
 -}
 papMemberIdFor : TOpt.Global -> Int -> Step Int
 papMemberIdFor global argCount s0 =
@@ -1932,7 +1927,7 @@ papMemberIdFor global argCount s0 =
 {-| E9: intern a STANDALONE-GLOBAL member ("g|" or "c|" key — named
 globals, ctors incl. `Can.Normal` ones like `List.::`, box/enum ctors) and
 record its Global in the reverse map the devirt consults
-(`standaloneMemberGlobal`) AND in `provisionalStandalone` (LSS_019 — these
+(`standaloneMemberGlobal`) AND in `provisionalStandalone` (LSS\_019 — these
 ids are PROVISIONAL: family names awaiting type-keyed grounding at zonk).
 Same interning as `memberIdFor`; the reverse inserts are idempotent.
 -}
@@ -1966,12 +1961,12 @@ standaloneMemberGlobal mid s =
         )
 
 
-{-| LSS_019: intern a GROUND standalone member — `g|<global>|<typeKey>`,
+{-| LSS\_019: intern a GROUND standalone member — `g|<global>|<typeKey>`,
 one id per (global × instantiation layout). Pure (callable from `Store`'s
 zonk, which threads no `Step`). Writes `sources` ONLY, never
 `provisionalStandalone`: ground ids pass through the grounding rewrite
 untouched, which is what makes zonk∘encode∘zonk idempotent — the stability
-LSS_010's finite-lattice termination argument consumes. The `typeKey` must
+LSS\_010's finite-lattice termination argument consumes. The `typeKey` must
 be the ANNOTATION-WIDENED arrow key (`groundSetMembers` builds it), so a
 set never participates in its own members' identity (μ-severing).
 -}
@@ -1988,7 +1983,7 @@ groundStandaloneMemberIdFor g typeKey table nextId =
         ( mid, insertMemberGlobal mid g table1, next1 )
 
 
-{-| LSS_019 (GAP-1 element grounding, plans/lss-fidelity-2-standalone-member-grounding.md §3):
+{-| LSS\_019 (GAP-1 element grounding, plans/lss-fidelity-2-standalone-member-grounding.md §3):
 rewrite each PROVISIONAL standalone member (`g|`/`c|`, recorded in
 `provisionalStandalone`) of a set slot being read back at the arrow
 `paramT -> resultT` to its GROUND member `g|<global>|<widened-arrow-typeKey>`.
@@ -2001,7 +1996,7 @@ Three load-bearing details (plan §3.2):
     provisional ids — grounding there would embed per-item residual MVar
     ids in the key, minting different ids for the same value in different
     specs (spurious 2-sets). Deferral equals the pre-plan semantics and is
-    convergent under LSS_010 re-translation (a later, more concrete demand
+    convergent under LSS\_010 re-translation (a later, more concrete demand
     grounds it then). Counted as the census's `deferred` — the explicit
     precision frontier.
 2.  The key is ANNOTATION-WIDENED (`widenSets` before `toComparable`): an
@@ -2015,6 +2010,7 @@ Lambda (`l|`), kernel (`k|`), accessor (`a|`) and already-ground members
 pass through untouched (not in `provisionalStandalone`). Mixed
 provisional/ground sets are legal mid-run; rewrite+dedup at every zonk
 keeps annotations canonical.
+
 -}
 groundSetMembers : Mono.MonoType -> Mono.MonoType -> List Int -> LssMemberTable -> Int -> { members : List Int, table : LssMemberTable, nextId : Int, grounded : Int, deferred : Int }
 groundSetMembers paramT resultT members table0 nextId0 =
@@ -2092,7 +2088,7 @@ dedupAscending xs =
             xs
 
 
-{-| E9.2 (LSS_016): intern a KERNEL member ("k|home.name" key — unchanged,
+{-| E9.2 (LSS\_016): intern a KERNEL member ("k|home.name" key — unchanged,
 so member ids are identical to the pre-E9.2 mint) and record its
 (prefix, home, name) identity in the reverse map the kernel devirt
 consults (`standaloneMemberKernel`). Mirrors `standaloneMemberIdFor`.
@@ -2243,59 +2239,59 @@ enqueueSpec global monoType s0 =
         enqueueSpecKeyed global monoType s0
 
     else
-    let
-        ( ( specId, reg1, hit ), s2 ) =
-            if s0.env.lss.enabled then
-                -- §8.5, keyed=False (M2/M3): keys are today's keys — lambda
-                -- sets never fan out specializations; the stored demand is the
-                -- annotation JOIN of every admitted demand (LSS_010).
-                -- K6: the widened KEY is hash-consed, so `eqKeySpec`'s
-                -- `identicalOr` can settle the registry probe on pointer
-                -- identity instead of walking the tree.
-                let
-                    ( keyType, intern1 ) =
-                        Intern.widenSets monoType s0.intern
-                in
-                ( Registry.getOrCreateSpecIdKeyed global keyType monoType s0.registry
-                , withIntern intern1 s0
-                )
+        let
+            ( ( specId, reg1, hit ), s2 ) =
+                if s0.env.lss.enabled then
+                    -- §8.5, keyed=False (M2/M3): keys are today's keys — lambda
+                    -- sets never fan out specializations; the stored demand is the
+                    -- annotation JOIN of every admitted demand (LSS_010).
+                    -- K6: the widened KEY is hash-consed, so `eqKeySpec`'s
+                    -- `identicalOr` can settle the registry probe on pointer
+                    -- identity instead of walking the tree.
+                    let
+                        ( keyType, intern1 ) =
+                            Intern.widenSets monoType s0.intern
+                    in
+                    ( Registry.getOrCreateSpecIdKeyed global keyType monoType s0.registry
+                    , withIntern intern1 s0
+                    )
 
-            else
-                -- lss off (byte-identical path — no widenSets allocation).
-                let
-                    ( sid, r ) =
-                        Registry.getOrCreateSpecId global monoType s0.registry
-                in
-                ( ( sid, r, Registry.CreatedNew ), s0 )
+                else
+                    -- lss off (byte-identical path — no widenSets allocation).
+                    let
+                        ( sid, r ) =
+                            Registry.getOrCreateSpecId global monoType s0.registry
+                    in
+                    ( ( sid, r, Registry.CreatedNew ), s0 )
 
-        s =
-            bumpKeyedHit hit s2
+            s =
+                bumpKeyedHit hit s2
 
-        storedChanged =
-            hit == Registry.HitChangedJoin
+            storedChanged =
+                hit == Registry.HitChangedJoin
 
-        -- MONO_030: `hit == CreatedNew` is NOT a reliable created signal on
-        -- the lss-off arm (it labels every probe CreatedNew) — nextId growth
-        -- is, on both arms.
-        watchdog =
-            if reg1.nextId > s0.registry.nextId then
-                checkSpecWatchdogs global monoType reg1 s
+            -- MONO_030: `hit == CreatedNew` is NOT a reliable created signal on
+            -- the lss-off arm (it labels every probe CreatedNew) — nextId growth
+            -- is, on both arms.
+            watchdog =
+                if reg1.nextId > s0.registry.nextId then
+                    checkSpecWatchdogs global monoType reg1 s
 
-            else
-                Nothing
-    in
-    case watchdog of
-        Just failure ->
-            Err failure
+                else
+                    Nothing
+        in
+        case watchdog of
+            Just failure ->
+                Err failure
 
-        Nothing ->
-            enqueueSpecCommit specId reg1 storedChanged s
+            Nothing ->
+                enqueueSpecCommit specId reg1 storedChanged s
 
 
 {-| The post-watchdog commit tail shared by `enqueueSpec`'s unkeyed/off arm
 and `enqueueSpecKeyed`.
 
-On an already-scheduled hit with a CHANGED join (LSS_010): a later demand
+On an already-scheduled hit with a CHANGED join (LSS\_010): a later demand
 widened the stored annotations of an already-scheduled spec. The node
 (translated, in flight, or pending) was/will be seeded from a NARROWER
 demand — its body annotations could claim a singleton set that lies about
@@ -2308,6 +2304,7 @@ re-push cascaded into hour-scale churn on the self-compile).
 On an unchanged hit (D2): the registry is the SAME value, so
 `{ s | registry = reg1 }` would copy the whole S to change nothing —
 return S unaltered.
+
 -}
 enqueueSpecCommit : Mono.SpecId -> Mono.SpecializationRegistry -> Bool -> S -> Result Failure ( Mono.SpecId, S )
 enqueueSpecCommit specId reg1 storedChanged s =
@@ -2392,7 +2389,7 @@ bumpCompletionJoinNoop s =
     }
 
 
-{-| LSS_010: record that a scheduled spec's stored type was join-widened.
+{-| LSS\_010: record that a scheduled spec's stored type was join-widened.
 Duplicate-free: the BitSet guards the list. The drain-end flush re-pushes
 and `processItem` consumes the bit when it re-translates.
 -}
@@ -2414,9 +2411,9 @@ type while this global is under its spec budget — lambda sets fan out
 specializations, giving each caller's member its own copy of the callee
 (the precondition for fast dispatch inside shared HOF bodies). Past the
 budget, new demands fall back to the widened key (types never widen —
-MONO_020/021/024) and the event is counted in `widenedByBudget`.
+MONO\_020/021/024) and the event is counted in `widenedByBudget`.
 
-BOTH branches go through the JOINING variant (LSS_010): an annotated key
+BOTH branches go through the JOINING variant (LSS\_010): an annotated key
 can collide with a widened one when the demand is all-`LTop` (an escaping
 reference's storeless classify keys exactly like a widened set-bearing
 type), and a plain first-demand-wins hit there would resurrect the shared
@@ -2427,6 +2424,7 @@ type, or a join that changes nothing).
 `specCountByGlobal` counts CREATED specs per global (detected by
 `registry.nextId` advancing), so budget checks are O(log n) and reuse of
 an existing spec never burns budget.
+
 -}
 enqueueSpecKeyed : Mono.Global -> Mono.MonoType -> Step Mono.SpecId
 enqueueSpecKeyed global monoType s0 =
@@ -2516,12 +2514,11 @@ enqueueSpecKeyed global monoType s0 =
     in
     -- MONO_030: watchdogs on the created path only (probe hits never check).
     case
-        (if created then
+        if created then
             checkSpecWatchdogs global monoType reg1 s2
 
-         else
+        else
             Nothing
-        )
     of
         Just failure ->
             Err failure
@@ -2688,61 +2685,61 @@ else `defName ++ sep ++ idx`.
 -}
 recordMultiInstance : (S -> List NumberMultiEntry) -> (List NumberMultiEntry -> S -> S) -> String -> String -> Mono.MonoType -> Step ( String, Mono.MonoType )
 recordMultiInstance getStack setStack sep name monoType s =
-        let
-            update entry =
-                -- Deliberately annotation-SENSITIVE (M4 == audit): local-multi
-                -- instances are specialization-intent — differing lambda sets
-                -- mint separate per-instance bindings (f / f$1), never share.
-                -- `Mono.SpecMap` is the spec flavour (`specHashOf`/`eqKeySpec`),
-                -- which is exactly the `toComparableMonoType` equivalence the
-                -- string key used to give (§10.1).
-                case Mono.specMapGet monoType entry.instances of
-                    Just inst ->
-                        ( entry, ( inst.freshName, inst.monoType ) )
+    let
+        update entry =
+            -- Deliberately annotation-SENSITIVE (M4 == audit): local-multi
+            -- instances are specialization-intent — differing lambda sets
+            -- mint separate per-instance bindings (f / f$1), never share.
+            -- `Mono.SpecMap` is the spec flavour (`specHashOf`/`eqKeySpec`),
+            -- which is exactly the `toComparableMonoType` equivalence the
+            -- string key used to give (§10.1).
+            case Mono.specMapGet monoType entry.instances of
+                Just inst ->
+                    ( entry, ( inst.freshName, inst.monoType ) )
 
-                    Nothing ->
+                Nothing ->
+                    let
+                        idx =
+                            Mono.specMapSize entry.instances
+
+                        freshName =
+                            if idx == 0 then
+                                name
+
+                            else
+                                name ++ sep ++ String.fromInt idx
+
+                        inst =
+                            { freshName = freshName, monoType = monoType }
+                    in
+                    ( { entry | instances = Mono.specMapInsert monoType inst entry.instances }
+                    , ( freshName, monoType )
+                    )
+
+        go entries =
+            case entries of
+                [] ->
+                    ( [], ( name, monoType ) )
+
+                e :: rest ->
+                    if e.defName == name then
                         let
-                            idx =
-                                Mono.specMapSize entry.instances
-
-                            freshName =
-                                if idx == 0 then
-                                    name
-
-                                else
-                                    name ++ sep ++ String.fromInt idx
-
-                            inst =
-                                { freshName = freshName, monoType = monoType }
+                            ( e1, result ) =
+                                update e
                         in
-                        ( { entry | instances = Mono.specMapInsert monoType inst entry.instances }
-                        , ( freshName, monoType )
-                        )
+                        ( e1 :: rest, result )
 
-            go entries =
-                case entries of
-                    [] ->
-                        ( [], ( name, monoType ) )
+                    else
+                        let
+                            ( rest1, result ) =
+                                go rest
+                        in
+                        ( e :: rest1, result )
 
-                    e :: rest ->
-                        if e.defName == name then
-                            let
-                                ( e1, result ) =
-                                    update e
-                            in
-                            ( e1 :: rest, result )
-
-                        else
-                            let
-                                ( rest1, result ) =
-                                    go rest
-                            in
-                            ( e :: rest1, result )
-
-            ( newStack, res ) =
-                go (getStack s)
-        in
-        Ok ( res, setStack newStack s )
+        ( newStack, res ) =
+            go (getStack s)
+    in
+    Ok ( res, setStack newStack s )
 
 
 {-| Run a step in a nested variable scope: bindings introduced inside are
@@ -2797,14 +2794,14 @@ harvestSuperTableExcept excluded s =
                     else
                         let
                             ( store1, desc ) =
-                                UF.get (IO.Pt pointIdx) store
+                                UF.get (Vars.Pt pointIdx) store
                         in
                         case desc.content of
-                            IO.FlexSuper IO.Number _ ->
-                                ( store1, CoreDict.insert (mvarIdKey mvarId) IO.Number super )
+                            Vars.FlexSuper Vars.Number _ ->
+                                ( store1, CoreDict.insert (mvarIdKey mvarId) Vars.Number super )
 
-                            IO.RigidSuper IO.Number _ ->
-                                ( store1, CoreDict.insert (mvarIdKey mvarId) IO.Number super )
+                            Vars.RigidSuper Vars.Number _ ->
+                                ( store1, CoreDict.insert (mvarIdKey mvarId) Vars.Number super )
 
                             _ ->
                                 ( store1, super )
@@ -2924,19 +2921,21 @@ failure direction is a missing license rather than a wrong one.
 
 Read from the solver's own super table, so this is the typechecker's truth, not
 a guess from a variable's spelling.
+
 -}
 isScalarVar : S -> TypeIds.MVarId -> Bool
 isScalarVar s mid =
     case CoreDict.get (mvarIdKey mid) s.superTable of
-        Just IO.Number ->
+        Just Vars.Number ->
             True
 
-        Just IO.Comparable ->
+        Just Vars.Comparable ->
             True
 
         _ ->
             False
 
-pointKey : IO.Variable -> Int
-pointKey (IO.Pt n) =
+
+pointKey : Vars.Variable -> Int
+pointKey (Vars.Pt n) =
     n

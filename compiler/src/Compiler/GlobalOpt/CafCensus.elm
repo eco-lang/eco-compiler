@@ -1,7 +1,7 @@
 module Compiler.GlobalOpt.CafCensus exposing (report)
 
 {-| Inner-CAF opportunity census (`ECO_CAF_CENSUS=1`,
-design_docs/caf-memoization-design.md §12 "Inner CAFs",
+design\_docs/caf-memoization-design.md §12 "Inner CAFs",
 plans/caf-hoist-closed-expressions.md H0).
 
 Walks the MonoGraph handed to it — pre-hoist for the opportunity
@@ -26,10 +26,10 @@ Output-only (stderr); never affects artifacts.
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.GlobalOpt.CafHoist as CafHoist
 import Dict exposing (Dict)
 import Set exposing (Set)
-import System.TypeCheck.IO as IO
 
 
 type alias Cand =
@@ -484,7 +484,8 @@ report prefix hoistCfg (Mono.MonoGraph g) =
                 && not c.fnType
                 && not c.bytesEx
                 && not c.hasDebug
-                && c.size >= hoistCfg.minNodes
+                && c.size
+                >= hoistCfg.minNodes
 
         eligibleV1 =
             List.length (List.filter eligible allCands)
@@ -549,7 +550,7 @@ report prefix hoistCfg (Mono.MonoGraph g) =
 
         specName sid =
             case Array.get sid g.registry.reverseMapping |> Maybe.andThen identity of
-                Just ( Mono.Global (IO.Canonical _ moduleName) n, _ ) ->
+                Just ( Mono.Global (ModuleName.Canonical _ moduleName) n, _ ) ->
                     moduleName ++ "." ++ Name.toElmString n
 
                 Just ( Mono.Accessor f, _ ) ->

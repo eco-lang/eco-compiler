@@ -40,7 +40,6 @@ problems occur.
 
 import Bytes.Decode
 import Bytes.Encode
-import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
@@ -69,15 +68,24 @@ compareLocated (At _ a) (At _ b) =
     compare a b
 
 
-{-| Apply an IO-producing function to a located value, preserving its location.
+{-| Apply a state-passing function to a located value, preserving its location.
 
-This is a monadic map operation that transforms the value while keeping
-the region annotation intact.
+Spelled in the state-passing shape rather than as `a -> IO b` so this module
+does not depend on the typechecker's monad: `IO b` IS `State -> ( State, b )`,
+so every `IO` caller still type-checks, and the signature now also serves any
+other state. `Compiler.Reporting.Annotation` is a low-level data module and an
+import of `System.TypeCheck.IO` here put the whole typechecker inside an
+import cycle once the union-find vocabulary moved to `Compiler.Type.Vars`
+(2026-09-08).
 
 -}
-traverse : (a -> IO b) -> Located a -> IO (Located b)
-traverse func (At region value) =
-    IO.map (At region) (func value)
+traverse : (a -> s -> ( s, b )) -> Located a -> s -> ( s, Located b )
+traverse func (At region value) s0 =
+    let
+        ( s1, b ) =
+            func value s0
+    in
+    ( s1, At region b )
 
 
 {-| Extract the value from a located wrapper, discarding location information.

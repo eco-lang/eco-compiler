@@ -38,11 +38,12 @@ import Compiler.Type.Occurs as Occurs
 import Compiler.Type.Type as Type exposing (Constraint(..), Type, nextMark)
 import Compiler.Type.Unify as Unify
 import Compiler.Type.UnionFind as UF
+import Compiler.Type.Vars as Vars exposing (Content, Descriptor, Mark, Variable)
 import Data.IORef exposing (IORef)
 import Data.Vector as Vector
 import Data.Vector.Mutable as MVector
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO exposing (Content, Descriptor, IO, Mark, Variable)
+import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
@@ -98,7 +99,7 @@ runWithIds :
                 , nodeTypes : Array (Maybe (Can.Type Name))
                 , nodeVars : Array (Maybe Variable)
                 , solverState :
-                    { cells : Array IO.PointCell
+                    { cells : Array Vars.PointCell
                     }
                 }
             )
@@ -507,7 +508,7 @@ occurs state ( name, A.At region variable ) =
                                 UF.get variable
                                     |> IO.andThen
                                         (\props ->
-                                            UF.set variable (IO.makeDescriptor IO.Error props.rank props.mark props.copy)
+                                            UF.set variable (IO.makeDescriptor Vars.Error props.rank props.mark props.copy)
                                                 |> IO.map (\_ -> addError state (Error.InfiniteType region name errorType))
                                         )
                             )
@@ -675,56 +676,56 @@ adjustRankContent youngMark visitMark groupRank content =
             adjustRank youngMark visitMark groupRank
     in
     case content of
-        IO.FlexVar _ ->
+        Vars.FlexVar _ ->
             IO.pure groupRank
 
-        IO.FlexSuper _ _ ->
+        Vars.FlexSuper _ _ ->
             IO.pure groupRank
 
-        IO.RigidVar _ ->
+        Vars.RigidVar _ ->
             IO.pure groupRank
 
-        IO.RigidSuper _ _ ->
+        Vars.RigidSuper _ _ ->
             IO.pure groupRank
 
-        IO.Structure flatType ->
+        Vars.Structure flatType ->
             case flatType of
-                IO.App1 _ _ args ->
+                Vars.App1 _ _ args ->
                     IO.foldM (\rank arg -> IO.map (max rank) (go arg)) Type.outermostRank args
 
-                IO.Fun1 arg result ->
+                Vars.Fun1 arg result ->
                     IO.pure max
                         |> IO.apply (go arg)
                         |> IO.apply (go result)
 
-                IO.FunL arg result setSlot ->
+                Vars.FunL arg result setSlot ->
                     IO.pure max
                         |> IO.apply (go arg)
                         |> IO.apply (IO.pure max |> IO.apply (go result) |> IO.apply (go setSlot))
 
-                IO.LambdaSet1 _ ->
+                Vars.LambdaSet1 _ ->
                     -- THEORY: ground member ids never need to get generalized.
                     -- (LsFrom's source Points — LSS_023 — are set-lattice
                     -- edges, not type structure, and are additionally
                     -- unreachable here per LSS_007's phase separation.)
                     IO.pure Type.outermostRank
 
-                IO.EmptyRecord1 ->
+                Vars.EmptyRecord1 ->
                     -- THEORY: an empty record never needs to get generalized
                     IO.pure Type.outermostRank
 
-                IO.Record1 fields extension ->
+                Vars.Record1 fields extension ->
                     go extension
                         |> IO.andThen
                             (\extRank ->
                                 IO.foldM (\rank field -> IO.map (max rank) (go field)) extRank (Dict.values fields)
                             )
 
-                IO.Unit1 ->
+                Vars.Unit1 ->
                     -- THEORY: a unit never needs to get generalized
                     IO.pure Type.outermostRank
 
-                IO.Tuple1 a b cs ->
+                Vars.Tuple1 a b cs ->
                     go a
                         |> IO.andThen
                             (\ma ->
@@ -735,11 +736,11 @@ adjustRankContent youngMark visitMark groupRank content =
                                         )
                             )
 
-        IO.Alias _ _ args _ ->
+        Vars.Alias _ _ args _ ->
             -- THEORY: anything in the realVar would be outermostRank
             IO.foldM (\rank ( _, argVar ) -> IO.map (max rank) (go argVar)) Type.outermostRank args
 
-        IO.Error ->
+        Vars.Error ->
             IO.pure groupRank
 
 
@@ -794,7 +795,7 @@ typeToVar rank pools _ tipe =
             IO.traverseList go args
                 |> IO.andThen
                     (\argVars ->
-                        register rank pools (IO.Structure (IO.App1 home name argVars))
+                        register rank pools (Vars.Structure (Vars.App1 home name argVars))
                     )
 
         Type.FunN a b ->
@@ -804,7 +805,7 @@ typeToVar rank pools _ tipe =
                         go b
                             |> IO.andThen
                                 (\bVar ->
-                                    register rank pools (IO.Structure (IO.Fun1 aVar bVar))
+                                    register rank pools (Vars.Structure (Vars.Fun1 aVar bVar))
                                 )
                     )
 
@@ -818,7 +819,7 @@ typeToVar rank pools _ tipe =
                         go aliasType
                             |> IO.andThen
                                 (\aliasVar ->
-                                    register rank pools (IO.Alias home name argVars aliasVar)
+                                    register rank pools (Vars.Alias home name argVars aliasVar)
                                 )
                     )
 
@@ -829,7 +830,7 @@ typeToVar rank pools _ tipe =
                         go ext
                             |> IO.andThen
                                 (\extVar ->
-                                    register rank pools (IO.Structure (IO.Record1 fieldVars extVar))
+                                    register rank pools (Vars.Structure (Vars.Record1 fieldVars extVar))
                                 )
                     )
 
@@ -849,7 +850,7 @@ typeToVar rank pools _ tipe =
                                     IO.traverseList go cs
                                         |> IO.andThen
                                             (\cVars ->
-                                                register rank pools (IO.Structure (IO.Tuple1 aVar bVar cVars))
+                                                register rank pools (Vars.Structure (Vars.Tuple1 aVar bVar cVars))
                                             )
                                 )
                     )
@@ -872,14 +873,14 @@ register rank pools content =
 -}
 emptyRecord1 : Content
 emptyRecord1 =
-    IO.Structure IO.EmptyRecord1
+    Vars.Structure Vars.EmptyRecord1
 
 
 {-| Content for a unit type.
 -}
 unit1 : Content
 unit1 =
-    IO.Structure IO.Unit1
+    Vars.Structure Vars.Unit1
 
 
 
@@ -895,19 +896,19 @@ srcTypeToVariable rank pools freeVars srcType =
         nameToContent : Name.Name -> Content
         nameToContent name =
             if Name.isNumberType name then
-                IO.FlexSuper IO.Number (Just name)
+                Vars.FlexSuper Vars.Number (Just name)
 
             else if Name.isComparableType name then
-                IO.FlexSuper IO.Comparable (Just name)
+                Vars.FlexSuper Vars.Comparable (Just name)
 
             else if Name.isAppendableType name then
-                IO.FlexSuper IO.Appendable (Just name)
+                Vars.FlexSuper Vars.Appendable (Just name)
 
             else if Name.isCompappendType name then
-                IO.FlexSuper IO.CompAppend (Just name)
+                Vars.FlexSuper Vars.CompAppend (Just name)
 
             else
-                IO.FlexVar (Just name)
+                Vars.FlexVar (Just name)
 
         makeVar : Name.Name -> b -> IO Variable
         makeVar name _ =
@@ -939,7 +940,7 @@ srcTypeToVar rank pools flexVars srcType =
                         go result
                             |> IO.andThen
                                 (\resultVar ->
-                                    register rank pools (IO.Structure (IO.Fun1 argVar resultVar))
+                                    register rank pools (Vars.Structure (Vars.Fun1 argVar resultVar))
                                 )
                     )
 
@@ -950,7 +951,7 @@ srcTypeToVar rank pools flexVars srcType =
             IO.traverseList go args
                 |> IO.andThen
                     (\argVars ->
-                        register rank pools (IO.Structure (IO.App1 home name argVars))
+                        register rank pools (Vars.Structure (Vars.App1 home name argVars))
                     )
 
         Can.TRecord fields maybeExt ->
@@ -966,7 +967,7 @@ srcTypeToVar rank pools flexVars srcType =
                         )
                             |> IO.andThen
                                 (\extVar ->
-                                    register rank pools (IO.Structure (IO.Record1 fieldVars extVar))
+                                    register rank pools (Vars.Structure (Vars.Record1 fieldVars extVar))
                                 )
                     )
 
@@ -983,7 +984,7 @@ srcTypeToVar rank pools flexVars srcType =
                                     IO.traverseList go cs
                                         |> IO.andThen
                                             (\cVars ->
-                                                register rank pools (IO.Structure (IO.Tuple1 aVar bVar cVars))
+                                                register rank pools (Vars.Structure (Vars.Tuple1 aVar bVar cVars))
                                             )
                                 )
                     )
@@ -1001,7 +1002,7 @@ srcTypeToVar rank pools flexVars srcType =
                         )
                             |> IO.andThen
                                 (\aliasVar ->
-                                    register rank pools (IO.Alias home name argVars aliasVar)
+                                    register rank pools (Vars.Alias home name argVars aliasVar)
                                 )
                     )
 
@@ -1070,41 +1071,41 @@ makeCopyHelp maxRank pools variable =
                                                                 -- We have already marked the variable as copied, so we
                                                                 -- will not repeat this work or crawl this variable again.
                                                                 case props.content of
-                                                                    IO.Structure term ->
+                                                                    Vars.Structure term ->
                                                                         traverseFlatType (makeCopyHelp maxRank pools) term
                                                                             |> IO.andThen
                                                                                 (\newTerm ->
-                                                                                    UF.set copy (makeDesc (IO.Structure newTerm))
+                                                                                    UF.set copy (makeDesc (Vars.Structure newTerm))
                                                                                         |> IO.map (\_ -> copy)
                                                                                 )
 
-                                                                    IO.FlexVar _ ->
+                                                                    Vars.FlexVar _ ->
                                                                         IO.pure copy
 
-                                                                    IO.FlexSuper _ _ ->
+                                                                    Vars.FlexSuper _ _ ->
                                                                         IO.pure copy
 
-                                                                    IO.RigidVar name ->
-                                                                        UF.set copy (makeDesc (IO.FlexVar (Just name)))
+                                                                    Vars.RigidVar name ->
+                                                                        UF.set copy (makeDesc (Vars.FlexVar (Just name)))
                                                                             |> IO.map (\_ -> copy)
 
-                                                                    IO.RigidSuper super name ->
-                                                                        UF.set copy (makeDesc (IO.FlexSuper super (Just name)))
+                                                                    Vars.RigidSuper super name ->
+                                                                        UF.set copy (makeDesc (Vars.FlexSuper super (Just name)))
                                                                             |> IO.map (\_ -> copy)
 
-                                                                    IO.Alias home name args realType ->
+                                                                    Vars.Alias home name args realType ->
                                                                         IO.mapM (IO.traverseTuple (makeCopyHelp maxRank pools)) args
                                                                             |> IO.andThen
                                                                                 (\newArgs ->
                                                                                     makeCopyHelp maxRank pools realType
                                                                                         |> IO.andThen
                                                                                             (\newRealType ->
-                                                                                                UF.set copy (makeDesc (IO.Alias home name newArgs newRealType))
+                                                                                                UF.set copy (makeDesc (Vars.Alias home name newArgs newRealType))
                                                                                                     |> IO.map (\_ -> copy)
                                                                                             )
                                                                                 )
 
-                                                                    IO.Error ->
+                                                                    Vars.Error ->
                                                                         IO.pure copy
                                                             )
                                                 )
@@ -1139,54 +1140,54 @@ restore variable =
 restoreContent : Content -> IO ()
 restoreContent content =
     case content of
-        IO.FlexVar _ ->
+        Vars.FlexVar _ ->
             IO.pure ()
 
-        IO.FlexSuper _ _ ->
+        Vars.FlexSuper _ _ ->
             IO.pure ()
 
-        IO.RigidVar _ ->
+        Vars.RigidVar _ ->
             IO.pure ()
 
-        IO.RigidSuper _ _ ->
+        Vars.RigidSuper _ _ ->
             IO.pure ()
 
-        IO.Structure term ->
+        Vars.Structure term ->
             case term of
-                IO.App1 _ _ args ->
+                Vars.App1 _ _ args ->
                     IO.mapM_ restore args
 
-                IO.Fun1 arg result ->
+                Vars.Fun1 arg result ->
                     restore arg
                         |> IO.andThen (\_ -> restore result)
 
-                IO.FunL arg result setSlot ->
+                Vars.FunL arg result setSlot ->
                     restore arg
                         |> IO.andThen (\_ -> restore result)
                         |> IO.andThen (\_ -> restore setSlot)
 
-                IO.LambdaSet1 _ ->
+                Vars.LambdaSet1 _ ->
                     IO.pure ()
 
-                IO.EmptyRecord1 ->
+                Vars.EmptyRecord1 ->
                     IO.pure ()
 
-                IO.Record1 fields ext ->
+                Vars.Record1 fields ext ->
                     IO.mapM_ restore (Dict.values fields)
                         |> IO.andThen (\_ -> restore ext)
 
-                IO.Unit1 ->
+                Vars.Unit1 ->
                     IO.pure ()
 
-                IO.Tuple1 a b cs ->
+                Vars.Tuple1 a b cs ->
                     IO.traverseList restore (a :: b :: cs)
                         |> IO.map (\_ -> ())
 
-        IO.Alias _ _ args var ->
+        Vars.Alias _ _ args var ->
             IO.mapM_ restore (List.map Tuple.second args)
                 |> IO.andThen (\_ -> restore var)
 
-        IO.Error ->
+        Vars.Error ->
             IO.pure ()
 
 
@@ -1197,44 +1198,44 @@ restoreContent content =
 {-| Apply a function to all variables in a FlatType structure.
 Used during copying to transform all contained variables.
 -}
-traverseFlatType : (Variable -> IO Variable) -> IO.FlatType -> IO IO.FlatType
+traverseFlatType : (Variable -> IO Variable) -> Vars.FlatType -> IO Vars.FlatType
 traverseFlatType f flatType =
     case flatType of
-        IO.App1 home name args ->
-            IO.map (IO.App1 home name) (IO.traverseList f args)
+        Vars.App1 home name args ->
+            IO.map (Vars.App1 home name) (IO.traverseList f args)
 
-        IO.Fun1 a b ->
-            IO.pure IO.Fun1
+        Vars.Fun1 a b ->
+            IO.pure Vars.Fun1
                 |> IO.apply (f a)
                 |> IO.apply (f b)
 
-        IO.FunL a b s ->
-            IO.pure IO.FunL
+        Vars.FunL a b s ->
+            IO.pure Vars.FunL
                 |> IO.apply (f a)
                 |> IO.apply (f b)
                 |> IO.apply (f s)
 
-        IO.LambdaSet1 ls ->
+        Vars.LambdaSet1 ls ->
             -- Ground data: no variables to transform. CONDITIONALLY true since
             -- LSS_023 (`LsFrom` carries source Points) — but unreachable here:
             -- LSS_007 keeps typechecking-phase stores free of FunL/LambdaSet1,
             -- and no MonoSolver module imports Type.Solve, so an `LsFrom` can
             -- never arrive at this copy.
-            IO.pure (IO.LambdaSet1 ls)
+            IO.pure (Vars.LambdaSet1 ls)
 
-        IO.EmptyRecord1 ->
-            IO.pure IO.EmptyRecord1
+        Vars.EmptyRecord1 ->
+            IO.pure Vars.EmptyRecord1
 
-        IO.Record1 fields ext ->
-            IO.pure IO.Record1
+        Vars.Record1 fields ext ->
+            IO.pure Vars.Record1
                 |> IO.apply (traverseDictIO f fields)
                 |> IO.apply (f ext)
 
-        IO.Unit1 ->
-            IO.pure IO.Unit1
+        Vars.Unit1 ->
+            IO.pure Vars.Unit1
 
-        IO.Tuple1 a b cs ->
-            IO.pure IO.Tuple1
+        Vars.Tuple1 a b cs ->
+            IO.pure Vars.Tuple1
                 |> IO.apply (f a)
                 |> IO.apply (f b)
                 |> IO.apply (IO.traverseList f cs)

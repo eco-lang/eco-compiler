@@ -45,13 +45,13 @@ import Compiler.AST.Utils.Binop as Binop
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Data.OneOrMore as OneOrMore
+import Compiler.Elm.ModuleName as ModuleName exposing (Canonical)
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult
 import Data.Set as EverySet
 import Dict exposing (Dict)
 import Maybe exposing (Maybe(..))
-import System.TypeCheck.IO exposing (Canonical)
 
 
 

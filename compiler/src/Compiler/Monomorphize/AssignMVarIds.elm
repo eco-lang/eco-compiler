@@ -19,16 +19,16 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.SolverRoots as SolverRoots
+import Compiler.Type.Vars as Vars
 import Data.Map as DMap
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 
 
 {-| Global state threaded through the entire ID assignment pass.
 -}
 type alias GlobalMVarState =
     { nextId : TypeIds.MVarId
-    , superVars : Dict Int IO.SuperType
+    , superVars : Dict Int Vars.SuperType
     , rootEnv : Dict ( String, Int ) TypeIds.MVarId
     , nextLam : TypeIds.SrcLambdaId -- LSS: source-lambda id supply; seeds the engine's member interning
     , lamLabels : Dict Int String -- LSS: member id -> "defKey#id" (census rendering only)
@@ -81,7 +81,7 @@ type alias Ctx =
     { env : SchemeEnv
     , state : GlobalMVarState
     , schemeRootsForDef : SolverRoots.SchemeRootsForDef
-    , varSupers : Dict Name IO.SuperType
+    , varSupers : Dict Name Vars.SuperType
     , moduleKey : String
     , defKey : String -- enclosing global's comparable key (lambda-label rendering)
     , useSolverRoots : Bool -- Phase 2b (lss.arrowSolverRoots): resolve `SolverRoot` slots through `arrowRootEnv` instead of minting a fresh occurrence id. OFF = exactly Phase 2a.
@@ -91,7 +91,7 @@ type alias Ctx =
 {-| Mint a fresh source-lambda id (LSS member identity), labeling it with the
 enclosing def for census rendering. Because `AssignMVarIds` runs on the
 merged whole-program graph with a deterministic walk, ids are per-run stable
-(LSS_003) — the same stability class as `MVarId`s.
+(LSS\_003) — the same stability class as `MVarId`s.
 -}
 freshLamId : Ctx -> ( TypeIds.SrcLambdaId, Ctx )
 freshLamId ctx =
@@ -187,6 +187,7 @@ unchanged — this only appends to the side table. Root keys are deduped by
 raw solver index is meaningless outside its home module, and colliding two
 modules' indices would be a FALSE union of two lambda sets. They are drawn
 from a negative supply so occurrence-id numbering is untouched.
+
 -}
 recordRootKey : Int -> ( TypeIds.ArrowId, Ctx ) -> ( TypeIds.ArrowId, Ctx )
 recordRootKey rootIdx ( arrowId, ctx ) =
@@ -306,7 +307,7 @@ assignIdsToType canType =
 side table. The super comes from the solver (via `RootedVar.super` for rooted
 vars, or the `varSupers` export for non-rooted names) — never from a name here.
 -}
-freshMVarId : Maybe IO.SuperType -> GlobalMVarState -> ( TypeIds.MVarId, GlobalMVarState )
+freshMVarId : Maybe Vars.SuperType -> GlobalMVarState -> ( TypeIds.MVarId, GlobalMVarState )
 freshMVarId maybeSuper state =
     let
         currentId =
@@ -358,12 +359,12 @@ solve numbers its `Pt` indices from zero; without scoping, unrelated
 definitions in different modules could collide on a raw index.
 
 -}
-ensureMVarIdForRoot : IO.RootedVar -> Ctx -> ( TypeIds.MVarId, Ctx )
+ensureMVarIdForRoot : Vars.RootedVar -> Ctx -> ( TypeIds.MVarId, Ctx )
 ensureMVarIdForRoot rooted ctx =
     let
         rootIdx =
             case rooted.var of
-                IO.Pt idx ->
+                Vars.Pt idx ->
                     idx
 
         key =
@@ -411,7 +412,7 @@ ensureBinder name ctx =
 -}
 rewriteAnnotationsByGlobal :
     Bool
-    -> Dict Name IO.SuperType
+    -> Dict Name Vars.SuperType
     -> TOpt.SchemeRootsByGlobal
     -> TOpt.AnnotationsByGlobal Name
     -> GlobalMVarState
@@ -449,7 +450,7 @@ moduleKeyOf global =
 
 rewriteAnnotation :
     Bool
-    -> Dict Name IO.SuperType
+    -> Dict Name Vars.SuperType
     -> String
     -> SolverRoots.SchemeRootsForDef
     -> Can.Annotation Name
@@ -487,7 +488,7 @@ rewriteAnnotation useSolverRoots varSupers moduleKey schemeRootsForDef (Can.Fora
 rewriteNodes :
     Bool
     -> (TOpt.Global -> TOpt.Global -> Order)
-    -> Dict Name IO.SuperType
+    -> Dict Name Vars.SuperType
     -> TOpt.SchemeRootsByGlobal
     -> DMap.Dict String TOpt.Global (TOpt.Node Name)
     -> GlobalMVarState

@@ -46,7 +46,6 @@ import Compiler.Parse.Space as Space
 import Compiler.Parse.Variable as Var
 import Compiler.Reporting.Annotation as A
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 import Utils.Crash exposing (crash)
@@ -72,7 +71,7 @@ Kernel code is parsed into chunks that represent different types of content:
 -}
 type Chunk
     = JS String
-    | ElmVar IO.Canonical Name
+    | ElmVar ModuleName.Canonical Name
     | JsVar Name Name
     | ElmField Name
     | JsField Int
@@ -422,9 +421,9 @@ addImport pkg foreigns ( _, Src.Import ( _, A.At _ importName ) maybeAlias ( _, 
 
     else
         let
-            home : IO.Canonical
+            home : ModuleName.Canonical
             home =
-                IO.Canonical (Dict.get importName foreigns |> Maybe.withDefault pkg) importName
+                ModuleName.Canonical (Dict.get importName foreigns |> Maybe.withDefault pkg) importName
 
             prefix : Name
             prefix =
