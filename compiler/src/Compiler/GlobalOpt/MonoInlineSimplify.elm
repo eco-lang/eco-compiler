@@ -1,6 +1,6 @@
 module Compiler.GlobalOpt.MonoInlineSimplify exposing
     ( Metrics, optimize, buildBodyLookup, countClosures
-    , functionResultCensus, residualTaxonomy
+    , functionResultCensus, reshapeCensus, reshapeReturnedUids, residualTaxonomy
     )
 
 {-| Mono IR Inliner and Simplifier.
@@ -36,6 +36,7 @@ import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.MonoTraverse as Traverse
 import Compiler.Reporting.Annotation as A exposing (Region)
 import Dict exposing (Dict)
+import Set
 
 
 
@@ -74,6 +75,14 @@ type alias Metrics =
     , arityRaised : Int
     , arityRaiseSkipped : Int
     , inlinedByCallee : Dict String Int
+
+    -- P0 census (plans/lss-inline-member-propagation.md §7): every reshape that
+    -- CLEARED an LSS member, keyed `<newLambdaUid>|<clearedMemberId>|<site>`.
+    -- Captured at the clearing site itself, so this is the `reshaped` set by
+    -- CONSTRUCTION rather than inferred from before/after instance counts (a
+    -- DCE'd instance and a reshaped one are indistinguishable by counting).
+    -- Census-only; `report`-gated at the consumer.
+    , clearedMembers : Dict String Int
     }
 
 
@@ -121,7 +130,7 @@ buildBodyLookup (MonoGraph { nodes, callEdges }) =
                             Nothing ->
                                 ( accDict, specId + 1 )
 
-                            Just ( params, body ) ->
+                            Just ( params, body, _ ) ->
                                 -- Keep case bodies out of THIS lookup even
                                 -- though the inliner proper accepts them
                                 -- (H2.0): the consumer is the bytes-fusion
@@ -1401,10 +1410,16 @@ type alias RewriteCtx =
     -- Partials of globals stay PAPs per mono-uncurry's design principle;
     -- application MERGING collapses the profitable single-use shapes.
     -- Legacy and whitelisted candidates keep full pre-H2 privileges.
-    { inlineCandidates : Dict Int ( List ( Name, Mono.MonoType ), MonoExpr, Bool )
+    { inlineCandidates : Dict Int ( List ( Name, Mono.MonoType ), MonoExpr, ( Bool, Maybe Int ) )
     , specArities : Dict Int Int -- H2.5: param count per spec (incl. recursive), for application merging
     , loopifiables : Dict Int LoopifyInfo -- H5: tail-func specs whose closure param can be loopified
     , loopifyEnabled : Bool
+
+    -- P0 census gate (plans/lss-inline-member-propagation.md §7). Collection is
+    -- a Dict bump per reshape; it is tied to `inline.report` because that is
+    -- exactly when the numbers are rendered. OFF by default, so the ordinary
+    -- build pays nothing.
+    , reshapeCensusOn : Bool
     , kernelFactsDce : Bool -- kernel-opt-11 (a): widen the dead-binding purity test to KernelFacts-droppable kernel calls
     , registry : Mono.SpecializationRegistry
     , whitelist : InlineWhitelist
@@ -1436,6 +1451,9 @@ type alias InternalMetrics =
     , arityRaised : Int
     , arityRaiseSkipped : Int
     , inlinedByCallee : Dict String Int
+
+    -- P0 census, mirrors `Metrics.clearedMembers`.
+    , clearedMembers : Dict String Int
     }
 
 
@@ -1464,6 +1482,69 @@ bumpBetaReductions ctx =
             ctx.metrics
     in
     { ctx | metrics = { m | betaReductions = m.betaReductions + 1 } }
+
+
+{-| The integer inside a `LambdaId` — the P0 census key for a residual
+(plans/lss-inline-member-propagation.md §7).
+-}
+lambdaUid : Mono.LambdaId -> Int
+lambdaUid lid =
+    case lid of
+        Mono.AnonymousLambda _ uid ->
+            uid
+
+
+{-| P0 census: record one identity-clearing reshape (see `Metrics.clearedMembers`).
+-}
+bumpClearedMember : Int -> Maybe Int -> String -> RewriteCtx -> RewriteCtx
+bumpClearedMember newUid maybeMid site ctx0 =
+    if not ctx0.reshapeCensusOn then
+        ctx0
+
+    else
+        bumpClearedMemberGo newUid maybeMid site ctx0
+
+
+bumpClearedMemberGo : Int -> Maybe Int -> String -> RewriteCtx -> RewriteCtx
+bumpClearedMemberGo newUid maybeMid site ctx0 =
+    let
+        -- Count EVERY reshape, member or not: a zero `cleared` with a zero
+        -- `reshapes` means the sites never fired (broken instrument); a zero
+        -- `cleared` with a nonzero `reshapes` means the reshaped closures
+        -- carried no member to lose (the real answer).
+        mTot =
+            ctx0.metrics
+
+        ctx =
+            { ctx0
+                | metrics =
+                    { mTot
+                        | clearedMembers =
+                            Dict.update ("RESHAPES|" ++ site)
+                                (\v -> Just (1 + Maybe.withDefault 0 v))
+                                mTot.clearedMembers
+                    }
+            }
+    in
+    case maybeMid of
+        Nothing ->
+            ctx
+
+        Just mid ->
+            let
+                m =
+                    ctx.metrics
+
+                key =
+                    String.fromInt newUid ++ "|" ++ String.fromInt mid ++ "|" ++ site
+            in
+            { ctx
+                | metrics =
+                    { m
+                        | clearedMembers =
+                            Dict.update key (\v -> Just (1 + Maybe.withDefault 0 v)) m.clearedMembers
+                    }
+            }
 
 
 bumpBetaForwards : RewriteCtx -> RewriteCtx
@@ -2268,7 +2349,7 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
                                     Nothing ->
                                         ( accDict, specId + 1 )
 
-                                    Just ( params, body ) ->
+                                    Just ( params, body, calleeMember ) ->
                                         let
                                             cost =
                                                 computeCost inlineConfig body
@@ -2334,7 +2415,7 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
                                             ( accDict, specId + 1 )
 
                                         else
-                                            ( Dict.insert specId ( params, body, exactOnly ) accDict, specId + 1 )
+                                            ( Dict.insert specId ( params, body, ( exactOnly, calleeMember ) ) accDict, specId + 1 )
                 )
                 ( Dict.empty, 0 )
                 nodes
@@ -2394,6 +2475,7 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
     , specArities = specArities
     , loopifiables = loopifiables
     , loopifyEnabled = inlineConfig.loopify
+    , reshapeCensusOn = inlineConfig.report
     , kernelFactsDce = inlineConfig.kernelFactsDce
     , registry = registry
     , whitelist = effectiveWhitelist
@@ -2420,6 +2502,7 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
         , arityRaised = 0
         , arityRaiseSkipped = 0
         , inlinedByCallee = Dict.empty
+        , clearedMembers = Dict.empty
         }
     }
 
@@ -3079,7 +3162,8 @@ betaReduce ctx region info closureBody args resultType =
                 }
         in
         ( wrapInLets bindings (MonoClosure newInfo substituted newClosureType) newClosureType
-        , bumpBetaReductions ctx2
+        , bumpBetaReductions
+            (bumpClearedMember (lambdaUid newInfo.lambdaId) info.lssMember "beta" ctx2)
         )
 
     else
@@ -4615,7 +4699,7 @@ tryInlineCall ctx specId args resultType =
             Nothing ->
                 ( Nothing, ctx )
 
-            Just ( params, body, exactOnly ) ->
+            Just ( params, body, ( exactOnly, calleeMember ) ) ->
                 let
                     numParams =
                         List.length params
@@ -4721,7 +4805,8 @@ tryInlineCall ctx specId args resultType =
                             wrapInLetsForInline bindings newClosure newClosureType
                     in
                     ( Just inlined
-                    , recordInline specId ctx3
+                    , recordInline specId
+                        (bumpClearedMember (lambdaUid newLambdaId) calleeMember "tryInline" ctx3)
                     )
 
                 else if numArgs > numParams then
@@ -4770,7 +4855,7 @@ tryInlineCall ctx specId args resultType =
                     )
 
 
-getInlinableBody : MonoNode -> Maybe ( List ( Name, Mono.MonoType ), MonoExpr )
+getInlinableBody : MonoNode -> Maybe ( List ( Name, Mono.MonoType ), MonoExpr, Maybe Int )
 getInlinableBody node =
     case node of
         MonoDefine expr _ ->
@@ -4781,11 +4866,11 @@ getInlinableBody node =
             -- from the terminator-era eco.case design.
             case expr of
                 MonoClosure info body _ ->
-                    Just ( info.params, body )
+                    Just ( info.params, body, info.lssMember )
 
                 _ ->
                     -- Simple define with no parameters (e.g., constants)
-                    Just ( [], expr )
+                    Just ( [], expr, Nothing )
 
         MonoTailFunc _ _ _ ->
             -- Never inline tail-recursive functions. Their bodies contain
@@ -5840,3 +5925,202 @@ inlineVarInDecider name replacement decider =
             Mono.FanOut (inlineVarInDtPath name replacement path)
                 (List.map (\( test, d ) -> ( test, inlineVarInDecider name replacement d )) edges)
                 (inlineVarInDecider name replacement fallback)
+
+
+{-| P0 census, axis 2 weighting (plans/lss-inline-member-propagation.md §7.3):
+the residual lambda UIDs that landed in the `returned` bucket.
+
+These are the only residuals §5 could act on, so they are the join key for the
+dynamic weight: each is emitted as `<Module>_lambda_<uid>` (plus `$cap`/`$clo`),
+and `ECO_DISPATCH_STATS=1` reports generic dispatch keyed by EVALUATOR pointer —
+which is what a stamp at the consuming site would convert to a direct call.
+
+-}
+reshapeReturnedUids : Dict String Int -> Mono.MonoGraph -> List Int
+reshapeReturnedUids cleared graph =
+    reshapeCensusGo cleared graph
+        |> Tuple.second
+        |> List.sort
+
+
+{-| P0 census, axis 2 (plans/lss-inline-member-propagation.md §7.1): classify
+each identity-clearing reshape by the residual's USE SHAPE, which decides
+whether §5 (fresh member + site rewrite) or §6 (sink to the unique application
+site) can take it.
+
+  - `appliedSameFn` — residual in CALLEE position of a call inside the function
+    that created it. §6's population.
+  - `returned` — residual in TAIL position of its node: it IS the result,
+    applied by some caller. §6 cannot cross that boundary; §5 only.
+  - `storedOrMulti` — every other position: a call ARGUMENT, a list/tuple/record
+    element, a non-forwarded let RHS, a non-tail branch. Neither helps.
+
+Walks the WHOLE expression tree. The first version inspected only tail position
+and direct callee position, located 80 of 863 residuals, and silently dropped
+the rest — a limit of the instrument that was reported as if it were a result.
+
+-}
+reshapeCensus : Dict String Int -> Mono.MonoGraph -> Dict String Int
+reshapeCensus cleared graph =
+    Tuple.first (reshapeCensusGo cleared graph)
+
+
+reshapeCensusGo : Dict String Int -> Mono.MonoGraph -> ( Dict String Int, List Int )
+reshapeCensusGo cleared (Mono.MonoGraph record) =
+    let
+        uids =
+            Dict.foldl
+                (\k _ acc ->
+                    if String.startsWith "RESHAPES|" k then
+                        acc
+
+                    else
+                        case String.split "|" k of
+                            u :: _ ->
+                                case String.toInt u of
+                                    Just n ->
+                                        Set.insert n acc
+
+                                    Nothing ->
+                                        acc
+
+                            [] ->
+                                acc
+                )
+                Set.empty
+                cleared
+
+        residualUid e =
+            case e of
+                MonoClosure info _ _ ->
+                    if Set.member (lambdaUid info.lambdaId) uids then
+                        Just (lambdaUid info.lambdaId)
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+
+        bump k ( d, us ) =
+            ( Dict.update k (\v -> Just (1 + Maybe.withDefault 0 v)) d, us )
+
+        -- `returned` additionally records the residual's uid: that list is the
+        -- join key for the dynamic weight (§7.3).
+        bumpAt tail uid acc =
+            case bump (posKey tail) acc of
+                ( d, us ) ->
+                    ( d
+                    , if tail then
+                        uid :: us
+
+                      else
+                        us
+                    )
+
+        goDef def acc =
+            case def of
+                Mono.MonoDef _ bound ->
+                    go False bound acc
+
+                Mono.MonoTailDef _ _ bound ->
+                    go False bound acc
+
+        goDecider tail d acc =
+            case d of
+                Mono.Leaf (Mono.Inline e) ->
+                    go tail e acc
+
+                Mono.Leaf (Mono.Jump _) ->
+                    acc
+
+                Mono.Chain _ ok no ->
+                    goDecider tail no (goDecider tail ok acc)
+
+                Mono.FanOut _ tests fb ->
+                    goDecider tail
+                        fb
+                        (List.foldl (\( _, dd ) a -> goDecider tail dd a) acc tests)
+
+        -- `tail` = this expression's value is the enclosing node's result.
+        -- Classify a residual AT its position, then recurse.
+        go tail e acc =
+            case e of
+                MonoCall _ func args _ _ ->
+                    let
+                        accF =
+                            case residualUid func of
+                                Just _ ->
+                                    bump "appliedSameFn" acc
+
+                                Nothing ->
+                                    go False func acc
+                    in
+                    List.foldl (go False) accF args
+
+                MonoClosure info body _ ->
+                    go True
+                        body
+                        (if Set.member (lambdaUid info.lambdaId) uids then
+                            bumpAt tail (lambdaUid info.lambdaId) acc
+
+                         else
+                            acc
+                        )
+
+                MonoLet def body _ ->
+                    go tail body (goDef def acc)
+
+                MonoDestruct _ inner _ ->
+                    go tail inner acc
+
+                MonoIf branches final _ ->
+                    go tail
+                        final
+                        (List.foldl (\( c, t ) a -> go tail t (go False c a)) acc branches)
+
+                MonoCase _ _ decider branches _ ->
+                    List.foldl (\( _, b ) a -> go tail b a) (goDecider tail decider acc) branches
+
+                MonoList _ items _ ->
+                    List.foldl (go False) acc items
+
+                MonoTupleCreate _ items _ ->
+                    List.foldl (go False) acc items
+
+                MonoRecordCreate fields _ ->
+                    List.foldl (\( _, v ) a -> go False v a) acc fields
+
+                MonoRecordAccess inner _ _ ->
+                    go False inner acc
+
+                MonoRecordUpdate inner ups _ ->
+                    List.foldl (\( _, v ) a -> go False v a) (go False inner acc) ups
+
+                MonoTailCall _ args _ ->
+                    List.foldl (\( _, v ) a -> go False v a) acc args
+
+                _ ->
+                    acc
+
+        posKey tail =
+            if tail then
+                "returned"
+
+            else
+                "storedOrMulti"
+    in
+    Array.foldl
+        (\maybeNode acc ->
+            case maybeNode of
+                Just (MonoDefine expr _) ->
+                    go True expr acc
+
+                Just (MonoTailFunc _ expr _) ->
+                    go True expr acc
+
+                _ ->
+                    acc
+        )
+        ( Dict.empty, [] )
+        record.nodes

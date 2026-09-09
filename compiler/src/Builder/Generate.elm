@@ -930,6 +930,68 @@ renderInlineReportWith inlineConfig m graph =
             ++ String.fromInt m.arityRaiseSkipped
             ++ " closuresRemaining="
             ++ String.fromInt (MonoInlineSimplify.countClosures graph)
+
+        -- P0 (plans/lss-inline-member-propagation.md §7): identity-clearing
+        -- reshapes, and §7.1's use-shape split that decides §5 vs §6.
+        , "inline reshapes (P0 axis 1: identity-clearing reshapes; axis 2: residual use shape): cleared="
+            ++ String.fromInt
+                (Dict.foldl
+                    (\k c a ->
+                        if String.startsWith "RESHAPES|" k then
+                            a
+
+                        else
+                            a + c
+                    )
+                    0
+                    m.clearedMembers
+                )
+            ++ " reshapesTotal="
+            ++ String.fromInt
+                (Dict.foldl
+                    (\k c a ->
+                        if String.startsWith "RESHAPES|" k then
+                            a + c
+
+                        else
+                            a
+                    )
+                    0
+                    m.clearedMembers
+                )
+            ++ " bySite="
+            ++ (Dict.toList m.clearedMembers
+                    |> List.filter (\( k, _ ) -> String.startsWith "RESHAPES|" k)
+                    |> List.map (\( k, c ) -> String.dropLeft 9 k ++ ":" ++ String.fromInt c)
+                    |> String.join ","
+               )
+            ++ " | "
+            ++ (let
+                    axis2 =
+                        MonoInlineSimplify.reshapeCensus m.clearedMembers graph
+
+                    shown =
+                        Dict.toList axis2
+                            |> List.map (\( k, c ) -> k ++ "=" ++ String.fromInt c)
+                            |> String.join " "
+                in
+                if String.isEmpty shown then
+                    "(no residuals located)"
+
+                else
+                    shown
+               )
+        , "inline reshapes RETURNED uids (P0 §7.3 join key for ECO_DISPATCH_STATS): "
+            ++ (let
+                    us =
+                        MonoInlineSimplify.reshapeReturnedUids m.clearedMembers graph
+                in
+                if List.isEmpty us then
+                    "(none)"
+
+                else
+                    String.join "," (List.map String.fromInt us)
+               )
         , "inline top callees: "
             ++ (if String.isEmpty topCallees then
                     "(none)"
