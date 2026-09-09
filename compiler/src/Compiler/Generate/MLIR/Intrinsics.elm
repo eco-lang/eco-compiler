@@ -842,9 +842,40 @@ boxedComparable ty =
             False
 
 
+{-| `ArraySet` from a value type, declining when it is not concrete. Guessing
+a kind for an unknown element is the defect `unsafeGet` above documents.
+-}
+concreteArraySet : Mono.MonoType -> Maybe Intrinsic
+concreteArraySet elt =
+    case elt of
+        Mono.MVar _ _ ->
+            Nothing
+
+        _ ->
+            Just (ArraySet { elementMlirType = Types.monoTypeToAbi elt })
+
+
+{-| The element type of a `JsArray`, if it is recoverable.
+
+**The constructor is `JsArray`, not `Array`.** `Elm.JsArray` declares
+`type JsArray a`, so a monomorphized `JsArray Int` is
+`MCustom _ (elm/core, Elm.JsArray) "JsArray" [ MInt ]` — as the LSS type dump
+spells it, `Xelm core Elm.JsArray JsArray(I)`. Matching only `"Array"` (this
+helper's original spelling, and the spelling in the intrinsic arms' comments)
+therefore never matched anything: `singleton` silently declined to a kernel
+call, and `unsafeGet` was left reading its element kind out of `resultType`,
+which is the defect `plans/pre-mono-inline-simplify.md` §13 root-causes.
+
+`"Array"` is kept because `Array.Array a` is also a one-argument type whose
+argument is its element, so the arm is correct where it does fire.
+
+-}
 arrayElementType : Mono.MonoType -> Maybe Mono.MonoType
 arrayElementType ty =
     case ty of
+        Mono.MCustom _ _ "JsArray" [ elt ] ->
+            Just elt
+
         Mono.MCustom _ _ "Array" [ elt ] ->
             Just elt
 
@@ -867,7 +898,7 @@ jsArrayIntrinsic name argTypes resultType =
 
         "singleton" ->
             -- JsArray.singleton : a -> Array a — element kind from the result
-            -- (resultType = MCustom _ "Array" [elt]); robust when the value
+            -- (resultType = MCustom _ "JsArray" [elt]); robust when the value
             -- arg type is a polymorphic var.
             case ( argTypes, arrayElementType resultType ) of
                 ( [ _ ], Just elt ) ->
@@ -913,21 +944,87 @@ jsArrayIntrinsic name argTypes resultType =
                     Nothing
 
         "unsafeGet" ->
-            -- JsArray.unsafeGet : Int -> Array a -> a
-            -- argTypes = [ MInt, MCustom _ "Array" [elt] ], resultType = elt
+            -- JsArray.unsafeGet : Int -> Array a -> a — element kind from the
+            -- ARRAY ARGUMENT, never from `resultType`.
+            --
+            -- `resultType` is the mono type of the call expression being
+            -- emitted. Inlined into a caller that wants an `i64` that is `MInt`
+            -- and the slot is read unboxed; but when this kernel is emitted as
+            -- a STANDALONE SPEC the same expression is the spec's own declared
+            -- result, which is boxed — so the spec read an unboxed Int slot as
+            -- `!eco.value` and its caller then `eco.unbox`ed a raw int.
+            -- SIGSEGV in the mutator, and only ever reachable when the inliner
+            -- declined this callee (cost 1 against a default budget of 10, so
+            -- it always inlined and the defect stayed hidden).
+            -- `plans/pre-mono-inline-simplify.md` §13 has the two MLIR dumps.
+            --
+            -- The array argument is specialized per element type — a program
+            -- with an `Array Int` and an `Array Float` emits four distinct
+            -- `unsafeGet` specs — so the concrete element is available here.
+            -- `singleton` above already takes this route for the same reason.
+            --
+            -- DECLINE when the element is not concrete rather than defaulting
+            -- to a boxed kind: a boxed default standing in for an unknown
+            -- element kind is exactly the defect above.
             case argTypes of
-                [ Mono.MInt, _ ] ->
-                    Just (ArrayGet { elementMlirType = Types.monoTypeToAbi resultType })
+                [ Mono.MInt, arrayTy ] ->
+                    case arrayElementType arrayTy of
+                        Just (Mono.MVar _ _) ->
+                            -- The element is still a VARIABLE, which is how
+                            -- `unsafeGet`'s own specialization arrives: its
+                            -- array parameter is element-polymorphic, so one
+                            -- spec body serves both boxed and unboxed element
+                            -- kinds. An unboxed slot read cannot be emitted
+                            -- for an unknown kind, so decline and let the
+                            -- generic kernel call — which resolves the kind
+                            -- from the array at runtime — do the read.
+                            Nothing
+
+                        Just elt ->
+                            Just (ArrayGet { elementMlirType = Types.monoTypeToAbi elt })
+
+                        Nothing ->
+                            -- The array's element is not recoverable here.
+                            -- `resultType` is then usable ONLY while it is a
+                            -- concrete UNBOXED primitive: a widened result is
+                            -- exactly the defect above, and an unboxed one
+                            -- cannot have been widened.
+                            if Types.monoTypeToAbi resultType == Types.ecoValue then
+                                Nothing
+
+                            else
+                                Just (ArrayGet { elementMlirType = Types.monoTypeToAbi resultType })
 
                 _ ->
                     Nothing
 
         "unsafeSet" ->
             -- JsArray.unsafeSet : Int -> a -> Array a -> Array a
-            -- argTypes = [ MInt, elt, MCustom _ "Array" [elt] ]
+            -- argTypes = [ MInt, elt, MCustom _ "JsArray" [elt] ]
+            --
+            -- The ARRAY argument is preferred over the value argument for the
+            -- same reason as `unsafeGet` and `singleton`: it is specialized per
+            -- element type, whereas the value argument can arrive as a
+            -- polymorphic var. The value argument stays as the fallback because
+            -- it was the only source before and is correct wherever it is
+            -- concrete; if neither is, decline rather than guess a kind.
             case argTypes of
-                [ Mono.MInt, elt, _ ] ->
-                    Just (ArraySet { elementMlirType = Types.monoTypeToAbi elt })
+                [ Mono.MInt, elt, arrayTy ] ->
+                    case arrayElementType arrayTy of
+                        Just (Mono.MVar _ _) ->
+                            -- Element-polymorphic array (see `unsafeGet`): fall
+                            -- through to the value argument, which is a real
+                            -- argument and may still be concrete.
+                            concreteArraySet elt
+
+                        Just fromArray ->
+                            Just (ArraySet { elementMlirType = Types.monoTypeToAbi fromArray })
+
+                        Nothing ->
+                            -- Unlike `unsafeGet`, the value argument here IS
+                            -- the element, and it is an ARGUMENT — never a
+                            -- widened spec result — so it stays trustworthy.
+                            concreteArraySet elt
 
                 _ ->
                     Nothing

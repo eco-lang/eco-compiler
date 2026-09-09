@@ -1,5 +1,5 @@
 module Compiler.GlobalOpt.MonoInlineSimplify exposing
-    ( Metrics, optimize, buildBodyLookup, countClosures
+    ( Metrics, emptyMetrics, optimize, buildBodyLookup, countClosures
     , functionResultCensus, reshapeCensus, reshapeReturnedUids, residualTaxonomy
     )
 
@@ -19,7 +19,7 @@ Key optimizations:
   - Dead code elimination (incl. chain-aware dead closure bindings)
   - Case simplifications
 
-@docs Metrics, optimize, buildBodyLookup, countClosures
+@docs Metrics, emptyMetrics, optimize, buildBodyLookup, countClosures
 
 -}
 
@@ -75,6 +75,10 @@ type alias Metrics =
     , arityRaised : Int
     , arityRaiseSkipped : Int
     , inlinedByCallee : Dict String Int
+
+    -- P0 (plans/pre-mono-inline-simplify.md §8): distinct SOURCE call sites
+    -- inlined — see `InternalMetrics.inlineSourceSites`.
+    , inlineSourceSites : Dict String Int
 
     -- P0 census (plans/lss-inline-member-propagation.md §7): every reshape that
     -- CLEARED an LSS member, keyed `<newLambdaUid>|<clearedMemberId>|<site>`.
@@ -1454,6 +1458,12 @@ type alias InternalMetrics =
 
     -- P0 census, mirrors `Metrics.clearedMembers`.
     , clearedMembers : Dict String Int
+
+    -- P0 for plans/pre-mono-inline-simplify.md §8: distinct SOURCE call sites
+    -- inlined, keyed `<callee qualified name>|<caller region>`. A pre-mono
+    -- inliner visits each of these ONCE; `inlineCount` counts them once per
+    -- specialization. The ratio is the redundancy this plan is about.
+    , inlineSourceSites : Dict String Int
     }
 
 
@@ -1482,6 +1492,32 @@ bumpBetaReductions ctx =
             ctx.metrics
     in
     { ctx | metrics = { m | betaReductions = m.betaReductions + 1 } }
+
+
+{-| All-zero metrics — what `optimize` would report having done nothing. Used
+when `inline.postMono` is off (plans/pre-mono-inline-simplify.md §7's EARLY
+arm), so the report renders honest zeroes rather than stale numbers.
+-}
+emptyMetrics : Metrics
+emptyMetrics =
+    { inlineCount = 0
+    , betaReductions = 0
+    , betaForwards = 0
+    , partialMerges = 0
+    , hofLoopified = 0
+    , loopifiable = 0
+    , letEliminations = 0
+    , kernelLetDCE = 0
+    , deadLets = 0
+    , deadBareKernelVar = 0
+    , deadDroppableKernelLets = 0
+    , closureDCE = 0
+    , arityRaised = 0
+    , arityRaiseSkipped = 0
+    , inlinedByCallee = Dict.empty
+    , clearedMembers = Dict.empty
+    , inlineSourceSites = Dict.empty
+    }
 
 
 {-| The integer inside a `LambdaId` — the P0 census key for a residual
@@ -1606,6 +1642,41 @@ bumpClosureDCE ctx =
             ctx.metrics
     in
     { ctx | metrics = { m | closureDCE = m.closureDCE + 1 } }
+
+
+{-| Render a call-site region as a P0 key component
+(plans/pre-mono-inline-simplify.md §8). Two specializations of ONE source call
+site share their region, so this collapses them.
+-}
+regionKey : A.Region -> String
+regionKey (A.Region (A.Position r1 c1) (A.Position r2 c2)) =
+    String.fromInt r1 ++ ":" ++ String.fromInt c1 ++ "-" ++ String.fromInt r2 ++ ":" ++ String.fromInt c2
+
+
+recordInlineAt : A.Region -> SpecId -> RewriteCtx -> RewriteCtx
+recordInlineAt region specId ctx0 =
+    let
+        ctx =
+            recordInline specId ctx0
+
+        m =
+            ctx.metrics
+
+        calleeKey =
+            Array.get specId ctx.registry.reverseMapping
+                |> Maybe.andThen identity
+                |> Maybe.andThen (\( g, _ ) -> globalToQualifiedName g)
+                |> Maybe.withDefault ("spec:" ++ String.fromInt specId)
+    in
+    { ctx
+        | metrics =
+            { m
+                | inlineSourceSites =
+                    Dict.update (calleeKey ++ "|" ++ regionKey region)
+                        (\v -> Just (1 + Maybe.withDefault 0 v))
+                        m.inlineSourceSites
+            }
+    }
 
 
 {-| Record a successful direct-call inline: global count, per-callee tally,
@@ -2503,6 +2574,7 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
         , arityRaiseSkipped = 0
         , inlinedByCallee = Dict.empty
         , clearedMembers = Dict.empty
+        , inlineSourceSites = Dict.empty
         }
     }
 
@@ -2707,7 +2779,7 @@ rewriteExpr ctx expr =
                 Nothing ->
                     let
                         ( maybeInlined, ctx1 ) =
-                            tryInlineCall ctx specId args resultType
+                            tryInlineCall region ctx specId args resultType
                     in
                     case maybeInlined of
                         Just inlinedExpr ->
@@ -4687,8 +4759,8 @@ renameLocalInDecider oldName newName decider =
 -- ============================================================================
 
 
-tryInlineCall : RewriteCtx -> SpecId -> List MonoExpr -> Mono.MonoType -> ( Maybe MonoExpr, RewriteCtx )
-tryInlineCall ctx specId args resultType =
+tryInlineCall : Region -> RewriteCtx -> SpecId -> List MonoExpr -> Mono.MonoType -> ( Maybe MonoExpr, RewriteCtx )
+tryInlineCall callRegion ctx specId args resultType =
     -- Check budget
     if ctx.inlineCountThisFunction >= ctx.maxInlinesPerFunction then
         ( Nothing, ctx )
@@ -4759,7 +4831,7 @@ tryInlineCall ctx specId args resultType =
                                 MonoCall A.zero remappedBody args resultType Mono.defaultCallInfo
                         in
                         ( Just inlined
-                        , recordInline specId ctx1
+                        , recordInlineAt callRegion specId ctx1
                         )
 
                 else if numArgs < numParams then
@@ -4831,7 +4903,7 @@ tryInlineCall ctx specId args resultType =
                             MonoCall A.zero innerExpr extraArgs resultType Mono.defaultCallInfo
                     in
                     ( Just inlined
-                    , recordInline specId ctx3
+                    , recordInlineAt callRegion specId ctx3
                     )
 
                 else
@@ -4851,7 +4923,7 @@ tryInlineCall ctx specId args resultType =
                             wrapInLetsForInline bindings substituted resultType
                     in
                     ( Just inlined
-                    , recordInline specId ctx3
+                    , recordInlineAt callRegion specId ctx3
                     )
 
 

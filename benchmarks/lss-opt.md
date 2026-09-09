@@ -1269,6 +1269,33 @@ NOT recommended for a default flip on this evidence. `ECO_INLINE_THRESHOLD=<n>` 
 (env for the existing `inline.threshold`); at 20 it misses `andThen` entirely (cost > 20), inlines
 18,374 unrelated specs, and costs +5.04 % dispatch — the blunt sibling, kept only as a tuning knob.
 
+### 2026-09-09 — Run AS: inliner POSITION A/B (pre-mono vs post-mono), exactly one active per arm
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| LATE (default: `postMono=1`) | **7:57.91** (477.9 s) | 13,625,088 kB | 2,109 | 9 | 740,505,639 (22,194 MiB) | 153.63 s | 15,620,406 B |
+| EARLY (`preMono=1 postMono=0`) | **7:54.87** (474.9 s) | 13,497,284 kB | 2,099 | 9 | 737,137,559 (22,078 MiB) | 152.05 s | 14,078,626 B |
+
+| axis | LATE | EARLY |
+|---|---|---|
+| inlines performed | 65,949 | **969** |
+| candidates / refused polymorphic / over budget | — | 498 / **2,738** / 2,098 |
+| `dispatchUpgraded` | 17,435 | 18,009 |
+| `declinedNoInstance` / `declinedBlocked` | 14,133 / 6,622 | 29,859 / 10,596 |
+| `multiInstanceGroups` / `instQual flatStamped` | 3,700 / 10,743 | 1,939 / 11,832 |
+
+New pass `Compiler.GlobalOpt.InlineSimplify` (`ECO_INLINE_PRE_MONO=1`) plus `ECO_INLINE_POST_MONO=0`
+gating the existing pass; both DEFAULT unchanged, and the compiler is at a bootstrap fixed point at
+defaults (byte-identical `.mlir`). Wall −0.6 % and every GC counter within 0.5 % — FLAT, no
+regression detected and no win. **The wall comparison is NOT attributable to position**: the two
+arms' `out.mlir` differ by 9.9 %, because EARLY performs 969 inlines against LATE's 65,949. The cause
+is not budget but soundness — every `TOpt` node carries its solver variable, so copying a polymorphic
+body pre-monomorphization makes two call sites' instantiations meet at one variable
+(observed: `unify-fail (List<?a> -> List<?a>) /vs/ (Int -> Int)`), and the pass therefore admits only
+fully-monomorphic candidates: 2,738 of 3,236 are refused on that ground alone. `declinedNoInstance`
+doubling is the expected shadow of 65k inlines not happening, not an LSS effect.
+`plans/pre-mono-inline-simplify.md` §11.2 carries the argument.
+
 ---
 
 ## Summary
@@ -1324,3 +1351,5 @@ One row per run, numbers only.
 | AQ | 458.0 | 2096 | 8 | 21911 |
 | AR-off | 467.9 | 2097 | 9 | 21984 |
 | AR-on | 477.9 | 2097 | 9 | 22005 |
+| AS-late | 477.9 | 2109 | 9 | 22194 |
+| AS-early | 474.9 | 2099 | 9 | 22078 |

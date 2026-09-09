@@ -984,6 +984,19 @@ type alias InlineConfig =
     -- under-threshold candidates already inline partially). Artifact-affecting;
     -- hash token `phof=1`; env `ECO_INLINE_PARTIAL_HOF=1`. DEFAULT-OFF.
     , partialHof : Bool
+
+    -- INLINER POSITION (plans/pre-mono-inline-simplify.md). `postMono` gates
+    -- the existing `MonoInlineSimplify` (after monomorphization); `preMono`
+    -- gates the new `InlineSimplify` (before it, on the TOpt IR). Both
+    -- artifact-affecting; hash tokens `preInl=` / `postInl=`.
+    --
+    -- The A/B is a POSITION test: exactly one is on in each arm, with every
+    -- other inline setting held constant, so the variable is WHERE the inliner
+    -- runs and not how much inlining happens.
+    --
+    -- Defaults preserve today's behaviour: preMono OFF, postMono ON.
+    , preMono : Bool
+    , postMono : Bool
     , report : Bool
     , kernelFactsDce : Bool -- kernel-opt-11 (a): let the dead-binding gate drop a dead kernel call whose KernelFacts row is `droppable` (cseSafe AND totality == Total, and every argument pure). DEFAULT-ON since 2026-08-12 (realizable ceiling on the whole 261-module self-compile is FOUR sites, of which 2 realize -- it ships for the enabling value and for ending the isPureExpr/CafHoist contradiction, NOT for a measured win); env kill switch ECO_KERNEL_FACTS_DCE=0; artifact-affecting (hash token "kfdce=1"). Widens ONLY MonoInlineSimplify's dead-let gate -- the H2.5/H6.1 partial-forward guards keep the legacy all-calls-impure predicate
     , kernelCostClasses : Bool -- kernel-opt-11 (b): price a kernel call from its derived KernelFacts cost class (and from whether it lowers to an inline op) instead of the flat 6-per-call the inliner uses today. DEFAULT-ON since 2026-08-12 (changes real inlining decisions -- emitted .mlir +1,341 B, letDCE 498->441 -- wall FLAT at +0.56%); env kill switch ECO_KERNEL_COST_CLASSES=0; artifact-affecting (hash token "kcc=<i>/<g>/<a>/<h>", the whole vector, so every A/B leg is cache-disjoint). Independent of kernelFactsDce ON PURPOSE -- DCE deletes work, cost classes move inliner thresholds, and a shared flag would make per-constant attribution impossible
@@ -1075,6 +1088,8 @@ default =
         -- The M3 census sweep picks any nonzero default.
         , raiseAppliedShareMin = 0
         , partialHof = False
+        , preMono = False
+        , postMono = True
         , report = False
         , kernelFactsDce = True
 
@@ -1189,6 +1204,8 @@ inlineDecoder =
         |> D.apply (D.optionalField "arityRaise" D.bool default.inline.arityRaise)
         |> D.apply (D.optionalField "raiseAppliedShareMin" D.int default.inline.raiseAppliedShareMin)
         |> D.apply (D.optionalField "partialHof" D.bool default.inline.partialHof)
+        |> D.apply (D.optionalField "preMono" D.bool default.inline.preMono)
+        |> D.apply (D.optionalField "postMono" D.bool default.inline.postMono)
         |> D.apply (D.optionalField "report" D.bool default.inline.report)
         |> D.apply (D.optionalField "kernelFactsDce" D.bool default.inline.kernelFactsDce)
         |> D.apply (D.optionalField "kernelCostClasses" D.bool default.inline.kernelCostClasses)
@@ -1426,6 +1443,20 @@ hash cfg =
          , "thr=" ++ String.fromInt cfg.inline.threshold
          , "phof="
             ++ (if cfg.inline.partialHof then
+                    "1"
+
+                else
+                    "0"
+               )
+         , "preInl="
+            ++ (if cfg.inline.preMono then
+                    "1"
+
+                else
+                    "0"
+               )
+         , "postInl="
+            ++ (if cfg.inline.postMono then
                     "1"
 
                 else

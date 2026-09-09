@@ -73,6 +73,7 @@ import Compiler.GlobalOpt.CafCensus as CafCensus
 import Compiler.GlobalOpt.CafDedupe as CafDedupe
 import Compiler.GlobalOpt.CafHoist as CafHoist
 import Compiler.GlobalOpt.CseCensus as CseCensus
+import Compiler.GlobalOpt.InlineSimplify as InlineSimplify
 import Compiler.GlobalOpt.ListCombinators as ListCombinators
 import Compiler.GlobalOpt.MapTemplate as MapTemplate
 import Compiler.GlobalOpt.MonoCse as MonoCse
@@ -739,9 +740,39 @@ through subsequent phases where they are no longer needed.
 -}
 runMonoOptPipeline : Config.EcoConfig -> FEStats.Handle -> TOpt.GlobalGraph Name -> TypeEnv.GlobalTypeEnv -> Task Exit.Generate MonoBuildResult
 runMonoOptPipeline ecoConfig stats typedGraph globalTypeEnv =
+    let
+        -- PRE-MONO inliner (plans/pre-mono-inline-simplify.md). Default OFF;
+        -- `ECO_INLINE_PRE_MONO=1` is the EARLY arm of the position A/B, which
+        -- pairs it with `ECO_INLINE_POST_MONO=0`.
+        ( inlinedTypedGraph, preInlineMetrics ) =
+            if ecoConfig.inline.preMono then
+                InlineSimplify.optimize ecoConfig.inline typedGraph
+
+            else
+                ( typedGraph, InlineSimplify.emptyMetrics )
+
+        preInlineReport =
+            if ecoConfig.inline.report then
+                Task.io
+                    (System.IO.writeLn System.IO.stderr
+                        (renderPreInlineReport preInlineMetrics)
+                    )
+
+            else
+                Task.succeed ()
+    in
+    preInlineReport
+        |> Task.andThen
+            (\_ ->
+                monoPipelineFrom ecoConfig stats globalTypeEnv inlinedTypedGraph
+            )
+
+
+monoPipelineFrom : Config.EcoConfig -> FEStats.Handle -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Task Exit.Generate MonoBuildResult
+monoPipelineFrom ecoConfig stats globalTypeEnv inlinedTypedGraph =
     FEStats.withPhase stats
         FEStats.PhaseMono
-        (case selectMonomorphizer ecoConfig globalTypeEnv typedGraph of
+        (case selectMonomorphizer ecoConfig globalTypeEnv inlinedTypedGraph of
             Err err ->
                 Task.throw (Exit.GenerateMonomorphizationError err)
 
@@ -854,8 +885,16 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
                         in
                         { cfg | blacklist = cfg.blacklist ++ extra }
 
+            -- `inline.postMono` (ECO_INLINE_POST_MONO=0) is the EARLY arm of
+            -- the position A/B (plans/pre-mono-inline-simplify.md §7): it
+            -- skips this pass so the pre-mono `InlineSimplify` is the only
+            -- inliner running. DEFAULT-ON, so the default path is unchanged.
             ( simplifiedGraph, inlineMetrics ) =
-                MonoInlineSimplify.optimize effectiveInlineConfig monoGraph0
+                if ecoConfig.inline.postMono then
+                    MonoInlineSimplify.optimize effectiveInlineConfig monoGraph0
+
+                else
+                    ( monoGraph0, MonoInlineSimplify.emptyMetrics )
          in
          if ecoConfig.inline.report then
             -- Inline census (inline.report / ECO_INLINE_REPORT=1): pass
@@ -872,6 +911,36 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
         )
         -- Hand off to a separate function so monoGraph0 goes out of scope
         |> Task.andThen (runGlobalOptPhase ecoConfig ecoConfig.mono.lss.report ecoConfig.list.report ecoConfig.borrow ecoConfig.cafMemo ecoConfig.cse stats)
+
+
+{-| Census line for the PRE-mono inliner (`plans/pre-mono-inline-simplify.md`).
+Deliberately mirrors the `inline-simplify:` line's leading fields so the two
+positions can be diffed directly.
+-}
+renderPreInlineReport : InlineSimplify.Metrics -> String
+renderPreInlineReport m =
+    let
+        topCallees =
+            Dict.toList m.inlinedByCallee
+                |> List.sortBy (\( _, n ) -> negate n)
+                |> List.take 20
+                |> List.map (\( callee, n ) -> callee ++ "=" ++ String.fromInt n)
+                |> String.join " "
+    in
+    "pre-inline-simplify: inlined="
+        ++ String.fromInt m.inlineCount
+        ++ " candidates="
+        ++ String.fromInt m.candidates
+        ++ " recursiveSkipped="
+        ++ String.fromInt m.recursiveSkipped
+        ++ " overBudget="
+        ++ String.fromInt m.overBudget
+        ++ " polymorphic="
+        ++ String.fromInt m.polymorphic
+        ++ " bodiesSeen="
+        ++ String.fromInt m.bodiesSeen
+        ++ "\n  top: "
+        ++ topCallees
 
 
 renderInlineReport : MonoInlineSimplify.Metrics -> Mono.MonoGraph -> String
@@ -992,6 +1061,12 @@ renderInlineReportWith inlineConfig m graph =
                 else
                     String.join "," (List.map String.fromInt us)
                )
+        , "inline P0 redundancy (plans/pre-mono-inline-simplify.md §8): inlines="
+            ++ String.fromInt m.inlineCount
+            ++ " distinctSourceSites="
+            ++ String.fromInt (Dict.size m.inlineSourceSites)
+            ++ " distinctCallees="
+            ++ String.fromInt (Dict.size m.inlinedByCallee)
         , "inline top callees: "
             ++ (if String.isEmpty topCallees then
                     "(none)"

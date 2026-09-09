@@ -363,6 +363,16 @@ applyEnvOverrides cfg =
                     |> Task.map (\thrVal -> applyInlineThresholdOverride thrVal cfgThr)
             )
         |> Task.andThen
+            (\cfgPre ->
+                (Utils.envLookupEnv "ECO_INLINE_PRE_MONO" |> Task.mapError never)
+                    |> Task.map (\v -> applyInlinePreMonoOverride v cfgPre)
+            )
+        |> Task.andThen
+            (\cfgPost ->
+                (Utils.envLookupEnv "ECO_INLINE_POST_MONO" |> Task.mapError never)
+                    |> Task.map (\v -> applyInlinePostMonoOverride v cfgPost)
+            )
+        |> Task.andThen
             (\cfg12 ->
                 (Utils.envLookupEnv "ECO_CAF_MEMO" |> Task.mapError never)
                     |> Task.map (\cmVal -> applyCafMemoOverride cmVal cfg12)
@@ -1775,6 +1785,57 @@ applyInlineThresholdOverride maybeVal cfg =
                     cfg.inline
             in
             { cfg | inline = { inline | threshold = max 0 n } }
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_INLINE_PRE_MONO=1|true|yes`: run `InlineSimplify` BEFORE
+monomorphization (plans/pre-mono-inline-simplify.md). Artifact-affecting; hash
+token `preInl=`. DEFAULT-OFF.
+-}
+applyInlinePreMonoOverride : Maybe String -> EcoConfig -> EcoConfig
+applyInlinePreMonoOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            let
+                inline =
+                    cfg.inline
+            in
+            if List.member v [ "1", "true", "yes" ] then
+                { cfg | inline = { inline | preMono = True } }
+
+            else if List.member v [ "0", "false", "no" ] then
+                { cfg | inline = { inline | preMono = False } }
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_INLINE_POST_MONO=0|false|no`: skip `MonoInlineSimplify`, the existing
+inliner that runs AFTER monomorphization. Artifact-affecting; hash token
+`postInl=`. DEFAULT-ON, so `=0` is the interesting setting — it is the EARLY arm
+of the position A/B (plans/pre-mono-inline-simplify.md §7).
+-}
+applyInlinePostMonoOverride : Maybe String -> EcoConfig -> EcoConfig
+applyInlinePostMonoOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            let
+                inline =
+                    cfg.inline
+            in
+            if List.member v [ "1", "true", "yes" ] then
+                { cfg | inline = { inline | postMono = True } }
+
+            else if List.member v [ "0", "false", "no" ] then
+                { cfg | inline = { inline | postMono = False } }
+
+            else
+                cfg
 
         Nothing ->
             cfg
