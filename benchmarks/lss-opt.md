@@ -1296,6 +1296,32 @@ fully-monomorphic candidates: 2,738 of 3,236 are refused on that ground alone. `
 doubling is the expected shadow of 65k inlines not happening, not an LSS effect.
 `plans/pre-mono-inline-simplify.md` §11.2 carries the argument.
 
+### 2026-09-10 — Run AT: inliner POSITION A/B re-run, both arms now CORRECT programs
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| B: LATE (default `postMono=1`) | **7:52.28** (472.3 s) | 13,726,496 kB | 2,111 | 9 | 741,671,060 (22,223 MiB) | 148.67 s | 15,646,289 B |
+| A: EARLY (`preMono=1 postMono=0`) | **7:54.87** (474.9 s) | 13,614,152 kB | 2,100 | 9 | 738,031,461 (22,096 MiB) | 148.94 s | 14,098,147 B |
+
+| axis | B: LATE | A: EARLY |
+|---|---|---|
+| inlines performed | 65,949 | 1,416 |
+| `dispatchUpgraded` / `stampedPapGlobal` | 17,481 / 2,185 | 18,065 / 2,254 |
+| `declinedNoInstance` / `declinedBlocked` | 14,162 / 6,619 | 29,897 / 10,595 |
+| `multiInstanceGroups` | 3,696 | 1,923 |
+| `slotsMinted` / `joins identical` | 835,295 / 84,224 | 833,989 / 84,216 |
+
+Re-run of Run AS now that both arms produce WORKING compilers: §13 fixed a shipped miscompile
+(`JsArray.unsafeGet` read its element kind from `resultType`, so a non-inlined spec read an unboxed
+Int slot as boxed) and §12 taught the pre-mono pass to copy polymorphic bodies by substituting the
+call site's types. Both arms are 887/889 on E2E, against 880/889 for EARLY at Run AS. Wall +0.55 %
+and every GC counter within 0.6 % — FLAT, no regression and no win. **Still not a position
+measurement**: `out.mlir` differs by 9.9 % because EARLY performs 1,416 inlines against LATE's
+65,949, so the arms differ in AMOUNT as well as position. EARLY's ceiling is now `determines` —
+1,506 calls declined because the call site does not pin the callee's type variables before
+monomorphization — not budget, and nothing in this pass can lift it. `declinedNoInstance` doubling
+is the expected shadow of 64k inlines not happening; `plans/pre-mono-inline-simplify.md` §15 argues.
+
 ---
 
 ## Summary
@@ -1353,3 +1379,5 @@ One row per run, numbers only.
 | AR-on | 477.9 | 2097 | 9 | 22005 |
 | AS-late | 477.9 | 2109 | 9 | 22194 |
 | AS-early | 474.9 | 2099 | 9 | 22078 |
+| AT-late | 472.3 | 2111 | 9 | 22223 |
+| AT-early | 474.9 | 2100 | 9 | 22096 |
