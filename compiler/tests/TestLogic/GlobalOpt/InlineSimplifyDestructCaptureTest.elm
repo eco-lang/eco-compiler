@@ -42,6 +42,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.AST.TypedOptimized as TOpt
+import Compiler.AST.TypeIds as TypeIds
 import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
 import Compiler.Reporting.Annotation as A
@@ -57,14 +58,14 @@ suite =
     Test.describe "InlineSimplify destructure-binder capture"
         [ Test.test "an inlined Destruct binder does not shadow a caller binder" <|
             \_ ->
-                case Pipeline.runToMono captureModule of
+                case Pipeline.runToAssigned captureModule of
                     Err msg ->
                         Expect.fail msg
 
-                    Ok { globalGraph } ->
+                    Ok assigned ->
                         let
-                            ( after, _ ) =
-                                InlineSimplify.optimize inlineConfig globalGraph
+                            ( after, _, _ ) =
+                                InlineSimplify.optimize inlineConfig assigned.mvarState assigned.graph
 
                             dupes =
                                 duplicateBinders after
@@ -92,7 +93,7 @@ inlineConfig =
 {-| Names bound more than once inside a single top-level body. A correct
 copy-and-rename never produces one; capture always does.
 -}
-duplicateBinders : TOpt.GlobalGraph Name -> List String
+duplicateBinders : TOpt.GlobalGraph TypeIds.MVarId -> List String
 duplicateBinders (TOpt.GlobalGraph nodes _ _ _ _) =
     Data.Map.foldl TOpt.compareGlobal
         (\g node acc ->
@@ -112,7 +113,7 @@ duplicateBinders (TOpt.GlobalGraph nodes _ _ _ _) =
         nodes
 
 
-bodyExpr : TOpt.Node Name -> Maybe (TOpt.Expr Name)
+bodyExpr : TOpt.Node TypeIds.MVarId -> Maybe (TOpt.Expr TypeIds.MVarId)
 bodyExpr node =
     case node of
         TOpt.Define e _ _ ->
@@ -145,7 +146,7 @@ repeated names =
 `Case` deciders — the fixture has none, and a decider's jump targets legally
 reuse names.
 -}
-binders : TOpt.Expr Name -> List String
+binders : TOpt.Expr TypeIds.MVarId -> List String
 binders expr =
     case expr of
         TOpt.Let def body _ ->
@@ -179,7 +180,7 @@ binders expr =
             []
 
 
-defBinders : TOpt.Def Name -> List String
+defBinders : TOpt.Def TypeIds.MVarId -> List String
 defBinders def =
     case def of
         TOpt.Def _ n bound _ ->

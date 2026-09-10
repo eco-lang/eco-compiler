@@ -1,6 +1,7 @@
 module Compiler.Monomorphize.Monomorphize exposing
     ( monomorphize
     , monomorphizeWithLimits
+    , monomorphizeWithLimitsAssigned
     )
 
 {-| This module transforms a TypedOptimized.GlobalGraph into a Monomorphized.MonoGraph
@@ -20,6 +21,7 @@ The monomorphization algorithm works as follows:
 # Monomorphization
 
 @docs monomorphize
+@docs monomorphizeWithLimits, monomorphizeWithLimitsAssigned
 
 -}
 
@@ -84,29 +86,39 @@ carries the error with no threading through `Specialize`'s internals.
 -}
 monomorphizeWithLimits : Config.SpecLimits -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
 monomorphizeWithLimits limits entryPointName globalTypeEnv globalGraph =
-    let
-        -- Phase 5 (flags): if the entry has type `Program flags model msg`,
-        -- synthesize its flags decoder as an extra top-level node BEFORE
-        -- MVarId assignment so it is rewritten along with everything else.
-        -- The decoder spec is registered at startup by the generated
-        -- preamble via Elm_Kernel_Platform_registerFlagsDecoder; initWorker
-        -- runs it against the host-supplied flags JSON.
-        ( graphWithFlags, maybeFlagsGlobal ) =
-            EntryPrep.insertFlagsDecoderNode entryPointName globalGraph
+    -- Phase 5 (flags) + Phase 0 (MVarId assignment) both live in
+    -- `EntryPrep.assign`: the flags decoder is synthesized BEFORE assignment so
+    -- it is rewritten along with everything else. The decoder spec is
+    -- registered at startup by the generated preamble via
+    -- Elm_Kernel_Platform_registerFlagsDecoder; initWorker runs it against the
+    -- host-supplied flags JSON. This engine assigns with `( False, False )` —
+    -- changing those flags would move its output.
+    monomorphizeWithLimitsAssigned limits
+        entryPointName
+        globalTypeEnv
+        (EntryPrep.assign ( False, False ) entryPointName globalGraph)
 
-        -- Phase 0: Assign globally unique MVarIds to all type variables
-        ( TOpt.GlobalGraph nodesWithIds _ annotationsWithIds _ _, mvarState ) =
-            AssignMVarIds.assignIds False False graphWithFlags
+
+{-| `monomorphizeWithLimits` on a graph that has ALREADY been through
+`AssignMVarIds` — the entry the Builder uses, because the pre-mono passes
+(`plans/pre-mono-lss-transforms.md`) run on the assigned graph. The Name-typed
+entry above is a wrapper, so every existing caller and test is unchanged.
+-}
+monomorphizeWithLimitsAssigned : Config.SpecLimits -> Name -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Result String Mono.MonoGraph
+monomorphizeWithLimitsAssigned limits entryPointName globalTypeEnv assigned =
+    let
+        (TOpt.GlobalGraph nodesWithIds _ annotationsWithIds _ _) =
+            assigned.graph
 
         mvarEnv =
-            State.initMVarEnv mvarState.nextId mvarState.superVars
+            State.initMVarEnv assigned.mvarState.nextId assigned.mvarState.superVars
     in
     case EntryPrep.findEntryPointId entryPointName nodesWithIds of
         Nothing ->
             Err ("No " ++ entryPointName ++ " function found")
 
         Just ( mainGlobal, mainType ) ->
-            monomorphizeFromEntryWith limits maybeFlagsGlobal mainGlobal mainType globalTypeEnv nodesWithIds annotationsWithIds mvarEnv
+            monomorphizeFromEntryWith limits assigned.flagsGlobal mainGlobal mainType globalTypeEnv nodesWithIds annotationsWithIds mvarEnv
 
 
 monomorphizeFromEntryWith : Config.SpecLimits -> Maybe TOpt.Global -> TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> Result String Mono.MonoGraph

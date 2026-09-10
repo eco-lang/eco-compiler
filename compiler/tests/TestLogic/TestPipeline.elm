@@ -14,6 +14,7 @@ module TestLogic.TestPipeline exposing
     , runSolverMonoWithLimits
     , runSolverMonoWithReport
     , runSubstMonoWithLimits
+    , runToAssigned
     , runToGlobalOpt
     , runToGlobalOptLssArrowIdOn
     , runToGlobalOptLssKeyedOn
@@ -66,6 +67,7 @@ import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.LocalOpt.Typed.Module as TypedOptimize
 import Compiler.MonoSolver.Monomorphize as MonoSolver
+import Compiler.Monomorphize.EntryPrep as EntryPrep
 import Compiler.Monomorphize.Monomorphize as Monomorphize
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Result as RResult
@@ -366,6 +368,25 @@ runToMono srcModule =
                         , globalTypeEnv = globalTypeEnv
                         , monoGraph = monoGraph
                         }
+
+
+{-| `runToMono`'s graph after `AssignMVarIds` — the shape the PRE-MONO passes
+operate on since
+`plans/pre-mono-lss-transforms-00-assign-mvar-ids-first.md`.
+
+`Builder.Generate.runMonoOptPipeline` calls `EntryPrep.assign` and hands the
+result to `InlineSimplify.optimize`; a test that wants to exercise a pre-mono
+pass must do the same, because the passes are no longer Name-typed.
+
+The `( False, False )` assignment flags match the subst engine and the test
+harness's own `monomorphizeAny`; a solver-flag test would pass its own.
+
+-}
+runToAssigned : Src.Module -> Result String EntryPrep.Assigned
+runToAssigned srcModule =
+    Result.map
+        (\artifacts -> EntryPrep.assign ( False, False ) "main" artifacts.globalGraph)
+        (runToMono srcModule)
 
 
 {-| Run pipeline through global optimization.

@@ -33,6 +33,7 @@ import Compiler.AST.SourceBuilder
         )
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedOptimized as TOpt
+import Compiler.AST.TypeIds as TypeIds
 import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
 import Compiler.GlobalOpt.InlineSimplify as InlineSimplify
@@ -151,16 +152,17 @@ budgetSuite =
     Test.describe "Budget"
         [ Test.test "threshold 0 admits nothing and inlines nothing" <|
             \_ ->
-                case Pipeline.runToMono addOneModule of
+                case Pipeline.runToAssigned addOneModule of
                     Err msg ->
                         Expect.fail msg
 
-                    Ok { globalGraph } ->
+                    Ok assigned ->
                         let
-                            ( _, m ) =
+                            ( _, _, m ) =
                                 InlineSimplify.optimize
                                     { inlineConfig | threshold = 0 }
-                                    globalGraph
+                                    assigned.mvarState
+                                    assigned.graph
                         in
                         Expect.equal ( 0, 0 ) ( m.candidates, m.inlineCount )
         ]
@@ -184,29 +186,36 @@ defaultInline =
 
 withMetrics : Src.Module -> (InlineSimplify.Metrics -> Expect.Expectation) -> Expect.Expectation
 withMetrics srcModule check =
-    case Pipeline.runToMono srcModule of
+    case Pipeline.runToAssigned srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok { globalGraph } ->
-            check (Tuple.second (InlineSimplify.optimize inlineConfig globalGraph))
+        Ok assigned ->
+            let
+                ( _, _, m ) =
+                    InlineSimplify.optimize inlineConfig assigned.mvarState assigned.graph
+            in
+            check m
 
 
 withGraphs :
     Src.Module
-    -> (TOpt.GlobalGraph Name -> TOpt.GlobalGraph Name -> Expect.Expectation)
+    -> (TOpt.GlobalGraph TypeIds.MVarId -> TOpt.GlobalGraph TypeIds.MVarId -> Expect.Expectation)
     -> Expect.Expectation
 withGraphs srcModule check =
-    case Pipeline.runToMono srcModule of
+    case Pipeline.runToAssigned srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok { globalGraph } ->
-            check globalGraph
-                (Tuple.first (InlineSimplify.optimize inlineConfig globalGraph))
+        Ok assigned ->
+            let
+                ( after, _, _ ) =
+                    InlineSimplify.optimize inlineConfig assigned.mvarState assigned.graph
+            in
+            check assigned.graph after
 
 
-nodeCount : TOpt.GlobalGraph Name -> Int
+nodeCount : TOpt.GlobalGraph TypeIds.MVarId -> Int
 nodeCount (TOpt.GlobalGraph nodes _ _ _ _) =
     Data.Map.size nodes
 

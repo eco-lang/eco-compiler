@@ -74,6 +74,7 @@ import Compiler.GlobalOpt.CafDedupe as CafDedupe
 import Compiler.GlobalOpt.CafHoist as CafHoist
 import Compiler.GlobalOpt.CseCensus as CseCensus
 import Compiler.GlobalOpt.InlineSimplify as InlineSimplify
+import Compiler.GlobalOpt.PreMono.Fresh as Fresh
 import Compiler.GlobalOpt.ListCombinators as ListCombinators
 import Compiler.GlobalOpt.MapTemplate as MapTemplate
 import Compiler.GlobalOpt.MonoCse as MonoCse
@@ -81,6 +82,7 @@ import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.MonoSolver.Diff as MonoDiff
 import Compiler.MonoSolver.Monomorphize as MonoSolver
+import Compiler.Monomorphize.EntryPrep as EntryPrep
 import Compiler.Monomorphize.Monomorphize as Monomorphize
 import Compiler.Monomorphize.ValidateLayout as ValidateLayout
 import Compiler.Nitpick.Debug as Nitpick
@@ -741,15 +743,30 @@ through subsequent phases where they are no longer needed.
 runMonoOptPipeline : Config.EcoConfig -> FEStats.Handle -> TOpt.GlobalGraph Name -> TypeEnv.GlobalTypeEnv -> Task Exit.Generate MonoBuildResult
 runMonoOptPipeline ecoConfig stats typedGraph globalTypeEnv =
     let
+        -- PHASE 0 — `AssignMVarIds` now runs HERE, in front of the pre-mono
+        -- passes, so they operate on `MVarId`s rather than on names
+        -- (`plans/pre-mono-lss-transforms-00-assign-mvar-ids-first.md`). It
+        -- also synthesizes the entry's flags decoder, exactly as it did at
+        -- each engine's own entry point. Identity therefore EXISTS during the
+        -- pre-mono passes: anything they create or copy must mint through
+        -- `PreMono.Fresh`, and `validateMinted` checks that under
+        -- `mono.validate`.
+        assigned0 =
+            EntryPrep.assign (assignFlagsFor ecoConfig) "main" typedGraph
+
         -- PRE-MONO inliner (plans/pre-mono-inline-simplify.md). Default OFF;
         -- `ECO_INLINE_PRE_MONO=1` is the EARLY arm of the position A/B, which
         -- pairs it with `ECO_INLINE_POST_MONO=0`.
-        ( inlinedTypedGraph, preInlineMetrics ) =
+        ( assigned1, preInlineMetrics ) =
             if ecoConfig.inline.preMono then
-                InlineSimplify.optimize ecoConfig.inline typedGraph
+                let
+                    ( g1, state1, metrics ) =
+                        InlineSimplify.optimize ecoConfig.inline assigned0.mvarState assigned0.graph
+                in
+                ( { assigned0 | graph = g1, mvarState = state1 }, metrics )
 
             else
-                ( typedGraph, InlineSimplify.emptyMetrics )
+                ( assigned0, InlineSimplify.emptyMetrics )
 
         preInlineReport =
             if ecoConfig.inline.report then
@@ -762,17 +779,59 @@ runMonoOptPipeline ecoConfig stats typedGraph globalTypeEnv =
                 Task.succeed ()
     in
     preInlineReport
+        |> Task.andThen (\_ -> validateMinted ecoConfig assigned1)
         |> Task.andThen
             (\_ ->
-                monoPipelineFrom ecoConfig stats globalTypeEnv inlinedTypedGraph
+                monoPipelineFrom ecoConfig stats globalTypeEnv assigned1
             )
 
 
-monoPipelineFrom : Config.EcoConfig -> FEStats.Handle -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Task Exit.Generate MonoBuildResult
-monoPipelineFrom ecoConfig stats globalTypeEnv inlinedTypedGraph =
+{-| The assignment flags for the selected engine. The solver passes its
+`LssConfig`'s; the subst and diff engines pass `( False, False )` — changing
+those would move their output.
+-}
+assignFlagsFor : Config.EcoConfig -> ( Bool, Bool )
+assignFlagsFor ecoConfig =
+    case ecoConfig.mono.engine of
+        Config.EngineSolver ->
+            ( ecoConfig.mono.lss.arrowSolverRoots, ecoConfig.mono.lss.arrowCensus )
+
+        Config.EngineSubst ->
+            ( False, False )
+
+        Config.EngineDiff ->
+            ( False, False )
+
+
+{-| Under `mono.validate` (`ECO_MONO_VALIDATE=1`), check that every pre-mono
+pass minted identity for what it created and copied.
+
+The DUPLICATE-id half is the one that earns its keep: a missing id declines
+visibly, a repeated one is two bodies under a single member and is silent.
+
+-}
+validateMinted : Config.EcoConfig -> EntryPrep.Assigned -> Task Exit.Generate ()
+validateMinted ecoConfig assigned =
+    if ecoConfig.mono.validate then
+        case Fresh.assertMinted assigned.graph of
+            Ok () ->
+                Task.succeed ()
+
+            Err message ->
+                Task.throw
+                    (Exit.GenerateMonomorphizationError
+                        ("pre-mono identity validator: " ++ message)
+                    )
+
+    else
+        Task.succeed ()
+
+
+monoPipelineFrom : Config.EcoConfig -> FEStats.Handle -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Task Exit.Generate MonoBuildResult
+monoPipelineFrom ecoConfig stats globalTypeEnv assigned =
     FEStats.withPhase stats
         FEStats.PhaseMono
-        (case selectMonomorphizer ecoConfig globalTypeEnv inlinedTypedGraph of
+        (case selectMonomorphizer ecoConfig globalTypeEnv assigned of
             Err err ->
                 Task.throw (Exit.GenerateMonomorphizationError err)
 
@@ -821,18 +880,18 @@ monoPipelineFrom ecoConfig stats globalTypeEnv inlinedTypedGraph =
 solver-based one; `EngineDiff` runs both and asserts their output matches. This
 is the single production dispatch point between the two engines.
 -}
-selectMonomorphizer : Config.EcoConfig -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String ( Mono.MonoGraph, Maybe String )
-selectMonomorphizer ecoConfig globalTypeEnv typedGraph =
+selectMonomorphizer : Config.EcoConfig -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Result String ( Mono.MonoGraph, Maybe String )
+selectMonomorphizer ecoConfig globalTypeEnv assigned =
     case ecoConfig.mono.engine of
         Config.EngineSubst ->
-            Result.map (\g -> ( g, Nothing )) (Monomorphize.monomorphizeWithLimits ecoConfig.mono.limits "main" globalTypeEnv typedGraph)
+            Result.map (\g -> ( g, Nothing )) (Monomorphize.monomorphizeWithLimitsAssigned ecoConfig.mono.limits "main" globalTypeEnv assigned)
 
         Config.EngineSolver ->
-            MonoSolver.monomorphizeWithReport ecoConfig.mono.lss ecoConfig.mono.limits "main" globalTypeEnv typedGraph
+            MonoSolver.monomorphizeWithReportAssigned ecoConfig.mono.lss ecoConfig.mono.limits "main" globalTypeEnv assigned
 
         Config.EngineDiff ->
             -- Diff forces lss off internally; no census.
-            Result.map (\g -> ( g, Nothing )) (MonoDiff.run ecoConfig.mono.diffDump "main" globalTypeEnv typedGraph)
+            Result.map (\g -> ( g, Nothing )) (MonoDiff.runAssigned ecoConfig.mono.diffDump "main" globalTypeEnv assigned)
 
 
 {-| Inline+simplify phase in its own scope so monomorphization inputs are GC-eligible.
@@ -951,6 +1010,52 @@ renderPreInlineReport m =
         ++ String.fromInt m.bodiesSeen
         ++ "\n  top: "
         ++ topCallees
+        ++ "\npre-inline Q1: undCallerPoly="
+        ++ String.fromInt m.undCallerPoly
+        ++ " undLocal="
+        ++ String.fromInt m.undLocal
+        ++ " undBodyOnly="
+        ++ String.fromInt m.undBodyOnly
+        ++ " undLeak(annBinders=0)="
+        ++ String.fromInt m.undLeak
+        ++ " overBudget(11-15,16-25,26-50,>50)="
+        ++ (case m.overBudgetBuckets of
+                ( b1, b2, ( b3, b4 ) ) ->
+                    String.join "," (List.map String.fromInt [ b1, b2, b3, b4 ])
+           )
+        ++ " hofArg(lambda,global,other)="
+        ++ String.join "," (List.map String.fromInt [ m.hofArgLambda, m.hofArgGlobal, m.hofArgOther ])
+        ++ "\n  undeterminedByCallee: "
+        ++ top 40 m.undeterminedByCallee
+        ++ "\n  undCallerPolyByCallee: "
+        ++ top 40 m.undCallerPolyByCallee
+        ++ "\n  undLocalByCallee: "
+        ++ top 60 m.undLocalByCallee
+        ++ "\n  undBodyOnlyByCallee: "
+        ++ top 40 m.undBodyOnlyByCallee
+        ++ "\n  hofNames: "
+        ++ String.join " " m.hofNames
+        ++ "\n  polyKernelNames: "
+        ++ String.join " " m.polyKernelNames
+        ++ "\n  superVarNames: "
+        ++ String.join " " m.superVarNames
+        ++ "\n  overBudgetCosts: "
+        ++ (m.overBudgetCosts
+                |> List.sortBy Tuple.second
+                |> List.map (\( n, c ) -> n ++ "=" ++ String.fromInt c)
+                |> String.join " "
+           )
+
+
+{-| Top-N entries of a count dict, largest first, as `k=v` tokens.
+-}
+top : Int -> Dict String Int -> String
+top n d =
+    Dict.toList d
+        |> List.sortBy (\( _, v ) -> negate v)
+        |> List.take n
+        |> List.map (\( k, v ) -> k ++ "=" ++ String.fromInt v)
+        |> String.join " "
 
 
 renderInlineReport : MonoInlineSimplify.Metrics -> Mono.MonoGraph -> String
@@ -979,7 +1084,13 @@ renderInlineReportWith inlineConfig m graph =
                 |> String.join " "
     in
     String.join "\n"
-        [ "inline-simplify: inlined="
+        [ "inline all callees: "
+            ++ (Dict.toList m.inlinedByCallee
+                    |> List.sortBy (\( _, n ) -> negate n)
+                    |> List.map (\( callee, n ) -> callee ++ "=" ++ String.fromInt n)
+                    |> String.join " "
+               )
+        , "inline-simplify: inlined="
             ++ String.fromInt m.inlineCount
             ++ " beta="
             ++ String.fromInt m.betaReductions

@@ -1,4 +1,4 @@
-module Compiler.Monomorphize.EntryPrep exposing (flagsDecoderName, insertFlagsDecoderNode, findEntryPointId, findNodeAnnotationType)
+module Compiler.Monomorphize.EntryPrep exposing (Assigned, assign, flagsDecoderName, insertFlagsDecoderNode, findEntryPointId, findNodeAnnotationType)
 
 {-| Engine-agnostic monomorphization input preparation, shared by the two
 monomorphizer drivers (`Compiler.Monomorphize.Monomorphize` and
@@ -8,6 +8,7 @@ Extracted verbatim from the original driver so both engines see byte-identical
 entry-point discovery and flags-decoder synthesis. Nothing here depends on
 either engine's type machinery.
 
+@docs Assigned, assign
 @docs flagsDecoderName, insertFlagsDecoderNode, findEntryPointId, findNodeAnnotationType
 
 -}
@@ -20,7 +21,54 @@ import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.LocalOpt.Typed.Names as Names
 import Compiler.LocalOpt.Typed.Port as Port
+import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
 import Data.Map as DMap
+
+
+{-| A graph that has been through `AssignMVarIds`, with the allocator state that
+produced it and the entry's flags-decoder global.
+
+This is the shape the PRE-MONO passes operate on
+(`plans/pre-mono-lss-transforms-00-assign-mvar-ids-first.md`). Identity — every
+`MVarId`, `SrcLambdaId` and `ArrowId` — already exists on this graph, so a
+transform that creates or copies a node MUST mint through
+`Compiler.GlobalOpt.PreMono.Fresh` rather than reuse an id.
+
+-}
+type alias Assigned =
+    { graph : TOpt.GlobalGraph TypeIds.MVarId
+    , flagsGlobal : Maybe TOpt.Global
+    , mvarState : AssignMVarIds.GlobalMVarState
+    }
+
+
+{-| Prepare a `GlobalGraph Name` for monomorphization: synthesize the entry's
+flags decoder, then assign ids.
+
+Both engines did exactly this at their own entry points; it is lifted here so it
+can run ONCE, before the pre-mono passes, with the resulting `Assigned` handed to
+whichever engine is selected. The two `Bool`s are the engine's assignment flags
+(`useSolverRoots`, `censusOn`) — the solver passes its `LssConfig`'s, the subst
+and diff engines pass `( False, False )`; changing them would move that engine's
+output.
+
+The flags-decoder node is Name-typed and is therefore inserted BEFORE assignment,
+exactly as it was at both engine entry points.
+
+-}
+assign : ( Bool, Bool ) -> Name -> TOpt.GlobalGraph Name -> Assigned
+assign ( useSolverRoots, censusOn ) entryPointName graph =
+    let
+        ( graphWithFlags, maybeFlagsGlobal ) =
+            insertFlagsDecoderNode entryPointName graph
+
+        ( assignedGraph, mvarState ) =
+            AssignMVarIds.assignIds useSolverRoots censusOn graphWithFlags
+    in
+    { graph = assignedGraph
+    , flagsGlobal = maybeFlagsGlobal
+    , mvarState = mvarState
+    }
 
 
 {-| The synthetic Global holding the root program's flags decoder. The `$`

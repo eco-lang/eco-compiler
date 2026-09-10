@@ -1,4 +1,4 @@
-module Compiler.MonoSolver.Diff exposing (run)
+module Compiler.MonoSolver.Diff exposing (run, runAssigned)
 
 {-| The A/B gate for the two monomorphizer engines (`EngineDiff`).
 
@@ -24,7 +24,7 @@ This is a comparison harness, not a fallback: neither engine's _output_ is ever
 built from the other. It imports the original driver's public `monomorphize` to
 run it (the point of A/B); the solver engine proper never does.
 
-@docs run
+@docs run, runAssigned
 
 -}
 
@@ -35,6 +35,7 @@ import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
 import Compiler.MonoSolver.Monomorphize as MonoSolver
+import Compiler.Monomorphize.EntryPrep as EntryPrep
 import Compiler.Monomorphize.Monomorphize as Monomorphize
 
 
@@ -43,7 +44,20 @@ first differing node's serialization to a mismatch error.
 -}
 run : Bool -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
 run dump entryPointName globalTypeEnv globalGraph =
-    case Monomorphize.monomorphize entryPointName globalTypeEnv globalGraph of
+    runAssigned dump entryPointName globalTypeEnv (EntryPrep.assign ( False, False ) entryPointName globalGraph)
+
+
+{-| `run` on a graph that has ALREADY been through `AssignMVarIds`.
+
+Both engines are handed the SAME assigned graph, so a diff run under
+`preMono=1` compares the two engines on the pre-mono passes' output rather than
+silently skipping them. Both assign with `( False, False )` today, which is why
+one `Assigned` serves both.
+
+-}
+runAssigned : Bool -> Name -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Result String Mono.MonoGraph
+runAssigned dump entryPointName globalTypeEnv assigned =
+    case Monomorphize.monomorphizeWithLimitsAssigned Config.defaultLimits entryPointName globalTypeEnv assigned of
         Err e ->
             Err e
 
@@ -58,11 +72,11 @@ run dump entryPointName globalTypeEnv globalGraph =
                 lssOff =
                     Config.defaultLss
             in
-            case MonoSolver.monomorphize { lssOff | enabled = False } entryPointName globalTypeEnv globalGraph of
+            case MonoSolver.monomorphizeWithReportAssigned { lssOff | enabled = False } Config.defaultLimits entryPointName globalTypeEnv assigned of
                 Err e ->
                     Err ("ECO_MONO_DIFF " ++ e)
 
-                Ok newGraph ->
+                Ok ( newGraph, _ ) ->
                     let
                         oldLines =
                             serializeGraph oldGraph

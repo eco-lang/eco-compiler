@@ -1,6 +1,7 @@
 module Compiler.MonoSolver.Monomorphize exposing
     ( monomorphize
     , monomorphizeWithReport
+    , monomorphizeWithReportAssigned
     )
 
 {-| The solver-based monomorphizer (Architecture C) — a drop-in replacement for
@@ -21,6 +22,7 @@ residual number vars and recomputes ctor shapes). Only the per-node
 specialization is the new solver engine.
 
 @docs monomorphize
+@docs monomorphizeWithReport, monomorphizeWithReportAssigned
 
 -}
 
@@ -82,12 +84,33 @@ defaults them, so test call sites are unchanged.
 -}
 monomorphizeWithReport : Config.LssConfig -> Config.SpecLimits -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String ( Mono.MonoGraph, Maybe String )
 monomorphizeWithReport lssConfig limits entryPointName globalTypeEnv globalGraph =
-    let
-        ( graphWithFlags, maybeFlagsGlobal ) =
-            EntryPrep.insertFlagsDecoderNode entryPointName globalGraph
+    monomorphizeWithReportAssigned lssConfig
+        limits
+        entryPointName
+        globalTypeEnv
+        (EntryPrep.assign ( lssConfig.arrowSolverRoots, lssConfig.arrowCensus ) entryPointName globalGraph)
 
-        ( TOpt.GlobalGraph nodesWithIds _ annotationsWithIds _ _, mvarState ) =
-            AssignMVarIds.assignIds lssConfig.arrowSolverRoots lssConfig.arrowCensus graphWithFlags
+
+{-| `monomorphizeWithReport` on a graph that has ALREADY been through
+`AssignMVarIds` — the entry the Builder uses, because the pre-mono passes
+(`plans/pre-mono-lss-transforms.md`) run on the assigned graph and hand their
+result straight here.
+
+The Name-typed entry above is a wrapper that assigns and calls this, so every
+existing caller and test is unchanged.
+
+-}
+monomorphizeWithReportAssigned : Config.LssConfig -> Config.SpecLimits -> Name -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Result String ( Mono.MonoGraph, Maybe String )
+monomorphizeWithReportAssigned lssConfig limits entryPointName globalTypeEnv assigned =
+    let
+        (TOpt.GlobalGraph nodesWithIds _ annotationsWithIds _ _) =
+            assigned.graph
+
+        maybeFlagsGlobal =
+            assigned.flagsGlobal
+
+        mvarState =
+            assigned.mvarState
     in
     case EntryPrep.findEntryPointId entryPointName nodesWithIds of
         Nothing ->

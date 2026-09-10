@@ -1,4 +1,4 @@
-module Compiler.Monomorphize.AssignMVarIds exposing (GlobalMVarState, assignIds, assignIdsToType)
+module Compiler.Monomorphize.AssignMVarIds exposing (GlobalMVarState, assignIds, assignIdsToType, freshMVarId, mintLamId, mintArrowId)
 
 {-| Assign globally unique MVarIds to all type variables in a TypedOptimized GlobalGraph.
 
@@ -8,6 +8,7 @@ variables carry sequential Int-based IDs instead of string names, and
 constraint information is recorded in a side table.
 
 @docs GlobalMVarState, assignIds, assignIdsToType
+@docs freshMVarId, mintLamId, mintArrowId
 
 -}
 
@@ -119,6 +120,43 @@ freshLamId ctx =
             }
       }
     )
+
+
+{-| Mint a fresh source-lambda id from the STATE, for the pre-mono passes.
+
+`freshLamId` below is the `Ctx`-level form this pass uses internally; the
+pre-mono transforms (`Compiler.GlobalOpt.PreMono.Fresh`) hold only a
+`GlobalMVarState`, and they must mint from the SAME supply so that
+`Engine.initState`'s `nextMemberId = Id.toComparable state.nextLam` stays past
+every id ever minted (LSS\_003). The `lamLabels` key is inserted with the same
+constant value `freshLamId` uses, so the census `Dict.size` is unchanged.
+
+-}
+mintLamId : GlobalMVarState -> ( TypeIds.SrcLambdaId, GlobalMVarState )
+mintLamId st =
+    let
+        lamId =
+            st.nextLam
+    in
+    ( lamId
+    , { st
+        | nextLam = Id.succ lamId
+        , lamLabels = Dict.insert (Id.toComparable lamId) "" st.lamLabels
+      }
+    )
+
+
+{-| Mint a fresh arrow identity from the STATE. The `Ctx`-level `freshArrowId`
+below is this pass's internal form; see `mintLamId` for why the pre-mono passes
+need the state-level one.
+
+A freshly minted occurrence id has no `arrowRootOf` entry, so it degrades to
+occurrence identity — the documented partial-map behaviour of that side table.
+
+-}
+mintArrowId : GlobalMVarState -> ( TypeIds.ArrowId, GlobalMVarState )
+mintArrowId st =
+    ( st.nextArrow, { st | nextArrow = Id.succ st.nextArrow } )
 
 
 {-| Mint a fresh arrow identity (Phase 2a,

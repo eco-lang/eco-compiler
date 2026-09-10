@@ -1109,3 +1109,21 @@ and that is a pre-mono type-precision limit, not a budget one.
     than a hard limit, and it is where `MonoInlineSimplify` earns its keep.
   - A row-variable binding in `matchType` would retire `rowPoly`, which
     currently declines nothing but is load-bearing if `determines` is relaxed.
+
+
+## 16. Follow-on investigation (2026-09-10) — see `/work/pre-mono-transformation.md`
+
+Four questions (completeness of this pass; what post-mono can do without losing sets; other
+pre-mono transforms; source shapes LSS resolves) are answered there. Two results land in this
+plan's ledger:
+
+  - **`determines` had a bug**: `typeVarsOfType` counted `Can.TAlias` parameter names as free
+    variables, so every `Task`/`IO`-returning callee was refused as `undetermined`. Fixed (aliases
+    contribute only their arguments' variables; same-name aliases match argument-wise). EARLY
+    inlines 1,416 → **1,865**, `undetermined` 1,506 → 864. E2E 887/889 in the EARLY arm; defaults
+    fixed point byte-identical.
+  - **The denominator for §15.4 was wrong.** LATE's 65,949 is 27,130 source sites × 2.43
+    per-spec multiplicity, and ≈35,100 of them are parameter-less alias forwards (`f = g`) that
+    this pass skips at `List.isEmpty params`. A complete pre-mono pass tops out near the
+    source-site count, not 66k. The ranked relaxations (R3 alias forwarding, R1 caller-binder
+    bindings, R2 reference-node metas, R4 kernel cost classes) are in the report's §1.3.

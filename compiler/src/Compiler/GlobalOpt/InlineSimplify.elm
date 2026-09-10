@@ -65,8 +65,11 @@ import Compiler.AST.TypedOptimized as TOpt
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
+import Compiler.Data.Id as Id
 import Compiler.Eco.Config as Config
+import Compiler.GlobalOpt.PreMono.Fresh as Fresh
 import Compiler.Graph as Graph
+import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
@@ -89,6 +92,41 @@ type alias Metrics =
     , undetermined : Int
     , bodiesSeen : Int
     , inlinedByCallee : CoreDict.Dict String Int
+
+    -- Q1 CENSUS (inline.report only; every field stays zero/empty when off).
+    -- `undetermined` split by WHY the call site failed to pin the callee's
+    -- type variables: every offending free var is a binder of the CALLER's own
+    -- annotation scheme (`undCallerPoly`); some offending free var is an
+    -- unsolved local that only MonoSolver resolves (`undLocal`); or the callee
+    -- var occurs in no parameter and not in the result — a let-polymorphic
+    -- inner variable (`undBodyOnly`).
+    , undCallerPoly : Int
+    , undLocal : Int
+    , undBodyOnly : Int
+    , undLeak : Int
+    , undeterminedByCallee : CoreDict.Dict String Int
+    , undCallerPolyByCallee : CoreDict.Dict String Int
+
+    -- overBudget candidates by pre-mono `cost`: (11-15, 16-25, 26-50, >50),
+    -- plus every over-budget (callee, cost) so the list can be joined against
+    -- the post-mono pass's `inlinedByCallee`.
+    , overBudgetBuckets : ( Int, Int, ( Int, Int ) )
+    , overBudgetCosts : List ( String, Int )
+
+    -- hofParam candidates, by the SHAPE of the function argument at each call
+    -- site's function-typed positions: a syntactic lambda (the shape whose
+    -- inlining keeps a singleton lambda set), a global, or anything else.
+    , hofArgLambda : Int
+    , hofArgGlobal : Int
+    , hofArgOther : Int
+
+    -- Names refused by each candidate-level guard, so post-mono's per-callee
+    -- inline counts can be attributed to the guard that keeps them out here.
+    , hofNames : List String
+    , polyKernelNames : List String
+    , superVarNames : List String
+    , undLocalByCallee : CoreDict.Dict String Int
+    , undBodyOnlyByCallee : CoreDict.Dict String Int
     }
 
 
@@ -108,6 +146,22 @@ emptyMetrics =
     , undetermined = 0
     , bodiesSeen = 0
     , inlinedByCallee = CoreDict.empty
+    , undCallerPoly = 0
+    , undLocal = 0
+    , undBodyOnly = 0
+    , undLeak = 0
+    , undeterminedByCallee = CoreDict.empty
+    , undCallerPolyByCallee = CoreDict.empty
+    , overBudgetBuckets = ( 0, 0, ( 0, 0 ) )
+    , overBudgetCosts = []
+    , hofArgLambda = 0
+    , hofArgGlobal = 0
+    , hofArgOther = 0
+    , hofNames = []
+    , polyKernelNames = []
+    , superVarNames = []
+    , undLocalByCallee = CoreDict.empty
+    , undBodyOnlyByCallee = CoreDict.empty
     }
 
 
@@ -117,25 +171,39 @@ type alias Ctx =
     , fresh : Int
     , fuel : Int
 
-    -- `( original, renamed )` for every type variable `suffixType` has
-    -- renamed. `optimize` turns this into the `varSupers` entries the renamed
-    -- names need: `ensureMVarId` reads a variable's supertype constraint from
-    -- that dict BY NAME, so `number42_pi3` would otherwise arrive
-    -- unconstrained and default differently from `number42`.
-    , renamedTypeVars : List ( Name, Name )
+    -- The id allocator. A copied body's lambda ids, arrow ids and
+    -- unsubstituted type variables are all minted from it through
+    -- `PreMono.Fresh` — which is what replaced the `_pi` TYPE-name suffix and
+    -- the `varSupers`-by-name re-keying this pass used before `AssignMVarIds`
+    -- moved in front of it.
+    , state : AssignMVarIds.GlobalMVarState
+
+    -- Q1 census plumbing. `censusOn` = `inline.report`; when off nothing
+    -- below is consulted. `callerBinders` is the free-variable set of the
+    -- annotation of the top-level definition currently being rewritten
+    -- (`rewriteGraph` sets it per node). `hofDeclined` maps a global refused
+    -- by the `hofParam` guard to its per-parameter is-function flags, so the
+    -- shape of the arguments at its call sites can be tallied.
+    , censusOn : Bool
+    , callerBinders : CoreDict.Dict Int ()
+    , hofDeclined : CoreDict.Dict String (List Bool)
     }
 
 
 type alias Candidate =
-    { params : List ( Name, Can.Type Name )
-    , body : TOpt.Expr Name
+    { params : List ( Name, Can.Type TypeIds.MVarId )
+    , body : TOpt.Expr TypeIds.MVarId
     , name : String
 
-    -- Every type-variable name in `params` and `body`, computed once when the
-    -- candidate is built rather than per inline. Two uses: the `polymorphic`
-    -- census, and carrying `varSupers` entries across the per-copy rename
-    -- (`suffixType`).
-    , typeVars : List Name
+    -- Every type variable in `params` and `body` as `Id.toComparable` keys,
+    -- computed once when the candidate is built rather than per inline. Used by
+    -- the `polymorphic` census and by `determines`.
+    , typeVars : List Int
+
+    -- Number of binders in the callee's OWN annotation (`Can.Forall`). Zero
+    -- with a non-empty `typeVars` means the body's node types carry variables
+    -- the signature does not — a TYPE_007/POST_010 leak, not polymorphism.
+    , annBinders : Int
     }
 
 
@@ -147,11 +215,11 @@ type alias Candidate =
 
 {-| Inline small non-recursive globals across the whole graph, to a fixpoint.
 -}
-optimize : Config.InlineConfig -> TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph Name, Metrics )
-optimize cfg graph =
+optimize : Config.InlineConfig -> AssignMVarIds.GlobalMVarState -> TOpt.GlobalGraph TypeIds.MVarId -> ( TOpt.GlobalGraph TypeIds.MVarId, AssignMVarIds.GlobalMVarState, Metrics )
+optimize cfg state graph =
     let
         cands =
-            buildCandidates cfg graph
+            buildCandidates cfg state graph
 
         ctx0 =
             { candidates = cands.index
@@ -166,19 +234,27 @@ optimize cfg graph =
                     , superVar = cands.superVar
                     , hofParam = cands.hofParam
                     , bodiesSeen = cands.bodiesSeen
+                    , overBudgetBuckets = cands.overBudgetBuckets
+                    , overBudgetCosts = cands.overBudgetCosts
+                    , hofNames = cands.hofNames
+                    , polyKernelNames = cands.polyKernelNames
+                    , superVarNames = cands.superVarNames
                 }
             , fresh = 0
             , fuel = max 1 cfg.fixpointIterations
-            , renamedTypeVars = []
+            , state = state
+            , censusOn = cfg.report
+            , callerBinders = CoreDict.empty
+            , hofDeclined = cands.hofDeclined
             }
     in
     rounds cfg ctx0 graph
 
 
-rounds : Config.InlineConfig -> Ctx -> TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph Name, Metrics )
+rounds : Config.InlineConfig -> Ctx -> TOpt.GlobalGraph TypeIds.MVarId -> ( TOpt.GlobalGraph TypeIds.MVarId, AssignMVarIds.GlobalMVarState, Metrics )
 rounds cfg ctx graph =
     if ctx.fuel <= 0 then
-        ( withRenamedSupers ctx graph, ctx.metrics )
+        ( graph, ctx.state, ctx.metrics )
 
     else
         let
@@ -190,43 +266,10 @@ rounds cfg ctx graph =
         in
         if ctx1.metrics.inlineCount == before then
             -- Fixpoint: a round that inlined nothing cannot be improved on.
-            ( withRenamedSupers ctx1 graph1, ctx1.metrics )
+            ( graph1, ctx1.state, ctx1.metrics )
 
         else
             rounds cfg { ctx1 | fuel = ctx1.fuel - 1 } graph1
-
-
-{-| Give every renamed type variable the supertype constraint its original
-carried.
-
-`AssignMVarIds.ensureMVarId` looks a variable's constraint up in `varSupers` BY
-NAME (`Dict.get name ctx.varSupers`), and `varSupers` is the `GlobalGraph`'s
-fifth field. A renamed `number42_pi3` is absent from it, so it would be minted
-unconstrained while `number42` is a `number` — a silent difference in
-defaulting, not a type error. Applied once at the end rather than per round:
-the map only grows, and a later round's rename of an already-renamed name
-cannot occur (suffixes are unique per copy).
-
--}
-withRenamedSupers : Ctx -> TOpt.GlobalGraph Name -> TOpt.GlobalGraph Name
-withRenamedSupers ctx (TOpt.GlobalGraph nodes fields annotations schemeRoots varSupers) =
-    TOpt.GlobalGraph nodes
-        fields
-        annotations
-        schemeRoots
-        (List.foldl
-            (\( original, renamed ) acc ->
-                case CoreDict.get original varSupers of
-                    Just super ->
-                        CoreDict.insert renamed super acc
-
-                    Nothing ->
-                        acc
-            )
-            varSupers
-            ctx.renamedTypeVars
-        )
-
 
 
 -- ============================================================================
@@ -244,7 +287,8 @@ direct recursion; the SCC closure below catches mutual recursion.
 -}
 buildCandidates :
     Config.InlineConfig
-    -> TOpt.GlobalGraph Name
+    -> AssignMVarIds.GlobalMVarState
+    -> TOpt.GlobalGraph TypeIds.MVarId
     ->
         { index : CoreDict.Dict String Candidate
         , recursiveSkipped : Int
@@ -255,8 +299,14 @@ buildCandidates :
         , superVar : Int
         , hofParam : Int
         , bodiesSeen : Int
+        , overBudgetBuckets : ( Int, Int, ( Int, Int ) )
+        , overBudgetCosts : List ( String, Int )
+        , hofDeclined : CoreDict.Dict String (List Bool)
+        , hofNames : List String
+        , polyKernelNames : List String
+        , superVarNames : List String
         }
-buildCandidates cfg (TOpt.GlobalGraph nodes _ _ _ varSupers) =
+buildCandidates cfg state (TOpt.GlobalGraph nodes _ annotations _ _) =
     let
         recursive =
             recursiveGlobals nodes
@@ -276,23 +326,81 @@ buildCandidates cfg (TOpt.GlobalGraph nodes _ _ _ varSupers) =
                             a
 
                         else if cost body > cfg.threshold then
-                            { a | overBudget = a.overBudget + 1 }
+                            let
+                                c =
+                                    cost body
+
+                                ( b1, b2, ( b3, b4 ) ) =
+                                    a.overBudgetBuckets
+                            in
+                            if cfg.report then
+                                { a
+                                    | overBudget = a.overBudget + 1
+                                    , overBudgetBuckets =
+                                        if c <= 15 then
+                                            ( b1 + 1, b2, ( b3, b4 ) )
+
+                                        else if c <= 25 then
+                                            ( b1, b2 + 1, ( b3, b4 ) )
+
+                                        else if c <= 50 then
+                                            ( b1, b2, ( b3 + 1, b4 ) )
+
+                                        else
+                                            ( b1, b2, ( b3, b4 + 1 ) )
+                                    , overBudgetCosts = ( qualifiedName g, c ) :: a.overBudgetCosts
+                                }
+
+                            else
+                                { a | overBudget = a.overBudget + 1 }
 
                         else if polyKernel params body then
-                            { a | polyKernel = a.polyKernel + 1 }
+                            { a
+                                | polyKernel = a.polyKernel + 1
+                                , polyKernelNames =
+                                    if cfg.report then
+                                        qualifiedName g :: a.polyKernelNames
+
+                                    else
+                                        a.polyKernelNames
+                            }
 
                         else if hasOpenRecord params body then
                             { a | rowPoly = a.rowPoly + 1 }
 
                         else if List.any (\( _, t ) -> isFunctionType t) params then
-                            { a | hofParam = a.hofParam + 1 }
+                            { a
+                                | hofParam = a.hofParam + 1
+                                , hofNames =
+                                    if cfg.report then
+                                        qualifiedName g :: a.hofNames
+
+                                    else
+                                        a.hofNames
+                                , hofDeclined =
+                                    if cfg.report then
+                                        CoreDict.insert key
+                                            (List.map (\( _, t ) -> isFunctionType t) params)
+                                            a.hofDeclined
+
+                                    else
+                                        a.hofDeclined
+                            }
 
                         else if
                             List.any
-                                (\v -> CoreDict.member v varSupers)
+                                (\v -> CoreDict.member v state.superVars)
                                 (candidateTypeVars params body)
                         then
-                            { a | superVar = a.superVar + 1 }
+                            { a
+                                | superVar = a.superVar + 1
+                                , superVarNames =
+                                    if cfg.report then
+                                        qualifiedName g :: a.superVarNames
+
+                                    else
+                                        a.superVarNames
+                            }
 
                         else
                             let
@@ -318,6 +426,13 @@ buildCandidates cfg (TOpt.GlobalGraph nodes _ _ _ varSupers) =
                                         , body = body
                                         , name = qualifiedName g
                                         , typeVars = tvs
+                                        , annBinders =
+                                            case Dict.get TOpt.toComparableGlobal g annotations of
+                                                Just (Can.Forall fv _) ->
+                                                    CoreDict.size fv
+
+                                                Nothing ->
+                                                    0
                                         }
                                         a.index
                             }
@@ -338,6 +453,12 @@ buildCandidates cfg (TOpt.GlobalGraph nodes _ _ _ varSupers) =
         , superVar = 0
         , hofParam = 0
         , bodiesSeen = 0
+        , overBudgetBuckets = ( 0, 0, ( 0, 0 ) )
+        , overBudgetCosts = []
+        , hofDeclined = CoreDict.empty
+        , hofNames = []
+        , polyKernelNames = []
+        , superVarNames = []
         }
         nodes
 
@@ -356,7 +477,7 @@ instead of `105` — a `List number` whose defaulting depends on which of its us
 survive.
 
 -}
-isFunctionType : Can.Type Name -> Bool
+isFunctionType : Can.Type TypeIds.MVarId -> Bool
 isFunctionType tipe =
     case tipe of
         Can.TLambda _ _ _ ->
@@ -379,19 +500,19 @@ Measured: the ten `RecordNarrow*` E2E tests SIGSEGV without this guard.
 Binding rows properly is the natural successor to this pass, not part of it.
 
 -}
-hasOpenRecord : List ( Name, Can.Type Name ) -> TOpt.Expr Name -> Bool
+hasOpenRecord : List ( Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Bool
 hasOpenRecord params body =
     List.any (\( _, t ) -> openRecordInType t) (List.map identity params)
         || openRecordInExpr body
 
 
-openRecordInExpr : TOpt.Expr Name -> Bool
+openRecordInExpr : TOpt.Expr TypeIds.MVarId -> Bool
 openRecordInExpr expr =
     openRecordInType (TOpt.typeOf expr)
         || List.any openRecordInExpr (children expr)
 
 
-openRecordInType : Can.Type Name -> Bool
+openRecordInType : Can.Type TypeIds.MVarId -> Bool
 openRecordInType tipe =
     case tipe of
         Can.TRecord fields ext ->
@@ -436,13 +557,13 @@ polymorphic candidates — the overwhelming majority — are unaffected: only a
 kernel node whose own type is still variable declines.
 
 -}
-polyKernel : List ( Name, Can.Type Name ) -> TOpt.Expr Name -> Bool
+polyKernel : List ( Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Bool
 polyKernel params body =
     not (List.isEmpty (candidateTypeVars params body))
         && hasPolymorphicKernel body
 
 
-hasPolymorphicKernel : TOpt.Expr Name -> Bool
+hasPolymorphicKernel : TOpt.Expr TypeIds.MVarId -> Bool
 hasPolymorphicKernel expr =
     case expr of
         TOpt.VarKernel _ _ _ _ meta ->
@@ -452,112 +573,8 @@ hasPolymorphicKernel expr =
             List.any hasPolymorphicKernel (children expr)
 
 
-{-| Rename every type variable in a type with the copy's suffix, and drop the
-arrow slots' solver-root identity.
-
-**Why the rename.** `AssignMVarIds`'s per-definition environment is
-`SchemeEnv = Dict Name TypeIds.MVarId`, "reset for each top-level definition" —
-so INSIDE ONE top-level definition a type variable's identity is its NAME. Two
-copies of a polymorphic body spliced into the same caller would both say
-`TVar "a"`, `ensureMVarId` would hand both the same `MVarId`, and the two call
-sites' instantiations would meet at that one variable. Measured before this
-existed, on `test/elm/src/PreMonoInlineTest.elm`, whose
-`twice : (a -> a) -> a -> a` is used at `Int` and at `List Int`:
-
-    unify-fail ({..} -> List<?a> -> List<?a>) /vs/ ({..} -> Int -> Int)
-
-Two instantiations that happened to unify would have collapsed onto one
-SILENTLY. Monomorphization reads only `meta.tipe` and never `meta.tvar`
-(`MonoSolver/Monomorphize.elm`), so this is a pure `Name` rewrite needing no
-solver state and no fresh-variable supply — which is what makes the pre-mono
-position workable at all.
-
-**Why the arrow slots are cleared.** A `TypeIds.SolverRoot idx` makes
-`AssignMVarIds` mint ONE `ArrowId` for every arrow sharing that root, through
-`arrowRootEnv` — which is GLOBAL state, not per-definition. Two copies keep the
-same roots, so their arrows and therefore their LSS members merge, even though
-the copies now have DIFFERENT types; a member indexing copy A's body could then
-be stamped at a call site in copy B, whose spec is a different instantiation.
-`NoArrow` falls back to per-occurrence `freshArrowId`, the same path every
-post-solve type already takes. This is type-neutral — `ArrowSlot` feeds
-`ArrowId`/`rootKey` and never `MVarId` — and costs the LSS root identity that
-`lss.arrowSolverRoots` buys, so it is measured rather than assumed
-(`plans/pre-mono-inline-simplify.md` §12.3c).
-
-The renamed names are ABSENT from the caller's `schemeRoots`, so
-`ensureBinder` falls through to the plain per-name path automatically. That is
-correct by construction and must stay that way: `ensureMVarIdForRoot`
-deliberately gives two names backed by one solver root the SAME `MVarId`, which
-is exactly the merge this rename exists to prevent.
-
--}
-suffixType : Subst -> String -> Can.Type Name -> Can.Type Name
-suffixType subst sfx tipe =
-    case tipe of
-        Can.TVar n ->
-            case CoreDict.get n subst of
-                -- Determined by the call site. Spliced in VERBATIM: it is the
-                -- CALLER's type, already consistent with the caller's own
-                -- variables and arrow slots, so it must not be renamed or
-                -- walked.
-                Just concrete ->
-                    concrete
-
-                Nothing ->
-                    Can.TVar (n ++ sfx)
-
-        Can.TLambda _ a b ->
-            Can.TLambda TypeIds.NoArrow
-                (suffixType subst sfx a)
-                (suffixType subst sfx b)
-
-        Can.TType home name args ->
-            Can.TType home name (List.map (suffixType subst sfx) args)
-
-        Can.TRecord fields ext ->
-            Can.TRecord
-                (CoreDict.map (\_ f -> suffixFieldType subst sfx f) fields)
-                (Maybe.map (\n -> n ++ sfx) ext)
-
-        Can.TUnit ->
-            Can.TUnit
-
-        Can.TTuple a b rest ->
-            Can.TTuple (suffixType subst sfx a)
-                (suffixType subst sfx b)
-                (List.map (suffixType subst sfx) rest)
-
-        Can.TAlias home name args real ->
-            Can.TAlias home
-                name
-                (List.map (\( n, t ) -> ( n ++ sfx, suffixType subst sfx t )) args)
-                (suffixAliasType subst sfx real)
-
-
-suffixFieldType : Subst -> String -> Can.FieldType Name -> Can.FieldType Name
-suffixFieldType subst sfx (Can.FieldType i t) =
-    Can.FieldType i (suffixType subst sfx t)
-
-
-suffixAliasType : Subst -> String -> Can.AliasType Name -> Can.AliasType Name
-suffixAliasType subst sfx alias_ =
-    case alias_ of
-        Can.Holey t ->
-            Can.Holey (suffixType subst sfx t)
-
-        Can.Filled t ->
-            Can.Filled (suffixType subst sfx t)
-
-
-suffixMeta : Subst -> String -> TOpt.Meta Name -> TOpt.Meta Name
-suffixMeta subst sfx meta =
-    { meta | tipe = suffixType subst sfx meta.tipe }
-
-
-{-| What the call site says each of the callee's type variables is.
--}
 type alias Subst =
-    CoreDict.Dict Name (Can.Type Name)
+    Fresh.Subst
 
 
 {-| One-way structural match of a CALLEE type against the ACTUAL type at the
@@ -576,17 +593,17 @@ PERMISSIVE: a shape mismatch binds nothing rather than failing, because a
 missing binding degrades to the (sound) rename while a wrong one would not.
 
 -}
-matchType : Can.Type Name -> Can.Type Name -> Subst -> Subst
+matchType : Can.Type TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Subst -> Subst
 matchType pattern actual subst =
     case ( pattern, actual ) of
         ( Can.TVar n, _ ) ->
             -- First binding wins; a second, different one would mean the call
-            -- site is inconsistent, and the rename is the safe answer there.
-            if CoreDict.member n subst then
+            -- site is inconsistent, and refusing the call is the safe answer.
+            if CoreDict.member (Id.toComparable n) subst then
                 subst
 
             else
-                CoreDict.insert n actual subst
+                CoreDict.insert (Id.toComparable n) actual subst
 
         ( Can.TLambda _ pa pb, Can.TLambda _ aa ab ) ->
             matchType pb ab (matchType pa aa subst)
@@ -614,24 +631,31 @@ matchType pattern actual subst =
                 subst
                 pfields
 
-        ( Can.TAlias _ _ _ preal, _ ) ->
-            matchType (aliasBody preal) actual subst
+        ( Can.TAlias _ pn pargs _, Can.TAlias _ an aargs _ ) ->
+            if pn == an then
+                matchList (List.map Tuple.second pargs) (List.map Tuple.second aargs) subst
 
-        ( _, Can.TAlias _ _ _ areal ) ->
-            matchType pattern (aliasBody areal) subst
+            else
+                matchType (expandAlias pattern) (expandAlias actual) subst
+
+        ( Can.TAlias _ _ _ _, _ ) ->
+            matchType (expandAlias pattern) actual subst
+
+        ( _, Can.TAlias _ _ _ _ ) ->
+            matchType pattern (expandAlias actual) subst
 
         _ ->
             subst
 
 
-matchList : List (Can.Type Name) -> List (Can.Type Name) -> Subst -> Subst
+matchList : List (Can.Type TypeIds.MVarId) -> List (Can.Type TypeIds.MVarId) -> Subst -> Subst
 matchList patterns actuals subst =
     List.foldl (\( p, a ) acc -> matchType p a acc)
         subst
         (List.map2 Tuple.pair patterns actuals)
 
 
-aliasBody : Can.AliasType Name -> Can.Type Name
+aliasBody : Can.AliasType TypeIds.MVarId -> Can.Type TypeIds.MVarId
 aliasBody alias_ =
     case alias_ of
         Can.Holey t ->
@@ -641,18 +665,64 @@ aliasBody alias_ =
             t
 
 
-{-| Every type-variable name reachable from a candidate's parameter types and
-body. Used for two things: the `polymorphic` census, and carrying the SUPERTYPE
-constraints across the rename.
+{-| The alias's body with its parameters replaced by the arguments — the
+type the alias stands for. Never matched against with the parameter names
+still in it: they would bind as if they were the caller's variables.
+-}
+expandAlias : Can.Type TypeIds.MVarId -> Can.Type TypeIds.MVarId
+expandAlias tipe =
+    case tipe of
+        Can.TAlias _ _ args (Can.Holey body) ->
+            -- Alias parameters are alias-LOCAL and are matched BY POSITION, never
+            -- by id membership: after assignment a parameter id was minted by
+            -- name in the definition's env, so it can share an id with a
+            -- same-named scheme binder.
+            substTypeVars
+                (CoreDict.fromList (List.map (\( pn, t ) -> ( Id.toComparable pn, t )) args))
+                body
 
-`ensureMVarId` reads a variable's constraint from `varSupers`, the
-`GlobalGraph`'s fifth field, keyed by NAME — so `number42` renamed to
-`number42_pi3` would lose its `number` constraint and default differently.
-`optimize` extends that dict for every renamed name that had an entry, which is
-the only reason this pass touches the graph's non-node fields.
+        Can.TAlias _ _ _ (Can.Filled body) ->
+            body
+
+        _ ->
+            tipe
+
+
+substTypeVars : CoreDict.Dict Int (Can.Type TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Can.Type TypeIds.MVarId
+substTypeVars env tipe =
+    case tipe of
+        Can.TVar n ->
+            Maybe.withDefault tipe (CoreDict.get (Id.toComparable n) env)
+
+        Can.TLambda slot a b ->
+            Can.TLambda slot (substTypeVars env a) (substTypeVars env b)
+
+        Can.TType h n args ->
+            Can.TType h n (List.map (substTypeVars env) args)
+
+        Can.TRecord fields ext ->
+            Can.TRecord (CoreDict.map (\_ (Can.FieldType i t) -> Can.FieldType i (substTypeVars env t)) fields) ext
+
+        Can.TUnit ->
+            Can.TUnit
+
+        Can.TTuple a b rest ->
+            Can.TTuple (substTypeVars env a) (substTypeVars env b) (List.map (substTypeVars env) rest)
+
+        Can.TAlias h n args real ->
+            Can.TAlias h n (List.map (\( pn, t ) -> ( pn, substTypeVars env t )) args) real
+
+
+{-| Every type variable reachable from a candidate's parameter types and body,
+as `Id.toComparable` keys.
+
+Used by the `polymorphic` census and by `determines`. The supertype constraint
+of a variable the copy re-mints is carried across by
+`PreMono.Fresh.freshenCopy`, which copies it into `superVars` BY ID — that is
+what replaced this pass's old `varSupers`-by-name re-keying.
 
 -}
-candidateTypeVars : List ( Name, Can.Type Name ) -> TOpt.Expr Name -> List Name
+candidateTypeVars : List ( Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> List Int
 candidateTypeVars params body =
     CoreDict.keys
         (List.foldl typeVarsOfType
@@ -661,18 +731,18 @@ candidateTypeVars params body =
         )
 
 
-typeVarsOfExpr : TOpt.Expr Name -> CoreDict.Dict Name () -> CoreDict.Dict Name ()
+typeVarsOfExpr : TOpt.Expr TypeIds.MVarId -> CoreDict.Dict Int () -> CoreDict.Dict Int ()
 typeVarsOfExpr expr acc =
     List.foldl typeVarsOfExpr
         (typeVarsOfType (TOpt.typeOf expr) acc)
         (children expr)
 
 
-typeVarsOfType : Can.Type Name -> CoreDict.Dict Name () -> CoreDict.Dict Name ()
+typeVarsOfType : Can.Type TypeIds.MVarId -> CoreDict.Dict Int () -> CoreDict.Dict Int ()
 typeVarsOfType tipe acc =
     case tipe of
         Can.TVar n ->
-            CoreDict.insert n () acc
+            CoreDict.insert (Id.toComparable n) () acc
 
         Can.TLambda _ a b ->
             typeVarsOfType b (typeVarsOfType a acc)
@@ -685,7 +755,7 @@ typeVarsOfType tipe acc =
                 (\_ (Can.FieldType _ t) a -> typeVarsOfType t a)
                 (case ext of
                     Just n ->
-                        CoreDict.insert n () acc
+                        CoreDict.insert (Id.toComparable n) () acc
 
                     Nothing ->
                         acc
@@ -698,26 +768,23 @@ typeVarsOfType tipe acc =
         Can.TTuple a b rest ->
             List.foldl typeVarsOfType (typeVarsOfType b (typeVarsOfType a acc)) rest
 
-        Can.TAlias _ _ args real ->
-            let
-                withArgs =
-                    List.foldl
-                        (\( n, t ) a -> typeVarsOfType t (CoreDict.insert n () a))
-                        acc
-                        args
-            in
-            case real of
-                Can.Holey t ->
-                    typeVarsOfType t withArgs
-
-                Can.Filled t ->
-                    typeVarsOfType t withArgs
+        Can.TAlias _ _ args _ ->
+            -- ALIAS PARAMETERS ARE NOT FREE VARIABLES. `TAlias`'s list pairs the
+            -- alias's own parameter NAMES with the argument types, and a `Holey`
+            -- body mentions those names; `MonoSolver.Store` binds each to its
+            -- argument's Point and restores afterwards ("params are
+            -- alias-local"). Counting them made every `Task`/`IO`-returning
+            -- callee look polymorphic and `determines` refuse it — 273 spurious
+            -- `undetermined` at `Utils.Main.envLookupEnv` alone. A `Filled`
+            -- body's free variables are a subset of the arguments' anyway, so
+            -- the arguments are the whole answer in both cases.
+            List.foldl (\( _, t ) a -> typeVarsOfType t a) acc args
 
 
 {-| Immediate sub-expressions, for the ground-type walk. Includes the decider's
 `Inline` choices — an unshared `case` branch body lives there.
 -}
-children : TOpt.Expr Name -> List (TOpt.Expr Name)
+children : TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId)
 children expr =
     case expr of
         TOpt.List _ items _ ->
@@ -766,7 +833,7 @@ children expr =
             []
 
 
-defChildren : TOpt.Def Name -> List (TOpt.Expr Name)
+defChildren : TOpt.Def TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId)
 defChildren def =
     case def of
         TOpt.Def _ _ bound _ ->
@@ -776,7 +843,7 @@ defChildren def =
             [ body ]
 
 
-deciderChildren : TOpt.Decider (TOpt.Choice Name) -> List (TOpt.Expr Name)
+deciderChildren : TOpt.Decider (TOpt.Choice TypeIds.MVarId) -> List (TOpt.Expr TypeIds.MVarId)
 deciderChildren decider =
     case decider of
         TOpt.Leaf (TOpt.Inline e) ->
@@ -806,7 +873,7 @@ names because the inlined copy binds them as ordinary `Let`s, which take a
 bare `Name`.
 
 -}
-bodyOf : TOpt.Node Name -> Maybe ( List ( Name, Can.Type Name ), TOpt.Expr Name )
+bodyOf : TOpt.Node TypeIds.MVarId -> Maybe ( List ( Name, Can.Type TypeIds.MVarId ), TOpt.Expr TypeIds.MVarId )
 bodyOf node =
     let
         fromExpr expr =
@@ -848,7 +915,7 @@ Three independent sources, unioned, because no one of them is complete:
     because it reads the body that would actually be copied.
 
 -}
-recursiveGlobals : Dict String TOpt.Global (TOpt.Node Name) -> CoreDict.Dict String ()
+recursiveGlobals : Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> CoreDict.Dict String ()
 recursiveGlobals nodes =
     let
         depsOf node =
@@ -927,7 +994,7 @@ recursiveGlobals nodes =
 
 {-| Whether an expression mentions the given global by name, anywhere.
 -}
-namesSelf : TOpt.Global -> TOpt.Expr Name -> Bool
+namesSelf : TOpt.Global -> TOpt.Expr TypeIds.MVarId -> Bool
 namesSelf ((TOpt.Global home name) as g) expr =
     case expr of
         TOpt.VarGlobal _ g2 _ ->
@@ -961,7 +1028,7 @@ qualifiedName g =
 kernel arm collapsed to the flat 6 (that plan's §3: pre-mono the kernel is
 known but its concrete instance is not, so the cost-class vector cannot apply).
 -}
-cost : TOpt.Expr Name -> Int
+cost : TOpt.Expr TypeIds.MVarId -> Int
 cost expr =
     case expr of
         TOpt.Bool _ _ _ ->
@@ -1061,7 +1128,7 @@ decider. Omitting this arm under-counts a `case`-heavy body by its whole
 branch weight, which is how a budget-respecting inliner ends up copying
 something enormous.
 -}
-costDecider : TOpt.Decider (TOpt.Choice Name) -> Int
+costDecider : TOpt.Decider (TOpt.Choice TypeIds.MVarId) -> Int
 costDecider decider =
     case decider of
         TOpt.Leaf (TOpt.Inline e) ->
@@ -1077,7 +1144,7 @@ costDecider decider =
             1 + sumBy (\( _, d ) -> costDecider d) branches + costDecider fallback
 
 
-costDef : TOpt.Def Name -> Int
+costDef : TOpt.Def TypeIds.MVarId -> Int
 costDef def =
     case def of
         TOpt.Def _ _ bound _ ->
@@ -1098,15 +1165,40 @@ sumBy f =
 -- ============================================================================
 
 
-rewriteGraph : Ctx -> TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph Name, Ctx )
+rewriteGraph : Ctx -> TOpt.GlobalGraph TypeIds.MVarId -> ( TOpt.GlobalGraph TypeIds.MVarId, Ctx )
 rewriteGraph ctx (TOpt.GlobalGraph nodes fields annotations schemeRoots varSupers) =
     let
         ( nodes1, ctx1 ) =
             Dict.foldl TOpt.compareGlobal
                 (\g node ( acc, c ) ->
                     let
+                        cIn =
+                            if c.censusOn then
+                                { c
+                                    | callerBinders =
+                                        -- From the annotation's TYPE, not its
+                                        -- `FreeVars`: `Can.FreeVars` is
+                                        -- `Dict Name ()` and is NOT
+                                        -- id-parameterised, so it still carries
+                                        -- NAMES after assignment. The two agree
+                                        -- by construction —
+                                        -- `AssignMVarIds.rewriteAnnotation`
+                                        -- seeds every binder through
+                                        -- `ensureBinder`, so the type's
+                                        -- variables ARE the scheme's binders.
+                                        case Dict.get TOpt.toComparableGlobal g annotations of
+                                            Just (Can.Forall _ annType) ->
+                                                typeVarsOfType annType CoreDict.empty
+
+                                            Nothing ->
+                                                CoreDict.empty
+                                }
+
+                            else
+                                c
+
                         ( node1, c1 ) =
-                            rewriteNode c node
+                            rewriteNode cIn node
                     in
                     ( Dict.insert TOpt.toComparableGlobal g node1 acc, c1 )
                 )
@@ -1116,7 +1208,7 @@ rewriteGraph ctx (TOpt.GlobalGraph nodes fields annotations schemeRoots varSuper
     ( TOpt.GlobalGraph nodes1 fields annotations schemeRoots varSupers, ctx1 )
 
 
-rewriteNode : Ctx -> TOpt.Node Name -> ( TOpt.Node Name, Ctx )
+rewriteNode : Ctx -> TOpt.Node TypeIds.MVarId -> ( TOpt.Node TypeIds.MVarId, Ctx )
 rewriteNode ctx node =
     case node of
         TOpt.Define expr deps meta ->
@@ -1153,7 +1245,7 @@ rewriteNode ctx node =
             ( node, ctx )
 
 
-rewriteExpr : Ctx -> TOpt.Expr Name -> ( TOpt.Expr Name, Ctx )
+rewriteExpr : Ctx -> TOpt.Expr TypeIds.MVarId -> ( TOpt.Expr TypeIds.MVarId, Ctx )
 rewriteExpr ctx expr =
     case expr of
         TOpt.Call region func args meta ->
@@ -1310,8 +1402,8 @@ rewriteExpr ctx expr =
 
 rewriteLocatedFields :
     Ctx
-    -> Dict String (A.Located Name) (TOpt.Expr Name)
-    -> ( Dict String (A.Located Name) (TOpt.Expr Name), Ctx )
+    -> Dict String (A.Located Name) (TOpt.Expr TypeIds.MVarId)
+    -> ( Dict String (A.Located Name) (TOpt.Expr TypeIds.MVarId), Ctx )
 rewriteLocatedFields ctx fields =
     Dict.foldl A.compareLocated
         (\k e ( acc, c ) ->
@@ -1329,7 +1421,7 @@ rewriteLocatedFields ctx fields =
 whole unshared `case` branch body, so skipping this loses inlining across every
 non-jump branch in the program.
 -}
-rewriteDecider : Ctx -> TOpt.Decider (TOpt.Choice Name) -> ( TOpt.Decider (TOpt.Choice Name), Ctx )
+rewriteDecider : Ctx -> TOpt.Decider (TOpt.Choice TypeIds.MVarId) -> ( TOpt.Decider (TOpt.Choice TypeIds.MVarId), Ctx )
 rewriteDecider ctx decider =
     case decider of
         TOpt.Leaf (TOpt.Inline e) ->
@@ -1372,7 +1464,7 @@ rewriteDecider ctx decider =
             ( TOpt.FanOut path (List.reverse branches1) fallback1, cf )
 
 
-mapBody : Ctx -> TOpt.Expr Name -> (TOpt.Expr Name -> TOpt.Expr Name) -> ( TOpt.Expr Name, Ctx )
+mapBody : Ctx -> TOpt.Expr TypeIds.MVarId -> (TOpt.Expr TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId) -> ( TOpt.Expr TypeIds.MVarId, Ctx )
 mapBody ctx body rebuild =
     let
         ( body1, c1 ) =
@@ -1381,7 +1473,7 @@ mapBody ctx body rebuild =
     ( rebuild body1, c1 )
 
 
-rewriteList : Ctx -> List (TOpt.Expr Name) -> ( List (TOpt.Expr Name), Ctx )
+rewriteList : Ctx -> List (TOpt.Expr TypeIds.MVarId) -> ( List (TOpt.Expr TypeIds.MVarId), Ctx )
 rewriteList ctx items =
     let
         ( rev, c ) =
@@ -1399,7 +1491,7 @@ rewriteList ctx items =
     ( List.reverse rev, c )
 
 
-rewriteDef : Ctx -> TOpt.Def Name -> ( TOpt.Def Name, Ctx )
+rewriteDef : Ctx -> TOpt.Def TypeIds.MVarId -> ( TOpt.Def TypeIds.MVarId, Ctx )
 rewriteDef ctx def =
     case def of
         TOpt.Def region name bound tipe ->
@@ -1437,7 +1529,7 @@ are bound rather than substituted so they evaluate in the caller's scope (see
 the module doc).
 
 -}
-tryInline : Ctx -> A.Region -> TOpt.Expr Name -> List (TOpt.Expr Name) -> TOpt.Meta Name -> ( Maybe (TOpt.Expr Name), Ctx )
+tryInline : Ctx -> A.Region -> TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> ( Maybe (TOpt.Expr TypeIds.MVarId), Ctx )
 tryInline ctx region func args callMeta =
     case func of
         TOpt.VarGlobal _ g _ ->
@@ -1462,23 +1554,194 @@ tryInline ctx region func args callMeta =
                             ( Nothing
                             , { ctx
                                 | metrics =
-                                    (\m -> { m | undetermined = m.undetermined + 1 })
+                                    censusUndetermined ctx cand args callMeta subst
+                                        (\m -> { m | undetermined = m.undetermined + 1 })
                                         ctx.metrics
                               }
                             )
 
                 Nothing ->
-                    ( Nothing, ctx )
+                    ( Nothing, censusHofArgs ctx g args )
 
         _ ->
             ( Nothing, ctx )
+
+
+{-| Q1 census: why did `determines` fail at this call? Off unless
+`inline.report`. A site is `undLocal` if ANY offending free variable is not a
+binder of the caller's annotation; else `undBodyOnly` if any callee variable
+occurs in no parameter and not in the result; else `undCallerPoly`.
+-}
+censusUndetermined : Ctx -> Candidate -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Subst -> (Metrics -> Metrics) -> Metrics -> Metrics
+censusUndetermined ctx cand args callMeta subst bump m0 =
+    let
+        m =
+            bump m0
+    in
+    if not ctx.censusOn then
+        m
+
+    else
+        let
+            paramTypes =
+                List.map Tuple.second cand.params
+
+            argTypes =
+                List.map TOpt.typeOf args
+
+            mentions v t =
+                CoreDict.member v (typeVarsOfType t CoreDict.empty)
+
+            freeOf t =
+                CoreDict.keys (typeVarsOfType t CoreDict.empty)
+
+            -- The free variables the call site offers for callee var `v`.
+            offered v =
+                case CoreDict.get v subst of
+                    Just t ->
+                        freeOf t
+
+                    Nothing ->
+                        List.concatMap
+                            (\( pt, at ) ->
+                                if mentions v pt then
+                                    freeOf at
+
+                                else
+                                    []
+                            )
+                            (List.map2 Tuple.pair paramTypes argTypes)
+                            ++ (if mentions v (TOpt.typeOf cand.body) then
+                                    freeOf callMeta.tipe
+
+                                else
+                                    []
+                               )
+
+            classes =
+                cand.typeVars
+                    |> List.filter
+                        (\v ->
+                            case CoreDict.get v subst of
+                                Just t ->
+                                    not (isGroundType t)
+
+                                Nothing ->
+                                    True
+                        )
+                    |> List.map
+                        (\v ->
+                            case offered v of
+                                [] ->
+                                    1
+
+                                vs ->
+                                    if List.all (\x -> CoreDict.member x ctx.callerBinders) vs then
+                                        0
+
+                                    else
+                                        2
+                        )
+
+            site =
+                List.foldl max 0 classes
+
+            bumpDict k d =
+                CoreDict.update k (\n -> Just (1 + Maybe.withDefault 0 n)) d
+        in
+        { m
+            | undLeak =
+                if cand.annBinders == 0 then
+                    m.undLeak + 1
+
+                else
+                    m.undLeak
+            , undeterminedByCallee = bumpDict cand.name m.undeterminedByCallee
+            , undCallerPoly =
+                if site == 0 then
+                    m.undCallerPoly + 1
+
+                else
+                    m.undCallerPoly
+            , undCallerPolyByCallee =
+                if site == 0 then
+                    bumpDict cand.name m.undCallerPolyByCallee
+
+                else
+                    m.undCallerPolyByCallee
+            , undBodyOnly =
+                if site == 1 then
+                    m.undBodyOnly + 1
+
+                else
+                    m.undBodyOnly
+            , undBodyOnlyByCallee =
+                if site == 1 then
+                    bumpDict cand.name m.undBodyOnlyByCallee
+
+                else
+                    m.undBodyOnlyByCallee
+            , undLocal =
+                if site == 2 then
+                    m.undLocal + 1
+
+                else
+                    m.undLocal
+            , undLocalByCallee =
+                if site == 2 then
+                    bumpDict cand.name m.undLocalByCallee
+
+                else
+                    m.undLocalByCallee
+        }
+
+
+{-| Q1 census: at a call to a global refused by the `hofParam` guard, what
+shape is each function-typed argument? Off unless `inline.report`.
+-}
+censusHofArgs : Ctx -> TOpt.Global -> List (TOpt.Expr TypeIds.MVarId) -> Ctx
+censusHofArgs ctx g args =
+    if not ctx.censusOn then
+        ctx
+
+    else
+        case CoreDict.get (TOpt.toComparableGlobal g) ctx.hofDeclined of
+            Nothing ->
+                ctx
+
+            Just flags ->
+                let
+                    m =
+                        List.foldl
+                            (\( isFn, arg ) acc ->
+                                if not isFn then
+                                    acc
+
+                                else
+                                    case arg of
+                                        TOpt.Function _ _ _ _ ->
+                                            { acc | hofArgLambda = acc.hofArgLambda + 1 }
+
+                                        TOpt.TrackedFunction _ _ _ _ ->
+                                            { acc | hofArgLambda = acc.hofArgLambda + 1 }
+
+                                        TOpt.VarGlobal _ _ _ ->
+                                            { acc | hofArgGlobal = acc.hofArgGlobal + 1 }
+
+                                        _ ->
+                                            { acc | hofArgOther = acc.hofArgOther + 1 }
+                            )
+                            ctx.metrics
+                            (List.map2 Tuple.pair flags args)
+                in
+                { ctx | metrics = m }
 
 
 {-| What the call site says each of the callee's type variables is: parameters
 against the actual arguments, plus the callee's result type against the call's
 own type.
 -}
-callSiteSubst : Candidate -> List (TOpt.Expr Name) -> TOpt.Meta Name -> Subst
+callSiteSubst : Candidate -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Subst
 callSiteSubst cand args callMeta =
     matchType (TOpt.typeOf cand.body)
         callMeta.tipe
@@ -1521,12 +1784,12 @@ determines cand subst =
         cand.typeVars
 
 
-isGroundType : Can.Type Name -> Bool
+isGroundType : Can.Type TypeIds.MVarId -> Bool
 isGroundType tipe =
     CoreDict.isEmpty (typeVarsOfType tipe CoreDict.empty)
 
 
-doInline : Ctx -> A.Region -> Candidate -> List (TOpt.Expr Name) -> Subst -> ( TOpt.Expr Name, Ctx )
+doInline : Ctx -> A.Region -> Candidate -> List (TOpt.Expr TypeIds.MVarId) -> Subst -> ( TOpt.Expr TypeIds.MVarId, Ctx )
 doInline ctx region cand args subst =
     let
         ( freshBody, freshParams, ctx1 ) =
@@ -1557,83 +1820,73 @@ doInline ctx region cand args subst =
     )
 
 
-{-| Freshen every binder in a candidate body before splicing it into the
-caller, returning the renamed body and the renamed parameter list.
+{-| Freshen a candidate body before splicing it into the caller: TYPE identity
+through `PreMono.Fresh`, TERM names by a uniform per-copy suffix.
 
-**Method: one uniform suffix per inlined copy.** Every LOCAL name in the body —
-binder or use, `Let`/`TailDef`/`Destruct` binder, `Function`/`TrackedFunction`
-parameter, `Case` label and root, `TailCall` label, `Path` root — gets the same
-`_pi<n>` suffix, where `n` is unique to this inline. Globals
-(`VarGlobal`/`VarCycle`/`VarKernel`) are untouched.
+**Types.** `Fresh.freshenCopy` mints a new `SrcLambdaId` for every lambda in the
+copy, a new `ArrowId` for every arrow, and — for every type variable the call
+site did NOT determine — a fresh `MVarId` carrying the original's supertype
+constraint. Determined variables are replaced by the call site's own type,
+spliced verbatim. This replaced the `_pi` TYPE-name suffix, the
+`varSupers`-by-name re-keying and the `SolverRoot -> NoArrow` clearing that this
+pass used while it ran before `AssignMVarIds`.
 
-A uniform suffix is INJECTIVE on names, so it preserves shadowing exactly: a
-body's inner `\x -> x` under an outer `let x` still shadows after renaming,
-because both `x`s become the same `x_pi7` at the same two nesting depths. That
-is why no scope tracking and no rename environment are needed here — and why
-this does NOT reuse `NormalizeLambdaBoundaries.renameExpr`, which renames
-`Def`/`Destructor`/`Case` binders and variable USES but leaves
-`Function`/`TrackedFunction` parameters and `TailDef` names and arguments
-alone. Those gaps are silent: uses get renamed while the binder does not, which
-is an unbound local, not a type error.
+**Terms.** Every LOCAL name in the body — binder or use, `Let`/`TailDef`/
+`Destruct` binder, `Function`/`TrackedFunction` parameter, `Case` label and
+root, `TailCall` label, `Path` root — gets the same `_pi<n>` suffix, unique to
+this copy. Globals are untouched. A uniform suffix is INJECTIVE on names, so it
+preserves shadowing exactly and needs no scope tracking: an inner `\x -> x`
+under an outer `let x` still shadows, because both become the same `x_pi7` at
+the same two depths.
 
-A candidate is a top-level `Define`/`TrackedDefine` body, so its only free
-locals are its own parameters — which are renamed here too. Nothing in the
-caller can therefore be captured.
-
-The mono pass's destructure-binder capture bug (`MonoDestruct` binders passed
-through verbatim while `MonoDef` binders were renamed) cannot recur here: the
-walk below has no per-binder-kind opt-out.
+Inlining one body at two sites in one caller would otherwise produce two
+`let x = …` with the same name, which the backend rejects as an SSA
+redefinition; and the mono pass's destructure-binder capture bug cannot recur
+here because the walk has no per-binder-kind opt-out.
 
 -}
-freshenBody : Ctx -> Subst -> Candidate -> ( TOpt.Expr Name, List ( Name, Can.Type Name ), Ctx )
+freshenBody : Ctx -> Subst -> Candidate -> ( TOpt.Expr TypeIds.MVarId, List ( Name, Can.Type TypeIds.MVarId ), Ctx )
 freshenBody ctx subst cand =
     let
         suffix =
             "_pi" ++ String.fromInt ctx.fresh
 
-        renamedParams =
-            List.map
-                (\( n, t ) -> ( n ++ suffix, suffixType subst suffix t ))
+        -- One `freshenCopy` walk over the body, then the parameter types
+        -- through the same allocator. The parameter types are the declared
+        -- types of the `let` wrappers `doInline` builds; they are copies of the
+        -- candidate's, so they mint their own arrow ids exactly as the body's do.
+        ( freshBody, state1 ) =
+            Fresh.freshenCopy subst ctx.state cand.body
+
+        ( renamedParams, state2 ) =
+            List.foldl
+                (\( n, t ) ( acc, st ) ->
+                    let
+                        ( t1, st1 ) =
+                            Fresh.freshenType subst st t
+                    in
+                    ( ( n ++ suffix, t1 ) :: acc, st1 )
+                )
+                ( [], state1 )
                 cand.params
     in
-    ( suffixExpr subst suffix cand.body
-    , renamedParams
-    , { ctx
-        | fresh = ctx.fresh + 1
-        , renamedTypeVars =
-            List.foldl
-                (\v acc ->
-                    if CoreDict.member v subst then
-                        -- Determined by the call site, so it is gone from the
-                        -- copy entirely and needs no constraint carried over.
-                        acc
-
-                    else
-                        ( v, v ++ suffix ) :: acc
-                )
-                ctx.renamedTypeVars
-                cand.typeVars
-      }
+    ( suffixExpr suffix freshBody
+    , List.reverse renamedParams
+    , { ctx | fresh = ctx.fresh + 1, state = state2 }
     )
 
 
 {-| Apply the copy suffix to every local name in an expression. See
 `freshenBody` for why a blanket rename is the right thing here.
 -}
-suffixExpr : Subst -> String -> TOpt.Expr Name -> TOpt.Expr Name
-suffixExpr subst sfx expr =
+suffixExpr : String -> TOpt.Expr TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId
+suffixExpr sfx expr =
     let
         go =
-            suffixExpr subst sfx
+            suffixExpr sfx
 
         nm n =
             n ++ sfx
-
-        mt =
-            suffixMeta subst sfx
-
-        ty =
-            suffixType subst sfx
 
         loc ln =
             A.At (A.toRegion ln) (nm (A.toValue ln))
@@ -1646,121 +1899,121 @@ suffixExpr subst sfx expr =
         -- unrenamed, which is the same shared-variable collapse the rename
         -- exists to prevent, just harder to see.
         TOpt.Bool region b meta ->
-            TOpt.Bool region b (mt meta)
+            TOpt.Bool region b meta
 
         TOpt.Chr region c meta ->
-            TOpt.Chr region c (mt meta)
+            TOpt.Chr region c meta
 
         TOpt.Str region v meta ->
-            TOpt.Str region v (mt meta)
+            TOpt.Str region v meta
 
         TOpt.Int region i meta ->
-            TOpt.Int region i (mt meta)
+            TOpt.Int region i meta
 
         TOpt.Float region f meta ->
-            TOpt.Float region f (mt meta)
+            TOpt.Float region f meta
 
         TOpt.VarLocal n meta ->
-            TOpt.VarLocal (nm n) (mt meta)
+            TOpt.VarLocal (nm n) meta
 
         TOpt.TrackedVarLocal region n meta ->
-            TOpt.TrackedVarLocal region (nm n) (mt meta)
+            TOpt.TrackedVarLocal region (nm n) meta
 
         TOpt.VarGlobal region g meta ->
-            TOpt.VarGlobal region g (mt meta)
+            TOpt.VarGlobal region g meta
 
         TOpt.VarEnum region g idx meta ->
-            TOpt.VarEnum region g idx (mt meta)
+            TOpt.VarEnum region g idx meta
 
         TOpt.VarBox region g meta ->
-            TOpt.VarBox region g (mt meta)
+            TOpt.VarBox region g meta
 
         TOpt.VarCycle region home n meta ->
-            TOpt.VarCycle region home n (mt meta)
+            TOpt.VarCycle region home n meta
 
         TOpt.VarDebug region n home unqualified meta ->
-            TOpt.VarDebug region n home unqualified (mt meta)
+            TOpt.VarDebug region n home unqualified meta
 
         TOpt.VarKernel region prefix home n meta ->
-            TOpt.VarKernel region prefix home n (mt meta)
+            TOpt.VarKernel region prefix home n meta
 
         TOpt.List region items meta ->
-            TOpt.List region (List.map go items) (mt meta)
+            TOpt.List region (List.map go items) meta
 
         TOpt.Function srcLam params body meta ->
             TOpt.Function srcLam
-                (List.map (\( n, t ) -> ( nm n, ty t )) params)
+                (List.map (\( n, t ) -> ( nm n, t )) params)
                 (go body)
-                (mt meta)
+                meta
 
         TOpt.TrackedFunction srcLam params body meta ->
             TOpt.TrackedFunction srcLam
-                (List.map (\( ln, t ) -> ( loc ln, ty t )) params)
+                (List.map (\( ln, t ) -> ( loc ln, t )) params)
                 (go body)
-                (mt meta)
+                meta
 
         TOpt.Call region f args meta ->
-            TOpt.Call region (go f) (List.map go args) (mt meta)
+            TOpt.Call region (go f) (List.map go args) meta
 
         TOpt.TailCall n args meta ->
             TOpt.TailCall (nm n)
                 (List.map (\( an, e ) -> ( nm an, go e )) args)
-                (mt meta)
+                meta
 
         TOpt.If branches final meta ->
             TOpt.If (List.map (\( c, t ) -> ( go c, go t )) branches)
                 (go final)
-                (mt meta)
+                meta
 
         TOpt.Let def body meta ->
-            TOpt.Let (suffixDef subst sfx def) (go body) (mt meta)
+            TOpt.Let (suffixDef sfx def) (go body) meta
 
         TOpt.Destruct (TOpt.Destructor n path dmeta) body meta ->
             TOpt.Destruct
-                (TOpt.Destructor (nm n) (suffixPath sfx path) (mt dmeta))
+                (TOpt.Destructor (nm n) (suffixPath sfx path) dmeta)
                 (go body)
-                (mt meta)
+                meta
 
         TOpt.Case label root decider jumps meta ->
             TOpt.Case (nm label)
                 (nm root)
-                (suffixDecider subst sfx decider)
+                (suffixDecider sfx decider)
                 (List.map (\( i, e ) -> ( i, go e )) jumps)
-                (mt meta)
+                meta
 
         TOpt.Accessor region field meta ->
-            TOpt.Accessor region field (mt meta)
+            TOpt.Accessor region field meta
 
         TOpt.Access inner region field meta ->
-            TOpt.Access (go inner) region field (mt meta)
+            TOpt.Access (go inner) region field meta
 
         TOpt.Update region record fields meta ->
-            TOpt.Update region (go record) (Dict.map (\_ e -> go e) fields) (mt meta)
+            TOpt.Update region (go record) (Dict.map (\_ e -> go e) fields) meta
 
         TOpt.Record fields meta ->
-            TOpt.Record (CoreDict.map (\_ e -> go e) fields) (mt meta)
+            TOpt.Record (CoreDict.map (\_ e -> go e) fields) meta
 
         TOpt.TrackedRecord region fields meta ->
-            TOpt.TrackedRecord region (Dict.map (\_ e -> go e) fields) (mt meta)
+            TOpt.TrackedRecord region (Dict.map (\_ e -> go e) fields) meta
 
         TOpt.Unit meta ->
-            TOpt.Unit (mt meta)
+            TOpt.Unit meta
 
         TOpt.Tuple region a b rest meta ->
-            TOpt.Tuple region (go a) (go b) (List.map go rest) (mt meta)
+            TOpt.Tuple region (go a) (go b) (List.map go rest) meta
 
         TOpt.Shader src inputs outputs meta ->
-            TOpt.Shader src inputs outputs (mt meta)
+            TOpt.Shader src inputs outputs meta
 
 
-suffixDef : Subst -> String -> TOpt.Def Name -> TOpt.Def Name
-suffixDef subst sfx def =
+suffixDef : String -> TOpt.Def TypeIds.MVarId -> TOpt.Def TypeIds.MVarId
+suffixDef sfx def =
     case def of
         TOpt.Def region n bound tipe ->
             TOpt.Def region
                 (n ++ sfx)
-                (suffixExpr subst sfx bound)
-                (suffixType subst sfx tipe)
+                (suffixExpr sfx bound)
+                (tipe)
 
         TOpt.TailDef region n args body tipe tvar ->
             TOpt.TailDef region
@@ -1768,13 +2021,13 @@ suffixDef subst sfx def =
                 (List.map
                     (\( ln, t ) ->
                         ( A.At (A.toRegion ln) (A.toValue ln ++ sfx)
-                        , suffixType subst sfx t
+                        , t
                         )
                     )
                     args
                 )
-                (suffixExpr subst sfx body)
-                (suffixType subst sfx tipe)
+                (suffixExpr sfx body)
+                (tipe)
                 tvar
 
 
@@ -1797,14 +2050,14 @@ suffixPath sfx path =
             TOpt.Root (n ++ sfx)
 
 
-suffixDecider : Subst -> String -> TOpt.Decider (TOpt.Choice Name) -> TOpt.Decider (TOpt.Choice Name)
-suffixDecider subst sfx decider =
+suffixDecider : String -> TOpt.Decider (TOpt.Choice TypeIds.MVarId) -> TOpt.Decider (TOpt.Choice TypeIds.MVarId)
+suffixDecider sfx decider =
     case decider of
         TOpt.Leaf choice ->
             TOpt.Leaf
                 (case choice of
                     TOpt.Inline e ->
-                        TOpt.Inline (suffixExpr subst sfx e)
+                        TOpt.Inline (suffixExpr sfx e)
 
                     TOpt.Jump i ->
                         TOpt.Jump i
@@ -1812,13 +2065,13 @@ suffixDecider subst sfx decider =
 
         TOpt.Chain tests ok ko ->
             TOpt.Chain tests
-                (suffixDecider subst sfx ok)
-                (suffixDecider subst sfx ko)
+                (suffixDecider sfx ok)
+                (suffixDecider sfx ko)
 
         TOpt.FanOut path branches fallback ->
             TOpt.FanOut path
-                (List.map (\( t, d ) -> ( t, suffixDecider subst sfx d )) branches)
-                (suffixDecider subst sfx fallback)
+                (List.map (\( t, d ) -> ( t, suffixDecider sfx d )) branches)
+                (suffixDecider sfx fallback)
 
 
 locatedName : A.Located Name -> Name
