@@ -937,6 +937,16 @@ renderPreInlineReport m =
         ++ String.fromInt m.overBudget
         ++ " polymorphic="
         ++ String.fromInt m.polymorphic
+        ++ " polyKernel="
+        ++ String.fromInt m.polyKernel
+        ++ " rowPoly="
+        ++ String.fromInt m.rowPoly
+        ++ " superVar="
+        ++ String.fromInt m.superVar
+        ++ " hofParam="
+        ++ String.fromInt m.hofParam
+        ++ " undetermined="
+        ++ String.fromInt m.undetermined
         ++ " bodiesSeen="
         ++ String.fromInt m.bodiesSeen
         ++ "\n  top: "

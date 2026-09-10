@@ -1033,3 +1033,79 @@ emitted `.mlir`, so the first iteration differs (15,626,963 -> 15,627,012 B,
     it was run it found a shipped miscompile.
   - The stale `"Array"` comments in `Intrinsics.elm` are corrected to
     `"JsArray"`, so the next reader is not sent down §14.1's dead end.
+
+
+## 15. §12 BUILT AND MEASURED (2026-09-10)
+
+Polymorphic bodies can now be copied. `PreMonoInlineTest` — the fixture that
+failed §11.2 — passes in the EARLY arm, the EARLY self-compile succeeds, and the
+full E2E suite is back to its 887/889 baseline with `preMono=1 postMono=0`.
+
+### 15.1 What §12 got right, and the one thing it got wrong
+
+Right: the clash is `AssignMVarIds`'s `SchemeEnv = Dict Name MVarId`, so it is a
+`Name` rewrite needing no solver state (§12.1). `suffixType` does it, and
+`varSupers` is extended for renamed names (§12.3a), and `SolverRoot` arrow slots
+are cleared to `NoArrow` (§12.3c).
+
+**Wrong: §12.4 rejected substitution and chose rename-only.** Renaming makes each
+copy INDEPENDENTLY polymorphic — sound, but it leaves the copy's nodes
+variable-typed with nothing to solve them, because the call that carried the
+demand is exactly what inlining removed. Layout decisions then go wrong:
+
+  - `swap : ( a, b ) -> ( b, a )` at two tuple types printed pointer-sized
+    garbage (`swapA: [2241972932276, ...]`) — the spliced `Tuple`'s slot kinds
+    were laid out from a type that was still a variable;
+  - `Tuple.second` SIGSEGV'd all ten `RecordNarrow*` tests.
+
+So substitution is not the optional refinement §12.4 called it; it is the
+mechanism. `matchType` matches the callee's parameter types against the actual
+argument types and its result type against the call's own, and `suffixType`
+splices the bound type in verbatim, falling back to the rename only for
+variables the call site leaves open.
+
+### 15.2 The correction that actually made it work: decide per CALL
+
+**Before monomorphization the CALL SITE frequently does not know its argument
+types either** — an argument's `meta.tipe` is often still a variable that only
+`MonoSolver` resolves. Where that happens the copy is variable-typed however
+carefully it is renamed. So `determines` requires the call site to pin down
+EVERY one of the callee's type variables to a GROUND type, and declines that
+call otherwise. On the self-compile that is 1,506 declined calls — the guard is
+doing most of the work, and it is a per-call decision, not a per-candidate one.
+
+### 15.3 Four candidate-level guards, each found by a failing test
+
+| guard | declines | found by |
+|---|---:|---|
+| `polyKernel` — a kernel call whose type is still variable | 15 | `Eco.Crash.crash : String -> a`, whose 134 copies registered `Eco_Kernel_Crash_crash` with conflicting ABIs (`eco.value -> eco.value` vs `eco.value -> i16`) |
+| `hofParam` — a function-typed parameter | 40 | `List.foldr` inlined pre-mono made `LetNumberFoldrTest` print `0` for `105`; a lambda argument has no settled staging or PAP shape yet, which is what `MonoInlineSimplify`'s `hofThreshold`/`exactOnly`/`loopify` apparatus exists to handle on specialized code |
+| `superVar` — a `number`/`comparable`/`appendable` variable | 22 | `LetNumber*`; freezing a constrained variable early changes its defaulting |
+| `rowPoly` — an open `{ r \| … }` record | 0 | written for `RecordNarrow*`, which `determines` turned out to cover; kept because `matchType` genuinely cannot bind a row variable |
+
+### 15.4 Numbers
+
+| | v1 (refuse polymorphic) | §12 |
+|---|---:|---:|
+| candidates | 498 | **644** |
+| inlines (self-compile) | 969 | **1,416** |
+| declined: this CALL undetermined | — | 1,506 |
+| full E2E, `preMono=1 postMono=0` | 887 / 889 | **887 / 889** |
+| bootstrap fixed point at defaults | byte-identical | **byte-identical** |
+| unit suite | 13,464 / 12 pre-existing | **13,464 / 12 pre-existing** |
+
+1,416 against `MonoInlineSimplify`'s 65,949 is still 2.1%, so §7's position A/B
+remains a comparison of two different AMOUNTS of inlining. The ceiling is now
+visibly set by `undetermined` (1,506 declined calls, more than are performed),
+and that is a pre-mono type-precision limit, not a budget one.
+
+### 15.5 What would raise it
+
+  - **`undetermined` is the whole game.** Every one of those 1,506 is a call
+    whose argument types are still variables at this point in the pipeline.
+    Nothing in this pass can improve that; it is a question about how much the
+    type checker leaves for `MonoSolver`.
+  - `hofParam` (40) is the one guard that is a deliberate scope choice rather
+    than a hard limit, and it is where `MonoInlineSimplify` earns its keep.
+  - A row-variable binding in `matchType` would retire `rowPoly`, which
+    currently declines nothing but is load-bearing if `determines` is relaxed.
