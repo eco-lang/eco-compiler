@@ -373,6 +373,16 @@ applyEnvOverrides cfg =
                     |> Task.map (\v -> applyInlinePostMonoOverride v cfgPost)
             )
         |> Task.andThen
+            (\cfgEta ->
+                (Utils.envLookupEnv "ECO_INLINE_ETA_EXPAND" |> Task.mapError never)
+                    |> Task.map (\v -> applyInlineEtaExpandOverride v cfgEta)
+            )
+        |> Task.andThen
+            (\cfgEtaOnly ->
+                (Utils.envLookupEnv "ECO_INLINE_ETA_ONLY" |> Task.mapError never)
+                    |> Task.map (\v -> applyInlineEtaOnlyOverride v cfgEtaOnly)
+            )
+        |> Task.andThen
             (\cfg12 ->
                 (Utils.envLookupEnv "ECO_CAF_MEMO" |> Task.mapError never)
                     |> Task.map (\cmVal -> applyCafMemoOverride cmVal cfg12)
@@ -1807,6 +1817,56 @@ applyInlinePreMonoOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 { cfg | inline = { inline | preMono = False } }
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_INLINE_ETA_ONLY=Mod.A,Mod.B`: DIAGNOSTIC — restrict `PreMono.EtaExpand`
+to globals whose module name starts with one of the listed prefixes (the
+2026-09-11 bootstrap fixed-point bisect). Empty/unset = every module.
+-}
+applyInlineEtaOnlyOverride : Maybe String -> EcoConfig -> EcoConfig
+applyInlineEtaOnlyOverride maybeVal cfg =
+    case maybeVal of
+        Just v ->
+            let
+                inline =
+                    cfg.inline
+
+                mods =
+                    String.split "," v
+                        |> List.map String.trim
+                        |> List.filter (\m -> m /= "")
+            in
+            { cfg | inline = { inline | etaOnly = mods } }
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_INLINE_ETA_EXPAND=1|true|yes`: run `PreMono.EtaExpand` before
+monomorphization
+(plans/pre-mono-lss-transforms-01-eta-expand-to-declared-arity.md).
+Artifact-affecting; hash token `eta=`. DEFAULT-ON since 2026-09-11 (`=0`
+turns it off).
+-}
+applyInlineEtaExpandOverride : Maybe String -> EcoConfig -> EcoConfig
+applyInlineEtaExpandOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            let
+                inline =
+                    cfg.inline
+            in
+            if List.member v [ "1", "true", "yes" ] then
+                { cfg | inline = { inline | etaExpand = True } }
+
+            else if List.member v [ "0", "false", "no" ] then
+                { cfg | inline = { inline | etaExpand = False } }
 
             else
                 cfg

@@ -20,8 +20,17 @@ target:
     historical counter meaning).
 5.  Flag OFF → byte-identical graph, all E9.5 counters 0 (the substrate
     inertness pin).
-6.  Two same-layout specs → the MINIMUM SpecId wins (determinism — the
-    registry inversion's list order is arbitrary).
+6.  Two same-layout specs and NO exact-type match → `PsAmbiguous`: the site
+    is NOT rewritten (`devirtPostAmbiguous` + `declinedNoInstance`). Until
+    2026-09-10 this pin read "the MINIMUM SpecId wins", and that choice
+    MISCOMPILED `test/elm/src/CombinatorRefIdentityBugTest.elm`: same-layout
+    specs of one global exist because keyed routing split it per lambda
+    set, and `MonoInlineSimplify` inlines each set's callback into its own
+    body, so they compute DIFFERENT functions of the same parameters
+    (`/work/combinator-uf-devirt-error.md`).
+7.  Two same-layout specs, ONE of them an exact `==` match on the full
+    MonoType (set annotation included) → THAT one is chosen, even though it
+    has the HIGHER SpecId — the pin that exactness, not id order, decides.
 
 -}
 
@@ -124,7 +133,7 @@ suite =
                     , \( g, _ ) -> Expect.equal Nothing (firstCalleeSpec g)
                     ]
                     ( graph, stats )
-        , Test.test "two same-layout specs: the MINIMUM SpecId wins (determinism)" <|
+        , Test.test "two same-layout specs, no exact match: AMBIGUOUS, not rewritten" <|
             \() ->
                 let
                     ( graph, stats ) =
@@ -132,15 +141,38 @@ suite =
                             (origins [ ( member, Mono.OriginGlobal targetGlobal ) ])
                             (registryOf
                                 [ Just ( otherGlobal, intFnPlain ) -- spec 0: different global
-                                , Just ( targetGlobal, intFnPlain ) -- spec 1: FIRST match
+                                , Just ( targetGlobal, intFnPlain ) -- spec 1: layout match
                                 , Just ( targetGlobal, intFnPlain ) -- spec 2: same layout, higher id
                                 ]
                             )
                             [ callSite 1 intRet ]
                 in
                 Expect.all
+                    [ \( _, s ) -> Expect.equal 0 s.devirtPost.fn
+                    , \( _, s ) -> Expect.equal 1 s.devirtPost.ambiguous
+                    , \( _, s ) -> Expect.equal 0 s.devirtPost.noSpec
+                    , \( _, s ) -> Expect.equal 1 s.declinedNoInstance
+                    , \( g, _ ) -> Expect.equal Nothing (firstCalleeSpec g)
+                    ]
+                    ( graph, stats )
+        , Test.test "two same-layout specs, one EXACT match at the higher id: exactness wins" <|
+            \() ->
+                let
+                    ( graph, stats ) =
+                        run True
+                            (origins [ ( member, Mono.OriginGlobal targetGlobal ) ])
+                            (registryOf
+                                [ Just ( otherGlobal, intFnPlain ) -- spec 0: different global
+                                , Just ( targetGlobal, intFnPlain ) -- spec 1: layout match only (the old winner)
+                                , Just ( targetGlobal, intFnMember ) -- spec 2: EXACT match, higher id
+                                ]
+                            )
+                            [ callSite 1 intRet ]
+                in
+                Expect.all
                     [ \( _, s ) -> Expect.equal 1 s.devirtPost.fn
-                    , \( g, _ ) -> Expect.equal (Just 1) (firstCalleeSpec g)
+                    , \( _, s ) -> Expect.equal 0 s.devirtPost.ambiguous
+                    , \( g, _ ) -> Expect.equal (Just 2) (firstCalleeSpec g)
                     ]
                     ( graph, stats )
         ]

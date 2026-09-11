@@ -1909,3 +1909,57 @@ doing more work per compile; the one comparable slice of it is Run AL's
 recorded −0.306 pp for the `arrowIdentity` flip. Full symbolized tables (all
 rows, 0 unknown fps): `/work/lss-head-defaults-dispatch.tsv`,
 `/work/lss-head-refidentity-dispatch.tsv`.
+
+### Run AP — pre-mono η-expansion ON, single arm: survivor call census + logical dispatch stats + LSS-set coverage (2026-09-10): **fast 52.9 % of the dispatch population; static-target share 94.5 %; typed cross-checks to 3 events; sets k1 68.4 % / kN 23.3 % / var 7.5 % / ⊤ 0.7 %**
+
+One arm, no A/B, as commissioned. The compiler ITSELF was built with
+`ECO_INLINE_ETA_EXPAND=1` at Stage 5 (`bin/eco-eta.mlir`, solver+LSS+borrow build
+env), lowered with BOTH `ECO_CALL_CENSUS=1` and `ECO_LSS_DISPATCH_SITE_COUNTERS=1`
+(§3.7 leg — logical and survivor counters from one run), and run on the cold
+self-compile workload under `ECO_DISPATCH_STATS=1 ECO_MONO_ENGINE=solver
+ECO_MONO_LSS=1 ECO_MONO_LSS_REPORT=1 ECO_INLINE_ETA_EXPAND=1`. Tree also carries the
+E9.5 `matchSpec` uniqueness fix. Wall 8:09.33 (489.3 s, census-on; Run AV's plain
+leg is 478.7 s), max RSS 13,965,452 kB, `out.mlir` 15,665,163 B.
+
+**Logical dispatch (`[dispatch-stats]`):**
+
+| sat | gen | typed | fast | sat+fast | fast % | gen % | typed % |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 784,353,191 | 701,772,864 | 82,580,327 | 881,785,786 | 1,666,138,977 | **52.92** | 42.12 | 4.96 |
+
+**Surviving calls (`[call-census]`, 447,605 sites, 20 partitions):**
+
+| elm | kernel | cap | helper | runtime | extern | indirect |
+|---:|---:|---:|---:|---:|---:|---:|
+| 11,761,180,688 | 1,257,847,611 | 569,760,395 | 635,332,146 | 10,244,738,974 | 0 | 0 |
+
+| derived | value |
+|---|---|
+| static-target share (elm+kernel+cap) / (elm+kernel+cap+sat) | **94.54 %** — surviving indirect 5.46 % |
+| helper split | `eco_apply_closure_eval` 552,751,822 · `eco_closure_call_saturated` 78,858,125 · `_saturated_eval` 3,722,199 |
+| typed cross-check | helper-typed 82,580,324 vs dispatch-stats typed 82,580,327 — **3 events** apart, as on 2026-08-28 |
+| generic not entered through generated code | gen − apply_closure_eval = 149,021,042 (21.2 % of gen: kernel-C++-initiated) |
+| logical fast vs surviving `$cap` | 881,785,786 vs 569,760,395 — 312,025,391 logical fast calls do not survive as `$cap` calls |
+| top `$cap` | `Terminal_Main_lambda_28424` 29.1 M, `_27785` 24.5 M, `_15588` 21.3 M |
+| top elm | `Dict_insertHelp_$_15758` 1.76 B, `Dict_balance_$_5460` 1.53 B, `Monomorphized_unionSortedInts` 426 M, `Array_get` 339 M |
+
+**LSS sets at sites (`ECO_MONO_LSS_REPORT=1`, same run):**
+
+| positions | k1 | kN | var | ⊤ | part | coverage (k1+kN) |
+|---:|---:|---:|---:|---:|---:|---:|
+| 147,871 | 101,132 (68.40 %) | 34,521 (23.35 %) | 11,107 (7.51 %) | 1,071 (0.72 %) | 40 (0.03 %) | **91.75 %** |
+
+Readback-weighted (`ledger:` 666,740 zonks): k1 47.3 %, kN 10.7 %, var 40.7 %, ⊤ 1.3 %.
+Stamping at AbiCloning (39,237 stamp/decline verdicts): `dispatchUpgraded` 18,225 (46.4 %),
+`stampedPapGlobal` 2,577, `stampedStaged` 201, `stampedPapPrefix` 15; declined `noInstance`
+14,553 (37.1 %), `blocked` 1,371, `bodyMismatch` 1,262, `shape` 668, `abiMismatch` 365;
+`devirtPost fn/ctor/noSpec/ambiguous` 103/305/0/14. Identical to Run AV's defaults-built
+binary on the same workload to within a few positions, as expected — the set census is a
+property of the workload.
+
+Two things NOT to read across runs: (a) the fast/`$cap` relation is INVERTED against the
+2026-08-28 census (`cap` was 1.84× logical fast there, on a fold-OFF binary of a different
+vintage) — this run's 312 M gap is the §3.7 inliner-erasure figure for THIS tree and is not
+a delta; (b) the eta-BUILT binary emits 15,665,163 B for the workload against the
+defaults-built binary's 15,654,810 B (Run AV) — a first-iteration difference, not a fixed
+point; the `eta=0` arm and the two-arm dispatch A/B the η plan's §6.3 asks for are still owed.

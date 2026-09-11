@@ -74,12 +74,13 @@ import Compiler.GlobalOpt.CafDedupe as CafDedupe
 import Compiler.GlobalOpt.CafHoist as CafHoist
 import Compiler.GlobalOpt.CseCensus as CseCensus
 import Compiler.GlobalOpt.InlineSimplify as InlineSimplify
-import Compiler.GlobalOpt.PreMono.Fresh as Fresh
 import Compiler.GlobalOpt.ListCombinators as ListCombinators
 import Compiler.GlobalOpt.MapTemplate as MapTemplate
 import Compiler.GlobalOpt.MonoCse as MonoCse
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
+import Compiler.GlobalOpt.PreMono.EtaExpand as EtaExpand
+import Compiler.GlobalOpt.PreMono.Fresh as Fresh
 import Compiler.MonoSolver.Diff as MonoDiff
 import Compiler.MonoSolver.Monomorphize as MonoSolver
 import Compiler.Monomorphize.EntryPrep as EntryPrep
@@ -754,6 +755,43 @@ runMonoOptPipeline ecoConfig stats typedGraph globalTypeEnv =
         assigned0 =
             EntryPrep.assign (assignFlagsFor ecoConfig) "main" typedGraph
 
+        -- PRE-MONO ETA EXPANSION
+        -- (plans/pre-mono-lss-transforms-01-eta-expand-to-declared-arity.md).
+        -- Default OFF; `ECO_INLINE_ETA_EXPAND=1` turns it on. With BOTH the
+        -- flag and `inline.report` off the pass is not called at all, so the
+        -- default path does not so much as walk the graph (R9).
+        --
+        -- With `inline.report` on and the flag off it runs as a CENSUS: `run`
+        -- classifies every body and returns the graph and the id allocator
+        -- UNTOUCHED, which is Step 1's measurement — the deficit histogram and
+        -- `cheapShare` that say whether the gate is tuned before a run is spent.
+        --
+        -- Placed BEFORE the pre-mono inliner (that plan's §2.8) so the inliner
+        -- sees SATURATED calls rather than the 2-of-3 PAPs its `hofParam` guard
+        -- declines, and before monomorphization because LSS runs inside the
+        -- solver: the saturated shape has to exist by the time the analysis
+        -- looks at it.
+        ( assignedEta, etaMetrics ) =
+            if ecoConfig.inline.etaExpand || ecoConfig.inline.report then
+                let
+                    ( gEta, stateEta, metrics ) =
+                        EtaExpand.run ecoConfig.inline assigned0.mvarState assigned0.graph
+                in
+                ( { assigned0 | graph = gEta, mvarState = stateEta }, metrics )
+
+            else
+                ( assigned0, EtaExpand.emptyMetrics )
+
+        preEtaReport =
+            if ecoConfig.inline.report then
+                Task.io
+                    (System.IO.writeLn System.IO.stderr
+                        (renderPreEtaReport ecoConfig.inline.etaExpand etaMetrics)
+                    )
+
+            else
+                Task.succeed ()
+
         -- PRE-MONO inliner (plans/pre-mono-inline-simplify.md). Default OFF;
         -- `ECO_INLINE_PRE_MONO=1` is the EARLY arm of the position A/B, which
         -- pairs it with `ECO_INLINE_POST_MONO=0`.
@@ -761,12 +799,12 @@ runMonoOptPipeline ecoConfig stats typedGraph globalTypeEnv =
             if ecoConfig.inline.preMono then
                 let
                     ( g1, state1, metrics ) =
-                        InlineSimplify.optimize ecoConfig.inline assigned0.mvarState assigned0.graph
+                        InlineSimplify.optimize ecoConfig.inline assignedEta.mvarState assignedEta.graph
                 in
-                ( { assigned0 | graph = g1, mvarState = state1 }, metrics )
+                ( { assignedEta | graph = g1, mvarState = state1 }, metrics )
 
             else
-                ( assigned0, InlineSimplify.emptyMetrics )
+                ( assignedEta, InlineSimplify.emptyMetrics )
 
         preInlineReport =
             if ecoConfig.inline.report then
@@ -778,7 +816,8 @@ runMonoOptPipeline ecoConfig stats typedGraph globalTypeEnv =
             else
                 Task.succeed ()
     in
-    preInlineReport
+    preEtaReport
+        |> Task.andThen (\_ -> preInlineReport)
         |> Task.andThen (\_ -> validateMinted ecoConfig assigned1)
         |> Task.andThen
             (\_ ->
@@ -970,6 +1009,87 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
         )
         -- Hand off to a separate function so monoGraph0 goes out of scope
         |> Task.andThen (runGlobalOptPhase ecoConfig ecoConfig.mono.lss.report ecoConfig.list.report ecoConfig.borrow ecoConfig.cafMemo ecoConfig.cse stats)
+
+
+{-| Census line for pre-mono η-expansion
+(`plans/pre-mono-lss-transforms-01-eta-expand-to-declared-arity.md` §2.8).
+
+`pre-eta-census:` when the flag is off (the classifier ran, nothing was
+rewritten) and `pre-eta:` when it is on, so a log cannot be misread as evidence
+that the rewrite happened.
+
+`bodiesSeen` is the denominator whose zero is impossible — the pre-mono
+inliner's lesson: `defs = 0` reads identically whether the pass refused
+everything or matched no node shape at all.
+
+-}
+renderPreEtaReport : Bool -> EtaExpand.Metrics -> String
+renderPreEtaReport enabled m =
+    let
+        topExpanded =
+            Dict.toList m.byName
+                |> List.sortBy (\( _, n ) -> negate n)
+                |> List.take 20
+                |> List.map (\( name, n ) -> name ++ "=" ++ String.fromInt n)
+                |> String.join " "
+
+        topDeclined =
+            Dict.toList m.notCheapByName
+                |> List.sortBy (\( _, n ) -> negate n)
+                |> List.take 20
+                |> List.map (\( name, n ) -> name ++ "=" ++ String.fromInt n)
+                |> String.join " "
+
+        prefix =
+            if enabled then
+                "pre-eta: "
+
+            else
+                "pre-eta-census: "
+    in
+    prefix
+        ++ "defs="
+        ++ String.fromInt m.defs
+        ++ " cycleDefs="
+        ++ String.fromInt m.cycleDefs
+        ++ " conts="
+        ++ String.fromInt m.conts
+        ++ " merged="
+        ++ String.fromInt m.merged
+        ++ " pushed="
+        ++ String.fromInt m.pushed
+        ++ " declined.notCheap="
+        ++ String.fromInt m.notCheap
+        ++ " declined.noDeficit="
+        ++ String.fromInt m.noDeficit
+        ++ " declined.noSpine="
+        ++ String.fromInt m.noSpine
+        ++ " declined.tailDef="
+        ++ String.fromInt m.tailDef
+        ++ " declined.cycleValue="
+        ++ String.fromInt m.cycleValue
+        ++ " declined.kernelAlias="
+        ++ String.fromInt m.kernelAlias
+        ++ " declined.ctorAlias="
+        ++ String.fromInt m.ctorAlias
+        ++ " declined.noPeel="
+        ++ String.fromInt m.noPeel
+        ++ " bodiesSeen="
+        ++ String.fromInt m.bodiesSeen
+        ++ "\n  deficit: 1="
+        ++ String.fromInt m.deficit1
+        ++ " 2="
+        ++ String.fromInt m.deficit2
+        ++ " 3+="
+        ++ String.fromInt m.deficit3
+        ++ "   cheapShare="
+        ++ String.fromInt m.cheapYes
+        ++ "/"
+        ++ String.fromInt m.cheapSeen
+        ++ "\n  top: "
+        ++ topExpanded
+        ++ "\n  topDeclined: "
+        ++ topDeclined
 
 
 {-| Census line for the PRE-mono inliner (`plans/pre-mono-inline-simplify.md`).
@@ -1401,12 +1521,14 @@ runGlobalOptPhase mapTemplateCfg lssReport listReport borrowCfg cafMemo cseCfg s
                                     ++ String.fromInt goStats.abiCloning.declinedAbiMismatch
                                     ++ " declinedBodyMismatch="
                                     ++ String.fromInt goStats.abiCloning.declinedBodyMismatch
-                                    ++ " devirtPost(fn/ctor/noSpec)="
+                                    ++ " devirtPost(fn/ctor/noSpec/ambiguous)="
                                     ++ String.fromInt goStats.abiCloning.devirtPost.fn
                                     ++ "/"
                                     ++ String.fromInt goStats.abiCloning.devirtPost.ctor
                                     ++ "/"
                                     ++ String.fromInt goStats.abiCloning.devirtPost.noSpec
+                                    ++ "/"
+                                    ++ String.fromInt goStats.abiCloning.devirtPost.ambiguous
                                     ++ " multiInstanceGroups="
                                     ++ String.fromInt goStats.abiCloning.multiInstanceGroups
                                     ++ " stampedWrapperInstances="

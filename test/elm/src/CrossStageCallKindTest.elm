@@ -18,6 +18,16 @@ differently staged lambdas"): later batches recursed with
 `callKindAttr = Nothing` and the segmentation_unknown re-tag lived only in
 the `Just` arm — so cross-stage batches emitted NEITHER attribute.
 
+NOTE (2026-09-10/11): the `CHECK-MLIR` below pins the PRESENCE of the generic
+cross-stage op, and pre-mono η-expansion would REMOVE it: `caseFunc` is written
+with one parameter and declares three, so η would push the two missing
+arguments into the `case` branches and the staged lambdas would beta away — no
+cross-stage batch left to tag. Since 2026-09-11 η-expansion is DEFAULT-ON, so
+the scrutinee goes through `Debug.log`: a `VarDebug` call is never cheap
+(EtaExpand fixture F8), the definition is refused, and the shape survives
+under either flag setting
+(plans/pre-mono-lss-transforms-01-eta-expand-to-declared-arity.md §9.4).
+
 -}
 
 -- CHECK-MLIR: segmentation_unknown
@@ -27,7 +37,12 @@ import Html exposing (text)
 
 
 caseFunc : Int -> Int -> Int -> Int
-caseFunc x =
+caseFunc x0 =
+    let
+        -- Not cheap ⇒ η-expansion leaves this definition alone (see NOTE).
+        x =
+            Debug.log "caseFunc" x0
+    in
     case x of
         0 ->
             \a b -> a + b

@@ -481,3 +481,45 @@ hash token-free across the flip; explicitly-off configs now key as
   ≈0.24% upper bound in §2.R and accepted as immaterial — the build is a
   reach-completeness decision); the kernel half keeps §2.R.3's warm lead
   (cons-class ≈0.56% + 30 named sites) as its Phase-0 seed.
+
+
+---
+
+## AMENDMENT 2026-09-10 — the minimum-SpecId choice was a miscompile
+
+**Refuted:** "Spec choice among same-layout candidates changes dispatch tiers
+inside G's body, never observable behavior — LSS_005 covers exactly this."
+
+**Evidence** (`/work/combinator-uf-devirt-error.md`, traced with temporary
+per-stage instrumentation, since removed): at `b f g y = s (k s) k f g y`, `matchSpec` saw
+
+```
+member=329 target=s
+    cand #13 eqLayout=F
+    cand #10 eqLayout=T exactEq=F      <- the spec mono itself emitted (`ref #10`)
+    cand #6  eqLayout=T exactEq=F
+    chosen=Just 6
+```
+
+`#6` is `s` routed under the demand `uf := double`, `#10` under
+`uf := inc`; `MonoInlineSimplify` had already inlined each callback into its own
+spec, so `#6`'s body computes `bf x (double x)` with `uf` DEAD. Picking `#6` for
+a value that is `#10` printed `square (double 4) = 64` for `square (inc 4) = 25`.
+
+**Why LSS_005 does not cover it:** same-layout specs of one global are not
+"the same body at different dispatch tiers" — they exist because keyed routing
+split the global per lambda set, and a keyed spec's body is correct only for
+values satisfying its key. Layout is blind to the key.
+
+**Fix (shipped):** `matchSpec` requires UNIQUENESS — a unique exact `==` match
+on the full MonoType wins; else a unique `eqLayout` match wins; else
+`PsAmbiguous n`, counted `devirtPost.ambiguous`, census key
+`noInstanceAmbiguous|<n>`. `PostSettleDevirtTest` pins 6 and 7 are the new
+contract; `test/elm/src/CombinatorRefIdentityBugTest.elm` is the E2E pin.
+
+**Precise repair (not built):** carry the DEMAND in the member origin.
+`OriginGlobal g` is minted from a `MonoVarGlobal specId` reference under
+`lss.refIdentity` and throws the SpecId away; `OriginGlobal g (Just specId)`
+would let `matchSpec` name the spec exactly, recovering every `ambiguous` site
+without a layout guess. Requires `Monomorphize.globalOrigin` and its
+`LssMemberTable` producer to see the reference's spec at mint time.

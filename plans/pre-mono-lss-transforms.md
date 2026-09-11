@@ -5,7 +5,7 @@
 | item | plan | status |
 |---|---|---|
 | 0 | `pre-mono-lss-transforms-00-assign-mvar-ids-first.md` | ready; step 0a re-verifies the §16 alias fix reproduces 1,865 / 864 |
-| 1 | `pre-mono-lss-transforms-01-eta-expand-to-declared-arity.md` | ready; census first |
+| 1 | `pre-mono-lss-transforms-01-eta-expand-to-declared-arity.md` | **BUILT, DEFAULT-OFF (Sep 10)** — reproduces the hand rewrite line-for-line; BLOCKED on a pre-existing miscompile it exposes (`/work/combinator-uf-devirt-error.md`). See its §9 |
 | 2 | `pre-mono-lss-transforms-02-inline-preserve-sets.md` | ready; independent of items 0/1/3/4/5 |
 | 3 | `pre-mono-lss-transforms-03-lift-closed-lambda-args.md` | **CENSUS-GATED** — the probe's `g1absentl` turned out to be a loopify artifact (see its R1); build only if the four-layer census clears the bar |
 | 4 | `pre-mono-lss-transforms-04-alias-forwarding.md` | ready; kernel-alias VALUES in argument position deferred to v2 |
@@ -15,7 +15,15 @@ Two facts established while lowering, recorded once here so the children can cit
 `TOpt.Link` is NOT an alias node (effect managers and cycle members only), and LSS already folds
 KERNEL aliases via `LssInfer.kernelAliasOf` (LSS_016) — item 4's new part is global→global; (b) the
 flags-decoder node inserted by `EntryPrep` becomes visible to the pre-mono passes after item 0, and
-items 1 and 4 must skip `EntryPrep.flagsDecoderName`.
+items 1 and 4 must skip `EntryPrep.flagsDecoderName` (item 1 does).
+
+**A third fact, established by BUILDING item 1 and worth citing before items 3/4/5 touch
+anything:** (c) an existing type sub-term may NOT be spliced at a new position — one `ArrowId`
+at two occurrences is the LSS_009 shape and `Fresh.assertMinted` rejects it, so every type a
+transform places somewhere new must have its arrow slots cleared and be re-minted; and (d) a
+callee's arity must be read from the GRAPH, never from its type, because an arrow chain counts
+the arrows of its RESULT (a 6-arrow type for a 3-parameter global miscompiled `CombinatorTest`).
+Item 1's §2.4 and §2.7 carry both in full.
 
 **Tree state warning (2026-09-10 09:26):** the §16 alias fix and Q1 census fields in
 `InlineSimplify.elm`/`Generate.elm` were reverted by a working-tree restore performed outside this

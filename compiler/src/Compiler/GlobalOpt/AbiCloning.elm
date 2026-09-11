@@ -139,7 +139,15 @@ type alias AbiCloningStats =
     -- every guard but no registry spec eqLayout-matched (expect ~0).
     -- partialDeclined (lss-lpartial AR-P2): LPartial-headed sites the
     -- stamp DECLINED — the observable devirt guard.
-    , devirtPost : { fn : Int, ctor : Int, noSpec : Int, partialDeclined : Int }
+    -- ambiguous: TWO OR MORE registry specs of the target eqLayout-matched
+    -- the site and none matched it exactly, so no spec could be named. Was
+    -- "take the minimum SpecId" until 2026-09-10, which MISCOMPILED
+    -- (/work/combinator-uf-devirt-error.md): same-layout specs of one global
+    -- are routed under different lambda-set keys, and MonoInlineSimplify
+    -- inlines each key's callback into its body, so they are not
+    -- interchangeable. Expect this to be small; every one is a site that
+    -- needs the reference's own spec carried through the member origin.
+    , devirtPost : { fn : Int, ctor : Int, noSpec : Int, partialDeclined : Int, ambiguous : Int }
     , multiInstanceGroups : Int -- layout groups holding ≥2 distinct lambdaIds. A MONITORING DELTA, not a zero-gate (amended LSS_017 reading): MonoInlineSimplify mints fresh lambdaIds for verbatim inline copies, and under LSS_024 annotation-only clones legitimately join one group — the representative premise is discharged by fingerprint unanimity, not by this count.
 
     -- Census (2026-07-21, plans/lss-dispatch-value-extraction.md open
@@ -178,7 +186,7 @@ emptyStats =
     , declinedShapeNonArrow = 0
     , declinedAbiMismatch = 0
     , declinedBodyMismatch = 0
-    , devirtPost = { fn = 0, ctor = 0, noSpec = 0, partialDeclined = 0 }
+    , devirtPost = { fn = 0, ctor = 0, noSpec = 0, partialDeclined = 0, ambiguous = 0 }
     , multiInstanceGroups = 0
     , declineByMember = Dict.empty
     , memberReps = Dict.empty
@@ -1610,6 +1618,26 @@ stampCall index ctx region func args resultType callInfo =
                                 )
                             )
 
+                        PsAmbiguous n ->
+                            -- Two or more same-layout specs of the target and
+                            -- nothing to choose between them: the site stays
+                            -- generic. See `devirtPost.ambiguous`.
+                            let
+                                statsA =
+                                    ctx.stats
+                            in
+                            ( Mono.MonoCall region func args resultType callInfo
+                            , bumpHost ("noInstanceAmbiguous|" ++ String.fromInt n)
+                                (bumpNoInstance
+                                    (let
+                                        dpA =
+                                            statsA.devirtPost
+                                     in
+                                     { ctx | stats = { statsA | devirtPost = { dpA | ambiguous = dpA.ambiguous + 1 } } }
+                                    )
+                                )
+                            )
+
                         PsStampPap target ->
                             -- LSS_040 (plans/lss-pap-fast-stamp.md §3.4): the
                             -- flowing value is a k-applied PAP of the UNIQUE
@@ -2289,10 +2317,19 @@ Guards, every one load-bearing:
     so a partially-applied value's remaining spine never carries the
     member; this guard is the belt to that suspender — it proves the value
     is the zero-capture bare global/ctor;
-  - an `eqLayout` spec of the target exists; the MINIMUM SpecId among
-    matches is chosen (deterministic, order-free — `specsByGlobal` lists
-    are unsorted). Spec choice among same-layout candidates is covered by
-    LSS\_005 (capture-free, see the call-site comment).
+  - EXACTLY ONE spec of the target names the site: a unique `==` match on
+    the full MonoType (set annotations included) wins; failing that, a
+    unique `eqLayout` match wins; two or more layout matches with no unique
+    exact one DECLINE as `PsAmbiguous`. This replaced "the MINIMUM SpecId
+    among matches" on 2026-09-10 — that choice miscompiled
+    `test/elm/src/CombinatorRefIdentityBugTest.elm` (`b square inc 4`
+    printed 64, not 25). The "LSS\_005 covers spec choice among same-layout
+    candidates" argument was wrong: those specs exist BECAUSE keyed routing
+    split one global per lambda set, and `MonoInlineSimplify` inlines each
+    set's callback into its own body, so two same-layout specs compute
+    DIFFERENT functions of the same parameters. Layout cannot pick between
+    them; only the demand that minted the member can, and `OriginGlobal`
+    does not carry it (the precise repair, see the bug write-up §7).
 
 No `lssBlockedMembers` check: blocked members are INSERTED into the index
 (blocked = True), so they take the `Just` path (`declinedBlocked`) and
@@ -2302,6 +2339,7 @@ never reach the noInstance arm.
 type PostSettleOutcome
     = PsStamp Mono.SpecId Bool -- Bool = ctor half (census split)
     | PsNoSpec -- every guard passed, no eqLayout spec — counted
+    | PsAmbiguous Int -- every guard passed, >= 2 eqLayout specs and no unique exact match — counted; the Int is how many
       -- P0 census (plans/lss-no-instance-declines.md §8.1): the reason travels
       -- with the rejection. A separate "why did it fail" function would
       -- duplicate the guard logic and drift from it.
@@ -2700,18 +2738,28 @@ Unchanged from the original; `PsNoSpec` has measured 0 since E9.5 shipped.
 -}
 matchSpec : Mono.Global -> Bool -> Mono.MonoType -> StampCtx -> PostSettleOutcome
 matchSpec target isCtor calleeType ctx =
-    case
-        Dict.get (Mono.toComparableGlobal target) ctx.specsByGlobal
-            |> Maybe.withDefault []
-            |> List.filter (\( _, specType ) -> Mono.eqLayout specType calleeType)
-            |> List.map Tuple.first
-            |> List.minimum
-    of
-        Just specId ->
+    let
+        layoutMatches =
+            Dict.get (Mono.toComparableGlobal target) ctx.specsByGlobal
+                |> Maybe.withDefault []
+                |> List.filter (\( _, specType ) -> Mono.eqLayout specType calleeType)
+
+        exactMatches =
+            List.filter (\( _, specType ) -> specType == calleeType) layoutMatches
+    in
+    -- UNIQUENESS, never minimum: see the type's doc and `devirtPost.ambiguous`.
+    case ( exactMatches, layoutMatches ) of
+        ( [ ( specId, _ ) ], _ ) ->
             PsStamp specId isCtor
 
-        Nothing ->
+        ( [], [ ( specId, _ ) ] ) ->
+            PsStamp specId isCtor
+
+        ( [], [] ) ->
             PsNoSpec
+
+        ( _, many ) ->
+            PsAmbiguous (List.length many)
 
 
 bumpNoInstance : StampCtx -> StampCtx

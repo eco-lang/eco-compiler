@@ -711,7 +711,14 @@ translateDispatch expr s0 =
                                             let
                                                 monoType =
                                                     if Mono.containsAnyMVar monoType0 then
-                                                        Mono.typeOf monoFinal
+                                                        -- Structure from the final branch, lambda-set
+                                                        -- annotations JOINED over every branch — see
+                                                        -- `joinBranchTypes` (adopting one branch's
+                                                        -- annotations verbatim was the 2026-09-11
+                                                        -- false-singleton miscompile).
+                                                        List.foldl (\( _, b ) acc -> joinBranchTypes acc (Mono.typeOf b))
+                                                            (Mono.typeOf monoFinal)
+                                                            monoBranches
 
                                                     else
                                                         monoType0
@@ -852,7 +859,17 @@ translateDispatch expr s0 =
             translateUpdate record updates meta.tipe s0
 
         TOpt.Let def body meta ->
-            translateLet def body meta.tipe s0
+            -- Connect the body's type to the Let node's own type before
+            -- translating: the two are one type to the typechecker but carry
+            -- DISTINCT per-occurrence arrow slots (LSS_006), and a branch value
+            -- reached through this wrapper must reach the enclosing join —
+            -- see the `TOpt.Destruct` arm for the miscompile this closes.
+            case connectTypes (TOpt.typeOf body) meta.tipe s0 of
+                Err e ->
+                    Err e
+
+                Ok ( (), s0c ) ->
+                    translateLet def body meta.tipe s0c
 
         TOpt.Case label root decider jumps meta ->
             -- M6: direct state-passing (desugared nested andThen/map) → byte-identical.
@@ -894,26 +911,42 @@ translateDispatch expr s0 =
             -- number-multi root is specialized body-FIRST, so its uses drive one
             -- root instance per demanded numeric type (+ dead-destructor elim).
             -- A1: direct state-passing (desugared andThen; pure getS inlined) → byte-identical.
-            case Engine.numberMultiRootType (pathRootName path) s0 of
+            --
+            -- 2026-09-11 (/work/eta-fixed-point-root-cause.md): connect the
+            -- body's type to the Destruct node's own type FIRST, exactly as
+            -- `specializeChoice` connects an inline leaf to its case. A
+            -- pattern-binding branch (`Just x -> f x`) is `Destruct` around the
+            -- value; without this connect the value's arrow slot (the call's
+            -- result set) never reaches the case's slot, so a sibling branch
+            -- that DOES connect — a PAP of a global, `LSet [p|…]` — read back as
+            -- the case's COMPLETE set: a false singleton that E9.5 fast-stamped,
+            -- running `succeed`'s evaluator on the other branch's closure and
+            -- silently skipping its state effect (`PapStampTest`).
+            case connectTypes (TOpt.typeOf body) meta.tipe s0 of
                 Err e ->
                     Err e
 
-                Ok ( maybeRootType, s1 ) ->
-                    case maybeRootType of
-                        Just eagerRootType ->
-                            case classifyAs Mono.tkClassDestr dmeta.tipe s1 of
-                                Err e ->
-                                    Err e
+                Ok ( (), s0d ) ->
+                    case Engine.numberMultiRootType (pathRootName path) s0d of
+                        Err e ->
+                            Err e
 
-                                Ok ( eagerLeaf, s2 ) ->
-                                    if isScalarNumber eagerLeaf && refineRootInstance s1.env.globalTypeEnv eagerRootType path eagerLeaf /= Nothing then
-                                        specializeNumberDestruct dname path dmeta (pathRootName path) eagerRootType body meta s2
+                        Ok ( maybeRootType, s1 ) ->
+                            case maybeRootType of
+                                Just eagerRootType ->
+                                    case classifyAs Mono.tkClassDestr dmeta.tipe s1 of
+                                        Err e ->
+                                            Err e
 
-                                    else
-                                        generalDestruct destructor body meta s2
+                                        Ok ( eagerLeaf, s2 ) ->
+                                            if isScalarNumber eagerLeaf && refineRootInstance s1.env.globalTypeEnv eagerRootType path eagerLeaf /= Nothing then
+                                                specializeNumberDestruct dname path dmeta (pathRootName path) eagerRootType body meta s2
 
-                        Nothing ->
-                            generalDestruct destructor body meta s1
+                                            else
+                                                generalDestruct destructor body meta s2
+
+                                Nothing ->
+                                    generalDestruct destructor body meta s1
 
         TOpt.Accessor region fieldName meta ->
             -- M6: direct state-passing (desugared andThen/map) → byte-identical.
@@ -7670,35 +7703,122 @@ annoCellLabel anno =
             "part"
 
 
+{-| The case's MonoType when the storeless classification carries residual
+MVars: the STRUCTURE of the first branch (jumps first, then the decider's
+inline leaves, then the fallback), with the lambda-set annotations JOINED over
+every branch by `joinBranchTypes`.
+
+Before 2026-09-11 this returned the first branch's MonoType verbatim,
+annotations included. That is a soundness hole (/work/eta-fixed-point-root-cause.md):
+a `case` whose branches are `succeed ()` — a PAP of a global, `LSet [p|…]` —
+and an `andThen … (loadType …)` call whose result arrow reads back ⊤/var made
+the whole case `LSet [p|…]`, the consumer keyed its `andThen` instance on that
+singleton, and E9.5 fast-stamped `step s` to `succeed`'s evaluator — which then
+ran on the other branch's closure and silently skipped its state effect (the
+census cell `caseanno|top|k1` next to `caseanno|top|top` is exactly this shape).
+The store cannot catch it: each branch is unified INTO the case's slot, so the
+class content is whatever the set-bearing branch wrote.
+
+-}
 inferCaseType : List ( Int, Mono.MonoExpr ) -> Mono.Decider Mono.MonoChoice -> Mono.MonoType -> Mono.MonoType
 inferCaseType jumps decider fallback =
-    case jumps of
-        ( _, e ) :: _ ->
-            Mono.typeOf e
+    case List.map (\( _, e ) -> Mono.typeOf e) jumps ++ deciderLeafTypes decider of
+        first :: rest ->
+            List.foldl (\t acc -> joinBranchTypes acc t) first rest
 
         [] ->
-            inferFromDecider decider fallback
-
-
-inferFromDecider : Mono.Decider Mono.MonoChoice -> Mono.MonoType -> Mono.MonoType
-inferFromDecider decider fallback =
-    case decider of
-        Mono.Leaf (Mono.Inline e) ->
-            Mono.typeOf e
-
-        Mono.Leaf (Mono.Jump _) ->
             fallback
 
-        Mono.Chain _ yes _ ->
-            inferFromDecider yes fallback
+
+{-| Every `Inline` leaf's MonoType, in decider order (yes before no, edges
+before the default) — the same homes `caseAnnoCensus` walks.
+-}
+deciderLeafTypes : Mono.Decider Mono.MonoChoice -> List Mono.MonoType
+deciderLeafTypes decider =
+    case decider of
+        Mono.Leaf (Mono.Inline e) ->
+            [ Mono.typeOf e ]
+
+        Mono.Leaf (Mono.Jump _) ->
+            []
+
+        Mono.Chain _ yes no ->
+            deciderLeafTypes yes ++ deciderLeafTypes no
 
         Mono.FanOut _ edges def ->
-            case edges of
-                ( _, d ) :: _ ->
-                    inferFromDecider d fallback
+            List.concatMap (\( _, d ) -> deciderLeafTypes d) edges ++ deciderLeafTypes def
 
-                [] ->
-                    inferFromDecider def fallback
+
+{-| Join the lambda-set annotations of two branch MonoTypes position-wise,
+keeping `acc`'s structure (the branches' structures agree by typing; on any
+shape disagreement `acc` is kept as-is, exactly as `Mono.overlayAnnotations`
+does).
+
+Per position the rule is `Mono.unionAnno` — set ∪ set = union, set ∪ var =
+`LPartial` (a lower bound, refused by every stamp guard and re-entering the
+store as flex), ⊤ absorbs — EXCEPT that two non-set labels keep the first
+branch's label rather than joining: `LVar i ∪ LVar j` would manufacture a
+conflict-⊤ out of two zonks' independent var numbering, and neither var nor ⊤
+is stampable, so nothing is gained by widening them. The only labels this join
+ever changes are the stampable ones, and it only ever weakens them.
+
+-}
+joinBranchTypes : Mono.MonoType -> Mono.MonoType -> Mono.MonoType
+joinBranchTypes acc next =
+    case ( acc, next ) of
+        ( Mono.MFunction _ annoA argsA retA, Mono.MFunction _ annoB argsB retB ) ->
+            if List.length argsA == List.length argsB then
+                Mono.mFunction (joinBranchAnno annoA annoB) (List.map2 joinBranchTypes argsA argsB) (joinBranchTypes retA retB)
+
+            else
+                acc
+
+        ( Mono.MList _ xa, Mono.MList _ xb ) ->
+            Mono.mList (joinBranchTypes xa xb)
+
+        ( Mono.MTuple _ xsa, Mono.MTuple _ xsb ) ->
+            if List.length xsa == List.length xsb then
+                Mono.mTuple (List.map2 joinBranchTypes xsa xsb)
+
+            else
+                acc
+
+        ( Mono.MRecord _ fieldsA, Mono.MRecord _ fieldsB ) ->
+            if Dict.keys fieldsA == Dict.keys fieldsB then
+                Mono.mRecord (Dict.map (\k ta -> joinBranchTypes ta (Maybe.withDefault ta (Dict.get k fieldsB))) fieldsA)
+
+            else
+                acc
+
+        ( Mono.MCustom _ homeA nameA argsA, Mono.MCustom _ homeB nameB argsB ) ->
+            if homeA == homeB && nameA == nameB && List.length argsA == List.length argsB then
+                Mono.mCustom homeA nameA (List.map2 joinBranchTypes argsA argsB)
+
+            else
+                acc
+
+        _ ->
+            acc
+
+
+joinBranchAnno : Mono.LambdaSetAnno -> Mono.LambdaSetAnno -> Mono.LambdaSetAnno
+joinBranchAnno acc next =
+    case ( acc, next ) of
+        ( Mono.LSet _, _ ) ->
+            Mono.unionAnno acc next
+
+        ( _, Mono.LSet _ ) ->
+            Mono.unionAnno acc next
+
+        ( Mono.LPartial _, _ ) ->
+            Mono.unionAnno acc next
+
+        ( _, Mono.LPartial _ ) ->
+            Mono.unionAnno acc next
+
+        _ ->
+            -- (var | ⊤) × (var | ⊤): the first branch's label, as before.
+            acc
 
 
 specializeDtPath : Name -> TypedPath.Path -> Step Mono.MonoDtPath

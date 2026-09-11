@@ -38,6 +38,7 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.MLIR.BytesFusion.LoopIR as IR exposing (Endianness(..), Op(..), WidthExpr(..))
+import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Compiler.Monomorphize.Registry as Registry
 import Dict exposing (Dict)
 
@@ -678,6 +679,22 @@ reifyMapBody bodyLookup registry exprCache mapFn iterExpr countExpr =
                 Just ( [ ( paramName, _ ) ], body ) ->
                     buildLoopNode bodyLookup registry exprCache paramName body iterExpr countExpr
 
+                Just ( [ ( paramName, _ ), ( extraName, _ ) ], body ) ->
+                    -- η-EXPANDED helper (2026-09-11). `Encoder` is an arrow
+                    -- alias, so pre-mono η-expansion rewrites
+                    -- `encodeByte n = E.unsignedInt8 n` to
+                    -- `encodeByte n w = E.unsignedInt8 n w`: the same helper
+                    -- with one more parameter and the body applied to it.
+                    -- Recognise it by η-REDUCING that trailing application
+                    -- — sound exactly when the extra parameter occurs
+                    -- nowhere else in the body (`FusionGlobalMapFnTest`).
+                    case etaReduceTrailingParam extraName body of
+                        Just reduced ->
+                            buildLoopNode bodyLookup registry exprCache paramName reduced iterExpr countExpr
+
+                        Nothing ->
+                            Nothing
+
                 _ ->
                     -- Not an arity-1 inlinable spec (recursive, kernel,
                     -- multi-arg, MonoCase body, etc.). Bail.
@@ -685,6 +702,87 @@ reifyMapBody bodyLookup registry exprCache mapFn iterExpr countExpr =
 
         _ ->
             Nothing
+
+
+{-| Undo one η-expansion on a helper body: `f args extra` (the extra
+parameter as the sole argument of an outer application, or as the LAST
+argument of a flat multi-argument call) becomes `f args`, provided `extra`
+occurs nowhere else. The reduced call's type is the callee's type peeled by
+the remaining argument count, so a flat multi-param arrow keeps its own
+annotation on the residual parameters.
+-}
+etaReduceTrailingParam : Name -> MonoExpr -> Maybe MonoExpr
+etaReduceTrailingParam extra body =
+    let
+        mentionsExtra e =
+            MonoTraverse.foldExpr
+                (\x acc ->
+                    acc
+                        || (case x of
+                                MonoVarLocal n _ ->
+                                    n == extra
+
+                                _ ->
+                                    False
+                           )
+                )
+                False
+                e
+    in
+    case body of
+        MonoCall _ func [ MonoVarLocal n _ ] _ _ ->
+            if n == extra && not (mentionsExtra func) then
+                Just func
+
+            else
+                Nothing
+
+        MonoCall region func args _ callInfo ->
+            case List.reverse args of
+                (MonoVarLocal n _) :: revInit ->
+                    let
+                        initArgs =
+                            List.reverse revInit
+                    in
+                    if n == extra && not (List.isEmpty initArgs) && not (mentionsExtra func) && not (List.any mentionsExtra initArgs) then
+                        Maybe.map
+                            (\reducedType -> MonoCall region func initArgs reducedType callInfo)
+                            (peelParams (List.length initArgs) (Mono.typeOf func))
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+{-| The type of `f a1 … ak` given `f`'s MonoType: peel `k` parameters off the
+(possibly multi-param) arrow spine; a partial peel keeps the arrow's own
+annotation on the residual parameters. `Nothing` when the spine is too short.
+-}
+peelParams : Int -> Mono.MonoType -> Maybe Mono.MonoType
+peelParams k funcType =
+    if k <= 0 then
+        Just funcType
+
+    else
+        case funcType of
+            Mono.MFunction _ anno params ret ->
+                let
+                    np =
+                        List.length params
+                in
+                if k >= np then
+                    peelParams (k - np) ret
+
+                else
+                    Just (Mono.mFunction anno (List.drop k params) ret)
+
+            _ ->
+                Nothing
 
 
 {-| Shared body-reification step for both `reifyMapBody` arms.

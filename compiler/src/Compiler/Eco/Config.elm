@@ -997,6 +997,31 @@ type alias InlineConfig =
     -- Defaults preserve today's behaviour: preMono OFF, postMono ON.
     , preMono : Bool
     , postMono : Bool
+
+    -- PRE-MONO ETA EXPANSION
+    -- (plans/pre-mono-lss-transforms-01-eta-expand-to-declared-arity.md).
+    -- Rewrites a definition or a continuation lambda whose SYNTACTIC parameter
+    -- count is below the arity its type declares once aliases are expanded
+    -- (`IO a = State -> ( State, a )`) into the saturated spelling, then merges
+    -- the freshly applied arguments into the under-applied call underneath.
+    -- The target is `System.TypeCheck.IO`'s bind chain, 55.3 % of generic
+    -- dispatch: `andThen`/`map` are already arity-3 in their definitions and
+    -- every caller writes them at the alias arity, so the deficit is entirely
+    -- caller-side. Gated on a CHEAPNESS test (plan §2.5) because expansion
+    -- moves whatever sits left of the new binders from once-per-CAF to
+    -- once-per-call. Artifact-affecting; hash token `eta=1`; env
+    -- `ECO_INLINE_ETA_EXPAND=0|1`. DEFAULT-ON since 2026-09-11: the
+    -- bootstrap fixed point for eta=1 was demonstrated (A == B, 15,681,792 B)
+    -- once the LSS false-singleton it exposed was fixed
+    -- (/work/eta-fixed-point-root-cause.md — `Translate`'s `Let`/`Destruct`
+    -- arms now connect the body's type to the node's type).
+    , etaExpand : Bool
+
+    -- DIAGNOSTIC (2026-09-11 fixed-point bisect): when non-empty, η-expansion
+    -- is applied ONLY to globals whose module name starts with one of these
+    -- prefixes. Artifact-affecting; hash token `etaOnly=`; env
+    -- `ECO_INLINE_ETA_ONLY=Mod.A,Mod.B`. DEFAULT [] (= every module).
+    , etaOnly : List String
     , report : Bool
     , kernelFactsDce : Bool -- kernel-opt-11 (a): let the dead-binding gate drop a dead kernel call whose KernelFacts row is `droppable` (cseSafe AND totality == Total, and every argument pure). DEFAULT-ON since 2026-08-12 (realizable ceiling on the whole 261-module self-compile is FOUR sites, of which 2 realize -- it ships for the enabling value and for ending the isPureExpr/CafHoist contradiction, NOT for a measured win); env kill switch ECO_KERNEL_FACTS_DCE=0; artifact-affecting (hash token "kfdce=1"). Widens ONLY MonoInlineSimplify's dead-let gate -- the H2.5/H6.1 partial-forward guards keep the legacy all-calls-impure predicate
     , kernelCostClasses : Bool -- kernel-opt-11 (b): price a kernel call from its derived KernelFacts cost class (and from whether it lowers to an inline op) instead of the flat 6-per-call the inliner uses today. DEFAULT-ON since 2026-08-12 (changes real inlining decisions -- emitted .mlir +1,341 B, letDCE 498->441 -- wall FLAT at +0.56%); env kill switch ECO_KERNEL_COST_CLASSES=0; artifact-affecting (hash token "kcc=<i>/<g>/<a>/<h>", the whole vector, so every A/B leg is cache-disjoint). Independent of kernelFactsDce ON PURPOSE -- DCE deletes work, cost classes move inliner thresholds, and a shared flag would make per-constant attribution impossible
@@ -1090,6 +1115,8 @@ default =
         , partialHof = False
         , preMono = False
         , postMono = True
+        , etaExpand = True
+        , etaOnly = []
         , report = False
         , kernelFactsDce = True
 
@@ -1206,6 +1233,8 @@ inlineDecoder =
         |> D.apply (D.optionalField "partialHof" D.bool default.inline.partialHof)
         |> D.apply (D.optionalField "preMono" D.bool default.inline.preMono)
         |> D.apply (D.optionalField "postMono" D.bool default.inline.postMono)
+        |> D.apply (D.optionalField "etaExpand" D.bool default.inline.etaExpand)
+        |> D.apply (D.optionalField "etaOnly" (D.list D.string) default.inline.etaOnly)
         |> D.apply (D.optionalField "report" D.bool default.inline.report)
         |> D.apply (D.optionalField "kernelFactsDce" D.bool default.inline.kernelFactsDce)
         |> D.apply (D.optionalField "kernelCostClasses" D.bool default.inline.kernelCostClasses)
@@ -1462,6 +1491,14 @@ hash cfg =
                 else
                     "0"
                )
+         , "eta="
+            ++ (if cfg.inline.etaExpand then
+                    "1"
+
+                else
+                    "0"
+               )
+         , "etaOnly=" ++ String.join "," cfg.inline.etaOnly
          , "wl=" ++ String.join "," cfg.inline.whitelist
          , "bl=" ++ String.join "," cfg.inline.blacklist
          , "mpf=" ++ String.fromInt cfg.inline.maxPerFunction

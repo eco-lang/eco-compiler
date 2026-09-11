@@ -1322,6 +1322,50 @@ measurement**: `out.mlir` differs by 9.9 % because EARLY performs 1,416 inlines 
 monomorphization — not budget, and nothing in this pass can lift it. `declinedNoInstance` doubling
 is the expected shadow of 64k inlines not happening; `plans/pre-mono-inline-simplify.md` §15 argues.
 
+### 2026-09-10 — Run AU: `AssignMVarIds` moved ahead of the pre-mono passes (`preMono=1 postMono=0`)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| EARLY (`preMono=1 postMono=0`) | **7:58.82** (478.8 s) | 13,563,712 kB | 2,111 | 10 | 734,171,101 (22,006 MiB) | 154.73 s | 14,154,952 B |
+
+Plain single run, no arms: `plans/pre-mono-lss-transforms-00-assign-mvar-ids-first.md` is an IR move
+with no flag and no dispatch change possible, so this is a regression check. `AssignMVarIds`
+(internally unchanged) now runs in `Generate.runMonoOptPipeline` before the pre-mono passes;
+`InlineSimplify` operates on `MVarId`s and mints copies via `PreMono.Fresh`, not the `_pi` suffix.
+Against Run AT's EARLY leg (474.9 s, 2,099 minors, 9 majors, 22,078 MiB): **+0.8 % wall, +12 minors,
++1 major, −0.3 % promoted** — FLAT by the 3 % bar, no regression detected. **The cross-row wall
+comparison is NOT clean**: `out.mlir` moved 14,098,147 → 14,154,952 B (+0.4 %) because the corpus is
+the compiler's own source and this item ADDS to it (`PreMono/Fresh.elm`, the engine `…Assigned`
+cores, `EntryPrep.assign`); the 9 → 10 majors is worth watching if a later item touches allocation
+but is not attributable at n=1 on a moved corpus. The real gates are the plan's §11 identity ones.
+
+### 2026-09-10 — Run AV: pre-mono η-expansion ON (`ECO_INLINE_ETA_EXPAND=1`, everything else default) + E9.5 uniqueness fix (plain run)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| LATE + eta (`postMono=1 etaExpand=1`) | **7:58.68** (478.7 s) | 14,043,068 kB | 2,121 | 11 | 748,002,745 (22,454 MiB) | 159.77 s | 15,654,810 B |
+
+| axis | value |
+|---|---|
+| `pre-eta` | defs=450 cycleDefs=46 conts=311 merged=634 pushed=240 · declined notCheap=368 noDeficit=6,176 noSpine=926 kernelAlias=180 cycleValue=6 noPeel=0 · bodiesSeen=8,493 |
+| deficit / cheapShare | 1→1,049 2→109 3+→17 · 807/1,175 |
+| inlines performed (post-mono) | 67,308 |
+| `dispatchUpgraded` / `stampedPapGlobal` | 18,226 / 2,577 |
+| `declinedNoInstance` / `declinedBlocked` / `multiInstanceGroups` | 14,553 / 1,371 / 3,617 |
+| `devirtPost(fn/ctor/noSpec/ambiguous)` | 103 / 305 / 0 / **14** |
+| `slotsMinted` / `joins identical` / join flush | 835,700 / 83,533 / rounds=0 retranslations=0 |
+
+Single run, no A/B, as commissioned: the shipping configuration plus `etaExpand=1`
+(`plans/pre-mono-lss-transforms-01-eta-expand-to-declared-arity.md`), on a tree that also carries the
+E9.5 `matchSpec` uniqueness fix (`/work/combinator-uf-devirt-error.md`). Against Run AT's LATE leg
+(472.3 s, 2,111 minors, 9 majors, 22,223 MiB, 148.67 s GC): wall +1.4 % — FLAT, no regression detected;
+minors +10, promoted +1.0 %, majors 9→11 — the majors move is worth watching but is not attributable
+at n=1 on a moved corpus. The cross-row wall comparison is NOT clean: `out.mlir` 15,646,289 → 15,654,810 B
+(+0.05 %) and the corpus gained `PreMono/EtaExpand.elm` plus the E9.5 change. η fired on 450 definitions,
+46 Cycle members and 311 continuations (`andThen` chains), merging 634 calls; `dispatchUpgraded` +745 and
+`stampedPapGlobal` +392 over AT-late are the analysis seeing saturated shapes. **`ambiguous=14` is the
+self-compile count of sites the pre-fix minimum-SpecId rule was stamping to a same-layout sibling.**
+
 ---
 
 ## Summary
@@ -1381,3 +1425,5 @@ One row per run, numbers only.
 | AS-early | 474.9 | 2099 | 9 | 22078 |
 | AT-late | 472.3 | 2111 | 9 | 22223 |
 | AT-early | 474.9 | 2100 | 9 | 22096 |
+| AU-early | 478.8 | 2111 | 10 | 22006 |
+| AV | 478.7 | 2121 | 11 | 22454 |
