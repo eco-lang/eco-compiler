@@ -990,11 +990,17 @@ type alias InlineConfig =
     -- gates the new `InlineSimplify` (before it, on the TOpt IR). Both
     -- artifact-affecting; hash tokens `preInl=` / `postInl=`.
     --
-    -- The A/B is a POSITION test: exactly one is on in each arm, with every
-    -- other inline setting held constant, so the variable is WHERE the inliner
-    -- runs and not how much inlining happens.
-    --
-    -- Defaults preserve today's behaviour: preMono OFF, postMono ON.
+    -- BOTH DEFAULT-ON since 2026-09-11. The position A/B this pair was built
+    -- for cannot be run: `postMono = False` MISCOMPILES (7 Array/JsArray
+    -- SIGSEGVs — the post-mono pass is load-bearing for CORRECTNESS), so the
+    -- two are additive rather than alternatives. `preMono` ships on its own
+    -- evidence (benchmarks/call-stats.md Run 4, measured with η default-on):
+    -- a bootstrap fixed point, `out.mlir` −0.51 %, `noInstance` −74 and
+    -- `blocked` −34 declines, and dispatch NEUTRAL — the +0.26 % the benchmark
+    -- arm shows is the pass's own workload cost (+0.30 % on the reference arm,
+    -- same binary). Inlining BEFORE specialization is what pays: 13,150
+    -- pre-mono inlines retire 18,588 post-mono ones (67,407 → 48,819).
+    -- `ECO_INLINE_PRE_MONO=0` turns it off.
     , preMono : Bool
     , postMono : Bool
 
@@ -1113,7 +1119,7 @@ default =
         -- The M3 census sweep picks any nonzero default.
         , raiseAppliedShareMin = 0
         , partialHof = False
-        , preMono = False
+        , preMono = True
         , postMono = True
         , etaExpand = True
         , etaOnly = []

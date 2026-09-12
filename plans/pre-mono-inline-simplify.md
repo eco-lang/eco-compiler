@@ -1127,3 +1127,42 @@ plan's ledger:
     this pass skips at `List.isEmpty params`. A complete pre-mono pass tops out near the
     source-site count, not 66k. The ranked relaxations (R3 alias forwarding, R1 caller-binder
     bindings, R2 reference-node metas, R4 kernel cost classes) are in the report's §1.3.
+
+
+## 17. SHIPPED DEFAULT-ON (2026-09-11)
+
+`inline.preMono = True` in `Config.default` (`ECO_INLINE_PRE_MONO=0` turns it off). The position
+A/B this flag pair was built for stays unrunnable — §13's finding that `postMono = False`
+MISCOMPILES is unchanged, so the two inliners are ADDITIVE and both ship on.
+
+Measured with η already default-on, under `benchmarks/call-stats.md`'s protocol (Run 3 = defaults,
+Run 4 = `preMono=1`, same tree, same-source arms):
+
+| | Run 3 (off) | Run 4 (on) | Δ |
+|---|---:|---:|---:|
+| `out.mlir` (B) | 15,668,282 | 15,588,695 | −79,587 (−0.51 %) |
+| arrow positions | 148,338 | 147,634 | −704 |
+| `noInstance` / `blocked` declines | 14,505 / 5,078 | 14,431 / 5,044 | −74 / −34 |
+| dispatch population | 1,847,894,829 | 1,852,635,974 | +0.26 % |
+| pre-mono / post-mono inlines | 0 / 67,407 | 13,150 / 48,819 | −5,438 total |
+
+The mechanism is leverage, not volume: inlining BEFORE specialization retires ~1.4 post-mono
+inlines per pre-mono one, which is where the code-size win comes from. **Dispatch is NEUTRAL** —
+the benchmark arm's +0.26 % is the pass's own workload cost, since the reference arm (same binary,
+only the workload flag moved) shows +0.30 %. Wall is not resolvable at N=1 (+2.2 % benchmark,
+−1.3 % reference).
+
+Gates: E2E 1725/1725 with `ECO_INLINE_PRE_MONO=1` and again at pure defaults after the flip; unit
+tests unchanged (`TestPipeline.runToAssigned` stops before the pre-mono passes, and both
+`InlineSimplify*Test` fixtures set `preMono = True` explicitly, so nothing pinned the old default).
+The bootstrap fixed point for `preMono=1` was demonstrated during the benchmark itself (Run 4's
+benchmark output is byte-identical to the `.mlir` its compiler was built from) and again on the
+flipped source: **B == C, 15,588,695 B**, with `PapStampTest` still printing 42.
+
+A default flip needs ONE EXTRA ITERATION to propagate, and the chain must be read accordingly. The
+baked-in default comes from the SOURCE a binary was compiled from, not from the compiler that
+compiled it, so seeding with a pre-flip binary gives A = the flipped source compiled WITHOUT the
+flag (15,668,282 B, Run 3's size) and only B = the flipped source compiled BY A — whose own default
+is now on — carries it (15,588,695 B, Run 4's size). `A != B` there is the flip propagating, not a
+divergence; the fixed point is `B == C`. Both A and B differ from their pre-flip counterparts by
+exactly the flipped constant (same size, different bytes).

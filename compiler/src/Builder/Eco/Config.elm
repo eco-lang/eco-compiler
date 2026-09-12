@@ -1800,9 +1800,9 @@ applyInlineThresholdOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_INLINE_PRE_MONO=1|true|yes`: run `InlineSimplify` BEFORE
-monomorphization (plans/pre-mono-inline-simplify.md). Artifact-affecting; hash
-token `preInl=`. DEFAULT-OFF.
+{-| `ECO_INLINE_PRE_MONO=0|1`: run `InlineSimplify` BEFORE monomorphization
+(plans/pre-mono-inline-simplify.md). Artifact-affecting; hash token `preInl=`.
+DEFAULT-ON since 2026-09-11 (`=0` turns it off; benchmarks/call-stats.md Run 4).
 -}
 applyInlinePreMonoOverride : Maybe String -> EcoConfig -> EcoConfig
 applyInlinePreMonoOverride maybeVal cfg =
