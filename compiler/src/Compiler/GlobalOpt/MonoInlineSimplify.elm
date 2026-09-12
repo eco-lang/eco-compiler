@@ -80,6 +80,13 @@ type alias Metrics =
     -- inlined — see `InternalMetrics.inlineSourceSites`.
     , inlineSourceSites : Dict String Int
 
+    -- plans/pre-mono-lss-transforms-02-inline-preserve-sets.md §3.3: partial
+    -- inlines refused by `inline.preserveSets`, at both guarded sites. NOT
+    -- report-gated — it is the denominator that makes a `clearedMembers` of
+    -- zero readable: flag ON must show `cleared=0` AND this equal to the
+    -- flag-OFF `cleared` count on the same input.
+    , declinedPreserveSets : Int
+
     -- P0 census (plans/lss-inline-member-propagation.md §7): every reshape that
     -- CLEARED an LSS member, keyed `<newLambdaUid>|<clearedMemberId>|<site>`.
     -- Captured at the clearing site itself, so this is the `reshaped` set by
@@ -1425,6 +1432,12 @@ type alias RewriteCtx =
     -- build pays nothing.
     , reshapeCensusOn : Bool
     , kernelFactsDce : Bool -- kernel-opt-11 (a): widen the dead-binding purity test to KernelFacts-droppable kernel calls
+
+    -- plans/pre-mono-lss-transforms-02-inline-preserve-sets.md: decline the
+    -- strictly-partial inline rather than mint an identity-less residual
+    -- closure. Consulted at the ONE site that clears a member (see
+    -- `tryInlineCall`) and at `rewriteExpr`'s beta arm for symmetry.
+    , preserveSets : Bool
     , registry : Mono.SpecializationRegistry
     , whitelist : InlineWhitelist
     , maxInlinesPerFunction : Int
@@ -1455,6 +1468,9 @@ type alias InternalMetrics =
     , arityRaised : Int
     , arityRaiseSkipped : Int
     , inlinedByCallee : Dict String Int
+
+    -- Mirrors `Metrics.declinedPreserveSets`.
+    , declinedPreserveSets : Int
 
     -- P0 census, mirrors `Metrics.clearedMembers`.
     , clearedMembers : Dict String Int
@@ -1515,6 +1531,7 @@ emptyMetrics =
     , arityRaised = 0
     , arityRaiseSkipped = 0
     , inlinedByCallee = Dict.empty
+    , declinedPreserveSets = 0
     , clearedMembers = Dict.empty
     , inlineSourceSites = Dict.empty
     }
@@ -1528,6 +1545,19 @@ lambdaUid lid =
     case lid of
         Mono.AnonymousLambda _ uid ->
             uid
+
+
+{-| One strictly-partial inline refused by `inline.preserveSets`
+(plans/pre-mono-lss-transforms-02-inline-preserve-sets.md §3.3). Unconditional:
+one Int, and it is the instrument's own correctness check.
+-}
+bumpDeclinedPreserveSets : RewriteCtx -> RewriteCtx
+bumpDeclinedPreserveSets ctx =
+    let
+        m =
+            ctx.metrics
+    in
+    { ctx | metrics = { m | declinedPreserveSets = m.declinedPreserveSets + 1 } }
 
 
 {-| P0 census: record one identity-clearing reshape (see `Metrics.clearedMembers`).
@@ -2548,6 +2578,7 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
     , loopifyEnabled = inlineConfig.loopify
     , reshapeCensusOn = inlineConfig.report
     , kernelFactsDce = inlineConfig.kernelFactsDce
+    , preserveSets = inlineConfig.preserveSets
     , registry = registry
     , whitelist = effectiveWhitelist
     , maxInlinesPerFunction = inlineConfig.maxPerFunction
@@ -2573,6 +2604,7 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
         , arityRaised = 0
         , arityRaiseSkipped = 0
         , inlinedByCallee = Dict.empty
+        , declinedPreserveSets = 0
         , clearedMembers = Dict.empty
         , inlineSourceSites = Dict.empty
         }
@@ -2762,8 +2794,32 @@ rewriteExpr : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
 rewriteExpr ctx expr =
     case expr of
         -- Beta reduction: ((\\x -> body) arg)
-        MonoCall region (MonoClosure info closureBody _) args resultType _ ->
-            betaReduce ctx region info closureBody args resultType
+        MonoCall region ((MonoClosure info closureBody _) as closureExpr) args resultType callInfo ->
+            if ctx.preserveSets && not (List.isEmpty args) && List.length args < List.length info.params then
+                -- plans/pre-mono-lss-transforms-02-inline-preserve-sets.md: the
+                -- mirror of `tryInlineCall`'s clearing arm — `betaReduce`'s own
+                -- strictly-partial arm rebuilds the literal with
+                -- `lssMember = Nothing`. Guarded HERE rather than inside
+                -- `betaReduce` because the decline must reproduce the call
+                -- VERBATIM: `betaReduce` never receives the closure's type (its
+                -- caller discards it) or the call's `CallInfo`, so reconstructing
+                -- inside it would have to synthesize a `topSynth` closure type —
+                -- widening the very annotation this flag exists to keep. The
+                -- other two `betaReduce` call sites pass exact or over-applied
+                -- argument lists by construction, so this is the only path that
+                -- reaches that arm. MEASURED dead on the self-compile
+                -- (`declinedPreserveSets` will say if that ever changes).
+                let
+                    ( rewrittenFunc, ctx1 ) =
+                        rewriteExpr (bumpDeclinedPreserveSets ctx) closureExpr
+
+                    ( rewrittenArgs, ctx2 ) =
+                        rewriteExprs ctx1 args
+                in
+                ( MonoCall region rewrittenFunc rewrittenArgs resultType callInfo, ctx2 )
+
+            else
+                betaReduce ctx region info closureBody args resultType
 
         -- Direct call inlining
         MonoCall region (MonoVarGlobal varRegion specId funcType) args resultType callInfo ->
@@ -4833,6 +4889,24 @@ tryInlineCall callRegion ctx specId args resultType =
                         ( Just inlined
                         , recordInlineAt callRegion specId ctx1
                         )
+
+                else if numArgs < numParams && ctx.preserveSets then
+                    -- plans/pre-mono-lss-transforms-02-inline-preserve-sets.md.
+                    -- DECLINE. The residual closure the arm below mints is the
+                    -- ONLY identity-clearing reshape that fires on real code
+                    -- (reshape census: `bySite=tryInline` and nothing else).
+                    -- Leaving the call alone leaves the callee's PAP in place,
+                    -- and a `p|<global>|k` PAP member is the best-served class
+                    -- in the compiler (LSS_040 stamps 2,041/2,418 sites) where
+                    -- the residual could not be stamped at all.
+                    --
+                    -- `( Nothing, … )` is exactly what the `exactOnly` refusal
+                    -- above returns; the caller then keeps the `MonoCall` and
+                    -- rewrites its children, so nothing else changes. This
+                    -- deliberately also refuses WHITELISTED and `partialHof`
+                    -- candidates: the flag's contract is that no clearing site
+                    -- fires, which admits no exception (plan §3.2).
+                    ( Nothing, bumpDeclinedPreserveSets ctx )
 
                 else if numArgs < numParams then
                     -- Partial application: bind available params, return closure with remaining

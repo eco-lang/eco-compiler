@@ -1238,6 +1238,8 @@ renderInlineReportWith inlineConfig m graph =
             ++ String.fromInt m.arityRaised
             ++ " raiseSkipped="
             ++ String.fromInt m.arityRaiseSkipped
+            ++ " declinedPreserveSets="
+            ++ String.fromInt m.declinedPreserveSets
             ++ " closuresRemaining="
             ++ String.fromInt (MonoInlineSimplify.countClosures graph)
 

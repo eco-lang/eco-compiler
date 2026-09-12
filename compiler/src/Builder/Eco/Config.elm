@@ -84,6 +84,10 @@ loadBase maybeExplicit root =
   - `ECO_MONO_LSS_REPORT=1` renders the LSS census to stderr after mono.
   - `ECO_INLINE_REPORT=1` renders the inline census to stderr after
     inline+simplify (HOF-elimination plan H0.2).
+  - `ECO_INLINE_PRESERVE_SETS=1` makes the post-mono inliner decline the
+    strictly-partial inline, the only reshape that clears an LSS member
+    (plans/pre-mono-lss-transforms-02-inline-preserve-sets.md); participates in
+    the hash via the `psets=` token.
   - `ECO_INLINE_HOF_THRESHOLD=<n>` overrides `inline.hofThreshold` (the H2
     called-function-param inlining budget); experiment/tuning knob.
   - `ECO_INLINE_FPI=<n>` overrides `inline.fixpointIterations`;
@@ -356,6 +360,11 @@ applyEnvOverrides cfg =
             (\cfgPh ->
                 (Utils.envLookupEnv "ECO_INLINE_PARTIAL_HOF" |> Task.mapError never)
                     |> Task.map (\phVal -> applyInlinePartialHofOverride phVal cfgPh)
+            )
+        |> Task.andThen
+            (\cfgPs ->
+                (Utils.envLookupEnv "ECO_INLINE_PRESERVE_SETS" |> Task.mapError never)
+                    |> Task.map (\psVal -> applyInlinePreserveSetsOverride psVal cfgPs)
             )
         |> Task.andThen
             (\cfgThr ->
@@ -1735,6 +1744,35 @@ applyRaiseMinAppliedOverride maybeVal cfg =
                     cfg.inline
             in
             { cfg | inline = { inline | raiseAppliedShareMin = clamp 0 100 n } }
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_INLINE_PRESERVE_SETS=1|true|yes`: make `MonoInlineSimplify` decline
+the strictly-partial inline — the one reshape that clears an LSS member
+identity — so the callee's PAP (a stampable `p|` member) is left in place
+(plans/pre-mono-lss-transforms-02-inline-preserve-sets.md). Beats
+`ECO_INLINE_PARTIAL_HOF`, which exists to force that same arm, and applies to
+whitelisted candidates too. Artifact-affecting; hash token `psets=`. DEFAULT-ON
+since 2026-09-12 (`=0` turns it off; benchmarks/call-stats.md Runs 7/8).
+-}
+applyInlinePreserveSetsOverride : Maybe String -> EcoConfig -> EcoConfig
+applyInlinePreserveSetsOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            let
+                inline =
+                    cfg.inline
+            in
+            if List.member v [ "1", "true", "yes" ] then
+                { cfg | inline = { inline | preserveSets = True } }
+
+            else if List.member v [ "0", "false", "no" ] then
+                { cfg | inline = { inline | preserveSets = False } }
+
+            else
+                cfg
 
         Nothing ->
             cfg

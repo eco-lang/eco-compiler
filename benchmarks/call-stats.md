@@ -381,6 +381,104 @@ the workload flag moved — falls just −0.81 %, so ~19.3 of those 20.15 points
 dispatching better rather than η making the compile cheaper. Run 1's retracted −21.4 % was therefore
 a real η win sitting on a floor that the miscompile had pushed ~112 M too low.
 
+### Run 7 — defaults, `preserveSets` OFF (2026-09-12)
+
+| compiler | build | workload | wall (s) | max RSS (kB) | minor GC | major GC | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| reference | `ECO_MONO_ENGINE=subst` | solver+LSS, defaults (`psets=0`) | 606.4 | 14,534,004 | 2,250 | 11 | 22,856 | 15,594,595 |
+| benchmark | solver+LSS, defaults (`psets=0`) | solver+LSS, defaults (`psets=0`) | 517.3 | 14,543,236 | 2,245 | 10 | 22,926 | 15,594,595 |
+
+**1. lss-coverage**
+
+| compiler | positions | singleton `k1` | multi `kN` | `var` | `⊤` | partial | coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| reference | 147,938 | 100,763 (68.11 %) | 34,457 (23.29 %) | 11,582 (7.83 %) | 1,079 (0.73 %) | 57 (0.04 %) | 91.40 % |
+| benchmark | 147,938 | 100,763 (68.11 %) | 34,457 (23.29 %) | 11,582 (7.83 %) | 1,079 (0.73 %) | 57 (0.04 %) | 91.40 % |
+
+**2. lss-stamping**
+
+| compiler | dispatchUpgraded | stampedPapGlobal | stampedStaged | stampedPapPrefix | noInstance | blocked | bodyMismatch | shape | abiMismatch | devirtPost fn/ctor/noSpec/ambiguous | multiInstanceGroups |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 18,284 | 3,228 | 205 | 15 | 14,434 | 5,044 | 1,257 | 669 | 365 | 108/307/0/14 | 3,652 |
+| benchmark | 18,284 | 3,228 | 205 | 15 | 14,434 | 5,044 | 1,257 | 669 | 365 | 108/307/0/14 | 3,652 |
+
+**3. dispatch-stats**
+
+| compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 2,812,561,920 | 2,726,486,373 | 86,075,547 | 0 | 2,812,561,920 | 0.00 | 96.94 | 3.06 | 6,798 |
+| benchmark | 898,228,272 | 816,650,903 | 81,577,369 | 958,086,598 | 1,856,314,870 | 51.61 | 43.99 | 4.39 | 7,037 |
+
+**4. call-census**
+
+| compiler | elm | runtime | kernel | helper | cap | extern | indirect | sites | static-target % |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 13,076,022,902 | 15,437,680,949 | 1,324,213,675 | 2,595,630,545 | 400,044,492 | 0 | 0 | 424,272 | 84.03 |
+| benchmark | 12,473,820,288 | 10,834,406,102 | 1,323,919,705 | 726,984,387 | 649,467,023 | 0 | 0 | 449,969 | 94.15 |
+
+| compiler | helper `apply_closure_eval` | `closure_call_saturated` | `..._saturated_eval` | typed cross-check |
+|---|---:|---:|---:|---|
+| reference | 2,509,555,001 | 82,060,465 | 4,015,079 | 86,075,544 vs typed 86,075,547 — 3 events |
+| benchmark | 645,407,021 | 77,892,235 | 3,685,131 | 81,577,366 vs typed 81,577,369 — 3 events |
+
+The `preserveSets` A/B's OFF arm, and the first row measured on a tree where η, the pre-mono
+inliner and the LSS connect fix have all shipped. Note the reference compiler is rebuilt from this
+tree: the older `eco-std4-census` predates both the `preMono` flip and the flag itself, so under
+bare defaults it silently ran a different workload and ignored `ECO_INLINE_PRESERVE_SETS`
+entirely — a reference binary must be able to honour every flag the run names.
+
+### Run 8 — defaults + `preserveSets=1` (2026-09-12)
+
+| compiler | build | workload | wall (s) | max RSS (kB) | minor GC | major GC | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| reference | `ECO_MONO_ENGINE=subst` | solver+LSS, `psets=1` | 613.8 | 14,539,644 | 2,250 | 11 | 22,860 | 15,449,374 |
+| benchmark | solver+LSS, `psets=1` | solver+LSS, `psets=1` | 521.6 | 14,648,732 | 2,245 | 11 | 22,940 | 15,449,374 |
+
+**1. lss-coverage**
+
+| compiler | positions | singleton `k1` | multi `kN` | `var` | `⊤` | partial | coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| reference | 147,938 | 100,763 (68.11 %) | 34,457 (23.29 %) | 11,582 (7.83 %) | 1,079 (0.73 %) | 57 (0.04 %) | 91.40 % |
+| benchmark | 147,938 | 100,763 (68.11 %) | 34,457 (23.29 %) | 11,582 (7.83 %) | 1,079 (0.73 %) | 57 (0.04 %) | 91.40 % |
+
+**2. lss-stamping**
+
+| compiler | dispatchUpgraded | stampedPapGlobal | stampedStaged | stampedPapPrefix | noInstance | blocked | bodyMismatch | shape | abiMismatch | devirtPost fn/ctor/noSpec/ambiguous | multiInstanceGroups |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 18,088 | 3,719 | 204 | 15 | 14,609 | 4,084 | 1,257 | 695 | 365 | 108/307/0/14 | 3,652 |
+| benchmark | 18,088 | 3,719 | 204 | 15 | 14,609 | 4,084 | 1,257 | 695 | 365 | 108/307/0/14 | 3,652 |
+
+**3. dispatch-stats**
+
+| compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 2,812,911,613 | 2,726,912,200 | 85,999,413 | 0 | 2,812,911,613 | 0.00 | 96.94 | 3.06 | 6,770 |
+| benchmark | 835,397,548 | 783,918,852 | 51,478,696 | 1,021,066,066 | 1,856,463,614 | 55.00 | 42.23 | 2.77 | 6,936 |
+
+**4. call-census**
+
+| compiler | elm | runtime | kernel | helper | cap | extern | indirect | sites | static-target % |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 13,074,418,750 | 15,433,974,877 | 1,323,838,950 | 2,596,015,314 | 400,013,385 | 0 | 0 | 424,272 | 84.03 |
+| benchmark | 12,508,076,570 | 10,704,738,157 | 1,323,544,986 | 664,188,739 | 634,597,780 | 0 | 0 | 449,696 | 94.54 |
+
+| compiler | helper `apply_closure_eval` | `closure_call_saturated` | `..._saturated_eval` | typed cross-check |
+|---|---:|---:|---:|---|
+| reference | 2,510,015,904 | 81,997,549 | 4,001,861 | 85,999,410 vs typed 85,999,413 — 3 events |
+| benchmark | 612,710,046 | 47,806,780 | 3,671,913 | 51,478,693 vs typed 51,478,696 — 3 events |
+
+`ECO_INLINE_PRESERVE_SETS=1`: the post-mono inliner declines the one reshape that clears an LSS
+member, leaving the callee's PAP in place
+(plans/pre-mono-lss-transforms-02-inline-preserve-sets.md §10). NOT flat, and the mechanism is
+visible end to end: `stampedPapGlobal` +491 (+15.21 %) because the surviving PAPs are stampable
+`p|` members, `blocked` declines −960, and **62,830,724 dispatches (−6.99 %) move out of the
+generic/typed bucket into `fast` (+62,979,468)** at a population that is flat to 0.01 % — a
+conversion, not an elimination. The reference arm, same binary with only the workload flag moved,
+shifts +0.01 %, so essentially ALL of it is the preserveSets-BUILT binary. `out.mlir` falls
+145,221 B (−0.93 %) because each declined partial inline is one callee body not copied
+(`inlined` 48,836 → 46,737), and the self-compile reshape census reads `cleared=0 bySite=`.
+Coverage and positions are identical to the digit — the flag moves the inliner, not the analysis.
+
 ---
 
 ## Summary
@@ -402,6 +500,10 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 5 | eta=1 preMono=1 | benchmark | 515.0 | 2235 | 11 | 22912 | 15588695 |
 | 6 | eta=0 preMono=1 | reference | 643.7 | 2315 | 11 | 22751 | 15790230 |
 | 6 | eta=0 preMono=1 | benchmark | 548.5 | 2306 | 11 | 22649 | 15790230 |
+| 7 | psets=0 | reference | 606.4 | 2250 | 11 | 22856 | 15594595 |
+| 7 | psets=0 | benchmark | 517.3 | 2245 | 10 | 22926 | 15594595 |
+| 8 | psets=1 | reference | 613.8 | 2250 | 11 | 22860 | 15449374 |
+| 8 | psets=1 | benchmark | 521.6 | 2245 | 11 | 22940 | 15449374 |
 
 ### 1. lss-coverage
 
@@ -419,6 +521,10 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 5 | eta=1 preMono=1 | benchmark | 147634 | 100724 | 34436 | 11340 | 1077 | 57 | 91.55 |
 | 6 | eta=0 preMono=1 | reference | 147662 | 100726 | 33674 | 11942 | 1179 | 141 | 91.02 |
 | 6 | eta=0 preMono=1 | benchmark | 147662 | 100726 | 33674 | 11942 | 1179 | 141 | 91.02 |
+| 7 | psets=0 | reference | 147938 | 100763 | 34457 | 11582 | 1079 | 57 | 91.40 |
+| 7 | psets=0 | benchmark | 147938 | 100763 | 34457 | 11582 | 1079 | 57 | 91.40 |
+| 8 | psets=1 | reference | 147938 | 100763 | 34457 | 11582 | 1079 | 57 | 91.40 |
+| 8 | psets=1 | benchmark | 147938 | 100763 | 34457 | 11582 | 1079 | 57 | 91.40 |
 
 ### 2. lss-stamping
 
@@ -436,6 +542,10 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 5 | eta=1 preMono=1 | benchmark | 18280 | 3228 | 205 | 15 | 14431 | 5044 | 1257 | 669 | 365 | 108 | 307 | 0 | 14 | 3652 |
 | 6 | eta=0 preMono=1 | reference | 17870 | 2225 | 685 | 3 | 14266 | 6598 | 1263 | 697 | 365 | 7 | 305 | 0 | 75 | 3754 |
 | 6 | eta=0 preMono=1 | benchmark | 17870 | 2225 | 685 | 3 | 14266 | 6598 | 1263 | 697 | 365 | 7 | 305 | 0 | 75 | 3754 |
+| 7 | psets=0 | reference | 18284 | 3228 | 205 | 15 | 14434 | 5044 | 1257 | 669 | 365 | 108 | 307 | 0 | 14 | 3652 |
+| 7 | psets=0 | benchmark | 18284 | 3228 | 205 | 15 | 14434 | 5044 | 1257 | 669 | 365 | 108 | 307 | 0 | 14 | 3652 |
+| 8 | psets=1 | reference | 18088 | 3719 | 204 | 15 | 14609 | 4084 | 1257 | 695 | 365 | 108 | 307 | 0 | 14 | 3652 |
+| 8 | psets=1 | benchmark | 18088 | 3719 | 204 | 15 | 14609 | 4084 | 1257 | 695 | 365 | 108 | 307 | 0 | 14 | 3652 |
 
 ### 3. dispatch-stats
 
@@ -453,6 +563,10 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 5 | eta=1 preMono=1 | benchmark | 896812039 | 815407282 | 81404757 | 955824021 | 1852636060 | 51.59 | 44.01 | 4.39 | 7034 |
 | 6 | eta=0 preMono=1 | reference | 3143530580 | 3056240803 | 87289777 | 0 | 3143530580 | 0.00 | 97.22 | 2.78 | 7267 |
 | 6 | eta=0 preMono=1 | benchmark | 1123071873 | 1040201434 | 82870439 | 1044982029 | 2168053902 | 48.20 | 47.98 | 3.82 | 7598 |
+| 7 | psets=0 | reference | 2812561920 | 2726486373 | 86075547 | 0 | 2812561920 | 0.00 | 96.94 | 3.06 | 6798 |
+| 7 | psets=0 | benchmark | 898228272 | 816650903 | 81577369 | 958086598 | 1856314870 | 51.61 | 43.99 | 4.39 | 7037 |
+| 8 | psets=1 | reference | 2812911613 | 2726912200 | 85999413 | 0 | 2812911613 | 0.00 | 96.94 | 3.06 | 6770 |
+| 8 | psets=1 | benchmark | 835397548 | 783918852 | 51478696 | 1021066066 | 1856463614 | 55.00 | 42.23 | 2.77 | 6936 |
 
 ### 4. call-census
 
@@ -470,3 +584,7 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 5 | eta=1 preMono=1 | benchmark | 12449916439 | 10815385263 | 1322548198 | 725784461 | 648278926 | 0 | 0 | 449691 | 94.15 |
 | 6 | eta=0 preMono=1 | reference | 13140898722 | 16017763415 | 1340439058 | 2784996210 | 479221066 | 0 | 0 | 426234 | 82.64 |
 | 6 | eta=0 preMono=1 | benchmark | 12540817438 | 11482322170 | 1340109115 | 910244127 | 774296037 | 0 | 0 | 457172 | 92.88 |
+| 7 | psets=0 | reference | 13076022902 | 15437680949 | 1324213675 | 2595630545 | 400044492 | 0 | 0 | 424272 | 84.03 |
+| 7 | psets=0 | benchmark | 12473820288 | 10834406102 | 1323919705 | 726984387 | 649467023 | 0 | 0 | 449969 | 94.15 |
+| 8 | psets=1 | reference | 13074418750 | 15433974877 | 1323838950 | 2596015314 | 400013385 | 0 | 0 | 424272 | 84.03 |
+| 8 | psets=1 | benchmark | 12508076570 | 10704738157 | 1323544986 | 664188739 | 634597780 | 0 | 0 | 449696 | 94.54 |

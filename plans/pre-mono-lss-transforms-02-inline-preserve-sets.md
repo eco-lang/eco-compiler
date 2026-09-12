@@ -1,6 +1,6 @@
 # Item 2 — `inline.preserveSets`: a post-mono inliner with no set-clearing site
 
-**Status:** IMPLEMENTATION-READY (2026-09-10). Not built.
+**Status:** SHIPPED DEFAULT-ON 2026-09-12. Results in §10.
 **Parent:** `plans/pre-mono-lss-transforms.md` item 2. Evidence base:
 `/work/pre-mono-transformation.md` §2, `scratchpad/q2-postmono-set-preserving.md`,
 `plans/lss-inline-member-propagation.md` §2/§7.3/§8, and the `q2probe` fixture re-run for this
@@ -309,3 +309,113 @@ population first, then re-measure.
   propagation plan closed.
 - Do not read the `_call_kind` histogram of a threshold-50 probe as a stamp count; the raised
   threshold inlines `List.map`/`foldr` and leaves dead specs whose sites are static only.
+
+
+## 10. BUILT AND MEASURED (2026-09-12)
+
+Steps 1–8 as lowered in §6, on a tree where items 0/1 and the pre-mono inliner have all shipped
+default-on (η, `preMono`), plus the LSS connect fix. Two deviations from the plan and one refuted
+claim are recorded below; neither changes the design.
+
+### 10.1 What shipped
+
+`inline.preserveSets` (hash token `psets=`, env `ECO_INLINE_PRESERVE_SETS`, DEFAULT-OFF), the
+guard at `tryInlineCall`'s strictly-partial arm, the mirror guard for `betaReduce`'s arm,
+`declinedPreserveSets` on `Metrics`/`InternalMetrics` rendered on the `inline-simplify:` line,
+and `MonoInlineSimplifyPreserveSetsTest` (T1–T4, 6 tests).
+
+**Deviation 1 — the beta guard sits at the CALL SITE, not inside `betaReduce`.** §3.1 proposed
+returning `MonoCall region (MonoClosure info closureBody _) args resultType Mono.defaultCallInfo`
+from inside the function, but `betaReduce` never receives the closure's TYPE (`rewriteExpr`
+discards it in the pattern) or the call's `CallInfo`, so reconstructing there would have to
+synthesize a `topSynth` closure type — widening the very annotation this flag exists to keep.
+Guarding at `rewriteExpr`'s beta arm returns the node with its own type and `CallInfo` intact and
+rewrites children the way every other declining arm does. The other two `betaReduce` call sites
+pass exact or over-applied argument lists by construction, so this covers every path to that arm.
+
+**Deviation 2 — §3.3's equality check is REFUTED as stated.** `declinedPreserveSets` is an EVENT
+count, and a decline leaves its call site in place for the fixpoint to re-visit, where a reshape
+consumes it. Measured on the q2probe fixture: 1 / 2 / 2 declines at `fixpointIterations` 1 / 2 / 3
+against a flag-off `cleared` of 1; on the self-compile, 1,756 declines against 924 reshapes
+(≈1.9 visits per site). The relation is `declinedPreserveSets >= cleared(flag off)`, with equality
+at ONE iteration — which is what the unit tests pin. The counter is still exactly the denominator
+§3.3 wanted: zero ⟺ the arm was never reached.
+
+### 10.2 Gates
+
+| gate | result |
+|---|---|
+| unit `MonoInlineSimplifyPreserveSetsTest` | 6/6 (T1 asserts the arm FIRES, so T2's zero is not vacuous) |
+| §5 q2probe, `thr=50` flag on | `cleared=0 reshapesTotal=0 bySite=`, `declinedPreserveSets=2`, `papCreate @Q2Probe_add3` back to **1** |
+| E2E, `ECO_INLINE_PRESERVE_SETS=1`, defaults otherwise | **1725/1725** |
+| self-compile reshape census, flag ON (step 7) | **`cleared=0 reshapesTotal=0 bySite=`**, `declinedPreserveSets=1756` (flag off: `cleared=924 bySite=tryInline:924`) |
+| emission at defaults, pre-change vs post-change binary, fixed input | **IDENTICAL** (R7) |
+| defaults fixed point on the new tree | **A == B, 15,594,595 B** |
+| flag-ON fixed point | **`cs8-bench-out.mlir` == `psetsOnA.mlir`, 15,449,374 B** |
+
+The two E2E legs §7.2 also asks for are moot on this tree: with `postMono=0` the pass does not run
+at all, so the flag is inert there (that configuration measures 1719/1725, all MLIR-shape pins),
+and at `ECO_INLINE_THRESHOLD=0` there are no candidates, so `tryInlineCall` returns before the
+guard.
+
+### 10.3 The A/B — NOT flat, and better than predicted
+
+`benchmarks/call-stats.md` Runs 7 (off) / 8 (on), benchmark arms:
+
+| | off | on | Δ |
+|---|---:|---:|---:|
+| `sat` | 898,228,272 | 835,397,548 | **−62,830,724 (−6.99 %)** |
+| generic | 816,650,903 | 783,918,852 | −32,732,051 (−4.01 %) |
+| typed | 81,577,369 | 51,478,696 | −30,098,673 (−36.90 %) |
+| fast | 958,086,598 | 1,021,066,066 | **+62,979,468 (+6.57 %)** |
+| population | 1,856,314,870 | 1,856,463,614 | +0.01 % |
+| `stampedPapGlobal` | 3,228 | 3,719 | **+491 (+15.21 %)** |
+| `blocked` declines | 5,044 | 4,084 | −960 (−19.03 %) |
+| helper calls | 726,984,387 | 664,188,739 | −8.64 % |
+| `out.mlir` | 15,594,595 | 15,449,374 | −145,221 (−0.93 %) |
+| coverage / positions | 91.40 % / 147,938 | 91.40 % / 147,938 | unchanged |
+| wall | 517.3 s | 521.6 s | +0.8 % |
+
+§4's R1 is now measured rather than argued: the PAP left in place IS stamped (+491
+`stampedPapGlobal`), and ~63 M dispatches move from the generic/typed bucket into the FAST one at
+a dispatch population that is flat to 0.01 %. This is conversion, not elimination. §7.3 predicted
+FLAT with a small generic-dispatch PRICE; generic instead fell 4 %, and the artifact shrank 0.93 %
+because each declined partial inline is one callee body not copied into its caller
+(`inlined` 48,836 → 46,737).
+
+Coverage, positions, `k1` and `kN` are identical to the digit — as they must be: the flag changes
+what the INLINER does, and the LSS analysis that produced those numbers has already run.
+
+**The decomposition.** The REFERENCE arm — an unstamped subst-built binary, only the workload flag
+moved — shifts `sat` +0.01 % and generic +0.02 %, so compiling WITH the flag costs nothing and
+essentially the whole win belongs to the preserveSets-BUILT binary (−7.01 pp of `sat`, −4.02 pp of
+generic after subtracting the workload). Both runs pass workload invariance (reference and
+benchmark emit the same bytes), and Run 8's benchmark output equals the `.mlir` its compiler was
+built from.
+
+**A protocol rule this run established the hard way.** The reference binary must be able to honour
+every flag the run names. `eco-std4-census` was reused at first; it predates both the `preMono`
+flip and `preserveSets`, so under bare defaults it ran `preMono=0` (a different workload) and
+ignored `ECO_INLINE_PRESERVE_SETS` entirely — `cs8-ref` came back byte-identical to `cs7-ref`,
+which is the tell. A reference built from the current tree fixed both. Cost: ~30 min of
+re-measurement; no wrong figure was published.
+
+### 10.4 Step 9 — the default-on decision
+
+§7.3's criterion is MET and exceeded: E2E green in every configuration the flag can affect; the Run
+is inside the 3 % bar on every axis (`population` +0.01 %, wall +0.8 %, `Minor GC` unmoved); the
+predicted dispatch PRICE does not exist (generic fell 4 %); and the both-on self-compile reads
+`cleared=0`. The `returned`-bucket argument that bounded the upside at 0.245 % turned out to
+UNDERSTATE it by an order of magnitude, because it priced only what the residual would have been
+stamped for and not what the surviving PAP gets stamped for (+491 `stampedPapGlobal`).
+
+**FLIPPED (step 9).** `Config.default.inline.preserveSets = True`; `ECO_INLINE_PRESERVE_SETS=0`
+turns it off. Gates: E2E at pure defaults **1725/1725** (clean rebuild, 0 cached); unit
+**13,506 passed / 12 failed** — the 12 pre-existing POST_010, plus this item's 6 new tests;
+bootstrap **A == B at pure defaults, 15,449,374 B**. A was built with the flag explicit so the flip
+was pre-propagated in one iteration rather than two (the `preMono` lesson: a binary's baked-in
+default comes from the source it was compiled FROM).
+
+With this and item 1 shipped, `preMono=1 postMono=1` — the configuration the parent plan's item 2
+exists to make default-safe — now runs with NO set-clearing site in either inliner.
+

@@ -985,6 +985,36 @@ type alias InlineConfig =
     -- hash token `phof=1`; env `ECO_INLINE_PARTIAL_HOF=1`. DEFAULT-OFF.
     , partialHof : Bool
 
+    -- SET-PRESERVING POST-MONO INLINER
+    -- (plans/pre-mono-lss-transforms-02-inline-preserve-sets.md). ON makes
+    -- `MonoInlineSimplify` DECLINE the one reshape that clears LSS member
+    -- identity: `tryInlineCall`'s strictly-partial arm, which mints a residual
+    -- `MonoClosure` with `lssMember = Nothing` and a `topSynth` type. Declining
+    -- leaves the callee's PAP in place, and a `p|<global>|k` PAP member is the
+    -- best-served class in the compiler (LSS_040 stamps 2,041/2,418 sites),
+    -- where the residual could not be stamped at all.
+    --
+    -- MEASURED: that arm is 863/65,949 inlines (1.31 %) on the 2026-09-10 tree
+    -- and 924/48,819 (1.89 %) at today's defaults — the ONLY clearing site that
+    -- fires on real code (`bySite=tryInline` in the reshape census; the mirror
+    -- arm in `betaReduce` is measured dead). The stampable subset of what it
+    -- costs is bounded at 0.245 % of generic dispatch, so the expectation is
+    -- FLAT dispatch and one fewer PAP-elimination per declined site.
+    --
+    -- PRECEDENCE: beats `partialHof`, whose whole purpose is to FORCE that arm;
+    -- with both on the partial branch declines before it mints. Applies to
+    -- WHITELISTED candidates too — the whitelist grants budget privileges, not
+    -- identity privileges. Does NOT gate `arityRaise`, a separate and larger
+    -- clearing that is off by default. Artifact-affecting; hash token
+    -- `psets=1`; env `ECO_INLINE_PRESERVE_SETS=0|1`. DEFAULT-ON since
+    -- 2026-09-12: the A/B (benchmarks/call-stats.md Runs 7/8) is not the
+    -- predicted FLAT but a win — `stampedPapGlobal` +491, 62,830,724 dispatches
+    -- (−6.99 %) moved from generic/typed into `fast` at a population flat to
+    -- 0.01 %, and `out.mlir` −0.93 % because a declined partial inline is a
+    -- callee body not copied. The reference arm moves +0.01 %, so the win is
+    -- the preserveSets-BUILT binary, not a cheaper workload.
+    , preserveSets : Bool
+
     -- INLINER POSITION (plans/pre-mono-inline-simplify.md). `postMono` gates
     -- the existing `MonoInlineSimplify` (after monomorphization); `preMono`
     -- gates the new `InlineSimplify` (before it, on the TOpt IR). Both
@@ -1126,6 +1156,7 @@ default =
         -- The M3 census sweep picks any nonzero default.
         , raiseAppliedShareMin = 0
         , partialHof = False
+        , preserveSets = True
         , preMono = True
         , postMono = True
         , etaExpand = True
@@ -1244,6 +1275,7 @@ inlineDecoder =
         |> D.apply (D.optionalField "arityRaise" D.bool default.inline.arityRaise)
         |> D.apply (D.optionalField "raiseAppliedShareMin" D.int default.inline.raiseAppliedShareMin)
         |> D.apply (D.optionalField "partialHof" D.bool default.inline.partialHof)
+        |> D.apply (D.optionalField "preserveSets" D.bool default.inline.preserveSets)
         |> D.apply (D.optionalField "preMono" D.bool default.inline.preMono)
         |> D.apply (D.optionalField "postMono" D.bool default.inline.postMono)
         |> D.apply (D.optionalField "etaExpand" D.bool default.inline.etaExpand)
@@ -1485,6 +1517,13 @@ hash cfg =
          , "thr=" ++ String.fromInt cfg.inline.threshold
          , "phof="
             ++ (if cfg.inline.partialHof then
+                    "1"
+
+                else
+                    "0"
+               )
+         , "psets="
+            ++ (if cfg.inline.preserveSets then
                     "1"
 
                 else
