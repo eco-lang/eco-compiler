@@ -129,6 +129,17 @@ between the arms to within 53 positions and one stamp, the workload-invariance c
 **The two arms' `out.mlir` differ (15,654,810 vs 15,665,163): the eta-BUILT compiler is not
 at a bootstrap fixed point for `eta=1`, so that gate is owed before the flag can ship on.**
 
+> **RETRACTED 2026-09-11 — do not cite this row's dispatch figures.** That fixed-point failure was a
+> MISCOMPILE (`/work/eta-fixed-point-root-cause.md`): a false-singleton `p|` stamp made `andThen`'s
+> `step s` call `succeed`'s evaluator, which returns the INCOMING state, so the solver silently
+> skipped demand bindings. The benchmark arm's `sat=784,353,200` is therefore the lowest number in
+> this file because the compiler was not doing the work — iterated once more it SIGSEGV'd on every
+> program. Run 3 is the same configuration on the fixed tree (`sat=894,855,765`); the +110 M is the
+> restored unification traffic, visible per symbol as `readPointCellS` +52.6 M, `UnionFind.reprS`
+> +25.6 M, `Store.loadTypeC` +11.8 M — exactly the `connectTypes` work the bug elided. The reference
+> arm, which carries no stamps at all, rose +222.0 M (+7.7 %) over the same source change, so the
+> extra work is a property of the fixed SOURCE, not of the stamping.
+
 ### Run 2 — default flags, `eta=0` (2026-09-11)
 
 | compiler | build | workload | wall (s) | max RSS (kB) | minor GC | major GC | promoted (MB) | out.mlir (B) |
@@ -275,9 +286,107 @@ same binary, only the workload flag moved — rises +0.30 %, so the preMono-BUIL
 dispatch-neutral. Wall +2.2 % (benchmark) against −1.3 % (reference) — opposite signs at N=1, no wall
 claim; the Run 4 reference row's lower peak RSS is the known bimodal artefact, not a preMono effect.
 
+### Run 5 — shipping defaults spelled out: `eta=1 preMono=1` (2026-09-12)
+
+| compiler | build | workload | wall (s) | max RSS (kB) | minor GC | major GC | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| reference | `ECO_MONO_ENGINE=subst` | solver+LSS, `eta=1 preMono=1` | 642.5 | 14,678,840 | 2,308 | 11 | 22,923 | 15,588,695 |
+| benchmark | solver+LSS, `eta=1 preMono=1` | solver+LSS, `eta=1 preMono=1` | 515.0 | 14,501,920 | 2,235 | 11 | 22,912 | 15,588,695 |
+
+**1. lss-coverage**
+
+| compiler | positions | singleton `k1` | multi `kN` | `var` | `⊤` | partial | coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| reference | 147,634 | 100,724 (68.23 %) | 34,436 (23.33 %) | 11,340 (7.68 %) | 1,077 (0.73 %) | 57 (0.04 %) | 91.55 % |
+| benchmark | 147,634 | 100,724 (68.23 %) | 34,436 (23.33 %) | 11,340 (7.68 %) | 1,077 (0.73 %) | 57 (0.04 %) | 91.55 % |
+
+**2. lss-stamping**
+
+| compiler | dispatchUpgraded | stampedPapGlobal | stampedStaged | stampedPapPrefix | noInstance | blocked | bodyMismatch | shape | abiMismatch | devirtPost fn/ctor/noSpec/ambiguous | multiInstanceGroups |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 18,280 | 3,228 | 205 | 15 | 14,431 | 5,044 | 1,257 | 669 | 365 | 108/307/0/14 | 3,652 |
+| benchmark | 18,280 | 3,228 | 205 | 15 | 14,431 | 5,044 | 1,257 | 669 | 365 | 108/307/0/14 | 3,652 |
+
+**3. dispatch-stats**
+
+| compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 3,117,966,009 | 3,029,714,591 | 88,251,418 | 0 | 3,117,966,009 | 0.00 | 97.17 | 2.83 | 7,334 |
+| benchmark | 896,812,039 | 815,407,282 | 81,404,757 | 955,824,021 | 1,852,636,060 | 51.59 | 44.01 | 4.39 | 7,034 |
+
+**4. call-census**
+
+| compiler | elm | runtime | kernel | helper | cap | extern | indirect | sites | static-target % |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 13,099,212,121 | 15,928,379,652 | 1,322,878,000 | 2,760,877,321 | 478,605,373 | 0 | 0 | 426,234 | 82.70 |
+| benchmark | 12,449,916,439 | 10,815,385,263 | 1,322,548,198 | 725,784,461 | 648,278,926 | 0 | 0 | 449,691 | 94.15 |
+
+| compiler | helper `apply_closure_eval` | `closure_call_saturated` | `..._saturated_eval` | typed cross-check |
+|---|---:|---:|---:|---|
+| reference | 2,672,625,906 | 84,242,747 | 4,008,668 | 88,251,415 vs typed 88,251,418 — 3 events |
+| benchmark | 644,379,707 | 77,726,030 | 3,678,724 | 81,404,754 vs typed 81,404,757 — 3 events |
+
+The SHIPPING configuration on the current tree, spelled out: solver + LSS + η + preMono, both flags
+now default-on. Read this row as the baseline, and Run 6 as its η A/B. Everything agrees: the arms
+emit a byte-identical 15,588,695 B, that artifact is the `.mlir` the benchmark compiler was itself
+built from (bootstrap fixed point), and the older subst reference binary — built before the preMono
+flip — reproduces it exactly once the flags are passed explicitly, which is the workload-invariance
+check at its strongest.
+
+### Run 6 — same tree, `eta=0` — the honest η A/B (2026-09-12)
+
+| compiler | build | workload | wall (s) | max RSS (kB) | minor GC | major GC | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| reference | `ECO_MONO_ENGINE=subst` | solver+LSS, `eta=0 preMono=1` | 643.7 | 14,433,848 | 2,315 | 11 | 22,751 | 15,790,230 |
+| benchmark | solver+LSS, `eta=0 preMono=1` | solver+LSS, `eta=0 preMono=1` | 548.5 | 14,267,528 | 2,306 | 11 | 22,649 | 15,790,230 |
+
+**1. lss-coverage**
+
+| compiler | positions | singleton `k1` | multi `kN` | `var` | `⊤` | partial | coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| reference | 147,662 | 100,726 (68.21 %) | 33,674 (22.80 %) | 11,942 (8.09 %) | 1,179 (0.80 %) | 141 (0.10 %) | 91.02 % |
+| benchmark | 147,662 | 100,726 (68.21 %) | 33,674 (22.80 %) | 11,942 (8.09 %) | 1,179 (0.80 %) | 141 (0.10 %) | 91.02 % |
+
+**2. lss-stamping**
+
+| compiler | dispatchUpgraded | stampedPapGlobal | stampedStaged | stampedPapPrefix | noInstance | blocked | bodyMismatch | shape | abiMismatch | devirtPost fn/ctor/noSpec/ambiguous | multiInstanceGroups |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 17,870 | 2,225 | 685 | 3 | 14,266 | 6,598 | 1,263 | 697 | 365 | 7/305/0/75 | 3,754 |
+| benchmark | 17,870 | 2,225 | 685 | 3 | 14,266 | 6,598 | 1,263 | 697 | 365 | 7/305/0/75 | 3,754 |
+
+**3. dispatch-stats**
+
+| compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 3,143,530,580 | 3,056,240,803 | 87,289,777 | 0 | 3,143,530,580 | 0.00 | 97.22 | 2.78 | 7,267 |
+| benchmark | 1,123,071,873 | 1,040,201,434 | 82,870,439 | 1,044,982,029 | 2,168,053,902 | 48.20 | 47.98 | 3.82 | 7,598 |
+
+**4. call-census**
+
+| compiler | elm | runtime | kernel | helper | cap | extern | indirect | sites | static-target % |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 13,140,898,722 | 16,017,763,415 | 1,340,439,058 | 2,784,996,210 | 479,221,066 | 0 | 0 | 426,234 | 82.64 |
+| benchmark | 12,540,817,438 | 11,482,322,170 | 1,340,109,115 | 910,244,127 | 774,296,037 | 0 | 0 | 457,172 | 92.88 |
+
+| compiler | helper `apply_closure_eval` | `closure_call_saturated` | `..._saturated_eval` | typed cross-check |
+|---|---:|---:|---:|---|
+| reference | 2,697,706,436 | 83,233,865 | 4,055,909 | 87,289,774 vs typed 87,289,777 — 3 events |
+| benchmark | 827,373,691 | 79,144,772 | 3,725,664 | 82,870,436 vs typed 82,870,439 — 3 events |
+
+The same tree with `ECO_INLINE_ETA_EXPAND=0` — the honest η A/B, and the row Runs 1–2 could not
+provide (both predate the LSS connect fix, and Run 1's compiler was miscompiling). η is worth
+**−226,259,834 dispatches (−20.15 %) and −224,794,152 generic (−21.61 %)** on the benchmark arm,
+−201,535 B (−1.28 %) of artifact and 548.5 → 515.0 s of wall. The reference arm — same binary, only
+the workload flag moved — falls just −0.81 %, so ~19.3 of those 20.15 points are the η-BUILT binary
+dispatching better rather than η making the compile cheaper. Run 1's retracted −21.4 % was therefore
+a real η win sitting on a floor that the miscompile had pushed ~112 M too low.
+
 ---
 
 ## Summary
+
+Run 1's rows come from a MISCOMPILING benchmark binary (see the retraction under that run) and
+are kept only so the arc is auditable. Run 3 is the shipping configuration.
 
 | Run | State | Compiler | Wall (s) | Minor GC | Major GC | Promoted (MB) | out.mlir (B) |
 |---|---|---|---:|---:|---:|---:|---:|
@@ -289,6 +398,10 @@ claim; the Run 4 reference row's lower peak RSS is the known bimodal artefact, n
 | 3 | defaults | benchmark | 512.0 | 2230 | 11 | 22825 | 15668282 |
 | 4 | preMono=1 | reference | 632.7 | 2308 | 11 | 22923 | 15588695 |
 | 4 | preMono=1 | benchmark | 523.3 | 2235 | 11 | 22912 | 15588695 |
+| 5 | eta=1 preMono=1 | reference | 642.5 | 2308 | 11 | 22923 | 15588695 |
+| 5 | eta=1 preMono=1 | benchmark | 515.0 | 2235 | 11 | 22912 | 15588695 |
+| 6 | eta=0 preMono=1 | reference | 643.7 | 2315 | 11 | 22751 | 15790230 |
+| 6 | eta=0 preMono=1 | benchmark | 548.5 | 2306 | 11 | 22649 | 15790230 |
 
 ### 1. lss-coverage
 
@@ -302,6 +415,10 @@ claim; the Run 4 reference row's lower peak RSS is the known bimodal artefact, n
 | 3 | defaults | benchmark | 148338 | 101232 | 34625 | 11341 | 1083 | 57 | 91.59 |
 | 4 | preMono=1 | reference | 147634 | 100724 | 34436 | 11340 | 1077 | 57 | 91.55 |
 | 4 | preMono=1 | benchmark | 147634 | 100724 | 34436 | 11340 | 1077 | 57 | 91.55 |
+| 5 | eta=1 preMono=1 | reference | 147634 | 100724 | 34436 | 11340 | 1077 | 57 | 91.55 |
+| 5 | eta=1 preMono=1 | benchmark | 147634 | 100724 | 34436 | 11340 | 1077 | 57 | 91.55 |
+| 6 | eta=0 preMono=1 | reference | 147662 | 100726 | 33674 | 11942 | 1179 | 141 | 91.02 |
+| 6 | eta=0 preMono=1 | benchmark | 147662 | 100726 | 33674 | 11942 | 1179 | 141 | 91.02 |
 
 ### 2. lss-stamping
 
@@ -315,6 +432,10 @@ claim; the Run 4 reference row's lower peak RSS is the known bimodal artefact, n
 | 3 | defaults | benchmark | 18276 | 3206 | 205 | 15 | 14505 | 5078 | 1258 | 669 | 365 | 108 | 307 | 0 | 14 | 3652 |
 | 4 | preMono=1 | reference | 18280 | 3228 | 205 | 15 | 14431 | 5044 | 1257 | 669 | 365 | 108 | 307 | 0 | 14 | 3652 |
 | 4 | preMono=1 | benchmark | 18280 | 3228 | 205 | 15 | 14431 | 5044 | 1257 | 669 | 365 | 108 | 307 | 0 | 14 | 3652 |
+| 5 | eta=1 preMono=1 | reference | 18280 | 3228 | 205 | 15 | 14431 | 5044 | 1257 | 669 | 365 | 108 | 307 | 0 | 14 | 3652 |
+| 5 | eta=1 preMono=1 | benchmark | 18280 | 3228 | 205 | 15 | 14431 | 5044 | 1257 | 669 | 365 | 108 | 307 | 0 | 14 | 3652 |
+| 6 | eta=0 preMono=1 | reference | 17870 | 2225 | 685 | 3 | 14266 | 6598 | 1263 | 697 | 365 | 7 | 305 | 0 | 75 | 3754 |
+| 6 | eta=0 preMono=1 | benchmark | 17870 | 2225 | 685 | 3 | 14266 | 6598 | 1263 | 697 | 365 | 7 | 305 | 0 | 75 | 3754 |
 
 ### 3. dispatch-stats
 
@@ -328,6 +449,10 @@ claim; the Run 4 reference row's lower peak RSS is the known bimodal artefact, n
 | 3 | defaults | benchmark | 894855765 | 813195885 | 81659880 | 953039064 | 1847894829 | 51.57 | 44.01 | 4.42 | 6960 |
 | 4 | preMono=1 | reference | 3117965995 | 3029714582 | 88251413 | 0 | 3117965995 | 0.00 | 97.17 | 2.83 | 7334 |
 | 4 | preMono=1 | benchmark | 896811962 | 815407211 | 81404751 | 955824012 | 1852635974 | 51.59 | 44.01 | 4.39 | 7005 |
+| 5 | eta=1 preMono=1 | reference | 3117966009 | 3029714591 | 88251418 | 0 | 3117966009 | 0.00 | 97.17 | 2.83 | 7334 |
+| 5 | eta=1 preMono=1 | benchmark | 896812039 | 815407282 | 81404757 | 955824021 | 1852636060 | 51.59 | 44.01 | 4.39 | 7034 |
+| 6 | eta=0 preMono=1 | reference | 3143530580 | 3056240803 | 87289777 | 0 | 3143530580 | 0.00 | 97.22 | 2.78 | 7267 |
+| 6 | eta=0 preMono=1 | benchmark | 1123071873 | 1040201434 | 82870439 | 1044982029 | 2168053902 | 48.20 | 47.98 | 3.82 | 7598 |
 
 ### 4. call-census
 
@@ -341,3 +466,7 @@ claim; the Run 4 reference row's lower peak RSS is the known bimodal artefact, n
 | 3 | defaults | benchmark | 12423189340 | 10804779989 | 1316288129 | 724424466 | 646967851 | 0 | 0 | 448556 | 94.14 |
 | 4 | preMono=1 | reference | 13099210170 | 15928379445 | 1322876210 | 2760877307 | 478605371 | 0 | 0 | 426234 | 82.70 |
 | 4 | preMono=1 | benchmark | 12449914433 | 10815384911 | 1322546371 | 725784409 | 648278889 | 0 | 0 | 449691 | 94.15 |
+| 5 | eta=1 preMono=1 | reference | 13099212121 | 15928379652 | 1322878000 | 2760877321 | 478605373 | 0 | 0 | 426234 | 82.70 |
+| 5 | eta=1 preMono=1 | benchmark | 12449916439 | 10815385263 | 1322548198 | 725784461 | 648278926 | 0 | 0 | 449691 | 94.15 |
+| 6 | eta=0 preMono=1 | reference | 13140898722 | 16017763415 | 1340439058 | 2784996210 | 479221066 | 0 | 0 | 426234 | 82.64 |
+| 6 | eta=0 preMono=1 | benchmark | 12540817438 | 11482322170 | 1340109115 | 910244127 | 774296037 | 0 | 0 | 457172 | 92.88 |

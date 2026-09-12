@@ -995,9 +995,12 @@ type alias InlineConfig =
     -- segfaulted until 2026-09-09, and that was NOT the inliner — §13/§14 of
     -- the plan root-caused it to `JsArray.unsafeGet` reading its element kind
     -- from `resultType` because `arrayElementType` matched the constructor
-    -- name "Array" when `Elm.JsArray` declares `type JsArray a`. Since that
-    -- fix `postMono = False` measured at parity with defaults (plan §14.3) but
-    -- has not been re-measured, so `preMono` ships on its own
+    -- name "Array" when `Elm.JsArray` declares `type JsArray a`. Re-measured
+    -- 2026-09-11: `ECO_INLINE_POST_MONO=0` gives E2E 1719/1725 and all six
+    -- failures are MLIR-SHAPE checks (a PAP survives HOF elimination), no
+    -- crashes and no wrong values — so the post-mono pass is an OPTIMIZATION
+    -- those fixtures pin, not a correctness dependency. `preMono` ships on its
+    -- own
     -- evidence (benchmarks/call-stats.md Run 4, measured with η default-on):
     -- a bootstrap fixed point, `out.mlir` −0.51 %, `noInstance` −74 and
     -- `blocked` −34 declines, and dispatch NEUTRAL — the +0.26 % the benchmark

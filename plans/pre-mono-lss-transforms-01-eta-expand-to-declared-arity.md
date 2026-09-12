@@ -656,3 +656,24 @@ Full account: `/work/eta-fixed-point-root-cause.md`. Diagnostic kept: `ECO_INLIN
   no arity and turns a non-inlinable CAF-alias call into an inlinable one, which hid the
   constructor from bytes fusion's name-keyed recogniser (`FusionGlobalMapFnTest`).
 - DEFAULT FLIPPED: `inline.etaExpand = True` (`ECO_INLINE_ETA_EXPAND=0` turns it off).
+
+## AMENDMENT 2026-09-12 — η's honest value, measured same-source on the fixed tree
+
+`benchmarks/call-stats.md` Runs 5/6 are the A/B Runs 1–2 could not provide (both predate the LSS
+connect fix, and Run 1's benchmark compiler was miscompiling). Current tree, `preMono=1` in both
+arms, only `ECO_INLINE_ETA_EXPAND` moving:
+
+| | eta=0 (Run 6) | eta=1 (Run 5) | Δ |
+|---|---:|---:|---:|
+| dispatch population | 2,168,053,902 | 1,852,636,060 | −14.55 % |
+| `sat` | 1,123,071,873 | 896,812,039 | **−226,259,834 (−20.15 %)** |
+| generic | 1,040,201,434 | 815,407,282 | −224,794,152 (−21.61 %) |
+| coverage | 91.02 % | 91.55 % | +0.53 pp |
+| `out.mlir` | 15,790,230 | 15,588,695 | −201,535 (−1.28 %) |
+| wall (benchmark arm) | 548.5 s | 515.0 s | −6.1 % |
+
+The REFERENCE arm — same binary, only the workload flag moved — falls just −0.81 %, so ~19.3 of the
+20.15 points are the η-BUILT binary dispatching better, not η making the compile cheaper. Run 1's
+retracted −21.4 % was therefore a REAL η win sitting on a floor the miscompile had pushed ~112 M too
+low: the fix did not cost the win, it raised the baseline on both arms.
+

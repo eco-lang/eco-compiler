@@ -1135,8 +1135,15 @@ plan's ledger:
 now ship ON, ADDITIVELY — the position A/B this flag pair was built for has still never been run.
 Its `postMono=0` arm segfaulted until §13/§14 root-caused and fixed the `JsArray.unsafeGet` element
 kind (an INTRINSIC-lowering defect, not the inliner), after which §14.3 measured
-`preMono=1 postMono=0` back at the defaults baseline (887/889). That arm has not been re-measured
-on this tree, so nothing here rests on it: `preMono` ships on its own evidence.
+`preMono=1 postMono=0` back at the defaults baseline (887/889).
+
+**Re-measured on this tree (2026-09-11): `ECO_INLINE_POST_MONO=0` gives E2E 1719/1725, and all six
+failures are MLIR-SHAPE checks — five `CHECK-NOT: eco.papCreate` (a PAP survives that HOF
+elimination would have removed) plus one missing `_tail_mono_inline` in `HofFoldlLoopifyTest`.** No
+segfaults and no wrong values: the post-mono pass is now an OPTIMIZATION whose absence those
+fixtures pin, not a correctness dependency. The "postMono=0 miscompiles" line that circulated in
+memories and plan notes is retired. `preMono` still ships on its own evidence, and the position A/B
+is now runnable if anyone wants it.
 
 Measured with η already default-on, under `benchmarks/call-stats.md`'s protocol (Run 3 = defaults,
 Run 4 = `preMono=1`, same tree, same-source arms):
