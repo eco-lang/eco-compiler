@@ -1131,9 +1131,12 @@ plan's ledger:
 
 ## 17. SHIPPED DEFAULT-ON (2026-09-11)
 
-`inline.preMono = True` in `Config.default` (`ECO_INLINE_PRE_MONO=0` turns it off). The position
-A/B this flag pair was built for stays unrunnable — §13's finding that `postMono = False`
-MISCOMPILES is unchanged, so the two inliners are ADDITIVE and both ship on.
+`inline.preMono = True` in `Config.default` (`ECO_INLINE_PRE_MONO=0` turns it off). Both inliners
+now ship ON, ADDITIVELY — the position A/B this flag pair was built for has still never been run.
+Its `postMono=0` arm segfaulted until §13/§14 root-caused and fixed the `JsArray.unsafeGet` element
+kind (an INTRINSIC-lowering defect, not the inliner), after which §14.3 measured
+`preMono=1 postMono=0` back at the defaults baseline (887/889). That arm has not been re-measured
+on this tree, so nothing here rests on it: `preMono` ships on its own evidence.
 
 Measured with η already default-on, under `benchmarks/call-stats.md`'s protocol (Run 3 = defaults,
 Run 4 = `preMono=1`, same tree, same-source arms):

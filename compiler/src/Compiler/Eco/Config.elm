@@ -990,10 +990,14 @@ type alias InlineConfig =
     -- gates the new `InlineSimplify` (before it, on the TOpt IR). Both
     -- artifact-affecting; hash tokens `preInl=` / `postInl=`.
     --
-    -- BOTH DEFAULT-ON since 2026-09-11. The position A/B this pair was built
-    -- for cannot be run: `postMono = False` MISCOMPILES (7 Array/JsArray
-    -- SIGSEGVs — the post-mono pass is load-bearing for CORRECTNESS), so the
-    -- two are additive rather than alternatives. `preMono` ships on its own
+    -- BOTH DEFAULT-ON since 2026-09-11, and ADDITIVELY: the position A/B this
+    -- pair was built for has never been run. Its `postMono = False` arm
+    -- segfaulted until 2026-09-09, and that was NOT the inliner — §13/§14 of
+    -- the plan root-caused it to `JsArray.unsafeGet` reading its element kind
+    -- from `resultType` because `arrayElementType` matched the constructor
+    -- name "Array" when `Elm.JsArray` declares `type JsArray a`. Since that
+    -- fix `postMono = False` measured at parity with defaults (plan §14.3) but
+    -- has not been re-measured, so `preMono` ships on its own
     -- evidence (benchmarks/call-stats.md Run 4, measured with η default-on):
     -- a bootstrap fixed point, `out.mlir` −0.51 %, `noInstance` −74 and
     -- `blocked` −34 declines, and dispatch NEUTRAL — the +0.26 % the benchmark
