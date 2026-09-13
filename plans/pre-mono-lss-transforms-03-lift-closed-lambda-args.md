@@ -1,8 +1,11 @@
 # Pre-mono LSS transforms — 03: lambda-lift CLOSED lambda arguments
 
-**Status:** IMPLEMENTATION-READY, **CENSUS-GATED** (2026-09-10). Item 3 of
-`plans/pre-mono-lss-transforms.md`. Not to be built before §5's census; the probe in §1.2 says
-the premise may not survive it.
+**Status:** **CLOSED UNBUILT** (2026-09-12) — §5's census ran and the premise did not survive it.
+Every `g1absentl` on the self-compile is manufactured by the POST-mono inliner (0 remain with
+`ECO_INLINE_POST_MONO=0`), so there is no genuine class for a PRE-mono lift to repair. Findings,
+numbers and the successor question are in §11; §1–§10 are the design as it stood, kept because the
+census instrument (`PreMono/LiftClosedArgs.elm`, §3.1's predicate) is retained and still reads them.
+Item 3 of `plans/pre-mono-lss-transforms.md`.
 
 **Origin:** `/work/pre-mono-transformation.md` §3.4/§4.C; `scratchpad/q4-shapes-for-lss.md` §2.C
 (probes `LiftLam`/`LiftFn`, `$SP/q4probe/src`). Depends on item 0 (`TOpt.GlobalGraph MVarId`,
@@ -282,3 +285,99 @@ at the lifted sites' host specs (layer D before/after), not on site counts.
   - Do not use `wrapperHome` for the new global (`:680` blocks it).
   - Do not `freshenCopy` the reference meta (§3.3) — it severs caller-binder identity.
   - Do not build before §5; do not read the 1,439 as weight.
+
+## 11. §5 census — RUN 2026-09-12. Verdict: **CLOSE UNBUILT**
+
+Run on the current tree (η, `preMono`, `preserveSets` all default-on; `out.mlir` 15,449,374 B, the
+Run-8 fixed point). Self-compile throughout, `eco-psetsDefA`, `ECO_MONO_LSS_REPORT=1
+ECO_MONO_LSS_CENSUS=1`. Raw: `build/compiler/build-kernel/la-{def,loop0,post0}.stderr`,
+`lc-def.stderr`, `$SP/lD-bt.txt`.
+
+### 11.1 Layer A — origin of the `g1absentl` declines
+
+The plan's layer-A design (join member ids to un-indexed closure instances) is UNRUNNABLE and its
+premise was wrong: `postSettleTarget`'s `Nothing` arm is reached only when the member is absent from
+`collectInstances`' index entirely, and `collectClosure` inserts an entry for every closure whose
+`instanceMember` resolves — wrapper-home and adopted ones included, as `blocked = True`. So a
+`g1absentl` member has NO closure carrying it anywhere in the graph, and there is nothing to join to.
+`wrapper` is not a possible origin (those decline as `declinedBlocked`), and `genuine` vs `loopify`
+cannot be told apart by scanning instances that do not exist.
+
+Three arms of the SAME binary answer it directly instead:
+
+| arm | `g1absentl` | `declinedNoInstance` | `dispatchUpgraded` | out.mlir (B) |
+|---|---:|---:|---:|---:|
+| defaults | **1,758** | 14,609 | 18,088 | 15,449,374 |
+| `ECO_INLINE_LOOPIFY=0` | **612** | 13,473 | 19,264 | 15,284,193 |
+| `ECO_INLINE_POST_MONO=0` | **0** | 31,488 | 19,153 | 14,251,245 |
+
+**Every one of the 1,758 is manufactured by the post-mono inliner.** 1,146 (65.2 %) by `loopify`
+alone, and the loopify delta is exactly the three loopified callees, to the site: `List.foldl`
+−1,063, `List.any` −78, `List.Extra.find` −4, with all 21 other hosts unchanged. The remaining 612
+are the pass's other reshapes.
+
+`g1absentl = 0` is not a workload collapse: at `postMono=0` the noInstance population more than
+DOUBLES (14,609 → 31,488, `g1kernel` 719 → 23,179), `g1absentp` is flat at ~600, and MORE sites
+stamp (19,153 vs 18,088). Lambda members resolve when nothing reshapes their closures.
+
+**§1.2's probe generalises: the class this item exists to repair is empty.** `genuine = 0`, so
+layer B is 0 and the §5 build gate (`closed ≥ 100` genuine sites) fails outright.
+
+### 11.2 Layer C — the pre-mono population (`pre-lift-census:`)
+
+`Compiler/GlobalOpt/PreMono/LiftClosedArgs.elm` is BUILT and RETAINED as a census: `census` runs the
+§3.1 predicate and returns metrics only, rendered by `Generate.renderPreLiftReport` behind
+`inline.report`. Emission is unaffected — the census-on run reproduced the census-off build BYTE FOR
+BYTE (15,484,502 B). Unit suite 13,506/12 (the pre-existing POST_010 accessor failures).
+
+```
+pre-lift-census: candidates=5341 closed=2044 capturing=3297 liftable=1039
+  declined.cycle=523 declined.port=0 declined.tailDef=171 declined.varCycle=0
+  declined.loopifiableCallee=311 lambdasSeen=12965 callsSeen=72871
+```
+
+Read it carefully: 1,039 lambdas COULD be lifted, and not one of them is a `g1absentl`. Layer C
+counts a source shape; layer B counted a failure. R1 is not the binding constraint either — it
+removes 311, less than a third of what the scope rules already remove.
+
+Two corrections the implementation forced, both measured:
+
+  - **R1's recursion test must include a `TailCall`.** A self-tail-recursive definition is rewritten
+    into a `TailDef` loop before this point, so `List.foldl` names neither itself nor anything in
+    its own SCC. With only `InlineSimplify.recursiveGlobals`' three tests, `declinedLoopifiable` is
+    **0** and `List.foldl`/`Dict.foldr` read as liftable.
+  - **Cycle MEMBERS must be keyed individually.** A `Cycle` node's own global is never a callee;
+    call sites name `Global home memberName`, exactly as `EtaExpand.buildIndex` keys them. Without
+    that, every mutually recursive HOF misses both R1 predicates.
+
+### 11.3 Layer D — dispatch weight, caller-attributed
+
+Uprobe on `eco_apply_closure_eval`, return address at `[rsp]` → calling spec (the 2026-09-05 method).
+838,532,078 generic-funnel entries over 4,200 distinct callers, probed wall 14:53.
+
+| g1absentl host | sites | generic dispatch INSIDE its specs | share |
+|---|---:|---:|---:|
+| `System.TypeCheck.IO.andThen` | 134 | 140,754,783 | 16.79 % |
+| `System.TypeCheck.IO.map` | 53 | 68,465,269 | 8.16 % |
+| `List.foldl` | 1,063 | 5,493,967 | 0.66 % |
+| `List.any` | 78 | 474,450 | 0.06 % |
+| `Result.andThen`, `Maybe.map`, `Maybe.andThen`, `Builder.Eco.Config.updateLss`, … | 353 | ~29 | 0.00 % |
+
+**Site count is inversely ranked to weight for the fifth time in this arc.** `List.foldl` hosts 60 %
+of the sites and 0.66 % of the dispatch; the two IO-monad hosts are 10.6 % of the sites and 24.95 %.
+Confirmed independently on the callee side (Run 8's `[dispatch-stats]` `fp` rows symbolized): ZERO
+generic dispatch reaches a `_tail_mono_inline_*` symbol, so loopify's rebuilt closures are cold — the
+loop really does absorb the callback, and its residual apply is the plan's one-per-site, not a hot
+path. 56.31 % of generic dispatch lands on lambda bodies overall (441,429,579 of 783,918,852).
+
+### 11.4 Verdict and successor
+
+CLOSE UNBUILT, on §9's first risk exactly as written. The lift cannot repair `g1absentl` because
+nothing needs repairing before `MonoInlineSimplify` runs and the lift runs before it. §10's "do not
+read the 1,439 as weight" was right twice over: they are not weight, and they are not this item's.
+
+The live question the census leaves behind belongs to item 2's family, not here: the post-mono
+inliner still clears 612 non-loopify lambda members after `preserveSets` retired the `tryInlineCall`
+partial arm, and they sit in `IO.andThen`/`IO.map`, which host a quarter of all generic dispatch.
+Price THAT at the site level before building anything: a host's dispatch is an upper bound, since a
+hot spec has generic sites that are not these.

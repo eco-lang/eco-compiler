@@ -7,7 +7,7 @@
 | 0 | `pre-mono-lss-transforms-00-assign-mvar-ids-first.md` | ready; step 0a re-verifies the §16 alias fix reproduces 1,865 / 864 |
 | 1 | `pre-mono-lss-transforms-01-eta-expand-to-declared-arity.md` | **BUILT, DEFAULT-OFF (Sep 10)** — reproduces the hand rewrite line-for-line; BLOCKED on a pre-existing miscompile it exposes (`/work/combinator-uf-devirt-error.md`). See its §9 |
 | 2 | `pre-mono-lss-transforms-02-inline-preserve-sets.md` | ready; independent of items 0/1/3/4/5 |
-| 3 | `pre-mono-lss-transforms-03-lift-closed-lambda-args.md` | **CENSUS-GATED** — the probe's `g1absentl` turned out to be a loopify artifact (see its R1); build only if the four-layer census clears the bar |
+| 3 | `pre-mono-lss-transforms-03-lift-closed-lambda-args.md` | **CLOSED UNBUILT** (2026-09-12) — census ran: all 1,758 `g1absentl` are POST-mono artifacts (1,146 loopify, 612 other reshapes, **0 genuine**; they vanish at `postMono=0`), so a pre-mono lift repairs nothing. Site count inversely ranked to weight AGAIN: `List.foldl` = 60 % of sites, 0.66 % of dispatch; `IO.andThen`/`IO.map` = 10.6 % of sites, 24.95 %. See its §11 |
 | 4 | `pre-mono-lss-transforms-04-alias-forwarding.md` | ready; kernel-alias VALUES in argument position deferred to v2 |
 | 5 | `pre-mono-lss-transforms-05-determines-caller-binders.md` | ready; step 0 is the 1,865 / 864 baseline check |
 
@@ -234,7 +234,7 @@ over-budget callees, bounded +≈1,470 source sites); per-round re-costing in `r
 | 0 | none (IR move) | no | byte-identical at defaults; EARLY inline count = 1,865; both-arm E2E | none — no dispatch change expected |
 | 1 | new, default-off | YES (arity-deficit census, cheap/non-cheap) | both-arm E2E; `ECO_INLINE_THRESHOLD=0` leg | protocol two-arm + dispatch uprobe; headline = generic dispatch at the IO-monad specs |
 | 2 | `inline.preserveSets`, default-off | no | reshape census `cleared=0`; both-arm E2E | one protocol run; expect FLAT |
-| 3 | new, default-off | YES (closed/capturing split of `g1absentl`) | both-arm E2E | dispatch uprobe; do not read site counts |
+| 3 | ~~new, default-off~~ CLOSED UNBUILT | census RAN 2026-09-12 | — | — (genuine population measured at ZERO; see item 3's §11) |
 | 4 | fold into `inline.preMono` | no | byte-identical at defaults; EARLY count; both-arm E2E | EARLY-arm inline census; then Run-AT-style two-arm |
 | 5 | fold into `inline.preMono` | no (census done) | `PreMonoInlineTest`; both-arm E2E | EARLY-arm inline census, +≈450 |
 

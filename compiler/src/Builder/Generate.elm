@@ -80,6 +80,7 @@ import Compiler.GlobalOpt.MonoCse as MonoCse
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.GlobalOpt.PreMono.EtaExpand as EtaExpand
+import Compiler.GlobalOpt.PreMono.LiftClosedArgs as LiftClosedArgs
 import Compiler.GlobalOpt.PreMono.Fresh as Fresh
 import Compiler.MonoSolver.Diff as MonoDiff
 import Compiler.MonoSolver.Monomorphize as MonoSolver
@@ -815,9 +816,26 @@ runMonoOptPipeline ecoConfig stats typedGraph globalTypeEnv =
 
             else
                 Task.succeed ()
+
+        -- CENSUS ONLY, no rewrite
+        -- (plans/pre-mono-lss-transforms-03-lift-closed-lambda-args.md §5
+        -- layer C). Runs on the graph the lift would see: after η-expansion
+        -- and after the pre-mono inliner, which is where §3.5 puts the pass.
+        -- There is no flag because there is no transform yet — the plan is
+        -- census-gated and this is the gate's own instrument.
+        preLiftReport =
+            if ecoConfig.inline.report then
+                Task.io
+                    (System.IO.writeLn System.IO.stderr
+                        (renderPreLiftReport (LiftClosedArgs.census assigned1.graph))
+                    )
+
+            else
+                Task.succeed ()
     in
     preEtaReport
         |> Task.andThen (\_ -> preInlineReport)
+        |> Task.andThen (\_ -> preLiftReport)
         |> Task.andThen (\_ -> validateMinted ecoConfig assigned1)
         |> Task.andThen
             (\_ ->
@@ -1090,6 +1108,60 @@ renderPreEtaReport enabled m =
         ++ topExpanded
         ++ "\n  topDeclined: "
         ++ topDeclined
+
+
+{-| Census line for the closed-lambda-argument LIFT
+(`plans/pre-mono-lss-transforms-03-lift-closed-lambda-args.md` §5 layer C).
+
+Named `pre-lift-census:`, never `pre-lift:` — there is no transform behind it,
+and the η line's lesson is that a census must not be readable as evidence that
+a rewrite happened.
+
+`candidates` is the denominator whose zero is impossible; `closed` is the §5
+build gate's number and `liftable` is that number after R1 removes the callees
+loopify would claim.
+
+-}
+renderPreLiftReport : LiftClosedArgs.Metrics -> String
+renderPreLiftReport m =
+    let
+        topBy d =
+            Dict.toList d
+                |> List.sortBy (\( _, n ) -> negate n)
+                |> List.take 20
+                |> List.map (\( name, n ) -> name ++ "=" ++ String.fromInt n)
+                |> String.join " "
+    in
+    "pre-lift-census: candidates="
+        ++ String.fromInt m.candidates
+        ++ " closed="
+        ++ String.fromInt m.closed
+        ++ " capturing="
+        ++ String.fromInt m.capturing
+        ++ " liftable="
+        ++ String.fromInt m.liftable
+        ++ " declined.cycle="
+        ++ String.fromInt m.declinedCycle
+        ++ " declined.port="
+        ++ String.fromInt m.declinedPort
+        ++ " declined.tailDef="
+        ++ String.fromInt m.declinedTailDef
+        ++ " declined.varCycle="
+        ++ String.fromInt m.declinedVarCycle
+        ++ " declined.loopifiableCallee="
+        ++ String.fromInt m.declinedLoopifiable
+        ++ " lambdasSeen="
+        ++ String.fromInt m.lambdasSeen
+        ++ " callsSeen="
+        ++ String.fromInt m.callsSeen
+        ++ " recursiveGlobals="
+        ++ String.fromInt m.recursiveGlobals
+        ++ " loopifiableGlobals="
+        ++ String.fromInt m.loopifiableGlobals
+        ++ "\n  liftable by callee: "
+        ++ topBy m.byCallee
+        ++ "\n  loopifiable by callee: "
+        ++ topBy m.byCalleeLoopifiable
 
 
 {-| Census line for the PRE-mono inliner (`plans/pre-mono-inline-simplify.md`).
