@@ -4960,12 +4960,15 @@ assembleRawGraph s mainSpecId flagsDecoderSpecId =
         , lssMemberOrigins = buildMemberOrigins s.env.toptNodes s.lssMemberTable
         , lssMemberKinds =
             -- CENSUS ONLY, report-gated: invert the interned key table to
-            -- member-id -> key PREFIX. `lssMemberOrigins` records standalone
+            -- member-id -> FULL interned key (`l|<raw>|<spec or widened key>`,
+            -- `p|<global>|<k>`, ...). `lssMemberOrigins` records standalone
             -- members only, so a member missing from it may be a lambda (l|),
             -- a PAP (p|) or an instance that was pruned - and the census
-            -- cannot tell those apart without this.
+            -- cannot tell those apart without this. Consumers that want the
+            -- kind take `String.left 1`; the full key is what lets a
+            -- `g1absentl` decline be joined back to its SOURCE lambda.
             if s.env.lss.report then
-                Dict.foldl (\key mid acc -> Dict.insert mid (String.left 1 key) acc) Dict.empty s.lssMemberTable.byKey
+                Dict.foldl (\key mid acc -> Dict.insert mid key acc) Dict.empty s.lssMemberTable.byKey
 
             else
                 Dict.empty

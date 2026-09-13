@@ -1,4 +1,4 @@
-module Compiler.Monomorphize.Prune exposing (pruneUnreachableSpecs)
+module Compiler.Monomorphize.Prune exposing (pruneUnreachableSpecs, pruneAfterInline)
 
 {-| Prune unreachable specializations from MonoGraph.
 
@@ -7,7 +7,18 @@ reachable from the main entry point via callEdges. This ensures the graph
 handed to GlobalOpt and MLIR contains only concrete specializations that
 matter for code generation.
 
-@docs pruneUnreachableSpecs
+**Two entry points, one reachability.** `pruneUnreachableSpecs` is the
+mono-time call: it prunes over the `callEdges` monomorphization computed and
+FUSES quiescence closing (MONO\_028) into the rebuild. `pruneAfterInline` is
+the post-`MonoInlineSimplify` call
+(`plans/post-inline-dead-spec-prune.md`): the inliner orphans a specialization
+whenever it inlines the only reference to it, and nothing removed those until
+this existed — 6,608 unreferenced code-bearing functions, 4.86 % of the
+self-compile's emitted text. It re-collects edges from the REWRITTEN bodies
+(`callEdges` is `Array.empty` after the inliner) and does no closing: residual
+number vars were already discharged and crash-checked at mono time.
+
+@docs pruneUnreachableSpecs, pruneAfterInline
 
 -}
 
@@ -22,11 +33,19 @@ import Dict exposing (Dict)
 import Utils.Crash
 
 
-{-| Compute the BitSet of SpecIds reachable from the main specialization
-by DFS over the precomputed callEdges adjacency.
+{-| Compute the BitSet of SpecIds reachable from the main specialization by DFS
+over the given adjacency.
+
+The adjacency is a PARAMETER, not `record.callEdges`, because the two callers
+have different ones: mono time passes the array monomorphization built,
+post-inline passes a fresh `MonoTraverse.collectSpecEdges` over the rewritten
+bodies. Both must relate every `MonoVarGlobal` occurrence to its spec — see
+that function's doc for why a partial adjacency is a miscompile and not a
+missed optimization.
+
 -}
-reachableFromMain : Mono.MonoGraph -> BitSet
-reachableFromMain (Mono.MonoGraph record) =
+reachableFromMain : Array (Maybe (List Int)) -> Mono.MonoGraph -> BitSet
+reachableFromMain edges (Mono.MonoGraph record) =
     let
         size =
             record.registry.nextId
@@ -65,7 +84,7 @@ reachableFromMain (Mono.MonoGraph record) =
                         Nothing ->
                             []
             in
-            markReachable record.callEdges (mainSpecId :: portRoots ++ flagsRoots) (BitSet.fromSize size)
+            markReachable edges (mainSpecId :: portRoots ++ flagsRoots) (BitSet.fromSize size)
 
 
 {-| DFS over callEdges using an explicit stack. Returns BitSet of all reachable specIds.
@@ -96,17 +115,70 @@ markReachable callEdges stack visited =
                 markReachable callEdges (neighbors ++ rest) visited1
 
 
+{-| What a prune does to the entries it KEEPS. Mono time closes residual number
+vars as it copies (Q3 perf: one walk, not two) and recomputes `ctorShapes` from
+the closed nodes so the layout keys stay consistent with them; post-inline does
+neither, so its closer is the identity one below.
+-}
+type alias Closer =
+    { node : Mono.MonoNode -> Mono.MonoNode
+    , tipe : Mono.MonoType -> Mono.MonoType
+    , hasResidual : Mono.MonoType -> Bool
+    , ctorShapes : Mono.LayoutMap (List Mono.CtorShape) -> Array (Maybe Mono.MonoNode) -> Mono.LayoutMap (List Mono.CtorShape)
+    }
+
+
+{-| Prune every specialization unreachable from the roots, over the edges given.
+
+Spec ids are array INDICES and are never renumbered: a dead slot becomes
+`Nothing`, exactly as it does for a spec monomorphization never emitted.
+Renumbering would invalidate `reverseMapping`, `callEdges`, LSS member keys
+(`l|<raw>|<specId>`), AbiCloning's `hostSpecId` and CafHoist's mints.
+
+-}
+pruneUnreachableWith : Array (Maybe (List Int)) -> Closer -> Mono.MonoGraph -> Mono.MonoGraph
+pruneUnreachableWith edges closer (Mono.MonoGraph record) =
+    let
+        live : BitSet
+        live =
+            reachableFromMain edges (Mono.MonoGraph record)
+    in
+    rebuild live edges closer (Mono.MonoGraph record)
+
+
+{-| The post-`MonoInlineSimplify` prune
+(`plans/post-inline-dead-spec-prune.md`).
+
+Edges are re-collected from the rewritten bodies: the inliner returns
+`callEdges = Array.empty`, and the mono-time array would be stale anyway
+because the bodies changed under it.
+
+No closing. Residual number vars were discharged at mono time and a survivor
+crashes there (MONO\_002), so there is nothing left to close; `ctorShapes` is
+carried through unchanged because pruning only ever REMOVES nodes, so the map
+can only become a superset of what the live nodes look up — and every consumer
+reads it by `layoutMapGet`, never by iteration.
+
+-}
+pruneAfterInline : Mono.MonoGraph -> Mono.MonoGraph
+pruneAfterInline ((Mono.MonoGraph record) as graph) =
+    pruneUnreachableWith
+        (Traverse.collectSpecEdges record.nodes)
+        { node = identity
+        , tipe = identity
+        , hasResidual = always False
+        , ctorShapes = \shapes _ -> shapes
+        }
+        graph
+
+
 {-| Prune MonoGraph and SpecializationRegistry to keep only
 specializations reachable from mainSpecId via callEdges.
 Also recomputes ctorShapes from the pruned nodes.
 -}
 pruneUnreachableSpecs : State.MVarEnv -> TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> Mono.MonoGraph
-pruneUnreachableSpecs mvarEnv globalTypeEnv (Mono.MonoGraph record) =
+pruneUnreachableSpecs mvarEnv globalTypeEnv ((Mono.MonoGraph record) as graph) =
     let
-        live : BitSet
-        live =
-            reachableFromMain (Mono.MonoGraph record)
-
         -- Quiescence closing (MONO_028) FUSED into the prune rebuild (Q3, perf,
         -- plans/monomorphization-perf-analysis.md): discharge residual number vars
         -- (MVar CNumber → MInt) as live nodes are copied here, rather than in a
@@ -151,6 +223,46 @@ pruneUnreachableSpecs mvarEnv globalTypeEnv (Mono.MonoGraph record) =
 
             else
                 node
+    in
+    pruneUnreachableWith record.callEdges
+        { node = closeNode
+        , tipe = closeType
+        , hasResidual = hasResidualType
+        , ctorShapes =
+            -- Recompute from the pruned+closed nodes. Since they are already
+            -- closed the derived keys and fieldTypes are closed and
+            -- consistent; the gated pass below is defensive (a no-op then).
+            \_ nodes1 ->
+                Mono.layoutMapMap
+                    (\_ shapes ->
+                        List.map
+                            (\shape ->
+                                if List.any hasResidualType shape.fieldTypes then
+                                    { shape | fieldTypes = List.map closeType shape.fieldTypes }
+
+                                else
+                                    shape
+                            )
+                            shapes
+                    )
+                    (Analysis.computeCtorShapesForGraph globalTypeEnv nodes1)
+        }
+        graph
+
+
+{-| The shared rebuild: filter, close, re-register, recompute shapes.
+-}
+rebuild : BitSet -> Array (Maybe (List Int)) -> Closer -> Mono.MonoGraph -> Mono.MonoGraph
+rebuild live edges closer (Mono.MonoGraph record) =
+    let
+        closeNode =
+            closer.node
+
+        closeType =
+            closer.tipe
+
+        hasResidualType =
+            closer.hasResidual
 
         -- 1. Filter nodes (leave Nothing gaps for dead entries) + close residuals
         nodes1 : Array (Maybe Mono.MonoNode)
@@ -176,7 +288,7 @@ pruneUnreachableSpecs mvarEnv globalTypeEnv (Mono.MonoGraph record) =
                     else
                         Nothing
                 )
-                record.callEdges
+                edges
 
         -- 3. Rebuild registry
         oldReg =
@@ -217,24 +329,13 @@ pruneUnreachableSpecs mvarEnv globalTypeEnv (Mono.MonoGraph record) =
             , countByGlobal = Dict.empty -- MONO_030: during-run counts; not carried into the output graph
             }
 
-        -- 4. Recompute ctorShapes from the pruned+closed nodes. Since nodes1 is
-        -- already closed, the derived keys and fieldTypes are closed and consistent.
-        -- The gated pass over fieldTypes is defensive (a no-op when already closed).
+        -- 4. ctorShapes, via the closer: recomputed and closed at mono time,
+        -- carried through unchanged post-inline (§3.1 — pruning only removes
+        -- nodes, so the existing map is a superset and every consumer reads it
+        -- by key).
         ctorShapes1 : Mono.LayoutMap (List Mono.CtorShape)
         ctorShapes1 =
-            Mono.layoutMapMap
-                (\_ shapes ->
-                    List.map
-                        (\shape ->
-                            if List.any hasResidualType shape.fieldTypes then
-                                { shape | fieldTypes = List.map closeType shape.fieldTypes }
-
-                            else
-                                shape
-                        )
-                        shapes
-                )
-                (Analysis.computeCtorShapesForGraph globalTypeEnv nodes1)
+            closer.ctorShapes record.ctorShapes nodes1
     in
     Mono.MonoGraph
         { nodes = nodes1

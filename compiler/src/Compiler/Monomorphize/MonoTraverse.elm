@@ -3,6 +3,7 @@ module Compiler.Monomorphize.MonoTraverse exposing
     , foldExpr, foldExprAccFirst
     , mapNodeTypes, anyNodeType
     , childrenOf
+    , collectSpecEdges
     )
 
 {-| Generic AST traversal abstractions for MonoExpr.
@@ -35,8 +36,14 @@ function on each node after processing children.
 
 @docs childrenOf
 
+
+# Spec reference edges
+
+@docs collectSpecEdges
+
 -}
 
+import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono exposing (CallInfo, CaptureABI, ClosureInfo, CtorShape, Decider(..), MonoChoice(..), MonoDef(..), MonoDestructor, MonoDtPath, MonoExpr(..), MonoNode, MonoPath, MonoType)
 
 
@@ -1417,3 +1424,79 @@ anyChoiceType p choice =
 
         Mono.Jump _ ->
             False
+
+
+-- ============================================================================
+-- ====== SPEC REFERENCE EDGES ======
+-- ============================================================================
+
+
+{-| The spec-reference adjacency of a node array: index (= `SpecId`) to the
+`SpecId`s that node's body mentions.
+
+**Every `MonoVarGlobal` occurrence is an edge, whatever position it is in.** A
+spec is kept alive by a direct call, by a `papCreate` that names it, and by a
+bare reference stored into data — `plans/post-inline-dead-spec-prune.md` §3.1.
+Collecting only the shapes that "look like calls" is what broke
+`plans/prune-bitset-calledges-reachability.md`: an incomplete adjacency pruned
+live specs and 702 tests failed on MONO\_011 / CGEN\_044. So this is one
+`foldExpr` over the whole body with a single-constructor match, never a curated
+list of call forms.
+
+`MonoGraph.callEdges` carries the same relation from monomorphization, but it
+is `Array.empty` after `MonoInlineSimplify` and stale after any rewrite, so
+both post-mono consumers (`Borrow`, the post-inline prune) re-collect with
+this.
+
+The node kinds with no expression — `MonoCtor`, `MonoEnum`, `MonoExtern`,
+`MonoManagerLeaf` — reference no spec: their payloads are a shape, an index, a
+type and a module name respectively.
+
+-}
+collectSpecEdges : Array (Maybe MonoNode) -> Array (Maybe (List Mono.SpecId))
+collectSpecEdges nodes =
+    -- Array.map preserves index = SpecId, the shape both consumers expect.
+    Array.map (Maybe.map specEdgesOfNode) nodes
+
+
+specEdgesOfNode : MonoNode -> List Mono.SpecId
+specEdgesOfNode node =
+    case node of
+        Mono.MonoDefine body _ ->
+            specEdgesOfExpr body
+
+        Mono.MonoTailFunc _ body _ ->
+            specEdgesOfExpr body
+
+        Mono.MonoPortIncoming body _ ->
+            specEdgesOfExpr body
+
+        Mono.MonoPortOutgoing body _ ->
+            specEdgesOfExpr body
+
+        Mono.MonoCtor _ _ ->
+            []
+
+        Mono.MonoEnum _ _ ->
+            []
+
+        Mono.MonoExtern _ ->
+            []
+
+        Mono.MonoManagerLeaf _ _ ->
+            []
+
+
+specEdgesOfExpr : MonoExpr -> List Mono.SpecId
+specEdgesOfExpr body =
+    foldExprAccFirst
+        (\acc e ->
+            case e of
+                MonoVarGlobal _ specId _ ->
+                    specId :: acc
+
+                _ ->
+                    acc
+        )
+        []
+        body

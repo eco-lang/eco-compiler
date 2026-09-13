@@ -1015,6 +1015,28 @@ type alias InlineConfig =
     -- the preserveSets-BUILT binary, not a cheaper workload.
     , preserveSets : Bool
 
+    -- POST-INLINE DEAD-SPEC PRUNE
+    -- (plans/post-inline-dead-spec-prune.md). `MonoInlineSimplify` leaves a
+    -- specialization in the graph when it inlines the only reference to it,
+    -- and nothing removed those: `Prune` runs once, at the END of
+    -- monomorphization, and the inliner returns `callEdges = Array.empty`.
+    -- MEASURED on the self-compile (2026-09-13): 6,608 unreferenced
+    -- code-bearing functions, 4,508,040 B, 4.86 % of the emitted text, versus
+    -- 921 / 1.27 % with the inliner off. They also account for all 1,758
+    -- `g1absentl` AbiCloning declines — sites in dead specs whose callback
+    -- member has no instance because the inliner consumed it — which
+    -- misdirected two plans before the per-site trace found them
+    -- (plans/pre-mono-lss-transforms-03-lift-closed-lambda-args.md §12.4).
+    --
+    -- ON runs `Prune.pruneAfterInline` immediately after the inliner, before
+    -- `MonoGlobalOptimize`: at that point the only cross-spec references are
+    -- `MonoVarGlobal`, so a `MonoTraverse.collectSpecEdges` reachability is
+    -- exact. Everything that references a spec by another route — AbiCloning's
+    -- `fastEvaluatorSpec` stamps, post-settle devirt targets, CafHoist's mints
+    -- — comes after and therefore cannot dangle. Artifact-affecting (it
+    -- removes functions); hash token `prune=`; env `ECO_INLINE_PRUNE_DEAD=0`.
+    , pruneDead : Bool
+
     -- INLINER POSITION (plans/pre-mono-inline-simplify.md). `postMono` gates
     -- the existing `MonoInlineSimplify` (after monomorphization); `preMono`
     -- gates the new `InlineSimplify` (before it, on the TOpt IR). Both
@@ -1157,6 +1179,7 @@ default =
         , raiseAppliedShareMin = 0
         , partialHof = False
         , preserveSets = True
+        , pruneDead = True
         , preMono = True
         , postMono = True
         , etaExpand = True
@@ -1276,6 +1299,7 @@ inlineDecoder =
         |> D.apply (D.optionalField "raiseAppliedShareMin" D.int default.inline.raiseAppliedShareMin)
         |> D.apply (D.optionalField "partialHof" D.bool default.inline.partialHof)
         |> D.apply (D.optionalField "preserveSets" D.bool default.inline.preserveSets)
+        |> D.apply (D.optionalField "pruneDead" D.bool default.inline.pruneDead)
         |> D.apply (D.optionalField "preMono" D.bool default.inline.preMono)
         |> D.apply (D.optionalField "postMono" D.bool default.inline.postMono)
         |> D.apply (D.optionalField "etaExpand" D.bool default.inline.etaExpand)
@@ -1524,6 +1548,13 @@ hash cfg =
                )
          , "psets="
             ++ (if cfg.inline.preserveSets then
+                    "1"
+
+                else
+                    "0"
+               )
+         , "prune="
+            ++ (if cfg.inline.pruneDead then
                     "1"
 
                 else

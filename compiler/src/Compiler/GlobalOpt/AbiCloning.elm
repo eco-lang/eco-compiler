@@ -160,7 +160,7 @@ type alias AbiCloningStats =
     , topSiteShapes : Dict String Int -- E8 split: LTop-annotated call sites by callee-expression shape (escape proxy: recordAccess/callResult vs local/global)
     , varSiteShapes : Dict String Int -- Phase 1a/3 (plans/lss-unknown-elimination.md §2.5, plans/lss-set-variable.md): the same census for LVar-annotated sites — the "still a variable" half of what used to be one undifferentiated ⊤ population. Same shape keys as topSiteShapes; same TRAP (stampCall consults EVERY call, so these are SITE counts, not dispatch weight).
     , stampedWrapperInstances : Int -- E7 trigger: stamped sites whose representative is a staging wrapper (collision signal)
-    , instQual : { byHost : Dict String Int, flatStamped : Int, shape : Dict String Int, niGuard : Dict String Int, papSites : Dict String Int } -- Per-site census Dicts, ALL gated on `lss.census` (`StampCtx.census`). Split from `lss.report` deliberately: the benchmark protocol mandates ECO_MONO_LSS_REPORT=1, so anything billed under `report` distorts every timed run (the `qCensus` precedent, Eco/Config.elm). Each of these builds a String key and inserts a Dict node at ~43,000 AbiCloning sites per self-compile; the scalar counters beside them are field increments and stay unconditional because they are the A/B gate numbers. `byHost`: "<host global>|<reason>" — the join key against the runtime dispatch census. One nested record because the flat stats record is near the 32-slot GC-scan cap.
+    , instQual : { byHost : Dict String Int, flatStamped : Int, shape : Dict String Int, niGuard : Dict String Int, papSites : Dict String Int, absentL : Dict String Int } -- Per-site census Dicts, ALL gated on `lss.census` (`StampCtx.census`). Split from `lss.report` deliberately: the benchmark protocol mandates ECO_MONO_LSS_REPORT=1, so anything billed under `report` distorts every timed run (the `qCensus` precedent, Eco/Config.elm). Each of these builds a String key and inserts a Dict node at ~43,000 AbiCloning sites per self-compile; the scalar counters beside them are field increments and stay unconditional because they are the A/B gate numbers. `byHost`: "<host global>|<reason>" — the join key against the runtime dispatch census. One nested record because the flat stats record is near the 32-slot GC-scan cap.
     , blockedMembers : List ( Int, Maybe Mono.LambdaId ) -- LSS_026 §11 census: every blocked member with its BLOCKER instance (the adopting synthetic closure; Nothing = μ-tie / no attribution). Print-only, never consulted by stamping. The instrument that named `Compiler_Type_Type_lambda_41139` as the 146-site blocker — member IDS shift with the corpus, the SYMBOL is the stable join key, which is why the blocker travels with the id. (It did NOT explain the de-stamp — see §11.5 — but it is what made that refutable.) Cost: one Dict fold over the index per COMPILE, alongside the existing `countMultiInstanceGroups` fold; nothing per site.
     }
 
@@ -195,7 +195,7 @@ emptyStats =
     , topSiteShapes = Dict.empty
     , varSiteShapes = Dict.empty
     , stampedWrapperInstances = 0
-    , instQual = { byHost = Dict.empty, flatStamped = 0, shape = Dict.empty, niGuard = Dict.empty, papSites = Dict.empty }
+    , instQual = { byHost = Dict.empty, flatStamped = 0, shape = Dict.empty, niGuard = Dict.empty, papSites = Dict.empty, absentL = Dict.empty }
     , blockedMembers = []
     }
 
@@ -735,11 +735,18 @@ type alias StampCtx =
     -- descriptor, not callable code).
     , specNodes : Array.Array (Maybe Mono.MonoNode)
 
-    -- CENSUS ONLY: member id -> interned key prefix, report-gated upstream and
-    -- Dict.empty otherwise. Splits `g1absent` into the classes that want
+    -- CENSUS ONLY: member id -> FULL interned key (kind = `String.left 1`),
+    -- report-gated upstream and Dict.empty otherwise. Splits `g1absent` into the classes that want
     -- different repairs (a lambda whose instance was pruned vs a PAP member,
     -- which never has one by construction).
     , memberKinds : Dict Int String
+
+    -- CENSUS ONLY (`lss.census`): raw `srcLambda` id -> the `lssMember` of
+    -- EVERY closure in the graph born from that source lambda, indexed or
+    -- not. Dict.empty otherwise. Joins a `g1absentl` member back to the
+    -- closures that share its source, which is the question "where did the
+    -- instance go" — see `bumpAbsentL`.
+    , srcIndex : Dict Int (List (Maybe Int))
 
     -- `lss.census` (`ECO_MONO_LSS_CENSUS=1`): collect the per-site census
     -- Dicts. OFF by default so the mandated `ECO_MONO_LSS_REPORT=1` benchmark
@@ -808,7 +815,26 @@ abiCloningPass fpFence postSettle flatPeel census papFast ((Mono.MonoGraph recor
             stats0 =
                 { emptyStats
                     | multiInstanceGroups = countMultiInstanceGroups index
-                    , instQual = { byHost = Dict.empty, flatStamped = 0, shape = Dict.empty, niGuard = Dict.empty, papSites = Dict.empty }
+                    , instQual =
+                        { byHost = Dict.empty
+                        , flatStamped = 0
+                        , shape = Dict.empty
+                        , niGuard = Dict.empty
+                        , papSites = Dict.empty
+
+                        -- CENSUS ONLY: seed the g1absentl dict with one `I|`
+                        -- row per INDEXED member — its representative
+                        -- lambda uids and instance count — so a member that
+                        -- is `g1absentl` in one arm can be joined to the
+                        -- instances it HAD in another arm of the same tree
+                        -- (member ids are deterministic per source).
+                        , absentL =
+                            if census then
+                                indexSummary index
+
+                            else
+                                Dict.empty
+                        }
                     , blockedMembers =
                         Dict.foldr
                             (\m mi acc ->
@@ -887,6 +913,12 @@ abiCloningPass fpFence postSettle flatPeel census papFast ((Mono.MonoGraph recor
                       , hostSpecId = -1
                       , specNodes = record.nodes
                       , memberKinds = record.lssMemberKinds
+                      , srcIndex =
+                            if census then
+                                collectSrcIndex record.nodes
+
+                            else
+                                Dict.empty
                       }
                     )
                     record.nodes
@@ -1548,13 +1580,15 @@ stampCall index ctx region func args resultType callInfo =
                                     ctxB.stats
                             in
                             ( Mono.MonoCall region func args resultType callInfo
-                            , { ctxB
-                                | stats =
-                                    { statsB
-                                        | declineByMember = bumpDict m statsB.declineByMember
-                                        , memberReps = Dict.insert m (memberRepsOf memberInfo) statsB.memberReps
-                                    }
-                              }
+                            , noteSite m
+                                reason
+                                { ctxB
+                                    | stats =
+                                        { statsB
+                                            | declineByMember = bumpDict m statsB.declineByMember
+                                            , memberReps = Dict.insert m (memberRepsOf memberInfo) statsB.memberReps
+                                        }
+                                }
                             )
 
                 Nothing ->
@@ -1687,7 +1721,8 @@ stampCall index ctx region func args resultType callInfo =
                             -- decline class (45.5 % on the self-compile), so it
                             -- gets host attribution AND a per-guard reason.
                             ( Mono.MonoCall region func args resultType callInfo
-                            , bumpPapSite why (bumpNiGuard why (bumpHost "noInstance" (bumpNoInstance ctx)))
+                            , bumpAbsentL why m func (List.length args)
+                                (bumpPapSite why (bumpNiGuard why (bumpHost "noInstance" (bumpNoInstance ctx))))
                             )
 
         Mono.LSet ms ->
@@ -1844,6 +1879,217 @@ bumpPapSite why ctx =
                         { iq | papSites = bumpDictStr (ctx.hostGlobal ++ "|" ++ String.fromInt ctx.hostSpecId) iq.papSites }
                 }
         }
+
+
+{-| CENSUS ONLY: what a `g1absentl` decline actually LOOKS like
+(`plans/pre-mono-lss-transforms-03-lift-closed-lambda-args.md` §11.4 follow-up).
+
+The guard name alone says a lambda member has no closure instance; it does not
+say how many DISTINCT lambdas that is, nor what the call site is applying. Three
+key families, all in one dict so the flat stats record stays where it is:
+
+  - `M|<member id>` — one per site, so `distinct M keys` vs `sites` separates
+    "many lambdas each declining once" from "a few lambdas declining often".
+  - `S|<callee shape>|<argCount>` — `local` means the callee is a parameter the
+    spec dispatches on; `closureLiteral` would mean the value is RIGHT THERE and
+    something else is wrong.
+  - `H|<host>|<spec id>|<callee shape>` — the SPEC id is what joins to the
+    runtime dispatch census (`<Module>_<name>_$_<specid>`), and a host-global
+    key cannot tell a 100 M spec from a dead one. That mistake has been made
+    three times in this arc.
+
+Member ids do not survive a recompile; shapes and hosts do. That is why the id
+is counted but never reported on its own.
+
+-}
+bumpAbsentL : String -> Int -> Mono.MonoExpr -> Int -> StampCtx -> StampCtx
+bumpAbsentL why m func argCount ctx0 =
+    let
+        ctx =
+            noteSite m ("ni:" ++ why) ctx0
+    in
+    if not ctx.census || why /= "g1absentl" then
+        ctx
+
+    else
+        let
+            st =
+                ctx.stats
+
+            iq =
+                st.instQual
+
+            shape =
+                calleeShape func
+
+            -- `l|<raw>|<qualifier>[|#inst]`: the KEY SHAPE with the raw id
+            -- blanked (spec-qualified `l|R|<int>` vs layout-qualified
+            -- `l|R|<widened key>`), and the raw id itself for the join.
+            key =
+                Maybe.withDefault "?" (Dict.get m ctx.memberKinds)
+
+            ( keyShape, raw ) =
+                case String.split "|" key of
+                    "l" :: r :: rest ->
+                        ( "l|R|"
+                            ++ (case rest of
+                                    q :: _ ->
+                                        if String.all Char.isDigit q then
+                                            "spec"
+
+                                        else
+                                            "layout"
+
+                                    [] ->
+                                        "?"
+                               )
+                            ++ (if List.any (String.startsWith "#") rest then
+                                    "|inst"
+
+                                else
+                                    ""
+                               )
+                        , String.toInt r
+                        )
+
+                    _ ->
+                        ( key, Nothing )
+
+            -- What the SOURCE lambda's closures carry now.
+            sourceRow =
+                case raw of
+                    Nothing ->
+                        "noRaw"
+
+                    Just r ->
+                        case Dict.get r ctx.srcIndex of
+                            Nothing ->
+                                "closures=0"
+
+                            Just members ->
+                                let
+                                    eq =
+                                        List.length (List.filter (\x -> x == Just m) members)
+
+                                    none =
+                                        List.length (List.filter (\x -> x == Nothing) members)
+                                in
+                                "closures="
+                                    ++ String.fromInt (List.length members)
+                                    ++ "|sameMember="
+                                    ++ String.fromInt eq
+                                    ++ "|otherMember="
+                                    ++ String.fromInt (List.length members - eq - none)
+                                    ++ "|noMember="
+                                    ++ String.fromInt none
+
+            d1 =
+                bumpDictStr ("M|" ++ String.fromInt m) iq.absentL
+
+            d2 =
+                bumpDictStr ("S|" ++ shape ++ "|" ++ String.fromInt argCount) d1
+
+            d3 =
+                bumpDictStr ("H|" ++ ctx.hostGlobal ++ "|" ++ String.fromInt ctx.hostSpecId ++ "|" ++ shape) d2
+
+            d4 =
+                bumpDictStr ("K|" ++ keyShape) d3
+
+            d5 =
+                bumpDictStr ("R|" ++ sourceRow) d4
+        in
+        { ctx | stats = { st | instQual = { iq | absentL = d5 } } }
+
+
+{-| CENSUS ONLY: `T|<host>|<spec id>|<member>|<outcome>` for EVERY consulted
+singleton site, so two arms of one tree can be joined per site and asked
+whether the MEMBER at that site changed — which is what separates "the
+inliner removed the instances" from "the inliner rewrote the annotation".
+-}
+noteSite : Int -> String -> StampCtx -> StampCtx
+noteSite m outcome ctx =
+    if not ctx.census then
+        ctx
+
+    else
+        let
+            st =
+                ctx.stats
+
+            iq =
+                st.instQual
+        in
+        { ctx
+            | stats =
+                { st
+                    | instQual =
+                        { iq
+                            | absentL =
+                                bumpDictStr
+                                    ("T|" ++ ctx.hostGlobal ++ "|" ++ String.fromInt ctx.hostSpecId ++ "|" ++ String.fromInt m ++ "|" ++ outcome)
+                                    iq.absentL
+                        }
+                }
+        }
+
+
+{-| CENSUS ONLY: `I|<member>|<rep uids>|n=<instances>` for every indexed member.
+-}
+indexSummary : Dict Int MemberInfo -> Dict String Int
+indexSummary index =
+    Dict.foldl
+        (\m mi acc ->
+            let
+                uids =
+                    memberRepsOf mi
+                        |> List.map (\(Mono.AnonymousLambda _ uid) -> String.fromInt uid)
+                        |> String.join ","
+
+                n =
+                    Dict.foldl (\_ groups a -> List.foldl (\g b -> b + g.count) a groups) 0 mi.buckets
+            in
+            Dict.insert
+                ("I|" ++ String.fromInt m ++ "|" ++ uids ++ "|n=" ++ String.fromInt n ++ (if mi.blocked then "|blocked" else ""))
+                1
+                acc
+        )
+        Dict.empty
+        index
+
+
+{-| CENSUS ONLY: every closure in the graph, keyed by the raw id of the source
+lambda it was born from, carrying its `lssMember`. Indexed-or-not deliberately:
+`collectInstances` keeps only what `instanceMember` resolves, and the question
+here is what happened to the ones it did NOT.
+-}
+collectSrcIndex : Array.Array (Maybe Mono.MonoNode) -> Dict Int (List (Maybe Int))
+collectSrcIndex nodes =
+    Array.foldl
+        (\maybeNode acc ->
+            case maybeNode of
+                Just node ->
+                    List.foldl (\e a -> MonoTraverse.foldExprAccFirst noteSrc a e) acc (nodeExprs node)
+
+                Nothing ->
+                    acc
+        )
+        Dict.empty
+        nodes
+
+
+noteSrc : Dict Int (List (Maybe Int)) -> Mono.MonoExpr -> Dict Int (List (Maybe Int))
+noteSrc acc expr =
+    case expr of
+        Mono.MonoClosure info _ _ ->
+            case info.srcLambda of
+                Just src ->
+                    Dict.update (Id.toComparable src) (\v -> Just (info.lssMember :: Maybe.withDefault [] v)) acc
+
+                Nothing ->
+                    acc
+
+        _ ->
+            acc
 
 
 {-| P0 census (plans/lss-no-instance-declines.md §8.4): record ONE `noInstance`
@@ -2278,7 +2524,11 @@ papScan fargs fret argCount groups noMatch =
 
 
 kindIdFor : Int -> StampCtx -> ( Int, StampCtx )
-kindIdFor m ctx =
+kindIdFor m ctx0 =
+    let
+        ctx =
+            noteSite m "stamp" ctx0
+    in
     case Dict.get m ctx.kindIds of
         Just kid ->
             ( kid, ctx )
@@ -2384,7 +2634,7 @@ postSettleTarget m func argCount ctx =
                 -- STANDALONE members only, so this is a lambda (`l|`), a PAP
                 -- (`p|`) or something else with no instance in the index —
                 -- classes that want different repairs, hence the prefix split.
-                PsNotCandidate ("g1absent" ++ Maybe.withDefault "?" (Dict.get m ctx.memberKinds))
+                PsNotCandidate ("g1absent" ++ Maybe.withDefault "?" (Maybe.map (String.left 1) (Dict.get m ctx.memberKinds)))
 
             Just (Mono.OriginPap g k) ->
                 -- LSS_040 (plans/lss-pap-fast-stamp.md §3.2). ONE guard chain

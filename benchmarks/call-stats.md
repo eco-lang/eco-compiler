@@ -67,6 +67,13 @@ NOT comparable to that file's. They are comparable across rows of this file.
 uniformly in every row here — which is why `benchmarks/runtime-calls.md` rows
 measured report-off are not comparable to these either.
 
+**Comparability across the post-inline prune (Runs 9/10 on).** `inline.pruneDead` removed 9,897
+dead specializations that AbiCloning had been walking, so every group-2 figure steps DOWN once as
+a correction, not a regression: a stamp or a decline recorded at a call site in a specialization
+nothing reaches was never worth anything. **Do not compare a group-2 number from Runs 1-8 with one
+from Run 9 onward.** Groups 1, 3 and 4 are unaffected — coverage is measured upstream of the prune
+(identical to the digit across Runs 9/10) and dead code does not execute.
+
 **Artefacts.** `benchmarks/call-stats.tsv` is the raw extraction, one line per
 compiler run, and `benchmarks/call-stats-extract.py <tag>...` regenerates it from
 the `<tag>.time` / `.stdout` / `.stderr` triple in `build/compiler/build-kernel`.
@@ -479,6 +486,96 @@ shifts +0.01 %, so essentially ALL of it is the preserveSets-BUILT binary. `out.
 (`inlined` 48,836 → 46,737), and the self-compile reshape census reads `cleared=0 bySite=`.
 Coverage and positions are identical to the digit — the flag moves the inliner, not the analysis.
 
+### Run 9 — defaults + the post-inline dead-spec prune (2026-09-13)
+
+| compiler | build | workload | wall (s) | max RSS (kB) | minor GC | major GC | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| reference | `ECO_MONO_ENGINE=subst` | solver+LSS, `prune=1` | 620.9 | 14,360,268 | 2249 | 11 | 22,990 | 13,367,419 |
+| benchmark | solver+LSS, `prune=1` | solver+LSS, `prune=1` | 525.7 | 14,589,388 | 2237 | 12 | 22,841 | 13,367,419 |
+
+**1. lss-coverage**
+
+| compiler | positions | singleton `k1` | multi `kN` | `var` | `⊤` | partial | coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| reference | 148,838 | 101,254 (68.03 %) | 34,597 (23.24 %) | 11,843 (7.96 %) | 1,087 (0.73 %) | 57 (0.04 %) | 91.27 % |
+| benchmark | 148,838 | 101,254 (68.03 %) | 34,597 (23.24 %) | 11,843 (7.96 %) | 1,087 (0.73 %) | 57 (0.04 %) | 91.27 % |
+
+**2. lss-stamping**
+
+| compiler | dispatchUpgraded | stampedPapGlobal | stampedStaged | stampedPapPrefix | noInstance | blocked | bodyMismatch | shape | abiMismatch | devirtPost fn/ctor/noSpec/ambiguous | multiInstanceGroups |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 16,673 | 3,251 | 204 | 12 | 10,917 | 2,418 | 1,263 | 650 | 353 | 67/310/0/9 | 1,783 |
+| benchmark | 16,673 | 3,251 | 204 | 12 | 10,917 | 2,418 | 1,263 | 650 | 353 | 67/310/0/9 | 1,783 |
+
+**3. dispatch-stats**
+
+| compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 2,836,638,231 | 2,779,296,562 | 57,341,669 | 0 | 2,836,638,231 | 0.00 | 97.98 | 2.02 | 6,779 |
+| benchmark | 841,170,945 | 788,053,933 | 53,117,012 | 1,020,914,791 | 1,862,085,736 | 54.83 | 42.32 | 2.85 | 7,084 |
+
+**4. call-census**
+
+| compiler | elm | runtime | kernel | helper | cap | extern | indirect | sites | static-target % |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 13,126,848,867 | 15,451,973,964 | 1,342,247,775 | 2,619,897,819 | 389,891,836 | 0 | 0 | 425,999 | 83.97 |
+| benchmark | 12,519,807,433 | 10,668,746,638 | 1,341,951,729 | 670,280,160 | 639,482,456 | 0 | 0 | 452,342 | 94.52 |
+
+`ECO_INLINE_PRUNE_DEAD=1`, default since this run: `Prune.pruneAfterInline` runs straight after
+`MonoInlineSimplify` and removes every specialization the inliner orphaned when it inlined the only
+reference to one (plans/post-inline-dead-spec-prune.md §8). **`pruned=9,897 kept=33,930` — 22.6 % of
+the graph was dead** — and `out.mlir` falls 15,532,506 → 13,367,419 B, **−13.94 %**.
+Read group 2 against Run 10 only. Every AbiCloning figure there was counting sites in dead specs
+before this pass existed, so each steps DOWN once as a correction: a stamp or a decline at a call
+site nothing reaches was never worth anything. Group 1 is unmoved to the digit — coverage is
+measured during monomorphization, upstream of the prune. Bootstrap fixed point B == C; E2E
+1,725/1,725 with the flag on and off; flag-off emission byte-identical to the pre-change binary.
+
+### Run 10 — the same tree with the prune OFF (2026-09-13)
+
+| compiler | build | workload | wall (s) | max RSS (kB) | minor GC | major GC | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| reference | `ECO_MONO_ENGINE=subst` | solver+LSS, `prune=0` | 618.1 | 14,619,872 | 2257 | 11 | 23,114 | 15,532,506 |
+| benchmark | solver+LSS, `prune=0` | solver+LSS, `prune=0` | 529.4 | 14,682,456 | 2244 | 12 | 22,935 | 15,532,506 |
+
+**1. lss-coverage**
+
+| compiler | positions | singleton `k1` | multi `kN` | `var` | `⊤` | partial | coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| reference | 148,838 | 101,254 (68.03 %) | 34,597 (23.24 %) | 11,843 (7.96 %) | 1,087 (0.73 %) | 57 (0.04 %) | 91.27 % |
+| benchmark | 148,838 | 101,254 (68.03 %) | 34,597 (23.24 %) | 11,843 (7.96 %) | 1,087 (0.73 %) | 57 (0.04 %) | 91.27 % |
+
+**2. lss-stamping**
+
+| compiler | dispatchUpgraded | stampedPapGlobal | stampedStaged | stampedPapPrefix | noInstance | blocked | bodyMismatch | shape | abiMismatch | devirtPost fn/ctor/noSpec/ambiguous | multiInstanceGroups |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 18,139 | 3,722 | 204 | 15 | 14,662 | 4,084 | 1,280 | 696 | 364 | 108/307/0/14 | 3,667 |
+| benchmark | 18,139 | 3,722 | 204 | 15 | 14,662 | 4,084 | 1,280 | 696 | 364 | 108/307/0/14 | 3,667 |
+
+**3. dispatch-stats**
+
+| compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 2,849,654,112 | 2,791,361,696 | 58,292,416 | 0 | 2,849,654,112 | 0.00 | 97.95 | 2.05 | 6,769 |
+| benchmark | 846,220,006 | 792,398,093 | 53,821,913 | 1,025,515,992 | 1,871,735,998 | 54.79 | 42.33 | 2.88 | 7,042 |
+
+**4. call-census**
+
+| compiler | elm | runtime | kernel | helper | cap | extern | indirect | sites | static-target % |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 13,172,761,634 | 15,571,592,867 | 1,346,858,413 | 2,632,402,101 | 392,193,141 | 0 | 0 | 425,999 | 83.96 |
+| benchmark | 12,566,436,246 | 10,769,869,809 | 1,346,562,330 | 674,817,647 | 642,717,495 | 0 | 0 | 452,342 | 94.51 |
+
+`ECO_INLINE_PRUNE_DEAD=0`, the control for Run 9. The SAME two binaries do both runs, so every
+difference is the workload flag.
+**Dispatch is neutral.** `sat` falls 846,220,006 → 841,170,945 (−0.60 %) in the benchmark arm, but
+the reference arm — same binary, only the flag moved — falls 2,849,654,112 → 2,836,638,231
+(−0.46 %), so all but ≈0.14 % of it is the pass's own saved work rather than a property of the
+pruned binary. `fast %` 54.79 → 54.83 and wall 529.4 → 525.7 s are noise at N=1.
+**The census corrections**, every one a site in dead code: `dispatchUpgraded` 18,139 → 16,673,
+`stampedPapGlobal` 3,722 → 3,251, `noInstance` 14,662 → 10,917, `blocked` 4,084 → 2,418,
+`multiInstanceGroups` 3,667 → 1,783, `devirtPost.fn` 108 → 67.
+
 ---
 
 ## Summary
@@ -504,6 +601,10 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 7 | psets=0 | benchmark | 517.3 | 2245 | 10 | 22926 | 15594595 |
 | 8 | psets=1 | reference | 613.8 | 2250 | 11 | 22860 | 15449374 |
 | 8 | psets=1 | benchmark | 521.6 | 2245 | 11 | 22940 | 15449374 |
+| 9 | prune=1 | reference | 620.9 | 2249 | 11 | 22990 | 13367419 |
+| 9 | prune=1 | benchmark | 525.7 | 2237 | 12 | 22841 | 13367419 |
+| 10 | prune=0 | reference | 618.1 | 2257 | 11 | 23114 | 15532506 |
+| 10 | prune=0 | benchmark | 529.4 | 2244 | 12 | 22935 | 15532506 |
 
 ### 1. lss-coverage
 
@@ -525,6 +626,10 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 7 | psets=0 | benchmark | 147938 | 100763 | 34457 | 11582 | 1079 | 57 | 91.40 |
 | 8 | psets=1 | reference | 147938 | 100763 | 34457 | 11582 | 1079 | 57 | 91.40 |
 | 8 | psets=1 | benchmark | 147938 | 100763 | 34457 | 11582 | 1079 | 57 | 91.40 |
+| 9 | prune=1 | reference | 148838 | 101254 | 34597 | 11843 | 1087 | 57 | 91.27 |
+| 9 | prune=1 | benchmark | 148838 | 101254 | 34597 | 11843 | 1087 | 57 | 91.27 |
+| 10 | prune=0 | reference | 148838 | 101254 | 34597 | 11843 | 1087 | 57 | 91.27 |
+| 10 | prune=0 | benchmark | 148838 | 101254 | 34597 | 11843 | 1087 | 57 | 91.27 |
 
 ### 2. lss-stamping
 
@@ -546,6 +651,10 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 7 | psets=0 | benchmark | 18284 | 3228 | 205 | 15 | 14434 | 5044 | 1257 | 669 | 365 | 108 | 307 | 0 | 14 | 3652 |
 | 8 | psets=1 | reference | 18088 | 3719 | 204 | 15 | 14609 | 4084 | 1257 | 695 | 365 | 108 | 307 | 0 | 14 | 3652 |
 | 8 | psets=1 | benchmark | 18088 | 3719 | 204 | 15 | 14609 | 4084 | 1257 | 695 | 365 | 108 | 307 | 0 | 14 | 3652 |
+| 9 | prune=1 | reference | 16673 | 3251 | 204 | 12 | 10917 | 2418 | 1263 | 650 | 353 | 67 | 310 | 0 | 9 | 1783 |
+| 9 | prune=1 | benchmark | 16673 | 3251 | 204 | 12 | 10917 | 2418 | 1263 | 650 | 353 | 67 | 310 | 0 | 9 | 1783 |
+| 10 | prune=0 | reference | 18139 | 3722 | 204 | 15 | 14662 | 4084 | 1280 | 696 | 364 | 108 | 307 | 0 | 14 | 3667 |
+| 10 | prune=0 | benchmark | 18139 | 3722 | 204 | 15 | 14662 | 4084 | 1280 | 696 | 364 | 108 | 307 | 0 | 14 | 3667 |
 
 ### 3. dispatch-stats
 
@@ -567,6 +676,10 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 7 | psets=0 | benchmark | 898228272 | 816650903 | 81577369 | 958086598 | 1856314870 | 51.61 | 43.99 | 4.39 | 7037 |
 | 8 | psets=1 | reference | 2812911613 | 2726912200 | 85999413 | 0 | 2812911613 | 0.00 | 96.94 | 3.06 | 6770 |
 | 8 | psets=1 | benchmark | 835397548 | 783918852 | 51478696 | 1021066066 | 1856463614 | 55.00 | 42.23 | 2.77 | 6936 |
+| 9 | prune=1 | reference | 2836638231 | 2779296562 | 57341669 | 0 | 2836638231 | 0.00 | 97.98 | 2.02 | 6779 |
+| 9 | prune=1 | benchmark | 841170945 | 788053933 | 53117012 | 1020914791 | 1862085736 | 54.83 | 42.32 | 2.85 | 7084 |
+| 10 | prune=0 | reference | 2849654112 | 2791361696 | 58292416 | 0 | 2849654112 | 0.00 | 97.95 | 2.05 | 6769 |
+| 10 | prune=0 | benchmark | 846220006 | 792398093 | 53821913 | 1025515992 | 1871735998 | 54.79 | 42.33 | 2.88 | 7042 |
 
 ### 4. call-census
 
@@ -588,3 +701,7 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 7 | psets=0 | benchmark | 12473820288 | 10834406102 | 1323919705 | 726984387 | 649467023 | 0 | 0 | 449969 | 94.15 |
 | 8 | psets=1 | reference | 13074418750 | 15433974877 | 1323838950 | 2596015314 | 400013385 | 0 | 0 | 424272 | 84.03 |
 | 8 | psets=1 | benchmark | 12508076570 | 10704738157 | 1323544986 | 664188739 | 634597780 | 0 | 0 | 449696 | 94.54 |
+| 9 | prune=1 | reference | 13126848867 | 15451973964 | 1342247775 | 2619897819 | 389891836 | 0 | 0 | 425999 | 83.97 |
+| 9 | prune=1 | benchmark | 12519807433 | 10668746638 | 1341951729 | 670280160 | 639482456 | 0 | 0 | 452342 | 94.52 |
+| 10 | prune=0 | reference | 13172761634 | 15571592867 | 1346858413 | 2632402101 | 392193141 | 0 | 0 | 425999 | 83.96 |
+| 10 | prune=0 | benchmark | 12566436246 | 10769869809 | 1346562330 | 674817647 | 642717495 | 0 | 0 | 452342 | 94.51 |

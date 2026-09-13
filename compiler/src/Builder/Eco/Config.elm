@@ -88,6 +88,9 @@ loadBase maybeExplicit root =
     strictly-partial inline, the only reshape that clears an LSS member
     (plans/pre-mono-lss-transforms-02-inline-preserve-sets.md); participates in
     the hash via the `psets=` token.
+  - `ECO_INLINE_PRUNE_DEAD=0` skips the post-inline dead-spec prune
+    (plans/post-inline-dead-spec-prune.md); default-on, participates in the
+    hash via the `prune=` token.
   - `ECO_INLINE_HOF_THRESHOLD=<n>` overrides `inline.hofThreshold` (the H2
     called-function-param inlining budget); experiment/tuning knob.
   - `ECO_INLINE_FPI=<n>` overrides `inline.fixpointIterations`;
@@ -365,6 +368,11 @@ applyEnvOverrides cfg =
             (\cfgPs ->
                 (Utils.envLookupEnv "ECO_INLINE_PRESERVE_SETS" |> Task.mapError never)
                     |> Task.map (\psVal -> applyInlinePreserveSetsOverride psVal cfgPs)
+            )
+        |> Task.andThen
+            (\cfgPd ->
+                (Utils.envLookupEnv "ECO_INLINE_PRUNE_DEAD" |> Task.mapError never)
+                    |> Task.map (\pdVal -> applyInlinePruneDeadOverride pdVal cfgPd)
             )
         |> Task.andThen
             (\cfgThr ->
@@ -1770,6 +1778,39 @@ applyInlinePreserveSetsOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 { cfg | inline = { inline | preserveSets = False } }
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_INLINE_PRUNE_DEAD=0|false|no`: skip the post-inline dead-spec prune
+(plans/post-inline-dead-spec-prune.md).
+
+`MonoInlineSimplify` orphans a specialization whenever it inlines the only
+reference to it; nothing removed those before this pass, because `Prune` runs
+at the end of monomorphization and the inliner returns empty `callEdges`.
+MEASURED: 6,608 unreferenced code-bearing functions on the self-compile,
+4.86 % of the emitted text, and every `g1absentl` AbiCloning decline. ON by
+default; `=0` is for the byte-identity gate and for bisecting a dangling
+reference if a later pass ever introduces one. Artifact-affecting; hash token
+`prune=`.
+-}
+applyInlinePruneDeadOverride : Maybe String -> EcoConfig -> EcoConfig
+applyInlinePruneDeadOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            let
+                inline =
+                    cfg.inline
+            in
+            if List.member v [ "1", "true", "yes" ] then
+                { cfg | inline = { inline | pruneDead = True } }
+
+            else if List.member v [ "0", "false", "no" ] then
+                { cfg | inline = { inline | pruneDead = False } }
 
             else
                 cfg

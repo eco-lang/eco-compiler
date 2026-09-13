@@ -288,7 +288,7 @@ solveSigs : Array (Maybe Mono.MonoNode) -> ( SigTable, Int, Int )
 solveSigs nodes =
     let
         edges =
-            collectEdges nodes
+            MonoTraverse.collectSpecEdges nodes
 
         ( indexToSpecId, sccs ) =
             buildSCC nodes edges
@@ -417,47 +417,10 @@ mkEnv lookup facts =
 
 
 -- EDGE RE-COLLECTION (callEdges is empty at Phase 6 — verified fact 1)
-
-
-collectEdges : Array (Maybe Mono.MonoNode) -> Array (Maybe (List Mono.SpecId))
-collectEdges nodes =
-    -- Array.map preserves index = SpecId, exactly the shape buildSCC consumes.
-    -- B3.5 will also collect routed edges here.
-    Array.map (Maybe.map collectFromNode) nodes
-
-
-collectFromNode : Mono.MonoNode -> List Mono.SpecId
-collectFromNode node =
-    case node of
-        Mono.MonoDefine body _ ->
-            collectFromExpr body
-
-        Mono.MonoTailFunc _ body _ ->
-            collectFromExpr body
-
-        Mono.MonoPortIncoming body _ ->
-            collectFromExpr body
-
-        Mono.MonoPortOutgoing body _ ->
-            collectFromExpr body
-
-        _ ->
-            []
-
-
-collectFromExpr : Mono.MonoExpr -> List Mono.SpecId
-collectFromExpr body =
-    MonoTraverse.foldExpr
-        (\e acc ->
-            case e of
-                Mono.MonoVarGlobal _ specId _ ->
-                    specId :: acc
-
-                _ ->
-                    acc
-        )
-        []
-        body
+-- Moved to `MonoTraverse.collectSpecEdges` so the post-inline prune
+-- (`plans/post-inline-dead-spec-prune.md`) collects the SAME relation: a
+-- second every-`MonoVarGlobal` walk that could drift from this one is exactly
+-- the hazard that plan's §3.1 records.
 
 
 

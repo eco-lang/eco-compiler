@@ -86,6 +86,8 @@ import Compiler.MonoSolver.Diff as MonoDiff
 import Compiler.MonoSolver.Monomorphize as MonoSolver
 import Compiler.Monomorphize.EntryPrep as EntryPrep
 import Compiler.Monomorphize.Monomorphize as Monomorphize
+import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.Monomorphize.Prune as Prune
 import Compiler.Monomorphize.ValidateLayout as ValidateLayout
 import Compiler.Nitpick.Debug as Nitpick
 import Compiler.Reporting.Render.Type.Localizer as L
@@ -884,6 +886,89 @@ validateMinted ecoConfig assigned =
         Task.succeed ()
 
 
+{-| Under `mono.validate` (`ECO_MONO_VALIDATE=1`), check that the post-inline
+prune left the graph CLOSED: every `MonoVarGlobal` in a live node names a live
+node (`plans/post-inline-dead-spec-prune.md` §4 R1, MONO\_011).
+
+This is the gate on the one real risk in that pass. Reachability is only as
+good as the adjacency it walks, and an adjacency that misses a reference
+shape prunes a live spec — which is silent here and surfaces as a CGEN\_044
+dangling `eco.call` at lowering, or as a crash. An earlier prune attempt
+(`plans/prune-bitset-calledges-reachability.md`) failed exactly this way
+across 702 tests. Checking closure directly costs one walk under a flag and
+cannot share a blind spot with the collector, because it matches the same
+single constructor from the other side.
+
+-}
+validatePruned : Config.EcoConfig -> Mono.MonoGraph -> Task Exit.Generate ()
+validatePruned ecoConfig (Mono.MonoGraph record) =
+    if not (ecoConfig.mono.validate && ecoConfig.inline.pruneDead) then
+        Task.succeed ()
+
+    else
+        let
+            isLive specId =
+                case Array.get specId record.nodes of
+                    Just (Just _) ->
+                        True
+
+                    _ ->
+                        False
+
+            -- Hoisted: `collectSpecEdges` walks the whole graph, so computing
+            -- it inside the fold would be quadratic in the spec count.
+            edges =
+                MonoTraverse.collectSpecEdges record.nodes
+
+            dangling =
+                Array.foldl
+                    (\entry ( specId, acc ) ->
+                        case entry of
+                            Nothing ->
+                                ( specId + 1, acc )
+
+                            Just _ ->
+                                ( specId + 1
+                                , case Array.get specId edges |> Maybe.andThen identity of
+                                    Just targets ->
+                                        List.foldl
+                                            (\t a ->
+                                                if isLive t then
+                                                    a
+
+                                                else
+                                                    ( specId, t ) :: a
+                                            )
+                                            acc
+                                            targets
+
+                                    Nothing ->
+                                        acc
+                                )
+                    )
+                    ( 0, [] )
+                    record.nodes
+                    |> Tuple.second
+        in
+        case dangling of
+            [] ->
+                Task.succeed ()
+
+            ( from, to ) :: rest ->
+                Task.throw
+                    (Exit.GenerateMonomorphizationError
+                        ("MONO_011: post-inline prune removed a LIVE specialization — spec "
+                            ++ String.fromInt from
+                            ++ " references pruned spec "
+                            ++ String.fromInt to
+                            ++ " ("
+                            ++ String.fromInt (1 + List.length rest)
+                            ++ " dangling references in total). The edge collector "
+                            ++ "(MonoTraverse.collectSpecEdges) missed a reference shape."
+                        )
+                    )
+
+
 monoPipelineFrom : Config.EcoConfig -> FEStats.Handle -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Task Exit.Generate MonoBuildResult
 monoPipelineFrom ecoConfig stats globalTypeEnv assigned =
     FEStats.withPhase stats
@@ -1005,25 +1090,52 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
             -- the position A/B (plans/pre-mono-inline-simplify.md §7): it
             -- skips this pass so the pre-mono `InlineSimplify` is the only
             -- inliner running. DEFAULT-ON, so the default path is unchanged.
-            ( simplifiedGraph, inlineMetrics ) =
+            ( inlinedGraph, inlineMetrics ) =
                 if ecoConfig.inline.postMono then
                     MonoInlineSimplify.optimize effectiveInlineConfig monoGraph0
 
                 else
                     ( monoGraph0, MonoInlineSimplify.emptyMetrics )
+
+            -- POST-INLINE DEAD-SPEC PRUNE
+            -- (plans/post-inline-dead-spec-prune.md). The inliner orphans a
+            -- specialization whenever it inlines the only reference to it, and
+            -- nothing removed those: `Prune` runs at the END of
+            -- monomorphization and the inliner returns `callEdges =
+            -- Array.empty`. HERE is the only position where a
+            -- `MonoVarGlobal`-reachability is exact — everything that
+            -- references a spec by another route (AbiCloning's
+            -- `fastEvaluatorSpec`, post-settle devirt targets, CafHoist's
+            -- mints) runs after `runGlobalOptPhase` below.
+            simplifiedGraph =
+                if ecoConfig.inline.pruneDead then
+                    Prune.pruneAfterInline inlinedGraph
+
+                else
+                    inlinedGraph
          in
          if ecoConfig.inline.report then
             -- Inline census (inline.report / ECO_INLINE_REPORT=1): pass
             -- metrics + the static count of closures surviving the pass
             -- (HOF-elimination plan H0.2). stderr, like the LSS census.
+            --
+            -- Rendered over the PRUNED graph: `closuresRemaining` and the
+            -- residual taxonomy counted closures in dead specs until the prune
+            -- existed, so every one of those figures steps down once when it
+            -- lands (plan §4 R3 — a correction, not a regression).
             Task.io
                 (System.IO.writeLn System.IO.stderr
-                    (renderInlineReportWith ecoConfig.inline inlineMetrics simplifiedGraph)
+                    (renderInlineReportWith ecoConfig.inline inlineMetrics simplifiedGraph
+                        ++ "\n"
+                        ++ renderPruneReport inlinedGraph simplifiedGraph
+                    )
                 )
+                |> Task.andThen (\_ -> validatePruned ecoConfig simplifiedGraph)
                 |> Task.map (\_ -> simplifiedGraph)
 
          else
-            Task.succeed simplifiedGraph
+            validatePruned ecoConfig simplifiedGraph
+                |> Task.map (\_ -> simplifiedGraph)
         )
         -- Hand off to a separate function so monoGraph0 goes out of scope
         |> Task.andThen (runGlobalOptPhase ecoConfig ecoConfig.mono.lss.report ecoConfig.list.report ecoConfig.borrow ecoConfig.cafMemo ecoConfig.cse stats)
@@ -1253,6 +1365,72 @@ top n d =
 renderInlineReport : MonoInlineSimplify.Metrics -> Mono.MonoGraph -> String
 renderInlineReport m graph =
     renderInlineReportWith Config.default.inline m graph
+
+
+{-| Census line for the post-inline dead-spec prune
+(`plans/post-inline-dead-spec-prune.md` §3.5).
+
+`pruned` is specs the prune removed, `kept` what survived; a `pruned=0` next to
+a large `kept` is the flag being off, which the line says outright rather than
+leaving the reader to infer. Pruned specs are attributed to their GLOBAL via
+the pre-prune `reverseMapping`, because a spec id means nothing across compiles
+and a global name is the join key to every other census here.
+
+-}
+renderPruneReport : Mono.MonoGraph -> Mono.MonoGraph -> String
+renderPruneReport (Mono.MonoGraph before) (Mono.MonoGraph after) =
+    let
+        ( prunedCount, keptCount, byGlobal ) =
+            Array.foldl
+                (\entry ( specId, ( nPruned, nKept, acc ) ) ->
+                    case entry of
+                        Nothing ->
+                            ( specId + 1, ( nPruned, nKept, acc ) )
+
+                        Just _ ->
+                            case Array.get specId after.nodes |> Maybe.andThen identity of
+                                Just _ ->
+                                    ( specId + 1, ( nPruned, nKept + 1, acc ) )
+
+                                Nothing ->
+                                    let
+                                        name =
+                                            case Array.get specId before.registry.reverseMapping |> Maybe.andThen identity of
+                                                Just ( g, _ ) ->
+                                                    Mono.toComparableGlobal g
+
+                                                Nothing ->
+                                                    "?"
+                                    in
+                                    ( specId + 1
+                                    , ( nPruned + 1
+                                      , nKept
+                                      , Dict.update name (\v -> Just (1 + Maybe.withDefault 0 v)) acc
+                                      )
+                                    )
+                )
+                ( 0, ( 0, 0, Dict.empty ) )
+                before.nodes
+                |> Tuple.second
+
+        topPruned =
+            Dict.toList byGlobal
+                |> List.sortBy (\( _, n ) -> negate n)
+                |> List.take 20
+                |> List.map (\( name, n ) -> name ++ "=" ++ String.fromInt n)
+                |> String.join " "
+    in
+    "post-inline-prune: pruned="
+        ++ String.fromInt prunedCount
+        ++ " kept="
+        ++ String.fromInt keptCount
+        ++ "\n  top pruned globals: "
+        ++ (if String.isEmpty topPruned then
+                "(none)"
+
+            else
+                topPruned
+           )
 
 
 renderInlineReportWith : Config.InlineConfig -> MonoInlineSimplify.Metrics -> Mono.MonoGraph -> String
@@ -1768,7 +1946,7 @@ abiCensusLines abi =
                     ps =
                         Dict.toList abi.instQual.papSites
                             |> List.sortBy (\( _, c ) -> negate c)
-                            |> List.take 400000
+                            |> List.take 1200000
                             |> List.map (\( k, c ) -> k ++ "=" ++ String.fromInt c)
                             |> String.join " "
                 in
@@ -1811,6 +1989,57 @@ abiCensusLines abi =
 
                 else
                     g
+               )
+        , "lss census instQual g1absentl SHAPE (callee shape|argCount) + distinct members: "
+            ++ (let
+                    pick pre =
+                        Dict.toList abi.instQual.absentL
+                            |> List.filter (\( k, _ ) -> String.startsWith pre k)
+
+                    members =
+                        pick "M|"
+
+                    sites =
+                        List.foldl (\( _, c ) a -> a + c) 0 members
+
+                    render rows =
+                        rows
+                            |> List.sortBy (\( _, c ) -> negate c)
+                            |> List.take 40
+                            |> List.map (\( k, c ) -> String.dropLeft 2 k ++ "=" ++ String.fromInt c)
+                            |> String.join " "
+                in
+                "sites="
+                    ++ String.fromInt sites
+                    ++ " distinctMembers="
+                    ++ String.fromInt (List.length members)
+                    ++ "  shapes: "
+                    ++ render (pick "S|")
+                    ++ "\n  by host+shape: "
+                    ++ render (pick "H|")
+                    ++ "\n  key shape: "
+                    ++ render (pick "K|")
+                    ++ "\n  source lambda's closures now: "
+                    ++ render (pick "R|")
+                    ++ "\n  members (id=sites): "
+                    ++ (members
+                            |> List.sortBy (\( _, c ) -> negate c)
+                            |> List.take 2000
+                            |> List.map (\( k, c ) -> String.dropLeft 2 k ++ "=" ++ String.fromInt c)
+                            |> String.join " "
+                       )
+                    ++ "\n  sites (T|host|spec|member|outcome): "
+                    ++ (pick "T|"
+                            |> List.take 60000
+                            |> List.map (\( k, c ) -> String.dropLeft 2 k ++ "=" ++ String.fromInt c)
+                            |> String.join " "
+                       )
+                    ++ "\n  indexed members (I|id|rep uids|n): "
+                    ++ (pick "I|"
+                            |> List.take 6000
+                            |> List.map (\( k, _ ) -> String.dropLeft 2 k)
+                            |> String.join " "
+                       )
                )
         , "lss census instQual flatStamped: " ++ String.fromInt abi.instQual.flatStamped
         , "lss census instQual overApply shape (firstStage->argCount|peel|reason): "

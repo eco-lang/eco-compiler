@@ -381,3 +381,116 @@ inliner still clears 612 non-loopify lambda members after `preserveSets` retired
 partial arm, and they sit in `IO.andThen`/`IO.map`, which host a quarter of all generic dispatch.
 Price THAT at the site level before building anything: a host's dispatch is an upper bound, since a
 hot spec has generic sites that are not these.
+
+## 12. The 612 — what they are, priced (2026-09-13)
+
+§11.4 asked for the non-loopify residue to be priced at site level before anything is built. Done.
+Arms of `eco-psetsDefA`, all with `ECO_INLINE_LOOPIFY=0` so the 1,146 loopify-made sites are already
+gone; shape census from `bin/eco-shape` (`instQual.absentL`); dispatch from a same-tree fixed-point
+uprobe run (`[G] FIXED POINT`, so the per-spec join is valid).
+
+### 12.1 They are 607 distinct lambdas, each declining once
+
+`sites=612 distinctMembers=607`, top members 3/2/2/2/1/1/… This is not a handful of hot lambdas
+consulted repeatedly. It is one member per continuation.
+
+**Callee shape is `local` at every single site** — 478 applied to ONE argument, 134 to TWO. Never
+`closureLiteral`, never `global`, never `callResult`. The spec is dispatching on a parameter, which
+is the ordinary HOF shape; the 134 two-argument sites are exactly `IO.andThen`'s 134, i.e. the
+η-expanded `f a s` continuation call.
+
+### 12.2 They are made by the HOF-admitted inline class, and `beta` is the consuming step
+
+Identity is never stripped: `preserveSets` retired the only reshape that cleared a member and the
+census confirms `cleared=0 bySite=` on the self-compile. The closure is CONSUMED instead.
+
+| arm (all `loopify=0`) | `g1absentl` | `inlined` | `beta` |
+|---|---:|---:|---:|
+| base | 612 | — | — |
+| `ECO_INLINE_HOF_THRESHOLD=0` | **1** | 43,766 | 148 |
+| `ECO_INLINE_THRESHOLD=0` | 595 | 12,210 | 789 |
+| both 0 | 1 | 10,058 | 148 |
+| `ECO_INLINE_PRESERVE_SETS=0` | 612 | 48,982 | 1,023 |
+| `ECO_INLINE_FIXPOINT_ITERATIONS=1` | 612 | — | — |
+
+`hofThreshold` alone accounts for all of them while leaving 43,766 inlines in place; the general
+small-candidate class accounts for none. It is not the fixpoint (one round suffices) and not
+`preserveSets` (identical either way — the 1,756 declines are a coincidence of magnitude, not a
+cause). `beta` tracks the population 1:1 across every arm: 148 wherever `g1absentl` is 1.
+
+### 12.3 Only 187 of the 612 ever execute
+
+Per-spec join, same tree, same compile:
+
+| host | declining sites | live specs | live generic sites | generic dispatch | share |
+|---|---:|---:|---:|---:|---:|
+| `System.TypeCheck.IO.andThen` | 134 | 90 | 133 | 140,793,140 | 16.79 % |
+| `System.TypeCheck.IO.map` | 53 | 31 | 32 | 71,525,270 | 8.53 % |
+| `Result.andThen` | 154 | 0 | 0 | 0 | 0.00 % |
+| `Maybe.map` | 87 | 1 | 1 | 29 | 0.00 % |
+| `Maybe.andThen` | 35 | 0 | 0 | 0 | 0.00 % |
+| `Builder.Eco.Config.updateLss` | 65 | 0 | 0 | 0 | 0.00 % |
+| `EtaExpand.bump`, `MapTemplate.bump`, 12 more | 84 | 0 | 0 | 0 | 0.00 % |
+
+**134 declining sites against 133 live generic sites is one declining site per live site**: in
+`IO.andThen` the declining site IS the hot dispatch. Together the two IO hosts are 212,318,410
+generic dispatches, **25.31 %** of the self-compile's total, at 187 sites. The other 425 sites never
+execute.
+
+So the target is 187 sites carrying a quarter of all generic dispatch, not 612 and not 1,758. The
+repair has to keep a member's instance alive across a HOF-admitted inline whose `beta` consumes the
+closure — post-mono, in `MonoInlineSimplify`, which is where every one of these is made.
+
+### 12.4 CORRECTION (2026-09-13, later): the 612 sites are in DEAD specs
+
+§12.3's "one declining site per live site" was a coincidence of counts, not a join. A per-site
+trace (`instQual.absentL` `T|<host>|<spec>|<member>|<outcome>` rows, both arms of one tree,
+`k-loop0` vs `k-post0`) and a reference count over the emitted text settle it:
+
+  - **Same member at every site in both arms** (612 same, 0 different): the inliner does not rewrite
+    annotations. With the inliner off those exact sites STAMP (682 `stamp`, 17 `bodyMismatch`).
+  - **All 583 specs hosting the 612 sites are UNREFERENCED in the inliner-on artifact** — no direct
+    call, no PAP construction, nothing — and every one of them is referenced with the inliner off.
+    `Result.andThen` 154/154, `IO.andThen` 134/134, `Maybe.map` 87/87, `updateLss` 65/65,
+    `IO.map` 53/53, `Maybe.andThen` 35/35, the `bump`s 19/19 and 17/17.
+
+**Mechanism, verified end to end.** η-expansion (plan 01) saturates the monad-bind call sites, which
+makes `andThen`/`map`/`Result.andThen`/`Maybe.map` inline candidates under the H2 "called-param"
+budget (`hofThreshold`; the pass's own doc: "inlining them lets a lambda argument beta-reduce away
+at the call site"). Their single caller is inlined, the callback literal is `ForwardClosure`-forwarded
+into the copied body and beta-reduced — the call is now DIRECT, strictly better than a stamp. The
+keyed spec the caller used to reach is left in the graph with no reference: nothing prunes dead
+specs after `MonoInlineSimplify` (the `Prune` pass is mono-time), so `AbiCloning` still walks it,
+its `f a s1` site still names the callback's member, the member's only instance was the closure
+that was just beta'd away, and the census records `g1absentl`. The decline is real; the site is
+dead. (No live `_tail_mono_inline_*` dispatch, no in-place identity strip — every one of those
+hypotheses was tested and failed.)
+
+**Consequences.**
+  - The "25.31 % of generic dispatch at 187 sites" in §12.3 is WRONG as an attribution. The two IO
+    hosts do carry a quarter of generic dispatch, but in OTHER specs — the 28-builder,
+    28-instance ones (e.g. `IO.andThen_$_19330`, 68.8 M generic entries, `bodyMismatch` in both
+    arms). The g1absentl sites carry nothing.
+  - There is nothing to keep alive: the closure was consumed on purpose and its consumer is direct.
+    The only defect is dead code in the artifact and in the census. The cheap fix is a
+    reachability prune after the post-mono inliner (or before AbiCloning); it removes the 1,758
+    `g1absentl` from the census and the dead specs from `out.mlir`.
+  - The measurement instruments (`absentL` `K|`/`R|`/`I|`/`T|` rows, the `I|` render capped at
+    6,000 rows — RAISE IT before relying on it, member ids above ~2xxxx are cut) are retained.
+
+**Size of the dead code (2026-09-13, `k-loop0`/`k-post0` text artifacts).** Unreferenced
+code-bearing functions (a body with a call, apply, case or loop; constructor/layout descriptors
+excluded): **6,608 with the inliner on, 4,508,040 B (4.86 % of the text artifact), vs 921 / 1.27 %
+with it off.** The delta is the inliner's leftovers: `Task.andThen` 1,116, `List.foldr` 917,
+`Task.map` 408, `Task.succeed` 290, `Elm.JsArray.foldl` 177 — the same "called-param" inlines. The
+583 `g1absentl` specs are a tenth of it. A post-inline reachability prune is worth building on the
+artifact-size ground alone, and it removes 1,758 census declines for free.
+
+**Successor:** `plans/post-inline-dead-spec-prune.md` — a reachability prune immediately after
+`MonoInlineSimplify`, reusing `Prune`'s core with edges re-collected from the rewritten bodies.
+
+**RESOLVED 2026-09-13.** `plans/post-inline-dead-spec-prune.md` shipped default-on and
+`g1absentl` measures **ZERO** on the self-compile (1,781 with `ECO_INLINE_PRUNE_DEAD=0`). Every
+decline this plan chased — the 612 of §12, the 1,146 loopify-made ones, all of it — was a call
+site in a specialization nothing reaches. Not one was a missed optimization, and the artifact lost
+13.94 % with dispatch unmoved.
