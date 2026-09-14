@@ -292,7 +292,7 @@ add_custom_command(
     # absolute build-tree path so non-default CMake build dirs (e.g. debug/)
     # resolve correctly.
     COMMAND ${CMAKE_COMMAND} -E env "GUIDA_JS_PATH=${COMPILER_OUTPUT}"
-        ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=12288
+        ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=16384
         ${COMPILER_DIR}/bin/index.js make
         --optimize
         --kernel-package eco/compiler
@@ -321,7 +321,7 @@ set(ECO_BOOT_2_RUNNER_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco-boot-2-runner.js")
 # invoke the runner.
 add_custom_command(
     OUTPUT ${ECO_BOOT_2_OUTPUT} ${ECO_BOOT_2_RUNNER_OUTPUT}
-    COMMAND ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=12288
+    COMMAND ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=16384
         bin/eco-boot-runner.js make
         --optimize
         --kernel-package eco/compiler
@@ -352,7 +352,7 @@ set(ECO_BOOT_3_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco-boot-3.js")
 
 add_custom_command(
     OUTPUT ${ECO_BOOT_3_OUTPUT}
-    COMMAND ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=12288
+    COMMAND ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=16384
         bin/eco-boot-2-runner.js make
         --optimize
         --kernel-package eco/compiler
@@ -412,13 +412,17 @@ add_custom_command(
         "-DECO_PATTERN=*.ecot"
         "-DECO_RECURSIVE=1"
         -P ${CMAKE_SOURCE_DIR}/cmake/EcoDeletePattern.cmake
-    # --max-old-space-size=12288: pin the V8 heap explicitly. Node's default
+    # --max-old-space-size=16384: pin the V8 heap explicitly. Node's default
     # old-space limit scales with host RAM (~4 GB on big machines, ~2 GB on
     # small ones). Under the solver mono engine (the 2026-07-22 default) the
     # JS-hosted self-compile needs ~12 GB — it passes in 12 GB and OOMs below
     # that, so all node-hosted bootstrap stages are pinned to 12 GiB.
+    # RAISED to 16 GiB (V8's maximum) on 2026-09-14: under solver+LSS the
+    # self-compile's V8 peak is ~11.8 GB and a 12 GiB cap GC-death-spirals
+    # (benchmarks/lss-opt.md); on a 15 GB host run the JS-hosted stages with
+    # ECO_MONO_ENGINE=subst (the compiler reads it at runtime).
     COMMAND ${_stage5_time_prefix}
-        ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=12288
+        ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=16384
         bin/eco-boot-2-runner.js make
         --optimize
         --kernel-package eco/compiler
@@ -977,7 +981,7 @@ set(ECO_STAGE9_2_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco-2")
 
 add_custom_command(
     OUTPUT ${ECO_STAGE9_2_OUTPUT}
-    COMMAND ${CMAKE_COMMAND} -E env "NODE_OPTIONS=--max-old-space-size=12288"
+    COMMAND ${CMAKE_COMMAND} -E env "NODE_OPTIONS=--max-old-space-size=16384"
         ${ECO_STAGE9_OUTPUT} make
         --optimize
         --kernel-package eco/compiler

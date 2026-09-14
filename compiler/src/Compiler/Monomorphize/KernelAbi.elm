@@ -3,7 +3,7 @@ module Compiler.Monomorphize.KernelAbi exposing
     , canTypeToMonoType_preserveVars
     , suffixSelectingKernels, comparePair
     , freeVarIds
-    , hasAnyFreeVar
+    , alwaysPolymorphicModules, hasAnyFreeVar
     )
 
 {-| Kernel ABI type derivation for monomorphization.

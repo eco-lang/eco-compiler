@@ -400,6 +400,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\v -> applyInlineEtaOnlyOverride v cfgEtaOnly)
             )
         |> Task.andThen
+            (\cfgAfwd ->
+                (Utils.envLookupEnv "ECO_INLINE_ALIAS_FORWARD" |> Task.mapError never)
+                    |> Task.map (\v -> applyInlineAliasForwardOverride v cfgAfwd)
+            )
+        |> Task.andThen
             (\cfg12 ->
                 (Utils.envLookupEnv "ECO_CAF_MEMO" |> Task.mapError never)
                     |> Task.map (\cmVal -> applyCafMemoOverride cmVal cfg12)
@@ -1797,6 +1802,7 @@ MEASURED: 6,608 unreferenced code-bearing functions on the self-compile,
 default; `=0` is for the byte-identity gate and for bisecting a dangling
 reference if a later pass ever introduces one. Artifact-affecting; hash token
 `prune=`.
+
 -}
 applyInlinePruneDeadOverride : Maybe String -> EcoConfig -> EcoConfig
 applyInlinePruneDeadOverride maybeVal cfg =
@@ -1922,6 +1928,32 @@ applyInlineEtaOnlyOverride maybeVal cfg =
                         |> List.filter (\m -> m /= "")
             in
             { cfg | inline = { inline | etaOnly = mods } }
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_INLINE_ALIAS_FORWARD=1|true|yes`: run `PreMono.AliasForward` before
+monomorphization (plans/pre-mono-lss-transforms-04-alias-forwarding.md).
+Artifact-affecting; hash token `afwd=`. DEFAULT-ON since 2026-09-14 (`=0` turns
+it off).
+-}
+applyInlineAliasForwardOverride : Maybe String -> EcoConfig -> EcoConfig
+applyInlineAliasForwardOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            let
+                inline =
+                    cfg.inline
+            in
+            if List.member v [ "1", "true", "yes" ] then
+                { cfg | inline = { inline | aliasForward = True } }
+
+            else if List.member v [ "0", "false", "no" ] then
+                { cfg | inline = { inline | aliasForward = False } }
+
+            else
+                cfg
 
         Nothing ->
             cfg

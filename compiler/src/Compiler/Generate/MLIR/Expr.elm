@@ -1649,8 +1649,46 @@ generateCall ctx func args resultType callInfo =
 
         Mono.CallDirectKnownSegmentation ->
             if callInfo.isSingleStageSaturated then
-                -- Single-stage saturated call: use saturated path (has intrinsic logic)
-                generateSaturatedCall ctx func args resultType callInfo
+                -- Single-stage saturated call: consult the AbiCloning stamp
+                -- FIRST (plans/pre-mono-lss-transforms-04-alias-forwarding.md
+                -- §7.1). A closure VALUE whose construction is visible in the
+                -- same function — a captured PAP after the post-mono inliner
+                -- copied a HOF body into its caller — is classified
+                -- known-segmentation by `annotateExprCalls`, and this branch
+                -- used to route it straight to the typed saturated helper
+                -- (`eco_closure_call_saturated`), silently discarding the
+                -- `PsStampPap`/`Stamp` the pass had placed: the SAME site
+                -- inside the un-inlined `List_map` spec is `CallGenericApply`
+                -- and took the fast path. MEASURED on the self-compile
+                -- (call-stats Runs 11/12): 21 M dispatches per compile fell
+                -- from `fast` to `typed` through this gap once alias
+                -- forwarding made `List.map` cheap enough to inline. A
+                -- direct-global callee never carries a stamp (its member has
+                -- no closure instance), so the intrinsic logic below is
+                -- reached exactly as before for those.
+                --
+                -- NARROWED the same day: with LSS_031 a global's own spec IS
+                -- an instance, so a `MonoVarGlobal` callee CAN carry a stamp
+                -- — and `generateSaturatedCallNoFusion` calls it DIRECTLY
+                -- (`eco.call @spec`), which beats any papExtend. Consulting
+                -- the stamp for those diverted 4,691 direct calls per
+                -- self-compile into papCreate + fast papExtend. Only a
+                -- closure VALUE (a local, a call result, a literal) has no
+                -- direct form; the two direct-call shapes keep their path.
+                case func of
+                    Mono.MonoVarGlobal _ _ _ ->
+                        generateSaturatedCall ctx func args resultType callInfo
+
+                    Mono.MonoVarKernel _ _ _ _ _ ->
+                        generateSaturatedCall ctx func args resultType callInfo
+
+                    _ ->
+                        case fastDispatchStamp callInfo args of
+                            Just ( fastLambdaId, fastAbi, papPrefix ) ->
+                                generateFastDispatchCall ctx func args resultType fastLambdaId fastAbi papPrefix
+
+                            Nothing ->
+                                generateSaturatedCall ctx func args resultType callInfo
 
             else
                 -- Multi-stage call or partial application: use closure path.

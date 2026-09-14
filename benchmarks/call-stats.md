@@ -578,6 +578,254 @@ pruned binary. `fast %` 54.79 → 54.83 and wall 529.4 → 525.7 s are noise at 
 
 ---
 
+### Run 11 — defaults, `aliasForward=0` (2026-09-14; control for Run 12)
+
+| compiler | build | workload | wall (s) | max RSS (kB) | minor GC | major GC | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| reference | `ECO_MONO_ENGINE=subst` | solver+LSS, `afwd=0` | 615.4 | 14,488,332 | 2245 | 11 | 22,844 | 13,400,752 |
+| benchmark | solver+LSS, `afwd=0` | solver+LSS, `afwd=0` | 526.7 | 14,571,516 | 2252 | 11 | 22,936 | 13,400,752 |
+
+**1. lss-coverage**
+
+| compiler | positions | singleton `k1` | multi `kN` | `var` | `⊤` | partial | coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| reference | 149,391 | 101,457 (67.91 %) | 34,677 (23.21 %) | 12,111 (8.11 %) | 1,089 (0.73 %) | 57 (0.04 %) | 91.13 % |
+| benchmark | 149,391 | 101,457 (67.91 %) | 34,677 (23.21 %) | 12,111 (8.11 %) | 1,089 (0.73 %) | 57 (0.04 %) | 91.13 % |
+
+**2. lss-stamping**
+
+| compiler | dispatchUpgraded | stampedPapGlobal | stampedStaged | stampedPapPrefix | noInstance | blocked | bodyMismatch | shape | abiMismatch | devirtPost fn/ctor/noSpec/ambiguous | multiInstanceGroups |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 16,723 | 3,251 | 204 | 12 | 10,922 | 2,418 | 1,267 | 650 | 353 | 67/310/0/9 | 1,784 |
+| benchmark | 16,723 | 3,251 | 204 | 12 | 10,922 | 2,418 | 1,267 | 650 | 353 | 67/310/0/9 | 1,784 |
+
+**3. dispatch-stats**
+
+| compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 2,846,000,950 | 2,788,516,387 | 57,484,563 | 0 | 2,846,000,950 | 0.00 | 97.98 | 2.02 | 6,825 |
+| benchmark | 843,527,677 | 790,275,486 | 53,252,191 | 1,024,559,506 | 1,868,087,183 | 54.85 | 42.30 | 2.85 | 7,076 |
+
+**4. call-census**
+
+| compiler | elm | runtime | kernel | helper | cap | extern | indirect | sites | static-target % |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 13,157,883,332 | 15,494,472,948 | 1,346,735,886 | 2,628,698,072 | 390,971,563 | 0 | 0 | 427,290 | 83.96 |
+| benchmark | 12,548,622,690 | 10,694,441,176 | 1,346,438,461 | 672,224,167 | 641,423,893 | 0 | 0 | 453,685 | 94.52 |
+
+Control for Run 12: the tree with `PreMono.AliasForward` present (default-off) and every other flag at
+its default. **Both Runs 11 and 12 additionally carry `ECO_INLINE_REPORT=1`** (the pass's census
+line is what §7 of its plan needed), uniformly across all four rows, so their walls are comparable
+with each other and not with Runs 1-10. Against Run 9 (same defaults, a day-older tree): coverage
+91.27 → 91.13 % and `positions` 148,838 → 149,391 are the corpus growing (this tree adds
+`PreMono/AliasForward.elm` and its test), not a change in the analysis; group 2 identical to the digit
+except `bodyMismatch` 1,263 → 1,267 and `multiInstanceGroups` 1,783 → 1,784.
+Native seed for the reference: `bin/eco-pruneB` (Run 9's benchmark binary) emitted `afwd-std-subst.mlir`
+from this tree — the JS-hosted subst self-compile hits V8's heap limit on this 15 GB box.
+
+### Run 12 — defaults + `aliasForward=1` (2026-09-14)
+
+| compiler | build | workload | wall (s) | max RSS (kB) | minor GC | major GC | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| reference | `ECO_MONO_ENGINE=subst` | solver+LSS, `afwd=1` | 621.0 | 14,472,576 | 2242 | 11 | 22,841 | 13,342,049 |
+| benchmark | solver+LSS, `afwd=1` | solver+LSS, `afwd=1` | 521.0 | 14,489,028 | 2250 | 11 | 22,883 | 13,342,049 |
+
+**1. lss-coverage**
+
+| compiler | positions | singleton `k1` | multi `kN` | `var` | `⊤` | partial | coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| reference | 148,401 | 100,600 (67.79 %) | 34,608 (23.32 %) | 12,074 (8.14 %) | 1,088 (0.73 %) | 31 (0.02 %) | 91.11 % |
+| benchmark | 148,401 | 100,600 (67.79 %) | 34,608 (23.32 %) | 12,074 (8.14 %) | 1,088 (0.73 %) | 31 (0.02 %) | 91.11 % |
+
+**2. lss-stamping**
+
+| compiler | dispatchUpgraded | stampedPapGlobal | stampedStaged | stampedPapPrefix | noInstance | blocked | bodyMismatch | shape | abiMismatch | devirtPost fn/ctor/noSpec/ambiguous | multiInstanceGroups |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 16,765 | 3,356 | 206 | 12 | 9,579 | 7 | 1,280 | 649 | 358 | 67/310/0/9 | 1,736 |
+| benchmark | 16,765 | 3,356 | 206 | 12 | 9,579 | 7 | 1,280 | 649 | 358 | 67/310/0/9 | 1,736 |
+
+**3. dispatch-stats**
+
+| compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 2,847,026,669 | 2,789,843,180 | 57,183,489 | 0 | 2,847,026,669 | 0.00 | 97.99 | 2.01 | 6,799 |
+| benchmark | 869,837,286 | 788,985,697 | 80,851,589 | 1,003,485,083 | 1,873,322,369 | 53.57 | 42.12 | 4.32 | 7,155 |
+
+**4. call-census**
+
+| compiler | elm | runtime | kernel | helper | cap | extern | indirect | sites | static-target % |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 13,150,816,972 | 15,490,832,657 | 1,344,138,476 | 2,630,975,144 | 392,614,627 | 0 | 0 | 427,290 | 83.95 |
+| benchmark | 12,502,695,131 | 10,744,722,205 | 1,343,840,927 | 699,576,492 | 640,962,474 | 0 | 0 | 450,194 | 94.34 |
+
+`ECO_INLINE_ALIAS_FORWARD=1` — pre-mono alias forwarding
+(`plans/pre-mono-lss-transforms-04-alias-forwarding.md`, v1): a reference to a parameter-less alias
+definition is rewritten to the same reference to its target before η-expansion. On this corpus it
+forwards 15,343 calls and 1,539 values (`pre-afwd:` — `aliases=351`, of which 189 are kernel
+aliases; 6,050 kernel-alias calls are KEPT because their kernel's ABI is per-occurrence, 57 because
+they are under-applied). Same-source, and the reference rows are the SAME binary as Run 11's, so
+every difference is the workload flag; the benchmark rows are different binaries. **Bootstrap fixed
+point in both arms** (each benchmark emission byte-identical to its reference emission).
+**Emission.** `out.mlir` 13,400,752 → 13,342,049 B (−0.44 %). The pre-mono inliner does 13,175 →
+5,485 inlines and the post-mono one 47,127 → 28,974 (−18,153: the alias wrappers it no longer needs
+to copy); post-inline prune keeps 33,988 → 32,911 specs (−1,077 retired wrappers).
+**Static (group 2).** `declinedBlocked` 2,418 → 7 and `declinedNoInstance` 10,922 → 9,579: a call
+through an alias CAF is an indirect site whose member's only instance is the synthetic wrapper
+(blocked); forwarding makes it a direct call, so the site ceases to exist — consulted sites
+35,800 → 32,212. `stampedPapGlobal` 3,251 → 3,356, `dispatchUpgraded` +42. Coverage 91.13 → 91.11 %
+(`positions` −990 with the retired specs), not a precision change.
+**Dispatch (group 3) — NEUTRAL on `gen`, a tier shift against on the rest.** `gen` 790,275,486 →
+788,985,697 (−0.16 %); but `fast` −21,074,423 (−2.06 %) and `typed` +27,599,398 (+51.8 %), i.e.
+≈1.2 % of the population moved from a stamped direct call to `eco_closure_call_saturated`
+(+22,227,029 in group 4's helper row, with +27,356,864 `eco_gc_push_stack_range` — one per typed
+call). The callee census names the shape: direct calls into `List_map` specs fall 49,493,259 →
+13,007,767 while post-mono `partialMerges` rise 419 → 1,050 — `List.map` is being inlined at the
+forwarded sites and the callback inside the inlined loop is invoked as a typed closure call rather
+than the `fast` stamp it had in the `List_map` spec. Attribution to a site needs the per-`fp`
+dispatch rows symbolized, which this run did not anchor. The reference arm (same binary, flag
+only) moves `sat` +0.04 %: the pass's own work is free.
+**Wall FLAT:** benchmark 526.7 → 521.0 s (−1.1 %), reference 615.4 → 621.0 s (+0.9 %), N=1, under
+the 3 % bar. **Verdict:** not a dispatch win on the arc's counter — the static declines it removes
+were not dynamic weight (the site-count-vs-weight trap, again) and the `fast → typed` shift is
+small but real. The flag stays DEFAULT-OFF pending that shift's attribution.
+
+---
+
+### Run 12a — `aliasForward=1` with post-mono inlining of `List.map`/`List.foldr` blacklisted (2026-09-14; the attribution arm for Run 12's `fast → typed` shift)
+
+| compiler | build | workload | wall (s) | max RSS (kB) | minor GC | major GC | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| reference | `ECO_MONO_ENGINE=subst` (Run 11/12's binary) | solver+LSS, `afwd=1`, `bl=List.map,List.foldr` | 617.2 | — | — | — | — | 13,450,845 |
+| benchmark | solver+LSS, `afwd=1`, `bl=…` | same | 517.9 | — | — | — | — | 13,450,845 |
+
+**3. dispatch-stats** (the only group this arm exists for; groups 1/2/4 in `call-stats.tsv` rows `cs12a-*`)
+
+| compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 2,846,709,395 | 2,789,669,307 | 57,040,088 | 0 | 2,846,709,395 | 0.00 | 98.00 | 2.00 | — |
+| benchmark | 849,847,497 | 791,926,755 | 57,920,742 | 1,023,107,372 | 1,872,954,869 | 54.63 | 42.28 | 3.09 | — |
+
+Same binaries and flags as Run 12 plus `--config` with `inline.blacklist = ["List.map", "List.foldr"]`
+(post-mono inliner only; the `bl=` hash token keeps it cache-disjoint). Bootstrap fixed point holds.
+**It recovers the shift:** against Run 12, `fast` 1,003,485,083 → **1,023,107,372** (+19.6 M of the
+21.1 M lost; Run 11: 1,024,559,506), `typed` 80,851,589 → **57,920,742** (Run 11: 53,252,191),
+`eco_closure_call_saturated` 70.7 M → 48.2 M (Run 11: 48.5 M), `gen` +0.37 % (791.9 M — the
+un-inlined `List_map` specs cost a few million generic calls of their own). `List_map` specs in the
+emission: 895 (Run 11) / 230 (Run 12) / **892** (this arm); the `Canonical.typeEncoderS` site's map
+lambda is `singleton_fast` again with `_pap_prefix = 1`. So ≈93 % of Run 12's `fast → typed` shift
+is the post-mono inliner inlining `List.map`/`foldr` at sites whose callback was stamped inside the
+keyed spec; the residual ≈4.7 M `typed` is the same effect at other HOFs that crossed the budget
+(`Tuple.mapSecond`, `Basics.composeL`, `Dict.foldr`, …) and were not blacklisted. The blacklist is
+the attribution instrument, not the fix: it also blocks the `map`/`foldr` inlines Run 11 performed
+(`out.mlir` +0.37 % vs Run 11), which a stamp-aware guard would keep. Mechanism and evidence:
+`plans/pre-mono-lss-transforms-04-alias-forwarding.md` §7.1.
+
+---
+
+### Run 13 — defaults on the CGEN_080-fixed compiler, `aliasForward=0` (2026-09-14)
+
+| compiler | build | workload | wall (s) | max RSS (kB) | minor GC | major GC | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| reference | `ECO_MONO_ENGINE=subst` (this tree, CGEN_080 fix) | solver+LSS, `afwd=0` | 611.2 | 14,521,632 | 2245 | 11 | 22,865 | 13,427,210 |
+| benchmark | solver+LSS, `afwd=0` | solver+LSS, `afwd=0` | 525.9 | 14,552,240 | 2252 | 11 | 22,917 | 13,427,210 |
+
+**1. lss-coverage**
+
+| compiler | positions | singleton `k1` | multi `kN` | `var` | `⊤` | partial | coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| reference | 149,391 | 101,457 (67.91 %) | 34,677 (23.21 %) | 12,111 (8.11 %) | 1,089 (0.73 %) | 57 (0.04 %) | 91.13 % |
+| benchmark | 149,391 | 101,457 (67.91 %) | 34,677 (23.21 %) | 12,111 (8.11 %) | 1,089 (0.73 %) | 57 (0.04 %) | 91.13 % |
+
+**2. lss-stamping**
+
+| compiler | dispatchUpgraded | stampedPapGlobal | stampedStaged | stampedPapPrefix | noInstance | blocked | bodyMismatch | shape | abiMismatch | devirtPost fn/ctor/noSpec/ambiguous | multiInstanceGroups |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 16,726 | 3,251 | 204 | 12 | 10,922 | 2,418 | 1,267 | 650 | 353 | 67/310/0/9 | 1,784 |
+| benchmark | 16,726 | 3,251 | 204 | 12 | 10,922 | 2,418 | 1,267 | 650 | 353 | 67/310/0/9 | 1,784 |
+
+**3. dispatch-stats**
+
+| compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 2,846,785,989 | 2,789,300,512 | 57,485,477 | 0 | 2,846,785,989 | 0.00 | 97.98 | 2.02 | 6,799 |
+| benchmark | 827,268,339 | 790,554,966 | 36,713,373 | 1,041,434,851 | 1,868,703,190 | 55.73 | 42.31 | 1.96 | 7,105 |
+
+**4. call-census**
+
+| compiler | elm | runtime | kernel | helper | cap | extern | indirect | sites | static-target % |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 13,161,647,325 | 15,489,926,657 | 1,347,022,677 | 2,629,400,585 | 391,098,558 | 0 | 0 | 427,301 | 83.96 |
+| benchmark | 12,552,368,296 | 10,655,701,814 | 1,346,725,326 | 655,896,982 | 647,149,917 | 0 | 0 | 452,934 | 94.62 |
+
+The CGEN_080 emission fix (`Expr.generateCall` consults the AbiCloning stamp on the
+`CallDirectKnownSegmentation` single-stage-saturated branch for closure-valued callees;
+`plans/pre-mono-lss-transforms-04-alias-forwarding.md` §7.2) at the DEFAULT flags — the control
+for Run 14 and the fix's own A/B against Run 11 (same source apart from the fix's own arm, same
+flags, same seed). Static groups 1/2 are identical to Run 11 to the digit (`dispatchUpgraded` +3 =
+the fix's code in the corpus): the fix is emission-only. Emission: `singleton_fast` 12,559 →
+15,225 (+2,666), `direct_known_segmentation` 8,461 → 5,795 (−2,666), `eco.call` and `papCreate`
+unchanged — zero direct calls diverted (the first cut of the fix diverted 4,691 and was narrowed
+before this run). **Dispatch:** `typed` 53,252,191 → **36,713,373 (−31 %)**, `fast` +16,875,345,
+`gen` +0.04 % (noise), `eco_closure_call_saturated` −14.8 M, runtime calls −38.7 M (one GC
+stack-range push per typed call). Wall 526.7 → 525.9 s, flat. Bootstrap fixed point holds. Both
+arms carry `ECO_INLINE_REPORT=1` as Runs 11/12 do.
+
+### Run 14 — CGEN_080-fixed compiler + `aliasForward=1` (2026-09-14)
+
+| compiler | build | workload | wall (s) | max RSS (kB) | minor GC | major GC | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| reference | `ECO_MONO_ENGINE=subst` (this tree, CGEN_080 fix) | solver+LSS, `afwd=1` | 617.6 | 14,504,896 | 2242 | 11 | 22,865 | 13,379,444 |
+| benchmark | solver+LSS, `afwd=1` | solver+LSS, `afwd=1` | 520.7 | 14,551,076 | 2251 | 11 | 22,955 | 13,379,444 |
+
+**1. lss-coverage**
+
+| compiler | positions | singleton `k1` | multi `kN` | `var` | `⊤` | partial | coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| reference | 148,401 | 100,600 (67.79 %) | 34,608 (23.32 %) | 12,074 (8.14 %) | 1,088 (0.73 %) | 31 (0.02 %) | 91.11 % |
+| benchmark | 148,401 | 100,600 (67.79 %) | 34,608 (23.32 %) | 12,074 (8.14 %) | 1,088 (0.73 %) | 31 (0.02 %) | 91.11 % |
+
+**2. lss-stamping**
+
+| compiler | dispatchUpgraded | stampedPapGlobal | stampedStaged | stampedPapPrefix | noInstance | blocked | bodyMismatch | shape | abiMismatch | devirtPost fn/ctor/noSpec/ambiguous | multiInstanceGroups |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 16,768 | 3,356 | 206 | 12 | 9,579 | 7 | 1,280 | 649 | 358 | 67/310/0/9 | 1,736 |
+| benchmark | 16,768 | 3,356 | 206 | 12 | 9,579 | 7 | 1,280 | 649 | 358 | 67/310/0/9 | 1,736 |
+
+**3. dispatch-stats**
+
+| compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 2,847,844,768 | 2,790,660,359 | 57,184,409 | 0 | 2,847,844,768 | 0.00 | 97.99 | 2.01 | 6,799 |
+| benchmark | 827,582,838 | 789,273,265 | 38,309,573 | 1,046,384,077 | 1,873,966,915 | 55.84 | 42.12 | 2.04 | 7,126 |
+
+**4. call-census**
+
+| compiler | elm | runtime | kernel | helper | cap | extern | indirect | sites | static-target % |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 13,154,673,488 | 15,487,413,337 | 1,344,436,624 | 2,631,707,619 | 392,744,035 | 0 | 0 | 427,301 | 83.95 |
+| benchmark | 12,506,586,893 | 10,655,051,892 | 1,344,139,038 | 657,251,158 | 648,504,715 | 0 | 0 | 449,172 | 94.60 |
+
+`ECO_INLINE_ALIAS_FORWARD=1` on the fixed compiler — the flip decision for pre-mono alias
+forwarding, re-measured now that the emission gap it exposed is closed. Same binaries' seed and
+flags as Run 13; static groups identical to Run 12 to the digit (`dispatchUpgraded` +3).
+**Against Run 13 (the only comparison that decides the flip):** `gen` 790,554,966 → **789,273,265
+(−0.16 %)**, `fast` +4,949,226, `typed` +1,596,200 (the residual of what was +27.6 M in Run 12 vs
+11), `elm` direct calls −45.8 M (the inlined `List.map`/`foldr` specs), wall 525.9 → 520.7 s
+(−1.0 %, noise), `out.mlir` −47,766 B (−0.36 %), specs kept 33,988 → 32,911, post-mono inlines
+47,127 → 28,974. **Against Run 12 (the fix under forwarding):** `typed` −42,542,016, `fast`
++42,898,994, runtime calls −89.7 M — the forwarding arm had MORE stamped-but-typed sites than the
+default arm, which is why it surfaced the gap. **Against Run 11 (both changes vs the pre-change
+default):** `fast` +21.8 M, `typed` −14.9 M, `gen` −1.0 M, `out.mlir` −21,308 B. Verdict: with
+CGEN_080 in place, forwarding is neutral-to-positive on every dispatch counter and negative on
+nothing measured; the flip is the user's call. Bootstrap fixed point holds in both arms.
+**FLIPPED DEFAULT-ON 2026-09-14** after the full `guides/bootstrap.md` chain at the new default: Gate A
+1727/1727, Stage 4b JS fixed point, Gate B 893/895 (the two are AOT-harness gaps — FLAGS directive
+and port echo unimplemented in `aot_e2e_main.cpp` — and reproduce with the flag off), Stage 8c
+`eco-compiler-boot == eco-compiler-boot-2` byte-identical, Stage 9b self-compile OK. The bootstrapped
+artifact is this row's emission plus the flipped `Config.default` literal (a 4-line diff).
+
+---
+
 ## Summary
 
 Run 1's rows come from a MISCOMPILING benchmark binary (see the retraction under that run) and
@@ -630,6 +878,14 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 9 | prune=1 | benchmark | 148838 | 101254 | 34597 | 11843 | 1087 | 57 | 91.27 |
 | 10 | prune=0 | reference | 148838 | 101254 | 34597 | 11843 | 1087 | 57 | 91.27 |
 | 10 | prune=0 | benchmark | 148838 | 101254 | 34597 | 11843 | 1087 | 57 | 91.27 |
+| 11 | afwd=0 | reference | 149391 | 101457 | 34677 | 12111 | 1089 | 57 | 91.13 |
+| 11 | afwd=0 | benchmark | 149391 | 101457 | 34677 | 12111 | 1089 | 57 | 91.13 |
+| 12 | afwd=1 | reference | 148401 | 100600 | 34608 | 12074 | 1088 | 31 | 91.11 |
+| 12 | afwd=1 | benchmark | 148401 | 100600 | 34608 | 12074 | 1088 | 31 | 91.11 |
+| 13 | fix afwd=0 | reference | 149391 | 101457 | 34677 | 12111 | 1089 | 57 | 91.13 |
+| 13 | fix afwd=0 | benchmark | 149391 | 101457 | 34677 | 12111 | 1089 | 57 | 91.13 |
+| 14 | fix afwd=1 | reference | 148401 | 100600 | 34608 | 12074 | 1088 | 31 | 91.11 |
+| 14 | fix afwd=1 | benchmark | 148401 | 100600 | 34608 | 12074 | 1088 | 31 | 91.11 |
 
 ### 2. lss-stamping
 
@@ -655,6 +911,14 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 9 | prune=1 | benchmark | 16673 | 3251 | 204 | 12 | 10917 | 2418 | 1263 | 650 | 353 | 67 | 310 | 0 | 9 | 1783 |
 | 10 | prune=0 | reference | 18139 | 3722 | 204 | 15 | 14662 | 4084 | 1280 | 696 | 364 | 108 | 307 | 0 | 14 | 3667 |
 | 10 | prune=0 | benchmark | 18139 | 3722 | 204 | 15 | 14662 | 4084 | 1280 | 696 | 364 | 108 | 307 | 0 | 14 | 3667 |
+| 11 | afwd=0 | reference | 16723 | 3251 | 204 | 12 | 10922 | 2418 | 1267 | 650 | 353 | 67 | 310 | 0 | 9 | 1784 |
+| 11 | afwd=0 | benchmark | 16723 | 3251 | 204 | 12 | 10922 | 2418 | 1267 | 650 | 353 | 67 | 310 | 0 | 9 | 1784 |
+| 12 | afwd=1 | reference | 16765 | 3356 | 206 | 12 | 9579 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
+| 12 | afwd=1 | benchmark | 16765 | 3356 | 206 | 12 | 9579 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
+| 13 | fix afwd=0 | reference | 16726 | 3251 | 204 | 12 | 10922 | 2418 | 1267 | 650 | 353 | 67 | 310 | 0 | 9 | 1784 |
+| 13 | fix afwd=0 | benchmark | 16726 | 3251 | 204 | 12 | 10922 | 2418 | 1267 | 650 | 353 | 67 | 310 | 0 | 9 | 1784 |
+| 14 | fix afwd=1 | reference | 16768 | 3356 | 206 | 12 | 9579 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
+| 14 | fix afwd=1 | benchmark | 16768 | 3356 | 206 | 12 | 9579 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
 
 ### 3. dispatch-stats
 
@@ -680,6 +944,16 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 9 | prune=1 | benchmark | 841170945 | 788053933 | 53117012 | 1020914791 | 1862085736 | 54.83 | 42.32 | 2.85 | 7084 |
 | 10 | prune=0 | reference | 2849654112 | 2791361696 | 58292416 | 0 | 2849654112 | 0.00 | 97.95 | 2.05 | 6769 |
 | 10 | prune=0 | benchmark | 846220006 | 792398093 | 53821913 | 1025515992 | 1871735998 | 54.79 | 42.33 | 2.88 | 7042 |
+| 11 | afwd=0 | reference | 2846000950 | 2788516387 | 57484563 | 0 | 2846000950 | 0.00 | 97.98 | 2.02 | 6825 |
+| 11 | afwd=0 | benchmark | 843527677 | 790275486 | 53252191 | 1024559506 | 1868087183 | 54.85 | 42.30 | 2.85 | 7076 |
+| 12 | afwd=1 | reference | 2847026669 | 2789843180 | 57183489 | 0 | 2847026669 | 0.00 | 97.99 | 2.01 | 6799 |
+| 12 | afwd=1 | benchmark | 869837286 | 788985697 | 80851589 | 1003485083 | 1873322369 | 53.57 | 42.12 | 4.32 | 7155 |
+| 12a | afwd=1 bl=map,foldr | reference | 2846709395 | 2789669307 | 57040088 | 0 | 2846709395 | 0.00 | 98.00 | 2.00 | — |
+| 12a | afwd=1 bl=map,foldr | benchmark | 849847497 | 791926755 | 57920742 | 1023107372 | 1872954869 | 54.63 | 42.28 | 3.09 | — |
+| 13 | fix afwd=0 | reference | 2846785989 | 2789300512 | 57485477 | 0 | 2846785989 | 0.00 | 97.98 | 2.02 | 6799 |
+| 13 | fix afwd=0 | benchmark | 827268339 | 790554966 | 36713373 | 1041434851 | 1868703190 | 55.73 | 42.31 | 1.96 | 7105 |
+| 14 | fix afwd=1 | reference | 2847844768 | 2790660359 | 57184409 | 0 | 2847844768 | 0.00 | 97.99 | 2.01 | 6799 |
+| 14 | fix afwd=1 | benchmark | 827582838 | 789273265 | 38309573 | 1046384077 | 1873966915 | 55.84 | 42.12 | 2.04 | 7126 |
 
 ### 4. call-census
 
@@ -705,3 +979,11 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 9 | prune=1 | benchmark | 12519807433 | 10668746638 | 1341951729 | 670280160 | 639482456 | 0 | 0 | 452342 | 94.52 |
 | 10 | prune=0 | reference | 13172761634 | 15571592867 | 1346858413 | 2632402101 | 392193141 | 0 | 0 | 425999 | 83.96 |
 | 10 | prune=0 | benchmark | 12566436246 | 10769869809 | 1346562330 | 674817647 | 642717495 | 0 | 0 | 452342 | 94.51 |
+| 11 | afwd=0 | reference | 13157883332 | 15494472948 | 1346735886 | 2628698072 | 390971563 | 0 | 0 | 427290 | 83.96 |
+| 11 | afwd=0 | benchmark | 12548622690 | 10694441176 | 1346438461 | 672224167 | 641423893 | 0 | 0 | 453685 | 94.52 |
+| 12 | afwd=1 | reference | 13150816972 | 15490832657 | 1344138476 | 2630975144 | 392614627 | 0 | 0 | 427290 | 83.95 |
+| 12 | afwd=1 | benchmark | 12502695131 | 10744722205 | 1343840927 | 699576492 | 640962474 | 0 | 0 | 450194 | 94.34 |
+| 13 | fix afwd=0 | reference | 13161647325 | 15489926657 | 1347022677 | 2629400585 | 391098558 | 0 | 0 | 427301 | 83.96 |
+| 13 | fix afwd=0 | benchmark | 12552368296 | 10655701814 | 1346725326 | 655896982 | 647149917 | 0 | 0 | 452934 | 94.62 |
+| 14 | fix afwd=1 | reference | 13154673488 | 15487413337 | 1344436624 | 2631707619 | 392744035 | 0 | 0 | 427301 | 83.95 |
+| 14 | fix afwd=1 | benchmark | 12506586893 | 10655051892 | 1344139038 | 657251158 | 648504715 | 0 | 0 | 449172 | 94.60 |

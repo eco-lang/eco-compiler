@@ -1094,6 +1094,26 @@ type alias InlineConfig =
     , kernelCostGcLeaf : Int -- cost of a CGcLeaf kernel call: no Elm GC, no C++ heap traffic, no callback
     , kernelCostAlloc : Int -- cost of a CAlloc kernel call: allocates on the Elm or C++ heap
     , kernelCostHof : Int -- cost of a CHof kernel call: re-enters Elm through a user closure
+
+    -- PRE-MONO ALIAS FORWARDING
+    -- (plans/pre-mono-lss-transforms-04-alias-forwarding.md). A reference to a
+    -- parameter-less ALIAS definition (`Basics.add = Elm.Kernel.Basics.add`,
+    -- `Doc.fromChars = P.text`) is rewritten to the same reference to its
+    -- target, caller meta kept: reference substitution, no type reasoning, no
+    -- minting. 53 % of the post-mono inliner's self-compile inlines are these
+    -- wrappers, which the pre-mono inliner cannot see (`bodyOf` admits
+    -- `Function` bodies only). Kernel-target CALLS forward only when exactly
+    -- saturated (§3.2 amendment: an under-applied call is the `p|` producer
+    -- site), kernel-target VALUES are kept in v1 (R6). Runs FIRST after
+    -- `AssignMVarIds`, before η-expansion. Artifact-affecting; hash token
+    -- `afwd=`; env `ECO_INLINE_ALIAS_FORWARD=0|1`. DEFAULT-ON since 2026-09-14:
+    -- benchmarks/call-stats.md Run 14 vs 13 on the CGEN_080-fixed compiler —
+    -- generic dispatch −0.16 %, `fast` +4.9 M, `typed` +1.6 M, `out.mlir`
+    -- −0.36 %, 1,077 wrapper specs retired, wall flat; E2E 1727/1727 both arms.
+    -- The `fast → typed` shift the first measurement showed (Runs 11/12) was
+    -- an emission gap this pass surfaced, not caused (plan §7.1-7.2). `=0`
+    -- turns it off.
+    , aliasForward : Bool
     }
 
 
@@ -1194,6 +1214,7 @@ default =
         , kernelCostGcLeaf = 4
         , kernelCostAlloc = 8
         , kernelCostHof = 20
+        , aliasForward = True
         }
     , callPurityAttrs = True
     , cse = { enabled = False, report = False, minCost = 5, maxPerDef = 64 }
@@ -1311,6 +1332,7 @@ inlineDecoder =
         |> D.apply (D.optionalField "kernelCostGcLeaf" D.int default.inline.kernelCostGcLeaf)
         |> D.apply (D.optionalField "kernelCostAlloc" D.int default.inline.kernelCostAlloc)
         |> D.apply (D.optionalField "kernelCostHof" D.int default.inline.kernelCostHof)
+        |> D.apply (D.optionalField "aliasForward" D.bool default.inline.aliasForward)
 
 
 bytesFusionDecoder : D.Decoder x BytesFusionConfig
@@ -1582,6 +1604,13 @@ hash cfg =
                     "0"
                )
          , "etaOnly=" ++ String.join "," cfg.inline.etaOnly
+         , "afwd="
+            ++ (if cfg.inline.aliasForward then
+                    "1"
+
+                else
+                    "0"
+               )
          , "wl=" ++ String.join "," cfg.inline.whitelist
          , "bl=" ++ String.join "," cfg.inline.blacklist
          , "mpf=" ++ String.fromInt cfg.inline.maxPerFunction

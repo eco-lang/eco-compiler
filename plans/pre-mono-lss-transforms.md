@@ -8,7 +8,7 @@
 | 1 | `pre-mono-lss-transforms-01-eta-expand-to-declared-arity.md` | **BUILT, DEFAULT-OFF (Sep 10)** — reproduces the hand rewrite line-for-line; BLOCKED on a pre-existing miscompile it exposes (`/work/combinator-uf-devirt-error.md`). See its §9 |
 | 2 | `pre-mono-lss-transforms-02-inline-preserve-sets.md` | ready; independent of items 0/1/3/4/5 |
 | 3 | `pre-mono-lss-transforms-03-lift-closed-lambda-args.md` | **CLOSED UNBUILT** (2026-09-12) — census ran: all 1,758 `g1absentl` are POST-mono artifacts (1,146 loopify, 612 other reshapes, **0 genuine**; they vanish at `postMono=0`), so a pre-mono lift repairs nothing. Site count inversely ranked to weight AGAIN: `List.foldl` = 60 % of sites, 0.66 % of dispatch; `IO.andThen`/`IO.map` = 10.6 % of sites, 24.95 %. See its §11 |
-| 4 | `pre-mono-lss-transforms-04-alias-forwarding.md` | ready; kernel-alias VALUES in argument position deferred to v2 |
+| 4 | `pre-mono-lss-transforms-04-alias-forwarding.md` | **BUILT, DEFAULT-ON (2026-09-14)** — 15,343 calls + 1,539 values forwarded on the self-compile; measuring it found and fixed a pre-existing emission gap (`CGEN_080`: AbiCloning stamps discarded on `CallDirectKnownSegmentation` closure calls, ≈17 M fast dispatches/compile at the defaults); with the fix, `gen` −0.16 %, `fast` +4.9 M, `out.mlir` −0.36 %, wall flat; bootstrap 8c fixed point byte-identical. Kernel-alias VALUES (v2, §10) still deferred |
 | 5 | `pre-mono-lss-transforms-05-determines-caller-binders.md` | ready; step 0 is the 1,865 / 864 baseline check |
 
 Two facts established while lowering, recorded once here so the children can cite them: (a)

@@ -79,14 +79,15 @@ import Compiler.GlobalOpt.MapTemplate as MapTemplate
 import Compiler.GlobalOpt.MonoCse as MonoCse
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
+import Compiler.GlobalOpt.PreMono.AliasForward as AliasForward
 import Compiler.GlobalOpt.PreMono.EtaExpand as EtaExpand
-import Compiler.GlobalOpt.PreMono.LiftClosedArgs as LiftClosedArgs
 import Compiler.GlobalOpt.PreMono.Fresh as Fresh
+import Compiler.GlobalOpt.PreMono.LiftClosedArgs as LiftClosedArgs
 import Compiler.MonoSolver.Diff as MonoDiff
 import Compiler.MonoSolver.Monomorphize as MonoSolver
 import Compiler.Monomorphize.EntryPrep as EntryPrep
-import Compiler.Monomorphize.Monomorphize as Monomorphize
 import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Compiler.Monomorphize.Monomorphize as Monomorphize
 import Compiler.Monomorphize.Prune as Prune
 import Compiler.Monomorphize.ValidateLayout as ValidateLayout
 import Compiler.Nitpick.Debug as Nitpick
@@ -755,8 +756,38 @@ runMonoOptPipeline ecoConfig stats typedGraph globalTypeEnv =
         -- pre-mono passes: anything they create or copy must mint through
         -- `PreMono.Fresh`, and `validateMinted` checks that under
         -- `mono.validate`.
-        assigned0 =
+        assignedRaw =
             EntryPrep.assign (assignFlagsFor ecoConfig) "main" typedGraph
+
+        -- PRE-MONO ALIAS FORWARDING
+        -- (plans/pre-mono-lss-transforms-04-alias-forwarding.md §3.6). Slot 2:
+        -- FIRST after assignment, before η-expansion — item 1 reads the
+        -- callee's declared arity, and after forwarding that is the target's.
+        -- DEFAULT-ON since 2026-09-14 (call-stats Run 14); `ECO_INLINE_ALIAS_FORWARD=0`
+        -- turns it off. With the flag
+        -- off and `inline.report` on it runs as a CENSUS and returns the graph
+        -- untouched (`pre-afwd-census:`); with both off it is not called.
+        -- The pass mints nothing, so the id allocator passes through.
+        ( assigned0, afwdMetrics ) =
+            if ecoConfig.inline.aliasForward || ecoConfig.inline.report then
+                let
+                    ( gAfwd, stateAfwd, metrics ) =
+                        AliasForward.run ecoConfig.inline assignedRaw.mvarState assignedRaw.graph
+                in
+                ( { assignedRaw | graph = gAfwd, mvarState = stateAfwd }, metrics )
+
+            else
+                ( assignedRaw, AliasForward.emptyMetrics )
+
+        preAfwdReport =
+            if ecoConfig.inline.report then
+                Task.io
+                    (System.IO.writeLn System.IO.stderr
+                        (renderPreAliasForwardReport ecoConfig.inline.aliasForward afwdMetrics)
+                    )
+
+            else
+                Task.succeed ()
 
         -- PRE-MONO ETA EXPANSION
         -- (plans/pre-mono-lss-transforms-01-eta-expand-to-declared-arity.md).
@@ -835,7 +866,8 @@ runMonoOptPipeline ecoConfig stats typedGraph globalTypeEnv =
             else
                 Task.succeed ()
     in
-    preEtaReport
+    preAfwdReport
+        |> Task.andThen (\_ -> preEtaReport)
         |> Task.andThen (\_ -> preInlineReport)
         |> Task.andThen (\_ -> preLiftReport)
         |> Task.andThen (\_ -> validateMinted ecoConfig assigned1)
@@ -1139,6 +1171,66 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
         )
         -- Hand off to a separate function so monoGraph0 goes out of scope
         |> Task.andThen (runGlobalOptPhase ecoConfig ecoConfig.mono.lss.report ecoConfig.list.report ecoConfig.borrow ecoConfig.cafMemo ecoConfig.cse stats)
+
+
+{-| Census line for pre-mono alias forwarding
+(`plans/pre-mono-lss-transforms-04-alias-forwarding.md` §7).
+
+`pre-afwd-census:` when the flag is off (the map was built and the walk
+counted, nothing was rewritten) and `pre-afwd:` when it is on, so a log cannot
+be misread as evidence that the rewrite happened.
+
+-}
+renderPreAliasForwardReport : Bool -> AliasForward.Metrics -> String
+renderPreAliasForwardReport enabled m =
+    let
+        topTargets =
+            Dict.toList m.byTarget
+                |> List.sortBy (\( _, n ) -> negate n)
+                |> List.take 20
+                |> List.map (\( name, n ) -> name ++ "=" ++ String.fromInt n)
+                |> String.join " "
+
+        prefix =
+            if enabled then
+                "pre-afwd: "
+
+            else
+                "pre-afwd-census: "
+    in
+    prefix
+        ++ "aliases="
+        ++ String.fromInt m.aliases
+        ++ " globalTargets="
+        ++ String.fromInt m.globalTargets
+        ++ " kernelTargets="
+        ++ String.fromInt m.kernelTargets
+        ++ " chainsMax="
+        ++ String.fromInt m.chainsMax
+        ++ " cycles="
+        ++ String.fromInt m.cycles
+        ++ " callsRewritten="
+        ++ String.fromInt m.callsRewritten
+        ++ " callsRewrittenKernel="
+        ++ String.fromInt m.callsRewrittenKernel
+        ++ " callsKeptKernelPartial="
+        ++ String.fromInt m.callsKeptKernelPartial
+        ++ " callsKeptKernelOver="
+        ++ String.fromInt m.callsKeptKernelOver
+        ++ " callsKeptKernelPoly="
+        ++ String.fromInt m.callsKeptKernelPoly
+        ++ " callsKeptKernelMeta="
+        ++ String.fromInt m.callsKeptKernelMeta
+        ++ " argRefsRewritten="
+        ++ String.fromInt m.argRefsRewritten
+        ++ " argRefsKeptKernel="
+        ++ String.fromInt m.argRefsKeptKernel
+        ++ " depsExtended="
+        ++ String.fromInt m.depsExtended
+        ++ " bodiesSeen="
+        ++ String.fromInt m.bodiesSeen
+        ++ "\n  top: "
+        ++ topTargets
 
 
 {-| Census line for pre-mono η-expansion
