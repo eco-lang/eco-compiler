@@ -54,6 +54,17 @@ no-static-lld fallback now writes the build lld into the cache with FORCE, so th
 install scope sees the value instead of the stale find_program result.
 ```
 
+## Footers
+
+- **Never add tool or assistant attribution trailers.** No `Co-Authored-By:` naming an AI
+  assistant, no `Claude-Session:` or similar session link, no "Generated with …" line. A commit
+  message records what changed and why; which editor, agent, or keyboard produced it is not part
+  of that record, and such trailers add a line to every `git log` and a phantom author to
+  `git shortlog -sn` without telling a future reader anything they can act on. Author identity
+  belongs in the commit's author field, which git already sets.
+- Real trailers stay: `Co-Authored-By:` for a human co-author who shaped the change, and
+  `Signed-off-by:` where a contribution requires the sign-off.
+
 ## Quick checklist
 
 - [ ] Subject is an imperative phrase, capitalized, no period, ≲70 chars.
@@ -62,3 +73,5 @@ install scope sees the value instead of the stale find_program result.
 - [ ] Body wrapped at 100 columns, present tense.
 - [ ] Each distinct concern is its own paragraph.
 - [ ] The *why* is stated wherever it isn't obvious from the diff.
+- [ ] No tool or assistant attribution trailer (`Co-Authored-By:` an AI, `Claude-Session:`,
+      "Generated with …").
