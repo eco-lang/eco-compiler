@@ -826,9 +826,10 @@ runMonoOptPipeline ecoConfig stats typedGraph globalTypeEnv =
             else
                 Task.succeed ()
 
-        -- PRE-MONO inliner (plans/pre-mono-inline-simplify.md). Default OFF;
-        -- `ECO_INLINE_PRE_MONO=1` is the EARLY arm of the position A/B, which
-        -- pairs it with `ECO_INLINE_POST_MONO=0`.
+        -- PRE-MONO inliner (plans/pre-mono-inline-simplify.md). DEFAULT-OFF
+        -- again since 2026-09-15 (call-stats Runs 17-20: +0.29 % generic
+        -- dispatch for 484 bytes, after `aliasForward` took over its
+        -- population); `ECO_INLINE_PRE_MONO=1` turns it on.
         ( assigned1, preInlineMetrics ) =
             if ecoConfig.inline.preMono then
                 let

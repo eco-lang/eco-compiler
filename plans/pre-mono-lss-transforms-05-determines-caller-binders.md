@@ -1,6 +1,9 @@
 # Pre-mono LSS transforms — 05: `determines` accepts caller-binder bindings
 
-**Status:** IMPLEMENTATION-READY (2026-09-10). Item 5 of `plans/pre-mono-lss-transforms.md`.
+**Status:** **§2.5 BUILT DEFAULT-OFF and MEASURED-OUT; §2.1+§2.4 CLOSED UNBUILT (2026-09-14).**
+The two classes this plan targets are cold: §2.5's recovers 136 sites for a 3-byte `out.mlir` move
+and flat dispatch (`benchmarks/call-stats.md` Runs 15/16), and §2.1's population is 0.0001 % of the
+runtime's calls. See §10. Item 5 of `plans/pre-mono-lss-transforms.md`.
 Assumes item 0 (`AssignMVarIds` before the inliner; `TOpt.Expr TypeIds.MVarId`; `Fresh.freshenCopy`)
 has landed. §8 says what changes if it is built on the `Name`-typed tree instead.
 
@@ -17,6 +20,97 @@ classifier, which already threads the caller's binders from `AnnotationsByGlobal
 the baseline of **1,865 inlines / 864 undetermined**. Line numbers cited as `:NNN` below are from
 the §12-state file where a function is unchanged by §16/Q1; functions that §16/Q1 changed are cited
 by name — re-verify lines against the tree when implementing.
+
+## 10. Outcome (2026-09-14): measured-out
+
+**§2.5 was built, measured and then REMOVED (2026-09-15).** It shipped briefly behind
+`inline.skipRefMetas` (`srm=`, `ECO_INLINE_SKIP_REF_METAS`, default-off) as a separate
+`determinableTypeVars` collector feeding `Candidate.determineVars`, with the candidate-level guards
+keeping the full `candidateTypeVars` set (§2.5's correction — `polyKernel`'s first conjunct); unit
+`InlineSimplifyRefMetasTest` 7/7 and a flag-off census reproducing the baseline to the digit. Given
+the result below, the flag, the collector and the test were deleted rather than left as dead weight:
+a default-off flag nobody will turn on is config surface with a maintenance cost and no user. What
+survives is this section, `benchmarks/call-stats.md` Runs 15/16, and a comment on
+`candidateTypeVars` recording the `polyKernel` trap for anyone who re-attempts it.
+
+| self-compile, shipping defaults | `srm=0` | `srm=1` |
+|---|---:|---:|
+| pre-mono `inlined` | 5,487 | 5,521 (**+34**) |
+| `undetermined` | 1,877 | 1,741 |
+| — `undLeak` (`annBinders = 0`) | 136 | **0** |
+| — `undBodyOnly` | 997 | **861** |
+| — `undLocal` | 216 | 216 |
+| `out.mlir` | 13,384,421 | 13,384,418 (**−3 B**) |
+| dispatch `gen` (benchmark arm) | 790,211,433 | 790,227,831 (**+0.002 %**) |
+
+**The §0 recalibration below was WRONG and §1's original estimate was right.** §0 predicted
+`undBodyOnly → 0` from the claim that a class-1 variable must be a reference meta. The converse does
+not hold: the flag recovered exactly the `undLeak` subset — callees whose OWN signature is
+monomorphic — and none of the 861 in polymorphic callees, where the offending variable sits on a
+non-reference node. §1's "≈150 (148 `undLeak` + part of body-only)" was accurate. Kept below rather
+than deleted: the class-correspondence argument is the kind that reads as proof and is not.
+
+**Both target classes are COLD, which closes §2.1/§2.4.** The 861 survivors are
+`Pretty.softlines` (803), `words` (39), `a` (19); `Pretty_*` executes **26 times in 12.5 e9 elm
+calls** per self-compile. And §2.1's own population: the top 18 `undCallerPoly` hosts are 528 of its
+664 sites and account for **17,180 of 15.19 e9 calls (0.0001 %)** — `Combine.app`,
+`Utils.Crash.crash`, `Array.length`, `Parser.Advanced.*`, `Dict.isEmpty`, `Tuple.second`. Most read
+ZERO because `MonoInlineSimplify` already eliminates them downstream, which is also why +34 pre-mono
+inlines moved 3 bytes. **Site count inversely ranked to weight, sixth occurrence in this arc.**
+
+So §2.1 would buy a few hundred bytes of `out.mlir` at best, while carrying the §2.4 `bottomShaped`
+guard — a SYNTACTIC proxy for a kernel-ABI hazard that item 4 demonstrated live twice on the same
+day (`Kernel signature mismatch for Elm_Kernel_Scheduler_succeed`, and the port-encoder placeholder
+meta). Not worth the risk for the return. **Recommendation: leave `skipRefMetas` default-off as a
+recorded negative result, and do not build §2.1/§2.4.** What remains open in this area is
+`overBudget = 4,804` (2.5× the whole `undetermined` population) — a cost-model question this plan
+does not address, and the only one of the three that has not been priced.
+
+## 0. Baseline recalibration (2026-09-14) — §1's numbers are stale
+
+§1 and §6 are written against the **EARLY arm** (`preMono=1 postMono=0`) of the Sep-10 tree, and
+step 0's gate demands `inlined=1,865 undetermined=864` "to the digit". That tree no longer exists:
+`postMono` went default-ON additively (Sep 11), `etaExpand` default-ON (Sep 11), `preserveSets` and
+`pruneDead` (Sep 12-13), `aliasForward` (Sep 14), and the corpus — the compiler's own source — grew.
+Today's census, shipping defaults:
+
+| | plan's baseline (Sep 10, EARLY) | today `afwd=0` | today `afwd=1` (shipping) |
+|---|---:|---:|---:|
+| `inlined` | 1,865 | 13,175 | **5,485** |
+| `undetermined` | 864 | 1,930 | **1,877** |
+| — `undCallerPoly` (§2.1 target) | 520 | 668 | **664** |
+| — `undLocal` (stays by design) | 188 | 216 | **216** |
+| — `undBodyOnly` (§2.5 target) | 156 | 1,046 | **997** |
+| — `undLeak` (⊆ bodyOnly) | 148 | 271 | 136 |
+| `overBudget` | — | 4,802 | **4,804** (11-15: 553, 16-25: 847, 26-50: 1,300, >50: 2,104) |
+
+Three things follow, and they change what this plan is worth:
+
+1. **§2.5 (R2) is now the larger half, not the smaller one.** It was 156 sites against 520; it is
+   **997 against 664**. Its "≈150" estimate is stale by 6.6×.
+2. **The two classes are disjoint, and R2's is exactly `undBodyOnly`** — provable from
+   `censusUndetermined`, not merely estimated. It classifies each OFFENDING variable by what the
+   call site `offered` it: `[]` ⇒ 1, all-caller-binders ⇒ 0, otherwise ⇒ 2; the site takes the MAX.
+   A variable occurring only in reference metas is in no parameter type, not in the result and not
+   in `subst`, so `offered` is `[]` and its class is ALWAYS 1. R2's population is therefore the 997,
+   and after it lands each such site either becomes an inline or is reclassified `undCallerPoly` —
+   it cannot become `undLocal` (a class-2 variable would already have taken the max).
+   **Falsifiable prediction: `undBodyOnly = 0`, `undLocal = 216` unchanged.**
+3. **Every recovered decline is one inline.** `determines` is the last gate in `tryInline`
+   (arity check → `callSiteSubst` → `determines` → `doInline`), so recovery maps 1:1 within a round.
+
+Recalibrated ceiling: **≈997 inlines from §2.5** and **≈600 from §2.1** (664 minus the bottom-shaped
+sites §2.4 removes), against a base of 5,485 — not §6's "+450 then +150".
+
+**The class is concentrated**: `undBodyOnlyByCallee` puts **803 of the 997 in one callee**,
+`the-sett/elm-pretty-printer:Pretty.softlines`, whose source is `softlines = join softline` — a
+point-free alias that item 1's η-expansion turns into a one-parameter candidate whose body holds two
+generic reference metas (`join : Doc ?t -> List (Doc ?t) -> Doc ?t`, `softline : Doc ?t`). Neither
+`?t` is the caller's to bind. The rest is the same shape in `Leijen.sep`/`cat` (76), `Pretty.words`
+(39) and a long tail.
+
+**Step 0's gate is replaced by:** `inlined=5,485 undetermined=1,877 (664/216/997)` at shipping
+defaults, or `13,175 / 1,930 (668/216/1,046)` under `ECO_INLINE_ALIAS_FORWARD=0`.
 
 ## 1. Problem
 
@@ -145,12 +239,25 @@ body contains a `VarKernel` whose result type mentions a caller-bound variable",
 global's scheme instantiated generically (Q1 §1: `isEmpty s = s == ""` is
 `call[g:Basics.eq:(?a -> ?a -> Bool)](s:String, "") : Bool`; the call and args are ground, the
 operator reference is not). Those variables are never asked about at the call site, so every such
-candidate is `undetermined` with `undBodyOnly`. Fix: `typeVarsOfExpr` skips the meta of the five
-reference constructors (recursing into nothing — they have no children). Sound because
-`translateVarRef` (`Translate.elm:601-613`) already receives the generic reference type for the
-un-inlined body and resolves it by demand; the copy is the same shape. Recovers ≈150 (148
-`undLeak` + part of body-only). Must keep the reference metas OUT of `polyKernel`'s check too? No —
-`hasPolymorphicKernel` inspects `VarKernel` metas deliberately and stays as is.
+candidate is `undetermined` with `undBodyOnly`. Fix: a SEPARATE collector,
+`determinableTypeVars`, skipping the meta of the five reference constructors (recursing into
+nothing — they have no children). Sound because `translateVarRef` (`Translate.elm:601-613`) already
+receives the generic reference type for the un-inlined body and resolves it by demand, and because
+`Fresh.freshenCopy` splices a SUBSTITUTED variable verbatim and re-mints every other one per copy —
+so a dropped variable gets each copy its own fresh instantiation, exactly what the reference would
+have got had the call not been inlined. Recovers up to 997 (§0), not the "≈150" first estimated.
+
+**`candidateTypeVars` itself must NOT change — corrected 2026-09-14.** This section originally
+asked whether the reference metas must stay in `polyKernel`'s check and answered "no,
+`hasPolymorphicKernel` stays as is". That is only half the guard: `polyKernel` is
+`not (List.isEmpty (candidateTypeVars params body)) && hasPolymorphicKernel body`, and a
+`VarKernel` meta IS a reference meta — so stripping them inside `candidateTypeVars` empties the
+FIRST conjunct for exactly the kernel-bodied candidates the guard exists to refuse, admitting a
+candidate whose copies register one kernel symbol under two ABIs. That is the
+`Kernel signature mismatch for Elm_Kernel_*` class, demonstrated live twice on 2026-09-14 by item
+4. The `superVar` guard calls `candidateTypeVars` directly too. So the new collector feeds
+`Candidate.determineVars` only; both guards keep the full set. Pinned by
+`InlineSimplifyRefMetasTest`'s two `candidateTypeVars` cases.
 
 ### 2.6 Step 3 (optional) — per-round re-costing
 
@@ -222,7 +329,7 @@ still registers per result kind). So it declines the candidate outright, which a
 | 3 | `bottomShaped` candidate guard + counter, after `polyKernel` in `buildCandidates`' guard chain (recursive → no params → cost → polyKernel → **bottomShaped** → rowPoly → hofParam → superVar) | `InlineSimplify.elm` `buildCandidates`, `Metrics`, report line | EARLY census `bottomShaped ≥ 1` (`Utils.Crash.crash` is in the compiler's own source) with the flag OFF too — it is candidate-level and unconditional |
 | 4 | tests of §5 (unit + `PreMonoInlineTest` extension) | `compiler/tests/TestLogic/GlobalOpt/InlineSimplifyCallerBindersTest.elm`, `test/elm/src/PreMonoInlineTest.elm` | unit green; E2E BOTH arms 887/889 |
 | 5 | flag ON census + gates | — | EARLY `undCallerPoly ≤ 10`, `inlined ≈ 2,315` (§6); E2E both arms; `ECO_INLINE_THRESHOLD=0` leg; fixed point |
-| 6 | R2: `typeVarsOfExpr` skips reference-node metas (§2.5) | `InlineSimplify.elm:664` | `undBodyOnly ≤ 10`, `inlined ≈ 2,465`; E2E both arms |
+| 6 | **BUILT 2026-09-14, ahead of steps 1-5 and on its own flag.** R2 via a separate `determinableTypeVars` collector feeding `Candidate.determineVars` (read by `determines` AND by the census that classifies its declines, so the two cannot disagree); the candidate-level guards keep the full set. Flag `inline.skipRefMetas`, hash `srm=`, env `ECO_INLINE_SKIP_REF_METAS`, DEFAULT-OFF | `InlineSimplify.elm`, `Compiler/Eco/Config.elm`, `Builder/Eco/Config.elm`, `compiler/tests/TestLogic/GlobalOpt/InlineSimplifyRefMetasTest.elm` | unit 7/7; `undBodyOnly = 0` with the flag on and `undLocal` unmoved; E2E both arms; A/B self-compile |
 | 7 | (optional) per-round re-costing (§2.6) | `InlineSimplify.elm:178` | count monotone; census `roundsRun` |
 | 8 | Run-AT-style two-arm protocol run; record in `benchmarks/lss-opt.md` | — | one cold run per arm, census off |
 

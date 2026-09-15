@@ -1827,7 +1827,7 @@ buildLoopifiables inlineConfig nodes =
             -- inlining but for recursive HOFs; give it double the HOF
             -- budget (List.foldl/map-class bodies land in the 15–30 range).
             budget =
-                2 * max inlineConfig.threshold inlineConfig.hofThreshold
+                2 * max inlineConfig.postMonoThreshold inlineConfig.hofThreshold
         in
         Array.foldl
             (\maybeNode ( acc, specId ) ->
@@ -2427,7 +2427,7 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
         -- H2: budget for candidates with a CALLED function-typed parameter.
         -- `max` so a raised general threshold is never undercut.
         hofBudget =
-            max inlineConfig.threshold inlineConfig.hofThreshold
+            max inlineConfig.postMonoThreshold inlineConfig.hofThreshold
 
         candidates =
             Array.foldl
@@ -2489,13 +2489,13 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
                                             -- is the IO-monad-bind class.
                                             hofAdmitted =
                                                 cost
-                                                    > inlineConfig.threshold
+                                                    > inlineConfig.postMonoThreshold
                                                     && cost
                                                     <= hofBudget
                                                     && hasCalledFunctionParam params body
 
                                             withinBudget =
-                                                cost <= inlineConfig.threshold || hofAdmitted
+                                                cost <= inlineConfig.postMonoThreshold || hofAdmitted
 
                                             -- `partialHof` lifts the
                                             -- exact-sites-only refusal for the
@@ -2508,7 +2508,7 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
                                             -- never.
                                             exactOnly =
                                                 cost
-                                                    > inlineConfig.threshold
+                                                    > inlineConfig.postMonoThreshold
                                                     && not whitelisted
                                                     && not (inlineConfig.partialHof && hofAdmitted)
                                         in
@@ -2582,7 +2582,7 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
     , registry = registry
     , whitelist = effectiveWhitelist
     , maxInlinesPerFunction = inlineConfig.maxPerFunction
-    , maxIterations = inlineConfig.fixpointIterations
+    , maxIterations = inlineConfig.postMonoFixpointIterations
     , inlineCountThisFunction = 0
     , varCounter = 0
     , lambdaCounter = nextLambdaIndex

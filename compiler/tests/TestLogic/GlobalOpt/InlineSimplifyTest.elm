@@ -17,23 +17,23 @@ What is pinned:
 
 -}
 
+import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
         , callExpr
         , define
         , intExpr
-        , negateExpr
         , letExpr
         , makeModuleWithTypedDefsUnionsAliases
+        , negateExpr
         , pVar
         , tLambda
         , tType
         , varExpr
         )
-import Compiler.AST.Source as Src
-import Compiler.AST.TypedOptimized as TOpt
 import Compiler.AST.TypeIds as TypeIds
+import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
 import Compiler.GlobalOpt.InlineSimplify as InlineSimplify
@@ -160,7 +160,7 @@ budgetSuite =
                         let
                             ( _, _, m ) =
                                 InlineSimplify.optimize
-                                    { inlineConfig | threshold = 0 }
+                                    { inlineConfig | preMonoThreshold = 0 }
                                     assigned.mvarState
                                     assigned.graph
                         in
@@ -230,7 +230,8 @@ nodeCount (TOpt.GlobalGraph nodes _ _ _ _) =
 addOne x = x
 
     testValue : Int
-    testValue = addOne 41
+    testValue =
+        addOne 41
 
 **No arithmetic on purpose.** The shared test harness leaves bare `TVar`s on
 `Binop` nodes — that is what this suite's pre-existing `POST_010` / `TYPE_007`
@@ -264,7 +265,8 @@ addOneModule =
 countDown n = negate (countDown n)
 
     testValue : Int
-    testValue = countDown 3
+    testValue =
+        countDown 3
 
 A self-recursive global whose recursive call is NOT in tail position, so it is
 a real `VarGlobal` reference to itself and inlining it would not terminate.

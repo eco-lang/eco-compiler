@@ -37,16 +37,16 @@ import Compiler.AST.SourceBuilder
         , pVar
         , tLambda
         , tTuple
-        , tupleExpr
         , tType
+        , tupleExpr
         , varExpr
         )
-import Compiler.AST.TypedOptimized as TOpt
 import Compiler.AST.TypeIds as TypeIds
+import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
-import Compiler.Reporting.Annotation as A
 import Compiler.GlobalOpt.InlineSimplify as InlineSimplify
+import Compiler.Reporting.Annotation as A
 import Data.Map
 import Expect
 import Test exposing (Test)
@@ -212,7 +212,10 @@ let ( a, b ) = p in a
 
     testValue : Int
     testValue =
-        let a = 100 in
+        let
+            a =
+                100
+        in
         split ( 1, 2 ) + a
 
 `split`'s body binds `a`; the caller binds `a` too. Inlining `split` puts both

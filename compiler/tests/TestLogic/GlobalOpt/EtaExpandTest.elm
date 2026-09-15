@@ -705,7 +705,7 @@ tickDef =
 
 
 {-| `plus : Int -> Int -> Int` and `expensive : Int -> Int`, the latter with a
-body whose pre-mono `cost` (15) is over the default `inline.threshold` (10).
+body whose pre-mono `cost` (15) is over the default `inline.etaThreshold` (10).
 The cheapness gate's saturated-call arm is the one they exercise.
 -}
 plusDef : TypedDef

@@ -93,8 +93,14 @@ loadBase maybeExplicit root =
     hash via the `prune=` token.
   - `ECO_INLINE_HOF_THRESHOLD=<n>` overrides `inline.hofThreshold` (the H2
     called-function-param inlining budget); experiment/tuning knob.
-  - `ECO_INLINE_FPI=<n>` overrides `inline.fixpointIterations`;
-    experiment/tuning knob (deep chains need extra passes to cascade).
+  - `ECO_INLINE_FPI=<n>` BROADCASTS to both passes' round counts;
+    `ECO_INLINE_PRE_MONO_FPI` / `ECO_INLINE_POST_MONO_FPI` set one each
+    (deep chains need extra passes to cascade).
+  - `ECO_INLINE_THRESHOLD=<n>` BROADCASTS to all three size budgets;
+    `ECO_INLINE_PRE_MONO_THRESHOLD`, `ECO_INLINE_POST_MONO_THRESHOLD` and
+    `ECO_ETA_THRESHOLD` set one each. Before the 2026-09-15 split one field
+    drove `InlineSimplify`, `MonoInlineSimplify` AND `EtaExpand`, so no A/B
+    could attribute an effect to one pass.
   - `ECO_INLINE_LOOPIFY=0` disables recursive-HOF loopification (plan H5);
     escape hatch, participates in the hash via the `loop=` token.
   - `ECO_ARITY_RAISE_MIN_APPLIED=<0..100>` overrides
@@ -403,6 +409,31 @@ applyEnvOverrides cfg =
             (\cfgAfwd ->
                 (Utils.envLookupEnv "ECO_INLINE_ALIAS_FORWARD" |> Task.mapError never)
                     |> Task.map (\v -> applyInlineAliasForwardOverride v cfgAfwd)
+            )
+        |> Task.andThen
+            (\c ->
+                (Utils.envLookupEnv "ECO_INLINE_PRE_MONO_THRESHOLD" |> Task.mapError never)
+                    |> Task.map (\v -> applyInlinePreMonoThresholdOverride v c)
+            )
+        |> Task.andThen
+            (\c ->
+                (Utils.envLookupEnv "ECO_INLINE_POST_MONO_THRESHOLD" |> Task.mapError never)
+                    |> Task.map (\v -> applyInlinePostMonoThresholdOverride v c)
+            )
+        |> Task.andThen
+            (\c ->
+                (Utils.envLookupEnv "ECO_ETA_THRESHOLD" |> Task.mapError never)
+                    |> Task.map (\v -> applyEtaThresholdOverride v c)
+            )
+        |> Task.andThen
+            (\c ->
+                (Utils.envLookupEnv "ECO_INLINE_PRE_MONO_FPI" |> Task.mapError never)
+                    |> Task.map (\v -> applyInlinePreMonoFpiOverride v c)
+            )
+        |> Task.andThen
+            (\c ->
+                (Utils.envLookupEnv "ECO_INLINE_POST_MONO_FPI" |> Task.mapError never)
+                    |> Task.map (\v -> applyInlinePostMonoFpiOverride v c)
             )
         |> Task.andThen
             (\cfg12 ->
@@ -1862,7 +1893,14 @@ applyInlinePartialHofOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_INLINE_THRESHOLD=<n>`: override `inline.threshold`, the general
+{-| `ECO_INLINE_THRESHOLD=<n>`: BROADCAST — sets `preMonoThreshold`,
+`postMonoThreshold` AND `etaThreshold` together. Kept because
+`ECO_INLINE_THRESHOLD=0` ("no inlining anywhere") is a standing test leg; the
+per-pass variables below are read AFTER it in the chain, so each one overrides
+the broadcast for its own pass. Was the only knob for all three passes until
+the 2026-09-15 split.
+
+Legacy note — the general
 inlining cost budget (default 10).
 
 Raising it past a spec's cost flips that spec out of `exactOnly`, which
@@ -1879,7 +1917,14 @@ applyInlineThresholdOverride maybeVal cfg =
                 inline =
                     cfg.inline
             in
-            { cfg | inline = { inline | threshold = max 0 n } }
+            { cfg
+                | inline =
+                    { inline
+                        | preMonoThreshold = max 0 n
+                        , postMonoThreshold = max 0 n
+                        , etaThreshold = max 0 n
+                    }
+            }
 
         Nothing ->
             cfg
@@ -1887,7 +1932,11 @@ applyInlineThresholdOverride maybeVal cfg =
 
 {-| `ECO_INLINE_PRE_MONO=0|1`: run `InlineSimplify` BEFORE monomorphization
 (plans/pre-mono-inline-simplify.md). Artifact-affecting; hash token `preInl=`.
-DEFAULT-ON since 2026-09-11 (`=0` turns it off; benchmarks/call-stats.md Run 4).
+**DEFAULT-OFF since 2026-09-15** (`=1` turns it on), reversing the 2026-09-11
+flip: `aliasForward` took over the alias-wrapper population this pass served,
+and call-stats Runs 17-20 price the remainder at +0.29 % generic dispatch for
+484 bytes of artifact. Gates ONLY `InlineSimplify` — `AliasForward` and
+`EtaExpand` are separate passes with their own flags and still run.
 -}
 applyInlinePreMonoOverride : Maybe String -> EcoConfig -> EcoConfig
 applyInlinePreMonoOverride maybeVal cfg =
@@ -1928,6 +1977,95 @@ applyInlineEtaOnlyOverride maybeVal cfg =
                         |> List.filter (\m -> m /= "")
             in
             { cfg | inline = { inline | etaOnly = mods } }
+
+        Nothing ->
+            cfg
+
+
+{-| Per-pass size budgets and round counts (2026-09-15 split). Each reads its
+own environment variable and is applied AFTER the `ECO_INLINE_THRESHOLD` /
+`ECO_INLINE_FPI` broadcasts, so a per-pass value always wins.
+
+`ECO_INLINE_PRE_MONO_THRESHOLD` — `InlineSimplify`'s candidate size gate
+(`cost body > preMonoThreshold` refuses the DEFINITION, so none of its call
+sites is considered). Hash token `preThr=`.
+
+`ECO_INLINE_POST_MONO_THRESHOLD` — `MonoInlineSimplify`'s budget; the effective
+HOF budget is `max postMonoThreshold hofThreshold`. Hash token `postThr=`.
+
+`ECO_ETA_THRESHOLD` — `PreMono.EtaExpand`'s CHEAPNESS gate, which is not an
+inlining budget at all: it decides whether the work left of a new binder is
+cheap enough to move from once-per-CAF to once-per-call. Hash token `etaThr=`.
+
+`ECO_INLINE_PRE_MONO_FPI` / `ECO_INLINE_POST_MONO_FPI` — per-pass round counts.
+Hash tokens `preFpi=` / `postFpi=`.
+
+-}
+applyInlinePreMonoThresholdOverride : Maybe String -> EcoConfig -> EcoConfig
+applyInlinePreMonoThresholdOverride maybeVal cfg =
+    case Maybe.andThen (String.toInt << String.trim) maybeVal of
+        Just n ->
+            let
+                inline =
+                    cfg.inline
+            in
+            { cfg | inline = { inline | preMonoThreshold = max 0 n } }
+
+        Nothing ->
+            cfg
+
+
+applyInlinePostMonoThresholdOverride : Maybe String -> EcoConfig -> EcoConfig
+applyInlinePostMonoThresholdOverride maybeVal cfg =
+    case Maybe.andThen (String.toInt << String.trim) maybeVal of
+        Just n ->
+            let
+                inline =
+                    cfg.inline
+            in
+            { cfg | inline = { inline | postMonoThreshold = max 0 n } }
+
+        Nothing ->
+            cfg
+
+
+applyEtaThresholdOverride : Maybe String -> EcoConfig -> EcoConfig
+applyEtaThresholdOverride maybeVal cfg =
+    case Maybe.andThen (String.toInt << String.trim) maybeVal of
+        Just n ->
+            let
+                inline =
+                    cfg.inline
+            in
+            { cfg | inline = { inline | etaThreshold = max 0 n } }
+
+        Nothing ->
+            cfg
+
+
+applyInlinePreMonoFpiOverride : Maybe String -> EcoConfig -> EcoConfig
+applyInlinePreMonoFpiOverride maybeVal cfg =
+    case Maybe.andThen (String.trim >> String.toInt) maybeVal of
+        Just n ->
+            let
+                inline =
+                    cfg.inline
+            in
+            { cfg | inline = { inline | preMonoFixpointIterations = n } }
+
+        Nothing ->
+            cfg
+
+
+applyInlinePostMonoFpiOverride : Maybe String -> EcoConfig -> EcoConfig
+applyInlinePostMonoFpiOverride maybeVal cfg =
+    case Maybe.andThen (String.trim >> String.toInt) maybeVal of
+        Just n ->
+            let
+                inline =
+                    cfg.inline
+            in
+            { cfg | inline = { inline | postMonoFixpointIterations = n } }
 
         Nothing ->
             cfg
@@ -2012,8 +2150,10 @@ applyInlinePostMonoOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_INLINE_FPI=<n>`: override `inline.fixpointIterations`. Participates
-in the config hash via the `fpi=` token. Non-numeric values are ignored.
+{-| `ECO_INLINE_FPI=<n>`: BROADCAST — sets `preMonoFixpointIterations` AND
+`postMonoFixpointIterations`. The per-pass variables are read after it and
+override it. Participates in the config hash via the `preFpi=`/`postFpi=`
+tokens. Non-numeric values are ignored.
 -}
 applyFpiOverride : Maybe String -> EcoConfig -> EcoConfig
 applyFpiOverride maybeVal cfg =
@@ -2023,7 +2163,13 @@ applyFpiOverride maybeVal cfg =
                 inline =
                     cfg.inline
             in
-            { cfg | inline = { inline | fixpointIterations = n } }
+            { cfg
+                | inline =
+                    { inline
+                        | preMonoFixpointIterations = n
+                        , postMonoFixpointIterations = n
+                    }
+            }
 
         Nothing ->
             cfg

@@ -219,7 +219,7 @@ run cfg state graph =
         -- Round 0: syntactic arities, straight off the graph.
         gate0 : Gate
         gate0 =
-            { threshold = cfg.threshold
+            { threshold = cfg.etaThreshold
             , arity = CoreDict.map (\_ c -> c.arity) index
             , cost = CoreDict.map (\_ c -> c.cost) index
             , aliasCost = buildAliasCost graph
@@ -1331,7 +1331,7 @@ cheap ctx expr =
 
 {-| A call is cheap when it BUILDS rather than works: an under-applied call to a
 known global is a PAP, and a saturated one is cheap only if the callee's body is
-under `inline.threshold`. A kernel is cheap only in the `gcLeaf` cost class.
+under `inline.etaThreshold`. A kernel is cheap only in the `gcLeaf` cost class.
 
 The `inline` cost class of `MonoInlineSimplify.kernelCallCost` cannot be read
 here: `Intrinsics.kernelIntrinsic` keys on MONO types, which do not exist yet.

@@ -826,6 +826,232 @@ artifact is this row's emission plus the flipped `Config.default` literal (a 4-l
 
 ---
 
+### Runs 15/16 — `inline.skipRefMetas` A/B (pre-mono `determines` ignores reference-node metas; 2026-09-14)
+
+| run | compiler | workload | wall (s) | max RSS (kB) | minor | major | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| 15 | reference | `srm=0` | 621.4 | 14,360,716 | 2255 | 11 | 22,981 | 13,384,421 |
+| 15 | benchmark | `srm=0` | 516.8 | 14,602,936 | 2254 | 11 | 23,074 | 13,384,421 |
+| 16 | reference | `srm=1` | 617.1 | 14,589,368 | 2255 | 11 | 22,980 | 13,384,418 |
+| 16 | benchmark | `srm=1` | 521.7 | 14,585,708 | 2254 | 11 | 23,067 | 13,384,418 |
+
+**1. lss-coverage**
+
+| run | compiler | positions | `k1` | `kN` | `var` | `⊤` | partial | coverage |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 15 | benchmark | 148,753 | 100,646 (67.66 %) | 34,631 (23.28 %) | 12,355 | 1,090 | 31 | 90.94 % |
+| 16 | benchmark | 148,748 | 100,641 (67.66 %) | 34,631 (23.28 %) | 12,355 | 1,090 | 31 | 90.94 % |
+
+**3. dispatch-stats**
+
+| run | compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 15 | reference | 2,851,302,516 | 2,794,054,238 | 57,248,278 | 0 | 2,851,302,516 | 0.00 | 97.99 | 2.01 | 6,802 |
+| 15 | benchmark | 828,577,140 | 790,211,433 | 38,365,707 | 1,048,428,907 | 1,877,006,047 | 55.86 | 42.10 | 2.04 | 7,158 |
+| 16 | reference | 2,851,355,963 | 2,794,109,428 | 57,246,535 | 0 | 2,851,355,963 | 0.00 | 97.99 | 2.01 | 6,803 |
+| 16 | benchmark | 828,593,102 | 790,227,831 | 38,365,271 | 1,048,446,105 | 1,877,039,207 | 55.86 | 42.10 | 2.04 | 7,129 |
+
+`plans/pre-mono-lss-transforms-05-determines-caller-binders.md` §2.5, built on its own flag. The
+pre-mono inliner's `determines` stops counting the metas of reference nodes — a
+`VarGlobal`/`VarKernel`/`VarCycle`/`VarEnum`/`VarBox` carries the REFERENCED global's scheme
+instantiated generically, which `callSiteSubst` can never bind. Group 2 is IDENTICAL in every field
+across the two arms; group 1 moves by 5 positions (`k1` 100,646 → 100,641, coverage unchanged at
+90.94 %) — the retired specs of the 34 extra inlines.
+
+**MEASURED-OUT, and the code was REMOVED on 2026-09-15** — the flag, its collector and its test are
+gone; these rows are the record. Pre-mono `inlined` 5,487 → 5,521 (**+34**), `undetermined`
+1,877 → 1,741, and `out.mlir` moves **3 bytes**. Dispatch: `gen` +16,398 (+0.002 %), `fast` +17,198, `typed` −436 —
+noise at N=1, as an emission differing by 3 bytes must be. Bootstrap fixed point holds in both arms.
+
+**Why the ceiling is 136 and not the 997 `undBodyOnly` sites.** The flag recovers exactly the
+`undLeak` subset (`annBinders = 0` — callees whose own signature is monomorphic while their body
+nodes carry variables): 136 → 0. The other 861 sit in POLYMORPHIC callees where the offending
+variable is on a non-reference node, which this change does not touch. The plan's original estimate
+("≈150 = 148 `undLeak` + part of body-only") was right; the 2026-09-14 recalibration to "up to 997"
+was wrong.
+
+**And the residual is cold.** The 861 survivors are `Pretty.softlines` (803), `Pretty.words` (39)
+and `Pretty.a` (19) — `Pretty_*` executes **26 times in 12.5 e9 elm calls** per self-compile
+(`Pretty_softline`: 1). The same holds for the sibling class this plan's §2.1 targets: the top 18
+`undCallerPoly` hosts are 528 of its 664 sites and account for **17,180 of 15.19 e9 calls
+(0.0001 %)** — most read zero because `MonoInlineSimplify` already eliminates them, which is also
+why +34 pre-mono inlines moved 3 bytes. Site count inversely ranked to weight, for the sixth time
+in this arc.
+
+---
+
+### Runs 17/18 — `inline.preMonoThreshold` 10 vs 25 (the pre-mono size budget, alone; 2026-09-15)
+
+| run | compiler | workload | wall (s) | max RSS (kB) | minor | major | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| 17 | reference | `preThr=10` | 623.6 | 14,307,028 | 2270 | 11 | 23,130 | 13,397,582 |
+| 17 | benchmark | `preThr=10` | 524.2 | 14,715,968 | 2264 | 11 | 23,087 | 13,397,582 |
+| 18 | reference | `preThr=25` | 624.7 | 14,660,724 | 2290 | 11 | 23,197 | 13,544,817 |
+| 18 | benchmark | `preThr=25` | 529.5 | 14,823,340 | 2290 | 11 | 23,193 | 13,544,817 |
+
+**1. lss-coverage**
+
+| run | positions | `k1` | `kN` | `var` | `⊤` | partial | coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 17 | 149,873 | 100,772 (67.24 %) | 34,698 (23.15 %) | 13,276 | 1,096 | 31 | 90.39 % |
+| 18 | 149,685 | 99,082 (66.19 %) | 34,314 (22.92 %) | 15,111 | 1,147 | 31 | 89.12 % |
+
+**2. lss-stamping** (upgraded / papGlobal / staged / noInstance / blocked / bodyMismatch / shape / multiInst)
+
+| run | values |
+|---|---|
+| 17 | 16,780 | 3,356 | 206 | 9,589 | 7 | 1,280 | 649 | 1,736 |
+| 18 | 16,919 | 3,365 | 206 | 10,033 | 7 | 1,302 | 651 | 1,730 |
+
+**3. dispatch-stats**
+
+| run | compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 17 | reference | 2,862,448,062 | 2,804,990,105 | 57,457,957 | 0 | 2,862,448,062 | 0.00 | 97.99 | 2.01 | 6,817 |
+| 17 | benchmark | 831,798,846 | 793,246,304 | 38,552,542 | 1,055,000,137 | 1,886,798,983 | 55.91 | 42.04 | 2.04 | 7,173 |
+| 18 | reference | 2,878,820,098 | 2,820,387,541 | 58,432,557 | 0 | 2,878,820,098 | 0.00 | 97.97 | 2.03 | 6,825 |
+| 18 | benchmark | 838,011,871 | 799,540,041 | 38,471,830 | 1,061,749,307 | 1,899,761,178 | 55.89 | 42.09 | 2.03 | 7,207 |
+
+The first clean A/B of a single pass's inlining budget: until the 2026-09-15 split, one `threshold`
+field drove `InlineSimplify`, `MonoInlineSimplify` AND `EtaExpand`'s cheapness gate, so this
+measurement was not expressible. Both arms at a bootstrap fixed point.
+
+**The pre-mono inliner's candidate admission nearly doubles**: `overBudget` 4,811 → 3,411 (−1,400,
+exactly the `11-15` + `16-25` histogram buckets), `candidates` 819 → 1,783, pre-mono `inlined`
+5,497 → **10,423 (+90 %)**. Only 964 of the 1,400 newly size-eligible definitions become candidates;
+the rest are caught by guards the budget had been masking — `polyKernel` 17 → **186**, `hofParam`
+54 → 227, `superVar` 25 → 119. (That `polyKernel` jump is the kernel-ABI miscompile class: at the
+wider budget the guard carries real weight, and `InlineSimplifyRefMetasTest` pins its input set.)
+
+**It is a LOSS on every axis measured.** `out.mlir` 13,397,582 → **13,544,817 (+1.10 %)** for only
+331 fewer specs (32,940 → 32,609) — bigger bodies copied at more sites, which is what a size budget
+exists to prevent. Post-mono `inlined` 29,036 → 27,998, so the extra pre-mono work mostly REPLACES
+post-mono work rather than adding to it. Dispatch: **`gen` +6,293,737 (+0.79 %)**, `sat` +0.75 %,
+`fast` +0.64 % with `fast %` flat at 55.9 — i.e. the whole dispatch population grew; nothing was
+converted to a better tier. Wall 524.2 → 529.5 s (+1.0 %). LSS coverage FALLS: `k1` 100,772 →
+99,082 and `var` 13,276 → **15,111**, because copying a body into more call sites multiplies arrow
+positions the analysis cannot pin.
+
+**Verdict: `preMonoThreshold = 10` is not leaving anything on the table.** The 4,804 over-budget
+definitions were the last unpriced population in this area, and raising the budget to admit a third
+of them costs 1.1 % code size, 0.8 % more generic dispatch, 1 % wall and 1,690 singleton positions.
+Keep the default. The remaining `>50` bucket (2,106 definitions) is further out of reach still.
+
+---
+
+### Run 19 — `inline.preMonoThreshold = 0`: the pre-mono inliner admits NOTHING (2026-09-15)
+
+| run | compiler | workload | wall (s) | max RSS (kB) | minor | major | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| 19 | reference | `preThr=0` | 616.7 | 14,612,296 | 2266 | 11 | 23,106 | 13,398,066 |
+| 19 | benchmark | `preThr=0` | 530.7 | 14,746,192 | 2261 | 11 | 23,113 | 13,398,066 |
+
+**3. dispatch-stats**
+
+| run | compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 19 | reference | 2,855,267,188 | 2,797,647,055 | 57,620,133 | 0 | 2,855,267,188 | 0.00 | 97.98 | 2.02 | 6,794 |
+| 19 | benchmark | 829,936,522 | 791,198,567 | 38,737,955 | 1,053,192,393 | 1,883,128,915 | 55.93 | 42.02 | 2.06 | 7,094 |
+
+Third point on the `preMonoThreshold` curve, on Runs 17/18's REFERENCE COMPILER — same source, same
+seed, same day, so the three are directly comparable. `0` makes every body over budget (`cost` ≥ 1
+for any node), so `InlineSimplify` still walks the graph and reports its census but admits no
+candidates. It is NOT `ECO_INLINE_PRE_MONO=0`, which skips the pass outright.
+
+**The curve, benchmark arms:**
+
+| | `preThr=0` | `preThr=10` (default) | `preThr=25` |
+|---|---:|---:|---:|
+| pre-mono `inlined` | **0** | 5,497 | 10,423 |
+| post-mono `inlined` | **34,908** | 29,036 | 27,998 |
+| specs kept | 32,947 | 32,940 | 32,609 |
+| `out.mlir` | 13,398,066 | 13,397,582 | 13,544,817 |
+| dispatch `gen` | **791,198,567** | 793,246,304 | 799,540,041 |
+| `fast %` | 55.93 | 55.91 | 55.89 |
+| wall (s) | 530.7 | 524.2 | 529.5 |
+| LSS `k1` / `var` | 101,246 / 13,277 | 100,772 / 13,276 | 99,082 / 15,111 |
+
+**The default is not a peak — it is indistinguishable from OFF, and both beat 25.** Turning the
+pre-mono inliner's 5,497 inlines off costs **484 bytes** of `out.mlir` (+0.0036 %) and *lowers*
+generic dispatch by 2,047,737 (−0.26 %), with `fast %` and specs kept flat. Post-mono absorbs the
+work almost exactly (+5,872 inlines), which is the mechanism: at today's defaults the two inliners
+are near-perfect substitutes, so moving work between them changes little except LSS coverage
+(`k1` 101,246 → 100,772 — slightly BETTER with pre-mono off).
+
+**This re-opens the evidence that shipped `preMono` default-on.** `benchmarks/call-stats.md` Run 4
+justified the flip with `out.mlir −0.51 %` and NEUTRAL dispatch, measured 2026-09-11 — before item 4
+existed. Alias forwarding then retired the wrapper population the pre-mono inliner was mostly
+serving (its inlines fell 13,175 → 5,485 when `aliasForward` went default-on, Runs 13/14), so most
+of what Run 4 measured has since been taken over by a cheaper pass that needs no copying. What
+remains is worth 484 bytes and costs 0.26 % dispatch. **A `preMono` default-off re-measurement is
+the obvious follow-up** — not done here, because `preMono=0` also skips the pass's graph rebuild and
+so is not the same experiment as `preThr=0`.
+
+Wall is not readable at N=1 across these three (530.7 / 524.2 / 529.5 s spans 1.2 % with no monotone
+trend; the variance study in `benchmarks/lss-opt.md` Run R puts cold-run noise at about that size).
+
+---
+
+### Run 20 — `ECO_INLINE_PRE_MONO=0`: the pre-mono inliner SKIPPED (2026-09-15)
+
+| run | compiler | workload | wall (s) | max RSS (kB) | minor | major | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| 20 | reference | `preMono=0` | 621.7 | 14,621,512 | 2265 | 11 | 23,116 | 13,398,066 |
+| 20 | benchmark | `preMono=0` | 526.2 | 14,736,704 | 2260 | 11 | 23,098 | 13,398,066 |
+
+**3. dispatch-stats**
+
+| run | compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 20 | reference | 2,854,163,494 | 2,796,555,379 | 57,608,115 | 0 | 2,854,163,494 | 0.00 | 97.98 | 2.02 | 6,765 |
+| 20 | benchmark | 829,709,242 | 790,971,287 | 38,737,955 | 1,052,614,199 | 1,882,323,441 | 55.92 | 42.02 | 2.06 | 7,059 |
+
+Fourth and last point, on Runs 17/18's reference compiler. `ECO_INLINE_PRE_MONO=0` gates ONLY
+`InlineSimplify` — `AliasForward` (slot 2) and `EtaExpand` (slot 3) are separately flagged and still
+run, so this isolates the INLINER, not pre-mono optimisation.
+
+**The whole curve, benchmark arms, one source and one seed:**
+
+| | `preMono=0` | `preThr=0` | `preThr=10` (shipping) | `preThr=25` |
+|---|---:|---:|---:|---:|
+| pre-mono `inlined` | — (skipped) | 0 | 5,497 | 10,423 |
+| post-mono `inlined` | 34,908 | 34,908 | 29,036 | 27,998 |
+| specs kept | 32,947 | 32,947 | 32,940 | 32,609 |
+| `out.mlir` | 13,398,066 | 13,398,066 | 13,397,582 | 13,544,817 |
+| dispatch `gen` | **790,971,287** | 791,198,567 | 793,246,304 | 799,540,041 |
+| `fast %` | 55.92 | 55.93 | 55.91 | 55.89 |
+| LSS `k1` / `var` | 101,246 / 13,277 | 101,246 / 13,277 | 100,772 / 13,276 | 99,082 / 15,111 |
+| wall (s) | 526.2 | 530.7 | 524.2 | 529.5 |
+
+**`preMono=0` and `preThr=0` emit BYTE-IDENTICAL artifacts** (13,398,066 B), so the pass is a true
+no-op when it admits nothing and the only difference between those two arms is its graph traversal —
+worth 227,280 dispatches (0.03 %) and inside wall noise.
+
+**The pre-mono inliner is not earning its place at today's defaults.** Against `preMono=0`, the
+shipping configuration's 5,497 inlines buy **484 bytes** of artifact (−0.0036 %) and 7 fewer specs,
+and cost **+2,275,017 generic dispatches (+0.29 %)**, +0.25 % `sat`, and 474 singleton positions
+(`k1` 101,246 → 100,772). `fast %` is flat to two decimals across all four arms — nothing moves
+between tiers anywhere on this curve. Post-mono absorbs the work one-for-one (34,908 → 29,036).
+
+**Why Run 4's evidence no longer holds.** `preMono` was flipped default-on 2026-09-11 on `out.mlir`
+−0.51 % with neutral dispatch. That measurement predates item 4: `aliasForward` (default-on
+2026-09-14) retired the parameter-less alias wrappers that were this pass's main population — its
+inlines fell 13,175 → 5,485 the moment forwarding shipped (Runs 13/14) — and forwarding achieves the
+same end by substituting a reference instead of copying a body, so it neither grows the artifact nor
+multiplies arrow positions. The inliner is now doing the residue, at a small net loss.
+
+**FLIPPED DEFAULT-OFF 2026-09-15** after the full `guides/bootstrap.md` chain at the new default:
+Gate A 1727/1727, Stage 4b JS fixed point (`eco-boot-2.js == eco-boot-3.js`, 8,570,725 B), Gate B
+893/895 (the two AOT-harness gaps — `FlagsRecordTest`, `PortEchoTest` — unchanged by the flip),
+Stage 5 under subst, **Stage 8c `eco-compiler-boot.mlir == eco-compiler-boot-2.mlir` BYTE-IDENTICAL**
+(13,398,066 B), Stage 9b `eco → eco-2` OK. The bootstrapped artifact is this run's emission plus the
+flipped `Config.default` literal alone (`arith.constant true → false`, a 4-line diff), and its size
+is exactly Run 20's 13,398,066 B — so the shipped compiler IS the `preMono=0` arm measured here.
+`postMono` stays default-on; `aliasForward` and `etaExpand` are unaffected (separate passes, separate
+flags, both still default-on).
+
+---
+
 ## Summary
 
 Run 1's rows come from a MISCOMPILING benchmark binary (see the retraction under that run) and
@@ -853,6 +1079,28 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 9 | prune=1 | benchmark | 525.7 | 2237 | 12 | 22841 | 13367419 |
 | 10 | prune=0 | reference | 618.1 | 2257 | 11 | 23114 | 15532506 |
 | 10 | prune=0 | benchmark | 529.4 | 2244 | 12 | 22935 | 15532506 |
+| 11 | afwd=0 | reference | 615.4 | 2245 | 11 | 22844 | 13400752 |
+| 11 | afwd=0 | benchmark | 526.7 | 2252 | 11 | 22936 | 13400752 |
+| 12 | afwd=1 | reference | 621.0 | 2242 | 11 | 22841 | 13342049 |
+| 12 | afwd=1 | benchmark | 521.0 | 2250 | 11 | 22883 | 13342049 |
+| 12a | afwd=1 bl=map,foldr | reference | 617.2 | 2242 | 11 | 22849 | 13450845 |
+| 12a | afwd=1 bl=map,foldr | benchmark | 517.9 | 2250 | 11 | 22884 | 13450845 |
+| 13 | fix afwd=0 | reference | 611.2 | 2245 | 11 | 22865 | 13427210 |
+| 13 | fix afwd=0 | benchmark | 525.9 | 2252 | 11 | 22917 | 13427210 |
+| 14 | fix afwd=1 | reference | 617.6 | 2242 | 11 | 22865 | 13379444 |
+| 14 | fix afwd=1 | benchmark | 520.7 | 2251 | 11 | 22955 | 13379444 |
+| 15 | srm=0 | reference | 621.4 | 2255 | 11 | 22981 | 13384421 |
+| 15 | srm=0 | benchmark | 516.8 | 2254 | 11 | 23074 | 13384421 |
+| 16 | srm=1 | reference | 617.1 | 2255 | 11 | 22980 | 13384418 |
+| 16 | srm=1 | benchmark | 521.7 | 2254 | 11 | 23067 | 13384418 |
+| 17 | preThr=10 | reference | 623.6 | 2270 | 11 | 23130 | 13397582 |
+| 17 | preThr=10 | benchmark | 524.2 | 2264 | 11 | 23087 | 13397582 |
+| 18 | preThr=25 | reference | 624.7 | 2290 | 11 | 23197 | 13544817 |
+| 18 | preThr=25 | benchmark | 529.5 | 2290 | 11 | 23193 | 13544817 |
+| 19 | preThr=0 | reference | 616.7 | 2266 | 11 | 23106 | 13398066 |
+| 19 | preThr=0 | benchmark | 530.7 | 2261 | 11 | 23113 | 13398066 |
+| 20 | preMono=0 | reference | 621.7 | 2265 | 11 | 23116 | 13398066 |
+| 20 | preMono=0 | benchmark | 526.2 | 2260 | 11 | 23098 | 13398066 |
 
 ### 1. lss-coverage
 
@@ -886,6 +1134,18 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 13 | fix afwd=0 | benchmark | 149391 | 101457 | 34677 | 12111 | 1089 | 57 | 91.13 |
 | 14 | fix afwd=1 | reference | 148401 | 100600 | 34608 | 12074 | 1088 | 31 | 91.11 |
 | 14 | fix afwd=1 | benchmark | 148401 | 100600 | 34608 | 12074 | 1088 | 31 | 91.11 |
+| 15 | srm=0 | reference | 148753 | 100646 | 34631 | 12355 | 1090 | 31 | 90.94 |
+| 15 | srm=0 | benchmark | 148753 | 100646 | 34631 | 12355 | 1090 | 31 | 90.94 |
+| 16 | srm=1 | reference | 148748 | 100641 | 34631 | 12355 | 1090 | 31 | 90.94 |
+| 16 | srm=1 | benchmark | 148748 | 100641 | 34631 | 12355 | 1090 | 31 | 90.94 |
+| 17 | preThr=10 | reference | 149873 | 100772 | 34698 | 13276 | 1096 | 31 | 90.39 |
+| 17 | preThr=10 | benchmark | 149873 | 100772 | 34698 | 13276 | 1096 | 31 | 90.39 |
+| 18 | preThr=25 | reference | 149685 | 99082 | 34314 | 15111 | 1147 | 31 | 89.12 |
+| 18 | preThr=25 | benchmark | 149685 | 99082 | 34314 | 15111 | 1147 | 31 | 89.12 |
+| 19 | preThr=0 | reference | 150533 | 101246 | 34877 | 13277 | 1102 | 31 | 90.43 |
+| 19 | preThr=0 | benchmark | 150533 | 101246 | 34877 | 13277 | 1102 | 31 | 90.43 |
+| 20 | preMono=0 | reference | 150533 | 101246 | 34877 | 13277 | 1102 | 31 | 90.43 |
+| 20 | preMono=0 | benchmark | 150533 | 101246 | 34877 | 13277 | 1102 | 31 | 90.43 |
 
 ### 2. lss-stamping
 
@@ -919,6 +1179,18 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 13 | fix afwd=0 | benchmark | 16726 | 3251 | 204 | 12 | 10922 | 2418 | 1267 | 650 | 353 | 67 | 310 | 0 | 9 | 1784 |
 | 14 | fix afwd=1 | reference | 16768 | 3356 | 206 | 12 | 9579 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
 | 14 | fix afwd=1 | benchmark | 16768 | 3356 | 206 | 12 | 9579 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
+| 15 | srm=0 | reference | 16772 | 3356 | 206 | 12 | 9581 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
+| 15 | srm=0 | benchmark | 16772 | 3356 | 206 | 12 | 9581 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
+| 16 | srm=1 | reference | 16772 | 3356 | 206 | 12 | 9581 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
+| 16 | srm=1 | benchmark | 16772 | 3356 | 206 | 12 | 9581 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
+| 17 | preThr=10 | reference | 16780 | 3356 | 206 | 12 | 9589 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
+| 17 | preThr=10 | benchmark | 16780 | 3356 | 206 | 12 | 9589 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
+| 18 | preThr=25 | reference | 16919 | 3365 | 206 | 12 | 10033 | 7 | 1302 | 651 | 358 | 67 | 310 | 0 | 9 | 1730 |
+| 18 | preThr=25 | benchmark | 16919 | 3365 | 206 | 12 | 10033 | 7 | 1302 | 651 | 358 | 67 | 310 | 0 | 9 | 1730 |
+| 19 | preThr=0 | reference | 16779 | 3356 | 206 | 12 | 9602 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
+| 19 | preThr=0 | benchmark | 16779 | 3356 | 206 | 12 | 9602 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
+| 20 | preMono=0 | reference | 16779 | 3356 | 206 | 12 | 9602 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
+| 20 | preMono=0 | benchmark | 16779 | 3356 | 206 | 12 | 9602 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
 
 ### 3. dispatch-stats
 
@@ -954,6 +1226,18 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 13 | fix afwd=0 | benchmark | 827268339 | 790554966 | 36713373 | 1041434851 | 1868703190 | 55.73 | 42.31 | 1.96 | 7105 |
 | 14 | fix afwd=1 | reference | 2847844768 | 2790660359 | 57184409 | 0 | 2847844768 | 0.00 | 97.99 | 2.01 | 6799 |
 | 14 | fix afwd=1 | benchmark | 827582838 | 789273265 | 38309573 | 1046384077 | 1873966915 | 55.84 | 42.12 | 2.04 | 7126 |
+| 15 | srm=0 | reference | 2851302516 | 2794054238 | 57248278 | 0 | 2851302516 | 0.00 | 97.99 | 2.01 | 6802 |
+| 15 | srm=0 | benchmark | 828577140 | 790211433 | 38365707 | 1048428907 | 1877006047 | 55.86 | 42.10 | 2.04 | 7158 |
+| 16 | srm=1 | reference | 2851355963 | 2794109428 | 57246535 | 0 | 2851355963 | 0.00 | 97.99 | 2.01 | 6803 |
+| 16 | srm=1 | benchmark | 828593102 | 790227831 | 38365271 | 1048446105 | 1877039207 | 55.86 | 42.10 | 2.04 | 7129 |
+| 17 | preThr=10 | reference | 2862448062 | 2804990105 | 57457957 | 0 | 2862448062 | 0.00 | 97.99 | 2.01 | 6817 |
+| 17 | preThr=10 | benchmark | 831798846 | 793246304 | 38552542 | 1055000137 | 1886798983 | 55.91 | 42.04 | 2.04 | 7173 |
+| 18 | preThr=25 | reference | 2878820098 | 2820387541 | 58432557 | 0 | 2878820098 | 0.00 | 97.97 | 2.03 | 6825 |
+| 18 | preThr=25 | benchmark | 838011871 | 799540041 | 38471830 | 1061749307 | 1899761178 | 55.89 | 42.09 | 2.03 | 7207 |
+| 19 | preThr=0 | reference | 2855267188 | 2797647055 | 57620133 | 0 | 2855267188 | 0.00 | 97.98 | 2.02 | 6794 |
+| 19 | preThr=0 | benchmark | 829936522 | 791198567 | 38737955 | 1053192393 | 1883128915 | 55.93 | 42.02 | 2.06 | 7094 |
+| 20 | preMono=0 | reference | 2854163494 | 2796555379 | 57608115 | 0 | 2854163494 | 0.00 | 97.98 | 2.02 | 6765 |
+| 20 | preMono=0 | benchmark | 829709242 | 790971287 | 38737955 | 1052614199 | 1882323441 | 55.92 | 42.02 | 2.06 | 7059 |
 
 ### 4. call-census
 
@@ -987,3 +1271,15 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 13 | fix afwd=0 | benchmark | 12552368296 | 10655701814 | 1346725326 | 655896982 | 647149917 | 0 | 0 | 452934 | 94.62 |
 | 14 | fix afwd=1 | reference | 13154673488 | 15487413337 | 1344436624 | 2631707619 | 392744035 | 0 | 0 | 427301 | 83.95 |
 | 14 | fix afwd=1 | benchmark | 12506586893 | 10655051892 | 1344139038 | 657251158 | 648504715 | 0 | 0 | 449172 | 94.60 |
+| 15 | srm=0 | reference | 13170882300 | 15504700387 | 1345422091 | 2634901283 | 393239481 | 0 | 0 | 427521 | 83.95 |
+| 15 | srm=0 | benchmark | 12522896669 | 10667271658 | 1345124410 | 658057886 | 649448333 | 0 | 0 | 449403 | 94.60 |
+| 16 | srm=1 | reference | 13171095767 | 15504720238 | 1345440206 | 2634947682 | 393244300 | 0 | 0 | 427521 | 83.95 |
+| 16 | srm=1 | benchmark | 12523109115 | 10667200409 | 1345142488 | 658067707 | 649455698 | 0 | 0 | 449403 | 94.60 |
+| 17 | preThr=10 | reference | 13266160736 | 15578691228 | 1347756622 | 2645146835 | 394885318 | 0 | 0 | 428103 | 83.98 |
+| 17 | preThr=10 | benchmark | 12618501592 | 10724952357 | 1347458811 | 660625288 | 652538123 | 0 | 0 | 449991 | 94.62 |
+| 18 | preThr=25 | reference | 13348011337 | 15791117991 | 1355140267 | 2658747375 | 398380526 | 0 | 0 | 428103 | 83.99 |
+| 18 | preThr=25 | benchmark | 12281539652 | 10924333544 | 1353077332 | 664273800 | 658166379 | 0 | 0 | 459021 | 94.46 |
+| 19 | preThr=0 | reference | 13242614657 | 15548546673 | 1342883402 | 2638594110 | 394212223 | 0 | 0 | 428103 | 83.99 |
+| 19 | preThr=0 | benchmark | 12598157403 | 10708411143 | 1342615327 | 659280628 | 651391219 | 0 | 0 | 448744 | 94.62 |
+| 20 | preMono=0 | reference | 13236815686 | 15542002450 | 1342234932 | 2637545752 | 394029605 | 0 | 0 | 428103 | 83.99 |
+| 20 | preMono=0 | benchmark | 12592218581 | 10703864813 | 1341966857 | 659108684 | 651251393 | 0 | 0 | 448744 | 94.62 |

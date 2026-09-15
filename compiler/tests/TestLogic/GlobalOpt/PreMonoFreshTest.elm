@@ -353,7 +353,7 @@ graphOf expr =
     TOpt.GlobalGraph
         (DMap.singleton TOpt.toComparableGlobal
             (TOpt.Global ModuleName.basics "probe")
-            (TOpt.Define expr (EverySet.empty) (meta intType))
+            (TOpt.Define expr EverySet.empty (meta intType))
         )
         Dict.empty
         DMap.empty

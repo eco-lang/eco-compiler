@@ -61,11 +61,11 @@ them too.
 -}
 
 import Compiler.AST.Canonical as Can
-import Compiler.AST.TypedOptimized as TOpt
 import Compiler.AST.TypeIds as TypeIds
+import Compiler.AST.TypedOptimized as TOpt
+import Compiler.Data.Id as Id
 import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
-import Compiler.Data.Id as Id
 import Compiler.Eco.Config as Config
 import Compiler.GlobalOpt.PreMono.Fresh as Fresh
 import Compiler.Graph as Graph
@@ -241,7 +241,7 @@ optimize cfg state graph =
                     , superVarNames = cands.superVarNames
                 }
             , fresh = 0
-            , fuel = max 1 cfg.fixpointIterations
+            , fuel = max 1 cfg.preMonoFixpointIterations
             , state = state
             , censusOn = cfg.report
             , callerBinders = CoreDict.empty
@@ -270,6 +270,7 @@ rounds cfg ctx graph =
 
         else
             rounds cfg { ctx1 | fuel = ctx1.fuel - 1 } graph1
+
 
 
 -- ============================================================================
@@ -325,7 +326,7 @@ buildCandidates cfg state (TOpt.GlobalGraph nodes _ annotations _ _) =
                         else if List.isEmpty params then
                             a
 
-                        else if cost body > cfg.threshold then
+                        else if cost body > cfg.preMonoThreshold then
                             let
                                 c =
                                     cost body
@@ -715,6 +716,19 @@ substTypeVars env tipe =
 
 {-| Every type variable reachable from a candidate's parameter types and body,
 as `Id.toComparable` keys.
+
+**Do not narrow this to exclude reference-node metas.** It feeds three
+consumers — `Candidate.typeVars` (hence `determines`), the `superVar` guard and
+`polyKernel`, whose first conjunct is
+`not (List.isEmpty (candidateTypeVars params body))`. A `VarKernel` meta IS a
+reference meta, so dropping those empties that conjunct for exactly the
+kernel-bodied candidates the guard exists to refuse, and each copy then
+registers one kernel symbol under a different ABI
+(`Kernel signature mismatch for Elm_Kernel_*`). Narrowing the DECISION set
+alone was built, measured and removed on 2026-09-15: it recovered 136 of the
+1,877 undetermined call sites for +34 inlines and a 3-byte artifact move
+(`benchmarks/call-stats.md` Runs 15/16;
+`plans/pre-mono-lss-transforms-05-determines-caller-binders.md` §10).
 
 Used by the `polymorphic` census and by `determines`. The supertype constraint
 of a variable the copy re-mints is carried across by
@@ -1554,7 +1568,11 @@ tryInline ctx region func args callMeta =
                             ( Nothing
                             , { ctx
                                 | metrics =
-                                    censusUndetermined ctx cand args callMeta subst
+                                    censusUndetermined ctx
+                                        cand
+                                        args
+                                        callMeta
+                                        subst
                                         (\m -> { m | undetermined = m.undetermined + 1 })
                                         ctx.metrics
                               }
@@ -2013,7 +2031,7 @@ suffixDef sfx def =
             TOpt.Def region
                 (n ++ sfx)
                 (suffixExpr sfx bound)
-                (tipe)
+                tipe
 
         TOpt.TailDef region n args body tipe tvar ->
             TOpt.TailDef region
@@ -2027,7 +2045,7 @@ suffixDef sfx def =
                     args
                 )
                 (suffixExpr sfx body)
-                (tipe)
+                tipe
                 tvar
 
 

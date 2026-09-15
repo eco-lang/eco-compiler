@@ -937,14 +937,28 @@ defaultKeyedGlobals =
     ]
 
 
-{-| Inliner / simplifier knobs (consumed by `Compiler.GlobalOpt.MonoInlineSimplify`).
+{-| Inliner / simplifier knobs.
+
+**Each pass has its OWN size budget and round count** (split 2026-09-15). One
+`threshold` field used to drive THREE passes — `InlineSimplify` (pre-mono),
+`MonoInlineSimplify` (post-mono) and `PreMono.EtaExpand`'s cheapness gate — so
+`ECO_INLINE_THRESHOLD` moved all three at once and no A/B could attribute an
+effect to one of them. The per-pass fields are `preMonoThreshold`,
+`postMonoThreshold`, `etaThreshold` and `preMonoFixpointIterations` /
+`postMonoFixpointIterations`; every default is the value the shared field had,
+so the split is behaviour-preserving. `ECO_INLINE_THRESHOLD` / `ECO_INLINE_FPI`
+are kept as BROADCAST setters (they write all of the corresponding fields, and
+the per-pass env vars override them) so `ECO_INLINE_THRESHOLD=0` still means
+"no inlining anywhere", which is a standing test leg.
 
   - `whitelist` is **additive**: appended to the built-in `defaultWhitelist`.
   - `blacklist` is subtracted from the effective whitelist afterward.
-  - `hofThreshold` is the cost budget for candidates with a CALLED
+  - `hofThreshold` is the POST-mono cost budget for candidates with a CALLED
     function-typed parameter (HOFs whose lambda argument beta-reduces away
     at the call site — plan H2). The effective budget is
-    `max threshold hofThreshold`, so it can only widen eligibility.
+    `max postMonoThreshold hofThreshold`, so it can only widen eligibility.
+    The pre-mono inliner has no HOF budget — it refuses HOF candidates
+    outright (`hofParam`) — and no whitelist bypass.
   - `loopify` enables recursive-HOF loopification (plan H5): a saturated
     call of a tail-recursive function passing a lambda LITERAL is rewritten
     to a local specialized loop with the lambda beta-inlined — the closure
@@ -961,11 +975,14 @@ defaultKeyedGlobals =
 
 -}
 type alias InlineConfig =
-    { threshold : Int
+    { preMonoThreshold : Int
+    , postMonoThreshold : Int
+    , etaThreshold : Int
     , whitelist : List String
     , blacklist : List String
     , maxPerFunction : Int
-    , fixpointIterations : Int
+    , preMonoFixpointIterations : Int
+    , postMonoFixpointIterations : Int
     , hofThreshold : Int
     , loopify : Bool
     , arityRaise : Bool
@@ -1051,15 +1068,23 @@ type alias InlineConfig =
     -- 2026-09-11: `ECO_INLINE_POST_MONO=0` gives E2E 1719/1725 and all six
     -- failures are MLIR-SHAPE checks (a PAP survives HOF elimination), no
     -- crashes and no wrong values — so the post-mono pass is an OPTIMIZATION
-    -- those fixtures pin, not a correctness dependency. `preMono` ships on its
-    -- own
-    -- evidence (benchmarks/call-stats.md Run 4, measured with η default-on):
-    -- a bootstrap fixed point, `out.mlir` −0.51 %, `noInstance` −74 and
-    -- `blocked` −34 declines, and dispatch NEUTRAL — the +0.26 % the benchmark
-    -- arm shows is the pass's own workload cost (+0.30 % on the reference arm,
-    -- same binary). Inlining BEFORE specialization is what pays: 13,150
-    -- pre-mono inlines retire 18,588 post-mono ones (67,407 → 48,819).
-    -- `ECO_INLINE_PRE_MONO=0` turns it off.
+    -- those fixtures pin, not a correctness dependency.
+    --
+    -- `postMono` stays DEFAULT-ON. **`preMono` went DEFAULT-OFF on 2026-09-15**
+    -- (`ECO_INLINE_PRE_MONO=1` turns it back on), reversing its 2026-09-11
+    -- flip. Its Run-4 evidence — `out.mlir` −0.51 %, dispatch neutral —
+    -- predates item 4: `aliasForward` (default-on 2026-09-14) retired the
+    -- parameter-less alias wrappers that were this pass's main population, by
+    -- REFERENCE SUBSTITUTION rather than body copying, so it grows no artifact
+    -- and multiplies no arrow positions. The inliner's remaining inlines fell
+    -- 13,175 → 5,485 the moment forwarding shipped (call-stats Runs 13/14), and
+    -- Runs 17-20 price what is left: against `preMono=0`, those 5,497 inlines
+    -- buy 484 BYTES of artifact (−0.0036 %) and 7 specs while costing
+    -- +2,275,017 generic dispatches (+0.29 %) and 474 singleton positions
+    -- (`k1` 101,246 → 100,772); `fast %` is flat to two decimals across the
+    -- whole `preMonoThreshold` curve (0 / 10 / 25), so nothing changes tier
+    -- anywhere on it. `MonoInlineSimplify` absorbs the work one-for-one
+    -- (29,036 → 34,908 inlines) for the same 32,947 specs.
     , preMono : Bool
     , postMono : Bool
 
@@ -1175,11 +1200,14 @@ type alias LogicalTypesConfig =
 default : EcoConfig
 default =
     { inline =
-        { threshold = 10
+        { preMonoThreshold = 10
+        , postMonoThreshold = 10
+        , etaThreshold = 10
         , whitelist = []
         , blacklist = []
         , maxPerFunction = 1000
-        , fixpointIterations = 4
+        , preMonoFixpointIterations = 4
+        , postMonoFixpointIterations = 4
 
         -- H2 matrix (2026-07-13, self-compile workload): 25 gives +35%
         -- betaForwards over 10 at +2.7% code size and no measurable
@@ -1200,7 +1228,7 @@ default =
         , partialHof = False
         , preserveSets = True
         , pruneDead = True
-        , preMono = True
+        , preMono = False
         , postMono = True
         , etaExpand = True
         , etaOnly = []
@@ -1309,11 +1337,14 @@ cseDecoder =
 inlineDecoder : D.Decoder x InlineConfig
 inlineDecoder =
     D.pure InlineConfig
-        |> D.apply (D.optionalField "threshold" D.int default.inline.threshold)
+        |> D.apply (D.optionalField "preMonoThreshold" D.int default.inline.preMonoThreshold)
+        |> D.apply (D.optionalField "postMonoThreshold" D.int default.inline.postMonoThreshold)
+        |> D.apply (D.optionalField "etaThreshold" D.int default.inline.etaThreshold)
         |> D.apply (D.optionalField "whitelist" (D.list D.string) default.inline.whitelist)
         |> D.apply (D.optionalField "blacklist" (D.list D.string) default.inline.blacklist)
         |> D.apply (D.optionalField "maxPerFunction" D.int default.inline.maxPerFunction)
-        |> D.apply (D.optionalField "fixpointIterations" D.int default.inline.fixpointIterations)
+        |> D.apply (D.optionalField "preMonoFixpointIterations" D.int default.inline.preMonoFixpointIterations)
+        |> D.apply (D.optionalField "postMonoFixpointIterations" D.int default.inline.postMonoFixpointIterations)
         |> D.apply (D.optionalField "hofThreshold" D.int default.inline.hofThreshold)
         |> D.apply (D.optionalField "loopify" D.bool default.inline.loopify)
         |> D.apply (D.optionalField "arityRaise" D.bool default.inline.arityRaise)
@@ -1560,7 +1591,9 @@ hash : EcoConfig -> String
 hash cfg =
     String.join "|"
         ([ "v1"
-         , "thr=" ++ String.fromInt cfg.inline.threshold
+         , "preThr=" ++ String.fromInt cfg.inline.preMonoThreshold
+         , "postThr=" ++ String.fromInt cfg.inline.postMonoThreshold
+         , "etaThr=" ++ String.fromInt cfg.inline.etaThreshold
          , "phof="
             ++ (if cfg.inline.partialHof then
                     "1"
@@ -1614,7 +1647,8 @@ hash cfg =
          , "wl=" ++ String.join "," cfg.inline.whitelist
          , "bl=" ++ String.join "," cfg.inline.blacklist
          , "mpf=" ++ String.fromInt cfg.inline.maxPerFunction
-         , "fpi=" ++ String.fromInt cfg.inline.fixpointIterations
+         , "preFpi=" ++ String.fromInt cfg.inline.preMonoFixpointIterations
+         , "postFpi=" ++ String.fromInt cfg.inline.postMonoFixpointIterations
          , "hthr=" ++ String.fromInt cfg.inline.hofThreshold
          , "loop="
             ++ (if cfg.inline.loopify then

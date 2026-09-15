@@ -13,7 +13,7 @@ These tests pin the instrument as well as the behaviour: a `cleared=0` is only
 meaningful next to a `declinedPreserveSets` that says the arm WAS reached, so
 T1 establishes the denominator and T2 asserts the exchange.
 
-**Every arm runs at `fixpointIterations = 1`,** which is what makes the counts
+**Every arm runs at `postMonoFixpointIterations = 1`,** which is what makes the counts
 comparable. A reshape CONSUMES its call site, so it is counted once however many
 iterations run; a decline LEAVES the site in place, so the fixpoint re-visits it
 and `declinedPreserveSets` counts it again (measured on the q2probe fixture:
@@ -218,9 +218,9 @@ bySite m =
         |> String.join ","
 
 
-{-| `threshold = 50` so the three-parameter global is a candidate at all (it
+{-| `postMonoThreshold = 50` so the three-parameter global is a candidate at all (it
 costs more than the default budget), `report = True` so the reshape census
-collects, and `fixpointIterations = 1` so decline counts are per-iteration
+collects, and `postMonoFixpointIterations = 1` so decline counts are per-iteration
 exact (see the module doc).
 -}
 partialConfig : Bool -> Config.InlineConfig
@@ -230,9 +230,9 @@ partialConfig preserveSets =
             Config.default.inline
     in
     { base
-        | threshold = 50
+        | postMonoThreshold = 50
         , report = True
-        , fixpointIterations = 1
+        , postMonoFixpointIterations = 1
         , preserveSets = preserveSets
     }
 
