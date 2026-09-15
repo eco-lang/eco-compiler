@@ -2950,8 +2950,17 @@ papSuccWrite mid rest seen res c0 =
         case desc.content of
             Vars.Structure (Vars.FunL _ _ slot) ->
                 -- The result IS an arrow: this member names it; continue the
-                -- walk FROM it for the next depth.
-                papSuccGoC rest seen1 res (Store.unifySlotWithSetC Nothing [ mid ] slot c1)
+                -- walk FROM it for the next depth — with `seen` UNCHANGED.
+                -- `papSuccGoC` records the variable it is entered on, exactly
+                -- as `spineGoC` does. Passing `seen1` (which already holds
+                -- `res`) made that guard fire on the very next step, so every
+                -- successor walk — the `refPapSpine` reference spine and
+                -- `injTotal`'s deep residual — wrote depth 1 and STOPPED
+                -- (`papInject|deep|d2 433, d3 40, d4 1`; a 32-ary constructor
+                -- reference named at depths 0-1 and unwritten at 2-31). Found
+                -- by the post-translation producer census, 2026-09-15
+                -- (plans/lss-container-payload-transport.md §12).
+                papSuccGoC rest seen res (Store.unifySlotWithSetC Nothing [ mid ] slot c1)
 
             Vars.Alias _ _ _ real ->
                 papSuccWrite mid rest seen1 real c1

@@ -2050,7 +2050,7 @@ translateLocalMultiCall region name funcCanType args callCanType s0 =
             Err e
 
         Ok ( funcVar, s1 ) ->
-            case unifyParamsCollect funcVar args s1 of
+            case unifyParamsCollectAt ("L:" ++ name) 0 funcVar args s1 of
                 Err e ->
                     Err e
 
@@ -3381,7 +3381,7 @@ translateGlobalCallSlow region funcRegion global funcCanType args callCanType s0
             Err e
 
         Ok ( funcVar, s1 ) ->
-            case unifyParamsCollect funcVar args s1 of
+            case unifyParamsCollectAt (TOpt.toComparableGlobal global) 0 funcVar args s1 of
                 Err e ->
                     Err e
 
@@ -3831,6 +3831,16 @@ type ArgStash
       -- App-rule σ-transport at the one edge Translate never rebuilt
       -- (`argUnifyVar`'s fresh load carries only the head injection).
     | StashParam Vars.Variable
+      -- v3 PRODUCER CENSUS (plans/lss-container-payload-transport.md §12; TEMPORARY):
+      -- (callee label, arg ordinal, the callee's PARAM var, the arg's form, the
+      -- entry this wraps). Produced ONLY under report+arrowCensus, so the
+      -- default path is unchanged. `translateArgsWith` translates through the
+      -- wrapped entry, THEN reads `pParam` — the end state the callee's demand
+      -- is zonked from, i.e. after the inner call/lambda/local has been
+      -- translated and after flowConnect's write-back. v1/v2 read the argument's
+      -- fresh load in `unifyParamsCollect`, BEFORE translation, which is why
+      -- they reported call results as empty (plan §11.3).
+    | StashCensus String Int Vars.Variable String ArgStash
 
 
 {-| Like `unifyParamsWithArgExprs` but returns, per arg, what the argument's
@@ -3838,7 +3848,12 @@ translation needs to know about the position it was unified into (see
 `ArgStash`).
 -}
 unifyParamsCollect : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Step (List ArgStash)
-unifyParamsCollect funcVar args s0 =
+unifyParamsCollect =
+    unifyParamsCollectAt "?" 0
+
+
+unifyParamsCollectAt : String -> Int -> Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Step (List ArgStash)
+unifyParamsCollectAt pfLabel pfIdx funcVar args s0 =
     case args of
         [] ->
             Ok ( [], s0 )
@@ -3879,12 +3894,12 @@ unifyParamsCollect funcVar args s0 =
                                                             Err e
 
                                                         Ok ( _, s4 ) ->
-                                                            case unifyParamsCollect pRest rest s4 of
+                                                            case unifyParamsCollectAt pfLabel (pfIdx + 1) pRest rest s4 of
                                                                 Err e ->
                                                                     Err e
 
                                                                 Ok ( restStash, s5 ) ->
-                                                                    Ok ( StashLocalMulti freshVar0 :: restStash, s5 )
+                                                                    Ok ( censusWrap pfLabel pfIdx pParam arg "localMulti" (StashLocalMulti freshVar0) s5 :: restStash, s5 )
 
                                         Nothing ->
                                             case argUnifyVar arg s2 of
@@ -3897,7 +3912,7 @@ unifyParamsCollect funcVar args s0 =
                                                             Err e
 
                                                         Ok ( _, s4 ) ->
-                                                            case unifyParamsCollect pRest rest s4 of
+                                                            case unifyParamsCollectAt pfLabel (pfIdx + 1) pRest rest s4 of
                                                                 Err e ->
                                                                     Err e
 
@@ -3914,7 +3929,7 @@ unifyParamsCollect funcVar args s0 =
                                                                             else
                                                                                 StashNone
                                                                     in
-                                                                    Ok ( entry :: restStash, s5 )
+                                                                    Ok ( censusWrap pfLabel pfIdx pParam arg (prodFormOf arg) entry s5 :: restStash, s5 )
 
                         Nothing ->
                             -- Over-applied or opaque callee spine: no
@@ -3923,7 +3938,7 @@ unifyParamsCollect funcVar args s0 =
                             -- left here are STRUCTURALLY unreachable for
                             -- D1's connect (no stash entry is ever made)
                             -- — the `dropped`-vs-population gap.
-                            Ok ( List.map (\_ -> StashNone) args, censusStashMiss args s1 )
+                            Ok ( List.map (\_ -> StashNone) args, censusStashMiss args (prodFormCensusPure pfLabel pfIdx arg "noslot" s1) )
 
 
 {-| LSS\_026 census (plan §2.6 "stash gap"): attribute the args that fall out
@@ -3991,6 +4006,28 @@ translateArgsWith stash args =
     Engine.traverse
         (\( entry, arg ) ->
             case ( entry, accessedLocalName arg ) of
+                ( StashCensus label idx pParam form inner, _ ) ->
+                    -- v3 census: translate through the WRAPPED entry (so
+                    -- flowConnect / local-multi behave exactly as without the
+                    -- census), THEN read the callee's param var.
+                    \s0 ->
+                        case translateArgsWith [ inner ] [ arg ] s0 of
+                            Err e ->
+                                Err e
+
+                            Ok ( monoArgs, s1 ) ->
+                                case monoArgs of
+                                    [ monoArg ] ->
+                                        case prodFormCensusStep label idx form arg pParam s1 of
+                                            Err e ->
+                                                Err e
+
+                                            Ok ( _, s2 ) ->
+                                                Ok ( monoArg, s2 )
+
+                                    _ ->
+                                        Err (Engine.EngineBug "translateArgsWith: census wrapper expected exactly one arg")
+
                 ( StashLocalMulti v, Just localName ) ->
                     -- M6: direct state-passing (desugared andThen/map) → byte-identical.
                     \s0 ->
@@ -4332,6 +4369,239 @@ localMultiArgName arg s0 =
 
         Nothing ->
             Ok ( Nothing, s0 )
+
+
+{-| v3 PRODUCER CENSUS helpers (TEMPORARY — remove after the census run).
+
+    prodform|<callee>|a<i>|<path>|<form>|<slot>
+
+One row per arrow at ANY depth of the callee's PARAM variable, read in
+`translateArgsWith` AFTER the argument is translated (plan §11.3: v1/v2 read the
+argument's fresh load BEFORE translation and were wrong about call results).
+`form` is the argument's syntactic form (`localMulti` for a local-multi function
+arg); `slot` is `mem` / `edge` / `top` / `flex` (nothing written) / `noslot` (a
+`Fun1`, slotless arrow) / `fuel`. Paths follow the `pos|` census except that the
+store is curried (an arrow's parameter is always `/a`). Report+arrowCensus gated.
+-}
+prodFormOf : TOpt.Expr TypeIds.MVarId -> String
+prodFormOf arg =
+    case arg of
+        TOpt.Function _ _ _ _ ->
+            "fn"
+
+        TOpt.TrackedFunction _ _ _ _ ->
+            "fn"
+
+        TOpt.VarGlobal _ _ _ ->
+            "ref"
+
+        TOpt.VarBox _ _ _ ->
+            "ref"
+
+        TOpt.VarCycle _ _ _ _ ->
+            "ref"
+
+        TOpt.VarKernel _ _ _ _ _ ->
+            "kernel"
+
+        TOpt.Accessor _ _ _ ->
+            "accessor"
+
+        TOpt.VarLocal _ _ ->
+            "local"
+
+        TOpt.TrackedVarLocal _ _ _ ->
+            "local"
+
+        TOpt.Call _ _ _ _ ->
+            "call"
+
+        TOpt.If _ _ _ ->
+            "if"
+
+        TOpt.Case _ _ _ _ _ ->
+            "case"
+
+        TOpt.Let _ _ _ ->
+            "let"
+
+        TOpt.Access _ _ _ _ ->
+            "access"
+
+        TOpt.Record _ _ ->
+            "record"
+
+        TOpt.TrackedRecord _ _ _ ->
+            "record"
+
+        TOpt.Tuple _ _ _ _ _ ->
+            "tuple"
+
+        TOpt.List _ _ _ ->
+            "list"
+
+        _ ->
+            "other"
+
+
+censusWrap : String -> Int -> Vars.Variable -> TOpt.Expr TypeIds.MVarId -> String -> ArgStash -> Engine.S -> ArgStash
+censusWrap label idx pParam arg form inner s =
+    if s.env.lss.report && s.env.lss.arrowCensus && canTypeHasArrowDeep (TOpt.typeOf arg) then
+        StashCensus label idx pParam form inner
+
+    else
+        inner
+
+
+prodFormKey : String -> Int -> String -> String -> String -> String
+prodFormKey callee idx path form slot =
+    "prodform|" ++ callee ++ "|a" ++ String.fromInt idx ++ "|" ++ path ++ "|" ++ form ++ "|" ++ slot
+
+
+prodFormCensusPure : String -> Int -> TOpt.Expr TypeIds.MVarId -> String -> Engine.S -> Engine.S
+prodFormCensusPure callee idx arg slot s =
+    if s.env.lss.report && s.env.lss.arrowCensus && canTypeHasArrowDeep (TOpt.typeOf arg) then
+        Engine.bumpArgFlowCensus (prodFormKey callee idx "" (prodFormOf arg) slot) s
+
+    else
+        s
+
+
+prodFormCensusStep : String -> Int -> String -> TOpt.Expr TypeIds.MVarId -> Vars.Variable -> Step ()
+prodFormCensusStep callee idx form arg argVar s0 =
+    if not (s0.env.lss.report && s0.env.lss.arrowCensus) then
+        Ok ( (), s0 )
+
+    else
+        let
+            emit path cls s =
+                Engine.bumpArgFlowCensus (prodFormKey callee idx path form cls) s
+
+            slotClass sdesc =
+                case sdesc.content of
+                    Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers _)) ->
+                        "mem"
+
+                    Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom _ _)) ->
+                        "edge"
+
+                    Vars.Structure (Vars.LambdaSet1 (Vars.LsTop _)) ->
+                        "top"
+
+                    _ ->
+                        "flex"
+
+            walk : Int -> String -> Vars.Variable -> Engine.S -> Result Engine.Failure Engine.S
+            walk fuel path v s =
+                if fuel <= 0 then
+                    Ok (emit path "fuel" s)
+
+                else
+                    case Engine.liftIO (UF.get v) s of
+                        Err e ->
+                            Err e
+
+                        Ok ( desc, s1 ) ->
+                            case desc.content of
+                                Vars.Structure (Vars.FunL pv rv slot) ->
+                                    case Engine.liftIO (UF.get slot) s1 of
+                                        Err e ->
+                                            Err e
+
+                                        Ok ( sdesc, s2 ) ->
+                                            case walk (fuel - 1) (path ++ "/a") pv (emit path (slotClass sdesc) s2) of
+                                                Err e ->
+                                                    Err e
+
+                                                Ok s3 ->
+                                                    walk (fuel - 1) (path ++ "/r") rv s3
+
+                                Vars.Structure (Vars.Fun1 pv rv) ->
+                                    case walk (fuel - 1) (path ++ "/a") pv (emit path "noslot" s1) of
+                                        Err e ->
+                                            Err e
+
+                                        Ok s3 ->
+                                            walk (fuel - 1) (path ++ "/r") rv s3
+
+                                Vars.Structure (Vars.App1 _ name args) ->
+                                    walkList (fuel - 1)
+                                        (if name == "List" then
+                                            \_ -> path ++ "/l"
+
+                                         else
+                                            \i -> path ++ "/c" ++ String.fromInt i
+                                        )
+                                        0
+                                        args
+                                        s1
+
+                                Vars.Structure (Vars.Tuple1 a b rest) ->
+                                    walkList (fuel - 1) (\i -> path ++ "/t" ++ String.fromInt i) 0 (a :: b :: rest) s1
+
+                                Vars.Structure (Vars.Record1 fields _) ->
+                                    List.foldl
+                                        (\( fname, fv ) acc ->
+                                            case acc of
+                                                Err e ->
+                                                    Err e
+
+                                                Ok sx ->
+                                                    walk (fuel - 1) (path ++ "/f:" ++ fname) fv sx
+                                        )
+                                        (Ok s1)
+                                        (Dict.toList fields)
+
+                                Vars.Alias _ _ _ real ->
+                                    walk (fuel - 1) path real s1
+
+                                _ ->
+                                    Ok s1
+
+            walkList fuel pathOf i vs s =
+                case vs of
+                    [] ->
+                        Ok s
+
+                    v :: rest ->
+                        case walk fuel (pathOf i) v s of
+                            Err e ->
+                                Err e
+
+                            Ok s1 ->
+                                walkList fuel pathOf (i + 1) rest s1
+        in
+        case walk 40 "" argVar s0 of
+            Err e ->
+                Err e
+
+            Ok s1 ->
+                Ok ( (), s1 )
+
+
+canTypeHasArrowDeep : Can.Type TypeIds.MVarId -> Bool
+canTypeHasArrowDeep t =
+    case t of
+        Can.TLambda _ _ _ ->
+            True
+
+        Can.TType _ _ args ->
+            List.any canTypeHasArrowDeep args
+
+        Can.TRecord fields _ ->
+            List.any (\( _, ft ) -> canTypeHasArrowDeep ft) (Can.fieldsToList fields)
+
+        Can.TTuple a b rest ->
+            canTypeHasArrowDeep a || canTypeHasArrowDeep b || List.any canTypeHasArrowDeep rest
+
+        Can.TAlias _ _ _ (Can.Filled inner) ->
+            canTypeHasArrowDeep inner
+
+        Can.TAlias _ _ _ (Can.Holey inner) ->
+            canTypeHasArrowDeep inner
+
+        _ ->
+            False
 
 
 {-| The store var to unify a call argument against: the arg's canonical type

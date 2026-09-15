@@ -1050,6 +1050,117 @@ is exactly Run 20's 13,398,066 B — so the shipped compiler IS the `preMono=0` 
 `postMono` stays default-on; `aliasForward` and `etaExpand` are unaffected (separate passes, separate
 flags, both still default-on).
 
+### Run 21 — defaults, `flowAll=0` (2026-09-15; control for Run 22)
+
+| compiler | build | workload | wall (s) | max RSS (kB) | minor GC | major GC | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| reference | `ECO_MONO_ENGINE=subst` | solver+LSS, `flowAll=0` | 622.6 | 14,725,476 | 2276 | 11 | 23,270 | 13,403,612 |
+| benchmark | solver+LSS, `flowAll=0` | solver+LSS, `flowAll=0` | 530.7 | 14,785,424 | 2265 | 11 | 23,310 | 13,403,612 |
+
+**1. lss-coverage**
+
+| compiler | positions | singleton `k1` | multi `kN` | `var` | `⊤` | partial | coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| reference | 150,259 | 101,296 (67.41 %) | 34,873 (23.21 %) | 12,958 (8.62 %) | 1,101 (0.73 %) | 31 (0.02 %) | 90.62 % |
+| benchmark | 150,259 | 101,296 (67.41 %) | 34,873 (23.21 %) | 12,958 (8.62 %) | 1,101 (0.73 %) | 31 (0.02 %) | 90.62 % |
+
+**2. lss-stamping**
+
+| compiler | dispatchUpgraded | stampedPapGlobal | stampedStaged | stampedPapPrefix | noInstance | blocked | bodyMismatch | shape | abiMismatch | devirtPost fn/ctor/noSpec/ambiguous | multiInstanceGroups |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 16,790 | 3,356 | 206 | 12 | 9,610 | 7 | 1,280 | 649 | 358 | 67/310/0/9 | 1,736 |
+| benchmark | 16,790 | 3,356 | 206 | 12 | 9,610 | 7 | 1,280 | 649 | 358 | 67/310/0/9 | 1,736 |
+
+**3. dispatch-stats**
+
+| compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 2,857,933,287 | 2,759,672,237 | 98,261,050 | 0 | 2,857,933,287 | 0.00 | 96.56 | 3.44 | 7,013 |
+| benchmark | 827,779,417 | 788,905,892 | 38,873,525 | 1,055,314,131 | 1,883,093,548 | 56.04 | 41.89 | 2.06 | 7,006 |
+
+**4. call-census**
+
+| compiler | elm | runtime | kernel | helper | cap | extern | indirect | sites | static-target % |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 13,202,787,029 | 15,564,125,728 | 1,343,064,242 | 2,639,663,752 | 391,103,741 | 0 | 0 | 429,285 | 83.94 |
+| benchmark | 12,611,421,751 | 10,713,743,952 | 1,342,796,540 | 656,242,898 | 648,893,968 | 0 | 0 | 448,921 | 94.64 |
+
+Control for Run 22: the tree with the `flow` sub-record (`flowConnect` moved into `lss.flow.connect`,
+unchanged in meaning, JSON key, env var and `lssFC` token) and F1 (`lss.flow.all`, DEFAULT-OFF) present,
+every other flag at its default. Exactly the protocol's environment
+(`ECO_DISPATCH_STATS=1 ECO_MONO_ENGINE=solver ECO_MONO_LSS=1 ECO_MONO_LSS_REPORT=1`, no
+`ECO_INLINE_REPORT`) plus `ECO_MONO_LSS_FLOW_ALL=0`. Against Run 20: the tree moved at 10:56 the same
+day (`Config.elm`, `InlineSimplify.elm` — the `preMono` default flip) and now carries the F1 code, so
+`positions` 150,533 → 150,259 and `var` 13,277 → 12,958 are source drift, not analysis; group 2 moves
+`dispatchUpgraded` 16,779 → 16,790 and `noInstance` 9,602 → 9,610 for the same reason. Native seed for
+the reference: `bin/pmo-bench-off-census` (Run 20's benchmark binary) emitted `f1-std-subst.mlir`
+(12,274,732 B) from this tree. **Bootstrap fixed point:** the benchmark emission is byte-identical to the
+reference emission.
+
+### Run 22 — defaults, `flowAll=1` (2026-09-15; F1: universal argument write-back)
+
+| compiler | build | workload | wall (s) | max RSS (kB) | minor GC | major GC | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| reference | `ECO_MONO_ENGINE=subst` | solver+LSS, `flowAll=1` | 630.9 | 14,819,268 | 2296 | 11 | 23,355 | 13,403,612 |
+| benchmark | solver+LSS, `flowAll=1` | solver+LSS, `flowAll=1` | 531.0 | 14,843,368 | 2284 | 11 | 23,352 | 13,403,612 |
+
+**1. lss-coverage**
+
+| compiler | positions | singleton `k1` | multi `kN` | `var` | `⊤` | partial | coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| reference | 150,259 | 101,296 (67.41 %) | 34,873 (23.21 %) | 12,958 (8.62 %) | 1,101 (0.73 %) | 31 (0.02 %) | 90.62 % |
+| benchmark | 150,259 | 101,296 (67.41 %) | 34,873 (23.21 %) | 12,958 (8.62 %) | 1,101 (0.73 %) | 31 (0.02 %) | 90.62 % |
+
+**2. lss-stamping**
+
+| compiler | dispatchUpgraded | stampedPapGlobal | stampedStaged | stampedPapPrefix | noInstance | blocked | bodyMismatch | shape | abiMismatch | devirtPost fn/ctor/noSpec/ambiguous | multiInstanceGroups |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 16,790 | 3,356 | 206 | 12 | 9,610 | 7 | 1,280 | 649 | 358 | 67/310/0/9 | 1,736 |
+| benchmark | 16,790 | 3,356 | 206 | 12 | 9,610 | 7 | 1,280 | 649 | 358 | 67/310/0/9 | 1,736 |
+
+**3. dispatch-stats**
+
+| compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 2,897,198,112 | 2,798,506,391 | 98,691,721 | 0 | 2,897,198,112 | 0.00 | 96.59 | 3.41 | 7,013 |
+| benchmark | 842,487,492 | 803,613,967 | 38,873,525 | 1,067,891,481 | 1,910,378,973 | 55.90 | 42.07 | 2.03 | 6,977 |
+
+**4. call-census**
+
+| compiler | elm | runtime | kernel | helper | cap | extern | indirect | sites | static-target % |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 13,303,632,836 | 15,699,241,647 | 1,354,566,129 | 2,676,248,139 | 397,152,696 | 0 | 0 | 429,285 | 83.86 |
+| benchmark | 12,704,330,133 | 10,790,168,783 | 1,354,298,390 | 669,049,842 | 659,409,249 | 0 | 0 | 448,921 | 94.59 |
+
+`ECO_MONO_LSS_FLOW_ALL=1` — F1, the universal argument write-back
+(`plans/lss-container-payload-transport.md` §10.5/§11): `flowConnect`'s store-level write-back of a
+translated argument's type into the callee's param variable, extended from lambda literals to EVERY
+argument whose type carries an arrow at any depth (call results, if/case/let/field-access
+expressions, containers of functions), with the consumer's `MFunction`-only guard dropped. Same
+source, and the reference rows are the SAME binary as Run 21's, so every difference is the workload
+flag.
+**It fires and changes nothing.** `flow|connLam` 8,970 → 29,289 and `flow|connAll` 788 (30,077
+write-backs vs 8,970), `flow|topCarried` 10 → 2,001, `flow|callTopFallback` 32 in both arms — and the
+emission is **byte-identical to Run 21's** (all four `out.mlir` files are 13,403,612 B and `cmp`-equal),
+so the two benchmark binaries are identical and both arms' bootstrap fixed points hold. Groups 1 and 2
+are identical to the digit: coverage 90.62 %, `var` 12,958, `dispatchUpgraded` 16,790.
+**Mechanism (verified in code, plan §11.2):** the edge F1 re-ties has been connected since
+`arrowIdentity` shipped on 2026-08-25. `translate (TOpt.Call … meta)` passes the call node's own
+`meta.tipe` as the inner call's `callCanType`; `unifyResultWithExpected` loads that same stamped
+`Can.Type` object; `Store.loadTypeC` memoises set slots by `ArrowId` in the item-scoped
+`itemAux.arrowMemo` — so the outer argument's load and the inner call's result already share every
+arrow slot, and `connectParamArg` unifies a class with a zonk of itself. The GAP-2 plan's "call result
+→ argument" hole was real on 2026-08-24 and closed the next day by identity, not by transport; the
+`prodform|` instrument that motivated F1 read the slot BEFORE the inner call was translated.
+**Dispatch (groups 3–4) — the write-back's own cost on an identical binary.** Benchmark `sat`
+827,779,417 → 842,487,492 (+1.78 %), `gen` +1.86 %, `fast` +1.19 %, `typed` IDENTICAL (38,873,525 —
+the extra work is entirely in the analysis's own calls); reference `sat` +1.37 %. Group 4 `helper`
++12,806,944 and `cap` +10,515,281 on the benchmark row, `sites` unchanged at 448,921 (same binary).
+**Wall:** reference 622.6 → 630.9 s (+1.3 %), benchmark 530.7 → 531.0 s (flat); RSS +0.4 %/+0.6 %;
+minor GC +20/+19. **Verdict: NULL under the completeness metric** — zero positions move — at a
+measurable analysis cost. The flag stays DEFAULT-OFF as the measured record; F2/F3 in the plan must
+be re-sized from a post-translation read before either is built (plan §11.5).
+
 ---
 
 ## Summary
@@ -1101,6 +1212,10 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 19 | preThr=0 | benchmark | 530.7 | 2261 | 11 | 23113 | 13398066 |
 | 20 | preMono=0 | reference | 621.7 | 2265 | 11 | 23116 | 13398066 |
 | 20 | preMono=0 | benchmark | 526.2 | 2260 | 11 | 23098 | 13398066 |
+| 21 | flowAll=0 | reference | 622.6 | 2276 | 11 | 23270 | 13403612 |
+| 21 | flowAll=0 | benchmark | 530.7 | 2265 | 11 | 23310 | 13403612 |
+| 22 | flowAll=1 | reference | 630.9 | 2296 | 11 | 23355 | 13403612 |
+| 22 | flowAll=1 | benchmark | 531.0 | 2284 | 11 | 23352 | 13403612 |
 
 ### 1. lss-coverage
 
@@ -1146,6 +1261,10 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 19 | preThr=0 | benchmark | 150533 | 101246 | 34877 | 13277 | 1102 | 31 | 90.43 |
 | 20 | preMono=0 | reference | 150533 | 101246 | 34877 | 13277 | 1102 | 31 | 90.43 |
 | 20 | preMono=0 | benchmark | 150533 | 101246 | 34877 | 13277 | 1102 | 31 | 90.43 |
+| 21 | flowAll=0 | reference | 150259 | 101296 | 34873 | 12958 | 1101 | 31 | 90.62 |
+| 21 | flowAll=0 | benchmark | 150259 | 101296 | 34873 | 12958 | 1101 | 31 | 90.62 |
+| 22 | flowAll=1 | reference | 150259 | 101296 | 34873 | 12958 | 1101 | 31 | 90.62 |
+| 22 | flowAll=1 | benchmark | 150259 | 101296 | 34873 | 12958 | 1101 | 31 | 90.62 |
 
 ### 2. lss-stamping
 
@@ -1191,6 +1310,10 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 19 | preThr=0 | benchmark | 16779 | 3356 | 206 | 12 | 9602 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
 | 20 | preMono=0 | reference | 16779 | 3356 | 206 | 12 | 9602 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
 | 20 | preMono=0 | benchmark | 16779 | 3356 | 206 | 12 | 9602 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
+| 21 | flowAll=0 | reference | 16790 | 3356 | 206 | 12 | 9610 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
+| 21 | flowAll=0 | benchmark | 16790 | 3356 | 206 | 12 | 9610 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
+| 22 | flowAll=1 | reference | 16790 | 3356 | 206 | 12 | 9610 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
+| 22 | flowAll=1 | benchmark | 16790 | 3356 | 206 | 12 | 9610 | 7 | 1280 | 649 | 358 | 67 | 310 | 0 | 9 | 1736 |
 
 ### 3. dispatch-stats
 
@@ -1238,6 +1361,10 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 19 | preThr=0 | benchmark | 829936522 | 791198567 | 38737955 | 1053192393 | 1883128915 | 55.93 | 42.02 | 2.06 | 7094 |
 | 20 | preMono=0 | reference | 2854163494 | 2796555379 | 57608115 | 0 | 2854163494 | 0.00 | 97.98 | 2.02 | 6765 |
 | 20 | preMono=0 | benchmark | 829709242 | 790971287 | 38737955 | 1052614199 | 1882323441 | 55.92 | 42.02 | 2.06 | 7059 |
+| 21 | flowAll=0 | reference | 2857933287 | 2759672237 | 98261050 | 0 | 2857933287 | 0.00 | 96.56 | 3.44 | 7013 |
+| 21 | flowAll=0 | benchmark | 827779417 | 788905892 | 38873525 | 1055314131 | 1883093548 | 56.04 | 41.89 | 2.06 | 7006 |
+| 22 | flowAll=1 | reference | 2897198112 | 2798506391 | 98691721 | 0 | 2897198112 | 0.00 | 96.59 | 3.41 | 7013 |
+| 22 | flowAll=1 | benchmark | 842487492 | 803613967 | 38873525 | 1067891481 | 1910378973 | 55.90 | 42.07 | 2.03 | 6977 |
 
 ### 4. call-census
 
@@ -1283,3 +1410,7 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 19 | preThr=0 | benchmark | 12598157403 | 10708411143 | 1342615327 | 659280628 | 651391219 | 0 | 0 | 448744 | 94.62 |
 | 20 | preMono=0 | reference | 13236815686 | 15542002450 | 1342234932 | 2637545752 | 394029605 | 0 | 0 | 428103 | 83.99 |
 | 20 | preMono=0 | benchmark | 12592218581 | 10703864813 | 1341966857 | 659108684 | 651251393 | 0 | 0 | 448744 | 94.62 |
+| 21 | flowAll=0 | reference | 13202787029 | 15564125728 | 1343064242 | 2639663752 | 391103741 | 0 | 0 | 429285 | 83.94 |
+| 21 | flowAll=0 | benchmark | 12611421751 | 10713743952 | 1342796540 | 656242898 | 648893968 | 0 | 0 | 448921 | 94.64 |
+| 22 | flowAll=1 | reference | 13303632836 | 15699241647 | 1354566129 | 2676248139 | 397152696 | 0 | 0 | 429285 | 83.86 |
+| 22 | flowAll=1 | benchmark | 12704330133 | 10790168783 | 1354298390 | 669049842 | 659409249 | 0 | 0 | 448921 | 94.59 |
