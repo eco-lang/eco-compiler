@@ -377,25 +377,28 @@ settleRowRefs s =
                     s.lssMemberTable.byKey
 
             emptyCell =
-                { top = False, sets = [], deps = [] }
+                { top = False, topKinds = [], markedVar = False, partial = False, sets = [], deps = [] }
 
             collectCell marked anno cell =
                 case anno of
-                    Mono.LTop _ ->
-                        { cell | top = True }
+                    Mono.LTop k ->
+                        -- The ⊤ KIND is the diagnostic: it names which
+                        -- manufacturer wrote into this constructor's payload
+                        -- (`rowDefer|why` below).
+                        { cell | top = True, topKinds = Mono.unionSortedInts [ k ] cell.topKinds }
 
                     Mono.LSet ms ->
                         { cell | sets = Mono.unionSortedInts ms cell.sets }
 
                     Mono.LPartial _ ->
-                        { cell | top = True }
+                        { cell | top = True, partial = True }
 
                     Mono.LRow rows ms ->
                         { cell | sets = Mono.unionSortedInts ms cell.sets, deps = Mono.unionSortedInts rows cell.deps }
 
                     Mono.LVar _ ->
                         if marked then
-                            { cell | top = True }
+                            { cell | top = True, markedVar = True }
 
                         else
                             cell
@@ -542,6 +545,15 @@ settleRowRefs s =
                 fixpoint initial (Dict.size initial + 2)
 
             -- ( annotation, ( resolved, top, empty ) )
+            --
+            -- A contaminated row resolves to `topRow`, NOT to
+            -- `LPartial (known union)`. The lower bound is the more honest
+            -- answer and every consumer already declines it — but
+            -- `settleCtorRows`' ⊤-heal runs AFTER this pass and is gated on
+            -- `hasTopAnno`, so a non-⊤ annotation FORFEITS the heal: measured,
+            -- 528 of the 646 ⊤-resolutions are filled by it afterwards
+            -- (plan §12.9.5, the `rowDefer|why` diagnostic). Partial here would
+            -- cost those 528 positions to buy nothing the metric counts.
             resolve rows ms =
                 case
                     List.foldl
@@ -656,6 +668,108 @@ settleRowRefs s =
                     _ ->
                         ( t, ( nr, nt, ne ) )
 
+            -- PER-ROW DIAGNOSTIC (plan §12.9.5): why each row failed to
+            -- resolve, keyed by the row's own cell. `top:<kinds>` names the ⊤
+            -- MANUFACTURER that wrote into the constructor's payload,
+            -- `markedVar` a flex-transporting construction (the parameter
+            -- chain), `dep` a row that is clean itself but references a row
+            -- that is not. Report-gated: the keys are built per row (57 on the
+            -- self-compile), not per position.
+            whyCensus sIn =
+                if not sIn.env.lss.report then
+                    sIn
+
+                else
+                    Dict.foldl
+                        (\rid rkey acc ->
+                            let
+                                label =
+                                    String.replace "|" ";" rkey
+
+                                reason =
+                                    case ( Dict.get rid rowValues, cellOf rid ) of
+                                        ( Just (Just ms), _ ) ->
+                                            "ok|n=" ++ String.fromInt (List.length ms)
+
+                                        ( _, Nothing ) ->
+                                            "noCell"
+
+                                        ( _, Just cell ) ->
+                                            if not (List.isEmpty cell.topKinds) then
+                                                "top:" ++ String.join "," (List.map Mono.topKindLabel cell.topKinds)
+
+                                            else if cell.markedVar then
+                                                "markedVar"
+
+                                            else if cell.partial then
+                                                "partial"
+
+                                            else
+                                                "dep"
+                            in
+                            Engine.bumpArgFlowCensus ("rowDefer|why|" ++ reason ++ "|" ++ label) acc
+                        )
+                        sIn
+                        rowKeyOf
+
+            -- F3-a, the AST half: `rowifyPayload`'s 13,984 mints land on
+            -- DESTRUCTOR and expression types, and only the ~671 that reach a
+            -- callee's demand (`enrichFromEnv` -> `monoTypeToVarC`) are
+            -- registry positions. Every other one would survive into the graph
+            -- as an unresolved `LRow` — sound (declined exactly like ⊤ at
+            -- AbiCloning, MapTemplate and the borrow oracle) but inert. Rewrite
+            -- them with the same resolved row values.
+            --
+            -- ONE linear pass over the node array, guarded per node by the
+            -- allocation-free `anyNodeType` probe so untouched nodes are not
+            -- rebuilt. (The Sep-4 regression was a per-let `traverseExpr` over
+            -- the whole body, quadratic in nesting — not a single sweep.)
+            rewriteType t =
+                case t of
+                    Mono.MFunction _ anno args result ->
+                        let
+                            anno1 =
+                                case anno of
+                                    Mono.LRow rows ms ->
+                                        Tuple.first (resolve rows ms)
+
+                                    _ ->
+                                        anno
+                        in
+                        Mono.mFunction anno1 (List.map rewriteType args) (rewriteType result)
+
+                    Mono.MList _ inner ->
+                        Mono.mList (rewriteType inner)
+
+                    Mono.MTuple _ elems ->
+                        Mono.mTuple (List.map rewriteType elems)
+
+                    Mono.MRecord _ fields ->
+                        Mono.mRecord (Dict.map (\_ ft -> rewriteType ft) fields)
+
+                    Mono.MCustom _ rtHome rtName args ->
+                        Mono.mCustom rtHome rtName (List.map rewriteType args)
+
+                    _ ->
+                        t
+
+            ( nodes1, astNodes ) =
+                Array.foldl
+                    (\maybeNode ( acc, n ) ->
+                        case maybeNode of
+                            Just node ->
+                                if Traverse.anyNodeType hasRow node then
+                                    ( Array.push (Just (Traverse.mapNodeTypes rewriteType node)) acc, n + 1 )
+
+                                else
+                                    ( Array.push maybeNode acc, n )
+
+                            Nothing ->
+                                ( Array.push maybeNode acc, n )
+                    )
+                    ( Array.empty, 0 )
+                    s.nodes
+
             ( registry1, ( totR, totT, totE ) ) =
                 Tuple.second
                     (Array.foldl
@@ -679,7 +793,9 @@ settleRowRefs s =
                         s.registry.reverseMapping
                     )
         in
-        { s | registry = registry1 }
+        { s | registry = registry1, nodes = nodes1 }
+            |> Engine.bumpArgFlowCensusBy "rowDefer|astNodes" astNodes
+            |> whyCensus
             |> Engine.bumpArgFlowCensusBy "rowDefer|rows" (Dict.size rowKeyOf)
             |> Engine.bumpArgFlowCensusBy "rowDefer|noCell" noCell
             |> Engine.bumpArgFlowCensusBy "rowDefer|resolved" totR

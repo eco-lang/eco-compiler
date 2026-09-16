@@ -782,7 +782,10 @@ or in the binding environment).
     does (Translate.elm `specializeCycleFuncDef`). Structure stays the
     classify's (the ABI guard). Artifact-affecting (spec keys are
     annotation-sensitive); hash token `lssFLO=`; env
-    `ECO_MONO_LSS_FLOW_LET_OVERLAY`. DEFAULT-OFF pending the A/B.
+    `ECO_MONO_LSS_FLOW_LET_OVERLAY` (`=0` is the escape hatch). DEFAULT-ON since
+    2026-09-16 (plan §12.10.3, last arm of the series): `leak|letAnno` 58 -> 0,
+    ⊤ 698 -> 668 with `var` +30 — a ⊤-manufacturer removal, coverage-flat by the
+    metric, wall flat.
 
 -}
 type alias LssFlowConfig =
@@ -798,6 +801,34 @@ type alias LssFlowConfig =
     -- union ⇒ false singleton). Artifact-affecting; hash token `lssFRD=`;
     -- env `ECO_MONO_LSS_FLOW_ROW_DEFER`. DEFAULT-OFF pending the A/B.
     , rowDefer : Bool
+
+    -- `accessFlow` — E15 (plans/lss-container-payload-transport.md §12.10.1): a
+    -- record-field ACCESS transports its field's set — `enrichFromEnv` projects
+    -- a local record's bound type for `r.f` arguments and callees, an access-form
+    -- argument takes the flowConnect write-back after translation, and
+    -- `refineAccessType` overlays the record's field annotations onto the access
+    -- node instead of keeping the storeless `clsMisc` ⊤. Also carries the
+    -- list-literal element JOIN (a first-element-only set is a completeness
+    -- claim the other elements falsify). Token `lssFAF=`; env
+    -- `ECO_MONO_LSS_FLOW_ACCESS_FLOW` (`=0` is the escape hatch).
+    --
+    -- DEFAULT-ON since 2026-09-16 (plan §12.10.3): `enrich|access|ofLocal`
+    -- 5,785 joins, `var` 852 -> 837, k1 +26, wall flat; the callee-form
+    -- dispatch effect is owed a call-stats pair.
+    , accessFlow : Bool
+
+    -- `litFacts` — F4-sig (§12.10.1): the signature walk gives record/tuple/
+    -- list/update literals a POINT (their loaded type, element slots joined
+    -- with the elements' points) instead of `WpNone`, so a def returning or
+    -- let-binding a literal of functions carries facts at the literal's
+    -- interior arrows. Token `lssFLF=`; env `ECO_MONO_LSS_FLOW_LIT_FACTS`
+    -- (`=0` is the escape hatch).
+    --
+    -- DEFAULT-ON since 2026-09-16 (plan §12.10.3): 13,443 literal points
+    -- (tuple 6,858 / list 5,341 / record 1,244 honest, update 1,541 opaque),
+    -- `var` 837 -> 821, k1 +133 / kN +87 — the largest gain of the series;
+    -- wall flat.
+    , litFacts : Bool
     }
 
 
@@ -914,6 +945,19 @@ type alias LssStampConfig =
     -- positions 866 -> 254 and their downstream parameter chain 1,024 ->
     -- 454; wall and RSS flat.
     , useInject : Bool
+
+    -- `useInjectPap` — F2.c (plans/lss-container-payload-transport.md §12.10.1):
+    -- the same use-site write for a local-multi whose RHS is a PARTIAL
+    -- APPLICATION of a global (`exprCompiler = bfExprCompiler (…)`): the id the
+    -- RHS re-translation mints is `p|<global>|<supplied>` (`injectPapMember`),
+    -- a function of the syntax alone and instance-blind by design, so the use
+    -- site mints the same key and writes it HEAD-ONLY (the `p|` law). Own flag
+    -- for its own A/B; token `lssIUP=`; env
+    -- `ECO_MONO_LSS_INSTANCE_QUAL_USE_INJECT_PAP` (`=0` is the escape hatch).
+    --
+    -- DEFAULT-ON since 2026-09-16 (plan §12.10.3, five-arm series): 46 uses
+    -- inject, `var` 893 -> 852, k1 +39, wall flat, devirt unchanged.
+    , useInjectPap : Bool
     }
 
 
@@ -967,10 +1011,10 @@ defaultLss =
     , argPoints = False
     , rsTop = True
     , destrAnno = True
-    , flow = { connect = True, letOverlay = False, rowDefer = False }
+    , flow = { connect = True, letOverlay = True, rowDefer = False, accessFlow = True, litFacts = True }
     , settle = { varSucc = True, varCtorRows = True, varLambda = True }
     , stageAnchor = { rowFill = False, demandFill = False }
-    , stamp = { enabled = True, maxInstances = 8, flatPeel = True, census = False, papFast = True, useInject = True }
+    , stamp = { enabled = True, maxInstances = 8, flatPeel = True, census = False, papFast = True, useInject = True, useInjectPap = True }
     }
 
 
@@ -1588,6 +1632,8 @@ lssFlowDecoder =
         |> D.apply (D.optionalField "flowConnect" D.bool defaultLss.flow.connect)
         |> D.apply (D.optionalField "flowLetOverlay" D.bool defaultLss.flow.letOverlay)
         |> D.apply (D.optionalField "flowRowDefer" D.bool defaultLss.flow.rowDefer)
+        |> D.apply (D.optionalField "flowAccessFlow" D.bool defaultLss.flow.accessFlow)
+        |> D.apply (D.optionalField "flowLitFacts" D.bool defaultLss.flow.litFacts)
 
 
 {-| Flat keys, prefixed — new with the sub-record (no schema history to keep).
@@ -1601,6 +1647,7 @@ lssInstanceQualDecoder =
         |> D.apply (D.optionalField "census" D.bool defaultLss.stamp.census)
         |> D.apply (D.optionalField "papFast" D.bool defaultLss.stamp.papFast)
         |> D.apply (D.optionalField "instanceQualUseInject" D.bool defaultLss.stamp.useInject)
+        |> D.apply (D.optionalField "instanceQualUseInjectPap" D.bool defaultLss.stamp.useInjectPap)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -2139,6 +2186,20 @@ hash cfg =
                       else
                         []
 
+                    -- F2.c PAP-RHS use-site injection: artifact-affecting.
+                    , if lss.stamp.useInjectPap /= defaultLss.stamp.useInjectPap then
+                        [ "lssIUP="
+                            ++ (if lss.stamp.useInjectPap then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
                     -- Injection completeness: PAP residual members are
                     -- artifact-affecting (members → annotations → keys).
                     , if lss.papMembers /= defaultLss.papMembers then
@@ -2368,6 +2429,34 @@ hash cfg =
                     , if lss.flow.rowDefer /= defaultLss.flow.rowDefer then
                         [ "lssFRD="
                             ++ (if lss.flow.rowDefer then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- E15 access flow: artifact-affecting.
+                    , if lss.flow.accessFlow /= defaultLss.flow.accessFlow then
+                        [ "lssFAF="
+                            ++ (if lss.flow.accessFlow then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- F4-sig literal facts: artifact-affecting.
+                    , if lss.flow.litFacts /= defaultLss.flow.litFacts then
+                        [ "lssFLF="
+                            ++ (if lss.flow.litFacts then
                                     "1"
 
                                 else

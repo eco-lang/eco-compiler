@@ -1549,11 +1549,6 @@ type alias ItemAux =
     -- (`retranslateWithTag`). Nothing outside a local-multi re-translation.
     , retranslating : Maybe ( String, TypeIds.SrcLambdaId, Int )
 
-    -- v4 PRODUCER CENSUS (TEMPORARY, plans/lss-container-payload-transport.md §12.9): local
-    -- name -> binding kind (param / let / letMulti / tailFn / destr / destrRoot). Written only
-    -- under report+arrowCensus; NOT scoped, so a shadowed name reads the latest binding.
-    , varKind : CoreDict.Dict String String
-
     -- Phase 2a arrow identity (plans/lss-unknown-elimination.md §4.5):
     -- `Id.toComparable arrowId` -> that arrow's lambda-set SLOT Point IN THIS
     -- ITEM'S STORE.
@@ -1630,7 +1625,7 @@ type alias ItemAux =
 
 emptyItemAux : ItemAux
 emptyItemAux =
-    { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = [], currentSpecId = Nothing, demandQualified = CoreDict.empty, currentLocalInstance = 0, retranslating = Nothing, varKind = CoreDict.empty, arrowMemo = CoreDict.empty, arrowOfSlot = CoreDict.empty, zonkLog = [], qLog = [], qSigRoot = Nothing }
+    { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = [], currentSpecId = Nothing, demandQualified = CoreDict.empty, currentLocalInstance = 0, retranslating = Nothing, arrowMemo = CoreDict.empty, arrowOfSlot = CoreDict.empty, zonkLog = [], qLog = [], qSigRoot = Nothing }
 
 
 {-| Scratch-store entry: clear ONLY the read lists (scratch Point indices are
@@ -1651,7 +1646,7 @@ from the inner state (matches the pre-pack behavior field for field).
 -}
 restoredAux : ItemAux -> ItemAux -> ItemAux
 restoredAux outer inner =
-    { inner | ecoResidualReads = outer.ecoResidualReads, ecoResidualKeyReads = outer.ecoResidualKeyReads, arrowMemo = outer.arrowMemo, arrowOfSlot = outer.arrowOfSlot, zonkLog = outer.zonkLog, qLog = outer.qLog, qSigRoot = outer.qSigRoot, currentLocalInstance = outer.currentLocalInstance, retranslating = outer.retranslating, varKind = outer.varKind }
+    { inner | ecoResidualReads = outer.ecoResidualReads, ecoResidualKeyReads = outer.ecoResidualKeyReads, arrowMemo = outer.arrowMemo, arrowOfSlot = outer.arrowOfSlot, zonkLog = outer.zonkLog, qLog = outer.qLog, qSigRoot = outer.qSigRoot, currentLocalInstance = outer.currentLocalInstance, retranslating = outer.retranslating }
 
 
 {-| Saturation-pass reset (MONO\_029 R2): drop the recorded reads before
@@ -1695,6 +1690,7 @@ type alias NumberMultiEntry =
     { defName : String
     , instances : Mono.SpecMap NumberInstance
     , rhsLam : Maybe ( TypeIds.SrcLambdaId, Int ) -- F2 (plans/lss-container-payload-transport.md §12.9.4): the let-function's RHS source lambda id and param count when the RHS is a lambda literal — what a use site injects; Nothing for tail defs, non-lambda RHSs and the numberMulti stack
+    , rhsPap : Maybe ( TOpt.Global, Int ) -- F2.c (§12.10.1): the RHS is a PARTIAL APPLICATION of this global with this many args supplied — a use site injects `p|<global>|<supplied>`; Nothing otherwise
     , pendingEnrich : CoreDict.Dict String ( String, Mono.MonoType ) -- E4a deferral (Translate.flushLocalMultiEnrich): instance name -> (its let's defName, the instance RHS type) of let-functions nested in THIS entry's body whose use-site overlay is owed to the outermost let-function's single walk; always empty on the numberMulti stack
     }
 
@@ -2599,7 +2595,7 @@ its body (instance discovery is body-first).
 -}
 pushNumberMulti : String -> Step ()
 pushNumberMulti defName s =
-    Ok ( (), { s | numberMulti = { defName = defName, instances = Mono.specMapEmpty, rhsLam = Nothing, pendingEnrich = CoreDict.empty } :: s.numberMulti } )
+    Ok ( (), { s | numberMulti = { defName = defName, instances = Mono.specMapEmpty, rhsLam = Nothing, rhsPap = Nothing, pendingEnrich = CoreDict.empty } :: s.numberMulti } )
 
 
 {-| Pop the top number-multi entry after the body is specialized.
@@ -2661,9 +2657,9 @@ recordNumberInstanceOrd name monoType s =
 {-| Push an empty local-multi entry for a let-bound function before walking its
 body (each use records the concrete type it is applied at).
 -}
-pushLocalMulti : Maybe ( TypeIds.SrcLambdaId, Int ) -> String -> Step ()
-pushLocalMulti rhsLam defName s =
-    Ok ( (), { s | localMulti = { defName = defName, instances = Mono.specMapEmpty, rhsLam = rhsLam, pendingEnrich = CoreDict.empty } :: s.localMulti } )
+pushLocalMulti : Maybe ( TypeIds.SrcLambdaId, Int ) -> Maybe ( TOpt.Global, Int ) -> String -> Step ()
+pushLocalMulti rhsLam rhsPap defName s =
+    Ok ( (), { s | localMulti = { defName = defName, instances = Mono.specMapEmpty, rhsLam = rhsLam, rhsPap = rhsPap, pendingEnrich = CoreDict.empty } :: s.localMulti } )
 
 
 popLocalMulti : Step (Maybe NumberMultiEntry)

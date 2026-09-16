@@ -177,7 +177,11 @@ runWith on srcModule =
             Config.defaultLss.flow
     in
     Pipeline.runSolverMonoWithLimits Config.defaultLimits
-        { defaults | enabled = True, keyed = True, flow = { fl | letOverlay = on } }
+        -- Per-mechanism isolation: the other flow repairs (E15 access flow, F4-sig
+        -- literal facts) are pinned OFF so the differential is letOverlay's alone —
+        -- with them on, the call-RHS fixture's field arrow arrives already
+        -- annotated and the flag-off arm no longer reads the classify's ⊤.
+        { defaults | enabled = True, keyed = True, flow = { fl | letOverlay = on, accessFlow = False, litFacts = False } }
         srcModule
 
 

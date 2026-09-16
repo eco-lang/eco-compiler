@@ -1634,6 +1634,23 @@ walkExpr letEnv expr s0 =
                 Ok ( _, s1 ) ->
                     Ok ( WpSelf, s1 )
 
+        -- F4-sig (plans/lss-container-payload-transport.md §12.10.1): literals
+        -- hand their parent a POINT — flag-off, exactly the structural arm.
+        TOpt.Record fields meta ->
+            walkLiteral letEnv "record" (CoreDict.toList fields) Nothing meta expr s0
+
+        TOpt.TrackedRecord _ fields meta ->
+            walkLiteral letEnv "record" (List.map (\( ln, e ) -> ( A.toValue ln, e )) (DMap.toList A.compareLocated fields)) Nothing meta expr s0
+
+        TOpt.Tuple _ a b rest meta ->
+            walkLiteral letEnv "tuple" (List.indexedMap (\i e -> ( String.fromInt i, e )) (a :: b :: rest)) Nothing meta expr s0
+
+        TOpt.List _ items meta ->
+            walkLiteral letEnv "list" (List.map (\e -> ( "l", e )) items) Nothing meta expr s0
+
+        TOpt.Update _ record fields meta ->
+            walkLiteral letEnv "update" (List.map (\( ln, e ) -> ( A.toValue ln, e )) (DMap.toList A.compareLocated fields)) (Just record) meta expr s0
+
         _ ->
             -- Everything else: structural recursion only. Shared MVarIds
             -- already carry the intra-def flow; re-implementing translate's
@@ -1695,6 +1712,190 @@ walkFunction paramNames srcLam body meta letEnv s0 =
 
                             Ok ( _, s3 ) ->
                                 Ok ( WpHonest funcVar, s3 )
+
+
+{-| F4-sig (plans/lss-container-payload-transport.md §12.10.1): a record /
+tuple / list / update literal's WalkPoint. Flag-off: the structural arm
+verbatim (`WpNone`). Flag-on: walk the elements (the same children the
+structural arm walks, so member injection inside them is unchanged), load the
+literal's own type, join every element's point into its slot of that type
+(structurally — `joinArrowSetsSig`, as the result join already is), and hand
+back the literal's var — HONEST only if every arrow-bearing element (and the
+update's base) handed an honest point, else OPAQUE (the hub rule: a partially
+visible container must not be mixed with member-bearing mates). An element
+whose slot cannot be located leaves it unwritten (var — no claim).
+-}
+walkLiteral : LetEnv -> String -> List ( String, TOpt.Expr TypeIds.MVarId ) -> Maybe (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> Step WalkPoint
+walkLiteral letEnv form elems maybeBase meta expr s0 =
+    if not (s0.env.lss.enabled && s0.env.lss.flow.litFacts) then
+        case walkChildren letEnv (directChildren expr) s0 of
+            Err e ->
+                Err e
+
+            Ok ( _, s1 ) ->
+                Ok ( WpNone, s1 )
+
+    else
+        case walkMaybe letEnv maybeBase s0 of
+            Err e ->
+                Err e
+
+            Ok ( baseWp, s1 ) ->
+                case walkKeyed letEnv elems [] s1 of
+                    Err e ->
+                        Err e
+
+                    Ok ( wps, s2 ) ->
+                        case Store.loadType meta.tipe s2 of
+                            Err e ->
+                                Err e
+
+                            Ok ( litVar, s3 ) ->
+                                case joinLiteralBase litVar baseWp s3 of
+                                    Err e ->
+                                        Err e
+
+                                    Ok ( _, s4 ) ->
+                                        case joinLiteralElems form litVar wps s4 of
+                                            Err e ->
+                                                Err e
+
+                                            Ok ( _, s5 ) ->
+                                                let
+                                                    elemHonest ( ( _, e ), wp ) =
+                                                        not (canTypeMentionsArrow (TOpt.typeOf e)) || isHonest wp
+
+                                                    baseHonest =
+                                                        case ( maybeBase, baseWp ) of
+                                                            ( Just _, Just wp ) ->
+                                                                isHonest wp
+
+                                                            ( Just _, Nothing ) ->
+                                                                False
+
+                                                            ( Nothing, _ ) ->
+                                                                True
+
+                                                    honest =
+                                                        baseHonest && List.all elemHonest (List.map2 (\e ( _, wp ) -> ( e, wp )) elems wps)
+                                                in
+                                                Ok
+                                                    ( if honest then
+                                                        WpHonest litVar
+
+                                                      else
+                                                        WpOpaque litVar
+                                                    , Engine.bumpArgFlowCensus
+                                                        ("litFacts|"
+                                                            ++ form
+                                                            ++ (if honest then
+                                                                    "|honest"
+
+                                                                else
+                                                                    "|opaque"
+                                                               )
+                                                        )
+                                                        s5
+                                                    )
+
+
+isHonest : WalkPoint -> Bool
+isHonest wp =
+    case wp of
+        WpHonest _ ->
+            True
+
+        _ ->
+            False
+
+
+walkMaybe : LetEnv -> Maybe (TOpt.Expr TypeIds.MVarId) -> Step (Maybe WalkPoint)
+walkMaybe letEnv maybeExpr s0 =
+    case maybeExpr of
+        Nothing ->
+            Ok ( Nothing, s0 )
+
+        Just e ->
+            case walkExpr letEnv e s0 of
+                Err err ->
+                    Err err
+
+                Ok ( wp, s1 ) ->
+                    Ok ( Just wp, s1 )
+
+
+walkKeyed : LetEnv -> List ( String, TOpt.Expr TypeIds.MVarId ) -> List ( String, WalkPoint ) -> Step (List ( String, WalkPoint ))
+walkKeyed letEnv elems acc s0 =
+    case elems of
+        [] ->
+            Ok ( List.reverse acc, s0 )
+
+        ( k, e ) :: rest ->
+            case walkExpr letEnv e s0 of
+                Err err ->
+                    Err err
+
+                Ok ( wp, s1 ) ->
+                    walkKeyed letEnv rest (( k, wp ) :: acc) s1
+
+
+joinLiteralBase : Vars.Variable -> Maybe WalkPoint -> Step ()
+joinLiteralBase litVar baseWp s0 =
+    case Maybe.andThen wpPoint baseWp of
+        Just p ->
+            joinArrowSetsSig litVar p s0
+
+        Nothing ->
+            Ok ( (), s0 )
+
+
+{-| Locate each element's slot in the literal's loaded type and join the
+element's point into it. Records by field name, tuples by position, lists all
+into the one element slot. Aliases chased; any other shape leaves the slots
+unwritten (counted).
+-}
+joinLiteralElems : String -> Vars.Variable -> List ( String, WalkPoint ) -> Step ()
+joinLiteralElems form litVar wps s0 =
+    case Engine.liftIO (UF.get litVar) s0 of
+        Err e ->
+            Err e
+
+        Ok ( desc, s1 ) ->
+            case desc.content of
+                Vars.Alias _ _ _ real ->
+                    joinLiteralElems form real wps s1
+
+                Vars.Structure (Vars.Record1 fields _) ->
+                    joinKeyedSlots (List.map (\( k, wp ) -> ( CoreDict.get k fields, wp )) wps) s1
+
+                Vars.Structure (Vars.Tuple1 a b rest) ->
+                    joinKeyedSlots (List.map2 (\slot ( _, wp ) -> ( Just slot, wp )) (a :: b :: rest) wps) s1
+
+                Vars.Structure (Vars.App1 _ "List" [ elem ]) ->
+                    joinKeyedSlots (List.map (\( _, wp ) -> ( Just elem, wp )) wps) s1
+
+                _ ->
+                    Ok ( (), Engine.bumpArgFlowCensus ("litFacts|shapeMiss|" ++ form) s1 )
+
+
+joinKeyedSlots : List ( Maybe Vars.Variable, WalkPoint ) -> Step ()
+joinKeyedSlots pairs s0 =
+    case pairs of
+        [] ->
+            Ok ( (), s0 )
+
+        ( maybeSlot, wp ) :: rest ->
+            case ( maybeSlot, wpPoint wp ) of
+                ( Just slot, Just p ) ->
+                    case joinArrowSetsSig slot p s0 of
+                        Err e ->
+                            Err e
+
+                        Ok ( _, s1 ) ->
+                            joinKeyedSlots rest s1
+
+                _ ->
+                    joinKeyedSlots rest s0
 
 
 {-| Call handling. Global callee: instantiate with signature facts and unify

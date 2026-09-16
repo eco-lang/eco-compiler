@@ -201,6 +201,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\iuVal -> applyLssInstanceQualUseInjectOverride iuVal cfgIU)
             )
         |> Task.andThen
+            (\cfgIUP ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_INSTANCE_QUAL_USE_INJECT_PAP" |> Task.mapError never)
+                    |> Task.map (\iupVal -> applyLssInstanceQualUseInjectPapOverride iupVal cfgIUP)
+            )
+        |> Task.andThen
             (\cfg4e4d ->
                 (Utils.envLookupEnv "ECO_MONO_LSS_FLAT_PEEL" |> Task.mapError never)
                     |> Task.map (\fpVal -> applyLssFlatPeelOverride fpVal cfg4e4d)
@@ -324,6 +329,16 @@ applyEnvOverrides cfg =
             (\cfgFRD ->
                 (Utils.envLookupEnv "ECO_MONO_LSS_FLOW_ROW_DEFER" |> Task.mapError never)
                     |> Task.map (\frdVal -> applyLssFlowRowDeferOverride frdVal cfgFRD)
+            )
+        |> Task.andThen
+            (\cfgFAF ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_FLOW_ACCESS_FLOW" |> Task.mapError never)
+                    |> Task.map (\fafVal -> applyLssFlowBoolOverride setFlowAccessFlow fafVal cfgFAF)
+            )
+        |> Task.andThen
+            (\cfgFLF ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_FLOW_LIT_FACTS" |> Task.mapError never)
+                    |> Task.map (\flfVal -> applyLssFlowBoolOverride setFlowLitFacts flfVal cfgFLF)
             )
         |> Task.andThen
             (\cfg4et ->
@@ -2376,6 +2391,33 @@ setStampUseInject v c =
     { c | useInject = v }
 
 
+setStampUseInjectPap : Bool -> Config.LssStampConfig -> Config.LssStampConfig
+setStampUseInjectPap v c =
+    { c | useInjectPap = v }
+
+
+{-| `ECO_MONO_LSS_INSTANCE_QUAL_USE_INJECT_PAP=1|true|yes / 0|false|no`: F2.c
+use-site `p|` member for a local-multi whose RHS is a partial application
+(plans/lss-container-payload-transport.md §12.10.1). Artifact-affecting; hash
+token `lssIUP=`.
+-}
+applyLssInstanceQualUseInjectPapOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssInstanceQualUseInjectPapOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | stamp = setStampUseInjectPap True lss.stamp }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | stamp = setStampUseInjectPap False lss.stamp }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
 {-| `ECO_MONO_LSS_INSTANCE_QUAL_USE_INJECT=1|true|yes / 0|false|no`: F2
 local-multi use-site member injection
 (plans/lss-container-payload-transport.md §12.9.4). Artifact-affecting;
@@ -2839,6 +2881,37 @@ setFlowLetOverlay v c =
 setFlowRowDefer : Bool -> Config.LssFlowConfig -> Config.LssFlowConfig
 setFlowRowDefer v c =
     { c | rowDefer = v }
+
+
+setFlowAccessFlow : Bool -> Config.LssFlowConfig -> Config.LssFlowConfig
+setFlowAccessFlow v c =
+    { c | accessFlow = v }
+
+
+setFlowLitFacts : Bool -> Config.LssFlowConfig -> Config.LssFlowConfig
+setFlowLitFacts v c =
+    { c | litFacts = v }
+
+
+{-| `ECO_MONO_LSS_FLOW_ACCESS_FLOW` (E15) / `ECO_MONO_LSS_FLOW_LIT_FACTS`
+(F4-sig): `1|true|yes / 0|false|no`, plans/lss-container-payload-transport.md
+§12.10.1. Artifact-affecting; tokens `lssFAF=` / `lssFLF=`.
+-}
+applyLssFlowBoolOverride : (Bool -> Config.LssFlowConfig -> Config.LssFlowConfig) -> Maybe String -> EcoConfig -> EcoConfig
+applyLssFlowBoolOverride setter maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | flow = setter True lss.flow }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | flow = setter False lss.flow }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
 
 
 {-| `ECO_MONO_LSS_FLOW_ROW_DEFER=1|true|yes / 0|false|no`: F3-a row-deferred

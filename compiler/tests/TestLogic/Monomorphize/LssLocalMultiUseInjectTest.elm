@@ -41,6 +41,7 @@ import Compiler.AST.SourceBuilder
         )
 import Compiler.Eco.Config as Config
 import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Dict
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
@@ -128,6 +129,52 @@ suite =
 
                         else
                             expectJoin heads instances
+        , Test.test "7. F2.c FLAG-ON: a local whose RHS is a PARTIAL APPLICATION names the PAP member at its use" <|
+            \() ->
+                -- `let h = apply2 inc in useF h`: `h` is function-typed (a
+                -- local-multi) with no lambda id — F2's `noLam` residual and
+                -- the compileExpr chain root on the self-compile. The use site
+                -- mints `p|apply2|1`, the same key the RHS re-translation's
+                -- `injectPapMember` mints, and writes it head-only.
+                case runWithPap True papRhs of
+                    Err e ->
+                        Expect.fail e
+
+                    Ok ((Mono.MonoGraph g) as graph) ->
+                        case calleeHeads [ "useF" ] graph of
+                            [ ( _, Mono.LSet [ m ] ) ] ->
+                                case Dict.get m g.lssMemberOrigins of
+                                    Just (Mono.OriginPap (Mono.Global _ gname) 1) ->
+                                        if gname == "apply2" then
+                                            Expect.pass
+
+                                        else
+                                            Expect.fail ("PAP member names the wrong global: " ++ gname)
+
+                                    other ->
+                                        Expect.fail ("expected a p|apply2|1 origin for member " ++ String.fromInt m ++ ", got " ++ Debug.toString other)
+
+                            heads ->
+                                Expect.fail ("expected one useF spec with a singleton callback, got " ++ describeHeads heads)
+        , Test.test "8. F2.c FLAG-OFF: the PAP-RHS local is unwritten at its use (the defect)" <|
+            \() ->
+                case runWithPap False papRhs of
+                    Err e ->
+                        Expect.fail e
+
+                    Ok g ->
+                        let
+                            heads =
+                                calleeHeads [ "useF" ] g
+                        in
+                        if List.isEmpty heads then
+                            Expect.fail "fixture broken: no useF spec"
+
+                        else if List.any isSet (List.map Tuple.second heads) then
+                            Expect.fail ("expected no set at useF's callback flag-off, got " ++ describeHeads heads)
+
+                        else
+                            Expect.pass
         , Test.test "5. F2.b FLAG-OFF: the self-reference is unwritten (the defect)" <|
             \() ->
                 case runWith False selfReference of
@@ -268,7 +315,46 @@ selfReference =
 
 
 
+{-| F2.c: `h = apply2 inc` is a partial application of a 2-ary global.
+-}
+papRhs : Src.Module
+papRhs =
+    makeModuleWithTypedDefs "Test"
+        [ { name = "inc", args = [ pVar "x" ], tipe = hInt, body = binopsExpr [ ( varExpr "x", "+" ) ] (intExpr 1) }
+        , { name = "apply2", args = [ pVar "f", pVar "n" ], tipe = tLambda hInt hInt, body = callExpr (varExpr "f") [ varExpr "n" ] }
+        , { name = "applyI", args = [ pVar "f", pVar "n" ], tipe = tLambda hInt hInt, body = callExpr (varExpr "f") [ varExpr "n" ] }
+        , { name = "useF", args = [ pVar "g" ], tipe = tLambda hInt (tType "Int" []), body = callExpr (varExpr "applyI") [ varExpr "g", intExpr 3 ] }
+        , { name = "testValue"
+          , args = []
+          , tipe = tType "Int" []
+          , body =
+                letExpr
+                    [ define "h" [] (callExpr (varExpr "apply2") [ varExpr "inc" ]) ]
+                    (callExpr (varExpr "useF") [ varExpr "h" ])
+          }
+        ]
+
+
+
 -- ====== HARNESS ======
+
+
+runWithPap : Bool -> Src.Module -> Result String Mono.MonoGraph
+runWithPap on srcModule =
+    let
+        defaults =
+            Config.defaultLss
+
+        stampDefaults =
+            Config.defaultLss.stamp
+    in
+    Pipeline.runSolverMonoWithLimits Config.defaultLimits
+        { defaults
+            | enabled = True
+            , keyed = True
+            , stamp = { stampDefaults | enabled = True, useInject = True, useInjectPap = on }
+        }
+        srcModule
 
 
 runWith : Bool -> Src.Module -> Result String Mono.MonoGraph

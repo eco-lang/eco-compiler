@@ -30,13 +30,17 @@ import Compiler.AST.SourceBuilder
         , intExpr
         , makeModuleWithTypedDefsUnionsAliases
         , pCtor
+        , pTuple
         , pVar
         , tLambda
+        , tTuple
         , tType
         , tVar
+        , tupleExpr
         , varExpr
         )
 import Compiler.Eco.Config as Config
+import Compiler.Monomorphize.MonoTraverse as Traverse
 import Expect
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
@@ -105,6 +109,65 @@ suite =
                                     g.registry.reverseMapping
                         in
                         Expect.equal 0 cov.row
+        , Test.test "5. FLAG-ON: no unresolved row reference survives on any AST node either" <|
+            \() ->
+                -- `settleRowRefs` rewrites the registry AND the node array: a
+                -- row left on a destructor or expression type would be sound
+                -- (declined like ⊤) but inert, and it is the 13,984 mints —
+                -- not the ~671 registry positions — that the fix is for.
+                case runWith True fixture of
+                    Err e ->
+                        Expect.fail e
+
+                    Ok (Mono.MonoGraph g) ->
+                        Expect.equal 0
+                            (Array.foldl
+                                (\maybeNode n ->
+                                    case maybeNode of
+                                        Just node ->
+                                            if Traverse.anyNodeType hasRowAnno node then
+                                                n + 1
+
+                                            else
+                                                n
+
+                                        Nothing ->
+                                            n
+                                )
+                                0
+                                g.nodes
+                            )
+        , Test.test "6. NESTED PAYLOAD: a function reached THROUGH a tuple inside the payload resolves" <|
+            \() ->
+                -- The payload projection is not the path's last step here (the
+                -- tuple index is), so before the anchor walk this destructure
+                -- kept its storeless ⊤ — `rowDefer|notPayload`.
+                case ( runWith False nested, runWith True nested ) of
+                    ( Ok offG, Ok onG ) ->
+                        let
+                            off =
+                                calleeHeads "apply" offG
+
+                            on =
+                                calleeHeads "apply" onG
+                        in
+                        if List.isEmpty on then
+                            Expect.fail "fixture broken: no apply spec"
+
+                        else if not (List.all isTop off) then
+                            Expect.fail ("expected ⊤ flag-off, got " ++ String.join ", " (List.map describeAnno off))
+
+                        else if List.all isTwoSet on then
+                            Expect.pass
+
+                        else
+                            Expect.fail ("expected the 2-member row union flag-on, got " ++ String.join ", " (List.map describeAnno on))
+
+                    ( Err e, _ ) ->
+                        Expect.fail e
+
+                    ( _, Err e ) ->
+                        Expect.fail e
         , Test.test "4. FLAG-ON: the re-wrapping construction's payload is a set, not ⊤" <|
             \() ->
                 case runWith True fixture of
@@ -186,6 +249,51 @@ fixture =
           }
         ]
         []
+
+
+
+{-| `type PT x = MkT ( Int, Int -> x ) | NoT` — the arrow sits inside a TUPLE
+inside the payload, so the destructure's last step is the tuple index.
+-}
+nested : Src.Module
+nested =
+    makeModuleWithTypedDefsUnionsAliases "Test"
+        [ { name = "inc", args = [ pVar "x" ], tipe = hInt, body = binopsExpr [ ( varExpr "x", "+" ) ] (intExpr 1) }
+        , { name = "dec", args = [ pVar "x" ], tipe = hInt, body = binopsExpr [ ( varExpr "x", "-" ) ] (intExpr 1) }
+        , { name = "apply", args = [ pVar "f", pVar "n" ], tipe = tLambda hInt hInt, body = callExpr (varExpr "f") [ varExpr "n" ] }
+        , { name = "mkA", args = [], tipe = ptOfInt, body = callExpr (ctorExpr "MkT") [ tupleExpr (intExpr 3) (varExpr "inc") ] }
+        , { name = "mkB", args = [], tipe = ptOfInt, body = callExpr (ctorExpr "MkT") [ tupleExpr (intExpr 4) (varExpr "dec") ] }
+        , { name = "useT"
+          , args = [ pVar "b" ]
+          , tipe = tLambda ptOfInt (tType "Int" [])
+          , body =
+                caseExpr (varExpr "b")
+                    [ ( pCtor "MkT" [ pTuple (pVar "r") (pVar "f") ], callExpr (varExpr "apply") [ varExpr "f", varExpr "r" ] )
+                    , ( pCtor "NoT" [], intExpr 0 )
+                    ]
+          }
+        , { name = "testValue"
+          , args = []
+          , tipe = tType "Int" []
+          , body =
+                binopsExpr [ ( callExpr (varExpr "useT") [ varExpr "mkA" ], "+" ) ]
+                    (callExpr (varExpr "useT") [ varExpr "mkB" ])
+          }
+        ]
+        [ { name = "PT"
+          , args = [ "x" ]
+          , ctors =
+                [ { name = "MkT", args = [ tTuple (tType "Int" []) (tLambda (tType "Int" []) (tVar "x")) ] }
+                , { name = "NoT", args = [] }
+                ]
+          }
+        ]
+        []
+
+
+ptOfInt : Src.Type
+ptOfInt =
+    tType "PT" [ tType "Int" [] ]
 
 
 
@@ -278,6 +386,21 @@ arrowsIn t =
 
         _ ->
             []
+
+
+hasRowAnno : Mono.MonoType -> Bool
+hasRowAnno t =
+    case t of
+        Mono.MFunction _ anno _ _ ->
+            case anno of
+                Mono.LRow _ _ ->
+                    True
+
+                _ ->
+                    False
+
+        _ ->
+            False
 
 
 isTop : Mono.LambdaSetAnno -> Bool

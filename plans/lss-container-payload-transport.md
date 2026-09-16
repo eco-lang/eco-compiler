@@ -1,6 +1,6 @@
 # LSS — container-payload identity across item boundaries
 
-**Status (2026-09-15, latest): §12.9 — F2, F3-b and F3-a ALL BUILT AND MEASURED.** F2 (`stamp.useInject`) SHIPPED DEFAULT-ON: `var` 1,380 → 873 (−36.7 %), ⊤ 938 → 697, coverage 98.44 → 98.94 %; it also found and fixed the root-fold misfire on local-multi RHS lambdas. F3-b (`flow.letOverlay`) and F3-a (`flow.rowDefer`) are built, pinned and measured FLAT on coverage (F3-b: ⊤ −33 / var +59; F3-a: 13,984 row references, 25 of 57 rows resolve, the rest contaminated by the flex-parameter chain) — both left default-off, one literal each to flip. Remaining residual roots: lambda bodies returning unknowns (356), tail-def/PAP local-multi RHSs (254), the E14 literal edge (F4). §12.6: the `papSuccWrite` fix MEASURED: `var` 12,958 → 1,380 (−89 %), coverage 90.62 % → 98.43 % (+7.81 pp), wall flat; F1 reverted (null, §11). Gates owed on the fix: bootstrap 8c, call-stats Runs 23/24 (elm-tests and E2E PASS). Earlier: §11 — F1 BUILT,
+**Status (2026-09-16, latest): §12.10.3 — the F3-b + F4 series is BUILT, MEASURED (five cumulative arms) and SHIPPED DEFAULT-ON: F2.c `stamp.useInjectPap` (46 PAP-RHS uses named), E15 `flow.accessFlow` (5,785 access joins), F4-sig `flow.litFacts` (13,443 literal points; +133 k1 / +87 kN — the payer), F3-b `flow.letOverlay` (⊤ −30, var +30). Series: `var` 893 → 851, ⊤ 700 → 668, coverage 98.92 → 98.97 %, wall flat. Unit 13,568 / standing 12. The record-field book barely moved (270 → 258): a fourth root (Borrow/LssFacts context records through `Maybe`/`Dict` payloads, fold accumulators) is unnamed. Before that: F2 SHIPPED DEFAULT-ON (var 1,380 → 873, coverage 98.44 → 98.94 %); F3-a COMPLETE, default-off, inert until the flex-parameter chain is repaired. §12.6: the `papSuccWrite` fix MEASURED: `var` 12,958 → 1,380 (−89 %), coverage 90.62 % → 98.43 % (+7.81 pp), wall flat; F1 reverted (null, §11). Gates owed on the fix: bootstrap 8c, call-stats Runs 23/24 (elm-tests and E2E PASS). Earlier: §11 — F1 BUILT,
 BENCHMARKED, NULL: 30,077 write-backs,
 byte-identical emission, coverage identical to the digit. Root cause verified in code: edge E4
 has been connected by `arrowIdentity` since 2026-08-25, and the v1/v2 instrument read the slot
@@ -710,7 +710,7 @@ top/top cells shrink to whatever E4/E5 still leave. Size the `clsLet` class firs
 positions, but the `local` container 44 % ⊤ suggests more reach the census as `var` after
 joins).
 
-**F4 — Literal field write-back (E14).** Record, tuple and list LITERALS: unify each field/
+**F4 — Literal field write-back (E14). MEASURED OUT 2026-09-16 (§12.10): 129 arrow-typed literal elements corpus-wide, 120 already carried by the literal's store type; re-scoped to E15 / F2.c / F4-sig.** Record, tuple and list LITERALS: unify each field/
 element var of the literal's loaded type with the translated field expression's type
 (`enrichFromEnv` already recurses TUPLE literals of LOCALS; extend to all three literal forms
 and all expression forms). Instrument first — the v2 census sees literals only when they are
@@ -1443,6 +1443,91 @@ by themselves as those roots are repaired — the resolver reads the complete un
 `rowDefer|why|<ctor>|<path>|top/markedVar/dep` counter names the contaminating construction
 sites (57 rows — one census run).
 
+**PER-ROW DIAGNOSTIC (2026-09-16, `rowDefer|why`, one arm; artefact `bin/rowwhy-2026-09-16.txt`).**
+One census key per row naming what blocked it. Analysis-neutral (`var` 873, `top` 708, `row` 0 as
+before). **46 of the 57 rows RESOLVE**, several to large honest unions — `Parser;/a0` 1,036 members,
+`RResult;/a0` 324, `Tracker;/a0` 144, `Chomper;/a0` 77, `Extractor;/a0` 37. The 11 that do not:
+
+| row | blocked by | contributors: known / var / ⊤ |
+|---|---|---|
+| `Cerr;/r/r/a0` (+`/r`) | `markedVar` | 308 / **8** / 0 |
+| `Eerr;/r/r/a0` (+`/r`) | `markedVar` | 363 / **11** / 0 |
+| `Decoder;/a0` (+`/r`) | `top:poison` | 2,009 / 3 / kernel ⊤ (F5) |
+| `Ok;/a0` | `top:clsDestr` | 241 / 0 / **1** |
+| `Parser;/a0/r/r/t2/c1` (+`/r`) | `top:clsDestr,clsLet` | 101 / 0 / **6** |
+| `ChomperOk;/r/r/a0` | `markedVar` | 31 / **2** / 0 |
+| `Ok;/a0/l/t1` | `markedVar` | 0 / 1 / 0 |
+
+**Every blocked row is blocked by under 4 % of its own contributors** — 38 contaminating specs out
+of ~5,500. AR-D2 is doing exactly what it promises (one unknown inhabitant voids a completeness
+claim), and the census now names the 38. By class: 6 rows on flex-parameter constructions
+(`markedVar` — the `local:param` 454 chain, e.g. `Eerr s.row s.col toError` where `toError` is the
+enclosing function's parameter), 3 on `clsDestr` ⊤ from destructure paths `rowifyPayload` does not
+reach (`rowDefer|notPayload` 103 — tuple/list/record projections INSIDE a payload), 1 on a `clsLet`
+⊤ (**F3-b's target — flipping `letOverlay` on should unblock `Parser;/a0/r/r/t2/c1`**), 2 on kernel
+poison (F5, out of scope here).
+
+**And the prize is small, which the diagnostic also settles.** Of the 646 positions that resolve ⊤,
+only **118** survive as `top@row` in the final registry — `settleCtorRows`' ⊤-heal (which is not
+gated on var contamination) fills the rest afterwards. So finishing F3-a is worth ~118 positions
+plus the ~141 `clsDestr` that `rowifyPayload` never reaches: **≈ 0.17 pp**, against §12.9.5's ≈ 0.3 pp
+estimate. The mechanism is sound and the rows self-heal as their roots are repaired; it does not
+justify chasing the 38 specs on its own.
+
+*Design note, unbuilt:* a contaminated row could resolve to `LPartial (known union)` instead of
+`topRow` — sound (a lower bound is exactly what a var contributor leaves), strictly more
+information than ⊤, and every consumer already declines `LPartial`. It moves positions from `top`
+to `part`, so it buys nothing under the coverage metric, but it is the honest answer and the
+paper's Q-accumulation shape.
+
+*Gate gap:* E2E has only been run with `rowDefer` OFF. The flag-on self-compile produces a sane
+artefact (`bin/why-out.mlir`, 13,499,532 B) and no `LRow` reaches emission, but `settleRowRefs`
+rewrites REGISTRY types only — an `LRow` left on an AST expression/destructor type stays `LRow`
+(guarded identically to ⊤ at every consumer, hence sound). Flipping the default on needs an E2E
+arm and, for the mints to pay off at call sites rather than only at the 671 registry positions,
+an AST-side rewrite.
+
+**F3-a COMPLETED (2026-09-16), and it is measurably INERT on this corpus.** The three gaps §12.9.5
+listed are closed; artefacts `bin/f3c-2026-09-16-{off,on}.*`.
+
+  - **AST-side resolution (the big one).** `settleRowRefs` now rewrites the NODE array as well as
+    the registry: one linear `Array.foldl`, each node guarded by the allocation-free
+    `Traverse.anyNodeType` probe and rebuilt through `Traverse.mapNodeTypes` only when it carries a
+    row (deliberately NOT a per-item `traverseExpr` — that shape is the Sep-4 regression).
+    **3,778 nodes rewritten**, so the destructor and expression types that hold the other ~13,300
+    of the 13,997 mints now resolve instead of surviving as inert-but-sound `LRow`.
+  - **Nested payload anchors.** `payloadRowPrefix` walks down to the NEAREST enclosing constructor
+    payload, accumulating the projections it passes as path segments (`/t<i>`, `/l`, `/f:<name>`),
+    so `Mk (a, f)` anchors at `Mk|/r/r/a0/t1`. `rowDefer|notPayload` 103 -> **90**; the 90 that
+    remain have no enclosing constructor payload at all (tuple/record/list roots), an unnameable
+    `CustomContainer ""` array index, or a multi-constructor `MonoUnbox` — by construction, not by
+    omission.
+  - **Contaminated rows keep resolving to `topRow`, not `LPartial`** (§12.9.5's design note,
+    now DECIDED and recorded at the code): `settleCtorRows`' ⊤-heal runs after this pass and is
+    gated on `hasTopAnno`, so a lower bound would FORFEIT the heal that currently fills 528 of the
+    646 ⊤-resolutions. Partial would cost 528 positions to buy nothing the metric counts.
+
+**The A/B (same run, `rowDefer` off vs on).** `var` 893 both arms; `⊤` 699 -> 708; `clsDestr` 250 ->
+141 with `row` 118; **coverage 98.92 % both arms (`coveredBp` 9892 = 9892)**; `devirtDirect` 4,560 and
+`devirtKernel` 1,138 IDENTICAL, `stampwalk` identical to the field; emission +105 B; wall 9:11 vs
+9:10, RSS flat. So the completed mechanism changes neither the coverage book nor a single
+devirtualization decision.
+
+**And the §12.9.5 diagnostic's own hypothesis is refuted.** I attributed 3 of the 11 blocked rows to
+`clsDestr` ⊤ arriving from the 103 non-payload destructure paths; anchoring those (13 of the 103 had
+an enclosing payload) left the blocked set BIT-IDENTICAL — same 11 rows, same reasons, `resolved` 25
+and `top` 646 unchanged. Those `clsDestr` contributors come from somewhere else, unmeasured. What
+remains true is the shape of the result: 46 of 57 rows resolve, and the 11 that do not are blocked
+by <4 % of their contributors, which belong to the flex-parameter chain (6 rows), an unlocated
+`clsDestr` source (3), and kernel poison (2, F5).
+
+**Verdict.** F3-a is complete, sound, pinned (`LssRowDeferTest` 6/6 — the AST sweep and the nested
+anchor each have a differential pin), unit-green (13,558 / standing 12) and DEFAULT-OFF, where it
+costs nothing. It buys nothing today either: its rows resolve to unions the ⊤-heal already
+produces, and the positions it could uniquely recover are gated behind roots it does not own. It
+stays in the tree as the mechanism that converts those roots into coverage the moment they are
+repaired — not as a fix that pays now.
+
 #### 12.9.6 Order, and what §12.5 now reads
 
 **F2 → re-read (v3/v4 census) → F3-b → F3-a → F4 → F5.** F2 first: it is the largest
@@ -1453,3 +1538,213 @@ its population is cold and its yield is ~250 positions. §12.8's "build neither"
 both; its "F2 design infeasible" applied to §10.5's store write-back, which is now replaced by
 (i). The v4 instrument's `rhsLam` / ordinal plumbing is F2's production code; everything else in
 the v3/v4 instrument (`StashCensus`, `varKind`, `lm*` counters) is census-only and comes out.
+
+
+### 12.10 F3-b + F4 PREPARED TOGETHER (2026-09-16) — F4 re-scoped by measurement
+
+**F4 as §10.5 wrote it — "literal field write-back (E14)" — measures out.** Two census runs
+(`bin/f4census-2026-09-16-{f4c,f4d}.txt`; instrument: `Translate.litCensus` at every
+record/tuple/list literal, `LssInfer.walkFunction`'s result-join census, `enrichFromEnv`'s
+access-argument counter — all report-gated, TEMPORARY) and one unit probe
+(`$SP/LssRecordChainProbe.elm`, parked outside the test tree because it reports by failing):
+
+| literal elements whose translated type is an arrow | events | element knows | literal's OWN store type knows |
+|---|---:|---|---|
+| record fields | 77 | k1 70, kN 1, ⊤ 4, var 2 | k1 70, kN 1, var 6 |
+| tuple slots | 39 | k1 37, kN 1, var 1 | k1 37, kN 1, var 1 |
+| list elements | 13 | k1 13 | k1 13 |
+
+129 arrow-typed literal elements in the whole self-compile, and the literal's loaded store type
+already carries 120 of them as sets (`connectRecordFields`/`connectSlots` + per-`ArrowId` memo do
+the within-item transport). The literal edge itself is worth ~7 var + 4 ⊤ positions. **Closed as a
+fix.** What survives of it is one soundness note (F4-lit-list below).
+
+**Where the container-interior positions actually come from — three located losses.** The
+artefact's container-interior book (current defaults, F2 on): `var` 388 of 893 inside containers
+(`/f:` 270, `/c` 63, `/l` 39, `/t` 16); ⊤ `clsLet` 160 of 181 and `clsDestr` 152 of 250 inside
+containers; `clsMisc` 40. The probe splits the record-field class cleanly: a callback delivered
+to a parameter and passed on directly reads `k1` at every hop (`build.a0`, `useF.a0`,
+`cbDirect.a0` = `LSet[11]`); the SAME callback read through a record field reads `LVar` at the
+consumer in every arm. Chasing the corpus chain (`emitFusedEncoder|a0 …|localMulti|flex`,
+`exprCompiler = bfExprCompiler (…)`, `emitWidthExpr state.compileExpr …`) lands on:
+
+  1. **E15 — a record-field ACCESS as CALLEE or ARGUMENT transports nothing.** `enrichFromEnv`
+     handles `VarLocal` and tuple literals of locals; for `TOpt.Access` it enriches nothing, so
+     `state.compileExpr expr ctx` (the callee path, `translateIndirectCall`:2225 — 16 such sites
+     in `BytesFusion/Emit.elm` alone) dispatches generically and `emitWidthExpr state.compileExpr`
+     (the argument path) hands the callee a var. Census: **885 arrow-carrying access events**
+     (`ofExpr` 785 — the record is itself an access/call, `ofLocal` 100), of which 30 are
+     argument positions (`access` form, all flex); the rest are callees. The probe pins it:
+     `apply.a0 = LVar` for `apply r.f n` in every arm.
+  2. **F2.c — a local-multi whose RHS is a PARTIAL APPLICATION of a global.** F2's `noLam`
+     residual (`lm|rhs|other:call` **82 lets**, 106 use events, `localMulti` unwritten 254 after
+     F2). This is the ROOT of the compileExpr chain (`exprCompiler = bfExprCompiler
+     (fusedLetsFromChain …)`, arity 3 applied to 1) and of the `Dict.foldl a0` 38×3 residual.
+  3. **F4-sig — the signature walk returns `WpNone` for every literal.** `LssInfer.walkExpr` has
+     no `Record`/`TrackedRecord`/`Tuple`/`List`/`Update` arm ("containers, literals … the value's
+     inhabitants are untracked"), so `walkFunction` never joins a literal body into the def's
+     result slot and the `Let` arm's `sigFlowJoinInto rhsVar Nothing` skips a let-bound literal.
+     Callers then read var at every container-interior result arrow. Census: `walk|noJoin|*|arrow`
+     **20 def bodies** (update 14, tuple 4, if 1 …; `join` 5,820, `noJoin|plain` 5,905) plus the
+     let-bound chains the counter cannot see. The probe pins it: `mk cb = { f = cb, n = 1 }` →
+     `mk.result.f = LPartial[7]` in the registry (the body's set ⊔ the caller's var) and
+     `useRec.f = LVar`.
+
+Two small ones from the same reading: **F4-acc-node** — `refineAccessType` keeps the storeless
+`clsMisc` ⊤ of an access node unless the classified type has an MVar or is a narrowed record
+(`top@clsMisc` 40 positions, 39 spine); **F4-lit-list** — a list literal's type is
+`classifyAs tkClassMisc` (⊤) for a ground element type and `mList (typeOf FIRST)` otherwise — a
+first-element-only set is a completeness claim the other elements can falsify (the If arm's
+`joinBranchTypes` is the precedent). The probe's own let-bound shape (a record literal carrying a
+generalized `number` var routes to local-multi, RHS form `record`) is `lm|rhs|other:record` = 2
+lets on the corpus — noted, not fixed.
+
+#### 12.10.1 Lowerings
+
+**F2.c — use-site PAP member (extends `injectLocalMultiUseMember`).** `NumberMultiEntry.rhsLam`
+becomes `rhsIdentity : RhsIdentity = RhsLambda SrcLambdaId Int | RhsPap TOpt.Global Int |
+RhsOther`, filled by `rhsLamOf` from the RHS syntax: `TOpt.Call _ (TOpt.VarGlobal _ g _) args _`
+with `List.length args < LssInfer.declaredArityOf g 8 s` is `RhsPap g (List.length args)`. At the
+`StashLocalMulti` consumer, `RhsPap g k` → `Engine.papMemberIdFor g k` →
+`LssInfer.injectSpineMemberId 1 mid v` — HEAD-ONLY, the `p|` law ("one arrow deeper is a
+DIFFERENT PAP"). Id agreement is by key: the RHS re-translation's `injectPapMember` mints
+`papMemberKey g k` = `p|<g>|<k>`, instance-blind by design, so ordinal and tag play no part.
+Consumers: `papResolve` already stamps `p|g|k` singletons (saturating extensions) and
+`papFast` fast-stamps the rest. Flag `stamp.useInjectPap` (own A/B; `useInject` stays on).
+Predictions: `lmInject|pap` ≈ 82-site share of the 106 `noId` uses; `localMulti` unwritten 254 →
+≤ 130 (tail-def RHSs remain); `emitFusedEncoder/Decoder|a0` → `k1:p`; the `local:param` chain
+below them falls; `Dict.foldl a0` 38 → 0. Pin: `let g = apply2 cb in useF g` — `useF.a0` is the
+`p|apply2|1` singleton flag-on, var flag-off.
+
+**E15 — access-form callee and argument write-back (`flow.accessFlow`).**
+  - `enrichFromEnv` gains an `Access record _ field _` arm for `ofLocal`: `lookupVar` the record
+    local, project the field from its `MRecord`, `monoTypeToVar` it, `unifyStepBestEffort` into
+    the arg/callee var (exactly the `VarLocal` arm one projection deeper).
+  - `ofExpr` cannot be read before translation; it takes the flowConnect shape: the `StashParam`
+    trigger `isLambdaLiteral arg` becomes `isLambdaLiteral arg || isAccessForm arg`, so
+    `connectParamArg` unifies the TRANSLATED access node's type (`refineAccessType` already
+    prefers the record's field type) into the param slot; the callee path adds the same
+    write-back in `translateIndirectCallBody` after `translate func` and BEFORE the call result
+    is zonked (`unifyStepBestEffort funcUseVar (monoTypeToVar (typeOf monoFunc))`).
+  - Predictions: `access` 30 → 0 flex; the `state.compileExpr` callee sites become
+    singleton-typed calls — **the first dispatch-relevant move since F2** (a call-stats pair is
+    owed for this one). Pins: the probe's `apply r.f 2` → `apply.a0` k1; a callee-form fixture
+    `useRec r = r.f 2` → the indirect call's callee type k1.
+
+**F4-sig — literal arms in `walkExpr` (`flow.litFacts`).** For `Record`/`TrackedRecord`/`Tuple`/
+`List`: walk the children collecting their `WalkPoint`s (this is what the default arm does today
+via `walkChildren`, so member injection inside literals is unchanged); `Store.loadType meta.tipe`
+→ `litVar`; for each element with a point, locate its slot (`UF.get litVar` → `Record1` field /
+`Tuple1` position / `App1 "List" [elem]`) and `joinArrowSetsSig slot point` (structural, as the
+result join already is); return `WpHonest litVar` iff every arrow-bearing element handed an
+honest point, else `WpOpaque litVar` (the hub rule: a partially visible container must not be
+mixed with member-bearing mates). `Update`: join the base's point into `litVar` first, then the
+field points (union over-approximates the override — sound). The `Let` arm then joins a let-bound
+literal through `sigFlowJoinInto rhsVar (Just litVar)` with no further change. Predictions: the
+20 `noJoin|arrow` bodies' result arrows go k1/kN; `mk.result.f` LPartial → k1; the returned-record
+consumers' var falls (unsized — the let-chain share is invisible to the counter). Pin: the probe's
+`returned` shape.
+
+**F4-acc-node / F4-lit-list (small, same flag as E15).** `refineAccessType`: when
+`Mono.eqLayout classified fieldType`, return `Mono.overlayAnnotations classified fieldType`
+(never worse than ⊤). List literal: `mList (List.foldl joinBranchTypes first rest)` and, for the
+ground-element case, `overlayAnnotations classified (mList joined)`.
+
+**F3-b** is unchanged (§12.9.5). Its role here: it CARRIES whatever a let RHS knows into the
+binding, and the census shows a literal RHS knows its sets (`litstore` k1 120/129) — so once the
+three roots above stop feeding vars into let-bound containers, the overlay converts `clsLet`
+positions (160 of 181 inside containers) into sets instead of into vars. Flip it in the same
+series, LAST, so its arm measures what the roots left.
+
+#### 12.10.2 Order, arms, gates
+
+Order: **F2.c → E15 → F4-sig → F4-acc/F4-lit → F3-b flip.** One flag per mechanism (F2.c under
+`stamp.useInjectPap`; E15 + the two small ones under `flow.accessFlow`; F4-sig under
+`flow.litFacts`; F3-b under `flow.letOverlay`), measured as per-mechanism arms on one emitted tree
+— the settle-order lesson (§8.4/§8.5): a combined arm hides which mechanism paid. Gates per arm:
+the pins above (+ `LssRecordChainProbe` converted from a report into expectations), full
+`elm-tests`, E2E `--target full` flag-on, flag-off byte-identity; a bootstrap fixed point before any
+default flip; a `benchmarks/call-stats.md` pair for E15 (callee-form dispatch). Expected on the
+coverage book, conservatively: `var` 893 → ~650, ⊤ 699 → ~620, and the first measurable
+dispatch change since F2 at the `state.compileExpr` callee sites.
+
+*Instrument in the tree (TEMPORARY, gated):* `litCensus` (Translate), `walk|noJoin`/`walk|join`
+(LssInfer), `enrich|accessArg` (Translate) — remove with the v3/v4 instrument.
+
+#### 12.10.3 The series BUILT and MEASURED (2026-09-16) — five cumulative arms, one emitted tree
+
+Artefacts `bin/f5arms-2026-09-16-{base,iup,faf,flf,flo}.*`. Each arm adds one mechanism to the
+previous (env flags on the lowered census compiler; F2 on in all arms).
+
+| arm (adds) | `var` | `⊤` | k1 | kN | coverage | wall | mechanism counter |
+|---|---:|---:|---:|---:|---:|---:|---|
+| base | 893 | 700 | 115,949 | 34,068 | 98.92 % | 9:18 | — |
+| +F2.c `stamp.useInjectPap` | **852** | 700 | +39 | −1 | 98.95 % | 9:27 | `lmInject\|pap` **46** (the 107 `noId` uses split 46 PAP / 61 tail-def & other); `localMulti` unwritten 255 → 209 |
+| +E15 `flow.accessFlow` | **837** | 702 | +26 | +6 | 98.96 % | 9:23 | `enrich\|access\|ofLocal` **5,785** joins; `ofExpr` 1,355 left to the post-translation write-back |
+| +F4-sig `flow.litFacts` | **821** | 698 | **+133** | **+87** | 98.97 % | 9:12 | literal points: tuple 6,858 / list 5,341 / record 1,244 honest, update 1,541 opaque; `walk\|noJoin\|*\|arrow` 20 → 1 |
+| +F3-b `flow.letOverlay` | 851 | **668** | 0 | 0 | 98.97 % | 9:17 | `leak\|letAnno` → 0; `clsLet` 161 → 92; ⊤ → var conversion, coverage-flat |
+
+Series total: `var` 893 → 851, `⊤` 700 → 668, k1 +198, kN +92, **coverage 98.92 % → 98.97 %**
+(+0.05 pp), wall and RSS flat, `devirtDirect` 4,567 / `devirtKernel` 1,140 → 1,139 in every arm.
+Emission moves in every arm (stored demands gain members). **All four flipped DEFAULT-ON** with the
+measured rationale on each flag.
+
+What the arms say beyond the totals:
+
+  - F2.c did what its pin says and no more: 46 of the 107 `noId` uses were PAPs of globals; the
+    other 61 are tail-def RHSs (`TOpt.TailDef` carries no lambda id — a `t\|` member kind is the
+    unbuilt repair). The parameter chain below the PAP sites barely moved (`local:param` flex 520
+    → 507): the compileExpr record's field positions are not reached by naming `exprCompiler`.
+  - E15's within-item joins are numerous (5,785) but the demand positions they could fill were
+    mostly already `mem`; the 30 `access`-form argument positions and the callee-form sites are
+    the yield, and the callee-form effect is on DISPATCH, which this series does not measure — the
+    call-stats pair is owed.
+  - F4-sig is the one that pays on the completeness book: +133 k1 / +87 kN. It also raised
+    `clsDestr` ⊤ 250 → 270 (`f` 6 → 20, `t` 11 → 17): a literal whose element is a
+    pattern-bound local (`WpNone`) now hands its parent an OPAQUE point carrying that ⊤ instead of
+    nothing — honest (the element IS unknown), and uncovered either way.
+  - The record-field book the section opened on — `var` `/f:` 270 → 258, `clsLet` `/f:` 110 → 98 —
+    barely moved. Its remaining positions (`List.foldl\|/a0/a0/f:bind`, `bindParamsRtys\|
+    /r/a0/f:lssFacts/c0/f:sigs`, the `emit*` results) are NOT the compileExpr chain; they are the
+    Borrow/LssFacts context records reached through `Maybe`/`Dict` payloads and fold accumulators —
+    a fourth root this census did not name. Next diagnostic: the v3 cells for those callees.
+
+Gates: `LssLocalMultiUseInjectTest` 8/8 (F2.c pins 7-8), `LssAccessAndLitFactsTest` 8/8 (E15 arg
++ callee, F4-sig, F4-lit-list — each a flag-off/flag-on differential), full `elm-tests` 13,568 /
+standing 12; **E2E `--target full` with the four new defaults: PASS (1727/1727, exit 0)** — a first run showed 935 failures, all `SyntaxError` from a `guida.js` truncated by a CONCURRENT `elm-tests` build sharing `build-xhr` (not a flag; rerun alone was clean). **`benchmarks/call-stats.md` Runs 23/24 (control: the four forced OFF / treatment: ON together, 2026-09-16): coverage 98.93 → 98.98 %, `dispatchUpgraded` +17, benchmark dispatch `sat` +1.10 % (fast share 54.23 → 54.47 %), wall reference +4.2 % / benchmark −1.6 %, RSS flat; BOTH arms at their bootstrap fixed point (benchmark emission byte-identical to reference emission). E15's callee-form sites do not show as a dispatch move. Verdict: completeness-only, dispatch-neutral, ~4 % analysis cost on the unoptimized binary; flags stay default-on.**
+
+#### 12.10.4 Census instruments REMOVED (2026-09-16) — and a recovery note
+
+Removed from the tree: the v3 producer census (`StashCensus`, `censusWrap`, `unifyParamsCollectAt`'s
+labels, `prodForm*`, `canTypeHasArrowDeep`), the v4 binding-kind/local-multi-join census
+(`insertVarK`, `ItemAux.varKind`, `bumpLm`/`lmUseCensus`/`lmRhsCensus`, `rhsShape`,
+`ordOfFreshName`), and the F4 census (`litCensus` at the three literal arms, the `walk|join`/
+`walk|noJoin` bumps + `bodyFormCensus`, the `enrich|accessArg` bumps). Kept: the mechanism counters
+every shipped fix reports under `lss.report` (`lmInject|*`, `enrich|access|*`, `litFacts|*`,
+`rowDefer|*` incl. the per-row `why`, `rootFold|localSkip`, `letOverlay|tailFn`) and the older
+LSS_026 instruments that predate this plan (`censusStashMiss`, `argDeepCensus`, `destranno`).
+
+**Recovery note.** The final tidy — a regex meant to delete doc comments orphaned by the function
+removals — matched from the first doc comment of each module to the orphan, deleting ~5,000 lines of
+`Translate.elm` and ~1,770 of `LssInfer.elm`; git is not reachable from this sandbox. Both were
+rebuilt from the newest surviving base (`Translate.elm.bak`, 2026-09-15 14:55, taken before the v3
+instrument; a 2026-09-10 copy of `LssInfer.elm`) plus the intact tails, and every session edit in
+the lost regions re-applied from the transcript. Audit: the rebuilt `Translate.elm` differs from its
+base in 43 hunks, each identified as a known change (F2/F2.b/F2.c, the root-fold skip, F3-a, F3-b,
+E15, the `flow` renames, `LRow` arms); `LssInfer.elm` differs from its base in exactly 3 (the
+literal arms, `walkLiteral`'s helpers, the `papSuccWrite` fix). Gates after the rebuild: 132/132 LSS
+unit tests, full `elm-tests` 13,568 / standing 12 (identical to before the removal), E2E
+`--target full` 1727/1727, plus the check below. Backups of the rebuilt modules are in the session
+scratchpad (`recon/`). Lesson recorded in memory: never delete by a multi-line non-greedy regex
+anchored on a comment opener; delete by named declaration only.
+
+**Rebuild verified three ways (2026-09-16, `$SP/recon-check.log`).** (1) A census-lowered binary of the
+rebuilt tree self-compiles to `coverage: positions=151,650 k1=116,010 kN=34,089 var=851 top=668 part=32
+coveredBp=9897` — `var`/`⊤`/coverage identical to Run 24's benchmark row; every mechanism counter agrees
+(`lmInject|pap` 46 = 46, `self` 138 = 138, `noLam` 61 = 61, `litFacts|record|honest` 1,244 = 1,244,
+`letOverlay|tailFn` 128 = 128) and the rest differ by ≤ 20 because the removed census functions are no
+longer part of the source being compiled (`positions` −208). (2) 62 fixed external programs (the 60
+largest E2E tests + `LssGapLambdaStages` + `PapStampTest`) compiled by the PRE-removal binary
+(`f6-bench-on-census`, Run 24's) and by the rebuilt tree's binary: **62/62 byte-identical emissions**
+— the removal was report-gated and the rebuild preserved semantics. (3) Unit 13,568 / standing 12 and
+E2E 1727/1727 as above.
