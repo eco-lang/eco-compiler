@@ -39,10 +39,25 @@ struct EcoPipelineOptions {};
 void buildEcoToEcoPipeline(mlir::PassManager &pm,
                            const EcoPipelineOptions &opts = {});
 
-/// Builds the full Eco -> LLVM lowering pipeline.
-/// This includes:
+/// Builds the Eco -> Eco + Stage 2 + M4-slot pipeline, stopping immediately
+/// before GC preparation. This includes:
 ///   - Stage 1: Eco -> Eco transformations
 ///   - Stage 2: Eco -> Standard MLIR (SCF, CF)
+///   - the M4 slot: EcoFoldProject + CSE
+///
+/// This is the last point at which Eco-level `construct`/`project` ops still
+/// exist AND the M4 folders have already run, which makes it the only
+/// observation window for fold-project's effect on them. Exposed for
+/// `ecoc --emit=mlir-opt` and for FileCheck tests that assert M4-slot
+/// behaviour; `buildEcoToLLVMPipeline` calls it, so the pass order the real
+/// compilation uses is unchanged.
+void buildEcoToOptPipeline(mlir::PassManager &pm,
+                           const EcoPipelineOptions &opts = {});
+
+/// Builds the full Eco -> LLVM lowering pipeline.
+/// This includes:
+///   - Stages 1-2 + M4 slot (via buildEcoToOptPipeline)
+///   - Stage 2.5: GC preparation
 ///   - Stage 3: Eco/Standard -> LLVM dialect
 void buildEcoToLLVMPipeline(mlir::PassManager &pm,
                             const EcoPipelineOptions &opts = {});

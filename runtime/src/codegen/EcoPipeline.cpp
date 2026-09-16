@@ -96,7 +96,7 @@ static bool envSwitch(const char *name, bool defaultOn) {
 static bool ecoMlirCseEnabled() { return envSwitch("ECO_MLIR_CSE", false); }
 static bool ecoFoldProjectEnabled() { return envSwitch("ECO_MLIR_FOLD", true); } // DEFAULT-ON since 2026-08-13 (Run Q)
 
-void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
+void buildEcoToOptPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // Stage 1: Eco -> Eco transformations.
     buildEcoToEcoPipeline(pm, opts);
 
@@ -136,6 +136,16 @@ void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
         pm.addNestedPass<func::FuncOp>(eco::createEcoFoldProjectPass());
     if (ecoMlirCseEnabled())
         pm.addNestedPass<func::FuncOp>(createCSEPass());
+}
+
+void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
+    // Stages 1-2 plus the M4 optimisation slot. Split out so `ecoc
+    // --emit=mlir-opt` can stop here: it is the last point at which
+    // `eco.construct.*`/`eco.project.*` still exist AND the M4 folders have
+    // run, so it is the only window in which fold-project's effect on Eco-level
+    // ops is observable. `--emit=mlir-eco` is too early (fold-project has not
+    // run) and `--emit=mlir-llvm` too late (the ops are gone).
+    buildEcoToOptPipeline(pm, opts);
 
     // Stage 2.5: GC preparation (root sets, allocation grouping, safepoint rewrite).
     // Publish the per-callee cannot-GC fact as a call-local attr first: by here

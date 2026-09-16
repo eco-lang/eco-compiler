@@ -10,6 +10,7 @@
 //   -emit=<action>  : What to output
 //     mlir          : Dump the input MLIR (no lowering)
 //     mlir-eco      : Dump MLIR after eco-to-eco passes
+//     mlir-opt      : Dump MLIR after the M4 slot (fold-project + CSE)
 //     mlir-llvm     : Dump MLIR after full lowering to LLVM dialect
 //     llvm          : Dump LLVM IR
 //     jit           : JIT compile and execute
@@ -124,6 +125,7 @@ enum Action {
     None,
     DumpMLIR,
     DumpMLIREco,
+    DumpMLIROpt,
     DumpMLIRLLVM,
     DumpLLVMIR,
     RunJIT
@@ -136,6 +138,8 @@ static cl::opt<enum Action> emitAction(
     cl::values(
         clEnumValN(DumpMLIR, "mlir", "Dump input MLIR (no lowering)"),
         clEnumValN(DumpMLIREco, "mlir-eco", "Dump MLIR after eco-to-eco passes"),
+        clEnumValN(DumpMLIROpt, "mlir-opt",
+                   "Dump MLIR after the M4 slot (fold-project + CSE), before GC prep"),
         clEnumValN(DumpMLIRLLVM, "mlir-llvm", "Dump MLIR after LLVM lowering"),
         clEnumValN(DumpLLVMIR, "llvm", "Dump LLVM IR"),
         clEnumValN(RunJIT, "jit", "JIT compile and run")),
@@ -184,7 +188,7 @@ static OwningOpRef<ModuleOp> loadMLIR(MLIRContext &context,
 
 
 
-static int runPipeline(ModuleOp module, bool lowerToLLVM) {
+static int runPipeline(ModuleOp module, Action action) {
     PassManager pm(module->getName());
 
     // Apply any generic pass manager command line options.
@@ -193,15 +197,21 @@ static int runPipeline(ModuleOp module, bool lowerToLLVM) {
 
     // Build the appropriate pipeline based on the emit action.
     eco::EcoPipelineOptions pipeOpts;
-    if (lowerToLLVM) {
-        // Use the shared pipeline from EcoPipeline.cpp
-        eco::buildEcoToLLVMPipeline(pm, pipeOpts);
-    } else {
+    if (action == DumpMLIREco) {
         // -emit=mlir-eco: the eco-to-eco stage only. This previously built
         // NO pipeline at all, so "dump MLIR after eco-to-eco passes"
         // actually dumped the verified input — structural FileCheck tests
         // of EcoPAPSimplify et al. were vacuous.
         eco::buildEcoToEcoPipeline(pm, pipeOpts);
+    } else if (action == DumpMLIROpt) {
+        // -emit=mlir-opt: stop after the M4 slot, the only point at which
+        // Eco-level construct/project ops still exist AND fold-project + CSE
+        // have run. A strict prefix of the real pipeline, same passes in the
+        // same order — it truncates, it never substitutes.
+        eco::buildEcoToOptPipeline(pm, pipeOpts);
+    } else {
+        // Use the shared pipeline from EcoPipeline.cpp
+        eco::buildEcoToLLVMPipeline(pm, pipeOpts);
     }
 
     if (failed(pm.run(module)))
@@ -450,12 +460,12 @@ int main(int argc, char **argv) {
     }
 
     // Run the lowering pipeline.
-    bool lowerToLLVM = emitAction >= DumpMLIRLLVM;
-    if (runPipeline(*module, lowerToLLVM) != 0)
+    if (runPipeline(*module, emitAction) != 0)
         return 1;
 
     // Handle different output modes.
-    if (emitAction == DumpMLIREco || emitAction == DumpMLIRLLVM) {
+    if (emitAction == DumpMLIREco || emitAction == DumpMLIROpt ||
+        emitAction == DumpMLIRLLVM) {
         module->dump();
         return 0;
     }
