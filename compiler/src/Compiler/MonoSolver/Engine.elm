@@ -1540,6 +1540,20 @@ type alias ItemAux =
     -- a scratch tag into the enclosing item.
     , currentLocalInstance : Int
 
+    -- F2.b (plans/lss-container-payload-transport.md §12.9.4): the local-multi
+    -- def whose instance RHS is being re-translated right now — (def name,
+    -- its RHS source lambda id, arity). A `VarLocal` reference to that name
+    -- inside the re-translation has no `varEnv` binding (the stack entry is
+    -- popped, the scope closed), so `injectArgLambdaMemberGo` injects the
+    -- instance's own id from here; the tag is already the instance's
+    -- (`retranslateWithTag`). Nothing outside a local-multi re-translation.
+    , retranslating : Maybe ( String, TypeIds.SrcLambdaId, Int )
+
+    -- v4 PRODUCER CENSUS (TEMPORARY, plans/lss-container-payload-transport.md §12.9): local
+    -- name -> binding kind (param / let / letMulti / tailFn / destr / destrRoot). Written only
+    -- under report+arrowCensus; NOT scoped, so a shadowed name reads the latest binding.
+    , varKind : CoreDict.Dict String String
+
     -- Phase 2a arrow identity (plans/lss-unknown-elimination.md §4.5):
     -- `Id.toComparable arrowId` -> that arrow's lambda-set SLOT Point IN THIS
     -- ITEM'S STORE.
@@ -1616,7 +1630,7 @@ type alias ItemAux =
 
 emptyItemAux : ItemAux
 emptyItemAux =
-    { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = [], currentSpecId = Nothing, demandQualified = CoreDict.empty, currentLocalInstance = 0, arrowMemo = CoreDict.empty, arrowOfSlot = CoreDict.empty, zonkLog = [], qLog = [], qSigRoot = Nothing }
+    { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = [], currentSpecId = Nothing, demandQualified = CoreDict.empty, currentLocalInstance = 0, retranslating = Nothing, varKind = CoreDict.empty, arrowMemo = CoreDict.empty, arrowOfSlot = CoreDict.empty, zonkLog = [], qLog = [], qSigRoot = Nothing }
 
 
 {-| Scratch-store entry: clear ONLY the read lists (scratch Point indices are
@@ -1637,7 +1651,7 @@ from the inner state (matches the pre-pack behavior field for field).
 -}
 restoredAux : ItemAux -> ItemAux -> ItemAux
 restoredAux outer inner =
-    { inner | ecoResidualReads = outer.ecoResidualReads, ecoResidualKeyReads = outer.ecoResidualKeyReads, arrowMemo = outer.arrowMemo, arrowOfSlot = outer.arrowOfSlot, zonkLog = outer.zonkLog, qLog = outer.qLog, qSigRoot = outer.qSigRoot, currentLocalInstance = outer.currentLocalInstance }
+    { inner | ecoResidualReads = outer.ecoResidualReads, ecoResidualKeyReads = outer.ecoResidualKeyReads, arrowMemo = outer.arrowMemo, arrowOfSlot = outer.arrowOfSlot, zonkLog = outer.zonkLog, qLog = outer.qLog, qSigRoot = outer.qSigRoot, currentLocalInstance = outer.currentLocalInstance, retranslating = outer.retranslating, varKind = outer.varKind }
 
 
 {-| Saturation-pass reset (MONO\_029 R2): drop the recorded reads before
@@ -1680,6 +1694,7 @@ order — changes. Accepted by decision (§10.4); names are unaffected because
 type alias NumberMultiEntry =
     { defName : String
     , instances : Mono.SpecMap NumberInstance
+    , rhsLam : Maybe ( TypeIds.SrcLambdaId, Int ) -- F2 (plans/lss-container-payload-transport.md §12.9.4): the let-function's RHS source lambda id and param count when the RHS is a lambda literal — what a use site injects; Nothing for tail defs, non-lambda RHSs and the numberMulti stack
     , pendingEnrich : CoreDict.Dict String ( String, Mono.MonoType ) -- E4a deferral (Translate.flushLocalMultiEnrich): instance name -> (its let's defName, the instance RHS type) of let-functions nested in THIS entry's body whose use-site overlay is owed to the outermost let-function's single walk; always empty on the numberMulti stack
     }
 
@@ -1687,6 +1702,7 @@ type alias NumberMultiEntry =
 type alias NumberInstance =
     { freshName : String
     , monoType : Mono.MonoType
+    , ordinal : Int -- insertion index in the entry's `SpecMap` == the `$N` of `freshName` == `buildLocalDefs`' re-translation ordinal (F2: the use site needs it to reproduce the instance tag)
     }
 
 
@@ -2583,7 +2599,7 @@ its body (instance discovery is body-first).
 -}
 pushNumberMulti : String -> Step ()
 pushNumberMulti defName s =
-    Ok ( (), { s | numberMulti = { defName = defName, instances = Mono.specMapEmpty, pendingEnrich = CoreDict.empty } :: s.numberMulti } )
+    Ok ( (), { s | numberMulti = { defName = defName, instances = Mono.specMapEmpty, rhsLam = Nothing, pendingEnrich = CoreDict.empty } :: s.numberMulti } )
 
 
 {-| Pop the top number-multi entry after the body is specialized.
@@ -2629,15 +2645,25 @@ returning its per-instance name (`defName` for the first/Int instance, then
 -}
 recordNumberInstance : String -> Mono.MonoType -> Step ( String, Mono.MonoType )
 recordNumberInstance name monoType s =
+    case recordNumberInstanceOrd name monoType s of
+        Err e ->
+            Err e
+
+        Ok ( ( freshName, instType, _ ), s1 ) ->
+            Ok ( ( freshName, instType ), s1 )
+
+
+recordNumberInstanceOrd : String -> Mono.MonoType -> Step ( String, Mono.MonoType, Int )
+recordNumberInstanceOrd name monoType s =
     recordMultiInstance .numberMulti (\stk st -> { st | numberMulti = stk }) "$v" name monoType s
 
 
 {-| Push an empty local-multi entry for a let-bound function before walking its
 body (each use records the concrete type it is applied at).
 -}
-pushLocalMulti : String -> Step ()
-pushLocalMulti defName s =
-    Ok ( (), { s | localMulti = { defName = defName, instances = Mono.specMapEmpty, pendingEnrich = CoreDict.empty } :: s.localMulti } )
+pushLocalMulti : Maybe ( TypeIds.SrcLambdaId, Int ) -> String -> Step ()
+pushLocalMulti rhsLam defName s =
+    Ok ( (), { s | localMulti = { defName = defName, instances = Mono.specMapEmpty, rhsLam = rhsLam, pendingEnrich = CoreDict.empty } :: s.localMulti } )
 
 
 popLocalMulti : Step (Maybe NumberMultiEntry)
@@ -2673,7 +2699,7 @@ localVarInfo name s =
 {-| Record (or reuse) an instance of a local-multi FUNCTION at a demanded type;
 per-instance name is `defName` (first) then `defName$<idx>`.
 -}
-recordLocalInstance : String -> Mono.MonoType -> Step ( String, Mono.MonoType )
+recordLocalInstance : String -> Mono.MonoType -> Step ( String, Mono.MonoType, Int )
 recordLocalInstance name monoType s =
     recordMultiInstance .localMulti (\stk st -> { st | localMulti = stk }) "$" name monoType s
 
@@ -2681,9 +2707,10 @@ recordLocalInstance name monoType s =
 {-| Shared machinery behind `recordNumberInstance` / `recordLocalInstance`:
 find the entry for `name` in the given stack, get-or-create an instance keyed
 by the demanded `MonoType` (`Mono.SpecMap`), and name it `defName` for index 0
-else `defName ++ sep ++ idx`.
+else `defName ++ sep ++ idx`. The third component is the instance ORDINAL
+(`idx`), stored on the instance so an existing one reports the same number.
 -}
-recordMultiInstance : (S -> List NumberMultiEntry) -> (List NumberMultiEntry -> S -> S) -> String -> String -> Mono.MonoType -> Step ( String, Mono.MonoType )
+recordMultiInstance : (S -> List NumberMultiEntry) -> (List NumberMultiEntry -> S -> S) -> String -> String -> Mono.MonoType -> Step ( String, Mono.MonoType, Int )
 recordMultiInstance getStack setStack sep name monoType s =
     let
         update entry =
@@ -2695,7 +2722,7 @@ recordMultiInstance getStack setStack sep name monoType s =
             -- string key used to give (§10.1).
             case Mono.specMapGet monoType entry.instances of
                 Just inst ->
-                    ( entry, ( inst.freshName, inst.monoType ) )
+                    ( entry, ( inst.freshName, inst.monoType, inst.ordinal ) )
 
                 Nothing ->
                     let
@@ -2710,16 +2737,16 @@ recordMultiInstance getStack setStack sep name monoType s =
                                 name ++ sep ++ String.fromInt idx
 
                         inst =
-                            { freshName = freshName, monoType = monoType }
+                            { freshName = freshName, monoType = monoType, ordinal = idx }
                     in
                     ( { entry | instances = Mono.specMapInsert monoType inst entry.instances }
-                    , ( freshName, monoType )
+                    , ( freshName, monoType, idx )
                     )
 
         go entries =
             case entries of
                 [] ->
-                    ( [], ( name, monoType ) )
+                    ( [], ( name, monoType, 0 ) )
 
                 e :: rest ->
                     if e.defName == name then

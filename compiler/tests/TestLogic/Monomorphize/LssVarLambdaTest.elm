@@ -247,6 +247,9 @@ describe xs =
 
                         Mono.LPartial ms ->
                             "LPartial " ++ String.fromInt (List.length ms)
+
+                        Mono.LRow _ ms ->
+                            "LRow " ++ String.fromInt (List.length ms)
                 )
                 xs
             )

@@ -220,6 +220,16 @@ type LambdaSet
     = LsTop Int
     | LsMembers (List Int)
     | LsFrom (List Int) (List Variable)
+      -- LsRow (F3-a, plans/lss-container-payload-transport.md §12.9.5): a set
+      -- DEFERRED TO CONSTRUCTOR ROWS — "⊇ members ∪ ⋃ row(r)" for each row
+      -- id r (an interned `r|<ctor>|<path>` key naming one payload position
+      -- of one constructor, program-wide). Born at a destructure of a
+      -- SYNTACTIC payload arrow (the scrutinee's type has no slot for it),
+      -- resolved post-drain by `Monomorphize.settleRowRefs` from the
+      -- COMPLETE union of every construction of that row. Joins: rows
+      -- union, members union; ⊤ absorbs; an edge (`LsFrom`) meeting a row
+      -- widens to ⊤ (edge kind) — the two deferrals do not compose.
+    | LsRow (List Int) (List Int)
 
 
 {-| Relation between two ascending member lists, decided in ONE merge-scan:

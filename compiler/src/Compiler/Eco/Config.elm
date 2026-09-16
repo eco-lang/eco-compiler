@@ -1,7 +1,7 @@
 module Compiler.Eco.Config exposing
     ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig
     , default, decoder, hash, clamp
-    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, ListConfig, LssConfig, LssSettleConfig, LssStageAnchorConfig, LssStampConfig, MonoConfig, MonoEngine(..), SpecLimits, borrowReifyFromString, defaultLimits, defaultLss, monoEngineFromString
+    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, ListConfig, LssConfig, LssFlowConfig, LssSettleConfig, LssStageAnchorConfig, LssStampConfig, MonoConfig, MonoEngine(..), SpecLimits, borrowReifyFromString, defaultLimits, defaultLss, monoEngineFromString
     )
 
 {-| Project-level tunable compiler settings, read from `eco-config.json`
@@ -684,7 +684,10 @@ type alias LssConfig =
     -- lattice, where pre-LPartial it manufactured +703 ⊤. Wall +2.6 %
     -- accepted by user decision. Escape hatch `ECO_MONO_LSS_FLOW_CONNECT=0`;
     -- hash token `lssFC=0` rides the OFF arm.
-    , flowConnect : Bool
+    --
+    -- Sub-record (`LssConfig` is at the 32-slot cap): `connect` is the
+    -- flag above, unchanged in JSON key / env / token; `letOverlay` is F3-b.
+    , flow : LssFlowConfig
 
     -- The post-drain settle-writer family (var chain-root arc), bundled
     -- into a sub-record because `LssConfig` sits AT the runtime's 32-slot
@@ -763,6 +766,38 @@ Both DEFAULT-OFF until the ORDER 4 battery presents a flip decision.
 type alias LssStageAnchorConfig =
     { rowFill : Bool
     , demandFill : Bool
+    }
+
+
+{-| Translation-time flow repairs (the edges Translate re-ties in the store
+or in the binding environment).
+
+  - `connect` — M1 flowConnect, documented on `LssConfig.flow`.
+  - `letOverlay` — F3-b (plans/lss-container-payload-transport.md §12.9.5):
+    a plain `let` binding's `varEnv` type takes its ANNOTATIONS from the
+    translated RHS (`Mono.overlayAnnotations classified bodyType`) instead of
+    the storeless classify's ⊤ — the LSS_026 `leak\|letAnno` class — and a
+    local tail-def's binding/param types take theirs from the zonk of the
+    demand-seeded annotation var, exactly as the top-level `TailDef` already
+    does (Translate.elm `specializeCycleFuncDef`). Structure stays the
+    classify's (the ABI guard). Artifact-affecting (spec keys are
+    annotation-sensitive); hash token `lssFLO=`; env
+    `ECO_MONO_LSS_FLOW_LET_OVERLAY`. DEFAULT-OFF pending the A/B.
+
+-}
+type alias LssFlowConfig =
+    { connect : Bool
+    , letOverlay : Bool
+
+    -- `rowDefer` — F3-a (plans/lss-container-payload-transport.md §12.9.5):
+    -- a destructured SYNTACTIC payload arrow (a constructor field, invisible
+    -- to the scrutinee's type) binds as `LRow` — a reference to the
+    -- constructor's row — instead of the storeless ⊤, and the post-drain
+    -- `settleRowRefs` resolves every `LRow` from the COMPLETE union of the
+    -- row's constructions (a translation-time read is unsound: partial
+    -- union ⇒ false singleton). Artifact-affecting; hash token `lssFRD=`;
+    -- env `ECO_MONO_LSS_FLOW_ROW_DEFER`. DEFAULT-OFF pending the A/B.
+    , rowDefer : Bool
     }
 
 
@@ -858,6 +893,27 @@ type alias LssStampConfig =
     -- wall FLAT (benchmarks/lss-opt.md Run AP) — flipped on the dispatch
     -- counter, the same basis as LSS_025.
     , papFast : Bool
+
+    -- `useInject` — F2, plans/lss-container-payload-transport.md §12.9.4: at a
+    -- local-multi USE passed as an argument, mint the id the instance's RHS
+    -- re-translation will mint for its lambda and write it into the stashed
+    -- var's spine before the callee is zonked, so the callee's demand carries
+    -- the singleton (GAP-9b's "no member, no stamp" closed). Also the
+    -- self-reference inside an instance re-translation (F2.b). Sound by
+    -- construction: the id is a deterministic function of the source lambda,
+    -- the instance tag and the spec, and the RHS mint runs under the same
+    -- three. Also skips `rootFold` for a local-multi instance RHS lambda
+    -- (which `demandUnifyRoot` otherwise folds onto the ENCLOSING global's
+    -- id, dropping the instance tag — the LSS_038 collapse, live for lambda
+    -- RHSs). Artifact-affecting; hash token `lssIU=`; env
+    -- `ECO_MONO_LSS_INSTANCE_QUAL_USE_INJECT` (`=0` is the escape hatch).
+    --
+    -- DEFAULT-ON since 2026-09-15 (plan §12.9.4 A/B, self-compile): `var`
+    -- 1,380 -> 873 (-36.7 %), `top` 938 -> 697 (`abi` 250 -> 6), `k1` +855,
+    -- analysis coverage 98.44 % -> 98.94 %; unwritten local-multi argument
+    -- positions 866 -> 254 and their downstream parameter chain 1,024 ->
+    -- 454; wall and RSS flat.
+    , useInject : Bool
     }
 
 
@@ -911,10 +967,10 @@ defaultLss =
     , argPoints = False
     , rsTop = True
     , destrAnno = True
-    , flowConnect = True
+    , flow = { connect = True, letOverlay = False, rowDefer = False }
     , settle = { varSucc = True, varCtorRows = True, varLambda = True }
     , stageAnchor = { rowFill = False, demandFill = False }
-    , stamp = { enabled = True, maxInstances = 8, flatPeel = True, census = False, papFast = True }
+    , stamp = { enabled = True, maxInstances = 8, flatPeel = True, census = False, papFast = True, useInject = True }
     }
 
 
@@ -1497,7 +1553,7 @@ lssDecoder =
         |> D.apply (D.optionalField "argPoints" D.bool defaultLss.argPoints)
         |> D.apply (D.optionalField "rsTop" D.bool defaultLss.rsTop)
         |> D.apply (D.optionalField "destrAnno" D.bool defaultLss.destrAnno)
-        |> D.apply (D.optionalField "flowConnect" D.bool defaultLss.flowConnect)
+        |> D.apply lssFlowDecoder
         |> D.apply lssSettleDecoder
         |> D.apply lssStageAnchorDecoder
         |> D.apply lssInstanceQualDecoder
@@ -1524,6 +1580,16 @@ lssStageAnchorDecoder =
         |> D.apply (D.optionalField "stageAnchorDemandFill" D.bool defaultLss.stageAnchor.demandFill)
 
 
+{-| `flowConnect` keeps its historical flat key; `flowLetOverlay` is new.
+-}
+lssFlowDecoder : D.Decoder x LssFlowConfig
+lssFlowDecoder =
+    D.pure LssFlowConfig
+        |> D.apply (D.optionalField "flowConnect" D.bool defaultLss.flow.connect)
+        |> D.apply (D.optionalField "flowLetOverlay" D.bool defaultLss.flow.letOverlay)
+        |> D.apply (D.optionalField "flowRowDefer" D.bool defaultLss.flow.rowDefer)
+
+
 {-| Flat keys, prefixed — new with the sub-record (no schema history to keep).
 -}
 lssInstanceQualDecoder : D.Decoder x LssStampConfig
@@ -1534,6 +1600,7 @@ lssInstanceQualDecoder =
         |> D.apply (D.optionalField "flatPeel" D.bool defaultLss.stamp.flatPeel)
         |> D.apply (D.optionalField "census" D.bool defaultLss.stamp.census)
         |> D.apply (D.optionalField "papFast" D.bool defaultLss.stamp.papFast)
+        |> D.apply (D.optionalField "instanceQualUseInject" D.bool defaultLss.stamp.useInject)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -2058,6 +2125,20 @@ hash cfg =
                       else
                         []
 
+                    -- F2 local-multi use-site injection: artifact-affecting.
+                    , if lss.stamp.useInject /= defaultLss.stamp.useInject then
+                        [ "lssIU="
+                            ++ (if lss.stamp.useInject then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
                     -- Injection completeness: PAP residual members are
                     -- artifact-affecting (members → annotations → keys).
                     , if lss.papMembers /= defaultLss.papMembers then
@@ -2255,9 +2336,38 @@ hash cfg =
 
                     -- Flow-connect write-back: artifact-affecting (demand
                     -- types move, hence SpecKeys — AR-F3).
-                    , if lss.flowConnect /= defaultLss.flowConnect then
+                    , if lss.flow.connect /= defaultLss.flow.connect then
                         [ "lssFC="
-                            ++ (if lss.flowConnect then
+                            ++ (if lss.flow.connect then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- F3-b let overlay: artifact-affecting (binding
+                    -- annotations reach demands, hence SpecKeys).
+                    , if lss.flow.letOverlay /= defaultLss.flow.letOverlay then
+                        [ "lssFLO="
+                            ++ (if lss.flow.letOverlay then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- F3-a row-deferred destructure sets: artifact-affecting.
+                    , if lss.flow.rowDefer /= defaultLss.flow.rowDefer then
+                        [ "lssFRD="
+                            ++ (if lss.flow.rowDefer then
                                     "1"
 
                                 else

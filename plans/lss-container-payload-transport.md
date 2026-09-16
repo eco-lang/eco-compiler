@@ -1,11 +1,6 @@
 # LSS — container-payload identity across item boundaries
 
-**Status (2026-09-15, latest): §12.6 — the `papSuccWrite` seen-guard fix MEASURED: `var`
-12,958 → 1,380 (−89 %), coverage 90.62 % → 98.43 % (+7.81 pp), wall flat. F1 reverted (null,
-§11); the v3 post-translation census (§12) found the bug: every PAP-successor walk wrote depth 1
-and stopped. Residual 2,725: bare-parameter locals 47 %, local-multi 866 (32 %, F2 next), lambda
-bodies returning unknowns 13 %. Gates owed: elm-tests (running), E2E, bootstrap 8c, call-stats
-Runs 23/24. Earlier: §11 — F1 BUILT,
+**Status (2026-09-15, latest): §12.9 — F2, F3-b and F3-a ALL BUILT AND MEASURED.** F2 (`stamp.useInject`) SHIPPED DEFAULT-ON: `var` 1,380 → 873 (−36.7 %), ⊤ 938 → 697, coverage 98.44 → 98.94 %; it also found and fixed the root-fold misfire on local-multi RHS lambdas. F3-b (`flow.letOverlay`) and F3-a (`flow.rowDefer`) are built, pinned and measured FLAT on coverage (F3-b: ⊤ −33 / var +59; F3-a: 13,984 row references, 25 of 57 rows resolve, the rest contaminated by the flex-parameter chain) — both left default-off, one literal each to flip. Remaining residual roots: lambda bodies returning unknowns (356), tail-def/PAP local-multi RHSs (254), the E14 literal edge (F4). §12.6: the `papSuccWrite` fix MEASURED: `var` 12,958 → 1,380 (−89 %), coverage 90.62 % → 98.43 % (+7.81 pp), wall flat; F1 reverted (null, §11). Gates owed on the fix: bootstrap 8c, call-stats Runs 23/24 (elm-tests and E2E PASS). Earlier: §11 — F1 BUILT,
 BENCHMARKED, NULL: 30,077 write-backs,
 byte-identical emission, coverage identical to the digit. Root cause verified in code: edge E4
 has been connected by `arrowIdentity` since 2026-08-25, and the v1/v2 instrument read the slot
@@ -953,12 +948,15 @@ stopped after one step, on both sides of the reference/PAP identity.
   1. **The `papSuccWrite` seen-guard fix (§12.3)** — applied; measured in §12.6. Predicted to
      resolve the staircase (`/c1/r…` down the whole spine) and the `ref` interior class.
      Artefact-affecting; owes E2E / elm-tests / bootstrap fixed point before it stays.
-  2. **F2 — local-multi instance write-back (E7)**, now correctly sized at **866 positions,
-     99 % flex**, the only systematically failing argument form. Design as §10.5 F2: keep the
-     fresh var per instance, `connectParamArg` it when the instance RHS type settles.
-  3. **F3 — store-aware let binding (E12/E13)**: `local` positions arrive ⊤ 13 % at head and
-     44 % inside containers (storeless `clsLet`/`clsDestr`); and 1,422 bare-local flex whose
-     binding kind (parameter / let / destructure) a v4 read should split before building.
+  2. **F2 — local-multi use-site member injection (E7)**, sized at **866 positions, 99 % flex**, the
+     only systematically failing argument form. Design (i) of §12.8, lowered in §12.9.4: at the
+     `StashLocalMulti` consumer mint the instance's own id and write it into the stashed var's spine
+     before the callee is zonked; plus the self-reference sub-class (258). §10.5's store write-back
+     design is withdrawn (translation order, §12.8).
+  3. **F3 — (a) row-deferred payload sets at destructures, (b) store overlay at let/tail-fn
+     bindings (E12/E13)**, sized in §12.9.1: the local ⊤ are 87 % destructures of SYNTACTIC payload
+     arrows (`Parse.Primitives` re-wraps), 250 `clsDestr` + 180 `clsLet` artefact positions. Lowered
+     in §12.9.5. The bare-local FLEX (1,292) are 79 % parameters — a chain from F2, not F3's target.
   4. **E2 residue (2,452 `fn` interior flex, mostly staircase)** — re-read after fix 1; whatever
      remains is a lambda body returning an unknown, i.e. one of the above one hop in.
   5. **F1 (universal argument write-back): CLOSED** — measured null, mechanism explained, code
@@ -996,7 +994,7 @@ PAP residual.
 
 | class | positions | share | cause / next fix |
 |---|---:|---:|---|
-| `local` — a callback arriving as a PARAMETER of the enclosing function, bare | 1,292 | 47 % | E6: its members come from the enclosing spec's demand; needs the binding-kind split (parameter / let / destructure) — **F3's target, re-sized** |
+| `local` — a bare local reference | 1,292 | 47 % | **measured in §12.9.1:** 1,024 parameters (whose demands are 92 % `mem` — a chain from the rows below), 258 local-multi self-references (F2.b), 10 noise. NOT a class of its own |
 | **`localMulti`** | **866** | **32 %** | E7, GAP-9b — **F2, unchanged and now the largest single mechanism** |
 | `fn` interior — a lambda whose body returns an unknown | 349 | 13 % | one hop in: the body's result is one of the classes above (`IO.andThen a0 /r` 106, `Result.map a0 /a` 145 = the callback's PARAMETER arrow, filled by `Result.map`'s body, not the caller) |
 | `call` | 107 | 4 % | inner callee's result genuinely unknown |
@@ -1054,3 +1052,404 @@ Two consumer-side changes would use what the analysis now knows, neither built:
 
 This is the GAP-6 lesson in its purest form: completeness is now near the paper's; the
 consumers were designed around what the analysis used to deliver.
+
+### 12.8 F2 and F3 are NOT implementation-ready — what each still needs
+
+**SUPERSEDED by §12.9 (same day): the v4 census answered both P0s; F2 and F3 are lowered there.**
+
+Asked directly (user, 2026-09-15) whether §12.5's next two fixes are ready to build. They are
+not, for different reasons, and §12.6's `local` row overstated what was measured (corrected
+above).
+
+**F2 — local-multi instance write-back (E7). Size solid, design probably INFEASIBLE as written.**
+The 866 positions are a real measurement: `localMulti` is its own census form, 99 % unwritten,
+no ambiguity. But §10.5's mechanism — "keep the fresh param var and `connectParamArg` the
+instance's settled RHS type into it" — does not fit the order of translation, verified in
+`Translate.elm:7079-7130`:
+
+1. `pushLocalMulti name`; `classifyAs tkClassLet` gives the declared (storeless-⊤) type;
+2. `insertVar name declType`; **`translate body`** — every use site that passes the local as an
+   argument runs here, takes the `StashLocalMulti` path, records its instance, and
+   `enqueueSpecStamped`s the callee with a param slot that is empty;
+3. `popLocalMulti`; **`buildLocalDefs`** re-translates each instance RHS via `retranslateAt`,
+   **in a FRESH solver store** (deliberately: "so the demand's concretization doesn't contaminate
+   the surrounding item");
+4. `flushLocalMultiEnrich` overlays the instance types onto the already-emitted use sites — at
+   the ANNOTATION level (`overlayLocalMultiUses`), not in the store.
+
+So the RHS type does not exist until after the callee's demand was zonked and keyed, and when it
+does exist it lives in a different store. That the existing machinery does an AST-level overlay
+here is evidence the store route was already found closed, not an oversight to reuse.
+
+Two candidate designs, neither worked out:
+  - **(i) use-site member injection.** The local's RHS is a `TOpt.Function` with a
+    `SrcLambdaId`, so `injectLambdaMemberQualified` could fire at the use exactly as
+    `injectArgLambdaMemberGo` does for a lambda literal — no ordering problem, the id is a
+    function of the source. Blocked on LSS_038's hazard: local-multi instance keying is
+    annotation-SENSITIVE while member qualification was instance-blind, which already produced
+    one member id indexing two bodies (the `declinedBodyMismatch` class,
+    `plans/lss-instance-qualified-members.md`). Needs the instance ordinal at the use site.
+  - **(ii) re-key on overlay.** Make `flushLocalMultiEnrich`'s overlay move the callee's demand,
+    i.e. drive an LSS_010 re-translation. Bigger, and it reopens the drain-flush.
+
+**P0 before either:** is the RHS's `SrcLambdaId` reachable from the use site, and is the instance
+ordinal known there (or only after `recordLocalInstance` returns)? Both are one census pass.
+
+**F3 — store-aware let binding (E12/E13). Target population NOT MEASURED, and mis-stated.**
+Two separate errors in §12.6:
+
+  - The census's `local` form comes from `prodFormOf` matching `TOpt.VarLocal` /
+    `TrackedVarLocal`. It says the argument is a local reference and nothing else; a function
+    PARAMETER, a `let` binding and a destructured pattern binding are indistinguishable, and
+    `Engine.varEnv` is `name -> MonoType` with no kind tag. The §12.6 row asserted "a callback
+    arriving as a PARAMETER" — an inference, not a measurement, now corrected.
+  - **F3 repairs a ⊤, not a flex.** `classifyAs tkClassLet`/`tkClassDestr` stamp ⊤ at every
+    arrow; the positions that reach the census as `top` at `local` arguments are 2,865 events
+    (head 1,290 + interior 1,233 + container 342), a DIFFERENT and larger population than the
+    1,292 flex the §12.6 table attached to it. (Event counts, multiplicity across call sites —
+    not artefact positions, where total ⊤ is 937. Never divide one into the other.)
+
+And a floor to establish first: if a large share of the 1,292 flex are function parameters, their
+members come from the enclosing spec's own demand, and for a genuinely polymorphic HOF that is
+CORRECTLY unknown — part of the class is a floor, not a defect. §8.5's pass-through finding says
+the same thing from the other side.
+
+**P0 before F3:** tag `varEnv` insertions with their binding kind (param / let / destructure /
+case-binding) and re-read, splitting both the 1,292 flex and the 2,865 ⊤ by kind. Until that
+runs, F3's target is unknown and could be near-empty.
+
+**Recommendation.** One combined v4 census pass answers both (binding-kind tag + the F2
+reachability question) in a single emit/lower/run cycle. Build neither fix before it.
+
+### 12.9 v4 census (2026-09-15): binding kinds and the local-multi join — F2 and F3 LOWERED TO IMPLEMENTATION-READY
+
+The combined pass §12.8 asked for. Same instrument as v3 plus: every `Engine.insertVar` site
+tagged with its binding kind (`param` / `let` / `letMulti` / `tailFn` / `destr` / `destrRoot`), the
+`local` census form split by that kind; and the local-multi JOIN — at every `StashLocalMulti` use
+`lm|use|<rhs shape>|ord=<k>` + `lmjoin|use|<global>.<def>|ord=k`, at every `buildLocalDefs`
+re-translation `lmjoin|rhs|<global>.<def>|ord=k|<head member>`. Artefacts
+`build/compiler/build-kernel/bin/prodform5-2026-09-15.*`. **Instrument neutral:** `var` 1,380 /
+`⊤` 937 / `part` 32 identical to `prod4`; `positions` +42 are the instrument's own source (the
+self-compile compiles it). Wall 8:39, RSS 14.8 GB.
+
+#### 12.9.1 The `local` argument form by binding kind (event counts, all depths)
+
+| kind | events | `mem` | `flex` | `⊤` | reading |
+|---|---:|---:|---:|---:|---|
+| `param` | 17,428 | 16,120 (92 %) | 1,024 | 284 | heads 95 % `mem`: the demand DOES deliver parameters' sets. Flex heads 435 (`foldrHelper a0` 90, `List.foldl a0` 78, `Dict.foldl a0` 40 …) are the enclosing spec's `f` handed on to a fold — a CHAIN whose roots are the rows below, not a class of their own |
+| **`destr`** | **2,580** | 99 | 0 | **2,481 (96 %)** | **F3's real target.** Head 1,259 + interior 1,198 + container 24. 1,198 of the 1,259 heads (95 %) are ONE shape in ONE module: `Compiler.Parse.Primitives` — `Cerr a2` 580, `Eerr a2` 574, `toErr a2` 40 |
+| `letMulti` | 260 | 2 | 258 | 0 | a local-multi function referenced INSIDE ITS OWN instance re-translation (`Array.foldl.helper` passing `helper` to `JsArray.foldl`): the stack is already popped, `varEnv` no longer binds it (`enrich\|unbound` 257 ≈ 258) — F2's second sub-class |
+| `let` | 75 | 15 | 0 | 60 | all 60 at container depth (E12 on a literal RHS — F4's domain) |
+| `tailFn` | 40 | 0 | 0 | 40 | local tail-def bound from `classifyAs tkClassLet` (Translate.elm:6283) |
+| `unk` | 10 | 0 | 10 | 0 | pattern var of an unmatched kind (noise) |
+
+The §12.6/§12.8 worry is settled: **the 1,292 bare-local flex are 79 % parameters (1,024), and
+parameters are 92 % `mem`** — the flex ones are downstream of the local-multi and lambda-interior
+classes, to be re-read after F2, not repaired. And **the 2,865 local ⊤ are 87 % destructures**
+(2,481), 258 param-container, 60 let-container, 40 tail-fn, 11+15 param head/interior.
+
+The artefact-position ⊤ book (937), by provenance kind, for the same run: `clsDestr` **250**,
+`abi` 250, `poison` 208, `clsLet` **180**, `clsMisc` 38, `clsLocal` 8, `conflict` 3. F3 addresses
+the two bold kinds — 430 positions, 46 % of all ⊤.
+
+#### 12.9.2 What the destructure class IS (read at the source)
+
+`Compiler/Parse/Primitives.elm`: `type PStep x a = Cok a State | Eok a State | Cerr Row Col
+(Row -> Col -> x) | Eerr Row Col (Row -> Col -> x)`, and the combinators re-wrap a step:
+
+    case parseA s of                                   -- root = a CALL result of type PStep x a
+        Cerr r c t -> Cerr r c t                       -- lines 157-161, 278-282, 405-409
+        Eerr r c t -> Eerr r c t
+
+`t : Row -> Col -> x` is a SYNTACTIC PAYLOAD ARROW: the arrow is a constructor field, not a type
+argument, so the scrutinee's type `PStep x a` has no slot for it and the destrAnno projection
+(`getMonoPathType`, Fix A) returns ⊤ — `destranno|top|top` 14,135, the same number as before. It
+then flows into the re-wrapping CONSTRUCTION's payload slot as `LTop clsDestr`, which (a) is the
+⊤ contributor that closes `settleVarCtorRows`' gate on every `Cerr`/`Eerr` cell, and (b) lands in
+non-ctor demands (`toErr a2`, `composeL a1`) that the post-drain ⊤-heal (`settleCtorRows`, ctor
+entries only) never touches — the 250 `top@clsDestr` artefact positions. Consumer weight: the
+value is called once per parse FAILURE (`Err (toError row col)`, `inContext`) — cold. This is a
+completeness fix, not a dispatch fix; it is also exactly the container-payload identity this plan
+was opened for, at the one edge (E13) where the paper's `PStep[l] x a` set variable has no Eco
+counterpart.
+
+#### 12.9.3 The local-multi join (F2's two P0 questions)
+
+RHS shapes at the let (1,036 `pushLocalMulti`): `fnWithId` 654 (arity 1: 264, 2: 297, 3: 73,
+4: 17, 5: 3), `tailDef` 122 (no `SrcLambdaId` — `TOpt.TailDef` has none), other 96 (`call` 82 =
+a PAP `f = g x`, plus access/if/let/record/case/ref). **Use sites** (a local-multi passed as an
+argument, 476 events): `fnWithId` 370 (78 %), `noId` 106; **ordinal 0: 473 (99.4 %)**, ordinal
+1: 3. RHS head member at the re-translation: `mid` 739, `top` 16, multi-member 6, non-fn 2.
+
+Join over (def, ordinal): 516 pairs; 203 seen on BOTH sides; 178 of those (88 %) have exactly
+ONE head id across every re-translation of that (def, ord). The 19 defs with several ids are
+all per-SPEC qualification (`Array.foldl.helper`: 83 uses, 75 ids, and `prod5-out.mlir` has 85
+`Array_foldl` specs) — the census key lacks the spec id, the mint does not. The 16 defs where
+one id serves several ordinals are all non-lambda heads (PAP/reference members, instance-blind
+by design; `copyExpr.withMeta` ord 0-15 = one `p|` id), none of which F2 injects.
+
+So both P0 answers are YES: the RHS `SrcLambdaId` is reachable at the use (`entry.rhsLam`, in the
+`localMulti` stack entry the use already consults), and the ordinal is known at the use
+(`recordLocalInstance` assigns it from `specMapSize`; `buildLocalDefs` indexes the same `SpecMap`
+in insertion order — the join confirms they agree: 203 both-sided pairs, 1 use-only).
+
+#### 12.9.4 F2 — IMPLEMENTATION-READY: use-site member injection (design (i))
+
+**Mechanism.** At a `StashLocalMulti` use, after the instance is recorded, mint the id the RHS
+re-translation WILL mint for that instance and write it into the spine of the stashed var. The
+var is already unified with the callee's param slot (`freshVar0`/`pParam`, Translate.elm:3892),
+and the write lands BEFORE the callee is zonked and enqueued (`translateArgsWith` at 2063/3394
+precedes `Store.zonkToMono funcVar` at 2078/3413), so the callee's DEMAND carries the singleton.
+No ordering problem, no fresh-store problem, no drain-flush: the RHS type is never needed — only
+its identity, which is a function of the source.
+
+**Why the id agrees.** `LssInfer.injectLambdaMemberQualified` → `Engine.lambdaInstanceMemberId
+raw` is deterministic in (raw lambda id, `itemAux.currentLocalInstance`, `currentSpecId`,
+`lssMemberTable.specWidenedKeys`, `itemAux.demandQualified`, `rootLamOf`) — the last four are
+item-static; interning is get-or-create by key (`lambdaMemberLayoutQualified`: "mint and lookup
+cannot disagree"). The RHS mint runs under `retranslateWithTag (localInstanceTagFor ord)` with
+the same spec id (`clearedAux` keeps it). Reproducing the tag at the use site reproduces the id.
+Ordinal 0 (99.4 % of uses) is never tagged (`localInstanceTagFor 0` = the enclosing tag).
+
+**Code, exactly.**
+1. `Engine.NumberMultiEntry` KEEPS the v4 field `rhsLam : Maybe ( TypeIds.SrcLambdaId, Int )`
+   (lambda id, arity); `pushLocalMulti` keeps its `Maybe` argument;
+   `translateLocalMultiLet` (Translate.elm:7248) passes `rhsLamOf defBody` (keep `rhsLamOf`,
+   drop `rhsShape`/`bumpLm`).
+2. `Engine.recordLocalInstance` returns the ordinal: `Step ( String, Mono.MonoType, Int )` — from
+   `recordMultiInstance`'s `idx` (existing instance: its index in `specMapValues`), dropping the
+   `$`-suffix parse the instrument used.
+3. `translateArgsWith`, `StashLocalMulti v` arm (Translate.elm:4031-4045): after
+   `recordLocalInstance` yields `( freshName, instType, ord )`, when `stamp.enabled &&
+   stamp.useInject` and the stack entry for `localName` has `rhsLam = Just ( lam, arity )`:
+   `tag ← Engine.localInstanceTagFor ord`; set `itemAux.currentLocalInstance = tag`;
+   `LssInfer.injectLambdaMemberQualified arity (Just lam) v`; restore
+   `currentLocalInstance`. Return `MonoVarLocal freshName instType` unchanged (the AST overlay
+   `flushLocalMultiEnrich` later replaces the annotation with `typeOf rhs`, which carries the same
+   id from `classifyLambdaHead`'s own injection). Record FIRST, inject SECOND: the instance key
+   stays the demand-side type, so two uses at one type get one ordinal and one id; injecting
+   first would make the key depend on the ordinal for ord ≥ 1.
+4. `injectSpineMemberId` is bounded by `arity` (LSS_013) — for `\a b -> \c -> …` only the two
+   own arrows are written; the returned closure's arrow stays whatever its flow says.
+5. **F2.b, the self-reference sub-class (258 flex):** during `retranslateAtInstance`, a
+   `VarLocal` reference to the def being re-translated has no `varEnv` binding
+   (`enrich|unbound`). Set `itemAux.retranslating = Just ( name, lam, arity )` for the duration
+   of `retranslateWithTag` (`ItemAux` has a free slot once `varKind` goes) and, in
+   `argUnifyVar`'s `injectArgLambdaMember` path, when `accessedLocalName arg == Just name`, inject
+   `injectLambdaMemberQualified arity (Just lam) canVar` — the tag is ALREADY the instance's own
+   (that is what `retranslateWithTag` sets), so the id is the same one.
+6. Flag: `LssConfig` is at the 32-field cap — add `useInject : Bool` to `LssStampConfig` (5
+   fields), env `ECO_MONO_LSS_INSTANCE_QUAL_USE_INJECT`, JSON `instanceQualUseInject`, hash
+   token `lssIU=1`, default OFF for the A/B, then ON.
+
+**Hazards, each with its answer.** LSS_038 (one id, two bodies): only lambda-RHS defs are
+injected, and for those the id is instance-qualified for ord ≥ 1 and shared for ord 0 exactly as
+today's re-translation makes it — F2 adds no id the RHS would not mint; the existing
+`declinedBodyMismatch` fence stays. The cap (`maxInstances` 8): `localInstanceTagFor` returns
+the enclosing tag past it for BOTH sides — still equal. μ-tie: `recordMuTied` at the use
+precedes the RHS's; recording is idempotent. Conflict manufacture: the write is a total join into
+a slot that is flex in 866/874 cases; a ⊤ there stays ⊤.
+
+**Pre-registered predictions (A/B on the v3 instrument, flag off vs on).** `localMulti` unwritten
+positions 866 → ≤ 250: 370 fnWithId heads become `mem` plus their within-arity spines (213×1 +
+14×2 + 2×2 + 1×3 = 248 interior positions) ≈ 618; F2.b adds the 258 `local:letMulti`. Residual
+= the 106 `noId` heads (tail-defs and PAP RHSs) and beyond-arity `/r` positions. Second order:
+`local:param` flex (1,024) falls where its chain root was one of these (the `JsArray.foldl` /
+`List.foldl` / `Dict.foldl` cells); `var` 1,380 drops by a few hundred POSITIONS (events ≠
+positions — do not equate). Emission changes (stored demands gain members).
+
+**Gates.** (1) flag-off byte-identical `out.mlir` and identical `coverage:`; (2) new unit test
+`LssLocalMultiUseInjectTest`: a let-bound lambda used as a callback at two instance types →
+both callee specs' param annotations are `k1` and EQUAL to the two instance closures'
+`lssMember` ids (the join, pinned); (3) `elm-tests`; (4) E2E `--target full` both arms; (5)
+bootstrap fixed point (Stage 8c); (6) `benchmarks/call-stats.md` pair — the fold callbacks this
+names are the hot `arityOver` family, so dispatch may move.
+
+**BUILT (2026-09-15) — and the unit pin found a second defect.** `LssLocalMultiUseInjectTest`
+(5 pins: flag-off no set / flag-on join at two instances / distinct ids / F2.b self-reference /
+its flag-off) first FAILED the join: use-site ids 3 and 6, both instance closures' `lssMember`
+**9 = the ENCLOSING GLOBAL's ground id**. Cause: `retranslateWithTag` re-translates the instance
+RHS through `demandUnifyRoot`, which stashes `lssRootAnn` for a lambda RHS; `classifyLambdaHead`
+then treats the LOCAL lambda as the def's root and `rootFold` (a) folds its key onto
+`g|<enclosing global>` — an id that names a DIFFERENT value (`SourceGlobal` registered for a
+CAF/tuple) — and (b) `instanceQualTagFor` drops the instance tag for root-folded lambdas, so
+every instance of a lambda-RHS let-function shares one id. That is the LSS_038 collapse, LIVE
+for the common shape (654 of 1,036 RHSs are lambdas), and it is what the v4 join's "16 defs, one
+id, several ordinals" (`copyExpr.withMeta` ord 0-15) actually were — misread in §12.9.3 as PAP
+heads. Fix, gated with `useInject` for the A/B: `classifyLambdaHead` skips the fold when
+`itemAux.retranslating /= Nothing` (`rootFold|localSkip`). With it: 24/24 (this suite +
+`LssInstanceQualTest`, `LssLocalMultiEnrichTest`, `LssRootFoldTest`). Shipped pieces:
+`LssStampConfig.useInject` (env `ECO_MONO_LSS_INSTANCE_QUAL_USE_INJECT`, JSON
+`instanceQualUseInject`, token `lssIU=`, default OFF pending the A/B); `NumberInstance.ordinal`;
+`recordLocalInstance` returns the ordinal; `ItemAux.retranslating`;
+`Translate.injectLocalMultiUseMember` (the use-site write), `injectRetranslatingSelf` (F2.b, a
+`VarLocal` arm in `injectArgLambdaMemberGo`); `retranslateAtInstance` takes the def name.
+
+**A/B MEASURED (2026-09-15, self-compile, one emit of the F2 tree, two arms of the lowered
+compiler under the v3 census; artefacts `bin/f2ab-2026-09-15-{off,on}.*`). The pre-registered
+predictions held to the number.**
+
+| | `useInject=0` | **`useInject=1`** | Δ | predicted |
+|---|---:|---:|---:|---|
+| `lmInject\|use` / `\|self` / `\|noLam` | — | **370 / 132 / 106** | | 370 / 132 (258 positions) / 106 |
+| `localMulti` unwritten positions | 866 | **254** | −612 (−71 %) | ≤ 250 |
+| `local:letMulti` (self-reference) flex | 258 | **0** | −258 | 258 → 0 |
+| `local:param` flex (the chain) | 1,024 | **454** | −570 | "falls, unquantified" |
+| ALL unwritten argument positions (v3) | 2,726 | **1,281** | **−53 %** | |
+| `var` (artefact positions) | 1,380 | **873** | **−507 (−36.7 %)** | "a few hundred" |
+| `⊤` | 938 | **697** | −241 (`abi` 250 → 6) | not predicted |
+| `k1` / `kN` | 114,257 / 33,790 | 115,112 / 33,845 | +855 / +55 | |
+| positions | 150,397 | 150,559 | +162 (keyed specs gained) | |
+| **analysis coverage** | 98.44 % | **98.94 %** | **+0.50 pp** | |
+| `rootFold\|folded` / `\|localSkip` | 49,378 / — | 48,010 / 712 | | |
+| wall / RSS | 8:55.6 / 15.01 GB | 9:01.7 / 15.04 GB | flat | |
+
+The ⊤ drop was not predicted and is the root-fold misfire's other cost: 244 of the 250 `abi` ⊤
+were manufactured by folded local ids (a `g|<enclosing>` id whose layout is the enclosing def's,
+joined against the instance's) — gone with the skip. Residual `localMulti` 254 = the 106 `noLam`
+heads (tail-def and PAP RHSs: `Dict.foldl a0` 38×3 positions, `List.map a0` 17) plus their
+spines and 20 container positions. **Default flipped ON** (`stamp = { … useInject = True }`).
+Gates (2026-09-16, with F3-b/F3-a in the tree flag-off): full `elm-tests` 13,556 pass / the standing 12
+POST_010 only; E2E `--target full` **PASS (1727/1727, exit 0)**. Still owed: bootstrap 8c and the
+call-stats pair (deferred by the user).
+
+#### 12.9.5 F3 — IMPLEMENTATION-READY: (a) row-deferred payload sets at destructures, (b) store overlay for let/tail-fn bindings
+
+**F3-a — the destructure class (`clsDestr` 250 positions / 2,481 events).** A translation-time
+read of the ctor row is UNSOUND (the fixture that moved Fix B to the settle: a set stamped from
+a partial union excludes later constructions), and ⊤ is what closes the settle's own gate. The
+paper's answer is a set VARIABLE in the scrutinee's type; Eco's MonoType cannot carry one for a
+syntactic payload arrow, so carry a DEFERRED REFERENCE to the row instead — the LPartial
+precedent (§ "paper's Q-accumulation", one producer, resolved by the post-drain settle):
+
+- **Annotation:** `LambdaSetAnno` gains `LRow Int Int (List Int)` = (ctor global key, payload
+  index, members so far) meaning "⊇ members ∪ row(ctor, index, this sub-path)". In-store
+  twin `LambdaSet.LsRow` with the same payload; `zonkSetSlot` maps one to the other;
+  `Store.unifySlotWithSet` join rules and `Mono.unionAnno` rules (LSS_010 law: `annoCovers a b
+  ⇔ unionAnno a b == a` — extend both together, pin in `LssLPartialTest`, which holds the law today):
+  `LRow c i m ⊔ LSet n = LRow c i (m ∪ n)`; `LRow c i m ⊔ LRow c i n = LRow c i (m ∪ n)`;
+  `LRow c i _ ⊔ LRow c' i' _` (different rows) `= LTop tkRow` (counted); `LRow ⊔ LTop k = LTop k`;
+  `LRow ⊔ LVar = LPartial` (same rule as `LSet ⊔ LVar`; the var half is unevidenced). `LRow` is
+  NOT ⊤ (`isTopAnno`/`hasTopAnno` false) and NOT covered (`annoCoverage` counts it in a new
+  `row` bucket until resolved); it is never a singleton; `headAnno` reports it as multi.
+  Spec keys are annotation-sensitive already — `LRow` keys as itself.
+- **Producer (one site):** `specializeDestructor` (Translate.elm:8305-8350). After Fix A's
+  projection enrich, for every arrow of the binding type still `LTop clsDestr` whose path is a
+  syntactic payload (the innermost `MonoIndex i (CustomContainer ctor) …` / `MonoUnbox` segment
+  of `monoPath`), replace it with `LRow ctorKey i []`. Type-argument-borne arrows (a `Maybe (a ->
+  b)` payload) are NOT payload-syntactic and keep Fix A's answer. `Mono.enrichAnnotations` must
+  treat `LRow` as a set-like operand (sets union into it; it never absorbs ⊤).
+- **Resolver (post-drain):** extend `Monomorphize.settleCtorRows`. It already builds per-ctor
+  cells; use `settleVarCtorRows`' PATH-keyed cells (ctor global, `/a<i>` ++ sub-path) over ALL
+  sibling specs. Iterate to a fixpoint (rows reference rows through re-wraps — finite lattice,
+  unions monotone, ⊤ absorbing): a cell whose contributors are sets / `LRow`s of the SAME cell
+  (self-reference contributes nothing) / vars resolves to `LSet (m ∪ cell)`; a cell with a ⊤
+  contributor or an `LRow` of another cell that resolved ⊤ resolves to `LTop tkRow`. Rewrite
+  every registry position carrying `LRow` (ctor AND non-ctor entries — `toErr a2`,
+  `composeL a1`) with `Registry.updateRegistryType`, exactly as the heal does. Order: this
+  resolution runs BEFORE `settleVarCtorRows` (the ⊤ contributors it removes are the ones that
+  gate closes on), which keeps "var writes read ⊤ contamination HONESTLY" true.
+- **Consumers:** none change. AbiCloning reads registry types; an `LRow` that survives (a
+  resolver miss) is neither ⊤ nor a set at every reader — add it to the `never-singleton` guards
+  next to `LPartial` (`papResolve`, `matchSpec`, `devirt`) so an unresolved one can never stamp.
+
+**F3-b — the let / tail-fn class (`clsLet` 180 positions; `leak|letAnno` 58, `local:let` 60,
+`tailFn` 40 events).** The top-level `TailDef` already does the right thing
+(Translate.elm:1467-1500: zonk the demand-seeded var, `overlayAnnotations classified zonked`,
+peel params). Apply the same two-line overlay at the local sites: plain let (6221: `defType =
+Mono.overlayAnnotations defMonoType0 bodyType` whenever `eqLayout` holds, replacing the
+`useBodyType` either/or that leaks the annotation — `leak|letAnno`), the number-multi eager path
+(6404) and the local tail-def (6283: overlay the classify with the zonk of its `demandUnify`'d
+var, as 1486 does). Structure stays the classify's (the ABI guard in the 1486 comment applies).
+
+**Pre-registered predictions.** F3-a: `top@clsDestr` 250 → ≤ 30; `destranno|top|top` 14,135 →
+≤ 1,000 (the projection still misses; the producer now converts the miss); the `Cerr`/`Eerr`
+field-2 cells resolve to `kN` (every error constructor ever wrapped — coarse, honest; the
+paper's per-value precision needs the set variable in the type). Second order: with the ⊤
+contributor gone, `settleVarCtorRows` opens on the Parse ctor cells — some of the remaining
+`var` is there (unquantified). F3-b: `top@clsLet` 180 → ≤ 100; `leak|letAnno` 58 → 0. Coverage:
+F3 is ~430 of 150,264 positions, ≤ +0.3 pp — build it for completeness, not for the number.
+
+**Gates.** (1) `LssLPartialTest` extended for `LRow` (LSS_010 law, every pair of variants); (2)
+unit fixture: a `Parser`-shaped re-wrap in one module with two constructions of the ctor →
+the destructured payload resolves to the 2-set, and a fixture with a ⊤ construction → resolves
+⊤ (the `destrAnno` fixture pattern: "ctorExpr not varExpr; tVar; multi-ctor + phantom var");
+(3) flag-off byte-identical; (4) `elm-tests`; (5) E2E; (6) bootstrap 8c.
+
+**F3-b BUILT (2026-09-15).** `LssFlowConfig { connect, letOverlay }` — `flowConnect` moved into
+the sub-record (JSON key, env and `lssFC` token unchanged; `LssConfig` is at cap); `letOverlay`
+env `ECO_MONO_LSS_FLOW_LET_OVERLAY`, JSON `flowLetOverlay`, token `lssFLO=`, default OFF pending
+the A/B. Plain let: `defType = overlayAnnotations defMonoType0 bodyType` when the classify wins
+(`leak|letAnno` reads 0 by construction flag-on). Local tail-def: the single-instance
+`demandUnify` now hands its seeded var on and `tailDefBindingTypes` zonks it — classify for
+structure, zonk for annotations, params peeled from the overlaid function type (the top-level
+`TailDef` recipe). Pins `LssLetOverlayTest` (4): the tail-def differential is clean (⊤ off, set
+on); the plain-let differential is `clsLet` ⊤ → the RHS's annotation, because **a one-module
+fixture cannot put a SET on a tuple payload arrow at all** — a tuple LITERAL types its arrow
+`LVar` and takes the body type in both arms, and a CALL RHS reads the callee's registered result,
+whose payload arrow is a `declZonk` ⊤ manufactured inside the callee (`mkPair n = ( \x -> x + n,
+n )` registers `Int -> ( Int ->⊤declZonk Int, Int )`). Both are E14 (F4, unbuilt): the
+literal-field edge is the upstream of F3-b's let half and caps what it can yield on the corpus.
+Unit: 7/7 with `LssFlowEdgeLossTest`. A/B: `$SP/f3b-ab.sh` → `bin/f3b-{off,on}-out.mlir`.
+
+**F3-b A/B MEASURED (2026-09-15; artefacts `bin/f3bab-2026-09-15-{off,on}.*`; F2 default-on in
+both arms).** `leak|letAnno` 58 → **0**; `letOverlay|tailFn` 122; `clsLet` ⊤ 180 → **70**; total ⊤
+697 → **664** (−33; `clsDestr` 250 → 327 is a RELABEL — a let bound to a destructured local now
+carries the RHS's `clsDestr` ⊤ instead of its own `clsLet` one, same position); `var` 873 → **932**
+(+59: the RHS annotations the overlay copies are mostly never-written vars — `local:tailFn` ⊤ 40 →
+flex 40, `local:param` flex 454 → 528); k1 +14, kN +36; **coverage 98.94 % → 98.92 % (flat)**;
+wall 9:06 → 8:59, RSS flat. Verdict: F3-b removes a ⊤ MANUFACTURER (110 `clsLet` positions no
+longer stamp ⊤ where the RHS knew better or knew nothing) but converts most of them to honest
+vars, which coverage counts the same. It earns its place as the precondition for F4 (a literal
+field written later can fill a var, never a ⊤) and for F3-a's let-bound destructures, not on the
+number. **Left DEFAULT-OFF** pending the user's call; flip = one literal in `defaultLss.flow`.
+
+**F3-a BUILT (2026-09-15).** `LambdaSetAnno.LRow (List Int) (List Int)` (row ids, members) with
+its in-store twin `Vars.LambdaSet.LsRow`; row id = the interned member-table key
+`r|<ctor>|<path>` (path in the constructor's CURRIED shape: payload i at `/r`×i ++ `/a0`, then
+`settleVarCtorRows`' grammar inside — the resolver's cell key). Producer `Translate.rowifyPayload`
+at `specializeDestructor`, after Fix A's projection: every ⊤ arrow of a binding whose path's last
+step is `MonoIndex i (CustomContainer ctor)` or the single-ctor `MonoUnbox` becomes
+`LRow [row] []`. Lattice: `unionAnno`/`annoCovers` (exact, LSS_010), `enrichAnno`, `annoHash`,
+`annoKeyEq`, `toComparableFragments` (`Ar[rows|members](`, keys as itself), `collectAnnoGo`,
+`hasVarAnno` (var-like for the gates), `annoCoverage.row`; store: `Unify` two-slot join (rows ∪,
+members ∪; row × edge → ⊤ edge), `unifySlotWithSetC`, `zonkSetSlot`, `monoTypeToVarC`. Resolver
+`Monomorphize.settleRowRefs`, FIRST in the settle chain: path-keyed cells over every ctor-global
+registry entry (⊤/partial/marked-var contaminate; sets union; `LRow` contributes members and
+DEPENDENCIES), least fixpoint over the row graph, then every registry `LRow` → `LSet` or `topRow`
+(`tkRow` 21; `rowDefer|resolved/top/empty/noCell` counters). Guards: AbiCloning devirt,
+MapTemplate ×3, Borrow `LssFacts` — `LRow` declines like `LPartial`. Flag `flow.rowDefer` (env
+`ECO_MONO_LSS_FLOW_ROW_DEFER`, JSON `flowRowDefer`, token `lssFRD=`, default OFF pending the A/B).
+Pins `LssRowDeferTest` (4): flag-off the HOF fed the destructured payload reads ⊤; flag-on it reads
+the COMPLETE 2-member union of the constructor's row; no `LRow` survives in the registry; the
+re-wrap construction's payload is a set. 29/29 with the six neighbouring LSS suites (every
+test's exhaustive annotation match gained an `LRow` arm). A/B: `$SP/f3a-ab.sh` →
+`bin/f3a-{off,on}-out.mlir`.
+
+**F3-a A/B MEASURED (2026-09-15; artefacts `bin/f3aab-2026-09-15-{off,on}.*`; F2 on, F3-b off in
+both arms).** Producer: `rowDefer|minted` **13,984** row references; the `local:destr` argument
+class ⊤ 2,481 → **24** (2,457 now `row`); `rowDefer|notPayload` 103 (tuple/list/record paths —
+Fix A's domain). Resolver: **57 rows**; `resolved` 25, `top` **646**, `empty` 0, `noCell` 0.
+Artefact: `clsDestr` ⊤ 250 → 141, new `row` ⊤ **118**, total ⊤ 699 → 708; k1 +21, kN +55; `var`
+873 unchanged; coverage 98.937 % → 98.939 % (**flat**); wall 9:00 both, RSS flat. Verdict: the
+mechanism is complete and correct (the unit pin resolves a clean row to the exact 2-set; on the
+corpus every mint reaches the resolver and no row is missing a cell), but the `Cerr`/`Eerr`
+cells it resolves are CONTAMINATED — the same constructors are also built at sites whose payload
+argument is a still-flex parameter (`local:param` flex 454, the chain F2 left: lambda bodies
+returning unknowns 356, tail-def/PAP local-multi RHSs 254) and a marked-var contributor makes
+the complete union unknowable (AR-D2, the `settleVarCtorRows` rule). The rows will flip to sets
+by themselves as those roots are repaired — the resolver reads the complete union each time.
+**Left DEFAULT-OFF** (coverage-flat); flip = one literal. Next diagnostic when wanted: a per-row
+`rowDefer|why|<ctor>|<path>|top/markedVar/dep` counter names the contaminating construction
+sites (57 rows — one census run).
+
+#### 12.9.6 Order, and what §12.5 now reads
+
+**F2 → re-read (v3/v4 census) → F3-b → F3-a → F4 → F5.** F2 first: it is the largest
+mechanism (32 % of the residual), one site, a keep-what-v4-built change, and its A/B doubles as
+the re-read that sizes the `local:param` chain. F3-b is two overlays with a precedent. F3-a is
+the one real design (new annotation variant + resolver) and is deliberately last of the three:
+its population is cold and its yield is ~250 positions. §12.8's "build neither" is lifted for
+both; its "F2 design infeasible" applied to §10.5's store write-back, which is now replaced by
+(i). The v4 instrument's `rhsLam` / ordinal plumbing is F2's production code; everything else in
+the v3/v4 instrument (`StashCensus`, `varKind`, `lm*` counters) is census-only and comes out.

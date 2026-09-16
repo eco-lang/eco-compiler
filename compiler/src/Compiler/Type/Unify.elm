@@ -823,6 +823,24 @@ unifyStructure ctx flatType content otherContent =
                         ( Vars.LsMembers m1, Vars.LsFrom m2 s2 ) ->
                             merge ctx (Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom (IO.unionSortedAsc m1 m2) s2)))
 
+                        -- F3-a row-deferred sets: rows union, members union;
+                        -- a row meeting an edge widens (edge kind) — the two
+                        -- deferrals do not compose. Total, like the rest.
+                        ( Vars.LsRow r1 m1, Vars.LsRow r2 m2 ) ->
+                            merge ctx (Vars.Structure (Vars.LambdaSet1 (Vars.LsRow (IO.unionSortedAsc r1 r2) (IO.unionSortedAsc m1 m2))))
+
+                        ( Vars.LsRow r1 m1, Vars.LsMembers m2 ) ->
+                            merge ctx (Vars.Structure (Vars.LambdaSet1 (Vars.LsRow r1 (IO.unionSortedAsc m1 m2))))
+
+                        ( Vars.LsMembers m1, Vars.LsRow r2 m2 ) ->
+                            merge ctx (Vars.Structure (Vars.LambdaSet1 (Vars.LsRow r2 (IO.unionSortedAsc m1 m2))))
+
+                        ( Vars.LsRow _ _, Vars.LsFrom _ _ ) ->
+                            merge ctx (IO.lsTopContentK 3)
+
+                        ( Vars.LsFrom _ _, Vars.LsRow _ _ ) ->
+                            merge ctx (IO.lsTopContentK 3)
+
                 ( Vars.EmptyRecord1, Vars.EmptyRecord1 ) ->
                     merge ctx otherContent
 

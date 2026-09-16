@@ -26,7 +26,7 @@ module Compiler.AST.Monomorphized exposing
     , ClosureKindId(..), ClosureKind(..), MaybeClosureKind
     , CaptureABI
     , containsAnyMVar, resultTypeOf
-    , AnnoCoverage, LambdaSetAnno(..), MemberOrigin(..), annoCoverage, annoCovers, collectAnnoMembers, emptyAnnoCoverage, enrichAnnotations, enrichAnnotationsTopOnly, eqLayout, eqModuloTopLabel, hasTopAnno, hasVarAnno, headAnno, isTopAnno, joinAnnotations, joinAnnotationsChanged, joinCollisionCells, mCustom, mFunction, mList, mRecord, mTuple, overlayAnnotations, recoverStoredSets, shallowLayoutKey, singletonHeadMember, tkAbi, tkClassCall, tkClassCase, tkClassDestr, tkClassIf, tkClassLambda, tkClassLet, tkClassLit, tkClassLocal, tkClassMisc, tkClassParam, tkConflict, tkDeclOther, tkDeclStoreC, tkDeclStoreS, tkDeclZonk, tkEdge, tkLegacy, tkPoison, tkSynth, tkWiden, topAbi, topClassCall, topClassCase, topClassDestr, topClassIf, topClassLambda, topClassLet, topClassLit, topClassLocal, topClassMisc, topClassParam, topConflict, topDeclOther, topDeclStoreC, topDeclStoreS, topDeclZonk, topEdge, topKindLabel, topLegacy, topOfKind, topPoison, topSynth, topWiden, typeNodesWithin, unionAnno, unionSortedInts, widenSets
+    , AnnoCoverage, LambdaSetAnno(..), MemberOrigin(..), annoCoverage, annoCovers, collectAnnoMembers, emptyAnnoCoverage, enrichAnnotations, enrichAnnotationsTopOnly, eqLayout, eqModuloTopLabel, hasTopAnno, hasVarAnno, headAnno, isTopAnno, joinAnnotations, joinAnnotationsChanged, joinCollisionCells, mCustom, mFunction, mList, mRecord, mTuple, overlayAnnotations, recoverStoredSets, shallowLayoutKey, singletonHeadMember, tkAbi, tkClassCall, tkClassCase, tkClassDestr, tkClassIf, tkClassLambda, tkClassLet, tkClassLit, tkClassLocal, tkClassMisc, tkClassParam, tkConflict, tkRow, topRow, tkDeclOther, tkDeclStoreC, tkDeclStoreS, tkDeclZonk, tkEdge, tkLegacy, tkPoison, tkSynth, tkWiden, topAbi, topClassCall, topClassCase, topClassDestr, topClassIf, topClassLambda, topClassLet, topClassLit, topClassLocal, topClassMisc, topClassParam, topConflict, topDeclOther, topDeclStoreC, topDeclStoreS, topDeclZonk, topEdge, topKindLabel, topLegacy, topOfKind, topPoison, topSynth, topWiden, typeNodesWithin, unionAnno, unionSortedInts, widenSets
       -- Typed closure calling (ABI cloning)
       -- Call staging metadata
       -- Staging/Segmentation helpers
@@ -442,6 +442,9 @@ annoHash anno =
         LPartial members ->
             List.foldl (\m h -> mixHash h m) 5 members
 
+        LRow rows members ->
+            List.foldl (\m h -> mixHash h m) (List.foldl (\r h -> mixHash h r) 7 rows) members
+
 
 {-| Smart constructor for `MList`. See the `hashBase` docs.
 -}
@@ -643,6 +646,9 @@ annoKeyEq a b =
         ( LTop _, LTop _ ) ->
             -- Kind-blind (§4.9): provenance never splits equality.
             True
+
+        ( LRow r1 m1, LRow r2 m2 ) ->
+            r1 == r2 && m1 == m2
 
         _ ->
             False
@@ -972,6 +978,16 @@ type LambdaSetAnno
       -- strict cells). Promotion to LSet (the paper's internalization) is
       -- deferred v2 work.
     | LPartial (List Int)
+      -- LRow (F3-a, plans/lss-container-payload-transport.md §12.9.5): a set
+      -- deferred to CONSTRUCTOR ROWS — "⊇ members ∪ ⋃ row(r)". Produced at a
+      -- destructure of a syntactic payload arrow (`Translate.rowifyPayload`),
+      -- carried through the store as `Vars.LsRow`, resolved post-drain by
+      -- `Monomorphize.settleRowRefs` into `LSet` (the complete union of the
+      -- rows' constructions) or `topRow`. Until then: never a singleton,
+      -- declined by every stamp guard like LPartial, keys as itself
+      -- (annotation-sensitive), and `LRow ⊔ LVar = LPartial` (an unwritten
+      -- var beside it is unevidenced — the LSet rule).
+    | LRow (List Int) (List Int)
 
 
 {-| ⊤ provenance kinds (plans/lss-provenance-join-and-demand-sigs.md §4.9).
@@ -1098,6 +1114,14 @@ tkClassMisc =
     20
 
 
+{-| F3-a: a row-deferred set whose rows resolved ⊤ (a construction of the row
+is ⊤/partial/marked-var, or the row was never constructed).
+-}
+tkRow : Int
+tkRow =
+    21
+
+
 {-| Shared ⊤ values, one CAF per kind — construction sites reuse these so a
 ⊤ write allocates nothing.
 -}
@@ -1206,6 +1230,11 @@ topClassMisc =
     LTop 20
 
 
+topRow : LambdaSetAnno
+topRow =
+    LTop 21
+
+
 {-| Kind-blind ⊤ test — the `== LTop` replacement for callers that must not
 split on provenance (§4.9).
 -}
@@ -1281,6 +1310,9 @@ topOfKind k =
     else if k == 20 then
         topClassMisc
 
+    else if k == 21 then
+        topRow
+
     else
         topLegacy
 
@@ -1346,6 +1378,9 @@ topKindLabel k =
 
     else if k == 20 then
         "clsMisc"
+
+    else if k == 21 then
+        "row"
 
     else
         "legacy"
@@ -1432,6 +1467,9 @@ collectAnnoGo monoType acc =
                         LPartial ms ->
                             -- Lower-bound members are REAL members.
                             ms ++ acc
+
+                        LRow _ ms ->
+                            ms ++ acc
             in
             List.foldl collectAnnoGo (collectAnnoGo result acc1) args
 
@@ -1470,12 +1508,12 @@ and every consumer that is not the analysis treats `LVar` exactly as `LTop`.
 
 -}
 type alias AnnoCoverage =
-    { k1 : Int, kN : Int, var : Int, top : Int, part : Int }
+    { k1 : Int, kN : Int, var : Int, top : Int, part : Int, row : Int }
 
 
 emptyAnnoCoverage : AnnoCoverage
 emptyAnnoCoverage =
-    { k1 = 0, kN = 0, var = 0, top = 0, part = 0 }
+    { k1 = 0, kN = 0, var = 0, top = 0, part = 0, row = 0 }
 
 
 {-| PRECISION-MONOTONE annotation merge (plans/lss-ctor-arrow-identity.md
@@ -1580,6 +1618,29 @@ enrichAnno a b =
         ( LSet xs, LPartial ys ) ->
             LPartial (unionSortedInts xs ys)
 
+        -- F3-a LRow arms: rows union, sets union into it, a partial beside
+        -- it keeps the result partial, ⊤/var never erase it.
+        ( LRow r1 m1, LRow r2 m2 ) ->
+            LRow (unionSortedInts r1 r2) (unionSortedInts m1 m2)
+
+        ( LRow r m, LSet ys ) ->
+            LRow r (unionSortedInts m ys)
+
+        ( LSet xs, LRow r m ) ->
+            LRow r (unionSortedInts xs m)
+
+        ( LRow _ m, LPartial ys ) ->
+            LPartial (unionSortedInts m ys)
+
+        ( LPartial xs, LRow _ m ) ->
+            LPartial (unionSortedInts xs m)
+
+        ( LRow _ _, _ ) ->
+            a
+
+        ( _, LRow _ _ ) ->
+            b
+
         ( LPartial _, _ ) ->
             a
 
@@ -1615,6 +1676,11 @@ hasVarAnno monoType =
                 LPartial _ ->
                     -- A lower bound admits unknown flows — var-like for the
                     -- flex-construction mark and every contamination gate.
+                    True
+
+                LRow _ _ ->
+                    -- F3-a: unresolved until the settle — var-like for the
+                    -- same gates.
                     True
 
                 _ ->
@@ -1885,6 +1951,9 @@ annoCoverage monoType acc =
 
                         LPartial _ ->
                             { acc | part = acc.part + 1 }
+
+                        LRow _ _ ->
+                            { acc | row = acc.row + 1 }
             in
             List.foldl annoCoverage (annoCoverage result acc1) args
 
@@ -2427,6 +2496,27 @@ annoCovers a b =
         -- battery). union(LPartial xs, LVar) = a; union with a subset
         -- partial/set = a; ⊤ absorbs (≠ a); set/var bases always CHANGE
         -- when a partial arrives.
+        -- F3-a LRow arms — EXACT against `unionAnno` (the LSS_010 law):
+        -- union(LRow, LRow') = a iff rows' ⊆ rows and members' ⊆ members;
+        -- union(LRow, LSet ys) = a iff ys ⊆ members; union(LRow, LVar) and
+        -- union(LRow, LPartial) are LPartial ≠ a; union(LRow, LTop) = ⊤ ≠ a;
+        -- union(LPartial xs, LRow _ m) = LPartial (xs ∪ m) = a iff m ⊆ xs;
+        -- union(LSet/LVar, LRow) is LRow/LPartial ≠ a.
+        ( LRow r1 m1, LRow r2 m2 ) ->
+            sortedSubsetOf r2 r1 && sortedSubsetOf m2 m1
+
+        ( LRow _ m, LSet ys ) ->
+            sortedSubsetOf ys m
+
+        ( LRow _ _, _ ) ->
+            False
+
+        ( LPartial xs, LRow _ m ) ->
+            sortedSubsetOf m xs
+
+        ( _, LRow _ _ ) ->
+            False
+
         ( LPartial xs, LVar _ ) ->
             True
 
@@ -2611,6 +2701,30 @@ unionAnno a b =
 
         ( _, LTop _ ) ->
             b
+
+        -- F3-a LRow arms (⊤ absorbed above): rows union, sets union in, an
+        -- unwritten var or a partial beside it makes the result PARTIAL (the
+        -- var side is unevidenced — exactly the LSet rule), rows dropped.
+        ( LRow r1 m1, LRow r2 m2 ) ->
+            LRow (unionSortedInts r1 r2) (unionSortedInts m1 m2)
+
+        ( LRow r m, LSet ys ) ->
+            LRow r (unionSortedInts m ys)
+
+        ( LSet xs, LRow r m ) ->
+            LRow r (unionSortedInts xs m)
+
+        ( LRow _ m, LVar _ ) ->
+            LPartial m
+
+        ( LVar _, LRow _ m ) ->
+            LPartial m
+
+        ( LRow _ m, LPartial ys ) ->
+            LPartial (unionSortedInts m ys)
+
+        ( LPartial xs, LRow _ m ) ->
+            LPartial (unionSortedInts xs m)
 
         ( LVar i, LVar j ) ->
             if i == j then
@@ -3455,6 +3569,9 @@ toComparableFragments annoSensitive mt tail =
                             -- Identity-blind with LSet (lss-lpartial §2).
                             LPartial members ->
                                 "A[" ++ String.join "," (List.map String.fromInt members) ++ "]("
+
+                            LRow rows members ->
+                                "Ar[" ++ String.join "," (List.map String.fromInt rows) ++ "|" ++ String.join "," (List.map String.fromInt members) ++ "]("
 
                     else
                         -- LAYOUT flavour: arrows key uniformly —

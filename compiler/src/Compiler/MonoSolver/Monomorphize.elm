@@ -189,7 +189,7 @@ monomorphizeWithReportAssigned lssConfig limits entryPointName globalTypeEnv ass
                         sFinal =
                             settleVarSuccessors
                                 (settleVarLambda
-                                    (settleVarSuccessors (settleCtorRows (settleVarCtorRows sDrained)))
+                                    (settleVarSuccessors (settleCtorRows (settleVarCtorRows (settleRowRefs sDrained))))
                                 )
 
                         graph =
@@ -314,6 +314,379 @@ settleCtorRows s =
         { s | registry = registry1 }
 
 
+{-| F3-a (plans/lss-container-payload-transport.md §12.9.5): resolve every
+`LRow` in the registry from the COMPLETE union of the referenced constructor
+rows. Runs FIRST in the settle chain — the ⊤ it replaces at re-wrapping
+constructions (`Cerr r c t -> Cerr r c t`) is exactly what used to close
+`settleVarCtorRows`' gate on those cells.
+
+Cells are `settleVarCtorRows`' (ctor name, position path) cells over every
+registry entry of a constructor global: a ⊤ / partial / marked-var
+contributor makes the cell ⊤; sets union; an `LRow` contributor unions its
+members and records its rows as DEPENDENCIES. Row values are the least
+fixpoint over the dependency graph (finite lattice, unions monotone, ⊤
+absorbing; a row naming itself contributes nothing new). A row with no cell
+was never constructed as far as the registry knows — ⊤ (`rowDefer|noCell`).
+Then every `LRow rows members` in EVERY entry (constructor or not) becomes
+`LSet (members ∪ ⋃ value rows)`, or `topRow` when a row is ⊤ or the union is
+empty (an `LSet` is non-empty by construction). Registry types only, like the
+⊤-heal. Flag-off: identity.
+-}
+settleRowRefs : S -> S
+settleRowRefs s =
+    if not (s.env.lss.enabled && s.env.lss.flow.rowDefer) then
+        s
+
+    else
+        let
+            isCtorGlobal key =
+                case key of
+                    Mono.Global rrHome rrName ->
+                        case HashMap.get TOpt.globalHash (==) (TOpt.Global rrHome rrName) s.env.toptNodes of
+                            Just (TOpt.Ctor _ _ _) ->
+                                True
+
+                            Just (TOpt.Box _) ->
+                                True
+
+                            _ ->
+                                False
+
+                    _ ->
+                        False
+
+            ctorNameOf key =
+                case key of
+                    Mono.Global _ rrName ->
+                        rrName
+
+                    _ ->
+                        "?"
+
+            -- row id -> "<ctor>|<path>", from the interned `r|` member keys
+            rowKeyOf =
+                Dict.foldl
+                    (\k rid acc ->
+                        if String.startsWith "r|" k then
+                            Dict.insert rid (String.dropLeft 2 k) acc
+
+                        else
+                            acc
+                    )
+                    Dict.empty
+                    s.lssMemberTable.byKey
+
+            emptyCell =
+                { top = False, sets = [], deps = [] }
+
+            collectCell marked anno cell =
+                case anno of
+                    Mono.LTop _ ->
+                        { cell | top = True }
+
+                    Mono.LSet ms ->
+                        { cell | sets = Mono.unionSortedInts ms cell.sets }
+
+                    Mono.LPartial _ ->
+                        { cell | top = True }
+
+                    Mono.LRow rows ms ->
+                        { cell | sets = Mono.unionSortedInts ms cell.sets, deps = Mono.unionSortedInts rows cell.deps }
+
+                    Mono.LVar _ ->
+                        if marked then
+                            { cell | top = True }
+
+                        else
+                            cell
+
+            collectWalk marked gname path t acc =
+                case t of
+                    Mono.MFunction _ anno args result ->
+                        let
+                            acc1 =
+                                Dict.update (gname ++ "|" ++ path)
+                                    (\v -> Just (collectCell marked anno (Maybe.withDefault emptyCell v)))
+                                    acc
+
+                            accR =
+                                collectWalk marked gname (path ++ "/r") result acc1
+                        in
+                        List.foldl
+                            (\( i, a ) accA -> collectWalk marked gname (path ++ "/a" ++ String.fromInt i) a accA)
+                            accR
+                            (List.indexedMap Tuple.pair args)
+
+                    Mono.MList _ inner ->
+                        collectWalk marked gname (path ++ "/l") inner acc
+
+                    Mono.MTuple _ elems ->
+                        List.foldl
+                            (\( i, e ) accE -> collectWalk marked gname (path ++ "/t" ++ String.fromInt i) e accE)
+                            acc
+                            (List.indexedMap Tuple.pair elems)
+
+                    Mono.MRecord _ fields ->
+                        Dict.foldl (\fname ft a -> collectWalk marked gname (path ++ "/f:" ++ fname) ft a) acc fields
+
+                    Mono.MCustom _ _ _ args ->
+                        List.foldl
+                            (\( i, a ) accA -> collectWalk marked gname (path ++ "/c" ++ String.fromInt i) a accA)
+                            acc
+                            (List.indexedMap Tuple.pair args)
+
+                    _ ->
+                        acc
+
+            cells =
+                Tuple.second
+                    (Array.foldl
+                        (\entry ( idx, acc ) ->
+                            case entry of
+                                Just ( key, monoType ) ->
+                                    if isCtorGlobal key then
+                                        ( idx + 1, collectWalk (Dict.member idx s.lssStats.flexCtorSpecs) (ctorNameOf key) "" monoType acc )
+
+                                    else
+                                        ( idx + 1, acc )
+
+                                Nothing ->
+                                    ( idx + 1, acc )
+                        )
+                        ( 0, Dict.empty )
+                        s.registry.reverseMapping
+                    )
+
+            cellOf rid =
+                Dict.get rid rowKeyOf |> Maybe.andThen (\k -> Dict.get k cells)
+
+            -- Nothing = ⊤
+            initial =
+                Dict.map
+                    (\rid _ ->
+                        case cellOf rid of
+                            Just cell ->
+                                if cell.top then
+                                    Nothing
+
+                                else
+                                    Just cell.sets
+
+                            Nothing ->
+                                Nothing
+                    )
+                    rowKeyOf
+
+            noCell =
+                Dict.foldl (\rid _ n -> if cellOf rid == Nothing then n + 1 else n) 0 rowKeyOf
+
+            step values =
+                Dict.foldl
+                    (\rid v ( acc, changed ) ->
+                        case v of
+                            Nothing ->
+                                ( acc, changed )
+
+                            Just ms ->
+                                let
+                                    deps =
+                                        Maybe.withDefault [] (Maybe.map .deps (cellOf rid))
+
+                                    v1 =
+                                        List.foldl
+                                            (\d accV ->
+                                                case accV of
+                                                    Nothing ->
+                                                        Nothing
+
+                                                    Just accMs ->
+                                                        if d == rid then
+                                                            accV
+
+                                                        else
+                                                            case Dict.get d values of
+                                                                Just (Just dms) ->
+                                                                    Just (Mono.unionSortedInts accMs dms)
+
+                                                                _ ->
+                                                                    Nothing
+                                            )
+                                            (Just ms)
+                                            deps
+                                in
+                                if v1 == v then
+                                    ( acc, changed )
+
+                                else
+                                    ( Dict.insert rid v1 acc, True )
+                    )
+                    ( values, False )
+                    values
+
+            fixpoint values fuel =
+                if fuel <= 0 then
+                    values
+
+                else
+                    let
+                        ( v1, changed ) =
+                            step values
+                    in
+                    if changed then
+                        fixpoint v1 (fuel - 1)
+
+                    else
+                        v1
+
+            rowValues =
+                fixpoint initial (Dict.size initial + 2)
+
+            -- ( annotation, ( resolved, top, empty ) )
+            resolve rows ms =
+                case
+                    List.foldl
+                        (\r accV ->
+                            case accV of
+                                Nothing ->
+                                    Nothing
+
+                                Just accMs ->
+                                    case Dict.get r rowValues of
+                                        Just (Just rms) ->
+                                            Just (Mono.unionSortedInts accMs rms)
+
+                                        _ ->
+                                            Nothing
+                        )
+                        (Just ms)
+                        rows
+                of
+                    Just [] ->
+                        ( Mono.topRow, ( 0, 0, 1 ) )
+
+                    Just union ->
+                        ( Mono.LSet union, ( 1, 0, 0 ) )
+
+                    Nothing ->
+                        ( Mono.topRow, ( 0, 1, 0 ) )
+
+            hasRow t =
+                case t of
+                    Mono.MFunction _ anno args result ->
+                        (case anno of
+                            Mono.LRow _ _ ->
+                                True
+
+                            _ ->
+                                False
+                        )
+                            || hasRow result
+                            || List.any hasRow args
+
+                    Mono.MList _ inner ->
+                        hasRow inner
+
+                    Mono.MTuple _ elems ->
+                        List.any hasRow elems
+
+                    Mono.MRecord _ fields ->
+                        Dict.foldl (\_ ft a -> a || hasRow ft) False fields
+
+                    Mono.MCustom _ _ _ args ->
+                        List.any hasRow args
+
+                    _ ->
+                        False
+
+            rewrite t ( nr, nt, ne ) =
+                case t of
+                    Mono.MFunction _ anno args result ->
+                        let
+                            ( args1, c1 ) =
+                                List.foldr (\a ( accL, accC ) -> let ( a1, accC1 ) = rewrite a accC in ( a1 :: accL, accC1 )) ( [], ( nr, nt, ne ) ) args
+
+                            ( result1, c2 ) =
+                                rewrite result c1
+
+                            ( anno1, c3 ) =
+                                case anno of
+                                    Mono.LRow rows ms ->
+                                        let
+                                            ( a1, ( r, tp, em ) ) =
+                                                resolve rows ms
+
+                                            ( cr, ct, ce ) =
+                                                c2
+                                        in
+                                        ( a1, ( cr + r, ct + tp, ce + em ) )
+
+                                    _ ->
+                                        ( anno, c2 )
+                        in
+                        ( Mono.mFunction anno1 args1 result1, c3 )
+
+                    Mono.MList _ inner ->
+                        let
+                            ( inner1, c1 ) =
+                                rewrite inner ( nr, nt, ne )
+                        in
+                        ( Mono.mList inner1, c1 )
+
+                    Mono.MTuple _ elems ->
+                        let
+                            ( elems1, c1 ) =
+                                List.foldr (\e ( accL, accC ) -> let ( e1, accC1 ) = rewrite e accC in ( e1 :: accL, accC1 )) ( [], ( nr, nt, ne ) ) elems
+                        in
+                        ( Mono.mTuple elems1, c1 )
+
+                    Mono.MRecord _ fields ->
+                        let
+                            ( fields1, c1 ) =
+                                Dict.foldl (\fname ft ( accD, accC ) -> let ( ft1, accC1 ) = rewrite ft accC in ( Dict.insert fname ft1 accD, accC1 )) ( Dict.empty, ( nr, nt, ne ) ) fields
+                        in
+                        ( Mono.mRecord fields1, c1 )
+
+                    Mono.MCustom _ rrHome rrName args ->
+                        let
+                            ( args1, c1 ) =
+                                List.foldr (\a ( accL, accC ) -> let ( a1, accC1 ) = rewrite a accC in ( a1 :: accL, accC1 )) ( [], ( nr, nt, ne ) ) args
+                        in
+                        ( Mono.mCustom rrHome rrName args1, c1 )
+
+                    _ ->
+                        ( t, ( nr, nt, ne ) )
+
+            ( registry1, ( totR, totT, totE ) ) =
+                Tuple.second
+                    (Array.foldl
+                        (\entry ( idx, ( reg, tot ) ) ->
+                            case entry of
+                                Just ( _, monoType ) ->
+                                    if hasRow monoType then
+                                        let
+                                            ( rewritten, tot1 ) =
+                                                rewrite monoType tot
+                                        in
+                                        ( idx + 1, ( Registry.updateRegistryType idx rewritten reg, tot1 ) )
+
+                                    else
+                                        ( idx + 1, ( reg, tot ) )
+
+                                Nothing ->
+                                    ( idx + 1, ( reg, tot ) )
+                        )
+                        ( 0, ( s.registry, ( 0, 0, 0 ) ) )
+                        s.registry.reverseMapping
+                    )
+        in
+        { s | registry = registry1 }
+            |> Engine.bumpArgFlowCensusBy "rowDefer|rows" (Dict.size rowKeyOf)
+            |> Engine.bumpArgFlowCensusBy "rowDefer|noCell" noCell
+            |> Engine.bumpArgFlowCensusBy "rowDefer|resolved" totR
+            |> Engine.bumpArgFlowCensusBy "rowDefer|top" totT
+            |> Engine.bumpArgFlowCensusBy "rowDefer|empty" totE
+
+
 {-| Phase 2b (plans/lss-var-chain-roots.md §3, `lss.settle.varCtorRows`): write var
 payload slots on ctor registry rows from the sibling-spec CELL union, under
 the all-sets completeness rule.
@@ -337,6 +710,7 @@ the heal rewrites ⊤ positions to sets and would erase the contamination
 evidence this gate reads.
 
 -}
+
 settleVarCtorRows : S -> S
 settleVarCtorRows s =
     if not (s.env.lss.enabled && s.env.lss.settle.varCtorRows) then
@@ -396,6 +770,11 @@ settleVarCtorRows s =
                     -- inhabitants — contaminates like a MARKED var,
                     -- regardless of the flex mark.
                     Mono.LPartial _ ->
+                        { cell | flexVar = True }
+
+                    -- F3-a: an unresolved row reference (settleRowRefs
+                    -- ran first, so none should remain) contaminates.
+                    Mono.LRow _ _ ->
                         { cell | flexVar = True }
 
                     Mono.LVar _ ->
@@ -1102,6 +1481,9 @@ varCellWalk argIds path t acc =
 
                                     -- lss-lpartial §2: contaminates as var.
                                     Mono.LPartial _ ->
+                                        { c | var = True }
+
+                                    Mono.LRow _ _ ->
                                         { c | var = True }
 
                                     Mono.LSet ms ->
@@ -1853,7 +2235,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 -- consumable) but is reported separately: partials are
                 -- settle-recoverable where ⊤ never was.
                 positions =
-                    concrete + coverage.var + coverage.top + coverage.part
+                    concrete + coverage.var + coverage.top + coverage.part + coverage.row
             in
             "coverage: positions="
                 ++ String.fromInt positions
@@ -1867,6 +2249,8 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 ++ String.fromInt coverage.top
                 ++ " part="
                 ++ String.fromInt coverage.part
+                ++ " row="
+                ++ String.fromInt coverage.row
                 ++ " coveredBp="
                 ++ String.fromInt
                     (if positions == 0 then
@@ -2003,6 +2387,10 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                                     -- lss-lpartial: member count rides the
                                     -- row so partial richness is visible.
                                     ( path, "part@" ++ String.fromInt (List.length ms) ) :: acc
+
+                                Mono.LRow rows _ ->
+                                    -- F3-a: an UNRESOLVED row reference.
+                                    ( path, "row@" ++ String.fromInt (List.length rows) ) :: acc
 
                                 Mono.LVar vn ->
                                     -- P0.a (plans/lss-ctor-arrow-identity.md
@@ -2445,6 +2833,9 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                                             -- lss-lpartial §2: contaminates
                                             -- as var (not shared — no id).
                                             Mono.LPartial _ ->
+                                                { c | var = True }
+
+                                            Mono.LRow _ _ ->
                                                 { c | var = True }
 
                                             Mono.LSet ms ->

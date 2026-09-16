@@ -196,6 +196,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\iqmVal -> applyLssInstanceQualMaxOverride iqmVal cfg4e4c)
             )
         |> Task.andThen
+            (\cfgIU ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_INSTANCE_QUAL_USE_INJECT" |> Task.mapError never)
+                    |> Task.map (\iuVal -> applyLssInstanceQualUseInjectOverride iuVal cfgIU)
+            )
+        |> Task.andThen
             (\cfg4e4d ->
                 (Utils.envLookupEnv "ECO_MONO_LSS_FLAT_PEEL" |> Task.mapError never)
                     |> Task.map (\fpVal -> applyLssFlatPeelOverride fpVal cfg4e4d)
@@ -309,6 +314,16 @@ applyEnvOverrides cfg =
             (\cfg4es ->
                 (Utils.envLookupEnv "ECO_MONO_LSS_FLOW_CONNECT" |> Task.mapError never)
                     |> Task.map (\fcVal -> applyLssFlowConnectOverride fcVal cfg4es)
+            )
+        |> Task.andThen
+            (\cfgFLO ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_FLOW_LET_OVERLAY" |> Task.mapError never)
+                    |> Task.map (\floVal -> applyLssFlowLetOverlayOverride floVal cfgFLO)
+            )
+        |> Task.andThen
+            (\cfgFRD ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_FLOW_ROW_DEFER" |> Task.mapError never)
+                    |> Task.map (\frdVal -> applyLssFlowRowDeferOverride frdVal cfgFRD)
             )
         |> Task.andThen
             (\cfg4et ->
@@ -2356,6 +2371,33 @@ setStampPapFast v c =
     { c | papFast = v }
 
 
+setStampUseInject : Bool -> Config.LssStampConfig -> Config.LssStampConfig
+setStampUseInject v c =
+    { c | useInject = v }
+
+
+{-| `ECO_MONO_LSS_INSTANCE_QUAL_USE_INJECT=1|true|yes / 0|false|no`: F2
+local-multi use-site member injection
+(plans/lss-container-payload-transport.md §12.9.4). Artifact-affecting;
+hash token `lssIU=`.
+-}
+applyLssInstanceQualUseInjectOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssInstanceQualUseInjectOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | stamp = setStampUseInject True lss.stamp }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | stamp = setStampUseInject False lss.stamp }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
 {-| `ECO_MONO_LSS_PAP_FAST=1|true|yes / 0|false|no` (LSS\_040,
 plans/lss-pap-fast-stamp.md): FAST-stamp call sites whose callee is a
 `p|<global>|<k>` partial-application member, loading the k bound arguments
@@ -2784,6 +2826,63 @@ applyLssVarCtorRowsOverride maybeVal cfg =
             cfg
 
 
+setFlowConnect : Bool -> Config.LssFlowConfig -> Config.LssFlowConfig
+setFlowConnect v c =
+    { c | connect = v }
+
+
+setFlowLetOverlay : Bool -> Config.LssFlowConfig -> Config.LssFlowConfig
+setFlowLetOverlay v c =
+    { c | letOverlay = v }
+
+
+setFlowRowDefer : Bool -> Config.LssFlowConfig -> Config.LssFlowConfig
+setFlowRowDefer v c =
+    { c | rowDefer = v }
+
+
+{-| `ECO_MONO_LSS_FLOW_ROW_DEFER=1|true|yes / 0|false|no`: F3-a row-deferred
+destructure sets (plans/lss-container-payload-transport.md §12.9.5).
+Artifact-affecting; hash token `lssFRD=`.
+-}
+applyLssFlowRowDeferOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssFlowRowDeferOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | flow = setFlowRowDefer True lss.flow }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | flow = setFlowRowDefer False lss.flow }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_FLOW_LET_OVERLAY=1|true|yes / 0|false|no`: F3-b let/tail-def
+binding overlay (plans/lss-container-payload-transport.md §12.9.5).
+Artifact-affecting; hash token `lssFLO=`.
+-}
+applyLssFlowLetOverlayOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssFlowLetOverlayOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | flow = setFlowLetOverlay True lss.flow }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | flow = setFlowLetOverlay False lss.flow }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
 {-| `ECO_MONO_LSS_FLOW_CONNECT=1|true|yes / 0|false|no`
 (plans/lss-var-chain-roots.md §9.5 M1): deep write-back of translated
 lambda-literal argument types into the callee's param store variable.
@@ -2794,10 +2893,10 @@ applyLssFlowConnectOverride maybeVal cfg =
     case Maybe.map (String.toLower << String.trim) maybeVal of
         Just v ->
             if List.member v [ "1", "true", "yes" ] then
-                updateLss (\lss -> { lss | flowConnect = True }) cfg
+                updateLss (\lss -> { lss | flow = setFlowConnect True lss.flow }) cfg
 
             else if List.member v [ "0", "false", "no" ] then
-                updateLss (\lss -> { lss | flowConnect = False }) cfg
+                updateLss (\lss -> { lss | flow = setFlowConnect False lss.flow }) cfg
 
             else
                 cfg

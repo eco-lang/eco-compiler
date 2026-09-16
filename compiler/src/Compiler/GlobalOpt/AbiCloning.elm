@@ -1783,6 +1783,26 @@ stampCall index ctx region func args resultType callInfo =
               { ctx | stats = { stats0p | devirtPost = { dp0 | partialDeclined = dp0.partialDeclined + 1 } } }
             )
 
+        Mono.LRow _ _ ->
+            -- F3-a: an UNRESOLVED row reference is never a singleton (same
+            -- guard as LPartial; the resolver normally leaves none).
+            -- AR-P2 (lss-lpartial §3), THE devirt guard: a LOWER bound is
+            -- never a singleton — stamping it would direct-call one member
+            -- while an unrecorded inhabitant may exist (the arrowSolverRoots
+            -- false-singleton class). NON-STAMP, censused so the guard is
+            -- observable.
+            let
+                stats0p =
+                    ctx.stats
+            in
+            ( Mono.MonoCall region func args resultType callInfo
+            , let
+                dp0 =
+                    stats0p.devirtPost
+              in
+              { ctx | stats = { stats0p | devirtPost = { dp0 | partialDeclined = dp0.partialDeclined + 1 } } }
+            )
+
         Mono.LVar _ ->
             -- Same NON-STAMP as LTop — a variable names no members, so there is
             -- nothing to devirtualize — but censused separately so the ⊤-site

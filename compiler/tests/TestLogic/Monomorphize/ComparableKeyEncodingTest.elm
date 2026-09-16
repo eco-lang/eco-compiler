@@ -706,6 +706,9 @@ referenceHelper annoSensitive work acc =
                                         -- identity-blind with LSet (lss-lpartial §2)
                                         "A[" ++ String.join "," (List.map String.fromInt members) ++ "]("
 
+                                    LRow rows members ->
+                                        "Ar[" ++ String.join "," (List.map String.fromInt rows) ++ "|" ++ String.join "," (List.map String.fromInt members) ++ "]("
+
                             else
                                 "A("
 

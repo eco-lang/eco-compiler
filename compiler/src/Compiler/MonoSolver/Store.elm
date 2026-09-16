@@ -887,6 +887,13 @@ monoTypeToVarC lssOn varSlots monoType st =
                                 -- Dict.fromList conversion.
                                 Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers members))
 
+                            Mono.LRow rows members ->
+                                -- F3-a: the row reference travels through the
+                                -- store (unlike LPartial, it is a COMPLETE
+                                -- claim once resolved, and the resolver needs
+                                -- it at the registry).
+                                Vars.Structure (Vars.LambdaSet1 (Vars.LsRow rows members))
+
                             Mono.LPartial _ ->
                                 -- lss-lpartial §2/AR-P4: the store keeps
                                 -- COMPLETE semantics in v1 — a lower bound
@@ -1394,6 +1401,24 @@ unifySlotWithSetC top members slot c0 =
 
                         _ ->
                             setRootC slot desc (Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom (IO.unionSortedAsc members cur) srcs))) { c1 | union = c1.union + 1 }
+
+        Vars.Structure (Vars.LambdaSet1 (Vars.LsRow rows cur)) ->
+            -- F3-a: a member write onto a row-deferred slot unions into its
+            -- members; ⊤ absorbs the whole variant.
+            case top of
+                Just topK ->
+                    setRootC slot desc (IO.lsTopContentK topK) { c1 | topJoin = c1.topJoin + 1 }
+
+                Nothing ->
+                    case IO.classifySorted members cur of
+                        Vars.SortedEqual ->
+                            { c1 | skip = c1.skip + 1 }
+
+                        Vars.SortedSub ->
+                            { c1 | skip = c1.skip + 1 }
+
+                        _ ->
+                            setRootC slot desc (Vars.Structure (Vars.LambdaSet1 (Vars.LsRow rows (IO.unionSortedAsc members cur)))) { c1 | union = c1.union + 1 }
 
         Vars.FlexVar _ ->
             -- The DOMINANT case (Run B: 70.1 %): LSS_006 makes loadType mint
@@ -3182,6 +3207,24 @@ zonkSetSlot paramT resultT setVar c0 =
 
                             else
                                 ( Mono.LSet members, noteArrowClass True setVar (noteMultiSet setVar members (bumpCauseC (\a -> { a | causeEdgeSet = a.causeEdgeSet + 1 }) (bumpZonkAcc (Just size) c3))) )
+
+                Nothing ->
+                    ( Mono.topEdge, c1 )
+
+        Vars.Structure (Vars.LambdaSet1 (Vars.LsRow rows ms0)) ->
+            -- F3-a: read back as the row-deferred annotation; members ground
+            -- like a set's (the resolver unions them into the row's value).
+            case c1.lss of
+                Just acc0 ->
+                    let
+                        ( members, c2 ) =
+                            if acc0.groundStandalones then
+                                groundMembersC paramT resultT ms0 c1
+
+                            else
+                                ( ms0, c1 )
+                    in
+                    ( Mono.LRow rows members, bumpCauseC (\a -> { a | causeUnknown = a.causeUnknown + 1 }) (bumpZonkAcc Nothing c2) )
 
                 Nothing ->
                     ( Mono.topEdge, c1 )

@@ -219,6 +219,9 @@ runBare srcModule =
     let
         d =
             Config.defaultLss
+
+        fl =
+            Config.defaultLss.flow
     in
     Pipeline.runSolverMonoWithLimits Config.defaultLimits
         -- flowConnect pinned OFF since its 2026-09-01 default-on flip: this
@@ -226,7 +229,7 @@ runBare srcModule =
         -- IS one now — the day it flipped, test 2's lost edge healed at
         -- inference (the loud expiry this suite was designed for; see the
         -- module doc's postscript).
-        { d | enabled = True, keyed = True, flowConnect = False, settle = { varSucc = False, varCtorRows = False, varLambda = False } }
+        { d | enabled = True, keyed = True, flow = { fl | connect = False }, settle = { varSucc = False, varCtorRows = False, varLambda = False } }
         srcModule
 
 
@@ -339,3 +342,6 @@ one a =
 
         Mono.LPartial ms ->
             "LPartial " ++ String.fromInt (List.length ms)
+
+        Mono.LRow _ ms ->
+            "LRow " ++ String.fromInt (List.length ms)
