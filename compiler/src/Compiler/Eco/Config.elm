@@ -370,11 +370,14 @@ type alias LssConfig =
     -- structurally-equal DISTINCT objects 97.5% of the time (§10.4), so
     -- occurrence ids cannot tie them and solver identity can.
     --
-    -- DEFAULT-OFF, and it should stay off until Phase 3: §10.9 measured that
-    -- slot sharing WITHOUT a per-use set variable trades the context
-    -- sensitivity that manufactures usable singletons (−0.50 pp fast dispatch,
-    -- 99% of it one de-stamped site), and 2b shares strictly MORE contexts
-    -- than 2a. Hash token `lssAR=1`; env `ECO_MONO_LSS_ARROW_ROOTS`.
+    -- DEFAULT-ON since 2026-09-16 (call-stats Runs 25/26): completeness first
+    -- — coverage 98.98 % -> 99.05 %, `var` 851 -> 593 — at the priced cost
+    -- §10.9 predicted: slot sharing WITHOUT a per-use set variable trades the
+    -- context sensitivity that manufactures usable singletons (`k1` −506,
+    -- `⊤` +152, fast dispatch share −2.73 pp, wall flat). Subsumes
+    -- `sigRootIdentity` (Run 27: byte-identical emission with it off), which
+    -- went default-off in the same flip. Escape hatch
+    -- `ECO_MONO_LSS_ARROW_ROOTS=0`; hash token `lssAR=0` rides the OFF arm.
     , arrowSolverRoots : Bool
 
     -- §5.2/§5.3 (plans/lss-paper-inclusion-constraints.md): consume the
@@ -483,8 +486,12 @@ type alias LssConfig =
     -- together, and disabling `papMembers` while leaving this ON re-creates
     -- exactly that miscompile — so if you turn one off, turn off both.
     --
-    -- Artifact-affecting. DEFAULT-ON since 2026-08-27. Escape hatch
-    -- `ECO_MONO_LSS_SIG_ROOT_ID=0`; hash token `lssSR=0` now rides the OFF
+    -- Artifact-affecting. DEFAULT-ON 2026-08-27 .. 2026-09-16, then
+    -- DEFAULT-OFF: with `arrowSolverRoots` on, `AssignMVarIds` already gives
+    -- every solver-root slot one shared arrow id, so this memo translation has
+    -- nothing left to merge (call-stats Run 27: emission byte-identical with it
+    -- off). Turning it back on is only meaningful with `arrowSolverRoots` off,
+    -- and then still REQUIRES `papMembers`. Hash token `lssSR=1` rides the ON
     -- arm; env `ECO_MONO_LSS_SIG_ROOT_ID`.
     , sigRootIdentity : Bool
 
@@ -997,12 +1004,12 @@ defaultLss =
     , layoutQualMembers = True
     , postSettleDevirt = True
     , arrowIdentity = True
-    , arrowSolverRoots = False
+    , arrowSolverRoots = True
     , qSolve = False
     , refIdentity = True
     , qCensus = False
     , papMembers = True
-    , sigRootIdentity = True
+    , sigRootIdentity = False
     , arrowCensus = False
     , regIdentity = True
     , rootFold = True

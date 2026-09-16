@@ -2627,9 +2627,10 @@ applyLssCensusOverride maybeVal cfg =
 (plans/lss-injection-completeness.md): inject the callee's member on the
 RESIDUAL arrows of a partial application of a known global — the one producer
 form that injected nothing before it (P0 census: 3,624 self-compile positions).
-DEFAULT-ON since 2026-08-27, flipped together with `sigRootIdentity`; setting
-this to 0 while `ECO_MONO_LSS_SIG_ROOT_ID` stays on re-creates the recorded
-identity-map miscompile, so turn off BOTH or neither. Hash token `lssPM=`.
+DEFAULT-ON since 2026-08-27, flipped together with `sigRootIdentity` (itself
+default-off again since 2026-09-16); setting this to 0 while
+`ECO_MONO_LSS_SIG_ROOT_ID=1` re-creates the recorded identity-map miscompile,
+so never run that pair. Hash token `lssPM=`.
 -}
 applyLssPapMembersOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssPapMembersOverride maybeVal cfg =
@@ -2655,7 +2656,9 @@ instead of by syntactic occurrence — tying a def's annotation arrows to its
 body's, so its signature carries the facts its body proves. REQUIRES
 `papMembers` (root-shared classes export through signatures; an
 injection-incomplete class publishes a false singleton to every caller).
-DEFAULT-ON since 2026-08-27. Hash token `lssSR=`.
+DEFAULT-ON 2026-08-27 .. 2026-09-16, DEFAULT-OFF since: `arrowSolverRoots`
+(now on) subsumes it — call-stats Run 27 emitted byte-identical output with it
+off. Hash token `lssSR=`.
 -}
 applyLssSigRootIdentityOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssSigRootIdentityOverride maybeVal cfg =
@@ -3118,8 +3121,9 @@ arrow ids, plans/lss-unknown-elimination.md §4.9): take each arrow's identity
 from its union-find ROOT, so two arrows the type checker unified share a
 lambda-set slot. Requires arrow identity to have any effect — it changes WHICH
 id an arrow gets, not whether slots are memoised at all — and that is now the
-default, so this flag alone is enough to select 2b. DEFAULT-OFF. Hash token
-`lssAR=`.
+default, so this flag alone is enough to select 2b. DEFAULT-ON since
+2026-09-16 (call-stats Runs 25-27; `sigRootIdentity` went off with it). Hash
+token `lssAR=`.
 -}
 applyLssArrowRootsOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssArrowRootsOverride maybeVal cfg =

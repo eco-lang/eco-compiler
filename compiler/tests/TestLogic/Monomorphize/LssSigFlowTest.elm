@@ -471,6 +471,13 @@ run sigFlow srcModule =
             , papMembers = False
             , sigRootIdentity = False
 
+            -- arrowSolverRoots (default-on since 2026-09-16) PINNED OFF: the
+            -- THIRD channel to the same place — 2b gives unified arrows one
+            -- shared id before mono starts, which subsumes sigRootIdentity's
+            -- tie (call-stats Run 27) and collapsed tests 1b/2/3 exactly as
+            -- that flag did. Fifth instance of the differential-overlap rule.
+            , arrowSolverRoots = False
+
             -- regIdentity (default-on since 2026-08-28) PINNED OFF, fourth
             -- instance of the differential-overlap rule: the registration
             -- stamp writes head/spine annos, and this harness's readers scan

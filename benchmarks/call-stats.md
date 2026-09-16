@@ -1248,6 +1248,187 @@ The four §12.10 flags ON together (the new defaults): F2.c use-site `p|` member
 **Dispatch (group 3):** benchmark `sat` 911,061,173 → 921,082,926 (+1.10 %), `gen` +1.14 %, `fast` +2.05 %, `typed` +0.25 %; fast share 54.23 % → 54.47 % (+0.24 pp); reference `sat` +1.95 % (the analysis's own calls — 5,785 access joins, 13,443 literal points, the overlays). Group 4: `helper` +0.79 %, `cap` +2.12 %, static-target 94.44 % both. **E15's callee-form sites (`state.compileExpr expr ctx`) do not show as a dispatch move** — the +17 upgraded stamps are the whole visible effect.
 **Wall:** reference 664.7 → 692.9 s (+4.2 % — the analysis cost on the unoptimized binary), benchmark 596.7 → 587.3 s (−1.6 %, within the ±2 % noise band); RSS flat (14.85 → 14.87 / 14.82 → 14.81 GB); promoted flat. **Verdict: a completeness change (+0.05 pp, var −42, ⊤ −32) that is dispatch-neutral and wall-neutral on the optimized binary, at ~4 % analysis cost on the reference. The flags stay DEFAULT-ON as shipped; the 5-arm attribution is in plan §12.10.3 (F4-sig carries the completeness gain, E15 the analysis cost).**
 
+### Run 25 — defaults on the post-instrument-removal tree (2026-09-16; control for Run 26)
+
+| compiler | build | workload | wall (s) | max RSS (kB) | minor GC | major GC | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| reference | `ECO_MONO_ENGINE=subst` | solver+LSS, defaults | 685.2 | 14,692,944 | 2398 | 10 | 25,284 | 13,569,895 |
+| benchmark | solver+LSS, defaults | solver+LSS, defaults | 578.6 | 14,833,696 | 2392 | 10 | 25,304 | 13,569,895 |
+
+**1. lss-coverage**
+
+| compiler | positions | singleton `k1` | multi `kN` | `var` | `⊤` | partial | coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| reference | 151,650 | 116,010 (76.50 %) | 34,089 (22.48 %) | 851 (0.56 %) | 668 (0.44 %) | 32 (0.02 %) | 98.98 % |
+| benchmark | 151,650 | 116,010 (76.50 %) | 34,089 (22.48 %) | 851 (0.56 %) | 668 (0.44 %) | 32 (0.02 %) | 98.98 % |
+
+**2. lss-stamping**
+
+| compiler | dispatchUpgraded | stampedPapGlobal | stampedStaged | stampedPapPrefix | noInstance | blocked | bodyMismatch | shape | abiMismatch | devirtPost fn/ctor/noSpec/ambiguous | multiInstanceGroups |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 17,495 | 3,360 | 209 | 12 | 9,839 | 7 | 1,525 | 518 | 356 | 65/323/0/0 | 1,776 |
+| benchmark | 17,495 | 3,360 | 209 | 12 | 9,839 | 7 | 1,525 | 518 | 356 | 65/323/0/0 | 1,776 |
+
+**3. dispatch-stats**
+
+| compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 3,023,062,047 | 2,921,110,413 | 101,951,634 | 0 | 3,023,062,047 | 0.00 | 96.63 | 3.37 | 7,045 |
+| benchmark | 908,737,616 | 868,198,925 | 40,538,691 | 1,089,868,621 | 1,998,606,237 | 54.53 | 43.44 | 2.03 | 7,054 |
+
+**4. call-census**
+
+| compiler | elm | runtime | kernel | helper | cap | extern | indirect | sites | static-target % |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 13,962,550,641 | 16,385,040,518 | 1,414,449,520 | 2,789,833,065 | 415,381,381 | 0 | 0 | 433,084 | 83.93 |
+| benchmark | 13,345,309,894 | 11,323,638,013 | 1,414,179,866 | 723,777,246 | 666,603,836 | 0 | 0 | 455,762 | 94.44 |
+
+| compiler | helper `apply_closure_eval` | `closure_call_saturated` | `..._saturated_eval` | typed cross-check |
+|---|---:|---:|---:|---|
+| reference | 2,687,881,434 | 92,190,992 | 9,760,639 | 2,789,833,065 vs typed 101,951,634 |
+| benchmark | 683,238,558 | 37,509,294 | 3,029,394 | 723,777,246 vs typed 40,538,691 |
+
+Control for Run 26, and the first row on the tree after the §12.9/§12.10 census instruments (v3/v4 and
+the F4 ones) were removed and the four §12.10 flags went default-on: exactly the protocol's environment,
+`ECO_MONO_LSS_ARROW_ROOTS=0` spelled explicitly (its default). Against Run 24 the SOURCE moved (the
+instruments were compiler code, so the workload shrank): `positions` 151,858 → 151,650, `out.mlir`
+13,597,442 → 13,569,895 B, while `var`/`⊤`/`partial` (851/668/32) and the coverage (98.98 %) are
+identical to the digit — the removal is inert on the analysis, as the recovery check measured.
+Native seed for the reference: `bin/pmo-bench-off-census` emitted `f7-std-subst.mlir` (12,363,985 B).
+**Bootstrap fixed point:** the benchmark emission is byte-identical to the reference emission
+(13,569,895 B). Dispatch is Run 24 within noise (benchmark `sat` −1.3 %, fast share 54.47 → 54.53 %).
+
+### Run 26 — `arrowSolverRoots = 1` (`lssAR=1`, `ECO_MONO_LSS_ARROW_ROOTS=1`) (2026-09-16)
+
+| compiler | build | workload | wall (s) | max RSS (kB) | minor GC | major GC | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| reference | `ECO_MONO_ENGINE=subst` | solver+LSS, `lssAR=1` | 669.7 | 14,824,880 | 2402 | 10 | 25,292 | 13,741,944 |
+| benchmark | solver+LSS, `lssAR=1` | solver+LSS, `lssAR=1` | 584.8 | 14,853,996 | 2398 | 10 | 25,293 | 13,741,944 |
+
+**1. lss-coverage**
+
+| compiler | positions | singleton `k1` | multi `kN` | `var` | `⊤` | partial | coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| reference | 151,904 | 115,504 (76.04 %) | 34,954 (23.01 %) | 593 (0.39 %) | 820 (0.54 %) | 33 (0.02 %) | 99.05 % |
+| benchmark | 151,904 | 115,504 (76.04 %) | 34,954 (23.01 %) | 593 (0.39 %) | 820 (0.54 %) | 33 (0.02 %) | 99.05 % |
+
+**2. lss-stamping**
+
+| compiler | dispatchUpgraded | stampedPapGlobal | stampedStaged | stampedPapPrefix | noInstance | blocked | bodyMismatch | shape | abiMismatch | devirtPost fn/ctor/noSpec/ambiguous | multiInstanceGroups |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 17,868 | 3,251 | 209 | 9 | 9,842 | 7 | 1,688 | 711 | 354 | 65/323/0/0 | 1,952 |
+| benchmark | 17,868 | 3,251 | 209 | 9 | 9,842 | 7 | 1,688 | 711 | 354 | 65/323/0/0 | 1,952 |
+
+**3. dispatch-stats**
+
+| compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 3,034,544,032 | 2,933,399,965 | 101,144,067 | 0 | 3,034,544,032 | 0.00 | 96.67 | 3.33 | 7,047 |
+| benchmark | 993,826,340 | 886,579,039 | 107,247,301 | 1,068,020,945 | 2,061,847,285 | 51.80 | 43.00 | 5.20 | 7,136 |
+
+**4. call-census**
+
+| compiler | elm | runtime | kernel | helper | cap | extern | indirect | sites | static-target % |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 13,983,145,613 | 16,449,171,386 | 1,423,548,328 | 2,800,085,162 | 417,197,980 | 0 | 0 | 433,084 | 83.91 |
+| benchmark | 13,297,299,168 | 11,584,285,123 | 1,423,279,077 | 807,838,813 | 719,623,515 | 0 | 0 | 463,376 | 93.95 |
+
+| compiler | helper `apply_closure_eval` | `closure_call_saturated` | `..._saturated_eval` | typed cross-check |
+|---|---:|---:|---:|---|
+| reference | 2,698,941,098 | 91,422,516 | 9,721,548 | 2,800,085,162 vs typed 101,144,067 |
+| benchmark | 700,591,515 | 46,493,893 | 60,753,405 | 807,838,813 vs typed 107,247,301 |
+
+Phase 2b solver-root arrow ids (`Compiler.Eco.Config` `lss.arrowSolverRoots`, default-off since
+plans/lss-unknown-elimination.md §10.9): every arrow the type checker UNIFIED shares one lambda-set slot
+instead of one slot per syntactic occurrence. Same source and the SAME reference binary as Run 25
+(`f7-eco-std-census`), so every difference is the flag. Both arms of Run 26 carry the flag (the benchmark
+compiler is built from the reference arm's emission, then self-compiles under the same flag).
+**Bootstrap fixed point holds** (13,741,944 B both arms; +172,049 B / +1.27 % over Run 25 — slot sharing
+widens keyed spec keys, `sites` 455,762 → 463,376). The lowered binary runs the full workload
+(`Success!` both arms), so the 2026-08-26 identity-map miscompile does not recur with `papMembers` on.
+**Completeness (group 1):** coverage 98.98 % → 99.05 % (+0.07 pp) — but it is the coverage-hollow
+shape: `var` 851 → 593 (−258) is bought with `⊤` 668 → 820 (+152, more conflicts once contexts share a
+slot) and `k1` −506 / `kN` +865: singleton positions become multi-member sets because distinct call
+contexts now pool their members. **Stamping (group 2):** `dispatchUpgraded` 17,495 → 17,868 (+373),
+`stampedPapGlobal` 3,360 → 3,251 (−109), `shape` 518 → 711 (+193, `arity over` 219 → 318), `bodyMismatch`
+1,525 → 1,688, `multiInstanceGroups` 1,776 → 1,952. **Dispatch (group 3):** benchmark `sat` 908.7 M →
+993.8 M (+9.36 %), `typed` 40.5 M → 107.2 M (×2.65), `gen` +2.1 %, `fast` 1,089.9 M → 1,068.0 M
+(−2.0 %); fast share 54.53 % → 51.80 % (−2.73 pp), population +3.2 %. The reference arm prices the
+workload at `sat` +0.38 %, so the benchmark's +85 M `sat` is the BINARY losing stamps: +373 upgraded
+sites are cold and the ~109 de-stamped PAP-global sites are hot — the site-count/weight inversion again.
+Group 4 agrees: `helper` 723.8 M → 807.8 M (+11.6 %), `closure_call_saturated_eval` 3.0 M → 60.8 M,
+`cap` +8.0 %, static-target 94.44 % → 93.95 %. **Wall:** benchmark 578.6 → 584.8 s (+1.1 %), reference
+685.2 → 669.7 s (−2.3 %), both inside the ±2 % band; RSS and promoted flat. **Verdict: §10.9's
+prediction confirmed and enlarged — slot sharing without a per-use set variable trades the context
+sensitivity that manufactures usable singletons (−0.50 pp fast then, −2.73 pp now, on a tree whose
+stamps depend on singletons far more). +0.07 pp coverage is hollow (k1 −506, ⊤ +152). The flag stays
+DEFAULT-OFF; it is not a completeness lever, it is a precision-for-sharing trade.**
+
+### Run 27 — `arrowSolverRoots = 1` + `sigRootIdentity = 0` (`lssAR=1 lssSR=0`) (2026-09-16)
+
+| compiler | build | workload | wall (s) | max RSS (kB) | minor GC | major GC | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| reference | `ECO_MONO_ENGINE=subst` | solver+LSS, `lssAR=1 lssSR=0` | 667.5 | 14,727,508 | 2402 | 10 | 25,292 | 13,741,944 |
+| benchmark | solver+LSS, `lssAR=1 lssSR=0` | solver+LSS, `lssAR=1 lssSR=0` | 574.9 | 14,820,968 | 2398 | 10 | 25,293 | 13,741,944 |
+
+**1. lss-coverage**
+
+| compiler | positions | singleton `k1` | multi `kN` | `var` | `⊤` | partial | coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| reference | 151,904 | 115,504 (76.04 %) | 34,954 (23.01 %) | 593 (0.39 %) | 820 (0.54 %) | 33 (0.02 %) | 99.05 % |
+| benchmark | 151,904 | 115,504 (76.04 %) | 34,954 (23.01 %) | 593 (0.39 %) | 820 (0.54 %) | 33 (0.02 %) | 99.05 % |
+
+**2. lss-stamping**
+
+| compiler | dispatchUpgraded | stampedPapGlobal | stampedStaged | stampedPapPrefix | noInstance | blocked | bodyMismatch | shape | abiMismatch | devirtPost fn/ctor/noSpec/ambiguous | multiInstanceGroups |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 17,868 | 3,251 | 209 | 9 | 9,842 | 7 | 1,688 | 711 | 354 | 65/323/0/0 | 1,952 |
+| benchmark | 17,868 | 3,251 | 209 | 9 | 9,842 | 7 | 1,688 | 711 | 354 | 65/323/0/0 | 1,952 |
+
+**3. dispatch-stats**
+
+| compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 3,034,544,109 | 2,933,400,036 | 101,144,073 | 0 | 3,034,544,109 | 0.00 | 96.67 | 3.33 | 7,073 |
+| benchmark | 993,826,340 | 886,579,039 | 107,247,301 | 1,068,020,945 | 2,061,847,285 | 51.80 | 43.00 | 5.20 | 7,136 |
+
+**4. call-census**
+
+| compiler | elm | runtime | kernel | helper | cap | extern | indirect | sites | static-target % |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 13,982,893,810 | 16,449,171,582 | 1,423,548,371 | 2,800,085,214 | 417,198,017 | 0 | 0 | 433,084 | 83.91 |
+| benchmark | 13,297,047,310 | 11,584,285,134 | 1,423,279,083 | 807,838,813 | 719,623,517 | 0 | 0 | 463,376 | 93.95 |
+
+| compiler | helper `apply_closure_eval` | `closure_call_saturated` | `..._saturated_eval` | typed cross-check |
+|---|---:|---:|---:|---|
+| reference | 2,698,941,144 | 91,422,522 | 9,721,548 | 2,800,085,214 vs typed 101,144,073 |
+| benchmark | 700,591,515 | 46,493,893 | 60,753,405 | 807,838,813 vs typed 107,247,301 |
+
+Run 26 with ONE change: `ECO_MONO_LSS_SIG_ROOT_ID=0` (solver-root signature identity OFF; `papMembers`
+stays on — the REQUIRES note in `Compiler.Eco.Config` forbids only the other direction). Single arm, same
+source and the same reference binary as Runs 25/26 (`f7-eco-std-census`). The override took: the stored
+config hash of every build in the run carries `lssSR=0` alongside `lssAR=1`.
+**The emission is byte-identical to Run 26's** (13,741,944 B, `cmp` clean against `f7-bench-on-out.mlir`),
+so groups 1 and 2 are Run 26 to the digit and the benchmark binary is the same program: group 3 matches
+Run 26 exactly (`sat` 993,826,340, `fast` 1,068,020,945, `typed` 107,247,301) and group 4 differs only by
+the run-to-run noise of the workload (`sat` on the reference +77 events). **Bootstrap fixed point holds.**
+**Reading:** `sigRootIdentity` is INERT under `arrowSolverRoots`. Roots (2b) make `AssignMVarIds` resolve
+every solver-root slot to one shared arrow id before mono starts, so the occurrence → root memo
+translation that `sigRootIdentity` applies inside the inference scratch (`Store.loadTypeC` via
+`arrowRootOf`) has nothing left to merge: 2b's identification subsumes SR's. It follows that Run 26's
+whole cost (fast share −2.73 pp, `k1` −506, `⊤` +152) is 2b's sharing OUTSIDE the inference scratch —
+the per-occurrence, per-call-site identity that specialization needs — and cannot be recovered by
+switching SR off. **Wall:** benchmark 574.9 s vs 584.8 s (Run 26) vs 578.6 s (Run 25): the three are one
+population within the ±2 % band. Verdict: no separate decision; Run 26's stands, and a Run 26 arm with
+SR off is not a distinct configuration.
+
+**SHIPPED AS THE DEFAULTS 2026-09-16 (later the same day):** `arrowSolverRoots = True`,
+`sigRootIdentity = False`, on the completeness-first directive. Gates on the flipped tree: elm-tests
+13,568 pass / the standing 12 (LssSigFlowTest and MuTieTest pin `arrowSolverRoots = False` — the
+differential-overlap rule), E2E `full` 1727/1727, `bootstrap` exit 0 with Stage 8c byte-identical
+(`eco-compiler-boot` == `eco-compiler-boot-2`, 75,749,432 B; self-compile emission 13,741,944 B = this
+run's), Stage 9b clean. Hash tokens now ride the other arms: `lssAR=0` / `lssSR=1`.
+
 ---
 
 ## Summary
@@ -1307,6 +1488,12 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 23 | series=0 | benchmark | 596.7 | 2402 | 11 | 25457 | 13562125 |
 | 24 | series=1 | reference | 692.9 | 2429 | 10 | 25655 | 13597442 |
 | 24 | series=1 | benchmark | 587.3 | 2422 | 11 | 25671 | 13597442 |
+| 25 | lssAR=0 | reference | 685.2 | 2398 | 10 | 25284 | 13569895 |
+| 25 | lssAR=0 | benchmark | 578.6 | 2392 | 10 | 25304 | 13569895 |
+| 26 | lssAR=1 | reference | 669.7 | 2402 | 10 | 25292 | 13741944 |
+| 26 | lssAR=1 | benchmark | 584.8 | 2398 | 10 | 25293 | 13741944 |
+| 27 | lssAR=1 lssSR=0 | reference | 667.5 | 2402 | 10 | 25292 | 13741944 |
+| 27 | lssAR=1 lssSR=0 | benchmark | 574.9 | 2398 | 10 | 25293 | 13741944 |
 
 ### 1. lss-coverage
 
@@ -1360,6 +1547,12 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 23 | series=0 | benchmark | 151642 | 115949 | 34068 | 893 | 700 | 32 | 98.93 |
 | 24 | series=1 | reference | 151858 | 116147 | 34160 | 851 | 668 | 32 | 98.98 |
 | 24 | series=1 | benchmark | 151858 | 116147 | 34160 | 851 | 668 | 32 | 98.98 |
+| 25 | lssAR=0 | reference | 151650 | 116010 | 34089 | 851 | 668 | 32 | 98.98 |
+| 25 | lssAR=0 | benchmark | 151650 | 116010 | 34089 | 851 | 668 | 32 | 98.98 |
+| 26 | lssAR=1 | reference | 151904 | 115504 | 34954 | 593 | 820 | 33 | 99.05 |
+| 26 | lssAR=1 | benchmark | 151904 | 115504 | 34954 | 593 | 820 | 33 | 99.05 |
+| 27 | lssAR=1 lssSR=0 | reference | 151904 | 115504 | 34954 | 593 | 820 | 33 | 99.05 |
+| 27 | lssAR=1 lssSR=0 | benchmark | 151904 | 115504 | 34954 | 593 | 820 | 33 | 99.05 |
 
 ### 2. lss-stamping
 
@@ -1413,6 +1606,12 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 23 | series=0 | benchmark | 17505 | 3361 | 209 | 12 | 9799 | 7 | 1481 | 529 | 356 | 65 | 319 | 0 | 0 | 1757 |
 | 24 | series=1 | reference | 17522 | 3370 | 209 | 12 | 9846 | 7 | 1536 | 517 | 356 | 65 | 323 | 0 | 0 | 1778 |
 | 24 | series=1 | benchmark | 17522 | 3370 | 209 | 12 | 9846 | 7 | 1536 | 517 | 356 | 65 | 323 | 0 | 0 | 1778 |
+| 25 | lssAR=0 | reference | 17495 | 3360 | 209 | 12 | 9839 | 7 | 1525 | 518 | 356 | 65 | 323 | 0 | 0 | 1776 |
+| 25 | lssAR=0 | benchmark | 17495 | 3360 | 209 | 12 | 9839 | 7 | 1525 | 518 | 356 | 65 | 323 | 0 | 0 | 1776 |
+| 26 | lssAR=1 | reference | 17868 | 3251 | 209 | 9 | 9842 | 7 | 1688 | 711 | 354 | 65 | 323 | 0 | 0 | 1952 |
+| 26 | lssAR=1 | benchmark | 17868 | 3251 | 209 | 9 | 9842 | 7 | 1688 | 711 | 354 | 65 | 323 | 0 | 0 | 1952 |
+| 27 | lssAR=1 lssSR=0 | reference | 17868 | 3251 | 209 | 9 | 9842 | 7 | 1688 | 711 | 354 | 65 | 323 | 0 | 0 | 1952 |
+| 27 | lssAR=1 lssSR=0 | benchmark | 17868 | 3251 | 209 | 9 | 9842 | 7 | 1688 | 711 | 354 | 65 | 323 | 0 | 0 | 1952 |
 
 ### 3. dispatch-stats
 
@@ -1468,6 +1667,12 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 23 | series=0 | benchmark | 911061173 | 870177392 | 40883781 | 1079644889 | 1990706062 | 54.23 | 43.71 | 2.05 | 7058 |
 | 24 | series=1 | reference | 3056786821 | 2954022558 | 102764263 | 0 | 3056786821 | 0.00 | 96.64 | 3.36 | 7058 |
 | 24 | series=1 | benchmark | 921082926 | 880097535 | 40985391 | 1101830413 | 2022913339 | 54.47 | 43.51 | 2.03 | 7037 |
+| 25 | lssAR=0 | reference | 3023062047 | 2921110413 | 101951634 | 0 | 3023062047 | 0.00 | 96.63 | 3.37 | 7045 |
+| 25 | lssAR=0 | benchmark | 908737616 | 868198925 | 40538691 | 1089868621 | 1998606237 | 54.53 | 43.44 | 2.03 | 7054 |
+| 26 | lssAR=1 | reference | 3034544032 | 2933399965 | 101144067 | 0 | 3034544032 | 0.00 | 96.67 | 3.33 | 7047 |
+| 26 | lssAR=1 | benchmark | 993826340 | 886579039 | 107247301 | 1068020945 | 2061847285 | 51.80 | 43.00 | 5.20 | 7136 |
+| 27 | lssAR=1 lssSR=0 | reference | 3034544109 | 2933400036 | 101144073 | 0 | 3034544109 | 0.00 | 96.67 | 3.33 | 7073 |
+| 27 | lssAR=1 lssSR=0 | benchmark | 993826340 | 886579039 | 107247301 | 1068020945 | 2061847285 | 51.80 | 43.00 | 5.20 | 7136 |
 
 ### 4. call-census
 
@@ -1521,3 +1726,9 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 23 | series=0 | benchmark | 13400589939 | 11370916757 | 1401623224 | 726724648 | 661445024 | 0 | 0 | 455215 | 94.44 |
 | 24 | series=1 | reference | 14155026289 | 16561633498 | 1429151071 | 2819314329 | 421478010 | 0 | 0 | 434152 | 83.96 |
 | 24 | series=1 | benchmark | 13532730486 | 11450324305 | 1428880493 | 732451153 | 675446910 | 0 | 0 | 456892 | 94.44 |
+| 25 | lssAR=0 | reference | 13962550641 | 16385040518 | 1414449520 | 2789833065 | 415381381 | 0 | 0 | 433084 | 83.93 |
+| 25 | lssAR=0 | benchmark | 13345309894 | 11323638013 | 1414179866 | 723777246 | 666603836 | 0 | 0 | 455762 | 94.44 |
+| 26 | lssAR=1 | reference | 13983145613 | 16449171386 | 1423548328 | 2800085162 | 417197980 | 0 | 0 | 433084 | 83.91 |
+| 26 | lssAR=1 | benchmark | 13297299168 | 11584285123 | 1423279077 | 807838813 | 719623515 | 0 | 0 | 463376 | 93.95 |
+| 27 | lssAR=1 lssSR=0 | reference | 13982893810 | 16449171582 | 1423548371 | 2800085214 | 417198017 | 0 | 0 | 433084 | 83.91 |
+| 27 | lssAR=1 lssSR=0 | benchmark | 13297047310 | 11584285134 | 1423279083 | 807838813 | 719623517 | 0 | 0 | 463376 | 93.95 |

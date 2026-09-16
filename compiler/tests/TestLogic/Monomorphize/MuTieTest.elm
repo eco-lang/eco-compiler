@@ -182,7 +182,11 @@ run muTie =
         -- ISOLATION — under LSS_024 (default-on since 2026-08-21) C alone
         -- closes the spiral and the flag-off arm's fan-out-to-budget
         -- expectation would be vacuous (LayoutQualTest pins the C arms).
-        { defaults | enabled = True, keyed = True, muTie = muTie, layoutQualMembers = False, maxSpecsPerGlobal = pinnedBudget, maxSetSize = 8 }
+        -- arrowSolverRoots PINNED OFF for the same reason (default-on since
+        -- 2026-09-16): one shared slot per unified arrow closes the spiral
+        -- flag-off too (loopSpecs=8 instead of the budget), so the fan-out
+        -- expectation only holds with per-occurrence identity.
+        { defaults | enabled = True, keyed = True, muTie = muTie, layoutQualMembers = False, arrowSolverRoots = False, maxSpecsPerGlobal = pinnedBudget, maxSetSize = 8 }
         spiralModule
         |> Result.map factsOf
 
