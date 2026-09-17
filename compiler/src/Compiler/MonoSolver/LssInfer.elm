@@ -183,7 +183,36 @@ injectLambdaMemberQualified arity srcLam funcVar s0 =
                     Err e
 
                 Ok ( mid, s1 ) ->
-                    injectSpineMemberId arity mid funcVar s1
+                    -- plans/lss-root-fold-depth-qualified-spine.md §3: a
+                    -- root-FOLDED lambda's id is its global's GROUND
+                    -- STANDALONE key — a STAMPABLE `g|` — and must not be
+                    -- written past the head. `lss-root-member-fold.md` §1.5
+                    -- AR-1: "the papMembers miscompile required a stampable
+                    -- id on a PARTIAL application; depth>0 stays `p|`
+                    -- (declining), so that door stays shut" — and the two
+                    -- OTHER spine writers (`Translate.stampSelfSpine` via
+                    -- `memberIdForDepth`, `injectPapSuccessors`) already
+                    -- honour that. This one did not: `spineGoC` writes ONE
+                    -- id at every depth, which is correct for `l|` lambdas
+                    -- (LSS_013 — LSS_011's PAP-prefix stamp layout-checks
+                    -- them) and wrong for a folded `g|`.
+                    --
+                    -- Non-folded lambdas keep the LSS_013 full-spine write.
+                    if s1.env.lss.rootFold && s1.env.lss.stamp.rootFoldDepth then
+                        case CoreDict.get (Engine.srcLambdaKey lamId) s1.lssMemberTable.rootLamOf of
+                            Just g ->
+                                case injectSpineMemberId 1 mid funcVar s1 of
+                                    Err e ->
+                                        Err e
+
+                                    Ok ( _, s2 ) ->
+                                        injectFoldedSuccessors g arity funcVar s2
+
+                            Nothing ->
+                                injectSpineMemberId arity mid funcVar s1
+
+                    else
+                        injectSpineMemberId arity mid funcVar s1
 
 
 
@@ -3068,6 +3097,36 @@ injectPapSuccessors g v0 s0 =
                     Store.foldSetWrites
                         (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
                         (Engine.bumpArgFlowCensus "refspine|inject" s1)
+
+
+{-| Depth-qualified successors for a ROOT-FOLDED def's OWN spine
+(plans/lss-root-fold-depth-qualified-spine.md §3/§4.1). Identical walk and
+identical ids to 'injectPapSuccessors', with two deliberate differences:
+
+  - the depth bound is the root lambda's own `arity` (the LSS\_013 bound — the
+    arrows a partial application of THIS lambda can peel), not
+    `declaredArityOf`, because the caller already has the parameter count;
+  - it is NOT gated on `lss.refPapSpine`. That flag governs the
+    REFERENCE-side spine; this is the def's own identity write and must not
+    depend on it. With `refPapSpine = 0` this becomes the only writer of
+    `p|g|d` at those depths, which is strictly more coverage than that arm
+    has today and cannot mint a stampable-on-PAP id (it writes `p|`).
+
+-}
+injectFoldedSuccessors : TOpt.Global -> Int -> Vars.Variable -> Step ()
+injectFoldedSuccessors g arity v0 s0 =
+    if arity <= 1 then
+        Ok ( (), Engine.bumpArgFlowCensus "rootFold|spineHeadOnly" s0 )
+
+    else
+        case mintPapSuccessorIds g 1 arity [] s0 of
+            Err e ->
+                Err e
+
+            Ok ( midsRev, s1 ) ->
+                Store.foldSetWrites
+                    (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
+                    (Engine.bumpArgFlowCensus "rootFold|spineDepth" s1)
 
 
 mintPapSuccessorIds : TOpt.Global -> Int -> Int -> List Int -> Step (List Int)

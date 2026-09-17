@@ -122,35 +122,82 @@ suite =
 
                                 else
                                     Expect.fail ("kernel-alias head grew a new identity: " ++ describe heads)
-        , Test.test "4. DEEP SPINE UNCHANGED: plus2's depth-1 anno is arm-identical" <|
+        , Test.test "4. DEEP SPINE: the folded head id is absent from depth 1" <|
             \() ->
-                -- The fold is head-only by design (`p|` stays the declining
-                -- class at depth > 0). Id-blind differential: /r must not
-                -- move across arms.
-                case ( runWith False plainModule, runWith True plainModule ) of
-                    ( Ok offG, Ok onG ) ->
+                -- plans/lss-root-fold-depth-qualified-spine.md.
+                --
+                -- SUPERSEDES "4. DEEP SPINE UNCHANGED: plus2's depth-1 anno
+                -- is arm-identical" (2026-09-17). That test asserted depth-1
+                -- SET SIZES were equal across the rootFold arms, on the
+                -- premise recorded in its comment: "The fold is head-only by
+                -- design (`p|` stays the declining class at depth > 0)."
+                -- The premise was FALSE of the translation-phase writer:
+                -- `injectLambdaMemberQualified` -> `spineGoC` wrote the
+                -- folded GROUND `g|` id at EVERY depth 0..arity-1, i.e. the
+                -- STAMPABLE id landed on partial-application positions,
+                -- which `lss-root-member-fold.md` §1.5 AR-1 forbids. The old
+                -- test stayed green because it was size-based and id-blind:
+                -- OFF gave `{l|lam, p|g|1}` and ON gave `{g|G|L, p|g|1}` —
+                -- both size 2. It pinned the SYMMETRY of the defect, not the
+                -- property its comment claimed.
+                --
+                -- This asserts the property directly, which is also the only
+                -- form that distinguishes WHICH member survives: under the
+                -- repair the head's folded id must not appear at depth 1.
+                case runWithDepth True True plainModule of
+                    Ok g ->
                         let
-                            offR =
-                                depth1Annos "plus2" offG
+                            heads =
+                                List.concatMap annoMembers (headAnnos "plus2" g)
 
-                            onR =
-                                depth1Annos "plus2" onG
+                            deep =
+                                List.concatMap annoMembers (depth1Annos "plus2" g)
+
+                            leaked =
+                                List.filter (\m -> List.member m deep) heads
                         in
-                        if List.map annoSize offR == List.map annoSize onR then
+                        if List.isEmpty heads then
+                            Expect.fail "no head member for `plus2` — fixture broken"
+
+                        else if List.isEmpty leaked then
                             Expect.pass
 
                         else
                             Expect.fail
-                                ("depth-1 set sizes moved across arms: "
-                                    ++ String.join "," (List.map String.fromInt (List.map annoSize offR))
-                                    ++ " -> "
-                                    ++ String.join "," (List.map String.fromInt (List.map annoSize onR))
+                                ("AR-1 violated: head member(s) "
+                                    ++ String.join "," (List.map String.fromInt leaked)
+                                    ++ " appear at depth 1 "
+                                    ++ String.join "," (List.map String.fromInt deep)
                                 )
 
-                    ( Err e, _ ) ->
+                    Err e ->
                         Expect.fail e
+        , Test.test "4b. DIFFERENTIAL: rootFoldDepth is what removes it" <|
+            \() ->
+                -- The same read with the repair OFF must SHOW the leak, so
+                -- this pair pins cause and effect rather than one endpoint.
+                case runWithDepth True False plainModule of
+                    Ok g ->
+                        let
+                            heads =
+                                List.concatMap annoMembers (headAnnos "plus2" g)
 
-                    ( _, Err e ) ->
+                            deep =
+                                List.concatMap annoMembers (depth1Annos "plus2" g)
+                        in
+                        if List.any (\m -> List.member m deep) heads then
+                            Expect.pass
+
+                        else
+                            Expect.fail
+                                ("flag-off arm no longer reproduces the leak — "
+                                    ++ "heads "
+                                    ++ String.join "," (List.map String.fromInt heads)
+                                    ++ " vs depth1 "
+                                    ++ String.join "," (List.map String.fromInt deep)
+                                )
+
+                    Err e ->
                         Expect.fail e
         , Test.test "5. CO-GATE: the crash shape publishes no false singleton" <|
             \() ->
@@ -276,13 +323,44 @@ joinModule =
 
 runWith : Bool -> Src.Module -> Result String Mono.MonoGraph
 runWith rootFold srcModule =
+    runWithDepth rootFold Config.defaultLss.stamp.rootFoldDepth srcModule
+
+
+{-| `runWith` with explicit control of `lss.stamp.rootFoldDepth`
+(plans/lss-root-fold-depth-qualified-spine.md). Needed because the two flags
+interact: `rootFoldDepth` only acts when `rootFold` is on, since it governs
+where the FOLDED id may be written.
+-}
+runWithDepth : Bool -> Bool -> Src.Module -> Result String Mono.MonoGraph
+runWithDepth rootFold depthIds srcModule =
     let
         defaults =
             Config.defaultLss
+
+        stamp0 =
+            defaults.stamp
     in
     Pipeline.runSolverMonoWithLimits Config.defaultLimits
-        { defaults | enabled = True, keyed = True, regIdentity = True, rootFold = rootFold }
+        { defaults
+            | enabled = True
+            , keyed = True
+            , regIdentity = True
+            , rootFold = rootFold
+            , stamp = { stamp0 | rootFoldDepth = depthIds }
+        }
         srcModule
+
+
+{-| The member ids of an annotation, or `[]` for anything that is not a set.
+-}
+annoMembers : Mono.LambdaSetAnno -> List Int
+annoMembers a =
+    case a of
+        Mono.LSet ms ->
+            ms
+
+        _ ->
+            []
 
 
 

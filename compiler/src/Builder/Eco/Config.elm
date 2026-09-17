@@ -276,6 +276,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\rfVal -> applyLssRootFoldOverride rfVal cfg4eh)
             )
         |> Task.andThen
+            (\cfg4ehd ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_ROOT_FOLD_DEPTH" |> Task.mapError never)
+                    |> Task.map (\rfdVal -> applyLssRootFoldDepthIdsOverride rfdVal cfg4ehd)
+            )
+        |> Task.andThen
             (\cfg4ei ->
                 (Utils.envLookupEnv "ECO_MONO_LSS_REF_PAP_SPINE" |> Task.mapError never)
                     |> Task.map (\rpVal -> applyLssRefPapSpineOverride rpVal cfg4ei)
@@ -2745,6 +2750,38 @@ applyLssRootFoldOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | rootFold = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| Set `rootFoldDepth` on an `LssStampConfig` (it lives in the nested stamp
+record because `LssConfig` is at the runtime's 32-slot record GC-scan cap).
+-}
+setStampRootFoldDepth : Bool -> Config.LssStampConfig -> Config.LssStampConfig
+setStampRootFoldDepth v st =
+    { st | rootFoldDepth = v }
+
+
+{-| `ECO_MONO_LSS_ROOT_FOLD_DEPTH=1|true|yes / 0|false|no`
+(plans/lss-root-fold-depth-qualified-spine.md): depth-qualify the
+translation-phase root-fold spine write — a root-folded lambda's GROUND `g|`
+id at depth 0 only, `p|<global>|<d>` at depths 1..arity-1, matching what
+`stampSelfSpine` and `injectPapSuccessors` already write. Requires
+`rootFold`. Artifact-affecting. Hash token `lssRFD=`.
+-}
+applyLssRootFoldDepthIdsOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssRootFoldDepthIdsOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | stamp = setStampRootFoldDepth True lss.stamp }) cfg
+
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | stamp = setStampRootFoldDepth False lss.stamp }) cfg
 
             else
                 cfg

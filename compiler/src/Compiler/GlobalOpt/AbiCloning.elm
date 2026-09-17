@@ -160,7 +160,7 @@ type alias AbiCloningStats =
     , topSiteShapes : Dict String Int -- E8 split: LTop-annotated call sites by callee-expression shape (escape proxy: recordAccess/callResult vs local/global)
     , varSiteShapes : Dict String Int -- Phase 1a/3 (plans/lss-unknown-elimination.md §2.5, plans/lss-set-variable.md): the same census for LVar-annotated sites — the "still a variable" half of what used to be one undifferentiated ⊤ population. Same shape keys as topSiteShapes; same TRAP (stampCall consults EVERY call, so these are SITE counts, not dispatch weight).
     , stampedWrapperInstances : Int -- E7 trigger: stamped sites whose representative is a staging wrapper (collision signal)
-    , instQual : { byHost : Dict String Int, flatStamped : Int, shape : Dict String Int, niGuard : Dict String Int, papSites : Dict String Int, absentL : Dict String Int } -- Per-site census Dicts, ALL gated on `lss.census` (`StampCtx.census`). Split from `lss.report` deliberately: the benchmark protocol mandates ECO_MONO_LSS_REPORT=1, so anything billed under `report` distorts every timed run (the `qCensus` precedent, Eco/Config.elm). Each of these builds a String key and inserts a Dict node at ~43,000 AbiCloning sites per self-compile; the scalar counters beside them are field increments and stay unconditional because they are the A/B gate numbers. `byHost`: "<host global>|<reason>" — the join key against the runtime dispatch census. One nested record because the flat stats record is near the 32-slot GC-scan cap.
+    , instQual : { byHost : Dict String Int, flatStamped : Int, shape : Dict String Int, niGuard : Dict String Int, papSites : Dict String Int, absentL : Dict String Int, multiSites : Dict String Int } -- Per-site census Dicts, ALL gated on `lss.census` (`StampCtx.census`). Split from `lss.report` deliberately: the benchmark protocol mandates ECO_MONO_LSS_REPORT=1, so anything billed under `report` distorts every timed run (the `qCensus` precedent, Eco/Config.elm). Each of these builds a String key and inserts a Dict node at ~43,000 AbiCloning sites per self-compile; the scalar counters beside them are field increments and stay unconditional because they are the A/B gate numbers. `byHost`: "<host global>|<reason>" — the join key against the runtime dispatch census. One nested record because the flat stats record is near the 32-slot GC-scan cap.
     , blockedMembers : List ( Int, Maybe Mono.LambdaId ) -- LSS_026 §11 census: every blocked member with its BLOCKER instance (the adopting synthetic closure; Nothing = μ-tie / no attribution). Print-only, never consulted by stamping. The instrument that named `Compiler_Type_Type_lambda_41139` as the 146-site blocker — member IDS shift with the corpus, the SYMBOL is the stable join key, which is why the blocker travels with the id. (It did NOT explain the de-stamp — see §11.5 — but it is what made that refutable.) Cost: one Dict fold over the index per COMPILE, alongside the existing `countMultiInstanceGroups` fold; nothing per site.
     }
 
@@ -195,7 +195,7 @@ emptyStats =
     , topSiteShapes = Dict.empty
     , varSiteShapes = Dict.empty
     , stampedWrapperInstances = 0
-    , instQual = { byHost = Dict.empty, flatStamped = 0, shape = Dict.empty, niGuard = Dict.empty, papSites = Dict.empty, absentL = Dict.empty }
+    , instQual = { byHost = Dict.empty, flatStamped = 0, shape = Dict.empty, niGuard = Dict.empty, papSites = Dict.empty, absentL = Dict.empty, multiSites = Dict.empty }
     , blockedMembers = []
     }
 
@@ -834,6 +834,7 @@ abiCloningPass fpFence postSettle flatPeel census papFast ((Mono.MonoGraph recor
 
                             else
                                 Dict.empty
+                        , multiSites = Dict.empty
                         }
                     , blockedMembers =
                         Dict.foldr
@@ -1749,9 +1750,12 @@ stampCall index ctx region func args resultType callInfo =
                         )
                         { stats0 | multiSetSiteHist = bumpDict (List.length ms) stats0.multiSetSiteHist }
                         ms
+
+                statsSites =
+                    noteMultiSite ctx.memberKinds ctx.census ms statsMembers
             in
             ( Mono.MonoCall region func args resultType callInfo
-            , bumpHost ("multi" ++ String.fromInt (List.length ms)) { ctx | stats = statsMembers }
+            , bumpHost ("multi" ++ String.fromInt (List.length ms)) { ctx | stats = statsSites }
             )
 
         Mono.LTop _ ->
@@ -2167,6 +2171,100 @@ bumpDict k d =
 bumpDictStr : String -> Dict String Int -> Dict String Int
 bumpDictStr k d =
     Dict.update k (\v -> Just (Maybe.withDefault 0 v + 1)) d
+
+
+{-| Per-SITE shape of a consulted multi-member set, gated on `lss.census`.
+
+`multiSetSiteHist` counts sites by |set| and `multiSetMembers` counts member
+occurrences, but neither can answer the question the sum-lowering decision
+turns on: is a k>=2 site GENUINE ALTERNATION (members naming different code
+objects) or one code object recorded at several application stages
+(`{g|G, p|G|1}` — the arrow-level census measured 96.9% of the latter, but
+arrows are not sites).
+
+Key: `<size>|<kinds>|<n>id|<identities>`, where `kinds` are the sorted
+distinct member-kind letters (l/g/c/k/a/p) and `identities` the sorted
+distinct second fields of the interned member keys. `1id` therefore means
+every member names ONE code object, which is exactly the staging-family
+shape; `2id`+ is real alternation. Value is the site count.
+-}
+noteMultiSite : Dict Int String -> Bool -> List Int -> AbiCloningStats -> AbiCloningStats
+noteMultiSite memberKinds censusOn ms stats =
+    if not censusOn then
+        stats
+
+    else if Dict.isEmpty memberKinds then
+        -- DISARMED: `lssMemberKinds` is populated ONLY under `lss.report`
+        -- (`Monomorphize.elm`, "CENSUS ONLY, report-gated"), but this
+        -- instrument is gated on `lss.stamp.census`. With census on and
+        -- report off every member falls to `memberIdentityOf`'s `Nothing`
+        -- branch ("?<mid>"), so every member looks like a DISTINCT identity
+        -- and every staging family misclassifies as alternation — silently
+        -- inverting the one question this census exists to answer. Emit a
+        -- sentinel rather than wrong rows.
+        let
+            iq =
+                stats.instQual
+        in
+        { stats | instQual = { iq | multiSites = bumpDictStr "DISARMED|set ECO_MONO_LSS_REPORT=1 too" iq.multiSites } }
+
+    else
+        let
+            idents =
+                distinctSorted (List.map (memberIdentityOf memberKinds) ms)
+
+            kinds =
+                String.concat (distinctSorted (List.map (memberKindOf memberKinds) ms))
+
+            key =
+                String.fromInt (List.length ms)
+                    ++ "|"
+                    ++ kinds
+                    ++ "|"
+                    ++ String.fromInt (List.length idents)
+                    ++ "id|"
+                    ++ String.join "," idents
+
+            iq =
+                stats.instQual
+        in
+        { stats | instQual = { iq | multiSites = bumpDictStr key iq.multiSites } }
+
+
+{-| The interned member key's kind letter (`l`/`g`/`c`/`k`/`a`/`p`).
+-}
+memberKindOf : Dict Int String -> Int -> String
+memberKindOf memberKinds mid =
+    case Dict.get mid memberKinds of
+        Just k ->
+            String.left 1 k
+
+        Nothing ->
+            "?"
+
+
+{-| The code object an interned member names: field 1 of `<kind>|<identity>|...`.
+`g|G|<layout>` and `p|G|<k>` both yield `G`, which is what makes a
+staging family detectable as `1id`.
+-}
+memberIdentityOf : Dict Int String -> Int -> String
+memberIdentityOf memberKinds mid =
+    case Dict.get mid memberKinds of
+        Just k ->
+            case String.split "|" k of
+                _ :: ident :: _ ->
+                    ident
+
+                _ ->
+                    k
+
+        Nothing ->
+            "?" ++ String.fromInt mid
+
+
+distinctSorted : List String -> List String
+distinctSorted xs =
+    Dict.keys (List.foldl (\x d -> Dict.insert x () d) Dict.empty xs)
 
 
 {-| All group-representative lambdaIds of a member — the symbol-join key

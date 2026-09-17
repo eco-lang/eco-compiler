@@ -965,6 +965,24 @@ type alias LssStampConfig =
     -- DEFAULT-ON since 2026-09-16 (plan §12.10.3, five-arm series): 46 uses
     -- inject, `var` 893 -> 852, k1 +39, wall flat, devirt unchanged.
     , useInjectPap : Bool
+
+    -- `rootFoldDepth` — plans/lss-root-fold-depth-qualified-spine.md.
+    -- Requires `lss.rootFold`. The translation-phase spine write
+    -- (`LssInfer.injectLambdaMemberQualified` -> `spineGoC`) puts a
+    -- root-folded lambda's GROUND `g|` id at EVERY depth 0..arity-1 of its
+    -- own spine; the other two spine writers (`Translate.stampSelfSpine`,
+    -- `LssInfer.injectPapSuccessors`) put `g|` at depth 0 and `p|g|d` at
+    -- depth d>=1. A folded `g|` is the STAMPABLE class (E9.1 devirt), and
+    -- `lss-root-member-fold.md` AR-1 requires depth>0 to stay `p|`. ON makes
+    -- the third writer match the other two.
+    --
+    -- Lives HERE, beside `useInject`/`useInjectPap`, and not at `LssConfig`
+    -- top level, because `LssConfig` is AT the runtime's 32-slot record
+    -- GC-scan cap: a 33rd field makes the compiler's own config record
+    -- unlowerable ('eco.construct.record' op field_count (33) exceeds
+    -- Record's 32-slot GC scan limit). Artifact-affecting; hash token
+    -- `lssRFD=`; env `ECO_MONO_LSS_ROOT_FOLD_DEPTH`.
+    , rootFoldDepth : Bool
     }
 
 
@@ -1021,7 +1039,7 @@ defaultLss =
     , flow = { connect = True, letOverlay = True, rowDefer = False, accessFlow = True, litFacts = True }
     , settle = { varSucc = True, varCtorRows = True, varLambda = True }
     , stageAnchor = { rowFill = False, demandFill = False }
-    , stamp = { enabled = True, maxInstances = 8, flatPeel = True, census = False, papFast = True, useInject = True, useInjectPap = True }
+    , stamp = { enabled = True, maxInstances = 8, flatPeel = True, census = False, papFast = True, useInject = True, useInjectPap = True, rootFoldDepth = True }
     }
 
 
@@ -1655,6 +1673,7 @@ lssInstanceQualDecoder =
         |> D.apply (D.optionalField "papFast" D.bool defaultLss.stamp.papFast)
         |> D.apply (D.optionalField "instanceQualUseInject" D.bool defaultLss.stamp.useInject)
         |> D.apply (D.optionalField "instanceQualUseInjectPap" D.bool defaultLss.stamp.useInjectPap)
+        |> D.apply (D.optionalField "rootFoldDepth" D.bool defaultLss.stamp.rootFoldDepth)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -2274,6 +2293,22 @@ hash cfg =
                     , if lss.rootFold /= defaultLss.rootFold then
                         [ "lssRF="
                             ++ (if lss.rootFold then
+                                    "1"
+
+                                else
+                                    "0"
+                               )
+                        ]
+
+                      else
+                        []
+
+                    -- Depth-qualified root-fold spine: artifact-affecting
+                    -- (the def's own inner-arrow annotations move, and with
+                    -- them keyed spec keys).
+                    , if lss.stamp.rootFoldDepth /= defaultLss.stamp.rootFoldDepth then
+                        [ "lssRFD="
+                            ++ (if lss.stamp.rootFoldDepth then
                                     "1"
 
                                 else

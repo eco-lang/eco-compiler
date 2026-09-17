@@ -106,6 +106,19 @@ censused, accepted: the dispatch prize is the head).
   untouched — signatures are per-unit; the translation mint is where specs
   and consumers live.
 
+**CORRECTION (2026-09-17):** §1.4's "Head only" was NOT true of the
+TRANSLATION-phase mint. `Translate.classifyLambdaHead` calls
+`LssInfer.injectLambdaMemberQualified arity`, whose `spineGoC` wrote the
+folded GROUND `g|` id at EVERY depth `0..arity-1` of the def's own spine —
+i.e. the stampable id landed on partial-application positions, which §1.5
+AR-1 requires to stay `p|`. Invisible until `lss.arrowSolverRoots` shipped
+default-ON (2026-09-17), which merges a def's depth-`d` slot with the inner
+arrow of its call sites and surfaced the pair as `{g|G|L, p|G|d}` at 139
+dispatch sites. Repaired by
+`plans/lss-root-fold-depth-qualified-spine.md` (`lss.stamp.rootFoldDepth`):
+head keeps the ground `g|`, depths `1..arity-1` get `p|g|d`, matching
+`stampSelfSpine` and `injectPapSuccessors`.
+
 ### §1.5 Soundness (the review, condensed)
 
 - **AR-1 (id truthfulness):** the folded id is attached to exactly the values

@@ -2020,6 +2020,21 @@ abiCensusLines abi =
                 else
                     multiHist
                )
+        , "lss census multiSiteShapes (one MSITE line per shape; sites<TAB>size|kinds|nIds|identities):\n"
+            ++ (let
+                    rows =
+                        List.sortBy (\( _, n ) -> -n) (Dict.toList abi.instQual.multiSites)
+                in
+                if List.isEmpty rows then
+                    "MSITE\t(none)\t0"
+
+                else
+                    String.join "\n"
+                        (List.map
+                            (\( k, n ) -> "MSITE\t" ++ String.fromInt n ++ "\t" ++ k)
+                            rows
+                        )
+               )
         , "lss census multiSetMembers top12 (member:count:repSyms): "
             ++ (if String.isEmpty multiTop then
                     "(none)"
