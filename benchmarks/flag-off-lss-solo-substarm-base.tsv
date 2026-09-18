@@ -1,0 +1,2 @@
+iter	flag	tag	wall	rss_mb	minor_gc	major_gc	promoted_mib	out_bytes	vs_base	positions	k1	kN	var	top	part	coverage	dispatchUpgraded	stampedPapGlobal	stampedStaged	stampedPapPrefix	noInstance	blocked	shape	abiMismatch	bodyMismatch	multiInst	devirtPost	sat	gen	typed	fast	distinct	off_switch
+base	<none>	fbase	10:20.85	14560.6	2297	10	24026	13458106	(baseline)	149057	145053	2586	572	813	33	99.05	17318	3331	208	9	9810	7	524	351	1415	1762	65/323/0/0	2907671876	2810413630	97258246	0	7016	

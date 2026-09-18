@@ -254,6 +254,19 @@ type alias LssConfig =
     -- there (byte-identical MLIR) at unmeasurable cost (wall/GC counters
     -- identical; benchmarks/lss-opt.md Run M). Artifact-affecting when it
     -- differs from this default (hash token `lssMU=0` then).
+    --
+    -- CONSIDERED FOR DEFAULT-OFF 2026-09-18 AND REJECTED. The solo flag census
+    -- (benchmarks/flag-off-lss-solo-findings.md) measured it inert on this
+    -- corpus — byte-identical output, −63 dispatches of 930 M (0.000007 %),
+    -- zero GC delta — which is exactly what the 2026-08-18 note predicted and
+    -- is NOT a reason to retire it. μ-tie is what demoted `maxSpecsPerGlobal`
+    -- from load-bearing TERMINATOR to fan-out policy: with this off AND the
+    -- budget at 0 = unlimited, the specs→qualified-members→keys spiral has no
+    -- terminator at all. The census measures the SELF-COMPILE, where the
+    -- eligible population is zero by construction; it says nothing about the
+    -- elm-aws-codegen pathological class this flag exists for. A flag whose
+    -- job is to bound a spiral that does not occur here reads as "inert"
+    -- precisely when it is working. It costs ~nothing, so it stays on.
     , muTie : Bool
 
     -- LSS_019 standalone-member grounding (GAP-1,
@@ -680,7 +693,14 @@ type alias LssSettleConfig =
 {-| Translation-time flow repairs (the edges Translate re-ties in the store
 or in the binding environment).
 
-  - `connect` — M1 flowConnect, documented on `LssConfig.flow`.
+  - `connect` — M1 flowConnect, documented on `LssConfig.flow`. **DEFAULT-OFF
+    since 2026-09-18**: the solo flag census
+    (benchmarks/flag-off-lss-solo-findings.md) measured it as the most
+    expensive inert flag in the set — turning it off emits a BYTE-IDENTICAL
+    artifact while saving 32.6 M dispatches (−3.51 %), 51 minor GCs and ~4.6 %
+    wall, the only inert flag whose wall delta clears the noise floor. It does
+    move analysis cells (var +27, ⊤ −19), so it computes something real; no
+    consumer reads it on this corpus.
   - `letOverlay` — F3-b (plans/lss-container-payload-transport.md §12.9.5):
     a plain `let` binding's `varEnv` type takes its ANNOTATIONS from the
     translated RHS (`Mono.overlayAnnotations classified bodyType`) instead of
@@ -923,29 +943,33 @@ defaultLss =
     , injTotal = True
     , rsTop = True
     , destrAnno = True
-    , flow = { connect = True, letOverlay = True, accessFlow = True, litFacts = True }
+    , flow = { connect = False, letOverlay = True, accessFlow = True, litFacts = True }
     , settle = { varSucc = True, varCtorRows = True, varLambda = True }
     , stamp = { enabled = True, maxInstances = 8, flatPeel = True, census = False, papFast = True, useInject = True, useInjectPap = True, rootFoldDepth = True }
     }
 
 
-{-| The default selective-keying set (Tier 1, 2026-07-20): the elm/core List
-fold chain. E5 shipped keying default-empty because Run F measured zero
-payoff; E9.2's kernel devirt is what unlocked it — the hot cons dispatches
-live inside these SHARED fold specs, and per-set keyed fan-out is what
-mints their `{k|List.cons}` singletons. Measured: −143.7 M dispatch
-events/run (Run J) at zero wall cost (Run J + the Tier-1 A/B: keyed ≈
-unkeyed, equal major-GC counts). Chain-keyed per the Run-F selection rule
-(an unkeyed middle like `foldrHelper` re-joins the sets).
-`ECO_MONO_LSS_KEYED_GLOBALS` REPLACES this list — set it empty to unkey.
+{-| The selective-keying set — **EMPTY since 2026-09-18**.
+
+It held the elm/core List fold chain (`List.foldl`, `foldr`, `foldrHelper`,
+`map`) from 2026-07-20, where it measured −143.7 M dispatch events/run (Run J)
+at zero wall cost. That payoff is now delivered by `keyed = True`, which keys
+ALL globals and has been the default since 2026-07-20 — the selective list has
+had nothing left to select ever since.
+
+The solo flag census confirmed it directly
+(benchmarks/flag-off-lss-solo-findings.md): emptying the list emits a
+BYTE-IDENTICAL artifact and moves 65 dispatches of 930 M, with every coverage
+and stamping cell unchanged. It is inert, and inert only BECAUSE `keyed` is on:
+under `ECO_MONO_LSS=unkeyed` this list is the whole of E5 selective keying, so
+restoring the four entries is the way to get Tier-1 behaviour back.
+
+`ECO_MONO_LSS_KEYED_GLOBALS` REPLACES this list at run time.
+
 -}
 defaultKeyedGlobals : List String
 defaultKeyedGlobals =
-    [ "elm/core:List.foldl"
-    , "elm/core:List.foldr"
-    , "elm/core:List.foldrHelper"
-    , "elm/core:List.map"
-    ]
+    []
 
 
 {-| Inliner / simplifier knobs.
