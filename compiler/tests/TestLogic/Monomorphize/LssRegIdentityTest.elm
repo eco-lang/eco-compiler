@@ -50,49 +50,34 @@ import TestLogic.TestPipeline as Pipeline
 
 suite : Test
 suite =
-    Test.describe "lss.regIdentity — tautological self-identity at spec registration"
-        [ Test.test "1. DIFFERENTIAL: a plain def's stored head anno is a COVERED SET flag-on, uncovered flag-off" <|
+    Test.describe "tautological self-identity at spec registration"
+        [ Test.test "1. a plain def's stored head anno is a COVERED SET" <|
             \() ->
-                case ( runWith False plainModule, runWith True plainModule ) of
-                    ( Ok offG, Ok onG ) ->
-                        let
-                            offHeads =
-                                headAnnos "double" offG
-
-                            onHeads =
-                                headAnnos "double" onG
-                        in
-                        if List.isEmpty onHeads then
-                            Expect.fail "no spec registered for `double` — fixture broken"
-
-                        else if List.any isSet offHeads then
-                            Expect.fail ("flag-off head expected uncovered (⊤/var), got " ++ describe offHeads)
-
-                        else if List.all isSet onHeads then
-                            -- COVERED, not necessarily singleton: the MSET
-                            -- census showed the stamp's `g|` member joining
-                            -- the def's own body-root `l|` member — two ids
-                            -- for the same function, both honest, so the set
-                            -- is a sound 2-set. Collapsing that split
-                            -- identity (grounding `g|` to the root member —
-                            -- lss-fidelity-2 territory) is EXPLOITATION
-                            -- follow-up; under gate 0 a kN set counts exactly
-                            -- as much as k1.
-                            Expect.pass
-
-                        else
-                            Expect.fail ("flag-on head expected covered sets, got " ++ describe onHeads)
-
-                    ( Err e, _ ) ->
+                case runWith plainModule of
+                    Err e ->
                         Expect.fail e
 
-                    ( _, Err e ) ->
-                        Expect.fail e
+                    Ok g ->
+                        case headAnnos "double" g of
+                            [] ->
+                                Expect.fail "no spec registered for `double` — fixture broken"
+
+                            onHeads ->
+                                -- COVERED, not necessarily singleton: the MSET
+                                -- census showed the stamp's `g|` member joining
+                                -- the def's own body-root `l|` member — two ids
+                                -- for the same function, both honest, so the set
+                                -- is a sound 2-set.
+                                if List.all isSet onHeads then
+                                    Expect.pass
+
+                                else
+                                    Expect.fail ("head expected covered sets, got " ++ describe onHeads)
         , Test.test "2a. ARITY: both spine depths of a 2-ary def are stamped" <|
             \() ->
                 -- `plus2 : Int -> Int -> Int` (arity 2): depth 0 AND depth 1
                 -- are parameters (LSS_013), so both get singleton stamps.
-                case runWith True plainModule of
+                case runWith plainModule of
                     Err e ->
                         Expect.fail e
 
@@ -112,54 +97,6 @@ suite =
                                 ("expected covered sets at depths 0 and 1: "
                                     ++ String.join "; " (List.map (\( h, r ) -> describeAnno h ++ " / " ++ describeMaybe r) spines)
                                 )
-        , Test.test "2b. ARITY BOUND: the arrow PAST declared arity is untouched by the flag" <|
-            \() ->
-                -- `ret1 : Int -> (Int -> Int)` has ONE parameter; its `/r`
-                -- arrow belongs to the RETURNED value (`double`). Honest flow
-                -- may legitimately fill `/r` (the signature conducts the body
-                -- ref), so asserting "not a singleton" would fail on CORRECT
-                -- behaviour. The id-blind assertion is DIFFERENTIAL: the flag
-                -- must change the HEAD and must NOT change `/r` at all — any
-                -- cross-arm difference at `/r` means the stamp leaked past
-                -- the arity bound.
-                case ( runWith False retModule, runWith True retModule ) of
-                    ( Ok offG, Ok onG ) ->
-                        let
-                            offSpines =
-                                List.filterMap spineAnnos (demandsOf "ret1" offG)
-
-                            onSpines =
-                                List.filterMap spineAnnos (demandsOf "ret1" onG)
-                        in
-                        case ( offSpines, onSpines ) of
-                            ( [ ( offH, offR ) ], [ ( onH, onR ) ] ) ->
-                                if offR /= onR then
-                                    Expect.fail
-                                        ("the stamp leaked past declared arity: /r moved "
-                                            ++ describeMaybe offR
-                                            ++ " -> "
-                                            ++ describeMaybe onR
-                                        )
-
-                                else if not (isSet onH) || isSet offH then
-                                    Expect.fail
-                                        ("head expected uncovered->covered, got "
-                                            ++ describeAnno offH
-                                            ++ " -> "
-                                            ++ describeAnno onH
-                                        )
-
-                                else
-                                    Expect.pass
-
-                            _ ->
-                                Expect.fail "expected exactly one ret1 spec per arm — fixture broken"
-
-                    ( Err e, _ ) ->
-                        Expect.fail e
-
-                    ( _, Err e ) ->
-                        Expect.fail e
         , Test.test "3. KERNEL BOUNDARY: a kernel-alias spec's head stays ⊤ (documented residue)" <|
             \() ->
                 -- P0 measured this: the kernel parametricity machinery
@@ -168,7 +105,7 @@ suite =
                 -- singleton, the kernel-license interaction changed and the
                 -- plan's residue model must be re-derived, not silently
                 -- enjoyed.
-                case runWith True consModule of
+                case runWith consModule of
                     Err e ->
                         Expect.fail e
 
@@ -209,7 +146,7 @@ suite =
                 -- added: the stamp must not manufacture a false singleton at
                 -- a CONSUMER's parameter (it only writes at spec spines,
                 -- where the inhabitant is tautological).
-                case runWith True joinModule of
+                case runWith joinModule of
                     Err e ->
                         Expect.fail e
 
@@ -329,14 +266,21 @@ joinModule =
 -- ====== HARNESS ======
 
 
-runWith : Bool -> Src.Module -> Result String Mono.MonoGraph
-runWith regIdentity srcModule =
+{-| `lss.regIdentity` was fixed at its default and removed 2026-09-18, so the
+two differentials that toggled it are gone. What they pinned, flag-off: a
+plain def's stored head anno was UNCOVERED (⊤/var), and `ret1`'s beyond-arity
+`/r` arrow was IDENTICAL across the arms — the stamp changes the head and
+never leaks past declared arity (LSS\_013). Solo census with it OFF: `var` ->
+19,131 and ⊤ -> 11,333, artifact +214 KB.
+-}
+runWith : Src.Module -> Result String Mono.MonoGraph
+runWith srcModule =
     let
         defaults =
             Config.defaultLss
     in
     Pipeline.runSolverMonoWithLimits Config.defaultLimits
-        { defaults | enabled = True, keyed = True, regIdentity = regIdentity }
+        { defaults | enabled = True }
         srcModule
 
 

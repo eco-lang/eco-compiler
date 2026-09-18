@@ -49,7 +49,7 @@ import TestLogic.TestPipeline as Pipeline
 
 suite : Test
 suite =
-    Test.describe "lss.papMembers — injection completeness for partial applications"
+    Test.describe "injection completeness for partial applications"
         [ Test.test "1. THE CRASH SHAPE: a one-sided join is never a false singleton" <|
             \() ->
                 -- `if flg then addTo 7 else idf`, passed as an ARGUMENT — the
@@ -65,7 +65,7 @@ suite =
                 -- place to look: the storeless classifier stamps ⊤ there by
                 -- construction, which is what the first version of this test
                 -- got wrong.
-                case runWith True joinModule of
+                case runWith joinModule of
                     Err msg ->
                         Expect.fail msg
 
@@ -91,7 +91,7 @@ suite =
                 -- claim, so assert the strictly stronger property: the
                 -- consumer's parameter NAMES a member. "Always widen" fails
                 -- here, which is the point of having both tests.
-                case runWith True loneModule of
+                case runWith loneModule of
                     Err msg ->
                         Expect.fail msg
 
@@ -104,27 +104,6 @@ suite =
                                 ("expected the injected PAP member at the consumer's param, got: "
                                     ++ describeAnnos (allAnnos "useIt" graph)
                                 )
-        , Test.test "3. flag-off is unchanged — the injection is gated at the MINT" <|
-            \() ->
-                -- Member-id allocation order is artifact-relevant, so the flag
-                -- must gate the mint itself and not merely its consumption.
-                -- Flag-off must therefore differ observably from flag-on here.
-                case ( runWith False loneModule, runWith True loneModule ) of
-                    ( Ok offGraph, Ok onGraph ) ->
-                        if allAnnos "useIt" offGraph == allAnnos "useIt" onGraph then
-                            Expect.fail
-                                ("flag-on produced the same annotations as flag-off — the injection never fired: "
-                                    ++ describeAnnos (allAnnos "useIt" onGraph)
-                                )
-
-                        else
-                            Expect.pass
-
-                    ( Err msg, _ ) ->
-                        Expect.fail msg
-
-                    ( _, Err msg ) ->
-                        Expect.fail msg
         , Test.test "4. the PAP member is NOT the callee's own `g|` identity" <|
             \() ->
                 -- The correction that made the first implementation a
@@ -138,7 +117,7 @@ suite =
                 -- fixture must still monomorphize. A `g|` member here aborts
                 -- the pipeline, so a green run IS the assertion, and test 2
                 -- separately proves a member was injected at all.
-                case runWith True papDevirtModule of
+                case runWith papDevirtModule of
                     Err msg ->
                         Expect.fail ("PAP member licensed a bad devirt: " ++ msg)
 
@@ -150,7 +129,7 @@ suite =
                     everyAnno =
                         List.concatMap
                             (\m ->
-                                case runWith True m of
+                                case runWith m of
                                     Ok g ->
                                         List.concatMap annosOf (allDemands g)
 
@@ -171,35 +150,27 @@ suite =
 -- ====== HARNESS ======
 
 
-runWith : Bool -> Src.Module -> Result String Mono.MonoGraph
-runWith papMembers srcModule =
-    Pipeline.runSolverMonoWithLimits Config.defaultLimits (lssConfig papMembers) srcModule
+{-| `lss.papMembers` was fixed at its default and removed 2026-09-18, and so
+was `regIdentity`, which this harness pinned OFF under the
+differential-overlap rule. The deleted test 3 pinned that the injection is
+gated at the MINT (flag-off produced observably different annotations, member
+allocation order being artifact-relevant). Solo census with `papMembers` OFF:
+`var` +3,803, artifact −61 KB.
 
-
-lssConfig : Bool -> Config.LssConfig
-lssConfig papMembers =
+`sigRootIdentity` used to move WITH `papMembers` here, never independently:
+root identity WITHOUT injection completeness is the pairing that published the
+false singleton and compiled `Task.map` into the identity map. That flag was
+deleted 2026-09-17 (plans/remove-default-off-lss-flags.md).
+-}
+runWith : Src.Module -> Result String Mono.MonoGraph
+runWith srcModule =
     let
         defaults =
             Config.defaultLss
     in
-    -- `sigRootIdentity` used to move WITH `papMembers` here, never
-    -- independently: root identity WITHOUT injection completeness is the
-    -- pairing that published the false singleton and compiled `Task.map` into
-    -- the identity map. That flag was deleted 2026-09-17
-    -- (plans/remove-default-off-lss-flags.md), which removes the pairing and
-    -- with it the need to pin it.
-    { defaults
-        | enabled = True
-        , keyed = True
-        , papMembers = papMembers
-
-        -- regIdentity PINNED OFF (differential-overlap rule): the
-        -- registration stamp puts sets — including honest SINGLETONS like
-        -- {g|useIt} — at spec heads, and this file's `allAnnos` readers scan
-        -- heads too, so test 1's no-singleton assertion would trip on an
-        -- honest self-identity rather than the false-completeness it pins.
-        , regIdentity = False
-    }
+    Pipeline.runSolverMonoWithLimits Config.defaultLimits
+        { defaults | enabled = True }
+        srcModule
 
 
 
@@ -340,9 +311,27 @@ allDemands (Mono.MonoGraph g) =
         g.registry.reverseMapping
 
 
+{-| Every annotation of the named global's demands BELOW the demand type's own
+head. The head carries the registration stamp's tautological self-identity —
+an HONEST singleton — so scanning it would trip the false-completeness pin on
+correct behaviour. That used to be handled by pinning `regIdentity = False`;
+the flag was fixed at its default and removed 2026-09-18, so the reader is
+narrowed instead. The false-completeness class this file pins lives at the
+CONSUMER's parameter, which is below the head by construction.
+-}
 allAnnos : String -> Mono.MonoGraph -> List Mono.LambdaSetAnno
 allAnnos target graph =
-    List.concatMap annosOf (demandsOf target graph)
+    List.concatMap belowHead (demandsOf target graph)
+
+
+belowHead : Mono.MonoType -> List Mono.LambdaSetAnno
+belowHead t =
+    case t of
+        Mono.MFunction _ _ args ret ->
+            List.concatMap annosOf args ++ annosOf ret
+
+        _ ->
+            annosOf t
 
 
 annosOf : Mono.MonoType -> List Mono.LambdaSetAnno

@@ -25,23 +25,22 @@ import TestLogic.TestPipeline as Pipeline
 
 {-| LSS\_002: every reachable closure's source identity is covered by its
 head annotation.
+
+Phase 2a arrow identity (`plans/lss-unknown-elimination.md` §4) makes repeated
+loads of one stamped type object SHARE a set slot, and the failure mode of a
+sharing bug is a LOST MEMBER — a closure instance whose own identity is
+missing from the set its arrow claims. That is exactly what LSS\_002 asserts,
+over the whole SourceIR corpus, through the real pipeline. A spurious member
+here would be a MISCOMPILE; a lost one is what slot sharing can plausibly
+cause. It used to be a SECOND arm (`lss.arrowIdentity` on); the flag was fixed
+at its default and removed 2026-09-18, so the two arms are one run.
+
 -}
 expectLambdaSetIntegrity : Src.Module -> Expect.Expectation
 expectLambdaSetIntegrity =
     integrityWith Pipeline.runToGlobalOptLssOn
 
 
-{-| LSS\_002 under **Phase 2a arrow identity**
-(`plans/lss-unknown-elimination.md` §4).
-
-This is the point of the arm: `lss.arrowIdentity` makes repeated loads of one
-stamped type object SHARE a set slot, and the failure mode of a sharing bug is
-a LOST MEMBER — a closure instance whose own identity is missing from the set
-its arrow claims. That is exactly what LSS\_002 asserts, over the whole
-SourceIR corpus, through the real pipeline. A spurious member here would be a
-MISCOMPILE; a lost one is what slot sharing can plausibly cause.
-
--}
 expectLambdaSetIntegrityArrowId : Src.Module -> Expect.Expectation
 expectLambdaSetIntegrityArrowId =
     integrityWith Pipeline.runToGlobalOptLssArrowIdOn

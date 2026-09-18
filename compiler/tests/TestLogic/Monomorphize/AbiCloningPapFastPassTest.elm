@@ -1,7 +1,12 @@
 module TestLogic.Monomorphize.AbiCloningPapFastPassTest exposing (suite)
 
-{-| LSS\_040 at the PASS level — `lss.stamp.papFast`
-(`plans/lss-pap-fast-stamp.md` §5).
+{-| LSS\_040 at the PASS level (`plans/lss-pap-fast-stamp.md` §5).
+
+Shipped behind `lss.stamp.papFast`, default-ON since 2026-09-07; the flag was
+fixed at that default and removed 2026-09-18, so test 1 lost its flag-off leg
+and pins the shipping behaviour directly. Solo census when it was OFF:
+`noInstance` +3,331 and nothing else moved — the 2,041 stamping `p|` sites
+simply fell back to generic dispatch.
 
 A `p|<global>|<k>` member names a k-applied partial application of a global.
 The fence on it forbids a DIRECT rewrite (that drops the bound arguments); a
@@ -26,8 +31,8 @@ import Test exposing (Test)
 
 suite : Test
 suite =
-    Test.describe "LSS_040 p| fast stamp at the pass level (lss.stamp.papFast)"
-        [ Test.test "1. DIFFERENTIAL: a p| site declines flag-off and FAST-stamps flag-on, callee untouched" <|
+    Test.describe "LSS_040 p| fast stamp at the pass level"
+        [ Test.test "1. a p| site FAST-stamps, callee untouched" <|
             \() ->
                 -- `add : Int -> Int -> Int`, the value is `add 5` (k = 1), the
                 -- site applies the residual's one argument.
@@ -41,16 +46,11 @@ suite =
                     site =
                         papSite 1 (fn1 [ Mono.MInt ] Mono.MInt) 1
 
-                    offStats =
-                        Tuple.second (run False (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ])
-
                     ( onGraph, onStats ) =
-                        run True (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
+                        run (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
                 in
                 Expect.all
-                    [ \_ -> Expect.equal 0 offStats.stampedPapGlobal
-                    , \_ -> Expect.equal 1 offStats.declinedNoInstance
-                    , \_ -> Expect.equal 1 onStats.stampedPapGlobal
+                    [ \_ -> Expect.equal 1 onStats.stampedPapGlobal
                     , \_ -> Expect.equal 0 onStats.declinedNoInstance
 
                     -- The stamp, field for field (§3.2).
@@ -92,7 +92,7 @@ suite =
                         papSite 1 (fn1 [ Mono.MInt ] Mono.MInt) 1
 
                     ( g, st ) =
-                        run True (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
+                        run (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
                 in
                 Expect.all
                     [ \_ -> Expect.equal 0 st.stampedPapGlobal
@@ -115,7 +115,7 @@ suite =
                         papSite 1 (fn1 [ Mono.MInt ] Mono.MInt) 1
 
                     ( _, st ) =
-                        run True (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
+                        run (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
                 in
                 Expect.all
                     [ \_ -> Expect.equal 0 st.stampedPapGlobal
@@ -135,7 +135,7 @@ suite =
                         papSite 1 (fn1 [ Mono.MInt ] Mono.MInt) 1
 
                     ( _, st ) =
-                        run True (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
+                        run (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
                 in
                 Expect.equal 0 st.stampedPapGlobal
         , Test.test "5. P2 RESIDUAL PEEL: a curried residual applied flat is peeled and stamps with k=1, |params|=2" <|
@@ -157,7 +157,7 @@ suite =
                         papSite 2 curriedResidual 1
 
                     ( g, st ) =
-                        run True (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
+                        run (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
                 in
                 Expect.all
                     [ \_ -> Expect.equal 1 st.stampedPapGlobal
@@ -181,7 +181,7 @@ suite =
                         papSite 1 (fn1 [ Mono.MInt ] Mono.MInt) 1
 
                     ( _, st ) =
-                        run True (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
+                        run (origins [ ( pap, Mono.OriginPap addGlobal 1 ) ]) reg nodes [ site ]
                 in
                 Expect.equal 0 st.stampedPapGlobal
         , Test.test "7. k=2: two bound arguments split the row at 2" <|
@@ -198,7 +198,7 @@ suite =
                         papSite 1 (fn1 [ Mono.MInt ] Mono.MInt) 2
 
                     ( g, st ) =
-                        run True (origins [ ( pap, Mono.OriginPap addGlobal 2 ) ]) reg nodes [ site ]
+                        run (origins [ ( pap, Mono.OriginPap addGlobal 2 ) ]) reg nodes [ site ]
                 in
                 Expect.all
                     [ \_ -> Expect.equal 1 st.stampedPapGlobal
@@ -225,7 +225,7 @@ suite =
                         papSite 1 (fn1 [ Mono.MFloat ] shapeTy) 1
 
                     ( g, st ) =
-                        run True (origins [ ( pap, Mono.OriginPap rectGlobal 1 ) ]) reg nodes [ site ]
+                        run (origins [ ( pap, Mono.OriginPap rectGlobal 1 ) ]) reg nodes [ site ]
                 in
                 Expect.all
                     [ \_ -> Expect.equal 1 st.stampedPapGlobal
@@ -255,7 +255,7 @@ suite =
                         papSite 24 (fn1 (List.repeat 24 Mono.MInt) shapeTy) 1
 
                     ( _, st ) =
-                        run True (origins [ ( pap, Mono.OriginPap rectGlobal 1 ) ]) reg nodes [ site ]
+                        run (origins [ ( pap, Mono.OriginPap rectGlobal 1 ) ]) reg nodes [ site ]
                 in
                 Expect.all
                     [ \_ -> Expect.equal 0 st.stampedPapGlobal
@@ -433,15 +433,11 @@ calleeIsLocal g =
 
 {-| Node 0 holds the sites; nodes 1.. are the registry specs, at the SAME
 index as their `reverseMapping` entry (nodes and reverseMapping share the
-SpecId index). `postSettle` is on: `papFast` rides E9.5's indices.
+SpecId index). The p| fast stamp rides E9.5's post-settle indices.
 -}
-run : Bool -> Dict.Dict Int Mono.MemberOrigin -> Mono.SpecializationRegistry -> List Mono.MonoNode -> List Mono.MonoExpr -> ( Mono.MonoGraph, AbiCloning.AbiCloningStats )
-run papFast memberOrigins registry specNodes exprs =
+run : Dict.Dict Int Mono.MemberOrigin -> Mono.SpecializationRegistry -> List Mono.MonoNode -> List Mono.MonoExpr -> ( Mono.MonoGraph, AbiCloning.AbiCloningStats )
+run memberOrigins registry specNodes exprs =
     AbiCloning.abiCloningPass True
-        True
-        True
-        True
-        papFast
         (Mono.MonoGraph
             { nodes =
                 Array.fromList

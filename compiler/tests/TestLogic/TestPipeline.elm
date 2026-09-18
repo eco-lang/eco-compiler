@@ -17,7 +17,7 @@ module TestLogic.TestPipeline exposing
     , runToAssigned
     , runToGlobalOpt
     , runToGlobalOptLssArrowIdOn
-    , runToGlobalOptLssKeyedOn
+    , runToGlobalOptLssAllKeyedOn
     , runToGlobalOptLssOn
     , runToGlobalOptLssOnStats
     , runToMlir
@@ -426,37 +426,46 @@ runToGlobalOpt srcModule =
 
 
 {-| Run pipeline through global optimization on the SOLVER engine with LSS
-enabled (keys unchanged: keyed = False). For LSS\_00x invariant checkers,
-which need real lambda-set annotations to inspect.
+enabled — the shipping configuration. For LSS\_00x invariant checkers, which
+need real lambda-set annotations to inspect.
+
+This used to take `keyed` and `arrowIdentity` as parameters; both flags were
+fixed at their defaults and removed 2026-09-18, so the three former entry
+points (`runToGlobalOptLssOn`, `runToGlobalOptLssArrowIdOn`,
+`runToGlobalOptLssAllKeyedOn`) are one configuration now.
 -}
 runToGlobalOptLssOn : Src.Module -> Result String GlobalOptArtifacts
 runToGlobalOptLssOn =
-    runToGlobalOptLssKeyedOn []
+    runToGlobalOptLssKeyedWith
 
 
-{-| `runToGlobalOptLssOn` with **Phase 2a arrow identity ON**
-(`plans/lss-unknown-elimination.md` §4). Exists so LSS\_002 totality — the best
-whole-pipeline check that SLOT SHARING has not lost a member — is checked on
-the flag-on path too. The flag ships default-off, so without this arm the whole
-arrow-memo code path would be untested by the unit suite.
+{-| Was `runToGlobalOptLssOn` with **Phase 2a arrow identity ON**
+(`plans/lss-unknown-elimination.md` §4) — LSS\_002 totality, the best
+whole-pipeline check that SLOT SHARING has not lost a member. Arrow identity
+is unconditional since 2026-09-18, so this is now an alias kept for its
+callers.
 -}
 runToGlobalOptLssArrowIdOn : Src.Module -> Result String GlobalOptArtifacts
 runToGlobalOptLssArrowIdOn =
-    runToGlobalOptLssKeyedWith True []
+    runToGlobalOptLssKeyedWith
 
 
-{-| Like `runToGlobalOptLssOn` but with E5 selective keying: the listed
-globals (user format `author/project:Module.Name.value`; the fixture package
-is `eco/example`, module `Test`) key their specializations per annotated
-type, fanning out one spec per call-site lambda set.
+{-| Like `runToGlobalOptLssOn` — ALL-GLOBALS keying, which is unconditional
+under LSS since `lss.keyed` was fixed at its default and removed 2026-09-18.
+Annotated demands key the registry, so one spec is minted per call-site lambda
+set and a single-member set can stamp.
+
+(Before that it was E5 SELECTIVE keying, `lss.keyedGlobals`, which named the
+globals to key while `keyed` stayed False; that flag went the same day.)
+
 -}
-runToGlobalOptLssKeyedOn : List String -> Src.Module -> Result String GlobalOptArtifacts
-runToGlobalOptLssKeyedOn =
-    runToGlobalOptLssKeyedWith False
+runToGlobalOptLssAllKeyedOn : Src.Module -> Result String GlobalOptArtifacts
+runToGlobalOptLssAllKeyedOn =
+    runToGlobalOptLssKeyedWith
 
 
-runToGlobalOptLssKeyedWith : Bool -> List String -> Src.Module -> Result String GlobalOptArtifacts
-runToGlobalOptLssKeyedWith arrowIdentity keyedGlobals srcModule =
+runToGlobalOptLssKeyedWith : Src.Module -> Result String GlobalOptArtifacts
+runToGlobalOptLssKeyedWith srcModule =
     case runToTypedOpt srcModule of
         Err e ->
             Err e
@@ -473,12 +482,7 @@ runToGlobalOptLssKeyedWith arrowIdentity keyedGlobals srcModule =
                     Config.defaultLss
 
                 lssOn =
-                    -- keyed pinned False: this pipeline tests the SELECTIVE
-                    -- keying mechanism (the listed globals vs an unkeyed
-                    -- baseline). The shipping default is keyed = True
-                    -- (post-Fix-B) — tests must not silently track it or the
-                    -- E5 keyed-vs-unkeyed contrast pin loses its baseline leg.
-                    { defaultLss | enabled = True, keyed = False, keyedGlobals = keyedGlobals, arrowIdentity = arrowIdentity }
+                    { defaultLss | enabled = True }
             in
             case MonoSolver.monomorphize lssOn "main" globalTypeEnv globalGraph of
                 Err monoErr ->
@@ -603,7 +607,7 @@ runToGlobalOptLssOnStats srcModule =
                             MonoInlineSimplify.optimize Config.default.inline monoGraph
 
                         ( _, stats ) =
-                            MonoGlobalOptimize.globalOptimizeWithStats lssOn.layoutQualMembers Config.default.mono.lss.postSettleDevirt lssOn.stamp.flatPeel True lssOn.stamp.papFast Config.default.borrow simplifiedGraph
+                            MonoGlobalOptimize.globalOptimizeWithStats True Config.default.borrow simplifiedGraph
                     in
                     Ok stats
 

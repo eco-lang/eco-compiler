@@ -47,7 +47,7 @@ import TestLogic.TestPipeline as Pipeline
 
 suite : Test
 suite =
-    Test.describe "lss.varCtorRows — completeness-gated ctor-row var writes"
+    Test.describe "completeness-gated ctor-row var writes"
         -- FIXTURE FINDING (plans/lss-var-chain-roots.md §5.1): one-module
         -- fixtures cannot manufacture the target var-row class — in-item
         -- unification + default-on producer machinery cover every payload
@@ -55,49 +55,42 @@ suite =
         -- all-set off-arm; a never-constructed second instantiation is
         -- PRUNED before the registry the tests read). The corpus battery's
         -- `varctor|wrote`/`varctor|skipFlexVar` counters and named cells
-        -- are the differential. The unit pins here: additive-only
-        -- invariance on covered fixtures, and the AR-V1 retrofit helper.
-        [ Test.test "1. no-op on a fully-covered fixture (additive-only pin)" <|
+        -- are the differential. The flag (`lss.settle.varCtorRows`) was fixed
+        -- at its default and removed 2026-09-18; the additive-only pins that
+        -- compared the two arms went with it. What remains is the coverage
+        -- claim they rested on — no var row survives at either fixture — plus
+        -- the AR-V1 retrofit helper.
+        [ Test.test "1. the clean fixture's ctor payload rows carry no var" <|
             \() ->
-                case ( runWith False fixtureClean, runWith True fixtureClean ) of
-                    ( Ok offG, Ok onG ) ->
-                        case ( mkPayloadAnnos offG, mkPayloadAnnos onG ) of
-                            ( [], _ ) ->
+                case runWith fixtureClean of
+                    Ok g ->
+                        case mkPayloadAnnos g of
+                            [] ->
                                 Expect.fail "no Mk /a1 payload positions — fixture broken"
 
-                            ( offA, onA ) ->
-                                if List.any isVar offA then
+                            a ->
+                                if List.any isVar a then
                                     Expect.fail
                                         ("fixture manufactured a var row after all — UPGRADE this pin to a real differential: "
-                                            ++ describe offA
+                                            ++ describe a
                                         )
-
-                                else if offA == onA then
-                                    Expect.pass
 
                                 else
-                                    Expect.fail
-                                        ("varCtorRows CHANGED a covered fixture: off "
-                                            ++ describe offA
-                                            ++ " vs on "
-                                            ++ describe onA
-                                        )
+                                    Expect.pass
 
-                    ( Err e, _ ) ->
+                    Err e ->
                         Expect.fail e
-
-                    ( _, Err e ) ->
-                        Expect.fail e
-        , Test.test "2. flex fixture: arms agree (gate never rewrites what transport already covered)" <|
+        , Test.test "2. the flex fixture's ctor payload rows carry no var either" <|
             \() ->
-                case ( runWith False fixtureFlex, runWith True fixtureFlex ) of
-                    ( Ok offG, Ok onG ) ->
-                        Expect.equal (describe (mkPayloadAnnos offG)) (describe (mkPayloadAnnos onG))
+                case runWith fixtureFlex of
+                    Ok g ->
+                        if List.any isVar (mkPayloadAnnos g) then
+                            Expect.fail ("expected no var row, got " ++ describe (mkPayloadAnnos g))
 
-                    ( Err e, _ ) ->
-                        Expect.fail e
+                        else
+                            Expect.pass
 
-                    ( _, Err e ) ->
+                    Err e ->
                         Expect.fail e
         , Test.test "3. enrichAnnotationsTopOnly: LVar base never flips, LTop base heals (AR-V1 pin)" <|
             \() ->
@@ -275,16 +268,14 @@ fixtureFlex =
 -- ====== HARNESS ======
 
 
-runWith : Bool -> Src.Module -> Result String Mono.MonoGraph
-runWith varCtorRows srcModule =
+runWith : Src.Module -> Result String Mono.MonoGraph
+runWith srcModule =
     let
         defaults =
             Config.defaultLss
     in
     Pipeline.runSolverMonoWithLimits Config.defaultLimits
-        -- destrAnno pinned ON explicitly: it owns the settle ORDER this
-        -- flag interlocks with (var writes before the ⊤-heal).
-        { defaults | enabled = True, keyed = True, destrAnno = True, settle = (\st -> { st | varCtorRows = varCtorRows }) defaults.settle }
+        { defaults | enabled = True }
         srcModule
 
 

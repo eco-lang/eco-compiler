@@ -15,15 +15,29 @@ called with TWO different lambda literals at the SAME type:
     testValue =
         applyBoth (\a -> a * 2) 2 1 + applyBoth (\b -> b + 7) 2 1
 
-UNKEYED (plain solver+LSS): both call sites demand one spec of `applyBoth`
-at the shared type; the spec's `f` param carries the JOINED 2-member set —
-`f acc` is not a singleton, nothing stamps. KEYED on
-`eco/example:Test.applyBoth` (the TestLogic fixture package/module): the
-annotated demand keys the registry, so each call site's lambda mints its own
-spec — each spec's `f` is a singleton and `f acc` exact-Stamps
-(`callInfo.fastEvaluator = Just <that lambda>`). The pin asserts TWO
-DISTINCT stamped fast evaluators (per-site fan-out, not just one lucky
-stamp), and that the unkeyed run stamps NONE (RED/GREEN by keying alone).
+Keying makes the annotated demand key the registry, so a call site's lambda
+can mint its own spec whose `f` is a SINGLETON and whose `f acc` exact-stamps
+(`callInfo.fastEvaluator = Just <that lambda>`). Without it both call sites
+demand one spec at the shared type, the spec's `f` carries the JOINED 2-member
+set, and nothing stamps.
+
+WHAT THIS PIN USED TO BE, and why it is weaker now (2026-09-18). It was a
+RED/GREEN pair on `lss.keyed`: the keyed arm asserted TWO DISTINCT stamped
+fast evaluators (per-site fan-out, not one lucky stamp) and the unkeyed arm
+asserted NONE. Both flags it rested on were fixed at their defaults and
+removed — `lss.keyed`, so there is no unkeyed arm to compare against, and
+`lss.arrowIdentity`, which this harness had pinned OFF.
+
+Arrow identity is what costs the second stamp: with it ON — the shipping
+default, and now unconditional — the two call sites' arrows share one set
+slot, so keying fans out ONE stamped evaluator on this fixture rather than
+two. That is slot sharing working as designed (LSS\_006 per-load
+fragmentation is what it removes), not a lost stamp: the 633-workload
+emission rail is byte-identical across the whole removal.
+
+What survives is the claim the fixture can still make at shipping defaults —
+a JOINED 2-member set stamps nothing, so any stamp here at all is keying's
+doing.
 
 -}
 
@@ -52,17 +66,12 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
-keyedTarget : String
-keyedTarget =
-    "eco/example:Test.applyBoth"
-
-
 suite : Test
 suite =
-    Test.describe "E5: keying a global fans out singleton specs that stamp"
-        [ Test.test "keyed on applyBoth: two distinct fast evaluators are stamped" <|
+    Test.describe "keying a global fans out singleton specs that stamp"
+        [ Test.test "applyBoth: keying makes the site stamp at all" <|
             \_ ->
-                case Pipeline.runToGlobalOptLssKeyedOn [ keyedTarget ] fixtureModule of
+                case Pipeline.runToGlobalOptLssAllKeyedOn fixtureModule of
                     Err e ->
                         Expect.fail ("solver+LSS keyed pipeline failed: " ++ e)
 
@@ -71,44 +80,16 @@ suite =
                             n =
                                 distinctFastEvaluators optimizedMonoGraph
                         in
-                        if n >= 2 then
+                        if n >= 1 then
                             Expect.pass
 
                         else
                             Expect.fail
-                                ("expected >= 2 distinct stamped fast evaluators (one per keyed spec), got "
+                                ("expected a stamped fast evaluator under keying, got "
                                     ++ String.fromInt n
-                                    ++ " (keyed nodes="
+                                    ++ " (nodes="
                                     ++ String.fromInt (nodeCount optimizedMonoGraph)
-                                    ++ ", unkeyed nodes="
-                                    ++ (case Pipeline.runToGlobalOptLssOn fixtureModule of
-                                            Ok a ->
-                                                String.fromInt (nodeCount a.optimizedMonoGraph)
-
-                                            Err _ ->
-                                                "?"
-                                       )
                                     ++ ")"
-                                )
-        , Test.test "unkeyed: the joined 2-member set stamps nothing (the E5 premise)" <|
-            \_ ->
-                case Pipeline.runToGlobalOptLssOn fixtureModule of
-                    Err e ->
-                        Expect.fail ("solver+LSS pipeline failed: " ++ e)
-
-                    Ok { optimizedMonoGraph } ->
-                        let
-                            n =
-                                distinctFastEvaluators optimizedMonoGraph
-                        in
-                        if n == 0 then
-                            Expect.pass
-
-                        else
-                            Expect.fail
-                                ("expected 0 stamped fast evaluators unkeyed, got "
-                                    ++ String.fromInt n
-                                    ++ " — the fixture no longer isolates keying"
                                 )
         ]
 

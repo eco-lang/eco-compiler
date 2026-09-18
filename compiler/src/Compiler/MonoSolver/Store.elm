@@ -62,7 +62,7 @@ type alias LoadCtx =
     , lssOn : Bool -- mint FunL set slots (lambda-set specialization)
     , arrowSlots : List Vars.Variable -- minted set slots, REVERSED minting order
     , slotsMinted : Int -- Phase 3 rider: unconstrained slot mints this load (sizes Phase 5's dead-slot population)
-    , arrowIdOn : Bool -- Phase 2a: consult/record `arrowMemo` (lss.arrowIdentity). OFF -> mint a fresh slot per arrow POSITION, exactly as before.
+    , arrowIdOn : Bool -- Phase 2a: consult/record `arrowMemo`. Always True from the solver (the flag was fixed at its default 2026-09-18); `testLoadCtx` still drives both regimes for the unit pins. OFF -> mint a fresh slot per arrow POSITION, exactly as before.
     , arrowMemo : Dict.Dict Int Vars.Variable -- Phase 2a: `Id.toComparable arrowId` -> that arrow's SET SLOT Point. SLOT ONLY, never the FunL node — see `loadTypeC`.
     , censusOn : Bool -- multi-set census (M3): mirror of `env.lss.report`. Gates `arrowOfSlot` ONLY; nothing else reads it.
     , arrowMintOn : Bool -- Phase 2a/2b: are ArrowIds meaningful at all? (`lss.enabled` — ids are minted unconditionally by AssignMVarIds, so this is really "is the census worth keeping".)
@@ -104,7 +104,7 @@ sharedLoadCtx s =
     , lssOn = s.env.lss.enabled
     , arrowSlots = []
     , slotsMinted = 0
-    , arrowIdOn = s.env.lss.arrowIdentity
+    , arrowIdOn = True
     , arrowMemo = s.itemAux.arrowMemo
     , censusOn = s.env.lss.report
     , arrowMintOn = s.env.lss.enabled
@@ -131,7 +131,7 @@ isolatedLoadCtx s =
     , lssOn = s.env.lss.enabled
     , arrowSlots = []
     , slotsMinted = 0
-    , arrowIdOn = s.env.lss.arrowIdentity
+    , arrowIdOn = True
     , arrowMemo = Dict.empty
     , censusOn = s.env.lss.report
 
@@ -2025,9 +2025,11 @@ Descriptor-preserving: `UF.set` replaces the WHOLE descriptor at the root, so
 this always writes `{ desc | content = … }`, never a fresh descriptor
 (the `setRootC` precedent).
 
-Every caller MUST be `lss.sigFlow`-gated — including the kernel-tunnel
-selector — or `LsFrom` escapes into flag-off stores and falsifies the
-Phase-A inertness gate (plan §2.2).
+Every caller is part of the LSS\_020 signature channel, the kernel-tunnel join
+included. That used to be a `lss.sigFlow` obligation — a caller outside the
+gate let `LsFrom` escape into a flag-off store and falsified the Phase-A
+inertness gate (plan §2.2). The flag was fixed at its default and removed
+2026-09-18; the structural claim about who may mint `LsFrom` still holds.
 
 -}
 addSlotSource : Vars.Variable -> Vars.Variable -> Step ()
@@ -2377,7 +2379,7 @@ zonkToMono var =
         let
             lssAcc =
                 if s.env.lss.enabled then
-                    Just { maxSetSize = s.env.lss.maxSetSize, zonked = 0, widenedBySize = 0, hist = Dict.empty, widenedHist = Dict.empty, groundStandalones = s.env.lss.groundStandalones, grounded = 0, groundingDeferred = 0, honestSources = True, mixedFlex = 0, mixedFlexGc = 0, censusOn = s.env.lss.report, causeSet = 0, causePoison = 0, causeFlex = 0, causeEdgeSet = 0, causeEdgeEmpty = 0, causeEdgeTop = 0, causeUnknown = 0, multiSets = Dict.empty, varArrows = Dict.empty, setArrows = Dict.empty }
+                    Just { maxSetSize = s.env.lss.maxSetSize, zonked = 0, widenedBySize = 0, hist = Dict.empty, widenedHist = Dict.empty, groundStandalones = True, grounded = 0, groundingDeferred = 0, honestSources = True, mixedFlex = 0, mixedFlexGc = 0, censusOn = s.env.lss.report, causeSet = 0, causePoison = 0, causeFlex = 0, causeEdgeSet = 0, causeEdgeEmpty = 0, causeEdgeTop = 0, causeUnknown = 0, multiSets = Dict.empty, varArrows = Dict.empty, setArrows = Dict.empty }
 
                 else
                     Nothing
@@ -2456,7 +2458,7 @@ rezonkSettled s =
             log ->
                 let
                     acc0 =
-                        { maxSetSize = s.env.lss.maxSetSize, zonked = 0, widenedBySize = 0, hist = Dict.empty, widenedHist = Dict.empty, groundStandalones = s.env.lss.groundStandalones, grounded = 0, groundingDeferred = 0, honestSources = True, mixedFlex = 0, mixedFlexGc = 0, censusOn = True, causeSet = 0, causePoison = 0, causeFlex = 0, causeEdgeSet = 0, causeEdgeEmpty = 0, causeEdgeTop = 0, causeUnknown = 0, multiSets = Dict.empty, varArrows = Dict.empty, setArrows = Dict.empty }
+                        { maxSetSize = s.env.lss.maxSetSize, zonked = 0, widenedBySize = 0, hist = Dict.empty, widenedHist = Dict.empty, groundStandalones = True, grounded = 0, groundingDeferred = 0, honestSources = True, mixedFlex = 0, mixedFlexGc = 0, censusOn = True, causeSet = 0, causePoison = 0, causeFlex = 0, causeEdgeSet = 0, causeEdgeEmpty = 0, causeEdgeTop = 0, causeUnknown = 0, multiSets = Dict.empty, varArrows = Dict.empty, setArrows = Dict.empty }
 
                     ctxN =
                         List.foldl
@@ -3021,7 +3023,7 @@ demanded instantiation LSS\_019's grounding keys on. Policy:
   - unresolved slot (FlexVar) -> LTop (unknown, NOT empty — an empty claim
     would license consumers to treat the arrow as dead)
   - LsTop -> LTop (widened / kernel-facing)
-  - LsMembers members -> under `lss.groundStandalones`, provisional `g|`/`c|`
+  - LsMembers members -> provisional `g|`/`c|`
     members first ground to `g|<global>|<widened-arrow-typeKey>` when the
     arrow is residual-free (LSS\_019; deferral keeps the provisional id) —
     then LSet members, the store list by pointer (ascending by construction),

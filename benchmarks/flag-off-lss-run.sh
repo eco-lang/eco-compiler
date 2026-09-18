@@ -9,6 +9,26 @@
 # Flags N..34 are off for iteration N. Records land in
 # benchmarks/flag-off-lss-loop.tsv and are rendered as a table into
 # benchmarks/flag-off-lss-results.md after every run.
+#
+# ============================== EXPIRED 2026-09-18 ==============================
+# 31 of the 32 LSS flags this census sweeps were FIXED AT THEIR DEFAULTS AND
+# REMOVED (plans/fix-lss-flags-at-defaults.md). `lss.enabled` is the only
+# switch left, plus the three numeric caps and the four censuses, none of
+# which this script rows.
+#
+# Setting a deleted `ECO_MONO_LSS_*` variable is now a SILENT NO-OP — the
+# compiler does not read it and does not complain — so every row below except
+# the last would report a "flag off" measurement that is really the baseline
+# measured twice. That failure mode is why this banner exists rather than a
+# quiet deletion: a stale row here is indistinguishable from a genuinely inert
+# flag, which is exactly the reading `flag-off-lss-solo-findings.md` was
+# written to make.
+#
+# The last census taken while the flags existed is
+# benchmarks/flag-off-lss-solo-findings.md (2026-09-18), and its per-flag rows
+# are reproduced in plans/fix-lss-flags-at-defaults.md §7. Use those; do not
+# re-run this script expecting per-flag rows.
+# ==============================================================================
 set -uo pipefail
 
 WORK=/work

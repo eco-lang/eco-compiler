@@ -222,7 +222,7 @@ lssConfig =
         defaults =
             Config.defaultLss
     in
-    { defaults | enabled = True, keyed = True, sigFlow = True, layoutQualMembers = False }
+    { defaults | enabled = True }
 
 
 reportLine : String -> String -> String

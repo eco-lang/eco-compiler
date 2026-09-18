@@ -75,7 +75,7 @@ emptySpecTally =
 
 
 {-| The created-spec ids for a global (comparable key), newest first. Empty
-when unkeyed (the tally is maintained only under `lss.keyed`).
+when LSS is off (the tally is maintained only under LSS).
 -}
 specIdsForGlobal : String -> S -> List Int
 specIdsForGlobal gkey s =
@@ -192,8 +192,8 @@ type alias LssStats =
 
 {-| LSS\_024 layout-qualification census: `mints` counts layout-qualified
 lambda mints, `shared` counts id reuse across DISTINCT enclosing specs (the
-fix working — detected via `lambdaQualified`'s first-minter payload, so it
-under-counts when `lss.muTie` is off), `fallback` counts mints whose spec had
+fix working — detected via `lambdaQualified`'s first-minter payload),
+`fallback` counts mints whose spec had
 no captured widened key (fell back to SpecId qualification — expected 0),
 `tieBypass` counts §2.3 equal-id μ-tie bypasses. Stats only.
 -}
@@ -457,8 +457,8 @@ type alias LssMemberTable =
     , lambdaQualified : CoreDict.Dict Int ( Int, Int ) -- LSS_018: qualified mid -> (raw lambda id, FIRST-minting SpecId — first-mint-wins; under LSS_024 layout qualification several specs share one mid, so the payload is diagnostics only); written at the qualified intern
     , muTied : CoreDict.Dict Int () -- LSS_018: member ids ever the target of a μ-tie — exported as MonoGraph.lssBlockedMembers (AbiCloning force-blocks them)
     , provisionalStandalone : CoreDict.Dict Int TOpt.Global -- LSS_019: ids minted by standaloneMemberIdFor with a "g|"/"c|" key (NOT kernel-alias-folded, NOT ground). Written at the same intern site; the zonk grounding rewrite consults this to decide "rewrite" vs "pass through". Ground ids are NEVER in this dict — that is what makes grounding idempotent.
-    , specWidenedKeys : CoreDict.Dict Int String -- LSS_024: SpecId -> the IMMUTABLE annotation-widened creation key (toComparableMonoType of widenSets keyType), captured write-once at spec creation (enqueueSpecKeyed / seedSpec — §2.2 of plans/lss-layout-qualified-members.md). Qualifies lambda mints under lss.layoutQualMembers; a missing entry falls back to SpecId qualification (censused, expected 0).
-    , rootLamOf : CoreDict.Dict Int TOpt.Global -- `lss.rootFold` (plans/lss-root-member-fold.md §1.2): raw SrcLambdaId -> the global whose def-ROOT lambda it is. Populated by `Translate.classifyLambdaHead` on the stashed-root path, flag-on only, kernel-alias globals excluded THERE (folding one would re-create the g|/k| split E9.2 removes). A miss mints `l|` exactly as today. Lives on the member table, not S — S sits at the runtime's 32-slot record GC-scan cap (the grounding/sigStats/layoutQual rationale).
+    , specWidenedKeys : CoreDict.Dict Int String -- LSS_024: SpecId -> the IMMUTABLE annotation-widened creation key (toComparableMonoType of widenSets keyType), captured write-once at spec creation (enqueueSpecKeyed / seedSpec — §2.2 of plans/lss-layout-qualified-members.md). Qualifies lambda mints; a missing entry falls back to SpecId qualification (censused, expected 0).
+    , rootLamOf : CoreDict.Dict Int TOpt.Global -- ROOT-MEMBER FOLD (plans/lss-root-member-fold.md §1.2): raw SrcLambdaId -> the global whose def-ROOT lambda it is. Populated by `Translate.classifyLambdaHead` on the stashed-root path, kernel-alias globals excluded THERE (folding one would re-create the g|/k| split E9.2 removes). A miss mints `l|` exactly as today. Lives on the member table, not S — S sits at the runtime's 32-slot record GC-scan cap (the grounding/sigStats/layoutQual rationale).
     }
 
 
@@ -562,9 +562,9 @@ the FIRST one, or the §3.3 cap is reached. Bumps `instCapped` on a cap hit.
 common case — a let-function with exactly ONE instance, which has no ambiguity
 to resolve — mints exactly the ids it mints now. Only the siblings that a
 split actually created pay for the split. This is also what makes the cap
-meaningful: `maxInstances = 1` tags nothing and reproduces the flag-off
-collapse exactly, and a cap of K bounds one (lambda, spec) to K identity
-classes — K-1 tagged plus the shared untagged one.
+meaningful: `maxInstances = 1` tags nothing and reproduces the
+pre-instanceQual collapse exactly, and a cap of K bounds one (lambda, spec)
+to K identity classes — K-1 tagged plus the shared untagged one.
 
 A capped or first re-translation CARRIES the outer tag rather than clearing
 it: the ENCLOSING instance's identity is still valid, only this level stops
@@ -577,7 +577,7 @@ localInstanceTagFor ord s =
         cfg =
             s.env.lss.stamp
     in
-    if ord == 0 || not (s.env.lss.enabled && cfg.enabled) then
+    if ord == 0 || not s.env.lss.enabled then
         Ok ( s.itemAux.currentLocalInstance, s )
 
     else if cfg.maxInstances > 0 && ord >= cfg.maxInstances then
@@ -604,10 +604,10 @@ reference with no instance component — qualifying it would silently break the
 -}
 instanceQualTagFor : Int -> Step Int
 instanceQualTagFor raw s =
-    if s.itemAux.currentLocalInstance == 0 || not s.env.lss.stamp.enabled then
+    if s.itemAux.currentLocalInstance == 0 then
         Ok ( 0, s )
 
-    else if s.env.lss.rootFold && CoreDict.member raw s.lssMemberTable.rootLamOf then
+    else if CoreDict.member raw s.lssMemberTable.rootLamOf then
         Ok ( 0, bumpInstanceQual (\lq -> { lq | instRootSkip = lq.instRootSkip + 1 }) s )
 
     else
@@ -673,26 +673,7 @@ lambdaInstanceMemberId lamId s0 =
         Ok ( raw, s0 )
 
     else
-        let
-            routed =
-                case s0.currentGlobal of
-                    Just g ->
-                        s0.env.lss.keyed
-                            || (not (CoreDict.isEmpty s0.env.lssKeyedSet)
-                                    && CoreDict.member (Mono.toComparableGlobal g) s0.env.lssKeyedSet
-                               )
-
-                    Nothing ->
-                        -- Outside any item: under all-globals keying treat as
-                        -- routed so the missing spec id is COUNTED, not
-                        -- silently raw-minted.
-                        s0.env.lss.keyed
-        in
-        if not routed then
-            Ok ( raw, s0 )
-
-        else
-            case s0.itemAux.currentSpecId of
+        case s0.itemAux.currentSpecId of
                 Just specId ->
                     case instanceQualTagFor raw s0 of
                         Err e ->
@@ -715,67 +696,11 @@ both qualification regimes.
 -}
 lambdaInstanceMemberGo : Int -> Int -> Int -> Step Int
 lambdaInstanceMemberGo raw instTag specId s0 =
-    if s0.env.lss.layoutQualMembers then
-        -- LSS_024: layout-qualified identity, with the §2.3
-        -- equal-id μ-tie bypass — see
-        -- `lambdaMemberLayoutQualified`.
-        lambdaMemberLayoutQualified raw instTag specId s0
-
-    else
-        -- LSS_018 μ-tie: if this spec's own STORED demand already
-        -- carries a qualified member of the same raw lambda, the
-        -- value being minted IS the value that arrived in the
-        -- demand — one recursive family. Minting Q(L,S) fresh
-        -- would only spawn the next family member (the
-        -- specs→qualified-members→keys spiral); reusing the
-        -- family id closes it at its second member. Tied ids are
-        -- recorded in `muTied` and AbiCloning-blocked (plan §2.4 —
-        -- multi-demand instances are behaviorally divergent and
-        -- must never rep-stamp). `demandQualified` is built (and
-        -- `lambdaQualified` recorded) only under `lss.muTie`, so
-        -- the flag-off path carries zero scan/table cost; the
-        -- Just arm is unreachable flag-off. The one-shot eligible
-        -- census measured 0 on the self-compile (Run J).
-        --
-        -- The lookup key is instance-QUALIFIED (§3.6): keyed by the
-        -- bare raw id, a mint inside local-multi instance B finds
-        -- instance A's id, ties to it and force-blocks exactly the
-        -- stamps this plan recovers — an "implemented, no effect"
-        -- failure that looks like the mechanism not working.
-        case CoreDict.get (qualifiedRawKey raw instTag) s0.itemAux.demandQualified of
-            Just tiedId ->
-                Ok ( tiedId, recordMuTied tiedId s0 )
-
-            Nothing ->
-                mintQualifiedLambda raw instTag specId s0
-
-
-{-| Intern the spec-qualified lambda member `Q(L,S)` and — under `lss.muTie`
-only — record its (raw, spec) identity in `lambdaQualified`, the LSS\_018
-reverse map that `processItem`'s demand scan consults. Flag-off skips the
-recording entirely (no map growth on the default path); the insert is
-idempotent (the key encodes both components), so LSS\_010 re-translations
-re-record the same pair.
--}
-mintQualifiedLambda : Int -> Int -> Int -> Step Int
-mintQualifiedLambda raw instTag specId s0 =
-    case memberIdFor (withInstTag instTag ("l|" ++ String.fromInt raw ++ "|" ++ String.fromInt specId)) s0 of
-        Err e ->
-            Err e
-
-        Ok ( mid, s1 ) ->
-            let
-                table =
-                    s1.lssMemberTable
-            in
-            if not s1.env.lss.muTie || CoreDict.member mid table.lambdaQualified then
-                Ok ( mid, s1 )
-
-            else
-                Ok ( mid, { s1 | lssMemberTable = { table | lambdaQualified = CoreDict.insert mid ( qualifiedRawKey raw instTag, specId ) table.lambdaQualified } } )
-
-
-{-| LSS\_024 (lss.layoutQualMembers): the layout-qualified mint. The member id
+    -- LSS_024: layout-qualified identity, with the §2.3
+    -- equal-id μ-tie bypass — see
+    -- `lambdaMemberLayoutQualified`.
+    lambdaMemberLayoutQualified raw instTag specId s0
+{-| LSS\_024: the layout-qualified mint. The member id
 for a keyed-routed lambda instance is `l|<raw>|<widenedKey>` where
 `widenedKey` is the enclosing spec's IMMUTABLE annotation-widened creation
 key (captured write-once at spec creation — `specWidenedKeys`, §2.2 of
@@ -807,7 +732,7 @@ lambdaMemberLayoutQualified raw instTag specId s0 =
         ( plainKey, isFallback ) =
             layoutQualKey s0.lssMemberTable.specWidenedKeys raw instTag specId
 
-        -- `lss.rootFold` (plans/lss-root-member-fold.md §1.1): a def's ROOT
+        -- ROOT-MEMBER FOLD (plans/lss-root-member-fold.md §1.1): a def's ROOT
         -- lambda interns the GROUND STANDALONE key of its global instead of
         -- the `l|` key — same qualifier tail, so the string equals what
         -- LSS_019 grounding produces from a reference and what the
@@ -817,20 +742,16 @@ lambdaMemberLayoutQualified raw instTag specId s0 =
         -- instance lookup, μ-tie comparison) recomputes the key through this
         -- function, so mint and lookup cannot disagree.
         ( key, foldedTo ) =
-            if s0.env.lss.rootFold then
-                case CoreDict.get raw s0.lssMemberTable.rootLamOf of
-                    Just g ->
-                        ( "g|"
-                            ++ TOpt.toComparableGlobal g
-                            ++ String.dropLeft (String.length ("l|" ++ String.fromInt raw)) plainKey
-                        , Just g
-                        )
+            case CoreDict.get raw s0.lssMemberTable.rootLamOf of
+                Just g ->
+                    ( "g|"
+                        ++ TOpt.toComparableGlobal g
+                        ++ String.dropLeft (String.length ("l|" ++ String.fromInt raw)) plainKey
+                    , Just g
+                    )
 
-                    Nothing ->
-                        ( plainKey, Nothing )
-
-            else
-                ( plainKey, Nothing )
+                Nothing ->
+                    ( plainKey, Nothing )
     in
     case CoreDict.get (qualifiedRawKey raw instTag) s0.itemAux.demandQualified of
         Just tiedId ->
@@ -859,7 +780,7 @@ layoutQualKey specWidenedKeys raw instTag specId =
             ( withInstTag instTag ("l|" ++ String.fromInt raw ++ "|" ++ String.fromInt specId), True )
 
 
-{-| `lss.rootFold`: the mint tail, plus `SourceGlobal` registration when the
+{-| The mint tail, plus `SourceGlobal` registration when the
 id was FOLDED — the folded id denotes the global, and devirt's reverse lookup
 (and the stampable-class licensing) read `sources`. Ground ids never enter
 `provisionalStandalone` (LSS\_019 idempotence).
@@ -888,12 +809,11 @@ mintLayoutQualifiedFold foldedTo key raw instTag specId isFallback isTieBypass s
 
 
 {-| The LSS\_024 intern + census tail: interns `key`, records the LSS\_018
-`lambdaQualified` reverse entry exactly like `mintQualifiedLambda`
+`lambdaQualified` reverse entry
 (first-mint-wins — under LSS\_024 several specs share one mid, so the payload
 is the FIRST-minting spec, diagnostics only), and bumps the `layoutQual`
 counters. `shared` bumps on a mint whose id's first minter was a DIFFERENT
-spec — id reuse across enclosing specs, the fix working (read from
-`lambdaQualified`, so it under-counts when `lss.muTie` is off).
+spec — id reuse across enclosing specs, the fix working.
 -}
 mintLayoutQualified : String -> Int -> Int -> Int -> Bool -> Bool -> Step Int
 mintLayoutQualified key raw instTag specId isFallback isTieBypass s0 =
@@ -961,7 +881,7 @@ mintLayoutQualified key raw instTag specId isFallback isTieBypass s0 =
                 table =
                     s2.lssMemberTable
             in
-            if not s2.env.lss.muTie || CoreDict.member mid table.lambdaQualified then
+            if CoreDict.member mid table.lambdaQualified then
                 Ok ( mid, s2 )
 
             else
@@ -1356,7 +1276,6 @@ type alias Env =
     , currentModule : ModuleName.Canonical -- entry module; home of every AnonymousLambda
     , superStatic : Dict Int Vars.SuperType -- static solver truth ONLY (loadVar)
     , lss : Config.LssConfig -- lambda-set specialization knobs; enabled=False is byte-identical off
-    , lssKeyedSet : CoreDict.Dict String () -- E5: comparable gkeys of lss.keyedGlobals (parsed once at initState)
     , lamLabels : CoreDict.Dict Int String -- member id -> "defKey#id" (census rendering only)
 
     -- STAMPING-WALK CENSUS denominator: every arrow occurrence AssignMVarIds
@@ -1388,7 +1307,7 @@ type alias S =
     , scheduled : BitSet
     , dirtySpecs : BitSet -- LSS_010: specs whose stored type was annotation-JOINED after scheduling; re-translated at drain-end flush rounds (flag-off: never set)
     , dirtyList : List Mono.SpecId -- enumeration twin of dirtySpecs (BitSet has no iteration); duplicate-free via the bit check; consumed by the drain-end flush
-    , specCountByGlobal : CoreDict.Dict String SpecTally -- M4 keyed budget: specs created per global (only maintained under lss.keyed; consulted by underBudget). §9.6: the tally also carries the CREATED spec ids so the destructor-side ctor-demand-union read (lss.destrAnno Fix B) is O(specs-of-this-global), not O(registry)
+    , specCountByGlobal : CoreDict.Dict String SpecTally -- M4 keyed budget: specs created per global (only maintained under LSS; consulted by underBudget). §9.6: the tally also carries the CREATED spec ids so the destructor-side ctor-demand-union read (destrAnno Fix B) is O(specs-of-this-global), not O(registry)
     , registry : Mono.SpecializationRegistry
     , ports : List Mono.PortRegistration
     , lambdaCounter : Int
@@ -2192,17 +2111,7 @@ enqueueSpec : Mono.Global -> Mono.MonoType -> Step Mono.SpecId
 enqueueSpec global monoType s0 =
     -- A1: explicit trailing-S param (was `\s -> …`) → saturated callers avoid the
     -- per-call closure; body unchanged → byte-identical.
-    -- E5: a global listed in lss.keyedGlobals routes into the budgeted keyed
-    -- path even when global keying is off. The isEmpty short-circuit keeps
-    -- the empty-config hot path free of the per-enqueue gkey string build.
-    if
-        s0.env.lss.enabled
-            && (s0.env.lss.keyed
-                    || (not (CoreDict.isEmpty s0.env.lssKeyedSet)
-                            && CoreDict.member (Mono.toComparableGlobal global) s0.env.lssKeyedSet
-                       )
-               )
-    then
+    if s0.env.lss.enabled then
         enqueueSpecKeyed global monoType s0
 
     else
@@ -2412,21 +2321,16 @@ enqueueSpecKeyed global monoType s0 =
             s0.env.lss.maxSpecsPerGlobal <= 0 || count < s0.env.lss.maxSpecsPerGlobal
 
         -- LSS_024 §2.2: the annotation-widened key is needed on the
-        -- over-budget arm (it IS the dedup key there — today's behavior)
-        -- and, flag-on, on the under-budget arm too (the capture probe —
-        -- the under-budget create path is exactly the sigFlow-split
-        -- population). Built at most once, K6 hash-consed; the flag-off
-        -- under-budget path skips it entirely (byte-identical).
+        -- over-budget arm (it IS the dedup key there) and on the
+        -- under-budget arm too (the capture probe — the under-budget create
+        -- path is exactly the sigFlow-split population). Built at most once,
+        -- K6 hash-consed.
         ( maybeWidened, sPre ) =
-            if not underBudget || s0.env.lss.layoutQualMembers then
-                let
-                    ( keyType, intern1 ) =
-                        Intern.widenSets monoType s0.intern
-                in
-                ( Just keyType, withIntern intern1 s0 )
-
-            else
-                ( Nothing, s0 )
+            let
+                ( keyType, intern1 ) =
+                    Intern.widenSets monoType s0.intern
+            in
+            ( Just keyType, withIntern intern1 s0 )
 
         ( ( specId, reg1, hit ), sProbe ) =
             if underBudget then
@@ -2472,7 +2376,7 @@ enqueueSpecKeyed global monoType s0 =
         -- budget-widened and annotation-created twins of one global land
         -- EQUAL widened keys — their lambdas share, per the plan's §5 pins).
         s2 =
-            case ( created && s.env.lss.layoutQualMembers, maybeWidened ) of
+            case ( created, maybeWidened ) of
                 ( True, Just keyType ) ->
                     recordSpecWidenedKey specId (Mono.toComparableMonoType keyType) s1
 

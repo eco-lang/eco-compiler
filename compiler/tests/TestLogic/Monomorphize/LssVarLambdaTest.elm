@@ -41,28 +41,24 @@ import TestLogic.TestPipeline as Pipeline
 
 suite : Test
 suite =
-    Test.describe "lss.varLambda — lambda-home var writes"
+    Test.describe "lambda-home var writes"
         [ -- A REAL differential, unlike the successor and ctor-row classes:
           -- this class IS reproducible in one module (§5.1's finding does not
           -- extend to it). `applyTwice`'s parameter is a lambda whose own
           -- result is a function; the result arrow's set lives only in
-          -- `mkAdder`'s body, so the off-arm leaves it flex.
-          Test.test "1. DIFFERENTIAL: the lambda's result arrow flips var -> set" <|
+          -- `mkAdder`'s body, so without this pass it stayed flex. The flag
+          -- (`lss.settle.varLambda`) was fixed at its default and removed
+          -- 2026-09-18, so what remains is the ON leg.
+          Test.test "1. the lambda's result arrow is a set, never var or ⊤" <|
             \() ->
-                case ( runWith False fixture, runWith True fixture ) of
-                    ( Ok offG, Ok onG ) ->
+                case runWith fixture of
+                    Ok onG ->
                         let
-                            off =
-                                annos offG
-
                             on =
                                 annos onG
                         in
-                        if List.isEmpty off then
+                        if List.isEmpty on then
                             Expect.fail "no applyTwice rows — fixture broken"
-
-                        else if not (List.any isVar off) then
-                            Expect.fail ("off-arm expected a var position, got " ++ describe off)
 
                         else if List.any isTop on then
                             Expect.fail ("on-arm manufactured ⊤: " ++ describe on)
@@ -76,10 +72,7 @@ suite =
                         else
                             Expect.fail ("on-arm expected sets throughout, got " ++ describe on)
 
-                    ( Err e, _ ) ->
-                        Expect.fail e
-
-                    ( _, Err e ) ->
+                    Err e ->
                         Expect.fail e
         , Test.test "2. GUARD: a var cell never becomes a set (strict-cell rule)" <|
             \() ->
@@ -162,14 +155,14 @@ fixture =
 -- ====== HARNESS ======
 
 
-runWith : Bool -> Src.Module -> Result String Mono.MonoGraph
-runWith varLambda srcModule =
+runWith : Src.Module -> Result String Mono.MonoGraph
+runWith srcModule =
     let
         defaults =
             Config.defaultLss
     in
     Pipeline.runSolverMonoWithLimits Config.defaultLimits
-        { defaults | enabled = True, keyed = True, settle = (\st -> { st | varLambda = varLambda }) defaults.settle }
+        { defaults | enabled = True }
         srcModule
 
 

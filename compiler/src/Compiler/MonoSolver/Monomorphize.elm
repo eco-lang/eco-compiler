@@ -87,7 +87,7 @@ monomorphizeWithReport lssConfig limits entryPointName globalTypeEnv globalGraph
         limits
         entryPointName
         globalTypeEnv
-        (EntryPrep.assign ( lssConfig.arrowSolverRoots, lssConfig.arrowCensus ) entryPointName globalGraph)
+        (EntryPrep.assign ( True, lssConfig.arrowCensus ) entryPointName globalGraph)
 
 
 {-| `monomorphizeWithReport` on a graph that has ALREADY been through
@@ -204,17 +204,24 @@ monomorphizeWithReportAssigned lssConfig limits entryPointName globalTypeEnv ass
                     Ok ( graph, report )
 
 
-{-| lss.destrAnno FIX B — the post-drain ctor-row settle (§9.8). For every
+{-| destrAnno FIX B — the post-drain ctor-row settle (§9.8). For every
 registry entry whose node is a `TOpt.Ctor`/`Box` and whose stored type still
 carries ⊤: enrich its annotations from the set-biased union of ALL entries of
 the same ctor global (`Mono.enrichAnnotations`-folded — a ⊤ contributes
 nothing, sets union). Precision-monotone, structure untouched (MONO\_029),
 complete-union sound (AR-D2). One sweep; no fixpoint needed — the unions are
-final. No-op flag-off and for globals with a single all-⊤ entry.
+final. No-op for globals with a single all-⊤ entry.
+
+LANDED 2026-08-31 as the Fix B half of `lss.destrAnno`, default-ON: ⊤
+2,133 -> 1,457 (−32 %, the largest single ⊤ cut of the arc), coverage
+88.99 % -> 89.61 %, conflict-⊤ exactly unchanged, wall +2.4 %. Unconditional
+since 2026-09-18. The differential that pinned it (`LssDestrAnnoTest`) is
+also what caught the partial-union false-singleton window §9.8 closed.
+
 -}
 settleCtorRows : S -> S
 settleCtorRows s =
-    if not (s.env.lss.enabled && s.env.lss.destrAnno) then
+    if not s.env.lss.enabled then
         s
 
     else
@@ -313,7 +320,7 @@ settleCtorRows s =
         { s | registry = registry1 }
 
 
-{-| Phase 2b (plans/lss-var-chain-roots.md §3, `lss.settle.varCtorRows`): write var
+{-| Phase 2b (plans/lss-var-chain-roots.md §3): write var
 payload slots on ctor registry rows from the sibling-spec CELL union, under
 the all-sets completeness rule.
 
@@ -335,10 +342,14 @@ ORDER IS LOAD-BEARING: this pass MUST run BEFORE `settleCtorRows`' ⊤-heal —
 the heal rewrites ⊤ positions to sets and would erase the contamination
 evidence this gate reads.
 
+
+LANDED 2026-08-31 as `lss.settle.varCtorRows`, default-ON (the flex gate
+protected 1,563 positions). Unconditional since 2026-09-18.
+
 -}
 settleVarCtorRows : S -> S
 settleVarCtorRows s =
-    if not (s.env.lss.enabled && s.env.lss.settle.varCtorRows) then
+    if not s.env.lss.enabled then
         s
 
     else
@@ -634,7 +645,7 @@ settleVarCtorRows s =
         Dict.foldl (\m n acc -> bumpN ("varctor|mod|" ++ m) n acc) s1 totals.byModule
 
 
-{-| Phase 4v2 (plans/lss-var-chain-roots.md §8.2, `lss.settle.varLambda`): enrich
+{-| Phase 4v2 (plans/lss-var-chain-roots.md §8.2): enrich
 `l|`-headed var positions from the LAMBDA-HOME table.
 
 A lambda's result set exists in exactly one place — the type of its BODY in
@@ -666,10 +677,14 @@ Deliberately an INDEPENDENT implementation of the cellmap walk from the
 classifier with its mechanism (the Aug-26 audit rule), which keeps its
 `lwould = 568` a genuine upper bound — this pass must write no more.
 
+
+LANDED 2026-09-01 as `lss.settle.varLambda`, default-ON: 597 writes, 587 k1,
+`andThen` var −328. Unconditional since 2026-09-18.
+
 -}
 settleVarLambda : S -> S
 settleVarLambda s =
-    if not (s.env.lss.enabled && s.env.lss.settle.varLambda) then
+    if not s.env.lss.enabled then
         s
 
     else
@@ -1136,7 +1151,7 @@ varCellWalk argIds path t acc =
             acc
 
 
-{-| Phase 1 (plans/lss-var-chain-roots.md §3, `lss.settle.varSucc`): post-drain
+{-| Phase 1 (plans/lss-var-chain-roots.md §3): post-drain
 successor writes. At any row position whose arrow holds a pap-able set
 (every member `p|X|k` / `g|X` / `c|X`) and whose RESULT arrow slot is flex,
 write the member-wise successor set `{p|X|k+j}` (j = args consumed at this
@@ -1154,10 +1169,15 @@ and `injectPapSuccessors` mint, so all paths unify (E9.2 one-identity).
 Bounded rounds: a write at depth d exposes the head for depth d+1 in the
 next round (the intra-row chains behind the census's 69.7 % interior mass).
 
+
+LANDED 2026-08-31 as `lss.settle.varSucc`, default-ON with `varCtorRows`:
+var −19.2 %, coverage +1.91 pp, ⊤ unchanged, accounting exact. Unconditional
+since 2026-09-18.
+
 -}
 settleVarSuccessors : S -> S
 settleVarSuccessors s0 =
-    if not (s0.env.lss.enabled && s0.env.lss.settle.varSucc) then
+    if not s0.env.lss.enabled then
         s0
 
     else
@@ -3704,7 +3724,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                -- LSS_018 monitoring, derived FREE from implementation state at
                -- report time (the per-event fidelity counters were removed after
                -- their one-shot census — Run J: muTied=0 widenedByLet=672
-               -- localMultiBypass=469; see plan §7). Meaningful under lss.muTie;
+               -- localMultiBypass=469; see plan §7). Meaningful for the μ-tie;
                -- reads 0 flag-off (tables are flag-gated).
                , "muTie: tied=" ++ String.fromInt (Dict.size sFinal.lssMemberTable.muTied) ++ " qualifiedRecorded=" ++ String.fromInt (Dict.size sFinal.lssMemberTable.lambdaQualified)
 
@@ -3863,7 +3883,6 @@ initState lssConfig limits currentModule nodes annotations globalTypeEnv mvarSta
         , currentModule = currentModule
         , superStatic = mvarState.superVars
         , lss = lssConfig
-        , lssKeyedSet = keyedGlobalSet lssConfig.keyedGlobals
         , lamLabels = mvarState.lamLabels
 
         -- Stamping-walk census denominator, read once here rather than
@@ -3894,42 +3913,6 @@ initState lssConfig limits currentModule nodes annotations globalTypeEnv mvarSta
     }
 
 
-{-| E5: parse `lss.keyedGlobals` user entries
-(`author/project:Module.Name.value`) into the comparable-gkey set the
-`enqueueSpec` gate consults. The comparable shape must match
-`Mono.toComparableGlobal`, so build a real `Mono.Global` and key it.
-Unparseable entries are skipped (the Builder env override already warned).
--}
-keyedGlobalSet : List String -> Dict.Dict String ()
-keyedGlobalSet entries =
-    List.filterMap parseKeyedGlobal entries
-        |> List.map (\g -> ( Mono.toComparableGlobal g, () ))
-        |> Dict.fromList
-
-
-parseKeyedGlobal : String -> Maybe Mono.Global
-parseKeyedGlobal entry =
-    case String.split ":" entry of
-        [ pkg, def ] ->
-            case ( String.split "/" pkg, List.reverse (String.split "." def) ) of
-                ( [ author, project ], valueName :: revModSegs ) ->
-                    if List.isEmpty revModSegs then
-                        Nothing
-
-                    else
-                        Just
-                            (Mono.Global
-                                (ModuleName.Canonical ( author, project ) (String.join "." (List.reverse revModSegs)))
-                                valueName
-                            )
-
-                _ ->
-                    Nothing
-
-        _ ->
-            Nothing
-
-
 seedSpec : Mono.Global -> Mono.MonoType -> S -> ( Mono.SpecId, S )
 seedSpec global monoType s =
     let
@@ -3944,7 +3927,7 @@ seedSpec global monoType s =
         -- construction. One pure widenSets for the 1-2 seeded specs; the
         -- flags-decoder seed arrives through this same function.
         s1 =
-            if s.env.lss.enabled && s.env.lss.layoutQualMembers then
+            if s.env.lss.enabled then
                 Engine.recordSpecWidenedKey specId
                     (Mono.toComparableMonoType (Mono.widenSets monoType))
                     s
@@ -4263,7 +4246,15 @@ processItem specId s =
                                                                     -- never overwrites an LSet, so
                                                                     -- the pair is idempotent).
                                                                     ( joinedR, recoveredN ) =
-                                                                        if s1.env.lss.rsTop && licensedKernelAliasNode node s1 then
+                                                                        -- P1 restatement-⊤ recovery, shipped
+                                                                        -- 2026-08-29 as `lss.rsTop` and
+                                                                        -- unconditional since 2026-09-18:
+                                                                        -- coverage 87.64 % -> 88.76 %,
+                                                                        -- ⊤ 3,668 -> 2,153 (−1,515 = 99.9 %
+                                                                        -- of the 1,516-cell P0 target,
+                                                                        -- landing as k1 +1,454 / kN +61),
+                                                                        -- `var` untouched by design.
+                                                                        if licensedKernelAliasNode node s1 then
                                                                             Mono.recoverStoredSets joined0 storedT
 
                                                                         else
@@ -4283,24 +4274,19 @@ processItem specId s =
                                                                     -- stamp enriches future demands and the
                                                                     -- census, it does not need a re-flush).
                                                                     joined1 =
-                                                                        if s1.env.lss.injTotal then
-                                                                            case specKey of
-                                                                                Mono.Global sgHome sgName ->
-                                                                                    case Translate.stampSelfSpine (TOpt.Global sgHome sgName) joinedR s1 of
-                                                                                        Ok ( stamped, _ ) ->
-                                                                                            stamped
+                                                                        case specKey of
+                                                                            Mono.Global sgHome sgName ->
+                                                                                case Translate.stampSelfSpine (TOpt.Global sgHome sgName) joinedR s1 of
+                                                                                    Ok ( stamped, _ ) ->
+                                                                                        stamped
 
-                                                                                        Err _ ->
-                                                                                            joinedR
+                                                                                    Err _ ->
+                                                                                        joinedR
 
-                                                                                _ ->
-                                                                                    -- Accessor keys: no self
-                                                                                    -- global to stamp (AR-3).
-                                                                                    joinedR
-
-                                                                        else
-                                                                            joinedR
-
+                                                                            _ ->
+                                                                                -- Accessor keys: no self
+                                                                                -- global to stamp (AR-3).
+                                                                                joinedR
                                                                     -- P1 census: one cell per
                                                                     -- recovered position (report-
                                                                     -- gated inside the bump).
@@ -4384,15 +4370,17 @@ processItem specId s =
 {-| LSS\_018 (μ-tie): raw-lambda → smallest qualified member id present in the
 spec's stored demand type. Consulted by `Engine.lambdaInstanceMemberId` on
 routed mints; smallest-id choice makes the canonical family id
-deterministic. Built ONLY under `lss.muTie` — the flag-off default path
-pays no per-item type walk (the one-shot eligible census, Run J, measured
-the population at 0 on the self-compile). The routing predicate is NOT
+deterministic. The one-shot eligible census (Run J) measured the population
+at 0 on the self-compile, which is what a bound on a spiral that does not
+occur here looks like when it is working — this is the elm-aws-codegen
+pathological class's terminator, and with the budget at 0 = unlimited it is
+the only structural one. The routing predicate is NOT
 re-checked here: the map is only ever read after
 `lambdaInstanceMemberId`'s own routed check.
 -}
 demandQualifiedFor : Mono.MonoType -> S -> Dict.Dict Int Int
 demandQualifiedFor monoType s =
-    if not (s.env.lss.enabled && s.env.lss.muTie) then
+    if not s.env.lss.enabled then
         Dict.empty
 
     else

@@ -415,7 +415,7 @@ typeCheckTyped modul canonical census =
                 --
                 -- Unconditional, NOT flag-gated: the index rides `Can.Type` and
                 -- therefore the cached artifact, so gating it here would key
-                -- the on-disk format to a mono-time flag. `lss.arrowSolverRoots`
+                -- the on-disk format to a mono-time flag. Solver-root arrow ids
                 -- gates whether AssignMVarIds USES it.
                 --
                 -- The index is meaningless without its module, and the walk

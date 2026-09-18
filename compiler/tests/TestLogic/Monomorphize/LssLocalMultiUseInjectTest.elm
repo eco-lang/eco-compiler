@@ -50,28 +50,9 @@ import TestLogic.TestPipeline as Pipeline
 suite : Test
 suite =
     Test.describe "F2 local-multi use-site member injection"
-        [ Test.test "1. FLAG-OFF: the callee's callback annotation is NOT a set (the defect)" <|
+        [ Test.test "2. both instances — each callee's callback is the SINGLETON of ITS instance closure" <|
             \() ->
-                case runWith False twoInstances of
-                    Err e ->
-                        Expect.fail e
-
-                    Ok g ->
-                        let
-                            heads =
-                                calleeHeads [ "applyI", "applyS" ] g
-                        in
-                        if List.isEmpty heads then
-                            Expect.fail "fixture broken: no applyI/applyS spec"
-
-                        else if List.any isSet (List.map Tuple.second heads) then
-                            Expect.fail ("expected no set at the callback flag-off, got " ++ describeHeads heads)
-
-                        else
-                            Expect.pass
-        , Test.test "2. FLAG-ON: both instances — each callee's callback is the SINGLETON of ITS instance closure" <|
-            \() ->
-                case runWith True twoInstances of
+                case runWith twoInstances of
                     Err e ->
                         Expect.fail e
 
@@ -88,9 +69,9 @@ suite =
 
                         else
                             expectJoin heads instances
-        , Test.test "3. FLAG-ON: the two instances carry DISTINCT ids (ordinal 1 is tagged)" <|
+        , Test.test "3. the two instances carry DISTINCT ids (ordinal 1 is tagged)" <|
             \() ->
-                case runWith True twoInstances of
+                case runWith twoInstances of
                     Err e ->
                         Expect.fail e
 
@@ -104,7 +85,7 @@ suite =
 
                         else
                             Expect.fail ("expected 2 distinct instance ids, got " ++ describeInts ids)
-        , Test.test "4. F2.b FLAG-ON: a self-reference inside the instance RHS names the instance too" <|
+        , Test.test "4. F2.b: a self-reference inside the instance RHS names the instance too" <|
             \() ->
                 -- `go` passes ITSELF to `applyI` from inside its own body; that
                 -- reference is translated during the instance re-translation,
@@ -112,7 +93,7 @@ suite =
                 -- `applyI` spec (outer use AND inner use) must read the same
                 -- singleton — otherwise the inner demand carries a var and the
                 -- keyed callee splits or joins to a partial.
-                case runWith True selfReference of
+                case runWith selfReference of
                     Err e ->
                         Expect.fail e
 
@@ -129,14 +110,14 @@ suite =
 
                         else
                             expectJoin heads instances
-        , Test.test "7. F2.c FLAG-ON: a local whose RHS is a PARTIAL APPLICATION names the PAP member at its use" <|
+        , Test.test "7. F2.c: a local whose RHS is a PARTIAL APPLICATION names the PAP member at its use" <|
             \() ->
                 -- `let h = apply2 inc in useF h`: `h` is function-typed (a
                 -- local-multi) with no lambda id — F2's `noLam` residual and
                 -- the compileExpr chain root on the self-compile. The use site
                 -- mints `p|apply2|1`, the same key the RHS re-translation's
                 -- `injectPapMember` mints, and writes it head-only.
-                case runWithPap True papRhs of
+                case runWithPap papRhs of
                     Err e ->
                         Expect.fail e
 
@@ -156,44 +137,6 @@ suite =
 
                             heads ->
                                 Expect.fail ("expected one useF spec with a singleton callback, got " ++ describeHeads heads)
-        , Test.test "8. F2.c FLAG-OFF: the PAP-RHS local is unwritten at its use (the defect)" <|
-            \() ->
-                case runWithPap False papRhs of
-                    Err e ->
-                        Expect.fail e
-
-                    Ok g ->
-                        let
-                            heads =
-                                calleeHeads [ "useF" ] g
-                        in
-                        if List.isEmpty heads then
-                            Expect.fail "fixture broken: no useF spec"
-
-                        else if List.any isSet (List.map Tuple.second heads) then
-                            Expect.fail ("expected no set at useF's callback flag-off, got " ++ describeHeads heads)
-
-                        else
-                            Expect.pass
-        , Test.test "5. F2.b FLAG-OFF: the self-reference is unwritten (the defect)" <|
-            \() ->
-                case runWith False selfReference of
-                    Err e ->
-                        Expect.fail e
-
-                    Ok g ->
-                        let
-                            heads =
-                                calleeHeads [ "applyI" ] g
-                        in
-                        if List.isEmpty heads then
-                            Expect.fail "fixture broken: no applyI spec"
-
-                        else if List.any isSet (List.map Tuple.second heads) then
-                            Expect.fail ("expected no set at the callback flag-off, got " ++ describeHeads heads)
-
-                        else
-                            Expect.pass
         ]
 
 
@@ -338,39 +281,31 @@ papRhs =
 -- ====== HARNESS ======
 
 
-runWithPap : Bool -> Src.Module -> Result String Mono.MonoGraph
-runWithPap on srcModule =
+runWithPap : Src.Module -> Result String Mono.MonoGraph
+runWithPap srcModule =
     let
         defaults =
             Config.defaultLss
-
-        stampDefaults =
-            Config.defaultLss.stamp
     in
     Pipeline.runSolverMonoWithLimits Config.defaultLimits
-        { defaults
-            | enabled = True
-            , keyed = True
-            , stamp = { stampDefaults | enabled = True, useInject = True, useInjectPap = on }
-        }
+        { defaults | enabled = True }
         srcModule
 
 
-runWith : Bool -> Src.Module -> Result String Mono.MonoGraph
-runWith on srcModule =
+{-| `lss.stamp.useInject` / `useInjectPap` were fixed at their defaults and
+removed 2026-09-18. The deleted flag-off pins recorded the defect each one
+closed: the callee's callback annotation was NOT a set (test 1), the PAP-RHS
+local was unwritten at its use (test 8), and a self-reference inside the
+instance RHS was unwritten (test 5).
+-}
+runWith : Src.Module -> Result String Mono.MonoGraph
+runWith srcModule =
     let
         defaults =
             Config.defaultLss
-
-        stampDefaults =
-            Config.defaultLss.stamp
     in
     Pipeline.runSolverMonoWithLimits Config.defaultLimits
-        { defaults
-            | enabled = True
-            , keyed = True
-            , stamp = { stampDefaults | enabled = True, useInject = on }
-        }
+        { defaults | enabled = True }
         srcModule
 
 

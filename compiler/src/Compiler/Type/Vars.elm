@@ -210,7 +210,7 @@ eagerly, never by a write hook. Invariants:
   - `members` is ascending/deduped but MAY be empty (unlike `LsMembers`).
   - sources are deduped by `pointKey` at install; UF unions may later alias
     them — resolution re-dedupes via its visited set.
-  - `LsFrom` is created ONLY under `lss.sigFlow` (every producer is gated,
+  - `LsFrom` is created ONLY by the LSS\_020 signature channel (every producer is there,
     including the kernel-tunnel selector) and NEVER escapes the store:
     `zonkSetSlot`/`zonkSigGo` resolve it, `Mono.LambdaSetAnno` stays
     `LTop | LSet`.

@@ -69,7 +69,7 @@ import TestLogic.TestPipeline as Pipeline
 
 suite : Test
 suite =
-    Test.describe "LSS_020 signature set-flow (lss.sigFlow)"
+    Test.describe "LSS_020 signature set-flow"
         [ Test.test "1a. THE depollution pin: chooseHandler's result reads the honest 2-set AND the params keep DISTINCT singletons" <|
             \() ->
                 -- LSS_023. Under the archived SYMMETRIC arm (Run X) the hub
@@ -80,7 +80,7 @@ suite =
                 -- kept sigFlow default-off. Directed edges keep the params'
                 -- own sets and the result resolves their union at read. This
                 -- assertion is what separates the two designs.
-                case run True chooseHandlerModule of
+                case run chooseHandlerModule of
                     Err msg ->
                         Expect.fail msg
 
@@ -125,57 +125,9 @@ suite =
                                             )
                             ]
                             ()
-        , Test.test "1b. chooseHandler flag OFF: the channel is empty — no multi-member set forms" <|
-            \() ->
-                case run False chooseHandlerModule of
-                    Err msg ->
-                        Expect.fail msg
-
-                    Ok graph ->
-                        if List.any (annoHasSize 2) (allAnnos "chooseHandler" graph) then
-                            Expect.fail "flag-off demand unexpectedly carries a 2-member set"
-
-                        else
-                            Expect.pass
-        , Test.test "2. mk2 flag ON: body lambdas' members reach the caller's result arrow" <|
-            \() ->
-                case ( run True mk2Module, run False mk2Module ) of
-                    ( Ok on, Ok off ) ->
-                        if
-                            List.any (annoHasSize 2) (allAnnos "mk2" on)
-                                && not (List.any (annoHasSize 2) (allAnnos "mk2" off))
-                        then
-                            Expect.pass
-
-                        else
-                            Expect.fail
-                                ("expected a 2-member LSet flag-on only; on="
-                                    ++ describeAnnos (allAnnos "mk2" on)
-                                    ++ " off="
-                                    ++ describeAnnos (allAnnos "mk2" off)
-                                )
-
-                    ( Err e, _ ) ->
-                        Expect.fail e
-
-                    ( _, Err e ) ->
-                        Expect.fail e
-        , Test.test "3. negative control: polymorphic `apply` demands are identical flag-on/flag-off" <|
-            \() ->
-                case ( run True applyModule, run False applyModule ) of
-                    ( Ok on, Ok off ) ->
-                        Expect.equal
-                            (List.map annosOf (demandsOf "apply" off))
-                            (List.map annosOf (demandsOf "apply" on))
-
-                    ( Err e, _ ) ->
-                        Expect.fail e
-
-                    ( _, Err e ) ->
-                        Expect.fail e
         , Test.test "4. HONESTY pin: a hub mixing an honest branch with a call result POISONS (no false singleton)" <|
             \() ->
-                case run True pickModule of
+                case run pickModule of
                     Err msg ->
                         Expect.fail msg
 
@@ -195,43 +147,6 @@ suite =
                                 ("expected LTop on every pick result arrow (honesty rule), got: "
                                     ++ describeAnnos resultAnnos
                                 )
-        , Test.test "5. TailDef pin: tail-recursive countdown transports k to its result arrow flag-on (peel + WpSelf); flag-off it is UNWRITTEN" <|
-            \() ->
-                case ( run True countdownModule, run False countdownModule ) of
-                    ( Ok on, Ok off ) ->
-                        let
-                            onRes =
-                                List.filterMap deepestRetAnno (demandsOf "countdown" on)
-
-                            offRes =
-                                List.filterMap deepestRetAnno (demandsOf "countdown" off)
-                        in
-                        -- Phase 1 (plans/lss-unknown-elimination.md): the
-                        -- flag-off arm reads a set VARIABLE, not `LTop`, and that
-                        -- is FREE INFORMATION rather than a fixture chore —
-                        -- with sigFlow off nothing ever WRITES this result
-                        -- arrow, so the position is unconstrained, not widened.
-                        -- Before Phase 1b that same position read `LTop`
-                        -- because `monoTypeToVarC` re-encoded the unwritten
-                        -- demand as an explicit `LsTop` (the §0.1 laundering).
-                        -- The pin's content is unchanged: flag-on must produce
-                        -- a real 1-member set, flag-off must produce NO set.
-                        if List.any (annoHasSize 1) onRes && List.all isVarAnno offRes then
-                            Expect.pass
-
-                        else
-                            Expect.fail
-                                ("expected a 1-member LSet on a countdown result arrow flag-on and a set VARIABLE flag-off; on="
-                                    ++ describeAnnos onRes
-                                    ++ " off="
-                                    ++ describeAnnos offRes
-                                )
-
-                    ( Err e, _ ) ->
-                        Expect.fail e
-
-                    ( _, Err e ) ->
-                        Expect.fail e
         , Test.test "6. B.4 rider: a >maxSetSize signature arrow widens and bumps widenedBySigSize" <|
             \() ->
                 let
@@ -240,7 +155,7 @@ suite =
                 in
                 case
                     Pipeline.runSolverMonoWithReport Config.defaultLimits
-                        { defaults | enabled = True, keyed = True, sigFlow = True, maxSetSize = 1, layoutQualMembers = False }
+                        { defaults | enabled = True, maxSetSize = 1 }
                         mk2Module
                 of
                     Err msg ->
@@ -277,7 +192,7 @@ suite =
                 -- Edge depth ≥ 2: the outer hub's sources include the inner
                 -- hub, whose sources are the g/h uses. Resolution walks the
                 -- chain; the params stay unpolluted at every depth.
-                case run True chainModule of
+                case run chainModule of
                     Err msg ->
                         Expect.fail msg
 
@@ -312,7 +227,7 @@ suite =
                 in
                 case
                     Pipeline.runSolverMonoWithReport Config.defaultLimits
-                        { defaults | enabled = True, keyed = True, sigFlow = True, layoutQualMembers = False }
+                        { defaults | enabled = True }
                         choosePairModule
                 of
                     Err msg ->
@@ -367,7 +282,7 @@ suite =
                 -- h.param ⊇ use_k. A BACKWARDS flip yields a k-less non-⊤ set
                 -- at exactly this position — the assertion shape that catches
                 -- it.
-                case run True useHModule of
+                case run useHModule of
                     Err msg ->
                         Expect.fail msg
 
@@ -431,18 +346,28 @@ suite =
 -- ====== HARNESS ======
 
 
-run : Bool -> Src.Module -> Result String Mono.MonoGraph
-run sigFlow srcModule =
+run : Src.Module -> Result String Mono.MonoGraph
+run srcModule =
     let
         defaults =
             Config.defaultLss
     in
     Pipeline.runSolverMonoWithLimits
         Config.defaultLimits
-        -- keyed = True (the shipping default) is what stores annotated
-        -- demands in the registry in the first place. layoutQualMembers
-        -- PINNED OFF: these fixtures pin LSS_020/023 mechanisms in
-        -- isolation from LSS_024's id sharing (default-on since 2026-08-21).
+        -- All-globals keying (unconditional under LSS since 2026-09-18)
+        -- is what stores annotated demands in the registry at all.
+        --
+        -- THE sigFlow DIFFERENTIAL IS GONE (2026-09-18): the flag was fixed
+        -- at its default and removed, and so were every flag this harness
+        -- pinned to keep the differential honest — `layoutQualMembers`
+        -- (LSS_024's id sharing), `papMembers`, `arrowSolverRoots` and
+        -- `regIdentity`, each a second channel to the same place. The four
+        -- pure differentials (1b, 2, 3, 5) were deleted; what they pinned,
+        -- flag-off, was: `chooseHandler`'s channel empty (no multi-member
+        -- set), `mk2`'s 2-member set absent, polymorphic `apply`'s demands
+        -- identical across arms, and `countdown`'s result arrow UNWRITTEN (a
+        -- set variable, not ⊤ — nothing writes it with the signature channel
+        -- off). The absolute pins below stay, now at shipping defaults.
         --
         -- `papMembers` PINNED OFF for the same reason, and it is load-bearing
         -- here rather than tidy-minded. Every test driven through this harness
@@ -463,28 +388,7 @@ run sigFlow srcModule =
         -- are deliberately NOT pinned — they assert absolute counter values
         -- under a single config rather than a difference, so a second
         -- channel does not invalidate them.
-        { defaults
-            | enabled = True
-            , keyed = True
-            , sigFlow = sigFlow
-            , layoutQualMembers = False
-            , papMembers = False
-
-            -- arrowSolverRoots (default-on since 2026-09-16) PINNED OFF: the
-            -- THIRD channel to the same place — 2b gives unified arrows one
-            -- shared id before mono starts, which subsumed `sigRootIdentity`'s
-            -- tie (call-stats Run 27, and why that flag could be deleted) and
-            -- collapsed tests 1b/2/3 exactly as it did. Fifth instance of the
-            -- differential-overlap rule.
-            , arrowSolverRoots = False
-
-            -- regIdentity (default-on since 2026-08-28) PINNED OFF, fourth
-            -- instance of the differential-overlap rule: the registration
-            -- stamp writes head/spine annos, and this harness's readers scan
-            -- ALL annos of a def's demands — the channel would sit in both
-            -- arms of the sigFlow differential.
-            , regIdentity = False
-        }
+        { defaults | enabled = True }
         srcModule
 
 

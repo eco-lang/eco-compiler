@@ -5,8 +5,11 @@ module TestLogic.Monomorphize.LssFlowEdgeLossTest exposing (suite)
 probes, 2026-09-01), not by the design narrative — which the probes partly
 falsified, recorded here honestly.
 
-ONE consumer, two producers, run with every settle repair OFF (what
-INFERENCE alone delivers):
+ONE consumer, two producers. The measurements below were taken with every
+settle repair OFF — what INFERENCE alone delivers. The settle flags were
+fixed at their defaults and removed 2026-09-18, so that arm can no longer be
+built in-tree: tests 1 and 2 went with it and their findings are recorded
+here instead. Test 3, the shipped-defaults pin, is what remains executable.
 
     useStep f seed = (f seed) 2        -- consumes a 2-stage function
 
@@ -36,17 +39,21 @@ meets this: it does not uncurry, so every λ keeps its own label. Eco's
 missing piece at this fixture is a PRODUCER-SIDE identity for lambda-PAP
 stages, not an edge.
 
-Test 3 pins today's compensation: at shipped defaults the settle machinery
-heals both rows consistently (the folded root head is pap-able, so
-`varSucc` mints the successor member and writes it in every row). The
-flow-repair arc's success metric is test 2 flipping to sets WITH settle
-still off — at which point update these pins.
+What the deleted arm pinned: with settle off, producer C's CALL-RESULT
+argument arrived all-set (test 1), while producer V's BARE-REFERENCE
+argument arrived (set head, VAR interior) and the producer's own row carried
+the same var (test 2) — the §9.1 point that the missing piece is a
+PRODUCER-SIDE identity for lambda-PAP stages, not an edge.
 
-POSTSCRIPT (2026-09-01): that day came — `lss.flowConnect` (LPartial +
-deTop, lss-lpartial-asymmetric-join.md) flipped default-on and test 2's
-lost edge healed at INFERENCE, exactly as this suite was built to detect.
-`runBare` now pins flowConnect off too, so these tests keep documenting
-the bare-inference baseline the repairs are measured against.
+The surviving test pins today's compensation: at shipped defaults the settle
+machinery heals both rows consistently (the folded root head is pap-able, so
+`varSucc` mints the successor member and writes it in every row).
+
+POSTSCRIPT (2026-09-01): `lss.flowConnect` (LPartial + deTop,
+lss-lpartial-asymmetric-join.md) flipped default-on and test 2's lost edge
+healed at INFERENCE, exactly as this suite was built to detect. flowConnect
+went default-OFF again on the 2026-09-18 solo census (byte-identical
+artifact, −32.6 M dispatches) and was deleted with its flag the same day.
 
 -}
 
@@ -74,57 +81,7 @@ import TestLogic.TestPipeline as Pipeline
 suite : Test
 suite =
     Test.describe "flow edge loss — the §9 pinned examples"
-        [ Test.test "1. CALL-RESULT arg (1-param producer), settle OFF: the full member spine arrives" <|
-            \() ->
-                case runBare fixtureCall of
-                    Ok g ->
-                        let
-                            xs =
-                                useStepAnnos g
-                        in
-                        if List.isEmpty xs then
-                            Expect.fail "no useStep rows — fixture broken"
-
-                        else if List.all (\( h, r ) -> isSet h && isSet r) xs then
-                            Expect.pass
-
-                        else
-                            Expect.fail ("expected all-set, got " ++ describePairs xs)
-
-                    Err e ->
-                        Expect.fail e
-        , Test.test "2. BARE-REF arg (0-param producer), settle OFF: the producer itself lacks the stage identity" <|
-            \() ->
-                case runBare fixtureRef of
-                    Ok g ->
-                        let
-                            xs =
-                                useStepAnnos g
-
-                            producerInner =
-                                mkAdderInner g
-                        in
-                        if List.isEmpty xs then
-                            Expect.fail "no useStep rows — fixture broken"
-
-                        else if not (List.any (\( h, r ) -> isSet h && isVar r) xs) then
-                            -- If this flips to all-set: flow repair (or a
-                            -- new identity mint) landed — update the pin to
-                            -- assert SETS and retire the narrative above.
-                            Expect.fail ("expected (set head, VAR interior) at useStep, got " ++ describePairs xs)
-
-                        else if not (List.any isVar producerInner) then
-                            Expect.fail
-                                ("expected the PRODUCER row's inner arrow to be var too (the §9.1 point), got "
-                                    ++ describe producerInner
-                                )
-
-                        else
-                            Expect.pass
-
-                    Err e ->
-                        Expect.fail e
-        , Test.test "3. BARE-REF arg at shipped defaults: settle heals both rows consistently" <|
+        [ Test.test "BARE-REF arg at shipped defaults: settle heals both rows consistently" <|
             \() ->
                 case runDefaults fixtureRef of
                     Ok g ->
@@ -214,25 +171,6 @@ fixtureRef =
 -- ====== HARNESS ======
 
 
-runBare : Src.Module -> Result String Mono.MonoGraph
-runBare srcModule =
-    let
-        d =
-            Config.defaultLss
-
-        fl =
-            Config.defaultLss.flow
-    in
-    Pipeline.runSolverMonoWithLimits Config.defaultLimits
-        -- flowConnect pinned OFF since its 2026-09-01 default-on flip: this
-        -- harness documents inference WITHOUT the repairs, and flowConnect
-        -- IS one now — the day it flipped, test 2's lost edge healed at
-        -- inference (the loud expiry this suite was designed for; see the
-        -- module doc's postscript).
-        { d | enabled = True, keyed = True, flow = { fl | connect = False }, settle = { varSucc = False, varCtorRows = False, varLambda = False } }
-        srcModule
-
-
 runDefaults : Src.Module -> Result String Mono.MonoGraph
 runDefaults srcModule =
     let
@@ -240,7 +178,7 @@ runDefaults srcModule =
             Config.defaultLss
     in
     Pipeline.runSolverMonoWithLimits Config.defaultLimits
-        { d | enabled = True, keyed = True }
+        { d | enabled = True }
         srcModule
 
 

@@ -71,7 +71,7 @@ type alias Ctx =
     , varSupers : Dict Name Vars.SuperType
     , moduleKey : String
     , defKey : String -- enclosing global's comparable key (lambda-label rendering)
-    , useSolverRoots : Bool -- Phase 2b (lss.arrowSolverRoots): resolve `SolverRoot` slots through `arrowRootEnv` instead of minting a fresh occurrence id. OFF = exactly Phase 2a.
+    , useSolverRoots : Bool -- Phase 2b: resolve `SolverRoot` slots through `arrowRootEnv` instead of minting a fresh occurrence id. True for the SOLVER engine (the flag was fixed at its default 2026-09-18); the subst and diff engines pass False — changing that would move their output. OFF = exactly Phase 2a.
     }
 
 

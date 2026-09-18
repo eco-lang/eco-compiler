@@ -67,21 +67,6 @@ suite =
                     , \s -> Expect.equal 1 s.multiInstanceGroups
                     ]
                     stats
-        , Test.test "fence OFF: the E11-shaped pair STAMPS (documented flag-off/HEAD behavior, id-inequality doctrine)" <|
-            \() ->
-                let
-                    stats =
-                        statsWithFence False
-                            [ mkClosure 1 member [] (annoBody 777) (annoRet 777)
-                            , mkClosure 2 member [] (annoBody 778) (annoRet 778)
-                            , callSite (intFn Mono.topLegacy)
-                            ]
-                in
-                Expect.all
-                    [ \s -> Expect.equal 1 s.dispatchUpgraded
-                    , \s -> Expect.equal 0 s.declinedBodyMismatch
-                    ]
-                    stats
         , Test.test "capture-layout-divergent pair: abiMismatch (existing fence unchanged)" <|
             \() ->
                 let
@@ -176,20 +161,19 @@ callSite retTy =
 
 statsOf : List Mono.MonoExpr -> AbiCloning.AbiCloningStats
 statsOf =
-    statsWithFence True
+    statsWithFence
 
 
-{-| The pass with the LSS\_024 fence toggled — `True` in every fence pin;
-`False` documents the preserved flag-off (HEAD) behavior.
+{-| The pass. The LSS\_024 fingerprint fence used to be a parameter here
+(`lss.layoutQualMembers`); it became unconditional when that flag was fixed
+at its default and removed, 2026-09-18. The deleted "fence OFF" pin recorded
+HEAD's id-inequality doctrine: the E11-shaped pair STAMPED.
 -}
-statsWithFence : Bool -> List Mono.MonoExpr -> AbiCloning.AbiCloningStats
-statsWithFence fence exprs =
+statsWithFence : List Mono.MonoExpr -> AbiCloning.AbiCloningStats
+statsWithFence exprs =
     Tuple.second
-        (AbiCloning.abiCloningPass fence
-            False
-            False
+        (AbiCloning.abiCloningPass
             True
-            False
             (Mono.MonoGraph
                 { nodes =
                     Array.fromList

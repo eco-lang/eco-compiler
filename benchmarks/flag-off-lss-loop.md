@@ -1,5 +1,17 @@
 # LSS flag-off census — experiment protocol
 
+> **EXPIRED 2026-09-18.** This protocol sweeps 32 LSS flags. 31 of them were
+> FIXED AT THEIR DEFAULTS AND REMOVED the same day
+> (`plans/fix-lss-flags-at-defaults.md`); `lss.enabled` is all that is left to
+> turn off, so a solo census now has exactly one row. Setting a deleted
+> `ECO_MONO_LSS_*` variable is a SILENT NO-OP, which makes a stale row
+> indistinguishable from a genuinely inert flag — the exact misreading this
+> document exists to prevent. The last census taken while the flags existed is
+> `flag-off-lss-solo-findings.md`, and its per-flag rows are reproduced in
+> `plans/fix-lss-flags-at-defaults.md` §7. The measurement method below (the
+> instrument, the same-source rail, the extraction) is still correct and is
+> what a future per-mechanism census should reuse.
+
 **SOLO MODE since 2026-09-18.** Each run turns off **exactly one** flag; every
 other flag stays at its default. The previous design was CUMULATIVE — flag N
 off implied flags N+1.. also off — which priced the stack from the top down but

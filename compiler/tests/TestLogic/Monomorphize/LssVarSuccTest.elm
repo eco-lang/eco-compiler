@@ -40,7 +40,7 @@ import TestLogic.TestPipeline as Pipeline
 
 suite : Test
 suite =
-    Test.describe "lss.varSucc — PAP successor settle writes"
+    Test.describe "PAP successor settle writes"
         -- FIXTURE FINDING (recorded in plans/lss-var-chain-roots.md §5.1):
         -- a ONE-MODULE pipeline fixture CANNOT manufacture the flag's
         -- target class — in-item unification plus the default-on
@@ -48,39 +48,31 @@ suite =
         -- completion) cover every /r spine this fixture can express, at
         -- MONO or POLY consumer types alike (both variants measured
         -- all-set on the off arm). The corpus battery's counters + named
-        -- cells are the differential; the unit pin here is the flip side:
-        -- the settle pass is ADDITIVE-ONLY — on a fully-covered fixture it
-        -- must change NOTHING.
-        [ Test.test "1. no-op on a fully-covered fixture (additive-only pin)" <|
+        -- cells are the differential; the unit pin was the flip side — the
+        -- settle pass is ADDITIVE-ONLY, so on a fully-covered fixture it must
+        -- change NOTHING — compared across the two arms of
+        -- `lss.settle.varSucc`. That flag was fixed at its default and removed
+        -- 2026-09-18, so the comparison is gone; what remains is the coverage
+        -- claim it rested on.
+        [ Test.test "1. the fixture is fully covered at the useStep /a0 spine" <|
             \() ->
-                case ( runWith False fixture, runWith True fixture ) of
-                    ( Ok offG, Ok onG ) ->
-                        case ( stepAnnos offG, stepAnnos onG ) of
-                            ( [], _ ) ->
+                case runWith fixture of
+                    Ok g ->
+                        case stepAnnos g of
+                            [] ->
                                 Expect.fail "no useStep /a0 arrow-result position — fixture broken"
 
-                            ( offA, onA ) ->
-                                if List.any (\( h, r ) -> not (isSet h) || not (isSet r)) offA then
+                            a ->
+                                if List.any (\( h, r ) -> not (isSet h) || not (isSet r)) a then
                                     Expect.fail
-                                        ("fixture no longer fully covered off-arm (in-item transport regressed?): "
-                                            ++ describePairs offA
+                                        ("fixture no longer fully covered (in-item transport regressed?): "
+                                            ++ describePairs a
                                         )
-
-                                else if offA == onA then
-                                    Expect.pass
 
                                 else
-                                    Expect.fail
-                                        ("varSucc CHANGED a covered fixture: off "
-                                            ++ describePairs offA
-                                            ++ " vs on "
-                                            ++ describePairs onA
-                                        )
+                                    Expect.pass
 
-                    ( Err e, _ ) ->
-                        Expect.fail e
-
-                    ( _, Err e ) ->
+                    Err e ->
                         Expect.fail e
         ]
 
@@ -127,14 +119,14 @@ fixture =
 -- ====== HARNESS ======
 
 
-runWith : Bool -> Src.Module -> Result String Mono.MonoGraph
-runWith varSucc srcModule =
+runWith : Src.Module -> Result String Mono.MonoGraph
+runWith srcModule =
     let
         defaults =
             Config.defaultLss
     in
     Pipeline.runSolverMonoWithLimits Config.defaultLimits
-        { defaults | enabled = True, keyed = True, settle = (\st -> { st | varSucc = varSucc }) defaults.settle }
+        { defaults | enabled = True }
         srcModule
 
 

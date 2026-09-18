@@ -1,8 +1,13 @@
 module TestLogic.Monomorphize.LssAccessAndLitFactsTest exposing (suite)
 
-{-| E15 (`lss.flow.accessFlow`) and F4-sig (`lss.flow.litFacts`) —
+{-| E15 access flow and F4-sig literal facts —
 plans/lss-container-payload-transport.md §12.10.1. The F4 probe's shapes,
-turned into pins. Every test is a DIFFERENTIAL (flag-off pins the defect).
+turned into pins.
+
+Both shipped as flags (`lss.flow.accessFlow` / `lss.flow.litFacts`), default-ON
+2026-09-16, and became unconditional 2026-09-18. Each test was a differential
+whose flag-off leg pinned the defect; those legs went with the flags, and what
+remains pins the shipping behaviour at the same four shapes.
 
 1.  E15 argument: `apply r.f 2` — the field's set reaches the HOF.
 2.  E15 callee: `r.f 2` — the access node (the callee) carries the field's
@@ -44,35 +49,23 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
-type alias Flags =
-    { letOverlay : Bool, accessFlow : Bool, litFacts : Bool }
-
-
 suite : Test
 suite =
     Test.describe "E15 access flow + F4-sig literal facts"
-        [ Test.test "1a. E15 ARG, flag-off: `apply r.f 2` hands the HOF no set" <|
-            \() -> expectHeads { letOverlay = True, accessFlow = False, litFacts = False } argShape (calleeHeads "apply") (not << isSet) "no set"
-        , Test.test "1b. E15 ARG, flag-on: the HOF reads the field's singleton" <|
-            \() -> expectHeads { letOverlay = True, accessFlow = True, litFacts = False } argShape (calleeHeads "apply") isSingleton "a singleton"
-        , Test.test "2a. E15 CALLEE, flag-off: the access-node callee is ⊤" <|
-            \() -> expectHeads { letOverlay = True, accessFlow = False, litFacts = False } calleeShape accessCalleeHeads isTop "⊤"
-        , Test.test "2b. E15 CALLEE, flag-on: the access-node callee carries the field's singleton" <|
-            \() -> expectHeads { letOverlay = True, accessFlow = True, litFacts = False } calleeShape accessCalleeHeads isSingleton "a singleton"
-        , Test.test "3a. F4-sig, flag-off: a returned record's field arrow reaches the consumer as var" <|
-            \() -> expectHeads { letOverlay = False, accessFlow = False, litFacts = False } returnedShape (fieldHeads "useRec" "f") isVar "var"
-        , Test.test "3b. F4-sig, flag-on: the consumer reads the singleton" <|
-            \() -> expectHeads { letOverlay = False, accessFlow = False, litFacts = True } returnedShape (fieldHeads "useRec" "f") isSingleton "a singleton"
-        , Test.test "4a. F4-lit-list, flag-off: a ground list literal of functions reaches its consumer as ⊤" <|
-            \() -> expectHeads { letOverlay = True, accessFlow = False, litFacts = False } listShape (listElemHeads "useL") isTop "⊤"
-        , Test.test "4b. F4-lit-list, flag-on: the consumer reads the 2-set" <|
-            \() -> expectHeads { letOverlay = True, accessFlow = True, litFacts = False } listShape (listElemHeads "useL") isTwoSet "a 2-set"
+        [ Test.test "1. E15 ARG: `apply r.f 2` hands the HOF the field's singleton" <|
+            \() -> expectHeads argShape (calleeHeads "apply") isSingleton "a singleton"
+        , Test.test "2. E15 CALLEE: the access-node callee carries the field's singleton" <|
+            \() -> expectHeads calleeShape accessCalleeHeads isSingleton "a singleton"
+        , Test.test "3. F4-sig: a returned record's field arrow reaches the consumer as the singleton" <|
+            \() -> expectHeads returnedShape (fieldHeads "useRec" "f") isSingleton "a singleton"
+        , Test.test "4. F4-lit-list: a ground list literal of functions reaches its consumer as the 2-set" <|
+            \() -> expectHeads listShape (listElemHeads "useL") isTwoSet "a 2-set"
         ]
 
 
-expectHeads : Flags -> Src.Module -> (Mono.MonoGraph -> List Mono.LambdaSetAnno) -> (Mono.LambdaSetAnno -> Bool) -> String -> Expect.Expectation
-expectHeads flags fixture reader ok what =
-    case runWith flags fixture of
+expectHeads : Src.Module -> (Mono.MonoGraph -> List Mono.LambdaSetAnno) -> (Mono.LambdaSetAnno -> Bool) -> String -> Expect.Expectation
+expectHeads fixture reader ok what =
+    case runWith fixture of
         Err e ->
             Expect.fail e
 
@@ -185,17 +178,14 @@ listShape =
 -- ====== HARNESS / READERS ======
 
 
-runWith : Flags -> Src.Module -> Result String Mono.MonoGraph
-runWith flags srcModule =
+runWith : Src.Module -> Result String Mono.MonoGraph
+runWith srcModule =
     let
         defaults =
             Config.defaultLss
-
-        fl =
-            Config.defaultLss.flow
     in
     Pipeline.runSolverMonoWithLimits Config.defaultLimits
-        { defaults | enabled = True, keyed = True, flow = { fl | letOverlay = flags.letOverlay, accessFlow = flags.accessFlow, litFacts = flags.litFacts } }
+        { defaults | enabled = True }
         srcModule
 
 
@@ -306,16 +296,6 @@ nodeExprs node =
             []
 
 
-isSet : Mono.LambdaSetAnno -> Bool
-isSet anno =
-    case anno of
-        Mono.LSet _ ->
-            True
-
-        _ ->
-            False
-
-
 isSingleton : Mono.LambdaSetAnno -> Bool
 isSingleton anno =
     case anno of
@@ -330,29 +310,6 @@ isTwoSet : Mono.LambdaSetAnno -> Bool
 isTwoSet anno =
     case anno of
         Mono.LSet [ _, _ ] ->
-            True
-
-        _ ->
-            False
-
-
-isTop : Mono.LambdaSetAnno -> Bool
-isTop anno =
-    case anno of
-        Mono.LTop _ ->
-            True
-
-        _ ->
-            False
-
-
-isVar : Mono.LambdaSetAnno -> Bool
-isVar anno =
-    case anno of
-        Mono.LVar _ ->
-            True
-
-        Mono.LPartial _ ->
             True
 
         _ ->

@@ -135,7 +135,7 @@ type alias AbiCloningStats =
     -- record sits at the 32-slot GC-scan cap (the Engine.S lesson) — a
     -- nested record is a single slot.
     -- fn/ctor: noInstance singleton sites rewritten to direct calls
-    -- (flag lss.postSettleDevirt; 0 flag-off). noSpec: candidate passed
+    -- (E9.5, unconditional since 2026-09-18). noSpec: candidate passed
     -- every guard but no registry spec eqLayout-matched (expect ~0).
     -- partialDeclined (lss-lpartial AR-P2): LPartial-headed sites the
     -- stamp DECLINED — the observable devirt guard.
@@ -256,8 +256,8 @@ type alias LayoutGroup =
     , paramCount : Int
     , unanimous : Bool
     , charFree : Bool
-    , multi : Bool -- ≥2 DISTINCT lambdaIds joined this group (monitoring — see multiInstanceGroups; the flag-on stamp license is unanimous && fpUnanimous, never this flag)
-    , fpUnanimous : Bool -- LSS_024: every instance's fingerprint equals rep's (trivially True single-instance; sticky False; maintained only when the fence is ON — flag-off it stays True and the pass is byte-identical to the pre-LSS_024 tree, INCLUDING the four measured non-verbatim multi-group stamps the fence would decline, see the flag-gating note on abiCloningPass)
+    , multi : Bool -- ≥2 DISTINCT lambdaIds joined this group (monitoring — see multiInstanceGroups; the stamp license is unanimous && fpUnanimous, never this flag)
+    , fpUnanimous : Bool -- LSS_024: every instance's fingerprint equals rep's (trivially True single-instance; sticky False). The fence that consumes it was `lss.layoutQualMembers`-gated until 2026-09-18 and is unconditional now; the four measured non-verbatim multi-group stamps it declines are the recorded flip delta, see the fence note on abiCloningPass.
     , repFp : Maybe String -- rep's fingerprint, memoized at the first multi join that needs it
     , count : Int -- P0 census only (plans/lss-instance-qualified-members.md §2.1): instances joined into this group. Never consulted by stamping.
     }
@@ -297,8 +297,8 @@ siteFingerprint params ret =
         ++ Mono.shallowLayoutKey fingerprintDepth ret
 
 
-collectInstances : Bool -> Mono.MonoGraph -> Dict Int MemberInfo
-collectInstances fpFence (Mono.MonoGraph record) =
+collectInstances : Mono.MonoGraph -> Dict Int MemberInfo
+collectInstances (Mono.MonoGraph record) =
     Tuple.second
         (Array.foldl
             (\maybeNode ( specId, acc ) ->
@@ -309,7 +309,7 @@ collectInstances fpFence (Mono.MonoGraph record) =
                         -- emitted under the spec's name. Everything nested
                         -- inside is walked with `Nothing` — those are ordinary
                         -- lambdas named by their lambdaId.
-                        ( specId + 1, collectNode fpFence specId node acc )
+                        ( specId + 1, collectNode specId node acc )
 
                     Nothing ->
                         ( specId + 1, acc )
@@ -331,20 +331,20 @@ that `Lambdas.elm` names — attributing the spec to it would swap one wrong
 symbol for another.
 
 -}
-collectNode : Bool -> Mono.SpecId -> Mono.MonoNode -> Dict Int MemberInfo -> Dict Int MemberInfo
-collectNode fpFence specId node acc =
+collectNode : Mono.SpecId -> Mono.MonoNode -> Dict Int MemberInfo -> Dict Int MemberInfo
+collectNode specId node acc =
     case node of
         Mono.MonoDefine ((Mono.MonoClosure _ _ _) as expr) _ ->
-            collectClosure fpFence (Just specId) expr acc
+            collectClosure (Just specId) expr acc
 
         Mono.MonoPortIncoming ((Mono.MonoClosure _ _ _) as expr) _ ->
-            collectClosure fpFence (Just specId) expr acc
+            collectClosure (Just specId) expr acc
 
         Mono.MonoPortOutgoing ((Mono.MonoClosure _ _ _) as expr) _ ->
-            collectClosure fpFence (Just specId) expr acc
+            collectClosure (Just specId) expr acc
 
         _ ->
-            List.foldl (collectGo fpFence) acc (nodeExprs node)
+            List.foldl collectGo acc (nodeExprs node)
 
 
 nodeExprs : Mono.MonoNode -> List Mono.MonoExpr
@@ -378,22 +378,22 @@ nodeExprs node =
 {-| First-order accumulating walk for the instance index (same de-HOF
 rationale as the stamping walk below).
 -}
-collectGo : Bool -> Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
-collectGo fpFence expr acc =
+collectGo : Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
+collectGo expr acc =
     case expr of
         Mono.MonoClosure _ _ _ ->
-            collectClosure fpFence Nothing expr acc
+            collectClosure Nothing expr acc
 
         _ ->
-            collectOther fpFence expr acc
+            collectOther expr acc
 
 
 {-| LSS\_031: index one closure, recording whether it is a node's TOP-LEVEL
 closure (`Just specId`, emitted under the spec name) or a nested one
 (`Nothing`, emitted under its lambdaId).
 -}
-collectClosure : Bool -> Maybe Mono.SpecId -> Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
-collectClosure fpFence topLevelSpec expr acc =
+collectClosure : Maybe Mono.SpecId -> Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
+collectClosure topLevelSpec expr acc =
     case expr of
         Mono.MonoClosure closureInfo body tipe ->
             let
@@ -425,10 +425,10 @@ collectClosure fpFence topLevelSpec expr acc =
                                                     present
 
                                                 else
-                                                    Just { mi | buckets = insertInstance fpFence emittedSpec closureInfo body mi.buckets }
+                                                    Just { mi | buckets = insertInstance emittedSpec closureInfo body mi.buckets }
 
                                             Nothing ->
-                                                Just { blocked = False, blockedBy = Nothing, buckets = insertInstance fpFence emittedSpec closureInfo body Dict.empty }
+                                                Just { blocked = False, blockedBy = Nothing, buckets = insertInstance emittedSpec closureInfo body Dict.empty }
                                     )
                                     acc
 
@@ -436,9 +436,9 @@ collectClosure fpFence topLevelSpec expr acc =
                             acc
 
                 acc2 =
-                    List.foldl (\( _, e, _ ) a -> collectGo fpFence e a) acc1 closureInfo.captures
+                    List.foldl (\( _, e, _ ) a -> collectGo e a) acc1 closureInfo.captures
             in
-            collectGo fpFence body acc2
+            collectGo body acc2
 
         _ ->
             -- `collectClosure` is only ever called on a closure; this arm
@@ -449,41 +449,41 @@ collectClosure fpFence topLevelSpec expr acc =
 {-| Every non-closure expression form. Split out of `collectGo` by LSS\_031 so
 the closure arm can take a `Maybe SpecId`.
 -}
-collectOther : Bool -> Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
-collectOther fpFence expr acc =
+collectOther : Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
+collectOther expr acc =
     case expr of
         Mono.MonoCall _ func args _ _ ->
-            List.foldl (collectGo fpFence) (collectGo fpFence func acc) args
+            List.foldl collectGo (collectGo func acc) args
 
         Mono.MonoTailCall _ args _ ->
-            List.foldl (\( _, e ) a -> collectGo fpFence e a) acc args
+            List.foldl (\( _, e ) a -> collectGo e a) acc args
 
         Mono.MonoIf branches final _ ->
-            collectGo fpFence final (List.foldl (\( c, t ) a -> collectGo fpFence t (collectGo fpFence c a)) acc branches)
+            collectGo final (List.foldl (\( c, t ) a -> collectGo t (collectGo c a)) acc branches)
 
         Mono.MonoLet def body _ ->
-            collectGo fpFence body (collectGoDef fpFence def acc)
+            collectGo body (collectGoDef def acc)
 
         Mono.MonoDestruct _ inner _ ->
-            collectGo fpFence inner acc
+            collectGo inner acc
 
         Mono.MonoCase _ _ decider jumps _ ->
-            List.foldl (\( _, e ) a -> collectGo fpFence e a) (collectGoDecider fpFence decider acc) jumps
+            List.foldl (\( _, e ) a -> collectGo e a) (collectGoDecider decider acc) jumps
 
         Mono.MonoList _ items _ ->
-            List.foldl (collectGo fpFence) acc items
+            List.foldl collectGo acc items
 
         Mono.MonoRecordCreate fields _ ->
-            List.foldl (\( _, e ) a -> collectGo fpFence e a) acc fields
+            List.foldl (\( _, e ) a -> collectGo e a) acc fields
 
         Mono.MonoRecordAccess inner _ _ ->
-            collectGo fpFence inner acc
+            collectGo inner acc
 
         Mono.MonoRecordUpdate record updates _ ->
-            List.foldl (\( _, e ) a -> collectGo fpFence e a) (collectGo fpFence record acc) updates
+            List.foldl (\( _, e ) a -> collectGo e a) (collectGo record acc) updates
 
         Mono.MonoTupleCreate _ elements _ ->
-            List.foldl (collectGo fpFence) acc elements
+            List.foldl collectGo acc elements
 
         Mono.MonoLiteral _ _ ->
             acc
@@ -504,37 +504,37 @@ collectOther fpFence expr acc =
             acc
 
         Mono.MonoClosure _ _ _ ->
-            collectClosure fpFence Nothing expr acc
+            collectClosure Nothing expr acc
 
 
-collectGoDef : Bool -> Mono.MonoDef -> Dict Int MemberInfo -> Dict Int MemberInfo
-collectGoDef fpFence def acc =
+collectGoDef : Mono.MonoDef -> Dict Int MemberInfo -> Dict Int MemberInfo
+collectGoDef def acc =
     case def of
         Mono.MonoDef _ e ->
-            collectGo fpFence e acc
+            collectGo e acc
 
         Mono.MonoTailDef _ _ e ->
-            collectGo fpFence e acc
+            collectGo e acc
 
 
-collectGoDecider : Bool -> Mono.Decider Mono.MonoChoice -> Dict Int MemberInfo -> Dict Int MemberInfo
-collectGoDecider fpFence decider acc =
+collectGoDecider : Mono.Decider Mono.MonoChoice -> Dict Int MemberInfo -> Dict Int MemberInfo
+collectGoDecider decider acc =
     case decider of
         Mono.Leaf (Mono.Inline e) ->
-            collectGo fpFence e acc
+            collectGo e acc
 
         Mono.Leaf (Mono.Jump _) ->
             acc
 
         Mono.Chain _ success failure ->
-            collectGoDecider fpFence failure (collectGoDecider fpFence success acc)
+            collectGoDecider failure (collectGoDecider success acc)
 
         Mono.FanOut _ edges fallback ->
-            collectGoDecider fpFence fallback (List.foldl (\( _, d ) a -> collectGoDecider fpFence d a) acc edges)
+            collectGoDecider fallback (List.foldl (\( _, d ) a -> collectGoDecider d a) acc edges)
 
 
-insertInstance : Bool -> Maybe Mono.SpecId -> Mono.ClosureInfo -> Mono.MonoExpr -> Dict String (List LayoutGroup) -> Dict String (List LayoutGroup)
-insertInstance fpFence emittedSpec closureInfo body buckets =
+insertInstance : Maybe Mono.SpecId -> Mono.ClosureInfo -> Mono.MonoExpr -> Dict String (List LayoutGroup) -> Dict String (List LayoutGroup)
+insertInstance emittedSpec closureInfo body buckets =
     let
         paramTypes =
             List.map Tuple.second closureInfo.params
@@ -553,7 +553,7 @@ insertInstance fpFence emittedSpec closureInfo body buckets =
             }
     in
     Dict.update (siteFingerprint paramTypes returnType)
-        (\present -> Just (joinGroup fpFence inst (Maybe.withDefault [] present)))
+        (\present -> Just (joinGroup inst (Maybe.withDefault [] present)))
         buckets
 
 
@@ -563,8 +563,8 @@ capture unanimity and Char-freedom, both with the allocation-free
 `eqLayout`. Order of groups and the identity of `rep` follow the
 deterministic node walk.
 -}
-joinGroup : Bool -> Instance -> List LayoutGroup -> List LayoutGroup
-joinGroup fpFence inst groups =
+joinGroup : Instance -> List LayoutGroup -> List LayoutGroup
+joinGroup inst groups =
     case groups of
         [] ->
             [ { rep = inst
@@ -596,7 +596,7 @@ joinGroup fpFence inst groups =
                             g.unanimous && sameCaptureLayout g.rep inst
 
                         ( fpU1, repFp1 ) =
-                            if not (fpFence && uni1 && g.fpUnanimous) then
+                            if not (uni1 && g.fpUnanimous) then
                                 ( g.fpUnanimous, g.repFp )
 
                             else
@@ -621,7 +621,7 @@ joinGroup fpFence inst groups =
                         :: rest
 
             else
-                g :: joinGroup fpFence inst rest
+                g :: joinGroup inst rest
 
 
 sameSignatureLayout : Instance -> Instance -> Bool
@@ -705,16 +705,14 @@ type alias StampCtx =
     -- §3). `origins` resolves a noInstance singleton's member id to its
     -- standalone target; `specsByGlobal` is the registry inversion the
     -- eqLayout spec match reads (family gkey -> (SpecId int, spec type)
-    -- pairs). Both are Dict.empty when the flag is off, so the flag-off
-    -- pass carries only two never-consulted empty-dict fields.
-    , postSettle : Bool
+    -- pairs).
+    --
+    -- UNCONDITIONAL since 2026-09-18 (`lss.postSettleDevirt` removed at its
+    -- default). Solo census when it was OFF: `noInstance` +3,719, artifact
+    -- −32 KB, no coverage change — it converts noInstance singletons into
+    -- direct calls and moves nothing else.
     , origins : Dict Int Mono.MemberOrigin
     , specsByGlobal : Dict String (List ( Int, Mono.MonoType ))
-
-    -- Fix A (plan §15.1): peel an over-applying site's curried callee type to
-    -- its own arg count before matching. Flag-gated because it changes WHICH
-    -- sites get stamped, hence CallInfo, hence emitted MLIR.
-    , flatPeel : Bool
 
     -- P0 census: the global whose spec the walk is currently inside, so a
     -- decline can be attributed to the HOST function (`elm/core:Dict.foldl`)
@@ -756,10 +754,6 @@ type alias StampCtx =
     -- are unaffected and always collected.
     , census : Bool
 
-    -- LSS_040 (`lss.stamp.papFast`): resolve `p|` PAP-of-global members to a
-    -- FAST stamp on the noInstance path. Rides E9.5's indices (`origins`,
-    -- `specsByGlobal` are populated only under `postSettle`).
-    , papFast : Bool
     }
 
 
@@ -769,27 +763,25 @@ With LSS off (or no singleton sets), the instance index is empty and the
 graph is returned untouched — the pass is inert by construction, so the
 flag-off pipeline stays byte-identical.
 
-`fpFence` (LSS\_024, = `lss.layoutQualMembers`): when True, representative
-stamps additionally require verbatim-body fingerprint unanimity across the
-layout group (`bodyMismatch` decline otherwise). The fence is FLAG-GATED
-rather than unconditional by a MEASURED decision (2026-08-21, the plan's
-§4.5 gate): the default tree holds exactly FOUR multi groups whose
-instances are NOT verbatim — local-multi twins in `Dict.map` specs whose
-fingerprints differ only by a sibling qualified-member id (`A[34133]` vs
-`A[34134]`) or by annotation PRECISION on a capture type (`A[18467]` vs
-`A(` LTop) — and today's LSS\_017 id-inequality doctrine stamps them.
-Fencing them flag-off would change default artifacts (−4 staged stamps),
-so flag-off keeps HEAD's exact behavior (byte-identity gate PASSES) and
-the fence applies exactly where LSS\_024's id sharing makes it load-bearing.
-Those four stamps are a recorded flip-time delta: at any default flip of
-`lss.layoutQualMembers` they become `bodyMismatch` declines, with the
-soundness rationale on their side (textual-identity doctrine; the id
-congruence that could re-admit the sibling-id pair is the plan's parked
-v2, never to be improvised in).
+THE FINGERPRINT FENCE (LSS\_024): representative stamps additionally require
+verbatim-body fingerprint unanimity across the layout group (`bodyMismatch`
+decline otherwise). It shipped behind `lss.layoutQualMembers` — the flag
+whose id sharing makes it load-bearing — and became unconditional when that
+flag was fixed at its default and removed (2026-09-18). Recorded flip-time
+delta from 2026-08-21: exactly FOUR multi groups whose instances are NOT
+verbatim — local-multi twins in `Dict.map` specs whose fingerprints differ
+only by a sibling qualified-member id (`A[34133]` vs `A[34134]`) or by
+annotation PRECISION on a capture type (`A[18467]` vs `A(` LTop) — moved from
+stamped to `bodyMismatch` declines, with the soundness rationale on their
+side (textual-identity doctrine; the id congruence that could re-admit the
+sibling-id pair is the plan's parked v2, never to be improvised in).
+
+Solo census 2026-09-18 with the flag OFF: `kN` +24,390, `noInstance` +5,935,
+artifact +650 KB — the largest surface of any single LSS flag.
 
 -}
-abiCloningPass : Bool -> Bool -> Bool -> Bool -> Bool -> Mono.MonoGraph -> ( Mono.MonoGraph, AbiCloningStats )
-abiCloningPass fpFence postSettle flatPeel census papFast ((Mono.MonoGraph record) as graph) =
+abiCloningPass : Bool -> Mono.MonoGraph -> ( Mono.MonoGraph, AbiCloningStats )
+abiCloningPass census ((Mono.MonoGraph record) as graph) =
     let
         -- LSS_018: μ-tied members are force-blocked — their instances span
         -- DIFFERENT demands of one recursive family (behaviorally divergent;
@@ -800,14 +792,15 @@ abiCloningPass fpFence postSettle flatPeel census papFast ((Mono.MonoGraph recor
         index =
             Dict.foldl
                 (\m () acc -> Dict.insert m { blocked = True, blockedBy = Nothing, buckets = Dict.empty } acc)
-                (collectInstances fpFence graph)
+                (collectInstances graph)
                 record.lssBlockedMembers
     in
-    if Dict.isEmpty index && not postSettle then
-        -- Inert-by-construction fast exit (LSS off / no singleton members).
-        -- E9.5: flag-on proceeds even with an empty closure index — the
-        -- post-settle rewrite consults the ORIGINS/registry, not instances
-        -- (a graph can hold devirtable g|/c| singletons and no closures).
+    if Dict.isEmpty index && Dict.isEmpty record.lssMemberOrigins then
+        -- Inert-by-construction fast exit (LSS off / no singleton members and
+        -- no standalone origins). E9.5's post-settle rewrite consults the
+        -- ORIGINS/registry, not instances — a graph can hold devirtable
+        -- g|/c| singletons and no closures — so an empty closure index alone
+        -- is not enough to exit.
         ( graph, emptyStats )
 
     else
@@ -850,14 +843,13 @@ abiCloningPass fpFence postSettle flatPeel census papFast ((Mono.MonoGraph recor
                 }
 
             -- E9.5: the registry inversion for the post-settle spec match —
-            -- one pass over reverseMapping, flag-on only. SpecId ints come
+            -- one pass over reverseMapping. SpecId ints come
             -- from the array index (reverseMapping is SpecId-indexed), so
             -- ascending fold order means each family list is DESCENDING by
             -- SpecId; the consumer takes the MINIMUM match, order-free.
             specsByGlobal =
-                if postSettle then
-                    Tuple.second
-                        (Array.foldl
+                Tuple.second
+                    (Array.foldl
                             (\maybeEntry ( i, acc ) ->
                                 case maybeEntry of
                                     Just ( global, specType ) ->
@@ -870,12 +862,9 @@ abiCloningPass fpFence postSettle flatPeel census papFast ((Mono.MonoGraph recor
                                     Nothing ->
                                         ( i + 1, acc )
                             )
-                            ( 0, Dict.empty )
-                            record.registry.reverseMapping
-                        )
-
-                else
-                    Dict.empty
+                        ( 0, Dict.empty )
+                        record.registry.reverseMapping
+                    )
 
             -- P0 census: the walk is SpecId-indexed (nodes and
             -- reverseMapping share the index), so the host global is one
@@ -899,17 +888,9 @@ abiCloningPass fpFence postSettle flatPeel census papFast ((Mono.MonoGraph recor
                     , { kindIds = Dict.empty
                       , nextKind = 0
                       , stats = stats0
-                      , postSettle = postSettle
-                      , origins =
-                            if postSettle then
-                                record.lssMemberOrigins
-
-                            else
-                                Dict.empty
+                      , origins = record.lssMemberOrigins
                       , specsByGlobal = specsByGlobal
-                      , flatPeel = flatPeel
                       , census = census
-                      , papFast = papFast
                       , hostGlobal = "?"
                       , hostSpecId = -1
                       , specNodes = record.nodes
@@ -1413,7 +1394,7 @@ stampCall index ctx region func args resultType callInfo =
         Mono.LSet [ m ] ->
             case Dict.get m index of
                 Just memberInfo ->
-                    case resolveRepresentative ctx.flatPeel (Mono.typeOf func) (List.length args) memberInfo of
+                    case resolveRepresentative (Mono.typeOf func) (List.length args) memberInfo of
                         Stamp inst ->
                             let
                                 ( kindId, ctx1 ) =
@@ -2359,8 +2340,8 @@ Dict.get, and one full `eqLayout` confirm per group in the bucket
     same code).
 
 -}
-resolveRepresentative : Bool -> Mono.MonoType -> Int -> MemberInfo -> Resolution
-resolveRepresentative flatPeel calleeType argCount memberInfo =
+resolveRepresentative : Mono.MonoType -> Int -> MemberInfo -> Resolution
+resolveRepresentative calleeType argCount memberInfo =
     if memberInfo.blocked then
         Decline "blocked" bumpBlocked
 
@@ -2385,7 +2366,7 @@ resolveRepresentative flatPeel calleeType argCount memberInfo =
                     -- so it cannot license a stamp. The INSTANCE is the
                     -- representation authority: peel the type to the site's
                     -- own arg count and match against THAT.
-                    case flattenedResolution flatPeel argCount calleeType memberInfo of
+                    case flattenedResolution argCount calleeType memberInfo of
                         Just resolution ->
                             resolution
 
@@ -2544,23 +2525,19 @@ an n-parameter closure which the n-argument call SATURATES, so `remaining_arity
 match would stamp a saturating call on a value that is not saturated.
 
 -}
-flattenedResolution : Bool -> Int -> Mono.MonoType -> MemberInfo -> Maybe Resolution
-flattenedResolution flatPeel argCount calleeType memberInfo =
-    if not flatPeel then
-        Nothing
+flattenedResolution : Int -> Mono.MonoType -> MemberInfo -> Maybe Resolution
+flattenedResolution argCount calleeType memberInfo =
+    case peelStages argCount calleeType of
+        Nothing ->
+            Nothing
 
-    else
-        case peelStages argCount calleeType of
-            Nothing ->
-                Nothing
+        Just ( flatArgs, flatRet ) ->
+            case Dict.get (siteFingerprint flatArgs flatRet) memberInfo.buckets of
+                Nothing ->
+                    Nothing
 
-            Just ( flatArgs, flatRet ) ->
-                case Dict.get (siteFingerprint flatArgs flatRet) memberInfo.buckets of
-                    Nothing ->
-                        Nothing
-
-                    Just groups ->
-                        flattenedScan argCount flatArgs flatRet groups
+                Just groups ->
+                    flattenedScan argCount flatArgs flatRet groups
 
 
 flattenedScan : Int -> List Mono.MonoType -> Mono.MonoType -> List LayoutGroup -> Maybe Resolution
@@ -2584,7 +2561,7 @@ flattenedScan argCount flatArgs flatRet groups =
                      else
                         -- Plan §15.0, THE STACKED GUARD: Fix A gets the site
                         -- past the arity check and it lands HERE unless
-                        -- `lss.stamp.enabled` (instance qualification) is also
+                        -- instance qualification is also
                         -- on. At `Dict_foldl_$_32636` — 100 M dispatches, the
                         -- largest single site in the compiler — that is
                         -- exactly what happens. Measure A in BOTH arms.
@@ -2668,8 +2645,6 @@ noInstance singleton to its post-settle direct-call target, or `Nothing`
 
 Guards, every one load-bearing:
 
-  - flag (`ctx.postSettle`) — flag-off this returns before touching state,
-    keeping the pass byte-identical;
   - member origin is `OriginGlobal`/`OriginCtor` (k| kernels need ABI
     derivation + the E9.2 guards — E10's arm, not this one; l| lambdas are
     CAPTURING values, undevirtable without the very instance that is
@@ -2738,11 +2713,7 @@ type alias PapTarget =
 
 postSettleTarget : Int -> Mono.MonoExpr -> Int -> StampCtx -> PostSettleOutcome
 postSettleTarget m func argCount ctx =
-    if not ctx.postSettle then
-        PsNotCandidate "off"
-
-    else
-        case Dict.get m ctx.origins of
+    case Dict.get m ctx.origins of
             Nothing ->
                 -- No origin recorded at all. `lssMemberOrigins` covers
                 -- STANDALONE members only, so this is a lambda (`l|`), a PAP
@@ -2754,16 +2725,10 @@ postSettleTarget m func argCount ctx =
                 -- LSS_040 (plans/lss-pap-fast-stamp.md §3.2). ONE guard chain
                 -- serves both the census and the stamp: `papResolve` returns
                 -- the target when every §3.3 guard passes AND the census key
-                -- either way, so what was measured is what ships. Flag-off
-                -- the key is still `g1absentp|…`, so the existing counter is
-                -- unmoved and the byte-identity rail holds by construction.
+                -- either way, so what was measured is what ships.
                 case papResolve g k func argCount ctx of
                     ( Just target, _ ) ->
-                        if ctx.papFast then
-                            PsStampPap target
-
-                        else
-                            PsNotCandidate (papCensusKey g k func argCount ctx)
+                        PsStampPap target
 
                     ( Nothing, key ) ->
                         PsNotCandidate key
@@ -2964,13 +2929,6 @@ papResolve g k func argCount ctx =
             ( Nothing, "g1absentp|papCallee-" ++ calleeShape func )
 
 
-{-| The census key alone (the second half of `papResolve`).
--}
-papCensusKey : Mono.Global -> Int -> Mono.MonoExpr -> Int -> StampCtx -> String
-papCensusKey g k func argCount ctx =
-    Tuple.second (papResolve g k func argCount ctx)
-
-
 {-| The flat parameter row and return type of a spec, when its node is
 CALLABLE CODE: a closure, a tail function, or (plan §11.1) a constructor with
 at most 24 fields. `Nothing` for a value CAF, an extern, a port, or a wider
@@ -3069,10 +3027,6 @@ postSettleArity target isCtor calleeType argCount ctx =
         -- the G4 fence is untouched: peeling decides whether the site is
         -- eligible, never whether the target matches.
         --
-        -- Rides `lss.stamp.flatPeel`: it IS that mechanism — "peel curried
-        -- callee types at stamping guards" — applied to this path's copy,
-        -- rather than a second independent flag for the same idea.
-        --
         -- UNVERIFIED ASSUMPTION, deliberately left for the measurement:
         -- `matchSpec` compares the spec's type against the UNPEELED callee
         -- type. If the registry stores globals curried (as `classifyGo` builds
@@ -3080,11 +3034,11 @@ postSettleArity target isCtor calleeType argCount ctx =
         -- eqLayout fails and these sites land on `PsNoSpec` instead. Watch
         -- `devirtPost.noSpec`: a jump of roughly the g3over population means
         -- the comparison needs the peeled view too.
-        case ( ctx.flatPeel, peelStages argCount calleeType ) of
-            ( True, Just _ ) ->
+        case peelStages argCount calleeType of
+            Just _ ->
                 matchSpec target isCtor calleeType ctx
 
-            _ ->
+            Nothing ->
                 PsNotCandidate
                     ("g3over|"
                         ++ String.fromInt firstStage

@@ -52,7 +52,7 @@ suite =
             \() ->
                 let
                     ( graph, stats ) =
-                        run True
+                        run
                             (origins [ ( member, Mono.OriginGlobal targetGlobal ) ])
                             (registryOf [ Just ( targetGlobal, intFnPlain ) ])
                             [ callSite 1 intRet ]
@@ -69,7 +69,7 @@ suite =
             \() ->
                 let
                     ( graph, stats ) =
-                        run True
+                        run
                             (origins [ ( member, Mono.OriginCtor targetGlobal ) ])
                             (registryOf [ Just ( targetGlobal, intFnPlain ) ])
                             [ callSite 1 intRet ]
@@ -85,7 +85,7 @@ suite =
             \() ->
                 let
                     ( graph, stats ) =
-                        run True
+                        run
                             (origins [ ( member, Mono.OriginGlobal targetGlobal ) ])
                             (registryOf [ Just ( targetGlobal, intFn2 ) ])
                             [ callSiteTyped 1 intFn2use intRet ]
@@ -101,7 +101,7 @@ suite =
             \() ->
                 let
                     ( graph, stats ) =
-                        run True
+                        run
                             (origins [ ( member, Mono.OriginGlobal targetGlobal ) ])
                             (registryOf [ Just ( targetGlobal, floatFn ) ])
                             [ callSite 1 intRet ]
@@ -113,31 +113,11 @@ suite =
                     , \( g, _ ) -> Expect.equal Nothing (firstCalleeSpec g)
                     ]
                     ( graph, stats )
-        , Test.test "flag OFF: pass walks (dummy instance in the index), site declines noInstance, NO rewrite (substrate inertness)" <|
-            \() ->
-                let
-                    -- The dummy closure keeps the index non-empty so the
-                    -- flag-off arm takes the REAL walk (the empty-index
-                    -- early-exit would satisfy this pin vacuously).
-                    ( graph, stats ) =
-                        run False
-                            (origins [ ( member, Mono.OriginGlobal targetGlobal ) ])
-                            (registryOf [ Just ( targetGlobal, intFnPlain ) ])
-                            [ dummyClosure, callSite 1 intRet ]
-                in
-                Expect.all
-                    [ \( _, s ) -> Expect.equal 0 s.devirtPost.fn
-                    , \( _, s ) -> Expect.equal 0 s.devirtPost.ctor
-                    , \( _, s ) -> Expect.equal 0 s.devirtPost.noSpec
-                    , \( _, s ) -> Expect.equal 1 s.declinedNoInstance
-                    , \( g, _ ) -> Expect.equal Nothing (firstCalleeSpec g)
-                    ]
-                    ( graph, stats )
         , Test.test "two same-layout specs, no exact match: AMBIGUOUS, not rewritten" <|
             \() ->
                 let
                     ( graph, stats ) =
-                        run True
+                        run
                             (origins [ ( member, Mono.OriginGlobal targetGlobal ) ])
                             (registryOf
                                 [ Just ( otherGlobal, intFnPlain ) -- spec 0: different global
@@ -159,7 +139,7 @@ suite =
             \() ->
                 let
                     ( graph, stats ) =
-                        run True
+                        run
                             (origins [ ( member, Mono.OriginGlobal targetGlobal ) ])
                             (registryOf
                                 [ Just ( otherGlobal, intFnPlain ) -- spec 0: different global
@@ -311,13 +291,9 @@ firstCalleeSpec (Mono.MonoGraph record) =
             Nothing
 
 
-run : Bool -> Dict.Dict Int Mono.MemberOrigin -> Mono.SpecializationRegistry -> List Mono.MonoExpr -> ( Mono.MonoGraph, AbiCloning.AbiCloningStats )
-run flag memberOrigins registry exprs =
+run : Dict.Dict Int Mono.MemberOrigin -> Mono.SpecializationRegistry -> List Mono.MonoExpr -> ( Mono.MonoGraph, AbiCloning.AbiCloningStats )
+run memberOrigins registry exprs =
     AbiCloning.abiCloningPass True
-        flag
-        False
-        True
-        False
         (Mono.MonoGraph
             { nodes =
                 Array.fromList

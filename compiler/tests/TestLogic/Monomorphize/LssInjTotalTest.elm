@@ -7,7 +7,16 @@ Three levers under one flag: L1 completion-join head re-stamp, L2 deep-PAP
 successor completion, L3 the Accessor/bare-VarKernel argument arms. L1's
 sharpest differentials live at E2E scale (the kernel-ABI ⊤ needs kernel-bodied
 defs — see LssGapReturnedClosure/LssGapPapDeepArg flag-on); this suite pins
-the fixture-testable levers as off-vs-on DIFFERENTIALS.
+the fixture-testable levers.
+
+These were off-vs-on DIFFERENTIALS whose off arm additionally pinned
+`varSucc`/`varCtorRows` off — those settle passes write the very `/a0/r`
+position the off arm asserted as `LVar`. The settle flags were fixed at their
+defaults and removed 2026-09-18, so the off arm is no longer constructible.
+What the deleted arms pinned: without L2/L3 the deep-PAP `/a0/r` and the
+accessor argument head both zonked to `LVar`, and the beyond-arity arrow of
+an arity-1 def plus `useIt`'s own `/a0` head were arm-identical (the deep
+walk ADDS, never disturbs; LSS\_013 stops it at declaredArity).
 
 -}
 
@@ -35,36 +44,30 @@ import TestLogic.TestPipeline as Pipeline
 
 suite : Test
 suite =
-    Test.describe "lss.injTotal — L2 deep-PAP + L3 accessor arm"
-        [ Test.test "1. L2 DIFFERENTIAL: deep-PAP /a0/r flips LVar -> LSet" <|
+    Test.describe "L2 deep-PAP + L3 accessor arm"
+        [ Test.test "1. L2: deep-PAP /a0/r is a SINGLETON" <|
             \() ->
-                case ( runWith False fixture, runWith True fixture ) of
-                    ( Ok offG, Ok onG ) ->
-                        case ( a0rAnnos "useIt" offG, a0rAnnos "useIt" onG ) of
-                            ( [], _ ) ->
+                case runWith fixture of
+                    Ok onG ->
+                        case a0rAnnos "useIt" onG of
+                            [] ->
                                 Expect.fail "no /a0/r for useIt — fixture broken"
 
-                            ( offA, onA ) ->
-                                if not (List.all isVar offA) then
-                                    Expect.fail ("off-arm /a0/r expected LVar, got " ++ describe offA)
-
-                                else if List.all isSingleton onA then
+                            onA ->
+                                if List.all isSingleton onA then
                                     Expect.pass
 
                                 else
-                                    Expect.fail ("on-arm /a0/r expected SINGLETON, got " ++ describe onA)
+                                    Expect.fail ("/a0/r expected SINGLETON, got " ++ describe onA)
 
-                    ( Err e, _ ) ->
-                        Expect.fail e
-
-                    ( _, Err e ) ->
+                    Err e ->
                         Expect.fail e
         , Test.test "2. L2 PRODUCER CONVERGENCE: deep id == deeper-producer id" <|
             \() ->
                 -- useIt (add3 10): L2 writes p|add3|2 at /a0/r.
                 -- useOne ((add3 10) 1): the producer head-inject writes
                 -- p|add3|2 at /a0. Same integer id = one identity.
-                case runWith True fixture of
+                case runWith fixture of
                     Err e ->
                         Expect.fail e
 
@@ -89,84 +92,22 @@ suite =
                                         ++ " prod="
                                         ++ String.fromInt (List.length ps)
                                     )
-        , Test.test "3. L3 DIFFERENTIAL: accessor arg head gains a|name singleton" <|
+        , Test.test "3. L3: an accessor argument head carries the a|name singleton" <|
             \() ->
-                case ( runWith False fixture, runWith True fixture ) of
-                    ( Ok offG, Ok onG ) ->
-                        case ( a0Annos "useF" offG, a0Annos "useF" onG ) of
-                            ( [], _ ) ->
+                case runWith fixture of
+                    Ok onG ->
+                        case a0Annos "useF" onG of
+                            [] ->
                                 Expect.fail "no /a0 for useF — fixture broken"
 
-                            ( offA, onA ) ->
-                                if not (List.all isVar offA) then
-                                    Expect.fail ("off-arm accessor /a0 expected LVar, got " ++ describe offA)
-
-                                else if List.all isSingleton onA then
+                            onA ->
+                                if List.all isSingleton onA then
                                     Expect.pass
 
                                 else
-                                    Expect.fail ("on-arm accessor /a0 expected SINGLETON, got " ++ describe onA)
+                                    Expect.fail ("accessor /a0 expected SINGLETON, got " ++ describe onA)
 
-                    ( Err e, _ ) ->
-                        Expect.fail e
-
-                    ( _, Err e ) ->
-                        Expect.fail e
-        , Test.test "4. LSS_013 BOUNDARY: arity-1 def's beyond-arity arrow arm-identical" <|
-            \() ->
-                -- mk x = add2 x (declaredArity 1 on a 2-arrow type): neither
-                -- L1 nor L2 may claim the second arrow.
-                case ( runWith False fixture, runWith True fixture ) of
-                    ( Ok offG, Ok onG ) ->
-                        let
-                            offR =
-                                List.map annoSize (a0rAnnos "useMk" offG)
-
-                            onR =
-                                List.map annoSize (a0rAnnos "useMk" onG)
-                        in
-                        if offR == onR then
-                            Expect.pass
-
-                        else
-                            Expect.fail
-                                ("beyond-arity /a0/r moved: "
-                                    ++ String.join "," (List.map String.fromInt offR)
-                                    ++ " -> "
-                                    ++ String.join "," (List.map String.fromInt onR)
-                                )
-
-                    ( Err e, _ ) ->
-                        Expect.fail e
-
-                    ( _, Err e ) ->
-                        Expect.fail e
-        , Test.test "5. HEADS UNCHANGED: /a0 of useIt arm-identical (deep walk adds, never disturbs)" <|
-            \() ->
-                case ( runWith False fixture, runWith True fixture ) of
-                    ( Ok offG, Ok onG ) ->
-                        let
-                            offH =
-                                List.map annoSize (a0Annos "useIt" offG)
-
-                            onH =
-                                List.map annoSize (a0Annos "useIt" onG)
-                        in
-                        if offH == onH && List.all (\n -> n >= 1) onH then
-                            Expect.pass
-
-                        else
-                            Expect.fail
-                                ("useIt /a0 moved: "
-                                    ++ String.join "," (List.map String.fromInt offH)
-                                    ++ " -> "
-                                    ++ String.join "," (List.map String.fromInt onH)
-                                )
-
-                    ( Err e, _ ) ->
-                        Expect.fail e
-
-                    ( _, Err e ) ->
+                    Err e ->
                         Expect.fail e
         ]
 
@@ -261,17 +202,14 @@ fixture =
 -- ====== HARNESS ======
 
 
-runWith : Bool -> Src.Module -> Result String Mono.MonoGraph
-runWith injTotal srcModule =
+runWith : Src.Module -> Result String Mono.MonoGraph
+runWith srcModule =
     let
         defaults =
             Config.defaultLss
     in
     Pipeline.runSolverMonoWithLimits Config.defaultLimits
-        -- varSucc/varCtorRows pinned OFF (2026-08-31): they write the very
-        -- /a0/r position this differential's off-arm asserts as LVar — the
-        -- overlapping-flag pin rule.
-        { defaults | enabled = True, keyed = True, injTotal = injTotal, settle = (\st -> { st | varSucc = False, varCtorRows = False }) defaults.settle }
+        { defaults | enabled = True }
         srcModule
 
 

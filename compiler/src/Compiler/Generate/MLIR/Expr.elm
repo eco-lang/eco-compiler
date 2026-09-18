@@ -2955,7 +2955,7 @@ references — but a reference surviving into a RESIDUAL `MonoExpr` inside an
 Encoder/DecoderNode is compiled by the emit callback in the ops stream,
 where the walked-past binding was never compiled → `lookupVar: unbound
 variable mono_inline_N`. Historically no reachable shape did this;
-fn-global devirtualization (`lss.devirtFnGlobals`) lets the inliner plant
+fn-global devirtualization (E9.1) lets the inliner plant
 `mono_inline_N` lets inside encoder trees, minting the shape. Fix: the
 shared BF expr-compiler substitutes a binding ONLY when the name is absent
 from `varMappings` — every working path resolves through `varMappings`

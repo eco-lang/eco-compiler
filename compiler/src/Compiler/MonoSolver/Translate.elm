@@ -663,8 +663,15 @@ translateDispatch expr s0 =
 
                                 Ok ( monoExprs, s3 ) ->
                                     let
+                                        -- E15 (`lss.flow.accessFlow`, DEFAULT-ON
+                                        -- 2026-09-16, unconditional 2026-09-18):
+                                        -- a first-element-only element set is a
+                                        -- completeness claim the other elements
+                                        -- can falsify, so join over all of them.
+                                        -- Landing measurement: `var` 852 -> 837,
+                                        -- k1 +26, wall flat.
                                         joinElems =
-                                            s3.env.lss.enabled && s3.env.lss.flow.accessFlow
+                                            s3.env.lss.enabled
 
                                         -- F4-lit-list (plans/lss-container-payload-transport.md
                                         -- §12.10.1): the element type is the JOIN over every
@@ -1653,7 +1660,7 @@ and `captureAbi` are placeholder `Nothing` at mono time (filled by GlobalOpt).
 specializeLambda : Maybe TypeIds.SrcLambdaId -> List ( Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 specializeLambda srcLam params body canType =
     Engine.andThen
-        (\( monoType0, maybeHeadVar ) ->
+        (\monoType0 ->
             Engine.andThen
                 (\classifiedParams ->
                     let
@@ -1678,50 +1685,33 @@ specializeLambda srcLam params body canType =
                                 (\lambdaId ->
                                     Engine.andThen
                                         (\monoBody s ->
-                                            case
-                                                -- M1 flowConnect v2, PRODUCER half
-                                                -- (plans/lss-var-chain-roots.md §9.10):
-                                                -- `monoType0` was zonked BEFORE the body
-                                                -- was translated (v1's null). Unify the
-                                                -- body's solved type into the kept head
-                                                -- variable's RESULT slot and re-zonk —
-                                                -- the paper's T-Abs identity (closure
-                                                -- type contains the body's type),
-                                                -- reconstructed in the ONE store world.
-                                                -- v1.1's annotation-level enrich here
-                                                -- measured +46 conflict-⊤ (§9.9, L7's
-                                                -- third confirmation) — diverged copies
-                                                -- are the one thing this must not make.
-                                                case ( s.env.lss.enabled && s.env.lss.flow.connect, maybeHeadVar ) of
-                                                    ( True, Just headVar ) ->
-                                                        connectLambdaResult (List.length params) headVar monoBody monoType0 s
+                                            -- `monoType0` is the head type as zonked
+                                            -- BEFORE the body was translated. The M1
+                                            -- flowConnect producer half used to unify the
+                                            -- body's solved type back into the kept head
+                                            -- variable's RESULT slot here; it was measured
+                                            -- inert on this corpus (byte-identical
+                                            -- artifact, −32.6 M dispatches when OFF) and
+                                            -- was removed with its flag on 2026-09-18.
+                                            Ok
+                                                ( Mono.MonoClosure
+                                                    { lambdaId = lambdaId
+                                                    , srcLambda = srcLam
 
-                                                    _ ->
-                                                        Ok ( monoType0, s )
-                                            of
-                                                Err e ->
-                                                    Err e
-
-                                                Ok ( monoType1, s1 ) ->
-                                                    Ok
-                                                        ( Mono.MonoClosure
-                                                            { lambdaId = lambdaId
-                                                            , srcLambda = srcLam
-
-                                                            -- Fix B (LSS_017): the id this instance was minted
-                                                            -- under (spec-qualified when keyed-routed) — the
-                                                            -- interning is idempotent, so this re-reads the id
-                                                            -- classifyLambdaHead already injected.
-                                                            , lssMember = maybeMember
-                                                            , captures = Closure.computeClosureCaptures monoParams monoBody
-                                                            , params = monoParams
-                                                            , closureKind = Nothing
-                                                            , captureAbi = Nothing
-                                                            }
-                                                            monoBody
-                                                            monoType1
-                                                        , s1
-                                                        )
+                                                    -- Fix B (LSS_017): the id this instance was minted
+                                                    -- under (spec-qualified when keyed-routed) — the
+                                                    -- interning is idempotent, so this re-reads the id
+                                                    -- classifyLambdaHead already injected.
+                                                    , lssMember = maybeMember
+                                                    , captures = Closure.computeClosureCaptures monoParams monoBody
+                                                    , params = monoParams
+                                                    , closureKind = Nothing
+                                                    , captureAbi = Nothing
+                                                    }
+                                                    monoBody
+                                                    monoType0
+                                                , s
+                                                )
                                         )
                                         (Engine.scoped (Engine.andThen (\_ -> translate body) (insertVars monoParams)))
                                 )
@@ -1751,7 +1741,7 @@ zonked structure is identical either way (leaf demand flow is memo-shared);
 only annotations gain content — lss-off byte-identity untouched.
 
 -}
-classifyLambdaHead : Int -> Maybe TypeIds.SrcLambdaId -> Can.Type TypeIds.MVarId -> Step ( Mono.MonoType, Maybe Vars.Variable )
+classifyLambdaHead : Int -> Maybe TypeIds.SrcLambdaId -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
 classifyLambdaHead arity srcLam canType s0 =
     if s0.env.lss.enabled then
         let
@@ -1809,20 +1799,20 @@ classifyLambdaHead arity srcLam canType s0 =
                     Nothing ->
                         ( Nothing, Engine.bumpArgFlowCensus "rootAnn|absent" s0 )
 
-            -- `lss.rootFold` (plans/lss-root-member-fold.md §1.2): the
+            -- ROOT-MEMBER FOLD (plans/lss-root-member-fold.md §1.2): the
             -- stashed-root path IS the def's root lambda — record
             -- `srcLam -> global` so the mint moments below folds it to the
             -- ground standalone key. Kernel-alias globals are skipped HERE
             -- (Engine cannot import `kernelAliasOf` — the import cycle):
             -- folding one would re-create the g|/k| split E9.2 removes.
             s0c =
-                case ( s0b.env.lss.rootFold, maybeRootVar, ( srcLam, s0b.currentGlobal ) ) of
-                    ( True, Just _, ( Just lamId, Just (Mono.Global home name) ) ) ->
+                case ( maybeRootVar, ( srcLam, s0b.currentGlobal ) ) of
+                    ( Just _, ( Just lamId, Just (Mono.Global home name) ) ) ->
                         let
                             g =
                                 TOpt.Global home name
                         in
-                        if s0b.itemAux.retranslating /= Nothing && s0b.env.lss.stamp.useInject then
+                        if s0b.itemAux.retranslating /= Nothing then
                             -- F2 (plans/lss-container-payload-transport.md
                             -- §12.9.4, found by LssLocalMultiUseInjectTest):
                             -- a LOCAL-multi instance RHS is re-translated
@@ -1837,8 +1827,7 @@ classifyLambdaHead arity srcLam canType s0 =
                             -- collapse, live for lambda RHSs). Skip the
                             -- fold; the lambda keeps its own `l|` identity,
                             -- instance-qualified, and equals the use-site
-                            -- mint. Gated with the flag so the flag-off arm
-                            -- stays byte-identical for the A/B.
+                            -- mint.
                             Engine.bumpArgFlowCensus "rootFold|localSkip" s0b
 
                         else
@@ -1890,15 +1879,7 @@ classifyLambdaHead arity srcLam canType s0 =
                                         Err e
 
                                     Ok ( classified, s4 ) ->
-                                        -- M1 v2 (flow-repair §9.10): the loaded
-                                        -- variable rides along so the caller can
-                                        -- unify the body's solved type into its
-                                        -- result slot POST-body and re-zonk —
-                                        -- restoring the paper's T-Abs identity
-                                        -- (closure type ⊇ body type) in the ONE
-                                        -- store world, where v1.1's annotation
-                                        -- copy manufactured conflict-⊤.
-                                        Ok ( ( Mono.overlayAnnotations classified zonked, Just funcVar ), s4 )
+                                        Ok ( Mono.overlayAnnotations classified zonked, s4 )
 
     else
         case classifyAs Mono.tkClassLambda canType s0 of
@@ -1906,7 +1887,7 @@ classifyLambdaHead arity srcLam canType s0 =
                 Err e
 
             Ok ( classified, s1 ) ->
-                Ok ( ( classified, Nothing ), s1 )
+                Ok ( classified, s1 )
 
 
 allocLambdaId : Step Mono.LambdaId
@@ -1963,7 +1944,7 @@ lambda set, so it keeps the cheap path and stays byte-identical.
 -}
 classifyRef : TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
 classifyRef refExpr canType s0 =
-    if not (s0.env.lss.enabled && s0.env.lss.refIdentity && LssInfer.canTypeMentionsArrow canType) then
+    if not (s0.env.lss.enabled && LssInfer.canTypeMentionsArrow canType) then
         classifyAs Mono.tkClassMisc canType s0
 
     else
@@ -2345,8 +2326,8 @@ translateIndirectCallBody region func args callCanType =
 
 
 {-| E9 (LSS\_015) / E9.2 (LSS\_016): what a devirtualized indirect call
-rewrites to — a standalone global (ctor, or fn-global behind
-`lss.devirtFnGlobals`), or a whitelisted kernel (prefix, home, name).
+rewrites to — a standalone global (ctor or fn-global), or a whitelisted
+kernel (prefix, home, name).
 -}
 type DevirtTarget
     = DevirtGlobal TOpt.Global
@@ -2631,17 +2612,17 @@ devirtDirectTarget func args monoFunc s0 =
                 Ok ( Nothing, s0 )
 
 
-{-| The ctor / (flag-gated) fn-global leg of the devirt decision — the
-singleton's standalone global is NOT a kernel alias (those route through
-the kernel whitelist above).
+{-| The ctor / fn-global leg of the devirt decision — the singleton's
+standalone global is NOT a kernel alias (those route through the kernel
+whitelist above).
 -}
 devirtGlobalTarget : TOpt.Global -> Int -> Step (Maybe DevirtTarget)
 devirtGlobalTarget ctorGlobal argCount s1 =
-    if not (isCtorNode ctorGlobal s1 || (s1.env.lss.devirtFnGlobals && isBodyNode ctorGlobal s1)) then
-        -- CTORS + (behind lss.devirtFnGlobals) body-bearing FUNCTION
-        -- globals. Direct CTOR calls have no body and are never inlined —
-        -- no inliner surface; the fn-global class unlocks inlining (E9.1,
-        -- after the BytesFusion walked-past-let seam fix).
+    if not (isCtorNode ctorGlobal s1 || isBodyNode ctorGlobal s1) then
+        -- CTORS + body-bearing FUNCTION globals. Direct CTOR calls have no
+        -- body and are never inlined — no inliner surface; the fn-global
+        -- class unlocks inlining (E9.1, after the BytesFusion walked-past-let
+        -- seam fix).
         Ok ( Nothing, s1 )
 
     else
@@ -2773,11 +2754,12 @@ isCtorNode g s =
             False
 
 
-{-| E9.1 (flag `lss.devirtFnGlobals`): is the global a body-bearing
-FUNCTION node? Devirtualizing these unlocks INLINING of previously-indirect
-calls — the class E9 v1 excluded because the new inline shapes tripped the
-`lookupVar: unbound mono_inline_N` codegen seam. Enabled only behind the
-flag until the seam fix is proven at self-compile scale.
+{-| E9.1: is the global a body-bearing FUNCTION node? Devirtualizing these
+unlocks INLINING of previously-indirect calls — the class E9 v1 excluded
+because the new inline shapes tripped the `lookupVar: unbound mono_inline_N`
+codegen seam. Behind `lss.devirtFnGlobals` until that seam fix was proven at
+self-compile scale; default-ON since Tier 1 (2026-07-20), unconditional since
+2026-09-18.
 -}
 isBodyNode : TOpt.Global -> Engine.S -> Bool
 isBodyNode g s =
@@ -2995,7 +2977,6 @@ Flag-off this is one Bool test.
 needsPapSlow : TOpt.Global -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Engine.S -> Bool
 needsPapSlow global args callCanType s =
     s.env.lss.enabled
-        && s.env.lss.papMembers
         && canTypeHasArrow callCanType
         && LssInfer.declaredArityOf global 8 s
         > List.length args
@@ -3868,13 +3849,6 @@ by `translateArgsWith`.
 type ArgStash
     = StashNone
     | StashLocalMulti Vars.Variable
-      -- Flow repair M1 (plans/lss-var-chain-roots.md §9.5, `lss.flowConnect`):
-      -- the param's own store variable, stashed for LAMBDA-LITERAL args so
-      -- the arg's fully-translated type (heads AND interiors, the body's
-      -- solved sets) can be unified back into it after translation — the
-      -- App-rule σ-transport at the one edge Translate never rebuilt
-      -- (`argUnifyVar`'s fresh load carries only the head injection).
-    | StashParam Vars.Variable
 
 
 {-| Like `unifyParamsWithArgExprs` but returns, per arg, what the argument's
@@ -3946,19 +3920,7 @@ unifyParamsCollect funcVar args s0 =
                                                                     Err e
 
                                                                 Ok ( restStash, s5 ) ->
-                                                                    let
-                                                                        -- M1 flowConnect: stash the param
-                                                                        -- var for lambda-literal args so
-                                                                        -- `translateArgsWith` can write the
-                                                                        -- translated type back into it.
-                                                                        entry =
-                                                                            if s5.env.lss.enabled && s5.env.lss.flow.connect && (isLambdaLiteral arg || (s5.env.lss.flow.accessFlow && isAccessForm arg)) then
-                                                                                StashParam pParam
-
-                                                                            else
-                                                                                StashNone
-                                                                    in
-                                                                    Ok ( entry :: restStash, s5 )
+                                                                    Ok ( StashNone :: restStash, s5 )
 
                         Nothing ->
                             -- Over-applied or opaque callee spine: no
@@ -4067,31 +4029,6 @@ translateArgsWith stash args =
                                             Ok ( _, s3 ) ->
                                                 Ok ( Mono.MonoVarLocal freshName instType, s3 )
 
-                ( StashParam pParam, _ ) ->
-                    -- M1 flowConnect (plans/lss-var-chain-roots.md §9.5): the
-                    -- lambda's fully-translated type carries its body's solved
-                    -- sets; encode it (annotations faithful — the enrichFromEnv
-                    -- helper) and unify into the param slot. STORE unification:
-                    -- both sides share the slot afterwards, so the L7
-                    -- `unionAnno (LSet, LVar)` conflict path cannot arise
-                    -- (AR-F2), and re-runs are idempotent (set ∪ set, AR-F4).
-                    \s0 ->
-                        case translate arg s0 of
-                            Err e ->
-                                Err e
-
-                            Ok ( monoArg, s1 ) ->
-                                case Mono.typeOf monoArg of
-                                    Mono.MFunction _ _ _ _ ->
-                                        connectParamArg pParam monoArg (Mono.typeOf monoArg) s1
-
-                                    _ ->
-                                        -- A lambda literal's type is an arrow
-                                        -- by construction; anything else means
-                                        -- the translation reshaped it — skip,
-                                        -- counted.
-                                        Ok ( monoArg, Engine.bumpArgFlowCensus "flow|connNoop" s1 )
-
                 _ ->
                     translate arg
         )
@@ -4147,7 +4084,7 @@ ordinal) on every both-sided pair). Ordinal 0 is never tagged. RHSs without a
 -}
 injectLocalMultiUseMember : Name -> Int -> Vars.Variable -> Step ()
 injectLocalMultiUseMember localName ord v s0 =
-    if not (s0.env.lss.enabled && (s0.env.lss.stamp.useInject || s0.env.lss.stamp.useInjectPap)) then
+    if not s0.env.lss.enabled then
         Ok ( (), s0 )
 
     else
@@ -4156,34 +4093,28 @@ injectLocalMultiUseMember localName ord v s0 =
                 injectLocalMultiUsePap localName v s0
 
             Just ( lam, arity ) ->
-                if not s0.env.lss.stamp.useInject then
-                    Ok ( (), s0 )
+                case Engine.localInstanceTagFor ord s0 of
+                    Err e ->
+                        Err e
 
-                else
-                    case Engine.localInstanceTagFor ord s0 of
-                        Err e ->
-                            Err e
+                    Ok ( instTag, s1 ) ->
+                        let
+                            aux1 =
+                                s1.itemAux
 
-                        Ok ( instTag, s1 ) ->
-                            let
-                                aux1 =
-                                    s1.itemAux
+                            outerTag =
+                                aux1.currentLocalInstance
+                        in
+                        case LssInfer.injectLambdaMemberQualified arity (Just lam) v { s1 | itemAux = { aux1 | currentLocalInstance = instTag } } of
+                            Err e ->
+                                Err e
 
-                                outerTag =
-                                    aux1.currentLocalInstance
-                            in
-                            case LssInfer.injectLambdaMemberQualified arity (Just lam) v { s1 | itemAux = { aux1 | currentLocalInstance = instTag } } of
-                                Err e ->
-                                    Err e
-
-                                Ok ( _, s2 ) ->
-                                    let
-                                        aux2 =
-                                            s2.itemAux
-                                    in
-                                    Ok ( (), Engine.bumpArgFlowCensus "lmInject|use" { s2 | itemAux = { aux2 | currentLocalInstance = outerTag } } )
-
-
+                            Ok ( _, s2 ) ->
+                                let
+                                    aux2 =
+                                        s2.itemAux
+                                in
+                                Ok ( (), Engine.bumpArgFlowCensus "lmInject|use" { s2 | itemAux = { aux2 | currentLocalInstance = outerTag } } )
 {-| F2.c (plans/lss-container-payload-transport.md §12.10.1): the local's RHS
 is a PARTIAL APPLICATION of a global — write the PAP member the RHS
 re-translation will mint (`injectPapMember` → `papMemberKey g k`) into the
@@ -4198,252 +4129,12 @@ injectLocalMultiUsePap localName v s0 =
             Ok ( (), Engine.bumpArgFlowCensus "lmInject|noLam" s0 )
 
         Just ( g, k ) ->
-            if not s0.env.lss.stamp.useInjectPap then
-                Ok ( (), Engine.bumpArgFlowCensus "lmInject|papOff" s0 )
-
-            else
-                case Engine.papMemberIdFor g k s0 of
-                    Err e ->
-                        Err e
-
-                    Ok ( mid, s1 ) ->
-                        Engine.andThen (\_ -> \s -> Ok ( (), Engine.bumpArgFlowCensus "lmInject|pap" s )) (LssInfer.injectSpineMemberId 1 mid v) s1
-
-
-{-| lss-lpartial §2 (the flowConnect amendment): strip ⊤ from a type about
-to be ENCODED into the store, replacing each with a DISTINCT fresh set
-variable (negative ids — disjoint from zonk ids, and distinct so the
-encode's var-slot sharing cannot alias unrelated positions). Under
-lower-bound semantics this is the paper's channel: a Q-constraint carries
-members only — there is no ⊤ to transport. This is what turned v2's ⊤ +703
-(`topCarried` 280) into no-ops at the target slots.
-
-SCOPE CONTRACT (audited 2026-09-05, `DEFECTS_DO_NOT_FORGET.md` §1). The supply
-is seeded at `-1` on EVERY call, so these ids are distinct only WITHIN one
-returned type — call this twice and both types start again at `LVar -1`. That
-is sufficient, and ONLY sufficient, because the result must be handed straight
-to `Store.monoTypeToVar`, whose `mintVarSlots` pre-pass builds the
-`LVar n -> slot` map fresh from `Dict.empty` for that one type; an id's whole
-lifetime is that single encode. Both call sites do exactly that.
-
-So do NOT retain a de-topped type as an annotation, and do not let one reach
-`Mono.unionAnno`, `annoCovers` or `annoKeyEq` — those compare `LVar` by NUMBER,
-and ids from two different calls collide by construction. A new caller that
-needs ids to survive the encode must take a supply as a parameter instead.
-
--}
-deTopAnnos : Mono.MonoType -> Mono.MonoType
-deTopAnnos t =
-    Tuple.first (deTopGo t -1)
-
-
-deTopGo : Mono.MonoType -> Int -> ( Mono.MonoType, Int )
-deTopGo t nextId =
-    case t of
-        Mono.MFunction _ anno args result ->
-            let
-                ( anno1, n1 ) =
-                    case anno of
-                        Mono.LTop _ ->
-                            ( Mono.LVar nextId, nextId - 1 )
-
-                        _ ->
-                            ( anno, nextId )
-
-                ( args1, n2 ) =
-                    List.foldr
-                        (\a ( accL, accN ) ->
-                            let
-                                ( a1, accN1 ) =
-                                    deTopGo a accN
-                            in
-                            ( a1 :: accL, accN1 )
-                        )
-                        ( [], n1 )
-                        args
-
-                ( result1, n3 ) =
-                    deTopGo result n2
-            in
-            ( Mono.mFunction anno1 args1 result1, n3 )
-
-        Mono.MList _ inner ->
-            let
-                ( inner1, n1 ) =
-                    deTopGo inner nextId
-            in
-            ( Mono.mList inner1, n1 )
-
-        Mono.MTuple _ elems ->
-            let
-                ( elems1, n1 ) =
-                    List.foldr
-                        (\e ( accL, accN ) ->
-                            let
-                                ( e1, accN1 ) =
-                                    deTopGo e accN
-                            in
-                            ( e1 :: accL, accN1 )
-                        )
-                        ( [], nextId )
-                        elems
-            in
-            ( Mono.mTuple elems1, n1 )
-
-        Mono.MRecord _ fields ->
-            let
-                ( fields1, n1 ) =
-                    Dict.foldl
-                        (\fn ft ( accD, accN ) ->
-                            let
-                                ( ft1, accN1 ) =
-                                    deTopGo ft accN
-                            in
-                            ( Dict.insert fn ft1 accD, accN1 )
-                        )
-                        ( Dict.empty, nextId )
-                        fields
-            in
-            ( Mono.mRecord fields1, n1 )
-
-        Mono.MCustom _ dtHome dtName args ->
-            let
-                ( args1, n1 ) =
-                    List.foldr
-                        (\a ( accL, accN ) ->
-                            let
-                                ( a1, accN1 ) =
-                                    deTopGo a accN
-                            in
-                            ( a1 :: accL, accN1 )
-                        )
-                        ( [], nextId )
-                        args
-            in
-            ( Mono.mCustom dtHome dtName args1, n1 )
-
-        _ ->
-            ( t, nextId )
-
-
-{-| The M1 write-back proper, split out so the stash arm stays readable.
--}
-connectParamArg : Vars.Variable -> Mono.MonoExpr -> Mono.MonoType -> Step Mono.MonoExpr
-connectParamArg pParam monoArg argType s1 =
-    case Store.monoTypeToVar (deTopAnnos argType) s1 of
-        Err e ->
-            Err e
-
-        Ok ( argTypeVar, s2 ) ->
-            case unifyStepBestEffort pParam argTypeVar s2 of
+            case Engine.papMemberIdFor g k s0 of
                 Err e ->
                     Err e
 
-                Ok ( _, s3 ) ->
-                    Ok
-                        ( monoArg
-                        , Engine.bumpArgFlowCensus "flow|connLam"
-                            (if Mono.hasTopAnno argType then
-                                Engine.bumpArgFlowCensus "flow|topCarried" s3
-
-                             else
-                                s3
-                            )
-                        )
-
-
-{-| M1 v2 producer half (plans/lss-var-chain-roots.md §9.10): peel exactly
-`nparams` parameter slots down the kept head variable's spine, unify the
-body's solved type into the RESULT variable there (`monoTypeToVar` encodes
-the body's annotations faithfully — the enrichFromEnv discipline), then
-re-zonk and overlay onto the classified structure (the ABI guard, same as
-the first zonk). ONE store world: the closure's type and every slot its
-value was unified with now agree by construction — no diverged annotation
-copies for `unionAnno` to meet (v1.1's +46 conflict-⊤, §9.9). Peel failure
-(reshaped spine) keeps the pre-body type, counted.
--}
-connectLambdaResult : Int -> Vars.Variable -> Mono.MonoExpr -> Mono.MonoType -> Step Mono.MonoType
-connectLambdaResult nparams headVar monoBody monoType0 s0 =
-    case peelParamsVar nparams headVar s0 of
-        Err e ->
-            Err e
-
-        Ok ( maybeResVar, s1 ) ->
-            case maybeResVar of
-                Nothing ->
-                    Ok ( monoType0, Engine.bumpArgFlowCensus "flow|lamResPeelMiss" s1 )
-
-                Just resVar ->
-                    case Store.monoTypeToVar (deTopAnnos (Mono.typeOf monoBody)) s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( bodyVar, s2 ) ->
-                            case unifyStepBestEffort resVar bodyVar s2 of
-                                Err e ->
-                                    Err e
-
-                                Ok ( _, s3 ) ->
-                                    case Store.zonkToMono headVar s3 of
-                                        Err e ->
-                                            Err e
-
-                                        Ok ( zonked2, s4 ) ->
-                                            let
-                                                monoType1 =
-                                                    Mono.overlayAnnotations monoType0 zonked2
-                                            in
-                                            if monoType1 == monoType0 then
-                                                Ok ( monoType0, Engine.bumpArgFlowCensus "flow|lamResSame" s4 )
-
-                                            else
-                                                Ok ( monoType1, Engine.bumpArgFlowCensus "flow|lamResEnrich" s4 )
-
-
-{-| Step into a lambda-type variable past exactly `n` parameter slots
-(`Store.arrowParts` peels one param per call, matching the closure's param
-list 1:1 — the `unifyParamsCollect` discipline), chasing transparent
-aliases without consuming depth (the `papSuccGoC` discipline). `Nothing`
-when the spine ends early.
--}
-peelParamsVar : Int -> Vars.Variable -> Step (Maybe Vars.Variable)
-peelParamsVar n v s0 =
-    if n <= 0 then
-        Ok ( Just v, s0 )
-
-    else
-        case Engine.liftIO (UF.get v) s0 of
-            Err e ->
-                Err e
-
-            Ok ( desc, s1 ) ->
-                case desc.content of
-                    Vars.Alias _ _ _ real ->
-                        peelParamsVar n real s1
-
-                    _ ->
-                        case Store.arrowParts desc.content of
-                            Just ( _, pRest ) ->
-                                peelParamsVar (n - 1) pRest s1
-
-                            Nothing ->
-                                Ok ( Nothing, s1 )
-
-
-{-| E15: an access-form argument (`r.f`, `(g x).f`) takes the flowConnect
-write-back — its translated type carries the record's field annotations
-(`refineAccessType`), which the fresh-loaded arg var does not.
--}
-isAccessForm : TOpt.Expr TypeIds.MVarId -> Bool
-isAccessForm arg =
-    case arg of
-        TOpt.Access _ _ _ _ ->
-            True
-
-        _ ->
-            False
-
-
+                Ok ( mid, s1 ) ->
+                    Engine.andThen (\_ -> \s -> Ok ( (), Engine.bumpArgFlowCensus "lmInject|pap" s )) (LssInfer.injectSpineMemberId 1 mid v) s1
 {-| Is the argument a lambda literal? (The M1 flowConnect trigger — only
 literals carry a body whose translation solves interior sets in-item.)
 -}
@@ -4620,7 +4311,7 @@ Any other local injects nothing here (its members arrive via `enrichFromEnv`).
 -}
 injectRetranslatingSelf : Name -> Vars.Variable -> Step ()
 injectRetranslatingSelf name canVar s0 =
-    if not (s0.env.lss.enabled && s0.env.lss.stamp.useInject) then
+    if not s0.env.lss.enabled then
         Ok ( (), s0 )
 
     else
@@ -4725,19 +4416,15 @@ injectArgLambdaMemberGo arg canVar =
                 (standaloneArgMember ("g|" ++ TOpt.toComparableGlobal (TOpt.Global home name)) (TOpt.Global home name) canVar)
 
         TOpt.Accessor _ field _ ->
-            -- L3 (lss.injTotal, plans/lss-coverage-four-levers.md §1.3): the
+            -- L3 (plans/lss-coverage-four-levers.md §1.3): the
             -- inference side has minted `a|<field>` for accessor references
             -- since POST-001; the translate side silently no-op'd — the S.10
             -- lockstep asymmetry. Head-only (".field" is an arity-1 chomper).
             \s ->
-                if s.env.lss.injTotal then
-                    Engine.andThen
-                        (\mid -> LssInfer.injectSpineMemberId 1 mid canVar)
-                        (Engine.memberIdFor ("a|" ++ field))
-                        (Engine.bumpArgFlowCensus "argArm|accessor" s)
-
-                else
-                    Ok ( (), s )
+                Engine.andThen
+                    (\mid -> LssInfer.injectSpineMemberId 1 mid canVar)
+                    (Engine.memberIdFor ("a|" ++ field))
+                    (Engine.bumpArgFlowCensus "argArm|accessor" s)
 
         TOpt.VarLocal name _ ->
             injectRetranslatingSelf name canVar
@@ -4750,11 +4437,7 @@ injectArgLambdaMemberGo arg canVar =
             -- modules) — the same k| identity the kernel-ALIAS VarGlobal arm
             -- mints, head-only per the kernelToSig rule.
             \s ->
-                if s.env.lss.injTotal then
-                    standaloneArgKernelMember ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name ) canVar (Engine.bumpArgFlowCensus "argArm|kernel" s)
-
-                else
-                    Ok ( (), s )
+                standaloneArgKernelMember ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name ) canVar (Engine.bumpArgFlowCensus "argArm|kernel" s)
 
         _ ->
             \s -> Ok ( (), s )
@@ -4858,7 +4541,7 @@ uninjected position is exactly today's behaviour, so every fallback is sound.
 -}
 injectPapMember : TOpt.Global -> Vars.Variable -> Int -> Step ()
 injectPapMember global funcVar argCount s0 =
-    if not (s0.env.lss.enabled && s0.env.lss.papMembers) then
+    if not s0.env.lss.enabled then
         Ok ( (), s0 )
 
     else
@@ -4914,8 +4597,8 @@ injectPapMember global funcVar argCount s0 =
                             Err e
 
                         Ok ( _, s4 ) ->
-                            -- L2 (lss.injTotal, plans/lss-coverage-four-levers.md
-                            -- §1.2): finish the counted papInject|deep residue —
+                            -- L2 (plans/lss-coverage-four-levers.md §1.2):
+                            -- finish the counted papInject|deep residue —
                             -- p|g|d for the depths past the residual head.
                             LssInfer.injectPapSuccessorsFrom global (argCount + 1) residualVar s4
 
@@ -4973,7 +4656,7 @@ memberIdForDepth g d groundKey s0 =
                     Just _ ->
                         case groundKey of
                             Just tk ->
-                                -- `lss.rootFold` §1.3: mint the GROUND id
+                                -- Root-member fold §1.3: mint the GROUND id
                                 -- directly — the same string the folded root
                                 -- mint and LSS_019 reference grounding
                                 -- produce, so all three converge on one id.
@@ -5007,7 +4690,7 @@ dataflow this plan must not claim.
 -}
 stampSelfSpine : TOpt.Global -> Mono.MonoType -> Step Mono.MonoType
 stampSelfSpine g monoType s0 =
-    if not (s0.env.lss.enabled && s0.env.lss.regIdentity) then
+    if not s0.env.lss.enabled then
         Ok ( monoType, s0 )
 
     else
@@ -5015,13 +4698,9 @@ stampSelfSpine g monoType s0 =
             -- §1.3: the head's ground qualifier is the widened whole type —
             -- pure `Mono.widenSets`, string-equal to the spec's captured
             -- creation key (`widenSets` ⊤-widens every anno, so stamped and
-            -- unstamped demands render identically). Only built flag-on.
+            -- unstamped demands render identically).
             groundKey =
-                if s0.env.lss.rootFold then
-                    Just (Mono.toComparableMonoType (Mono.widenSets monoType))
-
-                else
-                    Nothing
+                Just (Mono.toComparableMonoType (Mono.widenSets monoType))
         in
         stampSpineGo g groundKey (LssInfer.declaredArityOf g 8 s0) 0 monoType s0
 
@@ -5177,12 +4856,13 @@ enrichFromEnv arg canVar s0 =
                     -- E15 (plans/lss-container-payload-transport.md §12.10.1):
                     -- a `r.f` ARGUMENT or CALLEE used to enrich nothing — the
                     -- record's bound type knows the field's set, so project it
-                    -- (the `VarLocal` arm one projection deeper). An access of
-                    -- a non-local record takes the post-translation write-back
-                    -- instead (`StashParam`, `isAccessForm`).
+                    -- (the `VarLocal` arm one projection deeper). Shipped as
+                    -- `lss.flow.accessFlow`, DEFAULT-ON 2026-09-16
+                    -- (`enrich|access|ofLocal` 5,785 joins), unconditional
+                    -- 2026-09-18.
                     case accessedLocalName record of
                         Just rname ->
-                            if not (s0.env.lss.enabled && s0.env.lss.flow.accessFlow) then
+                            if not s0.env.lss.enabled then
                                 Ok ( (), s0 )
 
                             else
@@ -5516,16 +5196,10 @@ joinKernelTunnels resVar vars s0 =
             Ok ( (), s0 )
 
         v :: rest ->
-            -- LSS_023 selector — the translation twin of LssInfer's
-            -- `joinTunnels` gate; see the comment there. The kernel boundary
-            -- runs flag-off, so the sigFlow gate must live at the join.
-            case
-                if s0.env.lss.sigFlow then
-                    LssInfer.flowArrowSetsPlain v resVar s0
-
-                else
-                    LssInfer.joinArrowSetsPlain v resVar s0
-            of
+            -- LSS_023 — the translation twin of LssInfer's `joinTunnels`;
+            -- see the comment there. Also a `lss.sigFlow` selector until that
+            -- flag was fixed at its default and removed 2026-09-18.
+            case LssInfer.flowArrowSetsPlain v resVar s0 of
                 Err e ->
                     Err e
 
@@ -5986,8 +5660,14 @@ translateLet def body letCanType =
                                                             -- the value (LetNumberIndirectDual).
                                                             || (not (monoTypeMentionsEco bodyType) && numericLeafOnlyDiff defMonoType0 bodyType)
 
+                                                    -- F3-b (`lss.flow.letOverlay`,
+                                                    -- DEFAULT-ON 2026-09-16,
+                                                    -- unconditional 2026-09-18):
+                                                    -- `leak|letAnno` 58 -> 0,
+                                                    -- ⊤ 698 -> 668, `var` +30 —
+                                                    -- a ⊤-manufacturer removal.
                                                     letOverlay =
-                                                        s3.env.lss.enabled && s3.env.lss.flow.letOverlay
+                                                        s3.env.lss.enabled
 
                                                     defType =
                                                         if useBodyType then
@@ -6135,7 +5815,7 @@ tailDefBindingTypes maybeAnnVar typedArgs defCanType s0 =
                     Err e
 
                 Ok ( classifiedType, s2 ) ->
-                    case ( s2.env.lss.enabled && s2.env.lss.flow.letOverlay, maybeAnnVar ) of
+                    case ( s2.env.lss.enabled, maybeAnnVar ) of
                         ( True, Just annVar ) ->
                             case Store.zonkToMono annVar s2 of
                                 Err e ->
@@ -6501,7 +6181,7 @@ genericAccess record fieldName meta =
                                 (\s ->
                                     Mono.MonoRecordAccess monoRecord
                                         fieldName
-                                        (refineAccessType (s.env.lss.enabled && s.env.lss.flow.accessFlow) monoType (Mono.typeOf monoRecord) fieldName)
+                                        (refineAccessType s.env.lss.enabled monoType (Mono.typeOf monoRecord) fieldName)
                                 )
                         )
                         (translate record)
@@ -8154,8 +7834,10 @@ specializeDestructor (TOpt.Destructor name path meta) =
             Engine.andThen
                 (\monoType0 sD ->
                     let
-                        -- lss.destrAnno (plans/lss-ctor-arrow-identity.md
-                        -- §9.5, both fixes at the one site the AR chose):
+                        -- Destructor annotations
+                        -- (plans/lss-ctor-arrow-identity.md §9.5). Shipped as
+                        -- `lss.destrAnno`, default-ON 2026-08-31, and
+                        -- unconditional since 2026-09-18:
                         --
                         -- FIX A: the projected type (the root's varEnv type
                         -- pushed down the path) carries type-argument-borne
@@ -8185,7 +7867,7 @@ specializeDestructor (TOpt.Destructor name path meta) =
                         -- The projection (Fix A) is per-value — the root's
                         -- own flow — and stays.
                         monoType =
-                            if not (sD.env.lss.enabled && sD.env.lss.destrAnno && Mono.hasTopAnno monoType0) then
+                            if not (sD.env.lss.enabled && Mono.hasTopAnno monoType0) then
                                 monoType0
 
                             else

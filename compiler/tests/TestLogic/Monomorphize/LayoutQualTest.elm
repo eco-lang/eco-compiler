@@ -9,19 +9,16 @@ Three groups:
     `widenSets` (equal widened keys) while layout differences survive;
     `layoutQualKey`'s captured-vs-fallback split; `internMemberKey`
     idempotence (the re-mint pin).
-2.  SPIRAL pins on the MuTieTest fixture: under `layoutQualMembers` the
-    qualification spiral closes at its second member WITHOUT recording any
-    μ-tie — with `muTie` off (C alone terminates it: the generation-2 spec
-    is an annotation-only split of generation 1, so the mint re-interns the
-    same id and the registry probe hits) and with `muTie` on (the §2.3
-    equal-id bypass: `tieBypass` counts, `muTied`/`lssBlockedMembers` stay
-    empty). Any `lssBlockedMembers` shrink is the bypass and nothing else.
-3.  SPLIT-COLLAPSE pins: a two-caller family forcing an annotation-only
+2.  SPIRAL pin on the MuTieTest fixture: the qualification spiral closes at
+    its second member WITHOUT recording any μ-tie (the §2.3 equal-id bypass:
+    `tieBypass` counts, `muTied`/`lssBlockedMembers` stay empty). Any
+    `lssBlockedMembers` shrink is the bypass and nothing else.
+3.  SPLIT-COLLAPSE pin: a two-caller family forcing an annotation-only
     same-layout key split of `mid` whose per-spec inner lambda feeds a
-    shared HOF. Flag-off the propagated ids split the HOF's key (2 specs);
-    flag-on both mid specs mint ONE id (`shared` counts) and the HOF
+    shared HOF. Both mid specs mint ONE id (`shared` counts) and the HOF
     collapses to 1 spec — the §0 `UnionFind.get/modify`-class propagated
-    split, reproduced in miniature.
+    split, reproduced in miniature. The deleted flag-off arm had the
+    propagated ids splitting the HOF's key into 2 specs.
 
 -}
 
@@ -179,18 +176,23 @@ type alias Facts =
     }
 
 
-runSpiral : Bool -> Bool -> Result String Facts
-runSpiral muTie layoutQual =
+{-| `muTie`, `layoutQualMembers` and `sigFlow` were fixed at their defaults
+and removed 2026-09-18, so only the (muTie ON, layoutQual ON) arm survives.
+The deleted arms recorded: with muTie OFF and layoutQual ON, C alone closes
+the spiral and nothing is blocked; with muTie ON and layoutQual OFF, the tie
+itself fires and blocks (LSS_018 unchanged) with tieBypass 0. The `sigFlow`
+pin isolated LSS_024's C mechanism from signature facts on these tiny
+fixtures.
+-}
+runSpiral : Result String Facts
+runSpiral =
     let
         defaults =
             Config.defaultLss
     in
     Pipeline.runSolverMonoWithReport
         Config.defaultLimits
-        -- sigFlow PINNED OFF: these fixtures pin LSS_024's C mechanism in
-        -- isolation (default-on sigFlow since 2026-08-21 would add
-        -- signature facts to the tiny fixtures and move spec counts).
-        { defaults | enabled = True, keyed = True, muTie = muTie, layoutQualMembers = layoutQual, sigFlow = False }
+        { defaults | enabled = True }
         spiralModule
         |> Result.map
             (\( graph, maybeReport ) ->
@@ -258,27 +260,9 @@ leadingDigits s =
 
 spiralPins : List Test
 spiralPins =
-    [ Test.test "muTie OFF + layoutQual ON: C alone closes the spiral, nothing blocked" <|
+    [ Test.test "equal-id bypass — the spiral closes, nothing recorded, tieBypass counts" <|
         \() ->
-            case runSpiral False True of
-                Err msg ->
-                    Expect.fail msg
-
-                Ok f ->
-                    Expect.all
-                        [ \x -> Expect.equal 0 x.blockedCount
-                        , \x ->
-                            if x.loopSpecs <= 3 then
-                                Expect.pass
-
-                            else
-                                Expect.fail ("spiral did not close: loopSpecs=" ++ String.fromInt x.loopSpecs)
-                        , \x -> Expect.equal 0 (counterOf "fallback=" x.report)
-                        ]
-                        f
-    , Test.test "muTie ON + layoutQual ON: equal-id bypass — closed, nothing recorded, tieBypass counts" <|
-        \() ->
-            case runSpiral True True of
+            case runSpiral of
                 Err msg ->
                     Expect.fail msg
 
@@ -306,29 +290,6 @@ spiralPins =
                         , \x -> Expect.equal 0 (counterOf "fallback=" x.report)
                         ]
                         f
-    , Test.test "muTie ON + layoutQual OFF: the tie still fires and blocks (LSS_018 unchanged)" <|
-        \() ->
-            case runSpiral True False of
-                Err msg ->
-                    Expect.fail msg
-
-                Ok f ->
-                    Expect.all
-                        [ \x ->
-                            if x.blockedCount >= 1 then
-                                Expect.pass
-
-                            else
-                                Expect.fail "expected the flag-off arm to μ-tie and block"
-                        , \x ->
-                            if x.loopSpecs <= 3 then
-                                Expect.pass
-
-                            else
-                                Expect.fail ("tie did not close the spiral: loopSpecs=" ++ String.fromInt x.loopSpecs)
-                        , \x -> Expect.equal 0 (counterOf "tieBypass=" x.report)
-                        ]
-                        f
     ]
 
 
@@ -336,9 +297,9 @@ spiralPins =
 -- ====== 3. SPLIT-COLLAPSE PINS ======
 
 
-runSplit : Bool -> Result String { midSpecs : Int, hofSpecs : Int, report : String }
-runSplit layoutQual =
-    runSplitWithBudget layoutQual Config.defaultLss.maxSpecsPerGlobal
+runSplit : Result String { midSpecs : Int, hofSpecs : Int, report : String }
+runSplit =
+    runSplitWithBudget Config.defaultLss.maxSpecsPerGlobal
 
 
 {-| §5.1's budget-twin pin runs this with `maxSpecsPerGlobal = 1`: the first
@@ -346,15 +307,15 @@ runSplit layoutQual =
 BUDGET-WIDENED — twins of one global whose widened creation keys must land
 EQUAL, so their lambdas SHARE one id.
 -}
-runSplitWithBudget : Bool -> Int -> Result String { midSpecs : Int, hofSpecs : Int, report : String }
-runSplitWithBudget layoutQual budget =
+runSplitWithBudget : Int -> Result String { midSpecs : Int, hofSpecs : Int, report : String }
+runSplitWithBudget budget =
     let
         defaults =
             Config.defaultLss
     in
     Pipeline.runSolverMonoWithReport
         Config.defaultLimits
-        { defaults | enabled = True, keyed = True, layoutQualMembers = layoutQual, maxSpecsPerGlobal = budget, sigFlow = False }
+        { defaults | enabled = True, maxSpecsPerGlobal = budget }
         splitModule
         |> Result.map
             (\( (Mono.MonoGraph g) as graph, maybeReport ) ->
@@ -367,18 +328,9 @@ runSplitWithBudget layoutQual budget =
 
 splitPins : List Test
 splitPins =
-    [ Test.test "flag OFF: annotation-only split of mid propagates into applyHof (2 specs each)" <|
+    [ Test.test "mid's root split persists, the PROPAGATED applyHof split collapses to 1" <|
         \() ->
-            case runSplit False of
-                Err msg ->
-                    Expect.fail msg
-
-                Ok f ->
-                    Expect.equal { midSpecs = 2, hofSpecs = 2 }
-                        { midSpecs = f.midSpecs, hofSpecs = f.hofSpecs }
-    , Test.test "flag ON: mid's root split persists, the PROPAGATED applyHof split collapses to 1" <|
-        \() ->
-            case runSplit True of
+            case runSplit of
                 Err msg ->
                     Expect.fail msg
 
@@ -397,7 +349,7 @@ splitPins =
                         f
     , Test.test "budget twins share: annotation-created + budget-widened specs of one global mint ONE id" <|
         \() ->
-            case runSplitWithBudget True 1 of
+            case runSplitWithBudget 1 of
                 Err msg ->
                     Expect.fail msg
 

@@ -49,10 +49,14 @@ import TestLogic.TestPipeline as Pipeline
 suite : Test
 suite =
     Test.describe "instance-qualified lambda members"
-        [ Test.test "1. FLAG-OFF: one source lambda in two local-multi instances shares ONE member id" <|
+        [ Test.test "1. CAP=1: one source lambda in two local-multi instances shares ONE member id" <|
             \() ->
-                -- Pins the defect, so test 2's differential is not vacuous.
-                case runWith False foldShapeModule of
+                -- Pins the collapsed arm, so test 2's differential is not
+                -- vacuous. `maxInstances = 1` tags nothing (ordinal 0 is never
+                -- tagged and ordinals at or past the cap take today's key), so
+                -- it reproduces exactly what `lss.stamp.enabled = False` used
+                -- to produce before that flag was removed (2026-09-18).
+                case runCollapsed foldShapeModule of
                     Err e ->
                         Expect.fail e
 
@@ -75,12 +79,12 @@ suite =
                                 ("expected a SHARED member id across instances, got all-distinct "
                                     ++ describeInts members
                                 )
-        , Test.test "2. FLAG-ON: the shared pair splits — one more DISTINCT member id" <|
+        , Test.test "2. the shared pair splits — one more DISTINCT member id" <|
             \() ->
                 -- Id-count, not id-identity: interning is order-dependent, so
                 -- the integers themselves move between arms. What is stable is
                 -- that one member id becomes two. Measured 5 -> 6 distinct.
-                case ( runWith False foldShapeModule, runWith True foldShapeModule ) of
+                case ( runCollapsed foldShapeModule, runWith foldShapeModule ) of
                     ( Ok offG, Ok onG ) ->
                         let
                             off =
@@ -116,7 +120,7 @@ suite =
                 -- annotations at the callback position => different specHashOf
                 -- => `keyed` splits the consumer. Without this step the id
                 -- split buys nothing.
-                case ( runWith False foldShapeModule, runWith True foldShapeModule ) of
+                case ( runCollapsed foldShapeModule, runWith foldShapeModule ) of
                     ( Ok offG, Ok onG ) ->
                         let
                             off =
@@ -141,27 +145,11 @@ suite =
 
                     ( _, Err e ) ->
                         Expect.fail e
-        , Test.test "4. CAP: maxInstances = 1 reproduces the flag-off collapse" <|
-            \() ->
-                -- §3.3: the termination backstop. Ordinal 0 is never tagged and
-                -- ordinals at or past the cap take today's key, so cap = 1 tags
-                -- nothing at all and the fence declines exactly as it does now.
-                case ( runWith False foldShapeModule, runWithMax True 1 foldShapeModule ) of
-                    ( Ok offG, Ok cappedG ) ->
-                        Expect.equal
-                            (List.length (distinct (closureMembers offG)))
-                            (List.length (distinct (closureMembers cappedG)))
-
-                    ( Err e, _ ) ->
-                        Expect.fail e
-
-                    ( _, Err e ) ->
-                        Expect.fail e
-        , Test.test "5. NO LOCAL-MULTI, NO CHANGE: a plain module is arm-identical" <|
+        , Test.test "4. NO LOCAL-MULTI, NO CHANGE: a plain module is cap-identical" <|
             \() ->
                 -- The mechanism must be inert where nothing splits — otherwise
                 -- the corpus-wide fan-out cost is paid for nothing.
-                case ( runWith False plainModule, runWith True plainModule ) of
+                case ( runCollapsed plainModule, runWith plainModule ) of
                     ( Ok offG, Ok onG ) ->
                         Expect.equal (List.sort (closureMembers offG)) (List.sort (closureMembers onG))
 
@@ -263,13 +251,22 @@ plainModule =
 -- ====== HARNESS ======
 
 
-runWith : Bool -> Src.Module -> Result String Mono.MonoGraph
-runWith on srcModule =
-    runWithMax on Config.defaultLss.stamp.maxInstances srcModule
+runWith : Src.Module -> Result String Mono.MonoGraph
+runWith srcModule =
+    runWithMax Config.defaultLss.stamp.maxInstances srcModule
 
 
-runWithMax : Bool -> Int -> Src.Module -> Result String Mono.MonoGraph
-runWithMax on maxInstances srcModule =
+{-| The COLLAPSED arm: `maxInstances = 1` tags nothing, which is what
+`lss.stamp.enabled = False` produced before that flag was fixed at its default
+and removed (2026-09-18).
+-}
+runCollapsed : Src.Module -> Result String Mono.MonoGraph
+runCollapsed srcModule =
+    runWithMax 1 srcModule
+
+
+runWithMax : Int -> Src.Module -> Result String Mono.MonoGraph
+runWithMax maxInstances srcModule =
     let
         defaults =
             Config.defaultLss
@@ -280,12 +277,11 @@ runWithMax on maxInstances srcModule =
     Pipeline.runSolverMonoWithLimits Config.defaultLimits
         { defaults
             | enabled = True
-            , keyed = True
             , stamp =
                 -- Record UPDATE, not a literal: a literal breaks the moment
                 -- `LssStampConfig` gains a field, and nothing here would say so
                 -- until a self-build.
-                { stampDefaults | enabled = on, maxInstances = maxInstances }
+                { stampDefaults | maxInstances = maxInstances }
         }
         srcModule
 

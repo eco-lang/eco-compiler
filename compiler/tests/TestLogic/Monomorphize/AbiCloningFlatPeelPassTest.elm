@@ -1,7 +1,13 @@
 module TestLogic.Monomorphize.AbiCloningFlatPeelPassTest exposing (suite)
 
-{-| FIX A at the PASS level — `lss.stamp.flatPeel`
-(`plans/lss-instance-qualified-members.md` §15.1/§17.5 pins 6 and 7).
+{-| FIX A at the PASS level (`plans/lss-instance-qualified-members.md`
+§15.1/§17.5 pins 6 and 7).
+
+Fix A shipped behind `lss.stamp.flatPeel`, default-ON since 2026-09-06; the
+flag was fixed at that default and removed 2026-09-18, so tests 1 and 4 lost
+their flag-off leg and now pin the shipping behaviour directly. Solo census
+when it was OFF: `bodyMismatch` 1,415 -> 67, artifact −43 KB — i.e. Fix A is
+what puts the over-applying fold family in front of the fence at all.
 
 `AbiCloningFlatPeelTest` pins `peelStages` in isolation; these drive the whole
 pass on hand-built graphs, in the `AbiCloningFenceTest` mould, because the
@@ -28,8 +34,8 @@ import Test exposing (Test)
 
 suite : Test
 suite =
-    Test.describe "Fix A at the pass level (lss.stamp.flatPeel)"
-        [ Test.test "1. DIFFERENTIAL: an over-applying site declines flag-off and STAMPS flag-on" <|
+    Test.describe "Fix A at the pass level"
+        [ Test.test "1. an over-applying site STAMPS (it declined before Fix A)" <|
             \() ->
                 -- The plan's headline claim. A 3-parameter instance under a
                 -- singleton member, consulted by a site whose callee type is
@@ -41,10 +47,8 @@ suite =
                         ]
                 in
                 Expect.all
-                    [ \_ -> Expect.equal 0 (statsWith False graph).dispatchUpgraded
-                    , \_ -> Expect.equal 1 (statsWith False graph).declinedShapeArityOver
-                    , \_ -> Expect.equal 1 (statsWith True graph).dispatchUpgraded
-                    , \_ -> Expect.equal 0 (statsWith True graph).declinedShapeArityOver
+                    [ \_ -> Expect.equal 1 (statsOf graph).dispatchUpgraded
+                    , \_ -> Expect.equal 0 (statsOf graph).declinedShapeArityOver
                     ]
                     ()
         , Test.test "2. A PAP SUFFIX NEVER QUALIFIES — a 4-param instance is not stamped at a 3-arg site" <|
@@ -66,8 +70,8 @@ suite =
                         ]
                 in
                 Expect.all
-                    [ \_ -> Expect.equal 0 (statsWith True graph).dispatchUpgraded
-                    , \_ -> Expect.equal 1 (statsWith True graph).declinedShapeArityOver
+                    [ \_ -> Expect.equal 0 (statsOf graph).dispatchUpgraded
+                    , \_ -> Expect.equal 1 (statsOf graph).declinedShapeArityOver
                     ]
                     ()
         , Test.test "3. Fix A does NOT bypass the LSS_024 fence: divergent bodies still decline" <|
@@ -86,21 +90,26 @@ suite =
                         ]
                 in
                 Expect.all
-                    [ \_ -> Expect.equal 0 (statsWith True graph).dispatchUpgraded
-                    , \_ -> Expect.equal 1 (statsWith True graph).declinedBodyMismatch
-                    , \_ -> Expect.equal 0 (statsWith True graph).declinedShapeArityOver
+                    [ \_ -> Expect.equal 0 (statsOf graph).dispatchUpgraded
+                    , \_ -> Expect.equal 1 (statsOf graph).declinedBodyMismatch
+                    , \_ -> Expect.equal 0 (statsOf graph).declinedShapeArityOver
                     ]
                     ()
-        , Test.test "4. an EXACTLY-saturating site is untouched by the flag" <|
+        , Test.test "4. an EXACTLY-saturating site stamps on the ordinary path" <|
             \() ->
-                -- Fix A must only ever fire on the over-applying branch.
+                -- Fix A must only ever fire on the over-applying branch, so an
+                -- exact site is decided by the plain representative match.
                 let
                     graph =
                         [ flatClosure 1 member [ Mono.MInt ] intBody
                         , exactSite
                         ]
                 in
-                Expect.equal (statsWith False graph).dispatchUpgraded (statsWith True graph).dispatchUpgraded
+                Expect.all
+                    [ \_ -> Expect.equal 1 (statsOf graph).dispatchUpgraded
+                    , \_ -> Expect.equal 0 (statsOf graph).declinedShapeArityOver
+                    ]
+                    ()
         ]
 
 
@@ -194,14 +203,10 @@ exactSite =
         Mono.defaultCallInfo
 
 
-statsWith : Bool -> List Mono.MonoExpr -> AbiCloning.AbiCloningStats
-statsWith flatPeel exprs =
+statsOf : List Mono.MonoExpr -> AbiCloning.AbiCloningStats
+statsOf exprs =
     Tuple.second
         (AbiCloning.abiCloningPass True
-            False
-            flatPeel
-            True
-            False
             (Mono.MonoGraph
                 { nodes =
                     Array.fromList

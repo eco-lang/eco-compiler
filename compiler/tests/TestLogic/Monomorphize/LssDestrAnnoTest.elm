@@ -45,29 +45,26 @@ import TestLogic.TestPipeline as Pipeline
 
 suite : Test
 suite =
-    Test.describe "lss.destrAnno — destructor-bound annotations"
-        [ Test.test "1. DIFFERENTIAL: the destructured payload arrow flips ⊤ -> SET" <|
+    Test.describe "destructor-bound annotations"
+        [ -- This was a flag differential: with `lss.destrAnno` off the Box /a0
+          -- position carried a ⊤. The flag was fixed at its default and removed
+          -- 2026-09-18, so what remains is the ON leg — SETs and no ⊤.
+          Test.test "1. the destructured payload arrow carries a SET, never ⊤" <|
             \() ->
-                case ( runWith False fixture, runWith True fixture ) of
-                    ( Ok offG, Ok onG ) ->
-                        case ( unboxArgAnnos offG, unboxArgAnnos onG ) of
-                            ( [], _ ) ->
+                case runWith fixture of
+                    Ok onG ->
+                        case unboxArgAnnos onG of
+                            [] ->
                                 Expect.fail "no Box /a0 position — fixture broken"
 
-                            ( offA, onA ) ->
-                                if not (List.any isTop offA) then
-                                    Expect.fail ("off-arm expected a ⊤ somewhere, got " ++ describe offA)
-
-                                else if List.any isSet onA && not (List.any isTop onA) then
+                            onA ->
+                                if List.any isSet onA && not (List.any isTop onA) then
                                     Expect.pass
 
                                 else
-                                    Expect.fail ("on-arm expected SETs and no ⊤, got " ++ describe onA)
+                                    Expect.fail ("expected SETs and no ⊤, got " ++ describe onA)
 
-                    ( Err e, _ ) ->
-                        Expect.fail e
-
-                    ( _, Err e ) ->
+                    Err e ->
                         Expect.fail e
         , Test.test "2. enrichAnnotations never downgrades a set (re-landed pin)" <|
             \() ->
@@ -197,14 +194,14 @@ fixture =
 -- ====== HARNESS ======
 
 
-runWith : Bool -> Src.Module -> Result String Mono.MonoGraph
-runWith destrAnno srcModule =
+runWith : Src.Module -> Result String Mono.MonoGraph
+runWith srcModule =
     let
         defaults =
             Config.defaultLss
     in
     Pipeline.runSolverMonoWithLimits Config.defaultLimits
-        { defaults | enabled = True, keyed = True, destrAnno = destrAnno }
+        { defaults | enabled = True }
         srcModule
 
 

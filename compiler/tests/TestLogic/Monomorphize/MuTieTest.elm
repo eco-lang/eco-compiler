@@ -70,48 +70,15 @@ import TestLogic.TestPipeline as Pipeline
 suite : Test
 suite =
     Test.describe "LSS_018 μ-tie (qualification spiral)"
-        [ Test.test "flag OFF: the spiral fans out and nothing is tied" <|
+        [ Test.test "the fan-out closes at the family's second member" <|
             \() ->
-                case run False of
+                case run of
                     Err msg ->
                         Expect.fail msg
 
                     Ok facts ->
                         Expect.all
                             [ \f ->
-                                Expect.equal 0
-                                    f.blockedCount
-                            , \f ->
-                                -- The spiral is real AND the budget is its
-                                -- ONLY terminator (plan §2.1): measured 65
-                                -- specs of `loop` = the PINNED budget (64)
-                                -- + the seed, where the TYPE alone needs 1.
-                                if f.loopSpecs >= pinnedBudget then
-                                    Expect.pass
-
-                                else
-                                    Expect.fail
-                                        ("expected the flag-off spiral to run to the budget, got loopSpecs="
-                                            ++ String.fromInt f.loopSpecs
-                                        )
-                            ]
-                            facts
-        , Test.test "flag ON: the family is tied, blocked, and the fan-out closes" <|
-            \() ->
-                case run True of
-                    Err msg ->
-                        Expect.fail msg
-
-                    Ok facts ->
-                        Expect.all
-                            [ \f ->
-                                if f.blockedCount >= 1 then
-                                    Expect.pass
-
-                                else
-                                    Expect.fail
-                                        "expected at least one μ-tied member exported in lssBlockedMembers"
-                            , \f ->
                                 -- Measured 2: the family closes at its
                                 -- SECOND member (S2 reuses Q(L,S1), so its
                                 -- outgoing demand equals its incoming one
@@ -127,26 +94,6 @@ suite =
                                         )
                             ]
                             facts
-        , Test.test "the tie strictly reduces fan-out (off vs on, same fixture)" <|
-            \() ->
-                case ( run False, run True ) of
-                    ( Ok off, Ok on ) ->
-                        if on.loopSpecs < off.loopSpecs then
-                            Expect.pass
-
-                        else
-                            Expect.fail
-                                ("μ-tie did not reduce specialization fan-out: off="
-                                    ++ String.fromInt off.loopSpecs
-                                    ++ " on="
-                                    ++ String.fromInt on.loopSpecs
-                                )
-
-                    ( Err e, _ ) ->
-                        Expect.fail e
-
-                    ( _, Err e ) ->
-                        Expect.fail e
         ]
 
 
@@ -168,25 +115,27 @@ pinnedBudget =
     64
 
 
-run : Bool -> Result String Facts
-run muTie =
+run : Result String Facts
+run =
     let
         defaults =
             Config.defaultLss
     in
     Pipeline.runSolverMonoWithLimits
         Config.defaultLimits
-        -- keyed = True (the shipping default) is what routes the mints
-        -- through fork qualification in the first place.
-        -- layoutQualMembers PINNED OFF: this fixture tests LSS_018's tie in
-        -- ISOLATION — under LSS_024 (default-on since 2026-08-21) C alone
-        -- closes the spiral and the flag-off arm's fan-out-to-budget
-        -- expectation would be vacuous (LayoutQualTest pins the C arms).
-        -- arrowSolverRoots PINNED OFF for the same reason (default-on since
-        -- 2026-09-16): one shared slot per unified arrow closes the spiral
-        -- flag-off too (loopSpecs=8 instead of the budget), so the fan-out
-        -- expectation only holds with per-occurrence identity.
-        { defaults | enabled = True, keyed = True, muTie = muTie, layoutQualMembers = False, arrowSolverRoots = False, maxSpecsPerGlobal = pinnedBudget, maxSetSize = 8 }
+        -- All-globals keying (unconditional under LSS since 2026-09-18)
+        -- is what routes the mints through fork qualification at all.
+        --
+        -- THE ISOLATION IS GONE (2026-09-18). This fixture used to pin
+        -- `layoutQualMembers` and `arrowSolverRoots` OFF so the spiral's
+        -- closure was attributable to LSS_018's tie ALONE — under LSS_024,
+        -- C alone closes it, and under solver-root arrow ids one shared slot
+        -- per unified arrow closes it too. Both flags were fixed at their
+        -- defaults and removed, so what survives is the TERMINATION property
+        -- at shipping defaults, no longer attributed to one mechanism. The
+        -- flag-off arm it was measured against (fan-out to the pinned budget
+        -- of 64, nothing tied) is recorded here and is no longer runnable.
+        { defaults | enabled = True, maxSpecsPerGlobal = pinnedBudget, maxSetSize = 8 }
         spiralModule
         |> Result.map factsOf
 

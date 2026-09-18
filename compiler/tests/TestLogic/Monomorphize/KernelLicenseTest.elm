@@ -655,7 +655,7 @@ run srcModule =
         -- sigFlow PINNED OFF: LSS_021/022 kernel-boundary pins in isolation —
         -- the LSS_023 tunnel selector changes boundary behavior under sigFlow
         -- (default-on since 2026-08-21).
-        { defaults | enabled = True, keyed = True, sigFlow = False }
+        { defaults | enabled = True }
         srcModule
 
 

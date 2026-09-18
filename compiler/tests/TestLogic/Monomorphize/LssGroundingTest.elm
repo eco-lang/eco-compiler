@@ -217,18 +217,10 @@ suite =
                         ]
                         ()
             ]
-        , Test.describe "pipeline (flag wiring end to end)"
-            [ Test.test "flag OFF: one family id per standalone global (today's semantics)" <|
+        , Test.describe "pipeline (wiring end to end)"
+            [ Test.test "one ground id per demanded layout, all SourceGlobal-resolvable" <|
                 \() ->
-                    case run False of
-                        Err msg ->
-                            Expect.fail msg
-
-                        Ok facts ->
-                            Expect.equal 1 facts.myIdOrigins
-            , Test.test "flag ON: one ground id per demanded layout, all SourceGlobal-resolvable" <|
-                \() ->
-                    case run True of
+                    case run of
                         Err msg ->
                             Expect.fail msg
 
@@ -302,22 +294,19 @@ type alias Facts =
     }
 
 
-run : Bool -> Result String Facts
-run ground =
+run : Result String Facts
+run =
     let
         defaults =
             Config.defaultLss
     in
     Pipeline.runSolverMonoWithLimits
         Config.defaultLimits
-        -- sigFlow PINNED OFF: LSS_019 grounding pins in isolation from the
-        -- sigFlow default flip (2026-08-21). rootFold PINNED OFF (2026-08-28,
-        -- same isolation rule, 5th occurrence of the overlapping-flag
-        -- pattern): the fold interns one GROUND g| id per demanded layout at
-        -- the lambda mint itself, so the flag-off arm's "exactly one family
-        -- id" pin — which is about GROUNDING, not folding — broke when
-        -- rootFold went default-on.
-        { defaults | enabled = True, keyed = True, groundStandalones = ground, sigFlow = False, rootFold = False }
+        -- The isolation pins (`sigFlow`/`rootFold` off, and the
+        -- `groundStandalones` arm itself) went with their flags on
+        -- 2026-09-18; this now measures the shipping pipeline. The deleted
+        -- flag-off arm pinned "exactly one family id per standalone global".
+        { defaults | enabled = True }
         twoLayoutModule
         |> Result.map factsOf
 

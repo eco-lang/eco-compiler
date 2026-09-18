@@ -8,7 +8,7 @@ sound 2-set that singleton-only consumers cannot use. Under the fold the root
 lambda interns the GROUND STANDALONE key instead, so root injection,
 reference grounding and the `regIdentity` head stamp converge on ONE id.
 
-All pins run with `regIdentity = True` explicitly (it is the mechanism that
+All pins used to set `regIdentity = True` explicitly (it is the mechanism that
 makes the pairs meet at heads; default-on today, pinned here for
 self-documentation and against future default changes).
 
@@ -40,42 +40,14 @@ import TestLogic.TestPipeline as Pipeline
 
 suite : Test
 suite =
-    Test.describe "lss.rootFold — one member id per (function, layout)"
-        [ Test.test "1. DIFFERENTIAL: a plain def's stored head collapses 2-set -> singleton" <|
-            \() ->
-                case ( runWith False plainModule, runWith True plainModule ) of
-                    ( Ok offG, Ok onG ) ->
-                        let
-                            offHeads =
-                                headAnnos "double" offG
-
-                            onHeads =
-                                headAnnos "double" onG
-                        in
-                        if List.isEmpty onHeads then
-                            Expect.fail "no spec registered for `double` — fixture broken"
-
-                        else if not (List.all isMulti offHeads) then
-                            Expect.fail ("flag-off head expected the l|/g| 2-set, got " ++ describe offHeads)
-
-                        else if List.all isSingleton onHeads then
-                            Expect.pass
-
-                        else
-                            Expect.fail ("flag-on head expected SINGLETONS, got " ++ describe onHeads)
-
-                    ( Err e, _ ) ->
-                        Expect.fail e
-
-                    ( _, Err e ) ->
-                        Expect.fail e
-        , Test.test "2. CONVERGENCE: the stored head id IS the reference-flow id" <|
+    Test.describe "root-member fold — one member id per (function, layout)"
+        [ Test.test "1. CONVERGENCE: the stored head id IS the reference-flow id" <|
             \() ->
                 -- `useIt double 3`: the consumer's parameter carries the
                 -- member the REFERENCE path injected; the stored head carries
                 -- the member the fold + stamp minted. Same integer = the
                 -- whole point of the fold. Id-comparing, not class-guessing.
-                case runWith True refModule of
+                case runWith refModule of
                     Err e ->
                         Expect.fail e
 
@@ -107,7 +79,7 @@ suite =
                 -- E9.2 folds references to — recreating the exact split the
                 -- fold exists to remove. The skip is pinned as: never LVar
                 -- (routing intact) and never a >2 set (no third identity).
-                case runWith True consModule of
+                case runWith consModule of
                     Err e ->
                         Expect.fail e
 
@@ -144,7 +116,7 @@ suite =
                 -- This asserts the property directly, which is also the only
                 -- form that distinguishes WHICH member survives: under the
                 -- repair the head's folded id must not appear at depth 1.
-                case runWithDepth True True plainModule of
+                case runWith plainModule of
                     Ok g ->
                         let
                             heads =
@@ -172,36 +144,9 @@ suite =
 
                     Err e ->
                         Expect.fail e
-        , Test.test "4b. DIFFERENTIAL: rootFoldDepth is what removes it" <|
-            \() ->
-                -- The same read with the repair OFF must SHOW the leak, so
-                -- this pair pins cause and effect rather than one endpoint.
-                case runWithDepth True False plainModule of
-                    Ok g ->
-                        let
-                            heads =
-                                List.concatMap annoMembers (headAnnos "plus2" g)
-
-                            deep =
-                                List.concatMap annoMembers (depth1Annos "plus2" g)
-                        in
-                        if List.any (\m -> List.member m deep) heads then
-                            Expect.pass
-
-                        else
-                            Expect.fail
-                                ("flag-off arm no longer reproduces the leak — "
-                                    ++ "heads "
-                                    ++ String.join "," (List.map String.fromInt heads)
-                                    ++ " vs depth1 "
-                                    ++ String.join "," (List.map String.fromInt deep)
-                                )
-
-                    Err e ->
-                        Expect.fail e
         , Test.test "5. CO-GATE: the crash shape publishes no false singleton" <|
             \() ->
-                case runWith True joinModule of
+                case runWith joinModule of
                     Err e ->
                         Expect.fail e
 
@@ -321,33 +266,25 @@ joinModule =
 -- ====== HARNESS ======
 
 
-runWith : Bool -> Src.Module -> Result String Mono.MonoGraph
-runWith rootFold srcModule =
-    runWithDepth rootFold Config.defaultLss.stamp.rootFoldDepth srcModule
+{-| `lss.rootFold` and `lss.stamp.rootFoldDepth` were fixed at their defaults
+and removed 2026-09-18, so the two deleted differentials are recorded here
+instead. Test 1 pinned the plain def's stored head collapsing from the
+`{l|, g|}` 2-set to a SINGLETON under the fold. Test 4b pinned that
+`rootFoldDepth` is what removes the AR-1 leak: with it off, the head's folded
+id DID appear at depth 1.
 
-
-{-| `runWith` with explicit control of `lss.stamp.rootFoldDepth`
-(plans/lss-root-fold-depth-qualified-spine.md). Needed because the two flags
-interact: `rootFoldDepth` only acts when `rootFold` is on, since it governs
-where the FOLDED id may be written.
+Solo census with the flags OFF: `rootFold` −> `kN` 2,586 -> 63,050 and the
+artifact +312 KB; `stamp.rootFoldDepth` −> `k1` -> 113,110, `kN` -> 34,745,
+artifact +157 KB.
 -}
-runWithDepth : Bool -> Bool -> Src.Module -> Result String Mono.MonoGraph
-runWithDepth rootFold depthIds srcModule =
+runWith : Src.Module -> Result String Mono.MonoGraph
+runWith srcModule =
     let
         defaults =
             Config.defaultLss
-
-        stamp0 =
-            defaults.stamp
     in
     Pipeline.runSolverMonoWithLimits Config.defaultLimits
-        { defaults
-            | enabled = True
-            , keyed = True
-            , regIdentity = True
-            , rootFold = rootFold
-            , stamp = { stamp0 | rootFoldDepth = depthIds }
-        }
+        { defaults | enabled = True }
         srcModule
 
 

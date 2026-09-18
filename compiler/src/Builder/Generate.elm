@@ -886,7 +886,7 @@ assignFlagsFor : Config.EcoConfig -> ( Bool, Bool )
 assignFlagsFor ecoConfig =
     case ecoConfig.mono.engine of
         Config.EngineSolver ->
-            ( ecoConfig.mono.lss.arrowSolverRoots, ecoConfig.mono.lss.arrowCensus )
+            ( True, ecoConfig.mono.lss.arrowCensus )
 
         Config.EngineSubst ->
             ( False, False )
@@ -1685,7 +1685,7 @@ runGlobalOptPhase mapTemplateCfg lssReport listReport borrowCfg cafMemo cseCfg s
         FEStats.PhaseGlobalOpt
         (let
             ( goGraph, goStats ) =
-                MonoGlobalOptimize.globalOptimizeWithStats mapTemplateCfg.mono.lss.layoutQualMembers mapTemplateCfg.mono.lss.postSettleDevirt mapTemplateCfg.mono.lss.stamp.flatPeel mapTemplateCfg.mono.lss.stamp.census mapTemplateCfg.mono.lss.stamp.papFast borrowCfg simplifiedGraph
+                MonoGlobalOptimize.globalOptimizeWithStats mapTemplateCfg.mono.lss.stamp.census borrowCfg simplifiedGraph
 
             -- kernel-opt-13 C2: bounded-scope CSE of pure calls. Runs HERE,
             -- post-annotation, because it adds MonoLet bindings and

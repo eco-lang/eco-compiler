@@ -1,7 +1,7 @@
 module Compiler.Eco.Config exposing
     ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig
     , default, decoder, hash, clamp
-    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, ListConfig, LssConfig, LssFlowConfig, LssSettleConfig, LssStampConfig, MonoConfig, MonoEngine(..), SpecLimits, borrowReifyFromString, defaultLimits, defaultLss, monoEngineFromString
+    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, ListConfig, LssConfig, LssStampConfig, MonoConfig, MonoEngine(..), SpecLimits, borrowReifyFromString, defaultLimits, defaultLss, monoEngineFromString
     )
 
 {-| Project-level tunable compiler settings, read from `eco-config.json`
@@ -197,13 +197,16 @@ today's pipeline byte-for-byte: every arrow annotation is `LTop` and no set
 slots are minted in solver stores. Only meaningful under `EngineSolver`;
 `EngineDiff` always forces it off (the subst engine cannot produce sets).
 
-  - `enabled`: master switch (M2+).
-  - `keyed`: lambda sets participate in specialization keys (M4+) — ALL
-    globals.
-  - `keyedGlobals`: E5 selective keying — key ONLY these globals (user format
-    `author/project:Module.Name.value`, e.g. `elm/core:List.foldl`); the
-    engine converts to comparable gkeys at init. Irrelevant when `keyed` is
-    already True.
+THE FLAGS ARE GONE (2026-09-18, plans/fix-lss-flags-at-defaults.md). 31 of
+the 32 LSS flags were fixed at their defaults and removed WITH the branch each
+one gated, so every mechanism they used to select is unconditional under
+`enabled`. What is left is one switch, three numeric CAPS — policy values read
+at one site, which impose no boundary and so unlock no merge — and four
+censuses. There is no per-mechanism bisection any more; the gate that replaced
+it is `benchmarks/mlir-workload-rail.sh`.
+
+  - `enabled`: master switch (M2+). Also selects ALL-GLOBALS keying, which was
+    `lss.keyed` until the removal.
   - `maxSetSize`: a zonked set larger than this widens to `LTop`;
     **0 = UNLIMITED, and 0 is the DEFAULT since 2026-08-29** (was 8, user
     decision): a whole self-compile produces exactly 8 oversize sets
@@ -233,178 +236,9 @@ slots are minted in solver stores. Only meaningful under `EngineSolver`;
 -}
 type alias LssConfig =
     { enabled : Bool
-    , keyed : Bool
-    , keyedGlobals : List String
-    , devirtFnGlobals : Bool
     , maxSetSize : Int
     , maxSpecsPerGlobal : Int
     , report : Bool
-
-    -- LSS_018 μ-tie (plans/lss-fidelity-1-watchdogs-budget-accounting.md §2):
-    -- a lambda mint whose enclosing spec's demand already carries a qualified
-    -- member of the same raw lambda reuses that id, closing the
-    -- specs→qualified-members→keys spiral WITHOUT the budget, which demotes
-    -- `maxSpecsPerGlobal` from load-bearing terminator to fan-out policy.
-    -- Tied members are AbiCloning-blocked (never rep-stamp — plan §2.4).
-    --
-    -- DEFAULT-ON since 2026-08-18 (B3), on measured evidence: the mechanism
-    -- is proven by a forced-spiral fixture (65 specs → 2 —
-    -- tests/TestLogic/Monomorphize/MuTieTest.elm), while on the self-compile
-    -- the eligible population is ZERO, so enabling it is behavior-neutral
-    -- there (byte-identical MLIR) at unmeasurable cost (wall/GC counters
-    -- identical; benchmarks/lss-opt.md Run M). Artifact-affecting when it
-    -- differs from this default (hash token `lssMU=0` then).
-    --
-    -- CONSIDERED FOR DEFAULT-OFF 2026-09-18 AND REJECTED. The solo flag census
-    -- (benchmarks/flag-off-lss-solo-findings.md) measured it inert on this
-    -- corpus — byte-identical output, −63 dispatches of 930 M (0.000007 %),
-    -- zero GC delta — which is exactly what the 2026-08-18 note predicted and
-    -- is NOT a reason to retire it. μ-tie is what demoted `maxSpecsPerGlobal`
-    -- from load-bearing TERMINATOR to fan-out policy: with this off AND the
-    -- budget at 0 = unlimited, the specs→qualified-members→keys spiral has no
-    -- terminator at all. The census measures the SELF-COMPILE, where the
-    -- eligible population is zero by construction; it says nothing about the
-    -- elm-aws-codegen pathological class this flag exists for. A flag whose
-    -- job is to bound a spiral that does not occur here reads as "inert"
-    -- precisely when it is working. It costs ~nothing, so it stays on.
-    , muTie : Bool
-
-    -- LSS_019 standalone-member grounding (GAP-1,
-    -- plans/lss-fidelity-2-standalone-member-grounding.md): a provisional
-    -- `g|`/`c|` member read back from a set slot at a residual-free arrow is
-    -- rewritten at zonk to the ground member `g|<global>|<arrow-typeKey>` —
-    -- element identity becomes (global × instantiation layout), the paper's
-    -- post-substitution element identity. Artifact-affecting under keyed
-    -- routing (member ids → annotations → keyed spec keys → fan-out); hash
-    -- token `lssGS=` when it differs from this default.
-    --
-    -- DEFAULT-ON since 2026-08-19 (G3), on measured evidence: self-compile
-    -- grounded=4,955 / deferred=11 with joinRounds, devirt counters, budget
-    -- widening and spec fan-out all UNMOVED vs flag-off on the same tree
-    -- (byBudget 36,691→36,693; devirtDirect 3,984 both; foldl=2,052 both);
-    -- flag-on E2E 1,682/1,682 and the Stage-8c bootstrap fixed point is
-    -- byte-identical. The feared budget-pressure spiral from finer ids is
-    -- unrealized on this workload; plan 1's watchdogs + μ-tie stay armed.
-    , groundStandalones : Bool
-
-    -- LSS_020 signature set-flow completion (GAP-2,
-    -- plans/lss-fidelity-3-signature-flow-completion.md §B): the inference
-    -- walk connects ground-typed intra-def flow to signature slots
-    -- (member-root joins, param binding, If/Case hubs, Let rhs joins,
-    -- local-callee call shapes — all set-slot-only), so def signatures stop
-    -- being trivial and callers receive rep links + members. Includes the
-    -- signature-channel maxSetSize widening rider (`widenedBySigSize`).
-    -- Artifact-affecting under keyed routing (signature members reach caller
-    -- instantiations → annotations → keys); hash token `lssSF=` when it
-    -- differs from this default.
-    --
-    -- DEFAULT-ON since 2026-08-21 (the lss-directed-set-flow §8.3 flip,
-    -- re-opened and taken after LSS_024): LSS_023's directed edges made the
-    -- mono wall FLAT (lss-opt Run AC) and LSS_024 removed the runtime
-    -- de-stamp that was the flip's only recorded blocker — with
-    -- layoutQualMembers on, the sigFlow arm BEATS the sf-off baseline on
-    -- fast dispatch (runtime-calls Run AC: coverage 8.34% vs 8.32%,
-    -- +192K fast events; sat+fast invariant). Landed as its own battery
-    -- (never coupled with the layoutQualMembers flip): E2E full,
-    -- elm-tests, Stage-4b/8c bootstrap fixed points, same-corpus rail.
-    , sigFlow : Bool
-
-    -- LSS_024 layout-qualified lambda-instance members + the AbiCloning
-    -- fingerprint fence (plans/lss-layout-qualified-members.md): a
-    -- keyed-routed lambda mint qualifies by the enclosing spec's immutable
-    -- annotation-widened creation key (`l|<raw>|<widenedKey>`) instead of its
-    -- SpecId, so annotation-only spec splits mint ONE member id and consumer
-    -- slots stay singletons; AbiCloning representative stamps additionally
-    -- require fingerprint unanimity across the group (`bodyMismatch` decline
-    -- otherwise — the E11 same-layout divergent-clone fence). Artifact-
-    -- affecting under keyed routing (member ids → annotations → keys →
-    -- fan-out); hash token `lssLQ=` when it differs from this default.
-    --
-    -- DEFAULT-ON since 2026-08-21 (the plan's §6.4a flip), on measured
-    -- evidence: runtime-calls Run AC — 100.8% of the 23.5M-event sigFlow
-    -- fast-dispatch gap recovered (coverage 6.10%→8.34%, ABOVE the sf-off
-    -- baseline); lss-opt Run AD — wall FLAT, majors identical; full
-    -- battery + Stage-4b/8c bootstrap fixed points. Recorded flip deltas:
-    -- four HEAD-stamped non-verbatim `Dict.map` multi-groups become
-    -- `bodyMismatch` declines (the fence's soundness rationale), and the
-    -- §7.2 Borrow obligation landed with the flip (BORROW_006 fence in
-    -- `Borrow.buildLambdaSigs`, `lambdaSigMeets` census).
-    , layoutQualMembers : Bool
-
-    -- E9.5 post-settle devirt (plans/lss-post-settle-fn-global-devirt.md):
-    -- at AbiCloning, rewrite a singleton g|/c| noInstance call site (plain
-    -- local callee, exact arity) to a DIRECT call of the lowest-SpecId
-    -- eqLayout-matching spec of the member's origin global/ctor — the
-    -- commit-after-settle completion of E9.1's translate-time arm (LSS_025).
-    -- DEFAULT-ON since 2026-08-22 (user-directed flip, same day as the
-    -- landing battery: devirtPost 86/311/0 census-exact, minor/major GC
-    -- identical across arms, byte-identity + determinism + E2E both arms +
-    -- elm-tests green — lss-opt Run AE; ECO_MONO_LSS_DEVIRT_POST=0 is the
-    -- escape hatch). Built on the reach-completeness criterion — the
-    -- self-compile heat of the population is ≈0.24% upper bound (plan
-    -- §2.R); the point is closing the exploitation gap for workloads that
-    -- pass bare globals/ctors around more than a compiler does.
-    , postSettleDevirt : Bool
-
-    -- Phase 2a arrow identity (plans/lss-unknown-elimination.md §4):
-    -- `Can.TLambda` carries a per-OCCURRENCE `ArrowId`, and `Store.loadTypeC`
-    -- memoises one SET SLOT per id per item, so repeated loads of the SAME
-    -- stamped type object share their lambda-set slots instead of minting a
-    -- disjoint slot each time (LSS_006's per-load fragmentation — the reason
-    -- ~11 hand-written transport artifacts exist).
-    --
-    -- DEFAULT-ON since 2026-08-25 (plans/lss-paper-inclusion-constraints.md
-    -- §5.A3). §0.3 measured that this switch ALONE closes both transport gaps
-    -- the paper-fidelity work set out to close — the list-literal probe goes
-    -- `kN=0` -> `kN=1` and the Task probe `kN=0` -> `kN=4`, with the members
-    -- exactly the two globals in question — because the mechanism was LSS_006
-    -- slot-disjointness, not a missing set variable.
-    --
-    -- The ids are minted unconditionally (harmless — nothing reads them when
-    -- this is off) but the MEMO is gated, so flag-OFF remains byte-identical
-    -- to pre-2a and the two-binary rail still applies in that direction.
-    -- Artifact-affecting, so the hash token `lssAI=0` now rides the OFF arm.
-    -- Escape hatch: `ECO_MONO_LSS_ARROW_ID=0`.
-    , arrowIdentity : Bool
-
-    -- Phase 2b solver-root arrow ids (plans/lss-unknown-elimination.md §4.9).
-    -- Requires `arrowIdentity`. Instead of one id per SYNTACTIC arrow
-    -- occurrence, take the id from the arrow's union-find ROOT — so two arrows
-    -- the type checker UNIFIED share a lambda-set slot. EXP-2a measured why
-    -- this matters: a def's annotation and its body node's type are
-    -- structurally-equal DISTINCT objects 97.5% of the time (§10.4), so
-    -- occurrence ids cannot tie them and solver identity can.
-    --
-    -- DEFAULT-ON since 2026-09-16 (call-stats Runs 25/26): completeness first
-    -- — coverage 98.98 % -> 99.05 %, `var` 851 -> 593 — at the priced cost
-    -- §10.9 predicted: slot sharing WITHOUT a per-use set variable trades the
-    -- context sensitivity that manufactures usable singletons (`k1` −506,
-    -- `⊤` +152, fast dispatch share −2.73 pp, wall flat). Subsumes
-    -- `sigRootIdentity` (Run 27: byte-identical emission with it off), which
-    -- went default-off in the same flip and was deleted 2026-09-17. Escape
-    -- hatch
-    -- `ECO_MONO_LSS_ARROW_ROOTS=0`; hash token `lssAR=0` rides the OFF arm.
-    , arrowSolverRoots : Bool
-
-    -- §5.4 (GAP-A): classify a bare global reference STORE-AWARE when its type
-    -- mentions an arrow, instead of with the storeless classifier that stamps
-    -- LTop on every arrow. `translateGlobalCall` already gates that classifier
-    -- on `lssFastOk`; `translateVarRef` did not, which poisoned every bare
-    -- reference's arrows before a member could reach them.
-    --
-    -- DEFAULT-ON since 2026-08-26, on the day's full battery: analysis
-    -- coverage +7.14 pp at artifact positions (16.59% -> 23.73%, `coverage:`
-    -- census line — the largest single completeness gain measured in this
-    -- arc), `top` positions -7,754, `kN` positions 682 -> 2,276; mono wall
-    -- +0.60% = FLAT (lss-opt Run AN — Run AM's +4.3% was the Q verifier
-    -- billing the census, not the change); runtime dispatch NEUTRAL to the
-    -- event (-274 fast of 560M, one spec split, runtime-calls Run AO);
-    -- self-compile lowers both arms (0 undefined fast evaluator); E2E
-    -- `--target full` 1,691/1,691 with every test freshly compiled flag-on;
-    -- elm-tests 13,355/12 = the pre-existing failure set exactly. Escape
-    -- hatch `ECO_MONO_LSS_REF_IDENTITY=0`; hash token `lssRI=0` now rides
-    -- the OFF arm.
-    , refIdentity : Bool
 
     -- §5.1/§5.6 shadow `Q` (plans/lss-paper-inclusion-constraints.md): record
     -- every `ℓ ⋸ σ` the solver emits, solve it at the inference boundary, and
@@ -421,30 +255,6 @@ type alias LssConfig =
     --
     -- DEFAULT-OFF. Hash token `lssQC=1`; env `ECO_MONO_LSS_QCENSUS`.
     , qCensus : Bool
-
-    -- INJECTION COMPLETENESS (plans/lss-injection-completeness.md): a PARTIAL
-    -- application of a known global is a PAP of that global, so the callee's
-    -- member is sound on the residual arrows (LSS_013's arity bound: "a PAP of
-    -- member m is m"). It is the ONE producer form that injects nothing today
-    -- — P0's injection-totality census measured 3,624 such positions on the
-    -- self-compile, ≥84 % of the whole totality gap — and that hole is what
-    -- manufactured the `arrowSolverRoots` false singleton that compiled
-    -- `Task.map f` into the identity map.
-    --
-    -- This is the paper's own soundness mechanism, not a mitigation: L^src has
-    -- no currying, so `(::) x` is necessarily a λ there and `𝒬` injects EVERY
-    -- λ (Fig. 6) — the false singleton cannot form, and no ⊤-widening is
-    -- needed. Injecting here restores that property.
-    --
-    -- Artifact-affecting (members → annotations → keyed spec keys → fan-out).
-    -- DEFAULT-ON since 2026-08-27: +4.20 pp analysis coverage, all gates green
-    -- (E2E 1,691/1,691, `Q` REPRODUCES, elm-tests at the pre-existing set).
-    -- Flipped TOGETHER WITH `sigRootIdentity`, which it was unsound to
-    -- outlive: root sharing without injection completeness publishes a false
-    -- singleton. That flag was deleted 2026-09-17, so this one now stands
-    -- alone. Escape hatch `ECO_MONO_LSS_PAP_MEMBERS=0`; hash token `lssPM=0`
-    -- rides the OFF arm.
-    , papMembers : Bool
 
     -- ARROW LIVENESS CENSUS (plans/lss-provenance-ratio-census.md §7): mark
     -- every arrow PEELED BY AN ARGUMENT, so `var`/`set` arrows can be split
@@ -468,320 +278,39 @@ type alias LssConfig =
     -- `ECO_MONO_LSS_ARROW_CENSUS`.
     , arrowCensus : Bool
 
-    -- REGISTRATION SELF-IDENTITY (plans/lss-registration-self-identity.md):
-    -- stamp the tautological self/PAP members onto the leading spine of every
-    -- solver demand at spec registration. The value at spec-g's spine
-    -- position d IS g's spec applied to d arguments — the global is literally
-    -- in the registry key — yet 93.7 % of all ⊤ positions (54,631 of 58,287,
-    -- census 2026-08-27) were exactly these, because `classify`'s placeholder
-    -- ⊤ rides demands into the registry and the LSS_010 join absorbs
-    -- (⊤ ∪ x = ⊤, and LSet ∪ LVar = ⊤ too — Monomorphized.unionAnno).
-    --
-    -- Member ids are the SAME ones the reference paths mint (kernel-alias
-    -- fold k|, ctor c|, plain/cycle g|, PAP depths p|<g>|<d>), so every join
-    -- with an existing injection is idempotent — the E9.2 one-identity rule.
-    -- Depth is bounded by declaredArity (LSS_013): returned closures are
-    -- never claimed.
-    --
-    -- Artifact-affecting (stored types and keyed spec keys move).
-    -- DEFAULT-ON since 2026-08-28: analysis coverage 28.60 % -> 80.26 %
-    -- (+51.66 pp, the arc's largest completeness win) at EXACTLY neutral
-    -- dispatch (fast% 21.308 both arms, -7 events of 606 M) and flat wall;
-    -- Q-infer byte-identical; E2E 1,706/1,706 both arms. Escape hatch
-    -- `ECO_MONO_LSS_REG_IDENTITY=0`; hash token `lssRG=0` now rides the OFF
-    -- arm.
-    , regIdentity : Bool
-
-    -- ROOT-MEMBER FOLD (plans/lss-root-member-fold.md): a top-level def
-    -- carries TWO member ids — its body-root lambda's `l|` id and its
-    -- standalone `g|` id — and wherever both flow to one position (which
-    -- `regIdentity` made common at spec heads) the set is a sound but
-    -- singleton-consumer-useless 2-set. Under this flag the def's ROOT
-    -- lambda interns the GROUND STANDALONE key (`g|<global>|<layout>`)
-    -- instead of `l|<raw>|<layout>` — the E9.2 identity fold applied to
-    -- plain defs — and the `regIdentity` head stamp mints the same ground
-    -- key directly. One string, one id, singletons at heads.
-    --
-    -- Kernel-alias roots are NEVER folded (that would re-create the g|/k|
-    -- split E9.2 removes); deep-spine `{l|, p|}` pairs remain by design
-    -- (`p|` is the declining class). Artifact-affecting (member-id
-    -- allocation order moves).
-    --
-    -- DEFAULT-ON since 2026-08-28: k1 +25,209 / kN −25,792 (46,062 folded
-    -- mints, coverage flat by construction) and the arc's FIRST dispatch
-    -- win — sat 2,219,899,146 -> 2,194,042,291, i.e. 25,856,855 indirect
-    -- dispatches eliminated (−1.165 %) against byte-identical workload
-    -- output. Only 5,556,617 of those became stamped `$cap` calls; the other
-    -- 20,300,238 became DIRECT calls, which the dispatch census does not
-    -- count — so `fast %` (+0.353 pp) understates this ~4.7×. Escape hatch
-    -- `ECO_MONO_LSS_ROOT_FOLD=0`; hash token `lssRF=0` now rides the OFF arm.
-    , rootFold : Bool
-
-    -- REFERENCE-SPINE PAP SUCCESSORS (plans/lss-ref-pap-spine.md): at every
-    -- standalone-reference injection (VarGlobal plain + kernel-alias,
-    -- VarCycle, VarEnum, VarBox — both Translate and LssInfer mint arms),
-    -- after the head member, also write the PAP successors down the loaded
-    -- type's result spine: depth d in 1..declaredArity-1 gets
-    -- `p|<global>|<d>` — the SAME ids `injectPapMember` (papMembers) and
-    -- `memberIdForDepth` (regIdentity) mint, so all three paths unify (the
-    -- E9.2 one-identity rule). This is the paper's 𝒬 applied to the nested
-    -- λs of the conceptually-curried global at its instantiation, with
-    -- transport left to ordinary unification; LSS_013 stops the walk at
-    -- declaredArity (beyond it the arrows belong to the body's result).
-    -- Targets the largest surviving var population: /a0/r-shaped
-    -- argument-spine PAPs, 58 % of all var (census 2026-08-28).
-    --
-    -- The rejected alternative was `spineArity`, which injected the SAME g|
-    -- member at every depth — a conflated identity that papMembers rejected
-    -- (g| is stampable; a PAP is not) and that would have split against
-    -- papMembers' p| producer mints. It was deleted 2026-09-17.
-    --
-    -- Artifact-affecting (annotations and keyed spec keys move).
-    -- DEFAULT-ON since 2026-08-28 (same-day build and flip, user decision):
-    -- same-source coverage 79.85 % -> 83.10 % (+3.25 pp, var -4,104, top
-    -- -134) at EXACTLY neutral dispatch (typed delta 0, sat +7,335 of
-    -- 2.23 B = jitter, workload outputs byte-identical) and REDUCED spec
-    -- fan-out (List.foldl created specs 2,540 -> 2,137 — concrete p| key
-    -- fragments merge demands that per-type var numbering keyed apart).
-    -- E2E 1,707/1,707 both arms; Q-infer diverge=0 both arms. Escape hatch
-    -- `ECO_MONO_LSS_REF_PAP_SPINE=0`; hash token `lssRP=0` now rides the
-    -- OFF arm.
-    , refPapSpine : Bool
-
-    -- INJECTION TOTALITY COMPLETION (plans/lss-coverage-four-levers.md):
-    -- three levers finishing the paper's total-𝒬 under one flag —
-    -- L1 completion-join head re-stamp (heals the kernel-ABI rebuild's
-    -- hardcoded ⊤ and the slot-split LSet∪LVar=⊤ join at the ONE place the
-    -- stored type is finalized; stampSelfSpine is idempotent and never
-    -- overwrites an LSet), L2 deep-PAP successor completion (injectPapMember
-    -- stops at the residual head; the papSuccGoC walk finishes depths
-    -- supplied+1..arity-1 — the counted papInject|deep residue), L3 the
-    -- missing Accessor and bare-VarKernel arms in injectArgLambdaMember
-    -- (S.10 lockstep with the inference mints). Attribution via census
-    -- counters restamp|*, papInject|deepDone, argArm|*.
-    --
-    -- Artifact-affecting. DEFAULT-ON since 2026-08-29 (user decision):
-    -- coverage 83.10 % -> 88.07 % (+4.97 pp; top -62 %, its L1 lever healing
-    -- ~2x its 2,997-head target) at EXACTLY neutral dispatch (typed -5,
-    -- sat -69 of 2.24 B = jitter, workload outputs byte-identical), join
-    -- rounds/retranslations unchanged. E2E 1,711/1,711 both arms; Q-infer
-    -- diverge=0 both arms. Escape hatch `ECO_MONO_LSS_INJ_TOTAL=0`; hash
-    -- token `lssIT=0` now rides the OFF arm.
-    , injTotal : Bool
-
-    -- P1 RESTATEMENT-⊤ RECOVERY (plans/lss-provenance-join-and-demand-sigs.md
-    -- §4.3): at the completion join, for LICENSED kernel-alias nodes only
-    -- (Define whose body is a bare VarKernel with a TypeFaithful row whose
-    -- license applies at the alias's type), positions where the JOINED type
-    -- reads ⊤ but the STORED type held a complete LSet recover the stored
-    -- set. The actual side's ⊤s there are the kernel-ABI rebuild's
-    -- placeholders, not observations; the license is the audited proof the
-    -- kernel adds no function inhabitants, so the demands' set is complete
-    -- (AR-P1-2). Targets the aTop|nested join-collision mass (P0: 1,516
-    -- cells). Census counter `rsTop|recovered`.
-    --
-    -- Artifact-affecting (stored registry types move, hence retranslation
-    -- demand keys and spec keys). DEFAULT-ON since 2026-08-29 (user
-    -- decision): same-binary env A/B coverage 87.64 % -> 88.76 % (+1.12 pp),
-    -- top 3,668 -> 2,153 (-1,515 = 99.9 % of the 1,516-cell P0 target,
-    -- landing as k1 +1,454 / kN +61), var untouched by design. E2E
-    -- 1,714/1,714 BOTH arms; elm-tests at the known-12 baseline. Escape
-    -- hatch `ECO_MONO_LSS_RS_TOP=0`; hash token `lssRT=0` now rides the
-    -- OFF arm.
-    , rsTop : Bool
-
-    -- DESTRUCTOR ANNOTATIONS (plans/lss-ctor-arrow-identity.md §9.5/§9.6):
-    -- two paper-restoring repairs of the pattern-match path, one flag.
-    -- FIX A: `specializeDestructor` merges the PROJECTED type's annotations
-    -- (the root's varEnv type pushed down the path — the paper's TIU
-    -- substitution through the ctor's instantiated scheme) into the
-    -- storeless-classified bound type, precision-monotonically
-    -- (`Mono.enrichAnnotations` — a set can never be downgraded, a ⊤ can
-    -- never absorb one). Heals the type-argument-borne channel
-    -- (`destranno top|k1` = 125 events + the downstream cascade).
-    -- FIX B: at the final registry settle, a ctor entry's ⊤ field positions
-    -- recover from the set-biased UNION of the same ctor's other specs'
-    -- demands — the paper's single global-store solution reassembled from
-    -- Eco's keyed shards; union-over-specs can only WIDEN, so the
-    -- aggregation is conservative (AR-D2). Ceiling measured by the
-    -- `destrBend:` census line.
-    -- Artifact-affecting (varEnv-bound types move, hence demand keys).
-    -- DEFAULT-ON since 2026-08-31 (user decision): same-binary env A/B
-    -- top 2,133 -> 1,457 (-676, -32 % — the largest single ⊤ cut of the
-    -- arc), Eerr k1 1515->2028 / ⊤ 264->2, Cerr k1 1196->1724 / ⊤ 264->4,
-    -- conflict-⊤ EXACTLY unchanged, var untouched, coverage
-    -- 88.99 % -> 89.61 %, wall +2.4 %. VALIDATE leg clean; E2E 1,717/1,717
-    -- both arms; elm-tests at the known-12 baseline including the
-    -- LssDestrAnnoTest differential — which also caught (and §9.8 fixed)
-    -- the partial-union false-singleton window before this flip. Escape
-    -- hatch `ECO_MONO_LSS_DESTR_ANNO=0`; hash token `lssDA=0` now rides
-    -- the OFF arm.
-    -- Env `ECO_MONO_LSS_DESTR_ANNO`; hash token `lssDA=`.
-    , destrAnno : Bool
-
-    -- Flow repair M1 (plans/lss-var-chain-roots.md §9.5-9.7): deep argument
-    -- write-back for LAMBDA-LITERAL args. After the arg is translated (its
-    -- MonoType then carries the body's solved sets), unify it into the
-    -- callee's param STORE variable — the paper's App-rule σ-transport
-    -- re-tied at the one edge Translate never rebuilt. Store unification,
-    -- not annotation enrichment: both sides SHARE the slot, so the L7
-    -- `unionAnno (LSet, LVar) → ⊤conflict` path cannot arise (AR-F2).
-    -- DEFAULT-ON since 2026-09-01 under the COVERAGE metric
-    -- (lss-lpartial §8): var −80 / ⊤ −1 / +0.02 pp on the LPartial
-    -- lattice, where pre-LPartial it manufactured +703 ⊤. Wall +2.6 %
-    -- accepted by user decision. Escape hatch `ECO_MONO_LSS_FLOW_CONNECT=0`;
-    -- hash token `lssFC=0` rides the OFF arm.
-    --
-    -- Sub-record (`LssConfig` is at the 32-slot cap): `connect` is the
-    -- flag above, unchanged in JSON key / env / token; `letOverlay` is F3-b.
-    , flow : LssFlowConfig
-
-    -- The post-drain settle-writer family (var chain-root arc), bundled
-    -- into a sub-record because `LssConfig` sits AT the runtime's 32-slot
-    -- record GC-scan cap (parent plan §9.13 trap: `lamStages` as field 33
-    -- broke Stage 6 native lowering at BOOTSTRAP — same lesson as
-    -- Engine.S). Per-flag docs live on `LssSettleConfig`; env vars, JSON
-    -- keys and hash tokens (lssVS/lssVC/lssVL) are per-flag and UNCHANGED
-    -- by the bundling (tokens are independent of record shape).
-    , settle : LssSettleConfig
-
-    -- Instance-qualified lambda members
-    -- (plans/lss-instance-qualified-members.md). Sub-record, not a bare flag:
-    -- `LssConfig` is at the 32-slot record GC-scan cap with this field, so the
-    -- NEXT knob must go inside a sub-record too. Env
-    -- ECO_MONO_LSS_INSTANCE_QUAL / _MAX; hash tokens lssIQ= / lssIQM= ride the
-    -- non-default arm.
+    -- The instance-qualification cap and the stamping census
+    -- (plans/lss-instance-qualified-members.md). A sub-record because
+    -- `LssConfig` used to sit AT the runtime's 32-slot record GC-scan cap —
+    -- it is 7 fields now, so that pressure is gone, but the grouping is worth
+    -- keeping on its own terms. Env ECO_MONO_LSS_INSTANCE_QUAL_MAX /
+    -- ECO_MONO_LSS_CENSUS; hash token lssIQM= rides the non-default cap.
     , stamp : LssStampConfig
     }
 
 
-{-| Post-drain settle writers (one flag per mechanism — the §8.4/§8.5
-lesson: per-mechanism arms catch what combined arms pass).
+{-| The instance-qualification cap and the stamping census
+(plans/lss-instance-qualified-members.md).
 
-  - `varSucc` — var chain-root writes, Phase 1 (plans/lss-var-chain-roots.md
-    §3): post-drain settle sweep writing the PAP successor member into flex
-    result slots of pap-able singleton/kN heads, strictly within declared
-    arity. Sound unconditionally (type-level identity; beyond-arity results
-    belong to the body, LSS\_013). DEFAULT-ON since 2026-08-31 (with
-    varCtorRows: var −19.2 %, coverage +1.91 pp, ⊤ unchanged, accounting
-    exact, all gates green — §4.4). Escape hatch `ECO_MONO_LSS_VAR_SUCC=0`;
-    hash token `lssVS=0` rides the OFF arm.
-  - `varCtorRows` — Phase 2b (§3): post-drain ctor-row var payload writes
-    from the sibling-spec cell union, gated on the all-sets completeness
-    rule (zero ⊤ contributors AND zero flex-marked construction vars at the
-    cell — AR-V2/AR-V10; runs BEFORE the destrAnno ⊤-heal so the
-    contamination evidence is still honest). DEFAULT-ON since 2026-08-31
-    (§4.4; flex gate protected 1,563 positions). Escape hatch
-    `ECO_MONO_LSS_VAR_CTOR_ROWS=0`; hash token `lssVC=0` rides the OFF arm.
-  - `varLambda` — Phase 4v2 (§8.2): post-drain enrichment of `l|`-headed
-    var positions from the LAMBDA-HOME table — each qualified lambda's
-    settled result type, read off the closure NODES (`ClosureInfo.lssMember`
-      - the body's type), which is the only place a lambda's result set
-        exists. Strict cells (⊤ or var blocks), all-or-nothing across members,
-        and an ARITY guard. DEFAULT-ON since 2026-09-01 (597 writes, 587 k1,
-        andThen var −328; all gates green — §8.5). Escape hatch
-        `ECO_MONO_LSS_VAR_LAMBDA=0`; hash token `lssVL=0` rides the OFF arm.
+INSTANCE QUALIFICATION itself is unconditional (it was `lss.stamp.enabled`,
+fixed at its default and removed 2026-09-18): a lambda instance minted while
+re-translating the RHS of a LOCAL-MULTI instance carries that instance's
+identity in its member id, on top of LSS\_017's source lambda and LSS\_024's
+enclosing-spec widened key. Local-multi instance keying is
+annotation-SENSITIVE (`Engine.recordMultiInstance`) while member qualification
+was not, so two instances of one let-function shared ONE member id — a
+singleton set indexing two different bodies, which AbiCloning correctly
+refuses to stamp (`declinedBodyMismatch`) rather than miscompile.
 
--}
-type alias LssSettleConfig =
-    { varSucc : Bool
-    , varCtorRows : Bool
-    , varLambda : Bool
-    }
-
-
-{-| Translation-time flow repairs (the edges Translate re-ties in the store
-or in the binding environment).
-
-  - `connect` — M1 flowConnect, documented on `LssConfig.flow`. **DEFAULT-OFF
-    since 2026-09-18**: the solo flag census
-    (benchmarks/flag-off-lss-solo-findings.md) measured it as the most
-    expensive inert flag in the set — turning it off emits a BYTE-IDENTICAL
-    artifact while saving 32.6 M dispatches (−3.51 %), 51 minor GCs and ~4.6 %
-    wall, the only inert flag whose wall delta clears the noise floor. It does
-    move analysis cells (var +27, ⊤ −19), so it computes something real; no
-    consumer reads it on this corpus.
-  - `letOverlay` — F3-b (plans/lss-container-payload-transport.md §12.9.5):
-    a plain `let` binding's `varEnv` type takes its ANNOTATIONS from the
-    translated RHS (`Mono.overlayAnnotations classified bodyType`) instead of
-    the storeless classify's ⊤ — the LSS\_026 `leak\|letAnno` class — and a
-    local tail-def's binding/param types take theirs from the zonk of the
-    demand-seeded annotation var, exactly as the top-level `TailDef` already
-    does (Translate.elm `specializeCycleFuncDef`). Structure stays the
-    classify's (the ABI guard). Artifact-affecting (spec keys are
-    annotation-sensitive); hash token `lssFLO=`; env
-    `ECO_MONO_LSS_FLOW_LET_OVERLAY` (`=0` is the escape hatch). DEFAULT-ON since
-    2026-09-16 (plan §12.10.3, last arm of the series): `leak|letAnno` 58 -> 0,
-    ⊤ 698 -> 668 with `var` +30 — a ⊤-manufacturer removal, coverage-flat by the
-    metric, wall flat.
-
--}
-type alias LssFlowConfig =
-    { connect : Bool
-    , letOverlay : Bool
-
-    -- `accessFlow` — E15 (plans/lss-container-payload-transport.md §12.10.1): a
-    -- record-field ACCESS transports its field's set — `enrichFromEnv` projects
-    -- a local record's bound type for `r.f` arguments and callees, an access-form
-    -- argument takes the flowConnect write-back after translation, and
-    -- `refineAccessType` overlays the record's field annotations onto the access
-    -- node instead of keeping the storeless `clsMisc` ⊤. Also carries the
-    -- list-literal element JOIN (a first-element-only set is a completeness
-    -- claim the other elements falsify). Token `lssFAF=`; env
-    -- `ECO_MONO_LSS_FLOW_ACCESS_FLOW` (`=0` is the escape hatch).
-    --
-    -- DEFAULT-ON since 2026-09-16 (plan §12.10.3): `enrich|access|ofLocal`
-    -- 5,785 joins, `var` 852 -> 837, k1 +26, wall flat; the callee-form
-    -- dispatch effect is owed a call-stats pair.
-    , accessFlow : Bool
-
-    -- `litFacts` — F4-sig (§12.10.1): the signature walk gives record/tuple/
-    -- list/update literals a POINT (their loaded type, element slots joined
-    -- with the elements' points) instead of `WpNone`, so a def returning or
-    -- let-binding a literal of functions carries facts at the literal's
-    -- interior arrows. Token `lssFLF=`; env `ECO_MONO_LSS_FLOW_LIT_FACTS`
-    -- (`=0` is the escape hatch).
-    --
-    -- DEFAULT-ON since 2026-09-16 (plan §12.10.3): 13,443 literal points
-    -- (tuple 6,858 / list 5,341 / record 1,244 honest, update 1,541 opaque),
-    -- `var` 837 -> 821, k1 +133 / kN +87 — the largest gain of the series;
-    -- wall flat.
-    , litFacts : Bool
-    }
-
-
-{-| Instance-qualified lambda members (plans/lss-instance-qualified-members.md).
-
-`enabled`: a lambda instance minted while re-translating the RHS of a
-LOCAL-MULTI instance carries that instance's identity in its member id, on top
-of LSS\_017's source lambda and LSS\_024's enclosing-spec widened key. Local-multi
-instance keying is annotation-SENSITIVE (`Engine.recordMultiInstance`) while
-member qualification was not, so two instances of one let-function shared ONE
-member id — a singleton set indexing two different bodies, which AbiCloning
-correctly refuses to stamp (`declinedBodyMismatch`) rather than miscompile.
-
-`maxInstances`: the hard cap. The discriminator is the instance ORDINAL, not
+`maxInstances`: the hard cap, and — since the flag went — the only way to
+collapse the qualification back. `maxInstances = 1` tags nothing and
+reproduces the pre-qualification behaviour exactly, which is what
+`LssInstanceQualTest` now uses as its collapsed arm. The discriminator is the instance ORDINAL, not
 its type — a type hash would put annotations back into member ids and reopen
 the specs -> members -> keys spiral LSS\_018 exists to close. The ordinal keeps
 that spiral bounded but not provably absent: an annotation split mints an
 instance, whose new member id can drive a further split. Beyond the cap a mint
 takes today's key (fence declines, status quo), so termination is structural.
 0 means unlimited — do not ship it.
-
-`flatPeel` (Fix A, §15.1 of the plan): at an OVER-APPLYING call site — the
-site applies its args flat while the callee TYPE is curried, which
-`Store.classifyGo` makes it for every arrow ("one arrow per MFunction") — peel
-the type's stages until the accumulated parameter count EQUALS the site's arg
-count, and match the instance against THAT list instead of against the type's
-one-parameter first stage.
-
-The type is representation-AGNOSTIC: an arrow is inhabited by a flat n-param
-closure, by a curried chain and by PAPs alike, and `classifyGo` runs before any
-closure has flowed there. The INSTANCE is the only representation authority, so
-the comparison belongs against the instance. That is why this is a comparison
-fix and not a representation change.
-
-Measured at 33.2 % of the compiler's generic dispatch (plan §13).
 
 -}
 
@@ -811,89 +340,17 @@ Measured at 33.2 % of the compiler's generic dispatch (plan §13).
 --
 -- DEFAULT-OFF. Hash token `lssCen=1`; env `ECO_MONO_LSS_CENSUS`.
 --
--- Lives HERE and not on `LssConfig` because `LssConfig` is AT the 32-slot
+-- Lived HERE and not on `LssConfig` because `LssConfig` was AT the 32-slot
 -- record GC-scan cap: a 33rd top-level field lowers to
--- `eco.construct.record field_count (33)` and the backend verifier
--- rejects it. Every future LSS flag goes in a sub-record for this reason.
+-- `eco.construct.record field_count (33)` and the backend verifier rejects
+-- it. `LssConfig` is 7 fields since the 2026-09-18 flag removal, so that
+-- pressure is gone — but the cap itself has not moved, and it is what made
+-- `flow`/`settle`/`stamp` sub-records in the first place.
 
 
 type alias LssStampConfig =
-    { enabled : Bool
-    , maxInstances : Int
-    , flatPeel : Bool
+    { maxInstances : Int
     , census : Bool
-
-    -- `papFast` — LSS_040 (plans/lss-pap-fast-stamp.md): FAST-stamp call sites
-    -- whose callee is a `p|<global>|<k>` member, a k-applied partial
-    -- application of a global. The `p|` fence (Translate.injectPapMember)
-    -- forbids a DIRECT rewrite — it drops the bound arguments, the recorded
-    -- traverseTuple miscompile. A FAST stamp keeps the heap object and loads
-    -- the bound arguments out of it exactly as LSS_011 does for PAPs of
-    -- closures; nothing is reconstructed, so nothing is dropped. Rides E9.5's
-    -- indices, so it is inert unless `postSettleDevirt` is on.
-    --
-    -- Artifact-affecting (changes which sites are stamped, hence CallInfo,
-    -- hence emitted MLIR). Hash token `lssPF=`; env `ECO_MONO_LSS_PAP_FAST`
-    -- (`=0` is the escape hatch, riding `lssPF=0`).
-    --
-    -- DEFAULT-ON since 2026-09-07 (plan §10): 2,041 of 2,418 `p|` sites stamp
-    -- on the self-compile, generic dispatch −164 M (−14.96 %) on identical
-    -- input with byte-identical output; `.mlir` +0.13 %, RSS flat, protocol
-    -- wall FLAT (benchmarks/lss-opt.md Run AP) — flipped on the dispatch
-    -- counter, the same basis as LSS_025.
-    , papFast : Bool
-
-    -- `useInject` — F2, plans/lss-container-payload-transport.md §12.9.4: at a
-    -- local-multi USE passed as an argument, mint the id the instance's RHS
-    -- re-translation will mint for its lambda and write it into the stashed
-    -- var's spine before the callee is zonked, so the callee's demand carries
-    -- the singleton (GAP-9b's "no member, no stamp" closed). Also the
-    -- self-reference inside an instance re-translation (F2.b). Sound by
-    -- construction: the id is a deterministic function of the source lambda,
-    -- the instance tag and the spec, and the RHS mint runs under the same
-    -- three. Also skips `rootFold` for a local-multi instance RHS lambda
-    -- (which `demandUnifyRoot` otherwise folds onto the ENCLOSING global's
-    -- id, dropping the instance tag — the LSS_038 collapse, live for lambda
-    -- RHSs). Artifact-affecting; hash token `lssIU=`; env
-    -- `ECO_MONO_LSS_INSTANCE_QUAL_USE_INJECT` (`=0` is the escape hatch).
-    --
-    -- DEFAULT-ON since 2026-09-15 (plan §12.9.4 A/B, self-compile): `var`
-    -- 1,380 -> 873 (-36.7 %), `top` 938 -> 697 (`abi` 250 -> 6), `k1` +855,
-    -- analysis coverage 98.44 % -> 98.94 %; unwritten local-multi argument
-    -- positions 866 -> 254 and their downstream parameter chain 1,024 ->
-    -- 454; wall and RSS flat.
-    , useInject : Bool
-
-    -- `useInjectPap` — F2.c (plans/lss-container-payload-transport.md §12.10.1):
-    -- the same use-site write for a local-multi whose RHS is a PARTIAL
-    -- APPLICATION of a global (`exprCompiler = bfExprCompiler (…)`): the id the
-    -- RHS re-translation mints is `p|<global>|<supplied>` (`injectPapMember`),
-    -- a function of the syntax alone and instance-blind by design, so the use
-    -- site mints the same key and writes it HEAD-ONLY (the `p|` law). Own flag
-    -- for its own A/B; token `lssIUP=`; env
-    -- `ECO_MONO_LSS_INSTANCE_QUAL_USE_INJECT_PAP` (`=0` is the escape hatch).
-    --
-    -- DEFAULT-ON since 2026-09-16 (plan §12.10.3, five-arm series): 46 uses
-    -- inject, `var` 893 -> 852, k1 +39, wall flat, devirt unchanged.
-    , useInjectPap : Bool
-
-    -- `rootFoldDepth` — plans/lss-root-fold-depth-qualified-spine.md.
-    -- Requires `lss.rootFold`. The translation-phase spine write
-    -- (`LssInfer.injectLambdaMemberQualified` -> `spineGoC`) puts a
-    -- root-folded lambda's GROUND `g|` id at EVERY depth 0..arity-1 of its
-    -- own spine; the other two spine writers (`Translate.stampSelfSpine`,
-    -- `LssInfer.injectPapSuccessors`) put `g|` at depth 0 and `p|g|d` at
-    -- depth d>=1. A folded `g|` is the STAMPABLE class (E9.1 devirt), and
-    -- `lss-root-member-fold.md` AR-1 requires depth>0 to stay `p|`. ON makes
-    -- the third writer match the other two.
-    --
-    -- Lives HERE, beside `useInject`/`useInjectPap`, and not at `LssConfig`
-    -- top level, because `LssConfig` is AT the runtime's 32-slot record
-    -- GC-scan cap: a 33rd field makes the compiler's own config record
-    -- unlowerable ('eco.construct.record' op field_count (33) exceeds
-    -- Record's 32-slot GC scan limit). Artifact-affecting; hash token
-    -- `lssRFD=`; env `ECO_MONO_LSS_ROOT_FOLD_DEPTH`.
-    , rootFoldDepth : Bool
     }
 
 
@@ -905,13 +362,14 @@ default builds get lambda-set specialization without extra flags. The subst
 engine never consults this block, so `ECO_MONO_ENGINE=subst` builds are
 unaffected.
 
-`keyed = True` (2026-07-20, post-Fix-B): ALL-GLOBALS keying is the default.
-Sound since LSS\_017 fork-qualified members (`plans/lss-fork-qualified-members.md`
-— the singleton-representative hijack is fixed by construction) and measured
-free at run time (Run M, `benchmarks/runtime-calls.md`: coverage 6.81 % →
-13.22 %, identical total events, wall parity). `ECO_MONO_LSS=unkeyed` restores
-the selective-whitelist mode (`keyedGlobals`); `ECO_MONO_LSS=0` disables LSS
-entirely. Watch item: the elm-aws-codegen pathological-workload class (§11.7
+ALL-GLOBALS KEYING is unconditional under LSS (it was `lss.keyed`,
+default-ON since 2026-07-20 post-Fix-B, fixed at that default and removed
+2026-09-18). Sound since LSS\_017 fork-qualified members
+(`plans/lss-fork-qualified-members.md` — the singleton-representative hijack
+is fixed by construction) and measured free at run time (Run M,
+`benchmarks/runtime-calls.md`: coverage 6.81 % → 13.22 %, identical total
+events, wall parity). Solo census with it OFF: `k1` −44,575, `kN` +20,161,
+artifact −1.13 MB. `ECO_MONO_LSS=0` disables LSS entirely. Watch item: the elm-aws-codegen pathological-workload class (§11.7
 census note) — since the 2026-08-29 no-limits defaults the M4
 `maxSpecsPerGlobal` budget no longer engages by default; if that class
 regresses, `ECO_MONO_LSS_MAX_SPECS` restores a budget without a rebuild.
@@ -920,56 +378,13 @@ regresses, `ECO_MONO_LSS_MAX_SPECS` restores a budget without a rebuild.
 defaultLss : LssConfig
 defaultLss =
     { enabled = True
-    , keyed = True
-    , keyedGlobals = defaultKeyedGlobals
-    , devirtFnGlobals = True
     , maxSetSize = 0
     , maxSpecsPerGlobal = 0
     , report = False
-    , muTie = True
-    , groundStandalones = True
-    , sigFlow = True
-    , layoutQualMembers = True
-    , postSettleDevirt = True
-    , arrowIdentity = True
-    , arrowSolverRoots = True
-    , refIdentity = True
     , qCensus = False
-    , papMembers = True
     , arrowCensus = False
-    , regIdentity = True
-    , rootFold = True
-    , refPapSpine = True
-    , injTotal = True
-    , rsTop = True
-    , destrAnno = True
-    , flow = { connect = False, letOverlay = True, accessFlow = True, litFacts = True }
-    , settle = { varSucc = True, varCtorRows = True, varLambda = True }
-    , stamp = { enabled = True, maxInstances = 8, flatPeel = True, census = False, papFast = True, useInject = True, useInjectPap = True, rootFoldDepth = True }
+    , stamp = { maxInstances = 8, census = False }
     }
-
-
-{-| The selective-keying set — **EMPTY since 2026-09-18**.
-
-It held the elm/core List fold chain (`List.foldl`, `foldr`, `foldrHelper`,
-`map`) from 2026-07-20, where it measured −143.7 M dispatch events/run (Run J)
-at zero wall cost. That payoff is now delivered by `keyed = True`, which keys
-ALL globals and has been the default since 2026-07-20 — the selective list has
-had nothing left to select ever since.
-
-The solo flag census confirmed it directly
-(benchmarks/flag-off-lss-solo-findings.md): emptying the list emits a
-BYTE-IDENTICAL artifact and moves 65 dispatches of 930 M, with every coverage
-and stamping cell unchanged. It is inert, and inert only BECAUSE `keyed` is on:
-under `ECO_MONO_LSS=unkeyed` this list is the whole of E5 selective keying, so
-restoring the four entries is the way to get Tier-1 behaviour back.
-
-`ECO_MONO_LSS_KEYED_GLOBALS` REPLACES this list at run time.
-
--}
-defaultKeyedGlobals : List String
-defaultKeyedGlobals =
-    []
 
 
 {-| Inliner / simplifier knobs.
@@ -1502,58 +917,15 @@ lssDecoder : D.Decoder x LssConfig
 lssDecoder =
     D.pure LssConfig
         |> D.apply (D.optionalField "enabled" D.bool defaultLss.enabled)
-        |> D.apply (D.optionalField "keyed" D.bool defaultLss.keyed)
-        |> D.apply (D.optionalField "keyedGlobals" (D.list D.string) defaultLss.keyedGlobals)
-        |> D.apply (D.optionalField "devirtFnGlobals" D.bool defaultLss.devirtFnGlobals)
         |> D.apply (D.optionalField "maxSetSize" D.int defaultLss.maxSetSize)
         |> D.apply (D.optionalField "maxSpecsPerGlobal" D.int defaultLss.maxSpecsPerGlobal)
         |> D.apply (D.optionalField "report" D.bool defaultLss.report)
         -- APPEND ONLY, and LAST: this apply chain is POSITIONAL, so an
         -- insertion anywhere above silently swaps two flags' values and still
         -- type-checks (every field above is a Bool or an Int).
-        |> D.apply (D.optionalField "muTie" D.bool defaultLss.muTie)
-        |> D.apply (D.optionalField "groundStandalones" D.bool defaultLss.groundStandalones)
-        |> D.apply (D.optionalField "sigFlow" D.bool defaultLss.sigFlow)
-        |> D.apply (D.optionalField "layoutQualMembers" D.bool defaultLss.layoutQualMembers)
-        |> D.apply (D.optionalField "postSettleDevirt" D.bool defaultLss.postSettleDevirt)
-        |> D.apply (D.optionalField "arrowIdentity" D.bool defaultLss.arrowIdentity)
-        |> D.apply (D.optionalField "arrowSolverRoots" D.bool defaultLss.arrowSolverRoots)
-        |> D.apply (D.optionalField "refIdentity" D.bool defaultLss.refIdentity)
         |> D.apply (D.optionalField "qCensus" D.bool defaultLss.qCensus)
-        |> D.apply (D.optionalField "papMembers" D.bool defaultLss.papMembers)
         |> D.apply (D.optionalField "arrowCensus" D.bool defaultLss.arrowCensus)
-        |> D.apply (D.optionalField "regIdentity" D.bool defaultLss.regIdentity)
-        |> D.apply (D.optionalField "rootFold" D.bool defaultLss.rootFold)
-        |> D.apply (D.optionalField "refPapSpine" D.bool defaultLss.refPapSpine)
-        |> D.apply (D.optionalField "injTotal" D.bool defaultLss.injTotal)
-        |> D.apply (D.optionalField "rsTop" D.bool defaultLss.rsTop)
-        |> D.apply (D.optionalField "destrAnno" D.bool defaultLss.destrAnno)
-        |> D.apply lssFlowDecoder
-        |> D.apply lssSettleDecoder
         |> D.apply lssInstanceQualDecoder
-
-
-{-| Decode the settle sub-record from the SAME flat JSON keys the fields had
-before the sub-record bundling (2026-09-02, plans/lss-stage-anchor-writers.md
-§3L ORDER 0) — the eco-config.json schema is unchanged by the restructure.
--}
-lssSettleDecoder : D.Decoder x LssSettleConfig
-lssSettleDecoder =
-    D.pure LssSettleConfig
-        |> D.apply (D.optionalField "varSucc" D.bool defaultLss.settle.varSucc)
-        |> D.apply (D.optionalField "varCtorRows" D.bool defaultLss.settle.varCtorRows)
-        |> D.apply (D.optionalField "varLambda" D.bool defaultLss.settle.varLambda)
-
-
-{-| `flowConnect` keeps its historical flat key; `flowLetOverlay` is new.
--}
-lssFlowDecoder : D.Decoder x LssFlowConfig
-lssFlowDecoder =
-    D.pure LssFlowConfig
-        |> D.apply (D.optionalField "flowConnect" D.bool defaultLss.flow.connect)
-        |> D.apply (D.optionalField "flowLetOverlay" D.bool defaultLss.flow.letOverlay)
-        |> D.apply (D.optionalField "flowAccessFlow" D.bool defaultLss.flow.accessFlow)
-        |> D.apply (D.optionalField "flowLitFacts" D.bool defaultLss.flow.litFacts)
 
 
 {-| Flat keys, prefixed — new with the sub-record (no schema history to keep).
@@ -1561,14 +933,8 @@ lssFlowDecoder =
 lssInstanceQualDecoder : D.Decoder x LssStampConfig
 lssInstanceQualDecoder =
     D.pure LssStampConfig
-        |> D.apply (D.optionalField "instanceQual" D.bool defaultLss.stamp.enabled)
         |> D.apply (D.optionalField "instanceQualMaxInstances" D.int defaultLss.stamp.maxInstances)
-        |> D.apply (D.optionalField "flatPeel" D.bool defaultLss.stamp.flatPeel)
         |> D.apply (D.optionalField "census" D.bool defaultLss.stamp.census)
-        |> D.apply (D.optionalField "papFast" D.bool defaultLss.stamp.papFast)
-        |> D.apply (D.optionalField "instanceQualUseInject" D.bool defaultLss.stamp.useInject)
-        |> D.apply (D.optionalField "instanceQualUseInjectPap" D.bool defaultLss.stamp.useInjectPap)
-        |> D.apply (D.optionalField "rootFoldDepth" D.bool defaultLss.stamp.rootFoldDepth)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -1829,23 +1195,6 @@ hash cfg =
 
                       else
                         []
-                    , if lss.keyed then
-                        [ "lssK=1" ]
-
-                      else
-                        []
-                    , if List.isEmpty lss.keyedGlobals then
-                        []
-
-                      else
-                        -- E5 selective keying: sorted so equivalent configs
-                        -- share artifacts regardless of listing order.
-                        [ "lssKG=" ++ String.join "," (List.sort lss.keyedGlobals) ]
-                    , if lss.devirtFnGlobals then
-                        [ "lssDF=1" ]
-
-                      else
-                        []
                     , if lss.maxSetSize /= defaultLss.maxSetSize then
                         [ "lssS=" ++ String.fromInt lss.maxSetSize ]
 
@@ -1857,173 +1206,8 @@ hash cfg =
                       else
                         []
 
-                    -- LSS_018 μ-tie: artifact-affecting under keyed routing
-                    -- (tied member ids change annotations → keys → fan-out).
-                    -- Token when non-default so the default config's hash is
-                    -- stable across the B1→B3 rollout of the default itself.
-                    , if lss.muTie /= defaultLss.muTie then
-                        [ "lssMU="
-                            ++ (if lss.muTie then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- LSS_019 grounding: artifact-affecting under keyed
-                    -- routing (ground member ids change annotations → keys →
-                    -- fan-out). Token when non-default, muTie-style, so the
-                    -- default config's hash is stable across the G1→G3
-                    -- rollout of the default itself.
-                    , if lss.groundStandalones /= defaultLss.groundStandalones then
-                        [ "lssGS="
-                            ++ (if lss.groundStandalones then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- LSS_020 signature set-flow: artifact-affecting under
-                    -- keyed routing (signature members reach caller
-                    -- instantiations → annotations → keys → fan-out). Token
-                    -- when non-default, muTie-style, so the default config's
-                    -- hash is stable across an eventual default flip.
-                    , if lss.sigFlow /= defaultLss.sigFlow then
-                        [ "lssSF="
-                            ++ (if lss.sigFlow then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- Instance-qualified members: artifact-affecting for
-                    -- exactly the LSS_024 reason (member ids → annotations →
-                    -- keyed spec keys → fan-out). Env vars are NOT ninja
-                    -- inputs and the harness cache is env-blind, so without
-                    -- these tokens an A/B serves stale artifacts and both arms
-                    -- measure the same binary.
-                    , if lss.stamp.enabled /= defaultLss.stamp.enabled then
-                        [ "lssIQ="
-                            ++ (if lss.stamp.enabled then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
                     , if lss.stamp.maxInstances /= defaultLss.stamp.maxInstances then
                         [ "lssIQM=" ++ String.fromInt lss.stamp.maxInstances ]
-
-                      else
-                        []
-
-                    -- Fix A: artifact-affecting (it changes WHICH sites get
-                    -- stamped, hence CallInfo, hence emitted MLIR). Env vars
-                    -- are not ninja inputs and the harness cache is env-blind,
-                    -- so without this token an A/B serves stale artifacts.
-                    , if lss.stamp.flatPeel /= defaultLss.stamp.flatPeel then
-                        [ "lssFP="
-                            ++ (if lss.stamp.flatPeel then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- LSS_024 layout-qualified members: artifact-affecting
-                    -- under keyed routing (member ids → annotations → keys →
-                    -- fan-out). Token when non-default, muTie-style, so the
-                    -- default config's hash is stable across an eventual
-                    -- default flip.
-                    , if lss.layoutQualMembers /= defaultLss.layoutQualMembers then
-                        [ "lssLQ="
-                            ++ (if lss.layoutQualMembers then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- E9.5 post-settle devirt: artifact-affecting (rewrites
-                    -- call sites to direct form). Token when non-default,
-                    -- layoutQual-style.
-                    , if lss.postSettleDevirt /= defaultLss.postSettleDevirt then
-                        [ "lssDP="
-                            ++ (if lss.postSettleDevirt then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- Phase 2a arrow identity: artifact-affecting when on
-                    -- (shared set slots reach annotations and therefore keyed
-                    -- spec keys). Token when non-default.
-                    , if lss.arrowIdentity /= defaultLss.arrowIdentity then
-                        [ "lssAI="
-                            ++ (if lss.arrowIdentity then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- Phase 2b solver-root arrow ids: artifact-affecting when
-                    -- on (arrows the type checker unified share one set slot).
-                    , if lss.arrowSolverRoots /= defaultLss.arrowSolverRoots then
-                        [ "lssAR="
-                            ++ (if lss.arrowSolverRoots then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-                    , if lss.refIdentity /= defaultLss.refIdentity then
-                        [ "lssRI="
-                            ++ (if lss.refIdentity then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
 
                       else
                         []
@@ -2059,63 +1243,6 @@ hash cfg =
                       else
                         []
 
-                    -- LSS_040 p| fast stamp: artifact-affecting.
-                    , if lss.stamp.papFast /= defaultLss.stamp.papFast then
-                        [ "lssPF="
-                            ++ (if lss.stamp.papFast then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- F2 local-multi use-site injection: artifact-affecting.
-                    , if lss.stamp.useInject /= defaultLss.stamp.useInject then
-                        [ "lssIU="
-                            ++ (if lss.stamp.useInject then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- F2.c PAP-RHS use-site injection: artifact-affecting.
-                    , if lss.stamp.useInjectPap /= defaultLss.stamp.useInjectPap then
-                        [ "lssIUP="
-                            ++ (if lss.stamp.useInjectPap then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- Injection completeness: PAP residual members are
-                    -- artifact-affecting (members → annotations → keys).
-                    , if lss.papMembers /= defaultLss.papMembers then
-                        [ "lssPM="
-                            ++ (if lss.papMembers then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
                     -- Liveness census: read-only, but it rides the hash so a
                     -- census run cannot reuse a non-census cache (`qCensus`'s
                     -- rule).
@@ -2132,213 +1259,6 @@ hash cfg =
                       else
                         []
 
-                    -- Registration self-identity: artifact-affecting (stored
-                    -- types and keyed spec keys move).
-                    , if lss.regIdentity /= defaultLss.regIdentity then
-                        [ "lssRG="
-                            ++ (if lss.regIdentity then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- Root-member fold: artifact-affecting (member-id
-                    -- allocation order and set contents move).
-                    , if lss.rootFold /= defaultLss.rootFold then
-                        [ "lssRF="
-                            ++ (if lss.rootFold then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- Depth-qualified root-fold spine: artifact-affecting
-                    -- (the def's own inner-arrow annotations move, and with
-                    -- them keyed spec keys).
-                    , if lss.stamp.rootFoldDepth /= defaultLss.stamp.rootFoldDepth then
-                        [ "lssRFD="
-                            ++ (if lss.stamp.rootFoldDepth then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- Reference-spine PAP successors: artifact-affecting
-                    -- (annotations and keyed spec keys move).
-                    , if lss.refPapSpine /= defaultLss.refPapSpine then
-                        [ "lssRP="
-                            ++ (if lss.refPapSpine then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- Injection-totality completion: artifact-affecting
-                    -- (stored types and member allocation move).
-                    , if lss.injTotal /= defaultLss.injTotal then
-                        [ "lssIT="
-                            ++ (if lss.injTotal then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- P1 restatement-⊤ recovery: artifact-affecting when on
-                    -- (stored registry types move, hence retranslation
-                    -- demand keys and spec keys).
-                    , if lss.rsTop /= defaultLss.rsTop then
-                        [ "lssRT="
-                            ++ (if lss.rsTop then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- Destructor annotations: artifact-affecting when on
-                    -- (varEnv-bound types move, hence demand keys).
-                    , if lss.destrAnno /= defaultLss.destrAnno then
-                        [ "lssDA="
-                            ++ (if lss.destrAnno then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- Var successor writes: artifact-affecting when on
-                    -- (registry row annotations move).
-                    , if lss.settle.varSucc /= defaultLss.settle.varSucc then
-                        [ "lssVS="
-                            ++ (if lss.settle.varSucc then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- Ctor-row var writes: artifact-affecting when on.
-                    , if lss.settle.varCtorRows /= defaultLss.settle.varCtorRows then
-                        [ "lssVC="
-                            ++ (if lss.settle.varCtorRows then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- Lambda-home var writes: artifact-affecting when on.
-                    , if lss.settle.varLambda /= defaultLss.settle.varLambda then
-                        [ "lssVL="
-                            ++ (if lss.settle.varLambda then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- Flow-connect write-back: artifact-affecting (demand
-                    -- types move, hence SpecKeys — AR-F3).
-                    , if lss.flow.connect /= defaultLss.flow.connect then
-                        [ "lssFC="
-                            ++ (if lss.flow.connect then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- F3-b let overlay: artifact-affecting (binding
-                    -- annotations reach demands, hence SpecKeys).
-                    , if lss.flow.letOverlay /= defaultLss.flow.letOverlay then
-                        [ "lssFLO="
-                            ++ (if lss.flow.letOverlay then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- E15 access flow: artifact-affecting.
-                    , if lss.flow.accessFlow /= defaultLss.flow.accessFlow then
-                        [ "lssFAF="
-                            ++ (if lss.flow.accessFlow then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- F4-sig literal facts: artifact-affecting.
-                    , if lss.flow.litFacts /= defaultLss.flow.litFacts then
-                        [ "lssFLF="
-                            ++ (if lss.flow.litFacts then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
                     ]
                )
             -- Chunked-list token appears ONLY when enabled (the default since

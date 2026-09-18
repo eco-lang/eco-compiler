@@ -1,7 +1,7 @@
 module TestLogic.Monomorphize.LssLetOverlayTest exposing (suite)
 
-{-| F3-b — LET / TAIL-DEF BINDING OVERLAY (`lss.flow.letOverlay`,
-`plans/lss-container-payload-transport.md` §12.9.5).
+{-| F3-b — LET / TAIL-DEF BINDING OVERLAY
+(`plans/lss-container-payload-transport.md` §12.9.5).
 
 A plain `let` binds its name to `classifyAs tkClassLet`'s STORELESS type — ⊤ at
 every arrow — unless a structural reason makes it take the body's type. When
@@ -13,8 +13,12 @@ was unified into the item store one line earlier.
 
 The fix copies the top-level `TailDef` recipe: classify for STRUCTURE, the
 translated RHS (let) or the demand-seeded var's zonk (tail-def) for
-ANNOTATIONS. Pins: the callee's demand reads a SET flag-on and a ⊤ flag-off
-(the differential is not vacuous).
+ANNOTATIONS.
+
+These shipped as `lss.flow.letOverlay`, default-ON 2026-09-16 (`leak|letAnno`
+58 -> 0, ⊤ 698 -> 668, `var` +30), and became unconditional 2026-09-18. The
+flag-off legs of each differential went with the flag; what remains pins the
+shipping behaviour — the callee's demand reads a SET, never the classify's ⊤.
 
 -}
 
@@ -47,24 +51,18 @@ import TestLogic.TestPipeline as Pipeline
 suite : Test
 suite =
     Test.describe "F3-b let / tail-def binding overlay"
-        [ Test.test "1. PLAIN LET, FLAG-OFF: the callee reads the classify's clsLet ⊤ (leak|letAnno)" <|
+        [ Test.test "1. PLAIN LET: the callee reads the RHS's annotation, not the classify's clsLet ⊤" <|
             \() ->
-                expectHead False tupleLet "applyPair" (\a -> a == Mono.LTop Mono.tkClassLet) "LTop clsLet"
-        , Test.test "2. PLAIN LET, FLAG-ON: the callee reads the RHS's annotation instead (the overlay happened)" <|
+                expectHead tupleLet "applyPair" (\a -> a /= Mono.LTop Mono.tkClassLet) "the RHS's annotation, not clsLet ⊤"
+        , Test.test "2. TAIL-DEF: a callback param of the local tail-def carries the single instance's demand set" <|
             \() ->
-                expectHead True tupleLet "applyPair" (\a -> a /= Mono.LTop Mono.tkClassLet) "the RHS's annotation, not clsLet ⊤"
-        , Test.test "3. TAIL-DEF, FLAG-OFF: a callback param of the local tail-def reaches the callee as ⊤" <|
-            \() ->
-                expectHead False tailDef "apply" (\a -> isTop a) "⊤"
-        , Test.test "4. TAIL-DEF, FLAG-ON: the same param carries the single instance's demand set" <|
-            \() ->
-                expectHead True tailDef "apply" (\a -> isSet a) "a set"
+                expectHead tailDef "apply" (\a -> isSet a) "a set"
         ]
 
 
-expectHead : Bool -> Src.Module -> String -> (Mono.LambdaSetAnno -> Bool) -> String -> Expect.Expectation
-expectHead on fixture callee ok what =
-    case runWith on fixture of
+expectHead : Src.Module -> String -> (Mono.LambdaSetAnno -> Bool) -> String -> Expect.Expectation
+expectHead fixture callee ok what =
+    case runWith fixture of
         Err e ->
             Expect.fail e
 
@@ -168,21 +166,14 @@ tailDef =
 -- ====== HARNESS ======
 
 
-runWith : Bool -> Src.Module -> Result String Mono.MonoGraph
-runWith on srcModule =
+runWith : Src.Module -> Result String Mono.MonoGraph
+runWith srcModule =
     let
         defaults =
             Config.defaultLss
-
-        fl =
-            Config.defaultLss.flow
     in
     Pipeline.runSolverMonoWithLimits Config.defaultLimits
-        -- Per-mechanism isolation: the other flow repairs (E15 access flow, F4-sig
-        -- literal facts) are pinned OFF so the differential is letOverlay's alone —
-        -- with them on, the call-RHS fixture's field arrow arrives already
-        -- annotated and the flag-off arm no longer reads the classify's ⊤.
-        { defaults | enabled = True, keyed = True, flow = { fl | letOverlay = on, accessFlow = False, litFacts = False } }
+        { defaults | enabled = True }
         srcModule
 
 
@@ -234,16 +225,6 @@ isSet : Mono.LambdaSetAnno -> Bool
 isSet anno =
     case anno of
         Mono.LSet _ ->
-            True
-
-        _ ->
-            False
-
-
-isTop : Mono.LambdaSetAnno -> Bool
-isTop anno =
-    case anno of
-        Mono.LTop _ ->
             True
 
         _ ->
