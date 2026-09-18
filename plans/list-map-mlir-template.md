@@ -1896,6 +1896,13 @@ Three phases, independently landable, each with its own gates.
 
 #### F-5C — S.10 arity-threaded standalone spine (the general LSS fix; artifact-affecting when enabled)
 
+**REMOVED 2026-09-17.** `lss.spineArity` and `LssInfer.spineDepthForGlobal` are
+deleted (`plans/remove-default-off-lss-flags.md`): F-5C measured a no-op at any
+depth, and once `papMembers` shipped it would have split one runtime value's
+identity across `g|X` and `p|X|d` (`plans/lss-ref-pap-spine.md` AR-5).
+`declaredArityOf`, which this section also built, STAYS — it has fifteen
+callers unrelated to the flag. The design below is the record.
+
 The piece that generalizes beyond ctors: inject standalone members through
 the first `declaredArity` arrows so partially-applied globals/ctors carry
 resolvable members at the callback position (`injectSpineMemberId` already

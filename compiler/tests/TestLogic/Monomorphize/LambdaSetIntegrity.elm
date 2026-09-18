@@ -154,12 +154,6 @@ checkOne specId expr acc =
                             -- remainder — not an LSS_002 violation.
                             acc
 
-                        Mono.LRow _ _ ->
-                            -- A lower bound claims nothing COMPLETE, so a
-                            -- missing member may sit in the unknown
-                            -- remainder — not an LSS_002 violation.
-                            acc
-
                         Mono.LSet members ->
                             if List.member mid members then
                                 acc

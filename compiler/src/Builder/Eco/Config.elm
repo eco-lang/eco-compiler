@@ -161,11 +161,6 @@ applyEnvOverrides cfg =
                     |> Task.map (\dfVal -> applyLssDevirtFnOverride dfVal cfg4c)
             )
         |> Task.andThen
-            (\cfg4d ->
-                (Utils.envLookupEnv "ECO_MONO_LSS_SPINE_ARITY" |> Task.mapError never)
-                    |> Task.map (\saVal -> applyLssSpineArityOverride saVal cfg4d)
-            )
-        |> Task.andThen
             (\cfg4e ->
                 (Utils.envLookupEnv "ECO_MONO_LSS_MU_TIE" |> Task.mapError never)
                     |> Task.map (\mtVal -> applyLssMuTieOverride mtVal cfg4e)
@@ -226,11 +221,6 @@ applyEnvOverrides cfg =
                     |> Task.map (\arVal -> applyLssArrowRootsOverride arVal cfg4e7)
             )
         |> Task.andThen
-            (\cfg4e8 ->
-                (Utils.envLookupEnv "ECO_MONO_LSS_QSOLVE" |> Task.mapError never)
-                    |> Task.map (\qsVal -> applyLssQSolveOverride qsVal cfg4e8)
-            )
-        |> Task.andThen
             (\cfg4eb ->
                 (Utils.envLookupEnv "ECO_MONO_LSS_REF_IDENTITY" |> Task.mapError never)
                     |> Task.map (\riVal -> applyLssRefIdentityOverride riVal cfg4eb)
@@ -254,11 +244,6 @@ applyEnvOverrides cfg =
             (\cfg4ed ->
                 (Utils.envLookupEnv "ECO_MONO_LSS_PAP_MEMBERS" |> Task.mapError never)
                     |> Task.map (\pmVal -> applyLssPapMembersOverride pmVal cfg4ed)
-            )
-        |> Task.andThen
-            (\cfg4ee ->
-                (Utils.envLookupEnv "ECO_MONO_LSS_SIG_ROOT_ID" |> Task.mapError never)
-                    |> Task.map (\srVal -> applyLssSigRootIdentityOverride srVal cfg4ee)
             )
         |> Task.andThen
             (\cfg4ef ->
@@ -289,11 +274,6 @@ applyEnvOverrides cfg =
             (\cfg4ej ->
                 (Utils.envLookupEnv "ECO_MONO_LSS_INJ_TOTAL" |> Task.mapError never)
                     |> Task.map (\itVal -> applyLssInjTotalOverride itVal cfg4ej)
-            )
-        |> Task.andThen
-            (\cfg4ek ->
-                (Utils.envLookupEnv "ECO_MONO_LSS_ARG_POINTS" |> Task.mapError never)
-                    |> Task.map (\apVal -> applyLssArgPointsOverride apVal cfg4ek)
             )
         |> Task.andThen
             (\cfg4el ->
@@ -331,11 +311,6 @@ applyEnvOverrides cfg =
                     |> Task.map (\floVal -> applyLssFlowLetOverlayOverride floVal cfgFLO)
             )
         |> Task.andThen
-            (\cfgFRD ->
-                (Utils.envLookupEnv "ECO_MONO_LSS_FLOW_ROW_DEFER" |> Task.mapError never)
-                    |> Task.map (\frdVal -> applyLssFlowRowDeferOverride frdVal cfgFRD)
-            )
-        |> Task.andThen
             (\cfgFAF ->
                 (Utils.envLookupEnv "ECO_MONO_LSS_FLOW_ACCESS_FLOW" |> Task.mapError never)
                     |> Task.map (\fafVal -> applyLssFlowBoolOverride setFlowAccessFlow fafVal cfgFAF)
@@ -344,16 +319,6 @@ applyEnvOverrides cfg =
             (\cfgFLF ->
                 (Utils.envLookupEnv "ECO_MONO_LSS_FLOW_LIT_FACTS" |> Task.mapError never)
                     |> Task.map (\flfVal -> applyLssFlowBoolOverride setFlowLitFacts flfVal cfgFLF)
-            )
-        |> Task.andThen
-            (\cfg4et ->
-                (Utils.envLookupEnv "ECO_MONO_LSS_STAGE_ANCHOR_ROW_FILL" |> Task.mapError never)
-                    |> Task.map (\srVal -> applyLssStageAnchorRowFillOverride srVal cfg4et)
-            )
-        |> Task.andThen
-            (\cfg4eu ->
-                (Utils.envLookupEnv "ECO_MONO_LSS_STAGE_ANCHOR_DEMAND_FILL" |> Task.mapError never)
-                    |> Task.map (\sdVal -> applyLssStageAnchorDemandFillOverride sdVal cfg4eu)
             )
         |> Task.andThen
             (\cfg4f ->
@@ -1481,26 +1446,6 @@ applyLssMaxSetSizeOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_MONO_LSS_SPINE_ARITY=1|0` (S.10, F-5C): inject standalone members
-through the first `declaredArity` arrows rather than the head arrow only, so
-partially-applied globals and ctors carry a resolvable member at the callback
-position. Default off. Artifact-affecting when enabled — participates in
-`Config.hash` via the `lssSA=` token, so eco-stuff artifacts never alias
-across the two modes.
--}
-applyLssSpineArityOverride : Maybe String -> EcoConfig -> EcoConfig
-applyLssSpineArityOverride maybeVal cfg =
-    case Maybe.map String.trim maybeVal of
-        Just "1" ->
-            updateLss (\lss -> { lss | spineArity = True }) cfg
-
-        Just "0" ->
-            updateLss (\lss -> { lss | spineArity = False }) cfg
-
-        _ ->
-            cfg
-
-
 {-| `ECO_MONO_LSS_KEYED_GLOBALS=g1,g2` (E5 selective keying): key ONLY these
 globals. User format `author/project:Module.Name.value`; REPLACES the config
 list. Malformed entries are warned to stderr and dropped (dev knob — mirror
@@ -2253,11 +2198,6 @@ updateLssSettle f =
     updateLss (\lss -> { lss | settle = f lss.settle })
 
 
-updateLssStageAnchor : (Config.LssStageAnchorConfig -> Config.LssStageAnchorConfig) -> EcoConfig -> EcoConfig
-updateLssStageAnchor f =
-    updateLss (\lss -> { lss | stageAnchor = f lss.stageAnchor })
-
-
 updateLimits : (Config.SpecLimits -> Config.SpecLimits) -> EcoConfig -> EcoConfig
 updateLimits f cfg =
     let
@@ -2632,10 +2572,10 @@ applyLssCensusOverride maybeVal cfg =
 (plans/lss-injection-completeness.md): inject the callee's member on the
 RESIDUAL arrows of a partial application of a known global — the one producer
 form that injected nothing before it (P0 census: 3,624 self-compile positions).
-DEFAULT-ON since 2026-08-27, flipped together with `sigRootIdentity` (itself
-default-off again since 2026-09-16); setting this to 0 while
-`ECO_MONO_LSS_SIG_ROOT_ID=1` re-creates the recorded identity-map miscompile,
-so never run that pair. Hash token `lssPM=`.
+DEFAULT-ON since 2026-08-27. It was flipped together with `sigRootIdentity`,
+whose co-requirement made turning this off alone a recorded identity-map
+miscompile; that flag was deleted 2026-09-17, so the unsound pair no longer
+exists. Hash token `lssPM=`.
 -}
 applyLssPapMembersOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssPapMembersOverride maybeVal cfg =
@@ -2646,34 +2586,6 @@ applyLssPapMembersOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | papMembers = False }) cfg
-
-            else
-                cfg
-
-        Nothing ->
-            cfg
-
-
-{-| `ECO_MONO_LSS_SIG_ROOT_ID=1|true|yes / 0|false|no`
-(plans/lss-solver-root-signature-identity.md): inside the INFERENCE scratch
-store only, key an arrow's set slot by the type checker's union-find ROOT
-instead of by syntactic occurrence — tying a def's annotation arrows to its
-body's, so its signature carries the facts its body proves. REQUIRES
-`papMembers` (root-shared classes export through signatures; an
-injection-incomplete class publishes a false singleton to every caller).
-DEFAULT-ON 2026-08-27 .. 2026-09-16, DEFAULT-OFF since: `arrowSolverRoots`
-(now on) subsumes it — call-stats Run 27 emitted byte-identical output with it
-off. Hash token `lssSR=`.
--}
-applyLssSigRootIdentityOverride : Maybe String -> EcoConfig -> EcoConfig
-applyLssSigRootIdentityOverride maybeVal cfg =
-    case Maybe.map (String.toLower << String.trim) maybeVal of
-        Just v ->
-            if List.member v [ "1", "true", "yes" ] then
-                updateLss (\lss -> { lss | sigRootIdentity = True }) cfg
-
-            else if List.member v [ "0", "false", "no" ] then
-                updateLss (\lss -> { lss | sigRootIdentity = False }) cfg
 
             else
                 cfg
@@ -2918,11 +2830,6 @@ setFlowLetOverlay v c =
     { c | letOverlay = v }
 
 
-setFlowRowDefer : Bool -> Config.LssFlowConfig -> Config.LssFlowConfig
-setFlowRowDefer v c =
-    { c | rowDefer = v }
-
-
 setFlowAccessFlow : Bool -> Config.LssFlowConfig -> Config.LssFlowConfig
 setFlowAccessFlow v c =
     { c | accessFlow = v }
@@ -2946,27 +2853,6 @@ applyLssFlowBoolOverride setter maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | flow = setter False lss.flow }) cfg
-
-            else
-                cfg
-
-        Nothing ->
-            cfg
-
-
-{-| `ECO_MONO_LSS_FLOW_ROW_DEFER=1|true|yes / 0|false|no`: F3-a row-deferred
-destructure sets (plans/lss-container-payload-transport.md §12.9.5).
-Artifact-affecting; hash token `lssFRD=`.
--}
-applyLssFlowRowDeferOverride : Maybe String -> EcoConfig -> EcoConfig
-applyLssFlowRowDeferOverride maybeVal cfg =
-    case Maybe.map (String.toLower << String.trim) maybeVal of
-        Just v ->
-            if List.member v [ "1", "true", "yes" ] then
-                updateLss (\lss -> { lss | flow = setFlowRowDefer True lss.flow }) cfg
-
-            else if List.member v [ "0", "false", "no" ] then
-                updateLss (\lss -> { lss | flow = setFlowRowDefer False lss.flow }) cfg
 
             else
                 cfg
@@ -3040,51 +2926,6 @@ applyLssVarLambdaOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_MONO_LSS_STAGE_ANCHOR_ROW_FILL=1|true|yes / 0|false|no`
-(plans/lss-stage-anchor-writers.md §3 W2): post-drain settle fill of var
-interior cells under `l|`-singleton heads, bounded by r = T − s over the
-birth-time qSpine fact. DEFAULT-OFF. Hash token `lssSAr=`.
--}
-applyLssStageAnchorRowFillOverride : Maybe String -> EcoConfig -> EcoConfig
-applyLssStageAnchorRowFillOverride maybeVal cfg =
-    case Maybe.map (String.toLower << String.trim) maybeVal of
-        Just v ->
-            if List.member v [ "1", "true", "yes" ] then
-                updateLssStageAnchor (\sa -> { sa | rowFill = True }) cfg
-
-            else if List.member v [ "0", "false", "no" ] then
-                updateLssStageAnchor (\sa -> { sa | rowFill = False }) cfg
-
-            else
-                cfg
-
-        Nothing ->
-            cfg
-
-
-{-| `ECO_MONO_LSS_STAGE_ANCHOR_DEMAND_FILL=1|true|yes / 0|false|no`
-(plans/lss-stage-anchor-writers.md §3 W1): the same fill applied to every
-demand pre-registry and at the completion join (the stampSelfSpine
-architecture; keyed-routed globals decline). DEFAULT-OFF. Hash token
-`lssSAd=`.
--}
-applyLssStageAnchorDemandFillOverride : Maybe String -> EcoConfig -> EcoConfig
-applyLssStageAnchorDemandFillOverride maybeVal cfg =
-    case Maybe.map (String.toLower << String.trim) maybeVal of
-        Just v ->
-            if List.member v [ "1", "true", "yes" ] then
-                updateLssStageAnchor (\sa -> { sa | demandFill = True }) cfg
-
-            else if List.member v [ "0", "false", "no" ] then
-                updateLssStageAnchor (\sa -> { sa | demandFill = False }) cfg
-
-            else
-                cfg
-
-        Nothing ->
-            cfg
-
-
 {-| `ECO_MONO_LSS_RS_TOP=1|true|yes / 0|false|no` (P1,
 plans/lss-provenance-join-and-demand-sigs.md §4.3): restatement-⊤ recovery at
 the completion join for licensed kernel-alias nodes. DEFAULT-ON since
@@ -3107,60 +2948,14 @@ applyLssRsTopOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_MONO_LSS_ARG_POINTS=1|true|yes / 0|false|no` (M2,
-plans/lss-coverage-four-levers.md §7.2-REVISED): arg-point transport +
-ctor-call shape unify. DEFAULT-OFF (micro-gate failed; under diagnosis).
-Hash token `lssAP=`.
--}
-applyLssArgPointsOverride : Maybe String -> EcoConfig -> EcoConfig
-applyLssArgPointsOverride maybeVal cfg =
-    case Maybe.map (String.toLower << String.trim) maybeVal of
-        Just v ->
-            if List.member v [ "1", "true", "yes" ] then
-                updateLss (\lss -> { lss | argPoints = True }) cfg
-
-            else if List.member v [ "0", "false", "no" ] then
-                updateLss (\lss -> { lss | argPoints = False }) cfg
-
-            else
-                cfg
-
-        Nothing ->
-            cfg
-
-
-{-| `ECO_MONO_LSS_QSOLVE=1|true|yes / 0|false|no` (§5.2/§5.3,
-plans/lss-paper-inclusion-constraints.md): consume the signature as the paper's
-scheme `d⟨ᾱ⟩ : (Q ⇒ τ)` — instantiate `ᾱ` per use and re-emit `Q` against it,
-and internalize the def's non-reaching set variables to `S(Q,α)` — instead of
-copying a pre-solved member set out of the signature. DEFAULT-OFF. Hash token
-`lssQS=`.
--}
-applyLssQSolveOverride : Maybe String -> EcoConfig -> EcoConfig
-applyLssQSolveOverride maybeVal cfg =
-    case Maybe.map (String.toLower << String.trim) maybeVal of
-        Just v ->
-            if List.member v [ "1", "true", "yes" ] then
-                updateLss (\lss -> { lss | qSolve = True }) cfg
-
-            else if List.member v [ "0", "false", "no" ] then
-                updateLss (\lss -> { lss | qSolve = False }) cfg
-
-            else
-                cfg
-
-        Nothing ->
-            cfg
-
-
 {-| `ECO_MONO_LSS_ARROW_ROOTS=1|true|yes / 0|false|no` (Phase 2b solver-root
 arrow ids, plans/lss-unknown-elimination.md §4.9): take each arrow's identity
 from its union-find ROOT, so two arrows the type checker unified share a
 lambda-set slot. Requires arrow identity to have any effect — it changes WHICH
 id an arrow gets, not whether slots are memoised at all — and that is now the
 default, so this flag alone is enough to select 2b. DEFAULT-ON since
-2026-09-16 (call-stats Runs 25-27; `sigRootIdentity` went off with it). Hash
-token `lssAR=`.
+2026-09-16 (call-stats Runs 25-27; `sigRootIdentity` went off with it, and was
+deleted outright 2026-09-17). Hash token `lssAR=`.
 -}
 applyLssArrowRootsOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssArrowRootsOverride maybeVal cfg =

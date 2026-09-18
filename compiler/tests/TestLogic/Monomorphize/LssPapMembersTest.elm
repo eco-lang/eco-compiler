@@ -182,18 +182,16 @@ lssConfig papMembers =
         defaults =
             Config.defaultLss
     in
-    -- `sigRootIdentity` moves WITH `papMembers`, never independently. Both went
-    -- default-on together on 2026-08-27, and inheriting the default here would
-    -- leave the flag-off arm running root identity WITHOUT injection
-    -- completeness — which is not merely an odd configuration, it is precisely
-    -- the pairing that published the false singleton and compiled `Task.map`
-    -- into the identity map. The isolation this test needs is of `papMembers`,
-    -- so the co-flag has to follow it.
+    -- `sigRootIdentity` used to move WITH `papMembers` here, never
+    -- independently: root identity WITHOUT injection completeness is the
+    -- pairing that published the false singleton and compiled `Task.map` into
+    -- the identity map. That flag was deleted 2026-09-17
+    -- (plans/remove-default-off-lss-flags.md), which removes the pairing and
+    -- with it the need to pin it.
     { defaults
         | enabled = True
         , keyed = True
         , papMembers = papMembers
-        , sigRootIdentity = papMembers
 
         -- regIdentity PINNED OFF (differential-overlap rule): the
         -- registration stamp puts sets — including honest SINGLETONS like
@@ -384,9 +382,6 @@ neverFalselyComplete anno =
         Mono.LPartial _ ->
             True
 
-        Mono.LRow _ _ ->
-            True
-
         Mono.LSet ms ->
             List.length ms >= 2
 
@@ -420,6 +415,3 @@ describeAnno anno =
 
         Mono.LPartial ms ->
             "LPartial " ++ String.fromInt (List.length ms) ++ String.concat (List.map (\m -> " " ++ String.fromInt m) ms)
-
-        Mono.LRow _ ms ->
-            "LRow " ++ String.fromInt (List.length ms) ++ String.concat (List.map (\m -> " " ++ String.fromInt m) ms)

@@ -314,7 +314,6 @@ selfReference =
         ]
 
 
-
 {-| F2.c: `h = apply2 inc` is a partial application of a 2-ary global.
 -}
 papRhs : Src.Module
@@ -508,6 +507,3 @@ describeAnno anno =
 
         Mono.LPartial ms ->
             "LPartial" ++ describeInts ms
-
-        Mono.LRow _ ms ->
-            "LRow" ++ describeInts ms

@@ -1,7 +1,7 @@
 module Compiler.Eco.Config exposing
     ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig
     , default, decoder, hash, clamp
-    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, ListConfig, LssConfig, LssFlowConfig, LssSettleConfig, LssStageAnchorConfig, LssStampConfig, MonoConfig, MonoEngine(..), SpecLimits, borrowReifyFromString, defaultLimits, defaultLss, monoEngineFromString
+    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, ListConfig, LssConfig, LssFlowConfig, LssSettleConfig, LssStampConfig, MonoConfig, MonoEngine(..), SpecLimits, borrowReifyFromString, defaultLimits, defaultLss, monoEngineFromString
     )
 
 {-| Project-level tunable compiler settings, read from `eco-config.json`
@@ -240,14 +240,6 @@ type alias LssConfig =
     , maxSpecsPerGlobal : Int
     , report : Bool
 
-    -- S.10 (F-5C): inject standalone members through the first
-    -- `declaredArity` arrows instead of the head arrow only, so a
-    -- partially-applied global or ctor still carries a resolvable member at
-    -- the callback position. Default OFF: it is artifact-affecting when
-    -- enabled (hash token `lssSA=1`), and the soundness argument scopes it
-    -- to `g|`/`c|` mints — kernels stay head-only.
-    , spineArity : Bool
-
     -- LSS_018 μ-tie (plans/lss-fidelity-1-watchdogs-budget-accounting.md §2):
     -- a lambda mint whose enclosing spec's demand already carries a qualified
     -- member of the same raw lambda reuses that id, closing the
@@ -376,26 +368,10 @@ type alias LssConfig =
     -- context sensitivity that manufactures usable singletons (`k1` −506,
     -- `⊤` +152, fast dispatch share −2.73 pp, wall flat). Subsumes
     -- `sigRootIdentity` (Run 27: byte-identical emission with it off), which
-    -- went default-off in the same flip. Escape hatch
+    -- went default-off in the same flip and was deleted 2026-09-17. Escape
+    -- hatch
     -- `ECO_MONO_LSS_ARROW_ROOTS=0`; hash token `lssAR=0` rides the OFF arm.
     , arrowSolverRoots : Bool
-
-    -- §5.2/§5.3 (plans/lss-paper-inclusion-constraints.md): consume the
-    -- signature as the paper's SCHEME `d⟨ᾱ⟩ : (Q ⇒ τ)` rather than as a
-    -- pre-solved answer.
-    --
-    -- Flag-OFF is today's path: `applyFacts` copies `ArrowFact.members` into
-    -- the instantiation's slots, and a def's set variables are committed by
-    -- the eager write that put them there.
-    --
-    -- Flag-ON instantiates: freshen `ᾱ` (the fresh slots), tie the ordinals
-    -- that share a `rep` into one variable, then re-emit `Q` against those
-    -- variables; and at the def boundary internalize the variables that do NOT
-    -- reach the signature to `S(Q,α)`, the paper's minimal solution, instead
-    -- of reading whatever the eager union left behind.
-    --
-    -- DEFAULT-OFF. Hash token `lssQS=1`; env `ECO_MONO_LSS_QSOLVE`.
-    , qSolve : Bool
 
     -- §5.4 (GAP-A): classify a bare global reference STORE-AWARE when its type
     -- mentions an arrow, instead of with the storeless classifier that stamps
@@ -450,50 +426,12 @@ type alias LssConfig =
     -- Artifact-affecting (members → annotations → keyed spec keys → fan-out).
     -- DEFAULT-ON since 2026-08-27: +4.20 pp analysis coverage, all gates green
     -- (E2E 1,691/1,691, `Q` REPRODUCES, elm-tests at the pre-existing set).
-    -- Flipped TOGETHER WITH `sigRootIdentity`, and it must never be the one
-    -- turned off while that stays on — see the REQUIRES note there; the pair
-    -- is a soundness constraint, not a preference. Escape hatch
-    -- `ECO_MONO_LSS_PAP_MEMBERS=0`; hash token `lssPM=0` now rides the OFF arm.
+    -- Flipped TOGETHER WITH `sigRootIdentity`, which it was unsound to
+    -- outlive: root sharing without injection completeness publishes a false
+    -- singleton. That flag was deleted 2026-09-17, so this one now stands
+    -- alone. Escape hatch `ECO_MONO_LSS_PAP_MEMBERS=0`; hash token `lssPM=0`
+    -- rides the OFF arm.
     , papMembers : Bool
-
-    -- SOLVER-ROOT SIGNATURE IDENTITY
-    -- (plans/lss-solver-root-signature-identity.md): inside the INFERENCE
-    -- scratch store only, key an arrow's lambda-set slot by the type
-    -- checker's union-find ROOT instead of by syntactic occurrence. A def's
-    -- annotation arrow and its body node's arrow are structurally-equal
-    -- DISTINCT objects 97.5 % of the time, so occurrence identity cannot tie
-    -- them: the body's members land in slots `zonkSigGo` never reads, and the
-    -- signature comes back `allflex`. Tying them is what makes a def's
-    -- signature conduct — MEASURED for this flag on the self-compile
-    -- (2026-08-27): `sigfacts` 751 -> 1,825 rows over 857 newly-carrying
-    -- defs, analysis coverage 27.85 % -> 28.72 % (+0.87 pp), ⊤ −1,445
-    -- positions and `kN` +953, `out.mlir` −228,690 B. Fast dispatch is
-    -- UNCHANGED (21.200 % both arms, −7 events of 571 M) and wall is flat, so
-    -- the completeness gain costs nothing at runtime.
-    --
-    -- This is the paper's inference step (3): `ζ = 𝓔(ξ)`, the lambda-set
-    -- equalities implied by the type equalities (146:10). Eco reads them off
-    -- the checker's own solve rather than re-deriving them, and confines the
-    -- substitution to inference so the specialization phase keeps
-    -- per-occurrence identity and per-call-site instantiation — which is what
-    -- `arrowSolverRoots` (2b) gives up, and why that flag costs context
-    -- sensitivity.
-    --
-    -- REQUIRES `papMembers`: root-shared classes export through signatures,
-    -- so an injection-INCOMPLETE class publishes a false singleton to every
-    -- caller. That combination is the recorded identity-map miscompile; it
-    -- may be run only as a deliberate negative probe. Both went default-on
-    -- together, and disabling `papMembers` while leaving this ON re-creates
-    -- exactly that miscompile — so if you turn one off, turn off both.
-    --
-    -- Artifact-affecting. DEFAULT-ON 2026-08-27 .. 2026-09-16, then
-    -- DEFAULT-OFF: with `arrowSolverRoots` on, `AssignMVarIds` already gives
-    -- every solver-root slot one shared arrow id, so this memo translation has
-    -- nothing left to merge (call-stats Run 27: emission byte-identical with it
-    -- off). Turning it back on is only meaningful with `arrowSolverRoots` off,
-    -- and then still REQUIRES `papMembers`. Hash token `lssSR=1` rides the ON
-    -- arm; env `ECO_MONO_LSS_SIG_ROOT_ID`.
-    , sigRootIdentity : Bool
 
     -- ARROW LIVENESS CENSUS (plans/lss-provenance-ratio-census.md §7): mark
     -- every arrow PEELED BY AN ARGUMENT, so `var`/`set` arrows can be split
@@ -580,10 +518,10 @@ type alias LssConfig =
     -- Targets the largest surviving var population: /a0/r-shaped
     -- argument-spine PAPs, 58 % of all var (census 2026-08-28).
     --
-    -- NOT `spineArity`: that dormant flag injects the SAME g| member at
-    -- every depth — a conflated identity that papMembers rejected (g| is
-    -- stampable; a PAP is not) and that would split against papMembers'
-    -- p| producer mints. The two flags are mutually exclusive by intent.
+    -- The rejected alternative was `spineArity`, which injected the SAME g|
+    -- member at every depth — a conflated identity that papMembers rejected
+    -- (g| is stampable; a PAP is not) and that would have split against
+    -- papMembers' p| producer mints. It was deleted 2026-09-17.
     --
     -- Artifact-affecting (annotations and keyed spec keys move).
     -- DEFAULT-ON since 2026-08-28 (same-day build and flip, user decision):
@@ -617,17 +555,6 @@ type alias LssConfig =
     -- diverge=0 both arms. Escape hatch `ECO_MONO_LSS_INJ_TOTAL=0`; hash
     -- token `lssIT=0` now rides the OFF arm.
     , injTotal : Bool
-
-    -- M2 ARG-POINT TRANSPORT (plans/lss-coverage-four-levers.md §7.2-REVISED):
-    -- walk call args first and unify the WALKED points with callee params
-    -- (the A.1 leak), plus the ctor-call shape unify (H1). IMPLEMENTED but
-    -- the micro-gate FAILED (probe /c0 rows unchanged; armEntered=3 but all
-    -- walked points WpNone — partial ctor apps do not reach the Call arm in
-    -- the expected form, and non-arrow-typed args carry no point). Kept
-    -- DEFAULT-OFF pending the JS-loop diagnosis; separate from injTotal so
-    -- the VALIDATED L1-L3 behavior ships without this unproven piece.
-    -- Env `ECO_MONO_LSS_ARG_POINTS`; hash token `lssAP=1`.
-    , argPoints : Bool
 
     -- P1 RESTATEMENT-⊤ RECOVERY (plans/lss-provenance-join-and-demand-sigs.md
     -- §4.3): at the completion join, for LICENSED kernel-alias nodes only
@@ -705,14 +632,6 @@ type alias LssConfig =
     -- by the bundling (tokens are independent of record shape).
     , settle : LssSettleConfig
 
-    -- Stage-anchor writers (plans/lss-stage-anchor-writers.md §3): the
-    -- construction-anchored `l|` own-mid fill family — rowFill (post-drain
-    -- settle over registry rows) and demandFill (demand + completion-join
-    -- fill on the stampSelfSpine architecture). Per-flag docs on
-    -- `LssStageAnchorConfig`. Env ECO_MONO_LSS_STAGE_ANCHOR_ROW_FILL /
-    -- _DEMAND_FILL; hash tokens lssSAr= / lssSAd= ride the non-default arm.
-    , stageAnchor : LssStageAnchorConfig
-
     -- Instance-qualified lambda members
     -- (plans/lss-instance-qualified-members.md). Sub-record, not a bare flag:
     -- `LssConfig` is at the 32-slot record GC-scan cap with this field, so the
@@ -758,24 +677,6 @@ type alias LssSettleConfig =
     }
 
 
-{-| Stage-anchor writers (plans/lss-stage-anchor-writers.md §3): both fill
-`l|`-singleton-headed rows' var interior cells with the lambda's OWN mid
-(LSS\_013), bounded by the alignment theorem r = T − s over the birth-time
-qSpine fact.
-
-  - `rowFill` — W2: the post-drain settle pass over registry rows.
-  - `demandFill` — W1: the demand + completion-join fill (the
-    stampSelfSpine architecture; keyed-routed globals decline).
-
-Both DEFAULT-OFF until the ORDER 4 battery presents a flip decision.
-
--}
-type alias LssStageAnchorConfig =
-    { rowFill : Bool
-    , demandFill : Bool
-    }
-
-
 {-| Translation-time flow repairs (the edges Translate re-ties in the store
 or in the binding environment).
 
@@ -783,7 +684,7 @@ or in the binding environment).
   - `letOverlay` — F3-b (plans/lss-container-payload-transport.md §12.9.5):
     a plain `let` binding's `varEnv` type takes its ANNOTATIONS from the
     translated RHS (`Mono.overlayAnnotations classified bodyType`) instead of
-    the storeless classify's ⊤ — the LSS_026 `leak\|letAnno` class — and a
+    the storeless classify's ⊤ — the LSS\_026 `leak\|letAnno` class — and a
     local tail-def's binding/param types take theirs from the zonk of the
     demand-seeded annotation var, exactly as the top-level `TailDef` already
     does (Translate.elm `specializeCycleFuncDef`). Structure stays the
@@ -798,16 +699,6 @@ or in the binding environment).
 type alias LssFlowConfig =
     { connect : Bool
     , letOverlay : Bool
-
-    -- `rowDefer` — F3-a (plans/lss-container-payload-transport.md §12.9.5):
-    -- a destructured SYNTACTIC payload arrow (a constructor field, invisible
-    -- to the scrutinee's type) binds as `LRow` — a reference to the
-    -- constructor's row — instead of the storeless ⊤, and the post-drain
-    -- `settleRowRefs` resolves every `LRow` from the COMPLETE union of the
-    -- row's constructions (a translation-time read is unsound: partial
-    -- union ⇒ false singleton). Artifact-affecting; hash token `lssFRD=`;
-    -- env `ECO_MONO_LSS_FLOW_ROW_DEFER`. DEFAULT-OFF pending the A/B.
-    , rowDefer : Bool
 
     -- `accessFlow` — E15 (plans/lss-container-payload-transport.md §12.10.1): a
     -- record-field ACCESS transports its field's set — `enrichFromEnv` projects
@@ -1015,7 +906,6 @@ defaultLss =
     , maxSetSize = 0
     , maxSpecsPerGlobal = 0
     , report = False
-    , spineArity = False
     , muTie = True
     , groundStandalones = True
     , sigFlow = True
@@ -1023,22 +913,18 @@ defaultLss =
     , postSettleDevirt = True
     , arrowIdentity = True
     , arrowSolverRoots = True
-    , qSolve = False
     , refIdentity = True
     , qCensus = False
     , papMembers = True
-    , sigRootIdentity = False
     , arrowCensus = False
     , regIdentity = True
     , rootFold = True
     , refPapSpine = True
     , injTotal = True
-    , argPoints = False
     , rsTop = True
     , destrAnno = True
-    , flow = { connect = True, letOverlay = True, rowDefer = False, accessFlow = True, litFacts = True }
+    , flow = { connect = True, letOverlay = True, accessFlow = True, litFacts = True }
     , settle = { varSucc = True, varCtorRows = True, varLambda = True }
-    , stageAnchor = { rowFill = False, demandFill = False }
     , stamp = { enabled = True, maxInstances = 8, flatPeel = True, census = False, papFast = True, useInject = True, useInjectPap = True, rootFoldDepth = True }
     }
 
@@ -1601,7 +1487,6 @@ lssDecoder =
         -- APPEND ONLY, and LAST: this apply chain is POSITIONAL, so an
         -- insertion anywhere above silently swaps two flags' values and still
         -- type-checks (every field above is a Bool or an Int).
-        |> D.apply (D.optionalField "spineArity" D.bool defaultLss.spineArity)
         |> D.apply (D.optionalField "muTie" D.bool defaultLss.muTie)
         |> D.apply (D.optionalField "groundStandalones" D.bool defaultLss.groundStandalones)
         |> D.apply (D.optionalField "sigFlow" D.bool defaultLss.sigFlow)
@@ -1609,22 +1494,18 @@ lssDecoder =
         |> D.apply (D.optionalField "postSettleDevirt" D.bool defaultLss.postSettleDevirt)
         |> D.apply (D.optionalField "arrowIdentity" D.bool defaultLss.arrowIdentity)
         |> D.apply (D.optionalField "arrowSolverRoots" D.bool defaultLss.arrowSolverRoots)
-        |> D.apply (D.optionalField "qSolve" D.bool defaultLss.qSolve)
         |> D.apply (D.optionalField "refIdentity" D.bool defaultLss.refIdentity)
         |> D.apply (D.optionalField "qCensus" D.bool defaultLss.qCensus)
         |> D.apply (D.optionalField "papMembers" D.bool defaultLss.papMembers)
-        |> D.apply (D.optionalField "sigRootIdentity" D.bool defaultLss.sigRootIdentity)
         |> D.apply (D.optionalField "arrowCensus" D.bool defaultLss.arrowCensus)
         |> D.apply (D.optionalField "regIdentity" D.bool defaultLss.regIdentity)
         |> D.apply (D.optionalField "rootFold" D.bool defaultLss.rootFold)
         |> D.apply (D.optionalField "refPapSpine" D.bool defaultLss.refPapSpine)
         |> D.apply (D.optionalField "injTotal" D.bool defaultLss.injTotal)
-        |> D.apply (D.optionalField "argPoints" D.bool defaultLss.argPoints)
         |> D.apply (D.optionalField "rsTop" D.bool defaultLss.rsTop)
         |> D.apply (D.optionalField "destrAnno" D.bool defaultLss.destrAnno)
         |> D.apply lssFlowDecoder
         |> D.apply lssSettleDecoder
-        |> D.apply lssStageAnchorDecoder
         |> D.apply lssInstanceQualDecoder
 
 
@@ -1640,15 +1521,6 @@ lssSettleDecoder =
         |> D.apply (D.optionalField "varLambda" D.bool defaultLss.settle.varLambda)
 
 
-{-| Flat keys, prefixed — new with the sub-record (no schema history to keep).
--}
-lssStageAnchorDecoder : D.Decoder x LssStageAnchorConfig
-lssStageAnchorDecoder =
-    D.pure LssStageAnchorConfig
-        |> D.apply (D.optionalField "stageAnchorRowFill" D.bool defaultLss.stageAnchor.rowFill)
-        |> D.apply (D.optionalField "stageAnchorDemandFill" D.bool defaultLss.stageAnchor.demandFill)
-
-
 {-| `flowConnect` keeps its historical flat key; `flowLetOverlay` is new.
 -}
 lssFlowDecoder : D.Decoder x LssFlowConfig
@@ -1656,7 +1528,6 @@ lssFlowDecoder =
     D.pure LssFlowConfig
         |> D.apply (D.optionalField "flowConnect" D.bool defaultLss.flow.connect)
         |> D.apply (D.optionalField "flowLetOverlay" D.bool defaultLss.flow.letOverlay)
-        |> D.apply (D.optionalField "flowRowDefer" D.bool defaultLss.flow.rowDefer)
         |> D.apply (D.optionalField "flowAccessFlow" D.bool defaultLss.flow.accessFlow)
         |> D.apply (D.optionalField "flowLitFacts" D.bool defaultLss.flow.litFacts)
 
@@ -1961,11 +1832,6 @@ hash cfg =
 
                       else
                         []
-                    , if lss.spineArity then
-                        [ "lssSA=1" ]
-
-                      else
-                        []
 
                     -- LSS_018 μ-tie: artifact-affecting under keyed routing
                     -- (tied member ids change annotations → keys → fan-out).
@@ -2125,21 +1991,6 @@ hash cfg =
 
                       else
                         []
-
-                    -- §5.2/§5.3 scheme instantiation: artifact-affecting when
-                    -- on (it changes what a def's set variables resolve to).
-                    , if lss.qSolve /= defaultLss.qSolve then
-                        [ "lssQS="
-                            ++ (if lss.qSolve then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
                     , if lss.refIdentity /= defaultLss.refIdentity then
                         [ "lssRI="
                             ++ (if lss.refIdentity then
@@ -2241,22 +2092,6 @@ hash cfg =
                       else
                         []
 
-                    -- Solver-root signature identity: ties a def's annotation
-                    -- arrows to its body's, so signatures carry facts they did
-                    -- not before — annotations move, keys move.
-                    , if lss.sigRootIdentity /= defaultLss.sigRootIdentity then
-                        [ "lssSR="
-                            ++ (if lss.sigRootIdentity then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
                     -- Liveness census: read-only, but it rides the hash so a
                     -- census run cannot reuse a non-census cache (`qCensus`'s
                     -- rule).
@@ -2339,20 +2174,6 @@ hash cfg =
                     , if lss.injTotal /= defaultLss.injTotal then
                         [ "lssIT="
                             ++ (if lss.injTotal then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- M2 arg-point transport: artifact-affecting when on.
-                    , if lss.argPoints /= defaultLss.argPoints then
-                        [ "lssAP="
-                            ++ (if lss.argPoints then
                                     "1"
 
                                 else
@@ -2467,20 +2288,6 @@ hash cfg =
                       else
                         []
 
-                    -- F3-a row-deferred destructure sets: artifact-affecting.
-                    , if lss.flow.rowDefer /= defaultLss.flow.rowDefer then
-                        [ "lssFRD="
-                            ++ (if lss.flow.rowDefer then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
                     -- E15 access flow: artifact-affecting.
                     , if lss.flow.accessFlow /= defaultLss.flow.accessFlow then
                         [ "lssFAF="
@@ -2499,36 +2306,6 @@ hash cfg =
                     , if lss.flow.litFacts /= defaultLss.flow.litFacts then
                         [ "lssFLF="
                             ++ (if lss.flow.litFacts then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- Stage-anchor rowFill: artifact-affecting when on
-                    -- (registry row annotations move).
-                    , if lss.stageAnchor.rowFill /= defaultLss.stageAnchor.rowFill then
-                        [ "lssSAr="
-                            ++ (if lss.stageAnchor.rowFill then
-                                    "1"
-
-                                else
-                                    "0"
-                               )
-                        ]
-
-                      else
-                        []
-
-                    -- Stage-anchor demandFill: artifact-affecting when on
-                    -- (demand/registry annotations move mid-drain).
-                    , if lss.stageAnchor.demandFill /= defaultLss.stageAnchor.demandFill then
-                        [ "lssSAd="
-                            ++ (if lss.stageAnchor.demandFill then
                                     "1"
 
                                 else

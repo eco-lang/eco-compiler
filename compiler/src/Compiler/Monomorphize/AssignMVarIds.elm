@@ -1,4 +1,7 @@
-module Compiler.Monomorphize.AssignMVarIds exposing (GlobalMVarState, assignIds, assignIdsToType, freshMVarId, mintLamId, mintArrowId)
+module Compiler.Monomorphize.AssignMVarIds exposing
+    ( GlobalMVarState, assignIds, assignIdsToType
+    , freshMVarId, mintLamId, mintArrowId
+    )
 
 {-| Assign globally unique MVarIds to all type variables in a TypedOptimized GlobalGraph.
 
@@ -35,23 +38,6 @@ type alias GlobalMVarState =
     , lamLabels : Dict Int String -- LSS: member id -> "defKey#id" (census rendering only)
     , nextArrow : TypeIds.ArrowId -- Phase 2a: per-OCCURRENCE arrow identity supply (plans/lss-unknown-elimination.md §4.2). No side table: `lamLabels` exists only for census rendering and has no arrow analogue.
     , arrowRootEnv : Dict ( String, Int ) TypeIds.ArrowId -- Phase 2b: (moduleKey, solver root index) -> global ArrowId. EXACT mirror of `rootEnv`, and module-scoped for the same reason: each module's solve numbers its `Pt` from zero, so a raw index is only meaningful with its home module.
-
-    -- `lss.sigRootIdentity` (plans/lss-solver-root-signature-identity.md §2.1):
-    -- the same solver-root identity as `arrowRootEnv`, but recorded as a SIDE
-    -- TABLE instead of being stamped into the type — so the graph keeps its
-    -- per-occurrence ids (byte-identical) and a consumer can opt into root
-    -- keying per PHASE. `arrowRootOf` is the only one read downstream; the
-    -- other two are pass-internal.
-    --
-    -- Root keys come from their OWN NEGATIVE supply. Drawing them from
-    -- `nextArrow` would shift every later occurrence id's number, and
-    -- occurrence ids feed an `==` fast path
-    -- (`Translate.sameCanTypeIgnoringArrows`) — so numbering stays byte-stable
-    -- by construction rather than by test. Negative keys also cannot collide
-    -- with the memo's occurrence keys (>= 1) or its 0 "unstamped" sentinel.
-    , rootKeyEnv : Dict ( String, Int ) Int -- (moduleKey, solver root index) -> negative root key; module-scoped for `arrowRootEnv`'s reason (a raw index across modules would be a FALSE union)
-    , nextRootKey : Int -- next negative root key; starts at -1 and decrements
-    , arrowRootOf : Dict Int Int -- `Id.toComparable occId` -> negative root key. Partial: arrows that lost solver provenance have no entry and degrade to occurrence identity.
 
     -- STAMPING-WALK CENSUS (plans/lss-provenance-ratio-census.md §8). The walk
     -- in `SolverRoots.stampArrowRoots` abandons a WHOLE SUBTREE on a lockstep
@@ -149,10 +135,6 @@ mintLamId st =
 {-| Mint a fresh arrow identity from the STATE. The `Ctx`-level `freshArrowId`
 below is this pass's internal form; see `mintLamId` for why the pre-mono passes
 need the state-level one.
-
-A freshly minted occurrence id has no `arrowRootOf` entry, so it degrades to
-occurrence identity — the documented partial-map behaviour of that side table.
-
 -}
 mintArrowId : GlobalMVarState -> ( TypeIds.ArrowId, GlobalMVarState )
 mintArrowId st =
@@ -215,45 +197,6 @@ ensureArrowIdForRoot rootIdx ctx =
             ( arrowId, { ctx1 | state = { st | arrowRootEnv = Dict.insert key arrowId st.arrowRootEnv } } )
 
 
-{-| `lss.sigRootIdentity` (plans/lss-solver-root-signature-identity.md §2.1):
-record `occId -> rootKey` for an arrow that carries solver provenance, WITHOUT
-touching the id that gets stamped into the type.
-
-Takes the already-minted `( occId, ctx )` so the caller's stamping path is
-unchanged — this only appends to the side table. Root keys are deduped by
-`( moduleKey, rootIdx )`, module-scoped for `ensureArrowIdForRoot`'s reason: a
-raw solver index is meaningless outside its home module, and colliding two
-modules' indices would be a FALSE union of two lambda sets. They are drawn
-from a negative supply so occurrence-id numbering is untouched.
-
--}
-recordRootKey : Int -> ( TypeIds.ArrowId, Ctx ) -> ( TypeIds.ArrowId, Ctx )
-recordRootKey rootIdx ( arrowId, ctx ) =
-    let
-        st =
-            ctx.state
-
-        key =
-            ( ctx.moduleKey, rootIdx )
-
-        ( rootKey, st1 ) =
-            case Dict.get key st.rootKeyEnv of
-                Just existing ->
-                    ( existing, st )
-
-                Nothing ->
-                    ( st.nextRootKey
-                    , { st
-                        | rootKeyEnv = Dict.insert key st.nextRootKey st.rootKeyEnv
-                        , nextRootKey = st.nextRootKey - 1
-                      }
-                    )
-    in
-    ( arrowId
-    , { ctx | state = { st1 | arrowRootOf = Dict.insert (Id.toComparable arrowId) rootKey st1.arrowRootOf, arrowsStamped = st1.arrowsStamped + 1 } }
-    )
-
-
 {-| Run a function with a fresh binding-local SchemeEnv, then discard the
 binding-local env and restore the outer env, keeping only the evolved global state.
 -}
@@ -289,9 +232,6 @@ assignIds useSolverRoots censusOn (TOpt.GlobalGraph nodes fields annotations all
             , lamLabels = Dict.empty
             , nextArrow = TypeIds.firstArrowId
             , arrowRootEnv = Dict.empty
-            , rootKeyEnv = Dict.empty
-            , nextRootKey = -1
-            , arrowRootOf = Dict.empty
             , stampCensusOn = censusOn
             , arrowsStamped = 0
             , typesAll = 0
@@ -321,7 +261,7 @@ assignIdsToType canType =
     let
         ctx =
             { env = Dict.empty
-            , state = { nextId = TypeIds.firstMVarId, superVars = Dict.empty, rootEnv = Dict.empty, nextLam = TypeIds.firstSrcLambdaId, lamLabels = Dict.empty, nextArrow = TypeIds.firstArrowId, arrowRootEnv = Dict.empty, rootKeyEnv = Dict.empty, nextRootKey = -1, arrowRootOf = Dict.empty, stampCensusOn = False, arrowsStamped = 0, typesAll = 0, typesNone = 0, typesPartial = 0, arrowsInNone = 0, arrowsUnstampedInPartial = 0 }
+            , state = { nextId = TypeIds.firstMVarId, superVars = Dict.empty, rootEnv = Dict.empty, nextLam = TypeIds.firstSrcLambdaId, lamLabels = Dict.empty, nextArrow = TypeIds.firstArrowId, arrowRootEnv = Dict.empty, stampCensusOn = False, arrowsStamped = 0, typesAll = 0, typesNone = 0, typesPartial = 0, arrowsInNone = 0, arrowsUnstampedInPartial = 0 }
             , schemeRootsForDef = Dict.empty
             , varSupers = TOpt.varSupersOfType canType
             , moduleKey = ""
@@ -1236,8 +1176,8 @@ split that matters without any cross-phase plumbing:
   - none stamped => never walked, or failed at the very root. No repair to the
     walk can help this population.
 
-Deltas come from `nextArrow` and `arrowsStamped`, never `Dict.size arrowRootOf`
-— `Dict.size` is O(n) in Elm and would make the pass quadratic.
+Deltas come from `nextArrow` and `arrowsStamped`, never a `Dict.size` — that is
+O(n) in Elm and would make the pass quadratic.
 
 MUST wrap only the EXTERNAL call sites. Wrapping the recursive calls inside
 `rewriteCanType` would count every subtree as its own "type" and the
@@ -1323,13 +1263,9 @@ rewriteCanType ctx canType =
                                 ensureArrowIdForRoot rootIdx ctx
 
                             else
-                                -- `lss.sigRootIdentity` (§2.1): stamp the
-                                -- OCCURRENCE id exactly as before — the graph
-                                -- stays byte-identical — and record
-                                -- occId -> rootKey on the side, so a consumer
-                                -- can opt into root keying per PHASE rather
-                                -- than swallowing 2b's whole blast radius.
-                                recordRootKey rootIdx (freshArrowId ctx)
+                                -- Phase 2b off: per syntactic OCCURRENCE, the
+                                -- Phase 2a identity.
+                                freshArrowId ctx
 
                         _ ->
                             -- Phase 2a fallback: per syntactic OCCURRENCE.

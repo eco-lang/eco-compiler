@@ -444,19 +444,19 @@ run sigFlow srcModule =
         -- PINNED OFF: these fixtures pin LSS_020/023 mechanisms in
         -- isolation from LSS_024's id sharing (default-on since 2026-08-21).
         --
-        -- `papMembers` / `sigRootIdentity` PINNED OFF for the same reason,
-        -- and it is load-bearing here rather than tidy-minded. Every test
-        -- driven through this harness is DIFFERENTIAL — it compares
-        -- `sigFlow` on against off — and `sigRootIdentity` opens a SECOND
-        -- channel to the same place: it ties a def's annotation arrows to
-        -- its body's, so signatures conduct members whether or not `sigFlow`
-        -- is on. Inheriting it (default-on since 2026-08-27) put that
-        -- channel in BOTH arms, which collapsed the differentials: test 1b's
-        -- "the channel is empty" absence stopped holding, test 2's 2-member
-        -- set appeared flag-OFF too, and test 3's negative control stopped
-        -- being identical because root identity makes signatures non-trivial
-        -- (self-compile: 9,243 trivial -> 8,386) and that control's premise
-        -- is a trivial signature.
+        -- `papMembers` PINNED OFF for the same reason, and it is load-bearing
+        -- here rather than tidy-minded. Every test driven through this harness
+        -- is DIFFERENTIAL — it compares `sigFlow` on against off — and a
+        -- second channel to the same place collapses the differentials. The
+        -- recorded instance was `sigRootIdentity` (deleted 2026-09-17): it
+        -- tied a def's annotation arrows to its body's, so signatures
+        -- conducted members whether or not `sigFlow` was on, and inheriting it
+        -- put that channel in BOTH arms — test 1b's "the channel is empty"
+        -- absence stopped holding, test 2's 2-member set appeared flag-OFF
+        -- too, and test 3's negative control stopped being identical because
+        -- root identity made signatures non-trivial (self-compile: 9,243
+        -- trivial -> 8,386) and that control's premise is a trivial
+        -- signature.
         --
         -- The general rule, paid for twice now: A DIFFERENTIAL TEST MUST PIN
         -- EVERY FLAG THAT OVERLAPS THE ONE IT TOGGLES. Tests 6 and 8 below
@@ -469,13 +469,13 @@ run sigFlow srcModule =
             , sigFlow = sigFlow
             , layoutQualMembers = False
             , papMembers = False
-            , sigRootIdentity = False
 
             -- arrowSolverRoots (default-on since 2026-09-16) PINNED OFF: the
             -- THIRD channel to the same place — 2b gives unified arrows one
-            -- shared id before mono starts, which subsumes sigRootIdentity's
-            -- tie (call-stats Run 27) and collapsed tests 1b/2/3 exactly as
-            -- that flag did. Fifth instance of the differential-overlap rule.
+            -- shared id before mono starts, which subsumed `sigRootIdentity`'s
+            -- tie (call-stats Run 27, and why that flag could be deleted) and
+            -- collapsed tests 1b/2/3 exactly as it did. Fifth instance of the
+            -- differential-overlap rule.
             , arrowSolverRoots = False
 
             -- regIdentity (default-on since 2026-08-28) PINNED OFF, fourth
@@ -728,9 +728,6 @@ annoHasSize n anno =
         Mono.LPartial _ ->
             False
 
-        Mono.LRow _ _ ->
-            False
-
 
 describeAnnos : List Mono.LambdaSetAnno -> String
 describeAnnos annos =
@@ -749,9 +746,6 @@ describeAnnos annos =
 
                     Mono.LPartial ms ->
                         "LPartial[" ++ String.join "," (List.map String.fromInt ms) ++ "]"
-
-                    Mono.LRow _ ms ->
-                        "LRow[" ++ String.join "," (List.map String.fromInt ms) ++ "]"
             )
             annos
         )

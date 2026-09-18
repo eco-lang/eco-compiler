@@ -1,5 +1,7 @@
 # LSS: solver-root signature identity, with per-use instantiation
 
+**FLAG REMOVED 2026-09-17 — `lss.sigRootIdentity` and its `arrowRootOf` side table are deleted. `arrowSolverRoots` subsumed it (call-stats Run 27: emission byte-identical with it off), and deleting it also deletes the papMembers-pairing trap this plan documents. The mechanism described below is GONE from the compiler (`plans/remove-default-off-lss-flags.md`); this plan stays as the record of what was measured and why it was refused.**
+
 **Status: UNBLOCKED (2026-08-26 late) — the P0 exit criterion is MET.** The
 `+arrowSolverRoots +papMembers` arm emits, lowers (0 undefined fast
 evaluators) and **RUNS** — 29/29 dependencies, `Compiling (162)`, stopped only

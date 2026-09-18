@@ -68,7 +68,7 @@ env ECO_MONO_ENGINE=solver <OFF_SET_ENV> \
 ```
 
 `flag-off-lss-run.sh <N>` does one full iteration (both runs plus the
-lowering). `flag-off-lss-run.sh all` runs every effective iteration, 31 → 1.
+lowering). `flag-off-lss-run.sh all` runs every effective iteration, 35 → 1.
 
 ## 2. Metrics recorded
 
@@ -109,34 +109,34 @@ Order = order added to the codebase. Iteration N turns off row N.
 | N | Flag | Off switch | Default |
 |---|------|-----------|---------|
 | 35 | *(none — all flags ON)* | *no env; the reference pair* | — |
-| 34 | `stamp.papFast` | `ECO_MONO_LSS_PAP_FAST=0` | on |
-| 33 | `stamp.flatPeel` | `ECO_MONO_LSS_FLAT_PEEL=0` | on |
-| 32 | `instanceQual` | `ECO_MONO_LSS_INSTANCE_QUAL=0` | on |
-| 31 | `stageAnchor.demandFill` | `ECO_MONO_LSS_STAGE_ANCHOR_DEMAND_FILL=0` | **off** |
-| 30 | `stageAnchor.rowFill` | `ECO_MONO_LSS_STAGE_ANCHOR_ROW_FILL=0` | **off** |
-| 29 | `flowConnect` | `ECO_MONO_LSS_FLOW_CONNECT=0` | on |
-| 28 | `settle.varLambda` | `ECO_MONO_LSS_VAR_LAMBDA=0` | on |
-| 27 | `settle.varCtorRows` | `ECO_MONO_LSS_VAR_CTOR_ROWS=0` | on |
-| 26 | `settle.varSucc` | `ECO_MONO_LSS_VAR_SUCC=0` | on |
-| 25 | `destrAnno` | `ECO_MONO_LSS_DESTR_ANNO=0` | on |
-| 24 | `rsTop` | `ECO_MONO_LSS_RS_TOP=0` | on |
-| 23 | `argPoints` | `ECO_MONO_LSS_ARG_POINTS=0` | **off** |
-| 22 | `injTotal` | `ECO_MONO_LSS_INJ_TOTAL=0` | on |
-| 21 | `refPapSpine` | `ECO_MONO_LSS_REF_PAP_SPINE=0` | on |
-| 20 | `rootFold` | `ECO_MONO_LSS_ROOT_FOLD=0` | on |
-| 19 | `regIdentity` | `ECO_MONO_LSS_REG_IDENTITY=0` | on |
-| 18 | `sigRootIdentity` | `ECO_MONO_LSS_SIG_ROOT_ID=0` | on |
-| 17 | `papMembers` | `ECO_MONO_LSS_PAP_MEMBERS=0` | on |
-| 16 | `refIdentity` | `ECO_MONO_LSS_REF_IDENTITY=0` | on |
-| 15 | `qSolve` | `ECO_MONO_LSS_QSOLVE=0` | **off** |
-| 14 | `arrowSolverRoots` | `ECO_MONO_LSS_ARROW_ROOTS=0` | **off** |
-| 13 | `arrowIdentity` | `ECO_MONO_LSS_ARROW_ID=0` | on |
-| 12 | `postSettleDevirt` | `ECO_MONO_LSS_DEVIRT_POST=0` | on |
-| 11 | `layoutQualMembers` | `ECO_MONO_LSS_LAYOUT_QUAL=0` | on |
-| 10 | `sigFlow` | `ECO_MONO_LSS_SIG_FLOW=0` | on |
-| 9 | `groundStandalones` | `ECO_MONO_LSS_GROUND=0` | on |
-| 8 | `muTie` | `ECO_MONO_LSS_MU_TIE=0` | on |
-| 7 | `spineArity` | `ECO_MONO_LSS_SPINE_ARITY=0` | **off** |
+| 34 | `stamp.rootFoldDepth` | `ECO_MONO_LSS_ROOT_FOLD_DEPTH=0` | on |
+| 33 | `stamp.useInjectPap` | `ECO_MONO_LSS_INSTANCE_QUAL_USE_INJECT_PAP=0` | on |
+| 32 | `flow.litFacts` | `ECO_MONO_LSS_FLOW_LIT_FACTS=0` | on |
+| 31 | `flow.accessFlow` | `ECO_MONO_LSS_FLOW_ACCESS_FLOW=0` | on |
+| 30 | `flow.letOverlay` | `ECO_MONO_LSS_FLOW_LET_OVERLAY=0` | on |
+| 29 | `stamp.useInject` | `ECO_MONO_LSS_INSTANCE_QUAL_USE_INJECT=0` | on |
+| 28 | `stamp.papFast` | `ECO_MONO_LSS_PAP_FAST=0` | on |
+| 27 | `stamp.flatPeel` | `ECO_MONO_LSS_FLAT_PEEL=0` | on |
+| 26 | `instanceQual` (`stamp.enabled`) | `ECO_MONO_LSS_INSTANCE_QUAL=0` | on |
+| 25 | `flow.connect` | `ECO_MONO_LSS_FLOW_CONNECT=0` | on |
+| 24 | `settle.varLambda` | `ECO_MONO_LSS_VAR_LAMBDA=0` | on |
+| 23 | `settle.varCtorRows` | `ECO_MONO_LSS_VAR_CTOR_ROWS=0` | on |
+| 22 | `settle.varSucc` | `ECO_MONO_LSS_VAR_SUCC=0` | on |
+| 21 | `destrAnno` | `ECO_MONO_LSS_DESTR_ANNO=0` | on |
+| 20 | `rsTop` | `ECO_MONO_LSS_RS_TOP=0` | on |
+| 19 | `injTotal` | `ECO_MONO_LSS_INJ_TOTAL=0` | on |
+| 18 | `refPapSpine` | `ECO_MONO_LSS_REF_PAP_SPINE=0` | on |
+| 17 | `rootFold` | `ECO_MONO_LSS_ROOT_FOLD=0` | on |
+| 16 | `regIdentity` | `ECO_MONO_LSS_REG_IDENTITY=0` | on |
+| 15 | `papMembers` | `ECO_MONO_LSS_PAP_MEMBERS=0` | on |
+| 14 | `refIdentity` | `ECO_MONO_LSS_REF_IDENTITY=0` | on |
+| 13 | `arrowSolverRoots` | `ECO_MONO_LSS_ARROW_ROOTS=0` | on |
+| 12 | `arrowIdentity` | `ECO_MONO_LSS_ARROW_ID=0` | on |
+| 11 | `postSettleDevirt` | `ECO_MONO_LSS_DEVIRT_POST=0` | on |
+| 10 | `layoutQualMembers` | `ECO_MONO_LSS_LAYOUT_QUAL=0` | on |
+| 9 | `sigFlow` | `ECO_MONO_LSS_SIG_FLOW=0` | on |
+| 8 | `groundStandalones` | `ECO_MONO_LSS_GROUND=0` | on |
+| 7 | `muTie` | `ECO_MONO_LSS_MU_TIE=0` | on |
 | 6 | `devirtFnGlobals` | `ECO_MONO_LSS_DEVIRT_FN=0` | on |
 | 5 | `keyedGlobals` | `ECO_MONO_LSS_KEYED_GLOBALS=""` | non-empty |
 | 4 | `maxSpecsPerGlobal` | *already off* (0 = unlimited) | 0 |
@@ -148,44 +148,61 @@ Order = order added to the codebase. Iteration N turns off row N.
 carries `ECO_MONO_LSS=unkeyed`, and at iteration 1 that is replaced by
 `ECO_MONO_LSS=0`.
 
+### Knobs that are deliberately NOT rows
+
+- **Censuses** — `lss.report`, `lss.qCensus`, `lss.arrowCensus`,
+  `stamp.census`. Output-only, default-off, and §4 requires every census off
+  for a timed run anyway.
+- **`stamp.maxInstances`** (`ECO_MONO_LSS_INSTANCE_QUAL_MAX`, default 8). Like
+  `maxSetSize` / `maxSpecsPerGlobal` it is a cap where `0` means UNLIMITED, so
+  "turning it off" turns *more* qualification on — the opposite of what this
+  loop measures. `instanceQual` (row 26) is the switch that disables the
+  mechanism.
+
 ### Iterations that change nothing — SKIPPED
 
-Eight of the 31 flags are already at their off value in `defaultLss`
-(`compiler/src/Compiler/Eco/Config.elm`), so those iterations would re-run the
-previous configuration:
+**Only the two numeric caps.** `maxSpecsPerGlobal` (4) and `maxSetSize` (2) are
+already at their off value in `defaultLss` (`0` *is* "no limit"), so turning a
+cap off is a no-op; turning one *on* would be the change. The runner refuses
+them with an explanation; `flag-off-lss-run.sh <N> --force` measures one anyway.
 
-- **31, 30, 23, 15, 14, 7** — booleans that ship default-off.
-- **4, 2** — `maxSpecsPerGlobal` / `maxSetSize`, where `0` *is* "no limit";
-  turning a cap off is a no-op, turning one *on* would be the change.
-
-**Decision: skip them.** The runner refuses them with an explanation;
-`flag-off-lss-run.sh <N> --force` measures one anyway.
-
-**Exception: 31 is kept.** It is a no-op like the rest, but it is the setup
-check that proves the harness works. The all-defaults baseline pair is now
-iteration **34** (`stamp.papFast`, default-on since 2026-09-07), which unlike
-the old 31 is a real iteration.
+**Every other row is a real iteration.** Until 2026-09-17 seven rows were
+default-off booleans that the loop had to skip; they were deleted from the
+compiler outright, with their gated code
+(`plans/remove-default-off-lss-flags.md`), so the list no longer carries a knob
+that cannot move. The retired seven were `spineArity`, `qSolve`,
+`sigRootIdentity`, `argPoints`, `stageAnchor.rowFill`, `stageAnchor.demandFill`
+and `flow.rowDefer` — each measured neutral or negative, or never implemented;
+that plan's §2 carries the evidence per flag.
 
 **Iteration 35 is the all-flags-ON reference pair** (off-set `<none>`): the
 compiler as shipped. Every other iteration is read against it, and its
-`optimized` row is the fully-LSS-optimized compiler — the one carrying
-LSS_038/039/040 — self-compiling.
+`optimized` row is the fully-LSS-optimized compiler self-compiling.
 
-**2026-09-07 — flags 32/33/34 added.** `instanceQual` (LSS_038),
-`stamp.flatPeel` (LSS_039) and `stamp.papFast` (LSS_040) shipped default-on
-after the first run of this experiment, so the loop now starts at 34.
-`stamp.census` is deliberately NOT a row: it is census collection, default-off,
-and the protocol requires all censuses off anyway.
+That leaves 33 iterations:
 
-That leaves 28 iterations:
+    35 34 33 32 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12
+    11 10 9 8 7 6 5 3 1
 
-    35 34 33 32 31 29 28 27 26 25 24 22 21 20 19 18 17 16 13 12 11 10 9 8 6 5 3 1
+**There is no longer a free no-op repeat.** A skipped boolean used to double as
+the harness self-check and as the experiment's only run-to-run noise estimate.
+Both now cost a real run: `flag-off-lss-run.sh 4 --force` (or `2`) re-runs the
+*previous* level's configuration and is the way to get a same-config repeat.
 
-The cost of skipping: identical repeat configurations were the experiment's
-only noise estimate, so there is no measured run-to-run variance to compare
-differences against. If a later iteration shows a small delta and it matters
-whether it is real, re-run that same level with `--force` on a skipped index
-to get a same-config repeat.
+### Renumbering — the recorded TSV is stale
+
+Row indices are positions in an append-only list, and the list has been
+renumbered twice in one day: seven flags were appended (the reference pair
+moved 35 → 42), then seven older rows were deleted (35 again). Rows already in
+`benchmarks/flag-off-lss-loop.tsv` were recorded under the FIRST numbering,
+where 35 meant `<none>`; under this one 35 means `<none>` again but every row
+between 5 and 34 has shifted. Those rows are not comparable to a new run in any
+case — the default build has gained seven flags and lost seven since — so
+**archive the TSV before the next run**, as the 2026-09-04 data was archived:
+
+```bash
+mv benchmarks/flag-off-lss-loop.tsv benchmarks/flag-off-lss-loop-ref35-v1.tsv
+```
 
 ## 4. Hygiene — non-negotiable
 
@@ -197,7 +214,8 @@ to get a same-config repeat.
   ~11 GB. Two concurrent self-compiles will swap and destroy every timing.
   Concurrent runs also corrupt the `~/.eco` typed-artifact cache.
 - **All censuses off.** Leave `ECO_MONO_LSS_REPORT`, `ECO_MONO_LSS_QCENSUS`,
-  `ECO_MONO_LSS_ARROW_CENSUS`, `ECO_DISPATCH_STATS`, `ECO_CALL_CENSUS` unset.
+  `ECO_MONO_LSS_CENSUS`, `ECO_MONO_LSS_ARROW_CENSUS`, `ECO_DISPATCH_STATS`,
+  `ECO_CALL_CENSUS` unset.
   Census volume moves wall and GC counts; it is not what is being measured.
 - **Do not touch `ECO_HEAP_CONFIG`.** A non-default heap changes major-GC
   counts by an order of magnitude, and majors are one of the recorded metrics.
@@ -210,10 +228,19 @@ to get a same-config repeat.
 
 ## 5. Provenance
 
-- Flag list and defaults: `compiler/src/Compiler/Eco/Config.elm:233`
-  (`LssConfig`) and `defaultLss`; env overrides in
-  `compiler/src/Builder/Eco/Config.elm`.
-- Addition order derived from `gitlog.txt`, cross-checked against the
-  `LssConfig` field order.
+- Flag list and defaults: `compiler/src/Compiler/Eco/Config.elm:234`
+  (`LssConfig`) and `defaultLss` (`Config.elm:900`); env overrides in
+  `compiler/src/Builder/Eco/Config.elm` (`applyEnvOverrides`).
+- `LssConfig` sat AT the runtime's 32-slot record GC-scan cap, which is why
+  every flag added since 2026-09 lives in a SUB-RECORD: `LssFlowConfig`
+  (`flow.*`), `LssSettleConfig` (`settle.*`), `LssStampConfig` (`stamp.*` —
+  `instanceQual` is `stamp.enabled`). A new flag will be in one of those, not
+  at top level. The 2026-09-17 removal took it to 27 fields, so there is slack
+  again — but the sub-record convention stands.
+  (`LssStageAnchorConfig` was the fourth sub-record; it went with its two
+  flags.)
+- Addition order derived from the record field order (`LssConfig` first, then
+  each sub-record in field order), cross-checked against the ship dates in the
+  field doc comments.
 - Self-compile command copied from bootstrap Stage 7a,
   `compiler/CMakeLists.txt:494`.

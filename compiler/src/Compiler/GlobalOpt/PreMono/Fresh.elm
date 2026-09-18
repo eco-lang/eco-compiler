@@ -155,10 +155,9 @@ copyType env tipe =
                             )
 
         Can.TLambda _ from to ->
-            -- Every arrow in a copy is a NEW occurrence. A root-backed original
-            -- keeps its `arrowRootOf` entry; the fresh id gets none and degrades
-            -- to occurrence identity, which is what the old `NoArrow` clearing
-            -- achieved and what `AssignMVarIds`'s own fallback arm does.
+            -- Every arrow in a copy is a NEW occurrence, carrying the
+            -- occurrence identity the old `NoArrow` clearing achieved and that
+            -- `AssignMVarIds`'s own fallback arm mints.
             let
                 ( arrowId, st1 ) =
                     AssignMVarIds.mintArrowId env.state

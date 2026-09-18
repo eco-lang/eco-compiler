@@ -468,9 +468,6 @@ neverFalselyComplete anno =
         Mono.LPartial _ ->
             True
 
-        Mono.LRow _ _ ->
-            True
-
         Mono.LSet ms ->
             List.length ms >= 2
 
@@ -504,6 +501,3 @@ describeAnno anno =
 
         Mono.LPartial ms ->
             "LPartial " ++ String.fromInt (List.length ms)
-
-        Mono.LRow _ ms ->
-            "LRow " ++ String.fromInt (List.length ms)

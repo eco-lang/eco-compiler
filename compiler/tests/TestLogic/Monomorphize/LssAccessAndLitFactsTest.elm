@@ -4,14 +4,14 @@ module TestLogic.Monomorphize.LssAccessAndLitFactsTest exposing (suite)
 plans/lss-container-payload-transport.md §12.10.1. The F4 probe's shapes,
 turned into pins. Every test is a DIFFERENTIAL (flag-off pins the defect).
 
-  1. E15 argument: `apply r.f 2` — the field's set reaches the HOF.
-  2. E15 callee: `r.f 2` — the access node (the callee) carries the field's
-     set instead of the storeless `clsMisc` ⊤.
-  3. F4-sig: a def RETURNING a record of functions carries a fact at the
-     field arrow, so its caller's consumer reads the set (the probe measured
-     `LPartial` in the registry and `LVar` at the consumer).
-  4. F4-lit-list: a ground-typed list literal of two functions reaches its
-     consumer as the 2-set (through a let, F3-b on), not as `clsMisc` ⊤.
+1.  E15 argument: `apply r.f 2` — the field's set reaches the HOF.
+2.  E15 callee: `r.f 2` — the access node (the callee) carries the field's
+    set instead of the storeless `clsMisc` ⊤.
+3.  F4-sig: a def RETURNING a record of functions carries a fact at the
+    field arrow, so its caller's consumer reads the set (the probe measured
+    `LPartial` in the registry and `LVar` at the consumer).
+4.  F4-lit-list: a ground-typed list literal of two functions reaches its
+    consumer as the 2-set (through a let, F3-b on), not as `clsMisc` ⊤.
 
 -}
 
@@ -373,6 +373,3 @@ describeAnno anno =
 
         Mono.LPartial ms ->
             "LPartial[" ++ String.join "," (List.map String.fromInt ms) ++ "]"
-
-        Mono.LRow _ _ ->
-            "LRow"

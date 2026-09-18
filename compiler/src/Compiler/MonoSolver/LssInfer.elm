@@ -16,7 +16,6 @@ module Compiler.MonoSolver.LssInfer exposing
     , papMemberKey
     , sigSourceTypeFor
     , signatureFor
-    , spineDepthForGlobal
     )
 
 {-| Lambda-set signature inference (LSS design §7).
@@ -254,120 +253,8 @@ applyFacts global sig slots funcVar s0 =
     else if Array.length sig.arrows /= Array.length slots then
         Store.poisonArrowSets funcVar (censusLenGuard global (Array.length sig.arrows) (Array.length slots) s0)
 
-    else if s0.env.lss.qSolve then
-        -- §5.2: INSTANTIATE the scheme. `slots` are already fresh — that is
-        -- the freshening of `ᾱ` — so the three steps are: tie the ordinals
-        -- that share a `rep` into one variable, carry the ⊤ and the LSS_023
-        -- edges (both are facts about positions, not solved sets), then
-        -- re-emit `Q` against the instantiated variables.
-        instantiateScheme sig slots s0
-
     else
         applyFactsGo sig.arrows slots 0 s0
-
-
-{-| §5.2: apply a signature as `d⟨ᾱ⟩ : (Q ⇒ τ)`.
-
-Equivalent to `applyFactsGo` by construction — `residual` is derived from the
-same `members` at generalization and keyed by the `rep` the first pass has
-already unified — but it reads the signature the paper's way round: the use
-gets fresh variables and the CONSTRAINTS, never a pre-solved answer. That is
-the difference §5.3 then exploits, and the reason this is worth landing even
-though it is byte-neutral on its own.
-
--}
-instantiateScheme : Engine.LssSignature -> Array Vars.Variable -> Step ()
-instantiateScheme sig slots s0 =
-    case schemeTie sig.arrows slots 0 s0 of
-        Err e ->
-            Err e
-
-        Ok ( _, s1 ) ->
-            case schemeFacts sig.arrows slots 0 s1 of
-                Err e ->
-                    Err e
-
-                Ok ( _, s2 ) ->
-                    schemeResidual sig.residual slots s2
-
-
-{-| Step 1: ordinals sharing a `rep` ARE one set variable.
--}
-schemeTie : Array Engine.ArrowFact -> Array Vars.Variable -> Int -> Step ()
-schemeTie facts slots i s0 =
-    case ( Array.get i facts, Array.get i slots ) of
-        ( Just fact, Just slot ) ->
-            if fact.rep /= i then
-                case Array.get fact.rep slots of
-                    Just repSlot ->
-                        case Store.unifyStep repSlot slot s0 of
-                            Err e ->
-                                Err e
-
-                            Ok ( _, s1 ) ->
-                                schemeTie facts slots (i + 1) s1
-
-                    Nothing ->
-                        schemeTie facts slots (i + 1) s0
-
-            else
-                schemeTie facts slots (i + 1) s0
-
-        _ ->
-            Ok ( (), s0 )
-
-
-{-| Step 2: the facts that are NOT solved member sets — `⊤` (Eco's
-incompleteness marker, §3.6) and the LSS\_023 inclusion edges.
--}
-schemeFacts : Array Engine.ArrowFact -> Array Vars.Variable -> Int -> Step ()
-schemeFacts facts slots i s0 =
-    case ( Array.get i facts, Array.get i slots ) of
-        ( Just fact, Just slot ) ->
-            let
-                afterTop =
-                    if fact.top then
-                        Store.unifySlotWithSet (Just fact.topKind) [] slot s0
-
-                    else
-                        Ok ( (), s0 )
-            in
-            case afterTop of
-                Err e ->
-                    Err e
-
-                Ok ( _, s1 ) ->
-                    case installSources fact.sources slots slot s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s2 ) ->
-                            schemeFacts facts slots (i + 1) s2
-
-        _ ->
-            Ok ( (), s0 )
-
-
-{-| Step 3: re-emit `Q` — `ℓ… ⋸ α` — against the instantiated variables.
--}
-schemeResidual : List ( Int, List Int ) -> Array Vars.Variable -> Step ()
-schemeResidual residual slots s0 =
-    case residual of
-        [] ->
-            Ok ( (), s0 )
-
-        ( ordinal, members ) :: rest ->
-            case Array.get ordinal slots of
-                Nothing ->
-                    schemeResidual rest slots s0
-
-                Just slot ->
-                    case Store.unifySlotWithSet Nothing members slot s0 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s1 ) ->
-                            schemeResidual rest slots s1
 
 
 {-| LSS\_026 census: an arrow-count mismatch poisoned a whole instantiation.
@@ -919,20 +806,6 @@ zonkSigGo selfId slots n i factsRev s0 =
                     )
         in
         let
-            -- §5.2: `ᾱ` — the DISTINCT set variables. Ordinals sharing a `rep`
-            -- are one variable, so the canonical ones (own `rep`) are the
-            -- quantifier.
-            quantified =
-                List.filterMap
-                    (\( j, f ) ->
-                        if f.rep == j then
-                            Just j
-
-                        else
-                            Nothing
-                    )
-                    (List.indexedMap Tuple.pair facts)
-
             -- §5.2: `Q` — `ℓ… ⋸ α`, keyed by the CANONICAL ordinal, so a use
             -- re-emits against the variable rather than against a position.
             -- Members of a non-canonical ordinal belong to its rep's variable;
@@ -960,7 +833,7 @@ zonkSigGo selfId slots n i factsRev s0 =
                     (List.indexedMap Tuple.pair facts)
         in
         Ok
-            ( { arrows = Array.fromList facts, trivial = trivial, quantified = quantified, residual = residual }
+            ( { arrows = Array.fromList facts, trivial = trivial, residual = residual }
             , censusSignature n facts trivial s0
             )
 
@@ -1408,42 +1281,17 @@ walkExpr letEnv expr s0 =
             walkFunction (List.map (\( locName, _ ) -> A.toValue locName) params) srcLam body meta letEnv s0
 
         TOpt.Call _ func args meta ->
-            if s0.env.lss.enabled && s0.env.lss.argPoints then
-                -- M2/H2 (plans/lss-coverage-four-levers.md §7.2-REVISED):
-                -- walk the ARG EXPRESSIONS FIRST, keep their WalkPoints, and
-                -- hand them to the callee unify — the historical order walked
-                -- args AFTER the params were unified against fresh type
-                -- loads, so every member the arg walk minted was discarded
-                -- (the A.1 leak). Args are NOT re-walked below (AR-19).
-                case walkArgsCollect letEnv args s0 of
-                    Err e ->
-                        Err e
+            case walkCall letEnv func args meta s0 of
+                Err e ->
+                    Err e
 
-                    Ok ( ptArgs, s1 ) ->
-                        case walkCallWith letEnv func ptArgs meta s1 of
-                            Err e ->
-                                Err e
+                Ok ( wp, s1 ) ->
+                    case walkChildren letEnv (func :: args) s1 of
+                        Err e ->
+                            Err e
 
-                            Ok ( wp, s2 ) ->
-                                case walkChildren letEnv [ func ] s2 of
-                                    Err e ->
-                                        Err e
-
-                                    Ok ( _, s3 ) ->
-                                        Ok ( wp, s3 )
-
-            else
-                case walkCall letEnv func args meta s0 of
-                    Err e ->
-                        Err e
-
-                    Ok ( wp, s1 ) ->
-                        case walkChildren letEnv (func :: args) s1 of
-                            Err e ->
-                                Err e
-
-                            Ok ( _, s2 ) ->
-                                Ok ( wp, s2 )
+                        Ok ( _, s2 ) ->
+                            Ok ( wp, s2 )
 
         TOpt.VarGlobal _ g meta ->
             case kernelAliasOf g s0 of
@@ -1462,47 +1310,17 @@ walkExpr letEnv expr s0 =
                     -- refPapSpine: successors key by the ALIAS global —
                     -- the k| head is untouched (kernelToSig hazard is k|-only).
                     withPapSuccessors g
-                        (standaloneMemberWith (\_ -> 1) (Engine.kernelMemberIdFor ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name )) meta)
+                        (standaloneMemberWith (Engine.kernelMemberIdFor ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name )) meta)
                         s0
 
                 Nothing ->
                     case
                         withPapSuccessors g
-                            (standaloneMemberWith (spineDepthForGlobal g) (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal g) g) meta)
+                            (standaloneMemberWith (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal g) g) meta)
                             s0
                     of
                         Err e ->
                             Err e
-
-                        Ok ( WpNone, s1 ) ->
-                            -- M3 (plans/lss-coverage-four-levers.md §7.4-M3):
-                            -- a CONTAINER-typed reference (Box/Decoder value —
-                            -- not itself an arrow, but arrows inside) used to
-                            -- return no point, starving the arg transport. A
-                            -- reference IS a use of the def's scheme: hand
-                            -- back its signature instantiation, facts applied
-                            -- (payload ordinals included).
-                            if s1.env.lss.argPoints && canTypeMentionsArrow meta.tipe then
-                                -- B1 fact gate: skip trivial (nothing to
-                                -- transport; unify = pure key churn).
-                                case signatureFor g s1 of
-                                    Err e ->
-                                        Err e
-
-                                    Ok ( sig0, s1b ) ->
-                                        if sig0.trivial then
-                                            Ok ( WpNone, Engine.bumpArgFlowCensus "argpt|refInstSkip" s1b )
-
-                                        else
-                                            case instantiateWithSignature g (sigSourceTypeFor g meta.tipe s1b) s1b of
-                                                Err e ->
-                                                    Err e
-
-                                                Ok ( instVar, s2 ) ->
-                                                    Ok ( WpHonest instVar, Engine.bumpArgFlowCensus "argpt|refInst" s2 )
-
-                            else
-                                Ok ( WpNone, s1 )
 
                         okOther ->
                             okOther
@@ -1510,32 +1328,31 @@ walkExpr letEnv expr s0 =
         TOpt.VarEnum _ g _ meta ->
             -- E9: ctor mints register the Global for devirt lookup.
             withPapSuccessors g
-                (standaloneMemberWith (spineDepthForGlobal g) (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) meta)
+                (standaloneMemberWith (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) meta)
                 s0
 
         TOpt.VarBox _ g meta ->
             withPapSuccessors g
-                (standaloneMemberWith (spineDepthForGlobal g) (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) meta)
+                (standaloneMemberWith (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) meta)
                 s0
 
         TOpt.VarCycle _ home name meta ->
-            -- GAP-7 seam 1 (LSS_020 plan Phase E.1): cycle members resolve
-            -- their declared arity through `declaredArityOf`'s Cycle arm
-            -- (name-threaded past the Link chase), riding the same
-            -- `lss.spineArity` gate as the VarGlobal arm — dormant at the
-            -- default `spineArity = False` (depth floors at 1, today's
-            -- behavior). The translation-side twin gained its VarCycle arm
-            -- in the same change (Translate.injectArgLambdaMember), so both
-            -- sides deepen in lockstep through `spineDepthForGlobal`.
+            -- GAP-7 seam 1 (LSS_020 plan Phase E.1): a cycle member mints
+            -- its `g|` head exactly as the VarGlobal arm does. Standalone
+            -- members are HEAD-ONLY — the `lss.spineArity` flag that could
+            -- deepen them to `declaredArity` was deleted 2026-09-17
+            -- (plans/remove-default-off-lss-flags.md); depth beyond the head
+            -- belongs to `papMembers`' `p|` successors, which is what keeps
+            -- one runtime value from carrying two names.
             withPapSuccessors (TOpt.Global home name)
-                (standaloneMemberWith (spineDepthForGlobal (TOpt.Global home name)) (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal (TOpt.Global home name)) (TOpt.Global home name)) meta)
+                (standaloneMemberWith (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal (TOpt.Global home name)) (TOpt.Global home name)) meta)
                 s0
 
         TOpt.VarKernel _ kernelPrefix home name meta ->
             -- E9.2: kernel mints register (prefix, home, name) for devirt
             -- lookup — the "k|" key (and so the member id) is unchanged.
             -- Head-only: see the kernel-alias arm above.
-            standaloneMemberWith (\_ -> 1) (Engine.kernelMemberIdFor ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name )) meta s0
+            standaloneMemberWith (Engine.kernelMemberIdFor ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name )) meta s0
 
         TOpt.Accessor _ field meta ->
             -- `.field` is itself a chomper shape; this arm stays 1 forever.
@@ -1935,151 +1752,19 @@ letEnv family — NEVER whole-type unification of the shared family Point
 (§7.4). Anything else: children only (the caller recurses via walkChildren).
 -}
 walkCall : LetEnv -> TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
-walkCall letEnv func args meta =
-    walkCallWith letEnv func (List.map (\a -> ( Nothing, a )) args) meta
-
-
-{-| Walk each argument EXPRESSION, keeping its WalkPoint (M2/H2).
--}
-walkArgsCollect : LetEnv -> List (TOpt.Expr TypeIds.MVarId) -> Step (List ( Maybe Vars.Variable, TOpt.Expr TypeIds.MVarId ))
-walkArgsCollect letEnv args s0 =
-    case args of
-        [] ->
-            Ok ( [], s0 )
-
-        a :: rest ->
-            case walkExpr letEnv a s0 of
-                Err e ->
-                    Err e
-
-                Ok ( wp, s1 ) ->
-                    case walkArgsCollect letEnv rest s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( ptRest, s2 ) ->
-                            Ok ( ( wpPoint wp, a ) :: ptRest, s2 )
-
-
-{-| TEMP diagnosis helper (lever-4 M3).
--}
-exprTag : TOpt.Expr TypeIds.MVarId -> String
-exprTag e =
-    case e of
-        TOpt.Bool _ _ _ ->
-            "Bool"
-
-        TOpt.Chr _ _ _ ->
-            "Chr"
-
-        TOpt.Str _ _ _ ->
-            "Str"
-
-        TOpt.Int _ _ _ ->
-            "Int"
-
-        TOpt.Float _ _ _ ->
-            "Float"
-
-        TOpt.VarLocal n _ ->
-            "VarLocal:" ++ n
-
-        TOpt.TrackedVarLocal _ n _ ->
-            "TrackedVarLocal:" ++ n
-
-        TOpt.VarGlobal _ (TOpt.Global _ n) _ ->
-            "VarGlobal:" ++ n
-
-        TOpt.VarEnum _ (TOpt.Global _ n) _ _ ->
-            "VarEnum:" ++ n
-
-        TOpt.VarBox _ (TOpt.Global _ n) _ ->
-            "VarBox:" ++ n
-
-        TOpt.VarCycle _ _ n _ ->
-            "VarCycle:" ++ n
-
-        TOpt.VarDebug _ _ _ _ _ ->
-            "VarDebug"
-
-        TOpt.VarKernel _ _ _ n _ ->
-            "VarKernel:" ++ n
-
-        TOpt.List _ _ _ ->
-            "List"
-
-        TOpt.Function _ _ _ _ ->
-            "Function"
-
-        TOpt.TrackedFunction _ _ _ _ ->
-            "TrackedFunction"
-
-        TOpt.Call _ f _ _ ->
-            "Call(" ++ exprTag f ++ ")"
-
-        TOpt.TailCall _ _ _ ->
-            "TailCall"
-
-        TOpt.If _ _ _ ->
-            "If"
-
-        TOpt.Let d b _ ->
-            case d of
-                TOpt.Def _ n r _ ->
-                    "Let(" ++ n ++ "=" ++ exprTag r ++ ")(" ++ exprTag b ++ ")"
-
-                _ ->
-                    "Let(TailDef)(" ++ exprTag b ++ ")"
-
-        TOpt.Destruct _ _ _ ->
-            "Destruct"
-
-        TOpt.Case _ _ _ _ _ ->
-            "Case"
-
-        TOpt.Accessor _ _ _ ->
-            "Accessor"
-
-        TOpt.Access _ _ _ _ ->
-            "Access"
-
-        TOpt.Update _ _ _ _ ->
-            "Update"
-
-        TOpt.Record _ _ ->
-            "Record"
-
-        TOpt.TrackedRecord _ _ _ ->
-            "TrackedRecord"
-
-        TOpt.Unit _ ->
-            "Unit"
-
-        TOpt.Tuple _ _ _ _ _ ->
-            "Tuple"
-
-        TOpt.Shader _ _ _ _ ->
-            "Shader"
-
-
-walkCallWith : LetEnv -> TOpt.Expr TypeIds.MVarId -> List ( Maybe Vars.Variable, TOpt.Expr TypeIds.MVarId ) -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
-walkCallWith letEnv func ptArgs meta s0 =
-    let
-        args =
-            List.map Tuple.second ptArgs
-    in
+walkCall letEnv func args meta s0 =
     case func of
         TOpt.VarGlobal _ g funcMeta ->
-            applyCalleeAtWith g funcMeta.tipe ptArgs meta s0
+            applyCalleeAt g funcMeta.tipe args meta s0
 
         TOpt.VarCycle _ home name funcMeta ->
-            applyCalleeAtWith (TOpt.Global home name) funcMeta.tipe ptArgs meta s0
+            applyCalleeAt (TOpt.Global home name) funcMeta.tipe args meta s0
 
         TOpt.VarKernel _ _ home name funcMeta ->
             -- LSS_021/LSS_022: consult the audited set-flow table — licensed
             -- kernels behave like a plain callee, positional rows refine per
             -- param, no row / arity mismatch keeps LSS_004 full poison.
-            kernelCallBoundaryWith home name funcMeta ptArgs meta s0
+            kernelCallBoundary home name funcMeta args meta s0
 
         TOpt.VarDebug _ _ _ _ _ ->
             poisonCallBoundary args meta s0
@@ -2091,38 +1776,20 @@ walkCallWith letEnv func ptArgs meta s0 =
             localCalleeJoin letEnv name args meta s0
 
         TOpt.VarEnum _ g _ funcMeta ->
-            -- M2/H1: ctor calls previously fell to WpNone — no shape unify,
-            -- so payload members never entered the call's own type. Bodyless
-            -- ctors have trivial signatures; the instantiation+unify is the
-            -- transport (facts-free). Gated HERE, not only at the Call arm,
-            -- because walkCall delegates to walkCallWith unconditionally and
-            -- flag-off must stay byte-identical.
-            if s0.env.lss.argPoints then
-                applyCalleeAtWith g funcMeta.tipe ptArgs meta s0
+            -- A ctor call carries no member of its own: the ctor's payload
+            -- members reach the site through the argument walk, not through
+            -- the callee.
+            Ok ( WpNone, s0 )
 
-            else
-                Ok ( WpNone, s0 )
-
-        TOpt.VarBox _ g funcMeta ->
-            if s0.env.lss.argPoints then
-                applyCalleeAtWith g funcMeta.tipe ptArgs meta s0
-
-            else
-                Ok ( WpNone, s0 )
+        TOpt.VarBox _ _ _ ->
+            Ok ( WpNone, s0 )
 
         _ ->
             Ok ( WpNone, s0 )
 
 
 applyCalleeAt : TOpt.Global -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
-applyCalleeAt g funcFallbackType args meta =
-    applyCalleeAtWith g funcFallbackType (List.map (\a -> ( Nothing, a )) args) meta
-
-
-{-| `applyCalleeAt` with walked arg points (M2/H2).
--}
-applyCalleeAtWith : TOpt.Global -> Can.Type TypeIds.MVarId -> List ( Maybe Vars.Variable, TOpt.Expr TypeIds.MVarId ) -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
-applyCalleeAtWith g funcFallbackType args meta s0 =
+applyCalleeAt g funcFallbackType args meta s0 =
     let
         gkey =
             TOpt.toComparableGlobal g
@@ -2141,7 +1808,7 @@ applyCalleeAtWith g funcFallbackType args meta s0 =
                 Err e
 
             Ok ( funcVar, s1 ) ->
-                case unifyCallShapeWith funcVar args meta s1 of
+                case unifyCallShape funcVar args meta s1 of
                     Err e ->
                         Err e
 
@@ -2154,7 +1821,7 @@ applyCalleeAtWith g funcFallbackType args meta s0 =
                 Err e
 
             Ok ( funcVar, s1 ) ->
-                case unifyCallShapeWith funcVar args meta s1 of
+                case unifyCallShape funcVar args meta s1 of
                     Err e ->
                         Err e
 
@@ -2224,15 +1891,8 @@ whole-type best-effort unify here must never target a shared letEnv family
 Point (§7.4; local callees go through `joinCallArgs` instead).
 -}
 unifyCallShape : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Step Vars.Variable
-unifyCallShape funcVar args meta =
-    unifyCallShapeWith funcVar (List.map (\a -> ( Nothing, a )) args) meta
-
-
-{-| `unifyCallShape` with walked arg points (M2/H2).
--}
-unifyCallShapeWith : Vars.Variable -> List ( Maybe Vars.Variable, TOpt.Expr TypeIds.MVarId ) -> TOpt.Meta TypeIds.MVarId -> Step Vars.Variable
-unifyCallShapeWith funcVar args meta s0 =
-    case unifyParamsWithPoints funcVar args s0 of
+unifyCallShape funcVar args meta s0 =
+    case unifyParamsBestEffort funcVar args s0 of
         Err e ->
             Err e
 
@@ -2314,26 +1974,21 @@ noteApplied content s =
                         Engine.bumpArgFlowCensus "apply|hit" (Engine.bumpAppliedArrow aid s1)
 
 
+{-| Unify each argument against the callee's corresponding parameter, one
+arrow peeled per argument. Each argument's TYPE is loaded fresh — the known
+A.1 leak: members the argument WALK minted sit in a class this load never
+connects to the param, so signatures can read allflex at a position the
+argument did feed. `lss.argPoints` carried a mechanism that handed the walked
+point here instead; it measured negative and then inert, and was deleted
+2026-09-17 (plans/remove-default-off-lss-flags.md §2).
+-}
 unifyParamsBestEffort : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Step Vars.Variable
 unifyParamsBestEffort funcVar args s0 =
-    unifyParamsWithPoints funcVar (List.map (\a -> ( Nothing, a )) args) s0
-
-
-{-| M2/H2 (plans/lss-coverage-four-levers.md §7.2-REVISED): the A.1 arg leak,
-closed. The historical form fresh-loads each arg's TYPE, so members the arg
-WALK minted (standalone refs, PAP producers, lambdas) sat in a class never
-connected to the callee's param — signatures then read allflex at every
-position the args should have fed. When the Call arm hands us the WALKED
-point, unify THAT with the param; the fresh type load remains the fallback
-for point-less args (WpNone class).
--}
-unifyParamsWithPoints : Vars.Variable -> List ( Maybe Vars.Variable, TOpt.Expr TypeIds.MVarId ) -> Step Vars.Variable
-unifyParamsWithPoints funcVar args s0 =
     case args of
         [] ->
             Ok ( funcVar, s0 )
 
-        ( maybePt, arg ) :: rest ->
+        arg :: rest ->
             let
                 ( store1, desc ) =
                     UF.get funcVar s0.store
@@ -2343,16 +1998,7 @@ unifyParamsWithPoints funcVar args s0 =
             in
             case Store.arrowParts desc.content of
                 Just ( pParam, pRest ) ->
-                    let
-                        argVarStep sA =
-                            case maybePt of
-                                Just walked ->
-                                    Ok ( walked, Engine.bumpArgFlowCensus "argleak|walked" (noteApplied desc.content sA) )
-
-                                Nothing ->
-                                    Store.loadType (TOpt.typeOf arg) (noteApplied desc.content sA)
-                    in
-                    case argVarStep s1 of
+                    case Store.loadType (TOpt.typeOf arg) (noteApplied desc.content s1) of
                         Err e ->
                             Err e
 
@@ -2362,7 +2008,7 @@ unifyParamsWithPoints funcVar args s0 =
                                     Err e
 
                                 Ok ( _, s3 ) ->
-                                    unifyParamsWithPoints pRest rest s3
+                                    unifyParamsBestEffort pRest rest s3
 
                 Nothing ->
                     -- Over-applied or opaque at this depth: stop.
@@ -2511,20 +2157,7 @@ poison.
 
 -}
 kernelCallBoundary : Name -> Name -> TOpt.Meta TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
-kernelCallBoundary home name funcMeta args meta =
-    kernelCallBoundaryWith home name funcMeta (List.map (\a -> ( Nothing, a )) args) meta
-
-
-{-| `kernelCallBoundary` with walked arg points (M2/H2) — only the licensed
-Transports/TransportsAs arm consumes them; poison arms ignore them (the walk
-already ran; poison-after-inject is the recorded-safe order).
--}
-kernelCallBoundaryWith : Name -> Name -> TOpt.Meta TypeIds.MVarId -> List ( Maybe Vars.Variable, TOpt.Expr TypeIds.MVarId ) -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
-kernelCallBoundaryWith home name funcMeta ptArgs meta s0 =
-    let
-        args =
-            List.map Tuple.second ptArgs
-    in
+kernelCallBoundary home name funcMeta args meta s0 =
     case KernelSetFacts.factFor home name of
         Nothing ->
             poisonCallBoundary args meta s0
@@ -2563,7 +2196,7 @@ kernelCallBoundaryWith home name funcMeta ptArgs meta s0 =
                                 Err e
 
                             Ok ( funcVar, s1 ) ->
-                                case unifyCallShapeWith funcVar ptArgs meta s1 of
+                                case unifyCallShape funcVar args meta s1 of
                                     Err e ->
                                         Err e
 
@@ -2758,30 +2391,7 @@ path instead.
 -}
 standaloneMember : String -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
 standaloneMember key =
-    standaloneMemberWith (\_ -> 1) (Engine.memberIdFor key)
-
-
-{-| S.10 (F-5C): how many arrows of this standalone value's occurrence type
-are PARAMS, and therefore may carry its member id.
-
-The chomper bound is the soundness argument: the first `declaredArity` arrows
-ARE the parameters; arrow `declaredArity + 1` belongs to the returned value,
-and the TYPE cannot make that distinction (`A -> (B -> C)` is `A -> B -> C`).
-So the count comes from the DEFINITION, never the type.
-
-Returns 1 — today's head-only behaviour — when the flag is off, when the node
-cannot be resolved, and for eta-reduced/point-free definitions (zero params).
-`max 1` is exactly today's floor at every call site, which makes enabling the
-flag MONOTONE: sites only ever gain members at deeper arrows.
-
--}
-spineDepthForGlobal : TOpt.Global -> Engine.S -> Int
-spineDepthForGlobal g s =
-    if not s.env.lss.spineArity then
-        1
-
-    else
-        max 1 (declaredArityOf g 8 s)
+    standaloneMemberWith (Engine.memberIdFor key)
 
 
 declaredArityOf : TOpt.Global -> Int -> Engine.S -> Int
@@ -2795,11 +2405,9 @@ ORIGINAL sought name through `Link` hops, because a cycle member maps as
 name before the `TOpt.Cycle` node is reached. `sought` stays fixed across
 hops: correct for the documented single-hop pattern; a multi-hop chain
 through a differently-named intermediate floors at 1 (sound — today's
-behavior). NOTE the Cycle arm also deepens the VarGlobal/VarEnum/VarBox mint
-arms and `Translate.standaloneArgMember` for cross-module references to
-cycle members (they are VarGlobals whose node is `Link(group)`) — intended,
-symmetric, all through this one function, and dormant under the default
-`spineArity = False`.
+behavior). Callers are the saturation checks (`papMembers`, root-fold depth,
+`Translate.stampSpineGo`), NOT standalone member injection: that is head-only
+since `lss.spineArity` was deleted.
 -}
 declaredArityGo : Name -> TOpt.Global -> Int -> Engine.S -> Int
 declaredArityGo sought g fuel s =
@@ -2826,13 +2434,11 @@ declaredArityGo sought g fuel s =
             -- `TrackedFunction` bodies were MISSING here until 2026-08-23,
             -- and that is the shape `LocalOpt.Typed.Module.addDefNode` emits
             -- for a def with parameters — so this walk silently floored the
-            -- DOMINANT def shape at 1. Dormant at the default
-            -- `spineArity = False` (`spineDepthForGlobal` returns 1 without
-            -- consulting this), which is why it went unnoticed; it would
-            -- have under-deepened nearly every standalone spine injection
-            -- the moment that flag was flipped. Found by the LSS_026
-            -- saturation census reading `Basics.composeL` (3 source params)
-            -- as arity 1.
+            -- DOMINANT def shape at 1. It went unnoticed because the only
+            -- consumer then was the dormant `lss.spineArity` (since deleted);
+            -- today the saturation checks read it on every compile. Found by
+            -- the LSS_026 saturation census reading `Basics.composeL` (3
+            -- source params) as arity 1.
             Just (TOpt.Define (TOpt.TrackedFunction _ params _ _) _ _) ->
                 List.length params
 
@@ -2962,8 +2568,8 @@ devirt reverse map (globals AND ctors — `Can.Normal` ctors like `List.::`
 are VarGlobal/"g|"), and the kernel arm mints via `Engine.kernelMemberIdFor`
 for the E9.2 kernel reverse map; the accessor arm keeps the plain intern.
 -}
-standaloneMemberWith : (Engine.S -> Int) -> Step Int -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
-standaloneMemberWith depthOf mint meta s0 =
+standaloneMemberWith : Step Int -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
+standaloneMemberWith mint meta s0 =
     if canTypeIsArrow meta.tipe then
         case mint s0 of
             Err e ->
@@ -2975,7 +2581,7 @@ standaloneMemberWith depthOf mint meta s0 =
                         Err e
 
                     Ok ( funcVar, s2 ) ->
-                        case injectSpineMemberId (depthOf s2) mid funcVar s2 of
+                        case injectSpineMemberId 1 mid funcVar s2 of
                             Err e ->
                                 Err e
 
@@ -3324,20 +2930,7 @@ joinLetUse letEnv name meta s0 =
                 -- bound-name occurrence program-wide; an arrow-free join
                 -- writes no slots, so skipping it is semantics-free.
                 --
-                -- M3 (plans/lss-coverage-four-levers.md §7.4-M3): a local
-                -- USE's occurrence type is often a syntactically-unsolved
-                -- MVar even when the solver knows it is an arrow, so this
-                -- guard used to discard the FAMILY point it already held —
-                -- the point-killer behind let-bound partial applications
-                -- reading var at consumer payloads. Hand the hub back
-                -- (no load): §7.4's v1 policy already shares one set across
-                -- a let binding's uses, and a cross-use union can never
-                -- create a false singleton (LSS_005, widening only).
-                if s0.env.lss.argPoints then
-                    Ok ( WpHonest rhsVar, s0 )
-
-                else
-                    Ok ( WpNone, s0 )
+                Ok ( WpNone, s0 )
 
             else
                 case Store.loadType meta.tipe s0 of

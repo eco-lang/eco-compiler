@@ -1,5 +1,7 @@
 # Four coverage levers — `lss.injTotal` + the transport gate
 
+**FLAG REMOVED 2026-09-17 — lever 4's `lss.argPoints` is deleted — §7.5 measured it scale-negative (coverage -0.21 pp) and `lss-ctor-arrow-identity.md` §8.5 re-measured it byte-identical-inert. The mechanism described below is GONE from the compiler (`plans/remove-default-off-lss-flags.md`); this plan stays as the record of what was measured and why it was refused.**
+
 **Status: COMPLETE + FLIPPED DEFAULT-ON 2026-08-29 (user decision). Levers
 1–3 shipped; lever 4 measured GO-for-design (§6.2) — its mechanism design is
 the recorded follow-up, NOT part of this plan. Escape hatch

@@ -374,9 +374,6 @@ annoSize a =
         Mono.LPartial _ ->
             -3
 
-        Mono.LRow _ _ ->
-            -3
-
 
 describe : List Mono.LambdaSetAnno -> String
 describe annos =
@@ -396,9 +393,6 @@ describe annos =
 
                         Mono.LPartial ms ->
                             "LPartial " ++ String.fromInt (List.length ms)
-
-                        Mono.LRow _ ms ->
-                            "LRow " ++ String.fromInt (List.length ms)
                 )
                 annos
             )

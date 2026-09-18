@@ -7,7 +7,7 @@ A plain `let` binds its name to `classifyAs tkClassLet`'s STORELESS type — ⊤
 every arrow — unless a structural reason makes it take the body's type. When
 the RHS carries arrows (a tuple holding a closure, say) the translated RHS's
 set annotations never reach `varEnv`, and every use of the local enriches the
-callee's demand from ⊤: the LSS_026 `leak|letAnno` class. A local tail-def
+callee's demand from ⊤: the LSS\_026 `leak|letAnno` class. A local tail-def
 binds its params the same storeless way even when a single-instance demand
 was unified into the item store one line earlier.
 
@@ -104,6 +104,7 @@ tuple payload arrow is a `declZonk` ⊤ manufactured inside the callee. So the
 pin is the MECHANISM — flag-on the binding carries the RHS's annotation
 (here that ⊤, kind `declZonk`), flag-off the classify's `clsLet` ⊤ — and the
 corpus A/B carries the yield.
+
 -}
 tupleLet : Src.Module
 tupleLet =
@@ -263,7 +264,3 @@ describeAnno anno =
 
         Mono.LPartial ms ->
             "LPartial[" ++ String.join "," (List.map String.fromInt ms) ++ "]"
-
-        Mono.LRow _ ms ->
-            "LRow[" ++ String.join "," (List.map String.fromInt ms) ++ "]"
-

@@ -487,10 +487,6 @@ classifyBody env specId callbackName callbackType listType resultKind body acc =
             -- members may not be all of them.
             declineTopLike ()
 
-        Mono.LRow _ _ ->
-            -- F3-a: an unresolved row reference names nothing yet.
-            declineTopLike ()
-
         Mono.LSet [ member ] ->
             case debugFreedom env member of
                 Clean ->
@@ -1119,9 +1115,6 @@ calleeVerdict purity hooks func =
                     -- §2) — same verdict as LTop for the template's purposes.
                     poison (PoisonHigherOrder HOLocalLTop)
 
-                Mono.LRow _ _ ->
-                    poison (PoisonHigherOrder HOLocalLTop)
-
         MonoClosure _ body _ ->
             -- An immediately-applied lambda: its captures resolve against the
             -- table through their own annotations, by the same walk.
@@ -1210,9 +1203,6 @@ argProvenance purity hooks arg annos =
                             Mono.LPartial _ ->
                                 -- Lower bound: unknown inhabitants may exist
                                 -- (lss-lpartial §2) — same taint as LTop.
-                                ( PoisonArgTaint ArgLTop, Tuple.second acc )
-
-                            Mono.LRow _ _ ->
                                 ( PoisonArgTaint ArgLTop, Tuple.second acc )
 
                             Mono.LSet ms ->

@@ -2,11 +2,11 @@
 # One iteration of the LSS flag-off loop. See flag-off-lss-loop.md.
 #
 #   flag-off-lss-run.sh setup       build bin/eco-std (subst reference compiler)
-#   flag-off-lss-run.sh <N>         run iteration for flag N (31..1)
+#   flag-off-lss-run.sh <N>         run iteration for flag N (34..1)
 #   flag-off-lss-run.sh <N> --force run a skipped (no-op) iteration anyway
-#   flag-off-lss-run.sh all         run every effective iteration, 34 -> 1
+#   flag-off-lss-run.sh all         run every effective iteration, 35 -> 1
 #
-# Flags N..31 are off for iteration N. Records land in
+# Flags N..34 are off for iteration N. Records land in
 # benchmarks/flag-off-lss-loop.tsv and are rendered as a table into
 # benchmarks/flag-off-lss-results.md after every run.
 set -uo pipefail
@@ -21,49 +21,50 @@ RESULTS=$WORK/benchmarks/flag-off-lss-loop.tsv
 TABLE=$WORK/benchmarks/flag-off-lss-results.md
 
 # Iterations that cannot change the configuration, so they are SKIPPED:
-#   30 23 15 14 7  booleans already default-off in defaultLss
-#   4  2           numeric caps where 0 already IS "no limit"
-# 34 is the all-defaults baseline pair every later iteration is read against
-# (34 = papFast, default ON since 2026-09-07, so unlike the old 31 it is a REAL
-# iteration; 31 is kept as well). `--force` runs a skipped one anyway.
-SKIP="30 23 15 14 7 4 2"
-EFFECTIVE="35 34 33 32 31 29 28 27 26 25 24 22 21 20 19 18 17 16 13 12 11 10 9 8 6 5 3 1"
+#   4  2   numeric caps where 0 already IS "no limit"
+# 35 is the all-flags-ON reference pair every later iteration is read against.
+# `--force` runs a skipped one anyway, which is now the ONLY way to get a
+# same-config repeat: the seven default-off booleans that used to serve as free
+# no-op arms were removed from the compiler on 2026-09-17 together with the code
+# they gated (plans/remove-default-off-lss-flags.md).
+SKIP="4 2"
+EFFECTIVE="35 34 33 32 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9 8 7 6 5 3 1"
 
 # Flag N -> "VAR=value" applied when flag N and below-in-index are off.
-# Index 4 and 2 are numeric caps already at their off value (0 = unlimited);
-# index 31/30/23/15/14/7 are booleans already default-off. Both kinds emit
-# nothing, so those iterations re-run the previous configuration.
+# Index 4 and 2 are numeric caps already at their off value (0 = unlimited), so
+# they emit nothing and re-run the previous configuration. Every other index
+# emits a real change.
 off_env_for() {
     case "$1" in
         35) echo "" ;;                      # all flags ON: the <none> baseline
-        34) echo "ECO_MONO_LSS_PAP_FAST=0" ;;
-        33) echo "ECO_MONO_LSS_FLAT_PEEL=0" ;;
-        32) echo "ECO_MONO_LSS_INSTANCE_QUAL=0" ;;
-        31) echo "ECO_MONO_LSS_STAGE_ANCHOR_DEMAND_FILL=0" ;;
-        30) echo "ECO_MONO_LSS_STAGE_ANCHOR_ROW_FILL=0" ;;
-        29) echo "ECO_MONO_LSS_FLOW_CONNECT=0" ;;
-        28) echo "ECO_MONO_LSS_VAR_LAMBDA=0" ;;
-        27) echo "ECO_MONO_LSS_VAR_CTOR_ROWS=0" ;;
-        26) echo "ECO_MONO_LSS_VAR_SUCC=0" ;;
-        25) echo "ECO_MONO_LSS_DESTR_ANNO=0" ;;
-        24) echo "ECO_MONO_LSS_RS_TOP=0" ;;
-        23) echo "ECO_MONO_LSS_ARG_POINTS=0" ;;
-        22) echo "ECO_MONO_LSS_INJ_TOTAL=0" ;;
-        21) echo "ECO_MONO_LSS_REF_PAP_SPINE=0" ;;
-        20) echo "ECO_MONO_LSS_ROOT_FOLD=0" ;;
-        19) echo "ECO_MONO_LSS_REG_IDENTITY=0" ;;
-        18) echo "ECO_MONO_LSS_SIG_ROOT_ID=0" ;;
-        17) echo "ECO_MONO_LSS_PAP_MEMBERS=0" ;;
-        16) echo "ECO_MONO_LSS_REF_IDENTITY=0" ;;
-        15) echo "ECO_MONO_LSS_QSOLVE=0" ;;
-        14) echo "ECO_MONO_LSS_ARROW_ROOTS=0" ;;
-        13) echo "ECO_MONO_LSS_ARROW_ID=0" ;;
-        12) echo "ECO_MONO_LSS_DEVIRT_POST=0" ;;
-        11) echo "ECO_MONO_LSS_LAYOUT_QUAL=0" ;;
-        10) echo "ECO_MONO_LSS_SIG_FLOW=0" ;;
-         9) echo "ECO_MONO_LSS_GROUND=0" ;;
-         8) echo "ECO_MONO_LSS_MU_TIE=0" ;;
-         7) echo "ECO_MONO_LSS_SPINE_ARITY=0" ;;
+        34) echo "ECO_MONO_LSS_ROOT_FOLD_DEPTH=0" ;;
+        33) echo "ECO_MONO_LSS_INSTANCE_QUAL_USE_INJECT_PAP=0" ;;
+        32) echo "ECO_MONO_LSS_FLOW_LIT_FACTS=0" ;;
+        31) echo "ECO_MONO_LSS_FLOW_ACCESS_FLOW=0" ;;
+        30) echo "ECO_MONO_LSS_FLOW_LET_OVERLAY=0" ;;
+        29) echo "ECO_MONO_LSS_INSTANCE_QUAL_USE_INJECT=0" ;;
+        28) echo "ECO_MONO_LSS_PAP_FAST=0" ;;
+        27) echo "ECO_MONO_LSS_FLAT_PEEL=0" ;;
+        26) echo "ECO_MONO_LSS_INSTANCE_QUAL=0" ;;
+        25) echo "ECO_MONO_LSS_FLOW_CONNECT=0" ;;
+        24) echo "ECO_MONO_LSS_VAR_LAMBDA=0" ;;
+        23) echo "ECO_MONO_LSS_VAR_CTOR_ROWS=0" ;;
+        22) echo "ECO_MONO_LSS_VAR_SUCC=0" ;;
+        21) echo "ECO_MONO_LSS_DESTR_ANNO=0" ;;
+        20) echo "ECO_MONO_LSS_RS_TOP=0" ;;
+        19) echo "ECO_MONO_LSS_INJ_TOTAL=0" ;;
+        18) echo "ECO_MONO_LSS_REF_PAP_SPINE=0" ;;
+        17) echo "ECO_MONO_LSS_ROOT_FOLD=0" ;;
+        16) echo "ECO_MONO_LSS_REG_IDENTITY=0" ;;
+        15) echo "ECO_MONO_LSS_PAP_MEMBERS=0" ;;
+        14) echo "ECO_MONO_LSS_REF_IDENTITY=0" ;;
+        13) echo "ECO_MONO_LSS_ARROW_ROOTS=0" ;;
+        12) echo "ECO_MONO_LSS_ARROW_ID=0" ;;
+        11) echo "ECO_MONO_LSS_DEVIRT_POST=0" ;;
+        10) echo "ECO_MONO_LSS_LAYOUT_QUAL=0" ;;
+         9) echo "ECO_MONO_LSS_SIG_FLOW=0" ;;
+         8) echo "ECO_MONO_LSS_GROUND=0" ;;
+         7) echo "ECO_MONO_LSS_MU_TIE=0" ;;
          6) echo "ECO_MONO_LSS_DEVIRT_FN=0" ;;
          5) echo "ECO_MONO_LSS_KEYED_GLOBALS=" ;;
          4) echo "" ;;                      # maxSpecsPerGlobal: 0 already
@@ -76,24 +77,23 @@ off_env_for() {
 flag_name_for() {
     case "$1" in
         35) echo "<none>" ;;
-        34) echo stamp.papFast ;;           33) echo stamp.flatPeel ;;
-        32) echo instanceQual ;;
-        31) echo stageAnchor.demandFill ;;  30) echo stageAnchor.rowFill ;;
-        29) echo flowConnect ;;             28) echo settle.varLambda ;;
-        27) echo settle.varCtorRows ;;      26) echo settle.varSucc ;;
-        25) echo destrAnno ;;               24) echo rsTop ;;
-        23) echo argPoints ;;               22) echo injTotal ;;
-        21) echo refPapSpine ;;             20) echo rootFold ;;
-        19) echo regIdentity ;;             18) echo sigRootIdentity ;;
-        17) echo papMembers ;;              16) echo refIdentity ;;
-        15) echo qSolve ;;                  14) echo arrowSolverRoots ;;
-        13) echo arrowIdentity ;;           12) echo postSettleDevirt ;;
-        11) echo layoutQualMembers ;;       10) echo sigFlow ;;
-         9) echo groundStandalones ;;        8) echo muTie ;;
-         7) echo spineArity ;;               6) echo devirtFnGlobals ;;
-         5) echo keyedGlobals ;;             4) echo maxSpecsPerGlobal ;;
-         3) echo keyed ;;                    2) echo maxSetSize ;;
-         1) echo enabled ;;
+        34) echo stamp.rootFoldDepth ;;     33) echo stamp.useInjectPap ;;
+        32) echo flow.litFacts ;;           31) echo flow.accessFlow ;;
+        30) echo flow.letOverlay ;;         29) echo stamp.useInject ;;
+        28) echo stamp.papFast ;;           27) echo stamp.flatPeel ;;
+        26) echo instanceQual ;;            25) echo flow.connect ;;
+        24) echo settle.varLambda ;;        23) echo settle.varCtorRows ;;
+        22) echo settle.varSucc ;;          21) echo destrAnno ;;
+        20) echo rsTop ;;                   19) echo injTotal ;;
+        18) echo refPapSpine ;;             17) echo rootFold ;;
+        16) echo regIdentity ;;             15) echo papMembers ;;
+        14) echo refIdentity ;;             13) echo arrowSolverRoots ;;
+        12) echo arrowIdentity ;;           11) echo postSettleDevirt ;;
+        10) echo layoutQualMembers ;;        9) echo sigFlow ;;
+         8) echo groundStandalones ;;        7) echo muTie ;;
+         6) echo devirtFnGlobals ;;          5) echo keyedGlobals ;;
+         4) echo maxSpecsPerGlobal ;;        3) echo keyed ;;
+         2) echo maxSetSize ;;               1) echo enabled ;;
     esac
 }
 

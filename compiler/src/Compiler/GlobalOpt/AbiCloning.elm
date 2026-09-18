@@ -1722,7 +1722,10 @@ stampCall index ctx region func args resultType callInfo =
                             -- decline class (45.5 % on the self-compile), so it
                             -- gets host attribution AND a per-guard reason.
                             ( Mono.MonoCall region func args resultType callInfo
-                            , bumpAbsentL why m func (List.length args)
+                            , bumpAbsentL why
+                                m
+                                func
+                                (List.length args)
                                 (bumpPapSite why (bumpNiGuard why (bumpHost "noInstance" (bumpNoInstance ctx))))
                             )
 
@@ -1770,26 +1773,6 @@ stampCall index ctx region func args resultType callInfo =
             )
 
         Mono.LPartial _ ->
-            -- AR-P2 (lss-lpartial §3), THE devirt guard: a LOWER bound is
-            -- never a singleton — stamping it would direct-call one member
-            -- while an unrecorded inhabitant may exist (the arrowSolverRoots
-            -- false-singleton class). NON-STAMP, censused so the guard is
-            -- observable.
-            let
-                stats0p =
-                    ctx.stats
-            in
-            ( Mono.MonoCall region func args resultType callInfo
-            , let
-                dp0 =
-                    stats0p.devirtPost
-              in
-              { ctx | stats = { stats0p | devirtPost = { dp0 | partialDeclined = dp0.partialDeclined + 1 } } }
-            )
-
-        Mono.LRow _ _ ->
-            -- F3-a: an UNRESOLVED row reference is never a singleton (same
-            -- guard as LPartial; the resolver normally leaves none).
             -- AR-P2 (lss-lpartial §3), THE devirt guard: a LOWER bound is
             -- never a singleton — stamping it would direct-call one member
             -- while an unrecorded inhabitant may exist (the arrowSolverRoots
@@ -2073,7 +2056,19 @@ indexSummary index =
                     Dict.foldl (\_ groups a -> List.foldl (\g b -> b + g.count) a groups) 0 mi.buckets
             in
             Dict.insert
-                ("I|" ++ String.fromInt m ++ "|" ++ uids ++ "|n=" ++ String.fromInt n ++ (if mi.blocked then "|blocked" else ""))
+                ("I|"
+                    ++ String.fromInt m
+                    ++ "|"
+                    ++ uids
+                    ++ "|n="
+                    ++ String.fromInt n
+                    ++ (if mi.blocked then
+                            "|blocked"
+
+                        else
+                            ""
+                       )
+                )
                 1
                 acc
         )
@@ -2187,6 +2182,7 @@ distinct member-kind letters (l/g/c/k/a/p) and `identities` the sorted
 distinct second fields of the interned member keys. `1id` therefore means
 every member names ONE code object, which is exactly the staging-family
 shape; `2id`+ is real alternation. Value is the site count.
+
 -}
 noteMultiSite : Dict Int String -> Bool -> List Int -> AbiCloningStats -> AbiCloningStats
 noteMultiSite memberKinds censusOn ms stats =
@@ -2680,11 +2676,11 @@ Guards, every one load-bearing:
     missing; a| accessors measured 0);
   - callee is a plain `MonoVarLocal` (a var read is effect-and-bottom-free,
     so replacing it is sound — LSS\_015's clause);
-  - EXACT saturation: argCount == the callee type's own arrow arity. With
-    `spineArity = False`, standalone members live on the HEAD arrow only,
-    so a partially-applied value's remaining spine never carries the
-    member; this guard is the belt to that suspender — it proves the value
-    is the zero-capture bare global/ctor;
+  - EXACT saturation: argCount == the callee type's own arrow arity.
+    Standalone members live on the HEAD arrow only — unconditionally since
+    `lss.spineArity` was deleted 2026-09-17 — so a partially-applied value's
+    remaining spine never carries the member; this guard is the belt to that
+    suspender: it proves the value is the zero-capture bare global/ctor;
   - EXACTLY ONE spec of the target names the site: a unique `==` match on
     the full MonoType (set annotations included) wins; failing that, a
     unique `eqLayout` match wins; two or more layout matches with no unique

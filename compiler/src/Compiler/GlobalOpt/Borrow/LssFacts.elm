@@ -253,10 +253,6 @@ query facts calleeType =
             -- exist, so the oracle must not reason from the listed members.
             Poison PTop
 
-        Mono.LRow _ _ ->
-            -- F3-a: an unresolved row reference — same verdict.
-            Poison PTop
-
         Mono.LSet [ m ] ->
             resolveMember facts calleeType m
 

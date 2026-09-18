@@ -283,7 +283,7 @@ runToTypedOpt srcModule =
                 -- them here while the solver state is still live. Without this
                 -- the harness produced types whose arrows all carried
                 -- `NoArrow`, so every root-identity feature
-                -- (`lss.arrowSolverRoots`, `lss.sigRootIdentity`, Phase 2b)
+                -- (`lss.arrowSolverRoots`, Phase 2b)
                 -- was STRUCTURALLY INERT in every pipeline test — a test could
                 -- turn the flag on, pass, and have verified nothing.
                 --

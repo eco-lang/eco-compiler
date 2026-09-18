@@ -1431,6 +1431,78 @@ run's), Stage 9b clean. Hash tokens now ride the other arms: `lssAR=0` / `lssSR=
 
 ---
 
+### Run 28 — the seven default-OFF LSS flags REMOVED from the compiler (2026-09-17)
+
+| compiler | build | workload | wall (s) | max RSS (kB) | minor GC | major GC | promoted (MB) | out.mlir (B) |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| reference | `ECO_MONO_ENGINE=subst` | solver+LSS, defaults | 642.1 | 14,948,864 | 2,297 | 10 | 24,026 | 13,458,106 |
+| benchmark | solver+LSS, defaults | solver+LSS, defaults | 546.3 | 15,048,684 | 2,290 | 10 | 23,974 | 13,458,106 |
+
+**1. lss-coverage**
+
+| compiler | positions | singleton `k1` | multi `kN` | `var` | `⊤` | partial | coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| reference | 149,057 | 145,053 (97.31 %) | 2,586 (1.73 %) | 572 (0.38 %) | 813 (0.55 %) | 33 (0.02 %) | 99.05 % |
+| benchmark | 149,057 | 145,053 (97.31 %) | 2,586 (1.73 %) | 572 (0.38 %) | 813 (0.55 %) | 33 (0.02 %) | 99.05 % |
+
+**2. lss-stamping**
+
+| compiler | dispatchUpgraded | stampedPapGlobal | stampedStaged | stampedPapPrefix | noInstance | blocked | bodyMismatch | shape | abiMismatch | devirtPost fn/ctor/noSpec/ambiguous | multiInstanceGroups |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 17,318 | 3,331 | 208 | 9 | 9,810 | 7 | 1,415 | 524 | 351 | 65/323/0/0 | 1,762 |
+| benchmark | 17,318 | 3,331 | 208 | 9 | 9,810 | 7 | 1,415 | 524 | 351 | 65/323/0/0 | 1,762 |
+
+**3. dispatch-stats**
+
+| compiler | sat | gen | typed | fast | population | fast % | gen % | typed % | distinct |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 2,907,671,876 | 2,810,413,630 | 97,258,246 | 0 | 2,907,671,876 | 0.00 | 96.66 | 3.34 | 7,016 |
+| benchmark | 929,988,224 | 836,492,291 | 93,495,933 | 1,035,778,145 | 1,965,766,369 | 52.69 | 42.55 | 4.76 | 7,006 |
+
+**4. call-census**
+
+| compiler | elm | runtime | kernel | helper | cap | extern | indirect | sites | static-target % |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| reference | 13,359,566,318 | 15,718,765,828 | 1,374,064,809 | 2,682,996,484 | 398,696,190 | 0 | 0 | 427,610 | 83.88 |
+| benchmark | 12,693,545,022 | 11,002,605,289 | 1,373,769,177 | 751,568,605 | 693,275,654 | 0 | 0 | 451,085 | 94.07 |
+
+| compiler | helper `apply_closure_eval` | `closure_call_saturated` | `..._saturated_eval` | typed cross-check |
+|---|---:|---:|---:|---|
+| reference | 2,585,738,241 | 87,861,408 | 9,396,835 | 2,682,996,484 vs typed 97,258,246 |
+| benchmark | 658,072,675 | 36,145,752 | 57,350,178 | 751,568,605 vs typed 93,495,933 |
+
+**What this run is.** The tree with `spineArity`, `qSolve`, `sigRootIdentity`,
+`argPoints`, `stageAnchor.rowFill`, `stageAnchor.demandFill` and
+`flow.rowDefer` DELETED, along with the code they gated
+(`plans/remove-default-off-lss-flags.md`). All seven shipped default-off, so no
+default behaviour is intended to change — and none did: eleven fixed workloads
+compile byte-identically before vs after (that plan's §6.5), E2E is 1,727/1,727,
+and both bootstrap fixed points hold.
+
+**This is a NEW BASELINE, not a comparison against Run 27.** Two independent
+reasons, and they compound:
+
+1. **The workload shrank.** The call-stats workload IS the compiler's own
+   source, and this change deletes ~2 % of it — `out.mlir` 13,741,944 →
+   13,458,106 B. `positions` 151,904 → 149,057 follows directly. Every absolute
+   count in groups 1–4 moves for that reason alone.
+2. **Run 27 predates `stamp.rootFoldDepth`** (shipped 2026-09-17, after that
+   run). The `k1` 115,504 → 145,053 / `kN` 34,954 → 2,586 swing is THAT flag's
+   recorded effect (`plans/lss-root-fold-depth-qualified-spine.md` §13.2: kN
+   −92.6 %, k1 +32,151), not this removal's. Reading it as a flag-removal
+   result would be wrong.
+
+The ratios are the only figures that travel, and they are flat-to-slightly-up:
+analysis coverage **99.05 %** (Run 27: 99.05 %), fast-dispatch share **52.69 %**
+(51.80 %), static-target share **94.07 %** (93.95 %) — the last two carrying
+`rootFoldDepth`, not this change.
+
+**The internal check the protocol exists for passes exactly.** Groups 1 and 2
+are identical between the two arms **to the digit** — every coverage cell, every
+stamping verdict, `multiInstanceGroups` included — and both arms emit the same
+`out.mlir` byte count. The workload is invariant to which binary compiles it,
+which is what makes the group-3/4 difference attributable to the binary alone.
+
 ## Summary
 
 Run 1's rows come from a MISCOMPILING benchmark binary (see the retraction under that run) and
@@ -1494,6 +1566,8 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 26 | lssAR=1 | benchmark | 584.8 | 2398 | 10 | 25293 | 13741944 |
 | 27 | lssAR=1 lssSR=0 | reference | 667.5 | 2402 | 10 | 25292 | 13741944 |
 | 27 | lssAR=1 lssSR=0 | benchmark | 574.9 | 2398 | 10 | 25293 | 13741944 |
+| 28 | 7 flags removed | reference | 642.1 | 2297 | 10 | 24026 | 13458106 |
+| 28 | 7 flags removed | benchmark | 546.3 | 2290 | 10 | 23974 | 13458106 |
 
 ### 1. lss-coverage
 
@@ -1553,6 +1627,8 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 26 | lssAR=1 | benchmark | 151904 | 115504 | 34954 | 593 | 820 | 33 | 99.05 |
 | 27 | lssAR=1 lssSR=0 | reference | 151904 | 115504 | 34954 | 593 | 820 | 33 | 99.05 |
 | 27 | lssAR=1 lssSR=0 | benchmark | 151904 | 115504 | 34954 | 593 | 820 | 33 | 99.05 |
+| 28 | 7 flags removed | reference | 149057 | 145053 | 2586 | 572 | 813 | 33 | 99.05 |
+| 28 | 7 flags removed | benchmark | 149057 | 145053 | 2586 | 572 | 813 | 33 | 99.05 |
 
 ### 2. lss-stamping
 
@@ -1612,6 +1688,8 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 26 | lssAR=1 | benchmark | 17868 | 3251 | 209 | 9 | 9842 | 7 | 1688 | 711 | 354 | 65 | 323 | 0 | 0 | 1952 |
 | 27 | lssAR=1 lssSR=0 | reference | 17868 | 3251 | 209 | 9 | 9842 | 7 | 1688 | 711 | 354 | 65 | 323 | 0 | 0 | 1952 |
 | 27 | lssAR=1 lssSR=0 | benchmark | 17868 | 3251 | 209 | 9 | 9842 | 7 | 1688 | 711 | 354 | 65 | 323 | 0 | 0 | 1952 |
+| 28 | 7 flags removed | reference | 17318 | 3331 | 208 | 9 | 9810 | 7 | 1415 | 524 | 351 | 65 | 323 | 0 | 0 | 1762 |
+| 28 | 7 flags removed | benchmark | 17318 | 3331 | 208 | 9 | 9810 | 7 | 1415 | 524 | 351 | 65 | 323 | 0 | 0 | 1762 |
 
 ### 3. dispatch-stats
 
@@ -1673,6 +1751,8 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 26 | lssAR=1 | benchmark | 993826340 | 886579039 | 107247301 | 1068020945 | 2061847285 | 51.80 | 43.00 | 5.20 | 7136 |
 | 27 | lssAR=1 lssSR=0 | reference | 3034544109 | 2933400036 | 101144073 | 0 | 3034544109 | 0.00 | 96.67 | 3.33 | 7073 |
 | 27 | lssAR=1 lssSR=0 | benchmark | 993826340 | 886579039 | 107247301 | 1068020945 | 2061847285 | 51.80 | 43.00 | 5.20 | 7136 |
+| 28 | 7 flags removed | reference | 2907671876 | 2810413630 | 97258246 | 0 | 2907671876 | 0.00 | 96.66 | 3.34 | 7016 |
+| 28 | 7 flags removed | benchmark | 929988224 | 836492291 | 93495933 | 1035778145 | 1965766369 | 52.69 | 42.55 | 4.76 | 7006 |
 
 ### 4. call-census
 
@@ -1732,3 +1812,5 @@ are kept only so the arc is auditable. Run 3 is the shipping configuration.
 | 26 | lssAR=1 | benchmark | 13297299168 | 11584285123 | 1423279077 | 807838813 | 719623515 | 0 | 0 | 463376 | 93.95 |
 | 27 | lssAR=1 lssSR=0 | reference | 13982893810 | 16449171582 | 1423548371 | 2800085214 | 417198017 | 0 | 0 | 433084 | 83.91 |
 | 27 | lssAR=1 lssSR=0 | benchmark | 13297047310 | 11584285134 | 1423279083 | 807838813 | 719623517 | 0 | 0 | 463376 | 93.95 |
+| 28 | 7 flags removed | reference | 13359566318 | 15718765828 | 1374064809 | 2682996484 | 398696190 | 0 | 0 | 427610 | 83.88 |
+| 28 | 7 flags removed | benchmark | 12693545022 | 11002605289 | 1373769177 | 751568605 | 693275654 | 0 | 0 | 451085 | 94.07 |

@@ -128,23 +128,13 @@ type alias LssSignature =
     { arrows : Array ArrowFact
     , trivial : Bool -- every fact is {rep=self, members=[], top=False}
 
-    -- §5.2 (plans/lss-paper-inclusion-constraints.md): the SCHEME half,
-    -- `d⟨ᾱ⟩ : (Q ⇒ τ)`.
-    --
-    -- `quantified` is `ᾱ` — the CANONICAL ordinals, i.e. those that are their
-    -- own `rep`. Ordinals sharing a `rep` are one set variable, so the
-    -- distinct variables this signature abstracts over are exactly the
-    -- canonical ones; `rep` was always that statement in ordinal form, and
-    -- naming it makes instantiation say what it does.
-    --
-    -- `residual` is `Q` — `ℓ… ⋸ α`, keyed by CANONICAL ordinal. It carries the
+    -- §5.2 (plans/lss-paper-inclusion-constraints.md): `residual` is `Q` — `ℓ… ⋸ α`, keyed by CANONICAL ordinal. It carries the
     -- same information `ArrowFact.members` does, in the paper's direction: a
     -- constraint the USE re-emits against a freshly instantiated α, rather
     -- than a solved set the use copies. Derived from `members` at
     -- generalization, so the two agree by construction and the change is
     -- byte-neutral; what it buys is that the application path stops reading a
     -- pre-solved answer, which is the precondition for §5.3.
-    , quantified : List Int
     , residual : List ( Int, List Int )
     }
 
@@ -537,7 +527,6 @@ trivialSignature : Int -> LssSignature
 trivialSignature n =
     { arrows = Array.initialize n (\i -> { rep = i, members = [], top = False, topKind = Mono.tkLegacy, sources = [] })
     , trivial = True
-    , quantified = List.range 0 (n - 1)
     , residual = []
     }
 
@@ -1369,19 +1358,12 @@ type alias Env =
     , lss : Config.LssConfig -- lambda-set specialization knobs; enabled=False is byte-identical off
     , lssKeyedSet : CoreDict.Dict String () -- E5: comparable gkeys of lss.keyedGlobals (parsed once at initState)
     , lamLabels : CoreDict.Dict Int String -- member id -> "defKey#id" (census rendering only)
-    , arrowRootOf : CoreDict.Dict Int Int -- `lss.sigRootIdentity`: `Id.toComparable occArrowId` -> NEGATIVE solver-root key (AssignMVarIds side table). Read ONLY by `Store.loadTypeC`'s memo key, and only inside the inference scratch store — see plans/lss-solver-root-signature-identity.md §2.2.
 
-    -- PROVENANCE CENSUS (plans/lss-provenance-ratio-census.md): the two
-    -- denominators `arrowRootOf` cannot supply about itself. `arrowTotal` is
-    -- every arrow occurrence AssignMVarIds stamped; `arrowRootClasses` is the
-    -- number of distinct solver-root classes those arrows fell into. With
-    -- `Dict.size arrowRootOf` they give the layer-1 fidelity ratio — how much
-    -- of the paper's `ζ = 𝓔(ξ)` survived into LSS — which is the one layer the
-    -- shadow `Q` verifier is STRUCTURALLY blind to, since `Q` re-solves the
-    -- constraints we emitted and a constraint never emitted is not in its
-    -- input. Census rendering ONLY; nothing reads these during solving.
+    -- STAMPING-WALK CENSUS denominator: every arrow occurrence AssignMVarIds
+    -- stamped. Census rendering ONLY; nothing reads it during solving. Its
+    -- companions `arrowRootOf` / `arrowRootClasses` belonged to
+    -- `lss.sigRootIdentity` and went with it (2026-09-17).
     , arrowTotal : Int
-    , arrowRootClasses : Int
 
     -- Stamping-walk census (§8): how the lost provenance is DISTRIBUTED.
     -- `partial` types prove mid-walk abandonment; `none` types are never-walked
@@ -1473,17 +1455,6 @@ type alias S =
     --   recursive-call args to loop params (the TCO transform rebuilds that
     --   call chain with a fresh id family).
     , itemAux : ItemAux
-
-    -- `lss.sigRootIdentity` (plans/lss-solver-root-signature-identity.md
-    -- §2.2): True exactly while the INFERENCE scratch store is installed and
-    -- the flag is on — set/restored by `withScratchStore` (its single call
-    -- site is `LssInfer.resolveSignature`'s unit pass). `Store.sharedLoadCtx`
-    -- reads it into `LoadCtx.arrowKeyRoots`, which keys the arrow memo by
-    -- solver ROOT instead of by occurrence. Carried on `S` rather than
-    -- `ItemAux` deliberately: `clearedAux` resets aux fields to their
-    -- DEFAULTS on scratch entry, which is the wrong polarity for a flag that
-    -- must be ON inside the scratch and OFF outside it.
-    , scratchRootKeys : Bool
     }
 
 
@@ -2149,23 +2120,7 @@ withScratchStore step s0 =
             -- residual reads made inside the scratch must not be scanned at
             -- item end (scratch re-translation is itself a re-translation
             -- mechanism; its staleness is out of scope for MONO_029 v1).
-            --
-            -- `scratchRootKeys` (lss.sigRootIdentity §2.2): root-keyed arrow
-            -- memoisation is scoped to EXACTLY this window — signature
-            -- inference — so the specialization phase keeps per-occurrence
-            -- identity and per-call-site instantiation.
-            --
-            -- The `papMembers` conjunct ENFORCES the co-requirement rather than
-            -- documenting it. Root sharing merges producer sets that occurrence
-            -- identity kept apart, so a class is trustworthy only if every
-            -- producer flowing into it injected a member; without PAP injection
-            -- a one-sided join publishes a false singleton, devirt believes it,
-            -- and `Task.map f` compiles to the identity map. Both flags went
-            -- default-on together, but `ECO_MONO_LSS_PAP_MEMBERS=0` alone would
-            -- otherwise reach that miscompile through a single env var — so the
-            -- unsound pairing is made unreachable here, at the one place the
-            -- flag is read, instead of at each config path that can produce it.
-            { s0 | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty, itemAux = clearedAux s0.itemAux, scratchRootKeys = s0.env.lss.sigRootIdentity && s0.env.lss.papMembers }
+            { s0 | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty, itemAux = clearedAux s0.itemAux }
     in
     case step sFresh of
         Err e ->
@@ -2223,7 +2178,7 @@ withScratchStore step s0 =
                     else
                         s2
             in
-            Ok ( a, { s3 | store = s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = restoredAux s0.itemAux s3.itemAux, scratchRootKeys = s0.scratchRootKeys } )
+            Ok ( a, { s3 | store = s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = restoredAux s0.itemAux s3.itemAux } )
 
 
 
