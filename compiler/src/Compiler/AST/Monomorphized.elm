@@ -1563,7 +1563,7 @@ enrichAnnotationsWith merge structural annoSource =
                 structural
 
         ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
-            if Dict.keys fieldsA == Dict.keys fieldsB then
+            if sameFieldKeys fieldsA fieldsB then
                 mRecord (Dict.map (\k ta -> enrichAnnotationsWith merge ta (Maybe.withDefault ta (Dict.get k fieldsB))) fieldsA)
 
             else
@@ -2226,7 +2226,7 @@ joinAnnotations a b =
                 widenSets a
 
         ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
-            if Dict.keys fieldsA == Dict.keys fieldsB then
+            if sameFieldKeys fieldsA fieldsB then
                 mRecord (Dict.map (\k ta -> joinAnnotations ta (Maybe.withDefault ta (Dict.get k fieldsB))) fieldsA)
 
             else
@@ -2276,81 +2276,91 @@ self-compile scale and a false skip is the LSS\_010 miscompile.
 -}
 joinAnnotationsChanged : MonoType -> MonoType -> ( Bool, MonoType )
 joinAnnotationsChanged a b =
-    case ( a, b ) of
-        ( MFunction _ annoA argsA retA, MFunction _ annoB argsB retB ) ->
-            if List.length argsA == List.length argsB then
-                let
-                    ( argsChanged, args ) =
-                        joinListChanged argsA argsB
+    if a == b then
+        -- Step 22d. `joinAnnotations a a == a` in every arm (`annoCovers a a`
+        -- is True, `unionAnno` of equal annotations is the annotation, and the
+        -- children join to themselves), so the whole walk is skippable on
+        -- equal inputs. O(1) on pointer identity and O(1) on a packed-hash
+        -- mismatch; only hash-equal distinct trees pay a walk, and that walk
+        -- is cheaper than the one it replaces.
+        ( False, a )
 
-                    ( retChanged, ret ) =
-                        joinAnnotationsChanged retA retB
-                in
-                if annoCovers annoA annoB then
-                    if argsChanged || retChanged then
-                        -- Annotation stands; only the changed child spines are
-                        -- rebuilt, so unchanged siblings stay pointer-shared.
-                        ( True, mFunction annoA args ret )
+    else
+        case ( a, b ) of
+            ( MFunction _ annoA argsA retA, MFunction _ annoB argsB retB ) ->
+                if List.length argsA == List.length argsB then
+                    let
+                        ( argsChanged, args ) =
+                            joinListChanged argsA argsB
+
+                        ( retChanged, ret ) =
+                            joinAnnotationsChanged retA retB
+                    in
+                    if annoCovers annoA annoB then
+                        if argsChanged || retChanged then
+                            -- Annotation stands; only the changed child spines are
+                            -- rebuilt, so unchanged siblings stay pointer-shared.
+                            ( True, mFunction annoA args ret )
+
+                        else
+                            ( False, a )
 
                     else
-                        ( False, a )
+                        ( True, mFunction (unionAnno annoA annoB) args ret )
 
                 else
-                    ( True, mFunction (unionAnno annoA annoB) args ret )
+                    joinWidened a
 
-            else
-                joinWidened a
+            ( MList _ xa, MList _ xb ) ->
+                case joinAnnotationsChanged xa xb of
+                    ( True, x ) ->
+                        ( True, mList x )
 
-        ( MList _ xa, MList _ xb ) ->
-            case joinAnnotationsChanged xa xb of
-                ( True, x ) ->
-                    ( True, mList x )
+                    ( False, _ ) ->
+                        ( False, a )
 
-                ( False, _ ) ->
+            ( MTuple _ xsa, MTuple _ xsb ) ->
+                if List.length xsa == List.length xsb then
+                    case joinListChanged xsa xsb of
+                        ( True, xs ) ->
+                            ( True, mTuple xs )
+
+                        ( False, _ ) ->
+                            ( False, a )
+
+                else
+                    joinWidened a
+
+            ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
+                if sameFieldKeys fieldsA fieldsB then
+                    case joinFieldsChanged fieldsA fieldsB of
+                        ( True, fields ) ->
+                            ( True, mRecord fields )
+
+                        ( False, _ ) ->
+                            ( False, a )
+
+                else
+                    joinWidened a
+
+            ( MCustom _ homeA nameA argsA, MCustom _ homeB nameB argsB ) ->
+                if homeA == homeB && nameA == nameB && List.length argsA == List.length argsB then
+                    case joinListChanged argsA argsB of
+                        ( True, args ) ->
+                            ( True, mCustom homeA nameA args )
+
+                        ( False, _ ) ->
+                            ( False, a )
+
+                else
+                    joinWidened a
+
+            _ ->
+                if a == b then
                     ( False, a )
 
-        ( MTuple _ xsa, MTuple _ xsb ) ->
-            if List.length xsa == List.length xsb then
-                case joinListChanged xsa xsb of
-                    ( True, xs ) ->
-                        ( True, mTuple xs )
-
-                    ( False, _ ) ->
-                        ( False, a )
-
-            else
-                joinWidened a
-
-        ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
-            if Dict.keys fieldsA == Dict.keys fieldsB then
-                case joinFieldsChanged fieldsA fieldsB of
-                    ( True, fields ) ->
-                        ( True, mRecord fields )
-
-                    ( False, _ ) ->
-                        ( False, a )
-
-            else
-                joinWidened a
-
-        ( MCustom _ homeA nameA argsA, MCustom _ homeB nameB argsB ) ->
-            if homeA == homeB && nameA == nameB && List.length argsA == List.length argsB then
-                case joinListChanged argsA argsB of
-                    ( True, args ) ->
-                        ( True, mCustom homeA nameA args )
-
-                    ( False, _ ) ->
-                        ( False, a )
-
-            else
-                joinWidened a
-
-        _ ->
-            if a == b then
-                ( False, a )
-
-            else
-                joinWidened a
+                else
+                    joinWidened a
 
 
 {-| The mismatch fallback: widen the whole type, but report `changed` honestly.
@@ -2500,6 +2510,162 @@ sortedSubsetOf ys xs =
                 False
 
 
+{-| Allocation-free "same key set" — the `Dict.keys a == Dict.keys b`
+replacement (step 22d). Equal size plus every key of `a` present in `b` implies
+equal key sets, because keys are unique. `Dict.keys` built two `List Name` and
+compared them element by element; this builds nothing.
+-}
+sameFieldKeys : Dict Name a -> Dict Name b -> Bool
+sameFieldKeys a b =
+    Dict.size a == Dict.size b && Dict.foldl (\k _ ok -> ok && Dict.member k b) True a
+
+
+{-| `overlayAnnotations` reporting whether the result differs from
+`structural`, and returning `structural` ITSELF — not a copy — when it does not
+(step 22d).
+
+The old shape rebuilt the entire tree on every call: `mFunction`/`mList`/
+`mTuple`/`mRecord`/`mCustom` at every node, `List.map2` at every arg list and a
+whole new `Dict` at every record, whether or not the zonk had contributed a
+single annotation. A lambda head's overlay is on the hot translation path
+(`classifyLambdaHead`, and eight more sites in `Translate`), and the common case
+is that most of the tree is untouched.
+
+This is the same protocol `joinAnnotationsChanged` already uses: rebuild only
+the spines that changed, so unchanged siblings stay pointer-shared, and hand
+back the input when the whole node is unchanged. The `structural == annoSource`
+entry test is O(1) on pointer identity and O(1) on a packed-hash mismatch (the
+leading `Int` of every composite differs), so it only walks for hash-equal
+distinct trees — where the walk is cheaper than the rebuild it avoids.
+
+Results are structurally identical to the old function for every input, so
+emission is byte-identical.
+-}
+overlayAnnotationsChanged : MonoType -> MonoType -> ( Bool, MonoType )
+overlayAnnotationsChanged structural annoSource =
+    if structural == annoSource then
+        ( False, structural )
+
+    else
+        case ( structural, annoSource ) of
+            ( MFunction _ annoA argsA retA, MFunction _ annoB argsB retB ) ->
+                if List.length argsA == List.length argsB then
+                    let
+                        ( argsChanged, args ) =
+                            overlayListChanged argsA argsB
+
+                        ( retChanged, ret ) =
+                            overlayAnnotationsChanged retA retB
+                    in
+                    if argsChanged || retChanged || annoA /= annoB then
+                        ( True, mFunction annoB args ret )
+
+                    else
+                        ( False, structural )
+
+                else
+                    -- Today: `mFunction annoA argsA retA`, which is a copy of
+                    -- `structural` and nothing more.
+                    ( False, structural )
+
+            ( MList _ xa, MList _ xb ) ->
+                case overlayAnnotationsChanged xa xb of
+                    ( True, x ) ->
+                        ( True, mList x )
+
+                    ( False, _ ) ->
+                        ( False, structural )
+
+            ( MTuple _ xsa, MTuple _ xsb ) ->
+                if List.length xsa == List.length xsb then
+                    case overlayListChanged xsa xsb of
+                        ( True, xs ) ->
+                            ( True, mTuple xs )
+
+                        ( False, _ ) ->
+                            ( False, structural )
+
+                else
+                    ( False, structural )
+
+            ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
+                if sameFieldKeys fieldsA fieldsB then
+                    case overlayFieldsChanged fieldsA fieldsB of
+                        ( True, fields ) ->
+                            ( True, mRecord fields )
+
+                        ( False, _ ) ->
+                            ( False, structural )
+
+                else
+                    ( False, structural )
+
+            ( MCustom _ homeA nameA argsA, MCustom _ homeB nameB argsB ) ->
+                if homeA == homeB && nameA == nameB && List.length argsA == List.length argsB then
+                    case overlayListChanged argsA argsB of
+                        ( True, args ) ->
+                            ( True, mCustom homeA nameA args )
+
+                        ( False, _ ) ->
+                            ( False, structural )
+
+                else
+                    ( False, structural )
+
+            _ ->
+                ( False, structural )
+
+
+{-| `List.map2 overlayAnnotations` with the changed protocol: returns the LEFT
+list unchanged (pointer-shared) when no element moved. Arity-bounded lists
+(plan §4 N9), so direct recursion is fine — no accumulator, no reverse.
+-}
+overlayListChanged : List MonoType -> List MonoType -> ( Bool, List MonoType )
+overlayListChanged xsA xsB =
+    case ( xsA, xsB ) of
+        ( x :: ra, y :: rb ) ->
+            let
+                ( c1, x1 ) =
+                    overlayAnnotationsChanged x y
+
+                ( c2, rest ) =
+                    overlayListChanged ra rb
+            in
+            if c1 || c2 then
+                ( True, x1 :: rest )
+
+            else
+                ( False, xsA )
+
+        _ ->
+            ( False, xsA )
+
+
+{-| The record arm, in the `joinFieldsChanged` shape: fold the changed values
+into `fieldsA` rather than building a new `Dict` with `Dict.map`.
+-}
+overlayFieldsChanged : Dict Name MonoType -> Dict Name MonoType -> ( Bool, Dict Name MonoType )
+overlayFieldsChanged fieldsA fieldsB =
+    let
+        fold key ta accPair =
+            let
+                ( changed, overlaid ) =
+                    overlayAnnotationsChanged ta (Maybe.withDefault ta (Dict.get key fieldsB))
+            in
+            if changed then
+                ( True, Dict.insert key overlaid (Tuple.second accPair) )
+
+            else
+                accPair
+    in
+    case Dict.foldl fold ( False, fieldsA ) fieldsA of
+        ( True, newFields ) ->
+            ( True, newFields )
+
+        _ ->
+            ( False, fieldsA )
+
+
 {-| Structure from the FIRST type, lambda-set annotations from the SECOND
 where the layouts agree pointwise (keep the first's annotation on any
 mismatch). NOT a join: `unionAnno` treats ⊤ as absorbing, but here the first
@@ -2525,40 +2691,7 @@ self-compile scale (eco.case result i64 vs !eco.value yields).
 -}
 overlayAnnotations : MonoType -> MonoType -> MonoType
 overlayAnnotations structural annoSource =
-    case ( structural, annoSource ) of
-        ( MFunction _ annoA argsA retA, MFunction _ annoB argsB retB ) ->
-            if List.length argsA == List.length argsB then
-                mFunction annoB (List.map2 overlayAnnotations argsA argsB) (overlayAnnotations retA retB)
-
-            else
-                mFunction annoA argsA retA
-
-        ( MList _ xa, MList _ xb ) ->
-            mList (overlayAnnotations xa xb)
-
-        ( MTuple _ xsa, MTuple _ xsb ) ->
-            if List.length xsa == List.length xsb then
-                mTuple (List.map2 overlayAnnotations xsa xsb)
-
-            else
-                structural
-
-        ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
-            if Dict.keys fieldsA == Dict.keys fieldsB then
-                mRecord (Dict.map (\k ta -> overlayAnnotations ta (Maybe.withDefault ta (Dict.get k fieldsB))) fieldsA)
-
-            else
-                structural
-
-        ( MCustom _ homeA nameA argsA, MCustom _ homeB nameB argsB ) ->
-            if homeA == homeB && nameA == nameB && List.length argsA == List.length argsB then
-                mCustom homeA nameA (List.map2 overlayAnnotations argsA argsB)
-
-            else
-                structural
-
-        _ ->
-            structural
+    Tuple.second (overlayAnnotationsChanged structural annoSource)
 
 
 {-| The sole member of a singleton head annotation, if any.
@@ -2735,19 +2868,37 @@ typeHasResidualNumber isNumber monoType =
             typeHasResidualNumber isNumber inner
 
         MTuple _ elems ->
-            List.any (typeHasResidualNumber isNumber) elems
+            anyResidualNumber isNumber elems
 
         MRecord _ fields ->
             Dict.foldl (\_ t acc -> acc || typeHasResidualNumber isNumber t) False fields
 
         MCustom _ _ _ args ->
-            List.any (typeHasResidualNumber isNumber) args
+            anyResidualNumber isNumber args
 
         MFunction _ _ args result ->
-            List.any (typeHasResidualNumber isNumber) args || typeHasResidualNumber isNumber result
+            anyResidualNumber isNumber args || typeHasResidualNumber isNumber result
 
         _ ->
             False
+
+
+{-| Step 24(vii): `List.any (typeHasResidualNumber isNumber)` built a PAP at
+EVERY `MTuple`/`MCustom`/`MFunction` node of every live node type and
+dispatched it generically per element. Prune walks every node type in the
+graph, so that was one closure allocation plus a generic call per element per
+node. Direct recursion allocates nothing and calls directly; the short-circuit
+is the same `||`, left to right, so the result and the number of `isNumber`
+calls are unchanged.
+-}
+anyResidualNumber : (MVarId -> Bool) -> List MonoType -> Bool
+anyResidualNumber isNumber xs =
+    case xs of
+        [] ->
+            False
+
+        x :: rest ->
+            typeHasResidualNumber isNumber x || anyResidualNumber isNumber rest
 
 
 resolveNumberTypeRebuild : (MVarId -> Bool) -> MonoType -> MonoType

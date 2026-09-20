@@ -400,12 +400,6 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // Capture state before GC.
     size_t from_space_used = bytesAllocated();
     auto gc_start = GC_STATS_TIMER_START();
-    // Snapshot the old-gen-alloc-in-minor counter so we can subtract this
-    // cycle's old-gen helper work from `elapsed_ns` before recording into
-    // the histogram. OldGenSpace::allocate increments this counter every
-    // time it runs while g_in_minor_gc is true (set above), regardless of
-    // whether actual mark/sweep work happens in that call.
-    uint64_t helper_ns_at_start = oldgen.getStats().total_oldgen_alloc_in_minor_ns;
 #endif
 
     // Reset to-space allocation and the Cheney scan: one contiguous extent,
@@ -858,16 +852,12 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     size_t bytes_freed = from_space_used > to_space_used ? from_space_used - to_space_used : 0;
     uint64_t elapsed_ns = GC_STATS_TIMER_ELAPSED_NS(gc_start);
 
-    // Subtract the old-gen allocator work that ran during this minor
-    // cycle so the histogram and per-cycle min/max/avg reflect pure
-    // nursery-copy time. The aggregate is preserved via
-    // GCStats::total_oldgen_alloc_in_minor_ns.
-    uint64_t helper_ns_this_cycle =
-        oldgen.getStats().total_oldgen_alloc_in_minor_ns - helper_ns_at_start;
-    uint64_t pure_elapsed_ns = (elapsed_ns > helper_ns_this_cycle)
-                                   ? elapsed_ns - helper_ns_this_cycle
-                                   : 0;
-    GC_STATS_MINOR_RECORD_GC_END(stats, pure_elapsed_ns, bytes_freed);
+    // The recorded pause is the WHOLE minor cycle, promotion allocation
+    // included. Promotions are no longer timed individually (OldGenSpace
+    // ::allocate skips the clock when g_in_minor_gc), so there is nothing
+    // to subtract: the old "pure nursery-copy" figure was this pause minus
+    // a quantity that was mostly the timer overhead itself.
+    GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, bytes_freed);
 #endif
 
     // Reclaim split-header bodies whose nursery header did not survive this

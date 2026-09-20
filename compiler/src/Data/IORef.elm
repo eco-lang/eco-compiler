@@ -36,6 +36,7 @@ two. The `MVector` family is a genuinely separate store and is untouched.
 -}
 
 import Array exposing (Array)
+import Eco.CellStore as CellStore
 import Compiler.Type.Vars as Vars
 import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Crash exposing (crash)
@@ -96,23 +97,27 @@ union-find hot path and are defined in terms of these.
 -}
 readPointCellS : IO.State -> Int -> Vars.PointCell
 readPointCellS s ref =
-    case Array.get ref s.ioRefsPoint of
-        Just cell ->
-            cell
-
-        Nothing ->
-            crash "Data.IORef.readPointCell: could not find entry"
+    CellStore.get ref s.ioRefsPoint
 
 
 writePointCellS : Int -> Vars.PointCell -> IO.State -> IO.State
 writePointCellS ref cell s =
-    { s | ioRefsPoint = Array.set ref cell s.ioRefsPoint }
+    { s | ioRefsPoint = CellStore.set ref cell s.ioRefsPoint }
 
 
+{-| Mint a cell. The index is the store's size taken BEFORE the push, which is
+exactly the index `Array.length` returned when this was a persistent array —
+so Point indices, and everything keyed on them, are unchanged.
+
+The tuple's two components are built left to right, so `size` is read before
+`push` appends. Do NOT split them into two independent `let` bindings: the
+store is mutated in place and independent bindings are not ordered.
+
+-}
 newPointCellS : Int -> Vars.Descriptor -> IO.State -> ( Int, IO.State )
 newPointCellS weight desc s =
-    ( Array.length s.ioRefsPoint
-    , { s | ioRefsPoint = Array.push (Vars.Root weight desc) s.ioRefsPoint }
+    ( CellStore.size s.ioRefsPoint
+    , { s | ioRefsPoint = CellStore.push (Vars.Root weight desc) s.ioRefsPoint }
     )
 
 

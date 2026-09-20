@@ -542,6 +542,12 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         // external early-return covers both concerns exactly as before (walk 1
         // also gated on !isExternal; newly-created runtime decls are external
         // and were skipped by walk 2's guard too).
+        // String-literal interning cache (step 18b): the slots and the two
+        // cold-edge decls must exist before the per-function rewrite below
+        // references them, and the module may not be mutated from inside the
+        // walk. Deterministic: module order in, module order out.
+        materializeStringLiteralSlots(module);
+
         module.walk([&](LLVM::LLVMFuncOp func) {
             if (func.isExternal())
                 return;
@@ -564,6 +570,9 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             if (!cafMemoFuncs.empty() && cafCallerFastEnabled()) {
                 rewriteCafCallSitesFast(func, cafMemoFuncs);
             }
+            // Per-literal interning cache (step 18b): same diamond, keyed on
+            // the literal's bytes global instead of a thunk symbol.
+            rewriteStringLiteralCallSitesFast(func);
             if (!shadowRootFuncs.empty() &&
                 shadowRootFuncs.contains(func.getSymName())) {
                 OpBuilder builder(func.getContext());

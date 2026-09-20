@@ -1,5 +1,5 @@
 module System.TypeCheck.IO exposing
-    ( unsafePerformIO
+    ( unsafePerformIO, freshState
     , IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMapWithKey, forM_, mapM_
     , mapM, traverseList, traverseTuple
     , traverseArrayMaybe, foldMArray
@@ -19,7 +19,7 @@ act as pseudo-mutable stores for type variables and descriptors.
 
 Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 
-@docs unsafePerformIO
+@docs unsafePerformIO, freshState
 
 
 # The IO monad
@@ -46,6 +46,7 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 -}
 
 import Array exposing (Array)
+import Eco.CellStore as CellStore
 import Compiler.Type.Vars as Vars exposing (Content(..), Descriptor, FlatType(..), LambdaSet(..), Mark(..), Point(..), PointCell(..), RootedVar, SortedRel(..), SuperType(..), Variable)
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
@@ -60,13 +61,29 @@ state (with no references allocated) and returns only the computed value.
 -}
 unsafePerformIO : IO a -> a
 unsafePerformIO ioA =
-    { ioRefsPoint = Array.empty
+    case ioA (freshState ()) of
+        ( s1, a ) ->
+            -- The run owns its point store; nothing outside can reach it once
+            -- the run is over, so free it here. Disposal is threaded through
+            -- the RESULT so it is a data dependency and cannot be dropped as a
+            -- dead statement. Idempotent, so a `Solve.runWithIds` that already
+            -- froze the store is fine.
+            CellStore.disposeThen s1.ioRefsPoint a
+
+
+{-| A fresh IO state, with an empty point store.
+
+This MUST take an argument. As a zero-argument definition it would be a
+memoised constant and every "fresh" state would share one mutable store.
+
+-}
+freshState : () -> State
+freshState () =
+    { ioRefsPoint = CellStore.new 256
     , ioRefsMVector = Array.empty
     , names = emptyNameState
     , nodeIds = emptyNodeIds
     }
-        |> ioA
-        |> Tuple.second
 
 
 
@@ -92,14 +109,21 @@ type alias IO a =
 
 Contains arrays acting as pseudo-mutable stores for:
 
-  - `ioRefsPoint`: the union-find cell per Point — weight and descriptor
+  - `ioRefsPoint`: the union-find cell per Point — weight and descriptor —
+    held in an `Eco.CellStore`, an OFF-HEAP mutable vector. It used to be a
+    persistent `Array`, which meant a path copy of two or three 32-slot trie
+    nodes on every union and every descriptor write. The store is threaded
+    LINEARLY here (see `Compiler.Type.UnionFind`), which is what makes in-place
+    mutation sound; the three places that are not linear — the best-effort
+    unify recovery sites — bracket their speculation with
+    `CellStore.pushMark`/`rollback`
     inline on a root, or a link to the parent (kernel-opt-02 merged the former
     three index-synchronised weight/pointInfo/descriptor arrays into this one)
   - `ioRefsMVector`: Additional mutable vector storage
 
 -}
 type alias State =
-    { ioRefsPoint : Array PointCell
+    { ioRefsPoint : CellStore.Store PointCell
     , ioRefsMVector : Array (Array (Maybe (List Variable)))
     , names : NameState
     , nodeIds : NodeIdState

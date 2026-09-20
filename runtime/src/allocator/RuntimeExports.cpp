@@ -738,6 +738,48 @@ extern "C" HPtr eco_alloc_string_literal_utf8(const uint8_t* bytes,
     });
 }
 
+// -----------------------------------------------------------------------------
+// Slot-filling twins of the two interning entry points (LSS loop step 18b).
+//
+// Generated code caches the interned HPointer word in a zero-initialised i64
+// global (`__eco_strlit$__eco_str_N`) next to the literal's bytes, and only
+// calls in here when that slot still reads 0. The word is published ONLY when
+// the interned object landed in the PermanentSpace (HEAP_036: immortal,
+// GC-invisible, never moves, shared by every thread), so the slot needs no GC
+// root and no fixup — which is exactly why createGlobalRootInitFunction skips
+// the `__eco_strlit$` prefix. On the old-gen fallback (permanent reservation
+// exhausted) the slot stays 0 and every evaluation keeps calling through, where
+// internLiteral roots the cached HPointer as it always did.
+//
+// Cross-thread: LiteralTable is thread_local but permanent objects are
+// process-wide, so a word published by one thread denotes a valid immortal
+// object for every thread; two threads racing publish either the same object or
+// two equivalent immortal ones, both correct String values. Relaxed atomics keep
+// it formally race-free. `Allocator::reset` (test harness only) does not free
+// the PermanentSpace, so a surviving slot still denotes a live object.
+// -----------------------------------------------------------------------------
+static inline void publishLiteralSlot(HPtr r, uint64_t* slot) {
+    uint64_t raw = r.toBits();
+    if (raw == 0 || Elm::isConstantBits(raw)) return;
+    if (!Elm::PermanentSpace::instance().contains(reinterpret_cast<void*>(raw)))
+        return;
+    __atomic_store_n(slot, raw, __ATOMIC_RELAXED);
+}
+
+extern "C" HPtr eco_string_literal_fill(const uint16_t* chars, uint32_t length,
+                                        uint64_t* slot) {
+    HPtr r = eco_alloc_string_literal(chars, length);
+    publishLiteralSlot(r, slot);
+    return r;
+}
+
+extern "C" HPtr eco_string_literal_utf8_fill(const uint8_t* bytes,
+                                             uint32_t byteLen, uint64_t* slot) {
+    HPtr r = eco_alloc_string_literal_utf8(bytes, byteLen);
+    publishLiteralSlot(r, slot);
+    return r;
+}
+
 //===----------------------------------------------------------------------===//
 // Closure allocation census (ECO_CLOSURE_STATS=1)
 //

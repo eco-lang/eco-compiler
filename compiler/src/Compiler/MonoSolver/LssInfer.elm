@@ -6,6 +6,7 @@ module Compiler.MonoSolver.LssInfer exposing
     , flowArrowSetsPlain
     , injectLambdaMember
     , injectLambdaMemberQualified
+    , injectLambdaMemberQualifiedId
     , injectPapSuccessors
     , injectPapSuccessorsFrom
     , injectSpineMemberId
@@ -171,9 +172,35 @@ stay distinguishable. The inference-phase walk (`walkExpr`) keeps the raw
 -}
 injectLambdaMemberQualified : Int -> Maybe TypeIds.SrcLambdaId -> Vars.Variable -> Step ()
 injectLambdaMemberQualified arity srcLam funcVar s0 =
+    -- Step 22(b): the id-returning form is the real one; this is the
+    -- unit-returning wrapper for the three arg-injection sites that have no
+    -- use for the id. Written as a case rather than `Engine.map` so it costs
+    -- no closure.
+    case injectLambdaMemberQualifiedId arity srcLam funcVar s0 of
+        Err e ->
+            Err e
+
+        Ok ( _, s1 ) ->
+            Ok ( (), s1 )
+
+
+{-| `injectLambdaMemberQualified` returning the member id it minted (step 22b).
+
+The id was previously re-derived by a SECOND call to
+`Engine.lambdaInstanceMemberMaybe` in `Translate.specializeLambda`, which is
+state-idempotent but not cheap: each call runs `instanceQualTagFor`, the
+`rootLamOf` fold, `layoutQualKey` (a multi-kilobyte string concat) and a
+`byKey` probe. Returning it from the one mint that has to happen anyway makes
+LSS\_017's "stamped IDENTICALLY in its set injection and its
+`ClosureInfo.lssMember`" true by construction instead of by an idempotence
+argument.
+
+-}
+injectLambdaMemberQualifiedId : Int -> Maybe TypeIds.SrcLambdaId -> Vars.Variable -> Step (Maybe Int)
+injectLambdaMemberQualifiedId arity srcLam funcVar s0 =
     case srcLam of
         Nothing ->
-            Ok ( (), s0 )
+            Ok ( Nothing, s0 )
 
         Just lamId ->
             case Engine.lambdaInstanceMemberId lamId s0 of
@@ -203,10 +230,20 @@ injectLambdaMemberQualified arity srcLam funcVar s0 =
                                     Err e
 
                                 Ok ( _, s2 ) ->
-                                    injectFoldedSuccessors g arity funcVar s2
+                                    case injectFoldedSuccessors g arity funcVar s2 of
+                                        Err e ->
+                                            Err e
+
+                                        Ok ( _, s3 ) ->
+                                            Ok ( Just mid, s3 )
 
                         Nothing ->
-                            injectSpineMemberId arity mid funcVar s1
+                            case injectSpineMemberId arity mid funcVar s1 of
+                                Err e ->
+                                    Err e
+
+                                Ok ( _, s2 ) ->
+                                    Ok ( Just mid, s2 )
 
 
 
@@ -259,10 +296,17 @@ use" from a genuine pairing bug. Report-gated.
 -}
 censusLenGuard : TOpt.Global -> Int -> Int -> Engine.S -> Engine.S
 censusLenGuard global sigN slotsN s =
-    s
-        |> Engine.bumpArgFlowCensus "poison|lenGuard|all"
-        |> Engine.bumpArgFlowCensus ("poison|lenGuard|" ++ TOpt.toComparableGlobal global)
-        |> Engine.bumpArgFlowCensus ("poison|lenGuardShape|" ++ String.fromInt sigN ++ "->" ++ String.fromInt slotsN)
+    -- Gated since step 6: the two keys below are built with `++` on the call
+    -- line, so an ungated call pays for two strings per `applyFacts` whether or
+    -- not anything will read them.
+    if not s.env.lss.report then
+        s
+
+    else
+        s
+            |> Engine.bumpArgFlowCensus "poison|lenGuard|all"
+            |> Engine.bumpArgFlowCensus ("poison|lenGuard|" ++ TOpt.toComparableGlobal global)
+            |> Engine.bumpArgFlowCensus ("poison|lenGuardShape|" ++ String.fromInt sigN ++ "->" ++ String.fromInt slotsN)
 
 
 applyFactsGo : Array Engine.ArrowFact -> Array Vars.Variable -> Int -> Step ()
@@ -274,7 +318,7 @@ applyFactsGo facts slots i s0 =
                     if fact.rep /= i then
                         case Array.get fact.rep slots of
                             Just repSlot ->
-                                Store.unifyStep repSlot slot s0
+                                Store.unifyStrict repSlot slot s0
 
                             Nothing ->
                                 Ok ( (), s0 )
@@ -1021,9 +1065,15 @@ plan's escalation gate. Report-gated.
 -}
 censusMixedSig : List Int -> Engine.S -> Engine.S
 censusMixedSig members s =
-    s
-        |> Engine.bumpArgFlowCensus "mixed|sig"
-        |> Engine.bumpArgFlowCensus ("mixed|sig|" ++ Engine.membersClass members s.lssMemberTable)
+    -- Gated since step 6: `membersClass` is a string classification of the
+    -- member list, built per call.
+    if not s.env.lss.report then
+        s
+
+    else
+        s
+            |> Engine.bumpArgFlowCensus "mixed|sig"
+            |> Engine.bumpArgFlowCensus ("mixed|sig|" ++ Engine.membersClass members s.lssMemberTable)
 
 
 sigEdgesGo : Array Vars.Variable -> Int -> List Vars.Variable -> List Int -> List Int -> List Int -> Bool -> Step ( Maybe ( List Int, List Int ), Bool )
@@ -1573,17 +1623,7 @@ walkLiteral letEnv form elems maybeBase meta expr s0 =
 
                                                       else
                                                         WpOpaque litVar
-                                                    , Engine.bumpArgFlowCensus
-                                                        ("litFacts|"
-                                                            ++ form
-                                                            ++ (if honest then
-                                                                    "|honest"
-
-                                                                else
-                                                                    "|opaque"
-                                                               )
-                                                        )
-                                                        s5
+                                                    , censusLitFacts form honest s5
                                                     )
 
 
@@ -1663,7 +1703,38 @@ joinLiteralElems form litVar wps s0 =
                     joinKeyedSlots (List.map (\( _, wp ) -> ( Just elem, wp )) wps) s1
 
                 _ ->
-                    Ok ( (), Engine.bumpArgFlowCensus ("litFacts|shapeMiss|" ++ form) s1 )
+                    Ok ( (), censusLitShapeMiss form s1 )
+
+
+{-| The per-literal census key, gated. This is the only ungated `++` census key
+that ran per NODE rather than per item, so it is the one that mattered.
+-}
+censusLitFacts : String -> Bool -> Engine.S -> Engine.S
+censusLitFacts form honest s =
+    if not s.env.lss.report then
+        s
+
+    else
+        Engine.bumpArgFlowCensus
+            ("litFacts|"
+                ++ form
+                ++ (if honest then
+                        "|honest"
+
+                    else
+                        "|opaque"
+                   )
+            )
+            s
+
+
+censusLitShapeMiss : String -> Engine.S -> Engine.S
+censusLitShapeMiss form s =
+    if not s.env.lss.report then
+        s
+
+    else
+        Engine.bumpArgFlowCensus ("litFacts|shapeMiss|" ++ form) s
 
 
 joinKeyedSlots : List ( Maybe Vars.Variable, WalkPoint ) -> Step ()
@@ -2590,9 +2661,12 @@ injectPapSuccessorsFrom g startDepth v0 s0 =
                     Err e
 
                 Ok ( midsRev, s1 ) ->
-                    Store.foldSetWrites
-                        (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
-                        (Engine.bumpArgFlowCensus "papInject|deepDone" s1)
+                    Ok
+                        ( ()
+                        , Store.foldSetWrites
+                            (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
+                            (Engine.bumpArgFlowCensus "papInject|deepDone" s1)
+                        )
 
 
 {-| Reference-spine PAP successors (plans/lss-ref-pap-spine.md):
@@ -2640,9 +2714,12 @@ injectPapSuccessors g v0 s0 =
                     Err e
 
                 Ok ( midsRev, s1 ) ->
-                    Store.foldSetWrites
-                        (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
-                        (Engine.bumpArgFlowCensus "refspine|inject" s1)
+                    Ok
+                        ( ()
+                        , Store.foldSetWrites
+                            (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
+                            (Engine.bumpArgFlowCensus "refspine|inject" s1)
+                        )
 
 
 {-| Depth-qualified successors for a ROOT-FOLDED def's OWN spine
@@ -2670,9 +2747,12 @@ injectFoldedSuccessors g arity v0 s0 =
                 Err e
 
             Ok ( midsRev, s1 ) ->
-                Store.foldSetWrites
-                    (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
-                    (Engine.bumpArgFlowCensus "rootFold|spineDepth" s1)
+                Ok
+                    ( ()
+                    , Store.foldSetWrites
+                        (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
+                        (Engine.bumpArgFlowCensus "rootFold|spineDepth" s1)
+                    )
 
 
 mintPapSuccessorIds : TOpt.Global -> Int -> Int -> List Int -> Step (List Int)
@@ -2815,7 +2895,7 @@ injectSpineMemberId arity mid v0 s0 =
 spineGo : Int -> Int -> Dict Int () -> Vars.Variable -> Step ()
 spineGo mid remaining seen v s0 =
     -- Phase 3: ctx-threaded — one S write-back for the whole spine.
-    Store.foldSetWrites (spineGoC mid remaining seen v (Store.setWriteCtx (Store.qOnFor s0) s0.store)) s0
+    Ok ( (), Store.foldSetWrites (spineGoC mid remaining seen v (Store.setWriteCtx (Store.qOnFor s0) s0.store)) s0 )
 
 
 spineGoC : Int -> Int -> Dict Int () -> Vars.Variable -> Store.SetWriteCtx -> Store.SetWriteCtx

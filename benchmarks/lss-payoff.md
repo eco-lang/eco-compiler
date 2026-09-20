@@ -30,9 +30,17 @@ belongs in the plan file, not here.
 **Per run:** give it a **label** (Run A, Run B, …). Record **wall time**, **max RSS**,
 `Minor GC cycles`, `Major GC cycles`, `Objects promoted` (count and MB), `Total GC/Alloc
 time`, and the output `.mlir` byte size (workload-constancy check). Never report a wall
-without its majors — trigger-lottery lesson. Also record the `lss census` counters when
-the change touches them (`ECO_MONO_LSS_REPORT=1`): `set-writes`, `joins`, `widened`,
-`setsZonked`, `join flush: rounds/retranslations`.
+without its majors — trigger-lottery lesson.
+
+**The LSS census is NOT collected on a timed run.** `ECO_MONO_LSS_REPORT=1` makes the
+compiler do measurable extra work *inside the interval being measured* — recording ~106k
+constraints, a solve and a reachability walk per inference unit — which is the exact cost
+the `qCensus` split was made to stop billing to every timed run. So the timed leg runs
+WITHOUT it, and `set-writes`, `joins`, `widened`, `setsZonked` and `join flush:
+rounds/retranslations` are simply absent from a normal run entry. When a change needs
+those counters to be attributed, take them in a **purpose-built census leg** with
+`ECO_MONO_LSS_REPORT=1`, label it explicitly as such inside the entry, and never quote its
+wall — same discipline as the `ECO_INLINE_ALLOC=0` alloc leg below.
 
 **Heap allocation counts are NOT tracked in this file.** HEAP_034's inline-alloc fast
 path bypasses the per-tag counter, so `Objects allocated` / `Bytes allocated` undercount
@@ -104,8 +112,9 @@ the solver, a change to the LSS analysis moves BOTH the binary and the job it do
 Two consequences: (a) `out.mlir` byte-identity across arms is the check that the change
 was substrate-only (a substrate optimization must not move it; an analysis change
 deliberately will — say so); (b) a wall change may be the analysis doing more work
-rather than the binary running slower. Attribute explicitly, using the lss census
-counters, before calling anything a regression.
+rather than the binary running slower. Attribute explicitly before calling anything a
+regression: `out.mlir` and the GC counters first, and an untimed census leg only if those
+do not settle it.
 
 ---
 
@@ -165,7 +174,7 @@ ARMS="eco-lss-post"                    # A/B example: "eco-lss-post eco-lss-pre"
 for ARM in $ARMS; do
   rm -rf "$BK/eco-stuff"
   ( cd "$BK" && ulimit -c 0 && \
-      ECO_MONO_ENGINE=solver ECO_MONO_LSS=1 ECO_MONO_LSS_REPORT=1 \
+      ECO_MONO_ENGINE=solver ECO_MONO_LSS=1 \
       /usr/bin/time -v -o "$ARM.time" \
       "./bin/$ARM" make --optimize --kernel-package eco/compiler \
           --local-package eco/kernel=/work/eco-kernel-cpp \
@@ -173,8 +182,8 @@ for ARM in $ARMS; do
           > "$ARM.stdout" 2> "$ARM.stderr" )
 done
 # Wall + Max RSS from the .time files; minor/major GC cycles, promoted objects
-# and GC time from the GC dump in .stdout; lss census from .stderr; output size
-# from the -out.mlir files.
+# and GC time from the GC dump in .stdout; output size from the -out.mlir files.
+# NO ECO_MONO_LSS_REPORT on a timed leg — it adds work inside the measurement.
 ```
 
 For an A/B, `cmp` the `-out.mlir` files. A **substrate** change (representation, write
@@ -187,7 +196,22 @@ what moved, because the wall comparison then includes a workload change.
 
 ## Runs
 
-_No runs recorded yet._
+### 2026-09-18 — Run A: track baseline (plain run; no change under test)
+
+| leg | wall | max RSS | minor GC | major GC | promoted | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|
+| base | **6:48.37** (408.4 s) | 12,707,660 kB | 1,825 | 10 | 695,914,119 (20,846 MiB) | 145.63 s | 13,304,208 B |
+
+Zero point for the §6 merge work (settle chain, flow overlays, signature channel), taken on the
+tree immediately after `plans/fix-lss-flags-at-defaults.md` landed; nothing is under test here.
+Workload anchored: `out.mlir` is 13,304,208 B, byte-for-byte the bootstrap's Stage 5 and Stage 7a
+outputs on this tree, and the binary's own `eco-compiler.mlir` built out at the same figure — so
+`ECO_BORROW=1` in the build line is confirmed inert, as the methodology claims.
+NOT comparable to any row in `benchmarks/lss-opt.md`: different track, and the flag removal cut
+2,529 lines of compiler source, dropping the corpus 75,886 B (13,380,094 -> 13,304,208).
+Nor to the bootstrap's Stage 7a wall (4:46) — that leg runs against a warm `eco-stuff`, this
+protocol deletes it. No lss census figures: the timed leg no longer sets
+`ECO_MONO_LSS_REPORT=1`, which was doing measurable work inside the measured interval.
 
 ---
 
@@ -197,3 +221,4 @@ One row per run, numbers only.
 
 | Run | Wall (s) | Num Minor GCs | Num Major GCs | Promoted objects (MB) |
 |---|---|---|---|---|
+| A | 408.4 | 1825 | 10 | 20846 |

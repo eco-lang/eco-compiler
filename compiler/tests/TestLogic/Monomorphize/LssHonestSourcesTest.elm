@@ -240,7 +240,7 @@ runResolve honest table members0 mkSources =
                             (\st ->
                                 let
                                     ( res, c ) =
-                                        Store.resolveSlotMembers members0 srcs (ctx honest table st)
+                                        Store.resolveSlotMembersWith honest members0 srcs (ctx table st)
                                 in
                                 { members = res
                                 , mixed = counter .mixedFlex c
@@ -280,24 +280,22 @@ are inert placeholders (the `LssDirectedFlowTest` precedent).
 tests 1c/2b/3b assert.
 
 -}
-ctx : Bool -> Engine.LssMemberTable -> IO.State -> ZonkCtxShape
-ctx honest table st =
+ctx : Engine.LssMemberTable -> IO.State -> ZonkCtxShape
+ctx table st =
     { store = st
     , next = TypeIds.firstMVarId
+    , lssOn = True
+    , maxSetSize = 8
     , lss =
         Just
-            { maxSetSize = 8
-            , zonked = 0
+            { zonked = 0
             , widenedBySize = 0
             , hist = Dict.empty
             , widenedHist = Dict.empty
-            , groundStandalones = False
             , grounded = 0
             , groundingDeferred = 0
-            , honestSources = honest
             , mixedFlex = 0
             , mixedFlexGc = 0
-            , censusOn = True
             , causeSet = 0
             , causePoison = 0
             , causeFlex = 0
@@ -330,6 +328,8 @@ make the shape enough. Kept as a local alias so the fixture reads once.
 type alias ZonkCtxShape =
     { store : IO.State
     , next : TypeIds.MVarId
+    , lssOn : Bool
+    , maxSetSize : Int
     , lss : Maybe LssAccShape
     , ecoReads : List Vars.Variable
     , intern : Intern.Intern
@@ -342,18 +342,14 @@ type alias ZonkCtxShape =
 
 
 type alias LssAccShape =
-    { maxSetSize : Int
-    , zonked : Int
+    { zonked : Int
     , widenedBySize : Int
     , hist : Dict.Dict Int Int
     , widenedHist : Dict.Dict Int Int
-    , groundStandalones : Bool
     , grounded : Int
     , groundingDeferred : Int
-    , honestSources : Bool
     , mixedFlex : Int
     , mixedFlexGc : Int
-    , censusOn : Bool
     , causeSet : Int
     , causePoison : Int
     , causeFlex : Int

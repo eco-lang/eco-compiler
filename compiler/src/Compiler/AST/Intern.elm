@@ -1,6 +1,7 @@
 module Compiler.AST.Intern exposing
-    ( Intern, empty, disabled, readOnly, size
+    ( Intern, empty, disabled, readOnly, size, entries
     , hashCons, widenSets
+    , eqExact
     )
 
 {-| Construction-time hash-consing for `MonoType` (K6 of
@@ -69,16 +70,53 @@ never shared; the solver engine was already at 1.52% after §15.
 
 -}
 type Intern
-    = Intern (HashMap.HashMap MonoType MonoType)
-    | ReadOnly (HashMap.HashMap MonoType MonoType)
+    = Intern (HashMap.HashMap Canon MonoType) (HashMap.HashMap MonoType MonoType)
+    | ReadOnly (HashMap.HashMap Canon MonoType) (HashMap.HashMap MonoType MonoType)
     | Disabled
+
+
+{-| One table entry: the canonical node, plus — for a record only — its fields
+in ascending name order, so that a probe can walk a FRESH record's `Dict.foldl`
+(also ascending) in lockstep against it without allocating and without a
+`Dict.get` per field. `fields` is `[]` for every other kind.
+
+Built once per canonical node, on the MISS path only (~1 % of probes). The whole
+point of the split key type is that the 99 % hit path never builds one: the probe
+stays a bare `MonoType` and `HashMap.getBy` compares it against the stored
+`Canon` directly.
+
+-}
+type alias Canon =
+    { node : MonoType
+    , fields : List ( String, MonoType )
+    }
+
+
+canonOf : MonoType -> Canon
+canonOf mt =
+    case mt of
+        Mono.MRecord _ fields ->
+            { node = mt, fields = Dict.toList fields }
+
+        _ ->
+            { node = mt, fields = [] }
+
+
+canonHash : Canon -> Int
+canonHash c =
+    Mono.specHashOf c.node
+
+
+canonEq : Canon -> Canon -> Bool
+canonEq a b =
+    eqExactAgainst a.node b
 
 
 {-| An empty table.
 -}
 empty : Intern
 empty =
-    Intern HashMap.empty
+    Intern HashMap.empty HashMap.empty
 
 
 {-| A table that never canonicalises. See the `Intern` docs.
@@ -108,10 +146,10 @@ decision about whether interning is wanted.
 readOnly : Intern -> Intern
 readOnly intern =
     case intern of
-        Intern m ->
-            ReadOnly m
+        Intern m w ->
+            ReadOnly m w
 
-        ReadOnly _ ->
+        ReadOnly _ _ ->
             intern
 
         Disabled ->
@@ -123,10 +161,10 @@ readOnly intern =
 size : Intern -> Int
 size intern =
     case intern of
-        Intern m ->
+        Intern m _ ->
             HashMap.size m
 
-        ReadOnly m ->
+        ReadOnly m _ ->
             HashMap.size m
 
         Disabled ->
@@ -144,29 +182,29 @@ hashCons mt intern =
         Disabled ->
             ( mt, intern )
 
-        Intern m ->
+        Intern m w ->
             case mt of
                 Mono.MList _ _ ->
-                    probe mt m intern
+                    probe mt m w intern
 
                 Mono.MTuple _ _ ->
-                    probe mt m intern
+                    probe mt m w intern
 
                 Mono.MRecord _ _ ->
-                    probe mt m intern
+                    probe mt m w intern
 
                 Mono.MCustom _ _ _ _ ->
-                    probe mt m intern
+                    probe mt m w intern
 
                 Mono.MFunction _ _ _ _ ->
-                    probe mt m intern
+                    probe mt m w intern
 
                 _ ->
                     -- Leaves and `MVar`: nothing to share beyond the two words
                     -- they already occupy.
                     ( mt, intern )
 
-        ReadOnly m ->
+        ReadOnly m _ ->
             case mt of
                 Mono.MList _ _ ->
                     probeRO mt m intern
@@ -191,14 +229,14 @@ hashCons mt intern =
 caller back the very table value it was given. Rebuilding `Intern m` there would
 allocate one wrapper per hit — and hits are ~99% of calls (plan §13).
 -}
-probe : MonoType -> HashMap.HashMap MonoType MonoType -> Intern -> ( MonoType, Intern )
-probe mt m intern =
-    case HashMap.get Mono.specHashOf eqExact mt m of
+probe : MonoType -> HashMap.HashMap Canon MonoType -> HashMap.HashMap MonoType MonoType -> Intern -> ( MonoType, Intern )
+probe mt m w intern =
+    case HashMap.getBy Mono.specHashOf eqExactAgainst mt m of
         Just canonical ->
             ( canonical, intern )
 
         Nothing ->
-            ( mt, Intern (HashMap.insert Mono.specHashOf eqExact mt mt m) )
+            ( mt, Intern (HashMap.insert canonHash canonEq (canonOf mt) mt m) w )
 
 
 {-| The read-only probe: identical to `probe` on a hit, and a no-op on a miss.
@@ -208,9 +246,9 @@ read-only traversal free of state threading — and it also means
 `Engine.withIntern`'s "did the table grow?" guard can never fire for one.
 
 -}
-probeRO : MonoType -> HashMap.HashMap MonoType MonoType -> Intern -> ( MonoType, Intern )
+probeRO : MonoType -> HashMap.HashMap Canon MonoType -> Intern -> ( MonoType, Intern )
 probeRO mt m intern =
-    case HashMap.get Mono.specHashOf eqExact mt m of
+    case HashMap.getBy Mono.specHashOf eqExactAgainst mt m of
         Just canonical ->
             ( canonical, intern )
 
@@ -233,7 +271,147 @@ Phase-1 situation, and still not an artifact change.
 -}
 eqExact : MonoType -> MonoType -> Bool
 eqExact a b =
-    a == b
+    eqExactAgainst a (canonOf b)
+
+
+{-| EXACT structural equality of a FRESH node against a stored entry: decides
+precisely what `==` decides, but shaped so that on the hit path it is one packed
+`Int` compare plus one word compare per slot, with no descent into the children.
+
+Why that is a saving at all: `==` on a composite reaches the kernel's structural
+walk, and for `MRecord` that means comparing two red-black trees — two vector
+allocations, an in-order walk of both, and a string compare per field name — even
+though the children on both sides are already canonical and would have compared
+equal on the first word. The container shells were the entire cost.
+
+Why it is still exactly `==` (the byte-identity argument): the leading packed hash
+is computed from the children's stored hashes, so equal structures always produce
+equal packed hashes and the test can never reject an equal pair; what follows is
+the same field-wise `==` tests in a different order, and `&&` may be reordered
+freely for total, pure predicates. The record arm is content equality between two
+ascending in-order sequences, which is what the kernel's `dictEq` decides as well.
+Children are compared with `==`, NOT with this function, because a caller may cons
+a node whose children were rebuilt by a pure rebuilder and are therefore
+structurally equal to the canonical ones without being the same object; `==` still
+answers correctly there, it is merely slower.
+
+-}
+eqExactAgainst : MonoType -> Canon -> Bool
+eqExactAgainst a c =
+    case a of
+        Mono.MRecord ha fa ->
+            case c.node of
+                Mono.MRecord hb _ ->
+                    ha == hb && eqFieldsAgainst fa c.fields
+
+                _ ->
+                    False
+
+        Mono.MCustom ha homeA nameA argsA ->
+            case c.node of
+                Mono.MCustom hb homeB nameB argsB ->
+                    ha == hb && nameA == nameB && homeA == homeB && eqChildren argsA argsB
+
+                _ ->
+                    False
+
+        Mono.MFunction ha annoA argsA retA ->
+            case c.node of
+                Mono.MFunction hb annoB argsB retB ->
+                    ha == hb && annoA == annoB && retA == retB && eqChildren argsA argsB
+
+                _ ->
+                    False
+
+        Mono.MTuple ha xs ->
+            case c.node of
+                Mono.MTuple hb ys ->
+                    ha == hb && eqChildren xs ys
+
+                _ ->
+                    False
+
+        Mono.MList ha x ->
+            case c.node of
+                Mono.MList hb y ->
+                    ha == hb && x == y
+
+                _ ->
+                    False
+
+        _ ->
+            -- Leaves never reach a probe (`hashCons` filters them out), but the
+            -- function must stay total and `==`-exact.
+            a == c.node
+
+
+eqChildren : List MonoType -> List MonoType -> Bool
+eqChildren xs ys =
+    case xs of
+        [] ->
+            List.isEmpty ys
+
+        x :: restX ->
+            case ys of
+                y :: restY ->
+                    x == y && eqChildren restX restY
+
+                [] ->
+                    False
+
+
+{-| Sentinel parked in the accumulator after the first field mismatch. A record
+field name is a lower-case identifier and can never be `""`, so once this is in
+the accumulator every later step returns it again and the fold finishes
+non-empty, i.e. failed.
+-}
+failedFields : List ( String, MonoType )
+failedFields =
+    [ ( "", Mono.MUnit ) ]
+
+
+{-| The fresh record equals the stored one iff walking it in ascending name order
+consumes the stored list EXACTLY. Size equality is implied: fewer fresh fields
+leave a non-empty remainder, more fresh fields run into `[]`.
+-}
+eqFieldsAgainst : Dict.Dict String MonoType -> List ( String, MonoType ) -> Bool
+eqFieldsAgainst fresh stored =
+    List.isEmpty (Dict.foldl eqFieldStep stored fresh)
+
+
+eqFieldStep : String -> MonoType -> List ( String, MonoType ) -> List ( String, MonoType )
+eqFieldStep name t remaining =
+    case remaining of
+        ( n, ct ) :: more ->
+            if n == name && ct == t then
+                more
+
+            else
+                failedFields
+
+        [] ->
+            failedFields
+
+
+{-| An EXACT "has the table changed" stamp for the write-back guards.
+
+`size` counts canonicalised structures and is report semantics; it deliberately
+ignores the widen memo. A guard must not, or a run that only added memo entries
+would write nothing back and throw them away. Both tables only ever grow, so
+equal counts imply the same value.
+
+-}
+entries : Intern -> Int
+entries intern =
+    case intern of
+        Intern m w ->
+            HashMap.size m + HashMap.size w
+
+        ReadOnly m w ->
+            HashMap.size m + HashMap.size w
+
+        Disabled ->
+            0
 
 
 {-| `Mono.widenSets` threading the table — the hash-consed twin of the pure
@@ -269,6 +447,52 @@ bucket hash is shape-independent too.
 -}
 widenSets : MonoType -> Intern -> ( MonoType, Intern )
 widenSets monoType intern0 =
+    -- Step 11b: memoised per INPUT node. Widening is a pure function of the
+    -- input, and the input is canonical (every producer hash-conses bottom
+    -- up), so one entry answers every later enqueue of the same demand type.
+    -- Leaves and `MVar` are the identity and never enter the memo.
+    case intern0 of
+        Intern _ w ->
+            case HashMap.get Mono.specHashOf widenEq monoType w of
+                Just widened ->
+                    ( widened, intern0 )
+
+                Nothing ->
+                    let
+                        ( widened, intern1 ) =
+                            widenSetsGo monoType intern0
+                    in
+                    ( widened, putWiden monoType widened intern1 )
+
+        _ ->
+            -- ReadOnly and Disabled do not memoise: the first must not grow,
+            -- and the second canonicalises nothing, so there is no canonical
+            -- input to key on.
+            widenSetsGo monoType intern0
+
+
+{-| The memo's key equality. `==` on the input node, which is pointer-fast for a
+canonical input and correctly SEPARATES differently-annotated twins: two inputs
+that differ only in an arrow's label are two entries mapping to the same widened
+object, which is exact.
+-}
+widenEq : MonoType -> MonoType -> Bool
+widenEq a b =
+    a == b
+
+
+putWiden : MonoType -> MonoType -> Intern -> Intern
+putWiden key widened intern =
+    case intern of
+        Intern m w ->
+            Intern m (HashMap.insert Mono.specHashOf widenEq key widened w)
+
+        _ ->
+            intern
+
+
+widenSetsGo : MonoType -> Intern -> ( MonoType, Intern )
+widenSetsGo monoType intern0 =
     case monoType of
         Mono.MFunction _ _ args result ->
             let

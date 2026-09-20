@@ -205,6 +205,14 @@ HPtr eco_alloc_string_literal(const uint16_t* chars, uint32_t length);
 /// @return HPointer (as uint64_t) to the allocated string
 HPtr eco_alloc_string_literal_utf8(const uint8_t* bytes, uint32_t byteLen);
 
+// LSS step 18b: interning twins that also publish the interned word into a
+// caller-supplied i64 slot when the object is PermanentSpace-resident. Called
+// only on the cold edge of the generated per-literal cache diamond.
+HPtr eco_string_literal_fill(const uint16_t* chars, uint32_t length,
+                             uint64_t* slot);
+HPtr eco_string_literal_utf8_fill(const uint8_t* bytes, uint32_t byteLen,
+                                  uint64_t* slot);
+
 /// Allocates a closure object with PK_Boxed result kind (legacy entry).
 /// Forwards to `eco_alloc_closure_k(func_ptr, num_captures, PK_Boxed)` so
 /// existing callers (which all return boxed Tasks/HPointers) keep working

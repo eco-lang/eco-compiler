@@ -1,6 +1,6 @@
 module Data.HashMap exposing
     ( HashMap
-    , empty, insert, get, member, remove
+    , empty, insert, get, getBy, member, remove
     , size, isEmpty
     , foldl, map, toList, values, fromList
     )
@@ -33,7 +33,7 @@ matching `Dict.insert`. This is still not the LEXICOGRAPHIC order of the string
 keys these maps replace, so output that depends on traversal order does change.
 
 @docs HashMap
-@docs empty, insert, get, member, remove
+@docs empty, insert, get, getBy, member, remove
 @docs size, isEmpty
 @docs foldl, map, toList, values, fromList
 
@@ -60,27 +60,44 @@ empty =
 {-| Look up a key.
 -}
 get : (k -> Int) -> (k -> k -> Bool) -> k -> HashMap k v -> Maybe v
-get hash eq key (HashMap _ _ buckets) =
-    case Dict.get (hash key) buckets of
+get hash eq key m =
+    getBy hash eq key m
+
+
+{-| `get` with a PROBE whose type differs from the stored keys. `hash` is applied
+to the probe; `eq probe storedKey` decides the match. The pair must agree with the
+`hash`/`eq` the map was built with, exactly as `get`'s must — i.e. a probe and the
+key it should find must hash equal and compare equal.
+
+This exists so a caller can look up a stored key that carries precomputed
+auxiliary data (a canonical form, a sorted field list) without having to build
+that data for the probe on every lookup. `Compiler.AST.Intern` is the caller:
+building it per probe would allocate on the 99 %-hit path, which is the whole
+cost the table exists to avoid.
+
+-}
+getBy : (q -> Int) -> (q -> k -> Bool) -> q -> HashMap k v -> Maybe v
+getBy hash eq probe (HashMap _ _ buckets) =
+    case Dict.get (hash probe) buckets of
         Nothing ->
             Nothing
 
         Just bucket ->
-            scanBucket eq key bucket
+            scanBucketBy eq probe bucket
 
 
-scanBucket : (k -> k -> Bool) -> k -> List ( Int, k, v ) -> Maybe v
-scanBucket eq key bucket =
+scanBucketBy : (q -> k -> Bool) -> q -> List ( Int, k, v ) -> Maybe v
+scanBucketBy eq probe bucket =
     case bucket of
         [] ->
             Nothing
 
         ( _, k, v ) :: rest ->
-            if eq key k then
+            if eq probe k then
                 Just v
 
             else
-                scanBucket eq key rest
+                scanBucketBy eq probe rest
 
 
 {-| Membership test, without materializing the value.

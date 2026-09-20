@@ -891,7 +891,6 @@ void GCStats::combine(const GCStats& other) {
     }
 
     // Combine allocator-helper attribution.
-    total_oldgen_alloc_in_minor_ns    += other.total_oldgen_alloc_in_minor_ns;
     total_oldgen_alloc_in_mutator_ns  += other.total_oldgen_alloc_in_mutator_ns;
     total_post_sweep_shrink_ns        += other.total_post_sweep_shrink_ns;
     total_maybe_shrink_heavy_ns       += other.total_maybe_shrink_heavy_ns;
@@ -1099,13 +1098,14 @@ void GCStats::print() const {
     if (minor_gc_count > 0) {
         std::cout << "\nMinor GC Timing:" << std::endl;
 
-        // total_minor_gc_time_ns is the PURE nursery-copy time per cycle:
-        // NurserySpace::minorGC subtracts the inline-helper time
-        // (incremental mark + lazy sweep run via promotion → oldgen.allocate)
-        // before recording. The histogram/min/max/avg below all reflect the
-        // same pure-cycle accounting.
+        // total_minor_gc_time_ns is the WHOLE minor pause per cycle,
+        // promotion allocation included. Promotions are not timed
+        // individually any more (OldGenSpace::allocate skips the clock while
+        // g_in_minor_gc), so nothing is subtracted from the pause. The
+        // histogram/min/max/avg below all reflect the same whole-pause
+        // accounting.
         std::cout << "  Total time:            " << std::setw(15) << formatTime(total_minor_gc_time_ns)
-                  << "  (pure nursery-copy)" << std::endl;
+                  << "  (incl. promotion alloc)" << std::endl;
 
         uint64_t avg_ns = total_minor_gc_time_ns / minor_gc_count;
         std::cout << "  Average time:          " << std::setw(15) << formatTime(avg_ns) << std::endl;
@@ -1340,7 +1340,7 @@ void GCStats::print() const {
         total_oldgen_alloc_in_mutator_ns > 0 ||
         total_nursery_alloc_in_mutator_ns > 0) {
         std::cout << "\nAllocator Timings:" << std::endl;
-        std::cout << "  Minor GC (pure nursery-copy):  " << std::setw(15)
+        std::cout << "  Minor GC (incl. promotion alloc):" << std::setw(13)
                   << formatTime(total_minor_gc_time_ns) << std::endl;
         std::cout << "  Major GC:                      " << std::setw(15)
                   << formatTime(total_major_gc_time_ns) << std::endl;
@@ -1373,15 +1373,11 @@ void GCStats::print() const {
     //
     // Sub-counters of the buckets above. Reported only to show where time
     // inside a parent bucket was spent — DO NOT add to the totals.
-    if (total_oldgen_alloc_in_minor_ns > 0 ||
-        total_post_sweep_shrink_ns > 0 ||
+    if (total_post_sweep_shrink_ns > 0 ||
         total_maybe_shrink_heavy_ns > 0 ||
         total_maybe_shrink_light_ns > 0) {
         std::cout << "\nAllocator Nested Timings (Already included in "
                      "Allocator Timings):" << std::endl;
-        std::cout << "  In minor pauses (nested in Minor GC):                    "
-                  << std::setw(15)
-                  << formatTime(total_oldgen_alloc_in_minor_ns) << std::endl;
         std::cout << "  Post-sweep shrink (nested in Old-gen alloc in mutator):  "
                   << std::setw(15)
                   << formatTime(total_post_sweep_shrink_ns) << std::endl;
@@ -1817,7 +1813,6 @@ void GCStats::reset() {
     ensure_slow_calls = 0;
     oldgen_inuse_peak_bytes = 0;
     oldgen_hiwater_bytes    = 0;
-    total_oldgen_alloc_in_minor_ns    = 0;
     total_oldgen_alloc_in_mutator_ns  = 0;
     total_post_sweep_shrink_ns        = 0;
     total_maybe_shrink_heavy_ns       = 0;

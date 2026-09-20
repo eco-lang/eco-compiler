@@ -24,6 +24,7 @@ to older pools or generalized to `noRank` (making them polymorphic).
 
 -}
 
+import Eco.CellStore as CellStore
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Name as Name exposing (Name)
@@ -129,7 +130,7 @@ runWithIds constraint nodeVars =
                                                                     , nodeTypes = nodeTypes
                                                                     , nodeVars = nodeVars
                                                                     , solverState =
-                                                                        { cells = s.ioRefsPoint
+                                                                        { cells = CellStore.freeze s.ioRefsPoint
                                                                         }
                                                                     }
                                                                 )

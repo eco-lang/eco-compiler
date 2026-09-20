@@ -623,14 +623,28 @@ void *OldGenSpace::allocate(size_t size) {
     // splits, BBoP page acquire); when gc_phase_ != Idle the body also
     // runs incremental mark + lazy sweep slices, plus — via lazySweep →
     // onSweepComplete — a maybeShrinkCapacity → releaseBlockToAllocator
-    // cascade. None of that is mutator user code. Two clock reads on the
-    // slow path is ~40 ns, negligible vs the dispatch (microseconds for
-    // splitter + free-list walks). Routes elapsed wall-time to one of
-    // two counters by calling context; so the accounting identity is:
+    // cascade. None of that is mutator user code. Routes elapsed wall-time
+    // to the mutator counter; so the accounting identity is:
     //   wall_s = minor + major + nursery_alloc_in_mutator
     //          + oldgen_alloc_in_mutator + true_mutator.
+    //
+    // ONLY MUTATOR-CONTEXT CALLS ARE TIMED. When g_in_minor_gc is set this is
+    // a promotion: allocate() is then called once per promoted object by the
+    // three nursery evacuation copiers (NurserySpace.cpp evacuate / JIT-root
+    // copier / list-spine copier), ~7e8 times per self-compile. Those calls
+    // are ALREADY inside the minor-GC bracket (NurserySpace::minorGC), so
+    // timing them again bought a nested sub-counter at the price of two vdso
+    // clock reads per promoted object — several percent of wall. The "two
+    // clock reads is ~40 ns, negligible vs the dispatch" note this bracket
+    // used to carry was written for the mutator path (large/pinned and region
+    // allocations, a few hundred ms per run in total); it was never true of
+    // the promotion path, where the dispatch is a size-class free-list pop.
 #if ENABLE_GC_STATS
-    auto helper_t0 = GC_STATS_TIMER_START();
+    const bool timed = !g_in_minor_gc;
+    std::chrono::high_resolution_clock::time_point helper_t0;
+    if (timed) {
+        helper_t0 = GC_STATS_TIMER_START();
+    }
 #endif
 
     // Allocation-paced marking: do marking work proportional to allocation.
@@ -689,11 +703,9 @@ void *OldGenSpace::allocate(size_t size) {
     }
 
 #if ENABLE_GC_STATS
-    uint64_t helper_ns = GC_STATS_TIMER_ELAPSED_NS(helper_t0);
-    if (g_in_minor_gc) {
-        alloc_stats_.total_oldgen_alloc_in_minor_ns += helper_ns;
-    } else {
-        alloc_stats_.total_oldgen_alloc_in_mutator_ns += helper_ns;
+    if (timed) {
+        alloc_stats_.total_oldgen_alloc_in_mutator_ns +=
+            GC_STATS_TIMER_ELAPSED_NS(helper_t0);
     }
 #endif
 

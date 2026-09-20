@@ -877,7 +877,26 @@ abiCloningPass census ((Mono.MonoGraph record) as graph) =
                             Just node ->
                                 let
                                     ( newNode, ctx1 ) =
-                                        stampNode index { accCtx | hostGlobal = hostGlobalAt record.registry.reverseMapping specId, hostSpecId = specId } node
+                                        stampNode index
+                                            { accCtx
+                                              -- Step 25: `hostGlobalAt` builds a
+                                              -- five-part `toComparableGlobal`
+                                              -- string for EVERY one of the ~43K
+                                              -- specs, and every reader of
+                                              -- `ctx.hostGlobal` sits behind an
+                                              -- `if not ctx.census` early return
+                                              -- (AbiCloning 1852, 1899, 1999,
+                                              -- 2106, 2126), so off census the
+                                              -- string is built and never read.
+                                                | hostGlobal =
+                                                    if census then
+                                                        hostGlobalAt record.registry.reverseMapping specId
+
+                                                    else
+                                                        "?"
+                                                , hostSpecId = specId
+                                            }
+                                            node
                                 in
                                 ( ( Array.push (Just newNode) accNodes, specId + 1 ), ctx1 )
 
@@ -2852,31 +2871,32 @@ papResolve g k func argCount ctx =
                             Dict.get (Mono.toComparableGlobal g) ctx.specsByGlobal
                                 |> Maybe.withDefault []
 
-                        rows =
-                            List.map (\( specId, _ ) -> ( specId, specFunctionRow specId ctx )) specs
-
-                        matches =
-                            List.filterMap
-                                (\( specId, row ) ->
-                                    case row of
+                        -- Step 25: ONE pass. This built a `( specId, row )`
+                        -- pair for every spec of the global — 1,939 of them for
+                        -- `List.foldl` — then walked that list twice, once to
+                        -- filter the matches and once to ask whether any row was
+                        -- `Nothing`. `List.foldr` keeps `matches` in the order
+                        -- `List.filterMap` produced it.
+                        ( matches, nonFn ) =
+                            List.foldr
+                                (\( specId, _ ) ( accM, accN ) ->
+                                    case specFunctionRow specId ctx of
                                         Just ( params, ret ) ->
                                             if
                                                 (List.length params == k + List.length fargs)
                                                     && eqLayoutLists (List.drop k params) fargs
                                                     && Mono.eqLayout ret fret
                                             then
-                                                Just ( specId, params, ret )
+                                                ( ( specId, params, ret ) :: accM, accN )
 
                                             else
-                                                Nothing
+                                                ( accM, accN )
 
                                         Nothing ->
-                                            Nothing
+                                            ( accM, True )
                                 )
-                                rows
-
-                        nonFn =
-                            List.any (\( _, row ) -> row == Nothing) rows
+                                ( [], False )
+                                specs
                     in
                     case matches of
                         [ ( specId, params, ret ) ] ->
@@ -3057,13 +3077,29 @@ Unchanged from the original; `PsNoSpec` has measured 0 since E9.5 shipped.
 matchSpec : Mono.Global -> Bool -> Mono.MonoType -> StampCtx -> PostSettleOutcome
 matchSpec target isCtor calleeType ctx =
     let
-        layoutMatches =
-            Dict.get (Mono.toComparableGlobal target) ctx.specsByGlobal
-                |> Maybe.withDefault []
-                |> List.filter (\( _, specType ) -> Mono.eqLayout specType calleeType)
+        -- Step 25: ONE pass over the global's specs instead of two
+        -- (`eqLayout` filter, then an `==` filter over its result). `==` implies
+        -- `eqLayout`, so the exact list is a sub-fold of the layout list, and
+        -- `List.foldr` keeps both in `List.filter` order.
+        ( layoutMatches, exactMatches ) =
+            List.foldr
+                (\(( _, specType ) as e) ( accL, accE ) ->
+                    if Mono.eqLayout specType calleeType then
+                        ( e :: accL
+                        , if specType == calleeType then
+                            e :: accE
 
-        exactMatches =
-            List.filter (\( _, specType ) -> specType == calleeType) layoutMatches
+                          else
+                            accE
+                        )
+
+                    else
+                        ( accL, accE )
+                )
+                ( [], [] )
+                (Dict.get (Mono.toComparableGlobal target) ctx.specsByGlobal
+                    |> Maybe.withDefault []
+                )
     in
     -- UNIQUENESS, never minimum: see the type's doc and `devirtPost.ambiguous`.
     case ( exactMatches, layoutMatches ) of

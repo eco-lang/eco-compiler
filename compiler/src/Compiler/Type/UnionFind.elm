@@ -19,6 +19,24 @@ operations for unifying type variables and checking equivalence.
 @docs fresh, repr, get, set, modify, union, equivalent, redundant
 @docs freshS, reprS, getS, setS, modifyS, unionS, equivalentS, redundantQ
 
+
+**THE STORE IS MUTATED IN PLACE (2026-09-19).** `IO.State.ioRefsPoint` is an
+`Eco.CellStore`, an off-heap mutable vector, not a persistent `Array`. Every
+function here threads the state linearly, which is what makes that sound, and
+the rule for anything added here is the same one the store's own docs state:
+after a write, use ONLY the state the write returned. A read through an older
+state observes the NEW cells.
+
+Two consequences specific to this module. Path compression now persists
+wherever it runs, including inside a read whose returned state a caller drops;
+that is invisible (same roots, same descriptors, same weights) and is why
+those callers needed no change. And a caller that SPECULATES — unifies, then
+abandons the attempt on failure — can no longer recover by keeping the older
+state value: it must bracket the attempt with `Engine.markStore` and
+`Engine.rollbackStore`. There are exactly three such callers
+(`Store.unifyBestEffort`, `Translate.unifyStepBestEffort`,
+`Translate.classifyRef`) and they are all bracketed.
+
 -}
 
 {- This is based on the following implementations:

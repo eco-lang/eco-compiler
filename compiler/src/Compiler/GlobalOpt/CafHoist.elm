@@ -409,7 +409,15 @@ collectChildren minNodes ctx expr =
             -- would be a default-policy regression (kernel-opt-07 §6.F); the
             -- fix for the table's optimism is listing the effectful rows, not
             -- loosening this test.
-            ( { leafInfo | hasDebug = home == "Debug" }, [], ctx )
+            --
+            -- `CellStore` is excluded on the same "ineligible" channel, for a
+            -- different reason: `Eco.CellStore.new` ALLOCATES A MUTABLE STORE,
+            -- so hoisting a call to it out of its scope would make one store
+            -- shared by every evaluation of that scope. The Elm side already
+            -- guards this by giving `new` an argument (a CAF cannot form), and
+            -- this pass is default-off; the test is here so that turning the
+            -- pass on can never reintroduce the aliasing by another route.
+            ( { leafInfo | hasDebug = home == "Debug" || home == "CellStore" }, [], ctx )
 
         Mono.MonoUnit ->
             ( leafInfo, [], ctx )

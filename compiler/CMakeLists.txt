@@ -750,7 +750,7 @@ function(eco_apply_unified_link target)
             ElmKernel_Parser ElmKernel_Regex ElmKernel_Time ElmKernel_Url
             ElmKernel_EffectRegistry
             EcoKernel_File EcoKernel_Console EcoKernel_Env EcoKernel_Process
-            EcoKernel_MVar EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_Http
+            EcoKernel_MVar EcoKernel_CellStore EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_Http
             EcoKernel_Crash
             # Vendored libzip (FetchContent target) + brew openssl@3 statics.
             # Both not in the SDK; mirrored from the AOT link in
@@ -810,7 +810,7 @@ function(eco_apply_unified_link target)
             ElmKernel_Parser ElmKernel_Regex ElmKernel_Time ElmKernel_Url
             ElmKernel_EffectRegistry
             EcoKernel_File EcoKernel_Console EcoKernel_Env EcoKernel_Process
-            EcoKernel_MVar EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_Http
+            EcoKernel_MVar EcoKernel_CellStore EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_Http
             EcoKernel_Crash
             # Vendored statics: libcurl (schannel TLS), libzip, zlib. No
             # OpenSSL on Windows (SHA via BCrypt). Same set as the AOT link.
@@ -845,7 +845,7 @@ function(eco_apply_unified_link target)
         ElmKernel_Parser ElmKernel_Regex ElmKernel_Time ElmKernel_Url
         ElmKernel_EffectRegistry
         EcoKernel_File EcoKernel_Console EcoKernel_Env EcoKernel_Process
-        EcoKernel_MVar EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_Http
+        EcoKernel_MVar EcoKernel_CellStore EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_Http
         EcoKernel_Crash
         # --whole-archive forces every object in EcoNativeDriverStatic into
         # the link so the strong eco_native_lower_and_link overrides the weak

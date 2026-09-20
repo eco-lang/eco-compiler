@@ -1192,6 +1192,21 @@ void rewriteCafCallSitesFast(
     mlir::LLVM::LLVMFuncOp func,
     const llvm::DenseSet<llvm::StringRef> &cafMemoFuncs);
 
+/// String-literal interning cache (LSS compile-time loop, step 18b). Create
+/// one zero-initialised `__eco_strlit$<literal global>` i64 slot per
+/// `__eco_str_*` bytes global, plus the two cold-edge `*_fill` runtime decls.
+/// Serial post-Stage-2, BEFORE the per-function rewrite below and BEFORE
+/// createGlobalRootInitFunction (which must SKIP these slots — they only ever
+/// hold immortal PermanentSpace words). `ECO_STRLIT_CACHE=0` disables.
+void materializeStringLiteralSlots(mlir::ModuleOp module);
+
+/// Rewrite every `eco_alloc_string_literal[_utf8](@__eco_str_N, len)` call
+/// into a slot-load/icmp diamond whose hit edge barrier-casts the cached word
+/// with no call and no statepoint, and whose miss edge calls the `*_fill`
+/// twin that publishes the word. Same shape and same safety argument as
+/// rewriteCafCallSitesFast. `ECO_STRLIT_CACHE=0` disables.
+void rewriteStringLiteralCallSitesFast(mlir::LLVM::LLVMFuncOp func);
+
 /// Master switch for the caller-side fast path (default ON;
 /// `ECO_CAF_CALLER_FAST=0` is the escape / A-B lever — lowering-time only,
 /// so a same-MLIR A/B isolates its effect exactly).

@@ -478,7 +478,12 @@ void eco::detail::createGlobalRootInitFunction(
         // eco.global creates internal linkage globals with i64 type
         if (globalOp.getLinkage() == LLVM::Linkage::Internal &&
             globalOp.getGlobalType().isInteger(64) &&
-            !globalOp.getSymName().starts_with("__eco_caf$")) {
+            !globalOp.getSymName().starts_with("__eco_caf$") &&
+            // LSS step 18b string-literal cache slots: only ever hold a
+            // PermanentSpace word (eco_string_literal*_fill publishes nothing
+            // else), which is immortal and never moves, so the slot needs no
+            // root and no fixup. Same reasoning as __eco_caf$ above.
+            !globalOp.getSymName().starts_with("__eco_strlit$")) {
             ecoGlobals.push_back(globalOp);
         }
     });
@@ -722,5 +727,178 @@ void eco::detail::rewriteCafCallSitesFast(
             OpBuilder mb = OpBuilder::atBlockEnd(ifOp.elseBlock());
             mb.create<scf::YieldOp>(loc, ValueRange{call->getResult(0)});
         }
+    }
+}
+
+//===----------------------------------------------------------------------===//
+// String-literal interning cache (LSS compile-time loop, step 18b)
+//
+// Every evaluation of a string literal — `"Int"` in a `case name of` arm as
+// much as a literal in ordinary code — lowers to
+//
+//   %s = llvm.call @eco_alloc_string_literal_utf8(@__eco_str_N, len)
+//
+// and that call is NOT gc-leaf (its miss path allocates), so RS4GC statepoints
+// it: every live ptr addrspace(1) in the function is spilled and reloaded
+// around what is, after the first evaluation, a hash-table lookup returning a
+// pointer that can never change. `eco_alloc_string_literal_utf8` alone was
+// 0.60 % of a self-compile's samples (1.22 % of the monomorphization window)
+// before this, and the statepoint traffic it forces on its callers is not in
+// that figure.
+//
+// The fix is the CAF caller-side fast path (Run W) applied per literal: give
+// each literal global a zero-initialised i64 sibling slot and branch on it.
+//
+//   %bits  = llvm.load @__eco_strlit$__eco_str_N
+//   %isset = llvm.icmp ne %bits, 0
+//   scf.if %isset -> ptr<1> {
+//     scf.yield __eco_slot_to_hptr(%bits)            // no call, no statepoint
+//   } else {
+//     scf.yield llvm.call @eco_string_literal_utf8_fill(
+//                   @__eco_str_N, len, @__eco_strlit$__eco_str_N)
+//   }
+//
+// Built as an scf.if EXPRESSION rather than block surgery for the same reason
+// rewriteCafCallSitesFast is: post-Stage-2 bodies still contain scf regions
+// whose single-block constraint splitting would violate.
+//
+// GC-safety, point by point:
+//   - the slot is written ONLY by the runtime, ONLY with a PermanentSpace word
+//     (HEAP_036: immortal, GC-invisible, never moves), so it is not a root and
+//     needs no fixup — createGlobalRootInitFunction skips the prefix;
+//   - the hit arm's i64 -> ptr<1> crossing is globalLoadI64ToValue, the
+//     REP_LLVM_002 barrier form, identical to the CAF hit arm;
+//   - the load/icmp/branch carry no gc pointers, and the merge value is
+//     ordinary tracked ptr<1> SSA;
+//   - slot value 0 is reserved as "unpublished": no valid word is 0 (HEAP_044).
+//
+// ECO_STRLIT_CACHE=0 restores the bare call at every site.
+//===----------------------------------------------------------------------===//
+
+static bool strLitCacheEnabled() {
+    static const bool on = [] {
+        const char *e = ::getenv("ECO_STRLIT_CACHE");
+        return !(e && e[0] == '0' && e[1] == '\0');
+    }();
+    return on;
+}
+
+static bool isStringLiteralAllocCallee(llvm::StringRef callee) {
+    return callee == "eco_alloc_string_literal_utf8" ||
+           callee == "eco_alloc_string_literal";
+}
+
+void eco::detail::materializeStringLiteralSlots(ModuleOp module) {
+    if (!strLitCacheEnabled())
+        return;
+
+    auto *ctx = module.getContext();
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto i32Ty = IntegerType::get(ctx, 32);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+    auto hptrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
+
+    // Collect first (module order, so slot emission is deterministic), then
+    // insert: we are appending to the very block being iterated.
+    SmallVector<StringRef> literals;
+    for (auto globalOp : module.getOps<LLVM::GlobalOp>()) {
+        StringRef name = globalOp.getSymName();
+        if (!name.starts_with("__eco_str_"))
+            continue;
+        if (globalOp.getLinkage() != LLVM::Linkage::Internal)
+            continue;
+        if (!isa<LLVM::LLVMArrayType>(globalOp.getGlobalType()))
+            continue;
+        literals.push_back(name);
+    }
+    if (literals.empty())
+        return;
+
+    auto loc = module.getLoc();
+    OpBuilder builder = OpBuilder::atBlockEnd(module.getBody());
+    for (StringRef name : literals) {
+        std::string slotName = ("__eco_strlit$" + name).str();
+        if (module.lookupSymbol<LLVM::GlobalOp>(slotName))
+            continue;
+        builder.create<LLVM::GlobalOp>(loc, i64Ty, /*isConstant=*/false,
+                                       LLVM::Linkage::Internal, slotName,
+                                       builder.getI64IntegerAttr(0));
+    }
+
+    // The cold-edge twins. Declared here (serial, module mutation re-enabled)
+    // rather than in materializeAllRuntimeDecls so the escape hatch leaves no
+    // trace; the unused-decl strip removes them from modules with no literals.
+    for (const char *name :
+         {"eco_string_literal_fill", "eco_string_literal_utf8_fill"}) {
+        if (module.lookupSymbol<LLVM::LLVMFuncOp>(name))
+            continue;
+        auto fnTy = LLVM::LLVMFunctionType::get(hptrTy, {ptrTy, i32Ty, ptrTy});
+        builder.create<LLVM::LLVMFuncOp>(loc, name, fnTy);
+    }
+}
+
+void eco::detail::rewriteStringLiteralCallSitesFast(LLVM::LLVMFuncOp func) {
+    if (func.isExternal() || !strLitCacheEnabled())
+        return;
+
+    auto *ctx = func.getContext();
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+    auto hptrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
+    auto module = func->getParentOfType<ModuleOp>();
+
+    // Collect first: creating the scf.if relocates later ops.
+    SmallVector<LLVM::CallOp> sites;
+    func.walk([&](LLVM::CallOp call) {
+        auto callee = call.getCallee();
+        if (!callee || !isStringLiteralAllocCallee(*callee))
+            return;
+        if (call->getNumOperands() != 2 || call->getNumResults() != 1)
+            return;
+        if (call->getResult(0).getType() != hptrTy)
+            return;
+        auto addrOf = call->getOperand(0).getDefiningOp<LLVM::AddressOfOp>();
+        if (!addrOf || !addrOf.getGlobalName().starts_with("__eco_str_"))
+            return;
+        // Only rewrite when the slot was pre-materialized; a literal whose
+        // global this pass never saw keeps the plain call.
+        std::string slotName = ("__eco_strlit$" + addrOf.getGlobalName()).str();
+        if (!module.lookupSymbol<LLVM::GlobalOp>(slotName))
+            return;
+        sites.push_back(call);
+    });
+
+    for (LLVM::CallOp call : sites) {
+        auto loc = call.getLoc();
+        auto addrOf = call->getOperand(0).getDefiningOp<LLVM::AddressOfOp>();
+        std::string slotName = ("__eco_strlit$" + addrOf.getGlobalName()).str();
+        StringRef fillName = *call.getCallee() == "eco_alloc_string_literal_utf8"
+                                 ? "eco_string_literal_utf8_fill"
+                                 : "eco_string_literal_fill";
+        Value bytes = call->getOperand(0);
+        Value len = call->getOperand(1);
+
+        OpBuilder bb(call);
+        auto slotAddr = bb.create<LLVM::AddressOfOp>(loc, ptrTy, slotName);
+        auto bits = bb.create<LLVM::LoadOp>(loc, i64Ty, slotAddr);
+        auto zero = bb.create<LLVM::ConstantOp>(loc, i64Ty, 0);
+        auto isSet =
+            bb.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::ne, bits, zero);
+        auto ifOp = bb.create<scf::IfOp>(loc, TypeRange{hptrTy}, isSet,
+                                         /*withElseRegion=*/true);
+        {
+            OpBuilder hb = OpBuilder::atBlockBegin(ifOp.thenBlock());
+            Value cached = globalLoadI64ToValue(hb, loc, bits);
+            hb.create<scf::YieldOp>(loc, ValueRange{cached});
+        }
+        {
+            OpBuilder mb = OpBuilder::atBlockEnd(ifOp.elseBlock());
+            auto fill = mb.create<LLVM::CallOp>(loc, TypeRange{hptrTy}, fillName,
+                                                ValueRange{bytes, len, slotAddr});
+            mb.create<scf::YieldOp>(loc, ValueRange{fill.getResult()});
+        }
+
+        call->getResult(0).replaceAllUsesWith(ifOp.getResult(0));
+        call->erase();
     }
 }

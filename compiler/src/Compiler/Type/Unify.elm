@@ -1,4 +1,4 @@
-module Compiler.Type.Unify exposing (unify, Answer(..))
+module Compiler.Type.Unify exposing (unify, unifyBoolS, unifyS, Answer(..))
 
 {-| Type unification for Hindley-Milner type inference.
 
@@ -49,33 +49,87 @@ functions, records, tuples, and type aliases.
 
 -}
 unify : Vars.Variable -> Vars.Variable -> IO Answer
-unify v1 v2 =
-    case guardedUnify v1 v2 of
-        Unify k ->
-            k []
-                |> IO.andThen
-                    (\result ->
-                        case result of
-                            Ok (UnifyOk vars ()) ->
-                                onSuccess vars ()
-
-                            Err (UnifyErr vars ()) ->
-                                Type.toErrorType v1
-                                    |> IO.andThen
-                                        (\t1 ->
-                                            Type.toErrorType v2
-                                                |> IO.andThen
-                                                    (\t2 ->
-                                                        UF.union v1 v2 errorDescriptor
-                                                            |> IO.map (\_ -> AnswerErr vars t1 t2)
-                                                    )
-                                        )
-                    )
+unify v1 v2 s0 =
+    let
+        ( answer, s1 ) =
+            unifyS v1 v2 s0
+    in
+    ( s1, answer )
 
 
-onSuccess : List Vars.Variable -> () -> IO Answer
-onSuccess vars () =
-    IO.pure (AnswerOk vars)
+{-| The direct-state entry: `guardedUnify`'s body on an empty fresh-var
+accumulator, then the success or error tail of `unify`.
+
+This is the same computation the CPS entry performed, with the per-call
+scaffolding gone: the `IO.andThen` continuation closure, the `IO.pure` of the
+success arm, and the `Ok`/`UnifyOk` tuple pairs that only existed to be
+immediately destructured. On the ~10^6-per-run unification path that is real
+nursery allocation, and none of it did any work.
+
+Order is preserved exactly, because it has to be for more than the byte-identity
+gate: the two `toErrorType` renders still happen BEFORE the error union, so the
+reported types show the partial merges the failed attempt made, and the Points
+minted along the way keep their indices — `Vars.Pt` indices are exposed through
+`pointKey` to `dedupeSources` and to the lambda-set `seen` sets.
+
+-}
+unifyS : Vars.Variable -> Vars.Variable -> IO.State -> ( Answer, IO.State )
+unifyS v1 v2 s0 =
+    case guardedUnifyS v1 v2 [] s0 of
+        ( s1, Ok (UnifyOk vars ()) ) ->
+            ( answerOk vars, s1 )
+
+        ( s1, Err (UnifyErr vars ()) ) ->
+            let
+                ( s2, t1 ) =
+                    Type.toErrorType v1 s1
+
+                ( s3, t2 ) =
+                    Type.toErrorType v2 s2
+            in
+            ( AnswerErr vars t1 t2, UF.unionS v1 v2 errorDescriptor s3 )
+
+
+{-| The recovering entry: `True` with the unified store, `False` with the store
+as the failed attempt left it.
+
+It renders no error types and performs no error union, which is the whole cost
+of a best-effort failure and is unobservable to a caller that is about to
+discard the attempt.
+
+**The caller must bracket the call** (`Engine.markStore` / `rollbackStore`).
+Undoing a failure by keeping the older state value stopped working when the
+point store became an in-place `Eco.CellStore` (step 3): there is one store, so
+the pre-unify state names the same mutated cells. Returning `s0` here would
+therefore only look like an undo. The three best-effort callers already bracket.
+
+-}
+unifyBoolS : Vars.Variable -> Vars.Variable -> IO.State -> ( Bool, IO.State )
+unifyBoolS v1 v2 s0 =
+    case guardedUnifyS v1 v2 [] s0 of
+        ( s1, Ok _ ) ->
+            ( True, s1 )
+
+        ( s1, Err _ ) ->
+            ( False, s1 )
+
+
+{-| `AnswerOk []` is by far the common answer — fresh vars are registered only
+by the record and comparable arms — so share it rather than allocate it.
+-}
+answerOk : List Vars.Variable -> Answer
+answerOk vars =
+    case vars of
+        [] ->
+            answerOkEmpty
+
+        _ ->
+            AnswerOk vars
+
+
+answerOkEmpty : Answer
+answerOkEmpty =
+    AnswerOk []
 
 
 errorDescriptor : Vars.Descriptor
@@ -294,6 +348,18 @@ fresh props content =
 
 guardedUnify : Vars.Variable -> Vars.Variable -> Unify ()
 guardedUnify left right =
+    -- The combinator form. It keeps the explicit `\vars s0 ->` closure rather
+    -- than partially applying `guardedUnifyS`: the latter would make `k vars s3`
+    -- a PAP extension — a 4-ary function applied to two arguments and then two
+    -- more — which is exactly the dispatch the note below records removing.
+    Unify (\vars s0 -> guardedUnifyS left right vars s0)
+
+
+{-| `guardedUnify`'s body as a saturated top-level function, so the direct-state
+entries can call it without building the CPS closure first.
+-}
+guardedUnifyS : Vars.Variable -> Vars.Variable -> List Vars.Variable -> IO.State -> ( IO.State, Result UnifyErr (UnifyOk ()) )
+guardedUnifyS left right vars s0 =
     -- THE hot path of unification. Threads the union-find state directly
     -- (plans/io-monad-dispatch-reduction.md P3): `UF.equivalent left right` and
     -- the two `UF.get`s were each a PARTIAL application, so each built a PAP
@@ -302,27 +368,24 @@ guardedUnify left right =
     -- Saturated `equivalentS`/`getS` calls are direct, and the three `andThen`s
     -- disappear with them. `Unify` wraps `List Variable -> IO a`, and
     -- `IO a = State -> ( State, a )`, so taking `s0` here is just eta-expansion.
-    Unify
-        (\vars s0 ->
-            let
-                ( equivalent, s1 ) =
-                    UF.equivalentS s0 left right
-            in
-            if equivalent then
-                ( s1, Ok (UnifyOk vars ()) )
+    let
+        ( equivalent, s1 ) =
+            UF.equivalentS s0 left right
+    in
+    if equivalent then
+        ( s1, Ok (UnifyOk vars ()) )
 
-            else
-                let
-                    ( leftDesc, s2 ) =
-                        UF.getS s1 left
+    else
+        let
+            ( leftDesc, s2 ) =
+                UF.getS s1 left
 
-                    ( rightDesc, s3 ) =
-                        UF.getS s2 right
-                in
-                case actuallyUnify (makeContext left leftDesc right rightDesc) of
-                    Unify k ->
-                        k vars s3
-        )
+            ( rightDesc, s3 ) =
+                UF.getS s2 right
+        in
+        case actuallyUnify (makeContext left leftDesc right rightDesc) of
+            Unify k ->
+                k vars s3
 
 
 subUnify : Vars.Variable -> Vars.Variable -> Unify ()

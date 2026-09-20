@@ -3,9 +3,10 @@ module Compiler.MonoSolver.Engine exposing
     , succeed, fail, andThen, map, map2, traverse, foldlS
     , getS, modifyS, liftIO, runStep
     , freshVar, enqueueSpec
-    , freshStore, resetItem
+    , freshStore, renewStore, releaseScratch, markStore, commitStore, rollbackStore, resetItem
     , mvarIdKey, pointKey
-    , ArrowFact, Env, GroundingStats, ItemAux, LssMemberTable, LssSignature, LssStats, MemberSource(..), MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry(..), QPre(..), QShadowStats, SigFlowStats, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, emptyQShadowStats, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTable, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isNumberMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, lambdaInstanceMemberMaybe, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markDirty, markFlexCtorSpec, memberClassOf, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, numberMultiRootType, papMemberIdFor, papMemberKey, popLocalMulti, popNumberMulti, pushLocalMulti, pushNumberMulti, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withScratchStore
+    , AliasKey, AliasVerdict(..), aliasKeyHash, aliasKeyEq, putAliasVerdict
+    , ArrowFact, Env, GroundingStats, ItemAux, LssMemberTable, LssSignature, LssStats, MemberSource(..), MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry(..), QPre(..), QShadowStats, SigFlowStats, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, emptyQShadowStats, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTable, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isNumberMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markDirty, markFlexCtorSpec, memberClassOf, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, numberMultiRootType, papMemberIdFor, papMemberKey, popLocalMulti, popNumberMulti, pushLocalMulti, pushNumberMulti, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withScratchStore
     )
 
 {-| Core state + step monad for the solver-based monomorphizer.
@@ -21,11 +22,12 @@ original engine — see the module doc of `Compiler.MonoSolver.Monomorphize`).
 @docs succeed, fail, andThen, map, map2, traverse, foldlS
 @docs getS, modifyS, liftIO, runStep
 @docs freshVar, enqueueSpec
-@docs freshStore, resetItem
+@docs freshStore, renewStore, releaseScratch, markStore, commitStore, rollbackStore, resetItem
 @docs mvarIdKey, pointKey
 
 -}
 
+import Eco.CellStore as CellStore
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Intern as Intern exposing (Intern)
@@ -176,7 +178,6 @@ type alias LssStats =
     , setWriteFlex : Int -- unifySlotWithSet: adopted content into an unconstrained FlexVar slot
     , setWriteTopJoin : Int -- unifySlotWithSet: ⊤ write onto an LsMembers slot — direct set of the shared constant (Phase 2; was slow)
     , setWriteUnion : Int -- unifySlotWithSet: real member union onto an LsMembers slot — direct root join (Phase 2; was slow)
-    , setWriteSlow : Int -- unifySlotWithSet: the DEFENSIVE arm only (non-FlexVar, non-LambdaSet1 content) — expected 0; sustained 0 is the licence to delete it
     , joinIdenticalHit : Int -- keyed registry hit, demand bit-identical to the stored type (no join ran)
     , joinNoop : Int -- keyed registry hit, join ran and changed nothing (rebuilt tree discarded)
     , joinChanged : Int -- keyed registry hit, join widened the stored type (drives markDirty)
@@ -483,12 +484,68 @@ cap. Grouping them made room for `S.intern` (K6).
 type alias MonoMemo =
     { schemeMono : CoreDict.Dict String Mono.MonoType
     , callMemo : Mono.SpecKeyMap ( Mono.MonoType, Mono.MonoType, Mono.SpecId )
+    , aliasMemo : HashMap.HashMap AliasKey AliasVerdict
     }
 
 
 emptyMonoMemo : MonoMemo
 emptyMonoMemo =
-    { schemeMono = CoreDict.empty, callMemo = Mono.specKeyMapEmpty }
+    { schemeMono = CoreDict.empty, callMemo = Mono.specKeyMapEmpty, aliasMemo = HashMap.empty }
+
+
+{-| Identity of one alias INSTANTIATION whose arguments are ground and arrow-free.
+
+An alias occurrence cannot be keyed on object identity: `AssignMVarIds.rewriteCanType`
+rebuilds every node of every type per occurrence, and the types it rebuilds were
+themselves decoded per module, so two occurrences of `S` are two distinct trees before
+anything runs. The cheapest EXACT structural key is the alias's name plus its
+arguments: an alias is defined once per module and a module exists once per program, so
+`(home, name, args)` determines the expanded body.
+
+`args` holds the argument TYPES only. The ids paired with them in `Can.TAlias` are
+per-def binder ids minted by `AssignMVarIds.ensureBinder`, not identity, so they are
+dropped. `hash` is computed once by `Store.aliasKeyOf`.
+
+-}
+type alias AliasKey =
+    { hash : Int
+    , home : ModuleName.Canonical
+    , name : String
+    , args : List (Can.Type TypeIds.MVarId)
+    }
+
+
+{-| What the run has learned about an instantiation: either it is not memoisable (its
+body reaches an arrow), or it is, and this is its canonical interned classification.
+-}
+type AliasVerdict
+    = AliasIneligible
+    | AliasGround Mono.MonoType
+
+
+aliasKeyHash : AliasKey -> Int
+aliasKeyHash k =
+    k.hash
+
+
+aliasKeyEq : AliasKey -> AliasKey -> Bool
+aliasKeyEq a b =
+    -- Name first: it is the cheapest discriminator. `args` are ground and arrow-free,
+    -- so no ArrowId or MVarId can enter this comparison, and the common case is `[]`.
+    a.name == b.name && a.home == b.home && a.args == b.args
+
+
+{-| Record what the run knows about an instantiation. The map is never invalidated:
+`S.intern` is seeded empty and only ever grows, so a stored canonical `MonoType` stays
+the table's object for the rest of the run.
+-}
+putAliasVerdict : AliasKey -> AliasVerdict -> S -> S
+putAliasVerdict key v s =
+    let
+        m =
+            s.monoMemo
+    in
+    { s | monoMemo = { m | aliasMemo = HashMap.insert aliasKeyHash aliasKeyEq key v m.aliasMemo } }
 
 
 emptyMemberTable : LssMemberTable
@@ -518,7 +575,7 @@ insertMemberProvisional mid g t =
 
 emptyLssStats : LssStats
 emptyLssStats =
-    { setsZonked = 0, flexCtorSpecs = CoreDict.empty, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, setWriteSlow = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0, edgesInstalled = 0, flowDegraded = 0, multiSetsByArrow = CoreDict.empty, appliedArrows = CoreDict.empty, topMixedFlexSig = 0, topMixedFlexDemand = 0, argFlowCensus = CoreDict.empty, settled = emptySettledStats, qShadow = emptyQShadowStats, qInfer = emptyQShadowStats }, layoutQual = { mints = 0, shared = 0, fallback = 0, tieBypass = 0, instApplied = 0, instCapped = 0, instRootSkip = 0 } }
+    { setsZonked = 0, flexCtorSpecs = CoreDict.empty, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0, edgesInstalled = 0, flowDegraded = 0, multiSetsByArrow = CoreDict.empty, appliedArrows = CoreDict.empty, topMixedFlexSig = 0, topMixedFlexDemand = 0, argFlowCensus = CoreDict.empty, settled = emptySettledStats, qShadow = emptyQShadowStats, qInfer = emptyQShadowStats }, layoutQual = { mints = 0, shared = 0, fallback = 0, tieBypass = 0, instApplied = 0, instCapped = 0, instRootSkip = 0 } }
 
 
 {-| The all-defaults signature for an annotation with `n` arrows.
@@ -920,29 +977,6 @@ recordMuTied tiedId s =
 
     else
         { s | lssMemberTable = { table | muTied = CoreDict.insert tiedId () table.muTied } }
-
-
-{-| `lambdaInstanceMemberId` lifted over the optional provenance stamp, for
-the `ClosureInfo.lssMember` field: `Nothing` for untagged lambdas and on
-the lss-off path (where AbiCloning is inert and the field is never read).
--}
-lambdaInstanceMemberMaybe : Maybe TypeIds.SrcLambdaId -> Step (Maybe Int)
-lambdaInstanceMemberMaybe srcLam s0 =
-    if s0.env.lss.enabled then
-        case srcLam of
-            Just lamId ->
-                case lambdaInstanceMemberId lamId s0 of
-                    Err e ->
-                        Err e
-
-                    Ok ( mid, s1 ) ->
-                        Ok ( Just mid, s1 )
-
-            Nothing ->
-                Ok ( Nothing, s0 )
-
-    else
-        Ok ( Nothing, s0 )
 
 
 bumpWidenedByKernel : S -> S
@@ -1456,6 +1490,7 @@ type alias ItemAux =
     -- re-translates against the SAME store, so the Points are still valid and
     -- clearing would silently re-mint and lose sharing mid-item.
     , arrowMemo : CoreDict.Dict Int Vars.Variable
+    , groundLoads : HashMap.HashMap AliasKey Vars.FlatType
 
     -- Multi-set census (M3): set-slot `pointKey` -> the `ArrowId` that minted
     -- it. REPORT-GATED — empty unless `lss.report`, so the default path pays
@@ -1515,7 +1550,7 @@ type alias ItemAux =
 
 emptyItemAux : ItemAux
 emptyItemAux =
-    { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = [], currentSpecId = Nothing, demandQualified = CoreDict.empty, currentLocalInstance = 0, retranslating = Nothing, arrowMemo = CoreDict.empty, arrowOfSlot = CoreDict.empty, zonkLog = [], qLog = [], qSigRoot = Nothing }
+    { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = [], currentSpecId = Nothing, demandQualified = CoreDict.empty, currentLocalInstance = 0, retranslating = Nothing, arrowMemo = CoreDict.empty, groundLoads = HashMap.empty, arrowOfSlot = CoreDict.empty, zonkLog = [], qLog = [], qSigRoot = Nothing }
 
 
 {-| Scratch-store entry: clear ONLY the read lists (scratch Point indices are
@@ -1528,7 +1563,7 @@ miscompile, not a crash.
 -}
 clearedAux : ItemAux -> ItemAux
 clearedAux aux =
-    { aux | ecoResidualReads = [], ecoResidualKeyReads = [], arrowMemo = CoreDict.empty, arrowOfSlot = CoreDict.empty, zonkLog = [], qLog = [], qSigRoot = Nothing }
+    { aux | ecoResidualReads = [], ecoResidualKeyReads = [], arrowMemo = CoreDict.empty, groundLoads = HashMap.empty, arrowOfSlot = CoreDict.empty, zonkLog = [], qLog = [], qSigRoot = Nothing }
 
 
 {-| Scratch-store exit: restore the outer read lists, keep everything else
@@ -1536,7 +1571,7 @@ from the inner state (matches the pre-pack behavior field for field).
 -}
 restoredAux : ItemAux -> ItemAux -> ItemAux
 restoredAux outer inner =
-    { inner | ecoResidualReads = outer.ecoResidualReads, ecoResidualKeyReads = outer.ecoResidualKeyReads, arrowMemo = outer.arrowMemo, arrowOfSlot = outer.arrowOfSlot, zonkLog = outer.zonkLog, qLog = outer.qLog, qSigRoot = outer.qSigRoot, currentLocalInstance = outer.currentLocalInstance, retranslating = outer.retranslating }
+    { inner | ecoResidualReads = outer.ecoResidualReads, ecoResidualKeyReads = outer.ecoResidualKeyReads, arrowMemo = outer.arrowMemo, groundLoads = outer.groundLoads, arrowOfSlot = outer.arrowOfSlot, zonkLog = outer.zonkLog, qLog = outer.qLog, qSigRoot = outer.qSigRoot, currentLocalInstance = outer.currentLocalInstance, retranslating = outer.retranslating }
 
 
 {-| Saturation-pass reset (MONO\_029 R2): drop the recorded reads before
@@ -2039,7 +2074,7 @@ withScratchStore step s0 =
             -- residual reads made inside the scratch must not be scanned at
             -- item end (scratch re-translation is itself a re-translation
             -- mechanism; its staleness is out of scope for MONO_029 v1).
-            { s0 | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty, itemAux = clearedAux s0.itemAux }
+            { s0 | store = freshStore (), memo = CoreDict.empty, revMemo = Array.empty, itemAux = clearedAux s0.itemAux }
     in
     case step sFresh of
         Err e ->
@@ -2097,7 +2132,11 @@ withScratchStore step s0 =
                     else
                         s2
             in
-            Ok ( a, { s3 | store = s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = restoredAux s0.itemAux s3.itemAux } )
+            -- `releaseScratch` frees the scratch store and reinstates the
+            -- stashed one. The stash was never touched: `freshStore ()` above
+            -- allocated a DIFFERENT store, which is why that function takes an
+            -- argument.
+            Ok ( a, { s3 | store = releaseScratch s3.store s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = restoredAux s0.itemAux s3.itemAux } )
 
 
 
@@ -2116,29 +2155,16 @@ enqueueSpec global monoType s0 =
 
     else
         let
+            -- This branch is reached only when `lss.enabled` is False — the
+            -- test above routes the enabled case to `enqueueSpecKeyed` — so the
+            -- keyed arm that used to sit here was unreachable. It went with the
+            -- flag removal.
             ( ( specId, reg1, hit ), s2 ) =
-                if s0.env.lss.enabled then
-                    -- §8.5, keyed=False (M2/M3): keys are today's keys — lambda
-                    -- sets never fan out specializations; the stored demand is the
-                    -- annotation JOIN of every admitted demand (LSS_010).
-                    -- K6: the widened KEY is hash-consed, so `eqKeySpec`'s
-                    -- `identicalOr` can settle the registry probe on pointer
-                    -- identity instead of walking the tree.
-                    let
-                        ( keyType, intern1 ) =
-                            Intern.widenSets monoType s0.intern
-                    in
-                    ( Registry.getOrCreateSpecIdKeyed global keyType monoType s0.registry
-                    , withIntern intern1 s0
-                    )
-
-                else
-                    -- lss off (byte-identical path — no widenSets allocation).
-                    let
-                        ( sid, r ) =
-                            Registry.getOrCreateSpecId global monoType s0.registry
-                    in
-                    ( ( sid, r, Registry.CreatedNew ), s0 )
+                let
+                    ( sid, r ) =
+                        Registry.getOrCreateSpecId global monoType s0.registry
+                in
+                ( ( sid, r, Registry.CreatedNew ), s0 )
 
             s =
                 bumpKeyedHit hit s2
@@ -2406,10 +2432,16 @@ enqueueSpecKeyed global monoType s0 =
 
 {-| A fresh, empty solver store. Built here (rather than via a private IO.elm
 seed) so the engine touches zero lines of the type checker.
+
+This MUST take an argument. `ioRefsPoint` is an `Eco.CellStore`, a MUTABLE
+off-heap vector; a zero-argument definition would be a memoised constant and
+every "fresh" store would be the same object — which would make
+`withScratchStore` write straight through its own stash.
+
 -}
-freshStore : IO.State
-freshStore =
-    { ioRefsPoint = Array.empty
+freshStore : () -> IO.State
+freshStore () =
+    { ioRefsPoint = CellStore.new 256
     , ioRefsMVector = Array.empty
     , names =
         { taken = CoreDict.empty
@@ -2428,11 +2460,65 @@ freshStore =
     }
 
 
+{-| Free `dead`'s point store and return `keep`, for leaving a scratch scope.
+-}
+releaseScratch : IO.State -> IO.State -> IO.State
+releaseScratch dead keep =
+    { keep | ioRefsPoint = CellStore.release dead.ioRefsPoint keep.ioRefsPoint }
+
+
+{-| Free the state's point store and give it a fresh empty one.
+-}
+renewStore : IO.State -> IO.State
+renewStore st =
+    { st | ioRefsPoint = CellStore.renew st.ioRefsPoint }
+
+
+{-| Open an undo scope on the point store, for a speculative unify.
+-}
+markStore : S -> S
+markStore s =
+    let
+        inner =
+            s.store
+    in
+    { s | store = { inner | ioRefsPoint = CellStore.pushMark inner.ioRefsPoint } }
+
+
+{-| Keep what a speculative unify wrote.
+-}
+commitStore : S -> S
+commitStore s =
+    let
+        inner =
+            s.store
+    in
+    { s | store = { inner | ioRefsPoint = CellStore.commit inner.ioRefsPoint } }
+
+
+{-| Discard what a speculative unify wrote — the cells AND the Points it
+minted. This is what makes the best-effort recovery sites sound on a mutable
+store: they used to rely on simply dropping a persistent array.
+-}
+rollbackStore : S -> S
+rollbackStore s =
+    let
+        inner =
+            s.store
+    in
+    { s | store = { inner | ioRefsPoint = CellStore.rollback inner.ioRefsPoint } }
+
+
 {-| Reset the per-work-item solver state before specializing a node.
+
+The finished item's store is dead by now (`finishNode` has already run the
+harvest and the report-gated censuses), so `renewStore` frees it and hands
+back an empty one.
+
 -}
 resetItem : S -> S
 resetItem s =
-    { s | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty, varEnv = CoreDict.empty, numberMulti = [], localMulti = [], derivedDestructors = CoreDict.empty, localCanTypes = CoreDict.empty, itemAux = emptyItemAux }
+    { s | store = renewStore s.store, memo = CoreDict.empty, revMemo = Array.empty, varEnv = CoreDict.empty, numberMulti = [], localMulti = [], derivedDestructors = CoreDict.empty, localCanTypes = CoreDict.empty, itemAux = emptyItemAux }
 
 
 {-| Bind a local variable's monomorphized type.
@@ -2675,18 +2761,21 @@ harvestSuperTableExcept excluded s =
 
                     else
                         let
-                            ( store1, desc ) =
+                            -- Compressing read, state dropped: the write is in
+                            -- place (step 3) and this fold discarded its store
+                            -- half at the end anyway.
+                            ( _, desc ) =
                                 UF.get (Vars.Pt pointIdx) store
                         in
                         case desc.content of
                             Vars.FlexSuper Vars.Number _ ->
-                                ( store1, CoreDict.insert (mvarIdKey mvarId) Vars.Number super )
+                                ( store, CoreDict.insert (mvarIdKey mvarId) Vars.Number super )
 
                             Vars.RigidSuper Vars.Number _ ->
-                                ( store1, CoreDict.insert (mvarIdKey mvarId) Vars.Number super )
+                                ( store, CoreDict.insert (mvarIdKey mvarId) Vars.Number super )
 
                             _ ->
-                                ( store1, super )
+                                ( store, super )
             )
 
         ( _, ( _, superTable1 ) ) =
@@ -2778,7 +2867,9 @@ same table value. `HashMap.size` reads that stored count, O(1).
 -}
 withIntern : Intern -> S -> S
 withIntern intern1 s =
-    if Intern.size intern1 == Intern.size s.intern then
+    -- `entries`, not `size`: the widen memo (step 11b) grows without adding a
+    -- canonical structure, and a guard on `size` would discard it.
+    if Intern.entries intern1 == Intern.entries s.intern then
         s
 
     else

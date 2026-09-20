@@ -1181,14 +1181,55 @@ settleVarSuccessors s0 =
         s0
 
     else
-        -- ORDER 3 (§4.4): 8 rounds hit the cap while still writing; 16 gives
-        -- the fixpoint room to converge on its own (the `varsucc|rounds`
-        -- counter reports where it actually stopped).
-        varSuccRounds 16 s0
+        -- Step 24(ii): ONE pass, with the verification pass kept behind the
+        -- report flag.
+        --
+        -- The pass is IDEMPOTENT, so the round that follows a writing round
+        -- can only discover that there is nothing left to do -- and the
+        -- `varsucc|rounds` census confirms it: rounds=3 decomposes as
+        -- (write + empty) for the first invocation plus (empty) for the
+        -- second, i.e. exactly ONE wasted traversal of all ~43K registry
+        -- rows. Idempotence holds because (1) rows are independent --
+        -- `succType` reads only its own row's type and the member table;
+        -- (2) within a row the walk is TOP-DOWN on the result spine, writing
+        -- `LSet succ` at an arrow and immediately descending into the
+        -- rewritten result, so a chain of any depth completes in one pass;
+        -- (3) the member table is monotone and `succSetFor`'s verdict for a
+        -- member is a pure function of its source, the arg count and
+        -- `declaredArityOf`, all round-invariant, with freshly minted
+        -- successors visible immediately; (4) after the pass every writable
+        -- position IS `LSet` and every skipped position is skipped again for
+        -- the same reason. The old comment claiming "a row rewritten late can
+        -- expose a head an earlier row's walk passed over" describes a
+        -- cross-row dependency this code does not have.
+        --
+        -- Under `report` the second pass still runs as a VERIFICATION RAIL,
+        -- and its registry is discarded so report-on and report-off emit the
+        -- same bytes; only its counters are kept.
+        let
+            ( s1, _ ) =
+                varSuccPass s0
+        in
+        if s0.env.lss.report then
+            let
+                ( s2, changed2 ) =
+                    varSuccPass s1
+            in
+            Engine.bumpArgFlowCensus
+                (if changed2 then
+                    "varsucc|verifyCHANGED"
+
+                 else
+                    "varsucc|verifyClean"
+                )
+                (Engine.bumpArgFlowCensus "varsucc|rounds" { s1 | lssStats = s2.lssStats })
+
+        else
+            Engine.bumpArgFlowCensus "varsucc|rounds" s1
 
 
-varSuccRounds : Int -> S -> S
-varSuccRounds fuel s =
+varSuccPass : S -> ( S, Bool )
+varSuccPass s =
     let
         midKeys =
             Dict.foldl (\k mid acc -> Dict.insert mid k acc) Dict.empty s.lssMemberTable.byKey
@@ -1309,14 +1350,28 @@ varSuccRounds fuel s =
                                 ( [], sR, False )
                                 args
                     in
-                    ( Mono.mFunction anno args1 result1, sA, chW || chR || chA )
+                    -- Step 24(i'): return `t` BY POINTER when nothing under it
+                    -- moved. This walk runs over every registry row (~43K) on
+                    -- every round and used to rebuild every node of every row
+                    -- unconditionally; the overwhelming majority of rows carry
+                    -- no pap-able var arrow at all, so all of that was
+                    -- immediate garbage. Same protocol as step 22d.
+                    if chW || chR || chA then
+                        ( Mono.mFunction anno args1 result1, sA, True )
+
+                    else
+                        ( t, sA, False )
 
                 Mono.MList _ inner ->
                     let
                         ( inner1, s1, ch ) =
                             succType inner sIn
                     in
-                    ( Mono.mList inner1, s1, ch )
+                    if ch then
+                        ( Mono.mList inner1, s1, True )
+
+                    else
+                        ( t, s1, False )
 
                 Mono.MTuple _ elems ->
                     let
@@ -1332,7 +1387,11 @@ varSuccRounds fuel s =
                                 ( [], sIn, False )
                                 elems
                     in
-                    ( Mono.mTuple elems1, s1, ch )
+                    if ch then
+                        ( Mono.mTuple elems1, s1, True )
+
+                    else
+                        ( t, s1, False )
 
                 Mono.MRecord _ fields ->
                     let
@@ -1343,12 +1402,20 @@ varSuccRounds fuel s =
                                         ( ft1, accS1, ch1 ) =
                                             succType ft accS
                                     in
-                                    ( Dict.insert fname ft1 accD, accS1, accCh || ch1 )
+                                    if ch1 then
+                                        ( Dict.insert fname ft1 accD, accS1, True )
+
+                                    else
+                                        ( accD, accS1, accCh )
                                 )
-                                ( Dict.empty, sIn, False )
+                                ( fields, sIn, False )
                                 fields
                     in
-                    ( Mono.mRecord fields1, s1, ch )
+                    if ch then
+                        ( Mono.mRecord fields1, s1, True )
+
+                    else
+                        ( t, s1, False )
 
                 Mono.MCustom _ vsHome vsName args ->
                     let
@@ -1364,7 +1431,11 @@ varSuccRounds fuel s =
                                 ( [], sIn, False )
                                 args
                     in
-                    ( Mono.mCustom vsHome vsName args1, s1, ch )
+                    if ch then
+                        ( Mono.mCustom vsHome vsName args1, s1, True )
+
+                    else
+                        ( t, s1, False )
 
                 _ ->
                     ( t, sIn, False )
@@ -1398,17 +1469,9 @@ varSuccRounds fuel s =
                     s.registry.reverseMapping
                 )
     in
-    -- Rounds remain (cheap: wall was IDENTICAL at 8 and 16) because a row
-    -- rewritten late can expose a head an earlier row's walk passed over;
-    -- the walk itself now carries chains in ONE pass, so this converges by
-    -- exhaustion rather than by depth. Monotone and therefore terminating:
-    -- every round either writes (strictly shrinking the finite var
-    -- population) or stops.
-    if changed && fuel > 1 then
-        varSuccRounds (fuel - 1) (Engine.bumpArgFlowCensus "varsucc|rounds" sEnd)
-
-    else
-        Engine.bumpArgFlowCensus "varsucc|rounds" sEnd
+    -- Step 24(ii): the caller decides whether to run a second (verification)
+    -- pass; the `varsucc|rounds` bump moved there with it.
+    ( sEnd, changed )
 
 
 {-| The LSS census (design §8.6): member counts, set-size histogram, widening
@@ -3717,7 +3780,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                , "join flush: rounds=" ++ String.fromInt stats.joinRounds ++ " retranslations=" ++ String.fromInt stats.retranslations
 
                -- Substrate census (Phase 1, plans/lss-set-write-substrate.md).
-               , "set-writes: skip=" ++ String.fromInt stats.setWriteSkip ++ " flex=" ++ String.fromInt stats.setWriteFlex ++ " topJoin=" ++ String.fromInt stats.setWriteTopJoin ++ " union=" ++ String.fromInt stats.setWriteUnion ++ " slow=" ++ String.fromInt stats.setWriteSlow ++ " slotsMinted=" ++ String.fromInt stats.slotsMinted
+               , "set-writes: skip=" ++ String.fromInt stats.setWriteSkip ++ " flex=" ++ String.fromInt stats.setWriteFlex ++ " topJoin=" ++ String.fromInt stats.setWriteTopJoin ++ " union=" ++ String.fromInt stats.setWriteUnion ++ " slotsMinted=" ++ String.fromInt stats.slotsMinted
                , "joins: identical=" ++ String.fromInt stats.joinIdenticalHit ++ " noop=" ++ String.fromInt stats.joinNoop ++ " changed=" ++ String.fromInt stats.joinChanged ++ " completion=" ++ String.fromInt stats.completionJoins ++ " completionNoop=" ++ String.fromInt stats.completionJoinNoop
                , "devirtDirect=" ++ String.fromInt stats.devirtDirect ++ " devirtKernel=" ++ String.fromInt stats.devirtKernel ++ " unqualifiedLambdaMints=" ++ String.fromInt stats.unqualifiedLambdaMints
 
@@ -3898,7 +3961,7 @@ initState lssConfig limits currentModule nodes annotations globalTypeEnv mvarSta
         , limits = limits
         }
     , currentGlobal = Nothing
-    , store = Engine.freshStore
+    , store = Engine.freshStore ()
     , memo = Dict.empty
     , revMemo = Array.empty
     , varEnv = Dict.empty

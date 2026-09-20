@@ -269,7 +269,73 @@ suite =
                 [ "I", "F", "B", "C", "S", "U", "V0\u{0000}ecovalue", "L(", "T2(", "T4(", "R(", "X", "A(", "A[", "->" ]
                     |> List.filter (\marker -> not (String.contains marker allKeys))
                     |> Expect.equalLists []
+        , Test.test "K6: Intern.eqExact decides exactly (==) over the pair corpus" <|
+            \_ ->
+                pairs
+                    |> List.filter (\( a, b ) -> Intern.eqExact a b /= (a == b))
+                    |> List.map describePair
+                    |> Expect.equalLists []
+        , Test.test "K6: record probes are content-exact and shape-blind" <|
+            \_ ->
+                recordProbeCases
+                    |> List.filter
+                        (\( label, ( a, b ), expected ) ->
+                            not (Intern.eqExact a b == expected && (a == b) == expected)
+                        )
+                    |> List.map (\( label, _, _ ) -> label)
+                    |> Expect.equalLists []
         ]
+
+
+{-| Record pairs whose answer must not depend on the red-black SHAPE of the
+`Dict`, only on its content. The interesting ones are the two that a shallow
+compare could get wrong: fields inserted in opposite orders (equal content,
+different tree shape) and two names of equal length that collide on the packed
+hash.
+-}
+recordProbeCases : List ( String, ( MonoType, MonoType ), Bool )
+recordProbeCases =
+    let
+        rec pairsIn =
+            Mono.mRecord (Dict.fromList pairsIn)
+    in
+    [ ( "same fields, opposite insertion order"
+      , ( rec [ ( "a", MInt ), ( "b", MFloat ), ( "c", MBool ) ]
+        , rec [ ( "c", MBool ), ( "b", MFloat ), ( "a", MInt ) ]
+        )
+      , True
+      )
+    , ( "strict subset"
+      , ( rec [ ( "a", MInt ) ], rec [ ( "a", MInt ), ( "b", MFloat ) ] )
+      , False
+      )
+    , ( "strict superset"
+      , ( rec [ ( "a", MInt ), ( "b", MFloat ) ], rec [ ( "a", MInt ) ] )
+      , False
+      )
+    , ( "one field renamed at equal length"
+      , ( rec [ ( "ab", MInt ) ], rec [ ( "ba", MInt ) ] )
+      , False
+      )
+    , ( "same names, one child differs"
+      , ( rec [ ( "a", MInt ) ], rec [ ( "a", MFloat ) ] )
+      , False
+      )
+    , ( "nested record, inner value equal but a distinct object"
+      , ( rec [ ( "a", rec [ ( "x", MInt ) ] ) ]
+        , rec [ ( "a", rec [ ( "x", MInt ) ] ) ]
+        )
+      , True
+      )
+    , ( "empty vs empty"
+      , ( rec [], rec [] )
+      , True
+      )
+    , ( "empty vs one field"
+      , ( rec [], rec [ ( "a", MInt ) ] )
+      , False
+      )
+    ]
 
 
 {-| All ordered pairs over a prefix of the corpus, plus every pair drawn from

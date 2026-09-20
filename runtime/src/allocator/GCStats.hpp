@@ -35,9 +35,10 @@
 namespace Elm {
 
 // True only while the calling thread is inside NurserySpace::minorGC.
-// Read by OldGenSpace::allocate to attribute its body wall-time to the
-// GCStats::total_oldgen_alloc_in_minor_ns counter when the allocation
-// comes from a promotion (rather than a direct mutator alloc).
+// Read by OldGenSpace::allocate to SKIP timing when the allocation is a
+// promotion (rather than a direct mutator alloc): a promotion is already
+// inside the minor-GC bracket, and clocking each one cost two vdso reads
+// per promoted object (~7e8 per self-compile).
 // Always-on (not gated on ECO_GC_DEBUG) because the stats path needs it.
 extern thread_local bool g_in_minor_gc;
 
@@ -424,15 +425,10 @@ public:
     // when gc_phase_ == Idle the dispatch tail can walk free lists, split
     // larger cells, pull a fresh BBoP page, or — via lazySweep →
     // onSweepComplete — drive a maybeShrinkCapacity → releaseBlockToAllocator
-    // cascade. None of that is mutator user code. These counters bracket
-    // the whole function unconditionally and split by calling context:
-    //
-    //   total_oldgen_alloc_in_minor_ns
-    //     Time accumulated while the calling thread is mid-minorGC
-    //     (g_in_minor_gc == true), i.e. via promotion → oldgen.allocate.
-    //     NurserySpace::minorGC subtracts this per-cycle from elapsed_ns
-    //     before recording, so the minor histogram/min/max/avg reflect
-    //     pure nursery-copy time.
+    // cascade. None of that is mutator user code. This counter brackets the
+    // whole function WHEN THE CALLER IS THE MUTATOR; promotion calls
+    // (g_in_minor_gc == true) are not timed at all, because they are already
+    // inside the minor-GC bracket and the clock reads dominated them:
     //
     //   total_oldgen_alloc_in_mutator_ns
     //     Time accumulated when the mutator (not a minor GC) is calling
@@ -455,7 +451,6 @@ public:
     // Identity (after subtracting nested counters):
     //   wall_s = minor + major + nursery_alloc_in_mutator
     //          + oldgen_alloc_in_mutator + true_mutator
-    uint64_t total_oldgen_alloc_in_minor_ns   = 0;
     uint64_t total_oldgen_alloc_in_mutator_ns = 0;
     uint64_t total_post_sweep_shrink_ns       = 0;
     uint64_t total_maybe_shrink_heavy_ns      = 0;

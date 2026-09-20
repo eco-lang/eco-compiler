@@ -183,6 +183,8 @@ resolveAt st members sources =
         sources
         { store = st
         , next = TypeIds.firstMVarId
+        , lssOn = False
+        , maxSetSize = 0
         , lss = Nothing
         , ecoReads = []
         , intern = Intern.empty

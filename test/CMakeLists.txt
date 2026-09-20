@@ -151,10 +151,12 @@ if(APPLE)
     target_link_libraries(test rapidcheck
         -Wl,-force_load,$<TARGET_FILE:EcoRunner>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_MVar>
+        -Wl,-force_load,$<TARGET_FILE:EcoKernel_CellStore>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_Runtime>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_Http>
         EcoRunner
         EcoKernel_MVar
+        EcoKernel_CellStore
         EcoKernel_Runtime
         EcoKernel_Http
     )
@@ -166,12 +168,14 @@ elseif(WIN32)
     target_link_libraries(test rapidcheck
         EcoRunner
         EcoKernel_MVar
+        EcoKernel_CellStore
         EcoKernel_Runtime
         EcoKernel_Http
     )
     target_link_options(test PRIVATE
         /WHOLEARCHIVE:$<TARGET_FILE:EcoRunner>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_MVar>
+        /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_CellStore>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Runtime>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Http>
     )
@@ -180,6 +184,7 @@ else()
         -Wl,--whole-archive
             EcoRunner
             EcoKernel_MVar
+            EcoKernel_CellStore
             EcoKernel_Runtime
             EcoKernel_Http
         -Wl,--no-whole-archive
@@ -207,9 +212,11 @@ if(APPLE)
     target_link_libraries(stress-test
         -Wl,-force_load,$<TARGET_FILE:EcoRunner>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_MVar>
+        -Wl,-force_load,$<TARGET_FILE:EcoKernel_CellStore>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_Runtime>
         EcoRunner
         EcoKernel_MVar
+        EcoKernel_CellStore
         EcoKernel_Runtime
     )
 else()
@@ -217,6 +224,7 @@ else()
         -Wl,--whole-archive
             EcoRunner
             EcoKernel_MVar
+            EcoKernel_CellStore
             EcoKernel_Runtime
         -Wl,--no-whole-archive
     )

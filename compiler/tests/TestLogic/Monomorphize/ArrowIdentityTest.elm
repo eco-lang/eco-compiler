@@ -117,11 +117,11 @@ type alias Loaded =
     }
 
 
-loadInto : Bool -> Dict.Dict Int Vars.Variable -> Can.Type TypeIds.MVarId -> IO.State -> Loaded
-loadInto arrowIdOn seedMemo canType store =
+loadInto : Dict.Dict Int Vars.Variable -> Can.Type TypeIds.MVarId -> IO.State -> Loaded
+loadInto seedMemo canType store =
     let
         ( _, c ) =
-            Store.loadTypeC Dict.empty canType (Store.testLoadCtx True arrowIdOn seedMemo store)
+            Store.loadTypeC Dict.empty canType (Store.testLoadCtx True seedMemo store)
 
         slots =
             Array.fromList (List.reverse c.arrowSlots)
@@ -136,9 +136,9 @@ loadInto arrowIdOn seedMemo canType store =
     }
 
 
-loadFresh : Bool -> Dict.Dict Int Vars.Variable -> Can.Type TypeIds.MVarId -> Loaded
-loadFresh arrowIdOn seedMemo canType =
-    loadInto arrowIdOn seedMemo canType Engine.freshStore
+loadFresh : Dict.Dict Int Vars.Variable -> Can.Type TypeIds.MVarId -> Loaded
+loadFresh seedMemo canType =
+    loadInto seedMemo canType (Engine.freshStore ())
 
 
 {-| `( positions, mints, bothOrdinalsShareOneSlot )`.
@@ -164,32 +164,25 @@ ordinalPins : List Test
 ordinalPins =
     [ Test.test "two arrows sharing one ArrowId: 2 positions, 1 mint, both the same slot" <|
         \() ->
-            Expect.equal ( 2, 1, True ) (shape (loadFresh True Dict.empty (twinArrows firstId)))
+            Expect.equal ( 2, 1, True ) (shape (loadFresh Dict.empty (twinArrows firstId)))
     , Test.test "distinct ArrowIds: 2 positions, 2 mints, DIFFERENT slots" <|
         \() ->
-            Expect.equal ( 2, 2, False ) (shape (loadFresh True Dict.empty distinctArrows))
-    , Test.test "flag OFF: sharing an ArrowId changes nothing" <|
-        \() ->
-            let
-                r =
-                    loadFresh False Dict.empty (twinArrows firstId)
-            in
-            Expect.equal ( ( 2, 2, False ), True ) ( shape r, Dict.isEmpty r.memo )
+            Expect.equal ( 2, 2, False ) (shape (loadFresh Dict.empty distinctArrows))
     , Test.test "noArrowId ALWAYS misses and NEVER records (else every unstamped arrow collapses)" <|
         \() ->
             let
                 r =
-                    loadFresh True Dict.empty (twinArrows Can.noArrow)
+                    loadFresh Dict.empty (twinArrows Can.noArrow)
             in
             Expect.equal ( ( 2, 2, False ), True ) ( shape r, Dict.isEmpty r.memo )
     , Test.test "a miss INSERTS, so the memo carries the slot to the next load" <|
         \() ->
             let
                 first =
-                    loadFresh True Dict.empty (arrowWith firstId)
+                    loadFresh Dict.empty (arrowWith firstId)
 
                 second =
-                    loadFresh True first.memo (arrowWith firstId)
+                    loadFresh first.memo (arrowWith firstId)
             in
             Expect.equal ( 1, first.keys, 0 ) ( Dict.size first.memo, second.keys, second.minted )
     ]
@@ -209,20 +202,20 @@ isolationPins =
             -- call site of an annotated `f` unifies into one lambda set.
             let
                 a =
-                    loadInto True Dict.empty (arrowWith firstId) Engine.freshStore
+                    loadInto Dict.empty (arrowWith firstId) (Engine.freshStore ())
 
                 b =
-                    loadInto True Dict.empty (arrowWith firstId) a.store
+                    loadInto Dict.empty (arrowWith firstId) a.store
             in
             Expect.notEqual a.keys b.keys
     , Test.test "a SHARED seed DOES reuse it — the contrast that makes the asymmetry meaningful" <|
         \() ->
             let
                 a =
-                    loadInto True Dict.empty (arrowWith firstId) Engine.freshStore
+                    loadInto Dict.empty (arrowWith firstId) (Engine.freshStore ())
 
                 b =
-                    loadInto True a.memo (arrowWith firstId) a.store
+                    loadInto a.memo (arrowWith firstId) a.store
             in
             Expect.equal ( a.keys, 0 ) ( b.keys, b.minted )
     ]
@@ -241,7 +234,7 @@ samplePoints : Maybe ( Vars.Variable, Vars.Variable )
 samplePoints =
     let
         r =
-            loadFresh True Dict.empty distinctArrows
+            loadFresh Dict.empty distinctArrows
     in
     Maybe.map2 Tuple.pair (Array.get 0 r.slots) (Array.get 1 r.slots)
 

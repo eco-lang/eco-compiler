@@ -1,7 +1,8 @@
 module Compiler.MonoSolver.Store exposing
     ( loadType, monoTypeToVar, unifyStep, zonkToMono
     , rezonkSettled
-    , LoadCtx, SetWriteCtx, addSlotSource, arrowParts, arrowSetSlot, classifyDirect, foldSetWrites, loadTypeC, loadTypeIsolated, loadTypeIsolatedWithArrows, loadTypeWithArrows, poisonArrowSets, qInferenceCensus, qOnFor, qShadowCensus, resolveSlotMembers, setWriteCtx, testLoadCtx, unifyBestEffort, unifySlotWithSet, unifySlotWithSetC
+    , LoadCtx, SetWriteCtx, addSlotSource, unifyStrict, arrowParts, arrowSetSlot, classifyDirect, foldSetWrites, loadTypeC, loadTypeIsolated, loadTypeIsolatedWithArrows, loadTypeWithArrows, poisonArrowSets, qInferenceCensus, qOnFor, qShadowCensus, resolveSlotMembers, resolveSlotMembersWith, setWriteCtx, testLoadCtx, unifyBestEffort, unifySlotWithSet, unifySlotWithSetC
+    , groundHash, groundNoArrow, groundNoArrowWith, aliasKeyOf, aliasBodyEligible
     )
 
 {-| The solver store operations: load a canonical type into the union-find,
@@ -31,6 +32,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.Data.Id as Id
 import Compiler.Elm.ModuleName as ModuleName
+import Data.HashMap as HashMap
 import Compiler.MonoSolver.Engine as Engine exposing (Failure(..), Step)
 import Compiler.Type.Error as TErr
 import Compiler.Type.Type as Type
@@ -62,11 +64,11 @@ type alias LoadCtx =
     , lssOn : Bool -- mint FunL set slots (lambda-set specialization)
     , arrowSlots : List Vars.Variable -- minted set slots, REVERSED minting order
     , slotsMinted : Int -- Phase 3 rider: unconstrained slot mints this load (sizes Phase 5's dead-slot population)
-    , arrowIdOn : Bool -- Phase 2a: consult/record `arrowMemo`. Always True from the solver (the flag was fixed at its default 2026-09-18); `testLoadCtx` still drives both regimes for the unit pins. OFF -> mint a fresh slot per arrow POSITION, exactly as before.
     , arrowMemo : Dict.Dict Int Vars.Variable -- Phase 2a: `Id.toComparable arrowId` -> that arrow's SET SLOT Point. SLOT ONLY, never the FunL node — see `loadTypeC`.
     , censusOn : Bool -- multi-set census (M3): mirror of `env.lss.report`. Gates `arrowOfSlot` ONLY; nothing else reads it.
-    , arrowMintOn : Bool -- Phase 2a/2b: are ArrowIds meaningful at all? (`lss.enabled` — ids are minted unconditionally by AssignMVarIds, so this is really "is the census worth keeping".)
     , arrowOfSlot : Dict.Dict Int Int -- multi-set census (M3): set-slot pointKey -> ArrowId. Report-gated; recorded in BOTH arrowIdentity arms.
+    , groundLoads : HashMap.HashMap Engine.AliasKey Vars.FlatType -- step 4a: alias instantiation -> the ROOT content of its first load in THIS store. Store-scoped exactly like `arrowMemo`.
+    , aliasMemo : HashMap.HashMap Engine.AliasKey Engine.AliasVerdict -- step 4b's per-RUN verdicts, read-only here: saves re-walking a body to decide eligibility.
     }
 
 
@@ -77,19 +79,19 @@ the seed the four `Step`-typed entry points differ on — pass an item's memo to
 model `loadType`/`loadTypeWithArrows`, `Dict.empty` to model the two isolated
 entries.
 -}
-testLoadCtx : Bool -> Bool -> Dict.Dict Int Vars.Variable -> IO.State -> LoadCtx
-testLoadCtx lssOn arrowIdOn sharedArrowMemo store =
+testLoadCtx : Bool -> Dict.Dict Int Vars.Variable -> IO.State -> LoadCtx
+testLoadCtx lssOn sharedArrowMemo store =
     { store = store
     , memo = Dict.empty
     , revMemo = Array.empty
     , lssOn = lssOn
     , arrowSlots = []
     , slotsMinted = 0
-    , arrowIdOn = arrowIdOn
     , arrowMemo = sharedArrowMemo
     , censusOn = False
-    , arrowMintOn = lssOn
     , arrowOfSlot = Dict.empty
+    , groundLoads = HashMap.empty
+    , aliasMemo = HashMap.empty
     }
 
 
@@ -104,11 +106,11 @@ sharedLoadCtx s =
     , lssOn = s.env.lss.enabled
     , arrowSlots = []
     , slotsMinted = 0
-    , arrowIdOn = True
     , arrowMemo = s.itemAux.arrowMemo
     , censusOn = s.env.lss.report
-    , arrowMintOn = s.env.lss.enabled
     , arrowOfSlot = s.itemAux.arrowOfSlot
+    , groundLoads = s.itemAux.groundLoads
+    , aliasMemo = s.monoMemo.aliasMemo
     }
 
 
@@ -131,7 +133,6 @@ isolatedLoadCtx s =
     , lssOn = s.env.lss.enabled
     , arrowSlots = []
     , slotsMinted = 0
-    , arrowIdOn = True
     , arrowMemo = Dict.empty
     , censusOn = s.env.lss.report
 
@@ -139,8 +140,15 @@ isolatedLoadCtx s =
     -- ITEM's store, and the census only ever reads it to name a slot. Sharing
     -- it costs nothing and keeps per-call-site instantiations attributable to
     -- their arrow — which is exactly the population the census exists to see.
-    , arrowMintOn = s.env.lss.enabled
     , arrowOfSlot = s.itemAux.arrowOfSlot
+
+    -- `groundLoads` is NOT isolated, and for the same reason the census map is
+    -- not: it holds GROUND structure, which has no set slot and no var, so the
+    -- H1 collapse hazard that forces `arrowMemo` to be empty here does not
+    -- apply. Sharing it is the whole point — an isolated per-call-site load of
+    -- `S` should reuse the item's `S` Points.
+    , groundLoads = s.itemAux.groundLoads
+    , aliasMemo = s.monoMemo.aliasMemo
     }
 
 
@@ -161,15 +169,14 @@ writeBackShared c s =
                 in
                 { s | store = c.store, memo = c.memo, revMemo = c.revMemo, lssStats = { stats | slotsMinted = stats.slotsMinted + c.slotsMinted } }
     in
-    if c.arrowIdOn || c.censusOn then
-        let
-            aux =
-                s1.itemAux
-        in
-        { s1 | itemAux = { aux | arrowMemo = c.arrowMemo, arrowOfSlot = c.arrowOfSlot } }
-
-    else
-        s1
+    let
+        aux =
+            s1.itemAux
+    in
+    -- Unconditional since step 6: the guard was `arrowIdOn || censusOn`, and
+    -- `arrowIdOn` was fixed True from the solver, so the branch was always
+    -- taken.
+    { s1 | itemAux = { aux | arrowMemo = c.arrowMemo, groundLoads = c.groundLoads, arrowOfSlot = c.arrowOfSlot } }
 
 
 {-| Write an ISOLATED load back: store, revMemo, the mint counter — and
@@ -190,16 +197,22 @@ writeBackIsolated c s =
                 { s | store = c.store, revMemo = c.revMemo, lssStats = { stats | slotsMinted = stats.slotsMinted + c.slotsMinted } }
     in
     -- NEITHER memo goes out (§4.4's H1) — but the census map does, so an
-    -- isolated instantiation's slots can still be named by their arrow.
+    -- isolated instantiation's slots can still be named by their arrow, and so
+    -- does the ground-load memo: its Points live in the ITEM's store and are
+    -- ground, so a later shared load should reuse them.
     if c.censusOn then
         let
             aux =
                 s1.itemAux
         in
-        { s1 | itemAux = { aux | arrowOfSlot = c.arrowOfSlot } }
+        { s1 | itemAux = { aux | arrowOfSlot = c.arrowOfSlot, groundLoads = c.groundLoads } }
 
     else
-        s1
+        let
+            aux =
+                s1.itemAux
+        in
+        { s1 | itemAux = { aux | groundLoads = c.groundLoads } }
 
 
 loadType : Can.Type TypeIds.MVarId -> Step Vars.Variable
@@ -363,8 +376,8 @@ loadTypeC superStatic canType c0 =
                         structC (Vars.FunL pFrom pTo pSet)
                             (noteArrow pSet { cOut | arrowSlots = pSet :: cOut.arrowSlots, slotsMinted = cOut.slotsMinted + 1 })
                 in
-                if not c2.arrowIdOn || memoKey == 0 then
-                    -- Flag off, or `NoArrow` (an arrow built outside
+                if memoKey == 0 then
+                    -- `NoArrow` (an arrow built outside
                     -- `AssignMVarIds`): ALWAYS miss, NEVER record in
                     -- `arrowMemo` — otherwise every unstamped arrow in a type
                     -- collapses into one slot.
@@ -426,10 +439,81 @@ loadTypeC superStatic canType c0 =
             in
             structC (Vars.Tuple1 pa pb pRest) c3
 
-        Can.TAlias _ _ _ (Can.Filled inner) ->
+        Can.TAlias home name args aliasType ->
+            -- Step 4a: the second and later loads of one ground, arrow-free alias
+            -- instantiation WITHIN an item reuse the first load's child Points and
+            -- mint only a fresh root. For the compiler's own `S` that is one mint
+            -- instead of one per field and per nested subtree.
+            --
+            -- Only the CHILDREN are shared; the root is always fresh. Sharing a root
+            -- would let two vars that today land in separate union-find classes — a
+            -- bare reference's family var and a call's isolated twin — become
+            -- equivalent through it, which flips the MONO_029 stale-read barrier and
+            -- livelocks the saturation loop. Per-load roots keep them apart, and one
+            -- `fresh` is nothing against the mints it replaces.
+            --
+            -- Var Points are never shared (an eligible type has no `TVar`), and no
+            -- arrow is reachable, so `arrowSlots`/`arrowMemo`/`slotsMinted` and the
+            -- LSS_006 ordinal contract are not touched.
+            case aliasKeyOf home name args of
+                Nothing ->
+                    loadAliasPlainC superStatic args aliasType c0
+
+                Just key ->
+                    case HashMap.get Engine.aliasKeyHash Engine.aliasKeyEq key c0.groundLoads of
+                        Just flat ->
+                            structC flat c0
+
+                        Nothing ->
+                            let
+                                eligible =
+                                    case HashMap.get Engine.aliasKeyHash Engine.aliasKeyEq key c0.aliasMemo of
+                                        Just (Engine.AliasGround _) ->
+                                            True
+
+                                        Just Engine.AliasIneligible ->
+                                            False
+
+                                        Nothing ->
+                                            aliasBodyEligible aliasType
+
+                                ( p, c1 ) =
+                                    loadAliasPlainC superStatic args aliasType c0
+                            in
+                            if not eligible then
+                                ( p, c1 )
+
+                            else
+                                -- `p` was minted by this very load and nothing has
+                                -- unified it, so this is a root read.
+                                let
+                                    ( store1, desc ) =
+                                        UF.get p c1.store
+                                in
+                                case desc.content of
+                                    Vars.Structure flat ->
+                                        ( p
+                                        , { c1
+                                            | groundLoads = HashMap.insert Engine.aliasKeyHash Engine.aliasKeyEq key flat c1.groundLoads
+                                          }
+                                        )
+
+                                    _ ->
+                                        -- Unreachable for an eligible body, whose root
+                                        -- is always a Structure. Degrade to "not
+                                        -- memoised" rather than crash.
+                                        ( p, { c1 | store = store1 } )
+
+
+{-| The two alias arms as they were before step 4a.
+-}
+loadAliasPlainC : Dict.Dict Int Vars.SuperType -> List ( TypeIds.MVarId, Can.Type TypeIds.MVarId ) -> Can.AliasType TypeIds.MVarId -> LoadCtx -> ( Vars.Variable, LoadCtx )
+loadAliasPlainC superStatic args aliasType c0 =
+    case aliasType of
+        Can.Filled inner ->
             loadTypeC superStatic inner c0
 
-        Can.TAlias _ _ args (Can.Holey inner) ->
+        Can.Holey inner ->
             -- Bind each alias parameter to its argument's loaded Point, load the
             -- body, then restore the prior memo bindings (params are alias-local).
             let
@@ -1031,56 +1115,102 @@ errKind t =
             "Alias:" ++ n
 
 
-unifyStep : Vars.Variable -> Vars.Variable -> Step ()
-unifyStep v1 v2 =
-    Engine.andThen
-        (\answer ->
-            case answer of
-                Unify.AnswerOk _ ->
-                    Engine.succeed ()
+{-| Unify two store Points, reporting only whether it worked.
 
-                Unify.AnswerErr _ t1 t2 ->
-                    -- Diagnostic context: the spec being translated + flush state
-                    \s ->
-                        Engine.fail
-                            (UnifyMismatch
-                                ("unify-fail "
-                                    ++ errDeep t1
-                                    ++ " /vs/ "
-                                    ++ errDeep t2
-                                    ++ " [in "
-                                    ++ (case s.currentGlobal of
-                                            Just g ->
-                                                Mono.toComparableGlobal g
+This is the direct-state entry: no `Step`, no `Result`, no rendered error. A
+failing unify leaves the store as the attempt left it, so **a caller that means
+to recover must bracket the call** with `Engine.markStore` / `rollbackStore` —
+the store is mutated in place, so there is no older value to fall back to.
+`unifyStrict` below is the entry for callers that propagate the failure instead.
 
-                                            Nothing ->
-                                                "?"
-                                       )
-                                    ++ " joinRounds="
-                                    ++ String.fromInt s.lssStats.joinRounds
-                                    ++ " retrans="
-                                    ++ String.fromInt s.lssStats.retranslations
-                                    ++ "]"
-                                )
-                            )
-                            s
-        )
-        (Engine.liftIO (Unify.unify v1 v2))
+-}
+unifyStep : Vars.Variable -> Vars.Variable -> Engine.S -> ( Bool, Engine.S )
+unifyStep v1 v2 s0 =
+    let
+        ( ok, store1 ) =
+            Unify.unifyBoolS v1 v2 s0.store
+    in
+    ( ok, { s0 | store = store1 } )
 
 
-{-| Best-effort unify: a mismatch is swallowed, restoring the pre-unify state
-(free via Elm's persistent arrays — the failed attempt's partial merges are
-simply not kept). Used by the LSS inference walk, where structural failure
-means "no set flow here", never "abort the item".
+{-| Unify two store Points, failing the item on a mismatch with the diagnostic
+the monomorphizer renders. This is `unifyStep` as it was before step 5a: the
+error types are built only on the failure path, so the success path — which is
+almost all of them — no longer pays for the machinery that reported them.
+-}
+unifyStrict : Vars.Variable -> Vars.Variable -> Step ()
+unifyStrict v1 v2 s0 =
+    let
+        ( answer, store1 ) =
+            Unify.unifyS v1 v2 s0.store
+
+        s =
+            { s0 | store = store1 }
+    in
+    case answer of
+        Unify.AnswerOk _ ->
+            Ok ( (), s )
+
+        Unify.AnswerErr _ t1 t2 ->
+            -- Diagnostic context: the spec being translated + flush state
+            Engine.fail
+                (UnifyMismatch
+                    ("unify-fail "
+                        ++ errDeep t1
+                        ++ " /vs/ "
+                        ++ errDeep t2
+                        ++ " [in "
+                        ++ (case s.currentGlobal of
+                                Just g ->
+                                    Mono.toComparableGlobal g
+
+                                Nothing ->
+                                    "?"
+                           )
+                        ++ " joinRounds="
+                        ++ String.fromInt s.lssStats.joinRounds
+                        ++ " retrans="
+                        ++ String.fromInt s.lssStats.retranslations
+                        ++ "]"
+                    )
+                )
+                s
+
+
+{-| Best-effort unify: a mismatch is swallowed and the pre-unify state is
+restored. Used by the LSS inference walk, where structural failure means "no
+set flow here", never "abort the item".
+
+The restore used to be free: the store was a persistent array, so dropping the
+failed attempt's state dropped its partial merges with it. The store is now
+mutated in place, so the speculation is bracketed explicitly — `markStore`
+before, `rollbackStore` on failure, `commitStore` on success. Rollback undoes
+the partial merges, the descriptor overwrites, the path-compression writes AND
+the Points the failed unify minted, which is exactly what discarding the old
+array did.
+
 -}
 unifyBestEffort : Vars.Variable -> Vars.Variable -> Step ()
 unifyBestEffort v1 v2 s =
-    case unifyStep v1 v2 s of
-        Ok ( _, s1 ) ->
-            Ok ( (), s1 )
+    let
+        -- Bind the MARKED state and roll THAT back, never the pre-mark `s`.
+        -- Under the kernel the two would behave alike (one store, mutated in
+        -- place, and `s.store` is the same handle), but under the pure twin a
+        -- handle is a VALUE: `s` does not carry the mark, and rolling it back
+        -- is "rollback without a mark". `sM` differs from `s` only in the
+        -- store, so the non-store fields this arm returns are unchanged.
+        sM =
+            Engine.markStore s
+    in
+    case unifyStep v1 v2 sM of
+        ( True, s1 ) ->
+            Ok ( (), Engine.commitStore s1 )
 
-        Err _ ->
-            Ok ( (), s )
+        ( False, s1 ) ->
+            -- Roll back the state the attempt RETURNED, not the pre-mark one:
+            -- both name the same mutable store, but only this one carries the
+            -- mark under the pure twin.
+            Ok ( (), Engine.rollbackStore s1 )
 
 
 
@@ -1138,7 +1268,7 @@ unifySlotWithSet : Maybe Int -> List Int -> Vars.Variable -> Step ()
 unifySlotWithSet top members slot s0 =
     -- Phase 3: one thin wrapper over the ctx-threaded engine — a single S
     -- rebuild per call, exactly as before.
-    foldSetWrites (unifySlotWithSetC top members slot (setWriteCtx (qOnFor s0) s0.store)) s0
+    Ok ( (), foldSetWrites (unifySlotWithSetC top members slot (setWriteCtx (qOnFor s0) s0.store)) s0 )
 
 
 {-| Phase 3 (`plans/lss-set-write-substrate.md`): store-level set-write
@@ -1156,7 +1286,6 @@ type alias SetWriteCtx =
     , flex : Int
     , topJoin : Int
     , union : Int
-    , needSlow : List ( Maybe Int, List Int, Vars.Variable )
 
     -- §5.1 `Q` in shadow mode. `qOn` is `lss.report`; with it False nothing is
     -- appended and the only cost is one Bool in the ctx copy.
@@ -1176,7 +1305,7 @@ qOnFor s =
 
 setWriteCtx : Bool -> IO.State -> SetWriteCtx
 setWriteCtx qOn store =
-    { store = store, skip = 0, flex = 0, topJoin = 0, union = 0, needSlow = [], qOn = qOn, qLog = [] }
+    { store = store, skip = 0, flex = 0, topJoin = 0, union = 0, qOn = qOn, qLog = [] }
 
 
 {-| §5.1: record one inclusion constraint against `slot`, capturing the slot's
@@ -1221,7 +1350,7 @@ qPreOf desc =
 {-| Fold a traversal's writes back into `S` with ONE copy, then run any
 deferred defensive-arm writes through the Step-shaped slow path.
 -}
-foldSetWrites : SetWriteCtx -> Step ()
+foldSetWrites : SetWriteCtx -> Engine.S -> Engine.S
 foldSetWrites c s0 =
     let
         stats0 =
@@ -1258,27 +1387,7 @@ foldSetWrites c s0 =
                             }
                     }
     in
-    case c.needSlow of
-        [] ->
-            Ok ( (), s1 )
-
-        slots ->
-            foldSlowWrites slots s1
-
-
-foldSlowWrites : List ( Maybe Int, List Int, Vars.Variable ) -> Step ()
-foldSlowWrites items s0 =
-    case items of
-        [] ->
-            Ok ( (), s0 )
-
-        ( top, members, slot ) :: rest ->
-            case unifySlotWithSetSlow top members slot s0 of
-                Err e ->
-                    Err e
-
-                Ok ( (), s1 ) ->
-                    foldSlowWrites rest s1
+    s1
 
 
 {-| The set-write engine (join semantics and counter mapping exactly as the
@@ -1373,9 +1482,18 @@ unifySlotWithSetC top members slot c0 =
 
         _ ->
             -- DEFENSIVE only: unreachable by closure of the slot-content
-            -- channels (LSS_007); measured 0 (Run C). Deferred to the
-            -- traversal boundary.
-            { c1 | needSlow = ( top, members, slot ) :: c1.needSlow }
+            -- channels (LSS_007), and measured 0 on every self-compile since
+            -- Run C. It used to defer to a slow unify at the traversal
+            -- boundary, which cost a `needSlow` list, a fold and a counter for
+            -- a path that never runs. Writing ⊤ here is sound in the same
+            -- direction the deferral was: ⊤ absorbs, so an over-approximation
+            -- loses precision and never drops an edge.
+            case top of
+                Just topK ->
+                    setRootC slot desc (IO.lsTopContentK topK) { c1 | topJoin = c1.topJoin + 1 }
+
+                Nothing ->
+                    setRootC slot desc IO.lsTopContent { c1 | topJoin = c1.topJoin + 1 }
 
 
 setRootC : Vars.Variable -> Vars.Descriptor -> Vars.Content -> SetWriteCtx -> SetWriteCtx
@@ -1444,12 +1562,23 @@ qCensusInto toInfer roots s =
 
             entries ->
                 let
+                    -- The replay below only READS the store, but reading a
+                    -- union-find reaches path compression, and the store is
+                    -- now mutated in place rather than copied — so the writes
+                    -- would outlive the census instead of being dropped with
+                    -- the discarded array. Compression is observationally
+                    -- invisible (same roots, same descriptors), but a census
+                    -- must leave no trace at all, so the whole replay runs
+                    -- inside an undo scope that is rolled back on the way out.
+                    sM =
+                        Engine.markStore s
+
                     acc =
                         -- `entries` is in reverse record order, so folding from
                         -- the head visits newest first and the OLDEST write of
                         -- each Point lands last — which is exactly the seed we
                         -- want (`Dict.insert` overwrites).
-                        List.foldl qStep (qAcc0 s.store) entries
+                        List.foldl qStep (qAcc0 sM.store) entries
 
                     solved =
                         qSolve acc
@@ -1521,17 +1650,18 @@ qCensusInto toInfer roots s =
                         , scratchDropped = prev.scratchDropped
                         }
                 in
-                { s
-                    | lssStats =
-                        { stats
-                            | sigStats =
-                                if toInfer then
-                                    { sig | qInfer = updated }
+                Engine.rollbackStore
+                    { sM
+                        | lssStats =
+                            { stats
+                                | sigStats =
+                                    if toInfer then
+                                        { sig | qInfer = updated }
 
-                                else
-                                    { sig | qShadow = updated }
-                        }
-                }
+                                    else
+                                        { sig | qShadow = updated }
+                            }
+                    }
 
 
 {-| §5.1 / §3.1: the set-slot classes the def's SIGNATURE reaches.
@@ -1681,7 +1811,7 @@ qAcc0 store =
 qKey : Vars.Variable -> Engine.QPre -> QAcc -> ( Int, QAcc )
 qKey v pre a =
     let
-        ( store1, reprVar ) =
+        ( _, reprVar ) =
             UF.repr v a.store
 
         raw =
@@ -1692,8 +1822,7 @@ qKey v pre a =
     in
     ( key
     , { a
-        | store = store1
-        , seedByPoint = Dict.insert raw pre a.seedByPoint
+        | seedByPoint = Dict.insert raw pre a.seedByPoint
         , allMembers =
             case pre of
                 Engine.PreMembers ms ->
@@ -2103,31 +2232,6 @@ addSlotSource src dst s0 =
                                 write IO.lsTopContent s2
 
 
-unifySlotWithSetSlow : Maybe Int -> List Int -> Vars.Variable -> Step ()
-unifySlotWithSetSlow top members slot s0 =
-    let
-        stats0 =
-            s0.lssStats
-
-        s1 =
-            { s0 | lssStats = { stats0 | setWriteSlow = stats0.setWriteSlow + 1 } }
-
-        set =
-            case top of
-                Just topK ->
-                    Vars.LsTop topK
-
-                Nothing ->
-                    Vars.LsMembers members
-    in
-    case Engine.freshVar (Vars.Structure (Vars.LambdaSet1 set)) s1 of
-        Err e ->
-            Err e
-
-        Ok ( setVar, s2 ) ->
-            unifyStep slot setVar s2
-
-
 {-| Poison every arrow set slot reachable in a loaded type structure: kernels
 apply closures through the generic runtime path, so any arrow crossing the
 kernel/port ABI is dynamic (LSS\_004). Point-indexed `seen` set guards against
@@ -2138,7 +2242,7 @@ poisonArrowSets v0 s0 =
     -- Phase 3: ctx-threaded DFS — one ~6-field ctx copy per visited node and
     -- ONE S write-back here, where the old shape copied the full S record per
     -- visited node.
-    foldSetWrites (poisonGoC Dict.empty [ v0 ] (setWriteCtx (qOnFor s0) s0.store)) s0
+    Ok ( (), foldSetWrites (poisonGoC Dict.empty [ v0 ] (setWriteCtx (qOnFor s0) s0.store)) s0 )
 
 
 poisonGoC : Dict.Dict Int () -> List Vars.Variable -> SetWriteCtx -> SetWriteCtx
@@ -2160,11 +2264,16 @@ poisonGoC seen worklist c0 =
                     seen1 =
                         Dict.insert key () seen
 
-                    ( store1, desc ) =
+                    ( _, desc ) =
+                        -- The returned state is DROPPED, not threaded. `UF.get`'s only
+                        -- write is path compression, and the store is mutated in place
+                        -- (step 3), so the compression has already happened; the state it
+                        -- hands back differs from `c0.store` in nothing but the record
+                        -- wrapper. Threading it cost a context copy per read.
                         UF.get v c0.store
 
                     c1 =
-                        { c0 | store = store1 }
+                        c0
                 in
                 case desc.content of
                     Vars.Structure flat ->
@@ -2216,7 +2325,9 @@ allocation order threaded through `next`.
 type alias ZonkCtx =
     { store : IO.State
     , next : TypeIds.MVarId
-    , lss : Maybe LssZonkAcc -- Just iff lss.enabled; keeps the off path lean
+    , lssOn : Bool -- lss.enabled. Was read as `lss /= Nothing`; since step 7 the accumulator is report-scoped, so the two are no longer the same question.
+    , maxSetSize : Int -- policy (0 = unlimited). Was a field on the accumulator, which is why the accumulator had to exist off report.
+    , lss : Maybe LssZonkAcc -- Just iff lss.enabled AND lss.report. Nothing on the default path, so every counter bump is a `case` on a constant and allocates nothing.
     , ecoReads : List Vars.Variable -- MONO_029 stale-read barrier: vars read FREE while producing a CEcoValue residual (folded into S.ecoResidualReads)
     , intern : Intern -- K6: hash-cons table, carried in from S and written back once by `zonkToMono`
     , memberTable : Engine.LssMemberTable -- LSS_019: carried in from S, written back once (zonk grounding interns ground member ids)
@@ -2252,7 +2363,8 @@ consC mt c =
         ( mt1, intern1 ) =
             Intern.hashCons mt c.intern
     in
-    if Intern.size intern1 == Intern.size c.intern then
+    -- `entries`, not `size` — see `Engine.withIntern`.
+    if Intern.entries intern1 == Intern.entries c.intern then
         ( mt1, c )
 
     else
@@ -2263,8 +2375,7 @@ consC mt c =
 folded back into `S.lssStats` by the `zonkToMono` wrapper).
 -}
 type alias LssZonkAcc =
-    { maxSetSize : Int
-    , zonked : Int
+    { zonked : Int
     , widenedBySize : Int
     , hist : Dict.Dict Int Int
 
@@ -2276,15 +2387,15 @@ type alias LssZonkAcc =
     -- LSS_019 standalone-member grounding (plans/lss-fidelity-2-standalone-member-grounding.md):
     -- the flag gates the whole rewrite (flag-off zonk is allocation-identical
     -- to pre-plan); the counters fold into `lssStats.grounding`.
-    , groundStandalones : Bool
     , grounded : Int
     , groundingDeferred : Int
 
     -- LSS_026(a) honest sources (plans/lss-gap2-callarg-transport.md §3.2):
     -- members reached over a DANGLING (FlexVar) source resolve ⊤, never a
-    -- set. ESCALATED to unconditional 2026-08-23 — `honestSources` is seeded
-    -- True by `zonkToMono` and the field survives only so the store-level
-    -- pins (`LssHonestSourcesTest`) can assert BOTH directions of the rule.
+    -- set. ESCALATED to unconditional 2026-08-23. Since step 6 the policy is
+    -- an ARGUMENT to `resolveSlotMembersWith` rather than a field seeded True
+    -- at every production site; the store-level pins (`LssHonestSourcesTest`)
+    -- pass False to assert the other direction of the rule.
     -- The escalation trigger was a runtime witness, not the census: the
     -- self-compile measures zero crossings (`mixed|sig` = `mixed|demand` =
     -- 0), but `test/elm/src/LssMixedSigHonestyTest.elm` miscompiles at the
@@ -2293,7 +2404,6 @@ type alias LssZonkAcc =
     -- `mixedFlexGc` still classifies the crossings: a `gc` member grounds
     -- (LSS_019) and is devirt-consumable, where a lambda id merely declines
     -- (LSS_017).
-    , honestSources : Bool
     , mixedFlex : Int
     , mixedFlexGc : Int
 
@@ -2325,7 +2435,6 @@ type alias LssZonkAcc =
     -- soundness widening so `LTop` is right — but it means the ledger's `top`
     -- bucket silently contains the honest-∅ population. Split it with its own
     -- counter if a phase's measurement comes out ambiguous.
-    , censusOn : Bool
     , causeSet : Int
     , causePoison : Int
     , causeFlex : Int
@@ -2363,11 +2472,7 @@ bumpCauseC : (LssZonkAcc -> LssZonkAcc) -> ZonkCtx -> ZonkCtx
 bumpCauseC f c =
     case c.lss of
         Just acc ->
-            if acc.censusOn then
-                { c | lss = Just (f acc) }
-
-            else
-                c
+            { c | lss = Just (f acc) }
 
         Nothing ->
             c
@@ -2378,13 +2483,17 @@ zonkToMono var =
     \s ->
         let
             lssAcc =
-                if s.env.lss.enabled then
-                    Just { maxSetSize = s.env.lss.maxSetSize, zonked = 0, widenedBySize = 0, hist = Dict.empty, widenedHist = Dict.empty, groundStandalones = True, grounded = 0, groundingDeferred = 0, honestSources = True, mixedFlex = 0, mixedFlexGc = 0, censusOn = s.env.lss.report, causeSet = 0, causePoison = 0, causeFlex = 0, causeEdgeSet = 0, causeEdgeEmpty = 0, causeEdgeTop = 0, causeUnknown = 0, multiSets = Dict.empty, varArrows = Dict.empty, setArrows = Dict.empty }
+                -- Report-scoped since step 7: the accumulator holds COUNTERS
+                -- only, so off report there is nothing to accumulate and every
+                -- bump becomes a `case` on a constant `Nothing`. The policy
+                -- bits it used to carry are `lssOn` / `maxSetSize` on the ctx.
+                if s.env.lss.enabled && s.env.lss.report then
+                    Just { zonked = 0, widenedBySize = 0, hist = Dict.empty, widenedHist = Dict.empty, grounded = 0, groundingDeferred = 0, mixedFlex = 0, mixedFlexGc = 0, causeSet = 0, causePoison = 0, causeFlex = 0, causeEdgeSet = 0, causeEdgeEmpty = 0, causeEdgeTop = 0, causeUnknown = 0, multiSets = Dict.empty, varArrows = Dict.empty, setArrows = Dict.empty }
 
                 else
                     Nothing
         in
-        case zonkToMonoC s.superTable s.revMemo var { store = s.store, next = s.nextMVarId, lss = lssAcc, ecoReads = [], intern = s.intern, memberTable = s.lssMemberTable, nextMemberId = s.nextMemberId, arrowOf = s.itemAux.arrowOfSlot, varOf = Dict.empty, nextVar = 0 } of
+        case zonkToMonoC s.superTable s.revMemo var { store = s.store, next = s.nextMVarId, lssOn = s.env.lss.enabled, maxSetSize = s.env.lss.maxSetSize, lss = lssAcc, ecoReads = [], intern = s.intern, memberTable = s.lssMemberTable, nextMemberId = s.nextMemberId, arrowOf = s.itemAux.arrowOfSlot, varOf = Dict.empty, nextVar = 0 } of
             Err e ->
                 Err e
 
@@ -2458,7 +2567,12 @@ rezonkSettled s =
             log ->
                 let
                     acc0 =
-                        { maxSetSize = s.env.lss.maxSetSize, zonked = 0, widenedBySize = 0, hist = Dict.empty, widenedHist = Dict.empty, groundStandalones = True, grounded = 0, groundingDeferred = 0, honestSources = True, mixedFlex = 0, mixedFlexGc = 0, censusOn = True, causeSet = 0, causePoison = 0, causeFlex = 0, causeEdgeSet = 0, causeEdgeEmpty = 0, causeEdgeTop = 0, causeUnknown = 0, multiSets = Dict.empty, varArrows = Dict.empty, setArrows = Dict.empty }
+                        { zonked = 0, widenedBySize = 0, hist = Dict.empty, widenedHist = Dict.empty, grounded = 0, groundingDeferred = 0, mixedFlex = 0, mixedFlexGc = 0, causeSet = 0, causePoison = 0, causeFlex = 0, causeEdgeSet = 0, causeEdgeEmpty = 0, causeEdgeTop = 0, causeUnknown = 0, multiSets = Dict.empty, varArrows = Dict.empty, setArrows = Dict.empty }
+
+                    -- Same reason as `qCensusInto`: the replay compresses
+                    -- paths, and an in-place store would keep those writes.
+                    sM =
+                        Engine.markStore s
 
                     ctxN =
                         List.foldl
@@ -2482,12 +2596,12 @@ rezonkSettled s =
                                         -- fail a build.
                                         c
                             )
-                            { store = s.store, next = s.nextMVarId, lss = Just acc0, ecoReads = [], intern = s.intern, memberTable = s.lssMemberTable, nextMemberId = s.nextMemberId, arrowOf = s.itemAux.arrowOfSlot, varOf = Dict.empty, nextVar = 0 }
+                            { store = sM.store, next = s.nextMVarId, lssOn = s.env.lss.enabled, maxSetSize = s.env.lss.maxSetSize, lss = Just acc0, ecoReads = [], intern = s.intern, memberTable = s.lssMemberTable, nextMemberId = s.nextMemberId, arrowOf = s.itemAux.arrowOfSlot, varOf = Dict.empty, nextVar = 0 }
                             log
                 in
                 case ctxN.lss of
                     Nothing ->
-                        s
+                        Engine.rollbackStore sM
 
                     Just acc ->
                         let
@@ -2502,8 +2616,12 @@ rezonkSettled s =
                         in
                         -- NOTE what is NOT written: `ctxN.store`, `ctxN.next`,
                         -- `ctxN.intern`, `ctxN.memberTable`, `ctxN.nextMemberId`,
-                        -- `ctxN.ecoReads`. Only counters cross this line.
-                        { s
+                        -- `ctxN.ecoReads`. Only counters cross this line — and
+                        -- the undo scope opened above is closed by rolling it
+                        -- back, so the replay's path compression does not
+                        -- survive either.
+                        Engine.rollbackStore
+                        { sM
                             | lssStats =
                                 { stats
                                     | sigStats =
@@ -2684,11 +2802,16 @@ bumpCensusKey key n census =
 zonkToMonoC : Dict.Dict Int Vars.SuperType -> Array (Maybe TypeIds.MVarId) -> Vars.Variable -> ZonkCtx -> Result Failure ( Mono.MonoType, ZonkCtx )
 zonkToMonoC superTable revMemo var c0 =
     let
-        ( store1, desc ) =
+        ( _, desc ) =
+            -- The returned state is DROPPED, not threaded. `UF.get`'s only
+            -- write is path compression, and the store is mutated in place
+            -- (step 3), so the compression has already happened; the state it
+            -- hands back differs from `c0.store` in nothing but the record
+            -- wrapper. Threading it cost a context copy per read.
             UF.get var c0.store
 
         c1 =
-            { c0 | store = store1 }
+            c0
     in
     case desc.content of
         Vars.Structure flat ->
@@ -2863,7 +2986,7 @@ sharing pattern key together.
 varNumberFor : Vars.Variable -> ZonkCtx -> ( Int, ZonkCtx )
 varNumberFor setVar c =
     let
-        ( store1, reprVar ) =
+        ( _, reprVar ) =
             UF.repr setVar c.store
 
         key =
@@ -2871,11 +2994,11 @@ varNumberFor setVar c =
     in
     case Dict.get key c.varOf of
         Just n ->
-            ( n, { c | store = store1 } )
+            ( n, c )
 
         Nothing ->
             ( c.nextVar
-            , { c | store = store1, varOf = Dict.insert key c.nextVar c.varOf, nextVar = c.nextVar + 1 }
+            , { c | varOf = Dict.insert key c.nextVar c.varOf, nextVar = c.nextVar + 1 }
             )
 
 
@@ -2894,7 +3017,7 @@ noteMultiSet : Vars.Variable -> List Int -> ZonkCtx -> ZonkCtx
 noteMultiSet setVar members c =
     case c.lss of
         Just acc ->
-            if not acc.censusOn || List.length members < 2 then
+            if List.length members < 2 then
                 c
 
             else
@@ -2906,7 +3029,7 @@ noteMultiSet setVar members c =
                     -- (`monoTypeToVarC` builds from `Mono.MonoType`, which has
                     -- no arrows ids at all), so the lookup must go through the
                     -- union-find class, not the raw Point.
-                    ( store1, reprVar ) =
+                    ( _, reprVar ) =
                         UF.repr setVar c.store
 
                     hit =
@@ -2919,12 +3042,11 @@ noteMultiSet setVar members c =
                 in
                 case hit of
                     Nothing ->
-                        { c | store = store1 }
+                        c
 
                     Just akey ->
                         { c
-                            | store = store1
-                            , lss =
+                            | lss =
                                 Just
                                     { acc
                                         | multiSets =
@@ -2955,38 +3077,33 @@ noteArrowClass : Bool -> Vars.Variable -> ZonkCtx -> ZonkCtx
 noteArrowClass resolved setVar c =
     case c.lss of
         Just acc ->
-            if not acc.censusOn then
-                c
+            let
+                ( _, reprVar ) =
+                    UF.repr setVar c.store
 
-            else
-                let
-                    ( store1, reprVar ) =
-                        UF.repr setVar c.store
+                hit =
+                    case Dict.get (Engine.pointKey reprVar) c.arrowOf of
+                        Just a ->
+                            Just a
 
-                    hit =
-                        case Dict.get (Engine.pointKey reprVar) c.arrowOf of
-                            Just a ->
-                                Just a
+                        Nothing ->
+                            Dict.get (Engine.pointKey setVar) c.arrowOf
+            in
+            case hit of
+                Nothing ->
+                    c
 
-                            Nothing ->
-                                Dict.get (Engine.pointKey setVar) c.arrowOf
-                in
-                case hit of
-                    Nothing ->
-                        { c | store = store1 }
+                Just akey ->
+                    { c
+                        | lss =
+                            Just
+                                (if resolved then
+                                    { acc | setArrows = Dict.insert akey (1 + Maybe.withDefault 0 (Dict.get akey acc.setArrows)) acc.setArrows }
 
-                    Just akey ->
-                        { c
-                            | store = store1
-                            , lss =
-                                Just
-                                    (if resolved then
-                                        { acc | setArrows = Dict.insert akey (1 + Maybe.withDefault 0 (Dict.get akey acc.setArrows)) acc.setArrows }
-
-                                     else
-                                        { acc | varArrows = Dict.insert akey (1 + Maybe.withDefault 0 (Dict.get akey acc.varArrows)) acc.varArrows }
-                                    )
-                        }
+                                 else
+                                    { acc | varArrows = Dict.insert akey (1 + Maybe.withDefault 0 (Dict.get akey acc.varArrows)) acc.varArrows }
+                                )
+                    }
 
         Nothing ->
             c
@@ -3039,11 +3156,16 @@ argument needs.
 zonkSetSlot : Mono.MonoType -> Mono.MonoType -> Vars.Variable -> ZonkCtx -> ( Mono.LambdaSetAnno, ZonkCtx )
 zonkSetSlot paramT resultT setVar c0 =
     let
-        ( store1, desc ) =
+        ( _, desc ) =
+            -- The returned state is DROPPED, not threaded. `UF.get`'s only
+            -- write is path compression, and the store is mutated in place
+            -- (step 3), so the compression has already happened; the state it
+            -- hands back differs from `c0.store` in nothing but the record
+            -- wrapper. Threading it cost a context copy per read.
             UF.get setVar c0.store
 
         c1 =
-            { c0 | store = store1 }
+            c0
     in
     case desc.content of
         Vars.Structure (Vars.LambdaSet1 (Vars.LsTop tpK)) ->
@@ -3053,32 +3175,27 @@ zonkSetSlot paramT resultT setVar c0 =
             ( Mono.topOfKind tpK, bumpCauseC (\a -> { a | causePoison = a.causePoison + 1 }) (bumpZonkAcc Nothing c1) )
 
         Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers members0)) ->
-            case c1.lss of
-                Just acc0 ->
-                    let
-                        ( members, c2 ) =
-                            if acc0.groundStandalones then
-                                groundMembersC paramT resultT members0 c1
+            if c1.lssOn then
+                let
+                    ( members, c2 ) =
+                        groundMembersC paramT resultT members0 c1
 
-                            else
-                                ( members0, c1 )
+                    size =
+                        List.length members
+                in
+                -- maxSetSize 0 = UNLIMITED (2026-08-29).
+                if c1.maxSetSize > 0 && size > c1.maxSetSize then
+                    ( Mono.topWiden, bumpWidenedAcc size c2 )
 
-                        size =
-                            List.length members
-                    in
-                    -- maxSetSize 0 = UNLIMITED (2026-08-29).
-                    if acc0.maxSetSize > 0 && size > acc0.maxSetSize then
-                        ( Mono.topWiden, bumpWidenedAcc size c2 )
+                else
+                    -- Phase 2: IDENTITY — the store list IS the LSet
+                    -- payload (ascending by construction; was Dict.keys).
+                    ( Mono.LSet members, noteArrowClass True setVar (noteMultiSet setVar members (bumpCauseC (\a -> { a | causeSet = a.causeSet + 1 }) (bumpZonkAcc (Just size) c2))) )
 
-                    else
-                        -- Phase 2: IDENTITY — the store list IS the LSet
-                        -- payload (ascending by construction; was Dict.keys).
-                        ( Mono.LSet members, noteArrowClass True setVar (noteMultiSet setVar members (bumpCauseC (\a -> { a | causeSet = a.causeSet + 1 }) (bumpZonkAcc (Just size) c2))) )
-
-                Nothing ->
-                    -- A FunL zonked outside an lss-enabled wrapper (e.g. a
-                    -- direct zonkToMonoC caller): sound fallback.
-                    ( Mono.topEdge, c1 )
+            else
+                -- A FunL zonked outside an lss-enabled wrapper (e.g. a
+                -- direct zonkToMonoC caller): sound fallback.
+                ( Mono.topEdge, c1 )
 
         Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom members0 srcs)) ->
             -- LSS_023 pull-at-read: resolve the reachable edge graph NOW and
@@ -3087,62 +3204,57 @@ zonkSetSlot paramT resultT setVar c0 =
             -- would freeze them out). This arm sits BEFORE the wildcard so
             -- `LsFrom` is never silently eaten as LTop (sound but
             -- precision-dead — the whole plan's point lost in one arm).
-            case c1.lss of
-                Just acc0 ->
-                    case resolveSlotMembers members0 srcs c1 of
-                        ( Nothing, c2 ) ->
-                            -- A reachable ⊤ absorbs the whole resolution.
-                            ( Mono.topEdge, bumpCauseC (\a -> { a | causeEdgeTop = a.causeEdgeTop + 1 }) (bumpZonkAcc Nothing c2) )
+            if c1.lssOn then
+                case resolveSlotMembers members0 srcs c1 of
+                    ( Nothing, c2 ) ->
+                        -- A reachable ⊤ absorbs the whole resolution.
+                        ( Mono.topEdge, bumpCauseC (\a -> { a | causeEdgeTop = a.causeEdgeTop + 1 }) (bumpZonkAcc Nothing c2) )
 
-                        ( Just [], c2 ) ->
-                            -- EMPTY resolution = NO INFORMATION. Mirrors the
-                            -- FlexVar policy ("never empty"): an `LSet []`
-                            -- would claim a provably-dead arrow where
-                            -- symmetric HEAD reads an unconstrained class as
-                            -- unknown.
-                            --
-                            -- Phase 1: one of the TWO `LUnknown` producers.
-                            -- Nothing was ever written anywhere in this slot's
-                            -- reachable edge graph — that is an absence, not a
-                            -- widening. Both the old counter and `causeUnknown`
-                            -- are bumped so the `zc|` rows stay joinable
-                            -- against the pre-split baseline.
-                            let
-                                ( vn, c2v ) =
-                                    varNumberFor setVar c2
-                            in
-                            ( Mono.LVar vn
-                            , noteArrowClass False
-                                setVar
-                                (bumpCauseC (\a -> { a | causeEdgeEmpty = a.causeEdgeEmpty + 1, causeUnknown = a.causeUnknown + 1 })
-                                    (bumpZonkAcc Nothing c2v)
-                                )
+                    ( Just [], c2 ) ->
+                        -- EMPTY resolution = NO INFORMATION. Mirrors the
+                        -- FlexVar policy ("never empty"): an `LSet []`
+                        -- would claim a provably-dead arrow where
+                        -- symmetric HEAD reads an unconstrained class as
+                        -- unknown.
+                        --
+                        -- Phase 1: one of the TWO `LUnknown` producers.
+                        -- Nothing was ever written anywhere in this slot's
+                        -- reachable edge graph — that is an absence, not a
+                        -- widening. Both the old counter and `causeUnknown`
+                        -- are bumped so the `zc|` rows stay joinable
+                        -- against the pre-split baseline.
+                        let
+                            ( vn, c2v ) =
+                                varNumberFor setVar c2
+                        in
+                        ( Mono.LVar vn
+                        , noteArrowClass False
+                            setVar
+                            (bumpCauseC (\a -> { a | causeEdgeEmpty = a.causeEdgeEmpty + 1, causeUnknown = a.causeUnknown + 1 })
+                                (bumpZonkAcc Nothing c2v)
                             )
+                        )
 
-                        ( Just ms0, c2 ) ->
-                            -- THEN ground (LSS_019), THEN cap — verbatim the
-                            -- LsMembers tail on the RESOLVED list (resolution
-                            -- precedes grounding: groundMembersC keys on this
-                            -- arrow's already-zonked paramT/resultT).
-                            let
-                                ( members, c3 ) =
-                                    if acc0.groundStandalones then
-                                        groundMembersC paramT resultT ms0 c2
+                    ( Just ms0, c2 ) ->
+                        -- THEN ground (LSS_019), THEN cap — verbatim the
+                        -- LsMembers tail on the RESOLVED list (resolution
+                        -- precedes grounding: groundMembersC keys on this
+                        -- arrow's already-zonked paramT/resultT).
+                        let
+                            ( members, c3 ) =
+                                groundMembersC paramT resultT ms0 c2
 
-                                    else
-                                        ( ms0, c2 )
+                            size =
+                                List.length members
+                        in
+                        if c1.maxSetSize > 0 && size > c1.maxSetSize then
+                            ( Mono.topWiden, bumpWidenedAcc size c3 )
 
-                                size =
-                                    List.length members
-                            in
-                            if acc0.maxSetSize > 0 && size > acc0.maxSetSize then
-                                ( Mono.topWiden, bumpWidenedAcc size c3 )
+                        else
+                            ( Mono.LSet members, noteArrowClass True setVar (noteMultiSet setVar members (bumpCauseC (\a -> { a | causeEdgeSet = a.causeEdgeSet + 1 }) (bumpZonkAcc (Just size) c3))) )
 
-                            else
-                                ( Mono.LSet members, noteArrowClass True setVar (noteMultiSet setVar members (bumpCauseC (\a -> { a | causeEdgeSet = a.causeEdgeSet + 1 }) (bumpZonkAcc (Just size) c3))) )
-
-                Nothing ->
-                    ( Mono.topEdge, c1 )
+            else
+                ( Mono.topEdge, c1 )
 
         _ ->
             -- FlexVar residual: no information — never empty.
@@ -3200,6 +3312,30 @@ Discipline (each clause is load-bearing — see the plan §3.1):
 -}
 resolveSlotMembers : List Int -> List Vars.Variable -> ZonkCtx -> ( Maybe (List Int), ZonkCtx )
 resolveSlotMembers members0 srcs c0 =
+    -- The honest-sources rule is live exactly when there IS a zonk
+    -- accumulator, which is `lss.enabled`. That reproduces the old
+    -- `honestSourcesOn` to the letter: it read `acc.honestSources`, seeded
+    -- True at every production site, and answered False when the accumulator
+    -- was absent. Hardcoding True here would change the lss-off configuration.
+    resolveSlotMembersWith (hasLssAcc c0) members0 srcs c0
+
+
+hasLssAcc : ZonkCtx -> Bool
+hasLssAcc c =
+    -- Reads `lssOn`, not `lss`: since step 7 the accumulator exists only under
+    -- report, while the honesty rule is live whenever LSS is enabled. These
+    -- were the same question before and are not any more.
+    c.lssOn
+
+
+{-| `resolveSlotMembers` with the LSS_026(a) honest-sources rule as an explicit
+argument. Production always passes `True` — the rule has been unconditional
+since the 2026-08-23 escalation — and the store-level pins pass `False` to
+assert the shape the rule exists to reject. It used to be a field on the zonk
+accumulator, seeded `True` at every production site.
+-}
+resolveSlotMembersWith : Bool -> List Int -> List Vars.Variable -> ZonkCtx -> ( Maybe (List Int), ZonkCtx )
+resolveSlotMembersWith honest members0 srcs c0 =
     case resolveSources srcs [] False (Just members0) c0 of
         ( Nothing, _, c1 ) ->
             ( Nothing, c1 )
@@ -3208,11 +3344,11 @@ resolveSlotMembers members0 srcs c0 =
             if sawFlex && not (List.isEmpty ms) then
                 -- LSS_026(a): members PLUS a dangling inflow. The set is
                 -- INCOMPLETE but would read as complete — the false-set
-                -- (miscompile) direction. `honestSourcesOn` is True in every
-                -- production zonk (the rule is UNCONDITIONAL since the
-                -- 2026-08-23 escalation); the branch survives so the
-                -- store-level pins can assert what the pre-rule reader did.
-                ( if honestSourcesOn c1 then
+                -- (miscompile) direction. `honest` is True in every production
+                -- zonk (the rule is UNCONDITIONAL since the 2026-08-23
+                -- escalation); the branch survives so the store-level pins can
+                -- assert what the pre-rule reader did.
+                ( if honest then
                     Nothing
 
                   else
@@ -3225,21 +3361,6 @@ resolveSlotMembers members0 srcs c0 =
                 -- already reads LTop (no completeness claimed), so there is
                 -- nothing to widen and nothing to count.
                 ( Just ms, c1 )
-
-
-{-| LSS\_026(a): is the honest-sources policy live? `zonkToMono` seeds it True
-unconditionally (`ZonkCtx` has no `S`, hence the field rather than a direct
-read); only the store-level pins ever seed it False, to assert the shape the
-rule exists to reject.
--}
-honestSourcesOn : ZonkCtx -> Bool
-honestSourcesOn c =
-    case c.lss of
-        Just acc ->
-            acc.honestSources
-
-        Nothing ->
-            False
 
 
 {-| LSS\_026 census (plan §2.1 row 2, demand side): count a mixed resolution
@@ -3289,11 +3410,16 @@ resolveSources pending visited sawFlex acc c0 =
 
             else
                 let
-                    ( store1, desc ) =
+                    ( _, desc ) =
+                        -- The returned state is DROPPED, not threaded. `UF.get`'s only
+                        -- write is path compression, and the store is mutated in place
+                        -- (step 3), so the compression has already happened; the state it
+                        -- hands back differs from `c0.store` in nothing but the record
+                        -- wrapper. Threading it cost a context copy per read.
                         UF.get src c0.store
 
                     c1 =
-                        { c0 | store = store1 }
+                        c0
 
                     visited1 =
                         key :: visited
@@ -3618,10 +3744,58 @@ classifyGo topKind s aliasSubst canType =
                                 Ok ( mRest, s3 ) ->
                                     Ok (Engine.consS (Mono.mTuple (ma :: mb :: mRest)) s3)
 
-        Can.TAlias _ _ _ (Can.Filled inner) ->
+        Can.TAlias home name args aliasType ->
+            -- Step 4b: an alias instantiation whose arguments and body are ground and
+            -- arrow-free classifies to the same canonical `MonoType` at every
+            -- occurrence in the run, so the first classify is cached and every later
+            -- one is a hash lookup instead of a node-by-node walk with an intern probe
+            -- per node. `S` — the compiler's own 31-field state record — is the case
+            -- this exists for.
+            --
+            -- Exactness: the stored value came out of `consS`, so it IS the intern
+            -- table's canonical object, and the table is seeded empty and only grows;
+            -- a later probe of the same structure would hand back the very same
+            -- object, so returning it without probing is indistinguishable. `topKind`
+            -- and `aliasSubst` cannot matter on a hit: the first is read only by the
+            -- `TLambda` arm and the second only by the `TVar` arm, and an eligible
+            -- instantiation reaches neither.
+            case aliasKeyOf home name args of
+                Nothing ->
+                    classifyAliasPlain topKind s aliasSubst args aliasType
+
+                Just key ->
+                    case HashMap.get Engine.aliasKeyHash Engine.aliasKeyEq key s.monoMemo.aliasMemo of
+                        Just (Engine.AliasGround mono) ->
+                            Ok ( mono, s )
+
+                        Just Engine.AliasIneligible ->
+                            classifyAliasPlain topKind s aliasSubst args aliasType
+
+                        Nothing ->
+                            if aliasBodyEligible aliasType then
+                                case classifyAliasPlain topKind s aliasSubst args aliasType of
+                                    Err e ->
+                                        Err e
+
+                                    Ok ( mono, s1 ) ->
+                                        Ok ( mono, Engine.putAliasVerdict key (Engine.AliasGround mono) s1 )
+
+                            else
+                                -- Record the ineligibility too, so a body walk is paid
+                                -- once per instantiation rather than once per
+                                -- occurrence.
+                                classifyAliasPlain topKind (Engine.putAliasVerdict key Engine.AliasIneligible s) aliasSubst args aliasType
+
+
+{-| The two alias arms as they were before step 4b.
+-}
+classifyAliasPlain : Int -> Engine.S -> Dict.Dict Int Mono.MonoType -> List ( TypeIds.MVarId, Can.Type TypeIds.MVarId ) -> Can.AliasType TypeIds.MVarId -> Result Failure ( Mono.MonoType, Engine.S )
+classifyAliasPlain topKind s aliasSubst args aliasType =
+    case aliasType of
+        Can.Filled inner ->
             classifyGo topKind s aliasSubst inner
 
-        Can.TAlias _ _ args (Can.Holey inner) ->
+        Can.Holey inner ->
             -- Alias args are classified in the OUTER scope (mirrors
             -- Zonk.canTypeToMonoWith's Holey arm), then the body under the extended
             -- substitution.
@@ -3631,6 +3805,227 @@ classifyGo topKind s aliasSubst canType =
 
                 Ok ( newSubst, s1 ) ->
                     classifyGo topKind s1 newSubst inner
+
+
+-- ====== STEP 4: GROUND, ARROW-FREE ALIAS SUBTREES ======
+
+
+{-| `Mono.mixHash` is not exported, so this is its twin. Same constants, so a hash
+computed here is comparable with one computed there (nothing relies on that today; it
+is stated so a future reader does not assume they may diverge).
+-}
+mix : Int -> Int -> Int
+mix h x =
+    modBy 67108864 (h * 33 + modBy 67108864 x + 7)
+
+
+{-| `-1` when the type has a free var, an arrow or an open record ANYWHERE; otherwise
+a structural hash in `[0, 2^26)`.
+
+One walk, exiting at the first disqualifier, so the common "not eligible" answer is
+cheap. Through a `Filled` alias only `inner` is examined, because that is what load and
+classify consume; through a `Holey` alias the ARGS are hashed and the body is only
+checked for arrow-freeness, because its vars are the alias's parameters and the args
+are what distinguish two instantiations.
+
+-}
+groundHash : Can.Type TypeIds.MVarId -> Int
+groundHash t =
+    case t of
+        Can.TVar _ ->
+            -1
+
+        Can.TLambda _ _ _ ->
+            -1
+
+        Can.TUnit ->
+            1
+
+        Can.TType (ModuleName.Canonical _ modName) name args ->
+            groundHashList (mix (mix (mix 2 (String.length modName)) (String.length name)) (List.length args)) args
+
+        Can.TTuple a b rest ->
+            groundHashList (mix 3 (List.length rest)) (a :: b :: rest)
+
+        Can.TRecord _ (Just _) ->
+            -1
+
+        Can.TRecord fields Nothing ->
+            -- `Dict.foldl` cannot break, so a negative accumulator is sticky: one
+            -- compare per remaining field, no further walking.
+            Dict.foldl
+                (\k (Can.FieldType _ ft) h ->
+                    if h < 0 then
+                        h
+
+                    else
+                        let
+                            hf =
+                                groundHash ft
+                        in
+                        if hf < 0 then
+                            -1
+
+                        else
+                            mix (mix h (String.length k)) hf
+                )
+                (mix 4 (Dict.size fields))
+                fields
+
+        Can.TAlias _ _ _ (Can.Filled inner) ->
+            groundHash inner
+
+        Can.TAlias (ModuleName.Canonical _ modName) name args (Can.Holey inner) ->
+            let
+                h =
+                    groundHashList (mix (mix 5 (String.length modName)) (String.length name)) (List.map Tuple.second args)
+            in
+            if h < 0 || not (noArrowBody inner) then
+                -1
+
+            else
+                h
+
+
+groundHashList : Int -> List (Can.Type TypeIds.MVarId) -> Int
+groundHashList h ts =
+    case ts of
+        [] ->
+            h
+
+        t :: rest ->
+            let
+                ht =
+                    groundHash t
+            in
+            if ht < 0 then
+                -1
+
+            else
+                groundHashList (mix h ht) rest
+
+
+{-| Arrow-freeness of an alias BODY. Vars are fine here — they are the alias's
+parameters — and so is an open extension, which is a parameter too.
+-}
+noArrowBody : Can.Type TypeIds.MVarId -> Bool
+noArrowBody t =
+    case t of
+        Can.TVar _ ->
+            True
+
+        Can.TLambda _ _ _ ->
+            False
+
+        Can.TUnit ->
+            True
+
+        Can.TType _ _ args ->
+            List.all noArrowBody args
+
+        Can.TTuple a b rest ->
+            noArrowBody a && noArrowBody b && List.all noArrowBody rest
+
+        Can.TRecord fields _ ->
+            Dict.foldl (\_ (Can.FieldType _ ft) ok -> ok && noArrowBody ft) True fields
+
+        Can.TAlias _ _ _ (Can.Filled inner) ->
+            noArrowBody inner
+
+        Can.TAlias _ _ args (Can.Holey inner) ->
+            List.all (\( _, at ) -> noArrowBody at) args && noArrowBody inner
+
+
+{-| Ground and arrow-free: no free var, no arrow, no open record.
+-}
+groundNoArrow : Can.Type TypeIds.MVarId -> Bool
+groundNoArrow t =
+    groundHash t >= 0
+
+
+{-| The memo key of an alias occurrence, or `Nothing` when an ARGUMENT disqualifies it.
+
+Looks at the arguments only, never the body, so a probe never pays for a body walk;
+whether the BODY is eligible is a separate question answered once per instantiation by
+`aliasBodyEligible` and then cached.
+
+-}
+aliasKeyOf : ModuleName.Canonical -> String -> List ( TypeIds.MVarId, Can.Type TypeIds.MVarId ) -> Maybe Engine.AliasKey
+aliasKeyOf ((ModuleName.Canonical ( author, project ) modName) as home) name args =
+    let
+        argTypes =
+            List.map Tuple.second args
+
+        h0 =
+            mix (mix (mix (mix 6 (String.length author)) (String.length project)) (String.length modName))
+                (String.foldl (\c acc -> mix acc (Char.toCode c)) 23 name)
+
+        h =
+            groundHashList h0 argTypes
+    in
+    if h < 0 then
+        Nothing
+
+    else
+        Just { hash = h, home = home, name = name, args = argTypes }
+
+
+{-| Is the alias BODY eligible — the part `aliasKeyOf` deliberately did not look at?
+-}
+aliasBodyEligible : Can.AliasType TypeIds.MVarId -> Bool
+aliasBodyEligible aliasType =
+    case aliasType of
+        Can.Filled inner ->
+            groundHash inner >= 0
+
+        Can.Holey inner ->
+            noArrowBody inner
+
+
+{-| `groundNoArrow` that answers an alias occurrence from the run's verdict map when it
+can — O(1) for `S`, `Env` and `ItemAux` after their first classify — and walks
+otherwise. Step 9 consumes this.
+-}
+groundNoArrowWith : HashMap.HashMap Engine.AliasKey Engine.AliasVerdict -> Can.Type TypeIds.MVarId -> Bool
+groundNoArrowWith aliasMemo t =
+    case t of
+        Can.TAlias home name args aliasType ->
+            case aliasKeyOf home name args of
+                Nothing ->
+                    False
+
+                Just key ->
+                    case HashMap.get Engine.aliasKeyHash Engine.aliasKeyEq key aliasMemo of
+                        Just (Engine.AliasGround _) ->
+                            True
+
+                        Just Engine.AliasIneligible ->
+                            False
+
+                        Nothing ->
+                            aliasBodyEligible aliasType
+
+        Can.TType _ _ args ->
+            List.all (groundNoArrowWith aliasMemo) args
+
+        Can.TTuple a b rest ->
+            groundNoArrowWith aliasMemo a && groundNoArrowWith aliasMemo b && List.all (groundNoArrowWith aliasMemo) rest
+
+        Can.TRecord fields Nothing ->
+            Dict.foldl (\_ (Can.FieldType _ ft) ok -> ok && groundNoArrowWith aliasMemo ft) True fields
+
+        Can.TRecord _ (Just _) ->
+            False
+
+        Can.TUnit ->
+            True
+
+        Can.TVar _ ->
+            False
+
+        Can.TLambda _ _ _ ->
+            False
+
 
 
 classifyList : Int -> Engine.S -> Dict.Dict Int Mono.MonoType -> List (Can.Type TypeIds.MVarId) -> Result Failure ( List Mono.MonoType, Engine.S )
