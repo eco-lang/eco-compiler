@@ -78,7 +78,7 @@ SCC unit on first demand. Crashes (EngineBug) on re-entry into an in-flight
 unit — pre-resolution of callee signatures makes that impossible; the crash
 keeps it that way.
 -}
-signatureFor : TOpt.Global -> Step Engine.LssSignature
+signatureFor : TOpt.Global -> Engine.S -> ( Engine.LssSignature, Engine.S )
 signatureFor global s0 =
     let
         gkey =
@@ -86,14 +86,14 @@ signatureFor global s0 =
     in
     case CoreDict.get gkey s0.lssSignatures of
         Just sig ->
-            Ok ( sig, s0 )
+            ( sig, s0 )
 
         Nothing ->
             if not s0.env.lss.enabled then
-                Ok ( Engine.trivialSignature 0, s0 )
+                ( Engine.trivialSignature 0, s0 )
 
             else if CoreDict.member gkey s0.lssInProgress then
-                Err (EngineBug ("LssInfer.signatureFor re-entry on in-flight unit member: " ++ gkey))
+                Engine.crashFailure (EngineBug ("LssInfer.signatureFor re-entry on in-flight unit member: " ++ gkey))
 
             else
                 case HashMap.get TOpt.globalHash (==) global s0.env.toptNodes of
@@ -104,16 +104,13 @@ signatureFor global s0 =
                         -- signature — so after the chase, prefer this gkey's
                         -- freshly memoized signature over the target handle's.
                         case signatureFor target s0 of
-                            Err e ->
-                                Err e
-
-                            Ok ( sigTarget, s1 ) ->
+                            (  sigTarget, s1  ) ->
                                 case CoreDict.get gkey s1.lssSignatures of
                                     Just own ->
-                                        Ok ( own, s1 )
+                                        ( own, s1 )
 
                                     Nothing ->
-                                        Ok ( sigTarget, { s1 | lssSignatures = CoreDict.insert gkey sigTarget s1.lssSignatures } )
+                                        ( sigTarget, { s1 | lssSignatures = CoreDict.insert gkey sigTarget s1.lssSignatures } )
 
                     _ ->
                         inferUnit global gkey s0
@@ -125,24 +122,15 @@ arrow slots. `funcCanType` must be sourced annotation-first exactly as
 `Translate.translateCall` does — the signature side uses the same source, so
 ordinals pair (LSS\_006).
 -}
-instantiateWithSignature : TOpt.Global -> Can.Type TypeIds.MVarId -> Step Vars.Variable
+instantiateWithSignature : TOpt.Global -> Can.Type TypeIds.MVarId -> Engine.S -> ( Vars.Variable, Engine.S )
 instantiateWithSignature global funcCanType s0 =
     case signatureFor global s0 of
-        Err e ->
-            Err e
-
-        Ok ( sig, s1 ) ->
+        (  sig, s1  ) ->
             case Store.loadTypeIsolatedWithArrows funcCanType s1 of
-                Err e ->
-                    Err e
-
-                Ok ( ( funcVar, slots ), s2 ) ->
+                ( ( funcVar, slots ), s2 ) ->
                     case applyFacts global sig slots funcVar s2 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s3 ) ->
-                            Ok ( funcVar, s3 )
+                        s3 ->
+                            ( funcVar, s3 )
 
 
 {-| Unify a source lambda's own member into the first `arity` arrows of its
@@ -154,11 +142,11 @@ No-op for untagged lambdas and for any spine arrow with no slot (an erased-var
 head has no slot to constrain — sound: the arrow reads back whatever its other
 constraints say, or LTop). The argument arrows are deliberately never touched.
 -}
-injectLambdaMember : Int -> Maybe TypeIds.SrcLambdaId -> Vars.Variable -> Step ()
+injectLambdaMember : Int -> Maybe TypeIds.SrcLambdaId -> Vars.Variable -> Engine.S -> Engine.S
 injectLambdaMember arity srcLam funcVar s0 =
     case srcLam of
         Nothing ->
-            Ok ( (), s0 )
+            s0
 
         Just lamId ->
             injectSpineMemberId arity (Engine.srcLambdaKey lamId) funcVar s0
@@ -170,18 +158,15 @@ the defining global routes keyed, so keyed clones of one source lambda
 stay distinguishable. The inference-phase walk (`walkExpr`) keeps the raw
 `injectLambdaMember`: signatures are per-unit and pre-spec by design.
 -}
-injectLambdaMemberQualified : Int -> Maybe TypeIds.SrcLambdaId -> Vars.Variable -> Step ()
+injectLambdaMemberQualified : Int -> Maybe TypeIds.SrcLambdaId -> Vars.Variable -> Engine.S -> Engine.S
 injectLambdaMemberQualified arity srcLam funcVar s0 =
     -- Step 22(b): the id-returning form is the real one; this is the
     -- unit-returning wrapper for the three arg-injection sites that have no
     -- use for the id. Written as a case rather than `Engine.map` so it costs
     -- no closure.
     case injectLambdaMemberQualifiedId arity srcLam funcVar s0 of
-        Err e ->
-            Err e
-
-        Ok ( _, s1 ) ->
-            Ok ( (), s1 )
+        (  _, s1  ) ->
+            s1
 
 
 {-| `injectLambdaMemberQualified` returning the member id it minted (step 22b).
@@ -196,18 +181,15 @@ LSS\_017's "stamped IDENTICALLY in its set injection and its
 argument.
 
 -}
-injectLambdaMemberQualifiedId : Int -> Maybe TypeIds.SrcLambdaId -> Vars.Variable -> Step (Maybe Int)
+injectLambdaMemberQualifiedId : Int -> Maybe TypeIds.SrcLambdaId -> Vars.Variable -> Engine.S -> ( (Maybe Int), Engine.S )
 injectLambdaMemberQualifiedId arity srcLam funcVar s0 =
     case srcLam of
         Nothing ->
-            Ok ( Nothing, s0 )
+            ( Nothing, s0 )
 
         Just lamId ->
             case Engine.lambdaInstanceMemberId lamId s0 of
-                Err e ->
-                    Err e
-
-                Ok ( mid, s1 ) ->
+                ( mid, s1 ) ->
                     -- plans/lss-root-fold-depth-qualified-spine.md §3: a
                     -- root-FOLDED lambda's id is its global's GROUND
                     -- STANDALONE key — a STAMPABLE `g|` — and must not be
@@ -226,24 +208,15 @@ injectLambdaMemberQualifiedId arity srcLam funcVar s0 =
                     case CoreDict.get (Engine.srcLambdaKey lamId) s1.lssMemberTable.rootLamOf of
                         Just g ->
                             case injectSpineMemberId 1 mid funcVar s1 of
-                                Err e ->
-                                    Err e
-
-                                Ok ( _, s2 ) ->
+                                s2 ->
                                     case injectFoldedSuccessors g arity funcVar s2 of
-                                        Err e ->
-                                            Err e
-
-                                        Ok ( _, s3 ) ->
-                                            Ok ( Just mid, s3 )
+                                        s3 ->
+                                            ( Just mid, s3 )
 
                         Nothing ->
                             case injectSpineMemberId arity mid funcVar s1 of
-                                Err e ->
-                                    Err e
-
-                                Ok ( _, s2 ) ->
-                                    Ok ( Just mid, s2 )
+                                s2 ->
+                                    ( Just mid, s2 )
 
 
 
@@ -277,10 +250,10 @@ transport exists to deliver, which is why this counter is a direct read on
 the transport's yield rather than a curiosity.
 
 -}
-applyFacts : TOpt.Global -> Engine.LssSignature -> Array Vars.Variable -> Vars.Variable -> Step ()
+applyFacts : TOpt.Global -> Engine.LssSignature -> Array Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 applyFacts global sig slots funcVar s0 =
     if sig.trivial then
-        Ok ( (), s0 )
+        s0
 
     else if Array.length sig.arrows /= Array.length slots then
         Store.poisonArrowSets funcVar (censusLenGuard global (Array.length sig.arrows) (Array.length slots) s0)
@@ -309,7 +282,7 @@ censusLenGuard global sigN slotsN s =
             |> Engine.bumpArgFlowCensus ("poison|lenGuardShape|" ++ String.fromInt sigN ++ "->" ++ String.fromInt slotsN)
 
 
-applyFactsGo : Array Engine.ArrowFact -> Array Vars.Variable -> Int -> Step ()
+applyFactsGo : Array Engine.ArrowFact -> Array Vars.Variable -> Int -> Engine.S -> Engine.S
 applyFactsGo facts slots i s0 =
     case ( Array.get i facts, Array.get i slots ) of
         ( Just fact, Just slot ) ->
@@ -318,19 +291,16 @@ applyFactsGo facts slots i s0 =
                     if fact.rep /= i then
                         case Array.get fact.rep slots of
                             Just repSlot ->
-                                Store.unifyStrict repSlot slot s0
+                                Store.unifyStrictS (\() -> "") repSlot slot s0
 
                             Nothing ->
-                                Ok ( (), s0 )
+                                s0
 
                     else
-                        Ok ( (), s0 )
+                        s0
             in
             case afterRep of
-                Err e ->
-                    Err e
-
-                Ok ( _, s1 ) ->
+                s1 ->
                     let
                         afterSet =
                             if fact.top then
@@ -340,13 +310,10 @@ applyFactsGo facts slots i s0 =
                                 Store.unifySlotWithSet Nothing fact.members slot s1
 
                             else
-                                Ok ( (), s1 )
+                                s1
                     in
                     case afterSet of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s2 ) ->
+                        s2 ->
                             -- LSS_023: install the directed half — for each
                             -- source ordinal j, "slots[i] ⊇ slots[j]" as a
                             -- deferred edge. Pull-at-read makes the
@@ -358,21 +325,18 @@ applyFactsGo facts slots i s0 =
                             -- mismatch is already poisoned by applyFacts'
                             -- length guard).
                             case installSources fact.sources slots slot s2 of
-                                Err e ->
-                                    Err e
-
-                                Ok ( _, s3 ) ->
+                                s3 ->
                                     applyFactsGo facts slots (i + 1) s3
 
         _ ->
-            Ok ( (), s0 )
+            s0
 
 
-installSources : List Int -> Array Vars.Variable -> Vars.Variable -> Step ()
+installSources : List Int -> Array Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 installSources ordinals slots dst s0 =
     case ordinals of
         [] ->
-            Ok ( (), s0 )
+            s0
 
         j :: rest ->
             case Array.get j slots of
@@ -381,10 +345,7 @@ installSources ordinals slots dst s0 =
 
                 Just srcSlot ->
                     case Store.addSlotSource srcSlot dst s0 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s1 ) ->
+                        s1 ->
                             installSources rest slots dst s1
 
 
@@ -405,13 +366,10 @@ type alias UnitMember =
     }
 
 
-inferUnit : TOpt.Global -> String -> Step Engine.LssSignature
+inferUnit : TOpt.Global -> String -> Engine.S -> ( Engine.LssSignature, Engine.S )
 inferUnit global gkey s0 =
     case resolveUnit global s0 of
-        Err e ->
-            Err e
-
-        Ok ( members, s1 ) ->
+        (  members, s1  ) ->
             let
                 s2 =
                     { s1 | lssInProgress = CoreDict.insert gkey () (List.foldl (\m acc -> CoreDict.insert m.gkey () acc) s1.lssInProgress members) }
@@ -419,15 +377,9 @@ inferUnit global gkey s0 =
             -- Pre-resolve callee signatures OUTSIDE the scratch store so
             -- scratch stores never nest.
             case preResolveCallees members s2 of
-                Err e ->
-                    Err e
-
-                Ok ( _, s3 ) ->
+                s3 ->
                     case Engine.withScratchStore (inferUnitInScratch members) s3 of
-                        Err e ->
-                            Err e
-
-                        Ok ( sigs, s4 ) ->
+                        ( sigs, s4 ) ->
                             let
                                 s5 =
                                     { s4
@@ -437,7 +389,7 @@ inferUnit global gkey s0 =
                             in
                             case List.filter (\( k, _ ) -> k == gkey) sigs of
                                 ( _, sig ) :: _ ->
-                                    Ok ( sig, s5 )
+                                    ( sig, s5 )
 
                                 [] ->
                                     -- gkey is a Cycle GROUP handle (`_M$first`),
@@ -451,7 +403,7 @@ inferUnit global gkey s0 =
                                         placeholder =
                                             Engine.trivialSignature 0
                                     in
-                                    Ok ( placeholder, { s5 | lssSignatures = CoreDict.insert gkey placeholder s5.lssSignatures } )
+                                    ( placeholder, { s5 | lssSignatures = CoreDict.insert gkey placeholder s5.lssSignatures } )
 
 
 {-| Resolve the inference unit: a `TOpt.Cycle` node is one unit (all its
@@ -459,20 +411,20 @@ members); anything else is a singleton. Members without a walkable body
 (Ctor/Enum/Box/Kernel/Manager) get trivial signatures via a body-less member.
 Signature-source types are annotation-first (LSS\_006).
 -}
-resolveUnit : TOpt.Global -> Step (List UnitMember)
+resolveUnit : TOpt.Global -> Engine.S -> ( (List UnitMember), Engine.S )
 resolveUnit ((TOpt.Global home _) as global) s0 =
     case HashMap.get TOpt.globalHash (==) global s0.env.toptNodes of
         Nothing ->
             -- Unknown global (e.g. an accessor pseudo-global): trivial.
-            Ok ( [ memberOf global Can.TUnit Nothing s0 ], s0 )
+            ( [ memberOf global Can.TUnit Nothing s0 ], s0 )
 
         Just node ->
             case node of
                 TOpt.Define expr _ meta ->
-                    Ok ( [ memberOf global meta.tipe (Just expr) s0 ], s0 )
+                    ( [ memberOf global meta.tipe (Just expr) s0 ], s0 )
 
                 TOpt.TrackedDefine _ expr _ meta ->
-                    Ok ( [ memberOf global meta.tipe (Just expr) s0 ], s0 )
+                    ( [ memberOf global meta.tipe (Just expr) s0 ], s0 )
 
                 TOpt.Cycle _ valueDefs funcDefs _ ->
                     let
@@ -497,31 +449,31 @@ resolveUnit ((TOpt.Global home _) as global) s0 =
                                 )
                                 funcDefs
                     in
-                    Ok ( valueMembers ++ funcMembers, s0 )
+                    ( valueMembers ++ funcMembers, s0 )
 
                 TOpt.PortIncoming expr _ meta ->
-                    Ok ( [ memberOf global meta.tipe (Just expr) s0 ], s0 )
+                    ( [ memberOf global meta.tipe (Just expr) s0 ], s0 )
 
                 TOpt.PortOutgoing expr _ meta ->
-                    Ok ( [ memberOf global meta.tipe (Just expr) s0 ], s0 )
+                    ( [ memberOf global meta.tipe (Just expr) s0 ], s0 )
 
                 TOpt.Ctor _ _ canType ->
-                    Ok ( [ memberOf global canType Nothing s0 ], s0 )
+                    ( [ memberOf global canType Nothing s0 ], s0 )
 
                 TOpt.Enum _ canType ->
-                    Ok ( [ memberOf global canType Nothing s0 ], s0 )
+                    ( [ memberOf global canType Nothing s0 ], s0 )
 
                 TOpt.Box canType ->
-                    Ok ( [ memberOf global canType Nothing s0 ], s0 )
+                    ( [ memberOf global canType Nothing s0 ], s0 )
 
                 TOpt.Link target ->
                     resolveUnit target s0
 
                 TOpt.Manager _ ->
-                    Ok ( [ memberOf global Can.TUnit Nothing s0 ], s0 )
+                    ( [ memberOf global Can.TUnit Nothing s0 ], s0 )
 
                 TOpt.Kernel _ _ ->
-                    Ok ( [ memberOf global Can.TUnit Nothing s0 ], s0 )
+                    ( [ memberOf global Can.TUnit Nothing s0 ], s0 )
 
 
 memberOf : TOpt.Global -> Can.Type TypeIds.MVarId -> Maybe (TOpt.Expr TypeIds.MVarId) -> Engine.S -> UnitMember
@@ -536,7 +488,7 @@ memberOf g fallbackType body s =
 {-| Fold over unit bodies collecting referenced globals; `signatureFor` each
 one outside the unit and not yet memoized. Cheap syntactic pass.
 -}
-preResolveCallees : List UnitMember -> Step ()
+preResolveCallees : List UnitMember -> Engine.S -> Engine.S
 preResolveCallees members s0 =
     let
         unitKeys =
@@ -558,11 +510,11 @@ preResolveCallees members s0 =
     preResolveGo unitKeys (CoreDict.values referenced) s0
 
 
-preResolveGo : Dict String () -> List TOpt.Global -> Step ()
+preResolveGo : Dict String () -> List TOpt.Global -> Engine.S -> Engine.S
 preResolveGo unitKeys globals s0 =
     case globals of
         [] ->
-            Ok ( (), s0 )
+            s0
 
         g :: rest ->
             let
@@ -574,10 +526,7 @@ preResolveGo unitKeys globals s0 =
 
             else
                 case signatureFor g s0 of
-                    Err e ->
-                        Err e
-
-                    Ok ( _, s1 ) ->
+                    (  _, s1  ) ->
                         preResolveGo unitKeys rest s1
 
 
@@ -604,23 +553,17 @@ collectReferencedGlobals expr acc =
 -- ====== THE SCRATCH-STORE UNIT PASS ======
 
 
-inferUnitInScratch : List UnitMember -> Step (List ( String, Engine.LssSignature ))
+inferUnitInScratch : List UnitMember -> Engine.S -> ( (List ( String, Engine.LssSignature )), Engine.S )
 inferUnitInScratch members s0 =
     -- Load every member's signature type through the SHARED scratch memo,
     -- capturing per-member roots + arrow-slot arrays (self/sibling annotation
     -- vars share Points — the Σ rule).
     case loadMemberSlots members [] s0 of
-        Err e ->
-            Err e
-
-        Ok ( loaded, s1 ) ->
+        (  loaded, s1  ) ->
             -- `loaded` is in member order by construction (one triple per
             -- member, body-less members included), so the zips align.
             case walkMembers (List.map2 Tuple.pair members loaded) s1 of
-                Err e ->
-                    Err e
-
-                Ok ( _, s2 ) ->
+                s2 ->
                     -- LSS_026 §11.2(i) defaulted a WRAP-CLASS member's
                     -- head-arrow fact here. MEASURED NO-GO (plan §11.5): it
                     -- pushed 184 signatures into `trivial`, whose
@@ -636,10 +579,7 @@ inferUnitInScratch members s0 =
                             []
                             s2
                     of
-                        Err e ->
-                            Err e
-
-                        Ok ( sigs, s3 ) ->
+                        ( sigs, s3 ) ->
                             -- §5.6 (plans/lss-paper-inclusion-constraints.md):
                             -- score `Q` HERE, while the scratch store is still
                             -- installed. This is the paper's inference boundary
@@ -664,21 +604,18 @@ inferUnitInScratch members s0 =
                                 aux4 =
                                     s4.itemAux
                             in
-                            Ok ( sigs, { s4 | itemAux = { aux4 | qLog = [] } } )
+                            ( sigs, { s4 | itemAux = { aux4 | qLog = [] } } )
 
 
-loadMemberSlots : List UnitMember -> List ( String, Vars.Variable, Array Vars.Variable ) -> Step (List ( String, Vars.Variable, Array Vars.Variable ))
+loadMemberSlots : List UnitMember -> List ( String, Vars.Variable, Array Vars.Variable ) -> Engine.S -> ( (List ( String, Vars.Variable, Array Vars.Variable )), Engine.S )
 loadMemberSlots members acc s0 =
     case members of
         [] ->
-            Ok ( List.reverse acc, s0 )
+            ( List.reverse acc, s0 )
 
         m :: rest ->
             case Store.loadTypeWithArrows m.sigType s0 of
-                Err e ->
-                    Err e
-
-                Ok ( ( root, slots ), s1 ) ->
+                ( ( root, slots ), s1 ) ->
                     loadMemberSlots rest (( m.gkey, root, slots ) :: acc) s1
 
 
@@ -704,11 +641,11 @@ selfIdOf m =
             Nothing
 
 
-walkMembers : List ( UnitMember, ( String, Vars.Variable, Array Vars.Variable ) ) -> Step ()
+walkMembers : List ( UnitMember, ( String, Vars.Variable, Array Vars.Variable ) ) -> Engine.S -> Engine.S
 walkMembers pairs s0 =
     case pairs of
         [] ->
-            Ok ( (), s0 )
+            s0
 
         ( m, ( _, root, _ ) ) :: rest ->
             case m.body of
@@ -732,33 +669,24 @@ walkMembers pairs s0 =
                             bindParamsFromSpine m.tailArgs root CoreDict.empty CoreDict.empty s0
                     in
                     case walkExpr env0 body s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( wp, s2 ) ->
+                        (  wp, s2  ) ->
                             case ( maybeTarget, wpPoint wp ) of
                                 ( Just target, Just p ) ->
                                     case joinArrowSetsSig target p s2 of
-                                        Err e ->
-                                            Err e
-
-                                        Ok ( _, s3 ) ->
+                                        s3 ->
                                             walkMembers rest s3
 
                                 _ ->
                                     walkMembers rest s2
-zonkSignatures : List ( String, Maybe Int, Array Vars.Variable ) -> List ( String, Engine.LssSignature ) -> Step (List ( String, Engine.LssSignature ))
+zonkSignatures : List ( String, Maybe Int, Array Vars.Variable ) -> List ( String, Engine.LssSignature ) -> Engine.S -> ( (List ( String, Engine.LssSignature )), Engine.S )
 zonkSignatures pending acc s0 =
     case pending of
         [] ->
-            Ok ( List.reverse acc, s0 )
+            ( List.reverse acc, s0 )
 
         ( gkey, selfId, slots ) :: rest ->
             case zonkOneSignature selfId slots s0 of
-                Err e ->
-                    Err e
-
-                Ok ( sig, s1 ) ->
+                (  sig, s1  ) ->
                     zonkSignatures rest (( gkey, sig ) :: acc) (censusSigFacts gkey sig s1)
 
 
@@ -814,12 +742,12 @@ censusSigFacts gkey sig s =
             (List.indexedMap Tuple.pair (Array.toList sig.arrows))
 
 
-zonkOneSignature : Maybe Int -> Array Vars.Variable -> Step Engine.LssSignature
+zonkOneSignature : Maybe Int -> Array Vars.Variable -> Engine.S -> ( Engine.LssSignature, Engine.S )
 zonkOneSignature selfId slots s0 =
     zonkSigGo selfId slots (Array.length slots) 0 [] s0
 
 
-zonkSigGo : Maybe Int -> Array Vars.Variable -> Int -> Int -> List Engine.ArrowFact -> Step Engine.LssSignature
+zonkSigGo : Maybe Int -> Array Vars.Variable -> Int -> Int -> List Engine.ArrowFact -> Engine.S -> ( Engine.LssSignature, Engine.S )
 zonkSigGo selfId slots n i factsRev s0 =
     if i >= n then
         let
@@ -860,7 +788,6 @@ zonkSigGo selfId slots n i factsRev s0 =
                     []
                     (List.indexedMap Tuple.pair facts)
         in
-        Ok
             ( { arrows = Array.fromList facts, trivial = trivial, residual = residual }
             , censusSignature n facts trivial s0
             )
@@ -868,14 +795,11 @@ zonkSigGo selfId slots n i factsRev s0 =
     else
         case Array.get i slots of
             Nothing ->
-                Err (EngineBug "zonkOneSignature: slot index out of range")
+                Engine.crashFailure (EngineBug "zonkOneSignature: slot index out of range")
 
             Just slot ->
                 case repOrdinal slots slot i 0 s0 of
-                    Err e ->
-                        Err e
-
-                    Ok ( rep, s1 ) ->
+                    (  rep, s1  ) ->
                         let
                             ( store1, desc ) =
                                 UF.get slot s1.store
@@ -939,10 +863,7 @@ zonkSigGo selfId slots n i factsRev s0 =
 
                             Err ( ms0, srcs ) ->
                                 case sigResolveEdges selfId slots i ms0 srcs s3 of
-                                    Err e ->
-                                        Err e
-
-                                    Ok ( resolved, s4 ) ->
+                                    (  resolved, s4  ) ->
                                         let
                                             ( done, s5 ) =
                                                 finishSigFact rep resolved s4
@@ -1003,16 +924,13 @@ The self-id filter (B.1.f) applies to the COLLECTED members; ordinal self
 dropped from sources.
 
 -}
-sigResolveEdges : Maybe Int -> Array Vars.Variable -> Int -> List Int -> List Vars.Variable -> Step { top : Bool, members : List Int, sources : List Int }
+sigResolveEdges : Maybe Int -> Array Vars.Variable -> Int -> List Int -> List Vars.Variable -> Engine.S -> ( { top : Bool, members : List Int, sources : List Int }, Engine.S )
 sigResolveEdges selfId slots i ms0 srcs s0 =
     case sigEdgesGo slots i srcs [] ms0 [] False s0 of
-        Err e ->
-            Err e
+        (  ( Nothing, _ ), s1  ) ->
+            ( { top = True, members = [], sources = [] }, s1 )
 
-        Ok ( ( Nothing, _ ), s1 ) ->
-            Ok ( { top = True, members = [], sources = [] }, s1 )
-
-        Ok ( ( Just ( members, ordinals ), sawFlex ), s1 ) ->
+        ( ( Just ( members, ordinals ), sawFlex ), s1 ) ->
             let
                 filtered =
                     case selfId of
@@ -1048,13 +966,12 @@ sigResolveEdges selfId slots i ms0 srcs s0 =
                 -- The all-empty case keeps today's empty fact (consumers
                 -- write nothing, the slot stays flex and reads ⊤ — sound,
                 -- and it preserves the trivial-signature mass).
-                Ok
                     ( { top = True, members = [], sources = [] }
                     , censusMixedSig filtered (Engine.bumpTopMixedFlexSig s1)
                     )
 
             else
-                Ok ( { top = False, members = filtered, sources = List.sort ordinals }, s1 )
+                ( { top = False, members = filtered, sources = List.sort ordinals }, s1 )
 
 
 {-| LSS\_026 census (plan §2.1 row 2, signature side): count a mixed fact and
@@ -1076,11 +993,11 @@ censusMixedSig members s =
             |> Engine.bumpArgFlowCensus ("mixed|sig|" ++ Engine.membersClass members s.lssMemberTable)
 
 
-sigEdgesGo : Array Vars.Variable -> Int -> List Vars.Variable -> List Int -> List Int -> List Int -> Bool -> Step ( Maybe ( List Int, List Int ), Bool )
+sigEdgesGo : Array Vars.Variable -> Int -> List Vars.Variable -> List Int -> List Int -> List Int -> Bool -> Engine.S -> ( ( Maybe ( List Int, List Int ), Bool ), Engine.S )
 sigEdgesGo slots i pending visited accMembers accOrdinals sawFlex s0 =
     case pending of
         [] ->
-            Ok ( ( Just ( accMembers, accOrdinals ), sawFlex ), s0 )
+            ( ( Just ( accMembers, accOrdinals ), sawFlex ), s0 )
 
         src :: rest ->
             let
@@ -1092,10 +1009,7 @@ sigEdgesGo slots i pending visited accMembers accOrdinals sawFlex s0 =
 
             else
                 case ordinalOf slots i src s0 of
-                    Err e ->
-                        Err e
-
-                    Ok ( Just j, s1 ) ->
+                    (  Just j, s1  ) ->
                         -- PROMOTE: record the ordinal, do not descend.
                         sigEdgesGo slots
                             i
@@ -1111,7 +1025,7 @@ sigEdgesGo slots i pending visited accMembers accOrdinals sawFlex s0 =
                             sawFlex
                             s1
 
-                    Ok ( Nothing, s1 ) ->
+                    ( Nothing, s1 ) ->
                         -- INTERNALIZE.
                         let
                             ( store1, desc ) =
@@ -1125,7 +1039,7 @@ sigEdgesGo slots i pending visited accMembers accOrdinals sawFlex s0 =
                         in
                         case desc.content of
                             Vars.Structure (Vars.LambdaSet1 (Vars.LsTop _)) ->
-                                Ok ( ( Nothing, sawFlex ), s2 )
+                                ( ( Nothing, sawFlex ), s2 )
 
                             Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers ms)) ->
                                 sigEdgesGo slots i rest visited1 (IO.unionSortedAsc accMembers ms) accOrdinals sawFlex s2
@@ -1142,21 +1056,21 @@ sigEdgesGo slots i pending visited accMembers accOrdinals sawFlex s0 =
                             _ ->
                                 -- Defensive: fail toward ⊤ (§2.3's direction
                                 -- rule).
-                                Ok ( ( Nothing, sawFlex ), s2 )
+                                ( ( Nothing, sawFlex ), s2 )
 
 
 {-| The signature ordinal a Point IS (UF-equivalent to `slots[j]`, `j /= i`),
 scanning ALL ordinals — unlike `repOrdinal`, which scans only below `i`.
 -}
-ordinalOf : Array Vars.Variable -> Int -> Vars.Variable -> Step (Maybe Int)
+ordinalOf : Array Vars.Variable -> Int -> Vars.Variable -> Engine.S -> ( (Maybe Int), Engine.S )
 ordinalOf slots i node s0 =
     ordinalOfGo slots i node 0 s0
 
 
-ordinalOfGo : Array Vars.Variable -> Int -> Vars.Variable -> Int -> Step (Maybe Int)
+ordinalOfGo : Array Vars.Variable -> Int -> Vars.Variable -> Int -> Engine.S -> ( (Maybe Int), Engine.S )
 ordinalOfGo slots i node j s0 =
     if j >= Array.length slots then
-        Ok ( Nothing, s0 )
+        ( Nothing, s0 )
 
     else if j == i then
         ordinalOfGo slots i node (j + 1) s0
@@ -1164,7 +1078,7 @@ ordinalOfGo slots i node j s0 =
     else
         case Array.get j slots of
             Nothing ->
-                Ok ( Nothing, s0 )
+                ( Nothing, s0 )
 
             Just other ->
                 let
@@ -1175,7 +1089,7 @@ ordinalOfGo slots i node j s0 =
                         { s0 | store = store1 }
                 in
                 if eq then
-                    Ok ( Just j, s1 )
+                    ( Just j, s1 )
 
                 else
                     ordinalOfGo slots i node (j + 1) s1
@@ -1203,15 +1117,15 @@ finishSigFact rep resolved s0 =
 {-| The smallest ordinal j < i whose slot is UF-equivalent to this one (i if
 none). Arrows-per-signature is small; the O(n²) is on n ≈ arity.
 -}
-repOrdinal : Array Vars.Variable -> Vars.Variable -> Int -> Int -> Step Int
+repOrdinal : Array Vars.Variable -> Vars.Variable -> Int -> Int -> Engine.S -> ( Int, Engine.S )
 repOrdinal slots slot i j s0 =
     if j >= i then
-        Ok ( i, s0 )
+        ( i, s0 )
 
     else
         case Array.get j slots of
             Nothing ->
-                Ok ( i, s0 )
+                ( i, s0 )
 
             Just other ->
                 let
@@ -1219,7 +1133,7 @@ repOrdinal slots slot i j s0 =
                         UF.equivalent other slot s0.store
                 in
                 if eq then
-                    Ok ( j, { s0 | store = store1 } )
+                    ( j, { s0 | store = store1 } )
 
                 else
                     repOrdinal slots slot i (j + 1) { s0 | store = store1 }
@@ -1286,7 +1200,7 @@ wpPoint wp =
             Nothing
 
 
-walkExpr : LetEnv -> TOpt.Expr TypeIds.MVarId -> Step WalkPoint
+walkExpr : LetEnv -> TOpt.Expr TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 walkExpr letEnv expr s0 =
     case expr of
         TOpt.Function srcLam params body meta ->
@@ -1297,16 +1211,10 @@ walkExpr letEnv expr s0 =
 
         TOpt.Call _ func args meta ->
             case walkCall letEnv func args meta s0 of
-                Err e ->
-                    Err e
-
-                Ok ( wp, s1 ) ->
+                (  wp, s1  ) ->
                     case walkChildren letEnv (func :: args) s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s2 ) ->
-                            Ok ( wp, s2 )
+                        s2 ->
+                            ( wp, s2 )
 
         TOpt.VarGlobal _ g meta ->
             case kernelAliasOf g s0 of
@@ -1334,11 +1242,8 @@ walkExpr letEnv expr s0 =
                             (standaloneMemberWith (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal g) g) meta)
                             s0
                     of
-                        Err e ->
-                            Err e
-
-                        okOther ->
-                            okOther
+                        ( wp, sW ) ->
+                            ( wp, sW )
 
         TOpt.VarEnum _ g _ meta ->
             -- E9: ctor mints register the Global for devirt lookup.
@@ -1383,23 +1288,14 @@ walkExpr letEnv expr s0 =
             case def of
                 TOpt.Def _ name rhs defType ->
                     case walkExpr letEnv rhs s0 of
-                        Err e ->
-                            Err e
-
-                        Ok ( rhsWp, s1 ) ->
-                            case Store.loadType defType s1 of
-                                Err e ->
-                                    Err e
-
-                                Ok ( rhsVar, s2 ) ->
+                        (  rhsWp, s1  ) ->
+                            case Store.loadTypeS defType s1 of
+                                ( rhsVar, s2 ) ->
                                     -- LSS_020 (B.2): flag-on, connect the
                                     -- letEnv hub to the RHS's returned flow
                                     -- (single-source join; no-op flag-off).
                                     case sigFlowJoinInto rhsVar (wpPoint rhsWp) s2 of
-                                        Err e ->
-                                            Err e
-
-                                        Ok ( _, s3 ) ->
+                                        s3 ->
                                             walkExpr (CoreDict.insert name rhsVar letEnv) body s3
 
                 TOpt.TailDef _ name args rhs defType _ ->
@@ -1409,11 +1305,8 @@ walkExpr letEnv expr s0 =
                     -- hub (binding the args, closing leak 1 for local
                     -- loops), then single-source-join the spine end
                     -- against the rhs's returned flow.
-                    case Store.loadType defType s0 of
-                        Err e ->
-                            Err e
-
-                        Ok ( rhsVar, s1 ) ->
+                    case Store.loadTypeS defType s0 of
+                        ( rhsVar, s1 ) ->
                             let
                                 ( env1, maybeRes, s2 ) =
                                     bindParamsFromSpine
@@ -1424,17 +1317,11 @@ walkExpr letEnv expr s0 =
                                         s1
                             in
                             case walkExpr env1 rhs s2 of
-                                Err e ->
-                                    Err e
-
-                                Ok ( rhsWp, s3 ) ->
+                                (  rhsWp, s3  ) ->
                                     case ( maybeRes, wpPoint rhsWp ) of
                                         ( Just resVar, Just p ) ->
                                             case joinArrowSetsSig resVar p s3 of
-                                                Err e ->
-                                                    Err e
-
-                                                Ok ( _, s4 ) ->
+                                                s4 ->
                                                     walkExpr (CoreDict.insert name rhsVar letEnv) body s4
 
                                         _ ->
@@ -1449,36 +1336,24 @@ walkExpr letEnv expr s0 =
             -- per pair, then finally), collecting the branch VALUES' flow;
             -- then the hub join (LSS_020 B.2; no-op flag-off).
             case walkIfPairs letEnv branches [] s0 of
-                Err e ->
-                    Err e
-
-                Ok ( branchWps, s1 ) ->
+                (  branchWps, s1  ) ->
                     case walkExpr letEnv finally s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( finalWp, s2 ) ->
+                        (  finalWp, s2  ) ->
                             joinCfHub (finalWp :: branchWps) meta s2
 
         TOpt.Case _ _ decider jumps meta ->
             -- All Case children are branch VALUES (decider Inline leaves +
             -- jump bodies); same order as the structural arm.
             case walkCollect letEnv (deciderExprs decider ++ List.map Tuple.second jumps) [] s0 of
-                Err e ->
-                    Err e
-
-                Ok ( wps, s1 ) ->
+                (  wps, s1  ) ->
                     joinCfHub wps meta s1
 
         TOpt.TailCall _ tcArgs _ ->
             -- Children exactly as the structural arm walked them; `WpSelf` —
             -- the self edge is redundant in hubs (see `WalkPoint`).
             case walkChildren letEnv (List.map Tuple.second tcArgs) s0 of
-                Err e ->
-                    Err e
-
-                Ok ( _, s1 ) ->
-                    Ok ( WpSelf, s1 )
+                s1 ->
+                    ( WpSelf, s1 )
 
         -- F4-sig (plans/lss-container-payload-transport.md §12.10.1): literals
         -- hand their parent a POINT — flag-off, exactly the structural arm.
@@ -1502,11 +1377,8 @@ walkExpr letEnv expr s0 =
             -- already carry the intra-def flow; re-implementing translate's
             -- demand-concretization corners here would be wrong-layer work.
             case walkChildren letEnv (directChildren expr) s0 of
-                Err e ->
-                    Err e
-
-                Ok ( _, s1 ) ->
-                    Ok ( WpNone, s1 )
+                s1 ->
+                    ( WpNone, s1 )
 
 
 {-| LSS\_020 (B.1.e): the `Function`/`TrackedFunction` arm body. Flag-on it
@@ -1517,38 +1389,26 @@ for free) and joins the spine's result position against the body's returned
 flow (single-source: Honest|Opaque). Flag-off: byte-for-byte today's
 sequence.
 -}
-walkFunction : List Name -> Maybe TypeIds.SrcLambdaId -> TOpt.Expr TypeIds.MVarId -> TOpt.Meta TypeIds.MVarId -> LetEnv -> Step WalkPoint
+walkFunction : List Name -> Maybe TypeIds.SrcLambdaId -> TOpt.Expr TypeIds.MVarId -> TOpt.Meta TypeIds.MVarId -> LetEnv -> Engine.S -> ( WalkPoint, Engine.S )
 walkFunction paramNames srcLam body meta letEnv s0 =
-    case Store.loadType meta.tipe s0 of
-        Err e ->
-            Err e
-
-        Ok ( funcVar, s1 ) ->
+    case Store.loadTypeS meta.tipe s0 of
+        ( funcVar, s1 ) ->
             case injectLambdaMember (List.length paramNames) srcLam funcVar s1 of
-                Err e ->
-                    Err e
-
-                Ok ( _, s2 ) ->
+                s2 ->
                     let
                         ( letEnv1, maybeRes, s3 ) =
                             bindParamsFromSpine paramNames funcVar CoreDict.empty letEnv s2
                     in
                     case walkExpr letEnv1 body s3 of
-                        Err e ->
-                            Err e
-
-                        Ok ( wp, s4 ) ->
+                        (  wp, s4  ) ->
                             case ( maybeRes, wpPoint wp ) of
                                 ( Just resVar, Just bodyPt ) ->
                                     case joinArrowSetsSig resVar bodyPt s4 of
-                                        Err e ->
-                                            Err e
-
-                                        Ok ( _, s5 ) ->
-                                            Ok ( WpHonest funcVar, s5 )
+                                        s5 ->
+                                            ( WpHonest funcVar, s5 )
 
                                 _ ->
-                                    Ok ( WpHonest funcVar, s4 )
+                                    ( WpHonest funcVar, s4 )
 {-| F4-sig (plans/lss-container-payload-transport.md §12.10.1): a record /
 tuple / list / update literal's WalkPoint. Flag-off: the structural arm
 verbatim (`WpNone`). Shipped as `lss.flow.litFacts`, DEFAULT-ON 2026-09-16 —
@@ -1563,42 +1423,24 @@ update's base) handed an honest point, else OPAQUE (the hub rule: a partially
 visible container must not be mixed with member-bearing mates). An element
 whose slot cannot be located leaves it unwritten (var — no claim).
 -}
-walkLiteral : LetEnv -> String -> List ( String, TOpt.Expr TypeIds.MVarId ) -> Maybe (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> Step WalkPoint
+walkLiteral : LetEnv -> String -> List ( String, TOpt.Expr TypeIds.MVarId ) -> Maybe (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 walkLiteral letEnv form elems maybeBase meta expr s0 =
     if not s0.env.lss.enabled then
         case walkChildren letEnv (directChildren expr) s0 of
-            Err e ->
-                Err e
-
-            Ok ( _, s1 ) ->
-                Ok ( WpNone, s1 )
+            s1 ->
+                ( WpNone, s1 )
 
     else
         case walkMaybe letEnv maybeBase s0 of
-            Err e ->
-                Err e
-
-            Ok ( baseWp, s1 ) ->
+            (  baseWp, s1  ) ->
                 case walkKeyed letEnv elems [] s1 of
-                    Err e ->
-                        Err e
-
-                    Ok ( wps, s2 ) ->
-                        case Store.loadType meta.tipe s2 of
-                            Err e ->
-                                Err e
-
-                            Ok ( litVar, s3 ) ->
+                    (  wps, s2  ) ->
+                        case Store.loadTypeS meta.tipe s2 of
+                            ( litVar, s3 ) ->
                                 case joinLiteralBase litVar baseWp s3 of
-                                    Err e ->
-                                        Err e
-
-                                    Ok ( _, s4 ) ->
+                                    s4 ->
                                         case joinLiteralElems form litVar wps s4 of
-                                            Err e ->
-                                                Err e
-
-                                            Ok ( _, s5 ) ->
+                                            s5 ->
                                                 let
                                                     elemHonest ( ( _, e ), wp ) =
                                                         not (canTypeMentionsArrow (TOpt.typeOf e)) || isHonest wp
@@ -1617,7 +1459,6 @@ walkLiteral letEnv form elems maybeBase meta expr s0 =
                                                     honest =
                                                         baseHonest && List.all elemHonest (List.map2 (\e ( _, wp ) -> ( e, wp )) elems wps)
                                                 in
-                                                Ok
                                                     ( if honest then
                                                         WpHonest litVar
 
@@ -1637,44 +1478,38 @@ isHonest wp =
             False
 
 
-walkMaybe : LetEnv -> Maybe (TOpt.Expr TypeIds.MVarId) -> Step (Maybe WalkPoint)
+walkMaybe : LetEnv -> Maybe (TOpt.Expr TypeIds.MVarId) -> Engine.S -> ( (Maybe WalkPoint), Engine.S )
 walkMaybe letEnv maybeExpr s0 =
     case maybeExpr of
         Nothing ->
-            Ok ( Nothing, s0 )
+            ( Nothing, s0 )
 
         Just e ->
             case walkExpr letEnv e s0 of
-                Err err ->
-                    Err err
-
-                Ok ( wp, s1 ) ->
-                    Ok ( Just wp, s1 )
+                ( wp, s1 ) ->
+                    ( Just wp, s1 )
 
 
-walkKeyed : LetEnv -> List ( String, TOpt.Expr TypeIds.MVarId ) -> List ( String, WalkPoint ) -> Step (List ( String, WalkPoint ))
+walkKeyed : LetEnv -> List ( String, TOpt.Expr TypeIds.MVarId ) -> List ( String, WalkPoint ) -> Engine.S -> ( (List ( String, WalkPoint )), Engine.S )
 walkKeyed letEnv elems acc s0 =
     case elems of
         [] ->
-            Ok ( List.reverse acc, s0 )
+            ( List.reverse acc, s0 )
 
         ( k, e ) :: rest ->
             case walkExpr letEnv e s0 of
-                Err err ->
-                    Err err
-
-                Ok ( wp, s1 ) ->
+                ( wp, s1 ) ->
                     walkKeyed letEnv rest (( k, wp ) :: acc) s1
 
 
-joinLiteralBase : Vars.Variable -> Maybe WalkPoint -> Step ()
+joinLiteralBase : Vars.Variable -> Maybe WalkPoint -> Engine.S -> Engine.S
 joinLiteralBase litVar baseWp s0 =
     case Maybe.andThen wpPoint baseWp of
         Just p ->
             joinArrowSetsSig litVar p s0
 
         Nothing ->
-            Ok ( (), s0 )
+            s0
 
 
 {-| Locate each element's slot in the literal's loaded type and join the
@@ -1682,13 +1517,10 @@ element's point into it. Records by field name, tuples by position, lists all
 into the one element slot. Aliases chased; any other shape leaves the slots
 unwritten (counted).
 -}
-joinLiteralElems : String -> Vars.Variable -> List ( String, WalkPoint ) -> Step ()
+joinLiteralElems : String -> Vars.Variable -> List ( String, WalkPoint ) -> Engine.S -> Engine.S
 joinLiteralElems form litVar wps s0 =
     case Engine.liftIO (UF.get litVar) s0 of
-        Err e ->
-            Err e
-
-        Ok ( desc, s1 ) ->
+        ( desc, s1 ) ->
             case desc.content of
                 Vars.Alias _ _ _ real ->
                     joinLiteralElems form real wps s1
@@ -1703,7 +1535,7 @@ joinLiteralElems form litVar wps s0 =
                     joinKeyedSlots (List.map (\( _, wp ) -> ( Just elem, wp )) wps) s1
 
                 _ ->
-                    Ok ( (), censusLitShapeMiss form s1 )
+                    censusLitShapeMiss form s1
 
 
 {-| The per-literal census key, gated. This is the only ungated `++` census key
@@ -1737,20 +1569,17 @@ censusLitShapeMiss form s =
         Engine.bumpArgFlowCensus ("litFacts|shapeMiss|" ++ form) s
 
 
-joinKeyedSlots : List ( Maybe Vars.Variable, WalkPoint ) -> Step ()
+joinKeyedSlots : List ( Maybe Vars.Variable, WalkPoint ) -> Engine.S -> Engine.S
 joinKeyedSlots pairs s0 =
     case pairs of
         [] ->
-            Ok ( (), s0 )
+            s0
 
         ( maybeSlot, wp ) :: rest ->
             case ( maybeSlot, wpPoint wp ) of
                 ( Just slot, Just p ) ->
                     case joinArrowSetsSig slot p s0 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s1 ) ->
+                        s1 ->
                             joinKeyedSlots rest s1
 
                 _ ->
@@ -1764,7 +1593,7 @@ ABI is dynamic — poison arg and result arrows (LSS\_004). Local callee
 letEnv family — NEVER whole-type unification of the shared family Point
 (§7.4). Anything else: children only (the caller recurses via walkChildren).
 -}
-walkCall : LetEnv -> TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
+walkCall : LetEnv -> TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 walkCall letEnv func args meta s0 =
     case func of
         TOpt.VarGlobal _ g funcMeta ->
@@ -1792,16 +1621,16 @@ walkCall letEnv func args meta s0 =
             -- A ctor call carries no member of its own: the ctor's payload
             -- members reach the site through the argument walk, not through
             -- the callee.
-            Ok ( WpNone, s0 )
+            ( WpNone, s0 )
 
         TOpt.VarBox _ _ _ ->
-            Ok ( WpNone, s0 )
+            ( WpNone, s0 )
 
         _ ->
-            Ok ( WpNone, s0 )
+            ( WpNone, s0 )
 
 
-applyCalleeAt : TOpt.Global -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
+applyCalleeAt : TOpt.Global -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 applyCalleeAt g funcFallbackType args meta s0 =
     let
         gkey =
@@ -1816,29 +1645,17 @@ applyCalleeAt g funcFallbackType args meta s0 =
         -- member's own signature slots — unifying against them is the
         -- paper's TIU-Self-Ref rule (which forbids polymorphic recursion in
         -- set parameters and guarantees termination).
-        case Store.loadType srcType s0 of
-            Err e ->
-                Err e
-
-            Ok ( funcVar, s1 ) ->
+        case Store.loadTypeS srcType s0 of
+            ( funcVar, s1 ) ->
                 case unifyCallShape funcVar args meta s1 of
-                    Err e ->
-                        Err e
-
-                    Ok ( callVar, s2 ) ->
+                    (  callVar, s2  ) ->
                         injectPapMemberInfer g (List.length args) callVar s2
 
     else
         case instantiateWithSignature g srcType s0 of
-            Err e ->
-                Err e
-
-            Ok ( funcVar, s1 ) ->
+            (  funcVar, s1  ) ->
                 case unifyCallShape funcVar args meta s1 of
-                    Err e ->
-                        Err e
-
-                    Ok ( callVar, s2 ) ->
+                    (  callVar, s2  ) ->
                         injectPapMemberInfer g (List.length args) callVar s2
 
 
@@ -1865,35 +1682,26 @@ and the miscompile it was corrected from.
 Returns the `WalkPoint` unchanged — this is a pure store write.
 
 -}
-injectPapMemberInfer : TOpt.Global -> Int -> Vars.Variable -> Step WalkPoint
+injectPapMemberInfer : TOpt.Global -> Int -> Vars.Variable -> Engine.S -> ( WalkPoint, Engine.S )
 injectPapMemberInfer g argCount callVar s0 =
     if not s0.env.lss.enabled then
-        Ok ( WpOpaque callVar, s0 )
+        ( WpOpaque callVar, s0 )
 
     else if declaredArityOf g 8 s0 <= argCount then
-        Ok ( WpOpaque callVar, s0 )
+        ( WpOpaque callVar, s0 )
 
     else
         let
-            injected =
-                Engine.andThen
-                    (\mid -> injectSpineMemberId 1 mid callVar)
-                    (Engine.papMemberIdFor g argCount)
-                    s0
+            ( mid, sMid ) =
+                Engine.papMemberIdFor g argCount s0
         in
-        case injected of
-            Err e ->
-                Err e
-
-            Ok ( _, s1 ) ->
+        case injectSpineMemberId 1 mid callVar sMid of
+            s1 ->
                 -- L2: finish the deep residual — twin of the
                 -- Translate producer site, same keys, same walk.
                 case injectPapSuccessorsFrom g (argCount + 1) callVar s1 of
-                    Err e ->
-                        Err e
-
-                    Ok ( _, s2 ) ->
-                        Ok ( WpOpaque callVar, s2 )
+                    s2 ->
+                        ( WpOpaque callVar, s2 )
 
 
 {-| Unify a callee instantiation's params against the args and its residual
@@ -1903,24 +1711,15 @@ propagate — `WpOpaque` class). ISOLATED-instantiation path only: the
 whole-type best-effort unify here must never target a shared letEnv family
 Point (§7.4; local callees go through `joinCallArgs` instead).
 -}
-unifyCallShape : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Step Vars.Variable
+unifyCallShape : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( Vars.Variable, Engine.S )
 unifyCallShape funcVar args meta s0 =
     case unifyParamsBestEffort funcVar args s0 of
-        Err e ->
-            Err e
-
-        Ok ( restVar, s1 ) ->
-            case Store.loadType meta.tipe s1 of
-                Err e ->
-                    Err e
-
-                Ok ( callVar, s2 ) ->
-                    case Store.unifyBestEffort restVar callVar s2 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s3 ) ->
-                            Ok ( callVar, s3 )
+        (  restVar, s1  ) ->
+            case Store.loadTypeS meta.tipe s1 of
+                ( callVar, s2 ) ->
+                    case Store.unifyBestEffortStoreS restVar callVar s2 of
+                        s3 ->
+                            ( callVar, s3 )
 
 
 {-| Liveness census (plans/lss-provenance-ratio-census.md §7): this arrow is
@@ -1995,11 +1794,11 @@ argument did feed. `lss.argPoints` carried a mechanism that handed the walked
 point here instead; it measured negative and then inert, and was deleted
 2026-09-17 (plans/remove-default-off-lss-flags.md §2).
 -}
-unifyParamsBestEffort : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Step Vars.Variable
+unifyParamsBestEffort : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Engine.S -> ( Vars.Variable, Engine.S )
 unifyParamsBestEffort funcVar args s0 =
     case args of
         [] ->
-            Ok ( funcVar, s0 )
+            ( funcVar, s0 )
 
         arg :: rest ->
             let
@@ -2011,21 +1810,15 @@ unifyParamsBestEffort funcVar args s0 =
             in
             case Store.arrowParts desc.content of
                 Just ( pParam, pRest ) ->
-                    case Store.loadType (TOpt.typeOf arg) (noteApplied desc.content s1) of
-                        Err e ->
-                            Err e
-
-                        Ok ( argVar, s2 ) ->
-                            case Store.unifyBestEffort pParam argVar s2 of
-                                Err e ->
-                                    Err e
-
-                                Ok ( _, s3 ) ->
+                    case Store.loadTypeS (TOpt.typeOf arg) (noteApplied desc.content s1) of
+                        ( argVar, s2 ) ->
+                            case Store.unifyBestEffortStoreS pParam argVar s2 of
+                                s3 ->
                                     unifyParamsBestEffort pRest rest s3
 
                 Nothing ->
                     -- Over-applied or opaque at this depth: stop.
-                    Ok ( funcVar, s1 )
+                    ( funcVar, s1 )
 
 
 {-| LSS\_020 (B.3): a call whose callee is a letEnv-bound local. Slot-only
@@ -2035,53 +1828,44 @@ call's own type. The result-side join is the payload (the family's
 result-arrow members reach the site); the arg-side joins are cheap structure
 that becomes live if the arg-load residue (plan §A.1) is ever fixed.
 -}
-localCalleeJoin : LetEnv -> Name -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
+localCalleeJoin : LetEnv -> Name -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 localCalleeJoin letEnv name args meta s0 =
     case CoreDict.get name letEnv of
         Nothing ->
-            Ok ( WpNone, s0 )
+            ( WpNone, s0 )
 
         Just fVar ->
             case joinCallArgs fVar args CoreDict.empty s0 of
-                Err e ->
-                    Err e
-
-                Ok ( maybeRest, s1 ) ->
+                (  maybeRest, s1  ) ->
                     case maybeRest of
                         Nothing ->
                             -- Over-applied/opaque spine: stop (sound —
                             -- nothing joined, nothing claims
                             -- completeness).
-                            Ok ( WpNone, s1 )
+                            ( WpNone, s1 )
 
                         Just restVar ->
                             if canTypeMentionsArrow meta.tipe then
-                                case Store.loadType meta.tipe s1 of
-                                    Err e ->
-                                        Err e
-
-                                    Ok ( callVar, s2 ) ->
+                                case Store.loadTypeS meta.tipe s1 of
+                                    ( callVar, s2 ) ->
                                         -- LSS_023 directed: the callee's
                                         -- residual flows INTO the call.
                                         case flowArrowSetsSig restVar callVar s2 of
-                                            Err e ->
-                                                Err e
-
-                                            Ok ( _, s3 ) ->
-                                                Ok ( WpOpaque callVar, s3 )
+                                            s3 ->
+                                                ( WpOpaque callVar, s3 )
 
                             else
-                                Ok ( WpNone, s1 )
+                                ( WpNone, s1 )
 {-| Descend a family Point's arrow spine one arrow per argument, slot-joining
 each (arrow-bearing) arg's loaded type against the param position. Returns
 the spine position after the last arg (Nothing on early stop). The `seen`
 set guards the transparent-alias chase, mirroring `spineGoC`.
 -}
-joinCallArgs : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Dict Int () -> Step (Maybe Vars.Variable)
+joinCallArgs : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Dict Int () -> Engine.S -> ( (Maybe Vars.Variable), Engine.S )
 joinCallArgs v args seen s0 =
     case args of
         [] ->
-            Ok ( Just v, s0 )
+            ( Just v, s0 )
 
         arg :: rest ->
             let
@@ -2095,7 +1879,7 @@ joinCallArgs v args seen s0 =
                     { s0 | store = store1 }
             in
             if CoreDict.member key seen then
-                Ok ( Nothing, s1 )
+                ( Nothing, s1 )
 
             else
                 case desc.content of
@@ -2106,25 +1890,19 @@ joinCallArgs v args seen s0 =
                         case Store.arrowParts desc.content of
                             Just ( pParam, pRest ) ->
                                 if canTypeMentionsArrow (TOpt.typeOf arg) then
-                                    case Store.loadType (TOpt.typeOf arg) s1 of
-                                        Err e ->
-                                            Err e
-
-                                        Ok ( argVar, s2 ) ->
+                                    case Store.loadTypeS (TOpt.typeOf arg) s1 of
+                                        ( argVar, s2 ) ->
                                             -- LSS_023 directed: the argument
                                             -- flows INTO the param family.
                                             case flowArrowSetsSig argVar pParam s2 of
-                                                Err e ->
-                                                    Err e
-
-                                                Ok ( _, s3 ) ->
+                                                s3 ->
                                                     joinCallArgs pRest rest (CoreDict.insert key () seen) s3
 
                                 else
                                     joinCallArgs pRest rest (CoreDict.insert key () seen) s1
 
                             Nothing ->
-                                Ok ( Nothing, s1 )
+                                ( Nothing, s1 )
 
 
 {-| A kernel call boundary, resolved against the audited set-flow table.
@@ -2163,7 +1941,7 @@ already unifies the real item-memo arg Points before the (now skipped)
 poison.
 
 -}
-kernelCallBoundary : Name -> Name -> TOpt.Meta TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
+kernelCallBoundary : Name -> Name -> TOpt.Meta TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 kernelCallBoundary home name funcMeta args meta s0 =
     case KernelSetFacts.factFor home name of
         Nothing ->
@@ -2192,23 +1970,17 @@ kernelCallBoundary home name funcMeta args meta s0 =
                         -- contributes no members. Hub mates cannot be harmed by
                         -- it — `joinCfHub` is `canTypeMentionsArrow`-guarded on
                         -- the hub type, and an inert call's type is the hub's.
-                        Ok ( WpNone, Engine.bumpKernelLicensed s0 )
+                        ( WpNone, Engine.bumpKernelLicensed s0 )
 
                     -- `TransportsAs` behaves identically once verified — the
                     -- declared shape's only job is to make the license
                     -- checkable for a kernel the typechecker does not bound.
                     _ ->
                         case Store.loadTypeIsolated funcMeta.tipe s0 of
-                            Err e ->
-                                Err e
-
-                            Ok ( funcVar, s1 ) ->
+                            ( funcVar, s1 ) ->
                                 case unifyCallShape funcVar args meta s1 of
-                                    Err e ->
-                                        Err e
-
-                                    Ok ( callVar, s2 ) ->
-                                        Ok ( WpOpaque callVar, Engine.bumpKernelLicensed s2 )
+                                    (  callVar, s2  ) ->
+                                        ( WpOpaque callVar, Engine.bumpKernelLicensed s2 )
 
         Just (KernelSetFacts.Positional plan) ->
             if List.length plan.params /= List.length args then
@@ -2216,39 +1988,24 @@ kernelCallBoundary home name funcMeta args meta s0 =
 
             else
                 case kernelArgsGo plan.params args False [] s0 of
-                    Err e ->
-                        Err e
-
-                    Ok ( ( argPoisoned, tunnelsRev ), s1 ) ->
-                        case Store.loadType meta.tipe s1 of
-                            Err e ->
-                                Err e
-
-                            Ok ( resVar, s2 ) ->
+                    (  ( argPoisoned, tunnelsRev ), s1  ) ->
+                        case Store.loadTypeS meta.tipe s1 of
+                            ( resVar, s2 ) ->
                                 let
                                     resultStep =
                                         case plan.result of
                                             KernelSetFacts.PSFOpaque ->
                                                 case Store.poisonArrowSets resVar s2 of
-                                                    Err e ->
-                                                        Err e
-
-                                                    Ok ( _, s3 ) ->
-                                                        Ok ( True, s3 )
+                                                    s3 ->
+                                                        ( True, s3 )
 
                                             _ ->
-                                                Ok ( False, s2 )
+                                                ( False, s2 )
                                 in
                                 case resultStep of
-                                    Err e ->
-                                        Err e
-
-                                    Ok ( resPoisoned, s3 ) ->
+                                    ( resPoisoned, s3 ) ->
                                         case joinTunnels resVar (List.reverse tunnelsRev) s3 of
-                                            Err e ->
-                                                Err e
-
-                                            Ok ( _, s4 ) ->
+                                            s4 ->
                                                 let
                                                     s5 =
                                                         Engine.bumpKernelFactHit
@@ -2261,54 +2018,45 @@ kernelCallBoundary home name funcMeta args meta s0 =
                                                 in
                                                 if resPoisoned then
                                                     -- ⊤ result: honest summary.
-                                                    Ok ( WpHonest resVar, s5 )
+                                                    ( WpHonest resVar, s5 )
 
                                                 else
                                                     -- Unconstrained result: the
                                                     -- value's inhabitants are
                                                     -- untracked — WpNone (hub
                                                     -- mates must not mix with it).
-                                                    Ok ( WpNone, s5 )
+                                                    ( WpNone, s5 )
 
 
-kernelArgsGo : List KernelSetFacts.ParamSetFlow -> List (TOpt.Expr TypeIds.MVarId) -> Bool -> List Vars.Variable -> Step ( Bool, List Vars.Variable )
+kernelArgsGo : List KernelSetFacts.ParamSetFlow -> List (TOpt.Expr TypeIds.MVarId) -> Bool -> List Vars.Variable -> Engine.S -> ( ( Bool, List Vars.Variable ), Engine.S )
 kernelArgsGo flows args poisoned tunnelsRev s0 =
     case ( flows, args ) of
         ( flow :: fRest, arg :: aRest ) ->
             case flow of
                 KernelSetFacts.PSFOpaque ->
-                    case Store.loadType (TOpt.typeOf arg) s0 of
-                        Err e ->
-                            Err e
-
-                        Ok ( argVar, s1 ) ->
+                    case Store.loadTypeS (TOpt.typeOf arg) s0 of
+                        ( argVar, s1 ) ->
                             case Store.poisonArrowSets argVar s1 of
-                                Err e ->
-                                    Err e
-
-                                Ok ( _, s2 ) ->
+                                s2 ->
                                     kernelArgsGo fRest aRest True tunnelsRev s2
 
                 KernelSetFacts.PSFApplies ->
                     kernelArgsGo fRest aRest poisoned tunnelsRev s0
 
                 KernelSetFacts.PSFTunnels ->
-                    case Store.loadType (TOpt.typeOf arg) s0 of
-                        Err e ->
-                            Err e
-
-                        Ok ( argVar, s1 ) ->
+                    case Store.loadTypeS (TOpt.typeOf arg) s0 of
+                        ( argVar, s1 ) ->
                             kernelArgsGo fRest aRest poisoned (argVar :: tunnelsRev) s1
 
         _ ->
-            Ok ( ( poisoned, tunnelsRev ), s0 )
+            ( ( poisoned, tunnelsRev ), s0 )
 
 
-joinTunnels : Vars.Variable -> List Vars.Variable -> Step ()
+joinTunnels : Vars.Variable -> List Vars.Variable -> Engine.S -> Engine.S
 joinTunnels resVar vars s0 =
     case vars of
         [] ->
-            Ok ( (), s0 )
+            s0
 
         v :: rest ->
             -- LSS_023: a tunnelled kernel parameter takes the DIRECTED join,
@@ -2322,51 +2070,33 @@ joinTunnels resVar vars s0 =
             -- simply what happens now. Zero tunnel rows ship today; this is
             -- the enabling condition for the sortBy/sortWith refinement.
             case flowArrowSetsPlain v resVar s0 of
-                Err e ->
-                    Err e
-
-                Ok ( _, s1 ) ->
+                s1 ->
                     joinTunnels resVar rest s1
 
 
-poisonCallBoundary : List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
+poisonCallBoundary : List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 poisonCallBoundary args meta s0 =
     case poisonArgList args s0 of
-        Err e ->
-            Err e
-
-        Ok ( _, s1 ) ->
-            case Store.loadType meta.tipe s1 of
-                Err e ->
-                    Err e
-
-                Ok ( resVar, s2 ) ->
+        s1 ->
+            case Store.loadTypeS meta.tipe s1 of
+                ( resVar, s2 ) ->
                     case Store.poisonArrowSets resVar s2 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s3 ) ->
+                        s3 ->
                             -- ⊤ is an honest summary (LSS_004 boundary).
-                            Ok ( WpHonest resVar, Engine.bumpWidenedByKernel s3 )
+                            ( WpHonest resVar, Engine.bumpWidenedByKernel s3 )
 
 
-poisonArgList : List (TOpt.Expr TypeIds.MVarId) -> Step ()
+poisonArgList : List (TOpt.Expr TypeIds.MVarId) -> Engine.S -> Engine.S
 poisonArgList args s0 =
     case args of
         [] ->
-            Ok ( (), s0 )
+            s0
 
         arg :: rest ->
-            case Store.loadType (TOpt.typeOf arg) s0 of
-                Err e ->
-                    Err e
-
-                Ok ( argVar, s1 ) ->
+            case Store.loadTypeS (TOpt.typeOf arg) s0 of
+                ( argVar, s1 ) ->
                     case Store.poisonArrowSets argVar s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s2 ) ->
+                        s2 ->
                             poisonArgList rest s2
 
 
@@ -2386,7 +2116,7 @@ arity) is a follow-up once that arity is threaded here; the primary E2 target
 path instead.
 
 -}
-standaloneMember : String -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
+standaloneMember : String -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 standaloneMember key =
     standaloneMemberWith (Engine.memberIdFor key)
 
@@ -2565,54 +2295,39 @@ devirt reverse map (globals AND ctors — `Can.Normal` ctors like `List.::`
 are VarGlobal/"g|"), and the kernel arm mints via `Engine.kernelMemberIdFor`
 for the E9.2 kernel reverse map; the accessor arm keeps the plain intern.
 -}
-standaloneMemberWith : Step Int -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
+standaloneMemberWith : (Engine.S -> ( Int, Engine.S )) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 standaloneMemberWith mint meta s0 =
     if canTypeIsArrow meta.tipe then
         case mint s0 of
-            Err e ->
-                Err e
-
-            Ok ( mid, s1 ) ->
-                case Store.loadType meta.tipe s1 of
-                    Err e ->
-                        Err e
-
-                    Ok ( funcVar, s2 ) ->
+            ( mid, s1 ) ->
+                case Store.loadTypeS meta.tipe s1 of
+                    ( funcVar, s2 ) ->
                         case injectSpineMemberId 1 mid funcVar s2 of
-                            Err e ->
-                                Err e
-
-                            Ok ( _, s3 ) ->
+                            s3 ->
                                 -- Injected identity: complete to the
                                 -- injection depth; beyond-depth slots stay
                                 -- flex (EMPTY facts — sound).
-                                Ok ( WpHonest funcVar, s3 )
+                                ( WpHonest funcVar, s3 )
 
     else
-        Ok ( WpNone, s0 )
+        ( WpNone, s0 )
 
 
 {-| Sequence the successor walk after a mint arm, on the loaded variable the
 arm returns (`WpHonest`). `WpNone` (arrow-free reference) has nothing to walk.
 -}
-withPapSuccessors : TOpt.Global -> Step WalkPoint -> Step WalkPoint
+withPapSuccessors : TOpt.Global -> (Engine.S -> ( WalkPoint, Engine.S )) -> Engine.S -> ( WalkPoint, Engine.S )
 withPapSuccessors g step s0 =
     case step s0 of
-        Err e ->
-            Err e
-
-        Ok ( wp, s1 ) ->
+        ( wp, s1 ) ->
             case wp of
                 WpHonest funcVar ->
                     case injectPapSuccessors g funcVar s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s2 ) ->
-                            Ok ( wp, s2 )
+                        s2 ->
+                            ( wp, s2 )
 
                 _ ->
-                    Ok ( wp, s1 )
+                    ( wp, s1 )
 
 
 {-| The PAP element's key: `p|<global>|<supplied>` — moved here from
@@ -2642,10 +2357,10 @@ sat −69 of 2.24 B — with workload outputs byte-identical and join
 rounds/retranslations unchanged. Unconditional since 2026-09-18.
 
 -}
-injectPapSuccessorsFrom : TOpt.Global -> Int -> Vars.Variable -> Step ()
+injectPapSuccessorsFrom : TOpt.Global -> Int -> Vars.Variable -> Engine.S -> Engine.S
 injectPapSuccessorsFrom g startDepth v0 s0 =
     if not s0.env.lss.enabled then
-        Ok ( (), s0 )
+        s0
 
     else
         let
@@ -2653,20 +2368,14 @@ injectPapSuccessorsFrom g startDepth v0 s0 =
                 declaredArityOf g 8 s0
         in
         if startDepth >= arity then
-            Ok ( (), s0 )
+            s0
 
         else
             case mintPapSuccessorIds g startDepth arity [] s0 of
-                Err e ->
-                    Err e
-
-                Ok ( midsRev, s1 ) ->
-                    Ok
-                        ( ()
-                        , Store.foldSetWrites
-                            (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
-                            (Engine.bumpArgFlowCensus "papInject|deepDone" s1)
-                        )
+                (  midsRev, s1  ) ->
+                      Store.foldSetWrites
+                          (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
+                          (Engine.bumpArgFlowCensus "papInject|deepDone" s1)
 
 
 {-| Reference-spine PAP successors (plans/lss-ref-pap-spine.md):
@@ -2693,10 +2402,10 @@ merge demands that per-type var numbering kept apart. Unconditional since
 2026-09-18.
 
 -}
-injectPapSuccessors : TOpt.Global -> Vars.Variable -> Step ()
+injectPapSuccessors : TOpt.Global -> Vars.Variable -> Engine.S -> Engine.S
 injectPapSuccessors g v0 s0 =
     if not s0.env.lss.enabled then
-        Ok ( (), s0 )
+        s0
 
     else
         let
@@ -2704,22 +2413,16 @@ injectPapSuccessors g v0 s0 =
                 declaredArityOf g 8 s0
         in
         if arity <= 1 then
-            Ok ( (), Engine.bumpArgFlowCensus "refspine|arity1" s0 )
+            Engine.bumpArgFlowCensus "refspine|arity1" s0
 
         else
             -- Mint the successor ids first (Step-level interning), then one
             -- ctx-threaded store pass writes them at their depths.
             case mintPapSuccessorIds g 1 arity [] s0 of
-                Err e ->
-                    Err e
-
-                Ok ( midsRev, s1 ) ->
-                    Ok
-                        ( ()
-                        , Store.foldSetWrites
-                            (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
-                            (Engine.bumpArgFlowCensus "refspine|inject" s1)
-                        )
+                (  midsRev, s1  ) ->
+                      Store.foldSetWrites
+                          (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
+                          (Engine.bumpArgFlowCensus "refspine|inject" s1)
 
 
 {-| Depth-qualified successors for a ROOT-FOLDED def's OWN spine
@@ -2736,36 +2439,27 @@ identical ids to 'injectPapSuccessors', with two deliberate differences:
     has today and cannot mint a stampable-on-PAP id (it writes `p|`).
 
 -}
-injectFoldedSuccessors : TOpt.Global -> Int -> Vars.Variable -> Step ()
+injectFoldedSuccessors : TOpt.Global -> Int -> Vars.Variable -> Engine.S -> Engine.S
 injectFoldedSuccessors g arity v0 s0 =
     if arity <= 1 then
-        Ok ( (), Engine.bumpArgFlowCensus "rootFold|spineHeadOnly" s0 )
+        Engine.bumpArgFlowCensus "rootFold|spineHeadOnly" s0
 
     else
         case mintPapSuccessorIds g 1 arity [] s0 of
-            Err e ->
-                Err e
-
-            Ok ( midsRev, s1 ) ->
-                Ok
-                    ( ()
-                    , Store.foldSetWrites
-                        (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
-                        (Engine.bumpArgFlowCensus "rootFold|spineDepth" s1)
-                    )
+            (  midsRev, s1  ) ->
+                  Store.foldSetWrites
+                      (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
+                      (Engine.bumpArgFlowCensus "rootFold|spineDepth" s1)
 
 
-mintPapSuccessorIds : TOpt.Global -> Int -> Int -> List Int -> Step (List Int)
+mintPapSuccessorIds : TOpt.Global -> Int -> Int -> List Int -> Engine.S -> ( (List Int), Engine.S )
 mintPapSuccessorIds g d arity acc s0 =
     if d >= arity then
-        Ok ( acc, s0 )
+        ( acc, s0 )
 
     else
         case Engine.papMemberIdFor g d s0 of
-            Err e ->
-                Err e
-
-            Ok ( mid, s1 ) ->
+            ( mid, s1 ) ->
                 mintPapSuccessorIds g (d + 1) arity (mid :: acc) s1
 
 
@@ -2887,15 +2581,15 @@ are written with the total-join `Store.unifySlotWithSet` (extra inhabitants
 from later unification widen the set; they never corrupt it — LSS\_005).
 
 -}
-injectSpineMemberId : Int -> Int -> Vars.Variable -> Step ()
+injectSpineMemberId : Int -> Int -> Vars.Variable -> Engine.S -> Engine.S
 injectSpineMemberId arity mid v0 s0 =
     spineGo mid arity CoreDict.empty v0 s0
 
 
-spineGo : Int -> Int -> Dict Int () -> Vars.Variable -> Step ()
+spineGo : Int -> Int -> Dict Int () -> Vars.Variable -> Engine.S -> Engine.S
 spineGo mid remaining seen v s0 =
     -- Phase 3: ctx-threaded — one S write-back for the whole spine.
-    Ok ( (), Store.foldSetWrites (spineGoC mid remaining seen v (Store.setWriteCtx (Store.qOnFor s0) s0.store)) s0 )
+    Store.foldSetWrites (spineGoC mid remaining seen v (Store.setWriteCtx (Store.qOnFor s0) s0.store)) s0
 
 
 spineGoC : Int -> Int -> Dict Int () -> Vars.Variable -> Store.SetWriteCtx -> Store.SetWriteCtx
@@ -2937,11 +2631,11 @@ spineGoC mid remaining seen v c0 =
                     c1
 
 
-joinLetUse : LetEnv -> Name -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
+joinLetUse : LetEnv -> Name -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 joinLetUse letEnv name meta s0 =
     case CoreDict.get name letEnv of
         Nothing ->
-            Ok ( WpNone, s0 )
+            ( WpNone, s0 )
 
         Just rhsVar ->
             if not (canTypeMentionsArrow meta.tipe) then
@@ -2950,23 +2644,17 @@ joinLetUse letEnv name meta s0 =
                 -- bound-name occurrence program-wide; an arrow-free join
                 -- writes no slots, so skipping it is semantics-free.
                 --
-                Ok ( WpNone, s0 )
+                ( WpNone, s0 )
 
             else
-                case Store.loadType meta.tipe s0 of
-                    Err e ->
-                        Err e
-
-                    Ok ( useVar, s1 ) ->
+                case Store.loadTypeS meta.tipe s0 of
+                    ( useVar, s1 ) ->
                         case joinArrowSets identity rhsVar useVar s1 of
-                            Err e ->
-                                Err e
-
-                            Ok ( _, s2 ) ->
+                            s2 ->
                                 -- letEnv-linked flow: the family's own
                                 -- invariant (rhs join + poison-on-divergence)
                                 -- makes this complete-or-⊤.
-                                Ok ( WpHonest useVar, s2 )
+                                ( WpHonest useVar, s2 )
 
 
 {-| §7.4 let boundary, v1 policy: walk two loaded type structures in
@@ -2984,7 +2672,7 @@ repair adds (via `joinArrowSetsSig`). Phase H.2 widens this parameter into a
 poison MODE (PoisonUseOnly) — design for the parameter, don't over-build.
 
 -}
-joinArrowSets : (Engine.S -> Engine.S) -> Vars.Variable -> Vars.Variable -> Step ()
+joinArrowSets : (Engine.S -> Engine.S) -> Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 joinArrowSets onPoison a b s0 =
     let
         ( store1, descA ) =
@@ -3000,24 +2688,15 @@ joinArrowSets onPoison a b s0 =
         ( Vars.Structure flatA, Vars.Structure flatB ) ->
             case ( flatA, flatB ) of
                 ( Vars.FunL argA resA slotA, Vars.FunL argB resB slotB ) ->
-                    case Store.unifyBestEffort slotA slotB s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s2 ) ->
+                    case Store.unifyBestEffortStoreS slotA slotB s1 of
+                        s2 ->
                             case joinArrowSets onPoison argA argB s2 of
-                                Err e ->
-                                    Err e
-
-                                Ok ( _, s3 ) ->
+                                s3 ->
                                     joinArrowSets onPoison resA resB s3
 
                 ( Vars.Fun1 argA resA, Vars.Fun1 argB resB ) ->
                     case joinArrowSets onPoison argA argB s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s2 ) ->
+                        s2 ->
                             joinArrowSets onPoison resA resB s2
 
                 ( Vars.App1 _ _ argsA, Vars.App1 _ _ argsB ) ->
@@ -3038,20 +2717,17 @@ joinArrowSets onPoison a b s0 =
                                 []
                     in
                     case joinArrowSetsPairs onPoison shared s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s2 ) ->
+                        s2 ->
                             joinArrowSets onPoison extA extB s2
 
                 ( Vars.EmptyRecord1, _ ) ->
-                    Ok ( (), s1 )
+                    s1
 
                 ( _, Vars.EmptyRecord1 ) ->
-                    Ok ( (), s1 )
+                    s1
 
                 ( Vars.Unit1, Vars.Unit1 ) ->
-                    Ok ( (), s1 )
+                    s1
 
                 _ ->
                     poisonBoth onPoison a b s1
@@ -3071,7 +2747,7 @@ joinArrowSets onPoison a b s0 =
 (member-root, lambda-result, If/Case hub, Let rhs, local-callee shape) counts
 its poison events in `sigStats.widenedByCf` (report-gated inside the bump).
 -}
-joinArrowSetsSig : Vars.Variable -> Vars.Variable -> Step ()
+joinArrowSetsSig : Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 joinArrowSetsSig =
     joinArrowSets Engine.bumpWidenedByCf
 
@@ -3094,7 +2770,7 @@ that recursed argument positions co-variantly would install wrong-direction
 edges and UNDER-approximate — the miscompile class.
 
 -}
-flowArrowSets : (Engine.S -> Engine.S) -> Vars.Variable -> Vars.Variable -> Step ()
+flowArrowSets : (Engine.S -> Engine.S) -> Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 flowArrowSets onPoison src dst s0 =
     let
         ( store1, descS ) =
@@ -3111,25 +2787,16 @@ flowArrowSets onPoison src dst s0 =
             case ( flatS, flatD ) of
                 ( Vars.FunL argS resS slotS, Vars.FunL argD resD slotD ) ->
                     case Store.addSlotSource slotS slotD s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s2 ) ->
+                        s2 ->
                             case flowArrowSets onPoison resS resD s2 of
-                                Err e ->
-                                    Err e
-
-                                Ok ( _, s3 ) ->
+                                s3 ->
                                     -- ARG: contravariant flip.
                                     flowArrowSets onPoison argD argS s3
 
                 ( Vars.Fun1 argS resS, Vars.Fun1 argD resD ) ->
                     -- Slotless arrow: same variance, no edge to install.
                     case flowArrowSets onPoison resS resD s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s2 ) ->
+                        s2 ->
                             flowArrowSets onPoison argD argS s2
 
                 ( Vars.App1 _ _ _, Vars.App1 _ _ _ ) ->
@@ -3142,13 +2809,13 @@ flowArrowSets onPoison src dst s0 =
                     degradeToSymmetric onPoison src dst s1
 
                 ( Vars.EmptyRecord1, _ ) ->
-                    Ok ( (), s1 )
+                    s1
 
                 ( _, Vars.EmptyRecord1 ) ->
-                    Ok ( (), s1 )
+                    s1
 
                 ( Vars.Unit1, Vars.Unit1 ) ->
-                    Ok ( (), s1 )
+                    s1
 
                 _ ->
                     poisonBoth onPoison src dst s1
@@ -3169,13 +2836,10 @@ bumps only when the degraded pair can actually CARRY a set (arrow-mention in
 the src structure) — ground leaves like `Int` would otherwise dominate the
 counter and make it meaningless.
 -}
-degradeToSymmetric : (Engine.S -> Engine.S) -> Vars.Variable -> Vars.Variable -> Step ()
+degradeToSymmetric : (Engine.S -> Engine.S) -> Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 degradeToSymmetric onPoison src dst s0 =
     case storeMentionsArrow src s0 of
-        Err e ->
-            Err e
-
-        Ok ( carries, s1 ) ->
+        ( carries, s1 ) ->
             joinArrowSets onPoison
                 src
                 dst
@@ -3190,16 +2854,16 @@ degradeToSymmetric onPoison src dst s0 =
 {-| Does the store structure under this Point mention an arrow? Bounded
 walk with a visited list (aliases can cycle through records).
 -}
-storeMentionsArrow : Vars.Variable -> Engine.S -> Result Engine.Failure ( Bool, Engine.S )
+storeMentionsArrow : Vars.Variable -> Engine.S -> ( Bool, Engine.S )
 storeMentionsArrow root s0 =
     storeMentionsArrowGo [ root ] [] s0
 
 
-storeMentionsArrowGo : List Vars.Variable -> List Int -> Engine.S -> Result Engine.Failure ( Bool, Engine.S )
+storeMentionsArrowGo : List Vars.Variable -> List Int -> Engine.S -> ( Bool, Engine.S )
 storeMentionsArrowGo pending visited s0 =
     case pending of
         [] ->
-            Ok ( False, s0 )
+            ( False, s0 )
 
         v :: rest ->
             let
@@ -3222,10 +2886,10 @@ storeMentionsArrowGo pending visited s0 =
                 in
                 case desc.content of
                     Vars.Structure (Vars.FunL _ _ _) ->
-                        Ok ( True, s1 )
+                        ( True, s1 )
 
                     Vars.Structure (Vars.Fun1 _ _) ->
-                        Ok ( True, s1 )
+                        ( True, s1 )
 
                     Vars.Structure (Vars.App1 _ _ args) ->
                         storeMentionsArrowGo (args ++ rest) visited1 s1
@@ -3246,7 +2910,7 @@ storeMentionsArrowGo pending visited s0 =
 {-| `flowArrowSets` with sigFlow attribution — the directed twin of
 `joinArrowSetsSig`.
 -}
-flowArrowSetsSig : Vars.Variable -> Vars.Variable -> Step ()
+flowArrowSetsSig : Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 flowArrowSetsSig =
     flowArrowSets Engine.bumpWidenedByCf
 
@@ -3254,52 +2918,46 @@ flowArrowSetsSig =
 {-| Set-flow with no poison attribution — the directed twin of
 `joinArrowSetsPlain`, for translation-side consumers (kernel tunnels).
 -}
-flowArrowSetsPlain : Vars.Variable -> Vars.Variable -> Step ()
+flowArrowSetsPlain : Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 flowArrowSetsPlain =
     flowArrowSets identity
 
 
 {-| Single-source join (Let rhs → letEnv hub; skip on no point).
 -}
-sigFlowJoinInto : Vars.Variable -> Maybe Vars.Variable -> Step ()
+sigFlowJoinInto : Vars.Variable -> Maybe Vars.Variable -> Engine.S -> Engine.S
 sigFlowJoinInto target maybePoint s0 =
     case maybePoint of
         Just p ->
             joinArrowSetsSig target p s0
 
         Nothing ->
-            Ok ( (), s0 )
-joinArrowSetsList : (Engine.S -> Engine.S) -> List Vars.Variable -> List Vars.Variable -> Step ()
+            s0
+joinArrowSetsList : (Engine.S -> Engine.S) -> List Vars.Variable -> List Vars.Variable -> Engine.S -> Engine.S
 joinArrowSetsList onPoison xs ys s0 =
     case ( xs, ys ) of
         ( x :: xr, y :: yr ) ->
             case joinArrowSets onPoison x y s0 of
-                Err e ->
-                    Err e
-
-                Ok ( _, s1 ) ->
+                s1 ->
                     joinArrowSetsList onPoison xr yr s1
 
         _ ->
-            Ok ( (), s0 )
+            s0
 
 
-joinArrowSetsPairs : (Engine.S -> Engine.S) -> List ( Vars.Variable, Vars.Variable ) -> Step ()
+joinArrowSetsPairs : (Engine.S -> Engine.S) -> List ( Vars.Variable, Vars.Variable ) -> Engine.S -> Engine.S
 joinArrowSetsPairs onPoison pairs s0 =
     case pairs of
         [] ->
-            Ok ( (), s0 )
+            s0
 
         ( x, y ) :: rest ->
             case joinArrowSets onPoison x y s0 of
-                Err e ->
-                    Err e
-
-                Ok ( _, s1 ) ->
+                s1 ->
                     joinArrowSetsPairs onPoison rest s1
 
 
-poisonBoth : (Engine.S -> Engine.S) -> Vars.Variable -> Vars.Variable -> Step ()
+poisonBoth : (Engine.S -> Engine.S) -> Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 poisonBoth onPoison a b s0 =
     -- GAP-9a ⊤ source. One-shot census 2026-08-18 (Run J,
     -- benchmarks/lss-opt.md): 672 invocations on the self-compile vs
@@ -3308,16 +2966,10 @@ poisonBoth onPoison a b s0 =
     -- lss-fidelity-1 §7). LSS_020 joins attribute their events via
     -- `onPoison` instead.
     case Store.poisonArrowSets a s0 of
-        Err e ->
-            Err e
-
-        Ok ( _, s1 ) ->
+        s1 ->
             case Store.poisonArrowSets b s1 of
-                Err e ->
-                    Err e
-
-                Ok ( _, s2 ) ->
-                    Ok ( (), onPoison s2 )
+                s2 ->
+                    onPoison s2
 
 
 {-| P0 sizing instrument (plans/lss-ctor-arrow-identity.md §8.1): how many
@@ -3439,17 +3091,14 @@ claim completeness while a blind branch's runtime inhabitants are invisible,
 the false-singleton devirt vector. A poisoned hub returns `WpHonest` — ⊤
 propagates upward correctly through the parents' joins.
 -}
-joinCfHub : List WalkPoint -> TOpt.Meta TypeIds.MVarId -> Step WalkPoint
+joinCfHub : List WalkPoint -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 joinCfHub wps meta s0 =
     if not (canTypeMentionsArrow meta.tipe) then
-        Ok ( WpNone, s0 )
+        ( WpNone, s0 )
 
     else
-        case Store.loadType meta.tipe s0 of
-            Err e ->
-                Err e
-
-            Ok ( hub, s1 ) ->
+        case Store.loadTypeS meta.tipe s0 of
+            ( hub, s1 ) ->
                 if List.all hubHonest wps then
                     -- LSS_023: DIRECTED — each branch flows INTO the hub
                     -- (branch → hub), so the branches keep their own sets and
@@ -3457,19 +3106,13 @@ joinCfHub wps meta s0 =
                     -- version unified all branches into one class — the Run-X
                     -- pollution this plan exists to remove.
                     case flowAllSig hub (List.filterMap wpPoint wps) s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s2 ) ->
-                            Ok ( WpHonest hub, s2 )
+                        s2 ->
+                            ( WpHonest hub, s2 )
 
                 else
                     case Store.poisonArrowSets hub s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s2 ) ->
-                            Ok ( WpHonest hub, Engine.bumpWidenedByCf s2 )
+                        s2 ->
+                            ( WpHonest hub, Engine.bumpWidenedByCf s2 )
 
 
 hubHonest : WalkPoint -> Bool
@@ -3488,54 +3131,42 @@ hubHonest wp =
             False
 
 
-flowAllSig : Vars.Variable -> List Vars.Variable -> Step ()
+flowAllSig : Vars.Variable -> List Vars.Variable -> Engine.S -> Engine.S
 flowAllSig hub pts s0 =
     case pts of
         [] ->
-            Ok ( (), s0 )
+            s0
 
         p :: rest ->
             -- branch → hub: p is the SOURCE.
             case flowArrowSetsSig p hub s0 of
-                Err e ->
-                    Err e
-
-                Ok ( _, s1 ) ->
+                s1 ->
                     flowAllSig hub rest s1
 
 
-walkIfPairs : LetEnv -> List ( TOpt.Expr TypeIds.MVarId, TOpt.Expr TypeIds.MVarId ) -> List WalkPoint -> Step (List WalkPoint)
+walkIfPairs : LetEnv -> List ( TOpt.Expr TypeIds.MVarId, TOpt.Expr TypeIds.MVarId ) -> List WalkPoint -> Engine.S -> ( (List WalkPoint), Engine.S )
 walkIfPairs letEnv pairs acc s0 =
     case pairs of
         [] ->
-            Ok ( acc, s0 )
+            ( acc, s0 )
 
         ( cond, branch ) :: rest ->
             case walkExpr letEnv cond s0 of
-                Err e ->
-                    Err e
-
-                Ok ( _, s1 ) ->
+                (  _, s1  ) ->
                     case walkExpr letEnv branch s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( wp, s2 ) ->
+                        (  wp, s2  ) ->
                             walkIfPairs letEnv rest (wp :: acc) s2
 
 
-walkCollect : LetEnv -> List (TOpt.Expr TypeIds.MVarId) -> List WalkPoint -> Step (List WalkPoint)
+walkCollect : LetEnv -> List (TOpt.Expr TypeIds.MVarId) -> List WalkPoint -> Engine.S -> ( (List WalkPoint), Engine.S )
 walkCollect letEnv exprs acc s0 =
     case exprs of
         [] ->
-            Ok ( acc, s0 )
+            ( acc, s0 )
 
         e :: rest ->
             case walkExpr letEnv e s0 of
-                Err e1 ->
-                    Err e1
-
-                Ok ( wp, s1 ) ->
+                ( wp, s1 ) ->
                     walkCollect letEnv rest (wp :: acc) s1
 
 
@@ -3543,18 +3174,15 @@ walkCollect letEnv exprs acc s0 =
 -- ====== STRUCTURAL CHILD FOLDS ======
 
 
-walkChildren : LetEnv -> List (TOpt.Expr TypeIds.MVarId) -> Step ()
+walkChildren : LetEnv -> List (TOpt.Expr TypeIds.MVarId) -> Engine.S -> Engine.S
 walkChildren letEnv exprs s0 =
     case exprs of
         [] ->
-            Ok ( (), s0 )
+            s0
 
         e :: rest ->
             case walkExpr letEnv e s0 of
-                Err e1 ->
-                    Err e1
-
-                Ok ( _, s1 ) ->
+                ( _, s1 ) ->
                     walkChildren letEnv rest s1
 
 

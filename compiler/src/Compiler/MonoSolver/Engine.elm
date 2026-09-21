@@ -1,26 +1,42 @@
 module Compiler.MonoSolver.Engine exposing
     ( S, Step, Failure(..), WorkItem(..)
-    , succeed, fail, andThen, map, map2, traverse, foldlS
-    , getS, modifyS, liftIO, runStep
+    , traverse, foldlS, liftIO
     , freshVar, enqueueSpec
     , freshStore, renewStore, releaseScratch, markStore, commitStore, rollbackStore, resetItem
     , mvarIdKey, pointKey
     , AliasKey, AliasVerdict(..), aliasKeyHash, aliasKeyEq, putAliasVerdict
-    , ArrowFact, Env, GroundingStats, ItemAux, LssMemberTable, LssSignature, LssStats, MemberSource(..), MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry(..), QPre(..), QShadowStats, SigFlowStats, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, emptyQShadowStats, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTable, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isNumberMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markDirty, markFlexCtorSpec, memberClassOf, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, numberMultiRootType, papMemberIdFor, papMemberKey, popLocalMulti, popNumberMulti, pushLocalMulti, pushNumberMulti, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withScratchStore
+    , ArrowFact, Env, GroundingStats, ItemAux, LssMemberTable, LssSignature, LssStats, MemberSource(..), MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry(..), QPre(..), QShadowStats, SigFlowStats, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, emptyQShadowStats, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTable, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isNumberMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markDirty, markFlexCtorSpec, memberClassOf, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, numberMultiRootType, papMemberIdFor, papMemberKey, popLocalMulti, popNumberMulti, pushLocalMulti, pushNumberMulti, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, restoredAux, scoped, specIdsForGlobal, notePendingFailure, renderFailure, crashFailure, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withScratchStore
     )
 
 {-| Core state + step monad for the solver-based monomorphizer.
 
 `S` is one record threading BOTH the global monomorphization state (worklist,
 registry, nodes, …) and the per-work-item solver state (the union-find `store`
-plus the `memo` mapping MVarIds to union-find Points). `Step a = S -> Result
-Failure (a, S)` is a state monad with a failure short-circuit: a `Failure`
-aborts the whole monomorphization with a loud `Err` (no fallback to the
-original engine — see the module doc of `Compiler.MonoSolver.Monomorphize`).
+plus the `memo` mapping MVarIds to union-find Points).
+
+`Step a = S -> ( a, S )` is a plain state-passing function — a type synonym,
+not a monad. Step 10 removed the `Result Failure` half: nothing in the
+`Translate`/`Store`/`LssInfer` call graph ever CONSTRUCTED a failure, so the
+short-circuit was propagation of something that could not happen, at the cost
+of one `Ok` box and one `Result` match per bind on paths that run hundreds of
+millions of times per self-compile. The two real failure modes kept their
+own channels: `ItemAux.pendingFailure` for the MONO\_030 enqueue watchdog
+(read once per item by `Monomorphize.drain`), and `crashFailure` for engine
+bugs. Only the three driver-level functions still return `Result Failure`
+(`drain`, `processItem`, `specializeNodeSaturating`) — see the module doc of
+`Compiler.MonoSolver.Monomorphize`.
+
+There is no combinator layer any more: `andThen`, `map`, `map2`, `succeed`,
+`getS`, `modifyS`, `runStep`, `lift`, `liftU`, `afterU` and `scopedStep` were
+all deleted in step 10g and their call sites are explicit `case … of ( a, s1 )`
+chains. `traverse`, `foldlS`, `scoped`, `withScratchStore` and `liftIO` survive
+as ordinary direct-state higher-order functions. Writing the chains out is not
+a style preference: a function whose result-spine leaves are tuple LITERALS is
+eligible for the backend's `$sret` multi-result promotion (`Backend.buildSretPromoted`),
+and one written as a combinator chain never is.
 
 @docs S, Step, Failure, WorkItem
-@docs succeed, fail, andThen, map, map2, traverse, foldlS
-@docs getS, modifyS, liftIO, runStep
+@docs traverse, foldlS, liftIO
 @docs freshVar, enqueueSpec
 @docs freshStore, renewStore, releaseScratch, markStore, commitStore, rollbackStore, resetItem
 @docs mvarIdKey, pointKey
@@ -36,6 +52,7 @@ import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet exposing (BitSet)
+import Utils.Crash as Crash
 import Compiler.Data.Id as Id
 import Compiler.Eco.Config as Config
 import Compiler.Elm.ModuleName as ModuleName
@@ -628,20 +645,20 @@ it: the ENCLOSING instance's identity is still valid, only this level stops
 splitting.
 
 -}
-localInstanceTagFor : Int -> Step Int
+localInstanceTagFor : Int -> S -> ( Int, S )
 localInstanceTagFor ord s =
     let
         cfg =
             s.env.lss.stamp
     in
     if ord == 0 || not s.env.lss.enabled then
-        Ok ( s.itemAux.currentLocalInstance, s )
+        ( s.itemAux.currentLocalInstance, s )
 
     else if cfg.maxInstances > 0 && ord >= cfg.maxInstances then
-        Ok ( s.itemAux.currentLocalInstance, bumpInstanceQual (\lq -> { lq | instCapped = lq.instCapped + 1 }) s )
+        ( s.itemAux.currentLocalInstance, bumpInstanceQual (\lq -> { lq | instCapped = lq.instCapped + 1 }) s )
 
     else
-        Ok ( mixTag s.itemAux.currentLocalInstance ord, s )
+        ( mixTag s.itemAux.currentLocalInstance ord, s )
 
 
 bumpInstanceQual : (LayoutQualStats -> LayoutQualStats) -> S -> S
@@ -659,16 +676,16 @@ onto its global's GROUND key, which LSS\_019 grounding reproduces from a
 reference with no instance component — qualifying it would silently break the
 `{l|, g|}` singleton collapse.
 -}
-instanceQualTagFor : Int -> Step Int
+instanceQualTagFor : Int -> S -> ( Int, S )
 instanceQualTagFor raw s =
     if s.itemAux.currentLocalInstance == 0 then
-        Ok ( 0, s )
+        ( 0, s )
 
     else if CoreDict.member raw s.lssMemberTable.rootLamOf then
-        Ok ( 0, bumpInstanceQual (\lq -> { lq | instRootSkip = lq.instRootSkip + 1 }) s )
+        ( 0, bumpInstanceQual (\lq -> { lq | instRootSkip = lq.instRootSkip + 1 }) s )
 
     else
-        Ok ( s.itemAux.currentLocalInstance, s )
+        ( s.itemAux.currentLocalInstance, s )
 
 
 {-| The LSS\_018 μ-tie lookup/record key: the raw lambda id, or the raw id mixed
@@ -720,23 +737,20 @@ instances post-Fix-B, so signature-transported singletons decline at
 AbiCloning (unstampable-but-sound).
 
 -}
-lambdaInstanceMemberId : TypeIds.SrcLambdaId -> Step Int
+lambdaInstanceMemberId : TypeIds.SrcLambdaId -> S -> ( Int, S )
 lambdaInstanceMemberId lamId s0 =
     let
         raw =
             srcLambdaKey lamId
     in
     if not s0.env.lss.enabled then
-        Ok ( raw, s0 )
+        ( raw, s0 )
 
     else
         case s0.itemAux.currentSpecId of
                 Just specId ->
                     case instanceQualTagFor raw s0 of
-                        Err e ->
-                            Err e
-
-                        Ok ( instTag, s0i ) ->
+                        ( instTag, s0i ) ->
                             lambdaInstanceMemberGo raw instTag specId s0i
 
                 Nothing ->
@@ -744,14 +758,14 @@ lambdaInstanceMemberId lamId s0 =
                         stats =
                             s0.lssStats
                     in
-                    Ok ( raw, { s0 | lssStats = { stats | unqualifiedLambdaMints = stats.unqualifiedLambdaMints + 1 } } )
+                    ( raw, { s0 | lssStats = { stats | unqualifiedLambdaMints = stats.unqualifiedLambdaMints + 1 } } )
 
 
 {-| The routed mint, split out of `lambdaInstanceMemberId` so the instance tag
 (plans/lss-instance-qualified-members.md) can be resolved once and handed to
 both qualification regimes.
 -}
-lambdaInstanceMemberGo : Int -> Int -> Int -> Step Int
+lambdaInstanceMemberGo : Int -> Int -> Int -> S -> ( Int, S )
 lambdaInstanceMemberGo raw instTag specId s0 =
     -- LSS_024: layout-qualified identity, with the §2.3
     -- equal-id μ-tie bypass — see
@@ -783,7 +797,7 @@ a generation-2 spiral spec is an annotation-only split of generation 1, so
 its widened key is equal and the mint re-interns the same string).
 
 -}
-lambdaMemberLayoutQualified : Int -> Int -> Int -> Step Int
+lambdaMemberLayoutQualified : Int -> Int -> Int -> S -> ( Int, S )
 lambdaMemberLayoutQualified raw instTag specId s0 =
     let
         ( plainKey, isFallback ) =
@@ -816,7 +830,7 @@ lambdaMemberLayoutQualified raw instTag specId s0 =
                 mintLayoutQualifiedFold foldedTo key raw instTag specId isFallback True s0
 
             else
-                Ok ( tiedId, recordMuTied tiedId s0 )
+                ( tiedId, recordMuTied tiedId s0 )
 
         Nothing ->
             mintLayoutQualifiedFold foldedTo key raw instTag specId isFallback False s0
@@ -842,27 +856,23 @@ id was FOLDED — the folded id denotes the global, and devirt's reverse lookup
 (and the stampable-class licensing) read `sources`. Ground ids never enter
 `provisionalStandalone` (LSS\_019 idempotence).
 -}
-mintLayoutQualifiedFold : Maybe TOpt.Global -> String -> Int -> Int -> Int -> Bool -> Bool -> Step Int
+mintLayoutQualifiedFold : Maybe TOpt.Global -> String -> Int -> Int -> Int -> Bool -> Bool -> S -> ( Int, S )
 mintLayoutQualifiedFold foldedTo key raw instTag specId isFallback isTieBypass s0 =
     case mintLayoutQualified key raw instTag specId isFallback isTieBypass s0 of
-        Err e ->
-            Err e
-
-        Ok ( mid, s1 ) ->
+        ( mid, s1 ) ->
             case foldedTo of
                 Just g ->
                     if CoreDict.member mid s1.lssMemberTable.sources then
-                        Ok ( mid, bumpArgFlowCensus "rootFold|folded" s1 )
+                        ( mid, bumpArgFlowCensus "rootFold|folded" s1 )
 
                     else
-                        Ok
                             ( mid
                             , bumpArgFlowCensus "rootFold|folded"
                                 { s1 | lssMemberTable = insertMemberGlobal mid g s1.lssMemberTable }
                             )
 
                 Nothing ->
-                    Ok ( mid, s1 )
+                    ( mid, s1 )
 
 
 {-| The LSS\_024 intern + census tail: interns `key`, records the LSS\_018
@@ -872,13 +882,10 @@ is the FIRST-minting spec, diagnostics only), and bumps the `layoutQual`
 counters. `shared` bumps on a mint whose id's first minter was a DIFFERENT
 spec — id reuse across enclosing specs, the fix working.
 -}
-mintLayoutQualified : String -> Int -> Int -> Int -> Bool -> Bool -> Step Int
+mintLayoutQualified : String -> Int -> Int -> Int -> Bool -> Bool -> S -> ( Int, S )
 mintLayoutQualified key raw instTag specId isFallback isTieBypass s0 =
     case memberIdFor key s0 of
-        Err e ->
-            Err e
-
-        Ok ( mid, s1 ) ->
+        ( mid, s1 ) ->
             let
                 sharedInc =
                     case CoreDict.get mid s1.lssMemberTable.lambdaQualified of
@@ -939,10 +946,10 @@ mintLayoutQualified key raw instTag specId isFallback isTieBypass s0 =
                     s2.lssMemberTable
             in
             if CoreDict.member mid table.lambdaQualified then
-                Ok ( mid, s2 )
+                ( mid, s2 )
 
             else
-                Ok ( mid, { s2 | lssMemberTable = { table | lambdaQualified = CoreDict.insert mid ( qualifiedRawKey raw instTag, specId ) table.lambdaQualified } } )
+                ( mid, { s2 | lssMemberTable = { table | lambdaQualified = CoreDict.insert mid ( qualifiedRawKey raw instTag, specId ) table.lambdaQualified } } )
 
 
 {-| LSS\_024 §2.2: capture a just-created spec's annotation-widened creation
@@ -1261,6 +1268,29 @@ membersClass members table =
         "l"
 
 
+{-| Step 10c: record a MONO_030 watchdog trip for the driver to pick up.
+
+The trip no longer aborts the item mid-flight — `enqueueSpec*` has no `Result`
+to return it in — so the tripped spec IS committed (a valid state is required
+to finish the item) and `Monomorphize.drain` stops before ever processing it.
+Termination is unaffected: one item's translation is finite, and the next
+`drain` step reads the flag. FIRST TRIP WINS, which is what aborting
+immediately used to mean.
+-}
+notePendingFailure : Failure -> S -> S
+notePendingFailure f s =
+    let
+        aux =
+            s.itemAux
+    in
+    case aux.pendingFailure of
+        Just _ ->
+            s
+
+        Nothing ->
+            { s | itemAux = { aux | pendingFailure = Just f } }
+
+
 {-| MONO\_030 (solver arm): validate a just-CREATED spec against the breadth
 and key-size watchdogs. `Nothing` = fine; `Just` = the loud failure that
 replaces a silent hang/OOM (poly-rec through annotated mutual cycles is
@@ -1545,12 +1575,13 @@ type alias ItemAux =
     --
     -- REPORT-GATED and store-scoped exactly like `qLog`.
     , qSigRoot : Maybe Vars.Variable
+    , pendingFailure : Maybe Failure -- Step 10c: a MONO_030 watchdog trip recorded at enqueue time and consumed by `Monomorphize.drain` once per item; first trip wins. It lives on ItemAux and NOT on `S`, which is at 31 of the runtime's 32-slot record cap (R3). `clearedAux`/`restoredAux` deliberately let it flow through a scratch store: it holds no store Points, and a trip inside `withScratchStore` must still reach the driver.
     }
 
 
 emptyItemAux : ItemAux
 emptyItemAux =
-    { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = [], currentSpecId = Nothing, demandQualified = CoreDict.empty, currentLocalInstance = 0, retranslating = Nothing, arrowMemo = CoreDict.empty, groundLoads = HashMap.empty, arrowOfSlot = CoreDict.empty, zonkLog = [], qLog = [], qSigRoot = Nothing }
+    { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = [], currentSpecId = Nothing, demandQualified = CoreDict.empty, currentLocalInstance = 0, retranslating = Nothing, arrowMemo = CoreDict.empty, groundLoads = HashMap.empty, arrowOfSlot = CoreDict.empty, zonkLog = [], qLog = [], qSigRoot = Nothing, pendingFailure = Nothing }
 
 
 {-| Scratch-store entry: clear ONLY the read lists (scratch Point indices are
@@ -1646,132 +1677,99 @@ type Failure
 -- ====== STEP MONAD ======
 
 
-{-| A state transition that may fail. Failure aborts the whole pass.
+{-| A state transition: takes the state, returns a result and the new state.
+Failures do not travel here — see the module doc.
 -}
 type alias Step a =
-    S -> Result Failure ( a, S )
+    S -> ( a, S )
 
 
-succeed : a -> Step a
-succeed a =
-    \s -> Ok ( a, s )
-
-
-fail : Failure -> Step a
-fail f =
-    \_ -> Err f
-
-
-andThen : (a -> Step b) -> Step a -> Step b
-andThen f step =
-    \s ->
-        case step s of
-            Err e ->
-                Err e
-
-            Ok ( a, s1 ) ->
-                f a s1
-
-
-{-| D1: direct form. The former `andThen (\a -> succeed (f a)) step` allocated the
-`\a -> …` closure PLUS the `succeed (f a)` closure on every run; `map` fires on
-essentially every zonk/encode node, so the direct `case` form (one closure) is a
-broad cut to the monad-closure bucket. Monad-law-preserving → byte-identical.
+{-| Step 10: the human-readable text of a `Failure`. Moved here from
+`Monomorphize.renderFailure` so `crashFailure` can use it; `Monomorphize`'s one
+caller now calls this.
 -}
-map : (a -> b) -> Step a -> Step b
-map f step =
-    \s ->
-        case step s of
-            Err e ->
-                Err e
+renderFailure : Failure -> String
+renderFailure failure =
+    case failure of
+        Unsupported msg ->
+            "MonoSolver.unsupported: " ++ msg
 
-            Ok ( a, s1 ) ->
-                Ok ( f a, s1 )
+        UnifyMismatch msg ->
+            "MonoSolver.unify-mismatch: " ++ msg
 
+        EngineBug msg ->
+            "MonoSolver.bug: " ++ msg
 
-map2 : (a -> b -> c) -> Step a -> Step b -> Step c
-map2 f sa sb =
-    \s ->
-        case sa s of
-            Err e ->
-                Err e
-
-            Ok ( a, s1 ) ->
-                case sb s1 of
-                    Err e ->
-                        Err e
-
-                    Ok ( b, s2 ) ->
-                        Ok ( f a b, s2 )
+        LimitExceeded msg ->
+            -- MONO_030: a resource watchdog, deliberately NOT framed as a
+            -- compiler bug — the message itself names the limit, the env
+            -- var, and the likely cause (poly-rec via annotated mutual
+            -- cycles is legal Elm).
+            msg
 
 
-{-| Thread a step over a list, preserving order. Direct order-preserving
-recursion (no intermediate reversed list, no per-element `map` closure); the
-lists here are short (type arities / tuple slots / record fields), matching the
-non-tail shape already used by `Store.loadListC`/`Translate.classifyList`.
+{-| Step 10: abort the process with the SAME text a `Failure` would have
+surfaced as. `EngineBug` and `Unsupported` are "never a fallback" by their own
+docstring — every site aborts the build — so once a function stops carrying a
+`Result`, this is where they go. It type-checks in a `Step`-typed position as
+readily as in a direct one, which is what lets the crash sites convert
+independently of their enclosing functions.
+
+`LimitExceeded` must NOT come through here: MONO_030 calls it diagnosable
+rather than a bug, and `SpecWatchdogTest` pins the clean failure. It travels as
+`ItemAux.pendingFailure` instead.
 -}
+crashFailure : Failure -> a
+crashFailure f =
+    Crash.crash (renderFailure f)
+
+
 traverse : (a -> Step b) -> List a -> Step (List b)
 traverse f items =
     \s -> traverseGo f items s
 
 
-traverseGo : (a -> Step b) -> List a -> S -> Result Failure ( List b, S )
+traverseGo : (a -> Step b) -> List a -> S -> ( List b, S )
 traverseGo f items s =
     case items of
         [] ->
-            Ok ( [], s )
+            ( [], s )
 
         x :: rest ->
             case f x s of
-                Err e ->
-                    Err e
-
-                Ok ( b, s1 ) ->
+                ( b, s1 ) ->
                     case traverseGo f rest s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( bs, s2 ) ->
-                            Ok ( b :: bs, s2 )
+                        ( bs, s2 ) ->
+                            ( b :: bs, s2 )
 
 
-{-| Left fold in the Step monad.
+{-| Left fold, threading the state. Step 10g: direct — the `succeed`/`andThen`
+pair it used to be built from no longer exists.
 -}
 foldlS : (a -> b -> Step b) -> b -> List a -> Step b
-foldlS f acc items =
+foldlS f acc items s =
     case items of
         [] ->
-            succeed acc
+            ( acc, s )
 
         x :: rest ->
-            andThen (\acc1 -> foldlS f acc1 rest) (f x acc)
-
-
-runStep : Step a -> S -> Result Failure ( a, S )
-runStep step s =
-    step s
-
-
-getS : (S -> a) -> Step a
-getS f =
-    \s -> Ok ( f s, s )
-
-
-modifyS : (S -> S) -> Step ()
-modifyS f =
-    \s -> Ok ( (), f s )
+            case f x acc s of
+                ( acc1, s1 ) ->
+                    foldlS f acc1 rest s1
 
 
 {-| Run a solver `IO` action against the item's store.
 -}
-liftIO : IO.IO a -> Step a
-liftIO io =
-    \s ->
-        let
-            ( store1, a ) =
-                io s.store
-        in
-        Ok ( a, { s | store = store1 } )
+liftIO : IO.IO a -> S -> ( a, S )
+liftIO io s =
+    -- Step 10e: direct. A1 explicit trailing-S, tuple-literal leaf; `liftIO`
+    -- is on the store path of nearly every mint, so it must not be the thing
+    -- that boxes.
+    let
+        ( store1, a ) =
+            io s.store
+    in
+    ( a, { s | store = store1 } )
 
 
 
@@ -1782,7 +1780,7 @@ liftIO io =
 engine rank (`outermostRank`). No generalization happens, so any fixed rank is
 safe (`Unify.merge` uses `min`, `Occurs` ignores rank).
 -}
-freshVar : Vars.Content -> Step Vars.Variable
+freshVar : Vars.Content -> S -> ( Vars.Variable, S )
 freshVar content =
     liftIO (UF.fresh (IO.makeDescriptor content Type.outermostRank Type.noMark Nothing))
 
@@ -1809,17 +1807,17 @@ function), "k|home.name" (kernel ref), "a|field" (accessor value),
 supply as Phase-0 lambda ids (`nextMemberId` is seeded past
 `GlobalMVarState.nextLam`), so member ids never collide (LSS\_003).
 -}
-memberIdFor : String -> Step Int
+memberIdFor : String -> S -> ( Int, S )
 memberIdFor key s =
     let
         ( mid, table1, next1 ) =
             internMemberKey key s.lssMemberTable s.nextMemberId
     in
     if next1 == s.nextMemberId then
-        Ok ( mid, s )
+        ( mid, s )
 
     else
-        Ok ( mid, { s | lssMemberTable = table1, nextMemberId = next1 } )
+        ( mid, { s | lssMemberTable = table1, nextMemberId = next1 } )
 
 
 {-| The interned key for a partial application of `global` with `argCount`
@@ -1843,22 +1841,19 @@ The source registration exists only so the graph can NAME the global and the
 supplied count; `memberClassOf` keeps the member in the declining class.
 
 -}
-papMemberIdFor : TOpt.Global -> Int -> Step Int
+papMemberIdFor : TOpt.Global -> Int -> S -> ( Int, S )
 papMemberIdFor global argCount s0 =
     case memberIdFor (papMemberKey global argCount) s0 of
-        Err e ->
-            Err e
-
-        Ok ( mid, s1 ) ->
+        ( mid, s1 ) ->
             if CoreDict.member mid s1.lssMemberTable.sources then
-                Ok ( mid, s1 )
+                ( mid, s1 )
 
             else
                 let
                     t =
                         s1.lssMemberTable
                 in
-                Ok ( mid, { s1 | lssMemberTable = { t | sources = CoreDict.insert mid (SourcePap global argCount) t.sources } } )
+                ( mid, { s1 | lssMemberTable = { t | sources = CoreDict.insert mid (SourcePap global argCount) t.sources } } )
 
 
 {-| E9: intern a STANDALONE-GLOBAL member ("g|" or "c|" key — named
@@ -1868,26 +1863,22 @@ record its Global in the reverse map the devirt consults
 ids are PROVISIONAL: family names awaiting type-keyed grounding at zonk).
 Same interning as `memberIdFor`; the reverse inserts are idempotent.
 -}
-standaloneMemberIdFor : String -> TOpt.Global -> Step Int
+standaloneMemberIdFor : String -> TOpt.Global -> S -> ( Int, S )
 standaloneMemberIdFor key g s0 =
     case memberIdFor key s0 of
-        Err e ->
-            Err e
-
-        Ok ( mid, s1 ) ->
+        ( mid, s1 ) ->
             if CoreDict.member mid s1.lssMemberTable.sources then
-                Ok ( mid, s1 )
+                ( mid, s1 )
 
             else
-                Ok ( mid, { s1 | lssMemberTable = insertMemberProvisional mid g (insertMemberGlobal mid g s1.lssMemberTable) } )
+                ( mid, { s1 | lssMemberTable = insertMemberProvisional mid g (insertMemberGlobal mid g s1.lssMemberTable) } )
 
 
 {-| E9: the Global behind a member id, when the member is a standalone
 global/ctor reference.
 -}
-standaloneMemberGlobal : Int -> Step (Maybe TOpt.Global)
+standaloneMemberGlobal : Int -> S -> ( (Maybe TOpt.Global), S )
 standaloneMemberGlobal mid s =
-    Ok
         ( case CoreDict.get mid s.lssMemberTable.sources of
             Just (SourceGlobal g) ->
                 Just g
@@ -2030,26 +2021,22 @@ so member ids are identical to the pre-E9.2 mint) and record its
 (prefix, home, name) identity in the reverse map the kernel devirt
 consults (`standaloneMemberKernel`). Mirrors `standaloneMemberIdFor`.
 -}
-kernelMemberIdFor : String -> ( String, String, String ) -> Step Int
+kernelMemberIdFor : String -> ( String, String, String ) -> S -> ( Int, S )
 kernelMemberIdFor key k s0 =
     case memberIdFor key s0 of
-        Err e ->
-            Err e
-
-        Ok ( mid, s1 ) ->
+        ( mid, s1 ) ->
             if CoreDict.member mid s1.lssMemberTable.sources then
-                Ok ( mid, s1 )
+                ( mid, s1 )
 
             else
-                Ok ( mid, { s1 | lssMemberTable = insertMemberKernel mid k s1.lssMemberTable } )
+                ( mid, { s1 | lssMemberTable = insertMemberKernel mid k s1.lssMemberTable } )
 
 
 {-| E9.2: the kernel (prefix, home, name) behind a member id, when the
 member is a kernel-value reference.
 -}
-standaloneMemberKernel : Int -> Step (Maybe ( String, String, String ))
+standaloneMemberKernel : Int -> S -> ( (Maybe ( String, String, String )), S )
 standaloneMemberKernel mid s =
-    Ok
         ( case CoreDict.get mid s.lssMemberTable.sources of
             Just (SourceKernel k) ->
                 Just k
@@ -2065,7 +2052,7 @@ store/memo/revMemo afterward. This is `Translate.retranslateAt`'s
 stash/restore promoted to a combinator — the scratch store's Points never
 leak into the surrounding item, and vice versa.
 -}
-withScratchStore : Step a -> Step a
+withScratchStore : (S -> ( a, S )) -> S -> ( a, S )
 withScratchStore step s0 =
     let
         sFresh =
@@ -2077,10 +2064,7 @@ withScratchStore step s0 =
             { s0 | store = freshStore (), memo = CoreDict.empty, revMemo = Array.empty, itemAux = clearedAux s0.itemAux }
     in
     case step sFresh of
-        Err e ->
-            Err e
-
-        Ok ( a, s1 ) ->
+        ( a, s1 ) ->
             let
                 -- §3.2 reconciliation: readbacks made INSIDE the scratch store
                 -- are counted by the in-flight ledger but can never be
@@ -2136,7 +2120,7 @@ withScratchStore step s0 =
             -- stashed one. The stash was never touched: `freshStore ()` above
             -- allocated a DIFFERENT store, which is why that function takes an
             -- argument.
-            Ok ( a, { s3 | store = releaseScratch s3.store s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = restoredAux s0.itemAux s3.itemAux } )
+            ( a, { s3 | store = releaseScratch s3.store s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = restoredAux s0.itemAux s3.itemAux } )
 
 
 
@@ -2146,7 +2130,7 @@ withScratchStore step s0 =
 {-| Allocate or reuse the SpecId for a specialization, scheduling it if new.
 Mirrors the original `enqueueSpec`: LIFO worklist (cons), `scheduled` dedups.
 -}
-enqueueSpec : Mono.Global -> Mono.MonoType -> Step Mono.SpecId
+enqueueSpec : Mono.Global -> Mono.MonoType -> S -> ( Mono.SpecId, S )
 enqueueSpec global monoType s0 =
     -- A1: explicit trailing-S param (was `\s -> …`) → saturated callers avoid the
     -- per-call closure; body unchanged → byte-identical.
@@ -2184,7 +2168,9 @@ enqueueSpec global monoType s0 =
         in
         case watchdog of
             Just failure ->
-                Err failure
+                -- Step 10c: the tripped spec is still committed; `drain` stops
+                -- before it is ever processed.
+                enqueueSpecCommit specId reg1 storedChanged (notePendingFailure failure s)
 
             Nothing ->
                 enqueueSpecCommit specId reg1 storedChanged s
@@ -2208,24 +2194,23 @@ On an unchanged hit (D2): the registry is the SAME value, so
 return S unaltered.
 
 -}
-enqueueSpecCommit : Mono.SpecId -> Mono.SpecializationRegistry -> Bool -> S -> Result Failure ( Mono.SpecId, S )
+enqueueSpecCommit : Mono.SpecId -> Mono.SpecializationRegistry -> Bool -> S -> ( Mono.SpecId, S )
 enqueueSpecCommit specId reg1 storedChanged s =
     if BitSet.member specId s.scheduled then
         if storedChanged then
-            Ok ( specId, markDirty specId reg1 s )
+            ( specId, markDirty specId reg1 s )
 
         else
-            Ok ( specId, s )
+            ( specId, s )
 
     else
-        Ok
-            ( specId
-            , { s
-                | registry = reg1
-                , scheduled = BitSet.insertGrowing specId s.scheduled
-                , worklist = SpecializeGlobal specId :: s.worklist
-              }
-            )
+        ( specId
+        , { s
+            | registry = reg1
+            , scheduled = BitSet.insertGrowing specId s.scheduled
+            , worklist = SpecializeGlobal specId :: s.worklist
+          }
+        )
 
 
 {-| Phase 1 census (`plans/lss-set-write-substrate.md`): attribute a keyed
@@ -2328,7 +2313,7 @@ type, or a join that changes nothing).
 an existing spec never burns budget.
 
 -}
-enqueueSpecKeyed : Mono.Global -> Mono.MonoType -> Step Mono.SpecId
+enqueueSpecKeyed : Mono.Global -> Mono.MonoType -> S -> ( Mono.SpecId, S )
 enqueueSpecKeyed global monoType s0 =
     let
         gkey =
@@ -2418,7 +2403,8 @@ enqueueSpecKeyed global monoType s0 =
             Nothing
     of
         Just failure ->
-            Err failure
+            -- Step 10c: commit, record, and let `drain` stop at the item end.
+            enqueueSpecCommit specId s2.registry storedChanged (notePendingFailure failure s2)
 
         Nothing ->
             -- LSS_010 dirty machinery on a changed join — mark only; the
@@ -2523,52 +2509,51 @@ resetItem s =
 
 {-| Bind a local variable's monomorphized type.
 -}
-insertVar : String -> Mono.MonoType -> Step ()
+insertVar : String -> Mono.MonoType -> S -> S
 insertVar name monoType s =
-    Ok ( (), { s | varEnv = CoreDict.insert name monoType s.varEnv } )
+    { s | varEnv = CoreDict.insert name monoType s.varEnv }
 
 
 {-| Look up a local variable's type (populated by let/lambda/destructor bindings).
 -}
-lookupVar : String -> Step (Maybe Mono.MonoType)
+lookupVar : String -> S -> ( (Maybe Mono.MonoType), S )
 lookupVar name s =
-    Ok ( CoreDict.get name s.varEnv, s )
+    ( CoreDict.get name s.varEnv, s )
 
 
 {-| Push an empty number-multi entry for a let-bound number var before walking
 its body (instance discovery is body-first).
 -}
-pushNumberMulti : String -> Step ()
+pushNumberMulti : String -> S -> S
 pushNumberMulti defName s =
-    Ok ( (), { s | numberMulti = { defName = defName, instances = Mono.specMapEmpty, rhsLam = Nothing, rhsPap = Nothing, pendingEnrich = CoreDict.empty } :: s.numberMulti } )
+    { s | numberMulti = { defName = defName, instances = Mono.specMapEmpty, rhsLam = Nothing, rhsPap = Nothing, pendingEnrich = CoreDict.empty } :: s.numberMulti }
 
 
 {-| Pop the top number-multi entry after the body is specialized.
 -}
-popNumberMulti : Step (Maybe NumberMultiEntry)
+popNumberMulti : S -> ( Maybe NumberMultiEntry, S )
 popNumberMulti s =
     case s.numberMulti of
         top :: rest ->
-            Ok ( Just top, { s | numberMulti = rest } )
+            ( Just top, { s | numberMulti = rest } )
 
         [] ->
-            Ok ( Nothing, s )
+            ( Nothing, s )
 
 
 {-| Is `name` a let-bound number var currently being multi-specialized?
 -}
-isNumberMultiTarget : String -> Step Bool
+isNumberMultiTarget : String -> S -> ( Bool, S )
 isNumberMultiTarget name s =
-    Ok ( List.any (\e -> e.defName == name) s.numberMulti, s )
+    ( List.any (\e -> e.defName == name) s.numberMulti, s )
 
 
 {-| The eager (index-0, bare-name) instance monoType of a number-multi target,
 or Nothing if `name` is not one. Used by the destructor-derived divert to
 overlay a refined slot onto the root container's type.
 -}
-numberMultiRootType : String -> Step (Maybe Mono.MonoType)
+numberMultiRootType : String -> S -> ( (Maybe Mono.MonoType), S )
 numberMultiRootType name s =
-    Ok
         ( case List.head (List.filter (\e -> e.defName == name) s.numberMulti) of
             Just entry ->
                 List.head (List.filter (\i -> i.freshName == name) (Mono.specMapValues entry.instances))
@@ -2584,17 +2569,14 @@ numberMultiRootType name s =
 returning its per-instance name (`defName` for the first/Int instance, then
 `defName$v<idx>`). Keyed structurally on the demanded type (`Mono.SpecMap`).
 -}
-recordNumberInstance : String -> Mono.MonoType -> Step ( String, Mono.MonoType )
+recordNumberInstance : String -> Mono.MonoType -> S -> ( ( String, Mono.MonoType ), S )
 recordNumberInstance name monoType s =
     case recordNumberInstanceOrd name monoType s of
-        Err e ->
-            Err e
-
-        Ok ( ( freshName, instType, _ ), s1 ) ->
-            Ok ( ( freshName, instType ), s1 )
+        ( ( freshName, instType, _ ), s1 ) ->
+            ( ( freshName, instType ), s1 )
 
 
-recordNumberInstanceOrd : String -> Mono.MonoType -> Step ( String, Mono.MonoType, Int )
+recordNumberInstanceOrd : String -> Mono.MonoType -> S -> ( ( String, Mono.MonoType, Int ), S )
 recordNumberInstanceOrd name monoType s =
     recordMultiInstance .numberMulti (\stk st -> { st | numberMulti = stk }) "$v" name monoType s
 
@@ -2602,33 +2584,32 @@ recordNumberInstanceOrd name monoType s =
 {-| Push an empty local-multi entry for a let-bound function before walking its
 body (each use records the concrete type it is applied at).
 -}
-pushLocalMulti : Maybe ( TypeIds.SrcLambdaId, Int ) -> Maybe ( TOpt.Global, Int ) -> String -> Step ()
+pushLocalMulti : Maybe ( TypeIds.SrcLambdaId, Int ) -> Maybe ( TOpt.Global, Int ) -> String -> S -> S
 pushLocalMulti rhsLam rhsPap defName s =
-    Ok ( (), { s | localMulti = { defName = defName, instances = Mono.specMapEmpty, rhsLam = rhsLam, rhsPap = rhsPap, pendingEnrich = CoreDict.empty } :: s.localMulti } )
+    { s | localMulti = { defName = defName, instances = Mono.specMapEmpty, rhsLam = rhsLam, rhsPap = rhsPap, pendingEnrich = CoreDict.empty } :: s.localMulti }
 
 
-popLocalMulti : Step (Maybe NumberMultiEntry)
+popLocalMulti : S -> ( Maybe NumberMultiEntry, S )
 popLocalMulti s =
     case s.localMulti of
         top :: rest ->
-            Ok ( Just top, { s | localMulti = rest } )
+            ( Just top, { s | localMulti = rest } )
 
         [] ->
-            Ok ( Nothing, s )
+            ( Nothing, s )
 
 
-isLocalMultiTarget : String -> Step Bool
+isLocalMultiTarget : String -> S -> ( Bool, S )
 isLocalMultiTarget name s =
-    Ok ( List.any (\e -> e.defName == name) s.localMulti, s )
+    ( List.any (\e -> e.defName == name) s.localMulti, s )
 
 
 {-| D9: read all three `VarLocal` classifiers in one `getS` (is-local-multi,
 is-number-multi, varEnv binding) — collapses three sequential `getS` andThen
 closures on the hot local-ref node into one.
 -}
-localVarInfo : String -> Step ( Bool, Bool, Maybe Mono.MonoType )
+localVarInfo : String -> S -> ( ( Bool, Bool, Maybe Mono.MonoType ), S )
 localVarInfo name s =
-    Ok
         ( ( List.any (\e -> e.defName == name) s.localMulti
           , List.any (\e -> e.defName == name) s.numberMulti
           , CoreDict.get name s.varEnv
@@ -2640,7 +2621,7 @@ localVarInfo name s =
 {-| Record (or reuse) an instance of a local-multi FUNCTION at a demanded type;
 per-instance name is `defName` (first) then `defName$<idx>`.
 -}
-recordLocalInstance : String -> Mono.MonoType -> Step ( String, Mono.MonoType, Int )
+recordLocalInstance : String -> Mono.MonoType -> S -> ( ( String, Mono.MonoType, Int ), S )
 recordLocalInstance name monoType s =
     recordMultiInstance .localMulti (\stk st -> { st | localMulti = stk }) "$" name monoType s
 
@@ -2651,7 +2632,7 @@ by the demanded `MonoType` (`Mono.SpecMap`), and name it `defName` for index 0
 else `defName ++ sep ++ idx`. The third component is the instance ORDINAL
 (`idx`), stored on the instance so an existing one reports the same number.
 -}
-recordMultiInstance : (S -> List NumberMultiEntry) -> (List NumberMultiEntry -> S -> S) -> String -> String -> Mono.MonoType -> Step ( String, Mono.MonoType, Int )
+recordMultiInstance : (S -> List NumberMultiEntry) -> (List NumberMultiEntry -> S -> S) -> String -> String -> Mono.MonoType -> S -> ( ( String, Mono.MonoType, Int ), S )
 recordMultiInstance getStack setStack sep name monoType s =
     let
         update entry =
@@ -2707,21 +2688,20 @@ recordMultiInstance getStack setStack sep name monoType s =
         ( newStack, res ) =
             go (getStack s)
     in
-    Ok ( res, setStack newStack s )
+    ( res, setStack newStack s )
 
 
 {-| Run a step in a nested variable scope: bindings introduced inside are
 discarded afterward (so they don't leak to sibling expressions). Mirrors the
 original engine's varEnv push/pop.
 -}
-scoped : Step a -> Step a
+scoped : (S -> ( a, S )) -> S -> ( a, S )
 scoped step s0 =
+    -- Step 10e: direct HOF. The scope restore IS the copy (plan N11) — never
+    -- drop it.
     case step s0 of
-        Err e ->
-            Err e
-
-        Ok ( a, s1 ) ->
-            Ok ( a, { s1 | varEnv = s0.varEnv } )
+        ( a, s1 ) ->
+            ( a, { s1 | varEnv = s0.varEnv } )
 
 
 {-| Harvest number-taint (Join-R, §5.5) from the finished item's store into the
@@ -2788,38 +2768,32 @@ harvestSuperTableExcept excluded s =
 -- ====== M2 CACHES ======
 
 
-lookupSchemeMono : String -> Step (Maybe Mono.MonoType)
-lookupSchemeMono key =
-    getS (\s -> CoreDict.get key s.monoMemo.schemeMono)
+lookupSchemeMono : String -> S -> ( (Maybe Mono.MonoType), S )
+lookupSchemeMono key s =
+    ( CoreDict.get key s.monoMemo.schemeMono, s )
 
 
-putSchemeMono : String -> Mono.MonoType -> Step ()
-putSchemeMono key monoType =
-    modifyS
-        (\s ->
-            let
-                m =
-                    s.monoMemo
-            in
-            { s | monoMemo = { m | schemeMono = CoreDict.insert key monoType m.schemeMono } }
-        )
+putSchemeMono : String -> Mono.MonoType -> S -> S
+putSchemeMono key monoType s =
+        let
+            m =
+                s.monoMemo
+        in
+        { s | monoMemo = { m | schemeMono = CoreDict.insert key monoType m.schemeMono } }
 
 
-lookupCallMemo : Mono.SpecKey -> Step (Maybe ( Mono.MonoType, Mono.MonoType, Mono.SpecId ))
-lookupCallMemo key =
-    getS (\s -> Mono.specKeyMapGet key s.monoMemo.callMemo)
+lookupCallMemo : Mono.SpecKey -> S -> ( (Maybe ( Mono.MonoType, Mono.MonoType, Mono.SpecId )), S )
+lookupCallMemo key s =
+    ( Mono.specKeyMapGet key s.monoMemo.callMemo, s )
 
 
-putCallMemo : Mono.SpecKey -> ( Mono.MonoType, Mono.MonoType, Mono.SpecId ) -> Step ()
-putCallMemo key entry =
-    modifyS
-        (\s ->
-            let
-                m =
-                    s.monoMemo
-            in
-            { s | monoMemo = { m | callMemo = Mono.specKeyMapInsert key entry m.callMemo } }
-        )
+putCallMemo : Mono.SpecKey -> ( Mono.MonoType, Mono.MonoType, Mono.SpecId ) -> S -> S
+putCallMemo key entry s =
+        let
+            m =
+                s.monoMemo
+        in
+        { s | monoMemo = { m | callMemo = Mono.specKeyMapInsert key entry m.callMemo } }
 
 
 

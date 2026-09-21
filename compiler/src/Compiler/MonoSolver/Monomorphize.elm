@@ -144,18 +144,15 @@ monomorphizeWithReportAssigned lssConfig limits entryPointName globalTypeEnv ass
                 -- are non-arrows.
                 ( mainSpecId, s1 ) =
                     case Translate.stampSelfSpine mainGlobal mainMonoType s0 of
-                        Ok ( stampedMain, s0b ) ->
+                        ( stampedMain, s0b ) ->
                             seedSpec (toptToMonoGlobal mainGlobal) stampedMain s0b
-
-                        Err _ ->
-                            seedSpec (toptToMonoGlobal mainGlobal) mainMonoType s0
 
                 ( maybeFlagsSpecId, s2 ) =
                     seedFlagsDecoder maybeFlagsGlobal nodesWithIds s1
             in
             case drain s2 of
                 Err failure ->
-                    Err (renderFailure failure)
+                    Err (Engine.renderFailure failure)
 
                 Ok sDrained ->
                     let
@@ -1285,13 +1282,10 @@ varSuccPass s =
                                                         LssInfer.papMemberKey vsG (d + j)
                                                 in
                                                 case Engine.papMemberIdFor vsG (d + j) sAcc of
-                                                    Ok ( mid, sAcc1 ) ->
+                                                    ( mid, sAcc1 ) ->
                                                         ( Just (Mono.unionSortedInts [ mid ] acc)
                                                         , ( sAcc1, Dict.insert mid succKey keysAcc )
                                                         )
-
-                                                    Err _ ->
-                                                        ( Nothing, ( Engine.bumpArgFlowCensus "varsucc|mintErr" sAcc, keysAcc ) )
 
                                             else
                                                 ( Nothing, ( Engine.bumpArgFlowCensus "varsucc|skipBeyond" sAcc, keysAcc ) )
@@ -4025,11 +4019,8 @@ seedFlagsDecoder maybeFlagsGlobal nodes s =
 
                         ( specId, s1 ) =
                             case Translate.stampSelfSpine flagsGlobal decoderMonoType s of
-                                Ok ( stampedDec, sb ) ->
+                                ( stampedDec, sb ) ->
                                     seedSpec (toptToMonoGlobal flagsGlobal) stampedDec sb
-
-                                Err _ ->
-                                    seedSpec (toptToMonoGlobal flagsGlobal) decoderMonoType s
                     in
                     ( Just specId, s1 )
 
@@ -4096,7 +4087,18 @@ drain s =
                     Err e
 
                 Ok s1 ->
-                    drain s1
+                    -- Step 10c: the MONO_030 watchdog no longer aborts an item
+                    -- mid-flight (`enqueueSpec*` has no `Result` to carry it);
+                    -- it records `pendingFailure` and the item finishes, so the
+                    -- check lands here, once per item, before the next one
+                    -- starts. The message was built at TRIP time from the
+                    -- global in scope, so it is byte-for-byte the old text.
+                    case s1.itemAux.pendingFailure of
+                        Just f ->
+                            Err f
+
+                        Nothing ->
+                            drain s1
 
 
 {-| LSS\_010 flush-round cap. Real programs stabilize in a handful of
@@ -4340,11 +4342,8 @@ processItem specId s =
                                                                         case specKey of
                                                                             Mono.Global sgHome sgName ->
                                                                                 case Translate.stampSelfSpine (TOpt.Global sgHome sgName) joinedR s1 of
-                                                                                    Ok ( stamped, _ ) ->
+                                                                                    ( stamped, _ ) ->
                                                                                         stamped
-
-                                                                                    Err _ ->
-                                                                                        joinedR
 
                                                                             _ ->
                                                                                 -- Accessor keys: no self
@@ -4485,10 +4484,7 @@ per pass.
 specializeNodeSaturating : Int -> Name -> ModuleName.Canonical -> TOpt.Node TypeIds.MVarId -> Mono.MonoType -> S -> Result Failure ( Mono.MonoNode, S )
 specializeNodeSaturating attempt name home node monoType s =
     case specializeNode name home node monoType s of
-        Err e ->
-            Err e
-
-        Ok ( monoNode, s1 ) ->
+        ( monoNode, s1 ) ->
             if not (staleResidualRead s1) then
                 Ok ( monoNode, s1 )
 
@@ -4519,7 +4515,7 @@ maxSaturationPasses =
 {-| Specialize one top-level node. `name`/`home` identify the definition (used
 for ctor tags and to follow links to their target's name/home).
 -}
-specializeNode : Name -> ModuleName.Canonical -> TOpt.Node TypeIds.MVarId -> Mono.MonoType -> S -> Result Failure ( Mono.MonoNode, S )
+specializeNode : Name -> ModuleName.Canonical -> TOpt.Node TypeIds.MVarId -> Mono.MonoType -> S -> ( Mono.MonoNode, S )
 specializeNode name home node monoType s =
     case node of
         TOpt.Define expr _ meta ->
@@ -4529,22 +4525,22 @@ specializeNode name home node monoType s =
             defineFrom meta.tipe expr monoType s
 
         TOpt.Kernel _ _ ->
-            Ok ( Mono.MonoExtern monoType, s )
+            ( Mono.MonoExtern monoType, s )
 
         TOpt.Ctor index arity canType ->
-            Engine.runStep (Translate.specializeCtorViaScheme name (CtorTag.effective home name index) arity canType monoType) s
+            Translate.specializeCtorViaScheme name (CtorTag.effective home name index) arity canType monoType s
 
         TOpt.Enum index canType ->
-            Engine.runStep (Translate.enumNode (CtorTag.effective home name index) canType monoType) s
+            Translate.enumNode (CtorTag.effective home name index) canType monoType s
 
         TOpt.Box canType ->
             -- @unbox single-field type: a 1-field ctor with literal tag 0.
-            Engine.runStep (Translate.specializeCtorViaScheme name 0 1 canType monoType) s
+            Translate.specializeCtorViaScheme name 0 1 canType monoType s
 
         TOpt.Link linkedGlobal ->
             case HashMap.get TOpt.globalHash (==) linkedGlobal s.env.toptNodes of
                 Nothing ->
-                    Ok ( Mono.MonoExtern monoType, s )
+                    ( Mono.MonoExtern monoType, s )
 
                 Just linkedNode ->
                     case linkedGlobal of
@@ -4554,7 +4550,7 @@ specializeNode name home node monoType s =
         TOpt.Manager _ ->
             case home of
                 ModuleName.Canonical _ modName ->
-                    Ok ( Mono.MonoManagerLeaf (Name.toElmString modName) monoType, s )
+                    ( Mono.MonoManagerLeaf (Name.toElmString modName) monoType, s )
 
         TOpt.Cycle _ valueDefs funcDefs _ ->
             -- The demand reaches the cycle node through a `_M$<first>` Link, so
@@ -4570,12 +4566,12 @@ specializeNode name home node monoType s =
                         _ ->
                             name
             in
-            Engine.runStep (Translate.specializeCycle reqName valueDefs funcDefs monoType) s
+            Translate.specializeCycle reqName valueDefs funcDefs monoType s
 
         TOpt.PortIncoming expr _ meta ->
             case monoType of
                 Mono.MFunction _ _ _ _ ->
-                    Engine.runStep (Translate.specializePort True expr meta.tipe monoType) s
+                    Translate.specializePort True expr meta.tipe monoType s
 
                 _ ->
                     -- The same port Global demanded at its DECODER (non-function)
@@ -4584,7 +4580,7 @@ specializeNode name home node monoType s =
                     defineFrom (TOpt.typeOf expr) expr monoType s
 
         TOpt.PortOutgoing expr _ meta ->
-            Engine.runStep (Translate.specializePort False expr meta.tipe monoType) s
+            Translate.specializePort False expr meta.tipe monoType s
 
 
 {-| D13: resolve a `Mono.Global` to its `TOpt.Node` and annotation-id set, memoized
@@ -4646,18 +4642,12 @@ annotation in the store (so a polymorphic body concretizes via the shared memo),
 then translate the body. For a monomorphic global the demand equals the
 annotation and the unification is a no-op.
 -}
-defineFrom : Can.Type TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> Mono.MonoType -> S -> Result Failure ( Mono.MonoNode, S )
+defineFrom : Can.Type TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> Mono.MonoType -> S -> ( Mono.MonoNode, S )
 defineFrom annCanType expr demand s =
-    case Engine.runStep (Translate.demandUnifyRoot annCanType demand expr) s of
-        Err e ->
-            Err e
-
-        Ok ( (), s1 ) ->
-            case Engine.runStep (Translate.translate expr) s1 of
-                Err e ->
-                    Err e
-
-                Ok ( monoExpr, s2 ) ->
+    case Translate.demandUnifyRoot annCanType demand expr s of
+        s1 ->
+            case Translate.translate expr s1 of
+                ( monoExpr, s2 ) ->
                     -- LSS_026 §11 tried widening a WRAP-CLASS def's head
                     -- annotation here (the adoption input of
                     -- `Mono.singletonHeadMember`). MEASURED NO-GO — see the
@@ -4666,7 +4656,7 @@ defineFrom annCanType expr demand s =
                     -- by 0.000 pp, while costing 19 k singleton sets and 60 %
                     -- of grounding. Do not re-attempt without first
                     -- establishing what the fast→gen conversion actually is.
-                    Ok ( Mono.MonoDefine monoExpr (Mono.typeOf monoExpr), s2 )
+                    ( Mono.MonoDefine monoExpr (Mono.typeOf monoExpr), s2 )
 
 
 {-| LSS\_010 re-translation eligibility: only body-bearing nodes can be
@@ -5140,7 +5130,6 @@ arraySetGrowing index value arr =
         Array.set index value (Array.append arr (Array.repeat (index - len + 1) Nothing))
 
 
-renderFailure : Failure -> String
 renderFailure failure =
     case failure of
         Unsupported msg ->

@@ -407,8 +407,8 @@ streamNodesCollectEncode ctx0 remaining tables =
 plans/opt-tier1-aggregate-promotion.md): a spec is promoted iff
 (a) it is a zero-capture function whose result is a tuple2/3,
 (b) every RESULT-spine leaf of its body is a tuple literal of that
-arity (spine = let/destruct bodies + case branches; MonoIf is a
-recorded v1 scope cut), and
+arity (spine = let/destruct bodies + case branches + if branches, the
+last admitted by step 10a), and
 (c) at least one LET-BOUND direct call site exists somewhere in the
 graph (otherwise the worker+shim would be pure overhead).
 Leaf-ness is NOT required — the census measured it empty and it buys no
@@ -515,12 +515,122 @@ buildSretPromoted config nodes =
 
             base =
                 Dict.filter (\specId _ -> Set.member specId calledInLetPosition) candidates
+
+            -- Step 10g: the OPTIMISTIC start set for the greatest fixpoint —
+            -- every SHAPE-eligible zero-capture tuple2/3 define with a
+            -- let-bound call site, admitted without looking at its body.
+            optimistic =
+                Tuple.second
+                    (Array.foldl
+                        (\maybeNode ( specId, acc ) ->
+                            case maybeNode of
+                                Just (Mono.MonoDefine (Mono.MonoClosure cinfo _ _) monoType) ->
+                                    if List.isEmpty cinfo.captures && not (List.isEmpty cinfo.params) && Set.member specId calledInLetPosition && not (Dict.member specId acc) then
+                                        case closureResultType monoType of
+                                            Mono.MTuple _ ts ->
+                                                if List.length ts == 2 || List.length ts == 3 then
+                                                    let
+                                                        layout =
+                                                            Types.computeTupleLayout ts
+                                                    in
+                                                    ( specId + 1
+                                                    , Dict.insert specId
+                                                        { layout = layout, slotTypes = Types.tupleSlotTypes layout }
+                                                        acc
+                                                    )
+
+                                                else
+                                                    ( specId + 1, acc )
+
+                                            _ ->
+                                                ( specId + 1, acc )
+
+                                    else
+                                        ( specId + 1, acc )
+
+                                _ ->
+                                    ( specId + 1, acc )
+                        )
+                        ( 0, base )
+                        nodes
+                    )
         in
         if config.sretFresh then
-            sretFreshFixpoint calledInLetPosition nodes 0 base
+            case sretFreshGreatest nodes 0 optimistic of
+                Just settled ->
+                    settled
+
+                Nothing ->
+                    -- Did not converge inside the round budget: the table would
+                    -- not be self-consistent, and an inconsistent table is a
+                    -- MISCOMPILE (emission feeds a multi-result call to a
+                    -- callee that has no worker). Fall back to the least
+                    -- fixpoint, which is always consistent.
+                    sretFreshFixpoint calledInLetPosition nodes 0 base
 
         else
             base
+
+
+{-| Step 10g: the GREATEST fixpoint of the same admission rule.
+
+`sretFreshFixpoint` below is a LEAST fixpoint over an already-admitted table,
+so a group of functions whose result leaves are calls to EACH OTHER can never
+bootstrap: each one is waiting for the other to be admitted first, and neither
+ever is. That is not a rare shape — it is the normal shape of a recursive
+descent over a syntax tree, where `translate` and `translateDispatch` and the
+twenty `translateX` arms all tail-call one another. Under the least fixpoint
+only the functions whose every leaf is a literal tuple get promoted, which in
+`MonoSolver` was 16 of about 95.
+
+The greatest fixpoint answers the question the least one cannot: start with
+every SHAPE-eligible spec assumed promoted, then repeatedly DROP any whose
+body fails the check against the current table. Removal only ever shrinks the
+table, so the iteration terminates, and at the fixpoint every surviving
+member's call leaves point at surviving members — exactly the self-consistency
+`trySretFreshLeaf` needs at emission.
+
+The one thing the greatest fixpoint could admit that the least cannot justify
+is a cycle with NO tuple literal anywhere in it (`f` yields `g`, `g` yields
+`f`). Such a function has no result leaf at all and cannot terminate, so it
+cannot occur in a program that runs; and were it to occur, the members agree
+with each other, so emission stays consistent.
+
+Returns `Nothing` if the round budget runs out, because a table left mid-cascade
+is NOT self-consistent and using it would be a miscompile.
+
+-}
+sretFreshGreatest : Array (Maybe Mono.MonoNode) -> Int -> Dict.Dict Int Ctx.SretInfo -> Maybe (Dict.Dict Int Ctx.SretInfo)
+sretFreshGreatest nodes iter table =
+    let
+        ( _, dropped, next ) =
+            Array.foldl
+                (\maybeNode ( sid, shrank, acc ) ->
+                    case ( maybeNode, Dict.get sid acc ) of
+                        ( Just (Mono.MonoDefine (Mono.MonoClosure _ cbody _) _), Just info ) ->
+                            if sretFreshTailOk acc info.slotTypes cbody then
+                                ( sid + 1, shrank, acc )
+
+                            else
+                                ( sid + 1, True, Dict.remove sid acc )
+
+                        _ ->
+                            -- Not a define, or already dropped. Tail-func
+                            -- entries admitted by `sretTailFuncOk` are not
+                            -- table-relative and are never revisited here.
+                            ( sid + 1, shrank, acc )
+                )
+                ( 0, False, table )
+                nodes
+    in
+    if not dropped then
+        Just next
+
+    else if iter >= 30 then
+        Nothing
+
+    else
+        sretFreshGreatest nodes (iter + 1) next
 
 
 {-| U-T1.3.8 (`ECO_SRET_FRESH`): widen selection to helper-mediated
@@ -596,6 +706,12 @@ sretFreshTailOk table slotTys e =
         Mono.MonoDestruct _ b _ ->
             sretFreshTailOk table slotTys b
 
+        Mono.MonoIf brs fin _ ->
+            -- Step 10a: without this the fresh fixpoint rejects an if-spine
+            -- whose leaves are calls to promoted callees, and the whole
+            -- function falls back to a heap tuple.
+            List.all (sretFreshTailOk table slotTys) (fin :: List.map Tuple.second brs)
+
         Mono.MonoCase _ _ decider jumps _ ->
             sretFreshDeciderOk table slotTys decider
                 && List.all (\( _, je ) -> sretFreshTailOk table slotTys je) jumps
@@ -655,9 +771,10 @@ collectSretSites e acc =
 
 
 {-| U-T1.3.6: the result-spine walk for TAIL FUNCS — `MonoTailCall` is a
-loop CONTINUE (not a result leaf) and `MonoIf` is admissible (TailRec's
-`compileIfStep` threads the spine flag through `compileStep`, unlike
-Expr's `generateIf`).
+loop CONTINUE (not a result leaf). `MonoIf` was admissible here before it
+was admissible anywhere else, because TailRec's `compileIfStep` threads the
+spine flag through `compileStep`; step 10a taught `Expr.generateIf` the same
+protocol, so `sretTailOk` and `sretFreshTailOk` now admit it too.
 -}
 sretTailFuncOk : List MlirType -> Mono.MonoExpr -> Bool
 sretTailFuncOk slotTys e =
@@ -730,6 +847,14 @@ sretTailOk slotTys e =
 
         Mono.MonoDestruct _ b _ ->
             sretTailOk slotTys b
+
+        Mono.MonoIf brs fin _ ->
+            -- Step 10a: `if` joins the result spine, exactly as `sretTailFuncOk`
+            -- already admits it. `Expr.generateIf` now implements the same
+            -- spine-yield protocol `generateCase` does (decomposed
+            -- `eco.yieldMany` per branch, `eco.caseMany` at the join), so an
+            -- if-shaped tail is a result producer like any other.
+            List.all (sretTailOk slotTys) (fin :: List.map Tuple.second brs)
 
         Mono.MonoCase _ _ decider jumps _ ->
             sretDeciderTailOk slotTys decider

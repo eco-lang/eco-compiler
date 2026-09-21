@@ -1,7 +1,7 @@
 module Compiler.MonoSolver.Store exposing
-    ( loadType, monoTypeToVar, unifyStep, zonkToMono
+    ( loadType, monoTypeToVar, monoTypeToVarS, unifyStep, zonkToMono
     , rezonkSettled
-    , LoadCtx, SetWriteCtx, addSlotSource, unifyStrict, arrowParts, arrowSetSlot, classifyDirect, foldSetWrites, loadTypeC, loadTypeIsolated, loadTypeIsolatedWithArrows, loadTypeWithArrows, poisonArrowSets, qInferenceCensus, qOnFor, qShadowCensus, resolveSlotMembers, resolveSlotMembersWith, setWriteCtx, testLoadCtx, unifyBestEffort, unifySlotWithSet, unifySlotWithSetC
+    , LoadCtx, SetWriteCtx, addSlotSource, unifyStrict, arrowParts, arrowSetSlot, classifyDirect, foldSetWrites, loadTypeC, loadTypeS, loadTypeIsolated, loadTypeIsolatedWithArrows, loadTypeWithArrows, poisonArrowSets, qInferenceCensus, qOnFor, qShadowCensus, resolveSlotMembers, resolveSlotMembersWith, setWriteCtx, testLoadCtx, unifyBestEffort, unifyBestEffortStoreS, unifyStrictS, unifySlotWithSet, unifySlotWithSetC
     , groundHash, groundNoArrow, groundNoArrowWith, aliasKeyOf, aliasBodyEligible
     )
 
@@ -215,14 +215,21 @@ writeBackIsolated c s =
         { s1 | itemAux = { aux | groundLoads = c.groundLoads } }
 
 
+loadTypeS : Can.Type TypeIds.MVarId -> Engine.S -> ( Vars.Variable, Engine.S )
+loadTypeS canType s =
+    -- Step 10b: `loadType` never fails, so this is the real function and the
+    -- `Step` form below is a one-line adapter over it. A1 explicit trailing-S,
+    -- tuple-literal leaf — the shape `$sret` promotion requires.
+    let
+        ( v, c ) =
+            loadTypeC s.env.superStatic canType (sharedLoadCtx s)
+    in
+    ( v, writeBackShared c s )
+
+
 loadType : Can.Type TypeIds.MVarId -> Step Vars.Variable
-loadType canType =
-    \s ->
-        let
-            ( v, c ) =
-                loadTypeC s.env.superStatic canType (sharedLoadCtx s)
-        in
-        Ok ( v, writeBackShared c s )
+loadType canType s =
+    (loadTypeS canType s)
 
 
 {-| `loadType` additionally returning the minted arrow set slots in minting
@@ -231,28 +238,28 @@ order. **This function (with its isolated sibling) DEFINES arrow ordinals**
 in this array. Shared item memo — unit members loaded through one memo share
 annotation Points (the Σ self-reference rule).
 -}
-loadTypeWithArrows : Can.Type TypeIds.MVarId -> Step ( Vars.Variable, Array Vars.Variable )
-loadTypeWithArrows canType =
-    \s ->
+loadTypeWithArrows : Can.Type TypeIds.MVarId -> Engine.S -> ( ( Vars.Variable, Array Vars.Variable ), Engine.S )
+loadTypeWithArrows canType s =
+    -- Step 10e: A1 explicit trailing-S, tuple-literal leaf.
         let
             ( v, c ) =
                 loadTypeC s.env.superStatic canType (sharedLoadCtx s)
         in
-        Ok ( ( v, Array.fromList (List.reverse c.arrowSlots) ), writeBackShared c s )
+        ( ( v, Array.fromList (List.reverse c.arrowSlots) ), writeBackShared c s )
 
 
 {-| `loadTypeIsolated` additionally returning the minted arrow set slots in
 minting order (fresh per-call-site instantiation; see `loadTypeWithArrows`
 for the ordinal contract).
 -}
-loadTypeIsolatedWithArrows : Can.Type TypeIds.MVarId -> Step ( Vars.Variable, Array Vars.Variable )
-loadTypeIsolatedWithArrows canType =
-    \s ->
+loadTypeIsolatedWithArrows : Can.Type TypeIds.MVarId -> Engine.S -> ( ( Vars.Variable, Array Vars.Variable ), Engine.S )
+loadTypeIsolatedWithArrows canType s =
+    -- Step 10e: A1 explicit trailing-S, tuple-literal leaf.
         let
             ( v, c ) =
                 loadTypeC s.env.superStatic canType (isolatedLoadCtx s)
         in
-        Ok ( ( v, Array.fromList (List.reverse c.arrowSlots) ), writeBackIsolated c s )
+        ( ( v, Array.fromList (List.reverse c.arrowSlots) ), writeBackIsolated c s )
 
 
 {-| D8: load a scheme with an ISOLATED (empty) memo so its vars do not share
@@ -262,14 +269,14 @@ internal write, memo-restore) with a single write: the isolated memo is threaded
 internally and discarded, and `s.memo` is never touched. Byte-identical (same
 Points minted in the same order; store + revMemo updated; memo unchanged).
 -}
-loadTypeIsolated : Can.Type TypeIds.MVarId -> Step Vars.Variable
-loadTypeIsolated canType =
-    \s ->
+loadTypeIsolated : Can.Type TypeIds.MVarId -> Engine.S -> ( Vars.Variable, Engine.S )
+loadTypeIsolated canType s =
+    -- Step 10e: A1 explicit trailing-S, tuple-literal leaf.
         let
             ( v, c ) =
                 loadTypeC s.env.superStatic canType (isolatedLoadCtx s)
         in
-        Ok ( v, writeBackIsolated c s )
+        ( v, writeBackIsolated c s )
 
 
 loadTypeC : Dict.Dict Int Vars.SuperType -> Can.Type TypeIds.MVarId -> LoadCtx -> ( Vars.Variable, LoadCtx )
@@ -775,17 +782,22 @@ collectVarSlots monoType soFar =
 structure Points but touches neither memo nor revMemo), writing `S` back once
 instead of once per node. Byte-identical (same Points minted in the same order).
 -}
-monoTypeToVar : Mono.MonoType -> Step Vars.Variable
-monoTypeToVar monoType =
-    \s ->
-        let
-            ( varSlots, storeWithVars ) =
-                mintVarSlots s.env.lss.enabled monoType s.store
+monoTypeToVarS : Mono.MonoType -> Engine.S -> ( Vars.Variable, Engine.S )
+monoTypeToVarS monoType s =
+    -- Step 10e: A1 explicit trailing-S, tuple-literal leaf. Never fails.
+    let
+        ( varSlots, storeWithVars ) =
+            mintVarSlots s.env.lss.enabled monoType s.store
 
-            ( v, store1 ) =
-                monoTypeToVarC s.env.lss.enabled varSlots monoType storeWithVars
-        in
-        Ok ( v, { s | store = store1 } )
+        ( v, store1 ) =
+            monoTypeToVarC s.env.lss.enabled varSlots monoType storeWithVars
+    in
+    ( v, { s | store = store1 } )
+
+
+monoTypeToVar : Mono.MonoType -> Step Vars.Variable
+monoTypeToVar monoType s =
+    (monoTypeToVarS monoType s)
 
 
 freshVarS : Vars.Content -> IO.State -> ( Vars.Variable, IO.State )
@@ -1140,6 +1152,22 @@ almost all of them — no longer pays for the machinery that reported them.
 -}
 unifyStrict : Vars.Variable -> Vars.Variable -> Step ()
 unifyStrict v1 v2 s0 =
+    ( (), unifyStrictS (\() -> "") v1 v2 s0 )
+
+
+{-| Step 10c: `unifyStrict` as a crash, with a caller-supplied context THUNK.
+
+`UnifyMismatch` is manufactured only here. It is RECOVERED at exactly three
+places (`unifyBestEffort`, `Translate.unifyBestEffortS`, `Translate.classifyRef`),
+which read a `Bool` and never see this function; everywhere else a mismatch
+aborts the build, so once the enclosing function stops carrying a `Result` the
+abort is a process abort with the same rendered text.
+
+`ctx` stays a thunk (D3): the diagnostic's recursive `canKind`/`monoKind` walks
+are built ONLY on the aborting path, never on the ~100 %-success hot path.
+-}
+unifyStrictS : (() -> String) -> Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
+unifyStrictS ctx v1 v2 s0 =
     let
         ( answer, store1 ) =
             Unify.unifyS v1 v2 s0.store
@@ -1149,11 +1177,11 @@ unifyStrict v1 v2 s0 =
     in
     case answer of
         Unify.AnswerOk _ ->
-            Ok ( (), s )
+            s
 
         Unify.AnswerErr _ t1 t2 ->
             -- Diagnostic context: the spec being translated + flush state
-            Engine.fail
+            Engine.crashFailure
                 (UnifyMismatch
                     ("unify-fail "
                         ++ errDeep t1
@@ -1172,9 +1200,15 @@ unifyStrict v1 v2 s0 =
                         ++ " retrans="
                         ++ String.fromInt s.lssStats.retranslations
                         ++ "]"
+                        ++ (case ctx () of
+                                "" ->
+                                    ""
+
+                                c ->
+                                    " | " ++ c
+                           )
                     )
                 )
-                s
 
 
 {-| Best-effort unify: a mismatch is swallowed and the pre-unify state is
@@ -1192,6 +1226,11 @@ array did.
 -}
 unifyBestEffort : Vars.Variable -> Vars.Variable -> Step ()
 unifyBestEffort v1 v2 s =
+    ( (), unifyBestEffortStoreS v1 v2 s )
+
+
+unifyBestEffortStoreS : Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
+unifyBestEffortStoreS v1 v2 s =
     let
         -- Bind the MARKED state and roll THAT back, never the pre-mark `s`.
         -- Under the kernel the two would behave alike (one store, mutated in
@@ -1204,13 +1243,13 @@ unifyBestEffort v1 v2 s =
     in
     case unifyStep v1 v2 sM of
         ( True, s1 ) ->
-            Ok ( (), Engine.commitStore s1 )
+            Engine.commitStore s1
 
         ( False, s1 ) ->
             -- Roll back the state the attempt RETURNED, not the pre-mark one:
             -- both name the same mutable store, but only this one carries the
             -- mark under the pure twin.
-            Ok ( (), Engine.rollbackStore s1 )
+            Engine.rollbackStore s1
 
 
 
@@ -1264,11 +1303,11 @@ an unconstrained slot (⊤-onto-flex included); `topJoin` = ⊤ onto members;
 ONLY. Each bump rides the S copy its arm already makes.
 
 -}
-unifySlotWithSet : Maybe Int -> List Int -> Vars.Variable -> Step ()
+unifySlotWithSet : Maybe Int -> List Int -> Vars.Variable -> Engine.S -> Engine.S
 unifySlotWithSet top members slot s0 =
     -- Phase 3: one thin wrapper over the ctx-threaded engine — a single S
     -- rebuild per call, exactly as before.
-    Ok ( (), foldSetWrites (unifySlotWithSetC top members slot (setWriteCtx (qOnFor s0) s0.store)) s0 )
+    foldSetWrites (unifySlotWithSetC top members slot (setWriteCtx (qOnFor s0) s0.store)) s0
 
 
 {-| Phase 3 (`plans/lss-set-write-substrate.md`): store-level set-write
@@ -2161,22 +2200,16 @@ inertness gate (plan §2.2). The flag was fixed at its default and removed
 2026-09-18; the structural claim about who may mint `LsFrom` still holds.
 
 -}
-addSlotSource : Vars.Variable -> Vars.Variable -> Step ()
+addSlotSource : Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 addSlotSource src dst s0 =
     case Engine.liftIO (UF.equivalent src dst) s0 of
-        Err e ->
-            Err e
-
-        Ok ( same, s1 ) ->
+        ( same, s1 ) ->
             if same then
-                Ok ( (), s1 )
+                s1
 
             else
                 case Engine.liftIO (UF.get dst) s1 of
-                    Err e ->
-                        Err e
-
-                    Ok ( desc, s2a ) ->
+                    ( desc, s2a ) ->
                         let
                             -- §5.1: an LSS_023 edge IS a constraint — `σ_dst ⊇
                             -- σ_src`. Recording it is what lets the shadow
@@ -2185,31 +2218,25 @@ addSlotSource src dst s0 =
                             s2 =
                                 if qOnFor s2a then
                                     case Engine.liftIO (UF.get src) s2a of
-                                        Ok ( srcDesc, s2b ) ->
+                                        ( srcDesc, s2b ) ->
                                             let
                                                 aux =
                                                     s2b.itemAux
                                             in
                                             { s2b | itemAux = { aux | qLog = Engine.QEdge dst src (qPreOf desc) (qPreOf srcDesc) :: aux.qLog } }
 
-                                        Err _ ->
-                                            s2a
-
                                 else
                                     s2a
 
                             write content sN =
                                 case Engine.liftIO (UF.set dst { desc | content = content }) sN of
-                                    Err e ->
-                                        Err e
-
-                                    Ok ( (), sM ) ->
-                                        Ok ( (), Engine.bumpEdgeInstalled sM )
+                                    ( _, sM ) ->
+                                        Engine.bumpEdgeInstalled sM
                         in
                         case desc.content of
                             Vars.Structure (Vars.LambdaSet1 (Vars.LsTop _)) ->
                                 -- ⊤ ⊇ everything already.
-                                Ok ( (), s2 )
+                                s2
 
                             Vars.FlexVar _ ->
                                 write (Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom [] [ src ]))) s2
@@ -2219,7 +2246,7 @@ addSlotSource src dst s0 =
 
                             Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom ms ss)) ->
                                 if List.any (\p -> IO.pointKey p == IO.pointKey src) ss then
-                                    Ok ( (), s2 )
+                                    s2
 
                                 else
                                     write (Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom ms (src :: ss)))) s2
@@ -2237,16 +2264,17 @@ apply closures through the generic runtime path, so any arrow crossing the
 kernel/port ABI is dynamic (LSS\_004). Point-indexed `seen` set guards against
 revisits; store structure is finite.
 -}
-poisonArrowSets : Vars.Variable -> Step ()
+poisonArrowSets : Vars.Variable -> Engine.S -> Engine.S
 poisonArrowSets v0 s0 =
     -- Phase 3: ctx-threaded DFS — one ~6-field ctx copy per visited node and
     -- ONE S write-back here, where the old shape copied the full S record per
     -- visited node.
-    Ok ( (), foldSetWrites (poisonGoC Dict.empty [ v0 ] (setWriteCtx (qOnFor s0) s0.store)) s0 )
+    foldSetWrites (poisonGoC Dict.empty [ v0 ] (setWriteCtx (qOnFor s0) s0.store)) s0
 
 
 poisonGoC : Dict.Dict Int () -> List Vars.Variable -> SetWriteCtx -> SetWriteCtx
 poisonGoC seen worklist c0 =
+
     case worklist of
         [] ->
             c0
@@ -2478,9 +2506,10 @@ bumpCauseC f c =
             c
 
 
-zonkToMono : Vars.Variable -> Step Mono.MonoType
-zonkToMono var =
-    \s ->
+zonkToMono : Vars.Variable -> Engine.S -> ( Mono.MonoType, Engine.S )
+zonkToMono var s =
+    -- Step 10e: A1 explicit trailing-S (was `\s -> …`), so every call is
+    -- saturated and the result pair is `$sret`-promotable.
         let
             lssAcc =
                 -- Report-scoped since step 7: the accumulator holds COUNTERS
@@ -2494,10 +2523,7 @@ zonkToMono var =
                     Nothing
         in
         case zonkToMonoC s.superTable s.revMemo var { store = s.store, next = s.nextMVarId, lssOn = s.env.lss.enabled, maxSetSize = s.env.lss.maxSetSize, lss = lssAcc, ecoReads = [], intern = s.intern, memberTable = s.lssMemberTable, nextMemberId = s.nextMemberId, arrowOf = s.itemAux.arrowOfSlot, varOf = Dict.empty, nextVar = 0 } of
-            Err e ->
-                Err e
-
-            Ok ( mt, c ) ->
+            ( mt, c ) ->
                 let
                     s1 =
                         case c.ecoReads of
@@ -2527,7 +2553,7 @@ zonkToMono var =
                         else
                             s1
                 in
-                Ok ( mt, foldZonkStats c s2 )
+                ( mt, foldZonkStats c s2 )
 
 
 {-| POST-SETTLE RE-ZONK (plans/lss-post-mono-architecture.md §3.2, Item 2).
@@ -2586,15 +2612,16 @@ rezonkSettled s =
                                 -- dropped with the ctx, and letting it grow
                                 -- across 400k+ replayed readbacks retains a
                                 -- list nothing will ever look at.
+                                -- Step 10c/10e: the `Err _ -> c` arm is gone
+                                -- with the `Result`. It recovered only the two
+                                -- `EngineBug` invariants inside `zonkToMonoC`,
+                                -- which the crash policy says abort — and the
+                                -- MAIN path would have hit them first, so this
+                                -- census could never have been the one to see
+                                -- them.
                                 case zonkToMonoC s.superTable s.revMemo v { c | varOf = Dict.empty, nextVar = 0, ecoReads = [] } of
-                                    Ok ( _, c1 ) ->
+                                    ( _, c1 ) ->
                                         c1
-
-                                    Err _ ->
-                                        -- A replay that fails is dropped, never
-                                        -- fatal: a census must not be able to
-                                        -- fail a build.
-                                        c
                             )
                             { store = sM.store, next = s.nextMVarId, lssOn = s.env.lss.enabled, maxSetSize = s.env.lss.maxSetSize, lss = Just acc0, ecoReads = [], intern = s.intern, memberTable = s.lssMemberTable, nextMemberId = s.nextMemberId, arrowOf = s.itemAux.arrowOfSlot, varOf = Dict.empty, nextVar = 0 }
                             log
@@ -2799,7 +2826,7 @@ bumpCensusKey key n census =
         Dict.insert key (n + Maybe.withDefault 0 (Dict.get key census)) census
 
 
-zonkToMonoC : Dict.Dict Int Vars.SuperType -> Array (Maybe TypeIds.MVarId) -> Vars.Variable -> ZonkCtx -> Result Failure ( Mono.MonoType, ZonkCtx )
+zonkToMonoC : Dict.Dict Int Vars.SuperType -> Array (Maybe TypeIds.MVarId) -> Vars.Variable -> ZonkCtx -> ( Mono.MonoType, ZonkCtx )
 zonkToMonoC superTable revMemo var c0 =
     let
         ( _, desc ) =
@@ -2815,42 +2842,56 @@ zonkToMonoC superTable revMemo var c0 =
     in
     case desc.content of
         Vars.Structure flat ->
-            zonkFlatC superTable revMemo flat c1
+            case zonkFlatC superTable revMemo flat c1 of
+                ( zt, zc ) ->
+                    ( zt, zc )
 
         Vars.Alias _ _ _ real ->
-            zonkToMonoC superTable revMemo real c1
+            case zonkToMonoC superTable revMemo real c1 of
+                ( zt, zc ) ->
+                    ( zt, zc )
 
         Vars.FlexSuper Vars.Number _ ->
             let
                 ( mid, c2 ) =
                     residualIdC revMemo var c1
             in
-            Ok ( Mono.MVar mid Mono.CNumber, c2 )
+            ( Mono.MVar mid Mono.CNumber, c2 )
 
         Vars.FlexSuper _ _ ->
-            residualWithTaintC superTable revMemo var c1
+            case residualWithTaintC superTable revMemo var c1 of
+                ( zt, zc ) ->
+                    ( zt, zc )
 
         Vars.FlexVar _ ->
-            residualWithTaintC superTable revMemo var c1
+            case residualWithTaintC superTable revMemo var c1 of
+                ( zt, zc ) ->
+                    ( zt, zc )
 
         Vars.RigidVar _ ->
-            residualWithTaintC superTable revMemo var c1
+            case residualWithTaintC superTable revMemo var c1 of
+                ( zt, zc ) ->
+                    ( zt, zc )
 
         Vars.RigidSuper Vars.Number _ ->
             let
                 ( mid, c2 ) =
                     residualIdC revMemo var c1
             in
-            Ok ( Mono.MVar mid Mono.CNumber, c2 )
+            ( Mono.MVar mid Mono.CNumber, c2 )
 
         Vars.RigidSuper _ _ ->
-            residualWithTaintC superTable revMemo var c1
+            case residualWithTaintC superTable revMemo var c1 of
+                ( zt, zc ) ->
+                    ( zt, zc )
 
         Vars.Error ->
-            Err (EngineBug "Error content encountered in zonkToMono")
+            -- R4: the bottom is wrapped so the leaf is a tuple LITERAL; a bare
+            -- call here demotes the whole function off the $sret path.
+            ( Engine.crashFailure (EngineBug "Error content encountered in zonkToMono"), c0 )
 
 
-residualWithTaintC : Dict.Dict Int Vars.SuperType -> Array (Maybe TypeIds.MVarId) -> Vars.Variable -> ZonkCtx -> Result Failure ( Mono.MonoType, ZonkCtx )
+residualWithTaintC : Dict.Dict Int Vars.SuperType -> Array (Maybe TypeIds.MVarId) -> Vars.Variable -> ZonkCtx -> ( Mono.MonoType, ZonkCtx )
 residualWithTaintC superTable revMemo var c0 =
     let
         ( mid, c1 ) =
@@ -2858,7 +2899,7 @@ residualWithTaintC superTable revMemo var c0 =
     in
     case Dict.get (Engine.mvarIdKey mid) superTable of
         Just Vars.Number ->
-            Ok ( Mono.MVar mid Mono.CNumber, c1 )
+            ( Mono.MVar mid Mono.CNumber, c1 )
 
         _ ->
             -- MONO_029 stale-read barrier: this zonk is recording an erased
@@ -2871,10 +2912,10 @@ residualWithTaintC superTable revMemo var c0 =
             -- and they are not the MONO_029 class (nothing else re-reads them).
             case Maybe.andThen identity (Array.get (Engine.pointKey var) revMemo) of
                 Just _ ->
-                    Ok ( Mono.MVar mid Mono.CEcoValue, { c1 | ecoReads = var :: c1.ecoReads } )
+                    ( Mono.MVar mid Mono.CEcoValue, { c1 | ecoReads = var :: c1.ecoReads } )
 
                 Nothing ->
-                    Ok ( Mono.MVar mid Mono.CEcoValue, c1 )
+                    ( Mono.MVar mid Mono.CEcoValue, c1 )
 
 
 residualIdC : Array (Maybe TypeIds.MVarId) -> Vars.Variable -> ZonkCtx -> ( TypeIds.MVarId, ZonkCtx )
@@ -2889,83 +2930,69 @@ residualIdC revMemo var c =
             ( c.next, { c | next = Id.succ c.next } )
 
 
-zonkFlatC : Dict.Dict Int Vars.SuperType -> Array (Maybe TypeIds.MVarId) -> Vars.FlatType -> ZonkCtx -> Result Failure ( Mono.MonoType, ZonkCtx )
+zonkFlatC : Dict.Dict Int Vars.SuperType -> Array (Maybe TypeIds.MVarId) -> Vars.FlatType -> ZonkCtx -> ( Mono.MonoType, ZonkCtx )
 zonkFlatC superTable revMemo flat c0 =
     case flat of
         Vars.App1 canonical name args ->
             case zonkListC superTable revMemo args c0 of
-                Err e ->
-                    Err e
-
-                Ok ( mArgs, c1 ) ->
-                    Ok (classifyAppC canonical name mArgs c1)
+                ( mArgs, c1 ) ->
+                    case classifyAppC canonical name mArgs c1 of
+                        ( zt, zc ) ->
+                            ( zt, zc )
 
         Vars.Fun1 a b ->
             case zonkToMonoC superTable revMemo a c0 of
-                Err e ->
-                    Err e
-
-                Ok ( ma, c1 ) ->
+                ( ma, c1 ) ->
                     case zonkToMonoC superTable revMemo b c1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( mb, c2 ) ->
-                            Ok (consC (Mono.mFunction Mono.topDeclStoreC [ ma ] mb) c2)
+                        ( mb, c2 ) ->
+                            case consC (Mono.mFunction Mono.topDeclStoreC [ ma ] mb) c2 of
+                                ( zt, zc ) ->
+                                    ( zt, zc )
 
         Vars.FunL a b setVar ->
             case zonkToMonoC superTable revMemo a c0 of
-                Err e ->
-                    Err e
-
-                Ok ( ma, c1 ) ->
+                ( ma, c1 ) ->
                     case zonkToMonoC superTable revMemo b c1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( mb, c2 ) ->
+                        ( mb, c2 ) ->
                             let
                                 ( anno, c3 ) =
                                     zonkSetSlot ma mb setVar c2
                             in
-                            Ok (consC (Mono.mFunction anno [ ma ] mb) c3)
+                            case consC (Mono.mFunction anno [ ma ] mb) c3 of
+                                ( zt, zc ) ->
+                                    ( zt, zc )
 
         Vars.LambdaSet1 _ ->
             -- LSS_007: a LambdaSet1 only ever lives inside a FunL set slot,
             -- which is consumed by the FunL arm — reaching here is a bug.
-            Err (EngineBug "LambdaSet1 outside an arrow slot in zonkFlatC")
+            -- R4: wrapped so the leaf is a tuple literal.
+            ( Engine.crashFailure (EngineBug "LambdaSet1 outside an arrow slot in zonkFlatC"), c0 )
 
         Vars.EmptyRecord1 ->
-            Ok (consC (Mono.mRecord Dict.empty) c0)
+            case consC (Mono.mRecord Dict.empty) c0 of
+                ( zt, zc ) ->
+                    ( zt, zc )
 
         Vars.Record1 fields ext ->
             case zonkRecordExtC superTable revMemo ext c0 of
-                Err e ->
-                    Err e
-
-                Ok ( baseFields, c1 ) ->
-                    zonkRecordFieldsC superTable revMemo (Dict.toList fields) baseFields c1
+                ( baseFields, c1 ) ->
+                    case zonkRecordFieldsC superTable revMemo (Dict.toList fields) baseFields c1 of
+                        ( zt, zc ) ->
+                            ( zt, zc )
 
         Vars.Unit1 ->
-            Ok ( Mono.MUnit, c0 )
+            ( Mono.MUnit, c0 )
 
         Vars.Tuple1 a b rest ->
             case zonkToMonoC superTable revMemo a c0 of
-                Err e ->
-                    Err e
-
-                Ok ( ma, c1 ) ->
+                ( ma, c1 ) ->
                     case zonkToMonoC superTable revMemo b c1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( mb, c2 ) ->
+                        ( mb, c2 ) ->
                             case zonkListC superTable revMemo rest c2 of
-                                Err e ->
-                                    Err e
-
-                                Ok ( mRest, c3 ) ->
-                                    Ok (consC (Mono.mTuple (ma :: mb :: mRest)) c3)
+                                ( mRest, c3 ) ->
+                                    case consC (Mono.mTuple (ma :: mb :: mRest)) c3 of
+                                        ( zt, zc ) ->
+                                            ( zt, zc )
 
 
 {-| PHASE 3: the canonical number for this set slot's VARIABLE, within the type
@@ -3510,57 +3537,49 @@ bumpZonkAcc maybeSize c =
                     { c | lss = Just { acc | zonked = acc.zonked + 1, hist = Dict.insert size (1 + Maybe.withDefault 0 (Dict.get size acc.hist)) acc.hist } }
 
 
-zonkListC : Dict.Dict Int Vars.SuperType -> Array (Maybe TypeIds.MVarId) -> List Vars.Variable -> ZonkCtx -> Result Failure ( List Mono.MonoType, ZonkCtx )
+zonkListC : Dict.Dict Int Vars.SuperType -> Array (Maybe TypeIds.MVarId) -> List Vars.Variable -> ZonkCtx -> ( List Mono.MonoType, ZonkCtx )
 zonkListC superTable revMemo vars c0 =
     case vars of
         [] ->
-            Ok ( [], c0 )
+            ( [], c0 )
 
         v :: rest ->
             case zonkToMonoC superTable revMemo v c0 of
-                Err e ->
-                    Err e
-
-                Ok ( m, c1 ) ->
+                ( m, c1 ) ->
                     case zonkListC superTable revMemo rest c1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( ms, c2 ) ->
-                            Ok ( m :: ms, c2 )
+                        ( ms, c2 ) ->
+                            ( m :: ms, c2 )
 
 
-zonkRecordFieldsC : Dict.Dict Int Vars.SuperType -> Array (Maybe TypeIds.MVarId) -> List ( String, Vars.Variable ) -> Dict.Dict String Mono.MonoType -> ZonkCtx -> Result Failure ( Mono.MonoType, ZonkCtx )
+zonkRecordFieldsC : Dict.Dict Int Vars.SuperType -> Array (Maybe TypeIds.MVarId) -> List ( String, Vars.Variable ) -> Dict.Dict String Mono.MonoType -> ZonkCtx -> ( Mono.MonoType, ZonkCtx )
 zonkRecordFieldsC superTable revMemo fields base c0 =
     case fields of
         [] ->
-            Ok (consC (Mono.mRecord base) c0)
+            case consC (Mono.mRecord base) c0 of
+                ( zt, zc ) ->
+                    ( zt, zc )
 
         ( k, p ) :: rest ->
             case zonkToMonoC superTable revMemo p c0 of
-                Err e ->
-                    Err e
-
-                Ok ( v, c1 ) ->
-                    zonkRecordFieldsC superTable revMemo rest (Dict.insert k v base) c1
+                ( v, c1 ) ->
+                    case zonkRecordFieldsC superTable revMemo rest (Dict.insert k v base) c1 of
+                        ( zt, zc ) ->
+                            ( zt, zc )
 
 
 {-| Extract the base-field dict from a record extension tail.
 -}
-zonkRecordExtC : Dict.Dict Int Vars.SuperType -> Array (Maybe TypeIds.MVarId) -> Vars.Variable -> ZonkCtx -> Result Failure ( Dict.Dict String Mono.MonoType, ZonkCtx )
+zonkRecordExtC : Dict.Dict Int Vars.SuperType -> Array (Maybe TypeIds.MVarId) -> Vars.Variable -> ZonkCtx -> ( Dict.Dict String Mono.MonoType, ZonkCtx )
 zonkRecordExtC superTable revMemo ext c0 =
     case zonkToMonoC superTable revMemo ext c0 of
-        Err e ->
-            Err e
-
-        Ok ( mt, c1 ) ->
+        ( mt, c1 ) ->
             case mt of
                 Mono.MRecord _ fields ->
-                    Ok ( fields, c1 )
+                    ( fields, c1 )
 
                 _ ->
                     -- Open extension resolved to a var/other: no base fields.
-                    Ok ( Dict.empty, c1 )
+                    ( Dict.empty, c1 )
 
 
 {-| `classifyApp` hash-consed against a `ZonkCtx` (K6). Leaves (`MInt`, …) fall
@@ -3645,12 +3664,21 @@ unifies, so it can only ever carry its static super, which `superTable` already
 holds from `initState`).
 
 -}
-classifyDirect : Int -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
+classifyDirect : Int -> Can.Type TypeIds.MVarId -> Engine.S -> ( Mono.MonoType, Engine.S )
 classifyDirect topKind canType s =
-    classifyGo topKind s Dict.empty canType
+    -- Step 10b, R4: RE-TUPLE. A bare call in leaf position is only admitted by
+    -- the FRESH fixpoint, which is a LEAST fixpoint over an already-admitted
+    -- table — so a call leaf into a mutually recursive partner
+    -- (`classifyGo` <-> `classifyAliasPlain`) can never bootstrap. Destructuring
+    -- and re-tupling turns the leaf into a LET-POSITION call plus a tuple
+    -- LITERAL, which `sretTailOk` admits directly. The make-form dissolves
+    -- under SROA, so this costs nothing at runtime.
+    case classifyGo topKind s Dict.empty canType of
+        ( t, s1 ) ->
+            ( t, s1 )
 
 
-classifyGo : Int -> Engine.S -> Dict.Dict Int Mono.MonoType -> Can.Type TypeIds.MVarId -> Result Failure ( Mono.MonoType, Engine.S )
+classifyGo : Int -> Engine.S -> Dict.Dict Int Mono.MonoType -> Can.Type TypeIds.MVarId -> ( Mono.MonoType, Engine.S )
 classifyGo topKind s aliasSubst canType =
     case canType of
         Can.TVar mvarId ->
@@ -3660,14 +3688,24 @@ classifyGo topKind s aliasSubst canType =
             in
             case Dict.get key aliasSubst of
                 Just mono ->
-                    Ok ( mono, s )
+                    ( mono, s )
 
                 Nothing ->
                     case Dict.get key s.memo of
                         Just pt ->
                             -- Demand-concretized this item: read the bound Point back.
                             -- Threads S (zonk can allocate a residual id).
-                            zonkToMono pt s
+                            --
+                            -- Step 10b: `zonkToMono` is still `Step`-typed, so its
+                            -- result is destructured and RE-TUPLED as a literal here.
+                            -- `-> r` on the tuple-typed result would silently demote
+                            -- this whole function off the $sret path (R4).
+                            -- Step 10e: `zonkToMono` is direct now; the
+                            -- re-tuple stays (R4 — a bare call leaf would
+                            -- demote `classifyGo` off the $sret path).
+                            case zonkToMono pt s of
+                                ( mono, sZ ) ->
+                                    ( mono, sZ )
 
                         Nothing ->
                             case residualForVar mvarId s of
@@ -3680,69 +3718,53 @@ classifyGo topKind s aliasSubst canType =
                                         aux0 =
                                             s.itemAux
                                     in
-                                    Ok ( Mono.MVar mvarId Mono.CEcoValue, { s | itemAux = { aux0 | ecoResidualKeyReads = key :: aux0.ecoResidualKeyReads } } )
+                                    ( Mono.MVar mvarId Mono.CEcoValue, { s | itemAux = { aux0 | ecoResidualKeyReads = key :: aux0.ecoResidualKeyReads } } )
 
                                 residual ->
-                                    Ok ( residual, s )
+                                    ( residual, s )
 
         Can.TLambda _ from to ->
             case classifyGo topKind s aliasSubst from of
-                Err e ->
-                    Err e
-
-                Ok ( mFrom, s1 ) ->
+                ( mFrom, s1 ) ->
                     case classifyGo topKind s1 aliasSubst to of
-                        Err e ->
-                            Err e
-
-                        Ok ( mTo, s2 ) ->
+                        ( mTo, s2 ) ->
                             -- One arrow per MFunction, mirroring zonkFlat's Fun1 arm
                             -- (GlobalOpt flattens later per GOPT_016). Storeless
                             -- classification stamps LTop (sound-but-imprecise;
                             -- fast paths gate on signature triviality in M2).
-                            Ok (Engine.consS (Mono.mFunction (Mono.topOfKind topKind) [ mFrom ] mTo) s2)
+                            case Engine.consS (Mono.mFunction (Mono.topOfKind topKind) [ mFrom ] mTo) s2 of
+                                ( t, s3 ) ->
+                                    ( t, s3 )
 
         Can.TType canonical name args ->
             case classifyList topKind s aliasSubst args of
-                Err e ->
-                    Err e
-
-                Ok ( mArgs, s1 ) ->
-                    Ok (Engine.consS (classifyApp canonical name mArgs) s1)
+                ( mArgs, s1 ) ->
+                    case Engine.consS (classifyApp canonical name mArgs) s1 of
+                        ( t, s2 ) ->
+                            ( t, s2 )
 
         Can.TRecord fields maybeExtension ->
             case classifyRecordExt topKind s aliasSubst maybeExtension of
-                Err e ->
-                    Err e
-
-                Ok ( baseFields, s1 ) ->
+                ( baseFields, s1 ) ->
                     case classifyRecordFields topKind s1 aliasSubst (Dict.toList fields) baseFields of
-                        Err e ->
-                            Err e
-
-                        Ok ( allFields, s2 ) ->
-                            Ok (Engine.consS (Mono.mRecord allFields) s2)
+                        ( allFields, s2 ) ->
+                            case Engine.consS (Mono.mRecord allFields) s2 of
+                                ( t, s3 ) ->
+                                    ( t, s3 )
 
         Can.TUnit ->
-            Ok ( Mono.MUnit, s )
+            ( Mono.MUnit, s )
 
         Can.TTuple a b rest ->
             case classifyGo topKind s aliasSubst a of
-                Err e ->
-                    Err e
-
-                Ok ( ma, s1 ) ->
+                ( ma, s1 ) ->
                     case classifyGo topKind s1 aliasSubst b of
-                        Err e ->
-                            Err e
-
-                        Ok ( mb, s2 ) ->
+                        ( mb, s2 ) ->
                             case classifyList topKind s2 aliasSubst rest of
-                                Err e ->
-                                    Err e
-
-                                Ok ( mRest, s3 ) ->
-                                    Ok (Engine.consS (Mono.mTuple (ma :: mb :: mRest)) s3)
+                                ( mRest, s3 ) ->
+                                    case Engine.consS (Mono.mTuple (ma :: mb :: mRest)) s3 of
+                                        ( t, s4 ) ->
+                                            ( t, s4 )
 
         Can.TAlias home name args aliasType ->
             -- Step 4b: an alias instantiation whose arguments and body are ground and
@@ -3761,50 +3783,54 @@ classifyGo topKind s aliasSubst canType =
             -- instantiation reaches neither.
             case aliasKeyOf home name args of
                 Nothing ->
-                    classifyAliasPlain topKind s aliasSubst args aliasType
+                    case classifyAliasPlain topKind s aliasSubst args aliasType of
+                        ( t, s1 ) ->
+                            ( t, s1 )
 
                 Just key ->
                     case HashMap.get Engine.aliasKeyHash Engine.aliasKeyEq key s.monoMemo.aliasMemo of
                         Just (Engine.AliasGround mono) ->
-                            Ok ( mono, s )
+                            ( mono, s )
 
                         Just Engine.AliasIneligible ->
-                            classifyAliasPlain topKind s aliasSubst args aliasType
+                            case classifyAliasPlain topKind s aliasSubst args aliasType of
+                                ( t, s1 ) ->
+                                    ( t, s1 )
 
                         Nothing ->
                             if aliasBodyEligible aliasType then
                                 case classifyAliasPlain topKind s aliasSubst args aliasType of
-                                    Err e ->
-                                        Err e
-
-                                    Ok ( mono, s1 ) ->
-                                        Ok ( mono, Engine.putAliasVerdict key (Engine.AliasGround mono) s1 )
+                                    ( mono, s1 ) ->
+                                        ( mono, Engine.putAliasVerdict key (Engine.AliasGround mono) s1 )
 
                             else
                                 -- Record the ineligibility too, so a body walk is paid
                                 -- once per instantiation rather than once per
                                 -- occurrence.
-                                classifyAliasPlain topKind (Engine.putAliasVerdict key Engine.AliasIneligible s) aliasSubst args aliasType
+                                case classifyAliasPlain topKind (Engine.putAliasVerdict key Engine.AliasIneligible s) aliasSubst args aliasType of
+                                    ( t, s1 ) ->
+                                        ( t, s1 )
 
 
 {-| The two alias arms as they were before step 4b.
 -}
-classifyAliasPlain : Int -> Engine.S -> Dict.Dict Int Mono.MonoType -> List ( TypeIds.MVarId, Can.Type TypeIds.MVarId ) -> Can.AliasType TypeIds.MVarId -> Result Failure ( Mono.MonoType, Engine.S )
+classifyAliasPlain : Int -> Engine.S -> Dict.Dict Int Mono.MonoType -> List ( TypeIds.MVarId, Can.Type TypeIds.MVarId ) -> Can.AliasType TypeIds.MVarId -> ( Mono.MonoType, Engine.S )
 classifyAliasPlain topKind s aliasSubst args aliasType =
     case aliasType of
         Can.Filled inner ->
-            classifyGo topKind s aliasSubst inner
+            case classifyGo topKind s aliasSubst inner of
+                ( t, s1 ) ->
+                    ( t, s1 )
 
         Can.Holey inner ->
             -- Alias args are classified in the OUTER scope (mirrors
             -- Zonk.canTypeToMonoWith's Holey arm), then the body under the extended
             -- substitution.
             case classifyAliasArgs topKind s aliasSubst args aliasSubst of
-                Err e ->
-                    Err e
-
-                Ok ( newSubst, s1 ) ->
-                    classifyGo topKind s1 newSubst inner
+                ( newSubst, s1 ) ->
+                    case classifyGo topKind s1 newSubst inner of
+                        ( t, s2 ) ->
+                            ( t, s2 )
 
 
 -- ====== STEP 4: GROUND, ARROW-FREE ALIAS SUBTREES ======
@@ -4028,75 +4054,60 @@ groundNoArrowWith aliasMemo t =
 
 
 
-classifyList : Int -> Engine.S -> Dict.Dict Int Mono.MonoType -> List (Can.Type TypeIds.MVarId) -> Result Failure ( List Mono.MonoType, Engine.S )
+classifyList : Int -> Engine.S -> Dict.Dict Int Mono.MonoType -> List (Can.Type TypeIds.MVarId) -> ( List Mono.MonoType, Engine.S )
 classifyList topKind s aliasSubst types =
     case types of
         [] ->
-            Ok ( [], s )
+            ( [], s )
 
         t :: rest ->
             case classifyGo topKind s aliasSubst t of
-                Err e ->
-                    Err e
-
-                Ok ( m, s1 ) ->
+                ( m, s1 ) ->
                     case classifyList topKind s1 aliasSubst rest of
-                        Err e ->
-                            Err e
-
-                        Ok ( ms, s2 ) ->
-                            Ok ( m :: ms, s2 )
+                        ( ms, s2 ) ->
+                            ( m :: ms, s2 )
 
 
-classifyAliasArgs : Int -> Engine.S -> Dict.Dict Int Mono.MonoType -> List ( TypeIds.MVarId, Can.Type TypeIds.MVarId ) -> Dict.Dict Int Mono.MonoType -> Result Failure ( Dict.Dict Int Mono.MonoType, Engine.S )
+classifyAliasArgs : Int -> Engine.S -> Dict.Dict Int Mono.MonoType -> List ( TypeIds.MVarId, Can.Type TypeIds.MVarId ) -> Dict.Dict Int Mono.MonoType -> ( Dict.Dict Int Mono.MonoType, Engine.S )
 classifyAliasArgs topKind s outerSubst args acc =
     case args of
         [] ->
-            Ok ( acc, s )
+            ( acc, s )
 
         ( paramId, t ) :: rest ->
             case classifyGo topKind s outerSubst t of
-                Err e ->
-                    Err e
-
-                Ok ( mt, s1 ) ->
+                ( mt, s1 ) ->
                     classifyAliasArgs topKind s1 outerSubst rest (Dict.insert (Engine.mvarIdKey paramId) mt acc)
 
 
-classifyRecordExt : Int -> Engine.S -> Dict.Dict Int Mono.MonoType -> Maybe TypeIds.MVarId -> Result Failure ( Dict.Dict String Mono.MonoType, Engine.S )
+classifyRecordExt : Int -> Engine.S -> Dict.Dict Int Mono.MonoType -> Maybe TypeIds.MVarId -> ( Dict.Dict String Mono.MonoType, Engine.S )
 classifyRecordExt topKind s aliasSubst maybeExtension =
     case maybeExtension of
         Nothing ->
-            Ok ( Dict.empty, s )
+            ( Dict.empty, s )
 
         Just extVar ->
             case classifyGo topKind s aliasSubst (Can.TVar extVar) of
-                Err e ->
-                    Err e
-
-                Ok ( mt, s1 ) ->
+                ( mt, s1 ) ->
                     case mt of
                         Mono.MRecord _ baseFields ->
-                            Ok ( baseFields, s1 )
+                            ( baseFields, s1 )
 
                         _ ->
                             -- Open extension resolved to a var/other: no base fields
                             -- (matches zonkRecordExt).
-                            Ok ( Dict.empty, s1 )
+                            ( Dict.empty, s1 )
 
 
-classifyRecordFields : Int -> Engine.S -> Dict.Dict Int Mono.MonoType -> List ( String, Can.FieldType TypeIds.MVarId ) -> Dict.Dict String Mono.MonoType -> Result Failure ( Dict.Dict String Mono.MonoType, Engine.S )
+classifyRecordFields : Int -> Engine.S -> Dict.Dict Int Mono.MonoType -> List ( String, Can.FieldType TypeIds.MVarId ) -> Dict.Dict String Mono.MonoType -> ( Dict.Dict String Mono.MonoType, Engine.S )
 classifyRecordFields topKind s aliasSubst fields base =
     case fields of
         [] ->
-            Ok ( base, s )
+            ( base, s )
 
         ( k, Can.FieldType _ t ) :: rest ->
             case classifyGo topKind s aliasSubst t of
-                Err e ->
-                    Err e
-
-                Ok ( mt, s1 ) ->
+                ( mt, s1 ) ->
                     classifyRecordFields topKind s1 aliasSubst rest (Dict.insert k mt base)
 
 

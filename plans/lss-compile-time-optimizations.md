@@ -4431,6 +4431,27 @@ Shared vocabulary for both steps:
 
 ### Step 10 (was 3). Retire the `Step` encoding: `Step a` → `S -> ( a, S )`, `Step ()` → `S -> S`
 
+> **MEASURED OUT, 2026-09-21 — implemented in full, partially kept.** Stages `10a`, `10b`, `10c`
+> and `10e-i` are in the shipped compiler and are worth about 10 s together; `10e-i` alone was
+> −8.34 s. Stages `10e-ii`, `10f` and `10g` were implemented to completion — the whole `Step`
+> monad retired, all 55 combinator-shaped `Translate` functions rewritten, the combinator layer
+> deleted, `$sret` coverage 42 → 148 MonoSolver workers — and measured **+5.63 s (+2.4 %) over
+> six paired runs**. Reverted. Two findings close the step:
+>
+> 1. **`$sret` is a LEAF optimization.** It pays where per-call overhead dominates per-call work
+>    and costs where it does not, because the promotion emits a worker PLUS a shim and
+>    `Expr.trySretLetBinding` migrates only let-bound direct call sites. Blanket application is
+>    negative.
+> 2. **The `Step` monad was 0.03 % of allocation.** Deleting every `Result` box and all 320
+>    combinator closures moved objects allocated from 273,356,771 to 273,270,023. The inliner
+>    and `MonoInlineSimplify` were already folding them away. §2b's "the state monad is the
+>    cost" is retracted as a wall-clock claim.
+>
+> The full data and the per-stage diagnosis are in `benchmarks/lss-compile-opt-loop.md`, entries
+> `10a`–`10g`. `Backend.sretFreshGreatest` (greatest-fixpoint promotion selection) was written
+> and is correct but measured inert; it lives in `snapshots/lss-loop/step-10g.patch`. Do not
+> reopen this step — the remaining time is in the GC.
+
 This step is a STAGED PROGRAMME. Each stage below is one loop entry (`10a` … `10g`), built on the
 previous stage's `keep-*` snapshot, measured on its own, and kept or reverted on its own. The
 brief's lettering maps as: brief-10a = stages 10a + 10b here (backend prerequisite, then the

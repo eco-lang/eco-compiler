@@ -10,7 +10,7 @@ Node types come from `Zonk.canTypeToMono` (the pure `applySubstPure`-with-empty-
 subst classification, correct for monomorphic globals). Kernel-call ABIs use the
 store (`Store.instantiate`-style fresh load + unify param slots with the concrete
 arg types + zonk) to reproduce `deriveKernelAbiType` exactly. Everything the M1
-spine does not yet cover returns `Engine.fail (Unsupported …)` — never a fallback
+spine does not yet cover returns `Engine.crashFailure (Unsupported …)` — never a fallback
 to the original engine.
 
 @docs translate
@@ -58,7 +58,7 @@ visible) and zonk it back. For a monomorphic item with no demand this equals the
 pure `Zonk.canTypeToMono`; for a polymorphic item the memo carries the
 concretization — this is Architecture C's propagation-by-identity.
 -}
-classify : Can.Type TypeIds.MVarId -> Step Mono.MonoType
+classify : Can.Type TypeIds.MVarId -> Engine.S -> ( Mono.MonoType, Engine.S )
 classify canType s =
     -- Read-only classification: no store minting, no S copies. Byte-identical to
     -- the former `zonkToMono ∘ loadType` on fixed inputs (verified), see
@@ -73,18 +73,34 @@ sites; the kind says WHICH of them, which is what decides whether a
 store-aware alternative exists there. Diagnostic only — every semantic reader
 is ⊤-kind-blind.
 -}
-classifyAs : Int -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
+classifyAs : Int -> Can.Type TypeIds.MVarId -> Engine.S -> ( Mono.MonoType, Engine.S )
 classifyAs topKind canType s =
     Store.classifyDirect topKind canType s
+
+
+{-| Step 10b: `Step`-valued adapters over the direct `classify`/`classifyAs`
+above, for the combinator sites (`Engine.map`/`traverse`/`andThen` arguments)
+that are still `Step`-shaped. They allocate exactly what the old `classifyAs`
+allocated, so those sites are unchanged; the HOT sites call the direct form and
+get the `$sret` worker. Both disappear in 10f when their callers convert.
+-}
+classifyStep : Can.Type TypeIds.MVarId -> Step Mono.MonoType
+classifyStep canType s =
+    (classify canType s)
+
+
+classifyAsStep : Int -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
+classifyAsStep topKind canType s =
+    (classifyAs topKind canType s)
 
 
 {-| Assert a demanded MonoType against a definition's annotation in the store,
 concretizing the annotation's scheme variables (shared with the body via the
 item memo). A no-op when the demand equals the annotation (monomorphic case).
 -}
-demandUnify : Can.Type TypeIds.MVarId -> Mono.MonoType -> Step ()
-demandUnify annCanType demand =
-    Engine.map (\_ -> ()) (demandUnifyVar annCanType demand)
+demandUnify : Can.Type TypeIds.MVarId -> Mono.MonoType -> Engine.S -> Engine.S
+demandUnify annCanType demand s0 =
+    Tuple.second (demandUnifyVar annCanType demand s0)
 
 
 {-| `demandUnify` returning the loaded annotation var. Function-root defs
@@ -94,14 +110,19 @@ reuse THE seeded var: `Store.loadType` mints fresh arrow structure per load
 annotation shares nothing and the demand's lambda-set content would be
 unreachable from the def's binder types.
 -}
-demandUnifyVar : Can.Type TypeIds.MVarId -> Mono.MonoType -> Step Vars.Variable
-demandUnifyVar annCanType demand =
-    Engine.andThen
-        (\annVar ->
-            Engine.map (\_ -> annVar)
-                (Engine.andThen (unifyStepCtx (\() -> "demandUnify " ++ canKind annCanType ++ " vs " ++ monoKind demand) annVar) (Store.monoTypeToVar demand))
-        )
-        (Store.loadType annCanType)
+demandUnifyVar : Can.Type TypeIds.MVarId -> Mono.MonoType -> Engine.S -> ( Vars.Variable, Engine.S )
+demandUnifyVar annCanType demand s0 =
+    case Store.loadTypeS annCanType s0 of
+        ( annVar, s1 ) ->
+            case Store.monoTypeToVarS demand s1 of
+                ( demandVar, s2 ) ->
+                    ( annVar
+                    , Store.unifyStrictS
+                        (\() -> "demandUnify " ++ canKind annCanType ++ " vs " ++ monoKind demand)
+                        annVar
+                        demandVar
+                        s2
+                    )
 
 
 {-| `demandUnify` for a def root: when the def's expression is syntactically
@@ -109,13 +130,10 @@ a lambda and lss is on, stash the seeded annotation var for the root
 `classifyLambdaHead` to consume (see `demandUnifyVar`). Non-function defs
 and lss-off behave exactly like `demandUnify`.
 -}
-demandUnifyRoot : Can.Type TypeIds.MVarId -> Mono.MonoType -> TOpt.Expr TypeIds.MVarId -> Step ()
+demandUnifyRoot : Can.Type TypeIds.MVarId -> Mono.MonoType -> TOpt.Expr TypeIds.MVarId -> Engine.S -> Engine.S
 demandUnifyRoot annCanType demand expr s0 =
     case demandUnifyVar annCanType demand s0 of
-        Err e ->
-            Err e
-
-        Ok ( annVar, s1 ) ->
+        ( annVar, s1 ) ->
             let
                 -- §5.1: stash the def's root type Point for the shadow-`Q`
                 -- partition. Report-gated, and NOT gated on `exprIsLambda` —
@@ -137,10 +155,10 @@ demandUnifyRoot annCanType demand expr s0 =
                     aux1 =
                         sQ.itemAux
                 in
-                Ok ( (), { sQ | itemAux = { aux1 | lssRootAnn = Just ( annCanType, annVar ) } } )
+                { sQ | itemAux = { aux1 | lssRootAnn = Just ( annCanType, annVar ) } }
 
             else
-                Ok ( (), sQ )
+                sQ
 
 
 exprIsLambda : TOpt.Expr TypeIds.MVarId -> Bool
@@ -162,7 +180,7 @@ use-var picks up the context's already-concretized demand before the child is
 translated. Never fails — the typechecker already proved these compatible; any
 residual weirdness just leaves vars unbound.
 -}
-connectTypes : Can.Type TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Step ()
+connectTypes : Can.Type TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Engine.S -> Engine.S
 connectTypes childCan parentCan s0 =
     -- Step 9: when BOTH sides are ground and arrow-free there is nothing to
     -- connect. Such a type has no `TVar`, so it touches neither the var memo
@@ -175,21 +193,20 @@ connectTypes childCan parentCan s0 =
     -- The predicate answers an alias occurrence from step 4's verdict map, so
     -- it is O(1) for `S`, `Env` and `ItemAux` after their first classify.
     if Store.groundNoArrowWith s0.monoMemo.aliasMemo childCan && Store.groundNoArrowWith s0.monoMemo.aliasMemo parentCan then
-        Ok ( (), s0 )
+        s0
 
     else
         -- A1: direct state-passing (desugared andThen) → byte-identical.
-        case Store.loadType parentCan s0 of
-            Err e ->
-                Err e
+        -- Step 10b: `loadTypeS` never fails, so the two `Err` arms this had
+        -- were dead; the function returns `S` and allocates nothing at all.
+        let
+            ( parentVar, s1 ) =
+                Store.loadTypeS parentCan s0
 
-            Ok ( parentVar, s1 ) ->
-                case Store.loadType childCan s1 of
-                    Err e ->
-                        Err e
-
-                    Ok ( childVar, s2 ) ->
-                        unifyStepBestEffort childVar parentVar s2
+            ( childVar, s2 ) =
+                Store.loadTypeS childCan s1
+        in
+        unifyBestEffortS childVar parentVar s2
 
 
 {-| MONO\_029 R1: unify each TailCall argument's canType with the enclosing
@@ -197,31 +214,26 @@ tail-recursive function's matching loop-param canType (frames pushed around
 TailDef bodies, matched by function then arg name). Best-effort like every
 connect.
 -}
-connectTailCallArgs : Name -> List ( Name, TOpt.Expr TypeIds.MVarId ) -> Step ()
+connectTailCallArgs : Name -> List ( Name, TOpt.Expr TypeIds.MVarId ) -> Engine.S -> Engine.S
 connectTailCallArgs funcName args s0 =
     case lookupLoopFrame funcName s0.itemAux.loopParams of
         Nothing ->
-            Ok ( (), s0 )
+            s0
 
         Just params ->
             connectTailArgsGo params args s0
 
 
-connectTailArgsGo : List ( String, Can.Type TypeIds.MVarId ) -> List ( Name, TOpt.Expr TypeIds.MVarId ) -> Engine.S -> Result Failure ( (), Engine.S )
+connectTailArgsGo : List ( String, Can.Type TypeIds.MVarId ) -> List ( Name, TOpt.Expr TypeIds.MVarId ) -> Engine.S -> Engine.S
 connectTailArgsGo params args s0 =
     case args of
         [] ->
-            Ok ( (), s0 )
+            s0
 
         ( argName, argExpr ) :: rest ->
             case List.filter (\( pn, _ ) -> pn == argName) params of
                 ( _, pCan ) :: _ ->
-                    case connectTypes (TOpt.typeOf argExpr) pCan s0 of
-                        Err e ->
-                            Err e
-
-                        Ok ( (), s1 ) ->
-                            connectTailArgsGo params rest s1
+                    connectTailArgsGo params rest (connectTypes (TOpt.typeOf argExpr) pCan s0)
 
                 [] ->
                     connectTailArgsGo params rest s0
@@ -255,15 +267,12 @@ withLoopFrame name typedArgs step s0 =
             s0.itemAux
     in
     case step { s0 | itemAux = { aux0 | loopParams = frame :: aux0.loopParams } } of
-        Err e ->
-            Err e
-
-        Ok ( a, s1 ) ->
+        ( a, s1 ) ->
             let
                 aux1 =
                     s1.itemAux
             in
-            Ok ( a, { s1 | itemAux = { aux1 | loopParams = s0.itemAux.loopParams } } )
+            ( a, { s1 | itemAux = { aux1 | loopParams = s0.itemAux.loopParams } } )
 
 
 {-| The element type of a canonical `List a` (through filled aliases).
@@ -299,24 +308,26 @@ tupleSlotCanTypes t =
 {-| Connect each record-literal field expr's type to the record type's field
 slot (through filled aliases); fields without a slot are skipped.
 -}
-connectRecordFields : List ( Name, TOpt.Expr TypeIds.MVarId ) -> Can.Type TypeIds.MVarId -> Step ()
-connectRecordFields fieldExprs recordCanType =
+connectRecordFields : List ( Name, TOpt.Expr TypeIds.MVarId ) -> Can.Type TypeIds.MVarId -> Engine.S -> Engine.S
+connectRecordFields fieldExprs recordCanType s0 =
+    -- Step 10b: `List.foldl` visits left-to-right exactly as `traverseGo` did,
+    -- so the unification order — and therefore every Point index — is unchanged.
     case recordFieldCanTypes recordCanType of
         Just fieldCans ->
-            Engine.traverse
-                (\( name, fieldExpr ) ->
+            List.foldl
+                (\( name, fieldExpr ) sa ->
                     case Dict.get name fieldCans of
                         Just fieldCan ->
-                            connectTypes (TOpt.typeOf fieldExpr) fieldCan
+                            connectTypes (TOpt.typeOf fieldExpr) fieldCan sa
 
                         Nothing ->
-                            Engine.succeed ()
+                            sa
                 )
+                s0
                 fieldExprs
-                |> Engine.map (\_ -> ())
 
         Nothing ->
-            Engine.succeed ()
+            s0
 
 
 recordFieldCanTypes : Can.Type TypeIds.MVarId -> Maybe (Dict.Dict Name (Can.Type TypeIds.MVarId))
@@ -355,11 +366,8 @@ translate expr s0 =
     -- construction — `censusProducer` only bumps counters, and reads
     -- signature state without forcing it.
     case translateDispatch expr s0 of
-        Err e ->
-            Err e
-
-        Ok ( monoExpr, s1 ) ->
-            Ok ( monoExpr, censusProducer expr s1 )
+        ( monoExpr, s1 ) ->
+            ( monoExpr, censusProducer expr s1 )
 
 
 {-| Injection-totality census (plans/lss-injection-completeness.md §2.1).
@@ -517,22 +525,18 @@ translateDispatch : TOpt.Expr TypeIds.MVarId -> Step Mono.MonoExpr
 translateDispatch expr s0 =
     case expr of
         TOpt.Bool _ v _ ->
-            Ok ( Mono.MonoLiteral (Mono.LBool v) Mono.MBool, s0 )
+            ( Mono.MonoLiteral (Mono.LBool v) Mono.MBool, s0 )
 
         TOpt.Chr _ v _ ->
-            Ok ( Mono.MonoLiteral (Mono.LChar v) Mono.MChar, s0 )
+            ( Mono.MonoLiteral (Mono.LChar v) Mono.MChar, s0 )
 
         TOpt.Str _ v _ ->
-            Ok ( Mono.MonoLiteral (Mono.LStr v) Mono.MString, s0 )
+            ( Mono.MonoLiteral (Mono.LStr v) Mono.MString, s0 )
 
         TOpt.Int _ v meta ->
             -- M6: direct state-passing (desugared map) → byte-identical.
             case classifyAs Mono.tkClassLit meta.tipe s0 of
-                Err e ->
-                    Err e
-
-                Ok ( monoType, s1 ) ->
-                    Ok
+                ( monoType, s1 ) ->
                         ( case monoType of
                             Mono.MFloat ->
                                 Mono.MonoLiteral (Mono.LFloat (toFloat v)) monoType
@@ -545,11 +549,8 @@ translateDispatch expr s0 =
         TOpt.Float _ v meta ->
             -- M6: direct state-passing (desugared map) → byte-identical.
             case classifyAs Mono.tkClassLit meta.tipe s0 of
-                Err e ->
-                    Err e
-
-                Ok ( monoType, s1 ) ->
-                    Ok ( Mono.MonoLiteral (Mono.LFloat v) monoType, s1 )
+                ( monoType, s1 ) ->
+                    ( Mono.MonoLiteral (Mono.LFloat v) monoType, s1 )
 
         TOpt.VarLocal name meta ->
             -- D9: read localMulti/numberMulti/varEnv in ONE getS (all pure), then
@@ -560,54 +561,36 @@ translateDispatch expr s0 =
             -- every local-var reference, so eliminating its per-use bind closures is
             -- a broad cut; monad-law-preserving → byte-identical.
             case Engine.localVarInfo name s0 of
-                Err e ->
-                    Err e
-
-                Ok ( ( isLM, isNM, maybeBound ), s1 ) ->
+                ( ( isLM, isNM, maybeBound ), s1 ) ->
                     if isLM then
                         -- local-multi FUNCTION target: record this use's applied
                         -- type and point at its per-type binding (f / f$1 / …).
                         case classifyAs Mono.tkClassLocal meta.tipe s1 of
-                            Err e ->
-                                Err e
-
-                            Ok ( resolvedType, s2 ) ->
+                            ( resolvedType, s2 ) ->
                                 case Engine.recordLocalInstance name resolvedType s2 of
-                                    Err e ->
-                                        Err e
-
-                                    Ok ( ( freshName, instType, _ ), s3 ) ->
-                                        Ok ( Mono.MonoVarLocal freshName instType, s3 )
+                                    ( ( freshName, instType, _ ), s3 ) ->
+                                        ( Mono.MonoVarLocal freshName instType, s3 )
 
                     else if isNM then
                         -- number-multi target: record this use's instance and
                         -- point at its per-type binding (n / n$v1 / …).
                         case classifyAs Mono.tkClassLocal meta.tipe s1 of
-                            Err e ->
-                                Err e
-
-                            Ok ( resolvedType, s2 ) ->
+                            ( resolvedType, s2 ) ->
                                 case Engine.recordNumberInstance name resolvedType s2 of
-                                    Err e ->
-                                        Err e
-
-                                    Ok ( ( freshName, instType ), s3 ) ->
-                                        Ok ( Mono.MonoVarLocal freshName instType, s3 )
+                                    ( ( freshName, instType ), s3 ) ->
+                                        ( Mono.MonoVarLocal freshName instType, s3 )
 
                     else
                         -- Prefer the varEnv-bound type (from an enclosing let/
                         -- lambda/destructor, may be more concrete than the meta).
                         case maybeBound of
                             Just boundType ->
-                                Ok ( Mono.MonoVarLocal name boundType, s1 )
+                                ( Mono.MonoVarLocal name boundType, s1 )
 
                             Nothing ->
                                 case classifyAs Mono.tkClassLocal meta.tipe s1 of
-                                    Err e ->
-                                        Err e
-
-                                    Ok ( monoType, s2 ) ->
-                                        Ok ( Mono.MonoVarLocal name monoType, s2 )
+                                    ( monoType, s2 ) ->
+                                        ( Mono.MonoVarLocal name monoType, s2 )
 
         TOpt.TrackedVarLocal _ name meta ->
             translate (TOpt.VarLocal name meta) s0
@@ -626,19 +609,13 @@ translateDispatch expr s0 =
 
         TOpt.VarKernel region kernelPrefix home name meta ->
             case deriveKernelAbiTypeRef ( home, name ) meta.tipe s0 of
-                Err e ->
-                    Err e
-
-                Ok ( funcMonoType, s1 ) ->
-                    Ok ( Mono.MonoVarKernel region kernelPrefix home name funcMonoType, s1 )
+                ( funcMonoType, s1 ) ->
+                    ( Mono.MonoVarKernel region kernelPrefix home name funcMonoType, s1 )
 
         TOpt.VarDebug region name _ _ meta ->
             case deriveKernelAbiTypeRef ( "Debug", name ) meta.tipe s0 of
-                Err e ->
-                    Err e
-
-                Ok ( funcMonoType, s1 ) ->
-                    Ok ( Mono.MonoVarKernel region "Elm" "Debug" name funcMonoType, s1 )
+                ( funcMonoType, s1 ) ->
+                    ( Mono.MonoVarKernel region "Elm" "Debug" name funcMonoType, s1 )
 
         TOpt.List region exprs meta ->
             -- Connect every element's type var to the list's element slot (or,
@@ -646,36 +623,25 @@ translateDispatch expr s0 =
             -- use of a let-generalized number picks up the shared demand.
             -- M6: direct state-passing (desugared nested andThen/map) → byte-identical.
             let
-                connectElems =
+                connectElems sa =
                     case listElemCanType meta.tipe of
                         Just elemCan ->
-                            Engine.traverse (\e -> connectTypes (TOpt.typeOf e) elemCan) exprs
-                                |> Engine.map (\_ -> ())
+                            List.foldl (\e sb -> connectTypes (TOpt.typeOf e) elemCan sb) sa exprs
 
                         Nothing ->
                             case exprs of
                                 first :: restExprs ->
-                                    Engine.traverse (\e -> connectTypes (TOpt.typeOf e) (TOpt.typeOf first)) restExprs
-                                        |> Engine.map (\_ -> ())
+                                    List.foldl (\e sb -> connectTypes (TOpt.typeOf e) (TOpt.typeOf first) sb) sa restExprs
 
                                 [] ->
-                                    Engine.succeed ()
+                                    sa
             in
             case connectElems s0 of
-                Err e ->
-                    Err e
-
-                Ok ( _, s1 ) ->
+                s1 ->
                     case classifyAs Mono.tkClassMisc meta.tipe s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( monoType0, s2 ) ->
+                        ( monoType0, s2 ) ->
                             case Engine.traverse translate exprs s2 of
-                                Err e ->
-                                    Err e
-
-                                Ok ( monoExprs, s3 ) ->
+                                ( monoExprs, s3 ) ->
                                     let
                                         -- E15 (`lss.flow.accessFlow`, DEFAULT-ON
                                         -- 2026-09-16, unconditional 2026-09-18):
@@ -721,7 +687,7 @@ translateDispatch expr s0 =
                                                     [] ->
                                                         ( monoType0, s3 )
                                     in
-                                    Ok ( Mono.MonoList region monoExprs monoType, s3b )
+                                    ( Mono.MonoList region monoExprs monoType, s3b )
 
         TOpt.Call region func args meta ->
             translateCall region func args meta.tipe s0
@@ -734,25 +700,13 @@ translateDispatch expr s0 =
             -- Interleaved to mirror the original engine's per-use demand recording.
             -- M6: direct state-passing (desugared nested andThen/map) → byte-identical.
             case classifyAs Mono.tkClassIf meta.tipe s0 of
-                Err e ->
-                    Err e
-
-                Ok ( monoType0, s1 ) ->
+                ( monoType0, s1 ) ->
                     case Engine.traverse (translateIfBranch meta.tipe) branches s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( monoBranches, s2 ) ->
+                        ( monoBranches, s2 ) ->
                             case connectTypes (TOpt.typeOf final) meta.tipe s2 of
-                                Err e ->
-                                    Err e
-
-                                Ok ( _, s3 ) ->
+                                s3 ->
                                     case translate final s3 of
-                                        Err e ->
-                                            Err e
-
-                                        Ok ( monoFinal, s4 ) ->
+                                        ( monoFinal, s4 ) ->
                                             let
                                                 monoType =
                                                     if Mono.containsAnyMVar monoType0 then
@@ -768,7 +722,7 @@ translateDispatch expr s0 =
                                                     else
                                                         monoType0
                                             in
-                                            Ok ( Mono.MonoIf monoBranches monoFinal monoType, s4 )
+                                            ( Mono.MonoIf monoBranches monoFinal monoType, s4 )
 
         TOpt.TailCall name args meta ->
             -- M6: direct state-passing (desugared andThen/map) → byte-identical.
@@ -776,60 +730,39 @@ translateDispatch expr s0 =
             -- first — the TCO transform rebuilds this call chain with a fresh
             -- id family that otherwise never joins the annotation component.
             case connectTailCallArgs name args s0 of
-                Err e ->
-                    Err e
-
-                Ok ( (), s0c ) ->
+                s0c ->
                     case classifyAs Mono.tkClassMisc meta.tipe s0c of
-                        Err e ->
-                            Err e
-
-                        Ok ( monoType, s1 ) ->
-                            case Engine.traverse (\( argName, argExpr ) -> Engine.map (\me -> ( argName, me )) (translate argExpr)) args s1 of
-                                Err e ->
-                                    Err e
-
-                                Ok ( monoArgs, s2 ) ->
-                                    Ok ( Mono.MonoTailCall name monoArgs monoType, s2 )
+                        ( monoType, s1 ) ->
+                            case Engine.traverse (\( argName, argExpr ) sx -> case translate argExpr sx of ( me, sx1 ) -> ( ( argName, me ), sx1 )) args s1 of
+                                ( monoArgs, s2 ) ->
+                                    ( Mono.MonoTailCall name monoArgs monoType, s2 )
 
         TOpt.Unit _ ->
-            Ok ( Mono.MonoUnit, s0 )
+            ( Mono.MonoUnit, s0 )
 
         TOpt.Tuple region a b rest meta ->
             -- Connect each slot's type var to the tuple type's slot before
             -- translating (demand flow into tuple literals).
             -- M6: direct state-passing (desugared nested andThen/map) → byte-identical.
             let
-                connectSlots =
+                connectSlots sa =
                     case tupleSlotCanTypes meta.tipe of
                         Just slotCans ->
-                            Engine.traverse (\( e, slotCan ) -> connectTypes (TOpt.typeOf e) slotCan)
+                            List.foldl (\( e, slotCan ) sb -> connectTypes (TOpt.typeOf e) slotCan sb)
+                                sa
                                 (List.map2 Tuple.pair (a :: b :: rest) slotCans)
-                                |> Engine.map (\_ -> ())
 
                         Nothing ->
-                            Engine.succeed ()
+                            sa
             in
             case connectSlots s0 of
-                Err e ->
-                    Err e
-
-                Ok ( _, s1 ) ->
+                s1 ->
                     case translate a s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( monoA, s2 ) ->
+                        ( monoA, s2 ) ->
                             case translate b s2 of
-                                Err e ->
-                                    Err e
-
-                                Ok ( monoB, s3 ) ->
+                                ( monoB, s3 ) ->
                                     case Engine.traverse translate rest s3 of
-                                        Err e ->
-                                            Err e
-
-                                        Ok ( monoRest, s4 ) ->
+                                        ( monoRest, s4 ) ->
                                             let
                                                 allExprs =
                                                     monoA :: monoB :: monoRest
@@ -838,33 +771,31 @@ translateDispatch expr s0 =
                                                 ( tupleType, s5 ) =
                                                     Engine.consS (Mono.mTuple (List.map Mono.typeOf allExprs)) s4
                                             in
-                                            Ok ( Mono.MonoTupleCreate region allExprs tupleType, s5 )
+                                            ( Mono.MonoTupleCreate region allExprs tupleType, s5 )
 
         TOpt.Record fields meta ->
             -- Connect each field expr's type var to the record type's field slot
             -- before translating (demand flow into record literals).
             -- M6: direct state-passing (desugared andThen/map) → byte-identical.
             case connectRecordFields (Dict.toList fields) meta.tipe s0 of
-                Err e ->
-                    Err e
-
-                Ok ( _, s1 ) ->
+                s1 ->
                     case
                         Engine.foldlS
-                            (\( name, fieldExpr ) acc -> Engine.map (\me -> ( name, me ) :: acc) (translate fieldExpr))
+                            (\( name, fieldExpr ) acc sx ->
+                                case translate fieldExpr sx of
+                                    ( me, sx1 ) ->
+                                        ( ( name, me ) :: acc, sx1 )
+                            )
                             []
                             (Dict.toList fields)
                             s1
                     of
-                        Err e ->
-                            Err e
-
-                        Ok ( monoFieldsRev, s2 ) ->
+                        ( monoFieldsRev, s2 ) ->
                             let
                                 ( recType, s3 ) =
                                     Engine.consS (recordTypeFromFields monoFieldsRev) s2
                             in
-                            Ok ( Mono.MonoRecordCreate monoFieldsRev recType, s3 )
+                            ( Mono.MonoRecordCreate monoFieldsRev recType, s3 )
 
         TOpt.TrackedRecord _ fields meta ->
             -- M6: direct state-passing (desugared andThen/map) → byte-identical.
@@ -874,28 +805,24 @@ translateDispatch expr s0 =
                     meta.tipe
                     s0
             of
-                Err e ->
-                    Err e
-
-                Ok ( _, s1 ) ->
+                s1 ->
                     case
                         Engine.foldlS
-                            (\( locName, fieldExpr ) acc ->
-                                Engine.map (\me -> ( A.toValue locName, me ) :: acc) (translate fieldExpr)
+                            (\( locName, fieldExpr ) acc sx ->
+                                case translate fieldExpr sx of
+                                    ( me, sx1 ) ->
+                                        ( ( A.toValue locName, me ) :: acc, sx1 )
                             )
                             []
                             (DMap.toList A.compareLocated fields)
                             s1
                     of
-                        Err e ->
-                            Err e
-
-                        Ok ( monoFieldsRev, s2 ) ->
+                        ( monoFieldsRev, s2 ) ->
                             let
                                 ( recType, s3 ) =
                                     Engine.consS (recordTypeFromFields monoFieldsRev) s2
                             in
-                            Ok ( Mono.MonoRecordCreate monoFieldsRev recType, s3 )
+                            ( Mono.MonoRecordCreate monoFieldsRev recType, s3 )
 
         TOpt.Access record _ fieldName meta ->
             translateAccess record fieldName meta s0
@@ -909,31 +836,16 @@ translateDispatch expr s0 =
             -- DISTINCT per-occurrence arrow slots (LSS_006), and a branch value
             -- reached through this wrapper must reach the enclosing join —
             -- see the `TOpt.Destruct` arm for the miscompile this closes.
-            case connectTypes (TOpt.typeOf body) meta.tipe s0 of
-                Err e ->
-                    Err e
-
-                Ok ( (), s0c ) ->
-                    translateLet def body meta.tipe s0c
+            translateLet def body meta.tipe (connectTypes (TOpt.typeOf body) meta.tipe s0)
 
         TOpt.Case label root decider jumps meta ->
             -- M6: direct state-passing (desugared nested andThen/map) → byte-identical.
             case classifyAs Mono.tkClassCase meta.tipe s0 of
-                Err e ->
-                    Err e
-
-                Ok ( monoTypeFromCan, s1 ) ->
+                ( monoTypeFromCan, s1 ) ->
                     case specializeDecider meta.tipe root decider s1 of
-                        Err e ->
-                            Err e
-
-                        Ok ( monoDecider, s2 ) ->
+                        ( monoDecider, s2 ) ->
                             case specializeJumps meta.tipe jumps s2 of
-                                Err e ->
-                                    Err e
-
-                                Ok ( monoJumps, s3 ) ->
-                                    Ok
+                                ( monoJumps, s3 ) ->
                                         ( Mono.MonoCase label
                                             root
                                             monoDecider
@@ -968,22 +880,13 @@ translateDispatch expr s0 =
             -- running `succeed`'s evaluator on the other branch's closure and
             -- silently skipping its state effect (`PapStampTest`).
             case connectTypes (TOpt.typeOf body) meta.tipe s0 of
-                Err e ->
-                    Err e
-
-                Ok ( (), s0d ) ->
+                s0d ->
                     case Engine.numberMultiRootType (pathRootName path) s0d of
-                        Err e ->
-                            Err e
-
-                        Ok ( maybeRootType, s1 ) ->
+                        ( maybeRootType, s1 ) ->
                             case maybeRootType of
                                 Just eagerRootType ->
                                     case classifyAs Mono.tkClassDestr dmeta.tipe s1 of
-                                        Err e ->
-                                            Err e
-
-                                        Ok ( eagerLeaf, s2 ) ->
+                                        ( eagerLeaf, s2 ) ->
                                             if isScalarNumber eagerLeaf && refineRootInstance s1.env.globalTypeEnv eagerRootType path eagerLeaf /= Nothing then
                                                 specializeNumberDestruct dname path dmeta (pathRootName path) eagerRootType body meta s2
 
@@ -996,20 +899,14 @@ translateDispatch expr s0 =
         TOpt.Accessor region fieldName meta ->
             -- M6: direct state-passing (desugared andThen/map) → byte-identical.
             case classifyAs Mono.tkClassMisc meta.tipe s0 of
-                Err e ->
-                    Err e
-
-                Ok ( monoType, s1 ) ->
+                ( monoType, s1 ) ->
                     if ResolveAccessorValues.accessorTypeNeedsDefer monoType then
-                        Ok ( Mono.MonoAccessorValue region fieldName monoType, s1 )
+                        ( Mono.MonoAccessorValue region fieldName monoType, s1 )
 
                     else
                         case Engine.enqueueSpec (Mono.Accessor fieldName) monoType s1 of
-                            Err e ->
-                                Err e
-
-                            Ok ( specId, s2 ) ->
-                                Ok ( Mono.MonoVarGlobal region specId monoType, s2 )
+                            ( specId, s2 ) ->
+                                ( Mono.MonoVarGlobal region specId monoType, s2 )
 
         TOpt.Function srcLam params body meta ->
             specializeLambda srcLam params body meta.tipe s0
@@ -1019,26 +916,28 @@ translateDispatch expr s0 =
 
         -- Deferred to later milestones:
         _ ->
-            Err (Unsupported (nodeKind expr))
+            ( Engine.crashFailure (Unsupported (nodeKind expr)), s0 )
 
 
 translateBranch : ( TOpt.Expr TypeIds.MVarId, TOpt.Expr TypeIds.MVarId ) -> Step ( Mono.MonoExpr, Mono.MonoExpr )
-translateBranch ( cond, bodyExpr ) =
-    Engine.map2 (\c b -> ( c, b )) (translate cond) (translate bodyExpr)
+translateBranch ( cond, bodyExpr ) s0 =
+    case translate cond s0 of
+        ( c, s1 ) ->
+            case translate bodyExpr s1 of
+                ( b, s2 ) ->
+                    ( ( c, b ), s2 )
 
 
 {-| Translate one If branch: condition first, then connect the branch value's
 type to the If's type, then the branch value (see the `TOpt.If` arm).
 -}
 translateIfBranch : Can.Type TypeIds.MVarId -> ( TOpt.Expr TypeIds.MVarId, TOpt.Expr TypeIds.MVarId ) -> Step ( Mono.MonoExpr, Mono.MonoExpr )
-translateIfBranch ifCanType ( cond, bodyExpr ) =
-    Engine.andThen
-        (\monoCond ->
-            Engine.andThen
-                (\_ -> Engine.map (\monoBody -> ( monoCond, monoBody )) (translate bodyExpr))
-                (connectTypes (TOpt.typeOf bodyExpr) ifCanType)
-        )
-        (translate cond)
+translateIfBranch ifCanType ( cond, bodyExpr ) s0 =
+    case translate cond s0 of
+        ( monoCond, s1 ) ->
+            case translate bodyExpr (connectTypes (TOpt.typeOf bodyExpr) ifCanType s1) of
+                ( monoBody, s2 ) ->
+                    ( ( monoCond, monoBody ), s2 )
 
 
 
@@ -1073,7 +972,7 @@ specializeCycle name valueDefs funcDefs demand =
                             specializeCycleValue vexpr demand
 
                         _ ->
-                            Engine.fail (EngineBug ("cycle member not found: " ++ name))
+                            Engine.crashFailure (EngineBug ("cycle member not found: " ++ name))
 
 
 cycleDefName : TOpt.Def TypeIds.MVarId -> Name
@@ -1092,10 +991,10 @@ listFind pred xs =
 
 
 specializeCycleValue : TOpt.Expr TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoNode
-specializeCycleValue vexpr demand =
-    Engine.andThen
-        (\_ -> Engine.map (\monoExpr -> Mono.MonoDefine monoExpr (Mono.typeOf monoExpr)) (translate vexpr))
-        (demandUnifyRoot (TOpt.typeOf vexpr) demand vexpr)
+specializeCycleValue vexpr demand s0 =
+    case translate vexpr (demandUnifyRoot (TOpt.typeOf vexpr) demand vexpr s0) of
+        ( monoExpr, s1 ) ->
+            ( Mono.MonoDefine monoExpr (Mono.typeOf monoExpr), s1 )
 
 
 
@@ -1112,181 +1011,146 @@ specializePort incoming expr canType requestedMonoType s0 =
     -- LSS_004: port payload/encoder arrows are kernel-facing — poison their
     -- set slots before the body walks/loads them (no-op when lss is off).
     case poisonPortArrowsIfOn canType s0 of
-        Err e ->
-            Err e
-
-        Ok ( _, s1 ) ->
+        s1 ->
             specializePortBody incoming expr canType requestedMonoType s1
 
 
-poisonPortArrowsIfOn : Can.Type TypeIds.MVarId -> Step ()
+poisonPortArrowsIfOn : Can.Type TypeIds.MVarId -> Engine.S -> Engine.S
 poisonPortArrowsIfOn canType s =
     if s.env.lss.enabled then
-        case Store.loadType canType s of
-            Err e ->
-                Err e
-
-            Ok ( v, s1 ) ->
+        case Store.loadTypeS canType s of
+            ( v, s1 ) ->
                 case Store.poisonArrowSets v s1 of
-                    Err e ->
-                        Err e
-
-                    Ok ( _, s2 ) ->
-                        Ok ( (), Engine.bumpWidenedByKernel s2 )
+                    s2 ->
+                        Engine.bumpWidenedByKernel s2
 
     else
-        Ok ( (), s )
+        s
 
 
 specializePortBody : Bool -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoNode
-specializePortBody incoming expr canType requestedMonoType =
-    Engine.andThen
-        (\_ ->
-            Engine.andThen
-                (\classifiedCan ->
-                    Engine.andThen
-                        (\( portGlobal, portName ) ->
-                            -- Usually the demand is a concrete `p -> r`; if it reached
-                            -- us erased (a bare MVar), recover the shape from the port's
-                            -- own (now-unified) canonical type.
-                            let
-                                effectiveType =
-                                    case requestedMonoType of
-                                        Mono.MFunction _ _ _ _ ->
-                                            requestedMonoType
+specializePortBody incoming expr canType requestedMonoType s0 =
+    case classifyAs Mono.tkClassMisc canType (demandUnify canType requestedMonoType s0) of
+        ( classifiedCan, s1 ) ->
+            case portGlobalContext s1 of
+                ( ( portGlobal, portName ), s2 ) ->
+                    -- Usually the demand is a concrete `p -> r`; if it reached
+                    -- us erased (a bare MVar), recover the shape from the port's
+                    -- own (now-unified) canonical type.
+                    let
+                        effectiveType =
+                            case requestedMonoType of
+                                Mono.MFunction _ _ _ _ ->
+                                    requestedMonoType
 
-                                        _ ->
-                                            classifiedCan
-                            in
-                            case effectiveType of
-                                Mono.MFunction _ _ [ paramType ] resultType ->
-                                    Engine.andThen
-                                        (\lambdaId ->
-                                            let
-                                                region =
-                                                    A.zero
+                                _ ->
+                                    classifiedCan
+                    in
+                    case effectiveType of
+                        Mono.MFunction _ _ [ paramType ] resultType ->
+                            case allocLambdaId s2 of
+                                ( lambdaId, s3 ) ->
+                                    let
+                                        region =
+                                            A.zero
 
-                                                paramName =
-                                                    "_eco_port_arg"
+                                        paramName =
+                                            "_eco_port_arg"
 
-                                                paramVar =
-                                                    Mono.MonoVarLocal paramName paramType
+                                        paramVar =
+                                            Mono.MonoVarLocal paramName paramType
 
-                                                nameLit =
-                                                    Mono.MonoLiteral (Mono.LStr portName) Mono.MString
+                                        nameLit =
+                                            Mono.MonoLiteral (Mono.LStr portName) Mono.MString
 
-                                                leafKernel valueType =
-                                                    Mono.MonoVarKernel region "Elm" "Platform" "leaf" (Mono.mFunction Mono.topSynth [ Mono.MString, valueType ] resultType)
+                                        leafKernel valueType =
+                                            Mono.MonoVarKernel region "Elm" "Platform" "leaf" (Mono.mFunction Mono.topSynth [ Mono.MString, valueType ] resultType)
 
-                                                closureInfo =
-                                                    { lambdaId = lambdaId
-                                                    , srcLambda = Nothing
-                                                    , lssMember = Nothing
-                                                    , captures = []
-                                                    , params = [ ( paramName, paramType ) ]
-                                                    , closureKind = Nothing
-                                                    , captureAbi = Nothing
-                                                    }
-                                            in
-                                            if incoming then
+                                        closureInfo =
+                                            { lambdaId = lambdaId
+                                            , srcLambda = Nothing
+                                            , lssMember = Nothing
+                                            , captures = []
+                                            , params = [ ( paramName, paramType ) ]
+                                            , closureKind = Nothing
+                                            , captureAbi = Nothing
+                                            }
+                                    in
+                                    if incoming then
+                                        let
+                                            body =
+                                                Mono.MonoCall region (leafKernel paramType) [ nameLit, paramVar ] resultType Mono.defaultCallInfo
+
+                                            wrapper =
+                                                Mono.MonoClosure closureInfo body effectiveType
+                                        in
+                                        case classifyAs Mono.tkClassMisc (TOpt.typeOf expr) s3 of
+                                            ( decoderMonoType, s4 ) ->
+                                                case Engine.enqueueSpec portGlobal decoderMonoType s4 of
+                                                    ( decoderSpecId, s5 ) ->
+                                                        ( Mono.MonoPortIncoming wrapper effectiveType
+                                                        , recordPort { name = portName, key = Mono.toComparableGlobal portGlobal, incoming = True, decoderSpecId = Just decoderSpecId } s5
+                                                        )
+
+                                    else
+                                        case translate expr (connectEncoderType expr canType s3) of
+                                            ( encoderMono, s4 ) ->
                                                 let
+                                                    encodedType =
+                                                        case Mono.typeOf encoderMono of
+                                                            Mono.MFunction _ _ _ r ->
+                                                                r
+
+                                                            t ->
+                                                                t
+
+                                                    encodedExpr =
+                                                        Mono.MonoCall region encoderMono [ paramVar ] encodedType Mono.defaultCallInfo
+
                                                     body =
-                                                        Mono.MonoCall region (leafKernel paramType) [ nameLit, paramVar ] resultType Mono.defaultCallInfo
+                                                        Mono.MonoCall region (leafKernel encodedType) [ nameLit, encodedExpr ] resultType Mono.defaultCallInfo
 
                                                     wrapper =
                                                         Mono.MonoClosure closureInfo body effectiveType
                                                 in
-                                                Engine.andThen
-                                                    (\decoderMonoType ->
-                                                        Engine.andThen
-                                                            (\decoderSpecId ->
-                                                                Engine.map
-                                                                    (\_ -> Mono.MonoPortIncoming wrapper effectiveType)
-                                                                    (recordPort { name = portName, key = Mono.toComparableGlobal portGlobal, incoming = True, decoderSpecId = Just decoderSpecId })
-                                                            )
-                                                            (Engine.enqueueSpec portGlobal decoderMonoType)
-                                                    )
-                                                    (classifyAs Mono.tkClassMisc (TOpt.typeOf expr))
+                                                ( Mono.MonoPortOutgoing wrapper effectiveType
+                                                , recordPort { name = portName, key = Mono.toComparableGlobal portGlobal, incoming = False, decoderSpecId = Nothing } s4
+                                                )
 
-                                            else
-                                                Engine.andThen
-                                                    (\_ ->
-                                                        Engine.andThen
-                                                            (\encoderMono ->
-                                                                let
-                                                                    encodedType =
-                                                                        case Mono.typeOf encoderMono of
-                                                                            Mono.MFunction _ _ _ r ->
-                                                                                r
-
-                                                                            t ->
-                                                                                t
-
-                                                                    encodedExpr =
-                                                                        Mono.MonoCall region encoderMono [ paramVar ] encodedType Mono.defaultCallInfo
-
-                                                                    body =
-                                                                        Mono.MonoCall region (leafKernel encodedType) [ nameLit, encodedExpr ] resultType Mono.defaultCallInfo
-
-                                                                    wrapper =
-                                                                        Mono.MonoClosure closureInfo body effectiveType
-                                                                in
-                                                                Engine.map
-                                                                    (\_ -> Mono.MonoPortOutgoing wrapper effectiveType)
-                                                                    (recordPort { name = portName, key = Mono.toComparableGlobal portGlobal, incoming = False, decoderSpecId = Nothing })
-                                                            )
-                                                            (translate expr)
-                                                    )
-                                                    (connectEncoderType expr canType)
-                                        )
-                                        allocLambdaId
-
-                                _ ->
-                                    Engine.fail (EngineBug ("port '" ++ portName ++ "' must have a single-parameter function type; got " ++ monoKind effectiveType))
-                        )
-                        portGlobalContext
-                )
-                (classifyAs Mono.tkClassMisc canType)
-        )
-        (demandUnify canType requestedMonoType)
+                        _ ->
+                            ( Engine.crashFailure (EngineBug ("port '" ++ portName ++ "' must have a single-parameter function type; got " ++ monoKind effectiveType)), s2 )
 
 
 {-| Connect an outgoing port's ENCODER reference to `payload -> fresh` so its
 (otherwise free-floating) type var takes the function shape at the payload type
 — an erased encoder VG compiles to a 0-operand llvm.call.
 -}
-connectEncoderType : TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Step ()
-connectEncoderType expr portCanType =
+connectEncoderType : TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Engine.S -> Engine.S
+connectEncoderType expr portCanType s0 =
     case portCanType of
         Can.TLambda _ payloadCan _ ->
-            Engine.andThen
-                (\encVar ->
-                    Engine.andThen
-                        (\payloadVar ->
-                            Engine.andThen
-                                (\resVar ->
-                                    Engine.andThen
-                                        (\funVar -> unifyStepBestEffort encVar funVar)
-                                        (Engine.freshVar (Vars.Structure (Vars.Fun1 payloadVar resVar)))
-                                )
-                                (Engine.freshVar (Vars.FlexVar Nothing))
-                        )
-                        (Store.loadType payloadCan)
-                )
-                (Store.loadType (TOpt.typeOf expr))
+            case Store.loadType (TOpt.typeOf expr) s0 of
+                ( encVar, s1 ) ->
+                    case Store.loadTypeS payloadCan s1 of
+                        ( payloadVar, s2 ) ->
+                            case Engine.freshVar (Vars.FlexVar Nothing) s2 of
+                                ( resVar, s3 ) ->
+                                    case Engine.freshVar (Vars.Structure (Vars.Fun1 payloadVar resVar)) s3 of
+                                        ( funVar, s4 ) ->
+                                            unifyStepBestEffort encVar funVar s4
 
         _ ->
-            Engine.succeed ()
+            s0
 
 
 portGlobalContext : Step ( Mono.Global, String )
 portGlobalContext s =
     case s.currentGlobal of
         Just ((Mono.Global _ nm) as g) ->
-            Ok ( ( g, Name.toElmString nm ), s )
+            ( ( g, Name.toElmString nm ), s )
 
         _ ->
-            Err (EngineBug "specializePort: currentGlobal must be a Global")
+            ( Engine.crashFailure (EngineBug "specializePort: currentGlobal must be a Global"), s )
 
 
 {-| Replace every `MVar _ CEcoValue` in a kernel ABI with a fresh id (one per
@@ -1480,25 +1344,23 @@ monoKind mt =
             "other"
 
 
-recordPort : Mono.PortRegistration -> Step ()
-recordPort reg =
-    Engine.modifyS
-        (\s ->
-            if List.any (\p -> p.key == reg.key) s.ports then
-                s
+recordPort : Mono.PortRegistration -> Engine.S -> Engine.S
+recordPort reg s =
+    if List.any (\p -> p.key == reg.key) s.ports then
+        s
 
-            else
-                { s | ports = reg :: s.ports }
-        )
+    else
+        { s | ports = reg :: s.ports }
 
 
 specializeCycleFuncDef : TOpt.Def TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoNode
 specializeCycleFuncDef def demand =
     case def of
         TOpt.Def _ _ body defType ->
-            Engine.andThen
-                (\_ -> Engine.map (\monoExpr -> Mono.MonoDefine monoExpr (Mono.typeOf monoExpr)) (translate body))
-                (demandUnifyRoot defType demand body)
+            \sIn ->
+                case translate body (demandUnifyRoot defType demand body sIn) of
+                    ( monoExpr, s1 ) ->
+                        ( Mono.MonoDefine monoExpr (Mono.typeOf monoExpr), s1 )
 
         TOpt.TailDef _ tailName typedArgs body defType _ ->
             \sIn ->
@@ -1508,20 +1370,11 @@ specializeCycleFuncDef def demand =
                     -- fresh re-load) cannot see the transported lambda sets
                     -- (LSS_006: set slots live on per-load arrow structure).
                     case demandUnifyVar defType demand sIn of
-                        Err e ->
-                            Err e
-
-                        Ok ( annVar, s1 ) ->
+                        ( annVar, s1 ) ->
                             case Store.zonkToMono annVar s1 of
-                                Err e ->
-                                    Err e
-
-                                Ok ( zonkedType, s1b ) ->
+                                ( zonkedType, s1b ) ->
                                     case classifyAs Mono.tkClassLet defType s1b of
-                                        Err e ->
-                                            Err e
-
-                                        Ok ( classifiedType, s2 ) ->
+                                        ( classifiedType, s2 ) ->
                                             let
                                                 -- ABI guard (overlayAnnotations doc): classify
                                                 -- structure + zonk annotations. The zonk alone
@@ -1539,49 +1392,33 @@ specializeCycleFuncDef def demand =
                                                 -- alias/number resolution); the peeled zonk
                                                 -- contributes only annotations.
                                                 if List.length peeled == List.length typedArgs then
-                                                    Engine.traverse identity
-                                                        (List.map2
-                                                            (\( locName, argType ) peeledType ->
-                                                                Engine.map (\mt -> ( A.toValue locName, Mono.overlayAnnotations mt peeledType )) (classifyAs Mono.tkClassParam argType)
-                                                            )
-                                                            typedArgs
-                                                            peeled
+                                                    Engine.traverse
+                                                        (\( ( locName, argType ), peeledType ) sx ->
+                                                            case classifyAs Mono.tkClassParam argType sx of
+                                                                ( mt, sx1 ) ->
+                                                                    ( ( A.toValue locName, Mono.overlayAnnotations mt peeledType ), sx1 )
                                                         )
+                                                        (List.map2 Tuple.pair typedArgs peeled)
                                                         s2
 
                                                 else
                                                     -- Shape fallback: annotation stages don't
                                                     -- cover the params — classify as before.
-                                                    Engine.traverse (\( locName, argType ) -> Engine.map (\mt -> ( A.toValue locName, mt )) (classifyAs Mono.tkClassParam argType)) typedArgs s2
+                                                    Engine.traverse (\( locName, argType ) sx -> case classifyAs Mono.tkClassParam argType sx of ( mt, sx1 ) -> ( ( A.toValue locName, mt ), sx1 )) typedArgs s2
                                             of
-                                                Err e ->
-                                                    Err e
-
-                                                Ok ( monoParams, s3 ) ->
-                                                    case withLoopFrame tailName typedArgs (Engine.scoped (Engine.andThen (\_ -> translate body) (insertVars monoParams))) s3 of
-                                                        Err e ->
-                                                            Err e
-
-                                                        Ok ( monoBody, s4 ) ->
-                                                            Ok ( Mono.MonoTailFunc monoParams monoBody funcType, s4 )
+                                                ( monoParams, s3 ) ->
+                                                    case withLoopFrame tailName typedArgs (Engine.scoped (\sx -> translate body (insertVars monoParams sx))) s3 of
+                                                        ( monoBody, s4 ) ->
+                                                            ( Mono.MonoTailFunc monoParams monoBody funcType, s4 )
 
                 else
-                    Engine.andThen
-                        (\_ ->
-                            Engine.andThen
-                                (\monoParams ->
-                                    Engine.andThen
-                                        (\funcType ->
-                                            Engine.map
-                                                (\monoBody -> Mono.MonoTailFunc monoParams monoBody funcType)
-                                                (withLoopFrame tailName typedArgs (Engine.scoped (Engine.andThen (\_ -> translate body) (insertVars monoParams))))
-                                        )
-                                        (classifyAs Mono.tkClassLet defType)
-                                )
-                                (Engine.traverse (\( locName, argType ) -> Engine.map (\mt -> ( A.toValue locName, mt )) (classifyAs Mono.tkClassParam argType)) typedArgs)
-                        )
-                        (demandUnify defType demand)
-                        sIn
+                    case Engine.traverse (\( locName, argType ) sx -> case classifyAs Mono.tkClassParam argType sx of ( mt, sx1 ) -> ( ( A.toValue locName, mt ), sx1 )) typedArgs (demandUnify defType demand sIn) of
+                        ( monoParams, s1 ) ->
+                            case classifyAs Mono.tkClassLet defType s1 of
+                                ( funcType, s2 ) ->
+                                    case withLoopFrame tailName typedArgs (Engine.scoped (\sx -> translate body (insertVars monoParams sx))) s2 of
+                                        ( monoBody, s3 ) ->
+                                            ( Mono.MonoTailFunc monoParams monoBody funcType, s3 )
 
 
 
@@ -1594,43 +1431,35 @@ field types off it; the result type is peeled off the demand. Mirrors
 `Specialize.specializeCtorViaScheme` (Box uses tag 0, arity 1).
 -}
 specializeCtorViaScheme : Name -> Int -> Int -> Can.Type TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoNode
-specializeCtorViaScheme name tag arity canType demand =
-    Engine.andThen
-        (\annVar ->
-            Engine.andThen
-                (\demandVar ->
-                    Engine.andThen
-                        (\_ ->
-                            Engine.map
-                                (\ctorMonoType ->
-                                    Mono.MonoCtor
+specializeCtorViaScheme name tag arity canType demand s0 =
+    case Store.loadTypeS canType s0 of
+        ( annVar, s1 ) ->
+            case Store.monoTypeToVarS demand s1 of
+                ( demandVar, s2 ) ->
+                    case Store.unifyStrict annVar demandVar s2 of
+                        ( _, s3 ) ->
+                            case Store.zonkToMono annVar s3 of
+                                ( ctorMonoType, s4 ) ->
+                                    ( Mono.MonoCtor
                                         { name = name, tag = tag, fieldTypes = extractFieldTypes arity ctorMonoType }
                                         (extractCtorResultType arity demand)
-                                )
-                                (Store.zonkToMono annVar)
-                        )
-                        (Store.unifyStrict annVar demandVar)
-                )
-                (Store.monoTypeToVar demand)
-        )
-        (Store.loadType canType)
+                                    , s4
+                                    )
 
 
 {-| Specialize an enum (nullary ctor) node into `MonoEnum tag <type>`.
 -}
 enumNode : Int -> Can.Type TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoNode
-enumNode tag canType demand =
-    Engine.andThen
-        (\annVar ->
-            Engine.andThen
-                (\demandVar ->
-                    Engine.andThen
-                        (\_ -> Engine.map (\monoType -> Mono.MonoEnum tag monoType) (Store.zonkToMono annVar))
-                        (Store.unifyStrict annVar demandVar)
-                )
-                (Store.monoTypeToVar demand)
-        )
-        (Store.loadType canType)
+enumNode tag canType demand s0 =
+    case Store.loadTypeS canType s0 of
+        ( annVar, s1 ) ->
+            case Store.monoTypeToVarS demand s1 of
+                ( demandVar, s2 ) ->
+                    case Store.unifyStrict annVar demandVar s2 of
+                        ( _, s3 ) ->
+                            case Store.zonkToMono annVar s3 of
+                                ( monoType, s4 ) ->
+                                    ( Mono.MonoEnum tag monoType, s4 )
 
 
 extractFieldTypes : Int -> Mono.MonoType -> List Mono.MonoType
@@ -1672,84 +1501,71 @@ compute captures via the shared `Closure.computeClosureCaptures`. `closureKind`
 and `captureAbi` are placeholder `Nothing` at mono time (filled by GlobalOpt).
 -}
 specializeLambda : Maybe TypeIds.SrcLambdaId -> List ( Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
-specializeLambda srcLam params body canType =
-    Engine.andThen
-        (\( monoType0, maybeMember ) ->
-            Engine.andThen
-                (\classifiedParams ->
-                    let
-                        monoParams =
-                            classifiedParams
-                    in
-                    Engine.andThen
-                        (\lambdaId ->
-                            Engine.andThen
-                                (\monoBody s ->
-                                    -- `monoType0` is the head type as zonked
-                                    -- BEFORE the body was translated. The M1
-                                    -- flowConnect producer half used to unify the
-                                    -- body's solved type back into the kept head
-                                    -- variable's RESULT slot here; it was measured
-                                    -- inert on this corpus (byte-identical
-                                    -- artifact, −32.6 M dispatches when OFF) and
-                                    -- was removed with its flag on 2026-09-18.
-                                    Ok
-                                        ( Mono.MonoClosure
-                                            { lambdaId = lambdaId
-                                            , srcLambda = srcLam
+specializeLambda srcLam params body canType s0 =
+    case classifyLambdaHead (List.length params) srcLam canType (m2ShapeCensus params body s0) of
+        ( ( monoType0, maybeMember ), s1 ) ->
+            let
+                -- Step 22(a): the param types are PEELED from the (possibly
+                -- re-translated, hence concretized) head type whenever the peel
+                -- has the right arity, and only the NAMES of the classified
+                -- params were used in that case — so classifying every param
+                -- and then discarding the result was the common path, not the
+                -- fallback. Classify only when the peel does not line up.
+                --
+                -- `classify` is compositional, so peeled and per-param
+                -- classification agree in the normal case; the peel stays
+                -- concrete when only the function type's vars were unified,
+                -- which is why it was preferred in the first place.
+                peeled =
+                    extractFieldTypes (List.length params) monoType0
 
-                                            -- Fix B (LSS_017): the id this instance was
-                                            -- minted under (spec-qualified when
-                                            -- keyed-routed). Step 22(b): it now comes
-                                            -- back FROM `classifyLambdaHead`'s single
-                                            -- mint instead of being re-derived by a
-                                            -- second `Engine.lambdaInstanceMemberMaybe`
-                                            -- — that call was state-idempotent but ran
-                                            -- `instanceQualTagFor`, the `rootLamOf`
-                                            -- fold, `layoutQualKey` (a multi-kilobyte
-                                            -- string concat) and a `byKey` probe every
-                                            -- time. One mint, one id: LSS_017's
-                                            -- "stamped IDENTICALLY in its set injection
-                                            -- and its ClosureInfo.lssMember" now holds
-                                            -- by construction.
-                                            , lssMember = maybeMember
-                                            , captures = Closure.computeClosureCaptures monoParams monoBody
-                                            , params = monoParams
-                                            , closureKind = Nothing
-                                            , captureAbi = Nothing
-                                            }
-                                            monoBody
-                                            monoType0
-                                        , s
-                                        )
-                                )
-                                (Engine.scoped (Engine.andThen (\_ -> translate body) (insertVars monoParams)))
-                        )
-                        allocLambdaId
-                )
-                (-- Step 22(a): the param types are PEELED from the (possibly
-                 -- re-translated, hence concretized) head type whenever the peel
-                 -- has the right arity, and only the NAMES of the classified
-                 -- params were used in that case — so classifying every param
-                 -- and then discarding the result was the common path, not the
-                 -- fallback. Classify only when the peel does not line up.
-                 --
-                 -- `classify` is compositional, so peeled and per-param
-                 -- classification agree in the normal case; the peel stays
-                 -- concrete when only the function type's vars were unified,
-                 -- which is why it was preferred in the first place.
-                 let
-                    peeled =
-                        extractFieldTypes (List.length params) monoType0
-                 in
-                 if List.length peeled == List.length params then
-                    Engine.succeed (List.map2 (\( nm, _ ) pt -> ( nm, pt )) params peeled)
+                ( monoParams, s2 ) =
+                    if List.length peeled == List.length params then
+                        ( List.map2 (\( nm, _ ) pt -> ( nm, pt )) params peeled, s1 )
 
-                 else
-                    Engine.traverse (\( name, paramCanType ) -> Engine.map (\mt -> ( name, mt )) (classifyAs Mono.tkClassParam paramCanType)) params
-                )
-        )
-        (Engine.andThen (\_ -> classifyLambdaHead (List.length params) srcLam canType) (m2ShapeCensus params body))
+                    else
+                        Engine.traverse (\( name, paramCanType ) sx -> case classifyAs Mono.tkClassParam paramCanType sx of ( mt, sx1 ) -> ( ( name, mt ), sx1 )) params s1
+            in
+            case allocLambdaId s2 of
+                ( lambdaId, s3 ) ->
+                    case Engine.scoped (\sx -> translate body (insertVars monoParams sx)) s3 of
+                        ( monoBody, s4 ) ->
+                            -- `monoType0` is the head type as zonked
+                            -- BEFORE the body was translated. The M1
+                            -- flowConnect producer half used to unify the
+                            -- body's solved type back into the kept head
+                            -- variable's RESULT slot here; it was measured
+                            -- inert on this corpus (byte-identical
+                            -- artifact, -32.6 M dispatches when OFF) and
+                            -- was removed with its flag on 2026-09-18.
+                            ( Mono.MonoClosure
+                                { lambdaId = lambdaId
+                                , srcLambda = srcLam
+
+                                -- Fix B (LSS_017): the id this instance was
+                                -- minted under (spec-qualified when
+                                -- keyed-routed). Step 22(b): it now comes
+                                -- back FROM `classifyLambdaHead`'s single
+                                -- mint instead of being re-derived by a
+                                -- second `Engine.lambdaInstanceMemberMaybe`
+                                -- — that call was state-idempotent but ran
+                                -- `instanceQualTagFor`, the `rootLamOf`
+                                -- fold, `layoutQualKey` (a multi-kilobyte
+                                -- string concat) and a `byKey` probe every
+                                -- time. One mint, one id: LSS_017's
+                                -- "stamped IDENTICALLY in its set injection
+                                -- and its ClosureInfo.lssMember" now holds
+                                -- by construction.
+                                , lssMember = maybeMember
+                                , captures = Closure.computeClosureCaptures monoParams monoBody
+                                , params = monoParams
+                                , closureKind = Nothing
+                                , captureAbi = Nothing
+                                }
+                                monoBody
+                                monoType0
+                            , s4
+                            )
 
 
 {-| The lambda's head type. lss off: exactly the storeless `classify` (the
@@ -1876,28 +1692,19 @@ classifyLambdaHead arity srcLam canType s0 =
         case
             case maybeRootVar of
                 Just annVar ->
-                    Ok ( annVar, s0c )
+                    ( annVar, s0c )
 
                 Nothing ->
                     Store.loadType canType s0c
         of
-            Err e ->
-                Err e
-
-            Ok ( funcVar, s1 ) ->
+            ( funcVar, s1 ) ->
                 -- Fix B (LSS_017): translation-phase mint — spec-qualified.
                 -- Step 22(b): take the member id FROM the mint instead of
                 -- re-deriving it with a second `lambdaInstanceMemberMaybe`.
                 case LssInfer.injectLambdaMemberQualifiedId arity srcLam funcVar s1 of
-                    Err e ->
-                        Err e
-
-                    Ok ( maybeMid, s2 ) ->
+                    ( maybeMid, s2 ) ->
                         case Store.zonkToMono funcVar s2 of
-                            Err e ->
-                                Err e
-
-                            Ok ( zonked, s3 ) ->
+                            ( zonked, s3 ) ->
                                 -- ABI guard (overlayAnnotations doc): the
                                 -- storeless classification is the structure
                                 -- truth; the store zonk contributes ONLY the
@@ -1905,27 +1712,21 @@ classifyLambdaHead arity srcLam canType s0 =
                                 -- decide structure diverged from the byte
                                 -- path on demand-concretized leaves.
                                 case classifyAs Mono.tkClassLambda canType s3 of
-                                    Err e ->
-                                        Err e
-
-                                    Ok ( classified, s4 ) ->
-                                        Ok ( ( Mono.overlayAnnotations classified zonked, maybeMid ), s4 )
+                                    ( classified, s4 ) ->
+                                        ( ( Mono.overlayAnnotations classified zonked, maybeMid ), s4 )
 
     else
         case classifyAs Mono.tkClassLambda canType s0 of
-            Err e ->
-                Err e
-
-            Ok ( classified, s1 ) ->
+            ( classified, s1 ) ->
                 -- lss off: exactly what `lambdaInstanceMemberMaybe` answered
                 -- here (its own `enabled` guard), so `ClosureInfo.lssMember`
                 -- is unchanged in this regime too.
-                Ok ( ( classified, Nothing ), s1 )
+                ( ( classified, Nothing ), s1 )
 
 
 allocLambdaId : Step Mono.LambdaId
 allocLambdaId =
-    \s -> Ok ( Mono.AnonymousLambda s.env.currentModule s.lambdaCounter, { s | lambdaCounter = s.lambdaCounter + 1 } )
+    \s -> ( Mono.AnonymousLambda s.env.currentModule s.lambdaCounter, { s | lambdaCounter = s.lambdaCounter + 1 } )
 
 
 
@@ -1940,16 +1741,10 @@ translateVarRef refExpr region global canType s0 =
     -- M6: direct state-passing (desugared andThen/map). Fires on every global
     -- reference; monad-law-preserving → byte-identical.
     case classifyRef refExpr canType s0 of
-        Err e ->
-            Err e
-
-        Ok ( monoType, s1 ) ->
+        ( monoType, s1 ) ->
             case enqueueSpecStamped global monoType s1 of
-                Err e ->
-                    Err e
-
-                Ok ( specId, s2 ) ->
-                    Ok ( Mono.MonoVarGlobal region specId monoType, s2 )
+                ( specId, s2 ) ->
+                    ( Mono.MonoVarGlobal region specId monoType, s2 )
 
 
 {-| §5.4 (GAP-A): classify a bare global reference's type.
@@ -1975,8 +1770,15 @@ The guard is `canTypeMentionsArrow`: an arrow-free reference cannot inhabit a
 lambda set, so it keeps the cheap path and stays byte-identical.
 
 -}
-classifyRef : TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
+classifyRef : TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Engine.S -> ( Mono.MonoType, Engine.S )
 classifyRef refExpr canType s0 =
+    -- Step 10c: straight-line. `loadType` never fails, `injectArgLambdaMember`
+    -- cannot fail after step 6 removed the slow set-write arm, and
+    -- `zonkToMono` fails only on its two `EngineBug` invariants — which the
+    -- crash policy says abort rather than recover. So all three `Err` arms
+    -- here were recovering conditions that either cannot arise or must not be
+    -- recovered; only the mark/rollback brackets survive, and they are what
+    -- makes the speculation sound against the in-place store.
     if not (s0.env.lss.enabled && LssInfer.canTypeMentionsArrow canType) then
         classifyAs Mono.tkClassMisc canType s0
 
@@ -1992,32 +1794,21 @@ classifyRef refExpr canType s0 =
             s0M =
                 Engine.markStore s0
         in
-        case Store.loadType canType s0M of
-            Err _ ->
-                -- A reference type that will not load is not a reason to fail
-                -- the build; fall back to the storeless answer.
-                classifyAs Mono.tkClassMisc canType (Engine.rollbackStore s0M)
-
-            Ok ( canVar, s1a ) ->
+        case Store.loadTypeS canType s0M of
+            ( canVar, s1a ) ->
                 let
                     s1M =
                         Engine.markStore (Engine.commitStore s1a)
                 in
                 case injectArgLambdaMember refExpr canVar s1M of
-                    Err _ ->
-                        classifyAs Mono.tkClassMisc canType (Engine.rollbackStore s1M)
-
-                    Ok ( _, s2a ) ->
+                    s2a ->
                         let
                             s2M =
                                 Engine.markStore (Engine.commitStore s2a)
                         in
                         case Store.zonkToMono canVar s2M of
-                            Err _ ->
-                                classifyAs Mono.tkClassMisc canType (Engine.rollbackStore s2M)
-
-                            Ok ( monoType, s3 ) ->
-                                Ok ( monoType, Engine.commitStore s3 )
+                            ( monoType, s3 ) ->
+                                ( monoType, Engine.commitStore s3 )
 
 
 monoTypeMentionsEco : Mono.MonoType -> Bool
@@ -2056,10 +1847,7 @@ translateCall region func args callCanType =
             -- M6: direct state-passing (desugared andThen) → byte-identical.
             \s0 ->
                 case lookupAnnotation global s0 of
-                    Err e ->
-                        Err e
-
-                    Ok ( maybeAnn, s1 ) ->
+                    ( maybeAnn, s1 ) ->
                         let
                             funcCanType =
                                 case maybeAnn of
@@ -2097,10 +1885,7 @@ localCalleeCall : A.Region -> TOpt.Expr TypeIds.MVarId -> Name -> TOpt.Meta Type
 localCalleeCall region func name funcMeta args callCanType s0 =
     -- M6: direct state-passing (desugared andThen) → byte-identical.
     case Engine.isLocalMultiTarget name s0 of
-        Err e ->
-            Err e
-
-        Ok ( isLM, s1 ) ->
+        ( isLM, s1 ) ->
             if isLM then
                 translateLocalMultiCall region name funcMeta.tipe args callCanType s1
 
@@ -2123,51 +1908,26 @@ translateLocalMultiCall region name funcCanType args callCanType s0 =
     -- M6: direct state-passing (desugared 7-deep andThen/map nest, mirrors the
     -- D11 rewrite of translateGlobalCallSlow) → byte-identical.
     case instantiate funcCanType s0 of
-        Err e ->
-            Err e
-
-        Ok ( funcVar, s1 ) ->
+        ( funcVar, s1 ) ->
             case unifyParamsCollect funcVar args s1 of
-                Err e ->
-                    Err e
-
-                Ok ( argStash, s2 ) ->
+                ( argStash, s2 ) ->
                     case unifyResultWithExpected funcVar argCount callCanType s2 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s3 ) ->
+                        s3 ->
                             case translateArgsWith argStash args s3 of
-                                Err e ->
-                                    Err e
-
-                                Ok ( monoArgs, s3b ) ->
+                                ( monoArgs, s3b ) ->
                                     -- LSS_026 Phase-0 census: the LOCAL-MULTI
                                     -- consumer class (D1 connects these too,
                                     -- via this function's own
                                     -- `unifyResultWithExpected`). Same
                                     -- report-gated, read-only fold.
                                     case censusArgs (TOpt.Global (ModuleName.Canonical ( "local", "local" ) "local") name) args s3b of
-                                        Err e ->
-                                            Err e
-
-                                        Ok ( _, s4 ) ->
+                                        s4 ->
                                             case Store.zonkToMono funcVar s4 of
-                                                Err e ->
-                                                    Err e
-
-                                                Ok ( funcMonoType, s5 ) ->
+                                                ( funcMonoType, s5 ) ->
                                                     case callResultType argCount funcMonoType callCanType s5 of
-                                                        Err e ->
-                                                            Err e
-
-                                                        Ok ( resultMonoType, s6 ) ->
+                                                        ( resultMonoType, s6 ) ->
                                                             case Engine.recordLocalInstance name funcMonoType s6 of
-                                                                Err e ->
-                                                                    Err e
-
-                                                                Ok ( ( freshName, instType, _ ), s7 ) ->
-                                                                    Ok
+                                                                ( ( freshName, instType, _ ), s7 ) ->
                                                                         ( Mono.MonoCall region
                                                                             (Mono.MonoVarLocal freshName instType)
                                                                             monoArgs
@@ -2190,10 +1950,7 @@ translateIndirectCall region func args callCanType s0 =
     -- destructor root into the case/tuple the function came from.
     -- M6: direct state-passing (desugared andThen) → byte-identical.
     case appShapeConnect func args callCanType s0 of
-        Err e ->
-            Err e
-
-        Ok ( _, s1 ) ->
+        s1 ->
             let
                 -- M2 route-(ii) tracker (lss-var-chain-roots §9.14 —
                 -- M2 closed UNBUILT): an INDIRECT call applying fewer
@@ -2214,167 +1971,128 @@ translateIndirectCall region func args callCanType s0 =
             translateIndirectCallBody region func args callCanType s1b
 
 
-appShapeConnect : TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step ()
-appShapeConnect func args callCanType =
-    Engine.andThen
-        (\funcUseVar ->
-            Engine.andThen
-                (\_ ->
-                    -- MONO_029 root fix (R1): also unify the callee's use var with
-                    -- its varEnv-bound MonoType. The use/arg/result canTypes of a
-                    -- TCO/TailDef-REBUILT call node form a fresh id family that is
-                    -- only internally consistent; the varEnv binding (a classified
-                    -- param/let type) carries the demand-seeded annotation family.
-                    -- Without this, the call-result element zonks to an erased
-                    -- residual while the destructure leaf stays concrete — the
-                    -- layout disagreement behind the foldMGo miscompile
-                    -- (SolverLayoutFoldMTest / SolverLayoutFoldMCycleTest).
-                    -- enrichFromEnv is best-effort and skips local-multi targets
-                    -- (their varEnv entry is only the declared classify).
-                    Engine.andThen
-                        (\appVar ->
-                            Engine.andThen
-                                (\_ ->
-                                    -- Bridge into the destructor's own type ids (and through
-                                    -- them, the root case/tuple type) for derived functions.
-                                    case accessedLocalName func of
-                                        Just localName ->
-                                            Engine.andThen
-                                                (\maybeDCan ->
-                                                    case maybeDCan of
-                                                        Just dCan ->
-                                                            Engine.andThen
-                                                                (\dVar -> unifyStepBestEffort dVar appVar)
-                                                                (Store.loadType dCan)
+appShapeConnect : TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Engine.S -> Engine.S
+appShapeConnect func args callCanType s0 =
+    case Store.loadType (TOpt.typeOf func) s0 of
+        ( funcUseVar, s1 ) ->
+            -- MONO_029 root fix (R1): also unify the callee's use var with
+            -- its varEnv-bound MonoType. The use/arg/result canTypes of a
+            -- TCO/TailDef-REBUILT call node form a fresh id family that is
+            -- only internally consistent; the varEnv binding (a classified
+            -- param/let type) carries the demand-seeded annotation family.
+            -- Without this, the call-result element zonks to an erased
+            -- residual while the destructure leaf stays concrete — the
+            -- layout disagreement behind the foldMGo miscompile
+            -- (SolverLayoutFoldMTest / SolverLayoutFoldMCycleTest).
+            -- enrichFromEnv is best-effort and skips local-multi targets
+            -- (their varEnv entry is only the declared classify).
+            case buildAppVar args callCanType (enrichFromEnv func funcUseVar s1) of
+                ( appVar, s2 ) ->
+                    let
+                        s3 =
+                            unifyStepBestEffort funcUseVar appVar s2
+                    in
+                    -- Bridge into the destructor's own type ids (and through
+                    -- them, the root case/tuple type) for derived functions.
+                    case accessedLocalName func of
+                        Just localName ->
+                            case Dict.get localName s3.derivedDestructors of
+                                Just dCan ->
+                                    case Store.loadTypeS dCan s3 of
+                                        ( dVar, s4 ) ->
+                                            unifyStepBestEffort dVar appVar s4
 
-                                                        Nothing ->
-                                                            Engine.succeed ()
-                                                )
-                                                (Engine.getS (\s -> Dict.get localName s.derivedDestructors))
+                                Nothing ->
+                                    s3
 
-                                        Nothing ->
-                                            Engine.succeed ()
-                                )
-                                (unifyStepBestEffort funcUseVar appVar)
-                        )
-                        (buildAppVar args callCanType)
-                )
-                (enrichFromEnv func funcUseVar)
-        )
-        (Store.loadType (TOpt.typeOf func))
+                        Nothing ->
+                            s3
 
 
 buildAppVar : List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Vars.Variable
-buildAppVar args callCanType =
+buildAppVar args callCanType s0 =
     case args of
         [] ->
-            Store.loadType callCanType
+            Store.loadType callCanType s0
 
         arg :: rest ->
-            Engine.andThen
-                (\argVar ->
-                    Engine.andThen
-                        (\restVar -> Engine.freshVar (Vars.Structure (Vars.Fun1 argVar restVar)))
-                        (buildAppVar rest callCanType)
-                )
-                (Store.loadType (TOpt.typeOf arg))
+            case Store.loadType (TOpt.typeOf arg) s0 of
+                ( argVar, s1 ) ->
+                    case buildAppVar rest callCanType s1 of
+                        ( restVar, s2 ) ->
+                            Engine.freshVar (Vars.Structure (Vars.Fun1 argVar restVar)) s2
 
 
 translateIndirectCallBody : A.Region -> TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
-translateIndirectCallBody region func args callCanType =
-    Engine.andThen
-        (\monoArgs ->
-            Engine.andThen
-                (\monoFunc ->
-                    Engine.andThen
-                        (\maybeCtor ->
-                            case maybeCtor of
-                                Just (DevirtGlobal ctorGlobal) ->
-                                    -- E9 (LSS_015): the callee value is provably
-                                    -- ONE ctor — rewrite the callee to the ctor
-                                    -- reference at the site's own type (enqueues
-                                    -- the ctor spec at this layout); downstream
-                                    -- staging/codegen emit a DIRECT ctor call,
-                                    -- removing the dispatch. monoFunc's own
-                                    -- translation (a var read) already happened,
-                                    -- so state effects are identical.
-                                    Engine.andThen
-                                        (\ctorRef ->
-                                            Engine.andThen
-                                                (\classifiedResult ->
-                                                    Engine.map
-                                                        (\resultMonoType -> Mono.MonoCall region ctorRef monoArgs resultMonoType Mono.defaultCallInfo)
-                                                        (indirectResultAnno (Mono.typeOf monoFunc) (List.length args) classifiedResult)
+translateIndirectCallBody region func args callCanType s0 =
+    case Engine.traverse translate args s0 of
+        ( monoArgs, s1 ) ->
+            case translate func s1 of
+                ( monoFunc, s2 ) ->
+                    case devirtDirectTarget func args monoFunc s2 of
+                        ( Just (DevirtGlobal ctorGlobal), s3 ) ->
+                            -- E9 (LSS_015): the callee value is provably
+                            -- ONE ctor — rewrite the callee to the ctor
+                            -- reference at the site's own type (enqueues
+                            -- the ctor spec at this layout); downstream
+                            -- staging/codegen emit a DIRECT ctor call,
+                            -- removing the dispatch. monoFunc's own
+                            -- translation (a var read) already happened,
+                            -- so state effects are identical.
+                            case translateVarRef func region ctorGlobal (TOpt.typeOf func) (bumpDevirtDirect s3) of
+                                ( ctorRef, s4 ) ->
+                                    case classifyAs Mono.tkClassCall callCanType s4 of
+                                        ( classifiedResult, s5 ) ->
+                                            case indirectResultAnno (Mono.typeOf monoFunc) (List.length args) classifiedResult s5 of
+                                                ( resultMonoType, s6 ) ->
+                                                    ( Mono.MonoCall region ctorRef monoArgs resultMonoType Mono.defaultCallInfo, s6 )
+
+                        ( Just (DevirtKernel kernelPrefix home name), s3 ) ->
+                            -- E9.2 (LSS_016): the callee value is provably
+                            -- ONE whitelisted kernel — build the same
+                            -- direct form a written-out call produces
+                            -- (`translateKernelCall`'s shape), but on the
+                            -- ALREADY-translated monoArgs: re-invoking the
+                            -- full kernel path would translate the args a
+                            -- second time (doubled state effects). The ABI
+                            -- derives post-hoc, and the SITE type can be
+                            -- IMPRECISE: deep shared specs (combinator
+                            -- soups) reach the devirt with unresolved
+                            -- tvars defaulted to Int, and deriving cons
+                            -- over (Int, Int -> Int) would mint a
+                            -- poisonous cons_Int ABI (i64 tail/result —
+                            -- a list pointer reinterpreted as raw i64;
+                            -- caught by the CGEN_038 kernel-decl
+                            -- registry as a signature mismatch). GUARD:
+                            -- the derived type must have the whitelist
+                            -- entry's true shape or the devirt is
+                            -- DECLINED and the site falls back to the
+                            -- always-correct indirect call.
+                            case deriveKernelAbiTypeCall ( home, name ) (TOpt.typeOf func) args s3 of
+                                ( funcMonoType, s4 ) ->
+                                    case callResultType (List.length args) funcMonoType callCanType s4 of
+                                        ( resultMonoType, s5 ) ->
+                                            if not (kernelDevirtShapeOk home name funcMonoType) then
+                                                -- census (E10.0): shape-guard decline.
+                                                indirectCallFallback region monoFunc monoArgs (List.length args) callCanType (bumpKernelDeclineShape () s5)
+
+                                            else if not (kernelDevirtEmissionOk home name monoArgs resultMonoType) then
+                                                -- census (E10.0): emission-guard decline, split
+                                                -- CNumber (unsettled site — the declinedUnsettled
+                                                -- proxy) vs other (scalar tail/result, arg shape).
+                                                indirectCallFallback region monoFunc monoArgs (List.length args) callCanType (bumpKernelDeclineEmission home name monoArgs resultMonoType s5)
+
+                                            else
+                                                ( Mono.MonoCall region
+                                                    (Mono.MonoVarKernel region kernelPrefix home name funcMonoType)
+                                                    monoArgs
+                                                    resultMonoType
+                                                    Mono.defaultCallInfo
+                                                , bumpDevirtKernel s5
                                                 )
-                                                (classifyAs Mono.tkClassCall callCanType)
-                                        )
-                                        (Engine.andThen
-                                            (\_ -> translateVarRef func region ctorGlobal (TOpt.typeOf func))
-                                            bumpDevirtDirect
-                                        )
 
-                                Just (DevirtKernel kernelPrefix home name) ->
-                                    -- E9.2 (LSS_016): the callee value is provably
-                                    -- ONE whitelisted kernel — build the same
-                                    -- direct form a written-out call produces
-                                    -- (`translateKernelCall`'s shape), but on the
-                                    -- ALREADY-translated monoArgs: re-invoking the
-                                    -- full kernel path would translate the args a
-                                    -- second time (doubled state effects). The ABI
-                                    -- derives post-hoc, and the SITE type can be
-                                    -- IMPRECISE: deep shared specs (combinator
-                                    -- soups) reach the devirt with unresolved
-                                    -- tvars defaulted to Int, and deriving cons
-                                    -- over (Int, Int -> Int) would mint a
-                                    -- poisonous cons_Int ABI (i64 tail/result —
-                                    -- a list pointer reinterpreted as raw i64;
-                                    -- caught by the CGEN_038 kernel-decl
-                                    -- registry as a signature mismatch). GUARD:
-                                    -- the derived type must have the whitelist
-                                    -- entry's true shape or the devirt is
-                                    -- DECLINED and the site falls back to the
-                                    -- always-correct indirect call.
-                                    Engine.andThen
-                                        (\funcMonoType ->
-                                            Engine.andThen
-                                                (\resultMonoType ->
-                                                    if not (kernelDevirtShapeOk home name funcMonoType) then
-                                                        -- census (E10.0): shape-guard decline.
-                                                        Engine.andThen
-                                                            (\_ -> indirectCallFallback region monoFunc monoArgs (List.length args) callCanType)
-                                                            (bumpKernelDeclineShape ())
-
-                                                    else if not (kernelDevirtEmissionOk home name monoArgs resultMonoType) then
-                                                        -- census (E10.0): emission-guard decline, split
-                                                        -- CNumber (unsettled site — the declinedUnsettled
-                                                        -- proxy) vs other (scalar tail/result, arg shape).
-                                                        Engine.andThen
-                                                            (\_ -> indirectCallFallback region monoFunc monoArgs (List.length args) callCanType)
-                                                            (bumpKernelDeclineEmission home name monoArgs resultMonoType)
-
-                                                    else
-                                                        Engine.map
-                                                            (\_ ->
-                                                                Mono.MonoCall region
-                                                                    (Mono.MonoVarKernel region kernelPrefix home name funcMonoType)
-                                                                    monoArgs
-                                                                    resultMonoType
-                                                                    Mono.defaultCallInfo
-                                                            )
-                                                            bumpDevirtKernel
-                                                )
-                                                (callResultType (List.length args) funcMonoType callCanType)
-                                        )
-                                        (deriveKernelAbiTypeCall ( home, name ) (TOpt.typeOf func) args)
-
-                                Nothing ->
-                                    indirectCallFallback region monoFunc monoArgs (List.length args) callCanType
-                        )
-                        (devirtDirectTarget func args monoFunc)
-                )
-                (translate func)
-        )
-        (Engine.traverse translate args)
+                        ( Nothing, s3 ) ->
+                            indirectCallFallback region monoFunc monoArgs (List.length args) callCanType s3
 
 
 {-| E9 (LSS\_015) / E9.2 (LSS\_016): what a devirtualized indirect call
@@ -2588,14 +2306,12 @@ no-devirt path, shared with devirt arms that must DECLINE at rewrite time
 (the E9.2 shape guard).
 -}
 indirectCallFallback : A.Region -> Mono.MonoExpr -> List Mono.MonoExpr -> Int -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
-indirectCallFallback region monoFunc monoArgs argCount callCanType =
-    Engine.andThen
-        (\classifiedResult ->
-            Engine.map
-                (\resultMonoType -> Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo)
-                (indirectResultAnno (Mono.typeOf monoFunc) argCount classifiedResult)
-        )
-        (classifyAs Mono.tkClassCall callCanType)
+indirectCallFallback region monoFunc monoArgs argCount callCanType s0 =
+    case classifyAs Mono.tkClassCall callCanType s0 of
+        ( classifiedResult, s1 ) ->
+            case indirectResultAnno (Mono.typeOf monoFunc) argCount classifiedResult s1 of
+                ( resultMonoType, s2 ) ->
+                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo, s2 )
 
 
 {-| E9 (LSS\_015): decide whether this indirect call devirtualizes to a
@@ -2614,22 +2330,19 @@ devirt re-decides.
 devirtDirectTarget : TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Mono.MonoExpr -> Step (Maybe DevirtTarget)
 devirtDirectTarget func args monoFunc s0 =
     if not s0.env.lss.enabled then
-        Ok ( Nothing, s0 )
+        ( Nothing, s0 )
 
     else if not (calleeIsPlainVar func) then
-        Ok ( Nothing, s0 )
+        ( Nothing, s0 )
 
     else
         case Mono.headAnno (Mono.typeOf monoFunc) of
             Mono.LSet [ m ] ->
                 case Engine.standaloneMemberGlobal m s0 of
-                    Err e ->
-                        Err e
-
-                    Ok ( Nothing, s1 ) ->
+                    ( Nothing, s1 ) ->
                         devirtKernelTarget m (List.length args) s1
 
-                    Ok ( Just ctorGlobal, s1 ) ->
+                    ( Just ctorGlobal, s1 ) ->
                         case LssInfer.kernelAliasOf ctorGlobal s1 of
                             Just ( kernelPrefix, home, name ) ->
                                 -- E9.2/Tier-1 hardening: a KERNEL-ALIAS global
@@ -2649,19 +2362,19 @@ devirtDirectTarget func args monoFunc s0 =
                                 case kernelDevirtArity home name of
                                     Just arity ->
                                         if arity == List.length args then
-                                            Ok ( Just (DevirtKernel kernelPrefix home name), s1 )
+                                            ( Just (DevirtKernel kernelPrefix home name), s1 )
 
                                         else
-                                            Ok ( Nothing, recordKernelArityMiss s1 )
+                                            ( Nothing, recordKernelArityMiss s1 )
 
                                     Nothing ->
-                                        Ok ( Nothing, recordKernelMiss home name s1 )
+                                        ( Nothing, recordKernelMiss home name s1 )
 
                             Nothing ->
                                 devirtGlobalTarget ctorGlobal (List.length args) s1
 
             _ ->
-                Ok ( Nothing, s0 )
+                ( Nothing, s0 )
 
 
 {-| The ctor / fn-global leg of the devirt decision — the singleton's
@@ -2675,26 +2388,23 @@ devirtGlobalTarget ctorGlobal argCount s1 =
         -- body and are never inlined — no inliner surface; the fn-global
         -- class unlocks inlining (E9.1, after the BytesFusion walked-past-let
         -- seam fix).
-        Ok ( Nothing, s1 )
+        ( Nothing, s1 )
 
     else
         case lookupAnnotation ctorGlobal s1 of
-            Err e ->
-                Err e
-
-            Ok ( Just (Can.Forall _ annType), s2 ) ->
+            ( Just (Can.Forall _ annType), s2 ) ->
                 let
                     arity =
                         arrowSpineLength annType
                 in
                 if arity >= 1 && arity == argCount then
-                    Ok ( Just (DevirtGlobal ctorGlobal), s2 )
+                    ( Just (DevirtGlobal ctorGlobal), s2 )
 
                 else
-                    Ok ( Nothing, s2 )
+                    ( Nothing, s2 )
 
-            Ok ( Nothing, s2 ) ->
-                Ok ( Nothing, s2 )
+            ( Nothing, s2 ) ->
+                ( Nothing, s2 )
 
 
 {-| E9.2 (LSS\_016): the kernel leg of the devirt decision — the singleton
@@ -2704,23 +2414,20 @@ site exactly saturates the whitelist-pinned arity, devirtualize.
 devirtKernelTarget : Int -> Int -> Step (Maybe DevirtTarget)
 devirtKernelTarget m argCount s0 =
     case Engine.standaloneMemberKernel m s0 of
-        Err e ->
-            Err e
+        ( Nothing, s1 ) ->
+            ( Nothing, s1 )
 
-        Ok ( Nothing, s1 ) ->
-            Ok ( Nothing, s1 )
-
-        Ok ( Just ( kernelPrefix, home, name ), s1 ) ->
+        ( Just ( kernelPrefix, home, name ), s1 ) ->
             case kernelDevirtArity home name of
                 Just arity ->
                     if arity == argCount then
-                        Ok ( Just (DevirtKernel kernelPrefix home name), s1 )
+                        ( Just (DevirtKernel kernelPrefix home name), s1 )
 
                     else
-                        Ok ( Nothing, recordKernelArityMiss s1 )
+                        ( Nothing, recordKernelArityMiss s1 )
 
                 Nothing ->
-                    Ok ( Nothing, recordKernelMiss home name s1 )
+                    ( Nothing, recordKernelMiss home name s1 )
 
 
 {-| Census (whitelist growth): a kernel-member SINGLETON call site whose
@@ -2855,33 +2562,33 @@ arrowSpineLength t =
             0
 
 
-bumpDevirtDirect : Step ()
+bumpDevirtDirect : Engine.S -> Engine.S
 bumpDevirtDirect s =
     let
         stats =
             s.lssStats
     in
-    Ok ( (), { s | lssStats = { stats | devirtDirect = stats.devirtDirect + 1 } } )
+    { s | lssStats = { stats | devirtDirect = stats.devirtDirect + 1 } }
 
 
-bumpDevirtKernel : Step ()
+bumpDevirtKernel : Engine.S -> Engine.S
 bumpDevirtKernel s =
     let
         stats =
             s.lssStats
     in
-    Ok ( (), { s | lssStats = { stats | devirtKernel = stats.devirtKernel + 1 } } )
+    { s | lssStats = { stats | devirtKernel = stats.devirtKernel + 1 } }
 
 
 {-| Census (E10.0): the kernel-devirt SHAPE guard declined. Stats-only.
 -}
-bumpKernelDeclineShape : () -> Step ()
+bumpKernelDeclineShape : () -> Engine.S -> Engine.S
 bumpKernelDeclineShape () s =
     let
         stats =
             s.lssStats
     in
-    Ok ( (), { s | lssStats = { stats | declinedKernelShape = stats.declinedKernelShape + 1 } } )
+    { s | lssStats = { stats | declinedKernelShape = stats.declinedKernelShape + 1 } }
 
 
 {-| Census (E10.0): the kernel-devirt EMISSION guard declined — classify
@@ -2892,7 +2599,7 @@ shape). The classification re-runs only the cheap non-CNumber clauses:
 if they all pass, the failing clause was one of the deep-CNumber checks.
 Stats-only.
 -}
-bumpKernelDeclineEmission : Name -> Name -> List Mono.MonoExpr -> Mono.MonoType -> Step ()
+bumpKernelDeclineEmission : Name -> Name -> List Mono.MonoExpr -> Mono.MonoType -> Engine.S -> Engine.S
 bumpKernelDeclineEmission home name monoArgs resultMonoType s =
     let
         stats =
@@ -2912,10 +2619,10 @@ bumpKernelDeclineEmission home name monoArgs resultMonoType s =
                 False
     in
     if isCNumber then
-        Ok ( (), { s | lssStats = { stats | declinedKernelCNumber = stats.declinedKernelCNumber + 1 } } )
+        { s | lssStats = { stats | declinedKernelCNumber = stats.declinedKernelCNumber + 1 } }
 
     else
-        Ok ( (), { s | lssStats = { stats | declinedKernelEmission = stats.declinedKernelEmission + 1 } } )
+        { s | lssStats = { stats | declinedKernelEmission = stats.declinedKernelEmission + 1 } }
 
 
 {-| LSS\_013 transport: an indirect call's result type carries the CALLEE's
@@ -2931,10 +2638,10 @@ guard makes byte-identity independent of any structural subtlety in the peel).
 indirectResultAnno : Mono.MonoType -> Int -> Mono.MonoType -> Step Mono.MonoType
 indirectResultAnno funcMono argCount classifiedResult s0 =
     if s0.env.lss.enabled then
-        Ok ( Mono.overlayAnnotations classifiedResult (peelResultAnno argCount funcMono), s0 )
+        ( Mono.overlayAnnotations classifiedResult (peelResultAnno argCount funcMono), s0 )
 
     else
-        Ok ( classifiedResult, s0 )
+        ( classifiedResult, s0 )
 
 
 {-| Peel `n` argument positions off a (possibly multi-param-per-arrow) function
@@ -2981,10 +2688,7 @@ translateGlobalCall region funcRegion global funcCanType args callCanType s =
         -- no argument type mentions an arrow (an arrow-free ground call
         -- cannot transport sets). lss off ⇒ trivially permitted.
         case lssFastOk global args s of
-            Err e ->
-                Err e
-
-            Ok ( fastOk, s0 ) ->
+            ( fastOk, s0 ) ->
                 if not fastOk || needsPapSlow global args callCanType s0 then
                     translateGlobalCallSlow region funcRegion global funcCanType args callCanType s0
 
@@ -3041,18 +2745,15 @@ per global.
 lssFastOk : TOpt.Global -> List (TOpt.Expr TypeIds.MVarId) -> Step Bool
 lssFastOk global args s =
     if not s.env.lss.enabled then
-        Ok ( True, s )
+        ( True, s )
 
     else if List.any (canTypeHasArrow << TOpt.typeOf) args then
-        Ok ( False, s )
+        ( False, s )
 
     else
         case LssInfer.signatureFor global s of
-            Err e ->
-                Err e
-
-            Ok ( sig, s1 ) ->
-                Ok ( sig.trivial, s1 )
+            ( sig, s1 ) ->
+                ( sig.trivial, s1 )
 
 
 {-| Does a canonical type mention an arrow anywhere? (Syntactic; aliases
@@ -3210,17 +2911,13 @@ mFunctionParams n mt =
 instantiated scheme) and cached.
 -}
 cachedSchemeMono : String -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
-cachedSchemeMono key funcCanType =
-    Engine.andThen
-        (\cached ->
-            case cached of
-                Just mt ->
-                    Engine.succeed mt
+cachedSchemeMono key funcCanType s0 =
+    case Engine.lookupSchemeMono key s0 of
+        ( Just mt, s1 ) ->
+            ( mt, s1 )
 
-                Nothing ->
-                    computeSchemeMono key funcCanType
-        )
-        (Engine.lookupSchemeMono key)
+        ( Nothing, s1 ) ->
+            computeSchemeMono key funcCanType s1
 
 
 {-| The `cachedSchemeMono` miss path, as a direct state function so the K6
@@ -3235,11 +2932,8 @@ computeSchemeMono key funcCanType s0 =
             Zonk.canTypeToMonoI s0.env.superStatic funcCanType s0.intern
     in
     case Engine.putSchemeMono key mt { s0 | intern = intern1 } of
-        Err e ->
-            Err e
-
-        Ok ( (), s1 ) ->
-            Ok ( mt, s1 )
+        s1 ->
+            ( mt, s1 )
 
 
 {-| Flow the closed callee's ground parameter types into the args: a ground arg
@@ -3248,28 +2942,28 @@ gets its vars concretized to the ground param via `demandUnify` (the store
 equivalent of the slow path's per-arg param↔arg unification — enrichment is
 redundant against a fully-ground param).
 -}
-flowArgDemands : List ( Mono.MonoType, Can.Type TypeIds.MVarId ) -> Step ()
-flowArgDemands pairs =
-    Engine.foldlS
-        (\( paramMono, argCanType ) () ->
+flowArgDemands : List ( Mono.MonoType, Can.Type TypeIds.MVarId ) -> Engine.S -> Engine.S
+flowArgDemands pairs s0 =
+    List.foldl
+        (\( paramMono, argCanType ) sAcc ->
             if groundCanType argCanType then
-                Engine.succeed ()
+                sAcc
 
             else
-                demandUnify argCanType paramMono
+                demandUnify argCanType paramMono sAcc
         )
-        ()
+        s0
         pairs
 
 
 translateGlobalCallFast : A.Region -> A.Region -> TOpt.Global -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
-translateGlobalCallFast region funcRegion global funcCanType args callCanType =
+translateGlobalCallFast region funcRegion global funcCanType args callCanType s0 =
     let
         argCount =
             List.length args
     in
-    Engine.andThen
-        (\funcMonoType ->
+    case cachedSchemeMono (TOpt.toComparableGlobal global) funcCanType s0 of
+        ( funcMonoType, s1 ) ->
             let
                 paramMonos =
                     mFunctionParams argCount funcMonoType
@@ -3277,41 +2971,34 @@ translateGlobalCallFast region funcRegion global funcCanType args callCanType =
             if List.length paramMonos < argCount then
                 -- Over-applied relative to the scheme's arrows: the slow path's
                 -- Fun1 peeling handles this; fall back.
-                translateGlobalCallSlow region funcRegion global funcCanType args callCanType
+                translateGlobalCallSlow region funcRegion global funcCanType args callCanType s1
 
             else
                 let
                     resultMonoType =
                         peelResult argCount funcMonoType
-                in
-                Engine.andThen
-                    (\_ ->
-                        Engine.andThen
-                            (\_ ->
-                                Engine.andThen
-                                    (\monoArgs ->
-                                        Engine.map
-                                            (\specId ->
-                                                Mono.MonoCall region
-                                                    (Mono.MonoVarGlobal funcRegion specId funcMonoType)
-                                                    monoArgs
-                                                    resultMonoType
-                                                    Mono.defaultCallInfo
-                                            )
-                                            (enqueueSpecStamped global funcMonoType)
-                                    )
-                                    (Engine.traverse translate args)
-                            )
-                            (if groundCanType callCanType then
-                                Engine.succeed ()
 
-                             else
-                                demandUnify callCanType resultMonoType
-                            )
-                    )
-                    (flowArgDemands (List.map2 Tuple.pair paramMonos (List.map TOpt.typeOf args)))
-        )
-        (cachedSchemeMono (TOpt.toComparableGlobal global) funcCanType)
+                    s2 =
+                        flowArgDemands (List.map2 Tuple.pair paramMonos (List.map TOpt.typeOf args)) s1
+
+                    s3 =
+                        if groundCanType callCanType then
+                            s2
+
+                        else
+                            demandUnify callCanType resultMonoType s2
+                in
+                case Engine.traverse translate args s3 of
+                    ( monoArgs, s4 ) ->
+                        case enqueueSpecStamped global funcMonoType s4 of
+                            ( specId, s5 ) ->
+                                ( Mono.MonoCall region
+                                    (Mono.MonoVarGlobal funcRegion specId funcMonoType)
+                                    monoArgs
+                                    resultMonoType
+                                    Mono.defaultCallInfo
+                                , s5
+                                )
 
 
 {-| M2b: memoized open-scheme call at all-ground args/result. The key is
@@ -3322,96 +3009,75 @@ the whole instantiate+unify+zonk is skipped and only the args are translated and
 the spec enqueued — byte-identical to the slow path.
 -}
 translateGlobalCallGroundMemo : A.Region -> A.Region -> TOpt.Global -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
-translateGlobalCallGroundMemo region funcRegion global funcCanType args callCanType =
-    Engine.andThen
-        (\superStatic ->
-            let
-                key =
-                    -- Phase 3 site 1 (plans/speckey-optimization.md §10.2): the
-                    -- key is the callee Global plus the synthetic `args ->
-                    -- result` arrow these types already denote. The probe reads
-                    -- the `specHashOf` Int stored IN the type node and confirms
-                    -- with `eqKeySpec`, which partitions IDENTICALLY to the
-                    -- `toComparableMonoType` concatenation this replaces —
-                    -- pinned by ComparableKeyEncodingTest
-                    -- (`eqKeySpec a b == (toComparableMonoType a == toComparableMonoType b)`).
-                    -- The arg/result MonoTypes were already being built here
-                    -- purely to be rendered; only the rendering is deleted.
-                    --
-                    -- Annotation-neutral by construction (M4 == audit):
-                    -- canTypeToMono stamps LTop on every arrow AND the wrapper
-                    -- arrow is built at LTop, and lssFastOk gates this memo to
-                    -- trivial-signature callees with arrow-free args, so no set
-                    -- can differ under one key and the cached (funcMonoType,
-                    -- resultMonoType, specId) replay is exact.
-                    Mono.SpecKey (toptToMonoGlobal global)
-                        (Mono.mFunction Mono.topDeclOther
-                            (List.map (Zonk.canTypeToMono superStatic << TOpt.typeOf) args)
-                            (Zonk.canTypeToMono superStatic callCanType)
-                        )
-            in
-            Engine.andThen
-                (\cached ->
-                    case cached of
-                        Just ( funcMonoType, resultMonoType, specId ) ->
-                            -- D10 HIT: the spec was scheduled on the first miss
-                            -- (scheduled is monotonic), so skip enqueue entirely —
-                            -- no `getOrCreateSpecId` re-serialization — and emit
-                            -- the cached specId directly. Args still translate.
-                            Engine.map
-                                (\monoArgs ->
-                                    Mono.MonoCall region
-                                        (Mono.MonoVarGlobal funcRegion specId funcMonoType)
-                                        monoArgs
-                                        resultMonoType
-                                        Mono.defaultCallInfo
-                                )
-                                (Engine.traverse translate args)
-
-                        Nothing ->
-                            -- Compute exactly as the slow path does; enqueue to get
-                            -- the specId; cache (funcMono, resultMono, specId).
-                            Engine.andThen
-                                (\funcVar ->
-                                    Engine.andThen
-                                        (\_ ->
-                                            Engine.andThen
-                                                (\_ ->
-                                                    Engine.andThen
-                                                        (\funcMonoType ->
-                                                            Engine.andThen
-                                                                (\resultMonoType ->
-                                                                    Engine.andThen
-                                                                        (\monoArgs ->
-                                                                            Engine.andThen
-                                                                                (\specId ->
-                                                                                    Engine.map
-                                                                                        (\_ ->
-                                                                                            Mono.MonoCall region
-                                                                                                (Mono.MonoVarGlobal funcRegion specId funcMonoType)
-                                                                                                monoArgs
-                                                                                                resultMonoType
-                                                                                                Mono.defaultCallInfo
-                                                                                        )
-                                                                                        (Engine.putCallMemo key ( funcMonoType, resultMonoType, specId ))
-                                                                                )
-                                                                                (enqueueSpecStamped global funcMonoType)
-                                                                        )
-                                                                        (Engine.traverse translate args)
-                                                                )
-                                                                (callResultType (List.length args) funcMonoType callCanType)
-                                                        )
-                                                        (Store.zonkToMono funcVar)
-                                                )
-                                                (unifyResultWithExpected funcVar (List.length args) callCanType)
-                                        )
-                                        (unifyParamsWithArgExprs funcVar args)
-                                )
-                                (instantiate funcCanType)
+translateGlobalCallGroundMemo region funcRegion global funcCanType args callCanType s0 =
+    let
+        key =
+            -- Phase 3 site 1 (plans/speckey-optimization.md §10.2): the
+            -- key is the callee Global plus the synthetic `args ->
+            -- result` arrow these types already denote. The probe reads
+            -- the `specHashOf` Int stored IN the type node and confirms
+            -- with `eqKeySpec`, which partitions IDENTICALLY to the
+            -- `toComparableMonoType` concatenation this replaces —
+            -- pinned by ComparableKeyEncodingTest
+            -- (`eqKeySpec a b == (toComparableMonoType a == toComparableMonoType b)`).
+            -- The arg/result MonoTypes were already being built here
+            -- purely to be rendered; only the rendering is deleted.
+            --
+            -- Annotation-neutral by construction (M4 == audit):
+            -- canTypeToMono stamps LTop on every arrow AND the wrapper
+            -- arrow is built at LTop, and lssFastOk gates this memo to
+            -- trivial-signature callees with arrow-free args, so no set
+            -- can differ under one key and the cached (funcMonoType,
+            -- resultMonoType, specId) replay is exact.
+            Mono.SpecKey (toptToMonoGlobal global)
+                (Mono.mFunction Mono.topDeclOther
+                    (List.map (Zonk.canTypeToMono s0.env.superStatic << TOpt.typeOf) args)
+                    (Zonk.canTypeToMono s0.env.superStatic callCanType)
                 )
-                (Engine.lookupCallMemo key)
-        )
-        (Engine.getS (\s -> s.env.superStatic))
+    in
+    case Engine.lookupCallMemo key s0 of
+        ( Just ( funcMonoType, resultMonoType, specId ), s1 ) ->
+            -- D10 HIT: the spec was scheduled on the first miss
+            -- (scheduled is monotonic), so skip enqueue entirely —
+            -- no `getOrCreateSpecId` re-serialization — and emit
+            -- the cached specId directly. Args still translate.
+            case Engine.traverse translate args s1 of
+                ( monoArgs, s2 ) ->
+                    ( Mono.MonoCall region
+                        (Mono.MonoVarGlobal funcRegion specId funcMonoType)
+                        monoArgs
+                        resultMonoType
+                        Mono.defaultCallInfo
+                    , s2
+                    )
+
+        ( Nothing, s1 ) ->
+            -- Compute exactly as the slow path does; enqueue to get
+            -- the specId; cache (funcMono, resultMono, specId).
+            case instantiate funcCanType s1 of
+                ( funcVar, s2 ) ->
+                    let
+                        s3 =
+                            unifyResultWithExpected funcVar
+                                (List.length args)
+                                callCanType
+                                (unifyParamsWithArgExprs funcVar args s2)
+                    in
+                    case Store.zonkToMono funcVar s3 of
+                        ( funcMonoType, s4 ) ->
+                            case callResultType (List.length args) funcMonoType callCanType s4 of
+                                ( resultMonoType, s5 ) ->
+                                    case Engine.traverse translate args s5 of
+                                        ( monoArgs, s6 ) ->
+                                            case enqueueSpecStamped global funcMonoType s6 of
+                                                ( specId, s7 ) ->
+                                                    ( Mono.MonoCall region
+                                                        (Mono.MonoVarGlobal funcRegion specId funcMonoType)
+                                                        monoArgs
+                                                        resultMonoType
+                                                        Mono.defaultCallInfo
+                                                    , Engine.putCallMemo key ( funcMonoType, resultMonoType, specId ) s7
+                                                    )
 
 
 {-| Emit a global MonoCall: translate the args, enqueue the callee spec, build
@@ -3422,16 +3088,9 @@ emitCall region funcRegion global funcMonoType resultMonoType args s0 =
     -- D11: direct state-passing (desugared andThen/map). Avoids the two
     -- per-call monad closures; monad-law-preserving → byte-identical.
     case Engine.traverse translate args s0 of
-        Err e ->
-            Err e
-
-        Ok ( monoArgs, s1 ) ->
+        ( monoArgs, s1 ) ->
             case enqueueSpecStamped global funcMonoType s1 of
-                Err e ->
-                    Err e
-
-                Ok ( specId, s2 ) ->
-                    Ok
+                ( specId, s2 ) ->
                         ( Mono.MonoCall region
                             (Mono.MonoVarGlobal funcRegion specId funcMonoType)
                             monoArgs
@@ -3454,25 +3113,13 @@ translateGlobalCallSlow region funcRegion global funcCanType args callCanType s0
     -- D11: direct state-passing (desugared 7-deep andThen/map nest). Eliminates
     -- the seven per-call monad closures; monad-law-preserving → byte-identical.
     case instantiateLss global funcCanType s0 of
-        Err e ->
-            Err e
-
-        Ok ( funcVar, s1 ) ->
+        ( funcVar, s1 ) ->
             case unifyParamsCollect funcVar args s1 of
-                Err e ->
-                    Err e
-
-                Ok ( argStash, s2 ) ->
+                ( argStash, s2 ) ->
                     case unifyResultThenInjectPap funcVar argCount callCanType global s2 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s3 ) ->
+                        s3 ->
                             case translateArgsWith argStash args s3 of
-                                Err e ->
-                                    Err e
-
-                                Ok ( monoArgs, s3b ) ->
+                                ( monoArgs, s3b ) ->
                                     -- LSS_026 Phase-0 census (plan §2.1
                                     -- rows 1/4/5). AFTER the args are
                                     -- translated, so every arg-callee's
@@ -3483,25 +3130,13 @@ translateGlobalCallSlow region funcRegion global funcCanType args callCanType s0
                                     -- and `report` is excluded from the
                                     -- config hash). Report-gated.
                                     case censusArgs global args s3b of
-                                        Err e ->
-                                            Err e
-
-                                        Ok ( _, s4 ) ->
+                                        s4 ->
                                             case Store.zonkToMono funcVar s4 of
-                                                Err e ->
-                                                    Err e
-
-                                                Ok ( funcMonoType, s5 ) ->
+                                                ( funcMonoType, s5 ) ->
                                                     case callResultType argCount funcMonoType callCanType s5 of
-                                                        Err e ->
-                                                            Err e
-
-                                                        Ok ( resultMonoType, s6 ) ->
+                                                        ( resultMonoType, s6 ) ->
                                                             case enqueueSpecStamped global funcMonoType s6 of
-                                                                Err e ->
-                                                                    Err e
-
-                                                                Ok ( specId, s7pre ) ->
+                                                                ( specId, s7pre ) ->
                                                                     let
                                                                         -- Phase 2b flex-construction mark
                                                                         -- (plans/lss-var-chain-roots.md §3): a ctor
@@ -3520,7 +3155,6 @@ translateGlobalCallSlow region funcRegion global funcCanType args callCanType s0
                                                                             else
                                                                                 s7pre
                                                                     in
-                                                                    Ok
                                                                         ( Mono.MonoCall region
                                                                             (Mono.MonoVarGlobal funcRegion specId funcMonoType)
                                                                             monoArgs
@@ -3552,20 +3186,20 @@ Rows:
     forecast (`shape|blind`).
 
 -}
-censusArgs : TOpt.Global -> List (TOpt.Expr TypeIds.MVarId) -> Step ()
+censusArgs : TOpt.Global -> List (TOpt.Expr TypeIds.MVarId) -> Engine.S -> Engine.S
 censusArgs global args s0 =
     if not s0.env.lss.report then
-        Ok ( (), s0 )
+        s0
 
     else
         censusArgsGo (TOpt.toComparableGlobal global) args s0
 
 
-censusArgsGo : String -> List (TOpt.Expr TypeIds.MVarId) -> Step ()
+censusArgsGo : String -> List (TOpt.Expr TypeIds.MVarId) -> Engine.S -> Engine.S
 censusArgsGo hofKey args s0 =
     case args of
         [] ->
-            Ok ( (), s0 )
+            s0
 
         arg :: rest ->
             if not (canTypeHasArrow (TOpt.typeOf arg)) then
@@ -3770,21 +3404,11 @@ translateKernelCall region funcRegion kernelPrefix home name kernelId funcCanTyp
     -- arg's VarLocal use sees the demanded type (needed for number-multi).
     -- D11: direct state-passing (desugared andThen/map) → byte-identical.
     case deriveKernelAbiTypeCall kernelId funcCanType args s0 of
-        Err e ->
-            Err e
-
-        Ok ( funcMonoType, s1 ) ->
+        ( funcMonoType, s1 ) ->
             case Engine.traverse translate args s1 of
-                Err e ->
-                    Err e
-
-                Ok ( monoArgs, s2 ) ->
+                ( monoArgs, s2 ) ->
                     case callResultType (List.length args) funcMonoType callCanType s2 of
-                        Err e ->
-                            Err e
-
-                        Ok ( resultMonoType, s3 ) ->
-                            Ok
+                        ( resultMonoType, s3 ) ->
                                 ( Mono.MonoCall region
                                     (Mono.MonoVarKernel funcRegion kernelPrefix home name funcMonoType)
                                     monoArgs
@@ -3799,16 +3423,16 @@ if that still has a var, fall back to the call node's type. Mirrors
 `abiResultType`/`peelCallResult` in the original engine.
 -}
 callResultType : Int -> Mono.MonoType -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
-callResultType argCount funcMonoType callCanType =
+callResultType argCount funcMonoType callCanType s0 =
     let
         abiResultType =
             peelResult argCount funcMonoType
     in
     if Mono.containsAnyMVar abiResultType then
-        classifyAs Mono.tkClassCall callCanType
+        classifyAs Mono.tkClassCall callCanType s0
 
     else
-        Engine.succeed abiResultType
+        ( abiResultType, s0 )
 
 
 peelResult : Int -> Mono.MonoType -> Mono.MonoType
@@ -3835,9 +3459,10 @@ slots with the concrete argument types, zonk, then apply the ABI-mode policy.
 deriveKernelAbiTypeCall : ( String, String ) -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Step Mono.MonoType
 deriveKernelAbiTypeCall kernelId canFuncType args =
     deriveKernelAbiTypeWith kernelId canFuncType <|
-        Engine.andThen
-            (\funcVar -> Engine.map (\_ -> funcVar) (unifyParamsWithArgExprs funcVar args))
-            (instantiate canFuncType)
+        \s0 ->
+            case instantiate canFuncType s0 of
+                ( funcVar, s1 ) ->
+                    ( funcVar, unifyParamsWithArgExprs funcVar args s1 )
 
 
 {-| Unify each parameter slot of a function Point from the argument EXPRS: the
@@ -3850,9 +3475,9 @@ generalization — without this, a body-internal call like `Tuple.second tup`
 inside a re-translated local function keys its callee at the NARROW record type
 and mis-lays-out fields (RecordNarrow).
 -}
-unifyParamsWithArgExprs : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Step ()
-unifyParamsWithArgExprs funcVar args =
-    Engine.map (\_ -> ()) (unifyParamsCollect funcVar args)
+unifyParamsWithArgExprs : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Engine.S -> Engine.S
+unifyParamsWithArgExprs funcVar args s0 =
+    Tuple.second (unifyParamsCollect funcVar args s0)
 
 
 {-| What `unifyParamsCollect` recorded about one argument position, consumed
@@ -3881,25 +3506,19 @@ unifyParamsCollect : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Step (L
 unifyParamsCollect funcVar args s0 =
     case args of
         [] ->
-            Ok ( [], s0 )
+            ( [], s0 )
 
         arg :: rest ->
             -- M6/A1: direct state-passing over an explicit trailing S; fires once
             -- per call argument. Monad-law-preserving → byte-identical.
             case Engine.liftIO (UF.get funcVar) s0 of
-                Err e ->
-                    Err e
-
-                Ok ( desc, s1 ) ->
+                ( desc, s1 ) ->
                     case Store.arrowParts desc.content of
                         Just ( pParam, pRest ) ->
                             -- Liveness census (§7): one arrow peeled per
                             -- call argument — this IS the application.
                             case localMultiArgName arg (noteAppliedS desc.content s1) of
-                                Err e ->
-                                    Err e
-
-                                Ok ( maybeLM, s2 ) ->
+                                ( maybeLM, s2 ) ->
                                     case maybeLM of
                                         Just _ ->
                                             -- GAP-9b: fresh-instantiates a local-multi
@@ -3910,39 +3529,21 @@ unifyParamsCollect funcVar args s0 =
                                             -- per-event counter was removed after the
                                             -- measurement (plan lss-fidelity-1 §7).
                                             case instantiate (TOpt.typeOf arg) s2 of
-                                                Err e ->
-                                                    Err e
-
-                                                Ok ( freshVar0, s3 ) ->
+                                                ( freshVar0, s3 ) ->
                                                     case unifyStepBestEffort pParam freshVar0 s3 of
-                                                        Err e ->
-                                                            Err e
-
-                                                        Ok ( _, s4 ) ->
+                                                        s4 ->
                                                             case unifyParamsCollect pRest rest s4 of
-                                                                Err e ->
-                                                                    Err e
-
-                                                                Ok ( restStash, s5 ) ->
-                                                                    Ok ( StashLocalMulti freshVar0 :: restStash, s5 )
+                                                                ( restStash, s5 ) ->
+                                                                    ( StashLocalMulti freshVar0 :: restStash, s5 )
 
                                         Nothing ->
                                             case argUnifyVar arg s2 of
-                                                Err e ->
-                                                    Err e
-
-                                                Ok ( argVar, s3 ) ->
+                                                ( argVar, s3 ) ->
                                                     case unifyStepBestEffort pParam argVar s3 of
-                                                        Err e ->
-                                                            Err e
-
-                                                        Ok ( _, s4 ) ->
+                                                        s4 ->
                                                             case unifyParamsCollect pRest rest s4 of
-                                                                Err e ->
-                                                                    Err e
-
-                                                                Ok ( restStash, s5 ) ->
-                                                                    Ok ( StashNone :: restStash, s5 )
+                                                                ( restStash, s5 ) ->
+                                                                    ( StashNone :: restStash, s5 )
 
                         Nothing ->
                             -- Over-applied or opaque callee spine: no
@@ -3951,7 +3552,7 @@ unifyParamsCollect funcVar args s0 =
                             -- left here are STRUCTURALLY unreachable for
                             -- D1's connect (no stash entry is ever made)
                             -- — the `dropped`-vs-population gap.
-                            Ok ( List.map (\_ -> StashNone) args, censusStashMiss args s1 )
+                            ( List.map (\_ -> StashNone) args, censusStashMiss args s1 )
 
 
 {-| LSS\_026 census (plan §2.6 "stash gap"): attribute the args that fall out
@@ -4011,7 +3612,7 @@ args: zonk the fresh instantiation the params were unified against, record the
 instance at THAT type, and emit its per-instance local ref.
 -}
 translateArgsWith : List ArgStash -> List (TOpt.Expr TypeIds.MVarId) -> Step (List Mono.MonoExpr)
-translateArgsWith stash args =
+translateArgsWith stash args s0 =
     -- D4: `unifyParamsCollect` always returns exactly `List.length args` stash
     -- entries (every arm produces one per arg), so the former `stash ++
     -- List.repeat 0 Nothing` padding was a no-op that still copied `stash`.
@@ -4021,17 +3622,11 @@ translateArgsWith stash args =
             case ( entry, accessedLocalName arg ) of
                 ( StashLocalMulti v, Just localName ) ->
                     -- M6: direct state-passing (desugared andThen/map) → byte-identical.
-                    \s0 ->
-                        case Store.zonkToMono v s0 of
-                            Err e ->
-                                Err e
-
-                            Ok ( instType0, s1 ) ->
+                    \sa ->
+                        case Store.zonkToMono v sa of
+                            ( instType0, s1 ) ->
                                 case Engine.recordLocalInstance localName instType0 s1 of
-                                    Err e ->
-                                        Err e
-
-                                    Ok ( ( freshName, instType, ord ), s2 ) ->
+                                    ( ( freshName, instType, ord ), s2 ) ->
                                         -- F2 (plans/lss-container-payload-transport.md
                                         -- §12.9.4): the instance is recorded — now
                                         -- write ITS member into the stashed var.
@@ -4045,16 +3640,14 @@ translateArgsWith stash args =
                                         -- injecting first would make the key depend
                                         -- on the ordinal for ord >= 1.
                                         case injectLocalMultiUseMember localName ord v s2 of
-                                            Err e ->
-                                                Err e
-
-                                            Ok ( _, s3 ) ->
-                                                Ok ( Mono.MonoVarLocal freshName instType, s3 )
+                                            s3 ->
+                                                ( Mono.MonoVarLocal freshName instType, s3 )
 
                 _ ->
                     translate arg
         )
         (List.map2 Tuple.pair stash args)
+        s0
 
 
 {-| F2 (plans/lss-container-payload-transport.md §12.9.4): the let-function's
@@ -4104,10 +3697,10 @@ two mints agree by construction (the v4 join measured it: one id per (def,
 ordinal) on every both-sided pair). Ordinal 0 is never tagged. RHSs without a
 `SrcLambdaId` take the PAP route (`injectLocalMultiUsePap`) or inject nothing.
 -}
-injectLocalMultiUseMember : Name -> Int -> Vars.Variable -> Step ()
+injectLocalMultiUseMember : Name -> Int -> Vars.Variable -> Engine.S -> Engine.S
 injectLocalMultiUseMember localName ord v s0 =
     if not s0.env.lss.enabled then
-        Ok ( (), s0 )
+        s0
 
     else
         case List.head (List.filter (\e -> e.defName == localName) s0.localMulti) |> Maybe.andThen .rhsLam of
@@ -4116,10 +3709,7 @@ injectLocalMultiUseMember localName ord v s0 =
 
             Just ( lam, arity ) ->
                 case Engine.localInstanceTagFor ord s0 of
-                    Err e ->
-                        Err e
-
-                    Ok ( instTag, s1 ) ->
+                    ( instTag, s1 ) ->
                         let
                             aux1 =
                                 s1.itemAux
@@ -4128,15 +3718,12 @@ injectLocalMultiUseMember localName ord v s0 =
                                 aux1.currentLocalInstance
                         in
                         case LssInfer.injectLambdaMemberQualified arity (Just lam) v { s1 | itemAux = { aux1 | currentLocalInstance = instTag } } of
-                            Err e ->
-                                Err e
-
-                            Ok ( _, s2 ) ->
+                            s2 ->
                                 let
                                     aux2 =
                                         s2.itemAux
                                 in
-                                Ok ( (), Engine.bumpArgFlowCensus "lmInject|use" { s2 | itemAux = { aux2 | currentLocalInstance = outerTag } } )
+                                Engine.bumpArgFlowCensus "lmInject|use" { s2 | itemAux = { aux2 | currentLocalInstance = outerTag } }
 {-| F2.c (plans/lss-container-payload-transport.md §12.10.1): the local's RHS
 is a PARTIAL APPLICATION of a global — write the PAP member the RHS
 re-translation will mint (`injectPapMember` → `papMemberKey g k`) into the
@@ -4144,19 +3731,19 @@ stashed var, HEAD-ONLY: one arrow deeper is a different PAP (the `p|` law),
 and `injectPapMember` writes exactly one position too. Instance-blind by
 construction, so ordinals and tags play no part in the agreement.
 -}
-injectLocalMultiUsePap : Name -> Vars.Variable -> Step ()
+injectLocalMultiUsePap : Name -> Vars.Variable -> Engine.S -> Engine.S
 injectLocalMultiUsePap localName v s0 =
     case List.head (List.filter (\e -> e.defName == localName) s0.localMulti) |> Maybe.andThen .rhsPap of
         Nothing ->
-            Ok ( (), Engine.bumpArgFlowCensus "lmInject|noLam" s0 )
+            Engine.bumpArgFlowCensus "lmInject|noLam" s0
 
         Just ( g, k ) ->
             case Engine.papMemberIdFor g k s0 of
-                Err e ->
-                    Err e
+                ( mid, s1 ) ->
+                    Engine.bumpArgFlowCensus "lmInject|pap"
+                        (LssInfer.injectSpineMemberId 1 mid v s1)
 
-                Ok ( mid, s1 ) ->
-                    Engine.andThen (\_ -> \s -> Ok ( (), Engine.bumpArgFlowCensus "lmInject|pap" s )) (LssInfer.injectSpineMemberId 1 mid v) s1
+
 {-| Is the argument a lambda literal? (The M1 flowConnect trigger — only
 literals carry a body whose translation solves interior sets in-item.)
 -}
@@ -4182,10 +3769,10 @@ identity). Report-gated. Historical: this census decided the M2 GO that
 24k here are translations of ALREADY-NAMED stages) — kept as the
 population tracker, with that reading correction attached.
 -}
-m2ShapeCensus : List ( Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Step ()
+m2ShapeCensus : List ( Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Engine.S -> Engine.S
 m2ShapeCensus params body s =
     if not s.env.lss.report then
-        Ok ( (), s )
+        s
 
     else
         let
@@ -4206,7 +3793,7 @@ m2ShapeCensus params body s =
                 else
                     "m2|plainLam"
         in
-        Ok ( (), Engine.bumpArgFlowCensus key s )
+        Engine.bumpArgFlowCensus key s
 
 
 {-| `Just name` when the arg is a direct reference to a local-multi FUNCTION.
@@ -4217,11 +3804,7 @@ localMultiArgName arg s0 =
         Just localName ->
             -- M6/A1: direct state-passing over explicit trailing S → byte-identical.
             case Engine.isLocalMultiTarget localName s0 of
-                Err e ->
-                    Err e
-
-                Ok ( isLM, s1 ) ->
-                    Ok
+                ( isLM, s1 ) ->
                         ( if isLM then
                             Just localName
 
@@ -4231,7 +3814,7 @@ localMultiArgName arg s0 =
                         )
 
         Nothing ->
-            Ok ( Nothing, s0 )
+            ( Nothing, s0 )
 
 
 {-| The store var to unify a call argument against: the arg's canonical type
@@ -4243,22 +3826,13 @@ literals recurse so a `( 0, outer )` arg carries `outer`'s full record type.
 argUnifyVar : TOpt.Expr TypeIds.MVarId -> Step Vars.Variable
 argUnifyVar arg s0 =
     -- M6: direct state-passing (desugared andThen) → byte-identical.
-    case Store.loadType (TOpt.typeOf arg) s0 of
-        Err e ->
-            Err e
-
-        Ok ( canVar, s1 ) ->
+    case Store.loadTypeS (TOpt.typeOf arg) s0 of
+        ( canVar, s1 ) ->
             case enrichFromEnv arg canVar s1 of
-                Err e ->
-                    Err e
-
-                Ok ( _, s2 ) ->
+                s2 ->
                     case injectArgLambdaMember arg canVar s2 of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s3 ) ->
-                            Ok ( canVar, s3 )
+                        s3 ->
+                            ( canVar, s3 )
 
 
 {-| P0 sizing instrument (plans/lss-ctor-arrow-identity.md §8.1): classify
@@ -4268,10 +3842,10 @@ rows are the `/a0/r`-class the census says holds 64.6 % of the remaining var.
 Report-gated inside `bumpArgFlowCensus`; the type walks are cheap (leading
 arrows only) but still guarded.
 -}
-argDeepCensus : TOpt.Expr TypeIds.MVarId -> Step ()
+argDeepCensus : TOpt.Expr TypeIds.MVarId -> Engine.S -> Engine.S
 argDeepCensus arg s =
     if not s.env.lss.report then
-        Ok ( (), s )
+        s
 
     else
         let
@@ -4314,13 +3888,13 @@ argDeepCensus arg s =
                         ( "other", 0 )
         in
         if depth == 0 then
-            Ok ( (), s )
+            s
 
         else if depth > covered then
-            Ok ( (), Engine.bumpArgFlowCensus ("argdeep|" ++ form ++ "|deep") s )
+            Engine.bumpArgFlowCensus ("argdeep|" ++ form ++ "|deep") s
 
         else
-            Ok ( (), Engine.bumpArgFlowCensus ("argdeep|" ++ form ++ "|flat") s )
+            Engine.bumpArgFlowCensus ("argdeep|" ++ form ++ "|flat") s
 
 
 {-| F2.b (plans/lss-container-payload-transport.md §12.9.4): a local-multi
@@ -4331,27 +3905,28 @@ nothing; the value IS the instance being built, whose id is
 `injectLambdaMemberQualified` under the tag `retranslateWithTag` already set.
 Any other local injects nothing here (its members arrive via `enrichFromEnv`).
 -}
-injectRetranslatingSelf : Name -> Vars.Variable -> Step ()
+injectRetranslatingSelf : Name -> Vars.Variable -> Engine.S -> Engine.S
 injectRetranslatingSelf name canVar s0 =
     if not s0.env.lss.enabled then
-        Ok ( (), s0 )
+        s0
 
     else
         case s0.itemAux.retranslating of
             Just ( selfName, lam, arity ) ->
                 if selfName == name then
-                    Engine.andThen (\_ -> \s -> Ok ( (), Engine.bumpArgFlowCensus "lmInject|self" s )) (LssInfer.injectLambdaMemberQualified arity (Just lam) canVar) s0
+                    Engine.bumpArgFlowCensus "lmInject|self"
+                        (LssInfer.injectLambdaMemberQualified arity (Just lam) canVar s0)
 
                 else
-                    Ok ( (), s0 )
+                    s0
 
             Nothing ->
-                Ok ( (), s0 )
+                s0
 
 
-injectArgLambdaMember : TOpt.Expr TypeIds.MVarId -> Vars.Variable -> Step ()
-injectArgLambdaMember arg canVar =
-    Engine.andThen (\_ -> injectArgLambdaMemberGo arg canVar) (argDeepCensus arg)
+injectArgLambdaMember : TOpt.Expr TypeIds.MVarId -> Vars.Variable -> Engine.S -> Engine.S
+injectArgLambdaMember arg canVar s0 =
+    injectArgLambdaMemberGo arg canVar (argDeepCensus arg s0)
 
 
 {-| M3 arg-side member transport: a lambda LITERAL passed directly as an
@@ -4370,15 +3945,15 @@ targets; local-multi args (fresh-instantiated stash vars) remain a known
 precision gap in v1 — safe: no member, no stamp.
 
 -}
-injectArgLambdaMemberGo : TOpt.Expr TypeIds.MVarId -> Vars.Variable -> Step ()
-injectArgLambdaMemberGo arg canVar =
+injectArgLambdaMemberGo : TOpt.Expr TypeIds.MVarId -> Vars.Variable -> Engine.S -> Engine.S
+injectArgLambdaMemberGo arg canVar s =
     case arg of
         TOpt.Function srcLam params _ _ ->
             -- Fix B (LSS_017): translation-phase mint — spec-qualified.
-            LssInfer.injectLambdaMemberQualified (List.length params) srcLam canVar
+            LssInfer.injectLambdaMemberQualified (List.length params) srcLam canVar s
 
         TOpt.TrackedFunction srcLam params _ _ ->
-            LssInfer.injectLambdaMemberQualified (List.length params) srcLam canVar
+            LssInfer.injectLambdaMemberQualified (List.length params) srcLam canVar s
 
         TOpt.VarGlobal _ g _ ->
             -- E9: standalone globals/ctors passed as function args contribute
@@ -4398,33 +3973,27 @@ injectArgLambdaMemberGo arg canVar =
             -- kernel-alias HEAD stays k| (kernelToSig's inner-arrow hazard is
             -- a k|-member hazard); the successors key by the ALIAS global,
             -- matching injectPapMember's producer key for the same values.
-            \s ->
-                case
-                    case LssInfer.kernelAliasOf g s of
-                        Just ( kernelPrefix, home, name ) ->
-                            standaloneArgKernelMember ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name ) canVar s
+            case
+                (case LssInfer.kernelAliasOf g s of
+                    Just ( kernelPrefix, home, name ) ->
+                        standaloneArgKernelMember ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name ) canVar s
 
-                        Nothing ->
-                            standaloneArgMember ("g|" ++ TOpt.toComparableGlobal g) g canVar s
-                of
-                    Err e ->
-                        Err e
-
-                    Ok ( _, s1 ) ->
-                        case LssInfer.injectPapSuccessors g canVar s1 of
-                            Err e ->
-                                Err e
-
-                            Ok ( _, s2 ) ->
-                                Ok ( (), s2 )
+                    Nothing ->
+                        standaloneArgMember ("g|" ++ TOpt.toComparableGlobal g) g canVar s
+                )
+            of
+                s1 ->
+                    LssInfer.injectPapSuccessors g canVar s1
 
         TOpt.VarEnum _ g _ _ ->
-            Engine.andThen (\_ -> LssInfer.injectPapSuccessors g canVar)
-                (standaloneArgMember ("c|" ++ TOpt.toComparableGlobal g) g canVar)
+            LssInfer.injectPapSuccessors g
+                canVar
+                (standaloneArgMember ("c|" ++ TOpt.toComparableGlobal g) g canVar s)
 
         TOpt.VarBox _ g _ ->
-            Engine.andThen (\_ -> LssInfer.injectPapSuccessors g canVar)
-                (standaloneArgMember ("c|" ++ TOpt.toComparableGlobal g) g canVar)
+            LssInfer.injectPapSuccessors g
+                canVar
+                (standaloneArgMember ("c|" ++ TOpt.toComparableGlobal g) g canVar s)
 
         TOpt.VarCycle _ home name _ ->
             -- GAP-7 seam 2 (LSS_020 plan Phase E.2): a cycle member passed as
@@ -4434,35 +4003,33 @@ injectArgLambdaMemberGo arg canVar =
             -- Link→Cycle→wildcard). The provisional `g|` id grounds at zonk
             -- per LSS_019, and lands HEAD-ONLY in lockstep with the inference
             -- side; `injectPapSuccessors` owns everything deeper.
-            Engine.andThen (\_ -> LssInfer.injectPapSuccessors (TOpt.Global home name) canVar)
-                (standaloneArgMember ("g|" ++ TOpt.toComparableGlobal (TOpt.Global home name)) (TOpt.Global home name) canVar)
+            LssInfer.injectPapSuccessors (TOpt.Global home name)
+                canVar
+                (standaloneArgMember ("g|" ++ TOpt.toComparableGlobal (TOpt.Global home name)) (TOpt.Global home name) canVar s)
 
         TOpt.Accessor _ field _ ->
             -- L3 (plans/lss-coverage-four-levers.md §1.3): the
             -- inference side has minted `a|<field>` for accessor references
             -- since POST-001; the translate side silently no-op'd — the S.10
             -- lockstep asymmetry. Head-only (".field" is an arity-1 chomper).
-            \s ->
-                Engine.andThen
-                    (\mid -> LssInfer.injectSpineMemberId 1 mid canVar)
-                    (Engine.memberIdFor ("a|" ++ field))
-                    (Engine.bumpArgFlowCensus "argArm|accessor" s)
+            case Engine.memberIdFor ("a|" ++ field) (Engine.bumpArgFlowCensus "argArm|accessor" s) of
+                ( mid, s1 ) ->
+                    LssInfer.injectSpineMemberId 1 mid canVar s1
 
         TOpt.VarLocal name _ ->
-            injectRetranslatingSelf name canVar
+            injectRetranslatingSelf name canVar s
 
         TOpt.TrackedVarLocal _ name _ ->
-            injectRetranslatingSelf name canVar
+            injectRetranslatingSelf name canVar s
 
         TOpt.VarKernel _ kernelPrefix home name _ ->
             -- L3: a BARE kernel reference as a function argument (kernel shim
             -- modules) — the same k| identity the kernel-ALIAS VarGlobal arm
             -- mints, head-only per the kernelToSig rule.
-            \s ->
-                standaloneArgKernelMember ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name ) canVar (Engine.bumpArgFlowCensus "argArm|kernel" s)
+            standaloneArgKernelMember ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name ) canVar (Engine.bumpArgFlowCensus "argArm|kernel" s)
 
         _ ->
-            \s -> Ok ( (), s )
+            s
 
 
 {-| S.10 (F-5C): the translation-side twin of `LssInfer`'s `g|`/`c|` mints.
@@ -4470,23 +4037,22 @@ The depth must match its LssInfer counterpart exactly — a member injected to
 different depths on the two sides would name different arrow sets for the same
 value.
 -}
-standaloneArgMember : String -> TOpt.Global -> Vars.Variable -> Step ()
+standaloneArgMember : String -> TOpt.Global -> Vars.Variable -> Engine.S -> Engine.S
 standaloneArgMember key g canVar s =
-    Engine.andThen
-        (\mid -> LssInfer.injectSpineMemberId 1 mid canVar)
-        (Engine.standaloneMemberIdFor key g)
-        s
+    case Engine.standaloneMemberIdFor key g s of
+        ( mid, s1 ) ->
+            LssInfer.injectSpineMemberId 1 mid canVar s1
 
 
 {-| Kernels stay HEAD-ONLY (see `LssInfer`'s kernel arms): `kernelToSig`
 misaligns at inner arrows, and keeping `k|` members off them makes that
 hazard unreachable.
 -}
-standaloneArgKernelMember : String -> ( Name, Name, Name ) -> Vars.Variable -> Step ()
-standaloneArgKernelMember key k canVar =
-    Engine.andThen
-        (\mid -> LssInfer.injectSpineMemberId 1 mid canVar)
-        (Engine.kernelMemberIdFor key k)
+standaloneArgKernelMember : String -> ( Name, Name, Name ) -> Vars.Variable -> Engine.S -> Engine.S
+standaloneArgKernelMember key k canVar s =
+    case Engine.kernelMemberIdFor key k s of
+        ( mid, s1 ) ->
+            LssInfer.injectSpineMemberId 1 mid canVar s1
 
 
 {-| `unifyResultWithExpected` followed by the PAP residual injection, in that
@@ -4496,13 +4062,10 @@ demand will be read from) and BEFORE `Store.zonkToMono funcVar`. Sequenced as
 a composed step rather than another level of case-nesting purely for
 readability; the ordering is the load-bearing part.
 -}
-unifyResultThenInjectPap : Vars.Variable -> Int -> Can.Type TypeIds.MVarId -> TOpt.Global -> Step ()
+unifyResultThenInjectPap : Vars.Variable -> Int -> Can.Type TypeIds.MVarId -> TOpt.Global -> Engine.S -> Engine.S
 unifyResultThenInjectPap funcVar argCount callCanType global s0 =
     case unifyResultWithExpected funcVar argCount callCanType s0 of
-        Err e ->
-            Err e
-
-        Ok ( _, s1 ) ->
+        s1 ->
             injectPapMember global funcVar argCount s1
 
 
@@ -4561,10 +4124,10 @@ over-applied, or when the residual Point is opaque at that depth — an
 uninjected position is exactly today's behaviour, so every fallback is sound.
 
 -}
-injectPapMember : TOpt.Global -> Vars.Variable -> Int -> Step ()
+injectPapMember : TOpt.Global -> Vars.Variable -> Int -> Engine.S -> Engine.S
 injectPapMember global funcVar argCount s0 =
     if not s0.env.lss.enabled then
-        Ok ( (), s0 )
+        s0
 
     else
         let
@@ -4572,21 +4135,18 @@ injectPapMember global funcVar argCount s0 =
                 LssInfer.declaredArityOf global 8 s0
         in
         if declared <= argCount then
-            Ok ( (), s0 )
+            s0
 
         else
             case resultVarAfter funcVar argCount s0 of
-                Err e ->
-                    Err e
-
-                Ok ( Nothing, s1 ) ->
+                ( Nothing, s1 ) ->
                     -- Opaque at this depth (over-applied or not an arrow
                     -- spine): nothing to inject into. COUNTED, not silently
                     -- absorbed — this is the honest residue of the totality
                     -- claim, and a form census cannot see it.
-                    Ok ( (), Engine.bumpArgFlowCensus "papInject|opaque" s1 )
+                    Engine.bumpArgFlowCensus "papInject|opaque" s1
 
-                Ok ( Just residualVar, s1 ) ->
+                ( Just residualVar, s1 ) ->
                     -- The injection-FIRED counters. The P0 form census counts
                     -- syntactic partial applications and cannot fall once they
                     -- start injecting; only the write site can answer "did the
@@ -4609,20 +4169,15 @@ injectPapMember global funcVar argCount s0 =
                             else
                                 s2
                     in
-                    case
-                        Engine.andThen
-                            (\mid -> LssInfer.injectSpineMemberId 1 mid residualVar)
-                            (Engine.papMemberIdFor global argCount)
-                            s3
-                    of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s4 ) ->
+                    case Engine.papMemberIdFor global argCount s3 of
+                        ( mid, s3a ) ->
                             -- L2 (plans/lss-coverage-four-levers.md §1.2):
                             -- finish the counted papInject|deep residue —
                             -- p|g|d for the depths past the residual head.
-                            LssInfer.injectPapSuccessorsFrom global (argCount + 1) residualVar s4
+                            LssInfer.injectPapSuccessorsFrom global
+                                (argCount + 1)
+                                residualVar
+                                (LssInfer.injectSpineMemberId 1 mid residualVar s3a)
 
 
 {-| Registration self-identity (plans/lss-registration-self-identity.md §1.1):
@@ -4643,37 +4198,45 @@ ports) — the stamp skips the whole global and the census counts it.
 memberIdForDepth : TOpt.Global -> Int -> Maybe (() -> String) -> Step (Maybe Int)
 memberIdForDepth g d groundKey s0 =
     if d > 0 then
-        Engine.map Just (Engine.papMemberIdFor g d) s0
+        case Engine.papMemberIdFor g d s0 of
+            ( mid, s1 ) ->
+                ( Just mid, s1 )
 
     else
         case LssInfer.kernelAliasOf g s0 of
             Just ( kernelPrefix, home, name ) ->
-                Engine.map Just
-                    (Engine.kernelMemberIdFor ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name ))
-                    s0
+                case Engine.kernelMemberIdFor ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name ) s0 of
+                    ( mid, s1 ) ->
+                        ( Just mid, s1 )
 
             Nothing ->
                 case HashMap.get TOpt.globalHash (==) g s0.env.toptNodes of
                     Just (TOpt.Ctor _ _ _) ->
-                        Engine.map Just (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) s0
+                        case Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g s0 of
+                            ( mid, s1 ) ->
+                                ( Just mid, s1 )
 
                     Just (TOpt.Enum _ _) ->
-                        Engine.map Just (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) s0
+                        case Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g s0 of
+                            ( mid, s1 ) ->
+                                ( Just mid, s1 )
 
                     Just (TOpt.Box _) ->
-                        Engine.map Just (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) s0
+                        case Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g s0 of
+                            ( mid, s1 ) ->
+                                ( Just mid, s1 )
 
                     Just (TOpt.Kernel _ _) ->
-                        Ok ( Nothing, s0 )
+                        ( Nothing, s0 )
 
                     Just (TOpt.Manager _) ->
-                        Ok ( Nothing, s0 )
+                        ( Nothing, s0 )
 
                     Just (TOpt.PortIncoming _ _ _) ->
-                        Ok ( Nothing, s0 )
+                        ( Nothing, s0 )
 
                     Just (TOpt.PortOutgoing _ _ _) ->
-                        Ok ( Nothing, s0 )
+                        ( Nothing, s0 )
 
                     Just _ ->
                         case groundKey of
@@ -4688,13 +4251,15 @@ memberIdForDepth g d groundKey s0 =
                                     ( mid, table1, next1 ) =
                                         Engine.groundStandaloneMemberIdFor g (groundKeyOf ()) s0.lssMemberTable s0.nextMemberId
                                 in
-                                Ok ( Just mid, { s0 | lssMemberTable = table1, nextMemberId = next1 } )
+                                ( Just mid, { s0 | lssMemberTable = table1, nextMemberId = next1 } )
 
                             Nothing ->
-                                Engine.map Just (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal g) g) s0
+                                case Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal g) g s0 of
+                                    ( mid, s1 ) ->
+                                        ( Just mid, s1 )
 
                     Nothing ->
-                        Ok ( Nothing, s0 )
+                        ( Nothing, s0 )
 
 
 {-| Registration self-identity: stamp the leading spine of a DEMAND for
@@ -4715,7 +4280,7 @@ dataflow this plan must not claim.
 stampSelfSpine : TOpt.Global -> Mono.MonoType -> Step Mono.MonoType
 stampSelfSpine g monoType s0 =
     if not s0.env.lss.enabled then
-        Ok ( monoType, s0 )
+        ( monoType, s0 )
 
     else
         let
@@ -4741,7 +4306,7 @@ stampSelfSpine g monoType s0 =
 stampSpineGo : TOpt.Global -> Maybe (() -> String) -> Int -> Int -> Mono.MonoType -> Step Mono.MonoType
 stampSpineGo g groundKey arity d monoType s0 =
     if d >= arity then
-        Ok ( monoType, s0 )
+        ( monoType, s0 )
 
     else
         case monoType of
@@ -4757,13 +4322,10 @@ stampSpineGo g groundKey arity d monoType s0 =
                         )
                         s0
                 of
-                    Err e ->
-                        Err e
+                    ( Nothing, s1 ) ->
+                        ( monoType, Engine.bumpArgFlowCensus "regid|noId" s1 )
 
-                    Ok ( Nothing, s1 ) ->
-                        Ok ( monoType, Engine.bumpArgFlowCensus "regid|noId" s1 )
-
-                    Ok ( Just mid, s1 ) ->
+                    ( Just mid, s1 ) ->
                         let
                             ( anno2, s2 ) =
                                 case anno of
@@ -4774,28 +4336,27 @@ stampSpineGo g groundKey arity d monoType s0 =
                                         ( Mono.LSet [ mid ], Engine.bumpArgFlowCensus "regid|stamped" s1 )
                         in
                         case stampSpineGo g groundKey arity (d + 1) ret s2 of
-                            Err e ->
-                                Err e
-
-                            Ok ( ret2, s3 ) ->
-                                Ok ( Mono.mFunction anno2 args ret2, s3 )
+                            ( ret2, s3 ) ->
+                                ( Mono.mFunction anno2 args ret2, s3 )
 
             _ ->
-                Ok ( monoType, s0 )
+                ( monoType, s0 )
 
 
 {-| `Engine.enqueueSpec` with the registration self-identity stamp applied
 first, so the keyed path's key, the LSS\_010 join, and the stored type all see
 the same stamped demand.
 -}
-enqueueSpecStamped : TOpt.Global -> Mono.MonoType -> Step Mono.SpecId
+enqueueSpecStamped : TOpt.Global -> Mono.MonoType -> Engine.S -> ( Mono.SpecId, Engine.S )
 enqueueSpecStamped global monoType s0 =
+    -- Step 10c: `stampSelfSpine` never fails (its only callees are Engine
+    -- mints, and Engine raises nothing but the enqueue watchdog, which is now
+    -- `pendingFailure`), so its `Err` arm was dead.
     case stampSelfSpine global monoType s0 of
-        Err e ->
-            Err e
-
-        Ok ( stamped, s1 ) ->
-            Engine.enqueueSpec (toptToMonoGlobal global) stamped s1
+        ( stamped, s1 ) ->
+            case Engine.enqueueSpec (toptToMonoGlobal global) stamped s1 of
+                ( specId, s2 ) ->
+                    ( specId, s2 )
 
 
 {-| The `enrich|bare` / `enrich|withSets` census row (P0.a,
@@ -4822,7 +4383,7 @@ enrichCensusRow boundType s =
 
 {-| Best-effort unify `canVar` with environment-derived structure for `arg`.
 -}
-enrichFromEnv : TOpt.Expr TypeIds.MVarId -> Vars.Variable -> Step ()
+enrichFromEnv : TOpt.Expr TypeIds.MVarId -> Vars.Variable -> Engine.S -> Engine.S
 enrichFromEnv arg canVar s0 =
     case accessedLocalName arg of
         Just localName ->
@@ -4832,19 +4393,13 @@ enrichFromEnv arg canVar s0 =
             -- call args. Its typing is owned by the instance-recording path.
             -- M6/A1: direct state-passing over explicit trailing S → byte-identical.
             case Engine.isLocalMultiTarget localName s0 of
-                Err e ->
-                    Err e
-
-                Ok ( isLM, s1 ) ->
+                ( isLM, s1 ) ->
                     if isLM then
-                        Ok ( (), Engine.bumpArgFlowCensus "enrich|localMulti" s1 )
+                        Engine.bumpArgFlowCensus "enrich|localMulti" s1
 
                     else
                         case Engine.lookupVar localName s1 of
-                            Err e ->
-                                Err e
-
-                            Ok ( maybeBound, s2 ) ->
+                            ( maybeBound, s2 ) ->
                                 case maybeBound of
                                     Just boundType ->
                                         -- Step 9: a ground, arrow-free USE type has
@@ -4856,14 +4411,11 @@ enrichFromEnv arg canVar s0 =
                                         -- row is still counted, so report output is
                                         -- unchanged.
                                         if Store.groundNoArrowWith s2.monoMemo.aliasMemo (TOpt.typeOf arg) then
-                                            Ok ( (), enrichCensusRow boundType s2 )
+                                            enrichCensusRow boundType s2
 
                                         else
-                                            case Store.monoTypeToVar boundType s2 of
-                                                Err e ->
-                                                    Err e
-
-                                                Ok ( boundVar, s3 ) ->
+                                            case Store.monoTypeToVarS boundType s2 of
+                                                ( boundVar, s3 ) ->
                                                 -- P0.a (plans/lss-ctor-arrow-identity.md
                                                 -- §8.1): does the varEnv type this
                                                 -- transport actually CARRY members?
@@ -4875,7 +4427,7 @@ enrichFromEnv arg canVar s0 =
                                                     unifyStepBestEffort canVar boundVar (enrichCensusRow boundType s3)
 
                                     Nothing ->
-                                        Ok ( (), Engine.bumpArgFlowCensus "enrich|unbound" s2 )
+                                        Engine.bumpArgFlowCensus "enrich|unbound" s2
 
         Nothing ->
             case arg of
@@ -4884,36 +4436,25 @@ enrichFromEnv arg canVar s0 =
                     -- below would skip anyway. Skipping here saves the `UF.get`
                     -- and the three recursions at once.
                     if Store.groundNoArrowWith s0.monoMemo.aliasMemo (TOpt.typeOf arg) then
-                        Ok ( (), s0 )
+                        s0
 
                     else
                         -- M6/A1: direct state-passing over explicit trailing S → byte-identical.
                         case Engine.liftIO (UF.get canVar) s0 of
-                            Err e ->
-                                Err e
-
-                            Ok ( desc, s1 ) ->
+                            ( desc, s1 ) ->
                                 case desc.content of
                                     Vars.Structure (Vars.Tuple1 pa pb pRest) ->
                                         case enrichFromEnv a pa s1 of
-                                            Err e ->
-                                                Err e
-
-                                            Ok ( _, s2 ) ->
+                                            s2 ->
                                                 case enrichFromEnv b pb s2 of
-                                                    Err e ->
-                                                        Err e
-
-                                                    Ok ( _, s3 ) ->
-                                                        case Engine.traverse (\( e, pt ) -> enrichFromEnv e pt) (List.map2 Tuple.pair rest pRest) s3 of
-                                                            Err e ->
-                                                                Err e
-
-                                                            Ok ( _, s4 ) ->
-                                                                Ok ( (), s4 )
+                                                    s3 ->
+                                                        List.foldl
+                                                            (\( e, pt ) sAcc -> enrichFromEnv e pt sAcc)
+                                                            s3
+                                                            (List.map2 Tuple.pair rest pRest)
 
                                     _ ->
-                                        Ok ( (), s1 )
+                                        s1
 
                 TOpt.Access record _ fieldName _ ->
                     -- E15 (plans/lss-container-payload-transport.md §12.10.1):
@@ -4926,23 +4467,17 @@ enrichFromEnv arg canVar s0 =
                     case accessedLocalName record of
                         Just rname ->
                             if not s0.env.lss.enabled then
-                                Ok ( (), s0 )
+                                s0
 
                             else
                                 case Engine.isLocalMultiTarget rname s0 of
-                                    Err e ->
-                                        Err e
-
-                                    Ok ( isLM, s1 ) ->
+                                    ( isLM, s1 ) ->
                                         if isLM then
-                                            Ok ( (), Engine.bumpArgFlowCensus "enrich|access|localMulti" s1 )
+                                            Engine.bumpArgFlowCensus "enrich|access|localMulti" s1
 
                                         else
                                             case Engine.lookupVar rname s1 of
-                                                Err e ->
-                                                    Err e
-
-                                                Ok ( Just (Mono.MRecord _ fields), s2 ) ->
+                                                ( Just (Mono.MRecord _ fields), s2 ) ->
                                                     case Dict.get fieldName fields of
                                                         Just fieldType ->
                                                             -- Step 9: same argument as the local
@@ -4950,27 +4485,24 @@ enrichFromEnv arg canVar s0 =
                                                             -- to receive. The census row is still
                                                             -- counted.
                                                             if Store.groundNoArrowWith s2.monoMemo.aliasMemo (TOpt.typeOf arg) then
-                                                                Ok ( (), Engine.bumpArgFlowCensus "enrich|access|ofLocal" s2 )
+                                                                Engine.bumpArgFlowCensus "enrich|access|ofLocal" s2
 
                                                             else
-                                                                case Store.monoTypeToVar fieldType s2 of
-                                                                    Err e ->
-                                                                        Err e
-
-                                                                    Ok ( fieldVar, s3 ) ->
+                                                                case Store.monoTypeToVarS fieldType s2 of
+                                                                    ( fieldVar, s3 ) ->
                                                                         unifyStepBestEffort canVar fieldVar (Engine.bumpArgFlowCensus "enrich|access|ofLocal" s3)
 
                                                         Nothing ->
-                                                            Ok ( (), Engine.bumpArgFlowCensus "enrich|access|noField" s2 )
+                                                            Engine.bumpArgFlowCensus "enrich|access|noField" s2
 
-                                                Ok ( _, s2 ) ->
-                                                    Ok ( (), Engine.bumpArgFlowCensus "enrich|access|noRecord" s2 )
+                                                ( _, s2 ) ->
+                                                    Engine.bumpArgFlowCensus "enrich|access|noRecord" s2
 
                         Nothing ->
-                            Ok ( (), s0 )
+                            s0
 
                 _ ->
-                    Ok ( (), s0 )
+                    s0
 
 
 {-| Kernel ABI for a STANDALONE reference (`eq = Utils.equal`): load the type
@@ -4980,107 +4512,102 @@ isolate the vars and lose it.
 -}
 deriveKernelAbiTypeRef : ( String, String ) -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
 deriveKernelAbiTypeRef kernelId canFuncType =
-    deriveKernelAbiTypeWith kernelId canFuncType (Store.loadType canFuncType)
+    deriveKernelAbiTypeWith kernelId canFuncType (Store.loadTypeS canFuncType)
 
 
 deriveKernelAbiTypeWith : ( String, String ) -> Can.Type TypeIds.MVarId -> Step Vars.Variable -> Step Mono.MonoType
-deriveKernelAbiTypeWith kernelId canFuncType funcVarStep =
-    Engine.andThen
-        (\funcVar ->
-            Engine.andThen
-                (\monoAfterSubst ->
-                    Engine.andThen
-                        (\mvarEnv ->
-                            case KernelAbi.deriveKernelAbiMode kernelId canFuncType mvarEnv of
-                                KernelAbi.UseSubstitution ->
-                                    Engine.succeed monoAfterSubst
+deriveKernelAbiTypeWith kernelId canFuncType funcVarStep s0 =
+    case funcVarStep s0 of
+        ( funcVar0, sA ) ->
+            case poisonKernelArrowsThen kernelId canFuncType funcVar0 sA of
+                ( funcVar, sB ) ->
+                    case Store.zonkToMono funcVar sB of
+                        ( monoAfterSubst, sC ) ->
+                            case currentMVarEnv sC of
+                                ( mvarEnv, sD ) ->
+                                    (case KernelAbi.deriveKernelAbiMode kernelId canFuncType mvarEnv of
+                                        KernelAbi.UseSubstitution ->
+                                            ( monoAfterSubst, sD )
 
-                                KernelAbi.PreserveVars ->
-                                    if
-                                        EverySet.member KernelAbi.comparePair kernelId KernelAbi.suffixSelectingKernels
-                                            && not (Mono.containsAnyMVar monoAfterSubst)
-                                    then
-                                        Engine.succeed monoAfterSubst
+                                        KernelAbi.PreserveVars ->
+                                            if
+                                                EverySet.member KernelAbi.comparePair kernelId KernelAbi.suffixSelectingKernels
+                                                    && not (Mono.containsAnyMVar monoAfterSubst)
+                                            then
+                                                ( monoAfterSubst, sD )
 
-                                    else if EverySet.member KernelAbi.comparePair kernelId KernelAbi.suffixSelectingKernels then
-                                        -- Suffix-selecting kernel with residual vars in the
-                                        -- store truth: use the STORE-TRUTH zonk (not a canType
-                                        -- re-derivation), remapping its CEcoValue residuals to
-                                        -- fresh, taint-proof engine ids (ConsNumberTaintTest,
-                                        -- the Stage-7a bootstrap SIGSEGV):
-                                        --
-                                        --   * A structurally CONCRETE param whose FIELDS carry
-                                        --     erased residuals (e.g. a `(Name, MonoExpr, Bool)`
-                                        --     cons element zonking `T(eco,MonoExpr,eco)`) fails
-                                        --     the whole-type `containsAnyMVar` gate above, but
-                                        --     its top-level shape — all the suffix selection
-                                        --     reads — is exact. The former canType re-derivation
-                                        --     DISCARDED that shape for the kernel scheme's
-                                        --     annotation var (e.g. `List.cons`'s `a`), whose id
-                                        --     is SHARED by every use of the kernel in the whole
-                                        --     program.
-                                        --
-                                        --   * A shared annotation id can be Number-stamped by a
-                                        --     FOREIGN item (`harvestSuperTable` covers only the
-                                        --     finishing item's own annIds, not callee-scheme
-                                        --     vars left at `FlexSuper Number` — e.g. an
-                                        --     unresolved-number `1 :: 2 :: []`). Prune then
-                                        --     closes `MVar a CEcoValue -> MInt` behind this
-                                        --     spec's back and the kernel selects `_Int` over a
-                                        --     BOXED element — `eco.unbox` of a heap pointer.
-                                        --
-                                        -- Store-truth params align the ABI with the spec's own
-                                        -- body/param types (same zonk source); the fresh eco
-                                        -- ids make genuinely-erased elements immune to foreign
-                                        -- stamps (they stay boxed, matching the subst engine).
-                                        -- CNumber residuals keep their unconditional
-                                        -- close-to-MInt — the intended same-item taint.
-                                        \st ->
-                                            let
-                                                ( abi2, nextId2 ) =
-                                                    remapEcoVarsFresh st.nextMVarId monoAfterSubst
-                                            in
-                                            Ok ( abi2, { st | nextMVarId = nextId2 } )
+                                            else if EverySet.member KernelAbi.comparePair kernelId KernelAbi.suffixSelectingKernels then
+                                                -- Suffix-selecting kernel with residual vars in the
+                                                -- store truth: use the STORE-TRUTH zonk (not a canType
+                                                -- re-derivation), remapping its CEcoValue residuals to
+                                                -- fresh, taint-proof engine ids (ConsNumberTaintTest,
+                                                -- the Stage-7a bootstrap SIGSEGV):
+                                                --
+                                                --   * A structurally CONCRETE param whose FIELDS carry
+                                                --     erased residuals (e.g. a `(Name, MonoExpr, Bool)`
+                                                --     cons element zonking `T(eco,MonoExpr,eco)`) fails
+                                                --     the whole-type `containsAnyMVar` gate above, but
+                                                --     its top-level shape — all the suffix selection
+                                                --     reads — is exact. The former canType re-derivation
+                                                --     DISCARDED that shape for the kernel scheme's
+                                                --     annotation var (e.g. `List.cons`'s `a`), whose id
+                                                --     is SHARED by every use of the kernel in the whole
+                                                --     program.
+                                                --
+                                                --   * A shared annotation id can be Number-stamped by a
+                                                --     FOREIGN item (`harvestSuperTable` covers only the
+                                                --     finishing item's own annIds, not callee-scheme
+                                                --     vars left at `FlexSuper Number` — e.g. an
+                                                --     unresolved-number `1 :: 2 :: []`). Prune then
+                                                --     closes `MVar a CEcoValue -> MInt` behind this
+                                                --     spec's back and the kernel selects `_Int` over a
+                                                --     BOXED element — `eco.unbox` of a heap pointer.
+                                                --
+                                                -- Store-truth params align the ABI with the spec's own
+                                                -- body/param types (same zonk source); the fresh eco
+                                                -- ids make genuinely-erased elements immune to foreign
+                                                -- stamps (they stay boxed, matching the subst engine).
+                                                -- CNumber residuals keep their unconditional
+                                                -- close-to-MInt — the intended same-item taint.
+                                                let
+                                                    ( abi2, nextId2 ) =
+                                                        remapEcoVarsFresh sD.nextMVarId monoAfterSubst
+                                                in
+                                                ( abi2, { sD | nextMVarId = nextId2 } )
 
-                                    else
-                                        -- The preserved-vars ABI keeps the canType's var ids,
-                                        -- which THIS item's demand unification may have Join-R
-                                        -- number-tainted (e.g. `Decode.null 0` keys the spec at
-                                        -- CNumber and demandUnify taints the annotation vars) —
-                                        -- Prune would then close the honest eco ABI to MInt and
-                                        -- pass an unboxed i64 to a kernel expecting a boxed
-                                        -- value. The erased vars are layout placeholders, so
-                                        -- REMAP them to fresh, taint-proof engine ids (one per
-                                        -- distinct source id, preserving sharing) and advance
-                                        -- the id counter past everything minted.
-                                        \st ->
-                                            let
-                                                ( abiType, env1 ) =
-                                                    KernelAbi.canTypeToMonoType_preserveVars mvarEnv canFuncType
+                                            else
+                                                -- The preserved-vars ABI keeps the canType's var ids,
+                                                -- which THIS item's demand unification may have Join-R
+                                                -- number-tainted (e.g. `Decode.null 0` keys the spec at
+                                                -- CNumber and demandUnify taints the annotation vars) —
+                                                -- Prune would then close the honest eco ABI to MInt and
+                                                -- pass an unboxed i64 to a kernel expecting a boxed
+                                                -- value. The erased vars are layout placeholders, so
+                                                -- REMAP them to fresh, taint-proof engine ids (one per
+                                                -- distinct source id, preserving sharing) and advance
+                                                -- the id counter past everything minted.
+                                                let
+                                                    ( abiType, env1 ) =
+                                                        KernelAbi.canTypeToMonoType_preserveVars mvarEnv canFuncType
 
-                                                -- Debug WANTS the taint (it closes to Int like
-                                                -- the original refreshConstraints); only
-                                                -- genuinely-generic kernels get taint-proof
-                                                -- fresh ids. (Suffix-selecting kernels take the
-                                                -- store-truth branch above and never reach
-                                                -- here.)
-                                                remapWanted =
-                                                    Tuple.first kernelId /= "Debug"
+                                                    -- Debug WANTS the taint (it closes to Int like
+                                                    -- the original refreshConstraints); only
+                                                    -- genuinely-generic kernels get taint-proof
+                                                    -- fresh ids. (Suffix-selecting kernels take the
+                                                    -- store-truth branch above and never reach
+                                                    -- here.)
+                                                    remapWanted =
+                                                        Tuple.first kernelId /= "Debug"
 
-                                                ( finalAbi, nextId2 ) =
-                                                    if remapWanted then
-                                                        remapEcoVarsFresh env1.nextId abiType
+                                                    ( finalAbi, nextId2 ) =
+                                                        if remapWanted then
+                                                            remapEcoVarsFresh env1.nextId abiType
 
-                                                    else
-                                                        ( abiType, env1.nextId )
-                                            in
-                                            Ok ( finalAbi, { st | nextMVarId = nextId2 } )
-                        )
-                        currentMVarEnv
-                )
-                (Store.zonkToMono funcVar)
-        )
-        (Engine.andThen (poisonKernelArrowsThen kernelId canFuncType) funcVarStep)
+                                                        else
+                                                            ( abiType, env1.nextId )
+                                                in
+                                                ( finalAbi, { sD | nextMVarId = nextId2 } )
+                                    )
 
 
 {-| LSS\_004, refined by LSS\_021 and LSS\_022 (KernelSetFacts): a ROWLESS
@@ -5128,11 +4655,8 @@ poisonKernelArrowsThen ( kHome, kName ) canFuncType funcVar s0 =
         case KernelSetFacts.factFor kHome kName of
             Nothing ->
                 case Store.poisonArrowSets funcVar s of
-                    Err e ->
-                        Err e
-
-                    Ok ( _, s1 ) ->
-                        Ok ( funcVar, Engine.bumpWidenedByKernel s1 )
+                    s1 ->
+                        ( funcVar, Engine.bumpWidenedByKernel s1 )
 
             Just (KernelSetFacts.TypeFaithful license) ->
                 if not (KernelSetFacts.licenseApplies (Engine.isScalarVar s) license canFuncType) then
@@ -5146,11 +4670,8 @@ poisonKernelArrowsThen ( kHome, kName ) canFuncType funcVar s0 =
                     -- rest on the Elm annotation never drifting, which the rot
                     -- manifest cannot see. Fail SAFE to full poison.
                     case Store.poisonArrowSets funcVar s of
-                        Err e ->
-                            Err e
-
-                        Ok ( _, s1 ) ->
-                            Ok ( funcVar, Engine.bumpWidenedByKernel s1 )
+                        s1 ->
+                            ( funcVar, Engine.bumpWidenedByKernel s1 )
 
                 else
                     -- Licensed — pass-through. No spine descent, so no
@@ -5160,14 +4681,11 @@ poisonKernelArrowsThen ( kHome, kName ) canFuncType funcVar s0 =
                     -- needs no `scope` split — doing nothing is already the
                     -- whole implementation, and for an `Inert` row there are
                     -- no set slots for it to have done anything to.
-                    Ok ( funcVar, Engine.bumpKernelLicensed s )
+                    ( funcVar, Engine.bumpKernelLicensed s )
 
             Just (KernelSetFacts.Positional plan) ->
                 case poisonKernelPerParam plan.params [] funcVar False s of
-                    Err e ->
-                        Err e
-
-                    Ok ( maybeOutcome, s1 ) ->
+                    ( maybeOutcome, s1 ) ->
                         case maybeOutcome of
                             Nothing ->
                                 -- The spine ended before the row's params ran
@@ -5176,11 +4694,8 @@ poisonKernelArrowsThen ( kHome, kName ) canFuncType funcVar s0 =
                                 -- matching `unifyParamsCollect`): structural
                                 -- arity mismatch ⇒ LSS_004 full poison.
                                 case Store.poisonArrowSets funcVar s1 of
-                                    Err e ->
-                                        Err e
-
-                                    Ok ( _, s2 ) ->
-                                        Ok ( funcVar, Engine.bumpWidenedByKernel s2 )
+                                    s2 ->
+                                        ( funcVar, Engine.bumpWidenedByKernel s2 )
 
                             Just ( resVar, tunnelVars, argPoisoned ) ->
                                 let
@@ -5188,26 +4703,16 @@ poisonKernelArrowsThen ( kHome, kName ) canFuncType funcVar s0 =
                                         case plan.result of
                                             KernelSetFacts.PSFOpaque ->
                                                 case Store.poisonArrowSets resVar s1 of
-                                                    Err e ->
-                                                        Err e
-
-                                                    Ok ( _, s2 ) ->
-                                                        Ok ( True, s2 )
+                                                    s2 ->
+                                                        ( True, s2 )
 
                                             _ ->
-                                                Ok ( False, s1 )
+                                                ( False, s1 )
                                 in
                                 case resultStep of
-                                    Err e ->
-                                        Err e
-
-                                    Ok ( resPoisoned, s2 ) ->
+                                    ( resPoisoned, s2 ) ->
                                         case joinKernelTunnels resVar tunnelVars s2 of
-                                            Err e ->
-                                                Err e
-
-                                            Ok ( _, s3 ) ->
-                                                Ok
+                                            s3 ->
                                                     ( funcVar
                                                     , Engine.bumpKernelFactHit
                                                         (if argPoisoned || resPoisoned then
@@ -5219,7 +4724,7 @@ poisonKernelArrowsThen ( kHome, kName ) canFuncType funcVar s0 =
                                                     )
 
     else
-        Ok ( funcVar, s )
+        ( funcVar, s )
 
 
 {-| Descend the kernel scheme's arrow spine one arrow per declared param,
@@ -5231,26 +4736,20 @@ poisonKernelPerParam : List KernelSetFacts.ParamSetFlow -> List Vars.Variable ->
 poisonKernelPerParam flows tunnelsRev v poisoned s0 =
     case flows of
         [] ->
-            Ok ( Just ( v, List.reverse tunnelsRev, poisoned ), s0 )
+            ( Just ( v, List.reverse tunnelsRev, poisoned ), s0 )
 
         flow :: rest ->
             case Engine.liftIO (UF.get v) s0 of
-                Err e ->
-                    Err e
-
-                Ok ( desc, s1 ) ->
+                ( desc, s1 ) ->
                     case Store.arrowParts desc.content of
                         Nothing ->
-                            Ok ( Nothing, s1 )
+                            ( Nothing, s1 )
 
                         Just ( pParam, pRest ) ->
                             case flow of
                                 KernelSetFacts.PSFOpaque ->
                                     case Store.poisonArrowSets pParam s1 of
-                                        Err e ->
-                                            Err e
-
-                                        Ok ( _, s2 ) ->
+                                        s2 ->
                                             poisonKernelPerParam rest tunnelsRev pRest True s2
 
                                 KernelSetFacts.PSFApplies ->
@@ -5260,21 +4759,18 @@ poisonKernelPerParam flows tunnelsRev v poisoned s0 =
                                     poisonKernelPerParam rest (pParam :: tunnelsRev) pRest poisoned s1
 
 
-joinKernelTunnels : Vars.Variable -> List Vars.Variable -> Step ()
+joinKernelTunnels : Vars.Variable -> List Vars.Variable -> Engine.S -> Engine.S
 joinKernelTunnels resVar vars s0 =
     case vars of
         [] ->
-            Ok ( (), s0 )
+            s0
 
         v :: rest ->
             -- LSS_023 — the translation twin of LssInfer's `joinTunnels`;
             -- see the comment there. Also a `lss.sigFlow` selector until that
             -- flag was fixed at its default and removed 2026-09-18.
             case LssInfer.flowArrowSetsPlain v resVar s0 of
-                Err e ->
-                    Err e
-
-                Ok ( _, s1 ) ->
+                s1 ->
                     joinKernelTunnels resVar rest s1
 
 
@@ -5282,7 +4778,7 @@ joinKernelTunnels resVar vars s0 =
 the surrounding item (a fresh scheme instantiation). The minted Points persist
 in the store; the item memo is restored afterward.
 -}
-instantiate : Can.Type TypeIds.MVarId -> Step Vars.Variable
+instantiate : Can.Type TypeIds.MVarId -> Engine.S -> ( Vars.Variable, Engine.S )
 instantiate canType =
     -- D8: one S-write instead of three (see Store.loadTypeIsolated).
     Store.loadTypeIsolated canType
@@ -5293,29 +4789,13 @@ instantiation's arrow slots (design §8.4). lss-off = exactly `instantiate`.
 `funcCanType` is already annotation-sourced by `translateCall` (LSS\_006's
 other half — the signature side enumerates the same source).
 -}
-instantiateLss : TOpt.Global -> Can.Type TypeIds.MVarId -> Step Vars.Variable
+instantiateLss : TOpt.Global -> Can.Type TypeIds.MVarId -> Engine.S -> ( Vars.Variable, Engine.S )
 instantiateLss global funcCanType s =
     if s.env.lss.enabled then
         LssInfer.instantiateWithSignature global funcCanType s
 
     else
         instantiate funcCanType s
-
-
-unifyStepCtx : (() -> String) -> Vars.Variable -> Vars.Variable -> Step ()
-unifyStepCtx ctx v1 v2 s =
-    -- D3: `ctx` is a THUNK — the diagnostic string (recursive `canKind`/`monoKind`
-    -- type walks) is built ONLY on a mismatch (a compile-aborting failure), not on
-    -- the ~100%-success hot path where it was formerly built and discarded.
-    case Store.unifyStrict v1 v2 s of
-        Ok ok ->
-            Ok ok
-
-        Err (UnifyMismatch m) ->
-            Err (UnifyMismatch (ctx () ++ " | " ++ m))
-
-        Err other ->
-            Err other
 
 
 {-| Unify but never abort: on failure the store is restored to its pre-unify
@@ -5327,8 +4807,8 @@ Bracketed for the same reason as `Store.unifyBestEffort`: the store is mutated
 in place, so a failed attempt has to be undone rather than merely dropped.
 
 -}
-unifyStepBestEffort : Vars.Variable -> Vars.Variable -> Step ()
-unifyStepBestEffort v1 v2 s =
+unifyBestEffortS : Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
+unifyBestEffortS v1 v2 s =
     let
         -- The MARKED state is what gets rolled back; see the note in
         -- `Store.unifyBestEffort`.
@@ -5337,10 +4817,15 @@ unifyStepBestEffort v1 v2 s =
     in
     case Store.unifyStep v1 v2 sM of
         ( True, s1 ) ->
-            Ok ( (), Engine.commitStore s1 )
+            Engine.commitStore s1
 
         ( False, s1 ) ->
-            Ok ( (), Engine.rollbackStore s1 )
+            Engine.rollbackStore s1
+
+
+unifyStepBestEffort : Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
+unifyStepBestEffort v1 v2 s =
+    unifyBestEffortS v1 v2 s
 
 
 canKind : Can.Type TypeIds.MVarId -> String
@@ -5378,40 +4863,35 @@ canKind canType =
 expected call type — the "WithExpected" part of the original poly call path,
 needed for return-polymorphic callees.
 -}
-unifyResultWithExpected : Vars.Variable -> Int -> Can.Type TypeIds.MVarId -> Step ()
-unifyResultWithExpected funcVar argCount callCanType =
-    Engine.andThen
-        (\maybeResultVar ->
-            case maybeResultVar of
-                Just resultVar ->
-                    Engine.andThen (unifyStepBestEffort resultVar) (Store.loadType callCanType)
+unifyResultWithExpected : Vars.Variable -> Int -> Can.Type TypeIds.MVarId -> Engine.S -> Engine.S
+unifyResultWithExpected funcVar argCount callCanType s0 =
+    case resultVarAfter funcVar argCount s0 of
+        ( Just resultVar, s1 ) ->
+            case Store.loadTypeS callCanType s1 of
+                ( expectedVar, s2 ) ->
+                    unifyStepBestEffort resultVar expectedVar s2
 
-                Nothing ->
-                    Engine.succeed ()
-        )
-        (resultVarAfter funcVar argCount)
+        ( Nothing, s1 ) ->
+            s1
 
 
-resultVarAfter : Vars.Variable -> Int -> Step (Maybe Vars.Variable)
-resultVarAfter funcVar n =
+resultVarAfter : Vars.Variable -> Int -> Engine.S -> ( Maybe Vars.Variable, Engine.S )
+resultVarAfter funcVar n s0 =
     if n <= 0 then
-        Engine.succeed (Just funcVar)
+        ( Just funcVar, s0 )
 
     else
-        Engine.andThen
-            (\desc ->
+        case Engine.liftIO (UF.get funcVar) s0 of
+            ( desc, s1 ) ->
                 case Store.arrowParts desc.content of
                     Just ( _, pRest ) ->
                         -- Liveness census: peeling to find the result of an
                         -- n-argument application is an APPLICATION of this
                         -- arrow (plans/lss-provenance-ratio-census.md §7).
-                        Engine.andThen (\_ -> resultVarAfter pRest (n - 1))
-                            (noteAppliedStep desc.content)
+                        resultVarAfter pRest (n - 1) (noteAppliedS desc.content s1)
 
                     Nothing ->
-                        Engine.succeed Nothing
-            )
-            (Engine.liftIO (UF.get funcVar))
+                        ( Nothing, s1 )
 
 
 {-| Liveness census (plans/lss-provenance-ratio-census.md §7) — the `Step`-typed
@@ -5432,13 +4912,6 @@ noteAppliedS =
     LssInfer.noteApplied
 
 
-{-| `Step`-typed wrapper on `noteAppliedS`, for composition with `andThen`.
--}
-noteAppliedStep : Vars.Content -> Step ()
-noteAppliedStep content s =
-    Ok ( (), noteAppliedS content s )
-
-
 {-| Build an `MVarEnv` for the KernelAbi helpers (which read super info; they
 never mutate it here). Uses the engine's current allocator + super table.
 -}
@@ -5448,7 +4921,7 @@ currentMVarEnv =
     -- cross-item Join-R taint (a call like `Decode.null 0` elsewhere would stamp
     -- the kernel's `a` as CNumber → Prune closes it to MInt → unboxed i64 passed
     -- to a kernel expecting a boxed value). Same principle as Store.loadVar.
-    Engine.getS (\s -> State.initMVarEnv s.nextMVarId s.env.superStatic)
+    \s -> ( State.initMVarEnv s.nextMVarId s.env.superStatic, s )
 
 
 
@@ -5608,28 +5081,21 @@ translateUpdate : TOpt.Expr TypeIds.MVarId -> DMap.Dict String (A.Located Name) 
 translateUpdate record updates canType s0 =
     -- M6: direct state-passing (desugared andThen/map) → byte-identical.
     case classifyAs Mono.tkClassLet canType s0 of
-        Err e ->
-            Err e
-
-        Ok ( monoType, s1 ) ->
+        ( monoType, s1 ) ->
             case translate record s1 of
-                Err e ->
-                    Err e
-
-                Ok ( monoRecord, s2 ) ->
+                ( monoRecord, s2 ) ->
                     case
                         Engine.foldlS
-                            (\( locName, updateExpr ) acc ->
-                                Engine.map (\me -> ( A.toValue locName, me ) :: acc) (translate updateExpr)
+                            (\( locName, updateExpr ) acc sx ->
+                                case translate updateExpr sx of
+                                    ( me, sx1 ) ->
+                                        ( ( A.toValue locName, me ) :: acc, sx1 )
                             )
                             []
                             (DMap.toList A.compareLocated updates)
                             s2
                     of
-                        Err e ->
-                            Err e
-
-                        Ok ( monoUpdatesRev, s3 ) ->
+                        ( monoUpdatesRev, s3 ) ->
                             let
                                 recordMonoType =
                                     Mono.typeOf monoRecord
@@ -5637,7 +5103,7 @@ translateUpdate record updates canType s0 =
                                 resultMonoType =
                                     unionRecordTypes monoType recordMonoType
                             in
-                            Ok ( Mono.MonoRecordUpdate monoRecord monoUpdatesRev resultMonoType, s3 )
+                            ( Mono.MonoRecordUpdate monoRecord monoUpdatesRev resultMonoType, s3 )
 
 
 {-| `Mono.mRecord (Dict.union resultFields recordFields)` from the two record types,
@@ -5661,7 +5127,7 @@ unionRecordTypes classified recordType =
 
 
 translateLet : TOpt.Def TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
-translateLet def body letCanType =
+translateLet def body letCanType sTop =
     case def of
         TOpt.Def _ name defBody defCanType ->
             if isFunctionType defCanType || (typeContainsCanLambda defCanType && KernelAbi.hasAnyFreeVar defCanType) then
@@ -5670,89 +5136,77 @@ translateLet def body letCanType =
                 -- value-multi gate `typeContainsLambda && hasVar`) route through
                 -- body-first discovery + per-instance re-translation, so a use at
                 -- a concrete type re-specializes the closures inside.
-                translateLocalMultiLet name defBody body letCanType
+                translateLocalMultiLet name defBody body letCanType sTop
 
             else
                 -- M6: direct state-passing (desugared andThen; plain-let path is the
                 -- common case). The number-multi/local-multi sub-paths keep their own
                 -- shapes. Monad-law-preserving → byte-identical.
-                \s0 ->
-                    case isNumberMultiEligible defCanType s0 of
-                        Err e ->
-                            Err e
+                case isNumberMultiEligible defCanType sTop of
+                    ( eligible, s1 ) ->
+                        if eligible then
+                            translateNumberMultiLet name defBody body letCanType s1
 
-                        Ok ( eligible, s1 ) ->
-                            if eligible then
-                                translateNumberMultiLet name defBody body letCanType s1
+                        else
+                            -- Plain non-function, non-number value let.
+                            case translate defBody s1 of
+                                ( monoDefBody, s2 ) ->
+                                    case classifyAs Mono.tkClassLet defCanType s2 of
+                                        ( defMonoType0, s3 ) ->
+                                            let
+                                                bodyType =
+                                                    Mono.typeOf monoDefBody
 
-                            else
-                                -- Plain non-function, non-number value let.
-                                case translate defBody s1 of
-                                    Err e ->
-                                        Err e
+                                                useBodyType =
+                                                    Mono.containsAnyMVar defMonoType0
+                                                        -- A closed-narrow (row-poly) classified type defers
+                                                        -- to the body's actual/full record type (layout).
+                                                        || recordKeySubset defMonoType0 bodyType
+                                                        -- Same shape differing ONLY in numeric leaves:
+                                                        -- the classify carries Float pollution from a
+                                                        -- sibling use of a shared number var; the body IS
+                                                        -- the value (LetNumberIndirectDual).
+                                                        || (not (monoTypeMentionsEco bodyType) && numericLeafOnlyDiff defMonoType0 bodyType)
 
-                                    Ok ( monoDefBody, s2 ) ->
-                                        case classifyAs Mono.tkClassLet defCanType s2 of
-                                            Err e ->
-                                                Err e
+                                                -- F3-b (`lss.flow.letOverlay`,
+                                                -- DEFAULT-ON 2026-09-16,
+                                                -- unconditional 2026-09-18):
+                                                -- `leak|letAnno` 58 -> 0,
+                                                -- ⊤ 698 -> 668, `var` +30 —
+                                                -- a ⊤-manufacturer removal.
+                                                letOverlay =
+                                                    s3.env.lss.enabled
 
-                                            Ok ( defMonoType0, s3 ) ->
-                                                let
-                                                    bodyType =
-                                                        Mono.typeOf monoDefBody
+                                                defType =
+                                                    if useBodyType then
+                                                        bodyType
 
-                                                    useBodyType =
-                                                        Mono.containsAnyMVar defMonoType0
-                                                            -- A closed-narrow (row-poly) classified type defers
-                                                            -- to the body's actual/full record type (layout).
-                                                            || recordKeySubset defMonoType0 bodyType
-                                                            -- Same shape differing ONLY in numeric leaves:
-                                                            -- the classify carries Float pollution from a
-                                                            -- sibling use of a shared number var; the body IS
-                                                            -- the value (LetNumberIndirectDual).
-                                                            || (not (monoTypeMentionsEco bodyType) && numericLeafOnlyDiff defMonoType0 bodyType)
+                                                    else if letOverlay then
+                                                        -- F3-b (plans/lss-container-payload-transport.md
+                                                        -- §12.9.5): the classify's STRUCTURE (the ABI
+                                                        -- guard) with the translated RHS's ANNOTATIONS —
+                                                        -- the top-level `TailDef` precedent. Closes the
+                                                        -- `leak|letAnno` class below.
+                                                        Mono.overlayAnnotations defMonoType0 bodyType
 
-                                                    -- F3-b (`lss.flow.letOverlay`,
-                                                    -- DEFAULT-ON 2026-09-16,
-                                                    -- unconditional 2026-09-18):
-                                                    -- `leak|letAnno` 58 -> 0,
-                                                    -- ⊤ 698 -> 668, `var` +30 —
-                                                    -- a ⊤-manufacturer removal.
-                                                    letOverlay =
-                                                        s3.env.lss.enabled
+                                                    else
+                                                        defMonoType0
 
-                                                    defType =
-                                                        if useBodyType then
-                                                            bodyType
+                                                -- LSS_026 census (plan §2.1 row 5): the annotation-DROP leak.
+                                                -- When the classify wins over an arrow-bearing RHS, any set
+                                                -- annotations on `bodyType` never reach the varEnv, so
+                                                -- `enrichFromEnv` later enriches uses of this local from an
+                                                -- annotation-free type. Report-gated; cheap check first.
+                                                s3b =
+                                                    if not s3.env.lss.report || useBodyType || letOverlay || not (canTypeHasArrow defCanType) then
+                                                        s3
 
-                                                        else if letOverlay then
-                                                            -- F3-b (plans/lss-container-payload-transport.md
-                                                            -- §12.9.5): the classify's STRUCTURE (the ABI
-                                                            -- guard) with the translated RHS's ANNOTATIONS —
-                                                            -- the top-level `TailDef` precedent. Closes the
-                                                            -- `leak|letAnno` class below.
-                                                            Mono.overlayAnnotations defMonoType0 bodyType
-
-                                                        else
-                                                            defMonoType0
-
-                                                    -- LSS_026 census (plan §2.1 row 5): the annotation-DROP leak.
-                                                    -- When the classify wins over an arrow-bearing RHS, any set
-                                                    -- annotations on `bodyType` never reach the varEnv, so
-                                                    -- `enrichFromEnv` later enriches uses of this local from an
-                                                    -- annotation-free type. Report-gated; cheap check first.
-                                                    s3b =
-                                                        if not s3.env.lss.report || useBodyType || letOverlay || not (canTypeHasArrow defCanType) then
-                                                            s3
-
-                                                        else
-                                                            Engine.bumpArgFlowCensus "leak|letAnno" s3
-                                                in
-                                                Engine.scoped
-                                                    (Engine.andThen (\_ -> finishLet (Mono.MonoDef name monoDefBody) body letCanType)
-                                                        (Engine.insertVar name defType)
-                                                    )
-                                                    s3b
+                                                    else
+                                                        Engine.bumpArgFlowCensus "leak|letAnno" s3
+                                            in
+                                            Engine.scoped
+                                                (\sx -> finishLet (Mono.MonoDef name monoDefBody) body letCanType (Engine.insertVar name defType sx))
+                                                s3b
 
         TOpt.TailDef _ name typedArgs tailBody defCanType _ ->
             -- Local tail-recursive function: BODY-FIRST discovery (uses record the
@@ -5761,14 +5215,17 @@ translateLet def body letCanType =
             -- item store and translate the def ONCE under the bare name (the
             -- TailCall self-reference needs no renaming). Multi-instance falls back
             -- to the declared type (rare; would need renamed self-calls).
-            Engine.andThen
-                (\_ ->
-                    Engine.andThen
-                        (\declType ->
-                            Engine.andThen
-                                (\monoBody0 ->
-                                    Engine.andThen
-                                        (\( maybeEntry, monoBody ) ->
+            case classifyAs Mono.tkClassLet defCanType (Engine.pushLocalMulti Nothing Nothing name sTop) of
+                ( declType, s1 ) ->
+                    case Engine.scoped (\sx -> translate body (Engine.insertVar name declType sx)) s1 of
+                        ( monoBody0, s2 ) ->
+                            -- E4a deferral: let-functions nested in this body owe their
+                            -- use-site overlay to the outermost let-function; a tail def
+                            -- pushes the same stack, so it must flush (or pass up) too.
+                            case Engine.popLocalMulti s2 of
+                                ( maybeEntry, s3 ) ->
+                                    case flushLocalMultiEnrich name maybeEntry [] monoBody0 s3 of
+                                        ( monoBody, s4 ) ->
                                             let
                                                 singleInstance =
                                                     case maybeEntry of
@@ -5782,70 +5239,48 @@ translateLet def body letCanType =
 
                                                         Nothing ->
                                                             Nothing
+
+                                                ( maybeAnnVar, s5 ) =
+                                                    case singleInstance of
+                                                        Just instType ->
+                                                            -- Bind the def's vars to the single recorded
+                                                            -- demand (best-effort, shared store). The seeded
+                                                            -- var is handed on: F3-b reads the binding types
+                                                            -- from its zonk.
+                                                            case Store.loadTypeS defCanType s4 of
+                                                                ( annVar, sL1 ) ->
+                                                                    case Store.monoTypeToVarS instType sL1 of
+                                                                        ( demandVar, sL2 ) ->
+                                                                            ( Just annVar, unifyStepBestEffort annVar demandVar sL2 )
+
+                                                        Nothing ->
+                                                            ( Nothing, s4 )
                                             in
-                                            Engine.andThen
-                                                (\maybeAnnVar ->
-                                                    Engine.andThen
-                                                        (\( monoParams, defType ) ->
-                                                            Engine.andThen
-                                                                (\monoTailBody ->
-                                                                    Engine.map
-                                                                        (\letType0 ->
-                                                                            let
-                                                                                letType =
-                                                                                    if
-                                                                                        Mono.containsAnyMVar letType0
-                                                                                            || (not (monoTypeMentionsEco (Mono.typeOf monoBody)) && numericLeafOnlyDiff letType0 (Mono.typeOf monoBody))
-                                                                                    then
-                                                                                        Mono.typeOf monoBody
+                                            case tailDefBindingTypes maybeAnnVar typedArgs defCanType s5 of
+                                                ( ( monoParams, defType ), s6 ) ->
+                                                    case
+                                                        withLoopFrame name
+                                                            typedArgs
+                                                            (Engine.scoped
+                                                                (\sx -> translate tailBody (insertVars monoParams (Engine.insertVar name defType sx)))
+                                                            )
+                                                            s6
+                                                    of
+                                                        ( monoTailBody, s7 ) ->
+                                                            case classifyAs Mono.tkClassLet letCanType s7 of
+                                                                ( letType0, s8 ) ->
+                                                                    let
+                                                                        letType =
+                                                                            if
+                                                                                Mono.containsAnyMVar letType0
+                                                                                    || (not (monoTypeMentionsEco (Mono.typeOf monoBody)) && numericLeafOnlyDiff letType0 (Mono.typeOf monoBody))
+                                                                            then
+                                                                                Mono.typeOf monoBody
 
-                                                                                    else
-                                                                                        letType0
-                                                                            in
-                                                                            Mono.MonoLet (Mono.MonoTailDef name monoParams monoTailBody) monoBody letType
-                                                                        )
-                                                                        (classifyAs Mono.tkClassLet letCanType)
-                                                                )
-                                                                (withLoopFrame name
-                                                                    typedArgs
-                                                                    (Engine.scoped
-                                                                        (Engine.andThen (\_ -> Engine.andThen (\_ -> translate tailBody) (insertVars monoParams))
-                                                                            (Engine.insertVar name defType)
-                                                                        )
-                                                                    )
-                                                                )
-                                                        )
-                                                        (tailDefBindingTypes maybeAnnVar typedArgs defCanType)
-                                                )
-                                                (case singleInstance of
-                                                    Just instType ->
-                                                        -- Bind the def's vars to the single recorded
-                                                        -- demand (best-effort, shared store). The seeded
-                                                        -- var is handed on: F3-b reads the binding types
-                                                        -- from its zonk.
-                                                        Engine.andThen
-                                                            (\annVar -> Engine.map (\_ -> Just annVar) (Engine.andThen (unifyStepBestEffort annVar) (Store.monoTypeToVar instType)))
-                                                            (Store.loadType defCanType)
-
-                                                    Nothing ->
-                                                        Engine.succeed Nothing
-                                                )
-                                        )
-                                        -- E4a deferral: let-functions nested in this body owe their
-                                        -- use-site overlay to the outermost let-function; a tail def
-                                        -- pushes the same stack, so it must flush (or pass up) too.
-                                        (Engine.andThen
-                                            (\maybeEntry -> Engine.map (\b -> ( maybeEntry, b )) (flushLocalMultiEnrich name maybeEntry [] monoBody0))
-                                            Engine.popLocalMulti
-                                        )
-                                )
-                                (Engine.scoped
-                                    (Engine.andThen (\_ -> translate body) (Engine.insertVar name declType))
-                                )
-                        )
-                        (classifyAs Mono.tkClassLet defCanType)
-                )
-                (Engine.pushLocalMulti Nothing Nothing name)
+                                                                            else
+                                                                                letType0
+                                                                    in
+                                                                    ( Mono.MonoLet (Mono.MonoTailDef name monoParams monoTailBody) monoBody letType, s8 )
 
 
 {-| F3-b (plans/lss-container-payload-transport.md §12.9.5): a local tail-def's
@@ -5857,23 +5292,14 @@ function type when the arity matches.
 -}
 tailDefBindingTypes : Maybe Vars.Variable -> List ( A.Located Name, Can.Type TypeIds.MVarId ) -> Can.Type TypeIds.MVarId -> Step ( List ( Name, Mono.MonoType ), Mono.MonoType )
 tailDefBindingTypes maybeAnnVar typedArgs defCanType s0 =
-    case Engine.traverse (\( locName, argType ) -> Engine.map (\mt -> ( A.toValue locName, mt )) (classifyAs Mono.tkClassParam argType)) typedArgs s0 of
-        Err e ->
-            Err e
-
-        Ok ( classifiedParams, s1 ) ->
+    case Engine.traverse (\( locName, argType ) sx -> case classifyAs Mono.tkClassParam argType sx of ( mt, sx1 ) -> ( ( A.toValue locName, mt ), sx1 )) typedArgs s0 of
+        ( classifiedParams, s1 ) ->
             case classifyAs Mono.tkClassLet defCanType s1 of
-                Err e ->
-                    Err e
-
-                Ok ( classifiedType, s2 ) ->
+                ( classifiedType, s2 ) ->
                     case ( s2.env.lss.enabled, maybeAnnVar ) of
                         ( True, Just annVar ) ->
                             case Store.zonkToMono annVar s2 of
-                                Err e ->
-                                    Err e
-
-                                Ok ( zonkedType, s3 ) ->
+                                ( zonkedType, s3 ) ->
                                     let
                                         funcType =
                                             Mono.overlayAnnotations classifiedType zonkedType
@@ -5888,18 +5314,18 @@ tailDefBindingTypes maybeAnnVar typedArgs defCanType s0 =
                                             else
                                                 classifiedParams
                                     in
-                                    Ok ( ( monoParams, funcType ), Engine.bumpArgFlowCensus "letOverlay|tailFn" s3 )
+                                    ( ( monoParams, funcType ), Engine.bumpArgFlowCensus "letOverlay|tailFn" s3 )
 
                         _ ->
-                            Ok ( ( classifiedParams, classifiedType ), s2 )
+                            ( ( classifiedParams, classifiedType ), s2 )
 
 
 finishLet : Mono.MonoDef -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
-finishLet monoDef body letCanType =
-    Engine.andThen
-        (\monoBody ->
-            Engine.map
-                (\letType0 ->
+finishLet monoDef body letCanType s0 =
+    case translate body s0 of
+        ( monoBody, s1 ) ->
+            case classifyAs Mono.tkClassLet letCanType s1 of
+                ( letType0, s2 ) ->
                     let
                         letType =
                             if
@@ -5911,16 +5337,12 @@ finishLet monoDef body letCanType =
                             else
                                 letType0
                     in
-                    Mono.MonoLet monoDef monoBody letType
-                )
-                (classifyAs Mono.tkClassLet letCanType)
-        )
-        (translate body)
+                    ( Mono.MonoLet monoDef monoBody letType, s2 )
 
 
-insertVars : List ( Name, Mono.MonoType ) -> Step ()
-insertVars pairs =
-    Engine.foldlS (\( name, t ) _ -> Engine.insertVar name t) () pairs
+insertVars : List ( Name, Mono.MonoType ) -> Engine.S -> Engine.S
+insertVars pairs s0 =
+    List.foldl (\( name, t ) sAcc -> Engine.insertVar name t sAcc) s0 pairs
 
 
 
@@ -5934,21 +5356,23 @@ get `n$v<idx>`). Discovery is body-first (each use records its instance), then
 the eager Int def is emitted outermost, the extra copies nested inside.
 -}
 translateNumberMultiLet : Name -> TOpt.Expr TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
-translateNumberMultiLet name defBody body letCanType =
-    Engine.andThen
-        (\eagerBody ->
-            Engine.andThen
-                (\_ -> Engine.recordNumberInstance name (Mono.typeOf eagerBody))
-                (Engine.pushNumberMulti name)
-                |> thenAlso
-                    (Engine.andThen
-                        (\monoBody ->
-                            Engine.andThen
-                                (\maybeEntry ->
-                                    Engine.andThen
-                                        (\floatDefs ->
-                                            Engine.map
-                                                (\letType0 ->
+translateNumberMultiLet name defBody body letCanType s0 =
+    case translate defBody s0 of
+        ( eagerBody, s1 ) ->
+            case Engine.recordNumberInstance name (Mono.typeOf eagerBody) (Engine.pushNumberMulti name s1) of
+                ( _, s2 ) ->
+                    -- Bind the eager name in varEnv (scoped to the body) so
+                    -- destructor roots (`let (a,b) = (1,2)` => root `_v0`) and
+                    -- any non-VarLocal consumer resolve it. VarLocal uses still
+                    -- take the recordNumberInstance path (isTarget wins first).
+                    case Engine.scoped (\sx -> translate body (Engine.insertVar name (Mono.typeOf eagerBody) sx)) s2 of
+                        ( monoBody, s3 ) ->
+                            case Engine.popNumberMulti s3 of
+                                ( maybeEntry, s4 ) ->
+                                    case buildFloatDefs name defBody maybeEntry s4 of
+                                        ( floatDefs, s5 ) ->
+                                            case classifyAs Mono.tkClassLet letCanType s5 of
+                                                ( letType0, s6 ) ->
                                                     let
                                                         letType =
                                                             if
@@ -5963,33 +5387,7 @@ translateNumberMultiLet name defBody body letCanType =
                                                         bodyWithFloats =
                                                             List.foldl (\d acc -> Mono.MonoLet d acc (Mono.typeOf acc)) monoBody (List.reverse floatDefs)
                                                     in
-                                                    Mono.MonoLet (Mono.MonoDef name eagerBody) bodyWithFloats letType
-                                                )
-                                                (classifyAs Mono.tkClassLet letCanType)
-                                        )
-                                        (buildFloatDefs name defBody maybeEntry)
-                                )
-                                Engine.popNumberMulti
-                        )
-                        -- Bind the eager name in varEnv (scoped to the body) so
-                        -- destructor roots (`let (a,b) = (1,2)` ⇒ root `_v0`) and
-                        -- any non-VarLocal consumer resolve it. VarLocal uses still
-                        -- take the recordNumberInstance path (isTarget wins first).
-                        (Engine.scoped
-                            (Engine.andThen (\_ -> translate body)
-                                (Engine.insertVar name (Mono.typeOf eagerBody))
-                            )
-                        )
-                    )
-        )
-        (translate defBody)
-
-
-{-| Sequence two steps discarding the first's result.
--}
-thenAlso : Step b -> Step a -> Step b
-thenAlso next first =
-    Engine.andThen (\_ -> next) first
+                                                    ( Mono.MonoLet (Mono.MonoDef name eagerBody) bodyWithFloats letType, s6 )
 
 
 {-| Build the per-type extra copies (`n$v1`, …), each by re-translating the RHS
@@ -5997,15 +5395,20 @@ under a demand of the instance type (so e.g. `10 + 20` becomes the Float add).
 Excludes the eager/first instance (which keeps the bare name).
 -}
 buildFloatDefs : Name -> TOpt.Expr TypeIds.MVarId -> Maybe Engine.NumberMultiEntry -> Step (List Mono.MonoDef)
-buildFloatDefs name defBody maybeEntry =
+buildFloatDefs name defBody maybeEntry s0 =
     case maybeEntry of
         Just entry ->
             Engine.traverse
-                (\inst -> Engine.map (\e -> Mono.MonoDef inst.freshName e) (retranslateAt defBody inst.monoType))
+                (\inst sx ->
+                    case retranslateAt defBody inst.monoType sx of
+                        ( e, sx1 ) ->
+                            ( Mono.MonoDef inst.freshName e, sx1 )
+                )
                 (Mono.specMapValues entry.instances |> List.filter (\inst -> inst.freshName /= name))
+                s0
 
         Nothing ->
-            Engine.succeed []
+            ( [], s0 )
 
 
 {-| Re-translate an expression under a demanded type, in a fresh solver store
@@ -6035,10 +5438,7 @@ this is exactly `retranslateAt`.
 retranslateAtInstance : Name -> Int -> TOpt.Expr TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoExpr
 retranslateAtInstance name ord defBody instType s0 =
     case Engine.localInstanceTagFor ord s0 of
-        Err e ->
-            Err e
-
-        Ok ( instTag, s1 ) ->
+        ( instTag, s1 ) ->
             -- F2.b: the def's own name resolves to THIS instance's id inside
             -- the re-translation (`injectRetranslatingSelf`).
             retranslateWithTag instTag (Maybe.map (\( lam, arity ) -> ( name, lam, arity )) (rhsLamOf defBody)) defBody instType s1
@@ -6058,40 +5458,34 @@ retranslateWithTag instTag retranslating defBody instType s0 =
             { s0 | store = Engine.freshStore (), memo = Dict.empty, revMemo = Array.empty, itemAux = { clearedA | currentLocalInstance = instTag, retranslating = retranslating } }
 
         step =
-            Engine.andThen (\_ -> translate defBody) (demandUnifyRoot (TOpt.typeOf defBody) instType defBody)
+            \sx -> translate defBody (demandUnifyRoot (TOpt.typeOf defBody) instType defBody sx)
     in
     case step sFresh of
-        Err e ->
-            Err e
-
-        Ok ( monoExpr, s1 ) ->
+        ( monoExpr, s1 ) ->
             -- Free the scratch store and reinstate the stashed one. The two
             -- are different objects because `freshStore` above takes an
             -- argument; on the `Err e` path the scratch store is not freed,
             -- which is deliberate — that path ends the build.
-            Ok ( monoExpr, { s1 | store = Engine.releaseScratch s1.store s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = Engine.restoredAux s0.itemAux s1.itemAux } )
+            ( monoExpr, { s1 | store = Engine.releaseScratch s1.store s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = Engine.restoredAux s0.itemAux s1.itemAux } )
 
 
 isNumberMultiEligible : Can.Type TypeIds.MVarId -> Step Bool
-isNumberMultiEligible defCanType =
-    Engine.andThen
-        (\hasNum ->
-            if hasNum then
-                Engine.map isNumericFixableShape (classifyAs Mono.tkClassLet defCanType)
+isNumberMultiEligible defCanType s0 =
+    case hasNumberVar defCanType s0 of
+        ( True, s1 ) ->
+            case classifyAs Mono.tkClassLet defCanType s1 of
+                ( t, s2 ) ->
+                    ( isNumericFixableShape t, s2 )
 
-            else
-                Engine.succeed False
-        )
-        (hasNumberVar defCanType)
+        ( False, s1 ) ->
+            ( False, s1 )
 
 
 hasNumberVar : Can.Type TypeIds.MVarId -> Step Bool
-hasNumberVar defCanType =
-    Engine.map
-        (\superTable ->
-            List.any (\id -> Dict.get (Id.toComparable id) superTable == Just Vars.Number) (KernelAbi.freeVarIds defCanType [])
-        )
-        (Engine.getS .superTable)
+hasNumberVar defCanType s =
+    ( List.any (\id -> Dict.get (Id.toComparable id) s.superTable == Just Vars.Number) (KernelAbi.freeVarIds defCanType [])
+    , s
+    )
 
 
 isNumericFixableShape : Mono.MonoType -> Bool
@@ -6170,43 +5564,31 @@ Otherwise: generic path, connecting the access result's var to the record-use
 type's field slot (demand flow for single-owner shapes).
 -}
 translateAccess : TOpt.Expr TypeIds.MVarId -> Name -> TOpt.Meta TypeIds.MVarId -> Step Mono.MonoExpr
-translateAccess record fieldName meta =
+translateAccess record fieldName meta s0 =
     case accessedLocalName record of
         Just rname ->
-            Engine.andThen
-                (\maybeRoot ->
-                    case maybeRoot of
-                        Just eagerRootType ->
-                            Engine.andThen
-                                (\demand ->
-                                    if demand == Mono.MFloat || demand == Mono.MInt then
-                                        Engine.andThen
-                                            (\gte ->
-                                                case refineRootInstance gte eagerRootType (TOpt.Field fieldName (TOpt.Root rname)) demand of
-                                                    Just refinedRootType ->
-                                                        Engine.map
-                                                            (\( freshName, instType ) ->
-                                                                Mono.MonoRecordAccess (Mono.MonoVarLocal freshName instType) fieldName demand
-                                                            )
-                                                            (Engine.recordNumberInstance rname refinedRootType)
+            case Engine.numberMultiRootType rname s0 of
+                ( Just eagerRootType, s1 ) ->
+                    case classifyAs Mono.tkClassMisc meta.tipe s1 of
+                        ( demand, s2 ) ->
+                            if demand == Mono.MFloat || demand == Mono.MInt then
+                                case refineRootInstance s2.env.globalTypeEnv eagerRootType (TOpt.Field fieldName (TOpt.Root rname)) demand of
+                                    Just refinedRootType ->
+                                        case Engine.recordNumberInstance rname refinedRootType s2 of
+                                            ( ( freshName, instType ), s3 ) ->
+                                                ( Mono.MonoRecordAccess (Mono.MonoVarLocal freshName instType) fieldName demand, s3 )
 
-                                                    Nothing ->
-                                                        genericAccess record fieldName meta
-                                            )
-                                            (Engine.getS (\s -> s.env.globalTypeEnv))
+                                    Nothing ->
+                                        genericAccess record fieldName meta s2
 
-                                    else
-                                        genericAccess record fieldName meta
-                                )
-                                (classifyAs Mono.tkClassMisc meta.tipe)
+                            else
+                                genericAccess record fieldName meta s2
 
-                        Nothing ->
-                            genericAccess record fieldName meta
-                )
-                (Engine.numberMultiRootType rname)
+                ( Nothing, s1 ) ->
+                    genericAccess record fieldName meta s1
 
         Nothing ->
-            genericAccess record fieldName meta
+            genericAccess record fieldName meta s0
 
 
 {-| The local name a record-access scrutinee refers to (if it is a direct local
@@ -6226,31 +5608,25 @@ accessedLocalName record =
 
 
 genericAccess : TOpt.Expr TypeIds.MVarId -> Name -> TOpt.Meta TypeIds.MVarId -> Step Mono.MonoExpr
-genericAccess record fieldName meta =
-    Engine.andThen
-        (\_ ->
-            Engine.andThen
-                (\monoType ->
-                    Engine.andThen
-                        (\monoRecord ->
-                            Engine.getS
-                                (\s ->
-                                    Mono.MonoRecordAccess monoRecord
-                                        fieldName
-                                        (refineAccessType s.env.lss.enabled monoType (Mono.typeOf monoRecord) fieldName)
-                                )
-                        )
-                        (translate record)
-                )
-                (classifyAs Mono.tkClassMisc meta.tipe)
-        )
-        (case recordFieldCanType fieldName (TOpt.typeOf record) of
-            Just fieldCan ->
-                connectTypes meta.tipe fieldCan
+genericAccess record fieldName meta s0 =
+    let
+        sConn =
+            case recordFieldCanType fieldName (TOpt.typeOf record) of
+                Just fieldCan ->
+                    connectTypes meta.tipe fieldCan s0
 
-            Nothing ->
-                Engine.succeed ()
-        )
+                Nothing ->
+                    s0
+    in
+    case classifyAs Mono.tkClassMisc meta.tipe sConn of
+        ( monoType, s1 ) ->
+            case translate record s1 of
+                ( monoRecord, s2 ) ->
+                    ( Mono.MonoRecordAccess monoRecord
+                        fieldName
+                        (refineAccessType s2.env.lss.enabled monoType (Mono.typeOf monoRecord) fieldName)
+                    , s2
+                    )
 
 
 
@@ -6260,68 +5636,55 @@ genericAccess record fieldName meta =
 {-| Original eager destructor handling (bind then translate body, always emit).
 -}
 generalDestruct : TOpt.Destructor TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> TOpt.Meta TypeIds.MVarId -> Step Mono.MonoExpr
-generalDestruct ((TOpt.Destructor dname0 _ dmeta0) as destructor) body meta =
-    Engine.andThen
-        (\_ ->
-            generalDestructBody destructor body meta
-        )
+generalDestruct ((TOpt.Destructor dname0 _ dmeta0) as destructor) body meta s0 =
+    let
+        (TOpt.Destructor _ dpath0 _) =
+            destructor
+
         -- Remember the derived name -> destructor canType, AND connect the
         -- destructor's (freshly-rebuilt) type ids to the ROOT's canonical slot
         -- type: a later CALL of a derived FUNCTION (`getter rec`) then flows its
         -- concreteness back into the root case/tuple's own vars.
-        (Engine.andThen
-            (\_ ->
-                let
-                    (TOpt.Destructor _ dpath0 _) =
-                        destructor
-                in
-                Engine.andThen
-                    (\maybeRootCan ->
-                        case maybeRootCan |> Maybe.andThen (\rootCan -> canSlotForPath rootCan dpath0) of
-                            Just slotCan ->
-                                connectTypes dmeta0.tipe slotCan
+        s1 =
+            { s0 | derivedDestructors = Dict.insert dname0 dmeta0.tipe s0.derivedDestructors }
 
-                            Nothing ->
-                                Engine.succeed ()
-                    )
-                    (Engine.getS (\s -> Dict.get (pathRootName dpath0) s.localCanTypes))
-            )
-            (Engine.modifyS (\s -> { s | derivedDestructors = Dict.insert dname0 dmeta0.tipe s.derivedDestructors }))
-        )
+        s2 =
+            case Dict.get (pathRootName dpath0) s1.localCanTypes |> Maybe.andThen (\rootCan -> canSlotForPath rootCan dpath0) of
+                Just slotCan ->
+                    connectTypes dmeta0.tipe slotCan s1
+
+                Nothing ->
+                    s1
+    in
+    generalDestructBody destructor body meta s2
 
 
 generalDestructBody : TOpt.Destructor TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> TOpt.Meta TypeIds.MVarId -> Step Mono.MonoExpr
-generalDestructBody destructor body meta =
-    Engine.andThen
-        (\monoType0 ->
-            Engine.andThen
-                (\monoDestructor ->
+generalDestructBody destructor body meta s0 =
+    case classifyAs Mono.tkClassDestr meta.tipe s0 of
+        ( monoType0, s1 ) ->
+            case specializeDestructor destructor s1 of
+                ( monoDestructor, s2 ) ->
                     let
                         (Mono.MonoDestructor destructorName _ destructorType) =
                             monoDestructor
                     in
                     Engine.scoped
-                        (Engine.andThen
-                            (\_ ->
-                                Engine.map
-                                    (\monoBody ->
-                                        Mono.MonoDestruct monoDestructor
-                                            monoBody
-                                            (if Mono.containsAnyMVar monoType0 then
-                                                Mono.typeOf monoBody
+                        (\sx ->
+                            case translate body (Engine.insertVar destructorName destructorType sx) of
+                                ( monoBody, sx1 ) ->
+                                    ( Mono.MonoDestruct monoDestructor
+                                        monoBody
+                                        (if Mono.containsAnyMVar monoType0 then
+                                            Mono.typeOf monoBody
 
-                                             else
-                                                monoType0
-                                            )
+                                         else
+                                            monoType0
+                                        )
+                                    , sx1
                                     )
-                                    (translate body)
-                            )
-                            (Engine.insertVar destructorName destructorType)
                         )
-                )
-                (specializeDestructor destructor)
-        )
-        (classifyAs Mono.tkClassDestr meta.tipe)
+                        s2
 
 
 {-| Body-first specialization of a `Destruct` whose root is a number-multi target.
@@ -6332,15 +5695,15 @@ a slot-refined root instance (`recordNumberInstance rootName` — the root's own
 destructor is emitted only if the bare `dname` is actually referenced.
 -}
 specializeNumberDestruct : Name -> TOpt.Path -> TOpt.Meta TypeIds.MVarId -> Name -> Mono.MonoType -> TOpt.Expr TypeIds.MVarId -> TOpt.Meta TypeIds.MVarId -> Step Mono.MonoExpr
-specializeNumberDestruct dname path dmeta rootName eagerRootType body meta =
-    Engine.andThen
-        (\eagerLeaf ->
-            Engine.andThen (\_ -> Engine.recordNumberInstance dname eagerLeaf) (Engine.pushNumberMulti dname)
-                |> thenAlso
-                    (Engine.andThen
-                        (\monoBody ->
-                            Engine.andThen
-                                (\maybeEntry ->
+specializeNumberDestruct dname path dmeta rootName eagerRootType body meta s0 =
+    case classifyAs Mono.tkClassDestr dmeta.tipe s0 of
+        ( eagerLeaf, s1 ) ->
+            case Engine.recordNumberInstance dname eagerLeaf (Engine.pushNumberMulti dname s1) of
+                ( _, s2 ) ->
+                    case Engine.scoped (\sx -> translate body (Engine.insertVar dname eagerLeaf sx)) s2 of
+                        ( monoBody, s3 ) ->
+                            case Engine.popNumberMulti s3 of
+                                ( maybeEntry, s4 ) ->
                                     let
                                         dnameUsed =
                                             exprReferencesLocal dname monoBody
@@ -6353,22 +5716,15 @@ specializeNumberDestruct dname path dmeta rootName eagerRootType body meta =
                                                 Nothing ->
                                                     []
                                     in
-                                    Engine.map
-                                        (\maybeDestructors ->
+                                    case Engine.traverse (buildRefinedDestructor rootName eagerRootType path dmeta) instances s4 of
+                                        ( maybeDestructors, s5 ) ->
                                             let
                                                 destructors =
                                                     List.filterMap identity maybeDestructors
                                             in
-                                            List.foldl (\md acc -> Mono.MonoDestruct md acc (Mono.typeOf acc)) monoBody (List.reverse destructors)
-                                        )
-                                        (Engine.traverse (buildRefinedDestructor rootName eagerRootType path dmeta) instances)
-                                )
-                                Engine.popNumberMulti
-                        )
-                        (Engine.scoped (Engine.andThen (\_ -> translate body) (Engine.insertVar dname eagerLeaf)))
-                    )
-        )
-        (classifyAs Mono.tkClassDestr dmeta.tipe)
+                                            ( List.foldl (\md acc -> Mono.MonoDestruct md acc (Mono.typeOf acc)) monoBody (List.reverse destructors)
+                                            , s5
+                                            )
 
 
 {-| For one recorded instance of the destructor name, materialise the root value
@@ -6382,30 +5738,23 @@ buildRefinedDestructor rootName eagerRootType path dmeta inst s0 =
 
 
 buildRefinedDestructorWith : TypeEnv.GlobalTypeEnv -> Name -> Mono.MonoType -> TOpt.Path -> TOpt.Meta TypeIds.MVarId -> Engine.NumberInstance -> Step (Maybe Mono.MonoDestructor)
-buildRefinedDestructorWith gte rootName eagerRootType path _ inst =
+buildRefinedDestructorWith gte rootName eagerRootType path _ inst s0 =
     case refineRootInstance gte eagerRootType path inst.monoType of
         Just refinedRootType ->
-            Engine.andThen
-                (\( freshRootName, _ ) ->
-                    Engine.andThen
-                        (\_ ->
-                            Engine.andThen
-                                (\monoPath ->
-                                    let
-                                        dtype =
-                                            Mono.getMonoPathType monoPath
-                                    in
-                                    Engine.map (\_ -> Just (Mono.MonoDestructor inst.freshName monoPath dtype))
-                                        (Engine.insertVar inst.freshName dtype)
-                                )
-                                (specializePath (rewriteRootInPath rootName freshRootName path))
-                        )
-                        (Engine.insertVar freshRootName refinedRootType)
-                )
-                (Engine.recordNumberInstance rootName refinedRootType)
+            case Engine.recordNumberInstance rootName refinedRootType s0 of
+                ( ( freshRootName, _ ), s1 ) ->
+                    case specializePath (rewriteRootInPath rootName freshRootName path) (Engine.insertVar freshRootName refinedRootType s1) of
+                        ( monoPath, s2 ) ->
+                            let
+                                dtype =
+                                    Mono.getMonoPathType monoPath
+                            in
+                            ( Just (Mono.MonoDestructor inst.freshName monoPath dtype)
+                            , Engine.insertVar inst.freshName dtype s2
+                            )
 
         Nothing ->
-            Engine.succeed Nothing
+            ( Nothing, s0 )
 
 
 {-| Overlay `leaf` onto the eager root container at the slot selected by `path`
@@ -6826,59 +6175,50 @@ produced by re-translating the RHS under that type (in a fresh store), renamed t
 its per-instance name. An unused function emits its bare def once.
 -}
 translateLocalMultiLet : Name -> TOpt.Expr TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
-translateLocalMultiLet name defBody body letCanType =
-    Engine.modifyS (\s -> { s | localCanTypes = Dict.insert name (TOpt.typeOf defBody) s.localCanTypes })
-        |> Engine.andThen (\_ -> \s -> Engine.pushLocalMulti (rhsLamOf defBody) (rhsPapOf defBody s) name s)
-        |> Engine.andThen
-            (\_ ->
-                Engine.andThen
-                    (\declType ->
-                        -- Bind the name (scoped) so non-VarLocal consumers — e.g. a
-                        -- destructor root over a tuple-of-functions binding — resolve.
-                        Engine.scoped
-                            (Engine.andThen (\_ -> translate body) (Engine.insertVar name declType))
-                    )
-                    (classifyAs Mono.tkClassLet (TOpt.typeOf defBody))
-            )
-        |> Engine.andThen
-            (\monoBody ->
-                Engine.andThen
-                    (\maybeEntry ->
-                        Engine.andThen
-                            (\instanceDefs ->
-                                Engine.andThen
-                                    (\monoBody1 ->
-                                        Engine.map
-                                            (\letType0 ->
-                                                let
-                                                    -- letType stays computed from the UN-enriched
-                                                    -- body (its branch choice must not move flag-on).
-                                                    letType =
-                                                        if
-                                                            Mono.containsAnyMVar letType0
-                                                                || (not (monoTypeMentionsEco (Mono.typeOf monoBody)) && numericLeafOnlyDiff letType0 (Mono.typeOf monoBody))
-                                                        then
-                                                            Mono.typeOf monoBody
+translateLocalMultiLet name defBody body letCanType s0 =
+    let
+        sA =
+            { s0 | localCanTypes = Dict.insert name (TOpt.typeOf defBody) s0.localCanTypes }
 
-                                                        else
-                                                            letType0
-                                                in
-                                                List.foldl (\d acc -> Mono.MonoLet d acc (Mono.typeOf acc)) monoBody1 (List.reverse instanceDefs)
-                                                    |> retypeLet letType
-                                            )
-                                            (classifyAs Mono.tkClassLet letCanType)
-                                    )
+        sB =
+            Engine.pushLocalMulti (rhsLamOf defBody) (rhsPapOf defBody sA) name sA
+    in
+    case classifyAs Mono.tkClassLet (TOpt.typeOf defBody) sB of
+        ( declType, s1 ) ->
+            -- Bind the name (scoped) so non-VarLocal consumers — e.g. a
+            -- destructor root over a tuple-of-functions binding — resolve.
+            case Engine.scoped (\sx -> translate body (Engine.insertVar name declType sx)) s1 of
+                ( monoBody, s2 ) ->
+                    case Engine.popLocalMulti s2 of
+                        ( maybeEntry, s3 ) ->
+                            case buildLocalDefs name defBody maybeEntry s3 of
+                                ( instanceDefs, s4 ) ->
                                     -- E4a (plan §9.1): transport the per-instance re-translated
                                     -- defs' lambda-set annos to the already-emitted USE sites —
                                     -- walked now if this is the outermost let-function of the
                                     -- item, else owed to the enclosing one's single walk
                                     -- (`flushLocalMultiEnrich`).
-                                    (flushLocalMultiEnrich name maybeEntry instanceDefs monoBody)
-                            )
-                            (buildLocalDefs name defBody maybeEntry)
-                    )
-                    Engine.popLocalMulti
-            )
+                                    case flushLocalMultiEnrich name maybeEntry instanceDefs monoBody s4 of
+                                        ( monoBody1, s5 ) ->
+                                            case classifyAs Mono.tkClassLet letCanType s5 of
+                                                ( letType0, s6 ) ->
+                                                    let
+                                                        -- letType stays computed from the UN-enriched
+                                                        -- body (its branch choice must not move flag-on).
+                                                        letType =
+                                                            if
+                                                                Mono.containsAnyMVar letType0
+                                                                    || (not (monoTypeMentionsEco (Mono.typeOf monoBody)) && numericLeafOnlyDiff letType0 (Mono.typeOf monoBody))
+                                                            then
+                                                                Mono.typeOf monoBody
+
+                                                            else
+                                                                letType0
+                                                    in
+                                                    ( List.foldl (\d acc -> Mono.MonoLet d acc (Mono.typeOf acc)) monoBody1 (List.reverse instanceDefs)
+                                                        |> retypeLet letType
+                                                    , s6
+                                                    )
 
 
 {-| Overwrite the outermost `MonoLet`'s carried type with the let's own type
@@ -6936,7 +6276,7 @@ exactly as the completion-time fold computed it.
 flushLocalMultiEnrich : Name -> Maybe Engine.NumberMultiEntry -> List Mono.MonoDef -> Mono.MonoExpr -> Step Mono.MonoExpr
 flushLocalMultiEnrich defName maybeEntry instanceDefs monoBody s0 =
     if not s0.env.lss.enabled then
-        Ok ( monoBody, s0 )
+        ( monoBody, s0 )
 
     else
         let
@@ -6969,20 +6309,20 @@ flushLocalMultiEnrich defName maybeEntry instanceDefs monoBody s0 =
                 Dict.union own inherited
         in
         if Dict.isEmpty pending then
-            Ok ( monoBody, s0 )
+            ( monoBody, s0 )
 
         else
             case s0.localMulti of
                 top :: rest ->
                     -- Nested: the enclosing let-function's walk covers this body.
-                    Ok ( monoBody, { s0 | localMulti = { top | pendingEnrich = Dict.union pending top.pendingEnrich } :: rest } )
+                    ( monoBody, { s0 | localMulti = { top | pendingEnrich = Dict.union pending top.pendingEnrich } :: rest } )
 
                 [] ->
                     let
                         rootEnv =
                             Dict.map (\_ ( _, t ) -> t) own
                     in
-                    Ok ( overlayLocalMultiUses pending rootEnv monoBody, enrichCensus pending rootEnv monoBody s0 )
+                    ( overlayLocalMultiUses pending rootEnv monoBody, enrichCensus pending rootEnv monoBody s0 )
 
 
 {-| The single walk. `groups`: recorded instance name -> (its let's defName,
@@ -7404,12 +6744,14 @@ enrichCensusGo groups depth expr st =
 
 
 buildLocalDefs : Name -> TOpt.Expr TypeIds.MVarId -> Maybe Engine.NumberMultiEntry -> Step (List Mono.MonoDef)
-buildLocalDefs name defBody maybeEntry =
+buildLocalDefs name defBody maybeEntry s0 =
     case maybeEntry of
         Just entry ->
             if Mono.specMapIsEmpty entry.instances then
                 -- Unused function: emit its bare def once, at its declared type.
-                Engine.map (\e -> [ Mono.MonoDef name e ]) (translate defBody)
+                case translate defBody s0 of
+                    ( e, s1 ) ->
+                        ( [ Mono.MonoDef name e ], s1 )
 
             else
                 -- The ORDINAL is the discriminator
@@ -7420,11 +6762,16 @@ buildLocalDefs name defBody maybeEntry =
                 -- def names would already be unstable, which is the whole
                 -- stability argument, and it costs nothing new.
                 Engine.traverse
-                    (\( ord, inst ) -> Engine.map (\e -> Mono.MonoDef inst.freshName e) (retranslateAtInstance name ord defBody inst.monoType))
+                    (\( ord, inst ) sx ->
+                        case retranslateAtInstance name ord defBody inst.monoType sx of
+                            ( e, sx1 ) ->
+                                ( Mono.MonoDef inst.freshName e, sx1 )
+                    )
                     (List.indexedMap Tuple.pair (Mono.specMapValues entry.instances))
+                    s0
 
         Nothing ->
-            Engine.succeed []
+            ( [], s0 )
 
 
 
@@ -7432,58 +6779,56 @@ buildLocalDefs name defBody maybeEntry =
 
 
 specializeDecider : Can.Type TypeIds.MVarId -> Name -> TOpt.Decider (TOpt.Choice TypeIds.MVarId) -> Step (Mono.Decider Mono.MonoChoice)
-specializeDecider caseCanType root decider =
+specializeDecider caseCanType root decider s0 =
     case decider of
         TOpt.Leaf choice ->
-            Engine.map Mono.Leaf (specializeChoice caseCanType choice)
+            case specializeChoice caseCanType choice s0 of
+                ( mc, s1 ) ->
+                    ( Mono.Leaf mc, s1 )
 
         TOpt.Chain testChain success failure ->
-            Engine.andThen
-                (\monoTestChain ->
-                    Engine.andThen
-                        (\monoSuccess ->
-                            Engine.map (\monoFailure -> Mono.Chain monoTestChain monoSuccess monoFailure)
-                                (Engine.scoped (specializeDecider caseCanType root failure))
-                        )
-                        (Engine.scoped (specializeDecider caseCanType root success))
-                )
-                (Engine.traverse (\( path, test ) -> Engine.map (\mp -> ( mp, test )) (specializeDtPath root path)) testChain)
+            case Engine.traverse (\( path, test ) sx -> case specializeDtPath root path sx of ( mp, sx1 ) -> ( ( mp, test ), sx1 )) testChain s0 of
+                ( monoTestChain, s1 ) ->
+                    case Engine.scoped (specializeDecider caseCanType root success) s1 of
+                        ( monoSuccess, s2 ) ->
+                            case Engine.scoped (specializeDecider caseCanType root failure) s2 of
+                                ( monoFailure, s3 ) ->
+                                    ( Mono.Chain monoTestChain monoSuccess monoFailure, s3 )
 
         TOpt.FanOut path edges fallback ->
-            Engine.andThen
-                (\monoPath ->
-                    Engine.andThen
-                        (\monoEdges ->
-                            Engine.map (\monoFallback -> Mono.FanOut monoPath monoEdges monoFallback)
-                                (Engine.scoped (specializeDecider caseCanType root fallback))
-                        )
-                        (Engine.traverse (\( test, dec ) -> Engine.map (\md -> ( test, md )) (Engine.scoped (specializeDecider caseCanType root dec))) edges)
-                )
-                (specializeDtPath root path)
+            case specializeDtPath root path s0 of
+                ( monoPath, s1 ) ->
+                    case Engine.traverse (\( test, dec ) sx -> case Engine.scoped (specializeDecider caseCanType root dec) sx of ( md, sx1 ) -> ( ( test, md ), sx1 )) edges s1 of
+                        ( monoEdges, s2 ) ->
+                            case Engine.scoped (specializeDecider caseCanType root fallback) s2 of
+                                ( monoFallback, s3 ) ->
+                                    ( Mono.FanOut monoPath monoEdges monoFallback, s3 )
 
 
 specializeChoice : Can.Type TypeIds.MVarId -> TOpt.Choice TypeIds.MVarId -> Step Mono.MonoChoice
-specializeChoice caseCanType choice =
+specializeChoice caseCanType choice s0 =
     case choice of
         TOpt.Inline expr ->
             -- Connect the result's type to the case's own type first (demand flow
             -- into branch results, as in the If arm).
-            Engine.andThen
-                (\_ -> Engine.map Mono.Inline (translate expr))
-                (connectTypes (TOpt.typeOf expr) caseCanType)
+            case translate expr (connectTypes (TOpt.typeOf expr) caseCanType s0) of
+                ( me, s1 ) ->
+                    ( Mono.Inline me, s1 )
 
         TOpt.Jump index ->
-            Engine.succeed (Mono.Jump index)
+            ( Mono.Jump index, s0 )
 
 
 specializeJumps : Can.Type TypeIds.MVarId -> List ( Int, TOpt.Expr TypeIds.MVarId ) -> Step (List ( Int, Mono.MonoExpr ))
-specializeJumps caseCanType jumps =
+specializeJumps caseCanType jumps s0 =
     Engine.traverse
-        (\( idx, expr ) ->
-            Engine.map (\me -> ( idx, me ))
-                (Engine.scoped (Engine.andThen (\_ -> translate expr) (connectTypes (TOpt.typeOf expr) caseCanType)))
+        (\( idx, expr ) sx ->
+            case Engine.scoped (\sy -> translate expr (connectTypes (TOpt.typeOf expr) caseCanType sy)) sx of
+                ( me, sx1 ) ->
+                    ( ( idx, me ), sx1 )
         )
         jumps
+        s0
 
 
 {-| SHADOW MEASUREMENT (plans/lss-ctor-arrow-identity.md §9.2): at a `case`,
@@ -7844,39 +7189,33 @@ joinBranchAnno acc next =
 
 
 specializeDtPath : Name -> TypedPath.Path -> Step Mono.MonoDtPath
-specializeDtPath root path =
+specializeDtPath root path s0 =
     case path of
         TypedPath.Empty ->
-            Engine.andThen
-                (\maybeT ->
-                    case maybeT of
-                        Just t ->
-                            Engine.succeed (Mono.DtRoot root t)
+            case Engine.lookupVar root s0 of
+                ( Just t, s1 ) ->
+                    ( Mono.DtRoot root t, s1 )
 
-                        Nothing ->
-                            Engine.fail (EngineBug ("case root not in varEnv: " ++ root))
-                )
-                (Engine.lookupVar root)
+                ( Nothing, s1 ) ->
+                    ( Engine.crashFailure (EngineBug ("case root not in varEnv: " ++ root)), s1 )
 
         TypedPath.Index index hint subPath ->
-            Engine.andThen
-                (\monoSubPath ->
+            case specializeDtPath root subPath s0 of
+                ( monoSubPath, s1 ) ->
                     let
                         i =
                             Index.toMachine index
                     in
-                    Engine.map (\resultType -> Mono.DtIndex i (dtHintToKind hint) resultType monoSubPath)
-                        (projIndexType (dtHintToProj hint) i (Mono.dtPathType monoSubPath))
-                )
-                (specializeDtPath root subPath)
+                    case projIndexType (dtHintToProj hint) i (Mono.dtPathType monoSubPath) s1 of
+                        ( resultType, s2 ) ->
+                            ( Mono.DtIndex i (dtHintToKind hint) resultType monoSubPath, s2 )
 
         TypedPath.Unbox subPath ->
-            Engine.andThen
-                (\monoSubPath ->
-                    Engine.map (\resultType -> Mono.DtUnbox resultType monoSubPath)
-                        (computeUnboxResultType (Mono.dtPathType monoSubPath))
-                )
-                (specializeDtPath root subPath)
+            case specializeDtPath root subPath s0 of
+                ( monoSubPath, s1 ) ->
+                    case computeUnboxResultType (Mono.dtPathType monoSubPath) s1 of
+                        ( resultType, s2 ) ->
+                            ( Mono.DtUnbox resultType monoSubPath, s2 )
 
 
 
@@ -7884,11 +7223,11 @@ specializeDtPath root path =
 
 
 specializeDestructor : TOpt.Destructor TypeIds.MVarId -> Step Mono.MonoDestructor
-specializeDestructor (TOpt.Destructor name path meta) =
-    Engine.andThen
-        (\monoPath ->
-            Engine.andThen
-                (\monoType0 sD ->
+specializeDestructor (TOpt.Destructor name path meta) s0 =
+    case specializePath path s0 of
+        ( monoPath, sP ) ->
+            case classifyAs Mono.tkClassDestr meta.tipe sP of
+                ( monoType0, sD ) ->
                     let
                         -- Destructor annotations
                         -- (plans/lss-ctor-arrow-identity.md §9.5). Shipped as
@@ -7934,11 +7273,7 @@ specializeDestructor (TOpt.Destructor name path meta) =
                                 monoPath
                                 (destrAnnoCensus monoType0 (Mono.getMonoPathType monoPath) sD)
                     in
-                    Ok ( Mono.MonoDestructor name monoPath monoType, sD1 )
-                )
-                (classifyAs Mono.tkClassDestr meta.tipe)
-        )
-        (specializePath path)
+                    ( Mono.MonoDestructor name monoPath monoType, sD1 )
 
 
 payloadRowGo : Mono.MonoPath -> String -> Step (Maybe String)
@@ -7946,10 +7281,10 @@ payloadRowGo monoPath suffix s0 =
     case monoPath of
         Mono.MonoIndex fieldIx (Mono.CustomContainer ctorName) _ _ ->
             if ctorName == "" then
-                Ok ( Nothing, s0 )
+                ( Nothing, s0 )
 
             else
-                Ok ( Just (ctorName ++ "|" ++ String.repeat fieldIx "/r" ++ "/a0" ++ suffix), s0 )
+                ( Just (ctorName ++ "|" ++ String.repeat fieldIx "/r" ++ "/a0" ++ suffix), s0 )
 
         Mono.MonoUnbox _ subPath ->
             case Mono.getMonoPathType subPath of
@@ -7958,16 +7293,16 @@ payloadRowGo monoPath suffix s0 =
                         Just (Can.Union unionData) ->
                             case unionData.alts of
                                 [ Can.Ctor c ] ->
-                                    Ok ( Just (c.name ++ "|/a0" ++ suffix), s0 )
+                                    ( Just (c.name ++ "|/a0" ++ suffix), s0 )
 
                                 _ ->
-                                    Ok ( Nothing, s0 )
+                                    ( Nothing, s0 )
 
                         Nothing ->
-                            Ok ( Nothing, s0 )
+                            ( Nothing, s0 )
 
                 _ ->
-                    Ok ( Nothing, s0 )
+                    ( Nothing, s0 )
 
         -- Pass-through projections: prepend this step's segment (we walk
         -- OUTERMOST-first, which is DEEPEST in the type, so consing onto the
@@ -7985,68 +7320,59 @@ payloadRowGo monoPath suffix s0 =
             payloadRowGo subPath ("/f:" ++ fieldName ++ suffix) s0
 
         Mono.MonoRoot _ _ ->
-            Ok ( Nothing, s0 )
+            ( Nothing, s0 )
 
 
 specializePath : TOpt.Path -> Step Mono.MonoPath
-specializePath path =
+specializePath path s0 =
     case path of
         TOpt.Root name ->
-            Engine.andThen
-                (\maybeT ->
-                    case maybeT of
-                        Just t ->
-                            Engine.succeed (Mono.MonoRoot name t)
+            case Engine.lookupVar name s0 of
+                ( Just t, s1 ) ->
+                    ( Mono.MonoRoot name t, s1 )
 
-                        Nothing ->
-                            Engine.fail (EngineBug ("destruct root not in varEnv: " ++ name))
-                )
-                (Engine.lookupVar name)
+                ( Nothing, s1 ) ->
+                    ( Engine.crashFailure (EngineBug ("destruct root not in varEnv: " ++ name)), s1 )
 
         TOpt.Index index hint subPath ->
-            Engine.andThen
-                (\monoSubPath ->
+            case specializePath subPath s0 of
+                ( monoSubPath, s1 ) ->
                     let
                         i =
                             Index.toMachine index
                     in
-                    Engine.map (\resultType -> Mono.MonoIndex i (hintToKind hint) resultType monoSubPath)
-                        (projIndexType (hintToProj hint) i (Mono.getMonoPathType monoSubPath))
-                )
-                (specializePath subPath)
+                    case projIndexType (hintToProj hint) i (Mono.getMonoPathType monoSubPath) s1 of
+                        ( resultType, s2 ) ->
+                            ( Mono.MonoIndex i (hintToKind hint) resultType monoSubPath, s2 )
 
         TOpt.ArrayIndex idx subPath ->
-            Engine.andThen
-                (\monoSubPath ->
-                    Engine.map (\resultType -> Mono.MonoIndex idx (Mono.CustomContainer "") resultType monoSubPath)
-                        (computeArrayElementType (Mono.getMonoPathType monoSubPath))
-                )
-                (specializePath subPath)
+            case specializePath subPath s0 of
+                ( monoSubPath, s1 ) ->
+                    case computeArrayElementType (Mono.getMonoPathType monoSubPath) s1 of
+                        ( resultType, s2 ) ->
+                            ( Mono.MonoIndex idx (Mono.CustomContainer "") resultType monoSubPath, s2 )
 
         TOpt.Field fieldName subPath ->
-            Engine.andThen
-                (\monoSubPath ->
+            case specializePath subPath s0 of
+                ( monoSubPath, s1 ) ->
                     case Mono.getMonoPathType monoSubPath of
                         Mono.MRecord _ fields ->
                             case Dict.get fieldName fields of
                                 Just t ->
-                                    Engine.succeed (Mono.MonoField fieldName t monoSubPath)
+                                    ( Mono.MonoField fieldName t monoSubPath, s1 )
 
                                 Nothing ->
-                                    Engine.fail (EngineBug ("field not in record: " ++ fieldName))
+                                    ( Engine.crashFailure (EngineBug ("field not in record: " ++ fieldName)), s1 )
 
                         _ ->
-                            Engine.fail (EngineBug "field projection: container not Mono.mRecord")
-                )
-                (specializePath subPath)
+                            ( Engine.crashFailure (EngineBug "field projection: container not Mono.mRecord"), s1 )
 
         TOpt.Unbox subPath ->
-            Engine.andThen
-                (\monoSubPath ->
-                    Engine.map (\resultType -> Mono.MonoUnbox resultType monoSubPath)
-                        (computeUnboxResultType (Mono.getMonoPathType monoSubPath))
-                )
-                (specializePath subPath)
+            case specializePath subPath s0 of
+                ( monoSubPath, s1 ) ->
+                    case computeUnboxResultType (Mono.getMonoPathType monoSubPath) s1 of
+                        ( resultType, s2 ) ->
+                            ( Mono.MonoUnbox resultType monoSubPath, s2 )
 
 
 
@@ -8060,99 +7386,91 @@ type ProjKind
 
 
 projIndexType : ProjKind -> Int -> Mono.MonoType -> Step Mono.MonoType
-projIndexType kind index container =
+projIndexType kind index container s0 =
     case kind of
         PList ->
             case container of
                 Mono.MList _ elem ->
                     -- index 0 = head → element; otherwise = tail → the list itself
                     if index == 0 then
-                        Engine.succeed elem
+                        ( elem, s0 )
 
                     else
-                        Engine.succeed container
+                        ( container, s0 )
 
                 _ ->
-                    Engine.fail (EngineBug "list projection: container not Mono.mList")
+                    ( Engine.crashFailure (EngineBug "list projection: container not Mono.mList"), s0 )
 
         PTuple ->
             case container of
                 Mono.MTuple _ elems ->
                     case List.head (List.drop index elems) of
                         Just t ->
-                            Engine.succeed t
+                            ( t, s0 )
 
                         Nothing ->
-                            Engine.fail (EngineBug "tuple projection: index out of range")
+                            ( Engine.crashFailure (EngineBug "tuple projection: index out of range"), s0 )
 
                 _ ->
-                    Engine.fail (EngineBug "tuple projection: container not Mono.mTuple")
+                    ( Engine.crashFailure (EngineBug "tuple projection: container not Mono.mTuple"), s0 )
 
         PCustom ctorName ->
-            computeCustomFieldType ctorName index container
+            computeCustomFieldType ctorName index container s0
 
 
 computeArrayElementType : Mono.MonoType -> Step Mono.MonoType
-computeArrayElementType container =
+computeArrayElementType container s0 =
     case container of
         Mono.MCustom _ _ "Array" [ elem ] ->
-            Engine.succeed elem
+            ( elem, s0 )
 
         _ ->
-            Engine.fail (EngineBug "array projection: container not Array")
+            ( Engine.crashFailure (EngineBug "array projection: container not Array"), s0 )
 
 
 computeCustomFieldType : Name -> Int -> Mono.MonoType -> Step Mono.MonoType
-computeCustomFieldType ctorName index container =
+computeCustomFieldType ctorName index container s0 =
     case container of
         Mono.MCustom _ home typeName typeArgs ->
-            Engine.andThen
-                (\gte ->
-                    case Analysis.lookupUnion gte home typeName of
-                        Just (Can.Union unionData) ->
-                            case findCtorArg ctorName index unionData.alts of
-                                Just canArgType ->
-                                    instantiateUnionType unionData.vars typeArgs canArgType
-
-                                Nothing ->
-                                    Engine.fail (EngineBug ("ctor field not found: " ++ ctorName ++ "@" ++ String.fromInt index))
+            case Analysis.lookupUnion s0.env.globalTypeEnv home typeName of
+                Just (Can.Union unionData) ->
+                    case findCtorArg ctorName index unionData.alts of
+                        Just canArgType ->
+                            instantiateUnionType unionData.vars typeArgs canArgType s0
 
                         Nothing ->
-                            Engine.fail (EngineBug ("union not found: " ++ typeName))
-                )
-                (Engine.getS (\s -> s.env.globalTypeEnv))
+                            ( Engine.crashFailure (EngineBug ("ctor field not found: " ++ ctorName ++ "@" ++ String.fromInt index)), s0 )
+
+                Nothing ->
+                    ( Engine.crashFailure (EngineBug ("union not found: " ++ typeName)), s0 )
 
         _ ->
-            Engine.fail (EngineBug "custom field projection: container not Mono.mCustom")
+            ( Engine.crashFailure (EngineBug "custom field projection: container not Mono.mCustom"), s0 )
 
 
 computeUnboxResultType : Mono.MonoType -> Step Mono.MonoType
-computeUnboxResultType container =
+computeUnboxResultType container s0 =
     case container of
         Mono.MCustom _ home typeName typeArgs ->
-            Engine.andThen
-                (\gte ->
-                    case Analysis.lookupUnion gte home typeName of
-                        Just (Can.Union unionData) ->
-                            case unionData.alts of
-                                [ Can.Ctor c ] ->
-                                    case c.args of
-                                        [ canArgType ] ->
-                                            instantiateUnionType unionData.vars typeArgs canArgType
-
-                                        _ ->
-                                            Engine.fail (EngineBug "unbox: constructor is not single-arg")
+            case Analysis.lookupUnion s0.env.globalTypeEnv home typeName of
+                Just (Can.Union unionData) ->
+                    case unionData.alts of
+                        [ Can.Ctor c ] ->
+                            case c.args of
+                                [ canArgType ] ->
+                                    instantiateUnionType unionData.vars typeArgs canArgType s0
 
                                 _ ->
-                                    Engine.fail (EngineBug "unbox: type is not single-constructor")
+                                    ( Engine.crashFailure (EngineBug "unbox: constructor is not single-arg"), s0 )
 
-                        Nothing ->
-                            Engine.fail (EngineBug ("unbox: union not found: " ++ typeName))
-                )
-                (Engine.getS (\s -> s.env.globalTypeEnv))
+                        _ ->
+                            ( Engine.crashFailure (EngineBug "unbox: type is not single-constructor"), s0 )
+
+                Nothing ->
+                    ( Engine.crashFailure (EngineBug ("unbox: union not found: " ++ typeName)), s0 )
 
         _ ->
-            Engine.fail (EngineBug "unbox: container not Mono.mCustom")
+            ( Engine.crashFailure (EngineBug "unbox: container not Mono.mCustom"), s0 )
 
 
 findCtorArg : Name -> Int -> List Can.Ctor -> Maybe (Can.Type Name)
@@ -8171,9 +7489,9 @@ classify. Mirrors the original engine's field-type computation without importing
 its `applySubstPure`.
 -}
 instantiateUnionType : List Name -> List Mono.MonoType -> Can.Type Name -> Step Mono.MonoType
-instantiateUnionType vars typeArgs canArgType =
-    Engine.andThen
-        (\ids ->
+instantiateUnionType vars typeArgs canArgType s0 =
+    case allocFreshIds (List.length vars) s0 of
+        ( ids, s1 ) ->
             let
                 nameToId =
                     Dict.fromList (List.map2 Tuple.pair vars ids)
@@ -8183,25 +7501,21 @@ instantiateUnionType vars typeArgs canArgType =
 
                 convertedArg =
                     Analysis.convertCanTypeNameToMVarId nameToId canArgType
+
+                ( mt, intern1 ) =
+                    Zonk.canTypeToMonoWithI s1.superTable subst convertedArg s1.intern
             in
-            \s ->
-                let
-                    ( mt, intern1 ) =
-                        Zonk.canTypeToMonoWithI s.superTable subst convertedArg s.intern
-                in
-                Ok ( mt, { s | intern = intern1 } )
-        )
-        (allocFreshIds (List.length vars))
+            ( mt, { s1 | intern = intern1 } )
 
 
 allocFreshIds : Int -> Step (List TypeIds.MVarId)
-allocFreshIds n =
-    Engine.traverse (\_ -> allocFreshId) (List.repeat n ())
+allocFreshIds n s0 =
+    Engine.traverse (\_ -> allocFreshId) (List.repeat n ()) s0
 
 
 allocFreshId : Step TypeIds.MVarId
 allocFreshId =
-    \s -> Ok ( s.nextMVarId, { s | nextMVarId = Id.succ s.nextMVarId } )
+    \s -> ( s.nextMVarId, { s | nextMVarId = Id.succ s.nextMVarId } )
 
 
 hintToKind : TOpt.ContainerHint -> Mono.ContainerKind
@@ -8279,8 +7593,8 @@ dtHintToProj hint =
 
 
 lookupAnnotation : TOpt.Global -> Step (Maybe (Can.Annotation TypeIds.MVarId))
-lookupAnnotation global =
-    Engine.getS (\s -> DMap.get TOpt.toComparableGlobal global s.env.annotations)
+lookupAnnotation global s =
+    ( DMap.get TOpt.toComparableGlobal global s.env.annotations, s )
 
 
 toptToMonoGlobal : TOpt.Global -> Mono.Global

@@ -245,7 +245,7 @@ lines of prose — what changed, the verdict, and the one-line reason if it is n
 | **median** | | | | | | | |
 | Δ vs reference (last win / baseline), medians | | | | | | | |
 
-**Summary table** (§7, bottom of the file): one row per step, numbers only — the MEDIANS of the
+**Summary table** (§9, bottom of the file): one row per step, numbers only — the MEDIANS of the
 three runs: `step | wall (s) | minor GC | major GC | promoted MiB | max RSS (kB) | verdict | ref`.
 `ref` names the row the verdict was judged against (`base` or the step number of the last win),
 so a reverted row is visibly skipped by the row after it. No commentary in the table; the argument
@@ -317,12 +317,10 @@ or promotion increase as the warning it is.
 
 ## 6. Runs
 
-(Entries in the §3 shape, one per step, newest last.)
+(One entry per step, newest last. Each is: the results table, then at most ten lines —
+what changed, the verdict, and the reason if it is not obvious. §3 defines the shape.)
 
 ### base — series baseline (2026-09-19)
-
-`bin/eco-opt-prev` = the tree's fixed-point `bin/eco-compiler` (sha256 `7fc3b7e0…`) building the
-unchanged tree.
 
 | run | wall (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
 |---|---|---|---|---|---|---|---|
@@ -331,10 +329,11 @@ unchanged tree.
 | r3 | 397.19 | 1825 | 10 | 20846 | 12,708,052 | 13,304,208 | same |
 | **median** | **398.71** | **1825** | **10** | **20846** | **12,708,052** | 13,304,208 | same |
 
-Wall spread 5.21 s = 1.31 %. The three GC counters are IDENTICAL across all three runs — they are
-deterministic per (binary x tree), which is why they are judged before wall. All three outputs are
-byte-identical to each other and to `bin/eco-compiler.mlir`, so the tree is at its fixed point.
-GC/Alloc time 142.10 s = 35.6 % of wall. This row is the reference until the first win.
+`bin/eco-opt-prev` = the tree's fixed-point `bin/eco-compiler` (sha256 `7fc3b7e0…`) building the
+unchanged tree. Wall spread 5.21 s = 1.31 %. The three GC counters are IDENTICAL across all three
+runs — deterministic per (binary x tree), which is why they are judged before wall. All three
+outputs are byte-identical to each other and to `bin/eco-compiler.mlir`, so the tree is at its
+fixed point. GC/Alloc time 142.10 s = 35.6 % of wall. Reference row until the first win.
 
 ### 1 — GC-stats timer overhead in the `build` preset (runtime) — **WIN**
 
@@ -346,35 +345,16 @@ GC/Alloc time 142.10 s = 35.6 % of wall. This row is the reference until the fir
 | **median** | **370.18** | **1825** | **10** | **20846** | **12,705,760** | 13,304,208 | same |
 | D vs base | **-28.53 (-7.16 %)** | 0 | 0 | 0 | -2,292 (-0.02 %) | 0 | — |
 
-`OldGenSpace::allocate` no longer reads the clock when `g_in_minor_gc` is set. That call is one
-promotion, made once per promoted object by the three nursery evacuation copiers, so the bracket was
-costing two vdso clock reads per promoted object — on the order of 1.5e9 reads per run. Promotions
-are already inside the minor-GC bracket, so the deleted sub-counter measured a nesting, not a cost.
-`NurserySpace::minorGC` therefore records the whole pause with nothing subtracted, and the
-`total_oldgen_alloc_in_minor_ns` field is deleted rather than left reading zero. Four files,
-202-line patch (`snapshots/lss-loop/step-1.patch`); no compiler source changed, so the candidate is
-`bin/eco-compiler.mlir` re-lowered against the rebuilt runtime.
-
-Verdict WIN on rule 1, by a margin no re-run could flip: wall is down 28.53 s against a triple
-spread of 7.86 s. That spread is 2.12 % of the median, marginally over the 2 % disturbance
-threshold; it was not re-run because the delta is 3.6x the spread and the three GC counters came
-back bit-exact, which is what a disturbed machine does not do. The counters landing on 1825 / 10 /
-20846 exactly is also the proof that the change is pure overhead removal: the allocator did the same
-work, it just stopped timing itself.
-
-One number moved the other way and is not judged: `Total GC/Alloc time` rose from 142.10 s to
-146.53 s. That is an accounting change, not a regression. Minor-GC time now includes promotion
-allocation, which the old code subtracted out, and the subtracted quantity was itself mostly the
-timer overhead this step deleted. Walls recorded before step 1 are not comparable with later ones
-for that reason, which is why the reference row moves to this step.
-
-Rejected alternatives, recorded so they are not re-proposed: `rdtsc` (still two instructions plus
-serialisation per promotion, and TSC-versus-vdso agreement is unmeasured on this VM); sampling every
-2^n-th promotion and scaling (a non-deterministic sub-counter for a figure nobody judges); keeping
-the field and writing zero (a zero that reads like data).
-
-Gates: `check` green, 1727/1727 (C++-only change, so `check` is the sanctioned target). Kept as
-`keep-1`; `bin/eco-opt-prev` is now `eco-opt1`.
+`OldGenSpace::allocate` no longer reads the clock when `g_in_minor_gc` is set — two vdso reads
+per promoted object, ~1.5e9 per run, measuring a nesting rather than a cost. Four files, 202-line
+patch; no compiler source changed, so the candidate is `bin/eco-compiler.mlir` re-lowered against
+the rebuilt runtime. WIN on rule 1: wall -28.53 s against a 7.86 s spread, and the GC counters
+came back bit-exact (1825/10/20846), which is both the proof that this is pure overhead removal
+and what a disturbed machine does not do. `Total GC/Alloc time` rose 142.10 -> 146.53 s: an
+accounting change, not a regression — minor-GC time now includes promotion allocation, which the
+old code subtracted out. Walls before step 1 are not comparable with later ones for that reason.
+Rejected and not to be re-proposed: `rdtsc`, sampling every 2^n-th promotion, keeping the field at
+zero. Gates: `check` green 1727/1727 (C++-only). Kept as `keep-1`.
 
 ### 2 — hash-cons equality O(arity) instead of a deep structural walk — **WIN**
 
@@ -386,69 +366,29 @@ Gates: `check` green, 1727/1727 (C++-only change, so `check` is the sanctioned t
 | **median** | **359.47** | **1821** | **10** | **20836** | **12,690,812** | 13,306,221 | same |
 | D vs 1 | **-10.71 (-2.89 %)** | **-4** | 0 | **-10** | **-14,948 (-0.12 %)** | +2,013 | — |
 
-The intern table's key type becomes `Canon` — the canonical node plus, for a record only, its
-fields in ascending name order — and the probe stays a bare `MonoType` compared against it by
-`HashMap.getBy`, added here. `eqExact` is no longer Elm `==`: it tests the packed hash first, then
-the shallow slots, then the children with `==`. The record arm walks the fresh `Dict.foldl` in
-lockstep against the stored ascending list, so it never builds a list for the probe and never calls
-`Dict.get`. The sorted list is built once per canonical node, on the miss path, which is about 1 %
-of probes. Two files, 292-line patch (`snapshots/lss-loop/step-2.patch`).
-
-What this removes is the kernel's `dictEq` on the 99 %-hit path: comparing two record shells meant
-two vector allocations, an in-order walk of both red-black trees and a string compare per field
-name, even though the children on both sides were already canonical and would have answered on
-their first word. The children were never the cost; the container shells were.
-
-Every stat improved, so the verdict does not rest on wall alone. Four fewer minor cycles and 10 MiB
-less promoted, on a workload that GREW by 2,013 bytes, means the change removed real allocation
-rather than merely moving it. Wall spread 7.01 s = 1.95 %, inside the band.
-
-Byte identity, the gate for a substrate step, is met three ways. The fixed-point `cmp` is the
-strongest: `eco2.mlir` was emitted by the step-1 compiler (deep `==`) from the changed source and
-`eco-opt2-r1-out.mlir` by the step-2 compiler (shallow compare) from that same source, and the two
-agree over 13.3 MB. The 633-workload rail agrees as well, on both artefacts — 633/633 manifests
-identical and a zero-line diff across the 65,508-line LSS census, which is the analysis gate the
-bytes alone would not give. And a new unit oracle checks `eqExact a b == (a == b)` over the 8,100
-corpus pairs plus hand-written record cases, including the two a shallow compare is most likely to
-get wrong: fields inserted in opposite orders (equal content, different tree shape) and two names
-of equal length that also collide on the packed hash.
-
-`out.mlir` grew 2,013 bytes because the workload is the compiler's own source and this step adds
-source to it. That is workload movement, not emission drift; the rail is what separates the two.
-
-Gates: `full` green 1727/1727; unit suite 13,531 passed with the 12 pre-existing POST_010
-grounding failures unchanged in name and count; rail clean. New pins: `Compiler/Data/HashMapTest`
-(6 tests, collision-forcing hash) and two `K6` tests in `ComparableKeyEncodingTest`. Kept as
-`keep-2`; `bin/eco-opt-prev` is now `eco-opt2`. The rail artefacts are saved in `keep-2/` as the
-reference for step 3.
+The intern key becomes `Canon` — the canonical node plus, for records, fields in ascending name
+order — and `eqExact` tests the packed hash, then shallow slots, then children, instead of Elm
+`==`. That removes the kernel's `dictEq` from the 99 %-hit path: two vector allocations, an
+in-order walk of both red-black trees and a string compare per field, for children already
+canonical. Every stat improved on a workload that GREW 2,013 bytes, so real allocation went, not
+moved. Byte identity three ways: fixed-point `cmp` over 13.3 MB emitted by two different compilers
+from one source; the rail identical on manifest and the 65,508-line census; and a new oracle
+checking `eqExact a b == (a == b)` over 8,100 pairs plus opposite-order fields and equal-length
+colliding names. Gates: `full` 1727/1727; unit 13,531 + the 12 pre-existing POST_010 failures; new
+pins `Data/HashMapTest` and two K6 tests. Kept as `keep-2`.
 
 ### 3a — `Eco.CellStore` kernel package, pure twin, native pins — **not measured**
 
 No compiler source changed, so there is nothing to time. Adds the kernel module in three
 languages: `eco-kernel-cpp/src/eco/CellStore.{hpp,cpp}` + `CellStoreExports.cpp` (a C++ vector of
 encoded HPointer words plus an undo trail, registered with `RootSet::addExternalRootScanner`),
-`src/Eco/Kernel/CellStore.js` for the JS bootstrap stages, `src/Eco/CellStore.elm` as the Elm
-wrapper, and `compiler/src-xhr/Eco/CellStore.elm` as the PURE twin that stock Elm compiles for
-stage 1 and the unit suite. Wired into four build files plus the package manifest and
-`ECO_KERNEL_MODS`, which is the list that actually puts the archive in the lowered binary.
-
-Gates: `Compiler/Data/CellStoreTest` (16 tests, the twin) and four native pins under
-`test/eco-kernel` — round-trip over 1,000 boxed records, the rollback algebra, 40,000 cells
-surviving forced collections with the originals reachable only from the trail, and two stores
-built side by side not aliasing. All green.
-
-Three things this cost that the specification did not predict, recorded because the next kernel
-module will hit all three. The kernel JS file's leading `/* ... */` block is the IMPORT header, not
-a comment, so prose there makes the module unresolvable. A locally-linked package is COPIED into
-`~/.eco` on first build and the copy is not refreshed when the seed gains a module, so the copy has
-to be moved aside. And `ECO_KERNEL_MODS` in `runtime/src/codegen/CMakeLists.txt`, not the link
-lists, is what decides whether the archive reaches a lowered program.
-
-The snapshot tool was extended in this step and is now part of the protocol: it covers
-`compiler/tests`, `test/eco-kernel/src` and six individual build/manifest files, skips paths a
-snapshot predates rather than deleting them, and excludes `TestServerConfig.elm`, which the E2E
-harness rewrites with a fresh port on every run. `keep-2` was backfilled with the pre-step-3
-content of the new paths so a step-3 revert would have been complete.
+`src/Eco/Kernel/CellStore.js`, `src/Eco/CellStore.elm`, and `compiler/src-xhr/Eco/CellStore.elm` as
+the PURE twin stock Elm compiles for stage 1 and the unit suite. Three costs the spec did not
+predict: the kernel JS file's leading `/* … */` block is the IMPORT header, not a comment; a
+locally-linked package is COPIED into `~/.eco` and not refreshed when the seed gains a module; and
+`ECO_KERNEL_MODS` in `runtime/src/codegen/CMakeLists.txt` decides whether the archive reaches a
+lowered program. Gates: `CellStoreTest` (16, the twin) and four native pins — round-trip, rollback
+algebra, 40,000 cells surviving forced GC reachable only from the trail, two stores not aliasing.
 
 ### 3 — transient union-find store (`Eco.CellStore`) — **WIN**
 
@@ -460,50 +400,16 @@ content of the new paths so a step-3 revert would have been complete.
 | **median** | **340.70** | **1583** | **10** | **20376** | **12,457,544** | 13,314,359 | same |
 | D vs 2 | **-18.77 (-5.22 %)** | **-238 (-13.1 %)** | 0 | **-460 (-2.2 %)** | **-233,268 (-1.84 %)** | +8,138 | — |
 
-`IO.State.ioRefsPoint` is no longer a persistent 32-way trie. Every descriptor write and every
-union used to copy a path of two or three 32-slot nodes; now a write is one C call and a store, and
-a fresh Point is one vector push. The cells and the undo trail are GC roots through an external
-root scanner, which is the only sound way to hold Elm values in mutable storage here — the
-collector has no write barrier, so an on-heap mutable object could hold an old-to-young pointer no
-minor GC would ever see. Recorded as HEAP_047 and KERN_007.
-
-Soundness rests on the store being threaded linearly, which it already was everywhere except three
-best-effort recovery sites that used to "undo" a failed unify by keeping the older array value.
-Those now bracket their speculation with `markStore`/`rollbackStore`: `Store.unifyBestEffort`,
-`Translate.unifyStepBestEffort`, and `Translate.classifyRef`, the last with one scope per fallible
-step because each of its three `Err` arms falls back to a different state. The two report-gated
-census replays are bracketed too, so a census leaves no path compression behind.
-
-Every stat improved. The minor-GC drop of 238 cycles is the change working as designed: the trie
-nodes were the biggest single source of live data being copied at each collection, and 233 MB less
-peak RSS is the same fact seen from the other end.
-
-Byte identity: the fixed-point `cmp` holds, and the 633-workload rail's manifest is identical on
-all 633. The rail's census differs on exactly one workload, `Hello`, by exactly +13 source lambdas
-and one member id — which is `Eco.CellStore`'s twelve exported functions plus the lambda inside
-`freeze`, now compiled as part of the kernel package. Adding a module to that package necessarily
-mints members for it; no emitted byte moves.
-
-Two process notes. The pure twin earned its place immediately: it FAILED where the kernel would
-have passed, because rolling back a pre-mark state is a no-op on a mutable store but "rollback
-without a mark" on a value-typed one. The fix — bind the marked state and roll THAT back — is the
-portable form, and the twin is what forced it. Separately, one of the native pins failed on first
-run for a defect in the pin itself: it read a store through one handle while another binding
-mutated it, and Elm does not order independent `let` bindings. That is the hazard KERN_007 (b)
-names, caught by the test suite rather than by a miscompile.
-
-This row is the SECOND measurement of step 3. The first (wall median 335.46, GC counters identical
-to the digit) was taken before `check-kernel-license-manifest` failed: adding the CellStore
-root-registration call to `RuntimeExports.cpp` invalidated the audited hash pinning four licensed
-`Runtime.*` kernels. The re-audit is recorded in `KernelSetFacts` — the only change to that file is
-one line in the registration hook, touching no licensed body, type or capture behaviour — and the
-hash and audit dates were advanced. That edit is part of step 3, so the step was re-measured with
-it in rather than reported against a tree that was never built. The two triples agree: identical GC
-counters, 5 s of day-to-day wall drift.
-
-Gates: `full` 1731/1731 (up 4: the new native pins); unit suite 13,547 passed with the same 12
-pre-existing POST_010 failures; 1,271 kernel tests green; rail as above. Kept as `keep-3`;
-`bin/eco-opt-prev` is now `eco-opt3x`.
+`IO.State.ioRefsPoint` is no longer a persistent 32-way trie: a write is one C call and a store, a
+fresh Point one vector push. Cells and trail are GC roots through an external root scanner — the
+only sound way to hold Elm values in mutable storage here, the collector having no write barrier
+(HEAP_047, KERN_007). Linear threading already held except at three best-effort recovery sites,
+which now bracket with `markStore`/`rollbackStore`. Every stat improved; the 238-cycle minor drop
+is the trie nodes no longer being copied, and -233 MB RSS the same fact from the other end. Rail
+census differs on `Hello` by +13 source lambdas and one member id — CellStore's own exports. The
+pure twin earned its place by FAILING where the kernel passes (rolling back a pre-mark state is a
+no-op on a mutable store). SECOND measurement: the first predated the kernel-license re-audit and
+the triples agree. Gates: `full` 1731/1731 (+4 pins); unit 13,547; 1,271 kernel. Kept `keep-3`.
 
 ### 4b — per-run classify memo for ground alias instantiations — **WIN (wall), memory regression recorded**
 
@@ -516,37 +422,15 @@ pre-existing POST_010 failures; 1,271 kernel tests green; rail as above. Kept as
 | D vs 3 | **-5.85 (-1.72 %)** | +17 | 0 | **+487 (+2.4 %)** | **+254,220 (+2.0 %)** | +11,690 | — |
 
 An alias instantiation whose arguments and body are ground and arrow-free classifies to the same
-canonical `MonoType` at every occurrence, so the first classify is cached under a structural key
-`(home, name, args)` and every later one is a hash lookup instead of a node-by-node walk with an
-intern probe per node. The key cannot be object identity: `AssignMVarIds` rebuilds every node of
-every type per occurrence, so two occurrences of `S` are two distinct trees before anything runs.
-Parameter ids are dropped from the key because they are per-def binder ids, not identity.
-
-Verdict WIN on rule 1: the median wall fell 5.85 s. The evidence is better than that margin alone
-suggests, because all three candidate runs came in below the reference MEDIAN and two of the three
-below its fastest run — the distributions barely overlap. It is still a narrow result: the delta is
-inside this triple's own 6.38 s spread.
-
-**Three of the four other stats moved the wrong way, and that is not noise** — the GC counters are
-deterministic per binary and tree. Promoted rose 487 MiB and peak RSS 254 MB, giving back most of
-what step 3 won on those columns, and minor cycles rose by 17. The memo buys time with retention:
-its map lives for the whole run and holds a key per instantiation, and unlike the classifications
-themselves, which were already interned, the keys and buckets are new live data. The size of the
-effect is larger than a key-and-bucket count explains, so it is recorded as measured and not
-explained away. The plan predicted minor GC would FALL here; it did not, and the prediction was
-made for 4a and 4b together.
-
-Consequence for the next entry: 4a (the per-item load memo) is the half the plan expects to cut
-mints and therefore allocation. If 4a lands and the pair still shows this retention, the two should
-be judged together, and reverting both in favour of 4a alone is the obvious experiment.
-
-Byte identity holds three ways: the fixed-point `cmp`, and the 633-workload rail identical on BOTH
-artefacts — manifest and the 65,508-line census, zero diff lines, exactly as the specification
-predicted, which is the evidence that the memo changes only how the answer is reached.
-
-Gates: `full` 1731/1731; unit suite 13,561 passed with the same 12 pre-existing POST_010 failures;
-15 new pins in `GroundAliasMemoTest` covering the eligibility predicate, key equality under
-differing binder ids, and the verdict map overriding the walk. Kept as `keep-4b`.
+canonical `MonoType` everywhere, so the first classify is cached under a structural key
+`(home, name, args)`; identity cannot be the key, since `AssignMVarIds` rebuilds every node per
+occurrence. WIN on rule 1, wall -5.85 s, with all three candidate runs below the reference MEDIAN
+and two below its fastest — though the delta is inside this triple's 6.38 s spread. **Three of the
+four other stats moved the wrong way, and that is not noise**: promoted +487 MiB, RSS +254 MB,
+minor +17, giving back most of what step 3 won there. The memo buys time with retention, by more
+than a key-and-bucket count explains; recorded as measured. Byte identity: fixed point plus the
+rail identical on both artefacts. Gates: `full` 1731/1731; unit 13,561; 15 new pins in
+`GroundAliasMemoTest`. Kept as `keep-4b`.
 
 ### 4a — per-item load memo for ground alias instantiations — **WIN**
 
@@ -558,31 +442,15 @@ differing binder ids, and the verdict map overriding the walk. Kept as `keep-4b`
 | **median** | **291.93** | **1312** | **10** | **20354** | **12,026,400** | 13,332,898 | same |
 | D vs 4b | **-42.92 (-12.8 %)** | **-288 (-18.0 %)** | 0 | **-509 (-2.4 %)** | **-685,364 (-5.4 %)** | +6,849 | — |
 
-The second and later loads of one ground, arrow-free alias instantiation WITHIN an item now reuse
-the first load's child Points and mint only a fresh root. For `S`, the compiler's own 31-field
-state record, that is one mint instead of one per field and per nested subtree, and the profile put
-roughly 5.7 million union-find mints per self-compile largely on this path.
-
-The root is deliberately NOT shared. Sharing it would let a bare reference's family var and a
-call's isolated twin become union-find equivalent through it, which flips the MONO_029 stale-read
-barrier and livelocks the saturation loop; per-load roots keep them in separate classes, and one
-mint is nothing against the hundreds it replaces. Var Points are never shared either, and no arrow
-is reachable from an eligible type, so the LSS_006 ordinal contract is not touched — pinned by the
-arrow test in `GroundAliasMemoTest` and by the 165 existing arrow pins.
-
-Every stat improved, and by margins far outside the noise: wall is down 42.92 s against a 6.67 s
-spread, and the GC counters are exact. This is also the entry that settles 4b's memory regression.
-Against step 3, the pair 4b+4a is wall 340.70 to 291.93, minor cycles 1583 to 1312, promoted 20376
-to 20354 MiB and RSS 12.46 GB to 12.03 GB — so the retention 4b added is repaid with interest, and
-the two do belong together as the plan grouped them.
-
-Byte identity: fixed point holds, and the rail is identical on both artefacts against `keep-4b` —
-manifest and the full census, zero diff lines.
-
-Gates: `full` 1731/1731; unit suite 13,566 passed with the same 12 pre-existing POST_010 failures;
-five new load-side pins covering one-mint-per-repeat-load, distinct roots over identical children,
-no sharing for an arrow-bearing alias, per-instantiation keying, and the var memo and mint counter
-left untouched by a hit. Kept as `keep-4a`.
+Second and later loads of one ground, arrow-free alias instantiation WITHIN an item reuse the first
+load's child Points and mint only a fresh root — for `S`, the compiler's own 31-field state record,
+one mint instead of one per field and nested subtree, against a profiled ~5.7 M mints per
+self-compile. The root is deliberately NOT shared: that would make a bare reference's family var
+and a call's isolated twin union-find equivalent, flipping the MONO_029 stale-read barrier and
+livelocking the saturation loop. Every stat improved far outside the noise — wall -42.92 s against
+a 6.67 s spread. This settles 4b's memory regression: against step 3, 4b+4a is wall 340.70 ->
+291.93, minor 1583 -> 1312, promoted 20376 -> 20354 MiB, RSS 12.46 -> 12.03 GB. Gates: `full`
+1731/1731; unit 13,566; five new load-side pins. Kept as `keep-4a`.
 
 ### 5a — direct-state entry for `Unify.unify` — **WIN**
 
@@ -594,35 +462,16 @@ left untouched by a hit. Kept as `keep-4a`.
 | **median** | **289.43** | **1287** | **10** | **20341** | **12,048,496** | 13,332,279 | same |
 | D vs 4a | **-2.50 (-0.86 %)** | **-25** | 0 | **-13** | +22,096 (+0.18 %) | -619 | — |
 
-`Unify.unify`'s entry is now a wrapper over `unifyS`, a direct-state function, and `guardedUnify`'s
-body is a saturated top-level `guardedUnifyS` the entries call without building the CPS closure
-first. `Store.unifyStep` becomes `S -> ( Bool, S )` and renders nothing; callers that propagate a
-mismatch use the new `unifyStrict`, which builds the diagnostic only on the failure path. What goes
-away per unification is scaffolding: the `liftIO` thunk, the `Engine.andThen` closure and its
-continuation, `succeed`'s closure, the `IO.pure` of the success arm, and the `Ok`/`UnifyOk` pairs
-that existed only to be destructured immediately.
-
-The wall delta is smaller than this triple's 4.06 s spread, so on wall alone the result would be
-"probably faster". What makes it a win rather than a guess is that the two deterministic counters
-moved: 25 fewer minor cycles and 13 MiB less promoted, exact per binary and tree. RSS rose 22 MB,
-0.18 %, which is inside the bimodal band that column has on this machine.
-
-One adaptation to the specification, forced by step 3. It had `unifyBoolS` return the PRE-unify
-state on failure, so a best-effort caller recovered by taking the older value. That stopped working
-when the point store became an in-place `Eco.CellStore`: there is one store, so the pre-unify state
-names the same mutated cells and returning it only looks like an undo. The real undo is the
-caller's `markStore`/`rollbackStore` bracket, which step 3 already installed at all three
-best-effort sites, so `unifyBoolS` returns the state the attempt left and the bracket does the
-work. Both entries now roll back the state the attempt RETURNED rather than the pre-mark one — the
-same portability point the pure twin forced in step 3.
-
-Byte identity: fixed point holds and the rail is identical on both artefacts. Order preservation
-matters here beyond the gate, because `unifyS` is shared with the real typechecker and a change in
-Point mint order would move `Vars.Pt` indices, which are exposed through `pointKey`.
-
-Gates: `full` 1731/1731; unit suite 13,566 with the same 12 pre-existing failures. Kept as
-`keep-5a`. 5b (re-spelling the combinator layer itself, where the per-node closures live) remains
-a separate entry.
+`Unify.unify`'s entry becomes a wrapper over a direct-state `unifyS`, `guardedUnify`'s body a
+saturated top-level `guardedUnifyS`. Gone per unification: the `liftIO` thunk, the `andThen`
+closure and its continuation, `succeed`'s closure, the `IO.pure`, and the `Ok`/`UnifyOk` pairs that
+existed only to be destructured. The wall delta is inside this triple's 4.06 s spread, so what
+makes it a win is that both deterministic counters moved — 25 fewer minor cycles, 13 MiB less
+promoted; RSS +22 MB is inside that column's bimodal band. One adaptation forced by step 3: the
+spec had `unifyBoolS` return the PRE-unify state on failure, which means nothing once there is one
+in-place store — the real undo is the caller's mark/rollback bracket. Mint order matters beyond the
+gate, since `unifyS` is shared with the real typechecker and `Vars.Pt` indices are exposed through
+`pointKey`. Gates: `full` 1731/1731; unit 13,566. Kept as `keep-5a`.
 
 ### 6 — flag-residue and dead-arm cleanup — **WIN**
 
@@ -634,35 +483,16 @@ a separate entry.
 | **median** | **286.85** | **1281** | **10** | **20201** | **12,052,184** | 13,329,272 | same |
 | D vs 5a | **-2.58 (-0.89 %)** | **-6** | 0 | **-140** | +3,688 (+0.03 %) | -3,007 | — |
 
-The residue the 2026-09-18 flag removal left behind, deleted: the unreachable keyed arm in
-`enqueueSpec`, the `arrowIdOn`/`arrowMintOn` load-context fields and the two guards that read them,
-the `needSlow` deferral chain with `foldSlowWrites`, `unifySlotWithSetSlow` and the `setWriteSlow`
-counter, the `groundStandalones`/`honestSources` accumulator fields, and two dead `Translate`
-functions. `foldSetWrites` becomes `S -> S`, which steps 8 and 10 both require. Five census keys
-that were built with string concatenation before any gate are now behind the report flag, the one
-per-node case among them being the per-literal key in `walkLiteral`.
-
-Two of the deletions needed judgement rather than mechanical removal. The `needSlow` path existed
-to defer a defensive `unifySlotWithSetC` arm to a slow unify at the traversal boundary; that arm is
-unreachable by the closure of the slot-content channels and has measured zero on every self-compile
-since Run C, so it now writes ⊤ directly. That is sound in the same direction the deferral was: ⊤
-absorbs, so the failure mode is lost precision, never a dropped edge.
-
-The second one was caught by a test, and is worth recording because the "obvious" simplification
-was wrong. `honestSourcesOn` read a field that production always seeded True, so hardcoding True
-looked equivalent — but it also answered False when the zonk accumulator was ABSENT, which is the
-lss-off configuration. `LssDirectedFlowTest` case 5 failed immediately. The honesty policy is now
-an explicit argument to `resolveSlotMembersWith`, and `resolveSlotMembers` passes "is there an
-accumulator", which reproduces the old predicate exactly.
-
-Byte identity: fixed point holds and the rail's manifest is identical on all 633. The census
-differs on 633 lines, and every one is the same `set-writes:` line differing ONLY by the deleted
-` slow=0` field — checked mechanically by normalising that field away, after which the diff is
-empty. That is the counter this step removed, not analysis drift.
-
-Gates: `full` 1731/1731; unit suite 13,565 with the same 12 pre-existing POST_010 failures. One
-test was deleted rather than fixed: `ArrowIdentityTest`'s "flag OFF" case pinned the regime this
-step removes. Kept as `keep-6`.
+The residue of the 2026-09-18 flag removal, deleted: the unreachable keyed arm in `enqueueSpec`,
+`arrowIdOn`/`arrowMintOn` and their guards, the `needSlow` deferral chain, the
+`groundStandalones`/`honestSources` accumulators, two dead `Translate` functions. `foldSetWrites`
+becomes `S -> S`, which steps 8 and 10 require. Two deletions needed judgement. `needSlow` deferred
+a defensive arm unreachable by the closure of the slot-content channels and measuring zero since
+Run C; it now writes ⊤ directly — sound, since ⊤ absorbs. The second was caught by a test:
+`honestSourcesOn` also answered False when the accumulator was ABSENT, i.e. lss-off, so hardcoding
+True broke `LssDirectedFlowTest` case 5. The rail census differs on 633 lines, every one the same
+`set-writes:` line differing ONLY by the deleted ` slow=0` field, empty after normalising. Gates:
+`full` 1731/1731; unit 13,565; `ArrowIdentityTest`'s "flag OFF" case deleted. Kept as `keep-6`.
 
 ### 7 — census bookkeeping off the default path (7a) — **WIN on rule 2, marginal**
 
@@ -674,34 +504,16 @@ step removes. Kept as `keep-6`.
 | **median** | **289.08** | **1280** | **10** | **20183** | **12,044,660** | 13,329,112 | same |
 | D vs 6 | +2.23 (+0.78 %) | **-1** | 0 | **-18** | **-7,524 (-0.06 %)** | -160 | — |
 
-The zonk accumulator used to carry policy and counters together, so it had to exist whenever LSS
-was enabled. It is now counters only, allocated only under the report flag, with `lssOn` and
-`maxSetSize` moved onto the context. Every counter bump on the default path is therefore a `case`
-on a constant `Nothing` that allocates nothing.
-
-**Verdict WIN under rule 2, and it is the marginal case that rule exists for.** Median wall rose
-2.23 s, which is inside this triple's own 6.03 s spread, so wall is FLAT by the noise-band reading;
-both deterministic counters improved. But the improvements are tiny — one minor cycle in 1,280 and
-18 MiB in 20,183 — so the honest summary is that the accumulator was never a significant allocation
-source. Roughly 650,000 records per run is simply not much next to this compiler's nursery traffic.
-The step is kept for its substrate value rather than for a measured speedup: steps 8 and 10 both
-build on the reshaped zonk context, and `foldSetWrites` and the context split are prerequisites
-they assume.
-
-One hazard here was the same shape as step 6's, and this time it was caught by reading rather than
-by a test. Three sites used "is there an accumulator" as a proxy for "is LSS enabled" — the two
-`LambdaSet1` arms of `zonkSetSlot` and the honesty predicate. Once the accumulator became
-report-scoped those two questions came apart, and leaving them would have made the default path
-return ⊤ for every set slot: a silent, total precision collapse that no gate here would have
-caught, because emission of the self-compile might well not change. They now read `lssOn`.
-
-Byte identity: fixed point holds; the rail is identical on both artefacts, including the census,
-which is the check that the report still computes exactly what it did.
-
-Gates: `full` 1731/1731; unit suite 13,565 with the same 12 pre-existing failures. Two test
-context literals gained the new fields. 7b (`ItemAux.counters`) stays skipped: under 7a every
-counter it would hold is bumped only when the report is on, and the loop never times a report-on
-run. Kept as `keep-7`.
+The zonk accumulator carried policy and counters together, so it existed whenever LSS was on. It is
+now counters only, allocated only under the report flag, with `lssOn` and `maxSetSize` on the
+context; every default-path bump is a `case` on a constant `Nothing`. **WIN under rule 2, and the
+marginal case that rule exists for**: wall +2.23 s is inside a 6.03 s spread, so flat, and both
+deterministic counters improved — by one minor cycle in 1,280 and 18 MiB in 20,183, so the
+accumulator was never a significant allocation source. Kept for substrate value; steps 8 and 10
+assume the reshaped context. One hazard caught by reading, not by a test: three sites used "is
+there an accumulator" as a proxy for "is LSS enabled", and once it became report-scoped those came
+apart — leaving them would return ⊤ for every set slot on the default path, a silent total
+precision collapse no gate here would catch. Gates: `full` 1731/1731; unit 13,565. Kept `keep-7`.
 
 ### 8a — pure union-find reads (`peekS`/`rootQ`/`equivalentQ`) — **LOSS, reverted**
 
@@ -713,36 +525,16 @@ run. Kept as `keep-7`.
 | **median** | **288.94** | **1291** | **10** | **20233** | **12,118,144** | 13,328,536 | same |
 | D vs 7 | -0.14 (-0.05 %) | **+11** | 0 | **+50** | **+73,484 (+0.61 %)** | -576 | — |
 
-A read that only reads does not need to compress the path it walked, so the ~40 read-only sites
-were moved to pure `peekS`/`rootQ`/`equivalentQ`, dropping the state copy each one used to write
-back.
-
-**Not kept.** Wall moved 0.14 s on a 6.17 s spread, which is flat, and NO other stat improved —
-all three moved the wrong way, and the GC counters are exact. A flat wall with nothing improved is
-not a win under either rule, and keeping a change that costs 11 minor cycles, 50 MiB and 73 MB of
-peak RSS for no measured time would be strictly worse than not making it.
-
-**Why it lost, which is the useful part: step 3 had already removed the cost this step targets.**
-The premise was that a read's write-back is expensive — under the old persistent array it copied a
-path of trie nodes. Since the store became an in-place `Eco.CellStore`, a compression write is one
-C call and a store. So the saving is now near zero, while the cost is real and was always there:
-compression is WORK THAT PAYS FORWARD. Skipping it leaves chains long, and every later read walks
-them again. The counters going the wrong way is that effect showing up as more live chain traffic.
-
-Two consequences for the plan. Step 8b, the other half, is a different change — it removes zonk
-CONTEXT copies rather than compression — but its premise is weakened the same way and it should be
-judged on its own before being assumed. And the specification's reasoning was sound when written,
-against the tree of 2026-09-19; what invalidated it was a step landing in between. A spec written
-before its prerequisites land has to be re-read against what the tree became, not what it was.
-
-The measurement did surface a better target in the same area, recorded here rather than acted on:
-`IORef.writePointCellS` allocates a fresh `IO.State` record AND a fresh `Store` wrapper per union-find
-write, and under the in-place store both contain exactly what they contained before — the same
-handle. That is two allocations per write on a path that runs millions of times per run, and
-unlike compression it buys nothing at all.
-
-Reverted with `restore keep-7`, verified byte-identical. The reference row is unchanged: step 9 is
-judged against step 7. `try-8a` and `step-8a.patch` remain on disk as the record.
+A read that only reads need not compress the path it walked, so ~40 read-only sites moved to pure
+`peekS`/`rootQ`/`equivalentQ`, dropping the write-back. **Not kept.** Wall moved 0.14 s on a 6.17 s
+spread — flat — and NO other stat improved; all three moved the wrong way, and the GC counters are
+exact. **Why it lost is the useful part: step 3 had already removed the cost this targets.** Under
+the old persistent array a write-back copied a path of trie nodes; under `Eco.CellStore` it is one
+C call and a store. The saving is near zero while the cost is real and always was — compression is
+WORK THAT PAYS FORWARD, and skipping it leaves chains long for every later read. A spec written
+before its prerequisites land must be re-read against what the tree became. Surfaced, not acted on:
+`IORef.writePointCellS` allocates a fresh `IO.State` AND `Store` wrapper per write, both holding
+what they already held. Reverted with `restore keep-7`; the reference row is unchanged.
 
 ### 8b — drop the threaded state at compressing reads — **WIN**
 
@@ -754,30 +546,21 @@ judged against step 7. `try-8a` and `step-8a.patch` remain on disk as the record
 | **median** | **287.24** | **1273** | **10** | **20207** | **12,105,460** | 13,328,331 | same |
 | D vs 7 | **-1.84 (-0.64 %)** | **-7** | 0 | +24 | +60,800 (+0.50 %) | -781 | — |
 
-8a's replacement, designed from what 8a's failure showed. The read sites keep calling the
-COMPRESSING `UF.get`, and simply do not thread the state it returns. That is sound only because
-the store is mutated in place: the compression has already happened by the time the call returns,
-and the state handed back differs from the one passed in by nothing but the record wrapper around
-the same handle. So the context copy per read goes away while the compression that pays forward
-stays.
-
-The comparison with 8a is the whole point, on the same reference row:
-
 | | wall | minor GC | what changed |
 |---|---|---|---|
 | 8a | -0.14 (flat) | **+11** | dropped the copies AND the compression |
 | 8b | **-1.84** | **-7** | dropped the copies, KEPT the compression |
 
-Eighteen exact minor cycles separate the two, which is compression paying for itself. WIN on rule
-2: wall is down 1.84 s but that is inside this triple's 4.22 s spread, so it is the deterministic
-minor-cycle count that carries the verdict.
-
-The memory columns are mixed and are recorded as measured: promoted is up 24 MiB and peak RSS up
-61 MB, both small, both also present in 8a, so they track the context-copy removal rather than the
-compression question. They are not explained here.
-
-Byte identity: fixed point holds; rail identical on both artefacts. Gates: `full` 1731/1731; unit
-suite 13,565 with the same 12 pre-existing failures. Kept as `keep-8b`.
+8a's replacement, designed from what 8a's failure showed. The read sites keep calling the
+COMPRESSING `UF.get` and simply do not thread the state it returns — sound only because the store
+is mutated in place, so the compression has already happened by the time the call returns and the
+returned state differs from the passed one by nothing but the record wrapper around the same
+handle. The context copy per read goes; the compression that pays forward stays. Eighteen exact
+minor cycles separate this from 8a, which is compression paying for itself. WIN on rule 2: wall
+-1.84 s is inside the 4.22 s spread, so the deterministic minor-cycle count carries the verdict.
+Memory is mixed and recorded as measured — promoted +24 MiB, RSS +61 MB, both small and both
+present in 8a too, so they track the context-copy removal, not the compression question. Gates:
+`full` 1731/1731; unit 13,565. Kept as `keep-8b`.
 
 ### 9 — skip `connectTypes` / `enrichFromEnv` for ground, arrow-free types — **WIN**
 
@@ -789,58 +572,28 @@ suite 13,565 with the same 12 pre-existing failures. Kept as `keep-8b`.
 | **median** | **289.18** | **1252** | **10** | **20269** | **12,095,116** | 13,330,827 | same |
 | D vs 8b | +1.94 (+0.68 %) | **-21 (-1.6 %)** | 0 | +62 | **-10,344 (-0.09 %)** | +2,496 | — |
 
-A ground, arrow-free type has no type variable to concretise and no set slot to carry members
-into, so connecting it to another ground type, or re-encoding a bound type and unifying it into
-it, moves nothing. Both are now skipped, using step 4's verdict map so the predicate is a hash
-lookup for `S`, `Env` and `ItemAux` rather than a walk.
-
-WIN on rule 2: wall is up 1.94 s, which is flat against the 4.22 s band the reference triple set,
-and minor cycles are down 21 — an exact, deterministic figure, and the largest single-step drop in
-that column since step 4a.
-
-**This row needed two triples, and the first one is why the GC counters are judged first.** In the
-first triple, runs 1 and 2 agreed on 1252 / 20269 while run 3 reported 1273 / 20274 with 120 MB
-less peak RSS — counters that are deterministic per binary and tree do not do that. All three
-outputs were byte-identical, so the compiler behaved identically; what differed was the allocator,
-which this box is on record as switching heap modes. The triple was re-run and came back clean:
-identical counters on all three and a 1.50 s spread. The first triple's wall median was 284.73,
-about 4.5 s faster than the second's, which sets the honest resolution of the wall column on this
-machine at roughly ±5 s between triples. A step worth 2 s cannot be resolved by wall here, and the
-exact counters are what carry these verdicts.
-
-Byte identity: fixed point holds; the rail's manifest is identical on all 633. The census differs
-on 42 lines and every one is an `enrich|bare` or `enrich|access|ofLocal` COUNT, with no other key
-touched. That is the skip being visible in the diagnostic that counts attempted transports: when a
-whole tuple is ground the three element recursions are skipped together, so their rows are not
-counted. The transports themselves were no-ops — which is why not one emitted byte moves — so the
-census is now describing what the analysis actually does. The specification predicted zero census
-lines here and was wrong about the tuple arm specifically.
-
-Gates: `full` 1731/1731; unit suite 13,565 with the same 12 pre-existing failures. Kept as
-`keep-9`.
+A ground, arrow-free type has no variable to concretise and no set slot to carry members into, so
+connecting it to another ground type, or re-encoding a bound type into it, moves nothing. Both are
+skipped, using step 4's verdict map so the predicate is a hash lookup for `S`, `Env` and `ItemAux`.
+WIN on rule 2: wall +1.94 s is flat against the reference's 4.22 s band, minor cycles -21, the
+largest drop in that column since 4a. **This row needed two triples, and the first is why the GC
+counters are judged first**: runs 1 and 2 agreed on 1252/20269 while run 3 said 1273/20274 with
+120 MB less RSS — deterministic counters do not do that. All three outputs were byte-identical, so
+the allocator switched heap modes. The re-run was clean, and the two medians differ by ~4.5 s,
+which sets the honest wall resolution here at about ±5 s between triples. Rail census differs on 42
+lines, all `enrich|bare`/`enrich|access|ofLocal` counts. Gates: `full` 1731/1731; unit 13,565.
 
 ### 10 — retire the `Step` encoding — **DEFERRED, not attempted**
 
-Not measured, and the tree is unchanged. Recorded here so the gap is visible rather than silent.
-
-Step 10 is a seven-stage programme (§9 of the plan, entries `10a`–`10g`) and the stages are not
-independent. `10a` admits `MonoIf` on the `$sret` result spine, which means teaching
-`Generate.MLIR.Expr.generateIf` the spine-yield protocol that `generateCase` already implements —
-the aggregate result type, `emitSpineYield` per branch, `finishSpineCase` for the construction.
-That cannot be done half-way: admitting `MonoIf` in the selection rule while `generateExpr` still
-clears `sretTailLayout` for it would leave a worker whose branches yield scalars into a region
-declaring an aggregate. And `10a` on its own is predicted flat to slightly negative by its own
-specification — the coverage it unlocks only pays at `10f`, which needs `10b` through `10e` first:
-about 263 signatures, 500 combinator uses and 450 `Ok`/`Err` arms across four files.
-
-The ordering cost of deferring is small and was checked: §2's dependency table lists step 10 as a
-prerequisite only for step 26, and every step from 11 onward is independent of it. So the series
-continues at step 11 and step 26 is the one entry that cannot be reached without coming back here.
-
-What a later attempt should know, from the reading done: the selection side is two small mirror
-arms (`sretTailOk` and `sretFreshTailOk` already have the pattern in `sretTailFuncOk`), and the
-whole risk sits in `generateIf`. The result-type rule at the top of `generateCase` is the piece to
-extract and share first, because both callers need exactly it.
+Not measured; the tree is unchanged. Recorded so the gap is visible. Step 10 is a seven-stage
+programme whose stages are not independent: `10a` admits `MonoIf` on the `$sret` result spine,
+which means teaching `generateIf` the spine-yield protocol `generateCase` already implements, and
+that cannot be done half-way — admitting `MonoIf` in the selection rule while `generateExpr` still
+clears `sretTailLayout` would leave a worker whose branches yield scalars into a region declaring
+an aggregate. `10a` alone is predicted flat to slightly negative; the coverage only pays at `10f`,
+which needs `10b`-`10e` first: ~263 signatures, 500 combinator uses and 450 `Ok`/`Err` arms across
+four files. Deferring costs little — §2 lists step 10 as a prerequisite only for step 26. **It was
+attempted in full at the end of the series; see entries `10a` through `10f+10g` below.**
 
 ### 11b — memoise `Intern.widenSets` per canonical input — **WIN**
 
@@ -852,27 +605,16 @@ extract and share first, because both callers need exactly it.
 | **median** | **278.11** | **1243** | **10** | **20284** | **12,058,368** | 13,336,198 | same |
 | D vs 9 | **-11.07 (-3.83 %)** | **-9** | 0 | +15 | **-36,748 (-0.30 %)** | +5,371 | — |
 
-`widenSets` produces the annotation-insensitive spec-registry key, and it ran in full on every
-enqueue — a complete rebuild of the demand type with every arrow relabelled, hash-consing each
-node on the way. It is a pure function of its input, and the input is canonical because every
-producer hash-conses bottom up, so one entry answers every later enqueue of the same demand type.
-The intern table gains a second map for it, keyed by the input node.
-
-The largest wall win since 4a, and unambiguous: 11.07 s against a 5.45 s spread.
-
-One thing had to be fixed for the memo to survive at all, and it would have failed silently.
-`Engine.withIntern` and `Store.consC` decide whether to write the table back by comparing
-`Intern.size` — which counts canonicalised structures and deliberately ignores the new map. A run
-that only added memo entries would therefore have written nothing back and discarded them, leaving
-the memo permanently cold while still paying to build it. Both guards now use a new `entries`
-stamp that counts both tables; `size` keeps its report meaning.
-
-Byte identity: fixed point holds, and the rail is identical on both artefacts — which is the
-check that matters here, because a widen that differed from the old one would change specialization
-identity with no compile error.
-
-Gates: `full` 1731/1731; unit suite 13,565 with the same 12 pre-existing failures. Kept as
-`keep-11b`. 11a (one widen per enqueue, and the lazy render) remains a separate entry.
+`widenSets` produces the annotation-insensitive spec-registry key and ran in full on every enqueue
+— a complete rebuild of the demand type with every arrow relabelled, hash-consing each node. It is
+a pure function of a canonical input, so one entry answers every later enqueue of the same demand
+type; the intern table gains a second map keyed by the input node. The largest wall win since 4a
+and unambiguous: -11.07 s against a 5.45 s spread. One thing had to be fixed or the memo would
+have failed SILENTLY: `Engine.withIntern` and `Store.consC` decide whether to write the table back
+by comparing `Intern.size`, which counts canonicalised structures and ignores the new map — a run
+that only added memo entries would have discarded them while still paying to build them. Both
+guards now use an `entries` stamp counting both tables. Byte identity: fixed point and rail
+identical on both artefacts. Gates: `full` 1731/1731; unit 13,565. Kept as `keep-11b`.
 
 ### 11a — lazy ground-key render in `stampSelfSpine` — **WIN**
 
@@ -884,28 +626,16 @@ Gates: `full` 1731/1731; unit suite 13,565 with the same 12 pre-existing failure
 | **median** | **277.42** | **1238** | **10** | **20301** | **12,073,940** | 13,336,625 | same |
 | D vs 11b | -0.69 (-0.25 %) | **-5** | 0 | +17 | +15,572 (+0.13 %) | +427 | — |
 
-`stampSelfSpine` built its ground key eagerly — a full pure rebuild of the demand type followed by
-a multi-kilobyte string render — on every global reference and every global call, roughly 141,000
-times per run. One arm reads it: a depth-0 Define, TrackedDefine, Link or Cycle head with a
-declared arity above zero on an arrow demand. It is now a thunk, forced at that one site.
-
-WIN on rule 2: wall flat, minor cycles down 5. The gain is smaller than the eager work suggests,
-which says the consuming arm is hit often enough that the thunk is usually forced — the saving is
-the minority of calls that never read it, not the majority.
-
-This row also needed two triples, for the opposite reason to step 9's. The first had identical
-counters on all three runs but a 8.94 s wall spread — 3.24 %, over the disturbance threshold — with
-one slow run among two fast ones. Re-running gave a 1.27 s spread and a median 1.8 s slower than
-the first triple's. Where step 9's first triple was disturbed in its COUNTERS, this one was
-disturbed only in wall, and the protocol's spread check is what caught it.
-
-Byte identity: fixed point holds, rail identical on both artefacts. Gates: `full` 1731/1731; unit
-suite 13,565 with the same 12 pre-existing failures. Kept as `keep-11a`.
-
-Not done in this entry, and left for a later one: the specification's other half, which routes the
-INTERNED widen from `enqueueSpecKeyed` into the stamp so the type handed to the registry is
-pointer-identical to the stored one. That needs the widen to be threaded through `stampSelfSpine`,
-which is a signature change across the stamp path rather than a local edit.
+`stampSelfSpine` built its ground key eagerly — a full pure rebuild of the demand type plus a
+multi-kilobyte string render — on every global reference and call, ~141,000 times per run, for one
+arm that reads it. It is now a thunk forced at that site. WIN on rule 2: wall flat, minor cycles
+-5. The gain is smaller than the eager work suggests, which says the consuming arm is hit often
+enough that the thunk is usually forced — the saving is the minority of calls that never read it.
+This row also needed two triples, for the opposite reason to step 9's: the first had identical
+counters but an 8.94 s wall spread (3.24 %, over the disturbance threshold), one slow run among
+two fast. The re-run spread 1.27 s. Step 9's first triple was disturbed in its COUNTERS; this one
+only in wall, and the spread check caught it. Gates: `full` 1731/1731; unit 13,565. Kept as
+`keep-11a`. The spec's other half — routing the INTERNED widen into the stamp — is left for later.
 
 ### 14 — inline the HPointer resolve in the kernel export path (runtime) — **LOSS, reverted**
 
@@ -915,28 +645,16 @@ which is a signature change across the stamp path rather than a local edit.
 | second | 282.65 | 276.40 | 274.53 | 276.40 | 8.12 |
 | pooled (6 runs) | | | | **~279.4** | — |
 
-GC counters were IDENTICAL to the reference in all six runs — 1238 / 10 / 20301 — which is
-expected and is the whole problem with judging this step.
-
 `Allocator::resolve` was split into an inline fast path in the header and an out-of-line
-`resolveSlow`, so that `RuntimeExports.cpp` and the kernel translation units could inline it;
-there is no LTO in this build, so previously they could only call it.
-
-**Not kept, and this step cannot be resolved by this instrument.** It allocates nothing, so no GC
-counter can move, which means rule 2 can never fire and wall is the only signal. Wall on this box
-has a between-triple resolution of about 5 s, as step 9 and step 11a both demonstrated. The effect
-here is smaller than that: the two triples straddle the reference, the pooled median is ~2 s
-SLOWER, and the second triple's own spread was 8.12 s. There is no honest reading in which this is
-a measured improvement, and the measured direction is the wrong one.
-
-Why it plausibly costs rather than saves, which the profile could not show: `resolveFast` was
-ALREADY an inline fast path with exactly this body, and the hot kernel dereferences use it. What
-this step adds is inlining the same fast path into the roughly 300 `resolve()` call sites, most of
-which are cold. That is code growth at cold sites in exchange for a call saved at sites that were
-not hot — a classic inlining regression, and it does not show up in a self-time profile of
-`Allocator::resolve`, which is what the 7.7 % figure was.
-
-Reverted with `restore keep-11a` and the runtime rebuilt. The reference row is unchanged.
+`resolveSlow`, so `RuntimeExports.cpp` and the kernel translation units could inline it; there is
+no LTO in this build. **Not kept, and this step cannot be resolved by this instrument.** It
+allocates nothing, so no GC counter can move — the counters were IDENTICAL in all six runs
+(1238/10/20301) — which means rule 2 can never fire and wall is the only signal, at ~5 s
+resolution. The two triples straddle the reference, the pooled median is ~2 s SLOWER, and the
+second triple's spread was 8.12 s. Why it plausibly costs: `resolveFast` was ALREADY an inline
+fast path with this body and the hot kernel dereferences use it; what this adds is inlining it
+into ~300 mostly-cold `resolve()` sites — code growth at cold sites for a call saved where it was
+not hot. That does not show in a self-time profile, which is what the 7.7 % figure was. Reverted.
 
 ### 19' — geometric `revMemo` growth — **LOSS, reverted**
 
@@ -949,23 +667,15 @@ Reverted with `restore keep-11a` and the runtime rebuilt. The reference row is u
 | D vs 11a | +4.12 (+1.49 %) | **+1** | 0 | **+15** | **+60,528 (+0.50 %)** | -199 | — |
 
 The specification's fallback for step 19, chosen over the full version deliberately: the full one
-makes `revMemo` a second `Eco.CellStore` with a lifecycle paired to the point store, and a handle
-from the wrong lifetime there is a silent wrong id rather than a crash — too much exposure for an
-effect the plan sizes at about a second, which is under this box's wall resolution.
-
-**Not kept.** Wall is up 4.12 s, flat against the 5.71 s spread, and nothing improved: one more
-minor cycle, 15 MiB more promoted, 60 MB more peak RSS.
-
-The reasoning behind the change was that every var mint pays a `repeat`, a `push` and an `append`
-to grow the array by exactly the gap, so growing geometrically would amortise that away. The
-measurement says the trade goes the other way, and the RSS column says why: gaps between
-consecutive var mints are SMALL — a few structure Points — so the per-mint growth was small, while
-doubling an array that reaches roughly 825,000 entries retains up to twice the trie and copies it
-in large bursts. Paying O(gap) often beat paying O(n) rarely at this gap distribution.
-
-Reverted with `restore keep-11a`, verified. The reference row is unchanged. The full step 19
-remains unbuilt and its premise is now doubtful: if the growth pattern is not the cost, moving the
-array into a cell store buys only the `Just` boxes, and it carries the lifecycle risk above.
+makes `revMemo` a second `Eco.CellStore` with a lifecycle paired to the point store, where a handle
+from the wrong lifetime is a silent wrong id rather than a crash — too much exposure for an effect
+the plan sizes at about a second, under this box's wall resolution. **Not kept.** Wall +4.12 s,
+flat against the 5.71 s spread, and nothing improved: +1 minor cycle, +15 MiB promoted, +60 MB RSS.
+The premise was that every var mint pays a `repeat`, `push` and `append` to grow the array by
+exactly the gap. The RSS column says why the trade goes the other way: gaps between consecutive
+mints are SMALL, so per-mint growth was small, while doubling an array that reaches ~825,000
+entries retains up to twice the trie and copies it in bursts. Paying O(gap) often beat paying O(n)
+rarely. The full step 19's premise is now doubtful for the same reason. Reverted.
 
 ### 22a — skip the discarded parameter classify in `specializeLambda` — **WIN**
 
@@ -978,21 +688,15 @@ array into a cell store buys only the `Just` boxes, and it carries the lifecycle
 | D vs 11a | +0.59 (+0.21 %) | **-1** | 0 | **-8** | +1,204 (+0.01 %) | +115 | — |
 
 `specializeLambda` classified every parameter type and then used only the NAMES from that result
-whenever the head type peeled to the right arity — which is the normal case, not the fallback. The
-classification now runs only when the peel does not line up.
-
-WIN on rule 2: wall flat within a 3.07 s spread, with both exact counters down. Small, as the
-sub-item's own estimate implied.
-
-The rail's manifest is identical on all 633, and the census differs on 1,060 lines that are all
-zonk counts and their ledger lines — `sets zonked` falls, for instance 756 to 725 on one workload,
-because the discarded classifications were being counted. The specification predicted exactly this.
-Two checks make it safe to accept: every one of the 1,266 ledgers still reports RECONCILES=yes, so
-the counts remain internally consistent, and not one `MSET` line moved, so no member content
-changed.
-
-Gates: `full` 1731/1731; unit suite 13,565 with the same 12 pre-existing failures. Kept as
-`keep-22a`. Sub-items (b), (c) and (d) of step 22 are not done.
+whenever the head type peeled to the right arity — the normal case, not the fallback. The
+classification now runs only when the peel does not line up. WIN on rule 2: wall flat within a
+3.07 s spread, both exact counters down. Small, as the sub-item's own estimate implied. The rail's
+manifest is identical on all 633; the census differs on 1,060 lines, all zonk counts and their
+ledger lines (`sets zonked` 756 -> 725 on one workload) because the discarded classifications were
+being counted — exactly as the specification predicted. Two checks make that safe to accept: all
+1,266 ledgers still report RECONCILES=yes, and not one `MSET` line moved, so no member content
+changed. Gates: `full` 1731/1731; unit 13,565. Kept as `keep-22a`. Sub-items (b), (c), (d) not
+done.
 
 ### 16a — inert-callee instantiation skip (D1) + trivial-signature load (D8) — **LOSS, reverted**
 
@@ -1006,22 +710,14 @@ Gates: `full` 1731/1731; unit suite 13,565 with the same 12 pre-existing failure
 
 A global call whose signature is trivial and whose call type and arguments are all arrow-free
 cannot reach a set slot, so the isolated instantiation and its per-argument unifies were skipped;
-and a trivial signature now takes the plain isolated load, because the arrow-ordinal array it
-would otherwise build exists only to be indexed by facts that never arrive.
-
-**Not kept.** Wall fell 2.00 s but that is inside the 4.06 s spread, and every other stat moved
-the wrong way — 15 more minor cycles, 24 MiB more promoted. A change that SKIPS work is not
-supposed to allocate more.
-
-The likely mechanism, and the lesson: the inert test runs at EVERY global call, walking the call's
-type and every argument type and allocating a closure for the `List.all`, while the skip only pays
-off on calls that are actually inert. The specification expected the inert class to be the
-majority; the counters say the predicate is being paid far more often than it saves. It sized the
-skipped work but not the test, and a guard evaluated on the hot path is itself hot-path work.
-
-Reverted with `restore keep-22a`, verified. The reference row is unchanged. The other parts of
-step 16 — D2, D4, D10, D12 — are untouched and are not condemned by this result; D4 in particular
-skips a whole store DFS whose only reader is report-gated, and has no per-call predicate.
+and a trivial signature now takes the plain isolated load. **Not kept.** Wall -2.00 s is inside the
+4.06 s spread, and every other stat moved the wrong way — +15 minor cycles, +24 MiB promoted. A
+change that SKIPS work is not supposed to allocate more. The likely mechanism, and the lesson: the
+inert test runs at EVERY global call, walking the call's type and every argument type and
+allocating a closure for the `List.all`, while the skip only pays on calls that are actually
+inert. The spec sized the skipped work but not the test, and **a guard evaluated on the hot path
+is itself hot-path work.** Reverted. Step 16's other parts (D2, D4, D10, D12) are not condemned by
+this — D4 in particular has no per-call predicate.
 
 ### 24(i) — `varSuccRounds` pre-scan + pointer-preserving rebuild — **LOSS, reverted**
 
@@ -1032,8 +728,6 @@ skips a whole store DFS whose only reader is report-gated, and has no per-call p
 | **median** | **282.38** | — | **1250** | **10** | **20239** | **12,028,904** | 13,337,155 | same |
 | D vs 22a | +4.37 (+1.57 %) | — | **+13** | 0 | **-54** | **-46,240 (-0.38 %)** | +415 | — |
 
-Interleaved A/B against the reference, which is what settled it:
-
 | pair | ref (22a) | cand (24i) | diff |
 | 1 | 278.56 | 279.92 | **+1.36** |
 | 2 | 280.50 | 281.77 | **+1.27** |
@@ -1042,34 +736,14 @@ Interleaved A/B against the reference, which is what settled it:
 
 `succType` rebuilds every registry type on every settle round — six full passes per run — and
 already computed a "changed" flag it ignored. It now returns unchanged nodes by pointer, and a
-`hasVarAnno` pre-scan skips subtrees that cannot contain a successor write at all.
-
-**Not kept: 1.36 s slower, in all three pairs, with a paired spread of 0.42 s.** That is the
-tightest measurement in the whole series and leaves no ambiguity. The plain triple had said +4.37 s
-against a reference measured two hours earlier; the true figure is +1.36 s, and both agree on the
-sign, so the revert is right either way.
-
-It is the same lesson as 16a, which is now a pattern worth naming: **the pre-scan is a full walk
-of the subtree, so every subtree that DOES contain a var annotation is walked twice.** Promoted
-fell 54 MiB and RSS 46 MB — the pointer preservation is real and does share structure — but minor
-cycles rose 13, which is the scan's own `Dict.foldl` closure per record node. Sharing the output
-was worth less than walking the input twice cost.
-
-What would be worth trying instead, and is NOT what was built: fuse the test into the walk, so a
-single pass both decides and rebuilds, returning the input node by pointer when nothing below it
-changed. The pointer preservation half of this change was sound; only the separate pre-scan was
-not.
-
-**A compiler bug was found on the way here and is worth recording.** The first form of this change
-split the guard into a wrapper plus a worker, making `succType` and `succTypeGo` two MUTUALLY
-RECURSIVE let-bound local functions. The compiler accepted the source and emitted MLIR that would
-not parse: `invalid value index: 18446744073709551615`, which is -1 as an unsigned 64-bit word.
-Merging them into one self-recursive function fixed it. The bug is in the compiler, not in this
-step, and it is unrelated to anything the loop has changed — `bin/eco-opt22a` is the compiler that
-mis-emitted, and it predates this entry. Reproducer: two mutually recursive functions bound in one
-`let` inside a large function.
-
-Reverted with `restore keep-22a`, verified. The reference row is unchanged.
+`hasVarAnno` pre-scan skips subtrees that cannot contain a successor write. **Not kept: 1.36 s
+slower in all three pairs, paired spread 0.42 s** — the tightest measurement in the series. (The
+plain triple had said +4.37 s against a reference two hours old; both agree on sign.) Same lesson
+as 16a, now a pattern: **the pre-scan is a full walk, so every subtree that DOES contain a var
+annotation is walked twice.** Promoted -54 MiB and RSS -46 MB say the pointer preservation is real;
+minor +13 is the scan's own `Dict.foldl` closure per record node. Fusing test into walk is the
+thing to try. **A compiler bug surfaced here**: two MUTUALLY RECURSIVE let-bound local functions
+emit unparseable MLIR (`invalid value index: -1`); merge them into one. It predates this entry.
 
 ### 12 (surgical form) — key `lssSignatures`/`lssInProgress` by `Global`, not by a built string — **LOSS, reverted**
 
@@ -1080,59 +754,30 @@ Reverted with `restore keep-22a`, verified. The reference row is unchanged.
 | **median** | **275.58** | — | **1256** | **10** | **20292** | **12,046,092** | 13,353,457 | same |
 | D vs 22a | -2.43 (-0.87 %) | — | **+19** | 0 | -1 | -29,052 (-0.24 %) | **+16,717** | — |
 
-Interleaved A/B, which did NOT resolve it:
-
 | pair | ref (22a) | cand (12s) | diff |
 | 1 | 281.40 | 281.06 | -0.34 |
 | 2 | 281.44 | 280.01 | -1.43 |
 | 3 | 275.38 | 278.35 | **+2.97** |
 | median paired difference |  |  | -0.34 |
 
-Chosen over the specification's full `GlobalId` refactor because the re-profile named the target
-precisely: 8.2 % of the run is string comparison, and `signatureFor` probes `lssSignatures` about
-twice per translated call — roughly 10^6 times — each probe building a 25-50 character key and
-then doing 14-16 compares over a long shared prefix. `TOpt.globalHash` and a `HashMap` keyed by
-the `Global` itself remove both.
-
-**Not kept.** The A/B is the first in this series whose pairs disagree in SIGN, so wall is
-unresolved; and minor cycles rose 19, which is exact. RSS improved 0.24 %, and the letter of rule
-2 would call that a win — one of the listed counters improved — but that reading ignores the rule's
-own ORDER. Minor GC is judged before RSS precisely because it is deterministic, while RSS is the
-bimodal column this machine is on record for. Taking a win on the least reliable stat while the
-most reliable one regresses would be gaming the rule, so the step is reverted.
-
-Why it cost rather than saved is NOT established, and the obvious explanation was checked and
-ruled out. The suspicion was that `HashMap.get` takes the hash and the equality as ARGUMENTS, so
-every probe would pass two functions where `Dict.get` passed none — a closure per probe on a 10^6
-path. The lowered compiler says otherwise: `Data_HashMap_*` appears as neither a defined nor a
-called function anywhere in the 13 MB of MLIR, only inside report string literals. Every HashMap
-operation is inlined and specialised at its call site, so the function arguments cost nothing.
-
-So the regression is unexplained. What is known: 19 more minor cycles, and the emitted source grew
-16.7 kB, the largest growth of any step in this series. The remaining candidates are the insert
-path — `HashMap.insert` scans the bucket with `bucketMember` before rebuilding it, and a table of
-~43,000 signatures makes that bucket work real — and the fact that a `Dict String` probe allocates
-NOTHING once the key exists, so the string build it saves may simply be cheaper than the bucket
-machinery it adds.
-
-**This matters beyond this step.** Steps 13, 17 and 21 all assume that replacing a `Dict String`
-with a hashed table is close to free. This measurement says that assumption needs evidence per
-site, not in general: the win has to come from removing the KEY CONSTRUCTION on a path where the
-probe count is high and the insert count is low. `lssSignatures` has 43,000 inserts against a
-million probes, which should have been the favourable case, and it still lost.
-
-Reverted with `restore keep-22a`, verified. The reference row is unchanged.
+Chosen over the spec's full `GlobalId` refactor because the re-profile named the target: 8.2 % of
+the run is string comparison, and `signatureFor` probes `lssSignatures` ~2x per translated call —
+~10^6 times — each building a 25-50 character key then doing 14-16 compares over a long shared
+prefix. **Not kept.** Pairs disagree in SIGN so wall is unresolved, and minor cycles rose 19,
+which is exact. **CAUSE ESTABLISHED LATER, by entries 27 and 24(iii)+(iv):** the replacement
+probes with `TOpt.globalHash`, whose last line is
+`String.foldl (\c h -> globalMixHash h (Char.toCode c)) 23 name` — **an Elm closure call per
+character of the name, on every one of ~10^6 probes**, against a `Dict String` descent that
+bottoms out in a C++ memcmp. In this compiler hashing a string costs more than the ordered
+comparison it replaces. That makes this a RETRYABLE loss, unlike most here: the string build it
+removes is real, only the hash is wrong. A retry must carry the hash on the `Global` (computed
+once at construction) or go to step 13 proper — integer identity end to end. Do not retry it by
+swapping the container alone.
 
 ### 27 (new, from the re-profile) — hash the `.ecot` string-intern table — **LOSS, reverted**
 
 | run | wall (s) | — | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
 | r1 | **311.63** | — | **1310** | **11** | **20825** | 12,048,200 | 13,342,310 | same |
-
-One run was enough: +33.6 s, +73 minor cycles, an extra MAJOR collection, 532 MiB more promoted.
-The remaining runs were abandoned.
-
-This step came from attributing the re-profile's 8.2 % string-comparison block to its callers,
-which is worth recording because it is not where this plan has been looking:
 
 | caller of the string compare | share |
 | `Compiler.AST.StringTable.string` | 20.6 % |
@@ -1143,34 +788,18 @@ which is worth recording because it is not where this plan has been looking:
 | `Engine.internMemberKey` (step 13's target) | 14.3 % |
 | `Engine.lambdaMemberLayoutQualified` + `insertMemberKey` | 4.7 % |
 
-About two thirds is artifact and bytecode string INTERNING, and under a fifth is the LSS member
-keys step 13 exists to remove. The largest single string cost in this compiler today is in
-EMISSION, outside this plan's scope.
-
-`StringTable.strToIdx` is a `Dict String Int` probed once per encoded string field, keyed by
-module paths and qualified names that share long prefixes. Hashing it looked like the textbook
-case: the keys already exist so nothing is built, the table is written once and read many times,
-and a probe costs about sixteen prefix-walking comparisons.
-
-**It lost badly, and the reason is the lesson.** The comparison it replaced runs in C++
-(`Elm::StringOps::compare`, essentially a memcmp). The hash replacing it runs in ELM:
-`String.foldl` over every character, which in this compiler is a closure invocation per
-character. One Elm-level pass over a whole key costs far more than sixteen native partial
-compares.
-
-**This condemns the naive form of steps 13, 17 and 21**, and any other `Dict String` to hashed
-conversion, unless the hash is computed in the kernel or already carried on the value. Every
-hashing step that HAS won here (2, 4, 11b) hashes something with a precomputed integer already on
-it, never a string walked per probe. Step 13's real value is that it removes the key
-CONSTRUCTION, replacing strings with integers end to end; it must not be built as "the same
-strings, hashed".
-
-Reverted with `restore keep-22a`, verified.
+One run was enough: +33.6 s, +73 minor cycles, an extra MAJOR collection, 532 MiB more promoted;
+the remaining runs were abandoned. It came from attributing the re-profile's 8.2 % string block to
+its callers — about two thirds is artifact and bytecode INTERNING and under a fifth is the LSS
+member keys step 13 targets, so the largest string cost in this compiler is in EMISSION, outside
+this plan. `StringTable.strToIdx` looked like the textbook case for hashing: keys already exist,
+written once, read many, ~16 prefix-walking compares per probe. **It lost badly, and the reason is
+the lesson.** The comparison it replaced runs in C++ (`StringOps::compare`, essentially memcmp);
+the hash replacing it runs in ELM — `String.foldl`, a closure invocation per character. **This
+condemns the naive form of steps 13, 17 and 21.** Every hashing step that HAS won (2, 4, 11b)
+hashes something carrying a precomputed integer, never a string walked per probe.
 
 ### 20 — `Point` equality by index rather than through the generic `==` — **no win, reverted**
-
-GC counters were IDENTICAL to the reference in all runs (1237 / 10 / 20293), which is expected:
-the change allocates nothing.
 
 | pair | ref (22a) | cand (20) | diff |
 | 1 | 279.48 | 279.03 | -0.45 |
@@ -1181,13 +810,12 @@ the change allocates nothing.
 `Point` is a single-constructor box around an `Int`, so `==` on two of them goes through the
 kernel's structural equality to reach the answer an integer compare gives directly. The three
 sites in `UnionFind` — the compression test in `reprS`, the already-equal test in `unionS`, and
-`equivalentS` — now compare indices.
-
-**Not kept, and this is an instrument limit rather than evidence of harm.** The change strictly
-reduces work per operation and is provably equivalent. But it allocates nothing, so no counter can
-move, and the paired A/B disagrees in sign with a median of +0.12 s. Under the rule a step that
-cannot be shown to help is not kept. This is the same position step 14 ended in, and both should
-be revisited with a microbenchmark rather than a whole-compile timing.
+`equivalentS` — now compare indices. **Not kept, and this is an instrument limit rather than
+evidence of harm.** The change strictly reduces work per operation and is provably equivalent, but
+it allocates nothing, so no counter can move — they were IDENTICAL in all runs (1237/10/20293) —
+and the paired A/B disagrees in sign with a median of +0.12 s. Under the rule a step that cannot
+be shown to help is not kept. This is the same position step 14 ended in, and both should be
+revisited with a microbenchmark rather than a whole-compile timing.
 
 ### 13 (subset) — memoise the ground-arrow key on `(paramT, resultT)` — **LOSS, reverted**
 
@@ -1197,20 +825,15 @@ be revisited with a microbenchmark rather than a whole-compile timing.
 | D vs 22a | **+6 to +8** | **+25** | **+1** | +32 | -87,000 |
 
 `groundSetMembers` builds its annotation-widened arrow key with a full pure `widenSets` rebuild
-plus a `toComparableMonoType` render, once per SET-SLOT READBACK — on the order of 825,000 times
-a run — although it is a pure function of `paramT` and `resultT`, both canonical with precomputed
-hashes. Memoising it looked like step 4a's shape, which was the biggest win in the series.
-
-**Not kept, and the reason is a corollary to entry 27: do not memoise a large STRING.** The saving
-is real, the widen and the render stop repeating, but each entry retains a multi-kilobyte string
-for the life of the run and there are many distinct arrow shapes. That shows up exactly where you
-would expect: an extra MAJOR collection, 25 more minor cycles, and RSS moving 87 MB the other way
-as the retained table trades against the nursery. Step 4a's memo retained interned `MonoType`s
-that were already live; this one manufactures new retention.
-
-Which is the argument for step 13 PROPER rather than any shortcut to it: the win is not caching
-the rendered key, it is never rendering one — member identity as an integer end to end. Both
-attempts to approximate that, this entry and entry 27, lost for the same underlying reason.
+plus a `toComparableMonoType` render, once per SET-SLOT READBACK — ~825,000 times a run — although
+it is a pure function of `paramT` and `resultT`, both canonical with precomputed hashes.
+Memoising it looked like step 4a's shape, the biggest win in the series. **Not kept, and the
+reason is a corollary to entry 27: do not memoise a large STRING.** The saving is real, but each
+entry retains a multi-kilobyte string for the life of the run across many distinct arrow shapes —
+an extra MAJOR collection, +25 minor cycles, RSS +87 MB as the retained table trades against the
+nursery. Step 4a's memo retained interned `MonoType`s that were ALREADY live; this manufactures
+new retention. Which is the argument for step 13 PROPER: the win is not caching the rendered key,
+it is never rendering one.
 
 ### 23 — lazy kernel-ABI `MVarEnv` + gate `widenedByKernel` — **no win, reverted**
 
@@ -1224,21 +847,16 @@ attempts to approximate that, this entry and entry 27, lost for the same underly
 | 3 | 274.28 | 276.30 | +2.02 |
 | median paired difference |  |  | **+2.02** |
 
-An `MVarEnv` was built on every kernel call and every bare kernel reference, through its own
-`Engine.andThen` layer. `deriveKernelAbiMode` ignores it — its third parameter is literally `_` —
-and the only consumer is one branch, so the parameter was dropped from that function (three
-callers) and the env is now built inside the branch that reads it. The ungated `widenedByKernel`
-counter, which costs an `S` and an `LssStats` copy per rowless or refused boundary and is read
-only by a report line, is now behind the report flag.
-
-**Not kept.** Both measurements lean slower: the triple is +2.86 s and the paired A/B is +2.02 s
-with two of three pairs positive. The only improvement is 38 MiB of promotion, 0.19 %. Treating
-that as a rule-2 win while two independent wall measurements lean the other way would be the same
-mistake rejected in entry 12.
-
-The parameter removal is worth keeping in mind independently: `deriveKernelAbiMode` taking an
-argument it ignores is a wart, and dropping it is correct regardless of timing. It is reverted
-here only because it travelled with the rest of the entry.
+An `MVarEnv` was built on every kernel call and bare kernel reference through its own `andThen`
+layer, although `deriveKernelAbiMode` ignores it — its third parameter is literally `_` — and only
+one branch consumes it. The parameter was dropped (three callers) and the env is built inside the
+branch that reads it; the ungated `widenedByKernel` counter, which costs an `S` and an `LssStats`
+copy per rowless or refused boundary for a single report line, moves behind the report flag.
+**Not kept.** Both measurements lean slower: the triple +2.86 s, the paired A/B +2.02 s with two
+of three pairs positive. The only improvement is 38 MiB of promotion, 0.19 %; treating that as a
+rule-2 win while two independent wall measurements lean the other way is the mistake rejected at
+entry 12. The parameter removal is correct regardless of timing and is reverted only because it
+travelled with the rest.
 
 ### 17 — `Data.HashMap` buckets: `Dict Int` to an array-backed table — **LOSS, reverted**
 
@@ -1249,20 +867,16 @@ here only because it travelled with the rest of the entry.
 | **median** | **279.02** | **1262** | **10** | **20284** | **12,090,480** | 13,408,214 |
 | D vs 22a | +1.01 | **+25** | 0 | -9 | +15,336 | +71,474 |
 
-The bucket map was a red-black `Dict Int`, so every insert copied a path of about seventeen nodes
-to store a bucket found by a hash that needs no ordering. Replaced with a power-of-two `Array`
-indexed by a mask, doubling at a load factor of two, sequence numbers carried across the rehash so
-iteration order is untouched.
-
-**Not kept: 25 more minor cycles.** The reasoning was right about the intern table, which has
-around 100,000 inserts, and wrong about everything else. Most `HashMap`s in this compiler are
-SMALL and short-lived — per-item tables that hold a handful of entries — and for those the change
-replaces a `Dict` that starts genuinely empty with a 64-element `Array.repeat` at construction,
-plus a 32-wide trie node copy per `Array.set`. The big table's saving is real but it is outnumbered.
-
-The obvious repair is a smaller initial capacity, or keeping a list until the map outgrows it.
-Neither was tried: at a measured +25 minor cycles the headroom is a fraction of a percent, which
-this instrument cannot resolve, so it would be tuning against noise.
+The bucket map was a red-black `Dict Int`, so every insert copied a path of ~17 nodes to store a
+bucket found by a hash that needs no ordering. Replaced with a power-of-two `Array` indexed by a
+mask, doubling at load factor two, sequence numbers carried across the rehash so iteration order is
+untouched. **Not kept: 25 more minor cycles.** The reasoning was right about the intern table
+(~100,000 inserts) and wrong about everything else: most `HashMap`s here are SMALL and short-lived
+per-item tables holding a handful of entries, and for those the change replaces a `Dict` that
+starts genuinely empty with a 64-element `Array.repeat` at construction plus a 32-wide trie node
+copy per `Array.set`. The big table's saving is real but outnumbered. The obvious repair — a
+smaller initial capacity, or a list until the map outgrows it — was not tried: at +25 minor cycles
+the headroom is a fraction of a percent, which this instrument cannot resolve.
 
 ### 16 (D4) — skip the report-only store DFS in `degradeToSymmetric` — **no win, reverted**
 
@@ -1271,157 +885,72 @@ this instrument cannot resolve, so it would be tuning against noise.
 | r2 | 282.58 | 1238 | 10 | 20387 | 12,111,840 |
 | delta vs 22a | +3 | +1 | 0 | +94 | +40,000 |
 
-`storeMentionsArrow` is a full store depth-first walk that threads and copies `S` per visited node,
-and its only consumer is the arrow-mention test feeding `bumpFlowDegraded`, which is itself already
-report-gated. Off report the walk computes a Bool and throws it away, so the candidate skips it --
-the same pure-removal shape that won in steps 6 and 7.
-
-**Not kept: nothing improved.** The only reading consistent with a pure removal making every stat
-slightly worse is that the site is RARE -- `degradeToSymmetric` fires on container-typed directed
-flows only -- so there was almost nothing to remove, and what remains is the noise floor plus the
-162 bytes of added source. The step's own estimate was a fraction of a percent, and that is what it
-measured. Run 3 was abandoned once the first two runs agreed on both the sign and the counters
-(which are deterministic per binary x tree, so r1 == r2 on all four of them is conclusive).
+`storeMentionsArrow` is a full store depth-first walk that threads and copies `S` per visited
+node, and its only consumer is the arrow-mention test feeding `bumpFlowDegraded`, which is itself
+already report-gated — so off report the walk computes a Bool and throws it away. The candidate
+skips it: the same pure-removal shape that won in steps 6 and 7. **Not kept: nothing improved.**
+The only reading consistent with a pure removal making every stat slightly worse is that the site
+is RARE — `degradeToSymmetric` fires on container-typed directed flows only — so there was almost
+nothing to remove, and what remains is the noise floor plus 162 bytes of added source. The step's
+own estimate was a fraction of a percent, and that is what it measured. Run 3 was abandoned once
+the first two agreed on both sign and counters (deterministic per binary x tree, so r1 == r2 on
+all four is conclusive).
 
 ### 15 — `enqueueSpecKeyed` hit path (`15b`: tally probe behind the budget, widen on create only) — **LOSS, reverted**
-
-Measured with the INTERLEAVED form (`lss-loop-ab.sh eco-opt22a eco-opt15 3`), because the step's
-own estimate (1-3 % of the mono window) is below the unpaired wall resolution.
 
 | pair | ref `eco-opt22a` | cand `eco-opt15` | diff |
 | 1 | 273.35 | 278.54 | **+5.19** |
 | 2 | 278.39 | 280.81 | **+2.42** |
 | 3 | 279.63 | 284.46 | **+4.83** |
 
-Median paired difference **+4.83 s (+1.7 %)**, same sign in all three pairs, against a paired
-resolution of 0.42 s. GC counters IDENTICAL in both arms (1238 / 10 / 20318 MiB), RSS identical to
-four digits. `cmp` confirms the two arms emit BYTE-IDENTICAL MLIR (13,337,065 B), the candidate
-reproduces `eco15.mlir` exactly (fixed point, so no extra bootstrap turn was owed after all), and
-the three candidate runs agree byte-for-byte.
-
-What the candidate did, all three of which the spec expected to pay off on the ~98K keyed HITS:
-build `Mono.toComparableGlobal`'s five-part string and probe `specCountByGlobal` only when
-`maxSpecsPerGlobal > 0` (it is 0 by default); run `Intern.widenSets` only on the over-budget arm
-or on a CREATE (its only two consumers -- the over-budget dedup key and `recordSpecWidenedKey`);
-and skip the `{ s | registry, specCountByGlobal, lssStats }` rebuild on the hit path entirely.
-
-**It is slower, reproducibly.** The hit path genuinely does less work, so the cost is elsewhere in
-the same function: the rewrite splits one straight-line `let` into a two-armed `if created`, with
-bindings live across both arms, and moves the widen from a fixed position before the registry probe
-to a position after it inside one arm. Either the function stopped being inlined at its call sites,
-or the create arm's now-cold `Intern.widenSets` lost the locality that came from running on every
-enqueue. This is the same shape as steps 16a and 24i: **a guard on a hot path is hot-path work**,
-and here the guard's structural cost exceeded the ~98K x (one string concat + one red-black
-descent + one memoised widen) it was buying back.
-
-**Do not re-try `15b` as written.** If this is revisited, the only piece worth isolating is the
-tally probe alone (`15a`), left in the straight-line `let` with no `if created` split -- but note
-that the create path needs the key regardless, so the saving is confined to hits and is smaller
-than what was measured here as a net loss.
+Measured with the INTERLEAVED form, the step's own estimate (1-3 % of the mono window) being
+below unpaired wall resolution. The candidate builds the five-part global string and probes
+`specCountByGlobal` only when `maxSpecsPerGlobal > 0` (0 by default), runs `Intern.widenSets` only
+on the over-budget arm or a CREATE, and skips the `{ s | registry, … }` rebuild on the hit path.
+**It is slower, reproducibly**, same sign in all three pairs against a 0.42 s paired resolution,
+with GC counters IDENTICAL in both arms and both emitting byte-identical MLIR. The hit path
+genuinely does less work, so the cost is structural: the rewrite splits one straight-line `let`
+into a two-armed `if created` with bindings live across both, and moves the widen after the
+registry probe. Same shape as 16a and 24i — **a guard on a hot path is hot-path work**. Do not
+re-try `15b` as written; only the tally probe alone (`15a`) is worth isolating.
 
 ### 18b — per-literal string-intern cache in the codegen — **WIN, kept**
-
-The first entry in this series that changes the CODEGEN (`eco-boot-native`) rather than the
-compiler source or the runtime library. The candidate is `eco22a.mlir` -- the reference's own,
-unmodified MLIR -- lowered by the rebuilt `eco-boot-native`, so byte-identity is structural:
-there is one MLIR file and both arms compile it.
 
 | pair | ref `eco-opt22a` | cand `eco-opt18b` | diff |
 | 1 | 279.97 | 275.76 | **-4.21** |
 | 2 | 280.63 | 279.22 | **-1.41** |
 | 3 | 276.65 | 274.49 | **-2.16** |
 
-Median paired difference **-2.16 s (-0.78 %)**, same sign in all three pairs, against a paired
-resolution of 0.42 s. GC counters identical (1237 / 10 / 20293 MiB -- the change removes no
-allocation, the interning already deduped). Max RSS **12,126,548 kB vs 12,135,400**, -8.7 MB.
-`out.mlir` byte-identical between the arms (13,336,740 B) and identical to `eco22a.mlir`.
-
-**What it does.** Every evaluation of a string literal -- `"Int"` in a `case name of` arm as much
-as any literal in ordinary code -- lowered to
-`llvm.call @eco_alloc_string_literal_utf8(@__eco_str_N, len)`. That callee is not gc-leaf (its
-miss path allocates), so RS4GC statepoints it: every live `ptr addrspace(1)` in the function is
-spilled and reloaded around what is, after the first evaluation, an `unordered_map` lookup
-returning a pointer that can never change. The pass now gives each `__eco_str_*` bytes global a
-zero-initialised `__eco_strlit$<name>` i64 sibling and rewrites each call into the same diamond
-the CAF caller-side fast path (Run W) uses:
-
-    %bits  = llvm.load @__eco_strlit$__eco_str_N
-    %isset = llvm.icmp ne %bits, 0
-    scf.if %isset -> ptr<1> { scf.yield __eco_slot_to_hptr(%bits) }        // no call
-    else { scf.yield llvm.call @eco_string_literal_utf8_fill(bytes, len, slot) }
-
-Three files of codegen (`materializeStringLiteralSlots` + `rewriteStringLiteralCallSitesFast` in
-`EcoToLLVMGlobals.cpp`, wired into the serial post-Stage-2 phase of `EcoToLLVM.cpp`) and two new
-runtime exports (`eco_string_literal_fill` / `eco_string_literal_utf8_fill`) that publish the word
-**only** when the interned object landed in the PermanentSpace. That condition is what makes the
-slot legal without a GC root: a permanent object is immortal, GC-invisible and never moves
-(HEAP_036), so `createGlobalRootInitFunction` skips the `__eco_strlit$` prefix exactly as it
-skips `__eco_caf$`. On the old-gen fallback the slot stays 0 and every evaluation keeps calling
-through, rooted by `internLiteral` as before. The hit arm's i64 -> ptr<1> crossing is
-`globalLoadI64ToValue`, the REP_LLVM_002 barrier form. `ECO_STRLIT_CACHE=0` restores the bare call.
-
-**Gates.** E2E `cmake --build build --target full`: **1731 / 1731 passed**. The lowered compiler
-reproduces `eco22a.mlir` byte-for-byte on a self-compile -- a workload that evaluates string
-literals by the million, which is the strongest available correctness evidence for this change.
-The 633-workload rail does not apply: it gates FRONT-END (Elm source) drift through the JS Stage-1
-compiler, and no Elm source changed. `elm-tests` likewise unchanged -- the compiler source is
-exactly `keep-22a`'s.
-
-**Where the 2.16 s came from, and the ceiling.** `eco_alloc_string_literal_utf8` was 0.60 % of the
-self-compile's samples (1.22 % of the mono window), i.e. ~1.7 s of self time, and the measured win
-is larger than that -- the difference is the statepoint traffic the call forced on its callers,
-which never appeared under its own symbol. The candidate binary is 1.8 MB LARGER (74,890,920 vs
-73,067,112) because every literal site grew a diamond; the win is net of that.
-
-**This also raises the value of step 18a**, which was specified to run second: with the intern
-probe gone, what remains at `normalizePrimHome` / `classifyApp` / the `Zonk` `TType` arm is the
-`Utils.equal` chain itself, and 18a cuts that from up to 8 compares per node to at most 3 (0 for a
-non-primitive name).
+The first entry that changes the CODEGEN rather than compiler source or runtime: the candidate is
+the reference's own unmodified `eco22a.mlir` lowered by a rebuilt `eco-boot-native`, so
+byte-identity is structural. Every string literal lowered to a call to
+`eco_alloc_string_literal_utf8`, which is not gc-leaf, so RS4GC statepointed it — every live
+`ptr addrspace(1)` spilled and reloaded around what is, after first evaluation, a hash lookup
+returning an immutable pointer. Each `__eco_str_*` global now gets a zero-init `__eco_strlit$` i64
+sibling and the call becomes a load/test/`scf.if` diamond. The slot needs no GC root because the
+runtime publishes the word ONLY when the interned object landed in PermanentSpace (HEAP_036). The
+win exceeds the callee's 0.60 % self time — the difference is statepoint traffic that never
+appeared under its own symbol. Gates: E2E 1731/1731; self-compile reproduces `eco22a.mlir`.
 
 ### 18a — length-first primitive-name dispatch (`normalizePrimHome`, `classifyApp`, `Zonk`'s `TType` arm) — **LOSS, reverted**
-
-Measured immediately after 18b, against it (`lss-loop-ab.sh eco-opt18b eco-opt18a 3`).
 
 | pair | ref `eco-opt18b` | cand `eco-opt18a` | diff |
 | 1 | 279.37 | 281.54 | **+2.17** |
 | 2 | 272.86 | 281.66 | **+8.80** |
 | 3 | 275.36 | 277.21 | **+1.85** |
 
-Median paired difference **+2.17 s**, same sign in all three pairs. GC counters identical
-(1259 / 10 / 20293 -- 1259 rather than 18b's 1237 because BOTH arms compile the 18a source, which
-is larger; the comparison is still like-for-like). Both arms emit byte-identical MLIR
-(13,341,056 B) and the candidate reproduces `eco18a.mlir` exactly, so the rewrite is BI as
-predicted -- it is simply slower.
-
-The candidate replaced `case canonical of ModuleName.Canonical ( "elm", "core" ) _ -> case name of
-"Int" | "Float" | "Bool" | "Char" | "String" | "List"` with `case String.length name of` followed
-by at most three `name == "..."` compares and, only on a name hit, the module test. The three
-sites are `Store.normalizePrimHome` (every `App1` load), `Store.classifyApp` (every `TType` zonk)
-and `Zonk.canTypeToMonoWithI`'s `TType` arm.
-
-**18b removed 18a's premise.** The spec priced the old shape at "up to 8 intern probes + 8
-statepoint calls + up to 8 `Utils.equal` calls" per node; 18b deleted the probes and the
-statepoints, and what is left of a string-pattern arm is a `__eco_value_eq` whose FIRST test is
-raw pointer equality against an interned literal -- for a type name that is itself interned, that
-hits on the first arm with one compare. Against that, `String.length` plus an Int `case` plus an
-explicit `==` chain is more work, not less. This is the third instance in the series of the same
-lesson recorded at 16a and 24i: **once the thing being skipped is cheap, the test that skips it
-dominates.** It is also the second time in one sitting (with 15) that a plan step aimed at a hot
-path lost because the plan priced the work removed and not the code added.
-
-**Do not re-try.** 18a's estimate (2.2 % of the mono window) was for the pre-18b shape and no
-longer exists.
+Measured immediately after 18b, against it. The candidate replaced a `case name of` chain of
+string-pattern arms with `case String.length name of` plus at most three `==` compares and, only
+on a name hit, the module test, at `Store.normalizePrimHome`, `Store.classifyApp` and
+`Zonk.canTypeToMonoWithI`'s `TType` arm. Same sign in all three pairs; both arms emit
+byte-identical MLIR, so the rewrite is BI as predicted — simply slower. **18b removed 18a's
+premise.** The spec priced the old shape at up to 8 intern probes + 8 statepoint calls + 8
+`Utils.equal` per node; 18b deleted the probes and statepoints, and what remains of a
+string-pattern arm is a `__eco_value_eq` whose FIRST test is raw pointer equality against an
+interned literal — one compare for an interned type name. Third instance of the 16a/24i lesson:
+**once the thing being skipped is cheap, the test that skips it dominates.** Do not re-try.
 
 ### 22b — one member mint per lambda — **WIN on the counters, kept**
-
-`classifyLambdaHead` already mints the lambda's member id (via
-`LssInfer.injectLambdaMemberQualified` -> `Engine.lambdaInstanceMemberId`), and then
-`specializeLambda` minted it a SECOND time through `Engine.lambdaInstanceMemberMaybe` purely to
-fill `ClosureInfo.lssMember`. The second call is state-idempotent but not cheap: every one runs
-`instanceQualTagFor`, the `rootLamOf` fold, `layoutQualKey` (a multi-kilobyte string concat) and a
-`byKey` probe. `LssInfer.injectLambdaMemberQualifiedId` now returns the id, `classifyLambdaHead`
-returns `( MonoType, Maybe Int )`, `specializeLambda` takes the member from there, and
-`Engine.lambdaInstanceMemberMaybe` is deleted.
 
 | pair | ref `eco-opt18b` | cand `eco-opt22b` | diff |
 | 1 | 283.32 | 278.43 | -4.89 |
@@ -1434,354 +963,166 @@ returns `( MonoType, Maybe Int )`, `specializeLambda` takes the member from ther
 | promoted MiB | 20363 | **20335** | -28 |
 | max RSS kB | 12,093,664 | **11,916,868** | **-176,796 (-1.5 %)** |
 
-**Judged on the counters, not the wall.** The paired wall differences do not agree on a sign
-(-4.89 / -2.38 / +5.15), so wall is FLAT by this instrument -- and the loop's rule is explicit
-that flat wall with any other stat improved is a win. Here it is not one other stat but three, and
-they are the DETERMINISTIC ones: minor GC, promoted bytes and max RSS are exact per
-(binary x tree), so a 176 MB RSS drop is a fact at n=1, not an average. Deleting one of two mints
-per lambda removing 176 MB of peak footprint is exactly the shape of the four biggest wins in this
-series -- the cost of this compiler is allocation volume.
-
-**Gates, all green.**
-- Unit: 13,565 passed, the same 12 pre-existing POST_010 / golden-fingerprint failures.
-- E2E `cmake --build build --target full`: **1731 / 1731**.
-- 633-workload rail: **MLIR manifest byte-identical for every one of the 633 workloads**.
-  The census differs on EXACTLY the three lines the specification predicted and no others --
-  `layoutQual: mints=` (halved: e.g. 105 -> 53, 43 -> 23), `ARGF rootFold|folded` (halved), and
-  `instanceQual: … rootSkip=`. Every `varsucc|`, `varctor|`, `varlam|`, `grounding:` and
-  `members:` line is unchanged, which is the check that a mint-count change did not move
-  precision.
-- Fixed point: `eco-opt22b` reproduces `eco22b.mlir` exactly; both arms emit identical MLIR
-  (13,336,584 B); the three candidate runs agree byte-for-byte.
-
-LSS_017's requirement that a lambda be "stamped IDENTICALLY in its set injection and its
-`ClosureInfo.lssMember`" now holds by CONSTRUCTION -- one mint, one id -- rather than by an
-idempotence argument about two independent derivations.
+`classifyLambdaHead` already mints the lambda's member id, and `specializeLambda` minted it a
+SECOND time purely to fill `ClosureInfo.lssMember` — state-idempotent but not cheap: each ran
+`instanceQualTagFor`, the `rootLamOf` fold, `layoutQualKey` (a multi-kilobyte string concat) and a
+`byKey` probe. `classifyLambdaHead` now returns `( MonoType, Maybe Int )`;
+`lambdaInstanceMemberMaybe` is deleted. **Judged on the counters, not the wall**: the paired
+differences disagree on sign (-4.89/-2.38/+5.15), so wall is FLAT, and three DETERMINISTIC stats
+improved — exact per (binary x tree), so a 176 MB RSS drop is a fact at n=1. Gates: unit 13,565;
+E2E 1731/1731; rail manifest identical on all 633, census differing on EXACTLY the three predicted
+lines and no other. LSS_017's identical-stamping requirement now holds by CONSTRUCTION.
 
 ### 22d — pointer-preserving `overlayAnnotations` (+ join entry test, `sameFieldKeys`) — **WIN, kept**
-
-The largest single win since step 3, and the clearest confirmation of this series' one finding:
-**what costs time in this compiler is allocation.**
 
 | pair | ref `eco-opt22b` | cand `eco-opt22d` | diff |
 | 1 | 277.92 | 268.50 | **-9.42** |
 | 2 | 275.92 | 272.75 | **-3.17** |
 | 3 | 279.27 | 270.19 | **-9.08** |
 
-Median paired difference **-9.08 s (-3.3 %)**, same sign in all three pairs.
-Minor GC **1250 vs 1259** (-9 cycles). Promoted **20,004 vs 20,333 MiB (-329 MiB)**. Major GC 10,
-unchanged. GC time 126.32 vs 130.37 s.
-
-**What was wrong.** `Mono.overlayAnnotations structural annoSource` rebuilt the ENTIRE type tree on
-every call -- `mFunction` / `mList` / `mTuple` / `mRecord` / `mCustom` at every node, `List.map2`
-at every argument list, and a whole fresh `Dict` via `Dict.map` at every record -- whether or not
-the store zonk had contributed a single annotation. Its callers are the hottest paths in
-translation: `classifyLambdaHead` runs it for every lambda head, and there are eight more sites in
-`Translate`. The common case is that most of the tree is untouched, and all of that copying was
-immediately garbage.
-
-**The fix** is the protocol `joinAnnotationsChanged` next door already used, applied to the
-overlay: `overlayAnnotationsChanged : MonoType -> MonoType -> ( Bool, MonoType )` rebuilds only
-the spines that actually changed, leaves unchanged siblings pointer-shared, and returns
-`structural` ITSELF when nothing changed at all. An O(1) `structural == annoSource` entry test
-short-circuits the whole walk (pointer identity, or a packed-hash mismatch in the leading `Int`),
-so only hash-equal distinct trees walk -- and that walk is cheaper than the rebuild it replaces.
-`overlayAnnotations` stays as a `Tuple.second` wrapper, so **no call site changed**.
-
-Two smaller pieces rode along, both in the same file:
-- `joinAnnotationsChanged` gained the same `a == b` entry test (`joinAnnotations a a == a` in
-  every arm, so the walk is skippable on equal inputs);
-- `Dict.keys fieldsA == Dict.keys fieldsB` at all three record arms became `sameFieldKeys`, which
-  decides the same predicate with no allocation (equal size plus every key of `a` in `b` implies
-  equal key sets, since keys are unique) instead of building two `List Name` and comparing them.
-
-**Gates, all green.**
-- Unit: 13,565 passed, the same 12 pre-existing failures.
-- E2E `cmake --build build --target full`: **1731 / 1731**.
-- 633-workload rail: MLIR manifest byte-identical for every workload AND **the LSS census is
-  byte-identical too -- not one line differs.** That is the strongest gate result in this series:
-  22d changes no decision anywhere, only how much garbage is produced reaching them.
-- Fixed point OK; both arms emit identical MLIR (13,339,565 B); the three candidate runs agree
-  byte-for-byte.
-
-**The part of the specification NOT built.** §9's step 22 also parameterises the walk by a `cons`
-function so Engine can hash-cons each rebuilt node (`overlayS`/`enrichS`), and does the same for
-the enrich family. That was deliberately left out: it requires threading `S` through twelve call
-sites, and today's `overlayAnnotations` does not hash-cons either, so the pure pointer-preserving
-form is a strict improvement with ZERO change in canonicality -- which is exactly why the census
-came back identical. The `cons` variant remains available if the enrich sites are ever measured.
+The largest single win since step 3. `Mono.overlayAnnotations` rebuilt the ENTIRE type tree on
+every call — `mFunction`/`mList`/`mTuple`/`mRecord`/`mCustom` at every node, `List.map2` at every
+argument list, a fresh `Dict` at every record — whether or not the zonk contributed a single
+annotation, on the hottest paths in translation. `overlayAnnotationsChanged` rebuilds only the
+spines that changed, leaves siblings pointer-shared, and returns `structural` ITSELF when nothing
+changed; an O(1) `structural == annoSource` entry test short-circuits the walk, and the public
+name stays a `Tuple.second` wrapper so no call site moved. Riders: the same entry test on
+`joinAnnotationsChanged`, and `sameFieldKeys` for `Dict.keys a == Dict.keys b`. Gates: unit
+13,565; E2E 1731/1731; **rail manifest AND census byte-identical — not one line differs**, the
+strongest gate result in the series.
 
 ### 22c — the same pointer-preserving protocol for `enrichAnnotationsWith` — **LOSS, reverted**
-
-The obvious follow-up to 22d: give the enrich family the identical treatment
-(`enrichAnnotationsWithChanged` + `enrichListChanged` + `enrichFieldsChanged`, with the
-`structural == annoSource` entry test, `enrichAnnotationsWith` kept as a `Tuple.second` wrapper so
-no call site changes), plus the same `a == b` entry test on the PURE `joinAnnotations`.
 
 | pair | ref `eco-opt22d` | cand `eco-opt22c` | diff |
 | 1 | 273.18 | 276.63 | **+3.45** |
 | 2 | 270.95 | 274.37 | **+3.42** |
 | 3 | 270.42 | 271.00 | **+0.58** |
 
-Median paired difference **+3.42 s**, same sign in all three pairs. Minor GC identical (1250),
-promoted 20,000 vs 20,005 MiB (5 MiB better -- nothing), RSS slightly worse. Wall up ⇒ LOSS by the
-rule, and the counters do not rescue it.
-
-**Why the same change wins on overlay and loses on enrich.** `overlayAnnotations` is called to
-transplant annotations that MOSTLY are not there -- a storeless classification overlaid with a
-zonk that touched a few arrows -- so the no-op case dominates and pointer preservation skips a
-whole-tree rebuild. Enrich is called precisely BECAUSE a merge is expected to add something: the
-`merged /= annoA` test, the Bool threading and the extra `merge` indirection are paid on every
-node, and the no-op case they buy is rare. The population, not the shape of the code, decides.
-
-That makes 22c a fourth instance of the series' recurring lesson in a new form: it is not enough
-for a transformation to be sound and to remove work in principle -- **the population it removes
-work from has to be the common one**, and here the profitable population was already harvested by
-22d next door.
-
-**Do not re-try** without first counting no-op enrich calls; the transformation itself is correct
-(it was byte-identical: both arms emitted 13,343,726 B) and is preserved in `try-22c`.
+The obvious follow-up to 22d: identical treatment for the enrich family, same entry test, same
+`Tuple.second` wrapper so no call site changes, plus the `a == b` test on pure `joinAnnotations`.
+Same sign in all three pairs; minor GC identical, promoted 5 MiB better (nothing), RSS slightly
+worse. Wall up ⇒ LOSS, and the counters do not rescue it. **Why the same change wins on overlay
+and loses on enrich.** `overlayAnnotations` transplants annotations that MOSTLY are not there, so
+the no-op case dominates and pointer preservation skips a whole-tree rebuild. Enrich is called
+precisely BECAUSE a merge is expected to add something: the `merged /= annoA` test, the Bool
+threading and the extra indirection are paid on every node, and the no-op case is rare. **The
+population, not the shape of the code, decides** — the profitable one was harvested by 22d.
+Byte-identical; preserved in `try-22c`.
 
 ### 24(iii)+(iv) — `varSuccRounds` member decode through `sources`; delete dead `varArgIds` — **LOSS, reverted**
-
-(iii) deleted the two per-ROUND dictionary builds at the head of `varSuccRounds` -- `midKeys`,
-which inverts the 62,647-entry `byKey` into a `Dict Int String`, and `compGlobals`, which folds
-`toptNodes` into a `Dict String TOpt.Global` building one `toComparableGlobal` string per global
--- and replaced the per-member `String.split "|" mkey` decode with a direct
-`Dict.get m sources` read (`SourceGlobal g` -> `( g, 0 )`, `SourcePap g d` -> `( g, d )`),
-keeping the `toptNodes` membership test as an O(1) hash probe. The `keysAcc` threading went with
-it, since `papMemberIdFor` registers a freshly minted successor's source in the threaded `S`.
-(iv) deleted `varArgIds` and `varCellWalk`'s dead `argIds` parameter (threaded through six
-recursive calls, never read).
 
 | pair | ref `eco-opt22d` | cand `eco-opt24k` | diff |
 | 1 | 268.95 | 276.42 | **+7.47** |
 | 2 | 269.99 | 275.39 | **+5.40** |
 | 3 | 267.35 | 277.37 | **+10.02** |
 
-Median paired difference **+7.47 s (+2.8 %)** -- the largest regression measured in this series.
-Counters moved the right way but trivially: minor GC 1248 vs 1249, promoted 19,929 vs 19,935 MiB,
-RSS -14 MB. Wall up ⇒ LOSS.
-
-**Why deleting three big dictionary builds made it 7.5 s slower.** The builds are per ROUND --
-three of them across the whole run. What replaced the lookup runs per MEMBER per arrow position
-across all ~43K registry rows, and it contains
-`HashMap.get TOpt.globalHash (==) g s.env.toptNodes`. **`TOpt.globalHash` hashes the global's
-module name and name STRINGS in Elm -- a closure call per character** -- whereas
-`Dict.get gstr compGlobals` bottoms out in the C++ string compare. This is entry 27's finding
-exactly, arriving from the other direction: there, replacing a `Dict String` with a hashed table
-cost 33.6 s; here, replacing a prebuilt `Dict String` probe with a hash probe cost 7.5 s. **In
-this compiler a hash of a string is more expensive than the ordered comparison it replaces, and
-the crossover is nowhere near three dictionary builds.**
-
-Note what this does NOT say: the `sources` decode itself is sound and cheap (`Dict.get` on an Int
-key). It is the `toptNodes` membership test that had to be re-derived per member, because
-`compGlobals` was doing double duty as decode AND as the "is this global resolvable" filter. A
-version that keeps `compGlobals` and only deletes `midKeys` was not measured; on this evidence
-the remaining prize (one `Dict Int String` build of 62,647 entries, three times) is too small to
-be worth another run.
-
-(iv) is a genuine dead-code deletion and is preserved in `try-24k` for whenever this area is
-touched again; it was measured only as part of this bundle and cannot have caused the loss.
+(iii) deleted the two per-ROUND dictionary builds at the head of `varSuccRounds` — `midKeys`
+(inverting the 62,647-entry `byKey`) and `compGlobals` — and replaced the per-member
+`String.split "|"` decode with a direct `Dict.get m sources` read. (iv) deleted `varArgIds` and a
+dead `argIds` parameter. **The largest regression in the series.** Counters moved the right way
+but trivially. **Why deleting three big dictionary builds made it 7.5 s slower**: the builds are
+per ROUND — three across the whole run — while the replacement runs per MEMBER per arrow position
+over all ~43K rows and contains `HashMap.get TOpt.globalHash (==) g toptNodes`; **`globalHash`
+hashes the module name and name STRINGS in Elm, a closure call per character**, where
+`Dict.get gstr compGlobals` bottoms out in a C++ compare. Entry 27's finding from the other
+direction. (iv) is genuine dead code and is preserved in `try-24k`.
 
 ### 24(i') — pointer-preserving `succType` (no pre-scan) — **WIN, kept**
-
-Entry 24(i) earlier in this series lost: it added a `Mono.hasVarAnno` PRE-SCAN per registry row on
-top of a pointer-preserving rebuild, and allocation went UP by 13 minor cycles. This is the same
-target with the pre-scan removed -- exactly the shape that won as 22d: every arm of `succType`
-returns its input `t` BY POINTER when nothing under it moved, and the record arm folds changed
-fields into `fields` instead of building a new `Dict` from `Dict.empty`.
 
 | pair | ref `eco-opt22d` | cand `eco-opt24i2` | diff |
 | 1 | 277.31 | 272.36 | **-4.95** |
 | 2 | 274.65 | 270.59 | **-4.06** |
 | 3 | 267.12 | 268.45 | +1.33 |
 
-Median paired difference **-4.06 s (-1.5 %)**. Minor GC **1246 vs 1250 (-4)** -- deterministic,
-and it corroborates the wall: less was allocated. Promoted 19,962 vs 19,951 MiB (+11) and RSS
-+8 MB, both trivial and both after the wall and the minor count in the judging order.
-
-`succType` walks every one of the ~43K registry rows on every round of `varSuccRounds`, and used
-to rebuild every node of every row whether or not a successor was written. The vast majority of
-rows carry no pap-able var arrow at all, so essentially all of that was immediate garbage.
-
-**A compiler bug got in the way, and the workaround is the interesting part.** The first version
-also made the argument-list walks pointer-preserving, via a `succList` helper mutually recursive
-with `succType`. That lowered to MLIR the backend could not parse --
-`error: invalid value index: 18446744073709551615` -- which is the known miscompile of two
-mutually recursive `let`-bound local functions (recorded as `elm-mutual-recursion-let-miscompile`;
-the standing workaround is to merge them into one self-recursive function). Here merging is not
-possible without changing the walk, so the `List.foldr` list rebuilds were kept and only the NODE
-allocations are avoided. The list rebuild also has a correctness constraint worth recording: the
-fold is a `List.foldr`, so state threads RIGHT TO LEFT, and any replacement must visit element i
-after every element to its right or `papMemberIdFor`'s mint order -- and therefore every successor
-member id -- changes.
-
-**Gates, all green.** Unit 13,565 + the same 12 pre-existing failures; E2E **1731 / 1731**;
-633-workload rail **MLIR manifest identical and the census byte-identical** (not one line
-differs); fixed point OK; both arms emit identical MLIR (13,339,902 B).
+24(i) lost by adding a `hasVarAnno` PRE-SCAN on top of a pointer-preserving rebuild. This is the
+same target with the pre-scan removed — the shape that won as 22d: every arm of `succType` returns
+its input `t` BY POINTER when nothing under it moved, and the record arm folds changed fields in
+rather than rebuilding from `Dict.empty`. `succType` walks every one of ~43K registry rows on
+every round, and the vast majority carry no pap-able var arrow, so nearly all of that was
+immediate garbage. Minor GC -4, deterministic, corroborating the wall. **The compiler bug got in
+the way**: pointer-preserving the argument-list walks too needs a `succList` mutually recursive
+with `succType`, which lowers to unparseable MLIR, so the `List.foldr` rebuilds were kept — and
+that fold threads state RIGHT TO LEFT, so any replacement must preserve it or mint order moves.
+Gates: unit 13,565; E2E 1731/1731; rail manifest AND census byte-identical.
 
 ### 21a — `BitSet` membership twin for `provisionalStandalone` — **LOSS, reverted**
-
-The cheapest and hottest slice of step 21, isolated: `groundSetMembers`' fast path asks "is ANY
-member of this slot provisional?" once per member per SET ZONK (654,140 zonks), and answered it
-with `CoreDict.member mid provisionalStandalone` -- a red-black descent through 43K Int keys,
-~13 Int compares and a pointer chase, per member. The candidate added
-`provisionalBits : BitSet` to `LssMemberTable`, wrote it alongside the payload in
-`insertMemberProvisional`, and switched the three membership tests (the fast-path `List.any`, the
-deferral count, and the test fixture's hand-built table) to `BitSet.member`. The payload `Dict`
-stays for the slow path.
 
 | pair | ref `eco-opt24i2` | cand `eco-opt21a` | diff |
 | 1 | 273.06 | 275.92 | +2.86 |
 | 2 | 271.93 | 275.46 | +3.53 |
 | 3 | 274.18 | 268.80 | -5.38 |
 
-Median paired difference **+2.86 s**. Minor GC IDENTICAL (1247), promoted 19,966 vs 19,970 MiB
-(-4 MiB, 0.02 %), RSS within noise. Wall up on the median with nothing deterministic improving
-⇒ LOSS.
-
-**What this measures, and what it does not.** `BitSet.member` is `Array.get (mid // 32)` on a
-32-way persistent trie plus a shift and a mask — two or three indirections, not obviously fewer
-than the red-black descent it replaces — and the new field widens `LssMemberTable`, so every
-`{ t | … }` update on it copies one more slot. On this evidence the `Dict Int` -> bitmap swap is
-not the free win step 21 assumes; **it is the same class of finding as entry 27** (a "cheaper"
-container is only cheaper if the operation it replaces was actually the expensive part), arriving
-now for Int keys rather than String keys.
-
-This measures ONE of step 21's targets. `specWidenedKeys` / `rootLamOf` / `lambdaQualified` as
-`Array` (indexed by a dense id rather than probed) and `flexCtorSpecs` as a `BitSet` are
-**still unmeasured** and are not decided by this entry: an `Array.get` at a known dense index is a
-different operation from a `BitSet.member`, and those tables are probed 3-4 times per mint over
-43K/12K/30K entries rather than once per member per zonk. What this entry does establish is that
-step 21's estimate ("~1 % of the mono window") cannot be assumed for any of them without its own
-run.
+The cheapest and hottest slice of step 21, isolated: `groundSetMembers`' fast path asks "is ANY
+member of this slot provisional?" once per member per SET ZONK (654,140 zonks), answered by a
+red-black descent through 43K Int keys. The candidate added `provisionalBits : BitSet` to
+`LssMemberTable` and switched the three membership tests to `BitSet.member`. **LOSS**: minor GC
+IDENTICAL, promoted -4 MiB (0.02 %), RSS within noise, wall up. `BitSet.member` is
+`Array.get (mid // 32)` on a 32-way persistent trie plus a shift and a mask — two or three
+indirections, not obviously fewer than the descent it replaces — and the new field widens
+`LssMemberTable`, so every `{ t | … }` copies one more slot. **Same class as entry 27**, now for
+Int keys: a "cheaper" container is only cheaper if the operation it replaces was the expensive
+part. Step 21's other targets are probed differently and remain undecided by this.
 
 ### 24(vii)a — de-PAP `typeHasResidualNumber` — **WIN, kept**
-
-**Nine lines, -6.87 s.** The best ratio of effect to edit size in the entire series.
-
-Prune's `Mono.typeHasResidualNumber isNumber monoType` walks every live node type. At every
-`MTuple`, `MCustom` and `MFunction` node it called `List.any (typeHasResidualNumber isNumber) xs`
--- and `typeHasResidualNumber isNumber` is a PARTIAL APPLICATION, so each of those nodes
-allocated a PAP and then dispatched it generically once per element. Replacing it with a direct
-`anyResidualNumber isNumber xs` recursion allocates nothing and calls directly. Identical
-semantics: the same left-to-right `||` short-circuit, the same number of `isNumber` calls.
 
 | pair | ref `eco-opt24i2` | cand `eco-opt24v7` | diff |
 | 1 | 270.92 | 264.05 | **-6.87** |
 | 2 | 271.49 | 266.78 | **-4.71** |
 | 3 | 272.16 | 264.73 | **-7.43** |
 
-Median paired difference **-6.87 s (-2.5 %)**, same sign in all three pairs. Minor GC
-**1243 vs 1246 (-3)**. Promoted +10 MiB and RSS +18 MB, both trivial and both below wall and the
-minor count in the judging order.
-
-**The plan estimated this at 0.7 % of the mono window. It measured at 2.5 % of the whole run** --
-roughly seven times the estimate. The plan priced the generic DISPATCH the PAP causes (which is
-what the dispatch census could see); it did not price the PAP ALLOCATION, and in this compiler
-allocation is what costs. That is the same correction the four biggest wins in this series all
-made, and it generalises immediately: **`List.any`/`List.map`/`List.all`/`List.foldl` applied to
-a PARTIALLY APPLIED function on a per-node path is an allocation per node**, and there is no
-reason to think this was the only one.
-
-**Gates, all green.** Unit 13,565 + the same 12 pre-existing failures; E2E **1731 / 1731**;
-633-workload rail MLIR manifest identical AND census byte-identical; fixed point OK; both arms
-emit identical MLIR (13,339,964 B).
-
-Part two of the specification's (vii) -- threading a `seen : HashMap MonoType ()` through
-`collectAllCustomTypes` so a node type costs one probe instead of one per `MCustom` inside it --
-was NOT built: it touches ~30 call sites and, after 21a and 24(iii), a hash probe replacing a
-cheaper operation is exactly the shape that has been losing. It remains unmeasured.
+**Nine lines, -6.87 s** — the best ratio of effect to edit size in the series. Prune's
+`typeHasResidualNumber` walks every live node type, and at every `MTuple`, `MCustom` and
+`MFunction` called `List.any (typeHasResidualNumber isNumber) xs` — a PARTIAL APPLICATION, so each
+node allocated a PAP and dispatched it generically per element. A direct `anyResidualNumber`
+recursion allocates nothing and calls directly, with the same left-to-right `||` short-circuit.
+**The plan estimated 0.7 % of the mono window; it measured 2.5 % of the whole run** — seven times
+over. The plan priced the generic DISPATCH the PAP causes, which the dispatch census could see;
+it did not price the PAP ALLOCATION. Generalises immediately: **`List.any`/`map`/`all`/`foldl`
+applied to a PARTIALLY APPLIED function on a per-node path is an allocation per node.** Gates:
+unit 13,565; E2E 1731/1731; rail manifest and census byte-identical. Part two was not built.
 
 ### 24(vii)b — de-PAP three more hot list predicates — **no win, reverted**
-
-The direct follow-up to 24(vii)a: apply the same de-PAP to the other partially-applied list
-combinators the grep turned up on the solver path --
-`Mono.resolveNumberType`'s three `List.map (resolveNumberType isNumber)`,
-`Store.groundNoArrowWith`'s two `List.all (groundNoArrowWith aliasMemo)`, and
-`KernelSetFacts.hasFunctionCapable`'s two `List.any (hasFunctionCapable isScalarVar)`. Each
-became a direct top-level recursion over the (arity-bounded) list.
 
 | pair | ref `eco-opt24v7` | cand `eco-opt24v7b` | diff |
 | 1 | 267.58 | 267.19 | -0.39 |
 | 2 | 269.45 | 271.70 | +2.25 |
 | 3 | 267.76 | 274.13 | +6.37 |
 
-Median paired difference **+2.25 s**. Minor GC IDENTICAL (1243) -- which is the finding:
+The direct follow-up to 24(vii)a: the same de-PAP at the other partially-applied list combinators
+on the solver path — `resolveNumberType`'s three `List.map`, `groundNoArrowWith`'s two `List.all`,
+`hasFunctionCapable`'s two `List.any`. **No win.** Minor GC IDENTICAL, which is the finding:
 **the PAPs these sites allocate do not show up in the allocation counter at all**, so there were
-few of them. Promoted 19,961 vs 19,972 MiB (-11) and RSS mixed. Wall up ⇒ no win.
-
-**This bounds 24(vii)a's lesson rather than extending it.** The de-PAP is worth 2.5 % at
-`typeHasResidualNumber`, which Prune runs over EVERY live node type, and worth nothing at three
-sites that look identical in the source but are not hot: `groundNoArrowWith` is behind the alias
-memo (step 4a/6), `hasFunctionCapable` runs on kernel signature checks (a few hundred), and
-`resolveNumberType` only walks types that `typeHasResidualNumber` already said carry a residual.
-The pattern `List.any (f x)` is a reliable *smell*; it is only a *cost* where the enclosing walk
-is hot, and the minor-GC counter is the cheap way to tell the difference after the fact.
-
-The three rewrites are correct and byte-identical (13,338,740 B both arms) and are preserved in
-`try-24v7b`.
+few of them. **This bounds 24(vii)a's lesson rather than extending it.** The de-PAP is worth 2.5 %
+at `typeHasResidualNumber`, which Prune runs over EVERY live node type, and nothing at three sites
+that look identical in source but are not hot: `groundNoArrowWith` sits behind the alias memo,
+`hasFunctionCapable` runs on a few hundred kernel signature checks, and `resolveNumberType` only
+walks types `typeHasResidualNumber` already flagged. `List.any (f x)` is a reliable *smell*, a
+*cost* only where the enclosing walk is hot. Byte-identical; preserved in `try-24v7b`.
 
 ### 24(ii) — one `varSucc` pass; the verification pass is report-gated — **WIN, kept**
-
-`settleVarSuccessors` ran `varSuccRounds` to a fixed point (fuel 16). The census said
-`varsucc|rounds = 3`, which decomposes as (write + empty) for the first invocation plus (empty)
-for the second -- **exactly one wasted traversal of all ~43K registry rows.** The pass is
-idempotent, so that round could never do anything.
-
-Why it is idempotent: rows are independent (`succType` reads only its own row's type and the
-member table); within a row the walk is TOP-DOWN on the result spine, writing `LSet succ` at an
-arrow and immediately descending into the rewritten result, so a chain of any depth completes in
-one pass; the member table is monotone and `succSetFor`'s verdict for a member is a pure function
-of its source, the arg count and `declaredArityOf`, all round-invariant, with freshly minted
-successors visible immediately; and after the pass every writable position IS `LSet` while every
-skipped position is skipped again for the same reason. The comment claiming "a row rewritten late
-can expose a head an earlier row's walk passed over" described a cross-row dependency this code
-does not have.
-
-`varSuccRounds` became `varSuccPass : S -> ( S, Bool )`; `settleVarSuccessors` runs it once, and
-under `report` runs it a second time as a VERIFICATION RAIL whose registry is discarded (so
-report-on and report-off emit the same bytes) and only its counters kept.
 
 | pair | ref `eco-opt24v7` | cand `eco-opt24ii` | diff |
 | 1 | 268.41 | 264.70 | **-3.71** |
 | 2 | 267.93 | 264.89 | **-3.04** |
 | 3 | 268.60 | 270.28 | +1.68 |
 
-Median paired difference **-3.04 s**, and **all three deterministic counters improved**:
-minor GC **1241 vs 1243**, promoted **19,977 vs 20,002 MiB (-25)**, max RSS
-**11,529,796 vs 11,551,176 kB (-21 MB)**.
-
-**The idempotence argument was not just argued, it was measured.** The verification rail prints
-`varsucc|verifyClean` -- never `varsucc|verifyCHANGED` -- for **every one of the 633 rail
-workloads** (zero `verifyCHANGED` lines in the census), and the rail's MLIR manifest is identical
-for all 633. The self-compile agrees: both arms emit byte-identical MLIR (13,340,422 B) and the
-fixed point holds. The census differs only on `varsucc|rounds`-family lines
-(`skipNoSucc`, `skipBeyond`, the new `verifyClean`), all report-only.
-
-**Gates, all green.** Unit 13,565 + the same 12 pre-existing failures; E2E **1731 / 1731**;
-rail manifest identical; fixed point OK.
-
+`settleVarSuccessors` ran `varSuccRounds` to a fixed point (fuel 16), but the census said
+`varsucc|rounds = 3` — (write + empty) then (empty), i.e. **exactly one wasted traversal of all
+~43K rows**. The pass is idempotent: rows are independent, the within-row walk is TOP-DOWN on the
+result spine so a chain of any depth completes in one pass, the member table is monotone, and
+`succSetFor`'s verdict is round-invariant. The comment claiming a cross-row dependency described
+one this code does not have. `varSuccPass` now runs once; under `report` a second run is a
+VERIFICATION RAIL whose registry is discarded. **All three deterministic counters improved.**
+**The idempotence was measured, not just argued**: the rail prints `varsucc|verifyClean` and never
+`verifyCHANGED` for every one of the 633 workloads. Gates: unit 13,565; E2E 1731/1731; rail
+manifest identical; fixed point OK.
 
 ### 5b — direct-state `Unify` combinator layer — **LOSS, reverted — and the most informative entry in the series**
-
-`Unify` wrapped `List Vars.Variable -> IO (Result UnifyErr (UnifyOk a))`, so every structural node
-of every unification paid one `IO.andThen` continuation closure plus an `Ok`, a `UnifyOk` and a
-tuple, all built to be destructured immediately. Step 5a removed exactly that scaffolding from the
-ENTRY and won; 5b removes it from the RECURSION: the payload takes `IO.State` explicitly so the
-combinators call the next step directly, and `Result UnifyErr (UnifyOk a)` collapses into a single
-`UResult = UOk vars a | UErr vars`. Unification runs upwards of 10^6 times per self-compile.
-
-**It worked, exactly as designed, and the compiler got slower.**
 
 | | pair 1 | pair 2 | pair 3 |
 |---|---|---|---|
 | triple A (diff) | +8.03 | -2.62 | +4.86 |
 | triple B (diff) | +9.37 | +5.94 | +1.33 |
-
-Six pairs, five positive; pooled median **+5.40 s (+2.1 %)**. A second triple was run precisely
-because the first disagreed in sign and the counter it moved was the largest in the series.
 
 | stat | ref `eco-opt24ii` | cand `eco-opt5b` | delta |
 |---|---|---|---|
@@ -1790,46 +1131,18 @@ because the first disagreed in sign and the counter it moved was the largest in 
 | max RSS kB | 11,437,240 | 11,486,464 | +49 MB |
 | **GC/Alloc time (s)** | **121.72** | **127.03** | **+5.31** |
 
-**The allocation reduction is real and the slowdown is its consequence.** Minor GC count fell by
-26 cycles -- by far the largest counter move of the whole series -- while GC TIME rose by 5.31 s,
-which is the whole of the 5.40 s wall regression. Promotion rose with it.
-
-The mechanism follows from what a generational nursery actually charges for. **Minor GC count is a
-proxy for allocation VOLUME; minor GC cost is paid for SURVIVORS.** A short-lived object that dies
-before the next collection is free — it is never traced, never copied, and its space is reclaimed
-by moving a pointer. What 5b deleted was precisely that kind of object: continuation closures and
-`Ok`/`UnifyOk` wrappers that die within the same unification. Deleting them makes the nursery fill
-more slowly, so collections happen less often — but each collection now spans MORE elapsed work,
-so a larger fraction of the live set is still alive when it runs. `evacuate` is 10.8 % of this
-compiler's samples; more survivors per cycle at a lower cycle count came out net negative, and the
-extra 17 MiB of promotion is the same effect spilling into the old generation.
-
-**This corrects the series' central heuristic and is the single most useful thing it learned.**
-Fourteen entries supported "time is allocation"; this one shows the rule is really **time is
-SURVIVOR COPYING**, and allocation volume is only a proxy for it — a good proxy when the objects
-removed were being copied (the union-find store in step 3, the overlay rebuilds in 22d, the
-per-node PAPs in 24(vii)a all removed objects that lived long enough to be traced), and a
-MISLEADING one when they were dying young anyway. **A step should from now on be judged on GC
-TIME and promoted bytes, not on the minor-cycle count**, and `lss-loop-extract.sh` already prints
-GC time in column 7.
-
-The rewrite itself is correct: both arms emit byte-identical MLIR (13,328,697 B), the fixed point
-holds, and Point mint order is preserved (which matters beyond the gate — `Vars.Pt` indices reach
-`dedupeSources` and the lambda-set `seen` sets through `IO.pointKey`). It is kept in `try-5b`.
-
+5a removed the `IO.andThen`/`Ok`/`UnifyOk` scaffolding from the unify ENTRY and won; 5b removes it
+from the RECURSION, where unification runs upwards of 10^6 times per self-compile. **It worked
+exactly as designed, and the compiler got slower** — six pairs, five positive, pooled median
++5.40 s. **The allocation reduction is real and the slowdown is its consequence**: minor GC fell
+26 cycles, by far the largest counter move in the series, while GC TIME rose 5.31 s, which is the
+whole regression. **Minor GC count is a proxy for allocation VOLUME; minor GC cost is paid for
+SURVIVORS.** Objects that die before the next collection are free. Deleting them makes the nursery
+fill more slowly, so each collection spans MORE elapsed work and finds more of the live set still
+alive. **This corrects the series' central heuristic: time is SURVIVOR COPYING, and allocation
+volume is only a proxy.** Judge on GC TIME and promoted bytes. Byte-identical; kept in `try-5b`.
 
 ### 16 (D10, Let arm) — skip the load and join at ground arrow-free let bindings — **no win, reverted**
-
-A GROUND, arrow-free let binding has exactly one instance, so every occurrence of the name is
-arrow-free and `joinLetUse`'s guard fires on every read: the `letEnv` entry is provably never
-consumed. The candidate therefore skipped `Store.loadType defType` (which mints Points for the
-whole structure) and `sigFlowJoinInto` (ground x anything recurses to leaves over slot-free
-structure and can only bump a census counter), and REMOVED the name from `letEnv` rather than
-leaving it, so a shadowed outer arrow-typed binding cannot be found by an inner occurrence. The
-predicate is `Store.groundNoArrow`, which step 4/6 already added and exported -- GROUND and not
-merely arrow-free, because a GENERALISED let (`let xs = [] in …` : `List a`) can be USED at
-`List (Int -> Int)`, and skipping its entry would delete a real top write (more precise, still
-sound by LSS_005, but not byte-identical).
 
 | pair | ref `eco-opt24ii` | cand `eco-opt16d10` | diff |
 |---|---|---|---|
@@ -1837,29 +1150,18 @@ sound by LSS_005, but not byte-identical).
 | 2 | 269.82 | 272.88 | +3.06 |
 | 3 | 271.04 | 271.38 | +0.34 |
 
-Median paired difference **+0.34 s** -- flat. Minor GC 1241 vs 1242 (-1); promoted 20,079 vs
-20,067 MiB (+12, worse); RSS +27 MB (worse); GC time 129.97 vs 128.54 s (+1.43, worse). Nothing
-improved except a single minor cycle, so no win under the rule. Byte-identical (13,340,632 B both
-arms) and the fixed point holds, so the BI argument was right; there is simply nothing there.
-
-**Most likely already harvested by step 4a.** D10's whole value is the skipped LOAD, and the load
-it skips is of a GROUND type — which is exactly the population step 4a's per-item ground-alias
-load memo already turns into a memo hit. This is the third entry in the series (after 8a and 18a)
-whose premise was true when the specification was written and was deleted by a step that landed
-in between. Read a spec against the tree as it IS, not as it was.
-
-The literal half of D10 (`walkLiteral`'s arrow-free short-circuit) was not built and remains
-unmeasured; on this evidence it is unlikely to differ, since it skips the same kind of load.
-
+A GROUND, arrow-free let binding has exactly one instance, so `joinLetUse`'s guard fires on every
+read and the `letEnv` entry is provably never consumed. The candidate skipped `loadType defType`
+and `sigFlowJoinInto`, and REMOVED the name from `letEnv` so a shadowed outer arrow-typed binding
+cannot be found by an inner occurrence. The predicate is `groundNoArrow` — GROUND, not merely
+arrow-free, because a GENERALISED let can be USED at an arrow type. **Flat**: one minor cycle
+better, promoted, RSS and GC time all worse. Byte-identical and the fixed point holds, so the BI
+argument was right; there is simply nothing there. **Most likely already harvested by step 4a** —
+D10's whole value is the skipped LOAD, of a GROUND type, which is exactly the population 4a's
+load memo already turns into a hit. Third entry (after 8a and 18a) whose premise was deleted by a
+step that landed in between. Read a spec against the tree as it IS.
 
 ### 24(v) — ctor-row bitmap built once — **no win, reverted**
-
-Both ctor-row sweeps asked "is this row's key a ctor or box global?" per row per pass — FOUR
-`HashMap.get TOpt.globalHash (==) (TOpt.Global home name) toptNodes` probes over ~43K rows, each
-allocating a `TOpt.Global` and hashing its module name and its name (an Elm closure call per
-character, entry 27's cost). The candidate computes the answer once into a `BitSet` over the row
-index — legal because the sweeps write registry TYPES only, never keys — and both sweeps test
-`BitSet.member idx ctorRows`.
 
 | pair | ref `eco-opt24ii` | cand `eco-opt24v` | diff |
 |---|---|---|---|
@@ -1867,37 +1169,18 @@ index — legal because the sweeps write registry TYPES only, never keys — and
 | 2 | 274.09 | 268.62 | -5.47 |
 | 3 | 271.88 | 274.89 | +3.01 |
 
-Median paired difference **+3.01 s**. Minor GC IDENTICAL (1242); promoted +5 MiB, RSS +5 MB,
-GC time +0.13 s — all within nothing. Byte-identical (13,340,956 B both arms), fixed point holds.
-
-**About 129,000 string hashes and `TOpt.Global` allocations were removed and no counter noticed.**
-That is the scale lesson this entry contributes: the settle sweeps run ONCE at the end of
-monomorphization over 43K rows, so even four passes of a genuinely wasteful probe is a rounding
-error beside the per-ITEM work the solver does millions of times. The same probe removed from a
-per-item path would be worth measuring; removed from a per-registry-pass path it is not.
-
-The remaining half of the specification's (v) — caching the `gkeyOf` /`moduleOf` strings in the
-index so `Mono.toComparableGlobal` is built once per ctor row rather than once per row per pass —
-was not built, and on this evidence would not register either.
-
+Both ctor-row sweeps asked "is this row's key a ctor or box global?" per row per pass — FOUR
+`HashMap.get TOpt.globalHash (==) …` probes over ~43K rows, each allocating a `TOpt.Global` and
+hashing its strings in Elm. The candidate computes the answer once into a `BitSet` over the row
+index, legal because the sweeps write registry TYPES only, never keys. **No win**: minor GC
+IDENTICAL, everything else within nothing, byte-identical. **About 129,000 string hashes and
+`TOpt.Global` allocations were removed and no counter noticed.** That is the scale lesson: the
+settle sweeps run ONCE at the end of monomorphization over 43K rows, so even four passes of a
+genuinely wasteful probe is a rounding error beside the per-ITEM work the solver does millions of
+times. The same probe removed from a per-item path would be worth measuring; from a
+per-registry-pass path it is not. The `gkeyOf`/`moduleOf` caching half was not built.
 
 ### 25 — AbiCloning: census-gate `hostGlobal`, one-pass spec scans — **WIN, kept**
-
-The last plan step with no measurement of any kind. Three changes in
-`Compiler/GlobalOpt/AbiCloning.elm`, all post-mono, none of which changes a decision:
-
-1. **`hostGlobal` only under census.** The stamp fold set
-   `hostGlobal = hostGlobalAt record.registry.reverseMapping specId` for EVERY one of the ~43K
-   specs — a five-part `Mono.toComparableGlobal` string each time — and every reader of
-   `ctx.hostGlobal` sits behind an `if not ctx.census` early return (1852, 1899, 1999, 2106,
-   2126). Off census the string was built and never read.
-2. **`papResolve`: one pass.** It built a `( specId, specFunctionRow specId ctx )` pair for every
-   spec of the callee global — 1,939 of them for `List.foldl` — then walked that list twice, once
-   to filter matches and once to ask whether any row was `Nothing`. Now one `List.foldr` produces
-   both, in the same order.
-3. **`matchSpec`: one pass.** `List.filter eqLayout` followed by `List.filter (==)` over its
-   result became a single `List.foldr` building both lists; `==` implies `eqLayout`, so the exact
-   list is a sub-fold of the layout list.
 
 | pair | ref `eco-opt24ii` | cand `eco-opt25` | diff |
 |---|---|---|---|
@@ -1905,44 +1188,18 @@ The last plan step with no measurement of any kind. Three changes in
 | 2 | 268.51 | 266.27 | **-2.24** |
 | 3 | 269.38 | 265.28 | **-4.10** |
 
-Median paired difference **-4.10 s (-1.5 %)**, same sign in all three pairs. GC time
-**124.11 vs 127.01 s (-2.90)**. Minor GC identical (1241), promoted +3 MiB, RSS flat.
-
-**The plan estimated "wall down by well under 1 %" and it measured 1.5 %** — the estimate was
-made on the grounds that AbiCloning lives inside a ~28 s slice of the run, which is true and
-still leaves this as one of the larger wins in the second half of the series. The reason is
-visible in the GC-time column: what these three changes remove is not CPU but RETAINED
-intermediate lists and strings at a point where the graph is large, and by the finding at step 5b
-that is the allocation that actually costs.
-
-**Gates, all green.** Unit 13,565 + the same 12 pre-existing failures; E2E **1731 / 1731**;
-633-workload rail MLIR manifest identical AND census byte-identical — which matters more here
-than usual, because the rail diffs everything from `=== LSS census ===` onward and that includes
-`abiCensusLines` and the `lss globalopt:` line, so `memberReps` ORDER is load-bearing for this
-gate even though it is print-only. Fixed point OK; both arms emit identical MLIR (13,337,011 B).
-
-The remaining pieces of the specification — `siteFingerprint`'s `String.join` of depth-4
-`shallowLayoutKey` strings and its `Dict String` probe, and `resolvePapSuffix`'s
-`List.concat (Dict.values memberInfo.buckets)` — were NOT built and remain unmeasured.
-
+The last plan step with no measurement. Three post-mono changes in `AbiCloning.elm`, none of which
+changes a decision: `hostGlobal` (a five-part global string built for every one of ~43K specs and
+read only behind `if not ctx.census`) is now census-gated; `papResolve` builds its pairs and asks
+its `Nothing` question in one `List.foldr` instead of walking a 1,939-element list twice; and
+`matchSpec`'s two chained `List.filter`s become one fold, `==` implying `eqLayout`. Same sign in
+all three pairs; GC time -2.90 s. **The plan estimated "well under 1 %" and it measured 1.5 %.**
+The reason is visible in the GC-time column: what these remove is not CPU but RETAINED
+intermediate lists and strings at a point where the graph is large — by step 5b's finding, the
+allocation that actually costs. Gates: unit 13,565; E2E 1731/1731; rail manifest AND census
+byte-identical, which matters here because the rail diffs `abiCensusLines` too.
 
 ### 26a — nest the six scheduling fields of `S` into a `sched` group — **LOSS, reverted**
-
-**Step 26 specifies its own decision gate, and the gate was measured first.** Lower the kept
-compiler with `ECO_INLINE_ALLOC=0` so every record allocation goes through
-`eco_alloc_record(field_count, …)`, then count allocations by width with a uprobe:
-
-    sudo -n bpftrace -e 'uprobe:<BIN>:eco_alloc_record { @w[arg0] = count(); } END { print(@w); }'
-
-`S` is the only 31-field record in the solver, and the self-compile allocated
-**@w[31] = 11,939,218** of them (next widest populations: @w[4] = 103.4 M, @w[11] = 8.6 M,
-@w[2] = 4.2 M, @w[28] = 3.0 M). 31 slots x 8 B x 11.9 M is about 2.96 GB of record payload, and
-the plan's build threshold is >= ~10 M copies. **The gate said build**, so it was built.
-
-`sched = { worklist, inProgress, scheduled, dirtySpecs, dirtyList, ports }` — six fields written
-only when a spec is scheduled, marked dirty, or a port is registered (thousands of times), read
-through one extra indirection. `S` goes 31 -> 26 slots, i.e. 40 B and five GC-scanned slots off
-every one of the 11.9 M copies: **about 476 MB less allocation.**
 
 | pair | ref `eco-opt25` | cand `eco-opt26a` | diff |
 |---|---|---|---|
@@ -1950,136 +1207,211 @@ every one of the 11.9 M copies: **about 476 MB less allocation.**
 | 2 | 267.55 | 271.61 | +4.06 |
 | 3 | 269.21 | 272.90 | +3.69 |
 
-Median paired difference **+3.69 s**. Every deterministic counter moved the right way and by
-almost nothing: minor GC 1248 vs 1250 (-2), promoted 19,951 vs 19,965 MiB (-14), RSS -14 MB, and
-**GC time 127.91 vs 128.53 s — just 0.62 s**. Wall up ⇒ LOSS. Byte-identical (13,329,454 B both
-arms), fixed point holds.
+**Step 26 specifies its own decision gate, and the gate was measured first**: lowered with
+`ECO_INLINE_ALLOC=0` and a uprobe on `eco_alloc_record`, the self-compile allocated **11,939,218**
+31-field `S` records — ~2.96 GB of payload, over the plan's ~10 M threshold, so it was built.
+`sched` groups six fields written only on schedule/dirty/port events, taking `S` from 31 to 26
+slots: **about 476 MB less allocation.** Every deterministic counter moved the right way and by
+almost nothing — **GC time 127.91 vs 128.53 s, just 0.62 s.** Wall up ⇒ LOSS. **476 MB of nursery
+traffic bought 0.62 s — about 1.3 µs per megabyte, essentially free.** Step 5b's finding from the
+other direction, priced exactly. **This closes step 26 including 26b/26c/26d**: same
+transformation, same 11.9 M copies, ~0.12 s per removed slot against an indirection on every read.
+No grouping of the remaining fields reaches a win.
 
-**476 MB of nursery traffic bought 0.62 s.** That is about 1.3 microseconds per megabyte, which
-is to say: essentially free. It is step 5b's finding measured from the other direction and it
-prices the effect exactly — **allocation that dies young is nearly costless in this runtime**, and
-`S` copies die immediately (each is consumed by the next step of the same fold). The extra
-indirection on every `s.sched.*` read, plus a 6-slot group record at each write, cost more than
-0.62 s.
+### Post-series verification: full bootstrap on the kept tree (2026-09-20)
 
-**This closes step 26, including its unbuilt parts.** The specification's remaining groups
-(`runMemo` 26b, `letCtx` 26c, `drv` 26d) are the same transformation on the same 11.9 M copies,
-differing only in how many slots they remove; the measured price of a removed slot is now known
-(~0.12 s per slot across the whole run, against an indirection cost paid on every read), and no
-grouping of the remaining fields reaches a win. The formula in the plan's §1 —
-`ΔBytes = 8 · Σ N_w · (31 − T) − 8 · Σ N_g · |g|` — was right about the bytes and wrong about what
-a byte is worth.
+| gate | result |
+|---|---|
+| `cmake --build build --target elm-tests` | 13,565 passed, the same 12 pre-existing failures |
+| `cmake --build build --target full` | **1731 / 1731** |
+| `cmake --build build --target bootstrap` | **exit 0**, whole chain |
+| Stage 4b — JS fixed point | `eco-boot-2.js == eco-boot-3.js` |
+| Stage 8c — native fixed point | `eco-compiler-boot == eco-compiler-boot-2` |
+| Stage 9b — unified binary | `eco` (243,388,712 B) self-compiles to `eco-2` (74,890,568 B) |
 
+Run on `keep-25` after the series closed, to confirm the loop's private `bin/eco-opt-prev` chain
+had not drifted from the real bootstrap. **The bootstrapped compiler is byte-identical to the
+binary this series measured**: `eco-compiler-boot`, `eco-2` and `keep-25/bin/eco-opt25` are the
+same 74,890,568 bytes, and `eco-compiler-boot.mlir` has the same sha256 as `eco25.mlir`. Three
+independent routes to one artifact. Method note: the node-hosted stages (2-5) ran under
+`ECO_MONO_ENGINE=subst`, which `compiler/CMakeLists.txt:419-423` requires on a 15 GB host. That
+does not weaken the result — Stage 8c compares two NATIVE artifacts, both at the defaults
+(`EngineSolver`, `lss.enabled = True`) — and it gave incidental subst-path coverage of the
+engine-independent work. Stage 7a's 4:52.99 is NOT comparable with this series' 265.28 s: its
+compiler was lowered from SUBST-produced MLIR.
 
-## 7. Provenance
+### 10a — admit `MonoIf` on the `$sret` result spine — **WIN on the counters, kept**
 
-- Step list and order: `plans/lss-compile-time-optimizations.md` §2 (implementation order,
-  2026-09-19); measurement anatomy behind the order: same file §1 and the memory note
-  `lss-compile-time-profile-sep18`.
-- Method adapted from `benchmarks/lss-payoff.md` (workload, cache reset, no-census rule, entry
-  shape) with three changes: the tested binary is the CANDIDATE built by the previous kept
-  compiler and then measured building ITSELF; three cold runs per row instead of one, judged on
-  medians; the five-stat order and win rule of §4.
-- Self-compile command: bootstrap Stage 7a, `compiler/CMakeLists.txt:494`; lowering command:
-  Stage 6, `compiler/CMakeLists.txt:457-468`.
-- Noise band for THIS series, measured by the base triple (2026-09-19, §6): wall spread 5.21 s
-  = 1.31 % of median; RSS spread 0.03 %; minor/major GC and promoted MiB exactly deterministic.
-  The older indicative bands (wall ±2 % run-to-run; RSS bimodal with a ~2.15 GB gap, 2026-08-28
-  series and the retracted `injTotal` claim) still bound what a BAD triple can look like — a
-  triple whose wall spread exceeds ~2 % means the machine was disturbed, so re-run it.
-- Stat extraction: `benchmarks/lss-loop-extract.sh <prefix>` prints the five judged stats (plus GC
-  time and `out.mlir` bytes) as one TSV line from `<prefix>.time` + `<prefix>.stdout`; validated
-  2026-09-19 against the Sep-18 profile run's artefacts (reproduced all five figures exactly).
-- Fixed-point discipline for analysis-changing steps: one extra bootstrap turn, gate B==C
-  (`premono-inliner-shipped-default-on`, 2026-09-11).
-- Snapshot tool: `benchmarks/lss-loop-snap.sh` (snap / restore / verify / diff / list), self-tested
-  2026-09-19: an added file is deleted and a modified file restored byte-identically by `restore`;
-  `verify` exits non-zero on any drift. No git in this container (`build-traps` memory, Trap 3).
+| pair | ref `eco-opt25` | cand `eco-opt10a-b` | diff |
+|---|---|---|---|
+| 1 | 272.28 | 271.28 | -1.00 |
+| 2 | 266.91 | 269.52 | +2.61 |
+| 3 | 271.57 | 271.29 | -0.28 |
 
-## 8. Summary
+Step 10's first stage and its enabler: until now an `if` anywhere on a function's result spine
+disqualified the WHOLE function from `$sret` promotion, so its `( a, S )` return stayed a heap
+tuple. `Backend.sretTailOk` and `sretFreshTailOk` gain the `MonoIf` arm `sretTailFuncOk` has had
+all along, and `Expr.generateIf` learns the spine protocol `generateCase` implements — the result
+rule extracted into a shared `spineResultMlirType`, branch yields through `emitSpineYield`, the
+join by `finishSpineCase`. Two load-bearing details: the condition is NOT on the spine, so
+`generateIf` clears `sretTailLayout` for it and restores it for the branches (a leaked flag there
+would make-promote a Bool-typed case — the `eco.papExtend` aggregate-operand incident); and
+flag-off emission is unchanged token for token. Wall flat, counters improved. Codegen change, so
+the extra bootstrap turn and the rail both apply. Kept as `keep-10a`.
 
-One row per step, numbers only, in the order the entries were run.
+### 10b — the probe: classify family and `connectTypes` to direct state — **WIN, kept**
 
-**`wall (s)` is the candidate's OWN median** — of the plain triple for steps 1-11a, and of the
-candidate arm of the interleaved A/B from step 12 onward. It is an absolute number and is
-directly comparable down the column, but it carries machine drift: two sittings hours apart
-differ by about +/-5 s, which is larger than most single steps here.
+| pair | ref `eco-opt10a-b` | cand `eco-opt10b` | diff |
+|---|---|---|---|
+| 1 | 271.18 | 267.79 | **-3.39** |
+| 2 | 272.70 | 271.61 | **-1.09** |
+| 3 | 273.98 | 272.53 | **-1.45** |
 
-**`paired D (s)` is the judging statistic** for every A/B-measured entry: the MEDIAN of the three
-paired differences (candidate minus reference, measured minutes apart in one sitting). Drift
-cancels in it, and it resolves to roughly 2-3 s (0.4 s on a quiet machine — see "The instrument,
-calibrated" below). Where the two columns disagree, the paired difference is the one the verdict
-follows. `—` means the entry predates the interleaved form.
+The stage that proves the mechanism before the large rewrite. Seven `Store` classify functions
+drop their `Result Failure` and become `S -> ( a, S )`; `loadTypeS` becomes the real function with
+`loadType` a one-line adapter; `Translate.classify`/`classifyAs` go direct with `…Step` adapters
+for the 27 still-combinator sites; and `connectTypes` becomes `S -> S`, allocating nothing at all.
+**Minor GC is IDENTICAL (1234), and that is the point.** This win did not come from allocating
+less — it came from not touching the heap at all: `$sret` returns the pair in registers, so the
+`( a, S )` that used to be built, boxed and immediately destructured never exists. **That is the
+lever step 5b did not have**, 5b having removed short-lived boxes the runtime charges almost
+nothing for. Two R4 discoveries here: a bottom (`crashFailure`) is not a tuple literal and must be
+wrapped, and mutually recursive call leaves must be re-tupled to bootstrap the least fixpoint.
 
-The GC counters need neither correction: they are exact per (binary x tree).
+### 10c — the failure channel — **FLAT, kept as the enabler for 10d/10e**
 
-| step | wall (s) | paired D (s) | minor GC | major GC | promoted MiB | max RSS (kB) | verdict | ref |
-|---|---|---|---|---|---|---|---|---|
-| base | 398.71 | — | 1825 | 10 | 20846 | 12708052 | reference | — |
-| 1 | 370.18 | — | 1825 | 10 | 20846 | 12705760 | WIN | base |
-| 2 | 359.47 | — | 1821 | 10 | 20836 | 12690812 | WIN | 1 |
-| 3 | 340.70 | — | 1583 | 10 | 20376 | 12457544 | WIN | 2 |
-| 4b | 334.85 | — | 1600 | 10 | 20863 | 12711764 | WIN | 3 |
-| 4a | 291.93 | — | 1312 | 10 | 20354 | 12026400 | WIN | 4b |
-| 5a | 289.43 | — | 1287 | 10 | 20341 | 12048496 | WIN | 4a |
-| 6 | 286.85 | — | 1281 | 10 | 20201 | 12052184 | WIN | 5a |
-| 7 | 289.08 | — | 1280 | 10 | 20183 | 12044660 | WIN | 6 |
-| 8a | 288.94 | — | 1291 | 10 | 20233 | 12118144 | LOSS (reverted) | 7 |
-| 8b | 287.24 | — | 1273 | 10 | 20207 | 12105460 | WIN | 7 |
-| 9 | 289.18 | — | 1252 | 10 | 20269 | 12095116 | WIN | 8b |
-| 10 | — | — | — | — | — | — | DEFERRED (not attempted) | — |
-| 11b | 278.11 | — | 1243 | 10 | 20284 | 12058368 | WIN | 9 |
-| 11a | 277.42 | — | 1238 | 10 | 20301 | 12073940 | WIN | 11b |
-| 14 | ~279.4 | — | 1238 | 10 | 20301 | 12073960 | LOSS (reverted) | 11a |
-| 19' | 281.54 | — | 1239 | 10 | 20316 | 12134468 | LOSS (reverted) | 11a |
-| 22a | 278.01 | — | 1237 | 10 | 20293 | 12075144 | WIN | 11a |
-| 16a | 276.01 | — | 1252 | 10 | 20317 | 12083308 | LOSS (reverted) | 22a |
-| 24(i) | 282.38 | — | 1250 | 10 | 20239 | 12028904 | LOSS (reverted) | 22a |
-| 12s | 275.58 | — | 1256 | 10 | 20292 | 12046092 | LOSS (reverted) | 22a |
-| 27 | 311.63 | — | 1310 | 11 | 20825 | 12048200 | LOSS (reverted) | 22a |
-| 20 | ~279.0 | — | 1237 | 10 | 20293 | 12107848 | NO WIN (reverted) | 22a |
-| 13s | ~285.3 | — | 1262 | 11 | 20325 | 11988428 | LOSS (reverted) | 22a |
-| 23 | 280.87 | — | 1237 | 10 | 20255 | 12109264 | NO WIN (reverted) | 22a |
-| 17 | 279.02 | — | 1262 | 10 | 20284 | 12090480 | LOSS (reverted) | 22a |
-| 16-D4 | ~281.6 | — | 1238 | 10 | 20387 | 12120732 | NO WIN (reverted) | 22a |
-| 15 | 280.81 | +4.83 | 1238 | 10 | 20318 | 12022700 | LOSS (reverted) | 22a |
-| **18b** | **275.76** | **-2.16** | 1237 | 10 | 20293 | **12126548** | **WIN (kept)** | **18b** |
-| 18a | 281.54 | +2.17 | 1259 | 10 | 20293 | 12130068 | LOSS (reverted) | 18b |
-| **22b** | **278.43** | flat (-2.38 median, mixed sign) | **1237** | 10 | **20335** | **11916868** | **WIN on counters (kept)** | **22b** |
-| **22d** | **270.19** | **-9.08** | **1250** | 10 | **20004** | 10686984 | **WIN (kept)** | **22d** |
-| 22c | 274.37 | +3.42 | 1250 | 10 | 20000 | 11594052 | LOSS (reverted) | 22d |
-| 24(iii)+(iv) | 276.42 | +7.47 | 1248 | 10 | 19929 | 11513336 | LOSS (reverted) | 22d |
-| **24(i')** | **270.59** | **-4.06** | **1246** | 10 | 19962 | 11541556 | **WIN (kept)** | **24i2** |
-| 21a | 275.46 | +2.86 | 1247 | 10 | 19966 | 11583856 | LOSS (reverted) | 24i2 |
-| **24(vii)a** | **264.73** | **-6.87** | **1243** | 10 | 19972 | 11562648 | **WIN (kept)** | **24v7** |
-| 24(vii)b | 271.70 | +2.25 | 1243 | 10 | 19961 | 11563724 | NO WIN (reverted) | 24v7 |
-| **24(ii)** | **264.89** | **-3.04** | **1241** | 10 | **19977** | **11529796** | **WIN (kept)** | **24ii** |
-| 5b | 266.64 | +5.40 (6 pairs) | **1214** | 10 | 20009 | 11486464 | LOSS (reverted) | 24ii |
-| 16(D10) | 272.88 | +0.34 | 1241 | 10 | 20079 | 11528320 | NO WIN (reverted) | 24ii |
-| 24(v) | 272.09 | +3.01 | 1242 | 10 | 20061 | 11770580 | NO WIN (reverted) | 24ii |
-| **25** | **265.28** | **-4.10** | 1241 | 10 | 19982 | 11479276 | **WIN (kept)** | **25** |
-| 26a | 271.61 | +3.69 | 1248 | 10 | 19951 | 11529312 | LOSS (reverted) | 25 |
+| pair | ref `eco-opt10b` | cand `eco-opt10c` | diff |
+|---|---|---|---|
+| 1 | 265.49 | 265.30 | -0.19 |
+| 2 | 271.75 | 271.61 | -0.14 |
+| 3 | 266.23 | 270.37 | +4.14 |
 
-**SERIES COMPLETE: 398.71 s to 265.28 s, -33.5 %.** Minor GC 1825 to 1241 (-32 %), promoted
-20,846 to 19,982 MiB, peak RSS 12.71 to 11.48 GB (-9.7 %), GC time 142.10 to 124.11 s.
-**Forty-three entries run.**
+The stage with the semantic decision in it: `Step` cannot lose its `Result` until every `Failure`
+has somewhere else to go. **Policy, per class.** `EngineBug` and `Unsupported` are "never a
+fallback" by their own docstring — every site aborts — so the 24 sites raising them call
+`Engine.crashFailure`, printing the SAME rendered text via `renderFailure`, moved here from
+`Monomorphize`. `UnifyMismatch` is manufactured in one place and recovered in exactly three, which
+read a `Bool`; everywhere else it aborts, so `unifyStrictS` crashes with the same message and the
+context stays a THUNK so the diagnostic's type walks are built only on the aborting path.
+**`LimitExceeded` stays a clean failure** — MONO_030 calls it diagnosable and `SpecWatchdogTest`
+pins it — travelling as `ItemAux.pendingFailure`, on `ItemAux` rather than `S`, which is at 31 of
+the runtime's 32-slot cap. Flat; kept as the enabler for the rest of step 10.
 
-- **Kept (20):** 1, 2, 3, 4b, 4a, 5a, 6, 7, 8b, 9, 11b, 11a, 22a, 18b, 22b, 22d, 24(i'),
-  24(vii)a, 24(ii), 25.
-- **Reverted after their own measurement (22):** 5b, 8a, 12s, 13s, 14, 15, 16a, 16-D4, 16-D10,
-  17, 18a, 19', 20, 21a, 22c, 23, 24(i), 24(iii)+(iv), 24(v), 24(vii)b, 26a, 27.
-- **Deferred (1):** 10 — see its entry. It is the ONE step of the twenty-six with no measurement
-  of its own, and the entry says exactly why: it is a seven-stage programme whose first stage
-  cannot be built half-way and is predicted flat-to-negative alone.
+### 10e-i — the Store zonk and classify families fully direct-state — **WIN, kept**
 
-**Every other step of the plan now has at least one measurement of its own**, including the two
-that previously had none: step 25 (measured, kept) and step 26 (its own census gate measured at
-11.9 M `S` copies, over the plan's build threshold, so it was built — and it lost).
+| pair | ref `eco-opt10c` | cand `eco-opt10ei` | diff |
+|---|---|---|---|
+| 1 | 273.56 | 265.22 | **-8.34** |
+| 2 | 271.15 | 269.86 | **-1.29** |
+| 3 | 272.49 | 263.14 | **-9.35** |
 
-**Drift check on the series** (protocol §1, Phase 0's "repeated only after the last step"): the
-last kept compiler `eco-opt25` was re-measured in the 26a sitting at 273.07 / 267.55 / 269.21,
-median **269.21 s** against its own recorded **265.28 s** — a 3.93 s disagreement, inside the
-+/-5 s drift band this machine was calibrated at. The series deltas stand.
+The second-largest single win of the series. `Store.zonkToMono` (11.8 % of the mono window),
+`zonkToMonoC`, `zonkFlatC`, `residualWithTaintC`, `zonkListC`, `zonkRecordFieldsC`,
+`zonkRecordExtC`, `monoTypeToVarS` and the `loadType` family all drop their `Result` and become
+`S -> ( a, S )` / `ZonkCtx -> ( a, ZonkCtx )`, with 21 call sites repointed off the adapters.
+Same sign in all three pairs; **minor GC IDENTICAL (1232)** — for the third time in this step the
+win is not allocation volume. **`$sret` coverage 32 -> 42 MonoSolver workers**, double the series
+baseline's 21. Getting the last three took two more applications of R4 — eight mutually recursive
+call leaves re-tupled, and two `crashFailure` bottoms wrapped in the tuple, the difference between
+40 and 42. **A leaf must be a tuple LITERAL; neither a bare call nor a bottom qualifies.** Gates:
+BI both arms, rail manifest and census identical, unit 13,565, E2E 1731/1731.
+
+### 10e-ii — Translate's 30 remaining signatures direct-state — **LOSS, not kept as a step**
+
+| pair | ref `eco-opt10ei` | cand `eco-opt10eii` | diff |
+|---|---|---|---|
+| 1 | 257.25 | 260.45 | **+3.20** |
+| 2 | 255.93 | 260.13 | **+4.20** |
+| 3 | 258.27 | 259.15 | **+0.88** |
+
+| | `lift` | `liftU` | `afterU` | total |
+|---|---|---|---|---|
+| `keep-10ei` | 7 | 3 | 3 | **13** |
+| `try-10eii` | 38 | 30 | 9 | **77** |
+
+The last file of stage 10e. `Translate`'s `demandUnify*`, `instantiate*`, `resultVarAfter`,
+`unifyResultWithExpected`, `noteAppliedS`, the whole `injectArgLambdaMember` family, `insertVars`,
+the `annoPairFold` census family and `enrichFromEnv`'s tuple arm drop their `Result`; two
+`Monomorphize` call sites follow. Same sign in all three pairs. Every counter moved the RIGHT way
+and by almost nothing, so the +3.20 s is **mutator time, not collection**. `$sret` 42 -> 82 and
+the MLIR is 24,782 B SMALLER — the emission side did exactly what step 10 predicted.
+**Why it still lost: the transitional adapters.** `lift`/`liftU`/`afterU` each allocate a closure
+at their USE site, so converting a callee whose callers are still `Step`-typed MOVES the boxing
+rather than removing it — 13 adapters became 77, on per-call paths. **A statement about the
+HALF-CONVERTED state, not about step 10**: the conversion is monotone only at its endpoints.
+
+### 10f — `Step` stops being a monad — **WIN on wall, marginal**
+
+| pair | ref `eco-opt10ei` | cand `eco-opt10f` | diff |
+|---|---|---|---|
+| 1 | 253.88 | 253.93 | +0.05 |
+| 2 | 258.06 | 253.53 | **-4.53** |
+| 3 | 255.76 | 254.95 | **-0.81** |
+
+The 10e-ii diagnosis pointed at a change 10e-ii itself made available. The `Result` in
+`Step a = S -> Result Failure ( a, S )` was dead weight: **no `Err` is ever CONSTRUCTED in
+`Translate`** — all 97 occurrences are `Err e -> Err e` pass-throughs — `Engine.fail` has zero
+users, and 10c had already moved the one real in-graph failure onto `pendingFailure`. So the alias
+changed instead, to `S -> ( a, S )`. Everything followed: the combinator layer lost its `Result`
+match and `Ok` box, **`Engine.lift` became the identity**, 45 arm pairs and 106 `Ok` wrappers
+collapsed, and `Result Failure` survives at exactly three driver functions. **The number that
+matters is not the wall but the allocation: objects fell 0.03 %** (292,652,883 -> 292,557,278).
+The inliner and `MonoInlineSimplify` were already folding `case (Ok x) of Ok y -> …` away. Not
+kept — see `10f+10g`; its margin is inside its own three-pair spread, and one pair is positive.
+
+### 10f+10g — the whole `Step` monad retired — **LOSS**
+
+| pair | ref `eco-opt10ei` | cand `eco-opt10fg-b` | diff |
+|---|---|---|---|
+| 1 | 235.64 | 235.07 | -0.57 |
+| 2 | 232.29 | 238.89 | **+6.60** |
+| 3 | 231.43 | 236.74 | **+5.31** |
+| 4 | 237.19 | 236.28 | -0.91 |
+| 5 | 232.47 | 238.50 | **+6.03** |
+| 6 | 231.65 | 237.60 | **+5.95** |
+
+| | combinator uses in `Translate` | adapters | MonoSolver `$sret` | all `$sret` |
+|---|---|---|---|---|
+| `keep-10ei` | 320 | 13 | 42 | 528 |
+| `try-10eii` | 320 | **77** | 82 | — |
+| `try-10f` | 320 | 0 | 115 | 601 |
+| `try-10g2` | **0** | **0** | **148** | **635** |
+
+The rest of step 10, taken all the way: all 55 combinator-shaped `Translate` functions rewritten
+as explicit `case … of ( a, s1 )` chains, then `andThen`, `map`, `map2`, `succeed`, `getS`,
+`modifyS`, `runStep`, `lift`, `liftU`, `afterU`, `scopedStep`, `withScratchStoreStep` and
+`thenAlso` deleted from `Engine`. Rewriting the chains is not style: a function whose result-spine
+leaves are tuple LITERALS is eligible for `$sret`; one written as a combinator chain never is.
+Six pairs in two sittings, reproducing each other pair-for-pair. Counters: minor 1122 -> 1118,
+promoted +20 MiB (worse), GC time +1.4 s, MLIR 123,251 B smaller — and **objects allocated
+-0.03 %** again. **So the entire `Step` monad is worth 0.03 % of this compiler's allocation and
+costs 2.4 % of its wall.** Reverted on the measurement; **restored afterwards by explicit
+instruction**, so the tree carries it. Why it lost is in §7.
+
+### 10g (re-measure) — plain triple on the restored tree — **confirms the A/B**
+
+| run | wall (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|
+| t1 | 233.60 | 1118 | 10 | 17482 | 10,416,580 | 13,224,281 | same |
+| t2 | 235.45 | 1118 | 10 | 17482 | 10,415,772 | 13,224,281 | same |
+| t3 | 237.66 | 1118 | 10 | 17482 | 10,415,856 | 13,224,281 | same |
+| **median** | **235.45** | **1118** | **10** | **17482** | **10,415,856** | 13,224,281 | same |
+| **average** | **235.57** | — | — | — | — | — | — |
+
+Three cold runs of `eco-opt10fg-b` on the restored `try-10g2` tree, taken after the 10f+10g
+change was put back. Spread 4.06 s = 1.72 %, inside the band. **Every deterministic counter is
+identical to the A/B's candidate arm and identical across all three runs** — 1118 / 10 / 17,482
+MiB — which is the check that the restored tree is the measured tree. All three outputs agree
+byte-for-byte AND reproduce `eco10fg-b.mlir` exactly, so **the fixed point holds (B == C)**, the
+gate a NOT-BI codegen change owes. The absolute wall is NOT comparable with rows above it: the
+nearest in-time measurement of the reference `eco-opt10ei` is 232.29 / 232.47 from the same
+night, about +3 s below this, which agrees in sign with the six-pair +5.63 s and is the only
+comparison this triple licenses. Gates other than the fixed point are still owed.
+
+## 7. Findings
+
+What the series learned, separated from the per-step records above so the entries can stay
+to ten lines. Every claim here is traceable to a numbered entry in §6.
 
 ### What the series actually found
 
@@ -2122,6 +1454,41 @@ The mirror-image lessons, each paid for with a measured run:
 - **Scale beats waste** (24(v)): 129,000 redundant string hashes removed from a pass that runs
   once over the registry did not register at all. The same probe removed from a per-item path
   would have.
+
+### Why step 10 lost, and what `$sret` is actually for
+
+`$sret` works and the selection widened exactly as designed — 42 to 148 MonoSolver workers, 528
+to 635 overall. What the series had wrong was WHERE it pays.
+
+- **10e-i promoted the hot LEAVES and won 8.34 s.** `Store.zonkToMono` and the classify family are
+  11.8 % of the mono window; they are called millions of times, do little work per call, and their
+  result tuple was a real per-call allocation.
+- **10g promoted the cold SPINES and lost 6 s.** `translateLet`, `specializeDecider`,
+  `specializePath` and 52 others are called once per syntax node and each does substantial work;
+  the tuple they returned was noise against that. What they gained instead was the promotion's own
+  overhead — a worker PLUS a shim per promoted spec, paid at every call site
+  `Expr.trySretLetBinding` does not migrate (it migrates LET-BOUND direct calls only).
+
+Same mechanism, opposite sign; the discriminator is the ratio of per-call overhead to per-call
+work. **`$sret` is a leaf optimization, and applied as a blanket policy it is negative.**
+
+Two further things are on record for anyone who reopens this.
+
+1. **The half-converted state is the worst state** (entry 10e-ii, +3.20 s). The conversion is
+   monotone only at its endpoints — `Step` everywhere (13 adapters) and `Step` nowhere (0) are
+   both cheap, and every point between pays `lift`/`liftU`/`afterU` closures at the boundary.
+   Convert a whole call graph in one step or not at all.
+2. **`Backend.sretFreshGreatest` is written, correct, and inert on this tree.** The promotion
+   fixpoint was a LEAST fixpoint over an already-admitted table, so a group of functions whose
+   result leaves are calls to EACH OTHER can never bootstrap — the normal shape of a recursive
+   descent. The replacement computes the GREATEST fixpoint of the same rule: assume every
+   shape-eligible spec promoted, then drop any whose body fails against the current table.
+   Removal only shrinks, so it terminates; it returns `Nothing` if the cascade does not settle in
+   30 rounds, because a half-settled table is a MISCOMPILE, and the caller falls back to the least
+   fixpoint. It moved 600 to 601 workers on its own, and on the converted source the least
+   fixpoint finds the same 148 — once the chains are gone the leaves are literals and the
+   bootstrap problem it solves no longer exists. Reach for it only if the source returns to
+   combinator style.
 
 ### The instrument, calibrated
 
@@ -2254,3 +1621,113 @@ binary on the same tree, spread 5.06 s across half an hour. That is the drift, m
 and it is why comparing two medians taken hours apart cannot resolve a 1-3 % step. The paired
 differences spread 2.88 s, so magnitudes remain soft, but all three agree in sign — and the sign
 is what a verdict needs.
+
+
+## 8. Provenance
+
+- Step list and order: `plans/lss-compile-time-optimizations.md` §2 (implementation order,
+  2026-09-19); measurement anatomy behind the order: same file §1 and the memory note
+  `lss-compile-time-profile-sep18`.
+- Method adapted from `benchmarks/lss-payoff.md` (workload, cache reset, no-census rule, entry
+  shape) with three changes: the tested binary is the CANDIDATE built by the previous kept
+  compiler and then measured building ITSELF; three cold runs per row instead of one, judged on
+  medians; the five-stat order and win rule of §4.
+- Self-compile command: bootstrap Stage 7a, `compiler/CMakeLists.txt:494`; lowering command:
+  Stage 6, `compiler/CMakeLists.txt:457-468`.
+- Noise band for THIS series, measured by the base triple (2026-09-19, §6): wall spread 5.21 s
+  = 1.31 % of median; RSS spread 0.03 %; minor/major GC and promoted MiB exactly deterministic.
+  The older indicative bands (wall ±2 % run-to-run; RSS bimodal with a ~2.15 GB gap, 2026-08-28
+  series and the retracted `injTotal` claim) still bound what a BAD triple can look like — a
+  triple whose wall spread exceeds ~2 % means the machine was disturbed, so re-run it.
+- Stat extraction: `benchmarks/lss-loop-extract.sh <prefix>` prints the five judged stats (plus GC
+  time and `out.mlir` bytes) as one TSV line from `<prefix>.time` + `<prefix>.stdout`; validated
+  2026-09-19 against the Sep-18 profile run's artefacts (reproduced all five figures exactly).
+- Fixed-point discipline for analysis-changing steps: one extra bootstrap turn, gate B==C
+  (`premono-inliner-shipped-default-on`, 2026-09-11).
+- Snapshot tool: `benchmarks/lss-loop-snap.sh` (snap / restore / verify / diff / list), self-tested
+  2026-09-19: an added file is deleted and a modified file restored byte-identically by `restore`;
+  `verify` exits non-zero on any drift. No git in this container (`build-traps` memory, Trap 3).
+
+
+## 9. Summary
+
+One row per step, numbers only, in the order the entries were run.
+
+**The method this column records.** Build the candidate compiler with the optimization in it, have
+that compiler self-build, and keep the wall time of the OPTIMIZED run only. Three cold runs;
+`wall (s)` is their median. `ref` names the row it is judged against — the previous WIN, or `base`
+before the first win — and `delta (s)` is this row's `wall` minus that row's `wall`. Negative is
+an improvement. A reverted row never becomes the reference, so the next row skips it and is judged
+against the same win as this one was.
+
+**Two health warnings on `delta (s)`, both measured on this machine.**
+
+1. **The wall column carries machine drift, and the drift is large.** The unchanged binary
+   `eco-opt10ei`, on the unchanged workload, measured 257.25 s at 02:43 on 2026-09-21 and
+   232.47 s at 05:22 — **26.84 s, 10.4 %, in one session with nothing changed**. Rows whose
+   reference was measured in a different sitting carry that difference inside their delta. The
+   step-10 rows at the bottom are the worst affected: they were run in a fast session, so their
+   deltas against `10e-i` (measured hours earlier and slower) read as large improvements.
+2. **Seven rows have a delta whose SIGN disagrees with their recorded verdict.** Deltas say
+   improvement where the verdict says loss at `8a` (-0.14), `16a` (-2.00) and `12s` (-2.43);
+   deltas say regression where the verdict says win at `7` (+2.23), `9` (+1.94), `22a` (+0.59),
+   `24(i')` (+0.40), `24(ii)` (+0.16) and `25` (+0.39). The four small regressions kept as wins
+   were kept because other stats improved — in every case a lower minor-GC count, which is exact
+   per (binary x tree) where wall is not. The three small improvements not kept are the ones
+   worth a second look; see the note under step 10 below.
+
+**Step 10 is one row.** It was implemented and measured in seven stages (`10a`, `10b`, `10c`,
+`10e-i`, `10e-ii`, `10f`, `10g`), but it is a single optimization — retire the `Step` monad and
+let `$sret` return `( a, S )` in registers — and only the final state ships. The row is that
+final state measured against step 25, the last win before it: 237.17 s vs 265.28 s. The stages
+are recorded individually in §6 for anyone repeating the work, and §7 explains which parts of the
+mechanism paid and which did not.
+
+`out.mlir` is not a column here: byte-identity is a GATE, checked per entry, not a statistic.
+
+| step | wall (s) | delta (s) | minor GC | major GC | promoted MiB | max RSS (kB) | verdict | ref |
+|---|---|---|---|---|---|---|---|---|
+| base | 398.71 | — | 1825 | 10 | 20846 | 12708052 | reference | — |
+| 1 | 370.18 | -28.53 | 1825 | 10 | 20846 | 12705760 | WIN | base |
+| 2 | 359.47 | -10.71 | 1821 | 10 | 20836 | 12690812 | WIN | 1 |
+| 3 | 340.70 | -18.77 | 1583 | 10 | 20376 | 12457544 | WIN | 2 |
+| 4b | 334.85 | -5.85 | 1600 | 10 | 20863 | 12711764 | WIN | 3 |
+| 4a | 291.93 | -42.92 | 1312 | 10 | 20354 | 12026400 | WIN | 4b |
+| 5a | 289.43 | -2.50 | 1287 | 10 | 20341 | 12048496 | WIN | 4a |
+| 6 | 286.85 | -2.58 | 1281 | 10 | 20201 | 12052184 | WIN | 5a |
+| 7 | 289.08 | +2.23 | 1280 | 10 | 20183 | 12044660 | WIN | 6 |
+| 8a | 288.94 | -0.14 | 1291 | 10 | 20233 | 12118144 | LOSS (reverted) | 7 |
+| 8b | 287.24 | -1.84 | 1273 | 10 | 20207 | 12105460 | WIN | 7 |
+| 9 | 289.18 | +1.94 | 1252 | 10 | 20269 | 12095116 | WIN | 8b |
+| 11b | 278.11 | -11.07 | 1243 | 10 | 20284 | 12058368 | WIN | 9 |
+| 11a | 277.42 | -0.69 | 1238 | 10 | 20301 | 12073940 | WIN | 11b |
+| 14 | ~279.4 | ~+1.98 | 1238 | 10 | 20301 | 12073960 | LOSS (reverted) | 11a |
+| 19' | 281.54 | +4.12 | 1239 | 10 | 20316 | 12134468 | LOSS (reverted) | 11a |
+| 22a | 278.01 | +0.59 | 1237 | 10 | 20293 | 12075144 | WIN | 11a |
+| 16a | 276.01 | -2.00 | 1252 | 10 | 20317 | 12083308 | LOSS (reverted) | 22a |
+| 24(i) | 282.38 | +4.37 | 1250 | 10 | 20239 | 12028904 | LOSS (reverted) | 22a |
+| 12s | 275.58 | -2.43 | 1256 | 10 | 20292 | 12046092 | LOSS (reverted) | 22a |
+| 27 | 311.63 | +33.62 | 1310 | 11 | 20825 | 12048200 | LOSS (reverted) | 22a |
+| 20 | ~279.0 | ~+0.99 | 1237 | 10 | 20293 | 12107848 | NO WIN (reverted) | 22a |
+| 13s | ~285.3 | ~+7.29 | 1262 | 11 | 20325 | 11988428 | LOSS (reverted) | 22a |
+| 23 | 280.87 | +2.86 | 1237 | 10 | 20255 | 12109264 | NO WIN (reverted) | 22a |
+| 17 | 279.02 | +1.01 | 1262 | 10 | 20284 | 12090480 | LOSS (reverted) | 22a |
+| 16-D4 | ~281.6 | ~+3.59 | 1238 | 10 | 20387 | 12120732 | NO WIN (reverted) | 22a |
+| 15 | 280.81 | +2.80 | 1238 | 10 | 20318 | 12022700 | LOSS (reverted) | 22a |
+| 18b | 275.76 | -2.25 | 1237 | 10 | 20293 | 12126548 | WIN (kept) | 22a |
+| 18a | 281.54 | +5.78 | 1259 | 10 | 20293 | 12130068 | LOSS (reverted) | 18b |
+| 22b | 278.43 | +2.67 | 1237 | 10 | 20335 | 11916868 | WIN on counters (kept) | 18b |
+| 22d | 270.19 | -8.24 | 1250 | 10 | 20004 | 10686984 | WIN (kept) | 22b |
+| 22c | 274.37 | +4.18 | 1250 | 10 | 20000 | 11594052 | LOSS (reverted) | 22d |
+| 24(iii)+(iv) | 276.42 | +6.23 | 1248 | 10 | 19929 | 11513336 | LOSS (reverted) | 22d |
+| 24(i') | 270.59 | +0.40 | 1246 | 10 | 19962 | 11541556 | WIN (kept) | 22d |
+| 21a | 275.46 | +4.87 | 1247 | 10 | 19966 | 11583856 | LOSS (reverted) | 24(i') |
+| 24(vii)a | 264.73 | -5.86 | 1243 | 10 | 19972 | 11562648 | WIN (kept) | 24(i') |
+| 24(vii)b | 271.70 | +6.97 | 1243 | 10 | 19961 | 11563724 | NO WIN (reverted) | 24(vii)a |
+| 24(ii) | 264.89 | +0.16 | 1241 | 10 | 19977 | 11529796 | WIN (kept) | 24(vii)a |
+| 5b | 266.64 | +1.75 | 1214 | 10 | 20009 | 11486464 | LOSS (reverted) | 24(ii) |
+| 16(D10) | 272.88 | +7.99 | 1241 | 10 | 20079 | 11528320 | NO WIN (reverted) | 24(ii) |
+| 24(v) | 272.09 | +7.20 | 1242 | 10 | 20061 | 11770580 | NO WIN (reverted) | 24(ii) |
+| 25 | 265.28 | +0.39 | 1241 | 10 | 19982 | 11479276 | WIN (kept) | 24(ii) |
+| 26a | 271.61 | +6.33 | 1248 | 10 | 19951 | 11529312 | LOSS (reverted) | 25 |
+| 10 | 237.17 | -28.11 | 1118 | 10 | 17482 | 10415980 | WIN (kept) | 25 |

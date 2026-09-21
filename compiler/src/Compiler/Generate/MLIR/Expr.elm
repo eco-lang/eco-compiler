@@ -456,13 +456,14 @@ generateExpr ctx0 expr =
         Mono.MonoTailCall name args _ ->
             generateTailCall ctx name args
 
-        Mono.MonoIf branches final _ ->
-            -- v1 sret scope cut: MonoIf is not part of the result spine
-            -- (selection rejects if-shaped tails); clear defensively but
-            -- RESTORE on the returned ctx (the leaf yield decision reads it).
+        Mono.MonoIf branches final monoType ->
+            -- Step 10a: `if` IS part of the result spine now. The flag is
+            -- passed through (`generateIf` clears it for the condition and
+            -- restores it for the branches itself), and the returned ctx must
+            -- still carry the caller's flag, as the tuple arm does.
             let
                 res =
-                    generateIf { ctx | sretTailLayout = Nothing } branches final
+                    generateIf ctx branches final monoType
 
                 resCtx =
                     res.ctx
@@ -4752,17 +4753,24 @@ Compiles `if c1 then t1 else if c2 then t2 else ... final` to nested
 eco.case operations on boolean conditions.
 
 -}
-generateIf : Ctx.Context -> List ( Mono.MonoExpr, Mono.MonoExpr ) -> Mono.MonoExpr -> ExprResult
-generateIf ctx branches final =
+generateIf : Ctx.Context -> List ( Mono.MonoExpr, Mono.MonoExpr ) -> Mono.MonoExpr -> Mono.MonoType -> ExprResult
+generateIf ctx branches final resultMonoType =
     case branches of
         [] ->
             generateExpr ctx final
 
         ( condExpr, thenExpr ) :: restBranches ->
             let
-                -- Evaluate condition to Bool
+                -- Evaluate condition to Bool.
+                --
+                -- Step 10a, MANDATORY HYGIENE: the condition is NOT on the
+                -- result spine, so `sretTailLayout` is cleared for it. A
+                -- condition can itself be a `MonoCase` — a spine arm — and a
+                -- leaked flag there would make-promote a Bool-typed case,
+                -- which is the `eco.papExtend` aggregate-operand incident the
+                -- Backend docstring records.
                 condRes =
-                    generateExpr ctx condExpr
+                    generateExpr { ctx | sretTailLayout = Nothing } condExpr
 
                 -- Ensure condition is i1 for scf.if/eco.case
                 -- If the condition is eco.value (e.g., from a function call returning Bool),
@@ -4778,22 +4786,36 @@ generateIf ctx branches final =
                 condOpsAll =
                     condRes.ops ++ condUnboxOps
 
+                -- The flag was cleared on the ctx that flowed through the
+                -- condition; put it back for the branches, which ARE the spine.
+                condCtxSpine =
+                    { condCtx | sretTailLayout = ctx.sretTailLayout }
+
                 -- Generate then branch first to get its actual result type
                 thenRes =
-                    generateExpr condCtx thenExpr
+                    generateExpr condCtxSpine thenExpr
             in
             -- Check if then branch is terminated (e.g., tail call with eco.jump).
             -- If so, we can't use scf.if which requires both branches to yield.
             -- Fall back to eco.case which supports terminated regions.
             if thenRes.isTerminated then
-                generateIfWithTerminatedBranch condCtx condVar thenRes restBranches final condOpsAll
+                generateIfWithTerminatedBranch condCtx condVar thenRes restBranches final resultMonoType condOpsAll
 
             else
                 -- Then branch produces a value, check else branch
                 let
-                    -- Use the then branch's actual SSA type as the result type
+                    -- Off the spine this is exactly today's rule — the then
+                    -- branch's own SSA type — so the non-promoted path stays
+                    -- byte-identical by construction. On the spine the join
+                    -- declares the AGGREGATE type, the same rule
+                    -- `generateCase` uses (step 10a).
                     resultMlirType =
-                        thenRes.resultType
+                        case ctx.sretTailLayout of
+                            Nothing ->
+                                thenRes.resultType
+
+                            Just _ ->
+                                spineResultMlirType ctx resultMonoType
 
                     -- Coerce then result to target type if needed
                     ( thenCoerceOps, thenFinalVar, thenFinalCtx ) =
@@ -4802,10 +4824,14 @@ generateIf ctx branches final =
                     -- Generate else branch (recursive if or final)
                     -- Use ctxForSiblingRegion to avoid leaking varMappings from then-branch
                     elseCtx =
-                        Ctx.ctxForSiblingRegion condCtx thenFinalCtx
+                        let
+                            sibling =
+                                Ctx.ctxForSiblingRegion condCtx thenFinalCtx
+                        in
+                        { sibling | sretTailLayout = ctx.sretTailLayout }
 
                     elseRes =
-                        generateIf elseCtx restBranches final
+                        generateIf elseCtx restBranches final resultMonoType
                 in
                 if elseRes.isTerminated then
                     -- Else branch is terminated - use eco.case instead
@@ -4821,39 +4847,45 @@ generateIf ctx branches final =
                         ( elseCoerceOps, elseFinalVar, elseFinalCtx ) =
                             coerceResultToType elseRes.ctx elseRes.resultVar elseRes.resultType resultMlirType
 
-                        ( ctx2, elseYieldOp ) =
-                            Ops.ecoYield elseFinalCtx elseFinalVar resultMlirType
+                        -- Step 10a: decomposed yields on the spine, the plain
+                        -- `eco.yield` off it. `emitSpineYield` IS
+                        -- `Ops.ecoYield` when the flag is Nothing, and the
+                        -- fresh-name order below is the order this code used
+                        -- before — else yield, then yield (ctx discarded),
+                        -- case result var, case op — so flag-off emission is
+                        -- unchanged token for token.
+                        ( elseProjOps, elseYieldOp, ctx2 ) =
+                            emitSpineYield elseFinalCtx elseFinalVar resultMlirType
 
                         elseRegion =
-                            Ops.mkRegion [] (elseRes.ops ++ elseCoerceOps) elseYieldOp
+                            Ops.mkRegion [] (elseRes.ops ++ elseCoerceOps ++ elseProjOps) elseYieldOp
 
                         -- Build then region with eco.yield
-                        ( _, thenEcoYield ) =
-                            Ops.ecoYield thenFinalCtx thenFinalVar resultMlirType
+                        ( thenProjOps, thenEcoYield, _ ) =
+                            emitSpineYield thenFinalCtx thenFinalVar resultMlirType
 
                         thenRegionEco =
-                            Ops.mkRegion [] (thenRes.ops ++ thenCoerceOps) thenEcoYield
-
-                        -- Allocate result variable for eco.case
-                        ( caseResultVar, ctx2b ) =
-                            Ctx.freshVar ctx2
+                            Ops.mkRegion [] (thenRes.ops ++ thenCoerceOps ++ thenProjOps) thenEcoYield
 
                         -- eco.case on i1: tag 1 for True (then), tag 0 for False (else)
-                        ( ctx3, caseOp ) =
-                            Ops.ecoCase ctx2b caseResultVar condVar I1 "bool" [ 1, 0 ] [ thenRegionEco, elseRegion ] resultMlirType
+                        spineCase =
+                            finishSpineCase ctx2
+                                resultMlirType
+                                (\cS vS tS -> Ops.ecoCase cS vS condVar I1 "bool" [ 1, 0 ] [ thenRegionEco, elseRegion ] tS)
+                                (\cM pairsM -> Ops.ecoCaseMany cM condVar I1 "bool" [ 1, 0 ] [ thenRegionEco, elseRegion ] pairsM)
                     in
-                    { ops = condOpsAll ++ [ caseOp ]
-                    , resultVar = caseResultVar
-                    , resultType = resultMlirType
-                    , ctx = Ctx.ctxAfterBranchOp condCtx ctx3 [ caseResultVar ]
+                    { ops = condOpsAll ++ spineCase.ops
+                    , resultVar = spineCase.resultVar
+                    , resultType = spineCase.resultType
+                    , ctx = Ctx.ctxAfterBranchOp condCtx spineCase.ctx spineCase.newVars
                     , isTerminated = False
                     }
 
 
 {-| Generate if-then-else using eco.case when the then branch is terminated.
 -}
-generateIfWithTerminatedBranch : Ctx.Context -> String -> ExprResult -> List ( Mono.MonoExpr, Mono.MonoExpr ) -> Mono.MonoExpr -> List MlirOp -> ExprResult
-generateIfWithTerminatedBranch condCtx condVar thenRes restBranches final condOps =
+generateIfWithTerminatedBranch : Ctx.Context -> String -> ExprResult -> List ( Mono.MonoExpr, Mono.MonoExpr ) -> Mono.MonoExpr -> Mono.MonoType -> List MlirOp -> ExprResult
+generateIfWithTerminatedBranch condCtx condVar thenRes restBranches final resultMonoType condOps =
     let
         -- Build then region - it already has a terminator (should be eco.yield)
         thenRegion =
@@ -4864,7 +4896,11 @@ generateIfWithTerminatedBranch condCtx condVar thenRes restBranches final condOp
             Ctx.ctxForSiblingRegion condCtx thenRes.ctx
 
         elseRes =
-            generateIf elseCtx restBranches final
+            -- Step 10a: a terminated branch is unreachable on a promoted spine
+            -- (selection rejects MonoTailCall leaves for closures, and case
+            -- jumps are inlined in yield mode), so this path only threads the
+            -- parameter — it keeps treating the flag as Nothing.
+            generateIf elseCtx restBranches final resultMonoType
 
         -- Determine result type from else branch (then is terminated)
         resultMlirType =
@@ -6983,6 +7019,39 @@ mkCaseRegionFromDecider exprRes resultTy =
                 ( mkRegionFromOps (exprRes.ops ++ coerceOps ++ yieldPreOps ++ [ yieldOp ]), ctx2 )
 
 
+{-| U-T1.3.3: the result type a branch JOIN declares. On the sret worker's
+result spine it is the AGGREGATE type, so branch leaves coerce to it (make-form
+branches directly, boxed leaves via `eco.from_heap`) and the branches'
+constructions dissolve under SROA; off the spine it is the ordinary ABI type.
+
+Extracted from `generateCase` by step 10a so `generateIf` can use the identical
+rule — the two join shapes must agree or a promoted spine mixing `case` and `if`
+would declare two different result types for one worker.
+-}
+spineResultMlirType : Ctx.Context -> Mono.MonoType -> MlirType
+spineResultMlirType ctx resultMonoType =
+    case ctx.sretTailLayout of
+        Just tailLayout ->
+            case resultMonoType of
+                Mono.MTuple _ ts ->
+                    -- SLOT-TYPE-EXACT, for the same reason the tuple-literal
+                    -- leaf test is.
+                    if
+                        Types.tupleSlotTypes (Types.computeTupleLayout ts)
+                            == Types.tupleSlotTypes tailLayout
+                    then
+                        Ops.aggTupleType (Types.tupleSlotTypes tailLayout)
+
+                    else
+                        Types.monoTypeToAbi resultMonoType
+
+                _ ->
+                    Types.monoTypeToAbi resultMonoType
+
+        Nothing ->
+            Types.monoTypeToAbi resultMonoType
+
+
 {-| Generate case expression control flow.
 
 This is the main entry point for case expressions. It:
@@ -7000,30 +7069,7 @@ generateCase : Ctx.Context -> Name.Name -> Name.Name -> Mono.Decider Mono.MonoCh
 generateCase ctx _ _ decider jumps resultMonoType =
     let
         resultMlirType =
-            -- U-T1.3.3: a case on the sret worker's result spine declares the
-            -- AGGREGATE result type; branch leaves coerce to it (make-form
-            -- branches directly, boxed leaves via eco.from_heap) so the
-            -- branches' constructions dissolve under SROA.
-            case ctx.sretTailLayout of
-                Just tailLayout ->
-                    case resultMonoType of
-                        Mono.MTuple _ ts ->
-                            -- SLOT-TYPE-EXACT for the same reason as the
-                            -- tuple-literal arm above.
-                            if
-                                Types.tupleSlotTypes (Types.computeTupleLayout ts)
-                                    == Types.tupleSlotTypes tailLayout
-                            then
-                                Ops.aggTupleType (Types.tupleSlotTypes tailLayout)
-
-                            else
-                                Types.monoTypeToAbi resultMonoType
-
-                        _ ->
-                            Types.monoTypeToAbi resultMonoType
-
-                Nothing ->
-                    Types.monoTypeToAbi resultMonoType
+            spineResultMlirType ctx resultMonoType
 
         -- Build jump lookup for inlining shared branches (yield-based mode)
         -- Instead of emitting joinpoints, we inline branch bodies directly
