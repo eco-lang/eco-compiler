@@ -33,6 +33,7 @@ import Compiler.AST.TypeIds as TypeIds
 import Compiler.Data.Id as Id
 import Compiler.Elm.ModuleName as ModuleName
 import Data.HashMap as HashMap
+import Eco.Hash
 import Compiler.MonoSolver.Engine as Engine exposing (Failure(..), Step)
 import Compiler.Type.Error as TErr
 import Compiler.Type.Type as Type
@@ -3848,6 +3849,14 @@ mix h x =
 {-| `-1` when the type has a free var, an arrow or an open record ANYWHERE; otherwise
 a structural hash in `[0, 2^26)`.
 
+Names are hashed through `Eco.Hash.string`, the NARROW kernel variant, for two
+reasons. Its range is `[0, 2^26)`, so the `-1` sentinel stays distinguishable and
+the four `h < 0` tests below keep working — the wide `string64` can go negative
+and would silently poison them. And it is allocation-free and gc-leaf, which is
+what makes hashing the characters affordable at all: this used to hash only
+`String.length`, so every type in a module whose name was the same length
+collided (`Dict`/`Set`, `Task`/`Time`), and the same for record field keys.
+
 One walk, exiting at the first disqualifier, so the common "not eligible" answer is
 cheap. Through a `Filled` alias only `inner` is examined, because that is what load and
 classify consume; through a `Holey` alias the ARGS are hashed and the body is only
@@ -3868,7 +3877,7 @@ groundHash t =
             1
 
         Can.TType (ModuleName.Canonical _ modName) name args ->
-            groundHashList (mix (mix (mix 2 (String.length modName)) (String.length name)) (List.length args)) args
+            groundHashList (mix (mix (mix 2 (Eco.Hash.string modName)) (Eco.Hash.string name)) (List.length args)) args
 
         Can.TTuple a b rest ->
             groundHashList (mix 3 (List.length rest)) (a :: b :: rest)
@@ -3893,7 +3902,7 @@ groundHash t =
                             -1
 
                         else
-                            mix (mix h (String.length k)) hf
+                            mix (mix h (Eco.Hash.string k)) hf
                 )
                 (mix 4 (Dict.size fields))
                 fields
@@ -3904,7 +3913,7 @@ groundHash t =
         Can.TAlias (ModuleName.Canonical _ modName) name args (Can.Holey inner) ->
             let
                 h =
-                    groundHashList (mix (mix 5 (String.length modName)) (String.length name)) (List.map Tuple.second args)
+                    groundHashList (mix (mix 5 (Eco.Hash.string modName)) (Eco.Hash.string name)) (List.map Tuple.second args)
             in
             if h < 0 || not (noArrowBody inner) then
                 -1
@@ -3984,7 +3993,7 @@ aliasKeyOf ((ModuleName.Canonical ( author, project ) modName) as home) name arg
 
         h0 =
             mix (mix (mix (mix 6 (String.length author)) (String.length project)) (String.length modName))
-                (String.foldl (\c acc -> mix acc (Char.toCode c)) 23 name)
+                (Eco.Hash.string name)
 
         h =
             groundHashList h0 argTypes

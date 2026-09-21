@@ -1451,6 +1451,53 @@ Wall -2.51 s by median (-0.69 by mean) against a 6.50 s spread; minor GC flat, p
 and RSS +14 MB — a wider hash makes more distinct `Dict Int` bucket keys, so the bucket tree
 retains more. Wall is primary: WIN. Fixed point holds, three runs byte-identical.
 
+### ghash — `aliasKeyOf` and `groundHash` onto the native hash — **WIN, kept**
+
+| run | wall (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|
+| t1 | 231.43 | 1113 | 10 | 17633 | 10,526,024 | 13,241,185 | same |
+| t2 | 234.40 | 1113 | 10 | 17633 | 10,506,944 | 13,241,185 | same |
+| t3 | 235.17 | 1113 | 10 | 17633 | 10,506,704 | 13,241,185 | same |
+| **median** | **234.40** | **1113** | **10** | **17633** | **10,506,704** | 13,241,185 | same |
+| **average** | **233.67** | — | — | — | — | — | — |
+| D vs 12s | **-0.36** (mean **-2.15**) | 0 | 0 | +33 | +108,304 | -97 | — |
+
+The last two string-hash sites. `Store.aliasKeyOf`'s `String.foldl` becomes `Eco.Hash.string` —
+VALUE-FOR-VALUE identical, since Store's local `mix` is the kernel's narrow mix at the same seed
+23, so only the cost moves. `Store.groundHash` now hashes the CHARACTERS of names at its four
+name sites (the `TType` module and type names, record field keys, the `TAlias Holey` pair); it
+hashed `String.length` ONLY, so `Dict`/`Set` and `Task`/`Time` collided, as did every same-length
+field key. That was a deliberate economy when hashing cost a closure per character, and the
+kernel removes the reason for it. **The narrow variant is mandatory here**: `groundHash` returns
+`-1` for "free var, arrow or open record" and four sites test `h < 0`, so a `string64` that can
+go negative would silently read as ineligible. Wall -0.36 s by median and -2.15 s by mean; RSS
++108 MB is the better-distributed hash making more distinct `Dict Int` bucket keys to retain.
+
+### ghash63 — 63-bit `mix` and name hashes in `groundHash` — **LOSS, reverted**
+
+| run | wall (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|
+| t1 | 238.61 | 1113 | 10 | 17633 | 10,394,976 | 13,241,285 | same |
+| t2 | 239.13 | 1113 | 10 | 17633 | 10,394,928 | 13,241,285 | same |
+| t3 | 239.69 | 1113 | 10 | 17633 | 10,395,056 | 13,241,285 | same |
+| **median** | **239.13** | **1113** | **10** | **17633** | **10,394,976** | 13,241,285 | same |
+| **average** | **239.14** | — | — | — | — | — | — |
+| D vs ghash | **+4.73** (mean **+5.47**) | 0 | 0 | 0 | -111,728 | +100 | — |
+
+`Store.mix` became `Eco.Hash.mix63` (FNV-1a plus an xor-shift, masked to 63 bits so the `-1`
+sentinel survives) and the four name sites took `string63`. The premise was avalanche, not range:
+at ~43,000 alias keys the birthday estimate in 2^26 is about fourteen collisions, so width could
+never pay, but `h * 33 |> modBy 2^26` barely moves its low bits and `groundHash` nests it once
+per node. **Spread 1.08 s, the tightest triple in the series — this is not noise.**
+GC time 112.63 -> 116.45 s IS the whole regression; RSS actually improved 112 MB.
+
+**The cause is the call, not the hash.** `mix` runs once per NODE — per list element, per record
+field — so a gc-leaf kernel call replaced a single inline `modBy`. One call amortised over a
+whole string is a 100x win (`string63`); one call replacing one arithmetic op is a loss. Same
+shape as entries 14, 16a and 24(i): **the test, or the call, has to be cheaper than the work it
+replaces.** The avalanche question is therefore still OPEN and this entry does not answer it —
+a fair test needs `mix` inlined as an MLIR op, not called.
+
 ## 7. Findings
 
 What the series learned, separated from the per-step records above so the entries can stay
@@ -1776,3 +1823,5 @@ mechanism paid and which did not.
 | 10 | 237.17 | -28.11 | 1118 | 10 | 17482 | 10415980 | WIN (kept) | 25 |
 | 16a (re-measure) | 237.27 | +1.82 | 1112 | 10 | 17404 | 10384340 | WIN (kept) | 10 |
 | 12s (re-measure, + Eco.Hash) | 234.76 | -2.51 | 1113 | 10 | 17600 | 10398400 | WIN (kept) | 16a (re-measure) |
+| ghash (aliasKeyOf + groundHash) | 234.40 | -0.36 | 1113 | 10 | 17633 | 10506704 | WIN (kept) | 12s (re-measure) |
+| ghash63 (63-bit mix + names) | 239.13 | +4.73 | 1113 | 10 | 17633 | 10394976 | LOSS (reverted) | ghash |
