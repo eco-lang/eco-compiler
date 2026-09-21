@@ -1218,7 +1218,7 @@ the same artifact as a report-off one).
 -}
 memoizedSignatureTrivial : TOpt.Global -> S -> Maybe Bool
 memoizedSignatureTrivial g s =
-    Maybe.map .trivial (CoreDict.get (TOpt.toComparableGlobal g) s.lssSignatures)
+    Maybe.map .trivial (HashMap.get TOpt.globalHash (==) g s.lssSignatures)
 
 
 {-| LSS\_026 Phase-0 census: the member CLASS of a member id, as the
@@ -1382,8 +1382,8 @@ type alias S =
     , nextMVarId : TypeIds.MVarId
 
     -- LSS (all GLOBAL — survive resetItem; signatures/members are per-run facts)
-    , lssSignatures : CoreDict.Dict String LssSignature -- TOpt.toComparableGlobal -> signature
-    , lssInProgress : CoreDict.Dict String () -- in-flight inference units (re-entry = EngineBug)
+    , lssSignatures : HashMap.HashMap TOpt.Global LssSignature -- keyed by the Global itself (step 12): probing this was ~10^6 string builds and 14-16 long-prefix compares per run
+    , lssInProgress : HashMap.HashMap TOpt.Global () -- in-flight inference units (re-entry = EngineBug)
     , lssMemberTable : LssMemberTable -- interned non-lambda member ids + E9 devirt reverse map (ONE field: S self-hosts and must stay within the runtime's 32-slot record scan cap)
     , nextMemberId : Int -- shared supply, seeded past GlobalMVarState.nextLam
     , lssStats : LssStats

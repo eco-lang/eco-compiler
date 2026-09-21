@@ -84,7 +84,7 @@ signatureFor global s0 =
         gkey =
             TOpt.toComparableGlobal global
     in
-    case CoreDict.get gkey s0.lssSignatures of
+    case HashMap.get TOpt.globalHash (==) global s0.lssSignatures of
         Just sig ->
             ( sig, s0 )
 
@@ -92,7 +92,7 @@ signatureFor global s0 =
             if not s0.env.lss.enabled then
                 ( Engine.trivialSignature 0, s0 )
 
-            else if CoreDict.member gkey s0.lssInProgress then
+            else if HashMap.member TOpt.globalHash (==) global s0.lssInProgress then
                 Engine.crashFailure (EngineBug ("LssInfer.signatureFor re-entry on in-flight unit member: " ++ gkey))
 
             else
@@ -105,12 +105,12 @@ signatureFor global s0 =
                         -- freshly memoized signature over the target handle's.
                         case signatureFor target s0 of
                             (  sigTarget, s1  ) ->
-                                case CoreDict.get gkey s1.lssSignatures of
+                                case HashMap.get TOpt.globalHash (==) global s1.lssSignatures of
                                     Just own ->
                                         ( own, s1 )
 
                                     Nothing ->
-                                        ( sigTarget, { s1 | lssSignatures = CoreDict.insert gkey sigTarget s1.lssSignatures } )
+                                        ( sigTarget, { s1 | lssSignatures = HashMap.insert TOpt.globalHash (==) global sigTarget s1.lssSignatures } )
 
                     _ ->
                         inferUnit global gkey s0
@@ -125,12 +125,30 @@ ordinals pair (LSS\_006).
 instantiateWithSignature : TOpt.Global -> Can.Type TypeIds.MVarId -> Engine.S -> ( Vars.Variable, Engine.S )
 instantiateWithSignature global funcCanType s0 =
     case signatureFor global s0 of
-        (  sig, s1  ) ->
-            case Store.loadTypeIsolatedWithArrows funcCanType s1 of
-                ( ( funcVar, slots ), s2 ) ->
-                    case applyFacts global sig slots funcVar s2 of
-                        s3 ->
-                            ( funcVar, s3 )
+        ( sig, s1 ) ->
+            instantiateWithSig global sig funcCanType s1
+
+
+{-| `instantiateWithSignature` with the signature already in hand, so a caller
+that had to fetch it for another reason does not fetch it twice.
+
+Step 16 (D8): for a TRIVIAL signature `applyFacts` returns immediately, and the
+only thing the arrow-ordinal `Array` it is given exists for is to be indexed by
+facts. Building it — `Array.fromList (List.reverse …)` per call — is then pure
+waste, so a trivial signature takes the plain isolated load.
+
+-}
+instantiateWithSig : TOpt.Global -> Engine.LssSignature -> Can.Type TypeIds.MVarId -> Engine.S -> ( Vars.Variable, Engine.S )
+instantiateWithSig global sig funcCanType s1 =
+    if sig.trivial then
+        Store.loadTypeIsolated funcCanType s1
+
+    else
+        case Store.loadTypeIsolatedWithArrows funcCanType s1 of
+            ( ( funcVar, slots ), s2 ) ->
+                case applyFacts global sig slots funcVar s2 of
+                    s3 ->
+                        ( funcVar, s3 )
 
 
 {-| Unify a source lambda's own member into the first `arity` arrows of its
@@ -354,7 +372,8 @@ installSources ordinals slots dst s0 =
 
 
 type alias UnitMember =
-    { gkey : String
+    { g : TOpt.Global
+    , gkey : String
     , sigType : Can.Type TypeIds.MVarId
     , body : Maybe (TOpt.Expr TypeIds.MVarId)
 
@@ -372,7 +391,7 @@ inferUnit global gkey s0 =
         (  members, s1  ) ->
             let
                 s2 =
-                    { s1 | lssInProgress = CoreDict.insert gkey () (List.foldl (\m acc -> CoreDict.insert m.gkey () acc) s1.lssInProgress members) }
+                    { s1 | lssInProgress = HashMap.insert TOpt.globalHash (==) global () (List.foldl (\m acc -> HashMap.insert TOpt.globalHash (==) m.g () acc) s1.lssInProgress members) }
             in
             -- Pre-resolve callee signatures OUTSIDE the scratch store so
             -- scratch stores never nest.
@@ -383,11 +402,11 @@ inferUnit global gkey s0 =
                             let
                                 s5 =
                                     { s4
-                                        | lssSignatures = List.foldl (\( k, sg ) acc -> CoreDict.insert k sg acc) s4.lssSignatures sigs
-                                        , lssInProgress = CoreDict.remove gkey (List.foldl (\m acc -> CoreDict.remove m.gkey acc) s4.lssInProgress members)
+                                        | lssSignatures = List.foldl (\( k, sg ) acc -> HashMap.insert TOpt.globalHash (==) k sg acc) s4.lssSignatures sigs
+                                        , lssInProgress = HashMap.remove TOpt.globalHash (==) global (List.foldl (\m acc -> HashMap.remove TOpt.globalHash (==) m.g acc) s4.lssInProgress members)
                                     }
                             in
-                            case List.filter (\( k, _ ) -> k == gkey) sigs of
+                            case List.filter (\( k, _ ) -> k == global) sigs of
                                 ( _, sig ) :: _ ->
                                     ( sig, s5 )
 
@@ -403,7 +422,7 @@ inferUnit global gkey s0 =
                                         placeholder =
                                             Engine.trivialSignature 0
                                     in
-                                    ( placeholder, { s5 | lssSignatures = CoreDict.insert gkey placeholder s5.lssSignatures } )
+                                    ( placeholder, { s5 | lssSignatures = HashMap.insert TOpt.globalHash (==) global placeholder s5.lssSignatures } )
 
 
 {-| Resolve the inference unit: a `TOpt.Cycle` node is one unit (all its
@@ -478,7 +497,8 @@ resolveUnit ((TOpt.Global home _) as global) s0 =
 
 memberOf : TOpt.Global -> Can.Type TypeIds.MVarId -> Maybe (TOpt.Expr TypeIds.MVarId) -> Engine.S -> UnitMember
 memberOf g fallbackType body s =
-    { gkey = TOpt.toComparableGlobal g
+    { g = g
+    , gkey = TOpt.toComparableGlobal g
     , sigType = sigSourceTypeFor g fallbackType s
     , body = body
     , tailArgs = []
@@ -521,7 +541,7 @@ preResolveGo unitKeys globals s0 =
                 k =
                     TOpt.toComparableGlobal g
             in
-            if CoreDict.member k unitKeys || CoreDict.member k s0.lssSignatures then
+            if CoreDict.member k unitKeys || HashMap.member TOpt.globalHash (==) g s0.lssSignatures then
                 preResolveGo unitKeys rest s0
 
             else
@@ -553,7 +573,7 @@ collectReferencedGlobals expr acc =
 -- ====== THE SCRATCH-STORE UNIT PASS ======
 
 
-inferUnitInScratch : List UnitMember -> Engine.S -> ( (List ( String, Engine.LssSignature )), Engine.S )
+inferUnitInScratch : List UnitMember -> Engine.S -> ( (List ( TOpt.Global, Engine.LssSignature )), Engine.S )
 inferUnitInScratch members s0 =
     -- Load every member's signature type through the SHARED scratch memo,
     -- capturing per-member roots + arrow-slot arrays (self/sibling annotation
@@ -607,7 +627,7 @@ inferUnitInScratch members s0 =
                             ( sigs, { s4 | itemAux = { aux4 | qLog = [] } } )
 
 
-loadMemberSlots : List UnitMember -> List ( String, Vars.Variable, Array Vars.Variable ) -> Engine.S -> ( (List ( String, Vars.Variable, Array Vars.Variable )), Engine.S )
+loadMemberSlots : List UnitMember -> List ( TOpt.Global, Vars.Variable, Array Vars.Variable ) -> Engine.S -> ( (List ( TOpt.Global, Vars.Variable, Array Vars.Variable )), Engine.S )
 loadMemberSlots members acc s0 =
     case members of
         [] ->
@@ -616,7 +636,7 @@ loadMemberSlots members acc s0 =
         m :: rest ->
             case Store.loadTypeWithArrows m.sigType s0 of
                 ( ( root, slots ), s1 ) ->
-                    loadMemberSlots rest (( m.gkey, root, slots ) :: acc) s1
+                    loadMemberSlots rest (( m.g, root, slots ) :: acc) s1
 
 
 {-| LSS\_020 (B.1.f): the raw member id of the def's OWN body lambda. Filtered
@@ -641,7 +661,7 @@ selfIdOf m =
             Nothing
 
 
-walkMembers : List ( UnitMember, ( String, Vars.Variable, Array Vars.Variable ) ) -> Engine.S -> Engine.S
+walkMembers : List ( UnitMember, ( TOpt.Global, Vars.Variable, Array Vars.Variable ) ) -> Engine.S -> Engine.S
 walkMembers pairs s0 =
     case pairs of
         [] ->
@@ -678,7 +698,7 @@ walkMembers pairs s0 =
 
                                 _ ->
                                     walkMembers rest s2
-zonkSignatures : List ( String, Maybe Int, Array Vars.Variable ) -> List ( String, Engine.LssSignature ) -> Engine.S -> ( (List ( String, Engine.LssSignature )), Engine.S )
+zonkSignatures : List ( TOpt.Global, Maybe Int, Array Vars.Variable ) -> List ( TOpt.Global, Engine.LssSignature ) -> Engine.S -> ( (List ( TOpt.Global, Engine.LssSignature )), Engine.S )
 zonkSignatures pending acc s0 =
     case pending of
         [] ->
@@ -698,12 +718,18 @@ only at its own param ordinals yields nothing at the position the consumer
 reads. Report-gated; ~321 carrying signatures on the self-compile, a few
 ordinals each.
 -}
-censusSigFacts : String -> Engine.LssSignature -> Engine.S -> Engine.S
-censusSigFacts gkey sig s =
+censusSigFacts : TOpt.Global -> Engine.LssSignature -> Engine.S -> Engine.S
+censusSigFacts g sig s =
     if not s.env.lss.report || sig.trivial then
         s
 
     else
+        let
+            -- Step 12: rendered only here, behind the report gate. The
+            -- signature maps are keyed by the `Global` itself now.
+            gkey =
+                TOpt.toComparableGlobal g
+        in
         List.foldl
             (\( i, f ) acc ->
                 if f.rep == i && not f.top && List.isEmpty f.members && List.isEmpty f.sources then
@@ -1639,7 +1665,7 @@ applyCalleeAt g funcFallbackType args meta s0 =
         srcType =
             sigSourceTypeFor g funcFallbackType s0
     in
-    if CoreDict.member gkey s0.lssInProgress then
+    if HashMap.member TOpt.globalHash (==) g s0.lssInProgress then
         -- Σ self/sibling reference within the in-flight unit: the annotation
         -- loads through the SHARED scratch memo, so its Points ARE the
         -- member's own signature slots — unifying against them is the
@@ -1652,11 +1678,41 @@ applyCalleeAt g funcFallbackType args meta s0 =
                         injectPapMemberInfer g (List.length args) callVar s2
 
     else
-        case instantiateWithSignature g srcType s0 of
-            (  funcVar, s1  ) ->
-                case unifyCallShape funcVar args meta s1 of
-                    (  callVar, s2  ) ->
-                        injectPapMemberInfer g (List.length args) callVar s2
+        -- The signature is forced FIRST, at exactly the point it was forced
+        -- before, so the memo and mint order do not move.
+        case signatureFor g s0 of
+            ( sig, s1 ) ->
+                if calleeInert sig args meta then
+                    -- Step 16 (D1). Nothing below this point could write or
+                    -- connect a set slot: the signature is trivial, so
+                    -- `applyFacts` returns immediately and never touches the
+                    -- isolated instantiation's slots; and with the call's own
+                    -- type and every argument type arrow-free, the per-argument
+                    -- unify has no arrow on either side to reach a `FunL`. The
+                    -- whole isolated instantiation plus its unifies is a fixed
+                    -- cost buying nothing.
+                    ( WpNone, Engine.bumpArgFlowCensus "callee|inert" s1 )
+
+                else
+                    case instantiateWithSig g sig srcType (Engine.bumpArgFlowCensus "callee|instantiated" s1) of
+                        ( funcVar, s2 ) ->
+                            case unifyCallShape funcVar args meta s2 of
+                                ( callVar, s3 ) ->
+                                    injectPapMemberInfer g (List.length args) callVar s3
+
+
+{-| Can this callee's instantiation reach a set slot at all?
+
+Trivial signature: `applyFacts` writes nothing. Arrow-free call type and
+arrow-free arguments: the per-argument unify has no `FunL` on either side, so
+no slot is connected and none is written.
+
+-}
+calleeInert : Engine.LssSignature -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Bool
+calleeInert sig args meta =
+    sig.trivial
+        && not (canTypeMentionsArrow meta.tipe)
+        && List.all (\a -> not (canTypeMentionsArrow (TOpt.typeOf a))) args
 
 
 {-| INJECTION COMPLETENESS, inference side (the twin of

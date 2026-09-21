@@ -224,6 +224,13 @@ HPtr Eco_Kernel_MVar_drop(uint64_t id);
 // dependency — see the linearity contract in Eco/CellStore.elm.
 //===----------------------------------------------------------------------===//
 
+// Mix `seed` over a string's UTF-16 code units, allocation-free. Same mix as
+// the Elm/JS twins, so all three agree bit for bit.
+int64_t Eco_Kernel_Hash_stringWithSeed(int64_t seed, HPtr str);
+
+// Full-width FNV-1a. For bucket keys only; see Hash.hpp.
+int64_t Eco_Kernel_Hash_string64(int64_t seed, HPtr str);
+
 // Create a store; `cap` is a capacity hint (<= 0 means default).
 int64_t Eco_Kernel_CellStore_new(int64_t cap);
 

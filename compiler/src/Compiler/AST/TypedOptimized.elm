@@ -92,6 +92,7 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.Vars as Vars
 import Data.Map
+import Eco.Hash
 import Data.Set exposing (EverySet)
 import Dict exposing (Dict)
 import Set exposing (Set)
@@ -330,12 +331,18 @@ globalHash : Global -> Int
 globalHash g =
     case g of
         Global (ModuleName.Canonical ( author, project ) modName) name ->
-            globalMixHash
+            -- WIDE. This value is only ever a `Data.HashMap` bucket key, and
+            -- that map keys its buckets in a `Dict Int` on the RAW hash — no
+            -- mask, no `modBy`, no `Bitwise` — so the full i64 range is legal
+            -- and the extra width simply shortens buckets. Nothing packs this
+            -- hash with another (contrast `Monomorphized.stringHash`, which
+            -- feeds `packHashes` and must stay inside `[0, 2^26)`).
+            Eco.Hash.string64
                 (globalMixHash
                     (globalMixHash (globalMixHash 21 (String.length author)) (String.length project))
                     (String.length modName)
                 )
-                (String.foldl (\c h -> globalMixHash h (Char.toCode c)) 23 name)
+                name
 
 
 globalMixHash : Int -> Int -> Int

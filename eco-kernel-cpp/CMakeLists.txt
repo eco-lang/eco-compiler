@@ -166,6 +166,17 @@ target_include_directories(EcoKernel_MVar PUBLIC
 )
 target_compile_features(EcoKernel_MVar PUBLIC cxx_std_20)
 
+# Hash module (allocation-free native string hashing for Elm-side hash tables)
+add_library(EcoKernel_Hash STATIC
+    src/eco/Hash.cpp
+    src/eco/HashExports.cpp
+)
+target_include_directories(EcoKernel_Hash PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${RUNTIME_INCLUDE_DIR}
+)
+target_compile_features(EcoKernel_Hash PUBLIC cxx_std_20)
+
 # CellStore module (off-heap mutable cell vectors with an undo trail)
 add_library(EcoKernel_CellStore STATIC
     src/eco/CellStore.cpp
@@ -265,6 +276,7 @@ target_link_libraries(EcoKernel INTERFACE
     EcoKernel_Process
     EcoKernel_MVar
     EcoKernel_CellStore
+    EcoKernel_Hash
     EcoKernel_NativeDriver
     EcoKernel_Runtime
     EcoKernel_Http
@@ -275,7 +287,7 @@ target_link_libraries(EcoKernel INTERFACE
 if(ECO_ASSERTS_ON)
     foreach(target
         EcoKernel_File EcoKernel_Console EcoKernel_Env
-        EcoKernel_Process EcoKernel_MVar EcoKernel_CellStore
+        EcoKernel_Process EcoKernel_MVar EcoKernel_CellStore EcoKernel_Hash
         EcoKernel_NativeDriver EcoKernel_Runtime
         EcoKernel_Http EcoKernel_Crash
     )

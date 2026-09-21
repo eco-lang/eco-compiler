@@ -181,6 +181,7 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation exposing (Region)
 import Data.HashMap as HashMap
+import Eco.Hash
 import Dict exposing (Dict)
 
 
@@ -799,7 +800,9 @@ globalHash g =
 
 stringHash : String -> Int
 stringHash s =
-    String.foldl (\c h -> mixHash h (Char.toCode c)) 23 s
+    -- Native, allocation-free, gc-leaf. The Elm fold this replaces cost one
+    -- generic closure dispatch per character; see `Eco.Hash`.
+    Eco.Hash.stringWithSeed 23 s
 
 
 {-| A map keyed by `SpecKey` — the specialization registry's key. Spec flavour

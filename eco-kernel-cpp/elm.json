@@ -10,6 +10,7 @@
         "Eco.Crash",
         "Eco.Env",
         "Eco.File",
+        "Eco.Hash",
         "Eco.Http",
         "Eco.Http.Error",
         "Eco.IO.Error",

@@ -1485,10 +1485,10 @@ renderLssReport sFinal (Mono.MonoGraph g) =
             Dict.size sFinal.lssMemberTable.byKey
 
         sigCount =
-            Dict.size sFinal.lssSignatures
+            HashMap.size sFinal.lssSignatures
 
         trivialCount =
-            Dict.foldl
+            HashMap.foldl
                 (\_ sig n ->
                     if sig.trivial then
                         n + 1
@@ -3185,7 +3185,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                                                     )
                                                     acc.perG
                                         in
-                                        case Dict.get (TOpt.toComparableGlobal (TOpt.Global sfHome sfName)) sFinal.lssSignatures of
+                                        case HashMap.get TOpt.globalHash (==) (TOpt.Global sfHome sfName) sFinal.lssSignatures of
                                             Nothing ->
                                                 { acc | cells = bump "noSig" nvar acc.cells, perG = perG }
 
@@ -3278,9 +3278,9 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                                     -- the FIRST key ending ".name" (TOpt
                                     -- comparable format).
                                     sigDesc =
-                                        Dict.foldl
-                                            (\k sig found ->
-                                                if found == "" && String.endsWith ("." ++ gn) k then
+                                        HashMap.foldl
+                                            (\kg sig found ->
+                                                if found == "" && String.endsWith ("." ++ gn) (TOpt.toComparableGlobal kg) then
                                                     (if sig.trivial then
                                                         "triv"
 
@@ -3917,8 +3917,8 @@ initState lssConfig limits currentModule nodes annotations globalTypeEnv mvarSta
     , lambdaCounter = 0
     , superTable = mvarState.superVars
     , nextMVarId = mvarState.nextId
-    , lssSignatures = Dict.empty
-    , lssInProgress = Dict.empty
+    , lssSignatures = HashMap.empty
+    , lssInProgress = HashMap.empty
     , lssMemberTable = Engine.emptyMemberTable
     , nextMemberId = Id.toComparable mvarState.nextLam
     , lssStats = Engine.emptyLssStats

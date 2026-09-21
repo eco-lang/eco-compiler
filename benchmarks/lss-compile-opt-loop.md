@@ -1408,6 +1408,49 @@ nearest in-time measurement of the reference `eco-opt10ei` is 232.29 / 232.47 fr
 night, about +3 s below this, which agrees in sign with the six-pair +5.63 s and is the only
 comparison this triple licenses. Gates other than the fixed point are still owed.
 
+### 16a (re-measure) — inert-callee instantiation skip (D1) + trivial-signature load (D8) — **WIN, kept**
+
+| run | wall (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|
+| t1 | 233.75 | 1112 | 10 | 17404 | 10,384,340 | 13,225,156 | same |
+| t2 | 237.27 | 1112 | 10 | 17404 | 10,384,456 | 13,225,156 | same |
+| t3 | 238.52 | 1112 | 10 | 17404 | 10,387,632 | 13,225,156 | same |
+| **median** | **237.27** | **1112** | **10** | **17404** | **10,384,340** | 13,225,156 | same |
+| **average** | **236.51** | — | — | — | — | — | — |
+| D vs step 10 | **+1.82** | **-6** | 0 | **-78** | **-31,516** | +875 | — |
+
+Re-applied on the step-10 tree; the original was written against `keep-22a`, which step 10 then
+rewrote into direct state-passing, so the logic transferred rather than the patch.
+`instantiateWithSig` splits out so a caller holding the signature does not fetch it twice, and a
+TRIVIAL signature takes `loadTypeIsolated` — the arrow-ordinal `Array` exists only to be indexed
+by facts, and a trivial signature has none. `calleeInert` skips the whole isolated instantiation
+when the signature is trivial and the call type and every argument type are arrow-free. Wall rose
+1.82 s on a 4.77 s spread, so flat by this instrument, while all three deterministic counters
+improved — the reverse of the original run, where they had all moved the wrong way. **Kept by
+explicit decision**: wall is within noise and the counters carry it. Fixed point holds, three runs
+byte-identical.
+
+### 12s (re-measure, with `Eco.Hash`) — `lssSignatures`/`lssInProgress` keyed by `Global` — **WIN, kept**
+
+| run | wall (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|
+| t1 | 234.76 | 1113 | 10 | 17600 | 10,398,400 | 13,241,282 | same |
+| t2 | 233.10 | 1113 | 10 | 17600 | 10,398,704 | 13,241,282 | same |
+| t3 | 239.60 | 1113 | 10 | 17600 | 10,404,604 | 13,241,282 | same |
+| **median** | **234.76** | **1113** | **10** | **17600** | **10,398,400** | 13,241,282 | same |
+| **average** | **235.82** | — | — | — | — | — | — |
+| D vs 16a | **-2.51** | +1 | 0 | +196 | +14,060 | +16,126 | — |
+
+**This row bundles two changes**, because the second was built to make the first viable. `Eco.Hash`
+is a new kernel module: an allocation-free native string hash, gc-leaf, replacing an Elm
+`String.foldl` that snapshotted the string into a C++ vector and then performed one GENERIC
+CLOSURE DISPATCH per character with the accumulator boxed each time. That is why 12s lost the
+first time, and why entries 27 and 24(iii)+(iv) lost the same way. 12s itself then keys
+`lssSignatures`/`lssInProgress` on the `Global` instead of a built 25-50 character string.
+Wall -2.51 s by median (-0.69 by mean) against a 6.50 s spread; minor GC flat, promoted +196 MiB
+and RSS +14 MB — a wider hash makes more distinct `Dict Int` bucket keys, so the bucket tree
+retains more. Wall is primary: WIN. Fixed point holds, three runs byte-identical.
+
 ## 7. Findings
 
 What the series learned, separated from the per-step records above so the entries can stay
@@ -1731,3 +1774,5 @@ mechanism paid and which did not.
 | 25 | 265.28 | +0.39 | 1241 | 10 | 19982 | 11479276 | WIN (kept) | 24(ii) |
 | 26a | 271.61 | +6.33 | 1248 | 10 | 19951 | 11529312 | LOSS (reverted) | 25 |
 | 10 | 237.17 | -28.11 | 1118 | 10 | 17482 | 10415980 | WIN (kept) | 25 |
+| 16a (re-measure) | 237.27 | +1.82 | 1112 | 10 | 17404 | 10384340 | WIN (kept) | 10 |
+| 12s (re-measure, + Eco.Hash) | 234.76 | -2.51 | 1113 | 10 | 17600 | 10398400 | WIN (kept) | 16a (re-measure) |
