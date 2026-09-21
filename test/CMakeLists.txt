@@ -152,11 +152,13 @@ if(APPLE)
         -Wl,-force_load,$<TARGET_FILE:EcoRunner>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_MVar>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_CellStore>
+        -Wl,-force_load,$<TARGET_FILE:EcoKernel_Hash>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_Runtime>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_Http>
         EcoRunner
         EcoKernel_MVar
         EcoKernel_CellStore
+        EcoKernel_Hash
         EcoKernel_Runtime
         EcoKernel_Http
     )
@@ -169,6 +171,7 @@ elseif(WIN32)
         EcoRunner
         EcoKernel_MVar
         EcoKernel_CellStore
+        EcoKernel_Hash
         EcoKernel_Runtime
         EcoKernel_Http
     )
@@ -176,6 +179,7 @@ elseif(WIN32)
         /WHOLEARCHIVE:$<TARGET_FILE:EcoRunner>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_MVar>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_CellStore>
+        /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Hash>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Runtime>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Http>
     )
@@ -185,6 +189,7 @@ else()
             EcoRunner
             EcoKernel_MVar
             EcoKernel_CellStore
+            EcoKernel_Hash
             EcoKernel_Runtime
             EcoKernel_Http
         -Wl,--no-whole-archive
@@ -213,10 +218,12 @@ if(APPLE)
         -Wl,-force_load,$<TARGET_FILE:EcoRunner>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_MVar>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_CellStore>
+        -Wl,-force_load,$<TARGET_FILE:EcoKernel_Hash>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_Runtime>
         EcoRunner
         EcoKernel_MVar
         EcoKernel_CellStore
+        EcoKernel_Hash
         EcoKernel_Runtime
     )
 else()
@@ -225,6 +232,7 @@ else()
             EcoRunner
             EcoKernel_MVar
             EcoKernel_CellStore
+            EcoKernel_Hash
             EcoKernel_Runtime
         -Wl,--no-whole-archive
     )
