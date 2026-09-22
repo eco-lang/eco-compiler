@@ -190,7 +190,7 @@ static void test_eco_alloc_closure_metadata() {
         // Use a dummy function pointer
         void* func_ptr = reinterpret_cast<void*>(0x12345678);
 
-        auto hptr = eco_alloc_closure(func_ptr, num_captures);
+        auto hptr = eco_alloc_closure_fn(func_ptr, num_captures, /*result_kind=*/0);
         RC_ASSERT(hptr.toBits() != 0);
 
         void* obj = hptrToRaw(hptr.toBits());
@@ -200,7 +200,15 @@ static void test_eco_alloc_closure_metadata() {
         RC_ASSERT(closure->header.tag == Tag_Closure);
         RC_ASSERT(closure->n_values == 0);  // Initially no captured values
         RC_ASSERT(closure->max_values == num_captures);
-        RC_ASSERT(closure->evaluator == reinterpret_cast<EvalFunction>(func_ptr));
+        // Phase 2 (plans/gc-root-registration-cost.md): the evaluator slot holds
+        // an EvaluatorDesc, not a code pointer. `eco_alloc_closure_fn` interns
+        // one per (fn, arity, result_kind), so the descriptor must report back
+        // exactly the function and stage arity it was asked for.
+        RC_ASSERT(closure->evaluator != nullptr);
+        RC_ASSERT(reinterpret_cast<uintptr_t>(closure->evaluator->generic) ==
+                  reinterpret_cast<uintptr_t>(func_ptr));
+        RC_ASSERT(static_cast<uint32_t>(closure->evaluator->stage_arity) ==
+                  num_captures);
     });
 }
 
@@ -322,7 +330,7 @@ static void test_eco_store_field_closure() {
         auto value_hptr = eco_alloc_int(inner_val);
         RC_ASSERT(value_hptr.toBits() != 0);
 
-        auto hptr = eco_alloc_closure(nullptr, num_captures);
+        auto hptr = eco_alloc_closure_fn(nullptr, num_captures, /*result_kind=*/0);
         RC_ASSERT(hptr.toBits() != 0);
 
         eco_store_field(hptr, index, value_hptr);
@@ -402,7 +410,7 @@ static void test_eco_get_header_tag() {
         auto stringHptr = eco_alloc_string(10);
         RC_ASSERT(eco_get_header_tag(stringHptr) == Tag_String);
 
-        auto closureHptr = eco_alloc_closure(nullptr, 3);
+        auto closureHptr = eco_alloc_closure_fn(nullptr, 3, /*result_kind=*/0);
         RC_ASSERT(eco_get_header_tag(closureHptr) == Tag_Closure);
     });
 }

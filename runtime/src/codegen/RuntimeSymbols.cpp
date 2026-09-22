@@ -71,6 +71,10 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_closure),
                 llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_apply_segmentation_unknown")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_apply_segmentation_unknown),
+                llvm::JITSymbolFlags::Exported);
         symbolMap[interner("eco_alloc_closure_k")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_closure_k),
@@ -361,10 +365,6 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         symbolMap[interner("eco_closure_call_saturated_eval")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_closure_call_saturated_eval),
-                llvm::JITSymbolFlags::Exported);
-        symbolMap[interner("eco_apply_segmentation_unknown")] =
-            llvm::orc::ExecutorSymbolDef(
-                llvm::orc::ExecutorAddr::fromPtr(&eco_apply_segmentation_unknown),
                 llvm::JITSymbolFlags::Exported);
 
         // Runtime utilities.

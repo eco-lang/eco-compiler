@@ -103,8 +103,8 @@ static void test_generic_apply_boxes_captured_unboxed_int_equal() {
     reset_tracking();
 
     // Step 1: Create a closure for (==) with arity 2, no captures.
-    HPtr eq_closure = eco_alloc_closure(
-        reinterpret_cast<void*>(&mock_eq_evaluator), 2);
+    HPtr eq_closure = eco_alloc_closure_fn(
+        reinterpret_cast<void*>(&mock_eq_evaluator), 2, /*result_kind=*/0);
     TEST_ASSERT(eq_closure.toBits() != 0);
     declareSlotKinds(eq_closure, /*slot0=Int, slot1=boxed*/ 1);
 
@@ -148,8 +148,8 @@ static void test_generic_apply_boxes_captured_unboxed_int_not_equal() {
     initAllocator();
     reset_tracking();
 
-    HPtr eq_closure = eco_alloc_closure(
-        reinterpret_cast<void*>(&mock_eq_evaluator), 2);
+    HPtr eq_closure = eco_alloc_closure_fn(
+        reinterpret_cast<void*>(&mock_eq_evaluator), 2, /*result_kind=*/0);
 
     declareSlotKinds(eq_closure, /*slot0=Int, slot1=boxed*/ 1);
 
@@ -195,8 +195,8 @@ static void test_generic_apply_with_real_kernel_equal() {
     initAllocator();
 
     // Create (==) closure, capture unboxed 42, then apply boxed 42.
-    HPtr eq_closure = eco_alloc_closure(
-        reinterpret_cast<void*>(&real_eq_evaluator_asymmetric), 2);
+    HPtr eq_closure = eco_alloc_closure_fn(
+        reinterpret_cast<void*>(&real_eq_evaluator_asymmetric), 2, /*result_kind=*/0);
     declareSlotKinds(eq_closure, /*slot0=Int, slot1=boxed*/ 1);
 
     uint64_t raw_42 = static_cast<uint64_t>(42);
@@ -226,8 +226,8 @@ static void test_generic_apply_with_real_kernel_equal() {
 static void test_generic_apply_both_args_boxed_at_callsite() {
     initAllocator();
 
-    HPtr eq_closure = eco_alloc_closure(
-        reinterpret_cast<void*>(&real_eq_evaluator_all_boxed), 2);
+    HPtr eq_closure = eco_alloc_closure_fn(
+        reinterpret_cast<void*>(&real_eq_evaluator_all_boxed), 2, /*result_kind=*/0);
 
     // Both args boxed by caller (as lowerGenericApply does).
     uint64_t boxed_10 = eco_alloc_int(10).toBits();

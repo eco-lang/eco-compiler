@@ -33,6 +33,11 @@ module {
 }
 
 // Wrapper exists, returns i16 natively (suffix `_rc` = PK_Char).
+// Phase 2 (plans/gc-root-registration-cost.md): the closure header carries
+// the per-evaluator DESCRIPTOR, not the wrapper address. The descriptor is a
+// static constant whose first field IS the wrapper, so the registration below
+// still pins this wrapper to this closure, through one more indirection.
+// CHECK: @__eco_evaldesc___closure_wrapper_typed_upper_char_rc = internal constant {{.*}} ptr @__closure_wrapper_typed_upper_char_rc
 // CHECK: define internal i16 @__closure_wrapper_typed_upper_char_rc
 // CHECK: ret i16
 
@@ -42,4 +47,9 @@ module {
 // CHECK-NOT: @eco_alloc_char
 
 // eco_intern_closure0 (HEAP_033) registers the wrapper; K = 3 (PK_Char) rides in the packed word (and the _rc suffix).
-// CHECK: ptr @__closure_wrapper_typed_upper_char_rc, i32 1, i64
+// Phase 2 (plans/gc-root-registration-cost.md): the closure header now
+// carries the per-evaluator DESCRIPTOR, not the wrapper address. The
+// descriptor is a static constant whose first field IS the wrapper, so the
+// registration below still pins the wrapper to this closure — through one
+// more level of indirection.
+// CHECK: ptr @__eco_evaldesc___closure_wrapper_typed_upper_char_rc, i32 1, i64

@@ -1498,6 +1498,101 @@ shape as entries 14, 16a and 24(i): **the test, or the call, has to be cheaper t
 replaces.** The avalanche question is therefore still OPEN and this entry does not answer it —
 a fair test needs `mix` inlined as an MLIR op, not called.
 
+### gc-p1 — TLS shadow root stack: `eco_gc_push/point/restore` inlined at every call site — **NO WIN, reverted**
+
+| run | wall (s) | minor GC | major GC | promoted MiB | max RSS (kB) | GC time (s) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|
+| r1 | 233.30 | 1113 | 10 | 17633 | 10,523,820 | 112.98 | 13,241,185 | same |
+| r2 | 237.62 | 1113 | 10 | 17633 | 10,523,748 | 114.62 | 13,241,185 | same |
+| r3 | 235.60 | 1113 | 10 | 17633 | 10,525,404 | 114.17 | 13,241,185 | same |
+| **median** | **235.60** | **1113** | **10** | **17633** | **10,523,820** | **114.17** | 13,241,185 | same |
+| **average** | **235.51** | — | — | — | — | — | — | — |
+| D vs ghash | **+1.20** (mean **+1.84**) | 0 | 0 | 0 | +17,116 | +1.54 | 0 | — |
+
+| symbol (perf, reference binary, cold Stage 7a) | cycles self% | instr self% | plan's figure |
+|---|---|---|---|
+| `eco_gc_push_stack_range` | 1.32 | 1.83 | 14.53 |
+| `eco_gc_restore_stack_range_point` | 0.09 | 0.19 | 1.28 |
+| `eco_gc_stack_range_point` | 0.04 | 0.11 | 0.87 |
+| **triplet** | **1.45** | **2.13** | **16.68** |
+
+`plans/gc-root-registration-cost.md` Phase 1: `RootSet::stack_root_ranges` (a `std::vector` behind
+`tl_heap_ -> nursery_ -> root_set` and an out-of-line call) became three initial-exec TLS cursors,
+and `EcoBackend::expandRootRangeOps` rewrites the generated calls into inline `%fs`-relative
+traffic. It did exactly what it was built to do — **11,738 push call sites became 3**, point
+11,740 -> 2, restore 11,226 -> 4, binary -546 kB, E2E 1731/1731, GC counters identical TO THE
+DIGIT and `out.mlir` byte-identical to `ecoghash.mlir` — and wall did not move. **The plan's
+premise was already stale when it was written**: its 16.68 % came from `borrow-inf-census.md:157`,
+measured before this series, and the same profile on the reference binary now reads **1.45 %** of
+cycles, because steps 3/10/24 removed most of the closure-dispatch entries the triplet brackets.
+Instructions 2.13 % vs cycles 1.45 % says the body is well-pipelined, not stall-bound, so there
+was nothing for inlining to recover. Same shape as step 14 and `inline-bump-state-tls`: **a large
+call count is not a large cost.** Reverted at the time — then RESTORED and folded into the `gc-all` row below, which measures
+the whole plan as one unit, as the plan intends.
+
+### gc-all — the whole `gc-root-registration-cost` plan, Phases 1-4 as one unit — **FLAT; WIN only on RSS**
+
+| run | wall (s) | minor GC | major GC | promoted MiB | max RSS (kB) | GC time (s) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|
+| r1 | 235.80 | 1113 | 10 | 17634 | 10,459,624 | 115.76 | 13,241,185 | same |
+| r2 | 237.30 | 1113 | 10 | 17634 | 10,451,604 | 117.24 | 13,241,185 | same |
+| r3 | 234.14 | 1113 | 10 | 17634 | 10,451,360 | 115.36 | 13,241,185 | same |
+| **median** | **235.80** | **1113** | **10** | **17634** | **10,451,604** | **115.76** | 13,241,185 | same |
+| **average** | **235.75** | — | — | — | — | — | — | — |
+| D vs ghash | **+1.40** (mean **+2.08**) | 0 | 0 | +1 | **-55,100** | +3.13 | 0 | — |
+
+| perf, cycles self% (cold Stage 7a) | before | after | delta |
+|---|---|---|---|
+| root-range triplet (`push`/`point`/`restore`) | 1.45 | **0.00** | **-1.45** |
+| `eco_apply_closure_eval` | 2.12 | 0.86 | -1.26 |
+| `invokeSaturatedTyped` | 1.45 | 0.86 | -0.59 |
+| `spliceArgsForSaturatedCall` | 0.53 | 0.70 | +0.17 |
+| `Elm::Allocator::resolve` | 5.16 | 5.81 | **+0.65** |
+| `NurserySpace::evacuate` | 11.34 | 11.60 | +0.26 |
+
+All four phases, measured together: TLS shadow root stack + single-slot stack (P1),
+`EvaluatorDesc` indirection (P2), `$sat` entries + fast-path diamond (P3), dead `_dispatch_mode`
+path deleted (P4). Gates: E2E **1731/1731**, three runs byte-deterministic, self-compile output
+**byte-identical to `ecoghash.mlir`**. **The mechanisms all work**: the root-range triplet is gone
+from the profile entirely, 8,001 diamonds compiled in, and the apply/splice family falls 4.10 % ->
+2.42 %. **The costs cancel them.** Every slow dispatch now pays the guard, `Allocator::resolve`
+rises 0.65 pts because the diamond must resolve the closure on BOTH edges (plan §5.3's "the
+resolve is not extra" is false for the generic path, which otherwise hands the HPtr to the runtime
+unresolved), and 31,351 `$sat` entries add **+15.5 MB** of text. ~3.1 pts of cycles were removed
+from the named symbols and the wall did not move. RSS is the one real improvement: -55 MB, with
+the two triples' ranges fully disjoint, so it is separation and not the usual RSS noise.
+
+### gc-all2 — same plan, `$sat` population filtered by reachability + the newarg-count fix — **WIN, -4.85 s**
+
+| run | wall (s) | minor GC | major GC | promoted MiB | max RSS (kB) | GC time (s) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|
+| r1 | 229.55 | 1108 | 10 | 17599 | 10,438,980 | 114.82 | 13,241,185 | same |
+| r2 | 230.18 | 1108 | 10 | 17599 | 10,437,876 | 115.14 | 13,241,185 | same |
+| r3 | 228.01 | 1108 | 10 | 17599 | 10,435,260 | 114.28 | 13,241,185 | same |
+| **median** | **229.55** | **1108** | **10** | **17599** | **10,437,876** | **114.82** | 13,241,185 | same |
+| **average** | **229.25** | — | — | — | — | — | — | — |
+| D vs ghash | **-4.85** (mean **-4.42**) | **-5** | 0 | **-34** | **-68,828** | +2.19 | 0 | — |
+| D vs gc-all | **-6.25** | -5 | 0 | -35 | -13,728 | -0.94 | 0 | — |
+
+| | gc-all | gc-all2 |
+|---|---|---|
+| `$sat` entries | 31,351 | **25,316** |
+| diamonds (fast edges compiled in) | 8,001 | **11,501** |
+| binary | 90.01 MB | 88.18 MB |
+
+Two changes over `gc-all`. **(1) A reachability filter on `$sat` generation.** The diamond's
+`%c1` fixes the applied count at `P - N`, so `%c3`'s kind comparison is the STATICALLY KNOWN
+`(D.kinds >> 2*(P-N)) & mask`; an entry is therefore reachable only from a site whose full
+`(N, KC, RC)` signature matches exactly, and `n_values` starts at the smallest `num_captured`
+the target is created with, bounding `N <= P - minC0`. **(2) The bug that filter exposed**:
+`papExtend`'s operands are `[closure, newargs..., roots...]` and `getNewargs()` returns the tail
+INCLUDING roots, so every site's N was inflated by its root count — no `n=1` sites at all and a
+spurious peak at `n=5`. That is why `gc-all` compiled only 8,001 fast edges; the real
+distribution is n=1:8,910, n=2:15,367. Coverage +44 %, entries -19 %. Gates: E2E 1731/1731,
+byte-deterministic, output byte-identical. **The two triples' wall ranges are fully disjoint**
+([228.01, 230.18] vs [231.43, 235.17]) and minor GC and promoted — exact per (binary x tree) —
+both move down, so this is a real win, not spread.
+
 ## 7. Findings
 
 What the series learned, separated from the per-step records above so the entries can stay
@@ -1825,3 +1920,6 @@ mechanism paid and which did not.
 | 12s (re-measure, + Eco.Hash) | 234.76 | -2.51 | 1113 | 10 | 17600 | 10398400 | WIN (kept) | 16a (re-measure) |
 | ghash (aliasKeyOf + groundHash) | 234.40 | -0.36 | 1113 | 10 | 17633 | 10506704 | WIN (kept) | 12s (re-measure) |
 | ghash63 (63-bit mix + names) | 239.13 | +4.73 | 1113 | 10 | 17633 | 10394976 | LOSS (reverted) | ghash |
+| gc-p1 (TLS shadow root stack) | 235.60 | +1.20 | 1113 | 10 | 17633 | 10523820 | NO WIN (folded into gc-all) | ghash |
+| gc-all (Phases 1-4 as one unit) | 235.80 | +1.40 | 1113 | 10 | 17634 | 10451604 | FLAT, RSS-only WIN | ghash |
+| gc-all2 (+ $sat reachability filter, newarg fix) | 229.55 | -4.85 | 1108 | 10 | 17599 | 10437876 | WIN | ghash |

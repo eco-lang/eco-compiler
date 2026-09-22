@@ -210,7 +210,7 @@ static void test_string_length_all_forms() {
 // so the closure is invoked 4 times (Elm's code-point fold would invoke it 3).
 static void test_string_foldl_astral_count() {
     initAllocator();
-    HPtr closure = eco_alloc_closure(reinterpret_cast<void*>(&countFoldEvaluator), 2);
+    HPtr closure = eco_alloc_closure_fn(reinterpret_cast<void*>(&countFoldEvaluator), 2, /*result_kind=*/0);
     HPtr acc0 = eco_alloc_int(0);
     std::u16string s;
     s.push_back(u'a');

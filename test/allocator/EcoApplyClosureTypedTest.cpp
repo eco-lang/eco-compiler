@@ -121,8 +121,8 @@ static void test_eco_apply_closure_typed_mixed_kinds() {
 
     // 4-arg closure, no captures.
     g_record.n_args = 4;
-    HPtr closure = eco_alloc_closure(
-        reinterpret_cast<void*>(&mock_recording_evaluator), 4);
+    HPtr closure = eco_alloc_closure_fn(
+        reinterpret_cast<void*>(&mock_recording_evaluator), 4, /*result_kind=*/0);
     TEST_ASSERT(closure.toBits() != 0);
 
     // Pre-allocate the boxed input that backs slot 3 (PK_Boxed).
@@ -176,8 +176,8 @@ static void test_eco_apply_closure_typed_null_layout_treats_all_as_boxed() {
     resetRecord();
 
     g_record.n_args = 2;
-    HPtr closure = eco_alloc_closure(
-        reinterpret_cast<void*>(&mock_recording_evaluator), 2);
+    HPtr closure = eco_alloc_closure_fn(
+        reinterpret_cast<void*>(&mock_recording_evaluator), 2, /*result_kind=*/0);
 
     uint64_t a = eco_alloc_int(7).toBits();
     uint64_t b = eco_alloc_int(11).toBits();
@@ -207,8 +207,8 @@ static void test_eco_apply_closure_typed_zero_args() {
     // Build a 0-arg closure to satisfy max_values check on the apply path.
     // (This evaluator is never invoked for true 0-arg apply, but
     // eco_apply_closure handles num_args=0 by returning the closure as-is.)
-    HPtr closure = eco_alloc_closure(
-        reinterpret_cast<void*>(&mock_recording_evaluator), 1);
+    HPtr closure = eco_alloc_closure_fn(
+        reinterpret_cast<void*>(&mock_recording_evaluator), 1, /*result_kind=*/0);
 
     HPtr result = eco_apply_closure_typed(closure, nullptr, 0, /*args_layout=*/nullptr);
     // We do not assert on result content here — the contract for num_args=0
@@ -229,8 +229,8 @@ static void test_eco_apply_segmentation_unknown_saturated_typed() {
     resetRecord();
 
     g_record.n_args = 2;
-    HPtr closure = eco_alloc_closure(
-        reinterpret_cast<void*>(&mock_recording_evaluator), 2);
+    HPtr closure = eco_alloc_closure_fn(
+        reinterpret_cast<void*>(&mock_recording_evaluator), 2, /*result_kind=*/0);
 
     // Saturate with one Int and one Float at once (no captures, max=2).
     int64_t typed_args[2];
@@ -302,8 +302,8 @@ static void test_typed_newargs_skips_reboxing() {
     resetTypedRecord();
 
     // Allocate a 3-arg closure for the typed evaluator.
-    HPtr closure_hptr = eco_alloc_closure(
-        reinterpret_cast<void*>(&mock_typed_evaluator), 3);
+    HPtr closure_hptr = eco_alloc_closure_fn(
+        reinterpret_cast<void*>(&mock_typed_evaluator), 3, /*result_kind=*/0);
     TEST_ASSERT(closure_hptr.toBits() != 0);
 
     // Phase F semantics: the closure header records per-slot kinds in
@@ -365,8 +365,8 @@ static void test_legacy_path_still_reboxes() {
     resetRecord();
 
     g_record.n_args = 3;
-    HPtr closure_hptr = eco_alloc_closure(
-        reinterpret_cast<void*>(&mock_recording_evaluator), 3);
+    HPtr closure_hptr = eco_alloc_closure_fn(
+        reinterpret_cast<void*>(&mock_recording_evaluator), 3, /*result_kind=*/0);
 
     int64_t typed_args[3];
     typed_args[0] = 7;

@@ -602,12 +602,6 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateApplyClosureEval(OpBuilder &builder) con
     return getOrCreateFunc(builder, "eco_apply_closure_eval", funcTy);
 }
 
-LLVM::LLVMFuncOp EcoRuntime::getOrCreateApplySegmentationUnknown(OpBuilder &builder) const {
-    // eco_apply_segmentation_unknown(closure: hptr, typed_args: ptr, num_args: i32,
-    //                                args_layout: ptr) -> hptr
-    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, PTR_TY, I32_TY, PTR_TY});
-    return getOrCreateFunc(builder, "eco_apply_segmentation_unknown", funcTy);
-}
 
 //===----------------------------------------------------------------------===//
 // Utility Functions
@@ -865,6 +859,31 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateGcPushStackRange(OpBuilder &builder) con
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateGcRestoreStackRangePoint(OpBuilder &builder) const {
     auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {I64_TY});
     return getOrCreateFunc(builder, "eco_gc_restore_stack_range_point", funcTy, /*gcLeaf=*/true);
+}
+
+// plans/gc-root-registration-cost.md Phase 3. Marker pair bracketing the
+// generic (slow) apply sequence at an array-building call site; EcoBackend's
+// `expandSatMarkers` rewrites the pair into the fast/slow diamond at LLVM-IR
+// level, where block structure is free. It MUST be done there and not here:
+// a papExtend can sit inside a single-block `scf` region (loopified tail
+// recursion — `List.foldl`'s own loop is one), and this conversion runs before
+// SCFToControlFlow, so the lowering cannot create blocks around it. Same
+// reason `__eco_get_tag_inline` and the chunked-list projections are markers.
+//
+// Both are variadic so ONE declaration covers every call shape:
+//   __eco_sat_begin(cloResolved: ptr as1, N, KC, RC, satByteOff: i64, ...newargs)
+//   __eco_sat_end(tok: ptr, slowResult: <R>)
+// gc-leaf: they are erased before RS4GC and must never become statepoints.
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateSatBeginMarker(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(
+        PTR_TY, {HPTR_TY, I64_TY, I64_TY, I64_TY, I64_TY}, /*isVarArg=*/true);
+    return getOrCreateFunc(builder, "__eco_sat_begin", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateSatEndMarker(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {PTR_TY},
+                                              /*isVarArg=*/true);
+    return getOrCreateFunc(builder, "__eco_sat_end", funcTy, /*gcLeaf=*/true);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateRegisterTypeGraph(OpBuilder &builder) const {
@@ -1297,7 +1316,6 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreatePapExtend(b); getOrCreateClosureCallSaturated(b);
     getOrCreateClosureCallSaturatedEval(b); getOrCreateApplyClosure(b);
     getOrCreateApplyClosureTyped(b); getOrCreateApplyClosureEval(b);
-    getOrCreateApplySegmentationUnknown(b);
     getOrCreateResolveHPtr(b); getOrCreateGetTag(b);
     getOrCreateResolveFwdMarker(b); getOrCreateFollowForward(b);
     getOrCreateGetTagInlineMarker(b);
@@ -1316,6 +1334,7 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateArrayGetI64(b); getOrCreateArrayGetF64(b); getOrCreateArrayGetI16(b);
     getOrCreateCrash(b); getOrCreateGcAddRoot(b); getOrCreateGcStackRangePoint(b);
     getOrCreateGcPushStackRange(b); getOrCreateGcRestoreStackRangePoint(b);
+    getOrCreateSatBeginMarker(b); getOrCreateSatEndMarker(b);
     getOrCreateRegisterTypeGraph(b); getOrCreateDispatchStatsFast(b);
     getOrCreateSlotToHPtr(b); getOrCreateHPtrToSlot(b);
     getOrCreateIntPow(b); getOrCreateUtilsEqual(b);

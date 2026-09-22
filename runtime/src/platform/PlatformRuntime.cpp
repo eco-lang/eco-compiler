@@ -796,12 +796,12 @@ HPointer PlatformRuntime::initWorker(HPointer impl) {
     // at the previous from-space (now to-space) of the nursery.
     uint64_t impl_bits = encodeHP(impl);
     uint64_t flags_bits = encodeHP(flags);
-    size_t saved_range = eco_gc_stack_range_point();
-    eco_gc_push_stack_range(&impl_bits, 1, 1);
-    eco_gc_push_stack_range(&flags_bits, 1, 1);
+    Elm::EcoRootMark saved_range = Elm::ecoRootMark();
+    Elm::ecoRoot1Push(reinterpret_cast<Elm::HPointer*>(&impl_bits));
+    Elm::ecoRoot1Push(reinterpret_cast<Elm::HPointer*>(&flags_bits));
 
     void* implPtr = resolveHP(impl);
-    if (!implPtr) { eco_gc_restore_stack_range_point(saved_range); return emptyRecord(); }
+    if (!implPtr) { Elm::ecoRootRelease(saved_range); return emptyRecord(); }
     Record* implRec = static_cast<Record*>(implPtr);
 
     // impl fields in canonical order: init=0, subscriptions=1, update=2
@@ -812,7 +812,7 @@ HPointer PlatformRuntime::initWorker(HPointer impl) {
     // Re-read impl from the rooted slot (callClosure1 may have moved it).
     impl  = decodeHP(impl_bits);
     flags = decodeHP(flags_bits);
-    eco_gc_restore_stack_range_point(saved_range);
+    Elm::ecoRootRelease(saved_range);
 
     // Re-resolve impl after closure call
     implPtr = resolveHP(impl);

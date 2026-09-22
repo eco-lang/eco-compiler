@@ -85,6 +85,18 @@ namespace StringOps {
 bool tryMakeAsciiString(const char* data, size_t len, HPointer* out);
 }
 
+// Descriptor for a C++-kernel evaluator (plans/gc-root-registration-cost.md
+// Phase 2, risk R6). Compiled code gets its `EvaluatorDesc` emitted as a static
+// global beside the wrapper, but a kernel that builds a closure has only a
+// function pointer, so the runtime interns one descriptor per
+// (fn, stage_arity, result_kind) for the life of the process. Kernel evaluators
+// use the all-boxed `void*[]` convention, so `kinds` is 0 and every `sat[]` slot
+// is null — such a closure fails the fast-path guard closed and takes exactly
+// the path it takes today. Defined in RuntimeExports.cpp.
+const EvaluatorDesc* ecoDescForKernelEvaluator(EvalFunction fn,
+                                               unsigned stage_arity,
+                                               unsigned char result_kind);
+
 // ============================================================================
 // GC Stack Root Guard (RAII)
 // ============================================================================
@@ -110,49 +122,44 @@ bool tryMakeAsciiString(const char* data, size_t len, HPointer* out);
 //   }
 class StackRootGuard {
 public:
-    // Each pointer is registered as a 1-element stack root range.
-    StackRootGuard(HPointer* a) {
-        auto& rs = Allocator::instance().getRootSet();
-        savedPoint_ = rs.stackRangePoint();
-        rs.pushStackRootRange(a, 1, 1);
+    // Each pointer becomes one 8-byte entry on the single-slot shadow stack
+    // (plans/gc-root-registration-cost.md §3.3) — it used to be a 24-byte
+    // one-element RANGE each, so the four-pointer form wrote 96 bytes to say
+    // "four pointers". Both cursors are saved because a guarded scope may also
+    // push real ranges (a kernel that builds an args buffer inside one).
+    StackRootGuard(HPointer* a) : saved_(ecoRootMark()) {
+        ecoRoot1Push(a);
     }
-    StackRootGuard(HPointer* a, HPointer* b) {
-        auto& rs = Allocator::instance().getRootSet();
-        savedPoint_ = rs.stackRangePoint();
-        rs.pushStackRootRange(a, 1, 1);
-        rs.pushStackRootRange(b, 1, 1);
+    StackRootGuard(HPointer* a, HPointer* b) : saved_(ecoRootMark()) {
+        ecoRoot1Push(a);
+        ecoRoot1Push(b);
     }
-    StackRootGuard(HPointer* a, HPointer* b, HPointer* c) {
-        auto& rs = Allocator::instance().getRootSet();
-        savedPoint_ = rs.stackRangePoint();
-        rs.pushStackRootRange(a, 1, 1);
-        rs.pushStackRootRange(b, 1, 1);
-        rs.pushStackRootRange(c, 1, 1);
+    StackRootGuard(HPointer* a, HPointer* b, HPointer* c) : saved_(ecoRootMark()) {
+        ecoRoot1Push(a);
+        ecoRoot1Push(b);
+        ecoRoot1Push(c);
     }
-    StackRootGuard(HPointer* a, HPointer* b, HPointer* c, HPointer* d) {
-        auto& rs = Allocator::instance().getRootSet();
-        savedPoint_ = rs.stackRangePoint();
-        rs.pushStackRootRange(a, 1, 1);
-        rs.pushStackRootRange(b, 1, 1);
-        rs.pushStackRootRange(c, 1, 1);
-        rs.pushStackRootRange(d, 1, 1);
+    StackRootGuard(HPointer* a, HPointer* b, HPointer* c, HPointer* d)
+        : saved_(ecoRootMark()) {
+        ecoRoot1Push(a);
+        ecoRoot1Push(b);
+        ecoRoot1Push(c);
+        ecoRoot1Push(d);
     }
-    StackRootGuard(std::initializer_list<HPointer*> roots) {
-        auto& rs = Allocator::instance().getRootSet();
-        savedPoint_ = rs.stackRangePoint();
+    StackRootGuard(std::initializer_list<HPointer*> roots) : saved_(ecoRootMark()) {
         for (HPointer* r : roots) {
-            if (r != nullptr) rs.pushStackRootRange(r, 1, 1);
+            if (r != nullptr) ecoRoot1Push(r);
         }
     }
     ~StackRootGuard() {
-        Allocator::instance().getRootSet().restoreStackRangePoint(savedPoint_);
+        ecoRootRelease(saved_);
     }
 
     StackRootGuard(const StackRootGuard&) = delete;
     StackRootGuard& operator=(const StackRootGuard&) = delete;
 
 private:
-    size_t savedPoint_;
+    EcoRootMark saved_;
 };
 
 // RAII wrapper for pushStackRootRange / restoreStackRangePoint.
@@ -1938,7 +1945,7 @@ inline HPointer allocClosureK(EvalFunction evaluator, u32 max_values,
     cl->max_values = max_values;
     cl->result_kind = result_kind & 0x3;
     cl->unboxed = 0;
-    cl->evaluator = evaluator;
+    cl->evaluator = ecoDescForKernelEvaluator(evaluator, max_values, result_kind);
     return Allocator::instance().wrap(cl);
 }
 

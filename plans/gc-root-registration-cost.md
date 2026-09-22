@@ -1,15 +1,24 @@
 # Cutting GC root-registration cost: TLS shadow stack + arity monomorphisation
 
-**Status: IMPLEMENTATION-READY v2 — 2026-09-21.** Grounded against the tree; not
-implementation-started. Two independent optimisations against the same
-measured cost. O1 is a pure runtime/backend change; O2 is an MLIR-lowering
-change. They compose but neither depends on the other.
+**Status: FULLY IMPLEMENTED (Phases 1-4) AND A MEASURED WIN — 2026-09-21.
+Wall 229.55 s vs the 234.40 s reference: -4.85 s (-2.1 %), minor GC -5,
+promoted -34 MiB, max RSS -69 MB, output byte-identical, E2E 1731/1731.**
+§0 is still RETRACTED — its 16.68 % is 1.45 % on the current tree — so the
+win is NOT the one the plan predicted or of the size it predicted. The first
+build measured FLAT (`gc-all`); it took a reachability filter on `$sat`
+generation plus the newarg-count bug that filter exposed to turn it positive
+(`gc-all2`). §10 is the first measurement, §11 the full account, §12 what
+actually made it pay.
 
 Parent: `gc-opt-working-list.md` items #1–#4 (§1.a).
 
 ---
 
-## 0. The measured cost
+## 0. The measured cost — **RETRACTED 2026-09-21, see §10**
+
+The table below is what this plan was built on. It was re-measured on the
+tree the plan was written against and is wrong by 11x; every piece of
+arithmetic downstream of it inherits that. Read §10 first.
 
 `eco_gc_push_stack_range` is **the single hottest symbol in the whole
 self-compile**:
@@ -529,8 +538,21 @@ Flag: `ECO_SAT_FAST=0` (default **OFF** until measured).
 
 ## 6. Phase 4 — Dead code (independent, no measurement needed)
 
+> **CORRECTION 2026-09-21 (verified, not built): `emitClosureCall` is LIVE.**
+> It is reached from `PapExtendOpLowering` at `:2223` on the `_closure_kind`
+> arm, and `_closure_kind` IS emitted — by the Elm compiler, at
+> `compiler/src/Compiler/Generate/MLIR/Expr.elm:1263`, not by an MLIR pass,
+> which is why a grep of `runtime/src` alone missed it. Deleting it as listed
+> below would break the build. The other two ARE dead, transitively on the same
+> fact: `_dispatch_mode` is set nowhere in either tree, `emitDispatchedClosureCall`
+> sits behind `if (dispatchMode)` at `:2437`, and `emitUnknownClosureCall`'s only
+> caller is `emitDispatchedClosureCall` at `:1424`. `eco_apply_segmentation_unknown`
+> is dead as stated — `getOrCreateApplySegmentationUnknown` is called only from
+> `materializeAllRuntimeDecls` (`EcoToLLVMRuntime.cpp:1300`), i.e. pre-declared
+> and never emitted.
+
 - `_dispatch_mode` is never set by any pass → `emitDispatchedClosureCall`
-  (`:1392`), `emitClosureCall` (`:1335`), `emitUnknownClosureCall` (`:1899`)
+  (`:1392`), ~~`emitClosureCall` (`:1335`)~~, `emitUnknownClosureCall` (`:1899`)
   are unreachable. Delete, or revive by having Phase 3 set the attribute.
 - `eco_apply_segmentation_unknown` (`RuntimeExports.cpp:2273`) is
   implemented, JIT-registered (`RuntimeSymbols.cpp:357`) and
@@ -629,3 +651,335 @@ Per `guides/perf-tune-loop.md` and `benchmarks/lss-opt.md:18-75`.
 Phases 1, 2 and 4 are independent of each other and can land in any order.
 Phase 3 is the only one that needs both a measurement gate and a prerequisite.
 Do P0-a/b/c before writing implementation code.
+
+---
+
+## 10. What Phase 1 actually measured (2026-09-21)
+
+### 10.1 P0-a kills §0's number
+
+`perf record -F 499 -e cycles:u -e instructions:u` over one cold Stage-7a
+self-compile of the current reference compiler (`eco-optghash`, solver+LSS,
+234.40 s median):
+
+| symbol | cycles self% | instructions self% | §0 claimed |
+|---|---|---|---|
+| `eco_gc_push_stack_range` | **1.32%** | 1.83% | 14.53% |
+| `eco_gc_restore_stack_range_point` | 0.09% | 0.19% | 1.28% |
+| `eco_gc_stack_range_point` | 0.04% | 0.11% | 0.87% |
+| **triplet** | **1.45%** | **2.13%** | **16.68%** |
+
+§0's figures come from `design_docs/borrow-inf-census.md:157`, a
+`--call-graph dwarf` run on a **pre-`lss-compile-opt-loop` tree**. That series
+took the same workload from 398.71 s to 234.40 s, and the steps that did it —
+3 (off-heap union-find), 10 (`$sret`, `Step` retired), 24 — removed most of the
+closure-dispatch entries this triplet brackets 1:1. The triplet did not get
+faster; **its population collapsed.**
+
+The same profile now reads `NurserySpace::evacuate` 11.34%,
+`Allocator::resolve` 5.16%, `OldGenSpace::markOneObject` 3.64%,
+`NurserySpace::evacuateListSpine` 3.36%, `scanObject` 2.77% — **tracing GC, not
+root registration**, which is also what the loop's own closing finding said
+(`benchmarks/lss-compile-opt-loop.md` §7: time is survivor copying).
+
+§2.4's Phase-1 gate is nevertheless PASSED, not failed: 2.13% of instructions
+against 1.45% of cycles means the body retires *more* per cycle than the
+program average. It is not stall-bound — it is simply small. So §3's mechanism
+was built and measured rather than abandoned on the profile alone.
+
+### 10.2 Phase 1 as built (deviations from §3)
+
+- §3.1/§3.2/§3.4 as specified: `RootSet::stack_root_ranges` replaced by three
+  `initial-exec` TLS cursors, `Allocator::setThreadHeap` the sole publisher,
+  the collector walking `[base, sp)`. `RootSet`'s public methods became inline
+  wrappers over the cursors, so all runtime/kernel C++ and both `eco_gc_*`
+  exports inlined with **zero call-site churn** — §3.6's `HeapHelpers.hpp` row
+  was not needed.
+- §3.5 done at the **LLVM-IR level** (`EcoBackend::expandRootRangeOps`), not in
+  the MLIR lowering. One pass covers all seven emission sites, has `job.kind`
+  for `allowTls`, needs no MLIR change, and follows `expandInlineAllocs`'
+  precedent. Expansion is conservative: constant `count` in [1,64] and a
+  provably non-null base, else the call is kept.
+- **§3.3 (the single-slot stack) was SKIPPED.** It adds a second
+  collector-walked structure to save 16 bytes/entry on the `StackRootGuard`
+  population, which §1.2 never showed to be the hot one — and R4/R5 say a bug
+  there is heap corruption, not a wrong number. It was not worth the risk
+  before Phase 1's core was known to pay. It now definitively is not.
+- `HeapConfig` slot counts (§3.6) skipped; the sizes are compile-time
+  constants in `RootSet.hpp` (65,536 usable + 1,024 slack, ~16x the deepest
+  depth ever recorded against the old 4,096-entry reserve).
+
+### 10.3 The result
+
+Gates, all green: E2E **1731/1731**; three runs byte-deterministic; self-compile
+output **byte-identical to `ecoghash.mlir`**, i.e. the fixed point holds and the
+runtime change provably did not alter what the compiler emits.
+
+Effect on the binary: push call sites **11,738 -> 3**, point 11,740 -> 2,
+restore 11,226 -> 4, binary **-546 kB**. The emitted sequence is the intended
+one, and LLVM CSEs `point()`'s load so `restore` is a single
+`mov %r14,%fs:0x0(%r13)`.
+
+Effect on wall: **none.** Median 235.60 s vs the reference's 234.40 s (+1.20 s;
+mean +1.84 s), inside the 4.32 s triple spread. Minor GC 1113, major GC 10,
+promoted 17,633 MiB — **identical to the reference to the digit**, as they must
+be. GC time +1.54 s. Verdict under §4 of the loop protocol: flat wall, no
+counter improved ⇒ **NO WIN**, reverted.
+
+This is the third instance of the same lesson in this tree, after
+`inline-bump-state-tls.md` (10.46 B calls, -0.03%) and loop step 14: **rank by
+events x per-event cost, and re-measure the profile before writing the plan,
+not after.** R1 called the outcome correctly; what it could not call was that
+the 14.53% input was itself already gone.
+
+### 10.4 What this means for Phases 2-4
+
+- **Phase 3's surface is also re-priced.** On the same profile the apply/splice
+  family is `eco_apply_closure_eval` 2.12% + `invokeSaturatedTyped` 1.45% +
+  `spliceArgsForSaturatedCall` 0.53% = **4.10%** of cycles (§0's source had
+  7.58% + 3.51% + 2.57% = 13.66%), plus whatever share of the 1.45% triplet the
+  fast edge would delete. That is a real but much smaller target for a change
+  that adds a per-evaluator descriptor, a generated `$sat` entry per
+  `(target, N)`, and a four-predicate runtime diamond. **P0-c has not been run,
+  so §2.4's Phase-3 gate is still unanswered — do not build Phase 3 without
+  it, and re-derive the estimate from the numbers above, not from §0.**
+- **Phase 2 should not land on its own.** It is pure indirection whose only
+  consumer is Phase 3; landing it early buys an extra load in two readers for
+  nothing.
+- **Phase 4 is still free and still correct**, but it is unmeasured code
+  deletion in the backend, so it shifts binary layout for every later
+  candidate. Land it deliberately (with the reference re-baselined), not as a
+  passenger on another step.
+- The honest next target on this profile is **tracing GC** — evacuate + mark +
+  scan + resolve is ~26% of cycles against this triplet's 1.45%.
+
+---
+
+## 11. The whole plan, built and measured (2026-09-21)
+
+### 11.1 What was built
+
+All four phases, on top of the `ghash` reference tree, measured together:
+
+| phase | built | notes |
+|---|---|---|
+| 1 — TLS shadow root stack | yes, incl. §3.3 | one deviation: `Scheduler.cpp`'s guard left alone (§11.4) |
+| 2 — `EvaluatorDesc` | yes | plus two paths §4.1 missed (§11.4) |
+| 3 — `$sat` + diamond | yes, default ON | emitted as an LLVM-IR expansion, not MLIR (§11.3) |
+| 4 — dead code | partly | two of the four listed items were NOT dead (§11.4) |
+
+Counts from the candidate build: **16,104 descriptors**, **31,351 `$sat`
+entries**, **8,001 diamonds** expanded (16 dropped as ineligible), push call
+sites **11,741 -> 1**.
+
+### 11.2 The result
+
+`benchmarks/lss-compile-opt-loop.md` row `gc-all`, three cold runs against the
+`ghash` reference (234.40 s median):
+
+| stat | reference | candidate | delta |
+|---|---|---|---|
+| wall (median) | 234.40 s | 235.80 s | **+1.40** (mean +2.08) |
+| minor / major GC | 1113 / 10 | 1113 / 10 | 0 / 0 |
+| promoted | 17,633 MiB | 17,634 MiB | +1 |
+| max RSS | 10,506,704 kB | 10,451,604 kB | **-55,100** |
+| GC time | 112.63 s | 115.76 s | +3.13 |
+| binary | 74.5 MB | 90.0 MB | **+15.5 MB** |
+
+Gates: E2E **1731/1731**; three runs byte-deterministic; self-compile output
+**byte-identical to `ecoghash.mlir`**, which is the strong one — the whole
+closure representation changed underneath and the compiler emits the same
+bytes.
+
+**The mechanisms all work.** On the same cold Stage-7a profile:
+
+| cycles self% | before | after |
+|---|---|---|
+| root-range triplet | 1.45 % | **0.00 %** |
+| `eco_apply_closure_eval` | 2.12 % | 0.86 % |
+| `invokeSaturatedTyped` | 1.45 % | 0.86 % |
+| apply/splice family | 4.10 % | **2.42 %** |
+
+About **3.1 points of cycles** were removed from the targeted symbols and the
+wall did not move, so an equal amount was added elsewhere. Three identified
+sources, in order of confidence:
+
+1. **The guard is paid on every slow dispatch.** 8,001 sites now execute a
+   header load, ~10 ALU ops and four compares before falling through to the
+   same generic sequence as before.
+2. **`Allocator::resolve` +0.65 pts — §5.3's "the resolve is not extra" is
+   wrong for the generic path.** That path hands the closure HPtr to the
+   runtime and lets IT resolve; the diamond must resolve in the entry block to
+   read the header, so a *second* resolve now happens on every slow dispatch.
+   This is inherent to the diamond, not an implementation slip: the guard needs
+   the header before it can know which edge to take.
+3. **+15.5 MB of text.** §5.2 expected `|S| <= 4` small functions per target;
+   the self-compile's array-building sites use enough distinct arities that
+   31,351 entries were generated across 16,104 evaluators.
+
+RSS is the one real gain: **-55 MB**, and the two triples' RSS ranges are fully
+disjoint ([10.451, 10.460] vs [10.507, 10.526] GB), so it is separation rather
+than the bimodal noise §3 warns about.
+
+### 11.3 Implementation notes that differ from the plan
+
+**§5.3's diamond CANNOT be emitted in the MLIR lowering.** A `papExtend` can sit
+inside a single-block `scf` region — loopified tail recursion, and `List.foldl`'s
+own loop is one — and `EcoToLLVMPass` runs BEFORE `SCFToControlFlowPass`
+(`EcoPipeline.cpp:163` vs `:183`), so the lowering cannot create blocks around
+it. This is the same constraint that made `__eco_get_tag_inline` a marker. The
+diamond is therefore emitted as a marker PAIR
+(`__eco_sat_begin` / `__eco_sat_end`, both variadic so one declaration covers
+every call shape) bracketing the generic sequence, and `EcoBackend::expandSatMarkers`
+splits the block and builds the diamond at LLVM-IR level. §3.5's root-range
+inlining is done the same way (`expandRootRangeOps`), which additionally makes
+it cover all seven emission sites with one pass instead of six edits.
+
+**Two guards §5.3 does not state are required for soundness.**
+- `mx <= 25`: `Closure.unboxed` describes only 25 slots, so a wider closure's
+  kind bits must not be compared at all — without this, `%c3` can pass on
+  unrelated bits and admit a call with the wrong argument ABI.
+- A `$sat` entry may exist ONLY when the target's own return type already is
+  the canonical type for `result_kind`. The wrapper may re-box to reach its
+  declared ABI; `$sat` calls the target directly, so without this check `%c2`
+  would admit a call whose real return type differs from the one the merge phi
+  expects.
+
+`sat[]` is sized `stage_arity + 1` (not `|S|`), so the `sat[N]` load behind the
+`rem == N` guard is always in bounds without a second length check.
+
+### 11.4 Corrections the plan text needs
+
+1. **§0's 16.68 % is 1.45 %** — see §10.1. Everything downstream inherits it.
+2. **§4.1's access list is incomplete.** Two lowerings store a BARE function
+   symbol into `evaluator` and never go near `getOrCreateWrapper`:
+   `AllocateClosureOpLowering` (`EcoToLLVMClosures.cpp:203`) and
+   `MakeClosureOpLowering` (`EcoToLLVMValueAgg.cpp:~800` — the site R7 flagged
+   for audit, correctly). Both need their own descriptor. So does every C++
+   kernel that calls `alloc::allocClosureK` with a function pointer (~35 sites),
+   which is handled by interning one descriptor per
+   `(fn, stage_arity, result_kind)` in the runtime.
+3. **§6's dead-code list is wrong twice.**
+   - `emitClosureCall` is **LIVE** — reached from `PapExtendOpLowering` on the
+     `_closure_kind` arm, and `_closure_kind` is emitted by the ELM compiler
+     (`Compiler/Generate/MLIR/Expr.elm:1263`), so a grep of `runtime/src` misses
+     it. Deleting it breaks the build.
+   - `eco_apply_segmentation_unknown` has no LOWERING caller, as stated, but
+     `test/allocator/EcoApplyClosureTypedTest.cpp` calls it directly. Only the
+     codegen-side wiring (`getOrCreateApplySegmentationUnknown`) was removed.
+   `emitDispatchedClosureCall` and `emitUnknownClosureCall` were genuinely dead
+   and are deleted.
+4. **§3.3 skips `Scheduler.cpp`.** That file is pinned by the LSS_022
+   kernel-parametricity manifest (six `Scheduler.*` licences hash it), so ANY
+   edit — a comment included — requires re-auditing `KernelSetFacts.elm`, which
+   is COMPILER SOURCE and therefore this benchmark's own workload. Moving the
+   workload to save two stores at a cold effect-manager site is a bad trade.
+
+### 11.5 Verdict and what to do with it
+
+Under `benchmarks/lss-compile-opt-loop.md` §4 this is a WIN by the letter —
+flat wall plus an improved counter (RSS). In substance it is **FLAT**: wall
++1.40 s, GC time +3.13 s, promoted +1 MiB, binary +15.5 MB, one genuine
+improvement in the least trustworthy column.
+
+If it is kept, the cheapest thing that could turn it positive is **cutting the
+`$sat` population**: generate entries only for the `(target, N)` pairs that
+actually dispatch, rather than for every evaluator crossed with every observed
+arity. 31,351 entries for 8,001 diamonds is a ~4x overshoot, and most of the
++15.5 MB is never executed. That needs a dynamic site census (P0-c, still
+unrun) to size honestly.
+
+If it is dropped, the profile says where to go instead: `evacuate` 11.60 %,
+`resolve` 5.81 %, `markOneObject`, `evacuateListSpine`, `scanObject` — tracing
+GC is ~26 % of cycles against this plan's whole 5.5 % surface.
+
+---
+
+## 12. What made it pay: `$sat` reachability (2026-09-21)
+
+§11 measured the plan FLAT. The fix was to stop generating `$sat` entries for
+`(descriptor, N)` pairs that no call site can reach — and, in working that out,
+to find a bug that had been costing the mechanism 44 % of its coverage.
+
+### 12.1 The reachability criterion is exact, not a heuristic
+
+The diamond's own guards decide it, and two of the three are static:
+
+- `%c1` requires `rem == N`, i.e. `n_values == P - N`. **The applied count is
+  DETERMINED by N.**
+- So `%c3`'s `km = (kinds >> 2*n) & mask` is the compile-time constant
+  `(D.kinds >> 2*(P-N)) & mask` — this target's last N parameter kinds.
+- `%c2` requires `rk == D.result_kind`, also static.
+
+⇒ `sat[N]` on descriptor D is callable **only** from a site whose signature is
+exactly `(N, (D.kinds >> 2*(P-N)) & mask, D.result_kind)`. §5.2 keyed generation
+on N alone, which crosses every arity with every evaluator.
+
+A second, independent bound: a closure's `n_values` starts at its `papCreate`'s
+`num_captured` and only grows (`papExtend` adds), so `rem <= P - minC0` and any
+`N` above that is unreachable whatever the kinds say.
+
+Both are computed in the serial pre-pass that already exists. Disagreement
+between the recorded set and what a site computes is **safe in both
+directions** — a missing entry leaves `sat[N]` null and the site takes the slow
+edge (`%c4` fails closed); a spare entry is only wasted space.
+
+### 12.2 The bug the filter exposed
+
+`papExtend`'s operands are `[closure, newargs..., roots...]` and
+`getNewargs()` returns the whole tail after the closure — **roots included**.
+The lowering drops them (`splitAdaptedRoots`); §5.2's collection did not. Every
+site's N was therefore inflated by its root count:
+
+| | n=1 | n=2 | n=3 | n=4 | n=5 | peak |
+|---|---|---|---|---|---|---|
+| as collected (buggy) | 0 | 74 | 3,089 | 5,349 | 6,584 | n=5 |
+| actual | 8,910 | 15,367 | 1,144 | 400 | 31 | n=2 |
+
+So `gc-all`'s arity set never contained `n=1`, and **every one-argument
+application was refused a fast edge**. It compiled 8,001 diamonds where 11,501
+were available. The same inflation is present in the pre-existing
+`preMaterializeApplyLayouts` call, where it is harmless (it only mints a few
+unused layout globals) — which is why it had never been noticed.
+
+### 12.3 Result
+
+| | `gc-all` | `gc-all2` |
+|---|---|---|
+| wall (median) | 235.80 s | **229.55 s** |
+| vs the 234.40 s reference | +1.40 | **-4.85 (-2.1 %)** |
+| minor GC | 1113 | **1108** |
+| promoted | 17,634 MiB | **17,599 MiB** |
+| max RSS | 10,451,604 kB | **10,437,876 kB** |
+| `$sat` entries | 31,351 | **25,316** |
+| diamonds | 8,001 | **11,501** |
+| binary | 90.01 MB | 88.18 MB |
+
+The candidate's three walls [228.01, 230.18] lie entirely below the reference's
+[231.43, 235.17], and minor GC and promoted — deterministic per
+(binary x tree) — both fall, so this is separation rather than spread. Minor GC
+moving at all is the fast edge deleting the runtime's `combined_args`
+allocation (§5.5), which is the only allocation either side of this change
+touches.
+
+### 12.4 What the filter did NOT do, and what is left
+
+**The entry cut is only 19 %, not the ~4x §11.5 guessed.** The site signatures
+are dominated by `(1, boxed, boxed)` and `(2, boxed/boxed, boxed)`, which most
+descriptors also match, so the filter removes far less than the arity histogram
+suggested. Most of the win is the coverage bug, not the filter.
+
+The binary is still **+13.65 MB** over the reference, and the section split
+says that is mostly not code: `.llvm_stackmaps` +4.73 MB (one statepoint per
+`$sat` call), `.text` +3.90 MB, `.rela.dyn` +1.80 MB, `.eh_frame` +1.26 MB,
+`.data.rel.ro` +0.92 MB. The entries themselves are 1.75 MB of text at a mean
+of 77 bytes each. Remaining levers, cheapest first:
+
+1. **Stackmap weight.** Nothing is live across a `$sat` entry's call, yet each
+   still emits a full statepoint record — 158 bytes apiece. A `musttail` form,
+   or teaching RS4GC that the arguments need no relocation there, would cut the
+   largest single section.
+2. **The double resolve** (§11.2 item 2) is still paid on every slow dispatch
+   and is worth ~0.65 pts of cycles.
+3. **A dynamic (evaluator, N) census (P0-c, still unrun)** would say how many
+   of the 25,316 entries are ever *called*, as opposed to merely reachable.

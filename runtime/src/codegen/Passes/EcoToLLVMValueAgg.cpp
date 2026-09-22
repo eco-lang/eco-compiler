@@ -798,7 +798,12 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
         Value envAgg = adaptor.getEnv();
 
         // Resolve the function symbol and allocate a closure of size `arity`.
-        Value funcPtr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, op.getFunction());
+        // Phase 2 (plans/gc-root-registration-cost.md, R7): the evaluator slot
+        // holds the per-evaluator DESCRIPTOR. This path never goes through
+        // getOrCreateWrapper, so it uses the bare-function descriptor emitted
+        // beside the target by the serial pre-pass.
+        Value funcPtr = eco::detail::emitEvalDescAddrForFuncSymbol(
+            rewriter, loc, runtime, op.getFunction());
         Value closureHPtr;
         uint64_t cloByteSize = layout::ClosureBaseSize +
             static_cast<uint64_t>(arity) * layout::PtrSize;

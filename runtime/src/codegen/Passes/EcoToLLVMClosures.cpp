@@ -15,7 +15,10 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 
+#include "llvm/ADT/DenseSet.h"
+#include <atomic>
 #include <cstdlib>   // ::getenv for the E0.4 dispatch-site counter gate
+#include <string>
 
 using namespace mlir;
 using namespace eco;
@@ -28,6 +31,19 @@ namespace {
 static uint8_t mlirTypeToParamKind(Type ty);
 static uint64_t deriveAllParamKindsBitmap(const EcoRuntime &runtime,
                                           StringRef funcSymbol, int64_t arity);
+// plans/gc-root-registration-cost.md Phase 2/3.
+static Value emitEvalDescAddr(OpBuilder &b, Location loc,
+                              const EcoRuntime &runtime,
+                              LLVM::LLVMFuncOp wrapper);
+static bool satFastEnabled();
+static Value emitEvalDescAddrForFunc(OpBuilder &b, Location loc,
+                                     const EcoRuntime &runtime,
+                                     StringRef funcSymbol);
+static void getOrCreateEvalDescForFunc(OpBuilder &builder, ModuleOp module,
+                                       StringRef funcSymbol, int64_t arity,
+                                       uint64_t kindsBitmap, uint8_t resultKind,
+                                       Location loc,
+                                       llvm::SmallVectorImpl<char> &outName);
 static bool wrapperWillBeTypedNewargs(const EcoRuntime &runtime,
                                        StringRef funcSymbol);
 
@@ -191,7 +207,9 @@ struct AllocateClosureOpLowering : public OpConversionPattern<AllocateClosureOp>
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         auto funcSymbol = op.getFunction();
-        Value funcPtr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, funcSymbol);
+        // Phase 2 (R7): even this bypass path stores a DESCRIPTOR, not the
+        // function address — the runtime reads `evaluator` as `EvaluatorDesc*`.
+        Value funcPtr = emitEvalDescAddrForFunc(rewriter, loc, runtime, funcSymbol);
         auto arityConst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(op.getArity()));
 
         Value result = emitAllocWithSafepoint(
@@ -717,7 +735,11 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
                                               getTypeConverter(), runtime,
                                               /*typedNewargs=*/true,
                                               closureResultKind);
-        Value funcPtr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, wrapperFunc.getSymName());
+        // Phase 2 (plans/gc-root-registration-cost.md): the closure's evaluator
+        // slot holds the per-evaluator DESCRIPTOR, not the wrapper address.
+        // Same offset, same width, 1:1 with the wrapper — so HEAP_033's
+        // interning key and every census join key keep their meaning.
+        Value funcPtr = emitEvalDescAddr(rewriter, loc, runtime, wrapperFunc);
 
         // H4.2 (HEAP_033): a zero-capture, non-self-capturing closure is
         // immutable after construction (capture writes only happen for
@@ -956,8 +978,8 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
                 getTypeConverter(), runtime,
                 /*typedNewargs=*/true,
                 siblingResultKind);
-            Value funcPtr = rewriter.create<LLVM::AddressOfOp>(
-                loc, ptrTy, wrapperFunc.getSymName());
+            // Phase 2: descriptor address, not the wrapper's (see PapCreate).
+            Value funcPtr = emitEvalDescAddr(rewriter, loc, runtime, wrapperFunc);
             wrapperPtrs.push_back(funcPtr);
         }
 
@@ -1219,7 +1241,7 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
 
 /// Emit a typed closure call when capture ABI is known at compile time.
 /// Loads captures from closure, calls fast clone directly with typed args.
-/// This is used when _dispatch_mode="fast".
+/// Used for a stamped fast dispatch (`_fast_evaluator` + `_capture_abi`).
 static Value emitFastClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
                                  Value closureI64, ValueRange newArgs, SymbolRefAttr fastEvaluator,
                                  ArrayAttr captureAbiTypes, Type resultType,
@@ -1331,7 +1353,7 @@ static Value emitFastClosureCall(ConversionPatternRewriter &rewriter, Location l
 
 /// Emit a closure call via the generic clone.
 /// Calls the generic clone stored in closure.evaluator with (Closure*, args...).
-/// This is used when _dispatch_mode="closure".
+/// Used for a heterogeneous closure known by `_closure_kind` (Expr.elm).
 static Value emitClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
                              Value closureI64, ValueRange newArgs, Type resultType,
                              Operation *safeOp = nullptr, ValueRange liveRoots = {}) {
@@ -1376,58 +1398,6 @@ static Value emitClosureCall(ConversionPatternRewriter &rewriter, Location loc, 
     auto callOp = rewriter.create<LLVM::CallOp>(loc, funcType, callOperands);
 
     return callOp.getResult();
-}
-
-/// Emit a closure call when dispatch mode is unknown.
-/// Logs a diagnostic and falls back to generic closure call via emitInlineClosureCall.
-/// This is used when _dispatch_mode="unknown".
-static Value emitUnknownClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
-                                    Value closureI64, ValueRange newArgs, Type resultType,
-                                    ArrayRef<Type> origNewArgTypes = {},
-                                    Type origResultType = {},
-                                    Operation *safeOp = nullptr, ValueRange liveRoots = {});  // Forward declaration
-
-/// Dispatch a closure call based on the _dispatch_mode attribute.
-/// Returns Value() and emits error if dispatch mode is invalid or missing required attributes.
-static Value emitDispatchedClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
-                                       Operation *op, Value closureI64, ValueRange newArgs, Type resultType,
-                                       ArrayRef<Type> origNewArgTypes = {},
-                                       Type origResultType = {},
-                                       ValueRange liveRoots = {}) {
-    auto dispatchMode = op->getAttrOfType<StringAttr>("_dispatch_mode");
-
-    // Missing _dispatch_mode on a closure call = pipeline bug
-    if (!dispatchMode) {
-        op->emitError("closure call missing _dispatch_mode attribute");
-        return Value();
-    }
-
-    StringRef mode = dispatchMode.getValue();
-
-    if (mode == "fast") {
-        auto fastEval = op->getAttrOfType<SymbolRefAttr>("_fast_evaluator");
-        auto captureAbi = op->getAttrOfType<ArrayAttr>("_capture_abi");
-        if (!fastEval || !captureAbi) {
-            op->emitError("_dispatch_mode='fast' requires _fast_evaluator and _capture_abi attributes");
-            return Value();
-        }
-        return emitFastClosureCall(rewriter, loc, runtime, closureI64, newArgs, fastEval, captureAbi, resultType,
-                                   op, liveRoots);
-    }
-
-    if (mode == "closure") {
-        return emitClosureCall(rewriter, loc, runtime, closureI64, newArgs, resultType,
-                               op, liveRoots);
-    }
-
-    if (mode == "unknown") {
-        return emitUnknownClosureCall(rewriter, loc, runtime, closureI64, newArgs, resultType,
-                                      origNewArgTypes, origResultType,
-                                      op, liveRoots);
-    }
-
-    op->emitError("unrecognized _dispatch_mode: ") << mode;
-    return Value();
 }
 
 //===----------------------------------------------------------------------===//
@@ -1490,6 +1460,561 @@ static uint64_t deriveAllParamKindsBitmap(const EcoRuntime &runtime,
         bitmap |= kind << (2 * i);
     }
     return bitmap;
+}
+
+//===----------------------------------------------------------------------===//
+// EvaluatorDesc + `$sat` entries (plans/gc-root-registration-cost.md, Phases 2/3)
+//===----------------------------------------------------------------------===//
+
+/// The set of call-site SIGNATURES a `$sat` entry could ever be reached from,
+/// collected during the serial Stage-2 pre-pass.
+///
+/// Keying this on the newarg count N alone generates |S| entries for every one
+/// of the module's evaluators — a ~4x overshoot measured on the self-compile
+/// (31,351 entries for 8,001 diamonds). The diamond's own guards say exactly
+/// which (descriptor, N) pairs are reachable, so the full triple is both sound
+/// and much tighter:
+///
+///   `%c1` requires `rem == N`, i.e. `n_values == P - N`. **n is DETERMINED by
+///   N**, so `%c3`'s `km = (kinds >> 2n) & mask` is the statically-known
+///   constant `(D.kinds >> 2*(P-N)) & mask` — not a runtime unknown. `%c2`
+///   requires `rk == D.result_kind`, also static.
+///
+/// So `sat[N]` on descriptor D is callable ONLY from a site whose signature is
+/// exactly `(N, (D.kinds >> 2*(P-N)) & mask, D.result_kind)`. Anything else
+/// fails a guard closed and can never call it.
+///
+/// Divergence between what a site computes and what the pre-pass recorded is
+/// SAFE IN BOTH DIRECTIONS: a missing entry leaves `sat[N]` null and the site
+/// takes the slow edge (`%c4` fails closed); a spare entry is only wasted
+/// space. Written only by `preMaterializeClosureArtifacts` (serial); read
+/// afterwards, including from parallel Stage 2.
+struct SatSiteSig {
+    unsigned n;
+    uint64_t kc;
+    uint8_t rc;
+    bool operator==(const SatSiteSig &o) const {
+        return n == o.n && kc == o.kc && rc == o.rc;
+    }
+};
+static llvm::SmallVector<SatSiteSig, 16> g_satSigs;
+/// Smallest `num_captured` any `papCreate` gives this target. A closure's
+/// `n_values` STARTS there and only grows (`papExtend` adds), so
+/// `rem = P - n <= P - minCaptured` and any `N` above that bound is
+/// unreachable by construction, whatever the kinds say.
+static llvm::StringMap<unsigned> g_minCaptured;
+
+static bool satSigPresent(unsigned n, uint64_t kc, uint8_t rc) {
+    for (const SatSiteSig &s : g_satSigs)
+        if (s.n == n && s.kc == kc && s.rc == rc)
+            return true;
+    return false;
+}
+
+/// Why a candidate `(descriptor, N)` pair was not generated (ECO_PAP_HISTO).
+namespace satFilter {
+static std::atomic<uint64_t> considered{0}, byArity{0}, bySignature{0},
+    byShape{0}, generated{0};
+}
+
+static bool satFastEnabled() {
+    static const bool on = [] {
+        const char *e = ::getenv("ECO_SAT_FAST");
+        return !(e && e[0] == '0' && e[1] == '\0');
+    }();
+    return on;
+}
+
+/// P0-b static end-state histogram (plan §2.2). Dumped at backend exit when
+/// ECO_PAP_HISTO=1; pure counters, no behaviour.
+namespace papHisto {
+static std::atomic<uint64_t> fastN{0}, inlineN{0}, segunknownN{0}, genericN{0},
+    papextendN{0}, satDiamondN{0}, satEntriesN{0}, descN{0};
+static std::atomic<uint64_t> arityInline[9] = {};
+static std::atomic<uint64_t> arityUnknown[9] = {};
+static std::atomic<uint64_t> arityGeneric[9] = {};
+static bool enabled() {
+    static const bool on = (::getenv("ECO_PAP_HISTO") != nullptr);
+    return on;
+}
+static void bump(std::atomic<uint64_t> *bucket, unsigned n) {
+    if (!enabled()) return;
+    bucket[n <= 8 ? n : 8].fetch_add(1, std::memory_order_relaxed);
+}
+}  // namespace papHisto
+
+void ecoDumpPapHistogram() {
+    if (!papHisto::enabled()) return;
+    llvm::errs() << "[pap-histo] fast=" << papHisto::fastN
+                 << " inline=" << papHisto::inlineN
+                 << " segunknown=" << papHisto::segunknownN
+                 << " generic=" << papHisto::genericN
+                 << " papextend=" << papHisto::papextendN
+                 << " | descs=" << papHisto::descN
+                 << " satEntries=" << papHisto::satEntriesN
+                 << " satDiamonds=" << papHisto::satDiamondN << "\n";
+    auto row = [](const char *name, std::atomic<uint64_t> *a) {
+        llvm::errs() << "[pap-histo] " << name << " by numNewArgs:";
+        for (unsigned i = 0; i <= 8; ++i)
+            llvm::errs() << " " << (i == 8 ? "8+" : std::to_string(i)) << "="
+                         << a[i];
+        llvm::errs() << "\n";
+    };
+    row("inline", papHisto::arityInline);
+    row("segunknown", papHisto::arityUnknown);
+    row("generic", papHisto::arityGeneric);
+    llvm::errs() << "[sat-filter] considered=" << satFilter::considered
+                 << " generated=" << satFilter::generated
+                 << " rejected: arity=" << satFilter::byArity
+                 << " signature=" << satFilter::bySignature
+                 << " shape=" << satFilter::byShape << "\n";
+    llvm::errs() << "[pap-histo] satSigs(n,kc,rc) =";
+    for (const SatSiteSig &s : g_satSigs)
+        llvm::errs() << " (" << s.n << "," << s.kc << "," << (unsigned)s.rc << ")";
+    llvm::errs() << "\n";
+}
+
+/// Name of the `EvaluatorDesc` global that sits beside `wrapperName`.
+static void evalDescName(StringRef wrapperName, llvm::SmallVectorImpl<char> &out) {
+    ("__eco_evaldesc_" + wrapperName).toVector(out);
+}
+
+/// Name of the arity-monomorphised saturated entry for `(target, N)`.
+static void satEntryName(StringRef targetName, unsigned n, uint8_t resultKind,
+                         llvm::SmallVectorImpl<char> &out) {
+    const char *k = "";
+    switch (resultKind) {
+        case 1: k = "_ri"; break;
+        case 2: k = "_rf"; break;
+        case 3: k = "_rc"; break;
+        default: k = ""; break;
+    }
+    ("__closure_sat_" + targetName + "_n" + llvm::Twine(n) + k).toVector(out);
+}
+
+/// MLIR type for a parameter of the given ParamKind, in the ABI the target
+/// function actually uses (REP_ABI_001).
+static Type paramKindToLLVMType(MLIRContext *ctx, uint8_t kind) {
+    switch (kind) {
+        case 1: return IntegerType::get(ctx, 64);
+        case 2: return Float64Type::get(ctx);
+        case 3: return IntegerType::get(ctx, 16);
+        default: return LLVM::LLVMPointerType::get(ctx, 1);
+    }
+}
+
+/// Emit `__closure_sat_<target>_n<N>`: load the C = stageArity - N captures out
+/// of `%self` at their declared kinds and call the typed target with
+/// (captures..., newargs...).
+///
+/// This is a recombination of code that already exists — getOrCreateWrapper's
+/// per-slot kind conversion and emitFastClosureCall's typed capture load — with
+/// the capture load moved INSIDE. That is the whole point: a call site knows its
+/// own N but not the callee's capture count C, so the target's signature is not
+/// statically known there; `$sat`'s is, because it depends only on
+/// (N, newarg kinds, result kind).
+///
+/// Returns false when the target's signature is not available or the shape is
+/// unsupported, in which case no entry exists and `sat[N]` stays null.
+static bool getOrCreateSatEntry(OpBuilder &builder, ModuleOp module,
+                                const EcoRuntime &runtime, StringRef targetSymbol,
+                                unsigned n, int64_t stageArity,
+                                uint64_t kindsBitmap, uint8_t resultKind,
+                                Location loc,
+                                llvm::SmallVectorImpl<char> &outName) {
+    auto *ctx = builder.getContext();
+    satEntryName(targetSymbol, n, resultKind, outName);
+    StringRef name(outName.data(), outName.size());
+    if (runtime.lookupSymbol<LLVM::LLVMFuncOp>(name))
+        return true;
+
+    // The target must be a real typed function with a visible signature.
+    auto target = runtime.lookupSymbol<LLVM::LLVMFuncOp>(targetSymbol);
+    if (!target || target.isExternal())
+        return false;
+    auto targetTy = target.getFunctionType();
+    if (targetTy.isVarArg())
+        return false;
+    if (static_cast<int64_t>(targetTy.getNumParams()) != stageArity)
+        return false;  // uncurried/adapted shape: not ours to call flatly
+    if (n == 0 || static_cast<int64_t>(n) > stageArity)
+        return false;
+    // The wrapper may re-box the target's result to reach its declared ABI;
+    // `$sat` calls the target DIRECTLY, so an entry may exist only when the
+    // target's own return type already IS the canonical type for resultKind.
+    // Otherwise the diamond's `%c2` would admit a call whose real return type
+    // differs from the one the site's phi expects.
+    if (targetTy.getReturnType() != paramKindToLLVMType(ctx, resultKind))
+        return false;
+
+    const int64_t captureCount = stageArity - static_cast<int64_t>(n);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+    auto i8Ty = IntegerType::get(ctx, 8);
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto f64Ty = Float64Type::get(ctx);
+
+    // R3 (plans/wide-direct-abi-statepoint-fix.md): keep `$sat` off signatures
+    // wide enough to hit the SelectionDAG assertion for gc.statepoint with wide
+    // struct returns.
+    if (stageArity > 16)
+        return false;
+
+    // Newarg params take the kinds the call site will supply, which are the
+    // target's own parameter types for slots [C, stageArity).
+    SmallVector<Type> satParams;
+    satParams.push_back(ptrTy);  // %self: the RESOLVED closure base
+    for (int64_t i = captureCount; i < stageArity; ++i)
+        satParams.push_back(targetTy.getParamType(i));
+
+    Type retTy = targetTy.getReturnType();
+    auto satTy = LLVM::LLVMFunctionType::get(retTy, satParams, /*isVarArg=*/false);
+
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(module.getBody());
+    auto fn = builder.create<LLVM::LLVMFuncOp>(loc, name, satTy,
+                                               LLVM::Linkage::Internal);
+    Block *entry = fn.addEntryBlock(builder);
+    builder.setInsertionPointToStart(entry);
+
+    SmallVector<Value> callArgs;
+    Value self = entry->getArgument(0);
+    for (int64_t i = 0; i < captureCount; ++i) {
+        int64_t off = layout::ClosureValuesOffset + i * layout::PtrSize;
+        auto offConst = builder.create<LLVM::ConstantOp>(
+            loc, i64Ty, builder.getI64IntegerAttr(off));
+        auto slot = builder.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, self,
+                                                ValueRange{offConst});
+        uint8_t k = static_cast<uint8_t>((kindsBitmap >> (2 * i)) & 0x3);
+        Type want = targetTy.getParamType(i);
+        Value v;
+        if (isa<LLVM::LLVMPointerType>(want)) {
+            // E1.3 v2: load pointer captures AT their pointer type so they are
+            // GC-tracked from birth (no inttoptr for RS4GC to lose).
+            v = builder.create<LLVM::LoadOp>(loc, want, slot);
+        } else if (want.isF64()) {
+            Value raw = builder.create<LLVM::LoadOp>(loc, i64Ty, slot);
+            v = builder.create<LLVM::BitcastOp>(loc, f64Ty, raw);
+        } else if (want.isInteger(16)) {
+            Value raw = builder.create<LLVM::LoadOp>(loc, i64Ty, slot);
+            v = builder.create<LLVM::TruncOp>(loc, IntegerType::get(ctx, 16), raw);
+        } else if (want.isInteger(64)) {
+            v = builder.create<LLVM::LoadOp>(loc, i64Ty, slot);
+        } else {
+            // Unhandled capture ABI: drop the entry rather than guess.
+            fn.erase();
+            return false;
+        }
+        // The declared kind and the target's parameter type must agree, or the
+        // closure's own bitmap is lying about what its slots hold.
+        (void)k;
+        callArgs.push_back(v);
+    }
+    for (unsigned i = 1; i < entry->getNumArguments(); ++i)
+        callArgs.push_back(entry->getArgument(i));
+
+    auto call = builder.create<LLVM::CallOp>(loc, target, callArgs);
+    if (isa<LLVM::LLVMVoidType>(retTy))
+        builder.create<LLVM::ReturnOp>(loc, ValueRange{});
+    else
+        builder.create<LLVM::ReturnOp>(loc, call.getResult());
+
+    if (papHisto::enabled())
+        papHisto::satEntriesN.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+/// Emit (once) the `EvaluatorDesc` global that sits beside `wrapper`, and return
+/// its symbol name. Phase 2: a pure indirection — `Closure.evaluator` holds this
+/// address instead of the wrapper's, at the same offset and the same width.
+/// Phase 3 fills `sat[N]` only for the N whose reachability signature a call
+/// site actually presents (see `SatSiteSig`) and that the arity bound admits.
+///
+/// MUST be called only from the serial pre-pass: it creates module-level symbols.
+static void getOrCreateEvalDesc(OpBuilder &builder, ModuleOp module,
+                                const EcoRuntime &runtime,
+                                LLVM::LLVMFuncOp wrapper, StringRef targetSymbol,
+                                int64_t stageArity, uint64_t kindsBitmap,
+                                uint8_t resultKind, Location loc,
+                                llvm::SmallVectorImpl<char> &outName) {
+    auto *ctx = builder.getContext();
+    evalDescName(wrapper.getSymName(), outName);
+    StringRef name(outName.data(), outName.size());
+    if (module.lookupSymbol<LLVM::GlobalOp>(name))
+        return;
+
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+    auto i8Ty = IntegerType::get(ctx, 8);
+    auto i16Ty = IntegerType::get(ctx, 16);
+    auto i32Ty = IntegerType::get(ctx, 32);
+    auto i64Ty = IntegerType::get(ctx, 64);
+
+    // sat[] always has stageArity + 1 slots so `sat[N]` is in bounds for every
+    // N the `rem == N` guard can admit. Slots stay null unless Phase 3 fills them.
+    const unsigned satCount = static_cast<unsigned>(stageArity) + 1;
+    SmallVector<StringRef> satSyms(satCount);
+    SmallVector<llvm::SmallString<64>> satNameStorage(satCount);
+    if (satFastEnabled() && !targetSymbol.empty()) {
+        // `n_values` starts at the smallest num_captured this target is ever
+        // created with and only grows, so rem can never exceed P - minC0.
+        unsigned minC0 = 0;
+        if (auto it = g_minCaptured.find(targetSymbol); it != g_minCaptured.end())
+            minC0 = it->second;
+        const unsigned maxReachableN =
+            static_cast<unsigned>(stageArity) > minC0
+                ? static_cast<unsigned>(stageArity) - minC0
+                : 0;
+
+        for (unsigned n = 1; n < satCount; ++n) {
+            satFilter::considered.fetch_add(1, std::memory_order_relaxed);
+            if (n > maxReachableN) {
+                satFilter::byArity.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+            // `%c1` fixes the closure's applied count at P - n, so the kinds
+            // `%c3` will compare are exactly this target's LAST n parameter
+            // kinds. Only a site declaring that same vector (and this result
+            // kind) can ever reach the entry.
+            const unsigned shift = 2u * (static_cast<unsigned>(stageArity) - n);
+            const uint64_t mask =
+                n >= 32 ? ~uint64_t{0} : ((uint64_t{1} << (2 * n)) - 1);
+            const uint64_t requiredKc = (kindsBitmap >> shift) & mask;
+            if (!satSigPresent(n, requiredKc, resultKind)) {
+                satFilter::bySignature.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+            if (getOrCreateSatEntry(builder, module, runtime, targetSymbol, n,
+                                    stageArity, kindsBitmap, resultKind, loc,
+                                    satNameStorage[n])) {
+                satSyms[n] = StringRef(satNameStorage[n].data(),
+                                       satNameStorage[n].size());
+                satFilter::generated.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                satFilter::byShape.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
+
+    auto satArrTy = LLVM::LLVMArrayType::get(ptrTy, satCount);
+    auto descTy = LLVM::LLVMStructType::getLiteral(
+        ctx, {ptrTy, i64Ty, i8Ty, i8Ty, i16Ty, i32Ty, satArrTy});
+
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(module.getBody());
+    auto global = builder.create<LLVM::GlobalOp>(
+        loc, descTy, /*isConstant=*/true, LLVM::Linkage::Internal, name,
+        /*value=*/Attribute());
+
+    Block *blk = builder.createBlock(&global.getInitializerRegion());
+    builder.setInsertionPointToStart(blk);
+    Value agg = builder.create<LLVM::UndefOp>(loc, descTy);
+    Value genericPtr =
+        builder.create<LLVM::AddressOfOp>(loc, ptrTy, wrapper.getSymName());
+    agg = builder.create<LLVM::InsertValueOp>(loc, agg, genericPtr,
+                                              ArrayRef<int64_t>{0});
+    auto put = [&](int64_t idx, Type ty, int64_t v) {
+        Value c = builder.create<LLVM::ConstantOp>(loc, ty,
+                                                   builder.getIntegerAttr(ty, v));
+        agg = builder.create<LLVM::InsertValueOp>(loc, agg, c,
+                                                  ArrayRef<int64_t>{idx});
+    };
+    put(1, i64Ty, static_cast<int64_t>(kindsBitmap));
+    put(2, i8Ty, static_cast<int64_t>(stageArity & 0xFF));
+    put(3, i8Ty, static_cast<int64_t>(resultKind & 0x3));
+    put(4, i16Ty, 0);
+    put(5, i32Ty, 0);
+    Value nullPtr = builder.create<LLVM::ZeroOp>(loc, ptrTy);
+    for (unsigned i = 0; i < satCount; ++i) {
+        Value slotVal = nullPtr;
+        if (!satSyms[i].empty())
+            slotVal = builder.create<LLVM::AddressOfOp>(loc, ptrTy, satSyms[i]);
+        agg = builder.create<LLVM::InsertValueOp>(
+            loc, agg, slotVal, ArrayRef<int64_t>{6, static_cast<int64_t>(i)});
+    }
+    builder.create<LLVM::ReturnOp>(loc, agg);
+
+    if (papHisto::enabled())
+        papHisto::descN.fetch_add(1, std::memory_order_relaxed);
+}
+
+/// Plan §5.3. Emit the `__eco_sat_begin` marker in front of the generic apply
+/// sequence, so `expandSatMarkers` can turn the pair into the fast/slow diamond.
+/// Returns the token, or a null Value when the site is ineligible (in which case
+/// no `end` marker may be emitted and the slow path stands alone).
+///
+/// `kinds` is the site's STATIC kind vector for its N new arguments; the
+/// diamond's `%c3` proves the closure's declared slot kinds for the remaining
+/// slots equal it, which is what makes passing them unboxed sound under
+/// REP_ABI_001 (§5.4). A mismatch takes the slow path, which does today's
+/// conversions in `spliceArgsForSaturatedCall`.
+static inline MLIRContext *ctx0(OpBuilder &b) { return b.getContext(); }
+
+static Value emitSatBegin(ConversionPatternRewriter &rewriter, Location loc,
+                          const EcoRuntime &runtime, Value closureHPtr,
+                          ValueRange newArgs, ArrayRef<uint8_t> kinds,
+                          uint8_t resultKind, Type resultType) {
+    if (!satFastEnabled())
+        return Value();
+    const size_t n = newArgs.size();
+    if (n == 0 || n > 8 || kinds.size() != n)
+        return Value();
+    if (!resultType || isa<LLVM::LLVMVoidType>(resultType))
+        return Value();
+    // The merge phi takes the fast call's result and the slow value, so the
+    // site's result type must be exactly the canonical type its RC names.
+    if (resultType != paramKindToLLVMType(ctx0(rewriter), resultKind))
+        return Value();
+
+
+    auto *ctx = rewriter.getContext();
+    auto i64Ty = IntegerType::get(ctx, 64);
+
+    // Every newarg must already be in its canonical ABI form, or the site's
+    // static kind vector is not what the call would actually pass.
+    uint64_t kc = 0;
+    for (size_t i = 0; i < n; ++i) {
+        Type want = paramKindToLLVMType(ctx, kinds[i]);
+        if (newArgs[i].getType() != want)
+            return Value();
+        kc |= (static_cast<uint64_t>(kinds[i]) & 0x3) << (2 * i);
+    }
+    // No entry can exist for a signature the pre-pass never saw, so emitting
+    // the marker would only add a guard that always fails. A site's OWN
+    // signature must be in the set by construction, so a miss here means the
+    // pre-pass and the lowering disagree — report it under the census flag.
+    if (!satSigPresent(static_cast<unsigned>(n), kc, resultKind & 0x3)) {
+        if (papHisto::enabled()) {
+            static std::atomic<unsigned> shown{0};
+            if (shown.fetch_add(1, std::memory_order_relaxed) < 25)
+                llvm::errs() << "[sat-miss] site sig (n=" << n << ",kc=" << kc
+                             << ",rc=" << unsigned(resultKind & 3)
+                             << ") not recorded by the pre-pass\n";
+        }
+        return Value();
+    }
+
+    // Closures are never embedded constants, so the resolve marker's
+    // precondition holds without a branch (see emitFastClosureCall).
+    if (!inlineDerefExtEnabled())
+        return Value();
+    Value closurePtr = inlineResolvedBase(rewriter, loc, closureHPtr, runtime);
+
+    auto konst = [&](int64_t v) {
+        return rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+                                                 rewriter.getI64IntegerAttr(v))
+            .getResult();
+    };
+    SmallVector<Value> ops;
+    ops.push_back(closurePtr);
+    ops.push_back(konst(static_cast<int64_t>(n)));
+    ops.push_back(konst(static_cast<int64_t>(kc)));
+    ops.push_back(konst(static_cast<int64_t>(resultKind & 0x3)));
+    ops.push_back(konst(static_cast<int64_t>(layout::EvaluatorDescSatOffset +
+                                             8 * n)));
+    ops.append(newArgs.begin(), newArgs.end());
+
+    auto marker = runtime.getOrCreateSatBeginMarker(rewriter);
+    auto call = rewriter.create<LLVM::CallOp>(loc, marker, ops);
+    if (papHisto::enabled())
+        papHisto::satDiamondN.fetch_add(1, std::memory_order_relaxed);
+    return call.getResult();
+}
+
+/// Close the bracket opened by emitSatBegin. `slowResult` is the value the
+/// generic path produced; the expansion replaces its later uses with the merge
+/// phi, so nothing at this level has to know a fast path exists.
+static void emitSatEnd(ConversionPatternRewriter &rewriter, Location loc,
+                       const EcoRuntime &runtime, Value tok, Value slowResult) {
+    if (!tok)
+        return;
+    auto marker = runtime.getOrCreateSatEndMarker(rewriter);
+    rewriter.create<LLVM::CallOp>(loc, marker, ValueRange{tok, slowResult});
+}
+
+/// Descriptor for a closure whose evaluator is a BARE function symbol — the
+/// `eco.allocate_closure` / `eco.make_closure` paths, which deliberately bypass
+/// `getOrCreateWrapper` because the target already uses the args-array
+/// convention. R7: these are the accesses that reach `evaluator` without going
+/// anywhere near a wrapper, so they need their own descriptor or the slot would
+/// still hold a raw code pointer that the runtime would then deref as a struct.
+///
+/// `sat[]` stays null: an args-array target has no typed flat entry to call.
+static void getOrCreateEvalDescForFunc(OpBuilder &builder, ModuleOp module,
+                                       StringRef funcSymbol, int64_t arity,
+                                       uint64_t kindsBitmap, uint8_t resultKind,
+                                       Location loc,
+                                       llvm::SmallVectorImpl<char> &outName) {
+    auto *ctx = builder.getContext();
+    evalDescName(funcSymbol, outName);
+    StringRef name(outName.data(), outName.size());
+    if (module.lookupSymbol<LLVM::GlobalOp>(name))
+        return;
+
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+    auto i8Ty = IntegerType::get(ctx, 8);
+    auto i16Ty = IntegerType::get(ctx, 16);
+    auto i32Ty = IntegerType::get(ctx, 32);
+    auto i64Ty = IntegerType::get(ctx, 64);
+    const unsigned satCount = static_cast<unsigned>(arity) + 1;
+    auto satArrTy = LLVM::LLVMArrayType::get(ptrTy, satCount);
+    auto descTy = LLVM::LLVMStructType::getLiteral(
+        ctx, {ptrTy, i64Ty, i8Ty, i8Ty, i16Ty, i32Ty, satArrTy});
+
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(module.getBody());
+    auto global = builder.create<LLVM::GlobalOp>(
+        loc, descTy, /*isConstant=*/true, LLVM::Linkage::Internal, name,
+        /*value=*/Attribute());
+    Block *blk = builder.createBlock(&global.getInitializerRegion());
+    builder.setInsertionPointToStart(blk);
+    Value agg = builder.create<LLVM::UndefOp>(loc, descTy);
+    Value genericPtr = builder.create<LLVM::AddressOfOp>(loc, ptrTy, funcSymbol);
+    agg = builder.create<LLVM::InsertValueOp>(loc, agg, genericPtr,
+                                              ArrayRef<int64_t>{0});
+    auto put = [&](int64_t idx, Type ty, int64_t v) {
+        Value c = builder.create<LLVM::ConstantOp>(loc, ty,
+                                                   builder.getIntegerAttr(ty, v));
+        agg = builder.create<LLVM::InsertValueOp>(loc, agg, c,
+                                                  ArrayRef<int64_t>{idx});
+    };
+    put(1, i64Ty, static_cast<int64_t>(kindsBitmap));
+    put(2, i8Ty, static_cast<int64_t>(arity & 0xFF));
+    put(3, i8Ty, static_cast<int64_t>(resultKind & 0x3));
+    put(4, i16Ty, 0);
+    put(5, i32Ty, 0);
+    Value nullPtr = builder.create<LLVM::ZeroOp>(loc, ptrTy);
+    for (unsigned i = 0; i < satCount; ++i)
+        agg = builder.create<LLVM::InsertValueOp>(
+            loc, agg, nullPtr, ArrayRef<int64_t>{6, static_cast<int64_t>(i)});
+    builder.create<LLVM::ReturnOp>(loc, agg);
+    if (papHisto::enabled())
+        papHisto::descN.fetch_add(1, std::memory_order_relaxed);
+}
+
+/// Address of the descriptor for a bare function symbol (pre-materialized).
+static Value emitEvalDescAddrForFunc(OpBuilder &b, Location loc,
+                                     const EcoRuntime &runtime,
+                                     StringRef funcSymbol) {
+    auto ptrTy = LLVM::LLVMPointerType::get(b.getContext());
+    llvm::SmallString<96> nameBuf;
+    evalDescName(funcSymbol, nameBuf);
+    assert(runtime.module.lookupSymbol<LLVM::GlobalOp>(StringRef(nameBuf)) &&
+           "bare-function EvaluatorDesc not pre-materialized");
+    return b.create<LLVM::AddressOfOp>(loc, ptrTy, StringRef(nameBuf));
+}
+
+/// The address a closure's `evaluator` slot must hold: the descriptor beside
+/// `wrapper`, not the wrapper itself. The descriptor is materialized by the
+/// serial pre-pass, so this only ever builds the name.
+static Value emitEvalDescAddr(OpBuilder &b, Location loc,
+                              const EcoRuntime &runtime,
+                              LLVM::LLVMFuncOp wrapper) {
+    auto ptrTy = LLVM::LLVMPointerType::get(b.getContext());
+    llvm::SmallString<96> nameBuf;
+    evalDescName(wrapper.getSymName(), nameBuf);
+    assert(runtime.module.lookupSymbol<LLVM::GlobalOp>(StringRef(nameBuf)) &&
+           "EvaluatorDesc not pre-materialized: preMaterializeClosureArtifacts "
+           "missed a wrapper, and the closure would hold a dangling evaluator");
+    return b.create<LLVM::AddressOfOp>(loc, ptrTy, StringRef(nameBuf));
 }
 
 /// Predict whether `getOrCreateWrapper(.., typedNewargs=true)` will produce
@@ -1714,6 +2239,26 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
     int64_t numNewArgs = newArgs.size();
     bool hasOrigNewArgTypes = !origNewArgTypes.empty();
 
+    // Plan §5.3, primary target: bracket the whole generic sequence below with
+    // the `$sat` markers. Everything the fast edge deletes — the alloca, the
+    // memset, the N ptrtoints, the three root-registration calls, and the
+    // runtime's combined_args splice — is emitted between them, so the
+    // expansion moves all of it onto the slow edge. Ineligible sites get a null
+    // token and emit exactly what they emit today.
+    Value satTok;
+    {
+        SmallVector<uint8_t> satKinds;
+        bool satOk = hasOrigNewArgTypes &&
+                     origNewArgTypes.size() == newArgs.size();
+        if (satOk)
+            for (Type t : origNewArgTypes)
+                satKinds.push_back(mlirTypeToParamKind(t));
+        if (satOk)
+            satTok = emitSatBegin(rewriter, loc, runtime, closureI64, newArgs,
+                                  satKinds, mlirTypeToParamKind(resultType),
+                                  resultType);
+    }
+
     // Allocate array for new args only — hoisted to entry block.
     Value newArgsArray;
     {
@@ -1884,6 +2429,10 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
 
     emitRestoreArgsRootRange(rewriter, loc, runtime, savedRange);
 
+    // Close the §5.3 bracket. The expansion replaces `resultI64`'s later uses
+    // with the merge phi, so nothing below this point knows a fast edge exists.
+    emitSatEnd(rewriter, loc, runtime, satTok, resultI64);
+
     // For the boxed path, origResultType is !eco.value (or unknown +
     // resultType is a pointer): pass the HPointer through.
     if (origResultType && isa<eco::ValueType>(origResultType)) {
@@ -1896,20 +2445,6 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
     return resultI64;
 }
 
-/// Implementation of emitUnknownClosureCall.
-/// Emits a warning diagnostic and falls back to the legacy inline closure call.
-static Value emitUnknownClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
-                                    Value closureI64, ValueRange newArgs, Type resultType,
-                                    ArrayRef<Type> origNewArgTypes,
-                                    Type origResultType,
-                                    Operation *safeOp, ValueRange liveRoots) {
-    emitWarning(loc) << "closure call with _dispatch_mode='unknown' - "
-                     << "closure kind metadata was not propagated; "
-                     << "using generic dispatch";
-    // Fall back to legacy inline closure call (args-array convention)
-    return emitInlineClosureCall(rewriter, loc, runtime, closureI64, newArgs, resultType,
-                                 origNewArgTypes, origResultType, safeOp, liveRoots);
-}
 
 //===----------------------------------------------------------------------===//
 // eco.papExtend -> extend closure or call if saturated
@@ -1946,6 +2481,22 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         auto origNewargs = op.getNewargs();
         for (size_t i = 0; i < static_cast<size_t>(numNewArgs); ++i) {
             origNewArgTypes.push_back(origNewargs[i].getType());
+        }
+
+        // Plan §5.3: bracket the generic sequence so `expandSatMarkers` can
+        // put all of it — args buffer, root range, runtime splice — on the
+        // slow edge. `op`'s result type and the site's kind vector are both
+        // statically known here, which is exactly what the diamond needs.
+        Value satTok;
+        {
+            SmallVector<uint8_t> satKinds;
+            for (Type t : origNewArgTypes)
+                satKinds.push_back(mlirTypeToParamKind(t));
+            Type satResultTy =
+                getTypeConverter()->convertType(op.getResult().getType());
+            satTok = emitSatBegin(rewriter, loc, runtime, closureI64, newargs,
+                                  satKinds, mlirTypeToParamKind(satResultTy),
+                                  satResultTy);
         }
 
         // === 1. Alloca + zero-init typed args array — hoisted to entry block ===
@@ -2033,6 +2584,7 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
             emitRestoreArgsRootRange(rewriter, loc, runtime, typedSavedDepth);
         }
 
+        emitSatEnd(rewriter, loc, runtime, satTok, result);
         rewriter.replaceOp(op, result);
         return success();
     }
@@ -2065,6 +2617,22 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         auto origNewargs = op.getNewargs();
         for (size_t i = 0; i < newargs.size(); ++i)
             origNewArgTypes.push_back(origNewargs[i].getType());
+
+        // Plan §5.3: bracket the generic sequence so `expandSatMarkers` can
+        // put all of it — args buffer, root range, runtime splice — on the
+        // slow edge. `op`'s result type and the site's kind vector are both
+        // statically known here, which is exactly what the diamond needs.
+        Value satTok;
+        {
+            SmallVector<uint8_t> satKinds;
+            for (Type t : origNewArgTypes)
+                satKinds.push_back(mlirTypeToParamKind(t));
+            Type satResultTy =
+                getTypeConverter()->convertType(op.getResult().getType());
+            satTok = emitSatBegin(rewriter, loc, runtime, closureI64, newargs,
+                                  satKinds, mlirTypeToParamKind(satResultTy),
+                                  satResultTy);
+        }
 
         // Allocate typed args buffer at function entry.
         Value typedArgsArray;
@@ -2154,6 +2722,7 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
             emitRestoreArgsRootRange(rewriter, loc, runtime, savedDepth);
         }
 
+        emitSatEnd(rewriter, loc, runtime, satTok, result);
         rewriter.replaceOp(op, result);
         return success();
     }
@@ -2433,15 +3002,14 @@ struct CallOpLowering : public OpConversionPattern<CallOp> {
             // intermediate resolveHPtr/boxing calls).
             ValueRange callRoots = isMusttail ? ValueRange{} : liveRoots;
 
-            // Check for typed closure calling attributes.
-            auto dispatchMode = op->getAttrOfType<StringAttr>("_dispatch_mode");
-            if (dispatchMode) {
-                result = emitDispatchedClosureCall(rewriter, loc, runtime, op, closureI64, newArgs, convertedResultTy,
-                                                   origNewArgTypes, origResultType, callRoots);
-                if (!result) {
-                    return failure();
-                }
-            } else {
+            // Phase 4 (plans/gc-root-registration-cost.md): `_dispatch_mode` is
+            // set by NO pass in either tree, so the branch that read it — and
+            // `emitDispatchedClosureCall` / `emitUnknownClosureCall` behind it —
+            // was unreachable and has been deleted. `emitClosureCall` is NOT
+            // dead and stays: PapExtendOpLowering reaches it on the
+            // `_closure_kind` arm, and `_closure_kind` is emitted by the ELM
+            // compiler (Compiler/Generate/MLIR/Expr.elm), not by an MLIR pass.
+            {
                 result = emitInlineClosureCall(rewriter, loc, runtime, closureI64, newArgs, convertedResultTy,
                                                origNewArgTypes, origResultType, op, callRoots);
             }
@@ -2502,11 +3070,134 @@ void eco::detail::populateEcoClosurePatterns(EcoTypeConverter &typeConverter, Re
 // carry their ORIGINAL eco types at this pre-Stage-2 point) and calling the SAME
 // creators the patterns call. After this, Stage 2 getOrCreateWrapper/eval-layout
 // calls all HIT the cache (read-only symbol table).
+mlir::Value eco::detail::emitEvalDescAddrForFuncSymbol(
+    OpBuilder &b, Location loc, const EcoRuntime &runtime,
+    StringRef funcSymbol) {
+    return emitEvalDescAddrForFunc(b, loc, runtime, funcSymbol);
+}
+
 void eco::detail::preMaterializeClosureArtifacts(
     OpBuilder &builder, const EcoRuntime &runtime,
     const TypeConverter *typeConverter,
     llvm::ArrayRef<LLVM::LLVMFuncOp> funcs) {
     ModuleOp module = runtime.module;
+
+    // Plan §5.2: `$sat` entries are generated only for the newarg counts that
+    // array-building call sites actually use, so collect that set FIRST — a
+    // descriptor built in the walk below needs the final set to fill sat[].
+    // Serial by construction (this whole function is the serial pre-pass).
+    g_satSigs.clear();
+    g_minCaptured.clear();
+    {
+        // The site signature must be computed the way `emitSatBegin` computes
+        // it, or entries and markers disagree. Both directions of disagreement
+        // are safe (see SatSiteSig), but every mismatch is wasted work.
+        unsigned seenPe = 0, seenCall = 0;
+        unsigned nHist[20] = {};
+        auto note = [&](ValueRange newargs, Type resultTy) {
+            size_t n = newargs.size();
+            nHist[n < 20 ? n : 19]++;
+            if (n == 0 || n > 8) return;
+            uint64_t kc = 0;
+            for (size_t i = 0; i < n; ++i)
+                kc |= (static_cast<uint64_t>(
+                           mlirTypeToParamKind(newargs[i].getType())) &
+                       0x3)
+                      << (2 * i);
+            uint8_t rc = resultTy ? mlirTypeToParamKind(resultTy) : 0;
+            SatSiteSig sig{static_cast<unsigned>(n), kc,
+                           static_cast<uint8_t>(rc & 0x3)};
+            if (!llvm::is_contained(g_satSigs, sig))
+                g_satSigs.push_back(sig);
+        };
+        auto noteCaptures = [&](StringRef sym, unsigned captured) {
+            auto it = g_minCaptured.find(sym);
+            if (it == g_minCaptured.end())
+                g_minCaptured[sym] = captured;
+            else if (captured < it->second)
+                it->second = captured;
+        };
+
+        for (LLVM::LLVMFuncOp func : funcs) {
+            func.walk([&](Operation *op) {
+                if (auto pe = dyn_cast<PapExtendOp>(op)) {
+                    ++seenPe;
+                    // `papExtend`'s operand layout is
+                    // `[closure, newargs..., roots...]` and `getNewargs()`
+                    // returns the whole tail AFTER the closure — roots
+                    // included. The lowering drops them via splitAdaptedRoots;
+                    // counting them here inflated every site's N (no n=1 at
+                    // all, a spurious peak at n=5) and made every real
+                    // signature miss.
+                    auto all = pe.getNewargs();
+                    unsigned roots = pe.getGCRoots().size();
+                    if (all.size() < roots) return;
+                    note(all.take_front(all.size() - roots),
+                         typeConverter->convertType(pe.getResult().getType()));
+                } else if (auto call = dyn_cast<CallOp>(op)) {
+                    if (call.getCallee()) return;
+                    ++seenCall;
+                    unsigned rootCount = call.getGCRoots().size();
+                    auto operands = call.getOperands();
+                    unsigned realCount = operands.size() - rootCount;
+                    if (realCount < 1) return;
+                    Type rty = call.getNumResults() > 0
+                                   ? typeConverter->convertType(
+                                         call.getResult(0).getType())
+                                   : Type();
+                    note(operands.slice(1, realCount - 1), rty);
+                } else if (auto pc = dyn_cast<PapCreateOp>(op)) {
+                    StringRef sym;
+                    if (auto fe = pc->getAttrOfType<SymbolRefAttr>("_fast_evaluator"))
+                        sym = fe.getRootReference();
+                    else
+                        sym = pc.getFunction();
+                    noteCaptures(sym,
+                                 static_cast<unsigned>(pc.getNumCaptured()));
+                } else if (auto pg = dyn_cast<PapCreateGroupOp>(op)) {
+                    auto fes = pg.getFastEvaluators();
+                    auto ncs = pg.getNumCaptured();
+                    for (unsigned i = 0; i < fes.size(); ++i) {
+                        unsigned nc = 0;
+                        if (i < ncs.size())
+                            nc = static_cast<unsigned>(
+                                cast<IntegerAttr>(ncs[i]).getInt());
+                        noteCaptures(cast<FlatSymbolRefAttr>(fes[i]).getValue(),
+                                     nc);
+                    }
+                }
+            });
+        }
+        if (papHisto::enabled()) {
+            llvm::errs() << "[sat-walk] papExtend=" << seenPe
+                         << " indirectCall=" << seenCall << " nHist:";
+            for (unsigned i = 0; i < 12; ++i)
+                llvm::errs() << " " << i << "=" << nHist[i];
+            llvm::errs() << "\n";
+            llvm::errs() << "[sat-sigs] recorded";
+            for (const SatSiteSig &g : g_satSigs)
+                llvm::errs() << " (" << g.n << "," << g.kc << "," << unsigned(g.rc)
+                             << ")";
+            llvm::errs() << "\n";
+        }
+    }
+
+    // Emits the descriptor beside a wrapper (Phase 2), plus its `$sat` entries
+    // (Phase 3). Kept next to the wrapper creation so the two can never diverge.
+    auto materialize = [&](StringRef funcSymbol, int64_t arity, uint8_t rk,
+                           Location loc) {
+        auto wrapper = getOrCreateWrapper(builder, module, funcSymbol, arity, loc,
+                                          typeConverter, runtime,
+                                          /*typedNewargs=*/true, rk);
+        bool isTyped = wrapperWillBeTypedNewargs(runtime, funcSymbol);
+        uint64_t kinds =
+            isTyped ? deriveAllParamKindsBitmap(runtime, funcSymbol, arity) : 0;
+        llvm::SmallString<96> descName;
+        getOrCreateEvalDesc(builder, module, runtime, wrapper,
+                            /*targetSymbol=*/isTyped ? funcSymbol : StringRef(),
+                            arity, kinds, rk, loc, descName);
+    };
+
     for (LLVM::LLVMFuncOp func : funcs) {
         func.walk([&](Operation *op) {
             if (auto pc = dyn_cast<PapCreateOp>(op)) {
@@ -2515,10 +3206,8 @@ void eco::detail::preMaterializeClosureArtifacts(
                     funcSymbol = fe.getRootReference();
                 else
                     funcSymbol = pc.getFunction();
-                getOrCreateWrapper(builder, module, funcSymbol, pc.getArity(),
-                                   pc.getLoc(), typeConverter, runtime,
-                                   /*typedNewargs=*/true,
-                                   static_cast<uint8_t>(pc.get_resultKind()));
+                materialize(funcSymbol, pc.getArity(), 
+                            static_cast<uint8_t>(pc.get_resultKind()), pc.getLoc());
             } else if (auto pg = dyn_cast<PapCreateGroupOp>(op)) {
                 auto fes = pg.getFastEvaluators();
                 auto arities = pg.getArities();
@@ -2531,10 +3220,20 @@ void eco::detail::preMaterializeClosureArtifacts(
                     if (rks && i < rks.getValue().size())
                         rk = static_cast<uint8_t>(
                             cast<IntegerAttr>(rks.getValue()[i]).getInt());
-                    getOrCreateWrapper(builder, module, funcSymbol, arity,
-                                       pg.getLoc(), typeConverter, runtime,
-                                       /*typedNewargs=*/true, rk);
+                    materialize(funcSymbol, arity, rk, pg.getLoc());
                 }
+            } else if (auto ac = dyn_cast<AllocateClosureOp>(op)) {
+                // R7: bypass paths that store a bare function symbol still need
+                // a descriptor, or `evaluator` would hold a raw code pointer.
+                llvm::SmallString<96> n;
+                getOrCreateEvalDescForFunc(builder, module, ac.getFunction(),
+                                           ac.getArity(), /*kinds=*/0,
+                                           /*resultKind=*/0, ac.getLoc(), n);
+            } else if (auto mc = dyn_cast<MakeClosureOp>(op)) {
+                llvm::SmallString<96> n;
+                getOrCreateEvalDescForFunc(builder, module, mc.getFunction(),
+                                           mc.getArity(), /*kinds=*/0,
+                                           /*resultKind=*/0, mc.getLoc(), n);
             } else if (auto pe = dyn_cast<PapExtendOp>(op)) {
                 preMaterializeApplyLayouts(
                     builder, runtime, op, pe.getNewargs(),

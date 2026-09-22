@@ -375,6 +375,17 @@ constexpr uint64_t ClosurePackedOffset = HeaderSize;
 constexpr uint64_t ClosureEvaluatorOffset = HeaderSize + PtrSize;
 constexpr uint64_t ClosureValuesOffset = HeaderSize + 2 * PtrSize;
 
+// EvaluatorDesc layout (plans/gc-root-registration-cost.md Phase 2; the struct
+// lives in runtime/src/allocator/Heap.hpp and static_asserts these offsets):
+//   [generic:8][kinds:8][stage_arity:1][result_kind:1][pad:6][sat:(P+1)*8]
+// `sat` holds stage_arity+1 slots, so `sat[N]` behind the `rem == N` guard is
+// always in bounds; a slot with no generated entry is null.
+constexpr uint64_t EvaluatorDescGenericOffset = 0;
+constexpr uint64_t EvaluatorDescKindsOffset = 8;
+constexpr uint64_t EvaluatorDescStageArityOffset = 16;
+constexpr uint64_t EvaluatorDescResultKindOffset = 17;
+constexpr uint64_t EvaluatorDescSatOffset = 24;
+
 // Inline-alloc fixed byte sizes (HEAP_034,
 // plans/inline-nursery-allocation.md); pinned against the runtime structs by
 // static_asserts in EcoToLLVMHeap.cpp (the one pass file that includes
@@ -610,7 +621,9 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateApplyClosure(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateApplyClosureTyped(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateApplyClosureEval(mlir::OpBuilder &builder) const;
-    mlir::LLVM::LLVMFuncOp getOrCreateApplySegmentationUnknown(mlir::OpBuilder &builder) const;
+    // plans/gc-root-registration-cost.md Phase 3 marker pair.
+    mlir::LLVM::LLVMFuncOp getOrCreateSatBeginMarker(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateSatEndMarker(mlir::OpBuilder &builder) const;
 
     // Utility functions
     mlir::LLVM::LLVMFuncOp getOrCreateResolveHPtr(mlir::OpBuilder &builder) const;
@@ -1217,6 +1230,14 @@ inline bool cafCallerFastEnabled() {
     }();
     return enabled;
 }
+
+/// plans/gc-root-registration-cost.md Phase 2 (R7): address of the
+/// `EvaluatorDesc` emitted beside a BARE function symbol (the
+/// `eco.allocate_closure` / `eco.make_closure` paths, which bypass
+/// `getOrCreateWrapper`). Materialized by the serial closure pre-pass.
+mlir::Value emitEvalDescAddrForFuncSymbol(mlir::OpBuilder &b, mlir::Location loc,
+                                          const EcoRuntime &runtime,
+                                          mlir::StringRef funcSymbol);
 
 } // namespace detail
 } // namespace eco

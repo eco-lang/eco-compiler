@@ -460,6 +460,15 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
         }
     }
 
+    // Phase 1e': single-slot stack roots (plan §3.3). Same status as the ranges
+    // above — one HPointer slot each, count and mask implicit.
+#if ECO_GC_DEBUG
+    std::fprintf(stderr, "[gc] phase 1e': %zu single stack roots\n", root_set.getSingleRoots().size());
+#endif
+    for (HPointer* slot : root_set.getSingleRoots()) {
+        evacuate(*slot, oldgen, &promoted_objects);
+    }
+
     // Phase 1d: External root scanners (Scheduler run queue, PlatformRuntime state, etc.).
 #if ECO_GC_DEBUG
     std::fprintf(stderr, "[gc] phase 1d: %zu external scanners\n", root_set.getExternalRootScanners().size());

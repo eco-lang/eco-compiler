@@ -323,7 +323,7 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
                 closure->n_values = num_values;
                 closure->max_values = num_values;
                 closure->unboxed = buildUnboxedBitmap(desc.closure_values_boxed, 52);
-                closure->evaluator = (EvalFunction)desc.closure_evaluator_dummy;
+                closure->evaluator = reinterpret_cast<const EvaluatorDesc *>(desc.closure_evaluator_dummy);
 
                 for (size_t i = 0; i < num_values; i++) {
                     closure->values[i] = makeUnboxable(desc.closure_values_boxed[i], desc, allocated,
@@ -542,7 +542,7 @@ std::vector<void *> allocateHeapGraphInOldGen(OldGenSpace& oldgen,
                 closure->n_values = num_values;
                 closure->max_values = num_values;
                 closure->unboxed = buildUnboxedBitmap(desc.closure_values_boxed, 52);
-                closure->evaluator = (EvalFunction)desc.closure_evaluator_dummy;
+                closure->evaluator = reinterpret_cast<const EvaluatorDesc *>(desc.closure_evaluator_dummy);
 
                 for (size_t i = 0; i < num_values; i++) {
                     closure->values[i] = makeUnboxable(desc.closure_values_boxed[i], desc, allocated,

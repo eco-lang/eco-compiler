@@ -393,8 +393,8 @@ Testing::TestCase testEcoAllocChurnSurvivesManyMinorGCs(
                         break;
                 case 7: h = eco_alloc_record(0, 0); break;
                 case 8: h = eco_alloc_string(8); break;
-                case 9: h = eco_alloc_closure(reinterpret_cast<void*>(0x42),
-                                               0);
+                case 9: h = eco_alloc_closure_fn(reinterpret_cast<void*>(0x42),
+                                               0, /*result_kind=*/0);
                         break;
             }
             GCP_ASSERT(h.toBits() != 0);
@@ -478,8 +478,8 @@ Testing::TestCase testEcoAllocClosureCapturesSurviveGC(
             // Closure with kCaptures slots.
             StackRootRangeGuard g(captures, kCaptures,
                                   (1ULL << kCaptures) - 1ULL);
-            HPtr cl_h = eco_alloc_closure(reinterpret_cast<void*>(0xC10510),
-                                           kCaptures);
+            HPtr cl_h = eco_alloc_closure_fn(reinterpret_cast<void*>(0xC10510),
+                                           kCaptures, /*result_kind=*/0);
             GCP_ASSERT(cl_h.toBits() != 0);
             // Store each captured HPointer as a boxed field.
             for (uint32_t k = 0; k < kCaptures; ++k) {

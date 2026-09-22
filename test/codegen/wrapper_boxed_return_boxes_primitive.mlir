@@ -38,6 +38,11 @@ module {
 
 // Wrapper exists, returns `ptr` (boxed HPtr; no `_rf`/`_ri`/`_rc`
 // suffix because it's the PK_Boxed cache slot).
+// Phase 2 (plans/gc-root-registration-cost.md): the closure header carries
+// the per-evaluator DESCRIPTOR, not the wrapper address. The descriptor is a
+// static constant whose first field IS the wrapper, so the registration below
+// still pins this wrapper to this closure, through one more indirection.
+// CHECK: @__eco_evaldesc___closure_wrapper_typed_double_float_boxed = internal constant {{.*}} ptr @__closure_wrapper_typed_double_float_boxed
 // CHECK: define internal ptr @__closure_wrapper_typed_double_float_boxed
 // CHECK: ret ptr
 
@@ -46,4 +51,9 @@ module {
 // CHECK: @eco_alloc_float
 
 // eco_intern_closure0 (HEAP_033) registers the wrapper; K = 0 (PK_Boxed) rides in the packed word (and the _boxed suffix).
-// CHECK: ptr @__closure_wrapper_typed_double_float_boxed, i32 1, i64
+// Phase 2 (plans/gc-root-registration-cost.md): the closure header now
+// carries the per-evaluator DESCRIPTOR, not the wrapper address. The
+// descriptor is a static constant whose first field IS the wrapper, so the
+// registration below still pins the wrapper to this closure — through one
+// more level of indirection.
+// CHECK: ptr @__eco_evaldesc___closure_wrapper_typed_double_float_boxed, i32 1, i64

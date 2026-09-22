@@ -172,6 +172,34 @@ void Allocator::setThreadHeap(ThreadLocalHeap* h) {
     tl_heap_ = h;
     eco_tl_bump_state = h ? static_cast<void*>(h->getNursery().bumpState())
                           : nullptr;
+
+    // GC shadow root stack (plans/gc-root-registration-cost.md O1). Same rule,
+    // same place, same reason as the bump-state cache above: the three cursors
+    // must never disagree with `tl_heap_`, and keeping every write in this one
+    // function is what makes that true by construction.
+    //
+    // The cursor is reset to the array start on attach. Both transitions that
+    // reach here — initThread on a fresh thread, cleanupThread/reset on
+    // teardown — happen with no C++ or compiled frame holding a pushed range,
+    // so there is never a live entry to preserve across them.
+    if (h) {
+        RootSet& rs = h->getRootSet();
+        StackRootRangeRec* storage = rs.rangeStorage();
+        eco_tl_root_base = storage;
+        eco_tl_root_limit = storage + kRootRangeStackSlots;
+        eco_tl_root_sp = storage;
+        HPointer** one = rs.root1Storage();
+        eco_tl_root1_base = one;
+        eco_tl_root1_limit = one + kRoot1StackSlots;
+        eco_tl_root1_sp = one;
+    } else {
+        eco_tl_root_base = nullptr;
+        eco_tl_root_limit = nullptr;
+        eco_tl_root_sp = nullptr;
+        eco_tl_root1_base = nullptr;
+        eco_tl_root1_limit = nullptr;
+        eco_tl_root1_sp = nullptr;
+    }
 }
 
 Allocator::Allocator() :

@@ -26,6 +26,7 @@
 #include <unistd.h>
 #include <deque>
 #include <map>  // call-census row merge
+#include <mutex>
 #include <new>
 #include <sstream>
 #include <string>
@@ -1187,12 +1188,82 @@ extern "C" void eco_call_census_register(const void* counts, const void* names,
 // Manual/embedder hook: dump the call census now (idempotent).
 extern "C" void eco_call_census_dump(void) { callCensusDumpImpl(); }
 
+//===----------------------------------------------------------------------===//
+// Kernel evaluator descriptors (plans/gc-root-registration-cost.md Phase 2, R6)
+//
+// Compiled code carries an `EvaluatorDesc` global beside every closure wrapper.
+// A C++ kernel building a closure has only a function pointer, so one descriptor
+// per (fn, stage_arity, result_kind) is interned here for the life of the
+// process — never freed, never GC-visible (it is static data by construction,
+// exactly like the emitted globals).
+//
+// `kinds` is 0 (all PK_Boxed): kernel evaluators take the `void*[]` convention.
+// Every `sat[]` slot is null, so such a closure fails the arity fast-path guard
+// closed and takes the same route it takes today. `sat` is sized
+// `stage_arity + 1` so that a `sat[N]` load behind the `rem == N` guard is
+// always in bounds.
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+struct KernelDescKey {
+    Elm::EvalFunction fn;
+    unsigned arity;
+    unsigned char rk;
+    bool operator==(const KernelDescKey& o) const {
+        return fn == o.fn && arity == o.arity && rk == o.rk;
+    }
+};
+
+struct KernelDescKeyHash {
+    size_t operator()(const KernelDescKey& k) const {
+        return std::hash<const void*>()(reinterpret_cast<const void*>(k.fn)) * 31
+             + k.arity * 7 + k.rk;
+    }
+};
+
+std::mutex g_kernel_desc_mutex;
+std::unordered_map<KernelDescKey, Elm::EvaluatorDesc*, KernelDescKeyHash>
+    g_kernel_descs;
+
+}  // namespace
+
+namespace Elm {
+
+const EvaluatorDesc* ecoDescForKernelEvaluator(EvalFunction fn,
+                                               unsigned stage_arity,
+                                               unsigned char result_kind) {
+    KernelDescKey key{fn, stage_arity, static_cast<unsigned char>(result_kind & 3)};
+    std::lock_guard<std::mutex> lock(g_kernel_desc_mutex);
+    auto it = g_kernel_descs.find(key);
+    if (it != g_kernel_descs.end())
+        return it->second;
+
+    size_t bytes = sizeof(EvaluatorDesc)
+                 + (static_cast<size_t>(stage_arity) + 1) * sizeof(void*);
+    auto* desc = static_cast<EvaluatorDesc*>(std::calloc(1, bytes));
+    if (!desc) {
+        std::fprintf(stderr, "[eco] FATAL: out of memory interning an "
+                             "EvaluatorDesc for a kernel closure\n");
+        std::abort();
+    }
+    desc->generic = fn;
+    desc->kinds = 0;
+    desc->stage_arity = static_cast<unsigned char>(stage_arity);
+    desc->result_kind = static_cast<unsigned char>(result_kind & 3);
+    // calloc already nulled every sat[] slot.
+    g_kernel_descs.emplace(key, desc);
+    return desc;
+}
+
+}  // namespace Elm
+
 extern "C" HPtr eco_alloc_closure_k(void* func_ptr, uint32_t num_captures,
                                     uint8_t result_kind) {
     assert(result_kind <= 3 && "eco_alloc_closure_k: result_kind out of range");
     closureStatsRecord(func_ptr, /*isExtend=*/false);
     // Size: Header + metadata (8 bytes) + evaluator ptr + captures
-    size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + num_captures * sizeof(Unboxable);
+    size_t size = sizeof(Header) + 8 + sizeof(const EvaluatorDesc*) + num_captures * sizeof(Unboxable);
 
     // No HPointer args to root (func_ptr is a code pointer, not a heap pointer;
     // captures are filled by the caller via closureCapture afterwards).
@@ -1204,12 +1275,26 @@ extern "C" HPtr eco_alloc_closure_k(void* func_ptr, uint32_t num_captures,
     closure->max_values = num_captures;
     closure->result_kind = result_kind;
     closure->unboxed = 0;
-    closure->evaluator = reinterpret_cast<EvalFunction>(func_ptr);
+    closure->evaluator = reinterpret_cast<const EvaluatorDesc*>(func_ptr);
     return ptrToHPointer(obj);
 }
 
 extern "C" HPtr eco_alloc_closure(void* func_ptr, uint32_t num_captures) {
     return eco_alloc_closure_k(func_ptr, num_captures, /*result_kind=*/0);
+}
+
+// Same allocation, but `fn` is a raw EVALUATOR FUNCTION pointer rather than an
+// `EvaluatorDesc*` (plans/gc-root-registration-cost.md Phase 2). Compiled code
+// always has a descriptor emitted beside its wrapper and uses the entries
+// above; C++ that mints a closure from a plain function pointer — kernels via
+// `alloc::allocClosureK`, and the allocator unit tests — goes through the
+// interning registry instead.
+extern "C" HPtr eco_alloc_closure_fn(void* fn, uint32_t num_captures,
+                                     uint8_t result_kind) {
+    const EvaluatorDesc* desc = ecoDescForKernelEvaluator(
+        reinterpret_cast<EvalFunction>(fn), num_captures, result_kind);
+    return eco_alloc_closure_k(const_cast<EvaluatorDesc*>(desc), num_captures,
+                               result_kind);
 }
 
 // Zero-capture closure interning (HOF-elimination plan H4.2, HEAP_033).
@@ -1232,14 +1317,14 @@ extern "C" HPtr eco_intern_closure0(void* func_ptr, uint32_t arity,
                                     uint64_t packed) {
     return internLiteral(func_ptr, [&]() -> HPtr {
         closureStatsRecord(func_ptr, /*isExtend=*/false);
-        size_t size = sizeof(Header) + 8 + sizeof(EvalFunction)
+        size_t size = sizeof(Header) + 8 + sizeof(const EvaluatorDesc*)
                     + static_cast<size_t>(arity) * sizeof(Unboxable);
         void* obj = allocInternObject(Tag_Closure, size);
         if (!obj) return HPtr::fromBits(0);
         Closure* closure = static_cast<Closure*>(obj);
         std::memcpy(reinterpret_cast<char*>(obj) + 8, &packed,
                     sizeof(uint64_t));
-        closure->evaluator = reinterpret_cast<EvalFunction>(func_ptr);
+        closure->evaluator = reinterpret_cast<const EvaluatorDesc*>(func_ptr);
         // GC-safety: `packed` sets max_values == arity, and the closure scan
         // (OldGenSpace::markChildren / NurserySpace::scanObject, Tag_Closure)
         // iterates ALL max_values value slots — deliberately, to cover captures
@@ -1517,7 +1602,7 @@ extern "C" HPtr eco_alloc_string_slow(uint32_t length) {
 }
 
 extern "C" HPtr eco_alloc_closure_fast(void* func_ptr, uint32_t num_captures) {
-    size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + num_captures * sizeof(Unboxable);
+    size_t size = sizeof(Header) + 8 + sizeof(const EvaluatorDesc*) + num_captures * sizeof(Unboxable);
     void* obj = Allocator::instance().allocateFast(size);
     if (!obj) return HPtr::fromBits(0);
     closureStatsRecord(func_ptr, /*isExtend=*/false);
@@ -1531,13 +1616,13 @@ extern "C" HPtr eco_alloc_closure_fast(void* func_ptr, uint32_t num_captures) {
     closure->max_values = num_captures;
     closure->result_kind = 0;
     closure->unboxed = 0;
-    closure->evaluator = reinterpret_cast<EvalFunction>(func_ptr);
+    closure->evaluator = reinterpret_cast<const EvaluatorDesc*>(func_ptr);
 
     return ptrToHPointer(obj);
 }
 
 extern "C" HPtr eco_alloc_closure_slow(void* func_ptr, uint32_t num_captures) {
-    size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + num_captures * sizeof(Unboxable);
+    size_t size = sizeof(Header) + 8 + sizeof(const EvaluatorDesc*) + num_captures * sizeof(Unboxable);
     void* obj = Allocator::instance().allocateSlow(size, Tag_Closure);
     if (!obj) return HPtr::fromBits(0);
     closureStatsRecord(func_ptr, /*isExtend=*/false);
@@ -1547,7 +1632,7 @@ extern "C" HPtr eco_alloc_closure_slow(void* func_ptr, uint32_t num_captures) {
     closure->max_values = num_captures;
     closure->result_kind = 0;
     closure->unboxed = 0;
-    closure->evaluator = reinterpret_cast<EvalFunction>(func_ptr);
+    closure->evaluator = reinterpret_cast<const EvaluatorDesc*>(func_ptr);
 
     return ptrToHPointer(obj);
 }
@@ -1650,7 +1735,7 @@ extern "C" void eco_alloc_closure_group_slow(
     // allocated storage has room for future PAP-extend slots too.
     size_t totalBytes = 0;
     for (uint64_t i = 0; i < numSiblings; ++i) {
-        const size_t perSibling = sizeof(Header) + 8 + sizeof(EvalFunction)
+        const size_t perSibling = sizeof(Header) + 8 + sizeof(const EvaluatorDesc*)
                                 + static_cast<size_t>(arities[i]) * sizeof(Unboxable);
         totalBytes += perSibling;
     }
@@ -1672,7 +1757,7 @@ extern "C" void eco_alloc_closure_group_slow(
     for (uint64_t i = 0; i < numSiblings; ++i) {
         const uint32_t arity = arities[i];
         const uint32_t nc = numCaptured[i];
-        const size_t perSibling = sizeof(Header) + 8 + sizeof(EvalFunction)
+        const size_t perSibling = sizeof(Header) + 8 + sizeof(const EvaluatorDesc*)
                                 + static_cast<size_t>(arity) * sizeof(Unboxable);
 
         void* obj = cursor;
@@ -1690,8 +1775,7 @@ extern "C" void eco_alloc_closure_group_slow(
         // per-call-site plumbing.
         closure->result_kind = resultKinds[i] & 0x3;
         closure->unboxed = unboxedBitmaps[i];
-        closure->evaluator = reinterpret_cast<EvalFunction>(
-            const_cast<void*>(evaluators[i]));
+        closure->evaluator = reinterpret_cast<const EvaluatorDesc*>(evaluators[i]);
         closureStatsRecord(evaluators[i], /*isExtend=*/false);
 
         // Non-sibling captures: pre-ordered into slots [0 .. capture_counts[i]).
@@ -2101,6 +2185,98 @@ void deliverPrimitiveFromBoxed(HPtr boxed, uint8_t desired_kind, void* result_sl
 
 } // anonymous namespace
 
+// NOTE (plans/gc-root-registration-cost.md Phase 4, second correction):
+// no LOWERING emits a call to this — the decline census records zero events
+// and `getOrCreateApplySegmentationUnknown` has been deleted — but
+// test/allocator/EcoApplyClosureTypedTest.cpp exercises it directly, so the
+// definition stays. Only the dead codegen-side wiring was removed.
+// Phase D Part 2: typed-args entry point for segmentation-unknown apply.
+//
+// Takes a single typed `int64_t*` buffer plus an `EvalParamLayout` (instead
+// of the previous dual buffer + bitmap form). The runtime decides at the
+// closure header whether the call is under- or saturated, and routes:
+//
+//   under-saturated  → eco_pap_extend (with a bitmap derived from layout)
+//   saturated/over   → eco_apply_closure_typed (which centralises any
+//                      necessary primitive re-boxing for the saturated path)
+//
+// `args_layout` may be null only for the all-boxed fallback case; every
+// emitter today passes a non-null layout.
+extern "C" HPtr eco_apply_segmentation_unknown(HPtr closure_hptr,
+                                               int64_t* typed_args,
+                                               uint32_t num_args,
+                                               const EvalParamLayout* args_layout) {
+    uint64_t closure_bits = closure_hptr.toBits();
+    void* closure_ptr = hpointerToPtr(closure_bits);
+    if (!closure_ptr) return HPtr::fromBits(0);
+
+    Closure* closure = static_cast<Closure*>(closure_ptr);
+    uint32_t n_values = closure->n_values;
+    uint32_t max_values = closure->max_values;
+
+    // DIAG: Check for corrupted closure header
+    if (max_values == 0 || max_values > 63) {
+        uint64_t packed;
+        memcpy(&packed, reinterpret_cast<char*>(closure_ptr) + 8, sizeof(packed));
+        // Check if the closure has been forwarded (GC moved it)
+        fprintf(stderr, "DIAG: eco_apply_segmentation_unknown bad closure: hptr=0x%lx ptr=%p tag=%u n_values=%u max_values=%u num_args=%u packed=0x%lx\n",
+                closure_bits, closure_ptr, closure->header.tag, n_values, max_values, num_args, packed);
+        fprintf(stderr, "  header: color=%u pin=%u age=%u unboxed=%u size=%u\n",
+                closure->header.color, closure->header.pin,
+                closure->header.age, closure->header.unboxed, closure->header.size);
+        fprintf(stderr, "  evaluator=%p\n", (void*)closure->evaluator);
+        fflush(stderr);
+        // Abort early so we get the full output before the assertion
+        abort();
+    }
+    uint32_t remaining = max_values - n_values;
+
+    // Root closure_bits across the inner call.
+    EcoRootMark saved_range = ecoRootMark();
+    ecoRoot1Push(reinterpret_cast<HPointer*>(&closure_bits));
+    HPtr result;
+
+    if (num_args < remaining) {
+        // Under-saturated: hand the typed args to eco_pap_extend along with a
+        // 2-bit-per-slot bitmap derived from the layout's kinds. This matches
+        // the encoding `eco_pap_extend` expects (kind 0 = HPointer; non-zero =
+        // primitive index into ParamKind).
+        //
+        // The bitmap is u64 with 2 bits per slot, so it holds at most 32 slots.
+        // Closures with >32 typed newargs under-saturated would silently lose
+        // primitive-ness for slots 32+ — fail loud instead. Lifting this cap
+        // requires switching from a packed bitmap to a heap- or stack-allocated
+        // kind array.
+        assert(num_args <= 32 &&
+               "eco_apply_segmentation_unknown: bitmap derivation caps at 32 args");
+        uint64_t bitmap = 0;
+        if (args_layout != nullptr) {
+            for (uint32_t i = 0; i < num_args; ++i) {
+                bitmap |= (static_cast<uint64_t>(args_layout->kinds[i]) & 0x3ULL) << (2 * i);
+            }
+        }
+        if (num_args > 0) {
+            uint64_t mask = pointerMaskFromKindBitmap(bitmap, num_args);
+            if (mask != 0) {
+                eco_gc_push_stack_range(reinterpret_cast<uint64_t*>(typed_args), num_args, mask);
+            }
+        }
+        result = eco_pap_extend(HPtr::fromBits(closure_bits),
+                                reinterpret_cast<uint64_t*>(typed_args),
+                                num_args, bitmap);
+    } else {
+        // Saturated/over-saturated: forward to the typed-apply entry point,
+        // which reaches eco_apply_closure_eval; the `gen`+`sat` are recorded
+        // there.
+        // which centralises any required primitive re-boxing before invoking
+        // the evaluator. No parallel boxed buffer is needed.
+        result = eco_apply_closure_typed(HPtr::fromBits(closure_bits),
+                                         typed_args, num_args, args_layout);
+    }
+
+    ecoRootRelease(saved_range);
+    return result;
+}
 // Phase E: canonical generic-apply entry point with typed result delivery.
 //
 // Args interpretation is fully typed per REP_ABI_001:
@@ -2178,8 +2354,8 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
     // Root `closure_bits` and the typed args buffer's HPointer slots
     // across the inner runtime call. Mask comes from the layout's kinds
     // so primitive slots are correctly skipped by the GC scan.
-    size_t saved_range = eco_gc_stack_range_point();
-    eco_gc_push_stack_range(&closure_bits, 1, 1);
+    EcoRootMark saved_range = ecoRootMark();
+    ecoRoot1Push(reinterpret_cast<HPointer*>(&closure_bits));
     if (num_args > 0 && args_layout) {
         uint64_t hptrMask = 0;
         for (uint32_t i = 0; i < num_args && i < 64; ++i) {
@@ -2229,7 +2405,7 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
                                        reinterpret_cast<uint64_t*>(typed_args),
                                        num_args, bitmap);
         *static_cast<HPtr*>(result_slot) = extended;
-        eco_gc_restore_stack_range_point(saved_range);
+        ecoRootRelease(saved_range);
         return;
     }
 
@@ -2244,7 +2420,7 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
         // `desired_kind` (boxing if the caller wants a boxed result).
         invokeSaturatedTyped(closure_bits, typed_args, num_args, args_layout,
                              K, desired_kind, result_slot);
-        eco_gc_restore_stack_range_point(saved_range);
+        ecoRootRelease(saved_range);
         return;
     }
 
@@ -2282,7 +2458,7 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
     eco_apply_closure_eval(intermediate, typed_args + remaining,
                            trailing, sub, result_slot, desired_kind);
 
-    eco_gc_restore_stack_range_point(saved_range);
+    ecoRootRelease(saved_range);
 }
 
 // Phase E: legacy boxed-result entry point, now a thin shim around
@@ -2300,93 +2476,6 @@ extern "C" HPtr eco_apply_closure_typed(HPtr closure_hptr,
     return result;
 }
 
-// Phase D Part 2: typed-args entry point for segmentation-unknown apply.
-//
-// Takes a single typed `int64_t*` buffer plus an `EvalParamLayout` (instead
-// of the previous dual buffer + bitmap form). The runtime decides at the
-// closure header whether the call is under- or saturated, and routes:
-//
-//   under-saturated  → eco_pap_extend (with a bitmap derived from layout)
-//   saturated/over   → eco_apply_closure_typed (which centralises any
-//                      necessary primitive re-boxing for the saturated path)
-//
-// `args_layout` may be null only for the all-boxed fallback case; every
-// emitter today passes a non-null layout.
-extern "C" HPtr eco_apply_segmentation_unknown(HPtr closure_hptr,
-                                               int64_t* typed_args,
-                                               uint32_t num_args,
-                                               const EvalParamLayout* args_layout) {
-    uint64_t closure_bits = closure_hptr.toBits();
-    void* closure_ptr = hpointerToPtr(closure_bits);
-    if (!closure_ptr) return HPtr::fromBits(0);
-
-    Closure* closure = static_cast<Closure*>(closure_ptr);
-    uint32_t n_values = closure->n_values;
-    uint32_t max_values = closure->max_values;
-
-    // DIAG: Check for corrupted closure header
-    if (max_values == 0 || max_values > 63) {
-        uint64_t packed;
-        memcpy(&packed, reinterpret_cast<char*>(closure_ptr) + 8, sizeof(packed));
-        // Check if the closure has been forwarded (GC moved it)
-        fprintf(stderr, "DIAG: eco_apply_segmentation_unknown bad closure: hptr=0x%lx ptr=%p tag=%u n_values=%u max_values=%u num_args=%u packed=0x%lx\n",
-                closure_bits, closure_ptr, closure->header.tag, n_values, max_values, num_args, packed);
-        fprintf(stderr, "  header: color=%u pin=%u age=%u unboxed=%u size=%u\n",
-                closure->header.color, closure->header.pin,
-                closure->header.age, closure->header.unboxed, closure->header.size);
-        fprintf(stderr, "  evaluator=%p\n", (void*)closure->evaluator);
-        fflush(stderr);
-        // Abort early so we get the full output before the assertion
-        abort();
-    }
-    uint32_t remaining = max_values - n_values;
-
-    // Root closure_bits across the inner call.
-    size_t saved_range = eco_gc_stack_range_point();
-    eco_gc_push_stack_range(&closure_bits, 1, 1);
-    HPtr result;
-
-    if (num_args < remaining) {
-        // Under-saturated: hand the typed args to eco_pap_extend along with a
-        // 2-bit-per-slot bitmap derived from the layout's kinds. This matches
-        // the encoding `eco_pap_extend` expects (kind 0 = HPointer; non-zero =
-        // primitive index into ParamKind).
-        //
-        // The bitmap is u64 with 2 bits per slot, so it holds at most 32 slots.
-        // Closures with >32 typed newargs under-saturated would silently lose
-        // primitive-ness for slots 32+ — fail loud instead. Lifting this cap
-        // requires switching from a packed bitmap to a heap- or stack-allocated
-        // kind array.
-        assert(num_args <= 32 &&
-               "eco_apply_segmentation_unknown: bitmap derivation caps at 32 args");
-        uint64_t bitmap = 0;
-        if (args_layout != nullptr) {
-            for (uint32_t i = 0; i < num_args; ++i) {
-                bitmap |= (static_cast<uint64_t>(args_layout->kinds[i]) & 0x3ULL) << (2 * i);
-            }
-        }
-        if (num_args > 0) {
-            uint64_t mask = pointerMaskFromKindBitmap(bitmap, num_args);
-            if (mask != 0) {
-                eco_gc_push_stack_range(reinterpret_cast<uint64_t*>(typed_args), num_args, mask);
-            }
-        }
-        result = eco_pap_extend(HPtr::fromBits(closure_bits),
-                                reinterpret_cast<uint64_t*>(typed_args),
-                                num_args, bitmap);
-    } else {
-        // Saturated/over-saturated: forward to the typed-apply entry point,
-        // which reaches eco_apply_closure_eval; the `gen`+`sat` are recorded
-        // there.
-        // which centralises any required primitive re-boxing before invoking
-        // the evaluator. No parallel boxed buffer is needed.
-        result = eco_apply_closure_typed(HPtr::fromBits(closure_bits),
-                                         typed_args, num_args, args_layout);
-    }
-
-    eco_gc_restore_stack_range_point(saved_range);
-    return result;
-}
 
 extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_newargs,
                                    uint64_t new_unboxed_bitmap) {
@@ -2428,8 +2517,8 @@ extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_n
     // happen BEFORE the new closure is allocated: boxing may GC, which
     // would move a partially-built (unrooted) closure.
     uint64_t conv[63] = {0};
-    size_t saved_range = eco_gc_stack_range_point();
-    eco_gc_push_stack_range(&closure_bits, 1, 1);
+    EcoRootMark saved_range = ecoRootMark();
+    ecoRoot1Push(reinterpret_cast<HPointer*>(&closure_bits));
     if (num_newargs > 0) {
         uint64_t callerMask = pointerMaskFromKindBitmap(new_unboxed_bitmap, num_newargs);
         if (callerMask != 0) {
@@ -2484,7 +2573,7 @@ extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_n
     }
 
     // Allocate a new closure with room for all captured values.
-    size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + new_n_values * sizeof(Unboxable);
+    size_t size = sizeof(Header) + 8 + sizeof(const EvaluatorDesc*) + new_n_values * sizeof(Unboxable);
 
     // Fast path: bump-pointer with no rooting — allocateFast cannot GC,
     // and closure_bits / conv stay rooted from above regardless.
@@ -2498,7 +2587,7 @@ extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_n
         // Slow path: closure_bits / args / conv are already rooted above.
         obj = Allocator::instance().allocateSlow(size, Tag_Closure);
         if (!obj) {
-            eco_gc_restore_stack_range_point(saved_range);
+            ecoRootRelease(saved_range);
             return HPtr::fromBits(0);
         }
     }
@@ -2537,7 +2626,7 @@ extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_n
         new_closure->values[old_n_values + i].i = static_cast<i64>(conv[i]);
     }
 
-    eco_gc_restore_stack_range_point(saved_range);
+    ecoRootRelease(saved_range);
     return ptrToHPointer(obj);
 }
 
@@ -2703,8 +2792,8 @@ extern "C" void eco_closure_call_saturated_eval(
     Closure* closure = static_cast<Closure*>(closure_ptr);
     uint8_t K = closure->result_kind;
 
-    size_t saved_range = eco_gc_stack_range_point();
-    eco_gc_push_stack_range(&closure_bits, 1, 1);
+    EcoRootMark saved_range = ecoRootMark();
+    ecoRoot1Push(reinterpret_cast<HPointer*>(&closure_bits));
     if (num_newargs > 0 && layout) {
         uint64_t hptrMask = 0;
         for (uint32_t i = 0; i < num_newargs && i < 64; ++i) {
@@ -2717,7 +2806,7 @@ extern "C" void eco_closure_call_saturated_eval(
     invokeSaturatedTyped(closure_bits,
                          reinterpret_cast<int64_t*>(new_args),
                          num_newargs, layout, K, desired_kind, result_slot);
-    eco_gc_restore_stack_range_point(saved_range);
+    ecoRootRelease(saved_range);
 }
 
 extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args, uint32_t num_newargs, const EvalParamLayout* layout) {
@@ -2735,8 +2824,8 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
     Closure* hdr_closure = static_cast<Closure*>(closure_ptr);
     uint8_t K = hdr_closure->result_kind;
     if (K != 0) {
-        size_t saved_range = eco_gc_stack_range_point();
-        eco_gc_push_stack_range(&closure_bits, 1, 1);
+        EcoRootMark saved_range = ecoRootMark();
+        ecoRoot1Push(reinterpret_cast<HPointer*>(&closure_bits));
         // Root the typed-args buffer's HPointer slots so GC inside the
         // evaluator can update them in place.
         if (num_newargs > 0 && layout) {
@@ -2753,7 +2842,7 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
                              reinterpret_cast<int64_t*>(new_args),
                              num_newargs, layout, K,
                              /*desired_kind=*/0, &result);
-        eco_gc_restore_stack_range_point(saved_range);
+        ecoRootRelease(saved_range);
         return result;
     }
 
@@ -2772,8 +2861,8 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
     // Open a stack root range over closure_bits and the combined buffer.
     // The boxed-slot mask comes from `closure->unboxed` (the full-params
     // bitmap), so primitive slots are correctly skipped by GC.
-    size_t saved_range = eco_gc_stack_range_point();
-    eco_gc_push_stack_range(&closure_bits, 1, 1);
+    EcoRootMark saved_range = ecoRootMark();
+    ecoRoot1Push(reinterpret_cast<HPointer*>(&closure_bits));
     uint64_t bitmap = closure->unboxed;
     if (max_values > 0) {
         uint64_t mask = pointerMaskFromKindBitmap(bitmap, max_values);
@@ -2807,9 +2896,9 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
     // one indirect call that does NOT flow through invokeSaturatedTyped.
     dispatchStatsRecord(reinterpret_cast<const void*>(closure->evaluator),
                         DispatchKind::Sat);
-    void* result = closure->evaluator(combined_args);
+    void* result = closure->evaluator->generic(combined_args);
 
-    eco_gc_restore_stack_range_point(saved_range);
+    ecoRootRelease(saved_range);
     return HPtr::fromBits(reinterpret_cast<uint64_t>(result));
 }
 
@@ -2850,7 +2939,7 @@ void invokeSaturatedTyped(uint64_t closure_bits,
 
     // Root the combined buffer's boxed slots. closure_bits is already
     // rooted by the eval caller.
-    size_t saved_range = eco_gc_stack_range_point();
+    EcoRootMark saved_range = ecoRootMark();
     uint64_t bitmap = closure->unboxed;
     if (max_values > 0) {
         uint64_t mask = pointerMaskFromKindBitmap(bitmap, max_values);
@@ -2871,7 +2960,7 @@ void invokeSaturatedTyped(uint64_t closure_bits,
     // Cast the evaluator function pointer to its real C ABI (per K) and
     // invoke. The wrapper was generated with this exact return ABI by
     // `getOrCreateWrapper(.., resultKind=K)` in the JIT pass.
-    void* eval = reinterpret_cast<void*>(closure->evaluator);
+    void* eval = reinterpret_cast<void*>(closure->evaluator->generic);
     switch (K) {
         case 0: {  // PK_Boxed (HPtr)
             using FnT = void* (*)(void**);
@@ -2929,7 +3018,7 @@ void invokeSaturatedTyped(uint64_t closure_bits,
             __builtin_unreachable();
     }
 
-    eco_gc_restore_stack_range_point(saved_range);
+    ecoRootRelease(saved_range);
 }
 
 } // anonymous namespace

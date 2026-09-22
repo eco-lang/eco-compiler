@@ -221,6 +221,10 @@ HPtr eco_string_literal_utf8_fill(const uint8_t* bytes, uint32_t byteLen,
 /// @param num_captures Number of captured values
 /// @return HPointer (as uint64_t) to the allocated Closure object
 HPtr eco_alloc_closure(void* func_ptr, uint32_t num_captures);
+// Raw-function-pointer form of the above: interns an EvaluatorDesc for `fn`
+// (plans/gc-root-registration-cost.md Phase 2). For C++ callers that have a
+// function, not a descriptor.
+HPtr eco_alloc_closure_fn(void* fn, uint32_t num_captures, uint8_t result_kind);
 
 /// Allocates a closure object with an explicit result kind.
 /// `result_kind` records the C-ABI return type of `func_ptr` (ParamKind:
@@ -432,6 +436,9 @@ HPtr eco_apply_closure_typed(HPtr closure, int64_t* typed_args,
 /// @param args_layout Per-slot kind descriptor + closure result kind
 /// @param result_slot Pointer to storage receiving the result
 /// @param desired_kind Caller's desired result kind (ParamKind)
+HPtr eco_apply_segmentation_unknown(HPtr closure, int64_t* typed_args,
+                                    uint32_t num_args,
+                                    const Elm::EvalParamLayout* args_layout);
 void eco_apply_closure_eval(HPtr closure, int64_t* typed_args,
                             uint32_t num_args,
                             const Elm::EvalParamLayout* args_layout,
@@ -475,9 +482,6 @@ void eco_closure_call_saturated_eval(
 /// @param num_args Number of new arguments
 /// @param args_layout Per-slot ParamKind descriptor (may be null = all PK_Boxed)
 /// @return Result of the application (as HPointer i64)
-HPtr eco_apply_segmentation_unknown(HPtr closure, int64_t* typed_args,
-                                    uint32_t num_args,
-                                    const Elm::EvalParamLayout* args_layout);
 
 //===----------------------------------------------------------------------===//
 // Runtime Utilities

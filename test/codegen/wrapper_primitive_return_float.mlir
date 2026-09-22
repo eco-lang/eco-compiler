@@ -33,6 +33,11 @@ module {
 }
 
 // Wrapper exists, returns double natively (suffix `_rf` = PK_Float).
+// Phase 2 (plans/gc-root-registration-cost.md): the closure header carries
+// the per-evaluator DESCRIPTOR, not the wrapper address. The descriptor is a
+// static constant whose first field IS the wrapper, so the registration below
+// still pins this wrapper to this closure, through one more indirection.
+// CHECK: @__eco_evaldesc___closure_wrapper_typed_double_float_rf = internal constant {{.*}} ptr @__closure_wrapper_typed_double_float_rf
 // CHECK: define internal double @__closure_wrapper_typed_double_float_rf
 // CHECK: ret double
 
@@ -42,4 +47,9 @@ module {
 // CHECK-NOT: @eco_alloc_char
 
 // eco_intern_closure0 (HEAP_033) registers the wrapper; K = 2 (PK_Float) rides in the packed word (and the _rf suffix).
-// CHECK: ptr @__closure_wrapper_typed_double_float_rf, i32 1, i64
+// Phase 2 (plans/gc-root-registration-cost.md): the closure header now
+// carries the per-evaluator DESCRIPTOR, not the wrapper address. The
+// descriptor is a static constant whose first field IS the wrapper, so the
+// registration below still pins the wrapper to this closure — through one
+// more level of indirection.
+// CHECK: ptr @__eco_evaldesc___closure_wrapper_typed_double_float_rf, i32 1, i64

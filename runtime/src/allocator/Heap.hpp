@@ -27,6 +27,7 @@
 #define ECO_HEAP_H
 
 #include <assert.h>
+#include <stddef.h>
 #include <bit>
 #include <cstdint>
 #include <cstdio>
@@ -583,6 +584,34 @@ typedef void *(*EvalFunction)(void *[]);
 /// header fields to determine saturation. Over-saturated calls are handled by
 /// chaining: saturate this stage's evaluator, then recursively apply remaining
 /// args to the result closure (which has its own n_values/max_values header).
+/// Per-evaluator static descriptor (plans/gc-root-registration-cost.md Phase 2).
+///
+/// `Closure.evaluator` used to hold the `__closure_wrapper_*` address directly.
+/// It now holds the address of one of these instead — a **static data global**
+/// emitted beside each wrapper, never a heap object, so nothing about GC,
+/// scanning or HEAP_0xx changes. The mapping is 1:1 with the wrapper, which is
+/// what keeps HEAP_033's interning ("one permanent singleton per evaluator
+/// descriptor") and every census join key meaningful.
+///
+/// LAYOUT IS FROZEN — `EcoToLLVMClosures.cpp` emits these and
+/// `EvaluatorDescSatOffset` hard-codes `sat` at +24.
+///
+/// `sat[N]` is the arity-monomorphised entry for a call supplying exactly N new
+/// arguments: it loads the closure's C = stage_arity - N captures in place and
+/// tail-calls the typed target, so the caller needs no args array, no root
+/// range, and no runtime splice. `sat` always has `stage_arity + 1` slots, so a
+/// load of `sat[N]` is in bounds for every N the `rem == N` guard can admit;
+/// slots with no generated entry are null and fail the guard closed.
+struct EvaluatorDesc {
+    EvalFunction  generic;      // +0   the __closure_wrapper_* address
+    u64           kinds;        // +8   2 bits/param, params 0..31
+    unsigned char stage_arity;  // +16  P
+    unsigned char result_kind;  // +17  ParamKind of the wrapper's compiled return
+    unsigned short _pad0;       // +18
+    unsigned int   _pad1;       // +20
+    void*         sat[];        // +24  sat[0..stage_arity]; sat[0] unused
+};
+
 typedef struct {
     Header header;
     u64 n_values   : 6;    // Applied arity: args already captured for this stage (0-63).
@@ -599,9 +628,19 @@ typedef struct {
     u64 unboxed    : 50;   // 2-bit-per-slot kinds for captures 0..24 (50 = 25 slots).
                            // Reduced from 26 to 25 to make room for result_kind;
                            // existing tests cap captures well below 25.
-    EvalFunction evaluator;
+    const EvaluatorDesc* evaluator;   // static descriptor, NOT a heap pointer
     Unboxable values[];
 } Closure;
+
+#ifdef __cplusplus
+static_assert(sizeof(EvaluatorDesc) == 24,
+              "EvaluatorDesc header is 24 bytes; sat[] starts at +24 and the "
+              "backend hard-codes that (EvaluatorDescSatOffset)");
+static_assert(offsetof(EvaluatorDesc, generic) == 0, "generic at +0");
+static_assert(offsetof(EvaluatorDesc, kinds) == 8, "kinds at +8");
+static_assert(offsetof(EvaluatorDesc, stage_arity) == 16, "stage_arity at +16");
+static_assert(offsetof(EvaluatorDesc, result_kind) == 17, "result_kind at +17");
+#endif
 
 /// Type tag for each evaluator parameter slot, used by buildEvaluatorArgs
 /// to re-box unboxed captured values with the correct heap allocator.

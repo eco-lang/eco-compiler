@@ -277,8 +277,8 @@ bool callCensusKindCounted(uint8_t k) {
 // (RuntimeExports.cpp "No dispatch here — this grows a PAP") => runtime.
 bool callCensusIsTrampoline(StringRef n) {
     return n == "eco_apply_closure" || n == "eco_apply_closure_eval" ||
-           n == "eco_apply_closure_typed" ||
            n == "eco_apply_segmentation_unknown" ||
+           n == "eco_apply_closure_typed" ||
            n == "eco_closure_call_saturated" ||
            n == "eco_closure_call_saturated_eval";
 }
@@ -1460,6 +1460,372 @@ static void expandInlineAllocs(Module &m,
         report_fatal_error("expandInlineAllocs: CGEN_074 unchecked-marker "
                            "bookkeeping mismatch");
 }
+
+//===----------------------------------------------------------------------===//
+// GC shadow-root-stack expansion (plans/gc-root-registration-cost.md, Phase 1)
+//
+// `eco_gc_push_stack_range` is the hottest symbol of the whole self-compile —
+// 14.53% self on ~1.99 B events, one per closure-dispatch entry, with
+// `eco_gc_stack_range_point` (0.87%) and `eco_gc_restore_stack_range_point`
+// (1.28%) bracketing it. All three live in libEcoRuntimeStatic, which is not
+// LTO'd against generated code, so every args-array call site paid three
+// out-of-line calls (plus the caller-saved clobber each forces) to do a few
+// stores.
+//
+// The shadow stack is now three initial-exec TLS cursors (RootSet.hpp), so the
+// whole protocol is inline memory traffic:
+//
+//   point()   -> %p = threadlocal.address @eco_tl_root_sp ; load ptr
+//   push(b,n,m) -> load sp ; store b/+0, n/+8, m/+16 ; store sp+24
+//   restore(t)  -> store t
+//
+// The restore point is the cursor itself (StackRootRangeRec is trivially
+// destructible, so there is nothing to unwind), which is why restore collapses
+// to a single store. The `size_t` ABI is unchanged — the token is now a pointer
+// value rather than an index — so the out-of-line forms stay valid and the JIT,
+// which cannot resolve an initial-exec TLS reference from ORC-compiled code,
+// keeps calling them (`allowTls` false there, exactly as for the bump state).
+//
+// Why this is NOT redundant with RS4GC: an args array is a storage boundary,
+// and REP_LLVM_001 permits `ptr addrspace(1)` -> `i64` there. The moment a GC
+// pointer is ptrtoint'd into the array it stops being an SSA pointer and
+// statepoint coverage ends; the shadow range is the patch for exactly that hole
+// (EcoToLLVMClosures.cpp:1079-1086, the Stage 7 unsafeIndex crash). This pass
+// changes only HOW the range is registered, never WHETHER it is.
+//
+// No addrspace(1) value is created, loaded or stored here: the base is an
+// alloca in addrspace(0) and the other two fields are plain i64. The expansion
+// is therefore invisible to RS4GC and outside REP_LLVM_001 entirely.
+//
+// Conservative by construction — a site is expanded only when `count` is a
+// non-zero constant <= 64 (the runtime's own assert) and the base is provably
+// non-null. Anything else keeps the call, which still does the right thing.
+//===----------------------------------------------------------------------===//
+
+static bool rootStackInlineEnabled() {
+    static const bool on = [] {
+        const char *e = ::getenv("ECO_TLS_ROOT_STACK");
+        return !(e && e[0] == '0' && e[1] == '\0');
+    }();
+    return on;
+}
+
+static GlobalVariable *getOrCreateRootSpTls(Module &m) {
+    if (auto *gv = m.getGlobalVariable("eco_tl_root_sp", /*AllowInternal=*/true))
+        return gv;
+    auto *gv = new GlobalVariable(
+        m, PointerType::get(m.getContext(), 0), /*isConstant=*/false,
+        GlobalValue::ExternalLinkage, /*Initializer=*/nullptr,
+        "eco_tl_root_sp", /*InsertBefore=*/nullptr,
+        GlobalValue::InitialExecTLSModel);
+    gv->setAlignment(Align(8));
+    return gv;
+}
+
+// True when `v` cannot be null, using only facts every emission site supplies
+// (all seven pass an alloca, directly or through a constant GEP).
+static bool isProvablyNonNullStackPtr(Value *v) {
+    v = v->stripPointerCastsAndAliases();
+    if (isa<AllocaInst>(v) || isa<GlobalValue>(v))
+        return true;
+    if (auto *gep = dyn_cast<GEPOperator>(v))
+        return isProvablyNonNullStackPtr(gep->getPointerOperand());
+    return false;
+}
+
+static void expandRootRangeOps(Module &m, bool allowTls) {
+    if (!allowTls || !rootStackInlineEnabled())
+        return;
+
+    Function *pointF = m.getFunction("eco_gc_stack_range_point");
+    Function *pushF = m.getFunction("eco_gc_push_stack_range");
+    Function *restoreF = m.getFunction("eco_gc_restore_stack_range_point");
+    if ((!pointF || pointF->use_empty()) && (!pushF || pushF->use_empty()) &&
+        (!restoreF || restoreF->use_empty()))
+        return;
+
+    LLVMContext &ctx = m.getContext();
+    Type *i8Ty = Type::getInt8Ty(ctx);
+    Type *i64Ty = Type::getInt64Ty(ctx);
+    PointerType *as0 = PointerType::get(ctx, 0);
+    GlobalVariable *spTls = getOrCreateRootSpTls(m);
+
+    auto collect = [](Function *f, SmallVectorImpl<CallInst *> &out) {
+        if (!f)
+            return;
+        for (User *u : f->users())
+            if (auto *ci = dyn_cast<CallInst>(u))
+                if (ci->getCalledFunction() == f)
+                    out.push_back(ci);
+    };
+
+    SmallVector<CallInst *, 64> points, pushes, restores;
+    collect(pointF, points);
+    collect(pushF, pushes);
+    collect(restoreF, restores);
+
+    // point(): one TLS load. The address is thread-stable, so LLVM is free to
+    // CSE the threadlocal.address calls; the LOAD is a real load of mutable
+    // state and is re-done wherever the value is needed.
+    for (CallInst *ci : points) {
+        IRBuilder<> b(ci);
+        Value *slot = b.CreateThreadLocalAddress(spTls);
+        Value *sp = b.CreateAlignedLoad(as0, slot, Align(8), "eco.root.sp");
+        Value *tok = b.CreatePtrToInt(sp, i64Ty, "eco.root.point");
+        ci->replaceAllUsesWith(tok);
+        ci->eraseFromParent();
+    }
+
+    // restore(token): a single store. Unconditional, unlike the C++ form's
+    // clamp: compiled code emits point/push/call/restore as one balanced unit
+    // per call site, so the token can never be above the cursor.
+    for (CallInst *ci : restores) {
+        IRBuilder<> b(ci);
+        Value *slot = b.CreateThreadLocalAddress(spTls);
+        Value *v = b.CreateIntToPtr(ci->getArgOperand(0), as0, "eco.root.tok");
+        b.CreateAlignedStore(v, slot, Align(8));
+        ci->eraseFromParent();
+    }
+
+    // push(base, count, mask): three stores plus the cursor bump.
+    for (CallInst *ci : pushes) {
+        auto *countC = dyn_cast<ConstantInt>(ci->getArgOperand(1));
+        Value *base = ci->getArgOperand(0);
+        if (!countC || countC->getZExtValue() == 0 ||
+            countC->getZExtValue() > 64 || !isProvablyNonNullStackPtr(base))
+            continue;  // keep the call: it re-checks base/count itself
+
+        IRBuilder<> b(ci);
+        Value *slot = b.CreateThreadLocalAddress(spTls);
+        Value *sp = b.CreateAlignedLoad(as0, slot, Align(8), "eco.root.sp");
+        b.CreateAlignedStore(base, sp, Align(8));
+        Value *cntSlot = b.CreateGEP(i8Ty, sp, {b.getInt64(8)});
+        b.CreateAlignedStore(ci->getArgOperand(1), cntSlot, Align(8));
+        Value *maskSlot = b.CreateGEP(i8Ty, sp, {b.getInt64(16)});
+        b.CreateAlignedStore(ci->getArgOperand(2), maskSlot, Align(8));
+        Value *next = b.CreateGEP(i8Ty, sp, {b.getInt64(24)}, "eco.root.next");
+        b.CreateAlignedStore(next, slot, Align(8));
+        ci->eraseFromParent();
+    }
+    (void)i64Ty;
+}
+
+//===----------------------------------------------------------------------===//
+// `$sat` fast-path diamond (plans/gc-root-registration-cost.md, Phase 3)
+//
+// The MLIR lowering brackets each array-building apply with a marker pair:
+//
+//   %tok = call ptr @__eco_sat_begin(ptr as1 %clo, i64 N, i64 KC, i64 RC,
+//                                    i64 satByteOff, ...newargs)
+//     ... the generic sequence: alloca, memset, N ptrtoints, the three root
+//         registrations, and the runtime call that splices combined_args ...
+//   call void @__eco_sat_end(ptr %tok, <R> %slowResult)
+//
+// and this pass turns the pair into the diamond, because a papExtend can sit
+// inside a single-block `scf` region (loopified tail recursion — `List.foldl`'s
+// loop is one) and EcoToLLVM runs BEFORE SCFToControlFlow, so the lowering
+// cannot create blocks there. Same reason `__eco_get_tag_inline` is a marker.
+//
+//   entry:  %W   = load i64, %clo+8                ; n:6|max:6|rk:2|unboxed:50
+//           %n   = W & 63 ; %mx = (W>>6)&63 ; %rk = (W>>12)&3 ; %ub = W>>14
+//           %c1  = (%mx - %n) == N
+//           %c1b = %mx <= 25                       ; every slot described by %ub
+//           %c2  = %rk == RC
+//           %c3  = ((%ub >> 2*%n) & ((1<<2N)-1)) == KC
+//           br %c1&%c1b&%c2&%c3, maybe, slow
+//   maybe:  %d   = load ptr, %clo+16               ; the EvaluatorDesc
+//           %sat = load ptr, %d+satByteOff         ; in bounds: %c1 proved N<=P
+//           br %sat != null, fast, slow
+//   fast:   %rf  = call <R> %sat(ptr as1 %clo, %a0..%aN-1)
+//   slow:   ... the generic sequence ...
+//   cont:   %r   = phi [%rf, fast], [%slowResult, slow]
+//
+// `%c3` is what makes passing the args UNBOXED sound (REP_ABI_001, plan §5.4):
+// it proves the closure's declared slot kinds for the remaining slots equal the
+// site's static assumption. `%c1b` is the guard §5.3 does not state but needs —
+// `unboxed` describes only 25 slots, so a wider closure's kind bits must not be
+// compared at all, or the mask test could pass on unrelated bits.
+//
+// Everything the fast edge skips is exactly what §5.5 lists. The pointer args
+// stay `ptr addrspace(1)` into the call, so RS4GC covers them as ordinary SSA
+// values with no shadow-stack registration at all — which is why this pass MUST
+// run before every RS4GC flavour.
+//===----------------------------------------------------------------------===//
+
+static bool satFastBackendEnabled() {
+    static const bool on = [] {
+        const char *e = ::getenv("ECO_SAT_FAST");
+        return !(e && e[0] == '0' && e[1] == '\0');
+    }();
+    return on;
+}
+
+static void expandSatMarkers(Module &m) {
+    Function *beginF = m.getFunction("__eco_sat_begin");
+    Function *endF = m.getFunction("__eco_sat_end");
+    if (!beginF || beginF->use_empty())
+        return;
+
+    LLVMContext &ctx = m.getContext();
+    Type *i8Ty = Type::getInt8Ty(ctx);
+    Type *i64Ty = Type::getInt64Ty(ctx);
+    Type *i1Ty = Type::getInt1Ty(ctx);
+    PointerType *as0 = PointerType::get(ctx, 0);
+    PointerType *as1 = PointerType::get(ctx, 1);
+    const bool enabled = satFastBackendEnabled();
+
+    SmallVector<CallInst *, 64> begins;
+    for (User *u : beginF->users())
+        if (auto *ci = dyn_cast<CallInst>(u))
+            if (ci->getCalledFunction() == beginF)
+                begins.push_back(ci);
+
+    MDBuilder mdb(ctx);
+    unsigned expanded = 0, dropped = 0;
+
+    for (CallInst *B : begins) {
+        // Find this bracket's end: the unique __eco_sat_end whose token operand
+        // is B. It is emitted into the same block, after B.
+        CallInst *E = nullptr;
+        for (User *u : B->users()) {
+            auto *ci = dyn_cast<CallInst>(u);
+            if (!ci || ci->getCalledFunction() != endF)
+                continue;
+            if (ci->getParent() != B->getParent())
+                continue;
+            E = ci;
+            break;
+        }
+
+        // No usable bracket, or the fast path is switched off: drop the markers
+        // and leave the generic sequence exactly as emitted.
+        if (!E || !enabled || E->arg_size() != 2) {
+            if (E) E->eraseFromParent();
+            B->eraseFromParent();
+            ++dropped;
+            continue;
+        }
+
+        Value *clo = B->getArgOperand(0);
+        auto *nC = dyn_cast<ConstantInt>(B->getArgOperand(1));
+        auto *kcC = dyn_cast<ConstantInt>(B->getArgOperand(2));
+        auto *rcC = dyn_cast<ConstantInt>(B->getArgOperand(3));
+        auto *offC = dyn_cast<ConstantInt>(B->getArgOperand(4));
+        Value *slowVal = E->getArgOperand(1);
+        if (!nC || !kcC || !rcC || !offC) {
+            E->eraseFromParent();
+            B->eraseFromParent();
+            ++dropped;
+            continue;
+        }
+        const uint64_t N = nC->getZExtValue();
+        if (N == 0 || N > 8 || B->arg_size() != 5 + N) {
+            E->eraseFromParent();
+            B->eraseFromParent();
+            ++dropped;
+            continue;
+        }
+
+        SmallVector<Value *, 8> fastArgs;
+        SmallVector<Type *, 8> fastParamTys;
+        fastArgs.push_back(clo);
+        fastParamTys.push_back(as1);
+        for (uint64_t i = 0; i < N; ++i) {
+            Value *a = B->getArgOperand(5 + i);
+            fastArgs.push_back(a);
+            fastParamTys.push_back(a->getType());
+        }
+        FunctionType *satTy =
+            FunctionType::get(slowVal->getType(), fastParamTys, /*isVarArg=*/false);
+
+        // Split so the generic sequence between the markers becomes `slow`.
+        BasicBlock *entry = B->getParent();
+        BasicBlock *slow = entry->splitBasicBlock(B, "eco.sat.slow");
+        BasicBlock *cont = slow->splitBasicBlock(E, "eco.sat.cont");
+
+        // entry: the guards, in place of the unconditional branch the split left.
+        Instruction *entryTerm = entry->getTerminator();
+        IRBuilder<> b(entryTerm);
+        Value *packedSlot = b.CreateGEP(i8Ty, clo, {b.getInt64(8)}, "eco.clo.packed");
+        Value *W = b.CreateAlignedLoad(i64Ty, packedSlot, Align(8), "eco.clo.w");
+        Value *n = b.CreateAnd(W, b.getInt64(63), "eco.clo.n");
+        Value *mx = b.CreateAnd(b.CreateLShr(W, b.getInt64(6)), b.getInt64(63),
+                                "eco.clo.max");
+        Value *rk = b.CreateAnd(b.CreateLShr(W, b.getInt64(12)), b.getInt64(3),
+                                "eco.clo.rk");
+        Value *ub = b.CreateLShr(W, b.getInt64(14), "eco.clo.ub");
+        Value *rem = b.CreateSub(mx, n, "eco.clo.rem");
+        Value *c1 = b.CreateICmpEQ(rem, b.getInt64(N));
+        // `unboxed` describes 25 slots; a wider closure's kinds are not readable.
+        Value *c1b = b.CreateICmpULE(mx, b.getInt64(25));
+        Value *c2 = b.CreateICmpEQ(rk, b.getInt64(rcC->getZExtValue()));
+        Value *shift = b.CreateShl(n, b.getInt64(1));
+        Value *km = b.CreateAnd(b.CreateLShr(ub, shift),
+                                b.getInt64((uint64_t{1} << (2 * N)) - 1));
+        Value *c3 = b.CreateICmpEQ(km, b.getInt64(kcC->getZExtValue()));
+        Value *ok = b.CreateAnd(b.CreateAnd(c1, c1b), b.CreateAnd(c2, c3));
+
+        BasicBlock *maybe =
+            BasicBlock::Create(ctx, "eco.sat.maybe", entry->getParent(), slow);
+        BasicBlock *fast =
+            BasicBlock::Create(ctx, "eco.sat.fast", entry->getParent(), slow);
+        auto *br0 = BranchInst::Create(maybe, slow, ok, entryTerm->getIterator());
+        (void)br0;
+        entryTerm->eraseFromParent();
+
+        // maybe: the descriptor load. `%c1` already proved N <= stage_arity, and
+        // sat[] is sized stage_arity + 1, so this load is always in bounds.
+        IRBuilder<> bm(maybe);
+        Value *descSlot = bm.CreateGEP(i8Ty, clo, {bm.getInt64(16)}, "eco.clo.desc");
+        Value *desc = bm.CreateAlignedLoad(as0, descSlot, Align(8), "eco.evaldesc");
+        Value *satSlot = bm.CreateGEP(
+            i8Ty, desc, {bm.getInt64(static_cast<int64_t>(offC->getZExtValue()))},
+            "eco.sat.slot");
+        Value *sat = bm.CreateAlignedLoad(as0, satSlot, Align(8), "eco.sat.fn");
+        Value *has = bm.CreateICmpNE(sat, ConstantPointerNull::get(as0));
+        bm.CreateCondBr(has, fast, slow);
+
+        // fast: the arity-monomorphised entry, args in registers.
+        IRBuilder<> bf(fast);
+        CallInst *fastCall = bf.CreateCall(satTy, sat, fastArgs, "eco.sat.r");
+        bf.CreateBr(cont);
+
+        // cont: merge. `slow` still falls through to `cont` from the split.
+        PHINode *phi = PHINode::Create(slowVal->getType(), 2, "eco.sat.merge",
+                                       cont->begin());
+        phi->addIncoming(fastCall, fast);
+        phi->addIncoming(slowVal, slow);
+        slowVal->replaceAllUsesWith(phi);
+        phi->setIncomingValue(1, slowVal);
+
+        E->eraseFromParent();
+        B->eraseFromParent();
+        ++expanded;
+        (void)i1Ty;
+        (void)mdb;
+    }
+
+    if (::getenv("ECO_PAP_HISTO")) {
+        llvm::errs() << "[sat-expand] diamonds=" << expanded
+                     << " dropped=" << dropped << "\n";
+        unsigned satFns = 0, descs = 0;
+        for (Function &f : m)
+            if (!f.isDeclaration() && f.getName().starts_with("__closure_sat_"))
+                ++satFns;
+        for (GlobalVariable &g : m.globals())
+            if (g.getName().starts_with("__eco_evaldesc_"))
+                ++descs;
+        llvm::errs() << "[sat-expand] satEntries=" << satFns
+                     << " descriptors=" << descs << "\n";
+    }
+
+    // Markers are erased; drop the now-unused declarations so nothing downstream
+    // (RS4GC, the verifier, the JIT symbol map) ever sees them.
+    if (beginF->use_empty()) beginF->eraseFromParent();
+    if (endF && endF->use_empty()) endF->eraseFromParent();
+}
+
+
 
 // P2.5 R1b (plans/allocator-resolve-inlining.md). Expand each
 // `__eco_get_tag_inline` marker call into the open-coded eco_get_tag
@@ -3157,6 +3523,21 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     // initial-exec TLS reference from JIT'd code (plans/inline-bump-state-tls.md).
     expandInlineAllocs(m, &capHoist,
                        /*allowTls=*/job.kind == BackendKind::EmitObjectFile);
+
+
+    // GC shadow-root-stack registration (plans/gc-root-registration-cost.md):
+    // replace the point/push/restore calls that bracket every args-array call
+    // site with inline TLS cursor traffic. Same placement rationale as the
+    // bump-state inlining above — AOT object emission only, since ORC cannot
+    // resolve an initial-exec TLS reference from JIT'd code. Creates no
+    // addrspace(1) value, so it is invisible to every RS4GC flavour below.
+    expandRootRangeOps(m,
+                       /*allowTls=*/job.kind == BackendKind::EmitObjectFile);
+
+    // `$sat` fast-path diamond (plans/gc-root-registration-cost.md Phase 3).
+    // MUST precede every RS4GC flavour: the fast edge passes `ptr addrspace(1)`
+    // arguments straight into the call, and RS4GC is what covers them there.
+    expandSatMarkers(m);
 
     // E1.3: `$cap` inline prepass — must precede EVERY RS4GC flavour (serial,
     // deferred, and per-partition; all are downstream of this point). Skipped

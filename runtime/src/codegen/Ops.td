@@ -1472,16 +1472,25 @@ def Eco_PapExtendOp : Eco_Op<"papExtend", [
     is a saturated call that invokes the evaluator and returns the result.
     Otherwise, returns a new closure with additional captured arguments.
     CGEN_052 and CGEN_056 are enforced. Result type may be a typed ABI value.
-    Typed closure calling attributes (_dispatch_mode, _fast_evaluator,
-    _closure_kind) control lowering dispatch.
+    Typed closure calling attributes (_fast_evaluator, _closure_kind) control
+    lowering dispatch. (`_dispatch_mode` is declared below but set by no pass;
+    the lowering arm that read it was deleted — see
+    plans/gc-root-registration-cost.md Phase 4.)
 
     **Generic mode** (remaining_arity absent):
-    Runtime saturation check via the closure header's n_values/max_values.
-    EcoToLLVM loads the header, computes remaining = max_values - n_values,
-    and branches at runtime:
+    Saturation is decided at RUNTIME, inside `eco_apply_closure_eval` — the
+    lowering does NOT branch on it. It builds a typed args buffer plus an
+    `EvalParamLayout` and calls that helper, which reads the closure header and
+    handles under-/exactly-/over-saturated itself:
     - Under-saturated: returns new PAP (!eco.value)
     - Exactly saturated: calls evaluator, returns result
     - Over-saturated: saturates, then chains to result closure
+
+    With `ECO_SAT_FAST` on, EcoToLLVM additionally brackets that sequence with
+    the `__eco_sat_begin`/`__eco_sat_end` markers, and the backend's
+    `expandSatMarkers` puts a compiled fast edge in front of it that calls the
+    closure's arity-monomorphised `$sat` entry directly when the closure's
+    remaining arity, result kind and slot kinds all match the site.
     Result type may be !eco.value, or a primitive (i64/f64/i16) when Mono
     types the call as a primitive return — in that case the JIT lowers
     with the matching `desired_kind` and the runtime writes the primitive

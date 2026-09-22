@@ -628,6 +628,12 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
         }
     }
 
+    // Mark single-slot stack roots (plan §3.3).
+    for (HPointer* slot : root_set.getSingleRoots()) {
+        old_gen_.markHPointer(*slot);
+        ++stackrange_roots_pushed;
+    }
+
     // Mark external roots (Scheduler run queue, PlatformRuntime state,
     // MVar slots, Eco kernel Runtime state).
     for (auto& scanner : root_set.getExternalRootScanners()) {
