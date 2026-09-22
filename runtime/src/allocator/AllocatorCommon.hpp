@@ -125,7 +125,10 @@ constexpr u32 ROPE_MIN_LEAF_SIZE = 128;
 constexpr size_t NURSERY_BLOCK_COUNT = 256;
 
 // Hard upper bound on adaptive nursery growth, in blocks (must be even).
-constexpr size_t NURSERY_MAX_BLOCKS = 1024;
+  // Tuned 2026-09-22 (plans/gc-param-sweep/combinations-2026-09-22-results.md):
+  // 1024 -> 512 (nursery ceiling 512 -> 256 MiB), worth -17.6 s alone. Measured together as one config on the Stage-7 self-compile:
+  // 233.8 s -> 195.8 s (-16.3 %), GC 115.5 -> 85.4 s, output byte-identical.
+constexpr size_t NURSERY_MAX_BLOCKS = 512;
 
 // Nursery occupancy fraction that triggers a minor GC.
 constexpr float NURSERY_GC_THRESHOLD = 0.95f;
@@ -134,7 +137,10 @@ constexpr float NURSERY_GC_THRESHOLD = 0.95f;
 constexpr float NURSERY_GROWTH_THRESHOLD = 0.20f;
 
 // Minor-GC survivals required before an object is promoted to old gen (header age field is 2 bits).
-constexpr u32 PROMOTION_AGE = 2;
+  // Tuned 2026-09-22 (plans/gc-param-sweep/combinations-2026-09-22-results.md):
+  // 2 -> 1, halving nursery survivor copies (1.371 B -> 0.747 B), -17.7 s alone. Measured together as one config on the Stage-7 self-compile:
+  // 233.8 s -> 195.8 s (-16.3 %), GC 115.5 -> 85.4 s, output byte-identical.
+constexpr u32 PROMOTION_AGE = 1;
 
 // Enable two-pass DFS spine copying for Cons lists during minor GC (else BFS for all types).
 constexpr bool USE_HYBRID_DFS = true;
@@ -145,7 +151,10 @@ constexpr bool USE_HYBRID_DFS = true;
 constexpr size_t INITIAL_OLD_GEN_SIZE = 16 * 1024 * 1024;
 
 // Old-gen committed/cap fraction above which a major GC is scheduled (must exceed MAJOR_GC_TARGET_UTILIZATION).
-constexpr float MAJOR_GC_INITIATING_OCCUPANCY = 0.85f;
+  // Tuned 2026-09-22 (plans/gc-param-sweep/combinations-2026-09-22-results.md):
+  // 0.85 -> 0.95 (majors 10 -> 5), -11.8 s alone; SATURATES here (0.97/0.99 identical). Measured together as one config on the Stage-7 self-compile:
+  // 233.8 s -> 195.8 s (-16.3 %), GC 115.5 -> 85.4 s, output byte-identical.
+constexpr float MAJOR_GC_INITIATING_OCCUPANCY = 0.95f;
 
 // Fraction of the old-gen cap (= half the max_heap_size reservation) at which
 // the GlobalPressure trigger schedules a major GC. Historically this was

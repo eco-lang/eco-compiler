@@ -1593,6 +1593,47 @@ byte-deterministic, output byte-identical. **The two triples' wall ranges are fu
 ([228.01, 230.18] vs [231.43, 235.17]) and minor GC and promoted — exact per (binary x tree) —
 both move down, so this is a real win, not spread.
 
+### gcdef — GC defaults retuned from the parameter sweeps — **WIN, -30.09 s (-13.1 %)**
+
+Runtime-only change (like steps 1 and 14): the candidate is `bin/ecoghash.mlir`, the SAME MLIR
+`gc-all2` was lowered from, lowered again against the changed runtime. `bin/eco-optgcdef` is
+88,176,312 B — byte-size identical to `bin/eco-opt-prev`, as it must be when only compiled-in
+constants move. Patch `snapshots/lss-loop/step-gcdef.patch` (15 lines, 3 constants), tree
+snapshot `try-gcdef`.
+
+Three constants in `runtime/src/allocator/AllocatorCommon.hpp`:
+`PROMOTION_AGE` 2 -> **1**, `NURSERY_MAX_BLOCKS` 1024 -> **512**,
+`MAJOR_GC_INITIATING_OCCUPANCY` 0.85 -> **0.95**. Mirrored in
+`compiler/cmake/bootstrap/build-kernel/heap-config.json` and `heap-profile.py:BASELINE_HEAP`
+(all three kept in sync as a 41-field mirror of the struct).
+
+| run | wall (s) | minor GC | major GC | promoted MiB | max RSS (kB) | GC time (s) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|
+| r1 | 199.46 | 1924 | 6 | 19861 | 10,816,544 | 86.66 | 13,241,185 | same |
+| D vs gc-all2 | **-30.09** (-13.1 %) | +816 | **-4** | +2262 | +378,668 (+3.6 %) | **-28.16** (-24.5 %) | 0 | — |
+
+**ONE run, not the protocol's three** (explicit instruction). The fixed-point check still ran and
+passed (`cmp` vs `bin/ecoghash.mlir`); the cross-run determinism `cmp` could not. At -30.09 s the
+delta is ~6x the +-5 s between-sitting drift band, and the three counters that carry no noise all
+move: majors -4, minors +816, promoted +2262. Deviation from the literal §2 commands: the package
+registry cache is `touch`ed first, suppressing the 134 s network call found on 2026-09-22 (see
+`plans/gc-param-sweep/sensitivity-2026-09-22-results.md`); `gc-all2` at 229.55 s plainly did not pay it either, so
+this keeps the arms comparable rather than introducing a difference.
+
+**GC time accounts for the whole win**: -28.16 s of GC against -30.09 s of wall. Where it comes
+from, per the sweeps (`plans/gc-param-sweep/`): `promotion_age=1` halves nursery survivor copying
+(1.371 B -> 0.747 B copies) at the cost of +12.9 % promotion; `nursery_max_block_count=512` halves
+the nursery ceiling to 256 MiB, which raises the minor count 73.6 % while LOWERING total minor
+time — collection COUNT is nearly irrelevant, the same survivors get copied either way;
+`major_gc_initiating_occupancy=0.95` takes majors 10 -> 6.
+
+The three were measured individually (-17.7 / -17.6 / -11.8 s) and as pairs and triples; they
+compose SUB-additively (singles sum -47.1 s, triple delivers -38.0 s on that binary). **They do
+not compose without limit**: swapping in the better single `nursery_max_block_count=128` sends the
+old gen to 15,078 MB and the wall to +31 s via swap, because it and `promotion_age` push the same
+downstream quantity. Old-gen peak here is 9,928 MB, and RSS +3.6 % is the price of the win.
+
+
 ## 7. Findings
 
 What the series learned, separated from the per-step records above so the entries can stay
@@ -1923,3 +1964,4 @@ mechanism paid and which did not.
 | gc-p1 (TLS shadow root stack) | 235.60 | +1.20 | 1113 | 10 | 17633 | 10523820 | NO WIN (folded into gc-all) | ghash |
 | gc-all (Phases 1-4 as one unit) | 235.80 | +1.40 | 1113 | 10 | 17634 | 10451604 | FLAT, RSS-only WIN | ghash |
 | gc-all2 (+ $sat reachability filter, newarg fix) | 229.55 | -4.85 | 1108 | 10 | 17599 | 10437876 | WIN | ghash |
+| gcdef (GC defaults: age 1, nmbc 512, mio 0.95) | 199.46 | -30.09 | 1924 | 6 | 19861 | 10816544 | WIN | gc-all2 |

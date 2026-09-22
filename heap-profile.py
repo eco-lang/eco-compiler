@@ -8,6 +8,8 @@ Two modes:
            (the built-in one in this file, or a JSON file passed via
            `--variants-file`).
 
+Runs go to completion unless `--wall-seconds` caps them.
+
 Each invocation creates one timestamped folder under
     <results_root>/<machine>/<YYYY-MM-DDTHH-MM-SSZ>__<label>/
 containing:
@@ -23,6 +25,7 @@ All metric files are tab-separated (`.tsv`).
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -56,58 +59,79 @@ COMPILER_SRC = REPO_ROOT / "compiler/src"
 RUNTIME_SRC = REPO_ROOT / "runtime/src"
 DEFAULT_HEAP_CONFIG = REPO_ROOT / "build/compiler/build-kernel/heap-config.json"
 LOCAL_CONFIG = REPO_ROOT / "heap-profile.local.json"
-ECO_STUFF_1_0_0 = REPO_ROOT / "build/compiler/build-kernel/eco-stuff/1.0.0"
+ECO_STUFF = BUILD_KERNEL / "eco-stuff"
 
+# `timeout(1)` arguments, used ONLY when --wall-seconds is given. The default
+# is no budget at all: a run goes to completion. The 60 s sampling window this
+# script was born with predates the compiler being able to finish a self-compile
+# at all; today it finishes in ~4 minutes, and a truncated run sees too few
+# major GCs to say anything about old-gen tuning.
 KILL_AFTER_S = 10
-DEFAULT_WALL_SECONDS = 60
 
 # ---------------------------------------------------------------------------
 # Variants (hard-coded for sweep mode)
 # ---------------------------------------------------------------------------
 
-# Field order mirrors HeapConfig in runtime/src/allocator/AllocatorCommon.hpp:
-# heap-wide, then string / rope, nursery, old generation, sweep & mark pacing.
+# An exact mirror of the compiled-in HeapConfig defaults in
+# runtime/src/allocator/AllocatorCommon.hpp — every field of the struct, at the
+# value the runtime uses when no ECO_HEAP_CONFIG is set. Field order follows the
+# struct: heap-wide, string / rope, nursery, old generation, small-class
+# budgeting, sweep & mark pacing.
+#
+# Keeping this a COMPLETE mirror is what makes the `baseline` sweep cell the
+# shipped configuration: a field omitted here would silently fall back to the
+# struct default, so a drift between the two could not be seen in the results.
+# `compiler/cmake/bootstrap/build-kernel/heap-config.json` (copied into the
+# build tree at CMake configure time) carries the same 41 values.
 BASELINE_HEAP = {
     # Heap-wide.
-    "max_heap_size":                 "24G",
-    "alloc_buffer_size":             "512K",
-    "large_object_threshold":        "8K",
+    "max_heap_size":                     "24G",
+    # 0 = policy: min(4 GiB, max_heap_size / 2)  (HEAP_043).
+    "nursery_region_bytes":              0,
+    "alloc_buffer_size":                 "512K",
+    "large_object_threshold":            "8K",
     # String / rope heuristics.
-    "string_flatten_limit":          "32K",
-    "string_tiny_slice_limit":       "128",
-    "rope_max_height":               32,
-    "rope_leaf_count_limit":         64,
-    "rope_min_leaf_size":            128,
+    "string_flatten_limit":              "32K",
+    "string_tiny_slice_limit":           128,
+    "utf8_view_min_len":                 32,
+    "utf8_strings_enabled":              True,
+    "rope_max_height":                   32,
+    "rope_leaf_count_limit":             64,
+    "rope_min_leaf_size":                128,
     # Nursery.
-    "nursery_block_count":           256,
-    "nursery_max_block_count":       1024,
-    "nursery_gc_threshold":          0.95,
-    "nursery_growth_threshold":      0.20,
-    "promotion_age":                 2,
-    "use_hybrid_dfs":                True,
+    "nursery_block_count":               256,
+    "nursery_max_block_count":           512,
+    "nursery_gc_threshold":              0.95,
+    "nursery_growth_threshold":          0.20,
+    "promotion_age":                     1,
+    "use_hybrid_dfs":                    True,
     # Old generation.
-    "initial_old_gen_size":          "16M",
-    "major_gc_initiating_occupancy": 0.85,
-    "major_gc_target_utilization":   0.70,
-    "major_gc_garbage_fraction":     0.70,
-    "decommit_on_oldgen_release":    True,
+    "initial_old_gen_size":              "16M",
+    "major_gc_initiating_occupancy":     0.95,
+    "major_gc_global_pressure_fraction": 0.85,
+    "major_gc_target_utilization":       0.50,
+    "major_gc_garbage_fraction":         0.70,
+    "decommit_on_oldgen_release":        True,
+    # Small-class page budgeting.
+    "small_class_heap_budget_bytes":     "1G",
+    "small_class_cell_max_bytes":        "8K",
     # Old-gen sweep & mark pacing.
-    "sweep_work_budget":             "4K",
-    "initial_sweep_budget":          "64K",
-    "mark_work_ratio":               2,
-    "sweep_bytes_per_alloc_byte":    2.0,
-    "max_sweep_bytes_per_alloc":     "1M",
-    "max_sweep_bytes_hard":          "4M",
-    "sweep_cap_ratio_low":           0.50,
-    "sweep_cap_ratio_medium":        0.75,
-    "sweep_cap_ratio_high":          0.90,
-    "sweep_scale_low":               1.0,
-    "sweep_scale_medium":            2.0,
-    "sweep_scale_high":              4.0,
-    "sweep_scale_crit":              8.0,
-    "sweep_unswept_ratio_boost":     0.50,
-    "sweep_unswept_scale":           2.0,
-    "panic_sweep_slice_bytes":       "1M",
+    "sweep_work_budget":                 "4K",
+    "initial_sweep_budget":              "64K",
+    "mark_work_ratio":                   2,
+    "sweep_bytes_per_alloc_byte":        2.0,
+    "max_sweep_bytes_per_alloc":         "1M",
+    "max_sweep_bytes_hard":              "4M",
+    "sweep_cap_ratio_low":               0.50,
+    "sweep_cap_ratio_medium":            0.75,
+    "sweep_cap_ratio_high":              0.90,
+    "sweep_scale_low":                   1.0,
+    "sweep_scale_medium":                2.0,
+    "sweep_scale_high":                  4.0,
+    "sweep_scale_crit":                  8.0,
+    "sweep_unswept_ratio_boost":         0.50,
+    "sweep_unswept_scale":               2.0,
+    "panic_sweep_slice_bytes":           "1M",
 }
 
 VARIANTS = [
@@ -168,6 +192,8 @@ SUMMARY_COLUMNS = [
     "mutator_s", "mutator_pct",
     "bytes_alloc_MB", "alloc_MBps", "objs_alloc",
     "peak_commit_MB", "final_live_MB",
+    "registry_ms",
+    "out_bytes", "out_md5", "signal",
 ]
 
 
@@ -534,6 +560,12 @@ def parse_summary(out_text: str, err_text: str, wall_s: float) -> dict:
     mutator_pct = (mutator_s / wall_s * 100.0) if wall_s > 0 else 0.0
     alloc_mbps = bytes_mb / wall_s if wall_s > 0 else 0.0
 
+    # Time the compiler spent in the package-registry POST. Must be 0:
+    # _freeze_registry_ttl() suppresses the call. See its docstring.
+    registry_ms = 0
+    for m in re.finditer(r"Registry: POST \S+ completed in (\d+)ms", out_text):
+        registry_ms += int(m.group(1))
+
     peak = 0.0
     for m in re.finditer(r"tl\.committed=([0-9.]+)\s*MB", err_text):
         v = float(m.group(1))
@@ -562,6 +594,7 @@ def parse_summary(out_text: str, err_text: str, wall_s: float) -> dict:
         "objs_alloc": objs,
         "peak_commit_MB": f"{peak:.2f}",
         "final_live_MB": f"{final_live:.2f}",
+        "registry_ms": registry_ms,
     }
 
 
@@ -822,10 +855,12 @@ def _run_capturing(cmd, *, cwd, env, out_path: Path, err_path: Path,
 _SHUTDOWN_GRACE_S = 15
 
 # How long the child can be silent (no growth in either log file) before the
-# watchdog dumps its kernel stacks. 60 s is short enough to catch a stall
-# within the user's patience, long enough that a slow major GC or an
-# expensive typed-opt phase on a large module is not misclassified as stuck.
-_STALL_THRESHOLD_S = 60
+# watchdog dumps its kernel stacks. Raised 60 -> 180 once runs stopped being
+# truncated at 60 s: a full self-compile has quiet phases of several minutes
+# (mono, codegen) that print nothing, and 60 s misclassified them as stalls —
+# three spurious dumps in one run. A real stall still surfaces within 3 min,
+# and the dump re-arms, so a genuinely stuck run keeps producing evidence.
+_STALL_THRESHOLD_S = 180
 _WATCHDOG_POLL_S = 2
 
 
@@ -904,8 +939,9 @@ def _watchdog(*, proc: subprocess.Popen, out_path: Path, err_path: Path,
 
     Heuristic: if neither log file has grown for `_STALL_THRESHOLD_S`, the
     child is no longer producing output. We dump `/proc/<pid>/{status,wchan,
-    syscall,stack,comm}` for `proc.pid` (the timeout(1) wrapper) and every
-    descendant; eco-compiler is one of those descendants. The dump goes into
+    syscall,stack,comm}` for `proc.pid` and every descendant. `proc.pid` is
+    eco-compiler itself, or the timeout(1) wrapper it runs under when
+    --wall-seconds is given, in which case eco-compiler is a descendant. The dump goes into
     `variant_dir/stall_NNN.txt` so it survives the run for offline analysis.
     After dumping we re-arm: another `_STALL_THRESHOLD_S` of silence triggers
     another dump (with a fresh sequence number), so a long stall produces a
@@ -944,11 +980,12 @@ def _watchdog(*, proc: subprocess.Popen, out_path: Path, err_path: Path,
 def _shutdown_child(proc: subprocess.Popen) -> None:
     """Translate a Ctrl+C in the parent into a graceful shutdown of the child:
 
-    1. SIGTERM the timeout(1) wrapper's process group. timeout(1) forwards
-       SIGTERM to eco-compiler, whose SIGTERM handler in eco_entry.cpp
-       writes the `[gc-stats] SIGTERM — printing GC statistics` marker and
-       then prints the full GC-stats block to stdout.
-    2. Wait up to _SHUTDOWN_GRACE_S seconds for the wrapper to exit. The
+    1. SIGTERM the child's process group — eco-compiler directly, or the
+       timeout(1) wrapper under --wall-seconds, which forwards the signal.
+       eco-compiler's SIGTERM handler in eco_entry.cpp writes the
+       `[gc-stats] SIGTERM — printing GC statistics` marker and then prints
+       the full GC-stats block to stdout.
+    2. Wait up to _SHUTDOWN_GRACE_S seconds for it to exit. The
        grace window is generous because eco-compiler's stats handler is
        not async-signal-safe — if SIGTERM lands during a critical section
        (e.g. mid-allocation), getCombinedStats() may take a while to clear.
@@ -976,15 +1013,56 @@ def _shutdown_child(proc: subprocess.Popen) -> None:
 
 
 def _clear_eco_stuff() -> None:
-    """Remove `compiler/build-kernel/eco-stuff/1.0.0/` so each variant starts
-    from the same cold cache. eco-compiler recreates the directory and
-    repopulates it on its next `make`."""
-    if ECO_STUFF_1_0_0.exists():
-        shutil.rmtree(ECO_STUFF_1_0_0)
+    """Remove `compiler/build-kernel/eco-stuff/` so each variant starts from the
+    same cold cache. eco-compiler recreates the directory and repopulates it on
+    its next `make`.
+
+    The whole directory goes, not a version subfolder: the package version is
+    part of the path (`eco-stuff/0.1.1/` today, `eco-stuff/1.0.0/` when this
+    script was written) and a hard-coded version silently stops matching on a
+    bump, leaving every variant to run warm off its predecessor's cache. This
+    is what benchmarks/lss-loop-ab.sh does."""
+    if ECO_STUFF.exists():
+        shutil.rmtree(ECO_STUFF)
+
+
+def _freeze_registry_ttl() -> list[Path]:
+    """Refresh the mtime of every cached `registry.dat` so the compiler skips
+    its package-registry POST, and return the files touched.
+
+    Deleting `eco-stuff/` forces dependency re-verification, which calls
+    `Registry.update`. Under the `Normal` policy that hits the network unless
+    `registry.dat` was modified within the last 30 minutes
+    (`compiler/src/Builder/Deps/Registry.elm:208`). Measured here, that POST
+    took **134 s** and then FAILED — and a failed update neither writes nor
+    touches the file, so the TTL never resets by itself and every subsequent
+    run pays it again. Left alone it lands inside the measured wall and is
+    charged to mutator time, which is the metric a sweep is scored on.
+
+    The package cache is `$ECO_HOME` if set, else `~/.eco`
+    (`compiler/src/Builder/Stuff.elm:411`); every version directory under it is
+    touched, since the cache is versioned. This only suppresses the registry
+    REFRESH — the cached registry and the packages themselves are untouched,
+    which is what the benchmark protocol wants: cache intact, `eco-stuff` cold.
+    `parse_summary` records `registry_ms` so a run that somehow still makes the
+    call cannot pass unnoticed."""
+    eco_home = Path(os.environ.get("ECO_HOME") or (Path.home() / ".eco"))
+    touched = []
+    for dat in sorted(eco_home.glob("*/packages/registry.dat")):
+        try:
+            dat.touch()
+            touched.append(dat)
+        except OSError as e:
+            print(f"WARNING: could not touch {dat}: {e} — the run may make a "
+                  f"package-registry network call.", flush=True)
+    if not touched:
+        print(f"WARNING: no registry.dat under {eco_home} — the run may make a "
+              f"package-registry network call.", flush=True)
+    return touched
 
 
 def run_variant(*, name: str, change: str, heap_config: dict,
-                variant_dir: Path, wall_seconds: int, tee: bool,
+                variant_dir: Path, wall_seconds: int | None, tee: bool,
                 heap_trace: bool, preserve_eco_stuff: bool) -> dict:
     """Runs the binary once and writes all per-variant TSVs. Returns the
     summary row (a dict keyed by SUMMARY_COLUMNS)."""
@@ -997,6 +1075,7 @@ def run_variant(*, name: str, change: str, heap_config: dict,
 
     if not preserve_eco_stuff:
         _clear_eco_stuff()
+    _freeze_registry_ttl()
 
     boot_mlir = BUILD_KERNEL / "bin" / "eco-compiler-boot.mlir"
     if boot_mlir.exists():
@@ -1007,8 +1086,14 @@ def run_variant(*, name: str, change: str, heap_config: dict,
         "ECO_HEAP_TRACE": "1" if heap_trace else "0",
         "ECO_GC_PHASE_PROFILE": "1",
     }
+    # With no --wall-seconds the compiler is run directly, to completion.
+    # With one, timeout(1) SIGTERMs it at the budget; eco-compiler's handler
+    # prints the GC statistics before exiting, so a truncated run still parses.
+    budget = ([] if wall_seconds is None else
+              ["/usr/bin/timeout", f"--kill-after={KILL_AFTER_S}s",
+               str(wall_seconds)])
     cmd = [
-        "/usr/bin/timeout", f"--kill-after={KILL_AFTER_S}s", str(wall_seconds),
+        *budget,
         str(ECO_COMPILER), "make",
         "--optimize",
         "--kernel-package", "eco/compiler",
@@ -1017,8 +1102,9 @@ def run_variant(*, name: str, change: str, heap_config: dict,
         str(ELM_ENTRY),
     ]
 
-    print(f"\n=== {name}  ({change}) — wall_seconds={wall_seconds} ===",
-          flush=True)
+    budget_desc = ("to completion" if wall_seconds is None
+                   else f"wall_seconds={wall_seconds}")
+    print(f"\n=== {name}  ({change}) — {budget_desc} ===", flush=True)
     t0 = time.time()
     rc = _run_capturing(cmd, cwd=BUILD_KERNEL, env=env,
                         out_path=out_path, err_path=err_path, tee=tee)
@@ -1026,11 +1112,48 @@ def run_variant(*, name: str, change: str, heap_config: dict,
     out_text = out_path.read_text(errors="replace")
     err_text = err_path.read_text(errors="replace")
 
-    wall_s = float(wall_seconds) if rc == 124 else elapsed
+    # The runtime's fatal-signal handler writes this marker before printing
+    # stats. Checking it is NOT redundant with rc: on 2026-09-22 `abuf_128K`
+    # took SIGSEGV and still exited 0, so rc alone reported a crashed run as a
+    # 61.7 s "win". Never treat rc=0 as proof that a run completed.
+    crashed = re.search(r"\[gc-stats\] (SIG[A-Z]+) ", err_text)
+
+    # rc 124 is timeout(1)'s "budget expired", possible only under --wall-seconds.
+    truncated = rc == 124
+    wall_s = float(wall_seconds) if truncated else elapsed
+    if truncated:
+        print(f"WARNING: {name} hit the {wall_seconds}s budget — the run is "
+              f"TRUNCATED; its GC totals cover only that window.", flush=True)
+    elif rc != 0:
+        print(f"WARNING: {name} exited rc={rc} — check "
+              f"{err_path.relative_to(variant_dir.parent.parent)}", flush=True)
+
+    if crashed:
+        print(f"WARNING: {name} took {crashed.group(1)} (rc={rc}) — the run did "
+              f"NOT complete; its wall and GC totals cover only the time before "
+              f"the crash and must not be read as a result.", flush=True)
 
     summary = parse_summary(out_text, err_text, wall_s)
     summary["name"] = name
     summary["change"] = change
+    summary["signal"] = crashed.group(1) if crashed else ""
+    # Fingerprint the compiler's OUTPUT. A heap config must not change what the
+    # compiler emits; if one does, that is a miscompile, and without this it
+    # would read as a win (the fastest cell is exactly where the risk bites).
+    # Every cell overwrites this path, so the hash has to be taken per run.
+    if boot_mlir.exists():
+        data = boot_mlir.read_bytes()
+        summary["out_bytes"] = len(data)
+        summary["out_md5"] = hashlib.md5(data).hexdigest()
+    else:
+        summary["out_bytes"] = 0
+        summary["out_md5"] = "MISSING"
+        print(f"WARNING: {name} produced no {boot_mlir.name} — the compile did "
+              f"not reach its output stage.", flush=True)
+    if summary["registry_ms"]:
+        print(f"WARNING: {name} made a package-registry network call costing "
+              f"{summary['registry_ms'] / 1000:.1f}s — that time is INSIDE "
+              f"wall_s and mutator_s. See _freeze_registry_ttl().", flush=True)
 
     gc_timing_cols = ["wall_s", "major_s", "minor_s",
                       "helper_min_s", "helper_mut_s", "helper_s",
@@ -1082,14 +1205,16 @@ def run_variant(*, name: str, change: str, heap_config: dict,
 # ---------------------------------------------------------------------------
 
 def write_report(group_dir: Path, *, mode: str, machine: str, ts: str,
-                 wall_seconds: int, command_line: list[str],
+                 wall_seconds: int | None, command_line: list[str],
                  summary_rows: list[dict]) -> None:
     md = []
     md.append(f"# heap-profile {mode} report")
     md.append("")
     md.append(f"- machine: `{machine}`")
     md.append(f"- timestamp: `{ts}` (UTC)")
-    md.append(f"- wall_seconds: `{wall_seconds}`")
+    md.append("- wall budget: "
+              + ("`none` (each run went to completion)" if wall_seconds is None
+                 else f"`{wall_seconds}s` (runs truncated at the budget)"))
     md.append(f"- command: `{' '.join(command_line)}`")
     md.append("")
     md.append("## Summary")
@@ -1352,6 +1477,17 @@ def cmd_sweep(args, machine: str, results_root: Path) -> None:
             tee=args.tee, heap_trace=args.heap_trace,
             preserve_eco_stuff=args.preserve_eco_stuff)
         append_tsv_row(group_dir / "runs.tsv", SUMMARY_COLUMNS, summary)
+        # Compare against the first cell that actually PRODUCED output: a
+        # crashed cell has out_md5 "MISSING", and using it as the reference
+        # reports every healthy cell afterwards as a miscompile.
+        ref = next((r for r in summary_rows
+                    if r.get("out_md5") not in (None, "", "MISSING")), None)
+        if ref is not None and summary["out_md5"] != "MISSING":
+            if summary["out_md5"] != ref["out_md5"]:
+                print(f"WARNING: {name} OUTPUT DIFFERS from {ref['name']} "
+                      f"({summary['out_md5']} vs {ref['out_md5']}). A heap "
+                      f"config must not change the emitted code — treat this "
+                      f"cell as a MISCOMPILE, not a result.", flush=True)
         summary_rows.append(summary)
 
     (group_dir / "args.json").write_text(json.dumps({
@@ -1395,7 +1531,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "summary columns require this and will read as 0 "
                         "when disabled.")
     p.add_argument("--preserve-eco-stuff", action="store_true",
-                   help="do NOT delete compiler/build-kernel/eco-stuff/1.0.0 "
+                   help="do NOT delete compiler/build-kernel/eco-stuff "
                         "before each variant run. Off by default; the "
                         "directory is wiped per-run so every variant starts "
                         "from the same cold cache.")
@@ -1408,8 +1544,11 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--config", help=f"heap config JSON "
                     f"(default {DEFAULT_HEAP_CONFIG})")
     pr.add_argument("--label", help="folder label (default: 'default')")
-    pr.add_argument("--wall-seconds", type=int, default=DEFAULT_WALL_SECONDS,
-                    help=f"per-run wall budget (default {DEFAULT_WALL_SECONDS})")
+    pr.add_argument("--wall-seconds", type=int, default=None,
+                    help="optional per-run wall budget in seconds. Default: "
+                         "none — the run goes to completion. A budget "
+                         "TRUNCATES the workload, so its GC totals are a "
+                         "sample of the opening window, not the whole run.")
     pr.add_argument("--resume-dir", type=Path,
                     help="reuse an existing run-group directory")
     pr.add_argument("--dry-run", action="store_true",
@@ -1422,8 +1561,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="JSON file with a list of {name, change?, "
                          "overrides} objects, replacing the built-in matrix")
     ps.add_argument("--label", help="folder label (default: 'sweep')")
-    ps.add_argument("--wall-seconds", type=int, default=DEFAULT_WALL_SECONDS,
-                    help=f"per-run wall budget (default {DEFAULT_WALL_SECONDS})")
+    ps.add_argument("--wall-seconds", type=int, default=None,
+                    help="optional per-run wall budget in seconds. Default: "
+                         "none — the run goes to completion. A budget "
+                         "TRUNCATES the workload, so its GC totals are a "
+                         "sample of the opening window, not the whole run.")
     ps.add_argument("--resume-dir", type=Path,
                     help="reuse an existing run-group directory")
     ps.add_argument("--dry-run", action="store_true",
