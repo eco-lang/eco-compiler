@@ -8,7 +8,7 @@ win is NOT the one the plan predicted or of the size it predicted. The first
 build measured FLAT (`gc-all`); it took a reachability filter on `$sat`
 generation plus the newarg-count bug that filter exposed to turn it positive
 (`gc-all2`). §10 is the first measurement, §11 the full account, §12 what
-actually made it pay, **§13 follow-ups: 13.1 DONE, 13.2-13.4 open**.
+actually made it pay, **§13 follow-ups: 13.1 DONE; 13.2 and 13.3 WILL NOT DO (both refuted by measurement); 13.4 open**.
 
 Parent: `gc-opt-working-list.md` items #1–#4 (§1.a).
 
@@ -986,10 +986,12 @@ of 77 bytes each. Remaining levers, cheapest first:
 
 ---
 
-## 13. Follow-ups (13.1 done; 13.2-13.4 open, not started)
+## 13. Follow-ups (13.1 DONE; 13.2 and 13.3 WILL NOT DO; 13.4 the only open item)
 
-Recorded 2026-09-22 so they are not lost. None of the four has been acted on.
-Ordered by confidence-per-unit-effort, not by size.
+Recorded 2026-09-22 so they are not lost, then worked through. Of the four:
+13.1 is built and shipped; **13.2 and 13.3 are closed as things we will NOT
+do**, each refuted by its own diagnostic rather than deprioritised; 13.4 is the
+only one still open, and §13.2 has folded its one surviving idea into it.
 
 ### 13.1 The same root inflation in `preMaterializeApplyLayouts` — **DONE 2026-09-22**
 
@@ -1116,25 +1118,78 @@ that could have moved is `eco-boot-native`'s own runtime, which was not measured
 — a controlled before/after would need the pre-fix tool kept, and the predicted
 effect is inside noise anyway.
 
-### 13.2 `.llvm_stackmaps` weight on `$sat` entries — the largest single section cost
+### 13.2 `.llvm_stackmaps` weight on `$sat` entries — **WILL NOT DO** (diagnosed 2026-09-22)
 
 `.llvm_stackmaps` grew **+4.73 MB**, the biggest item in the +13.65 MB binary and
 bigger than `.text`'s +3.90 MB. That is one statepoint record per `$sat` entry's
 call to its target, ~158 bytes each across 25,316 entries.
 
-The interesting part: **nothing is live across that call.** A `$sat` entry loads
-its C captures, passes them plus the newargs, and returns the result — `%self`
-is dead at the call and no value survives it. The records are large because
-every `ptr addrspace(1)` ARGUMENT to a statepointed call is recorded and
-relocated, and the same pointers are already recorded at the caller's statepoint
-for the indirect `%sat` call on the fast edge. So the inner record is close to
-pure duplication.
+**To be clear about what is and is not claimed: `$sat` calls are NOT
+non-allocating.** The target is arbitrary Elm code — it can allocate, it can
+collect, and the call therefore MUST be statepointed. Nothing here proposes
+removing the statepoint's safety.
 
-Two candidate routes, neither tried:
-- emit the inner call as a **tail call** (`musttail` + `ret`), so there is
-  provably nothing to relocate;
-- teach the RS4GC flavour used here to skip relocation for a call whose result
-  is returned directly and which has no live-across set.
+The narrower claim is about the `$sat` FRAME: no value in it is defined before
+the call and used after it. `%self` is dead once the last capture is loaded,
+and the captures and newargs are consumed by the call itself. So the
+RELOCATION set at that statepoint should be near-empty, which is exactly why
+149 bytes per entry is surprising and worth chasing.
+
+**Measured split (2026-09-22).** The two builds vary the two populations in
+opposite directions — `gc-all` has 31,351 entries / 8,001 diamonds, `gc-all2`
+has 25,316 / 11,501 — so solving the pair against their `.llvm_stackmaps`
+growth (4,960,648 B and 4,178,520 B over the reference) separates them:
+
+| | bytes each |
+|---|---|
+| per `$sat` entry | **149.5** |
+| per diamond call site (the extra fast-edge statepoint) | 34.3 |
+
+The entries account for **3.61 MB of `gc-all2`'s 3.98 MB** of stackmap growth,
+so the attribution above is right — but the "nothing is live" reasoning does
+NOT explain the size, and the two fixes previously suggested here were guesses
+at an unconfirmed cause. Retract them as proposals; keep them as candidates.
+
+#### Diagnostic run (2026-09-22): it is a POPULATION problem, not a relocation one
+
+Parsing `.llvm_stackmaps` out of the `gc-all2` binary (24 concatenated v3 blobs,
+64,960 function entries) and matching function addresses against the
+`__closure_sat_*` symbols — 24,272 of 25,316 matched:
+
+| | |
+|---|---|
+| records per `$sat` function | 1.17 |
+| locations per record | min 3, mean **4.53**, max 31 |
+| location histogram | **3 -> 17,965**, 5 -> 3,932, 7 -> 3,876, 9 -> 1,618, 11 -> 508, … |
+| bytes per `$sat` function | **120.3** (24 B function entry + 96.3 B of records) |
+
+Every count is odd because a lowered `gc.statepoint` record always begins with
+three CONSTANT locations (calling convention, flags, deopt count) and then adds
+a (base, derived) PAIR per relocated pointer. So `3` means **zero pointers
+relocated**, `5` means one, `7` two, and so on.
+
+**63 % of `$sat` records relocate nothing at all**, and the mean is 0.77
+pointers. The "nothing is live across the call" claim was therefore correct —
+and it is exactly why the two fixes proposed above **are refuted**: `musttail`
+and teaching RS4GC to skip relocation would both save almost nothing, because
+there is almost nothing being relocated.
+
+The weight is structural and floors out per FUNCTION. A minimal record is
+16 B header + 3 x 12 B constant locations + alignment + the live-out
+half-word = **64 bytes**, on top of a 24 B per-function stackmap entry. So each
+`$sat` entry costs ~88 B before it describes a single GC pointer, and nothing
+about its BODY can reduce that.
+
+**The lever is therefore fewer `$sat` functions, and only that.**
+
+**Verdict: this item is closed and will not be built.** Both things it proposed
+— a `musttail` form and an RS4GC relocation skip — are refuted by the numbers
+above, and nothing else about an entry's BODY can move an ~88 B floor that is
+paid before the record describes anything. The one surviving idea, generating
+fewer entries, is not this item: it is §13.4, which already owns it. What this
+section leaves behind is a fact for that work to use — 25,316 entries backing
+11,501 fast edges cost 3.61 MB at ~88-120 B each, so the size question is
+entirely "how many entries are justified", never "how cheap can one be".
 
 This is also not purely a size question: `StackMap::parse` runs once at startup
 over the whole section (`eco_entry.cpp:52`), and `records_` is then consulted by
@@ -1143,7 +1198,7 @@ over the whole section (`eco_entry.cpp:52`), and `records_` is then consulted by
 record table is plausibly part of the +2.19 s GC time that `gc-all2` still
 carries against the reference.
 
-### 13.3 The double resolve on every slow dispatch — ~0.65 pts of cycles
+### 13.3 The double resolve on every slow dispatch — **WILL NOT DO** (refuted 2026-09-22)
 
 `Allocator::resolve` went 5.16 % -> 5.81 % of cycles. §5.3 asserts "`%clo` is
 needed on both paths, so the resolve is not extra"; that is **false for the
@@ -1152,15 +1207,99 @@ lets the RUNTIME resolve it. The diamond must resolve in its entry block to read
 the header word, so every dispatch that takes the SLOW edge now resolves twice.
 
 It is inherent to the diamond as specified — the guard cannot know which edge to
-take without the header — so the fix is not a code tidy-up but a design choice,
-e.g.:
-- pass the already-resolved base into the slow path too, so the runtime helper
-  can skip its own resolve (needs a new entry point taking a resolved base);
-- or hoist the resolve so that it is shared with a resolve the site already
-  performs for another reason, where one exists.
+take without the header — so the fix is not a code tidy-up but a design choice.
 
-Worth roughly 0.65 pts of cycles — comparable to the whole root-range triplet
-this plan started from, and now larger than it.
+**Status: NOT implementation-ready (checked 2026-09-22).** Two things are now
+established and two are not, and the gap is in the sizing, which is the part
+that decides whether the work is worth doing at all.
+
+Established:
+- The resolve **cannot be removed, only shared**. The guard needs the packed
+  header word at `%clo + 8`; reading it through an unresolved HPtr would read a
+  FORWARDING header on an evacuated closure, and the bit pattern could pass the
+  guard, taking the fast edge on a stale object. That is a miscompile, not a
+  slowdown.
+- Handing the resolved base to the slow path is **not unsound on lifetime
+  grounds**, which was the obvious objection. `__eco_resolve_fwd` is
+  `ptr as1 -> ptr as1` (`EcoToLLVMRuntime.cpp`), so the resolved base is a GC
+  pointer that RS4GC relocates like any other; it survives the safepoint poll
+  `emitSafepointMarker` emits before the runtime call. A raw `void*` would not
+  have.
+
+NOT established, and needed before this is buildable:
+- **The size. The 0.65 pts is STALE** — it comes from the `gc-all` profile, on
+  the build with 8,001 diamonds. The shipped `gc-all2` has 11,501 and has never
+  been re-profiled, so the figure is wrong by an unknown amount in an unknown
+  direction (more diamonds means more double-resolves, but the coverage fix
+  also moved work off the slow edge entirely).
+- **Whether the runtime's resolve is even what the profile is showing.**
+  `Allocator::resolve` rising could equally be the `$sat` entries' capture
+  loads or the guard's own header read; attributing it to a second resolve
+  inside `eco_apply_closure_eval` is inference, not measurement.
+- **Whether a second resolve is expensive at all.** `resolveFast` on an
+  ALREADY-resolved base takes the no-forwarding fast path, which may be a
+  handful of instructions on a line that is already hot in cache — in which
+  case the whole item is moot and the profile delta has another cause.
+
+#### Census run (2026-09-22): **CLOSED — the attribution was wrong**
+
+`perf record -F 199 --call-graph dwarf` on the shipped `gc-all2` binary, then
+counting the IMMEDIATE caller of every sample whose leaf is
+`Elm::Allocator::resolve` (the deep `foldrHelper` recursion makes the rendered
+tree useless, so this is taken from `perf script --max-stack=2`):
+
+| caller | share of `Allocator::resolve` |
+|---|---|
+| `StringOps::forEachSegmentEx` (collectSegs) | **53.4 %** |
+| `Kernel::Export::toPtr` | 9.9 % |
+| `writeEncoder` | 8.5 % |
+| `alloc::ListCursor::advanceSpine` | 7.8 % |
+| `eco_clone_array` | 5.1 % |
+| `Kernel::Utils::resolveAndCompare` | 4.6 % |
+| `alloc::listLogicalLen` | 3.0 % |
+| `hpointerToPtr` | **~1.75 %** |
+
+**None of it is the diamond**, and there is a structural reason it cannot be:
+the diamond resolves through `inlineResolvedBase` -> the `__eco_resolve_fwd`
+marker, which `expandInlineDerefs` expands INLINE into a header-tag check before
+RS4GC ever runs. It never calls `Allocator::resolve`, so the caller-side half of
+the "double resolve" is invisible in this symbol by construction. The
+runtime-side half arrives via `hpointerToPtr` and is ~1.75 % of 5.84 %, i.e.
+**~0.10 % of cycles** — an order of magnitude below the 0.65 pts attributed here.
+
+The 5.16 % -> 5.84 % rise is string, list and array kernel work, not dispatch.
+Attributing it to a second resolve inside `eco_apply_closure_eval` was
+inference, and the inference was wrong.
+
+**Verdict: this item is closed and will not be built.** A resolved-base entry
+point would mean a new runtime ABI in which the callee trusts a caller-supplied
+base — a real soundness surface — bought for ~0.1 % of cycles. The premise it
+rested on does not survive measurement, so there is nothing here to build even
+cheaply. This is precisely the outcome the "do not design the entry point first"
+rule existed to catch, and it is the third time in this plan that a number
+measured somewhere else did not survive being measured here.
+
+### 13.3a The shipped configuration, re-priced
+
+While the §13.3 census was running, the same profile re-prices the plan's own
+targets on `gc-all2` (the row that ships). Cross-config caveat: this run is
+`-F 199 --call-graph dwarf`, the earlier two were `-F 499` flat, so shares are
+not exactly comparable — but the apply-family move is far larger than any
+plausible sampling skew.
+
+| cycles self% | reference | `gc-all` | **`gc-all2`** |
+|---|---|---|---|
+| root-range triplet | 1.45 | 0.00 | **0.00** |
+| `eco_apply_closure_eval` | 2.12 | 0.86 | **0.36** |
+| `invokeSaturatedTyped` | 1.45 | 0.86 | **0.22** |
+| `spliceArgsForSaturatedCall` | 0.53 | 0.70 | **0.24** |
+| **apply/splice family** | **4.10** | 2.42 | **0.82** |
+
+The coverage fix did most of this: 11,501 fast edges against `gc-all`'s 8,001
+took the family from 2.42 % to 0.82 %. **The consequence for the rest of this
+plan is that Phase 3 has almost nothing left to win** — its entire remaining
+surface is under 1 % of cycles. Further `$sat` work should be judged as a SIZE
+exercise (§13.2/§13.4), not a speed one.
 
 ### 13.4 A dynamic (evaluator, N) census — how many entries are ever CALLED
 
