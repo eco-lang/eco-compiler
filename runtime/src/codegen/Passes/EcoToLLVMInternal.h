@@ -424,8 +424,10 @@ struct EcoRuntime {
     /// name via AddressOfOp, never looked up — so guarding just their dedup set
     /// + creation with this dedicated mutex keeps the hot symCache LOCK-FREE.
     /// Contention is low: taken per closure-apply site, not per symbol ref.
+    // Minted ONLY by the serial closure pre-pass, so no lock guards it
+    // (plan §13.1: a full self-compile creates zero eval-layouts after
+    // freeze(), so no Stage-2 worker ever writes here).
     mutable llvm::DenseSet<mlir::StringAttr> evalLayoutNames;
-    mutable std::mutex evalLayoutMutex;
 
     /// Pre-scanned original function types (before LLVM type conversion).
     /// Maps function name -> original FunctionType (with eco::ValueType etc.).
@@ -1238,6 +1240,7 @@ inline bool cafCallerFastEnabled() {
 mlir::Value emitEvalDescAddrForFuncSymbol(mlir::OpBuilder &b, mlir::Location loc,
                                           const EcoRuntime &runtime,
                                           mlir::StringRef funcSymbol);
+
 
 } // namespace detail
 } // namespace eco

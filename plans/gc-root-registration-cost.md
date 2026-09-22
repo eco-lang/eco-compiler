@@ -8,7 +8,7 @@ win is NOT the one the plan predicted or of the size it predicted. The first
 build measured FLAT (`gc-all`); it took a reachability filter on `$sat`
 generation plus the newarg-count bug that filter exposed to turn it positive
 (`gc-all2`). §10 is the first measurement, §11 the full account, §12 what
-actually made it pay.
+actually made it pay, **§13 follow-ups: 13.1 DONE, 13.2-13.4 open**.
 
 Parent: `gc-opt-working-list.md` items #1–#4 (§1.a).
 
@@ -983,3 +983,200 @@ of 77 bytes each. Remaining levers, cheapest first:
    and is worth ~0.65 pts of cycles.
 3. **A dynamic (evaluator, N) census (P0-c, still unrun)** would say how many
    of the 25,316 entries are ever *called*, as opposed to merely reachable.
+
+---
+
+## 13. Follow-ups (13.1 done; 13.2-13.4 open, not started)
+
+Recorded 2026-09-22 so they are not lost. None of the four has been acted on.
+Ordered by confidence-per-unit-effort, not by size.
+
+### 13.1 The same root inflation in `preMaterializeApplyLayouts` — **DONE 2026-09-22**
+
+§12.2 fixed the newarg count in the `$sat` signature collection. The identical
+bug was still live in the pre-existing layout pre-materialization
+(`EcoToLLVMClosures.cpp`, the `PapExtendOp` arm of
+`preMaterializeClosureArtifacts`):
+
+```cpp
+} else if (auto pe = dyn_cast<PapExtendOp>(op)) {
+    preMaterializeApplyLayouts(builder, runtime, op, pe.getNewargs(), ...);
+//                                                   ^^^^^^^^^^^^^^^^ roots included
+```
+
+`preMaterializeApplyLayouts` derives its kind vector from every element it is
+handed, so on this path it is the ROOT-PADDED vector. Note the `CallOp` arm two
+lines below already strips roots correctly (`operands[1 .. realCount)`) — it is
+only the papExtend arm that is wrong, and the pre-pass walk sees **25,858
+papExtends and ZERO indirect calls**, so this is every site.
+
+**It is not a correctness bug**, which is why it has survived: the call sites
+reach layouts through `getOrCreateEvalLayout`, which calls
+`ensureEvalLayoutGlobal` itself, and that creates the global on demand under its
+own mutex *even during parallel Stage 2*. So a pre-materialization miss
+self-heals. The costs are:
+
+1. every pre-minted papExtend layout is keyed on a vector no site ever asks for
+   — dead `private` globals, DCE'd later, so invisible in the binary;
+2. the pre-materialization therefore achieves **nothing** on the papExtend path;
+   every real layout is instead minted lazily under `evalLayoutMutex` by
+   whichever Stage-2 worker gets there first — exactly the contention the
+   pre-pass exists to avoid.
+
+Fix is the same two lines as §12.2 (`take_front(size - getGCRoots().size())`).
+Note it strips BOTH uses inside `preMaterializeApplyLayouts`: the `kinds` vector
+and the `zeros(kinds.size())` padding of the capture-ABI variant.
+
+**Scope: this is lowering-tool time, not benchmark time.** All of it runs inside
+`eco-boot-native`/`ecoc`, never in the produced compiler, and the wrongly-keyed
+globals are `private` and unreferenced so LLVM DCEs them. The self-compile wall
+this plan is measured on cannot move. Expect the emitted module to be unchanged
+modulo global ordering — re-check byte-identity, and do not expect a wall delta.
+
+#### Which side to drop, and can the mutex go? (answered and BUILT 2026-09-22)
+
+**Drop the LAZY side; keep the pre-mint.** The choice is not symmetric: dropping
+the pre-mint instead leaves both the mutex and the contention in place, which is
+strictly worse than today. Keeping the pre-mint and making call sites reference
+the global BY NAME is also what every other artifact class in this file already
+does — wrappers, string literals, string cases, and the `__eco_evaldesc_*`
+globals of Phase 2. The lazy path is the outlier, and the reason it is an
+outlier is the comment at `ensureEvalLayoutGlobal`: *"Eval-layouts are the ONE
+artifact class whose exact demand cannot be pre-derived."* **That claim was
+self-fulfilling** — the pre-derivation could not match because it was keyed on
+root-padded vectors.
+
+`getOrCreateEvalLayout` then collapses to: build the name, `AddressOfOp`, done.
+`RootSet`-style creation moves entirely into the serial pre-pass, where no lock
+is needed at all, so **`evalLayoutMutex` AND `evalLayoutNames`
+(`EcoToLLVMInternal.h:427-428`) both become dead** and `ensureEvalLayoutGlobal`
+can dedup with a plain unguarded set.
+
+The demand surface is four site calls against three pre-mints, and after the
+root strip they line up:
+
+| site | vector it asks for | pre-mint that covers it |
+|---|---|---|
+| `emitInlineClosureCall` (`:2340`) | newarg kinds, `safeOp._result_kind` | `(kinds, resultKind)` |
+| `lowerSegmentationUnknown` (`:2564`) | newarg kinds, `op.get_resultKind()` | `(kinds, resultKind)` |
+| `lowerGenericApply` (`:2701`) | newarg kinds, `op.get_resultKind()` | `(kinds, resultKind)` |
+| PapExtend capture-ABI arm (`:2809`) | capture kinds ++ zeros(numNewArgs), 0 | `(ck, 0)` |
+
+**But "line up" is exactly the kind of `should` the root bug punished, so
+measure it.** Sequencing:
+
+1. fix the root strip (both uses);
+2. add a counter in `ensureEvalLayoutGlobal` for creations that happen AFTER the
+   pre-pass — i.e. from a call site — and print it at lowering exit;
+3. if that count is **0** on a full self-compile, convert the four sites to
+   name-only `AddressOfOp` and delete the mutex and the set;
+4. if it is non-zero, the comment is right for some reason not yet identified —
+   find which site misses before touching anything.
+
+The failure mode of step 3 is safe and loud, not silent: `LLVM::AddressOfOp`
+carries `SymbolUserOpInterface::Trait`, so a reference to a global the pre-pass
+did not mint is an MLIR **verifier error** at lowering time.
+
+Honest expected payoff: the mutex is taken on the order of 10^5 times across a
+~270 s lowering spread over 24 threads, so removing it is tidiness and a false
+invariant retired — **not** a measurable speed-up of anything. The real value is
+that the pre-pass starts doing the job it exists for.
+
+#### Outcome (built, all three steps)
+
+Step 1, the strip: the papExtend arm now passes
+`all.take_front(all.size() - pe.getGCRoots().size())`. One edit covers both uses
+— `kinds` and the capture-ABI variant's zero padding both derive from that same
+range, so the "strips BOTH uses" note above was over-cautious.
+
+Step 2, the probe: a counter on creations while `runtime.frozen` (set at
+`EcoToLLVM.cpp:352`, immediately after the pre-pass, so it is exactly
+"created by a call site during parallel Stage 2"). A full self-compile lowering
+reports **`createdAfterFreeze=0`**. The demand IS pre-derivable; the
+`ensureEvalLayoutGlobal` comment claiming otherwise is refuted and has been
+rewritten to say why it looked true.
+
+Step 3, therefore taken: the four call sites now emit a name-only
+`AddressOfOp`, `ensureEvalLayoutGlobal` is a serial-pre-pass-only routine, and
+**`evalLayoutMutex` is deleted** (`EcoToLLVMInternal.h`). `evalLayoutNames`
+stays as the pre-pass's unguarded dedup set. Two guards keep it honest:
+`assert(!runtime.frozen)` in `ensureEvalLayoutGlobal`, and — always on, not just
+in debug — `AddressOfOp`'s `SymbolUserOpInterface`, which turns an unpredicted
+demand into an MLIR verifier error rather than a race.
+
+Gates: **E2E 1731/1731 with the assert live**, which is far broader coverage of
+the pre-derivation claim than the single self-compile module — every codegen
+fixture and E2E program exercises it. And the decisive one: re-lowering
+`ecoghash.mlir` produces a binary **byte-identical** to the kept `eco-optgc4`,
+both after step 1 and after step 3.
+
+No benchmark was run and none is owed: the produced binary is byte-identical, so
+the measured self-compile wall is unchanged *by construction*. The only thing
+that could have moved is `eco-boot-native`'s own runtime, which was not measured
+— a controlled before/after would need the pre-fix tool kept, and the predicted
+effect is inside noise anyway.
+
+### 13.2 `.llvm_stackmaps` weight on `$sat` entries — the largest single section cost
+
+`.llvm_stackmaps` grew **+4.73 MB**, the biggest item in the +13.65 MB binary and
+bigger than `.text`'s +3.90 MB. That is one statepoint record per `$sat` entry's
+call to its target, ~158 bytes each across 25,316 entries.
+
+The interesting part: **nothing is live across that call.** A `$sat` entry loads
+its C captures, passes them plus the newargs, and returns the result — `%self`
+is dead at the call and no value survives it. The records are large because
+every `ptr addrspace(1)` ARGUMENT to a statepointed call is recorded and
+relocated, and the same pointers are already recorded at the caller's statepoint
+for the indirect `%sat` call on the fast edge. So the inner record is close to
+pure duplication.
+
+Two candidate routes, neither tried:
+- emit the inner call as a **tail call** (`musttail` + `ret`), so there is
+  provably nothing to relocate;
+- teach the RS4GC flavour used here to skip relocation for a call whose result
+  is returned directly and which has no live-across set.
+
+This is also not purely a size question: `StackMap::parse` runs once at startup
+over the whole section (`eco_entry.cpp:52`), and `records_` is then consulted by
+`collectStackRootsFromStackMap()` on **every** minor and major GC
+(`ThreadLocalHeap.cpp:530,587`) — 1,118 times on the measured workload. A larger
+record table is plausibly part of the +2.19 s GC time that `gc-all2` still
+carries against the reference.
+
+### 13.3 The double resolve on every slow dispatch — ~0.65 pts of cycles
+
+`Allocator::resolve` went 5.16 % -> 5.81 % of cycles. §5.3 asserts "`%clo` is
+needed on both paths, so the resolve is not extra"; that is **false for the
+generic path**, which hands the closure HPtr to `eco_apply_closure_eval` and
+lets the RUNTIME resolve it. The diamond must resolve in its entry block to read
+the header word, so every dispatch that takes the SLOW edge now resolves twice.
+
+It is inherent to the diamond as specified — the guard cannot know which edge to
+take without the header — so the fix is not a code tidy-up but a design choice,
+e.g.:
+- pass the already-resolved base into the slow path too, so the runtime helper
+  can skip its own resolve (needs a new entry point taking a resolved base);
+- or hoist the resolve so that it is shared with a resolve the site already
+  performs for another reason, where one exists.
+
+Worth roughly 0.65 pts of cycles — comparable to the whole root-range triplet
+this plan started from, and now larger than it.
+
+### 13.4 A dynamic (evaluator, N) census — how many entries are ever CALLED
+
+§12.1's filter is a REACHABILITY criterion: it removes entries no site *could*
+call. It says nothing about how many are ever *actually* called. 25,316 entries
+back 11,501 diamonds, so an upper bound of ~2.2 entries per fast edge — but the
+true dynamic set could be far smaller.
+
+This is P0-c (§2.3), still unrun. What is wanted is a counter, behind a
+compile-time `ECO_SAT_CENSUS` flag so it never rides a timed binary, recording
+per `(descriptor, N)` how many times the fast edge fired. That gives:
+- the real entry population, hence what a profile-guided generation pass could
+  cut (and therefore how much of §13.2's stackmap weight is avoidable);
+- the fast-edge HIT RATE, which is the missing number for §13.3 — if most
+  dispatches take the slow edge, the double resolve and the guard dominate and
+  the diamond's economics change.
+
+Do this one before any further `$sat` work: §11.5 and §12.4 have both now
+guessed at the entry population and both guessed wrong.

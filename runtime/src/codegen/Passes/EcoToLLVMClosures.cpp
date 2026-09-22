@@ -2065,16 +2065,22 @@ static void ensureEvalLayoutGlobal(OpBuilder &builder, Location loc,
         os << n;
     }
     StringRef name = nameBuf;
-    // Eval-layouts are the ONE artifact class whose exact demand cannot be
-    // pre-derived, so they are created on demand here even during parallel
-    // Stage 2. They are referenced ONLY by name via AddressOfOp (never looked
-    // up in symCache), so they live in a dedicated dedup set guarded by their
-    // own mutex — leaving the hot symCache LOCK-FREE. insert().second is false
-    // if already created (this worker earlier or another); the lock is held
-    // through creation so the module.getBody() insertion is serialized across
-    // workers. Content-keyed, ~dozens exist, taken per closure-apply site.
+    // Eval-layouts used to be created on demand from call sites — during
+    // PARALLEL Stage 2 — behind their own mutex, on the stated grounds that
+    // "eval-layouts are the ONE artifact class whose exact demand cannot be
+    // pre-derived". That was self-fulfilling: the papExtend arm of
+    // preMaterializeClosureArtifacts derived its kind vector from a
+    // ROOT-PADDED operand range, so it pre-minted keys no site ever asked for
+    // and predicted none of the keys sites did ask for. With the range
+    // stripped, a full self-compile mints ZERO layouts after freeze()
+    // (plan §13.1), so this is a serial-pre-pass-only routine and needs no
+    // lock: `evalLayoutNames` is touched by one thread. Content-keyed,
+    // insert().second is false when the pre-pass already minted this key.
+    assert(!runtime.frozen &&
+           "ensureEvalLayoutGlobal after freeze(): an eval-layout demand the "
+           "serial pre-pass did not predict; creating it here would race the "
+           "parallel Stage-2 workers");
     auto key = mlir::StringAttr::get(ctx, name);
-    std::lock_guard<std::mutex> lk(runtime.evalLayoutMutex);
     if (!runtime.evalLayoutNames.insert(key).second)
         return;  // already created
     auto arrayTy = LLVM::LLVMArrayType::get(i8Ty, n);
@@ -2110,7 +2116,6 @@ static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location
                                    uint8_t resultKind = 0) {
     auto *ctx = rewriter.getContext();
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
-    ensureEvalLayoutGlobal(rewriter, loc, runtime, kinds, resultKind);
     llvm::SmallString<48> nameBuf;
     {
         llvm::raw_svector_ostream os(nameBuf);
@@ -2118,6 +2123,11 @@ static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location
         for (uint8_t k : kinds) os << unsigned(k) << "_";
         os << unsigned(kinds.size());
     }
+    // Referenced BY NAME only — the serial pre-pass minted it. A miss is not
+    // silent: LLVM::AddressOfOp carries SymbolUserOpInterface, so a reference
+    // to a global that does not exist is an MLIR verifier error here.
+    assert(runtime.module.lookupSymbol<LLVM::GlobalOp>(StringRef(nameBuf)) &&
+           "eval-layout not pre-materialized (plan §13.1)");
     return rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, StringRef(nameBuf));
 }
 
@@ -3235,8 +3245,24 @@ void eco::detail::preMaterializeClosureArtifacts(
                                            mc.getArity(), /*kinds=*/0,
                                            /*resultKind=*/0, mc.getLoc(), n);
             } else if (auto pe = dyn_cast<PapExtendOp>(op)) {
+                // `papExtend`'s operands are `[closure, newargs..., roots...]`
+                // and `getNewargs()` returns the whole tail after the closure,
+                // roots included; the lowering drops them via
+                // splitAdaptedRoots. Passing the padded range here derived the
+                // layout kind vector for `[kinds..., 0 x rootCount]`, a key NO
+                // site ever asks for — so every pre-minted papExtend layout was
+                // dead and every layout a site DID want was instead created
+                // lazily, under a lock, by whichever Stage-2 worker reached it
+                // first. Both `kinds` and the capture-ABI variant's
+                // zero padding derive from this range, so stripping once here
+                // fixes both. (The CallOp arm below already strips correctly.)
+                auto all = pe.getNewargs();
+                unsigned roots = pe.getGCRoots().size();
+                if (all.size() < roots)
+                    return;
                 preMaterializeApplyLayouts(
-                    builder, runtime, op, pe.getNewargs(),
+                    builder, runtime, op,
+                    all.take_front(all.size() - roots),
                     static_cast<uint8_t>(pe.get_resultKind()),
                     pe->getAttrOfType<ArrayAttr>("_capture_abi"));
             } else if (auto call = dyn_cast<CallOp>(op)) {
