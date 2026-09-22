@@ -14,6 +14,29 @@ Baseline: GC is 29–41% of Stage-7 self-compile wall; minor ~86 s / major
 `Custom` 60.7% + `Cons` 36.7% = 97.4% of promotion (Run H,
 `benchmarks/tier2-opt.md:280`).
 
+### Line-number provenance — read before using any citation
+
+Line numbers were taken against the tree of **2026-09-21**. On **2026-09-22**
+Phase 1 of the sibling plan (`gc-root-registration-cost.md`, the TLS shadow
+stack) landed and modified nine allocator files: `RootSet.{hpp,cpp}`,
+`RuntimeExports.cpp`, `ThreadLocalHeap.cpp`, `AllocatorCommon.hpp`,
+`Allocator.cpp`, `HeapHelpers.hpp`, `Heap.hpp`, `NurserySpace.cpp`.
+
+Spot-checked drift in those files is **−1 to +6 lines** (e.g.
+`NurserySpace::evacuate` `:919`→`:918`; the `promoted_objects` vector
+`:418`→`:412`; `clearToSpaceFreeRegion`'s call site `:533`→`:536`;
+`Header.refcount` `Heap.hpp:168`→`:171`). `OldGenSpace.{hpp,cpp}`,
+`GCStats.{hpp,cpp}` and `StackMap.cpp` are **unchanged**, so every W3/W7/W8/W9
+citation into those files is still exact.
+
+Every citation in this plan names the **function** as well as the line —
+trust the name, re-locate the line. Two premises were re-verified after the
+landing and still hold verbatim: item 36 (`roots`/`jit_roots` are still
+`std::unordered_set`, `RootSet.hpp:312-313`) and item 37
+(`ExternalRootScanner` is still `std::function<void(EvacuateFn)>` taking the
+inner function by value, `:297-298`, with the 24-byte capturing lambda still at
+`NurserySpace.cpp:477`).
+
 **Standing caution.** `plans/inline-bump-state-tls.md` deleted 10.46 B calls
 and measured **−0.03% wall**. Its lesson — *"a large count is not a large
 cost… rank by events × per-event cost × criticality"* — applies to most of
@@ -30,9 +53,9 @@ is an instruction-count argument, and the wall A/B is the arbiter.
 | **W1** | Nursery zeroing | 6,7,8,9 | **5.6% CPU *measured*** | medium |
 | **W2** | `evacuate` inner loop | 16–23 | *bound* | low |
 | **W3** | Per-object dispatch | 24–28 | *bound* | low |
-| **W4** | Slot scanning | 29–32 | *bound* | medium |
-| **W5** | Minor-GC structure | 33–37,53,55 | *bound* | low |
-| **W6** | Old-gen virgin-page bump | 10,15 | *bound* | medium |
+| **W4** | Slot scanning | 29–31 (**32 gated**) | *bound* | medium |
+| **W5** | Minor-GC structure | 33,34,35,37,53,55 (**36 closed**) | *bound* | low |
+| **W6** | Old-gen virgin-page bump | 10, 15 (counter first) | *bound* | medium |
 | **W7** | Promotion-path sweep coupling | 14 | *measured outlier* | medium |
 | **W8** | Mark-side data structures | 38,40,51,52,54 | *bound* | medium |
 | **W9** | Old-gen bookkeeping | 41–47 | *bound* | low |
@@ -254,7 +277,39 @@ should `abort()` on an unclassifiable miss under `ECO_HEAP_VALIDATE`.
 The real fix: prove every allocated object is fully initialised before the
 next safepoint, then delete all of the above.
 
-Investigation, not yet a change:
+### Which tags are actually exposed (static narrowing — do this first, it is free)
+
+The exposure is not "every allocation". It is exactly those tags whose **scan
+extent is `hdr->size` with no separate fill counter**, because only those trace
+slots the mutator has not written yet. Walking `scanObject` (`:1358-1636`):
+
+| tag | scan extent | exposed? |
+|---|---|---|
+| `Custom`, `Record`, `Closure`, `DynRecord` | `hdr->size` = full field count | **yes** |
+| `Tuple2`, `Tuple3`, `Cons`, `ConsChunk` | fixed slot count | **yes** |
+| `FieldGroup` | `hdr->size` | **yes** |
+| `Array` | `arr->length`, **not** capacity (`:1582`) | no — `allocArray` sets `length = 0` (`HeapHelpers.hpp:1660`) and it grows only as slots are filled |
+| `ListBacking` | `[hd, hdr->size)` = whole capacity | no — `listBacking` memsets its own element area for boxed kinds (`HeapHelpers.hpp:684`) |
+| `String`, `ByteBuffer`, `StringUtf8Leaf`, `Int`, `Float`, `Char` | pointer-free | no |
+| slices / ropes / split headers | fixed, 1–2 slots | **yes** |
+
+Two findings worth stating plainly:
+
+- **`Array` is safe by construction**, and the `length`/`capacity` split is
+  precisely why. `getObjectSize` strides by capacity (`AllocatorCommon.hpp:322`)
+  while the scan iterates `length`, so the uninitialised tail is stepped over
+  and never read. That is the pattern the exposed tags lack.
+- **`ListBacking` was already fixed locally**, with the rationale written down
+  at `HeapHelpers.hpp:663-666`. Somebody already hit this once and solved it for
+  one tag.
+
+So the instrumentation below only needs to cover the "yes" rows, and the second
+half of the problem — the **per-object kind bitmap word at offset 8**
+(`Custom.ctor|unboxed`, `Record.unboxed`, `Closure.unboxed`), which
+`initHeaderForTag` does not clear — applies only to `Custom`, `Record` and
+`Closure`.
+
+### Investigation
 
 1. Build with `ECO_HEAP_VALIDATE`, disable `clearToSpaceFreeRegion`, and
    instead poison the free region with a recognisable non-zero pattern
@@ -269,9 +324,21 @@ Investigation, not yet a change:
    HEAP_031 (`FreshStoreNoForward`) — the compiler already reasons about
    freshly-allocated objects, so the gap may be narrow.
 
-If the set is small and closable, delete the zeroing outright. If not, W1.2
-is the permanent answer. **Do this investigation before W1.2** — it may make
-W1.2 unnecessary, and it is cheap.
+5. For each reported site, classify: (a) a safepoint genuinely falls between
+   the header write and the last field store, or (b) the object is a
+   `builder`-bit object, which HEAP_BUILDER_001 *deliberately* exposes to
+   tracing while half-built. Class (b) cannot be closed by compiler work — a
+   builder is traced by design — so those sites need the `listBacking`
+   treatment (zero the slot area at allocation), not a safepoint fix.
+
+**Decision rule.** If every class-(a) site is closable and every class-(b) site
+is given a local memset, delete the bulk zeroing entirely and keep the poison
+fill under `ECO_HEAP_VALIDATE` as the permanent regression guard. If class (a)
+is large, W1.2 is the answer and this investigation still pays for itself by
+telling you so cheaply.
+
+**Do this investigation before W1.2** — it may make W1.2 unnecessary, the
+static narrowing above is free, and the instrumentation is ~30 lines.
 
 ### Files
 
@@ -324,10 +391,28 @@ body is `if (is_boxed) evacuate(...)`. Move to the header, or mark
 stay out-of-line — that is fine; the win is not calling through for unboxed
 slots.
 
-**Item 20.** No `__builtin_expect` anywhere in the file. Annotate: constants
-and nulls are rare on the boxed-slot path; `Tag_Forward` is common
-mid-scan; promotion is the minority per object. Use `ECO_LIKELY`/`ECO_UNLIKELY`
-macros rather than raw builtins, matching `Allocator.hpp:69`'s idiom.
+**Item 20 — branch hints.** `NurserySpace.cpp` contains no `__builtin_expect`
+at all. House style is the **raw builtin**, not a macro — there are six uses
+(`Allocator.hpp:69`, `Allocator.cpp:938`, `HeapHelpers.hpp:639`,
+`RuntimeExports.cpp:382`, `:4876`) and no `ECO_LIKELY` exists. Match that;
+introducing macros is a separate style change and should not ride along here.
+
+Hints to place, with the direction argued rather than assumed:
+
+| site | hint | why |
+|---|---|---|
+| `ptr.ptr_ind != 0` (`:920`), `ptr.ptr == 0` (`:922`) | unlikely | boxed slots dominate; constants are filtered by the bitmap in item 29 |
+| `!isInFromSpace` after item 17's reorder | **likely** | in steady state most edges point at to-space, old gen or permanent |
+| `hdr->tag == Tag_Forward` (`:993`) | likely | mid-scan, most in-from-space targets are already evacuated |
+| promotion predicate (`:1041`) | unlikely | promotion is the minority per surviving object |
+
+Note the two existing `Tag_Forward` hints point **opposite ways** —
+`Allocator.hpp:69` says unlikely (a mutator deref, forwarding is the rare
+post-GC window) while `RuntimeExports.cpp:4876` says likely (a chase loop that
+only runs when already forwarded). Direction is context-dependent here too:
+inside `evacuate` mid-scan it is likely, which is the opposite of the mutator
+path it superficially resembles. Get this wrong and the hint costs rather than
+pays, so put the reasoning in the comment.
 
 **Item 23.** Forwarding-pointer install writes three separate bitfields
 (`:1139-1146`, also `:1250-1254`, `:1762-1766`), each a read-modify-write of
@@ -469,40 +554,100 @@ through `evacuateUnboxable(elem, is_boxed, ...)`, re-testing the flag in the
 callee. Hoist the test out and run a tight `evacuate`-only loop when boxed;
 skip the loop entirely when not.
 
-**Item 32 — "no boxed slots" header bit.** `Header.refcount : 15`
-(`Heap.hpp:168`) is documented as *"Reference count (unused currently)"*.
-Steal one bit as `no_boxed_slots`, set at allocation when the kind bitmap has
-no zero-kind slot in range.
+**Item 32 — "no boxed slots" header bit. ⚠ GATED ON A MEASUREMENT THAT ALREADY
+EXISTS; likely to be closed.** *(Re-assessed 2026-09-22 after a full header-writer
+inventory.)*
 
-Then `scanObject` and `markChildren` can early-out before the tag dispatch:
+The idea: steal one of the 15 unused `Header.refcount` bits (`Heap.hpp:171`,
+bits [16,31); `builder` is bit 31) as `no_boxed_slots`, so `scanObject` and
+`markChildren` can early-out before the tag dispatch. The inventory says the
+mechanics are workable but the **addressable population is small and the two
+dominant tags are excluded**.
 
-```cpp
-if (ECO_LIKELY(hdr->no_boxed_slots)) return;   // Int, Float, Char, String,
-                                               // ByteBuffer, all-primitive
-                                               // Custom/Record/Tuple/Array
-```
+### Which tags could ever set it
 
-**This is the riskiest item in the plan** and must be staged:
+| tag | bitmap location | can set? |
+|---|---|---|
+| Int, Float, Char | none | **yes** — pointer-free by construction |
+| String, StringUtf8Leaf, ByteBuffer | none | **yes** |
+| `Tag_Free` | none | **yes** |
+| Tuple2 / Tuple3 | `header.unboxed`, static at write | yes, when all slots primitive |
+| Record | separate word at +8, constant on the inline path | inline path only |
+| **Custom** | separate word at +8, and the non-inline path writes `unboxed = 0` as a **placeholder** later patched by `eco_set_unboxed` (`RuntimeExports.cpp:253-288`, `:1389`, `:1409`) | **inline path only, all-primitive only** |
+| **Cons** | `header.unboxed` bits 1:0 describe the **head only**; `tail` is always `HPointer` | **never** |
+| **ElmArray** | `allocArray` writes `unboxed = 0` as a placeholder; the kind is bound **lazily on first push** (`HeapHelpers.hpp:1857`, `:1876`, `if (idx == 0)`) and patched wholesale at 16 `JsArrayExports.cpp` sites plus `eco_array_set_fix_kind` | **never** |
+| **Closure** | capture kinds written **incrementally across GC points** by `closureCapture` (`HeapHelpers.hpp:1968-2013`), so boxedness is not final until all captures land | **never** |
 
-- The bit must be set on **every** allocation path — `initHeaderForTag`, the
-  HEAP_034 inline-alloc header word composed by
-  `value_enc::composeHeader` (so the compiler must compute it too), the
-  region-slicing paths, kernel builders, `eco_pap_extend`'s copy, promotion's
-  `memcpy` (which preserves it), and `PermanentSpace`'s deep copy.
-- A stale *set* bit is a missed trace → use-after-free. A stale *clear* bit is
-  merely slow. So the compile-time default must be **clear**, and setting it
-  must be opt-in per path.
-- Under `ECO_HEAP_VALIDATE`, ignore the bit and scan anyway, asserting that a
-  set bit implies no boxed slot was found.
-- Land the validator first, then the setters, then the early-out, as three
-  commits.
+`Cons` and `Custom` are **97.4% of everything promoted** (Run H). `Cons` is
+structurally excluded and `Custom` only qualifies on the inline path with an
+all-primitive bitmap. So the reachable population is roughly "boxed scalars and
+strings" — which is exactly the set the retention census puts at ≤2.6%.
 
-Given the risk, gate W4-item-32 on W4-items-29/31 having measured a win; if
-the mask loop already collapses the cost, the bit buys little.
+### The gate: a histogram that is already collected but not printed
+
+The scan cost follows objects **scanned** (survivors + promoted), not promotion
+alone, and the survived-by-tag distribution has never been reported — Run H
+printed only `promoted_*_by_tag`. But `GCStats::recordSurvival(tag, bytes,
+nfields)` already fills `survived_count_bytes_by_tag` alongside it.
+
+**So the measurement is a reporting change, not an instrumentation change.**
+Print the survived-by-tag histogram and read off the share of scanned objects
+that are pointer-free scalars and strings.
+
+- **≥15% of scanned objects** → item 32 is worth its risk; proceed with the
+  staging below.
+- **Below that** → **close the item.** The risk/benefit does not justify it,
+  and items 29/31 already remove the per-slot cost that motivated it.
+
+### If it proceeds — what the inventory changes
+
+Two findings make it safer than first assumed:
+
+1. **Default-off is free everywhere.** No producer writes `refcount` today, so
+   every one of the ~60 header writers already emits 0 in that window. Only
+   paths that must set 1 need editing; nothing needs a defensive clear.
+2. **The regression test already exists.**
+   `assertHeaderPreservedAcrossCopy` (`NurserySpace.cpp:909-914`,
+   `ECO_HEAP_VALIDATE`) explicitly asserts `dst->refcount == src.refcount`
+   across all six minor-GC copy sites (`:1055`, `:1131`, `:1220`, `:1239`,
+   `:1738`, `:1757`). Stealing a refcount bit makes that assert the free
+   invariant check for every evacuation and promotion.
+
+Three hazards it surfaces:
+
+3. **`composeHeader` has no parameter for bits [16,31)**
+   (`EcoToLLVMInternal.h:305-320`) — a new argument plus **13 call sites**
+   (6 in `EcoToLLVMHeap.cpp`, 6 in `EcoToLLVMValueAgg.cpp`, 1 in
+   `EcoToLLVMClosures.cpp`). The inline and non-inline paths must change in
+   lockstep or `ECO_INLINE_ALLOC=0` diverges.
+4. **`installForwardingPointer` writes only `tag`**
+   (`OldGenSpace.cpp:3864`, `NurserySpace.cpp:1141/1251/1763`), leaving the
+   rest of the header live on the tombstone. Anything reading the bit off a
+   `Tag_Forward` header sees the *dead* object's value. The early-out must be
+   ordered after the forwarding check, not before.
+5. **`PermanentSpace::promoteValue` (`PermanentSpace.cpp:295-311`) edits
+   nothing after its memcpy** — not even `color`. It inherits the bit verbatim,
+   which is correct only if the source was correct.
+
+### Landing order (three commits, unchanged)
+
+1. Field + `ECO_HEAP_VALIDATE` check that scans as today and asserts a set bit
+   implies no boxed slot. Nothing sets it yet.
+2. Setters for the unambiguous tags only (Int, Float, Char, String,
+   StringUtf8Leaf, ByteBuffer, `Tag_Free`). Validator now exercises them.
+3. The early-out, after a full self-compile and E2E under `ECO_HEAP_VALIDATE`
+   with zero failures.
+
+Order within W4: land **29 and 31 first**, then print the survived-by-tag
+histogram, then decide 32. Both gates must pass — a pointer-free share ≥15% of
+scanned objects, *and* items 29/31 not already having collapsed the per-slot
+cost that motivated the bit. On current evidence 32 is more likely to be closed
+than built, and that is a fine outcome: the inventory it required is reusable
+for any future header-bit work (item 46 included).
 
 ---
 
-## W5 — Minor-GC structure (items 33–37, 53, 55)
+## W5 — Minor-GC structure (items 33–35, 37, 53, 55; 36 closed)
 
 **Item 33 — delete the redundant loop.** Phase 2 (`:485-489`) is
 `while (scanHasMore()) { scanObject(...); scan_ptr_ += getObjectSize(...); }`.
@@ -516,14 +661,34 @@ mallocs and doubles from zero every cycle, during the pause. Make it a member
 cycle start so capacity is retained. It is `push_back`-ed at `:1070`, `:1225`,
 `:1743` and index-walked at `:518`.
 
-**Item 36 — root iteration order.** Phases 1a (`:424`) and 1c (`:445`) iterate
-`std::unordered_set` in bucket order: a pointer chase per node, and roots
-touched in random address order. Replace `RootSet::roots` and `jit_roots` with
-sorted `std::vector`s plus a `bool dirty_` re-sort on first GC after a change.
-`addRoot`/`removeRoot` are O(1) today and become O(log n) lookup + O(n)
-erase — acceptable because registration is rare (literal interning and CAF
-slots) while iteration is per-GC. **Measure the registration rate first**
-(`RuntimeExports.cpp:688` is the hot registration site).
+**Item 36 — root iteration order. ✗ CLOSED, NOT WORTH DOING.**
+
+The proposal was to replace `RootSet::roots` / `jit_roots` with sorted vectors
+because iterating an `unordered_set` in bucket order is cache-hostile. The
+premise was right; the magnitude is not. **Measured root counts on a
+self-compile are `longLived=4 jit=0`** — `benchmarks/runtime-calls.md:1372-1400`
+(Run AA, the `[gc-roots]` line from `GCStats.cpp:1787-1792`).
+
+They used to be ~15–20K long-lived and 1,562 JIT. HEAP_036's CAF permanent
+space collapsed them: `plans/caf-permanent-space.md:1-11` records
+*"longLived ~15-20K → 4, jit 1,562 → 0"*, because interned literals are now
+born in the GC-invisible `PermanentSpace` and `internLiteral` roots a slot only
+on the old-gen fallback path (`RuntimeExports.cpp:632-636`).
+
+Iterating a 4-element set twice per GC is not a cost. **Do not do this item.**
+
+Two facts worth keeping from the investigation, because they change other
+things:
+
+- **`removeRoot` and `removeJitRoot` are never called in production** — the
+  only callers are `main.cpp` (the `ecor` synthetic demo) and `test/allocator/*`.
+  The sets are add-only and startup-dominated. If a future workload does grow
+  them, a plain append-only `std::vector` is then the obvious structure, with
+  no erase problem to solve.
+- **This retroactively devalues item 39** (see W0): `collectRoots()`'s
+  by-value copy is a copy of four elements, ~10–17 times per run. Still worth
+  the one-line fix because it is free and wrong-looking, but it buys nothing
+  measurable. Do not cite it as a win.
 
 **Item 37 — `std::function` external scanners.** `RootSet.hpp:91-92` defines
 `EvacuateFn = std::function<void(uint64_t&)>` and
@@ -543,11 +708,40 @@ Seven registration sites to update: `Scheduler.cpp:56-71`,
 `PlatformRuntime.cpp:101`, `PortRuntime.cpp:260`, `HttpExports.cpp:292`,
 `TimeEffectManager.cpp:78`.
 
-**Item 53 — prefetch the Cheney scan.** The scan walks to-space linearly.
-Maintain a second cursor `kPrefetchDistance` objects ahead and
-`__builtin_prefetch(next)` each iteration. The stride is only known by
-walking, so keep a small ring of the next few object addresses computed as the
-loop advances. Start at distance 4; make it a `HeapConfig` knob for sweeping.
+**Item 53 — prefetch the CHILDREN, not the scan stream.** *(Re-specified
+2026-09-22; the original framing was wrong.)*
+
+Prefetching the to-space walk itself is close to worthless: it is a forward
+sequential stride, which the hardware prefetcher already covers. The miss that
+actually costs is the **child header load** in `evacuate:958` — which is
+exactly why item 17 exists, and why `NurserySpace::evacuate` carries 5.46–8.26%
+self time while the scan loop does not appear in the profile at all.
+
+So prefetch each object's boxed children before processing them. This composes
+directly with item 29's boxed mask — walk the mask twice:
+
+```cpp
+uint64_t m = boxedMask(c->unboxed, n);
+for (uint64_t t = m; t; t &= t - 1)                 // pass 1: issue prefetches
+    __builtin_prefetch(Allocator::fromPointerRaw(c->values[__builtin_ctzll(t)].p));
+for (uint64_t t = m; t; t &= t - 1)                 // pass 2: evacuate
+    evacuate(c->values[__builtin_ctzll(t)].p, oldgen, promoted_objects);
+```
+
+`fromPointerRaw` is pure arithmetic under HEAP_028 (the HPointer word *is* the
+address), so a prefetch costs a load, a mask and the prefetch itself — no
+branch. **Do not filter constants or nulls first:** `__builtin_prefetch` of a
+bogus address is architecturally harmless on x86-64 and the branch would cost
+more than the wasted prefetch. Add a one-line comment saying so, because it
+looks like a bug otherwise.
+
+Highest value on the wide shapes — `Custom` (60.7% of retention) and `Record`
+— where several children can be in flight at once. For `Cons` (36.7%) the two
+slots give one miss hidden behind another. Skip the double pass when
+`popcount(m) <= 1`.
+
+Order: land **after** item 29, which supplies the mask. — measurable on its
+own via the evacuate self-time row.
 
 **Item 55 — per-object stats calls.** `GC_STATS_MINOR_INC_{SURVIVORS,PROMOTED}`
 expand to out-of-line calls into `GCStats.cpp:448-456`, once per surviving and
@@ -557,13 +751,34 @@ increments plus a `Tag_Custom` special case. Move the bodies into
 LH1 per-tag retention histogram are the metric the whole Tier-2 promotion work
 is ranked by (`benchmarks/tier2-opt.md` Run H).
 
-**Item 34 — measurement, not a change.** The hybrid-DFS Cons path (`:1460`,
-`:1657-1835`) traverses every list spine three times: `evacuateListSpine`
-copies the cells, `evacuateListHeads` re-walks them, and the Cheney scan
-reaches them anyway. `use_hybrid_dfs` is already a `HeapConfig` bool
-(`AllocatorCommon.hpp:466`, default true), so this is a one-line A/B — run it
-in the `gc-param-sweep-experiment` harness and record the answer rather than
-guessing.
+**Item 34 — hybrid-DFS A/B (a two-run experiment, fully specified).** The
+hybrid-DFS Cons path (`:1460`, `:1657-1835`) traverses every list spine three
+times: `evacuateListSpine` copies the cells, `evacuateListHeads` re-walks them
+in to-space re-loading each header, and the Cheney scan reaches them anyway.
+It buys allocation contiguity for list spines — `Cons` is 36.7% of retention,
+so the bet is not obviously wrong, but it has never been measured.
+
+No code change is needed: `use_hybrid_dfs` is a `HeapConfig` bool
+(`AllocatorCommon.hpp:466`, default true) settable from the
+`ECO_HEAP_CONFIG` JSON (`HeapConfigJson.cpp`).
+
+**Protocol.** Two cold Stage-7a self-compiles, census-off, one binary, configs
+`{"use_hybrid_dfs": true}` and `{"use_hybrid_dfs": false}`.
+
+**What must NOT move**, and this is what makes it a clean A/B: the flag changes
+*evacuation order*, not *what survives*. Promotion is driven by `age`, so
+minors, majors, objects promoted, promoted MB and `out.mlir` must all be
+byte/count identical. If any of them moves, the experiment is invalid — stop
+and find out why before reading the wall.
+
+**Decision rule.** Turn it off if flag-off improves wall by ≥1% or GC time by
+≥2% with those counters identical. Keep it on otherwise. Record the result in
+`benchmarks/` either way — a confirmed "the locality does pay" is worth as
+much as a removal, because it closes the question.
+
+**Second-order effect to watch:** flag-off changes survivor layout in
+to-space, which changes mutator cache behaviour after the GC. Max RSS should be
+unchanged; if it moves, the layout change is doing something unmodelled.
 
 ---
 
@@ -631,17 +846,71 @@ is never parsed and needs no headers.
   `live_bytes == 0` — if that block is a live virgin cursor, the cursor must
   be invalidated. Add that check.
 - `maybeShrinkCapacity` (`:2869`) likewise.
+- **Small-class budget accounting.** `populateFromBlock` credits
+  `small_class_bytes_` via `onUniformBlockDedicated` (`:550-556`); the release
+  path debits via `onBlockReleased` (`:558-567`). The virgin path claims pages
+  without going through `populateFromBlock`, so it **must credit the same
+  counter** or `shouldPreferBagForSmallClass` (`:574-582`) silently stops
+  firing and the 1 GiB budget becomes inert. Under the self-compile config
+  every size class counts as "small", so this is not an edge case. See item 15
+  for the full interaction.
 
 Test: `GCVirginPageTest` — fill a class partway from a virgin page, force a
 major GC, assert `end_of_objects` unchanged, assert the cursor still allocates
 contiguously afterwards, assert swept cells from the prefix reappear on the
 free list.
 
-**Item 15.** `tryAllocateBySplittingLarger` (`:977-1077`) first-fit scans
-larger size-class lists cell by cell; each list is unbounded. With item 10 in
-place this path is hit far less often (virgin space no longer routes through
-splitting), so **measure before optimising it** — it may become cold enough to
-leave alone.
+**Item 15 — add the counter that does not exist, then decide.** *(Premise
+corrected 2026-09-22.)*
+
+The working list said `tryAllocateBySplittingLarger` (`:987-1092`) first-fit
+scans "larger size-class lists, each unbounded". **That is wrong for the
+size-class path.** Line `:1027` is
+`const size_t start_cls = std::max(target_cls, num_size_classes_);` — the walk
+starts *at or above* `num_size_classes_`, so when called from
+`allocateFromSizeClass` step (3) it never touches a uniform class list and
+scans only the three mixed-only classes (16K/32K/64K at default config). The
+comment at `:1010-1021` says why: `findBlockContaining` per cell is
+O(#blocks) and "dominates Stage-7 mutator time", so uniform classes are
+deliberately skipped.
+
+Where the scan *is* potentially unbounded is the other caller:
+`allocateFromBagPage` (`:1129`, `:1151`), where `start_cls == request_cls` so
+the request's own class is included. That is the **primary** allocator for the
+whole `[large_object_threshold, alloc_buffer_size)` band (routing doc at
+`:605-612`), not a fallback. It is also reached from `tryAllocateFromFreeLists`
+(`:795`), called twice per iteration by `sweepOnDemandAllocate` (`:885`,
+`:901`).
+
+**There is no counter for split hits anywhere** — `GCStats` has no
+split-related field and `tryAllocateBySplittingLarger` contains no
+`GC_STATS_*` macro. So step one is instrumentation, not optimisation:
+
+- count entries, cells walked, and hits, split by caller (size-class step 3 /
+  bag-page / sweep-on-demand);
+- report cells-walked as a histogram, since the question is tail behaviour.
+
+Decide only then. If the bag-page caller dominates and walks deep lists, the
+fix is a per-class "largest available" hint or a segregated remainder list; if
+it is shallow, close the item.
+
+### Interaction with item 10 that must be settled first
+
+`shouldPreferBagForSmallClass` (`:574-582`) disables the bag-first arm once
+`small_class_bytes_ >= small_class_heap_budget_bytes` (default **1 GiB**,
+`AllocatorCommon.hpp:180`), pushing those allocations onto splitting until a
+major GC releases pages and the live census drops back. Under the self-compile
+config (`compiler/cmake/bootstrap/build-kernel/heap-config.json:28-29`,
+`small_class_cell_max_bytes == large_object_threshold == 8K`) **every size
+class counts as "small"**, so the budget applies universally and 1 GiB against
+a 12 GiB old-gen cap is a reachable ceiling.
+
+`small_class_bytes_` is credited in `onUniformBlockDedicated` (`:550-556`) and
+debited in `onBlockReleased` (`:558-567`). **Item 10's virgin-page path must
+participate in that accounting** — if it claims pages without crediting
+`small_class_bytes_`, the budget silently stops working and the splitting
+fallback never engages; if it double-counts, bag-first shuts off early. Add
+this to item 10's checklist and to `GCVirginPageTest`.
 
 Flag: `ECO_VIRGIN_BUMP=0` disables (default OFF until measured).
 
@@ -670,9 +939,50 @@ garbage remains. Promotion that skips sweeping may fall through to
 `allocateFromBagPage` and grow committed capacity sooner, pulling majors
 forward.
 
-So: measure **minor-GC pause distribution** (the 39-bucket histogram in
-`GCStats.hpp:99-113` already exists) *and* majors-per-run together. Accept
-only if the outlier tail shrinks without majors increasing.
+### Acceptance criteria
+
+Three legs, cold Stage-7a, census-off: **A** = today, **B** = the full gate
+above, **C** = the throttled fallback below. Every leg reports the 39-bucket
+minor-pause histogram (`GCStats.hpp:99-113`, already recorded), majors-per-run,
+peak RSS, and wall.
+
+Accept **B** iff all three hold:
+
+1. **p99 minor pause improves by ≥20%.** The histogram's top buckets are the
+   claim being tested — the comment says outliers, so the mean is the wrong
+   statistic. If the mean moves but p99 does not, the diagnosis was wrong.
+2. **Major GC count does not increase.** Majors are 10–17 per run and each is
+   ~5 s of mark, so one extra major erases a large pause win.
+3. **Peak RSS does not increase by more than 5%.** This is the sweep-before-grow
+   discipline showing up as committed capacity.
+
+### Fallback if (2) or (3) fails — throttle rather than gate
+
+Deferring *all* sweep work out of the minor pause is the aggressive reading.
+The conservative one keeps the mutator-help property but caps the latency
+contribution:
+
+```cpp
+if (gc_phase_ == GCPhase::Sweeping) {
+    size_t budget = g_in_minor_gc
+        ? config_->sweep_work_budget / config_->minor_sweep_divisor   // new knob, default 8
+        : config_->sweep_work_budget;
+    lazySweep(sizeClass(size), budget);
+}
+```
+
+Add `minor_sweep_divisor` to `HeapConfig` so leg C is a config change, not a
+rebuild, and so the `gc-param-sweep-experiment` harness can sweep it (1 = today,
+∞ = full gate). **Run all three legs in one session** — the three-way comparison
+is the deliverable, not a yes/no on B.
+
+### Also fix the accounting while here
+
+`sweepOnDemandAllocate` can burn up to `max_sweep_bytes_per_alloc` (4 MiB,
+`AllocatorCommon.hpp:191`) inside a single allocation, and when that allocation
+is a promotion the whole cost lands in minor-GC time. Whatever leg wins, add a
+counter for *sweep bytes driven from inside a minor GC* so the next reader can
+see the coupling directly instead of inferring it from a pause histogram.
 
 ---
 
@@ -725,12 +1035,42 @@ last-touched index (marking has strong block locality); for the parallel case
 this becomes per-worker accumulation merged at the barrier (#59), so
 **implement it as per-accumulator from the start**.
 
-**Item 54 — mark prefetching.** `gc_handbook/02-mark-sweep.md §2.6`: insert a
-FIFO of 8–32 entries between the mark stack and the scan, prefetching each
-object as it enters the FIFO and processing from the far end.
-`plans/blockindexfor-and-mark-stack-perf.md` already caches the block index on
-the mark-stack entry; the FIFO composes with it. Do this **after** item 40 —
-prefetching into a pointer-chased bitmap helps much less than into a flat one.
+**Item 54 — mark-stack FIFO prefetch buffer.** Unlike item 53's case, the mark
+stack is LIFO with no spatial locality at all, so `gc_handbook/02-mark-sweep.md
+§2.6`'s FIFO genuinely applies: interpose a ring between `mark_stack.pop_back()`
+and `markOneObject`, prefetch on entry, process from the far end.
+
+```cpp
+// OldGenSpace::incrementalMark, replacing the pop/markOneObject pair at :1611
+MarkStackEntry fifo[kMarkFifo];              // kMarkFifo = 16, power of two
+size_t head = 0, tail = 0, fill = 0;
+
+while (units_done < work_units) {
+    while (fill < kMarkFifo && !mark_stack.empty()) {
+        MarkStackEntry e = mark_stack.back(); mark_stack.pop_back();
+        __builtin_prefetch(e.obj);           // header, and usually slot 0
+        fifo[head] = e; head = (head + 1) & (kMarkFifo - 1); ++fill;
+    }
+    if (fill == 0) break;
+    MarkStackEntry e = fifo[tail]; tail = (tail + 1) & (kMarkFifo - 1); --fill;
+    if (markOneObject(e.obj, e.block_index)) ++units_done;
+}
+```
+
+**Correctness note that makes this safe:** the mark bit is set on *push*, in
+`pushMarkRoot` (`:1780-1804`), not on pop. So an object sitting in the FIFO is
+already marked and cannot be enqueued twice — the buffer changes only the
+*order* of processing, never the set. Say this in the commit message; it is the
+question a reviewer will ask.
+
+Two consequences to handle: `incrementalMark` is called in a loop until it
+returns false (`:2012`), so the FIFO must be **drained before returning**, not
+carried across calls — keep it a local. And `mark_stack_peak` telemetry
+(`:2053`) now undercounts by up to `kMarkFifo`; either add `fill` or note it.
+
+Order: land **after** item 40. Prefetching into a `vector<vector<uint8_t>>`
+bitmap chases a pointer per probe, which is most of what the prefetch was
+supposed to hide.
 
 ---
 
@@ -740,13 +1080,53 @@ All O(n²) or repeated-walk fixes. Low risk, low individual value, but they
 compound on a multi-GB heap and they are the difference between a major GC
 that scales and one that does not.
 
-**Item 41.** `fixupIndicesAfterBlockMove` (`:3150`) walks **all** of
-`buffer_meta_` per released block, and `reclaimAllDeadBlocksFromMeta` (`:3403`)
-and `maybeShrinkCapacity` (`:2869`) release blocks in a loop → O(released ×
-#blocks). Fix: maintain `buffer_meta_` indexed *by* block index rather than
-carrying a `block_index` field, so a swap-remove of `blocks_[i]` is a
-swap-remove of `buffer_meta_[i]` with no scan. If the field must stay, batch
-the fixup: collect all moves, then do one pass.
+**Item 41 — delete a dead field and the O(n²) loop it justifies.** *(Design
+choice resolved 2026-09-22; it is smaller than either option first offered.)*
+
+`fixupIndicesAfterBlockMove` (`OldGenSpace.cpp:3150-3213`, sole caller
+`releaseBlockToAllocator:3356`) opens with
+
+```cpp
+for (auto& m : buffer_meta_) { if (m.block_index == old_idx) m.block_index = new_idx; }
+```
+
+and `reclaimAllDeadBlocksFromMeta` / `maybeShrinkCapacity` release blocks in a
+loop → O(released × #blocks).
+
+**`buffer_meta_` is already strictly parallel to `blocks_`.** Every mutation
+keeps them index-identical: the four push sites (`:1203/:1209`, `:1293/:1300`,
+`:1487/:1494`, `:3851/:3853`), the swap-remove (`:3322-3334`), the compaction
+erase (`:4145-4147`) and `clear` (`:310/:311`). And
+`BufferMetadata::block_index` is **written in three places** (`:1897`, `:2007`,
+`:3157`) and **read nowhere** — the only read is the self-comparison inside
+that loop. Every real consumer indexes `buffer_meta_[i]` with an index derived
+from `blocks_` or `blockIndexFor()`.
+
+So the fix is: **delete the field and delete the loop.** No restructuring.
+
+What must **not** be deleted — the rest of the function patches other index
+holders and is not O(#blocks): `evacuation_set_`, `free_large_blocks_`,
+`evac_block_index_`, `sweep_buffer_index_`, `fixup_buffer_index_`
+(`:3160-3168`), and the Tier-M `CellHandle::block_index` back-links
+(`:3186-3212` — a *different* field that happens to share the name).
+
+Two things to add while removing it, because the parallelism is currently
+maintained by convention rather than enforced:
+
+1. A debug assertion `buffer_meta_.size() == blocks_.size()` at the top of
+   `resetBufferMetaForMark`, `prepareMetaForLazySweep` and
+   `releaseBlockToAllocator`. Today `releaseBlockToAllocator` computes
+   `meta_last` and `last` *separately* (`:3322` vs `:3329`), and ~20 read sites
+   defensively guard with `i < buffer_meta_.size()` — those guards exist
+   because the resize helpers only ever grow.
+2. A note in `OldGenSpace.hpp` that the two vectors are index-identical by
+   invariant. That is what makes the deletion safe, so it should be written
+   down rather than rediscovered.
+
+Latent bug this also removes: after the compaction `erase` loop (`:4138-4148`)
+the surviving `block_index` values are stale and are only renormalised at the
+next `resetBufferMetaForMark`. Harmless today because nothing reads them —
+which is exactly the argument for deleting the field.
 
 **Item 42.** `releaseBlockToAllocator` (`:3258-3271`) iterates the entire
 `large_body_index_` hash map per released block, plus a linear scan of
@@ -774,10 +1154,37 @@ block per large allocation. Maintain a free-block list.
 **Item 46.** `markLargeBodySeen` (`:4289`) does an `unordered_map` lookup per
 split-header scanned, called from `NurserySpace.cpp:1620`/`:1626`;
 `promoteLargeHeader` (`:4301-4315`) linearly scans `nursery_owned_bodies_` per
-promoted header. Store the `LargeBodyId` **in the header object itself** —
-`Tag_LargeStringHeader`/`Tag_LargeByteHeader` are 16 bytes
-(`static_assert` at `Heap.hpp:469`) with a spare `Header` word; the id fits in
-the unused `refcount` bits. Then both operations are O(1) with no table.
+promoted header. Store the `LargeBodyId` **in the header object itself**, in
+the unused `Header.refcount` bits, so both operations become O(1) with no table.
+
+**Width problem, and the fix.** `LargeBodyId` is `uint32_t`
+(`OldGenSpace.hpp:564`) but `Header.refcount` is only **15 bits**, so a naive
+store silently truncates any id ≥ 32768. Ids are recycled through
+`free_large_body_ids_` (`:577`), so the bound is the *concurrent* large-body
+high-water mark rather than the lifetime total — at an 8 KiB
+`large_object_threshold` that is ≥256 MiB of live large bodies before it can
+bite. Plausible, but not guaranteed by anything.
+
+So reserve a sentinel: `0` = "no id stored", `1..32766` = id + 1,
+`0x7FFF` = "id too large, consult `large_body_index_`". `registerLargeBody`
+(`:965`) writes the sentinel when the id does not fit; `markLargeBodySeen` and
+`promoteLargeHeader` fall back to today's lookup on the sentinel. That keeps
+the fast path for every realistic workload without a truncation bug hiding in
+the tail. Assert under `ECO_HEAP_VALIDATE` that a stored id round-trips.
+
+**Item 32 interaction:** item 32 also wants a bit out of `refcount` (bits
+[16,31), `Heap.hpp:171`). Item 32 is now gated and more likely to be closed than
+built, so **item 46 should not wait for it** — take 15 bits (ids `1..32766`,
+`0` = none, `0x7FFF` = overflow) and put the split in one `constexpr` block in
+`Heap.hpp`. If item 32 later proceeds it takes one bit back and narrows the id
+field to 14, updating that one block and its `static_assert`.
+
+Both items benefit from the same two facts the header-writer inventory turned
+up: no producer writes `refcount` today, so the field is genuinely free; and
+`assertHeaderPreservedAcrossCopy` (`NurserySpace.cpp:909-914`) already asserts
+`refcount` equality across all six minor-GC copies, so whatever is stored there
+is checked across every evacuation and promotion under `ECO_HEAP_VALIDATE` at
+no extra cost.
 
 **Item 47.** The sweep inner loop does `large_body_index_.find(sweep_cursor_)`
 per pinned string/bytebuffer cell (`:2653`), described in its own comment as a
@@ -852,6 +1259,14 @@ beyond instruction count.
 **R2 — W4 item 32 can cause use-after-free.** A `no_boxed_slots` bit that is
 wrongly set means an object's children are never traced. Staged landing plus a
 validator that ignores the bit is mandatory, and the default must be clear.
+The header-writer inventory reduced this risk materially — the field is
+untouched by every producer, and `assertHeaderPreservedAcrossCopy` already
+checks it across all six copy paths — but it also showed the reachable
+population is small, which is why the item is now gated on the survived-by-tag
+histogram rather than scheduled. **Two exclusions are structural and must not
+be argued around:** `Cons` (the tail is always a pointer) and `ElmArray` /
+`Closure` (their kind bitmaps are bound lazily, after allocation and across GC
+points).
 
 **R3 — W1.2 touches the compiled-code allocation fast path.** `bump_.end` is
 consumed by `expandInlineAllocs` (HEAP_034) and by `applyCapacityHoisting`
@@ -883,16 +1298,29 @@ every tag.
 ## Sequencing
 
 ```
-W0 ──────────────────────────────────────────► (free, land immediately)
-W1.3 (investigate) ─► W1.1 ─► W1.2            (biggest measured cost)
-W2 ─► W3 ─► W4(29,31) ─► W4(32)               (minor-GC inner loop)
-W5                                             (independent)
-W6 ─► W7                                       (old-gen allocation policy)
-W8(40) ─► W8(38,51,52) ─► W8(54)              (also unblocks parallel mark)
-W9                                             (independent)
-W10                                            (independent)
+W0 ───────────────────────────────────────────────► (free, land immediately)
+W1.3 (investigate) ─► W1.1 ─► W1.2                 (biggest measured cost)
+W2 ─► W3 ─► W4(29,31) ─┬─► W4(32)                  (minor-GC inner loop)
+                       └─► W5(53)                  (53 needs 29's boxed mask)
+W5(33,34,35,37,55)                                  (independent)
+W6(10) ─► W6(15 counter) ─► W7                      (old-gen allocation policy)
+W8(40) ─► W8(38,51,52) ─► W8(54)                    (also unblocks parallel mark)
+W9                                                  (independent)
+W10                                                 (independent)
 ```
 
-W0, W5, W9 and W10 have no dependencies and can land at any time. W8 item 40
-gates the rest of W8 and is the prerequisite for working-list #58. W1.3's
-investigation may make W1.2 unnecessary, so run it first.
+Cross-package dependencies, all introduced by the 2026-09-22 revision:
+
+- **53 → 29.** Child prefetching walks the boxed mask item 29 builds. Landing
+  53 first means writing the mask twice.
+- **54 → 40.** Prefetching into a `vector<vector<uint8_t>>` bitmap chases a
+  pointer per probe, which is most of what the prefetch should hide.
+- **32 ↔ 46.** Both want bits out of `Header.refcount`; they must agree one
+  field split in a single `constexpr` block.
+- **15 → 10.** Item 10 changes how often splitting is reached *and* must
+  participate in the small-class budget accounting that gates it.
+
+W0, W9 and W10 have no dependencies. W8 item 40 gates the rest of W8 and is the
+prerequisite for working-list #58 (parallel marking), which is the largest
+algorithmic win available anywhere — so W8 has value beyond its own delta.
+W1.3's investigation may make W1.2 unnecessary, so run it first.
