@@ -20,6 +20,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringMap.h"
+#include <cstdlib>
 #include <vector>
 #include <mutex>
 
@@ -930,11 +931,43 @@ inline void emitFreshFieldStore(mlir::OpBuilder &b, mlir::Location loc,
 /// zero-init of the `*_uninit` alloc family is deliberately NOT replicated:
 /// with no safepoint between the bump and the last store, the GC can never
 /// observe the object partially initialized.
+//
+// PAYLOAD ZEROING: NOT EMITTED (plans/nursery-per-site-zeroing.md).
+//
+// A freshly allocated object gets its header word and its own field stores,
+// and nothing else. The payload keeps whatever the previous occupant of those
+// bytes wrote, because no collector loop ever reads a payload word the mutator
+// has not written: fixed-shape classes store every field via straight-line
+// code before any safepoint (the HEAP_034 contract above), and Closure — the
+// one variable-length class — is traced to `n_values`, not to its capacity.
+//
+// This was arrived at in two steps, and the second overturned the first:
+//   1. Phase 1 marked EVERY site as needing its payload zeroed and retired the
+//      bulk to-space memset. Suppressing this emission then produced 2,704
+//      poison reads, all Tag_Closure, over 903 minor GCs.
+//   2. The closure scan was then bounded on n_values. The same experiment now
+//      produces ZERO, so the mark is gone rather than narrowed to closures.
+//
+// `kZeroPayloadDefault` stays as the per-site knob in case a future class
+// genuinely needs it; ECO_INLINE_ZERO=1 forces it back on everywhere as the
+// bisection switch. It changes emitted code — never set it for a measured or
+// reproducible run.
+inline constexpr bool kZeroPayloadDefault = false;
+
+inline bool inlineZeroPayload(bool siteRequested) {
+    static const bool force = []{
+        const char *e = std::getenv("ECO_INLINE_ZERO");
+        return e != nullptr && e[0] == '1';
+    }();
+    return siteRequested || force;
+}
+
 inline mlir::Value emitInlineAllocWithHeader(mlir::OpBuilder &b,
                                              mlir::Location loc,
                                              const EcoRuntime &runtime,
                                              uint64_t byteSize,
-                                             uint64_t headerWord) {
+                                             uint64_t headerWord,
+                                             bool zeroPayload = kZeroPayloadDefault) {
     auto *ctx = b.getContext();
     auto i64Ty = mlir::IntegerType::get(ctx, 64);
     auto hptrTy = getHPtrLLVMType(*ctx);
@@ -945,6 +978,26 @@ inline mlir::Value emitInlineAllocWithHeader(mlir::OpBuilder &b,
     mlir::Value obj =
         b.create<mlir::LLVM::CallOp>(loc, marker, mlir::ValueRange{sizeConst})
             .getResult();
+
+    // Zero [obj + 8, obj + byteSize): everything past the 8-byte header. That
+    // span covers BOTH the payload slots and the per-object kind bitmap word
+    // at offset 8 (Custom.ctor|unboxed, Record.unboxed, Closure.unboxed),
+    // which sits outside the header and is the dangerous one — garbage there
+    // can tell the collector an unboxed slot is a pointer. The header word and
+    // any meta word are stored below/after this and overwrite it.
+    if (inlineZeroPayload(zeroPayload) && byteSize > 8) {
+        auto i8Ty = mlir::IntegerType::get(ctx, 8);
+        auto zeroI8 = b.create<mlir::LLVM::ConstantOp>(
+            loc, i8Ty, b.getI8IntegerAttr(0));
+        auto eight = b.create<mlir::LLVM::ConstantOp>(loc, i64Ty,
+                                                      static_cast<int64_t>(8));
+        mlir::Value payload = b.create<mlir::LLVM::GEPOp>(
+            loc, obj.getType(), i8Ty, obj, mlir::ValueRange{eight});
+        auto lenConst = b.create<mlir::LLVM::ConstantOp>(
+            loc, i64Ty, static_cast<int64_t>(byteSize - 8));
+        b.create<mlir::LLVM::MemsetOp>(loc, payload, zeroI8, lenConst,
+                                       /*isVolatile=*/false);
+    }
 
     auto headerConst = b.create<mlir::LLVM::ConstantOp>(
         loc, i64Ty, static_cast<int64_t>(headerWord));

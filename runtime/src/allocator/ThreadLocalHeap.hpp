@@ -1,6 +1,8 @@
 #ifndef ECO_THREAD_LOCAL_HEAP_H
 #define ECO_THREAD_LOCAL_HEAP_H
 
+#include <cstdlib>
+#include <cstring>
 #include <unordered_set>
 #include "AllocatorCommon.hpp"
 #include "NurserySpace.hpp"
@@ -18,6 +20,40 @@ class Allocator;
 // inside ThreadLocalHeap::allocate and by the generic
 // eco_alloc_with_roots fast-path init in RuntimeExports.cpp.
 void initHeaderForTag(Header* hdr, Tag tag, size_t size);
+
+/// Zero a freshly allocated object. HEADER ONLY — the payload is left as
+/// whatever the previous occupant of those bytes wrote.
+///
+/// That is safe because no collector loop ever reads a payload word the
+/// mutator has not written (plans/nursery-per-site-zeroing.md):
+///   - every fixed-shape class stores all of its fields via straight-line
+///     code with no intervening safepoint (HEAP_034);
+///   - the one variable class, Closure, is traced to `n_values`, not to its
+///     capacity, and every writer of a value slot maintains
+///     "slots below n_values are written".
+///
+/// The history is worth keeping, because two layers of zeroing were removed
+/// and each looked load-bearing until it was measured:
+///   1. `NurserySpace::clearToSpaceFreeRegion` memset the WHOLE semi-space
+///      every minor GC (~246 GB per self-compile). Retired -> -14.54 s GC.
+///   2. Per-site payload zeroing replaced it (inline codegen + 10 runtime
+///      sites). Retired once the closure scan was bounded on n_values, which
+///      is what made the over-scan — and therefore the zeroing — necessary.
+///
+/// ECO_PERSITE_ZERO=1 restores full-object zeroing in VALIDATOR builds only,
+/// as the bisection switch if a missed write ever surfaces. Release builds
+/// compile to an unconditional 8-byte memset with no branch.
+inline void zeroNewObject(Header* hdr, size_t size) {
+#if ECO_HEAP_VALIDATE
+    static const bool full = []{
+        const char* e = std::getenv("ECO_PERSITE_ZERO");
+        return e != nullptr && e[0] == '1';
+    }();
+    if (full) { std::memset(hdr, 0, size); return; }
+#endif
+    (void)size;
+    std::memset(hdr, 0, sizeof(Header));
+}
 
 /**
  * Thread-local heap space containing nursery, old gen, and GC stats.

@@ -481,9 +481,20 @@ Testing::TestCase testEcoAllocClosureCapturesSurviveGC(
             HPtr cl_h = eco_alloc_closure_fn(reinterpret_cast<void*>(0xC10510),
                                            kCaptures, /*result_kind=*/0);
             GCP_ASSERT(cl_h.toBits() != 0);
-            // Store each captured HPointer as a boxed field.
+            // Store each captured HPointer as a boxed capture.
+            //
+            // closureCapture, NOT eco_store_field: the collector's closure
+            // scan bounds on n_values, and closureCapture is what maintains
+            // it (append at n_values, then increment). eco_store_field
+            // writes the slot and leaves n_values alone, so the captures
+            // below would never be traced and this test's own assertions
+            // would fail once the scan stopped over-scanning to max_values.
+            HPointer cl_hp = cl_h.toHPointer();
+            void* clPtr = readBarrier(cl_hp);
+            GCP_ASSERT(clPtr != nullptr);
             for (uint32_t k = 0; k < kCaptures; ++k) {
-                eco_store_field(cl_h, k, HPtr::fromHPointer(captures[k]));
+                GCP_ASSERT(alloc::closureCapture(
+                    clPtr, alloc::boxed(captures[k]), PK_Boxed));
             }
 
             roots.push_back({cl_h.toHPointer(), std::move(vals)});
@@ -510,6 +521,11 @@ Testing::TestCase testEcoAllocClosureCapturesSurviveGC(
             Closure* cl = static_cast<Closure*>(obj);
             GCP_ASSERT(cl->header.tag == Tag_Closure);
             GCP_ASSERT(cl->max_values == kCaptures);
+            // Pin the invariant the closure scan bounds on: slots below
+            // n_values are written and live. If a writer ever stops
+            // maintaining n_values, the captures below go untraced and are
+            // reclaimed — which is what this test exists to catch.
+            GCP_ASSERT(cl->n_values == kCaptures);
             for (uint32_t k = 0; k < kCaptures; ++k) {
                 HPointer slot;
                 std::memcpy(&slot, &cl->values[k].i, sizeof(slot));

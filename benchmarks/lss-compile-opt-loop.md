@@ -1965,3 +1965,9 @@ mechanism paid and which did not.
 | gc-all (Phases 1-4 as one unit) | 235.80 | +1.40 | 1113 | 10 | 17634 | 10451604 | FLAT, RSS-only WIN | ghash |
 | gc-all2 (+ $sat reachability filter, newarg fix) | 229.55 | -4.85 | 1108 | 10 | 17599 | 10437876 | WIN | ghash |
 | gcdef (GC defaults: age 1, nmbc 512, mio 0.95) | 199.46 | -30.09 | 1924 | 6 | 19861 | 10816544 | WIN | gc-all2 |
+
+**THIS SERIES IS CLOSED AT `gcdef`. It continues in `benchmarks/gc-opt-loop.md`**, which uses
+this file's method unchanged and carries this table forward whole, appending its own rows. The
+live summary table — and therefore the current reference row for any new step — is that file's
+§9, not the one above. Do not append here.
+

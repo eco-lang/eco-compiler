@@ -164,10 +164,11 @@ static bool visitChildren(void *obj, F &&visit) {
             return true;
         }
         case Tag_Closure: {
-            // hdr->size == max_values; all slots are initialized at rest
-            // (same contract major mark relies on).
+            // Bounds on n_values, matching the nursery and major scans.
+            // An interned closure singleton has n_values == 0 and never
+            // writes a value slot, so this visits nothing — which is right.
             Closure *cl = static_cast<Closure *>(obj);
-            for (u32 i = 0; i < hdr->size; i++)
+            for (u32 i = 0; i < cl->n_values; i++)
                 if (fieldKind(cl->unboxed, i) == 0) visit(cl->values[i].p);
             return true;
         }

@@ -1706,14 +1706,18 @@ void OldGenSpace::markChildren(void *obj) {
             break;
         }
         case Tag_Closure: {
-            // Iterate hdr->size (== max_values) to match the nursery scan
-            // (NurserySpace::scanObject Tag_Closure). n_values is the count
-            // of slots already written by the closure-construction sequence
-            // and may be less than max_values mid-construction; using it
-            // here would skip captures that are stored but not yet "applied"
-            // and let major GC reclaim them.
+            // GC scans APPLIED slots only: `n_values`, not `hdr->size`
+            // (== max_values, the capacity). Slots [n_values, max_values) are
+            // unapplied argument space that no code reads, so tracing them
+            // only exposed uninitialised memory — the reason the closure
+            // payload had to be zeroed at all
+            // (plans/nursery-per-site-zeroing.md).
+            //
+            // See NurserySpace::scanObject's Tag_Closure arm for the
+            // invariant every value-slot writer must keep, and why
+            // eco_store_field* must never be used on a Closure.
             Closure *cl = static_cast<Closure *>(obj);
-            for (u32 i = 0; i < hdr->size; i++) {
+            for (u32 i = 0; i < cl->n_values; i++) {
                 markUnboxable(cl->values[i], fieldKind(cl->unboxed, i) == 0);
             }
             break;
@@ -4007,10 +4011,11 @@ void OldGenSpace::fixPointersInObject(void* obj) {
             break;
         }
         case Tag_Closure: {
-            // Iterate hdr->size to match the nursery scan and the marking
-            // pass above; see comment there for the rationale.
+            // Bounds on n_values, matching the nursery scan and the marking
+            // pass above; see the comment there. A fix pass MUST cover
+            // exactly the slots mark traced, no more and no less.
             Closure* cl = static_cast<Closure*>(obj);
-            for (u32 i = 0; i < hdr->size; i++) {
+            for (u32 i = 0; i < cl->n_values; i++) {
                 fixUnboxable(cl->values[i], fieldKind(cl->unboxed, i) == 0);
             }
             break;

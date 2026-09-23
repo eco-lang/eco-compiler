@@ -1386,7 +1386,7 @@ extern "C" HPtr eco_alloc_custom_fast(uint32_t ctor_id, uint32_t field_count, ui
 
     // Init header + ctor
     Header* hdr = getHeader(obj);
-    std::memset(hdr, 0, sizeof(Header));
+    zeroNewObject(hdr, size);
     hdr->tag = Tag_Custom;
     hdr->size = (size - sizeof(Custom)) / sizeof(Unboxable);
     Custom* custom = static_cast<Custom*>(obj);
@@ -1554,7 +1554,7 @@ extern "C" HPtr eco_alloc_record_fast(uint32_t field_count, uint64_t unboxed_bit
     if (!obj) return HPtr::fromBits(0);
 
     Header* hdr = getHeader(obj);
-    std::memset(hdr, 0, sizeof(Header));
+    zeroNewObject(hdr, size);
     hdr->tag = Tag_Record;
     hdr->size = field_count;
     Record* rec = static_cast<Record*>(obj);
@@ -1582,7 +1582,7 @@ extern "C" HPtr eco_alloc_string_fast(uint32_t length) {
     if (!obj) return HPtr::fromBits(0);
 
     Header* hdr = getHeader(obj);
-    std::memset(hdr, 0, sizeof(Header));
+    zeroNewObject(hdr, size);
     hdr->tag = Tag_String;
     hdr->size = length;
 
@@ -1608,7 +1608,7 @@ extern "C" HPtr eco_alloc_closure_fast(void* func_ptr, uint32_t num_captures) {
     closureStatsRecord(func_ptr, /*isExtend=*/false);
 
     Header* hdr = getHeader(obj);
-    std::memset(hdr, 0, sizeof(Header));
+    zeroNewObject(hdr, size);
     hdr->tag = Tag_Closure;
     hdr->size = (size - sizeof(Closure)) / sizeof(Unboxable);
     Closure* closure = static_cast<Closure*>(obj);
@@ -1762,7 +1762,7 @@ extern "C" void eco_alloc_closure_group_slow(
 
         void* obj = cursor;
         Header* hdr = getHeader(obj);
-        std::memset(hdr, 0, sizeof(Header));
+        zeroNewObject(hdr, perSibling);
         hdr->tag = Tag_Closure;
         hdr->size = static_cast<u32>(
             (perSibling - sizeof(Closure)) / sizeof(Unboxable));
@@ -1879,7 +1879,7 @@ extern "C" HPtr eco_init_tuple3_at(void* obj, uint64_t a, uint64_t b, uint64_t c
 
 extern "C" HPtr eco_init_record_at(void* obj, uint32_t field_count, uint64_t unboxed_bitmap) {
     Header* hdr = getHeader(obj);
-    std::memset(hdr, 0, sizeof(Header));
+    zeroNewObject(hdr, sizeof(Header) + 8 + field_count * sizeof(Unboxable));
     hdr->tag = Tag_Record;
     hdr->size = field_count;
     Record* rec = static_cast<Record*>(obj);
@@ -1889,7 +1889,8 @@ extern "C" HPtr eco_init_record_at(void* obj, uint32_t field_count, uint64_t unb
 
 extern "C" HPtr eco_init_custom_at(void* obj, uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
     Header* hdr = getHeader(obj);
-    std::memset(hdr, 0, sizeof(Header));
+    zeroNewObject(hdr,
+                  sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes);
     hdr->tag = Tag_Custom;
     hdr->size = (sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes - sizeof(Custom)) / sizeof(Unboxable);
     Custom* custom = static_cast<Custom*>(obj);
@@ -1900,7 +1901,7 @@ extern "C" HPtr eco_init_custom_at(void* obj, uint32_t ctor_id, uint32_t field_c
 
 extern "C" HPtr eco_init_string_at(void* obj, uint32_t length) {
     Header* hdr = getHeader(obj);
-    std::memset(hdr, 0, sizeof(Header));
+    zeroNewObject(hdr, (sizeof(Header) + length * sizeof(u16) + 7) & ~size_t{7});
     hdr->tag = Tag_String;
     hdr->size = length;
     return ptrToHPointer(obj);
@@ -1966,6 +1967,20 @@ extern "C" void eco_store_field(HPtr obj_hptr, uint32_t index, HPtr value) {
             break;
         }
         case Tag_Closure: {
+            // eco_store_field* is NOT a legal way to fill closure captures.
+            // The collector's closure scan bounds on n_values, and this path
+            // writes a value slot without touching it — so a capture stored
+            // here is never traced and is reclaimed. Raising n_values to
+            // index+1 does NOT fix it either: a store at index 3 with slots
+            // 0..2 unwritten would then have the scan trace three
+            // uninitialised slots.
+            //
+            // Use closureCapture (HeapHelpers.hpp), which appends at
+            // n_values and increments, making ascending order structural.
+            // There are no production callers of this arm: the compiler
+            // emits eco_store_field* only for CustomConstructOp, and no
+            // kernel calls it on a closure.
+            assert(false && "eco_store_field on a Closure: use closureCapture");
             Closure* closure = static_cast<Closure*>(obj);
             closure->values[index].i = static_cast<i64>(value_bits);
             break;
@@ -2008,6 +2023,8 @@ extern "C" void eco_store_field_i64(HPtr obj_hptr, uint32_t index, int64_t value
             break;
         }
         case Tag_Closure: {
+            // See eco_store_field's Tag_Closure arm: use closureCapture.
+            assert(false && "eco_store_field_i64 on a Closure: use closureCapture");
             Closure* closure = static_cast<Closure*>(obj);
             closure->values[index].i = value;
             break;
@@ -2044,6 +2061,8 @@ extern "C" void eco_store_field_f64(HPtr obj_hptr, uint32_t index, double value)
             break;
         }
         case Tag_Closure: {
+            // See eco_store_field's Tag_Closure arm: use closureCapture.
+            assert(false && "eco_store_field_f64 on a Closure: use closureCapture");
             Closure* closure = static_cast<Closure*>(obj);
             closure->values[index].f = value;
             break;
@@ -2580,7 +2599,7 @@ extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_n
     void* obj = Allocator::instance().allocateFast(size);
     if (obj) {
         Header* hdr = getHeader(obj);
-        std::memset(hdr, 0, sizeof(Header));
+        zeroNewObject(hdr, size);
         hdr->tag = Tag_Closure;
         hdr->size = (size - sizeof(Closure)) / sizeof(Unboxable);
     } else {

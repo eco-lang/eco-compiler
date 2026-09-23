@@ -40,6 +40,8 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <atomic>
+#include <cstdlib>
 #if ECO_HEAP_VALIDATE
 // Used by debugAssertValidNurseryPointer's diagnostic (prints a backtrace).
 // musl (Stage B static build) ships no <execinfo.h>; stub as no-ops there.
@@ -59,6 +61,29 @@ thread_local void* g_scan_parent = nullptr;
 thread_local int g_scan_tag = -1;
 thread_local Elm::u32 g_scan_size = 0;
 #endif
+
+// ---------------------------------------------------------------------------
+// Phase-1 per-site-zeroing tripwire (plans/nursery-per-site-zeroing.md gate 4)
+// ---------------------------------------------------------------------------
+//
+// ECO_NURSERY_POISON=1 makes the post-GC free-region fill write 0xD8 bytes
+// instead of zeroes. Any payload word an allocation site failed to zero then
+// reads back as ECO_POISON_WORD.
+//
+// 0xD8 is NOT arbitrary. An HPointer's bit 2 is `ptr_ind`, and 0xD8 has that
+// bit CLEAR, so a poisoned word is classified as a heap POINTER and is
+// followed into evacuate(), where the check below catches it by name. The
+// obvious choice, 0xDD, has bit 2 SET: every poisoned word would decode as an
+// embedded constant, be skipped, and the tripwire would report nothing
+// however broken the zeroing was. That is the trap this gate exists to avoid.
+static constexpr uint64_t ECO_POISON_WORD = 0xD8D8D8D8D8D8D8D8ull;
+
+bool nursery_poison_enabled() {
+    static const bool on =
+        []{ const char* e = std::getenv("ECO_NURSERY_POISON");
+            return e != nullptr && e[0] == '1'; }();
+    return on;
+}
 
 namespace Elm {
 
@@ -513,9 +538,15 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // at least as old as the parent and therefore also qualify for promotion.
     // in_phase3_ arms the assertion in evacuate() that catches any violation.
     // Use index-based loop since vector may grow during iteration.
-#if ECO_HEAP_VALIDATE
-    in_phase3_ = true;
-#endif
+    //
+    // The flag is toggled PER INNER LOOP, not once around the whole
+    // alternation. The assertion is about the children of a PROMOTED parent;
+    // a to-space parent's child being younger than promotion_age is the
+    // ordinary case, and arming the assertion across the Cheney drain made
+    // it fire on that — reporting a to-space parent as "parent(old-gen)".
+    // W5 item 33 removed the preliminary drain that used to empty to-space
+    // before the flag was raised, which is what made a latent mislabel start
+    // aborting the heap-validate build.
     // Drain alternately between to-space and the promoted-objects queue
     // until both are empty. Scanning a promoted object can copy YOUNG
     // children into to-space (when the child's age < promotion_age) —
@@ -531,10 +562,16 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     while (scanHasMore() || promoted_idx < promoted_objects.size()) {
         while (scanHasMore()) {
             void *obj = scan_ptr_;
+#if ECO_HEAP_VALIDATE
+            in_phase3_ = false;   // to-space parent: young children are normal
+#endif
             scanObject(obj, oldgen, &promoted_objects);
             scan_ptr_ += getObjectSize(obj);
         }
         while (promoted_idx < promoted_objects.size()) {
+#if ECO_HEAP_VALIDATE
+            in_phase3_ = true;    // promoted parent: the invariant applies
+#endif
             scanObject(promoted_objects[promoted_idx++], oldgen, &promoted_objects);
         }
     }
@@ -633,8 +670,9 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                         break;
                     }
                     case Tag_Closure: {
+                        // n_values, matching the scan this is verifying.
                         Closure* cl = static_cast<Closure*>(static_cast<void*>(scan));
-                        for (u32 i = 0; i < h->size; i++) {
+                        for (u32 i = 0; i < cl->n_values; i++) {
                             if (Elm::fieldKind(cl->unboxed, i) == 0)
                                 checkChild(cl->values[i].p, "closure", i);
                         }
@@ -749,8 +787,9 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                 }
                 switch (h->tag) {
                     case Tag_Closure: {
+                        // n_values, matching the scan this is verifying.
                         Closure* cl = static_cast<Closure*>(static_cast<void*>(scan));
-                        for (u32 i = 0; i < h->size; i++) {
+                        for (u32 i = 0; i < cl->n_values; i++) {
                             if (Elm::fieldKind(cl->unboxed, i) == 0)
                                 checkOGChild(cl->values[i].p, scan, "capture", i);
                         }
@@ -933,6 +972,44 @@ static inline void assertHeaderPreservedAcrossCopy(const Header &src, const Head
 #endif
 
 void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
+#if ECO_HEAP_VALIDATE
+    // Gate 4 tripwire: this boxed slot still holds free-region poison, so the
+    // allocation site that produced the parent never zeroed it.
+    if (nursery_poison_enabled()) {
+        uint64_t raw_slot;
+        memcpy(&raw_slot, &ptr, sizeof(raw_slot));
+        if (raw_slot == ECO_POISON_WORD) {
+            std::fprintf(stderr,
+                "[gc-debug] POISON READ AS A BOXED SLOT: an allocation site "
+                "left a payload word unzeroed.\n  slot raw=0x%016lx\n",
+                (unsigned long)raw_slot);
+            if (g_scan_parent) {
+                std::fprintf(stderr,
+                    "  parent obj=%p tag=%d size=%u\n",
+                    g_scan_parent, g_scan_tag, (unsigned)g_scan_size);
+            }
+            std::fflush(stderr);
+            // ECO_POISON_NONFATAL=1: census mode. Report each distinct
+            // (parent tag, size) once, NULL the slot so the collector stays
+            // sane, and carry on — one run then yields the full distribution
+            // of classes that need their payload zeroed, instead of stopping
+            // at the first one. Answers are meaningless in this mode; only
+            // the census is.
+            static const bool nonfatal =
+                []{ const char* e = std::getenv("ECO_POISON_NONFATAL");
+                    return e != nullptr && e[0] == '1'; }();
+            if (nonfatal) {
+                ptr.ptr = 0;
+                ptr.ptr_ind = 0;
+                return;
+            }
+            void* bt[40];
+            int n = backtrace(bt, 40);
+            backtrace_symbols_fd(bt, n, fileno(stderr));
+            assert(false && "per-site zeroing missed a payload slot");
+        }
+    }
+#endif
     // W2 item 20: boxed, non-null slots dominate the traced population, so
     // both early-outs are the unlikely side.
     if (__builtin_expect(ptr.ptr_ind != 0, 0))
@@ -1125,8 +1202,12 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
                     "  parent(old-gen) obj=%p tag=%u size=%u age=%u\n",
                     g_scan_parent, g_scan_tag, (unsigned)g_scan_size,
                     (unsigned)phdr->age);
+                // Start at 0, NOT -1: an old-gen object can sit at the very
+                // first address of a block, and reading the word before it
+                // faults -- which is how this diagnostic used to kill the
+                // process before printing the backtrace it exists to print.
                 uint64_t *pw = reinterpret_cast<uint64_t*>(g_scan_parent);
-                for (int x = -1; x < (int)g_scan_size + 2 && x < 10; x++) {
+                for (int x = 0; x < (int)g_scan_size + 2 && x < 10; x++) {
                     std::fprintf(stderr, "  parent[%d] = 0x%016lx\n", x, pw[x]);
                 }
             }
@@ -1454,8 +1535,26 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
             break;
         }
         case Tag_Closure: {
+            // GC scans APPLIED slots only: `n_values`, not `hdr->size`
+            // (== max_values, the capacity). Slots [n_values, max_values) are
+            // unapplied argument space that no code reads, so tracing them
+            // only exposed uninitialised memory — the reason the closure
+            // payload had to be zeroed at all
+            // (plans/nursery-per-site-zeroing.md).
+            //
+            // INVARIANT every writer of a value slot must keep: at any
+            // safepoint, slots below n_values are written. closureCapture
+            // stores then increments; papCreate codegen and eco_pap_extend
+            // publish the count first and fill after, with no safepoint in
+            // between (HEAP_034). eco_store_field* does NOT maintain it and
+            // must never be used on a Closure — its Tag_Closure arm asserts.
+            //
+            // Getting this wrong is silent either way: too low drops a live
+            // capture (use-after-free), too high traces an unwritten slot.
+            // GCPressureTest's "eco_alloc_closure captures stay valid across
+            // minor and major GCs" pins it.
             Closure *cl = static_cast<Closure *>(obj);
-            for (u32 i = 0; i < hdr->size; i++) {
+            for (u32 i = 0; i < cl->n_values; i++) {
                 bool is_boxed = Elm::fieldKind(cl->unboxed, i) == 0;
 #if ECO_HEAP_VALIDATE
                 validateBitmapSlotKind(this, hbase, hres, cl->values[i], is_boxed, obj, hdr->tag, "Closure", i);
@@ -1870,11 +1969,38 @@ void NurserySpace::clearToSpaceFreeRegion() {
     // survivor. Load-bearing (not debug-gated) — without it, stale bytes in
     // the free tail decode as out-of-range raw pointers at the next cycle
     // and abort in evacuate with "Pointer above heap end!".
+    // PER-SITE ZEROING Phase 1 (plans/nursery-per-site-zeroing.md): the bulk
+    // clear is OFF by default now that every allocation site zeroes its own
+    // payload. Set ECO_NURSERY_BULK_CLEAR=1 to restore the old behaviour —
+    // that is the bisection switch if Phase 1 turns out to be unsound.
+    static const bool bulk_clear =
+        []{ const char* e = std::getenv("ECO_NURSERY_BULK_CLEAR");
+            return e != nullptr && e[0] == '1'; }();
+
+#if ECO_HEAP_VALIDATE
+    // ECO_NURSERY_POISON=1 is the zeroing TRIPWIRE
+    // (plans/nursery-per-site-zeroing.md gate 4): it fills the free region
+    // with 0xD8 instead of zero, so any payload word an allocation site
+    // fails to write reads back as ECO_POISON_WORD and the boxed-slot check
+    // in evacuate() aborts naming the parent. It costs a full bulk memset
+    // per cycle, so it is a gate configuration and never a measured one.
+    // Validator builds only — the check it feeds lives there too.
+    const bool poison = nursery_poison_enabled();
+    if (!bulk_clear && !poison) return;
+#else
+    if (!bulk_clear) return;
+#endif
+
     char* base = toBase();
     if (!base) return;
     char* end = base + slice_.capacity;
     if (copy_ptr_ < end) {
+#if ECO_HEAP_VALIDATE
+        std::memset(copy_ptr_, poison ? 0xD8 : 0,
+                    static_cast<size_t>(end - copy_ptr_));
+#else
         std::memset(copy_ptr_, 0, static_cast<size_t>(end - copy_ptr_));
+#endif
     }
 }
 

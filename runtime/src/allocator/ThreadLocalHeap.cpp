@@ -107,7 +107,7 @@ majorReasonTag(OldGenSpace::MajorGCTriggerReason reason) {
 // path (allocateFast does not touch the header; only allocateSlow does
 // via this function).
 void initHeaderForTag(Header* hdr, Tag tag, size_t size) {
-    std::memset(hdr, 0, sizeof(Header));
+    zeroNewObject(hdr, size);
     hdr->tag = tag;
 
     switch (tag) {

@@ -318,29 +318,6 @@ static void test_eco_store_field_cons() {
     });
 }
 
-static void test_eco_store_field_closure() {
-    rc::check("eco_store_field stores captured values in Closure", []() {
-        initAllocator();
-        uint32_t num_captures = *rc::gen::inRange<uint32_t>(1, 5);
-        uint32_t index = *rc::gen::inRange<uint32_t>(0, num_captures);
-
-        // eco_store_field stores boxed HPointer values.
-        // Allocate a real heap object to use as the stored value.
-        i64 inner_val = *rc::gen::arbitrary<i64>();
-        auto value_hptr = eco_alloc_int(inner_val);
-        RC_ASSERT(value_hptr.toBits() != 0);
-
-        auto hptr = eco_alloc_closure_fn(nullptr, num_captures, /*result_kind=*/0);
-        RC_ASSERT(hptr.toBits() != 0);
-
-        eco_store_field(hptr, index, value_hptr);
-
-        void* obj = hptrToRaw(hptr.toBits());
-        Closure* closure = static_cast<Closure*>(obj);
-        RC_ASSERT(static_cast<uint64_t>(closure->values[index].i) == static_cast<i64>(value_hptr.toBits()));
-    });
-}
-
 static void test_eco_store_field_i64() {
     rc::check("eco_store_field_i64 stores int64 values correctly", []() {
         initAllocator();
@@ -690,7 +667,6 @@ void registerRuntimeExportsTests(Testing::TestSuite& suite) {
     suite.add(Testing::TestCase("eco_store_field Tuple2 fields", test_eco_store_field_tuple2));
     suite.add(Testing::TestCase("eco_store_field Tuple3 fields", test_eco_store_field_tuple3));
     suite.add(Testing::TestCase("eco_store_field Cons head", test_eco_store_field_cons));
-    suite.add(Testing::TestCase("eco_store_field Closure captures", test_eco_store_field_closure));
     suite.add(Testing::TestCase("eco_store_field_i64 stores int64", test_eco_store_field_i64));
     suite.add(Testing::TestCase("eco_store_field_f64 stores double", test_eco_store_field_f64));
 

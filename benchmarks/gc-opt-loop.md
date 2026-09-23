@@ -885,6 +885,148 @@ majors) having bought **-30 s** where eleven packages of constant-factor work bo
 **The next real win is algorithmic — parallel marking (working-list #57-63), which W8 item 40
 gates — not another constant-factor pass.**
 
+### Entry W1 — per-site nursery zeroing, retiring the bulk to-space memset (WIN, KEPT)
+
+**This entry overturns the section above.** W1 was the one package in the plan backed by a
+measurement (5.6 % CPU) and it was left unbuilt when `W1.1`'s high-water variant lost its gate.
+The conclusion "the next real win is algorithmic, not constant-factor" was drawn with W1 still
+on the table. It was wrong in that respect: W1 alone is **-14.54 s of GC time**, three and a half
+times what eleven packages of constant-factor work bought between them.
+
+**Change** (`plans/nursery-per-site-zeroing.md`, Phase 1). Every allocation site zeroes its own
+payload; `NurserySpace::clearToSpaceFreeRegion` — the whole-semi-space memset that ran at the end
+of every minor GC — is switched off (`ECO_NURSERY_BULK_CLEAR=1` restores it for bisection). Four
+allocation paths had to be covered, not the two that are obvious:
+
+| path | site | was |
+|---|---|---|
+| inline codegen (13 sites) | `emitInlineAllocWithHeader` | no payload zeroing at all |
+| runtime slow/generic | `initHeaderForTag` | `memset(hdr, 0, sizeof(Header))` — **8 bytes** |
+| runtime fast calls | `eco_alloc_{custom,record,string,closure}_fast` | 8 bytes |
+| region / group + PAP extend | `eco_init_{record,custom,string}_at`, closure-group init, papExtend | 8 bytes |
+
+Every one of those set `hdr->size` to the full field count while zeroing only the header, and
+free-rode on the bulk clear for the rest.
+
+**Result** (median of 3 cold self-compiles, reference `W7`):
+
+| stat | W7 | W1 | delta |
+|---|---|---|---|
+| wall | 194.64 s | **183.82 s** | **-10.82 s (-5.6 %)** |
+| Total GC/Alloc | 82.42 s | **67.88 s** | **-14.54 s (-17.6 %)** |
+| Minor GC | 77.29 s | 59.19 s | -18.10 s |
+| Major GC | 10.96 s | 8.55 s | -2.41 s |
+| True mutator | 112.10 s | ~115.6 s | +3.5 s |
+| minor / major cycles | 1924 / 6 | 1924 / 6 | identical |
+| promoted | 19861 MiB | 19861 MiB | identical |
+| max RSS | 10,805,292 kB | **10,677,000 kB** | **-128 MB** |
+
+**Why it wins is NOT "fewer bytes zeroed" — Phase 1 zeroes MORE eagerly than before.** The bulk
+clear wrote the whole semi-space every cycle (~1924 x 128 MiB ~ 246 GB) whether the mutator would
+use it or not, and zeroed bytes that each object's own field stores immediately overwrote. Per-site
+zeroing writes only what is allocated. The ~17 s that left minor GC minus ~3.5 s back on the
+mutator is the whole story, and it reconciles to the memset bandwidth of this machine.
+
+**Gates.** E2E `--target check` 1731/1731. Determinism across all three runs and `out.mlir`
+byte-identical to `bin/ecoghash.mlir`. Heap-validate `-DECO_HEAP_VALIDATE=ON` **1731/1731** —
+that gate had been RED and blocking W1/W4-32/W6/W8, and repairing it was part of this step (two
+validator-only defects: the phase-3 assertion was armed over the to-space Cheney drain as well as
+the promoted queue, and its diagnostic read `parent[-1]` off the front of an old-gen block and
+segfaulted before printing). Stress suite 100/100 at 1,263 minor GCs. Poison tripwire with a
+demonstrated positive control: zero hits.
+
+**Traps this step set, all of them things that would have produced a confident wrong answer:**
+
+1. **A gate that cannot fail is not a gate.** The stress suite at shipped defaults runs **0 minor
+   GCs** — 62 MB against a 256 MB semi-space. It passes 100/100 without ever re-using a byte of
+   the nursery. `benchmarks/heap-config-gc-pressure.json` is what makes it mean something.
+2. **`0xDD` is the wrong poison byte** — bit 2 is `ptr_ind`, so poison decodes as a constant and
+   is never followed. Use `0xD8`. The plan had specified `0xDD`, and the earlier `W1.3` "zero
+   hits" result is best treated as void.
+3. **Two of the four allocation paths are easy to miss**, because `emitInlineAllocWithHeader` and
+   `initHeaderForTag` look like the whole story and are not.
+4. **Build BOTH `test` and `ecoc`** in a validator tree; `test` alone fails 12 Elm cases with
+   `exit 127` and reads exactly like a codegen regression.
+
+**Follow-up DONE — the inline-path control, and it decided Phase 2's design.** No compiler
+lowering was needed: `stress-test` links `EcoRunner` whole-archive and JIT-compiles each Elm
+program in-process, so `ECO_INLINE_NO_ZERO=1` reaches the emitted code directly and isolates the
+inline path. Suppressing it fires the tripwire hard (72 hits, 76/100 cases failing), so both
+paths are demonstrably watched. Run in census mode (`ECO_POISON_NONFATAL=1`, which nulls the slot
+and carries on):
+
+| arm | cycles | poison hits | classes |
+|---|---|---|---|
+| inline path suppressed | 903 | 2,704 | **`Tag_Closure` — 100 %** |
+| runtime path suppressed | 933 | 420 | **`Tag_Closure` — 100 %** |
+| shipped (both on) | 1,032 | 0 | — |
+
+**Not one hit from Cons, Tuple2/3, Record, Custom or String on either path.** The scan walks a
+closure's full CAPACITY (`NurserySpace.cpp:1535`, `i < hdr->size` where `hdr->size == max_values`),
+while only `n_values` captures are written at creation and the rest are filled later by
+`papExtend` across safepoints. So Phase 2 can drop the mark for 12 of the 13 inline sites on
+evidence rather than assumption, and for closures should zero only the unfilled tail
+`[n_values, max_values)` rather than the whole payload.
+
+**Still owed:** 5 stress cases (6 of 7 in the JSON decoder kernel) abort under the validator at GC
+pressure on a stale unrooted HPointer. That reproduces with the bulk clear restored, so it is
+pre-existing and wants its own plan.
+
+### Entry W1b — bound the closure scan on n_values, delete payload zeroing (FLAT, kept)
+
+**Change.** W1 retired the bulk to-space memset and replaced it with per-site payload zeroing.
+This step removes that replacement as well, so allocation writes an 8-byte header and nothing
+more. What makes it safe is a separate fix: the six closure trace loops now bound on
+`n_values` (applied captures) rather than `hdr->size` (the allocated capacity). Slots at or
+above `n_values` are unapplied argument space nothing reads — tracing them was the ONLY reason
+a payload had to be zeroed. Also: `eco_store_field*` asserts on `Tag_Closure` (it writes a
+value slot without maintaining `n_values`, and has no compiled-code or kernel callers), and
+the heap-validate build's phase-3 promotion assertion is armed over the promoted queue only.
+
+**Result** (median of 3 cold self-compiles, reference `W1`):
+
+| stat | W1 | W1b | delta |
+|---|---|---|---|
+| wall | 183.82 s | 183.57 s | -0.25 |
+| Total GC/Alloc | 67.88 s | 68.16 s | +0.28 |
+| minor GC | 59.19 s | 59.43 s | +0.24 |
+| max RSS | 10,677,000 kB | 10,676,096 kB | -904 |
+| minor / major cycles | 1924 / 6 | 1924 / 6 | identical |
+| promoted | 19861 MiB | 19861 MiB | identical |
+
+Deterministic across all three; `out.mlir` byte-identical to `bin/ecoghash.mlir`. Everything
+inside the 2σ = 5.3 s band ⇒ **FLAT**. Kept under the flat-deletions-ship rule: one mechanism
+fewer, 110 KB smaller compiler binary, and the scan now traces exactly what the mutator wrote.
+
+**THE PREDICTION WAS WRONG AND THE REASON MATTERS.** W1's mutator time rose 112.10 → 115.7 s
+when it added per-site zeroing, and this step was expected to hand that back. Deleting every
+memset moves the mutator **+0.39 s**. So the per-site zeroing never cost that; memsetting
+`[obj+8, obj+size)` for a 24-64 byte object touches the very cache lines its field stores are
+about to write. The +3.5 s is far more likely the cost of RETIRING THE BULK CLEAR — the mutator
+used to allocate into memory a memset had just pulled into cache, and now allocates into cold
+lines. That cost is not recoverable by deleting more zeroing.
+
+**Gates.** E2E `--target check` **1730/1730** (1731 before `test_eco_store_field_closure` was
+removed as vacuous once the arm asserts). Heap-validate **1730/1730**. Stress suite **100/100**
+at 1,263 minor GCs. Poison tripwire (`ECO_NURSERY_POISON=1`, 0xD8) **zero hits** over 1,032
+cycles with a demonstrated positive control.
+
+**Traps.**
+
+1. **The census that said "no hazard" was pointed at the wrong workload.** `ECO_CLOSURE_NVALUES_CENSUS`
+   found ZERO live captures at/above `n_values` over 1,032 cycles — but the stress suite never
+   fills closure captures via `eco_store_field`, and `GCPressureTest` does. Absence of a hit
+   bounds only what was run.
+2. **Do NOT "fix" `eco_store_field` by raising `n_values` to `index + 1`.** Stores can arrive
+   out of order (RuntimeExportsTest used a random index), which then has the scan trace the
+   unwritten slots below. `closureCapture` is correct because it appends.
+3. **Do NOT reorder `eco_pap_extend` to publish `n_values` after its copy loop.** There is no
+   safepoint in the window, so the original order is already guaranteed; the reorder only
+   swaps an over-count for an under-count.
+4. **The validator suite is SEED-FLAKY.** Its heap-graph generator can emit a 0-field
+   `Tag_Custom` (HEAP_044 forbids it) and aborts in the from-space pre-walk — pre-existing.
+   Gate with `--seed 1790156644220971348`.
+
 ## 8. Provenance
 
 - Step list and landing order: `plans/gc-tier1-constant-factors.md` — its work-package table,
@@ -1025,3 +1167,5 @@ mechanism paid and which did not.
 | W9 (delete block_index + O(n^2) loop) | 197.18 | +0.16 | 1924 | 6 | 19861 | 10805240 | FLAT (kept) | W10 |
 | W7 (sweep-coupling knob, default 1) | 194.64 | -2.54 | 1924 | 6 | 19861 | 10805292 | KNOB kept, leg B rejected | W9 |
 | W6 (virgin-page bump) | 272.17 | +77.53 | 1924 | 6 | 19861 | 14389864 | LOSS (reverted) | W7 |
+| **W1 (per-site nursery zeroing)** | **183.82** | **-10.82** | 1924 | 6 | 19861 | **10677000** | **WIN (kept)** | W7 |
+| W1b (n_values closure scan, zeroing removed) | 183.57 | -0.25 | 1924 | 6 | 19861 | 10676096 | FLAT (kept, simplification) | W1 |
