@@ -328,8 +328,8 @@ inline size_t getObjectSize(void *obj) {
             // the next object's header. Iterating only `length` elements
             // is for marking/copying/fixup — but the heap footprint and
             // the per-object stride during sweep both need capacity.
-            ElmArray *arr = static_cast<ElmArray *>(obj);
-            size = sizeof(ElmArray) + arr->header.size * sizeof(Unboxable);
+            // W0 item 27: hdr->size IS arr->header.size, already loaded above.
+            size = sizeof(ElmArray) + hdr->size * sizeof(Unboxable);
             break;
         }
         case Tag_LargeStringHeader:
@@ -505,10 +505,23 @@ struct HeapConfig {
     // Bytes of lazy-sweep work the allocator does per slow-path invocation.
     size_t sweep_work_budget = SWEEP_WORK_BUDGET;
 
+    // W7 item 14: divisor applied to sweep_work_budget when the allocation is a
+    // PROMOTION, i.e. when the caller is inside a minor GC. OldGenSpace::allocate
+    // drives lazy sweep whenever gc_phase_ == Sweeping, and the code's own
+    // comment names that "the dominant source of minor GC outliers" — but the
+    // work still has to happen, and sweep-before-grow exists to stop the heap
+    // growing while unswept garbage remains. So this THROTTLES rather than gates.
+    //   1 = today (no throttle)     8 = conservative     0 = full gate, no sweep
+    // Default 1: unchanged behaviour until a measurement says otherwise.
+    size_t minor_sweep_divisor = 1;
+
     // Bytes of sweep work finishMarkAndSweep runs synchronously before returning.
     size_t initial_sweep_budget = INITIAL_SWEEP_BUDGET;
 
-    // Incremental marking work ratio: bytes marked per byte allocated during the marking phase.
+    // NO EFFECT (W0 item 13). Its only reader was the allocation-paced marking
+    // branch in OldGenSpace::allocate, which was dead (gc_phase_ is never
+    // Marking) and has been removed. Kept as an accepted key so existing
+    // heap-config files still parse; validate() still rejects 0.
     size_t mark_work_ratio = MARK_WORK_RATIO;
 
     // Base proportionality factor for the per-allocation sweep budget (bytes swept per byte requested).

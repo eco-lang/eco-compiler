@@ -594,7 +594,7 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
     RootSet& root_set = nursery_.getRootSet();
 
     // Collect long-lived roots from this thread.
-    std::unordered_set<HPointer*> roots = collectRoots();
+    const std::unordered_set<HPointer*>& roots = collectRoots();
     const std::unordered_set<uint64_t*>& jit_roots = root_set.getJitRoots();
 
     auto t_after_root_collect = std::chrono::high_resolution_clock::now();
@@ -784,7 +784,7 @@ bool ThreadLocalHeap::isNurseryNearFull(float threshold) const {
     return usage >= static_cast<size_t>(total_capacity * threshold);
 }
 
-std::unordered_set<HPointer*> ThreadLocalHeap::collectRoots() {
+const std::unordered_set<HPointer*>& ThreadLocalHeap::collectRoots() {
     // Returns only long-lived roots. Stackmap roots and stack root ranges
     // are marked via explicit loops in majorGC().
     return nursery_.getRootSet().getRoots();

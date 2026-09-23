@@ -246,6 +246,18 @@ size_t NurserySpace::bytesAllocated() const {
 }
 
 void NurserySpace::refreshCapacityCaches() {
+    // W2 items 16/18/19/22: GC-invariant values hoisted off the per-object
+    // and per-slot paths. This function already runs at init / reset / grow,
+    // which is exactly when any of them can change.
+    if (config_ != nullptr) {
+        promotion_age_ = config_->promotion_age;
+        use_hybrid_dfs_ = config_->use_hybrid_dfs;
+    }
+    if (allocator_ != nullptr) {
+        heap_base_ = allocator_->getHeapBase();
+        heap_reserved_ = allocator_->getHeapReserved();
+    }
+
     from_capacity_bytes_ = slice_.capacity;
     threshold_total_bytes_ =
         static_cast<size_t>(static_cast<double>(from_capacity_bytes_) * gc_threshold_);
@@ -409,7 +421,13 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     scan_ptr_ = toBase();
 
     // Buffer for promoted objects that need scanning.
-    std::vector<void*> promoted_objects;
+    // W5 item 35: reuse the buffer across cycles. Declared locally it mallocs
+    // and doubles from zero inside every pause — this workload promotes ~350K
+    // objects per minor GC, i.e. ~19 reallocs each copying up to 2.8 MB of
+    // pointers, 1,924 times per run. clear() keeps the capacity; deliberately
+    // NOT shrink_to_fit.
+    promoted_buf_.clear();
+    std::vector<void*>& promoted_objects = promoted_buf_;
 
     // Phase 1a: Evacuate long-lived roots (may add to promoted_objects).
 #if ECO_GC_DEBUG
@@ -485,11 +503,10 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // Phase 2: Cheney's algorithm - scan to-space objects breadth-first.
     // When use_hybrid_dfs is enabled, list spine copying provides locality optimization
     // within scanObject() without requiring a separate DFS stack.
-    while (scanHasMore()) {
-        void *obj = scan_ptr_;
-        scanObject(obj, oldgen, &promoted_objects);
-        scan_ptr_ += getObjectSize(obj);
-    }
+    // W5 item 33: the Cheney drain that stood here was REDUNDANT — phase 3's
+    // outer loop below opens with an identical inner `while (scanHasMore())`
+    // and runs unconditionally immediately after, so this loop only ever did
+    // work that the next one would have done anyway.
 
     // Phase 3: Process promoted objects until buffer is empty.
     // By Elm's immutability invariant, every child of a promoted object must be
@@ -916,9 +933,11 @@ static inline void assertHeaderPreservedAcrossCopy(const Header &src, const Head
 #endif
 
 void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
-    if (ptr.ptr_ind != 0)
+    // W2 item 20: boxed, non-null slots dominate the traced population, so
+    // both early-outs are the unlikely side.
+    if (__builtin_expect(ptr.ptr_ind != 0, 0))
         return;  // It's a constant.
-    if (ptr.ptr == 0)
+    if (__builtin_expect(ptr.ptr == 0, 0))
         return;  // Null/zero HPointer (e.g. unfilled closure capture slot).
 
     void *obj = Allocator::fromPointerRaw(ptr);
@@ -937,9 +956,9 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     // need no evacuation. The former hard bounds asserts survive as a
     // permanent-aware tripwire in validator builds (out-of-range garbage
     // still aborts there).
-    char *heap_base = allocator_->getHeapBase();
+    char *heap_base = heap_base_;
     if (static_cast<char*>(obj) < heap_base ||
-        static_cast<char*>(obj) >= heap_base + allocator_->getHeapReserved()) {
+        static_cast<char*>(obj) >= heap_base + heap_reserved_) {
 #if ECO_HEAP_VALIDATE
         if (!PermanentSpace::instance().contains(obj)) {
             std::fprintf(stderr,
@@ -951,9 +970,22 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         return;
     }
 
-    // First priority: Check if this location has a forward pointer.
-    // This must happen BEFORE the from-space check so that pointers from
-    // old-gen objects can be updated even when pointing to from-space.
+    // W2 item 17: the from-space test comes FIRST, before the child header is
+    // touched. It is pure arithmetic on a pointer we already hold, whereas the
+    // header load is a cache-line miss on a different object — and in steady
+    // state most edges point at to-space, old gen or permanent space, so most
+    // of those loads were pure waste.
+    //
+    // The old ordering existed so old-gen -> from-space pointers get forwarded.
+    // That still works: such a pointer IS in from-space, so it passes this test
+    // and reaches the header load exactly as before. What changes is only that
+    // pointers NOT in from-space skip the load, and those need no forwarding by
+    // construction — a Tag_Forward is only ever installed on a from-space copy
+    // (the three install sites all write into the object being evacuated OUT of
+    // from-space). The assertion below pins that claim.
+    if (__builtin_expect(!isInFromSpace(obj), 1))
+        return;
+
     Header *hdr = getHeader(obj);
 
     // Assert tag is valid.
@@ -1000,7 +1032,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         // corrupted forwarding.
         {
             assert(tgt >= heap_base &&
-                   tgt < heap_base + allocator_->getHeapReserved() &&
+                   tgt < heap_base + heap_reserved_ &&
                    "forward target outside heap");
             Header* tgthdr = getHeader(tgt);
             if (tgthdr->tag == Tag_Forward) {
@@ -1018,8 +1050,8 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
 
     // Second priority: Only evacuate if in from-space (not to-space!).
     // This prevents creating forwarding chains by re-evacuating already-moved objects.
-    if (!isInFromSpace(obj))
-        return;
+    // W2 item 17: membership was already established above.
+    assert(isInFromSpace(obj) && "evacuate: reached the copy path off from-space");
 
     // Now proceed with evacuation (object is in from-space and not yet forwarded).
 
@@ -1037,7 +1069,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     // the nursery so kernel slot writes never produce old-gen→young edges
     // (HEAP_BUILDER_001/002). `pin` is orthogonal: pin forbids relocation,
     // builder forbids promotion.
-    if (hdr->age >= config_->promotion_age && !hdr->pin && !hdr->builder) {
+    if (shouldPromote(hdr)) {
         // Direct allocation to old gen (simplified - no TLAB buffering).
         new_obj = oldgen.allocate(size);
         assert(new_obj && "Failed to allocate in old gen during promotion");
@@ -1083,7 +1115,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
                 "[gc-debug] INVARIANT VIOLATION: phase 3 child not old enough to promote!\n"
                 "  child obj=%p tag=%u age=%u builder=%u promotion_age=%u\n",
                 obj, (unsigned)hdr->tag, (unsigned)hdr->age,
-                (unsigned)hdr->builder, (unsigned)config_->promotion_age);
+                (unsigned)hdr->builder, (unsigned)promotion_age_);
             uint64_t raw_hptr;
             memcpy(&raw_hptr, &ptr, sizeof(raw_hptr));
             std::fprintf(stderr, "  child hptr raw=0x%016lx\n", (unsigned long)raw_hptr);
@@ -1145,11 +1177,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     ptr = Allocator::toPointerRaw(new_obj);
 }
 
-void NurserySpace::evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
-    if (is_boxed) {
-        evacuate(val.p, oldgen, promoted_objects);
-    }
-}
+// W2 item 21: evacuateUnboxable is now inline in NurserySpace.hpp.
 
 /**
  * Evacuates a JIT root containing a raw 64-bit heap pointer.
@@ -1177,11 +1205,11 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
     }
 #endif
 
-    char *heap_base = allocator_->getHeapBase();
+    char *heap_base = heap_base_;
 
     // Validate pointer is within heap bounds.
     if (static_cast<char*>(obj) < heap_base ||
-        static_cast<char*>(obj) >= heap_base + allocator_->getHeapReserved()) {
+        static_cast<char*>(obj) >= heap_base + heap_reserved_) {
         // Pointer is outside the heap - could be a foreign pointer or error.
         // For now, skip it to avoid crashes.
         return;
@@ -1208,7 +1236,7 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
     void *new_obj = nullptr;
 
     // Promote to old gen iff aged AND not pinned/builder (HEAP_BUILDER_001).
-    if (hdr->age >= config_->promotion_age && !hdr->pin && !hdr->builder) {
+    if (shouldPromote(hdr)) {
         new_obj = oldgen.allocate(size);
         assert(new_obj && "Failed to allocate in old gen during promotion");
 
@@ -1463,7 +1491,7 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
             validateBitmapSlotKind(this, hbase, hres, c->head, head_boxed, obj, hdr->tag, "Cons", 0);
 #endif
 
-            if (config_->use_hybrid_dfs) {
+            if (use_hybrid_dfs_) {
                 // Two-pass list copying for optimal locality:
                 // Pass 1: Copy the tail spine contiguously
                 // Pass 2: Copy heads (only if needed)
@@ -1665,7 +1693,7 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
     void* first_copied = nullptr;
     void* prev_copied = nullptr;
     HPointer current = ptr;
-    char* heap_base = allocator_->getHeapBase();
+    char* heap_base = heap_base_;
 
     while (current.ptr_ind == 0) {
         void* obj = Allocator::fromPointerRaw(current);
@@ -1726,7 +1754,7 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
 
         // HEAP_BUILDER_001/002: defensively respect pin/builder on Cons,
         // even though no current kernel marks Cons cells as builders.
-        if (hdr->age >= config_->promotion_age && !hdr->pin && !hdr->builder) {
+        if (shouldPromote(hdr)) {
             // Promote to old gen
             new_obj = oldgen.allocate(size);
             assert(new_obj && "Failed to allocate in old gen during list spine copy");
@@ -1968,7 +1996,7 @@ void NurserySpace::debugAssertValidNurseryPointer(void* ptr) const {
 
     if (!ok) {
         // Compute the HPointer value from the physical address
-        char* heap_base = allocator_->getHeapBase();
+        char* heap_base = heap_base_;
         uint64_t hptr_val = (reinterpret_cast<char*>(ptr) - heap_base) / 8;
         std::fprintf(stderr, "[gc-debug] STALE hptr value=0x%lx (physical %p, heap_base=%p)\n",
                      (unsigned long)hptr_val, ptr, (void*)heap_base);

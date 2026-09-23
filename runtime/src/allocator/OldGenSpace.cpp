@@ -17,6 +17,16 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+
+// W0 item 48: ECO_OLDGEN_DEBUG, read once at namespace scope. It used to be
+// two function-local `static const bool`s — one in pushSpanOnFreeLists (per
+// coalesced run) and one in sweep() — and a function-local static with dynamic
+// initialisation costs a guard-variable atomic load plus a branch on EVERY
+// call. Namespace-scope dynamic initialisation runs before main, so reads here
+// are a plain load.
+namespace {
+const bool g_oldgen_debug = std::getenv("ECO_OLDGEN_DEBUG") != nullptr;
+}
 #include <functional>
 #include <unordered_map>
 #include <unordered_set>
@@ -647,35 +657,35 @@ void *OldGenSpace::allocate(size_t size) {
     }
 #endif
 
-    // Allocation-paced marking: do marking work proportional to allocation.
-    // Both branches now call markOneObject so live-bytes attribution stays
-    // consistent regardless of which path runs.
-    if (gc_phase_ == GCPhase::Marking && !mark_stack.empty()) {
-        size_t mark_budget = size * config_->mark_work_ratio;
-#if ENABLE_GC_STATS
-        // Stats are not available on the allocation hot path; loop
-        // markOneObject directly to avoid touching the stats counters.
-        while (mark_budget > 0 && !mark_stack.empty()) {
-            MarkStackEntry entry = mark_stack.back();
-            mark_stack.pop_back();
-            if (markOneObject(entry.obj, entry.block_index)) {
-                mark_budget = (mark_budget > 1) ? mark_budget - 1 : 0;
-            }
-        }
-#else
-        incrementalMark(mark_budget);
-#endif
-        if (mark_stack.empty()) {
-            transitionToSweeping();
-        }
-    }
+    // W0 item 13: the allocation-paced marking branch that stood here was
+    // DEAD. It ran under `gc_phase_ == GCPhase::Marking`, and gc_phase_ is
+    // assigned at exactly four sites — Idle (initialize), Sweeping
+    // (transitionToSweeping), Idle (reclaim), Idle (reset) — and never
+    // Marking. Marking is driven synchronously by finishMarkAndSweep, which
+    // still calls incrementalMark; only this per-allocation branch is gone.
+    // Confirmed empirically before removal: the 2026-09-22 sensitivity sweep
+    // ran mark_work_ratio at 1 / 2 / 4 and every GC counter was bit-identical,
+    // which is only possible if this branch never executes.
 
     // Drive lazy sweep work to make sure free lists fill up before we exhaust
     // the bag. Without this, all unassigned pages can be consumed before the
     // sweep ever returns garbage to a free list.
     if (gc_phase_ == GCPhase::Sweeping) {
-        size_t cls_for_sweep = sizeClass(size);
-        lazySweep(cls_for_sweep, config_->sweep_work_budget);
+        // W7 item 14: when this allocation is a PROMOTION (g_in_minor_gc), the
+        // sweep work it drives lands inside the minor pause. Throttle it by
+        // minor_sweep_divisor rather than gating it outright: the work still
+        // has to happen, and skipping it entirely lets the heap grow while
+        // unswept garbage remains (plans/sweep-on-demand-allocation.md).
+        // divisor 1 = today, 0 = full gate.
+        size_t budget = config_->sweep_work_budget;
+        if (g_in_minor_gc) {
+            const size_t d = config_->minor_sweep_divisor;
+            budget = (d == 0) ? 0 : budget / d;
+        }
+        if (budget > 0) {
+            size_t cls_for_sweep = sizeClass(size);
+            lazySweep(cls_for_sweep, budget);
+        }
     }
 
     // Path 2/3/4 dispatch. These are inside the helper bracket because
@@ -1206,7 +1216,7 @@ void* OldGenSpace::allocateFromBagPage(size_t requested_size) {
     // lazy sweep skips the freshly-placed Tag_Free cells.
     const bool mid_cycle =
         marking_active || gc_phase_ != GCPhase::Idle;
-    buffer_meta_.push_back({block_idx, 0, 0, mid_cycle});
+    buffer_meta_.push_back({0, 0, mid_cycle});          // W9 item 41: no block_index
     mark_bits_.emplace_back(bitmapBytesForBlock(blocks_.back()), 0);
     large_block_mark_.push_back(0);
     assignPageIndexForBlock(block_idx);
@@ -1297,7 +1307,7 @@ bool OldGenSpace::populateFromBlock(size_t cls) {
     // and dangle the free-list pointers.
     const bool mid_cycle =
         marking_active || gc_phase_ != GCPhase::Idle;
-    buffer_meta_.push_back({block_idx, 0, 0, mid_cycle});
+    buffer_meta_.push_back({0, 0, mid_cycle});          // W9 item 41: no block_index
     mark_bits_.emplace_back(bitmapBytesForBlock(blocks_.back()), 0);
     large_block_mark_.push_back(0);
     assignPageIndexForBlock(block_idx);
@@ -1491,7 +1501,7 @@ void* OldGenSpace::allocateLargeBlock(size_t size) {
     // single live object's Black header would otherwise get reset to White.
     const bool mid_cycle_large =
         marking_active || gc_phase_ != GCPhase::Idle;
-    buffer_meta_.push_back({block_idx, size, 0, mid_cycle_large});
+    buffer_meta_.push_back({size, 0, mid_cycle_large}); // W9 item 41: no block_index
     // Large blocks use large_block_mark_ for liveness; mark_bits_ stays empty.
     mark_bits_.emplace_back();
     large_block_mark_.push_back(0);
@@ -1877,7 +1887,14 @@ bool OldGenSpace::markOneObject(void* obj, uint32_t block_index) {
         if (blk_idx >= blocks_.size()) return false;
     }
 
-    const size_t step = walkStepFor(blocks_[blk_idx], getObjectSize(obj));
+    // W3 item 28: walkStepFor DISCARDS its second argument whenever the block
+    // is a uniform size-class page, which is the common case — so computing
+    // getObjectSize(obj) eagerly paid a full size dispatch per marked object
+    // for a value that was then thrown away. Compute it only on the mixed path.
+    const BlockInfo& blk = blocks_[blk_idx];
+    const size_t step = (blk.size_class < NUM_SIZE_CLASSES)
+        ? OldGenSpaceTestAccess::classToSize(blk.size_class)
+        : getObjectSize(obj);
     if (blk_idx < buffer_meta_.size()) {
         buffer_meta_[blk_idx].live_bytes += step;
     }
@@ -1891,10 +1908,12 @@ bool OldGenSpace::markOneObject(void* obj) {
 
 void OldGenSpace::resetBufferMetaForMark() {
     if (buffer_meta_.size() < blocks_.size()) {
-        buffer_meta_.resize(blocks_.size(), {0, 0, 0, false});
+        buffer_meta_.resize(blocks_.size(), {0, 0, false});
     }
+    // W9 item 41: the deletion above is safe only while these stay parallel.
+    assert(buffer_meta_.size() >= blocks_.size() &&
+           "buffer_meta_ must cover every block (see OldGenSpace.hpp)");
     for (size_t i = 0; i < blocks_.size(); ++i) {
-        buffer_meta_[i].block_index = i;
         buffer_meta_[i].live_bytes = 0;
         buffer_meta_[i].garbage_bytes = 0;
         buffer_meta_[i].fully_swept = false;
@@ -2001,10 +2020,12 @@ OldGenSpace::demoteMostlyDeadUniformBlocks() {
 
 void OldGenSpace::prepareMetaForLazySweep() {
     if (buffer_meta_.size() < blocks_.size()) {
-        buffer_meta_.resize(blocks_.size(), {0, 0, 0, false});
+        buffer_meta_.resize(blocks_.size(), {0, 0, false});
     }
+    // W9 item 41: the deletion above is safe only while these stay parallel.
+    assert(buffer_meta_.size() >= blocks_.size() &&
+           "buffer_meta_ must cover every block (see OldGenSpace.hpp)");
     for (size_t i = 0; i < blocks_.size(); ++i) {
-        buffer_meta_[i].block_index = i;
         // Preserve mark-derived live_bytes: the post-mark shrink decision
         // uses it, and lazy sweep recomputes the same value as it walks.
         buffer_meta_[i].garbage_bytes = 0;
@@ -2227,8 +2248,7 @@ inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
     // remaining bytes pushes a coalesced run past the block boundary, which
     // would corrupt cells in subsequent blocks. Shipped guarded so production
     // pays nothing.
-    static const bool kDbg = std::getenv("ECO_OLDGEN_DEBUG") != nullptr;
-    if (kDbg && block != nullptr) {
+    if (g_oldgen_debug && block != nullptr) {
         char* span_end = span_start + span_bytes;
         if (span_start < block->start || span_end > block->end) {
             std::fprintf(stderr,
@@ -2425,8 +2445,7 @@ void OldGenSpace::sweep() {
 
     // Diagnostic (gated on ECO_OLDGEN_DEBUG): validate every free-list cell
     // is in-heap. Detects sweep-time corruption before shrink walks the lists.
-    static const bool kSweepDebug = std::getenv("ECO_OLDGEN_DEBUG") != nullptr;
-    if (kSweepDebug && allocator_ != nullptr) {
+    if (g_oldgen_debug && allocator_ != nullptr) {
         char* heap_lo = allocator_->heap_base;
         char* heap_hi = allocator_->heap_base + allocator_->getOldGenMaxBytes();
         for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
@@ -3150,12 +3169,11 @@ void OldGenSpace::removeFreeCellsForBlock(size_t block_index) {
 void OldGenSpace::fixupIndicesAfterBlockMove(size_t old_idx, size_t new_idx) {
     if (old_idx == new_idx) return;
 
-    // BufferMetadata::block_index is denormalized; rewrite if it pointed at
-    // the moved entry. (Note: callers also swap-remove buffer_meta_, so this
-    // mostly normalizes the back-reference.)
-    for (auto& m : buffer_meta_) {
-        if (m.block_index == old_idx) m.block_index = new_idx;
-    }
+    // W9 item 41: the O(#blocks) walk that stood here rewrote
+    // BufferMetadata::block_index, a denormalised copy of the subscript that
+    // nothing read. With reclaim releasing ~10,000 blocks in a single pause on
+    // this workload, it made block release O(released x #blocks) — on the order
+    // of 1e8 iterations inside one GC pause. The field is gone; so is the walk.
 
     for (size_t& idx : evacuation_set_) {
         if (idx == old_idx) idx = new_idx;
@@ -3505,6 +3523,7 @@ void OldGenSpace::gatherFreeListSnapshotInto(
         // (see warm-cache Stage 7a hang investigation). The check is O(N) on
         // the same walk we'd do anyway, so the cost on healthy lists is one
         // extra pointer-load per iteration.
+#if ECO_HEAP_VALIDATE
         {
             FreeCell* slow = free_lists_[cls];
             FreeCell* fast = free_lists_[cls];
@@ -3530,6 +3549,7 @@ void OldGenSpace::gatherFreeListSnapshotInto(
                 }
             }
         }
+#endif  // ECO_HEAP_VALIDATE (W0 item 49: a debug tripwire, not telemetry)
 
         uint64_t cell_count = 0;
         uint64_t cell_bytes = 0;
@@ -3850,7 +3870,7 @@ void* OldGenSpace::allocateForEvacuation(size_t size) {
     bi.is_large = false;
     blocks_.push_back(bi);
     evac_block_index_ = blocks_.size() - 1;
-    buffer_meta_.push_back({evac_block_index_, 0, 0, true});
+    buffer_meta_.push_back({0, 0, true});               // W9 item 41: no block_index
     mark_bits_.emplace_back(bitmapBytesForBlock(blocks_.back()), 0);
     large_block_mark_.push_back(0);
     assignPageIndexForBlock(evac_block_index_);
@@ -4337,6 +4357,10 @@ void OldGenSpace::promoteLargeHeader(HPointer body_hp) {
 }
 
 size_t OldGenSpace::sweepNurseryLargeBodies(bool minor_color) {
+    // W0 item 50: the common case is an empty list — leave before the asserts
+    // and the compaction-phase branch rather than after them.
+    if (nursery_owned_bodies_.empty()) return 0;
+
     // Defensive: reject during compaction phases where blocks_ is mid-shuffle.
     assert(compact_phase_ != CompactionPhase::Evacuating &&
            compact_phase_ != CompactionPhase::FixingRefs &&

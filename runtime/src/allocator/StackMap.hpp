@@ -69,6 +69,14 @@ private:
 
     /// Keyed by return address (function address + instruction offset).
     std::unordered_map<uint64_t, StackMapRecord> records_;
+
+    // W10 item 56: the [lo, hi) span of every statepoint return address seen at
+    // parse time. findRecord runs per stack frame at EVERY minor and major GC,
+    // and most frames — GC entry, allocator internals, libc — can never match;
+    // a pair of compares rejects them without touching the hash table. The map
+    // is never mutated after startup, so the span is fixed once parsed.
+    uint64_t addr_lo_ = ~static_cast<uint64_t>(0);
+    uint64_t addr_hi_ = 0;
 };
 
 /// Global stack map instance for JIT-compiled code.

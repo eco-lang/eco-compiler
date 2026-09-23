@@ -217,7 +217,10 @@ private:
 #endif
 
     /** Collects all roots from this thread's root set. */
-    std::unordered_set<HPointer*> collectRoots();
+    // Returns a reference into the RootSet, which outlives the call. Returning
+    // by value copied the whole bucket array plus a node per root, once per
+    // major GC (W0 item 39).
+    const std::unordered_set<HPointer*>& collectRoots();
 
     /** Populate RootSet stack roots from __LLVM_StackMaps by walking
      *  the current thread's call stack frames. */

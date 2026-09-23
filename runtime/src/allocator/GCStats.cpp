@@ -426,34 +426,11 @@ void GCStats::recordTLHAllocation(size_t bytes, Tag tag) {
 // comparable with pre-LH1 runs.
 // W1: bucket a Custom by field count (Header::size), clamping into the
 // overflow slot. Non-Custom tags never reach here.
-static inline int customArityBucket(uint32_t nfields) {
-    return nfields >= static_cast<uint32_t>(GCStats::CUSTOM_ARITY_BUCKETS)
-        ? GCStats::CUSTOM_ARITY_BUCKETS - 1
-        : static_cast<int>(nfields);
-}
+// W5 item 55: customArityBucket moved to GCStats.hpp as a static member.
 
-void GCStats::recordPromotion(Tag tag, size_t bytes, uint32_t nfields) {
-    objects_promoted++;
-    int idx = static_cast<int>(tag);
-    if (idx < 0 || idx >= NUM_ALLOC_TAGS) return;
-    promoted_count_by_tag[idx]++;
-    promoted_bytes_by_tag[idx] += bytes;
-    if (tag == Tag_Custom) {
-        int b = customArityBucket(nfields);
-        custom_promoted_by_nfields[b]++;
-        custom_promoted_bytes_by_nfields[b] += bytes;
-    }
-}
+// W5 item 55: recordPromotion is now inline in GCStats.hpp.
 
-void GCStats::recordSurvival(Tag tag, size_t bytes, uint32_t nfields) {
-    objects_survived++;
-    int idx = static_cast<int>(tag);
-    if (idx < 0 || idx >= NUM_ALLOC_TAGS) return;
-    survived_count_by_tag[idx]++;
-    survived_bytes_by_tag[idx] += bytes;
-    if (tag == Tag_Custom)
-        custom_survived_by_nfields[customArityBucket(nfields)]++;
-}
+// W5 item 55: recordSurvival is now inline in GCStats.hpp.
 
 // Helper: routes a per-tag mutator allocation event from a free function
 // (initHeaderForTag) to the calling thread's GCStats. Exposed via the

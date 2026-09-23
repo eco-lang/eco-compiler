@@ -226,6 +226,8 @@ bool StackMap::parse(const uint8_t* data, size_t size, uint64_t loadBase) {
         if (funcIdx < numFunctions) {
             returnAddr = functions[funcIdx].address + record.instructionOffset;
             records_[returnAddr] = std::move(record);
+            if (returnAddr < addr_lo_) addr_lo_ = returnAddr;
+            if (returnAddr >= addr_hi_) addr_hi_ = returnAddr + 1;
         }
 #if ECO_GC_DEBUG
         static size_t debugCount = 0;
@@ -290,6 +292,9 @@ bool StackMap::parse(const uint8_t* data, size_t size, uint64_t loadBase) {
 }
 
 const StackMapRecord* StackMap::findRecord(uint64_t returnAddress) const {
+    // W10 item 56: reject out-of-span frames before hashing. See StackMap.hpp.
+    if (returnAddress < addr_lo_ || returnAddress >= addr_hi_)
+        return nullptr;
     auto it = records_.find(returnAddress);
     if (it == records_.end())
         return nullptr;

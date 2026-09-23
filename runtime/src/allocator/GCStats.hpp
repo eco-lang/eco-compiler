@@ -627,8 +627,40 @@ public:
     // objects_survived) so the totals cannot drift from the histograms.
     // `nfields` is Header::size, meaningful only for Tag_Custom (W1); other
     // tags pass it harmlessly and it is ignored.
-    void recordPromotion(Tag tag, size_t bytes, uint32_t nfields);
-    void recordSurvival(Tag tag, size_t bytes, uint32_t nfields);
+    // W5 item 55: bucketing helper, moved here with the two inlined recorders
+    // below (it was file-static in GCStats.cpp). Non-Custom tags never reach it.
+    static int customArityBucket(uint32_t nfields) {
+        return nfields >= static_cast<uint32_t>(CUSTOM_ARITY_BUCKETS)
+            ? CUSTOM_ARITY_BUCKETS - 1
+            : static_cast<int>(nfields);
+    }
+
+    // W5 item 55: these run once per SURVIVING and once per PROMOTED object —
+    // 744M + 676M = ~1.42 BILLION calls per self-compile — and each was an
+    // out-of-line call for a bounds check and two or three increments. Inlined
+    // here; deliberately NOT deleted, since objects_promoted and the per-tag
+    // retention histogram are what the whole Tier-2 promotion work is ranked on.
+    inline void recordPromotion(Tag tag, size_t bytes, uint32_t nfields) {
+        objects_promoted++;
+        int idx = static_cast<int>(tag);
+        if (idx < 0 || idx >= NUM_ALLOC_TAGS) return;
+        promoted_count_by_tag[idx]++;
+        promoted_bytes_by_tag[idx] += bytes;
+        if (tag == Tag_Custom) {
+            int b = customArityBucket(nfields);
+            custom_promoted_by_nfields[b]++;
+            custom_promoted_bytes_by_nfields[b] += bytes;
+        }
+    }
+    inline void recordSurvival(Tag tag, size_t bytes, uint32_t nfields) {
+        objects_survived++;
+        int idx = static_cast<int>(tag);
+        if (idx < 0 || idx >= NUM_ALLOC_TAGS) return;
+        survived_count_by_tag[idx]++;
+        survived_bytes_by_tag[idx] += bytes;
+        if (tag == Tag_Custom)
+            custom_survived_by_nfields[customArityBucket(nfields)]++;
+    }
 
     // Records a single String allocation by heap-object byte size into the
     // String size-distribution histogram. Called from the allocString

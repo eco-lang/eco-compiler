@@ -224,7 +224,15 @@ struct BlockInfo {
 
 // Tracks per-block statistics for compaction decisions.
 struct BufferMetadata {
-    size_t block_index;     // Index into blocks_ vector.
+    // W9 item 41: `block_index` DELETED. buffer_meta_ is strictly parallel to
+    // blocks_ — every mutation keeps them index-identical (the four push
+    // sites, the swap-remove, the compaction erase, and clear) — so the field
+    // was a denormalised copy of the subscript. It was written in three places
+    // and READ NOWHERE except the self-comparison in
+    // fixupIndicesAfterBlockMove, which is what made that function O(#blocks)
+    // per released block. INVARIANT: buffer_meta_[i] describes blocks_[i];
+    // index one with a subscript derived from the other, never with a stored
+    // back-reference.
     size_t live_bytes;      // Live object bytes (computed during sweep).
     size_t garbage_bytes;   // Garbage bytes (computed during sweep).
     bool fully_swept;       // True when this block has been fully swept.

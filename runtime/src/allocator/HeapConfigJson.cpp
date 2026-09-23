@@ -185,6 +185,7 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         "rope_leaf_count_limit",
         "rope_min_leaf_size",
         "sweep_work_budget",
+        "minor_sweep_divisor",
         "initial_sweep_budget",
         "mark_work_ratio",
         "sweep_bytes_per_alloc_byte",
@@ -278,6 +279,8 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         cfg.rope_min_leaf_size = parseU32(*it, "rope_min_leaf_size");
     if (auto it = doc.find("sweep_work_budget"); it != doc.end())
         cfg.sweep_work_budget = parseByteSize(*it, "sweep_work_budget");
+    if (auto it = doc.find("minor_sweep_divisor"); it != doc.end())
+        cfg.minor_sweep_divisor = parseByteSize(*it, "minor_sweep_divisor");
     if (auto it = doc.find("initial_sweep_budget"); it != doc.end())
         cfg.initial_sweep_budget = parseByteSize(*it, "initial_sweep_budget");
     if (auto it = doc.find("mark_work_ratio"); it != doc.end())

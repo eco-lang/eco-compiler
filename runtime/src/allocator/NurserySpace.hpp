@@ -105,6 +105,10 @@ private:
     // Current allocation state (bump pointer allocation).
     NurseryBump bump_;              // {ptr, end} — see the public doc.
 
+    // W5 item 35: promoted-object work queue, retained across cycles so its
+    // capacity is paid for once rather than re-grown inside every pause.
+    std::vector<void*> promoted_buf_;
+
     // GC state (active only during minorGC execution).
     char* copy_ptr_;                // Bump pointer for copying into to-space.
     char* copy_end_;                // To-space extent end.
@@ -119,6 +123,17 @@ private:
     // trigger fraction). Read once at init/reset, then consumed by
     // computeAllocEnd; never touched on the alloc fast path.
     float gc_threshold_;
+
+    // W2 items 18/19/22: both are GC-invariant but were dereferenced through
+    // config_ once per surviving object (promotion_age at three sites) and
+    // once per Cons cell (use_hybrid_dfs). Refreshed in refreshCapacityCaches.
+    Elm::u32 promotion_age_ = 1;
+    bool use_hybrid_dfs_ = true;
+
+    // W2 item 16: heap bounds are GC-invariant but were re-fetched through
+    // allocator_ on every evacuate() call. Same refresh point.
+    char* heap_base_ = nullptr;
+    size_t heap_reserved_ = 0;
 
     // Cached from-space capacity in bytes (== slice_.capacity; both sides are
     // equal). Kept as a field so the threshold math and the validators don't
@@ -291,7 +306,18 @@ private:
     void evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
     void evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
     void evacuateValueSlot(uint64_t &encoded, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
-    void evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
+    // W2 item 21: the body is `if (is_boxed) evacuate(...)`. Out-of-line it
+    // cost a call per unboxed slot for nothing; defined here so the unboxed
+    // case folds away at the call site.
+    inline void evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace &oldgen,
+                                  std::vector<void*> *promoted_objects) {
+        if (is_boxed) evacuate(val.p, oldgen, promoted_objects);
+    }
+
+    // W2 item 22: the same three-term test appeared verbatim at three sites.
+    inline bool shouldPromote(const Header* hdr) const {
+        return hdr->age >= promotion_age_ && !hdr->pin && !hdr->builder;
+    }
     void scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
 
     // ========== List Locality Optimization ==========
