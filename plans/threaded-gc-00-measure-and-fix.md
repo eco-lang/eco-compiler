@@ -797,6 +797,17 @@ Run these in order after Step 13. They are correctness gates, run separately fro
    cleaned (`--target full`) fails 63 codegen tests with `ecoc: not found`. Run G5 only after the
    main tree is fully built.
 
+8. **The instruments are compile-time opt-in (decided after T00, 2026-09-24).** P§1 rule 6's
+   runtime kill switch is superseded.
+   - Measured left-on in a stats build: **+1.52 s GC (+2.3 %)** (`benchmarks/gc-opt-loop.md`
+     entry T00). The old env var `ECO_GC_PHASE_TIMERS=0` removed only about half of that.
+   - The CMake option `ECO_GC_PHASE_TIMERS` (default OFF, requires `ECO_GC_STATS`, defines
+     `ENABLE_GC_PHASE_TIMERS`) now gates the phase timers, promotion-path sampling, pause
+     bracket and log, event-log writes and banner blocks. There is no runtime switch.
+   - The census stays under `ECO_HEAP_VALIDATE`.
+   - Always compiled: the scanner labels, stack-walk frame counters, the `GCPhaseTotals`
+     types and the print-time statistics helpers (cold code, and used by the unit tests).
+
 ## 7. Out of scope
 
 - Any change to GC policy, ordering, sizing or allocation. That starts in master-plan phase 1.

@@ -688,10 +688,10 @@ void *OldGenSpace::allocate(size_t size) {
         }
         if (budget > 0) {
             size_t cls_for_sweep = sizeClass(size);
-#if ENABLE_GC_STATS
+#if ENABLE_GC_PHASE_TIMERS
             // threaded-gc-00: promotion-path sweep bytes (exact) and time
             // (1-in-16 deterministic sample). Measurement only.
-            if (g_in_minor_gc && gcPhaseTimersEnabled()) {
+            if (g_in_minor_gc) {
                 if (promo_instr_.sweep.shouldSample()) {
                     const uint64_t t0 = GCStats::nowSinceProcessStartNs();
                     promo_instr_.sweep_bytes += lazySweep(cls_for_sweep, budget);
@@ -715,12 +715,11 @@ void *OldGenSpace::allocate(size_t size) {
     // small but non-zero (bag-page pulls, mmap commit) and they too can
     // run in either gc_phase_ context.
     void* result;
-#if ENABLE_GC_STATS
+#if ENABLE_GC_PHASE_TIMERS
     // threaded-gc-00: sample the allocator's own cost per promotion (the
     // dispatch below; the upfront sweep slice above is measured separately,
     // so the two estimates never double-count). 1-in-256, deterministic.
-    const bool sample_alloc = g_in_minor_gc && gcPhaseTimersEnabled() &&
-                              promo_instr_.alloc.shouldSample();
+    const bool sample_alloc = g_in_minor_gc && promo_instr_.alloc.shouldSample();
     const uint64_t t_alloc0 = sample_alloc ? GCStats::nowSinceProcessStartNs() : 0;
 #endif
     if (size >= config_->alloc_buffer_size) {
@@ -737,7 +736,7 @@ void *OldGenSpace::allocate(size_t size) {
             result = allocateFromBagPage(size);
         }
     }
-#if ENABLE_GC_STATS
+#if ENABLE_GC_PHASE_TIMERS
     if (sample_alloc) {
         promo_instr_.alloc.sampled_ns += GCStats::nowSinceProcessStartNs() - t_alloc0;
         promo_instr_.alloc.sampled_calls++;

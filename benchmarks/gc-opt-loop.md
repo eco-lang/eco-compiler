@@ -1644,6 +1644,120 @@ six matched samples per run instead of one, and it was already the basis on whic
 were decided.
 
 
+### T00 — threaded-gc-00 instruments (cost measurement, not an optimization) — **FLAT wall, GC +1.52 s (+2.3 %), measurable**
+
+**What was measured.** `plans/threaded-gc-00-measure-and-fix.md` added:
+- minor-GC phase timers;
+- 1-in-16 / 1-in-256 promotion-path sampling;
+- a pause bracket and pause log (percentiles, MMU);
+- named external root scanners;
+- the `ECO_GC_EVENT_LOG` check;
+- the validate-only survivor-write census.
+
+Everything except the validate-only parts is compiled in under `ECO_GC_STATS`, which is ON for
+the standard `build` preset. The question this entry answers is **what those instruments cost
+the self-compile when they are simply left on**, to decide whether they need their own
+compile-time flag. The candidate is `bin/eco-optT00` (renamed `eco-optT00b` for the run), which
+is `ecoghash.mlir` lowered against the `keep-T00` runtime: a runtime-only step, Phase 1.4. The
+reference is the last WIN, `W13c` (`bin/eco-optW13c`): the same MLIR against the pre-phase-0
+runtime. It has no instrument at all compiled in.
+
+**Method.** §2 Phase 2 plain triples, strictly serial, idle machine (load 0.1 at start), cold
+`eco-stuff`, no census variables. Because the object-level counters depend on the launch
+session (threaded-gc-00 plan §6a.1) and wall drifts between sittings, the reference was
+re-measured **in the same sitting** as the series drift check, immediately after the candidate.
+
+| run | wall (s) | GC (s) | minor (s) | major (s) | true mutator (s) |
+|---|---|---|---|---|---|
+| T00b r1 | 182.50 | 68.58 | 59.93 | 8.51 | 113.60 |
+| T00b r2 | 184.71 | 68.82 | 60.18 | 8.50 | 115.56 |
+| T00b r3 | 188.32 | 69.88 | 61.08 | 8.66 | 118.11 |
+| **T00b median** | **184.71** (spread 5.82) | **68.82** | **60.18** | 8.51 | 115.56 |
+| W13c r1 | 182.26 | 67.85 | 59.23 | 8.48 | 114.04 |
+| W13c r2 | 181.86 | 67.30 | 58.78 | 8.39 | 114.24 |
+| W13c r3 | 181.86 | 67.25 | 58.75 | 8.36 | 114.29 |
+| **W13c median** | **181.86** (spread 0.40) | **67.30** | **58.78** | 8.39 | 114.24 |
+| **Δ** | **+2.85** | **+1.52 (+2.3 %)** | **+1.40** | +0.12 | +1.32 |
+
+**Gates.**
+- All six `out.mlir` are byte-identical to `ecoghash.mlir`.
+- Counters are identical in all six runs: 1924 minors, 6 majors, 19,861 MiB promoted, 254,094,395
+  objects allocated, 675,767,781 promoted.
+- Drift check: W13c re-measured at 181.86 s against its recorded 180.08 s, +1.78 s, inside the
+  5.3 s band. **No drift**, and the intervening rows stand.
+
+**Verdict.**
+- **Wall is FLAT** under §4: +2.85 s is inside the candidate's own 5.82 s spread. r3 alone
+  carries most of it.
+- **The GC-time cost is real.** All three candidate GC times (68.58–69.88 s) lie above all three
+  reference GC times (67.25–67.85 s): complete separation, with +1.40 s of it in the minor pause.
+- Split, using the earlier same-binary A/B in `benchmarks/threaded-gc-00-baseline.md` §2:
+  - about **0.77 s** is the fine-grained phase timers and sampling (the part `ECO_GC_PHASE_TIMERS=0`
+    turns off);
+  - the remaining ~0.75 s is what stays on even then: the per-GC pause bracket and log, the
+    per-minor record plumbing, and per-scanner indirection.
+- The §4 amendment ("a flat package that DELETES work still ships") does not apply: this package
+  ADDS work.
+
+**Decision input, not a ship decision.**
+- **~1.5 s of GC (~0.8 % of wall)** is a small but real tax on every stats-build benchmark in this
+  loop.
+- It is below the wall noise band, but not below the GC-time noise floor: GC-time SD for identical
+  work is ~0.4–0.8 s, and here the separation is complete.
+- **Recommendation:** compile the threaded-gc-00 instruments out by default behind their own CMake
+  option (default OFF), and keep a runtime opt-in inside it.
+- With the instruments on, a future phase's GC-time deltas would carry this constant; that is
+  harmless for A/B within one binary, and misleading against rows recorded without instruments.
+- The two always-compiled pieces (scanner labels, stack-walk frame counters) are one-off or
+  per-frame increments. They are unmeasurable here and can stay.
+
+### T01 — threaded-gc-00 instruments compiled OUT (`ECO_GC_PHASE_TIMERS` OFF, the new default) — **FLAT, unmoved within noise**
+
+**What changed after T00.** The instruments moved behind a compile-time CMake option,
+`ECO_GC_PHASE_TIMERS`: default OFF, requires `ECO_GC_STATS`, defines `ENABLE_GC_PHASE_TIMERS`.
+The runtime env var was removed.
+
+With the option OFF, `nm` confirms that `NurserySpace`, `ThreadLocalHeap` and `OldGenSpace`
+reference no instrument symbol (`gcEventLog*`, `recordPause`, `recordMinorPhases`,
+`GCPhaseTotals::add*`, `sampledEstimateNs`, clock reads). What remains compiled in:
+- the scanner-label vector (filled once at registration);
+- two integer increments per stack frame walked;
+- `lazySweep` returning its work count;
+- the ordered-compare `ensureHeadroom` fix.
+
+The candidate is `bin/eco-optT01` (`ecoghash.mlir` lowered against the flag-OFF runtime). The
+reference is W13c (no instruments at all), re-measured in the same sitting, straight after the
+candidate. Tests: `build/test/test` 1734/1734 and `build-validate/test/test` 1735/1735. The
+flag-ON tree (`build-phasetimers`) builds and passes its threaded-gc-00 tests.
+
+| run | wall (s) | GC (s) | minor (s) | major (s) | true mutator (s) |
+|---|---|---|---|---|---|
+| T01 r1 | 184.63 | 69.47 | 60.82 | 8.48 | 114.81 |
+| T01 r2 | 181.66 | 67.82 | 59.32 | 8.34 | 113.49 |
+| T01 r3 | 183.86 | 68.70 | 60.14 | 8.40 | 114.81 |
+| **T01 median** | **183.86** (spread 2.97) | **68.70** | **60.14** | 8.40 | 114.81 |
+| W13c r1 | 179.49 | 67.09 | 58.57 | 8.37 | 112.04 |
+| W13c r2 | 183.35 | 68.06 | 59.44 | 8.47 | 114.94 |
+| W13c r3 | 181.55 | 68.10 | 59.05 | 8.90 | 113.10 |
+| **W13c median** | **181.55** (spread 3.86) | **68.06** | **59.05** | 8.47 | 113.10 |
+| **Δ** | **+2.31** (inside band) | **+0.64** | +1.09 | -0.07 | +1.71 |
+
+**Gates.** All six `out.mlir` are byte-identical to `ecoghash.mlir`. Counters are identical in
+all six (1924 / 6 / 19,861 MiB / 254,094,395 / 675,767,781). No threaded-gc-00 banner block is
+printed.
+
+**Verdict: FLAT.**
+- **Wall:** +2.31 s is inside the larger spread (3.86 s).
+- **GC time:** the ranges now **overlap**: T01 67.82–69.47 s against W13c 67.09–68.10 s.
+  Under T00 they were fully separated, with a +1.52 s median gap. The remaining +0.64 s median gap
+  is below this sitting's own reference spread (1.01 s of GC), so it is not resolvable with n=3.
+- **Minor time:** also overlaps (59.32–60.82 against 58.57–59.44).
+- **This sitting was noisier than T00's:** the W13c wall spread was 3.86 s here against 0.40 s
+  there.
+- Compiling the instruments out removed the measurable cost. Any residual is below the
+  protocol's resolution. A tighter bound would need per-collection pairing on the minor event
+  distribution, which a flag-OFF build cannot log, or more runs.
+
 ## 7. Findings
 
 (What this series learns, separated from the per-step records so the entries stay to ten lines.
@@ -2098,3 +2212,6 @@ mechanism paid and which did not.
 | W13f (ring, prefetch removed — DIAGNOSTIC) | 187.66 | +7.58 | 1924 | 6 | 19861 | 10743048 | ordering cost MEASURED: mark +4841.2 ms (reverted) | W13c |
 | W13g (markToCompletion, single drain, local ring) | 181.57 | +1.49 | 1924 | 6 | 19861 | 10741472 | NO WIN (reverted; mark +94.3 ms) | W13c |
 | W13h (drain-interval sweep 64/256/1024/4096) | — | — | 1924 | 6 | 19861 | — | FLAT, no effect (reverted); measures noise floor SD=80 ms | W13c |
+| drift check (eco-optW13c re-measured, same sitting as T00) | 181.86 | +1.78 vs its own row | 1924 | 6 | 19861 | 9726024 | NO DRIFT | W13c |
+| T00 (threaded-gc-00 instruments on, stats build) | 184.71 | +2.85 vs same-sitting W13c | 1924 | 6 | 19861 | 9726340 | FLAT wall; GC +1.52 s (+2.3 %) measured cost | W13c (re-measured) |
+| T01 (threaded-gc-00 instruments compiled out, ECO_GC_PHASE_TIMERS OFF) | 183.86 | +2.31 vs same-sitting W13c (181.55) | 1924 | 6 | 19861 | 9725408 | FLAT, unmoved within noise (GC +0.64 s, ranges overlap) | W13c (re-measured) |

@@ -115,6 +115,23 @@ else()
     add_compile_definitions(ENABLE_GC_STATS=0)
 endif()
 
+# threaded-gc-00 instruments (plans/threaded-gc-00-measure-and-fix.md): minor-GC
+# phase timers, promotion-path sampling, the pause log (percentiles, MMU), the
+# ECO_GC_EVENT_LOG per-collection TSV and their banner blocks. Compile-time
+# only and OFF by default: left on, they cost +1.52 s of GC time (+2.3 %) on
+# the self-compile (benchmarks/gc-opt-loop.md entry T00). Requires ECO_GC_STATS.
+option(ECO_GC_PHASE_TIMERS
+       "Compile in threaded-gc-00 GC phase timers, pause log and event log (requires ECO_GC_STATS)"
+       OFF)
+if(ECO_GC_PHASE_TIMERS)
+    if(NOT ECO_GC_STATS)
+        message(FATAL_ERROR "ECO_GC_PHASE_TIMERS=ON requires ECO_GC_STATS=ON")
+    endif()
+    add_compile_definitions(ENABLE_GC_PHASE_TIMERS=1)
+else()
+    add_compile_definitions(ENABLE_GC_PHASE_TIMERS=0)
+endif()
+
 # Force `assert(...)` to compile through, even in release builds. The runtime
 # allocator and the kernel libraries have hundreds of asserts on the hot
 # path that catch real bugs during bootstrap self-compile. Default ON for

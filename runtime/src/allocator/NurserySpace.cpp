@@ -423,6 +423,9 @@ void NurserySpace::checkAndGrow() {
  */
 void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_roots,
                            MinorGCRecord* rec) {
+#if !ENABLE_GC_PHASE_TIMERS
+    (void)rec;
+#endif
     // Set the cross-allocator in-minor-GC flag (always on, used by the
     // OldGenSpace::allocate inline-helper attribution counter).
     g_in_minor_gc = true;
@@ -455,7 +458,9 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // Capture state before GC.
     size_t from_space_used = bytesAllocated();
     auto gc_start = GC_STATS_TIMER_START();
+#endif
 
+#if ENABLE_GC_PHASE_TIMERS
     // threaded-gc-00 phase timers. Clock reads at phase boundaries only
     // (never per object); nothing here feeds a GC decision.
     const bool T = rec != nullptr;
@@ -509,7 +514,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     for (HPointer *root: root_set.getRoots()) {
         evacuate(*root, oldgen, &promoted_objects);
     }
-#if ENABLE_GC_STATS
+#if ENABLE_GC_PHASE_TIMERS
     if (T) rec->roots_longlived_jit_ns += lap();
 #endif
 
@@ -525,7 +530,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 #endif
         evacuate(*root, oldgen, &promoted_objects);
     }
-#if ENABLE_GC_STATS
+#if ENABLE_GC_PHASE_TIMERS
     if (T) rec->roots_stackmap_ns = lap();
 #endif
 
@@ -536,7 +541,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     for (uint64_t *root: root_set.getJitRoots()) {
         evacuateJitPtr(*root, oldgen, &promoted_objects);
     }
-#if ENABLE_GC_STATS
+#if ENABLE_GC_PHASE_TIMERS
     if (T) rec->roots_longlived_jit_ns += lap();
 #endif
 
@@ -568,7 +573,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     for (HPointer* slot : root_set.getSingleRoots()) {
         evacuate(*slot, oldgen, &promoted_objects);
     }
-#if ENABLE_GC_STATS
+#if ENABLE_GC_PHASE_TIMERS
     if (T) rec->roots_ranges_ns = lap();
 #endif
 
@@ -576,7 +581,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 #if ECO_GC_DEBUG
     std::fprintf(stderr, "[gc] phase 1d: %zu external scanners\n", root_set.getExternalRootScanners().size());
 #endif
-#if ENABLE_GC_STATS
+#if ENABLE_GC_PHASE_TIMERS
     if (T) {
         // Same scanners, same order; each timed and its slots counted.
         const auto& scanners = root_set.getExternalRootScanners();
@@ -642,7 +647,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // the alternation runs to mutual fixed point.
     size_t promoted_idx = 0;
     while (scanHasMore() || promoted_idx < promoted_objects.size()) {
-#if ENABLE_GC_STATS
+#if ENABLE_GC_PHASE_TIMERS
         if (T) { ++rec->drain_rounds; lap(); }
 #endif
         while (scanHasMore()) {
@@ -653,7 +658,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
             scanObject(obj, oldgen, &promoted_objects);
             scan_ptr_ += getObjectSize(obj);
         }
-#if ENABLE_GC_STATS
+#if ENABLE_GC_PHASE_TIMERS
         if (T) rec->drain_tospace_ns += lap();
 #endif
         while (promoted_idx < promoted_objects.size()) {
@@ -662,14 +667,14 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 #endif
             scanObject(promoted_objects[promoted_idx++], oldgen, &promoted_objects);
         }
-#if ENABLE_GC_STATS
+#if ENABLE_GC_PHASE_TIMERS
         if (T) rec->drain_promoted_ns += lap();
 #endif
     }
 #if ECO_HEAP_VALIDATE
     in_phase3_ = false;
 #endif
-#if ENABLE_GC_STATS
+#if ENABLE_GC_PHASE_TIMERS
     // Promotion-path old-gen counters for this cycle (Step 7). Taken at drain
     // exit: every promotion happens inside the root phases or the drain.
     if (T) {
@@ -1029,6 +1034,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     size_t to_space_used = static_cast<size_t>(bump_.ptr - fromBase());
     size_t bytes_freed = from_space_used > to_space_used ? from_space_used - to_space_used : 0;
     uint64_t elapsed_ns = GC_STATS_TIMER_ELAPSED_NS(gc_start);
+#if ENABLE_GC_PHASE_TIMERS
     if (T) {
         rec->tail_ns = static_cast<uint64_t>(GC_STATS_TIMER_ELAPSED_NS(t_loop_exit));
         rec->nursery_pause_ns = elapsed_ns;
@@ -1042,6 +1048,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
         rec->survived_bytes = survb1 - survb0;
         rec->promoted_bytes = promb1 - promb0;
     }
+#endif
 
     // The recorded pause is the WHOLE minor cycle, promotion allocation
     // included. Promotions are no longer timed individually (OldGenSpace
@@ -1057,11 +1064,11 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // OldGenSpace::sweepNurseryLargeBodies. NOTE: this runs after the minor
     // pause timer stops, so "Minor GC Timing" excludes it (threaded-gc-00
     // reports it in the pause and phase blocks).
-#if ENABLE_GC_STATS
+#if ENABLE_GC_PHASE_TIMERS
     const uint64_t t_lb = T ? GCStats::nowSinceProcessStartNs() : 0;
 #endif
     oldgen.sweepNurseryLargeBodies(minor_color_);
-#if ENABLE_GC_STATS
+#if ENABLE_GC_PHASE_TIMERS
     if (T) {
         rec->large_body_sweep_ns = GCStats::nowSinceProcessStartNs() - t_lb;
 #if defined(RUSAGE_THREAD)

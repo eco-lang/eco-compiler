@@ -51,10 +51,18 @@ extern thread_local bool g_in_minor_gc;
 // may feed a GC decision: GC counters must stay bit-identical with or
 // without them. Populated only under ENABLE_GC_STATS.
 
-// Latched once per process from ECO_GC_PHASE_TIMERS (default ON; "0" turns
-// the fine-grained phase timers and per-object sampling off so their own
-// overhead can be measured). The pause bracket does not depend on it.
-bool gcPhaseTimersEnabled() noexcept;
+// Compile-time switch for everything in this section: CMake option
+// ECO_GC_PHASE_TIMERS (default OFF) defines ENABLE_GC_PHASE_TIMERS=1. It
+// requires ECO_GC_STATS. Measured cost when compiled in: +1.52 s GC (+2.3 %)
+// on the self-compile (benchmarks/gc-opt-loop.md entry T00), hence opt-in.
+// The types and print-time helpers below are always compiled (cold code,
+// and the unit tests use them); only the hot-path call sites are gated.
+#ifndef ENABLE_GC_PHASE_TIMERS
+#define ENABLE_GC_PHASE_TIMERS 0
+#endif
+#if ENABLE_GC_PHASE_TIMERS && !ENABLE_GC_STATS
+#error "ENABLE_GC_PHASE_TIMERS (CMake ECO_GC_PHASE_TIMERS) requires ENABLE_GC_STATS (ECO_GC_STATS)"
+#endif
 
 // Deterministic 1-in-2^K sampler for per-object paths. Counter-based, no
 // randomness, so it never perturbs anything compared across runs.
@@ -166,7 +174,6 @@ struct GCPhaseTotals {
     uint64_t pause_max_ns = 0;
     uint64_t pause_count_by_kind[3] = {0, 0, 0};
     uint64_t pause_log2_hist[PAUSE_LOG2_BUCKETS] = {0};
-    bool     phase_timers_disabled = false;
 
     // Adds one minor's record. `names` resolves scanner index -> name.
     void addMinor(const MinorGCRecord& r, const char* const* names, size_t n_names);

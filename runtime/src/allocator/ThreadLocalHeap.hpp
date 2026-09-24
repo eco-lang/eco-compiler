@@ -251,6 +251,7 @@ private:
 #if ENABLE_GC_STATS
     GCStats stats_;               // Thread-local GC statistics
 
+#if ENABLE_GC_PHASE_TIMERS
     // threaded-gc-00 pause bracket: depth of nested minorGC/majorGC calls,
     // start of the outermost one, and what it contained.
     int      gc_depth_ = 0;
@@ -264,6 +265,7 @@ private:
 
     /** Records one minor GC's phase measurements into stats_ and the log. */
     void recordMinorPhases(MinorGCRecord& rec);
+#endif
 #endif
 
     /** Collects all roots from this thread's root set. */

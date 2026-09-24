@@ -58,6 +58,12 @@ work (about ±1.7 s at 2σ), and the plan's criterion (within 2σ, or ≤ 1 %) i
 passed.** Run with `ECO_GC_PHASE_TIMERS=0` for the cleanest timing, and leave the timers on when
 the anatomy is the question.
 
+**Superseded by T00 and the decision that followed.** Against the same-sitting W13c
+reference (no instruments), instruments-on cost **+1.52 s GC (+2.3 %)**, and `ECO_GC_PHASE_TIMERS=0`
+removed only half of it. The instruments are therefore now **compile-time opt-in**: CMake
+`-DECO_GC_PHASE_TIMERS=ON`, default OFF. The runtime switch no longer exists. See plan §6a.8 and
+`benchmarks/gc-opt-loop.md` entries T00 and T01.
+
 ## 3. Pause distribution
 
 A pause here is one contiguous mutator stop. A minor that triggers a major is one pause.

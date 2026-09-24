@@ -523,7 +523,7 @@ void ThreadLocalHeap::collectAtSafepoint() {
     }
 }
 
-#if ENABLE_GC_STATS
+#if ENABLE_GC_PHASE_TIMERS
 // threaded-gc-00: brackets the OUTERMOST minorGC/majorGC call on this thread,
 // so a minor that triggers a major is recorded as one contiguous pause.
 struct GCPauseScope {
@@ -563,29 +563,22 @@ void ThreadLocalHeap::recordMinorPhases(MinorGCRecord& rec) {
 #endif
 
 void ThreadLocalHeap::minorGC() {
-#if ENABLE_GC_STATS
+#if ENABLE_GC_PHASE_TIMERS
     GCPauseScope pause_scope(*this, /*is_major=*/false);
-    const bool timers = gcPhaseTimersEnabled();
     MinorGCRecord rec;
-    if (timers) rec.start_ns = GCStats::nowSinceProcessStartNs();
+    rec.start_ns = GCStats::nowSinceProcessStartNs();
 #endif
     if (Allocator::heapTraceEnabled()) {
         parent_->dumpHeapState("minorGC begin");
     }
     StackWalkCounts sw = collectStackRootsFromStackMap();
-#if ENABLE_GC_STATS
-    if (timers) {
-        rec.stack_walk_ns = GCStats::nowSinceProcessStartNs() - rec.start_ns;
-        rec.frames_walked = sw.frames_walked;
-        rec.frames_matched = sw.frames_matched;
-        rec.stack_slots = sw.slots;
-    }
-    nursery_.minorGC(old_gen_, stack_map_roots_, timers ? &rec : nullptr);
-    if (timers) {
-        recordMinorPhases(rec);
-    } else {
-        stats_.tg.phase_timers_disabled = true;
-    }
+#if ENABLE_GC_PHASE_TIMERS
+    rec.stack_walk_ns = GCStats::nowSinceProcessStartNs() - rec.start_ns;
+    rec.frames_walked = sw.frames_walked;
+    rec.frames_matched = sw.frames_matched;
+    rec.stack_slots = sw.slots;
+    nursery_.minorGC(old_gen_, stack_map_roots_, &rec);
+    recordMinorPhases(rec);
 #else
     (void)sw;
     nursery_.minorGC(old_gen_, stack_map_roots_, nullptr);
@@ -609,7 +602,7 @@ void ThreadLocalHeap::minorGC() {
 }
 
 void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
-#if ENABLE_GC_STATS
+#if ENABLE_GC_PHASE_TIMERS
     GCPauseScope pause_scope(*this, /*is_major=*/true);
 #endif
     const bool profile_phases = gcPhaseProfileEnabled();
@@ -749,12 +742,14 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
         phase_profile.blocks_scanned,
         nursery_.getStats().minor_gc_count,
         nursery_.getStats().objects_promoted);
+#if ENABLE_GC_PHASE_TIMERS
     if (gcEventLogEnabled() && stats_.major_gc_events_used > 0) {
         const GCStats::MajorGCEvent& ev =
             stats_.major_gc_events[stats_.major_gc_events_used - 1];
         gcEventLogMajor(ev.seq, ev.start_ns, ev.total_ns, ev.mark_ns, ev.sweep_ns,
                         ev.root_scan_ns + ev.root_push_ns, gcMajorReasonName(ev.reason));
     }
+#endif
 #endif
 
     if (profile_phases) {

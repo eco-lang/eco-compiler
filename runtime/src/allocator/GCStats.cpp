@@ -1393,7 +1393,9 @@ void GCStats::print() const {
     }
 
     // ========== threaded-gc-00 blocks (additive; appended) ==========
+#if ENABLE_GC_PHASE_TIMERS
     printThreadedGcBlocks();
+#endif
 
     // ========== Allocation Size Histograms ==========
     //
@@ -1970,14 +1972,6 @@ uint64_t gcClockOverheadNs() noexcept {
     return ovh;
 }
 
-bool gcPhaseTimersEnabled() noexcept {
-    static const bool enabled = [] {
-        const char* e = std::getenv("ECO_GC_PHASE_TIMERS");
-        return !(e && e[0] == '0' && e[1] == '\0');
-    }();
-    return enabled;
-}
-
 int GCPhaseTotals::scannerIndex(const char* name) {
     if (!name) name = "unnamed";
     for (int i = 0; i < ext_count; ++i) {
@@ -2099,7 +2093,6 @@ void GCPhaseTotals::merge(const GCPhaseTotals& o) {
     pause_max_ns = std::max(pause_max_ns, o.pause_max_ns);
     for (int k = 0; k < 3; ++k) pause_count_by_kind[k] += o.pause_count_by_kind[k];
     for (int b = 0; b < PAUSE_LOG2_BUCKETS; ++b) pause_log2_hist[b] += o.pause_log2_hist[b];
-    phase_timers_disabled = phase_timers_disabled || o.phase_timers_disabled;
 }
 
 uint64_t GCPhaseTotals::percentile(const std::vector<uint64_t>& sorted, double q) {
@@ -2341,9 +2334,6 @@ void GCStats::printThreadedGcBlocks() const {
         std::snprintf(buf, sizeof buf, "  calibrated clock-read overhead: %llu ns per bracket",
                       (unsigned long long)gcClockOverheadNs());
         std::cout << buf << std::endl;
-    } else if (t.phase_timers_disabled) {
-        std::cout << "\nMinor GC Phase Breakdown (threaded-gc-00): phase timers disabled "
-                     "(ECO_GC_PHASE_TIMERS=0)" << std::endl;
     }
 
     // ---------------- Block 3: external root scanners ----------------

@@ -280,15 +280,15 @@ The `EcoGCPrepare` MLIR pass detects all potentially allocating operations and a
 
 ### GC instrumentation *(threaded-gc-00, Sep 24, 2026)*
 
-`plans/threaded-gc-00-measure-and-fix.md` added measurements that change no GC behaviour. GC counters and `out.mlir` stay bit-identical, and nothing below feeds a GC decision.
+`plans/threaded-gc-00-measure-and-fix.md` added measurements that change no GC behaviour. All of them except the census are **compiled in only with the CMake option `-DECO_GC_PHASE_TIMERS=ON`** (default OFF; requires `ECO_GC_STATS`). Left on, they cost +1.52 s of GC time (+2.3 %) on the self-compile (`benchmarks/gc-opt-loop.md` entry T00). With the option off, none of their code or clock reads exist in the runtime. GC counters and `out.mlir` stay bit-identical, and nothing below feeds a GC decision.
 
-- **Banner blocks** (stats builds, appended after "Adaptive Lazy-Sweep Bytes"):
+- **Banner blocks** (`ECO_GC_PHASE_TIMERS` builds, appended after "Adaptive Lazy-Sweep Bytes"):
   - `GC Pause Distribution (threaded-gc-00)`. A pause is one contiguous mutator stop: the outermost `ThreadLocalHeap::minorGC` or `majorGC` call, so a minor that triggers a major counts once. The block gives percentiles, a log2 histogram and an MMU table.
   - `Minor GC Phase Breakdown (threaded-gc-00)`. Covers the stack walk, each root phase, the Cheney drain vs the promoted-object drain, the tail, the large-body sweep, the unaccounted residual, sampled promotion-allocator and in-pause lazy-sweep estimates, and page faults.
   - `External Root Scanners (threaded-gc-00)`. Per named scanner (`RootSet::addExternalRootScanner(fn, name)`): time and slot counts.
 - **Two timer brackets that differ.** The legacy "Minor GC Timing" bracket excludes the stack walk and the large-body sweep. Both are counted as mutator time by "Allocator Timings". The pause block includes them.
-- **`ECO_GC_PHASE_TIMERS=0`** turns off the fine-grained phase timers and the 1-in-16 / 1-in-256 promotion-path sampling, so their overhead can be measured. The pause bracket, two clock reads per GC, stays on.
-- **`ECO_GC_EVENT_LOG=<path>`** writes one tab-separated row per minor, major and pause. Summarise it with `benchmarks/gc-event-log-summary.py <log> [--json]`.
+- **There is no runtime switch.** If `ECO_GC_PHASE_TIMERS` is compiled in, the timers, sampling and pause log are on.
+- **`ECO_GC_EVENT_LOG=<path>`** (`ECO_GC_PHASE_TIMERS` builds) writes one tab-separated row per minor, major and pause. Summarise it with `benchmarks/gc-event-log-summary.py <log> [--json]`.
 - **`ECO_SURVIVOR_WRITE_CENSUS=1`** (heap-validate builds only) hashes every survivor at the end of a minor GC and re-checks it at the start of the next. It counts writes into objects that have already survived a GC, i.e. the P1 question of `design_docs/parallel-gc.md` §7.4.3, and prints a `[survivor-write-census]` table to stderr at exit.
 - **`ECO_VALIDATE_FREELIST_DUP_SCAN=0`** (heap-validate builds only) skips the O(list-length) duplicate-push scan in `pushSpanOnFreeLists`. Without it a validator self-compile takes days, because the post-major sweep pushes millions of cells onto lists up to 10^6 long.
 
