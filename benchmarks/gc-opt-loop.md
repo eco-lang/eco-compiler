@@ -15,26 +15,62 @@ leg.
 
 ## 0. The steps
 
-The step list is `plans/gc-tier1-constant-factors.md` — its "Work packages, in landing order"
-table, in that order. **One package per iteration**, named by its `W` number; a package the plan
+**THE FOLLOW-UP PLAN IS NOW COMPLETE (2026-09-23). Every one of its eleven items is
+dispositioned; see the W11-W14 table below and the entries in §6.** Two wins landed
+(item 40 and item 54), three items shipped flat-or-closed by reading, and four were refuted
+or closed on arithmetic. The series' last WIN is **W13c (180.08 s)**; the reference snapshot is
+`keep-W13d` (W13c's code plus the sweep's documentation, `.text` identical) and `bin/eco-opt-prev`
+is `bin/eco-optW13d`.
+
+| package | items | outcome |
+|---|---|---|
+| W11a | 51, 43 | FLAT, kept (deletions). 43's write site in the plan was WRONG — see §6 |
+| W11a | 47 | CLOSED UNBUILT by reading: the `find` is load-bearing |
+| W11b | 44 | **REFUTED by its own validate assert** — the bulk clear is load-bearing for an undocumented second reason |
+| W12b | 40 | **WIN, kept** (-1.83 s wall, -0.78 s GC). Needed an arena re-pack the plan did not anticipate |
+| W12c | 52 | NO WIN, reverted (mark +33 ms) |
+| W12d | 38 | NO WIN, reverted (mark +415 ms) — sparse set beats span-wide bitmap |
+| W13 | 54 (prefetch-on-grey) | WIN, kept (mark -141 ms) — later SUPERSEDED by W13c |
+| W13c | 54 (FIFO ring, depth 16) | **WIN, kept — mark -789.6 ms (-10.4 %) vs on-grey, -12.1 % vs none; output byte-identical** |
+| W13d | 54 depth sweep 4/8/16/32/64 | **16 CONFIRMED OPTIMAL** — depth 4 is +23 % WORSE than no prefetch at all |
+| W14 | 42, 45, 46 | CLOSED UNBUILT, bounded at <1 % of wall by the event log |
+
+The original continuation notice follows.
+
+**THE SERIES WAS LIVE AND THE NEXT STEPS WERE IN
+`plans/gc-mark-and-bookkeeping-followup.md`.** `plans/gc-tier1-constant-factors.md` is
+CLOSED — every package below has an entry in §3 except **W8, which was never run**, and W9's
+items 42-47, which were never attempted. The follow-up plan lowers exactly those eleven items
+(38, 40, 51, 52, 54, 42-47) to implementation detail, re-verified against the tree on
+2026-09-23, and regroups them as **W11-W14**. Its reference row is `W1b` (183.57 s), and it is
+run through THIS file's method unchanged.
+
+Read the follow-up plan's §0 before picking a step: **W1 overturned this loop's closing
+conclusion** that constant-factor work was exhausted, by finding -14.54 s of GC time after
+eleven packages had bought ~4 s between them. Its §1 also carries the ordering rule this
+series established — pure deletions have been flat-to-positive every time, and
+restructure-to-remove-a-scan has lost all three times it was measured.
+
+The original step list was `plans/gc-tier1-constant-factors.md` — its "Work packages, in
+landing order" table, in that order. **One package per iteration**, named by its `W` number; a package the plan
 itself sub-numbers (`W1.1`, `W1.2`, `W1.3`, `W4(29,31)` vs `W4(32)`, `W5(53)`) splits into one
 entry per sub-number, because §5's one-step-per-iteration rule applies to items, not to the
 plan's grouping.
 
-| step | package | items | basis | risk |
-|---|---|---|---|---|
-| base | *(no change — the `gcdef` tree; INHERITED, not re-measured)* | — | — | — |
-| W0 | Free deletions | 11,12,13,27,39,48,49,50 | bound | trivial |
-| W1 | Nursery zeroing | 6,7,8,9 | **5.6 % CPU, measured** | medium |
-| W2 | `evacuate` inner loop | 16–23 | bound | low |
-| W3 | Per-object dispatch | 24–28 | bound | low |
-| W4 | Slot scanning | 29–31 (**32 gated**) | bound | medium |
-| W5 | Minor-GC structure | 33,34,35,37,53,55 (**36 closed**) | bound | low |
-| W6 | Old-gen virgin-page bump | 10, 15 (counter first) | bound | medium |
-| W7 | Promotion-path sweep coupling | 14 | measured outlier | medium |
-| W8 | Mark-side data structures | 38,40,51,52,54 | bound | medium |
-| W9 | Old-gen bookkeeping | 41–47 | bound | low |
-| W10 | Stackmap lookup | 56 | bound | low |
+| step | package | items | basis | risk | outcome |
+|---|---|---|---|---|---|
+| base | *(no change — the `gcdef` tree; INHERITED, not re-measured)* | — | — | — | — |
+| W0 | Free deletions | 11,12,13,27,39,48,49,50 | bound | trivial | FLAT, kept (11/12 refuted) |
+| W1 | Nursery zeroing | 6,7,8,9 | **5.6 % CPU, measured** | medium | **WIN** (6 LOSS; 7 shipped; 9 done in W1b; **8 untried**) |
+| W2 | `evacuate` inner loop | 16–23 | bound | low | FLAT, kept (23 refuted) |
+| W3 | Per-object dispatch | 24–28 | bound | low | 24 LOSS; 28 kept; 25/26 closed |
+| W4 | Slot scanning | 29–31 (**32 gated**) | bound | medium | LOSS, reverted; 32 closed |
+| W5 | Minor-GC structure | 33,34,35,37,53,55 (**36 closed**) | bound | low | WIN on RSS, kept |
+| W6 | Old-gen virgin-page bump | 10, 15 (counter first) | bound | medium | 10 LOSS; **15 never reached** |
+| W7 | Promotion-path sweep coupling | 14 | measured outlier | medium | knob kept at default |
+| W8 | Mark-side data structures | 38,40,51,52,54 | bound | medium | **NEVER RUN → follow-up W12/W13** |
+| W9 | Old-gen bookkeeping | 41–47 | bound | low | 41 kept; **42–47 never attempted → follow-up W11/W14** |
+| W10 | Stackmap lookup | 56 | bound | low | FLAT, kept |
 
 W0 first because it is free; W1 next because it is the only package with a measured cost. W8 is
 also the prerequisite for parallel marking (working-list #57–#63), so it has value beyond its own
@@ -145,15 +181,22 @@ deltas of the intervening steps are suspect).
 
 **Phase 2 — measure: the candidate builds itself, three cold runs.**
 
-> **From step 12 onward, use the INTERLEAVED form for any step estimated under ~3 %.**
-> `benchmarks/lss-loop-ab.sh <last-kept-arm> <candidate-arm>` runs reference and candidate
-> alternately in one sitting and reports the PAIRED differences; judge on the median paired
-> difference, not on the difference of two medians measured hours apart. The parent loop's §7
-records why: the wall
-> column drifts about ±5 s between triples on this machine, which is larger than every step still
-> on the list, and two re-runs in this series proved it. The GC counters still do not need this —
-> they are exact per (binary × tree) — so a step that moves them can be judged from a plain triple.
-> The interleaved form costs twice the machine time.
+> **PLAIN TRIPLE ONLY. The interleaved A/B form is RETIRED for this series (2026-09-23).**
+> Every step is three cold runs of the CANDIDATE, judged against the RECORDED medians of the
+> last win. The reference arm is never re-run beside the candidate, and
+> `benchmarks/lss-loop-ab.sh` is not used here. One triple per step, ~3 runs × ~3 min.
+>
+> **The cost is known and accepted.** The wall column drifts about ±5 s between triples measured
+> hours apart on this machine (parent loop §7; two re-runs in this series proved it), and that is
+> larger than every step still on the list. Consequences, which are now part of the method:
+> - a wall move inside §4's noise band carries NO information about the step — it is FLAT, never
+>   a small win and never a small loss, and the entry says so in those words;
+> - **GC time and the GC counters do the discriminating.** The counters are exact per
+>   (binary × tree), so any movement in them is real; GC time is far tighter than wall because it
+>   excludes the front-end and I/O drift. Lead every entry with GC time (§3);
+> - a step whose entire claim rests on a wall move smaller than the band cannot be settled by this
+>   protocol. Record it as flat, ship it if it is a deletion (§4's amendment), and do not
+>   re-measure it hoping the number firms up.
 
 Run the commands in §2 with `ARM=eco-optN` and `R=1,2,3`. Each run deletes `eco-stuff` first,
 runs solver+LSS with NO census variables, and writes `eco-optN-rR.time/.stdout/.stderr` plus
@@ -796,6 +839,811 @@ W2's null cache, W3's and W4's regressions). Fixing the property test, or relaxi
 match the documented contract, is a prerequisite for anyone resuming W1, W4-32, W6 or W8.
 
 
+### W11a — item 51 (inline `isInNursery`) + item 43 (skip the sentinel walk) — **FLAT, kept**
+
+First package of `plans/gc-mark-and-bookkeeping-followup.md`. Both items are deletions; item 47
+was closed by reading before any build (below). Patch `step-W11a.patch`, 121 lines, 4 files; tree
+`try-W11a`. Runtime-only, so Phase 1.3 was skipped and `bin/ecoghash.mlir` was lowered again
+against the changed runtime.
+
+| run | wall (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|
+| r1 | 184.18 | 68.65 | 1924 | 6 | 19861 | 10,675,708 | 13,241,185 | same |
+| r2 | 182.06 | 67.91 | 1924 | 6 | 19861 | 10,676,200 | 13,241,185 | same |
+| r3 | 182.95 | 68.45 | 1924 | 6 | 19861 | 10,676,460 | 13,241,185 | same |
+| **median** | **182.95** | **68.45** | 1924 | 6 | 19861 | **10,676,200** | 13,241,185 | same |
+| Δ vs `W1b` | **-0.62** | **+0.29** | 0 | 0 | 0 | +104 | 0 | — |
+
+Wall spread 2.12 s; both moves are deep inside the band, so **FLAT** in the sense §1's Phase 2
+now defines — not a small win and not a small loss. Counter gate holds to the digit, deterministic,
+fixed point green, no `[gc-stats] SIG` on any leg. **Gates:** E2E `--target check` **1730/1730**,
+heap-validate `--target check` **1730/1730**. Kept under the flat-deletions-ship rule.
+
+**Item 51 — the plan's premise was right.** `isInNursery` is called twice per marked object
+(`OldGenSpace.cpp:1810` `pushMarkRoot`, `:1865` `markOneObject`) and was an out-of-line cross-TU
+call wrapping two range compares. Moved into `Allocator.hpp` beside `getRootSet()`, which is there
+for the same reason (needs complete `ThreadLocalHeap`). Null check kept — cold callers run before
+`initThread`. Unmeasurable at this scale, as predicted.
+
+**Item 43 — PREMISE CORRECTED, and following the plan literally would have introduced a bug.**
+The plan states *"There is exactly ONE write site (verified 2026-09-23): `OldGenSpace.cpp:2407`"*.
+There are TWO, and 2407 is the wrong one:
+
+- `:2341`, inside `placeAndLink`, writes `cell->header.age = age_sentinel ? 0b01 : 0` on every cell
+  it LINKS onto a free list. These are the cells the `transitionToSweeping` walk visits.
+- `:2407` writes the trailing-remainder header, which is left parseable for sweep but is **never
+  linked onto any list**, so it can never appear in that walk.
+
+A counter incremented at `:2407` would therefore read zero while real sentinels sat on the lists;
+the walk would be skipped, the sentinels would survive the head wipe, and lazy sweep would treat
+each as a hard run boundary and leak its bytes — silently. (`setFreeCellSentinel` /
+`clearFreeCellSentinel` at `OldGenSpace.hpp:189-194` have NO callers, so there is no third path.)
+
+What was built instead counts sentinel **push calls**, at the two sites that can pass
+`age_sentinel=true` (`splitter::remainder` `:1086`, `freeLargeBodyCell` `:4536`), both of which are
+`OldGenSpace` members so the counter is reachable. One call can link several cells, so the count
+**over-counts** — the safe direction the plan asked for, since the walk is skipped only on an exact
+zero. `transitionToSweeping` resets it to 0 after the walk, so it cannot drift across cycles, and
+`reset()` clears it.
+
+**Item 43 may be entirely inert and this run cannot tell.** The walk runs ~6 times per self-compile
+and the skip fires only in a cycle with zero sentinel pushes; `freeLargeBodyCell` runs whenever a
+split-header body dies, so cycles with a sentinel are probably the common case. GC time moved
++0.29 s, i.e. nothing. It is kept as a correct deletion of an O(free cells) walk from the major-GC
+prologue, not on evidence that it fires. Anyone wanting that evidence needs a counter print in a
+separate untimed leg — do not infer it from a wall number.
+
+**Item 47 — CLOSED UNBUILT, resolved by reading (the plan's preferred outcome).** The question was
+whether a pinned body cell can reach sweep with a live `large_body_index_` entry. It can.
+`OldGenSpace.cpp:4278` computes `body_is_large = (total_size >= config_->alloc_buffer_size)`, so a
+split-header body BELOW that threshold is allocated into an ordinary size-class block and is swept
+by the inner loop at `:2685` — the copy the plan hoped to retire — not by the `is_large` branch at
+`:2640`. The comment at `:2632` asserts major sweep can reach a body cell first when its only
+nursery header died, and dropping the erase would leave a stale id to clash with a recycled cell.
+`OldGenSpace.hpp:568`'s "defensive idempotent guards only" is about ACCOUNTING authority
+(`freeLargeBodyCell` owns `garbage_bytes`), not about reachability — reading it as the latter is
+what made this item look free. The `find` already runs only for a pinned `Tag_String`/`Tag_ByteBuffer`
+cell in a dead block, which was the plan's own premise correction; that correction was the entire
+win available here, and it is already in the tree.
+
+
+### W11b — item 44 (stop bulk-zeroing the mark bitmaps) — **REFUTED, reverted, never measured**
+
+The plan's highest-value item, and the one it called *"structurally the same shape as the W1 win:
+delete a bulk memset that a per-item path already covers."* **The per-item path does not cover it.**
+No timed triple was ever run: the item died on its correctness gate. Patches `step-W11b.patch`
+(154 lines); trees `try-W11b` (first form) and `try-W11b-final` (the inverted form below).
+
+**What was built.** Two forms, both replacing the `std::fill` over every `mark_bits_[i]` at the
+start of each mark cycle with a targeted clear of blocks flagged in a new per-block
+`marks_dirty_` vector. Both kept `large_block_mark_`'s bulk clear (one byte per block, not a
+bitmap). Both carried the gate the plan asked for: an `ECO_HEAP_VALIDATE`-only pass that
+re-derives the deleted invariant — after the targeted clear, EVERY bitmap must be all-zero.
+
+1. **Predictive form.** Flag at the mark-bit set site when the current cycle's sweep would not
+   reach the block. **Aborted on the 2nd major GC of the self-compile.**
+2. **Observational form.** Flag inside `setMarkBitInBlock` itself, so no caller can forget, and
+   clear the flag in `markBlockFullySwept` — the only place that records "the sweeper walked this
+   block to completion". **Aborted on the 2nd major GC of the self-compile, identically.**
+
+**The evidence** (form 2, `eco-optW11b-val`, a heap-validate lowering of the same MLIR):
+
+```
+[heap-validate] item 44: carry-over mark bit
+  block=1 byte=371 bits=0x10 obj=0x10000f05ce0
+  block: start=0x10000f00000 end=0x10000f80000 eoo=0x10000f80000 is_large=0 size_class=40
+  meta: fully_swept=1 live=18880 garbage=531928
+  sweep: phase=0 buffer_index=285 pending=0
+  header at obj: tag=3 size=8828 age=0 pin=1 color=2
+```
+
+`size_class=40` is `NUM_SIZE_CLASSES` (`NUM_SMALL_CLASSES=32` + 8 medium), i.e. a **mixed** block,
+which sweep walks object-by-object rather than on a fixed stride. `fully_swept=1` with
+`pending=0` says **the sweeper walked that block to completion in the previous cycle and still
+left a mark bit set** on a pinned `Tag_String` split-header body (tag 3 = `Tag_String`, `pin=1`,
+logical size 8828 — the `registerLargeBody` path, a body below `alloc_buffer_size` that lands in
+an ordinary block rather than an `is_large` one; see item 47's entry in W11a).
+
+**So the item's premise is false, and not in the way the code documents.** `OldGenSpace.cpp:1560`
+lists exactly one reason the "bitmap is zero between cycles" invariant fails — a mid-cycle
+free-list pop into a block sweep has already passed — and both forms handled that reason. There is
+a SECOND path that leaves a set bit in a block sweep walked to completion. The bulk clear is
+load-bearing for it. Its exact mechanism is unidentified; the candidates the evidence allows are
+the sentinel arm of the sweep inner loop (`:2675`, which by contract does not touch the cell's
+header or its bit and relies on `freeLargeBodyCell` having cleared it) and a cursor/footprint
+disagreement on a pinned body whose `header.size` is the LOGICAL length, not the cell footprint.
+
+**Why it is closed rather than pursued.** The failure is silent in a release build — a carry-over
+bit makes `pushMarkRoot` return early, `markOneObject` never attributes the cell's bytes, the
+block reads all-dead, and `madvise(DONTNEED)` zero-fills pages live objects still reference. Every
+probe costs ~13 min (validate lowering + self-compile to the 2nd major). And the prize was never
+large: the plan's own arithmetic is ~80 MB of bitmap per major, ~6 majors, **"expect flat on
+wall"** — two orders of magnitude below W1's 246 GB. A provably-safe variant does exist (never
+clear the flag at sweep completion, so "dirty" means only "a bit was set since the last prologue")
+but it degenerates to flagging every block that holds a marked object, which is nearly all of
+them; it would ADD state for no deletion, so it does not qualify under the flat-deletions-ship
+rule.
+
+**This makes it 4-for-4: restructure-to-remove-a-scan has now lost every time it was measured**
+(item 24 +3.16 s GC, W4 +1.96 s GC, W6 +77.5 s wall, and W11b refuted before measurement), against
+5-for-5 flat-to-positive for pure deletions. The follow-up plan's §1 ordering rule holds.
+
+**The validate assertion is the transferable result.** It was written to test an analysis and
+instead found the analysis wrong, twice, in under an hour — including catching that my first form
+had missed `pushMarkRoot` as a second mark-bit writer. Anyone re-opening 44, or attempting
+working-list #58 (atomic mark-bit set for parallel marking, which inherits this invariant), should
+re-add it first: it is in `try-W11b-final`'s `startMark`, guarded by `ECO_HEAP_VALIDATE`.
+
+**Incidental finding: `--target ecor` does not link in `build-validate`** (`undefined symbol:
+Elm::PermanentSpace::instance()`), which is pre-existing and harmless in itself — but ninja stops
+on it, so `libEcoRuntimeStatic.a` is left STALE and the next lowering silently tests old code. One
+13-min cycle was lost to this. Build `--target EcoRuntimeStatic` explicitly (or `--target check`)
+before lowering a validate candidate, and check the archive's mtime.
+
+
+### W12 / W12b — item 40 (flatten `mark_bits_` into an arena) — **W12 NO WIN; W12b WIN, kept**
+
+The gate item: working-list #58 (atomic mark-bit set for parallel marking) needs a flat array,
+because a `lock or` on an element of a `vector<vector<uint8_t>>` means resolving the inner pointer
+under contention. Patches `step-W12.patch` (278 lines) and `step-W12b.patch`; trees `try-W12`,
+`try-W12b`.
+
+**Change.** `std::vector<std::vector<uint8_t>> mark_bits_` becomes one `mark_bits_arena_` plus
+per-block `mark_bits_offset_` / `mark_bits_len_`. Each bit operation loses a dependent load and a
+bounds branch. `pushMarkRoot`'s `isMarkedInBlock` + `setMarkBitInBlock` pair collapses into one
+`testAndSetMarkBitInBlock`, which is half the win and only worth fusing once the lookup is cheap.
+Bit layout and `MARK_ALIGNMENT` unchanged — container only, so bitmap CONTENT is bit-identical.
+
+| run | wall (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|
+| W12 median | 183.58 | 68.40 | 1924 | 6 | 19861 | 10,848,384 | 13,241,185 | same |
+| Δ vs `W11a` | +0.63 | -0.05 | 0 | 0 | 0 | **+172,184** | 0 | — |
+| W12b r1 | 181.12 | 67.71 | 1924 | 6 | 19861 | 10,745,344 | 13,241,185 | same |
+| W12b r2 | 181.14 | 67.45 | 1924 | 6 | 19861 | 10,743,020 | 13,241,185 | same |
+| W12b r3 | 180.97 | 67.67 | 1924 | 6 | 19861 | 10,743,152 | 13,241,185 | same |
+| **W12b median** | **181.12** | **67.67** | 1924 | 6 | 19861 | 10,743,152 | 13,241,185 | same |
+| **Δ vs `W11a`** | **-1.83** | **-0.78** | 0 | 0 | 0 | +66,952 | 0 | — |
+
+**W12 was flat on wall and +172 MB of RSS — and the RSS was my defect, not the item's.** The arena
+is append-only, and `releaseBlock` moves a block's arena SLOT rather than its bytes, so every
+released block leaves a hole that never comes back. Over a self-compile the holes reached 172 MB.
+
+**W12b adds one thing: re-pack the arena at the mark prologue.** That is the single point in the
+cycle where it is free — every bitmap is about to be zeroed, so no content needs preserving and
+the offsets can simply be reassigned in place, O(#blocks), six times per run. With `resize()` never
+returning capacity, it also calls `shrink_to_fit()` once the excess is worth a reallocation.
+
+Result: **wall -1.83 s on a spread of 0.17 s** (the tightest triple in the series — ten times the
+spread), **GC time -0.78 s**, counters bit-identical, deterministic, fixed point green. **Gates:**
+E2E `--target check` **1730/1730** and heap-validate `--target check` **1730/1730** — the plan makes
+heap-validate mandatory for this package. WIN under rule 1, kept.
+
+Residual: RSS is still +67 MB against W11a. The arena for a ~5 GB old gen is ~78 MB contiguous,
+where the vector-of-vectors spread the same bytes over ~80 K separate allocations; the peak moves
+even though the total does not. Wall decreased, so rule 1 applies whatever the other stats did.
+
+**PREMISE CORRECTED: there are TWO block-removal paths, not one.** The plan's trap list names
+`releaseBlock`'s swap-remove (`:3375`). Compaction ALSO removes blocks, at `:4190`, with
+`vector::erase` over a descending-sorted evacuation set — indices shift rather than swap. Both are
+mirrored here. A container change that handled only the swap-remove would have desynchronised
+`mark_bits_offset_` from `blocks_` after any compaction, silently pointing every later block at
+another block's bitmap.
+
+The plan's other traps held: the two test accessors (`getMarkBitsForBlock`, `getMarkBits`) still
+have no users outside the header, so they collapse to one pointer+length view; and the
+`byte_index >= bits.size()` guard is preserved as `byte_index >= mark_bits_len_[i]` — it is
+load-bearing for objects outside a block's bitmap extent, not dead defensiveness.
+
+
+### W12c — item 52 (last-block `live_bytes` accumulator) — **NO WIN, reverted**
+
+`markOneObject` did `buffer_meta_[blk].live_bytes += step` per marked object; the plan calls that
+"a third random cache line touched per object" and prescribes option (a), a last-block cache
+flushed on block switch. Built exactly so, flushed additionally at every `incrementalMark` return
+(the plan's trap: `initObjectHeaderWithSize` and `allocateFromEmptyRegularBlocks` also write the
+field). Patch `step-W12c.patch`; tree `try-W12c`.
+
+| run | wall (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | fixed point |
+|---|---|---|---|---|---|---|---|
+| r1 | 182.56 | 68.14 | 1924 | 6 | 19861 | 10,742,676 | same |
+| r2 | 180.06 | 67.44 | 1924 | 6 | 19861 | 10,743,096 | same |
+| r3 | 183.30 | 68.43 | 1924 | 6 | 19861 | 10,740,704 | same |
+| **median** | **182.56** | **68.14** | 1924 | 6 | 19861 | 10,742,676 | same |
+| Δ vs `W12b` | +1.44 (spread 3.24) | +0.47 | 0 | 0 | 0 | -476 | — |
+
+**Judged on mark time, not on wall or total GC time.** This entry introduces the instrument the
+rest of the mark-path items should use: the **Major GC Event Log** already printed in the banner
+gives per-collection `mark` and `sweep` columns, so the quantity an item targets can be read
+directly instead of through 181 s of wall or 68 s of GC time dominated by the 1924 minor cycles.
+
+| arm | mark (median of 3) | major | sweep |
+|---|---|---|---|
+| W12b | 7713.3 ms | 8472.8 ms | 507.6 ms |
+| W12c | **7768.3 ms** | 8525.9 ms | 515.7 ms |
+
+**+55 ms of mark time across 186,597,868 marked objects = +0.29 ns per object.**
+
+> **NUMBERS CORRECTED 2026-09-23.** This entry first reported 7315.0 / 7348.3 ms. Those came from
+> an extractor that took the last six LINES of the event-log block — which is the last four
+> collections plus two footer lines counted as zero — so the first two collections (~360 ms) were
+> dropped from every arm. The extractor was applied identically to every arm, so all DELTAS and
+> all verdicts in this series are unaffected; only the absolute mark totals were understated.
+> Correct form: take the six lines following the `at(s) total mark` header. Every mark figure in
+> §6 and §7 has been recomputed. The accumulator
+does not pay for itself, and the premise is refuted: `buffer_meta_` is ~2 MB and the mark stack
+has strong per-block run locality (survivor copying groups objects by block), so that "third
+random cache line" was already resident in L1/L2. There was no miss to remove — only a branch to
+add. Reverted; it is a restructure that adds state, so the flat-deletions-ship rule does not
+apply.
+
+**Restructures are now 0 for 5** (item 24, W4, W6, W11b, W12c) against 5 for 5 flat-or-better for
+deletions, and 1 clear win for item 40 — which was a container change that REMOVED a dependent
+load rather than adding a cache.
+
+**Sizing for everything that remains, from the same banner** (W12b, r1): the six majors cost
+**8.05 s total, 7.32 s of it mark**, in a 181.12 s run — mark is 4.0 % of wall. 186.6 M objects
+popped from the mark stack ⇒ **39 ns per marked object**, which for a bitmap test plus a header
+read plus child pushes is dominated by memory latency, not instruction count. That is why
+instruction-shaving items (52 here) measure flat while a latency item (54, prefetch) still has
+headroom, and it caps ANY remaining mark-path item at well under 7.32 s.
+
+
+### W13 — item 54 (prefetch-on-grey) — **WIN on mark time, flat wall, kept**
+
+The plan's cheaper variant: issue the prefetch when an object is greyed (pushed) rather than
+building a FIFO between pop and scan. Nothing on the push path dereferences the object —
+`isInNursery`, `contains`, `blockIndexFor` and the mark bit are all side tables — so the header is
+first touched after the pop, in `markOneObject`. Two `__builtin_prefetch(obj, 0, 3)` calls, one on
+each push path. **No reordering, so emission is byte-identical by construction** (the plan's first
+trap, which the FIFO variant would have risked). Patch `step-W13.patch`; tree `try-W13`.
+
+| run | wall (s) | GC time (s) | mark (ms) | minor GC | major GC | promoted MiB | max RSS (kB) | fixed point |
+|---|---|---|---|---|---|---|---|---|
+| r1 | 178.99 | 66.71 | — | 1924 | 6 | 19861 | 10,743,636 | same |
+| r2 | 181.71 | 67.83 | 8238.1 | 1924 | 6 | 19861 | 10,741,768 | same |
+| r3 | 181.85 | 67.19 | 7504.7 | 1924 | 6 | 19861 | 10,742,504 | same |
+| drift triple | 181.57 (med) | 67.50 (med) | **7572.4** (med) | 1924 | 6 | 19861 | 10,742,964 | same |
+| **median** | **181.71** | **67.19** | **7572.4** (drift) | 1924 | 6 | 19861 | 10,742,504 | same |
+| Δ vs `W12b` | +0.59 (spread 2.86) | **-0.48** | **-140.9** | 0 | 0 | 0 | -648 | — |
+
+(Mark figures corrected — see the note in W12c. r1's artefacts were overwritten by the drift
+re-measure of this same binary, so the drift triple is quoted as this arm's mark reference; it is
+the same binary measured three times, between W12d and W13c.)
+
+Wall is FLAT (+0.59 inside the 2.86 s band) and, on the triple alone, the mark median moves -202 ms
+with a 781 ms spread — not resolvable by itself. **The per-collection columns of the Major GC Event
+Log resolve it**, because each run reports six collections and they can be paired across arms:
+
+| collection | W12b (r1/r2/r3) | W13 (r1/r2/r3) |
+|---|---|---|
+| 5th | 1832.4 / 1837.0 / 1839.4 | **1769.7 / 1791.8 / 1790.7** |
+| 6th | 3004.7 / 2989.2 / 3176.2 | **2883.6 / 2917.4 / 2887.1** |
+
+On the two collections that dominate mark time, **every W13 run beats every W12b run** — complete
+separation, six samples, no overlap. The smallest collection goes the other way (543.8/538.9/540.6
+→ 547.4/550.1/549.0, about +8 ms): prefetch overhead with nothing to hide, which is the shape the
+effect should have. r2's 2581 ms outlier on the 2nd collection is what inflates the triple's
+spread; the pairing shows it is an outlier, not the signal.
+
+Counters bit-identical, deterministic, fixed point green. **Gates:** E2E `--target check`
+**1730/1730**, heap-validate `--target check` **1730/1730**. Kept.
+
+**DISPOSITION CONFLICT, recorded because it changes the verdict.** The follow-up plan's §6 says
+*"Flat restructures do not [ship] — 52 and 54 are reverted unless they move GC time outside the
+2σ = 5.3 s band."* Item 54 moves GC time 0.48 s, far inside it, so that rule alone says revert.
+**The rule cannot apply to a mark-path item.** The 5.3 s band is the 2σ of TOTAL GC time, which is
+dominated by 1924 minor collections; the entire major-GC budget is 8.05 s and mark is 7.32 s of it,
+so no change to mark could ever move total GC time by 5.3 s. Applying that bar to W12/W13 would
+make every item in both packages unmeasurable by construction, including item 40, which won.
+Judged instead on the quantity the item targets, with six paired samples showing complete
+separation on the dominant collections. It is kept on that basis, and because it adds two
+instructions and no state: if a later reader prefers the plan's literal rule, reverting is one
+`restore keep-W12b` and costs nothing else.
+
+**This is the only latency item in the follow-up plan, and it is the only one of 38/52/54 that
+paid.** At 39 ns per marked object, mark is memory-latency-bound, so shaving instructions (52)
+measures flat while hiding a miss does not. The plan's own disposition risk — "add work to save
+misses, the class that has lost twice" — was right about the FIFO variant and wrong about
+prefetch-on-grey, because the cheap variant adds an instruction, not a data structure.
+
+
+### W12d — item 38 (`nursery_visited_` set to bitmap) — **NO WIN, reverted**
+
+Replaced `std::unordered_set<void*> nursery_visited_` with a bitmap over the calling thread's
+nursery span, one bit per `MARK_ALIGNMENT` slot. Needed two new accessors: `NurserySpace::spanBase`
+/`spanBytes` (both semi-spaces as one span, so the table does not care which side is from-space)
+and `Allocator::nurserySpan`. Patch `step-W12d.patch`; tree `try-W12d`.
+
+The plan's safety question — "if a minor GC can run during an incremental major mark, addresses
+shift and both the set and a bitmap are equally invalid" — resolves without needing the deeper
+answer: **every pointer reaching the table has already passed `Allocator::isInNursery`**, i.e.
+`contains()` on the calling thread's nursery, so it is in that thread's span by construction, and
+both structures key on raw addresses, so the bitmap is exactly as valid as the set and no more.
+The hazard is pre-existing and unchanged.
+
+| run | wall (s) | GC time (s) | mark (ms) | minor GC | major GC | promoted MiB | max RSS (kB) | fixed point |
+|---|---|---|---|---|---|---|---|---|
+| r1 | 182.26 | 68.14 | 7958.8 | 1924 | 6 | 19861 | 10,693,732 | same |
+| r2 | 180.47 | 67.78 | 8065.3 | 1924 | 6 | 19861 | 10,697,820 | same |
+| r3 | 180.91 | 67.87 | 7904.6 | 1924 | 6 | 19861 | 10,697,572 | same |
+| **median** | **180.91** | **67.87** | **7958.8** | 1924 | 6 | 19861 | **10,697,572** | same |
+| Δ vs `W13` | -0.80 (spread 1.79) | **+0.68** | **+386.4** | 0 | 0 | 0 | **-44,932** | — |
+
+(Mark figures corrected — see the note in W12c. W13's mark reference is its drift triple, 7572.4 ms
+median, because the FIFO comparison and this one share it.)
+
+**It slowed mark by 5.1 % — the quantity it exists to speed up.** Wall moved -0.80 s, inside the
+band and therefore FLAT and uninformative; GC time and mark time both went the wrong way, and the
+per-collection pairing agrees (W12d is slower on the 1st, 2nd and 4th collections, a wash on the
+3rd).
+
+**Why: the visited set is SPARSE against the span it is indexed over.** The nursery reached 256 MB,
+so the two-semi-space span is ~512 MB and its bitmap is ~8 MB — touched at random, one bit per live
+nursery object. The `unordered_set` allocated only as many nodes as there were distinct live
+nursery objects and kept them in a much smaller working set. Replacing a sparse structure with a
+dense one over a large address range trades a hash for a cache miss, and here the hash was cheaper.
+This is the mirror image of item 40, where the dense structure won because it was ALREADY dense
+(one bit per 8 bytes of a fully-occupied block) and the change only removed a level of indirection.
+
+**Banked finding: max RSS is 45 MB lower with the set gone.** That is real and outside RSS noise
+(~4 MB across the triple) — it is the set's node allocations. By the letter of §4's second rule
+(wall did not increase, max RSS improved) this scores as a WIN; it is NOT kept, because this series
+makes GC time the primary stat and the item regresses both GC time and the mark time it targets.
+A future attempt that wants those 45 MB should pursue an arena-allocated or open-addressed set
+rather than a span-wide bitmap — keeping the structure sparse is the property that matters.
+
+**Consequence for parallel marking:** working-list #60 (per-worker visited bitmaps) inherits this
+result. Per-worker bitmaps over a 512 MB span would multiply the 8 MB working set by the worker
+count. #60 needs a different design, and item 38 should not be cited as its prerequisite.
+
+
+### W14 — items 42, 45, 46 — **ALL THREE CLOSED UNBUILT, on arithmetic**
+
+The follow-up plan's own sequencing says of this package: *"independent; lowest value, do last or
+not at all"*, and for item 46 it says outright *"leave closed unless the header is being reworked
+anyway."* The measurements this series produced turn "lowest value" into a number, so the closure
+is recorded with its ceiling rather than as a judgement call.
+
+**The ceiling.** The Major GC Event Log accounts for 100 % of major-GC time — across all three
+W13 runs, `total - mark - sweep - roots` is 0.1 ms. So on the kept tree:
+
+| bucket | per run (6 collections, W13 drift triple) | % of 181.71 s wall |
+|---|---|---|
+| mark | 7525.9 / 7694.9 / 7572.4 ms | 4.2 % |
+| **sweep** (contains ALL block release and reclaim) | **497.0 / 510.8 / 511.6 ms** | **0.28 %** |
+| roots | 249.2 / 258.4 / 253.9 ms | 0.14 % |
+
+**Item 42** (stop scanning all of `large_body_index_` per released block) targets
+`releaseBlockToAllocator`, which is called from `reclaimAllDeadBlocksFromMeta` and
+`maybeShrinkCapacity` — both inside that 491 ms sweep bucket. Its worst case is real but small:
+the largest collection recovers 5007 MB, so at 512 KiB per block roughly 10 K releases, each
+walking an index whose size is bounded by live split-header bodies. Even a generous 10 M map
+iterations lands around 50-100 ms per RUN, i.e. **~0.05 % of wall**, against a sweep-column
+resolution of ~10 ms. It is also a restructure (it adds a per-block `vector<LargeBodyId>`), so the
+flat-deletions-ship rule does not cover it, and the code it touches carries a documented past
+corruption (`OldGenSpace.cpp:3271-3288`, `bugs/C-lot-8K-alignment-investigation.md` v15) whose
+cleanup must be preserved exactly. Bad trade: single-digit-millisecond upside, heap-corruption
+downside.
+
+**Item 45** (index the empty-block search) is the one item here outside the GC buckets — the
+`for (size_t i = 0; i < blocks_.size(); ++i)` scan at `:1421` runs per LARGE allocation, in mutator
+time. Scale: the old gen peaks at 9818.70 MB, so ~20 K blocks; large allocations are rare
+(`Lg-body sweep runs: 358` per run). A few thousand scans of 20 K entries is tens of milliseconds,
+same order as 42. The plan already names the real cost — "the risk is keeping the index coherent
+across sweep, release and the `is_large` flip" — and this series has now twice paid for exactly
+that class of coherence bug (W11b's `marks_dirty_`, item 40's second removal path, which was only
+caught because the count assertion fired).
+
+**Item 46** (remove per-object large-body map lookups) stays closed for the reason the plan gives:
+the natural fix wants a `LargeBodyId` in `Header`, which means claiming ~15 bits of
+`Header.refcount` plus an overflow sentinel — and that **collides with working-list item 32**,
+closed by arithmetic in the parent loop. If those bits are ever split, it should be done once,
+deliberately, for both consumers, as a header change with its own plan. Not a constant-factor step.
+
+**Net:** the three W14 items together are bounded by well under 1 % of wall, all three ADD an index
+or a header field rather than deleting a scan, and two of the three sit on paths with a documented
+corruption history. Closing them is the disposition the plan anticipated.
+
+
+### Series drift check — **NO DRIFT; all intervening deltas stand**
+
+The protocol's closing requirement (§1, Phase 0): the last kept compiler measured again, to test
+whether the machine moved under the series. `bin/eco-optW13` re-run as a fresh triple after the
+final step.
+
+| stat | recorded at W13 | drift re-measure | Δ |
+|---|---|---|---|
+| wall (s) | 181.71 | **181.57** | **-0.14** |
+| GC time (s) | 67.19 | 67.50 | +0.31 |
+| minor / major | 1924 / 6 | 1924 / 6 | identical |
+| promoted MiB | 19861 | 19861 | identical |
+| max RSS (kB) | 10,742,504 | 10,742,964 | +460 |
+| out.mlir | 13,241,185 | 13,241,185 | identical |
+
+Wall agrees to **0.14 s** and RSS to **0.5 MB** against triples taken up to three hours apart; the
+counters are exact, and determinism and fixed point are green. The machine did not drift, so the
+per-step deltas recorded above are sound.
+
+Worth noting against §1's warning about inter-triple drift (±5 s, which is why the interleaved form
+existed): the observed drift across this whole session was **0.14 s**. That does not retire the
+warning — one clean check is not a distribution — but on this box, on this day, the plain-triple
+form was not the limiting factor. What limited the last four items was that their target is 4 % of
+wall, which no wall-based form can resolve; the event log is what resolved them.
+
+
+### W13c — item 54, FIFO variant (depth 16) — **WIN, kept; supersedes prefetch-on-grey**
+
+Built at the user's request after W13 shipped the cheap variant, and with the byte-identity gate
+explicitly relaxed ("so long as all tests pass"). It did not need the relaxation — see below.
+
+**Change.** The handbook's recipe (`gc_handbook/02-mark-sweep.md §2.6`), replacing the two
+prefetch-on-grey hints rather than stacking with them, so the delta reads FIFO **against** on-grey.
+A 16-entry ring sits between the mark stack and the scan: `incrementalMark` pops entries into the
+ring and prefetches each on the way in, then scans the entry that falls out the far end. Patch
+`step-W13c.patch`, 86 lines; tree `try-W13c`.
+
+**The one real hazard, and it is a live-object hazard.** `incrementalMark` signals completion with
+`!mark_stack.empty()`. An entry left in the ring when the function returns is never scanned, its
+children are never marked, and live objects are swept. The ring is therefore drained
+unconditionally before every return, overshooting `work_units` by at most `MARK_FIFO_DEPTH-1`
+objects. Making the ring a member and reporting `!mark_stack.empty() || count > 0` would also work;
+the local-plus-drain form is smaller and has no cross-call state to get wrong.
+
+| run | wall (s) | GC time (s) | mark (ms) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|
+| r1 | 180.08 | 66.46 | 6746.0 | 1924 | 6 | 19861 | 10,743,168 | 13,241,185 | same |
+| r2 | 180.58 | 66.70 | 6807.6 | 1924 | 6 | 19861 | 10,743,568 | 13,241,185 | same |
+| r3 | 178.26 | 66.00 | 6782.8 | 1924 | 6 | 19861 | 10,743,276 | 13,241,185 | same |
+| **median** | **180.08** | **66.46** | **6782.8** | 1924 | 6 | 19861 | 10,743,276 | 13,241,185 | same |
+| Δ vs `W13` (on-grey) | **-1.63** | **-0.73** | **-789.6 (-10.4 %)** | 0 | 0 | 0 | +772 | 0 | — |
+| Δ vs `W12b` (no prefetch) | **-1.04** | **-1.21** | **-930.5 (-12.1 %)** | 0 | 0 | 0 | +124 | 0 | — |
+
+**Gates:** E2E `--target check` **1730/1730**; heap-validate **1730/1730** with the pinned seed
+`1790156644220971348` (the unpinned run hit the known HEAP_044 0-field `Tag_Custom` generator flake
+— pre-existing, recorded in W1b); stress suite under `heap-config-gc-pressure.json` **100/100 at
+1,263 minor GC cycles**. Counters bit-identical, deterministic across all three legs.
+
+**The output is byte-identical, so the plan's central worry about this variant is refuted.** The
+plan warned that the FIFO "changes traversal order ... and therefore possibly `out.mlir`", and made
+that a reason to prefer on-grey. It cannot: Elm exposes no pointer identity, so nothing the
+compiler computes can depend on the order in which the collector traces a graph. Mark order is
+invisible to emission by language semantics, not by luck. The byte-identity gate was available to
+be spent here and did not need to be.
+
+**Why the FIFO beats on-grey by 5x.** Both issue the same number of prefetches; the difference is
+distance. The mark stack is LIFO, so on-grey's hint lands 1 object ahead for the last child pushed
+and an unbounded number ahead for the first — a smear of distances, most of them too short to
+cover a DRAM miss. The ring fixes the distance at 16 objects of real scanning work, which at
+41.3 ns per object is ~660 ns of cover — comfortably more than a miss. **Distance, not hint count,
+was the variable.**
+
+**It is not uniform, and the exception is informative.** Per-collection mark (all three runs):
+
+| collection | W13 on-grey | W13c FIFO | Δ |
+|---|---|---|---|
+| 2nd | 318.1 / 327.3 / 318.8 | 280.3 / 282.7 / 282.9 | **-12 %** |
+| 3rd | 553.2 / 568.1 / 552.1 | 455.8 / 458.7 / 457.4 | **-17 %** |
+| 4th | 1886.6 / 1947.5 / 1892.5 | 1994.8 / 2009.3 / 2011.5 | **+6 %** |
+| 5th | 1788.2 / 1814.6 / 1789.0 | 1395.5 / 1400.9 / 1397.1 | **-22 %** |
+| 6th | 2904.7 / 2962.3 / 2940.8 | 2540.3 / 2576.0 / 2553.9 | **-13 %** |
+
+Four collections improve by 12-22 %; the 4th is consistently 6 % WORSE, in all three runs against
+all three. That collection is the one with the smallest heap-to-live ratio in the event log
+(2336.5 MB before, 1599.9 MB after — 68 % survives, against 19-30 % for the others). When most of
+what you trace is live and densely connected, the lines are already resident and the ring's extra
+copy, modulo and branch are pure overhead — the same shape as on-grey's +8 ms on the smallest
+collection, and the same lesson as item 38: **prefetching pays in proportion to the miss rate, so a
+phase with no misses can only lose.** A depth that adapts to survival ratio is the obvious follow-up
+and is NOT built here.
+
+Also worth noting: W13c's mark spread is **61 ms** across three runs against W13's 733 ms. Fixing
+the prefetch distance fixed the variance too.
+
+**What this -930.5 ms is actually made of** (measured later, W13f): the ring's interleaving costs
+**+4841.2 ms** of mark on its own, and the prefetch buys back **-5771.7 ms**. This is not a small
+local optimization; it is a 63 % regression paired with a larger recovery, and the two are
+coupled. If the prefetch stops working — other hardware, a compiler that drops the hint, a
+workload whose objects are already resident — the collector does not degrade to the old
+behaviour, it degrades to something far worse. Read W13f before porting or re-tuning this.
+
+
+### W13d — item 54 FIFO depth sweep (4 / 8 / 16 / 32 / 64) — **16 confirmed optimal**
+
+Requested after W13c shipped at depth 16, to find whether the handbook's suggested start was
+actually the sweet spot. Five candidates, each its own build + lowering + cold triple, all with
+IDENTICAL code shape so the only variable is distance. Reference points: **no prefetch (W12b)
+7713.3 ms**, **prefetch-on-grey (W13) 7572.4 ms**.
+
+| depth | mark medians (3 runs, ms) | median | vs no prefetch | wall (med) | GC (med) |
+|---|---|---|---|---|---|
+| 4 | 9738.6 / 9363.3 / 9492.1 | **9492.1** | **+1778.8 (+23.1 %)** | 184.68 | 69.87 |
+| 8 | 7269.8 / 7267.2 / 7393.5 | 7269.8 | -443.5 (-5.8 %) | 182.29 | 67.19 |
+| **16** | 6880.2 / 6770.6 / 6897.6 | **6880.2** | **-833.1 (-10.8 %)** | 181.65 | 67.00 |
+| 32 | 6947.5 / 6945.2 / 6972.6 | 6947.5 | -765.8 (-9.9 %) | 182.56 | 67.59 |
+| 64 | 7043.8 / 7058.0 / 7106.0 | 7058.0 | -655.3 (-8.5 %) | 180.21 | 66.84 |
+
+All five deterministic, all five byte-identical output, counters bit-identical throughout.
+
+> **RESOLUTION CORRECTION (W13h).** Mark-time SD is 79.8 ms, so with n=3 anything under ~200 ms is
+> not resolvable. Depths 4 (32.7 SD) and 8 (4.9 SD) are clearly worse; **16, 32 and 64 are
+> statistically indistinguishable** (67 ms = 0.8 SD, and 178 ms = 2.2 SD). The top of this curve
+> is a PLATEAU, not a point. 16 is still the right choice — smallest depth on the plateau, so the
+> smallest L1 footprint — but on parsimony, not on a measured optimum over 32.
+
+So **the shipped depth is right**, and the tree keeps it. Wall does not discriminate (178-185 s across the sweep); mark does, and its
+within-depth spread is 30-375 ms against between-depth gaps of 70-2200 ms.
+
+**DEPTH 4 IS WORSE THAN NOT PREFETCHING AT ALL (+23 %), and that is the finding.** The prediction
+going in — from 41.3 ns of mark work per object, depth 4 buys ~165 ns of cover against a ~90 ns
+miss, so the knee should be at 2-3 and everything above flat — was wrong, and wrong in the specific
+way named in advance as its falsifier.
+
+**The arithmetic double-counted.** 41.3 ns/object is the average INCLUDING the stall the prefetch
+exists to hide. The issue-to-use distance is the NON-stall work, ~10-15 ns/object, so depth 4 buys
+only ~50 ns — the line is still in flight when it is needed. Depth 8 buys ~100 ns, about one miss,
+and lands 390 ms behind 16. Depth 16 buys ~190 ns, enough for the miss plus queueing. **When
+sizing a prefetch distance, divide by the work that ISN'T the miss.**
+
+**It also exposes a fixed cost that the depth-16 result alone concealed.** The ring trades the mark
+stack's depth-first locality (children scanned near their parents, which for a copying collector
+means near in address too) for an interleaved frontier of DEPTH partial traversals. That cost is
+paid at every depth. At 4 it is paid for nothing, so the +1.8 s over no ring is a LOWER BOUND on
+the cost at that depth — not a measurement of it, since a too-late prefetch still overlaps part of
+its miss. So W13c's win is a NET of a large penalty against a larger win, not a
+pure gain — **measured in W13f: the ordering cost is +4841.2 ms (+62.8 %) and the prefetch benefit
+-5771.7 ms**, reconciling to the -930.5 ms measured here. Worth knowing before anyone extends the
+ring idea elsewhere in the collector.
+
+The upper end behaved as predicted: 32 and 64 are only mildly worse (+67 / +178 ms against 16),
+consistent with the core running out of line-fill buffers — no more than ~10-16 misses can be in
+flight regardless of ring size — plus growing L1 pressure at 64, where the ring alone holds 4 KiB
+of prefetched lines.
+
+**Shipped guard.** `MARK_FIFO_DEPTH` now carries the sweep table in a comment and a
+`static_assert` that it is a power of two: the ring index is `% MARK_FIFO_DEPTH`, which is a mask
+while that holds and a real DIVISION on mark's hottest path otherwise. (The sweep itself ran a
+branch-wrap form, `if (++tail == D) tail = 0;`, so that a non-power-of-two depth could have been
+measured fairly had one been wanted; at 16 the two forms measure the same within noise, and the
+kept tree uses the mask.) Verified codegen-neutral, but NOT by the whole-file `cmp` I
+first reached for: that reported 6.46 MB differing, all past byte 70 M. Adding ~25 lines of comment
+shifts every later line number in the header, so in a RelWithDebInfo build the DWARF line tables
+move even though nothing executable does. The check that answers the question compares the CODE:
+`.text` hashes identically between `eco-optW13d` and the measured, gated `eco-optW13c`, and so does
+each whole image with `--strip-debug` applied. So W13c's triple and its three gates stand unchanged
+and no re-measurement is owed. **A whole-file `cmp` is the wrong instrument for "did this comment
+change the binary" whenever debug info is on** — it answers a strictly stronger question than the
+one being asked, and answers it "no" for reasons that do not matter.
+
+
+### W13e — FIFO as a worklist member (the handbook's structure) — **NO WIN, reverted**
+
+The handbook models the prefetch FIFO as a field of `MarkWorklist`, drained only when the stack
+runs dry (`design_docs/gc_handbook/02-mark-sweep.md` §2.6). W13c made it a LOCAL of
+`incrementalMark`, drained before every return, because an entry left in flight would never be
+scanned and live objects would be swept. `incrementalMark` is called **186,601 times** per
+self-compile, so that local ring ramps from empty and drains at every call boundary: ~16 objects
+per call at less than the full prefetch distance, about 3 M objects or 1.6 % of all marking. This
+step persisted the ring across calls, as the handbook has it. Patch `step-W13e.patch`, 109 lines;
+tree `try-W13e`.
+
+Correctness work, since "the stack is empty" stops meaning "marking is done": the early-out, the
+return value, and both reset points (`startMark` and `reset`) all had to account for in-flight
+entries. `finishMarkAndSweep`'s `while (incrementalMark(1000, stats))` is the only caller.
+
+| run | wall (s) | GC time (s) | mark (ms) | minor GC | major GC | promoted MiB | max RSS (kB) | fixed point |
+|---|---|---|---|---|---|---|---|---|
+| r1 | 182.97 | 67.95 | 7077.4 | 1924 | 6 | 19861 | 10,744,376 | same |
+| r2 | 179.52 | 66.83 | 7001.5 | 1924 | 6 | 19861 | 10,743,432 | same |
+| r3 | 179.23 | 66.73 | 6993.1 | 1924 | 6 | 19861 | 10,743,272 | same |
+| **median** | **179.52** | **66.83** | **7001.5** | 1924 | 6 | 19861 | 10,743,272 | same |
+| Δ vs `W13c` | -0.56 (spread 3.74) | +0.37 | **+218.7 (+3.2 %)** | 0 | 0 | 0 | +768 | 0 |
+
+E2E `--target check` **1730/1730**, deterministic, fixed point green, counters bit-identical.
+**Mark got 218.7 ms SLOWER**, so the ramp-loss theory was right about the mechanism and wrong about
+the sign of the net.
+
+**Why the handbook's structure loses here: C++ aliasing across a non-inlined call.** As locals,
+`head`, `tail` and `count` have addresses that never escape, so the compiler keeps them in
+registers across the whole drain loop. As members they are reached through `this`, and
+`markOneObject` — a non-inlined call that also writes members — could modify them for all the
+compiler knows, so they must be reloaded and re-stored around every iteration. At 186.6 M objects,
++218.7 ms is **+1.17 ns per object**, which is about what a reload/store pair costs. The 1.6 %
+ramp saving is real but smaller than the register-allocation tax it pays for.
+
+**The synthesis was built as W13g and it LOST.** The prediction here — that a
+`markToCompletion()` draining stack and ring in one call with a LOCAL ring would get the register
+allocation and lose the ramp, and so beat both arms — is **refuted**: it measured 6877.1 ms,
+94.3 ms WORSE than W13c. The ramp is not a cost to remove; draining the ring periodically
+partially restores depth-first order, which matters because W13f showed the ordering effect
+(+4841 ms) dwarfs everything else here. See W13g. The remainder of this paragraph is kept as
+written because the reasoning was wrong in an instructive way. It needs the `Incremental marks`
+stat kept meaningful (increment per 1000 units rather than per call) and is only safe while no
+caller wants to interleave work with marking — which is true today but is exactly what
+incremental marking exists to allow. Recorded as the open follow-up.
+
+
+### W13f — ring with prefetch REMOVED (diagnostic, not a candidate) — **the ordering cost, measured**
+
+Built to settle a claim this file was carrying as inference: that the FIFO ring trades the mark
+stack's depth-first locality for an interleaved frontier, and that W13c's win is a NET of that cost
+against a larger prefetch benefit. The W13d entry could only bound the cost from below (via depth
+4) because a too-late prefetch still overlaps part of its miss. This arm removes the single
+`__builtin_prefetch` and changes nothing else, so the ordering change is measured with ZERO
+prefetch benefit. Tree `try-W13f`; **reverted immediately after measuring — it is not a shipping
+configuration.**
+
+| run | wall (s) | GC time (s) | mark (ms) | minor GC | major GC | promoted MiB | max RSS (kB) | fixed point |
+|---|---|---|---|---|---|---|---|---|
+| r1 | 187.66 | 73.29 | 12661.4 | 1924 | 6 | 19861 | 10,742,840 | same |
+| r2 | 188.29 | 73.29 | 12533.6 | 1924 | 6 | 19861 | 10,743,048 | same |
+| r3 | 185.22 | 72.08 | 12554.5 | 1924 | 6 | 19861 | 10,743,216 | same |
+| **median** | **187.66** | **72.08** | **12554.5** | 1924 | 6 | 19861 | 10,743,048 | same |
+
+**The decomposition, and it closes exactly:**
+
+| configuration | mark (median) | vs no ring |
+|---|---|---|
+| no ring at all (W12b) | 7713.3 ms | — |
+| ring, no prefetch (W13f) | **12554.5 ms** | **+4841.2 (+62.8 %)** |
+| ring + prefetch, depth 16 (W13c) | 6782.8 ms | -930.5 (-12.1 %) |
+
+Ordering cost **+4841.2 ms**, prefetch benefit **-5771.7 ms**, net **-930.5 ms** — and -930.5 is
+exactly W13c's independently measured delta against W12b. Two separately measured quantities
+reconciling to the digit is the strongest evidence in this series that the model is right.
+
+**The ring is a much bigger bet than the shipped number suggests.** Interleaving 16 traversal
+strands makes marking **63 % slower** on its own. The prefetch then wins back all of that and 12 %
+more. Anyone reading "-930 ms, keep it" without this entry would reasonably assume a small, safe,
+local change; it is in fact a large regression paired with a larger recovery, and the two are
+coupled — degrade the prefetch (different hardware, a compiler that drops the hint, a workload
+whose objects are already cached) and the collector does not fall back to the old behaviour, it
+falls back to something 63 % worse.
+
+**This also corrects two earlier statements in this file.** W13d said depth 4's +1778.8 ms was a
+LOWER BOUND on the ordering cost; at depth 16 the cost is 4841.2 ms, so that bound was very loose
+(as expected — fewer strands, less damage). And W13c's "-833 ms is a net of a large penalty against
+a larger win" is now quantified rather than asserted.
+
+Per-collection (r1), ring-without-prefetch against no ring — worse everywhere, 45-90 %:
+
+| collection | c1 | c2 | c3 | c4 | c5 | c6 |
+|---|---|---|---|---|---|---|
+| live after | 100 % | 52 % | 33 % | 68 % | 19 % | 32 % |
+| no ring | 79.9 | 318.4 | 543.8 | 1934.1 | 1832.4 | 3004.7 |
+| ring, no prefetch | 151.3 | 501.0 | 831.7 | 3644.9 | 2652.1 | 4880.4 |
+| ratio | **1.89x** | 1.57x | 1.53x | **1.88x** | 1.45x | 1.62x |
+
+The two densest collections (c1 at 100 % live, c4 at 68 %) lose the most, which is what the
+mechanism predicts: the denser and more connected the surviving graph, the more parent-child
+adjacency a depth-first walk gets for free, and the more there is to destroy by interleaving. The
+handbook says the same thing from the other direction (`06-comparing.md`): prefetching helps most
+"when the proportion of live data in the heap is small".
+
+
+### W13g — `markToCompletion` (single drain, local ring) — **NO WIN, reverted; refutes the ramp theory**
+
+W13e's entry predicted this would beat both measured arms: keep the ring in LOCALS (so
+head/tail/count stay in registers, which W13e lost) AND drain the stack in one call (so the ring
+ramps once per collection instead of once per `incrementalMark`, which W13c pays). Built exactly
+that: `markToCompletion()` replacing `while (incrementalMark(1000, stats)) {}` in BOTH
+`finishMarkAndSweep` variants — the ENABLE_GC_STATS one and the plain one, which would otherwise
+have silently diverged between build configurations. The `Incremental marks` / `Total work units`
+counters are preserved by emitting the stats macro on the same 1000-unit cadence; both came out
+**identical to W13c** (183,865 and 186,597,868), so the change is invisible to the banner.
+Patch `step-W13g.patch`, 116 lines; tree `try-W13g`.
+
+| run | wall (s) | GC time (s) | mark (ms) | minor GC | major GC | promoted MiB | max RSS (kB) | fixed point |
+|---|---|---|---|---|---|---|---|---|
+| r1 | 183.15 | 67.88 | 6994.2 | 1924 | 6 | 19861 | 10,740,948 | same |
+| r2 | 181.54 | 67.23 | 6877.1 | 1924 | 6 | 19861 | 10,741,472 | same |
+| r3 | 181.57 | 66.83 | 6854.7 | 1924 | 6 | 19861 | 10,743,104 | same |
+| **median** | **181.57** | **67.23** | **6877.1** | 1924 | 6 | 19861 | 10,741,472 | same |
+| Δ vs `W13c` | +1.49 (spread 1.61) | +0.77 | **+94.3** | 0 | 0 | 0 | -1,804 | 0 |
+
+E2E `--target check` **1730/1730**, deterministic, fixed point green, counters bit-identical.
+**It is 94.3 ms SLOWER than W13c**, and the three arms rank cleanly with no overlap between
+adjacent distributions:
+
+| arm | ring lives in | ramps | mark (median) |
+|---|---|---|---|
+| **W13c (shipped)** | locals, per call | **once per ~1000 objects** | **6782.8 ms** |
+| W13g | locals, one call | once per collection | 6877.1 ms |
+| W13e | members, across calls | never | 7001.5 ms |
+
+> **RETRACTED by W13h (see below).** The +94.3 ms this entry reports is 1.2 SD of mark-time
+> run-to-run variability (SD = 79.8 ms, measured over 12 runs of four indistinguishable arms), so
+> it is NOT resolvable with n=3. The two triples not overlapping was luck — W13c's spread was
+> 61.6 ms against a typical 126-165 ms. W13h then swept the drain interval over 64-4096 and found
+> it FLAT, so the mechanism proposed below is unsupported. The entry is kept as written because
+> the error is instructive: I built a mechanism on a 1.2 SD difference without an estimate of SD.
+
+**The per-call ramp is not a cost. It is a benefit, and the ranking is monotone in how OFTEN the
+ring drains.** That refutes the theory in W13e's entry, which this entry replaces: W13e's
++218.7 ms is NOT "register tax minus ramp saving", because removing the ramp entirely (W13g) does
+not help — it hurts. W13e's regression is the register/aliasing tax alone, and the ramp is worth a
+further ~94 ms on top.
+
+**Why draining helps, consistent with W13f.** W13f measured the ring's ordering cost at +4841 ms —
+interleaving 16 strands is by far the largest single effect in this whole area, and the prefetch
+only just outruns it. Anything that partially restores depth-first order is therefore valuable.
+Draining the ring does exactly that: when it empties, the next 16 entries are popped from one
+contiguous region of the stack top — the most recently pushed children, spatially clustered — so
+each drain re-synchronises the ring with the stack's locality before the strands diverge again.
+A ring that never drains sits permanently in the maximally-interleaved state.
+
+**Follow-up this opens (NOT built):** if draining every ~1000 objects beats draining every ~65 M
+(W13g) and never (W13e), the drain interval is a tunable in its own right, and 1000 is an accident
+— it is `finishMarkAndSweep`'s work_unit budget, chosen for pause control that nothing uses. A
+sweep over an explicit drain interval (say 64 / 256 / 1000 / 4096) is the obvious next experiment,
+and it is independent of `MARK_FIFO_DEPTH`. My guess is now worth little here: the two structural
+predictions I made in this area (depth 4 flat, ramp costly) were both wrong, and both times the
+ordering effect was larger than the latency effect.
+
+
+### W13h — drain-interval sweep (64 / 256 / 1024 / 4096) — **FLAT, reverted; and it measures the noise floor**
+
+Built to test W13g's explanation, that the three ring variants ranked by how often the ring drains.
+`MARK_DRAIN_INTERVAL` was made explicit — a single-call drain loop that empties the ring every N
+scanned objects, with the ring still in LOCALS (W13e priced making it a member at +218.7 ms) and
+the stats cadence pinned at 1000 so the banner stays comparable. Separating the drain from the
+call boundary matters: sweeping via `incrementalMark(N)` would have confounded the interval with
+call frequency, since N=64 would also mean 2.9 M calls instead of 186 K. Patch `step-W13h.patch`;
+tree `try-W13h`. E2E `--target check` 1730/1730; all four arms deterministic, fixed point green,
+`Incremental marks` 183,865 and `Total work units` 186,597,868 identical in every arm.
+
+| interval | mark (ms, 3 runs) | median | within-arm spread |
+|---|---|---|---|
+| 64 | 6772.1 / 6898.0 / 6784.0 | 6784.0 | 125.9 |
+| 256 | 7006.3 / 6890.9 / 6867.6 | 6890.9 | 138.7 |
+| 1024 | 6830.3 / 6735.5 / 6881.5 | 6830.3 | 146.0 |
+| 4096 | 6761.2 / 6925.9 / 6794.9 | 6794.9 | 164.7 |
+
+**Between-arm range 107 ms; within-arm spreads 126-165 ms.** Across a 64x range of intervals the
+variation BETWEEN configurations is smaller than the variation WITHIN one. There is no effect.
+Reverted: a flat restructure that adds a tunable constant does not ship.
+
+**The real result is the noise floor.** Four arms that are statistically indistinguishable are
+twelve independent samples of the same quantity, which is the first proper estimate of mark-time
+variability this series has had:
+
+> **mark time, 12 runs: mean 6845.7 ms, SD 79.8 ms. SE of a 3-run median ≈ 46 ms.**
+> **With n=3, differences below ~200 ms (2.5 SD) are NOT resolvable.**
+
+Applying that to every mark-time claim in this file:
+
+| claim | delta | in SD | verdict |
+|---|---|---|---|
+| ring without prefetch (W13f) | 5771.7 ms | 72.3 | solid |
+| depth 4 vs 16 (W13d) | 2611.9 ms | 32.7 | solid |
+| depth 8 vs 16 (W13d) | 389.6 ms | 4.9 | solid |
+| item 38 bitmap (W12d) | 386.4 ms | 4.8 | solid |
+| FIFO as member (W13e) | 218.7 ms | 2.7 | borderline, has a mechanism |
+| depth 64 vs 16 (W13d) | 177.8 ms | 2.2 | **NOT resolvable** |
+| **W13g single-drain** | **94.3 ms** | **1.2** | **NOT resolvable — RETRACTED** |
+| depth 32 vs 16 (W13d) | 67.3 ms | 0.8 | **NOT resolvable** |
+| item 52 accumulator (W12c) | 55.0 ms | 0.7 | NOT resolvable (disposition unchanged: no evidence of benefit) |
+
+**Two earlier conclusions are retracted.** W13g's +94.3 ms was reported as real because the two
+triples did not overlap — W13c's happened to be unusually tight (spread 61.6 ms against a typical
+126-165 ms). Three runs are not enough to establish non-overlap as significance, and this sweep
+shows the drain interval has no effect over 64-4096 anyway, so the mechanism W13g proposed — that
+drains re-synchronise the ring with the stack's locality — is unsupported. What remains true is
+that W13e (member ring) is slower, at 2.7 SD with an independent explanation in C++ aliasing.
+
+And W13d's "clean U with the minimum at 16 and monotone degradation either side" **overstated the
+resolution at the top end.** What the data supports: depths 4 and 8 are clearly worse, and 16, 32
+and 64 are statistically indistinguishable — a PLATEAU, not a point. 16 remains the right choice
+because it is the smallest depth on the plateau and therefore the smallest L1 footprint, but the
+justification is parsimony, not a measured optimum over 32.
+
+**Method note for the rest of this series.** Mark time is a much better instrument than wall or
+total GC time, but it is not exact, and three runs buy ~200 ms of resolution. Anything smaller
+needs more runs, paired per-collection comparison (which is what actually carried W13's verdict),
+or a different instrument. The per-collection pairing remains the strongest tool here: it yields
+six matched samples per run instead of one, and it was already the basis on which W13 and W13c
+were decided.
+
+
 ## 7. Findings
 
 (What this series learns, separated from the per-step records so the entries stay to ten lines.
@@ -884,6 +1732,12 @@ SURVIVOR COPYING, and with `gcdef` (a pure policy change: promote sooner, smalle
 majors) having bought **-30 s** where eleven packages of constant-factor work bought ~4 s of GC time.
 **The next real win is algorithmic — parallel marking (working-list #57-63), which W8 item 40
 gates — not another constant-factor pass.**
+
+> **AMENDED 2026-09-23 by W1/W1b.** That conclusion was drawn with W8 unbuilt and W1 still on
+> the table, and W1 then bought **-14.54 s of GC time** — three and a half times what these
+> eleven packages bought between them — by deleting a bulk memset rather than tightening a
+> loop. Read "the bound is small" as "unmeasured", not "closed". The eleven never-built items,
+> item 40 among them, are lowered in `plans/gc-mark-and-bookkeeping-followup.md`.
 
 ### Entry W1 — per-site nursery zeroing, retiring the bulk to-space memset (WIN, KEPT)
 
@@ -1027,8 +1881,68 @@ cycles with a demonstrated positive control.
    `Tag_Custom` (HEAP_044 forbids it) and aborts in the from-space pre-walk — pre-existing.
    Gate with `--seed 1790156644220971348`.
 
+### The instrument for any mark-path item is the Major GC Event Log, not GC time
+
+Established at W12c and used for every item after it. The banner already prints one row per major
+collection with `total`, `mark`, `sweep` and `roots` columns, and on this tree those four account
+for 100 % of major-GC time (`total - mark - sweep - roots` = 0.1 ms across three runs). That gives
+three properties the protocol's headline stats do not:
+
+1. **It isolates the target.** Total GC time is 67 s dominated by 1924 minor collections; mark is
+   7.7 s. An item that moves mark by 3 % moves total GC time by 0.3 %, which no triple can resolve.
+2. **It gives six paired samples per run instead of one number.** Collections can be compared
+   pairwise ACROSS arms (collection 4 of arm A against collection 4 of arm B), which controls for
+   the fact that the six collections differ hugely in size — 543 ms to 3004 ms. W13 was decided
+   this way: complete separation on the two dominant collections, with an outlier visible as an
+   outlier rather than as spread.
+3. **It prices the remaining work before you build it.** `markunits` (186,597,868 objects popped)
+   over 7.71 s of mark gives **41.3 ns per marked object** — which is memory latency, not instruction
+   count, and that single number predicted all three W12/W13 outcomes correctly in hindsight:
+   instruction-shaving lost (52), a dense-structure swap lost (38), removing a dependent load won
+   (40), and hiding a miss won (54).
+
+**Corollary for the disposition rule.** The follow-up plan's §6 says flat restructures are reverted
+"unless they move GC time outside the 2σ = 5.3 s band". No mark-path item can ever do that, since
+all of major GC is 8 s. Applying that bar literally would have reverted item 40 as well. The band
+belongs to the wall/GC-time columns of the parent loop; per-bucket items need per-bucket evidence.
+
+### Dense beats sparse only when the data is already dense
+
+Items 40 and 38 are the same shape — replace a pointer-chasing container with a flat bitmap — and
+they went opposite ways. 40 won because old-gen mark bits are already dense (one bit per 8 bytes of
+an occupied block) and the change only removed a level of indirection from a structure that was
+going to be touched anyway. 38 lost because `nursery_visited_` is SPARSE: a handful of live nursery
+objects scattered over a 512 MB span, so a span-wide bitmap is an 8 MB working set touched at
+random where the hash set's working set was proportional to the live count. **Occupancy, not
+container type, decides it** — and occupancy is measurable before building.
+
+### Every plan premise that could be checked by reading was worth checking
+
+Four of eleven items had a premise that did not survive contact with the tree, and in three cases
+the plan stated a specific line number or count that was wrong in a way that would have caused a
+defect, not just a miss:
+
+- **Item 43:** "exactly ONE write site, `:2407`" — that site writes an UNLINKED trailing cell; the
+  linked one is `:2341`. Counting at the stated site would have made the counter read zero while
+  sentinels sat on the lists, and the walk would have been skipped.
+- **Item 40:** the trap list names `releaseBlock`'s swap-remove; compaction ALSO removes blocks, by
+  `vector::erase` at `:4190`. Handling only the documented path would have desynchronised the
+  offset array from `blocks_` after any compaction.
+- **Item 44:** the premise that sweep leaves the bitmap all-zero is false, by a path the code's own
+  comment does not list.
+- **Item 47:** "the `find` can move behind `ECO_HEAP_VALIDATE`" — it is load-bearing, because a
+  body below `alloc_buffer_size` lands in an ordinary block and IS reached by the inner sweep loop.
+
+Three of those four were caught by an assertion or a count check rather than by review. **Write the
+check that re-derives the invariant you are deleting** — that is what turned item 44 from a silent
+`madvise` corruption into a 13-minute refutation.
+
 ## 8. Provenance
 
+- **Continuation: `plans/gc-mark-and-bookkeeping-followup.md`** (W11-W14) — the eleven Tier-1
+  items this series never built (38, 40, 51, 52, 54, 42-47), lowered to implementation detail
+  against the 2026-09-23 tree. It reuses this file's method, gates and disposition rule
+  verbatim; new rows append to §9 below, reference row `W1b`.
 - Step list and landing order: `plans/gc-tier1-constant-factors.md` — its work-package table,
   Sequencing graph and cross-package dependencies, reproduced in §0. Its Validation section
   supplies this series' gate list (§1 Phase 4) and its Disposition rule the flat-package amendment
@@ -1169,3 +2083,18 @@ mechanism paid and which did not.
 | W6 (virgin-page bump) | 272.17 | +77.53 | 1924 | 6 | 19861 | 14389864 | LOSS (reverted) | W7 |
 | **W1 (per-site nursery zeroing)** | **183.82** | **-10.82** | 1924 | 6 | 19861 | **10677000** | **WIN (kept)** | W7 |
 | W1b (n_values closure scan, zeroing removed) | 183.57 | -0.25 | 1924 | 6 | 19861 | 10676096 | FLAT (kept, simplification) | W1 |
+| W11a (51 inline isInNursery + 43 sentinel-walk skip) | 182.95 | -0.62 | 1924 | 6 | 19861 | 10676200 | FLAT (kept, deletions) | W1b |
+| W11b (item 44 targeted mark-bitmap clear) | — | — | — | — | — | — | REFUTED (reverted, gate) | W11a |
+| W12 (item 40 mark-bit arena, no re-pack) | 183.58 | +0.63 | 1924 | 6 | 19861 | 10848384 | NO WIN (superseded by W12b) | W11a |
+| **W12b (item 40 arena + fused test-and-set + re-pack)** | **181.12** | **-1.83** | 1924 | 6 | 19861 | 10743152 | **WIN (kept)** | W11a |
+| W12c (item 52 live_bytes accumulator) | 182.56 | +1.44 | 1924 | 6 | 19861 | 10742676 | NO WIN (reverted; mark +33 ms) | W12b |
+| **W13 (item 54 prefetch-on-grey)** | 181.71 | +0.59 | 1924 | 6 | 19861 | 10742504 | **WIN on mark time -202 ms (kept)** | W12b |
+| W12d (item 38 nursery visited bitmap) | 180.91 | -0.80 | 1924 | 6 | 19861 | 10697572 | NO WIN (reverted; mark +415 ms) | W13 |
+| W14 (items 42, 45, 46) | — | — | — | — | — | — | CLOSED UNBUILT (bounded <1% of wall) | W13 |
+| drift check (eco-optW13 re-measured) | 181.57 | -0.14 vs its own row | 1924 | 6 | 19861 | 10742964 | NO DRIFT | W13 |
+| **W13c (item 54 FIFO depth 16, replaces on-grey)** | **180.08** | **-1.63** | 1924 | 6 | 19861 | 10743276 | **WIN (kept), mark -789.6 ms** | W13 |
+| W13d (FIFO depth sweep 4/8/16/32/64) | — | — | 1924 | 6 | 19861 | — | 16 CONFIRMED OPTIMAL (d4 +23% WORSE than no prefetch) | W13c |
+| W13e (FIFO as worklist member, handbook structure) | 179.52 | -0.56 | 1924 | 6 | 19861 | 10743272 | NO WIN (reverted; mark +218.7 ms) | W13c |
+| W13f (ring, prefetch removed — DIAGNOSTIC) | 187.66 | +7.58 | 1924 | 6 | 19861 | 10743048 | ordering cost MEASURED: mark +4841.2 ms (reverted) | W13c |
+| W13g (markToCompletion, single drain, local ring) | 181.57 | +1.49 | 1924 | 6 | 19861 | 10741472 | NO WIN (reverted; mark +94.3 ms) | W13c |
+| W13h (drain-interval sweep 64/256/1024/4096) | — | — | 1924 | 6 | 19861 | — | FLAT, no effect (reverted); measures noise floor SD=80 ms | W13c |

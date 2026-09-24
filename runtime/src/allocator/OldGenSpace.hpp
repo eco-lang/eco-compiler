@@ -478,6 +478,36 @@ private:
     static_assert(sizeof(MarkStackEntry) == 16,
                   "MarkStackEntry must pack to 16 bytes");
 
+    // Item 54 FIFO variant: prefetch distance, in objects of real scanning
+    // work, between popping an entry off the mark stack and scanning it.
+    //
+    // MEASURED, do not re-tune by intuition (benchmarks/gc-opt-loop.md, W13d).
+    // Median mark time over three cold self-compiles, against 7713.3 ms with
+    // no prefetching at all:
+    //
+    //     depth  4 -> 9492.1 ms   (+23 % — WORSE THAN NO PREFETCH)
+    //     depth  8 -> 7269.8 ms   (-5.8 %)
+    //     depth 16 -> 6880.2 ms   (-10.8 %)  <-- optimum
+    //     depth 32 -> 6947.5 ms   (-9.9 %)
+    //     depth 64 -> 7058.0 ms   (-8.5 %)
+    //
+    // The ring costs something whatever the depth: it trades the mark stack's
+    // depth-first locality for an interleaved frontier. Below ~8 the prefetch
+    // lands too late to cover the miss, so that cost is paid for nothing --
+    // which is why depth 4 is worse than not prefetching. Above ~16 the core
+    // runs out of line-fill buffers and L1 pressure grows (64 entries is 4 KiB
+    // of prefetched lines), so the extra distance buys nothing.
+    //
+    // Keep it a POWER OF TWO: the ring index arithmetic is `% MARK_FIFO_DEPTH`,
+    // which is a mask only while that holds and becomes a real division
+    // otherwise -- a division on the hottest path in mark. The static_assert
+    // below enforces it.
+    static constexpr size_t MARK_FIFO_DEPTH = 16;
+    static_assert(MARK_FIFO_DEPTH > 0 &&
+                  (MARK_FIFO_DEPTH & (MARK_FIFO_DEPTH - 1)) == 0,
+                  "MARK_FIFO_DEPTH must be a power of two so the ring index "
+                  "arithmetic compiles to a mask rather than a division");
+
     std::vector<MarkStackEntry> mark_stack;  // Grey set: object + cached block index.
     // Nursery objects pushed during the current major-GC mark. Major GC must
     // not write color into nursery headers (minor GC owns them), so we use
@@ -518,9 +548,47 @@ private:
     // asserts but are NOT load-bearing for sweep liveness. mark_bits_[i]
     // covers regular blocks; large_block_mark_[i] is a single-bit
     // live/dead flag for is_large blocks (their mark_bits_[i] stays empty).
-    // Invariant: mark_bits_.size() == large_block_mark_.size() == blocks_.size().
-    std::vector<std::vector<uint8_t>> mark_bits_;
-    std::vector<uint8_t>              large_block_mark_;
+    // Item 40: the per-block bitmaps live back-to-back in ONE arena, with a
+    // byte offset and length per block, instead of a vector-of-vectors. Every
+    // bit operation used to chase the inner vector's data pointer and bounds-
+    // check twice; now it is one add against `mark_bits_arena_.data()` and one
+    // length check. This is also the prerequisite for parallel marking
+    // (working-list #58): a `lock or` needs a flat array, not an element of a
+    // vector-of-vectors whose inner pointer must be resolved under contention.
+    //
+    // The arena is append-only. A released block leaves a hole (its bytes are
+    // not reclaimed until `reset()` rebuilds), and a block flipped to is_large
+    // keeps its slot with `mark_bits_len_[i] = 0`. Holes are bounded by block
+    // churn, and a block's bitmap is blockBytes/64 — a 512 KiB block is 8 KiB.
+    //
+    // Invariant: mark_bits_offset_.size() == mark_bits_len_.size() ==
+    //            large_block_mark_.size() == blocks_.size().
+    std::vector<uint8_t>  mark_bits_arena_;
+    std::vector<size_t>   mark_bits_offset_;
+    std::vector<uint32_t> mark_bits_len_;    // 0 for is_large blocks
+    std::vector<uint8_t>  large_block_mark_;
+
+    // Appends an all-zero bitmap of `bytes` for a newly pushed block.
+    void markBitsAppendForBlock(size_t bytes) {
+        mark_bits_offset_.push_back(mark_bits_arena_.size());
+        mark_bits_len_.push_back(static_cast<uint32_t>(bytes));
+        mark_bits_arena_.resize(mark_bits_arena_.size() + bytes, 0);
+    }
+
+    // Zeroes block `i`'s bitmap in place (its arena slot is retained).
+    void markBitsClearBlock(size_t i) {
+        if (i >= mark_bits_len_.size()) return;
+        uint8_t* p = mark_bits_arena_.data() + mark_bits_offset_[i];
+        std::fill(p, p + mark_bits_len_[i], 0);
+    }
+
+    // Block `i` flipped to is_large: zero and retire its bitmap. Liveness
+    // moves to the single-byte large_block_mark_[i].
+    void markBitsDropBlock(size_t i) {
+        if (i >= mark_bits_len_.size()) return;
+        markBitsClearBlock(i);
+        mark_bits_len_[i] = 0;
+    }
 
     // ========== Fragmentation Statistics ==========
 
@@ -542,6 +610,17 @@ private:
     // Segregated free lists indexed by size class.
     // Each list contains free cells of size classToSize(i).
     FreeCell* free_lists_[NUM_SIZE_CLASSES];
+
+    // Number of "on free list" sentinel cells (Header.age & 0b01) PUSHED onto
+    // free_lists_ since the last `transitionToSweeping` (item 43). Counted per
+    // sentinel PUSH CALL, not per cell: a push can link several cells, so this
+    // OVER-counts — which is the safe direction. It is consulted only for the
+    // exact-zero case, where it lets transitionToSweeping null the list heads
+    // without walking every free cell in the heap to downgrade sentinels that
+    // provably do not exist. Reset to 0 by that walk, so it cannot drift
+    // across cycles. Only two call sites can produce a sentinel:
+    // `splitter::remainder` and `freeLargeBodyCell`.
+    size_t free_list_sentinel_count_ = 0;
 
     // Indices into `blocks_` of large/pinned blocks whose single object died
     // in the most recent sweep. `allocateLargeBlock` consults this list
@@ -1019,9 +1098,32 @@ private:
         size_t byte_index;
         uint8_t mask;
         markBitLocation(block_index, obj, &byte_index, &mask);
-        const auto& bits = mark_bits_[block_index];
-        if (byte_index >= bits.size()) return false;
-        return (bits[byte_index] & mask) != 0;
+        if (byte_index >= mark_bits_len_[block_index]) return false;
+        return (mark_bits_arena_[mark_bits_offset_[block_index] + byte_index]
+                & mask) != 0;
+    }
+
+    // Item 40: `pushMarkRoot` used to call isMarkedInBlock and then
+    // setMarkBitInBlock — two full lookups for one logical test-and-set.
+    // Returns true if the bit was ALREADY set (caller should stop), false if
+    // this call set it (caller should push the object). An out-of-range slot
+    // returns false and sets nothing, which is the behaviour the pair had.
+    bool testAndSetMarkBitInBlock(size_t block_index, const void* obj) {
+        if (block_index >= blocks_.size()) return false;
+        if (blocks_[block_index].is_large) {
+            const uint8_t prev = large_block_mark_[block_index];
+            large_block_mark_[block_index] = 1;
+            return prev != 0;
+        }
+        size_t byte_index;
+        uint8_t mask;
+        markBitLocation(block_index, obj, &byte_index, &mask);
+        if (byte_index >= mark_bits_len_[block_index]) return false;
+        uint8_t& b = mark_bits_arena_[mark_bits_offset_[block_index] +
+                                      byte_index];
+        const bool was_set = (b & mask) != 0;
+        b |= mask;
+        return was_set;
     }
 
     // Sets the bit for `obj` and returns true if the bit was previously
@@ -1036,10 +1138,11 @@ private:
         size_t byte_index;
         uint8_t mask;
         markBitLocation(block_index, obj, &byte_index, &mask);
-        auto& bits = mark_bits_[block_index];
-        if (byte_index >= bits.size()) return false;
-        const bool was_set = (bits[byte_index] & mask) != 0;
-        bits[byte_index] |= mask;
+        if (byte_index >= mark_bits_len_[block_index]) return false;
+        uint8_t& b = mark_bits_arena_[mark_bits_offset_[block_index] +
+                                      byte_index];
+        const bool was_set = (b & mask) != 0;
+        b |= mask;
         return !was_set;
     }
 
@@ -1056,10 +1159,11 @@ private:
         size_t byte_index;
         uint8_t mask;
         markBitLocation(block_index, obj, &byte_index, &mask);
-        auto& bits = mark_bits_[block_index];
-        if (byte_index >= bits.size()) return false;
-        const bool was_set = (bits[byte_index] & mask) != 0;
-        bits[byte_index] &= static_cast<uint8_t>(~mask);
+        if (byte_index >= mark_bits_len_[block_index]) return false;
+        uint8_t& b = mark_bits_arena_[mark_bits_offset_[block_index] +
+                                      byte_index];
+        const bool was_set = (b & mask) != 0;
+        b &= static_cast<uint8_t>(~mask);
         return was_set;
     }
 
@@ -1302,14 +1406,14 @@ public:
         return oldgen.page_to_block_index_;
     }
 
-    // Per-block mark bitmap access for tests.
-    static const std::vector<uint8_t>& getMarkBitsForBlock(
-            const OldGenSpace& oldgen, size_t i) {
-        return oldgen.mark_bits_[i];
-    }
-    static const std::vector<std::vector<uint8_t>>& getMarkBits(
-            const OldGenSpace& oldgen) {
-        return oldgen.mark_bits_;
+    // Per-block mark bitmap access for tests. Item 40 replaced the
+    // vector-of-vectors with an arena; these return a pointer+length view.
+    // (A repo-wide grep found no users outside this header at the time of
+    // the change.)
+    static const uint8_t* getMarkBitsForBlock(
+            const OldGenSpace& oldgen, size_t i, size_t* len_out) {
+        *len_out = oldgen.mark_bits_len_[i];
+        return oldgen.mark_bits_arena_.data() + oldgen.mark_bits_offset_[i];
     }
     static const std::vector<uint8_t>& getLargeBlockMark(
             const OldGenSpace& oldgen) {

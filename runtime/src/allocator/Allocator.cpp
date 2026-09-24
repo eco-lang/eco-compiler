@@ -458,10 +458,7 @@ bool Allocator::isNurseryNearFull(float threshold) {
     return false;
 }
 
-// Returns true if the pointer is in the calling thread's nursery.
-bool Allocator::isInNursery(void *ptr) {
-    return tl_heap_ && tl_heap_->isInNursery(ptr);
-}
+// `Allocator::isInNursery` is defined inline at the bottom of Allocator.hpp.
 
 // Validates an HPointer without dereferencing (so it's SEGV-safe even when
 // fed unboxed Int bits that happen to decode to a wild address). Decodes

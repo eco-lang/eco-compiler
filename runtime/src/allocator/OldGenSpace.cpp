@@ -321,7 +321,10 @@ void OldGenSpace::reset(const HeapConfig* new_config) {
     buffer_meta_.clear();
     unassigned_blocks_.clear();
     page_to_block_index_.clear();
-    mark_bits_.clear();
+    mark_bits_arena_.clear();
+    mark_bits_arena_.shrink_to_fit();
+    mark_bits_offset_.clear();
+    mark_bits_len_.clear();
     large_block_mark_.clear();
 
     // Reset state.
@@ -343,6 +346,7 @@ void OldGenSpace::reset(const HeapConfig* new_config) {
     for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
         free_lists_[i] = nullptr;
     }
+    free_list_sentinel_count_ = 0;
     free_large_blocks_.clear();
 
     // Clear split-header body tracking.
@@ -1083,6 +1087,7 @@ void* OldGenSpace::tryAllocateBySplittingLarger(size_t target_cls,
 #if ECO_HEAP_VALIDATE
                     PushOriginScope _origin("splitter::remainder");
 #endif
+                    if (need_sentinel) free_list_sentinel_count_++;
                     pushSpanOnFreeLists(free_lists_, base + alloc_size,
                                         remainder, blk, blk_idx,
                                         need_sentinel);
@@ -1217,7 +1222,7 @@ void* OldGenSpace::allocateFromBagPage(size_t requested_size) {
     const bool mid_cycle =
         marking_active || gc_phase_ != GCPhase::Idle;
     buffer_meta_.push_back({0, 0, mid_cycle});          // W9 item 41: no block_index
-    mark_bits_.emplace_back(bitmapBytesForBlock(blocks_.back()), 0);
+    markBitsAppendForBlock(bitmapBytesForBlock(blocks_.back()));
     large_block_mark_.push_back(0);
     assignPageIndexForBlock(block_idx);
 
@@ -1308,7 +1313,7 @@ bool OldGenSpace::populateFromBlock(size_t cls) {
     const bool mid_cycle =
         marking_active || gc_phase_ != GCPhase::Idle;
     buffer_meta_.push_back({0, 0, mid_cycle});          // W9 item 41: no block_index
-    mark_bits_.emplace_back(bitmapBytesForBlock(blocks_.back()), 0);
+    markBitsAppendForBlock(bitmapBytesForBlock(blocks_.back()));
     large_block_mark_.push_back(0);
     assignPageIndexForBlock(block_idx);
 
@@ -1399,9 +1404,7 @@ void* OldGenSpace::allocateFromFreeLargeBlocks(size_t size) {
         // Defensive zero of the bitmap before any mark/sweep can observe
         // this re-purposed block. mark_bits_[idx] is empty for is_large
         // blocks; large_block_mark_[idx] is the single live/dead bit.
-        if (idx < mark_bits_.size()) {
-            std::fill(mark_bits_[idx].begin(), mark_bits_[idx].end(), 0);
-        }
+        markBitsClearBlock(idx);
         if (idx < large_block_mark_.size()) {
             large_block_mark_[idx] = 0;
         }
@@ -1446,10 +1449,7 @@ void* OldGenSpace::allocateFromEmptyRegularBlocks(size_t size) {
         buffer_meta_[i].fully_swept = true;
         // Block flipped to is_large: drop the per-slot bitmap and use the
         // single-bit large_block_mark_ slot. Defensive zero on both.
-        if (i < mark_bits_.size()) {
-            mark_bits_[i].clear();
-            mark_bits_[i].shrink_to_fit();
-        }
+        markBitsDropBlock(i);
         if (i < large_block_mark_.size()) {
             large_block_mark_[i] = 0;
         }
@@ -1502,8 +1502,9 @@ void* OldGenSpace::allocateLargeBlock(size_t size) {
     const bool mid_cycle_large =
         marking_active || gc_phase_ != GCPhase::Idle;
     buffer_meta_.push_back({size, 0, mid_cycle_large}); // W9 item 41: no block_index
-    // Large blocks use large_block_mark_ for liveness; mark_bits_ stays empty.
-    mark_bits_.emplace_back();
+    // Large blocks use large_block_mark_ for liveness; the bitmap slot is
+    // present but zero-length (item 40).
+    markBitsAppendForBlock(0);
     large_block_mark_.push_back(0);
 
     // Maintain the cached contains() bounds.
@@ -1567,9 +1568,29 @@ void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots,
     // entire live content is carry-over-bit cells then appears "all dead"
     // and gets released (madvise DONTNEED), zero-filling pages that other
     // long-lived objects still reference via stale HPointers.
-    for (auto& bits : mark_bits_) {
-        std::fill(bits.begin(), bits.end(), 0);
+    // Item 40: re-pack the arena and zero it in one pass.
+    //
+    // Every bitmap is about to be zeroed, so nothing in the arena needs
+    // preserving — which makes this the one point in the cycle where the
+    // offsets can be reassigned for free. Releasing a block leaves its arena
+    // slot behind as a hole (releaseBlock moves the SLOT, not the bytes), and
+    // without this the holes accumulate across a run: measured at +172 MB of
+    // max RSS over a self-compile before it was added. Re-packing here costs
+    // O(#blocks) and runs once per major GC.
+    size_t packed = 0;
+    for (size_t i = 0; i < mark_bits_len_.size(); ++i) {
+        mark_bits_offset_[i] = packed;
+        packed += mark_bits_len_[i];
     }
+    if (mark_bits_arena_.size() != packed) {
+        mark_bits_arena_.resize(packed);
+        // resize() never releases capacity, so hand the holes back explicitly
+        // once the excess is worth a reallocation.
+        if (mark_bits_arena_.capacity() > packed + (packed / 2) + 4096) {
+            mark_bits_arena_.shrink_to_fit();
+        }
+    }
+    std::fill(mark_bits_arena_.begin(), mark_bits_arena_.end(), 0);
     std::fill(large_block_mark_.begin(), large_block_mark_.end(), 0);
 
     marking_active = true;
@@ -1630,9 +1651,42 @@ bool OldGenSpace::incrementalMark(size_t work_units) {
 
     size_t units_done = 0;
 
-    while (!mark_stack.empty() && units_done < work_units) {
-        MarkStackEntry entry = mark_stack.back();
-        mark_stack.pop_back();
+    // Item 54, FIFO variant (gc_handbook/02-mark-sweep.md §2.6). A small ring
+    // sits between the mark stack and the scan: entries are popped into the
+    // ring and prefetched on the way in, and the entry that falls out the far
+    // end is the one scanned. That fixes the prefetch distance at
+    // MARK_FIFO_DEPTH objects of real work, where prefetch-on-grey's distance
+    // was whatever the LIFO happened to give — often 1, for the last child
+    // pushed.
+    //
+    // The ring MUST be drained before returning: `incrementalMark` signals
+    // completion with `!mark_stack.empty()`, so an entry left in flight would
+    // never be scanned, its children would never be marked, and live objects
+    // would be swept. The budget therefore overshoots `work_units` by at most
+    // MARK_FIFO_DEPTH-1 objects, which is what the trailing drain does.
+    MarkStackEntry fifo[MARK_FIFO_DEPTH];
+    size_t head = 0, tail = 0, count = 0;
+
+    while (units_done < work_units) {
+        while (count < MARK_FIFO_DEPTH && !mark_stack.empty()) {
+            MarkStackEntry e = mark_stack.back();
+            mark_stack.pop_back();
+            __builtin_prefetch(e.obj, 0, 3);
+            fifo[tail] = e;
+            tail = (tail + 1) % MARK_FIFO_DEPTH;
+            ++count;
+        }
+        if (count == 0) break;
+        MarkStackEntry entry = fifo[head];
+        head = (head + 1) % MARK_FIFO_DEPTH;
+        --count;
+        if (markOneObject(entry.obj, entry.block_index)) ++units_done;
+    }
+
+    while (count > 0) {   // trailing drain — never return with entries in flight
+        MarkStackEntry entry = fifo[head];
+        head = (head + 1) % MARK_FIFO_DEPTH;
+        --count;
         if (markOneObject(entry.obj, entry.block_index)) ++units_done;
     }
 
@@ -1821,8 +1875,8 @@ void OldGenSpace::pushMarkRoot(void *obj) {
     const size_t block_index = blockIndexFor(obj);
     if (block_index >= blocks_.size()) return;
 
-    if (isMarkedInBlock(block_index, obj)) return;
-    setMarkBitInBlock(block_index, obj);
+    // Item 40: one test-and-set instead of isMarkedInBlock + setMarkBitInBlock.
+    if (testAndSetMarkBitInBlock(block_index, obj)) return;
     // Cache the block index on the entry so markOneObject can skip a second
     // blockIndexFor lookup when attributing live bytes.
     mark_stack.push_back(MarkStackEntry{
@@ -2501,13 +2555,25 @@ void OldGenSpace::transitionToSweeping() {
     // Resetting to age=0 lets sweep merge those bytes into a coalesced run
     // as it walks. Sentinel cells originate from `freeLargeBodyCell` and
     // `splitter::remainder` mid-sweep pushes.
-    for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
-        for (FreeCell* c = free_lists_[i]; c != nullptr;
-             c = c->next_in_class) {
-            if (c->header.age == 0b01) c->header.age = 0;
+    // Item 43: the inner walk touches EVERY free cell in the heap, and its
+    // only job is to downgrade sentinels. `free_list_sentinel_count_` counts
+    // sentinel pushes since the last transition and over-counts, so a zero is
+    // a proof that no sentinel is on any list and the walk can be skipped
+    // outright; any non-zero value falls back to the full walk.
+    if (free_list_sentinel_count_ == 0) {
+        for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
+            free_lists_[i] = nullptr;
         }
-        free_lists_[i] = nullptr;
+    } else {
+        for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
+            for (FreeCell* c = free_lists_[i]; c != nullptr;
+                 c = c->next_in_class) {
+                if (c->header.age == 0b01) c->header.age = 0;
+            }
+            free_lists_[i] = nullptr;
+        }
     }
+    free_list_sentinel_count_ = 0;
     // Clear per-block free-cell threads. Sweep will rebuild them as it
     // emits Tier-M cells via pushSpanOnFreeLists.
     for (auto& blk : blocks_) {
@@ -3358,12 +3424,16 @@ void OldGenSpace::releaseBlockToAllocator(size_t block_index) {
     // Mirror swap-remove on the per-block bitmap vectors so the
     // mark_bits_.size() == large_block_mark_.size() == blocks_.size()
     // invariant holds across the release.
-    if (block_index < mark_bits_.size()) {
-        const size_t mark_last = mark_bits_.size() - 1;
+    if (block_index < mark_bits_offset_.size()) {
+        const size_t mark_last = mark_bits_offset_.size() - 1;
         if (block_index != mark_last) {
-            mark_bits_[block_index] = std::move(mark_bits_[mark_last]);
+            // Item 40: move the arena SLOT (offset+len), not the bytes. The
+            // vacated slot becomes a hole until reset() rebuilds the arena.
+            mark_bits_offset_[block_index] = mark_bits_offset_[mark_last];
+            mark_bits_len_[block_index] = mark_bits_len_[mark_last];
         }
-        mark_bits_.pop_back();
+        mark_bits_offset_.pop_back();
+        mark_bits_len_.pop_back();
     }
     if (block_index < large_block_mark_.size()) {
         const size_t lbm_last = large_block_mark_.size() - 1;
@@ -3875,7 +3945,7 @@ void* OldGenSpace::allocateForEvacuation(size_t size) {
     blocks_.push_back(bi);
     evac_block_index_ = blocks_.size() - 1;
     buffer_meta_.push_back({0, 0, true});               // W9 item 41: no block_index
-    mark_bits_.emplace_back(bitmapBytesForBlock(blocks_.back()), 0);
+    markBitsAppendForBlock(bitmapBytesForBlock(blocks_.back()));
     large_block_mark_.push_back(0);
     assignPageIndexForBlock(evac_block_index_);
     evac_alloc_ptr_ = bi.start;
@@ -4173,8 +4243,9 @@ void OldGenSpace::freeEvacuatedBuffers() {
         }
         // Mirror erase on the per-block bitmap vectors so the
         // size invariant with blocks_ holds post-compaction.
-        if (idx < mark_bits_.size()) {
-            mark_bits_.erase(mark_bits_.begin() + idx);
+        if (idx < mark_bits_offset_.size()) {
+            mark_bits_offset_.erase(mark_bits_offset_.begin() + idx);
+            mark_bits_len_.erase(mark_bits_len_.begin() + idx);
         }
         if (idx < large_block_mark_.size()) {
             large_block_mark_.erase(large_block_mark_.begin() + idx);
@@ -4533,6 +4604,7 @@ void OldGenSpace::freeLargeBodyCell(LargeBodyMeta& m) {
 #if ECO_HEAP_VALIDATE
                 PushOriginScope _origin("freeLargeBodyCell");
 #endif
+                if (need_sentinel) free_list_sentinel_count_++;
                 pushSpanOnFreeLists(free_lists_,
                                     static_cast<char*>(m.body_base),
                                     m.cell_size,

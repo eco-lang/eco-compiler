@@ -195,6 +195,10 @@ public:
     bool isNurseryNearFull(float threshold);
 
     // Returns true if the pointer is in the calling thread's nursery.
+    // Defined inline at the bottom of this header (needs the complete
+    // ThreadLocalHeap) — item 51: it runs twice per marked object from
+    // OldGenSpace's pushMarkRoot/markOneObject, and a cross-TU call with
+    // no LTO was the whole cost.
     bool isInNursery(void *ptr);
 
     // Returns true if the pointer is in the calling thread's old gen.
@@ -538,6 +542,12 @@ namespace Elm {
 
 inline RootSet &Allocator::getRootSet() noexcept {
     return tl_heap_->getRootSet();
+}
+
+// Same reason as getRootSet() above: the body needs `ThreadLocalHeap` to be
+// complete. Keep the null check — cold callers run before initThread().
+inline bool Allocator::isInNursery(void *ptr) {
+    return tl_heap_ && tl_heap_->isInNursery(ptr);
 }
 
 } // namespace Elm
