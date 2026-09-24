@@ -4552,7 +4552,7 @@ ListScratch& listScratch() {
                         evac(sp->bits[i]);
                     }
                 }
-            });
+            }, "list-scratch");
     }
     return s;
 }

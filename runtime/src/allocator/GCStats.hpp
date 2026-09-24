@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <vector>
 
 #include "Heap.hpp"  // for Tag (per-kind allocation histogram).
 
@@ -41,6 +42,159 @@ namespace Elm {
 // per promoted object (~7e8 per self-compile).
 // Always-on (not gated on ECO_GC_DEBUG) because the stats path needs it.
 extern thread_local bool g_in_minor_gc;
+
+// ============================================================================
+// threaded-gc-00: minor-GC phase breakdown and pause accounting
+// ============================================================================
+//
+// Instruments only (plans/threaded-gc-00-measure-and-fix.md). Nothing here
+// may feed a GC decision: GC counters must stay bit-identical with or
+// without them. Populated only under ENABLE_GC_STATS.
+
+// Latched once per process from ECO_GC_PHASE_TIMERS (default ON; "0" turns
+// the fine-grained phase timers and per-object sampling off so their own
+// overhead can be measured). The pause bracket does not depend on it.
+bool gcPhaseTimersEnabled() noexcept;
+
+// Deterministic 1-in-2^K sampler for per-object paths. Counter-based, no
+// randomness, so it never perturbs anything compared across runs.
+template <unsigned K>
+struct SampledTimer {
+    uint64_t calls = 0;
+    uint64_t sampled_calls = 0;
+    uint64_t sampled_ns = 0;
+    bool shouldSample() noexcept {
+        return ((calls++) & ((uint64_t{1} << K) - 1)) == 0;
+    }
+};
+
+// Calibrated cost of one clock-read bracket with nothing inside it (the
+// minimum of 2000 back-to-back reads, measured once per process).
+uint64_t gcClockOverheadNs() noexcept;
+
+// Scales a sampled time to all calls: sampled_ns * calls / sampled_calls,
+// after subtracting the calibrated clock overhead of every sampled bracket.
+inline uint64_t sampledEstimateNs(uint64_t d_sampled_ns, uint64_t d_calls,
+                                  uint64_t d_sampled_calls) noexcept {
+    if (d_sampled_calls == 0) return 0;
+    const uint64_t ovh = gcClockOverheadNs() * d_sampled_calls;
+    d_sampled_ns = d_sampled_ns > ovh ? d_sampled_ns - ovh : 0;
+    return static_cast<uint64_t>(static_cast<double>(d_sampled_ns) *
+                                 static_cast<double>(d_calls) /
+                                 static_cast<double>(d_sampled_calls));
+}
+
+constexpr int GC_EXT_SCANNER_CAP = 16;
+
+// One minor collection's measurements. Filled by ThreadLocalHeap (stack
+// walk, pause) and NurserySpace (everything inside the nursery pause), then
+// recorded once by ThreadLocalHeap::recordMinorPhases.
+struct MinorGCRecord {
+    uint64_t start_ns = 0;             // process-relative, at the stack-walk start
+    uint64_t stack_walk_ns = 0;
+    uint64_t frames_walked = 0;
+    uint64_t frames_matched = 0;
+    uint64_t stack_slots = 0;
+    uint64_t roots_longlived_jit_ns = 0;   // phases 1a + 1c
+    uint64_t roots_stackmap_ns = 0;        // phase 1b
+    uint64_t roots_ranges_ns = 0;          // phases 1e + 1e'
+    uint64_t roots_external_ns = 0;        // phase 1d
+    int      ext_count = 0;
+    uint64_t ext_ns[GC_EXT_SCANNER_CAP] = {0};
+    uint64_t ext_slots[GC_EXT_SCANNER_CAP] = {0};
+    uint64_t drain_tospace_ns = 0;
+    uint64_t drain_promoted_ns = 0;
+    uint64_t drain_rounds = 0;
+    uint64_t tail_ns = 0;              // drain exit -> end of the nursery timer
+    uint64_t nursery_pause_ns = 0;     // == the existing "Minor GC Timing" per-cycle value
+    uint64_t large_body_sweep_ns = 0;
+    uint64_t lazy_sweep_calls = 0;
+    uint64_t lazy_sweep_bytes = 0;
+    uint64_t lazy_sweep_est_ns = 0;
+    uint64_t promo_alloc_calls = 0;
+    uint64_t promo_alloc_est_ns = 0;
+    uint64_t survived = 0;
+    uint64_t promoted = 0;
+    uint64_t survived_bytes = 0;
+    uint64_t promoted_bytes = 0;
+    uint64_t minflt = 0;
+    uint64_t majflt = 0;
+    uint64_t pause_ns = 0;             // whole ThreadLocalHeap::minorGC, excl. a nested major
+};
+
+// One contiguous mutator stop on one thread.
+struct PauseEvent {
+    uint64_t start_ns;
+    uint64_t dur_ns;
+    uint8_t  kind;   // 0 = minor only, 1 = minor + nested major, 2 = major only
+};
+
+// Run totals for the records above. Kept as one struct so combine()/reset()
+// cannot silently miss a field (a missed merge prints as zero, not a crash).
+struct GCPhaseTotals {
+    // ----- minor phase totals (summed over recorded minors) -----
+    uint64_t minor_records = 0;
+    uint64_t stack_walk_ns = 0, stack_walk_ns_max = 0;
+    uint64_t frames_walked = 0, frames_walked_max = 0;
+    uint64_t frames_matched = 0;
+    uint64_t stack_slots = 0, stack_slots_max = 0;
+    uint64_t roots_longlived_jit_ns = 0, roots_stackmap_ns = 0;
+    uint64_t roots_ranges_ns = 0, roots_external_ns = 0;
+    uint64_t drain_tospace_ns = 0, drain_promoted_ns = 0;
+    uint64_t drain_rounds = 0, drain_rounds_max = 0;
+    uint64_t tail_ns = 0, nursery_pause_ns = 0, large_body_sweep_ns = 0;
+    uint64_t lazy_sweep_calls = 0, lazy_sweep_bytes = 0, lazy_sweep_est_ns = 0;
+    uint64_t promo_alloc_calls = 0, promo_alloc_est_ns = 0;
+    uint64_t survived = 0, promoted = 0, survived_bytes = 0, promoted_bytes = 0;
+    uint64_t minflt = 0, majflt = 0;
+    uint64_t minor_pause_ns = 0;
+
+    // ----- per external root scanner (merged by name) -----
+    int         ext_count = 0;
+    const char* ext_name[GC_EXT_SCANNER_CAP] = {nullptr};
+    uint64_t    ext_ns[GC_EXT_SCANNER_CAP] = {0};
+    uint64_t    ext_slots[GC_EXT_SCANNER_CAP] = {0};
+    uint64_t    ext_slots_max[GC_EXT_SCANNER_CAP] = {0};
+
+    // ----- pause accounting (always on in stats builds) -----
+    static constexpr size_t PAUSE_EVENT_CAP = size_t{1} << 18;
+    static constexpr int PAUSE_LOG2_BUCKETS = 32;  // bucket b: [2^b, 2^(b+1)) us; b=0 is < 2 us
+    std::vector<PauseEvent> pause_events;
+    uint64_t pause_events_dropped = 0;
+    uint64_t pause_count = 0;
+    uint64_t pause_total_ns = 0;
+    uint64_t pause_max_ns = 0;
+    uint64_t pause_count_by_kind[3] = {0, 0, 0};
+    uint64_t pause_log2_hist[PAUSE_LOG2_BUCKETS] = {0};
+    bool     phase_timers_disabled = false;
+
+    // Adds one minor's record. `names` resolves scanner index -> name.
+    void addMinor(const MinorGCRecord& r, const char* const* names, size_t n_names);
+    // Adds one pause.
+    void addPause(uint64_t start_ns, uint64_t dur_ns, uint8_t kind);
+    // Returns the index for scanner `name`, appending it if new (or -1 if full).
+    int scannerIndex(const char* name);
+    void merge(const GCPhaseTotals& other);
+
+    // ----- print-time helpers (static so unit tests can call them) -----
+    // Nearest-rank percentile of `sorted` (ascending); q in (0, 1].
+    static uint64_t percentile(const std::vector<uint64_t>& sorted, double q);
+    // Minimum mutator utilisation over [0, wall_ns] for window w_ns, given
+    // pauses sorted by start. Returns a fraction in [0, 1].
+    static double mmu(const std::vector<PauseEvent>& sorted, uint64_t wall_ns,
+                      uint64_t w_ns);
+    static int pauseBucket(uint64_t dur_ns);
+};
+
+// Per-collection event log (ECO_GC_EVENT_LOG=<path>): see GCStats.cpp.
+struct MinorGCRecord;
+bool gcEventLogEnabled() noexcept;
+void gcEventLogMinor(const MinorGCRecord& r, uint64_t seq, const char* const* names,
+                     size_t n_names);
+void gcEventLogMajor(uint64_t seq, uint64_t start_ns, uint64_t total_ns, uint64_t mark_ns,
+                     uint64_t sweep_ns, uint64_t roots_ns, const char* reason);
+void gcEventLogPause(uint64_t seq, uint64_t start_ns, uint64_t dur_ns, uint8_t kind);
+void gcEventLogFlush() noexcept;
 
 /**
  * Collects performance metrics for garbage collection.
@@ -98,6 +252,11 @@ public:
     uint64_t oldgen_hiwater_bytes = 0;
 
     // ========== Minor GC Timing Stats ==========
+    // The per-cycle time is NurserySpace::minorGC's own bracket: it EXCLUDES
+    // the stack walk (run before it, in ThreadLocalHeap::minorGC) and the
+    // split-header large-body sweep (run after it). Both are counted as
+    // mutator time by "Allocator Timings". The threaded-gc-00 pause blocks
+    // (GCPhaseTotals) measure the whole contiguous stop instead.
     uint64_t total_minor_gc_time_ns = 0;
     uint64_t min_minor_gc_time_ns = UINT64_MAX;
     uint64_t max_minor_gc_time_ns = 0;
@@ -594,6 +753,13 @@ public:
     uint64_t last_major_minor_count      = 0;
     uint64_t last_major_promoted         = 0;
 
+    // ========== threaded-gc-00 phase breakdown + pauses ==========
+    GCPhaseTotals tg;
+
+    // Prints the three threaded-gc-00 banner blocks (pause distribution,
+    // minor phase breakdown, external root scanners).
+    void printThreadedGcBlocks() const;
+
     // ========== Methods ==========
 
     // Records a nursery allocation event (count, bytes, size histogram).
@@ -827,6 +993,12 @@ enum Utf8WidenSite : int {
 
 // Per-thread routing helper for the per-site widen attribution.
 void recordUtf8WidenSiteOnCurrentThread(int site, size_t units) noexcept;
+
+// Human-readable major-GC reason (shared by the banner and the event log).
+const char* gcMajorReasonName(GCStats::MajorReason r);
+
+// Human-readable heap Tag name (shared by the banner and diagnostics).
+const char* gcTagName(int tag);
 
 // ============================================================================
 // Zero-Overhead Macros

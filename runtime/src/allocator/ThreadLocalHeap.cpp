@@ -523,12 +523,73 @@ void ThreadLocalHeap::collectAtSafepoint() {
     }
 }
 
+#if ENABLE_GC_STATS
+// threaded-gc-00: brackets the OUTERMOST minorGC/majorGC call on this thread,
+// so a minor that triggers a major is recorded as one contiguous pause.
+struct GCPauseScope {
+    ThreadLocalHeap& h;
+    GCPauseScope(ThreadLocalHeap& heap, bool is_major) : h(heap) {
+        if (h.gc_depth_++ == 0) {
+            h.pause_start_ns_ = GCStats::nowSinceProcessStartNs();
+            h.pause_saw_minor_ = false;
+            h.pause_saw_major_ = false;
+        }
+        (is_major ? h.pause_saw_major_ : h.pause_saw_minor_) = true;
+    }
+    ~GCPauseScope() {
+        if (--h.gc_depth_ == 0) {
+            const uint64_t now = GCStats::nowSinceProcessStartNs();
+            const uint8_t kind = h.pause_saw_minor_ ? (h.pause_saw_major_ ? 1 : 0) : 2;
+            h.recordPause(h.pause_start_ns_, now - h.pause_start_ns_, kind);
+        }
+    }
+};
+
+void ThreadLocalHeap::recordPause(uint64_t start_ns, uint64_t dur_ns, uint8_t kind) {
+    stats_.tg.addPause(start_ns, dur_ns, kind);
+    if (gcEventLogEnabled()) {
+        gcEventLogPause(stats_.tg.pause_count, start_ns, dur_ns, kind);
+    }
+}
+
+void ThreadLocalHeap::recordMinorPhases(MinorGCRecord& rec) {
+    rec.pause_ns = GCStats::nowSinceProcessStartNs() - rec.start_ns;
+    const auto& names = nursery_.getRootSet().getExternalRootScannerNames();
+    stats_.tg.addMinor(rec, names.data(), names.size());
+    if (gcEventLogEnabled()) {
+        gcEventLogMinor(rec, nursery_.getStats().minor_gc_count, names.data(), names.size());
+    }
+}
+#endif
+
 void ThreadLocalHeap::minorGC() {
+#if ENABLE_GC_STATS
+    GCPauseScope pause_scope(*this, /*is_major=*/false);
+    const bool timers = gcPhaseTimersEnabled();
+    MinorGCRecord rec;
+    if (timers) rec.start_ns = GCStats::nowSinceProcessStartNs();
+#endif
     if (Allocator::heapTraceEnabled()) {
         parent_->dumpHeapState("minorGC begin");
     }
-    collectStackRootsFromStackMap();
-    nursery_.minorGC(old_gen_, stack_map_roots_);
+    StackWalkCounts sw = collectStackRootsFromStackMap();
+#if ENABLE_GC_STATS
+    if (timers) {
+        rec.stack_walk_ns = GCStats::nowSinceProcessStartNs() - rec.start_ns;
+        rec.frames_walked = sw.frames_walked;
+        rec.frames_matched = sw.frames_matched;
+        rec.stack_slots = sw.slots;
+    }
+    nursery_.minorGC(old_gen_, stack_map_roots_, timers ? &rec : nullptr);
+    if (timers) {
+        recordMinorPhases(rec);
+    } else {
+        stats_.tg.phase_timers_disabled = true;
+    }
+#else
+    (void)sw;
+    nursery_.minorGC(old_gen_, stack_map_roots_, nullptr);
+#endif
     if (Allocator::heapTraceEnabled()) {
         parent_->dumpHeapState("minorGC end");
     }
@@ -548,6 +609,9 @@ void ThreadLocalHeap::minorGC() {
 }
 
 void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
+#if ENABLE_GC_STATS
+    GCPauseScope pause_scope(*this, /*is_major=*/true);
+#endif
     const bool profile_phases = gcPhaseProfileEnabled();
 
     // Dump sizes at major GC so the reproduction log makes it easy to see
@@ -685,6 +749,12 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
         phase_profile.blocks_scanned,
         nursery_.getStats().minor_gc_count,
         nursery_.getStats().objects_promoted);
+    if (gcEventLogEnabled() && stats_.major_gc_events_used > 0) {
+        const GCStats::MajorGCEvent& ev =
+            stats_.major_gc_events[stats_.major_gc_events_used - 1];
+        gcEventLogMajor(ev.seq, ev.start_ns, ev.total_ns, ev.mark_ns, ev.sweep_ns,
+                        ev.root_scan_ns + ev.root_push_ns, gcMajorReasonName(ev.reason));
+    }
 #endif
 
     if (profile_phases) {
@@ -790,7 +860,8 @@ const std::unordered_set<HPointer*>& ThreadLocalHeap::collectRoots() {
     return nursery_.getRootSet().getRoots();
 }
 
-void ThreadLocalHeap::collectStackRootsFromStackMap() {
+ThreadLocalHeap::StackWalkCounts ThreadLocalHeap::collectStackRootsFromStackMap() {
+    StackWalkCounts counts;
     StackMap& sm = globalStackMap();
     if (!sm.hasRecords()) {
 #if ECO_GC_DEBUG
@@ -800,7 +871,7 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
             warned = true;
         }
 #endif
-        return;
+        return counts;
     }
 
     StackMapRoots& sm_roots = stack_map_roots_;
@@ -825,11 +896,13 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
     Allocator& alloc = Allocator::instance();
 
     do {
+        ++counts.frames_walked;
         uintptr_t ip = cur.ip();
         const StackMapRecord* rec = sm.findRecord(ip + kIpToReturnAddressBias);
         if (!rec) {
             continue;
         }
+        ++counts.frames_matched;
 
         for (const StackMapLocation& loc : rec->locations) {
             if (loc.kind != StackMapLocation::Indirect) {
@@ -862,6 +935,7 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
             }
         }
     } while (cur.step());
+    counts.slots = sm_roots.get().size();
 
 #if ECO_GC_DEBUG
     fprintf(stderr, "[gc-stackmap-summary] stack roots pushed: %zu\n",
@@ -889,6 +963,7 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
         }
     }
 #endif
+    return counts;
 }
 
 } // namespace Elm

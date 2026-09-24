@@ -265,7 +265,7 @@ void PortRuntime::ensureRuntimeHooks() {
                 if (info.decoder) evacuate(info.decoder);
                 if (info.subs) evacuate(info.subs);
             }
-        });
+        }, "port-runtime");
 
     // Incoming sends are drained on the eco thread via the scheduler's
     // asyncSource mechanism (same pattern as the HTTP worker).

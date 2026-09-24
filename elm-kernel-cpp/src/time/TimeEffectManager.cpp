@@ -83,7 +83,7 @@ static void timerRegisterScannerOnce() {
                     if (state.taggerEnc) evac(state.taggerEnc);
                     if (state.routerEnc) evac(state.routerEnc);
                 }
-            });
+            }, "time-effects");
     });
 }
 

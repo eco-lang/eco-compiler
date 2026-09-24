@@ -1,0 +1,19 @@
+[
+  {
+    "name": "s_abuf256",
+    "change": "alloc_buffer_size=256K",
+    "overrides": {
+      "alloc_buffer_size": "256K"
+    }
+  },
+  {
+    "name": "q_abuf256_age_nmbc_mio",
+    "change": "alloc_buffer_size=256K + promotion_age=1, nursery_max_block_count=512, major_gc_initiating_occupancy=0.95",
+    "overrides": {
+      "alloc_buffer_size": "256K",
+      "promotion_age": 1,
+      "nursery_max_block_count": 512,
+      "major_gc_initiating_occupancy": 0.95
+    }
+  }
+]

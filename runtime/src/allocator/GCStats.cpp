@@ -7,12 +7,17 @@
  */
 
 #include <algorithm>
+#include <atomic>
+#include <cmath>
 #include <bit>
 #include <cstdio>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <sstream>
+#include <string>
+#include <thread>
 #include "Allocator.hpp"
 #include "GCStats.hpp"
 #include "PermanentSpace.hpp"
@@ -1027,6 +1032,8 @@ void GCStats::combine(const GCStats& other) {
     latest_freelist_large_block_bytes += other.latest_freelist_large_block_bytes;
     latest_freelist_snapshots         += other.latest_freelist_snapshots;
     // Pending free-list staging: not exposed by the printer; left untouched.
+    // threaded-gc-00 phase totals and pause log.
+    tg.merge(other.tg);
 }
 
 // Prints a formatted summary to stdout with histograms.
@@ -1080,7 +1087,8 @@ void GCStats::print() const {
         // individually any more (OldGenSpace::allocate skips the clock while
         // g_in_minor_gc), so nothing is subtracted from the pause. The
         // histogram/min/max/avg below all reflect the same whole-pause
-        // accounting.
+        // accounting. It excludes the stack walk and the large-body sweep;
+        // see "GC Pause Distribution (threaded-gc-00)" for whole pauses.
         std::cout << "  Total time:            " << std::setw(15) << formatTime(total_minor_gc_time_ns)
                   << "  (incl. promotion alloc)" << std::endl;
 
@@ -1383,6 +1391,9 @@ void GCStats::print() const {
                   << total_panic_sweep_bytes
                   << "  bytes requested" << std::endl;
     }
+
+    // ========== threaded-gc-00 blocks (additive; appended) ==========
+    printThreadedGcBlocks();
 
     // ========== Allocation Size Histograms ==========
     //
@@ -1934,6 +1945,587 @@ void GCStats::reset() {
     latest_freelist_snapshots         = 0;
     pending_freelist_large_block_count = 0;
     pending_freelist_large_block_bytes = 0;
+
+    // threaded-gc-00 phase totals and pause log.
+    tg = GCPhaseTotals{};
 }
+
+
+// ============================================================================
+// threaded-gc-00: phase totals, pause statistics, banner blocks, event log
+// ============================================================================
+
+uint64_t gcClockOverheadNs() noexcept {
+    // Minimum back-to-back difference of two process-clock reads: the part of
+    // a sampled bracket that is clock, not work. Calibrated once.
+    static const uint64_t ovh = [] {
+        uint64_t best = UINT64_MAX;
+        for (int i = 0; i < 2000; ++i) {
+            const uint64_t a = GCStats::nowSinceProcessStartNs();
+            const uint64_t b = GCStats::nowSinceProcessStartNs();
+            if (b - a < best) best = b - a;
+        }
+        return best == UINT64_MAX ? 0 : best;
+    }();
+    return ovh;
+}
+
+bool gcPhaseTimersEnabled() noexcept {
+    static const bool enabled = [] {
+        const char* e = std::getenv("ECO_GC_PHASE_TIMERS");
+        return !(e && e[0] == '0' && e[1] == '\0');
+    }();
+    return enabled;
+}
+
+int GCPhaseTotals::scannerIndex(const char* name) {
+    if (!name) name = "unnamed";
+    for (int i = 0; i < ext_count; ++i) {
+        if (ext_name[i] == name || std::string(ext_name[i]) == name) return i;
+    }
+    if (ext_count >= GC_EXT_SCANNER_CAP) return GC_EXT_SCANNER_CAP - 1;
+    ext_name[ext_count] = name;
+    return ext_count++;
+}
+
+void GCPhaseTotals::addMinor(const MinorGCRecord& r, const char* const* names,
+                             size_t n_names) {
+    minor_records++;
+    stack_walk_ns += r.stack_walk_ns;
+    stack_walk_ns_max = std::max(stack_walk_ns_max, r.stack_walk_ns);
+    frames_walked += r.frames_walked;
+    frames_walked_max = std::max(frames_walked_max, r.frames_walked);
+    frames_matched += r.frames_matched;
+    stack_slots += r.stack_slots;
+    stack_slots_max = std::max(stack_slots_max, r.stack_slots);
+    roots_longlived_jit_ns += r.roots_longlived_jit_ns;
+    roots_stackmap_ns += r.roots_stackmap_ns;
+    roots_ranges_ns += r.roots_ranges_ns;
+    roots_external_ns += r.roots_external_ns;
+    drain_tospace_ns += r.drain_tospace_ns;
+    drain_promoted_ns += r.drain_promoted_ns;
+    drain_rounds += r.drain_rounds;
+    drain_rounds_max = std::max(drain_rounds_max, r.drain_rounds);
+    tail_ns += r.tail_ns;
+    nursery_pause_ns += r.nursery_pause_ns;
+    large_body_sweep_ns += r.large_body_sweep_ns;
+    lazy_sweep_calls += r.lazy_sweep_calls;
+    lazy_sweep_bytes += r.lazy_sweep_bytes;
+    lazy_sweep_est_ns += r.lazy_sweep_est_ns;
+    promo_alloc_calls += r.promo_alloc_calls;
+    promo_alloc_est_ns += r.promo_alloc_est_ns;
+    survived += r.survived;
+    promoted += r.promoted;
+    survived_bytes += r.survived_bytes;
+    promoted_bytes += r.promoted_bytes;
+    minflt += r.minflt;
+    majflt += r.majflt;
+    minor_pause_ns += r.pause_ns;
+    for (int i = 0; i < r.ext_count; ++i) {
+        const char* nm = (static_cast<size_t>(i) < n_names && names) ? names[i] : "unnamed";
+        int j = scannerIndex(nm);
+        ext_ns[j] += r.ext_ns[i];
+        ext_slots[j] += r.ext_slots[i];
+        ext_slots_max[j] = std::max(ext_slots_max[j], r.ext_slots[i]);
+    }
+}
+
+int GCPhaseTotals::pauseBucket(uint64_t dur_ns) {
+    const uint64_t us = dur_ns / 1000;
+    if (us < 2) return 0;
+    int b = static_cast<int>(std::bit_width(us)) - 1;   // floor(log2(us))
+    return std::min(b, PAUSE_LOG2_BUCKETS - 1);
+}
+
+void GCPhaseTotals::addPause(uint64_t start_ns, uint64_t dur_ns, uint8_t kind) {
+    pause_count++;
+    pause_total_ns += dur_ns;
+    pause_max_ns = std::max(pause_max_ns, dur_ns);
+    if (kind < 3) pause_count_by_kind[kind]++;
+    pause_log2_hist[pauseBucket(dur_ns)]++;
+    if (pause_events.size() >= PAUSE_EVENT_CAP) {
+        pause_events_dropped++;
+        return;
+    }
+    if (pause_events.capacity() == 0) pause_events.reserve(4096);
+    pause_events.push_back(PauseEvent{start_ns, dur_ns, kind});
+}
+
+void GCPhaseTotals::merge(const GCPhaseTotals& o) {
+    minor_records += o.minor_records;
+    stack_walk_ns += o.stack_walk_ns;
+    stack_walk_ns_max = std::max(stack_walk_ns_max, o.stack_walk_ns_max);
+    frames_walked += o.frames_walked;
+    frames_walked_max = std::max(frames_walked_max, o.frames_walked_max);
+    frames_matched += o.frames_matched;
+    stack_slots += o.stack_slots;
+    stack_slots_max = std::max(stack_slots_max, o.stack_slots_max);
+    roots_longlived_jit_ns += o.roots_longlived_jit_ns;
+    roots_stackmap_ns += o.roots_stackmap_ns;
+    roots_ranges_ns += o.roots_ranges_ns;
+    roots_external_ns += o.roots_external_ns;
+    drain_tospace_ns += o.drain_tospace_ns;
+    drain_promoted_ns += o.drain_promoted_ns;
+    drain_rounds += o.drain_rounds;
+    drain_rounds_max = std::max(drain_rounds_max, o.drain_rounds_max);
+    tail_ns += o.tail_ns;
+    nursery_pause_ns += o.nursery_pause_ns;
+    large_body_sweep_ns += o.large_body_sweep_ns;
+    lazy_sweep_calls += o.lazy_sweep_calls;
+    lazy_sweep_bytes += o.lazy_sweep_bytes;
+    lazy_sweep_est_ns += o.lazy_sweep_est_ns;
+    promo_alloc_calls += o.promo_alloc_calls;
+    promo_alloc_est_ns += o.promo_alloc_est_ns;
+    survived += o.survived;
+    promoted += o.promoted;
+    survived_bytes += o.survived_bytes;
+    promoted_bytes += o.promoted_bytes;
+    minflt += o.minflt;
+    majflt += o.majflt;
+    minor_pause_ns += o.minor_pause_ns;
+    for (int i = 0; i < o.ext_count; ++i) {
+        int j = scannerIndex(o.ext_name[i]);
+        ext_ns[j] += o.ext_ns[i];
+        ext_slots[j] += o.ext_slots[i];
+        ext_slots_max[j] = std::max(ext_slots_max[j], o.ext_slots_max[i]);
+    }
+    for (const PauseEvent& e : o.pause_events) {
+        if (pause_events.size() >= PAUSE_EVENT_CAP) { pause_events_dropped++; continue; }
+        pause_events.push_back(e);
+    }
+    pause_events_dropped += o.pause_events_dropped;
+    pause_count += o.pause_count;
+    pause_total_ns += o.pause_total_ns;
+    pause_max_ns = std::max(pause_max_ns, o.pause_max_ns);
+    for (int k = 0; k < 3; ++k) pause_count_by_kind[k] += o.pause_count_by_kind[k];
+    for (int b = 0; b < PAUSE_LOG2_BUCKETS; ++b) pause_log2_hist[b] += o.pause_log2_hist[b];
+    phase_timers_disabled = phase_timers_disabled || o.phase_timers_disabled;
+}
+
+uint64_t GCPhaseTotals::percentile(const std::vector<uint64_t>& sorted, double q) {
+    if (sorted.empty()) return 0;
+    const double n = static_cast<double>(sorted.size());
+    size_t rank = static_cast<size_t>(std::ceil(q * n));   // nearest rank, 1-based
+    if (rank < 1) rank = 1;
+    if (rank > sorted.size()) rank = sorted.size();
+    return sorted[rank - 1];
+}
+
+double GCPhaseTotals::mmu(const std::vector<PauseEvent>& sorted_in, uint64_t wall_ns,
+                          uint64_t w_ns) {
+    if (w_ns == 0 || w_ns > wall_ns) return 1.0;
+    // Union overlapping intervals (pauses from several threads may overlap).
+    std::vector<std::pair<uint64_t, uint64_t>> iv;   // [start, end)
+    iv.reserve(sorted_in.size());
+    for (const PauseEvent& e : sorted_in) {
+        uint64_t s = e.start_ns, t = e.start_ns + e.dur_ns;
+        if (!iv.empty() && s <= iv.back().second) {
+            iv.back().second = std::max(iv.back().second, t);
+        } else {
+            iv.emplace_back(s, t);
+        }
+    }
+    if (iv.empty()) return 1.0;
+    std::vector<uint64_t> prefix(iv.size() + 1, 0);
+    for (size_t i = 0; i < iv.size(); ++i)
+        prefix[i + 1] = prefix[i] + (iv[i].second - iv[i].first);
+
+    auto gcIn = [&](uint64_t a, uint64_t b) -> uint64_t {
+        // First interval with end > a.
+        size_t i0 = static_cast<size_t>(
+            std::upper_bound(iv.begin(), iv.end(), a,
+                [](uint64_t v, const std::pair<uint64_t, uint64_t>& x) { return v < x.second; })
+            - iv.begin());
+        // First interval with start >= b.
+        size_t i1 = static_cast<size_t>(
+            std::lower_bound(iv.begin(), iv.end(), b,
+                [](const std::pair<uint64_t, uint64_t>& x, uint64_t v) { return x.first < v; })
+            - iv.begin());
+        if (i0 >= i1) return 0;
+        uint64_t sum = prefix[i1] - prefix[i0];
+        if (iv[i0].first < a) sum -= (a - iv[i0].first);
+        if (iv[i1 - 1].second > b) sum -= (iv[i1 - 1].second - b);
+        return sum;
+    };
+
+    const uint64_t t_max = wall_ns - w_ns;
+    double worst = 1.0;
+    auto consider = [&](int64_t t) {
+        uint64_t tt = t < 0 ? 0 : static_cast<uint64_t>(t);
+        if (tt > t_max) tt = t_max;
+        uint64_t g = gcIn(tt, tt + w_ns);
+        if (g > w_ns) g = w_ns;
+        double u = static_cast<double>(w_ns - g) / static_cast<double>(w_ns);
+        worst = std::min(worst, u);
+    };
+    for (const auto& x : iv) {
+        consider(static_cast<int64_t>(x.first));
+        consider(static_cast<int64_t>(x.second) - static_cast<int64_t>(w_ns));
+    }
+    return worst;
+}
+
+namespace {
+
+std::string fmtMs(uint64_t ns) {
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%.3f ms", ns / 1.0e6);
+    return buf;
+}
+
+std::string fmtS(uint64_t ns) {
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%.3f s", ns / 1.0e9);
+    return buf;
+}
+
+void printPauseLine(const char* label, std::vector<uint64_t> d) {
+    std::sort(d.begin(), d.end());
+    if (d.empty()) {
+        std::cout << "  " << label << ": none" << std::endl;
+        return;
+    }
+    uint64_t total = 0;
+    for (uint64_t v : d) total += v;
+    char buf[512];
+    std::snprintf(buf, sizeof buf,
+        "  %-26s n=%-8zu total=%-12s p50=%-12s p90=%-12s p99=%-12s p99.9=%-12s max=%s",
+        label, d.size(), fmtS(total).c_str(),
+        fmtMs(GCPhaseTotals::percentile(d, 0.50)).c_str(),
+        fmtMs(GCPhaseTotals::percentile(d, 0.90)).c_str(),
+        fmtMs(GCPhaseTotals::percentile(d, 0.99)).c_str(),
+        fmtMs(GCPhaseTotals::percentile(d, 0.999)).c_str(),
+        fmtMs(d.back()).c_str());
+    std::cout << buf << std::endl;
+}
+
+}  // namespace
+
+void GCStats::printThreadedGcBlocks() const {
+    const GCPhaseTotals& t = tg;
+
+    // ---------------- Block 1: pause distribution ----------------
+    if (t.pause_count > 0) {
+        std::cout << "\nGC Pause Distribution (threaded-gc-00):" << std::endl;
+        std::cout << "  (pause = one contiguous mutator stop; includes the stack walk and "
+                     "the large-body sweep,\n   which \"Minor GC Timing\" excludes; a minor "
+                     "that triggers a major is ONE pause)" << std::endl;
+        std::vector<PauseEvent> ev = t.pause_events;
+        std::sort(ev.begin(), ev.end(),
+                  [](const PauseEvent& a, const PauseEvent& b) { return a.start_ns < b.start_ns; });
+        std::vector<uint64_t> all, minor_only, with_major;
+        for (const PauseEvent& e : ev) {
+            all.push_back(e.dur_ns);
+            if (e.kind == 0) minor_only.push_back(e.dur_ns);
+            else with_major.push_back(e.dur_ns);
+        }
+        char buf[256];
+        std::snprintf(buf, sizeof buf,
+            "  pauses: %llu (minor-only %llu, minor+major %llu, major-only %llu)",
+            (unsigned long long)t.pause_count,
+            (unsigned long long)t.pause_count_by_kind[0],
+            (unsigned long long)t.pause_count_by_kind[1],
+            (unsigned long long)t.pause_count_by_kind[2]);
+        std::cout << buf << std::endl;
+        printPauseLine("all pauses", all);
+        printPauseLine("minor-only pauses", minor_only);
+        printPauseLine("pauses containing a major", with_major);
+        if (t.pause_events_dropped > 0) {
+            std::cout << "  WARNING: " << t.pause_events_dropped
+                      << " pauses beyond the event cap; percentiles/MMU cover the first "
+                      << GCPhaseTotals::PAUSE_EVENT_CAP << " only" << std::endl;
+        }
+
+        std::cout << "  Pause log2 histogram:" << std::endl;
+        uint64_t hmax = 0;
+        for (int b = 0; b < GCPhaseTotals::PAUSE_LOG2_BUCKETS; ++b)
+            hmax = std::max(hmax, t.pause_log2_hist[b]);
+        for (int b = 0; b < GCPhaseTotals::PAUSE_LOG2_BUCKETS; ++b) {
+            if (t.pause_log2_hist[b] == 0) continue;
+            const uint64_t lo_us = b == 0 ? 0 : (uint64_t{1} << b);
+            const uint64_t hi_us = uint64_t{1} << (b + 1);
+            std::snprintf(buf, sizeof buf, "    [%10.3f ms, %10.3f ms): ",
+                          lo_us / 1000.0, hi_us / 1000.0);
+            std::cout << buf;
+            int bar = hmax ? static_cast<int>((t.pause_log2_hist[b] * 40) / hmax) : 0;
+            for (int j = 0; j < bar; ++j) std::cout << "█";
+            std::cout << " " << t.pause_log2_hist[b] << std::endl;
+        }
+
+        if (wall_time_ns == 0) {
+            std::cout << "  MMU: skipped (wall time not stamped)" << std::endl;
+        } else {
+            static const uint64_t kWindowsMs[] = {1, 2, 5, 10, 20, 50, 100, 200, 500,
+                                                  1000, 2000, 5000, 10000};
+            std::cout << "  Minimum mutator utilisation (MMU):" << std::endl;
+            for (uint64_t w_ms : kWindowsMs) {
+                const uint64_t w_ns = w_ms * 1000000ull;
+                if (w_ns > wall_time_ns) break;
+                double u = GCPhaseTotals::mmu(ev, wall_time_ns, w_ns);
+                std::snprintf(buf, sizeof buf, "    MMU %6llu ms: %6.2f%%",
+                              (unsigned long long)w_ms, 100.0 * u);
+                std::cout << buf << std::endl;
+            }
+        }
+        std::cout << "  GC work outside the minor timer: stack walk "
+                  << fmtS(t.stack_walk_ns) << ", large-body sweep "
+                  << fmtS(t.large_body_sweep_ns)
+                  << " (counted as mutator in \"Allocator Timings\")" << std::endl;
+    }
+
+    // ---------------- Block 2: minor phase breakdown ----------------
+    if (t.minor_records > 0) {
+        std::cout << "\nMinor GC Phase Breakdown (threaded-gc-00):" << std::endl;
+        const double n = static_cast<double>(t.minor_records);
+        const uint64_t denom = t.minor_pause_ns ? t.minor_pause_ns : 1;
+        const uint64_t accounted = t.stack_walk_ns + t.roots_longlived_jit_ns +
+            t.roots_stackmap_ns + t.roots_ranges_ns + t.roots_external_ns +
+            t.drain_tospace_ns + t.drain_promoted_ns + t.tail_ns + t.large_body_sweep_ns;
+        const int64_t unaccounted = static_cast<int64_t>(t.minor_pause_ns) -
+                                    static_cast<int64_t>(accounted);
+        struct Row { const char* name; int64_t ns; };
+        const Row rows[] = {
+            {"stack walk", (int64_t)t.stack_walk_ns},
+            {"roots: long-lived + JIT", (int64_t)t.roots_longlived_jit_ns},
+            {"roots: stackmap", (int64_t)t.roots_stackmap_ns},
+            {"roots: ranges + singles", (int64_t)t.roots_ranges_ns},
+            {"roots: external scanners", (int64_t)t.roots_external_ns},
+            {"drain: to-space (Cheney)", (int64_t)t.drain_tospace_ns},
+            {"drain: promoted objects", (int64_t)t.drain_promoted_ns},
+            {"tail (grow/clear/swap)", (int64_t)t.tail_ns},
+            {"large-body sweep", (int64_t)t.large_body_sweep_ns},
+            {"unaccounted", unaccounted},
+        };
+        char buf[256];
+        std::snprintf(buf, sizeof buf, "  minors recorded: %llu, summed minor pause %s",
+                      (unsigned long long)t.minor_records, fmtS(t.minor_pause_ns).c_str());
+        std::cout << buf << std::endl;
+        for (const Row& r : rows) {
+            std::snprintf(buf, sizeof buf, "  %-28s %12.3f s  %6.2f%%  %9.3f ms/minor",
+                          r.name, r.ns / 1.0e9, 100.0 * r.ns / static_cast<double>(denom),
+                          r.ns / 1.0e6 / n);
+            std::cout << buf << std::endl;
+        }
+        std::cout << "  (each root phase includes copying/promoting the objects it reaches "
+                     "directly; their children are copied in the drain)" << std::endl;
+        std::snprintf(buf, sizeof buf,
+            "  stack frames walked: mean %.1f, max %llu; matched mean %.1f; slots mean %.1f, max %llu",
+            t.frames_walked / n, (unsigned long long)t.frames_walked_max,
+            t.frames_matched / n, t.stack_slots / n, (unsigned long long)t.stack_slots_max);
+        std::cout << buf << std::endl;
+        std::snprintf(buf, sizeof buf, "  stack walk: mean %.3f ms, max %s",
+                      t.stack_walk_ns / 1.0e6 / n, fmtMs(t.stack_walk_ns_max).c_str());
+        std::cout << buf << std::endl;
+        std::snprintf(buf, sizeof buf, "  drain rounds: mean %.2f, max %llu",
+                      t.drain_rounds / n, (unsigned long long)t.drain_rounds_max);
+        std::cout << buf << std::endl;
+        std::snprintf(buf, sizeof buf,
+            "  objects per minor: survived %.0f (%.2f MB), promoted %.0f (%.2f MB)",
+            t.survived / n, t.survived_bytes / n / 1048576.0,
+            t.promoted / n, t.promoted_bytes / n / 1048576.0);
+        std::cout << buf << std::endl;
+        std::snprintf(buf, sizeof buf,
+            "  in-pause lazy sweep: %llu calls, %.3f GB, est. %s (1-in-16 sample, clock overhead removed)",
+            (unsigned long long)t.lazy_sweep_calls, t.lazy_sweep_bytes / 1.0e9,
+            fmtS(t.lazy_sweep_est_ns).c_str());
+        std::cout << buf << std::endl;
+        std::snprintf(buf, sizeof buf,
+            "  promotion allocator: %llu calls, est. %s, %.1f ns/call (1-in-256 sample; "
+            "clock overhead removed)",
+            (unsigned long long)t.promo_alloc_calls, fmtS(t.promo_alloc_est_ns).c_str(),
+            t.promo_alloc_calls ? (double)t.promo_alloc_est_ns / t.promo_alloc_calls : 0.0);
+        std::cout << buf << std::endl;
+        std::snprintf(buf, sizeof buf, "  page faults inside minors: minor %llu, major %llu",
+                      (unsigned long long)t.minflt, (unsigned long long)t.majflt);
+        std::cout << buf << std::endl;
+        std::snprintf(buf, sizeof buf, "  calibrated clock-read overhead: %llu ns per bracket",
+                      (unsigned long long)gcClockOverheadNs());
+        std::cout << buf << std::endl;
+    } else if (t.phase_timers_disabled) {
+        std::cout << "\nMinor GC Phase Breakdown (threaded-gc-00): phase timers disabled "
+                     "(ECO_GC_PHASE_TIMERS=0)" << std::endl;
+    }
+
+    // ---------------- Block 3: external root scanners ----------------
+    if (t.minor_records > 0 && t.ext_count > 0) {
+        std::cout << "\nExternal Root Scanners (threaded-gc-00):" << std::endl;
+        const double n = static_cast<double>(t.minor_records);
+        char buf[256];
+        for (int i = 0; i < t.ext_count; ++i) {
+            std::snprintf(buf, sizeof buf,
+                "  %-18s total %10.3f ms  mean %9.3f us/minor  slots %14llu  max slots/minor %llu",
+                t.ext_name[i] ? t.ext_name[i] : "unnamed", t.ext_ns[i] / 1.0e6,
+                t.ext_ns[i] / 1.0e3 / n, (unsigned long long)t.ext_slots[i],
+                (unsigned long long)t.ext_slots_max[i]);
+            std::cout << buf << std::endl;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-collection event log (ECO_GC_EVENT_LOG=<path>), tab-separated.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+class GCEventLogImpl {
+public:
+    static GCEventLogImpl& instance() {
+        static GCEventLogImpl inst;
+        return inst;
+    }
+    bool enabled() const { return path_ != nullptr; }
+
+    void writeMinor(const MinorGCRecord& r, uint64_t seq, const char* const* names,
+                    size_t n_names) {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!open(names, n_names)) return;
+        std::string line;
+        line.reserve(512);
+        addField(line, "minor"); addNum(line, tid()); addNum(line, seq);
+        addNum(line, r.start_ns); addNum(line, r.pause_ns); addNum(line, r.nursery_pause_ns);
+        addNum(line, r.stack_walk_ns); addNum(line, r.frames_walked);
+        addNum(line, r.frames_matched); addNum(line, r.stack_slots);
+        addNum(line, r.roots_longlived_jit_ns); addNum(line, r.roots_stackmap_ns);
+        addNum(line, r.roots_ranges_ns); addNum(line, r.roots_external_ns);
+        addNum(line, r.drain_tospace_ns); addNum(line, r.drain_promoted_ns);
+        addNum(line, r.drain_rounds); addNum(line, r.tail_ns);
+        addNum(line, r.large_body_sweep_ns); addNum(line, r.lazy_sweep_calls);
+        addNum(line, r.lazy_sweep_bytes); addNum(line, r.lazy_sweep_est_ns);
+        addNum(line, r.promo_alloc_calls); addNum(line, r.promo_alloc_est_ns);
+        addNum(line, r.survived); addNum(line, r.promoted);
+        addNum(line, r.survived_bytes); addNum(line, r.promoted_bytes);
+        addNum(line, r.minflt); addNum(line, r.majflt);
+        // External scanner columns in header order; unknown names -> ext:late.
+        std::vector<uint64_t> ns(ext_cols_.size() + 1, 0), sl(ext_cols_.size() + 1, 0);
+        for (int i = 0; i < r.ext_count; ++i) {
+            const char* nm = (names && static_cast<size_t>(i) < n_names) ? names[i] : "unnamed";
+            size_t col = ext_cols_.size();
+            for (size_t c = 0; c < ext_cols_.size(); ++c)
+                if (ext_cols_[c] == nm) { col = c; break; }
+            ns[col] += r.ext_ns[i];
+            sl[col] += r.ext_slots[i];
+        }
+        for (size_t c = 0; c <= ext_cols_.size(); ++c) { addNum(line, ns[c]); addNum(line, sl[c]); }
+        for (int k = 0; k < 5; ++k) addField(line, "-");
+        finish(line);
+    }
+
+    void writeMajor(uint64_t seq, uint64_t start_ns, uint64_t total_ns, uint64_t mark_ns,
+                    uint64_t sweep_ns, uint64_t roots_ns, const char* reason) {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!open(nullptr, 0)) return;
+        std::string line;
+        addField(line, "major"); addNum(line, tid()); addNum(line, seq);
+        addNum(line, start_ns);
+        dashes(line, kMinorNumericCols - 1);  // pause_ns .. majflt
+        dashes(line, 2 * (ext_cols_.size() + 1));
+        addNum(line, total_ns); addNum(line, mark_ns); addNum(line, sweep_ns);
+        addNum(line, roots_ns); addField(line, reason);
+        finish(line);
+    }
+
+    void writePause(uint64_t seq, uint64_t start_ns, uint64_t dur_ns, uint8_t kind) {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!open(nullptr, 0)) return;
+        std::string line;
+        addField(line, "pause"); addNum(line, tid()); addNum(line, seq);
+        addNum(line, start_ns); addNum(line, dur_ns);
+        dashes(line, kMinorNumericCols - 2);
+        dashes(line, 2 * (ext_cols_.size() + 1));
+        dashes(line, 4);
+        addField(line, kind == 0 ? "minor" : kind == 1 ? "minor+major" : "major");
+        finish(line);
+    }
+
+    void flush() {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (file_) std::fflush(file_);
+    }
+
+private:
+    // Numeric columns of a minor row after (kind, tid, seq): start_ns .. majflt.
+    static constexpr int kMinorNumericCols = 27;
+
+    GCEventLogImpl() {
+        const char* p = std::getenv("ECO_GC_EVENT_LOG");
+        if (p && *p) path_ = p;
+    }
+
+    bool open(const char* const* names, size_t n_names) {
+        if (!path_) return false;
+        if (file_) return true;
+        if (failed_) return false;
+        file_ = std::fopen(path_, "w");
+        if (!file_) { failed_ = true; return false; }
+        std::atexit([] { GCEventLogImpl::instance().flush(); });
+        for (size_t i = 0; names && i < n_names; ++i) ext_cols_.push_back(names[i] ? names[i] : "unnamed");
+        std::string h =
+            "kind\ttid\tseq\tstart_ns\tpause_ns\tnursery_pause_ns\tstack_walk_ns\t"
+            "frames_walked\tframes_matched\tstack_slots\troots_longlived_jit_ns\t"
+            "roots_stackmap_ns\troots_ranges_ns\troots_external_ns\tdrain_tospace_ns\t"
+            "drain_promoted_ns\tdrain_rounds\ttail_ns\tlarge_body_sweep_ns\t"
+            "lazy_sweep_calls\tlazy_sweep_bytes\tlazy_sweep_est_ns\tpromo_alloc_calls\t"
+            "promo_alloc_est_ns\tsurvived\tpromoted\tsurvived_bytes\tpromoted_bytes\t"
+            "minflt\tmajflt";
+        for (const std::string& c : ext_cols_) h += "\text:" + c + "_ns\text:" + c + "_slots";
+        h += "\text:late_ns\text:late_slots";
+        h += "\tmajor_total_ns\tmajor_mark_ns\tmajor_sweep_ns\tmajor_roots_ns\tmajor_reason\n";
+        std::fputs(h.c_str(), file_);
+        return true;
+    }
+
+    static uint64_t tid() {
+        static std::atomic<uint64_t> next{0};
+        thread_local uint64_t id = next++;
+        return id;
+    }
+    static void addField(std::string& l, const char* v) {
+        if (!l.empty()) l += '\t';
+        l += v;
+    }
+    static void addNum(std::string& l, uint64_t v) {
+        if (!l.empty()) l += '\t';
+        l += std::to_string(v);
+    }
+    static void dashes(std::string& l, size_t n) {
+        for (size_t i = 0; i < n; ++i) addField(l, "-");
+    }
+    void finish(std::string& l) {
+        l += '\n';
+        std::fputs(l.c_str(), file_);
+    }
+
+    const char* path_ = nullptr;
+    FILE* file_ = nullptr;
+    bool failed_ = false;
+    std::mutex mu_;
+    std::vector<std::string> ext_cols_;
+};
+
+}  // namespace
+
+bool gcEventLogEnabled() noexcept { return GCEventLogImpl::instance().enabled(); }
+
+void gcEventLogMinor(const MinorGCRecord& r, uint64_t seq, const char* const* names,
+                     size_t n_names) {
+    GCEventLogImpl::instance().writeMinor(r, seq, names, n_names);
+}
+
+void gcEventLogMajor(uint64_t seq, uint64_t start_ns, uint64_t total_ns, uint64_t mark_ns,
+                     uint64_t sweep_ns, uint64_t roots_ns, const char* reason) {
+    GCEventLogImpl::instance().writeMajor(seq, start_ns, total_ns, mark_ns, sweep_ns,
+                                          roots_ns, reason);
+}
+
+void gcEventLogPause(uint64_t seq, uint64_t start_ns, uint64_t dur_ns, uint8_t kind) {
+    GCEventLogImpl::instance().writePause(seq, start_ns, dur_ns, kind);
+}
+
+void gcEventLogFlush() noexcept { GCEventLogImpl::instance().flush(); }
+
+const char* gcMajorReasonName(GCStats::MajorReason r) { return majorReasonName(r); }
+
+const char* gcTagName(int tag) { return tagName(tag); }
 
 } // namespace Elm

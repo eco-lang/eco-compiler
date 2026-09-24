@@ -372,6 +372,17 @@ public:
         return p >= region_base_ && p < region_end_;
     }
 
+    // threaded-gc-00: promotion-path instruments (promotions only, i.e.
+    // allocate() while g_in_minor_gc). Deterministic 1-in-16 sampling of the
+    // in-pause lazy-sweep slice and 1-in-256 of the allocator dispatch. The
+    // nursery takes start/end differences per minor GC.
+    struct PromoInstr {
+        SampledTimer<4> sweep;
+        uint64_t        sweep_bytes = 0;
+        SampledTimer<8> alloc;
+    };
+    const PromoInstr& promoInstr() const { return promo_instr_; }
+
 #if ENABLE_GC_STATS
     // Returns the per-allocation stats accumulated by this old gen. Only the
     // allocation-size histogram is populated here; major-GC counters are
@@ -417,6 +428,7 @@ private:
     // ThreadLocalHeap's GCStats by Allocator::getCombinedStats().
     GCStats alloc_stats_;
 #endif
+    PromoInstr promo_instr_;   // threaded-gc-00 (see promoInstr())
 
     // Bag of pre-committed-but-unassigned pages (start, end). Each entry is
     // a page of `alloc_buffer_size` bytes carved from the initial region or
@@ -815,7 +827,8 @@ private:
 
     // Lazy sweeping methods.
     void transitionToSweeping();
-    void lazySweep(size_t target_class, size_t work_budget);
+    // Returns heap bytes walked (the unit of work_budget).
+    size_t lazySweep(size_t target_class, size_t work_budget);
     void onSweepComplete();
 
     // True if the current GC cycle still has blocks that haven't been fully

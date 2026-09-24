@@ -1,0 +1,12 @@
+[
+  {
+    "name": "t2_age_nmbc128_mio",
+    "change": "promotion_age=1, nursery_block_count=128, nursery_max_block_count=128 (64 MiB fixed nursery), major_gc_initiating_occupancy=0.95",
+    "overrides": {
+      "promotion_age": 1,
+      "nursery_block_count": 128,
+      "nursery_max_block_count": 128,
+      "major_gc_initiating_occupancy": 0.95
+    }
+  }
+]

@@ -17,5 +17,10 @@ extern Testing::TestCase testListSurvivesMultipleGCCyclesWithHybridDFS;
 extern Testing::TestCase testListSurvivesMultipleGCCyclesWithBFS;
 extern Testing::TestCase testDeepListLocalityCopying;
 
+#if ECO_HEAP_VALIDATE
+// threaded-gc-00 Step 11: survivor-write census
+extern Testing::TestCase testSurvivorWriteCensus;
+#endif
+
 // Regression: promoted boxed Ints vs the ECO_HEAP_VALIDATE old-gen walk
 extern Testing::UnitTest testPromotedBoxedIntsValidateWalk;

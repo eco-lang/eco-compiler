@@ -1,0 +1,96 @@
+[
+  {
+    "name": "p_abuf_age",
+    "change": "alloc_buffer_size=128K, promotion_age=1",
+    "overrides": {
+      "alloc_buffer_size": "128K",
+      "promotion_age": 1
+    }
+  },
+  {
+    "name": "p_abuf_nmbc",
+    "change": "alloc_buffer_size=128K, nursery_max_block_count=512",
+    "overrides": {
+      "alloc_buffer_size": "128K",
+      "nursery_max_block_count": 512
+    }
+  },
+  {
+    "name": "p_abuf_mio",
+    "change": "alloc_buffer_size=128K, major_gc_initiating_occupancy=0.95",
+    "overrides": {
+      "alloc_buffer_size": "128K",
+      "major_gc_initiating_occupancy": 0.95
+    }
+  },
+  {
+    "name": "p_age_nmbc",
+    "change": "promotion_age=1, nursery_max_block_count=512",
+    "overrides": {
+      "promotion_age": 1,
+      "nursery_max_block_count": 512
+    }
+  },
+  {
+    "name": "p_age_mio",
+    "change": "promotion_age=1, major_gc_initiating_occupancy=0.95",
+    "overrides": {
+      "promotion_age": 1,
+      "major_gc_initiating_occupancy": 0.95
+    }
+  },
+  {
+    "name": "p_nmbc_mio",
+    "change": "nursery_max_block_count=512, major_gc_initiating_occupancy=0.95",
+    "overrides": {
+      "nursery_max_block_count": 512,
+      "major_gc_initiating_occupancy": 0.95
+    }
+  },
+  {
+    "name": "t_abuf_age_nmbc",
+    "change": "alloc_buffer_size=128K, promotion_age=1, nursery_max_block_count=512",
+    "overrides": {
+      "alloc_buffer_size": "128K",
+      "promotion_age": 1,
+      "nursery_max_block_count": 512
+    }
+  },
+  {
+    "name": "t_abuf_age_mio",
+    "change": "alloc_buffer_size=128K, promotion_age=1, major_gc_initiating_occupancy=0.95",
+    "overrides": {
+      "alloc_buffer_size": "128K",
+      "promotion_age": 1,
+      "major_gc_initiating_occupancy": 0.95
+    }
+  },
+  {
+    "name": "t_abuf_nmbc_mio",
+    "change": "alloc_buffer_size=128K, nursery_max_block_count=512, major_gc_initiating_occupancy=0.95",
+    "overrides": {
+      "alloc_buffer_size": "128K",
+      "nursery_max_block_count": 512,
+      "major_gc_initiating_occupancy": 0.95
+    }
+  },
+  {
+    "name": "t_age_nmbc_mio",
+    "change": "promotion_age=1, nursery_max_block_count=512, major_gc_initiating_occupancy=0.95",
+    "overrides": {
+      "promotion_age": 1,
+      "nursery_max_block_count": 512,
+      "major_gc_initiating_occupancy": 0.95
+    }
+  },
+  {
+    "name": "q_abuf_age_nmbc_mio",
+    "change": "alloc_buffer_size=128K, promotion_age=1, nursery_max_block_count=512, major_gc_initiating_occupancy=0.95",
+    "overrides": {
+      "alloc_buffer_size": "128K",
+      "promotion_age": 1,
+      "nursery_max_block_count": 512,
+      "major_gc_initiating_occupancy": 0.95
+    }
+  }
+]

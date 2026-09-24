@@ -156,6 +156,7 @@ satbBarrier(object, field, value):
 **Advantages:**
 - Clean termination: once grey set empty, collection complete
 - No floating garbage from mutations during collection
+  *(Correction 2026-09-24: this is wrong. SATB retains everything live at the snapshot, so it floats **more** garbage than incremental update; see `design_docs/parallel-gc.md` §5.7.)*
 - Only logs deletions, not insertions
 
 **Disadvantages:**

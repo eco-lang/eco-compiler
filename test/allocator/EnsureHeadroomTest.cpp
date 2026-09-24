@@ -346,3 +346,42 @@ Testing::TestCase testEnsureAbandonedTailsSurviveValidateWalk(
             alloc.getRootSet().removeRoot(&root);
         }
     });
+
+// ============================================================================
+// (e) end < ptr means "no headroom" (threaded-gc-00 Step 1)
+// ============================================================================
+//
+// A clamp that lands BELOW the bump pointer (a future remote doorbell,
+// design_docs/parallel-gc.md §3.2) must read as "must collect". The old
+// `size_t(end - ptr) >= n` form underflowed to a huge value and returned
+// true, so a covered region would have bumped unchecked past the extent.
+
+Testing::TestCase testEnsureHeadroomEndBelowPtr(
+    "HEAP_041: end < ptr reports no headroom and ensure(n) collects",
+    []() {
+        auto& alloc = initAllocator(pressureHeapConfig());
+        auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
+        EH_ASSERT(heap != nullptr);
+        NurserySpace& nursery = heap->getNursery();
+
+        alloc.minorGC();
+        heap->ensureNursery(4 * kCell);
+        for (size_t j = 0; j < 4; ++j) {
+            uncheckedBumpInt(nursery, static_cast<i64>(j));
+        }
+
+        NTA::setBumpEnd(nursery, NTA::bumpPtr(nursery) - 8);
+        EH_ASSERT(!NTA::ensureHeadroom(nursery, 8));
+        EH_ASSERT(NTA::headroom(nursery) == 0);
+
+#if ENABLE_GC_STATS
+        const uint64_t minors0 = minors(nursery);
+#endif
+        heap->ensureNursery(8);
+#if ENABLE_GC_STATS
+        EH_ASSERT(minors(nursery) == minors0 + 1);
+#endif
+        EH_ASSERT(NTA::headroom(nursery) >= 8);
+        EH_ASSERT(NTA::bumpEnd(nursery) >= NTA::bumpPtr(nursery));
+        assertBumpCoherent(nursery);
+    });

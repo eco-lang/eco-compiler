@@ -33,6 +33,11 @@
  */
 
 #include "NurserySpace.hpp"
+#include <sys/resource.h>
+#include "RuntimeExports.h"
+#include <unordered_map>
+#include <mutex>
+#include <dlfcn.h>
 #include "Allocator.hpp"
 #include "PermanentSpace.hpp"
 #include "ThreadLocalHeap.hpp"
@@ -251,8 +256,16 @@ void* NurserySpace::allocateSlow(size_t size) {
 // WITHOUT allocating anything; returns false when only a minor GC can satisfy
 // the request. Contiguity collapses the block design's advance loop (and its
 // clamp-vs-exhaustion disambiguator) to a single comparison.
+//
+// `end < ptr` is a legal state meaning "must collect" (e.g. a future remote
+// clamp that lands below the bump pointer, design_docs/parallel-gc.md §3.2).
+// The old `size_t(end - ptr) >= n` form underflowed to "plenty of room" there,
+// letting a covered region bump unchecked past the extent. Compare in integer
+// space, ordered, so no out-of-range pointer is ever formed.
 bool NurserySpace::ensureHeadroom(size_t n) {
-    return static_cast<size_t>(bump_.end - bump_.ptr) >= n;
+    const uintptr_t p = reinterpret_cast<uintptr_t>(bump_.ptr);
+    const uintptr_t e = reinterpret_cast<uintptr_t>(bump_.end);
+    return e >= p && e - p >= n;
 }
 
 void NurserySpace::failSoftUnclamp() {
@@ -408,7 +421,8 @@ void NurserySpace::checkAndGrow() {
  * this: if phase 3 ever encounters a from-space child whose age < promotion_age,
  * that is a bug (heap corruption), not a case to handle gracefully.
  */
-void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_roots) {
+void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_roots,
+                           MinorGCRecord* rec) {
     // Set the cross-allocator in-minor-GC flag (always on, used by the
     // OldGenSpace::allocate inline-helper attribution counter).
     g_in_minor_gc = true;
@@ -431,12 +445,46 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // assert tag/size sanity before evacuation begins. Catches mutator-side
     // header corruption that would otherwise propagate via memcpy.
     preEvacuationFromSpaceWalk();
+
+    // threaded-gc-00 Step 11: compare the survivors recorded at the end of
+    // the previous minor GC before anything is evacuated.
+    if (censusEnabled()) censusCheck();
 #endif
 
 #if ENABLE_GC_STATS
     // Capture state before GC.
     size_t from_space_used = bytesAllocated();
     auto gc_start = GC_STATS_TIMER_START();
+
+    // threaded-gc-00 phase timers. Clock reads at phase boundaries only
+    // (never per object); nothing here feeds a GC decision.
+    const bool T = rec != nullptr;
+    uint64_t tp = T ? GCStats::nowSinceProcessStartNs() : 0;
+    auto lap = [&]() -> uint64_t {
+        const uint64_t now = GCStats::nowSinceProcessStartNs();
+        const uint64_t d = now - tp;
+        tp = now;
+        return d;
+    };
+    const uint64_t surv0 = stats.objects_survived, prom0 = stats.objects_promoted;
+    uint64_t survb0 = 0, promb0 = 0;
+    if (T) {
+        for (int i = 0; i < GCStats::NUM_ALLOC_TAGS; ++i) {
+            survb0 += stats.survived_bytes_by_tag[i];
+            promb0 += stats.promoted_bytes_by_tag[i];
+        }
+    }
+    const OldGenSpace::PromoInstr promo0 = oldgen.promoInstr();
+    long flt_minor0 = 0, flt_major0 = 0;
+#if defined(RUSAGE_THREAD)
+    if (T) {
+        struct rusage ru;
+        if (getrusage(RUSAGE_THREAD, &ru) == 0) {
+            flt_minor0 = ru.ru_minflt;
+            flt_major0 = ru.ru_majflt;
+        }
+    }
+#endif
 #endif
 
     // Reset to-space allocation and the Cheney scan: one contiguous extent,
@@ -461,6 +509,9 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     for (HPointer *root: root_set.getRoots()) {
         evacuate(*root, oldgen, &promoted_objects);
     }
+#if ENABLE_GC_STATS
+    if (T) rec->roots_longlived_jit_ns += lap();
+#endif
 
     // Phase 1b: Evacuate stackmap-derived roots (discovered from LLVM StackMaps).
 #if ECO_GC_DEBUG
@@ -474,6 +525,9 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 #endif
         evacuate(*root, oldgen, &promoted_objects);
     }
+#if ENABLE_GC_STATS
+    if (T) rec->roots_stackmap_ns = lap();
+#endif
 
     // Phase 1c: Evacuate JIT roots (raw 64-bit pointers from JIT-compiled globals).
 #if ECO_GC_DEBUG
@@ -482,6 +536,9 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     for (uint64_t *root: root_set.getJitRoots()) {
         evacuateJitPtr(*root, oldgen, &promoted_objects);
     }
+#if ENABLE_GC_STATS
+    if (T) rec->roots_longlived_jit_ns += lap();
+#endif
 
     // Phase 1e: Stack root ranges (alloca-backed args arrays from compiled code).
 #if ECO_GC_DEBUG
@@ -511,10 +568,35 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     for (HPointer* slot : root_set.getSingleRoots()) {
         evacuate(*slot, oldgen, &promoted_objects);
     }
+#if ENABLE_GC_STATS
+    if (T) rec->roots_ranges_ns = lap();
+#endif
 
     // Phase 1d: External root scanners (Scheduler run queue, PlatformRuntime state, etc.).
 #if ECO_GC_DEBUG
     std::fprintf(stderr, "[gc] phase 1d: %zu external scanners\n", root_set.getExternalRootScanners().size());
+#endif
+#if ENABLE_GC_STATS
+    if (T) {
+        // Same scanners, same order; each timed and its slots counted.
+        const auto& scanners = root_set.getExternalRootScanners();
+        for (size_t i = 0; i < scanners.size(); ++i) {
+            uint64_t slots = 0;
+            const uint64_t ts = GCStats::nowSinceProcessStartNs();
+            scanners[i]([this, &oldgen, &promoted_objects, &slots](uint64_t& ref) {
+                ++slots;
+                evacuateValueSlot(ref, oldgen, &promoted_objects);
+            });
+            const uint64_t dt = GCStats::nowSinceProcessStartNs() - ts;
+            const size_t k = i < static_cast<size_t>(GC_EXT_SCANNER_CAP)
+                                 ? i : static_cast<size_t>(GC_EXT_SCANNER_CAP - 1);
+            rec->ext_ns[k] += dt;
+            rec->ext_slots[k] += slots;
+        }
+        rec->ext_count = static_cast<int>(std::min(scanners.size(),
+                                          static_cast<size_t>(GC_EXT_SCANNER_CAP)));
+        rec->roots_external_ns = lap();
+    } else
 #endif
     for (auto& scanner : root_set.getExternalRootScanners()) {
         scanner([this, &oldgen, &promoted_objects](uint64_t& ref) {
@@ -560,6 +642,9 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // the alternation runs to mutual fixed point.
     size_t promoted_idx = 0;
     while (scanHasMore() || promoted_idx < promoted_objects.size()) {
+#if ENABLE_GC_STATS
+        if (T) { ++rec->drain_rounds; lap(); }
+#endif
         while (scanHasMore()) {
             void *obj = scan_ptr_;
 #if ECO_HEAP_VALIDATE
@@ -568,15 +653,38 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
             scanObject(obj, oldgen, &promoted_objects);
             scan_ptr_ += getObjectSize(obj);
         }
+#if ENABLE_GC_STATS
+        if (T) rec->drain_tospace_ns += lap();
+#endif
         while (promoted_idx < promoted_objects.size()) {
 #if ECO_HEAP_VALIDATE
             in_phase3_ = true;    // promoted parent: the invariant applies
 #endif
             scanObject(promoted_objects[promoted_idx++], oldgen, &promoted_objects);
         }
+#if ENABLE_GC_STATS
+        if (T) rec->drain_promoted_ns += lap();
+#endif
     }
 #if ECO_HEAP_VALIDATE
     in_phase3_ = false;
+#endif
+#if ENABLE_GC_STATS
+    // Promotion-path old-gen counters for this cycle (Step 7). Taken at drain
+    // exit: every promotion happens inside the root phases or the drain.
+    if (T) {
+        const OldGenSpace::PromoInstr& p1 = oldgen.promoInstr();
+        rec->lazy_sweep_calls = p1.sweep.calls - promo0.sweep.calls;
+        rec->lazy_sweep_bytes = p1.sweep_bytes - promo0.sweep_bytes;
+        rec->lazy_sweep_est_ns = sampledEstimateNs(
+            p1.sweep.sampled_ns - promo0.sweep.sampled_ns, rec->lazy_sweep_calls,
+            p1.sweep.sampled_calls - promo0.sweep.sampled_calls);
+        rec->promo_alloc_calls = p1.alloc.calls - promo0.alloc.calls;
+        rec->promo_alloc_est_ns = sampledEstimateNs(
+            p1.alloc.sampled_ns - promo0.alloc.sampled_ns, rec->promo_alloc_calls,
+            p1.alloc.sampled_calls - promo0.alloc.sampled_calls);
+    }
+    auto t_loop_exit = GC_STATS_TIMER_START();
 #endif
 
     // Phase 4: Check occupancy and grow if needed.
@@ -911,11 +1019,29 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
            bump_.end <= fromBase() + from_capacity_bytes_ &&
            "post-swap bump state must lie inside the from-space extent");
 
+#if ECO_HEAP_VALIDATE
+    // threaded-gc-00 Step 11: record this cycle's survivors for the census.
+    if (censusEnabled()) censusRecord();
+#endif
+
 #if ENABLE_GC_STATS
     // Calculate what happened during this GC.
     size_t to_space_used = static_cast<size_t>(bump_.ptr - fromBase());
     size_t bytes_freed = from_space_used > to_space_used ? from_space_used - to_space_used : 0;
     uint64_t elapsed_ns = GC_STATS_TIMER_ELAPSED_NS(gc_start);
+    if (T) {
+        rec->tail_ns = static_cast<uint64_t>(GC_STATS_TIMER_ELAPSED_NS(t_loop_exit));
+        rec->nursery_pause_ns = elapsed_ns;
+        rec->survived = stats.objects_survived - surv0;
+        rec->promoted = stats.objects_promoted - prom0;
+        uint64_t survb1 = 0, promb1 = 0;
+        for (int i = 0; i < GCStats::NUM_ALLOC_TAGS; ++i) {
+            survb1 += stats.survived_bytes_by_tag[i];
+            promb1 += stats.promoted_bytes_by_tag[i];
+        }
+        rec->survived_bytes = survb1 - survb0;
+        rec->promoted_bytes = promb1 - promb0;
+    }
 
     // The recorded pause is the WHOLE minor cycle, promotion allocation
     // included. Promotions are no longer timed individually (OldGenSpace
@@ -926,9 +1052,27 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 #endif
 
     // Reclaim split-header bodies whose nursery header did not survive this
-    // cycle. Skipped if a major GC is mid-cycle (deferred until after major
-    // completes). See OldGenSpace::sweepNurseryLargeBodies.
+    // cycle. Skipped only while old-gen COMPACTION is in flight (deferred
+    // until it completes); it runs normally during major-GC mark/sweep. See
+    // OldGenSpace::sweepNurseryLargeBodies. NOTE: this runs after the minor
+    // pause timer stops, so "Minor GC Timing" excludes it (threaded-gc-00
+    // reports it in the pause and phase blocks).
+#if ENABLE_GC_STATS
+    const uint64_t t_lb = T ? GCStats::nowSinceProcessStartNs() : 0;
+#endif
     oldgen.sweepNurseryLargeBodies(minor_color_);
+#if ENABLE_GC_STATS
+    if (T) {
+        rec->large_body_sweep_ns = GCStats::nowSinceProcessStartNs() - t_lb;
+#if defined(RUSAGE_THREAD)
+        struct rusage ru;
+        if (getrusage(RUSAGE_THREAD, &ru) == 0) {
+            rec->minflt = static_cast<uint64_t>(ru.ru_minflt - flt_minor0);
+            rec->majflt = static_cast<uint64_t>(ru.ru_majflt - flt_major0);
+        }
+#endif
+    }
+#endif
 
     // Clear the cross-allocator in-minor-GC flag last, after the timer
     // has captured the full minor pause but before control returns to
@@ -2166,5 +2310,215 @@ void NurserySpace::debugAssertValidNurseryPointer(void* ptr) const {
     assert(ok && "HPointer into nursery free region (stale pointer into unallocated space)");
 }
 #endif // ECO_HEAP_VALIDATE
+
+
+#if ECO_HEAP_VALIDATE
+// ============================================================================
+// threaded-gc-00 Step 11: survivor-write census
+// ============================================================================
+//
+// Measures P1 (design_docs/parallel-gc.md §7.4.3): does anything write into
+// an object after it has survived a minor GC? The in_phase3_ assertion only
+// sees writes of YOUNGER values; a concurrent promoter would also lose writes
+// of older ones, so this compares whole-object hashes instead. Aggregated
+// process-wide and printed to stderr at exit. Never aborts, never repairs.
+
+namespace {
+
+struct SurvivorWriteCensus {
+    std::mutex mu;
+    uint64_t checked = 0;
+    uint64_t mismatched = 0;
+    uint64_t skipped_builder = 0;
+    uint64_t base_mismatch = 0;
+    uint64_t minors = 0;
+    std::unordered_map<uint64_t, uint64_t> hits;          // packed key -> count
+    std::unordered_map<uintptr_t, uint32_t> eval_id;      // EvaluatorDesc* -> id
+    std::vector<uintptr_t> eval_fn;                       // id -> generic fn
+    bool report_registered = false;
+};
+
+SurvivorWriteCensus& survivorCensus() {
+    // Leaked on purpose: must outlive every nursery and still exist at atexit.
+    static SurvivorWriteCensus* g = new SurvivorWriteCensus;
+    return *g;
+}
+
+inline uint64_t censusKey(int tag, uint32_t sub, uint16_t word) {
+    return (static_cast<uint64_t>(tag & 0xFF) << 48) |
+           (static_cast<uint64_t>(sub) << 16) | word;
+}
+
+inline uint64_t censusHash(const char* obj, size_t size) {
+    uint64_t h = 0xcbf29ce484222325ull ^ size;
+    const size_t n = size / 8;
+    for (size_t i = 0; i < n; ++i) {
+        uint64_t w;
+        std::memcpy(&w, obj + 8 * i, 8);
+        h = (h ^ w) * 0x9E3779B97F4A7C15ull;
+        h ^= h >> 29;
+    }
+    return h;
+}
+
+void survivorCensusReport() {
+    SurvivorWriteCensus& g = survivorCensus();
+    std::lock_guard<std::mutex> lock(g.mu);
+    std::fprintf(stderr,
+        "[survivor-write-census] minors=%llu checked=%llu mismatched=%llu "
+        "skipped_builder=%llu base_mismatch=%llu\n",
+        (unsigned long long)g.minors, (unsigned long long)g.checked,
+        (unsigned long long)g.mismatched, (unsigned long long)g.skipped_builder,
+        (unsigned long long)g.base_mismatch);
+    std::vector<std::pair<uint64_t, uint64_t>> rows(g.hits.begin(), g.hits.end());
+    std::sort(rows.begin(), rows.end(),
+              [](const auto& a, const auto& b) { return a.second > b.second; });
+    const size_t n = std::min<size_t>(rows.size(), 50);
+    for (size_t i = 0; i < n; ++i) {
+        const uint64_t key = rows[i].first;
+        const int tag = static_cast<int>(key >> 48);
+        const uint32_t sub = static_cast<uint32_t>((key >> 16) & 0xFFFFFFFFu);
+        const uint16_t word = static_cast<uint16_t>(key & 0xFFFF);
+        char wbuf[16];
+        if (word == 0xFFFF) std::snprintf(wbuf, sizeof wbuf, "?");
+        else std::snprintf(wbuf, sizeof wbuf, "%u", (unsigned)word);
+        if (tag == Tag_Closure && sub < g.eval_fn.size()) {
+            const uintptr_t fn = g.eval_fn[sub];
+            Dl_info info{};
+            const char* sym = (fn && dladdr(reinterpret_cast<void*>(fn), &info) && info.dli_sname)
+                                  ? info.dli_sname : "?";
+            std::fprintf(stderr,
+                "[survivor-write-census]   tag=%s evaluator-fn=0x%lx (%s) word=%s count=%llu\n",
+                gcTagName(tag), (unsigned long)fn, sym, wbuf,
+                (unsigned long long)rows[i].second);
+        } else {
+            std::fprintf(stderr,
+                "[survivor-write-census]   tag=%s sub=%u word=%s count=%llu\n",
+                gcTagName(tag), (unsigned)sub, wbuf, (unsigned long long)rows[i].second);
+        }
+    }
+    std::fprintf(stderr, "[survivor-write-census] anchor eco_alloc_custom=0x%lx\n",
+                 (unsigned long)reinterpret_cast<uintptr_t>(&eco_alloc_custom));
+}
+
+}  // namespace
+
+bool NurserySpace::censusEnabled() const {
+    if (census_forced_ >= 0) return census_forced_ == 1;
+    static const bool on = [] {
+        const char* e = std::getenv("ECO_SURVIVOR_WRITE_CENSUS");
+        return e != nullptr && e[0] == '1';
+    }();
+    return on;
+}
+
+void NurserySpace::censusRecord() {
+    census_.clear();
+    census_copy_.clear();
+    char* base = fromBase();
+    census_base_ = base;
+    if (!base) return;
+    char* end = bump_.ptr;
+    for (char* scan = base; scan < end;) {
+        const size_t sz = getObjectSize(scan);
+        if (sz == 0 || scan + sz > end) break;   // pre-walk would have aborted
+        const Header* h = getHeader(scan);
+        CensusEntry e;
+        e.offset_q = static_cast<uint32_t>((scan - base) >> 3);
+        e.size = static_cast<uint32_t>(sz);
+        e.hash = censusHash(scan, sz);
+        e.builder = static_cast<uint8_t>(h->builder);
+        e.copy_off = UINT32_MAX;
+        if (sz <= 128 && !e.builder) {
+            e.copy_off = static_cast<uint32_t>(census_copy_.size());
+            for (size_t i = 0; i < sz / 8; ++i) {
+                uint64_t w;
+                std::memcpy(&w, scan + 8 * i, 8);
+                census_copy_.push_back(w);
+            }
+        }
+        census_.push_back(e);
+        scan += sz;
+    }
+    SurvivorWriteCensus& g = survivorCensus();
+    std::lock_guard<std::mutex> lock(g.mu);
+    if (!g.report_registered && census_forced_ < 0) {
+        g.report_registered = true;
+        std::atexit(survivorCensusReport);
+    }
+}
+
+void NurserySpace::censusCheck() {
+    SurvivorWriteCensus& g = survivorCensus();
+    std::lock_guard<std::mutex> lock(g.mu);
+    g.minors++;
+    if (census_.empty()) return;
+    char* base = fromBase();
+    if (census_base_ != base) {
+        if (g.base_mismatch++ == 0) {
+            std::fprintf(stderr, "[survivor-write-census] WARNING: from-space base moved "
+                                 "between record and check; cycle skipped\n");
+        }
+        census_.clear();
+        return;
+    }
+    for (const CensusEntry& e : census_) {
+        char* obj = base + (static_cast<size_t>(e.offset_q) << 3);
+        if (e.builder) { g.skipped_builder++; continue; }
+        g.checked++;
+        if (censusHash(obj, e.size) == e.hash) continue;
+        g.mismatched++;
+        uint16_t word = 0xFFFF;
+        if (e.copy_off != UINT32_MAX) {
+            for (size_t i = 0; i < e.size / 8; ++i) {
+                uint64_t w;
+                std::memcpy(&w, obj + 8 * i, 8);
+                if (w != census_copy_[e.copy_off + i]) { word = static_cast<uint16_t>(i); break; }
+            }
+        }
+        const Header* h = getHeader(obj);
+        const int tag = static_cast<int>(h->tag);
+        uint32_t sub = 0;
+        if (tag == Tag_Custom) {
+            sub = static_cast<uint32_t>(static_cast<Custom*>(static_cast<void*>(obj))->ctor);
+        } else if (tag == Tag_Closure) {
+            const Closure* c = static_cast<const Closure*>(static_cast<void*>(obj));
+            const uintptr_t desc = reinterpret_cast<uintptr_t>(c->evaluator);
+            auto it = g.eval_id.find(desc);
+            if (it == g.eval_id.end()) {
+                const uint32_t id = static_cast<uint32_t>(g.eval_fn.size());
+                g.eval_fn.push_back(c->evaluator
+                    ? reinterpret_cast<uintptr_t>(c->evaluator->generic) : 0);
+                it = g.eval_id.emplace(desc, id).first;
+            }
+            sub = it->second;
+        }
+        g.hits[censusKey(tag, sub, word)]++;
+    }
+    census_.clear();
+}
+
+NurserySpaceTestAccess::CensusCounts NurserySpaceTestAccess::survivorWriteCensusCounts() {
+    SurvivorWriteCensus& g = survivorCensus();
+    std::lock_guard<std::mutex> lock(g.mu);
+    return CensusCounts{g.checked, g.mismatched, g.skipped_builder};
+}
+
+uint64_t NurserySpaceTestAccess::survivorWriteCensusHits(int tag, uint32_t sub, uint16_t word) {
+    SurvivorWriteCensus& g = survivorCensus();
+    std::lock_guard<std::mutex> lock(g.mu);
+    auto it = g.hits.find(censusKey(tag, sub, word));
+    return it == g.hits.end() ? 0 : it->second;
+}
+
+void NurserySpaceTestAccess::resetSurvivorWriteCensus() {
+    SurvivorWriteCensus& g = survivorCensus();
+    std::lock_guard<std::mutex> lock(g.mu);
+    g.checked = g.mismatched = g.skipped_builder = g.base_mismatch = g.minors = 0;
+    g.hits.clear();
+    g.eval_id.clear();
+    g.eval_fn.clear();
+}
+#endif  // ECO_HEAP_VALIDATE
 
 } // namespace Elm

@@ -4,6 +4,8 @@
 #include "HeapGenerators.hpp"
 #include "HeapSnapshot.hpp"
 #include "TestHelpers.hpp"
+#include "HeapHelpers.hpp"
+#include "ThreadLocalHeap.hpp"
 
 using namespace Elm;
 
@@ -523,3 +525,64 @@ Testing::UnitTest testPromotedBoxedIntsValidateWalk(
 
         ints.unregisterRoots(alloc);
     });
+
+#if ECO_HEAP_VALIDATE
+// ============================================================================
+// threaded-gc-00 Step 11: survivor-write census
+// ============================================================================
+//
+// A write into an object that has already survived a minor GC must be
+// counted, keyed by (tag, ctor, first differing word); an untouched survivor
+// must not be; a builder object must be skipped (writes are allowed there).
+Testing::TestCase testSurvivorWriteCensus("threaded-gc-00: survivor-write census counts writes into survived objects", []() {
+    auto& alloc = initAllocator();
+    auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
+    NurserySpace& nursery = heap->getNursery();
+    NurserySpaceTestAccess::setSurvivorWriteCensus(nursery, true);
+    NurserySpaceTestAccess::resetSurvivorWriteCensus();
+
+    const u64 kTwoInts = 0b0101;   // two unboxed Int slots (2-bit kinds)
+    Unboxable v1; v1.i = 1;
+    Unboxable v2; v2.i = 2;
+
+    // --- Control: survives twice untouched -> no mismatch.
+    HPointer untouched = Elm::alloc::custom(7, {v1, v2}, kTwoInts);
+    alloc.getRootSet().addRoot(&untouched);
+    alloc.minorGC();            // survives into to-space (age 1); recorded
+    alloc.minorGC();            // checked
+    auto c0 = NurserySpaceTestAccess::survivorWriteCensusCounts();
+    if (c0.mismatched != 0) throw std::runtime_error("census: false positive on untouched survivor");
+    if (c0.checked == 0) throw std::runtime_error("census: nothing was checked");
+    alloc.getRootSet().removeRoot(&untouched);
+
+    // --- Write after survival -> exactly one mismatch at word 3 (values[1]).
+    NurserySpaceTestAccess::resetSurvivorWriteCensus();
+    HPointer written = Elm::alloc::custom(7, {v1, v2}, kTwoInts);
+    alloc.getRootSet().addRoot(&written);
+    alloc.minorGC();            // survives; recorded
+    Custom* obj = static_cast<Custom*>(alloc.resolve(written));
+    obj->values[1].i = 99;      // the write the census must catch
+    alloc.minorGC();            // checked
+    auto c1 = NurserySpaceTestAccess::survivorWriteCensusCounts();
+    if (c1.mismatched != 1) throw std::runtime_error("census: write after survival not counted exactly once");
+    if (NurserySpaceTestAccess::survivorWriteCensusHits(Tag_Custom, 7, 3) != 1)
+        throw std::runtime_error("census: hit not keyed (Tag_Custom, ctor 7, word 3)");
+    alloc.getRootSet().removeRoot(&written);
+
+    // --- Builder object: written after survival but exempt -> skipped.
+    NurserySpaceTestAccess::resetSurvivorWriteCensus();
+    HPointer builder = Elm::alloc::custom(9, {v1, v2}, kTwoInts);
+    Elm::alloc::mark_as_builder(getHeader(alloc.resolve(builder)));
+    alloc.getRootSet().addRoot(&builder);
+    alloc.minorGC();
+    static_cast<Custom*>(alloc.resolve(builder))->values[0].i = 42;
+    alloc.minorGC();
+    auto c2 = NurserySpaceTestAccess::survivorWriteCensusCounts();
+    if (c2.skipped_builder == 0) throw std::runtime_error("census: builder object not skipped");
+    if (c2.mismatched != 0) throw std::runtime_error("census: builder write counted as a violation");
+    Elm::alloc::clear_builder(getHeader(alloc.resolve(builder)));
+    alloc.getRootSet().removeRoot(&builder);
+
+    NurserySpaceTestAccess::setSurvivorWriteCensus(nursery, false);
+});
+#endif

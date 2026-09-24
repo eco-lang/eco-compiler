@@ -160,6 +160,26 @@ private:
     // {to-allocated} (mid-GC).
     bool in_minor_gc_ = false;
     bool in_phase3_   = false;        // True only during phase 3 (promoted-object scan).
+
+    // threaded-gc-00 Step 11: survivor-write census (ECO_SURVIVOR_WRITE_CENSUS=1).
+    // At the end of each minor GC every survivor in [fromBase, bump_.ptr) is
+    // hashed; at the start of the next minor GC each is re-hashed. A mismatch
+    // is a write into an object that had already survived a GC (P1,
+    // design_docs/parallel-gc.md §7.4.3). Counts only; never aborts.
+    struct CensusEntry {
+        uint32_t offset_q;    // (obj - census_base_) >> 3
+        uint32_t size;        // bytes
+        uint64_t hash;
+        uint32_t copy_off;    // word offset into census_copy_, or UINT32_MAX
+        uint8_t  builder;     // builder bit at record time (writes allowed)
+    };
+    std::vector<CensusEntry> census_;
+    std::vector<uint64_t>    census_copy_;   // bytes of survivors <= 128 B
+    char* census_base_ = nullptr;
+    int   census_forced_ = -1;               // test override: -1 env, 0 off, 1 on
+    bool  censusEnabled() const;
+    void  censusRecord();
+    void  censusCheck();
 #endif
 
     // Per-minor-GC 1-bit color for split-header bodies (HEAP_026). Flipped at
@@ -182,7 +202,10 @@ private:
     void initializeFromConfig();
 
     // Performs minor GC, evacuating live objects to to_space or promoting to old gen.
-    void minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_roots);
+    // `rec` (threaded-gc-00): when non-null, the per-phase measurements of
+    // this collection are written into it. Null = no phase timing.
+    void minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_roots,
+                 MinorGCRecord* rec = nullptr);
 
     // Zeros the free region of to-space after evacuation completes.
     // Prevents ghost headers from surviving into the next GC cycle.
@@ -423,12 +446,26 @@ public:
 
     // Bytes between the bump pointer and the CLAMPED end — exactly the
     // quantity ensureHeadroom guarantees.
+    // 0 when end < ptr (a clamp below the bump pointer means "must collect").
     static size_t headroom(const NurserySpace& nursery) {
-        return static_cast<size_t>(nursery.bump_.end - nursery.bump_.ptr);
+        const uintptr_t p = reinterpret_cast<uintptr_t>(nursery.bump_.ptr);
+        const uintptr_t e = reinterpret_cast<uintptr_t>(nursery.bump_.end);
+        return e >= p ? static_cast<size_t>(e - p) : 0;
     }
 
     static char* bumpPtr(const NurserySpace& nursery) { return nursery.bump_.ptr; }
     static char* bumpEnd(const NurserySpace& nursery) { return nursery.bump_.end; }
+    static void setBumpEnd(NurserySpace& nursery, char* end) { nursery.bump_.end = end; }
+#if ECO_HEAP_VALIDATE
+    // threaded-gc-00 Step 11: census control + readout for tests.
+    static void setSurvivorWriteCensus(NurserySpace& nursery, bool on) {
+        nursery.census_forced_ = on ? 1 : 0;
+    }
+    struct CensusCounts { uint64_t checked, mismatched, skipped_builder; };
+    static CensusCounts survivorWriteCensusCounts();
+    static uint64_t survivorWriteCensusHits(int tag, uint32_t sub, uint16_t word);
+    static void resetSurvivorWriteCensus();
+#endif
 
     // Consumes headroom without going through allocate() so a test can park
     // the bump pointer at an exact offset inside the extent.

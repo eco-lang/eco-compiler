@@ -163,7 +163,7 @@ void registerGcRootScanner() {
                     }
                 }
             }
-        });
+        }, "cellstore");
 }
 
 } // namespace Eco::Kernel::CellStore

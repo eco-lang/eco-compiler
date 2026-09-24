@@ -297,10 +297,18 @@ public:
     using EvacuateFn = std::function<void(uint64_t&)>;
     using ExternalRootScanner = std::function<void(EvacuateFn)>;
 
-    void addExternalRootScanner(ExternalRootScanner scanner);
+    // `name` must have static lifetime (a string literal); it labels the
+    // scanner in the threaded-gc-00 per-scanner cost report.
+    void addExternalRootScanner(ExternalRootScanner scanner,
+                                const char* name = "unnamed");
 
     const std::vector<ExternalRootScanner>& getExternalRootScanners() const {
         return external_scanners;
+    }
+
+    // Parallel to getExternalRootScanners(): one name per scanner.
+    const std::vector<const char*>& getExternalRootScannerNames() const {
+        return external_scanner_names;
     }
 
     // ===== Utility =====
@@ -312,6 +320,7 @@ private:
     std::unordered_set<HPointer *> roots;     // Long-lived roots (O(1) add/remove).
     std::unordered_set<uint64_t *> jit_roots; // JIT roots storing raw 64-bit pointers.
     std::vector<ExternalRootScanner> external_scanners; // External root callbacks.
+    std::vector<const char*> external_scanner_names;    // Parallel names.
     StackRootRangeRec* range_storage_ = nullptr;        // Range shadow-stack array.
     HPointer** root1_storage_ = nullptr;                // Single-slot shadow-stack array.
 };

@@ -148,7 +148,7 @@ PlatformRuntime::PlatformRuntime() {
                     for (auto& enc : per.subHPs) evacuate(enc);
                 }
             }
-        });
+        }, "platform-runtime");
 }
 
 // ============================================================================

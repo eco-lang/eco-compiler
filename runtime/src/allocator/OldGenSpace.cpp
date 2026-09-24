@@ -688,6 +688,20 @@ void *OldGenSpace::allocate(size_t size) {
         }
         if (budget > 0) {
             size_t cls_for_sweep = sizeClass(size);
+#if ENABLE_GC_STATS
+            // threaded-gc-00: promotion-path sweep bytes (exact) and time
+            // (1-in-16 deterministic sample). Measurement only.
+            if (g_in_minor_gc && gcPhaseTimersEnabled()) {
+                if (promo_instr_.sweep.shouldSample()) {
+                    const uint64_t t0 = GCStats::nowSinceProcessStartNs();
+                    promo_instr_.sweep_bytes += lazySweep(cls_for_sweep, budget);
+                    promo_instr_.sweep.sampled_ns += GCStats::nowSinceProcessStartNs() - t0;
+                    promo_instr_.sweep.sampled_calls++;
+                } else {
+                    promo_instr_.sweep_bytes += lazySweep(cls_for_sweep, budget);
+                }
+            } else
+#endif
             lazySweep(cls_for_sweep, budget);
         }
     }
@@ -701,6 +715,14 @@ void *OldGenSpace::allocate(size_t size) {
     // small but non-zero (bag-page pulls, mmap commit) and they too can
     // run in either gc_phase_ context.
     void* result;
+#if ENABLE_GC_STATS
+    // threaded-gc-00: sample the allocator's own cost per promotion (the
+    // dispatch below; the upfront sweep slice above is measured separately,
+    // so the two estimates never double-count). 1-in-256, deterministic.
+    const bool sample_alloc = g_in_minor_gc && gcPhaseTimersEnabled() &&
+                              promo_instr_.alloc.shouldSample();
+    const uint64_t t_alloc0 = sample_alloc ? GCStats::nowSinceProcessStartNs() : 0;
+#endif
     if (size >= config_->alloc_buffer_size) {
         // Path 2: large objects bypass the BBoP and get a dedicated pinned block.
         result = allocateLargeBlock(size);
@@ -715,6 +737,12 @@ void *OldGenSpace::allocate(size_t size) {
             result = allocateFromBagPage(size);
         }
     }
+#if ENABLE_GC_STATS
+    if (sample_alloc) {
+        promo_instr_.alloc.sampled_ns += GCStats::nowSinceProcessStartNs() - t_alloc0;
+        promo_instr_.alloc.sampled_calls++;
+    }
+#endif
 
 #if ENABLE_GC_STATS
     if (timed) {
@@ -2360,7 +2388,15 @@ inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
         // assignment to `free_lists[cls] = cell` makes `cell` reachable from
         // its own predecessor in the original chain). On abort, look up the
         // first-push origin so we can pin which call site placed the cell.
-        {
+        // ECO_VALIDATE_FREELIST_DUP_SCAN=0 skips this O(list-length) scan
+        // (threaded-gc-00): on a self-compile the post-major sweep pushes
+        // millions of cells onto lists up to 1M long, which makes a validator
+        // self-compile take days. Every other validator check stays on.
+        static const bool dup_scan_enabled = [] {
+            const char* e = std::getenv("ECO_VALIDATE_FREELIST_DUP_SCAN");
+            return !(e && e[0] == '0');
+        }();
+        if (dup_scan_enabled) {
             size_t depth = 0;
             for (FreeCell* c = free_lists[cls]; c != nullptr;
                  c = c->next_in_class) {
@@ -2625,7 +2661,7 @@ void OldGenSpace::markBlockFullySwept(size_t block_index) {
  * Lazy sweep - sweep a bounded amount of heap to find free space.
  * Coalesces adjacent garbage spans into Tag_Free cells, just like sweep().
  */
-void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
+size_t OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
     size_t work_done = 0;
 
     // Per-block coalescing run state, carried across iterations only within
@@ -2658,7 +2694,7 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
                 alloc_stats_.total_post_sweep_shrink_ns +=
                     GC_STATS_TIMER_ELAPSED_NS(t0_shrink);
 #endif
-                return;
+                return work_done;
             }
             // Skip blocks that were materialized mid-cycle (populated /
             // freshly-acquired during sweeping). Their meta.fully_swept is
@@ -2792,7 +2828,7 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
             // Flush any in-progress run so we don't leave it dangling across
             // an early return.
             flushRun(sweep_buffer_index_);
-            return;
+            return work_done;
         }
     }
 
@@ -2811,6 +2847,7 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
             GC_STATS_TIMER_ELAPSED_NS(t0_shrink);
 #endif
     }
+    return work_done;
 }
 
 /**
@@ -4594,6 +4631,10 @@ void OldGenSpace::freeLargeBodyCell(LargeBodyMeta& m) {
                         need_sentinel = false;
                         break;
                     case GCPhase::Marking:
+                        // UNREACHABLE today: gc_phase_ is never set to
+                        // Marking (marking runs to completion inside the
+                        // major pause). Kept for threaded-gc phase 5a, which
+                        // reworks this function for concurrent marking.
                         need_sentinel = true;
                         break;
                     case GCPhase::Sweeping:

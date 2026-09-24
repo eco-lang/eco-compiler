@@ -1,0 +1,40 @@
+[
+  {
+    "name": "nmbc_256",
+    "change": "nursery_max_block_count=256, nursery_block_count=256 (128 MiB fixed nursery)",
+    "overrides": {
+      "nursery_max_block_count": 256,
+      "nursery_block_count": 256
+    }
+  },
+  {
+    "name": "nmbc_128",
+    "change": "nursery_max_block_count=128, nursery_block_count=128 (64 MiB fixed nursery)",
+    "overrides": {
+      "nursery_max_block_count": 128,
+      "nursery_block_count": 128
+    }
+  },
+  {
+    "name": "nmbc_64",
+    "change": "nursery_max_block_count=64, nursery_block_count=64 (32 MiB fixed nursery)",
+    "overrides": {
+      "nursery_max_block_count": 64,
+      "nursery_block_count": 64
+    }
+  },
+  {
+    "name": "mio_0.97",
+    "change": "major_gc_initiating_occupancy=0.97",
+    "overrides": {
+      "major_gc_initiating_occupancy": 0.97
+    }
+  },
+  {
+    "name": "mio_0.99",
+    "change": "major_gc_initiating_occupancy=0.99",
+    "overrides": {
+      "major_gc_initiating_occupancy": 0.99
+    }
+  }
+]

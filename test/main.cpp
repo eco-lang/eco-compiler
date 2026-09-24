@@ -35,6 +35,7 @@
 #include "allocator/EcoApplyClosureTypedTest.hpp"
 #include "allocator/GCPressureTest.hpp"
 #include "allocator/EnsureHeadroomTest.hpp"
+#include "allocator/GCPauseStatsTest.hpp"
 #include "allocator/NurseryContiguityTest.hpp"
 #include "allocator/SliceRepresentationTest.hpp"
 #include "allocator/AddressSpaceReservationTest.hpp"
@@ -579,6 +580,9 @@ int main(int argc, char* argv[]) {
     nurseryTests.add(testListSurvivesMultipleGCCyclesWithHybridDFS);
     nurseryTests.add(testListSurvivesMultipleGCCyclesWithBFS);
     nurseryTests.add(testDeepListLocalityCopying);
+#if ECO_HEAP_VALIDATE
+    nurseryTests.add(testSurvivorWriteCensus);
+#endif
     nurseryTests.add(testPromotedBoxedIntsValidateWalk);
 
     Testing::TestSuite oldGenTests("OldGenSpace");
@@ -825,6 +829,10 @@ int main(int argc, char* argv[]) {
     // (HEAP_041). Reconfigures the heap to tiny/threshold-tripping shapes,
     // so it rides the same fork isolation as the rest of this suite.
     gcPressureTests->add(testEnsureHeadroomPostconditionAcrossAdvanceAndGC);
+    gcPressureTests->add(testEnsureHeadroomEndBelowPtr);
+    gcPressureTests->add(testGCPauseStatsMMU);
+    gcPressureTests->add(testGCPauseStatsPercentiles);
+    gcPressureTests->add(testGCPauseStatsCombine);
     gcPressureTests->add(testEnsureAtClampedBlockGCsInsteadOfAdvancing);
     gcPressureTests->add(testEnsureFailSoftTinyConfigTerminates);
     gcPressureTests->add(testEnsureAbandonedTailsSurviveValidateWalk);

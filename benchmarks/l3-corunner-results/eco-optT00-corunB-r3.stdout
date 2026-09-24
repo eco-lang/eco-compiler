@@ -1,0 +1,412 @@
+Verifying dependencies (17/29)Verifying dependencies (18/29)Verifying dependencies (19/29)Verifying dependencies (20/29)Verifying dependencies (21/29)Verifying dependencies (22/29)Verifying dependencies (23/29)Verifying dependencies (24/29)Verifying dependencies (25/29)Verifying dependencies (26/29)Verifying dependencies (27/29)Verifying dependencies (28/29)Verifying dependencies (29/29)                              Dependencies ready!
+Compiling ...Compiling (1)Compiling (2)Compiling (3)Compiling (4)Compiling (5)Compiling (6)Compiling (7)Compiling (8)Compiling (9)Compiling (10)Compiling (11)Compiling (12)Compiling (13)Compiling (14)Compiling (15)Compiling (16)Compiling (17)Compiling (18)Compiling (19)Compiling (20)Compiling (21)Compiling (22)Compiling (23)Compiling (24)Compiling (25)Compiling (26)Compiling (27)Compiling (28)Compiling (29)Compiling (30)Compiling (31)Compiling (32)Compiling (33)Compiling (34)Compiling (35)Compiling (36)Compiling (37)Compiling (38)Compiling (39)Compiling (40)Compiling (41)Compiling (42)Compiling (43)Compiling (44)Compiling (45)Compiling (46)Compiling (47)Compiling (48)Compiling (49)Compiling (50)Compiling (51)Compiling (52)Compiling (53)Compiling (54)Compiling (55)Compiling (56)Compiling (57)Compiling (58)Compiling (59)Compiling (60)Compiling (61)Compiling (62)Compiling (63)Compiling (64)Compiling (65)Compiling (66)Compiling (67)Compiling (68)Compiling (69)Compiling (70)Compiling (71)Compiling (72)Compiling (73)Compiling (74)Compiling (75)Compiling (76)Compiling (77)Compiling (78)Compiling (79)Compiling (80)Compiling (81)Compiling (82)Compiling (83)Compiling (84)Compiling (85)Compiling (86)Compiling (87)Compiling (88)Compiling (89)Compiling (90)Compiling (91)Compiling (92)Compiling (93)Compiling (94)Compiling (95)Compiling (96)Compiling (97)Compiling (98)Compiling (99)Compiling (100)Compiling (101)Compiling (102)Compiling (103)Compiling (104)Compiling (105)Compiling (106)Compiling (107)Compiling (108)Compiling (109)Compiling (110)Compiling (111)Compiling (112)Compiling (113)Compiling (114)Compiling (115)Compiling (116)Compiling (117)Compiling (118)Compiling (119)Compiling (120)Compiling (121)Compiling (122)Compiling (123)Compiling (124)Compiling (125)Compiling (126)Compiling (127)Compiling (128)Compiling (129)Compiling (130)Compiling (131)Compiling (132)Compiling (133)Compiling (134)Compiling (135)Compiling (136)Compiling (137)Compiling (138)Compiling (139)Compiling (140)Compiling (141)Compiling (142)Compiling (143)Compiling (144)Compiling (145)Compiling (146)Compiling (147)Compiling (148)Compiling (149)Compiling (150)Compiling (151)Compiling (152)Compiling (153)Compiling (154)Compiling (155)Compiling (156)Compiling (157)Compiling (158)Compiling (159)Compiling (160)Compiling (161)Compiling (162)Compiling (163)Compiling (164)Compiling (165)Compiling (166)Compiling (167)Compiling (168)Compiling (169)Compiling (170)Compiling (171)Compiling (172)Compiling (173)Compiling (174)Compiling (175)Compiling (176)Compiling (177)Compiling (178)Compiling (179)Compiling (180)Compiling (181)Compiling (182)Compiling (183)Compiling (184)Compiling (185)Compiling (186)Compiling (187)Compiling (188)Compiling (189)Compiling (190)Compiling (191)Compiling (192)Compiling (193)Compiling (194)Compiling (195)Compiling (196)Compiling (197)Compiling (198)Compiling (199)Compiling (200)Compiling (201)Compiling (202)Compiling (203)Compiling (204)Compiling (205)Compiling (206)Compiling (207)Compiling (208)Compiling (209)Compiling (210)Compiling (211)Compiling (212)Compiling (213)Compiling (214)Compiling (215)Compiling (216)Compiling (217)Compiling (218)Compiling (219)Compiling (220)Compiling (221)Compiling (222)Compiling (223)Compiling (224)Compiling (225)Compiling (226)Compiling (227)Compiling (228)Compiling (229)Compiling (230)Compiling (231)Compiling (232)Compiling (233)Compiling (234)Compiling (235)Compiling (236)Compiling (237)Compiling (238)Compiling (239)Compiling (240)Compiling (241)Compiling (242)Compiling (243)Compiling (244)Compiling (245)Compiling (246)Compiling (247)Compiling (248)Compiling (249)Compiling (250)Compiling (251)Compiling (252)Compiling (253)Compiling (254)Compiling (255)Compiling (256)Compiling (257)Compiling (258)Compiling (259)Compiling (260)Compiling (261)Compiling (262)Compiling (263)Compiling (264)Compiling (265)Compiling (266)Compiling (267)Compiling (268)Compiling (269)Compiling (270)Compiling (271)Compiling (272)Compiling (273)Success! Compiled 273 modules.
+
+    Terminal.Main ───> bin/eco-optT00-corunB-r3-out.mlir
+
+
+=== GC Statistics ===
+
+Allocation:
+  Objects allocated:        254094395
+  Bytes allocated:           13224.76 MB
+
+Minor GC:
+  Minor GC cycles:               1924
+  Objects survived:         744329992 (292.9%)
+  Objects promoted:         675767781 (266.0%)
+  Bytes reclaimed:          205149.96 MB
+  Nursery grow events:              2
+  Ensure slow calls:              504
+  Maximum nursery size:        256.00 MB
+
+
+Minor GC Timing:
+  Total time:                    58.24 s  (incl. promotion alloc)
+  Average time:                 30.27 ms
+  Min time:                    63.37 µs
+  Max time:                    846.99 ms
+
+Minor GC Time Histogram:
+   60.00 µs -  65.00 µs:  5 (0.3%)
+   65.00 µs -  70.00 µs:  9 (0.5%)
+   70.00 µs -  75.00 µs: █ 37 (1.9%)
+   75.00 µs -  80.00 µs: ██ 94 (4.9%)
+   80.00 µs -  85.00 µs: ██ 84 (4.4%)
+   85.00 µs -  90.00 µs: ██ 68 (3.5%)
+   90.00 µs -  95.00 µs: █ 64 (3.3%)
+   95.00 µs - 100.00 µs: █ 43 (2.2%)
+  100.00 µs - 150.00 µs: ████ 149 (7.7%)
+  150.00 µs - 200.00 µs:  23 (1.2%)
+  200.00 µs - 250.00 µs:  5 (0.3%)
+  250.00 µs - 300.00 µs:  4 (0.2%)
+  300.00 µs - 350.00 µs:  8 (0.4%)
+  350.00 µs - 400.00 µs:  1 (0.1%)
+  400.00 µs - 450.00 µs:  5 (0.3%)
+  500.00 µs - 550.00 µs:  1 (0.1%)
+  550.00 µs - 600.00 µs:  5 (0.3%)
+  600.00 µs - 650.00 µs:  7 (0.4%)
+  650.00 µs - 700.00 µs:  4 (0.2%)
+  700.00 µs - 750.00 µs:  2 (0.1%)
+  750.00 µs - 800.00 µs:  4 (0.2%)
+  800.00 µs - 850.00 µs:  4 (0.2%)
+  850.00 µs - 900.00 µs:  5 (0.3%)
+  900.00 µs - 950.00 µs:  3 (0.2%)
+  950.00 µs -    1.00 ms:  6 (0.3%)
+  >    1.00 ms     : ████████████████████████████████████████ 1284 (66.7%)
+
+Major GC:
+  Major GC cycles:                  6
+  Concurrent marks:                 6
+  Mark-sweeps completed:            6
+  Incremental marks:           188052
+  Total work units:         190869802
+  Occupancy triggers:               0
+  Alloc-fail triggers:              0
+  Global-pressure trig.:            0
+  Garbage-frac triggers:            6
+
+Major GC Event Log (one row per collection):
+     at(s)   total   mark  sweep  roots    reason        before      after    garbage   recovered   minors    promoted    markunits
+      1.57   85.6   80.7    4.5    0.4  garbage-frac        98.2       97.9       41.7         0.0       58     3094292      3144401
+      9.71  532.7  516.6   13.6    2.5  garbage-frac       646.3      370.9      378.4       223.5      180    18869568     13092526
+     20.15 1108.2 1029.4   34.8   44.0  garbage-frac      1690.7      746.0     1112.7       773.5      148    46409287     26599705
+     37.41 1862.0 1694.2   71.9   95.8  garbage-frac      3364.6     1402.2     2264.5      1657.5      215    92737982     48671043
+     64.76 2187.7 1913.7  151.5  122.5  garbage-frac      6023.6     1702.0     4863.5      3866.0      308   160456498     48480909
+    104.76 2302.4 2040.7  234.1   27.6  garbage-frac      7903.4     1708.4     7034.3      5148.5      480   227762179     50881218
+  (times ms; sizes MB; 'roots' = root scan + push; 'after' is post-sweep live; 'recovered' = all-dead + shrink
+   released to the allocator this pause; 'markunits' = objects popped from the mark stack)
+  Old-gen in-use peak:        8824.77 MB  (43.1% of cap)
+  Old-gen commit hiwtr:       8824.77 MB  (cap 20480.00 MB)
+  Lg-body sweep runs:             358
+  Lg-body sweep skips:              0  (0.0% of attempts; major/compact in flight)
+  Lg-body freed (minor):      1157.61 MB
+  Lg-body deferred:              0.00 MB  (0.0% of attempts left to major GC)
+
+Major GC Timing:
+  Total time:                     8.08 s
+  Average time:                   1.35 s
+  Min time:                     85.64 ms
+  Max time:                       2.30 s
+
+Major GC Time Histogram:
+    85.00 ms -   90.00 ms: ██████████ 1 (16.7%)
+   500.00 ms -  550.00 ms: ██████████ 1 (16.7%)
+  >     1.00 s     : ████████████████████████████████████████ 4 (66.7%)
+
+Allocator Timings:
+  Minor GC (incl. promotion alloc):      58.24 s
+  Major GC:                               8.08 s
+  Old-gen alloc in mutator:            119.14 ms
+  Nursery alloc in mutator:             6.65 µs
+  Total GC/Alloc time:                   66.44 s
+  True mutator (wall - sum):            104.78 s   (61.2% of 171.22 s wall)
+
+Allocator Nested Timings (Already included in Allocator Timings):
+  Post-sweep shrink (nested in Old-gen alloc in mutator):        92.73 µs
+  maybeShrink heavy (nested in Major GC):                        11.05 µs
+  maybeShrink light (nested in Post-sweep shrink):               16.09 µs
+
+Adaptive Lazy-Sweep Bytes:
+  Mutator slow-path:             3053280  bytes requested
+  Panic path:                          0  bytes requested
+
+GC Pause Distribution (threaded-gc-00):
+  (pause = one contiguous mutator stop; includes the stack walk and the large-body sweep,
+   which "Minor GC Timing" excludes; a minor that triggers a major is ONE pause)
+  pauses: 1924 (minor-only 1918, minor+major 6, major-only 0)
+  all pauses                 n=1924     total=66.491 s     p50=5.079 ms     p90=135.218 ms   p99=154.341 ms   p99.9=2276.619 ms  max=2448.698 ms
+  minor-only pauses          n=1918     total=57.743 s     p50=5.057 ms     p90=134.812 ms   p99=149.771 ms   p99.9=634.889 ms   max=847.110 ms
+  pauses containing a major  n=6        total=8.748 s      p50=1247.791 ms  p90=2448.698 ms  p99=2448.698 ms  p99.9=2448.698 ms  max=2448.698 ms
+  Pause log2 histogram:
+    [     0.064 ms,      0.128 ms): ██████████████████ 180
+    [     0.128 ms,      0.256 ms): ████████████████████████████████████████ 386
+    [     0.256 ms,      0.512 ms): ███ 29
+    [     0.512 ms,      1.024 ms): ███ 37
+    [     1.024 ms,      2.048 ms): ███████ 71
+    [     2.048 ms,      4.096 ms): ██████████████ 142
+    [     4.096 ms,      8.192 ms): █████████████████████████████ 283
+    [     8.192 ms,     16.384 ms): █████████████ 129
+    [    16.384 ms,     32.768 ms): ██████████████████ 179
+    [    32.768 ms,     65.536 ms): ██████████████ 142
+    [    65.536 ms,    131.072 ms): █████████████ 135
+    [   131.072 ms,    262.144 ms): ████████████████████ 202
+    [   262.144 ms,    524.288 ms):  1
+    [   524.288 ms,   1048.576 ms):  4
+    [  1048.576 ms,   2097.152 ms):  2
+    [  2097.152 ms,   4194.304 ms):  2
+  Minimum mutator utilisation (MMU):
+    MMU      1 ms:   0.00%
+    MMU      2 ms:   0.00%
+    MMU      5 ms:   0.00%
+    MMU     10 ms:   0.00%
+    MMU     20 ms:   0.00%
+    MMU     50 ms:   0.00%
+    MMU    100 ms:   0.00%
+    MMU    200 ms:   0.00%
+    MMU    500 ms:   0.00%
+    MMU   1000 ms:   0.00%
+    MMU   2000 ms:   0.00%
+    MMU   5000 ms:  11.91%
+    MMU  10000 ms:  27.90%
+  GC work outside the minor timer: stack walk 0.158 s, large-body sweep 0.004 s (counted as mutator in "Allocator Timings")
+
+Minor GC Phase Breakdown (threaded-gc-00):
+  minors recorded: 1924, summed minor pause 58.408 s
+  stack walk                          0.158 s    0.27%      0.082 ms/minor
+  roots: long-lived + JIT             0.003 s    0.01%      0.002 ms/minor
+  roots: stackmap                     0.004 s    0.01%      0.002 ms/minor
+  roots: ranges + singles             0.002 s    0.00%      0.001 ms/minor
+  roots: external scanners            0.877 s    1.50%      0.456 ms/minor
+  drain: to-space (Cheney)           27.881 s   47.74%     14.491 ms/minor
+  drain: promoted objects            29.474 s   50.46%     15.319 ms/minor
+  tail (grow/clear/swap)              0.001 s    0.00%      0.000 ms/minor
+  large-body sweep                    0.004 s    0.01%      0.002 ms/minor
+  unaccounted                         0.003 s    0.01%      0.002 ms/minor
+  (each root phase includes copying/promoting the objects it reaches directly; their children are copied in the drain)
+  stack frames walked: mean 108.6, max 1127; matched mean 90.4; slots mean 202.4, max 10068
+  stack walk: mean 0.082 ms, max 0.311 ms
+  drain rounds: mean 1.00, max 1
+  objects per minor: survived 386866 (11.34 MB), promoted 351231 (10.32 MB)
+  in-pause lazy sweep: 2416781 calls, 10.536 GB, est. 1.990 s (1-in-16 sample, clock overhead removed)
+  promotion allocator: 675767781 calls, est. 28.010 s, 41.4 ns/call (1-in-256 sample; clock overhead removed)
+  page faults inside minors: minor 4901023, major 0
+  calibrated clock-read overhead: 22 ns per bracket
+
+External Root Scanners (threaded-gc-00):
+  mvar               total    121.739 ms  mean    63.274 us/minor  slots        1648077  max slots/minor 1030
+  cellstore          total    699.765 ms  mean   363.703 us/minor  slots       89044640  max slots/minor 1302037
+  eco-runtime        total      0.594 ms  mean     0.309 us/minor  slots              0  max slots/minor 0
+  platform-runtime   total      2.009 ms  mean     1.044 us/minor  slots          57720  max slots/minor 30
+  scheduler          total     48.641 ms  mean    25.281 us/minor  slots        1388155  max slots/minor 976
+  time-effects       total      0.521 ms  mean     0.271 us/minor  slots              0  max slots/minor 0
+  list-scratch       total      3.095 ms  mean     1.608 us/minor  slots          42587  max slots/minor 17407
+
+Nursery Allocation Size Histogram:
+       8 B -     16 B:  1 (0.0%)
+      16 B -     24 B: █████████████ 36031706 (14.2%)
+      24 B -     32 B: ████████████████████████████████████████ 108481557 (42.7%)
+      32 B -     64 B: ████████████████████████ 65138939 (25.6%)
+      64 B -    128 B: ████████ 24281980 (9.6%)
+     128 B -    256 B: ██ 5633184 (2.2%)
+     256 B -    512 B: █████ 14239976 (5.6%)
+     512 B -    1 KiB:  127500 (0.1%)
+     1 KiB -    2 KiB:  60733 (0.0%)
+     2 KiB -    4 KiB:  39375 (0.0%)
+     4 KiB -    8 KiB:  31454 (0.0%)
+  >=    8 KiB        :  1 (0.0%)
+
+Mutator Allocations by Object Kind:
+  StringUtf8Leaf    : ████████████████████████████████████████ 68603160 (28.6%, 2213 MiB total, 33.8 B avg)
+  Cons              : █████████████████████████ 43557406 (18.1%, 997 MiB total, 24.0 B avg)
+  Array             : █████████████████████████ 43420736 (18.1%, 5953 MiB total, 143.8 B avg)
+  StringSlice       : ███████████ 19290818 (8.0%, 442 MiB total, 24.0 B avg)
+  StringRope        : ████████ 14910202 (6.2%, 455 MiB total, 32.0 B avg)
+  ConsChunk         : ████████ 14788830 (6.2%, 451 MiB total, 32.0 B avg)
+  Tuple2            : ████████ 14287038 (5.9%, 327 MiB total, 24.0 B avg)
+  Custom            : ███████ 12173317 (5.1%, 279 MiB total, 24.0 B avg)
+  StringUtf8View    : ██ 4929975 (2.1%, 113 MiB total, 24.0 B avg)
+  ListBacking       : █ 2580605 (1.1%, 373 MiB total, 151.5 B avg)
+  Int               :  1008597 (0.4%, 15 MiB total, 16.0 B avg)
+  ByteBuffer        :  393397 (0.2%, 22 MiB total, 59.4 B avg)
+  Process           :  153033 (0.1%, 6 MiB total, 40.0 B avg)
+  Task              :  88287 (0.0%, 4 MiB total, 48.0 B avg)
+  Closure           :  31592 (0.0%, 1 MiB total, 40.4 B avg)
+  LargeByteHeader   :  27866 (0.0%, 435 KiB total, 16.0 B avg)
+  String            :  3103 (0.0%, 1 MiB total, 503.8 B avg)
+  LargeStringHeader :  123 (0.0%, 2 KiB total, 16.0 B avg)
+
+Retention by Object Kind (promoted = survived a minor GC into old gen):
+  totals: promoted 675767781 (19861 MiB), copied-in-nursery 744329992
+  surv% = promoted/allocated; only meaningful under ECO_INLINE_ALLOC=0 (see LH1 note)
+  Custom            : ████████████████████████████████████████ 393254133 (58.2% of promo, 13022 MiB, 34.7 B avg, copied 430801097, surv 3230.46%!)
+  Cons              : ██████████████████████████ 261432555 (38.7% of promo, 5984 MiB, 24.0 B avg, copied 290734728, surv 600.20%!)
+  Record            :  7400632 (1.1% of promo, 337 MiB, 47.8 B avg, copied 8405777, surv n/a)
+  StringRope        :  7124649 (1.1% of promo, 217 MiB, 32.0 B avg, copied 7375050, surv 47.78%)
+  Tuple2            :  2874989 (0.4% of promo, 66 MiB, 24.0 B avg, copied 2993129, surv 20.12%)
+  StringUtf8Leaf    :  2293449 (0.3% of promo, 141 MiB, 64.6 B avg, copied 2346575, surv 3.34%)
+  Tuple3            :  675404 (0.1% of promo, 21 MiB, 32.0 B avg, copied 686668, surv n/a)
+  ByteBuffer        :  227109 (0.0% of promo, 12 MiB, 54.5 B avg, copied 330117, surv 57.73%)
+  Array             :  170591 (0.0% of promo, 42 MiB, 255.2 B avg, copied 265509, surv 0.39%)
+  ConsChunk         :  143152 (0.0% of promo, 4 MiB, 32.0 B avg, copied 158012, surv 0.97%)
+  ListBacking       :  142970 (0.0% of promo, 14 MiB, 99.3 B avg, copied 157754, surv 5.54%)
+  Closure           :  9349 (0.0% of promo, 501 KiB, 54.9 B avg, copied 49566, surv 29.59%)
+  Task              :  4686 (0.0% of promo, 220 KiB, 48.0 B avg, copied 8304, surv 5.31%)
+  Process           :  4213 (0.0% of promo, 165 KiB, 40.0 B avg, copied 7632, surv 2.75%)
+  StringUtf8View    :  4129 (0.0% of promo, 97 KiB, 24.0 B avg, copied 4188, surv 0.08%)
+  LargeByteHeader   :  4058 (0.0% of promo, 63 KiB, 16.0 B avg, copied 4157, surv 14.56%)
+  String            :  1523 (0.0% of promo, 468 KiB, 314.6 B avg, copied 1531, surv 49.08%)
+  LargeStringHeader :  123 (0.0% of promo, 2 KiB, 16.0 B avg, copied 123, surv 100.00%)
+  StringSlice       :  67 (0.0% of promo, 2 KiB, 24.0 B avg, copied 75, surv 0.00%)
+
+Promoted Custom by Field Count (W1):
+   1  field           : ███████ 47666802 (12.1% of promoted Custom, 1091 MiB, copied 53872893)
+   2  fields          : ████████████████████████████████████████ 247681395 (63.0% of promoted Custom, 7559 MiB, copied 273106428)
+   3  fields          : ████████ 50844980 (12.9% of promoted Custom, 1940 MiB, copied 53012093)
+   4  fields          : █ 10543722 (2.7% of promoted Custom, 483 MiB, copied 11127540)
+   5  fields          : █████ 36502498 (9.3% of promoted Custom, 1949 MiB, copied 39663476)
+   6  fields          :  14736 (0.0% of promoted Custom, 921 KiB, copied 18666)
+  total promoted Custom: 393254133 (13022 MiB)
+
+Old-Gen Allocation Size Histogram:
+      16 B -     24 B:  1105556 (0.2%)
+      24 B -     32 B: ██████████████████████████████████ 312210993 (46.2%)
+      32 B -     64 B: ████████████████████████████████████████ 361208211 (53.4%)
+      64 B -    128 B:  899030 (0.1%)
+     128 B -    256 B:  106186 (0.0%)
+     256 B -    512 B:  204328 (0.0%)
+     512 B -    1 KiB:  17876 (0.0%)
+     1 KiB -    2 KiB:  7338 (0.0%)
+     2 KiB -    4 KiB:  3993 (0.0%)
+     4 KiB -    8 KiB:  4269 (0.0%)
+     8 KiB -   16 KiB:  15735 (0.0%)
+    16 KiB -   32 KiB:  11855 (0.0%)
+    32 KiB -   64 KiB:  127 (0.0%)
+    64 KiB -  128 KiB:  88 (0.0%)
+   128 KiB -  256 KiB:  78 (0.0%)
+   256 KiB -  512 KiB:  45 (0.0%)
+   512 KiB -    1 MiB:  22 (0.0%)
+  >=    1 MiB        :  40 (0.0%)
+
+String Allocation Size Histogram:
+      16 B -     32 B: █████ 155 (5.9%)
+      32 B -     64 B: ██████ 179 (6.8%)
+      64 B -    128 B: ██████████████████████ 605 (23.1%)
+     128 B -    256 B: ████████████████████████████████████████ 1058 (40.4%)
+     256 B -    512 B: ███ 86 (3.3%)
+     512 B -    1 KiB:  13 (0.5%)
+     1 KiB -    2 KiB: ██████ 161 (6.1%)
+     2 KiB -    4 KiB: ████████ 234 (8.9%)
+     4 KiB -    8 KiB:  8 (0.3%)
+     8 KiB -   16 KiB:  16 (0.6%)
+    16 KiB -   32 KiB:  24 (0.9%)
+    32 KiB -   64 KiB: █ 33 (1.3%)
+    64 KiB -  128 KiB:  20 (0.8%)
+   128 KiB -  256 KiB:  19 (0.7%)
+   256 KiB -  512 KiB:  8 (0.3%)
+   512 KiB -    1 MiB:  3 (0.1%)
+
+UTF-8 -> UTF-16 widen events:
+  Widen calls:                     11908
+  Widened code units:              91589
+    trim/trimLeft/trimRight               14 calls           1400 units
+    indexes (needle+haystack)          10898 calls          87819 units
+    append (mixed encodings)             996 calls           2370 units
+    [blind] segment-chunk widen       907093 calls        3470188 units
+
+
+Old-Gen Page Residency Histogram (cumulative over 6 major-GC end snapshots):
+  live_frac        pages    page_MB    live_MB    free_MB    garb_MB   live%   free%   garb%
+    0.00             49     479.95       0.00     367.84     112.11    0.0%   76.6%   23.4%  
+  (0.00, 0.01]     1780     890.00       2.81     440.66     446.53    0.3%   49.5%   50.2%  █████
+  (0.01, 0.05]     1563     781.50      20.02     336.57     424.91    2.6%   43.1%   54.4%  ████
+  (0.05, 0.10]      882     441.00      31.88     208.82     200.30    7.2%   47.4%   45.4%  ██
+  (0.10, 0.25]     1121     560.50      92.88     282.69     184.92   16.6%   50.4%   33.0%  ███
+  (0.25, 0.50]     1513     756.50     289.92     260.76     205.82   38.3%   34.5%   27.2%  ████
+  (0.50, 0.75]     2916    1458.00     967.26      19.18     471.56   66.3%    1.3%   32.3%  █████████
+  (0.75, 1.00]     9652    4830.11    4622.60       1.31     206.20   95.7%    0.0%    4.3%  ██████████████████████████████
+  total           19476   10197.56    6027.38    1917.84    2252.34   59.1%   18.8%   22.1%
+  pinned             68     493.56      13.53     367.84     112.18    2.7%   74.5%   22.7%   (subset; cannot be sweep-released)
+  per-major avg: 3246.0 pages, 1699.59 committed MB, 1004.56 live MB, 319.64 free MB, 375.39 garb MB
+
+Old-Gen Page Residency Histogram (latest: most recent major-GC end):
+  live_frac        pages    page_MB    live_MB    free_MB    garb_MB   live%   free%   garb%
+    0.00             13     211.61       0.00     145.08      66.53    0.0%   68.6%   31.4%  
+  (0.00, 0.01]      944     472.00       1.51     169.57     300.92    0.3%   35.9%   63.8%  ███████████
+  (0.01, 0.05]      900     450.00      11.19     139.16     299.64    2.5%   30.9%   66.6%  ██████████
+  (0.05, 0.10]      431     215.50      15.42      77.82     122.26    7.2%   36.1%   56.7%  █████
+  (0.10, 0.25]      428     214.00      35.47     102.04      76.49   16.6%   47.7%   35.7%  █████
+  (0.25, 0.50]      641     320.50     123.08     145.98      51.44   38.4%   45.5%   16.0%  ███████
+  (0.50, 0.75]     1083     541.50     363.81       5.75     171.94   67.2%    1.1%   31.8%  ████████████
+  (0.75, 1.00]     2501    1251.16    1157.91       0.24      93.01   92.5%    0.0%    7.4%  ██████████████████████████████
+  total            6941    3676.27    1708.39     785.66    1182.23   46.5%   21.4%   32.2%
+  pinned             16     213.77       2.15     145.08      66.54    1.0%   67.9%   31.1%   (subset; cannot be sweep-released)
+
+Old-Gen Free-List Size-Class Histogram (cumulative over 6 major-GC end snapshots):
+  cell_size       cells       bytes     bytes_MB    %bytes
+      16 B        93046     1488736       1.42    0.1%  ██████████
+      24 B        45943     1102632       1.05    0.1%  █████
+      32 B        54698     1750336       1.67    0.1%  █████
+      40 B        34124     1364960       1.30    0.1%  ███
+      48 B        42154     2023392       1.93    0.1%  ████
+      56 B        28382     1589392       1.52    0.1%  ███
+      64 B        49829     3189056       3.04    0.2%  █████
+      72 B        46998     3383856       3.23    0.2%  █████
+      80 B        34981     2798480       2.67    0.1%  ███
+      88 B        24927     2193576       2.09    0.1%  ██
+      96 B        60924     5848704       5.58    0.3%  ██████
+     104 B        22155     2304120       2.20    0.1%  ██
+     112 B        23988     2686656       2.56    0.1%  ██
+     120 B        39518     4742160       4.52    0.2%  ████
+     128 B        33217     4251776       4.05    0.2%  ███
+     136 B        17661     2401896       2.29    0.1%  █
+     144 B        33176     4777344       4.56    0.2%  ███
+     152 B        18691     2841032       2.71    0.1%  ██
+     160 B        33998     5439680       5.19    0.3%  ███
+     168 B        29320     4925760       4.70    0.2%  ███
+     176 B        14644     2577344       2.46    0.1%  █
+     184 B        16137     2969208       2.83    0.1%  █
+     192 B        38010     7297920       6.96    0.4%  ████
+     200 B        14728     2945600       2.81    0.1%  █
+     208 B        14137     2940496       2.80    0.1%  █
+     216 B        18924     4087584       3.90    0.2%  ██
+     224 B        33952     7605248       7.25    0.4%  ███
+     232 B        16518     3832176       3.65    0.2%  █
+     240 B        30563     7335120       7.00    0.4%  ███
+     248 B        21241     5267768       5.02    0.3%  ██
+     256 B       273809    70095104      66.85    3.5%  ██████████████████████████████
+     512 B        59844    30640128      29.22    1.5%  ██████
+     1 KiB       130695   133831680     127.63    6.6%  ██████████████
+     2 KiB        76687   157054976     149.78    7.7%  ████████
+     4 KiB       221572   907558912     865.52   44.8%  ████████████████████████
+     8 KiB        18033   147726336     140.88    7.3%  █
+    16 KiB          243     3981312       3.80    0.2%  
+    32 KiB           86     2818048       2.69    0.1%  
+    64 KiB         1219    79888384      76.19    3.9%  
+  large-blk            42   385712128     367.84   19.0%   (whole-block free entries)
+  total           1768772  2027269016    1933.35  100.0%
+  per-major avg: 294795.3 cells, 322.23 MB on free lists
+
+Old-Gen Free-List Size-Class Histogram (latest: most recent major-GC end):
+  cell_size       cells       bytes     bytes_MB    %bytes
+      16 B        30252      484032       0.46    0.1%  ██████
+      24 B         4447      106728       0.10    0.0%  
+      32 B        13775      440800       0.42    0.1%  ██
+      40 B         8711      348440       0.33    0.0%  █
+      48 B         8667      416016       0.40    0.1%  █
+      56 B         8280      463680       0.44    0.1%  █
+      64 B        12466      797824       0.76    0.1%  ██
+      72 B        21402     1540944       1.47    0.2%  ████
+      80 B        11076      886080       0.85    0.1%  ██
+      88 B         4008      352704       0.34    0.0%  
+      96 B        26372     2531712       2.41    0.3%  █████
+     104 B         8278      860912       0.82    0.1%  █
+     112 B         8471      948752       0.90    0.1%  █
+     120 B        16648     1997760       1.91    0.2%  ███
+     128 B        14874     1903872       1.82    0.2%  ███
+     136 B         6508      885088       0.84    0.1%  █
+     144 B        15442     2223648       2.12    0.3%  ███
+     152 B         6472      983744       0.94    0.1%  █
+     160 B        17012     2721920       2.60    0.3%  ███
+     168 B        12291     2064888       1.97    0.2%  ██
+     176 B         7129     1254704       1.20    0.2%  █
+     184 B         6267     1153128       1.10    0.1%  █
+     192 B        19961     3832512       3.65    0.5%  ████
+     200 B         6324     1264800       1.21    0.2%  █
+     208 B         6370     1324960       1.26    0.2%  █
+     216 B        10422     2251152       2.15    0.3%  ██
+     224 B        15765     3531360       3.37    0.4%  ███
+     232 B         3182      738224       0.70    0.1%  
+     240 B        18846     4523040       4.31    0.5%  ████
+     248 B         6577     1631096       1.56    0.2%  █
+     256 B       140838    36054528      34.38    4.4%  ██████████████████████████████
+     512 B        52413    26835456      25.59    3.2%  ███████████
+     1 KiB        64834    66390016      63.31    8.0%  █████████████
+     2 KiB        37113    76007424      72.49    9.2%  ███████
+     4 KiB        94528   387186688     369.25   46.8%  ████████████████████
+     8 KiB         4651    38100992      36.34    4.6%  
+  large-blk            12   152129536     145.08   18.4%   (whole-block free entries)
+  total            750672   827169160     788.85  100.0%
+
+[caf-permanent] promoted=443 constant=4 declined=0 objects=4513 KB=150 abandonedKB=0 slotsRooted=0 interned=5432 internKB=288
+[gc-roots] longLived=1 jit=0 stackRanges=3
+

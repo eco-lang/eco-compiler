@@ -250,6 +250,20 @@ private:
 
 #if ENABLE_GC_STATS
     GCStats stats_;               // Thread-local GC statistics
+
+    // threaded-gc-00 pause bracket: depth of nested minorGC/majorGC calls,
+    // start of the outermost one, and what it contained.
+    int      gc_depth_ = 0;
+    uint64_t pause_start_ns_ = 0;
+    bool     pause_saw_minor_ = false;
+    bool     pause_saw_major_ = false;
+    friend struct GCPauseScope;
+
+    /** Records one completed pause (outermost GC call). */
+    void recordPause(uint64_t start_ns, uint64_t dur_ns, uint8_t kind);
+
+    /** Records one minor GC's phase measurements into stats_ and the log. */
+    void recordMinorPhases(MinorGCRecord& rec);
 #endif
 
     /** Collects all roots from this thread's root set. */
@@ -260,7 +274,12 @@ private:
 
     /** Populate RootSet stack roots from __LLVM_StackMaps by walking
      *  the current thread's call stack frames. */
-    void collectStackRootsFromStackMap();
+    struct StackWalkCounts {
+        uint64_t frames_walked = 0;
+        uint64_t frames_matched = 0;
+        uint64_t slots = 0;
+    };
+    StackWalkCounts collectStackRootsFromStackMap();
 };
 
 } // namespace Elm

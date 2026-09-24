@@ -8,6 +8,10 @@
  */
 
 #include "RootSet.hpp"
+#include <dlfcn.h>
+#include <string>
+#include <deque>
+#include <cstring>
 
 #include <cstdio>
 #include <cstdlib>
@@ -93,8 +97,34 @@ void RootSet::removeJitRoot(uint64_t *root) {
 }
 
 // Registers an external root scanner callback.
-void RootSet::addExternalRootScanner(ExternalRootScanner scanner) {
+// Unnamed scanners (the registration sites in kernel files pinned by the
+// LSS_022 license manifest cannot take a name argument without a re-audit)
+// are labelled by the address of the registering code: a symbol when dladdr
+// can resolve one, otherwise "unnamed@+0x<offset>" within the mapped object,
+// which `nm` resolves offline. Labels are interned for static lifetime.
+static const char* labelForUnnamedScanner(void* caller) {
+    static std::deque<std::string>* owned = new std::deque<std::string>();
+    char buf[256];
+    Dl_info info{};
+    if (caller && dladdr(caller, &info) && info.dli_sname) {
+        std::snprintf(buf, sizeof buf, "unnamed@%s", info.dli_sname);
+    } else if (caller && info.dli_fbase) {
+        std::snprintf(buf, sizeof buf, "unnamed@+0x%lx",
+                      (unsigned long)(reinterpret_cast<uintptr_t>(caller) -
+                                      reinterpret_cast<uintptr_t>(info.dli_fbase)));
+    } else {
+        std::snprintf(buf, sizeof buf, "unnamed@%p", caller);
+    }
+    owned->emplace_back(buf);
+    return owned->back().c_str();
+}
+
+void RootSet::addExternalRootScanner(ExternalRootScanner scanner, const char* name) {
     external_scanners.push_back(std::move(scanner));
+    if (name == nullptr || std::strcmp(name, "unnamed") == 0) {
+        name = labelForUnnamedScanner(__builtin_return_address(0));
+    }
+    external_scanner_names.push_back(name);
 }
 
 // Clears all roots. Used for testing.
@@ -106,6 +136,7 @@ void RootSet::reset() {
         eco_tl_root1_sp = eco_tl_root1_base;
     }
     external_scanners.clear();
+    external_scanner_names.clear();
 }
 
 } // namespace Elm

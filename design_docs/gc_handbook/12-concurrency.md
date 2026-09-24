@@ -498,6 +498,11 @@ incrementalUpdateBarrier(object, field, newValue):
 | **Barrier cost** | Logs old value | Checks colors |
 | **Termination** | Clean (drain SATB buffers) | May need multiple passes |
 
+> **Correction (2026-09-24, `design_docs/parallel-gc.md` §5.7):** the "Floating garbage: None" row
+> above is wrong. SATB keeps everything that was live at the snapshot, including objects that die
+> during marking, so it floats **more** garbage than incremental update, not less. Do not size a
+> heap from this table.
+
 ---
 
 ## 12.11 Parallel Marking
