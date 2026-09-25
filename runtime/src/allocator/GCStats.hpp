@@ -135,6 +135,52 @@ struct PauseEvent {
 
 // Run totals for the records above. Kept as one struct so combine()/reset()
 // cannot silently miss a field (a missed merge prints as zero, not a crash).
+// threaded-gc-02 (plans/threaded-gc-02-bitmap-allocation.md Step 8): counters
+// of the bitmap-allocation path. All zero with old_gen_bitmap_alloc off, and
+// then the banner block is not printed (the flag-off banner is unchanged).
+struct BitmapAllocStats {
+    uint64_t bitmap_allocs = 0;
+    uint64_t bitmap_alloc_bytes = 0;
+    uint64_t cursor_refills = 0;
+    uint64_t virgin_blocks = 0;
+    uint64_t list_pops = 0;
+    uint64_t split_allocs = 0;
+    uint64_t sweep_on_demand_hits = 0;
+    uint64_t gap_sweep_live_objects = 0;
+    uint64_t gap_sweep_gaps = 0;
+    uint64_t gap_sweep_bytes = 0;
+    uint64_t uniform_cells_freed = 0;
+    uint64_t blocks_classified_uniform = 0;
+    uint64_t blocks_classified_large = 0;
+    uint64_t blocks_classified_mixed = 0;
+    // Free bytes (cells x cell - live) of the uniform blocks queued at each
+    // major-GC end, cumulative. These cells are no longer on free lists, so
+    // the residency histogram counts them as garbage in bitmap mode.
+    uint64_t bitmap_free_bytes_at_major = 0;
+    void merge(const BitmapAllocStats& o) {
+        bitmap_allocs += o.bitmap_allocs;
+        bitmap_alloc_bytes += o.bitmap_alloc_bytes;
+        cursor_refills += o.cursor_refills;
+        virgin_blocks += o.virgin_blocks;
+        list_pops += o.list_pops;
+        split_allocs += o.split_allocs;
+        sweep_on_demand_hits += o.sweep_on_demand_hits;
+        gap_sweep_live_objects += o.gap_sweep_live_objects;
+        gap_sweep_gaps += o.gap_sweep_gaps;
+        gap_sweep_bytes += o.gap_sweep_bytes;
+        uniform_cells_freed += o.uniform_cells_freed;
+        blocks_classified_uniform += o.blocks_classified_uniform;
+        blocks_classified_large += o.blocks_classified_large;
+        blocks_classified_mixed += o.blocks_classified_mixed;
+        bitmap_free_bytes_at_major += o.bitmap_free_bytes_at_major;
+    }
+    bool any() const {
+        return bitmap_allocs | virgin_blocks | cursor_refills |
+               blocks_classified_uniform | blocks_classified_mixed |
+               blocks_classified_large | gap_sweep_gaps;
+    }
+};
+
 struct GCPhaseTotals {
     // ----- minor phase totals (summed over recorded minors) -----
     uint64_t minor_records = 0;
@@ -708,6 +754,7 @@ public:
         GarbageFraction = 3,
         AllocFailure   = 4,
         Forced         = 5,
+        LiveBudget     = 6,  // threaded-gc-02 trigger experiment
     };
 
     struct MajorGCEvent {
@@ -758,6 +805,10 @@ public:
 
     // ========== threaded-gc-00 phase breakdown + pauses ==========
     GCPhaseTotals tg;
+
+    // ========== threaded-gc-02 bitmap-allocation counters ==========
+    BitmapAllocStats bm;
+    void printBitmapAllocBlock() const;
 
     // Prints the three threaded-gc-00 banner blocks (pause distribution,
     // minor phase breakdown, external root scanners).

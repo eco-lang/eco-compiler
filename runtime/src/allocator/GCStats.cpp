@@ -726,6 +726,7 @@ const char* majorReasonName(GCStats::MajorReason r) {
         case GCStats::MajorReason::GarbageFraction: return "garbage-frac";
         case GCStats::MajorReason::AllocFailure:    return "alloc-failure";
         case GCStats::MajorReason::Forced:          return "forced";
+        case GCStats::MajorReason::LiveBudget:      return "live-budget";
         case GCStats::MajorReason::Unknown:         break;
     }
     return "unknown";
@@ -1031,6 +1032,7 @@ void GCStats::combine(const GCStats& other) {
     // Pending free-list staging: not exposed by the printer; left untouched.
     // threaded-gc-00 phase totals and pause log.
     tg.merge(other.tg);
+    bm.merge(other.bm);
 }
 
 // Prints a formatted summary to stdout with histograms.
@@ -1393,6 +1395,8 @@ void GCStats::print() const {
 #if ENABLE_GC_PHASE_TIMERS
     printThreadedGcBlocks();
 #endif
+    // threaded-gc-02 block (additive; printed only in bitmap mode).
+    printBitmapAllocBlock();
 
     // ========== Allocation Size Histograms ==========
     //
@@ -1947,6 +1951,7 @@ void GCStats::reset() {
 
     // threaded-gc-00 phase totals and pause log.
     tg = GCPhaseTotals{};
+    bm = BitmapAllocStats{};
 }
 
 
@@ -2514,5 +2519,30 @@ void gcEventLogFlush() noexcept { GCEventLogImpl::instance().flush(); }
 const char* gcMajorReasonName(GCStats::MajorReason r) { return majorReasonName(r); }
 
 const char* gcTagName(int tag) { return tagName(tag); }
+
+void GCStats::printBitmapAllocBlock() const {
+    if (!bm.any()) return;
+    std::cout << "\nOld-gen Bitmap Allocation (threaded-gc-02):" << std::endl;
+    auto row = [](const char* k, uint64_t v) {
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "  %-30s %16llu", k, (unsigned long long)v);
+        std::cout << buf << std::endl;
+    };
+    row("cursor allocations", bm.bitmap_allocs);
+    row("cursor allocated bytes", bm.bitmap_alloc_bytes);
+    row("partial-queue refills", bm.cursor_refills);
+    row("virgin blocks", bm.virgin_blocks);
+    row("free-list pops (mixed cells)", bm.list_pops);
+    row("split allocations", bm.split_allocs);
+    row("sweep-on-demand hits", bm.sweep_on_demand_hits);
+    row("gap-sweep live objects", bm.gap_sweep_live_objects);
+    row("gap-sweep gaps", bm.gap_sweep_gaps);
+    row("gap-sweep bytes covered", bm.gap_sweep_bytes);
+    row("uniform cells freed (bodies)", bm.uniform_cells_freed);
+    row("blocks classified uniform", bm.blocks_classified_uniform);
+    row("blocks classified large", bm.blocks_classified_large);
+    row("blocks classified mixed", bm.blocks_classified_mixed);
+    row("bitmap-free bytes at majors", bm.bitmap_free_bytes_at_major);
+}
 
 } // namespace Elm

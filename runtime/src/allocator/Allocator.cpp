@@ -967,6 +967,8 @@ GCStats Allocator::getCombinedStats() const {
         // Combine nursery, old-gen (allocation-size histogram), and
         // thread-local heap (major-GC) stats.
         combined.combine(heap->getNursery().getStats());
+        // threaded-gc-02: fold the bitmap cursors' pending counts first.
+        heap->getOldGen().syncCursorLiveBytes();
         combined.combine(heap->getOldGen().getStats());
         combined.combine(heap->getStats());
     }

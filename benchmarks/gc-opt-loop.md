@@ -1815,6 +1815,72 @@ the same sitting.
 
 The **validator self-compile is no longer a gate** (user decision; too slow).
 
+### TG2 — threaded-gc-02 bitmap allocation — **WIN on pauses and allocation: minor-only max 976 → 178 ms, promotion 32.0 → 16.1 ns, minor GC −4.1 s; GC flat (+1 major); peak/RSS −0.4 %; wall −2.4 s (inside spread)**
+
+**What changed** (`plans/threaded-gc-02-bitmap-allocation.md`, now the compiled defaults):
+- a uniform block's mark bitmap is its allocation map; one per-class cursor allocates from it,
+  with no header sweep of uniform blocks (HEAP_054);
+- mixed blocks keep a gap sweep that reads only live headers (HEAP_055);
+- dead large bodies are retired at mark end (HEAP_056);
+- `demote_live_fraction` default 0.3 (from E1);
+- a new **LiveBudget** major trigger, k = 4.5 and r = 1.5 (HEAP_057).
+
+Candidate `eco-optTG2`; same-session control `eco-optTG1f`, strictly serial on an idle machine.
+
+| arm | wall (s) | GC (s) | minor (s) | major (s) | mark (s) | majors | old-gen peak (MB) | max RSS (kB) |
+|---|---|---|---|---|---|---|---|---|
+| TG1f median of 3 | 183.37 (spread 5.6) | 67.38 | 58.73 | 8.49 | 7.67 | 6 | 8,824 | 9,663,784 |
+| **TG2 median of 3** | **180.97** (spread 1.3) | 67.32 | **54.59** | 12.67 | 11.52 | 7 | **8,790** | **9,622,612** |
+| Δ | −2.40 | −0.06 | **−4.14** | +4.18 | +3.85 | +1 | −0.4 % | −0.4 % |
+
+- **Counters (G8):** output identical ×7. Minors 1,924, promoted 675,767,781, objects allocated
+  254,094,414 and per-tag retention are identical to the control. Yesterday's 395 allocated was
+  the environment: today's control reads 414 too.
+- **Mark cost per marked object: 41.27 vs 40.16 ns (+2.8 %).** That is marginally outside M's
+  ±2 %, inside the control's own 4 % run spread. It cannot be paired per collection: 7 vs 6
+  collections at different points. The +3.85 s of mark is volume: 279 M vs 191 M marked objects.
+- **Pauses** (phase-timer builds, one run each):
+
+  | | TG1fpt | TG2pt |
+  |---|---|---|
+  | minor-only max | 976 ms | **178 ms** |
+  | minor-only p99.9 | 705 ms | 162 ms |
+  | minor-only p99 | 153 ms | 142 ms |
+  | minor-only p50 | 5.9 ms | 5.4 ms |
+  | worst pause containing a major | 2.64 s | **4.72 s** (the extra LiveBudget major at a larger live set) |
+  | promotion allocator | 32.0 ns/call | **16.1 ns/call** |
+  | in-pause lazy sweep | 10.5 GB covered, est 2.28 s, worst 820 ms in one pause | 3.7 GB covered, est 0.24 s, worst **63 ms** |
+
+  Criterion P's byte bound (≤ 256 MB in-pause sweep per pause) fails as written: 5 pauses exceed
+  it in both arms, and the largest covers 938 MB. The bound was calibrated for a header walk; the
+  gap sweep covers bytes without reading them, so its intent (sweep time in a pause) holds 13×.
+- **The allocator was SLOWER than the free-list pop as first built** (33 ns). Four integer
+  `div`s per scan plus a runtime stride-mask loop were the cost. A next-cell hit path plus
+  per-stride constant tables fixed it (plan §9 item 8).
+
+**The trigger finding** (plan §9 item 7, memory `gc-trigger-is-chaotic`). The garbage-fraction
+trigger sizes the heap at about 3.3× the live set seen at ONE instant.
+- The reference's 6 majors / 8.8 GB is a lucky point: legacy at gf 0.65 / 0.70 / 0.75 gives
+  7 / 6 / 4 majors and 11.8 / 8.8 / 16.2 GB peak.
+- The bitmap mode's first flag-on run (RSS 14.4 GB) was that chaos, not allocator retention.
+- LiveBudget k = 4.5 bounds it. The E1 table (plan §9 item 9) calibrates `demote_live_fraction`
+  from 0 to 0.75.
+
+**Gates** (default on):
+- **G1:** unit + E2E 1,757/1,757 in the main and phase-timer trees.
+- **G2:** elm-tests 13,565/12 (the reference set).
+- **G3:** `--target full` 1,757/1,757.
+- **G4:** stress 100/100 at 1,263 minors.
+- **G5:** validate unit + E2E 1,758/1,758 with the pinned seed and zero `[heap-validate]` lines;
+  validate stress 95/100, the same 5 pre-existing `JsonRoundtrip*` aborts.
+- **G6:** stats-off `ecoc` builds.
+- **G7:** every `populateFromBlock(` call is in flag-off code.
+- **G5 found a real (latent) defect.** A major now leaves nothing to sweep, so compaction runs
+  right after it. The HEAP_048 fixup-cursor check then read a dead position after
+  `freeEvacuatedBuffers`' erase. Fixed by resetting the dead cursor.
+- **Trap:** `ECO_HEAP_CONFIG` does NOT reach the old gen in `test/test`
+  (`initAllocator` → `reset` installs the raw config).
+
 ## 7. Findings
 
 (What this series learns, separated from the per-step records so the entries stay to ten lines.

@@ -57,8 +57,14 @@ struct BlockInfo {
     // independent.
     uint16_t free_cells_in_block = FREE_CELLS_EMPTY;
 
+    // threaded-gc-02 (HEAP_054): bitmap-allocation ownership of a uniform
+    // block — 0 None, 1 Queued (on OldGenSpace::partial_[size_class]),
+    // 2 Current (owned by cursor_[size_class]). Always 0 with the flag off.
+    uint8_t alloc_state = 0;
+
     size_t totalBytes() const { return static_cast<size_t>(end - start); }
 };
+static_assert(sizeof(BlockInfo) == 40, "BlockInfo must stay 40 bytes");
 
 // ============================================================================
 // Per-Block Metadata

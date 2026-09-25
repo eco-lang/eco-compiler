@@ -175,6 +175,11 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         "use_hybrid_dfs",
         "large_object_threshold",
         "decommit_on_oldgen_release",
+        "old_gen_bitmap_alloc",
+        "demote_live_fraction",
+        "garbage_denom_cap",
+        "major_gc_live_budget",
+        "live_growth_bound",
         "small_class_heap_budget_bytes",
         "small_class_cell_max_bytes",
         "string_flatten_limit",
@@ -255,6 +260,17 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
     if (auto it = doc.find("decommit_on_oldgen_release"); it != doc.end())
         cfg.decommit_on_oldgen_release =
             parseBool(*it, "decommit_on_oldgen_release");
+    if (auto it = doc.find("old_gen_bitmap_alloc"); it != doc.end())
+        cfg.old_gen_bitmap_alloc = parseBool(*it, "old_gen_bitmap_alloc");
+    if (auto it = doc.find("demote_live_fraction"); it != doc.end())
+        cfg.demote_live_fraction =
+            parseFraction(*it, "demote_live_fraction");
+    if (auto it = doc.find("garbage_denom_cap"); it != doc.end())
+        cfg.garbage_denom_cap = parseDouble(*it, "garbage_denom_cap");
+    if (auto it = doc.find("major_gc_live_budget"); it != doc.end())
+        cfg.major_gc_live_budget = parseDouble(*it, "major_gc_live_budget");
+    if (auto it = doc.find("live_growth_bound"); it != doc.end())
+        cfg.live_growth_bound = parseDouble(*it, "live_growth_bound");
     if (auto it = doc.find("small_class_heap_budget_bytes"); it != doc.end())
         cfg.small_class_heap_budget_bytes =
             parseByteSize(*it, "small_class_heap_budget_bytes");

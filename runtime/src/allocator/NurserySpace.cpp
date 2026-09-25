@@ -874,10 +874,23 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
         };
 
         for (size_t pos = 0; pos < oldgen.blocks_.size(); ++pos) {
-            const BlockInfo& blk = oldgen.blocks_.info(oldgen.blocks_.idAt(pos));
+            const BlockId blk_id = oldgen.blocks_.idAt(pos);
+            const BlockInfo& blk = oldgen.blocks_.info(blk_id);
             char* scan = blk.start;
             char* end  = blk.end_of_objects;
+            // threaded-gc-02 (HEAP_024 reworded): in bitmap mode a uniform
+            // block is NOT header-parsable — only cells whose start bit is set
+            // hold objects (dead cells keep stale headers, virgin cells none).
+            const bool uniform_bitmap = oldgen.config_->old_gen_bitmap_alloc &&
+                !blk.is_large && blk.size_class < oldgen.num_size_classes_;
+            const size_t ucell = uniform_bitmap
+                ? OldGenSpace::classToSize(blk.size_class) : 0;
             while (scan < end) {
+                if (uniform_bitmap && !oldgen.isMarkedInBlock(blk_id, scan)) {
+                    scan += ucell;
+                    continue;
+                }
+                char* const cell_start = scan;
                 Header* h = getHeader(scan);
                 // Only a FULLY-ZERO word is uninitialized/swept filler.
                 // Testing `tag == 0` alone is wrong: Tag_Int == 0, so a
@@ -992,6 +1005,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                     default: break;
                 }
                 scan += obj_size;
+                if (uniform_bitmap) scan = cell_start + ucell;
             }
         }
     }

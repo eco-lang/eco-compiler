@@ -68,6 +68,7 @@ recordMajorTriggerReason(GCStats& stats,
             stats.major_gc_global_pressure_triggers++;
             break;
         case OldGenSpace::MajorGCTriggerReason::GarbageFraction:
+        case OldGenSpace::MajorGCTriggerReason::LiveBudget:  // same counter
             stats.major_gc_garbage_triggers++;
             break;
         case OldGenSpace::MajorGCTriggerReason::None:
@@ -88,6 +89,8 @@ majorReasonTag(OldGenSpace::MajorGCTriggerReason reason) {
             return GCStats::MajorReason::GlobalPressure;
         case OldGenSpace::MajorGCTriggerReason::GarbageFraction:
             return GCStats::MajorReason::GarbageFraction;
+        case OldGenSpace::MajorGCTriggerReason::LiveBudget:
+            return GCStats::MajorReason::LiveBudget;
         case OldGenSpace::MajorGCTriggerReason::None:
             break;
     }

@@ -1,6 +1,7 @@
 #ifndef ECO_OLDGENSPACE_H
 #define ECO_OLDGENSPACE_H
 
+#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -40,7 +41,8 @@ struct MajorGCPhaseProfile {
     // scanning their cells.
     size_t   alldead_blocks_released = 0;
     size_t   alldead_bytes_released  = 0;
-    // Uniform→mixed demotion: blocks whose live_bytes <= 50% of total at the
+    // Uniform→mixed demotion: blocks whose live_bytes <= demote_live_fraction
+    // (default 50%) of total at the
     // mark/sweep boundary, retagged so their freed space lands in the
     // splittable mixed-only free-list classes.
     size_t   demoted_blocks          = 0;
@@ -350,6 +352,8 @@ public:
         GlobalPressure,   // global old-gen committed/cap >= initiating/3
         GarbageFraction,  // (allocated - post-sweep-live) / committed >=
                           // major_gc_garbage_fraction
+        LiveBudget,       // allocated since major >= major_gc_live_budget *
+                          // min(L_i, live_growth_bound * L_{i-1})
     };
 
     // Returns which trigger condition (if any) is live. Thread-local: each
@@ -423,6 +427,17 @@ private:
     // measure post-major mutator allocation, so the threshold expresses
     // "allocated since last major" rather than "currently held".
     size_t post_sweep_live_bytes_ = 0;
+    // Mark-derived live at the end of the last two majors (LiveBudget trigger).
+    size_t major_live_ = 0;
+    size_t prev_major_live_ = 0;
+
+    // threaded-gc-02 (bitmap mode): committed bytes at the end of the last
+    // major GC. The garbage-fraction trigger divides by
+    // min(committed, 2 * this) instead of the current committed size: while
+    // garbage cannot be reused before the next major, every allocated byte
+    // grows committed, so a current-committed denominator chases its
+    // numerator (measured: a 12.7 GB major after 682 minors, RSS 14.4 GB).
+    size_t committed_at_major_ = 0;
 
 #if ENABLE_GC_STATS
     // Records the allocation-size histogram for this old gen. Combined with
@@ -475,6 +490,78 @@ private:
     // Commits the page index through the slot covering `end - 1` (no-op when
     // already committed). Every site that grows region_end_ calls this.
     void commitPageIndexThrough(const char* end);
+
+    // ========== Bitmap allocation (threaded-gc-02, HEAP_054) ==========
+    //
+    // With HeapConfig::old_gen_bitmap_alloc, a uniform block's mark bitmap is
+    // its allocation map (cell-start bit set <=> allocated). Per size class
+    // one AllocCursor owns at most one block (alloc_state Current) and scans
+    // its bitmap for clear cell starts; partially free blocks wait on
+    // partial_[cls] (FIFO from partial_head_[cls]) in the position order
+    // classifyBlocksAfterMark saw them. Reset at startMark. See
+    // plans/threaded-gc-02-bitmap-allocation.md P§3.
+    static constexpr uint8_t kAllocNone = 0;
+    static constexpr uint8_t kAllocQueued = 1;
+    static constexpr uint8_t kAllocCurrent = 2;
+    struct AllocCursor {
+        BlockId  block = NO_BLOCK_ID;
+        uint32_t next_cell = 0;     // first cell index not yet examined
+        uint32_t num_cells = 0;
+        uint32_t stride_bits = 0;   // cell_bytes / 8
+        uint32_t cell_bytes = 0;
+        uint8_t* bits = nullptr;    // mark_.slot(block) (stable, HEAP_050)
+        char*    base = nullptr;    // block start
+        // Hot-path accumulators, flushed into the block's BufferMetadata /
+        // the stats by flushCursor (measured: updating meta.live_bytes and
+        // two stats counters on every promotion made the bitmap path slower
+        // than the legacy pop, 34.1 vs 31.1 ns). Every reader of a uniform
+        // block's live_bytes calls syncCursorLiveBytes() first.
+        uint64_t pending_live = 0;
+        uint64_t pending_allocs = 0;
+    };
+    AllocCursor cursor_[NUM_SIZE_CLASSES];
+    std::vector<BlockId> partial_[NUM_SIZE_CLASSES];
+    size_t partial_head_[NUM_SIZE_CLASSES] = {};
+
+    bool bitmapMode() const { return config_->old_gen_bitmap_alloc; }
+    // Cells in a uniform block: (end_of_objects - start) / cell size.
+    static uint32_t cellsIn(const BlockInfo& b) {
+        return static_cast<uint32_t>(
+            static_cast<size_t>(b.end_of_objects - b.start) /
+            classToSize(b.size_class));
+    }
+    void resetAllocCursors();
+    // Removes `id` from its class cursor / queue (before release, flip to
+    // large, demotion or compaction). No-op for kAllocNone.
+    void detachFromAllocation(BlockId id);
+    void setCursor(size_t cls, BlockId id);
+    // Folds cursor_[cls]'s pending live bytes / counts into its block's meta
+    // and the stats. syncCursorLiveBytes does it for every class.
+    void flushCursor(size_t cls);
+public:
+    // Folds every bitmap cursor's pending live bytes / counts into the block
+    // metadata and stats (threaded-gc-02). Called before readers.
+    void syncCursorLiveBytes();
+private:
+    bool refillCursor(size_t cls);
+    void* cursorAllocate(size_t cls, size_t requested_size);
+    void* finalizeBitmapCell(AllocCursor& c, uint32_t k, size_t requested_size);
+    bool startVirginBlock(size_t cls);
+    bool ensureBagPageAvailable();
+    void* allocateFromSizeClassBitmap(size_t cls, size_t requested_size);
+    // Frees one cell of a uniform block (bitmap mode): clears its bit and
+    // rewinds the cursor / queues the block so the cell is reusable now.
+    void freeUniformCell(BlockId id, char* cell);
+    // Post-mark (bitmap mode): retire dead nursery-owned bodies, decide
+    // is_large blocks, mark uniform blocks swept and queue partial ones.
+    void retireDeadLargeBodies();
+    void classifyBlocksAfterMark();
+    // True iff the in-progress lazy sweep will still walk over `addr` in
+    // block `id`: the block is not fully swept and lies ahead of the sweep
+    // cursor (a later position, or the current block at/after sweep_cursor_).
+    // A cell the sweep has already passed must be pushed onto a free list; a
+    // cell ahead of it must NOT be (the gap sweep reclaims it). P§3.7.
+    bool sweepWillReach(BlockId id, const char* addr) const;
 
     // ========== Per-heap GC state (HEAP_053) ==========
     //
@@ -1201,7 +1288,8 @@ private:
     void resetBufferMetaForMark();
 
     // Demotes uniform size-class blocks whose mark-derived live_bytes is at
-    // most half of their total bytes to mixed (`size_class = NUM_SIZE_CLASSES`).
+    // most HeapConfig::demote_live_fraction (default 0.5; 0.0 = never) of their
+    // total bytes to mixed (`size_class = NUM_SIZE_CLASSES`).
     // Run after `finalizeMetaAfterMark` and before `transitionToSweeping` so
     // that (a) the residency snapshot still sees the pre-demotion class
     // assignments and (b) `transitionToSweeping` then wipes free_lists_,
@@ -1402,6 +1490,72 @@ public:
     static const FragmentationStats& getFragStats(const OldGenSpace& oldgen) { return oldgen.frag_stats_; }
 
     // Free lists.
+    // ---- threaded-gc-02 bitmap allocation (HEAP_054) ----
+    static BlockId cursorBlock(const OldGenSpace& og, size_t cls) {
+        return og.cursor_[cls].block;
+    }
+    static size_t partialQueueLength(const OldGenSpace& og, size_t cls) {
+        return og.partial_[cls].size() - og.partial_head_[cls];
+    }
+    static uint8_t allocState(const OldGenSpace& og, BlockId id) {
+        return og.blocks_.info(id).alloc_state;
+    }
+    static void releaseBlock(OldGenSpace& og, BlockId id) {
+        og.releaseBlockToAllocator(id);
+    }
+    static void driveSweepToCompletion(OldGenSpace& og) {
+        while (og.gc_phase_ == GCPhase::Sweeping) {
+            og.lazySweep(NUM_SIZE_CLASSES, std::numeric_limits<size_t>::max() / 2);
+        }
+    }
+    static bool demoted(const OldGenSpace& og, BlockId id) {
+        return og.blocks_.info(id).size_class >= og.num_size_classes_;
+    }
+    static const BufferMetadata& metaOf(OldGenSpace& og, BlockId id) {
+        og.syncCursorLiveBytes();
+        return og.blocks_.meta(id);
+    }
+    // Bytes of free-list cells whose start lies in [lo, hi).
+    static size_t freeListBytesIn(const OldGenSpace& og, const char* lo,
+                                  const char* hi) {
+        size_t n = 0;
+        for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
+            for (FreeCell* c = og.free_lists_[cls]; c != nullptr; c = c->next_in_class) {
+                const char* p = reinterpret_cast<const char*>(c);
+                if (p >= lo && p < hi) n += c->header.size;
+            }
+        }
+        return n;
+    }
+    // Non-aborting V10: cursor / queue / alloc_state consistency.
+    static bool allocStateConsistent(const OldGenSpace& og) {
+        for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
+            const BlockId b = og.cursor_[cls].block;
+            if (b.valid() && (!og.blocks_.isLive(b) ||
+                              og.blocks_.info(b).alloc_state != OldGenSpace::kAllocCurrent)) {
+                return false;
+            }
+            for (size_t k = og.partial_head_[cls]; k < og.partial_[cls].size(); ++k) {
+                const BlockId q = og.partial_[cls][k];
+                if (!og.blocks_.isLive(q) ||
+                    og.blocks_.info(q).alloc_state != OldGenSpace::kAllocQueued) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+#if ENABLE_GC_STATS
+    static const BitmapAllocStats& bitmapStats(OldGenSpace& og) {
+        og.syncCursorLiveBytes();
+        return og.alloc_stats_.bm;
+    }
+#endif
+    static size_t numSizeClasses(const OldGenSpace& og) { return og.num_size_classes_; }
+    static bool sweepWillReach(const OldGenSpace& og, BlockId id, const void* a) {
+        return og.sweepWillReach(id, static_cast<const char*>(a));
+    }
+
     // threaded-gc-01 (HEAP_052): true iff every Tier-M cell on every class
     // list decodes its back-link to its actual predecessor (nullptr at the
     // head). Non-aborting twin of OldGenSpace::validateFreeListBackLinks.

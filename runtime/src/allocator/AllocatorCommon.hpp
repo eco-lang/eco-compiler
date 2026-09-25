@@ -176,6 +176,31 @@ constexpr float MAJOR_GC_GARBAGE_FRACTION = 0.70f;
 // On releaseOldGenBlock, also madvise(MADV_DONTNEED) to drop physical RSS (virtual mapping is retained either way).
 constexpr bool DECOMMIT_ON_OLDGEN_RELEASE = true;
 
+// threaded-gc-02 (plans/threaded-gc-02-bitmap-allocation.md, HEAP_054): allocate
+// uniform size-class cells straight from the mark bitmap through a per-class
+// cursor, and gap-sweep mixed blocks, instead of the header-walking lazy sweep.
+constexpr bool OLD_GEN_BITMAP_ALLOC = true;
+
+// threaded-gc-02 D1b: a uniform block is demoted to mixed at the end of mark
+// iff live_bytes <= DEMOTE_LIVE_FRACTION * totalBytes. 0.5 is the former
+// hard-coded `live * 2 <= total`; 0.0 = never demote. 0.3 chosen from E1
+// (plan §9 item 9): steady 7 majors, peak ~1 GB below 0.5.
+constexpr double DEMOTE_LIVE_FRACTION = 0.3;
+
+// threaded-gc-02: in bitmap mode the garbage-fraction trigger's denominator is
+// min(committed, GARBAGE_DENOM_CAP * committed at the last major). 0 = uncapped
+// (the legacy denominator, current committed) — the default: with LiveBudget
+// bounding the peak, a cap of 2 only added a major (plan §9 item 7).
+constexpr double GARBAGE_DENOM_CAP = 0.0;
+
+// threaded-gc-02 (both modes; defaults from the plan's §9 item 7 sweep, k = 4.5 and
+// r = 1.5 chosen 2026-09-25): a LiveBudget major fires when
+// bytes allocated since the last major reach MAJOR_GC_LIVE_BUDGET * live_ref,
+// live_ref = min(L_i, LIVE_GROWTH_BOUND * L_{i-1}) (L = mark-derived live at
+// the end of mark). 0 disables each.
+constexpr double MAJOR_GC_LIVE_BUDGET = 4.5;
+constexpr double LIVE_GROWTH_BOUND = 1.5;
+
 // Default cap on bytes committed to uniform small-class pages before splitting larger free cells.
 constexpr size_t DEFAULT_SMALL_CLASS_HEAP_BUDGET = 1024ULL * 1024 * 1024;
 
@@ -494,6 +519,23 @@ struct HeapConfig {
     // On releaseOldGenBlock, also madvise(MADV_DONTNEED) to drop physical RSS.
     bool decommit_on_oldgen_release = DECOMMIT_ON_OLDGEN_RELEASE;
 
+    // threaded-gc-02 (HEAP_054): bitmap allocation for uniform blocks + gap
+    // sweep for mixed blocks. Off = the legacy header-walking lazy sweep.
+    bool old_gen_bitmap_alloc = OLD_GEN_BITMAP_ALLOC;
+
+    // threaded-gc-02 D1b: demote a uniform block to mixed at the end of mark
+    // iff live_bytes <= demote_live_fraction * totalBytes. In [0, 1];
+    // 0.0 = never demote (explicit early return); 1.0 = demote every block.
+    double demote_live_fraction = DEMOTE_LIVE_FRACTION;
+
+    // threaded-gc-02: bitmap-mode cap on the garbage-fraction denominator, as
+    // a multiple of committed at the last major; 0 = uncapped.
+    double garbage_denom_cap = GARBAGE_DENOM_CAP;
+
+    // threaded-gc-02: LiveBudget trigger (see MAJOR_GC_LIVE_BUDGET); 0 = off.
+    double major_gc_live_budget = MAJOR_GC_LIVE_BUDGET;
+    double live_growth_bound = LIVE_GROWTH_BOUND;
+
     // Cap on bytes committed to uniform small-class pages before splitting larger free cells (0 disables).
     size_t small_class_heap_budget_bytes = DEFAULT_SMALL_CLASS_HEAP_BUDGET;
 
@@ -621,6 +663,19 @@ struct HeapConfig {
 
         if (alloc_buffer_size == 0) {
             throw std::invalid_argument("alloc_buffer_size must be > 0");
+        }
+
+        if (!(demote_live_fraction >= 0.0 && demote_live_fraction <= 1.0)) {
+            throw std::invalid_argument("demote_live_fraction must be in [0, 1]");
+        }
+        if (!(garbage_denom_cap == 0.0 || garbage_denom_cap >= 1.0)) {
+            throw std::invalid_argument("garbage_denom_cap must be 0 or >= 1");
+        }
+        if (!(major_gc_live_budget >= 0.0)) {
+            throw std::invalid_argument("major_gc_live_budget must be >= 0");
+        }
+        if (!(live_growth_bound == 0.0 || live_growth_bound >= 1.0)) {
+            throw std::invalid_argument("live_growth_bound must be 0 or >= 1");
         }
 
         if (nursery_block_count == 0) {

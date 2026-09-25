@@ -23,6 +23,8 @@
 #include "allocator/FreeListBackLinkTest.hpp"
 #include "allocator/ReservedArrayTest.hpp"
 #include "allocator/OldGenScaleTest.hpp"
+#include "allocator/BitmapScanTest.hpp"
+#include "allocator/OldGenBitmapAllocTest.hpp"
 #include "allocator/OldGenSweepOnDemandTest.hpp"
 #include "allocator/OldGenSweepBudgetTest.hpp"
 #include "allocator/OldGenSmallClassBudgetTest.hpp"
@@ -647,6 +649,17 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testBlockTableClearRestartsIds);
     oldGenTests.add(testOldGenGeometryAt8TB);
     oldGenTests.add(testOldGenMetadataReserve8TBIsCheap);
+    oldGenTests.add(testBitmapNextFreeCellMatchesReference);
+    oldGenTests.add(testBitmapNextSetBitMatchesReference);
+    oldGenTests.add(testBitmapVirginBlockAddressOrder);
+    oldGenTests.add(testBitmapReuseDeadCellsAfterMajor);
+    oldGenTests.add(testBitmapSplitBeforeVirginW6Rule);
+    oldGenTests.add(testBitmapFreeBodyInUniformBlock);
+    oldGenTests.add(testBitmapFreeBodyInUnsweptMixedBlock);
+    oldGenTests.add(testBitmapGapSweepDemotedBlock);
+    oldGenTests.add(testBitmapDetachOnRelease);
+    oldGenTests.add(testBitmapDeadBodyRetiredAtMark);
+    oldGenTests.add(testDemoteLiveFractionLever);
     oldGenTests.add(testLazySweepDrivenFromAllocation);
     oldGenTests.add(testShrinkUsesMarkLiveBytes);
     oldGenTests.add(testCompactionBlockedDuringSweep);

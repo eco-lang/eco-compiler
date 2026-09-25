@@ -108,6 +108,8 @@ add_executable(test
         allocator/FreeListBackLinkTest.cpp
         allocator/ReservedArrayTest.cpp
         allocator/OldGenScaleTest.cpp
+        allocator/BitmapScanTest.cpp
+        allocator/OldGenBitmapAllocTest.cpp
         allocator/GCPauseStatsTest.cpp
         allocator/NurseryContiguityTest.cpp
         allocator/SliceRepresentationTest.cpp
