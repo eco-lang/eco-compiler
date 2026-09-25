@@ -175,6 +175,10 @@ ThreadLocalHeap::ThreadLocalHeap(Allocator* parent,
 
     // Initialize nursery with reference to this heap for promotion.
     nursery_.initialize(this, config_);
+
+    // HEAP_053: the old gen's mark path asks THIS heap's nursery, not the
+    // calling thread's (Allocator::isInNursery via tl_heap_).
+    old_gen_.bindNursery(&nursery_);
 }
 
 void* ThreadLocalHeap::allocate(size_t size, Tag tag) {

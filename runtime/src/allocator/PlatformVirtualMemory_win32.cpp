@@ -48,6 +48,11 @@ void* commitAt(void* addr, std::size_t size) {
     return VirtualAlloc(addr, size, MEM_COMMIT, PAGE_READWRITE);
 }
 
+bool resetPagesToZero(void* addr, std::size_t size) {
+    if (VirtualFree(addr, size, MEM_DECOMMIT) == 0) return false;
+    return VirtualAlloc(addr, size, MEM_COMMIT, PAGE_READWRITE) == addr;
+}
+
 bool decommit(void* addr, std::size_t size) {
     return VirtualFree(addr, size, MEM_DECOMMIT) != 0;
 }

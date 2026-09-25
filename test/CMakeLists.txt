@@ -105,6 +105,9 @@ add_executable(test
         allocator/EcoApplyClosureTypedTest.cpp
         allocator/GCPressureTest.cpp
         allocator/EnsureHeadroomTest.cpp
+        allocator/FreeListBackLinkTest.cpp
+        allocator/ReservedArrayTest.cpp
+        allocator/OldGenScaleTest.cpp
         allocator/GCPauseStatsTest.cpp
         allocator/NurseryContiguityTest.cpp
         allocator/SliceRepresentationTest.cpp

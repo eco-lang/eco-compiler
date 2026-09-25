@@ -153,6 +153,13 @@ private:
 
     ThreadLocalHeap* thread_heap_;    // Owner ThreadLocalHeap (for multi-threaded mode).
 
+    // True from the start to the end of minorGC's collection bracket (the
+    // former thread_local g_in_minor_gc, HEAP_053: GC state is per-heap, never
+    // the calling thread's TLS). Set and cleared together with
+    // OldGenSpace::in_minor_gc_. Distinct from the validate-only in_minor_gc_
+    // below, whose bracket is narrower.
+    bool minor_gc_running_ = false;
+
 #if ECO_HEAP_VALIDATE
     // True only during minorGC execution. Consumed by the stale-pointer
     // detector (`debugAssertValidNurseryPointer`) to decide whether the
@@ -378,6 +385,7 @@ private:
 
     friend class Allocator;
     friend class ThreadLocalHeap;
+    friend class OldGenSpace;     // HEAP_053: mark path asks contains() directly
     friend class NurserySpaceTestAccess;
 };
 

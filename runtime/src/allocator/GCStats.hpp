@@ -35,13 +35,9 @@
 
 namespace Elm {
 
-// True only while the calling thread is inside NurserySpace::minorGC.
-// Read by OldGenSpace::allocate to SKIP timing when the allocation is a
-// promotion (rather than a direct mutator alloc): a promotion is already
-// inside the minor-GC bracket, and clocking each one cost two vdso reads
-// per promoted object (~7e8 per self-compile).
-// Always-on (not gated on ECO_GC_DEBUG) because the stats path needs it.
-extern thread_local bool g_in_minor_gc;
+// threaded-gc-01: the former thread_local g_in_minor_gc is now per-heap
+// state, OldGenSpace::in_minor_gc_ / NurserySpace::minor_gc_running_
+// (HEAP_053).
 
 // ============================================================================
 // threaded-gc-00: minor-GC phase breakdown and pause accounting

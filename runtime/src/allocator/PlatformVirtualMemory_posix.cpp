@@ -62,6 +62,13 @@ void* commitAt(void* addr, std::size_t size) {
     return p == MAP_FAILED ? nullptr : p;
 }
 
+bool resetPagesToZero(void* addr, std::size_t size) {
+    void* p = mmap(addr, size, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE,
+                   -1, 0);
+    return p == addr;
+}
+
 bool decommit(void* addr, std::size_t size) {
     // Re-map as PROT_NONE so the pages are unbacked but the address space is
     // still reserved (a fresh PROT_READ|PROT_WRITE commit at the same addr

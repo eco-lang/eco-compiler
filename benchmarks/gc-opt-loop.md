@@ -1758,6 +1758,63 @@ printed.
   protocol's resolution. A tighter bound would need per-collection pairing on the minor event
   distribution, which a flag-OFF build cannot log, or more runs.
 
+### TG1 — threaded-gc-01 stable old-gen metadata (prerequisite, not an optimisation) — **FLAT on mark (+1.2 %, inside the band), GC −1.47 s, RSS −62 MB, counters bit-identical**
+
+**What changed** (`plans/threaded-gc-01-stable-metadata.md`):
+- stable `BlockId`s in a VA-reserved `BlockTable`, with an iteration order that reproduces the
+  former `blocks_` vector exactly;
+- a page index keyed from `heap_base` over the whole reservation;
+- a per-id mark-bit arena;
+- a marker-side live-bytes accumulator;
+- address-encoded free-list back-links;
+- per-heap state instead of the GC-path thread-locals.
+
+Candidate `eco-optTG1f` (snapshot `try-TG1f`); same-session control `eco-optT01`, measured in
+the same sitting.
+
+| arm | wall (s) | GC (s) | minor (s) | major (s) | mark (ms) | max RSS (kB) | counters |
+|---|---|---|---|---|---|---|---|
+| T01 median (3 + 1 drift re-run) | 185.34 | 69.47 | 60.71 | 8.54 | 7,559 | 9,725,780 | reference |
+| **TG1f median of 3** | **181.61** | **67.00** | **58.36** | 8.59 | 7,652 (pooled 5) | **9,664,108** | identical ×3 |
+| Δ | −3.73 | −2.47 | −2.35 | +0.05 | **+1.2 %** | −61,672 | — |
+
+- **Mark was judged per collection on the event log** (criterion M ≤ +2 %). Pooling the 5 runs
+  of the byte-identical binary (2 as `eco-optTG1al`, 3 as `eco-optTG1f`) gives per-collection
+  deltas of −2.1 / −1.7 / +0.6 / +0.6 / +2.5 / +1.0 %, and a total of **+1.2 %**.
+- **The run-to-run spread of this binary's mark time is ~430 ms** (7,571 to 7,997). That is
+  wider than the control's 82 ms. Three runs are not enough to resolve 2 % on mark.
+- **The GC and wall gains are real but not the point.** The minor-GC −2.35 s most likely comes
+  from dropping the TLS `g_in_minor_gc` load and the block-table indirections on the promotion
+  path. That is not separately attributed.
+
+**Two traps found on the way** (plan P§9a.13, memory `gc-mark-loop-alignment-trap`):
+
+1. **Loop alignment.** The first candidate measured mark **+5.5 %**, yet every mark function got
+   *smaller*. perf put the extra time at the child-field load of `markChildren`'s Custom loop.
+   That loop had moved from a 64 B-aligned address to offset 48 through unrelated code-size
+   changes. `-falign-loops=64` on `OldGenSpace.cpp` restored the control's mark time, and is now
+   pinned in `runtime/src/codegen/CMakeLists.txt`. **Some of the "restructures lose" record may
+   be alignment**; check the hot loop's address before blaming a design.
+2. **Tail-committed VA gets no THP.** Committing an array at its tail in small `MAP_FIXED` steps
+   left the 134 MiB mark arena on 4 KiB pages (0 MiB `AnonHugePages`, vs 196 MiB for the
+   `malloc`'d vector), costing ~1 % of mark. Fixed with a 2 MiB-aligned, 2 MiB-granule
+   `ReservedArray` for the arena.
+
+**Pauses** (phase-timer builds, one run each, pre-alignment-fix candidate): max 2,633 vs
+2,620 ms, p99 154 vs 156 ms, minor-only max 915 vs 911 ms, MMU identical. **Unchanged.**
+
+**Gates:**
+- E2E 1,746/1,746;
+- validate E2E 1,747/1,747;
+- validate unit tests clean (pinned seed);
+- stress 100/100 at 1,263 minors;
+- validate stress 95/100, the same 5 pre-existing `JsonRoundtrip*` nursery-check aborts as the
+  pre-change sources;
+- elm-tests 13,565/12 (the reference set);
+- zero `[heap-validate]` lines anywhere.
+
+The **validator self-compile is no longer a gate** (user decision; too slow).
+
 ## 7. Findings
 
 (What this series learns, separated from the per-step records so the entries stay to ten lines.
@@ -2215,3 +2272,4 @@ mechanism paid and which did not.
 | drift check (eco-optW13c re-measured, same sitting as T00) | 181.86 | +1.78 vs its own row | 1924 | 6 | 19861 | 9726024 | NO DRIFT | W13c |
 | T00 (threaded-gc-00 instruments on, stats build) | 184.71 | +2.85 vs same-sitting W13c | 1924 | 6 | 19861 | 9726340 | FLAT wall; GC +1.52 s (+2.3 %) measured cost | W13c (re-measured) |
 | T01 (threaded-gc-00 instruments compiled out, ECO_GC_PHASE_TIMERS OFF) | 183.86 | +2.31 vs same-sitting W13c (181.55) | 1924 | 6 | 19861 | 9725408 | FLAT, unmoved within noise (GC +0.64 s, ranges overlap) | W13c (re-measured) |
+| TG1 (threaded-gc-01 stable metadata, `eco-optTG1f`) | 181.61 | −3.73 vs same-sitting T01 (185.34) | 1924 | 6 | 19861 | 9664108 | FLAT on mark (+1.2 %), GC −2.47 s; KEPT (prerequisite) | `keep-TG1` |

@@ -51,6 +51,15 @@ void* commitAt(void* addr, std::size_t size);
 // unbacked again. Returns true on success.
 bool decommit(void* addr, std::size_t size);
 
+// Zero a committed, page-aligned subrange and return its physical memory to
+// the OS, keeping the pages committed and read/write (they fault back in as
+// zero pages on the next touch). Unlike `decommit`, the range stays
+// accessible. POSIX: a fresh MAP_FIXED anonymous RW mapping over the range
+// (portable: Darwin's MADV_DONTNEED does not guarantee zeros). Win64:
+// MEM_DECOMMIT then MEM_COMMIT. `addr` and `size` must be OS-page aligned.
+// Returns true on success. (threaded-gc-01: ReservedArray::discard.)
+bool resetPagesToZero(void* addr, std::size_t size);
+
 // Release a whole reservation (must be the same `addr` that was returned by
 // reserveAddressSpace; `size` is the originally-requested size on POSIX,
 // ignored on Windows where MEM_RELEASE keys on the reservation base).

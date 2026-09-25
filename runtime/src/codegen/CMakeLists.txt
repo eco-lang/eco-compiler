@@ -179,6 +179,18 @@ set_source_files_properties(
     PROPERTIES OBJECT_DEPENDS "${ECO_TABLEGEN_OUTPUTS}"
 )
 
+# threaded-gc-01 (plans/threaded-gc-01-stable-metadata.md P§9a): align loops in
+# the old-gen GC to 64 bytes. The major-GC mark loop (markChildren's field
+# walk) is latency-bound and alignment-sensitive: an unrelated code-size change
+# elsewhere in OldGenSpace.cpp moved it off a 64-byte boundary and cost +4.5 %
+# mark time with IDENTICAL instructions; -falign-loops=64 measured back to the
+# control (7,571-7,620 ms vs 7,558). Pinning the alignment keeps later edits to
+# this file from reintroducing a phantom regression.
+if(NOT MSVC)
+    set_source_files_properties(../allocator/OldGenSpace.cpp
+        PROPERTIES COMPILE_OPTIONS "-falign-loops=64")
+endif()
+
 #------------------------------------------------------------------------------
 # Create a library target for the dialect
 #------------------------------------------------------------------------------

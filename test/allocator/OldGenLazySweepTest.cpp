@@ -204,7 +204,7 @@ Testing::TestCase testCompactionBlockedDuringSweep(
 // ----------------------------------------------------------------------------
 
 Testing::TestCase testPageIndexBlockLookup(
-    "blockIndexFor agrees with linear scan after populate/release cycles", []() {
+    "blockIdFor agrees with linear scan after populate/release cycles", []() {
     auto cfg = lazySweepHeapConfig();
     auto& alloc = initAllocator(cfg);
     auto& og = threadOldGen(alloc);
@@ -218,12 +218,13 @@ Testing::TestCase testPageIndexBlockLookup(
         const auto& blocks = OldGenSpaceTestAccess::getBlocks(og);
         for (size_t i = 0; i < blocks.size(); ++i) {
             void* probe = blocks[i].start;
-            const size_t fast = OldGenSpaceTestAccess::blockIndexFor(og, probe);
-            // Brute force linear scan.
-            size_t slow = blocks.size();
+            const BlockId fast = OldGenSpaceTestAccess::blockIdFor(og, probe);
+            // Brute force linear scan over order positions (threaded-gc-01:
+            // the page index returns stable BlockIds, HEAP_049).
+            BlockId slow = NO_BLOCK_ID;
             for (size_t j = 0; j < blocks.size(); ++j) {
                 if (probe >= blocks[j].start && probe < blocks[j].end) {
-                    slow = j;
+                    slow = OldGenSpaceTestAccess::blockIdAt(og, j);
                     break;
                 }
             }

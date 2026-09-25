@@ -20,6 +20,9 @@
 #include "allocator/OldGenSpaceTest.hpp"
 #include "allocator/OldGenCapacityTest.hpp"
 #include "allocator/OldGenLazySweepTest.hpp"
+#include "allocator/FreeListBackLinkTest.hpp"
+#include "allocator/ReservedArrayTest.hpp"
+#include "allocator/OldGenScaleTest.hpp"
 #include "allocator/OldGenSweepOnDemandTest.hpp"
 #include "allocator/OldGenSweepBudgetTest.hpp"
 #include "allocator/OldGenSmallClassBudgetTest.hpp"
@@ -632,6 +635,18 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testDecommitFlagPathExercised);
     // Lazy-sweep / mark-driven shrink coverage.
     oldGenTests.add(testAllDeadBlockReclaimSkipsCells);
+    oldGenTests.add(testFreeListBackLinkEncodeRoundTrip);
+    oldGenTests.add(testFreeListBackLinksConsistentAfterChurn);
+    oldGenTests.add(testReservedArrayStableAndZeroed);
+    oldGenTests.add(testReservedArrayDiscardZeroes);
+    oldGenTests.add(testReservedArrayHugeGranule);
+    oldGenTests.add(testReservedArrayScaleReserveIsCheap);
+    oldGenTests.add(testBlockTableOrderMatchesVectorModel);
+    oldGenTests.add(testBlockTableIdsStable);
+    oldGenTests.add(testBlockTableBeyond65536);
+    oldGenTests.add(testBlockTableClearRestartsIds);
+    oldGenTests.add(testOldGenGeometryAt8TB);
+    oldGenTests.add(testOldGenMetadataReserve8TBIsCheap);
     oldGenTests.add(testLazySweepDrivenFromAllocation);
     oldGenTests.add(testShrinkUsesMarkLiveBytes);
     oldGenTests.add(testCompactionBlockedDuringSweep);

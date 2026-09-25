@@ -382,6 +382,12 @@ private:
     // Returns the base address of the unified heap.
     char *getHeapBase() const { return heap_base; }
 
+    // Size of the old-gen address range [heap_base, heap_base +
+    // nursery_offset) that every heap's old-gen blocks lie in (HEAP_043).
+    // First-init-wins, never changes. Sizes the threaded-gc-01 metadata
+    // reservations (HEAP_048/049/050).
+    size_t getOldGenReservationBytes() const { return nursery_offset; }
+
     // Returns the total reserved heap size.
     size_t getHeapReserved() const { return heap_reserved; }
 

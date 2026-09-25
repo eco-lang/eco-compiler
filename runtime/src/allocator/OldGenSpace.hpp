@@ -8,6 +8,7 @@
 #include "AllocatorCommon.hpp"
 #include "RootSet.hpp"
 #include "GCStats.hpp"
+#include "BlockTable.hpp"
 
 namespace Elm {
 
@@ -106,44 +107,25 @@ struct MajorGCPhaseProfile {
 //     back-link. Bulk release walks free_lists_[1] end-to-end (bounded —
 //     class 1 is the smallest list).
 //   * Tier-M (cls ≥ 2, cellSize ≥ 24 B): cell additionally carries a
-//     compact 4-byte CellHandle back-link in the size-class list and
-//     16-bit per-block offsets, so removeFreeCellsForBlock can walk only
-//     this block's cells and unlink each in O(1) from both threads.
+//     back-link to its predecessor in the size-class list and 16-bit
+//     per-block offsets, so removeFreeCellsForBlock can walk only this
+//     block's cells and unlink each in O(1) from both threads.
 //
-// `prev_in_class` is a CellHandle (4 B): {block_index, cell_offset_8}.
-// HEAD_SENTINEL == 0xFFFF in block_index marks the cell as the current
-// head of its size-class list (no predecessor cell exists; the slot is
-// `&free_lists_[cls]`).
+// The class-list back-link (threaded-gc-01, HEAP_052) is the predecessor's
+// ADDRESS >> 3 in 40 bits: the low 32 bits in `prev_lo`, the high 8 bits in
+// bits [0,8) of the cell's own Header.refcount (unused on Tag_Free cells),
+// with refcount bit 8 marking "head of its class list". Only setPrevHead /
+// setPrev / copyPrev (OldGenSpace.cpp) write these bits. The encoding needs
+// no block metadata and imposes no bound on the block count.
 //
 // `next_in_block` / `prev_in_block` are 16-bit offsets, encoded as
 // (cell_addr - block.start) / 8. FREE_CELLS_EMPTY == 0xFFFF marks the
-// chain end.
-//
-// Bounds:
-//   * block_index in [0, 0xFFFE]: max 65,535 blocks. With 24 GB max heap
-//     and 512 KiB pages this is 49,152 — comfortably within range.
-//   * cell_offset_8 in [0, 0xFFFF]: max byte offset 524,280 ⇒ block byte
-//     size ≤ 524,288 (= 512 KiB). Enforced at OldGenSpace::initialize.
+// chain end. cell offset/8 in [0, 0xFFFF] bounds the block byte size to
+// 524,288 (= 512 KiB); enforced at OldGenSpace::initialize.
 struct FreeCell;
 
-static constexpr uint16_t FREE_CELLS_EMPTY = 0xFFFF;
-static constexpr uint16_t HEAD_SENTINEL    = 0xFFFF;
+// FREE_CELLS_EMPTY lives in BlockTable.hpp (with BlockInfo).
 
-// Forward decl so CellHandle::resolve can name BlockInfo.
-struct BlockInfo;
-
-// 4-byte compact reference to a free cell.
-//   block_index == HEAD_SENTINEL  ⇒ cell is current head of its class list
-//                                   (no predecessor cell; slot = &free_lists_[cls])
-//   otherwise  ⇒ cell lives at  blocks[block_index].start + cell_offset_8 * 8
-struct CellHandle {
-    uint16_t block_index;
-    uint16_t cell_offset_8;
-
-    static CellHandle head() { return {HEAD_SENTINEL, 0}; }
-    bool isHead() const { return block_index == HEAD_SENTINEL; }
-};
-static_assert(sizeof(CellHandle) == 4, "CellHandle must be 4 bytes");
 
 // Tier-S (16 B): minimal layout for class 1. Tier-M is laid out so its
 // header + next_in_class share offsets with the Tier-S view.
@@ -159,7 +141,7 @@ static_assert(sizeof(FreeCell) == 16, "Tier-S FreeCell must be 16 bytes");
 struct FreeCellMid {
     Header     header;          // 8 B
     FreeCell*  next_in_class;   // 8 B
-    CellHandle prev_in_class;   // 4 B   compact back-link in the size-class list
+    uint32_t   prev_lo;         // 4 B   back-link, low 32 bits (HEAP_052)
     uint16_t   next_in_block;   // 2 B   offset/8 within block; FREE_CELLS_EMPTY = end
     uint16_t   prev_in_block;   // 2 B   offset/8 within block; FREE_CELLS_EMPTY = head
 };
@@ -167,6 +149,40 @@ static_assert(sizeof(FreeCellMid) == 24, "Tier-M FreeCellMid must be 24 bytes");
 static_assert(offsetof(FreeCell,    next_in_class) ==
               offsetof(FreeCellMid, next_in_class),
               "FreeCell and FreeCellMid must share next_in_class offset");
+
+// Free-list back-link encoding (threaded-gc-01 P§3.7, HEAP_052). A Tier-M
+// cell's predecessor in its size-class list is stored as its address >> 3
+// (40 bits; heap addresses are < 2^43): the low 32 bits in
+// FreeCellMid::prev_lo, the high 8 in bits [0,8) of THIS cell's
+// Header.refcount. refcount bit 8 marks "no predecessor: head of the list".
+// refcount is unused on Tag_Free cells (Heap.hpp), and ONLY these three
+// helpers touch it there. Resolving a back-link reads no block metadata, and
+// Tier-M threading no longer depends on the block count (the former 16-bit
+// CellHandle capped it at 65,535 blocks).
+inline constexpr u32 kPrevHiMask  = 0xFFu;
+inline constexpr u32 kPrevHeadBit = 0x100u;
+static_assert(POINTER_BITS == 40,
+              "back-link encoding assumes heap addresses < 2^43");
+
+inline void setPrevHead(FreeCellMid* m) {
+    m->header.refcount = kPrevHeadBit;
+    m->prev_lo = 0;
+}
+inline void setPrev(FreeCellMid* m, const FreeCell* pred) {
+    const uint64_t e = reinterpret_cast<uintptr_t>(pred) >> 3;
+    m->prev_lo = static_cast<uint32_t>(e);
+    m->header.refcount = static_cast<u32>(e >> 32) & kPrevHiMask;
+}
+inline void copyPrev(FreeCellMid* dst, const FreeCellMid* src) {
+    dst->prev_lo = src->prev_lo;
+    dst->header.refcount = src->header.refcount & (kPrevHiMask | kPrevHeadBit);
+}
+inline FreeCell* getPrev(const FreeCellMid* m) {
+    if (m->header.refcount & kPrevHeadBit) return nullptr;
+    const uint64_t e =
+        (uint64_t(m->header.refcount & kPrevHiMask) << 32) | m->prev_lo;
+    return reinterpret_cast<FreeCell*>(static_cast<uintptr_t>(e << 3));
+}
 
 // Smallest free cell that can be linked into a free list (Tier-S, class 1).
 static constexpr size_t MIN_FREE_CELL_SIZE = sizeof(FreeCell);
@@ -193,50 +209,8 @@ inline void clearFreeCellSentinel(Header* hdr) {
     hdr->age = (hdr->age & ~0b11u);
 }
 
-// ============================================================================
-// Block Info Structure
-// ============================================================================
-
-// Tracks a page (or large block) currently materialized in `blocks_`. A page
-// enters `blocks_` only once it has been pulled from `unassigned_blocks_` and
-// either populated for a size class or wrapped as a single splittable cell.
-struct BlockInfo {
-    char* start;            // Start of the page/block (inclusive).
-    char* end;              // End of the page/block (exclusive).
-    char* end_of_objects;   // Sweep watermark: parse [start, end_of_objects).
-    size_t size_class;      // Advisory: preferred class for this page (or
-                            // NUM_SIZE_CLASSES if mixed/large).
-    bool is_large;          // True for dedicated large-object (pinned) blocks.
-
-    // Head (16-bit offset/8 from `start`) of this block's intrusive Tier-M
-    // free-cell thread. Tier-S (class 1) cells are NOT in this thread.
-    // FREE_CELLS_EMPTY (0xFFFF) when no Tier-M cells from this block are
-    // currently linked. Stored as an offset (not a pointer) so the thread is
-    // independent of `std::vector<BlockInfo>` reallocation.
-    uint16_t free_cells_in_block = FREE_CELLS_EMPTY;
-
-    size_t totalBytes() const { return static_cast<size_t>(end - start); }
-};
-
-// ============================================================================
-// Per-Block Metadata
-// ============================================================================
-
-// Tracks per-block statistics for compaction decisions.
-struct BufferMetadata {
-    // W9 item 41: `block_index` DELETED. buffer_meta_ is strictly parallel to
-    // blocks_ — every mutation keeps them index-identical (the four push
-    // sites, the swap-remove, the compaction erase, and clear) — so the field
-    // was a denormalised copy of the subscript. It was written in three places
-    // and READ NOWHERE except the self-comparison in
-    // fixupIndicesAfterBlockMove, which is what made that function O(#blocks)
-    // per released block. INVARIANT: buffer_meta_[i] describes blocks_[i];
-    // index one with a subscript derived from the other, never with a stored
-    // back-reference.
-    size_t live_bytes;      // Live object bytes (computed during sweep).
-    size_t garbage_bytes;   // Garbage bytes (computed during sweep).
-    bool fully_swept;       // True when this block has been fully swept.
-};
+// BlockInfo, BufferMetadata, BlockId, BlockTable and MarkBitArena live in
+// BlockTable.hpp (threaded-gc-01, HEAP_048/HEAP_050).
 
 // ============================================================================
 // Fragmentation Statistics
@@ -276,6 +250,7 @@ enum class CompactionPhase {
 
 // Forward declarations.
 class Allocator;
+class NurserySpace;
 class OldGenSpaceTestAccess;
 
 // Follows a forwarding pointer if present, updating the HPointer in place.
@@ -289,7 +264,8 @@ void* readBarrier(HPointer& ptr);
  * old-gen region is precommitted and sliced into pages, each pulled from the
  * bag on demand. See the file-level comment block above for the full design.
  *
- * Thread-local (one instance per thread).
+ * Thread-local (one instance per thread). Block metadata storage is
+ * VA-reserved and never moves; blocks have stable BlockIds (HEAP_048).
  */
 class OldGenSpace {
 public:
@@ -335,6 +311,26 @@ public:
 
     // ========== Queries ==========
 
+    // threaded-gc-01 metadata geometry (P§3.3) for an old-gen reservation of
+    // `reservation_bytes` and pages of `page` bytes. Every block is >= one
+    // page and lies inside the reservation, so max_blocks bounds the live
+    // block count and no table can overflow. A pure function so the scale
+    // test can check the arithmetic at 8 TB.
+    struct OldGenGeometry {
+        size_t max_blocks = 0;        // BlockTable / accumulator capacity (ids)
+        size_t index_slots = 0;       // page-index slots
+        size_t stride = 0;            // mark-arena bytes per id
+        size_t mark_arena_bytes = 0;  // max_blocks * stride (VA)
+    };
+    static OldGenGeometry geometryFor(size_t reservation_bytes, size_t page);
+
+    // Binds the owning heap's nursery (HEAP_053). Called once by the
+    // ThreadLocalHeap constructor.
+    void bindNursery(const NurserySpace* n) { nursery_ = n; }
+
+    // Set by NurserySpace::minorGC around its collection bracket.
+    void setInMinorGC(bool v) { in_minor_gc_ = v; }
+
     // Returns the current number of bytes allocated in this old gen space.
     size_t getAllocatedBytes() const { return allocated_bytes; }
 
@@ -373,7 +369,7 @@ public:
     }
 
     // threaded-gc-00: promotion-path instruments (promotions only, i.e.
-    // allocate() while g_in_minor_gc). Deterministic 1-in-16 sampling of the
+    // allocate() while in_minor_gc_). Deterministic 1-in-16 sampling of the
     // in-pause lazy-sweep slice and 1-in-256 of the allocator dispatch. The
     // nursery takes start/end differences per minor GC.
     struct PromoInstr {
@@ -391,15 +387,18 @@ public:
     const GCStats& getStats() const { return alloc_stats_; }
 #endif
 
-    // Up to two owning blocks_ indices per page slot. Two are required because
-    // non-page-aligned block extents (e.g. a 512 KiB large block whose start
-    // is not page-aligned) can intersect the same slot as a sibling block; a
-    // single-owner table would lose one. For ordinary one-page blocks the
-    // secondary owner stays NO_BLOCK.
+    // Up to two owning blocks per page slot (HEAP_049). Two are required
+    // because non-page-aligned block extents (e.g. a large block whose start
+    // is not alloc_buffer_size-aligned) can intersect the same slot as a
+    // sibling block; every block is >= alloc_buffer_size, so a slot can
+    // intersect at most two. Owners are stored ENCODED as BlockId.v + 1, so a
+    // fresh zero-filled slot means "no owner" (decodeOwner(0) == NO_BLOCK_ID).
     struct PageOwners {
-        size_t primary;
-        size_t secondary;
+        uint32_t primary;
+        uint32_t secondary;
     };
+    static constexpr uint32_t encodeOwner(BlockId id) { return id.v + 1; }
+    static constexpr BlockId decodeOwner(uint32_t o) { return BlockId{o - 1}; }
 
 private:
     // ========== Configuration ==========
@@ -413,7 +412,9 @@ private:
 
     // ========== Block Management ==========
 
-    std::vector<BlockInfo> blocks_;        // Pages currently in use.
+    // Blocks currently in use: stable BlockId identity + iteration order that
+    // reproduces the former std::vector<BlockInfo> exactly (HEAP_048).
+    BlockTable blocks_;
     size_t allocated_bytes;                // Total bytes currently allocated.
 
     // Snapshot of `allocated_bytes` taken right after each major GC's sweep
@@ -439,35 +440,63 @@ private:
     char* region_base_;                    // Start of old gen region.
     char* region_end_;                     // End of committed old gen region.
 
-    // Page slot (= (p - region_base_) / alloc_buffer_size) → up to two
-    // owning blocks_ indices (see PageOwners above). Sized to
-    // ceil(committed / alloc_buffer_size) and grown alongside region_end_;
-    // bag pages and just-released pages hold {NO_BLOCK, NO_BLOCK}.
-    std::vector<PageOwners> page_to_block_index_;
+    // Page index (HEAP_049): slot (p - index_base_) / alloc_buffer_size ->
+    // up to two owning blocks. index_base_ is the heap base, so the index
+    // covers the WHOLE old-gen reservation [heap_base, heap_base +
+    // nursery_offset); it is VA-reserved at initialize(), committed through
+    // region_end_, and never rebuilt: blocks are added and removed
+    // incrementally and ids never move. Lookups must bounds-check against
+    // page_index_.committed() (uncommitted slots are PROT_NONE).
+    ReservedArray<PageOwners> page_index_;
+    char* index_base_ = nullptr;
 
-    // Recomputes region_base_/region_end_ from blocks_ + unassigned_blocks_
-    // and rebuilds page_to_block_index_ from scratch. Called after any path
-    // that releases or reshapes the address range (post-mark shrink, all-dead
-    // reclaim, single-block release tail, compaction free pass) so the
-    // page-index slots line up with the new region geometry. The initial
-    // setup paths (initialize / reset) populate the index incrementally as
-    // blocks are added and don't need this call.
-    void recomputeRegionBoundsAndRebuildIndex();
+    // alloc_buffer_size the reservations were sized for.
+    size_t reserved_page_size_ = 0;
 
-    // Resets every page_to_block_index_ slot to {NO_BLOCK, NO_BLOCK} and
-    // re-runs assignPageIndexForBlock for every block in blocks_. Cheap when
-    // blocks_ is small relative to the slot count.
-    void rebuildPageIndexFromBlocks();
+    // Reserves every metadata table (BlockTable, MarkBitArena, page index)
+    // for geometryFor(allocator reservation, alloc_buffer_size). Aborts with
+    // the requested sizes on failure: a silently smaller table would
+    // overflow later.
+    void reserveMetadata();
 
-    // Walks the page slots covered by blocks_[new_idx] and rewrites every
-    // owner field that currently holds `old_idx` to point at `new_idx`. Used
-    // by releaseBlockToAllocator's swap-remove tail: when blocks_[last] is
-    // moved into block_index, slots that referred to `last` (the now-stale
-    // index) must be retargeted to `block_index` (the new home of the same
-    // BlockInfo). Without this, stale owner entries linger in the table —
-    // inert against blockIndexFor (which screens via idx < blocks_.size())
-    // but blocking future assignments at the same slot.
-    void renamePageIndexSlots(size_t old_idx, size_t new_idx);
+#if ECO_HEAP_VALIDATE
+    // V7: storage base addresses recorded at reserveMetadata(); asserted
+    // unchanged at every validator run (HEAP_048: storage never moves).
+    const void* storage_bases_[BlockTable::kStorageArrays + 3] = {};
+#endif
+
+    // Recomputes region_base_/region_end_ from blocks_ + unassigned_blocks_.
+    // Called after any path that releases address range (post-mark shrink,
+    // all-dead reclaim, single-block release tail, compaction free pass).
+    // threaded-gc-01: no longer rebuilds the page index (it is keyed from
+    // index_base_, not region_base_).
+    void recomputeRegionBounds();
+
+    // Commits the page index through the slot covering `end - 1` (no-op when
+    // already committed). Every site that grows region_end_ calls this.
+    void commitPageIndexThrough(const char* end);
+
+    // ========== Per-heap GC state (HEAP_053) ==========
+    //
+    // threaded-gc-01: these were thread_locals. Collection code for a heap
+    // reads the heap's own state, never the calling thread's TLS, so a helper
+    // thread doing this heap's GC work (phase 3 onward) sees the right values.
+
+    // The owning heap's nursery. Bound by the ThreadLocalHeap constructor;
+    // replaces Allocator::isInNursery (which resolved the CALLING thread's
+    // heap through tl_heap_) on the mark path.
+    const NurserySpace* nursery_ = nullptr;
+
+    // True while this heap's NurserySpace::minorGC is running, i.e. every
+    // allocate() is a PROMOTION. Set/cleared by NurserySpace::minorGC.
+    bool in_minor_gc_ = false;
+
+    // When non-zero, releaseBlockToAllocator skips the per-call recomputation
+    // of region_base_/region_end_: the caller (typically `maybeShrinkCapacity`)
+    // is in batch mode and will recompute bounds once at the end. Avoids an
+    // O(N) scan inside each release call when shrink is freeing thousands of
+    // blocks in one pass.
+    int batch_release_depth_ = 0;
 
     // ========== GC State Machine ==========
 
@@ -475,17 +504,14 @@ private:
 
     // ========== Marking State ==========
 
-    // Each entry on the mark stack pairs an object with the blocks_ index
-    // that owns it (NO_BLOCK_U32 for nursery objects and any stale entry
-    // pointing at a since-released block). Caching the index on push avoids a
-    // second blockIndexFor call when markOneObject attributes the object's
-    // walkStep-aligned size to buffer_meta_[idx].live_bytes. uint32_t keeps
-    // the entry packed at 16 bytes; CellHandle's 16-bit block_index already
-    // bounds blocks_ at 65,535, well within range.
-    static constexpr uint32_t NO_BLOCK_U32 = static_cast<uint32_t>(-1);
+    // Each entry on the mark stack pairs an object with the BlockId that
+    // owns it (NO_BLOCK_ID for nursery objects). Caching the id on push avoids
+    // a second blockIdFor call when markOneObject attributes the object's
+    // walkStep-aligned size to the live-bytes accumulator (HEAP_051). The
+    // 32-bit id keeps the entry packed at 16 bytes.
     struct MarkStackEntry {
         void* obj;
-        uint32_t block_index;
+        BlockId block;      // NO_BLOCK_ID for nursery objects
     };
     static_assert(sizeof(MarkStackEntry) == 16,
                   "MarkStackEntry must pack to 16 bytes");
@@ -534,11 +560,11 @@ private:
 
     size_t sweep_buffer_index_;       // Index of block currently being swept.
     char* sweep_cursor_;              // Current position within sweep block.
-    std::vector<BufferMetadata> buffer_meta_;  // Per-block metadata for compaction.
+    // (Per-block BufferMetadata lives in blocks_, addressed by BlockId.)
 
     // Number of blocks that still need sweeping in the current GC cycle.
     // Initialised in finishMarkAndSweep AFTER reclaimAllDeadBlocksFromMeta has
-    // removed all-dead blocks from buffer_meta_; decremented by
+    // removed all-dead blocks from the block table; decremented by
     // markBlockFullySwept whenever a block transitions to fully_swept;
     // zeroed in onSweepComplete and on reset/ctor. Drives the
     // sweep-before-grow gate in allocateFromSizeClass.
@@ -546,61 +572,29 @@ private:
 
     // Total in-cycle blocks (i.e. eligible to be swept this cycle) used as
     // the denominator for the unswept-fraction boost in
-    // `computeSweepBudgetForAlloc`. Counts entries in `buffer_meta_` with
+    // `computeSweepBudgetForAlloc`. Counts blocks whose BufferMetadata has
     // `!fully_swept && garbage_bytes > 0` at sweep entry, so it excludes
     // mid-cycle blocks pre-marked as fully_swept that would otherwise
     // dilute the ratio. Set in `recomputeSweepPendingBlocks` and zeroed in
     // `onSweepComplete` / reset / ctor.
     size_t sweep_total_blocks_;
 
-    // ========== Per-Block Mark Bitmaps ==========
+    // ========== Per-Block Mark Bitmaps (HEAP_050) ==========
     //
     // Liveness for old-gen objects is tracked in per-block bitmaps (1 bit per
     // 8-byte slot). Headers retain a `color` field for compaction's debug
-    // asserts but are NOT load-bearing for sweep liveness. mark_bits_[i]
-    // covers regular blocks; large_block_mark_[i] is a single-bit
-    // live/dead flag for is_large blocks (their mark_bits_[i] stays empty).
-    // Item 40: the per-block bitmaps live back-to-back in ONE arena, with a
-    // byte offset and length per block, instead of a vector-of-vectors. Every
-    // bit operation used to chase the inner vector's data pointer and bounds-
-    // check twice; now it is one add against `mark_bits_arena_.data()` and one
-    // length check. This is also the prerequisite for parallel marking
-    // (working-list #58): a `lock or` needs a flat array, not an element of a
-    // vector-of-vectors whose inner pointer must be resolved under contention.
+    // asserts but are NOT load-bearing for sweep liveness. Regular blocks use
+    // their MarkBitArena slot; is_large blocks use the single large-mark byte
+    // in blocks_ (their arena slot has length 0).
     //
-    // The arena is append-only. A released block leaves a hole (its bytes are
-    // not reclaimed until `reset()` rebuilds), and a block flipped to is_large
-    // keeps its slot with `mark_bits_len_[i] = 0`. Holes are bounded by block
-    // churn, and a block's bitmap is blockBytes/64 — a 512 KiB block is 8 KiB.
-    //
-    // Invariant: mark_bits_offset_.size() == mark_bits_len_.size() ==
-    //            large_block_mark_.size() == blocks_.size().
-    std::vector<uint8_t>  mark_bits_arena_;
-    std::vector<size_t>   mark_bits_offset_;
-    std::vector<uint32_t> mark_bits_len_;    // 0 for is_large blocks
-    std::vector<uint8_t>  large_block_mark_;
+    // threaded-gc-01: one fixed-stride slot per BlockId (see MarkBitArena).
+    // The slot address never moves; there is no per-block offset table and
+    // no re-pack at startMark.
+    MarkBitArena mark_;
 
-    // Appends an all-zero bitmap of `bytes` for a newly pushed block.
-    void markBitsAppendForBlock(size_t bytes) {
-        mark_bits_offset_.push_back(mark_bits_arena_.size());
-        mark_bits_len_.push_back(static_cast<uint32_t>(bytes));
-        mark_bits_arena_.resize(mark_bits_arena_.size() + bytes, 0);
-    }
-
-    // Zeroes block `i`'s bitmap in place (its arena slot is retained).
-    void markBitsClearBlock(size_t i) {
-        if (i >= mark_bits_len_.size()) return;
-        uint8_t* p = mark_bits_arena_.data() + mark_bits_offset_[i];
-        std::fill(p, p + mark_bits_len_[i], 0);
-    }
-
-    // Block `i` flipped to is_large: zero and retire its bitmap. Liveness
-    // moves to the single-byte large_block_mark_[i].
-    void markBitsDropBlock(size_t i) {
-        if (i >= mark_bits_len_.size()) return;
-        markBitsClearBlock(i);
-        mark_bits_len_[i] = 0;
-    }
+    // Marker-side live-bytes attribution (HEAP_051): markOneObject adds
+    // here; finalizeMetaAfterMark merges into BufferMetadata::live_bytes.
+    LiveBytesAccumulator mark_live_;
 
     // ========== Fragmentation Statistics ==========
 
@@ -609,10 +603,10 @@ private:
     // ========== Compaction State ==========
 
     CompactionPhase compact_phase_;           // Current compaction phase (Idle, Evacuating, or FixingRefs).
-    std::vector<size_t> evacuation_set_;      // Block indices selected for evacuation.
+    std::vector<BlockId> evacuation_set_;     // Blocks selected for evacuation.
     size_t current_evac_index_;               // Index within evacuation_set_ being processed.
     char* evac_cursor_;                       // Position within current evacuation block.
-    size_t evac_block_index_;                 // Destination block for evacuation bump-allocation.
+    BlockId evac_block_index_;                // Destination block for evacuation bump-allocation.
     char* evac_alloc_ptr_;                    // Bump pointer within evacuation destination block.
     size_t fixup_buffer_index_;               // Block index for reference fixup pass.
     char* fixup_cursor_;                      // Position within current fixup block.
@@ -637,7 +631,7 @@ private:
     // Indices into `blocks_` of large/pinned blocks whose single object died
     // in the most recent sweep. `allocateLargeBlock` consults this list
     // before asking the Allocator for a fresh block.
-    std::vector<size_t> free_large_blocks_;
+    std::vector<BlockId> free_large_blocks_;
 
     // ========== Split-Header Body Tracking (HEAP_026) ==========
     //
@@ -702,16 +696,16 @@ private:
     // Credits the given block's totalBytes() to small_class_bytes_ if it
     // is a uniform small-class page. Called immediately after
     // `populateFromBlock` materialises a uniform block.
-    void onUniformBlockDedicated(size_t block_index);
+    void onUniformBlockDedicated(BlockId block_index);
 
     // Debits the given block's totalBytes() from small_class_bytes_ if it
     // was a uniform small-class page. Called from any path that drops a
     // block from blocks_.
-    void onBlockReleased(size_t block_index);
+    void onBlockReleased(BlockId block_index);
 
     // Same as onBlockReleased but used for in-place transitions to is_large
     // (no swap-remove). See allocateFromEmptyRegularBlocks.
-    void onBlockTransitioningToLarge(size_t block_index);
+    void onBlockTransitioningToLarge(BlockId block_index);
 
     // ========== Size Class Helpers ==========
 
@@ -841,14 +835,14 @@ private:
         return gc_phase_ != GCPhase::Sweeping || sweep_pending_blocks_ == 0;
     }
 
-    // Recomputes sweep_pending_blocks_ from buffer_meta_. Called once per
+    // Recomputes sweep_pending_blocks_ from the blocks' BufferMetadata. Called once per
     // major-GC cycle from finishMarkAndSweep, AFTER all-dead reclaim and
     // BEFORE the initial lazy-sweep slice runs.
     void recomputeSweepPendingBlocks();
 
     // Centralised "this block is fully swept" mutation: sets the flag and
     // decrements sweep_pending_blocks_ if the transition is fresh.
-    void markBlockFullySwept(size_t block_index);
+    void markBlockFullySwept(BlockId block_index);
 
     // Free-list-only allocation attempt: pop from free_lists_[cls], else
     // try splitting a larger free cell. Does NOT consume a bag page or
@@ -913,7 +907,7 @@ private:
     bool shouldCompact() const;
     void computeFragmentationStats();
     void scheduleCompaction();
-    std::vector<size_t> selectEvacuationSet(size_t max_live_to_move);
+    std::vector<BlockId> selectEvacuationSet(size_t max_live_to_move);
     void incrementalCompactionSlice(size_t work_budget);
     size_t evacuateSlice(size_t work_budget);
     void prepareReferenceFixup();
@@ -924,7 +918,7 @@ private:
     void* allocateForEvacuation(size_t size);
     void installForwardingPointer(void* old_location, void* new_location);
     void* getForwardingAddress(void* obj) const;
-    bool isInEvacuationSet(size_t buffer_index) const;
+    bool isInEvacuationSet(BlockId block) const;
     void freeEvacuatedBuffers();
 
     // ========== Segregated-Fits + BBoP Internal Helpers ==========
@@ -950,7 +944,8 @@ private:
     // is from a freshly-acquired bag page that hasn't been registered yet).
     // Linear cost: blocks_.size() is bounded by total committed pages.
     const BlockInfo* findBlockContaining(char* addr) const {
-        for (const auto& block : blocks_) {
+        for (size_t pos = 0; pos < blocks_.size(); ++pos) {
+            const BlockInfo& block = blocks_.info(blocks_.idAt(pos));
             if (addr >= block.start && addr < block.end) {
                 return &block;
             }
@@ -977,10 +972,10 @@ private:
 
     // ========== Large-block reuse helpers ==========
 
-    // Marks `blocks_[idx]` (an `is_large` block whose single object died) as
+    // Marks block `idx` (an `is_large` block whose single object died) as
     // available for reuse via `allocateFromFreeLargeBlocks`. Asserts that
     // the block is not already on the list.
-    void markBlockAsFreeLarge(size_t block_index);
+    void markBlockAsFreeLarge(BlockId block_index);
 
     // Returns a previously-released large block sized >= `size`, or nullptr
     // if no such block is available. On success, resets the block's
@@ -1005,23 +1000,23 @@ private:
     // Walks free lists to drop any FreeCell that lies inside the block, drops
     // a `free_large_blocks_` entry if applicable, removes the BlockInfo and
     // BufferMetadata, and patches indices that referenced the moved-from slot.
-    void releaseBlockToAllocator(size_t block_index);
+    void releaseBlockToAllocator(BlockId block_index);
 
     // Releases an unassigned bag-page extent back to the Allocator. These
     // pages were never materialized into `blocks_`, so this is just an
     // Allocator round-trip plus a swap-remove from `unassigned_blocks_`.
     void releaseUnassignedBlockToAllocator(size_t unassigned_index);
 
-    // Removes any FreeCell that lies inside `[blocks_[idx].start, ...end)`
+    // Removes any FreeCell that lies inside `[info(idx).start, ...end)`
     // from every per-class free list. Called before releasing a block so
     // its embedded free cells don't leave dangling free-list pointers.
-    void removeFreeCellsForBlock(size_t block_index);
+    void removeFreeCellsForBlock(BlockId block_index);
 
-    // Patches indices stored in BufferMetadata, evacuation_set_,
-    // evac_block_index_, sweep_buffer_index_, fixup_buffer_index_, and
-    // free_large_blocks_ when blocks_ has had a swap-remove move the
-    // last-index entry to old_idx. Called by releaseBlockToAllocator.
-    void fixupIndicesAfterBlockMove(size_t old_idx, size_t new_idx);
+    // Patches the two POSITION cursors (sweep_buffer_index_,
+    // fixup_buffer_index_) when a release's swap-remove moved the block at
+    // order position `old_pos` to `new_pos`. Every other stored block
+    // reference is a BlockId and does not move (threaded-gc-01, HEAP_048).
+    void fixupCursorsAfterOrderMove(size_t old_pos, size_t new_pos);
 
     // Inspects post-mark live/heap and, if heap is well above the desired
     // capacity, releases fully-free pages until heap ≈ desired_heap_bytes.
@@ -1034,29 +1029,34 @@ private:
 
     // ========== Page-index helpers (Step 1) ==========
 
-    // Resizes page_to_block_index_ to cover [region_base_, region_end_).
-    // Newly-added slots are filled with NO_BLOCK. Called after any commit/grow
-    // that moves region_end_ forward.
-    void resizePageIndexForRegion();
+    // Commits the page index through region_end_. Called after any
+    // commit/grow that moves region_end_ forward (formerly
+    // resizePageIndexForRegion).
+    void resizePageIndexForRegion() { commitPageIndexThrough(region_end_); }
 
     // Returns the first / last page slot the block covers, or SIZE_MAX if
-    // region_base_ is not set / the block lies outside the indexed region.
+    // the index is not set up / the block lies below index_base_.
     size_t firstPageIndex(const BlockInfo& block) const;
     size_t lastPageIndex(const BlockInfo& block) const;
 
-    // Writes `block_index` into every page_to_block_index_ slot the block's
-    // extent covers. Used when a block enters blocks_.
-    void assignPageIndexForBlock(size_t block_index);
+    // Records `block_index` as an owner of every page slot the block's
+    // extent covers. Used when a block is materialized.
+    void assignPageIndexForBlock(BlockId block_index);
 
-    // Clears every page_to_block_index_ slot the block's extent covers
-    // back to NO_BLOCK. Used immediately before a block leaves blocks_.
-    void clearPageIndexForBlock(size_t block_index);
+    // Removes `block_index` from every page slot the block's extent covers.
+    // Used immediately before a block is released (both removal paths).
+    void clearPageIndexForBlock(BlockId block_index);
 
-    // Returns the blocks_ index of the block containing `obj`, or
-    // blocks_.size() if `obj` lies outside the committed region or no block
-    // currently owns its page. O(1) when the page index is hot; falls back to
-    // a linear scan if the slot is NO_BLOCK (defensive).
-    size_t blockIndexFor(const void* obj) const;
+    // Returns the id of the block containing `obj`, or NO_BLOCK_ID if `obj`
+    // lies outside [region_base_, region_end_) or no block currently owns its
+    // page. O(1): one page-index slot, at most two extent checks (there is no
+    // linear fallback).
+    BlockId blockIdFor(const void* obj) const;
+
+    // Materializes a block: BlockTable::add + mark-arena slot + page index.
+    // The one place a block enters the old gen (threaded-gc-01 Step 5.1).
+    BlockId materializeBlock(const BlockInfo& bi, const BufferMetadata& m,
+                             size_t mark_bytes);
 
     // ========== Split-Header Body Helpers ==========
 
@@ -1091,11 +1091,11 @@ private:
     }
 
     // Computes the (byte_index, mask) for the bit covering `obj` inside
-    // block_index. Caller is responsible for routing is_large blocks to
-    // large_block_mark_ instead of calling this.
-    void markBitLocation(size_t block_index, const void* obj,
+    // block `id`. Caller is responsible for routing is_large blocks to the
+    // large-mark byte instead of calling this.
+    void markBitLocation(BlockId id, const void* obj,
                          size_t* byte_index, uint8_t* mask) const {
-        const BlockInfo& block = blocks_[block_index];
+        const BlockInfo& block = blocks_.info(id);
         const char* p = static_cast<const char*>(obj);
         const size_t offset = static_cast<size_t>(p - block.start);
         const size_t slot = offset / MARK_ALIGNMENT;
@@ -1103,17 +1103,16 @@ private:
         *mask = static_cast<uint8_t>(1u << (slot & 7));
     }
 
-    bool isMarkedInBlock(size_t block_index, const void* obj) const {
-        if (block_index >= blocks_.size()) return false;
-        if (blocks_[block_index].is_large) {
-            return large_block_mark_[block_index] != 0;
+    bool isMarkedInBlock(BlockId id, const void* obj) const {
+        if (!id.valid()) return false;
+        if (blocks_.info(id).is_large) {
+            return blocks_.largeMark(id) != 0;
         }
         size_t byte_index;
         uint8_t mask;
-        markBitLocation(block_index, obj, &byte_index, &mask);
-        if (byte_index >= mark_bits_len_[block_index]) return false;
-        return (mark_bits_arena_[mark_bits_offset_[block_index] + byte_index]
-                & mask) != 0;
+        markBitLocation(id, obj, &byte_index, &mask);
+        if (byte_index >= mark_.len(id)) return false;
+        return (mark_.slot(id)[byte_index] & mask) != 0;
     }
 
     // Item 40: `pushMarkRoot` used to call isMarkedInBlock and then
@@ -1121,19 +1120,19 @@ private:
     // Returns true if the bit was ALREADY set (caller should stop), false if
     // this call set it (caller should push the object). An out-of-range slot
     // returns false and sets nothing, which is the behaviour the pair had.
-    bool testAndSetMarkBitInBlock(size_t block_index, const void* obj) {
-        if (block_index >= blocks_.size()) return false;
-        if (blocks_[block_index].is_large) {
-            const uint8_t prev = large_block_mark_[block_index];
-            large_block_mark_[block_index] = 1;
+    bool testAndSetMarkBitInBlock(BlockId id, const void* obj) {
+        if (!id.valid()) return false;
+        if (blocks_.info(id).is_large) {
+            uint8_t& lm = blocks_.largeMark(id);
+            const uint8_t prev = lm;
+            lm = 1;
             return prev != 0;
         }
         size_t byte_index;
         uint8_t mask;
-        markBitLocation(block_index, obj, &byte_index, &mask);
-        if (byte_index >= mark_bits_len_[block_index]) return false;
-        uint8_t& b = mark_bits_arena_[mark_bits_offset_[block_index] +
-                                      byte_index];
+        markBitLocation(id, obj, &byte_index, &mask);
+        if (byte_index >= mark_.len(id)) return false;
+        uint8_t& b = mark_.slot(id)[byte_index];
         const bool was_set = (b & mask) != 0;
         b |= mask;
         return was_set;
@@ -1141,19 +1140,19 @@ private:
 
     // Sets the bit for `obj` and returns true if the bit was previously
     // unset (i.e. this caller observed the white→grey transition).
-    bool setMarkBitInBlock(size_t block_index, const void* obj) {
-        if (block_index >= blocks_.size()) return false;
-        if (blocks_[block_index].is_large) {
-            uint8_t prev = large_block_mark_[block_index];
-            large_block_mark_[block_index] = 1;
+    bool setMarkBitInBlock(BlockId id, const void* obj) {
+        if (!id.valid()) return false;
+        if (blocks_.info(id).is_large) {
+            uint8_t& lm = blocks_.largeMark(id);
+            const uint8_t prev = lm;
+            lm = 1;
             return prev == 0;
         }
         size_t byte_index;
         uint8_t mask;
-        markBitLocation(block_index, obj, &byte_index, &mask);
-        if (byte_index >= mark_bits_len_[block_index]) return false;
-        uint8_t& b = mark_bits_arena_[mark_bits_offset_[block_index] +
-                                      byte_index];
+        markBitLocation(id, obj, &byte_index, &mask);
+        if (byte_index >= mark_.len(id)) return false;
+        uint8_t& b = mark_.slot(id)[byte_index];
         const bool was_set = (b & mask) != 0;
         b |= mask;
         return !was_set;
@@ -1162,19 +1161,19 @@ private:
     // Tests the bit for `obj`, clears it, and returns whether it was set.
     // Used by sweep so that the bitmap is left all-zero post-sweep
     // (precondition for the next mark cycle to skip bulk-zeroing).
-    bool testAndClearMarkBitInBlock(size_t block_index, const void* obj) {
-        if (block_index >= blocks_.size()) return false;
-        if (blocks_[block_index].is_large) {
-            uint8_t prev = large_block_mark_[block_index];
-            large_block_mark_[block_index] = 0;
+    bool testAndClearMarkBitInBlock(BlockId id, const void* obj) {
+        if (!id.valid()) return false;
+        if (blocks_.info(id).is_large) {
+            uint8_t& lm = blocks_.largeMark(id);
+            const uint8_t prev = lm;
+            lm = 0;
             return prev != 0;
         }
         size_t byte_index;
         uint8_t mask;
-        markBitLocation(block_index, obj, &byte_index, &mask);
-        if (byte_index >= mark_bits_len_[block_index]) return false;
-        uint8_t& b = mark_bits_arena_[mark_bits_offset_[block_index] +
-                                      byte_index];
+        markBitLocation(id, obj, &byte_index, &mask);
+        if (byte_index >= mark_.len(id)) return false;
+        uint8_t& b = mark_.slot(id)[byte_index];
         const bool was_set = (b & mask) != 0;
         b &= static_cast<uint8_t>(~mask);
         return was_set;
@@ -1184,20 +1183,20 @@ private:
 
     // Performs the White → Grey → Black transition on `obj`, recursively
     // pushes children via markChildren, and attributes the object's
-    // walkStep-aligned size to buffer_meta_[block_index].live_bytes.
+    // walkStep-aligned size to the live-bytes accumulator (HEAP_051).
     // Skips Tag_Free and already-Black objects. For nursery objects, only
     // calls markChildren — major GC must not write into nursery headers and
-    // nursery cells aren't tracked in buffer_meta_. Returns true if the
+    // nursery cells aren't tracked per block. Returns true if the
     // object did real work (popped one work unit).
     //
-    // The two-arg form takes the cached `block_index` produced by
-    // pushMarkRoot so the hot path skips a redundant blockIndexFor lookup
-    // (NO_BLOCK_U32 means "unknown / nursery"). The one-arg wrapper looks
+    // The two-arg form takes the cached block id produced by
+    // pushMarkRoot so the hot path skips a redundant blockIdFor lookup
+    // (NO_BLOCK_ID means "unknown / nursery"). The one-arg wrapper looks
     // up the index itself; only cold callers (lazy-sweep adjacency) use it.
-    bool markOneObject(void* obj, uint32_t block_index);
+    bool markOneObject(void* obj, BlockId block);
     bool markOneObject(void* obj);
 
-    // O(#blocks) reset of buffer_meta_ to match blocks_, called at major-GC
+    // O(#blocks) reset of every live block's BufferMetadata, called at major-GC
     // start so live_bytes attribution can begin from zero.
     void resetBufferMetaForMark();
 
@@ -1236,9 +1235,9 @@ private:
         size_t bytes_released  = 0;
     };
 
-    // Walks buffer_meta_ back-to-front and releases every non-large block
+    // Walks the blocks back-to-front (by position) and releases every non-large block
     // whose live_bytes == 0 via releaseBlockToAllocator. Brackets the loop
-    // with g_batch_release_depth and recomputes region_base_/region_end_
+    // with batch_release_depth_ and recomputes region_base_/region_end_
     // once at the end. Excludes is_large blocks (which continue to flow
     // through markBlockAsFreeLarge / allocateFromFreeLargeBlocks).
     AllDeadReclaimStats reclaimAllDeadBlocksFromMeta();
@@ -1275,6 +1274,26 @@ private:
     void gatherResidencySnapshotFrom(
         GCStats& stats,
         const FreeBytesByBlockStart& free_by_start) const;
+#endif
+
+#if ECO_HEAP_VALIDATE
+    // ========== threaded-gc-01 metadata validators (P§4 Step 9) ==========
+    //
+    // One entry point, run at the old gen's sync points (end of
+    // finishMarkAndSweep, end of every release batch, compaction free pass,
+    // every 64th minor GC). Each check re-derives an invariant that
+    // threaded-gc-01 relies on or whose maintaining code it deleted. Aborts
+    // with a "[heap-validate] <where>: ..." line on the first violation.
+    void validateOldGenMetadata(const char* where) const;
+    // V6: every Tier-M free cell's back-link names its actual predecessor
+    // in its size-class list (HEAP_052).
+    void validateFreeListBackLinks(const char* where) const;
+public:
+    // Runs validateOldGenMetadata on every 64th call (deterministic). Called
+    // at the end of every minor GC by NurserySpace::minorGC.
+    void validateEveryNthMinor();
+private:
+    uint64_t validate_minor_count_ = 0;
 #endif
 
     friend class Allocator;
@@ -1383,23 +1402,71 @@ public:
     static const FragmentationStats& getFragStats(const OldGenSpace& oldgen) { return oldgen.frag_stats_; }
 
     // Free lists.
+    // threaded-gc-01 (HEAP_052): true iff every Tier-M cell on every class
+    // list decodes its back-link to its actual predecessor (nullptr at the
+    // head). Non-aborting twin of OldGenSpace::validateFreeListBackLinks.
+    static bool freeListBackLinksConsistent(const OldGenSpace& oldgen) {
+        for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
+            const FreeCell* pred = nullptr;
+            for (FreeCell* c = oldgen.free_lists_[cls]; c != nullptr;
+                 c = c->next_in_class) {
+                if (c->header.size >= MIN_TIER_M_SIZE &&
+                    getPrev(reinterpret_cast<const FreeCellMid*>(c)) != pred) {
+                    return false;
+                }
+                pred = c;
+            }
+        }
+        return true;
+    }
+
     static FreeCell* getFreeList(const OldGenSpace& oldgen, size_t cls) {
         assert(cls < NUM_SIZE_CLASSES && "getFreeList: invalid size class (>= NUM_SIZE_CLASSES)");
         return oldgen.free_lists_[cls];
     }
 
     // Block metadata.
-    static const std::vector<BufferMetadata>& getBufferMeta(const OldGenSpace& oldgen) {
-        return oldgen.buffer_meta_;
+    // threaded-gc-01: position-indexed views (positions == the former
+    // std::vector subscripts, so tests keep their meaning).
+    static size_t blockCount(const OldGenSpace& oldgen) {
+        return oldgen.blocks_.size();
     }
-    static const std::vector<BlockInfo>& getBlocks(const OldGenSpace& oldgen) {
+    static BlockId blockIdAt(const OldGenSpace& oldgen, size_t pos) {
+        return oldgen.blocks_.idAt(pos);
+    }
+    static const BlockInfo& blockInfoAt(const OldGenSpace& oldgen, size_t pos) {
+        return oldgen.blocks_.info(oldgen.blocks_.idAt(pos));
+    }
+    static const BufferMetadata& bufferMetaAt(const OldGenSpace& oldgen,
+                                              size_t pos) {
+        return oldgen.blocks_.meta(oldgen.blocks_.idAt(pos));
+    }
+    static const BlockTable& getBlockTable(const OldGenSpace& oldgen) {
         return oldgen.blocks_;
+    }
+    // Order-position snapshots: element i describes position i, exactly as
+    // the former getBlocks()/getBufferMeta() vectors did.
+    static std::vector<BlockInfo> getBlocks(const OldGenSpace& oldgen) {
+        std::vector<BlockInfo> v;
+        v.reserve(oldgen.blocks_.size());
+        for (size_t pos = 0; pos < oldgen.blocks_.size(); ++pos) {
+            v.push_back(oldgen.blocks_.info(oldgen.blocks_.idAt(pos)));
+        }
+        return v;
+    }
+    static std::vector<BufferMetadata> getBufferMeta(const OldGenSpace& oldgen) {
+        std::vector<BufferMetadata> v;
+        v.reserve(oldgen.blocks_.size());
+        for (size_t pos = 0; pos < oldgen.blocks_.size(); ++pos) {
+            v.push_back(oldgen.blocks_.meta(oldgen.blocks_.idAt(pos)));
+        }
+        return v;
     }
     static const std::vector<std::pair<char*, char*>>& getUnassignedBlocks(
             const OldGenSpace& oldgen) {
         return oldgen.unassigned_blocks_;
     }
-    static const std::vector<size_t>& getFreeLargeBlocks(
+    static const std::vector<BlockId>& getFreeLargeBlocks(
             const OldGenSpace& oldgen) {
         return oldgen.free_large_blocks_;
     }
@@ -1411,12 +1478,12 @@ public:
     }
 
     // Page-index access for tests (Step 1).
-    static size_t blockIndexFor(const OldGenSpace& oldgen, const void* obj) {
-        return oldgen.blockIndexFor(obj);
+    static BlockId blockIdFor(const OldGenSpace& oldgen, const void* obj) {
+        return oldgen.blockIdFor(obj);
     }
-    static const std::vector<OldGenSpace::PageOwners>& getPageToBlockIndex(
+    static const ReservedArray<OldGenSpace::PageOwners>& getPageIndex(
             const OldGenSpace& oldgen) {
-        return oldgen.page_to_block_index_;
+        return oldgen.page_index_;
     }
 
     // Per-block mark bitmap access for tests. Item 40 replaced the
@@ -1424,25 +1491,24 @@ public:
     // (A repo-wide grep found no users outside this header at the time of
     // the change.)
     static const uint8_t* getMarkBitsForBlock(
-            const OldGenSpace& oldgen, size_t i, size_t* len_out) {
-        *len_out = oldgen.mark_bits_len_[i];
-        return oldgen.mark_bits_arena_.data() + oldgen.mark_bits_offset_[i];
+            const OldGenSpace& oldgen, BlockId id, size_t* len_out) {
+        *len_out = oldgen.mark_.len(id);
+        return oldgen.mark_.slot(id);
     }
-    static const std::vector<uint8_t>& getLargeBlockMark(
-            const OldGenSpace& oldgen) {
-        return oldgen.large_block_mark_;
+    static uint8_t getLargeBlockMark(const OldGenSpace& oldgen, BlockId id) {
+        return oldgen.blocks_.largeMark(id);
     }
     static bool isObjectMarked(const OldGenSpace& oldgen, void* obj) {
         if (!oldgen.contains(obj)) return false;
-        size_t i = oldgen.blockIndexFor(obj);
-        if (i >= oldgen.blocks_.size()) return false;
-        return oldgen.isMarkedInBlock(i, obj);
+        const BlockId id = oldgen.blockIdFor(obj);
+        if (!id.valid()) return false;
+        return oldgen.isMarkedInBlock(id, obj);
     }
     static bool setObjectMark(OldGenSpace& oldgen, void* obj) {
         if (!oldgen.contains(obj)) return false;
-        size_t i = oldgen.blockIndexFor(obj);
-        if (i >= oldgen.blocks_.size()) return false;
-        return oldgen.setMarkBitInBlock(i, obj);
+        const BlockId id = oldgen.blockIdFor(obj);
+        if (!id.valid()) return false;
+        return oldgen.setMarkBitInBlock(id, obj);
     }
 
     // Mark-time live attribution (Step 2): drive the helper directly.
@@ -1490,7 +1556,7 @@ public:
     static void incrementalCompactionSlice(OldGenSpace& oldgen, size_t work_budget) {
         oldgen.incrementalCompactionSlice(work_budget);
     }
-    static const std::vector<size_t>& getEvacuationSet(const OldGenSpace& oldgen) {
+    static const std::vector<BlockId>& getEvacuationSet(const OldGenSpace& oldgen) {
         return oldgen.evacuation_set_;
     }
     static void* getForwardingAddress(const OldGenSpace& oldgen, void* obj) {

@@ -1,6 +1,6 @@
 # Threaded GC — master plan (outline)
 
-**Status:** OUTLINE (2026-09-24). No phase has a work plan yet.
+**Status:** OUTLINE (2026-09-24). Phases 0 and 1 are DONE (see §4); later phases have no work plan yet.
 
 **Source:** `design_docs/parallel-gc.md`, the design-space investigation. Section references below
 (§n) point into that report. It holds the correctness arguments, estimates, hazards and handbook
@@ -55,7 +55,10 @@ descriptions into mini-plans.
 - **Gates**, all required:
   - E2E (`--target full`);
   - elm-tests;
-  - the heap validator on the **self-compile** as well as E2E;
+  - the heap validator (`ECO_HEAP_VALIDATE` tree) on the runtime unit tests, E2E and the
+    GC-pressure stress suite. **Not on the self-compile**: a validator self-compile takes hours
+    and is not a gate (decided 2026-09-24). The GC-pressure stress run (≳1,000 minor GCs) is
+    what exercises the validators under real GC load;
   - GC-pressure stress (`benchmarks/heap-config-gc-pressure.json`; the default config runs zero
     minor GCs);
   - `out.mlir` byte-identical;
@@ -76,7 +79,8 @@ descriptions into mini-plans.
 - **Invariants:** each phase lists the `invariants.csv` rows it adds or amends, and lands them in the
   same change (report §11).
 - **Assert the invariant you are deleting or relying on.** Every structural premise gets an
-  `ECO_HEAP_VALIDATE` check that re-derives it, exercised on the self-compile.
+  `ECO_HEAP_VALIDATE` check that re-derives it, exercised by the validate-tree unit tests, E2E and
+  GC-pressure stress (not the self-compile, which is too slow under the validator).
 
 ## 3. Phases
 
@@ -341,7 +345,7 @@ later phase's measurements show it matters at the target scale:
 | Phase | Work plan | Status | Outcome / facts for later phases |
 |---|---|---|---|
 | 0 Measure and fix | `plans/threaded-gc-00-measure-and-fix.md` | **DONE (2026-09-24)**, snapshot `keep-T00`, `bin/eco-opt-prev` = `eco-optT00`; results in `benchmarks/threaded-gc-00-baseline.md` | (1) Promotion ≈ 67 % of the minor pause; the old-gen allocator alone ≈ 36 % (32 ns/promotion). (2) Worst pauses: majors 1.3–2.7 s, then post-major lazy-sweep bursts 0.4–0.9 s. MMU = 0 up to 2 s windows. (3) Stack walk negligible (0.1 ms/minor); CellStore root scan up to 8.6 ms/pause. (4) A memory-heavy co-runner made the mutator ~8 % FASTER, a spin-only one 2.4 % slower: interference is not a blocker. (5) New lead: 4.9 M page faults inside minors, ≈ one per promoted 4 KiB. (6) Judge GC counters against a SAME-SESSION control; object counts depend on launch args/env. (7) P1: no violations seen (E2E census 0; validator self-compile 72 % of minors clean); a full-scale census count is still owed. |
-| 1 Stable metadata | — | not started | |
+| 1 Stable metadata | `plans/threaded-gc-01-stable-metadata.md` | **DONE (2026-09-24)**, snapshot `keep-TG1`, `bin/eco-opt-prev` = `eco-optTG1f`; loop entry TG1 in `benchmarks/gc-opt-loop.md` | (1) Blocks have stable `BlockId`s; every metadata table is VA-reserved (`ReservedArray`) and **never moves**; iteration ORDER is separate and must stay vector-identical (counters depend on it). Only `sweep_buffer_index_`/`fixup_buffer_index_` are positions (HEAP_048). (2) Page index keyed from `heap_base`, owners stored as id+1, never rebuilt; lookups must bounds-check the committed slot count (HEAP_049). (3) Mark bits: fixed per-id arena slot (`arena + id*stride`), 2 MiB-aligned/granule for THP; the startMark bulk clear stays (HEAP_050). Phase 4's `fetch_or` goes on `mark_.slot(id)`. (4) Marker writes only a `LiveBytesAccumulator`, merged at `finalizeMetaAfterMark`; phase 4 = one per marker (HEAP_051). (5) Free-list back-links are addresses, no block-count limit (HEAP_052); GC state is per-heap, not TLS (HEAP_053). (6) The mark loop is **alignment-sensitive**: `-falign-loops=64` is pinned for `OldGenSpace.cpp`; a few-% mark swing with identical instructions means check the loop address first. (7) The validator self-compile is dropped as a gate (too slow); validate = unit tests + E2E + GC-pressure stress. Validate stress has 5 PRE-EXISTING `JsonRoundtrip*` aborts. (8) 8 TB of metadata reserves ~130 GB VA and costs +64 KiB RSS. |
 | 2 Bitmap allocation | — | not started | |
 | 3 Helper-thread infra | — | not started | |
 | 4 Parallel STW mark | — | not started | |

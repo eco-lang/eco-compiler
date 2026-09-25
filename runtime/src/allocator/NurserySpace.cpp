@@ -62,6 +62,8 @@
 #if ECO_HEAP_VALIDATE
 // Track which heap object is currently being scanned during Cheney scan,
 // so stale-pointer diagnostics can identify the parent object.
+// Deliberately thread_local (HEAP_053): it describes what THIS worker is
+// scanning, which is the right meaning once several threads scan one heap.
 thread_local void* g_scan_parent = nullptr;
 thread_local int g_scan_tag = -1;
 thread_local Elm::u32 g_scan_size = 0;
@@ -241,7 +243,7 @@ void* NurserySpace::allocateSlow(size_t size) {
     // drives the GC and the post-GC recompute re-applies the fail-soft.
 
 #if ENABLE_GC_STATS
-    if (!g_in_minor_gc) {
+    if (!minor_gc_running_) {
         stats.total_nursery_alloc_in_mutator_ns +=
             GC_STATS_TIMER_ELAPSED_NS(t0);
     }
@@ -428,7 +430,8 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 #endif
     // Set the cross-allocator in-minor-GC flag (always on, used by the
     // OldGenSpace::allocate inline-helper attribution counter).
-    g_in_minor_gc = true;
+    minor_gc_running_ = true;
+    oldgen.setInMinorGC(true);
 
     // Flip the split-header body color for this cycle. Every live header
     // scanned in to-space gets recorded with this color via markLargeBodySeen;
@@ -870,7 +873,8 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
             std::fflush(stderr);
         };
 
-        for (const auto& blk : oldgen.blocks_) {
+        for (size_t pos = 0; pos < oldgen.blocks_.size(); ++pos) {
+            const BlockInfo& blk = oldgen.blocks_.info(oldgen.blocks_.idAt(pos));
             char* scan = blk.start;
             char* end  = blk.end_of_objects;
             while (scan < end) {
@@ -1084,7 +1088,12 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // Clear the cross-allocator in-minor-GC flag last, after the timer
     // has captured the full minor pause but before control returns to
     // ThreadLocalHeap::minorGC (which may then fire majorGC).
-    g_in_minor_gc = false;
+    minor_gc_running_ = false;
+    oldgen.setInMinorGC(false);
+#if ECO_HEAP_VALIDATE
+    // threaded-gc-01 Step 9: old-gen metadata validators (HEAP_048..052).
+    oldgen.validateEveryNthMinor();
+#endif
 }
 
 /**

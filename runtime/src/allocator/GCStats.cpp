@@ -25,9 +25,6 @@
 
 namespace Elm {
 
-// Definition for the in-minor-GC flag declared in GCStats.hpp.
-thread_local bool g_in_minor_gc = false;
-
 // Maps an allocation size in bytes to its power-of-two histogram bucket.
 // Bucket k covers [8 << k, 8 << (k+1)); the last bucket absorbs anything
 // at or above the histogram's upper bound.
