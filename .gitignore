@@ -21,3 +21,6 @@ dist/
 .claude
 .serena
 projects/
+
+# Machine-specific local dev container setup (managed separately)
+local-dev/
