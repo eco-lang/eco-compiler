@@ -16,16 +16,20 @@
  */
 
 #include "Allocator.hpp"
+#include "GCHelperPool.hpp"
 #include "HeapConfigJson.hpp"
+#include "PageWork.hpp"
 #include "OldGenSpace.hpp"
 #include "PermanentSpace.hpp"
 #include "PlatformVirtualMemory.hpp"
 #include "ThreadLocalHeap.hpp"
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <new>
 #include <stdexcept>
 // musl (Stage B static build) ships no <execinfo.h>/backtrace; stub them as
@@ -215,6 +219,8 @@ Allocator::~Allocator() {
     // Clean up all thread heaps.
     {
         std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+        // threaded-gc-03: no helper job may outlive the PageWork it points at.
+        if (page_work_) page_work_->drainAll(/*discard_pending=*/false);
         thread_heaps_.clear();
     }
 
@@ -236,6 +242,8 @@ void Allocator::initialize(const HeapConfig& config) {
     // rebuild — see HeapConfigJson.hpp for the recognised keys.
     config_ = config;
     applyHeapConfigFromEnv(config_);
+    // threaded-gc-03: ECO_GC_THREAD / ECO_GC_HELPER_JITTER_US win over JSON.
+    applyGcThreadEnv(config_, helper_jitter_us_);
     config_.validate();
 
     heap_reserved = config_.max_heap_size;
@@ -283,6 +291,9 @@ void Allocator::initialize(const HeapConfig& config) {
     runtime_start_ns_ = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
+
+    // threaded-gc-03: helper pool + page work (modes 1/2 only).
+    rebuildPageWork();
 
     initialized = true;
 }
@@ -667,6 +678,35 @@ char* Allocator::acquireOldGenBlock(size_t size) {
             *it = old_gen_free_blocks_.back();
             old_gen_free_blocks_.pop_back();
 
+            // threaded-gc-03 (HEAP_059): in modes 1/2 a pending discard is
+            // cancelled, a posted one is waited for — BEFORE the pages are
+            // touched. Which extent was chosen does not depend on it.
+            if (page_work_) {
+                const auto r = page_work_->onReuse(block, block_size, callerInPause());
+#if ECO_HEAP_VALIDATE
+                // V1: the extent handed out is neither pending nor posted.
+                if (page_work_->isPendingOrPosted(block)) {
+                    std::fprintf(stderr, "[heap-validate] V1: reused extent %p still tracked\n",
+                                 static_cast<void*>(block));
+                    std::abort();
+                }
+#endif
+                if (r == gc::PageWork::Reuse::AfterDiscard) {
+                    page_supply_.reuse_after_discard_bytes += block_size;
+                } else {
+                    page_supply_.reuse_resident_bytes += block_size;
+#if ECO_HEAP_VALIDATE
+                    // V4: nothing may rely on a reacquired extent reading as
+                    // zero; poison resident old contents (0xD8, not 0xDD).
+                    std::memset(block, 0xD8, block_size);
+#endif
+                }
+            } else if (config_.decommit_on_oldgen_release) {
+                page_supply_.reuse_after_discard_bytes += block_size;
+            } else {
+                page_supply_.reuse_resident_bytes += block_size;
+            }
+
             // The virtual mapping was never released, just (optionally)
             // decommitted. Hint to the kernel that it'll be touched soon;
             // a no-op if the pages were never decommitted.
@@ -697,8 +737,18 @@ char* Allocator::acquireOldGenBlock(size_t size) {
 
     char* block_base = heap_base + old_gen_committed;
 
-    // Commit physical memory for this block.
-    void* result = Elm::platform::commitAt(block_base, size);
+    // Commit physical memory for this block. threaded-gc-03 (HEAP_060): in
+    // modes 1/2 the part inside the commit-ahead window is already mapped
+    // (and populated) and must NOT be re-mapped.
+    char* commit_from = block_base;
+    size_t commit_bytes = size;
+    if (page_work_) commit_bytes = page_work_->onFreshBump(block_base, size, &commit_from);
+    void* result = block_base;
+    if (commit_bytes > 0) {
+        if (commit_observer_for_testing) commit_observer_for_testing(commit_from, commit_bytes);
+        if (Elm::platform::commitAt(commit_from, commit_bytes) == nullptr) result = nullptr;
+    }
+    page_supply_.fresh_bytes += size;
 
     if (result == nullptr) {
         if (heapTraceEnabled()) {
@@ -736,10 +786,26 @@ void Allocator::releaseOldGenBlock(char* block, size_t size) {
 
     size = (size + 7) & ~7;
 
-    if (config_.decommit_on_oldgen_release) {
+    page_supply_.released_bytes += size;
+    page_supply_.released_extents += 1;
+    if (page_work_) {
+        // threaded-gc-03 (HEAP_059): the discard is deferred (Pending) and
+        // later posted to the helper pool; see PageWork.
+        page_work_->onRelease(block, size, callerInPause());
+    } else if (config_.decommit_on_oldgen_release) {
         // Drop physical RSS while keeping the virtual mapping reserved so a
         // later acquireOldGenBlock can reuse the same address range.
+#if ENABLE_GC_STATS
+        const auto t0 = std::chrono::steady_clock::now();
+#endif
         madvise(block, size, MADV_DONTNEED);
+#if ENABLE_GC_STATS
+        page_supply_.discard_inline_ns += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - t0).count());
+#endif
+        page_supply_.discarded_bytes += size;
+        page_supply_.discarded_extents += 1;
     }
 
     // Do NOT decrement `old_gen_committed`. The field is the bump pointer
@@ -852,6 +918,19 @@ void Allocator::reset(const HeapConfig* new_config) {
 
     ++heap_generation_;  // destroys all thread heaps/RootSets below; bump epoch
 
+    // threaded-gc-03: finish every helper job and discard the pending extents
+    // BEFORE the heaps and the free list go away (P§7 trap 5).
+    if (page_work_) {
+        page_work_->drainAll(/*discard_pending=*/true);
+#if ECO_HEAP_VALIDATE
+        if (page_work_->trackedCount() != 0 || !page_work_->allSlotsIdle()) {
+            std::fprintf(stderr, "[heap-validate] V5: page work not drained at reset\n");
+            std::abort();
+        }
+#endif
+        page_work_.reset();
+    }
+
     // Update config if provided.
     if (new_config) {
         new_config->validate();
@@ -879,6 +958,10 @@ void Allocator::reset(const HeapConfig* new_config) {
     nursery_high_committed_ = 0;
 
     old_gen_free_blocks_.clear();
+    page_supply_ = PageSupplyStats{};
+    sync_epoch_ = 0;
+    major_epoch_ = 0;
+    rebuildPageWork();
 
     // Rebuild the nursery slice table against the (possibly new) config,
     // dropping every retained-commit record: slot bases move when
@@ -954,6 +1037,171 @@ HPointer Allocator::wrap(void* obj) {
 }
 
 
+// ============================================================================
+// GC helper threads (threaded-gc-03, plans/threaded-gc-03-helper-threads.md)
+// ============================================================================
+
+void (*Allocator::commit_observer_for_testing)(char* p, size_t n) = nullptr;
+
+namespace {
+
+bool pageOpDiscard(void*, char* p, size_t n) {
+    return Elm::platform::discardPages(p, n);
+}
+bool pageOpPopulate(void*, char* p, size_t n) {
+    return Elm::platform::populatePagesWrite(p, n);
+}
+bool pageOpCommit(void*, char* p, size_t n) {
+    if (Allocator::commit_observer_for_testing) Allocator::commit_observer_for_testing(p, n);
+    return Elm::platform::commitAt(p, n) != nullptr;
+}
+
+// Stall observer: a stall OUTSIDE a pause goes to the MMU stall list of the
+// calling thread's heap (phase-timer builds) and to the event log.
+void pageHookStall(void*, uint64_t start_ns, uint64_t dur_ns, gc::HelperClient client,
+                   bool in_pause) {
+#if ENABLE_GC_STATS
+    const uint64_t origin = GCStats::processStartSteadyNs();
+    const uint64_t rel = start_ns > origin ? start_ns - origin : 0;
+#if ENABLE_GC_PHASE_TIMERS
+    if (!in_pause) {
+        if (ThreadLocalHeap* h = Allocator::instance().getCurrentThreadHeap()) {
+            h->getStats().tg.addStall(rel, dur_ns);
+        }
+    }
+#endif
+    if (gcEventLogEnabled()) gcEventLogStall(rel, dur_ns, gc::helperClientName(client), in_pause);
+#else
+    (void)start_ns; (void)dur_ns; (void)client; (void)in_pause;
+#endif
+}
+
+void pageHookJobReaped(void*, const gc::HelperJob& job) {
+#if ENABLE_GC_STATS
+    if (!gcEventLogEnabled()) return;
+    const uint64_t origin = GCStats::processStartSteadyNs();
+    auto rel = [&](uint64_t t) { return t > origin ? t - origin : 0; };
+    gcEventLogJob(rel(job.post_ns), rel(job.start_ns), rel(job.end_ns), job.bytes,
+                  gc::helperClientName(job.client));
+#else
+    (void)job;
+#endif
+}
+
+}  // namespace
+
+bool Allocator::callerInPause() const {
+    return tl_heap_ != nullptr && tl_heap_->inPause();
+}
+
+void Allocator::rebuildPageWork() {
+    page_work_.reset();
+    if (config_.gc_thread_mode == 0) return;   // mode 0: today's inline path
+    auto& pool = gc::GCHelperPool::instance();
+    const auto mode = static_cast<gc::HelperMode>(config_.gc_thread_mode);
+    if (pool.configured() &&
+        (pool.mode() != mode || pool.threads() != config_.gc_helper_threads ||
+         pool.pinCpu() != config_.gc_helper_cpu)) {
+        // Only test harnesses get here (a reset() that configured the pool
+        // before initialize(), or a reset to new settings); every earlier
+        // PageWork was drained and destroyed, so the idle pool may restart.
+        pool.shutdownForTesting();
+    }
+    // Jitter is a process-level probe (ECO_GC_HELPER_JITTER_US); a pool a
+    // test configured with its own jitter keeps it.
+    const unsigned jitter = pool.configured() ? pool.jitterUs() : helper_jitter_us_;
+    pool.configure(mode, config_.gc_helper_threads, config_.gc_helper_cpu, jitter);
+    gc::PageOps ops;
+    ops.discard = &pageOpDiscard;
+    ops.populate = &pageOpPopulate;
+    ops.commit = &pageOpCommit;
+    gc::PageWorkConfig cfg;
+    cfg.decommit = config_.decommit_on_oldgen_release;
+    cfg.delay = config_.decommit_delay_syncs;
+    cfg.pending_cap = config_.decommit_pending_max_bytes;
+    cfg.delay_majors = config_.decommit_delay_majors;
+    cfg.ahead_bytes = config_.commit_ahead_bytes;
+    gc::PageWorkHooks hooks;
+    hooks.on_stall = &pageHookStall;
+    hooks.on_job_reaped = &pageHookJobReaped;
+    page_work_ = std::make_unique<gc::PageWork>(ops, cfg, pool, hooks);
+}
+
+void Allocator::onGCPauseEnd(ThreadLocalHeap& heap, bool had_major) {
+    (void)heap;
+#if ECO_HEAP_VALIDATE
+    // V6: mode 0 is inert (no page work exists).
+    if (config_.gc_thread_mode == 0 && page_work_) {
+        std::fprintf(stderr, "[heap-validate] V6: page work alive in gc_thread_mode 0\n");
+        std::abort();
+    }
+#endif
+    if (!page_work_) return;   // mode 0: one predictable branch per pause
+    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+    if (!page_work_) return;
+    ++sync_epoch_;
+    if (had_major) ++major_epoch_;
+    page_work_->syncPoint(sync_epoch_, major_epoch_, heap_base + old_gen_committed,
+                          heap_base + nursery_offset, /*in_pause=*/true);
+#if ECO_HEAP_VALIDATE
+    validatePageWork("onGCPauseEnd");
+#endif
+}
+
+void Allocator::drainHelperWork() {
+    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+    if (page_work_) page_work_->drainAll(/*discard_pending=*/false);
+}
+
+#if ECO_HEAP_VALIDATE
+// V2 + V3 (plans/threaded-gc-03-helper-threads.md Step 6). Caller holds
+// thread_mutex_.
+void Allocator::validatePageWork(const char* where) const {
+    if (!page_work_) return;
+    auto fail = [&](const char* what, char* p) {
+        std::fprintf(stderr, "[heap-validate] page-work %s at %s: extent %p\n", what,
+                     where, static_cast<void*>(p));
+        std::fflush(stderr);
+        std::abort();
+    };
+    // Sorted in-use ranges of every heap: materialized blocks + unassigned.
+    std::vector<std::pair<char*, char*>> used;
+    for (const auto& [tid, h] : thread_heaps_) {
+        (void)tid;
+        const OldGenSpace& og = h->getOldGen();
+        for (size_t pos = 0; pos < og.blocks_.size(); ++pos) {
+            const BlockInfo& bi = og.blocks_.info(og.blocks_.idAt(pos));
+            used.emplace_back(bi.start, bi.end);
+        }
+        for (const auto& e : og.unassigned_blocks_) used.emplace_back(e.first, e.second);
+    }
+    std::sort(used.begin(), used.end());
+    page_work_->forEachTracked([&](char* p, size_t n, int) {
+        // V2a: exactly once in the free list.
+        size_t hits = 0;
+        for (const auto& fb : old_gen_free_blocks_) {
+            if (fb.first == p) {
+                ++hits;
+                if (fb.second != n) fail("size differs from the free-list extent", p);
+            }
+        }
+        if (hits != 1) fail("tracked extent not exactly once in old_gen_free_blocks_", p);
+        // V2b: overlaps no heap-owned range.
+        auto it = std::upper_bound(used.begin(), used.end(), std::make_pair(p + n, p + n));
+        if (it != used.begin()) {
+            --it;
+            if (it->second > p && it->first < p + n) fail("tracked extent overlaps a heap block", p);
+        }
+    });
+    // V3: populate jobs stay inside old-gen address space.
+    char* lo_bound = heap_base;
+    char* hi_bound = heap_base + nursery_offset;
+    page_work_->forEachPopulateInFlight([&](char* lo, char* hi) {
+        if (lo < lo_bound || hi > hi_bound || lo >= hi) fail("populate range out of bounds", lo);
+    });
+}
+#endif
+
 #if ENABLE_GC_STATS
 // Returns combined statistics from all thread heaps.
 GCStats Allocator::getCombinedStats() const {
@@ -983,6 +1231,59 @@ GCStats Allocator::getCombinedStats() const {
     // allocator rather than merged out of the per-thread stats.
     combined.oldgen_inuse_peak_bytes = old_gen_in_use_peak_;
     combined.oldgen_hiwater_bytes    = old_gen_committed;
+
+    // threaded-gc-03 (P§3.9): page supply + helper snapshot, allocator-global.
+    combined.page_supply = page_supply_;
+    if (page_work_) {
+        const gc::PageWorkCounters& c = page_work_->counters();
+        combined.page_supply.discarded_bytes = c.discard_posted_bytes;
+        combined.page_supply.discarded_extents = c.discard_posted_extents;
+        combined.page_supply.fresh_ahead_hit_bytes = c.fresh_ahead_hit_bytes;
+        combined.page_supply.fresh_ahead_miss_bytes = c.fresh_ahead_miss_bytes;
+        combined.page_supply.pending_peak_bytes = c.pending_peak_bytes;
+        const auto& pool = gc::GCHelperPool::instance();
+        const auto& ps = pool.stats();
+        HelperStatsSnapshot& h = combined.helper;
+        h.mode = config_.gc_thread_mode;
+        h.threads = pool.threads();
+        h.pin_cpu = pool.pinCpu();
+        h.jitter_us = pool.jitterUs();
+        for (int i = 0; i < HelperStatsSnapshot::kClients; ++i) {
+            h.jobs[i] = ps.client[i].jobs.load(std::memory_order_relaxed);
+            h.bytes[i] = ps.client[i].bytes.load(std::memory_order_relaxed);
+            h.cpu_ns[i] = ps.client[i].cpu_ns.load(std::memory_order_relaxed);
+            h.inline_cpu_ns[i] = ps.client[i].inline_cpu_ns.load(std::memory_order_relaxed);
+        }
+        h.posts = ps.posts.load(std::memory_order_relaxed);
+        h.stall_count = ps.stall_count.load(std::memory_order_relaxed);
+        h.stall_ns = ps.stall_ns.load(std::memory_order_relaxed);
+        h.stall_max_ns = ps.stall_max_ns.load(std::memory_order_relaxed);
+        h.stall_outside_pause = ps.stall_outside_pause.load(std::memory_order_relaxed);
+        h.stall_outside_pause_ns = ps.stall_outside_pause_ns.load(std::memory_order_relaxed);
+        h.reuse_waits = c.reuse_waits;
+        h.release_waits = c.release_waits;
+        h.slot_full_waits = c.slot_full_waits;
+        h.cancelled_bytes = c.cancelled_bytes;
+        h.cancelled_extents = c.cancelled_extents;
+        h.discard_jobs = c.discard_jobs;
+        h.discard_failures = c.discard_failures;
+        h.populate_jobs = c.populate_jobs;
+        h.populate_bytes = c.populate_posted_bytes;
+        h.populate_failures = c.populate_failures;
+        h.window_commit_failures = c.window_commit_failures;
+        h.populate_supported = c.populate_supported;
+        h.commit_ahead_bytes = config_.commit_ahead_bytes;
+        h.decommit_delay = config_.decommit_delay_syncs;
+        h.pending_cap = config_.decommit_pending_max_bytes;
+        h.decommit_delay_majors = config_.decommit_delay_majors;
+#if !defined(_WIN32)
+        timespec ts;
+        if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts) == 0) {
+            h.process_cpu_ns = static_cast<uint64_t>(ts.tv_sec) * 1000000000ull +
+                               static_cast<uint64_t>(ts.tv_nsec);
+        }
+#endif
+    }
     return combined;
 }
 #endif

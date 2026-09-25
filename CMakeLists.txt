@@ -404,6 +404,8 @@ add_executable(ecor EXCLUDE_FROM_ALL
         runtime/src/allocator/OldGenSpace.cpp
         runtime/src/allocator/NurserySpace.cpp
         runtime/src/allocator/Allocator.cpp
+        runtime/src/allocator/GCHelperPool.cpp
+        runtime/src/allocator/PageWork.cpp
         ${ECO_ALLOCATOR_PLATFORM_SRCS}
         runtime/src/allocator/ThreadLocalHeap.cpp
         runtime/src/allocator/GCStats.cpp

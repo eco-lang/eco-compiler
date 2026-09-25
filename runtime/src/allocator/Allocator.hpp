@@ -15,6 +15,7 @@
 
 namespace Elm {
 class ThreadLocalHeap;
+namespace gc { class PageWork; }
 
 /**
  * Central allocator managing thread-local heaps.
@@ -158,6 +159,23 @@ public:
     // GCStats from a free function context. Inline because it's just a
     // thread-local read.
     ThreadLocalHeap* getCurrentThreadHeap() const noexcept { return tl_heap_; }
+
+    // ========== GC helper threads (threaded-gc-03) ==========
+
+    // The helper sync point: called by ThreadLocalHeap at the end of the
+    // OUTERMOST minor/major pause (P§3.5). A no-op in gc_thread_mode 0.
+    void onGCPauseEnd(ThreadLocalHeap& heap, bool had_major);
+
+    // Waits for every posted helper job (the atexit stats path; NOT the
+    // signal path). A no-op in mode 0.
+    void drainHelperWork();
+
+    // Test/validation access to the page-work state (nullptr in mode 0).
+    gc::PageWork* pageWork() const { return page_work_.get(); }
+
+    // Test hook: observes every range this allocator maps RW for the old gen
+    // (bump commits and commit-ahead windows). nullptr in production.
+    static void (*commit_observer_for_testing)(char* p, size_t n);
 
     // ========== Garbage Collection ==========
 
@@ -334,6 +352,23 @@ private:
     // bumping `old_gen_committed`.
     std::vector<std::pair<char*, size_t>> old_gen_free_blocks_;
     bool initialized;             // True after initialize() has been called.
+    // threaded-gc-03: ECO_GC_HELPER_JITTER_US (0 = none), read at initialize().
+    uint32_t helper_jitter_us_ = 0;
+    // threaded-gc-03: U1/U2 page work (modes 1/2 only; guarded by
+    // thread_mutex_), the sync-point epoch, and the page-supply counters
+    // (every mode; guarded by thread_mutex_).
+    std::unique_ptr<gc::PageWork> page_work_;
+    uint64_t sync_epoch_ = 0;
+    uint64_t major_epoch_ = 0;       // majors completed (counted at sync points)
+    PageSupplyStats page_supply_;
+    // (Re)creates page_work_ from config_ (nullptr in mode 0) and configures
+    // the helper pool (restarting it if idle and configured differently).
+    void rebuildPageWork();
+    // True when the calling thread's heap is inside a GC pause.
+    bool callerInPause() const;
+#if ECO_HEAP_VALIDATE
+    void validatePageWork(const char* where) const;
+#endif
     uint64_t heap_generation_ = 0; // Bumped on initialize()/reset(); see heapGeneration().
 
 #if ENABLE_GC_STATS

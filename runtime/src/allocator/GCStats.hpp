@@ -181,6 +181,45 @@ struct BitmapAllocStats {
     }
 };
 
+// threaded-gc-03 (plans/threaded-gc-03-helper-threads.md P§3.9): where old-gen
+// pages come from and go to. Allocator-global (filled by getCombinedStats from
+// the live allocator), so combine() merges by max like the old-gen walls.
+struct PageSupplyStats {
+    uint64_t released_bytes = 0, released_extents = 0;
+    uint64_t discarded_bytes = 0, discarded_extents = 0;
+    uint64_t discard_inline_ns = 0;          // mode 0: the inline madvise, timed
+    uint64_t reuse_resident_bytes = 0;       // reuse whose discard was cancelled / never done
+    uint64_t reuse_after_discard_bytes = 0;  // reuse of discarded pages (they refault)
+    uint64_t fresh_bytes = 0;                // bump commits
+    uint64_t fresh_ahead_hit_bytes = 0, fresh_ahead_miss_bytes = 0;
+    uint64_t pending_peak_bytes = 0;
+    bool any() const { return released_bytes | reuse_resident_bytes |
+                              reuse_after_discard_bytes | fresh_bytes; }
+    void mergeMax(const PageSupplyStats& o);
+};
+
+// threaded-gc-03: a snapshot of the GC helper pool + PageWork (mode != 0).
+struct HelperStatsSnapshot {
+    uint32_t mode = 0, threads = 0, jitter_us = 0;
+    int32_t  pin_cpu = -1;
+    static constexpr int kClients = 3;       // gc::HelperClient::kCount
+    uint64_t jobs[kClients] = {0}, bytes[kClients] = {0};
+    uint64_t cpu_ns[kClients] = {0}, inline_cpu_ns[kClients] = {0};
+    uint64_t posts = 0;
+    uint64_t stall_count = 0, stall_ns = 0, stall_max_ns = 0;
+    uint64_t stall_outside_pause = 0, stall_outside_pause_ns = 0;
+    uint64_t reuse_waits = 0, release_waits = 0, slot_full_waits = 0;
+    uint64_t cancelled_bytes = 0, cancelled_extents = 0;
+    uint64_t discard_jobs = 0, discard_failures = 0;
+    uint64_t populate_jobs = 0, populate_bytes = 0, populate_failures = 0;
+    uint64_t window_commit_failures = 0;
+    bool     populate_supported = false;
+    uint64_t commit_ahead_bytes = 0, decommit_delay = 0, pending_cap = 0;
+    uint64_t decommit_delay_majors = 0;
+    uint64_t process_cpu_ns = 0;             // CLOCK_PROCESS_CPUTIME_ID at print
+    void mergeMax(const HelperStatsSnapshot& o);
+};
+
 struct GCPhaseTotals {
     // ----- minor phase totals (summed over recorded minors) -----
     uint64_t minor_records = 0;
@@ -217,6 +256,13 @@ struct GCPhaseTotals {
     uint64_t pause_count_by_kind[3] = {0, 0, 0};
     uint64_t pause_log2_hist[PAUSE_LOG2_BUCKETS] = {0};
 
+    // threaded-gc-03: helper stalls OUTSIDE a pause (a stall inside a pause is
+    // already pause time). Kept apart from pause_events so the existing pause
+    // lines are unchanged; the MMU line "incl. helper stalls" uses both.
+    std::vector<PauseEvent> stall_events;
+    uint64_t stall_events_dropped = 0;
+    void addStall(uint64_t start_ns, uint64_t dur_ns);
+
     // Adds one minor's record. `names` resolves scanner index -> name.
     void addMinor(const MinorGCRecord& r, const char* const* names, size_t n_names);
     // Adds one pause.
@@ -243,6 +289,11 @@ void gcEventLogMinor(const MinorGCRecord& r, uint64_t seq, const char* const* na
 void gcEventLogMajor(uint64_t seq, uint64_t start_ns, uint64_t total_ns, uint64_t mark_ns,
                      uint64_t sweep_ns, uint64_t roots_ns, const char* reason);
 void gcEventLogPause(uint64_t seq, uint64_t start_ns, uint64_t dur_ns, uint8_t kind);
+// threaded-gc-03 rows: a helper stall (start, dur, client name) and a finished
+// helper job (post/start/end process-relative ns, bytes, client name).
+void gcEventLogStall(uint64_t start_ns, uint64_t dur_ns, const char* client, bool in_pause);
+void gcEventLogJob(uint64_t post_ns, uint64_t start_ns, uint64_t end_ns, uint64_t bytes,
+                   const char* client);
 void gcEventLogFlush() noexcept;
 
 /**
@@ -810,6 +861,12 @@ public:
     BitmapAllocStats bm;
     void printBitmapAllocBlock() const;
 
+    // ========== threaded-gc-03 page supply + helper threads ==========
+    PageSupplyStats page_supply;
+    HelperStatsSnapshot helper;
+    void printPageSupplyBlock() const;
+    void printHelperBlock() const;
+
     // Prints the three threaded-gc-00 banner blocks (pause distribution,
     // minor phase breakdown, external root scanners).
     void printThreadedGcBlocks() const;
@@ -904,6 +961,9 @@ public:
 
     // Nanoseconds since process start (the event log's time origin).
     static uint64_t nowSinceProcessStartNs();
+    // steady_clock time_since_epoch ns of the process-start anchor above
+    // (converts GCHelperPool::nowNs() stamps to process-relative time).
+    static uint64_t processStartSteadyNs();
 
     // Opens an event: call at major-GC entry with the cause and the old-gen
     // state before the pause. Pairs with recordMajorGCEvent below.

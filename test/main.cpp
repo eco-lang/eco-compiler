@@ -24,6 +24,7 @@
 #include "allocator/ReservedArrayTest.hpp"
 #include "allocator/OldGenScaleTest.hpp"
 #include "allocator/BitmapScanTest.hpp"
+#include "allocator/GCHelperTest.hpp"
 #include "allocator/OldGenBitmapAllocTest.hpp"
 #include "allocator/OldGenSweepOnDemandTest.hpp"
 #include "allocator/OldGenSweepBudgetTest.hpp"
@@ -649,6 +650,28 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testBlockTableClearRestartsIds);
     oldGenTests.add(testOldGenGeometryAt8TB);
     oldGenTests.add(testOldGenMetadataReserve8TBIsCheap);
+    oldGenTests.add(testHelperConfigValidation);
+    oldGenTests.add(testHelperPoolSyncRunsInline);
+    oldGenTests.add(testHelperPoolConcurrentRunsOnWorker);
+    oldGenTests.add(testHelperPoolFifoAndDrain);
+    oldGenTests.add(testHelperPoolStallAccounting);
+    oldGenTests.add(testHelperPoolJitterKeepsFifo);
+    oldGenTests.add(testHelperPoolStateMachineAsserts);
+    oldGenTests.add(testPageWorkReleaseThenCancel);
+    oldGenTests.add(testPageWorkDelaySemantics);
+    oldGenTests.add(testPageWorkDelayMajors);
+    oldGenTests.add(testPageWorkReuseWaitsForPostedDiscard);
+    oldGenTests.add(testPageWorkPendingCap);
+    oldGenTests.add(testPageWorkReleaseWaitsForOverlappingPopulate);
+    oldGenTests.add(testPageWorkFreshBumpWindow);
+    oldGenTests.add(testPageWorkSlotFullWaits);
+    oldGenTests.add(testPageWorkDrainAllDiscardsPending);
+    oldGenTests.add(testPageWorkPopulateUnsupported);
+    oldGenTests.add(testDecommitModesAgreeOnCounters);
+    oldGenTests.add(testCommitAheadNeverRemapsWindow);
+    oldGenTests.add(testPageWorkValidatorCatchesOwnedTrackedExtent);
+    oldGenTests.add(testMmuIncludesHelperStalls);
+    oldGenTests.add(testHelperPoolSurvivesFork);
     oldGenTests.add(testBitmapNextFreeCellMatchesReference);
     oldGenTests.add(testBitmapNextSetBitMatchesReference);
     oldGenTests.add(testBitmapVirginBlockAddressOrder);

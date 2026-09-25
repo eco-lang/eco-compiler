@@ -569,12 +569,31 @@ void ThreadLocalHeap::recordMinorPhases(MinorGCRecord& rec) {
 }
 #endif
 
+// threaded-gc-03 (plans/threaded-gc-03-helper-threads.md P§3.5): the helper
+// sync point at the end of the OUTERMOST pause. Declared after GCPauseScope so
+// it destructs first: sync-mode helper work is inside the pause bracket.
+struct PauseEndHook {
+    ThreadLocalHeap& h;
+    Allocator* parent;
+    PauseEndHook(ThreadLocalHeap& heap, Allocator* p) : h(heap), parent(p) {
+        ++h.pause_depth_;
+    }
+    ~PauseEndHook() {
+        if (--h.pause_depth_ == 0) {
+            const bool had_major = h.pause_had_major_;
+            h.pause_had_major_ = false;
+            parent->onGCPauseEnd(h, had_major);
+        }
+    }
+};
+
 void ThreadLocalHeap::minorGC() {
 #if ENABLE_GC_PHASE_TIMERS
     GCPauseScope pause_scope(*this, /*is_major=*/false);
     MinorGCRecord rec;
     rec.start_ns = GCStats::nowSinceProcessStartNs();
 #endif
+    PauseEndHook pause_end(*this, parent_);
     if (Allocator::heapTraceEnabled()) {
         parent_->dumpHeapState("minorGC begin");
     }
@@ -612,6 +631,8 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
 #if ENABLE_GC_PHASE_TIMERS
     GCPauseScope pause_scope(*this, /*is_major=*/true);
 #endif
+    PauseEndHook pause_end(*this, parent_);
+    pause_had_major_ = true;
     const bool profile_phases = gcPhaseProfileEnabled();
 
     // Dump sizes at major GC so the reproduction log makes it easy to see

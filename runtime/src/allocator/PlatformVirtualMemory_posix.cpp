@@ -79,6 +79,22 @@ bool decommit(void* addr, std::size_t size) {
     return p != MAP_FAILED;
 }
 
+bool discardPages(void* addr, std::size_t size) {
+    return madvise(addr, size, MADV_DONTNEED) == 0;
+}
+
+bool populatePagesWrite(void* addr, std::size_t size) {
+#if defined(__linux__)
+#  ifndef MADV_POPULATE_WRITE
+#    define MADV_POPULATE_WRITE 23
+#  endif
+    return madvise(addr, size, MADV_POPULATE_WRITE) == 0;
+#else
+    (void)addr; (void)size;
+    return false;
+#endif
+}
+
 bool releaseReservation(void* addr, std::size_t size) {
     return munmap(addr, size) == 0;
 }

@@ -60,6 +60,16 @@ bool decommit(void* addr, std::size_t size);
 // Returns true on success. (threaded-gc-01: ReservedArray::discard.)
 bool resetPagesToZero(void* addr, std::size_t size);
 
+// threaded-gc-03 (PageWork's ops). discardPages: drop the physical pages of a
+// committed RW range, keeping it mapped (POSIX madvise(MADV_DONTNEED): the
+// range reads as zero afterwards on Linux; Win64: a no-op returning true, the
+// parity of Allocator.cpp's madvise stub). populatePagesWrite: fault the
+// range in writable without touching its contents (Linux >= 5.14
+// MADV_POPULATE_WRITE); returns false where unsupported, and callers must not
+// fall back to touching pages.
+bool discardPages(void* addr, std::size_t size);
+bool populatePagesWrite(void* addr, std::size_t size);
+
 // Release a whole reservation (must be the same `addr` that was returned by
 // reserveAddressSpace; `size` is the originally-requested size on POSIX,
 // ignored on Windows where MEM_RELEASE keys on the reservation base).

@@ -24,6 +24,20 @@ namespace Elm {
 //   "use_hybrid_dfs"                 bool
 //   "large_object_threshold"         size_t (bytes)
 //   "decommit_on_oldgen_release"     bool
+//   "gc_thread_mode"                 unsigned (0 off, 1 sync, 2 concurrent; threaded-gc-03)
+//   "gc_helper_threads"              unsigned (1..64)
+//   "gc_helper_cpu"                  int (-1 = no pinning)
+//   "decommit_delay_syncs"           unsigned (pause ends; 4294967295 = never)
+//   "decommit_pending_max_bytes"     size_t (0 = no cap)
+//   "decommit_delay_majors"          unsigned (0 = off)
+//   "commit_ahead_bytes"             size_t (0 = off; OS-page multiple)
+//   (the list above is partial; HeapConfigJson.cpp's kKnownKeys is complete)
+//
+// Environment overrides applied by Allocator::initialize AFTER this file
+// (threaded-gc-03): ECO_GC_THREAD=0|1|2 sets gc_thread_mode;
+// ECO_GC_HELPER_JITTER_US=<n> makes every helper sleep a random [0, n) us
+// before each job (a determinism probe; GC_DET_001). Keep both values the
+// same LENGTH across compared runs: the environment is a program input.
 //
 // Numeric byte sizes accept either a JSON integer (raw bytes) or a string
 // with a unit suffix: "16K", "32M", "2G", "8KiB", "16 MB" (decimal +
@@ -36,5 +50,13 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path);
 // non-empty, calls applyHeapConfigJsonFile with its value. No-op otherwise.
 // Same exception contract as applyHeapConfigJsonFile.
 void applyHeapConfigFromEnv(HeapConfig &cfg);
+
+// threaded-gc-03: applies ECO_GC_THREAD (exactly one of "0", "1", "2") to
+// cfg.gc_thread_mode and parses ECO_GC_HELPER_JITTER_US (unsigned <= 100000,
+// default 0) into jitter_us. Throws std::invalid_argument on a bad value.
+// The 4-argument form takes the raw values (nullptr = unset) for tests.
+void applyGcThreadEnv(HeapConfig &cfg, uint32_t &jitter_us);
+void applyGcThreadEnv(HeapConfig &cfg, uint32_t &jitter_us,
+                      const char *mode_value, const char *jitter_value);
 
 } // namespace Elm

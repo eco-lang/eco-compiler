@@ -176,6 +176,29 @@ constexpr float MAJOR_GC_GARBAGE_FRACTION = 0.70f;
 // On releaseOldGenBlock, also madvise(MADV_DONTNEED) to drop physical RSS (virtual mapping is retained either way).
 constexpr bool DECOMMIT_ON_OLDGEN_RELEASE = true;
 
+// threaded-gc-03 (plans/threaded-gc-03-helper-threads.md, HEAP_058-060,
+// GC_DET_001): GC helper threads. Mode 0 = off (today's inline path, no pool),
+// 1 = sync (helper jobs run inline at their post point: the reference),
+// 2 = concurrent (jobs run on the GCHelperPool). ECO_GC_THREAD=0|1|2 overrides.
+constexpr uint32_t GC_THREAD_MODE = 2;               // default-on (plan Step 12)
+constexpr uint32_t GC_HELPER_THREADS = 1;
+constexpr int32_t  GC_HELPER_CPU = -1;                 // -1 = no pinning
+// U1 deferred decommit: a released extent is discarded once it has stayed
+// unused past this many pause ends (UINT32_MAX = never, except under the cap).
+// E1: no finite value in {0, 4, 16, 64, 256} came within 10 % of "never" on
+// refaults (reuse spreads over a whole major cycle), so the pause-end clock is
+// off by default and the major clock below bounds retention instead.
+constexpr uint32_t DECOMMIT_DELAY_SYNCS = UINT32_MAX;
+constexpr size_t   DECOMMIT_PENDING_MAX_BYTES = 0;     // 0 = no cap
+// ...or once it has stayed unused past this many MAJOR GCs (0 = off). E1
+// (plan §9): reuse of released blocks spreads over a whole major cycle, so a
+// delay counted in majors is the unit that keeps the refault savings.
+constexpr uint32_t DECOMMIT_DELAY_MAJORS = 1;
+// U2 commit-ahead: bytes kept committed + populated above the old-gen bump.
+// E2: 128 MiB is the smallest window that covered every fresh commit of the
+// self-compile (32 MiB missed 26 %); 512 MiB gained nothing and cost RSS.
+constexpr size_t   COMMIT_AHEAD_BYTES = size_t{128} << 20;   // 0 = off
+
 // threaded-gc-02 (plans/threaded-gc-02-bitmap-allocation.md, HEAP_054): allocate
 // uniform size-class cells straight from the mark bitmap through a per-class
 // cursor, and gap-sweep mixed blocks, instead of the header-walking lazy sweep.
@@ -519,6 +542,17 @@ struct HeapConfig {
     // On releaseOldGenBlock, also madvise(MADV_DONTNEED) to drop physical RSS.
     bool decommit_on_oldgen_release = DECOMMIT_ON_OLDGEN_RELEASE;
 
+    // threaded-gc-03: helper-thread mode and the page-work users (see the
+    // constants above). Modes 1/2 route decommit through PageWork (HEAP_059)
+    // and may keep a commit-ahead window (HEAP_060).
+    uint32_t gc_thread_mode = GC_THREAD_MODE;
+    uint32_t gc_helper_threads = GC_HELPER_THREADS;
+    int32_t  gc_helper_cpu = GC_HELPER_CPU;
+    uint32_t decommit_delay_syncs = DECOMMIT_DELAY_SYNCS;
+    size_t   decommit_pending_max_bytes = DECOMMIT_PENDING_MAX_BYTES;
+    uint32_t decommit_delay_majors = DECOMMIT_DELAY_MAJORS;
+    size_t   commit_ahead_bytes = COMMIT_AHEAD_BYTES;
+
     // threaded-gc-02 (HEAP_054): bitmap allocation for uniform blocks + gap
     // sweep for mixed blocks. Off = the legacy header-walking lazy sweep.
     bool old_gen_bitmap_alloc = OLD_GEN_BITMAP_ALLOC;
@@ -667,6 +701,20 @@ struct HeapConfig {
 
         if (!(demote_live_fraction >= 0.0 && demote_live_fraction <= 1.0)) {
             throw std::invalid_argument("demote_live_fraction must be in [0, 1]");
+        }
+        // threaded-gc-03
+        if (gc_thread_mode > 2) {
+            throw std::invalid_argument("gc_thread_mode must be 0, 1 or 2");
+        }
+        if (gc_helper_threads == 0 || gc_helper_threads > 64) {
+            throw std::invalid_argument("gc_helper_threads must be in [1, 64]");
+        }
+        if (gc_helper_cpu < -1) {
+            throw std::invalid_argument("gc_helper_cpu must be >= -1");
+        }
+        if (commit_ahead_bytes % OS_PAGE_SIZE != 0) {
+            throw std::invalid_argument(
+                "commit_ahead_bytes must be a multiple of the OS page size");
         }
         if (!(garbage_denom_cap == 0.0 || garbage_denom_cap >= 1.0)) {
             throw std::invalid_argument("garbage_denom_cap must be 0 or >= 1");

@@ -186,6 +186,9 @@ public:
 
     // ========== Accessors ==========
 
+    /** threaded-gc-03: true while a minor/major GC of this heap is running. */
+    bool inPause() const { return pause_depth_ > 0; }
+
     /** Returns the root set for this thread. */
     RootSet& getRootSet() { return nursery_.getRootSet(); }
 
@@ -247,6 +250,11 @@ private:
     OldGenSpace old_gen_;         // Thread-local old generation
     StackMapRoots stack_map_roots_; // Stackmap-derived roots (GC-internal)
     bool force_gc_ = false;       // Force GC at next safepoint (for test harness/debugger)
+    // threaded-gc-03 (P§3.5): depth of nested minorGC/majorGC calls, always
+    // on. The outermost exit is the helper sync point (Allocator::onGCPauseEnd).
+    int pause_depth_ = 0;
+    bool pause_had_major_ = false;   // a major ran in the current pause
+    friend struct PauseEndHook;
 
 #if ENABLE_GC_STATS
     GCStats stats_;               // Thread-local GC statistics

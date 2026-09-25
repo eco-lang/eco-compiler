@@ -201,6 +201,9 @@ static void atexitPrintStats() {
         Elm::Allocator::instance().getCurrentThreadHeap() != nullptr) {
         Elm::Allocator::instance().majorGC();
     }
+    // threaded-gc-03: let posted helper jobs finish so the helper block's
+    // CPU/bytes are final (NOT on the signal path: it may hold no lock).
+    Elm::Allocator::instance().drainHelperWork();
     printGCStatsOnce("normal exit");
 }
 

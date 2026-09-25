@@ -741,6 +741,7 @@ int main(int argc, char* argv[]) {
 
         // Print combined GC statistics if enabled at compile time.
 #if ENABLE_GC_STATS
+        alloc.drainHelperWork();   // threaded-gc-03
         alloc.getCombinedStats().print();
 #endif
 

@@ -57,6 +57,14 @@ bool decommit(void* addr, std::size_t size) {
     return VirtualFree(addr, size, MEM_DECOMMIT) != 0;
 }
 
+bool discardPages(void*, std::size_t) {
+    return true;   // parity with Allocator.cpp's Win64 madvise stub
+}
+
+bool populatePagesWrite(void*, std::size_t) {
+    return false;  // no MADV_POPULATE_WRITE equivalent; U2 disables itself
+}
+
 bool releaseReservation(void* addr, std::size_t /*size*/) {
     // MEM_RELEASE requires size == 0 and releases the entire reservation
     // identified by `addr`. POSIX munmap takes a size; we accept it for

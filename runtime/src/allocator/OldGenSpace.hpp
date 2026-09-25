@@ -1397,6 +1397,12 @@ private:
 // For test code only - provides privileged access to OldGenSpace internals.
 class OldGenSpaceTestAccess {
 public:
+    // threaded-gc-03 V2 negative test: plant an extent in the unassigned list.
+    static void pushUnassignedForTesting(OldGenSpace& og, char* start, char* end) {
+        og.unassigned_blocks_.emplace_back(start, end);
+    }
+    static void popUnassignedForTesting(OldGenSpace& og) { og.unassigned_blocks_.pop_back(); }
+
 #if ENABLE_GC_STATS
     static void startMark(OldGenSpace& oldgen, const std::unordered_set<HPointer*>& roots,
                           Allocator& alloc, GCStats& stats) {

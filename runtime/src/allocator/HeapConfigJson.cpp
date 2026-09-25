@@ -136,6 +136,19 @@ uint32_t parseU32(const json &value, const char *key) {
     return static_cast<uint32_t>(raw);
 }
 
+int32_t parseI32(const json &value, const char *key) {
+    if (!value.is_number_integer() && !value.is_number_unsigned()) {
+        throw std::invalid_argument(std::string("HeapConfig key '") + key +
+                                    "' must be an integer");
+    }
+    const auto raw = value.get<int64_t>();
+    if (raw < INT32_MIN || raw > INT32_MAX) {
+        throw std::invalid_argument(std::string("HeapConfig key '") + key +
+                                    "' is out of int32_t range");
+    }
+    return static_cast<int32_t>(raw);
+}
+
 } // namespace
 
 void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
@@ -175,6 +188,13 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         "use_hybrid_dfs",
         "large_object_threshold",
         "decommit_on_oldgen_release",
+        "gc_thread_mode",
+        "gc_helper_threads",
+        "gc_helper_cpu",
+        "decommit_delay_syncs",
+        "decommit_pending_max_bytes",
+        "decommit_delay_majors",
+        "commit_ahead_bytes",
         "old_gen_bitmap_alloc",
         "demote_live_fraction",
         "garbage_denom_cap",
@@ -260,6 +280,21 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
     if (auto it = doc.find("decommit_on_oldgen_release"); it != doc.end())
         cfg.decommit_on_oldgen_release =
             parseBool(*it, "decommit_on_oldgen_release");
+    if (auto it = doc.find("gc_thread_mode"); it != doc.end())
+        cfg.gc_thread_mode = parseU32(*it, "gc_thread_mode");
+    if (auto it = doc.find("gc_helper_threads"); it != doc.end())
+        cfg.gc_helper_threads = parseU32(*it, "gc_helper_threads");
+    if (auto it = doc.find("gc_helper_cpu"); it != doc.end())
+        cfg.gc_helper_cpu = parseI32(*it, "gc_helper_cpu");
+    if (auto it = doc.find("decommit_delay_syncs"); it != doc.end())
+        cfg.decommit_delay_syncs = parseU32(*it, "decommit_delay_syncs");
+    if (auto it = doc.find("decommit_pending_max_bytes"); it != doc.end())
+        cfg.decommit_pending_max_bytes =
+            parseByteSize(*it, "decommit_pending_max_bytes");
+    if (auto it = doc.find("decommit_delay_majors"); it != doc.end())
+        cfg.decommit_delay_majors = parseU32(*it, "decommit_delay_majors");
+    if (auto it = doc.find("commit_ahead_bytes"); it != doc.end())
+        cfg.commit_ahead_bytes = parseByteSize(*it, "commit_ahead_bytes");
     if (auto it = doc.find("old_gen_bitmap_alloc"); it != doc.end())
         cfg.old_gen_bitmap_alloc = parseBool(*it, "old_gen_bitmap_alloc");
     if (auto it = doc.find("demote_live_fraction"); it != doc.end())
@@ -341,6 +376,37 @@ void applyHeapConfigFromEnv(HeapConfig &cfg) {
     const char *path = std::getenv("ECO_HEAP_CONFIG");
     if (path == nullptr || path[0] == '\0') return;
     applyHeapConfigJsonFile(cfg, path);
+}
+
+void applyGcThreadEnv(HeapConfig &cfg, uint32_t &jitter_us,
+                      const char *mode_value, const char *jitter_value) {
+    if (mode_value != nullptr && mode_value[0] != '\0') {
+        if (mode_value[1] != '\0' || mode_value[0] < '0' || mode_value[0] > '2') {
+            throw std::invalid_argument("ECO_GC_THREAD must be 0, 1 or 2");
+        }
+        cfg.gc_thread_mode = static_cast<uint32_t>(mode_value[0] - '0');
+    }
+    jitter_us = 0;
+    if (jitter_value != nullptr && jitter_value[0] != '\0') {
+        uint64_t v = 0;
+        for (const char *p = jitter_value; *p; ++p) {
+            if (*p < '0' || *p > '9' || v > 100000) {
+                throw std::invalid_argument(
+                    "ECO_GC_HELPER_JITTER_US must be an unsigned decimal <= 100000");
+            }
+            v = v * 10 + static_cast<uint64_t>(*p - '0');
+        }
+        if (v > 100000) {
+            throw std::invalid_argument(
+                "ECO_GC_HELPER_JITTER_US must be an unsigned decimal <= 100000");
+        }
+        jitter_us = static_cast<uint32_t>(v);
+    }
+}
+
+void applyGcThreadEnv(HeapConfig &cfg, uint32_t &jitter_us) {
+    applyGcThreadEnv(cfg, jitter_us, std::getenv("ECO_GC_THREAD"),
+                     std::getenv("ECO_GC_HELPER_JITTER_US"));
 }
 
 } // namespace Elm

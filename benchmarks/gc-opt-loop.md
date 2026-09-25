@@ -1881,6 +1881,98 @@ trigger sizes the heap at about 3.3× the live set seen at ONE instant.
 - **Trap:** `ECO_HEAP_CONFIG` does NOT reach the old gen in `test/test`
   (`initAllocator` → `reset` installs the raw config).
 
+### TG3 — threaded-gc-03 helper threads (deferred decommit + commit-ahead) — **WIN: in-minor page faults −99.4 %, minor GC −6.55 s, GC −7.17 s, wall −8.54 s; counters bit-identical in every mode; RSS +142 MB (the 128 MiB window)**
+
+**What changed** (`plans/threaded-gc-03-helper-threads.md`; compiled defaults `gc_thread_mode` 2,
+`decommit_delay_majors` 1, `decommit_delay_syncs` never, `commit_ahead_bytes` 128 MiB):
+- **The pool.** `GCHelperPool` is a process-wide GC helper pool. The mutator posts jobs at the
+  pause end and collects them at `acquire`/`release`. `ECO_GC_THREAD` selects the mode: 0 off,
+  1 sync, 2 concurrent.
+- **U1, deferred decommit (HEAP_059).** A released extent stays resident until it has gone
+  unused for a whole major cycle. A reuse before then cancels the discard. The discard runs
+  on a helper.
+- **U2, commit-ahead (HEAP_060).** 128 MiB above the old-gen bump is mapped by the mutator and
+  `MADV_POPULATE_WRITE`d by a helper.
+- **GC_DET_001.** No decision reads helper progress.
+
+**Pre-plan diagnostic (TG3-0, `eco-optTG2pt`, one run each).** 4.76 M page faults inside minors.
+With `decommit_on_oldgen_release=false` (via `ECO_HEAP_CONFIG`):
+- in-minor faults 2.20 M;
+- minor GC −5.8 s, pauses −7.0 s, max RSS +17 MB.
+
+So half the faults were refaults of blocks the majors `MADV_DONTNEED`ed (~12.3 GB/run) and the
+minors reacquired. The rest ≈ the 8.8 GB commit high-water mark.
+
+Candidate `eco-optTG3`; same-session control `eco-optTG2` with `ECO_GC_THREAD=0`. Every arm
+sets `ECO_GC_THREAD` and `ECO_GC_HELPER_JITTER_US` to same-length values.
+
+| arm | wall (s) | GC (s) | minor (s) | major (s) | mark (s) | sweep col (s) | sys (s) | process minflt | max RSS (kB) |
+|---|---|---|---|---|---|---|---|---|---|
+| TG2 control, mode 0, median of 3 | 181.21 (spread 1.79) | 66.89 | 54.15 | 12.67 | 11.59 | 0.74 | 6.72 | 4,803,717 | 9,625,344 |
+| TG3 mode 1 (sync), median of 3 | 175.79 | 60.40 | 48.16 | 12.27 | 11.55 | 0.35 | 2.55 | 1,833,426 | 9,770,800 |
+| **TG3 mode 2 (concurrent), median of 3** | **172.67** (spread 2.99) | **59.72** | **47.60** | **12.13** | 11.44 | 0.34 | 2.61 | 1,826,365 | 9,770,964 |
+| Δ mode 2 vs control | **−8.54** | **−7.17** | **−6.55** | −0.54 | −0.15 | −0.40 | −4.11 | −62 % | +145,620 |
+| TG3 mode 2 + jitter 500 µs | 173.71 | 60.26 | 48.01 | 12.23 | 11.52 | 0.35 | 2.68 | 1,820,202 | 9,770,672 |
+| TG3 mode 0 | 182.45 | 67.40 | 54.64 | 12.69 | 11.60 | 0.74 | 6.82 | 4,803,105 | 9,626,916 |
+
+- **Counters (G8):** every counter line and the major event log are identical across all 11 runs
+  (control ×3; TG3 modes 0, 1 ×3, 2 ×3, 2+jitter). `out.mlir` is identical to `ecoghash.mlir`
+  every time.
+- **Mode 0 is physically inert:** faults −0.01 %, RSS +0.02 % vs control.
+- **Pauses** (phase-timer builds, one run each):
+
+  | | TG2pt (mode 0) | TG3pt mode 1 | TG3pt mode 2 |
+  |---|---|---|---|
+  | page faults inside minors | 4,708,246 | 29,416 | **28,904** |
+  | minor-only pause total | 55.05 s | 49.78 s | **47.35 s** |
+  | minor-only p50 / p99 / max | 5.33 / 141.5 / 178.2 ms | 5.20 / 126.8 / 179.3 ms | **4.93 / 113.7 / 175.7 ms** |
+  | promotion allocator | 16.5 ns/call | 10.1 | 12.0 |
+  | populate helper cpu / inline cpu | — | 0 / 1.90 s | 1.94 s / 0 |
+  | stalls | — | 0 | 0 |
+
+  The worst pause is the last major. In the phase-timer single runs it reads 4.86 s (control) vs
+  5.07 s / 5.09 s, but the triples' major event logs say the opposite: median 5,341 ms (control)
+  vs 5,158 ms (mode 2). The single control run was a low draw. Major 6 drops 2,093 → 1,912 ms,
+  which is the inline `madvise` leaving its sweep.
+- **Interference** (non-helper CPU, mode 2 − mode 1): −3.1 s. Negative, because sync mode runs
+  the populate on the mutator.
+- **Pinning (E3)** made no difference (48.29 vs 48.32 s minor), so the helper is not pinned.
+
+**E1: the pause-end delay was the wrong unit** (plan §9 item 1).
+- D ∈ {0, 4, 16, 64, 256} pause ends gave 4.82 / 4.69 / 4.38 / 3.96 / 2.87 M process faults,
+  against 2.22 M for "never discard".
+- Minors reacquire released blocks throughout a whole major cycle. So a block unused by the next
+  major is the surplus: `decommit_delay_majors = 1` reproduces "never" exactly while bounding
+  retention to one cycle.
+- A 1 GiB pending cap returned 5.9 GB of refaults (+2.4 s minor) without lowering max RSS, so the
+  default cap is 0.
+
+**E2:** commit-ahead of 32 / 128 / 512 MiB covered 74 % / 100 % / 100 % of fresh commits, for
+minor GC 47.94 / 46.77 / 46.81 s and max RSS +37 / +131 / +515 MB. 128 MiB was chosen.
+
+**Defects found and fixed on the way:**
+1. **Fork safety.** The unit-test runner forks per test. A child inherited "workers started" but
+   had no workers, and a condition variable with dead waiters, so jobs never ran: 60 s
+   timeouts. Fixed with `pthread_atfork` handlers:
+   - prepare: drain, then lock;
+   - child: re-construct the mutex and both condition variables, and restart workers lazily.
+
+   Pinned by `testHelperPoolSurvivesFork`. It matters for any embedder that forks without exec.
+2. **First-configuration-wins in test harnesses.** A `reset()` configured the pool before
+   `initialize()`, and the latter aborted in mode 1. Fixed: an *idle* pool restarts when the
+   settings differ.
+
+**Gates:**
+- G1 unit 1,779/1,779;
+- G2 elm-tests 13,565/12 (the reference set);
+- G4 stress 100/100 at 1,263 minors in modes 0, 1 and 2;
+- G6 stats-off `ecoc` builds;
+- G7 TSan harness: 0 warnings, and its negative control fails as it must;
+- G10 static checks;
+- G3 `full` 1,779/1,779, plus `check` in modes 1 and 0;
+- G5 validate 1,780/1,780 (mode 2 + jitter, and mode 1) with zero `[heap-validate]` lines;
+  validate stress 95/100 (the 5 pre-existing `JsonRoundtrip*` aborts, same in mode 0).
+
 ## 7. Findings
 
 (What this series learns, separated from the per-step records so the entries stay to ten lines.
@@ -2339,3 +2431,4 @@ mechanism paid and which did not.
 | T00 (threaded-gc-00 instruments on, stats build) | 184.71 | +2.85 vs same-sitting W13c | 1924 | 6 | 19861 | 9726340 | FLAT wall; GC +1.52 s (+2.3 %) measured cost | W13c (re-measured) |
 | T01 (threaded-gc-00 instruments compiled out, ECO_GC_PHASE_TIMERS OFF) | 183.86 | +2.31 vs same-sitting W13c (181.55) | 1924 | 6 | 19861 | 9725408 | FLAT, unmoved within noise (GC +0.64 s, ranges overlap) | W13c (re-measured) |
 | TG1 (threaded-gc-01 stable metadata, `eco-optTG1f`) | 181.61 | −3.73 vs same-sitting T01 (185.34) | 1924 | 6 | 19861 | 9664108 | FLAT on mark (+1.2 %), GC −2.47 s; KEPT (prerequisite) | `keep-TG1` |
+| **TG3 (threaded-gc-03 helper threads, `eco-optTG3`, mode 2)** | **172.67** | **−8.54 vs same-sitting TG2 (181.21)** | 1924 | 7 | 19861 | 9770964 | **WIN: in-minor faults −99.4 %, minor −6.55 s; counters identical in modes 0/1/2** | `keep-TG3` |

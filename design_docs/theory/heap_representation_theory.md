@@ -485,6 +485,8 @@ Elm values are always acyclic (pure functional language), so GC traversal is gua
 
 Each heap region is owned by exactly one thread—no cross-thread heap pointers exist.
 
+The owning mutator makes every decision about its heap. GC helper threads (threaded-gc-03, `GCHelperPool`) may run only jobs the mutator posted at a pause-end sync point, touching only state the job owns; so far those jobs work on old-gen *pages* (deferred discard, pre-faulting above the bump), never on heap objects. Helper progress is never a decision input (GC_DET_001; HEAP_058–HEAP_060).
+
 ## Debugging Representation Bugs
 
 Common issues and how to identify them:

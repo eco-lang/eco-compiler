@@ -469,6 +469,8 @@ add_llvm_executable(ecoc
     ../allocator/StackUnwind.cpp
     ../allocator/RuntimeExports.cpp
     ../allocator/Allocator.cpp
+    ../allocator/GCHelperPool.cpp
+    ../allocator/PageWork.cpp
     ${ECO_ALLOCATOR_PLATFORM_SRCS_RELATIVE}
     ../allocator/HeapConfigJson.cpp
     ../allocator/NurserySpace.cpp
@@ -589,6 +591,8 @@ add_mlir_library(EcoRunner
     ../allocator/StackUnwind.cpp
     ../allocator/RuntimeExports.cpp
     ../allocator/Allocator.cpp
+    ../allocator/GCHelperPool.cpp
+    ../allocator/PageWork.cpp
     ${ECO_ALLOCATOR_PLATFORM_SRCS_RELATIVE}
     ../allocator/HeapConfigJson.cpp
     ../allocator/NurserySpace.cpp
@@ -670,6 +674,8 @@ endif() # NOT ECO_GLIBC_OUTPUT_RUNTIME — MLIR dialects/passes/tools half
 add_library(EcoRuntimeStatic STATIC
     ../allocator/RuntimeExports.cpp
     ../allocator/Allocator.cpp
+    ../allocator/GCHelperPool.cpp
+    ../allocator/PageWork.cpp
     ${ECO_ALLOCATOR_PLATFORM_SRCS_RELATIVE}
     ../allocator/HeapConfigJson.cpp
     ../allocator/NurserySpace.cpp

@@ -655,6 +655,12 @@ void GCStats::recordFreeListSnapshot() {
 static const std::chrono::steady_clock::time_point g_process_start =
     std::chrono::steady_clock::now();
 
+uint64_t GCStats::processStartSteadyNs() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            g_process_start.time_since_epoch()).count());
+}
+
 uint64_t GCStats::nowSinceProcessStartNs() {
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -869,6 +875,9 @@ void GCStats::combine(const GCStats& other) {
     if (other.oldgen_hiwater_bytes > oldgen_hiwater_bytes) {
         oldgen_hiwater_bytes = other.oldgen_hiwater_bytes;
     }
+    // threaded-gc-03: allocator-global like the walls above.
+    page_supply.mergeMax(other.page_supply);
+    helper.mergeMax(other.helper);
 
     // Combine allocator-helper attribution.
     total_oldgen_alloc_in_mutator_ns  += other.total_oldgen_alloc_in_mutator_ns;
@@ -1397,6 +1406,9 @@ void GCStats::print() const {
 #endif
     // threaded-gc-02 block (additive; printed only in bitmap mode).
     printBitmapAllocBlock();
+    // threaded-gc-03 blocks (additive): page supply always, helpers in mode != 0.
+    printPageSupplyBlock();
+    printHelperBlock();
 
     // ========== Allocation Size Histograms ==========
     //
@@ -1804,6 +1816,8 @@ void GCStats::reset() {
     ensure_slow_calls = 0;
     oldgen_inuse_peak_bytes = 0;
     oldgen_hiwater_bytes    = 0;
+    page_supply = PageSupplyStats{};
+    helper = HelperStatsSnapshot{};
     total_oldgen_alloc_in_mutator_ns  = 0;
     total_post_sweep_shrink_ns        = 0;
     total_maybe_shrink_heavy_ns       = 0;
@@ -2047,6 +2061,14 @@ void GCPhaseTotals::addPause(uint64_t start_ns, uint64_t dur_ns, uint8_t kind) {
     pause_events.push_back(PauseEvent{start_ns, dur_ns, kind});
 }
 
+void GCPhaseTotals::addStall(uint64_t start_ns, uint64_t dur_ns) {
+    if (stall_events.size() >= PAUSE_EVENT_CAP) {
+        stall_events_dropped++;
+        return;
+    }
+    stall_events.push_back(PauseEvent{start_ns, dur_ns, 3});
+}
+
 void GCPhaseTotals::merge(const GCPhaseTotals& o) {
     minor_records += o.minor_records;
     stack_walk_ns += o.stack_walk_ns;
@@ -2094,6 +2116,11 @@ void GCPhaseTotals::merge(const GCPhaseTotals& o) {
     pause_total_ns += o.pause_total_ns;
     pause_max_ns = std::max(pause_max_ns, o.pause_max_ns);
     for (int k = 0; k < 3; ++k) pause_count_by_kind[k] += o.pause_count_by_kind[k];
+    for (const PauseEvent& e : o.stall_events) {
+        if (stall_events.size() >= PAUSE_EVENT_CAP) { stall_events_dropped++; continue; }
+        stall_events.push_back(e);
+    }
+    stall_events_dropped += o.stall_events_dropped;
     for (int b = 0; b < PAUSE_LOG2_BUCKETS; ++b) pause_log2_hist[b] += o.pause_log2_hist[b];
 }
 
@@ -2260,6 +2287,25 @@ void GCStats::printThreadedGcBlocks() const {
                 std::snprintf(buf, sizeof buf, "    MMU %6llu ms: %6.2f%%",
                               (unsigned long long)w_ms, 100.0 * u);
                 std::cout << buf << std::endl;
+            }
+            // threaded-gc-03: the same windows over pauses + outside-pause
+            // helper stalls (printed only when a stall happened).
+            if (!t.stall_events.empty()) {
+                std::vector<PauseEvent> both = ev;
+                both.insert(both.end(), t.stall_events.begin(), t.stall_events.end());
+                std::sort(both.begin(), both.end(),
+                          [](const PauseEvent& a, const PauseEvent& b) {
+                              return a.start_ns < b.start_ns; });
+                std::cout << "  MMU incl. helper stalls (" << t.stall_events.size()
+                          << " outside-pause stalls):" << std::endl;
+                for (uint64_t w_ms : kWindowsMs) {
+                    const uint64_t w_ns = w_ms * 1000000ull;
+                    if (w_ns > wall_time_ns) break;
+                    double u = GCPhaseTotals::mmu(both, wall_time_ns, w_ns);
+                    std::snprintf(buf, sizeof buf, "    MMU %6llu ms: %6.2f%%",
+                                  (unsigned long long)w_ms, 100.0 * u);
+                    std::cout << buf << std::endl;
+                }
             }
         }
         std::cout << "  GC work outside the minor timer: stack walk "
@@ -2430,6 +2476,43 @@ public:
         finish(line);
     }
 
+    // threaded-gc-03: start_ns/pause_ns carry the stall; the reason column
+    // carries "stall:<client>[:pause]".
+    void writeStall(uint64_t start_ns, uint64_t dur_ns, const char* client, bool in_pause) {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!open(nullptr, 0)) return;
+        std::string line;
+        addField(line, "stall"); addNum(line, tid()); addNum(line, 0);
+        addNum(line, start_ns); addNum(line, dur_ns);
+        dashes(line, kMinorNumericCols - 2);
+        dashes(line, 2 * (ext_cols_.size() + 1));
+        dashes(line, 4);
+        std::string r = std::string("stall:") + client + (in_pause ? ":pause" : "");
+        addField(line, r.c_str());
+        finish(line);
+    }
+
+    // threaded-gc-03: a finished helper job. start_ns = post time,
+    // pause_ns = queueing delay (start - post), nursery_pause_ns = run time
+    // (end - start), stack_walk_ns = bytes; reason column = "job:<client>".
+    void writeJob(uint64_t post_ns, uint64_t start_ns, uint64_t end_ns, uint64_t bytes,
+                  const char* client) {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!open(nullptr, 0)) return;
+        std::string line;
+        addField(line, "job"); addNum(line, tid()); addNum(line, 0);
+        addNum(line, post_ns);
+        addNum(line, start_ns >= post_ns ? start_ns - post_ns : 0);
+        addNum(line, end_ns >= start_ns ? end_ns - start_ns : 0);
+        addNum(line, bytes);
+        dashes(line, kMinorNumericCols - 4);
+        dashes(line, 2 * (ext_cols_.size() + 1));
+        dashes(line, 4);
+        std::string r = std::string("job:") + client;
+        addField(line, r.c_str());
+        finish(line);
+    }
+
     void flush() {
         std::lock_guard<std::mutex> lock(mu_);
         if (file_) std::fflush(file_);
@@ -2510,6 +2593,15 @@ void gcEventLogMajor(uint64_t seq, uint64_t start_ns, uint64_t total_ns, uint64_
                                           roots_ns, reason);
 }
 
+void gcEventLogStall(uint64_t start_ns, uint64_t dur_ns, const char* client, bool in_pause) {
+    GCEventLogImpl::instance().writeStall(start_ns, dur_ns, client, in_pause);
+}
+
+void gcEventLogJob(uint64_t post_ns, uint64_t start_ns, uint64_t end_ns, uint64_t bytes,
+                   const char* client) {
+    GCEventLogImpl::instance().writeJob(post_ns, start_ns, end_ns, bytes, client);
+}
+
 void gcEventLogPause(uint64_t seq, uint64_t start_ns, uint64_t dur_ns, uint8_t kind) {
     GCEventLogImpl::instance().writePause(seq, start_ns, dur_ns, kind);
 }
@@ -2543,6 +2635,126 @@ void GCStats::printBitmapAllocBlock() const {
     row("blocks classified large", bm.blocks_classified_large);
     row("blocks classified mixed", bm.blocks_classified_mixed);
     row("bitmap-free bytes at majors", bm.bitmap_free_bytes_at_major);
+}
+
+// ---------------------------------------------------------------------------
+// threaded-gc-03 (plans/threaded-gc-03-helper-threads.md P§3.9)
+// ---------------------------------------------------------------------------
+
+void PageSupplyStats::mergeMax(const PageSupplyStats& o) {
+    auto mx = [](uint64_t& a, uint64_t b) { if (b > a) a = b; };
+    mx(released_bytes, o.released_bytes);
+    mx(released_extents, o.released_extents);
+    mx(discarded_bytes, o.discarded_bytes);
+    mx(discarded_extents, o.discarded_extents);
+    mx(discard_inline_ns, o.discard_inline_ns);
+    mx(reuse_resident_bytes, o.reuse_resident_bytes);
+    mx(reuse_after_discard_bytes, o.reuse_after_discard_bytes);
+    mx(fresh_bytes, o.fresh_bytes);
+    mx(fresh_ahead_hit_bytes, o.fresh_ahead_hit_bytes);
+    mx(fresh_ahead_miss_bytes, o.fresh_ahead_miss_bytes);
+    mx(pending_peak_bytes, o.pending_peak_bytes);
+}
+
+void HelperStatsSnapshot::mergeMax(const HelperStatsSnapshot& o) {
+    // Only the combined (allocator-filled) object is non-zero; take it whole.
+    if (o.mode != 0 && mode == 0) *this = o;
+}
+
+namespace {
+std::string fmtMB3(uint64_t b) {
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%.2f MB", b / (1024.0 * 1024.0));
+    return buf;
+}
+std::string fmtMs3(uint64_t ns) {
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%.3f ms", ns / 1.0e6);
+    return buf;
+}
+}  // namespace
+
+void GCStats::printPageSupplyBlock() const {
+    const PageSupplyStats& p = page_supply;
+    if (!p.any()) return;
+    std::cout << "\nOld-gen Page Supply (threaded-gc-03):" << std::endl;
+    char buf[256];
+    std::snprintf(buf, sizeof buf, "  released:              %14s  (%llu extents)",
+                  fmtMB3(p.released_bytes).c_str(), (unsigned long long)p.released_extents);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  discarded:             %14s  (%llu extents; inline madvise %s)",
+                  fmtMB3(p.discarded_bytes).c_str(), (unsigned long long)p.discarded_extents,
+                  fmtMs3(p.discard_inline_ns).c_str());
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf, "  reuse: resident        %14s", fmtMB3(p.reuse_resident_bytes).c_str());
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf, "  reuse: after discard   %14s", fmtMB3(p.reuse_after_discard_bytes).c_str());
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf, "  fresh commit:          %14s  (ahead-hit %s, ahead-miss %s)",
+                  fmtMB3(p.fresh_bytes).c_str(), fmtMB3(p.fresh_ahead_hit_bytes).c_str(),
+                  fmtMB3(p.fresh_ahead_miss_bytes).c_str());
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf, "  pending peak:          %14s", fmtMB3(p.pending_peak_bytes).c_str());
+    std::cout << buf << std::endl;
+}
+
+void GCStats::printHelperBlock() const {
+    const HelperStatsSnapshot& h = helper;
+    if (h.mode == 0) return;
+    std::cout << "\nGC Helper Threads (threaded-gc-03):" << std::endl;
+    char buf[256];
+    std::snprintf(buf, sizeof buf,
+                  "  mode %u (%s), threads %u, pin cpu %d, jitter %u us",
+                  h.mode, h.mode == 1 ? "sync" : "concurrent", h.threads, h.pin_cpu,
+                  h.jitter_us);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  config: decommit delay %llu syncs / %llu majors, pending cap %s, commit-ahead %s%s",
+                  (unsigned long long)h.decommit_delay,
+                  (unsigned long long)h.decommit_delay_majors, fmtMB3(h.pending_cap).c_str(),
+                  fmtMB3(h.commit_ahead_bytes).c_str(),
+                  (h.commit_ahead_bytes > 0 && !h.populate_supported)
+                      ? " (unsupported: no MADV_POPULATE_WRITE)" : "");
+    std::cout << buf << std::endl;
+    static const char* kNames[] = {"decommit", "populate", "test"};
+    uint64_t helper_cpu = 0;
+    for (int c = 0; c < HelperStatsSnapshot::kClients; ++c) {
+        helper_cpu += h.cpu_ns[c];
+        if (h.jobs[c] == 0) continue;
+        std::snprintf(buf, sizeof buf,
+                      "  %-9s jobs %8llu  bytes %14s  helper cpu %12s  inline cpu %12s",
+                      kNames[c], (unsigned long long)h.jobs[c], fmtMB3(h.bytes[c]).c_str(),
+                      fmtMs3(h.cpu_ns[c]).c_str(), fmtMs3(h.inline_cpu_ns[c]).c_str());
+        std::cout << buf << std::endl;
+    }
+    std::snprintf(buf, sizeof buf,
+                  "  stalls: %llu, total %s, max %s; outside a pause %llu (%s)",
+                  (unsigned long long)h.stall_count, fmtMs3(h.stall_ns).c_str(),
+                  fmtMs3(h.stall_max_ns).c_str(), (unsigned long long)h.stall_outside_pause,
+                  fmtMs3(h.stall_outside_pause_ns).c_str());
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  waits: reuse %llu, release %llu, slot-full %llu",
+                  (unsigned long long)h.reuse_waits, (unsigned long long)h.release_waits,
+                  (unsigned long long)h.slot_full_waits);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  decommit: cancelled %s (%llu extents), jobs %llu, failures %llu",
+                  fmtMB3(h.cancelled_bytes).c_str(), (unsigned long long)h.cancelled_extents,
+                  (unsigned long long)h.discard_jobs, (unsigned long long)h.discard_failures);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  populate: jobs %llu, bytes %s, failures %llu, window commit failures %llu",
+                  (unsigned long long)h.populate_jobs, fmtMB3(h.populate_bytes).c_str(),
+                  (unsigned long long)h.populate_failures,
+                  (unsigned long long)h.window_commit_failures);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  process cpu %.3f s, helper cpu %.3f s, non-helper cpu %.3f s",
+                  h.process_cpu_ns / 1.0e9, helper_cpu / 1.0e9,
+                  (h.process_cpu_ns > helper_cpu ? h.process_cpu_ns - helper_cpu : 0) / 1.0e9);
+    std::cout << buf << std::endl;
 }
 
 } // namespace Elm

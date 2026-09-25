@@ -12,7 +12,14 @@ and prints:
   (d) the 20 worst pauses with their phase breakdown;
   (e) Pearson r of the minor pause against promoted / survived /
       lazy_sweep_bytes / stack_slots;
-  (f) per-object copy cost and per-promotion allocator cost.
+  (f) per-object copy cost and per-promotion allocator cost;
+  (g) threaded-gc-03 helper rows: stalls (count, total, max, p99; how many
+      outside a pause) and jobs per client (count, bytes, run time sum/max,
+      post->start queueing delay). Row layout: `stall` rows carry start_ns /
+      pause_ns (= duration) and major_reason "stall:<client>[:pause]"; `job`
+      rows carry start_ns = post time, pause_ns = queueing delay,
+      nursery_pause_ns = run time, stack_walk_ns = bytes, major_reason
+      "job:<client>". Unknown row kinds are ignored.
 
 Usage: gc-event-log-summary.py <log.tsv> [--json]
 """
@@ -170,6 +177,29 @@ def summarise(path):
                                  if minors else 0.0)
     out["frames_walked_max"] = max((num(r["frames_walked"]) or 0 for r in minors), default=0)
     out["drain_rounds_max"] = max((num(r["drain_rounds"]) or 0 for r in minors), default=0)
+    # (g) helper stalls and jobs (threaded-gc-03)
+    stalls = [r for r in rows if r["kind"] == "stall"]
+    jobs = [r for r in rows if r["kind"] == "job"]
+    sd = sorted(num(r["pause_ns"]) or 0 for r in stalls)
+    out["stalls"] = {
+        "count": len(stalls), "total_ns": sum(sd), "max_ns": sd[-1] if sd else 0,
+        "p99_ns": percentile(sd, 0.99),
+        "outside_pause": sum(1 for r in stalls if not r.get("major_reason", "").endswith(":pause")),
+    }
+    per_client = {}
+    for r in jobs:
+        c = r.get("major_reason", "job:?")[4:]
+        d = per_client.setdefault(c, {"count": 0, "bytes": 0, "run_ns": 0, "run_max_ns": 0,
+                                       "queue_ns": 0, "queue_max_ns": 0})
+        run = num(r["nursery_pause_ns"]) or 0
+        q = num(r["pause_ns"]) or 0
+        d["count"] += 1
+        d["bytes"] += num(r["stack_walk_ns"]) or 0
+        d["run_ns"] += run
+        d["run_max_ns"] = max(d["run_max_ns"], run)
+        d["queue_ns"] += q
+        d["queue_max_ns"] = max(d["queue_max_ns"], q)
+    out["jobs"] = per_client
     out["warnings"] = warnings
     return out
 
@@ -215,6 +245,16 @@ def print_text(s):
           (s["lazy_sweep_est_ns_total"] / 1e9, s["lazy_sweep_bytes_total"] / 1e9))
     print("  stack frames walked: mean %.1f, max %d; drain rounds max %d" %
           (s["frames_walked_mean"], s["frames_walked_max"], s["drain_rounds_max"]))
+    st = s["stalls"]
+    if st["count"] or s["jobs"]:
+        print("\n(g) helper threads (threaded-gc-03):")
+        print("  stalls: %d, total %s, p99 %s, max %s; outside a pause %d" %
+              (st["count"], ms(st["total_ns"]), ms(st["p99_ns"]), ms(st["max_ns"]),
+               st["outside_pause"]))
+        for c, d in s["jobs"].items():
+            print("  %-9s jobs %6d  %10.1f MB  run %s (max %s)  queue %s (max %s)" %
+                  (c, d["count"], d["bytes"] / 2**20, ms(d["run_ns"]), ms(d["run_max_ns"]),
+                   ms(d["queue_ns"]), ms(d["queue_max_ns"])))
     for w in s["warnings"]:
         print("WARNING: " + w)
 
