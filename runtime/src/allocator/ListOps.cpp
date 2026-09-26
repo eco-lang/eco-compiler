@@ -39,7 +39,7 @@ SpineShape probeShape(HPointer list) {
 // enabled. Over-cap batches split across ⌈n/max⌉ nursery-born backings
 // (alloc::listChunkChain), preserving the §2.2 nursery-born invariant.
 bool chunkEligible(const SpineShape& s) {
-    return eco_g_list_chunks && s.uniform && s.n >= 4;
+    return eco_g_list_chunks && s.uniform && s.n >= 4 && alloc::chunkChainFits(s.n);
 }
 
 // Backing pointer of a freshly built view, re-resolved AFTER the view
@@ -277,6 +277,7 @@ HPointer append(HPointer a, HPointer b) {
             for (alloc::ListCursor c(a); !c.done(); c.next()) {
                 w.put(c.current());
             }
+            alloc::finishChunkChain(head, s.n);
             return head;
         }
     }
@@ -327,6 +328,7 @@ HPointer concat(HPointer listOfLists) {
                     w.put(inner.current());
                 }
             }
+            alloc::finishChunkChain(head, s.n);
             return head;
         }
     }
@@ -544,6 +546,7 @@ HPointer reverse(HPointer list) {
         for (alloc::ListCursor c(list); !c.done(); c.next()) {
             w.put(c.current());
         }
+        alloc::finishChunkChain(head, s.n);
         return head;
     }
 
@@ -559,23 +562,6 @@ HPointer reverse(HPointer list) {
         c.advance();
     }
     return result;
-}
-
-bool member(Unboxable value, bool is_boxed, HPointer list) {
-    for (alloc::ListCursor c(list); !c.done(); c.next()) {
-        bool elem_is_boxed = (c.currentKind() == 0);
-
-        // Simple equality check for unboxed primitives
-        if (!is_boxed && !elem_is_boxed) {
-            if (value.i == c.current().i) return true;
-        } else if (is_boxed && elem_is_boxed) {
-            // Identity equality for boxed values: same HPointer word (covers
-            // heap pointers and embedded constants — Bool, empty, etc.).
-            if (hpBits(value.p) == hpBits(c.current().p)) return true;
-        }
-    }
-
-    return false;
 }
 
 HPointer sort(HPointer list) {

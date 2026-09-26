@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <vector>
 #include "AllocatorCommon.hpp"
+#include "P1Census.hpp"
 #include "GCStats.hpp"
 #include "OldGenSpace.hpp"
 #include "RootSet.hpp"
@@ -139,6 +140,10 @@ private:
     // equal). Kept as a field so the threshold math and the validators don't
     // reach through the slice each time.
     size_t from_capacity_bytes_;
+public:
+    // threaded-gc-04: per-side capacity (bounds builder-built chunk chains).
+    size_t capacityBytes() const { return from_capacity_bytes_; }
+private:
 
     // Pre-computed `from_capacity_bytes_ * gc_threshold_`. The proactive-GC
     // trip point in absolute bytes-allocated terms. Recomputed only when
@@ -167,12 +172,15 @@ private:
     // {to-allocated} (mid-GC).
     bool in_minor_gc_ = false;
     bool in_phase3_   = false;        // True only during phase 3 (promoted-object scan).
+#endif
 
-    // threaded-gc-00 Step 11: survivor-write census (ECO_SURVIVOR_WRITE_CENSUS=1).
+#if P1_CENSUS_COMPILED
+    // threaded-gc-00 Step 11, moved to the P1 census by threaded-gc-04
+    // (detector N; P1Census.hpp): survivor-write census.
     // At the end of each minor GC every survivor in [fromBase, bump_.ptr) is
     // hashed; at the start of the next minor GC each is re-hashed. A mismatch
     // is a write into an object that had already survived a GC (P1,
-    // design_docs/parallel-gc.md §7.4.3). Counts only; never aborts.
+    // design_docs/parallel-gc.md §7.4.3). Mode 1 counts; mode 2 aborts.
     struct CensusEntry {
         uint32_t offset_q;    // (obj - census_base_) >> 3
         uint32_t size;        // bytes
@@ -183,7 +191,8 @@ private:
     std::vector<CensusEntry> census_;
     std::vector<uint64_t>    census_copy_;   // bytes of survivors <= 128 B
     char* census_base_ = nullptr;
-    int   census_forced_ = -1;               // test override: -1 env, 0 off, 1 on
+    int   census_forced_ = -1;               // test override: -1 p1::mode, 0 off, 1 on
+    uint64_t census_minor_seq_ = 0;          // minors seen (P1 periodic verify)
     bool  censusEnabled() const;
     void  censusRecord();
     void  censusCheck();
@@ -464,7 +473,7 @@ public:
     static char* bumpPtr(const NurserySpace& nursery) { return nursery.bump_.ptr; }
     static char* bumpEnd(const NurserySpace& nursery) { return nursery.bump_.end; }
     static void setBumpEnd(NurserySpace& nursery, char* end) { nursery.bump_.end = end; }
-#if ECO_HEAP_VALIDATE
+#if P1_CENSUS_COMPILED
     // threaded-gc-00 Step 11: census control + readout for tests.
     static void setSurvivorWriteCensus(NurserySpace& nursery, bool on) {
         nursery.census_forced_ = on ? 1 : 0;

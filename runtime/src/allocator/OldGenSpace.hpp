@@ -254,6 +254,7 @@ enum class CompactionPhase {
 class Allocator;
 class NurserySpace;
 class OldGenSpaceTestAccess;
+namespace p1 { struct P1CensusAccess; }
 
 // Follows a forwarding pointer if present, updating the HPointer in place.
 // Primarily for test code; production uses Allocator::resolve() instead.
@@ -542,7 +543,40 @@ public:
     // Folds every bitmap cursor's pending live bytes / counts into the block
     // metadata and stats (threaded-gc-02). Called before readers.
     void syncCursorLiveBytes();
+
+    // ---- threaded-gc-04 HEAP_061: born-old pending list ----
+    // A pointer-bearing object (or a region of objects) allocated DIRECTLY in
+    // the old gen (large objects, large closure-group regions) is filled by
+    // its kernel afterwards, possibly with nursery pointers. Such an object is
+    // the only permitted holder of old->young edges: every minor GC scans it
+    // as a root until it has had promotion_age + 1 minors with builder == 0
+    // (by then every child has been promoted). Mark end drops dead entries and
+    // splits regions into their live objects (the gap sweep may free the
+    // rest). Compaction is not scheduled while any entry is pending.
+    struct BornOld {
+        char*    obj;
+        uint32_t size;
+        uint8_t  region;         // 1: a run of objects walked by getObjectSize
+        uint8_t  quiet_minors;   // minors seen with builder == 0
+    };
+    void noteBornOld(void* obj, size_t size, bool region) {
+        born_old_.push_back(BornOld{static_cast<char*>(obj),
+                                    static_cast<uint32_t>(size),
+                                    static_cast<uint8_t>(region ? 1 : 0), 0});
+    }
+    bool isBornOldPending(const void* p) const {
+        const char* c = static_cast<const char*>(p);
+        for (const BornOld& b : born_old_) {
+            if (c >= b.obj && c < b.obj + b.size) return true;
+        }
+        return false;
+    }
+    std::vector<BornOld>& bornOld() { return born_old_; }
+    const std::vector<BornOld>& bornOld() const { return born_old_; }
+    // Mark end (finalizeMetaAfterMark): drop unmarked entries; split regions.
+    void pruneBornOldAtMarkEnd();
 private:
+    std::vector<BornOld> born_old_;
     bool refillCursor(size_t cls);
     void* cursorAllocate(size_t cls, size_t requested_size);
     void* finalizeBitmapCell(AllocCursor& c, uint32_t k, size_t requested_size);
@@ -1388,6 +1422,7 @@ private:
     friend class NurserySpace;
     friend class ThreadLocalHeap;
     friend class OldGenSpaceTestAccess;
+    friend struct p1::P1CensusAccess;   // threaded-gc-04: reads mark bits at mark end
 };
 
 // ============================================================================

@@ -88,6 +88,20 @@ if(ECO_HEAP_VALIDATE)
     add_compile_definitions(ECO_HEAP_VALIDATE=1)
 endif()
 
+# threaded-gc-04 (plans/threaded-gc-04-frozen-published-heap.md): the P1
+# survivor-write census WITHOUT the heap validator. Cheap (linear hashing of
+# survivors + a sampled table of promoted objects), so it can run a whole
+# self-compile. Runtime mode ECO_P1_CENSUS=0/1/2 (off/count/abort). The
+# validate tree compiles the same census and defaults to abort (the tripwire).
+option(ECO_P1_CENSUS
+       "Compile in the P1 survivor-write census (threaded-gc-04); cheap, not heap-validate"
+       OFF)
+if(ECO_P1_CENSUS)
+    add_compile_definitions(ENABLE_P1_CENSUS=1)
+else()
+    add_compile_definitions(ENABLE_P1_CENSUS=0)
+endif()
+
 # Per-GC `[heap-trace] …` diagnostics. When OFF (default), the trace prints
 # and their gathering logic are compiled out so they cost nothing on the hot
 # path. When ON, the existing `ECO_HEAP_TRACE` env-var still gates emission at
@@ -406,6 +420,8 @@ add_executable(ecor EXCLUDE_FROM_ALL
         runtime/src/allocator/Allocator.cpp
         runtime/src/allocator/GCHelperPool.cpp
         runtime/src/allocator/PageWork.cpp
+        runtime/src/allocator/P1Census.cpp
+        runtime/src/allocator/OldGenBornOld.cpp
         ${ECO_ALLOCATOR_PLATFORM_SRCS}
         runtime/src/allocator/ThreadLocalHeap.cpp
         runtime/src/allocator/GCStats.cpp

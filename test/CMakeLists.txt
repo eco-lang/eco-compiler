@@ -110,6 +110,7 @@ add_executable(test
         allocator/OldGenScaleTest.cpp
         allocator/BitmapScanTest.cpp
         allocator/GCHelperTest.cpp
+        allocator/P1CensusTest.cpp
         allocator/OldGenBitmapAllocTest.cpp
         allocator/GCPauseStatsTest.cpp
         allocator/NurseryContiguityTest.cpp

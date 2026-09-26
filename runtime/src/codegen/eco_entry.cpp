@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "../allocator/P1Census.hpp"
 #include "../allocator/Allocator.hpp"
 #include "../allocator/StackMap.hpp"
 #include "../allocator/GCStats.hpp"
@@ -227,6 +228,9 @@ static void signalPrintStats(int sig) {
 #endif
     }
     printGCStatsOnce(name);
+#if P1_CENSUS_COMPILED
+    Elm::p1::reportNow();   // threaded-gc-04: best effort; try_lock only
+#endif
     std::raise(sig);
 }
 

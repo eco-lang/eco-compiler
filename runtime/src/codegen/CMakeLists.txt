@@ -471,6 +471,8 @@ add_llvm_executable(ecoc
     ../allocator/Allocator.cpp
     ../allocator/GCHelperPool.cpp
     ../allocator/PageWork.cpp
+    ../allocator/P1Census.cpp
+    ../allocator/OldGenBornOld.cpp
     ${ECO_ALLOCATOR_PLATFORM_SRCS_RELATIVE}
     ../allocator/HeapConfigJson.cpp
     ../allocator/NurserySpace.cpp
@@ -593,6 +595,8 @@ add_mlir_library(EcoRunner
     ../allocator/Allocator.cpp
     ../allocator/GCHelperPool.cpp
     ../allocator/PageWork.cpp
+    ../allocator/P1Census.cpp
+    ../allocator/OldGenBornOld.cpp
     ${ECO_ALLOCATOR_PLATFORM_SRCS_RELATIVE}
     ../allocator/HeapConfigJson.cpp
     ../allocator/NurserySpace.cpp
@@ -676,6 +680,8 @@ add_library(EcoRuntimeStatic STATIC
     ../allocator/Allocator.cpp
     ../allocator/GCHelperPool.cpp
     ../allocator/PageWork.cpp
+    ../allocator/P1Census.cpp
+    ../allocator/OldGenBornOld.cpp
     ${ECO_ALLOCATOR_PLATFORM_SRCS_RELATIVE}
     ../allocator/HeapConfigJson.cpp
     ../allocator/NurserySpace.cpp

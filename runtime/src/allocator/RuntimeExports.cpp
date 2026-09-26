@@ -4602,7 +4602,7 @@ extern "C" HPtr eco_scratch_finish_fwd(int64_t mark, HPtr rest,
     HPointer acc = rest.toHPointer();
     u8 k = static_cast<u8>(kind & 0x3);
 
-    if (eco_g_list_chunks && n >= 4) {
+    if (eco_g_list_chunks && n >= 4 && alloc::chunkChainFits(static_cast<u32>(n))) {
         StackRootGuard guard(&acc);
         u32 nn = static_cast<u32>(n);
         HPointer head = alloc::listChunkChain(nn, k, acc);
@@ -4612,6 +4612,7 @@ extern "C" HPtr eco_scratch_finish_fwd(int64_t mark, HPtr rest,
             v.i = static_cast<i64>(s.bits[i]);
             w.put(v);
         }
+        alloc::finishChunkChain(head, nn);
         s.bits.resize(m);
         s.kinds.resize(m);
         return HPtr::fromBits(hpBits(head));
@@ -4646,7 +4647,7 @@ extern "C" HPtr eco_scratch_finish(int64_t mark, HPtr next, int64_t kind) {
     u8 k = static_cast<u8>(kind & 0x3);
     auto& allocator = Allocator::instance();
 
-    if (eco_g_list_chunks && n >= 4) {
+    if (eco_g_list_chunks && n >= 4 && alloc::chunkChainFits(static_cast<u32>(n))) {
         StackRootGuard guard(&acc);
         u32 nn = static_cast<u32>(n);
         HPointer head = alloc::listChunkChain(nn, k, acc);
@@ -4658,6 +4659,7 @@ extern "C" HPtr eco_scratch_finish(int64_t mark, HPtr next, int64_t kind) {
             v.i = static_cast<i64>(s.bits[end - 1 - i]);
             w.put(v);
         }
+        alloc::finishChunkChain(head, nn);
         s.bits.resize(m);
         s.kinds.resize(m);
         return HPtr::fromBits(hpBits(head));

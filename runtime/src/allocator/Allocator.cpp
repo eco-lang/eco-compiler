@@ -1090,6 +1090,10 @@ void pageHookJobReaped(void*, const gc::HelperJob& job) {
 
 }  // namespace
 
+size_t Allocator::nurseryCapacityBytes() const {
+    return tl_heap_ != nullptr ? tl_heap_->getNursery().capacityBytes() : 0;
+}
+
 bool Allocator::callerInPause() const {
     return tl_heap_ != nullptr && tl_heap_->inPause();
 }

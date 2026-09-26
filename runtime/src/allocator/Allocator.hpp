@@ -170,6 +170,11 @@ public:
     // signal path). A no-op in mode 0.
     void drainHelperWork();
 
+    // threaded-gc-04: the calling thread's current nursery per-side capacity
+    // (0 without a heap). Bounds builder-built chunk chains (HEAP_SNAPSHOT_001
+    // S1): builders stay in the nursery until finished.
+    size_t nurseryCapacityBytes() const;
+
     // Test/validation access to the page-work state (nullptr in mode 0).
     gc::PageWork* pageWork() const { return page_work_.get(); }
 

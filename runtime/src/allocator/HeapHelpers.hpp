@@ -53,6 +53,7 @@
 #include "Allocator.hpp"
 #include "AllocatorCommon.hpp"
 #include "Heap.hpp"
+#include "P1Census.hpp"
 #include "RootSet.hpp"
 #include "RuntimeExports.h"
 #include <algorithm>
@@ -978,6 +979,29 @@ inline u32 listBackingMaxElems() {
 // Returns the head view. Boxed-kind slots are zero-initialized, so a GC
 // during construction scans nulls; callers fill AFTER this returns and must
 // not allocate between construction and the end of the fill.
+//
+// threaded-gc-04 S1: a chunk chain is built as builder objects, which stay in
+// the nursery until finishChunkChain. Take the chunk path only when the whole
+// chain (backings + views) fits in a quarter of the current nursery; larger
+// batches use the cons-cell path, which never needs builders.
+inline bool chunkChainFits(u32 n) {
+    const size_t links = n / listBackingMaxElems() + 1;
+    const size_t bytes = static_cast<size_t>(n) * sizeof(Unboxable) +
+                         links * (sizeof(ListBacking) + sizeof(ConsChunk) + 16);
+    return bytes * 4 <= Allocator::instance().nurseryCapacityBytes();
+}
+
+// (Defined with the other builder helpers below.)
+inline void mark_as_builder(Header* h);
+inline void clear_builder(Header* h);
+
+// threaded-gc-04 S1 (HEAP_SNAPSHOT_001): every backing AND view is created
+// with builder = 1, so a minor GC during the construction neither ages nor
+// promotes them (a promoted backing filled afterwards would hold unremembered
+// old->young pointers; an aged one would be a write into a survived object).
+// Views are builders too because a builder child of a promoted parent is
+// forbidden (HEAP_BUILDER_001). The caller MUST call finishChunkChain(head, n)
+// after its fill and before the list escapes (HEAP_BUILDER_003).
 inline HPointer listChunkChain(u32 n, u8 kind, HPointer next) {
     if (n == 0) return next;
     u32 maxElems = listBackingMaxElems();
@@ -985,15 +1009,36 @@ inline HPointer listChunkChain(u32 n, u8 kind, HPointer next) {
     StackRootGuard guard(&chain);
     u32 len = isNil(next) ? 0 : listLogicalLen(next);
     u32 remaining = n;
+    auto& allocator = Allocator::instance();
     while (remaining > 0) {
         u32 run = remaining % maxElems;
         if (run == 0) run = maxElems;
         HPointer backing = listBacking(run, kind);
+        mark_as_builder(getHeader(allocator.resolve(backing)));
         len += run;
         chain = consChunkView(backing, 0, len, chain, kind);
+        mark_as_builder(getHeader(allocator.resolve(chain)));
         remaining -= run;
     }
     return chain;
+}
+
+// Ends the construction window listChunkChain opened: clears the builder bit
+// of the chain's first ceil(n / listBackingMaxElems()) views and their
+// backings (the part listChunkChain built; the `next` tail is untouched).
+// Allocation-free.
+inline void finishChunkChain(HPointer head, u32 n) {
+    auto& allocator = Allocator::instance();
+    u32 seen = 0;
+    HPointer v = head;
+    while (seen < n) {
+        ConsChunk* cv = static_cast<ConsChunk*>(allocator.resolve(v));
+        ListBacking* lb = static_cast<ListBacking*>(allocator.resolve(cv->backing));
+        clear_builder(getHeader(cv));
+        clear_builder(getHeader(lb));
+        seen += lb->header.size;
+        v = cv->next;
+    }
 }
 
 // Sequential logical-order writer over a freshly built chunk chain. Caches
@@ -1016,6 +1061,9 @@ struct ListChainWriter {
             nextView = cv->next;
             idx = 0;
             run = lb->header.size;
+#if P1_CENSUS_COMPILED
+            p1::noteWrite(lb, "listChainFill");   // builder: legal (S1)
+#endif
         }
         lb->elems[idx++] = v;
     }
@@ -1121,6 +1169,9 @@ struct ListChainReverseWriter {
             ConsChunk* cv = static_cast<ConsChunk*>(allocator.resolve(v));
             ListBacking* lb =
                 static_cast<ListBacking*>(allocator.resolve(cv->backing));
+#if P1_CENSUS_COMPILED
+            p1::noteWrite(lb, "listChainFill");   // builder: legal (S1)
+#endif
             chunks.push_back(lb);
             seen += lb->header.size;
             v = cv->next;
@@ -1158,7 +1209,8 @@ inline HPointer listFromPointers(const std::vector<HPointer>& elements) {
     // Chunks: one dense chain instead of n cells (String.split parts and
     // the other pointer-list builders). Elements are re-read from the
     // rooted vector after construction; the fill never allocates.
-    if (eco_g_list_chunks && rooted.size() >= 4) {
+    if (eco_g_list_chunks && rooted.size() >= 4 &&
+        chunkChainFits(static_cast<u32>(rooted.size()))) {
         u32 n = static_cast<u32>(rooted.size());
         HPointer head = listChunkChain(n, 0, listNil());
         ListChainWriter w(head);
@@ -1167,6 +1219,7 @@ inline HPointer listFromPointers(const std::vector<HPointer>& elements) {
             v.p = rooted[i];
             w.put(v);
         }
+        finishChunkChain(head, n);
         rs.restoreStackRangePoint(saved);
         return head;
     }
@@ -1186,7 +1239,8 @@ inline HPointer listFromPointers(const std::vector<HPointer>& elements) {
  */
 inline HPointer listFromInts(const std::vector<i64>& elements) {
     // Chunks: scalar backings need no rooting discipline at all.
-    if (eco_g_list_chunks && elements.size() >= 4) {
+    if (eco_g_list_chunks && elements.size() >= 4 &&
+        chunkChainFits(static_cast<u32>(elements.size()))) {
         u32 n = static_cast<u32>(elements.size());
         HPointer head = listChunkChain(n, 1, listNil());
         ListChainWriter w(head);
@@ -1195,6 +1249,7 @@ inline HPointer listFromInts(const std::vector<i64>& elements) {
             v.i = elements[i];
             w.put(v);
         }
+        finishChunkChain(head, n);
         return head;
     }
     HPointer result = listNil();
@@ -1263,7 +1318,8 @@ inline HPointer listFromUnboxables(
     // `result` are rooted above, so the chain allocations may GC freely;
     // elements are re-read from the (GC-updated) vector after construction,
     // and the fill itself never allocates.
-    if (eco_g_list_chunks && elems.size() >= 4) {
+    if (eco_g_list_chunks && elems.size() >= 4 &&
+        chunkChainFits(static_cast<u32>(elems.size()))) {
         bool uniform = true;
         u8 firstKind = elems[0].second;
         for (auto& [val, kind] : elems) {
@@ -1280,6 +1336,7 @@ inline HPointer listFromUnboxables(
             } else {
                 for (u32 i = 0; i < n; ++i) w.put(elems[i].first);
             }
+            finishChunkChain(head, n);
             rs.restoreStackRangePoint(saved);
             return head;
         }
@@ -1691,7 +1748,9 @@ inline void mark_as_builder(Header* h) {
  */
 inline void clear_builder(Header* h) {
 #if ECO_HEAP_VALIDATE
-    assert(Allocator::instance().isInNursery(h) &&
+    // threaded-gc-04 HEAP_061: or a born-old pending object (large builder).
+    assert((Allocator::instance().isInNursery(h) ||
+            Allocator::instance().getCurrentThreadHeap()->getOldGen().isBornOldPending(h)) &&
            "HEAP_BUILDER_001: clear_builder on non-nursery object");
 #endif
     h->builder = 0;
@@ -1845,6 +1904,9 @@ inline bool arrayPush(void* arr, Unboxable value, bool is_boxed) {
     if (a->length >= a->header.size) {
         return false;  // At capacity
     }
+#if P1_CENSUS_COMPILED
+    p1::noteWrite(arr, "arrayPush");   // threaded-gc-04 detector W
+#endif
 
     // Per-write stale-pointer tripwire (boxed slots only).
     if (is_boxed) validateNurseryHPtr(value.p);
@@ -1866,6 +1928,9 @@ inline bool arrayPush(void* arr, Unboxable value, bool is_boxed) {
 inline bool arrayPushKind(void* arr, Unboxable value, u8 kind) {
     ElmArray* a = static_cast<ElmArray*>(arr);
     if (a->length >= a->header.size) return false;
+#if P1_CENSUS_COMPILED
+    p1::noteWrite(arr, "arrayPushKind");   // threaded-gc-04 detector W
+#endif
 
     // Per-write stale-pointer tripwire (boxed slots only).
     if ((kind & 0x3) == 0) validateNurseryHPtr(value.p);
@@ -1970,6 +2035,9 @@ inline bool closureCapture(void* closure, Unboxable value, ParamKind kind) {
     if (cl->n_values >= cl->max_values) {
         return false;
     }
+#if P1_CENSUS_COMPILED
+    p1::noteWrite(closure, "closureCapture");   // threaded-gc-04 detector W
+#endif
 
     // Per-write stale-pointer tripwire (boxed captures only). Catches the
     // common bug of capturing an HPointer that has gone stale across a

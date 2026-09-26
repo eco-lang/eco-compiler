@@ -261,7 +261,7 @@ private:
 // One fixed-stride mark-bitmap slot per BlockId: block `id`'s bits live at
 // `base + id * stride` (1 bit per 8-byte heap slot). The slot address never
 // moves, so there is no re-pack and no per-block offset table; the flat
-// per-id address is also what phase 4's atomic `fetch_or` needs.
+// per-id address is also what phase 5b's (parallel mark) atomic `fetch_or` needs.
 //
 // `len(id)` is the block's VALID bitmap length: bitmapBytesForBlock for a
 // regular block, 0 for is_large and free ids. The `byte_index >= len` guard in
@@ -373,7 +373,7 @@ private:
 // here, never to BufferMetadata::live_bytes (which only the owning heap's
 // allocator side writes); `mergeInto` folds the accumulator into the table at
 // the mark->sweep sync point (the first statement of finalizeMetaAfterMark)
-// and leaves it all-zero. Phase 1 has exactly one (the mutator marks); phase 4
+// and leaves it all-zero. Phase 1 has exactly one (the mutator marks); phase 5b
 // gives each marker thread its own and merges them all at the same statement.
 class LiveBytesAccumulator {
 public:

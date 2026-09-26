@@ -83,7 +83,7 @@ public:
                     char* old_gen_base, size_t old_gen_initial_size, size_t old_gen_max_size,
                     const HeapConfig* config);
 
-    ~ThreadLocalHeap() = default;
+    ~ThreadLocalHeap();
 
     // Non-copyable, non-movable (owns memory regions)
     ThreadLocalHeap(const ThreadLocalHeap&) = delete;

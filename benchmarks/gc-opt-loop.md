@@ -1973,6 +1973,39 @@ minor GC 47.94 / 46.77 / 46.81 s and max RSS +37 / +131 / +515 MB. 128 MiB was c
 - G5 validate 1,780/1,780 (mode 2 + jitter, and mode 1) with zero `[heap-validate]` lines;
   validate stress 95/100 (the 5 pre-existing `JsonRoundtrip*` aborts, same in mode 0).
 
+### TG4 — threaded-gc-04 frozen published heap (P1) — **correctness phase: P1 measured at full scale (0 violations in 744 M + 265 M + 18.8 M checks), two real hazards fixed, production counters identical but +1 nursery copy, wall flat**
+
+**What changed** (`plans/threaded-gc-04-frozen-published-heap.md`):
+- **The census.** `-DECO_P1_CENSUS=ON` gives a P1 census build that is not heap-validate. It has
+  three detectors:
+  - N: nursery survivors;
+  - O: a sampled table of promoted objects, pruned at mark end;
+  - W: the mutating heap helpers, keyed by caller.
+
+  Validate builds run it in abort mode: the tripwire.
+- **Fixes:**
+  - S1: chunk-chain backings and views are built as builders, bounded by `chunkChainFits`;
+  - S2: a born-old pending list (HEAP_061), which fixes a latent loss of the young children of
+    large pointer-bearing objects allocated directly in the old gen;
+  - `ListOps::member` deleted (FORBID_HEAP_005).
+
+| arm | wall (s) | minor GC (s) | minors | majors | promoted | copied-in-nursery | max RSS (kB) | out.mlir |
+|---|---|---|---|---|---|---|---|---|
+| TG3 control (same session) | 174.73 | 47.53 | 1924 | 7 | 675,767,785 | 744,329,942 | 9,776,448 | same |
+| **TG4** | **172.77** | 47.31 | 1924 | 7 | 675,767,785 | **744,329,943** | 9,776,948 | same |
+| TG4 census (sample 16) | 195.37 | — | 1924 | 7 | — | — | 10,343,016 | same |
+
+- **Single runs.** This is a correctness phase: the wall delta is inside the band.
+- **The one counter change is +1 nursery copy**, the S1 builder effect, recorded as the plan's D7
+  delta.
+- **Census result:**
+  - N: 744,021,406 re-hashes, 0 mismatches;
+  - O: 264,970,501 re-hashes of 42.2 M sampled promotions, 0 mismatches;
+  - W: 18,800,426 helper writes, 0 violations.
+- **Census tree, abort mode:** unit + E2E 1,792 / 1,792; stress 100/100.
+- **Gates:** G1–G9 green. Validate stress keeps the 5 pre-existing `JsonRoundtrip*` aborts,
+  which are not P1: a stale closure in `eco_apply_closure_eval`.
+
 ## 7. Findings
 
 (What this series learns, separated from the per-step records so the entries stay to ten lines.
@@ -2345,9 +2378,15 @@ mechanism paid and which did not.
 
 `out.mlir` is not a column here: byte-identity is a GATE, checked per entry, not a statistic.
 
+Table conventions. `verdict` is WIN, FLAT (kept) or LOSS; LOSS covers every change not kept
+(reverted, refuted, superseded, or a sweep that kept the existing value). `—` marks a row that is
+not a step: the baseline, the drift checks and the closed-unbuilt W14. `-r` is a re-measure. The
+walls of 14, 20, 13s and 16-D4 are approximate. From `drift-W13c` on, `delta (s)` is against a
+same-sitting control run, not the `ref` row's recorded wall. Details live in each row's entry.
+
 | step | wall (s) | delta (s) | minor GC | major GC | promoted MiB | max RSS (kB) | verdict | ref |
 |---|---|---|---|---|---|---|---|---|
-| base | 398.71 | — | 1825 | 10 | 20846 | 12708052 | reference | — |
+| base | 398.71 | — | 1825 | 10 | 20846 | 12708052 | — | — |
 | 1 | 370.18 | -28.53 | 1825 | 10 | 20846 | 12705760 | WIN | base |
 | 2 | 359.47 | -10.71 | 1821 | 10 | 20836 | 12690812 | WIN | 1 |
 | 3 | 340.70 | -18.77 | 1583 | 10 | 20376 | 12457544 | WIN | 2 |
@@ -2356,79 +2395,81 @@ mechanism paid and which did not.
 | 5a | 289.43 | -2.50 | 1287 | 10 | 20341 | 12048496 | WIN | 4a |
 | 6 | 286.85 | -2.58 | 1281 | 10 | 20201 | 12052184 | WIN | 5a |
 | 7 | 289.08 | +2.23 | 1280 | 10 | 20183 | 12044660 | WIN | 6 |
-| 8a | 288.94 | -0.14 | 1291 | 10 | 20233 | 12118144 | LOSS (reverted) | 7 |
+| 8a | 288.94 | -0.14 | 1291 | 10 | 20233 | 12118144 | LOSS | 7 |
 | 8b | 287.24 | -1.84 | 1273 | 10 | 20207 | 12105460 | WIN | 7 |
 | 9 | 289.18 | +1.94 | 1252 | 10 | 20269 | 12095116 | WIN | 8b |
 | 11b | 278.11 | -11.07 | 1243 | 10 | 20284 | 12058368 | WIN | 9 |
 | 11a | 277.42 | -0.69 | 1238 | 10 | 20301 | 12073940 | WIN | 11b |
-| 14 | ~279.4 | ~+1.98 | 1238 | 10 | 20301 | 12073960 | LOSS (reverted) | 11a |
-| 19' | 281.54 | +4.12 | 1239 | 10 | 20316 | 12134468 | LOSS (reverted) | 11a |
+| 14 | 279.4 | +1.98 | 1238 | 10 | 20301 | 12073960 | LOSS | 11a |
+| 19' | 281.54 | +4.12 | 1239 | 10 | 20316 | 12134468 | LOSS | 11a |
 | 22a | 278.01 | +0.59 | 1237 | 10 | 20293 | 12075144 | WIN | 11a |
-| 16a | 276.01 | -2.00 | 1252 | 10 | 20317 | 12083308 | LOSS (reverted) | 22a |
-| 24(i) | 282.38 | +4.37 | 1250 | 10 | 20239 | 12028904 | LOSS (reverted) | 22a |
-| 12s | 275.58 | -2.43 | 1256 | 10 | 20292 | 12046092 | LOSS (reverted) | 22a |
-| 27 | 311.63 | +33.62 | 1310 | 11 | 20825 | 12048200 | LOSS (reverted) | 22a |
-| 20 | ~279.0 | ~+0.99 | 1237 | 10 | 20293 | 12107848 | NO WIN (reverted) | 22a |
-| 13s | ~285.3 | ~+7.29 | 1262 | 11 | 20325 | 11988428 | LOSS (reverted) | 22a |
-| 23 | 280.87 | +2.86 | 1237 | 10 | 20255 | 12109264 | NO WIN (reverted) | 22a |
-| 17 | 279.02 | +1.01 | 1262 | 10 | 20284 | 12090480 | LOSS (reverted) | 22a |
-| 16-D4 | ~281.6 | ~+3.59 | 1238 | 10 | 20387 | 12120732 | NO WIN (reverted) | 22a |
-| 15 | 280.81 | +2.80 | 1238 | 10 | 20318 | 12022700 | LOSS (reverted) | 22a |
-| 18b | 275.76 | -2.25 | 1237 | 10 | 20293 | 12126548 | WIN (kept) | 22a |
-| 18a | 281.54 | +5.78 | 1259 | 10 | 20293 | 12130068 | LOSS (reverted) | 18b |
-| 22b | 278.43 | +2.67 | 1237 | 10 | 20335 | 11916868 | WIN on counters (kept) | 18b |
-| 22d | 270.19 | -8.24 | 1250 | 10 | 20004 | 10686984 | WIN (kept) | 22b |
-| 22c | 274.37 | +4.18 | 1250 | 10 | 20000 | 11594052 | LOSS (reverted) | 22d |
-| 24(iii)+(iv) | 276.42 | +6.23 | 1248 | 10 | 19929 | 11513336 | LOSS (reverted) | 22d |
-| 24(i') | 270.59 | +0.40 | 1246 | 10 | 19962 | 11541556 | WIN (kept) | 22d |
-| 21a | 275.46 | +4.87 | 1247 | 10 | 19966 | 11583856 | LOSS (reverted) | 24(i') |
-| 24(vii)a | 264.73 | -5.86 | 1243 | 10 | 19972 | 11562648 | WIN (kept) | 24(i') |
-| 24(vii)b | 271.70 | +6.97 | 1243 | 10 | 19961 | 11563724 | NO WIN (reverted) | 24(vii)a |
-| 24(ii) | 264.89 | +0.16 | 1241 | 10 | 19977 | 11529796 | WIN (kept) | 24(vii)a |
-| 5b | 266.64 | +1.75 | 1214 | 10 | 20009 | 11486464 | LOSS (reverted) | 24(ii) |
-| 16(D10) | 272.88 | +7.99 | 1241 | 10 | 20079 | 11528320 | NO WIN (reverted) | 24(ii) |
-| 24(v) | 272.09 | +7.20 | 1242 | 10 | 20061 | 11770580 | NO WIN (reverted) | 24(ii) |
-| 25 | 265.28 | +0.39 | 1241 | 10 | 19982 | 11479276 | WIN (kept) | 24(ii) |
-| 26a | 271.61 | +6.33 | 1248 | 10 | 19951 | 11529312 | LOSS (reverted) | 25 |
-| 10 | 237.17 | -28.11 | 1118 | 10 | 17482 | 10415980 | WIN (kept) | 25 |
-| 16a (re-measure) | 237.27 | +1.82 | 1112 | 10 | 17404 | 10384340 | WIN (kept) | 10 |
-| 12s (re-measure, + Eco.Hash) | 234.76 | -2.51 | 1113 | 10 | 17600 | 10398400 | WIN (kept) | 16a (re-measure) |
-| ghash (aliasKeyOf + groundHash) | 234.40 | -0.36 | 1113 | 10 | 17633 | 10506704 | WIN (kept) | 12s (re-measure) |
-| ghash63 (63-bit mix + names) | 239.13 | +4.73 | 1113 | 10 | 17633 | 10394976 | LOSS (reverted) | ghash |
-| gc-p1 (TLS shadow root stack) | 235.60 | +1.20 | 1113 | 10 | 17633 | 10523820 | NO WIN (folded into gc-all) | ghash |
-| gc-all (Phases 1-4 as one unit) | 235.80 | +1.40 | 1113 | 10 | 17634 | 10451604 | FLAT, RSS-only WIN | ghash |
-| gc-all2 (+ $sat reachability filter, newarg fix) | 229.55 | -4.85 | 1108 | 10 | 17599 | 10437876 | WIN | ghash |
-| gcdef (GC defaults: age 1, nmbc 512, mio 0.95) | 199.46 | -30.09 | 1924 | 6 | 19861 | 10816544 | WIN | gc-all2 |
-| W0 (free deletions) | 198.43 | -1.03 | 1924 | 6 | 19861 | 10817408 | FLAT (kept) | gcdef |
-| W1.1 (high-water clear) | 198.65 | +0.22 | 1924 | 6 | 19861 | 10810956 | LOSS (reverted, gate) | W0 |
-| W2 (evacuate inner loop) | 197.87 | -0.56 | 1924 | 6 | 19861 | 10816820 | FLAT (kept) | W0 |
-| W3 (table getObjectSize + walkStepFor) | 201.55 | +3.68 | 1924 | 6 | 19861 | 10817360 | LOSS (item 24 reverted) | W2 |
-| W3' (walkStepFor hoist only) | 195.73 | -2.14 | 1924 | 6 | 19861 | 10816696 | FLAT (kept) | W2 |
-| W4 (slot scanning 29/30/31) | 199.13 | +3.40 | 1924 | 6 | 19861 | 10816228 | LOSS (reverted) | W3' |
-| W5 (minor-GC structure 33/35/55) | 196.17 | +0.44 | 1924 | 6 | 19861 | 10805896 | WIN on RSS (kept) | W3' |
-| W10 (stackmap span check) | 197.02 | +0.85 | 1924 | 6 | 19861 | 10805692 | FLAT (kept) | W5 |
-| W9 (delete block_index + O(n^2) loop) | 197.18 | +0.16 | 1924 | 6 | 19861 | 10805240 | FLAT (kept) | W10 |
-| W7 (sweep-coupling knob, default 1) | 194.64 | -2.54 | 1924 | 6 | 19861 | 10805292 | KNOB kept, leg B rejected | W9 |
-| W6 (virgin-page bump) | 272.17 | +77.53 | 1924 | 6 | 19861 | 14389864 | LOSS (reverted) | W7 |
-| **W1 (per-site nursery zeroing)** | **183.82** | **-10.82** | 1924 | 6 | 19861 | **10677000** | **WIN (kept)** | W7 |
-| W1b (n_values closure scan, zeroing removed) | 183.57 | -0.25 | 1924 | 6 | 19861 | 10676096 | FLAT (kept, simplification) | W1 |
-| W11a (51 inline isInNursery + 43 sentinel-walk skip) | 182.95 | -0.62 | 1924 | 6 | 19861 | 10676200 | FLAT (kept, deletions) | W1b |
-| W11b (item 44 targeted mark-bitmap clear) | — | — | — | — | — | — | REFUTED (reverted, gate) | W11a |
-| W12 (item 40 mark-bit arena, no re-pack) | 183.58 | +0.63 | 1924 | 6 | 19861 | 10848384 | NO WIN (superseded by W12b) | W11a |
-| **W12b (item 40 arena + fused test-and-set + re-pack)** | **181.12** | **-1.83** | 1924 | 6 | 19861 | 10743152 | **WIN (kept)** | W11a |
-| W12c (item 52 live_bytes accumulator) | 182.56 | +1.44 | 1924 | 6 | 19861 | 10742676 | NO WIN (reverted; mark +33 ms) | W12b |
-| **W13 (item 54 prefetch-on-grey)** | 181.71 | +0.59 | 1924 | 6 | 19861 | 10742504 | **WIN on mark time -202 ms (kept)** | W12b |
-| W12d (item 38 nursery visited bitmap) | 180.91 | -0.80 | 1924 | 6 | 19861 | 10697572 | NO WIN (reverted; mark +415 ms) | W13 |
-| W14 (items 42, 45, 46) | — | — | — | — | — | — | CLOSED UNBUILT (bounded <1% of wall) | W13 |
-| drift check (eco-optW13 re-measured) | 181.57 | -0.14 vs its own row | 1924 | 6 | 19861 | 10742964 | NO DRIFT | W13 |
-| **W13c (item 54 FIFO depth 16, replaces on-grey)** | **180.08** | **-1.63** | 1924 | 6 | 19861 | 10743276 | **WIN (kept), mark -789.6 ms** | W13 |
-| W13d (FIFO depth sweep 4/8/16/32/64) | — | — | 1924 | 6 | 19861 | — | 16 CONFIRMED OPTIMAL (d4 +23% WORSE than no prefetch) | W13c |
-| W13e (FIFO as worklist member, handbook structure) | 179.52 | -0.56 | 1924 | 6 | 19861 | 10743272 | NO WIN (reverted; mark +218.7 ms) | W13c |
-| W13f (ring, prefetch removed — DIAGNOSTIC) | 187.66 | +7.58 | 1924 | 6 | 19861 | 10743048 | ordering cost MEASURED: mark +4841.2 ms (reverted) | W13c |
-| W13g (markToCompletion, single drain, local ring) | 181.57 | +1.49 | 1924 | 6 | 19861 | 10741472 | NO WIN (reverted; mark +94.3 ms) | W13c |
-| W13h (drain-interval sweep 64/256/1024/4096) | — | — | 1924 | 6 | 19861 | — | FLAT, no effect (reverted); measures noise floor SD=80 ms | W13c |
-| drift check (eco-optW13c re-measured, same sitting as T00) | 181.86 | +1.78 vs its own row | 1924 | 6 | 19861 | 9726024 | NO DRIFT | W13c |
-| T00 (threaded-gc-00 instruments on, stats build) | 184.71 | +2.85 vs same-sitting W13c | 1924 | 6 | 19861 | 9726340 | FLAT wall; GC +1.52 s (+2.3 %) measured cost | W13c (re-measured) |
-| T01 (threaded-gc-00 instruments compiled out, ECO_GC_PHASE_TIMERS OFF) | 183.86 | +2.31 vs same-sitting W13c (181.55) | 1924 | 6 | 19861 | 9725408 | FLAT, unmoved within noise (GC +0.64 s, ranges overlap) | W13c (re-measured) |
-| TG1 (threaded-gc-01 stable metadata, `eco-optTG1f`) | 181.61 | −3.73 vs same-sitting T01 (185.34) | 1924 | 6 | 19861 | 9664108 | FLAT on mark (+1.2 %), GC −2.47 s; KEPT (prerequisite) | `keep-TG1` |
-| **TG3 (threaded-gc-03 helper threads, `eco-optTG3`, mode 2)** | **172.67** | **−8.54 vs same-sitting TG2 (181.21)** | 1924 | 7 | 19861 | 9770964 | **WIN: in-minor faults −99.4 %, minor −6.55 s; counters identical in modes 0/1/2** | `keep-TG3` |
+| 16a | 276.01 | -2.00 | 1252 | 10 | 20317 | 12083308 | LOSS | 22a |
+| 24(i) | 282.38 | +4.37 | 1250 | 10 | 20239 | 12028904 | LOSS | 22a |
+| 12s | 275.58 | -2.43 | 1256 | 10 | 20292 | 12046092 | LOSS | 22a |
+| 27 | 311.63 | +33.62 | 1310 | 11 | 20825 | 12048200 | LOSS | 22a |
+| 20 | 279.0 | +0.99 | 1237 | 10 | 20293 | 12107848 | LOSS | 22a |
+| 13s | 285.3 | +7.29 | 1262 | 11 | 20325 | 11988428 | LOSS | 22a |
+| 23 | 280.87 | +2.86 | 1237 | 10 | 20255 | 12109264 | LOSS | 22a |
+| 17 | 279.02 | +1.01 | 1262 | 10 | 20284 | 12090480 | LOSS | 22a |
+| 16-D4 | 281.6 | +3.59 | 1238 | 10 | 20387 | 12120732 | LOSS | 22a |
+| 15 | 280.81 | +2.80 | 1238 | 10 | 20318 | 12022700 | LOSS | 22a |
+| 18b | 275.76 | -2.25 | 1237 | 10 | 20293 | 12126548 | WIN | 22a |
+| 18a | 281.54 | +5.78 | 1259 | 10 | 20293 | 12130068 | LOSS | 18b |
+| 22b | 278.43 | +2.67 | 1237 | 10 | 20335 | 11916868 | WIN | 18b |
+| 22d | 270.19 | -8.24 | 1250 | 10 | 20004 | 10686984 | WIN | 22b |
+| 22c | 274.37 | +4.18 | 1250 | 10 | 20000 | 11594052 | LOSS | 22d |
+| 24(iii+iv) | 276.42 | +6.23 | 1248 | 10 | 19929 | 11513336 | LOSS | 22d |
+| 24(i') | 270.59 | +0.40 | 1246 | 10 | 19962 | 11541556 | WIN | 22d |
+| 21a | 275.46 | +4.87 | 1247 | 10 | 19966 | 11583856 | LOSS | 24(i') |
+| 24(vii)a | 264.73 | -5.86 | 1243 | 10 | 19972 | 11562648 | WIN | 24(i') |
+| 24(vii)b | 271.70 | +6.97 | 1243 | 10 | 19961 | 11563724 | LOSS | 24(vii)a |
+| 24(ii) | 264.89 | +0.16 | 1241 | 10 | 19977 | 11529796 | WIN | 24(vii)a |
+| 5b | 266.64 | +1.75 | 1214 | 10 | 20009 | 11486464 | LOSS | 24(ii) |
+| 16-D10 | 272.88 | +7.99 | 1241 | 10 | 20079 | 11528320 | LOSS | 24(ii) |
+| 24(v) | 272.09 | +7.20 | 1242 | 10 | 20061 | 11770580 | LOSS | 24(ii) |
+| 25 | 265.28 | +0.39 | 1241 | 10 | 19982 | 11479276 | WIN | 24(ii) |
+| 26a | 271.61 | +6.33 | 1248 | 10 | 19951 | 11529312 | LOSS | 25 |
+| 10 | 237.17 | -28.11 | 1118 | 10 | 17482 | 10415980 | WIN | 25 |
+| 16a-r | 237.27 | +1.82 | 1112 | 10 | 17404 | 10384340 | WIN | 10 |
+| 12s-r | 234.76 | -2.51 | 1113 | 10 | 17600 | 10398400 | WIN | 16a-r |
+| ghash | 234.40 | -0.36 | 1113 | 10 | 17633 | 10506704 | WIN | 12s-r |
+| ghash63 | 239.13 | +4.73 | 1113 | 10 | 17633 | 10394976 | LOSS | ghash |
+| gc-p1 | 235.60 | +1.20 | 1113 | 10 | 17633 | 10523820 | FLAT (kept) | ghash |
+| gc-all | 235.80 | +1.40 | 1113 | 10 | 17634 | 10451604 | FLAT (kept) | ghash |
+| gc-all2 | 229.55 | -4.85 | 1108 | 10 | 17599 | 10437876 | WIN | ghash |
+| gcdef | 199.46 | -30.09 | 1924 | 6 | 19861 | 10816544 | WIN | gc-all2 |
+| W0 | 198.43 | -1.03 | 1924 | 6 | 19861 | 10817408 | FLAT (kept) | gcdef |
+| W1.1 | 198.65 | +0.22 | 1924 | 6 | 19861 | 10810956 | LOSS | W0 |
+| W2 | 197.87 | -0.56 | 1924 | 6 | 19861 | 10816820 | FLAT (kept) | W0 |
+| W3 | 201.55 | +3.68 | 1924 | 6 | 19861 | 10817360 | LOSS | W2 |
+| W3' | 195.73 | -2.14 | 1924 | 6 | 19861 | 10816696 | FLAT (kept) | W2 |
+| W4 | 199.13 | +3.40 | 1924 | 6 | 19861 | 10816228 | LOSS | W3' |
+| W5 | 196.17 | +0.44 | 1924 | 6 | 19861 | 10805896 | WIN | W3' |
+| W10 | 197.02 | +0.85 | 1924 | 6 | 19861 | 10805692 | FLAT (kept) | W5 |
+| W9 | 197.18 | +0.16 | 1924 | 6 | 19861 | 10805240 | FLAT (kept) | W10 |
+| W7 | 194.64 | -2.54 | 1924 | 6 | 19861 | 10805292 | FLAT (kept) | W9 |
+| W6 | 272.17 | +77.53 | 1924 | 6 | 19861 | 14389864 | LOSS | W7 |
+| W1 | 183.82 | -10.82 | 1924 | 6 | 19861 | 10677000 | WIN | W7 |
+| W1b | 183.57 | -0.25 | 1924 | 6 | 19861 | 10676096 | FLAT (kept) | W1 |
+| W11a | 182.95 | -0.62 | 1924 | 6 | 19861 | 10676200 | FLAT (kept) | W1b |
+| W11b | — | — | — | — | — | — | LOSS | W11a |
+| W12 | 183.58 | +0.63 | 1924 | 6 | 19861 | 10848384 | LOSS | W11a |
+| W12b | 181.12 | -1.83 | 1924 | 6 | 19861 | 10743152 | WIN | W11a |
+| W12c | 182.56 | +1.44 | 1924 | 6 | 19861 | 10742676 | LOSS | W12b |
+| W13 | 181.71 | +0.59 | 1924 | 6 | 19861 | 10742504 | WIN | W12b |
+| W12d | 180.91 | -0.80 | 1924 | 6 | 19861 | 10697572 | LOSS | W13 |
+| W14 | — | — | — | — | — | — | — | W13 |
+| drift-W13 | 181.57 | -0.14 | 1924 | 6 | 19861 | 10742964 | — | W13 |
+| W13c | 180.08 | -1.63 | 1924 | 6 | 19861 | 10743276 | WIN | W13 |
+| W13d | — | — | 1924 | 6 | 19861 | — | LOSS | W13c |
+| W13e | 179.52 | -0.56 | 1924 | 6 | 19861 | 10743272 | LOSS | W13c |
+| W13f | 187.66 | +7.58 | 1924 | 6 | 19861 | 10743048 | LOSS | W13c |
+| W13g | 181.57 | +1.49 | 1924 | 6 | 19861 | 10741472 | LOSS | W13c |
+| W13h | — | — | 1924 | 6 | 19861 | — | LOSS | W13c |
+| drift-W13c | 181.86 | +1.78 | 1924 | 6 | 19861 | 9726024 | — | W13c |
+| T00 | 184.71 | +2.85 | 1924 | 6 | 19861 | 9726340 | FLAT (kept) | W13c |
+| T01 | 183.86 | +2.31 | 1924 | 6 | 19861 | 9725408 | FLAT (kept) | W13c |
+| TG1 | 181.61 | -3.73 | 1924 | 6 | 19861 | 9664108 | FLAT (kept) | T01 |
+| TG2 | 180.97 | -2.40 | 1924 | 7 | 19861 | 9622612 | WIN | TG1 |
+| TG3 | 172.67 | -8.54 | 1924 | 7 | 19861 | 9770964 | WIN | TG2 |
+| TG4 | 172.77 | -1.96 | 1924 | 7 | 19861 | 9776948 | FLAT (kept) | TG3 |

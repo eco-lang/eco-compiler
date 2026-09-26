@@ -6,6 +6,7 @@
  */
 
 #include "ThreadLocalHeap.hpp"
+#include "P1Census.hpp"
 #include "Allocator.hpp"
 #include "StackMap.hpp"
 #include "StackUnwind.hpp"
@@ -184,6 +185,11 @@ ThreadLocalHeap::ThreadLocalHeap(Allocator* parent,
     old_gen_.bindNursery(&nursery_);
 }
 
+ThreadLocalHeap::~ThreadLocalHeap() {
+    // threaded-gc-04: verify, then drop, this heap's P1 census table.
+    p1::forget(old_gen_);
+}
+
 void* ThreadLocalHeap::allocate(size_t size, Tag tag) {
     // Align to 8 bytes up front so the threshold comparison is meaningful
     // (matches the alignment performed inside nursery/oldgen allocators).
@@ -348,6 +354,7 @@ void* ThreadLocalHeap::allocateRegionSlow(size_t total) {
             return nullptr;
         }
         GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(stats_, total);
+        old_gen_.noteBornOld(obj, total, /*region=*/true);   // HEAP_061
         return obj;
     }
 
@@ -366,6 +373,7 @@ void* ThreadLocalHeap::allocateRegionSlow(size_t total) {
             return nullptr;
         }
         GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(stats_, total);
+        old_gen_.noteBornOld(obj, total, /*region=*/true);   // HEAP_061
         return obj;
     }
 
@@ -404,6 +412,13 @@ void* ThreadLocalHeap::allocateLargePinned(size_t size, Tag tag) {
     initHeaderForTag(hdr, tag, size);
     hdr->color = saved_color;
     hdr->pin = 1;
+    // threaded-gc-04 HEAP_061: a pointer-bearing object born in the old gen is
+    // filled by its kernel afterwards (possibly with nursery pointers): the
+    // minor GC must scan it until its children are old.
+    if (tag != Tag_Int && tag != Tag_Float && tag != Tag_Char &&
+        tag != Tag_String && tag != Tag_ByteBuffer) {
+        old_gen_.noteBornOld(obj, size, /*region=*/false);
+    }
     return obj;
 }
 
@@ -683,6 +698,9 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
     const std::unordered_set<uint64_t*>& jit_roots = root_set.getJitRoots();
 
     auto t_after_root_collect = std::chrono::high_resolution_clock::now();
+
+    // threaded-gc-04: verify the P1 census's old-gen table before marking.
+    p1::verifyOldGen(old_gen_, "major-start");
 
     // Start marking phase with long-lived and JIT roots.
 #if ENABLE_GC_STATS

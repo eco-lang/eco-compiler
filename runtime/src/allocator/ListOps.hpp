@@ -327,10 +327,7 @@ inline bool any(Predicate pred, HPointer list) {
     return false;
 }
 
-/**
- * Checks if an element is a member of a list (using equality).
- */
-bool member(Unboxable value, bool is_boxed, HPointer list);
+
 
 // ============================================================================
 // Sorting

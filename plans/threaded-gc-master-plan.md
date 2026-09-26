@@ -1,6 +1,8 @@
 # Threaded GC — master plan (outline)
 
 **Status:** OUTLINE (2026-09-24). Phases 0–3 are DONE (see §4); later phases have no work plan yet.
+Phases 4–5 were **reordered on 2026-09-25** (§3, dependency graph): P1 first, then incremental,
+parallel and concurrent marking on a snapshot.
 
 **Source:** `design_docs/parallel-gc.md`, the design-space investigation. Section references below
 (§n) point into that report. It holds the correctness arguments, estimates, hazards and handbook
@@ -86,23 +88,38 @@ descriptions into mini-plans.
 
 ### Dependency graph
 
+**Reordered 2026-09-25**, after phase 3 and before any later phase had a work plan. The old-gen
+marking work now builds the snapshot discipline first, single-threaded, and adds threads to a
+marker that already runs on a snapshot. The first table below maps the old
+numbers to the new; the old numbers remain in the done plans (00–03), the phase 0 baseline and older
+loop entries. No retired label is reused.
+
+| old | new | content |
+|---|---|---|
+| 7a | **4** | Frozen published heap (P1) |
+| 5a | **5a** | Incremental marking on the mutator thread (snapshot protocol) |
+| 4 | **5b** | Parallel marking, written against the snapshot |
+| 5b | **5c** | Concurrent marking on collector threads |
+| 6, 7b, 7c, 8 | unchanged | (7a is retired, not reused) |
+
 | Phase | Depends on | Why |
 |---|---|---|
 | 0 | — | baseline data |
 | 1 | 0 | a neutral refactor judged against the phase 0 baseline |
 | 2 | 1 | builds on stable block ids and the in-place mark-bit arena |
 | 3 | 1 | per-heap state instead of TLS; metadata that is safe to share |
-| 4 | 3 | helper pool |
-| 5a | 1 (and 0 for pause data) | snapshot protocol; single-threaded |
-| 5b | 3, 4, 5a | collector threads; parallel-safe mark bits and assist; the snapshot protocol |
+| 4 | 0 | the census of kernel writes into already-survived objects |
+| 4b | 4 | young large objects: restores HEAP_005 without the HEAP_061 exception before anything builds on it |
+| 5a | 1, 4, 4b | the snapshot lemma that lets the mutator run between mark slices holds only under P1; the young generation must be exception-free |
+| 5b | 3, 5a | helper pool; a marker that already runs on a snapshot |
+| 5c | 3, 5b | collector threads; parallel-safe mark bits, deques and termination; the snapshot protocol |
 | 6 | 2, 3 | thread-safe promotion destination; helper pool |
-| 7a | 0 | the census of kernel writes into already-survived objects |
-| 7b | 2, 7a | promotion buffers; the frozen-heap invariant |
+| 7b | 2, 4 | promotion buffers; the frozen-heap invariant |
 | 7c | 3, 6, 7b | collector thread; parallel promotion machinery; survivor regions |
 | 8 | per item | gated by measurements |
 
-Phase 6 may be pulled ahead of phase 5 if wall time becomes the pressing need. Phase 7a can run in
-parallel with anything after phase 0.
+Phase 6 may be pulled ahead of phase 5 if wall time becomes the pressing need. Phase 4 is small
+and can run in parallel with anything after phase 0, but it must land before 5a.
 
 ---
 
@@ -208,32 +225,51 @@ work that cannot corrupt the heap.
 
 ---
 
-### Phase 4 — Parallel stop-the-world marking
+### Phase 4 — Frozen published heap (P1)
 
-**Why:** it cuts the largest pause (~1.3 s → ~0.4 s at 4 threads) at low risk, and it builds the
-atomic mark bits, work-stealing deques and termination detection that phase 5b reuses.
+**Why first:** every snapshot design rests on the snapshot-closure lemma (report §2.1): nothing
+writes a pointer into an object that has already been published.
+- Incremental marking (5a) lets the mutator run between mark slices; concurrent marking (5c) and
+  concurrent tenuring (7c) run a collector alongside it.
+- A kernel that writes into an already-survived object breaks the lemma for all three. The marker
+  can then miss a live object: silent, rare and catastrophic.
+
+Phase 0's census found no violation on E2E, but the full-scale census is still owed. This phase
+turns "no violation seen" into an enforced invariant before any snapshot marker depends on it.
+Formerly 7a; it was always scheduled "in parallel with anything after phase 0", and now it is
+also a precondition.
 
 **Scope:**
-- Atomic mark test-and-set.
-- Chase–Lev deques.
-- Two-phase termination.
-- Large-array chunking.
-- A per-thread prefetch ring.
-- Deterministic merge of per-thread accounting.
+- The full-scale census that phase 0 owes: a periodic or signal-safe census dump on the
+  self-compile (baseline §5).
+- Adopt HEAP_SNAPSHOT_001: no writes into an object that has survived a GC unless it is flagged
+  `builder`.
+- Fix or `builder`-flag every kernel path the census finds.
+- Enforce it with a validator tripwire.
+- Adopt FORBID_HEAP_005 (no identity-negative comparisons).
 
-See report §5.8.
+**Deploy:** correctness hardening; no flag. Counters are bit-identical unless a kernel path has to
+change.
 
-**Deploy:** behind `gc_threads`, where `gc_threads=1` is the reference. Counters are
-bit-identical.
-
-**Exit:** the major-pause reduction is confirmed on the major-GC event log with per-collection
-pairing.
+**Exit:** HEAP_SNAPSHOT_001 is enforced by a validator that runs in the validate-tree gates, and
+the full-scale census reports zero violations.
 
 ---
 
-### Phase 5 — Concurrent marking
+### Phase 5 — Old-gen marking on a snapshot
 
-**Why:** it is the only old-gen design whose pause does not grow with heap size (goal 2).
+**Why:** it is the only old-gen design whose pause does not grow with heap size (goal 2). It is
+built in three steps: the snapshot discipline without threads, then threads on a marker that
+already honours it, then the move off the pause.
+
+**Rule for all of phase 5: write every marker as if the world were running.**
+- Markers read only the snapshot (roots, off-heap stores, nursery survivors as of t0) and the heap.
+  They never read mutator-owned structures: free lists, cursors, `unassigned_blocks_`, the large
+  body index.
+- Nothing is released, reused or re-parsed under a running cycle; releases are deferred to the
+  handoff.
+- All per-marker state (live bytes, stack peaks, counters) is merged explicitly at the handoff.
+- A 5b that quietly relied on the mutator being stopped would have to be rewritten for 5c.
 
 #### 5a — Incremental marking on the mutator thread (snapshot protocol)
 
@@ -242,21 +278,42 @@ pairing.
   - off-heap stores (CellStore cells and trail, MVar, scheduler queues);
   - the nursery survivors, via promote-all or a grey buffer (report §5.2).
 - Log old-gen allocations so they are allocated black.
-- Defer `freeLargeBodyCell` while marking.
+- Defer `freeLargeBodyCell` and block releases while marking.
 - Emergency majors join the running cycle.
 - Mark slices run at each minor-GC end; the handoff runs today's post-mark tail.
 - Validator: "everything reachable at handoff is marked or allocated after t0".
-- Deployable on its own: it spreads the major pause across minor pauses, and it is
-  deterministic.
+- Deployable on its own. It spreads the major pause (today ~5 s at the last major) across minor
+  pauses. It is deterministic, and single-threaded, so every bug reproduces exactly.
 
-#### 5b — Marking moves to collector threads
+#### 5b — Parallel marking (formerly phase 4)
 
-- Concurrent mark slices on the phase 3 pool, parallel across markers using phase 4's machinery.
+- Atomic mark test-and-set (`fetch_or` on `mark_.slot(id)`, HEAP_050).
+- Chase–Lev deques and work stealing; the paused mutator is itself a worker.
+- Two-phase termination, with spin-then-yield-then-sleep idling so an oversubscribed machine does
+  not starve the worker being waited for.
+- Large-array chunking.
+- A per-thread prefetch ring.
+- One `LiveBytesAccumulator` per marker (HEAP_051), merged deterministically.
+- The worker count comes from available cores (affinity mask and cgroup quota), not
+  `hardware_concurrency`; `gc_helper_threads = 0` means auto. With one core, run the same work
+  inline.
+- It runs 5a's slices, the handoff and any emergency full mark in parallel. It also works as a
+  plain stop-the-world parallel mark when incremental marking is off.
+
+See report §5.8. **Deploy:** behind `gc_threads`, where `gc_threads=1` is the reference, and
+counters are bit-identical to it. **Exit:** slice and major-pause reductions confirmed on the
+major-GC event log with per-collection pairing.
+
+#### 5c — Marking moves to collector threads (formerly 5b)
+
+- Concurrent mark slices on the phase 3 pool, parallel across markers using 5b's machinery.
 - Heap-relative pacing: the trigger comes from promotion rate × predicted mark time.
-- Mark assist when the collector is late.
+- Mark assist when the collector is late (work moves onto mutator threads, never onto extra
+  threads).
+- The concurrent collector runs at low priority, so it only takes cores the mutators leave idle.
 - The trigger margin is validated at both the 15 GB and the 4 GB budget.
 
-**Invariants:** HEAP_SNAPSHOT_002 (mutable roots are off-heap and snapshotted); HEAP_026
+**Invariants (phase 5):** HEAP_SNAPSHOT_002 (mutable roots are off-heap and snapshotted); HEAP_026
 amendment.
 
 **Exit:** the major pause equals the root-snapshot pause (~50 ms today, independent of heap size).
@@ -293,14 +350,7 @@ beyond the documented CAS tax.
 **Why:** promotion (~75–80 % of the minor pause) leaves the pause entirely. The minor pause shrinks
 to roots plus the first copy.
 
-#### 7a — Frozen published heap (P1)
-
-- Adopt HEAP_SNAPSHOT_001: no writes into an object that has survived a GC unless it is flagged
-  `builder`.
-- Fix or `builder`-flag every kernel path the phase 0 census found.
-- Enforce it with a validator tripwire.
-- Adopt FORBID_HEAP_005 (no identity-negative comparisons).
-- Ships as correctness hardening even if 7b and 7c never happen.
+(7a, the frozen published heap, is now phase 4, a precondition of 7b and 7c.)
 
 #### 7b — Eden plus rotating survivor regions, promotion still synchronous
 
@@ -346,14 +396,15 @@ later phase's measurements show it matters at the target scale:
 | Phase | Work plan | Status | Outcome / facts for later phases |
 |---|---|---|---|
 | 0 Measure and fix | `plans/threaded-gc-00-measure-and-fix.md` | **DONE (2026-09-24)**, snapshot `keep-T00`, `bin/eco-opt-prev` = `eco-optT00`; results in `benchmarks/threaded-gc-00-baseline.md` | (1) Promotion ≈ 67 % of the minor pause; the old-gen allocator alone ≈ 36 % (32 ns/promotion). (2) Worst pauses: majors 1.3–2.7 s, then post-major lazy-sweep bursts 0.4–0.9 s. MMU = 0 up to 2 s windows. (3) Stack walk negligible (0.1 ms/minor); CellStore root scan up to 8.6 ms/pause. (4) A memory-heavy co-runner made the mutator ~8 % FASTER, a spin-only one 2.4 % slower: interference is not a blocker. (5) New lead: 4.9 M page faults inside minors, ≈ one per promoted 4 KiB. (6) Judge GC counters against a SAME-SESSION control; object counts depend on launch args/env. (7) P1: no violations seen (E2E census 0; validator self-compile 72 % of minors clean); a full-scale census count is still owed. |
-| 1 Stable metadata | `plans/threaded-gc-01-stable-metadata.md` | **DONE (2026-09-24)**, snapshot `keep-TG1`, `bin/eco-opt-prev` = `eco-optTG1f`; loop entry TG1 in `benchmarks/gc-opt-loop.md` | (1) Blocks have stable `BlockId`s; every metadata table is VA-reserved (`ReservedArray`) and **never moves**; iteration ORDER is separate and must stay vector-identical (counters depend on it). Only `sweep_buffer_index_`/`fixup_buffer_index_` are positions (HEAP_048). (2) Page index keyed from `heap_base`, owners stored as id+1, never rebuilt; lookups must bounds-check the committed slot count (HEAP_049). (3) Mark bits: fixed per-id arena slot (`arena + id*stride`), 2 MiB-aligned/granule for THP; the startMark bulk clear stays (HEAP_050). Phase 4's `fetch_or` goes on `mark_.slot(id)`. (4) Marker writes only a `LiveBytesAccumulator`, merged at `finalizeMetaAfterMark`; phase 4 = one per marker (HEAP_051). (5) Free-list back-links are addresses, no block-count limit (HEAP_052); GC state is per-heap, not TLS (HEAP_053). (6) The mark loop is **alignment-sensitive**: `-falign-loops=64` is pinned for `OldGenSpace.cpp`; a few-% mark swing with identical instructions means check the loop address first. (7) The validator self-compile is dropped as a gate (too slow); validate = unit tests + E2E + GC-pressure stress. Validate stress has 5 PRE-EXISTING `JsonRoundtrip*` aborts. (8) 8 TB of metadata reserves ~130 GB VA and costs +64 KiB RSS. |
-| 2 Bitmap allocation | `plans/threaded-gc-02-bitmap-allocation.md` | **DONE (2026-09-25)**, snapshot `keep-TG2`, `bin/eco-opt-prev` = `eco-optTG2`; loop entry TG2 in `benchmarks/gc-opt-loop.md` | (1) **Cursor ownership:** per size class ONE `AllocCursor` owns at most one uniform block (`BlockInfo.alloc_state` Current); partially free blocks wait on `partial_[cls]` in position order; cursors/queues reset at `startMark`; a block is `detachFromAllocation`ed before release/large-flip/demotion/compaction. Phase 6 = one cursor per thread per class (HEAP_054). (2) **A uniform block's mark bitmap IS its allocation map** (bit set ⇔ allocated); uniform blocks are never swept and are **not header-parsable** (free cells have stale or no headers) — any new walker must skip clear cell-start bits (HEAP_021/024/027). Phase 4's parallel marker sets the same bits. (3) `live_bytes` is exact for uniform blocks (popcount × cell, V8); cursors carry `pending_live` folded by `syncCursorLiveBytes` before any reader. (4) **Remaining sweep cost** is the mixed-block gap sweep (reads only live headers, HEAP_055): 3.7 GB covered in-pause, est 0.24 s over the run, worst 63 ms in one pause (was 820 ms). Promotion allocation is 16.1 ns (was 32.0) — the hit path tests the next cell's bit; no integer `div` anywhere on the path. (5) **`demote_live_fraction` lever, default 0.3** (E1: 0.0 pins the peak and has the lowest pauses at +1–3 majors; 0.75 brings back 0.6 s pauses). (6) **The garbage-fraction major trigger is chaotic** (legacy: 4–7 majors, 8.8–16.2 GB peak across gf 0.65–0.75): phase 2 adds the **LiveBudget** trigger, k = 4.5 × min(L_i, 1.5·L_{i−1}) (HEAP_057). Judge any trigger/allocator change on a gf sweep, never one run. (7) A major now leaves nothing to sweep when there are no mixed blocks, so the GC is Idle at once and **compaction becomes reachable right after a major** — it exposed a latent HEAP_048 fixup-cursor false positive (fixed). |
+| 1 Stable metadata | `plans/threaded-gc-01-stable-metadata.md` | **DONE (2026-09-24)**, snapshot `keep-TG1`, `bin/eco-opt-prev` = `eco-optTG1f`; loop entry TG1 in `benchmarks/gc-opt-loop.md` | (1) Blocks have stable `BlockId`s; every metadata table is VA-reserved (`ReservedArray`) and **never moves**; iteration ORDER is separate and must stay vector-identical (counters depend on it). Only `sweep_buffer_index_`/`fixup_buffer_index_` are positions (HEAP_048). (2) Page index keyed from `heap_base`, owners stored as id+1, never rebuilt; lookups must bounds-check the committed slot count (HEAP_049). (3) Mark bits: fixed per-id arena slot (`arena + id*stride`), 2 MiB-aligned/granule for THP; the startMark bulk clear stays (HEAP_050). Phase 5b's `fetch_or` goes on `mark_.slot(id)`. (4) Marker writes only a `LiveBytesAccumulator`, merged at `finalizeMetaAfterMark`; phase 5b = one per marker (HEAP_051). (5) Free-list back-links are addresses, no block-count limit (HEAP_052); GC state is per-heap, not TLS (HEAP_053). (6) The mark loop is **alignment-sensitive**: `-falign-loops=64` is pinned for `OldGenSpace.cpp`; a few-% mark swing with identical instructions means check the loop address first. (7) The validator self-compile is dropped as a gate (too slow); validate = unit tests + E2E + GC-pressure stress. Validate stress has 5 PRE-EXISTING `JsonRoundtrip*` aborts. (8) 8 TB of metadata reserves ~130 GB VA and costs +64 KiB RSS. |
+| 2 Bitmap allocation | `plans/threaded-gc-02-bitmap-allocation.md` | **DONE (2026-09-25)**, snapshot `keep-TG2`, `bin/eco-opt-prev` = `eco-optTG2`; loop entry TG2 in `benchmarks/gc-opt-loop.md` | (1) **Cursor ownership:** per size class ONE `AllocCursor` owns at most one uniform block (`BlockInfo.alloc_state` Current); partially free blocks wait on `partial_[cls]` in position order; cursors/queues reset at `startMark`; a block is `detachFromAllocation`ed before release/large-flip/demotion/compaction. Phase 6 = one cursor per thread per class (HEAP_054). (2) **A uniform block's mark bitmap IS its allocation map** (bit set ⇔ allocated); uniform blocks are never swept and are **not header-parsable** (free cells have stale or no headers) — any new walker must skip clear cell-start bits (HEAP_021/024/027). Phase 5b's parallel marker sets the same bits. (3) `live_bytes` is exact for uniform blocks (popcount × cell, V8); cursors carry `pending_live` folded by `syncCursorLiveBytes` before any reader. (4) **Remaining sweep cost** is the mixed-block gap sweep (reads only live headers, HEAP_055): 3.7 GB covered in-pause, est 0.24 s over the run, worst 63 ms in one pause (was 820 ms). Promotion allocation is 16.1 ns (was 32.0) — the hit path tests the next cell's bit; no integer `div` anywhere on the path. (5) **`demote_live_fraction` lever, default 0.3** (E1: 0.0 pins the peak and has the lowest pauses at +1–3 majors; 0.75 brings back 0.6 s pauses). (6) **The garbage-fraction major trigger is chaotic** (legacy: 4–7 majors, 8.8–16.2 GB peak across gf 0.65–0.75): phase 2 adds the **LiveBudget** trigger, k = 4.5 × min(L_i, 1.5·L_{i−1}) (HEAP_057). Judge any trigger/allocator change on a gf sweep, never one run. (7) A major now leaves nothing to sweep when there are no mixed blocks, so the GC is Idle at once and **compaction becomes reachable right after a major** — it exposed a latent HEAP_048 fixup-cursor false positive (fixed). |
 | 3 Helper-thread infra | `plans/threaded-gc-03-helper-threads.md` | **DONE (2026-09-25)**, snapshot `keep-TG3`, `bin/eco-opt-prev` = `eco-optTG3`; loop entry TG3 in `benchmarks/gc-opt-loop.md` | (1) **Pool API:** `GCHelperPool` (one per process; std-only, no allocator includes; TSan harness `test/gc-helper-tsan` built with g++, since clang 14 here has no TSan runtime). Jobs are intrusive `HelperJob`s: post / wait / drain; a job's state is read only to wait (GC_DET_001). (2) **Sync point:** `ThreadLocalHeap` PauseEndHook → `Allocator::onGCPauseEnd(heap, had_major)` at the end of the OUTERMOST pause; `sync_epoch_` / `major_epoch_` are the only clocks policy may use. (3) **Modes:** `ECO_GC_THREAD` 0/1/2 (one character: the environment is a program input); `ECO_GC_HELPER_JITTER_US` is the determinism probe. Gate recipe: counters must be identical in 0, 1, 2 and 2+jitter (they were, across 11 runs). (4) **First users, worth −8.5 s wall, −7.2 s GC:** deferred decommit with a delay counted in MAJORS (a pause-end delay was the wrong unit); commit-ahead 128 MiB + `MADV_POPULATE_WRITE`. In-minor faults 4.71 M → 29 k. (5) **Fork safety:** `pthread_atfork` (prepare drains; the child re-constructs mutex and condvars and restarts workers lazily). Every later phase's pool state must be added to `atforkChild`. (6) **Interference** of 1 helper was negative (−3.1 s), and pinning did nothing: the L3 is not a blocker at this job volume (1.9 s of helper CPU per run). |
-| 4 Parallel STW mark | — | not started | |
+| 4 Frozen published heap (P1) | `plans/threaded-gc-04-frozen-published-heap.md` | **DONE (2026-09-25)**, snapshot `keep-TG4`, `bin/eco-opt-prev` = `eco-optTG4`; loop entry TG4 | (1) **P1 holds at full scale:** census build (`-DECO_P1_CENSUS=ON`, `ECO_P1_CENSUS=1`) on the self-compile found 0 violations in 744 M nursery-survivor, 265 M promoted-object (sample 16) and 18.8 M write-site checks; E2E + stress clean in abort mode. (2) **Validate builds now enforce P1** (`ECO_P1_CENSUS` defaults to 2 there): every later phase's validate gates re-check it. Tests that write on purpose force mode 1. (3) Two hazards were real and are fixed: chunk-chain backings (now builders, bounded to ¼ nursery by `chunkChainFits`), and **born-old pointer objects** (HEAP_061: minor GCs scan them as roots until their children are old; compaction is skipped while any is pending). (4) **For 5a:** builder objects that exist at t0 are written after t0 by design, so the snapshot needs a builder-root/grey path; born-old pending objects are the only old→young holders and must be snapshot roots too. (5) Out of scope, recorded: the 5 validate-stress `JsonRoundtrip*` aborts are a stale closure in `eco_apply_closure_eval`, not P1. |
+| 4b Young large objects | `plans/threaded-gc-04b-young-large-objects.md` | **PLANNED (2026-09-26)**, to implement before 5a | Replaces HEAP_061 (the born-old list) with nursery placement up to ⅛ of the per-side nursery + a young large-object space (non-moving, promoted in place) + chunked JSON arrays. |
 | 5a Incremental mark | — | not started | |
-| 5b Concurrent mark | — | not started | |
+| 5b Parallel mark | — | not started | |
+| 5c Concurrent mark | — | not started | |
 | 6 Parallel STW minor | — | not started | |
-| 7a Frozen published heap | — | not started | |
 | 7b Survivor regions | — | not started | |
 | 7c Concurrent tenuring | — | not started | |
 | 8 Massive-workload items | — | not started | |
@@ -367,7 +418,9 @@ These are targets, not measurements. Update the table as each phase lands.
 | today | ~1.3 s (major mark); 986 ms (sweep burst) | ~31 ms |
 | 2 | **measured:** 4.72 s (major, one extra LiveBudget major at a larger live set; was 2.64 s); **minor-only max 178 ms** (was 976 ms), no sweep burst | p50 5.4 ms, p99 142 ms (was 5.9 / 153 ms) |
 | 3 | **measured:** last major 5.16 s (triple median; was 5.34 s); minor-only max 176 ms, no in-minor page faults (4.7 M → 29 k) | p50 4.9 ms, p99 114 ms (was 5.3 / 142 ms) |
-| 4 | ~0.4 s (major, 4 threads) | ~31 ms |
-| 5b | ~50 ms (root snapshot) | ~31 ms |
+| 4 | **measured:** unchanged (correctness phase; wall flat) | unchanged |
+| 5a | the major's mark spread over minor pauses: slice budget + handoff tail (sized by the 5a plan) | minor pause + one slice |
+| 5b | slices and handoff ÷ ~worker count (major-only mark ~0.4 s at 4 threads if 5a is off) | minor pause + a shorter slice |
+| 5c | ~50 ms (root snapshot) | ~31 ms |
 | 6 | ~50 ms | ~12 ms |
 | 7c | roots + first copy (sized by phase 0) | roots + first copy |

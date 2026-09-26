@@ -256,6 +256,8 @@ Each mutator thread runs its own GC on its own heap, and makes every decision ab
 - **Major GC**: Triggered when old gen committed bytes exceed a threshold
 - **Incremental work**: Marking and compaction can be spread across allocation slow-paths
 
+**Frozen published heap (P1, HEAP_SNAPSHOT_001).** Runtime and kernel code never write into an object after it has survived a GC, unless it carries `builder`. Compiled Elm code writes only fresh objects (HEAP_031). Validate builds enforce this with the P1 census (`ECO_P1_CENSUS`, detectors N/O/W), and a `-DECO_P1_CENSUS=ON` build measures it at full scale. The one sanctioned holder of old→young pointers is a *born-old pending* object: a large pointer-bearing object allocated directly in the old gen, which minor GCs scan as a root until its children are old (HEAP_061).
+
 Each thread's GC is stop-the-world *for that thread only*. Other threads continue executing. This avoids global synchronization while keeping the GC simple.
 
 The `ThreadLocalHeap` coordinates its nursery and old gen:

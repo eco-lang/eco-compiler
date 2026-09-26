@@ -25,6 +25,7 @@
 #include "allocator/OldGenScaleTest.hpp"
 #include "allocator/BitmapScanTest.hpp"
 #include "allocator/GCHelperTest.hpp"
+#include "allocator/P1CensusTest.hpp"
 #include "allocator/OldGenBitmapAllocTest.hpp"
 #include "allocator/OldGenSweepOnDemandTest.hpp"
 #include "allocator/OldGenSweepBudgetTest.hpp"
@@ -650,6 +651,19 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testBlockTableClearRestartsIds);
     oldGenTests.add(testOldGenGeometryAt8TB);
     oldGenTests.add(testOldGenMetadataReserve8TBIsCheap);
+    oldGenTests.add(testP1CensusModeParsing);
+    oldGenTests.add(testP1OldGenCatchesWriteAfterPromotion);
+    oldGenTests.add(testP1OldGenNoFalsePositiveAcrossMajors);
+    oldGenTests.add(testP1OldGenPruneDropsDead);
+    oldGenTests.add(testP1OldGenCompactionInvalidates);
+    oldGenTests.add(testP1WriteSiteFreshIsLegal);
+    oldGenTests.add(testP1WriteSiteAgedCaught);
+    oldGenTests.add(testP1WriteSiteBuilderExempt);
+    oldGenTests.add(testP1ChunkChainSurvivesMidConstructionGC);
+    oldGenTests.add(testBornOldArrayChildrenSurviveMinors);
+    oldGenTests.add(testBornOldEntryRetires);
+    oldGenTests.add(testBornOldDeadEntryPrunedAtMark);
+    oldGenTests.add(testBornOldRegionSplitAtMark);
     oldGenTests.add(testHelperConfigValidation);
     oldGenTests.add(testHelperPoolSyncRunsInline);
     oldGenTests.add(testHelperPoolConcurrentRunsOnWorker);

@@ -11,6 +11,7 @@
 #include "Allocator.hpp"
 #include "NurserySpace.hpp"
 #include "BitmapScan.hpp"
+#include "P1Census.hpp"
 #include <chrono>
 #include <limits>
 #include <algorithm>
@@ -2363,7 +2364,8 @@ bool OldGenSpace::markOneObject(void* obj, BlockId block_index) {
     // observe one here, a kernel either failed to clear the bit before
     // publishing the object, or the GC promoted a builder despite the
     // !builder gate in NurserySpace::evacuate.
-    assert(!hdr->builder &&
+    // threaded-gc-04 HEAP_061: a born-old pending object may be a builder.
+    assert((!hdr->builder || isBornOldPending(obj)) &&
            "HEAP_BUILDER_001: builder object in old gen");
 #endif
     // Use the cached block id when valid; fall back to blockIdFor only
@@ -2422,6 +2424,10 @@ void OldGenSpace::finalizeMetaAfterMark() {
     // marker and allocate-black, both additions, so the sum equals the
     // former direct attribution exactly.
     mark_live_.mergeInto(blocks_);
+    // threaded-gc-04: the P1 census reads mark bits here, before any sweep
+    // clears them (plan P§3.4, trap 1).
+    p1::onMarkEnd(*this);
+    pruneBornOldAtMarkEnd();   // threaded-gc-04 HEAP_061
 
     size_t total_live = 0;
     size_t total_heap = 0;
@@ -4284,8 +4290,13 @@ void OldGenSpace::scheduleCompaction() {
     assert(sweepComplete() &&
            "scheduleCompaction: sweep must be complete (gc_phase_ == Idle)");
 
+    // threaded-gc-04 HEAP_061: born-old pending objects hold old->young
+    // edges the minor GC fixes up in place; never move them (or anything)
+    // while any is pending.
+    if (!born_old_.empty()) return;
     evacuation_set_ = selectEvacuationSet(COMPACTION_WORK_BUDGET * 10);
     if (evacuation_set_.empty()) return;
+    p1::invalidate(*this);   // threaded-gc-04: objects are about to move
 
     compact_phase_ = CompactionPhase::Evacuating;
     current_evac_index_ = 0;
