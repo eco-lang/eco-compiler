@@ -112,6 +112,7 @@ add_executable(test
         allocator/GCHelperTest.cpp
         allocator/P1CensusTest.cpp
         allocator/LargePtrPlacementTest.cpp
+        allocator/IncrementalMarkTest.cpp
         allocator/OldGenBitmapAllocTest.cpp
         allocator/GCPauseStatsTest.cpp
         allocator/NurseryContiguityTest.cpp

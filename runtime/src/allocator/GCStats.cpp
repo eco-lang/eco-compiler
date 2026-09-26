@@ -879,6 +879,7 @@ void GCStats::combine(const GCStats& other) {
     page_supply.mergeMax(other.page_supply);
     helper.mergeMax(other.helper);
     lp.combine(other.lp);
+    im.combine(other.im);
 
     // Combine allocator-helper attribution.
     total_oldgen_alloc_in_mutator_ns  += other.total_oldgen_alloc_in_mutator_ns;
@@ -1411,6 +1412,7 @@ void GCStats::print() const {
     printPageSupplyBlock();
     printHelperBlock();
     printLargePtrBlock();   // threaded-gc-04b (only when non-zero)
+    printIncrMarkBlock();   // threaded-gc-05a (only when non-zero)
 
     // ========== Allocation Size Histograms ==========
     //
@@ -1821,6 +1823,7 @@ void GCStats::reset() {
     page_supply = PageSupplyStats{};
     helper = HelperStatsSnapshot{};
     lp = LargePtrStats{};
+    im = IncrMarkStats{};
     total_oldgen_alloc_in_mutator_ns  = 0;
     total_post_sweep_shrink_ns        = 0;
     total_maybe_shrink_heavy_ns       = 0;
@@ -2054,7 +2057,7 @@ void GCPhaseTotals::addPause(uint64_t start_ns, uint64_t dur_ns, uint8_t kind) {
     pause_count++;
     pause_total_ns += dur_ns;
     pause_max_ns = std::max(pause_max_ns, dur_ns);
-    if (kind < 3) pause_count_by_kind[kind]++;
+    if (kind < 6) pause_count_by_kind[kind]++;
     pause_log2_hist[pauseBucket(dur_ns)]++;
     if (pause_events.size() >= PAUSE_EVENT_CAP) {
         pause_events_dropped++;
@@ -2118,7 +2121,7 @@ void GCPhaseTotals::merge(const GCPhaseTotals& o) {
     pause_count += o.pause_count;
     pause_total_ns += o.pause_total_ns;
     pause_max_ns = std::max(pause_max_ns, o.pause_max_ns);
-    for (int k = 0; k < 3; ++k) pause_count_by_kind[k] += o.pause_count_by_kind[k];
+    for (int k = 0; k < 6; ++k) pause_count_by_kind[k] += o.pause_count_by_kind[k];
     for (const PauseEvent& e : o.stall_events) {
         if (stall_events.size() >= PAUSE_EVENT_CAP) { stall_events_dropped++; continue; }
         stall_events.push_back(e);
@@ -2238,23 +2241,34 @@ void GCStats::printThreadedGcBlocks() const {
         std::vector<PauseEvent> ev = t.pause_events;
         std::sort(ev.begin(), ev.end(),
                   [](const PauseEvent& a, const PauseEvent& b) { return a.start_ns < b.start_ns; });
-        std::vector<uint64_t> all, minor_only, with_major;
+        std::vector<uint64_t> all, minor_only, with_major, k_t0, k_slice, k_handoff;
         for (const PauseEvent& e : ev) {
             all.push_back(e.dur_ns);
             if (e.kind == 0) minor_only.push_back(e.dur_ns);
+            else if (e.kind == 3) k_t0.push_back(e.dur_ns);
+            else if (e.kind == 4) k_slice.push_back(e.dur_ns);
+            else if (e.kind == 5) k_handoff.push_back(e.dur_ns);
             else with_major.push_back(e.dur_ns);
         }
         char buf[256];
         std::snprintf(buf, sizeof buf,
-            "  pauses: %llu (minor-only %llu, minor+major %llu, major-only %llu)",
+            "  pauses: %llu (minor-only %llu, minor+major %llu, major-only %llu, "
+            "minor+t0 %llu, minor+slice %llu, minor+handoff %llu)",
             (unsigned long long)t.pause_count,
             (unsigned long long)t.pause_count_by_kind[0],
             (unsigned long long)t.pause_count_by_kind[1],
-            (unsigned long long)t.pause_count_by_kind[2]);
+            (unsigned long long)t.pause_count_by_kind[2],
+            (unsigned long long)t.pause_count_by_kind[3],
+            (unsigned long long)t.pause_count_by_kind[4],
+            (unsigned long long)t.pause_count_by_kind[5]);
         std::cout << buf << std::endl;
         printPauseLine("all pauses", all);
         printPauseLine("minor-only pauses", minor_only);
         printPauseLine("pauses containing a major", with_major);
+        // threaded-gc-05a: the incremental cycle's pause kinds.
+        if (!k_t0.empty()) printPauseLine("minor + cycle t0 snapshot", k_t0);
+        if (!k_slice.empty()) printPauseLine("minor + mark slice", k_slice);
+        if (!k_handoff.empty()) printPauseLine("minor + cycle handoff", k_handoff);
         if (t.pause_events_dropped > 0) {
             std::cout << "  WARNING: " << t.pause_events_dropped
                       << " pauses beyond the event cap; percentiles/MMU cover the first "
@@ -2475,7 +2489,9 @@ public:
         dashes(line, kMinorNumericCols - 2);
         dashes(line, 2 * (ext_cols_.size() + 1));
         dashes(line, 4);
-        addField(line, kind == 0 ? "minor" : kind == 1 ? "minor+major" : "major");
+        static const char* const kKind[] = {"minor", "minor+major", "major",
+                                            "minor+t0", "minor+slice", "minor+handoff"};
+        addField(line, kind < 6 ? kKind[kind] : "?");
         finish(line);
     }
 
@@ -2512,6 +2528,25 @@ public:
         dashes(line, 2 * (ext_cols_.size() + 1));
         dashes(line, 4);
         std::string r = std::string("job:") + client;
+        addField(line, r.c_str());
+        finish(line);
+    }
+
+    // threaded-gc-05a: one incremental mark cycle. start_ns = t0,
+    // pause_ns = span (t0 -> handoff wall), nursery_pause_ns = span in minors,
+    // stack_walk_ns = mark units; reason column = "cycle:<finish>".
+    void writeCycle(uint64_t seq, uint64_t t0_ns, uint64_t span_ns, uint32_t span_minors,
+                    uint64_t units, const char* finish_reason) {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!open(nullptr, 0)) return;
+        std::string line;
+        addField(line, "cycle"); addNum(line, tid()); addNum(line, seq);
+        addNum(line, t0_ns); addNum(line, span_ns);
+        addNum(line, span_minors); addNum(line, units);
+        dashes(line, kMinorNumericCols - 4);
+        dashes(line, 2 * (ext_cols_.size() + 1));
+        dashes(line, 4);
+        std::string r = std::string("cycle:") + finish_reason;
         addField(line, r.c_str());
         finish(line);
     }
@@ -2607,6 +2642,11 @@ void gcEventLogJob(uint64_t post_ns, uint64_t start_ns, uint64_t end_ns, uint64_
 
 void gcEventLogPause(uint64_t seq, uint64_t start_ns, uint64_t dur_ns, uint8_t kind) {
     GCEventLogImpl::instance().writePause(seq, start_ns, dur_ns, kind);
+}
+
+void gcEventLogCycle(uint64_t seq, uint64_t t0_ns, uint64_t span_ns, uint32_t span_minors,
+                     uint64_t units, const char* finish) {
+    GCEventLogImpl::instance().writeCycle(seq, t0_ns, span_ns, span_minors, units, finish);
 }
 
 void gcEventLogFlush() noexcept { GCEventLogImpl::instance().flush(); }
@@ -2723,6 +2763,42 @@ void GCStats::printLargePtrBlock() const {
                   (unsigned long long)lp.ylos_freed_minor,
                   (unsigned long long)lp.ylos_retired_major,
                   (unsigned long long)lp.ylos_reach_calls, (unsigned long long)lp.ylos_scans);
+    std::cout << buf << std::endl;
+}
+
+void GCStats::printIncrMarkBlock() const {
+    if (!im.any()) return;
+    std::cout << "\nIncremental Mark (threaded-gc-05a):" << std::endl;
+    char buf[256];
+    std::snprintf(buf, sizeof buf,
+                  "  incremental: cycles %llu, slices %llu, slice units %llu, closing units %llu (max %llu)",
+                  (unsigned long long)im.cycles, (unsigned long long)im.slices,
+                  (unsigned long long)im.slice_units, (unsigned long long)im.closing_units,
+                  (unsigned long long)im.closing_units_max);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  finishes: schedule %llu, pressure %llu, join %llu",
+                  (unsigned long long)im.finish_schedule, (unsigned long long)im.finish_pressure,
+                  (unsigned long long)im.finish_join);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  black %.2f MB, traced live %.2f MB, deferred frees %llu (%.2f MB)",
+                  im.black_bytes / (1024.0 * 1024.0), im.traced_live_bytes / (1024.0 * 1024.0),
+                  (unsigned long long)im.deferred_frees, im.deferred_free_bytes / (1024.0 * 1024.0));
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  t0 snapshot: survivors %llu (%.2f MB), ylos %llu",
+                  (unsigned long long)im.t0_survivors, im.t0_survivor_bytes / (1024.0 * 1024.0),
+                  (unsigned long long)im.t0_ylos);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  in-pause ms: t0 total %.3f max %.3f; slices total %.3f max %.3f; handoff total %.3f max %.3f",
+                  im.t0_ns_total / 1e6, im.t0_ns_max / 1e6, im.slice_ns_total / 1e6,
+                  im.slice_ns_max / 1e6, im.handoff_ns_total / 1e6, im.handoff_ns_max / 1e6);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  t0 of which prepare (lazy-sweep drain + bitmap clear): total %.3f max %.3f ms",
+                  im.t0_prep_ns_total / 1e6, im.t0_prep_ns_max / 1e6);
     std::cout << buf << std::endl;
 }
 

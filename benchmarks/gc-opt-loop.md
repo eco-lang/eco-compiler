@@ -2514,3 +2514,30 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | TG3 | 172.67 | -8.54 | 1924 | 7 | 19861 | 9770964 | WIN | TG2 |
 | TG4 | 172.77 | -1.96 | 1924 | 7 | 19861 | 9776948 | FLAT (kept) | TG3 |
 | TG4b | 170.70 | -3.72 | 1924 | 7 | 19862 | 9781300 | FLAT (kept) | TG4 |
+| TG5a | 170.20 | -0.80 | 1924 | 7 | 19862 | 9844144 | WIN on pause (4.83 s -> 336 ms), wall flat | TG4b |
+
+### TG5a — threaded-gc-05a incremental marking — **DEFAULT-ON T = 32: self-compile worst pause 4.83 s -> 336 ms, old-gen peak +1.6 %, wall flat, output identical**
+
+Plan `plans/threaded-gc-05a-incremental-marking.md` (as-built P§10). A major is a mark cycle
+over T + 1 minors: t0 snapshot at the trigger's minor end (roots, off-heap stores, every young
+object walked once), T paced slices at minor ends (the T-th drains), then the unchanged
+post-mark tail. Allocate-black, deferred body/YLOS frees, fixed schedule, joins. Validators
+IM1-IM9 in the validate tree. Same-session phase-timer binary `eco-optTG5aPT2`, arms by
+`ECO_HEAP_CONFIG` (equal-length paths), gf 0.70:
+
+| arm | wall (s) | max RSS (kB) | old-gen peak (MB) | minors | majors | max pause (ms) | slice p99 (ms) | out.mlir |
+|---|---|---|---|---|---|---|---|---|
+| flag off ×3 (median) | 171.0 | 9,780,000 | 8,797.7 | 1917 minor-only pauses | 7 | 4,832 | — | identical |
+| **T = 32 ×3 (median)** | **170.2** | **9,840,000** | **8,935.7** | 1686 minor-only pauses | **7** | **336** | **306** | identical |
+
+- **G7:** flag-off `eco-optTG5aoff` vs `eco-optTG4b` same session: every counter and the
+  major event log's non-timing columns identical (first pair differed only because the
+  control run alone did a registry POST).
+- **E0:** T = 0 vs flag off: every decision counter identical; mark units lower (nursery
+  objects no longer units); worst pause 5,020 -> 4,828 ms.
+- **E1 round 1** (planned pacing): max pauses 977-4,588 ms, peaks up to 14.4 GB: closing
+  slices of 28-54 M units, and allocate-black bytes in the trigger baseline delayed triggers
+  (5-6 majors). Fixed by front-loaded pacing with doubling on overrun, and by excluding black
+  bytes from the baseline (plan P§10.1).
+- **E2 (gf sweep):** the peak swings +/-30 % in BOTH arms (gf 0.65: T32 +35 %; gf 0.75: T32
+  -27 %); sweep medians 9.84 vs 9.68 GB; worst pause 234-392 ms vs 2.7-4.8 s.

@@ -369,6 +369,25 @@ void OldGenSpace::reset(const HeapConfig* new_config) {
     region_end_ = nullptr;
     gc_phase_ = GCPhase::Idle;
     marking_active = false;
+    // threaded-gc-05a: drop any running cycle.
+    cycle_state_ = CycleState::Idle;
+    snapshot_mode_ = false;
+    in_slice_ = false;
+    cycle_tail_uses_traced_live_ = false;
+    cycle_slices_ = 0;
+    cycle_k_ = 0;
+    cycle_predicted_ = 0;
+    cycle_units_ = 0;
+    prev_cycle_units_ = 0;
+    prev_cycle_occ_t0_ = 0;
+    cycle_black_bytes_ = 0;
+    baseline_black_bytes_ = 0;
+    cycle_traced_live_ = 0;
+    deferred_frees_.clear();
+#if ECO_HEAP_VALIDATE
+    cycle_alloc_log_.clear();
+    cycle_t0_blocks_.clear();
+#endif
     current_epoch = 0;
     mark_stack.clear();
     batch_release_depth_ = 0;
@@ -437,7 +456,11 @@ void OldGenSpace::initObjectHeaderWithSize(void* obj, size_t cell_bytes) {
         if (contains(obj)) {
             const BlockId block_id = blockIdFor(obj);
             if (block_id.valid()) {
-                setMarkBitInBlock(block_id, obj);
+#if ECO_HEAP_VALIDATE
+                assertCellWasWhite(block_id, obj);   // IM4
+#endif
+                if (!test_skip_allocate_black_)      // negative-control hook only
+                    setMarkBitInBlock(block_id, obj);
                 if (cell_bytes > 0) {
                     // Attribute the cell's bytes so a block that contained
                     // only mid-cycle allocations isn't seen as all-dead by
@@ -682,8 +705,13 @@ void* OldGenSpace::finalizeBitmapCell(AllocCursor& c, uint32_t k,
                                       size_t requested_size) {
     const size_t cell = c.cell_bytes;
     char* p = c.base + static_cast<size_t>(k) * cell;
+#if ECO_HEAP_VALIDATE
+    assertCellWasWhite(c.block, p);   // threaded-gc-05a IM4
+#endif
     // P§3.1: the bit is the allocation record — set on EVERY allocation.
-    bitscan::setBit(c.bits, static_cast<size_t>(k) * c.stride_bits);
+    // (threaded-gc-05a: skipped only by the allocate-black negative control.)
+    if (!test_skip_allocate_black_)
+        bitscan::setBit(c.bits, static_cast<size_t>(k) * c.stride_bits);
     Header* hdr = reinterpret_cast<Header*>(p);
     std::memset(hdr, 0, sizeof(Header));
     hdr->color = static_cast<u32>(
@@ -901,7 +929,9 @@ void OldGenSpace::classifyBlocksAfterMark() {
             meta.fully_swept = true;
             const size_t cap =
                 static_cast<size_t>(cellsIn(b)) * classToSize(b.size_class);
-            if (meta.live_bytes < cap) {
+            if (meta.live_bytes < cap && b.alloc_state != kAllocQueued) {
+                // (threaded-gc-05a: a deferred free at the handoff may have
+                // queued it already through freeUniformCell.)
                 partial_[b.size_class].push_back(id);
                 b.alloc_state = kAllocQueued;
 #if ENABLE_GC_STATS
@@ -1140,6 +1170,9 @@ void *OldGenSpace::allocate(size_t size) {
         alloc_stats_.total_oldgen_alloc_in_mutator_ns +=
             GC_STATS_TIMER_ELAPSED_NS(helper_t0);
     }
+#endif
+#if ECO_HEAP_VALIDATE
+    if (cycleActive()) noteCycleAllocation(result);   // threaded-gc-05a IM4
 #endif
 
     return result;
@@ -1948,18 +1981,8 @@ void* OldGenSpace::allocateLargeBlock(size_t size) {
  * Starts the marking phase of a major GC.
  * Pushes all roots onto the mark stack and prepares for incremental marking.
  */
-#if ENABLE_GC_STATS
-void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots,
-                            const std::unordered_set<uint64_t*> &jit_roots,
-                            Allocator &alloc, GCStats &stats) {
-#else
-void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots,
-                            const std::unordered_set<uint64_t*> &jit_roots,
-                            Allocator &alloc) {
-#endif
-    if (marking_active)
-        return;
-
+// threaded-gc-05a D1: startMark's preparation, shared with beginMarkCycle.
+void OldGenSpace::prepareMark(Allocator &alloc) {
     // Drain any in-progress lazy sweep before starting a new mark cycle.
     // The previous major GC's finishMarkAndSweep may have left gc_phase_ in
     // Sweeping (initial slice + mutator-driven slices). If we begin a new
@@ -2029,6 +2052,25 @@ void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots,
     // fast path (Step 3) keys off this counter being still zero post-mark.
     resetBufferMetaForMark();
 
+}
+
+#if ENABLE_GC_STATS
+void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots,
+                            const std::unordered_set<uint64_t*> &jit_roots,
+                            Allocator &alloc, GCStats &stats) {
+#else
+void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots,
+                            const std::unordered_set<uint64_t*> &jit_roots,
+                            Allocator &alloc) {
+#endif
+    // threaded-gc-05a: a running cycle is always finished (joined) by
+    // ThreadLocalHeap::majorGC before a STW mark starts (P§3.8).
+    assert(!cycleActive() && "startMark during an incremental mark cycle");
+    if (marking_active)
+        return;
+
+    prepareMark(alloc);
+
     // Push ALL roots onto mark stack - including nursery objects.
     // Embedded constants live entirely in the `constant` tag; filter them.
     // Routed through markHPointer so nursery objects are deduped via
@@ -2042,16 +2084,7 @@ void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots,
     // These are raw addresses, not HPointer encodings (see
     // plans/value-root-api-for-encoded-hpointers.md), so we don't decode them.
     for (uint64_t *root: jit_roots) {
-        uint64_t val = *root;
-
-        if (isConstantBits(val)) {
-            continue;  // Skip embedded constants.
-        }
-
-        void *obj = reinterpret_cast<void*>(val);
-        if (obj && alloc.isInHeap(obj)) {
-            pushMarkRoot(obj);
-        }
+        markJitRootRaw(*root, alloc);
     }
 
 #if ENABLE_GC_STATS
@@ -2059,19 +2092,23 @@ void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots,
 #endif
 }
 
+void OldGenSpace::markJitRootRaw(uint64_t val, Allocator &alloc) {
+    if (isConstantBits(val)) {
+        return;  // Skip embedded constants.
+    }
+    void *obj = reinterpret_cast<void*>(val);
+    if (obj && alloc.isInHeap(obj)) {
+        pushMarkRoot(obj);
+    }
+}
+
 /**
  * Performs incremental marking work for up to work_units objects.
  * Returns true if more work remains, false if marking is complete.
  */
-#if ENABLE_GC_STATS
-bool OldGenSpace::incrementalMark(size_t work_units, GCStats &stats) {
-#else
-bool OldGenSpace::incrementalMark(size_t work_units) {
-#endif
-    if (!marking_active || mark_stack.empty()) {
-        return false;  // No work to do.
-    }
-
+// threaded-gc-05a: the mark loop, returning the units done. Shared by
+// incrementalMark (the STW loop) and the incremental cycle's slices.
+size_t OldGenSpace::markWorkUnits(size_t work_units) {
     size_t units_done = 0;
 
     // Item 54, FIFO variant (gc_handbook/02-mark-sweep.md §2.6). A small ring
@@ -2113,8 +2150,23 @@ bool OldGenSpace::incrementalMark(size_t work_units) {
         if (markOneObject(entry.obj, entry.block)) ++units_done;
     }
 
+    return units_done;
+}
+
+#if ENABLE_GC_STATS
+bool OldGenSpace::incrementalMark(size_t work_units, GCStats &stats) {
+#else
+bool OldGenSpace::incrementalMark(size_t work_units) {
+#endif
+    if (!marking_active || mark_stack.empty()) {
+        return false;  // No work to do.
+    }
+
+    const size_t units_done = markWorkUnits(work_units);
 #if ENABLE_GC_STATS
     GC_STATS_MAJOR_INC_INCREMENTAL_MARK(stats, units_done);
+#else
+    (void)units_done;
 #endif
 
     return !mark_stack.empty();
@@ -2290,6 +2342,23 @@ void OldGenSpace::pushMarkRoot(void *obj) {
     assert(nursery_->contains(obj) == allocator_ref_->isInNursery(obj) &&
            "HEAP_053: bound nursery disagrees with tl_heap_'s nursery");
 #endif
+    if (__builtin_expect(cycle_state_ != CycleState::Idle, 0)) {
+        // threaded-gc-05a (P§3.2): in snapshot mode young targets are walked
+        // by the snapshot itself; after t0 the marker never sees one (IM3).
+        if (snapshot_mode_) {
+            if (nursery_->contains(obj)) return;
+            if (mayBeYoungLarge(obj) && isYoungLarge(obj)) return;
+        } else {
+#if ECO_HEAP_VALIDATE
+            if (nursery_->contains(obj) || isYoungLarge(obj)) {
+                std::fprintf(stderr, "[heap-validate] IM3: mark slice reached "
+                    "young object %p (tag %u)\n", obj, (unsigned)getHeader(obj)->tag);
+                std::fflush(stderr);
+                std::abort();
+            }
+#endif
+        }
+    }
     if (nursery_->contains(obj)) {
         if (nursery_visited_.insert(obj).second) {
             mark_stack.push_back(MarkStackEntry{obj, NO_BLOCK_ID});
@@ -2458,8 +2527,19 @@ void OldGenSpace::finalizeMetaAfterMark() {
     // of the major-GC end-of-mark sequence, so the garbage-fraction trigger
     // restarts from the current live set.
     post_sweep_live_bytes_ = total_live;
+    // threaded-gc-05a (P§3.6 as built, P§10): allocate-black bytes are
+    // allocation SINCE the cycle's t0. A STW major at t0 would have counted
+    // them as allocated since the major, so the trigger baseline excludes
+    // them; otherwise every cycle's promotions would enlarge the next
+    // cycle's budget. Zero for a STW major.
+    baseline_black_bytes_ = cycle_tail_uses_traced_live_ ? cycle_black_bytes_ : 0;
+    post_sweep_live_bytes_ = (total_live > baseline_black_bytes_)
+                                 ? total_live - baseline_black_bytes_ : 0;
     prev_major_live_ = major_live_;
-    major_live_ = total_live;
+    // threaded-gc-05a (P§3.6, HEAP_057): a cycle's LiveBudget reference is the
+    // bytes the marker TRACED; allocate-black bytes measure in-cycle
+    // allocation, not the live set. Equal to total_live for a STW major.
+    major_live_ = cycle_tail_uses_traced_live_ ? cycle_traced_live_ : total_live;
 }
 
 // Walks `blocks_` once and demotes any non-large uniform block whose
@@ -2555,32 +2635,49 @@ void OldGenSpace::prepareMetaForLazySweep() {
  * to completion. See plans/gc-mark-driven-live-lazy-sweep.md for the
  * design and the rationale behind each step.
  */
-#if ENABLE_GC_STATS
-void OldGenSpace::finishMarkAndSweep(GCStats &stats) {
-    while (incrementalMark(1000, stats)) {
-        // Keep marking.
-    }
+// threaded-gc-05a D1: the post-mark tail, once. Every finishMarkAndSweep
+// overload is "mark loop + runPostMarkTail"; the incremental cycle's handoff
+// (HEAP_063) runs the same tail. `stats` / `profile` may be null; with both
+// null this is exactly the former no-stats, no-profile tail.
+void OldGenSpace::runPostMarkTail(GCStats* stats, MajorGCPhaseProfile* profile) {
+    auto t_sweep_start = std::chrono::high_resolution_clock::now();
 
     finalizeMetaAfterMark();
+    // threaded-gc-05a P§3.7: bodies / YLOS cells that died during an
+    // incremental cycle are freed here, against the just-merged live_bytes and
+    // before demotion/reclaim so their bytes count as garbage. Empty otherwise.
+    processDeferredFrees();
+#if ENABLE_GC_STATS
     // Phase A of the residency snapshot: capture free-list state BEFORE
     // transitionToSweeping wipes free_lists_ / free_large_blocks_. The
     // per-block free-bytes map is keyed by BlockInfo::start so it
     // survives reclaim's swap-remove of blocks_ entries, and is consumed
     // by Phase B after reclaim + shrink.
     FreeBytesByBlockStart free_by_start;
-    gatherFreeListSnapshotInto(stats, free_by_start);
-    // Retag mostly-dead uniform blocks as mixed BEFORE transitionToSweeping.
-    // The wipe of free_lists_ then drops their stale uniform-class cells
-    // for free; lazy sweep re-emits the coalesced runs on mixed-only
-    // classes where the splitter can carve smaller cells.
-    demoteMostlyDeadUniformBlocks();
+    if (stats) gatherFreeListSnapshotInto(*stats, free_by_start);
+#else
+    (void)stats;
+#endif
+    // Retag mostly-dead uniform blocks as mixed BEFORE transitionToSweeping
+    // so lazy sweep parses them with the mixed-block walk step and the
+    // mixed any-class packer. See demoteMostlyDeadUniformBlocks for the
+    // safety argument.
+    DemotionStats demotion = demoteMostlyDeadUniformBlocks();
+    // transitionToSweeping clears free_lists_ and free_large_blocks_, which
+    // makes the per-block removeFreeCellsForBlock inside releaseBlockToAllocator
+    // a no-op. Doing it BEFORE reclaim turns reclaim from O(B*F) (B blocks
+    // released, F free-list cells) into O(B). Lazy sweep rebuilds free
+    // lists as it walks the surviving blocks. prepareMetaForLazySweep
+    // preserves mark-derived live_bytes so reclaim's check is unchanged.
     transitionToSweeping();
-    reclaimAllDeadBlocksFromMeta();
+    AllDeadReclaimStats alldead = reclaimAllDeadBlocksFromMeta();
     adjustCapacityAfterMajorGC();
+#if ENABLE_GC_STATS
     // Phase B of the residency snapshot: post-reclaim, post-shrink, so
     // the live_frac == 0 bucket reflects the truly retained dead pages
     // rather than candidates about to be released.
-    gatherResidencySnapshotFrom(stats, free_by_start);
+    if (stats) gatherResidencySnapshotFrom(*stats, free_by_start);
+#endif
     // threaded-gc-02 (P§3.3): classify blocks, retire dead bodies, queue
     // partial uniform blocks — after reclaim/shrink, before the pending count.
     if (config_->old_gen_bitmap_alloc) {
@@ -2590,12 +2687,40 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats) {
     recomputeSweepPendingBlocks();
     lazySweep(NUM_SIZE_CLASSES, config_->initial_sweep_budget);
 
+    if (profile) {
+        auto t_sweep_end = std::chrono::high_resolution_clock::now();
+        profile->sweep_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                t_sweep_end - t_sweep_start).count();
+        profile->blocks_scanned = blocks_.size();
+        profile->live_bytes_after = frag_stats_.live_bytes;
+        profile->garbage_bytes    = frag_stats_.total_free_bytes;
+        profile->alldead_blocks_released = alldead.blocks_released;
+        profile->alldead_bytes_released  = alldead.bytes_released;
+        profile->demoted_blocks  = demotion.blocks_demoted;
+        profile->demoted_bytes   = demotion.bytes_demoted;
+        profile->initial_sweep_budget_bytes = config_->initial_sweep_budget;
+        // True post-initial-slice pending count, fed by markBlockFullySwept
+        // throughout the slice.
+        profile->sweep_pending_blocks = sweep_pending_blocks_;
+    }
+
 #if ECO_HEAP_VALIDATE
     validateOldGenMetadata("finishMarkAndSweep");
 #endif
     marking_active = false;
 
-    GC_STATS_MAJOR_INC_MARK_SWEEP(stats);
+#if ENABLE_GC_STATS
+    if (stats) GC_STATS_MAJOR_INC_MARK_SWEEP(*stats);
+#endif
+}
+
+#if ENABLE_GC_STATS
+void OldGenSpace::finishMarkAndSweep(GCStats &stats) {
+    while (incrementalMark(1000, stats)) {
+        // Keep marking.
+    }
+    runPostMarkTail(&stats, nullptr);
 }
 
 void OldGenSpace::finishMarkAndSweep(GCStats &stats,
@@ -2616,96 +2741,17 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats,
     profile.mark_units_done =
         stats.total_incremental_mark_work_units - mark_units_before;
     auto t_mark_end = std::chrono::high_resolution_clock::now();
-
-    auto t_sweep_start = t_mark_end;
-
-    finalizeMetaAfterMark();
-    // Phase A of the residency snapshot: capture free-list state BEFORE
-    // transitionToSweeping wipes free_lists_ / free_large_blocks_. The
-    // per-block free-bytes map is keyed by BlockInfo::start so it
-    // survives reclaim's swap-remove of blocks_ entries, and is consumed
-    // by Phase B after reclaim + shrink.
-    FreeBytesByBlockStart free_by_start;
-    gatherFreeListSnapshotInto(stats, free_by_start);
-    // Retag mostly-dead uniform blocks as mixed BEFORE transitionToSweeping
-    // so lazy sweep parses them with the mixed-block walk step and the
-    // mixed any-class packer. See demoteMostlyDeadUniformBlocks for the
-    // safety argument.
-    DemotionStats demotion = demoteMostlyDeadUniformBlocks();
-    // transitionToSweeping clears free_lists_ and free_large_blocks_, which
-    // makes the per-block removeFreeCellsForBlock inside releaseBlockToAllocator
-    // a no-op. Doing it BEFORE reclaim turns reclaim from O(B*F) (B blocks
-    // released, F free-list cells) into O(B). Lazy sweep rebuilds free
-    // lists as it walks the surviving blocks. prepareMetaForLazySweep
-    // preserves mark-derived live_bytes so reclaim's check is unchanged.
-    transitionToSweeping();
-    AllDeadReclaimStats alldead = reclaimAllDeadBlocksFromMeta();
-    adjustCapacityAfterMajorGC();
-    // Phase B of the residency snapshot: post-reclaim, post-shrink, so
-    // the live_frac == 0 bucket reflects the truly retained dead pages
-    // rather than candidates about to be released.
-    gatherResidencySnapshotFrom(stats, free_by_start);
-    // threaded-gc-02 (P§3.3): classify blocks, retire dead bodies, queue
-    // partial uniform blocks — after reclaim/shrink, before the pending count.
-    if (config_->old_gen_bitmap_alloc) {
-        classifyBlocksAfterMark();
-        committed_at_major_ = getCommittedBytes();
-    }
-    recomputeSweepPendingBlocks();
-    lazySweep(NUM_SIZE_CLASSES, config_->initial_sweep_budget);
-
-    auto t_sweep_end = std::chrono::high_resolution_clock::now();
-
     profile.mark_ns =
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             t_mark_end - t_mark_start).count();
-    profile.sweep_ns =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            t_sweep_end - t_sweep_start).count();
-
-    profile.blocks_scanned = blocks_.size();
-    profile.live_bytes_after = frag_stats_.live_bytes;
-    profile.garbage_bytes    = frag_stats_.total_free_bytes;
-    profile.alldead_blocks_released = alldead.blocks_released;
-    profile.alldead_bytes_released  = alldead.bytes_released;
-    profile.demoted_blocks  = demotion.blocks_demoted;
-    profile.demoted_bytes   = demotion.bytes_demoted;
-    profile.initial_sweep_budget_bytes = config_->initial_sweep_budget;
-    // True post-initial-slice pending count, fed by markBlockFullySwept
-    // throughout the slice.
-    profile.sweep_pending_blocks = sweep_pending_blocks_;
-
-#if ECO_HEAP_VALIDATE
-    validateOldGenMetadata("finishMarkAndSweep");
-#endif
-    marking_active = false;
-
-    GC_STATS_MAJOR_INC_MARK_SWEEP(stats);
+    runPostMarkTail(&stats, &profile);
 }
 #else
 void OldGenSpace::finishMarkAndSweep() {
     while (incrementalMark(1000)) {
         // Keep marking.
     }
-
-    finalizeMetaAfterMark();
-    demoteMostlyDeadUniformBlocks();
-    transitionToSweeping();
-    reclaimAllDeadBlocksFromMeta();
-    adjustCapacityAfterMajorGC();
-    // threaded-gc-02 (P§3.3): classify blocks, retire dead bodies, queue
-    // partial uniform blocks — after reclaim/shrink, before the pending count.
-    if (config_->old_gen_bitmap_alloc) {
-        classifyBlocksAfterMark();
-        committed_at_major_ = getCommittedBytes();
-    }
-    recomputeSweepPendingBlocks();
-    lazySweep(NUM_SIZE_CLASSES, config_->initial_sweep_budget);
-
-#if ECO_HEAP_VALIDATE
-    validateOldGenMetadata("finishMarkAndSweep");
-#endif
-    marking_active = false;
+    runPostMarkTail(nullptr, nullptr);
 }
 
 void OldGenSpace::finishMarkAndSweep(MajorGCPhaseProfile &profile) {
@@ -2718,50 +2764,307 @@ void OldGenSpace::finishMarkAndSweep(MajorGCPhaseProfile &profile) {
         if (!more) break;
     }
     auto t_mark_end = std::chrono::high_resolution_clock::now();
-
-    finalizeMetaAfterMark();
-    DemotionStats demotion = demoteMostlyDeadUniformBlocks();
-    // transitionToSweeping clears free_lists_ and free_large_blocks_, which
-    // makes the per-block removeFreeCellsForBlock inside releaseBlockToAllocator
-    // a no-op. Doing it BEFORE reclaim turns reclaim from O(B*F) (B blocks
-    // released, F free-list cells) into O(B). Lazy sweep rebuilds free
-    // lists as it walks the surviving blocks. prepareMetaForLazySweep
-    // preserves mark-derived live_bytes so reclaim's check is unchanged.
-    transitionToSweeping();
-    AllDeadReclaimStats alldead = reclaimAllDeadBlocksFromMeta();
-    adjustCapacityAfterMajorGC();
-    // threaded-gc-02 (P§3.3): classify blocks, retire dead bodies, queue
-    // partial uniform blocks — after reclaim/shrink, before the pending count.
-    if (config_->old_gen_bitmap_alloc) {
-        classifyBlocksAfterMark();
-        committed_at_major_ = getCommittedBytes();
-    }
-    recomputeSweepPendingBlocks();
-    lazySweep(NUM_SIZE_CLASSES, config_->initial_sweep_budget);
-
-    auto t_sweep_end = std::chrono::high_resolution_clock::now();
-
     profile.mark_ns =
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             t_mark_end - t_mark_start).count();
-    profile.sweep_ns =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            t_sweep_end - t_mark_end).count();
+    runPostMarkTail(nullptr, &profile);
+}
+#endif
 
-    profile.blocks_scanned = blocks_.size();
-    profile.live_bytes_after = frag_stats_.live_bytes;
-    profile.garbage_bytes    = frag_stats_.total_free_bytes;
-    profile.alldead_blocks_released = alldead.blocks_released;
-    profile.alldead_bytes_released  = alldead.bytes_released;
-    profile.demoted_blocks  = demotion.blocks_demoted;
-    profile.demoted_bytes   = demotion.bytes_demoted;
-    profile.initial_sweep_budget_bytes = config_->initial_sweep_budget;
-    profile.sweep_pending_blocks = sweep_pending_blocks_;
+// ===========================================================================
+// threaded-gc-05a: the incremental mark cycle (HEAP_063).
+// plans/threaded-gc-05a-incremental-marking.md P§3. Driven from
+// ThreadLocalHeap (startMarkCycle / stepMarkCycle / finishMarkCycleNow).
+// ===========================================================================
+
+void OldGenSpace::beginMarkCycle(Allocator &alloc, uint32_t slices) {
+    assert(!cycleActive() && !marking_active &&
+           "beginMarkCycle: a mark is already in progress");
+    assert(config_->old_gen_bitmap_alloc && "HEAP_063 requires bitmap allocation");
+#if ENABLE_GC_STATS
+    const auto t_prep = std::chrono::steady_clock::now();
+#endif
+    prepareMark(alloc);   // sweep drain, clearForMark, cursors, meta (F4)
+#if ENABLE_GC_STATS
+    {
+        const uint64_t d = static_cast<uint64_t>(std::chrono::duration_cast<
+            std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t_prep).count());
+        alloc_stats_.im.t0_prep_ns_total += d;
+        if (d > alloc_stats_.im.t0_prep_ns_max) alloc_stats_.im.t0_prep_ns_max = d;
+    }
+#endif
+    // Every existing mid-cycle branch (allocate-black, fully_swept on new
+    // blocks) keys off gc_phase_ != Idle (F10).
+    gc_phase_ = GCPhase::Marking;
+    cycle_state_ = CycleState::Marking;
+    cycle_slices_ = slices;
+    cycle_k_ = 0;
+    cycle_units_ = 0;
+    cycle_traced_live_ = 0;
+    cycle_tail_uses_traced_live_ = true;
+    // P§3.5 (as built, P§10): the previous cycle's units scaled by the
+    // larger of the growth allowance and the occupancy growth since the
+    // previous t0 (the live set grows with the heap), or (first cycle)
+    // occupancy / 48 B, a mean object. All deterministic (GC_DET_001).
+    const size_t occ = allocated_bytes;
+    if (prev_cycle_units_ > 0) {
+        double scale = config_->incremental_mark_predict_growth;
+        if (prev_cycle_occ_t0_ > 0) {
+            scale = std::max(scale, static_cast<double>(occ) /
+                                    static_cast<double>(prev_cycle_occ_t0_));
+        }
+        cycle_predicted_ = static_cast<uint64_t>(std::ceil(
+            static_cast<double>(prev_cycle_units_) * scale));
+    } else {
+        cycle_predicted_ = occ / 48;
+    }
+    prev_cycle_occ_t0_ = occ;
+    deferred_frees_.clear();
+#if ECO_HEAP_VALIDATE
+    cycle_alloc_log_.clear();
+    cycle_t0_blocks_ = t0Blocks();
+#endif
+}
+
+void OldGenSpace::snapshotYoungLarge() {
+    assert(snapshot_mode_ && "snapshotYoungLarge outside the t0 snapshot");
+    forEachYoungLarge([&](void* obj, LargeBodyMeta&) {
+        const BlockId id = contains(obj) ? blockIdFor(obj) : NO_BLOCK_ID;
+        if (!id.valid()) return;
+        // The cell itself: marked and attributed exactly as markOneObject
+        // would for an old-gen object (HEAP_051).
+        if (!testAndSetMarkBitInBlock(id, obj)) {
+            const BlockInfo& blk = blocks_.info(id);
+            const size_t step = (blk.size_class < NUM_SIZE_CLASSES)
+                ? OldGenSpaceTestAccess::classToSize(blk.size_class)
+                : getObjectSize(obj);
+            mark_live_.add(id, step);
+        }
+        // Its children: old ones greyed, young ones dropped (walked anyway).
+        markChildren(obj);
+#if ENABLE_GC_STATS
+        alloc_stats_.im.t0_ylos++;
+#endif
+    });
+}
+
+size_t OldGenSpace::drainCycleMark() {
+    size_t done = 0;
+    while (!mark_stack.empty()) done += markWorkUnits(1000);
+    cycle_units_ += done;
+    return done;
+}
+
+size_t OldGenSpace::runCycleSlice() {
+    assert(cycle_state_ == CycleState::Marking);
+    assert(cycle_k_ >= 1 && cycle_k_ <= cycle_slices_);
+    in_slice_ = true;
+    size_t done;
+    if (cycle_k_ >= cycle_slices_) {
+        // The closing slice (k == T): drain everything that is left.
+        done = drainCycleMark();
+        cycle_state_ = CycleState::HandoffDue;
+#if ENABLE_GC_STATS
+        alloc_stats_.im.closing_units += done;
+        if (done > alloc_stats_.im.closing_units_max) alloc_stats_.im.closing_units_max = done;
+#endif
+    } else {
+        // P§3.5 as built (P§10): FRONT-LOADED pacing. The predicted work is
+        // spread over the first H = ceil(T/2) slices, leaving the rest as a
+        // buffer; on an overrun (predicted units done, stack not empty) the
+        // prediction doubles and the remainder is spread over the slices
+        // left before the closing one. An under-prediction therefore lands
+        // on the buffer slices instead of the closing slice (E1: the
+        // spread-over-T form left up to 42 M units = ~2 s to the closing
+        // slice). Deterministic: a function of units done (GC_DET_001).
+        if (!mark_stack.empty() && cycle_units_ >= cycle_predicted_) {
+            cycle_predicted_ = std::max<uint64_t>(cycle_predicted_, cycle_units_) * 2;
+        }
+        const uint64_t remaining =
+            cycle_predicted_ > cycle_units_ ? cycle_predicted_ - cycle_units_ : 0;
+        const uint64_t half = (static_cast<uint64_t>(cycle_slices_) + 1) / 2;
+        const uint64_t target = (cycle_k_ <= half) ? half : cycle_slices_ - 1;
+        const uint64_t slices_left = std::max<uint64_t>(1, target - cycle_k_ + 1);
+        const uint64_t b = std::max<uint64_t>(
+            config_->incremental_mark_min_slice_units,
+            (remaining + slices_left - 1) / slices_left);
+        done = mark_stack.empty() ? 0 : markWorkUnits(static_cast<size_t>(b));
+        cycle_units_ += done;
+    }
+    in_slice_ = false;
+#if ENABLE_GC_STATS
+    alloc_stats_.im.slices++;
+    alloc_stats_.im.slice_units += done;
+#endif
+    return done;
+}
+
+bool OldGenSpace::cyclePressureFinishDue() const {
+    if (allocator_ == nullptr) return false;
+    const size_t cap = allocator_->getOldGenMaxBytes();
+    if (cap == 0) return false;
+    return static_cast<double>(allocator_->getOldGenCommittedBytes()) /
+               static_cast<double>(cap) >=
+           config_->incremental_mark_finish_fraction;
+}
+
+void OldGenSpace::handoffMarkCycle(GCStats* stats, MajorGCPhaseProfile* profile) {
+    assert(cycleActive() && "handoff without a cycle");
+    assert(mark_stack.empty() && "IM9: handoff with a non-empty mark stack");
+    assert(!in_slice_);
+    // P§3.6 step 2: fold the cursors' pending bytes (post-t0 virgin blocks)
+    // into live_bytes and detach every block, as startMark does, BEFORE the
+    // tail reads live_bytes (trap 2).
+    resetAllocCursors();
+    cycle_traced_live_ = mark_live_.sum(blocks_);
+    // Before the merge, BufferMetadata::live_bytes holds exactly the bytes
+    // allocated black during the cycle (reset at t0, HEAP_051).
+    cycle_black_bytes_ = 0;
+    for (size_t pos = 0; pos < blocks_.size(); ++pos)
+        cycle_black_bytes_ += blocks_.meta(blocks_.idAt(pos)).live_bytes;
+#if ENABLE_GC_STATS
+    alloc_stats_.im.black_bytes += cycle_black_bytes_;
+    alloc_stats_.im.traced_live_bytes += cycle_traced_live_;
+#endif
+#if ECO_HEAP_VALIDATE
+    // IM4 (final half): every in-cycle allocation is still marked.
+    assertAllMarked(cycle_alloc_log_, "IM4 in-cycle allocation");
+    cycle_alloc_log_.clear();
+    // IM6 equality: the mark stack is empty, so every set bit is attributed.
+    validateCycleUniformLive("handoff", /*exact=*/true);
+    // IM5: no block that existed at t0 changed identity or was released.
+    checkT0BlocksUnchanged();
+    cycle_t0_blocks_.clear();
+    // IM8: every deferred free is a distinct, still-allocated cell.
+    {
+        std::vector<void*> cells;
+        cells.reserve(deferred_frees_.size());
+        for (const LargeBodyMeta& m : deferred_frees_) cells.push_back(m.body_base);
+        assertAllMarked(cells, "IM8 deferred free");
+        std::sort(cells.begin(), cells.end());
+        if (std::adjacent_find(cells.begin(), cells.end()) != cells.end()) {
+            std::fprintf(stderr, "[heap-validate] IM8: a cell was deferred twice\n");
+            std::fflush(stderr);
+            std::abort();
+        }
+    }
+#endif
+    // P§3.6 step 5: the state today's STW major has after its mark loop.
+    gc_phase_ = GCPhase::Idle;
+    cycle_state_ = CycleState::Idle;
+    runPostMarkTail(stats, profile);
+    cycle_tail_uses_traced_live_ = false;
+    prev_cycle_units_ = cycle_units_;
+#if ENABLE_GC_STATS
+    alloc_stats_.im.cycles++;
+#endif
+}
+
+void OldGenSpace::processDeferredFrees() {
+    if (deferred_frees_.empty()) return;
+    for (LargeBodyMeta& m : deferred_frees_) {
+        // The index key was erased at deferral; freeLargeBodyCell's own erase
+        // is a no-op (nothing can have re-registered the still-allocated cell).
+        freeLargeBodyCell(m);
+    }
+    deferred_frees_.clear();
+}
 
 #if ECO_HEAP_VALIDATE
-    validateOldGenMetadata("finishMarkAndSweep");
-#endif
-    marking_active = false;
+[[noreturn]] static void cycleValidateFail(const char* what, const void* p) {
+    std::fprintf(stderr, "[heap-validate] %s: %p\n", what, p);
+    std::fflush(stderr);
+    std::abort();
+}
+
+void OldGenSpace::assertCellWasWhite(BlockId id, const void* obj) const {
+    if (!cycleActive() || !id.valid()) return;
+    if (blocks_.info(id).is_large) {
+        if (blocks_.largeMark(id) != 0)
+            cycleValidateFail("IM4: in-cycle allocation into a marked large block", obj);
+        return;
+    }
+    if (isMarkedInBlock(id, obj))
+        cycleValidateFail("IM4: in-cycle allocation into a MARKED cell (live object)", obj);
+}
+
+void OldGenSpace::noteCycleAllocation(void* obj) {
+    if (!cycleActive() || obj == nullptr) return;
+    const BlockId id = contains(obj) ? blockIdFor(obj) : NO_BLOCK_ID;
+    if (!id.valid()) cycleValidateFail("IM4: in-cycle allocation outside any block", obj);
+    const bool marked = blocks_.info(id).is_large ? blocks_.largeMark(id) != 0
+                                                  : isMarkedInBlock(id, obj);
+    if (!marked) cycleValidateFail("IM4: in-cycle allocation NOT allocated black", obj);
+    cycle_alloc_log_.push_back(obj);
+}
+
+void OldGenSpace::assertAllMarked(const std::vector<void*>& objs, const char* what) const {
+    for (void* obj : objs) {
+        const BlockId id = contains(obj) ? blockIdFor(obj) : NO_BLOCK_ID;
+        if (!id.valid()) {
+            std::fprintf(stderr, "[heap-validate] %s: %p is in no old-gen block\n", what, obj);
+            std::fflush(stderr);
+            std::abort();
+        }
+        const bool marked = blocks_.info(id).is_large ? blocks_.largeMark(id) != 0
+                                                      : isMarkedInBlock(id, obj);
+        if (!marked) {
+            std::fprintf(stderr, "[heap-validate] %s: %p (tag %u, size %u) is NOT marked\n",
+                         what, obj, (unsigned)getHeader(obj)->tag,
+                         (unsigned)getHeader(obj)->size);
+            std::fflush(stderr);
+            std::abort();
+        }
+    }
+}
+
+std::vector<OldGenSpace::T0Block> OldGenSpace::t0Blocks() const {
+    std::vector<T0Block> v;
+    v.reserve(blocks_.size());
+    for (size_t pos = 0; pos < blocks_.size(); ++pos) {
+        const BlockId id = blocks_.idAt(pos);
+        const BlockInfo& b = blocks_.info(id);
+        v.push_back(T0Block{id.v, b.start, b.size_class, b.is_large});
+    }
+    return v;
+}
+
+void OldGenSpace::checkT0BlocksUnchanged() const {
+    for (const T0Block& t : cycle_t0_blocks_) {
+        const BlockId id{t.id};
+        if (!blocks_.isLive(id)) cycleValidateFail("IM5: a t0 block was released mid-cycle", t.start);
+        const BlockInfo& b = blocks_.info(id);
+        if (b.start != t.start || b.size_class != t.size_class || b.is_large != t.is_large)
+            cycleValidateFail("IM5: a t0 block changed start/size_class/is_large mid-cycle", t.start);
+    }
+}
+
+void OldGenSpace::validateCycleUniformLive(const char* where, bool exact) const {
+    if (!cycleActive() && !exact) return;
+    for (size_t pos = 0; pos < blocks_.size(); ++pos) {
+        const BlockId id = blocks_.idAt(pos);
+        const BlockInfo& b = blocks_.info(id);
+        if (b.is_large || b.size_class >= num_size_classes_) continue;
+        const uint8_t* bits = mark_.slot(id);
+        const uint32_t n = cellsIn(b);
+        const uint32_t m = static_cast<uint32_t>(classToSize(b.size_class) / 8);
+        const uint64_t pc = bitscan::popcountCellStarts(bits, m, n);
+        uint64_t pend = 0;
+        const AllocCursor& c = cursor_[b.size_class];
+        if (b.alloc_state == kAllocCurrent && c.block == id) pend = c.pending_live;
+        const uint64_t have = blocks_.meta(id).live_bytes + pend + mark_live_.peek(id);
+        const uint64_t bitsb = pc * classToSize(b.size_class);
+        if (exact ? bitsb != have : bitsb < have) {
+            std::fprintf(stderr, "[heap-validate] %s: IM6 block id %u class %zu: popcount "
+                "%llu x %zu = %llu %s live %llu (meta %zu + pending %llu + acc %llu)\n",
+                where, id.v, (size_t)b.size_class, (unsigned long long)pc,
+                classToSize(b.size_class), (unsigned long long)bitsb,
+                exact ? "!=" : "<", (unsigned long long)have, blocks_.meta(id).live_bytes,
+                (unsigned long long)pend, (unsigned long long)mark_live_.peek(id));
+            std::fflush(stderr);
+            std::abort();
+        }
+    }
 }
 #endif
 
@@ -3405,6 +3708,9 @@ void OldGenSpace::onSweepComplete() {
 
 OldGenSpace::MajorGCTriggerReason
 OldGenSpace::evaluateMajorGCTrigger() const {
+    // threaded-gc-05a (HEAP_063): no trigger fires while a cycle runs; the
+    // cycle's own schedule, pressure finish and joins govern it (P§3.8).
+    if (cycle_state_ != CycleState::Idle) return MajorGCTriggerReason::None;
     // With lazy sweep replacing STW sweep, "earlier" major GC triggers are
     // cheap: the post-mark pause is bounded by mark + initial sweep slice;
     // remaining sweep work is amortized across mutator allocations. The
@@ -3863,6 +4169,7 @@ void OldGenSpace::fixupCursorsAfterOrderMove(size_t old_pos, size_t new_pos) {
 }
 
 void OldGenSpace::releaseBlockToAllocator(BlockId block_index) {
+    assert(!cycleActive() && "IM5: release/compaction during an incremental mark cycle");
     if (!block_index.valid()) return;
     if (config_->old_gen_bitmap_alloc) detachFromAllocation(block_index);
 
@@ -4002,6 +4309,7 @@ void OldGenSpace::releaseBlockToAllocator(BlockId block_index) {
 }
 
 void OldGenSpace::releaseUnassignedBlockToAllocator(size_t unassigned_index) {
+    assert(!cycleActive() && "IM5: release/compaction during an incremental mark cycle");
     if (unassigned_index >= unassigned_blocks_.size()) return;
 
     // Mirror releaseBlockToAllocator: keep the heap-base extent permanently
@@ -4255,6 +4563,10 @@ void OldGenSpace::computeFragmentationStats() {
     // allocates from this point on is "post-major" allocation, even when it
     // lands on a free-list cell that was just reclaimed.
     post_sweep_live_bytes_ = frag_stats_.live_bytes;
+    // threaded-gc-05a: the last cycle's allocate-black bytes stay counted as
+    // allocation since the major until the next one (see finalizeMetaAfterMark).
+    post_sweep_live_bytes_ = (post_sweep_live_bytes_ > baseline_black_bytes_)
+                                 ? post_sweep_live_bytes_ - baseline_black_bytes_ : 0;
 }
 
 /**
@@ -4276,6 +4588,7 @@ bool OldGenSpace::shouldCompact() const {
 // ============================================================================
 
 void OldGenSpace::scheduleCompaction() {
+    assert(!cycleActive() && "IM5: release/compaction during an incremental mark cycle");
     syncCursorLiveBytes();   // threaded-gc-02: readers of live_bytes
     if (compact_phase_ != CompactionPhase::Idle) return;
     // Same gate as shouldCompact: compaction must wait for lazy sweep to
@@ -4348,6 +4661,7 @@ std::vector<BlockId> OldGenSpace::selectEvacuationSet(size_t max_live_to_move) {
 }
 
 void OldGenSpace::incrementalCompactionSlice(size_t work_budget) {
+    assert(!cycleActive() && "IM5: release/compaction during an incremental mark cycle");
     if (compact_phase_ == CompactionPhase::Idle) return;
 
     size_t work_done = 0;
@@ -5142,7 +5456,19 @@ size_t OldGenSpace::sweepNurseryLargeBodies(bool minor_color) {
         const size_t freed_bytes = m.cell_size;
         if (m.kind == 1) alloc_stats_.lp.ylos_freed_minor++;
 #endif
-        freeLargeBodyCell(m);
+        if (__builtin_expect(cycle_state_ != CycleState::Idle, 0)) {
+            // threaded-gc-05a P§3.7 (M5): the cell may be marked or greyed
+            // under the running cycle; unlink it now, free it at the handoff.
+            deferred_frees_.push_back(m);
+            large_body_index_.erase(m.body_base);
+            m.body_base = nullptr;
+#if ENABLE_GC_STATS
+            alloc_stats_.im.deferred_frees++;
+            alloc_stats_.im.deferred_free_bytes += m.cell_size;
+#endif
+        } else {
+            freeLargeBodyCell(m);
+        }
         free_large_body_ids_.push_back(id);
         nursery_owned_bodies_[k] = nursery_owned_bodies_.back();
         nursery_owned_bodies_.pop_back();
@@ -5160,6 +5486,8 @@ size_t OldGenSpace::sweepNurseryLargeBodies(bool minor_color) {
 
 void OldGenSpace::freeLargeBodyCell(LargeBodyMeta& m) {
     if (m.body_base == nullptr) return;
+    // IM5 (HEAP_063): nothing that existed at t0 is freed under a cycle.
+    assert(!cycleActive() && "freeLargeBodyCell during an incremental mark cycle");
     // Authoritative ownership transition for split-header bodies (HEAP_026,
     // Resolved Decisions §3): erasing here is what retires the LargeBodyId.
     // Major sweep's defensive `large_body_index_.erase` calls (in lazySweep

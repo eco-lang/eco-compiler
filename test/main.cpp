@@ -27,6 +27,7 @@
 #include "allocator/GCHelperTest.hpp"
 #include "allocator/P1CensusTest.hpp"
 #include "allocator/LargePtrPlacementTest.hpp"
+#include "allocator/IncrementalMarkTest.hpp"
 #include "allocator/OldGenBitmapAllocTest.hpp"
 #include "allocator/OldGenSweepOnDemandTest.hpp"
 #include "allocator/OldGenSweepBudgetTest.hpp"
@@ -677,6 +678,31 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testYlosCensusPromotedInPlaceRecorded);
     oldGenTests.add(testYlosCensusSurvivorChecked);
     oldGenTests.add(testE1LargeArrayPlacementBench);
+    oldGenTests.add(testIncrConfigJson);
+    oldGenTests.add(testPauseKindsCounted);
+    oldGenTests.add(testIncrT0MatchesStwLiveSet);
+    oldGenTests.add(testIncrT0YlosCellMarked);
+    oldGenTests.add(testIncrT0BuilderChildrenSurvive);
+    oldGenTests.add(testIncrScheduleFixed);
+    oldGenTests.add(testIncrOldReachableOnlyFromSurvivor);
+    oldGenTests.add(testIncrRootOverwrittenAfterT0);
+    oldGenTests.add(testIncrExternalStoreOverwrittenAfterT0);
+    oldGenTests.add(testIncrAllocateBlackEveryEntryPoint);
+    oldGenTests.add(testIncrNoPreT0UniformReuse);
+    oldGenTests.add(testIncrTriggersSuppressed);
+    oldGenTests.add(testIncrLiveBudgetUsesTracedLive);
+    oldGenTests.add(testIncrBuilderFilledDuringCycle);
+    oldGenTests.add(testIncrDeferredBodyFree);
+    oldGenTests.add(testIncrDeferredYlosFree);
+    oldGenTests.add(testIncrYlosPromotedInPlaceDuringCycle);
+    oldGenTests.add(testIncrNoReleaseDuringCycle);
+    oldGenTests.add(testIncrJoinOnExplicitMajor);
+    oldGenTests.add(testIncrJoinOnYlosAllocFailure);
+    oldGenTests.add(testIncrPressureFinish);
+    oldGenTests.add(testIncrResetMidCycle);
+    oldGenTests.add(testIncrNegativeSkipYoungWalk);
+    oldGenTests.add(testIncrNegativeSkipExternal);
+    oldGenTests.add(testIncrNegativeSkipAllocateBlack);
     oldGenTests.add(testHelperConfigValidation);
     oldGenTests.add(testHelperPoolSyncRunsInline);
     oldGenTests.add(testHelperPoolConcurrentRunsOnWorker);

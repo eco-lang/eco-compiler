@@ -34,6 +34,9 @@ HeapConfig bitmapConfig(bool on) {
     cfg.large_object_threshold  = 8 * 1024;
     cfg.decommit_on_oldgen_release = false;
     cfg.old_gen_bitmap_alloc    = on;
+    // threaded-gc-05a: incremental marking requires bitmap allocation; the
+    // legacy arm runs the STW major.
+    if (!on) cfg.incremental_mark = false;
     return cfg;
 }
 

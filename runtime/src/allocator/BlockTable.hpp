@@ -395,6 +395,12 @@ public:
         bytes_[id.v] = 0;
         return v;
     }
+    // Sum over every live id (threaded-gc-05a: the cycle's traced live).
+    uint64_t sum(const BlockTable& t) const {
+        uint64_t s = 0;
+        for (size_t pos = 0; pos < t.size(); ++pos) s += bytes_[t.idAt(pos).v];
+        return s;
+    }
     // meta(id).live_bytes += take(id) for every live id, in order.
     void mergeInto(BlockTable& t) {
         for (size_t pos = 0; pos < t.size(); ++pos) {

@@ -130,7 +130,8 @@ struct MinorGCRecord {
 struct PauseEvent {
     uint64_t start_ns;
     uint64_t dur_ns;
-    uint8_t  kind;   // 0 = minor only, 1 = minor + nested major, 2 = major only
+    uint8_t  kind;   // 0 = minor only, 1 = minor + nested major, 2 = major only,
+                     // 3 = minor + t0, 4 = minor + slice, 5 = minor + handoff (05a)
 };
 
 // Run totals for the records above. Kept as one struct so combine()/reset()
@@ -207,6 +208,41 @@ struct LargePtrStats {
     }
 };
 
+// threaded-gc-05a (plans/threaded-gc-05a-incremental-marking.md P§3.12): the
+// incremental mark cycle (HEAP_063). Per-heap (OldGenSpace's alloc_stats_);
+// combine() sums counters and maxes the per-pause maxima.
+struct IncrMarkStats {
+    uint64_t cycles = 0, slices = 0, slice_units = 0, closing_units = 0;
+    uint64_t closing_units_max = 0;
+    uint64_t finish_schedule = 0, finish_pressure = 0, finish_join = 0;
+    uint64_t black_bytes = 0, traced_live_bytes = 0;
+    uint64_t deferred_frees = 0, deferred_free_bytes = 0;
+    uint64_t t0_survivors = 0, t0_survivor_bytes = 0, t0_ylos = 0;
+    uint64_t t0_ns_total = 0, t0_ns_max = 0;
+    uint64_t t0_prep_ns_total = 0, t0_prep_ns_max = 0;   // of which: sweep drain + clear
+    uint64_t slice_ns_total = 0, slice_ns_max = 0;
+    uint64_t handoff_ns_total = 0, handoff_ns_max = 0;
+    bool any() const { return cycles != 0 || slices != 0; }
+    void combine(const IncrMarkStats& o) {
+        cycles += o.cycles; slices += o.slices; slice_units += o.slice_units;
+        closing_units += o.closing_units;
+        if (o.closing_units_max > closing_units_max) closing_units_max = o.closing_units_max;
+        finish_schedule += o.finish_schedule; finish_pressure += o.finish_pressure;
+        finish_join += o.finish_join;
+        black_bytes += o.black_bytes; traced_live_bytes += o.traced_live_bytes;
+        deferred_frees += o.deferred_frees; deferred_free_bytes += o.deferred_free_bytes;
+        t0_survivors += o.t0_survivors; t0_survivor_bytes += o.t0_survivor_bytes;
+        t0_ylos += o.t0_ylos;
+        t0_ns_total += o.t0_ns_total; slice_ns_total += o.slice_ns_total;
+        t0_prep_ns_total += o.t0_prep_ns_total;
+        if (o.t0_prep_ns_max > t0_prep_ns_max) t0_prep_ns_max = o.t0_prep_ns_max;
+        handoff_ns_total += o.handoff_ns_total;
+        if (o.t0_ns_max > t0_ns_max) t0_ns_max = o.t0_ns_max;
+        if (o.slice_ns_max > slice_ns_max) slice_ns_max = o.slice_ns_max;
+        if (o.handoff_ns_max > handoff_ns_max) handoff_ns_max = o.handoff_ns_max;
+    }
+};
+
 // threaded-gc-03 (plans/threaded-gc-03-helper-threads.md P§3.9): where old-gen
 // pages come from and go to. Allocator-global (filled by getCombinedStats from
 // the live allocator), so combine() merges by max like the old-gen walls.
@@ -279,7 +315,9 @@ struct GCPhaseTotals {
     uint64_t pause_count = 0;
     uint64_t pause_total_ns = 0;
     uint64_t pause_max_ns = 0;
-    uint64_t pause_count_by_kind[3] = {0, 0, 0};
+    // 0 minor only, 1 minor + major, 2 major only; threaded-gc-05a: 3 minor +
+    // t0 snapshot, 4 minor + mark slice, 5 minor + cycle handoff.
+    uint64_t pause_count_by_kind[6] = {0, 0, 0, 0, 0, 0};
     uint64_t pause_log2_hist[PAUSE_LOG2_BUCKETS] = {0};
 
     // threaded-gc-03: helper stalls OUTSIDE a pause (a stall inside a pause is
@@ -315,6 +353,9 @@ void gcEventLogMinor(const MinorGCRecord& r, uint64_t seq, const char* const* na
 void gcEventLogMajor(uint64_t seq, uint64_t start_ns, uint64_t total_ns, uint64_t mark_ns,
                      uint64_t sweep_ns, uint64_t roots_ns, const char* reason);
 void gcEventLogPause(uint64_t seq, uint64_t start_ns, uint64_t dur_ns, uint8_t kind);
+// threaded-gc-05a: one row per incremental mark cycle, at its handoff.
+void gcEventLogCycle(uint64_t seq, uint64_t t0_ns, uint64_t span_ns, uint32_t span_minors,
+                     uint64_t units, const char* finish);
 // threaded-gc-03 rows: a helper stall (start, dur, client name) and a finished
 // helper job (post/start/end process-relative ns, bytes, client name).
 void gcEventLogStall(uint64_t start_ns, uint64_t dur_ns, const char* client, bool in_pause);
@@ -892,7 +933,9 @@ public:
     HelperStatsSnapshot helper;
     // threaded-gc-04b: large allocations by placement + YLOS life cycle.
     LargePtrStats lp;
+    IncrMarkStats im;   // threaded-gc-05a
     void printLargePtrBlock() const;
+    void printIncrMarkBlock() const;
     void printPageSupplyBlock() const;
     void printHelperBlock() const;
 

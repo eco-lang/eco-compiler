@@ -20,6 +20,11 @@ and prints:
       rows carry start_ns = post time, pause_ns = queueing delay,
       nursery_pause_ns = run time, stack_walk_ns = bytes, major_reason
       "job:<client>". Unknown row kinds are ignored.
+  (h) threaded-gc-05a incremental mark: pause percentiles per kind
+      (minor, minor+major, minor+t0, minor+slice, minor+handoff) and one
+      `cycle` row per mark cycle: start_ns = t0, pause_ns = span (wall t0 ->
+      handoff), nursery_pause_ns = span in minors, stack_walk_ns = mark units,
+      major_reason "cycle:<schedule|pressure|join>".
 
 Usage: gc-event-log-summary.py <log.tsv> [--json]
 """
@@ -200,6 +205,23 @@ def summarise(path):
         d["queue_ns"] += q
         d["queue_max_ns"] = max(d["queue_max_ns"], q)
     out["jobs"] = per_client
+    # (h) incremental mark (threaded-gc-05a): per-kind pauses and cycles
+    by_kind = {}
+    for r in pauses:
+        by_kind.setdefault(r.get("major_reason", "?"), []).append(num(r["pause_ns"]) or 0)
+    out["pause_kinds"] = {k: dict(count=len(v), **pct_block(v)) for k, v in by_kind.items()}
+    cycles = [r for r in rows if r["kind"] == "cycle"]
+    finishes = {}
+    for r in cycles:
+        f = r.get("major_reason", "cycle:?")[6:]
+        finishes[f] = finishes.get(f, 0) + 1
+    out["cycles"] = {
+        "count": len(cycles),
+        "span_minors": pct_block([num(r["nursery_pause_ns"]) or 0 for r in cycles]),
+        "span_ns": pct_block([num(r["pause_ns"]) or 0 for r in cycles]),
+        "units": pct_block([num(r["stack_walk_ns"]) or 0 for r in cycles]),
+        "finishes": finishes,
+    }
     out["warnings"] = warnings
     return out
 
@@ -255,6 +277,18 @@ def print_text(s):
             print("  %-9s jobs %6d  %10.1f MB  run %s (max %s)  queue %s (max %s)" %
                   (c, d["count"], d["bytes"] / 2**20, ms(d["run_ns"]), ms(d["run_max_ns"]),
                    ms(d["queue_ns"]), ms(d["queue_max_ns"])))
+    if any(k.startswith("minor+") and k != "minor+major" for k in s["pause_kinds"]) or \
+            s["cycles"]["count"]:
+        print("\n(h) incremental mark (threaded-gc-05a):")
+        for k, b in sorted(s["pause_kinds"].items()):
+            print("  %-14s %6d pauses  p50 %s  p99 %s  max %s" %
+                  (k, b["count"], ms(b["p50"]), ms(b["p99"]), ms(b["max"])))
+        c = s["cycles"]
+        print("  cycles %d, finishes %s; span minors p50 %d max %d; span p50 %s max %s; "
+              "units p50 %d max %d" %
+              (c["count"], c["finishes"], c["span_minors"]["p50"], c["span_minors"]["max"],
+               ms(c["span_ns"]["p50"]), ms(c["span_ns"]["max"]), c["units"]["p50"],
+               c["units"]["max"]))
     for w in s["warnings"]:
         print("WARNING: " + w)
 

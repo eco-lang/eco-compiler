@@ -957,6 +957,85 @@ private:
     void finishMarkAndSweep(MajorGCPhaseProfile &profile);
 #endif
 
+    // ========== threaded-gc-05a: the incremental mark cycle (HEAP_063) ==========
+    // plans/threaded-gc-05a-incremental-marking.md. Driven by ThreadLocalHeap
+    // (it owns the roots); single-threaded, deterministic (GC_DET_001).
+public:
+    enum class CycleState : uint8_t { Idle, Marking, HandoffDue };
+    enum class CycleFinish : uint8_t { Schedule, Pressure, Join };
+    bool cycleActive() const { return cycle_state_ != CycleState::Idle; }
+    CycleState cycleState() const { return cycle_state_; }
+private:
+    // t0: startMark's preparation (sweep drain, clearForMark, cursors, meta),
+    // then gc_phase_ = Marking and the cycle bookkeeping for `slices` = T.
+    void beginMarkCycle(Allocator& alloc, uint32_t slices);
+    // Shared by startMark and beginMarkCycle.
+    void prepareMark(Allocator& alloc);
+    // Snapshot mode (P§3.2): pushMarkRoot drops nursery and YLOS targets.
+    void setSnapshotMode(bool on) { snapshot_mode_ = on; }
+    // One JIT root word (startMark's JIT loop body).
+    void markJitRootRaw(uint64_t val, Allocator& alloc);
+    // t0: mark every YLOS cell and grey its old-gen children.
+    void snapshotYoungLarge();
+    // Mark work: processes up to `work_units` objects (ring drained) and
+    // returns the old-gen units done.
+    size_t markWorkUnits(size_t work_units);
+    // One cycle step at minor end k (1 <= k <= T): a paced slice, or the
+    // closing drain at k == T. Returns units done.
+    size_t runCycleSlice();
+    // Drains the mark stack completely (closing slice / emergency / join).
+    size_t drainCycleMark();
+    // The handoff (P§3.6): runs the post-mark tail and returns to Idle.
+    void handoffMarkCycle(GCStats* stats, MajorGCPhaseProfile* profile);
+    // True when old-gen committed / cap >= incremental_mark_finish_fraction.
+    bool cyclePressureFinishDue() const;
+    uint32_t cycleSlicesPlanned() const { return cycle_slices_; }
+    uint32_t cycleMinorsSinceT0() const { return cycle_k_; }
+    void noteCycleMinorEnd() { ++cycle_k_; }
+    uint64_t cycleUnitsDone() const { return cycle_units_; }
+    uint64_t cyclePredictedUnits() const { return cycle_predicted_; }
+    // The post-mark tail, shared by every finishMarkAndSweep overload and the
+    // handoff. stats/profile may be null.
+    void runPostMarkTail(GCStats* stats, MajorGCPhaseProfile* profile);
+    // Handoff step 6: frees deferred during the cycle (P§3.7).
+    void processDeferredFrees();
+#if ECO_HEAP_VALIDATE
+    // IM4: the target cell's bit is clear before an in-cycle allocation sets it.
+    void assertCellWasWhite(BlockId id, const void* obj) const;
+    // IM4: logs an in-cycle allocation and asserts its bit is set.
+    void noteCycleAllocation(void* obj);
+    // IM6: uniform-block consistency during a cycle (equality when `exact`).
+    void validateCycleUniformLive(const char* where, bool exact) const;
+    // IM5: every t0 block (id, start, size_class, is_large), re-checked at
+    // the handoff.
+    struct T0Block { uint32_t id; char* start; size_t size_class; bool is_large; };
+    std::vector<T0Block> t0Blocks() const;
+    void checkT0BlocksUnchanged() const;
+    std::vector<T0Block> cycle_t0_blocks_;
+    // IM1/IM2 hooks, run by ThreadLocalHeap with an independent tracer.
+    void assertAllMarked(const std::vector<void*>& objs, const char* what) const;
+    std::vector<void*> cycle_t0_reach_;     // IM1: old objects reached at t0
+    std::vector<void*> cycle_alloc_log_;    // IM4: in-cycle allocations
+#endif
+    // Test hooks for the negative controls (P§3.13).
+    bool test_skip_allocate_black_ = false;
+
+    // threaded-gc-05a cycle state (HEAP_063).
+    CycleState cycle_state_ = CycleState::Idle;
+    bool     snapshot_mode_ = false;
+    bool     in_slice_ = false;
+    bool     cycle_tail_uses_traced_live_ = false;
+    uint32_t cycle_slices_ = 0;       // T, fixed at t0
+    uint32_t cycle_k_ = 0;            // minor ends since t0
+    uint64_t cycle_predicted_ = 0;    // predicted units, fixed at t0
+    uint64_t cycle_units_ = 0;        // old-gen units marked this cycle
+    uint64_t prev_cycle_units_ = 0;   // carried across cycles
+    size_t   prev_cycle_occ_t0_ = 0;  // occupancy at the previous cycle's t0
+    size_t   cycle_traced_live_ = 0;  // accumulator sum at the handoff
+    size_t   cycle_black_bytes_ = 0;  // allocated black this cycle (handoff)
+    size_t   baseline_black_bytes_ = 0;  // excluded from the trigger baseline until the next major
+    std::vector<LargeBodyMeta> deferred_frees_;   // P§3.7
+
     void markChildren(void *obj);
     void markHPointer(HPointer &ptr);
     // Pushes a heap object onto the mark stack. Routes nursery objects
@@ -1461,6 +1540,33 @@ private:
 // For test code only - provides privileged access to OldGenSpace internals.
 class OldGenSpaceTestAccess {
 public:
+    // ---- threaded-gc-05a (HEAP_063) ----
+    static bool isMarked(OldGenSpace& og, const void* obj) {
+        const BlockId id = og.contains(const_cast<void*>(obj)) ? og.blockIdFor(obj) : NO_BLOCK_ID;
+        if (!id.valid()) return false;
+        return og.blocks_.info(id).is_large ? og.blocks_.largeMark(id) != 0
+                                            : og.isMarkedInBlock(id, obj);
+    }
+    static bool cycleActive(const OldGenSpace& og) { return og.cycleActive(); }
+    static bool inUniformBlock(OldGenSpace& og, const void* obj) {
+        const BlockId id = og.contains(const_cast<void*>(obj)) ? og.blockIdFor(obj) : NO_BLOCK_ID;
+        if (!id.valid()) return false;
+        const BlockInfo& b = og.blocks_.info(id);
+        return !b.is_large && b.size_class < og.num_size_classes_;
+    }
+    static OldGenSpace::CycleState cycleState(const OldGenSpace& og) { return og.cycle_state_; }
+    static uint64_t cycleUnits(const OldGenSpace& og) { return og.cycle_units_; }
+    static uint64_t prevCycleUnits(const OldGenSpace& og) { return og.prev_cycle_units_; }
+    static uint32_t cycleK(const OldGenSpace& og) { return og.cycle_k_; }
+    static size_t deferredFrees(const OldGenSpace& og) { return og.deferred_frees_.size(); }
+    static size_t majorLive(const OldGenSpace& og) { return og.major_live_; }
+    static size_t postSweepLive(const OldGenSpace& og) { return og.post_sweep_live_bytes_; }
+    static size_t cycleTracedLive(const OldGenSpace& og) { return og.cycle_traced_live_; }
+    static GCPhase gcPhase(const OldGenSpace& og) { return og.gc_phase_; }
+    static void setSkipAllocateBlack(OldGenSpace& og, bool on) { og.test_skip_allocate_black_ = on; }
+    static OldGenSpace::MajorGCTriggerReason trigger(const OldGenSpace& og) {
+        return og.evaluateMajorGCTrigger();
+    }
     // threaded-gc-03 V2 negative test: plant an extent in the unassigned list.
     static void pushUnassignedForTesting(OldGenSpace& og, char* start, char* end) {
         og.unassigned_blocks_.emplace_back(start, end);

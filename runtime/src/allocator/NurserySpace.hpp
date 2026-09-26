@@ -112,6 +112,7 @@ private:
 
     // GC state (active only during minorGC execution).
     char* copy_ptr_;                // Bump pointer for copying into to-space.
+    char* survivor_end_ = nullptr;  // threaded-gc-05a: bump_.ptr right after the last minor.
     char* copy_end_;                // To-space extent end.
     char* scan_ptr_;                // Cheney scan pointer.
 
@@ -143,6 +144,37 @@ private:
 public:
     // threaded-gc-04: per-side capacity (bounds builder-built chunk chains).
     size_t capacityBytes() const { return from_capacity_bytes_; }
+    // threaded-gc-05a (P§3.2, IM7): walks the survivor prefix
+    // [fromBase(), bump_.ptr) left by the last minor GC, calling f(obj) for
+    // every object. Valid only before the mutator allocates again; asserts
+    // bump_.ptr == survivor_end_ (in every build) and that the walk ends
+    // exactly at bump_.ptr. Returns the number of objects visited.
+    template <typename F> size_t forEachSurvivor(F&& f, size_t* bytes_out = nullptr) {
+        assert(bump_.ptr == survivor_end_ &&
+               "IM7: nursery allocated since the last minor; the survivor prefix is not exact");
+        char* p = fromBase();
+        char* const end = bump_.ptr;
+        size_t n = 0;
+        while (p < end) {
+            const size_t sz = getObjectSize(p);
+#if ECO_HEAP_VALIDATE
+            if (getHeader(p)->tag > Tag_Forward || sz == 0 || p + sz > end) {
+                std::fprintf(stderr, "[heap-validate] IM7: bad survivor at %p (tag %u, size %zu)\n",
+                             static_cast<void*>(p), (unsigned)getHeader(p)->tag, sz);
+                std::fflush(stderr);
+                std::abort();
+            }
+#endif
+            f(static_cast<void*>(p));
+            ++n;
+            p += sz;
+        }
+        assert(p == end && "IM7: survivor walk overran bump_.ptr");
+        if (bytes_out) *bytes_out = static_cast<size_t>(end - fromBase());
+        return n;
+    }
+    // True when no nursery allocation happened since the last minor GC.
+    bool survivorPrefixExact() const { return bump_.ptr == survivor_end_; }
 private:
 
     // Pre-computed `from_capacity_bytes_ * gc_threshold_`. The proactive-GC

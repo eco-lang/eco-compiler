@@ -1059,6 +1059,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // (now from-space) holds them as one contiguous prefix.
     bump_.ptr = copy_ptr_;
     bump_.end = computeAllocEnd();
+    survivor_end_ = bump_.ptr;   // threaded-gc-05a IM7
 
     assert(bump_.ptr >= fromBase() && bump_.ptr <= bump_.end &&
            bump_.end <= fromBase() + from_capacity_bytes_ &&

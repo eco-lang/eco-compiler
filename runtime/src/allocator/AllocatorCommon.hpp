@@ -213,6 +213,17 @@ constexpr size_t   COMMIT_AHEAD_BYTES = size_t{128} << 20;   // 0 = off
 // cursor, and gap-sweep mixed blocks, instead of the header-walking lazy sweep.
 constexpr bool OLD_GEN_BITMAP_ALLOC = true;
 
+// threaded-gc-05a (plans/threaded-gc-05a-incremental-marking.md, HEAP_063):
+// spread the major-GC mark over the minor GCs after the trigger. Requires
+// OLD_GEN_BITMAP_ALLOC. SLICES = T (0 = the whole cycle inside the t0 pause).
+// DEFAULT-ON with T = 32 from experiment E1 (plan P§10): self-compile max
+// pause 4.83 s -> 336 ms (triple medians), old-gen peak +1.6 %, wall flat.
+constexpr bool     INCREMENTAL_MARK = true;
+constexpr uint32_t INCREMENTAL_MARK_SLICES = 32;
+constexpr size_t   INCREMENTAL_MARK_MIN_SLICE_UNITS = 16384;   // ~0.7 ms at 41 ns/object
+constexpr double   INCREMENTAL_MARK_PREDICT_GROWTH = 1.25;
+constexpr double   INCREMENTAL_MARK_FINISH_FRACTION = 0.95;
+
 // threaded-gc-02 D1b: a uniform block is demoted to mixed at the end of mark
 // iff live_bytes <= DEMOTE_LIVE_FRACTION * totalBytes. 0.5 is the former
 // hard-coded `live * 2 <= total`; 0.0 = never demote. 0.3 chosen from E1
@@ -581,6 +592,13 @@ struct HeapConfig {
     // sweep for mixed blocks. Off = the legacy header-walking lazy sweep.
     bool old_gen_bitmap_alloc = OLD_GEN_BITMAP_ALLOC;
 
+    // threaded-gc-05a (HEAP_063): incremental mark cycle.
+    bool     incremental_mark = INCREMENTAL_MARK;
+    uint32_t incremental_mark_slices = INCREMENTAL_MARK_SLICES;
+    size_t   incremental_mark_min_slice_units = INCREMENTAL_MARK_MIN_SLICE_UNITS;
+    double   incremental_mark_predict_growth = INCREMENTAL_MARK_PREDICT_GROWTH;
+    double   incremental_mark_finish_fraction = INCREMENTAL_MARK_FINISH_FRACTION;
+
     // threaded-gc-02 D1b: demote a uniform block to mixed at the end of mark
     // iff live_bytes <= demote_live_fraction * totalBytes. In [0, 1];
     // 0.0 = never demote (explicit early return); 1.0 = demote every block.
@@ -723,6 +741,28 @@ struct HeapConfig {
             throw std::invalid_argument("alloc_buffer_size must be > 0");
         }
 
+        // threaded-gc-05a
+        if (incremental_mark && !old_gen_bitmap_alloc) {
+            throw std::invalid_argument(
+                "incremental_mark requires old_gen_bitmap_alloc");
+        }
+        if (incremental_mark_slices > 4096) {
+            throw std::invalid_argument("incremental_mark_slices must be <= 4096");
+        }
+        if (incremental_mark_min_slice_units < 1) {
+            throw std::invalid_argument("incremental_mark_min_slice_units must be >= 1");
+        }
+        if (!(incremental_mark_predict_growth >= 1.0 &&
+              incremental_mark_predict_growth <= 4.0)) {
+            throw std::invalid_argument("incremental_mark_predict_growth must be in [1, 4]");
+        }
+        if (!(incremental_mark_finish_fraction >
+                  static_cast<double>(major_gc_global_pressure_fraction) &&
+              incremental_mark_finish_fraction <= 1.0)) {
+            throw std::invalid_argument(
+                "incremental_mark_finish_fraction must be in "
+                "(major_gc_global_pressure_fraction, 1]");
+        }
         if (!(demote_live_fraction >= 0.0 && demote_live_fraction <= 1.0)) {
             throw std::invalid_argument("demote_live_fraction must be in [0, 1]");
         }

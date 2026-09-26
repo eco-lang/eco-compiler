@@ -198,6 +198,11 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         "decommit_delay_majors",
         "commit_ahead_bytes",
         "old_gen_bitmap_alloc",
+        "incremental_mark",
+        "incremental_mark_slices",
+        "incremental_mark_min_slice_units",
+        "incremental_mark_predict_growth",
+        "incremental_mark_finish_fraction",
         "demote_live_fraction",
         "garbage_denom_cap",
         "major_gc_live_budget",
@@ -305,6 +310,19 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         cfg.commit_ahead_bytes = parseByteSize(*it, "commit_ahead_bytes");
     if (auto it = doc.find("old_gen_bitmap_alloc"); it != doc.end())
         cfg.old_gen_bitmap_alloc = parseBool(*it, "old_gen_bitmap_alloc");
+    if (auto it = doc.find("incremental_mark"); it != doc.end())
+        cfg.incremental_mark = parseBool(*it, "incremental_mark");
+    if (auto it = doc.find("incremental_mark_slices"); it != doc.end())
+        cfg.incremental_mark_slices = parseU32(*it, "incremental_mark_slices");
+    if (auto it = doc.find("incremental_mark_min_slice_units"); it != doc.end())
+        cfg.incremental_mark_min_slice_units =
+            parseByteSize(*it, "incremental_mark_min_slice_units");
+    if (auto it = doc.find("incremental_mark_predict_growth"); it != doc.end())
+        cfg.incremental_mark_predict_growth =
+            parseDouble(*it, "incremental_mark_predict_growth");
+    if (auto it = doc.find("incremental_mark_finish_fraction"); it != doc.end())
+        cfg.incremental_mark_finish_fraction =
+            parseDouble(*it, "incremental_mark_finish_fraction");
     if (auto it = doc.find("demote_live_fraction"); it != doc.end())
         cfg.demote_live_fraction =
             parseFraction(*it, "demote_live_fraction");

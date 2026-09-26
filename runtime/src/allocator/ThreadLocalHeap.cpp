@@ -10,6 +10,8 @@
 #include "Allocator.hpp"
 #include "StackMap.hpp"
 #include "StackUnwind.hpp"
+#include "HeapChildWalk.hpp"
+#include <unordered_set>
 #include <cassert>
 #include <chrono>
 #include <cstdio>
@@ -629,13 +631,21 @@ struct GCPauseScope {
             h.pause_start_ns_ = GCStats::nowSinceProcessStartNs();
             h.pause_saw_minor_ = false;
             h.pause_saw_major_ = false;
+            h.pause_saw_t0_ = h.pause_saw_slice_ = h.pause_saw_handoff_ = false;
         }
         (is_major ? h.pause_saw_major_ : h.pause_saw_minor_) = true;
     }
     ~GCPauseScope() {
         if (--h.gc_depth_ == 0) {
             const uint64_t now = GCStats::nowSinceProcessStartNs();
-            const uint8_t kind = h.pause_saw_minor_ ? (h.pause_saw_major_ ? 1 : 0) : 2;
+            uint8_t kind = h.pause_saw_minor_ ? (h.pause_saw_major_ ? 1 : 0) : 2;
+            // threaded-gc-05a: a minor pause that carried cycle work.
+            // Precedence: major > handoff > t0 > slice.
+            if (kind == 0) {
+                if (h.pause_saw_handoff_) kind = 5;
+                else if (h.pause_saw_t0_) kind = 3;
+                else if (h.pause_saw_slice_) kind = 4;
+            }
             h.recordPause(h.pause_start_ns_, now - h.pause_start_ns_, kind);
         }
     }
@@ -707,12 +717,30 @@ void ThreadLocalHeap::minorGC() {
     // not dense in MLIR-generated code, so we also check at the end of
     // every minor GC to avoid filling the old gen before the next
     // safepoint fires.
+    //
+    // threaded-gc-05a (HEAP_063): while an incremental cycle runs, this minor
+    // end is one of its steps instead (triggers are suppressed; a pause that
+    // runs a handoff does not evaluate them again).
+    if (old_gen_.cycleActive()) {
+        stepMarkCycle();
+        return;
+    }
+    if (__builtin_expect(test_force_major_trigger_, 0)) {   // tests only
+        test_force_major_trigger_ = false;
+        if (config_->incremental_mark) startMarkCycle(GCStats::MajorReason::Forced);
+        else majorGC(GCStats::MajorReason::Forced);
+        return;
+    }
     const auto reason = old_gen_.evaluateMajorGCTrigger();
     if (reason != OldGenSpace::MajorGCTriggerReason::None) {
 #if ENABLE_GC_STATS
         recordMajorTriggerReason(stats_, reason);
 #endif
-        majorGC(majorReasonTag(reason));
+        if (config_->incremental_mark) {
+            startMarkCycle(majorReasonTag(reason));
+        } else {
+            majorGC(majorReasonTag(reason));
+        }
     }
 }
 
@@ -722,6 +750,13 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
 #endif
     PauseEndHook pause_end(*this, parent_);
     pause_had_major_ = true;
+    // threaded-gc-05a (P§3.8): a join. A running incremental cycle frees only
+    // what was dead at its t0; an allocation failure or an explicit major
+    // needs everything dead now. Finish the cycle, then run the requested STW
+    // major as usual (two majors: an emergency path).
+    if (old_gen_.cycleActive()) {
+        finishMarkCycleNow(OldGenSpace::CycleFinish::Join);
+    }
     const bool profile_phases = gcPhaseProfileEnabled();
 
     // Dump sizes at major GC so the reproduction log makes it easy to see
@@ -787,40 +822,16 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
     size_t stackrange_roots_pushed = 0;
     size_t external_roots_pushed = 0;
 
-    // Mark stackmap-derived roots.
-    for (HPointer* slot : stack_map_roots_.get()) {
-        old_gen_.markHPointer(*slot);
-        ++stackmap_roots_pushed;
-    }
-
-    // Mark stack root ranges.
-    for (const auto& range : root_set.getStackRootRanges()) {
-        HPointer* base = range.base;
-        uint64_t mask = range.hpointer_mask;
-        for (size_t i = 0; i < range.count; ++i) {
-            if (stackRangeSlotIsRoot(mask, i)) {
-                old_gen_.markHPointer(base[i]);
-                ++stackrange_roots_pushed;
-            }
-        }
-    }
-
-    // Mark single-slot stack roots (plan §3.3).
-    for (HPointer* slot : root_set.getSingleRoots()) {
-        old_gen_.markHPointer(*slot);
-        ++stackrange_roots_pushed;
-    }
-
-    // Mark external roots (Scheduler run queue, PlatformRuntime state,
-    // MVar slots, Eco kernel Runtime state).
-    for (auto& scanner : root_set.getExternalRootScanners()) {
-        scanner([this, &external_roots_pushed](uint64_t& ref) {
-            HPointer hp;
-            std::memcpy(&hp, &ref, sizeof(hp));
-            old_gen_.markHPointer(hp);
-            ++external_roots_pushed;
-        });
-    }
+    // Mark stackmap-derived roots, stack root ranges, single-slot stack roots
+    // and external roots (Scheduler run queue, PlatformRuntime state, MVar
+    // slots, Eco kernel Runtime state) — threaded-gc-05a D1: one enumeration
+    // shared with the incremental cycle's t0 snapshot.
+    forEachMajorRoot(root_set, [&](HPointer& hp, int kind) {
+        old_gen_.markHPointer(hp);
+        if (kind == 0) ++stackmap_roots_pushed;
+        else if (kind == 1) ++stackrange_roots_pushed;
+        else ++external_roots_pushed;
+    });
 
     auto t_after_root_push = std::chrono::high_resolution_clock::now();
 
@@ -968,6 +979,281 @@ bool ThreadLocalHeap::isNurseryNearFull(float threshold) const {
     size_t usage = nursery_.bytesAllocated();
     return usage >= static_cast<size_t>(total_capacity * threshold);
 }
+
+// ===========================================================================
+// threaded-gc-05a: the incremental mark cycle driver (HEAP_063,
+// plans/threaded-gc-05a-incremental-marking.md P§3.1-P§3.8).
+// ===========================================================================
+
+template <typename F>
+void ThreadLocalHeap::forEachMajorRoot(RootSet& root_set, F&& f) {
+    // kind 0: stack-map slots.
+    for (HPointer* slot : stack_map_roots_.get()) f(*slot, 0);
+    // kind 1: stack root ranges (masked), then single-slot stack roots.
+    for (const auto& range : root_set.getStackRootRanges()) {
+        HPointer* base = range.base;
+        uint64_t mask = range.hpointer_mask;
+        for (size_t i = 0; i < range.count; ++i) {
+            if (stackRangeSlotIsRoot(mask, i)) f(base[i], 1);
+        }
+    }
+    for (HPointer* slot : root_set.getSingleRoots()) f(*slot, 1);
+    // kind 2: external root scanners (off-heap stores; HEAP_SNAPSHOT_002).
+    for (auto& scanner : root_set.getExternalRootScanners()) {
+        scanner([&f](uint64_t& ref) {
+            HPointer hp;
+            std::memcpy(&hp, &ref, sizeof(hp));
+            f(hp, 2);
+        });
+    }
+}
+
+static inline uint64_t cycleNowNs() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+void ThreadLocalHeap::notePauseCycleWork(int what) {
+#if ENABLE_GC_PHASE_TIMERS
+    if (what == 0) pause_saw_t0_ = true;
+    else if (what == 1) pause_saw_slice_ = true;
+    else pause_saw_handoff_ = true;
+#else
+    (void)what;
+#endif
+}
+
+void ThreadLocalHeap::startMarkCycle(GCStats::MajorReason reason) {
+    const uint64_t t_start = cycleNowNs();
+#if ENABLE_GC_STATS
+    stats_.beginMajorGCEvent(reason, old_gen_.getAllocatedBytes(),
+                             old_gen_.getCommittedBytes());
+#else
+    (void)reason;
+#endif
+    // Fresh stack roots: the minor just updated every slot in place.
+    collectStackRootsFromStackMap();
+    RootSet& root_set = nursery_.getRootSet();
+    p1::verifyOldGen(old_gen_, "cycle-start");
+
+    old_gen_.beginMarkCycle(*parent_, config_->incremental_mark_slices);
+    cycle_t0_wall_ns_ = t_start;
+    cycle_mark_ns_ = 0;
+    cycle_inpause_ns_ = 0;
+
+    // P§3.2: the snapshot. Old-gen targets of every root and off-heap store
+    // are greyed; young targets are dropped (snapshot mode) because every
+    // young object is walked below.
+    old_gen_.setSnapshotMode(true);
+    for (HPointer* root : root_set.getRoots()) old_gen_.markHPointer(*root);
+    for (uint64_t* root : root_set.getJitRoots()) old_gen_.markJitRootRaw(*root, *parent_);
+    forEachMajorRoot(root_set, [&](HPointer& hp, int kind) {
+        if (kind == 2 && test_snapshot_skip_external_) return;   // negative control
+        old_gen_.markHPointer(hp);
+    });
+    old_gen_.snapshotYoungLarge();
+    size_t surv_bytes = 0;
+    size_t survivors = 0;
+    if (!test_snapshot_skip_young_walk_) {                        // negative control
+        survivors = nursery_.forEachSurvivor(
+            [&](void* obj) { old_gen_.markChildren(obj); }, &surv_bytes);
+    }
+    old_gen_.setSnapshotMode(false);
+#if ENABLE_GC_STATS
+    old_gen_.getStats().im.t0_survivors += survivors;
+    old_gen_.getStats().im.t0_survivor_bytes += surv_bytes;
+#else
+    (void)survivors;
+#endif
+#if ECO_HEAP_VALIDATE
+    // IM1 (record half): every old-gen object reachable at t0, found by an
+    // independent tracer, must be marked at the handoff.
+    {
+        bool complete = false;
+        old_gen_.cycle_t0_reach_ = traceOldReachableForValidation(&complete);
+        if (!complete) old_gen_.cycle_t0_reach_.clear();
+    }
+#endif
+    notePauseCycleWork(0);
+    const uint64_t dur = cycleNowNs() - t_start;
+    cycle_mark_ns_ += dur;
+    cycle_inpause_ns_ += dur;
+#if ENABLE_GC_STATS
+    {
+        IncrMarkStats& im = old_gen_.getStats().im;
+        im.t0_ns_total += dur;
+        if (dur > im.t0_ns_max) im.t0_ns_max = dur;
+    }
+#endif
+    // T = 0: the whole cycle inside the t0 pause (the E0 equivalence arm).
+    if (config_->incremental_mark_slices == 0) {
+        finishMarkCycleNow(OldGenSpace::CycleFinish::Schedule);
+    }
+}
+
+void ThreadLocalHeap::stepMarkCycle() {
+    old_gen_.noteCycleMinorEnd();
+    if (old_gen_.cycleState() == OldGenSpace::CycleState::HandoffDue) {
+        completeMarkCycle(OldGenSpace::CycleFinish::Schedule);
+        return;
+    }
+    if (old_gen_.cyclePressureFinishDue()) {
+        finishMarkCycleNow(OldGenSpace::CycleFinish::Pressure);
+        return;
+    }
+    const uint64_t t_start = cycleNowNs();
+    old_gen_.runCycleSlice();
+#if ECO_HEAP_VALIDATE
+    old_gen_.validateCycleUniformLive("mark slice", /*exact=*/false);   // IM6
+#endif
+    notePauseCycleWork(1);
+    const uint64_t dur = cycleNowNs() - t_start;
+    cycle_mark_ns_ += dur;
+    cycle_inpause_ns_ += dur;
+#if ENABLE_GC_STATS
+    {
+        IncrMarkStats& im = old_gen_.getStats().im;
+        im.slice_ns_total += dur;
+        if (dur > im.slice_ns_max) im.slice_ns_max = dur;
+    }
+#endif
+}
+
+void ThreadLocalHeap::finishMarkCycleNow(OldGenSpace::CycleFinish why) {
+    assert(old_gen_.cycleActive());
+    assert(!old_gen_.in_slice_ && "IM9: a join inside a mark slice");
+    if (old_gen_.cycleState() == OldGenSpace::CycleState::Marking) {
+        const uint64_t t_start = cycleNowNs();
+        old_gen_.drainCycleMark();
+        const uint64_t dur = cycleNowNs() - t_start;
+        cycle_mark_ns_ += dur;
+        cycle_inpause_ns_ += dur;
+    }
+    completeMarkCycle(why);
+}
+
+void ThreadLocalHeap::completeMarkCycle(OldGenSpace::CycleFinish why) {
+#if ECO_HEAP_VALIDATE
+    // IM1 (check half) and IM2, before anything is freed.
+    old_gen_.assertAllMarked(old_gen_.cycle_t0_reach_, "IM1 reachable at t0");
+    old_gen_.cycle_t0_reach_.clear();
+    {
+        bool complete = false;
+        std::vector<void*> now = traceOldReachableForValidation(&complete);
+        if (complete) old_gen_.assertAllMarked(now, "IM2 reachable at handoff");
+    }
+#endif
+#if ENABLE_GC_STATS
+    {
+        IncrMarkStats& im = old_gen_.getStats().im;
+        if (why == OldGenSpace::CycleFinish::Schedule) im.finish_schedule++;
+        else if (why == OldGenSpace::CycleFinish::Pressure) im.finish_pressure++;
+        else im.finish_join++;
+    }
+#else
+    (void)why;
+#endif
+    const uint64_t units = old_gen_.cycleUnitsDone();
+    const uint32_t span_minors = old_gen_.cycleMinorsSinceT0();
+    const uint64_t t_start = cycleNowNs();
+    MajorGCPhaseProfile prof;
+#if ENABLE_GC_STATS
+    old_gen_.handoffMarkCycle(&stats_, &prof);
+#else
+    old_gen_.handoffMarkCycle(nullptr, &prof);
+#endif
+    pause_had_major_ = true;   // one major per cycle for the decommit clock
+    notePauseCycleWork(2);
+    const uint64_t dur = cycleNowNs() - t_start;
+    if (gcPhaseProfileEnabled()) {
+        std::fprintf(stderr,
+            "[gc-profile] cycle handoff units=%llu span_minors=%u handoff=%.3fms"
+            " tail_sweep=%.3fms live=%zu garbage=%zu alldead=%zu/%zub demoted=%zu/%zub"
+            " sweep_pending=%zu\n",
+            (unsigned long long)units, span_minors, dur / 1e6, prof.sweep_ns / 1e6,
+            prof.live_bytes_after, prof.garbage_bytes, prof.alldead_blocks_released,
+            prof.alldead_bytes_released, prof.demoted_blocks, prof.demoted_bytes,
+            prof.sweep_pending_blocks);
+        std::fflush(stderr);
+    }
+    cycle_inpause_ns_ += dur;
+#if ENABLE_GC_STATS
+    {
+        IncrMarkStats& im = old_gen_.getStats().im;
+        im.handoff_ns_total += dur;
+        if (dur > im.handoff_ns_max) im.handoff_ns_max = dur;
+    }
+    GC_STATS_MAJOR_RECORD_GC_END(stats_, cycle_inpause_ns_);
+    stats_.recordMajorGCEvent(
+        cycle_inpause_ns_,
+        /*root_scan_ns=*/0,
+        /*root_push_ns=*/0,
+        cycle_mark_ns_,
+        prof.sweep_ns,
+        prof.capacity_ns,
+        old_gen_.getAllocatedBytes(),
+        prof.live_bytes_after,
+        prof.garbage_bytes,
+        prof.alldead_bytes_released,
+        prof.shrink_bytes_released,
+        units,
+        /*mark_stack_peak=*/0,
+        prof.blocks_scanned,
+        nursery_.getStats().minor_gc_count,
+        nursery_.getStats().objects_promoted);
+#if ENABLE_GC_PHASE_TIMERS
+    if (gcEventLogEnabled() && stats_.major_gc_events_used > 0) {
+        const GCStats::MajorGCEvent& ev =
+            stats_.major_gc_events[stats_.major_gc_events_used - 1];
+        gcEventLogMajor(ev.seq, ev.start_ns, ev.total_ns, ev.mark_ns, ev.sweep_ns,
+                        ev.root_scan_ns + ev.root_push_ns, gcMajorReasonName(ev.reason));
+        gcEventLogCycle(ev.seq, ev.start_ns, cycleNowNs() - cycle_t0_wall_ns_,
+                        span_minors, units,
+                        why == OldGenSpace::CycleFinish::Schedule ? "schedule"
+                        : why == OldGenSpace::CycleFinish::Pressure ? "pressure" : "join");
+    }
+#endif
+#endif
+    (void)span_minors;
+    (void)units;
+}
+
+#if ECO_HEAP_VALIDATE
+// IM1/IM2: an INDEPENDENT tracer (its own visited set, visitHeapChildren
+// rather than markChildren) from every root, through young and old objects.
+// Returns the old-gen objects reached; `complete` is false when the walk hit
+// the 5 M-object cap (the caller then skips the check).
+std::vector<void*> ThreadLocalHeap::traceOldReachableForValidation(bool* complete) {
+    constexpr size_t kCap = 5'000'000;
+    std::unordered_set<void*> seen;
+    std::vector<void*> stack;
+    std::vector<void*> old_out;
+    auto push = [&](HPointer& hp) {
+        if (hp.ptr_ind != 0) return;
+        void* o = Allocator::fromPointerRaw(hp);
+        if (!o || !parent_->isInHeap(o)) return;
+        if (seen.insert(o).second) stack.push_back(o);
+    };
+    RootSet& root_set = nursery_.getRootSet();
+    for (HPointer* root : root_set.getRoots()) push(*root);
+    for (uint64_t* root : root_set.getJitRoots()) {
+        const uint64_t val = *root;
+        if (isConstantBits(val)) continue;
+        void* o = reinterpret_cast<void*>(val);
+        if (o && parent_->isInHeap(o) && seen.insert(o).second) stack.push_back(o);
+    }
+    forEachMajorRoot(root_set, [&](HPointer& hp, int) { push(hp); });
+    *complete = true;
+    while (!stack.empty()) {
+        if (seen.size() > kCap) { *complete = false; break; }
+        void* o = stack.back();
+        stack.pop_back();
+        if (old_gen_.contains(o)) old_out.push_back(o);
+        visitHeapChildren(o, [&](HPointer& c) { push(c); });
+    }
+    return old_out;
+}
+#endif
 
 const std::unordered_set<HPointer*>& ThreadLocalHeap::collectRoots() {
     // Returns only long-lived roots. Stackmap roots and stack root ranges

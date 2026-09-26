@@ -220,6 +220,16 @@ public:
         return placeLargeFor(size, tag, nursery_.capacityBytes(), *config_);
     }
 
+    /** threaded-gc-05a: true while an incremental mark cycle runs (HEAP_063). */
+    bool markCycleActive() const { return old_gen_.cycleActive(); }
+    // Negative-control hooks (P§3.13; tests only): the t0 snapshot skips the
+    // young walk / the external root scanners.
+    bool test_snapshot_skip_young_walk_ = false;
+    bool test_snapshot_skip_external_ = false;
+    // Tests only: the next minor end behaves as if a major trigger fired
+    // (starts a cycle with incremental_mark, else a STW major).
+    bool test_force_major_trigger_ = false;
+
     /** threaded-gc-03: true while a minor/major GC of this heap is running. */
     bool inPause() const { return pause_depth_ > 0; }
 
@@ -288,6 +298,20 @@ private:
     // on. The outermost exit is the helper sync point (Allocator::onGCPauseEnd).
     int pause_depth_ = 0;
     bool pause_had_major_ = false;   // a major ran in the current pause
+
+    // threaded-gc-05a: the incremental mark cycle driver (HEAP_063).
+    template <typename F> void forEachMajorRoot(RootSet& root_set, F&& f);
+    void startMarkCycle(GCStats::MajorReason reason);
+    void stepMarkCycle();
+    void finishMarkCycleNow(OldGenSpace::CycleFinish why);
+    void completeMarkCycle(OldGenSpace::CycleFinish why);
+    void notePauseCycleWork(int what);   // 0 t0, 1 slice, 2 handoff
+    uint64_t cycle_t0_wall_ns_ = 0;
+    uint64_t cycle_mark_ns_ = 0;
+    uint64_t cycle_inpause_ns_ = 0;
+#if ECO_HEAP_VALIDATE
+    std::vector<void*> traceOldReachableForValidation(bool* complete);
+#endif
     friend struct PauseEndHook;
 
 #if ENABLE_GC_STATS
@@ -300,6 +324,9 @@ private:
     uint64_t pause_start_ns_ = 0;
     bool     pause_saw_minor_ = false;
     bool     pause_saw_major_ = false;
+    bool     pause_saw_t0_ = false;       // threaded-gc-05a pause kinds 3/4/5
+    bool     pause_saw_slice_ = false;
+    bool     pause_saw_handoff_ = false;
     friend struct GCPauseScope;
 
     /** Records one completed pause (outermost GC call). */
