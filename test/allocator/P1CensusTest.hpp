@@ -12,7 +12,3 @@ extern Testing::TestCase testP1WriteSiteFreshIsLegal;
 extern Testing::TestCase testP1WriteSiteAgedCaught;
 extern Testing::TestCase testP1WriteSiteBuilderExempt;
 extern Testing::TestCase testP1ChunkChainSurvivesMidConstructionGC;
-extern Testing::TestCase testBornOldArrayChildrenSurviveMinors;
-extern Testing::TestCase testBornOldEntryRetires;
-extern Testing::TestCase testBornOldDeadEntryPrunedAtMark;
-extern Testing::TestCase testBornOldRegionSplitAtMark;

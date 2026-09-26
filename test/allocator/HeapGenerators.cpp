@@ -245,12 +245,17 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
 
             case HeapObjectDesc::Custom: {
                 size_t num_values = std::min(desc.custom_values_boxed.size(), desc.custom_child_values.size());
-                size_t size = sizeof(Custom) + num_values * sizeof(Unboxable);
+                // HEAP_044: a nullary ctor is an embedded constant, never a heap
+                // Custom (the validate pre-walk rejects one). Give a would-be
+                // 0-field Custom one unboxed Int field instead.
+                const bool pad = (num_values == 0);
+                size_t size = sizeof(Custom) + (pad ? 1 : num_values) * sizeof(Unboxable);
                 obj = alloc.allocate(size, Tag_Custom);
                 Custom *custom = static_cast<Custom *>(obj);
 
                 custom->ctor = desc.ctor;
-                custom->unboxed = buildUnboxedBitmap(desc.custom_values_boxed, 48);
+                custom->unboxed = pad ? 1 : buildUnboxedBitmap(desc.custom_values_boxed, 48);
+                if (pad) custom->values[0].i = 0;
 
                 for (size_t i = 0; i < num_values; i++) {
                     custom->values[i] = makeUnboxable(desc.custom_values_boxed[i], desc, allocated,

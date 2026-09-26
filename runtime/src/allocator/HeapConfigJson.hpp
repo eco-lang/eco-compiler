@@ -23,6 +23,8 @@ namespace Elm {
 //   "major_gc_garbage_fraction"      number [0..1)  (0 disables)
 //   "use_hybrid_dfs"                 bool
 //   "large_object_threshold"         size_t (bytes)
+//   "large_ptr_nursery_divisor"      unsigned (0 = never nursery; threaded-gc-04b)
+//   "large_ptr_nursery_max_size"     size_t (bytes, multiple of 8; 0 = no fixed bound)
 //   "decommit_on_oldgen_release"     bool
 //   "gc_thread_mode"                 unsigned (0 off, 1 sync, 2 concurrent; threaded-gc-03)
 //   "gc_helper_threads"              unsigned (1..64)

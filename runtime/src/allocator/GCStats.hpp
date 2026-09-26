@@ -181,6 +181,32 @@ struct BitmapAllocStats {
     }
 };
 
+// threaded-gc-04b (plans/threaded-gc-04b-young-large-objects.md P§3.6): large
+// (>= large_object_threshold) allocations by placement, and the young
+// large-object space (YLOS) life cycle. Per-heap; combine() sums.
+struct LargePtrStats {
+    uint64_t nursery_allocs = 0, nursery_bytes = 0;     // pointer-bearing, in the nursery
+    uint64_t ylos_allocs = 0, ylos_bytes = 0;           // pointer-bearing, young large object
+    uint64_t region_allocs = 0, region_bytes = 0;       // large closure-group regions
+    uint64_t pointerfree_allocs = 0, pointerfree_bytes = 0;   // strings/bytes/scalars, old pinned
+    uint64_t ylos_promoted_in_place = 0, ylos_freed_minor = 0, ylos_retired_major = 0;
+    uint64_t ylos_reach_calls = 0, ylos_scans = 0;
+    bool any() const {
+        return nursery_allocs | ylos_allocs | region_allocs | pointerfree_allocs;
+    }
+    void combine(const LargePtrStats& o) {
+        nursery_allocs += o.nursery_allocs; nursery_bytes += o.nursery_bytes;
+        ylos_allocs += o.ylos_allocs; ylos_bytes += o.ylos_bytes;
+        region_allocs += o.region_allocs; region_bytes += o.region_bytes;
+        pointerfree_allocs += o.pointerfree_allocs; pointerfree_bytes += o.pointerfree_bytes;
+        ylos_promoted_in_place += o.ylos_promoted_in_place;
+        ylos_freed_minor += o.ylos_freed_minor;
+        ylos_retired_major += o.ylos_retired_major;
+        ylos_reach_calls += o.ylos_reach_calls;
+        ylos_scans += o.ylos_scans;
+    }
+};
+
 // threaded-gc-03 (plans/threaded-gc-03-helper-threads.md P§3.9): where old-gen
 // pages come from and go to. Allocator-global (filled by getCombinedStats from
 // the live allocator), so combine() merges by max like the old-gen walls.
@@ -864,6 +890,9 @@ public:
     // ========== threaded-gc-03 page supply + helper threads ==========
     PageSupplyStats page_supply;
     HelperStatsSnapshot helper;
+    // threaded-gc-04b: large allocations by placement + YLOS life cycle.
+    LargePtrStats lp;
+    void printLargePtrBlock() const;
     void printPageSupplyBlock() const;
     void printHelperBlock() const;
 

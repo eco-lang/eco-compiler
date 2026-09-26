@@ -93,6 +93,15 @@ constexpr size_t ALLOC_BUFFER_SIZE = 512 * 1024;
 // Allocations of this size or larger bypass the nursery and are pinned in old gen (also triggers split-header path for strings/byte buffers).
 constexpr size_t LARGE_OBJECT_THRESHOLD = 8 * 1024;
 
+// threaded-gc-04b placement of large pointer-bearing objects: one no larger
+// than min(nursery capacity / divisor, max size) goes in the nursery, a larger
+// one in the young large-object space (YLOS). Divisor 0 = never the nursery;
+// max size 0 = no fixed bound.
+constexpr u32 LARGE_PTR_NURSERY_DIVISOR = 8;
+// 128 KiB chosen by experiment E1 (plans/threaded-gc-04b-young-large-objects.md
+// P§5a/P§9): best or tied on wall and GC time at 80 KB, 800 KB and 8 MB arrays.
+constexpr size_t LARGE_PTR_NURSERY_MAX_SIZE = 128 * 1024;
+
 // ---- String / rope heuristics ----
 
 // Concat results <= this many UTF-16 code units flatten to a single leaf; larger totals build a Tag_StringRope.
@@ -291,6 +300,15 @@ constexpr size_t NUM_SIZE_CLASSES = NUM_SMALL_CLASSES + NUM_MEDIUM_CLASSES_MAX;
 // Returns the header of a heap object.
 inline Header *getHeader(void *obj) { return static_cast<Header *>(obj); }
 
+// threaded-gc-04b (HEAP_062): may an object with this tag hold heap pointers?
+// Only these tags are pointer-free by construction; everything else (including
+// a Tag_Array that happens to hold unboxed values — the tag cannot tell) is
+// treated as pointer-bearing, so a large one is young (nursery or YLOS).
+inline bool tagMayHoldPointers(uint32_t tag) {
+    return tag != Tag_Int && tag != Tag_Float && tag != Tag_Char &&
+           tag != Tag_String && tag != Tag_ByteBuffer;
+}
+
 // Returns the size of a heap object in bytes (8-byte aligned).
 inline size_t getObjectSize(void *obj) {
     Header *hdr = getHeader(obj);
@@ -477,6 +495,12 @@ struct HeapConfig {
 
     // Allocations of this size or larger bypass the nursery and are pinned in old gen.
     size_t large_object_threshold = LARGE_OBJECT_THRESHOLD;
+
+    // Large pointer-bearing objects (threaded-gc-04b): nursery when the size
+    // is <= min(nursery capacity / divisor, max size), else the YLOS.
+    // Divisor 0 = always the YLOS; max size 0 = no fixed bound.
+    u32 large_ptr_nursery_divisor = LARGE_PTR_NURSERY_DIVISOR;
+    size_t large_ptr_nursery_max_size = LARGE_PTR_NURSERY_MAX_SIZE;
 
     // ---- String / rope heuristics ----
 
@@ -873,6 +897,11 @@ struct HeapConfig {
                 "(otherwise objects in [alloc_buffer_size, "
                 "large_object_threshold) take the nursery path but cannot "
                 "fit in a single nursery block)");
+        }
+
+        if (large_ptr_nursery_max_size % 8 != 0) {
+            throw std::invalid_argument(
+                "large_ptr_nursery_max_size must be a multiple of 8");
         }
 
         // ========== 5. Promotion Constraints ==========

@@ -15,6 +15,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#if ECO_HEAP_VALIDATE
+#include <execinfo.h>   // threaded-gc-04b ECO_LARGE_PTR_TRACE
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 // musl (Stage B static build) ships no <execinfo.h>/backtrace; stub them as
 // no-ops so the debug paths compile. glibc keeps its real backtrace. See
 // plans/static-link-eco-binary.md.
@@ -185,6 +190,46 @@ ThreadLocalHeap::ThreadLocalHeap(Allocator* parent,
     old_gen_.bindNursery(&nursery_);
 }
 
+void ThreadLocalHeap::noteLargeAlloc(LargePlacement where, size_t size, uint32_t tag) {
+#if ENABLE_GC_STATS
+    LargePtrStats& lp = stats_.lp;
+    switch (where) {
+        case LargePlacement::Nursery:     lp.nursery_allocs++;     lp.nursery_bytes += size; break;
+        case LargePlacement::Ylos:        lp.ylos_allocs++;        lp.ylos_bytes += size; break;
+        case LargePlacement::Region:      lp.region_allocs++;      lp.region_bytes += size; break;
+        case LargePlacement::PointerFree: lp.pointerfree_allocs++; lp.pointerfree_bytes += size; break;
+    }
+#endif
+#if ECO_HEAP_VALIDATE
+    // D6: a trace of large allocation sites (the tool for spotting a kernel
+    // that builds big flat pointer arrays).
+    // ECO_LARGE_PTR_TRACE=1 traces to stderr with a backtrace; any other
+    // non-empty value is a FILE PATH that one line per allocation is appended
+    // to (O_APPEND: forked test children can share it — the runners' children
+    // _exit, so their stats banners never print).
+    static const int trace_fd = [] {
+        const char* e = std::getenv("ECO_LARGE_PTR_TRACE");
+        if (e == nullptr || e[0] == '\0') return -1;
+        if (e[0] == '1' && e[1] == '\0') return 2;
+        return ::open(e, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    }();
+    if (trace_fd >= 0) {
+        static const char* kNames[] = {"nursery", "ylos", "region", "pointer-free"};
+        char line[128];
+        const int len = std::snprintf(line, sizeof line, "[large-ptr] %s tag=%u size=%zu\n",
+                                      kNames[static_cast<int>(where)], tag, size);
+        if (len > 0) (void)!::write(trace_fd, line, static_cast<size_t>(len));
+        if (trace_fd == 2) {
+            void* frames[8];
+            const int n = backtrace(frames, 8);
+            backtrace_symbols_fd(frames, n, 2);
+        }
+    }
+#else
+    (void)size; (void)tag; (void)where;
+#endif
+}
+
 ThreadLocalHeap::~ThreadLocalHeap() {
     // threaded-gc-04: verify, then drop, this heap's P1 census table.
     p1::forget(old_gen_);
@@ -195,10 +240,17 @@ void* ThreadLocalHeap::allocate(size_t size, Tag tag) {
     // (matches the alignment performed inside nursery/oldgen allocators).
     size = (size + 7) & ~static_cast<size_t>(7);
 
-    // Large-object path: bypass the nursery and allocate directly in old
-    // gen, marking the object pinned so the compactor will not move it.
+    // Large-object path (threaded-gc-04b P§3.1): a pointer-free object goes
+    // to the old gen, pinned; a pointer-bearing one to the nursery up to the
+    // cap, else to the young large-object space. Never born old.
     if (size >= config_->large_object_threshold) {
-        return allocateLargePinned(size, tag);
+        switch (placeLarge(size, tag)) {
+            case LargePlacement::PointerFree: return allocateLargePinned(size, tag);
+            case LargePlacement::Ylos:        return allocateYoungLarge(size, tag);
+            default:
+                noteLargeAlloc(LargePlacement::Nursery, size, tag);
+                break;
+        }
     }
 
     // Fast path. NurserySpace::allocate's bump-pointer compares against
@@ -240,7 +292,11 @@ void* ThreadLocalHeap::allocate(size_t size, Tag tag) {
     // Nursery allocation still failed — genuinely out of space. Cannot fall
     // back to old-gen allocation: the object's fields would be filled in
     // afterwards, potentially creating old→young pointers that violate
-    // the generational GC invariant.
+    // the generational GC invariant. A large object can still go to the
+    // young large-object space, which is young.
+    if (size >= config_->large_object_threshold) {
+        return allocateYoungLarge(size, tag);
+    }
     assert(false && "Failed to allocate to nursery, it is full.");
     return nullptr;
 }
@@ -256,8 +312,16 @@ void* ThreadLocalHeap::allocateSlow(size_t size, Tag tag) {
     // Slow path: GC then allocate. Called after allocateFast returns nullptr.
     size = (size + 7) & ~static_cast<size_t>(7);
 
+    // Large objects: same placement as allocate(). The Nursery placement
+    // takes the GC-and-retry path below.
     if (size >= config_->large_object_threshold) {
-        return allocateLargePinned(size, tag);
+        switch (placeLarge(size, tag)) {
+            case LargePlacement::PointerFree: return allocateLargePinned(size, tag);
+            case LargePlacement::Ylos:        return allocateYoungLarge(size, tag);
+            default:
+                noteLargeAlloc(LargePlacement::Nursery, size, tag);
+                break;
+        }
     }
 
     minorGC();
@@ -276,6 +340,9 @@ void* ThreadLocalHeap::allocateSlow(size_t size, Tag tag) {
         return obj;
     }
 
+    if (size >= config_->large_object_threshold) {
+        return allocateYoungLarge(size, tag);
+    }
     assert(false && "Failed to allocate after GC in slow path.");
     return nullptr;
 }
@@ -346,35 +413,13 @@ void* ThreadLocalHeap::allocateRegionSlow(size_t total) {
     // Caller handles header init for each sub-object.
     total = (total + 7) & ~static_cast<size_t>(7);
 
-    if (total >= config_->large_object_threshold) {
-        // Large regions go to old gen directly.
-        void* obj = old_gen_.allocate(total);
-        if (!obj) {
-            assert(false && "Failed to allocate large region in old gen.");
-            return nullptr;
-        }
-        GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(stats_, total);
-        old_gen_.noteBornOld(obj, total, /*region=*/true);   // HEAP_061
-        return obj;
-    }
-
-    if (total >= config_->large_object_threshold) {
-        // Large regions go to old gen directly.
-        void* obj = old_gen_.allocate(total);
-        if (!obj) {
-#if ENABLE_GC_STATS
-            stats_.major_gc_alloc_failure_triggers++;
-#endif
-            majorGC(GCStats::MajorReason::AllocFailure);
-            obj = old_gen_.allocate(total);
-        }
-        if (!obj) {
-            assert(false && "Failed to allocate large region in old gen.");
-            return nullptr;
-        }
-        GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(stats_, total);
-        old_gen_.noteBornOld(obj, total, /*region=*/true);   // HEAP_061
-        return obj;
+    // A large closure-group region is several objects, so it cannot go to
+    // the young large-object space (per object); it must fit the nursery
+    // (threaded-gc-04b P§3.2). Bounded by the whole nursery, not the
+    // placement cap: a region is not a large-object tuning decision.
+    const bool large = total >= config_->large_object_threshold;
+    if (large) {
+        noteLargeAlloc(LargePlacement::Region, total, Tag_Closure);
     }
 
     minorGC();
@@ -382,12 +427,48 @@ void* ThreadLocalHeap::allocateRegionSlow(size_t total) {
     void* obj = nursery_.allocate(total);
     if (obj) return obj;
 
+    // Post-GC threshold fail-soft — see ThreadLocalHeap::allocate.
+    nursery_.failSoftUnclamp();
+    obj = nursery_.allocate(total);
+    if (obj) return obj;
+
+    if (large) regionTooLarge(total);
     assert(false && "Failed to allocate region after GC.");
     return nullptr;
 }
 
+[[noreturn]] void ThreadLocalHeap::regionTooLarge(size_t total) {
+    std::fprintf(stderr,
+                 "eco: closure group region of %zu bytes exceeds the nursery cap "
+                 "(%zu-byte nursery); split the group\n",
+                 total, nursery_.capacityBytes());
+    std::abort();
+}
+
+void* ThreadLocalHeap::allocateYoungLarge(size_t size, Tag tag) {
+    // threaded-gc-04b HEAP_062: an old-gen cell that is YOUNG — registered
+    // with the current minor color, so the next minor frees it unless it is
+    // reached. No minor GC here: the caller's raw pointers stay valid unless
+    // the old gen is full and a major runs first (before the cell exists).
+    noteLargeAlloc(LargePlacement::Ylos, size, tag);
+    void* obj = old_gen_.allocateYoungLarge(size, tag, nursery_.minor_color_);
+    if (!obj) {
+#if ENABLE_GC_STATS
+        stats_.major_gc_alloc_failure_triggers++;
+#endif
+        majorGC(GCStats::MajorReason::AllocFailure);
+        obj = old_gen_.allocateYoungLarge(size, tag, nursery_.minor_color_);
+    }
+    assert(obj && "Failed to allocate young large object.");
+    return obj;
+}
+
 void* ThreadLocalHeap::allocateLargePinned(size_t size, Tag tag) {
-    // size is already 8-byte aligned by the caller.
+    // size is already 8-byte aligned by the caller. Pointer-free tags only
+    // (threaded-gc-04b V4): a pointer-bearing object is never born old.
+    assert(!tagMayHoldPointers(tag) &&
+           "allocateLargePinned: pointer-bearing objects go to the nursery or YLOS");
+    noteLargeAlloc(LargePlacement::PointerFree, size, tag);
     void* obj = old_gen_.allocate(size);
     if (!obj) {
         // Try once after a major GC to reclaim space.
@@ -412,13 +493,6 @@ void* ThreadLocalHeap::allocateLargePinned(size_t size, Tag tag) {
     initHeaderForTag(hdr, tag, size);
     hdr->color = saved_color;
     hdr->pin = 1;
-    // threaded-gc-04 HEAP_061: a pointer-bearing object born in the old gen is
-    // filled by its kernel afterwards (possibly with nursery pointers): the
-    // minor GC must scan it until its children are old.
-    if (tag != Tag_Int && tag != Tag_Float && tag != Tag_Char &&
-        tag != Tag_String && tag != Tag_ByteBuffer) {
-        old_gen_.noteBornOld(obj, size, /*region=*/false);
-    }
     return obj;
 }
 
@@ -724,7 +798,7 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
         HPointer* base = range.base;
         uint64_t mask = range.hpointer_mask;
         for (size_t i = 0; i < range.count; ++i) {
-            if (mask & (1ULL << i)) {
+            if (stackRangeSlotIsRoot(mask, i)) {
                 old_gen_.markHPointer(base[i]);
                 ++stackrange_roots_pushed;
             }

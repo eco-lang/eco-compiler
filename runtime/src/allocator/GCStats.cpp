@@ -878,6 +878,7 @@ void GCStats::combine(const GCStats& other) {
     // threaded-gc-03: allocator-global like the walls above.
     page_supply.mergeMax(other.page_supply);
     helper.mergeMax(other.helper);
+    lp.combine(other.lp);
 
     // Combine allocator-helper attribution.
     total_oldgen_alloc_in_mutator_ns  += other.total_oldgen_alloc_in_mutator_ns;
@@ -1409,6 +1410,7 @@ void GCStats::print() const {
     // threaded-gc-03 blocks (additive): page supply always, helpers in mode != 0.
     printPageSupplyBlock();
     printHelperBlock();
+    printLargePtrBlock();   // threaded-gc-04b (only when non-zero)
 
     // ========== Allocation Size Histograms ==========
     //
@@ -1818,6 +1820,7 @@ void GCStats::reset() {
     oldgen_hiwater_bytes    = 0;
     page_supply = PageSupplyStats{};
     helper = HelperStatsSnapshot{};
+    lp = LargePtrStats{};
     total_oldgen_alloc_in_mutator_ns  = 0;
     total_post_sweep_shrink_ns        = 0;
     total_maybe_shrink_heavy_ns       = 0;
@@ -2696,6 +2699,30 @@ void GCStats::printPageSupplyBlock() const {
                   fmtMB3(p.fresh_ahead_miss_bytes).c_str());
     std::cout << buf << std::endl;
     std::snprintf(buf, sizeof buf, "  pending peak:          %14s", fmtMB3(p.pending_peak_bytes).c_str());
+    std::cout << buf << std::endl;
+}
+
+void GCStats::printLargePtrBlock() const {
+    if (!lp.any()) return;
+    std::cout << "\nLarge Pointer Objects (threaded-gc-04b):" << std::endl;
+    auto row = [](const char* k, uint64_t n, uint64_t b) {
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "  %-28s %12llu  %14.2f MB", k, (unsigned long long)n,
+                      b / (1024.0 * 1024.0));
+        std::cout << buf << std::endl;
+    };
+    row("nursery (pointer-bearing)", lp.nursery_allocs, lp.nursery_bytes);
+    row("young large objects (YLOS)", lp.ylos_allocs, lp.ylos_bytes);
+    row("closure-group regions", lp.region_allocs, lp.region_bytes);
+    row("pointer-free, old pinned", lp.pointerfree_allocs, lp.pointerfree_bytes);
+    char buf[200];
+    std::snprintf(buf, sizeof buf,
+                  "  YLOS: promoted in place %llu, freed at minor %llu, retired at major %llu, "
+                  "reach calls %llu, scans %llu",
+                  (unsigned long long)lp.ylos_promoted_in_place,
+                  (unsigned long long)lp.ylos_freed_minor,
+                  (unsigned long long)lp.ylos_retired_major,
+                  (unsigned long long)lp.ylos_reach_calls, (unsigned long long)lp.ylos_scans);
     std::cout << buf << std::endl;
 }
 

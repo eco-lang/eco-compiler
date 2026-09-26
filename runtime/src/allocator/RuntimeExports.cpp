@@ -149,9 +149,24 @@ extern "C" void* eco_get_output_stream() {
 extern "C" void* eco_alloc_with_roots(uint32_t tag, uint64_t size,
                                        uint64_t* roots, uint32_t n_roots,
                                        uint64_t hptr_mask) {
+    Allocator& alloc = Allocator::instance();
+    // threaded-gc-04b: a large object takes the placement policy (P§3.1:
+    // nursery up to the cap, else the YLOS, or old-gen pinned when
+    // pointer-free), never the size-blind bump below. It may GC, so the
+    // caller's roots are open across it, as on the slow path.
+    if (__builtin_expect(size >= alloc.getLargeObjectThreshold(), 0)) {
+        size_t saved = eco_gc_stack_range_point();
+        if (n_roots > 0 && hptr_mask != 0) {
+            eco_gc_push_stack_range(roots, n_roots, hptr_mask);
+        }
+        void* obj = alloc.allocate(static_cast<size_t>(size), static_cast<Tag>(tag));
+        eco_gc_restore_stack_range_point(saved);
+        return obj;
+    }
+
     // Fast path: bump-pointer with no rooting. allocateFast cannot trigger
     // GC, so values in roots[] cannot move during this call.
-    void* obj = Allocator::instance().allocateFast(static_cast<size_t>(size));
+    void* obj = alloc.allocateFast(static_cast<size_t>(size));
     if (obj) {
         // allocateFast does not init the header; do it consistently with
         // the slow path (which calls initHeaderForTag inside allocateSlow).
@@ -167,8 +182,7 @@ extern "C" void* eco_alloc_with_roots(uint32_t tag, uint64_t size,
     if (n_roots > 0 && hptr_mask != 0) {
         eco_gc_push_stack_range(roots, n_roots, hptr_mask);
     }
-    obj = Allocator::instance().allocateSlow(static_cast<size_t>(size),
-                                             static_cast<Tag>(tag));
+    obj = alloc.allocateSlow(static_cast<size_t>(size), static_cast<Tag>(tag));
     eco_gc_restore_stack_range_point(saved);
     return obj;
 }
@@ -2929,8 +2943,8 @@ namespace {
 // converting between the evaluator's actual return ABI (`K`) and the
 // caller's `desired_kind` as needed (boxing or extracting primitives).
 //
-// `closure_bits` must be GC-rooted by the caller across this call.
-// `typed_args` holds newargs in the format described by `args_layout`.
+// `closure_bits` is passed by value and rooted here; `typed_args`' boxed
+// slots must be GC-rooted by the caller across this call. `typed_args` holds newargs in the format described by `args_layout`.
 void invokeSaturatedTyped(uint64_t closure_bits,
                           int64_t* typed_args,
                           uint32_t num_args,
@@ -2956,9 +2970,11 @@ void invokeSaturatedTyped(uint64_t closure_bits,
                            static_cast<void**>(alloca(max_values * sizeof(void*)));
     memset(combined_args, 0, max_values * sizeof(void*));
 
-    // Root the combined buffer's boxed slots. closure_bits is already
-    // rooted by the eval caller.
+    // Root the combined buffer's boxed slots, and this function's own copy
+    // of closure_bits: it arrives by value, so the caller's root does not
+    // cover it, and the splice re-resolves it after a boxing allocation.
     EcoRootMark saved_range = ecoRootMark();
+    ecoRoot1Push(reinterpret_cast<HPointer*>(&closure_bits));
     uint64_t bitmap = closure->unboxed;
     if (max_values > 0) {
         uint64_t mask = pointerMaskFromKindBitmap(bitmap, max_values);

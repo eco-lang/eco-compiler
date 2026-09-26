@@ -421,7 +421,6 @@ add_executable(ecor EXCLUDE_FROM_ALL
         runtime/src/allocator/GCHelperPool.cpp
         runtime/src/allocator/PageWork.cpp
         runtime/src/allocator/P1Census.cpp
-        runtime/src/allocator/OldGenBornOld.cpp
         ${ECO_ALLOCATOR_PLATFORM_SRCS}
         runtime/src/allocator/ThreadLocalHeap.cpp
         runtime/src/allocator/GCStats.cpp

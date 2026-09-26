@@ -33,6 +33,7 @@
  */
 
 #include "NurserySpace.hpp"
+#include "HeapChildWalk.hpp"
 #include <sys/resource.h>
 #include "RuntimeExports.h"
 #include <unordered_map>
@@ -437,6 +438,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // scanned in to-space gets recorded with this color via markLargeBodySeen;
     // bodies whose recorded color doesn't match at the end are freed.
     minor_color_ = !minor_color_;
+    young_large_scan_.clear();
 
 #if ECO_HEAP_VALIDATE
     // Used by stale-pointer detection in `debugAssertValidNurseryPointer`.
@@ -456,7 +458,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // threaded-gc-04 P1 census: detector N compares the survivors recorded at
     // the end of the previous minor GC before anything is evacuated; detector
     // O verifies the old-gen table every ECO_P1_CENSUS_EVERY minors.
-    if (censusEnabled()) censusCheck();
+    if (censusEnabled()) censusCheck(oldgen);
     p1::onMinorStart(oldgen, ++census_minor_seq_);
 #endif
 
@@ -559,7 +561,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
         HPointer *base = range.base;
         uint64_t mask  = range.hpointer_mask;
         for (size_t i = 0; i < range.count; ++i) {
-            if (mask & (1ULL << i)) {
+            if (stackRangeSlotIsRoot(mask, i)) {
 #if ECO_GC_DEBUG
                 uint64_t rv; memcpy(&rv, &base[i], sizeof(rv));
                 if (rv == 0x20039995ULL)
@@ -651,28 +653,10 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // at the next mutator read. Conversely, scanning a fresh to-space
     // object can promote an aged child, growing the queue further; hence
     // the alternation runs to mutual fixed point.
-    // threaded-gc-04 HEAP_061: born-old pending objects (large pointer-bearing
-    // objects and regions allocated directly in the old gen) are roots: their
-    // young children are evacuated and their slots updated in place, exactly
-    // as for a promoted parent. The drain below then scans what they reached.
-    for (OldGenSpace::BornOld& b : oldgen.bornOld()) {
-#if ECO_HEAP_VALIDATE
-        in_phase3_ = false;   // an old parent with young children is the point
-#endif
-        if (!b.region) {
-            scanObject(b.obj, oldgen, &promoted_objects);
-            continue;
-        }
-        for (char* p = b.obj; p < b.obj + b.size;) {
-            const size_t sz = getObjectSize(p);
-            if (sz == 0) break;
-            scanObject(p, oldgen, &promoted_objects);
-            p += sz;
-        }
-    }
-
     size_t promoted_idx = 0;
-    while (scanHasMore() || promoted_idx < promoted_objects.size()) {
+    size_t young_large_idx = 0;   // threaded-gc-04b: YLOS objects staying young
+    while (scanHasMore() || promoted_idx < promoted_objects.size() ||
+           young_large_idx < young_large_scan_.size()) {
 #if ENABLE_GC_PHASE_TIMERS
         if (T) { ++rec->drain_rounds; lap(); }
 #endif
@@ -696,9 +680,20 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 #if ENABLE_GC_PHASE_TIMERS
         if (T) rec->drain_promoted_ns += lap();
 #endif
+        // A young parent, scanned in place: its young children are normal.
+        while (young_large_idx < young_large_scan_.size()) {
+#if ECO_HEAP_VALIDATE
+            in_phase3_ = false;
+#endif
+            scanObject(young_large_scan_[young_large_idx++], oldgen, &promoted_objects);
+#if ENABLE_GC_STATS
+            stats.lp.ylos_scans++;
+#endif
+        }
     }
 #if ECO_HEAP_VALIDATE
     in_phase3_ = false;
+    validatePromotedHaveNoYoungChildren(oldgen, promoted_objects);   // V2
 #endif
 #if ENABLE_GC_PHASE_TIMERS
     // Promotion-path old-gen counters for this cycle (Step 7). Taken at drain
@@ -878,6 +873,10 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 
         auto checkOGChild = [&](HPointer &hp, void* parent, const char* field, int idx) {
             if (hp.ptr_ind != 0 || hp.ptr == 0) return;
+            // threaded-gc-04b: an unreached young large object is dead (the
+            // minor-end sweep frees it); its stale slots are not a defect.
+            if (const auto* m = oldgen.youngLargeMeta(parent); m && m->color != minor_color_)
+                return;
             void* child = Allocator::fromPointerRaw(hp);
             if (!child) return;
             if (!isInCurrentFromSpace(child)) return;
@@ -1068,31 +1067,9 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 #if P1_CENSUS_COMPILED
     // threaded-gc-04 P1 census: record this cycle's survivors (N) and a sample
     // of its promotions, now final after the drain (O).
-    if (censusEnabled()) censusRecord();
+    if (censusEnabled()) censusRecord(oldgen);
     p1::recordPromoted(&oldgen, promoted_buf_);
 #endif
-
-    // threaded-gc-04 HEAP_061: retire born-old entries. Every child an entry
-    // held was copied or promoted by this minor; once it has spent
-    // promotion_age + 1 minors outside construction (builder == 0), every
-    // child is old and the entry is frozen: drop it (and let detector O
-    // watch it from here on).
-    {
-        std::vector<OldGenSpace::BornOld>& bo = oldgen.bornOld();
-        size_t w = 0;
-        for (size_t r = 0; r < bo.size(); ++r) {
-            OldGenSpace::BornOld b = bo[r];
-            if (b.region || !getHeader(b.obj)->builder) b.quiet_minors++;
-            if (b.quiet_minors > promotion_age_) {
-#if P1_CENSUS_COMPILED
-                if (!b.region) p1::recordPromoted(&oldgen, std::vector<void*>{b.obj});
-#endif
-                continue;
-            }
-            bo[w++] = b;
-        }
-        bo.resize(w);
-    }
 
 #if ENABLE_GC_STATS
     // Calculate what happened during this GC.
@@ -1133,6 +1110,9 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     const uint64_t t_lb = T ? GCStats::nowSinceProcessStartNs() : 0;
 #endif
     oldgen.sweepNurseryLargeBodies(minor_color_);
+#if ECO_HEAP_VALIDATE
+    validateYoungLarge(oldgen);   // V1
+#endif
 #if ENABLE_GC_PHASE_TIMERS
     if (T) {
         rec->large_body_sweep_ns = GCStats::nowSinceProcessStartNs() - t_lb;
@@ -1281,8 +1261,13 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     // construction — a Tag_Forward is only ever installed on a from-space copy
     // (the three install sites all write into the object being evacuated OUT of
     // from-space). The assertion below pins that claim.
-    if (__builtin_expect(!isInFromSpace(obj), 1))
+    if (__builtin_expect(!isInFromSpace(obj), 1)) {
+        // threaded-gc-04b: a young large object is not in from-space but is
+        // young; reach it (the pointer stays). A pure compare when empty.
+        if (__builtin_expect(oldgen.mayBeYoungLarge(obj), 0))
+            (void)reachYoungLarge(obj, oldgen, promoted_objects);
         return;
+    }
 
     Header *hdr = getHeader(obj);
 
@@ -1526,9 +1511,13 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
         return;
     }
 
-    // Only evacuate if in from-space.
-    if (!isInFromSpace(obj))
+    // Only evacuate if in from-space; a young large object is reached in
+    // place (threaded-gc-04b).
+    if (!isInFromSpace(obj)) {
+        if (oldgen.mayBeYoungLarge(obj))
+            (void)reachYoungLarge(obj, oldgen, promoted_objects);
         return;
+    }
 
     size_t size = getObjectSize(obj);
 #if ECO_HEAP_VALIDATE
@@ -1681,6 +1670,80 @@ static inline void validateBitmapSlotKind(NurserySpace* /*self*/,
         (unsigned)tgt_hdr->tag, (unsigned)tgt_hdr->size);
     std::fflush(stderr);
     std::abort();
+}
+#endif
+
+bool NurserySpace::reachYoungLarge(void* obj, OldGenSpace& oldgen,
+                                   std::vector<void*>* promoted_objects) {
+    OldGenSpace::LargeBodyMeta* m = oldgen.youngLargeMeta(obj);
+    if (m == nullptr) return false;   // an old object inside the bounding box
+#if ENABLE_GC_STATS
+    stats.lp.ylos_reach_calls++;
+#endif
+    if (m->color == minor_color_) return true;   // already reached this minor
+    m->color = minor_color_;
+    Header* h = getHeader(obj);
+    // shouldPromote minus pin: YLOS objects are pinned (never moved) but age.
+    if (!h->builder && h->age >= promotion_age_) {
+        oldgen.promoteYoungLarge(obj);   // invalidates m
+        // Scanned as a promoted parent: by immutability its children are at
+        // least as old, so they promote in this minor too (phase-3 rule).
+        (promoted_objects ? *promoted_objects : young_large_scan_).push_back(obj);
+        return true;
+    }
+#if ECO_HEAP_VALIDATE
+    if (in_phase3_) {
+        std::fprintf(stderr,
+            "[gc-debug] INVARIANT VIOLATION: phase 3 child (young large object) "
+            "not old enough to promote!\n  child obj=%p tag=%u age=%u builder=%u "
+            "promotion_age=%u\n  parent(old-gen) obj=%p tag=%d\n",
+            obj, (unsigned)h->tag, (unsigned)h->age, (unsigned)h->builder,
+            (unsigned)promotion_age_, g_scan_parent, g_scan_tag);
+        std::fflush(stderr);
+        std::abort();
+    }
+#endif
+    if (!h->builder) h->age++;
+    young_large_scan_.push_back(obj);
+    return true;
+}
+
+#if ECO_HEAP_VALIDATE
+void NurserySpace::validateYoungLarge(OldGenSpace& oldgen) const {
+    oldgen.forEachYoungLarge([&](void* obj, OldGenSpace::LargeBodyMeta&) {
+        const Header* h = getHeader(obj);
+        const char* p = static_cast<const char*>(obj);
+        if (h->pin != 1 || (h->builder && h->age != 0) ||
+            !oldgen.mayBeYoungLarge(p) || !oldgen.mayBeYoungLarge(p + getObjectSize(obj) - 1)) {
+            std::fprintf(stderr, "[heap-validate] V1: YLOS object %p tag=%u pin=%u "
+                         "builder=%u age=%u (or outside the bounding box)\n",
+                         obj, (unsigned)h->tag, (unsigned)h->pin,
+                         (unsigned)h->builder, (unsigned)h->age);
+            std::fflush(stderr);
+            std::abort();
+        }
+    });
+}
+
+void NurserySpace::validatePromotedHaveNoYoungChildren(
+        OldGenSpace& oldgen, const std::vector<void*>& promoted) const {
+    // HEAP_005 strict: after the drain, no object promoted this minor points
+    // into the nursery or at a young large object.
+    for (void* parent : promoted) {
+        visitHeapChildren(parent, [&](HPointer& hp) {
+            if (hp.ptr_ind != 0 || hp.ptr == 0) return;
+            void* child = Allocator::fromPointerRaw(hp);
+            if (child == nullptr) return;
+            if (contains(child) || oldgen.isYoungLarge(child)) {
+                std::fprintf(stderr, "[heap-validate] V2: promoted %p (tag=%u) has a "
+                             "young child %p (%s)\n", parent,
+                             (unsigned)getHeader(parent)->tag, child,
+                             contains(child) ? "nursery" : "YLOS");
+                std::fflush(stderr);
+                std::abort();
+            }
+        });
+    }
 }
 #endif
 
@@ -2409,6 +2472,8 @@ struct SurvivorWriteCensus {
     uint64_t skipped_builder = 0;
     uint64_t base_mismatch = 0;
     uint64_t minors = 0;
+    uint64_t ylos_checked = 0;      // threaded-gc-04b: young large objects
+    uint64_t ylos_mismatched = 0;
     std::unordered_map<uint64_t, uint64_t> hits;          // packed key -> count
     std::unordered_map<uintptr_t, uint32_t> eval_id;      // EvaluatorDesc* -> id
     std::vector<uintptr_t> eval_fn;                       // id -> generic fn
@@ -2442,10 +2507,11 @@ void survivorCensusReport() {
 void survivorCensusReportLocked(SurvivorWriteCensus& g) {
     std::fprintf(stderr,
         "[survivor-write-census] minors=%llu checked=%llu mismatched=%llu "
-        "skipped_builder=%llu base_mismatch=%llu\n",
+        "skipped_builder=%llu base_mismatch=%llu ylos_checked=%llu ylos_mismatched=%llu\n",
         (unsigned long long)g.minors, (unsigned long long)g.checked,
         (unsigned long long)g.mismatched, (unsigned long long)g.skipped_builder,
-        (unsigned long long)g.base_mismatch);
+        (unsigned long long)g.base_mismatch, (unsigned long long)g.ylos_checked,
+        (unsigned long long)g.ylos_mismatched);
     std::vector<std::pair<uint64_t, uint64_t>> rows(g.hits.begin(), g.hits.end());
     std::sort(rows.begin(), rows.end(),
               [](const auto& a, const auto& b) { return a.second > b.second; });
@@ -2496,7 +2562,16 @@ void nurseryCensusReport(bool from_signal) {
     survivorCensusReportLocked(g);
 }
 
-void NurserySpace::censusRecord() {
+void NurserySpace::censusRecord(OldGenSpace& oldgen) {
+    // threaded-gc-04b: YLOS objects that stay young are survivors too.
+    census_ylos_.clear();
+    census_ylos_epoch_ = oldgen.majorEpoch();
+    for (void* obj : young_large_scan_) {
+        if (getHeader(obj)->builder) continue;
+        const size_t sz = getObjectSize(obj);
+        census_ylos_.push_back(CensusYlosEntry{obj, static_cast<uint32_t>(sz),
+                                               censusHash(static_cast<char*>(obj), sz)});
+    }
     census_.clear();
     census_copy_.clear();
     char* base = fromBase();
@@ -2532,10 +2607,32 @@ void NurserySpace::censusRecord() {
     }
 }
 
-void NurserySpace::censusCheck() {
+void NurserySpace::censusCheck(OldGenSpace& oldgen) {
     SurvivorWriteCensus& g = survivorCensus();
     std::lock_guard<std::mutex> lock(g.mu);
     g.minors++;
+    // threaded-gc-04b: YLOS survivors (still young, no major since).
+    if (!census_ylos_.empty() && oldgen.majorEpoch() == census_ylos_epoch_) {
+        for (const CensusYlosEntry& e : census_ylos_) {
+            if (!oldgen.isYoungLarge(e.obj)) continue;
+            g.checked++;
+            g.ylos_checked++;
+            if (censusHash(static_cast<char*>(e.obj), e.size) == e.hash) continue;
+            g.mismatched++;
+            g.ylos_mismatched++;
+            const Header* vh = getHeader(e.obj);
+            if (census_forced_ < 0 && p1::mode() == 2) {
+                std::fprintf(stderr,
+                    "[p1-census] VIOLATION (young large object): object %p tag=%s size=%u "
+                    "was written after surviving a minor GC (HEAP_SNAPSHOT_001)\n",
+                    e.obj, gcTagName(static_cast<int>(vh->tag)), e.size);
+                std::fflush(stderr);
+                std::abort();
+            }
+            g.hits[censusKey(static_cast<int>(vh->tag), 0, 0xFFFF)]++;
+        }
+    }
+    census_ylos_.clear();
     if (census_.empty()) return;
     char* base = fromBase();
     if (census_base_ != base) {
@@ -2594,7 +2691,7 @@ void NurserySpace::censusCheck() {
 NurserySpaceTestAccess::CensusCounts NurserySpaceTestAccess::survivorWriteCensusCounts() {
     SurvivorWriteCensus& g = survivorCensus();
     std::lock_guard<std::mutex> lock(g.mu);
-    return CensusCounts{g.checked, g.mismatched, g.skipped_builder};
+    return CensusCounts{g.checked, g.mismatched, g.skipped_builder, g.ylos_checked};
 }
 
 uint64_t NurserySpaceTestAccess::survivorWriteCensusHits(int tag, uint32_t sub, uint16_t word) {
@@ -2608,6 +2705,7 @@ void NurserySpaceTestAccess::resetSurvivorWriteCensus() {
     SurvivorWriteCensus& g = survivorCensus();
     std::lock_guard<std::mutex> lock(g.mu);
     g.checked = g.mismatched = g.skipped_builder = g.base_mismatch = g.minors = 0;
+    g.ylos_checked = g.ylos_mismatched = 0;
     g.hits.clear();
     g.eval_id.clear();
     g.eval_fn.clear();

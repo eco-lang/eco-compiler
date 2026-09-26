@@ -544,39 +544,7 @@ public:
     // metadata and stats (threaded-gc-02). Called before readers.
     void syncCursorLiveBytes();
 
-    // ---- threaded-gc-04 HEAP_061: born-old pending list ----
-    // A pointer-bearing object (or a region of objects) allocated DIRECTLY in
-    // the old gen (large objects, large closure-group regions) is filled by
-    // its kernel afterwards, possibly with nursery pointers. Such an object is
-    // the only permitted holder of old->young edges: every minor GC scans it
-    // as a root until it has had promotion_age + 1 minors with builder == 0
-    // (by then every child has been promoted). Mark end drops dead entries and
-    // splits regions into their live objects (the gap sweep may free the
-    // rest). Compaction is not scheduled while any entry is pending.
-    struct BornOld {
-        char*    obj;
-        uint32_t size;
-        uint8_t  region;         // 1: a run of objects walked by getObjectSize
-        uint8_t  quiet_minors;   // minors seen with builder == 0
-    };
-    void noteBornOld(void* obj, size_t size, bool region) {
-        born_old_.push_back(BornOld{static_cast<char*>(obj),
-                                    static_cast<uint32_t>(size),
-                                    static_cast<uint8_t>(region ? 1 : 0), 0});
-    }
-    bool isBornOldPending(const void* p) const {
-        const char* c = static_cast<const char*>(p);
-        for (const BornOld& b : born_old_) {
-            if (c >= b.obj && c < b.obj + b.size) return true;
-        }
-        return false;
-    }
-    std::vector<BornOld>& bornOld() { return born_old_; }
-    const std::vector<BornOld>& bornOld() const { return born_old_; }
-    // Mark end (finalizeMetaAfterMark): drop unmarked entries; split regions.
-    void pruneBornOldAtMarkEnd();
 private:
-    std::vector<BornOld> born_old_;
     bool refillCursor(size_t cls);
     void* cursorAllocate(size_t cls, size_t requested_size);
     void* finalizeBitmapCell(AllocCursor& c, uint32_t k, size_t requested_size);
@@ -782,13 +750,71 @@ public:
         size_t cell_size;   // Total cell footprint in bytes (includes Header).
         bool   is_large;    // True iff the body sits in a dedicated is_large block.
         bool   color;       // Last minor_color that observed a live header.
+        uint8_t kind = 0;   // 0 = split-header body; 1 = young large object (YLOS).
     };
+
+    // ---- threaded-gc-04b HEAP_062: the young large-object space (YLOS) ----
+    // A large pointer-bearing object too big for the nursery is allocated in
+    // an old-gen cell (pinned, never moved) but is YOUNG: a kind-1 entry in
+    // the HEAP_026 index, colored per minor like a split-header body. The
+    // minor GC reaches it through the copiers (NurserySpace::reachYoungLarge),
+    // scans it in place, ages it, and promotes it in place at promotion_age;
+    // an unreached one is freed at minor end. No old object may point at one.
+
+    // Allocates the cell, writes the header for `tag` (pin = 1, age = 0) and
+    // registers the kind-1 entry with `initial_color`. nullptr on failure.
+    void* allocateYoungLarge(size_t size, Tag tag, bool initial_color);
+    // Cheap filter: false for every pointer outside the bounding box of the
+    // kind-1 entries (and always false when there are none). Conservative:
+    // true does not imply a YLOS object (use youngLargeMeta).
+    bool mayBeYoungLarge(const void* p) const {
+        return p >= ylo_lo_ && p < ylo_hi_;
+    }
+    // The kind-1 entry whose object starts at `p`, or nullptr.
+    LargeBodyMeta* youngLargeMeta(const void* p) {
+        if (!mayBeYoungLarge(p)) return nullptr;
+        auto it = large_body_index_.find(const_cast<void*>(p));
+        if (it == large_body_index_.end() || it->second >= large_bodies_.size()) return nullptr;
+        LargeBodyMeta& m = large_bodies_[it->second];
+        return (m.kind == 1 && m.body_base == p) ? &m : nullptr;
+    }
+    bool isYoungLarge(const void* p) {
+        return youngLargeMeta(p) != nullptr;
+    }
+    // Promotes a YLOS object in place: drops its entry (it is now an ordinary
+    // old object governed by the major GC) and resets its age.
+    void promoteYoungLarge(void* obj);
+    size_t youngLargeCount() const { return ylo_count_; }
+    // Bumped at every major mark end (finalizeMetaAfterMark), after which a
+    // dead YLOS cell may be retired and reused. The P1 census drops YLOS
+    // records across a change.
+    uint64_t majorEpoch() const { return major_epoch_; }
+    // Recomputes ylo_lo_/ylo_hi_/ylo_count_ from the live kind-1 entries.
+    void recomputeYoungLargeBounds();
+    // Calls f(obj, meta) for every live kind-1 entry.
+    template <typename F> void forEachYoungLarge(F&& f) {
+        for (LargeBodyId id : nursery_owned_bodies_) {
+            if (id >= large_bodies_.size()) continue;
+            LargeBodyMeta& m = large_bodies_[id];
+            if (m.body_base != nullptr && m.kind == 1) f(m.body_base, m);
+        }
+    }
 
 private:
     std::vector<LargeBodyMeta>             large_bodies_;
     std::unordered_map<void*, LargeBodyId> large_body_index_;
     std::vector<LargeBodyId>               nursery_owned_bodies_;
     std::vector<LargeBodyId>               free_large_body_ids_;
+    // YLOS bounding box and count (threaded-gc-04b). Grown on registration,
+    // recomputed at minor end and after major retirement; conservative in
+    // between (promotion in place does not shrink it).
+    uint64_t major_epoch_ = 0;
+    char*  ylo_lo_ = nullptr;
+    char*  ylo_hi_ = nullptr;
+    size_t ylo_count_ = 0;
+    // Clears an index entry that the major GC found dead: counts a kind-1
+    // retirement. Does NOT recycle the id (see freeLargeBodyCell).
+    void retireIndexEntry(LargeBodyId id);
 
     // ========== Small-Class Block Budget ==========
     //
@@ -1184,7 +1210,10 @@ private:
     // Records a freshly-allocated body in tracking. Reuses a tombstone id from
     // free_large_body_ids_ when present.
     LargeBodyId registerLargeBody(void* body, size_t cell_size, bool is_large,
-                                  bool minor_color);
+                                  bool minor_color, uint8_t kind = 0);
+    // allocate() + the cell-footprint computation shared by the split-header
+    // body and YLOS allocators. Returns the cell and its footprint.
+    void* allocateTrackedCell(size_t total_size, size_t& cell_size, bool& is_large);
 
     // Frees a body cell. For is_large bodies, hands the block to
     // free_large_blocks_ via markBlockAsFreeLarge. For size-class / split-

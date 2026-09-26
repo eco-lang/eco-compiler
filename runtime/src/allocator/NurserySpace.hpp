@@ -193,9 +193,18 @@ private:
     char* census_base_ = nullptr;
     int   census_forced_ = -1;               // test override: -1 p1::mode, 0 off, 1 on
     uint64_t census_minor_seq_ = 0;          // minors seen (P1 periodic verify)
+    // threaded-gc-04b: YLOS objects that stayed young this minor (they never
+    // move: recorded by address), dropped if a major ran in between.
+    struct CensusYlosEntry {
+        void*    obj;
+        uint32_t size;
+        uint64_t hash;
+    };
+    std::vector<CensusYlosEntry> census_ylos_;
+    uint64_t census_ylos_epoch_ = 0;
     bool  censusEnabled() const;
-    void  censusRecord();
-    void  censusCheck();
+    void  censusRecord(OldGenSpace& oldgen);
+    void  censusCheck(OldGenSpace& oldgen);
 #endif
 
     // Per-minor-GC 1-bit color for split-header bodies (HEAP_026). Flipped at
@@ -203,6 +212,11 @@ private:
     // OldGenSpace::markLargeBodySeen with this color for every live header,
     // and the end-of-cycle sweep frees bodies whose color does not match.
     bool minor_color_ = false;
+
+    // threaded-gc-04b HEAP_062: YLOS objects reached this minor that stay
+    // young. The drain loop scans them in place (young children are normal).
+    // Cleared at the start of each minor.
+    std::vector<void*> young_large_scan_;
 
     // ========== Internal Methods ==========
 
@@ -359,6 +373,21 @@ private:
     }
     void scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*> *promoted_objects);
 
+    // threaded-gc-04b HEAP_062: a copier met a pointer inside the YLOS
+    // bounding box. If `obj` is a young large object, reach it — record the
+    // minor color, then promote it in place (queued on promoted_objects) at
+    // promotion age, else age it and queue it on young_large_scan_ — and
+    // return true: the pointer is unchanged (YLOS objects never move).
+    // Returns false for any other object (the copier carries on).
+    bool reachYoungLarge(void* obj, OldGenSpace& oldgen,
+                         std::vector<void*>* promoted_objects);
+#if ECO_HEAP_VALIDATE
+    // V1 / V2 (plans/threaded-gc-04b-young-large-objects.md P§3.8).
+    void validateYoungLarge(OldGenSpace& oldgen) const;
+    void validatePromotedHaveNoYoungChildren(OldGenSpace& oldgen,
+                                             const std::vector<void*>& promoted) const;
+#endif
+
     // ========== List Locality Optimization ==========
     // Two-pass list copying for contiguous spine allocation (improves cache locality).
 
@@ -478,7 +507,7 @@ public:
     static void setSurvivorWriteCensus(NurserySpace& nursery, bool on) {
         nursery.census_forced_ = on ? 1 : 0;
     }
-    struct CensusCounts { uint64_t checked, mismatched, skipped_builder; };
+    struct CensusCounts { uint64_t checked, mismatched, skipped_builder, ylos_checked; };
     static CensusCounts survivorWriteCensusCounts();
     static uint64_t survivorWriteCensusHits(int tag, uint32_t sub, uint16_t word);
     static void resetSurvivorWriteCensus();

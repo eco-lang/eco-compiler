@@ -42,7 +42,7 @@ exactly like any other object:
 
 | option | what | role |
 |---|---|---|
-| **3. Nursery placement** | Pointer-bearing large objects up to a cap (default ⅛ of the per-side nursery: 8 MiB at start, 16 MiB at the 128 MiB cap) are allocated **in the nursery** | the common case, with no new machinery. Most of these objects already land there today through `eco_alloc_with_roots`' size-blind bump fast path |
+| **3. Nursery placement** | Pointer-bearing large objects up to a cap are allocated **in the nursery**. The cap is the smaller of a relative bound (`large_ptr_nursery_divisor`, default ⅛ of the per-side nursery: 8 MiB at start, 16 MiB at the 128 MiB cap) and a fixed, tunable size (`large_ptr_nursery_max_size`, e.g. 128 KiB or 1 MiB; chosen by experiment E1) | the common case, with no new machinery. Most of these objects already land there today through `eco_alloc_with_roots`' size-blind bump fast path |
 | **4. Young large-object space (YLOS)** | Above the cap, or when the nursery cannot fit the object after a GC: a **non-moving young object**. Its cell sits in the old-gen address range, is traced by the minor GC when reachable, ages like a nursery object, is **promoted in place** (a flag flip, no copy), and is freed at a minor when unreachable | the giants. HEAP_005 becomes literally true again: the young generation = nursery ∪ YLOS |
 | **2. Kernel change** | JSON arrays of more than ~1,020 elements are stored **chunked** (a two-level array of ≤ 8 KiB pieces) instead of one flat `ElmArray`; the other kernels are covered by a census plus a guard | removes the only input-driven source of large flat arrays |
 
@@ -55,7 +55,7 @@ Option 1 (force a minor at creation) is **rejected**:
 | # | Deliverable |
 |---|---|
 | D0 | A census of pointer-bearing large allocations (by tag, placement, call site) on the self-compile, E2E, stress and a JSON microbenchmark: the baseline |
-| D1 | Placement policy: `tagMayHoldPointers(tag)`, the `large_ptr_nursery_divisor` config (default 8; 0 = never nursery) and one routing function used by every large-allocation entry point |
+| D1 | Placement policy: `tagMayHoldPointers(tag)`, two configs that bound nursery placement, `large_ptr_nursery_divisor` (relative; default 8; 0 = never nursery) and `large_ptr_nursery_max_size` (fixed bytes; 0 = no fixed bound), and one routing function used by every large-allocation entry point |
 | D2 | Option 3: nursery placement in `allocate`, `allocateSlow` and `allocateRegionSlow`, with the fail-soft to YLOS |
 | D3 | Option 4: YLOS on top of the HEAP_026 body index (`LargeBodyMeta.kind`), the minor-GC reach/scan/age/promote-in-place path, the bounding-box filter in the evacuation copiers, and freeing through the existing `sweepNurseryLargeBodies` / `retireDeadLargeBodies` |
 | D4 | Removal of HEAP_061: the born-old list, `OldGenBornOld.cpp`, the compaction guard, the `markOneObject` / `clear_builder` exceptions, and detector W's exception |
@@ -135,15 +135,39 @@ LargePlacement placeLarge(size_t size, Tag tag) const;
 - `!tagMayHoldPointers(tag)` → `OldPinned`, today's `allocateLargePinned`. Only
   `Tag_Int/Float/Char/String/ByteBuffer` reach it through `allocate()` (strings and bytes
   normally take the split-header path before this point).
-- `large_ptr_nursery_divisor == 0` → `Ylos` (a test knob).
-- `size <= nursery_.capacityBytes() / large_ptr_nursery_divisor` → `Nursery`.
-- otherwise → `Ylos`.
+- `large_ptr_nursery_divisor == 0` → `Ylos` (a test knob: never place in the nursery).
+- Otherwise the **nursery cap** is
+  ```cpp
+  size_t cap = nursery_.capacityBytes() / large_ptr_nursery_divisor;     // relative bound
+  if (large_ptr_nursery_max_size != 0)
+      cap = std::min(cap, large_ptr_nursery_max_size);                    // fixed bound
+  ```
+  and `size <= cap` → `Nursery`, otherwise → `Ylos`.
+
+The two bounds do different jobs:
+- **The divisor is a safety bound.** It keeps a large object from crowding the nursery when the
+  nursery is small (early in a run, or in a small-heap configuration). It scales with the
+  nursery.
+- **The fixed maximum is a tuning knob.** It chooses how big an object is still worth copying
+  through the nursery (copied once to to-space, then promoted by copy) rather than keeping it in
+  place in the YLOS (scanned, never copied), **independently of how large the nursery has
+  grown**. A value such as 128 KiB or 1 MiB keeps big arrays out of the nursery even at the 128
+  MiB cap. Its default is chosen by experiment E1 (P§5a).
+- A `large_ptr_nursery_max_size` below `large_object_threshold` is legal. Every large pointer
+  object then goes to the YLOS, which gives the same behaviour as `large_ptr_nursery_divisor = 0`
+  and is useful for tests.
 
 `tagMayHoldPointers(tag)` is an inline in `AllocatorCommon.hpp`: `tag` is not one of `Tag_Int,
 Tag_Float, Tag_Char, Tag_String, Tag_ByteBuffer`.
 
-New `HeapConfig::large_ptr_nursery_divisor` (`uint32_t`, default `LARGE_PTR_NURSERY_DIVISOR = 8`;
-JSON key; `validate`: no constraint, since 0 is legal).
+New `HeapConfig` fields, each with a compiled default in `AllocatorCommon.hpp`, a JSON key in
+`HeapConfigJson.cpp` (known-key list plus a parse block), and a line in `HeapConfigJson.hpp`'s key
+comment:
+
+| field | type | default | parse | `validate` |
+|---|---|---|---|---|
+| `large_ptr_nursery_divisor` | `uint32_t` | `LARGE_PTR_NURSERY_DIVISOR = 8` | `parseU32` | none (0 is legal: never nursery) |
+| `large_ptr_nursery_max_size` | `size_t` | `LARGE_PTR_NURSERY_MAX_SIZE = 0` (no fixed bound) until E1 sets it | `parseByteSize` (accepts `"128K"`, `"1M"`) | must be a multiple of 8 |
 
 ### 3.2 Option 3: nursery placement
 
@@ -345,10 +369,21 @@ validate tree's `test` target and run the new tests there.
 ### Step 1 — D1: policy
 
 1. `tagMayHoldPointers` inline (`AllocatorCommon.hpp`).
-2. `HeapConfig::large_ptr_nursery_divisor` + the constant + the JSON key.
+2. `HeapConfig::large_ptr_nursery_divisor` and `large_ptr_nursery_max_size`, with their
+   constants, JSON keys and the `validate` rule (P§3.1 table).
 3. `ThreadLocalHeap::placeLarge` (P§3.1).
-4. Unit test `testPlaceLargeDecisions`: string → OldPinned; array under the cap → Nursery; array
-   over the cap → Ylos; divisor 0 → Ylos.
+4. Unit tests:
+   - `testPlaceLargeDecisions`:
+     - a string → OldPinned;
+     - an array under the cap → Nursery;
+     - an array over the cap → Ylos;
+     - divisor 0 → Ylos;
+     - `max_size` = 128 KiB with a 64 MiB nursery: a 100 KiB array → Nursery, a 200 KiB one →
+       Ylos (the fixed bound wins over the divisor's 8 MiB);
+     - `max_size` = 64 MiB with a 64 MiB nursery: the divisor wins (8 MiB);
+     - `max_size` below the large-object threshold → every large pointer object → Ylos.
+   - `testLargePtrConfigJson`: both keys round-trip through JSON, including `"1M"`, and
+     `max_size` = 1001 is rejected by `validate`.
 
 ### Step 2 — D2: nursery placement
 
@@ -439,6 +474,42 @@ P§5, P§6, P§8.
   - the pause is not worse.
 - **Stress under GC pressure:** the `large_ptr_*` counters, and 100/100.
 
+### 5a. Experiment E1 — choosing `large_ptr_nursery_max_size`
+
+Run after Step 5, on the JSON microbenchmark (D0), a second microbenchmark that builds large
+arrays through `List.toArray` / `allocArrayBuilder` at sizes of 10 k, 100 k and 1 M elements, and
+the self-compile. Arms, each set as a **compiled default** (one lowered binary per arm, as in the
+GC loop; env-free):
+
+| arm | `large_ptr_nursery_max_size` |
+|---|---|
+| A | 0 (divisor only: up to 8–16 MiB in the nursery) |
+| B | 4 MiB |
+| C | 1 MiB |
+| D | 128 KiB |
+| E | 16 KiB (almost everything large goes to the YLOS) |
+
+Record per arm:
+- wall and GC time (minor and major);
+- max pause, minor-only p99 (phase-timer builds);
+- copied-in-nursery and promoted bytes;
+- `large_ptr_nursery_*` / `large_ptr_ylos_*` counts, `ylos_promoted_in_place`,
+  `ylos_reach_calls`;
+- max RSS.
+
+**Decision rule:**
+- choose the **largest** value whose microbenchmark GC time and max pause are within noise of the
+  best arm and whose self-compile is FLAT against A;
+- if every arm is within noise, choose **1 MiB**, which bounds the per-object nursery copy cost
+  without relying on the YLOS for common sizes.
+
+Record the table and the choice in P§9, and set `LARGE_PTR_NURSERY_MAX_SIZE`.
+
+What to watch: nursery placement costs two copies (to-space, then promotion) and speeds up the
+next minor. YLOS placement costs a hash lookup per reach, plus a scan of the whole object at
+every minor while it is young. The crossover is the object size at which copying twice outweighs
+scanning in place.
+
 ## 6. Gates
 
 | # | Gate | Pass |
@@ -481,8 +552,9 @@ P§5, P§6, P§8.
 - **HEAP_061:** mark it **retired** (status `retired`), with a pointer to HEAP_062.
 - **HEAP_062 YoungLargeObjectSpace (new):**
   - A pointer-bearing object of size ≥ `large_object_threshold` is placed in the nursery when it
-    fits under `capacity / large_ptr_nursery_divisor`. Otherwise it goes to the YLOS: a pinned
-    old-gen-range cell registered as a kind-1 entry of the HEAP_026 body index.
+    fits under `min(capacity / large_ptr_nursery_divisor, large_ptr_nursery_max_size)` (the
+    fixed bound applies when non-zero). Otherwise it goes to the YLOS: a pinned old-gen-range cell
+    registered as a kind-1 entry of the HEAP_026 body index.
   - A YLOS object is young. The minor GC reaches it through a bounding-box filter plus an index
     lookup in the evacuation copiers, colors it, ages it like a nursery object, scans its
     children, and promotes it in place (the entry is removed, no copy) when `age >=
@@ -500,7 +572,153 @@ P§5, P§6, P§8.
 
 ## 9. As-built deviations
 
-*(Fill in during implementation, including the D0 census table.)*
+Implemented 2026-09-26. Every step landed. The deviations and results follow.
+
+### 9.1 Pre-existing bugs found and fixed on the way
+
+The D0/D5 tests and the validate gate exposed five defects that predate this plan:
+
+1. **`Json.Decode.array` built an invalid `Array` for more than 1,056 elements.** The old code
+   built a flat tree with shift 5, so `Array.get 499999` returned 287. It is replaced by
+   `buildElmArrayFromElements`, which mirrors `Array.fromList`:
+   - the tail is `len % 32`, and full 32-chunks are `Leaf` nodes;
+   - `SubTree` levels group by 32;
+   - `startShift = max 5 (5 * floor(log32(numLeaves*32 - 1)))`.
+
+   A first attempt with tail `((len-1)%32)+1` crashed `Array.get`.
+2. **`invokeSaturatedTyped` took `closure_bits` by value** and passed a reference to that
+   unrooted copy to `spliceArgsForSaturatedCall`. The splice re-resolves the closure after a
+   primitive→boxed allocation, so it read a stale closure ("PTR IN TO-SPACE"). Fixed by rooting
+   the local.
+3. **`runDecoder`'s recursive calls passed the unrooted `jvalEnc` parameter copy** (`oneOf`,
+   `andThen`, `map2`+, `lazy`). After the first sub-decoder GC'd, later ones decoded a stale
+   value. They now pass `Export::encode(jvalHP)`, and the parameter is renamed `jvalEncIn`.
+
+   Items 2 and 3 were the long-standing validate-stress `JsonRoundtrip*` aborts: **validate
+   stress under GC pressure went from 95/101 to 101/101.**
+4. **Stack root ranges longer than 64 slots** relied on `1ULL << i` for i ≥ 64, which is UB.
+   `stackRangeSlotIsRoot` now defines the semantics (beyond slot 63, only an all-ones mask
+   roots). Every such range in the tree uses an all-ones mask, and the old code compiled to
+   `bt reg,reg` (mod-64 wrap) in both scanners, so behaviour is unchanged.
+5. **The heap-graph test generator made 0-field `Custom`s**, which HEAP_044 forbids. The
+   validate unit suite failed on about half the seeds. The generator now pads to one unboxed
+   field.
+
+### 9.2 Design deviations
+
+- **`LargePlacement` enum.** It is `{Nursery, Ylos, Region, PointerFree}`, one enum shared by
+  the policy and the counters. The policy is the pure static
+  `ThreadLocalHeap::placeLargeFor(size, tag, nursery_capacity, cfg)`, so tests can pass any
+  capacity.
+- **`eco_alloc_with_roots`: large sizes skip the size-blind bump (F3).** They go through
+  `Allocator::allocate` with the caller's roots open. Otherwise the cap and the fixed maximum
+  did nothing for kernel allocations (`allocArray`, `allocArrayBuilder`), which is most of them.
+- **Regions are bounded by the whole nursery, not the placement cap.** A region is fatal only
+  if it does not fit after a minor plus the fail-soft. A nursery/8 cap would abort real
+  programs in small-nursery configs (GC-pressure: 128 KiB, so a 16 KiB cap).
+- **The bounding box is conservative between minors.** It is not recomputed per in-place
+  promotion (that would be O(n²)), only at minor end, after the major's retirement, and grown
+  on registration. `youngLargeMeta` is an exact index lookup, so a stale box costs a lookup,
+  never a wrong answer.
+- **The copier hook sits inside the `!isInFromSpace` branch**, and on a miss the copier returns
+  as before. The from-space path costs nothing.
+- **Major-side index retirement keys on the index, not the tag**, at three sites
+  (`classifyBlocksAfterMark`'s `is_large` branch and both legacy sweep branches). Keying on
+  String/ByteBuffer would leak the kind-1 entry of a dead YLOS object in an `is_large` block,
+  and a later `freeLargeBodyCell` would double-free it.
+- **Validate integrity check.** The old-gen check ("OLD-GEN→NURSERY(stale)") skips unreached
+  kind-1 parents: they are dead until the minor-end sweep frees them.
+- **Census N for the YLOS** records survivors by address and drops them across a major
+  (`OldGenSpace::majorEpoch()`). A major can retire a cell and reuse it.
+- **V2 (`HeapChildWalk.hpp`)** reuses PermanentSpace's per-tag child walker, moved to a shared
+  header.
+- **Step 4's test swap happened in Step 2:** the born-old region test cannot run once regions
+  are nursery-only.
+- **Kernel-license manifest.** The `JsonExports.cpp` rows (33) carry a dated re-audit note: no
+  apply, no retention, no closure mint. The manifest was regenerated.
+- **E1 microbenchmark 2 is a C++ bench** (`testE1LargeArrayPlacementBench`, enabled by
+  `ECO_E1_BENCH=1`). Elm cannot build large flat pointer arrays:
+  - `List.toArray` is a pass-through in eco;
+  - `Elm.JsArray` is not exposed;
+  - `Array`'s JsArrays hold at most 32 elements.
+
+  Arms are set in the `HeapConfig` (unit tests ignore `ECO_HEAP_CONFIG`), so every arm runs in
+  one binary and one environment.
+
+### 9.3 D0 census (placement of large allocations)
+
+| workload | nursery (ptr) | YLOS | regions | pointer-free | born old (before) |
+|---|---|---|---|---|---|
+| self-compile (candidate, mode 2) | 0 | 0 | 0 | 1 (0.02 MB) | 0 |
+| unit + E2E (validate tree, before Step 2) | 3 (tests) | — | 1 (test) | 63 (ByteBuffer) | 3 (tests) |
+| stress under GC pressure (before Step 2) | 20 arrays | — | 0 | — | 1 |
+| JSON benchmark (`JsonLargeArray`, after D5) | 0 | 0 | 0 | 0 | — |
+
+**The self-compile makes no large pointer-bearing allocation.** It is therefore invariant under
+the whole policy, including every E1 arm.
+
+### 9.4 Measurement (P§5, G8)
+
+Same-session control `eco-optTG4` vs candidate `eco-optTG4b`, mode 2, two runs each:
+
+| | wall | max RSS | out.mlir | objects / minors / majors | promoted / copied |
+|---|---|---|---|---|---|
+| control | 2:56.52, 2:52.32 | 9,778,496 / 9,778,056 KB | — | 254,179,007 / 1,924 / 7 | 675,771,142 / 744,248,460 |
+| candidate | 2:50.98, 2:50.42 | 9,781,300 / 9,780,708 KB (+0.03 %) | identical | identical | +241 / +1,880 |
+
+Each binary is deterministic (r1 = r2). The promoted/copied delta (3.6e-7 relative) is **not
+attributed**:
+- reverting the two stale-pointer fixes did not change the candidate's counters;
+- restoring the TG4 JSON kernel did not either;
+- the root-range change is behaviour-identical (see §9.1 item 4);
+- a *fresh* lowering of the keep-TG4 sources differs from the old `eco-optTG4` by 2 copies.
+
+So same-source lowerings are not bit-exact on this counter, and the residue is most likely
+layout-sensitive. Two intermediate experiments were invalid and are discarded: a source swap
+restored with `cp -a` kept old mtimes, so ninja linked stale objects.
+
+### 9.5 Experiment E1 (P§5a)
+
+`testE1LargeArrayPlacementBench`, production `HeapConfig` defaults, `gc_thread_mode` 0.
+24 M elements per cell: arrays filled across allocations (like `JsArray.initialize`), with the
+last 4 kept live. Run 1 is shown; run 2 agreed within ~3 %.
+
+| arm (`max_size`) | 10 k (80 KB): wall / minor ms | 100 k (800 KB): wall / minor ms | 1 M (8 MB): wall / GC ms / majors |
+|---|---|---|---|
+| A 0 (divisor only) | 204 / 4.5 | 235 / 47.6 | 1,735 / 1,524 / 5 |
+| B 4 MiB | 190 / 4.0 | 236 / 48.8 | 923 / 684 / 1 |
+| C 1 MiB | 189 / 3.9 | 235 / 48.0 | 914 / 683 / 1 |
+| **D 128 KiB** | **190 / 3.9** | **234 / 29.9** | **913 / 680 / 1** |
+| E 16 KiB | 317 / 2.7 | 234 / 30.9 | 908 / 677 / 1 |
+
+Where the cost goes:
+- **An 8 MB array in the nursery (A)** is copied twice, and the doubled promotion volume drives
+  4 extra majors: 1.9× the wall.
+- **An 800 KB array in the YLOS (D, E)** cuts minor GC time by 37 %.
+- **An 80 KB array in the YLOS (E)** is 1.65× slower in wall while its GC time drops. YLOS
+  allocation (an old-gen cell plus index registration, then a free at the next minor) costs
+  more than copying 80 KB. The plan's GC-time-only rule would pick E; it cannot see that cost.
+
+**Choice: 128 KiB (D).** It is best or tied at every size on wall and GC time, and max pauses
+are within noise. `LARGE_PTR_NURSERY_MAX_SIZE = 128 KiB`. The self-compile is flat by
+construction (§9.3).
+
+### 9.6 Gates
+
+| gate | result |
+|---|---|
+| G1 | `check` 1805/1805 |
+| G2 | elm-tests 13,565 / 12 (the reference set) |
+| G3 | `full` 1804/1804 |
+| G4 | stress under GC pressure 101/101 |
+| G5 | validate unit + E2E 1806/1806, stress under pressure 101/101, zero `[heap-validate]` / P1 / STALE lines |
+| G6 | stats-off `ecoc` builds |
+| G7 | census tree (abort mode): unit + E2E 1805/1805, stress 101/101, 0 violations; self-compile in count mode (`eco-optTG4bcensus`): N 743,942,253 re-hashes, O 264,965,968 checks, W 18,800,491 writes, **0 violations**, out.mlir identical |
+| G8 | §9.4 |
+| G9 | `grep -rn "born_old\|BornOld\|noteBornOld\|isBornOldPending\|HEAP_061" runtime/src test` is empty; `allocateLargePinned` asserts a pointer-free tag |
+
+Negative control: with `reachYoungLarge` removed from `evacuate`,
+`testYlosChildrenSurviveMinors` fails ("YLOS after minor: length").
 
 ## 10. Out of scope
 
@@ -516,5 +734,6 @@ P§5, P§6, P§8.
 - HEAP_005 is strict, HEAP_062 is in, and HEAP_061 is retired, with no born-old code left (G9).
 - G1–G9 are green. The D0 census and the P§5 measurements are recorded.
 - The chunked JSON arrays are in, with their tests.
+- Experiment E1 has been run, and `LARGE_PTR_NURSERY_MAX_SIZE` has been set by its rule.
 - Snapshot `keep-TG4b` is taken, loop entry TG4b is written, and the master plan has a row 4b and
   its §5 row.

@@ -30,6 +30,7 @@
 #include <cassert>
 #include <vector>
 #include <algorithm>
+#include <deque>
 
 using json = nlohmann::json;
 using namespace Elm;
@@ -52,6 +53,11 @@ static constexpr u16 CTOR_JSON_FLOAT  = 103;  // 1 unboxed field: f64
 static constexpr u16 CTOR_JSON_STRING = 104;  // 1 boxed field: HPointer to ElmString
 static constexpr u16 CTOR_JSON_ARRAY  = 105;  // 1 boxed field: HPointer to ElmArray
 static constexpr u16 CTOR_JSON_OBJECT = 106;  // 1 boxed field: Elm List of (String, JsonValue) tuples
+// threaded-gc-04b D5: an array longer than jsonArrayChunkSize() elements.
+// values[0] = ElmArray of chunk ElmArrays (chunk i holds elements
+// [i*F, min(n, (i+1)*F)), every chunk below the large-object threshold);
+// values[1] = unboxed Int n. Read only through jsonArrayLength/jsonArrayAt.
+static constexpr u16 CTOR_JSON_ARRAY_CHUNKED = 107;
 
 // Decoder ctor values
 static constexpr u16 DEC_STRING = 0;
@@ -248,6 +254,140 @@ static HPointer makeJsonString(HPointer elmStr) {
     return Allocator::instance().wrap(c);
 }
 
+// threaded-gc-04b D5: roots a vector that will NOT be resized while rooted,
+// in 64-slot ranges (a StackRootRange's hpointer_mask has 64 bits). The
+// caller restores the range stack point afterwards.
+static void rootInChunks(RootSet& rs, std::vector<HPointer>& v) {
+    for (size_t base = 0; base < v.size(); base += 64) {
+        const size_t chunk = std::min<size_t>(64, v.size() - base);
+        const uint64_t mask = (chunk == 64) ? ~uint64_t{0} : ((uint64_t{1} << chunk) - 1);
+        rs.pushStackRootRange(v.data() + base, chunk, mask);
+    }
+}
+
+// Allocates a JsArray of `count` elements from elems[start..start+count) of
+// uniform kind (0 boxed, 1 Int, 2 Float): boxed values are stored as-is,
+// unboxed kinds are read out of their boxed ElmInt/ElmFloat. `elems` must be
+// rooted by the caller (re-read after the allocation). count <= 32 here, so
+// the array is always small (nursery-born, filled with no allocation).
+static HPointer jsArrayFromSlice(std::vector<HPointer>& elems, size_t start, size_t count,
+                                 u8 kind) {
+    auto& allocator = Allocator::instance();
+    HPointer jsArr = alloc::allocArray(count);
+    void* arrObj = allocator.resolve(jsArr);
+    for (size_t i = 0; i < count; ++i) {
+        if (kind == 1) {
+            ElmInt* ei = static_cast<ElmInt*>(allocator.resolve(elems[start + i]));
+            Unboxable u; u.i = ei->value;
+            alloc::arrayPushKind(arrObj, u, 1);
+        } else if (kind == 2) {
+            ElmFloat* ef = static_cast<ElmFloat*>(allocator.resolve(elems[start + i]));
+            Unboxable u; u.f = ef->value;
+            alloc::arrayPushKind(arrObj, u, 2);
+        } else {
+            Unboxable u; u.p = elems[start + i];
+            alloc::arrayPush(arrObj, u, true);
+        }
+    }
+    return jsArr;
+}
+
+// Allocates the Array.elm `Node` Custom wrapping `child` (a JsArray):
+// ctor 0 = SubTree, ctor 1 = Leaf (declaration order in Array.elm).
+static HPointer makeArrayNode(u16 ctor, HPointer child) {
+    size_t sz = (sizeof(Custom) + 1 * sizeof(Unboxable) + 7) & ~size_t{7};
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &child, sizeof(child));
+    Custom* node = static_cast<Custom*>(eco_alloc_with_roots(Tag_Custom, sz, roots, 1, 0x1));
+    std::memcpy(&child, &roots[0], sizeof(child));
+    node->ctor = ctor;
+    node->unboxed = 0;
+    node->values[0].p = child;
+    return Allocator::instance().wrap(node);
+}
+
+// Builds an Elm `Array a` = `Array_elm_builtin Int Int (Tree a) (JsArray a)`
+// with EXACTLY Array.fromList's shape (elm/core Array.elm fromListHelp /
+// builderToArray / treeFromBuilder / compressNodes): the last len % 32
+// elements form the tail (empty for a multiple of 32 — Array.get's
+// tailIndex relies on it); every full 32-element chunk is a Leaf node; while more than 32 nodes
+// remain they are grouped 32 at a time into SubTree nodes; the top level is
+// a JsArray of at most 32 nodes; startShift = max 5 (5 * floor(log32(treeLen - 1))).
+//
+// threaded-gc-04b D5: before this, the tree was ONE flat JsArray of all
+// leaves with startShift 5 — only a valid Array up to 32 leaves (1,056
+// elements); larger decoded arrays returned wrong elements from Array.get,
+// and the flat leaf array was a large pointer-bearing object (the S2 source).
+// Every JsArray built here has <= 32 elements.
+//
+// `elements` must be rooted by the caller (rootInChunks) and is not resized.
+static HPointer buildElmArrayFromElements(std::vector<HPointer>& elements, u8 elemKind) {
+    constexpr size_t kBranch = 32;
+    auto& allocator = Allocator::instance();
+    auto& rs = allocator.getRootSet();
+    const size_t len = elements.size();
+    const size_t tailLen = len % kBranch;   // fromListHelp: full chunks are Leaves
+    const size_t tailStart = len - tailLen;
+    const size_t numLeaves = tailStart / kBranch;
+
+    size_t saved = rs.stackRangePoint();
+    HPointer tailJsArr = jsArrayFromSlice(elements, tailStart, tailLen, elemKind);
+    rs.pushStackRootRange(&tailJsArr, 1, 1);
+
+    // Every level's vector stays alive (and rooted, buffer never moved) until
+    // the function returns: a std::deque never relocates its elements, so the
+    // root ranges registered on each level's buffer stay valid.
+    std::deque<std::vector<HPointer>> levels;
+
+    // Level 0: the Leaf nodes, in index order.
+    levels.emplace_back(numLeaves, alloc::listNil());
+    rootInChunks(rs, levels.back());
+    for (size_t k = 0; k < numLeaves; ++k) {
+        HPointer leafArr = jsArrayFromSlice(elements, k * kBranch, kBranch, elemKind);
+        levels.back()[k] = makeArrayNode(/*Leaf*/ 1, leafArr);
+    }
+
+    // Group into SubTree nodes while more than 32 nodes remain.
+    while (levels.back().size() > kBranch) {
+        std::vector<HPointer>& below = levels.back();
+        const size_t groups = (below.size() + kBranch - 1) / kBranch;
+        levels.emplace_back(groups, alloc::listNil());
+        std::vector<HPointer>& above = levels.back();
+        rootInChunks(rs, above);
+        for (size_t g = 0; g < groups; ++g) {
+            const size_t start = g * kBranch;
+            const size_t count = std::min(kBranch, below.size() - start);
+            HPointer sub = jsArrayFromSlice(below, start, count, /*boxed*/ 0);
+            above[g] = makeArrayNode(/*SubTree*/ 0, sub);
+        }
+    }
+
+    HPointer treeJsArr = jsArrayFromSlice(levels.back(), 0, levels.back().size(), /*boxed*/ 0);
+    rs.pushStackRootRange(&treeJsArr, 1, 1);
+
+    size_t startShift = 5;
+    if (numLeaves > 0) {
+        size_t v = numLeaves * kBranch - 1;   // treeLen - 1
+        size_t depth = 0;
+        while (v >= kBranch) { v /= kBranch; ++depth; }
+        startShift = std::max<size_t>(5, 5 * depth);
+    }
+
+    size_t sz = (sizeof(Custom) + 4 * sizeof(Unboxable) + 7) & ~size_t{7};
+    uint64_t roots[4] = {static_cast<uint64_t>(len), static_cast<uint64_t>(startShift), 0, 0};
+    std::memcpy(&roots[2], &treeJsArr, sizeof(treeJsArr));
+    std::memcpy(&roots[3], &tailJsArr, sizeof(tailJsArr));
+    Custom* c = static_cast<Custom*>(eco_alloc_with_roots(Tag_Custom, sz, roots, 4, 0xC));
+    c->ctor = 0;       // Array_elm_builtin
+    c->unboxed = 0x5;  // fields 0 (length) and 1 (startShift) are unboxed Ints
+    c->values[0].i = static_cast<i64>(roots[0]);
+    c->values[1].i = static_cast<i64>(roots[1]);
+    std::memcpy(&c->values[2].p, &roots[2], sizeof(HPointer));
+    std::memcpy(&c->values[3].p, &roots[3], sizeof(HPointer));
+    rs.restoreStackRangePoint(saved);
+    return allocator.wrap(c);
+}
+
 // Create a heap-resident JSON array from an ElmArray of JSON values.
 static HPointer makeJsonArray(HPointer elmArray) {
     size_t size = sizeof(Custom) + sizeof(Unboxable);
@@ -262,6 +402,83 @@ static HPointer makeJsonArray(HPointer elmArray) {
     c->unboxed = 0;
     c->values[0].p = elmArray;
     return Allocator::instance().wrap(c);
+}
+
+// threaded-gc-04b D5: elements per chunk of a chunked JSON array, so every
+// chunk ElmArray stays below the large-object threshold (1,021 at 8 KiB).
+static size_t jsonArrayChunkSize() {
+    return (Allocator::instance().getLargeObjectThreshold() - 1 - sizeof(ElmArray)) /
+           sizeof(Unboxable);
+}
+
+// Create a chunked heap-resident JSON array: `index` is an ElmArray of chunk
+// ElmArrays holding `n` elements in total.
+static HPointer makeJsonArrayChunked(HPointer index, u32 n) {
+    size_t size = sizeof(Custom) + 2 * sizeof(Unboxable);
+    size = (size + 7) & ~7;
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &index, sizeof(index));
+    Custom* c = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, roots, 1, 0x1));
+    std::memcpy(&index, &roots[0], sizeof(index));
+    c->header.size = 2;
+    c->ctor = CTOR_JSON_ARRAY_CHUNKED;
+    c->unboxed = 0x4;              // values[1]: Int (kind 1 in bits [2,3])
+    c->values[0].p = index;
+    c->values[1].i = static_cast<i64>(n);
+    return Allocator::instance().wrap(c);
+}
+
+// Builds the JSON array for `elements` (rooted by the caller, not resized):
+// one ElmArray up to jsonArrayChunkSize() elements, else chunks then an index
+// (each array filled right after its allocation: SAFE-FRESH).
+static HPointer makeJsonArrayFrom(std::vector<HPointer>& elements) {
+    const size_t n = elements.size();
+    const size_t F = jsonArrayChunkSize();
+    if (n <= F) return makeJsonArray(arrayFromPointers(elements));
+
+    auto& rs = Allocator::instance().getRootSet();
+    const size_t saved = rs.stackRangePoint();
+    std::vector<HPointer> chunks((n + F - 1) / F, alloc::listNil());
+    rootInChunks(rs, chunks);
+    for (size_t c = 0; c < chunks.size(); ++c) {
+        const size_t lo = c * F;
+        const size_t hi = std::min(n, lo + F);
+        // arrayFromPointers roots its own copy of the slice.
+        std::vector<HPointer> slice(elements.begin() + lo, elements.begin() + hi);
+        chunks[c] = arrayFromPointers(slice);
+#if ECO_HEAP_VALIDATE
+        // V5: every chunk is below the large-object threshold.
+        assert(sizeof(ElmArray) + slice.size() * sizeof(Unboxable) <
+                   Allocator::instance().getLargeObjectThreshold() &&
+               "JSON array chunk reached the large-object threshold");
+#endif
+    }
+    HPointer index = arrayFromPointers(chunks);
+    rs.restoreStackRangePoint(saved);
+    return makeJsonArrayChunked(index, static_cast<u32>(n));
+}
+
+static bool isJsonArrayCtor(u16 ctor) {
+    return ctor == CTOR_JSON_ARRAY || ctor == CTOR_JSON_ARRAY_CHUNKED;
+}
+
+// Element count of a JSON array of either form. No allocation.
+static u32 jsonArrayLength(Custom* jarr) {
+    if (jarr->ctor == CTOR_JSON_ARRAY_CHUNKED) return static_cast<u32>(jarr->values[1].i);
+    return static_cast<ElmArray*>(Allocator::instance().resolve(jarr->values[0].p))->length;
+}
+
+// Element i (< jsonArrayLength) of a JSON array of either form. No
+// allocation. The chunk size is chunk 0's length (every chunk but the last
+// is full), so it does not depend on the current configuration.
+static HPointer jsonArrayAt(Custom* jarr, u32 i) {
+    auto& allocator = Allocator::instance();
+    ElmArray* top = static_cast<ElmArray*>(allocator.resolve(jarr->values[0].p));
+    if (jarr->ctor != CTOR_JSON_ARRAY_CHUNKED) return top->elements[i].p;
+    const u32 F = static_cast<ElmArray*>(allocator.resolve(top->elements[0].p))->length;
+    ElmArray* chunk = static_cast<ElmArray*>(allocator.resolve(top->elements[i / F].p));
+    return chunk->elements[i % F].p;
 }
 
 // Create a heap-resident JSON object from an Elm List of (String, JsonValue) tuples.
@@ -354,10 +571,11 @@ static HPointer jsonToHeap(const json& j) {
             elements[i++] = jsonToHeap(elem);
         }
 
-        // Build ElmArray from collected (and still-rooted) HPointers.
-        HPointer arr = arrayFromPointers(elements);
+        // Build the JSON array from the collected (still-rooted) HPointers:
+        // flat, or chunked above jsonArrayChunkSize() (threaded-gc-04b D5).
+        HPointer jarr = makeJsonArrayFrom(elements);
         rs.restoreStackRangePoint(saved);
-        return makeJsonArray(arr);
+        return jarr;
     }
 
     if (j.is_object()) {
@@ -428,13 +646,13 @@ static json heapJsonToNlohmann(uint64_t jvalEnc) {
             return json(elmStringToStd(Export::encode(c->values[0].p)));
         }
 
-        case CTOR_JSON_ARRAY: {
+        case CTOR_JSON_ARRAY:
+        case CTOR_JSON_ARRAY_CHUNKED: {
+            // No heap allocation below, so `c` stays valid.
             json arr = json::array();
-            void* arrPtr = allocator.resolve(c->values[0].p);
-            ElmArray* elmArr = static_cast<ElmArray*>(arrPtr);
-            u32 len = elmArr->header.size;
+            const u32 len = jsonArrayLength(c);
             for (u32 i = 0; i < len; i++) {
-                arr.push_back(heapJsonToNlohmann(Export::encode(elmArr->elements[i].p)));
+                arr.push_back(heapJsonToNlohmann(Export::encode(jsonArrayAt(c, i))));
             }
             return arr;
         }
@@ -548,15 +766,16 @@ static uint64_t makeDecoder2ip(u16 ctor, int64_t arg1, uint64_t arg2) {
 
 // Run decoder on a heap-resident JSON value and return Result.
 //
-// Both `decoderHP` and the JSON value referenced by `jvalEnc` are rooted for
+// Both `decoderHP` and the JSON value referenced by `jvalEncIn` are rooted for
 // the lifetime of the body so the GC keeps them valid across recursive
 // `runDecoder` calls, closure invocations, and any other allocator activity.
 // Raw `Custom*` for `decoder` / `jval` MUST be re-derived through the rooted
-// handles after every potential GC point.
-static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
+// handles after every potential GC point. The `jvalEncIn` parameter is an
+// unrooted copy: recursive calls must pass `Export::encode(jvalHP)`.
+static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEncIn) {
     auto& allocator = Allocator::instance();
 
-    HPointer jvalHP = Export::decode(jvalEnc);
+    HPointer jvalHP = Export::decode(jvalEncIn);
     StackRootGuard topRoots(&decoderHP, &jvalHP);
 
     // Helpers — always re-resolve after a potential GC.
@@ -645,15 +864,16 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
         }
 
         case DEC_LIST: {
-            if (!jval || jctor != CTOR_JSON_ARRAY) {
+            if (!jval || !isJsonArrayCtor(jctor)) {
                 return makeErr("Expecting a LIST");
             }
 
             // Get element decoder handle and infer cons-head kind. The kind
             // decision is made up-front on the *static* sub-decoder type, so a
             // brief raw-pointer use here (no GC point) is safe.
+            // Elements are read through the rooted jvalHP (resolveJval) with
+            // jsonArrayAt, either representation (threaded-gc-04b D5).
             HPointer elemDecHP = decoder->values[0].p;
-            HPointer arrayHP   = jval->values[0].p;
             u8 elemConsKind = 0;  // 0 = boxed
             {
                 switch (decoderCtorOf(allocator, elemDecHP)) {
@@ -663,12 +883,8 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
                 }
             }
 
-            // Get the ElmArray length (primitive snapshot).
-            u32 len;
-            {
-                ElmArray* arr0 = static_cast<ElmArray*>(allocator.resolve(arrayHP));
-                len = arr0->header.size;
-            }
+            // Length (primitive snapshot).
+            const u32 len = jsonArrayLength(jval);
 
             // Chunks: decode in the SAME reverse order (failure semantics —
             // the error returned is the last failing index) but accumulate
@@ -676,12 +892,11 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
             // so the logical order matches the cells path exactly, and the
             // whole result becomes a dense chunk chain instead of len cells.
             if (eco_g_list_chunks) {
-                StackRootGuard decRoots(&arrayHP, &elemDecHP);
+                StackRootGuard decRoots(&elemDecHP);
                 int64_t mark = eco_scratch_mark();
                 for (i64 i = static_cast<i64>(len) - 1; i >= 0; i--) {
-                    ElmArray* arr =
-                        static_cast<ElmArray*>(allocator.resolve(arrayHP));
-                    uint64_t elemEnc = Export::encode(arr->elements[i].p);
+                    uint64_t elemEnc = Export::encode(
+                        jsonArrayAt(resolveJval(), static_cast<u32>(i)));
                     uint64_t elemResult = runDecoder(elemDecHP, elemEnc);
                     if (!isOk(elemResult)) {
                         eco_scratch_abandon(mark);
@@ -711,14 +926,14 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
             }
 
             // Decode each element in reverse to build the list. `result` is
-            // the accumulator; `arrayHP` and `elemDecHP` may be moved by GC
-            // during the recursion or `cons`. Root all three.
+            // the accumulator; it and `elemDecHP` may be moved by GC during
+            // the recursion or `cons`. Root both (jvalHP is rooted above).
             HPointer result = listNil();
-            StackRootGuard listRoots(&result, &arrayHP, &elemDecHP);
+            StackRootGuard listRoots(&result, &elemDecHP);
 
             for (i64 i = static_cast<i64>(len) - 1; i >= 0; i--) {
-                ElmArray* arr = static_cast<ElmArray*>(allocator.resolve(arrayHP));
-                uint64_t elemEnc = Export::encode(arr->elements[i].p);
+                uint64_t elemEnc = Export::encode(
+                    jsonArrayAt(resolveJval(), static_cast<u32>(i)));
 
                 uint64_t elemResult = runDecoder(elemDecHP, elemEnc);
                 if (!isOk(elemResult)) {
@@ -751,13 +966,13 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
         }
 
         case DEC_ARRAY: {
-            if (!jval || jctor != CTOR_JSON_ARRAY) {
+            if (!jval || !isJsonArrayCtor(jctor)) {
                 return makeErr("Expecting an ARRAY");
             }
 
-            // Snapshot the element decoder handle and source-array handle.
+            // Snapshot the element decoder handle; elements are read through
+            // the rooted jvalHP with jsonArrayAt (threaded-gc-04b D5).
             HPointer elemDecHP = decoder->values[0].p;
-            HPointer arrayHP   = jval->values[0].p;
 
             // Determine element kind from the element decoder (pure read,
             // pre-loop, no GC point yet).
@@ -772,178 +987,31 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
             }
 
             // Snapshot length (primitive).
-            u32 len;
-            {
-                ElmArray* arr0 = static_cast<ElmArray*>(allocator.resolve(arrayHP));
-                len = arr0->length;
-            }
+            const u32 len = jsonArrayLength(jval);
 
-            // Decode each element, collecting result HPointers. The collected
-            // vector is range-rooted so each subsequent recursive `runDecoder`
-            // can't invalidate already-decoded entries. Because `push_back`
-            // may reallocate the vector storage, we re-pin the buffer after
-            // every push.
-            std::vector<HPointer> elements;
-            elements.reserve(len);
+            // threaded-gc-04b D5: decode each element into a pre-sized vector
+            // (pre-filled with Nil, a constant the GC skips) rooted ONCE in
+            // 64-slot ranges (a range's hpointer_mask has 64 bits), instead of
+            // re-pinning the whole vector as one >64-slot range per element.
+            std::vector<HPointer> elements(len, alloc::listNil());
 
             auto& rs = allocator.getRootSet();
             size_t savedRoots = rs.stackRangePoint();
             rs.pushStackRootRange(&elemDecHP, 1, 1);
-            rs.pushStackRootRange(&arrayHP,   1, 1);
+            rootInChunks(rs, elements);
 
             for (u32 i = 0; i < len; i++) {
-                ElmArray* arr = static_cast<ElmArray*>(allocator.resolve(arrayHP));
-                uint64_t elemEnc = Export::encode(arr->elements[i].p);
+                uint64_t elemEnc = Export::encode(jsonArrayAt(resolveJval(), i));
 
                 uint64_t elemResult = runDecoder(elemDecHP, elemEnc);
                 if (!isOk(elemResult)) {
                     rs.restoreStackRangePoint(savedRoots);
                     return elemResult;
                 }
-                elements.push_back(getOkValue(elemResult));
-
-                // Re-pin: vector may have reallocated, invalidating the prior
-                // base address.
-                rs.restoreStackRangePoint(savedRoots);
-                rs.pushStackRootRange(&elemDecHP, 1, 1);
-                rs.pushStackRootRange(&arrayHP,   1, 1);
-                rs.pushStackRootRange(elements.data(), elements.size(),
-                                      /*hpointer_mask=*/~uint64_t(0));
+                elements[i] = getOkValue(elemResult);
             }
 
-            // Build Elm `Array a` = `Array_elm_builtin Int Int (Tree a) (JsArray a)`.
-            // Array_elm_builtin is the first (and only) ctor of `Array`, so
-            // ctor index = 0. Fields:
-            //   0: length      (Int, unboxed  → kind 01)
-            //   1: startShift  (Int, unboxed  → kind 01)
-            //   2: tree        (JsArray Node  → boxed HPointer)
-            //   3: tail        (JsArray a     → boxed HPointer)
-            // Unboxed bitmap (2 bits/slot): slot0=01, slot1=01, slot2=00, slot3=00 → 0b0101 = 0x5.
-            auto buildElmArray = [&](HPointer tree_hp, HPointer tail_hp, u32 length) -> HPointer {
-                size_t sz = sizeof(Custom) + 4 * sizeof(Unboxable);
-                sz = (sz + 7) & ~7;
-
-                // Pattern A: tree_hp + tail_hp are HPointer fields at slots
-                // 2 and 3. Pack length and 5 (Int slots) into roots[0,1]
-                // alongside; mask = 0b1100 = 0xC roots only the HPointer
-                // slots.
-                uint64_t roots[4] = {
-                    static_cast<uint64_t>(length),
-                    5,
-                    0,
-                    0,
-                };
-                std::memcpy(&roots[2], &tree_hp, sizeof(tree_hp));
-                std::memcpy(&roots[3], &tail_hp, sizeof(tail_hp));
-
-                Custom* c = static_cast<Custom*>(
-                    eco_alloc_with_roots(Tag_Custom, sz, roots, 4, 0xC));
-                c->ctor = 0;       // Array_elm_builtin
-                c->unboxed = 0x5;  // field 0 and 1 are unboxed Int
-                c->values[0].i = static_cast<i64>(roots[0]);
-                c->values[1].i = static_cast<i64>(roots[1]);
-                std::memcpy(&c->values[2].p, &roots[2], sizeof(HPointer));
-                std::memcpy(&c->values[3].p, &roots[3], sizeof(HPointer));
-                return Allocator::instance().wrap(c);
-            };
-
-            // Helper: allocate a JsArray of a given uniform kind and length,
-            // initialized from `elements[start..start+count)`. For boxed kind
-            // (0) elements are HPointers; for unboxed kinds the decoded values
-            // are boxed primitives and we unbox them into the element slot.
-            auto buildJsArray = [&](size_t start, size_t count, u8 kind) -> HPointer {
-                // Root the element HPointers across the allocation.
-                std::vector<HPointer> rooted(elements.begin() + start,
-                                              elements.begin() + start + count);
-                auto& rs = Allocator::instance().getRootSet();
-                size_t saved = rs.stackRangePoint();
-                for (auto& hp : rooted) rs.pushStackRootRange(&hp, 1, 1);
-
-                HPointer jsArr = alloc::allocArray(count);
-                auto& allocLocal = Allocator::instance();
-                for (size_t i = 0; i < count; ++i) {
-                    void* arrObj = allocLocal.resolve(jsArr);
-                    if (kind == 1) {
-                        ElmInt* ei = static_cast<ElmInt*>(allocLocal.resolve(rooted[i]));
-                        Unboxable u; u.i = ei->value;
-                        alloc::arrayPushKind(arrObj, u, 1);
-                    } else if (kind == 2) {
-                        ElmFloat* ef = static_cast<ElmFloat*>(allocLocal.resolve(rooted[i]));
-                        Unboxable u; u.f = ef->value;
-                        alloc::arrayPushKind(arrObj, u, 2);
-                    } else {
-                        Unboxable u; u.p = rooted[i];
-                        alloc::arrayPush(arrObj, u, true);
-                    }
-                }
-                rs.restoreStackRangePoint(saved);
-                return jsArr;
-            };
-
-            // Replicate Array.fromList's layout: partition into fixed-size
-            // leaves (branchFactor = 32) with a remainder tail. For small
-            // arrays (len < 32) the tree is empty and everything lives in tail.
-            constexpr u32 kBranch = 32;
-            u32 tailStart = (len / kBranch) * kBranch;
-            u32 tailLen = len - tailStart;
-
-            // Build the tail JsArray (can be empty for len multiple of 32).
-            HPointer tailJsArr = buildJsArray(tailStart, tailLen, elemKind);
-
-            // Build leaf Nodes and the tree JsArray. For len < 32 the tree
-            // is empty (alloc::allocArray(0)). Root the tail across leaf /
-            // node / tree allocations.
-            HPointer treeJsArr;
-            {
-                auto& rs = Allocator::instance().getRootSet();
-                size_t saved = rs.stackRangePoint();
-                HPointer tailRoot = tailJsArr;
-                rs.pushStackRootRange(&tailRoot, 1, 1);
-
-                u32 numLeaves = tailStart / kBranch;
-                std::vector<HPointer> leafNodes;
-                leafNodes.reserve(numLeaves);
-                for (u32 k = 0; k < numLeaves; ++k) {
-                    // Root prior leaves across this leaf's allocations.
-                    for (auto& hp : leafNodes) rs.pushStackRootRange(&hp, 1, 1);
-
-                    HPointer leafJsArr = buildJsArray(k * kBranch, kBranch, elemKind);
-
-                    // Build `Leaf (JsArray a)` Custom. In Array.elm's Node type,
-                    // `SubTree` is ctor 0 and `Leaf` is ctor 1 (declaration order).
-                    size_t sz = sizeof(Custom) + 1 * sizeof(Unboxable);
-                    sz = (sz + 7) & ~7;
-
-                    uint64_t roots[1];
-                    std::memcpy(&roots[0], &leafJsArr, sizeof(leafJsArr));
-                    Custom* node = static_cast<Custom*>(
-                        eco_alloc_with_roots(Tag_Custom, sz, roots, 1, 0x1));
-                    std::memcpy(&leafJsArr, &roots[0], sizeof(leafJsArr));
-                    node->ctor = 1;      // Leaf
-                    node->unboxed = 0;
-                    node->values[0].p = leafJsArr;
-                    leafNodes.push_back(Allocator::instance().wrap(node));
-
-                    rs.restoreStackRangePoint(saved);
-                    rs.pushStackRootRange(&tailRoot, 1, 1);
-                }
-
-                // Build the tree as a JsArray of leaf Nodes (boxed, kind 0).
-                for (auto& hp : leafNodes) rs.pushStackRootRange(&hp, 1, 1);
-                treeJsArr = alloc::allocArray(numLeaves);
-                void* tObj = Allocator::instance().resolve(treeJsArr);
-                for (u32 k = 0; k < numLeaves; ++k) {
-                    Unboxable u; u.p = leafNodes[k];
-                    alloc::arrayPush(tObj, u, true);
-                    tObj = Allocator::instance().resolve(treeJsArr);
-                }
-
-                // Update tailJsArr from the root in case GC moved it.
-                tailJsArr = tailRoot;
-                rs.restoreStackRangePoint(saved);
-            }
-
-            HPointer resultArr = buildElmArray(treeJsArr, tailJsArr, len);
+            HPointer resultArr = buildElmArrayFromElements(elements, elemKind);
             rs.restoreStackRangePoint(savedRoots);
             return makeOk(resultArr);
         }
@@ -985,20 +1053,18 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
         }
 
         case DEC_INDEX: {
-            if (!jval || jctor != CTOR_JSON_ARRAY) {
+            if (!jval || !isJsonArrayCtor(jctor)) {
                 return makeErr("Expecting an ARRAY");
             }
 
             int64_t index = decoder->values[0].i;
             HPointer nestedDecHP = decoder->values[1].p;
-            HPointer arrayHP = jval->values[0].p;
 
-            ElmArray* arr = static_cast<ElmArray*>(allocator.resolve(arrayHP));
-            if (index < 0 || static_cast<u32>(index) >= arr->header.size) {
+            if (index < 0 || static_cast<u64>(index) >= jsonArrayLength(jval)) {
                 return makeErr("Expecting a LONGER array");
             }
 
-            uint64_t elemEnc = Export::encode(arr->elements[index].p);
+            uint64_t elemEnc = Export::encode(jsonArrayAt(jval, static_cast<u32>(index)));
             return runDecoder(nestedDecHP, elemEnc);
         }
 
@@ -1119,7 +1185,7 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
             uint64_t innerResult;
             {
                 StackRootGuard guard(&callbackHP);
-                innerResult = runDecoder(innerDecHP, jvalEnc);
+                innerResult = runDecoder(innerDecHP, Export::encode(jvalHP));
             }
             if (!isOk(innerResult)) return innerResult;
 
@@ -1135,7 +1201,7 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
                 newDecHP = Export::decode(newDecEnc);
             }
 
-            return runDecoder(newDecHP, jvalEnc);
+            return runDecoder(newDecHP, Export::encode(jvalHP));
         }
 
         case DEC_ONEOF: {
@@ -1147,7 +1213,7 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
             u8 decKind;
 
             while (decs.read(decHead, decKind)) {
-                uint64_t result = runDecoder(decHead.p, jvalEnc);
+                uint64_t result = runDecoder(decHead.p, Export::encode(jvalHP));
                 if (isOk(result)) {
                     return result;
                 }
@@ -1171,7 +1237,7 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
                 // could otherwise leave a separate stale local. Mirrors
                 // DEC_MAP2..DEC_MAP4 patterns.
                 StackRootGuard guard(&dec1HP, &callbackHP);
-                result1 = runDecoder(dec1HP, jvalEnc);
+                result1 = runDecoder(dec1HP, Export::encode(jvalHP));
             }
             if (!isOk(result1)) return result1;
 
@@ -1194,7 +1260,7 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
             uint64_t result1;
             {
                 StackRootGuard guard(&dec2HP, &callbackHP);
-                result1 = runDecoder(dec1HP, jvalEnc);
+                result1 = runDecoder(dec1HP, Export::encode(jvalHP));
             }
             if (!isOk(result1)) return result1;
 
@@ -1202,7 +1268,7 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
             uint64_t result2;
             {
                 StackRootGuard guard(&v1, &callbackHP);
-                result2 = runDecoder(dec2HP, jvalEnc);
+                result2 = runDecoder(dec2HP, Export::encode(jvalHP));
             }
             if (!isOk(result2)) return result2;
 
@@ -1249,7 +1315,7 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
             }
 
             for (int i = 0; i < n; i++) {
-                uint64_t r = runDecoder(subDecHPs[i], jvalEnc);
+                uint64_t r = runDecoder(subDecHPs[i], Export::encode(jvalHP));
                 if (!isOk(r)) {
                     rs.restoreStackRangePoint(mapSaved);
                     return r;
@@ -1358,6 +1424,7 @@ static json elmToJson(uint64_t valueEnc) {
             case CTOR_JSON_FLOAT:
             case CTOR_JSON_STRING:
             case CTOR_JSON_ARRAY:
+            case CTOR_JSON_ARRAY_CHUNKED:
             case CTOR_JSON_OBJECT:
                 return heapJsonToNlohmann(valueEnc);
 

@@ -1748,9 +1748,9 @@ inline void mark_as_builder(Header* h) {
  */
 inline void clear_builder(Header* h) {
 #if ECO_HEAP_VALIDATE
-    // threaded-gc-04 HEAP_061: or a born-old pending object (large builder).
+    // threaded-gc-04b HEAP_062: or a young large object (a large builder).
     assert((Allocator::instance().isInNursery(h) ||
-            Allocator::instance().getCurrentThreadHeap()->getOldGen().isBornOldPending(h)) &&
+            Allocator::instance().getCurrentThreadHeap()->getOldGen().isYoungLarge(h)) &&
            "HEAP_BUILDER_001: clear_builder on non-nursery object");
 #endif
     h->builder = 0;

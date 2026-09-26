@@ -392,6 +392,8 @@ void OldGenSpace::reset(const HeapConfig* new_config) {
     large_body_index_.clear();
     nursery_owned_bodies_.clear();
     free_large_body_ids_.clear();
+    ylo_lo_ = ylo_hi_ = nullptr;
+    ylo_count_ = 0;
 
     // Reset fragmentation stats.
     frag_stats_ = {0, 0, 0};
@@ -859,8 +861,7 @@ void OldGenSpace::retireDeadLargeBodies() {
         const BlockId bid = contains(body) ? blockIdFor(body) : NO_BLOCK_ID;
         if (bid.valid() && !blocks_.info(bid).is_large &&
             !isMarkedInBlock(bid, body)) {
-            const LargeBodyId id = it->second;
-            if (id < large_bodies_.size()) large_bodies_[id].body_base = nullptr;
+            retireIndexEntry(it->second);
             it = large_body_index_.erase(it);
         } else {
             ++it;
@@ -878,15 +879,13 @@ void OldGenSpace::classifyBlocksAfterMark() {
             // The former lazySweep is_large branch, verbatim in effect.
             const bool live = testAndClearMarkBitInBlock(id, b.start);
             if (!live) {
+                // A split-header body or a YLOS object (threaded-gc-04b):
+                // the index is authoritative, whatever the tag.
                 Header* hdr = reinterpret_cast<Header*>(b.start);
-                if (hdr->pin && (hdr->tag == Tag_String ||
-                                 hdr->tag == Tag_ByteBuffer)) {
+                if (hdr->pin) {
                     auto it = large_body_index_.find(b.start);
                     if (it != large_body_index_.end()) {
-                        const LargeBodyId lid = it->second;
-                        if (lid < large_bodies_.size()) {
-                            large_bodies_[lid].body_base = nullptr;
-                        }
+                        retireIndexEntry(it->second);
                         large_body_index_.erase(it);
                     }
                 }
@@ -918,6 +917,8 @@ void OldGenSpace::classifyBlocksAfterMark() {
 #endif
         }
     }
+    // threaded-gc-04b: dead YLOS objects were retired above (both paths).
+    recomputeYoungLargeBounds();
 #if ECO_HEAP_VALIDATE
     // V12 (HEAP_056): every surviving nursery-owned body is marked.
     for (const auto& kv : large_body_index_) {
@@ -2364,8 +2365,9 @@ bool OldGenSpace::markOneObject(void* obj, BlockId block_index) {
     // observe one here, a kernel either failed to clear the bit before
     // publishing the object, or the GC promoted a builder despite the
     // !builder gate in NurserySpace::evacuate.
-    // threaded-gc-04 HEAP_061: a born-old pending object may be a builder.
-    assert((!hdr->builder || isBornOldPending(obj)) &&
+    // threaded-gc-04b HEAP_062: a young large object is young, so it may be
+    // a builder (HEAP_BUILDER_001: builders are nursery or YLOS objects).
+    assert((!hdr->builder || isYoungLarge(obj)) &&
            "HEAP_BUILDER_001: builder object in old gen");
 #endif
     // Use the cached block id when valid; fall back to blockIdFor only
@@ -2427,7 +2429,7 @@ void OldGenSpace::finalizeMetaAfterMark() {
     // threaded-gc-04: the P1 census reads mark bits here, before any sweep
     // clears them (plan P§3.4, trap 1).
     p1::onMarkEnd(*this);
-    pruneBornOldAtMarkEnd();   // threaded-gc-04 HEAP_061
+    ++major_epoch_;
 
     size_t total_live = 0;
     size_t total_heap = 0;
@@ -3203,14 +3205,10 @@ size_t OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
                     // header died; clear the side-table entry so future
                     // recycling doesn't clash with a stale id.
                     Header* hdr = reinterpret_cast<Header*>(sweep_cursor_);
-                    if (hdr->pin && (hdr->tag == Tag_String ||
-                                     hdr->tag == Tag_ByteBuffer)) {
+                    if (hdr->pin) {   // a body or a YLOS object: index is authoritative
                         auto it = large_body_index_.find(sweep_cursor_);
                         if (it != large_body_index_.end()) {
-                            LargeBodyId id = it->second;
-                            if (id < large_bodies_.size()) {
-                                large_bodies_[id].body_base = nullptr;
-                            }
+                            retireIndexEntry(it->second);
                             large_body_index_.erase(it);
                         }
                     }
@@ -3300,14 +3298,10 @@ size_t OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
                 // large_body_index_ entry for body cells that major GC sweep
                 // reaches before nursery sweep does. Defensive idempotent
                 // guard — freeLargeBodyCell is authoritative (§3).
-                if (hdr->pin && (hdr->tag == Tag_String ||
-                                 hdr->tag == Tag_ByteBuffer)) {
+                if (hdr->pin) {   // a body or a YLOS object: index is authoritative
                     auto it = large_body_index_.find(sweep_cursor_);
                     if (it != large_body_index_.end()) {
-                        LargeBodyId id = it->second;
-                        if (id < large_bodies_.size()) {
-                            large_bodies_[id].body_base = nullptr;
-                        }
+                        retireIndexEntry(it->second);
                         large_body_index_.erase(it);
                     }
                 }
@@ -4290,10 +4284,6 @@ void OldGenSpace::scheduleCompaction() {
     assert(sweepComplete() &&
            "scheduleCompaction: sweep must be complete (gc_phase_ == Idle)");
 
-    // threaded-gc-04 HEAP_061: born-old pending objects hold old->young
-    // edges the minor GC fixes up in place; never move them (or anything)
-    // while any is pending.
-    if (!born_old_.empty()) return;
     evacuation_set_ = selectEvacuationSet(COMPACTION_WORK_BUDGET * 10);
     if (evacuation_set_.empty()) return;
     p1::invalidate(*this);   // threaded-gc-04: objects are about to move
@@ -4878,14 +4868,51 @@ void OldGenSpace::freeEvacuatedBuffers() {
 // Split-header body tracking (HEAP_026).
 // ---------------------------------------------------------------------------
 
+void* OldGenSpace::allocateTrackedCell(size_t total_size, size_t& cell_size,
+                                       bool& is_large) {
+    void* body = allocate(total_size);
+    if (!body) return nullptr;
+    GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(alloc_stats_, total_size);
+
+    // Decide whether the cell landed in a dedicated is_large block. The
+    // BBoP allocator places sizes >= alloc_buffer_size into is_large blocks.
+    is_large = (total_size >= config_->alloc_buffer_size);
+
+    // Cell footprint:
+    //   - For is_large: the cell owns the entire block (page-aligned, possibly
+    //     larger than total_size). cell_size = block totalBytes.
+    //   - For size-class cells: the allocator rounded our request up to the
+    //     block's size-class slot. We MUST record the slot size, not the
+    //     requested size, because pushSpanOnFreeLists uses cell_size to
+    //     re-emit free cells of exactly classToSize(cls). A request of
+    //     2056 in a 2048 slot, freed via pushSpanOnFreeLists with
+    //     span_bytes=2056 and cellSize=2048, would push one 2048 cell and
+    //     orphan an 8-byte Tag_Free placeholder past the slot boundary —
+    //     which lands in the next cell's header and corrupts the heap.
+    cell_size = total_size;
+    if (contains(body)) {
+        const BlockId blk_idx = blockIdFor(body);
+        if (blk_idx.valid()) {
+            const BlockInfo& blk = blocks_.info(blk_idx);
+            if (blk.is_large) {
+                cell_size = blk.totalBytes();
+            } else if (blk.size_class < NUM_SIZE_CLASSES) {
+                cell_size = classToSize(blk.size_class);
+            }
+        }
+    }
+    return body;
+}
+
 void* OldGenSpace::allocateLargeBody(size_t total_size, size_t logical_size,
                                      Tag body_tag, bool initial_color) {
     assert(body_tag == Tag_String || body_tag == Tag_ByteBuffer);
     total_size = (total_size + 7) & ~static_cast<size_t>(7);
 
-    void* body = allocate(total_size);
+    size_t cell_size = 0;
+    bool body_is_large = false;
+    void* body = allocateTrackedCell(total_size, cell_size, body_is_large);
     if (!body) return nullptr;
-    GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(alloc_stats_, total_size);
 
     // The body is pointer-free; pinning keeps `body_base` stable for the
     // entire lifetime so large_body_index_'s key remains valid. allocate()
@@ -4903,48 +4930,99 @@ void* OldGenSpace::allocateLargeBody(size_t total_size, size_t logical_size,
     hdr->pin = 1;
     hdr->size = static_cast<u32>(logical_size);
 
-    // Decide whether the body landed in a dedicated is_large block. The
-    // BBoP allocator places sizes >= alloc_buffer_size into is_large blocks.
-    const bool body_is_large = (total_size >= config_->alloc_buffer_size);
-
-    // Cell footprint:
-    //   - For is_large: body owns the entire block (page-aligned, possibly
-    //     larger than total_size). cell_size = block totalBytes.
-    //   - For size-class cells: the allocator rounded our request up to the
-    //     block's size-class slot. We MUST record the slot size, not the
-    //     requested size, because pushSpanOnFreeLists uses cell_size to
-    //     re-emit free cells of exactly classToSize(cls). A request of
-    //     2056 in a 2048 slot, freed via pushSpanOnFreeLists with
-    //     span_bytes=2056 and cellSize=2048, would push one 2048 cell and
-    //     orphan an 8-byte Tag_Free placeholder past the slot boundary —
-    //     which lands in the next cell's header and corrupts the heap.
-    size_t cell_size = total_size;
-    if (contains(body)) {
-        const BlockId blk_idx = blockIdFor(body);
-        if (blk_idx.valid()) {
-            const BlockInfo& blk = blocks_.info(blk_idx);
-            if (blk.is_large) {
-                cell_size = blk.totalBytes();
-            } else if (blk.size_class < NUM_SIZE_CLASSES) {
-                cell_size = classToSize(blk.size_class);
-            }
-        }
-    }
-
     registerLargeBody(body, cell_size, body_is_large, initial_color);
     return body;
 }
 
+void* OldGenSpace::allocateYoungLarge(size_t size, Tag tag, bool initial_color) {
+    size = (size + 7) & ~static_cast<size_t>(7);
+    size_t cell_size = 0;
+    bool is_large = false;
+    void* obj = allocateTrackedCell(size, cell_size, is_large);
+    if (!obj) return nullptr;
+
+    // allocate() zeroed the header and chose its color for the GC phase;
+    // keep that color, write the tag's header, pin it (never moved: HEAP_062).
+    Header* hdr = getHeader(obj);
+    const u32 saved_color = hdr->color;
+    initHeaderForTag(hdr, tag, size);
+    hdr->color = saved_color;
+    hdr->pin = 1;
+    hdr->age = 0;
+
+    registerLargeBody(obj, cell_size, is_large, initial_color, /*kind=*/1);
+    char* lo = static_cast<char*>(obj);
+    char* hi = lo + size;
+    if (ylo_count_ == 0) {
+        ylo_lo_ = lo;
+        ylo_hi_ = hi;
+    } else {
+        if (lo < ylo_lo_) ylo_lo_ = lo;
+        if (hi > ylo_hi_) ylo_hi_ = hi;
+    }
+    ++ylo_count_;
+    return obj;
+}
+
+void OldGenSpace::promoteYoungLarge(void* obj) {
+    auto it = large_body_index_.find(obj);
+    if (it == large_body_index_.end()) return;
+    const LargeBodyId id = it->second;
+    assert(id < large_bodies_.size() && large_bodies_[id].kind == 1);
+    for (size_t k = 0; k < nursery_owned_bodies_.size(); ++k) {
+        if (nursery_owned_bodies_[k] == id) {
+            nursery_owned_bodies_[k] = nursery_owned_bodies_.back();
+            nursery_owned_bodies_.pop_back();
+            break;
+        }
+    }
+    large_body_index_.erase(it);
+    large_bodies_[id].body_base = nullptr;
+    large_bodies_[id].kind = 0;
+    free_large_body_ids_.push_back(id);
+    // An ordinary old object from here on (as a promoted copy: age 0). The
+    // bounding box stays conservative until the minor-end recompute.
+    getHeader(obj)->age = 0;
+#if ENABLE_GC_STATS
+    alloc_stats_.lp.ylos_promoted_in_place++;
+#endif
+}
+
+void OldGenSpace::recomputeYoungLargeBounds() {
+    char* lo = nullptr;
+    char* hi = nullptr;
+    size_t n = 0;
+    forEachYoungLarge([&](void* obj, LargeBodyMeta&) {
+        char* a = static_cast<char*>(obj);
+        char* b = a + getObjectSize(obj);
+        if (n == 0 || a < lo) lo = a;
+        if (n == 0 || b > hi) hi = b;
+        ++n;
+    });
+    ylo_lo_ = lo;
+    ylo_hi_ = hi;
+    ylo_count_ = n;
+}
+
+void OldGenSpace::retireIndexEntry(LargeBodyId id) {
+    if (id >= large_bodies_.size()) return;
+#if ENABLE_GC_STATS
+    if (large_bodies_[id].kind == 1 && large_bodies_[id].body_base != nullptr)
+        alloc_stats_.lp.ylos_retired_major++;
+#endif
+    large_bodies_[id].body_base = nullptr;
+}
+
 OldGenSpace::LargeBodyId OldGenSpace::registerLargeBody(
-        void* body, size_t cell_size, bool is_large, bool minor_color) {
+        void* body, size_t cell_size, bool is_large, bool minor_color, uint8_t kind) {
     LargeBodyId id;
     if (!free_large_body_ids_.empty()) {
         id = free_large_body_ids_.back();
         free_large_body_ids_.pop_back();
-        large_bodies_[id] = LargeBodyMeta{body, cell_size, is_large, minor_color};
+        large_bodies_[id] = LargeBodyMeta{body, cell_size, is_large, minor_color, kind};
     } else {
         id = static_cast<LargeBodyId>(large_bodies_.size());
-        large_bodies_.push_back(LargeBodyMeta{body, cell_size, is_large, minor_color});
+        large_bodies_.push_back(LargeBodyMeta{body, cell_size, is_large, minor_color, kind});
     }
     large_body_index_[body] = id;
     nursery_owned_bodies_.push_back(id);
@@ -4992,7 +5070,10 @@ void OldGenSpace::promoteLargeHeader(HPointer body_hp) {
 size_t OldGenSpace::sweepNurseryLargeBodies(bool minor_color) {
     // W0 item 50: the common case is an empty list — leave before the asserts
     // and the compaction-phase branch rather than after them.
-    if (nursery_owned_bodies_.empty()) return 0;
+    if (nursery_owned_bodies_.empty()) {
+        if (ylo_count_ != 0) recomputeYoungLargeBounds();   // all promoted
+        return 0;
+    }
 
     // Defensive: reject during compaction phases where blocks_ is mid-shuffle.
     assert(compact_phase_ != CompactionPhase::Evacuating &&
@@ -5055,9 +5136,11 @@ size_t OldGenSpace::sweepNurseryLargeBodies(bool minor_color) {
             ++k;
             continue;
         }
-        // Body's header in nursery did not survive this minor GC; free.
+        // Body's header in nursery did not survive this minor GC (or, for a
+        // YLOS object, the object itself was not reached); free.
 #if ENABLE_GC_STATS
         const size_t freed_bytes = m.cell_size;
+        if (m.kind == 1) alloc_stats_.lp.ylos_freed_minor++;
 #endif
         freeLargeBodyCell(m);
         free_large_body_ids_.push_back(id);
@@ -5069,6 +5152,9 @@ size_t OldGenSpace::sweepNurseryLargeBodies(bool minor_color) {
 #endif
     }
 
+    // threaded-gc-04b: the YLOS bounding box shrinks here, after this
+    // minor's promotions in place and frees.
+    recomputeYoungLargeBounds();
     return freed;
 }
 

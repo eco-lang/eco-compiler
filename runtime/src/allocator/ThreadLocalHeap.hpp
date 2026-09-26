@@ -1,6 +1,7 @@
 #ifndef ECO_THREAD_LOCAL_HEAP_H
 #define ECO_THREAD_LOCAL_HEAP_H
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <unordered_set>
@@ -170,6 +171,14 @@ private:
      */
     void* allocateLargePinned(size_t size, Tag tag);
 
+    // threaded-gc-04b: a large pointer-bearing object in the young
+    // large-object space (the Ylos placement, and the fallback when a
+    // Nursery-placed one does not fit after a minor).
+    void* allocateYoungLarge(size_t size, Tag tag);
+
+    // A large closure-group region that cannot fit the nursery: fatal.
+    [[noreturn]] void regionTooLarge(size_t total);
+
 public:
 
     // ========== Garbage Collection ==========
@@ -185,6 +194,31 @@ public:
     void majorGC(GCStats::MajorReason reason = GCStats::MajorReason::Forced);
 
     // ========== Accessors ==========
+
+    // threaded-gc-04b (plans/threaded-gc-04b-young-large-objects.md P§3.1):
+    // where a large (>= large_object_threshold) allocation goes.
+    enum class LargePlacement : uint8_t { Nursery, Ylos, Region, PointerFree };
+    // Counts (stats builds) and traces (validate builds, ECO_LARGE_PTR_TRACE=1)
+    // one large allocation.
+    void noteLargeAlloc(LargePlacement where, size_t size, uint32_t tag);
+
+    // The placement policy (P§3.1) for a large allocation: PointerFree for a
+    // tag that cannot hold pointers (old gen, pinned), else Nursery when
+    // size <= min(nursery_capacity / divisor, max size) and Ylos otherwise.
+    // Pure, so tests can pass any nursery capacity.
+    static LargePlacement placeLargeFor(size_t size, uint32_t tag,
+                                        size_t nursery_capacity,
+                                        const HeapConfig& cfg) {
+        if (!tagMayHoldPointers(tag)) return LargePlacement::PointerFree;
+        if (cfg.large_ptr_nursery_divisor == 0) return LargePlacement::Ylos;
+        size_t cap = nursery_capacity / cfg.large_ptr_nursery_divisor;
+        if (cfg.large_ptr_nursery_max_size != 0)
+            cap = std::min(cap, cfg.large_ptr_nursery_max_size);
+        return size <= cap ? LargePlacement::Nursery : LargePlacement::Ylos;
+    }
+    LargePlacement placeLarge(size_t size, uint32_t tag) const {
+        return placeLargeFor(size, tag, nursery_.capacityBytes(), *config_);
+    }
 
     /** threaded-gc-03: true while a minor/major GC of this heap is running. */
     bool inPause() const { return pause_depth_ > 0; }

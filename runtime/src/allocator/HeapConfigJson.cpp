@@ -187,6 +187,8 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         "major_gc_garbage_fraction",
         "use_hybrid_dfs",
         "large_object_threshold",
+        "large_ptr_nursery_divisor",
+        "large_ptr_nursery_max_size",
         "decommit_on_oldgen_release",
         "gc_thread_mode",
         "gc_helper_threads",
@@ -277,6 +279,12 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
     if (auto it = doc.find("large_object_threshold"); it != doc.end())
         cfg.large_object_threshold =
             parseByteSize(*it, "large_object_threshold");
+    if (auto it = doc.find("large_ptr_nursery_divisor"); it != doc.end())
+        cfg.large_ptr_nursery_divisor =
+            parseU32(*it, "large_ptr_nursery_divisor");
+    if (auto it = doc.find("large_ptr_nursery_max_size"); it != doc.end())
+        cfg.large_ptr_nursery_max_size =
+            parseByteSize(*it, "large_ptr_nursery_max_size");
     if (auto it = doc.find("decommit_on_oldgen_release"); it != doc.end())
         cfg.decommit_on_oldgen_release =
             parseBool(*it, "decommit_on_oldgen_release");

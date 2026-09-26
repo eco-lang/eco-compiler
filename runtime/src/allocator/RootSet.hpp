@@ -20,7 +20,8 @@ namespace Elm {
 // hpointer_mask is MANDATORY for correctness on mixed arrays:
 //   - Bit i set   -> base[i] is treated as an HPointer root.
 //   - Bit i clear -> base[i] is ignored by the GC.
-// For all-boxed arrays, hpointer_mask is simply ((1ULL << count) - 1).
+// For all-boxed arrays, hpointer_mask is simply ((1ULL << count) - 1), or
+// ~0 for any length (see stackRangeSlotIsRoot).
 //
 // The stack used to be a `std::vector<StackRootRange>` inside RootSet, reached
 // through `tl_heap_ -> nursery_ -> root_set` and pushed by an out-of-line
@@ -47,6 +48,14 @@ static_assert(sizeof(StackRootRangeRec) == 24,
 static_assert(offsetof(StackRootRangeRec, base) == 0, "base at +0");
 static_assert(offsetof(StackRootRangeRec, count) == 8, "count at +8");
 static_assert(offsetof(StackRootRangeRec, hpointer_mask) == 16, "mask at +16");
+
+// Whether slot i of a stack root range is a root. Bit i of the mask for
+// i < 64; beyond that, only an all-ones mask (an all-boxed range of any
+// length, e.g. arrayFromPointers' batch) makes it one. Spelled out because
+// `1ULL << i` for i >= 64 is undefined (x86 happens to wrap the count).
+inline bool stackRangeSlotIsRoot(uint64_t mask, size_t i) {
+    return i < 64 ? ((mask >> i) & 1) != 0 : mask == ~uint64_t{0};
+}
 
 // Cursor, array start and usable end for the calling thread's shadow stack.
 // Written ONLY by `Allocator::setThreadHeap` (base/limit, and the cursor reset)

@@ -26,6 +26,7 @@
 #include "allocator/BitmapScanTest.hpp"
 #include "allocator/GCHelperTest.hpp"
 #include "allocator/P1CensusTest.hpp"
+#include "allocator/LargePtrPlacementTest.hpp"
 #include "allocator/OldGenBitmapAllocTest.hpp"
 #include "allocator/OldGenSweepOnDemandTest.hpp"
 #include "allocator/OldGenSweepBudgetTest.hpp"
@@ -660,10 +661,22 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testP1WriteSiteAgedCaught);
     oldGenTests.add(testP1WriteSiteBuilderExempt);
     oldGenTests.add(testP1ChunkChainSurvivesMidConstructionGC);
-    oldGenTests.add(testBornOldArrayChildrenSurviveMinors);
-    oldGenTests.add(testBornOldEntryRetires);
-    oldGenTests.add(testBornOldDeadEntryPrunedAtMark);
-    oldGenTests.add(testBornOldRegionSplitAtMark);
+    oldGenTests.add(testPlaceLargeDecisions);
+    oldGenTests.add(testLargePtrConfigJson);
+    oldGenTests.add(testLargeArrayInNurseryKeepsChildren);
+    oldGenTests.add(testLargeArrayPromotesByCopy);
+    oldGenTests.add(testLargeRegionInNursery);
+    oldGenTests.add(testYlosChildrenSurviveMinors);
+    oldGenTests.add(testYlosAgesAndPromotesInPlace);
+    oldGenTests.add(testYlosUnreachableFreedAtMinor);
+    oldGenTests.add(testYlosUnreachableFreedAtMajor);
+    oldGenTests.add(testYlosReachedOnlyThroughNurseryObject);
+    oldGenTests.add(testYlosBuilderNeverAges);
+    oldGenTests.add(testYlosReachedTwiceScannedOnce);
+    oldGenTests.add(testYlosCensusWriteSiteCaught);
+    oldGenTests.add(testYlosCensusPromotedInPlaceRecorded);
+    oldGenTests.add(testYlosCensusSurvivorChecked);
+    oldGenTests.add(testE1LargeArrayPlacementBench);
     oldGenTests.add(testHelperConfigValidation);
     oldGenTests.add(testHelperPoolSyncRunsInline);
     oldGenTests.add(testHelperPoolConcurrentRunsOnWorker);

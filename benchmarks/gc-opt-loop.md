@@ -2006,6 +2006,46 @@ minor GC 47.94 / 46.77 / 46.81 s and max RSS +37 / +131 / +515 MB. 128 MiB was c
 - **Gates:** G1–G9 green. Validate stress keeps the 5 pre-existing `JsonRoundtrip*` aborts,
   which are not P1: a stale closure in `eco_apply_closure_eval`.
 
+### TG4b — threaded-gc-04b young large objects — **correctness phase: HEAP_005 strict again (HEAP_061 retired, HEAP_062 in), validate stress 101/101 for the first time, the self-compile makes zero large pointer allocations, wall flat**
+
+**What changed** (`plans/threaded-gc-04b-young-large-objects.md`):
+- **Placement.** A large pointer-bearing object goes to the nursery up to min(⅛ nursery,
+  `large_ptr_nursery_max_size` = 128 KiB, chosen by E1). Otherwise it goes to the young
+  large-object space (YLOS): a pinned old-gen cell that is young. The copiers reach it through a
+  bounding box plus an index lookup; it is scanned in place, promoted in place, and freed at
+  minor end. `eco_alloc_with_roots` no longer bump-allocates large sizes blind.
+- **JSON arrays** over 1,021 elements are chunked.
+- **Born-old list removed** (HEAP_061).
+- **Pre-existing fixes:**
+  - `invokeSaturatedTyped` rooted its by-value `closure_bits`;
+  - `runDecoder` re-encodes the rooted `jvalHP`;
+  - `Json.Decode.array` builds a valid Array above 1,056 elements;
+  - root ranges over 64 slots have defined semantics.
+
+| arm | wall (s) | minor GC (s) | minors | majors | promoted | copied-in-nursery | max RSS (kB) | out.mlir |
+|---|---|---|---|---|---|---|---|---|
+| TG4 control, r1 / r2 (same session) | 176.52 / 172.32 | 48.19 / 47.15 | 1924 | 7 | 675,771,142 | 744,248,460 | 9,778,496 / 9,778,056 | — |
+| **TG4b**, r1 / r2 | **170.98 / 170.42** | **44.95 / 44.69** | 1924 | 7 | 675,771,383 | 744,250,340 | 9,781,300 / 9,780,708 | identical |
+
+- **Counters.** Objects allocated, minors and majors are identical. Promoted +241 and copied
+  +1,880 are unattributed (plan §9.4):
+  - reverting the stale-pointer fixes, or the TG4 JSON kernel, leaves them unchanged;
+  - a fresh lowering of the keep-TG4 sources itself differs from `eco-optTG4` by 2 copies.
+
+  **Same-source lowerings are not bit-exact on the copy counter.**
+- **Wall.** −2.1 %, and minor GC −2.9 s (−6 %) on identical GC work. Two runs each; recorded,
+  not claimed. Likely layout (cf. the mark-loop alignment trap).
+- **D0.** The self-compile makes 0 large pointer allocations (1 pointer-free), so it is
+  invariant under the policy.
+- **E1** (C++ bench, `ECO_E1_BENCH=1`):
+  - an 8 MB array in the nursery is 1.9× slower (5 majors vs 1);
+  - the YLOS cuts minor GC time 37 % at 800 KB and is 1.65× slower at 80 KB;
+  - 128 KiB is best or tied at every size.
+- **Gates:**
+  - G1–G9 green;
+  - validate stress under pressure 101/101: the 5 `JsonRoundtrip*` aborts are fixed;
+  - census tree (abort) unit + E2E 1805/1805, stress 101/101.
+
 ## 7. Findings
 
 (What this series learns, separated from the per-step records so the entries stay to ten lines.
@@ -2473,3 +2513,4 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | TG2 | 180.97 | -2.40 | 1924 | 7 | 19861 | 9622612 | WIN | TG1 |
 | TG3 | 172.67 | -8.54 | 1924 | 7 | 19861 | 9770964 | WIN | TG2 |
 | TG4 | 172.77 | -1.96 | 1924 | 7 | 19861 | 9776948 | FLAT (kept) | TG3 |
+| TG4b | 170.70 | -3.72 | 1924 | 7 | 19862 | 9781300 | FLAT (kept) | TG4 |

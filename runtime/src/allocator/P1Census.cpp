@@ -396,12 +396,13 @@ __attribute__((noinline)) void noteWrite(void* obj, const char* helper) {
     }
     Allocator& A = Allocator::instance();
     const bool in_nursery = A.isInNursery(obj);
-    // A born-old pending object (HEAP_061) has not survived a GC in the P1
-    // sense: the minor GC still scans it as a root, so writes are legal.
+    // threaded-gc-04b HEAP_062: a young large object is judged like a
+    // nursery object — a write is a violation once it has survived a minor.
+    // Any other old-gen target is a violation.
     ThreadLocalHeap* tlh = A.getCurrentThreadHeap();
-    const bool born_old_pending =
-        !in_nursery && tlh != nullptr && tlh->getOldGen().isBornOldPending(obj);
-    const bool violation = in_nursery ? h->age >= 1 : !born_old_pending;
+    const bool young_large =
+        !in_nursery && tlh != nullptr && tlh->getOldGen().isYoungLarge(obj);
+    const bool violation = (in_nursery || young_large) ? h->age >= 1 : true;
     Census& g = census();
     std::lock_guard<std::mutex> lk(g.mu);
     g.w_calls++;
@@ -416,7 +417,8 @@ __attribute__((noinline)) void noteWrite(void* obj, const char* helper) {
         std::fprintf(stderr,
             "[p1-census] VIOLATION (write site): %s at %s wrote into %s object %p "
             "tag=%s age=%u (HEAP_SNAPSHOT_001)\n",
-            helper, symbolFor(ret, sym, sizeof sym), in_nursery ? "an aged nursery" : "an old-gen",
+            helper, symbolFor(ret, sym, sizeof sym),
+            in_nursery ? "an aged nursery" : young_large ? "an aged young large" : "an old-gen",
             obj, gcTagName(static_cast<int>(h->tag)), static_cast<unsigned>(h->age));
         censusAbort();
     }
