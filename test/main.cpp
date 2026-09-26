@@ -28,6 +28,7 @@
 #include "allocator/P1CensusTest.hpp"
 #include "allocator/LargePtrPlacementTest.hpp"
 #include "allocator/IncrementalMarkTest.hpp"
+#include "allocator/ParallelMarkTest.hpp"
 #include "allocator/OldGenBitmapAllocTest.hpp"
 #include "allocator/OldGenSweepOnDemandTest.hpp"
 #include "allocator/OldGenSweepBudgetTest.hpp"
@@ -703,6 +704,26 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testIncrNegativeSkipYoungWalk);
     oldGenTests.add(testIncrNegativeSkipExternal);
     oldGenTests.add(testIncrNegativeSkipAllocateBlack);
+    oldGenTests.add(testMarkEntryEncoding);
+    oldGenTests.add(testDequeLifoOwnerFifoThief);
+    oldGenTests.add(testDequeGrowKeepsEntries);
+    oldGenTests.add(testGangRunsEveryMemberOnce);
+    oldGenTests.add(testGangForkChild);
+    oldGenTests.add(testMarkThreadsConfig);
+    oldGenTests.add(testMarkChunkedArrayAllChildren);
+    oldGenTests.add(testMarkChunkedListBacking);
+    oldGenTests.add(testMarkChunkBudgetSplitsArray);
+    oldGenTests.add(testParMarkMatchesSerial);
+    oldGenTests.add(testParMarkUnitsExactPerSlice);
+    oldGenTests.add(testParMarkDeterministicAcrossThreadCounts);
+    oldGenTests.add(testParMarkResumesAcrossSlices);
+    oldGenTests.add(testParMarkStealingHappens);
+    oldGenTests.add(testParMarkIncrementalOffUsesT0Cycle);
+    oldGenTests.add(testParMarkJoinDrainParallel);
+    oldGenTests.add(testParMarkAutoThreadCount);
+    oldGenTests.add(testParMarkNegativeSkipMergeWorker1);
+    oldGenTests.add(testParMarkNegativePlainBits);
+    oldGenTests.add(testParMarkNegativeStealWithoutTicket);
     oldGenTests.add(testHelperConfigValidation);
     oldGenTests.add(testHelperPoolSyncRunsInline);
     oldGenTests.add(testHelperPoolConcurrentRunsOnWorker);

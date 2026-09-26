@@ -58,6 +58,8 @@ void applyHeapConfigFromEnv(HeapConfig &cfg);
 // default 0) into jitter_us. Throws std::invalid_argument on a bad value.
 // The 4-argument form takes the raw values (nullptr = unset) for tests.
 void applyGcThreadEnv(HeapConfig &cfg, uint32_t &jitter_us);
+// threaded-gc-05b: ECO_GC_MARK_THREADS; also applied by applyGcThreadEnv(cfg, jitter).
+void applyMarkThreadsEnv(HeapConfig &cfg, const char *value);
 void applyGcThreadEnv(HeapConfig &cfg, uint32_t &jitter_us,
                       const char *mode_value, const char *jitter_value);
 

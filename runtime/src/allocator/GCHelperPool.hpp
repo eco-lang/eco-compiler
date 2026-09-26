@@ -151,4 +151,73 @@ private:
     Stats stats_;
 };
 
+// ---------------------------------------------------------------------------
+// threaded-gc-05b (plans/threaded-gc-05b-parallel-marking.md P§3.5, HEAP_064):
+// the mark gang. Gang scheduling: run() executes fn(ctx, i) for i in [0, n) at
+// once -- i = 0 on the caller, 1..n-1 on parked gang threads -- and returns
+// when all n returned. Start and join are mutex release/acquire pairs, which
+// publish everything written before run() to the members and everything the
+// members wrote to the caller. Runs happen only inside a GC pause (HEAP_058
+// amended): the pool's FIFO cannot start N jobs together, and may have a
+// decommit queued first.
+// ---------------------------------------------------------------------------
+class GCMarkGang {
+public:
+    using Fn = void (*)(void* ctx, unsigned member);
+    static GCMarkGang& instance();
+
+    // First call wins (as GCHelperPool::configure); `members` includes the
+    // caller, in [1, 64]. A later call with different values aborts.
+    void configure(unsigned members, unsigned jitter_us);
+    bool configured() const { return configured_.load(std::memory_order_acquire); }
+    unsigned members() const { return members_; }
+    unsigned jitterUs() const { return jitter_us_; }
+
+    // n <= members(). n == 1 calls fn(ctx, 0) inline. Concurrent callers
+    // (several heaps) are serialised.
+    void run(Fn fn, void* ctx, unsigned n);
+
+    struct Stats {
+        std::atomic<uint64_t> runs{0};
+        std::atomic<uint64_t> member_cpu_ns{0};     // gang threads only (collector CPU)
+        std::atomic<uint64_t> wake_ns_total{0};
+        std::atomic<uint64_t> wake_ns_max{0};
+    };
+    const Stats& stats() const { return stats_; }
+
+    // Test-only: joins the threads and returns to unconfigured (stats zeroed).
+    void shutdownForTesting();
+
+private:
+    GCMarkGang() = default;
+    void memberLoop(unsigned index);
+    void startThreadsLocked();
+    static void atforkPrepare();
+    static void atforkParent();
+    static void atforkChild();
+
+    std::atomic<bool> configured_{false};
+    unsigned members_ = 1;
+    unsigned jitter_us_ = 0;
+    std::mutex run_m_;                 // one run at a time
+    std::mutex m_;
+    std::condition_variable cv_start_;
+    std::condition_variable cv_done_;
+    uint64_t generation_ = 0;          // guarded by m_
+    unsigned running_n_ = 0;           // guarded by m_
+    unsigned finished_ = 0;            // guarded by m_
+    Fn fn_ = nullptr;                  // guarded by m_
+    void* ctx_ = nullptr;              // guarded by m_
+    uint64_t post_ns_ = 0;             // guarded by m_
+    bool started_ = false;             // guarded by m_
+    bool stopping_ = false;            // guarded by m_
+    std::vector<std::thread>* threads_ = new std::vector<std::thread>();
+    Stats stats_;
+};
+
+// threaded-gc-05b P§3.9: CPUs this process may run on -- the affinity mask,
+// capped by a cgroup v2 cpu.max quota when one is set. Never
+// hardware_concurrency (which ignores both). At least 1.
+unsigned availableCpus();
+
 } // namespace Elm::gc

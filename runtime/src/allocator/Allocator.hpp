@@ -247,6 +247,8 @@ public:
 
     // Returns committed bytes in the shared old-gen region (all threads).
     size_t getOldGenCommittedBytes() const { return old_gen_in_use_bytes_; }
+    // threaded-gc-05b: ECO_GC_HELPER_JITTER_US, also the mark gang's probe.
+    uint32_t helperJitterUs() const { return helper_jitter_us_; }
 
     // C0 census (TEMPORARY, plans/contiguous-nursery-space.md §3.3). Two
     // DIFFERENT old-gen walls: the peak of the in-use figure above (the

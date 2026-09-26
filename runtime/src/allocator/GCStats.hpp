@@ -243,6 +243,31 @@ struct IncrMarkStats {
     }
 };
 
+// threaded-gc-05b (plans/threaded-gc-05b-parallel-marking.md P§3.10): the
+// parallel marker. Per-heap (old gen's alloc_stats_); combine() sums, maxes.
+struct ParMarkStats {
+    uint64_t runs = 0, members_max = 0, units = 0;
+    uint64_t steals = 0, steal_aborts = 0, steal_empty = 0;
+    uint64_t idle_spins = 0, idle_yields = 0, idle_sleeps = 0;
+    uint64_t imbalance_milli_sum = 0, imbalance_milli_max = 0;   // max/mean units x 1000
+    uint64_t member_cpu_ns = 0, run_ns_total = 0, run_ns_max = 0;
+    uint64_t deque_grows = 0, deque_peak_entries = 0, chunks_pushed = 0;
+    bool any() const { return runs != 0 || chunks_pushed != 0; }
+    void combine(const ParMarkStats& o) {
+        runs += o.runs; units += o.units;
+        if (o.members_max > members_max) members_max = o.members_max;
+        steals += o.steals; steal_aborts += o.steal_aborts; steal_empty += o.steal_empty;
+        idle_spins += o.idle_spins; idle_yields += o.idle_yields; idle_sleeps += o.idle_sleeps;
+        imbalance_milli_sum += o.imbalance_milli_sum;
+        if (o.imbalance_milli_max > imbalance_milli_max) imbalance_milli_max = o.imbalance_milli_max;
+        member_cpu_ns += o.member_cpu_ns; run_ns_total += o.run_ns_total;
+        if (o.run_ns_max > run_ns_max) run_ns_max = o.run_ns_max;
+        deque_grows += o.deque_grows;
+        if (o.deque_peak_entries > deque_peak_entries) deque_peak_entries = o.deque_peak_entries;
+        chunks_pushed += o.chunks_pushed;
+    }
+};
+
 // threaded-gc-03 (plans/threaded-gc-03-helper-threads.md P§3.9): where old-gen
 // pages come from and go to. Allocator-global (filled by getCombinedStats from
 // the live allocator), so combine() merges by max like the old-gen walls.
@@ -934,8 +959,10 @@ public:
     // threaded-gc-04b: large allocations by placement + YLOS life cycle.
     LargePtrStats lp;
     IncrMarkStats im;   // threaded-gc-05a
+    ParMarkStats pm;    // threaded-gc-05b
     void printLargePtrBlock() const;
     void printIncrMarkBlock() const;
+    void printParMarkBlock() const;
     void printPageSupplyBlock() const;
     void printHelperBlock() const;
 

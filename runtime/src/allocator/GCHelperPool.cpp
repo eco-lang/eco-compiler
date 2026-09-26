@@ -7,6 +7,10 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 #include <ctime>
 #include <new>
 
@@ -307,6 +311,200 @@ void GCHelperPool::shutdownForTesting() {
     stats_.stall_max_ns.store(0);
     stats_.stall_outside_pause.store(0);
     stats_.stall_outside_pause_ns.store(0);
+}
+
+// ===========================================================================
+// threaded-gc-05b: GCMarkGang
+// ===========================================================================
+
+GCMarkGang& GCMarkGang::instance() {
+    static GCMarkGang* g = new GCMarkGang();   // leaky, like the pool
+    return *g;
+}
+
+void GCMarkGang::configure(unsigned members, unsigned jitter_us) {
+    std::lock_guard<std::mutex> lk(m_);
+    if (configured_.load(std::memory_order_relaxed)) {
+        if (members != members_ || jitter_us != jitter_us_) {
+            poolAbort("GCMarkGang::configure: already configured with different settings");
+        }
+        return;
+    }
+    if (members == 0 || members > 64) poolAbort("GCMarkGang::configure: members must be in [1, 64]");
+#if !defined(_WIN32)
+    static bool atfork_registered = false;
+    if (!atfork_registered) {
+        atfork_registered = true;
+        pthread_atfork(&GCMarkGang::atforkPrepare, &GCMarkGang::atforkParent,
+                       &GCMarkGang::atforkChild);
+    }
+#endif
+    members_ = members;
+    jitter_us_ = jitter_us;
+    configured_.store(true, std::memory_order_release);
+}
+
+void GCMarkGang::startThreadsLocked() {
+    if (started_) return;
+    started_ = true;
+    for (unsigned i = 1; i < members_; ++i) {
+        threads_->emplace_back([this, i] { memberLoop(i); });
+    }
+}
+
+void GCMarkGang::memberLoop(unsigned index) {
+#if !defined(_WIN32)
+    {
+        char name[16];
+        std::snprintf(name, sizeof name, "eco-mark-%u", index);
+#  if defined(__APPLE__)
+        pthread_setname_np(name);
+#  else
+        pthread_setname_np(pthread_self(), name);
+#  endif
+    }
+#endif
+    uint64_t seen = 0;
+    uint64_t rng = 0xD1B54A32D192ED03ull ^ (static_cast<uint64_t>(index) * 0x9E3779B97F4A7C15ull);
+    for (;;) {
+        Fn fn;
+        void* ctx;
+        uint64_t post;
+        unsigned n;
+        {
+            std::unique_lock<std::mutex> lk(m_);
+            cv_start_.wait(lk, [&] { return stopping_ || generation_ != seen; });
+            if (stopping_) return;
+            seen = generation_;
+            if (index >= running_n_) continue;       // not part of this run
+            fn = fn_;
+            ctx = ctx_;
+            post = post_ns_;
+            n = running_n_;
+        }
+        const uint64_t wake = GCHelperPool::nowNs() - post;
+        stats_.wake_ns_total.fetch_add(wake, std::memory_order_relaxed);
+        uint64_t prev = stats_.wake_ns_max.load(std::memory_order_relaxed);
+        while (wake > prev &&
+               !stats_.wake_ns_max.compare_exchange_weak(prev, wake, std::memory_order_relaxed)) {
+        }
+        if (jitter_us_ != 0) {
+            rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
+            std::this_thread::sleep_for(std::chrono::microseconds(rng % (jitter_us_ + 1)));
+        }
+        const uint64_t c0 = GCHelperPool::threadCpuNs();
+        fn(ctx, index);
+        stats_.member_cpu_ns.fetch_add(GCHelperPool::threadCpuNs() - c0, std::memory_order_relaxed);
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            if (++finished_ == n - 1) cv_done_.notify_one();
+        }
+    }
+}
+
+void GCMarkGang::run(Fn fn, void* ctx, unsigned n) {
+    if (n <= 1) {
+        fn(ctx, 0);
+        return;
+    }
+    std::lock_guard<std::mutex> run_lk(run_m_);
+    if (!configured_.load(std::memory_order_acquire) || n > members_) {
+        poolAbort("GCMarkGang::run: not configured for this many members");
+    }
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        startThreadsLocked();
+        fn_ = fn;
+        ctx_ = ctx;
+        running_n_ = n;
+        finished_ = 0;
+        post_ns_ = GCHelperPool::nowNs();
+        ++generation_;
+    }
+    cv_start_.notify_all();
+    stats_.runs.fetch_add(1, std::memory_order_relaxed);
+    fn(ctx, 0);
+    std::unique_lock<std::mutex> lk(m_);
+    cv_done_.wait(lk, [&] { return finished_ == n - 1; });
+}
+
+void GCMarkGang::shutdownForTesting() {
+    std::lock_guard<std::mutex> run_lk(run_m_);
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        stopping_ = true;
+    }
+    cv_start_.notify_all();
+    for (std::thread& t : *threads_) {
+        if (t.joinable()) t.join();
+    }
+    threads_->clear();
+    std::lock_guard<std::mutex> lk(m_);
+    stopping_ = false;
+    started_ = false;
+    generation_ = 0;
+    running_n_ = finished_ = 0;
+    members_ = 1;
+    jitter_us_ = 0;
+    stats_.runs.store(0);
+    stats_.member_cpu_ns.store(0);
+    stats_.wake_ns_total.store(0);
+    stats_.wake_ns_max.store(0);
+    configured_.store(false, std::memory_order_release);
+}
+
+void GCMarkGang::atforkPrepare() {
+    GCMarkGang& g = instance();
+    // Runs happen only inside a GC pause, fork only outside one (plan trap 12):
+    // taking run_m_ waits out any run and keeps new ones from starting.
+    g.run_m_.lock();
+    g.m_.lock();
+}
+
+void GCMarkGang::atforkParent() {
+    GCMarkGang& g = instance();
+    g.m_.unlock();
+    g.run_m_.unlock();
+}
+
+void GCMarkGang::atforkChild() {
+    GCMarkGang& g = instance();
+    new (&g.run_m_) std::mutex();
+    new (&g.m_) std::mutex();
+    new (&g.cv_start_) std::condition_variable();
+    new (&g.cv_done_) std::condition_variable();
+    g.threads_ = new std::vector<std::thread>();   // abandon the parent's
+    g.started_ = false;
+    g.stopping_ = false;
+    g.running_n_ = g.finished_ = 0;
+}
+
+unsigned availableCpus() {
+    unsigned n = 0;
+#if defined(__linux__)
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (sched_getaffinity(0, sizeof set, &set) == 0) n = static_cast<unsigned>(CPU_COUNT(&set));
+    if (FILE* f = std::fopen("/sys/fs/cgroup/cpu.max", "r")) {
+        char quota[32] = {0};
+        unsigned long long period = 0;
+        if (std::fscanf(f, "%31s %llu", quota, &period) == 2 && period > 0 &&
+            std::strcmp(quota, "max") != 0) {
+            const unsigned long long q = std::strtoull(quota, nullptr, 10);
+            if (q > 0) {
+                const unsigned cg = static_cast<unsigned>((q + period - 1) / period);
+                if (n == 0 || cg < n) n = cg;
+            }
+        }
+        std::fclose(f);
+    }
+#elif defined(_WIN32)
+    n = static_cast<unsigned>(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS));
+#else
+    const long v = sysconf(_SC_NPROCESSORS_ONLN);
+    if (v > 0) n = static_cast<unsigned>(v);
+#endif
+    return n == 0 ? 1 : n;
 }
 
 } // namespace Elm::gc

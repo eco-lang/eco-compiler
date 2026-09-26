@@ -62,6 +62,11 @@ HeapConfig incrConfig(uint32_t slices, bool on = true, uint32_t divisor = 8) {
     cfg.incremental_mark           = on;
     cfg.incremental_mark_slices    = slices;
     cfg.incremental_mark_min_slice_units = 1;
+    // threaded-gc-05b: rerun every 5a test on N markers with the test-only
+    // variable ECO_TEST_MARK_THREADS (plan Step 6.4); default 1 (serial).
+    if (const char* mt = std::getenv("ECO_TEST_MARK_THREADS")) {
+        cfg.gc_mark_threads = static_cast<uint32_t>(std::atoi(mt));
+    }
     cfg.validate();
     return cfg;
 }

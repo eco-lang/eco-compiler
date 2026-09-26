@@ -8,6 +8,9 @@
  */
 
 #include "OldGenSpace.hpp"
+#include "GCHelperPool.hpp"
+#include "HeapChildWalk.hpp"
+#include <mutex>
 #include "Allocator.hpp"
 #include "NurserySpace.hpp"
 #include "BitmapScan.hpp"
@@ -220,6 +223,7 @@ OldGenSpace::OldGenSpace() :
     for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
         free_lists_[i] = nullptr;
     }
+    ensureMarkers();   // threaded-gc-05b: worker 0 always exists
 }
 
 OldGenSpace::~OldGenSpace() {
@@ -229,7 +233,9 @@ OldGenSpace::~OldGenSpace() {
     blocks_.releaseStorage();
     mark_.release();
     page_index_.release();
-    mark_live_.release();
+    for (unsigned i = 0; i < kMaxMarkers; ++i) {
+        if (markers_[i]) markers_[i]->live.release();
+    }
 }
 
 OldGenSpace::OldGenGeometry
@@ -247,8 +253,15 @@ void OldGenSpace::reserveMetadata() {
     const OldGenGeometry g =
         geometryFor(reservation, config_->alloc_buffer_size);
     index_base_ = allocator_->getHeapBase();
+    // threaded-gc-05b: one accumulator per marker (HEAP_051 / HEAP_064).
+    mark_threads_ = resolveMarkThreads(*config_);
+    ensureMarkers();
+    bool live_ok = true;
+    for (unsigned i = 0; i < mark_threads_; ++i) {
+        live_ok = live_ok && markers_[i]->live.reserve(g.max_blocks);
+    }
     if (!blocks_.reserve(g.max_blocks) || !mark_.reserve(g.max_blocks, g.stride) ||
-        !page_index_.reserve(g.index_slots) || !mark_live_.reserve(g.max_blocks)) {
+        !page_index_.reserve(g.index_slots) || !live_ok) {
         std::fprintf(stderr,
             "[oldgen] metadata VA reservation failed (reservation=%zu B, "
             "page=%zu B: %zu block ids, %zu index slots, %zu B mark arena)\n",
@@ -263,7 +276,7 @@ void OldGenSpace::reserveMetadata() {
     }
     storage_bases_[BlockTable::kStorageArrays] = mark_.storageBase();
     storage_bases_[BlockTable::kStorageArrays + 1] = page_index_.data();
-    storage_bases_[BlockTable::kStorageArrays + 2] = mark_live_.storageBase();
+    storage_bases_[BlockTable::kStorageArrays + 2] = w0().live.storageBase();
 #endif
 }
 
@@ -389,7 +402,7 @@ void OldGenSpace::reset(const HeapConfig* new_config) {
     cycle_t0_blocks_.clear();
 #endif
     current_epoch = 0;
-    mark_stack.clear();
+    w0().stack.clear();
     batch_release_depth_ = 0;
     in_minor_gc_ = false;
     sweep_buffer_index_ = 0;
@@ -596,7 +609,7 @@ BlockId OldGenSpace::materializeBlock(const BlockInfo& bi,
                                       size_t mark_bytes) {
     const BlockId id = blocks_.add(bi, m);
     mark_.assign(id, static_cast<uint32_t>(mark_bytes));
-    mark_live_.commitThrough(id);
+    for (unsigned i = 0; i < mark_threads_; ++i) markers_[i]->live.commitThrough(id);
     assignPageIndexForBlock(id);
     return id;
 }
@@ -2041,7 +2054,12 @@ void OldGenSpace::prepareMark(Allocator &alloc) {
 
     marking_active = true;
     current_epoch++;
-    mark_stack.clear();
+    for (unsigned i = 0; i < mark_threads_; ++i) {
+        markers_[i]->stack.clear();
+        markers_[i]->priv.store(0, std::memory_order_relaxed);
+        markers_[i]->deque.reset();
+    }
+    mark_parallel_ = false;   // threaded-gc-05b: beginMarkCycle decides
     nursery_visited_.clear();
 
     // Store Allocator reference for nursery checks during marking.
@@ -2102,245 +2120,118 @@ void OldGenSpace::markJitRootRaw(uint64_t val, Allocator &alloc) {
     }
 }
 
-/**
- * Performs incremental marking work for up to work_units objects.
- * Returns true if more work remains, false if marking is complete.
- */
-// threaded-gc-05a: the mark loop, returning the units done. Shared by
-// incrementalMark (the STW loop) and the incremental cycle's slices.
-size_t OldGenSpace::markWorkUnits(size_t work_units) {
-    size_t units_done = 0;
+// ===========================================================================
+// threaded-gc-05b: the marker (HEAP_064; plans/threaded-gc-05b-parallel-marking.md
+// P§3.2-P§3.8). One templated mark path; SerialMark = today's plain bit ops and
+// the nursery traversal of the legacy STW major, ParallelMark = atomic bit ops
+// on N markers. The grey set is worker 0's stack (serial) or the markers'
+// Chase-Lev deques (parallel), chosen by mark_parallel_ at beginMarkCycle.
+// ===========================================================================
 
-    // Item 54, FIFO variant (gc_handbook/02-mark-sweep.md §2.6). A small ring
-    // sits between the mark stack and the scan: entries are popped into the
-    // ring and prefetched on the way in, and the entry that falls out the far
-    // end is the one scanned. That fixes the prefetch distance at
-    // MARK_FIFO_DEPTH objects of real work, where prefetch-on-grey's distance
-    // was whatever the LIFO happened to give — often 1, for the last child
-    // pushed.
-    //
-    // The ring MUST be drained before returning: `incrementalMark` signals
-    // completion with `!mark_stack.empty()`, so an entry left in flight would
-    // never be scanned, its children would never be marked, and live objects
-    // would be swept. The budget therefore overshoots `work_units` by at most
-    // MARK_FIFO_DEPTH-1 objects, which is what the trailing drain does.
-    MarkStackEntry fifo[MARK_FIFO_DEPTH];
-    size_t head = 0, tail = 0, count = 0;
-
-    while (units_done < work_units) {
-        while (count < MARK_FIFO_DEPTH && !mark_stack.empty()) {
-            MarkStackEntry e = mark_stack.back();
-            mark_stack.pop_back();
-            __builtin_prefetch(e.obj, 0, 3);
-            fifo[tail] = e;
-            tail = (tail + 1) % MARK_FIFO_DEPTH;
-            ++count;
-        }
-        if (count == 0) break;
-        MarkStackEntry entry = fifo[head];
-        head = (head + 1) % MARK_FIFO_DEPTH;
-        --count;
-        if (markOneObject(entry.obj, entry.block)) ++units_done;
-    }
-
-    while (count > 0) {   // trailing drain — never return with entries in flight
-        MarkStackEntry entry = fifo[head];
-        head = (head + 1) % MARK_FIFO_DEPTH;
-        --count;
-        if (markOneObject(entry.obj, entry.block)) ++units_done;
-    }
-
-    return units_done;
+unsigned OldGenSpace::resolveMarkThreads(const HeapConfig& cfg) {
+    // Parallel marking runs only inside incremental cycles, which need
+    // bitmap allocation (HEAP_063).
+    if (!cfg.old_gen_bitmap_alloc) return 1;
+    unsigned n = cfg.gc_mark_threads;
+    if (n == 0) n = std::min<unsigned>(cfg.gc_mark_threads_cap, gc::availableCpus());
+    if (n > kMaxMarkers) n = kMaxMarkers;
+    return n == 0 ? 1 : n;
 }
 
-#if ENABLE_GC_STATS
-bool OldGenSpace::incrementalMark(size_t work_units, GCStats &stats) {
-#else
-bool OldGenSpace::incrementalMark(size_t work_units) {
-#endif
-    if (!marking_active || mark_stack.empty()) {
-        return false;  // No work to do.
-    }
-
-    const size_t units_done = markWorkUnits(work_units);
-#if ENABLE_GC_STATS
-    GC_STATS_MAJOR_INC_INCREMENTAL_MARK(stats, units_done);
-#else
-    (void)units_done;
-#endif
-
-    return !mark_stack.empty();
-}
-
-void OldGenSpace::markChildren(void *obj) {
-    Header *hdr = getHeader(obj);
-
-    switch (hdr->tag) {
-        case Tag_Tuple2: {
-            Tuple2 *t = static_cast<Tuple2 *>(obj);
-            markUnboxable(t->a, tupleFieldKind(hdr->unboxed, 0) == 0);
-            markUnboxable(t->b, tupleFieldKind(hdr->unboxed, 1) == 0);
-            break;
+void OldGenSpace::ensureMarkers() {
+    const unsigned want = mark_threads_ == 0 ? 1 : mark_threads_;
+    for (unsigned i = 0; i < kMaxMarkers; ++i) {
+        if (i < want) {
+            if (!markers_[i]) markers_[i] = std::make_unique<MarkWorker>();
+        } else if (markers_[i]) {
+            markers_[i]->live.release();
+            markers_[i].reset();
         }
-        case Tag_Tuple3: {
-            Tuple3 *t = static_cast<Tuple3 *>(obj);
-            markUnboxable(t->a, tupleFieldKind(hdr->unboxed, 0) == 0);
-            markUnboxable(t->b, tupleFieldKind(hdr->unboxed, 1) == 0);
-            markUnboxable(t->c, tupleFieldKind(hdr->unboxed, 2) == 0);
-            break;
-        }
-        case Tag_Cons: {
-            Cons *c = static_cast<Cons *>(obj);
-            markUnboxable(c->head, tupleFieldKind(hdr->unboxed, 0) == 0);
-            markHPointer(c->tail);
-            break;
-        }
-        case Tag_ConsChunk: {
-            ConsChunk *cv = static_cast<ConsChunk *>(obj);
-            markHPointer(cv->backing);
-            markHPointer(cv->next);
-            break;
-        }
-        case Tag_ListBacking: {
-            // Live slots are [hd, capacity); scalar-kind backings (unboxed
-            // bits 1:0 != 0) are pointer-free. Slack below hd is never traced.
-            if ((hdr->unboxed & 0x3) == 0) {
-                ListBacking *lb = static_cast<ListBacking *>(obj);
-                for (u32 i = lb->hd; i < hdr->size; i++) {
-                    markUnboxable(lb->elems[i], true);
-                }
-            }
-            break;
-        }
-        case Tag_Custom: {
-            Custom *c = static_cast<Custom *>(obj);
-            for (u32 i = 0; i < hdr->size && i < 24; i++) {
-                markUnboxable(c->values[i], fieldKind(c->unboxed, i) == 0);
-            }
-            break;
-        }
-        case Tag_Record: {
-            Record *r = static_cast<Record *>(obj);
-            for (u32 i = 0; i < hdr->size && i < 32; i++) {
-                markUnboxable(r->values[i], fieldKind(r->unboxed, i) == 0);
-            }
-            break;
-        }
-        case Tag_DynRecord: {
-            DynRecord *dr = static_cast<DynRecord *>(obj);
-            markHPointer(dr->fieldgroup);
-            for (u32 i = 0; i < hdr->size; i++) {
-                markHPointer(dr->values[i]);
-            }
-            break;
-        }
-        case Tag_Closure: {
-            // GC scans APPLIED slots only: `n_values`, not `hdr->size`
-            // (== max_values, the capacity). Slots [n_values, max_values) are
-            // unapplied argument space that no code reads, so tracing them
-            // only exposed uninitialised memory — the reason the closure
-            // payload had to be zeroed at all
-            // (plans/nursery-per-site-zeroing.md).
-            //
-            // See NurserySpace::scanObject's Tag_Closure arm for the
-            // invariant every value-slot writer must keep, and why
-            // eco_store_field* must never be used on a Closure.
-            Closure *cl = static_cast<Closure *>(obj);
-            for (u32 i = 0; i < cl->n_values; i++) {
-                markUnboxable(cl->values[i], fieldKind(cl->unboxed, i) == 0);
-            }
-            break;
-        }
-        case Tag_Process: {
-            Process *p = static_cast<Process *>(obj);
-            markHPointer(p->root);
-            markHPointer(p->stack);
-            markHPointer(p->mailbox);
-            break;
-        }
-        case Tag_Task: {
-            Task *t = static_cast<Task *>(obj);
-            if ((t->header.unboxed & 0x3) == 0) {
-                markHPointer(t->value.p);
-            }
-            markHPointer(t->callback);
-            markHPointer(t->kill);
-            markHPointer(t->task);
-            break;
-        }
-        case Tag_Array: {
-            ElmArray *arr = static_cast<ElmArray *>(obj);
-            bool is_boxed = (arr->header.unboxed & 0x3) == 0;
-            for (u32 i = 0; i < arr->length; i++) {
-                markUnboxable(arr->elements[i], is_boxed);
-            }
-            break;
-        }
-        case Tag_StringSlice: {
-            ElmStringSlice *slc = static_cast<ElmStringSlice *>(obj);
-            markHPointer(slc->base);
-            break;
-        }
-        case Tag_StringUtf8View: {
-            ElmStringUtf8View *v = static_cast<ElmStringUtf8View *>(obj);
-            markHPointer(v->base);
-            break;
-        }
-        case Tag_ByteBufferSlice: {
-            ElmByteBufferSlice *slc = static_cast<ElmByteBufferSlice *>(obj);
-            markHPointer(slc->base);
-            break;
-        }
-        case Tag_StringRope: {
-            ElmStringRope *r = static_cast<ElmStringRope *>(obj);
-            markHPointer(r->left);
-            markHPointer(r->right);
-            break;
-        }
-        case Tag_LargeStringHeader: {
-            // Split header: trace the body so it survives major GC. The body
-            // is pointer-free (Tag_String chars[]), so no further traversal.
-            LargeStringHeader *h = static_cast<LargeStringHeader *>(obj);
-            markHPointer(h->body);
-            break;
-        }
-        case Tag_LargeByteHeader: {
-            LargeByteHeader *h = static_cast<LargeByteHeader *>(obj);
-            markHPointer(h->body);
-            break;
-        }
-        // Tag_ByteBuffer: No pointers to mark (raw bytes only).
-        // Tag_FieldGroup: No pointers to mark (field IDs only).
-        // Tag_Int, Tag_Float, Tag_Char, Tag_String: No children.
-        // Tag_Free: Never traversed.
-        default:
-            break;
     }
 }
 
-void OldGenSpace::markHPointer(HPointer &ptr) {
-    if (ptr.ptr_ind != 0)
-        return;
-
-    void *obj = Allocator::fromPointerRaw(ptr);
-    if (!obj)
-        return;
-
-    if (!allocator_ref_ || !allocator_ref_->isInHeap(obj))
-        return;
-
-    pushMarkRoot(obj);
+uint64_t OldGenSpace::markLivePeek(BlockId id) const {
+    uint64_t v = 0;
+    for (unsigned i = 0; i < mark_threads_; ++i) v += markers_[i]->live.peek(id);
+    return v;
 }
 
-void OldGenSpace::pushMarkRoot(void *obj) {
+uint64_t OldGenSpace::markLiveTake(BlockId id) {
+    uint64_t v = 0;
+    for (unsigned i = 0; i < mark_threads_; ++i) v += markers_[i]->live.take(id);
+    return v;
+}
+
+uint64_t OldGenSpace::markLiveSum() const {
+    uint64_t v = 0;
+    for (unsigned i = 0; i < mark_threads_; ++i) v += markers_[i]->live.sum(blocks_);
+    return v;
+}
+
+void OldGenSpace::markLiveMergeAll() {
+    // Index order (plan trap 5): integer sums, identical to one accumulator.
+    for (unsigned i = 0; i < mark_threads_; ++i) {
+        if (i == 1 && test_skip_merge_worker1_) continue;   // negative control
+        markers_[i]->live.mergeInto(blocks_);
+    }
+}
+
+bool OldGenSpace::markStackEmpty() const {
+    if (!mark_parallel_) return w0().stack.empty();
+    for (unsigned i = 0; i < mark_threads_; ++i) {
+        if (!markers_[i]->deque.emptyApprox() || !markers_[i]->stack.empty()) return false;
+    }
+    return true;
+}
+
+size_t OldGenSpace::markStackSize() const {
+    if (!mark_parallel_) return w0().stack.size();
+    size_t n = 0;
+    for (unsigned i = 0; i < mark_threads_; ++i) {
+        n += markers_[i]->deque.sizeApprox() + markers_[i]->stack.size();
+    }
+    return n;
+}
+
+template <class P>
+bool OldGenSpace::testAndSetMark(BlockId id, const void* obj) {
+    if constexpr (!P::kParallel) {
+        return testAndSetMarkBitInBlock(id, obj);
+    } else {
+        if (__builtin_expect(test_plain_bits_parallel_, 0)) {   // negative control
+            return testAndSetMarkBitInBlock(id, obj);
+        }
+        if (!id.valid()) return false;
+        if (blocks_.info(id).is_large) {
+            std::atomic_ref<uint8_t> lm(blocks_.largeMark(id));
+            if (lm.load(std::memory_order_relaxed) != 0) return true;
+            return lm.exchange(1, std::memory_order_relaxed) != 0;
+        }
+        size_t byte_index;
+        uint8_t mask;
+        markBitLocation(id, obj, &byte_index, &mask);
+        if (byte_index >= mark_.len(id)) return false;
+        std::atomic_ref<uint8_t> b(mark_.slot(id)[byte_index]);
+        // Test before set: an already-marked object costs a plain load, not
+        // a locked RMW on a line other markers may be writing.
+        if (b.load(std::memory_order_relaxed) & mask) return true;
+        return (b.fetch_or(mask, std::memory_order_relaxed) & mask) != 0;
+    }
+}
+
+template <class P>
+void OldGenSpace::greyObject(MarkWorker& w, void* obj) {
     // Major GC must not write into nursery headers; minor GC owns those.
     // Use nursery_visited_ to break cycles when traversing through nursery
     // objects, instead of per-block bitmaps (which only cover old gen).
 #if ECO_HEAP_VALIDATE
     // HEAP_053: the per-heap nursery must agree with the calling thread's
-    // heap (HEAP_007 makes them the same heap today).
-    assert(nursery_->contains(obj) == allocator_ref_->isInNursery(obj) &&
-           "HEAP_053: bound nursery disagrees with tl_heap_'s nursery");
+    // heap (HEAP_007 makes them the same heap today). Only on the mutator:
+    // a gang thread has no tl_heap_.
+    if constexpr (!P::kParallel) {
+        assert(nursery_->contains(obj) == allocator_ref_->isInNursery(obj) &&
+               "HEAP_053: bound nursery disagrees with tl_heap_'s nursery");
+    }
 #endif
     if (__builtin_expect(cycle_state_ != CycleState::Idle, 0)) {
         // threaded-gc-05a (P§3.2): in snapshot mode young targets are walked
@@ -2360,37 +2251,249 @@ void OldGenSpace::pushMarkRoot(void *obj) {
         }
     }
     if (nursery_->contains(obj)) {
-        if (nursery_visited_.insert(obj).second) {
-            mark_stack.push_back(MarkStackEntry{obj, NO_BLOCK_ID});
+        if constexpr (P::kParallel) {
+            // HEAP_064 / plan trap 6: nursery_visited_ is not thread-safe and
+            // a parallel marker can never meet a young object (HEAP_005 +
+            // the t0 snapshot). Every build.
+            std::fprintf(stderr, "[gc] parallel marker reached nursery object %p\n", obj);
+            std::abort();
+        } else {
+            if (nursery_visited_.insert(obj).second) {
+                pushGrey(w, markwork::objEntry(obj, 0));
+            }
+            return;
         }
-        return;
     }
 
     // Old-gen path: bitmap discovery via O(1) page-table lookup. Setting
-    // the bit IS the grey transition; popping + markChildren IS the
+    // the bit IS the grey transition; popping + scanChildren IS the
     // blackening. Bit stays set until sweep clears it.
     if (!contains(obj)) return;
     const BlockId block_id = blockIdFor(obj);
     if (!block_id.valid()) return;
 
     // Item 40: one test-and-set instead of isMarkedInBlock + setMarkBitInBlock.
-    if (testAndSetMarkBitInBlock(block_id, obj)) return;
-    // Cache the block id on the entry so markOneObject can skip a second
+    if (testAndSetMark<P>(block_id, obj)) return;
+    // Cache the block id on the entry so scanObject can skip a second
     // blockIdFor lookup when attributing live bytes.
-    mark_stack.push_back(MarkStackEntry{obj, block_id});
+    const uint64_t e = markwork::objEntry(obj, block_id.v + 1);
+    pushGrey(w, e);
 }
 
-void OldGenSpace::markUnboxable(Unboxable &val, bool is_boxed) {
-    if (is_boxed) {
-        markHPointer(val.p);
+template <class P>
+void OldGenSpace::greyHPointer(MarkWorker& w, HPointer& ptr) {
+    if (ptr.ptr_ind != 0)
+        return;
+
+    void *obj = Allocator::fromPointerRaw(ptr);
+    if (!obj)
+        return;
+
+    if (!allocator_ref_ || !allocator_ref_->isInHeap(obj))
+        return;
+
+    greyObject<P>(w, obj);
+}
+
+template <class P>
+void OldGenSpace::scanChildren(MarkWorker& w, void* obj) {
+    auto greyU = [&](Unboxable& val, bool is_boxed) {
+        if (is_boxed) greyHPointer<P>(w, val.p);
+    };
+    auto greyH = [&](HPointer& p) { greyHPointer<P>(w, p); };
+
+    Header *hdr = getHeader(obj);
+
+    switch (hdr->tag) {
+        case Tag_Tuple2: {
+            Tuple2 *t = static_cast<Tuple2 *>(obj);
+            greyU(t->a, tupleFieldKind(hdr->unboxed, 0) == 0);
+            greyU(t->b, tupleFieldKind(hdr->unboxed, 1) == 0);
+            break;
+        }
+        case Tag_Tuple3: {
+            Tuple3 *t = static_cast<Tuple3 *>(obj);
+            greyU(t->a, tupleFieldKind(hdr->unboxed, 0) == 0);
+            greyU(t->b, tupleFieldKind(hdr->unboxed, 1) == 0);
+            greyU(t->c, tupleFieldKind(hdr->unboxed, 2) == 0);
+            break;
+        }
+        case Tag_Cons: {
+            Cons *c = static_cast<Cons *>(obj);
+            greyU(c->head, tupleFieldKind(hdr->unboxed, 0) == 0);
+            greyH(c->tail);
+            break;
+        }
+        case Tag_ConsChunk: {
+            ConsChunk *cv = static_cast<ConsChunk *>(obj);
+            greyH(cv->backing);
+            greyH(cv->next);
+            break;
+        }
+        case Tag_ListBacking: {
+            // Live slots are [hd, capacity); scalar-kind backings (unboxed
+            // bits 1:0 != 0) are pointer-free. Slack below hd is never traced.
+            // threaded-gc-05b P§3.6: chunked above MARK_CHUNK_ELEMS slots.
+            if ((hdr->unboxed & 0x3) == 0) {
+                ListBacking *lb = static_cast<ListBacking *>(obj);
+                const u32 hd = lb->hd;
+                const u32 len = hdr->size > hd ? hdr->size - hd : 0;
+                const u32 first = (snapshot_mode_ || len < MARK_CHUNK_ELEMS) ? len : MARK_CHUNK_ELEMS;
+                for (u32 i = hd; i < hd + first; i++) {
+                    greyU(lb->elems[i], true);
+                }
+                for (u32 c = 1; first < len && static_cast<uint64_t>(c) * MARK_CHUNK_ELEMS < len; ++c) {
+                    pushGrey(w, markwork::chunkEntry(obj, c));
+                    ++w.chunks;
+                }
+            }
+            break;
+        }
+        case Tag_Custom: {
+            Custom *c = static_cast<Custom *>(obj);
+            for (u32 i = 0; i < hdr->size && i < 24; i++) {
+                greyU(c->values[i], fieldKind(c->unboxed, i) == 0);
+            }
+            break;
+        }
+        case Tag_Record: {
+            Record *r = static_cast<Record *>(obj);
+            for (u32 i = 0; i < hdr->size && i < 32; i++) {
+                greyU(r->values[i], fieldKind(r->unboxed, i) == 0);
+            }
+            break;
+        }
+        case Tag_DynRecord: {
+            DynRecord *dr = static_cast<DynRecord *>(obj);
+            greyH(dr->fieldgroup);
+            for (u32 i = 0; i < hdr->size; i++) {
+                greyH(dr->values[i]);
+            }
+            break;
+        }
+        case Tag_Closure: {
+            // GC scans APPLIED slots only: `n_values`, not `hdr->size`
+            // (== max_values, the capacity). Slots [n_values, max_values) are
+            // unapplied argument space that no code reads, so tracing them
+            // only exposed uninitialised memory — the reason the closure
+            // payload had to be zeroed at all
+            // (plans/nursery-per-site-zeroing.md).
+            //
+            // See NurserySpace::scanObject's Tag_Closure arm for the
+            // invariant every value-slot writer must keep, and why
+            // eco_store_field* must never be used on a Closure.
+            Closure *cl = static_cast<Closure *>(obj);
+            for (u32 i = 0; i < cl->n_values; i++) {
+                greyU(cl->values[i], fieldKind(cl->unboxed, i) == 0);
+            }
+            break;
+        }
+        case Tag_Process: {
+            Process *p = static_cast<Process *>(obj);
+            greyH(p->root);
+            greyH(p->stack);
+            greyH(p->mailbox);
+            break;
+        }
+        case Tag_Task: {
+            Task *t = static_cast<Task *>(obj);
+            if ((t->header.unboxed & 0x3) == 0) {
+                greyH(t->value.p);
+            }
+            greyH(t->callback);
+            greyH(t->kill);
+            greyH(t->task);
+            break;
+        }
+        case Tag_Array: {
+            // threaded-gc-05b P§3.6: boxed arrays longer than MARK_CHUNK_ELEMS
+            // scan their first chunk here and push the rest as chunk entries.
+            ElmArray *arr = static_cast<ElmArray *>(obj);
+            if ((arr->header.unboxed & 0x3) != 0) break;   // unboxed: no children
+            const u32 n = arr->length;
+            // Never chunk in the t0 snapshot: a young object (YLOS array) must
+            // be scanned completely at t0 -- it can die, be freed or promoted
+            // after t0, and a slice must never read a young object (IM3).
+            const u32 first = (snapshot_mode_ || n < MARK_CHUNK_ELEMS) ? n : MARK_CHUNK_ELEMS;
+            for (u32 i = 0; i < first; i++) {
+                greyU(arr->elements[i], true);
+            }
+            for (u32 c = 1; first < n && static_cast<uint64_t>(c) * MARK_CHUNK_ELEMS < n; ++c) {
+                pushGrey(w, markwork::chunkEntry(obj, c));
+                ++w.chunks;
+            }
+            break;
+        }
+        case Tag_StringSlice: {
+            ElmStringSlice *slc = static_cast<ElmStringSlice *>(obj);
+            greyH(slc->base);
+            break;
+        }
+        case Tag_StringUtf8View: {
+            ElmStringUtf8View *v = static_cast<ElmStringUtf8View *>(obj);
+            greyH(v->base);
+            break;
+        }
+        case Tag_ByteBufferSlice: {
+            ElmByteBufferSlice *slc = static_cast<ElmByteBufferSlice *>(obj);
+            greyH(slc->base);
+            break;
+        }
+        case Tag_StringRope: {
+            ElmStringRope *r = static_cast<ElmStringRope *>(obj);
+            greyH(r->left);
+            greyH(r->right);
+            break;
+        }
+        case Tag_LargeStringHeader: {
+            // Split header: trace the body so it survives major GC. The body
+            // is pointer-free (Tag_String chars[]), so no further traversal.
+            LargeStringHeader *h = static_cast<LargeStringHeader *>(obj);
+            greyH(h->body);
+            break;
+        }
+        case Tag_LargeByteHeader: {
+            LargeByteHeader *h = static_cast<LargeByteHeader *>(obj);
+            greyH(h->body);
+            break;
+        }
+        // Tag_ByteBuffer: No pointers to mark (raw bytes only).
+        // Tag_FieldGroup: No pointers to mark (field IDs only).
+        // Tag_Int, Tag_Float, Tag_Char, Tag_String: No children.
+        // Tag_Free: Never traversed.
+        default:
+            break;
     }
 }
 
-// ---------------------------------------------------------------------------
-// Mark-time live-bytes attribution (Step 2).
-// ---------------------------------------------------------------------------
+template <class P>
+void OldGenSpace::scanChunk(MarkWorker& w, void* obj, uint32_t chunk) {
+    // threaded-gc-05b P§3.6: one MARK_CHUNK_ELEMS range of a boxed array or
+    // list backing. No live bytes: the object's were attributed when its own
+    // entry was scanned. Old objects are immutable (P1), so the range is the
+    // one that existed when the chunk was pushed.
+    Header* hdr = getHeader(obj);
+    const uint64_t lo_rel = static_cast<uint64_t>(chunk) * MARK_CHUNK_ELEMS;
+    if (hdr->tag == Tag_Array) {
+        ElmArray* arr = static_cast<ElmArray*>(obj);
+        const uint64_t n = arr->length;
+        const uint64_t hi = std::min<uint64_t>(n, lo_rel + MARK_CHUNK_ELEMS);
+        for (uint64_t i = lo_rel; i < hi; ++i) greyHPointer<P>(w, arr->elements[i].p);
+    } else if (hdr->tag == Tag_ListBacking) {
+        ListBacking* lb = static_cast<ListBacking*>(obj);
+        const uint64_t hd = lb->hd;
+        const uint64_t end = hdr->size;
+        const uint64_t lo = hd + lo_rel;
+        const uint64_t hi = std::min<uint64_t>(end, lo + MARK_CHUNK_ELEMS);
+        for (uint64_t i = lo; i < hi; ++i) greyHPointer<P>(w, lb->elems[i].p);
+    } else {
+        std::fprintf(stderr, "[gc] chunk entry on tag %u at %p\n", (unsigned)hdr->tag, obj);
+        std::abort();
+    }
+}
 
-bool OldGenSpace::markOneObject(void* obj, BlockId block_index) {
+template <class P>
+bool OldGenSpace::scanObject(MarkWorker& w, void* obj, BlockId block_index) {
     if (!obj) return false;
     Header* hdr = getHeader(obj);
 
@@ -2409,25 +2512,25 @@ bool OldGenSpace::markOneObject(void* obj, BlockId block_index) {
            "embedded null-cons constants");
 #endif
 
-    // Nursery objects: traverse children but never write into the header,
-    // and don't attribute bytes (nursery cells aren't tracked in
-    // per block; only old-gen blocks are). The cycle break lives in
-    // pushMarkRoot via nursery_visited_.
-#if ECO_HEAP_VALIDATE
-    assert((nursery_ != nullptr && nursery_->contains(obj)) ==
-               (allocator_ref_ && allocator_ref_->isInNursery(obj)) &&
-           "HEAP_053: bound nursery disagrees with tl_heap_'s nursery");
-#endif
+    // Nursery objects (legacy STW path only): traverse children but never
+    // write into the header, and don't attribute bytes. The cycle break
+    // lives in greyObject via nursery_visited_.
     if (nursery_ != nullptr && nursery_->contains(obj)) {
-        markChildren(obj);
-        return true;
+        if constexpr (P::kParallel) {
+            std::fprintf(stderr, "[gc] parallel marker scanning nursery object %p\n", obj);
+            std::abort();
+        } else {
+#if ECO_HEAP_VALIDATE
+            assert(allocator_ref_ && allocator_ref_->isInNursery(obj) &&
+                   "HEAP_053: bound nursery disagrees with tl_heap_'s nursery");
+#endif
+            scanChildren<P>(w, obj);
+            return true;
+        }
     }
 
-    // Old-gen object: the bit was already set by pushMarkRoot when this
-    // object was discovered, so we don't need to test it again here. Just
-    // attribute live bytes and recurse into children. markChildren may
-    // call back into pushMarkRoot for child references; those will set
-    // their own bits and push themselves on the mark stack.
+    // Old-gen object: the bit was already set by greyObject when this
+    // object was discovered. Attribute live bytes and scan its children.
     if (!contains(obj)) return false;
 #if ECO_HEAP_VALIDATE
     // HEAP_BUILDER_001: builder objects are forbidden in old gen. If we
@@ -2436,11 +2539,11 @@ bool OldGenSpace::markOneObject(void* obj, BlockId block_index) {
     // !builder gate in NurserySpace::evacuate.
     // threaded-gc-04b HEAP_062: a young large object is young, so it may be
     // a builder (HEAP_BUILDER_001: builders are nursery or YLOS objects).
+    // (05b plan trap 7: a concurrent read of the YLOS index, safe only
+    // because the mutator is paused.)
     assert((!hdr->builder || isYoungLarge(obj)) &&
            "HEAP_BUILDER_001: builder object in old gen");
 #endif
-    // Use the cached block id when valid; fall back to blockIdFor only
-    // when the cache is empty (cold callers / nursery sentinel).
     BlockId blk_idx = block_index;
     if (!blk_idx.valid()) {
         blk_idx = blockIdFor(obj);
@@ -2455,13 +2558,326 @@ bool OldGenSpace::markOneObject(void* obj, BlockId block_index) {
     const size_t step = (blk.size_class < NUM_SIZE_CLASSES)
         ? OldGenSpaceTestAccess::classToSize(blk.size_class)
         : getObjectSize(obj);
-    // HEAP_051: the marker attributes to its accumulator only; merged into
-    // BufferMetadata::live_bytes at finalizeMetaAfterMark.
-    mark_live_.add(blk_idx, step);
-    markChildren(obj);
+    // HEAP_051: the marker attributes to ITS accumulator only; merged into
+    // BufferMetadata::live_bytes at finalizeMetaAfterMark (all markers).
+    w.live.add(blk_idx, step);
+    scanChildren<P>(w, obj);
     return true;
 }
 
+template <class P>
+void OldGenSpace::scanEntry(MarkWorker& w, uint64_t e) {
+#if ECO_HEAP_VALIDATE
+    im10NoteScan(e);
+#endif
+    void* obj = markwork::entryAddr(e);
+    if (markwork::isChunk(e)) {
+        scanChunk<P>(w, obj, markwork::entryField(e));
+        return;
+    }
+    const uint32_t f = markwork::entryField(e);
+    (void)scanObject<P>(w, obj, f != 0 ? BlockId{f - 1} : NO_BLOCK_ID);
+}
+
+// The two environments of markwork::runMarkerLoop (P§3.3).
+struct OldGenSpace::SerialEnv {
+    static constexpr bool kParallel = false;
+    OldGenSpace& og;
+    markwork::MarkerCounters& counters(unsigned) { return og.w0().ctr; }
+    uint64_t takeOwn(unsigned) {
+        std::vector<uint64_t>& st = og.w0().stack;
+        if (st.empty()) return markwork::kEmpty;
+        const uint64_t e = st.back();
+        st.pop_back();
+        return e;
+    }
+    uint64_t stealFrom(unsigned) { return markwork::kEmpty; }
+    bool anyWork() { return !og.w0().stack.empty(); }
+    void prefetch(uint64_t e) { __builtin_prefetch(markwork::entryAddr(e), 0, 3); }
+    void scan(unsigned, uint64_t e) { og.scanEntry<SerialMark>(og.w0(), e); }
+};
+
+struct OldGenSpace::ParallelEnv {
+    static constexpr bool kParallel = true;
+    OldGenSpace& og;
+    markwork::MarkerCounters& counters(unsigned i) { return og.markers_[i]->ctr; }
+    uint64_t takeOwn(unsigned i) {
+        MarkWorker& w = *og.markers_[i];
+        if (!w.stack.empty()) {                  // private first: no fence, no atomics
+            const uint64_t e = w.stack.back();
+            w.stack.pop_back();
+            w.priv.store(w.stack.size(), std::memory_order_relaxed);
+            if ((++w.pops & 63) == 0) og.publishHalf(w);
+            return e;
+        }
+        return w.deque.take();
+    }
+    uint64_t stealFrom(unsigned v) { return og.markers_[v]->deque.steal(); }
+    // Termination (P§3.3): private stacks count as work too -- their owner is
+    // the only one who can take it, and it re-activates when it sees it.
+    bool anyWork() {
+        for (unsigned i = 0; i < og.mark_threads_; ++i) {
+            const MarkWorker& w = *og.markers_[i];
+            if (!w.deque.emptyApprox() || w.priv.load(std::memory_order_relaxed) != 0) return true;
+        }
+        return false;
+    }
+    void prefetch(uint64_t e) { __builtin_prefetch(markwork::entryAddr(e), 0, 3); }
+    void scan(unsigned self, uint64_t e) { og.scanEntry<ParallelMark>(*og.markers_[self], e); }
+};
+
+namespace {
+struct MarkRunArgs {
+    OldGenSpace* og;
+    markwork::SliceControl* c;
+};
+}  // namespace
+
+void OldGenSpace::markerEntry(void* ctx, unsigned member) {
+    MarkRunArgs* a = static_cast<MarkRunArgs*>(ctx);
+    ParallelEnv env{*a->og};
+    markwork::runMarkerLoop(env, member, *a->c);
+}
+
+uint64_t OldGenSpace::runMarkers(int64_t budget) {
+    if (budget <= 0) return 0;
+    const auto t_start = std::chrono::steady_clock::now();
+    uint64_t units = 0;
+    if (!mark_parallel_) {
+        markwork::SliceControl c(budget, 1, 0);
+        w0().ctr.resetRun(0);
+        SerialEnv env{*this};
+        markwork::runMarkerLoop(env, 0, c);
+        units = w0().ctr.units;
+        assert(budget >= markwork::kDrainBudget ||
+               static_cast<int64_t>(units) == budget - c.budget.load() ||
+               !"P§3.3: serial units != consumed tickets");
+    } else {
+        gc::GCMarkGang& gang = gc::GCMarkGang::instance();
+        const unsigned jitter = allocator_ != nullptr ? allocator_->helperJitterUs() : 0;
+        if (!gang.configured() || gang.members() < mark_threads_ || gang.jitterUs() != jitter) {
+            // Only tests reconfigure (a heap reset to a new marker count).
+            if (gang.configured()) gang.shutdownForTesting();
+            gang.configure(mark_threads_, jitter);
+        }
+        markwork::SliceControl c(budget, mark_threads_, jitter);
+        c.steal_without_ticket = test_steal_without_ticket_;
+        for (unsigned i = 0; i < mark_threads_; ++i) {
+            markers_[i]->ctr.resetRun(i);
+            markers_[i]->chunks = 0;
+        }
+        MarkRunArgs args{this, &c};
+        gang.run(&OldGenSpace::markerEntry, &args, mark_threads_);
+        uint64_t umax = 0;
+        for (unsigned i = 0; i < mark_threads_; ++i) {
+            MarkWorker& m = *markers_[i];
+            m.deque.retireOldArrays();       // after the join (plan trap 4)
+            units += m.ctr.units;
+            umax = std::max(umax, m.ctr.units);
+#if ENABLE_GC_STATS
+            ParMarkStats& pm = alloc_stats_.pm;
+            pm.steals += m.ctr.steals;
+            pm.steal_aborts += m.ctr.steal_aborts;
+            pm.steal_empty += m.ctr.steal_empty;
+            pm.idle_spins += m.ctr.idle_spins;
+            pm.idle_yields += m.ctr.idle_yields;
+            pm.idle_sleeps += m.ctr.idle_sleeps;
+            pm.chunks_pushed += m.chunks;
+#endif
+        }
+        assert(budget >= markwork::kDrainBudget ||
+               static_cast<int64_t>(units) == budget - c.budget.load() ||
+               !"P§3.3: parallel units != consumed tickets");
+        assert(c.active() == 0 && c.done() && "P§3.3: a marker left the slice active");
+#if ENABLE_GC_STATS
+        ParMarkStats& pm = alloc_stats_.pm;
+        pm.runs++;
+        pm.units += units;
+        if (mark_threads_ > pm.members_max) pm.members_max = mark_threads_;
+        if (units > 0) {
+            const uint64_t imb = umax * 1000 * mark_threads_ / units;
+            pm.imbalance_milli_sum += imb;
+            if (imb > pm.imbalance_milli_max) pm.imbalance_milli_max = imb;
+        }
+        uint64_t grows = 0;
+        for (unsigned i = 0; i < mark_threads_; ++i) grows += markers_[i]->deque.grows();
+        pm.deque_grows = grows;
+#endif
+    }
+#if ENABLE_GC_STATS
+    if (!mark_parallel_) alloc_stats_.pm.chunks_pushed += w0().chunks, w0().chunks = 0;
+    const uint64_t ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - t_start).count());
+    if (mark_parallel_) {
+        alloc_stats_.pm.run_ns_total += ns;
+        if (ns > alloc_stats_.pm.run_ns_max) alloc_stats_.pm.run_ns_max = ns;
+        alloc_stats_.pm.member_cpu_ns = gc::GCMarkGang::instance().stats().member_cpu_ns.load();
+    }
+#else
+    (void)t_start;
+#endif
+    // Every unit consumed inside a cycle counts toward its pacing (IM12).
+    if (cycle_state_ != CycleState::Idle) cycle_units_ += units;
+    return units;
+}
+
+#if ECO_HEAP_VALIDATE
+// ---------------------------------------------------------------------------
+// IM10 / IM11 (plan P§3.11). IM10: every entry is scanned at most once per
+// cycle (a sharded, mutex-guarded set: validate builds only). IM11: at the
+// handoff, the set of scanned OBJECT entries equals the old-gen closure of
+// the t0 grey set, computed independently (visitHeapChildren).
+// ---------------------------------------------------------------------------
+struct OldGenSpace::Im10State {
+    struct Shard {
+        std::mutex m;
+        std::unordered_set<uint64_t> seen;
+    };
+    Shard shards[64];
+};
+
+void OldGenSpace::im10Reset() {
+    if (!im10_) im10_ = std::make_unique<Im10State>();
+    for (auto& sh : im10_->shards) {
+        std::lock_guard<std::mutex> lk(sh.m);
+        sh.seen.clear();
+    }
+}
+
+void OldGenSpace::im10NoteScan(uint64_t e) {
+    if (cycle_state_ == CycleState::Idle || !im10_) return;
+    // Object entries are keyed by address only (the block field may differ
+    // between two pushes of the same object -- which itself would be the bug).
+    const uint64_t key = markwork::isChunk(e) ? e : (e & markwork::kAddrMask);
+    auto& sh = im10_->shards[(key * 0x9E3779B97F4A7C15ull) >> 58];
+    std::lock_guard<std::mutex> lk(sh.m);
+    if (!sh.seen.insert(key).second) {
+        std::fprintf(stderr, "[heap-validate] IM10: entry %p (%s) scanned twice in one "
+            "cycle: the mark test-and-set is broken\n", markwork::entryAddr(e),
+            markwork::isChunk(e) ? "chunk" : "object");
+        std::fflush(stderr);
+        std::abort();
+    }
+}
+
+void OldGenSpace::im11Check(const char* where) {
+    if (!im10_) return;
+    constexpr size_t kCap = 5'000'000;
+    std::unordered_set<uintptr_t> closure;
+    std::vector<uint64_t> work(im11_t0_greys_.begin(), im11_t0_greys_.end());
+    auto pushChild = [&](HPointer& hp) {
+        if (hp.ptr_ind != 0) return;
+        void* o = Allocator::fromPointerRaw(hp);
+        if (!o || !contains(o) || nursery_->contains(o) || isYoungLarge(o)) return;
+        work.push_back(markwork::objEntry(o, 0));
+    };
+    auto scanRange = [&](void* obj, uint64_t lo, uint64_t hi, bool backing) {
+        Unboxable* el = backing ? static_cast<ListBacking*>(obj)->elems
+                                : static_cast<ElmArray*>(obj)->elements;
+        for (uint64_t i = lo; i < hi; ++i) pushChild(el[i].p);
+    };
+    while (!work.empty()) {
+        if (closure.size() > kCap) return;   // too big to check: skip (counted nowhere)
+        const uint64_t e = work.back();
+        work.pop_back();
+        void* obj = markwork::entryAddr(e);
+        Header* hdr = getHeader(obj);
+        if (markwork::isChunk(e)) {
+            const uint64_t lo = uint64_t{markwork::entryField(e)} * MARK_CHUNK_ELEMS;
+            if (hdr->tag == Tag_Array) {
+                const uint64_t n = static_cast<ElmArray*>(obj)->length;
+                scanRange(obj, lo, std::min<uint64_t>(n, lo + MARK_CHUNK_ELEMS), false);
+            } else {
+                const uint64_t hd = static_cast<ListBacking*>(obj)->hd;
+                scanRange(obj, hd + lo, std::min<uint64_t>(hdr->size, hd + lo + MARK_CHUNK_ELEMS), true);
+            }
+            continue;
+        }
+        if (!closure.insert(reinterpret_cast<uintptr_t>(obj)).second) continue;
+        if (hdr->tag == Tag_Process) {
+            Process* pr = static_cast<Process*>(obj);
+            pushChild(pr->root);
+            pushChild(pr->stack);
+            pushChild(pr->mailbox);
+        } else {
+            (void)visitHeapChildren(obj, pushChild);
+        }
+    }
+    // IM12 (P§3.3): every scanned entry was paid for with exactly one ticket.
+    {
+        uint64_t scanned_all = 0;
+        for (auto& sh : im10_->shards) {
+            std::lock_guard<std::mutex> lk(sh.m);
+            scanned_all += sh.seen.size();
+        }
+        if (scanned_all != cycle_units_) {
+            std::fprintf(stderr, "[heap-validate] %s: IM12: %llu entries scanned but %llu "
+                "units (tickets) consumed this cycle\n", where,
+                (unsigned long long)scanned_all, (unsigned long long)cycle_units_);
+            std::fflush(stderr);
+            std::abort();
+        }
+    }
+    // Compare with the scanned object entries (IM10's set).
+    size_t scanned_objects = 0;
+    for (auto& sh : im10_->shards) {
+        std::lock_guard<std::mutex> lk(sh.m);
+        for (uint64_t key : sh.seen) {
+            if (markwork::isChunk(key)) continue;
+            ++scanned_objects;
+            const uintptr_t a = static_cast<uintptr_t>(key << 3);
+            if (!closure.count(a)) {
+                std::fprintf(stderr, "[heap-validate] %s: IM11: scanned %p (tag %u) is not in "
+                    "the closure of the t0 grey set\n", where, reinterpret_cast<void*>(a),
+                    (unsigned)getHeader(reinterpret_cast<void*>(a))->tag);
+                std::fflush(stderr);
+                std::abort();
+            }
+        }
+    }
+    if (scanned_objects != closure.size()) {
+        std::fprintf(stderr, "[heap-validate] %s: IM11: %zu objects scanned, closure of the "
+            "t0 greys has %zu\n", where, scanned_objects, closure.size());
+        std::fflush(stderr);
+        std::abort();
+    }
+}
+#endif
+
+// The 5a mark loop's name, now a thin wrapper (units are exact tickets).
+size_t OldGenSpace::markWorkUnits(size_t work_units) {
+    return static_cast<size_t>(runMarkers(static_cast<int64_t>(work_units)));
+}
+
+#if ENABLE_GC_STATS
+bool OldGenSpace::incrementalMark(size_t work_units, GCStats &stats) {
+#else
+bool OldGenSpace::incrementalMark(size_t work_units) {
+#endif
+    if (!marking_active || markStackEmpty()) {
+        return false;  // No work to do.
+    }
+
+    const size_t units_done = markWorkUnits(work_units);
+#if ENABLE_GC_STATS
+    GC_STATS_MAJOR_INC_INCREMENTAL_MARK(stats, units_done);
+#else
+    (void)units_done;
+#endif
+
+    return !markStackEmpty();
+}
+
+// Legacy names, on SerialMark and worker 0 (tests, the snapshot, the STW major).
+void OldGenSpace::markChildren(void *obj) { scanChildren<SerialMark>(w0(), obj); }
+void OldGenSpace::markHPointer(HPointer &ptr) { greyHPointer<SerialMark>(w0(), ptr); }
+void OldGenSpace::pushMarkRoot(void *obj) { greyObject<SerialMark>(w0(), obj); }
+void OldGenSpace::markUnboxable(Unboxable &val, bool is_boxed) {
+    if (is_boxed) markHPointer(val.p);
+}
+bool OldGenSpace::markOneObject(void* obj, BlockId block_index) {
+    return scanObject<SerialMark>(w0(), obj, block_index);
+}
 bool OldGenSpace::markOneObject(void* obj) {
     return markOneObject(obj, NO_BLOCK_ID);
 }
@@ -2474,10 +2890,10 @@ void OldGenSpace::resetBufferMetaForMark() {
 #if ECO_HEAP_VALIDATE
         // V5 (HEAP_051): the previous cycle's merge left the accumulator
         // all-zero; anything here was attributed outside [reset, merge].
-        if (mark_live_.peek(id) != 0) {
+        if (markLivePeek(id) != 0) {
             std::fprintf(stderr, "[heap-validate] HEAP_051: id %u has %llu "
                 "unmerged marker live bytes at mark start\n", id.v,
-                (unsigned long long)mark_live_.peek(id));
+                (unsigned long long)markLivePeek(id));
             std::abort();
         }
 #endif
@@ -2494,7 +2910,7 @@ void OldGenSpace::finalizeMetaAfterMark() {
     // stop-the-world, and between reset and here the only writers are the
     // marker and allocate-black, both additions, so the sum equals the
     // former direct attribution exactly.
-    mark_live_.mergeInto(blocks_);
+    markLiveMergeAll();   // threaded-gc-05b: every marker, in index order
     // threaded-gc-04: the P1 census reads mark bits here, before any sweep
     // clears them (plan P§3.4, trap 1).
     p1::onMarkEnd(*this);
@@ -2732,8 +3148,8 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats,
     // is its delta across this mark loop — no extra work in the mark path.
     const uint64_t mark_units_before = stats.total_incremental_mark_work_units;
     while (true) {
-        if (mark_stack.size() > profile.mark_stack_peak)
-            profile.mark_stack_peak = mark_stack.size();
+        if (markStackSize() > profile.mark_stack_peak)
+            profile.mark_stack_peak = markStackSize();
         bool more = incrementalMark(1000, stats);
         profile.mark_iterations++;
         if (!more) break;
@@ -2757,8 +3173,8 @@ void OldGenSpace::finishMarkAndSweep() {
 void OldGenSpace::finishMarkAndSweep(MajorGCPhaseProfile &profile) {
     auto t_mark_start = std::chrono::high_resolution_clock::now();
     while (true) {
-        if (mark_stack.size() > profile.mark_stack_peak)
-            profile.mark_stack_peak = mark_stack.size();
+        if (markStackSize() > profile.mark_stack_peak)
+            profile.mark_stack_peak = markStackSize();
         bool more = incrementalMark(1000);
         profile.mark_iterations++;
         if (!more) break;
@@ -2792,6 +3208,14 @@ void OldGenSpace::beginMarkCycle(Allocator &alloc, uint32_t slices) {
         alloc_stats_.im.t0_prep_ns_total += d;
         if (d > alloc_stats_.im.t0_prep_ns_max) alloc_stats_.im.t0_prep_ns_max = d;
     }
+#endif
+    // threaded-gc-05b (HEAP_064): the cycle's mark work runs on every marker
+    // when there is more than one; the t0 snapshot pushes onto worker 0's
+    // deque as its owner (nobody steals until the first slice).
+    mark_parallel_ = mark_threads_ > 1;
+#if ECO_HEAP_VALIDATE
+    im10Reset();
+    im11_t0_greys_.clear();
 #endif
     // Every existing mid-cycle branch (allocate-black, fully_swept on new
     // blocks) keys off gc_phase_ != Idle (F10).
@@ -2838,7 +3262,7 @@ void OldGenSpace::snapshotYoungLarge() {
             const size_t step = (blk.size_class < NUM_SIZE_CLASSES)
                 ? OldGenSpaceTestAccess::classToSize(blk.size_class)
                 : getObjectSize(obj);
-            mark_live_.add(id, step);
+            w0().live.add(id, step);
         }
         // Its children: old ones greyed, young ones dropped (walked anyway).
         markChildren(obj);
@@ -2849,10 +3273,8 @@ void OldGenSpace::snapshotYoungLarge() {
 }
 
 size_t OldGenSpace::drainCycleMark() {
-    size_t done = 0;
-    while (!mark_stack.empty()) done += markWorkUnits(1000);
-    cycle_units_ += done;
-    return done;
+    // runMarkers adds to cycle_units_ itself (every path, IM12).
+    return markStackEmpty() ? 0 : static_cast<size_t>(runMarkers(markwork::kDrainBudget));
 }
 
 size_t OldGenSpace::runCycleSlice() {
@@ -2877,7 +3299,7 @@ size_t OldGenSpace::runCycleSlice() {
         // on the buffer slices instead of the closing slice (E1: the
         // spread-over-T form left up to 42 M units = ~2 s to the closing
         // slice). Deterministic: a function of units done (GC_DET_001).
-        if (!mark_stack.empty() && cycle_units_ >= cycle_predicted_) {
+        if (!markStackEmpty() && cycle_units_ >= cycle_predicted_) {
             cycle_predicted_ = std::max<uint64_t>(cycle_predicted_, cycle_units_) * 2;
         }
         const uint64_t remaining =
@@ -2888,8 +3310,7 @@ size_t OldGenSpace::runCycleSlice() {
         const uint64_t b = std::max<uint64_t>(
             config_->incremental_mark_min_slice_units,
             (remaining + slices_left - 1) / slices_left);
-        done = mark_stack.empty() ? 0 : markWorkUnits(static_cast<size_t>(b));
-        cycle_units_ += done;
+        done = markStackEmpty() ? 0 : runMarkers(static_cast<int64_t>(b));
     }
     in_slice_ = false;
 #if ENABLE_GC_STATS
@@ -2910,13 +3331,13 @@ bool OldGenSpace::cyclePressureFinishDue() const {
 
 void OldGenSpace::handoffMarkCycle(GCStats* stats, MajorGCPhaseProfile* profile) {
     assert(cycleActive() && "handoff without a cycle");
-    assert(mark_stack.empty() && "IM9: handoff with a non-empty mark stack");
+    assert(markStackEmpty() && "IM9: handoff with a non-empty mark stack");
     assert(!in_slice_);
     // P§3.6 step 2: fold the cursors' pending bytes (post-t0 virgin blocks)
     // into live_bytes and detach every block, as startMark does, BEFORE the
     // tail reads live_bytes (trap 2).
     resetAllocCursors();
-    cycle_traced_live_ = mark_live_.sum(blocks_);
+    cycle_traced_live_ = markLiveSum();
     // Before the merge, BufferMetadata::live_bytes holds exactly the bytes
     // allocated black during the cycle (reset at t0, HEAP_051).
     cycle_black_bytes_ = 0;
@@ -2949,12 +3370,17 @@ void OldGenSpace::handoffMarkCycle(GCStats* stats, MajorGCPhaseProfile* profile)
         }
     }
 #endif
+#if ECO_HEAP_VALIDATE
+    im11Check("handoff");   // threaded-gc-05b IM10/IM11
+#endif
     // P§3.6 step 5: the state today's STW major has after its mark loop.
     gc_phase_ = GCPhase::Idle;
     cycle_state_ = CycleState::Idle;
     runPostMarkTail(stats, profile);
     cycle_tail_uses_traced_live_ = false;
     prev_cycle_units_ = cycle_units_;
+    for (unsigned i = 0; i < mark_threads_; ++i) markers_[i]->deque.reset();
+    mark_parallel_ = false;
 #if ENABLE_GC_STATS
     alloc_stats_.im.cycles++;
 #endif
@@ -3052,7 +3478,7 @@ void OldGenSpace::validateCycleUniformLive(const char* where, bool exact) const 
         uint64_t pend = 0;
         const AllocCursor& c = cursor_[b.size_class];
         if (b.alloc_state == kAllocCurrent && c.block == id) pend = c.pending_live;
-        const uint64_t have = blocks_.meta(id).live_bytes + pend + mark_live_.peek(id);
+        const uint64_t have = blocks_.meta(id).live_bytes + pend + markLivePeek(id);
         const uint64_t bitsb = pc * classToSize(b.size_class);
         if (exact ? bitsb != have : bitsb < have) {
             std::fprintf(stderr, "[heap-validate] %s: IM6 block id %u class %zu: popcount "
@@ -3060,7 +3486,7 @@ void OldGenSpace::validateCycleUniformLive(const char* where, bool exact) const 
                 where, id.v, (size_t)b.size_class, (unsigned long long)pc,
                 classToSize(b.size_class), (unsigned long long)bitsb,
                 exact ? "!=" : "<", (unsigned long long)have, blocks_.meta(id).live_bytes,
-                (unsigned long long)pend, (unsigned long long)mark_live_.peek(id));
+                (unsigned long long)pend, (unsigned long long)markLivePeek(id));
             std::fflush(stderr);
             std::abort();
         }
@@ -5515,7 +5941,7 @@ void OldGenSpace::freeLargeBodyCell(LargeBodyMeta& m) {
                 // HEAP_051: the former code's `= 0` also discarded any marker
                 // attribution; drop the accumulator entry too (mid-mark is
                 // reachable only from hand-driven unit tests).
-                if (marking_active) (void)mark_live_.take(idx);
+                if (marking_active) (void)markLiveTake(idx);
                 bm.live_bytes = 0;
                 bm.garbage_bytes = blocks_.info(idx).totalBytes();
                 bm.fully_swept = true;
@@ -5639,7 +6065,7 @@ void OldGenSpace::freeLargeBodyCell(LargeBodyMeta& m) {
                     // with the marker's additions. Mid-mark it is reachable
                     // only from hand-driven unit tests (marking is STW), and
                     // folding this id's accumulator first keeps them exact.
-                    if (marking_active) bm.live_bytes += mark_live_.take(idx);
+                    if (marking_active) bm.live_bytes += markLiveTake(idx);
                     if (bm.live_bytes >= m.cell_size) {
                         bm.live_bytes -= m.cell_size;
                     } else {
@@ -5730,7 +6156,7 @@ void OldGenSpace::validateOldGenMetadata(const char* where) const {
     }
     if (mark_.storageBase() != storage_bases_[BlockTable::kStorageArrays] ||
         page_index_.data() != storage_bases_[BlockTable::kStorageArrays + 1] ||
-        mark_live_.storageBase() !=
+        w0().live.storageBase() !=
             storage_bases_[BlockTable::kStorageArrays + 2]) {
         metaValidateFail(where, "HEAP_048: side-table storage moved");
     }

@@ -213,6 +213,16 @@ constexpr size_t   COMMIT_AHEAD_BYTES = size_t{128} << 20;   // 0 = off
 // cursor, and gap-sweep mixed blocks, instead of the header-walking lazy sweep.
 constexpr bool OLD_GEN_BITMAP_ALLOC = true;
 
+// threaded-gc-05b (plans/threaded-gc-05b-parallel-marking.md, HEAP_064): the
+// old-gen mark work of an incremental cycle runs on gc_mark_threads markers
+// (0 = auto: min(cap, available CPUs); 1 = serial reference). Boxed arrays and
+// list backings longer than MARK_CHUNK_ELEMS slots are scanned in chunks.
+// DEFAULT auto, capped at 16, from experiments E2/E3 (plan P§10): self-compile
+// in-pause slice mark 9.76 s -> 1.30 s, worst pause = the minor floor (189 ms).
+constexpr uint32_t GC_MARK_THREADS = 0;
+constexpr uint32_t GC_MARK_THREADS_CAP = 16;
+constexpr uint32_t MARK_CHUNK_ELEMS = 1024;
+
 // threaded-gc-05a (plans/threaded-gc-05a-incremental-marking.md, HEAP_063):
 // spread the major-GC mark over the minor GCs after the trigger. Requires
 // OLD_GEN_BITMAP_ALLOC. SLICES = T (0 = the whole cycle inside the t0 pause).
@@ -592,6 +602,10 @@ struct HeapConfig {
     // sweep for mixed blocks. Off = the legacy header-walking lazy sweep.
     bool old_gen_bitmap_alloc = OLD_GEN_BITMAP_ALLOC;
 
+    // threaded-gc-05b (HEAP_064): parallel marking.
+    uint32_t gc_mark_threads = GC_MARK_THREADS;
+    uint32_t gc_mark_threads_cap = GC_MARK_THREADS_CAP;
+
     // threaded-gc-05a (HEAP_063): incremental mark cycle.
     bool     incremental_mark = INCREMENTAL_MARK;
     uint32_t incremental_mark_slices = INCREMENTAL_MARK_SLICES;
@@ -741,6 +755,13 @@ struct HeapConfig {
             throw std::invalid_argument("alloc_buffer_size must be > 0");
         }
 
+        // threaded-gc-05b
+        if (gc_mark_threads > 64) {
+            throw std::invalid_argument("gc_mark_threads must be <= 64");
+        }
+        if (gc_mark_threads_cap < 1 || gc_mark_threads_cap > 64) {
+            throw std::invalid_argument("gc_mark_threads_cap must be in [1, 64]");
+        }
         // threaded-gc-05a
         if (incremental_mark && !old_gen_bitmap_alloc) {
             throw std::invalid_argument(

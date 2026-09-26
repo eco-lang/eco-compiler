@@ -727,7 +727,7 @@ void ThreadLocalHeap::minorGC() {
     }
     if (__builtin_expect(test_force_major_trigger_, 0)) {   // tests only
         test_force_major_trigger_ = false;
-        if (config_->incremental_mark) startMarkCycle(GCStats::MajorReason::Forced);
+        if (useMarkCycle()) startMarkCycle(GCStats::MajorReason::Forced);
         else majorGC(GCStats::MajorReason::Forced);
         return;
     }
@@ -736,7 +736,7 @@ void ThreadLocalHeap::minorGC() {
 #if ENABLE_GC_STATS
         recordMajorTriggerReason(stats_, reason);
 #endif
-        if (config_->incremental_mark) {
+        if (useMarkCycle()) {
             startMarkCycle(majorReasonTag(reason));
         } else {
             majorGC(majorReasonTag(reason));
@@ -1036,7 +1036,10 @@ void ThreadLocalHeap::startMarkCycle(GCStats::MajorReason reason) {
     RootSet& root_set = nursery_.getRootSet();
     p1::verifyOldGen(old_gen_, "cycle-start");
 
-    old_gen_.beginMarkCycle(*parent_, config_->incremental_mark_slices);
+    // threaded-gc-05b P§3.8: with incremental_mark off, a cycle exists only to
+    // run the mark on N markers -- T = 0, the whole cycle in this pause.
+    const uint32_t slices = config_->incremental_mark ? config_->incremental_mark_slices : 0;
+    old_gen_.beginMarkCycle(*parent_, slices);
     cycle_t0_wall_ns_ = t_start;
     cycle_mark_ns_ = 0;
     cycle_inpause_ns_ = 0;
@@ -1086,7 +1089,7 @@ void ThreadLocalHeap::startMarkCycle(GCStats::MajorReason reason) {
     }
 #endif
     // T = 0: the whole cycle inside the t0 pause (the E0 equivalence arm).
-    if (config_->incremental_mark_slices == 0) {
+    if (slices == 0) {
         finishMarkCycleNow(OldGenSpace::CycleFinish::Schedule);
     }
 }

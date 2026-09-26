@@ -124,6 +124,7 @@ struct ElmSharedTestResult {
     uint64_t residency_pinned_free_bytes;
     uint64_t residency_snapshots;
     Elm::IncrMarkStats im;   // threaded-gc-05a (POD)
+    Elm::ParMarkStats pm;    // threaded-gc-05b (POD)
 
     // Free-list size-class histogram. Cells parked on each per-class
     // free list at major-GC end, plus the aggregate `free_large_blocks_`
@@ -189,6 +190,7 @@ inline void copyStatsToShared(ElmSharedTestResult* shared) {
     shared->residency_pinned_free_bytes    = stats.residency_pinned_free_bytes;
     shared->residency_snapshots            = stats.residency_snapshots;
     shared->im                             = stats.im;
+    shared->pm                             = stats.pm;
     for (int i = 0; i < Elm::GCStats::FREELIST_CLASS_BUCKETS; i++) {
         shared->freelist_cells_by_class[i] = stats.freelist_cells_by_class[i];
         shared->freelist_bytes_by_class[i] = stats.freelist_bytes_by_class[i];
@@ -246,6 +248,7 @@ inline void accumulateFromShared(const ElmSharedTestResult* shared) {
     childStats.residency_pinned_free_bytes    = shared->residency_pinned_free_bytes;
     childStats.residency_snapshots            = shared->residency_snapshots;
     childStats.im                             = shared->im;
+    childStats.pm                             = shared->pm;
     for (int i = 0; i < Elm::GCStats::FREELIST_CLASS_BUCKETS; i++) {
         childStats.freelist_cells_by_class[i] = shared->freelist_cells_by_class[i];
         childStats.freelist_bytes_by_class[i] = shared->freelist_bytes_by_class[i];

@@ -880,6 +880,7 @@ void GCStats::combine(const GCStats& other) {
     helper.mergeMax(other.helper);
     lp.combine(other.lp);
     im.combine(other.im);
+    pm.combine(other.pm);
 
     // Combine allocator-helper attribution.
     total_oldgen_alloc_in_mutator_ns  += other.total_oldgen_alloc_in_mutator_ns;
@@ -1413,6 +1414,7 @@ void GCStats::print() const {
     printHelperBlock();
     printLargePtrBlock();   // threaded-gc-04b (only when non-zero)
     printIncrMarkBlock();   // threaded-gc-05a (only when non-zero)
+    printParMarkBlock();    // threaded-gc-05b (only when non-zero)
 
     // ========== Allocation Size Histograms ==========
     //
@@ -1824,6 +1826,7 @@ void GCStats::reset() {
     helper = HelperStatsSnapshot{};
     lp = LargePtrStats{};
     im = IncrMarkStats{};
+    pm = ParMarkStats{};
     total_oldgen_alloc_in_mutator_ns  = 0;
     total_post_sweep_shrink_ns        = 0;
     total_maybe_shrink_heavy_ns       = 0;
@@ -2799,6 +2802,33 @@ void GCStats::printIncrMarkBlock() const {
     std::snprintf(buf, sizeof buf,
                   "  t0 of which prepare (lazy-sweep drain + bitmap clear): total %.3f max %.3f ms",
                   im.t0_prep_ns_total / 1e6, im.t0_prep_ns_max / 1e6);
+    std::cout << buf << std::endl;
+}
+
+void GCStats::printParMarkBlock() const {
+    if (!pm.any()) return;
+    std::cout << "\nParallel Mark (threaded-gc-05b):" << std::endl;
+    char buf[256];
+    std::snprintf(buf, sizeof buf,
+                  "  runs %llu, members %llu, units %llu, chunks pushed %llu",
+                  (unsigned long long)pm.runs, (unsigned long long)pm.members_max,
+                  (unsigned long long)pm.units, (unsigned long long)pm.chunks_pushed);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  steals %llu (aborts %llu, empty %llu); idle spins %llu, yields %llu, sleeps %llu",
+                  (unsigned long long)pm.steals, (unsigned long long)pm.steal_aborts,
+                  (unsigned long long)pm.steal_empty, (unsigned long long)pm.idle_spins,
+                  (unsigned long long)pm.idle_yields, (unsigned long long)pm.idle_sleeps);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  imbalance (max/mean units): mean %.3f, max %.3f",
+                  pm.runs ? pm.imbalance_milli_sum / 1000.0 / pm.runs : 0.0,
+                  pm.imbalance_milli_max / 1000.0);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  run ms total %.3f max %.3f; gang (collector) CPU %.3f s; deque grows %llu, peak %llu",
+                  pm.run_ns_total / 1e6, pm.run_ns_max / 1e6, pm.member_cpu_ns / 1e9,
+                  (unsigned long long)pm.deque_grows, (unsigned long long)pm.deque_peak_entries);
     std::cout << buf << std::endl;
 }
 

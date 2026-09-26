@@ -10,6 +10,8 @@
 #include "RootSet.hpp"
 #include "GCStats.hpp"
 #include "BlockTable.hpp"
+#include "MarkWork.hpp"
+#include <memory>
 
 namespace Elm {
 
@@ -635,7 +637,8 @@ private:
                   "MARK_FIFO_DEPTH must be a power of two so the ring index "
                   "arithmetic compiles to a mask rather than a division");
 
-    std::vector<MarkStackEntry> mark_stack;  // Grey set: object + cached block index.
+    // threaded-gc-05b (HEAP_064): the grey set lives in the markers (worker 0's
+    // `stack` on the serial path, the markers' deques on the parallel path).
     // Nursery objects pushed during the current major-GC mark. Major GC must
     // not write color into nursery headers (minor GC owns them), so we use
     // this set instead of the header `color` field to break cycles when
@@ -681,9 +684,96 @@ private:
     // no re-pack at startMark.
     MarkBitArena mark_;
 
-    // Marker-side live-bytes attribution (HEAP_051): markOneObject adds
-    // here; finalizeMetaAfterMark merges into BufferMetadata::live_bytes.
-    LiveBytesAccumulator mark_live_;
+    // ========== threaded-gc-05b: the markers (HEAP_064, HEAP_051) ==========
+    // One MarkWorker per marker: worker 0 always exists (the mutator; the
+    // serial and legacy paths use only it). Each marker attributes live bytes
+    // to its OWN accumulator; finalizeMetaAfterMark merges them in index order.
+public:
+    struct SerialMark   { static constexpr bool kParallel = false; };
+    struct ParallelMark { static constexpr bool kParallel = true; };
+    struct MarkWorker {
+        // Serial: worker 0's grey set. Parallel: this marker's PRIVATE stack
+        // (owner-only, no atomics); its oldest half is published to `deque`
+        // when the deque runs dry, and thieves steal only from the deque.
+        std::vector<uint64_t> stack;
+        std::atomic<uint64_t> priv{0};           // stack.size(), for other markers' termination checks
+        uint64_t pops = 0;
+        markwork::WorkStealingDeque deque;       // parallel grey set
+        LiveBytesAccumulator live;               // HEAP_051: this marker's bytes
+        markwork::MarkerCounters ctr;
+        uint64_t chunks = 0;                     // chunk entries pushed (stats)
+    };
+    static constexpr unsigned kMaxMarkers = 64;
+    unsigned markThreads() const { return mark_threads_; }
+    bool markParallel() const { return mark_parallel_; }
+    // gc_mark_threads resolved: 0 = auto (min(cap, available CPUs)); 1 when
+    // bitmap allocation is off (parallel marking runs only inside cycles).
+    static unsigned resolveMarkThreads(const HeapConfig& cfg);
+private:
+    std::unique_ptr<MarkWorker> markers_[kMaxMarkers];
+    unsigned mark_threads_ = 1;      // markers with a reserved accumulator
+    bool mark_parallel_ = false;     // fixed at beginMarkCycle
+    MarkWorker& w0() { return *markers_[0]; }
+    const MarkWorker& w0() const { return *markers_[0]; }
+    // Sum of every marker's accumulator for `id` (IM6, V5).
+    uint64_t markLivePeek(BlockId id) const;
+    uint64_t markLiveTake(BlockId id);
+    uint64_t markLiveSum() const;
+    void markLiveMergeAll();
+    void ensureMarkers();
+    template <class P> bool testAndSetMark(BlockId id, const void* obj);
+    template <class P> void greyObject(MarkWorker& w, void* obj);
+    template <class P> void greyHPointer(MarkWorker& w, HPointer& ptr);
+    template <class P> void scanChildren(MarkWorker& w, void* obj);
+    template <class P> void scanChunk(MarkWorker& w, void* obj, uint32_t chunk);
+    template <class P> bool scanObject(MarkWorker& w, void* obj, BlockId block);
+    template <class P> void scanEntry(MarkWorker& w, uint64_t e);
+    static constexpr size_t kPublishMin = 64;
+    // Publish the OLDEST half of w's private stack to its stealable deque
+    // when the deque is empty (owner only).
+    void publishHalf(MarkWorker& w) {
+        if (w.stack.size() < kPublishMin || !w.deque.emptyApprox()) return;
+        const size_t half = w.stack.size() / 2;
+        for (size_t i = 0; i < half; ++i) w.deque.push(w.stack[i]);
+        w.stack.erase(w.stack.begin(), w.stack.begin() + static_cast<std::ptrdiff_t>(half));
+        w.priv.store(w.stack.size(), std::memory_order_relaxed);
+    }
+    void pushGrey(MarkWorker& w, uint64_t e) {
+#if ECO_HEAP_VALIDATE
+        if (snapshot_mode_) im11_t0_greys_.push_back(e);   // IM11: the t0 grey set
+#endif
+        w.stack.push_back(e);
+        if (mark_parallel_) {
+            w.priv.store(w.stack.size(), std::memory_order_relaxed);
+            if ((w.stack.size() & 31) == 0) publishHalf(w);
+        }
+    }
+    // Runs marking with `budget` tickets (markwork::kDrainBudget = drain) on
+    // mark_threads_ markers when mark_parallel_, else serially on worker 0.
+    // Returns the units consumed (exact, P§3.3).
+    uint64_t runMarkers(int64_t budget);
+    static void markerEntry(void* ctx, unsigned member);
+    bool markStackEmpty() const;
+    size_t markStackSize() const;
+    struct SerialEnv;
+    struct ParallelEnv;
+    friend struct SerialEnv;
+    friend struct ParallelEnv;
+#if ECO_HEAP_VALIDATE
+    // IM10 (scanned once) / IM11 (scanned set == closure of the t0 greys).
+    void im10NoteScan(uint64_t e);
+    void im10Reset();
+    void im11Check(const char* where);
+    std::vector<uint64_t> im11_t0_greys_;
+    struct Im10State;
+    std::unique_ptr<Im10State> im10_;
+#endif
+public:
+    // Negative-control hooks (tests only; P§3.11).
+    bool test_skip_merge_worker1_ = false;
+    bool test_plain_bits_parallel_ = false;
+    bool test_steal_without_ticket_ = false;
+private:
 
     // ========== Fragmentation Statistics ==========
 
@@ -1540,6 +1630,12 @@ private:
 // For test code only - provides privileged access to OldGenSpace internals.
 class OldGenSpaceTestAccess {
 public:
+    // ---- threaded-gc-05b (HEAP_064) ----
+    static uint64_t runMarkers(OldGenSpace& og, int64_t budget) { return og.runMarkers(budget); }
+    static bool markStackEmpty(const OldGenSpace& og) { return og.markStackEmpty(); }
+    static uint64_t markLiveSum(const OldGenSpace& og) { return og.markLiveSum(); }
+    static unsigned markThreads(const OldGenSpace& og) { return og.mark_threads_; }
+    static bool markParallel(const OldGenSpace& og) { return og.mark_parallel_; }
     // ---- threaded-gc-05a (HEAP_063) ----
     static bool isMarked(OldGenSpace& og, const void* obj) {
         const BlockId id = og.contains(const_cast<void*>(obj)) ? og.blockIdFor(obj) : NO_BLOCK_ID;

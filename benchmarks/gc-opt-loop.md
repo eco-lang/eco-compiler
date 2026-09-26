@@ -2515,6 +2515,7 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | TG4 | 172.77 | -1.96 | 1924 | 7 | 19861 | 9776948 | FLAT (kept) | TG3 |
 | TG4b | 170.70 | -3.72 | 1924 | 7 | 19862 | 9781300 | FLAT (kept) | TG4 |
 | TG5a | 170.20 | -0.80 | 1924 | 7 | 19862 | 9844144 | WIN on pause (4.83 s -> 336 ms), wall flat | TG4b |
+| TG5b | 164.20 | -6.00 | 1924 | 7 | 19862 | 9850000 | WIN: slice mark 9.9 -> 1.3 s, worst pause = minor floor 189 ms, wall -6 s | TG5a |
 
 ### TG5a — threaded-gc-05a incremental marking — **DEFAULT-ON T = 32: self-compile worst pause 4.83 s -> 336 ms, old-gen peak +1.6 %, wall flat, output identical**
 
@@ -2541,3 +2542,25 @@ IM1-IM9 in the validate tree. Same-session phase-timer binary `eco-optTG5aPT2`, 
   bytes from the baseline (plan P§10.1).
 - **E2 (gf sweep):** the peak swings +/-30 % in BOTH arms (gf 0.65: T32 +35 %; gf 0.75: T32
   -27 %); sweep medians 9.84 vs 9.68 GB; worst pause 234-392 ms vs 2.7-4.8 s.
+
+### TG5b — threaded-gc-05b parallel marking — **DEFAULT-ON (auto markers, cap 16): in-pause slice mark 9.9 s -> 1.3 s, worst pause = the minor floor (189 ms), wall -6 s, every counter bit-identical at every marker count**
+
+Plan `plans/threaded-gc-05b-parallel-marking.md` (as-built P§10). Slices, closing drains and
+join/pressure drains run on N markers (paused mutator + GCMarkGang threads): private stacks
+publishing to Chase-Lev deques, atomic mark bits, per-marker accumulators, exact tickets, one-CAS
+termination. Phase-timer binary `eco-optTG5bPT3`, T = 32, arms by `ECO_GC_MARK_THREADS`:
+
+| N | wall (s) | slice mark total (ms) | worst pause (ms) | slice p99 (ms) | collector CPU (s) |
+|---|---|---|---|---|---|
+| 1 | 174.9 | 9,925 | 326 | 303 | — |
+| 4 | 166.6 | 3,282 | 189 | 174 | 9.8 |
+| 16 | 165.7 | 1,335 | 189 | 141 | 19.4 |
+| auto | 164.2 | 1,346 | 189 | 139 | 19.5 |
+
+- Counters (allocated, promoted, majors, cycle units, closing units, peak) identical across N =
+  1/2/4/8/16/auto and 4 + jitter; event-log hash identical.
+- The first build (deque-only) gave no gain at N = 2; private stacks fixed it (plan P§10.1 1).
+- A termination race (separate `active`/`done` loads) made a slice end early under load; fixed with
+  one CAS on (active, epoch, done) (plan P§10.1 10).
+- E3: T = 8/16 at 16 markers gain no pause and cost +12 % peak: T stays 32. E4: incremental off +
+  16 markers: worst pause 735 ms vs 4.64 s serial. E5: 8 markers on 2 CPUs +0.9 % wall.

@@ -301,6 +301,11 @@ private:
 
     // threaded-gc-05a: the incremental mark cycle driver (HEAP_063).
     template <typename F> void forEachMajorRoot(RootSet& root_set, F&& f);
+    // threaded-gc-05b: trigger majors run as cycles when marking is
+    // incremental, or parallel (T = 0 then).
+    bool useMarkCycle() const {
+        return config_->incremental_mark || old_gen_.markThreads() > 1;
+    }
     void startMarkCycle(GCStats::MajorReason reason);
     void stepMarkCycle();
     void finishMarkCycleNow(OldGenSpace::CycleFinish why);

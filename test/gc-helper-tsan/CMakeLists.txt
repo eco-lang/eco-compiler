@@ -20,3 +20,14 @@ target_compile_options(gc-helper-tsan PRIVATE -fsanitize=thread -O1 -g -UNDEBUG)
 target_link_options(gc-helper-tsan PRIVATE -fsanitize=thread)
 find_package(Threads REQUIRED)
 target_link_libraries(gc-helper-tsan PRIVATE Threads::Threads)
+
+# threaded-gc-05b Step 5: the parallel marker's std-only core (MarkWork.hpp:
+# WorkStealingDeque + runMarkerLoop) and GCMarkGang, on a synthetic heap.
+#   build-tsan/gc-mark-tsan   (pass: "mark_harness PASS", no TSan warning)
+add_executable(gc-mark-tsan
+    mark_harness.cpp
+    ${ECO_ALLOC}/GCHelperPool.cpp)
+target_include_directories(gc-mark-tsan PRIVATE ${ECO_ALLOC})
+target_compile_options(gc-mark-tsan PRIVATE -fsanitize=thread -O1 -g -UNDEBUG)
+target_link_options(gc-mark-tsan PRIVATE -fsanitize=thread)
+target_link_libraries(gc-mark-tsan PRIVATE Threads::Threads)

@@ -199,6 +199,8 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         "commit_ahead_bytes",
         "old_gen_bitmap_alloc",
         "incremental_mark",
+        "gc_mark_threads",
+        "gc_mark_threads_cap",
         "incremental_mark_slices",
         "incremental_mark_min_slice_units",
         "incremental_mark_predict_growth",
@@ -310,6 +312,10 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         cfg.commit_ahead_bytes = parseByteSize(*it, "commit_ahead_bytes");
     if (auto it = doc.find("old_gen_bitmap_alloc"); it != doc.end())
         cfg.old_gen_bitmap_alloc = parseBool(*it, "old_gen_bitmap_alloc");
+    if (auto it = doc.find("gc_mark_threads"); it != doc.end())
+        cfg.gc_mark_threads = parseU32(*it, "gc_mark_threads");
+    if (auto it = doc.find("gc_mark_threads_cap"); it != doc.end())
+        cfg.gc_mark_threads_cap = parseU32(*it, "gc_mark_threads_cap");
     if (auto it = doc.find("incremental_mark"); it != doc.end())
         cfg.incremental_mark = parseBool(*it, "incremental_mark");
     if (auto it = doc.find("incremental_mark_slices"); it != doc.end())
@@ -430,9 +436,24 @@ void applyGcThreadEnv(HeapConfig &cfg, uint32_t &jitter_us,
     }
 }
 
+// threaded-gc-05b: ECO_GC_MARK_THREADS (decimal 0..64) wins over JSON.
+void applyMarkThreadsEnv(HeapConfig &cfg, const char *value) {
+    if (value == nullptr || value[0] == '\0') return;
+    uint64_t v = 0;
+    for (const char *p = value; *p; ++p) {
+        if (*p < '0' || *p > '9' || v > 64) {
+            throw std::invalid_argument("ECO_GC_MARK_THREADS must be an unsigned decimal <= 64");
+        }
+        v = v * 10 + static_cast<uint64_t>(*p - '0');
+    }
+    if (v > 64) throw std::invalid_argument("ECO_GC_MARK_THREADS must be <= 64");
+    cfg.gc_mark_threads = static_cast<uint32_t>(v);
+}
+
 void applyGcThreadEnv(HeapConfig &cfg, uint32_t &jitter_us) {
     applyGcThreadEnv(cfg, jitter_us, std::getenv("ECO_GC_THREAD"),
                      std::getenv("ECO_GC_HELPER_JITTER_US"));
+    applyMarkThreadsEnv(cfg, std::getenv("ECO_GC_MARK_THREADS"));
 }
 
 } // namespace Elm
