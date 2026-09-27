@@ -1538,6 +1538,15 @@ The default was re-measured with the stats build and no GC environment (`eco-opt
 The gates re-run default-on are recorded in P§10.14. `ECO_GC_MINOR_THREADS=1` restores the
 serial path.
 
+### 10.14 Gates re-run default-on (auto, cap 8, no GC environment)
+
+- `full`: 1,907/1,907.
+- stress: 101/101 at the default config; 101/101 on the pressure-parallel config (all 1,090
+  minors parallel on 8 workers).
+- validate unit: 1,908/1,908; the only `[heap-validate]` lines are the three negative controls.
+- validate stress: 101/101 on both parallel pressure configs, zero `[heap-validate]` lines.
+- The benchmark triple of P§10.13 reproduced `out.mlir` (fixed point).
+
 ## 11. Done means
 
 - Every gate G1–G12 passes with the default flipped, or the phase is closed with the reason
