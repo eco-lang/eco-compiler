@@ -13,7 +13,9 @@
 #include "BlockTable.hpp"
 #include "MarkWork.hpp"
 #include "GCHelperPool.hpp"
+#include "MinorWork.hpp"
 #include <memory>
+#include <mutex>
 
 namespace Elm {
 
@@ -276,6 +278,9 @@ void* readBarrier(HPointer& ptr);
  */
 class OldGenSpace {
 public:
+    // threaded-gc-06: parallel minor workers (HEAP_067); promotion contexts.
+    static constexpr unsigned kMaxMinorWorkers = 64;
+    static constexpr unsigned kMaxPromoWorkers = kMaxMinorWorkers;
     OldGenSpace();
     ~OldGenSpace();
 
@@ -585,7 +590,98 @@ public:
     // metadata and stats (threaded-gc-02). Called before readers.
     void syncCursorLiveBytes();
 
+    // ========== Promotion buffers (threaded-gc-06 P§3.8, HEAP_054) ==========
+    //
+    // Inside a parallel minor each worker owns one AllocCursor per size class
+    // (rung 1 of the bitmap ladder, no lock); rungs 2-8 run under promo_mu_.
+    // Fast-path accounting goes to the worker's fields and is merged after the
+    // join. Worker cursors exist only between beginParallelPromotion and
+    // endParallelPromotion; worker 0 adopts cursor_[] there and hands it back.
+    struct PromoWorker {
+        AllocCursor cur[NUM_SIZE_CLASSES];
+        uint64_t allocated_bytes = 0;     // allocated_bytes delta (fast path)
+        uint64_t old_alloc_total = 0;     // old_alloc_total_ delta (fast path)
+        uint64_t bm_allocs = 0, bm_bytes = 0;   // alloc_stats_.bm cursor counters
+        uint64_t mutex_acquires = 0, mutex_wait_ns = 0;
+        uint64_t size_hist[GCStats::OLDGEN_ALLOC_BUCKETS] = {};
+        uint64_t size_16_24 = 0;
+        // Step 7b: rung-2 free cells popped in a batch under the lock and
+        // finalized one by one outside it (N > 1 only); returned at the merge.
+        static constexpr unsigned kStash = 16;
+        FreeCell* stash[NUM_SIZE_CLASSES][kStash];
+        uint8_t stash_n[NUM_SIZE_CLASSES] = {};
+        uint64_t list_pops = 0, stash_returned = 0;
+        uint8_t chunk_units[NUM_SIZE_CLASSES] = {};   // next claim size (units), per minor
+#if ECO_HEAP_VALIDATE
+        std::vector<void*> cycle_alloc_log;   // IM4, appended to cycle_alloc_log_
+        uint64_t mutex_charges = 0;           // PM6: bytes charged under the lock
+#endif
+        void resetRun();
+    };
+    struct PromoCtx {
+        unsigned n = 0;
+        PromoWorker w[kMaxPromoWorkers];
+        // N > 1 (as built, P§10.1): workers share ONE current block per class
+        // and claim chunks of it by CAS on shared[cls] = (block id + 1) << 32 |
+        // next unit index (0 = no block), a unit being kChunkUnitCells cells.
+        // A unit of 64 cells of any 8-byte-multiple size covers whole bitmap
+        // bytes, so workers never share one; open-block slack is N chunks, not
+        // N blocks.
+        bool chunked = false;
+        // One cache line per class: hot classes are claimed by every worker,
+        // and packed words made each claim invalidate its neighbours' line.
+        struct alignas(64) SharedWord { std::atomic<uint64_t> w{0}; };
+        SharedWord shared[NUM_SIZE_CLASSES];
+    };
+    // Chunks are counted in units of kChunkUnitCells (64 cells of any
+    // 8-byte-multiple size = whole bitmap bytes). A worker's claim for a class
+    // starts at 1 unit each minor and doubles up to kChunkMaxUnits (1,024
+    // cells): classes a worker barely uses leave little open slack (the
+    // committed bytes the garbage-fraction trigger reads), hot classes claim
+    // rarely (E2 as built: fixed 256 cost +9 % minor time, fixed 1,024 moved
+    // the first major from minor 91 to 145).
+    static constexpr uint32_t kChunkUnitCells = 64;
+    static constexpr uint32_t kChunkMaxUnits = 16;
+    // Lazily allocated; valid for the heap's lifetime.
+    PromoCtx& promoCtx();
+    // n >= 1 workers; worker 0 adopts cursor_[]. Requires bitmap allocation.
+    void beginParallelPromotion(PromoCtx& ctx, unsigned n);
+    // After the join, single-threaded: flushes, returns worker cursors to the
+    // FRONT of partial_[] (W6), merges accounting, runs a deferred sweep end.
+    void endParallelPromotion(PromoCtx& ctx);
+    // A promotion by worker `pw` (any thread inside a parallel minor).
+    // `per_alloc_sweep` reproduces allocate()'s per-promotion lazy-sweep slice
+    // (the one-worker identity switch only; P§3.8.5).
+    void* allocatePromotion(PromoWorker& pw, size_t size, bool per_alloc_sweep);
+    bool parallelPromotionActive() const { return par_promo_active_; }
+#if ECO_HEAP_VALIDATE
+    // PM6: allocated_bytes before the drain, for the post-merge check.
+    size_t pm6_allocated_before_ = 0;
+    bool pm6_skip_ = false;
+#endif
+
 private:
+    // threaded-gc-06 worker-cursor variants (P§3.8.2). Duplicates of the
+    // serial functions (which stay untouched) with the cursor passed in and
+    // accounting redirected to the worker.
+    void flushCursorW(AllocCursor& c, PromoWorker& pw);
+    void setCursorW(AllocCursor& c, size_t cls, BlockId id, PromoWorker& pw);
+    bool refillCursorW(AllocCursor& c, size_t cls, PromoWorker& pw);
+    void* finalizeBitmapCellW(AllocCursor& c, uint32_t k, size_t requested_size, PromoWorker& pw);
+    void* finalizePoppedCellW(FreeCell* cell, size_t cls, size_t requested_size, PromoWorker& pw);
+    void* cursorAllocateW(AllocCursor& c, size_t requested_size, PromoWorker& pw);
+    bool startVirginBlockW(AllocCursor& c, size_t cls, PromoWorker& pw);
+    void* ladderFrom2W(size_t cls, size_t requested_size, PromoWorker& pw);
+    void requeueFront(size_t cls, BlockId id);
+    bool claimChunkW(size_t cls, AllocCursor& c, PromoWorker& pw);
+    bool advanceSharedW(size_t cls);
+    bool startVirginBlockShared(size_t cls);
+    void publishShared(size_t cls, BlockId id);
+    void sweepCompleteInPromotion();
+    std::unique_ptr<PromoCtx> promo_ctx_;
+    minorwork::SpinMutex promo_mu_;   // short sections: spin, not futex (P§3.8.3)
+    bool par_promo_active_ = false;
+    bool sweep_complete_deferred_ = false;   // onSweepComplete held for the merge
     bool refillCursor(size_t cls);
     void* cursorAllocate(size_t cls, size_t requested_size);
     void* finalizeBitmapCell(AllocCursor& c, uint32_t k, size_t requested_size);
@@ -748,6 +844,11 @@ public:
     // gc_mark_threads resolved: 0 = auto (min(cap, available CPUs)); 1 when
     // bitmap allocation is off (parallel marking runs only inside cycles).
     static unsigned resolveMarkThreads(const HeapConfig& cfg);
+    // threaded-gc-06 (HEAP_067): gc_minor_threads resolved (0 = auto); 1 when
+    // bitmap allocation is off. The gang is sized for max(mark, minor).
+    static unsigned resolveMinorThreads(const HeapConfig& cfg);
+    unsigned minorThreads() const { return minor_threads_; }
+    gc::GCMarkGang& ensureGang();
 private:
     std::unique_ptr<MarkWorker> markers_[kMaxMarkers];
     // threaded-gc-05c (P§3.2): marker SLOTS. 0..F-1 foreground (0 = the
@@ -755,6 +856,7 @@ private:
     // (B = conc_threads_). Every slot has an accumulator and a deque; loops
     // about slots run to mark_slots_, loops that start a gang to F.
     unsigned mark_threads_ = 1;      // F: foreground markers
+    unsigned minor_threads_ = 1;     // threaded-gc-06: parallel minor workers
     unsigned conc_threads_ = 0;      // B: background markers (conc_mark = 2 only)
     unsigned mark_slots_ = 1;        // F + B
     bool mark_parallel_ = false;     // fixed at beginMarkCycle (mark_slots_ > 1)
@@ -1256,6 +1358,7 @@ private:
 #endif
     // Test hooks for the negative controls (P§3.13).
     bool test_skip_allocate_black_ = false;
+    bool test_keep_worker_cursor_ = false;    // threaded-gc-06 PM4 negative control
 
     // threaded-gc-05a cycle state (HEAP_063).
     CycleState cycle_state_ = CycleState::Idle;
@@ -1809,6 +1912,35 @@ private:
 // For test code only - provides privileged access to OldGenSpace internals.
 class OldGenSpaceTestAccess {
 public:
+    // ---- threaded-gc-06 (promotion buffers, P§3.8) ----
+    static BlockId partialQueueAt(const OldGenSpace& og, size_t cls, size_t k) {
+        const auto& q = og.partial_[cls];
+        const size_t i = og.partial_head_[cls] + k;
+        return i < q.size() ? q[i] : NO_BLOCK_ID;
+    }
+    static BlockId blockOf(OldGenSpace& og, const void* p) { return og.blockIdFor(p); }
+    static void setKeepWorkerCursor(OldGenSpace& og, bool on) { og.test_keep_worker_cursor_ = on; }
+    static size_t numBlocks(const OldGenSpace& og) { return og.blocks_.size(); }
+    static uint64_t committedBytes(const OldGenSpace& og) { return og.getCommittedBytes(); }
+    // FNV-1a over (block start, size class, alloc state, bitmap bytes) of every
+    // block in position order: equal iff the two heaps' layouts are equal.
+    static uint64_t layoutHash(OldGenSpace& og) {
+        uint64_t h = 1469598103934665603ull;
+        auto mix = [&](uint64_t v) { h ^= v; h *= 1099511628211ull; };
+        for (size_t pos = 0; pos < og.blocks_.size(); ++pos) {
+            const BlockId id = og.blocks_.idAt(pos);
+            const BlockInfo& b = og.blocks_.info(id);
+            mix(static_cast<uint64_t>(b.end_of_objects - b.start));
+            mix(b.size_class); mix(b.is_large); mix(b.alloc_state);
+            mix(og.blocks_.meta(id).live_bytes);
+            if (!b.is_large) {
+                const uint8_t* bits = og.mark_.slot(id);
+                const size_t n = og.bitmapBytesForBlock(b);
+                for (size_t i = 0; i < n; ++i) mix(bits[i]);
+            }
+        }
+        return h;
+    }
     // ---- threaded-gc-05c (HEAP_065) ----
     static unsigned concThreads(const OldGenSpace& og) { return og.conc_threads_; }
     static unsigned markSlots(const OldGenSpace& og) { return og.mark_slots_; }

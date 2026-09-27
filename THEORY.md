@@ -145,6 +145,17 @@ Benefits:
 - Reduced TLB misses for list-heavy code
 - No cost for non-list data structures (they use standard BFS)
 
+### Parallel minor GC *(Sep 27, 2026 — plans/threaded-gc-06-parallel-minor.md, HEAP_067/HEAP_068)*
+
+By default (`gc_minor_threads` = 0: auto, capped at 8) the copy phase of a minor GC runs on N workers: the paused mutator and N − 1 `GCMarkGang` threads (the 5b gang, sized for the larger of the mark and minor worker counts). The root phase stays serial on worker 0, and its copies are dealt round-robin to the workers' Chase–Lev deques; the drain is 5b's `markwork::runMarkerLoop` with an unlimited budget. `gc_minor_threads = 1` keeps the serial Cheney core above, unchanged.
+
+- **Exactly-once copying without undo.** A worker CASes a from-space object's header word from the header it read to **BUSY** (`Tag_Forward`, `forward_ptr` 0), sizes and copies the object from the saved header, then publishes the forward word with a release store. A loser reads the forward (waiting out BUSY). A loser never allocated anything, so nothing is rolled back.
+- **To-space LABs and fillers.** Young survivors go to per-worker LABs claimed from an atomic to-space top. A LAB tail left behind becomes a `Tag_Free` filler, so the survivor prefix is objects plus fillers. Every nursery policy — the minor trigger, the fail-soft test, growth, the stats — counts **object bytes** (prefix bytes − `filler_bytes_`, HEAP_068), which makes every nursery counter identical at every worker count. A minor runs parallel only when the survivors plus the worst-case LAB waste provably fit in to-space; otherwise it runs serially.
+- **Promotion buffers.** Workers share one current block per size class and claim chunks of it with a CAS (units of 64 cells, so two workers never share a mark-bitmap byte; a worker's claim grows from 1 to 16 units within a minor). The open slack is N chunks rather than N blocks, which keeps committed bytes — and so the garbage-fraction trigger — where the serial collector has them. Rungs 2–8 of the ladder run under one spin lock; free-list cells are popped in batches of 16 and finalized outside it. At the end of the minor the shared block becomes the mutator's cursor again, and a block left with free cells goes to the **front** of the partial-block queue (reuse before growth). The per-promotion lazy-sweep slice becomes one pre-drain slice with the same total budget.
+- **Idle workers wake only for stealable work.** A worker's private stack is its own; counting it as work (as the parallel marker does) made idle workers spin against a worker walking a long list and slowed it 5–40×.
+- **Lists** are copied in runs of 512 spine cells; the heads pass counts the cells it copied (the next cell may be another worker's copy). Long boxed arrays and list backings are scanned in 1,024-slot chunks.
+- **Determinism.** Which old-gen cell a promoted object lands in depends on the copy schedule, so old-gen placement — and the decisions that read it (committed bytes, per-block live fractions) — can differ between runs at N > 1. Object-level counters cannot: GC_DET_001 was amended to say exactly this.
+
 ## HPointers: Raw Absolute Addresses with Embedded Constants
 
 An `HPointer` is a 64-bit tagged word. For a heap pointer the word **is** the raw

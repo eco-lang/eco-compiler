@@ -149,6 +149,23 @@ void NurserySpace::initializeFromConfig() {
     updateBounds();
     refreshCapacityCaches();
     bump_.ptr = fromBase();
+    filler_bytes_ = filler_bytes_to_ = 0;   // threaded-gc-06: an empty prefix
+#if ENABLE_GC_STATS
+    // threaded-gc-06 Step 4 gate: ECO_TEST_PROMO_VIA_CTX=1 turns the identity
+    // switch on for a whole run (stats builds only; never a shipped setting).
+    {
+        static const bool via_ctx = [] {
+            const char* e = std::getenv("ECO_TEST_PROMO_VIA_CTX");
+            return e != nullptr && e[0] == '1';
+        }();
+        test_serial_promo_via_ctx_ = via_ctx;
+        static const bool engine = [] {
+            const char* e = std::getenv("ECO_TEST_MINOR_ENGINE");
+            return e != nullptr && e[0] == 'P';
+        }();
+        test_force_parallel_engine_ = engine;
+    }
+#endif
     bump_.end = computeAllocEnd();
 
 #if ENABLE_GC_STATS
@@ -304,10 +321,13 @@ void NurserySpace::refreshCapacityCaches() {
         static_cast<size_t>(static_cast<double>(from_capacity_bytes_) * gc_threshold_);
 }
 
-char* NurserySpace::computeAllocEnd() const {
+char* NurserySpace::computeAllocEnd() {
     char* base = fromBase();
     char* extent_end = base + from_capacity_bytes_;
-    size_t already = static_cast<size_t>(bump_.ptr - base);
+    // threaded-gc-06 HEAP_068: OBJECT bytes. The survivor prefix may hold
+    // filler_bytes_ of LAB-tail fillers; counting them would make the next
+    // trigger depend on the copy schedule. At N = 1 filler_bytes_ is 0.
+    size_t already = static_cast<size_t>(bump_.ptr - base) - filler_bytes_;
     if (already >= threshold_total_bytes_) {
         // The threshold has already been crossed by survivors of a prior
         // GC. Tripping the threshold again before the space fills cannot
@@ -317,7 +337,15 @@ char* NurserySpace::computeAllocEnd() const {
         // exhaustion drive the GC.
         return extent_end;
     }
-    return base + threshold_total_bytes_;
+    if (filler_bytes_ == 0) return base + threshold_total_bytes_;
+    const size_t room = from_capacity_bytes_;
+    if (threshold_total_bytes_ + filler_bytes_ > room) {
+#if ENABLE_GC_STATS
+        stats.pmin.alloc_end_capped++;   // must stay 0 on gate runs (P§3.5)
+#endif
+        return extent_end;
+    }
+    return base + threshold_total_bytes_ + filler_bytes_;
 }
 
 void* NurserySpace::copyToSpace(size_t size) {
@@ -342,7 +370,9 @@ bool NurserySpace::scanHasMore() const {
 void NurserySpace::checkAndGrow() {
     // To-space occupancy after copying. Contiguous, so this is pure survivor
     // bytes with no block-quantization waste in the numerator.
-    const size_t bytes_used = static_cast<size_t>(copy_ptr_ - toBase());
+    // threaded-gc-06 HEAP_068: object bytes (the to-space prefix's fillers
+    // excluded), so growth is identical at every worker count.
+    const size_t bytes_used = static_cast<size_t>(copy_ptr_ - toBase()) - filler_bytes_to_;
     const size_t total_to_capacity = slice_.capacity;
     if (total_to_capacity == 0) return;
 
@@ -464,7 +494,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 
 #if ENABLE_GC_STATS
     // Capture state before GC.
-    size_t from_space_used = bytesAllocated();
+    size_t from_space_used = objectBytesAllocated();   // threaded-gc-06: object bytes
     auto gc_start = GC_STATS_TIMER_START();
 #endif
 
@@ -505,6 +535,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     copy_ptr_ = toBase();
     copy_end_ = toBase() + slice_.capacity;
     scan_ptr_ = toBase();
+    filler_bytes_to_ = 0;   // threaded-gc-06: only a parallel minor writes fillers
 
     // Buffer for promoted objects that need scanning.
     // W5 item 35: reuse the buffer across cycles. Declared locally it mallocs
@@ -514,6 +545,32 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // NOT shrink_to_fit.
     promoted_buf_.clear();
     std::vector<void*>& promoted_objects = promoted_buf_;
+
+    // threaded-gc-06 (HEAP_067): with gc_minor_threads > 1 (or the forced
+    // one-worker engine) the root phase and the drain run in parallel
+    // (NurseryParallel.cpp). The serial core below is unchanged; it is the
+    // gc_minor_threads = 1 reference and every fallback minor (P§3.2).
+    const unsigned par_n = chooseMinorWorkers(oldgen);
+    if (par_n != 0) {
+#if ENABLE_GC_STATS
+        const uint64_t tpar0 = GCStats::nowSinceProcessStartNs();
+#endif
+        minorGCParallel(oldgen, stackmap_roots, rec, par_n);
+#if ENABLE_GC_STATS
+        stats.pmin.drain_ns_sum += GCStats::nowSinceProcessStartNs() - tpar0;
+#endif
+    } else {   // ---- the serial core: roots, then the alternating drain ----
+#if ENABLE_GC_STATS
+    // threaded-gc-06 Step 4: the one-worker identity switch -- the serial
+    // copiers promote through worker 0 of a promotion context (P§3.8), which
+    // must reproduce allocate() bit for bit.
+    promo_w0_ = nullptr;
+    if (__builtin_expect(test_serial_promo_via_ctx_, 0) && oldgen.config_->old_gen_bitmap_alloc) {
+        OldGenSpace::PromoCtx& ctx = oldgen.promoCtx();
+        oldgen.beginParallelPromotion(ctx, 1);
+        promo_w0_ = &ctx.w[0];
+    }
+#endif
 
     // Phase 1a: Evacuate long-lived roots (may add to promoted_objects).
 #if ECO_GC_DEBUG
@@ -691,9 +748,18 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 #endif
         }
     }
+#if ENABLE_GC_STATS
+    if (promo_w0_ != nullptr) {
+        oldgen.endParallelPromotion(oldgen.promoCtx());
+        promo_w0_ = nullptr;
+    }
+#endif
+    last_minor_promoted_ = promoted_objects.size();   // sizes the next pre-drain sweep
+
+    }   // ---- end of the serial core ----
 #if ECO_HEAP_VALIDATE
     in_phase3_ = false;
-    validatePromotedHaveNoYoungChildren(oldgen, promoted_objects);   // V2
+    validatePromotedHaveNoYoungChildren(oldgen, promoted_buf_);   // V2
 #endif
 #if ENABLE_GC_PHASE_TIMERS
     // Promotion-path old-gen counters for this cycle (Step 7). Taken at drain
@@ -1057,7 +1123,9 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     refreshCapacityCaches();
 
     // Resume allocation immediately after the survivors: the old to-space
-    // (now from-space) holds them as one contiguous prefix.
+    // (now from-space) holds them as one contiguous prefix (objects and, after
+    // a parallel minor, Tag_Free fillers: HEAP_068).
+    filler_bytes_ = filler_bytes_to_;
     bump_.ptr = copy_ptr_;
     bump_.end = computeAllocEnd();
     survivor_end_ = bump_.ptr;   // threaded-gc-05a IM7
@@ -1075,7 +1143,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 
 #if ENABLE_GC_STATS
     // Calculate what happened during this GC.
-    size_t to_space_used = static_cast<size_t>(bump_.ptr - fromBase());
+    size_t to_space_used = objectBytesAllocated();   // threaded-gc-06: object bytes
     size_t bytes_freed = from_space_used > to_space_used ? from_space_used - to_space_used : 0;
     uint64_t elapsed_ns = GC_STATS_TIMER_ELAPSED_NS(gc_start);
 #if ENABLE_GC_PHASE_TIMERS
@@ -1356,7 +1424,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     // builder forbids promotion.
     if (shouldPromote(hdr)) {
         // Direct allocation to old gen (simplified - no TLAB buffering).
-        new_obj = oldgen.allocate(size);
+        new_obj = promoteAllocate(oldgen, size);
         assert(new_obj && "Failed to allocate in old gen during promotion");
 
         std::memcpy(new_obj, obj, size);
@@ -1530,7 +1598,7 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
 
     // Promote to old gen iff aged AND not pinned/builder (HEAP_BUILDER_001).
     if (shouldPromote(hdr)) {
-        new_obj = oldgen.allocate(size);
+        new_obj = promoteAllocate(oldgen, size);
         assert(new_obj && "Failed to allocate in old gen during promotion");
 
         std::memcpy(new_obj, obj, size);
@@ -2141,7 +2209,7 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
         // even though no current kernel marks Cons cells as builders.
         if (shouldPromote(hdr)) {
             // Promote to old gen
-            new_obj = oldgen.allocate(size);
+            new_obj = promoteAllocate(oldgen, size);
             assert(new_obj && "Failed to allocate in old gen during list spine copy");
             std::memcpy(new_obj, obj, size);
 
@@ -2584,6 +2652,7 @@ void NurserySpace::censusRecord(OldGenSpace& oldgen) {
         const size_t sz = getObjectSize(scan);
         if (sz == 0 || scan + sz > end) break;   // pre-walk would have aborted
         const Header* h = getHeader(scan);
+        if (h->tag == Tag_Free) { scan += sz; continue; }   // threaded-gc-06 filler
         CensusEntry e;
         e.offset_q = static_cast<uint32_t>((scan - base) >> 3);
         e.size = static_cast<uint32_t>(sz);

@@ -1,7 +1,10 @@
 # Threaded GC 06 — Parallel stop-the-world minor GC
 
-**Status:** PLANNED (2026-09-27). Written against the `keep-TG5c` tree
-(`bin/eco-opt-prev` = `eco-optTG5c`). Nothing is implemented yet.
+**Status:** DONE (2026-09-27), **DEFAULT-ON: `gc_minor_threads` = 0 (auto), cap 8**. The
+retention gate (E7) failed (+8.8 % gf-sweep median peak, P§10.9) and was **overridden after
+review** (P§10.13). Default self-compile: wall 162.6 → 123.3 s, minor GC 46.8 → 12.3 s, minor p99
+111.9 → 25.4 ms. Written against `keep-TG5c`; as-built record in P§10; snapshot `keep-TG6`,
+`bin/eco-opt-prev` = `eco-optTG6d`.
 
 **Parent:** `plans/threaded-gc-master-plan.md`, phase 6.
 
@@ -1294,9 +1297,246 @@ or a larger `kSpineRun`); it is not a blocker if wall still wins.
 
 ## 10. As-built deviations
 
-(Empty until implementation. Record here: 10.1 Step 0 facts and audit results, 10.2 E0, 10.3 E1,
-10.4 E2, 10.5 E3, 10.6 E4, 10.7 E5, 10.8 E6, 10.9 E7, 10.10 E8, 10.11 E9, 10.12 gates, and every
-design deviation with its reason.)
+Implemented 2026-09-27 against `keep-TG5c` (snapshot `try-TG6-pre` before any change, `try-TG6`
+after). Candidate binaries are `ecoTG6base.mlir` (md5 933c3ff0d288…, the MLIR `eco-optTG5c` builds
+itself to) lowered against the phase-6 runtime.
+
+### 10.1 Step 0 facts, audits, and design deviations
+
+**Facts that differed from P§2:**
+1. **`eco-optTG5c` predates 5c's paced-LiveBudget default flip.** Its self-compile has 7 majors and
+   an 8,936 MB peak (the 5c "C" arm). A binary built from the `keep-TG5c` sources has 8 majors and
+   9,251 MB (the "P" arm). With `major_gc_live_budget_paced` pinned off in both arms by the same
+   JSON file, the Step 1+2 candidate matched `eco-optTG5c` on **every** counter, decisions
+   included (`tg6-compare.py --all`). E0 comparisons therefore pin paced off in both arms.
+2. **F5 is wrong for small `alloc_buffer_size`.** A nursery object can be larger than a block
+   when `alloc_buffer_size` is below the nursery's large-pointer cap (32 KiB blocks in the test
+   geometries; never at the 512 KiB default). The serial path promotes it through
+   `allocateLargeBlock`. `allocatePromotion` now does the same under the lock, and
+   `allocateFromEmptyRegularBlocks` skips worker-owned (Current) blocks during a parallel minor.
+3. **A lazy sweep can finish inside a promotion.** `lazySweep` → `onSweepComplete` → shrink reads
+   `live_bytes` and may release blocks. With worker cursors holding unflushed `pending_live`, the
+   shrink could release a live cursor block. As built: at N = 1 the worker's accounting and
+   cursors are handed back and `onSweepComplete` runs in place (this keeps the Step 4 identity
+   exact); at N > 1 it is deferred to `endParallelPromotion`, after the flush.
+4. **Audit (P§3.11).** No rung-2..8 path calls `detachFromAllocation`, `freeUniformCell` or
+   `syncCursorLiveBytes`, except the large-block path of fact 2 (guarded). `detachFromAllocation`
+   now aborts in every build if it meets a Current block during a parallel minor.
+5. **Colour.** No reader depends on a copy's or a forward word's colour. Nursery objects are
+   White; the unified "copies are White" fixup is bit-identical in effect.
+6. **Ladder census (Step 0 item 3, from the banner).** Of ~676 M promotions, cursors serve all but
+   ~0.12 %: 728 k free-list pops, 82 k splits, 37 k virgin blocks, 12 k refills, 0 sweep-on-demand
+   hits.
+7. **Large bodies.** The self-compile makes one pointer-free large allocation and no YLOS object.
+
+**Design deviations:**
+1. **`minorGC` is not split into three functions.** The serial roots-and-drain core is wrapped in
+   `if (par_n != 0) minorGCParallel(...) else { … }` without re-indenting, so the serial code is
+   textually unchanged. The prologue and epilogue stay inline.
+2. **The Chase–Lev element store/load became release/acquire** (`MarkWork.hpp`). A parallel
+   minor worker scans a copy the pushing worker just wrote. The paper's release fence already
+   orders that, but TSan does not model stand-alone fences and reported it. On x86 both are
+   plain moves; the fences stay; the 5b mark harness still passes.
+3. **Idle workers wake only for stealable work** (`MinorEnv::anyWork` ignores private stacks).
+   5b's `anyWork` counts private stacks. Here that made every idle worker wake, fail to steal and
+   re-idle in a tight loop while one worker walked a long chain. That bounced the busy worker's
+   `priv` line and the ticket/state words: 5–40× slower than serial on such minors (seq
+   1836–1845), growing with N (N = 16: 1.36 s against a 38 ms serial). Termination is unaffected:
+   an owner publishes everything before it goes idle.
+4. **The promotion lock is a spin lock** (`minorwork::SpinMutex`: pause, then yield, then 10 µs
+   sleeps). Critical sections are sub-microsecond; as a futex-backed `std::mutex` every contended
+   acquisition slept and convoys formed.
+5. **Step 7b was built** (batched rung-2 pops, 16 per acquisition, finalized outside the lock).
+   `initObjectHeaderWithSize`'s mid-cycle `live_bytes` add became an atomic add, because a
+   worker finalizes stashed cells of the same mixed blocks outside the lock.
+6. **The space bound is exact** instead of `S/32`:
+   `S + (S / (lab − lab/64) + N) · lab/64 + N · lab ≤ capacity`. At the pressure configs' 128 KiB
+   side and 95 % trigger no bound fits once N · lab exceeds the 5 % slack, so those minors run
+   serially by design. The parallel stress configs (`benchmarks/heap-config-gc-pressure[-
+   incremental]-parallel.json`) use a 1 MiB side at an 85 % trigger with 4 KiB LABs.
+7. **PM2** is "no to-space copy still points into from-space". A leftover BUSY word cannot be
+   found by walking from-space after the copy, because forwarded objects no longer parse.
+8. **Imbalance** is recorded in entries (`imbalance_units`), not ns.
+9. **The one-worker identity switch** (`ECO_TEST_PROMO_VIA_CTX`) and the forced engine
+   (`ECO_TEST_MINOR_ENGINE=P`) are stats-build test switches. `ECO_TEST_MINOR_THREADS=<n>` runs
+   the whole unit suite with n workers (configs that set `minor_lab_bytes` keep their own).
+10. **E2E coverage.** In-process E2E heaps take the allocator's config at its first initialize, so
+    environment settings do not reliably reach them (the 5c caveat). Parallel minors are covered
+    by the unit suite under `ECO_TEST_MINOR_THREADS`, the stress suite (standalone Elm programs,
+    1,090 parallel minors per run), both TSan harnesses and the self-compile.
+11. **Shared chunked blocks replace per-worker blocks for N > 1** (N = 1 keeps P§3.8's
+    per-worker cursor, so the identity checks stay exact). With one block per worker per class,
+    each minor left up to N × (classes in use) × 512 KiB of partly filled blocks. That inflated
+    committed bytes, the garbage-fraction trigger's denominator. Early in the run, when the old gen
+    is ~100 MB, the first major moved from minor 91 (serial) to 165 (N = 8) and 240 (N = 16). The
+    chaotic trigger then carried the change through the run (6 majors, peak +20 %). As built:
+    - one shared current block per class; workers claim chunks by CAS on a cache-line-padded word
+      (block id + 1) << 32 | next unit, where a unit is 64 cells (whole bitmap bytes);
+    - a worker's claim for a class starts at 1 unit in each minor and doubles up to 16 (1,024
+      cells);
+    - refills and virgin blocks advance the shared block under the lock;
+    - at the merge the shared block becomes the mutator's cursor, and blocks retired with cells
+      left in a worker's last chunk are re-queued at the front;
+    - flushes of pending live bytes are atomic adds (several workers per block).
+
+    Fixed 256-cell chunks restored the first major but cost +9 % minor time. Fixed 1,024-cell
+    chunks recovered the time but moved the first major to minor 145. Adaptive claims give both:
+    the first two majors are identical to serial at N = 4, 8 and 16, with the best minor times.
+12. **Found, not fixed (pre-existing):** the bitmap ladder's rung 7 passes a size-classed
+    request to `allocateFromBagPage`, which asserts in `-UNDEBUG` builds. It is reached only at
+    the old-gen cap (seen in a test whose first-initialize reservation was 64 MB).
+
+### 10.2 E0 — the serial reference
+
+- `gc_minor_threads = 1` against `eco-optTG5c` (same session, `major_gc_live_budget_paced`
+  pinned off in both arms by one JSON file; see 10.1 fact 1): **every counter matches**,
+  decisions included (`tg6-compare.py --all`: RESULT MATCH). `out.mlir` is byte-identical
+  (933c3ff0d288…) in every run of the phase.
+- The Step 4 identity switch (serial minor promoting through a one-worker context) reproduces
+  `allocate()` exactly: `testPromoViaCtxMatchesSerial`, 3 seeds, layout hash + every counter.
+
+### 10.3 E1 — determinism (phase-timer candidate, one run per arm)
+
+`ECO_GC_MINOR_THREADS` ∈ {01, 02, 04, 08, 00 (auto = 8 then)} and 08 + `ECO_GC_HELPER_JITTER_US=50`:
+**all 1,924 per-minor rows identical in their object columns**, and the run totals are identical
+(`tg6-compare.py`, object class). The decision class differs, as the amended GC_DET_001 allows
+(8/7/7/6 majors before the chunked blocks, 8 at every N after).
+
+### 10.4 E2 — scaling
+
+Final design without prefetch (`eco-optTG6c9PT`), triples, medians:
+
+| N | wall (s) | minor GC (s) | minor p50 / p99 / max (ms) | old-gen peak (MB) | max RSS (GB) | member CPU (s) |
+|---|---|---|---|---|---|---|
+| 1 | 160.9 | 46.75 | 4.82 / 111.9 / 177.5 | 9,250 | 10.18 | — |
+| 8 | 124.1 | 12.83 | 2.07 / 25.4 / 116.5 | 11,423 | 12.41 | 67.5 |
+| 12 | 120.8 | 10.39 | 1.82 / 21.1 / 106.2 | 11,430 | 12.42 | 77.4 |
+| 16 | 121.9 | 9.47 | 1.81 / 20.2 / 74.2 | 11,842 | 12.85 | 89.5 |
+
+Single runs: N = 2: 34.0 s minor; N = 3: 24.1; N = 4: 19.9; N = 6: 15.3.
+
+**Decision rule:** N = 16 is the only N within 10 % of the best on both minor GC and worst
+pause. Its collector CPU per second of pause saved is 2.40, 1.26× N = 4's (< 3×). **Cap = 16.**
+Wall −39 s (−24 %), minor GC −80 %, p99 −82 %, worst minor −58 %.
+
+How the design got there (each row one N = 8 / N = 16 run):
+
+| design step | N = 8 minor / max | N = 16 minor / max | majors (N = 8) |
+|---|---|---|---|
+| first build (priv counted as work, std::mutex, per-worker blocks) | 16.5 s / 649 ms | 23.4 s / 1,358 ms | 6 |
+| idle workers wake only for stealable work | 13.2 / 203 | 10.3 / 213 | 6 |
+| spin lock | 12.7 / 110 | 9.9 / 141 | 6 |
+| batched rung-2 pops (Step 7b) | 12.7 / 79 | 9.5 / 110 | 6 |
+| chunked shared blocks, 256 cells | 13.9 / 110 | 9.9 / 122 | 8 |
+| adaptive chunks (1 → 16 units) | 13.0 / 139 | 9.45 / 75 | 8 |
+
+### 10.5 E3 — LAB size and child prefetch (N = 16, one run each)
+
+| LAB | prefetch | minor GC (s) | fillers (MB, % of survived bytes) |
+|---|---|---|---|
+| 8 KiB | off / on | 9.48 / 9.25 | 109 (0.5 %) |
+| 32 KiB | off / on | 9.45 / 9.24 | 314 (1.4 %) |
+| 128 KiB | off / on | 9.45 / 9.11 | 1,274 (5.8 %) |
+
+32 KiB and 128 KiB fail the ≤ 1 % filler rule. Prefetch gains ~2 % at N = 16. At N = 1 the serial
+path runs, so the "wins at both N" clause has nothing to compare. **Defaults: 8 KiB LABs,
+prefetch on.**
+
+### 10.6 E4 — the serial threshold (stress suite, parallel config, N = 16)
+
+Minors of ~0.85 MB: minor GC 2.22 s in parallel vs 1.21 s serial (the gang wake and
+termination dominate). Any threshold ≥ 1 MiB routes them serially. Minors between 1 and 4 MiB
+were not measured; every self-compile minor is ~120 MB. **The default stays 4 MiB.**
+
+### 10.7 E5 — oversubscription (`taskset -c 0,1`)
+
+N = 8: wall 148.5 s, minor max 158 ms; N = 2: 151.0 s, 150 ms. It passes: no collapse, and
+8 is not slower.
+
+### 10.8 E6 — background marking
+
+At N = 16: `conc_mark` 0 → 9.45 s minor, 2 → 9.56 s (+1 %). Background markers barely slow
+parallel minors.
+
+### 10.9 E7 — retention (the rule-3 gate): FAILED
+
+Old-gen peak in MB (majors), N = 16 vs N = 1, gf sweep, one run per point:
+
+| gf | N = 1 | N = 16 |
+|---|---|---|
+| 0.65 | 8,696 (9) | 10,066 (8) |
+| 0.70 | 9,250 (8) | 11,850 (8) |
+| 0.75 | 9,290 (7) | 9,476 (7) |
+
+Sweep median +8.8 % (limit +3 %); gf 0.70 is above N = 1's sweep max; max RSS median +8.6 %.
+
+**Root cause (isolated):**
+- **It is not concurrency.** The parallel engine forced to one worker (no chunking, no stash, a
+  single cursor as in serial) peaks at 11,070 MB. Restoring per-promotion sweep slices in it
+  changes nothing (11,037 MB).
+- **It is promotion order.** Per class the engine fills exactly the same cells as serial each
+  minor; only the object → cell mapping differs. The first five majors are identical in timing
+  and size. At major 5 the engine recovers ~27–36 MB less (fewer all-dead blocks). Committed
+  memory, the garbage-fraction denominator, stays higher, and major 6 fires 54–56 minors later
+  at a program point with ~2.5× the live data. The chaotic trigger carries that to the peak.
+  Serial Cheney promotes breadth-first, which in this workload clusters objects that die
+  together into the same blocks better than the engine's depth-first order.
+- **FIFO grey order** (`minor_fifo_order`) brings the one-worker engine to 9,790 MB (+6 %), but
+  at N = 16 it peaks at 11,427 MB (stealing scrambles the order) and costs 25 % minor time.
+
+**Per the gates, `GC_MINOR_THREADS` stays 1.** Every other setting is the measured one for when
+it is enabled.
+
+### 10.10 E8 — tight cap (`max_heap_size` 15G, an 11 GB old-gen cap)
+
+N = 1: 9,236 MB (82.0 % of the cap), 8 majors. N = 16: 9,652 MB (85.7 %), 9 majors. +3.7 points
+against a +2 limit: the same retention effect as E7. Stress 101/101 at 1, 4, 8, 8 + jitter and 16.
+
+### 10.11 E9 — mutator locality
+
+Mutator CPU outside pauses (E2 medians): N = 1 113.4 s; N = 8 110.2 s; N = 16 111.4 s. The
+depth-first copy order does not hurt the mutator; it is slightly faster.
+
+### 10.12 Final build and gates
+
+The final build is `eco-optTG6`, `eco-optTG6PT` and `eco-optTG6NS`, with default LAB 8 KiB and
+child prefetch on. At N = 16, triple medians: wall 120.7 s, minor GC 9.34 s, minor p50 / p99 / max
+1.70 / 20.2 / 75.2 ms, 8 majors, peak 11,837 MB, max RSS 12.84 GB. N = 1: 160.9 s, 46.25 s,
+110.9 / 174.7 ms.
+
+| # | Gate | Result |
+|---|---|---|
+| G1 | unit | 1,907/1,907 at default, `ECO_TEST_MINOR_THREADS` 8 and 16 |
+| G2 | elm-tests | 13,565 pass / 12 fail: the pre-existing reference set |
+| G3 | `full` | 1,907/1,907 (default); E2E subset at 8 under the pressure-parallel config 942/942 |
+| G4 | stress | 101/101 at 1, 4, 8, 8 + jitter and 16 on both parallel pressure configs (1,090 parallel minors); original pressure config 101/101 (serial by the space bound) |
+| G5 | validate tree | unit 1,908/1,908 at 1, 4 and 8; stress 101/101 on every arm above. The only `[heap-validate]` lines are the three negative controls (PM2 for the double copy, PM3 for the missing filler, PM4 for the kept block), which must fire |
+| G6 | stats-off | `eco-optTG6NS` self-compiles at N = 16, output identical |
+| G7 | E0 | MATCH on every counter against `eco-optTG5c` (paced pinned off) |
+| G8 | E1 | object class identical at 1/2/4/8/16/16 + jitter (final build) |
+| G9 | TSan | `gc-minor-tsan` 2,200 runs (and 220 on 2 cores), `gc-mark-tsan`, `gc-heap-tsan` (and on 2 cores): 0 warnings |
+| G10 | E2–E9 | rules applied (P§10.4–10.11); **E7 and E8 (retention) failed** |
+| G11 | fixed point | every run in the phase reproduced `out.mlir` md5 933c3ff0d288…, the MLIR its compiler was lowered from |
+| G12 | static | no `hardware_concurrency` in the allocator; `minorGCSerial`'s statements are unchanged (the serial core is wrapped, not edited) |
+
+### 10.13 The default (after review, 2026-09-27)
+
+The gates left `gc_minor_threads` at 1. On review the default was flipped to **auto with a cap
+of 8** (`GC_MINOR_THREADS = 0`, `GC_MINOR_THREADS_CAP = 8`), overriding E7/E8 as 5c's paced
+LiveBudget was overridden:
+- 8 workers give most of the gain (E2: wall 124 s vs 122 s at 16, minor p99 25 vs 20 ms) for
+  ~25 % less collector CPU (67.5 vs 89.5 s);
+- the retention cost does not shrink with fewer workers (peak +19–28 % at every N ≥ 4), because
+  its cause is promotion order.
+
+The default was re-measured with the stats build and no GC environment (`eco-optTG6d`, triple):
+- wall 2:03.44 / 2:02.43 / 2:03.30 (median 123.30 s; TG5c 162.60 s);
+- minor GC 12.25 s, 1,924 minors, 8 majors, all 1,924 minors parallel on 8 workers;
+- old-gen peak 11,437 MB, max RSS 12,426,732 kB;
+- output identical (933c3ff0d288…).
+
+The gates re-run default-on are recorded in P§10.14. `ECO_GC_MINOR_THREADS=1` restores the
+serial path.
 
 ## 11. Done means
 

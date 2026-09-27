@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "TestHelpers.hpp"
 #include "ThreadLocalHeap.hpp"
 #include <cstring>
@@ -10,7 +11,28 @@ namespace TestHelpers {
 // 1. Allocator Initialization
 // ============================================================================
 
-Allocator& initAllocator(const HeapConfig& config) {
+// threaded-gc-06: ECO_TEST_MINOR_THREADS=<n> runs EVERY unit test with n
+// parallel minor workers (4 KiB LABs, no serial threshold) -- the unit-suite
+// coverage switch of plan Step 6/7. A test's heap ignores ECO_GC_* after the
+// first Allocator::initialize, so the override is applied to its config here.
+static HeapConfig withTestMinorThreads(const HeapConfig& in) {
+    static const int n = [] {
+        const char* e = std::getenv("ECO_TEST_MINOR_THREADS");
+        return e ? std::atoi(e) : -1;
+    }();
+    HeapConfig c = in;
+    // Configs that set minor_lab_bytes pin their own minor configuration (the
+    // phase-6 tests, whose serial arms must stay serial).
+    if (n >= 0 && c.gc_minor_threads == GC_MINOR_THREADS && c.minor_lab_bytes == MINOR_LAB_BYTES) {
+        c.gc_minor_threads = static_cast<uint32_t>(n);
+        c.minor_lab_bytes = 4096;
+        c.minor_parallel_min_bytes = 0;
+    }
+    return c;
+}
+
+Allocator& initAllocator(const HeapConfig& config_in) {
+    const HeapConfig config = withTestMinorThreads(config_in);
     auto& alloc = Allocator::instance();
     // Ensure the global heap mmap exists. On the first ever call this seeds
     // config_ with `config`; subsequent calls are no-ops because `initialize`

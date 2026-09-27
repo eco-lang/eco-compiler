@@ -989,7 +989,7 @@ bool ThreadLocalHeap::isNurseryNearFull(float threshold) const {
     // __eco_safepoint_poll, which compiled code does not emit today) and
     // the synthetic benchmark driver's pacing loop (main.cpp).
     size_t total_capacity = nursery_.from_capacity_bytes_;  // friend access
-    size_t usage = nursery_.bytesAllocated();
+    size_t usage = nursery_.objectBytesAllocated();   // threaded-gc-06 HEAP_068
     return usage >= static_cast<size_t>(total_capacity * threshold);
 }
 

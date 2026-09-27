@@ -32,11 +32,17 @@ i64 intOf(Allocator& a, HPointer hp) {
     return static_cast<ElmInt*>(o)->value;
 }
 
-void scenario(unsigned bg, unsigned slices, uint64_t seed) {
+// threaded-gc-06 Step 8: `minor` > 1 runs every minor on that many parallel
+// workers (a 1 MiB nursery side leaves room for their LABs), overlapping the
+// background markers' episodes.
+void scenario(unsigned bg, unsigned slices, uint64_t seed, unsigned minor = 1) {
     HeapConfig cfg;
     cfg.alloc_buffer_size = 32 * 1024;
-    cfg.nursery_block_count = 8;
-    cfg.nursery_max_block_count = 8;
+    cfg.nursery_block_count = minor > 1 ? 64 : 8;
+    cfg.nursery_max_block_count = minor > 1 ? 64 : 8;
+    cfg.gc_minor_threads = minor;
+    cfg.minor_lab_bytes = 4096;
+    cfg.minor_parallel_min_bytes = 0;
     cfg.initial_old_gen_size = 256 * 1024;
     cfg.max_heap_size = 512ULL << 20;
     cfg.large_object_threshold = 8 * 1024;
@@ -107,11 +113,12 @@ void scenario(unsigned bg, unsigned slices, uint64_t seed) {
     }
     while (OldGenSpaceTestAccess::cycleActive(h->getOldGen())) a.minorGC();
     const ConcMarkStats& cm = h->getOldGen().getStats().cm;
-    std::printf("heap scenario B=%u T=%u: %llu forced cycles ok (episodes %llu, bg units %llu, "
-                "assists %llu, closings with work %llu, early done %llu)\n", bg, slices,
+    std::printf("heap scenario B=%u T=%u minor=%u: %llu forced cycles ok (episodes %llu, bg units %llu, "
+                "assists %llu, closings with work %llu, early done %llu, parallel minors %llu)\n", bg, slices, minor,
                 (unsigned long long)cycles, (unsigned long long)cm.episodes_launched,
                 (unsigned long long)cm.bg_units, (unsigned long long)cm.assists,
-                (unsigned long long)cm.closings_with_work, (unsigned long long)cm.done_k_hist[0]);
+                (unsigned long long)cm.closings_with_work, (unsigned long long)cm.done_k_hist[0],
+                (unsigned long long)h->getNursery().getStats().pmin.minors_parallel);
 }
 }  // namespace
 
@@ -119,6 +126,9 @@ int main() {
     scenario(2, 4, 1);
     scenario(4, 16, 2);
     scenario(3, 8, 3);
+    // threaded-gc-06: parallel minors overlapping background episodes.
+    scenario(2, 4, 4, 4);
+    scenario(4, 16, 5, 3);
     std::printf("heap_driver PASS\n");
     return 0;
 }

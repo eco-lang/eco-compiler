@@ -2118,6 +2118,37 @@ row: the E3 triple medians (mode 2, B = 4) vs the mode-0 (= TG5b) triple of the 
   rejected it). The summary row predates the flip. The garbage backstop was rejected. Headroom ships (E10: at an
   11 GB cap, peak 94.4 % -> 81.5 % of the cap, same majors).
 
+### TG6 — threaded-gc-06 parallel minor GC — **DEFAULT-ON (auto workers, cap 8): wall 162.60 -> 123.30 s (triple median, stats build, no GC environment), minor GC 46.8 -> 12.3 s, minor p99 111.9 -> 25.4 ms; per-minor object counters identical at every N; retention gate FAILED (gf-sweep median peak +8.8 %, max RSS 12.4 GB) and was overridden after review
+
+Plan `plans/threaded-gc-06-parallel-minor.md` (as-built P§10). Phase-timer candidates lowered from
+`ecoTG6base.mlir` (the MLIR `eco-optTG5c` reproduces, md5 933c3ff0d288…); arms set
+`ECO_GC_MINOR_THREADS` / `ECO_GC_HELPER_JITTER_US` / `ECO_HEAP_CONFIG` with equal-length values.
+
+| arm (triple medians) | wall (s) | minor GC (s) | minor p99 / max (ms) | majors | old-gen peak (MB) | max RSS (kB) |
+|---|---|---|---|---|---|---|
+| N = 1 (serial path) | 160.9 | 46.75 | 111.9 / 177.5 | 8 | 9,250 | 10,176,300 |
+| N = 8 | 124.1 | 12.83 | 25.4 / 116.5 | 8 | 11,423 | 12,411,664 |
+| N = 16 | 121.9 | 9.47 | 20.2 / 74.2 | 8 | 11,842 | 12,846,300 |
+| **default (N = 8, `eco-optTG6d`, stats build, no GC env)** | **123.30** | 12.25 | — | 8 | 11,437 | 12,426,732 |
+
+- **E0:** at N = 1 every counter equals `eco-optTG5c` once `major_gc_live_budget_paced` is pinned
+  off in both arms. **The `eco-optTG5c` binary predates 5c's paced-LiveBudget default flip**
+  (7 majors / 8,936 MB vs the source's 8 / 9,251 MB).
+- **E1:** all 1,924 per-minor object rows identical at 1/2/4/8/auto and under jitter.
+- **E7 (failed):** peak N = 1 {8,696, 9,250, 9,290} vs N = 16 {10,066, 11,850, 9,476} at gf
+  0.65/0.70/0.75. A one-worker parallel engine shows the same +20 %: **promotion ORDER is a
+  retention input** (depth-first vs Cheney breadth-first clusters lifetimes differently; majors
+  1–5 identical, major 5 recovers ~30 MB less, the garbage-fraction trigger then fires ~55
+  minors later).
+- **Default flipped after review (2026-09-27):** auto workers capped at 8. 8 workers give
+  most of the wall and p99 gain for ~25 % less collector CPU than 16 (67.5 vs 89.5 s); the
+  retention cost is the same at every N ≥ 4. The default triple ran `eco-optTG6d` with no GC
+  environment: 2:03.44 / 2:02.43 / 2:03.30, output identical (933c3ff0d288…). The TG5c row it
+  is compared with predates 5c's paced-LiveBudget flip (E0 note above).
+- Four fixes found by measurement are in the build: idle workers wake only for stealable work,
+  a spin lock, batched free-list pops, and adaptive chunked shared blocks (per-worker blocks
+  moved the first major from minor 91 to 165).
+
 ## 7. Findings
 
 (What this series learns, separated from the per-step records so the entries stay to ten lines.
@@ -2589,3 +2620,4 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | TG5a | 170.20 | -0.80 | 1924 | 7 | 19862 | 9844144 | WIN | TG4b |
 | TG5b | 163.90 | -5.84 | 1924 | 7 | 19862 | 9845612 | WIN | TG5a |
 | TG5c | 162.60 | -0.99 | 1924 | 7 | 19862 | 9849108 | WIN (pause) | TG5b |
+| TG6 | 123.30 | -39.30 | 1924 | 8 | 19862 | 12426732 | WIN (wall, pause; retention gate overridden) | TG5c |

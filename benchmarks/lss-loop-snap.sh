@@ -21,11 +21,13 @@
 
 ROOT=/work
 SNAPS=$ROOT/snapshots/lss-loop
-DIRS="compiler/src compiler/src-xhr runtime/src elm-kernel-cpp/src eco-kernel-cpp/src compiler/tests test/eco-kernel/src"
+DIRS="compiler/src compiler/src-xhr runtime/src elm-kernel-cpp/src eco-kernel-cpp/src compiler/tests test/eco-kernel/src test/allocator test/gc-helper-tsan test/gc-heap-tsan"
+# threaded-gc-06: the allocator unit tests and the TSan harnesses joined the list (a snapshot
+# taken before that simply lacks them and they are skipped, as for FILES below).
 # Individual files a step may change. Build files matter because a step that ADDS a source file
 # also adds it to a link list, and reverting only the sources would leave the build referring to a
 # file that is gone. Added 2026-09-19 for step 3 (the CellStore kernel), which touches all four.
-FILES="compiler/CMakeLists.txt test/CMakeLists.txt eco-kernel-cpp/CMakeLists.txt eco-kernel-cpp/elm.json runtime/src/codegen/CMakeLists.txt design_docs/invariants.csv"
+FILES="compiler/CMakeLists.txt test/CMakeLists.txt eco-kernel-cpp/CMakeLists.txt eco-kernel-cpp/elm.json runtime/src/codegen/CMakeLists.txt design_docs/invariants.csv CMakeLists.txt test/main.cpp test/ElmE2ETestBase.hpp THEORY.md"
 
 # A snapshot taken before a path joined the lists simply does not contain it. Such a path is
 # SKIPPED on restore/verify/diff rather than treated as "the snapshot says this should not exist" —

@@ -384,6 +384,15 @@ void GCStats::recordAllocation(size_t bytes) {
 
 // Records a single old-generation allocation of the given size in the
 // size-distribution histogram only.
+size_t GCStats::oldGenAllocBucket(size_t bytes) {
+    return allocSizeBucketIndex(bytes, OLDGEN_ALLOC_BUCKETS);
+}
+
+void GCStats::mergeOldGenAllocHistogram(const uint64_t* buckets, uint64_t c16_24) {
+    for (int i = 0; i < OLDGEN_ALLOC_BUCKETS; ++i) oldgen_alloc_size_histogram[i] += buckets[i];
+    oldgen_alloc_size_16_24_count += c16_24;
+}
+
 void GCStats::recordOldGenAllocation(size_t bytes) {
     size_t bucket = allocSizeBucketIndex(bytes, OLDGEN_ALLOC_BUCKETS);
     oldgen_alloc_size_histogram[bucket]++;
@@ -880,6 +889,7 @@ void GCStats::combine(const GCStats& other) {
     page_supply.mergeMax(other.page_supply);
     helper.mergeMax(other.helper);
     lp.combine(other.lp);
+    pmin.combine(other.pmin);
     im.combine(other.im);
     pm.combine(other.pm);
     cm.combine(other.cm);
@@ -1415,6 +1425,7 @@ void GCStats::print() const {
     printPageSupplyBlock();
     printHelperBlock();
     printLargePtrBlock();   // threaded-gc-04b (only when non-zero)
+    printParMinorBlock();   // threaded-gc-06 (only when non-zero)
     printIncrMarkBlock();   // threaded-gc-05a (only when non-zero)
     printParMarkBlock();    // threaded-gc-05b (only when non-zero)
     printConcMarkBlock();   // threaded-gc-05c (only when non-zero)
@@ -1828,6 +1839,7 @@ void GCStats::reset() {
     page_supply = PageSupplyStats{};
     helper = HelperStatsSnapshot{};
     lp = LargePtrStats{};
+    pmin = ParMinorStats{};
     im = IncrMarkStats{};
     pm = ParMarkStats{};
     cm = ConcMarkStats{};
@@ -2470,6 +2482,10 @@ public:
         }
         for (size_t c = 0; c <= ext_cols_.size(); ++c) { addNum(line, ns[c]); addNum(line, sl[c]); }
         for (int k = 0; k < 5; ++k) addField(line, "-");
+        // threaded-gc-06 (P§3.12): parallel-minor columns.
+        addNum(line, r.workers); addNum(line, r.par_sweep_ns); addNum(line, r.par_roots_ns);
+        addNum(line, r.par_drain_ns); addNum(line, r.par_close_ns); addNum(line, r.filler_bytes);
+        addNum(line, r.mutex_wait_ns); addNum(line, r.imbalance_units);
         finish(line);
     }
 
@@ -2484,6 +2500,7 @@ public:
         dashes(line, 2 * (ext_cols_.size() + 1));
         addNum(line, total_ns); addNum(line, mark_ns); addNum(line, sweep_ns);
         addNum(line, roots_ns); addField(line, reason);
+        dashes(line, kParCols);   // threaded-gc-06
         finish(line);
     }
 
@@ -2499,6 +2516,7 @@ public:
         static const char* const kKind[] = {"minor", "minor+major", "major",
                                             "minor+t0", "minor+slice", "minor+handoff"};
         addField(line, kind < 6 ? kKind[kind] : "?");
+        dashes(line, kParCols);   // threaded-gc-06
         finish(line);
     }
 
@@ -2515,6 +2533,7 @@ public:
         dashes(line, 4);
         std::string r = std::string("stall:") + client + (in_pause ? ":pause" : "");
         addField(line, r.c_str());
+        dashes(line, kParCols);   // threaded-gc-06
         finish(line);
     }
 
@@ -2536,6 +2555,7 @@ public:
         dashes(line, 4);
         std::string r = std::string("job:") + client;
         addField(line, r.c_str());
+        dashes(line, kParCols);   // threaded-gc-06
         finish(line);
     }
 
@@ -2555,6 +2575,7 @@ public:
         dashes(line, 4);
         std::string r = std::string("cycle:") + finish_reason;
         addField(line, r.c_str());
+        dashes(line, kParCols);   // threaded-gc-06
         finish(line);
     }
 
@@ -2566,6 +2587,8 @@ public:
 private:
     // Numeric columns of a minor row after (kind, tid, seq): start_ns .. majflt.
     static constexpr int kMinorNumericCols = 27;
+    // threaded-gc-06: parallel-minor columns after major_reason.
+    static constexpr int kParCols = 8;
 
     GCEventLogImpl() {
         const char* p = std::getenv("ECO_GC_EVENT_LOG");
@@ -2590,7 +2613,9 @@ private:
             "minflt\tmajflt";
         for (const std::string& c : ext_cols_) h += "\text:" + c + "_ns\text:" + c + "_slots";
         h += "\text:late_ns\text:late_slots";
-        h += "\tmajor_total_ns\tmajor_mark_ns\tmajor_sweep_ns\tmajor_roots_ns\tmajor_reason\n";
+        h += "\tmajor_total_ns\tmajor_mark_ns\tmajor_sweep_ns\tmajor_roots_ns\tmajor_reason";
+        h += "\tpar_workers\tpar_sweep_ns\tpar_roots_ns\tpar_drain_ns\tpar_close_ns"
+             "\tpar_filler_bytes\tpar_mutex_wait_ns\tpar_imbalance_units\n";
         std::fputs(h.c_str(), file_);
         return true;
     }
@@ -2770,6 +2795,43 @@ void GCStats::printLargePtrBlock() const {
                   (unsigned long long)lp.ylos_freed_minor,
                   (unsigned long long)lp.ylos_retired_major,
                   (unsigned long long)lp.ylos_reach_calls, (unsigned long long)lp.ylos_scans);
+    std::cout << buf << std::endl;
+}
+
+void GCStats::printParMinorBlock() const {
+    if (!pmin.any()) return;
+    const ParMinorStats& p = pmin;
+    std::cout << "\nParallel Minor GC (threaded-gc-06):" << std::endl;
+    char buf[320];
+    std::snprintf(buf, sizeof buf,
+                  "  minors: parallel %llu (mean workers %.2f), serial small %llu, serial space %llu, alloc-end capped %llu",
+                  (unsigned long long)p.minors_parallel,
+                  p.minors_parallel ? (double)p.workers_sum / (double)p.minors_parallel : 0.0,
+                  (unsigned long long)p.serial_small, (unsigned long long)p.serial_space,
+                  (unsigned long long)p.alloc_end_capped);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  to-space: LAB claims %llu, direct claims %llu, fillers %.2f MB (max %.2f MB in one minor)",
+                  (unsigned long long)p.lab_claims, (unsigned long long)p.direct_claims,
+                  p.filler_bytes_total / (1024.0 * 1024.0), p.filler_bytes_max / (1024.0 * 1024.0));
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  claims: races %llu, busy waits %llu; spine splits %llu, chunks %llu",
+                  (unsigned long long)p.claim_races, (unsigned long long)p.busy_waits,
+                  (unsigned long long)p.spine_splits, (unsigned long long)p.chunks);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  work: steals %llu (aborts %llu), idle spins %llu yields %llu sleeps %llu",
+                  (unsigned long long)p.steals, (unsigned long long)p.steal_aborts,
+                  (unsigned long long)p.idle_spins, (unsigned long long)p.idle_yields,
+                  (unsigned long long)p.idle_sleeps);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  promo mutex: acquires %llu, wait %.3f s; drain %.3f s, pre-drain sweep %.3f s, "
+                  "imbalance %llu units, member CPU %.3f s",
+                  (unsigned long long)p.promo_mutex_acquires, p.promo_mutex_wait_ns / 1e9,
+                  p.drain_ns_sum / 1e9, p.sweep_ns_sum / 1e9, (unsigned long long)p.imbalance_units_sum,
+                  p.member_cpu_ns / 1e9);
     std::cout << buf << std::endl;
 }
 

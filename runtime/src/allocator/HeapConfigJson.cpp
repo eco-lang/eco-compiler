@@ -201,6 +201,12 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         "incremental_mark",
         "gc_mark_threads",
         "gc_mark_threads_cap",
+        "gc_minor_threads",
+        "gc_minor_threads_cap",
+        "minor_lab_bytes",
+        "minor_parallel_min_bytes",
+        "minor_prefetch_children",
+        "minor_fifo_order",
         "conc_mark",
         "conc_mark_threads",
         "conc_mark_threads_cap",
@@ -324,6 +330,19 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         cfg.gc_mark_threads = parseU32(*it, "gc_mark_threads");
     if (auto it = doc.find("gc_mark_threads_cap"); it != doc.end())
         cfg.gc_mark_threads_cap = parseU32(*it, "gc_mark_threads_cap");
+    // threaded-gc-06
+    if (auto it = doc.find("gc_minor_threads"); it != doc.end())
+        cfg.gc_minor_threads = parseU32(*it, "gc_minor_threads");
+    if (auto it = doc.find("gc_minor_threads_cap"); it != doc.end())
+        cfg.gc_minor_threads_cap = parseU32(*it, "gc_minor_threads_cap");
+    if (auto it = doc.find("minor_lab_bytes"); it != doc.end())
+        cfg.minor_lab_bytes = parseByteSize(*it, "minor_lab_bytes");
+    if (auto it = doc.find("minor_parallel_min_bytes"); it != doc.end())
+        cfg.minor_parallel_min_bytes = parseByteSize(*it, "minor_parallel_min_bytes");
+    if (auto it = doc.find("minor_prefetch_children"); it != doc.end())
+        cfg.minor_prefetch_children = parseBool(*it, "minor_prefetch_children");
+    if (auto it = doc.find("minor_fifo_order"); it != doc.end())
+        cfg.minor_fifo_order = parseBool(*it, "minor_fifo_order");
     // threaded-gc-05c
     if (auto it = doc.find("conc_mark"); it != doc.end())
         cfg.conc_mark = parseU32(*it, "conc_mark");
@@ -475,6 +494,20 @@ void applyMarkThreadsEnv(HeapConfig &cfg, const char *value) {
     cfg.gc_mark_threads = static_cast<uint32_t>(v);
 }
 
+// threaded-gc-06: ECO_GC_MINOR_THREADS (decimal 0..64) wins over JSON.
+void applyMinorThreadsEnv(HeapConfig &cfg, const char *value) {
+    if (value == nullptr || value[0] == '\0') return;
+    uint64_t v = 0;
+    for (const char *p = value; *p; ++p) {
+        if (*p < '0' || *p > '9' || v > 64) {
+            throw std::invalid_argument("ECO_GC_MINOR_THREADS must be an unsigned decimal <= 64");
+        }
+        v = v * 10 + static_cast<uint64_t>(*p - '0');
+    }
+    if (v > 64) throw std::invalid_argument("ECO_GC_MINOR_THREADS must be <= 64");
+    cfg.gc_minor_threads = static_cast<uint32_t>(v);
+}
+
 // threaded-gc-05c: ECO_GC_CONC_MARK (exactly one of "0", "1", "2") and
 // ECO_GC_CONC_MARK_THREADS (decimal 0..63) win over JSON.
 void applyConcMarkEnv(HeapConfig &cfg, const char *mode_value, const char *threads_value) {
@@ -502,6 +535,7 @@ void applyGcThreadEnv(HeapConfig &cfg, uint32_t &jitter_us) {
     applyGcThreadEnv(cfg, jitter_us, std::getenv("ECO_GC_THREAD"),
                      std::getenv("ECO_GC_HELPER_JITTER_US"));
     applyMarkThreadsEnv(cfg, std::getenv("ECO_GC_MARK_THREADS"));
+    applyMinorThreadsEnv(cfg, std::getenv("ECO_GC_MINOR_THREADS"));
     applyConcMarkEnv(cfg, std::getenv("ECO_GC_CONC_MARK"),
                      std::getenv("ECO_GC_CONC_MARK_THREADS"));
 }

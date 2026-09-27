@@ -80,7 +80,12 @@ public:
         if (b - t > a->mask) {
             a = grow(a, b, t);
         }
-        a->buf[b & a->mask].store(e, std::memory_order_relaxed);
+        // threaded-gc-06: the element store is a RELEASE (a thief's element
+        // load an ACQUIRE). A parallel minor worker scans an object that the
+        // pushing worker has just written (its copy); the paper's release
+        // fence already orders that, but ThreadSanitizer does not model
+        // stand-alone fences. On x86 both are plain moves; the fences stay.
+        a->buf[b & a->mask].store(e, std::memory_order_release);
         std::atomic_thread_fence(std::memory_order_release);
         bottom_.store(b + 1, std::memory_order_relaxed);
     }
@@ -116,7 +121,7 @@ public:
         const int64_t b = bottom_.load(std::memory_order_acquire);
         if (t < b) {
             Array* a = array_.load(std::memory_order_acquire);
-            const uint64_t e = a->buf[t & a->mask].load(std::memory_order_relaxed);
+            const uint64_t e = a->buf[t & a->mask].load(std::memory_order_acquire);
             if (!top_.compare_exchange_strong(t, t + 1, std::memory_order_seq_cst,
                                               std::memory_order_relaxed)) {
                 return kAbort;
@@ -174,7 +179,7 @@ private:
         Array* na = Array::make(log + 1);
         for (int64_t i = t; i < b; ++i) {
             na->buf[i & na->mask].store(a->buf[i & a->mask].load(std::memory_order_relaxed),
-                                        std::memory_order_relaxed);
+                                        std::memory_order_release);
         }
         retired_.push_back(a);        // a thief may still read it: free after the join
         array_.store(na, std::memory_order_release);

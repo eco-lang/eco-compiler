@@ -41,6 +41,11 @@ namespace Elm {
 //   "major_gc_headroom_margin"       double (0 = off; Headroom trigger)
 //   "major_gc_live_budget_paced"     bool
 //   "major_gc_garbage_backstop"      fraction (0 = off)
+//   "gc_minor_threads"               unsigned (0 = auto, <= 64; threaded-gc-06)
+//   "gc_minor_threads_cap"           unsigned (1..64)
+//   "minor_lab_bytes"                size_t (multiple of 8 in [4 KiB, 1 MiB])
+//   "minor_parallel_min_bytes"       size_t (below: the minor runs serially)
+//   "minor_prefetch_children"        bool
 //   (the list above is partial; HeapConfigJson.cpp's kKnownKeys is complete)
 //
 // Environment overrides applied by Allocator::initialize AFTER this file
@@ -68,6 +73,8 @@ void applyHeapConfigFromEnv(HeapConfig &cfg);
 void applyGcThreadEnv(HeapConfig &cfg, uint32_t &jitter_us);
 // threaded-gc-05b: ECO_GC_MARK_THREADS; also applied by applyGcThreadEnv(cfg, jitter).
 void applyMarkThreadsEnv(HeapConfig &cfg, const char *value);
+// threaded-gc-06: ECO_GC_MINOR_THREADS (decimal 0..64) wins over JSON.
+void applyMinorThreadsEnv(HeapConfig &cfg, const char *value);
 // threaded-gc-05c: ECO_GC_CONC_MARK / ECO_GC_CONC_MARK_THREADS (nullptr = unset).
 void applyConcMarkEnv(HeapConfig &cfg, const char *mode_value, const char *threads_value);
 void applyGcThreadEnv(HeapConfig &cfg, uint32_t &jitter_us,

@@ -223,6 +223,30 @@ constexpr uint32_t GC_MARK_THREADS = 0;
 constexpr uint32_t GC_MARK_THREADS_CAP = 16;
 constexpr uint32_t MARK_CHUNK_ELEMS = 1024;
 
+// threaded-gc-06 (plans/threaded-gc-06-parallel-minor.md, HEAP_067/HEAP_068):
+// the copy phase of a minor GC runs on gc_minor_threads workers (0 = auto:
+// min(cap, available CPUs); 1 = the serial Cheney reference). Young survivors
+// go to per-worker to-space LABs of MINOR_LAB_BYTES; a minor whose from-space
+// holds fewer than MINOR_PARALLEL_MIN_BYTES object bytes runs serially.
+// ECO_GC_MINOR_THREADS overrides.
+// DEFAULT-ON (plan P§10.13): auto workers capped at 8. The retention gate
+// (E7) failed -- depth-first promotion order raises the self-compile's
+// gf-sweep median old-gen peak by ~9 % -- and was overridden after review:
+// 8 workers give most of the wall and p99 gain (E2: 124 s vs 161 s, minor
+// p99 25 vs 112 ms) for 25 % less collector CPU than 16. E3: 8 KiB LABs,
+// child prefetch; E4: a 0.85 MB minor is 1.8x slower in parallel, so 4 MiB.
+constexpr uint32_t GC_MINOR_THREADS = 0;
+constexpr uint32_t GC_MINOR_THREADS_CAP = 8;
+constexpr size_t   MINOR_LAB_BYTES = 8 * 1024;
+constexpr size_t   MINOR_PARALLEL_MIN_BYTES = 4ULL * 1024 * 1024;
+constexpr bool     MINOR_PREFETCH_CHILDREN = true;
+// Grey order of a parallel minor: true = FIFO (breadth-first, closer to the
+// serial Cheney's promotion order: E7 one-worker peak +6 % instead of +20 %,
+// but no better at 16 workers and 25 % slower), false = LIFO (depth-first).
+constexpr bool     MINOR_FIFO_ORDER = false;
+constexpr uint32_t MINOR_CHUNK_ELEMS = 1024;
+constexpr uint32_t MINOR_SPINE_RUN = 512;
+
 // threaded-gc-05c (plans/threaded-gc-05c-concurrent-marking.md, HEAP_065):
 // concurrent marking. CONC_MARK 0 = off (05b in-pause slices), 1 = sync (the
 // whole mark in the t0 pause: the determinism reference), 2 = concurrent
@@ -360,9 +384,11 @@ inline bool tagMayHoldPointers(uint32_t tag) {
            tag != Tag_String && tag != Tag_ByteBuffer;
 }
 
-// Returns the size of a heap object in bytes (8-byte aligned).
-inline size_t getObjectSize(void *obj) {
-    Header *hdr = getHeader(obj);
+// Returns the size in bytes (8-byte aligned) of an object with header `*hdr`.
+// Reads only tag and size. threaded-gc-06 (P§3.3.2): a parallel minor worker
+// sizes a claimed object from its SAVED header word, because the header in
+// place already reads BUSY.
+inline size_t getObjectSizeFromHeader(const Header *hdr) {
 
     size_t size;
     switch (hdr->tag) {
@@ -483,6 +509,11 @@ inline size_t getObjectSize(void *obj) {
 
     // All heap objects are 8-byte aligned.
     return (size + 7) & ~7;
+}
+
+// Returns the size of a heap object in bytes (8-byte aligned).
+inline size_t getObjectSize(void *obj) {
+    return getObjectSizeFromHeader(getHeader(obj));
 }
 
 // ============================================================================
@@ -635,6 +666,14 @@ struct HeapConfig {
     // threaded-gc-05b (HEAP_064): parallel marking.
     uint32_t gc_mark_threads = GC_MARK_THREADS;
     uint32_t gc_mark_threads_cap = GC_MARK_THREADS_CAP;
+
+    // threaded-gc-06 (HEAP_067): parallel minor GC.
+    uint32_t gc_minor_threads = GC_MINOR_THREADS;
+    uint32_t gc_minor_threads_cap = GC_MINOR_THREADS_CAP;
+    size_t   minor_lab_bytes = MINOR_LAB_BYTES;
+    size_t   minor_parallel_min_bytes = MINOR_PARALLEL_MIN_BYTES;
+    bool     minor_prefetch_children = MINOR_PREFETCH_CHILDREN;
+    bool     minor_fifo_order = MINOR_FIFO_ORDER;
 
     // threaded-gc-05c (HEAP_065): concurrent marking.
     uint32_t conc_mark = CONC_MARK;
@@ -802,6 +841,16 @@ struct HeapConfig {
         }
         if (gc_mark_threads_cap < 1 || gc_mark_threads_cap > 64) {
             throw std::invalid_argument("gc_mark_threads_cap must be in [1, 64]");
+        }
+        // threaded-gc-06
+        if (gc_minor_threads > 64) {
+            throw std::invalid_argument("gc_minor_threads must be <= 64");
+        }
+        if (gc_minor_threads_cap < 1 || gc_minor_threads_cap > 64) {
+            throw std::invalid_argument("gc_minor_threads_cap must be in [1, 64]");
+        }
+        if (minor_lab_bytes < 4096 || minor_lab_bytes > 1024 * 1024 || minor_lab_bytes % 8 != 0) {
+            throw std::invalid_argument("minor_lab_bytes must be a multiple of 8 in [4096, 1 MiB]");
         }
         // threaded-gc-05c
         if (conc_mark > 2) {

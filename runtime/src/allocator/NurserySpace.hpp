@@ -2,9 +2,15 @@
 #define ECO_NURSERYSPACE_H
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
+#include <cstring>
+#include <memory>
+#include <mutex>
 #include <vector>
 #include "AllocatorCommon.hpp"
+#include "MarkWork.hpp"
+#include "MinorWork.hpp"
 #include "P1Census.hpp"
 #include "GCStats.hpp"
 #include "OldGenSpace.hpp"
@@ -113,6 +119,13 @@ private:
     // GC state (active only during minorGC execution).
     char* copy_ptr_;                // Bump pointer for copying into to-space.
     char* survivor_end_ = nullptr;  // threaded-gc-05a: bump_.ptr right after the last minor.
+    // threaded-gc-06 HEAP_068: Tag_Free filler bytes inside the from-space
+    // survivor prefix [fromBase(), survivor_end_) (LAB tails of a parallel
+    // minor; always 0 after a serial one), and the same figure for the to-space
+    // prefix being built by the running minor. Nursery policy counts OBJECT
+    // bytes = prefix bytes - filler bytes.
+    size_t filler_bytes_ = 0;
+    size_t filler_bytes_to_ = 0;
     char* copy_end_;                // To-space extent end.
     char* scan_ptr_;                // Cheney scan pointer.
 
@@ -155,6 +168,7 @@ public:
         char* p = fromBase();
         char* const end = bump_.ptr;
         size_t n = 0;
+        size_t fillers = 0;
         while (p < end) {
             const size_t sz = getObjectSize(p);
 #if ECO_HEAP_VALIDATE
@@ -165,12 +179,17 @@ public:
                 std::abort();
             }
 #endif
-            f(static_cast<void*>(p));
-            ++n;
+            if (getHeader(p)->tag == Tag_Free) {   // threaded-gc-06: a LAB-tail filler
+                fillers += sz;
+            } else {
+                f(static_cast<void*>(p));
+                ++n;
+            }
             p += sz;
         }
         assert(p == end && "IM7: survivor walk overran bump_.ptr");
-        if (bytes_out) *bytes_out = static_cast<size_t>(end - fromBase());
+        assert(fillers == filler_bytes_ && "HEAP_068: survivor-prefix fillers != filler_bytes_");
+        if (bytes_out) *bytes_out = static_cast<size_t>(end - fromBase()) - fillers;
         return n;
     }
     // True when no nursery allocation happened since the last minor GC.
@@ -344,6 +363,12 @@ private:
 
     // Returns the number of bytes currently allocated in the nursery.
     size_t bytesAllocated() const;
+public:
+    // threaded-gc-06 HEAP_068: bytesAllocated() minus the survivor-prefix
+    // fillers. Every nursery policy input reads this, never bytesAllocated().
+    size_t objectBytesAllocated() const { return bytesAllocated() - filler_bytes_; }
+    size_t fillerBytes() const { return filler_bytes_; }
+private:
 
     // Recomputes capacity-derived caches (`from_capacity_bytes_`,
     // `threshold_total_bytes_`) from the slice capacity. Call after any
@@ -355,7 +380,7 @@ private:
     // proactive-GC threshold-fit. Allocation that would push total
     // bytesAllocated past `threshold_total_bytes_` falls through to the slow
     // path and triggers `minorGC`.
-    char* computeAllocEnd() const;
+    char* computeAllocEnd();   // non-const: counts alloc_end_capped (threaded-gc-06)
 
     // Resets the nursery to initial state (releases and re-acquires the
     // slice). If new_config is provided, reconfigures with new parameters.
@@ -398,6 +423,87 @@ private:
                                   std::vector<void*> *promoted_objects) {
         if (is_boxed) evacuate(val.p, oldgen, promoted_objects);
     }
+
+    // threaded-gc-06 Step 4: the serial copiers' promotion allocation. The
+    // identity switch (stats builds) routes it through a promotion context.
+    inline void* promoteAllocate(OldGenSpace& oldgen, size_t size) {
+#if ENABLE_GC_STATS
+        if (__builtin_expect(promo_w0_ != nullptr, 0))
+            return oldgen.allocatePromotion(*promo_w0_, size, /*per_alloc_sweep=*/true);
+#endif
+        return oldgen.allocate(size);
+    }
+#if ENABLE_GC_STATS
+    OldGenSpace::PromoWorker* promo_w0_ = nullptr;
+#endif
+public:
+    // threaded-gc-06 test switches (stats builds; written only between minors).
+    bool test_serial_promo_via_ctx_ = false;   // Step 4 identity switch
+    // Runs every minor through the parallel engine, even with one worker and
+    // below minor_parallel_min_bytes (tests; ECO_TEST_MINOR_ENGINE=P).
+    bool test_force_parallel_engine_ = false;
+    // Negative controls (P§3.13): every k-th claim winner copies again (PM1
+    // must fire); one retired LAB tail is left unformatted (PM3/IM7 must fire).
+    uint64_t test_minor_double_copy_every_ = 0;
+    bool test_minor_skip_filler_ = false;
+private:
+
+    // ========== Parallel minor GC (threaded-gc-06, HEAP_067) ==========
+    struct MinorWorker {
+        unsigned index = 0;                     // == its PromoWorker in the context
+        // Private grey work (owner-only): stack[head, size). LIFO pops from the
+        // back; FIFO (fifo_order_) pops at head, the serial Cheney's order.
+        std::vector<uint64_t> stack;
+        size_t head = 0;
+        std::atomic<uint64_t> priv{0};          // pending private entries
+        uint64_t pops = 0;
+        markwork::WorkStealingDeque deque{10};
+        markwork::MarkerCounters ctr;
+        minorwork::Lab lab;
+        minorwork::LabCounters lc;
+        GCStats::MinorCopyCounts copies;
+        uint64_t n_surv = 0, b_surv = 0, n_prom = 0, n_ylos_prom = 0;   // every build
+        uint64_t claim_races = 0, busy_waits = 0, spine_splits = 0, chunks = 0;
+        uint64_t ylos_reach_calls = 0, ylos_scans = 0;
+        uint64_t busy_ns = 0;
+        uint64_t claims_won = 0;                // negative-control counter
+        std::vector<HPointer> lb_seen, lb_promoted;   // deferred large-body ops (P§3.9)
+        std::vector<void*> ylos_young;          // YLOS objects that stay young (census)
+#if ECO_HEAP_VALIDATE || P1_CENSUS_COMPILED
+        std::vector<void*> promoted_log;
+#endif
+        void resetRun();
+    };
+    struct MinorEnv;
+    friend struct MinorEnv;
+    std::unique_ptr<MinorWorker> minor_workers_[OldGenSpace::kMaxMinorWorkers];
+    minorwork::ToSpace tospace_;
+    OldGenSpace* par_oldgen_ = nullptr;
+    OldGenSpace::PromoCtx* par_ctx_ = nullptr;
+    unsigned par_n_ = 0;
+    std::mutex ylos_mu_;
+    // Promoted objects of the previous minor (an object count: identical at
+    // every worker count). Sizes the pre-drain sweep slice (P§3.8.5).
+    size_t last_minor_promoted_ = 0;
+    bool prefetch_children_ = false;
+    bool fifo_order_ = false;        // grey order: see MinorWorker
+
+    unsigned chooseMinorWorkers(OldGenSpace& oldgen);
+    // Roots + drain + LAB close + merge of a parallel minor (P§3.1 steps 1-8).
+    void minorGCParallel(OldGenSpace& oldgen, const StackMapRoots& stackmap_roots,
+                         MinorGCRecord* rec, unsigned n);
+    static void minorWorkerEntry(void* ctx, unsigned member);
+    void evacuateP(MinorWorker& w, HPointer& slot, bool parent_old);
+    void evacuateRawP(MinorWorker& w, uint64_t& raw);
+    void* copyClaimed(MinorWorker& w, void* obj, uint64_t hw, bool parent_old);
+    uint64_t waitPublishedP(MinorWorker& w, void* obj);
+    void scanEntryP(MinorWorker& w, uint64_t e);
+    void spineRunP(MinorWorker& w, Cons* prev);
+    void reachYoungLargeP(MinorWorker& w, void* obj, bool parent_old);
+    void pushGreyP(MinorWorker& w, uint64_t e);
+    void publishHalfP(MinorWorker& w);
+    void publishAllP(MinorWorker& w);
+    static void writeFiller(char* p, size_t bytes);
 
     // W2 item 22: the same three-term test appeared verbatim at three sites.
     inline bool shouldPromote(const Header* hdr) const {
@@ -549,6 +655,35 @@ public:
     // the bump pointer at an exact offset inside the extent.
     static void bumpBy(NurserySpace& nursery, size_t bytes) {
         nursery.bump_.ptr += bytes;
+    }
+
+    // ---- threaded-gc-06 HEAP_068: fillers and object bytes ----
+
+    // Simulates a parallel minor's LAB-tail filler: right after a minor GC
+    // (the survivor prefix is exact), appends a Tag_Free filler of `bytes`
+    // (multiple of 8, >= 8) to the survivor prefix and re-derives bump_.end.
+    static void appendFillerAfterMinor(NurserySpace& nursery, size_t bytes) {
+        assert(nursery.bump_.ptr == nursery.survivor_end_ && bytes >= 8 && bytes % 8 == 0);
+        Header* h = reinterpret_cast<Header*>(nursery.bump_.ptr);
+        std::memset(h, 0, sizeof(Header));
+        h->tag = Tag_Free;
+        h->size = static_cast<u32>(bytes);
+        nursery.bump_.ptr += bytes;
+        nursery.survivor_end_ = nursery.bump_.ptr;
+        nursery.filler_bytes_ += bytes;
+        nursery.bump_.end = nursery.computeAllocEnd();
+    }
+    static size_t fillerBytes(const NurserySpace& nursery) { return nursery.filler_bytes_; }
+    static size_t objectBytesAllocated(const NurserySpace& nursery) {
+        return nursery.objectBytesAllocated();
+    }
+    // Runs checkAndGrow as if a minor had copied `raw` bytes into to-space of
+    // which `fillers` are Tag_Free fillers.
+    static void checkAndGrowAt(NurserySpace& nursery, size_t raw, size_t fillers) {
+        nursery.copy_ptr_ = nursery.toBase() + raw;
+        nursery.filler_bytes_to_ = fillers;
+        nursery.checkAndGrow();
+        nursery.filler_bytes_to_ = 0;
     }
 
     // Forces the proactive-GC clamp to fire inside the extent, i.e. the

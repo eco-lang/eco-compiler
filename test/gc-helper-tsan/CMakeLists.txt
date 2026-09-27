@@ -31,3 +31,15 @@ target_include_directories(gc-mark-tsan PRIVATE ${ECO_ALLOC})
 target_compile_options(gc-mark-tsan PRIVATE -fsanitize=thread -O1 -g -UNDEBUG)
 target_link_options(gc-mark-tsan PRIVATE -fsanitize=thread)
 target_link_libraries(gc-mark-tsan PRIVATE Threads::Threads)
+
+# threaded-gc-06 Step 3: the parallel minor's std-only core (MinorWork.hpp:
+# claim/publish header words, to-space LABs and fillers) driven by the real
+# markwork::runMarkerLoop on GCMarkGang, over a synthetic heap.
+#   build-tsan/gc-minor-tsan [heaps]   (pass: "minor_harness PASS", no TSan warning)
+add_executable(gc-minor-tsan
+    minor_harness.cpp
+    ${ECO_ALLOC}/GCHelperPool.cpp)
+target_include_directories(gc-minor-tsan PRIVATE ${ECO_ALLOC})
+target_compile_options(gc-minor-tsan PRIVATE -fsanitize=thread -O1 -g -UNDEBUG)
+target_link_options(gc-minor-tsan PRIVATE -fsanitize=thread)
+target_link_libraries(gc-minor-tsan PRIVATE Threads::Threads)

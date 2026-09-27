@@ -47,6 +47,9 @@
 #include "allocator/EcoApplyClosureTypedTest.hpp"
 #include "allocator/GCPressureTest.hpp"
 #include "allocator/EnsureHeadroomTest.hpp"
+#include "allocator/NurseryFillerTest.hpp"
+#include "allocator/ParallelMinorTest.hpp"
+#include "allocator/PromoBufferTest.hpp"
 #include "allocator/GCPauseStatsTest.hpp"
 #include "allocator/NurseryContiguityTest.hpp"
 #include "allocator/SliceRepresentationTest.hpp"
@@ -723,6 +726,25 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testParMarkIncrementalOffUsesT0Cycle);
     oldGenTests.add(testParMarkJoinDrainParallel);
     oldGenTests.add(testParMarkAutoThreadCount);
+    // threaded-gc-06: parallel minor GC (HEAP_067).
+    oldGenTests.add(testMinorThreadsConfigParse);
+    oldGenTests.add(testGangSizedForMinorAndMark);
+    oldGenTests.add(testPromoViaCtxMatchesSerial);
+    oldGenTests.add(testWorkerCursorReturnedToFront);
+    oldGenTests.add(testLadderUnderMutexAccounting);
+    oldGenTests.add(testEngineMatchesSerialObjectCounters);
+    oldGenTests.add(testEngineLongListRuns);
+    oldGenTests.add(testEngineSharedTailList);
+    oldGenTests.add(testEngineChunkedArray);
+    oldGenTests.add(testEngineLargeBodies);
+    oldGenTests.add(testEngineBuilderStaysYoung);
+    oldGenTests.add(testParMinorStealing);
+    oldGenTests.add(testParMinorFallbackSpace);
+    oldGenTests.add(testParMinorFallbackSmall);
+    oldGenTests.add(testParMinorFillersParse);
+    oldGenTests.add(testParMinorForkChild);
+    oldGenTests.add(testParMinorDuringCycle);
+    oldGenTests.add(testParMinorNegativeControls);
     oldGenTests.add(testParMarkNegativeSkipMergeWorker1);
     oldGenTests.add(testParMarkNegativePlainBits);
     oldGenTests.add(testParMarkNegativeStealWithoutTicket);
@@ -997,6 +1019,12 @@ int main(int argc, char* argv[]) {
     gcPressureTests->add(testEnsureAtClampedBlockGCsInsteadOfAdvancing);
     gcPressureTests->add(testEnsureFailSoftTinyConfigTerminates);
     gcPressureTests->add(testEnsureAbandonedTailsSurviveValidateWalk);
+    // threaded-gc-06 Step 1: fillers and object-byte accounting (HEAP_068).
+    gcPressureTests->add(testFillerSkippedBySurvivorWalk);
+    gcPressureTests->add(testTriggerCountsObjectBytes);
+    gcPressureTests->add(testGrowthCountsObjectBytes);
+    gcPressureTests->add(testFailSoftUsesObjectBytes);
+    gcPressureTests->add(testAllocEndCappedCounted);
     // Group G — contiguous nursery extents + the slice layer (HEAP_042).
     // Reconfigures the heap geometry, so it rides the same fork isolation.
     gcPressureTests->add(testNurseryExtentsAreContiguousAndMirrored);

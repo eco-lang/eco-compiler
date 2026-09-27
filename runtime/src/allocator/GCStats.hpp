@@ -124,6 +124,16 @@ struct MinorGCRecord {
     uint64_t minflt = 0;
     uint64_t majflt = 0;
     uint64_t pause_ns = 0;             // whole ThreadLocalHeap::minorGC, excl. a nested major
+    // threaded-gc-06 (P§3.12): a parallel minor (workers > 1, or the forced
+    // one-worker engine). drain_tospace/promoted stay 0 on such a minor.
+    uint64_t workers = 1;
+    uint64_t par_sweep_ns = 0;         // the pre-drain sweep slice (P§3.8.5)
+    uint64_t par_roots_ns = 0;         // the serial root phase
+    uint64_t par_drain_ns = 0;         // the gang run
+    uint64_t par_close_ns = 0;         // LAB close + merge + cursor return
+    uint64_t filler_bytes = 0;
+    uint64_t mutex_wait_ns = 0;
+    uint64_t imbalance_units = 0;      // max - min entries scanned per worker
 };
 
 // One contiguous mutator stop on one thread.
@@ -205,6 +215,41 @@ struct LargePtrStats {
         ylos_retired_major += o.ylos_retired_major;
         ylos_reach_calls += o.ylos_reach_calls;
         ylos_scans += o.ylos_scans;
+    }
+};
+
+// threaded-gc-06 (plans/threaded-gc-06-parallel-minor.md P§3.12): parallel
+// minor GC (HEAP_067) and the object-byte nursery accounting (HEAP_068).
+// Per-heap (the nursery's GCStats); combine() sums, maxes the maxima.
+struct ParMinorStats {
+    uint64_t minors_parallel = 0, serial_small = 0, serial_space = 0;
+    uint64_t workers_sum = 0;
+    uint64_t filler_bytes_total = 0, filler_bytes_max = 0;
+    uint64_t alloc_end_capped = 0;          // HEAP_068: must stay 0 on gate runs
+    uint64_t lab_claims = 0, direct_claims = 0, claim_races = 0, busy_waits = 0;
+    uint64_t spine_splits = 0, chunks = 0;
+    uint64_t steals = 0, steal_aborts = 0, idle_spins = 0, idle_yields = 0, idle_sleeps = 0;
+    uint64_t promo_mutex_acquires = 0, promo_mutex_wait_ns = 0;
+    uint64_t imbalance_units_sum = 0;
+    uint64_t drain_ns_sum = 0, sweep_ns_sum = 0;
+    uint64_t member_cpu_ns = 0;             // GCMarkGang member CPU spent in minors
+    bool any() const { return minors_parallel | serial_small | serial_space | alloc_end_capped; }
+    void combine(const ParMinorStats& o) {
+        minors_parallel += o.minors_parallel; serial_small += o.serial_small;
+        serial_space += o.serial_space; workers_sum += o.workers_sum;
+        filler_bytes_total += o.filler_bytes_total;
+        if (o.filler_bytes_max > filler_bytes_max) filler_bytes_max = o.filler_bytes_max;
+        alloc_end_capped += o.alloc_end_capped;
+        lab_claims += o.lab_claims; direct_claims += o.direct_claims;
+        claim_races += o.claim_races; busy_waits += o.busy_waits;
+        spine_splits += o.spine_splits; chunks += o.chunks;
+        steals += o.steals; steal_aborts += o.steal_aborts; idle_spins += o.idle_spins;
+        idle_yields += o.idle_yields; idle_sleeps += o.idle_sleeps;
+        promo_mutex_acquires += o.promo_mutex_acquires;
+        promo_mutex_wait_ns += o.promo_mutex_wait_ns;
+        imbalance_units_sum += o.imbalance_units_sum;
+        drain_ns_sum += o.drain_ns_sum; sweep_ns_sum += o.sweep_ns_sum;
+        member_cpu_ns += o.member_cpu_ns;
     }
 };
 
@@ -989,10 +1034,12 @@ public:
     HelperStatsSnapshot helper;
     // threaded-gc-04b: large allocations by placement + YLOS life cycle.
     LargePtrStats lp;
+    ParMinorStats pmin;   // threaded-gc-06
     IncrMarkStats im;   // threaded-gc-05a
     ParMarkStats pm;    // threaded-gc-05b
     ConcMarkStats cm;   // threaded-gc-05c
     void printLargePtrBlock() const;
+    void printParMinorBlock() const;   // threaded-gc-06
     void printConcMarkBlock() const;
     void printIncrMarkBlock() const;
     void printParMarkBlock() const;
@@ -1015,6 +1062,10 @@ public:
     // Bytes/object totals are NOT incremented here — those are only updated
     // for mutator-initiated allocations via recordOldGenDirectAllocation.
     void recordOldGenAllocation(size_t bytes);
+    // threaded-gc-06: the histogram bucket of recordOldGenAllocation, and a
+    // merge of a worker's private counts (parallel promotions, P§3.8.1).
+    static size_t oldGenAllocBucket(size_t bytes);
+    void mergeOldGenAllocHistogram(const uint64_t* buckets, uint64_t c16_24);
 
     // Records a mutator-initiated direct old-gen allocation (large objects,
     // permanent strings, large regions). Increments the cross-generation
@@ -1069,6 +1120,56 @@ public:
         survived_bytes_by_tag[idx] += bytes;
         if (tag == Tag_Custom)
             custom_survived_by_nfields[customArityBucket(nfields)]++;
+    }
+
+    // threaded-gc-06 (P§3.12): one parallel minor worker's copy counters --
+    // the fields recordSurvival / recordPromotion write -- kept privately by
+    // the worker and merged in worker order after the join.
+    struct MinorCopyCounts {
+        uint64_t survived = 0, promoted = 0;
+        uint64_t survived_count[NUM_ALLOC_TAGS] = {0};
+        uint64_t survived_bytes[NUM_ALLOC_TAGS] = {0};
+        uint64_t promoted_count[NUM_ALLOC_TAGS] = {0};
+        uint64_t promoted_bytes[NUM_ALLOC_TAGS] = {0};
+        uint64_t custom_promoted[CUSTOM_ARITY_BUCKETS] = {0};
+        uint64_t custom_promoted_bytes[CUSTOM_ARITY_BUCKETS] = {0};
+        uint64_t custom_survived[CUSTOM_ARITY_BUCKETS] = {0};
+        inline void promotion(Tag tag, size_t bytes, uint32_t nfields) {
+            promoted++;
+            const int idx = static_cast<int>(tag);
+            if (idx < 0 || idx >= NUM_ALLOC_TAGS) return;
+            promoted_count[idx]++;
+            promoted_bytes[idx] += bytes;
+            if (tag == Tag_Custom) {
+                const int b = customArityBucket(nfields);
+                custom_promoted[b]++;
+                custom_promoted_bytes[b] += bytes;
+            }
+        }
+        inline void survival(Tag tag, size_t bytes, uint32_t nfields) {
+            survived++;
+            const int idx = static_cast<int>(tag);
+            if (idx < 0 || idx >= NUM_ALLOC_TAGS) return;
+            survived_count[idx]++;
+            survived_bytes[idx] += bytes;
+            if (tag == Tag_Custom) custom_survived[customArityBucket(nfields)]++;
+        }
+        void reset() { *this = MinorCopyCounts{}; }
+    };
+    void mergeCopyCounts(const MinorCopyCounts& c) {
+        objects_survived += c.survived;
+        objects_promoted += c.promoted;
+        for (int i = 0; i < NUM_ALLOC_TAGS; ++i) {
+            survived_count_by_tag[i] += c.survived_count[i];
+            survived_bytes_by_tag[i] += c.survived_bytes[i];
+            promoted_count_by_tag[i] += c.promoted_count[i];
+            promoted_bytes_by_tag[i] += c.promoted_bytes[i];
+        }
+        for (int b = 0; b < CUSTOM_ARITY_BUCKETS; ++b) {
+            custom_promoted_by_nfields[b] += c.custom_promoted[b];
+            custom_promoted_bytes_by_nfields[b] += c.custom_promoted_bytes[b];
+            custom_survived_by_nfields[b] += c.custom_survived[b];
+        }
     }
 
     // Records a single String allocation by heap-object byte size into the

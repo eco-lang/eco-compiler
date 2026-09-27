@@ -47,6 +47,10 @@ PHASES = [
     "drain_promoted_ns",
     "tail_ns",
     "large_body_sweep_ns",
+    # threaded-gc-06: a parallel minor's phases (its roots stay in roots_*).
+    "par_sweep_ns",
+    "par_drain_ns",
+    "par_close_ns",
 ]
 
 
@@ -100,7 +104,7 @@ def summarise(path):
     out["minor_pause_total_ns"] = pause_sum
 
     # (a) phase totals and shares
-    phase_tot = {p: sum(num(r[p]) or 0 for r in minors) for p in PHASES}
+    phase_tot = {p: sum(num(r.get(p)) or 0 for r in minors) for p in PHASES}
     accounted = sum(phase_tot.values())
     residual = pause_sum - accounted
     out["phases"] = {
@@ -120,7 +124,7 @@ def summarise(path):
                 (("p50", 0.5), ("p90", 0.9), ("p99", 0.99), ("p999", 0.999), ("max", 1.0))}
 
     out["minor_pause_pct_ns"] = pct_block([num(r["pause_ns"]) or 0 for r in minors])
-    out["phase_pct_ns"] = {p: pct_block([num(r[p]) or 0 for r in minors]) for p in PHASES}
+    out["phase_pct_ns"] = {p: pct_block([num(r.get(p)) or 0 for r in minors]) for p in PHASES}
     out["all_pause_pct_ns"] = pct_block([num(r["pause_ns"]) or 0 for r in pauses])
 
     # (c) scanners
@@ -159,7 +163,7 @@ def summarise(path):
                  "pause_ms": (num(p["pause_ns"]) or 0) / 1e6,
                  "kind": p.get("major_reason", "-")}
         if m:
-            entry.update({ph: (num(m[ph]) or 0) / 1e6 for ph in PHASES})
+            entry.update({ph: (num(m.get(ph)) or 0) / 1e6 for ph in PHASES})
             entry["promoted"] = num(m["promoted"])
             entry["lazy_sweep_bytes"] = num(m["lazy_sweep_bytes"])
         out["worst_pauses"].append(entry)
@@ -236,6 +240,21 @@ def summarise(path):
         "finishes": finishes,
         "per_cycle": kvs,
     }
+    # (j) threaded-gc-06 parallel minors
+    par = [r for r in minors if (num(r.get("par_workers")) or 1) > 1 or (num(r.get("par_drain_ns")) or 0) > 0]
+    if par:
+        busy = [num(r.get("par_drain_ns")) or 0 for r in par]
+        out["parallel"] = {
+            "count": len(par),
+            "workers_mean": sum(num(r.get("par_workers")) or 1 for r in par) / len(par),
+            "drain_ns": sum(busy),
+            "sweep_ns": sum(num(r.get("par_sweep_ns")) or 0 for r in par),
+            "close_ns": sum(num(r.get("par_close_ns")) or 0 for r in par),
+            "filler_bytes": sum(num(r.get("par_filler_bytes")) or 0 for r in par),
+            "mutex_wait_ns": sum(num(r.get("par_mutex_wait_ns")) or 0 for r in par),
+            "imbalance_units": sum(num(r.get("par_imbalance_units")) or 0 for r in par),
+            "pause_pct_ns": pct_block([num(r["pause_ns"]) or 0 for r in par]),
+        }
     out["warnings"] = warnings
     return out
 
@@ -315,6 +334,16 @@ def print_text(s):
                       (i + 1, k.get("done_k", "-"), k.get("bg_units", "-"), k.get("assists", "-"),
                        k.get("assist_units", "-"), k.get("closing_units", "-"),
                        k.get("p_hat", "-"), k.get("live_ref", "-"), k.get("alloc_since_major", "-")))
+    if "parallel" in s:
+        p = s["parallel"]
+        b = p["pause_pct_ns"]
+        print("\n(j) parallel minors (threaded-gc-06):")
+        print("  %d minors, mean workers %.2f; pause p50 %s p99 %s max %s" %
+              (p["count"], p["workers_mean"], ms(b["p50"]), ms(b["p99"]), ms(b["max"])))
+        print("  drain %.3f s, pre-drain sweep %.3f s, close %.3f s, mutex wait %.3f s, "
+              "imbalance %d units, fillers %.1f MB" %
+              (p["drain_ns"] / 1e9, p["sweep_ns"] / 1e9, p["close_ns"] / 1e9,
+               p["mutex_wait_ns"] / 1e9, p["imbalance_units"], p["filler_bytes"] / 2**20))
     for w in s["warnings"]:
         print("WARNING: " + w)
 

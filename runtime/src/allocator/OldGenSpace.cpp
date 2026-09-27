@@ -259,6 +259,7 @@ void OldGenSpace::reserveMetadata() {
     index_base_ = allocator_->getHeapBase();
     // threaded-gc-05b: one accumulator per marker (HEAP_051 / HEAP_064).
     mark_threads_ = resolveMarkThreads(*config_);
+    minor_threads_ = resolveMinorThreads(*config_);   // threaded-gc-06
     // threaded-gc-05c (HEAP_065): background slots after the foreground ones.
     conc_threads_ = resolveConcMarkThreads(*config_, mark_threads_);
     mark_slots_ = mark_threads_ + conc_threads_;
@@ -511,7 +512,11 @@ void OldGenSpace::initObjectHeaderWithSize(void* obj, size_t cell_bytes) {
                     // Attribute the cell's bytes so a block that contained
                     // only mid-cycle allocations isn't seen as all-dead by
                     // finalize/reclaim/shrink. Owner-side write (HEAP_051).
-                    blocks_.meta(block_id).live_bytes += cell_bytes;
+                    // threaded-gc-06: atomic -- a parallel promotion worker
+                    // finalizes stashed cells of mixed blocks outside the
+                    // promotion lock (finalizePoppedCellW).
+                    std::atomic_ref<uint64_t>(blocks_.meta(block_id).live_bytes)
+                        .fetch_add(cell_bytes, std::memory_order_relaxed);
                 }
             }
         }
@@ -678,6 +683,15 @@ void OldGenSpace::detachFromAllocation(BlockId id) {
     const size_t cls = b.size_class;
     assert(cls < NUM_SIZE_CLASSES && "detach: allocation state on a non-uniform block");
     if (b.alloc_state == kAllocCurrent) {
+        // threaded-gc-06 (P§3.8.4): inside a parallel minor a Current block may
+        // belong to a WORKER cursor, which this cannot see. Step 0 proved no
+        // ladder rung detaches; a detach here would lose that cursor's block.
+        if (__builtin_expect(par_promo_active_, 0)) {
+            std::fprintf(stderr, "[gc] FATAL: detachFromAllocation(%u) during a parallel "
+                         "minor (HEAP_054 worker cursors)\n", id.v);
+            std::fflush(stderr);
+            std::abort();
+        }
         if (cursor_[cls].block == id) {
             flushCursor(cls);
             cursor_[cls] = AllocCursor{};
@@ -928,6 +942,664 @@ void OldGenSpace::freeUniformCell(BlockId id, char* cell) {
 #if ENABLE_GC_STATS
     alloc_stats_.bm.uniform_cells_freed++;
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// threaded-gc-06 (plans/threaded-gc-06-parallel-minor.md P§3.8, HEAP_054):
+// promotion buffers for the parallel minor GC. The *W functions are copies of
+// the serial cursor functions with the cursor passed in and every shared
+// counter redirected to the worker (the serial ones are left untouched: the
+// gc_minor_threads = 1 path must stay bit-identical and alignment-stable).
+// ---------------------------------------------------------------------------
+
+#if ECO_HEAP_VALIDATE
+[[noreturn]] static void cycleValidateFail(const char* what, const void* p);   // defined below
+#endif
+
+namespace {
+// Defined with the sweep helpers below (same unnamed namespace, same TU).
+inline void pushCoalescedFreeCell(FreeCell** free_lists, char* span_start, size_t span_bytes,
+                                  BlockInfo* block, BlockId block_index);
+}  // namespace
+
+void OldGenSpace::PromoWorker::resetRun() {
+    for (size_t c = 0; c < NUM_SIZE_CLASSES; ++c) cur[c] = AllocCursor{};
+    allocated_bytes = old_alloc_total = 0;
+    bm_allocs = bm_bytes = 0;
+    mutex_acquires = mutex_wait_ns = 0;
+    for (auto& b : size_hist) b = 0;
+    size_16_24 = 0;
+    for (auto& k : stash_n) k = 0;
+    list_pops = stash_returned = 0;
+    for (auto& u : chunk_units) u = 1;
+#if ECO_HEAP_VALIDATE
+    cycle_alloc_log.clear();
+    mutex_charges = 0;
+#endif
+}
+
+OldGenSpace::PromoCtx& OldGenSpace::promoCtx() {
+    if (!promo_ctx_) promo_ctx_ = std::make_unique<PromoCtx>();
+    return *promo_ctx_;
+}
+
+void OldGenSpace::flushCursorW(AllocCursor& c, PromoWorker& pw) {
+    if (c.block.valid() && c.pending_allocs != 0) {
+        // Atomic: with chunked cursors (N > 1) several workers flush into one
+        // block.
+        std::atomic_ref<uint64_t>(blocks_.meta(c.block).live_bytes)
+            .fetch_add(c.pending_live, std::memory_order_relaxed);
+        pw.bm_allocs += c.pending_allocs;
+        pw.bm_bytes += c.pending_live;
+    }
+    c.pending_live = 0;
+    c.pending_allocs = 0;
+}
+
+void OldGenSpace::setCursorW(AllocCursor& c, size_t cls, BlockId id, PromoWorker& pw) {
+#if ECO_HEAP_VALIDATE
+    // IM13 for worker cursors (threaded-gc-05c H1b, generalised by 06).
+    if (isT0Block(id)) {
+        std::fprintf(stderr, "[heap-validate] IM13: a worker promotion cursor took t0 "
+                     "block %u during a mark cycle\n", id.v);
+        std::fflush(stderr);
+        std::abort();
+    }
+#endif
+    flushCursorW(c, pw);
+    BlockInfo& b = blocks_.info(id);
+    c.block = id;
+    c.next_cell = 0;
+    c.num_cells = cellsIn(b);
+    c.cell_bytes = static_cast<uint32_t>(classToSize(cls));
+    c.stride_bits = c.cell_bytes / 8;
+    c.bits = mark_.slot(id);
+    c.base = b.start;
+    b.alloc_state = kAllocCurrent;
+}
+
+// Step 7b (P§4, as built): a stashed free cell (popped under the lock in a
+// batch) is finalized OUTSIDE the lock. Everything it writes is private to
+// this worker or atomic: the header and slack (the cell is ours), the mark
+// bit mid-cycle (atomic fetch_or, 5c H1), the block's live_bytes (atomic
+// add, as initObjectHeaderWithSize now does), and the byte charges (pw).
+void* OldGenSpace::finalizePoppedCellW(FreeCell* cell, size_t cls, size_t requested_size,
+                                       PromoWorker& pw) {
+    void* result = static_cast<void*>(cell);
+    const size_t cell_size = classToSize(cls);
+    Header* hdr = reinterpret_cast<Header*>(result);
+    std::memset(hdr, 0, sizeof(Header));
+    if (marking_active || gc_phase_ != GCPhase::Idle) {
+        hdr->color = static_cast<u32>(Color::Black);
+        if (contains(result)) {
+            const BlockId id = blockIdFor(result);
+            if (id.valid()) {
+#if ECO_HEAP_VALIDATE
+                assertCellWasWhite(id, result);   // IM4
+#endif
+                if (!test_skip_allocate_black_) setMarkBitAtomic(id, result);
+                std::atomic_ref<uint64_t>(blocks_.meta(id).live_bytes)
+                    .fetch_add(cell_size, std::memory_order_relaxed);
+            }
+        }
+    } else {
+        hdr->color = static_cast<u32>(Color::White);
+    }
+    padCellSlack(result, requested_size, cell_size);
+    pw.allocated_bytes += cell_size;
+    pw.old_alloc_total += cell_size;
+    ++pw.list_pops;
+    return result;
+}
+
+// Under promo_mu_ (it pops the shared partial_ queue).
+bool OldGenSpace::refillCursorW(AllocCursor& c, size_t cls, PromoWorker& pw) {
+    std::vector<BlockId>& q = partial_[cls];
+    size_t& h = partial_head_[cls];
+    while (h < q.size()) {
+        const BlockId id = q[h++];
+        if (!blocks_.isLive(id)) continue;
+        BlockInfo& b = blocks_.info(id);
+        if (b.alloc_state != kAllocQueued || b.is_large || b.size_class != cls) {
+            continue;
+        }
+        if (h == q.size()) { q.clear(); h = 0; }
+        setCursorW(c, cls, id, pw);
+#if ENABLE_GC_STATS
+        alloc_stats_.bm.cursor_refills++;   // under the lock
+#endif
+        return true;
+    }
+    q.clear();
+    h = 0;
+    return false;
+}
+
+void* OldGenSpace::finalizeBitmapCellW(AllocCursor& c, uint32_t k, size_t requested_size,
+                                       PromoWorker& pw) {
+    const size_t cell = c.cell_bytes;
+    char* p = c.base + static_cast<size_t>(k) * cell;
+#if ECO_HEAP_VALIDATE
+    assertCellWasWhite(c.block, p);   // IM4
+#endif
+    // The cursor's block is private to this worker and (IM13) post-t0 during
+    // a cycle: no marker writes these bitmap bytes, so a plain set is safe.
+    if (!test_skip_allocate_black_)
+        bitscan::setBit(c.bits, static_cast<size_t>(k) * c.stride_bits);
+    Header* hdr = reinterpret_cast<Header*>(p);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->color = static_cast<u32>(
+        (marking_active || gc_phase_ != GCPhase::Idle) ? Color::Black : Color::White);
+    c.pending_live += cell;
+    c.pending_allocs++;
+    pw.allocated_bytes += cell;
+    pw.old_alloc_total += cell;
+    padCellSlack(p, requested_size, cell);
+    return p;
+}
+
+// Rung 1 inside the worker's current block only. nullptr when the block is
+// exhausted (it is then retired to kAllocNone and the cursor emptied).
+void* OldGenSpace::cursorAllocateW(AllocCursor& c, size_t requested_size, PromoWorker& pw) {
+    if (!c.block.valid()) return nullptr;
+    if (c.next_cell < c.num_cells) {
+        const size_t bit = static_cast<size_t>(c.next_cell) * c.stride_bits;
+        if (((c.bits[bit >> 3] >> (bit & 7)) & 1u) == 0) {
+            const uint32_t k = c.next_cell++;
+            return finalizeBitmapCellW(c, k, requested_size, pw);
+        }
+    }
+    const uint32_t k = bitscan::nextFreeCell(c.bits, c.stride_bits, c.next_cell, c.num_cells);
+    if (k < c.num_cells) {
+        c.next_cell = k + 1;
+        return finalizeBitmapCellW(c, k, requested_size, pw);
+    }
+    flushCursorW(c, pw);
+    // One worker per block (N = 1): retire it here. Chunked (N > 1): the
+    // shared block's state is advanced under the lock (advanceSharedW).
+    if (!promo_ctx_->chunked) blocks_.info(c.block).alloc_state = kAllocNone;
+    c = AllocCursor{};
+    return nullptr;
+}
+
+// Chunked cursors (N > 1). Lock-free: claims the next chunk of the class's
+// shared block into the worker's cursor. false when there is no block or it
+// is exhausted (the caller then advances under the lock).
+bool OldGenSpace::claimChunkW(size_t cls, AllocCursor& c, PromoWorker& pw) {
+    std::atomic<uint64_t>& sh = promo_ctx_->shared[cls].w;
+    uint64_t w = sh.load(std::memory_order_acquire);
+    for (;;) {
+        if (w == 0) return false;
+        const BlockId id{static_cast<uint32_t>(w >> 32) - 1};
+        const uint32_t k = static_cast<uint32_t>(w);
+        const BlockInfo& b = blocks_.info(id);
+        const uint32_t ncell = cellsIn(b);
+        const uint64_t lo = static_cast<uint64_t>(k) * kChunkUnitCells;
+        if (lo >= ncell) return false;
+        const uint32_t units = pw.chunk_units[cls];
+        if (sh.compare_exchange_weak(w, w + units, std::memory_order_acq_rel,
+                                     std::memory_order_acquire)) {
+            if (units < kChunkMaxUnits) pw.chunk_units[cls] = static_cast<uint8_t>(units * 2);
+            flushCursorW(c, pw);
+            c.block = id;
+            c.next_cell = static_cast<uint32_t>(lo);
+            c.num_cells = static_cast<uint32_t>(
+                std::min<uint64_t>(lo + static_cast<uint64_t>(units) * kChunkUnitCells, ncell));
+            c.cell_bytes = static_cast<uint32_t>(classToSize(cls));
+            c.stride_bits = c.cell_bytes / 8;
+            c.bits = mark_.slot(id);
+            c.base = b.start;
+            return true;
+        }
+    }
+}
+
+// Under promo_mu_. Makes `id` the class's shared block, chunk 0.
+void OldGenSpace::publishShared(size_t cls, BlockId id) {
+#if ECO_HEAP_VALIDATE
+    if (isT0Block(id)) {   // IM13 for the shared chunked cursor
+        std::fprintf(stderr, "[heap-validate] IM13: the shared promotion block took t0 "
+                     "block %u during a mark cycle\n", id.v);
+        std::fflush(stderr);
+        std::abort();
+    }
+#endif
+    blocks_.info(id).alloc_state = kAllocCurrent;
+    promo_ctx_->shared[cls].w.store((static_cast<uint64_t>(id.v) + 1) << 32,
+                                  std::memory_order_release);
+}
+
+// Under promo_mu_. true when a claimable chunk is available afterwards: either
+// another worker already advanced, or the partial_ queue supplied a block
+// (rung 1 refill). The exhausted block is retired (kAllocNone); at the merge
+// the workers' last chunks re-queue it if cells are left.
+bool OldGenSpace::advanceSharedW(size_t cls) {
+    std::atomic<uint64_t>& sh = promo_ctx_->shared[cls].w;
+    const uint64_t w = sh.load(std::memory_order_relaxed);
+    if (w != 0) {
+        const BlockId id{static_cast<uint32_t>(w >> 32) - 1};
+        const uint64_t lo = static_cast<uint64_t>(static_cast<uint32_t>(w)) * kChunkUnitCells;
+        if (lo < cellsIn(blocks_.info(id))) return true;
+        blocks_.info(id).alloc_state = kAllocNone;
+        sh.store(0, std::memory_order_relaxed);
+    }
+    std::vector<BlockId>& q = partial_[cls];
+    size_t& h = partial_head_[cls];
+    while (h < q.size()) {
+        const BlockId id = q[h++];
+        if (!blocks_.isLive(id)) continue;
+        BlockInfo& b = blocks_.info(id);
+        if (b.alloc_state != kAllocQueued || b.is_large || b.size_class != cls) continue;
+        if (h == q.size()) { q.clear(); h = 0; }
+        publishShared(cls, id);
+#if ENABLE_GC_STATS
+        alloc_stats_.bm.cursor_refills++;
+#endif
+        return true;
+    }
+    q.clear();
+    h = 0;
+    return false;
+}
+
+// Under promo_mu_: a virgin block becomes the class's shared block.
+bool OldGenSpace::startVirginBlockShared(size_t cls) {
+    const size_t cell_bytes = classToSize(cls);
+    if (!ensureBagPageAvailable()) return false;
+    const auto extent = unassigned_blocks_.back();
+    const size_t page_size = static_cast<size_t>(extent.second - extent.first);
+    const size_t num_cells = page_size / cell_bytes;
+    if (num_cells == 0) return false;
+    unassigned_blocks_.pop_back();
+    BlockInfo bi;
+    bi.start = extent.first;
+    bi.end = extent.second;
+    bi.end_of_objects = extent.first + num_cells * cell_bytes;
+    bi.size_class = cls;
+    bi.is_large = false;
+    const BlockId id =
+        materializeBlock(bi, {0, 0, /*fully_swept=*/true}, bitmapBytesForBlock(bi));
+    onUniformBlockDedicated(id);
+    std::atomic<uint64_t>& sh = promo_ctx_->shared[cls].w;
+    const uint64_t w = sh.load(std::memory_order_relaxed);
+    if (w != 0) {   // retire the exhausted one it replaces
+        blocks_.info(BlockId{static_cast<uint32_t>(w >> 32) - 1}).alloc_state = kAllocNone;
+    }
+    publishShared(cls, id);
+#if ENABLE_GC_STATS
+    alloc_stats_.bm.virgin_blocks++;
+#endif
+    return true;
+}
+
+// Under promo_mu_.
+bool OldGenSpace::startVirginBlockW(AllocCursor& c, size_t cls, PromoWorker& pw) {
+    const size_t cell_bytes = classToSize(cls);
+    if (!ensureBagPageAvailable()) return false;
+    const auto extent = unassigned_blocks_.back();
+    const size_t page_size = static_cast<size_t>(extent.second - extent.first);
+    const size_t num_cells = page_size / cell_bytes;
+    if (num_cells == 0) return false;
+    unassigned_blocks_.pop_back();
+    BlockInfo bi;
+    bi.start = extent.first;
+    bi.end = extent.second;
+    bi.end_of_objects = extent.first + num_cells * cell_bytes;
+    bi.size_class = cls;
+    bi.is_large = false;
+    const BlockId id =
+        materializeBlock(bi, {0, 0, /*fully_swept=*/true}, bitmapBytesForBlock(bi));
+    onUniformBlockDedicated(id);
+    assert(!c.block.valid() && "virgin block while the worker cursor is live");
+    setCursorW(c, cls, id, pw);
+#if ENABLE_GC_STATS
+    alloc_stats_.bm.virgin_blocks++;
+#endif
+    return true;
+}
+
+// Rungs (2)..(8) of allocateFromSizeClassBitmap, under promo_mu_, with the
+// virgin-block rungs feeding the WORKER's cursor (the W6 rule: same order).
+void* OldGenSpace::ladderFrom2W(size_t cls, size_t requested_size, PromoWorker& pw) {
+    AllocCursor& c = pw.cur[cls];
+    if (FreeCell* cell = tryPopFromFreeList(cls)) {
+#if ENABLE_GC_STATS
+        alloc_stats_.bm.list_pops++;
+#endif
+        return finalizePoppedCell(cell, cls, requested_size);
+    }
+    const bool chunked = promo_ctx_->chunked;
+    auto virgin = [&]() -> void* {
+        if (chunked) {
+            if (!startVirginBlockShared(cls)) return nullptr;
+            while (claimChunkW(cls, c, pw)) {
+                if (void* r = cursorAllocateW(c, requested_size, pw)) return r;
+            }
+            return nullptr;
+        }
+        if (!startVirginBlockW(c, cls, pw)) return nullptr;
+        return cursorAllocateW(c, requested_size, pw);
+    };
+    if (shouldPreferBagForSmallClass(cls)) {
+        if (void* r = virgin()) return r;
+    }
+    if (void* r = tryAllocateBySplittingLarger(cls, classToSize(cls))) {
+        padCellSlack(r, requested_size, classToSize(cls));
+#if ENABLE_GC_STATS
+        alloc_stats_.bm.split_allocs++;
+#endif
+        return r;
+    }
+    if (hasPendingSweepWork()) {
+        if (void* r = sweepOnDemandAllocate(cls, requested_size)) {
+#if ENABLE_GC_STATS
+            alloc_stats_.bm.sweep_on_demand_hits++;
+#endif
+            return r;
+        }
+    }
+    if (void* r = virgin()) return r;
+    if (void* r = allocateFromBagPage(requested_size)) return r;
+    return panicSweepAndRetryAllocation(cls, requested_size);
+}
+
+void OldGenSpace::requeueFront(size_t cls, BlockId id) {
+    std::vector<BlockId>& q = partial_[cls];
+    size_t& h = partial_head_[cls];
+    if (h > 0) q[--h] = id;
+    else q.insert(q.begin(), id);
+    blocks_.info(id).alloc_state = kAllocQueued;
+}
+
+// The sweep finished inside a promotion. With one worker nothing runs
+// concurrently: hand worker 0's accounting and cursors back, run the shrink
+// exactly where allocate() would have, and take them again (the one-worker
+// identity, P§3.8.5). With more workers the merge runs it (deferred).
+void OldGenSpace::sweepCompleteInPromotion() {
+    PromoCtx& ctx = *promo_ctx_;
+    if (ctx.n > 1) {
+        sweep_complete_deferred_ = true;
+        return;
+    }
+    PromoWorker& pw = ctx.w[0];
+    allocated_bytes += pw.allocated_bytes;
+    old_alloc_total_ += pw.old_alloc_total;
+#if ECO_HEAP_VALIDATE
+    pm6_skip_ = true;   // onSweepComplete re-bases allocated_bytes: PM6 cannot balance
+#endif
+    pw.allocated_bytes = pw.old_alloc_total = 0;
+    for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
+        flushCursorW(pw.cur[cls], pw);
+        cursor_[cls] = pw.cur[cls];
+    }
+    par_promo_active_ = false;
+    onSweepComplete();
+    par_promo_active_ = true;
+    for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
+        pw.cur[cls] = cursor_[cls];
+        cursor_[cls] = AllocCursor{};
+    }
+}
+
+void OldGenSpace::beginParallelPromotion(PromoCtx& ctx, unsigned n) {
+    assert(config_->old_gen_bitmap_alloc && "parallel promotion needs bitmap allocation");
+    assert(n >= 1 && n <= kMaxPromoWorkers);
+    assert(!par_promo_active_);
+    ctx.n = n;
+    ctx.chunked = n > 1;
+    for (unsigned w = 0; w < n; ++w) ctx.w[w].resetRun();
+    for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
+        ctx.shared[cls].w.store(0, std::memory_order_relaxed);
+        if (!ctx.chunked) {
+            ctx.w[0].cur[cls] = cursor_[cls];     // worker 0 adopts the mutator's cursors
+        } else if (cursor_[cls].block.valid()) {
+            // The mutator's block becomes the shared block, from the chunk of
+            // its next cell (cells below it are allocated or rewound into it).
+            flushCursor(cls);
+            ctx.shared[cls].w.store(((static_cast<uint64_t>(cursor_[cls].block.v) + 1) << 32) |
+                                      (cursor_[cls].next_cell / kChunkUnitCells),
+                                  std::memory_order_relaxed);
+        }
+        cursor_[cls] = AllocCursor{};
+    }
+    sweep_complete_deferred_ = false;
+#if ECO_HEAP_VALIDATE
+    pm6_allocated_before_ = allocated_bytes;
+    pm6_skip_ = false;
+#endif
+    par_promo_active_ = true;
+}
+
+void OldGenSpace::endParallelPromotion(PromoCtx& ctx) {
+    assert(par_promo_active_);
+    par_promo_active_ = false;
+    uint64_t alloc_delta = 0, total_delta = 0;
+    for (unsigned w = 0; w < ctx.n; ++w) {
+        PromoWorker& pw = ctx.w[w];
+        for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) flushCursorW(pw.cur[cls], pw);
+        alloc_delta += pw.allocated_bytes;
+        total_delta += pw.old_alloc_total;
+#if ENABLE_GC_STATS
+        alloc_stats_.bm.bitmap_allocs += pw.bm_allocs;
+        alloc_stats_.bm.bitmap_alloc_bytes += pw.bm_bytes;
+        alloc_stats_.mergeOldGenAllocHistogram(pw.size_hist, pw.size_16_24);
+#endif
+#if ECO_HEAP_VALIDATE
+        cycle_alloc_log_.insert(cycle_alloc_log_.end(), pw.cycle_alloc_log.begin(),
+                                pw.cycle_alloc_log.end());
+#endif
+    }
+    // Step 7b: unused stashed cells go back onto their class free list (they
+    // were popped, never finalized: the sweep has passed them already).
+    for (unsigned w = 0; w < ctx.n; ++w) {
+        PromoWorker& pw = ctx.w[w];
+        for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
+            while (pw.stash_n[cls] != 0) {
+                char* cell = reinterpret_cast<char*>(pw.stash[cls][--pw.stash_n[cls]]);
+                const BlockId id = blockIdFor(cell);
+                pushCoalescedFreeCell(free_lists_, cell, classToSize(cls),
+                                      id.valid() ? &blocks_.info(id) : nullptr, id);
+                ++pw.stash_returned;
+            }
+        }
+#if ENABLE_GC_STATS
+        alloc_stats_.bm.list_pops += pw.list_pops;
+#endif
+    }
+    if (!ctx.chunked) {
+        for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) cursor_[cls] = ctx.w[0].cur[cls];
+        for (unsigned w = 1; w < ctx.n; ++w) {
+            if (__builtin_expect(test_keep_worker_cursor_, 0) && w == 1) continue;   // negative control
+            for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
+                AllocCursor& c = ctx.w[w].cur[cls];
+                if (!c.block.valid()) continue;
+                const uint32_t k = bitscan::nextFreeCell(c.bits, c.stride_bits, 0, c.num_cells);
+                if (k < c.num_cells) requeueFront(cls, c.block);   // W6: reuse before growth
+                else blocks_.info(c.block).alloc_state = kAllocNone;
+                c = AllocCursor{};
+            }
+        }
+    } else {
+        bool kept_one = false;   // negative control: leave one shared block Current, unowned
+        for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
+            const uint64_t sw = ctx.shared[cls].w.load(std::memory_order_relaxed);
+            ctx.shared[cls].w.store(0, std::memory_order_relaxed);
+            BlockId keep = NO_BLOCK_ID;
+            if (sw != 0) {
+                const BlockId id{static_cast<uint32_t>(sw >> 32) - 1};
+                BlockInfo& b = blocks_.info(id);
+                const uint32_t n_cells = cellsIn(b);
+                if (bitscan::nextFreeCell(mark_.slot(id), classToSize(cls) / 8, 0, n_cells) < n_cells) {
+                    if (__builtin_expect(test_keep_worker_cursor_, 0) && !kept_one) {
+                        kept_one = true;   // stays Current with no cursor_: PM4 must fire
+                    } else {
+                        setCursor(cls, id);          // the mutator continues in it
+                        cursor_[cls].next_cell = 0;  // bitmap scan skips allocated cells
+                        keep = id;
+                    }
+                } else {
+                    b.alloc_state = kAllocNone;
+                }
+            }
+            // The workers' last chunks: a retired block with cells left is
+            // re-queued at the FRONT (W6: reuse before growth).
+            for (unsigned w = 0; w < ctx.n; ++w) {
+                AllocCursor& c = ctx.w[w].cur[cls];
+                if (c.block.valid() && c.block != keep &&
+                    blocks_.info(c.block).alloc_state == kAllocNone) {
+                    const uint32_t n_cells = cellsIn(blocks_.info(c.block));
+                    if (bitscan::nextFreeCell(c.bits, c.stride_bits, 0, n_cells) < n_cells)
+                        requeueFront(cls, c.block);
+                }
+                c = AllocCursor{};
+            }
+        }
+    }
+    allocated_bytes += alloc_delta;
+    old_alloc_total_ += total_delta;
+#if ECO_HEAP_VALIDATE
+    // PM6: every byte charged after begin is accounted: the workers' fast-path
+    // deltas plus what the rungs charged under the lock.
+    {
+        uint64_t under_lock = 0;
+        for (unsigned w = 0; w < ctx.n; ++w) under_lock += ctx.w[w].mutex_charges;
+        if (!pm6_skip_ && allocated_bytes != pm6_allocated_before_ + alloc_delta + under_lock) {
+            std::fprintf(stderr, "[heap-validate] PM6: allocated_bytes %zu != before %zu + "
+                         "fast %llu + locked %llu\n", allocated_bytes, pm6_allocated_before_,
+                         (unsigned long long)alloc_delta, (unsigned long long)under_lock);
+            std::fflush(stderr);
+            std::abort();
+        }
+    }
+    // PM4: no block is Current except the mutator's cursors.
+    for (size_t pos = 0; pos < blocks_.size(); ++pos) {
+        const BlockId id = blocks_.idAt(pos);
+        const BlockInfo& b = blocks_.info(id);
+        if (b.alloc_state != kAllocCurrent) continue;
+        if (b.is_large || b.size_class >= NUM_SIZE_CLASSES || cursor_[b.size_class].block != id) {
+            std::fprintf(stderr, "[heap-validate] PM4: block %u is Current but no mutator "
+                         "cursor owns it after a parallel minor\n", id.v);
+            std::fflush(stderr);
+            std::abort();
+        }
+    }
+#endif
+    if (sweep_complete_deferred_) {
+        sweep_complete_deferred_ = false;
+        onSweepComplete();
+    }
+}
+
+void* OldGenSpace::allocatePromotion(PromoWorker& pw, size_t size, bool per_alloc_sweep) {
+    size = (size + 7) & ~static_cast<size_t>(7);
+#if ENABLE_GC_STATS
+    pw.size_hist[GCStats::oldGenAllocBucket(size)]++;
+    if (size >= 16 && size < 24) pw.size_16_24++;
+#endif
+    if (__builtin_expect(size >= config_->alloc_buffer_size, 0)) {
+        // A nursery object at least a block long (possible when
+        // alloc_buffer_size is below the nursery's large-pointer cap, as in
+        // small test geometries; never at the 512 KiB default): allocate()'s
+        // large path, under the lock.
+        std::lock_guard<minorwork::SpinMutex> lk(promo_mu_);
+        ++pw.mutex_acquires;
+#if ECO_HEAP_VALIDATE
+        const size_t charged0 = allocated_bytes;
+#endif
+        void* r = allocateLargeBlock(size);
+#if ECO_HEAP_VALIDATE
+        pw.mutex_charges += allocated_bytes - charged0;
+#endif
+        return r;
+    }
+    // The one-worker identity switch reproduces allocate()'s per-promotion
+    // sweep slice exactly; a parallel minor runs one pre-drain slice instead.
+    if (per_alloc_sweep && gc_phase_ == GCPhase::Sweeping) {
+        const size_t d = config_->minor_sweep_divisor;
+        const size_t budget = (d == 0) ? 0 : config_->sweep_work_budget / d;
+        if (budget > 0) lazySweep(sizeClass(size), budget);
+    }
+    const size_t cls = sizeClass(size);
+    void* result = nullptr;
+    FreeCell* popped = nullptr;
+    if (cls < num_size_classes_) {
+        AllocCursor& c = pw.cur[cls];
+        if ((result = cursorAllocateW(c, size, pw)) != nullptr) goto done;
+        // Chunked (N > 1): the next chunk of the shared block, lock-free.
+        if (promo_ctx_->chunked) {
+            while (claimChunkW(cls, c, pw)) {
+                if ((result = cursorAllocateW(c, size, pw)) != nullptr) goto done;
+            }
+        }
+        // Rung 2, cached (Step 7b). A non-empty stash means partial_[cls] was
+        // already empty in this minor, and nothing refills it mid-minor, so
+        // taking a stashed cell before the lock keeps the ladder order (W6).
+        if (pw.stash_n[cls] != 0) {
+            popped = pw.stash[cls][--pw.stash_n[cls]];
+            result = finalizePoppedCellW(popped, cls, size, pw);
+            goto done;
+        }
+    }
+    {
+        std::unique_lock<minorwork::SpinMutex> lk(promo_mu_, std::try_to_lock);
+        if (!lk.owns_lock()) {
+#if ENABLE_GC_STATS
+            const uint64_t t0 = GCStats::nowSinceProcessStartNs();
+            lk.lock();
+            pw.mutex_wait_ns += GCStats::nowSinceProcessStartNs() - t0;
+#else
+            lk.lock();
+#endif
+        }
+        ++pw.mutex_acquires;
+#if ECO_HEAP_VALIDATE
+        const DecisionScope im16(*this);
+        const size_t charged0 = allocated_bytes;
+#endif
+        if (cls < num_size_classes_) {
+            AllocCursor& c = pw.cur[cls];
+            if (promo_ctx_->chunked) {
+                // Rung 1 refill: advance the shared block, then claim chunks.
+                while (result == nullptr && advanceSharedW(cls)) {
+                    while (result == nullptr && claimChunkW(cls, c, pw)) {
+                        result = cursorAllocateW(c, size, pw);
+                    }
+                }
+            } else {
+                while (result == nullptr && refillCursorW(c, cls, pw)) {
+                    result = cursorAllocateW(c, size, pw);
+                }
+            }
+            // Rung 2 in a batch with more than one worker: pop up to kStash
+            // cells now, finalize one after unlocking, keep the rest.
+            if (result == nullptr && promo_ctx_->n > 1) {
+                popped = tryPopFromFreeList(cls);
+                while (popped != nullptr && pw.stash_n[cls] < PromoWorker::kStash) {
+                    FreeCell* more = tryPopFromFreeList(cls);
+                    if (more == nullptr) break;
+                    pw.stash[cls][pw.stash_n[cls]++] = more;
+                }
+            }
+            if (result == nullptr && popped == nullptr) result = ladderFrom2W(cls, size, pw);
+        } else {
+            result = allocateFromBagPage(size);
+        }
+#if ECO_HEAP_VALIDATE
+        pw.mutex_charges += allocated_bytes - charged0;
+#endif
+    }
+    if (result == nullptr && popped != nullptr) result = finalizePoppedCellW(popped, cls, size, pw);
+done:
+#if ECO_HEAP_VALIDATE
+    if (result != nullptr && cycleActive()) {
+        const BlockId id = contains(result) ? blockIdFor(result) : NO_BLOCK_ID;
+        if (!id.valid()) cycleValidateFail("IM4: in-cycle promotion outside any block", result);
+        if (!isMarkedInBlockRelaxed(id, result))
+            cycleValidateFail("IM4: in-cycle promotion NOT allocated black", result);
+        pw.cycle_alloc_log.push_back(result);
+    }
+#endif
+    return result;
 }
 
 bool OldGenSpace::sweepWillReach(BlockId id, const char* addr) const {
@@ -1955,6 +2627,9 @@ void* OldGenSpace::allocateFromEmptyRegularBlocks(size_t size) {
         const BufferMetadata& meta = blocks_.meta(i);
         if (!meta.fully_swept || meta.live_bytes != 0) continue;
         if (blocks_.info(i).is_large) continue;
+        // threaded-gc-06: a worker cursor's block holds unflushed pending
+        // bytes (its live_bytes may read 0) and is invisible to detach.
+        if (par_promo_active_ && blocks_.info(i).alloc_state == kAllocCurrent) continue;
         if (blocks_.info(i).totalBytes() < size) continue;
 
         // Drop any embedded free cells before flipping is_large; otherwise
@@ -2204,6 +2879,29 @@ unsigned OldGenSpace::resolveMarkThreads(const HeapConfig& cfg) {
     unsigned n = cfg.gc_mark_threads;
     if (n == 0) n = std::min<unsigned>(cfg.gc_mark_threads_cap, gc::availableCpus());
     if (n > kMaxMarkers) n = kMaxMarkers;
+    return n == 0 ? 1 : n;
+}
+
+// threaded-gc-06 (HEAP_067): parallel minors run on the same gang as the
+// foreground markers; it is sized for the larger of the two (P§3.14). Only
+// tests reconfigure (a heap reset to a new worker count).
+gc::GCMarkGang& OldGenSpace::ensureGang() {
+    gc::GCMarkGang& gang = gc::GCMarkGang::instance();
+    const unsigned jitter = allocator_ != nullptr ? allocator_->helperJitterUs() : 0;
+    const unsigned want = std::max(mark_threads_, minor_threads_);
+    if (!gang.configured() || gang.members() < want || gang.jitterUs() != jitter) {
+        if (gang.configured()) gang.shutdownForTesting();
+        gang.configure(want, jitter);
+    }
+    return gang;
+}
+
+unsigned OldGenSpace::resolveMinorThreads(const HeapConfig& cfg) {
+    // The per-worker promotion cursor is a bitmap cursor (HEAP_054).
+    if (!cfg.old_gen_bitmap_alloc) return 1;
+    unsigned n = cfg.gc_minor_threads;
+    if (n == 0) n = std::min<unsigned>(cfg.gc_minor_threads_cap, gc::availableCpus());
+    if (n > kMaxMinorWorkers) n = kMaxMinorWorkers;
     return n == 0 ? 1 : n;
 }
 
@@ -2781,13 +3479,8 @@ uint64_t OldGenSpace::runMarkers(int64_t budget) {
                static_cast<int64_t>(units) == budget - c.budget.load() ||
                !"P§3.3: serial units != consumed tickets");
     } else {
-        gc::GCMarkGang& gang = gc::GCMarkGang::instance();
-        const unsigned jitter = allocator_ != nullptr ? allocator_->helperJitterUs() : 0;
-        if (!gang.configured() || gang.members() < mark_threads_ || gang.jitterUs() != jitter) {
-            // Only tests reconfigure (a heap reset to a new marker count).
-            if (gang.configured()) gang.shutdownForTesting();
-            gang.configure(mark_threads_, jitter);
-        }
+        gc::GCMarkGang& gang = ensureGang();
+        const unsigned jitter = gang.jitterUs();
         // threaded-gc-05c: victims = every slot (background deques included);
         // participants = the F foreground members.
         markwork::SliceControl c(budget, mark_slots_, jitter, mark_threads_);
@@ -3786,12 +4479,7 @@ void OldGenSpace::assistEpisode(int64_t budget) {
         markers_[i]->ctr.resetRun(i);
         markers_[i]->chunks = 0;
     }
-    gc::GCMarkGang& gang = gc::GCMarkGang::instance();
-    const unsigned jitter = allocator_ != nullptr ? allocator_->helperJitterUs() : 0;
-    if (!gang.configured() || gang.members() < mark_threads_ || gang.jitterUs() != jitter) {
-        if (gang.configured()) gang.shutdownForTesting();
-        gang.configure(mark_threads_, jitter);
-    }
+    gc::GCMarkGang& gang = ensureGang();
     fg_run_active_ = true;
     gang.run(&OldGenSpace::assistEntry, &args, mark_threads_);
     fg_run_active_ = false;
@@ -3832,12 +4520,7 @@ size_t OldGenSpace::closingFinish() {
             markers_[i]->ctr.resetRun(i);
             markers_[i]->chunks = 0;
         }
-        gc::GCMarkGang& gang = gc::GCMarkGang::instance();
-        const unsigned jitter = allocator_ != nullptr ? allocator_->helperJitterUs() : 0;
-        if (!gang.configured() || gang.members() < mark_threads_ || gang.jitterUs() != jitter) {
-            if (gang.configured()) gang.shutdownForTesting();
-            gang.configure(mark_threads_, jitter);
-        }
+        gc::GCMarkGang& gang = ensureGang();
         test_bg_hold_.store(false, std::memory_order_release);
         fg_run_active_ = true;
         gang.run(&OldGenSpace::closingEntry, &args, mark_threads_);
@@ -4503,7 +5186,11 @@ size_t OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
 #if ENABLE_GC_STATS
                 auto t0_shrink = GC_STATS_TIMER_START();
 #endif
-                onSweepComplete();
+                // threaded-gc-06 (P§3.8.4): inside a parallel minor the
+                // shrink would read live bytes of blocks whose worker cursors
+                // hold unflushed pending bytes; the merge runs it instead.
+                if (par_promo_active_) sweepCompleteInPromotion();
+                else onSweepComplete();
 #if ENABLE_GC_STATS
                 alloc_stats_.total_post_sweep_shrink_ns +=
                     GC_STATS_TIMER_ELAPSED_NS(t0_shrink);
