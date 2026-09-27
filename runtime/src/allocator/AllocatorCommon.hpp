@@ -243,13 +243,14 @@ constexpr uint32_t CONC_MARK_ASSIST_LAG = 8;       // grace, in cycle steps
 // HEADROOM_MARGIN > 0 enables the Headroom trigger -- DEFAULT 1.5 (E9/E10: it
 // never fires at the self-compile's 20 GB cap, and at an 11 GB cap it started
 // the late cycle earlier: peak 94.4 % -> 81.5 % of the cap, same majors).
-// LIVE_BUDGET_PACED reaches the LiveBudget at the handoff instead of t0 (E9:
-// peak spread over the gf sweep 44.5 % -> 6.4 %, but +2 majors at gf 0.65 --
-// the plan's "+1 at every point" rule rejects it as a default).
+// LIVE_BUDGET_PACED reaches the LiveBudget at the handoff instead of t0 --
+// DEFAULT ON (E9: peak spread over the gf sweep 44.5 % -> 6.4 %, max RSS 9.6-10.2
+// GB vs 9.8-14.3 GB, +1-2 majors that cost no pause time under concurrent
+// marking; wall and pauses within noise).
 // GARBAGE_BACKSTOP > 0 raises the garbage-fraction threshold to it while
 // LiveBudget is on (E9: 36 % spread, non-monotone in k -- rejected).
 constexpr double MAJOR_GC_HEADROOM_MARGIN = 1.5;
-constexpr bool   MAJOR_GC_LIVE_BUDGET_PACED = false;
+constexpr bool   MAJOR_GC_LIVE_BUDGET_PACED = true;
 constexpr float  MAJOR_GC_GARBAGE_BACKSTOP = 0.0f;
 
 // threaded-gc-05a (plans/threaded-gc-05a-incremental-marking.md, HEAP_063):

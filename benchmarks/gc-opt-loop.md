@@ -2096,7 +2096,7 @@ termination. Phase-timer binary `eco-optTG5bPT3`, T = 32, arms by `ECO_GC_MARK_T
 - E3: T = 8/16 at 16 markers gain no pause and cost +12 % peak: T stays 32. E4: incremental off +
   16 markers: worst pause 735 ms vs 4.64 s serial. E5: 8 markers on 2 CPUs +0.9 % wall.
 
-### TG5c — threaded-gc-05c concurrent marking + Headroom trigger — **DEFAULT-ON (mode 2, B cap 4, priority 0, lag 8; headroom 1.5): kind-4 pauses 224 -> 0, all-pause p99 127.5 -> 116.3 ms, collector CPU 19.7 -> 12.6 s, wall -1.0 s, every decision counter and every cycle's units identical to TG5b**
+### TG5c — threaded-gc-05c concurrent marking + Headroom trigger — **DEFAULT-ON (mode 2, B cap 4, priority 0, lag 8; headroom 1.5, paced LiveBudget): kind-4 pauses 224 -> 0, all-pause p99 127.5 -> 116.3 ms, collector CPU 19.7 -> 12.6 s, wall -1.0 s, every decision counter and every cycle's units identical to TG5b**
 
 Plan `plans/threaded-gc-05c-concurrent-marking.md` (as-built P§10). Background markers (a per-heap
 `GCBackgroundGang`) mark between pauses; the mutator and the foreground gang join the running
@@ -2113,8 +2113,9 @@ row: the E3 triple medians (mode 2, B = 4) vs the mode-0 (= TG5b) triple of the 
 - E1: modes 0/1/2, B = 1/2/4/8 and jitter: decision counters and the major table identical.
 - E4: under 24 spinning co-runners, SCHED_IDLE made a 9.5 s closing pause and nice 19 a 1.0 s one,
   so the priority is 0 (224 ms worst, vs mode 0's 262 ms).
-- E9: the paced LiveBudget cut the gf-sweep peak spread 44.5 % -> 6.4 % but cost +2 majors at gf
-  0.65, so it stays default-off. The garbage backstop was rejected. Headroom ships (E10: at an
+- E9: the paced LiveBudget cut the gf-sweep peak spread 44.5 % -> 6.4 % (max RSS 9.6-10.2 GB vs
+  9.8-14.3 GB) for +1-2 majors at no pause cost: default-on after review (the plan's majors rule
+  rejected it). The summary row predates the flip. The garbage backstop was rejected. Headroom ships (E10: at an
   11 GB cap, peak 94.4 % -> 81.5 % of the cap, same majors).
 
 ## 7. Findings

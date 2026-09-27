@@ -1,8 +1,8 @@
 # Threaded GC 05c — Concurrent marking on background threads, and heap-relative trigger pacing
 
 **Status:** DONE (2026-09-27). **Part A default-on:** `conc_mark = 2`, auto background markers
-(cap 4), priority 0, assist lag 8. **Part B:** the `Headroom` trigger is default-on (margin 1.5);
-the paced LiveBudget and the garbage-fraction backstop ship default-off. T stays 32. Written
+(cap 4), priority 0, assist lag 8. **Part B:** the `Headroom` trigger (margin 1.5) and the paced
+LiveBudget are default-on; the garbage-fraction backstop ships default-off. T stays 32. Written
 against the `keep-TG5b` tree (`bin/eco-opt-prev` = `eco-optTG5b`); as-built record in P§10.
 
 **Parent:** `plans/threaded-gc-master-plan.md`, phase 5c (formerly 5b).
@@ -1510,8 +1510,14 @@ Old-gen peak in MB (majors in parentheses):
   0.75, 5 of 6 are LiveBudget. P̂ is bursty (up to 54 MB per minor).
 - **Decision (the plan's rule):**
   - P has the smallest spread and a lower median peak, with wall flat, but +2 majors at gf 0.65
-    breaks "majors within +1 of C at every point". **P is not a default.** It is kept as a knob
-    and is the obvious follow-up decision.
+    breaks "majors within +1 of C at every point", so the rule rejected it.
+  - **Overridden after review (2026-09-27): P is default-on.** The majors rule predates
+    concurrent marking; here an extra major costs no measurable pause time (all-pause totals
+    49.0–50.2 s in every C and P run) and about 1 s of background CPU. Wall, p99, worst pause and
+    MMU sit within run-to-run noise. The trade is about +3 % peak at gf 0.70 (8,938 -> 9,251 MB)
+    for removing the 14.3 GB worst case (max RSS across the sweep 9.6–10.2 GB vs 9.8–14.3 GB).
+    No further runs were made: the shipped default is the P/PH arm of E9 plus Headroom, and the
+    E10–E12 runs were made with P off.
   - PHB is rejected: suppressing the garbage fraction moves the chaos into LiveBudget.
   - The headroom margin ships (E10).
 
