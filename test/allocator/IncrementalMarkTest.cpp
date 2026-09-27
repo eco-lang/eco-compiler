@@ -67,6 +67,12 @@ HeapConfig incrConfig(uint32_t slices, bool on = true, uint32_t divisor = 8) {
     if (const char* mt = std::getenv("ECO_TEST_MARK_THREADS")) {
         cfg.gc_mark_threads = static_cast<uint32_t>(std::atoi(mt));
     }
+    // threaded-gc-05c: the compiled default (conc_mark = 2) runs these 05a
+    // scenarios with background marking; ECO_TEST_CONC_MARK=0 reruns them on
+    // the 05b in-pause path.
+    if (const char* cm = std::getenv("ECO_TEST_CONC_MARK")) {
+        cfg.conc_mark = static_cast<uint32_t>(std::atoi(cm));
+    }
     cfg.validate();
     return cfg;
 }

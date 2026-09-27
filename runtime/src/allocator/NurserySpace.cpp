@@ -908,7 +908,8 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
             const size_t ucell = uniform_bitmap
                 ? OldGenSpace::classToSize(blk.size_class) : 0;
             while (scan < end) {
-                if (uniform_bitmap && !oldgen.isMarkedInBlock(blk_id, scan)) {
+                // threaded-gc-05c (H2): background markers may write these bytes.
+                if (uniform_bitmap && !oldgen.isMarkedInBlockRelaxed(blk_id, scan)) {
                     scan += ucell;
                     continue;
                 }

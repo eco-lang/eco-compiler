@@ -24,7 +24,9 @@ and prints:
       (minor, minor+major, minor+t0, minor+slice, minor+handoff) and one
       `cycle` row per mark cycle: start_ns = t0, pause_ns = span (wall t0 ->
       handoff), nursery_pause_ns = span in minors, stack_walk_ns = mark units,
-      major_reason "cycle:<schedule|pressure|join>".
+      major_reason "cycle:<schedule|pressure|join>" followed (threaded-gc-05c)
+      by ";key=value" pairs: done_k, bg_units, assists, assist_units,
+      closing_units, p_hat, h_c, live_ref, alloc_since_major, headroom.
 
 Usage: gc-event-log-summary.py <log.tsv> [--json]
 """
@@ -212,15 +214,27 @@ def summarise(path):
     out["pause_kinds"] = {k: dict(count=len(v), **pct_block(v)) for k, v in by_kind.items()}
     cycles = [r for r in rows if r["kind"] == "cycle"]
     finishes = {}
+    # threaded-gc-05c: the reason field is "cycle:<finish>[;key=value...]"
+    # (done_k, bg_units, assists, assist_units, closing_units, p_hat, h_c,
+    # live_ref, alloc_since_major, headroom).
+    kvs = []
     for r in cycles:
-        f = r.get("major_reason", "cycle:?")[6:]
+        parts = r.get("major_reason", "cycle:?")[6:].split(";")
+        f = parts[0]
         finishes[f] = finishes.get(f, 0) + 1
+        kv = {}
+        for p in parts[1:]:
+            if "=" in p:
+                k, v = p.split("=", 1)
+                kv[k] = num(v)
+        kvs.append(kv)
     out["cycles"] = {
         "count": len(cycles),
         "span_minors": pct_block([num(r["nursery_pause_ns"]) or 0 for r in cycles]),
         "span_ns": pct_block([num(r["pause_ns"]) or 0 for r in cycles]),
         "units": pct_block([num(r["stack_walk_ns"]) or 0 for r in cycles]),
         "finishes": finishes,
+        "per_cycle": kvs,
     }
     out["warnings"] = warnings
     return out
@@ -289,6 +303,18 @@ def print_text(s):
               (c["count"], c["finishes"], c["span_minors"]["p50"], c["span_minors"]["max"],
                ms(c["span_ns"]["p50"]), ms(c["span_ns"]["max"]), c["units"]["p50"],
                c["units"]["max"]))
+        pc = [k for k in c.get("per_cycle", []) if k]
+        if pc:
+            # threaded-gc-05c (concurrent marking + Part B pacing columns)
+            print("\n(i) concurrent mark (threaded-gc-05c), per cycle:")
+            print("  %3s %6s %12s %8s %12s %12s %12s %14s %14s" %
+                  ("#", "done_k", "bg_units", "assists", "assist_units", "closing_u",
+                   "p_hat", "live_ref", "alloc_since"))
+            for i, k in enumerate(pc):
+                print("  %3d %6s %12s %8s %12s %12s %12s %14s %14s" %
+                      (i + 1, k.get("done_k", "-"), k.get("bg_units", "-"), k.get("assists", "-"),
+                       k.get("assist_units", "-"), k.get("closing_units", "-"),
+                       k.get("p_hat", "-"), k.get("live_ref", "-"), k.get("alloc_since_major", "-")))
     for w in s["warnings"]:
         print("WARNING: " + w)
 

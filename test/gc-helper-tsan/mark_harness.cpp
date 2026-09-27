@@ -17,6 +17,7 @@
 #include "MarkWork.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -155,6 +156,12 @@ struct SynthHeap {
         x.priv.store(x.stack.size(), std::memory_order_relaxed);
         if ((x.stack.size() & 31) == 0) publishHalf(x);
     }
+    void publishAll(unsigned self) {
+        Worker& x = *w[self];
+        for (uint64_t e : x.stack) x.dq.push(e);
+        x.stack.clear();
+        x.priv.store(0, std::memory_order_relaxed);
+    }
     uint64_t takeOwn(unsigned self) {
         Worker& x = *w[self];
         if (!x.stack.empty()) {
@@ -205,6 +212,7 @@ struct SynthEnv {
     }
     void prefetch(uint64_t) {}
     void scan(unsigned self, uint64_t e) { h.scan(self, e); }
+    void publishAll(unsigned self) { h.publishAll(self); }
 };
 
 struct RunArgs { SynthHeap* h; SliceControl* c; };
@@ -305,6 +313,284 @@ static void terminationStress(unsigned n, int slices) {
                 (unsigned long long)done);
 }
 
+// ---------------------------------------------------------------------------
+// (5) threaded-gc-05c episode storm (plans/threaded-gc-05c-concurrent-marking.md
+// P§4 Step 3): B background Members run a drain episode on a GCBackgroundGang
+// while a "mutator" thread, at random, (a) joins as Assists with a bounded
+// pool, (b) fetch_ors "allocate-black" bits into bytes the markers share,
+// (c) stops the episode and relaunches a fresh one, and finally (d) joins as
+// Members until termination. Mark bits are PACKED (8 nodes a byte) so the
+// mutator's bits and the markers' bits share bytes. Phantom nodes (idx % 8 ==
+// 7) are never reachable and are set only by the mutator. Checks: the marked
+// real nodes == the reachable set; every phantom bit set by the mutator
+// survives; the total units == the entry count; no private work after a run.
+// ---------------------------------------------------------------------------
+struct PackedHeap {
+    const Graph& g;
+    unsigned n;                       // slots
+    std::unique_ptr<std::atomic<uint8_t>[]> bits;
+    struct Worker {
+        WorkStealingDeque dq{4};
+        std::vector<uint64_t> stack;
+        std::atomic<uint64_t> priv{0};
+        uint64_t pops = 0;
+        MarkerCounters ctr;
+    };
+    std::vector<std::unique_ptr<Worker>> w;
+    PackedHeap(const Graph& gr, unsigned slots) : g(gr), n(slots),
+        bits(new std::atomic<uint8_t>[(gr.kids.size() + 7) / 8]) {
+        for (size_t i = 0; i < (gr.kids.size() + 7) / 8; ++i) bits[i].store(0);
+        for (unsigned i = 0; i < slots; ++i) w.push_back(std::make_unique<Worker>());
+    }
+    bool marked(uint32_t idx) const { return (bits[idx / 8].load() >> (idx % 8)) & 1u; }
+    void setBit(uint32_t idx) { bits[idx / 8].fetch_or(uint8_t(1u << (idx % 8)), std::memory_order_relaxed); }
+    static constexpr size_t kPublishMin = 64;
+    void publishHalf(Worker& x) {
+        if (x.stack.size() < kPublishMin || !x.dq.emptyApprox()) return;
+        const size_t half = x.stack.size() / 2;
+        for (size_t i = 0; i < half; ++i) x.dq.push(x.stack[i]);
+        x.stack.erase(x.stack.begin(), x.stack.begin() + static_cast<std::ptrdiff_t>(half));
+        x.priv.store(x.stack.size(), std::memory_order_relaxed);
+    }
+    void publishAll(unsigned self) {
+        Worker& x = *w[self];
+        for (uint64_t e : x.stack) x.dq.push(e);
+        x.stack.clear();
+        x.priv.store(0, std::memory_order_relaxed);
+    }
+    void pushGrey(unsigned self, uint64_t e) {
+        Worker& x = *w[self];
+        x.stack.push_back(e);
+        x.priv.store(x.stack.size(), std::memory_order_relaxed);
+        if ((x.stack.size() & 31) == 0) publishHalf(x);
+    }
+    uint64_t takeOwn(unsigned self) {
+        Worker& x = *w[self];
+        if (!x.stack.empty()) {
+            const uint64_t e = x.stack.back();
+            x.stack.pop_back();
+            x.priv.store(x.stack.size(), std::memory_order_relaxed);
+            if ((++x.pops & 63) == 0) publishHalf(x);
+            return e;
+        }
+        return x.dq.take();
+    }
+    void grey(unsigned self, uint32_t idx) {
+        std::atomic<uint8_t>& b = bits[idx / 8];
+        const uint8_t m = uint8_t(1u << (idx % 8));
+        if (b.load(std::memory_order_relaxed) & m) return;          // test before set
+        if (b.fetch_or(m, std::memory_order_relaxed) & m) return;
+        pushGrey(self, uint64_t{idx} + 1);
+    }
+    void scan(unsigned self, uint64_t e) {
+        const uint32_t idx = static_cast<uint32_t>((e & kAddrMask) - 1);
+        const auto& ks = g.kids[idx];
+        if (isChunk(e)) {
+            const uint32_t c = entryField(e);
+            for (uint32_t k = c * kChunk; k < std::min<uint32_t>(ks.size(), (c + 1) * kChunk); ++k) grey(self, ks[k]);
+            return;
+        }
+        for (uint32_t k = 0; k < std::min<uint32_t>(ks.size(), kChunk); ++k) grey(self, ks[k]);
+        for (uint32_t c = 1; uint64_t{c} * kChunk < ks.size(); ++c)
+            pushGrey(self, kChunkBit | (uint64_t{idx} + 1) | (uint64_t{c} << 40));
+    }
+    bool empty() const {
+        for (auto& x : w) if (!x->dq.emptyApprox() || !x->stack.empty()) return false;
+        return true;
+    }
+};
+
+struct PackedEnv {
+    static constexpr bool kParallel = true;
+    PackedHeap& h;
+    MarkerCounters& counters(unsigned i) { return h.w[i]->ctr; }
+    uint64_t takeOwn(unsigned i) { return h.takeOwn(i); }
+    uint64_t stealFrom(unsigned v) { return h.w[v]->dq.steal(); }
+    bool anyWork() {
+        for (auto& x : h.w)
+            if (!x->dq.emptyApprox() || x->priv.load(std::memory_order_relaxed) != 0) return true;
+        return false;
+    }
+    void prefetch(uint64_t) {}
+    void scan(unsigned self, uint64_t e) { h.scan(self, e); }
+    void publishAll(unsigned self) { h.publishAll(self); }
+};
+
+struct EpisodeCtx {
+    PackedHeap* h;
+    SliceControl* c;
+    unsigned F;                       // foreground slots 0..F-1, background F..
+    std::atomic<int64_t>* pool;
+};
+
+static Graph makePackedGraph(uint32_t nodes, uint64_t seed) {
+    // Real nodes: idx % 8 != 7. Phantom nodes are never a child or a root.
+    Graph g;
+    g.kids.resize(nodes);
+    std::mt19937_64 rng(seed);
+    auto real = [&]() { uint32_t v; do { v = static_cast<uint32_t>(rng() % nodes); } while (v % 8 == 7); return v; };
+    for (uint32_t i = 0; i < nodes; ++i) {
+        if (i % 8 == 7) continue;
+        const bool big = (rng() % 100) < 2;
+        const uint32_t deg = big ? 200 + static_cast<uint32_t>(rng() % 300) : static_cast<uint32_t>(rng() % 5);
+        for (uint32_t k = 0; k < deg; ++k) g.kids[i].push_back(real());
+    }
+    for (int r = 0; r < 50; ++r) g.roots.push_back(real());
+    return g;
+}
+
+static void episodeStorm(unsigned F, unsigned B, unsigned jitter, uint64_t seed) {
+    const Graph g = makePackedGraph(80000, seed);
+    const unsigned slots = F + B;
+    PackedHeap h(g, slots);
+    for (uint32_t r : g.roots) h.grey(0, r);        // the t0 snapshot on slot 0
+    h.publishAll(0);
+    auto& fg = gc::GCMarkGang::instance();
+    if (fg.configured()) fg.shutdownForTesting();
+    fg.configure(F, jitter);
+    gc::GCBackgroundGang::Options o;
+    o.members = B;
+    o.jitter_us = jitter;
+    gc::GCBackgroundGang bg(o);
+    std::mt19937_64 rng(seed * 7 + 1);
+    uint64_t units = 0;
+    auto sumUnits = [&](unsigned lo, unsigned hi) {
+        for (unsigned i = lo; i < hi; ++i) { units += h.w[i]->ctr.units; h.w[i]->ctr.resetRun(i); }
+    };
+    auto noPrivate = [&](unsigned lo, unsigned hi, const char* where) {
+        for (unsigned i = lo; i < hi; ++i) {
+            if (!h.w[i]->stack.empty() || h.w[i]->priv.load() != 0) {
+                std::fprintf(stderr, "slot %u after %s\n", i, where);
+                fail("episode: private work left after a run");
+            }
+        }
+    };
+    std::vector<uint32_t> phantoms;
+    int stops = 0, assists = 0, episodes = 0;
+    bool finished = false;
+    while (!finished) {
+        auto c = std::make_unique<SliceControl>(kDrainBudget, slots, jitter, static_cast<int64_t>(B));
+        EpisodeCtx ctx{&h, c.get(), F, nullptr};
+        for (unsigned i = F; i < slots; ++i) h.w[i]->ctr.resetRun(i);
+        ++episodes;
+        bg.launch([](void* p, unsigned j) {
+            auto* x = static_cast<EpisodeCtx*>(p);
+            PackedEnv env{*x->h};
+            runMarkerLoop(env, x->F + j, *x->c, x->c->budget, Role::Member, false);
+        }, &ctx, &c->stop);
+        bool stopped = false;
+        for (int act = 0; act < 40 && !stopped; ++act) {
+            const unsigned what = static_cast<unsigned>(rng() % 10);
+            if (what < 4) {                             // (a) assist
+                std::atomic<int64_t> pool{1 + static_cast<int64_t>(rng() % 3000)};
+                const int64_t b0 = pool.load();
+                EpisodeCtx a{&h, c.get(), F, &pool};
+                c->share_epoch.fetch_add(1, std::memory_order_relaxed);
+                for (unsigned i = 0; i < F; ++i) h.w[i]->ctr.resetRun(i);
+                fg.run([](void* p, unsigned i) {
+                    auto* x = static_cast<EpisodeCtx*>(p);
+                    PackedEnv env{*x->h};
+                    runMarkerLoop(env, i, *x->c, *x->pool, Role::Assist, true);
+                }, &a, F);
+                uint64_t fu = 0;
+                for (unsigned i = 0; i < F; ++i) fu += h.w[i]->ctr.units;
+                if (static_cast<int64_t>(fu) != b0 - pool.load()) fail("assist: units != consumed tickets");
+                sumUnits(0, F);
+                noPrivate(0, F, "an assist");
+                ++assists;
+            } else if (what < 8) {                      // (b) allocate-black on shared bytes
+                for (int k = 0; k < 64; ++k) {
+                    const uint32_t ph = static_cast<uint32_t>((rng() % (g.kids.size() / 8)) * 8 + 7);
+                    h.setBit(ph);
+                    phantoms.push_back(ph);
+                }
+            } else if (what == 8 && stops < 6) {        // (c) stop and relaunch
+                bg.stopAndJoin();
+                sumUnits(F, slots);
+                noPrivate(0, slots, "a stop");
+                for (auto& x : h.w) x->dq.retireOldArrays();
+                ++stops;
+                stopped = true;
+            } else {
+                std::this_thread::sleep_for(std::chrono::microseconds(rng() % 200));
+            }
+        }
+        if (stopped) {
+            if (h.empty()) finished = true;
+            continue;
+        }
+        // (d) the closing join: foreground Members until termination.
+        EpisodeCtx cl{&h, c.get(), F, nullptr};
+        c->share_epoch.fetch_add(1, std::memory_order_relaxed);
+        for (unsigned i = 0; i < F; ++i) h.w[i]->ctr.resetRun(i);
+        fg.run([](void* p, unsigned i) {
+            auto* x = static_cast<EpisodeCtx*>(p);
+            PackedEnv env{*x->h};
+            runMarkerLoop(env, i, *x->c, x->c->budget, Role::Member, true);
+        }, &cl, F);
+        sumUnits(0, F);
+        bg.join();
+        if (!c->done()) fail("episode: closing join returned before termination");
+        sumUnits(F, slots);
+        noPrivate(0, slots, "the closing");
+        for (auto& x : h.w) x->dq.retireOldArrays();
+        if (!h.empty()) fail("episode: work left after termination");
+        finished = true;
+    }
+    // Reachability and exact units.
+    std::vector<uint8_t> reach(g.kids.size(), 0);
+    std::vector<uint32_t> st(g.roots.begin(), g.roots.end());
+    uint64_t entries = 0;
+    while (!st.empty()) {
+        const uint32_t i = st.back();
+        st.pop_back();
+        if (reach[i]) continue;
+        reach[i] = 1;
+        entries += 1 + (g.kids[i].size() > kChunk ? (g.kids[i].size() - 1) / kChunk : 0);
+        for (uint32_t k : g.kids[i]) st.push_back(k);
+    }
+    for (size_t i = 0; i < g.kids.size(); ++i) {
+        if (i % 8 == 7) continue;
+        if (h.marked(static_cast<uint32_t>(i)) != (reach[i] != 0)) fail("episode: marked set != reachable set");
+    }
+    for (uint32_t ph : phantoms) if (!h.marked(ph)) fail("episode: a mutator (allocate-black) bit was lost");
+    if (units != entries) {
+        std::fprintf(stderr, "units %llu entries %llu\n", (unsigned long long)units, (unsigned long long)entries);
+        fail("episode: total units != entries");
+    }
+    std::printf("episode storm: F=%u B=%u jitter %u: %d episodes, %d assists, %d stops, %zu black bits ok\n",
+                F, B, jitter, episodes, assists, stops, phantoms.size());
+}
+
+// (6) threaded-gc-05c bg-gang storm: launch/join and stop/join cycles.
+static void bgGangStorm(unsigned launches, unsigned stops) {
+    std::mt19937_64 rng(3);
+    for (unsigned m = 1; m <= 8; m *= 2) {
+        gc::GCBackgroundGang::Options o;
+        o.members = m;
+        gc::GCBackgroundGang g(o);
+        std::atomic<bool> stop{false};
+        std::atomic<uint64_t> hits{0};
+        struct Ctx { std::atomic<bool>* s; std::atomic<uint64_t>* h; } ctx{&stop, &hits};
+        for (unsigned r = 0; r < launches / 4; ++r) {
+            g.launch([](void* p, unsigned) { static_cast<Ctx*>(p)->h->fetch_add(1); }, &ctx, &stop);
+            if (rng() & 1) { while (!g.finishedApprox()) std::this_thread::yield(); }
+            g.join();
+        }
+        if (hits.load() != uint64_t{launches / 4} * m) fail("bg gang: a member ran a wrong number of times");
+        for (unsigned r = 0; r < stops / 4; ++r) {
+            stop.store(false);
+            g.launch([](void* p, unsigned) {
+                auto* x = static_cast<Ctx*>(p);
+                while (!x->s->load(std::memory_order_acquire)) std::this_thread::yield();
+            }, &ctx, &stop);
+            g.stopAndJoin();
+            if (g.running()) fail("bg gang: running after stopAndJoin");
+        }
+    }
+    std::printf("bg gang storm: %u launches, %u stops per size ok\n", launches / 4, stops / 4);
+}
+
 int main() {
     terminationStress(8, 40000);
     terminationStress(16, 40000);
@@ -327,6 +613,14 @@ int main() {
     for (int rep = 0; rep < 5; ++rep)
         if (synthMark(g, 8, 0, budgets) != ref) fail("synth: consumption differs on a repeat");
     std::printf("synthetic marker: 60000 nodes, 420 slices, n = 1/2/4/8 + jitter + 5 repeats identical\n");
+    gc::GCMarkGang::instance().shutdownForTesting();
+    bgGangStorm(50000, 5000);
+    for (unsigned rep = 0; rep < 3; ++rep) {
+        episodeStorm(2, 2, 0, 100 + rep);
+        episodeStorm(1, 4, 0, 200 + rep);
+        episodeStorm(4, 8, 0, 300 + rep);
+        episodeStorm(3, 3, 50, 400 + rep);
+    }
     gc::GCMarkGang::instance().shutdownForTesting();
     std::printf("mark_harness PASS\n");
     return 0;

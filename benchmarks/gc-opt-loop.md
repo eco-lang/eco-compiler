@@ -2046,6 +2046,77 @@ minor GC 47.94 / 46.77 / 46.81 s and max RSS +37 / +131 / +515 MB. 128 MiB was c
   - validate stress under pressure 101/101: the 5 `JsonRoundtrip*` aborts are fixed;
   - census tree (abort) unit + E2E 1805/1805, stress 101/101.
 
+### TG5a — threaded-gc-05a incremental marking — **DEFAULT-ON T = 32: self-compile worst pause 4.83 s -> 336 ms, old-gen peak +1.6 %, wall flat, output identical**
+
+Plan `plans/threaded-gc-05a-incremental-marking.md` (as-built P§10). A major is a mark cycle
+over T + 1 minors: t0 snapshot at the trigger's minor end (roots, off-heap stores, every young
+object walked once), T paced slices at minor ends (the T-th drains), then the unchanged
+post-mark tail. Allocate-black, deferred body/YLOS frees, fixed schedule, joins. Validators
+IM1-IM9 in the validate tree. Same-session phase-timer binary `eco-optTG5aPT2`, arms by
+`ECO_HEAP_CONFIG` (equal-length paths), gf 0.70:
+
+| arm | wall (s) | max RSS (kB) | old-gen peak (MB) | minors | majors | max pause (ms) | slice p99 (ms) | out.mlir |
+|---|---|---|---|---|---|---|---|---|
+| flag off ×3 (median) | 171.0 | 9,780,000 | 8,797.7 | 1917 minor-only pauses | 7 | 4,832 | — | identical |
+| **T = 32 ×3 (median)** | **170.2** | **9,840,000** | **8,935.7** | 1686 minor-only pauses | **7** | **336** | **306** | identical |
+
+- **G7:** flag-off `eco-optTG5aoff` vs `eco-optTG4b` same session: every counter and the
+  major event log's non-timing columns identical (first pair differed only because the
+  control run alone did a registry POST).
+- **E0:** T = 0 vs flag off: every decision counter identical; mark units lower (nursery
+  objects no longer units); worst pause 5,020 -> 4,828 ms.
+- **E1 round 1** (planned pacing): max pauses 977-4,588 ms, peaks up to 14.4 GB: closing
+  slices of 28-54 M units, and allocate-black bytes in the trigger baseline delayed triggers
+  (5-6 majors). Fixed by front-loaded pacing with doubling on overrun, and by excluding black
+  bytes from the baseline (plan P§10.1).
+- **E2 (gf sweep):** the peak swings +/-30 % in BOTH arms (gf 0.65: T32 +35 %; gf 0.75: T32
+  -27 %); sweep medians 9.84 vs 9.68 GB; worst pause 234-392 ms vs 2.7-4.8 s.
+
+### TG5b — threaded-gc-05b parallel marking — **DEFAULT-ON (auto markers, cap 16): in-pause slice mark 9.9 s -> 1.3 s, worst pause = the minor floor (189 ms), wall -6 s, every counter bit-identical at every marker count**
+
+Plan `plans/threaded-gc-05b-parallel-marking.md` (as-built P§10). Slices, closing drains and
+join/pressure drains run on N markers (paused mutator + GCMarkGang threads): private stacks
+publishing to Chase-Lev deques, atomic mark bits, per-marker accumulators, exact tickets, one-CAS
+termination. Phase-timer binary `eco-optTG5bPT3`, T = 32, arms by `ECO_GC_MARK_THREADS`:
+
+| N | wall (s) | slice mark total (ms) | worst pause (ms) | slice p99 (ms) | collector CPU (s) |
+|---|---|---|---|---|---|
+| 1 | 174.9 | 9,925 | 326 | 303 | — |
+| 4 | 166.6 | 3,282 | 189 | 174 | 9.8 |
+| 16 | 165.7 | 1,335 | 189 | 141 | 19.4 |
+| auto | 164.2 | 1,346 | 189 | 139 | 19.5 |
+
+- Summary row: the same-sitting E2 pair on the private-stack build, N = 1 control 169.74 s vs
+  16 markers 163.90 s (plan P§10.4); the table above is the final build (P§10.9).
+- Counters (allocated, promoted, majors, cycle units, closing units, peak) identical across N =
+  1/2/4/8/16/auto and 4 + jitter; event-log hash identical.
+- The first build (deque-only) gave no gain at N = 2; private stacks fixed it (plan P§10.1 1).
+- A termination race (separate `active`/`done` loads) made a slice end early under load; fixed with
+  one CAS on (active, epoch, done) (plan P§10.1 10).
+- E3: T = 8/16 at 16 markers gain no pause and cost +12 % peak: T stays 32. E4: incremental off +
+  16 markers: worst pause 735 ms vs 4.64 s serial. E5: 8 markers on 2 CPUs +0.9 % wall.
+
+### TG5c — threaded-gc-05c concurrent marking + Headroom trigger — **DEFAULT-ON (mode 2, B cap 4, priority 0, lag 8; headroom 1.5): kind-4 pauses 224 -> 0, all-pause p99 127.5 -> 116.3 ms, collector CPU 19.7 -> 12.6 s, wall -1.0 s, every decision counter and every cycle's units identical to TG5b**
+
+Plan `plans/threaded-gc-05c-concurrent-marking.md` (as-built P§10). Background markers (a per-heap
+`GCBackgroundGang`) mark between pauses; the mutator and the foreground gang join the running
+episode only for paced assists and the closing step. Phase-timer binary `eco-optTG5cPT`, arms by
+`ECO_GC_CONC_MARK` / `ECO_GC_CONC_MARK_THREADS` and equal-length `ECO_HEAP_CONFIG` JSON. Summary
+row: the E3 triple medians (mode 2, B = 4) vs the mode-0 (= TG5b) triple of the same session
+(163.59 s).
+
+| arm | wall (s) | worst / all-p99 (ms) | kind-4 pauses | collector CPU (s) | mutator CPU outside pauses (s) |
+|---|---|---|---|---|---|
+| mode 0 (TG5b) | 163.6 | 191.0 / 127.5 | 224 | 19.7 | 112.56 |
+| mode 2, B = 4 | 162.6 | 190.0 / 116.3 | 0 | 12.6 | 112.67 |
+
+- E1: modes 0/1/2, B = 1/2/4/8 and jitter: decision counters and the major table identical.
+- E4: under 24 spinning co-runners, SCHED_IDLE made a 9.5 s closing pause and nice 19 a 1.0 s one,
+  so the priority is 0 (224 ms worst, vs mode 0's 262 ms).
+- E9: the paced LiveBudget cut the gf-sweep peak spread 44.5 % -> 6.4 % but cost +2 majors at gf
+  0.65, so it stays default-off. The garbage backstop was rejected. Headroom ships (E10: at an
+  11 GB cap, peak 94.4 % -> 81.5 % of the cap, same majors).
+
 ## 7. Findings
 
 (What this series learns, separated from the per-step records so the entries stay to ten lines.
@@ -2514,53 +2585,6 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | TG3 | 172.67 | -8.54 | 1924 | 7 | 19861 | 9770964 | WIN | TG2 |
 | TG4 | 172.77 | -1.96 | 1924 | 7 | 19861 | 9776948 | FLAT (kept) | TG3 |
 | TG4b | 170.70 | -3.72 | 1924 | 7 | 19862 | 9781300 | FLAT (kept) | TG4 |
-| TG5a | 170.20 | -0.80 | 1924 | 7 | 19862 | 9844144 | WIN on pause (4.83 s -> 336 ms), wall flat | TG4b |
-| TG5b | 164.20 | -6.00 | 1924 | 7 | 19862 | 9850000 | WIN: slice mark 9.9 -> 1.3 s, worst pause = minor floor 189 ms, wall -6 s | TG5a |
-
-### TG5a — threaded-gc-05a incremental marking — **DEFAULT-ON T = 32: self-compile worst pause 4.83 s -> 336 ms, old-gen peak +1.6 %, wall flat, output identical**
-
-Plan `plans/threaded-gc-05a-incremental-marking.md` (as-built P§10). A major is a mark cycle
-over T + 1 minors: t0 snapshot at the trigger's minor end (roots, off-heap stores, every young
-object walked once), T paced slices at minor ends (the T-th drains), then the unchanged
-post-mark tail. Allocate-black, deferred body/YLOS frees, fixed schedule, joins. Validators
-IM1-IM9 in the validate tree. Same-session phase-timer binary `eco-optTG5aPT2`, arms by
-`ECO_HEAP_CONFIG` (equal-length paths), gf 0.70:
-
-| arm | wall (s) | max RSS (kB) | old-gen peak (MB) | minors | majors | max pause (ms) | slice p99 (ms) | out.mlir |
-|---|---|---|---|---|---|---|---|---|
-| flag off ×3 (median) | 171.0 | 9,780,000 | 8,797.7 | 1917 minor-only pauses | 7 | 4,832 | — | identical |
-| **T = 32 ×3 (median)** | **170.2** | **9,840,000** | **8,935.7** | 1686 minor-only pauses | **7** | **336** | **306** | identical |
-
-- **G7:** flag-off `eco-optTG5aoff` vs `eco-optTG4b` same session: every counter and the
-  major event log's non-timing columns identical (first pair differed only because the
-  control run alone did a registry POST).
-- **E0:** T = 0 vs flag off: every decision counter identical; mark units lower (nursery
-  objects no longer units); worst pause 5,020 -> 4,828 ms.
-- **E1 round 1** (planned pacing): max pauses 977-4,588 ms, peaks up to 14.4 GB: closing
-  slices of 28-54 M units, and allocate-black bytes in the trigger baseline delayed triggers
-  (5-6 majors). Fixed by front-loaded pacing with doubling on overrun, and by excluding black
-  bytes from the baseline (plan P§10.1).
-- **E2 (gf sweep):** the peak swings +/-30 % in BOTH arms (gf 0.65: T32 +35 %; gf 0.75: T32
-  -27 %); sweep medians 9.84 vs 9.68 GB; worst pause 234-392 ms vs 2.7-4.8 s.
-
-### TG5b — threaded-gc-05b parallel marking — **DEFAULT-ON (auto markers, cap 16): in-pause slice mark 9.9 s -> 1.3 s, worst pause = the minor floor (189 ms), wall -6 s, every counter bit-identical at every marker count**
-
-Plan `plans/threaded-gc-05b-parallel-marking.md` (as-built P§10). Slices, closing drains and
-join/pressure drains run on N markers (paused mutator + GCMarkGang threads): private stacks
-publishing to Chase-Lev deques, atomic mark bits, per-marker accumulators, exact tickets, one-CAS
-termination. Phase-timer binary `eco-optTG5bPT3`, T = 32, arms by `ECO_GC_MARK_THREADS`:
-
-| N | wall (s) | slice mark total (ms) | worst pause (ms) | slice p99 (ms) | collector CPU (s) |
-|---|---|---|---|---|---|
-| 1 | 174.9 | 9,925 | 326 | 303 | — |
-| 4 | 166.6 | 3,282 | 189 | 174 | 9.8 |
-| 16 | 165.7 | 1,335 | 189 | 141 | 19.4 |
-| auto | 164.2 | 1,346 | 189 | 139 | 19.5 |
-
-- Counters (allocated, promoted, majors, cycle units, closing units, peak) identical across N =
-  1/2/4/8/16/auto and 4 + jitter; event-log hash identical.
-- The first build (deque-only) gave no gain at N = 2; private stacks fixed it (plan P§10.1 1).
-- A termination race (separate `active`/`done` loads) made a slice end early under load; fixed with
-  one CAS on (active, epoch, done) (plan P§10.1 10).
-- E3: T = 8/16 at 16 markers gain no pause and cost +12 % peak: T stays 32. E4: incremental off +
-  16 markers: worst pause 735 ms vs 4.64 s serial. E5: 8 markers on 2 CPUs +0.9 % wall.
+| TG5a | 170.20 | -0.80 | 1924 | 7 | 19862 | 9844144 | WIN | TG4b |
+| TG5b | 163.90 | -5.84 | 1924 | 7 | 19862 | 9845612 | WIN | TG5a |
+| TG5c | 162.60 | -0.99 | 1924 | 7 | 19862 | 9849108 | WIN (pause) | TG5b |

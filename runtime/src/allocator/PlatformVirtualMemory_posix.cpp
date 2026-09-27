@@ -36,6 +36,18 @@ void* reserveAddressSpaceBelow(std::size_t size, std::uintptr_t limit) {
 #endif
     const int kBaseFlags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE;
 
+#if defined(__SANITIZE_THREAD__)
+    // ThreadSanitizer builds (threaded-gc-05c's gc-heap-tsan harness): TSan's
+    // shadow occupies 1 TB and up, so probe its low application range
+    // [64 GB, 512 GB) first, in 64 GB steps.
+    for (std::uintptr_t base = 0x10'0000'0000ULL; base + size <= 0x80'0000'0000ULL;
+         base += 0x10'0000'0000ULL) {
+        void* p = mmap(reinterpret_cast<void*>(base), size, PROT_NONE, kBaseFlags | kFixed, -1, 0);
+        if (p == MAP_FAILED) continue;
+        if (reinterpret_cast<std::uintptr_t>(p) == base) return p;
+        munmap(p, size);
+    }
+#endif
     for (std::uintptr_t base = kStep; base + size <= limit; base += kStep) {
         void* hint = reinterpret_cast<void*>(base);
         void* p = mmap(hint, size, PROT_NONE, kBaseFlags | kFixed, -1, 0);

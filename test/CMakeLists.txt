@@ -114,6 +114,8 @@ add_executable(test
         allocator/LargePtrPlacementTest.cpp
         allocator/IncrementalMarkTest.cpp
         allocator/ParallelMarkTest.cpp
+        allocator/ConcurrentMarkTest.cpp
+        allocator/TriggerPacingTest.cpp
         allocator/OldGenBitmapAllocTest.cpp
         allocator/GCPauseStatsTest.cpp
         allocator/NurseryContiguityTest.cpp

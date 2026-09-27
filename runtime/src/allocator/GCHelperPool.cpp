@@ -23,6 +23,8 @@
 #  include <pthread.h>
 #  if defined(__linux__)
 #    include <sched.h>
+#    include <sys/resource.h>
+#    include <sys/syscall.h>
 #  endif
 #endif
 
@@ -477,6 +479,214 @@ void GCMarkGang::atforkChild() {
     g.started_ = false;
     g.stopping_ = false;
     g.running_n_ = g.finished_ = 0;
+}
+
+// ===========================================================================
+// threaded-gc-05c: GCBackgroundGang
+// ===========================================================================
+
+namespace {
+std::mutex& bgRegistryMutex() {
+    static std::mutex* m = new std::mutex();    // leaky: used from atexit/atfork
+    return *m;
+}
+std::vector<GCBackgroundGang*>& bgRegistry() {
+    static auto* v = new std::vector<GCBackgroundGang*>();
+    return *v;
+}
+bool bg_hooks_registered = false;               // guarded by bgRegistryMutex()
+}  // namespace
+
+GCBackgroundGang::GCBackgroundGang(const Options& opt) : opt_(opt) {
+    if (opt_.members == 0 || opt_.members > 63) {
+        poolAbort("GCBackgroundGang: members must be in [1, 63]");
+    }
+    std::lock_guard<std::mutex> lk(bgRegistryMutex());
+    if (!bg_hooks_registered) {
+        bg_hooks_registered = true;
+#if !defined(_WIN32)
+        pthread_atfork(&GCBackgroundGang::atforkPrepare, &GCBackgroundGang::atforkParent,
+                       &GCBackgroundGang::atforkChild);
+#endif
+        std::atexit(&GCBackgroundGang::stopAllAtExit);
+    }
+    bgRegistry().push_back(this);
+}
+
+GCBackgroundGang::~GCBackgroundGang() {
+    stopAndJoin();
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        stopping_ = true;
+    }
+    cv_start_.notify_all();
+    for (std::thread& t : *threads_) {
+        if (t.joinable()) t.join();
+    }
+    delete threads_;
+    std::lock_guard<std::mutex> lk(bgRegistryMutex());
+    auto& reg = bgRegistry();
+    for (size_t i = 0; i < reg.size(); ++i) {
+        if (reg[i] == this) { reg.erase(reg.begin() + static_cast<std::ptrdiff_t>(i)); break; }
+    }
+}
+
+void GCBackgroundGang::startThreadsLocked() {
+    if (started_) return;
+    started_ = true;
+    tids_.assign(opt_.members, 0);
+    for (unsigned i = 0; i < opt_.members; ++i) {
+        threads_->emplace_back([this, i] { memberLoop(i); });
+    }
+}
+
+void GCBackgroundGang::memberLoop(unsigned index) {
+#if !defined(_WIN32)
+    {
+        char name[16];
+        std::snprintf(name, sizeof name, "eco-cmark-%u", index);
+#  if defined(__APPLE__)
+        pthread_setname_np(name);
+#  else
+        pthread_setname_np(pthread_self(), name);
+#  endif
+    }
+#endif
+#if defined(__linux__)
+    const long tid = static_cast<long>(syscall(SYS_gettid));
+    // One-way (plan F20): set once, never raised again.
+    if (opt_.priority >= 1 && opt_.priority <= 19) {
+        (void)setpriority(PRIO_PROCESS, static_cast<id_t>(tid), opt_.priority);
+    } else if (opt_.priority == 20) {
+        sched_param sp{};
+        sp.sched_priority = 0;
+        (void)pthread_setschedparam(pthread_self(), SCHED_IDLE, &sp);
+    }
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        if (index < tids_.size()) tids_[index] = tid;
+    }
+#endif
+    uint64_t seen = 0;
+    uint64_t rng = 0xA0761D6478BD642Full ^ (static_cast<uint64_t>(index + 1) * 0x9E3779B97F4A7C15ull);
+    for (;;) {
+        Fn fn;
+        void* ctx;
+        {
+            std::unique_lock<std::mutex> lk(m_);
+            cv_start_.wait(lk, [&] { return stopping_ || generation_ != seen; });
+            if (stopping_) return;
+            seen = generation_;
+            fn = fn_;
+            ctx = ctx_;
+        }
+        if (opt_.jitter_us != 0) {
+            std::this_thread::sleep_for(
+                std::chrono::microseconds(xorshift(&rng) % (opt_.jitter_us + 1)));
+        }
+        const uint64_t c0 = GCHelperPool::threadCpuNs();
+        fn(ctx, index);
+        stats_.member_cpu_ns.fetch_add(GCHelperPool::threadCpuNs() - c0, std::memory_order_relaxed);
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            ++finished_;
+            finished_pub_.store(finished_, std::memory_order_release);
+            if (finished_ == opt_.members) cv_done_.notify_all();
+        }
+    }
+}
+
+void GCBackgroundGang::launch(Fn fn, void* ctx, std::atomic<bool>* stop) {
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        if (running_.load(std::memory_order_relaxed)) {
+            poolAbort("GCBackgroundGang::launch: already running");
+        }
+        startThreadsLocked();
+        fn_ = fn;
+        ctx_ = ctx;
+        stop_ = stop;
+        finished_ = 0;
+        finished_pub_.store(0, std::memory_order_relaxed);
+        ++generation_;
+        running_.store(true, std::memory_order_release);
+    }
+    cv_start_.notify_all();
+    stats_.launches.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool GCBackgroundGang::finishedApprox() const {
+    return finished_pub_.load(std::memory_order_acquire) >= opt_.members;
+}
+
+void GCBackgroundGang::joinLocked(std::unique_lock<std::mutex>& lk, bool stopping) {
+    const uint64_t t0 = GCHelperPool::nowNs();
+    cv_done_.wait(lk, [&] { return finished_ >= opt_.members; });
+    running_.store(false, std::memory_order_release);
+    const uint64_t d = GCHelperPool::nowNs() - t0;
+    stats_.join_wait_ns_total.fetch_add(d, std::memory_order_relaxed);
+    fetchMax(stats_.join_wait_ns_max, d);
+    if (stopping) fetchMax(stats_.stop_wait_ns_max, d);
+}
+
+void GCBackgroundGang::join() {
+    std::unique_lock<std::mutex> lk(m_);
+    if (!running_.load(std::memory_order_relaxed)) return;
+    joinLocked(lk, false);
+}
+
+void GCBackgroundGang::stopAndJoin() {
+    std::unique_lock<std::mutex> lk(m_);
+    if (!running_.load(std::memory_order_relaxed)) return;
+    if (stop_ != nullptr) stop_->store(true, std::memory_order_release);
+    joinLocked(lk, true);
+}
+
+std::vector<long> GCBackgroundGang::memberTids() const {
+    std::lock_guard<std::mutex> lk(m_);
+    return tids_;
+}
+
+void GCBackgroundGang::stopAllForFork() {
+    for (GCBackgroundGang* g : bgRegistry()) {
+        if (g->running()) {
+            g->stopAndJoin();
+            g->stats_.fork_stops.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+}
+
+void GCBackgroundGang::stopAllAtExit() {
+    std::lock_guard<std::mutex> lk(bgRegistryMutex());
+    for (GCBackgroundGang* g : bgRegistry()) g->stopAndJoin();
+}
+
+void GCBackgroundGang::atforkPrepare() {
+    bgRegistryMutex().lock();
+    stopAllForFork();
+    // Hold every instance's mutex across fork so the child's copy is consistent.
+    for (GCBackgroundGang* g : bgRegistry()) g->m_.lock();
+}
+
+void GCBackgroundGang::atforkParent() {
+    for (GCBackgroundGang* g : bgRegistry()) g->m_.unlock();
+    bgRegistryMutex().unlock();
+}
+
+void GCBackgroundGang::atforkChild() {
+    for (GCBackgroundGang* g : bgRegistry()) {
+        new (&g->m_) std::mutex();
+        new (&g->cv_start_) std::condition_variable();
+        new (&g->cv_done_) std::condition_variable();
+        g->threads_ = new std::vector<std::thread>();   // abandon the parent's
+        g->started_ = false;
+        g->stopping_ = false;
+        g->finished_ = 0;
+        g->finished_pub_.store(0, std::memory_order_relaxed);
+        g->running_.store(false, std::memory_order_relaxed);
+        g->tids_.clear();
+    }
+    new (&bgRegistryMutex()) std::mutex();
 }
 
 unsigned availableCpus() {

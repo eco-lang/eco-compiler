@@ -861,10 +861,10 @@ void Allocator::ensureOldGenCapacityFor(OldGenSpace& space,
         space.unassigned_blocks_.emplace_back(block_base, block_base + block_size);
 
         if (space.region_base_ == nullptr || block_base < space.region_base_) {
-            space.region_base_ = block_base;
+            space.setRegionBase(block_base);
         }
         if (block_base + block_size > space.region_end_) {
-            space.region_end_ = block_base + block_size;
+            space.setRegionEnd(block_base + block_size);
         }
     }
 

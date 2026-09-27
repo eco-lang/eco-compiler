@@ -201,6 +201,14 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         "incremental_mark",
         "gc_mark_threads",
         "gc_mark_threads_cap",
+        "conc_mark",
+        "conc_mark_threads",
+        "conc_mark_threads_cap",
+        "conc_mark_priority",
+        "conc_mark_assist_lag",
+        "major_gc_headroom_margin",
+        "major_gc_live_budget_paced",
+        "major_gc_garbage_backstop",
         "incremental_mark_slices",
         "incremental_mark_min_slice_units",
         "incremental_mark_predict_growth",
@@ -316,6 +324,23 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         cfg.gc_mark_threads = parseU32(*it, "gc_mark_threads");
     if (auto it = doc.find("gc_mark_threads_cap"); it != doc.end())
         cfg.gc_mark_threads_cap = parseU32(*it, "gc_mark_threads_cap");
+    // threaded-gc-05c
+    if (auto it = doc.find("conc_mark"); it != doc.end())
+        cfg.conc_mark = parseU32(*it, "conc_mark");
+    if (auto it = doc.find("conc_mark_threads"); it != doc.end())
+        cfg.conc_mark_threads = parseU32(*it, "conc_mark_threads");
+    if (auto it = doc.find("conc_mark_threads_cap"); it != doc.end())
+        cfg.conc_mark_threads_cap = parseU32(*it, "conc_mark_threads_cap");
+    if (auto it = doc.find("conc_mark_priority"); it != doc.end())
+        cfg.conc_mark_priority = parseI32(*it, "conc_mark_priority");
+    if (auto it = doc.find("conc_mark_assist_lag"); it != doc.end())
+        cfg.conc_mark_assist_lag = parseU32(*it, "conc_mark_assist_lag");
+    if (auto it = doc.find("major_gc_headroom_margin"); it != doc.end())
+        cfg.major_gc_headroom_margin = parseDouble(*it, "major_gc_headroom_margin");
+    if (auto it = doc.find("major_gc_live_budget_paced"); it != doc.end())
+        cfg.major_gc_live_budget_paced = parseBool(*it, "major_gc_live_budget_paced");
+    if (auto it = doc.find("major_gc_garbage_backstop"); it != doc.end())
+        cfg.major_gc_garbage_backstop = parseFraction(*it, "major_gc_garbage_backstop");
     if (auto it = doc.find("incremental_mark"); it != doc.end())
         cfg.incremental_mark = parseBool(*it, "incremental_mark");
     if (auto it = doc.find("incremental_mark_slices"); it != doc.end())
@@ -450,10 +475,35 @@ void applyMarkThreadsEnv(HeapConfig &cfg, const char *value) {
     cfg.gc_mark_threads = static_cast<uint32_t>(v);
 }
 
+// threaded-gc-05c: ECO_GC_CONC_MARK (exactly one of "0", "1", "2") and
+// ECO_GC_CONC_MARK_THREADS (decimal 0..63) win over JSON.
+void applyConcMarkEnv(HeapConfig &cfg, const char *mode_value, const char *threads_value) {
+    if (mode_value != nullptr && mode_value[0] != '\0') {
+        if (mode_value[1] != '\0' || mode_value[0] < '0' || mode_value[0] > '2') {
+            throw std::invalid_argument("ECO_GC_CONC_MARK must be 0, 1 or 2");
+        }
+        cfg.conc_mark = static_cast<uint32_t>(mode_value[0] - '0');
+    }
+    if (threads_value != nullptr && threads_value[0] != '\0') {
+        uint64_t v = 0;
+        for (const char *p = threads_value; *p; ++p) {
+            if (*p < '0' || *p > '9' || v > 63) {
+                throw std::invalid_argument(
+                    "ECO_GC_CONC_MARK_THREADS must be an unsigned decimal <= 63");
+            }
+            v = v * 10 + static_cast<uint64_t>(*p - '0');
+        }
+        if (v > 63) throw std::invalid_argument("ECO_GC_CONC_MARK_THREADS must be <= 63");
+        cfg.conc_mark_threads = static_cast<uint32_t>(v);
+    }
+}
+
 void applyGcThreadEnv(HeapConfig &cfg, uint32_t &jitter_us) {
     applyGcThreadEnv(cfg, jitter_us, std::getenv("ECO_GC_THREAD"),
                      std::getenv("ECO_GC_HELPER_JITTER_US"));
     applyMarkThreadsEnv(cfg, std::getenv("ECO_GC_MARK_THREADS"));
+    applyConcMarkEnv(cfg, std::getenv("ECO_GC_CONC_MARK"),
+                     std::getenv("ECO_GC_CONC_MARK_THREADS"));
 }
 
 } // namespace Elm

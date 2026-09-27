@@ -223,6 +223,35 @@ constexpr uint32_t GC_MARK_THREADS = 0;
 constexpr uint32_t GC_MARK_THREADS_CAP = 16;
 constexpr uint32_t MARK_CHUNK_ELEMS = 1024;
 
+// threaded-gc-05c (plans/threaded-gc-05c-concurrent-marking.md, HEAP_065):
+// concurrent marking. CONC_MARK 0 = off (05b in-pause slices), 1 = sync (the
+// whole mark in the t0 pause: the determinism reference), 2 = concurrent
+// (background markers between pauses; the mutator assists when late).
+// ECO_GC_CONC_MARK=0|1|2 and ECO_GC_CONC_MARK_THREADS override.
+// DEFAULT-ON (plan P§10): mode 2, auto background markers capped at 4 (E2: the
+// smallest B with zero assists and closings on the self-compile; B = 2 needed
+// assists), priority 0 = inherit (E4: nice 10 / 19 / SCHED_IDLE let a starved
+// marker stall the closing join -- up to 9.5 s under 24 spinning co-runners),
+// assist lag 8 (E2: the largest lag with zero assists).
+constexpr uint32_t CONC_MARK = 2;
+constexpr uint32_t CONC_MARK_THREADS = 0;          // 0 = auto: min(cap, CPUs - 1)
+constexpr uint32_t CONC_MARK_THREADS_CAP = 4;
+constexpr int32_t  CONC_MARK_PRIORITY = 0;         // 0 inherit, 1..19 nice, 20 SCHED_IDLE
+constexpr uint32_t CONC_MARK_ASSIST_LAG = 8;       // grace, in cycle steps
+
+// threaded-gc-05c Part B (P§3.11): heap-relative trigger pacing.
+// HEADROOM_MARGIN > 0 enables the Headroom trigger -- DEFAULT 1.5 (E9/E10: it
+// never fires at the self-compile's 20 GB cap, and at an 11 GB cap it started
+// the late cycle earlier: peak 94.4 % -> 81.5 % of the cap, same majors).
+// LIVE_BUDGET_PACED reaches the LiveBudget at the handoff instead of t0 (E9:
+// peak spread over the gf sweep 44.5 % -> 6.4 %, but +2 majors at gf 0.65 --
+// the plan's "+1 at every point" rule rejects it as a default).
+// GARBAGE_BACKSTOP > 0 raises the garbage-fraction threshold to it while
+// LiveBudget is on (E9: 36 % spread, non-monotone in k -- rejected).
+constexpr double MAJOR_GC_HEADROOM_MARGIN = 1.5;
+constexpr bool   MAJOR_GC_LIVE_BUDGET_PACED = false;
+constexpr float  MAJOR_GC_GARBAGE_BACKSTOP = 0.0f;
+
 // threaded-gc-05a (plans/threaded-gc-05a-incremental-marking.md, HEAP_063):
 // spread the major-GC mark over the minor GCs after the trigger. Requires
 // OLD_GEN_BITMAP_ALLOC. SLICES = T (0 = the whole cycle inside the t0 pause).
@@ -606,6 +635,17 @@ struct HeapConfig {
     uint32_t gc_mark_threads = GC_MARK_THREADS;
     uint32_t gc_mark_threads_cap = GC_MARK_THREADS_CAP;
 
+    // threaded-gc-05c (HEAP_065): concurrent marking.
+    uint32_t conc_mark = CONC_MARK;
+    uint32_t conc_mark_threads = CONC_MARK_THREADS;
+    uint32_t conc_mark_threads_cap = CONC_MARK_THREADS_CAP;
+    int32_t  conc_mark_priority = CONC_MARK_PRIORITY;
+    uint32_t conc_mark_assist_lag = CONC_MARK_ASSIST_LAG;
+    // threaded-gc-05c Part B: trigger pacing (P§3.11).
+    double major_gc_headroom_margin = MAJOR_GC_HEADROOM_MARGIN;
+    bool   major_gc_live_budget_paced = MAJOR_GC_LIVE_BUDGET_PACED;
+    float  major_gc_garbage_backstop = MAJOR_GC_GARBAGE_BACKSTOP;
+
     // threaded-gc-05a (HEAP_063): incremental mark cycle.
     bool     incremental_mark = INCREMENTAL_MARK;
     uint32_t incremental_mark_slices = INCREMENTAL_MARK_SLICES;
@@ -761,6 +801,31 @@ struct HeapConfig {
         }
         if (gc_mark_threads_cap < 1 || gc_mark_threads_cap > 64) {
             throw std::invalid_argument("gc_mark_threads_cap must be in [1, 64]");
+        }
+        // threaded-gc-05c
+        if (conc_mark > 2) {
+            throw std::invalid_argument("conc_mark must be 0, 1 or 2");
+        }
+        if (conc_mark_threads > 63) {
+            throw std::invalid_argument("conc_mark_threads must be <= 63");
+        }
+        if (conc_mark_threads_cap < 1 || conc_mark_threads_cap > 63) {
+            throw std::invalid_argument("conc_mark_threads_cap must be in [1, 63]");
+        }
+        if (conc_mark_priority < 0 || conc_mark_priority > 20) {
+            throw std::invalid_argument("conc_mark_priority must be in [0, 20]");
+        }
+        if (conc_mark_assist_lag > 4096) {
+            throw std::invalid_argument("conc_mark_assist_lag must be <= 4096");
+        }
+        if (!(major_gc_headroom_margin >= 0.0 && major_gc_headroom_margin <= 8.0)) {
+            throw std::invalid_argument("major_gc_headroom_margin must be in [0, 8]");
+        }
+        if (!(major_gc_garbage_backstop == 0.0f ||
+              (major_gc_garbage_backstop > major_gc_garbage_fraction &&
+               major_gc_garbage_backstop < 1.0f))) {
+            throw std::invalid_argument(
+                "major_gc_garbage_backstop must be 0 or in (major_gc_garbage_fraction, 1)");
         }
         // threaded-gc-05a
         if (incremental_mark && !old_gen_bitmap_alloc) {

@@ -27,3 +27,18 @@ Scenarios, each with 1, 2 and 4 workers and jitter 0 / 300 us:
   word means a discard hit memory the mutator owned.
 
 Pass: exit 0, no ThreadSanitizer warning.
+
+## threaded-gc-05c additions (`gc-mark-tsan`)
+
+- **bg-gang storm:** `GCBackgroundGang` launch/join (with and without waiting
+  on `finishedApprox`) and stop/join cycles at 1, 2, 4 and 8 members.
+- **episode storm:** B background Members run a drain episode on a
+  `GCBackgroundGang` while the "mutator" thread, at random, joins as Assists
+  (bounded ticket pool), `fetch_or`s allocate-black bits into bytes the markers
+  share (packed mark bits; phantom nodes set only by the mutator), stops and
+  relaunches the episode, and finally joins as Members until termination.
+  Checks: marked real nodes == reachable set; no mutator bit lost; total units
+  == entry count; no private work after any run.
+
+Run it normally and under `taskset -c 0,1` (pass: `mark_harness PASS`, no TSan
+warning). The heap-level harness is `test/gc-heap-tsan` (the real allocator).

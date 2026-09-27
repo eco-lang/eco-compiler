@@ -733,6 +733,7 @@ const char* majorReasonName(GCStats::MajorReason r) {
         case GCStats::MajorReason::AllocFailure:    return "alloc-failure";
         case GCStats::MajorReason::Forced:          return "forced";
         case GCStats::MajorReason::LiveBudget:      return "live-budget";
+        case GCStats::MajorReason::Headroom:        return "headroom";
         case GCStats::MajorReason::Unknown:         break;
     }
     return "unknown";
@@ -881,6 +882,7 @@ void GCStats::combine(const GCStats& other) {
     lp.combine(other.lp);
     im.combine(other.im);
     pm.combine(other.pm);
+    cm.combine(other.cm);
 
     // Combine allocator-helper attribution.
     total_oldgen_alloc_in_mutator_ns  += other.total_oldgen_alloc_in_mutator_ns;
@@ -1415,6 +1417,7 @@ void GCStats::print() const {
     printLargePtrBlock();   // threaded-gc-04b (only when non-zero)
     printIncrMarkBlock();   // threaded-gc-05a (only when non-zero)
     printParMarkBlock();    // threaded-gc-05b (only when non-zero)
+    printConcMarkBlock();   // threaded-gc-05c (only when non-zero)
 
     // ========== Allocation Size Histograms ==========
     //
@@ -1827,6 +1830,7 @@ void GCStats::reset() {
     lp = LargePtrStats{};
     im = IncrMarkStats{};
     pm = ParMarkStats{};
+    cm = ConcMarkStats{};
     total_oldgen_alloc_in_mutator_ns  = 0;
     total_post_sweep_shrink_ns        = 0;
     total_maybe_shrink_heavy_ns       = 0;
@@ -2829,6 +2833,41 @@ void GCStats::printParMarkBlock() const {
                   "  run ms total %.3f max %.3f; gang (collector) CPU %.3f s; deque grows %llu, peak %llu",
                   pm.run_ns_total / 1e6, pm.run_ns_max / 1e6, pm.member_cpu_ns / 1e9,
                   (unsigned long long)pm.deque_grows, (unsigned long long)pm.deque_peak_entries);
+    std::cout << buf << std::endl;
+}
+
+void GCStats::printConcMarkBlock() const {
+    if (!cm.any() && cm.mutator_cpu_ns == 0) return;
+    std::cout << "\nConcurrent Mark (threaded-gc-05c):" << std::endl;
+    char buf[320];
+    std::snprintf(buf, sizeof buf,
+                  "  episodes %llu (relaunched %llu, stopped %llu); background units %llu",
+                  (unsigned long long)cm.episodes_launched, (unsigned long long)cm.episodes_relaunched,
+                  (unsigned long long)cm.episodes_stopped, (unsigned long long)cm.bg_units);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  assists %llu (units %llu, ms total %.3f max %.3f); closings with work %llu "
+                  "(units %llu, ms total %.3f max %.3f)",
+                  (unsigned long long)cm.assists, (unsigned long long)cm.assist_units,
+                  cm.assist_ns_total / 1e6, cm.assist_ns_max / 1e6,
+                  (unsigned long long)cm.closings_with_work, (unsigned long long)cm.closing_units,
+                  cm.closing_ns_total / 1e6, cm.closing_ns_max / 1e6);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  background done by k<=T/4 %llu, <=T/2 %llu, <=3T/4 %llu, <=T %llu, at closing %llu",
+                  (unsigned long long)cm.done_k_hist[0], (unsigned long long)cm.done_k_hist[1],
+                  (unsigned long long)cm.done_k_hist[2], (unsigned long long)cm.done_k_hist[3],
+                  (unsigned long long)cm.done_k_hist[4]);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  background CPU %.3f s, episode wall %.3f s; join wait max %.3f ms, stop wait max %.3f ms",
+                  cm.bg_cpu_ns / 1e9, cm.bg_wall_ns_total / 1e9, cm.join_wait_ns_max / 1e6,
+                  cm.stop_wait_ns_max / 1e6);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  mutator CPU %.3f s, of which in pauses %.3f s; outside pauses %.3f s",
+                  cm.mutator_cpu_ns / 1e9, cm.mutator_pause_cpu_ns / 1e9,
+                  (cm.mutator_cpu_ns - std::min(cm.mutator_cpu_ns, cm.mutator_pause_cpu_ns)) / 1e9);
     std::cout << buf << std::endl;
 }
 

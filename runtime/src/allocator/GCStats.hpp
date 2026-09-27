@@ -268,6 +268,36 @@ struct ParMarkStats {
     }
 };
 
+// threaded-gc-05c (plans/threaded-gc-05c-concurrent-marking.md P§3.13):
+// concurrent marking. Per-heap (old gen's alloc_stats_); combine() sums, maxes.
+// PROGRESS counters: they may differ across conc_mark modes (P§3.10).
+struct ConcMarkStats {
+    uint64_t episodes_launched = 0, episodes_relaunched = 0, episodes_stopped = 0;
+    uint64_t bg_units = 0;
+    uint64_t assists = 0, assist_units = 0, assist_ns_total = 0, assist_ns_max = 0;
+    uint64_t closings_with_work = 0, closing_units = 0, closing_ns_total = 0, closing_ns_max = 0;
+    uint64_t done_k_hist[5] = {0, 0, 0, 0, 0};   // by T/4, T/2, 3T/4, T, not before closing
+    uint64_t bg_cpu_ns = 0, bg_wall_ns_total = 0;
+    uint64_t stop_wait_ns_max = 0, join_wait_ns_max = 0;
+    uint64_t mutator_cpu_ns = 0, mutator_pause_cpu_ns = 0;
+    bool any() const { return episodes_launched != 0 || assists != 0 || closings_with_work != 0; }
+    void combine(const ConcMarkStats& o) {
+        episodes_launched += o.episodes_launched; episodes_relaunched += o.episodes_relaunched;
+        episodes_stopped += o.episodes_stopped; bg_units += o.bg_units;
+        assists += o.assists; assist_units += o.assist_units;
+        assist_ns_total += o.assist_ns_total;
+        if (o.assist_ns_max > assist_ns_max) assist_ns_max = o.assist_ns_max;
+        closings_with_work += o.closings_with_work; closing_units += o.closing_units;
+        closing_ns_total += o.closing_ns_total;
+        if (o.closing_ns_max > closing_ns_max) closing_ns_max = o.closing_ns_max;
+        for (int i = 0; i < 5; ++i) done_k_hist[i] += o.done_k_hist[i];
+        bg_cpu_ns += o.bg_cpu_ns; bg_wall_ns_total += o.bg_wall_ns_total;
+        if (o.stop_wait_ns_max > stop_wait_ns_max) stop_wait_ns_max = o.stop_wait_ns_max;
+        if (o.join_wait_ns_max > join_wait_ns_max) join_wait_ns_max = o.join_wait_ns_max;
+        mutator_cpu_ns += o.mutator_cpu_ns; mutator_pause_cpu_ns += o.mutator_pause_cpu_ns;
+    }
+};
+
 // threaded-gc-03 (plans/threaded-gc-03-helper-threads.md P§3.9): where old-gen
 // pages come from and go to. Allocator-global (filled by getCombinedStats from
 // the live allocator), so combine() merges by max like the old-gen walls.
@@ -898,6 +928,7 @@ public:
         AllocFailure   = 4,
         Forced         = 5,
         LiveBudget     = 6,  // threaded-gc-02 trigger experiment
+        Headroom       = 7,  // threaded-gc-05c Part B (P§3.11)
     };
 
     struct MajorGCEvent {
@@ -960,7 +991,9 @@ public:
     LargePtrStats lp;
     IncrMarkStats im;   // threaded-gc-05a
     ParMarkStats pm;    // threaded-gc-05b
+    ConcMarkStats cm;   // threaded-gc-05c
     void printLargePtrBlock() const;
+    void printConcMarkBlock() const;
     void printIncrMarkBlock() const;
     void printParMarkBlock() const;
     void printPageSupplyBlock() const;

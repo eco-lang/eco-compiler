@@ -332,6 +332,7 @@ private:
     bool     pause_saw_t0_ = false;       // threaded-gc-05a pause kinds 3/4/5
     bool     pause_saw_slice_ = false;
     bool     pause_saw_handoff_ = false;
+    uint64_t pause_cpu_start_ns_ = 0;     // threaded-gc-05c: mutator CPU split
     friend struct GCPauseScope;
 
     /** Records one completed pause (outermost GC call). */

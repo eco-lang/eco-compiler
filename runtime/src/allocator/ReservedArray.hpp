@@ -28,6 +28,7 @@
 // happen in whole 2 MiB units, and discard() only returns whole 2 MiB units
 // (partial ones are zeroed with memset) so it never splits a huge page.
 
+#include <atomic>
 #include <cassert>
 #include <cstddef>
 #include <cstdio>
@@ -85,7 +86,7 @@ public:
         capacity_ = capacity;
         reserved_bytes_ = bytes;
         committed_bytes_ = 0;
-        committed_ = 0;
+        committed_.store(0, std::memory_order_relaxed);
         return true;
     }
 
@@ -100,14 +101,14 @@ public:
         capacity_ = 0;
         reserved_bytes_ = 0;
         committed_bytes_ = 0;
-        committed_ = 0;
+        committed_.store(0, std::memory_order_relaxed);
     }
 
     // Makes indices [0, n) addressable. Never moves data. Aborts if n
     // exceeds the capacity or the commit fails: callers cannot recover from
     // losing GC metadata, and a silently short table would corrupt later.
     void ensureCommitted(size_t n) {
-        if (n <= committed_) return;
+        if (n <= committed_.load(std::memory_order_relaxed)) return;
         if (n > capacity_) {
             std::fprintf(stderr,
                 "[oldgen] ReservedArray overflow (n=%zu, cap=%zu, elem=%zu B)\n",
@@ -127,8 +128,11 @@ public:
             std::abort();
         }
         committed_bytes_ = want;
-        committed_ = committed_bytes_ / sizeof(T);
-        if (committed_ > capacity_) committed_ = capacity_;
+        size_t c = committed_bytes_ / sizeof(T);
+        if (c > capacity_) c = capacity_;
+        // threaded-gc-05c (H4, HEAP_049): background markers read the count
+        // while the owner commits; publish only after the commit syscall.
+        committed_.store(c, std::memory_order_release);
     }
 
     // Zeroes elements [first, first+count) and returns the physical memory
@@ -136,7 +140,7 @@ public:
     // zeroed with memset. The range stays committed and accessible.
     void discard(size_t first, size_t count) {
         if (count == 0) return;
-        assert(first + count <= committed_);
+        assert(first + count <= committed());
         char* lo = reinterpret_cast<char*>(base_ + first);
         char* hi = reinterpret_cast<char*>(base_ + first + count);
         // Only whole granules are returned (never split a huge page).
@@ -156,18 +160,18 @@ public:
     }
 
     T& operator[](size_t i) {
-        assert(i < committed_ && "ReservedArray index past committed prefix");
+        assert(i < committed() && "ReservedArray index past committed prefix");
         return base_[i];
     }
     const T& operator[](size_t i) const {
-        assert(i < committed_ && "ReservedArray index past committed prefix");
+        assert(i < committed() && "ReservedArray index past committed prefix");
         return base_[i];
     }
 
     T* data() { return base_; }
     const T* data() const { return base_; }
     size_t capacity() const { return capacity_; }
-    size_t committed() const { return committed_; }
+    size_t committed() const { return committed_.load(std::memory_order_acquire); }
     size_t reservedBytes() const { return reserved_bytes_; }
     size_t committedBytes() const { return committed_bytes_; }
 
@@ -181,7 +185,7 @@ private:
     size_t capacity_ = 0;
     size_t reserved_bytes_ = 0;
     size_t committed_bytes_ = 0;
-    size_t committed_ = 0;
+    std::atomic<size_t> committed_{0};
 };
 
 }  // namespace Elm

@@ -65,6 +65,13 @@ HeapConfig parConfig(uint32_t threads, uint32_t slices = 4, uint32_t divisor = 8
     cfg.incremental_mark_slices    = slices;
     cfg.incremental_mark_min_slice_units = 64;
     cfg.gc_mark_threads            = threads;
+    // threaded-gc-05c: these tests drive the 05b in-pause marker directly
+    // (runMarkers, slice-by-slice units), so they pin conc_mark = 0; the test
+    // switch ECO_TEST_CONC_MARK overrides it for the scenarios that allow it.
+    cfg.conc_mark                  = 0;
+    if (const char* cm = std::getenv("ECO_TEST_CONC_MARK")) {
+        cfg.conc_mark = static_cast<uint32_t>(std::atoi(cm));
+    }
     cfg.validate();
     return cfg;
 }

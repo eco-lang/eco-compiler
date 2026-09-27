@@ -212,18 +212,32 @@ struct SliceControl {
     static constexpr uint64_t kDone       = 1ull << 63;
     std::atomic<int64_t>  budget{0};
     std::atomic<uint64_t> state{0};
+    // threaded-gc-05c (P§3.3): a stop request. Participants finish their ring,
+    // publish their private stack and leave WITHOUT setting done; the unscanned
+    // work stays in the deques for a later run.
+    std::atomic<bool>     stop{false};
+    // threaded-gc-05c: a joiner (assist / closing) bumps this so every running
+    // participant publishes its private stack at its next ring refill -- work
+    // a private stack holds is otherwise out of the joiners' reach.
+    std::atomic<uint32_t> share_epoch{0};
+    // threaded-gc-05c: the VICTIM range (every slot a thief may steal from and
+    // anyWork() scans), no longer the participant count.
     uint32_t              n = 1;
     unsigned              jitter_us = 0;
     bool                  steal_without_ticket = false;   // negative-control hook only
-    explicit SliceControl(int64_t b, uint32_t members = 1, unsigned jitter = 0)
+    // `active` = participants counted active at the start (default: members).
+    explicit SliceControl(int64_t b, uint32_t members = 1, unsigned jitter = 0,
+                          int64_t active = -1)
         : n(members), jitter_us(jitter) {
         budget.store(b, std::memory_order_relaxed);
-        state.store(members, std::memory_order_relaxed);
+        state.store(active < 0 ? members : static_cast<uint64_t>(active),
+                    std::memory_order_relaxed);
     }
     bool done() const { return (state.load(std::memory_order_acquire) & kDone) != 0; }
     uint32_t active() const {
         return static_cast<uint32_t>(state.load(std::memory_order_acquire) & kActiveMask);
     }
+    bool stopRequested() const { return stop.load(std::memory_order_relaxed); }
     void goIdle() { state.fetch_sub(1, std::memory_order_acq_rel); }
     // false when the slice is already done.
     bool reactivate() {
@@ -238,13 +252,21 @@ struct SliceControl {
     }
 };
 
+// threaded-gc-05c (P§3.3): how a participant takes part in a run.
+//   Member: 5b semantics -- idles until the control terminates.
+//   Assist: joins for a bounded ticket pool, never idles; leaves (publishing
+//           everything first) when its pool is empty or it finds no work.
+enum class Role : uint8_t { Member, Assist };
+
 struct MarkerCounters {
     uint64_t tickets = 0;          // claimed, unconsumed
     uint64_t units = 0;            // consumed this run
     uint64_t steals = 0, steal_aborts = 0, steal_empty = 0;
     uint64_t idle_spins = 0, idle_yields = 0, idle_sleeps = 0;
     uint64_t rng = 0;
+    uint32_t share_seen = 0;       // last SliceControl::share_epoch acted on
     void resetRun(unsigned member) {
+        share_seen = 0;
         tickets = units = steals = steal_aborts = steal_empty = 0;
         idle_spins = idle_yields = idle_sleeps = 0;
         rng = 0x9E3779B97F4A7C15ull ^ ((static_cast<uint64_t>(member) + 1) * 0xBF58476D1CE4E5B9ull);
@@ -255,24 +277,26 @@ struct MarkerCounters {
     }
 };
 
-inline bool claimTicket(MarkerCounters& w, SliceControl& c) {
+inline bool claimTicket(MarkerCounters& w, std::atomic<int64_t>& pool) {
     if (w.tickets > 0) { --w.tickets; return true; }
-    int64_t b = c.budget.load(std::memory_order_relaxed);
+    int64_t b = pool.load(std::memory_order_relaxed);
     while (b > 0) {
         const int64_t take = b < kTicketBatch ? b : kTicketBatch;
-        if (c.budget.compare_exchange_weak(b, b - take, std::memory_order_relaxed)) {
+        if (pool.compare_exchange_weak(b, b - take, std::memory_order_relaxed)) {
             w.tickets = static_cast<uint64_t>(take - 1);
             return true;
         }
     }
     return false;
 }
-inline void returnTickets(MarkerCounters& w, SliceControl& c) {
+inline bool claimTicket(MarkerCounters& w, SliceControl& c) { return claimTicket(w, c.budget); }
+inline void returnTickets(MarkerCounters& w, std::atomic<int64_t>& pool) {
     if (w.tickets) {
-        c.budget.fetch_add(static_cast<int64_t>(w.tickets), std::memory_order_relaxed);
+        pool.fetch_add(static_cast<int64_t>(w.tickets), std::memory_order_relaxed);
         w.tickets = 0;
     }
 }
+inline void returnTickets(MarkerCounters& w, SliceControl& c) { returnTickets(w, c.budget); }
 
 inline void cpuRelax() {
 #if defined(__x86_64__) || defined(__i386__)
@@ -313,6 +337,8 @@ inline void backoff(unsigned round, MarkerCounters& w) {
 //   bool     anyWork();                              // parallel: any deque non-empty
 //   void     prefetch(uint64_t e);
 //   void     scan(unsigned self, uint64_t e);        // may push onto self's grey set
+//   void     publishAll(unsigned self);              // parallel: move self's private
+//                                                    // stack into its deque (05c)
 template <class Env>
 inline uint64_t stealAny(Env& env, unsigned self, SliceControl& c, MarkerCounters& w) {
     const unsigned n = c.n;
@@ -340,6 +366,7 @@ inline bool idleUntilWorkOrDone(Env& env, SliceControl& c, MarkerCounters& w) {
     for (unsigned round = 0;; ++round) {
         const uint64_t s = c.state.load(std::memory_order_acquire);
         if (s & SliceControl::kDone) return false;
+        if (c.stopRequested()) return false;          // 05c: leave idle on a stop
         if (c.budget.load(std::memory_order_acquire) > 0 && env.anyWork()) {
             if (!c.reactivate()) return false;
             return true;
@@ -362,9 +389,23 @@ inline bool idleUntilWorkOrDone(Env& env, SliceControl& c, MarkerCounters& w) {
     }
 }
 
+// threaded-gc-05c (P§3.3): one participant's run.
+//   pool   -- its ticket source (&c.budget for Members, an assist pool for Assists);
+//   role   -- Member (idle until termination) or Assist (bounded, never idles);
+//   joined -- it enters a RUNNING control (c.reactivate(); returns at once when
+//             the control already terminated) instead of being counted in the
+//             control's initial active count.
+// Every exit of a parallel participant that is still active scans its ring,
+// publishes its private stack (Env::publishAll), returns its tickets and only
+// THEN goes idle (plan trap 5): an idle Member that reads the post-goIdle state
+// word also sees the published work and reactivates instead of deciding done.
 template <class Env>
-inline void runMarkerLoop(Env& env, unsigned self, SliceControl& c) {
+inline void runMarkerLoop(Env& env, unsigned self, SliceControl& c,
+                          std::atomic<int64_t>& pool, Role role, bool joined) {
     MarkerCounters& w = env.counters(self);
+    if constexpr (Env::kParallel) {
+        if (joined && !c.reactivate()) return;
+    }
     uint64_t ring[kRingDepth];
     size_t head = 0, count = 0;
     auto ringPush = [&](uint64_t e) {
@@ -372,10 +413,16 @@ inline void runMarkerLoop(Env& env, unsigned self, SliceControl& c) {
         ring[(head + count) & (kRingDepth - 1)] = e;
         ++count;
     };
+    bool active = true;
     for (;;) {
+        const bool stopping = Env::kParallel && c.stopRequested();
+        if constexpr (Env::kParallel) {
+            const uint32_t se = c.share_epoch.load(std::memory_order_relaxed);
+            if (se != w.share_seen) { w.share_seen = se; env.publishAll(self); }
+        }
         // (1) Fill the ring: a ticket per entry, taken from our own grey set.
-        while (count < kRingDepth) {
-            if (!claimTicket(w, c)) break;
+        while (!stopping && count < kRingDepth) {
+            if (!claimTicket(w, pool)) break;
             const uint64_t e = env.takeOwn(self);
             if (e == kEmpty) { ++w.tickets; break; }
             ringPush(e);
@@ -393,28 +440,48 @@ inline void runMarkerLoop(Env& env, unsigned self, SliceControl& c) {
             continue;
         }
         if constexpr (Env::kParallel) {
+            if (stopping) break;                     // ring empty; still active
             // (3) Steal, with a ticket in hand (plan trap 2).
             if (c.steal_without_ticket) {
                 const uint64_t e = stealAny(env, self, c, w);
                 if (e != kEmpty) {
-                    if (claimTicket(w, c)) { ringPush(e); continue; }
+                    if (claimTicket(w, pool)) { ringPush(e); continue; }
                     env.scan(self, e);   // deliberately unaccounted: the hook's bug
                     continue;
                 }
-            } else if (claimTicket(w, c)) {
+            } else if (claimTicket(w, pool)) {
                 const uint64_t e = stealAny(env, self, c, w);
                 if (e != kEmpty) { ringPush(e); continue; }
                 ++w.tickets;
             }
-            // (4) Idle: return tickets first (plan trap 3), then termination.
-            returnTickets(w, c);
+            if (role == Role::Assist) break;         // never idles: leave (active)
+            // (4) Idle: publish, return tickets first (plan trap 3), then termination.
+            env.publishAll(self);
+            returnTickets(w, pool);
             c.goIdle();
+            active = false;
             if (!idleUntilWorkOrDone(env, c, w)) break;
+            active = true;
         } else {
             break;
         }
     }
-    returnTickets(w, c);
+    if constexpr (Env::kParallel) {
+        if (active) {
+            env.publishAll(self);
+            returnTickets(w, pool);
+            c.goIdle();
+            return;
+        }
+        env.publishAll(self);   // after termination: nobody runs; normally a no-op
+    }
+    returnTickets(w, pool);
+}
+
+// 5b entry point: a Member counted in the initial active set, drawing on c.budget.
+template <class Env>
+inline void runMarkerLoop(Env& env, unsigned self, SliceControl& c) {
+    runMarkerLoop(env, self, c, c.budget, Role::Member, /*joined=*/false);
 }
 
 }  // namespace Elm::markwork

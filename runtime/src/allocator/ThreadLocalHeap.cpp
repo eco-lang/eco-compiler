@@ -73,6 +73,7 @@ recordMajorTriggerReason(GCStats& stats,
             stats.major_gc_occupancy_triggers++;
             break;
         case OldGenSpace::MajorGCTriggerReason::GlobalPressure:
+        case OldGenSpace::MajorGCTriggerReason::Headroom:   // same counter (05c)
             stats.major_gc_global_pressure_triggers++;
             break;
         case OldGenSpace::MajorGCTriggerReason::GarbageFraction:
@@ -99,6 +100,8 @@ majorReasonTag(OldGenSpace::MajorGCTriggerReason reason) {
             return GCStats::MajorReason::GarbageFraction;
         case OldGenSpace::MajorGCTriggerReason::LiveBudget:
             return GCStats::MajorReason::LiveBudget;
+        case OldGenSpace::MajorGCTriggerReason::Headroom:
+            return GCStats::MajorReason::Headroom;
         case OldGenSpace::MajorGCTriggerReason::None:
             break;
     }
@@ -632,6 +635,7 @@ struct GCPauseScope {
             h.pause_saw_minor_ = false;
             h.pause_saw_major_ = false;
             h.pause_saw_t0_ = h.pause_saw_slice_ = h.pause_saw_handoff_ = false;
+            h.pause_cpu_start_ns_ = gc::GCHelperPool::threadCpuNs();   // 05c P§3.13
         }
         (is_major ? h.pause_saw_major_ : h.pause_saw_minor_) = true;
     }
@@ -647,6 +651,12 @@ struct GCPauseScope {
                 else if (h.pause_saw_slice_) kind = 4;
             }
             h.recordPause(h.pause_start_ns_, now - h.pause_start_ns_, kind);
+            // threaded-gc-05c (P§3.13): mutator CPU in and outside pauses, for
+            // the interference figure (mode 2 vs mode 0).
+            const uint64_t cpu = gc::GCHelperPool::threadCpuNs();
+            ConcMarkStats& c = h.old_gen_.getStats().cm;
+            c.mutator_pause_cpu_ns += cpu - h.pause_cpu_start_ns_;
+            c.mutator_cpu_ns = cpu;
         }
     }
 };
@@ -711,6 +721,9 @@ void ThreadLocalHeap::minorGC() {
     if (Allocator::heapTraceEnabled()) {
         parent_->dumpHeapState("minorGC end");
     }
+    // threaded-gc-05c Part B (P§3.11): the promotion-rate estimate, at every
+    // minor end, before the cycle step or the trigger.
+    old_gen_.notePacingMinorEnd();
 
     // 75% occupancy trigger: minor GC promotes into old gen, so allocated
     // bytes can cross the initiating threshold here. Safepoint polling is
@@ -1077,6 +1090,11 @@ void ThreadLocalHeap::startMarkCycle(GCStats::MajorReason reason) {
         if (!complete) old_gen_.cycle_t0_reach_.clear();
     }
 #endif
+    // threaded-gc-05c (P§3.5): hand the grey set to the background markers
+    // (conc_mark 2) or mark it all now (conc_mark 1). After every other t0
+    // action, IM1's record half included: nothing the mutator does in this
+    // pause may race with a marker.
+    old_gen_.afterSnapshot();
     notePauseCycleWork(0);
     const uint64_t dur = cycleNowNs() - t_start;
     cycle_mark_ns_ += dur;
@@ -1105,10 +1123,17 @@ void ThreadLocalHeap::stepMarkCycle() {
         return;
     }
     const uint64_t t_start = cycleNowNs();
-    old_gen_.runCycleSlice();
+    const bool conc = old_gen_.concurrentCycle();
+    (void)old_gen_.cycleStep();
 #if ECO_HEAP_VALIDATE
-    old_gen_.validateCycleUniformLive("mark slice", /*exact=*/false);   // IM6
+    // IM6 reads every accumulator: only when no background member runs (05c trap 7).
+    if (old_gen_.bgEpisode() != OldGenSpace::BgEpisode::Running) {
+        old_gen_.validateCycleUniformLive("mark slice", /*exact=*/false);
+    }
 #endif
+    // threaded-gc-05c: a concurrent step with no in-pause mark work is a plain
+    // minor pause (kind 0), and its time is not a slice.
+    if (conc && !old_gen_.lastStepHadPauseWork()) return;
     notePauseCycleWork(1);
     const uint64_t dur = cycleNowNs() - t_start;
     cycle_mark_ns_ += dur;
@@ -1210,10 +1235,19 @@ void ThreadLocalHeap::completeMarkCycle(OldGenSpace::CycleFinish why) {
             stats_.major_gc_events[stats_.major_gc_events_used - 1];
         gcEventLogMajor(ev.seq, ev.start_ns, ev.total_ns, ev.mark_ns, ev.sweep_ns,
                         ev.root_scan_ns + ev.root_push_ns, gcMajorReasonName(ev.reason));
+        // threaded-gc-05c (P§3.13): progress and pacing columns ride in the
+        // reason field as key=value pairs (the row layout is fixed).
+        const OldGenSpace::CycleProgress cp = old_gen_.cycleProgress();
+        char reason[256];
+        std::snprintf(reason, sizeof reason,
+            "%s;done_k=%u;bg_units=%llu;assists=%llu;assist_units=%llu;closing_units=%llu;%s",
+            why == OldGenSpace::CycleFinish::Schedule ? "schedule"
+            : why == OldGenSpace::CycleFinish::Pressure ? "pressure" : "join",
+            cp.done_k, (unsigned long long)cp.bg_units, (unsigned long long)cp.assists,
+            (unsigned long long)cp.assist_units, (unsigned long long)cp.closing_units,
+            old_gen_.pacingSnapshot().c_str());
         gcEventLogCycle(ev.seq, ev.start_ns, cycleNowNs() - cycle_t0_wall_ns_,
-                        span_minors, units,
-                        why == OldGenSpace::CycleFinish::Schedule ? "schedule"
-                        : why == OldGenSpace::CycleFinish::Pressure ? "pressure" : "join");
+                        span_minors, units, reason);
     }
 #endif
 #endif

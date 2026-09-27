@@ -215,6 +215,95 @@ private:
     Stats stats_;
 };
 
+// ---------------------------------------------------------------------------
+// threaded-gc-05c (plans/threaded-gc-05c-concurrent-marking.md P§3.4, HEAP_065):
+// a per-heap BACKGROUND gang. launch() starts fn(ctx, j), j < members, on parked
+// threads and returns at once; the members run outside GC pauses (concurrent
+// marking) until they return by themselves (the mark terminated) or observe the
+// episode's stop flag. join() waits for them. Launch and join are mutex
+// release/acquire pairs: everything the owner wrote before launch() is visible
+// to the members, and everything they wrote is visible after join().
+//
+// Priority is applied ONCE by each thread to itself at thread start: an
+// unprivileged process cannot raise it again (plan F20), so these threads are
+// never used for work that must run at normal priority.
+//
+// One instance per OldGenSpace (not a singleton: a background episode lasts
+// seconds and must not serialise other heaps' in-pause GCMarkGang runs).
+// fork(): atforkPrepare stops and joins every running instance (the owner
+// relaunches at its next cycle step); the child abandons its threads and
+// restarts them lazily. Process exit: stopAllAtExit (std::atexit, registered at
+// the first launch) runs before static destructors could unmap a heap.
+// ---------------------------------------------------------------------------
+class GCBackgroundGang {
+public:
+    using Fn = void (*)(void* ctx, unsigned member);
+    struct Options {
+        unsigned members = 1;     // [1, 63]
+        int priority = 0;         // 0 inherit, 1..19 nice, 20 SCHED_IDLE (Linux)
+        unsigned jitter_us = 0;   // determinism probe: random start delay per member
+    };
+    explicit GCBackgroundGang(const Options& opt);
+    ~GCBackgroundGang();          // stopAndJoin(), joins the threads, unregisters
+    GCBackgroundGang(const GCBackgroundGang&) = delete;
+    GCBackgroundGang& operator=(const GCBackgroundGang&) = delete;
+
+    unsigned members() const { return opt_.members; }
+    const Options& options() const { return opt_; }
+    // Precondition: !running(). `stop` is the episode's stop flag (set by
+    // stopAndJoin and by the fork hook). Returns immediately.
+    void launch(Fn fn, void* ctx, std::atomic<bool>* stop);
+    // Launched and not yet joined (a fork-prepare stop also joins).
+    bool running() const { return running_.load(std::memory_order_acquire); }
+    // Every member of the current launch returned. A HINT for the owner's
+    // bookkeeping only (GC_DET_001: never a decision input).
+    bool finishedApprox() const;
+    // Blocks until every member returned; no-op when not running.
+    void join();
+    // *stop = true, then join(). No-op when not running.
+    void stopAndJoin();
+
+    struct Stats {
+        std::atomic<uint64_t> launches{0};
+        std::atomic<uint64_t> member_cpu_ns{0};
+        std::atomic<uint64_t> join_wait_ns_total{0};
+        std::atomic<uint64_t> join_wait_ns_max{0};
+        std::atomic<uint64_t> stop_wait_ns_max{0};
+        std::atomic<uint64_t> fork_stops{0};
+    };
+    const Stats& stats() const { return stats_; }
+
+    static void stopAllForFork();
+    static void stopAllAtExit();
+    // Test helper: the kernel thread ids of the started members (Linux; empty elsewhere).
+    std::vector<long> memberTids() const;
+
+private:
+    void memberLoop(unsigned index);
+    void startThreadsLocked();
+    void joinLocked(std::unique_lock<std::mutex>& lk, bool stopping);
+    static void atforkPrepare();
+    static void atforkParent();
+    static void atforkChild();
+
+    Options opt_;
+    mutable std::mutex m_;
+    std::condition_variable cv_start_;
+    std::condition_variable cv_done_;
+    uint64_t generation_ = 0;          // guarded by m_
+    unsigned finished_ = 0;            // guarded by m_
+    std::atomic<unsigned> finished_pub_{0};
+    std::atomic<bool> running_{false};
+    bool started_ = false;             // guarded by m_
+    bool stopping_ = false;            // guarded by m_ (destruction)
+    Fn fn_ = nullptr;                  // guarded by m_
+    void* ctx_ = nullptr;              // guarded by m_
+    std::atomic<bool>* stop_ = nullptr;
+    std::vector<std::thread>* threads_ = new std::vector<std::thread>();
+    std::vector<long> tids_;           // guarded by m_
+    Stats stats_;
+};
+
 // threaded-gc-05b P§3.9: CPUs this process may run on -- the affinity mask,
 // capped by a cgroup v2 cpu.max quota when one is set. Never
 // hardware_concurrency (which ignores both). At least 1.

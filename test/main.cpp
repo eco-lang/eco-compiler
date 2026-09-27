@@ -29,6 +29,8 @@
 #include "allocator/LargePtrPlacementTest.hpp"
 #include "allocator/IncrementalMarkTest.hpp"
 #include "allocator/ParallelMarkTest.hpp"
+#include "allocator/ConcurrentMarkTest.hpp"
+#include "allocator/TriggerPacingTest.hpp"
 #include "allocator/OldGenBitmapAllocTest.hpp"
 #include "allocator/OldGenSweepOnDemandTest.hpp"
 #include "allocator/OldGenSweepBudgetTest.hpp"
@@ -724,6 +726,40 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testParMarkNegativeSkipMergeWorker1);
     oldGenTests.add(testParMarkNegativePlainBits);
     oldGenTests.add(testParMarkNegativeStealWithoutTicket);
+    oldGenTests.add(testBgGangLaunchJoinEveryMemberOnce);
+    oldGenTests.add(testBgGangStopAndJoinBounded);
+    oldGenTests.add(testBgGangPriorityApplied);
+    oldGenTests.add(testBgGangForkWhileRunning);
+    oldGenTests.add(testBgGangDestructorStops);
+    oldGenTests.add(testConcMarkConfigJson);
+    oldGenTests.add(testConcMarkEnvOverrides);
+    oldGenTests.add(testConcMarkThreadsResolution);
+    oldGenTests.add(testConcMarkMatchesPauseMark);
+    oldGenTests.add(testConcMarkRunsDuringMinorGCs);
+    oldGenTests.add(testConcMarkUnitsExactAcrossB);
+    oldGenTests.add(testConcMarkAssistWhenLate);
+    oldGenTests.add(testConcMarkClosingJoinsRunningEpisode);
+    oldGenTests.add(testConcMarkNoAssistWhenOnTime);
+    oldGenTests.add(testConcMarkStoppedEpisodeRelaunches);
+    oldGenTests.add(testConcMarkJoinOnExplicitMajor);
+    oldGenTests.add(testConcMarkPressureFinish);
+    oldGenTests.add(testConcMarkResetMidEpisode);
+    oldGenTests.add(testConcMarkForkDuringEpisode);
+    oldGenTests.add(testConcMarkSyncModeMarksAtT0);
+    oldGenTests.add(testConcMarkT0DistributesToBackground);
+    oldGenTests.add(testConcMarkIncrementalOffNoBackground);
+    oldGenTests.add(testConcMarkNegativeSkipBgMerge);
+    oldGenTests.add(testConcMarkNegativeLeavePrivate);
+    oldGenTests.add(testConcMarkNegativeCursorT0Block);
+    oldGenTests.add(testConcMarkNegativePlainAllocateBlack);
+    oldGenTests.add(testConcMarkScaleBench);
+    oldGenTests.add(testPromoRateEwmaDeterministic);
+    oldGenTests.add(testOldAllocTotalMonotone);
+    oldGenTests.add(testHeadroomTriggerThreshold);
+    oldGenTests.add(testHeadroomFiresBeforePressure);
+    oldGenTests.add(testPacedLiveBudgetFiresEarlierByHorizon);
+    oldGenTests.add(testGarbageBackstop);
+    oldGenTests.add(testPacingIgnoresMarkProgress);
     oldGenTests.add(testHelperConfigValidation);
     oldGenTests.add(testHelperPoolSyncRunsInline);
     oldGenTests.add(testHelperPoolConcurrentRunsOnWorker);

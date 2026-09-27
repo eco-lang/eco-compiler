@@ -2,6 +2,7 @@
 #define ECO_OLDGENSPACE_H
 
 #include <limits>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -11,6 +12,7 @@
 #include "GCStats.hpp"
 #include "BlockTable.hpp"
 #include "MarkWork.hpp"
+#include "GCHelperPool.hpp"
 #include <memory>
 
 namespace Elm {
@@ -357,7 +359,24 @@ public:
                           // major_gc_garbage_fraction
         LiveBudget,       // allocated since major >= major_gc_live_budget *
                           // min(L_i, live_growth_bound * L_{i-1})
+        Headroom,         // threaded-gc-05c: committed + margin * H_c * P_hat >=
+                          // finish_fraction * cap
     };
+    // threaded-gc-05c Part B (P§3.11): heap-relative trigger pacing.
+    // P_hat = integer EWMA (1/8) of old-gen bytes allocated per minor, from
+    // the monotone old_alloc_total_; H_c = T + 1 minors (the fixed schedule).
+    void notePacingMinorEnd() {
+        const int64_t sample = static_cast<int64_t>(old_alloc_total_ - old_alloc_at_prev_minor_);
+        old_alloc_at_prev_minor_ = old_alloc_total_;
+        p_hat_ += (sample - p_hat_) / 8;
+    }
+    int64_t promoRateEstimate() const { return p_hat_; }
+    uint64_t oldAllocTotal() const { return old_alloc_total_; }
+    uint64_t pacingHorizonMinors() const {
+        return (config_->incremental_mark ? config_->incremental_mark_slices : 0) + 1ull;
+    }
+    // "p_hat=..;live_ref=..;alloc_since_major=..;headroom=.." at the last t0.
+    std::string pacingSnapshot() const;
 
     // Returns which trigger condition (if any) is live. Thread-local: each
     // thread's old gen triggers its own major GC.
@@ -372,8 +391,21 @@ public:
     // O(1) check using cached bounds. Inlined for performance.
     inline bool contains(void* ptr) const {
         char* p = static_cast<char*>(ptr);
-        return p >= region_base_ && p < region_end_;
+        return p >= regionBase() && p < regionEnd();
     }
+    // threaded-gc-05c (H5): the region bounds are read by background markers
+    // while the mutator extends the region; every write goes through
+    // setRegionBase/setRegionEnd (relaxed atomics: plain moves on x86). During
+    // a cycle the region only grows, so a stale value still covers every
+    // block that existed at t0.
+    char* regionBase() const {
+        return std::atomic_ref<char*>(const_cast<char*&>(region_base_)).load(std::memory_order_relaxed);
+    }
+    char* regionEnd() const {
+        return std::atomic_ref<char*>(const_cast<char*&>(region_end_)).load(std::memory_order_relaxed);
+    }
+    void setRegionBase(char* v) { std::atomic_ref<char*>(region_base_).store(v, std::memory_order_relaxed); }
+    void setRegionEnd(char* v) { std::atomic_ref<char*>(region_end_).store(v, std::memory_order_relaxed); }
 
     // threaded-gc-00: promotion-path instruments (promotions only, i.e.
     // allocate() while in_minor_gc_). Deterministic 1-in-16 sampling of the
@@ -405,6 +437,13 @@ public:
         uint32_t secondary;
     };
     static constexpr uint32_t encodeOwner(BlockId id) { return id.v + 1; }
+    // threaded-gc-05c (H3): owner words are read by background markers.
+    static void storeOwner(uint32_t& w, uint32_t v) {
+        std::atomic_ref<uint32_t>(w).store(v, std::memory_order_release);
+    }
+    static uint32_t loadOwner(const uint32_t& w) {
+        return std::atomic_ref<uint32_t>(const_cast<uint32_t&>(w)).load(std::memory_order_acquire);
+    }
     static constexpr BlockId decodeOwner(uint32_t o) { return BlockId{o - 1}; }
 
 private:
@@ -711,8 +750,14 @@ public:
     static unsigned resolveMarkThreads(const HeapConfig& cfg);
 private:
     std::unique_ptr<MarkWorker> markers_[kMaxMarkers];
-    unsigned mark_threads_ = 1;      // markers with a reserved accumulator
-    bool mark_parallel_ = false;     // fixed at beginMarkCycle
+    // threaded-gc-05c (P§3.2): marker SLOTS. 0..F-1 foreground (0 = the
+    // mutator; F = mark_threads_, the GCMarkGang size), F..F+B-1 background
+    // (B = conc_threads_). Every slot has an accumulator and a deque; loops
+    // about slots run to mark_slots_, loops that start a gang to F.
+    unsigned mark_threads_ = 1;      // F: foreground markers
+    unsigned conc_threads_ = 0;      // B: background markers (conc_mark = 2 only)
+    unsigned mark_slots_ = 1;        // F + B
+    bool mark_parallel_ = false;     // fixed at beginMarkCycle (mark_slots_ > 1)
     MarkWorker& w0() { return *markers_[0]; }
     const MarkWorker& w0() const { return *markers_[0]; }
     // Sum of every marker's accumulator for `id` (IM6, V5).
@@ -738,6 +783,15 @@ private:
         w.stack.erase(w.stack.begin(), w.stack.begin() + static_cast<std::ptrdiff_t>(half));
         w.priv.store(w.stack.size(), std::memory_order_relaxed);
     }
+    // threaded-gc-05c: move the WHOLE private stack to the deque (owner only).
+    // Every exit of a parallel run calls it, so no private work survives a run
+    // (IM15) and any thread can steal what is left.
+    void publishAll(MarkWorker& w) {
+        if (w.stack.empty()) return;
+        for (uint64_t e : w.stack) w.deque.push(e);
+        w.stack.clear();
+        w.priv.store(0, std::memory_order_relaxed);
+    }
     void pushGrey(MarkWorker& w, uint64_t e) {
 #if ECO_HEAP_VALIDATE
         if (snapshot_mode_) im11_t0_greys_.push_back(e);   // IM11: the t0 grey set
@@ -753,7 +807,8 @@ private:
     // Returns the units consumed (exact, P§3.3).
     uint64_t runMarkers(int64_t budget);
     static void markerEntry(void* ctx, unsigned member);
-    bool markStackEmpty() const;
+    bool markStackEmpty() const;      // exact only when no marker runs (05c trap 12)
+    bool markWorkApprox() const;      // 05c: atomics only; safe while an episode runs
     size_t markStackSize() const;
     struct SerialEnv;
     struct ParallelEnv;
@@ -768,6 +823,87 @@ private:
     struct Im10State;
     std::unique_ptr<Im10State> im10_;
 #endif
+    // ========== threaded-gc-05c: concurrent marking (HEAP_065) ==========
+public:
+    // The t0 view (P§3.2): every scalar a ParallelMark path needs, filled in
+    // beginMarkCycle and immutable until the handoff -- markers never read the
+    // live nursery bounds, cycle state or the YLOS index.
+    struct MarkView {
+        const char* nursery_lo = nullptr;   // the nursery RESERVATION (immutable)
+        const char* nursery_hi = nullptr;
+#if ECO_HEAP_VALIDATE
+        std::vector<const void*> ylos_t0;   // sorted YLOS addresses at t0
+#endif
+    };
+    enum class BgEpisode : uint8_t { None, Running, Finished };
+    static unsigned resolveConcMarkThreads(const HeapConfig& cfg, unsigned fg);
+    unsigned concThreads() const { return conc_threads_; }
+    unsigned markSlots() const { return mark_slots_; }
+    BgEpisode bgEpisode() const { return bg_ep_; }
+private:
+    MarkView mark_view_;
+    BgEpisode bg_ep_ = BgEpisode::None;
+    std::unique_ptr<gc::GCBackgroundGang> bg_;
+    std::unique_ptr<markwork::SliceControl> bg_ctl_;
+    uint32_t bg_done_k_ = 0;           // stats: first step that saw it finished
+public:
+    // Per-cycle progress counters for the event-log cycle row (P§3.13).
+    struct CycleProgress { uint64_t bg_units = 0, assists = 0, assist_units = 0, closing_units = 0; uint32_t done_k = 0; };
+    CycleProgress cycleProgress() const { CycleProgress p = cyc_prog_; p.done_k = bg_done_k_; return p; }
+private:
+    CycleProgress cyc_prog_;
+    // Part B state (mutator-only; deterministic).
+    uint64_t old_alloc_total_ = 0;
+    uint64_t old_alloc_at_prev_minor_ = 0;
+    int64_t  p_hat_ = 0;
+    struct PacingAtT0 { int64_t p_hat = 0; uint64_t live_ref = 0, alloc_since_major = 0, headroom = 0; };
+    PacingAtT0 pacing_t0_;
+    uint64_t bg_launch_ns_ = 0;        // stats: wall at launch
+    bool fg_run_active_ = false;       // a GCMarkGang run is in progress (IM14)
+    bool step_pause_work_ = false;     // the last concurrent step ran an assist or a closing join
+    bool young_in_view(const void* obj) const {
+        const char* p = static_cast<const char*>(obj);
+        return p >= mark_view_.nursery_lo && p < mark_view_.nursery_hi;
+    }
+#if ECO_HEAP_VALIDATE
+    bool ylosAtT0(const void* obj) const;
+    bool isT0Block(BlockId id) const;
+    std::atomic<bool> im10_armed_{false};
+#endif
+    // Background episode (P§3.5).
+    void launchBackground();
+    void reapBackground(bool wait);
+    void mergeBackgroundCounters();
+    void retireAllDequeArrays();
+    uint64_t bgConsumedApprox() const;
+    size_t runCycleStepConcurrent();
+    void assistEpisode(int64_t budget);
+    size_t closingFinish();
+    static void bgEntry(void* ctx, unsigned member);
+    static void assistEntry(void* ctx, unsigned member);
+    static void closingEntry(void* ctx, unsigned member);
+    void assertNoPrivateWork(const char* where) const;
+#if ECO_HEAP_VALIDATE
+    // IM16 (P§3.9): a decision path (trigger, pressure finish, allocation
+    // ladder) is on the stack; collector-progress reads assert it is not.
+    mutable int in_decision_ = 0;
+    struct DecisionScope {
+        const OldGenSpace& og;
+        explicit DecisionScope(const OldGenSpace& o) : og(o) { ++og.in_decision_; }
+        ~DecisionScope() { --og.in_decision_; }
+    };
+    void assertNotInDecision(const char* what) const;
+#endif
+    void assertSlotsQuiescent(const char* where) const;
+public:
+    // Stops and joins a running background episode (reset, destruction, tests).
+    void stopBackground();
+    // Test hooks (P§3.9, Step 6).
+    bool test_skip_bg_merge_ = false;
+    bool test_leave_private_on_exit_ = false;
+    bool test_cursor_takes_t0_block_ = false;
+    bool test_plain_allocate_black_ = false;
+    std::atomic<bool> test_bg_hold_{false};   // bg members wait while set
 public:
     // Negative-control hooks (tests only; P§3.11).
     bool test_skip_merge_worker1_ = false;
@@ -1073,6 +1209,17 @@ private:
     // One cycle step at minor end k (1 <= k <= T): a paced slice, or the
     // closing drain at k == T. Returns units done.
     size_t runCycleSlice();
+    // threaded-gc-05c: after the t0 snapshot (T >= 1): launch the background
+    // episode (conc_mark 2) or mark everything now (conc_mark 1, sync).
+    void afterSnapshot();
+    // conc_mark 2 with background markers, in a multi-minor cycle.
+    bool concurrentCycle() const {
+        return conc_threads_ > 0 && cycle_slices_ > 0 && mark_parallel_;
+    }
+    // The mode-2 step at minor end k: reap, paced assist, closing. Returns the
+    // units marked INSIDE this pause.
+    size_t cycleStep() { return concurrentCycle() ? runCycleStepConcurrent() : runCycleSlice(); }
+    bool lastStepHadPauseWork() const { return step_pause_work_; }
     // Drains the mark stack completely (closing slice / emergency / join).
     size_t drainCycleMark();
     // The handoff (P§3.6): runs the post-mark tail and returns to Idle.
@@ -1477,6 +1624,38 @@ private:
         return !was_set;
     }
 
+    // threaded-gc-05c (H1, HEAP_050): allocate-black on the non-cursor paths
+    // during a cycle. A background marker may fetch_or other bits of the same
+    // byte: a plain RMW here could erase its bit and the sweep would free a
+    // live object. Relaxed: the RMW only has to be indivisible.
+    void setMarkBitAtomic(BlockId id, const void* obj) {
+        if (!id.valid()) return;
+        if (blocks_.info(id).is_large) {
+            std::atomic_ref<uint8_t>(blocks_.largeMark(id)).store(1, std::memory_order_relaxed);
+            return;
+        }
+        size_t byte_index;
+        uint8_t mask;
+        markBitLocation(id, obj, &byte_index, &mask);
+        if (byte_index >= mark_.len(id)) return;
+        std::atomic_ref<uint8_t>(mark_.slot(id)[byte_index]).fetch_or(mask, std::memory_order_relaxed);
+    }
+    // threaded-gc-05c (H2): a mutator-side read of a mark byte a background
+    // marker may be writing (validators).
+    bool isMarkedInBlockRelaxed(BlockId id, const void* obj) const {
+        if (!id.valid()) return false;
+        if (blocks_.info(id).is_large) {
+            return std::atomic_ref<uint8_t>(const_cast<OldGenSpace*>(this)->blocks_.largeMark(id))
+                       .load(std::memory_order_relaxed) != 0;
+        }
+        size_t byte_index;
+        uint8_t mask;
+        markBitLocation(id, obj, &byte_index, &mask);
+        if (byte_index >= mark_.len(id)) return false;
+        return (std::atomic_ref<uint8_t>(const_cast<uint8_t&>(mark_.slot(id)[byte_index]))
+                    .load(std::memory_order_relaxed) & mask) != 0;
+    }
+
     // Tests the bit for `obj`, clears it, and returns whether it was set.
     // Used by sweep so that the bitmap is left all-zero post-sweep
     // (precondition for the next mark cycle to skip bulk-zeroing).
@@ -1630,6 +1809,30 @@ private:
 // For test code only - provides privileged access to OldGenSpace internals.
 class OldGenSpaceTestAccess {
 public:
+    // ---- threaded-gc-05c (HEAP_065) ----
+    static unsigned concThreads(const OldGenSpace& og) { return og.conc_threads_; }
+    static unsigned markSlots(const OldGenSpace& og) { return og.mark_slots_; }
+    static OldGenSpace::BgEpisode bgEpisode(const OldGenSpace& og) { return og.bg_ep_; }
+    static bool hasBgGang(const OldGenSpace& og) { return og.bg_ != nullptr; }
+    static gc::GCBackgroundGang* bgGang(OldGenSpace& og) { return og.bg_.get(); }
+    static bool bgFinishedApprox(const OldGenSpace& og) {
+        return og.bg_ep_ == OldGenSpace::BgEpisode::Running && og.bg_->finishedApprox();
+    }
+    static void stopBackground(OldGenSpace& og) { og.stopBackground(); }
+    static size_t slotDequeSize(const OldGenSpace& og, unsigned i) {
+        return og.markers_[i]->deque.sizeApprox() + og.markers_[i]->stack.size();
+    }
+    static uint64_t cyclePredicted(const OldGenSpace& og) { return og.cycle_predicted_; }
+    // ---- threaded-gc-05c Part B ----
+    static void setPromoRate(OldGenSpace& og, int64_t v) { og.p_hat_ = v; }
+    static void addOldAlloc(OldGenSpace& og, uint64_t b) { og.old_alloc_total_ += b; }
+    static void setLiveRefs(OldGenSpace& og, size_t major_live, size_t prev_major_live,
+                            size_t post_sweep) {
+        og.major_live_ = major_live;
+        og.prev_major_live_ = prev_major_live;
+        og.post_sweep_live_bytes_ = post_sweep;
+    }
+    static size_t allocatedBytes(const OldGenSpace& og) { return og.allocated_bytes; }
     // ---- threaded-gc-05b (HEAP_064) ----
     static uint64_t runMarkers(OldGenSpace& og, int64_t budget) { return og.runMarkers(budget); }
     static bool markStackEmpty(const OldGenSpace& og) { return og.markStackEmpty(); }
