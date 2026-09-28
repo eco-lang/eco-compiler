@@ -36,6 +36,8 @@ capable.
 - [Testing](docs/testing.md) — the elm-test, end-to-end, and stress suites.
 - [Bootstrap](docs/bootstrap.md) — the 9-stage self-compilation pipeline.
 - [Build targets](docs/build-targets.md) — reference for every CMake target.
+- [Options and flags](docs/options.md) — every CLI flag, environment variable,
+  `eco-config.json` key, heap/GC setting and CMake option, with defaults.
 
 ## Getting Started
 
