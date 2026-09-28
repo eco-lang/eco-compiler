@@ -138,6 +138,7 @@ struct MinorGCRecord {
     uint64_t rg_region = 0;
     uint64_t rg_merge_ns = 0;
     uint64_t rg_heal_slots = 0;
+    uint64_t rg_zapped = 0, rg_zap_ns = 0;   // threaded-gc-07b
     uint64_t rg_heal_ns = 0;
     uint64_t rg_wait_ns = 0;
     uint64_t rg_help_ns = 0;
@@ -302,6 +303,9 @@ struct RegionTenureCounters {
     // Step 0 item 9 / lever L6: survivor copies smaller than 16 bytes (a
     // 16-byte shadow granule needs zero), and heals run on the gang.
     uint64_t copies_under16 = 0, heals_parallel = 0, grant_fallbacks = 0;
+    // threaded-gc-07b (tenure age k > 1): the ageing mark and the zap.
+    uint64_t tenure_age = 1, age_starts = 0, age_marked = 0, age_marked_bytes = 0, age_heal = 0;
+    uint64_t zapped = 0, zapped_bytes = 0, zap_ns = 0, age_forced_exact = 0, age_par_marks = 0;
     bool any() const { return minors != 0; }
     void combine(const RegionTenureCounters& o) {
         minors += o.minors; jobs += o.jobs; merges += o.merges;
@@ -324,6 +328,11 @@ struct RegionTenureCounters {
         par_idle_yields += o.par_idle_yields; par_idle_sleeps += o.par_idle_sleeps;
         copies_under16 += o.copies_under16; heals_parallel += o.heals_parallel;
         grant_fallbacks += o.grant_fallbacks;
+        if (o.tenure_age > tenure_age) tenure_age = o.tenure_age;
+        age_starts += o.age_starts; age_marked += o.age_marked;
+        age_marked_bytes += o.age_marked_bytes; age_heal += o.age_heal;
+        zapped += o.zapped; zapped_bytes += o.zapped_bytes; zap_ns += o.zap_ns;
+        age_forced_exact += o.age_forced_exact; age_par_marks += o.age_par_marks;
     }
 };
 struct RegionTenureStats : RegionTenureCounters {

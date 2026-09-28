@@ -2821,11 +2821,11 @@ void NurserySpace::censusRecordRegion(OldGenSpace& oldgen) {
             p += sz;
         }
     };
-    for (int i = 0; i < 3; ++i) {
+    for (unsigned i = 0; i < R.n_surv; ++i) {
         region::Extent& X = R.x[i];
-        if (X.state == region::XState::Fresh) {
+        if (X.state == region::XState::Young) {
             walk(X.base, X.surv_top);
-            walk(X.bld_lo, X.bld_hi);
+            if (X.age == 1) walk(X.bld_lo, X.bld_hi);
             for (void* y : X.ylos_gen) {
                 if (oldgen.isYoungLarge(y)) rec(static_cast<char*>(y), getObjectSize(y));
             }

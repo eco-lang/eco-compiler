@@ -1855,6 +1855,9 @@ The loop entry is TG7d in `benchmarks/gc-opt-loop.md`.
 ## 12. Separate lever L1: tenure age k > 1 (in-place ageing)
 
 **Not part of this phase.** Build it only after 7c is default-on and the go/no-go below passes.
+**Built 2026-09-28 in `plans/threaded-gc-07b-tenure-ageing.md`** (with two design changes: the
+mark derives the heal list from live holders, so no per-target H lists are kept across minors, and
+the merge zaps dead ageing objects so no walker reads a dangling slot).
 
 ### 12.1 What it would do
 

@@ -131,19 +131,20 @@ Testing::TestCase testRegionConfigValidation(
         TEST_ASSERT(autoc.nursery_regions == 1);
         autoc = regionConfig(1, 1);
         autoc.nursery_regions = 2;
-        autoc.promotion_age = 2;
+        autoc.old_gen_bitmap_alloc = false;
+        autoc.incremental_mark = false;
         autoc.validate();
         autoc.resolveNurseryRegions();
         TEST_ASSERT(autoc.nursery_regions == 0);
         autoc.validate();
+        // threaded-gc-07b: promotion_age is the region tenure age k (1..3);
+        // a heap slot then holds k + 3 extents (+1 with eden flip).
+        HeapConfig aged = regionConfig(1, 1);
+        aged.promotion_age = 3;
+        aged.validate();
+        TEST_ASSERT(aged.regionTenureAge() == 3 && aged.regionSurvivorExtents() == 5);
+        TEST_ASSERT(aged.regionExtents() == 6u + (aged.regionEdenFlip() ? 1u : 0u));
         HeapConfig bad = regionConfig(1, 1);
-        bad.promotion_age = 2;
-        threw = false;
-        try { bad.validate(); } catch (const std::invalid_argument& e) {
-            threw = std::string(e.what()).find("P§12") != std::string::npos;
-        }
-        TEST_ASSERT(threw);
-        bad = regionConfig(1, 1);
         bad.old_gen_bitmap_alloc = false;
         bad.incremental_mark = false;
         threw = false;
@@ -340,7 +341,7 @@ Testing::TestCase testRegionBuilderStaysInArea(
             RegionState* R = NTA::region(nurseryOf(a));
             bool in_area = false;
             for (int i = 0; i < 3; ++i)
-                if (R->x[i].state == region::XState::Fresh && o >= R->x[i].bld_lo && o < R->x[i].bld_hi) in_area = true;
+                if (R->x[i].state == region::XState::Young && R->x[i].age == 1 && o >= R->x[i].bld_lo && o < R->x[i].bld_hi) in_area = true;
             TEST_ASSERT(in_area);
             TEST_ASSERT(getHeader(o)->builder == 1 && getHeader(o)->age == 0);
         }

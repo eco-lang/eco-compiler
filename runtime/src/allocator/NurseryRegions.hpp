@@ -4,9 +4,10 @@
 // P§3.11; HEAP_069/HEAP_070): the region nursery's data structures.
 //
 // A heap owns n extents of one capacity at a power-of-two stride X in its
-// slot block: eden (two alternating edens with eden flip) and three survivor
-// extents that rotate through the roles fill -> fresh -> hand-over ->
-// tenuring -> retire -> free. See NurseryRegion.cpp for the minor and the
+// slot block: eden (two alternating edens with eden flip) and k + 2 survivor
+// extents (k = the tenure age, threaded-gc-07b) that rotate through the roles
+// fill -> young (ageing k - 1 minors) -> hand-over -> tenuring -> retire ->
+// free. See NurseryRegion.cpp for the minor and NurseryTenure.cpp for the
 // tenure job.
 
 #include <atomic>
@@ -27,21 +28,30 @@ namespace gc { class GCBackgroundGang; }
 
 namespace region {
 
-enum class XState : uint8_t { Free, Fresh, Tenuring };
+// Survivor extents: the fill, k - 1 ageing, the hand-over and the retiring
+// extent, k <= 3 (threaded-gc-07b).
+constexpr int kMaxSurv = 5;
 
-// A pointer's role (P§3.4). Inside a minor: Eden, Hand, HandBuilders, Retire,
-// Fill; between minors: Eden, Fresh, Tenuring. Everything else in the heap's
-// slot block is Stale (a Free survivor extent, the quarantined eden, past
+enum class XState : uint8_t { Free, Young, Tenuring };
+
+// A pointer's role (P§3.4). Inside a minor: Eden, Hand, PrevBuilders (the
+// builder area of the previous fill: the Hand extent when k = 1, the age-1
+// extent otherwise), Age (an ageing extent's survivor part, k >= 2), Retire,
+// Fill; between minors: Eden, Fresh (the age-1 extent), Aged (a Young extent
+// of age >= 2), Tenuring. Everything else in the heap's slot block is Stale
+// (a Free survivor extent, the quarantined eden, a stale builder area, past
 // capacity). NotMine = outside the slot block (old gen, permanent space,
 // other heaps' nurseries).
-enum class Role : uint8_t { NotMine, Eden, Hand, HandBuilders, Retire, Fill, Fresh, Tenuring, Stale };
+enum class Role : uint8_t { NotMine, Eden, Hand, PrevBuilders, Age, Retire, Fill, Fresh, Aged, Tenuring, Stale };
 
 inline const char* roleName(Role r) {
     switch (r) {
         case Role::NotMine: return "NotMine";
         case Role::Eden: return "Eden";
         case Role::Hand: return "Hand";
-        case Role::HandBuilders: return "HandBuilders";
+        case Role::PrevBuilders: return "PrevBuilders";
+        case Role::Age: return "Age";
+        case Role::Aged: return "Aged";
         case Role::Retire: return "Retire";
         case Role::Fill: return "Fill";
         case Role::Fresh: return "Fresh";
@@ -55,6 +65,7 @@ struct Extent {
     char*    base = nullptr;          // slot_base + k * X
     unsigned k = 0;                   // index in the slot block
     XState   state = XState::Free;
+    unsigned age = 0;                 // Young: minors since it was the fill (1..k)
     char*    surv_top = nullptr;      // survivors [base, surv_top): objects and Tag_Free fillers
     char*    bld_lo = nullptr;        // builders [bld_lo, bld_hi), filled bump-down
     char*    bld_hi = nullptr;        // == base + capacity when this extent was the fill
@@ -66,6 +77,7 @@ struct Extent {
     uint32_t class_count[NUM_SIZE_CLASSES] = {};   // survivor objects per size class (the grant input)
     std::vector<HPointer> lb_bodies;  // bodies whose header was copied into this extent (P§3.14)
     std::vector<void*>    ylos_gen;   // YLOS objects first reached (non-builder) at gen_minor
+    std::vector<uint64_t> mark_bits;  // 07b: the job's mark while this extent ages (1 bit / 8 B)
 
     void clearContents() {
         surv_top = base;
@@ -81,6 +93,7 @@ struct Extent {
 struct RegionWorker {
     std::vector<void*>     S;          // Hand targets from roots / builders / hand-over YLOS
     std::vector<uint64_t*> H;          // slots (in fill copies / young YLOS) that point into Hand
+    std::vector<void*>     SA;         // 07b: targets in Age extents / ageing-generation YLOS
     uint32_t class_count[NUM_SIZE_CLASSES] = {};
     std::vector<HPointer>  lb_bodies;  // bodies of headers copied into the fill this minor
     std::vector<void*>     ylos_gen;   // YLOS first reached (non-builder) this minor
@@ -92,6 +105,7 @@ struct RegionWorker {
     void reset() {
         S.clear();
         H.clear();
+        SA.clear();
         for (auto& c : class_count) c = 0;
         lb_bodies.clear();
         ylos_gen.clear();
@@ -106,7 +120,7 @@ struct RegionWorker {
 struct TenureJob {
     enum class State : uint8_t { None, Built, Running, Done, Merged };
     State state = State::None;
-    int x = -1;                       // survivor extent index (0..2) being tenured
+    int x = -1;                       // survivor extent index being tenured
     char* base = nullptr;
     char* surv_top = nullptr;
     uint32_t gen = 0;
@@ -135,6 +149,13 @@ struct TenureJob {
     // mutator state).
     char* slot_lo = nullptr;
     char* slot_hi = nullptr;
+    // threaded-gc-07b: the ageing extents the mark traverses (their survivor
+    // parts and mark bitmaps) and the ageing generations' YLOS snapshot.
+    struct AgeRange { char* base; char* top; uint64_t* bits; };
+    AgeRange age[kMaxSurv] = {};
+    int n_age = 0;
+    const char* age_ylos_lo = nullptr;
+    const char* age_ylos_hi = nullptr;
 };
 
 // Stats for the "Region nursery / tenuring" block (P§3.20).
@@ -146,19 +167,23 @@ using RegionStats = RegionTenureStats;
 struct RegionState {
     NurserySliceSet set;
     unsigned n_ext = 4;
+    unsigned tenure_age = 1;                    // k (promotion_age)
+    unsigned n_surv = 3;                        // k + 2
     bool flip = false;
     unsigned eden_k[2] = {0, 0};
     unsigned eden_cur = 0;
     char* eden_base = nullptr;
     char* eden_dirty[2] = {nullptr, nullptr};   // bump high-water per eden since it was last cleared
-    region::Extent x[3];
-    ReservedArray<uint64_t> shadow[3];
+    region::Extent x[region::kMaxSurv];
+    ReservedArray<uint64_t> shadow[region::kMaxSurv];
     unsigned shadow_shift = 3;
     int fill = -1, hand = -1, retire = -1;      // valid inside a minor
+    int prev = -1;                              // the previous fill (age 1, or Hand when k = 1)
     uint8_t role_of_k[8] = {};
     size_t stride_log2 = 0;
     size_t stride_mask = 0;
-    size_t hand_bld_off = SIZE_MAX;             // HandBuilders start offset of the Hand extent
+    unsigned prev_k = ~0u;                      // slot index of the previous fill
+    size_t prev_bld_off = SIZE_MAX;             // PrevBuilders start offset in it
     size_t S_m = 0;                             // object bytes survived at the last minor
     std::atomic<char*> bld_bottom{nullptr};     // the fill's builder bump (down)
     char* fill_base = nullptr;
@@ -169,10 +194,13 @@ struct RegionState {
     // job's inputs; moved into it by tenureLaunch).
     std::vector<void*> pend_S;
     std::vector<uint64_t*> pend_H;
+    std::vector<void*> pend_SA;                 // 07b: mark sources in the ageing extents
     OldGenSpace* tenure_og = nullptr;           // for the collector's job
     // The hand-over snapshot of generation-(m-1) YLOS for this minor (sorted).
     std::vector<tenurework::YlosEntry> hand_ylos;
     std::vector<uint8_t> hand_ylos_reached;
+    // 07b: the ageing generations' YLOS snapshot of this minor (sorted).
+    std::vector<tenurework::YlosEntry> age_ylos;
     region::RegionStats rs;
     uint64_t minor_seq = 0;
     uint64_t last_minor_end_ns = 0;
@@ -191,15 +219,21 @@ struct RegionState {
         const size_t off = d & stride_mask;
         if (off >= set.capacity) return region::Role::Stale;
         const region::Role r = static_cast<region::Role>(role_of_k[k]);
-        if (r == region::Role::Hand && off >= hand_bld_off) return region::Role::HandBuilders;
+        if (k == prev_k && off >= prev_bld_off) return region::Role::PrevBuilders;
         return r;
     }
     bool contains(const void* p) const { return roleOf(p) != region::Role::NotMine; }
-    int extentOf(const void* p) const {   // survivor extent index (0..2) or -1
+    int extentOf(const void* p) const {   // survivor extent index or -1
         const uintptr_t d = reinterpret_cast<uintptr_t>(p) - reinterpret_cast<uintptr_t>(set.slot_base);
         if (d >= (static_cast<uintptr_t>(n_ext) << stride_log2)) return -1;
-        const unsigned k = static_cast<unsigned>(d >> stride_log2);
-        for (int i = 0; i < 3; ++i) if (x[i].k == k) return i;
+        const unsigned kk = static_cast<unsigned>(d >> stride_log2);
+        for (unsigned i = 0; i < n_surv; ++i) if (x[i].k == kk) return static_cast<int>(i);
+        return -1;
+    }
+    // The Young extent of age 1 (the fill of the last minor), or -1.
+    int freshIndex() const {
+        for (unsigned i = 0; i < n_surv; ++i)
+            if (x[i].state == region::XState::Young && x[i].age == 1) return static_cast<int>(i);
         return -1;
     }
     uint64_t* shadowWord(int xi, const void* obj) {

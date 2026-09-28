@@ -880,8 +880,15 @@ struct HeapConfig {
         if (nursery_region_eden_flip >= 0) return nursery_region_eden_flip != 0;
         return ECO_HEAP_VALIDATE != 0;
     }
-    // Extents per heap slot: eden (two with eden flip) + three survivor extents.
-    unsigned regionExtents() const { return regionEdenFlip() ? 5u : 4u; }
+    // threaded-gc-07b: the region tenure age k is promotion_age (1..3). An
+    // object is tenured if live at the k-th minor after its first copy,
+    // ageing in place in its survivor extent until then.
+    unsigned regionTenureAge() const { return promotion_age < 1 ? 1u : promotion_age; }
+    // Survivor extents: the fill, k - 1 ageing extents, the hand-over and the
+    // retiring extent.
+    unsigned regionSurvivorExtents() const { return regionTenureAge() + 2; }
+    // Extents per heap slot: eden (two with eden flip) + the survivor extents.
+    unsigned regionExtents() const { return regionSurvivorExtents() + (regionEdenFlip() ? 2u : 1u); }
     // The extent stride X: the next power of two >= the per-heap growth
     // ceiling ((nursery_max_block_count / 2) * alloc_buffer_size), so a
     // pointer's extent index is one shift. Every extent's capacity is <= X.
@@ -906,10 +913,8 @@ struct HeapConfig {
     // or nullptr when it can. validate() throws it for nursery_regions = 1;
     // resolveNurseryRegions() turns auto (2) into 0 on it.
     const char* regionIncompatibility() const {
-        if (promotion_age != 1) {
-            return
-                "nursery_regions = 1 requires promotion_age = 1 (tenure age k > 1 is "
-                "lever L1, plans/threaded-gc-07-concurrent-tenuring.md P§12)";
+        if (promotion_age < 1 || promotion_age > 3) {
+            return "nursery_regions = 1 requires promotion_age (the tenure age k) in 1..3";
         }
         if (!old_gen_bitmap_alloc) {
             return

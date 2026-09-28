@@ -2910,6 +2910,18 @@ void GCStats::printRegionBlock() const {
                       (unsigned long long)r.par_idle_yields, (unsigned long long)r.par_idle_sleeps);
         std::cout << buf << std::endl;
     }
+    if (r.tenure_age > 1) {
+        std::snprintf(buf, sizeof buf,
+                      "  ageing (threaded-gc-07b): tenure age %llu; age starts %llu, marked %llu objects "
+                      "(%.2f MB), heal slots from the mark %llu; zap spans %llu (%.2f MB, %.3f s in "
+                      "pauses); L3 forced exact %llu; parallel marks in pauses %llu",
+                      (unsigned long long)r.tenure_age, (unsigned long long)r.age_starts,
+                      (unsigned long long)r.age_marked, r.age_marked_bytes / (1024.0 * 1024.0),
+                      (unsigned long long)r.age_heal, (unsigned long long)r.zapped,
+                      r.zapped_bytes / (1024.0 * 1024.0), r.zap_ns / 1e9,
+                      (unsigned long long)r.age_forced_exact, (unsigned long long)r.age_par_marks);
+        std::cout << buf << std::endl;
+    }
     std::snprintf(buf, sizeof buf, "  survivor copies < 16 B: %llu; parallel heals: %llu; grant fallbacks (old gen near its cap): %llu",
                   (unsigned long long)r.copies_under16, (unsigned long long)r.heals_parallel,
                   (unsigned long long)r.grant_fallbacks);

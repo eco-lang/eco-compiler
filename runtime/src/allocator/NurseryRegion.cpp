@@ -1,13 +1,15 @@
 // threaded-gc-07 (plans/threaded-gc-07-concurrent-tenuring.md, HEAP_069 /
-// HEAP_070): the region nursery. An eden plus three survivor extents per heap;
-// a minor evacuates eden (and the previous fill's builder area) into the Free
-// extent, RECORDS references into the extent filled at the previous minor
-// (the hand-over), RESOLVES references into the extent tenured during the
-// last epoch, and retires that one. The tenure job (NurseryTenure.cpp)
-// promotes the hand-over extent's live objects off-header.
+// HEAP_070): the region nursery. An eden plus k + 2 survivor extents per heap
+// (k = the tenure age, threaded-gc-07b); a minor evacuates eden (and the
+// previous fill's builder area) into the Free extent, RECORDS references into
+// the extent filled k minors ago (the hand-over) and into the ageing extents
+// in between, RESOLVES references into the extent tenured during the last
+// epoch, and retires that one. The tenure job (NurseryTenure.cpp) marks the
+// ageing extents and promotes the hand-over extent's live objects off-header.
 //
-//   minor m:  Free -> Fill (G_m), Fresh -> Hand (G_{m-1}), Tenuring -> Retire (G_{m-2})
-//   end:      Fill -> Fresh, Hand -> Tenuring (job m), Retire -> Free
+//   minor m:  Free -> Fill (G_m), Young(a < k) -> Age, Young(k) -> Hand (G_{m-k}),
+//             Tenuring -> Retire (G_{m-k-1})
+//   end:      Fill -> Young(1), Age: a + 1, Hand -> Tenuring (job m), Retire -> Free
 //
 // The drain runs on phase 6's engine (markwork::runMarkerLoop, LABs,
 // Tag_Free fillers, the header claim/publish protocol) at any worker count,
@@ -86,20 +88,29 @@ size_t largestClassBytes(const HeapConfig& c, size_t* n_classes) {
 void RegionState::rebuildRoles(bool in_minor_roles) {
     for (auto& r : role_of_k) r = static_cast<uint8_t>(Role::Stale);
     role_of_k[eden_k[eden_cur]] = static_cast<uint8_t>(Role::Eden);
-    for (int i = 0; i < 3; ++i) {
+    for (unsigned u = 0; u < n_surv; ++u) {
+        const int i = static_cast<int>(u);
+        const region::Extent& X = x[u];
         Role r = Role::Stale;
         if (in_minor_roles) {
             if (i == fill) r = Role::Fill;
             else if (i == hand) r = Role::Hand;
             else if (i == retire) r = Role::Retire;
+            else if (X.state == region::XState::Young) r = Role::Age;
         } else {
-            if (x[i].state == region::XState::Fresh) r = Role::Fresh;
-            else if (x[i].state == region::XState::Tenuring) r = Role::Tenuring;
+            if (X.state == region::XState::Young) r = X.age == 1 ? Role::Fresh : Role::Aged;
+            else if (X.state == region::XState::Tenuring) r = Role::Tenuring;
         }
-        role_of_k[x[i].k] = static_cast<uint8_t>(r);
+        role_of_k[X.k] = static_cast<uint8_t>(r);
     }
-    hand_bld_off = (in_minor_roles && hand >= 0)
-                       ? static_cast<size_t>(x[hand].bld_lo - x[hand].base) : SIZE_MAX;
+    // In a minor the previous fill's builder area is PrevBuilders (evacuated
+    // like eden); every other builder area but the Fresh one is stale.
+    prev_k = ~0u;
+    prev_bld_off = SIZE_MAX;
+    if (in_minor_roles && prev >= 0) {
+        prev_k = x[prev].k;
+        prev_bld_off = static_cast<size_t>(x[prev].bld_lo - x[prev].base);
+    }
 }
 
 void NurserySpace::initRegions() {
@@ -110,16 +121,20 @@ void NurserySpace::initRegions() {
     R.set = allocator_->acquireNurserySliceSet(initial);
     if (R.set.capacity == 0) regionFatal("failed to commit the region slice set", nullptr, nullptr, initial);
     R.n_ext = R.set.n;
-    R.flip = R.n_ext == 5;
+    R.tenure_age = config_->regionTenureAge();
+    R.n_surv = config_->regionSurvivorExtents();
+    if (R.n_surv > static_cast<unsigned>(region::kMaxSurv) || R.n_ext < R.n_surv + 1)
+        regionFatal("bad region geometry", nullptr, nullptr, R.n_ext, R.n_surv);
+    R.flip = R.n_ext == R.n_surv + 2;
     R.eden_k[0] = 0;
     R.eden_k[1] = R.flip ? 1 : 0;
     R.eden_cur = 0;
     R.stride_log2 = R.set.stride_log2;
     R.stride_mask = (size_t{1} << R.stride_log2) - 1;
     R.shadow_shift = config_->shadow_granule_log2;
-    for (int i = 0; i < 3; ++i) {
+    for (unsigned i = 0; i < R.n_surv; ++i) {
         region::Extent& X = R.x[i];
-        X.k = R.n_ext - 3 + static_cast<unsigned>(i);
+        X.k = R.n_ext - R.n_surv + i;
         X.base = R.set.extent(X.k);
         X.state = region::XState::Free;
         X.gen = 0;
@@ -191,7 +206,7 @@ void NurserySpace::regionCheckAndGrow() {
         }
         return;
     }
-    for (int i = 0; i < 3; ++i) R.shadow[i].ensureCommitted(R.set.capacity >> R.shadow_shift);
+    for (unsigned i = 0; i < R.n_surv; ++i) R.shadow[i].ensureCommitted(R.set.capacity >> R.shadow_shift);
     refreshCapacityCaches();
 #if ENABLE_GC_STATS
     stats.nursery_grow_events++;
@@ -226,13 +241,15 @@ void NurserySpace::regionAssertValidPointer(void* ptr) const {
     switch (r) {
         case Role::Eden: ok = p >= R.eden_base && p < bump_.ptr; break;
         case Role::Fresh:
+        case Role::Aged:
         case Role::Tenuring: {
             const int i = R.extentOf(p);
             ok = inSurv(i) || (r == Role::Fresh && inBld(i));
             break;
         }
         case Role::Hand: ok = R.in_minor && inSurv(R.hand); break;
-        case Role::HandBuilders: ok = R.in_minor && inBld(R.hand); break;
+        case Role::PrevBuilders: ok = R.in_minor && inBld(R.prev); break;
+        case Role::Age: ok = R.in_minor && inSurv(R.extentOf(p)); break;
         case Role::Retire: ok = R.in_minor && inSurv(R.retire); break;
         case Role::Fill:
             ok = R.in_minor && ((p >= R.fill_base && p < tospace_.top.load(std::memory_order_relaxed)) ||
@@ -245,9 +262,9 @@ void NurserySpace::regionAssertValidPointer(void* ptr) const {
         std::fprintf(stderr, "[heap-validate] TV7: stale nursery pointer %p (role %s, in_minor %d, "
                      "eden [%p, %p))\n", ptr, region::roleName(r), (int)R.in_minor,
                      (void*)R.eden_base, (void*)bump_.ptr);
-        for (int i = 0; i < 3; ++i) {
-            std::fprintf(stderr, "  extent %d k=%u state=%d [%p, %p) bld [%p, %p) gen %u\n", i,
-                         R.x[i].k, (int)R.x[i].state, (void*)R.x[i].base, (void*)R.x[i].surv_top,
+        for (unsigned i = 0; i < R.n_surv; ++i) {
+            std::fprintf(stderr, "  extent %u k=%u state=%d age=%u [%p, %p) bld [%p, %p) gen %u\n", i,
+                         R.x[i].k, (int)R.x[i].state, R.x[i].age, (void*)R.x[i].base, (void*)R.x[i].surv_top,
                          (void*)R.x[i].bld_lo, (void*)R.x[i].bld_hi, R.x[i].gen);
         }
         std::fflush(stderr);
@@ -290,7 +307,7 @@ struct NurserySpace::RegionEnv {
             if (hp.ptr_ind != 0 || hp.ptr == 0) return;
             void* c = Allocator::fromPointerRaw(hp);
             const Role r = R.roleOf(c);
-            if (r == Role::Eden || r == Role::HandBuilders) __builtin_prefetch(c, 1, 3);
+            if (r == Role::Eden || r == Role::PrevBuilders) __builtin_prefetch(c, 1, 3);
         };
         switch (h->tag) {
             case Tag_Cons: {
@@ -429,7 +446,7 @@ void NurserySpace::evacuateR(MinorWorker& w, region::RegionWorker& rw, HPointer&
             return;
         }
         case Role::Eden:
-        case Role::HandBuilders: {
+        case Role::PrevBuilders: {
             uint64_t hw = mw::loadHeader(obj);
             for (;;) {
                 if (mw::isForwardWord(hw)) {
@@ -452,6 +469,12 @@ void NurserySpace::evacuateR(MinorWorker& w, region::RegionWorker& rw, HPointer&
             // builder slots (rescanned at the next minor) -> S (trap 8).
             if (col == kColSurv || col == kColYoungYlos) rw.H.push_back(reinterpret_cast<uint64_t*>(&slot));
             else rw.S.push_back(obj);
+            return;
+        case Role::Age:
+            // threaded-gc-07b: an ageing object stays; it is a mark source of
+            // this minor's job (never a heal slot: a fill-copy holder is found
+            // by the mark of its own target's hand-over).
+            rw.SA.push_back(obj);
             return;
         case Role::Retire:
             slot = Allocator::toPointerRaw(resolveRetire(obj, &rw));
@@ -482,6 +505,12 @@ void NurserySpace::reachYoungLargeR(MinorWorker& w, region::RegionWorker& rw, vo
             R.hand_ylos_reached[static_cast<size_t>(k)] = 1;
             ++rw.ylos_handover_reached;
             e = mk::objEntry(obj, kColHandYlos);
+        } else if (!R.age_ylos.empty() && tw::ylosFind(R.age_ylos, obj) >= 0) {
+            // threaded-gc-07b: an ageing generation's member (coloured by the
+            // hand-over preparation, so this test comes first): the job's mark
+            // scans it; the pause only records it.
+            rw.SA.push_back(obj);
+            return;
         } else {
             if (m->color == minor_color_) return;   // already reached this minor
             m->color = minor_color_;
@@ -514,7 +543,7 @@ void NurserySpace::spineRunR(MinorWorker& w, region::RegionWorker& rw, Cons* pre
         void* obj = Allocator::fromPointerRaw(t);
         if (obj == nullptr) break;
         const Role r = R.roleOf(obj);
-        if (r != Role::Eden && r != Role::HandBuilders) { evacuateR(w, rw, prev->tail, pcol); break; }
+        if (r != Role::Eden && r != Role::PrevBuilders) { evacuateR(w, rw, prev->tail, pcol); break; }
         uint64_t hw = mw::loadHeader(obj);
         if (mw::isForwardWord(hw)) {
             if (hw == mw::kBusy) hw = waitPublishedP(w, obj);
@@ -668,16 +697,22 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
     ++R.rs.minors;
 
     // ---- beginMinor (P§3.3) ----
-    R.fill = R.hand = R.retire = -1;
+    R.fill = R.hand = R.retire = R.prev = -1;
     unsigned nonfree = 0;
-    for (int i = 0; i < 3; ++i) {
-        switch (R.x[i].state) {
-            case region::XState::Fresh: R.hand = i; ++nonfree; break;
+    for (unsigned u = 0; u < R.n_surv; ++u) {
+        const int i = static_cast<int>(u);
+        switch (R.x[u].state) {
+            case region::XState::Young:
+                if (R.x[u].age == R.tenure_age) R.hand = i;   // G_{m-k}
+                if (R.x[u].age == 1) R.prev = i;              // G_{m-1}: its builders
+                ++nonfree;
+                break;
             case region::XState::Tenuring: R.retire = i; ++nonfree; break;
             case region::XState::Free: if (R.fill < 0) R.fill = i; break;
         }
     }
-    if (R.fill < 0 || nonfree > 2) regionFatal("TV10: no Free survivor extent at minor start", nullptr, nullptr, nonfree);
+    if (R.fill < 0 || nonfree > R.tenure_age + 1)
+        regionFatal("TV10: no Free survivor extent at minor start", nullptr, nullptr, nonfree);
     if (R.retire >= 0 && R.job.state != region::TenureJob::State::Merged)
         regionFatal("TV1: the retiring extent's tenure job was not merged", nullptr, nullptr,
                     static_cast<uint64_t>(R.job.state));
@@ -707,10 +742,31 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
                   [](const tw::YlosEntry& a, const tw::YlosEntry& b) { return a.obj < b.obj; });
         R.hand_ylos_reached.assign(R.hand_ylos.size(), 0);
     }
+    // threaded-gc-07b: the ageing generations keep their large bodies and YLOS
+    // objects until their own hand-over (re-coloured every minor; the sweep
+    // frees neither), and their YLOS members form this minor's age snapshot.
+    R.age_ylos.clear();
+    for (unsigned u = 0; u < R.n_surv; ++u) {
+        const int i = static_cast<int>(u);
+        region::Extent& Ax = R.x[u];
+        if (Ax.state != region::XState::Young || i == R.hand) continue;
+        if (!test_no_body_remark_) {
+            for (const HPointer& b : Ax.lb_bodies) oldgen.markLargeBodySeen(b, minor_color_);
+        }
+        for (void* y : Ax.ylos_gen) {
+            OldGenSpace::LargeBodyMeta* m = oldgen.youngLargeMeta(y);
+            if (m == nullptr) continue;
+            m->color = minor_color_;
+            R.age_ylos.push_back(tw::YlosEntry{static_cast<const char*>(y),
+                                               static_cast<const char*>(y) + getObjectSize(y)});
+        }
+    }
+    std::sort(R.age_ylos.begin(), R.age_ylos.end(),
+              [](const tw::YlosEntry& a, const tw::YlosEntry& b) { return a.obj < b.obj; });
 
-    // ---- worker count (6-P§3.2's space test on eden + HandBuilders bytes) ----
+    // ---- worker count (6-P§3.2's space test on eden + PrevBuilders bytes) ----
     const size_t eden_bytes = static_cast<size_t>(bump_.ptr - R.eden_base);
-    const size_t hb_bytes = R.hand >= 0 ? R.x[R.hand].bld_bytes : 0;
+    const size_t hb_bytes = R.prev >= 0 ? R.x[R.prev].bld_bytes : 0;
     const size_t s_in = eden_bytes + hb_bytes;
     unsigned n = oldgen.minorThreads();
     if (n < 1) n = 1;
@@ -843,12 +899,14 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
     // ---- merge, in worker order (P§3.5 step 6) ----
     std::vector<void*> S_all;
     std::vector<uint64_t*> H_all;
+    std::vector<void*> SA_all;
     uint64_t n_surv = 0, b_fill = 0, b_bld = 0, resolved = 0;
     for (unsigned i = 0; i < n; ++i) {
         MinorWorker& w = *minor_workers_[i];
         region::RegionWorker& rw = R.rw[i];
         S_all.insert(S_all.end(), rw.S.begin(), rw.S.end());
         H_all.insert(H_all.end(), rw.H.begin(), rw.H.end());
+        SA_all.insert(SA_all.end(), rw.SA.begin(), rw.SA.end());
         for (size_t c = 0; c < NUM_SIZE_CLASSES; ++c) F.class_count[c] += rw.class_count[c];
         F.lb_bodies.insert(F.lb_bodies.end(), rw.lb_bodies.begin(), rw.lb_bodies.end());
         F.ylos_gen.insert(F.ylos_gen.end(), rw.ylos_gen.begin(), rw.ylos_gen.end());
@@ -889,8 +947,10 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
     R.rs.starts += S_all.size();
     R.rs.heal_slots += H_all.size();
     R.rs.resolved += resolved;
+    R.rs.age_starts += SA_all.size();
     R.pend_S.swap(S_all);
     R.pend_H.swap(H_all);
+    R.pend_SA.swap(SA_all);
 #if ENABLE_GC_STATS
     {
         ParMinorStats& p = stats.pmin;
@@ -913,7 +973,7 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
                 if (hp.ptr_ind != 0 || hp.ptr == 0) return;
                 void* c = Allocator::fromPointerRaw(hp);
                 const Role r = R.roleOf(c);
-                if (r == Role::Eden || r == Role::HandBuilders || r == Role::Retire || r == Role::Stale) {
+                if (r == Role::Eden || r == Role::PrevBuilders || r == Role::Retire || r == Role::Stale) {
                     std::fprintf(stderr, "[heap-validate] region PM2: fill copy %p (tag %u) points into "
                                  "%s (%p)\n", (void*)p, (unsigned)getHeader(p)->tag, region::roleName(r), c);
                     std::fflush(stderr);
@@ -1012,17 +1072,29 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
 #endif
     }
 
-    // endMinor: Fill -> Fresh, Hand -> Tenuring, Retire -> Free.
-    F.state = region::XState::Fresh;
-    if (R.hand >= 0) R.x[R.hand].state = region::XState::Tenuring;
-    R.fill = R.hand = R.retire = -1;
+    // endMinor: Fill -> Young(1), Age: age + 1, Hand -> Tenuring, Retire -> Free.
+    for (unsigned u = 0; u < R.n_surv; ++u) {
+        const int i = static_cast<int>(u);
+        region::Extent& X = R.x[u];
+        if (i == R.fill || X.state != region::XState::Young) continue;
+        if (i == R.hand) {
+            X.state = region::XState::Tenuring;
+            X.age = 0;
+        } else {
+            ++X.age;
+        }
+    }
+    F.state = region::XState::Young;
+    F.age = 1;
+    R.fill = R.hand = R.retire = R.prev = -1;
     R.rebuildRoles(false);
     R.in_minor = false;
     {
         unsigned nf = 0;
-        for (int i = 0; i < 3; ++i) if (R.x[i].state != region::XState::Free) ++nf;
+        for (unsigned i = 0; i < R.n_surv; ++i) if (R.x[i].state != region::XState::Free) ++nf;
         if (nf > R.rs.max_nonfree) R.rs.max_nonfree = nf;
-        if (nf > 2) regionFatal("TV10: more than two survivor extents in use between minors", nullptr, nullptr, nf);
+        if (nf > R.tenure_age + 1)
+            regionFatal("TV10: more than k + 1 survivor extents in use between minors", nullptr, nullptr, nf);
     }
     refreshCapacityCaches();
     filler_bytes_ = filler_bytes_to_ = 0;
@@ -1081,7 +1153,43 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
 // object points into the region nursery.
 void NurserySpace::regionEndMinorValidate(OldGenSpace& oldgen) {
     RegionState& R = *rg_;
-    for (int i = 0; i < 3; ++i) {
+    // TV2Y (threaded-gc-07b): every non-free object of a Young extent points,
+    // inside the slot block, only into a Young or Tenuring survivor part or the
+    // Fresh builder area: a dead ageing object is zapped at the merge after
+    // the hand-over that found it dead, before it can hold a retired address.
+    auto youngOk = [&](const char* c) {
+        const int j = R.extentOf(c);
+        if (j < 0) return false;
+        const region::Extent& Y = R.x[j];
+        if (Y.state == region::XState::Free) return false;
+        if (c >= Y.base && c < Y.surv_top) return true;
+        return Y.state == region::XState::Young && Y.age == 1 && c >= Y.bld_lo && c < Y.bld_hi;
+    };
+    for (unsigned i = 0; i < R.n_surv; ++i) {
+        region::Extent& X = R.x[i];
+        if (X.state != region::XState::Young) continue;
+        auto check = [&](char* lo, char* hi) {
+            for (char* p = lo; p < hi;) {
+                const size_t sz = getObjectSize(p);
+                if (getHeader(p)->tag != Tag_Free) {
+                    forEachChildSlot(p, [&](HPointer& hp) {
+                        if (hp.ptr_ind != 0 || hp.ptr == 0) return;
+                        char* c = static_cast<char*>(Allocator::fromPointerRaw(hp));
+                        if (!R.contains(c) || youngOk(c)) return;
+                        std::fprintf(stderr, "[heap-validate] TV2Y: young object %p (tag %u, extent age %u) "
+                                     "has a child %p in %s\n", (void*)p, (unsigned)getHeader(p)->tag, X.age,
+                                     (void*)c, region::roleName(R.roleOf(c)));
+                        std::fflush(stderr);
+                        std::abort();
+                    });
+                }
+                p += sz;
+            }
+        };
+        check(X.base, X.surv_top);
+        if (X.age == 1) check(X.bld_lo, X.bld_hi);
+    }
+    for (unsigned i = 0; i < R.n_surv; ++i) {
         region::Extent& X = R.x[i];
         if (X.state != region::XState::Tenuring) continue;
         for (char* p = X.base; p < X.surv_top;) {

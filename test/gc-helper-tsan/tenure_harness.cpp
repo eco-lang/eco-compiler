@@ -22,6 +22,13 @@
 // collector runs; the "pause" joins, heals and verifies. (h) Storm: 10,000
 // jobs on the real gang with random stops. Pass: "tenure_harness PASS", exit
 // 0, no ThreadSanitizer report.
+//
+// threaded-gc-07b: even seeds add an AGEING arena (objects pointing into the
+// tenuring arena, the ageing arena, old objects and constants) and age starts.
+// (i) the mark marks exactly the ageing objects reachable from the age starts,
+// (j) the zap spans cover exactly the unmarked ageing objects, (k) the heal list
+// gains exactly the marked objects' slots into the tenuring arena, all under
+// the same stop / resume identity and on the real gang.
 
 #include "GCHelperPool.hpp"
 #include "TenureWork.hpp"
@@ -93,9 +100,10 @@ inline uint64_t* obj(uint64_t w) { return reinterpret_cast<uint64_t*>(static_cas
 inline bool isPtr(uint64_t w) { return w != 0 && (w & 7) == 0; }
 
 struct Heap {
-    Arena ten, fresh, old, ylos, dst;
+    Arena ten, fresh, old, ylos, dst, age;
     std::vector<uint64_t> shadow;         // one per 8-byte granule of `ten`
-    std::vector<uint64_t*> ten_objs, fresh_objs, old_objs, ylos_objs;
+    std::vector<uint64_t*> ten_objs, fresh_objs, old_objs, ylos_objs, age_objs;
+    std::vector<uint64_t> age_bits;       // the job's mark over `age`
     uint32_t gen = 0;
     std::mt19937_64 rng;
 
@@ -105,7 +113,9 @@ struct Heap {
         old.init(4ull << 20);
         ylos.init(4ull << 20);
         dst.init(96ull << 20);
+        age.init(8ull << 20);
         shadow.assign((64ull << 20) / 8, 0);
+        age_bits.assign((8ull << 20) / 8 / 64, 0);
     }
     uint64_t pickTarget(bool allow_fresh) {
         const uint64_t r = rng() % 100;
@@ -123,8 +133,8 @@ struct Heap {
     // subgraphs, cycles), fresh objects pointing into all of them.
     void build(uint64_t seed) {
         rng.seed(seed);
-        ten.reset(); fresh.reset(); old.reset(); ylos.reset(); dst.reset();
-        ten_objs.clear(); fresh_objs.clear(); old_objs.clear(); ylos_objs.clear();
+        ten.reset(); fresh.reset(); old.reset(); ylos.reset(); dst.reset(); age.reset();
+        ten_objs.clear(); fresh_objs.clear(); old_objs.clear(); ylos_objs.clear(); age_objs.clear();
         uint64_t id = 1;
         for (int i = 0; i < 200; ++i) {
             uint64_t* o = old.alloc(3);
@@ -166,6 +176,23 @@ struct Heap {
         for (int i = 0; i < nodes; ++i) {
             uint64_t* o = ten_objs[i];
             for (uint64_t j = 0; j < hN(o[0]); ++j) o[2 + j] = pickTarget(false);
+        }
+        // 07b: ageing objects (even seeds): younger than the tenuring arena,
+        // older than the fresh one; slots into tenuring / ageing / old / constants.
+        if (seed % 2 == 0) {
+            for (int i = 0; i < 6000; ++i) {
+                const uint64_t k = rng() % 5;
+                uint64_t* o = age.alloc(2 + k);
+                o[0] = mkHeader(kNode, k); o[1] = id++;
+                age_objs.push_back(o);
+            }
+            for (uint64_t* o : age_objs) {
+                for (uint64_t j = 0; j < hN(o[0]); ++j) {
+                    const uint64_t r = rng() % 10;
+                    o[2 + j] = r < 4 ? reinterpret_cast<uint64_t>(age_objs[rng() % age_objs.size()])
+                                     : pickTarget(false);
+                }
+            }
         }
         for (int i = 0; i < 3000; ++i) {
             const uint64_t k = 1 + rng() % 4;
@@ -211,6 +238,24 @@ struct Env {
         return hTag(p[0]) == kCons ? &p[2] : nullptr;
     }
     [[noreturn]] void abortYoungChild(const void*, const void*) const { fail("young child (TV6)"); }
+    // 07b: one ageing extent (the `age` arena).
+    int ageIndex(const void* p) const { return h.age.has(p) ? 0 : -1; }
+    bool markAge(int, const void* o) const {
+        const size_t g = static_cast<size_t>(static_cast<const char*>(o) - h.age.base) >> 3;
+        uint64_t& w = h.age_bits[g >> 6];
+        const uint64_t m = uint64_t{1} << (g & 63);
+        if (w & m) return false;
+        w |= m;
+        return true;
+    }
+    bool isMarkedAge(int, const void* o) const {
+        const size_t g = static_cast<size_t>(static_cast<const char*>(o) - h.age.base) >> 3;
+        return (h.age_bits[g >> 6] >> (g & 63)) & 1;
+    }
+    char* ageBase(unsigned) const { return h.age.base; }
+    char* ageTop(unsigned) const { return h.age.base + h.age.top; }
+    bool ageYlosMaybe(const void*) const { return false; }
+    const uint64_t* ageBits(unsigned) const { return h.age_bits.data(); }
 };
 
 // Inputs of one job over the heap: random starts + heal slots of fresh objects.
@@ -229,11 +274,54 @@ void makeJob(Heap& h, tw::SerialState& st, uint64_t seed) {
         st.ylos.push_back(tw::YlosEntry{reinterpret_cast<const char*>(y),
                                         reinterpret_cast<const char*>(y) + (2 + hN(y[0])) * 8});
     st.reached.assign(st.ylos.size(), 0);
+    st.age_starts.clear();
+    st.n_age = 0;
+    std::fill(h.age_bits.begin(), h.age_bits.end(), 0);
+    if (!h.age_objs.empty()) {
+        for (int i = 0; i < 40; ++i) st.age_starts.push_back(h.age_objs[r() % h.age_objs.size()]);
+        st.n_age = 1;
+    }
     st.clearProgress();
 }
 
 // Checks (a)-(e) after a finished job, then heals the fresh slots.
 void verify(Heap& h, tw::SerialState& st) {
+    // 07b (i)-(k): the ageing phases against an independent trace.
+    if (st.n_age != 0) {
+        std::unordered_set<uint64_t*> areach;
+        std::vector<uint64_t*> as;
+        for (void* s : st.age_starts) if (areach.insert(static_cast<uint64_t*>(s)).second) as.push_back(static_cast<uint64_t*>(s));
+        size_t heal_expect = 0;
+        while (!as.empty()) {
+            uint64_t* o = as.back();
+            as.pop_back();
+            for (uint64_t j = 0; j < hN(o[0]); ++j) {
+                const uint64_t w = o[2 + j];
+                if (!isPtr(w)) continue;
+                if (h.age.has(obj(w))) { if (areach.insert(obj(w)).second) as.push_back(obj(w)); }
+                else if (h.ten.has(obj(w))) ++heal_expect;
+            }
+        }
+        if (st.age_marked != areach.size()) fail("(i) marked != reachable ageing objects", st.age_marked, areach.size());
+        // Spans are disjoint, in address order, and cover an object iff it is unmarked.
+        for (size_t i = 1; i < st.zap.size(); ++i)
+            if (st.zap[i].p < st.zap[i - 1].p + st.zap[i - 1].bytes) fail("(j) zap spans overlap");
+        for (uint64_t* o : h.age_objs) {
+            const char* lo = reinterpret_cast<const char*>(o);
+            const char* hi = lo + (2 + hN(o[0])) * 8;
+            auto it = std::upper_bound(st.zap.begin(), st.zap.end(), lo,
+                                       [](const char* q, const tw::Span& sp) { return q < sp.p; });
+            bool covered = false, touched = false;
+            if (it != st.zap.begin()) {
+                const tw::Span& sp = *(it - 1);
+                covered = lo >= sp.p && hi <= sp.p + sp.bytes;
+                touched = lo < sp.p + sp.bytes;
+            }
+            if (it != st.zap.end() && it->p < hi) touched = true;
+            if (areach.count(o) != 0 ? touched : !covered) fail("(j) zap spans != unmarked ageing objects");
+        }
+        if (st.age_heal != heal_expect) fail("(k) heal slots from the mark", st.age_heal, heal_expect);
+    }
     std::unordered_set<uint64_t*> reach;
     std::vector<uint64_t*> stack;
     std::unordered_set<uint64_t*> ylos_seen;
@@ -356,11 +444,14 @@ int main(int argc, char** argv) {
         std::atomic<bool> stop{false};
         CollectorCtx cc{&h, &st, nullptr, &stop};
         std::atomic<bool> done{false};
+        // The pause's heal list (the job appends the mark's slots privately).
+        const std::vector<uint64_t*> heal0 = st.heal;
         std::thread reader([&] {
             uint64_t sum = 0;
             while (!done.load(std::memory_order_acquire)) {
                 for (uint64_t* o : h.ten_objs) sum += o[1] + hN(o[0]);
-                for (uint64_t* s : st.heal) sum += *s;
+                for (uint64_t* o : h.age_objs) sum += o[1] + hN(o[0]);
+                for (uint64_t* s : heal0) sum += *s;
             }
             if (sum == 42) std::fprintf(stderr, " ");
         });

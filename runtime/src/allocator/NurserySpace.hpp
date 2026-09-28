@@ -225,6 +225,7 @@ public:
     // Test hooks (P§3.19 negative controls; written only between minors).
     uint64_t test_tenure_skip_start_every_ = 0;
     bool test_heal_skip_one_ = false;
+    bool test_skip_zap_ = false;              // threaded-gc-07b negative control
     bool test_no_body_remark_ = false;
     uint64_t test_tenure_force_stop_after_ = 0;
     uint64_t test_tenure_sleep_us_ = 0;
@@ -541,6 +542,12 @@ private:
     static void regionWorkerEntry(void* ctx, unsigned member);
     void mergeJob(OldGenSpace& oldgen, bool heal, MinorGCRecord* rec);
     void runJobExact(OldGenSpace& oldgen, const std::atomic<bool>* stop);
+    // threaded-gc-07b: the mark and sweep phases, serially (n = 1) or on the
+    // minor's gang in a pause (help, fallback).
+    void finishJobMarkPhases(OldGenSpace& oldgen, unsigned n = 1);
+    struct AgeParEnv;
+    friend struct AgeParEnv;
+    static void ageParEntry(void* ctx, unsigned member);
     void runJobParallel(OldGenSpace& oldgen, unsigned n);
     static void tenureEntry(void* ctx, unsigned member);
     static void tenureParEntry(void* ctx, unsigned member);
@@ -813,11 +820,13 @@ size_t NurserySpace::forEachYoung(F&& f, size_t* bytes_out) {
             p += sz;
         }
     };
-    for (int i = 0; i < 3; ++i) {
+    // threaded-gc-07b: every Young extent (ageing ones included; dead ageing
+    // objects are zapped fillers) and Tenuring; only the Fresh builder area is live.
+    for (unsigned i = 0; i < rg_->n_surv; ++i) {
         region::Extent& X = rg_->x[i];
-        if (X.state == region::XState::Fresh) {
+        if (X.state == region::XState::Young) {
             walk(X.base, X.surv_top);
-            walk(X.bld_lo, X.bld_hi);
+            if (X.age == 1) walk(X.bld_lo, X.bld_hi);
         } else if (X.state == region::XState::Tenuring) {
             walk(X.base, X.surv_top);
         }

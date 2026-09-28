@@ -51,6 +51,7 @@
 #include "allocator/ParallelMinorTest.hpp"
 #include "allocator/RegionMinorTest.hpp"
 #include "allocator/ConcurrentTenureTest.hpp"
+#include "allocator/TenureAgeingTest.hpp"
 #include "allocator/TenureGrantTest.hpp"
 #include "allocator/PromoBufferTest.hpp"
 #include "allocator/GCPauseStatsTest.hpp"
@@ -780,6 +781,14 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testTenureCollectorThreads);
     oldGenTests.add(testTenureRespawnAndForkStorm);
     oldGenTests.add(testTenureFifoOrder);
+    oldGenTests.add(testAgeOracleLegacy);
+    oldGenTests.add(testAgeLifetime);
+    oldGenTests.add(testAgeNoNepotismAndZap);
+    oldGenTests.add(testAgeHealThroughMark);
+    oldGenTests.add(testAgeYoungLarge);
+    oldGenTests.add(testAgeModesAgree);
+    oldGenTests.add(testAgeLateHelpParallel);
+    oldGenTests.add(testAgeNegativeControls);
     oldGenTests.add(testParMarkNegativeSkipMergeWorker1);
     oldGenTests.add(testParMarkNegativePlainBits);
     oldGenTests.add(testParMarkNegativeStealWithoutTicket);

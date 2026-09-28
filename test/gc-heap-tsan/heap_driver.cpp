@@ -38,7 +38,7 @@ i64 intOf(Allocator& a, HPointer hp) {
 // threaded-gc-07 Step 10: `regions` runs the region nursery in tenure mode 2
 // with `collectors` tenure collector threads (1 = the exact engine; > 1 = L3).
 void scenario(unsigned bg, unsigned slices, uint64_t seed, unsigned minor = 1,
-              bool regions = false, unsigned collectors = 1) {
+              bool regions = false, unsigned collectors = 1, unsigned age = 1) {
     HeapConfig cfg;
     cfg.alloc_buffer_size = 32 * 1024;
     cfg.nursery_block_count = minor > 1 ? 64 : 8;
@@ -65,6 +65,7 @@ void scenario(unsigned bg, unsigned slices, uint64_t seed, unsigned minor = 1,
         cfg.tenure_mode = 2;
         cfg.tenure_collector_threads = collectors;
         cfg.tenure_help_threads = 0;
+        cfg.promotion_age = age;   // threaded-gc-07b: the tenure age k
     }
     cfg.validate();
     auto& a = Allocator::instance();
@@ -125,9 +126,11 @@ void scenario(unsigned bg, unsigned slices, uint64_t seed, unsigned minor = 1,
     const ConcMarkStats& cm = h->getOldGen().getStats().cm;
     if (regions) {
         const RegionTenureStats& rg = h->getNursery().getStats().rg;
-        std::printf("region scenario collectors=%u: minors %llu, tenured %llu, late %llu, par runs %llu\n",
-                    collectors, (unsigned long long)rg.minors, (unsigned long long)rg.tenured,
-                    (unsigned long long)rg.late, (unsigned long long)rg.par_runs);
+        std::printf("region scenario collectors=%u age=%u: minors %llu, tenured %llu, late %llu, par runs %llu, "
+                    "marked %llu, zapped %llu\n",
+                    collectors, age, (unsigned long long)rg.minors, (unsigned long long)rg.tenured,
+                    (unsigned long long)rg.late, (unsigned long long)rg.par_runs,
+                    (unsigned long long)rg.age_marked, (unsigned long long)rg.zapped);
     }
     std::printf("heap scenario B=%u T=%u minor=%u: %llu forced cycles ok (episodes %llu, bg units %llu, "
                 "assists %llu, closings with work %llu, early done %llu, parallel minors %llu)\n", bg, slices, minor,
@@ -149,6 +152,10 @@ int main() {
     // a 5c cycle every ~40 minors, 4 parallel minor workers.
     scenario(2, 4, 6, 4, /*regions=*/true, /*collectors=*/1);
     scenario(2, 4, 7, 4, /*regions=*/true, /*collectors=*/4);
+    // threaded-gc-07b: tenure ageing (k = 2, 3): the ageing mark on the
+    // collector, the zap in the merge, 5c cycles, 4 minor workers.
+    scenario(2, 4, 8, 4, /*regions=*/true, /*collectors=*/1, /*age=*/2);
+    scenario(2, 4, 9, 4, /*regions=*/true, /*collectors=*/1, /*age=*/3);
     std::printf("heap_driver PASS\n");
     return 0;
 }

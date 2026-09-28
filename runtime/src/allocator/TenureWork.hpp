@@ -17,6 +17,13 @@
 //     spine run with its heads pass), and a restart continues the same item
 //     sequence, so a job stopped anywhere and finished on another thread
 //     produces the same copies at the same addresses (P§3.18).
+//   - threaded-gc-07b (tenure age k > 1): two phases run first. MARK traces,
+//     read-only, the objects of the ageing extents (and ageing-generation YLOS)
+//     reachable from the pause's age sources; each marked object's slot into
+//     the tenuring extent joins `heal` (a start and a heal slot). SWEEP scans
+//     each ageing extent's mark bitmap in address order and lists every GAP
+//     between marked objects (dead objects and fillers) in `zap`; the merge
+//     writes one filler header per gap. Only marked objects' headers are read.
 //
 // Deliberately standalone (includes nothing from the allocator) so the TSan
 // harness (test/gc-helper-tsan/tenure_harness.cpp) runs the same engine over
@@ -96,6 +103,13 @@ struct YlosEntry {
     const char* end;
 };
 
+// A dead range of an ageing extent (threaded-gc-07b): the merge writes one
+// Tag_Free filler of `bytes` at `p`.
+struct Span {
+    char* p;
+    size_t bytes;
+};
+
 struct SerialState {
     // Inputs, fixed in the hand-over pause.
     std::vector<void*>     starts;      // S_m: Hand targets (tenuring objects)
@@ -110,6 +124,18 @@ struct SerialState {
     bool fifo = false;                  // breadth-first promotion order (a retention lever)
     std::vector<uint32_t> ylos_pending; // snapshot indices to scan (FIFO by index order of reach)
     size_t ylos_next = 0;
+    // threaded-gc-07b: the mark / sweep phases over the ageing extents.
+    std::vector<void*>     age_starts;     // pause sources: ageing objects / ageing YLOS
+    std::vector<YlosEntry> age_ylos;       // sorted: the ageing generations' YLOS snapshot
+    std::vector<uint8_t>   age_ylos_marked;
+    unsigned n_age = 0;                    // ageing extents to sweep
+    size_t next_age_start = 0;
+    std::vector<void*> age_stack;
+    unsigned sweep_x = 0;                  // extent being swept
+    size_t sweep_w = 0;                    // next bitmap word of it
+    char* sweep_gap = nullptr;             // start of the current dead gap (nullptr: extent not begun)
+    std::vector<Span> zap;                 // dead gaps (the merge fills them)
+    uint64_t age_marked = 0, age_marked_bytes = 0, age_heal = 0, zapped = 0, zapped_bytes = 0;
     // Counters (object class: identical in every mode).
     uint64_t tenured = 0, tenured_bytes = 0, items = 0, spine_runs = 0, ylos_reached = 0;
     // Test hooks (written only while no job runs).
@@ -124,10 +150,20 @@ struct SerialState {
         ylos_pending.clear();
         ylos_next = 0;
         tenured = tenured_bytes = items = spine_runs = ylos_reached = 0;
+        next_age_start = 0;
+        age_stack.clear();
+        sweep_x = 0;
+        sweep_w = 0;
+        sweep_gap = nullptr;
+        zap.clear();
+        age_marked = age_marked_bytes = age_heal = zapped = zapped_bytes = 0;
+    }
+    bool markPhasesDone() const {
+        return age_stack.empty() && next_age_start >= age_starts.size() && sweep_x >= n_age;
     }
     bool done() const {
-        return stack.size() == stack_head && next_start >= starts.size() && next_heal >= heal.size() &&
-               ylos_next >= ylos_pending.size();
+        return markPhasesDone() && stack.size() == stack_head && next_start >= starts.size() &&
+               next_heal >= heal.size() && ylos_next >= ylos_pending.size();
     }
 };
 
@@ -164,6 +200,13 @@ inline long ylosFind(const std::vector<YlosEntry>& ys, const void* p) {
 //   uint64_t* consTail(void* obj)             tail slot if obj is a Cons, else nullptr
 //   uint64_t* consHead(void* obj)             boxed head slot of a Cons, else nullptr
 //   [[noreturn]] void abortYoungChild(const void* parent, const void* child)
+// and, for the ageing phases (threaded-gc-07b):
+//   int       ageIndex(const void* p)          ageing extent of p's survivor part, or -1
+//   bool      markAge(int i, const void* obj)  test-and-set obj's mark bit; true if newly set
+//   bool      isMarkedAge(int i, const void* obj)
+//   char*     ageBase(unsigned i), ageTop(unsigned i)
+//   bool      ageYlosMaybe(const void* p)     cheap bounding-box filter for the age snapshot
+//   const uint64_t* ageBits(unsigned i)       extent i's mark bitmap (bit per 8-byte granule)
 // ---------------------------------------------------------------------------
 template <class Env>
 class SerialEngine {
@@ -180,6 +223,23 @@ public:
             if (!step()) return DrainResult::Done;
             ++st_.items;
             if (st_.test_sleep_us_per_item != 0) sleepUs(st_.test_sleep_us_per_item);
+        }
+    }
+
+    // threaded-gc-07b: only the mark and sweep phases (the parallel engines
+    // take the tenure phase after them). Never stops.
+    void runMarkPhases() {
+        while (!st_.markPhasesDone()) {
+            markOrSweepStep();
+            ++st_.items;
+        }
+    }
+    // Finishes the extent a stopped sweep is inside (a parallel sweep starts
+    // only at an extent boundary).
+    void finishSweepExtent() {
+        while (st_.sweep_x < st_.n_age && st_.sweep_gap != nullptr) {
+            sweepStep();
+            ++st_.items;
         }
     }
 
@@ -215,6 +275,10 @@ private:
 
     // One item. False when there is nothing left.
     bool step() {
+        if (!st_.markPhasesDone()) {
+            markOrSweepStep();
+            return true;
+        }
         if (st_.stack.size() != st_.stack_head) {
             void* c;
             if (st_.fifo) {
@@ -253,6 +317,105 @@ private:
             return true;
         }
         return false;
+    }
+
+    // ---- threaded-gc-07b: the ageing phases ----
+    void markOrSweepStep() {
+        if (!st_.age_stack.empty()) {
+            void* o = st_.age_stack.back();
+            st_.age_stack.pop_back();
+            scanAge(o);
+            return;
+        }
+        if (st_.next_age_start < st_.age_starts.size()) {
+            const size_t i = st_.next_age_start++;
+            if (i + 8 < st_.age_starts.size()) __builtin_prefetch(st_.age_starts[i + 8], 0, 3);
+            markTarget(st_.age_starts[i], nullptr, nullptr);
+            return;
+        }
+        sweepStep();
+    }
+
+    bool markAgeYlos(void* t) {
+        const long k = ylosFind(st_.age_ylos, t);
+        if (k < 0) return false;
+        if (st_.age_ylos_marked[static_cast<size_t>(k)]) return true;
+        st_.age_ylos_marked[static_cast<size_t>(k)] = 1;
+        ++st_.age_marked;
+        st_.age_marked_bytes += env_.sizeOf(t);
+        st_.age_stack.push_back(t);
+        return true;
+    }
+
+    // A reference `t` (from the pause when parent == nullptr, else from the
+    // marked object `parent`'s slot `s`).
+    void markTarget(void* t, void* parent, uint64_t* s) {
+        const int i = env_.ageIndex(t);
+        if (i >= 0) {
+            if (env_.markAge(i, t)) {
+                ++st_.age_marked;
+                st_.age_marked_bytes += env_.sizeOf(t);
+                st_.age_stack.push_back(t);
+            }
+            return;
+        }
+        if (parent != nullptr && env_.inTenuring(t)) {
+            st_.heal.push_back(s);   // a tenure start whose slot the merge heals
+            ++st_.age_heal;
+            return;
+        }
+        if (parent != nullptr && env_.ylosMaybe(t) && ylosFind(st_.ylos, t) >= 0) {
+            reachYlos(t);
+            return;
+        }
+        if (env_.ageYlosMaybe(t) && markAgeYlos(t)) return;
+        if (parent == nullptr) {
+            std::fprintf(stderr, "[tenure] FATAL: an age source outside the ageing extents (%p)\n", t);
+            std::abort();
+        }
+        if (env_.youngElsewhere(t)) env_.abortYoungChild(parent, t);   // TV6 (every build)
+    }
+
+    void scanAge(void* o) {
+        env_.forEachChildSlot(o, [&](uint64_t* s) {
+            void* t = env_.target(*s);
+            if (t != nullptr) markTarget(t, o, s);
+        });
+    }
+
+    void emitGap(char* p, size_t bytes) {
+        st_.zap.push_back(Span{p, bytes});
+        ++st_.zapped;
+        st_.zapped_bytes += bytes;
+    }
+
+    // One bitmap word of the address-order scan over an ageing survivor part:
+    // the gap before each marked object becomes a zap span.
+    void sweepStep() {
+        const unsigned x = st_.sweep_x;
+        char* base = env_.ageBase(x);
+        char* top = env_.ageTop(x);
+        if (st_.sweep_gap == nullptr) {
+            st_.sweep_gap = base;
+            st_.sweep_w = 0;
+        }
+        const size_t words = ((static_cast<size_t>(top - base) >> 3) + 63) / 64;
+        if (st_.sweep_w >= words) {
+            if (st_.sweep_gap < top) emitGap(st_.sweep_gap, static_cast<size_t>(top - st_.sweep_gap));
+            ++st_.sweep_x;
+            st_.sweep_gap = nullptr;
+            st_.sweep_w = 0;
+            return;
+        }
+        uint64_t bits = env_.ageBits(x)[st_.sweep_w];
+        while (bits != 0) {
+            const unsigned b = static_cast<unsigned>(__builtin_ctzll(bits));
+            bits &= bits - 1;
+            char* p = base + ((st_.sweep_w * 64 + b) << 3);
+            if (p > st_.sweep_gap) emitGap(st_.sweep_gap, static_cast<size_t>(p - st_.sweep_gap));
+            st_.sweep_gap = p + env_.sizeOf(p);
+        }
+        ++st_.sweep_w;
     }
 
     void reachYlos(const void* t) {
@@ -355,6 +518,20 @@ template <class Env>
 inline DrainResult tenureDrainSerial(SerialState& st, Env& env, const std::atomic<bool>* stop) {
     SerialEngine<Env> e(st, env);
     return e.run(stop);
+}
+
+// threaded-gc-07b: finish only the mark and sweep phases (before a parallel
+// engine takes the tenure phase).
+template <class Env>
+inline void finishMarkPhases(SerialState& st, Env& env) {
+    SerialEngine<Env> e(st, env);
+    e.runMarkPhases();
+}
+
+template <class Env>
+inline void finishSweepExtent(SerialState& st, Env& env) {
+    SerialEngine<Env> e(st, env);
+    e.finishSweepExtent();
 }
 
 }  // namespace Elm::tenurework

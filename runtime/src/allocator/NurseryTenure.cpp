@@ -118,11 +118,287 @@ struct NurserySpace::TenureHeapEnv {
         return reinterpret_cast<uint64_t*>(&static_cast<Cons*>(obj)->head.p);
     }
     [[noreturn]] void abortYoungChild(const void* parent, const void* child) const {
-        // TV6 (every build): a promoted copy would point into the nursery.
-        tenureFatal("TV6: a promoted object has a young child outside the tenuring extent "
-                    "(HEAP_005 / HEAP_BUILDER_003)", parent, child);
+        // TV6 (every build): a promoted copy (or a live ageing object) would
+        // point into a retired or stale part of the nursery.
+        tenureFatal("TV6: a promoted or live ageing object has a young child outside the tenuring "
+                    "and ageing extents (HEAP_005 / HEAP_BUILDER_003)", parent, child);
+    }
+    // threaded-gc-07b: the ageing extents (job-private copies of their ranges).
+    int ageIndex(const void* p) const {
+        const char* q = static_cast<const char*>(p);
+        for (int i = 0; i < J.n_age; ++i)
+            if (q >= J.age[i].base && q < J.age[i].top) return i;
+        return -1;
+    }
+    bool markAge(int i, const void* obj) const {
+        const size_t g = static_cast<size_t>(static_cast<const char*>(obj) - J.age[i].base) >> 3;
+        uint64_t& w = J.age[i].bits[g >> 6];
+        const uint64_t m = uint64_t{1} << (g & 63);
+        if (w & m) return false;
+        w |= m;
+        return true;
+    }
+    bool isMarkedAge(int i, const void* obj) const {
+        const size_t g = static_cast<size_t>(static_cast<const char*>(obj) - J.age[i].base) >> 3;
+        return (J.age[i].bits[g >> 6] >> (g & 63)) & 1;
+    }
+    char* ageBase(unsigned i) const { return J.age[i].base; }
+    char* ageTop(unsigned i) const { return J.age[i].top; }
+    bool ageYlosMaybe(const void* p) const {
+        const char* q = static_cast<const char*>(p);
+        return q >= J.age_ylos_lo && q < J.age_ylos_hi;
+    }
+    const uint64_t* ageBits(unsigned i) const { return J.age[i].bits; }
+};
+
+// ---------------------------------------------------------------------------
+// threaded-gc-07b: the ageing mark on the minor's gang (a pause: help, the
+// grant fallback). Bits are set with an atomic OR; heal slots and reached
+// hand-over YLOS go to per-worker lists merged in worker order. The marked
+// set, the heal set and the zap spans equal the exact engine's.
+// ---------------------------------------------------------------------------
+namespace {
+constexpr uint32_t kAgeScan = 0;    // a marked object to scan
+constexpr uint32_t kAgeStart = 1;   // a pause source to mark
+struct AgeOut {
+    std::vector<uint64_t*> heal;
+    std::vector<uint32_t> ylos;
+    uint64_t marked = 0, marked_bytes = 0, heal_n = 0, ylos_reached = 0;
+};
+}  // namespace
+
+struct NurserySpace::AgeParEnv {
+    static constexpr bool kParallel = true;
+    NurserySpace& ns;
+    TenureJob& J;
+    std::unique_ptr<MinorWorker>* ws;
+    unsigned n;
+    std::vector<AgeOut>* out;
+
+    MinorWorker& W(unsigned i) { return *ws[i]; }
+    mk::MarkerCounters& counters(unsigned i) { return W(i).ctr; }
+    uint64_t takeOwn(unsigned i) {
+        MinorWorker& w = W(i);
+        if (w.stack.size() != w.head) {
+            const uint64_t e = w.stack.back();
+            w.stack.pop_back();
+            w.priv.store(w.stack.size() - w.head, std::memory_order_relaxed);
+            if ((++w.pops & 63) == 0) ns.publishHalfP(w);
+            return e;
+        }
+        return w.deque.take();
+    }
+    uint64_t stealFrom(unsigned v) { return W(v).deque.steal(); }
+    bool anyWork() {
+        for (unsigned i = 0; i < n; ++i) if (!W(i).deque.emptyApprox()) return true;
+        return false;
+    }
+    void prefetch(uint64_t) {}
+    void publishAll(unsigned self) { ns.publishAllP(W(self)); }
+
+    int ageIndex(const void* p) const {
+        const char* q = static_cast<const char*>(p);
+        for (int i = 0; i < J.n_age; ++i)
+            if (q >= J.age[i].base && q < J.age[i].top) return i;
+        return -1;
+    }
+    bool markBit(int i, const void* o) const {
+        const size_t g = static_cast<size_t>(static_cast<const char*>(o) - J.age[i].base) >> 3;
+        std::atomic_ref<uint64_t> w(J.age[i].bits[g >> 6]);
+        const uint64_t m = uint64_t{1} << (g & 63);
+        if (w.load(std::memory_order_relaxed) & m) return false;
+        return (w.fetch_or(m, std::memory_order_acq_rel) & m) == 0;
+    }
+    void mark(MinorWorker& w, AgeOut& o, void* t, void* parent, uint64_t* s) {
+        tw::SerialState& st = J.st;
+        const char* q = static_cast<const char*>(t);
+        const int i = ageIndex(t);
+        if (i >= 0) {
+            if (markBit(i, t)) {
+                ++o.marked;
+                o.marked_bytes += getObjectSize(t);
+                ns.pushGreyP(w, mk::objEntry(t, kAgeScan));
+            }
+            return;
+        }
+        if (parent != nullptr && q >= J.base && q < J.surv_top) {
+            o.heal.push_back(s);
+            ++o.heal_n;
+            return;
+        }
+        if (parent != nullptr && q >= J.ylos_lo && q < J.ylos_hi) {
+            const long k = tw::ylosFind(st.ylos, t);
+            if (k >= 0) {
+                std::atomic_ref<uint8_t> r(st.reached[static_cast<size_t>(k)]);
+                if (r.load(std::memory_order_relaxed) == 0 && r.exchange(1, std::memory_order_acq_rel) == 0) {
+                    o.ylos.push_back(static_cast<uint32_t>(k));
+                    ++o.ylos_reached;
+                }
+                return;
+            }
+        }
+        if (q >= J.age_ylos_lo && q < J.age_ylos_hi) {
+            const long k = tw::ylosFind(st.age_ylos, t);
+            if (k >= 0) {
+                std::atomic_ref<uint8_t> r(st.age_ylos_marked[static_cast<size_t>(k)]);
+                if (r.load(std::memory_order_relaxed) == 0 && r.exchange(1, std::memory_order_acq_rel) == 0) {
+                    ++o.marked;
+                    o.marked_bytes += getObjectSize(t);
+                    ns.pushGreyP(w, mk::objEntry(t, kAgeScan));
+                }
+                return;
+            }
+        }
+        if (parent == nullptr) tenureFatal("an age source outside the ageing extents", t);
+        if (q >= J.slot_lo && q < J.slot_hi)
+            tenureFatal("TV6: a live ageing object has a young child outside the tenuring and ageing extents",
+                        parent, t);
+    }
+    void scan(unsigned self, uint64_t e) {
+        MinorWorker& w = W(self);
+        AgeOut& o = (*out)[self];
+        void* obj = mk::entryAddr(e);
+        if (mk::entryField(e) == kAgeStart) { mark(w, o, obj, nullptr, nullptr); return; }
+        forEachChildSlot(obj, [&](HPointer& hp) {
+            if (hp.ptr_ind != 0 || hp.ptr == 0) return;
+            mark(w, o, Allocator::fromPointerRaw(hp), obj, reinterpret_cast<uint64_t*>(&hp));
+        });
     }
 };
+
+void NurserySpace::ageParEntry(void* ctx, unsigned member) {
+    struct Args { AgeParEnv* env; mk::SliceControl* ctl; };
+    Args* a = static_cast<Args*>(ctx);
+    mk::runMarkerLoop(*a->env, member, *a->ctl);
+}
+
+void NurserySpace::finishJobMarkPhases(OldGenSpace& oldgen, unsigned n) {
+    TenureJob& J = rg_->job;
+    tw::SerialState& st = J.st;
+    if (st.markPhasesDone()) return;
+    TenureHeapEnv env{J, oldgen, nullptr};
+    const uint64_t t0 = nowNs();
+    gc::GCMarkGang* gang = nullptr;
+    if (n > 1) {
+        gang = &oldgen.ensureGang();
+        n = std::min<unsigned>({n, gang->members(), static_cast<unsigned>(OldGenSpace::kMaxMinorWorkers)});
+    }
+    if (n <= 1) {
+        tw::finishMarkPhases(st, env);
+        J.busy_ns += nowNs() - t0;
+        return;
+    }
+    // (1) The mark, on the gang.
+    if (!st.age_stack.empty() || st.next_age_start < st.age_starts.size()) {
+        tenureParSetup(minor_workers_, n);
+        size_t rr = 0;
+        for (void* o : st.age_stack) minor_workers_[rr++ % n]->deque.push(mk::objEntry(o, kAgeScan));
+        for (size_t i = st.next_age_start; i < st.age_starts.size(); ++i)
+            minor_workers_[rr++ % n]->deque.push(mk::objEntry(st.age_starts[i], kAgeStart));
+        st.age_stack.clear();
+        st.next_age_start = st.age_starts.size();
+        std::vector<AgeOut> outs(n);
+        AgeParEnv penv{*this, J, minor_workers_, n, &outs};
+        mk::SliceControl ctl(mk::kDrainBudget, n, gang->jitterUs(), n);
+        struct Args { AgeParEnv* env; mk::SliceControl* ctl; } args{&penv, &ctl};
+        par_n_ = n;
+        gang->run(&NurserySpace::ageParEntry, &args, n);
+        par_n_ = 0;
+        for (unsigned i = 0; i < n; ++i) {
+            MinorWorker& w = *minor_workers_[i];
+            if (w.stack.size() != w.head || !w.deque.emptyApprox())
+                tenureFatal("work left in an ageing-mark worker after termination", nullptr, nullptr, i);
+            w.deque.reset();
+            w.resetRun();
+            const AgeOut& o = outs[i];
+            st.heal.insert(st.heal.end(), o.heal.begin(), o.heal.end());
+            st.ylos_pending.insert(st.ylos_pending.end(), o.ylos.begin(), o.ylos.end());
+            st.age_marked += o.marked;
+            st.age_marked_bytes += o.marked_bytes;
+            st.age_heal += o.heal_n;
+            st.ylos_reached += o.ylos_reached;
+        }
+    }
+    // (2) The sweep: finish a partly swept extent serially, then each
+    // remaining extent in n bitmap-word chunks stitched in address order
+    // (the same spans as the exact engine).
+    tw::finishSweepExtent(st, env);
+    struct Chunk {
+        std::vector<tw::Span> spans;
+        char* first = nullptr;
+        char* last_end = nullptr;
+    };
+    static const bool check_sweep = [] {
+        const char* e = std::getenv("ECO_TEST_CHECK_AGE_SWEEP");
+        return (e != nullptr && e[0] == '1') || ECO_HEAP_VALIDATE;
+    }();
+    for (unsigned x = st.sweep_x; x < st.n_age; ++x) {
+        const size_t zap0 = st.zap.size();
+        char* base = J.age[x].base;
+        char* top = J.age[x].top;
+        const size_t words = ((static_cast<size_t>(top - base) >> 3) + 63) / 64;
+        std::vector<Chunk> chunks(n);
+        struct SweepCtx { char* base; const uint64_t* bits; size_t words; unsigned n; std::vector<Chunk>* c; }
+            sc{base, J.age[x].bits, words, n, &chunks};
+        gang->run([](void* c, unsigned m) {
+            SweepCtx& s = *static_cast<SweepCtx*>(c);
+            Chunk& ch = (*s.c)[m];
+            const size_t w0 = s.words * m / s.n, w1 = s.words * (m + 1) / s.n;
+            char* gap = nullptr;
+            for (size_t w = w0; w < w1; ++w) {
+                uint64_t bits = s.bits[w];
+                while (bits != 0) {
+                    const unsigned b = static_cast<unsigned>(__builtin_ctzll(bits));
+                    bits &= bits - 1;
+                    char* p = s.base + ((w * 64 + b) << 3);
+                    if (gap == nullptr) ch.first = p;
+                    else if (p > gap) ch.spans.push_back(tw::Span{gap, static_cast<size_t>(p - gap)});
+                    gap = p + getObjectSize(p);
+                }
+            }
+            ch.last_end = gap;
+        }, &sc, n);
+        char* gap = base;
+        auto emit = [&](char* p, size_t bytes) {
+            st.zap.push_back(tw::Span{p, bytes});
+            ++st.zapped;
+            st.zapped_bytes += bytes;
+        };
+        for (const Chunk& ch : chunks) {
+            if (ch.first == nullptr) continue;
+            if (ch.first > gap) emit(gap, static_cast<size_t>(ch.first - gap));
+            for (const tw::Span& sp : ch.spans) emit(sp.p, sp.bytes);
+            gap = ch.last_end;
+        }
+        if (gap < top) emit(gap, static_cast<size_t>(top - gap));
+        if (check_sweep) {
+            // TVZ: the stitched spans equal the exact engine's address-order scan.
+            std::vector<tw::Span> ref;
+            char* g = base;
+            for (size_t w = 0; w < words; ++w) {
+                uint64_t bits = J.age[x].bits[w];
+                while (bits != 0) {
+                    const unsigned b = static_cast<unsigned>(__builtin_ctzll(bits));
+                    bits &= bits - 1;
+                    char* p = base + ((w * 64 + b) << 3);
+                    if (p > g) ref.push_back(tw::Span{g, static_cast<size_t>(p - g)});
+                    g = p + getObjectSize(p);
+                }
+            }
+            if (g < top) ref.push_back(tw::Span{g, static_cast<size_t>(top - g)});
+            bool same = ref.size() == st.zap.size() - zap0;
+            for (size_t i = 0; same && i < ref.size(); ++i)
+                same = ref[i].p == st.zap[zap0 + i].p && ref[i].bytes == st.zap[zap0 + i].bytes;
+            if (!same) tenureFatal("TVZ: the parallel ageing sweep differs from the exact scan", base, top,
+                                   ref.size(), st.zap.size() - zap0);
+        }
+    }
+    st.sweep_x = st.n_age;
+    st.sweep_gap = nullptr;
+    st.sweep_w = 0;
+    J.busy_ns += nowNs() - t0;
+    ++rg_->rs.age_par_marks;
+}
 
 void NurserySpace::runJobExact(OldGenSpace& oldgen, const std::atomic<bool>* stop) {
     TenureJob& J = rg_->job;
@@ -154,13 +430,15 @@ void NurserySpace::tenureLaunch(OldGenSpace& oldgen) {
     RegionState& R = *rg_;
     TenureJob& J = R.job;
     int t = -1;
-    for (int i = 0; i < 3; ++i) if (R.x[i].state == region::XState::Tenuring) t = i;
+    for (unsigned i = 0; i < R.n_surv; ++i)
+        if (R.x[i].state == region::XState::Tenuring) t = static_cast<int>(i);
     if (J.state != TenureJob::State::None && J.state != TenureJob::State::Merged) {
         tenureFatal("tenureLaunch over an unmerged job", nullptr, nullptr, static_cast<uint64_t>(J.state));
     }
-    if (t < 0) {                       // minor 1: nothing handed over
+    if (t < 0) {                       // minors 1..k: nothing handed over
         R.pend_S.clear();
         R.pend_H.clear();
+        R.pend_SA.clear();
         return;
     }
     if (J.x == t && J.hand_minor == R.minor_seq) return;   // already launched for this minor
@@ -192,6 +470,28 @@ void NurserySpace::tenureLaunch(OldGenSpace& oldgen) {
     R.pend_H.clear();
     J.st.ylos = R.hand_ylos;
     J.st.reached = R.hand_ylos_reached;
+    // threaded-gc-07b: the ageing extents of this minor (now Young, age >= 2),
+    // their cleared mark bitmaps, the pause's age sources and the ageing
+    // generations' YLOS snapshot.
+    J.n_age = 0;
+    for (unsigned i = 0; i < R.n_surv; ++i) {
+        region::Extent& A = R.x[i];
+        if (A.state != region::XState::Young || A.age < 2) continue;
+        const size_t granules = static_cast<size_t>(A.surv_top - A.base) >> 3;
+        const size_t words = (granules + 63) / 64;
+        const size_t cap_words = ((R.set.capacity >> 3) + 63) / 64;
+        if (A.mark_bits.size() < cap_words) A.mark_bits.resize(cap_words);
+        std::fill(A.mark_bits.begin(), A.mark_bits.begin() + static_cast<std::ptrdiff_t>(words), 0);
+        J.age[J.n_age++] = TenureJob::AgeRange{A.base, A.surv_top, A.mark_bits.data()};
+    }
+    J.st.n_age = static_cast<unsigned>(J.n_age);
+    J.st.age_starts.swap(R.pend_SA);
+    R.pend_SA.clear();
+    J.st.age_ylos = R.age_ylos;
+    J.st.age_ylos_marked.assign(J.st.age_ylos.size(), 0);
+    J.age_ylos_lo = J.st.age_ylos.empty() ? nullptr : J.st.age_ylos.front().obj;
+    J.age_ylos_hi = nullptr;
+    for (const tw::YlosEntry& e : J.st.age_ylos) if (e.end > J.age_ylos_hi) J.age_ylos_hi = e.end;
     // Members the pause reached were scanned by the pause (their Hand
     // targets are in S); the job scans only members it reaches itself.
     J.ylos_lo = J.st.ylos.empty() ? nullptr : J.st.ylos.front().obj;
@@ -228,7 +528,11 @@ void NurserySpace::tenureLaunch(OldGenSpace& oldgen) {
     // Lever L3: B collector members for a large extent (a small one is not
     // worth waking B threads: the 6-P§3.2 serial threshold).
     const unsigned B = config_->tenure_collector_threads;
-    const bool conc_par = mode2 && B > 1 && X.obj_bytes >= config_->minor_parallel_min_bytes;
+    // threaded-gc-07b: the ageing mark runs on the exact engine only, so with
+    // k >= 2 the job never uses the L3 members.
+    const bool aged = R.tenure_age > 1;
+    if (aged && mode2 && B > 1) ++R.rs.age_forced_exact;
+    const bool conc_par = !aged && mode2 && B > 1 && X.obj_bytes >= config_->minor_parallel_min_bytes;
     // Slack: every participant (the B members, then up to the help gang's
     // width in the pause) holds at most one partly used 64-cell chunk.
     const unsigned help_w = std::max<unsigned>(
@@ -509,6 +813,19 @@ void NurserySpace::mergeJob(OldGenSpace& oldgen, bool heal, MinorGCRecord* rec) 
         }
     }
 #endif
+    // (5b) threaded-gc-07b: zap. Every ageing object the mark did not reach is
+    // dead; its header becomes a filler so no walker (t0 young walk, census,
+    // validators) reads its possibly dangling slots. After the census check
+    // (tenureJoin) and the heal (its holders are all marked).
+    if (heal && !st.zap.empty()) {
+        const uint64_t tz = nowNs();
+        if (!test_skip_zap_) {
+            for (const tw::Span& z : st.zap) writeFiller(z.p, z.bytes);
+        }
+        const uint64_t dz = nowNs() - tz;
+        R.rs.zap_ns += dz;
+        if (rec) rec->rg_zap_ns = dz;
+    }
     // (6) Stats: tenured counts (legacy's promoted, one minor later: P§3.18).
 #if ENABLE_GC_STATS
     stats.mergeCopyCounts(J.copies);
@@ -520,6 +837,12 @@ void NurserySpace::mergeJob(OldGenSpace& oldgen, bool heal, MinorGCRecord* rec) 
     R.rs.ylos_gen_freed += ylos_freed;
     R.rs.busy_ns += J.busy_ns;
     R.rs.stops += J.stops;
+    R.rs.age_marked += st.age_marked;
+    R.rs.age_marked_bytes += st.age_marked_bytes;
+    R.rs.age_heal += st.age_heal;
+    R.rs.zapped += st.zapped;
+    R.rs.zapped_bytes += st.zapped_bytes;
+    if (rec) rec->rg_zapped = st.zapped;
     R.rs.merges++;
     {
         const uint64_t now = GCStats::nowSinceProcessStartNs();
@@ -563,7 +886,8 @@ void NurserySpace::syncRegionStats() {
     stats.rg = R.rs;
     stats.rg.util_ppm = std::move(u);
     size_t hw = 0, sh = 0;
-    for (int i = 0; i < 3; ++i) {
+    stats.rg.tenure_age = R.tenure_age;
+    for (unsigned i = 0; i < R.n_surv; ++i) {
         hw += R.x[i].hw;
         sh += R.shadow[i].committedBytes();
     }
@@ -844,6 +1168,7 @@ void NurserySpace::tenureParCollect(std::unique_ptr<MinorWorker>* ws, unsigned n
 void NurserySpace::runJobParallel(OldGenSpace& oldgen, unsigned n) {
     RegionState& R = *rg_;
     TenureJob& J = R.job;
+    finishJobMarkPhases(oldgen, n);   // threaded-gc-07b: the tenure phase needs the mark's heal
     const uint64_t t0 = nowNs();
     // Any unused grant goes back first; the exact engine's copies stay.
     if (J.grant.active) {

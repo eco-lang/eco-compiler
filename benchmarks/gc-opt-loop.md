@@ -2228,6 +2228,56 @@ driver, `invariants.csv`, `THEORY.md`).
   `nursery_regions = 0` and the region tests use `initRegionAllocator`. Without auto, 17 more
   failed validation (`promotion_age > 1`, bitmap allocation off, heaps too small for a slot).
 
+### TA2 — threaded-gc-07b tenure ageing (`promotion_age` k in region mode) — **k = 1 FLAT, code kept (inert at the default); k = 2 / 3 LOSS on wall (+6.0 / +11.3 s) and pauses (p99 28 → 46 / 71 ms); promoted bytes −7 % / −12 %, but the old-gen peak does not follow: the gf 0.70 point's −13 % reverses at 0.65 and 0.75**
+
+Plan `plans/threaded-gc-07b-tenure-ageing.md` (lever L1 of phase 07 P§12). With k ≥ 2 an object ages in
+place in its survivor extent until minor j + k. The job first **marks** the ageing extents from
+the pause's sources, so there is no nepotism, then **sweeps** the mark bitmap into dead gaps, which the
+merge **zaps** into fillers. Runtime-only: `ecoTG6base.mlir` lowered against the changed runtime
+(`eco-optTA2`); arms set `ECO_HEAP_CONFIG={"promotion_age": k}` (equal-length paths), no other
+GC environment. Patches `step-TA.patch` (v1) and `step-TA2.patch` (v2 on top). Output identical
+(933c3ff0d288) in every run.
+
+| run | wall (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|
+| k1 r1 | 112.43 | 7.88 | 1924 | 8 | 19862 | 13349532 | 13262272 | same |
+| k1 r2 | 112.45 | 7.80 | 1924 | 8 | 19862 | 13370184 | 13262272 | same |
+| k1 r3 | 112.86 | 7.84 | 1924 | 8 | 19862 | 13312188 | 13262272 | same |
+| **k1 median** | **112.45** | **7.84** | 1924 | 8 | 19862 | 13349532 | 13262272 | same |
+| Δ vs TG7d (112.09 / 8.31 / 13359864) | +0.36 | −0.47 | 0 | 0 | 0 | −10332 | 0 | — |
+| k2 r1 / r2 / r3 | 119.33 / 118.11 / 117.19 | 8.11 / 8.26 / 8.00 | 1924 | 7 | 18476 | 11955140 / 11946256 / 11953480 | 13262272 | same |
+| **k2 median** | **118.11** | **8.11** | 1924 | 7 | 18476 | 11953480 | 13262272 | same |
+| k3 r1 / r2 / r3 | 123.39 / 124.17 / 122.93 | 8.42 / 8.31 / 8.27 | 1924 | 7 | 17532 | 13414396 / 13411848 / 13419012 | 13262272 | same |
+| **k3 median** | **123.39** | **8.31** | 1924 | 7 | 17532 | 13414396 | 13262272 | same |
+
+Pause distribution (phase-timer relink `eco-optTA2PT`, medians of three):
+
+| k | pause p50 / p99 / p99.9 / max (ms) | help in pauses (s) | late minors | collector CPU (s) | ageing marked (objects) | zap (s) |
+|---|---|---|---|---|---|---|
+| 1 | 1.72 / 28.2 / 73.1 / 86.7 | 2.0 | 330 | 20.2 | — | — |
+| 2 | 1.78 / 46.3 / 101.6 / 119.5 | 5.4 | 378 | 24.0 | 676 M | 0.06 |
+| 3 | 1.93 / 70.7 / 130.5 / 156.8 | 8.5 | 412 | 27.9 | 1,302 M | 0.12 |
+
+- **Retention (E4, one run per point).** Old-gen peak in MB, k = 1 vs k = 2: gf 0.65 9,540 vs 12,126, gf 0.70
+  11,922 vs 10,394, gf 0.75 9,546 vs 12,271. Max RSS moves the same way (10.87 / 13.35 / 10.89
+  GB vs 13.78 / 11.96 / 13.89 GB). Ageing lowers the promoted volume, but the peak is decided by
+  when the majors fire (the chaotic trigger, [[gc-trigger-is-chaotic]]). The one point where k = 2 wins
+  is the default gf.
+- **Legacy reference (same session, v1 phase-timer binary, `ECO_NURSERY_REGIONS=0`):** legacy age 1 / 2 / 3 =
+  121.7 / 124.8 / 131.0 s wall, GC 12.6 / 16.5 / 21.0 s, peak 11,434 / 10,206 / 9,759 MB, promoted 19,862 /
+  19,374 / 19,275 MiB. Region ageing never re-copies: at k = 2 it is 6.7 s faster than legacy age 2,
+  with GC half of legacy's.
+- **v1 → v2.** The first build (TA) swept by walking every ageing object and finished a late job's mark
+  and sweep serially in the pause. Help cost 7.1 / 19.7 s and k = 3 took 135.0 s. The gap sweep plus
+  the parallel help mark (TA2) cut help to 5.4 / 8.5 s and zap time 6×.
+- **Gates:** the unit suite with 8 new ageing tests, including the legacy oracle (region k matches legacy
+  `promotion_age` k on a fixed schedule) for k = 1–3 at 1 and 4 workers. Validate unit and GC-pressure stress
+  pass at k = 2 and 3, modes 1 and 2, with jitter. E2E is 942/942 at k = 2 and 3. Both TSan harnesses (with ageing
+  scenarios) report 0 warnings.
+- **Trap found:** relowering needs every runtime archive rebuilt. A stale `libEcoEntryStatic.a` with
+  the old `GCStats` layout made every run SIGSEGV at exit, after a complete banner. Those nine runs
+  were discarded.
+
 ## 7. Findings
 
 (What this series learns, separated from the per-step records so the entries stay to ten lines.
@@ -2701,3 +2751,5 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | TG5c | 162.60 | -0.99 | 1924 | 7 | 19862 | 9849108 | WIN (pause) | TG5b |
 | TG6 | 123.30 | -39.30 | 1924 | 8 | 19862 | 12426732 | WIN (wall, pause; retention gate overridden) | TG5c |
 | TG7d | 112.09 | -11.21 | 1924 | 8 | 19862 | 13359864 | WIN (wall, pause; keep-up gate overridden) | TG6 |
+| TA | 119.60 | +7.51 | 1924 | 7 | 18476 | 11982016 | LOSS (k = 2, v1) | TG7d |
+| TA2 | 112.45 | +0.36 | 1924 | 8 | 19862 | 13349532 | FLAT (kept, k = 1; k = 2 118.11 / k = 3 123.39 LOSS) | TG7d |
