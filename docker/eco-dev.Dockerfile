@@ -70,9 +70,9 @@ RUN ./install_claude.sh && rm ./install_claude.sh
 ENV UV_INSTALL_DIR="/usr/local/bin"
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# FlameGraph tools for perf visualization
+# FlameGraph tools for perf visualization (put on PATH by the ENV PATH near the
+# end of this file, which replaces PATH wholesale)
 RUN git clone --depth=1 https://github.com/brendangregg/FlameGraph.git /opt/FlameGraph
-ENV PATH="/opt/FlameGraph:${PATH}"
 
 # ============================================================
 # TLA+ / PlusCal toolchain for the GC concurrency models
@@ -82,7 +82,10 @@ ENV PATH="/opt/FlameGraph:${PATH}"
 #                               CommunityModules on the classpath (the Json and
 #                               IOUtils modules are what trace validation reads)
 #   apalache-mc                 symbolic checker (inductive invariants, larger
-#                               parameters); needs Java 17+
+#                               parameters); needs Java 21+ (class file 65)
+#   Temurin 21 JRE              bookworm only ships openjdk-17, which cannot
+#                               load Apalache 0.62.x, so the JRE comes from
+#                               Adoptium. TLC runs on it too.
 #   tlapm                       TLAPS proof manager, OPT-IN: the upstream tarball
 #                               is ~880 MB and is a rolling pre-release, so it
 #                               cannot be SHA-pinned. Build with
@@ -109,12 +112,32 @@ ARG TLA_COMMUNITY_MODULES_SHA256=3d9a282c360e90d55e9bbe99caa2987d508fef1556d6527
 ARG APALACHE_VERSION=0.62.2
 ARG APALACHE_SHA256=765f610537281a0f25b8c30f2554f19523e2859c824e80e62276653ee23c10e2
 ARG INSTALL_TLAPS=0
+ARG TEMURIN_VERSION=21.0.12.1+1
+ARG TEMURIN_SHA256_AMD64=2413149700df0f7d440500a84a8f764c535f21e5a5e87d38328b64eec2c5b500
+ARG TEMURIN_SHA256_ARM64=14be1f35ebdbd1f6e8d57eb911a3ffb74d6d9aa255abc5daf2b1302002cf2cf2
 
-# openjdk's postinst needs the man1 directory to exist.
-RUN mkdir -p /usr/share/man/man1 \
- && apt-get update && apt-get install -y --no-install-recommends \
-    openjdk-17-jre-headless graphviz \
+RUN apt-get update && apt-get install -y --no-install-recommends graphviz \
  && rm -rf /var/lib/apt/lists/*
+
+# Symlinked into /usr/local/bin rather than put on PATH, because the ENV PATH
+# near the end of this file replaces PATH wholesale.
+RUN set -eu; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) JRE_ARCH=x64;     JRE_SHA256="${TEMURIN_SHA256_AMD64}" ;; \
+      arm64) JRE_ARCH=aarch64; JRE_SHA256="${TEMURIN_SHA256_ARM64}" ;; \
+      *) echo "no Temurin JRE pinned for $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    JRE_TAG="jdk-$(echo "${TEMURIN_VERSION}" | sed 's/+/%2B/')"; \
+    JRE_FILE="OpenJDK21U-jre_${JRE_ARCH}_linux_hotspot_$(echo "${TEMURIN_VERSION}" | tr + _).tar.gz"; \
+    curl -fsSL -o /tmp/jre.tgz \
+      "https://github.com/adoptium/temurin21-binaries/releases/download/${JRE_TAG}/${JRE_FILE}"; \
+    echo "${JRE_SHA256}  /tmp/jre.tgz" | sha256sum -c -; \
+    mkdir -p /opt/java; \
+    tar -xzf /tmp/jre.tgz -C /opt/java --strip-components=1; \
+    rm /tmp/jre.tgz; \
+    ln -s /opt/java/bin/java /usr/local/bin/java; \
+    java -version
+ENV JAVA_HOME=/opt/java
 
 RUN set -eu; \
     mkdir -p /opt/tlaplus; \
@@ -158,7 +181,7 @@ RUN set -eu; \
     apalache-mc version > /dev/null \
       || { echo "Apalache smoke test failed" >&2; exit 1; }; \
     cd /; \
-    rm -rf /tmp/tla-smoke
+    rm -rf /tmp/tla-smoke /tmp/SANY*
 
 ENV TLA_TOOLS_DIR=/opt/tlaplus
 
@@ -186,8 +209,9 @@ ENV CCACHE_MAXSIZE=5G
 # Helpful defaults for downstream builds; entrypoint also exports these.
 ENV CMAKE_PREFIX_PATH=/opt/llvm-mlir
 ENV LD_LIBRARY_PATH=/opt/llvm-mlir/lib
-# ccache wrappers first in PATH for transparent caching
-ENV PATH=/usr/lib/ccache:/opt/llvm-mlir/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# ccache wrappers first in PATH for transparent caching; FlameGraph last so its
+# loose scripts never shadow system tools
+ENV PATH=/usr/lib/ccache:/opt/llvm-mlir/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/FlameGraph
 ENV CC=clang
 ENV CXX=clang++
 

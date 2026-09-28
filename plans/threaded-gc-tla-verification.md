@@ -104,7 +104,7 @@ written down as one.
 
 | Tool | Version | Pinned | Use |
 |---|---|---|---|
-| `openjdk-17-jre-headless` | Debian bookworm | apt | TLC, SANY, PlusCal, Apalache (Java 17+) |
+| Temurin JRE (Adoptium) | 21.0.12.1+1, amd64/arm64 | SHA256 | TLC, SANY, PlusCal, Apalache. Apalache 0.62.x needs Java 21 (class file 65); bookworm's openjdk-17 cannot load it |
 | `tla2tools.jar` | **1.8.0** (build 2026.09.25, rev 8f4bc8b) | SHA256 | `tlc`, `sany`, `pcal`, `tlatex` wrappers in `/usr/local/bin` |
 | CommunityModules-deps | 202609120237 | SHA256 | Json/IOUtils (trace validation), SequencesExt, Functions |
 | Apalache | 0.62.2 | SHA256 | `apalache-mc`: inductive invariants, larger parameters |
