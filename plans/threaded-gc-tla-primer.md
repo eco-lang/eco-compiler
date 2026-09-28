@@ -1,6 +1,7 @@
 # Threaded GC — TLA+ modelling primer
 
-**Status:** REFERENCE (2026-09-28). Read this before any model plan.
+**Status:** REFERENCE (2026-09-28). Read this before any model plan. Updated the same day with the
+lessons of the adversarial review of the model plans (rules 12–13 in §2, and §3.3, §3.7, §4, §5).
 
 **Parent:** `plans/threaded-gc-tla-verification.md`. That plan says *what* gets modelled and why. The
 model plans (`plans/threaded-gc-tla-M*.md`) say *how* each model is built. This primer explains the
@@ -149,6 +150,14 @@ The constructs the model plans use:
     a sequence. Without it, SANY prints dozens of semantic errors (found while writing M1).
 11. **SANY's exit status is 0 even when it reports errors.** Always read its output for
     `*** Errors:` (§7).
+12. **Apalache rejects recursive functions and `RECURSIVE` operators** ("Apalache does not support
+    recursive functions"). In any module Apalache checks, write a fixpoint as a fold
+    (`ApaFoldSeqLeft` over `MkSeq(n, ...)`, or `ApaFoldSet`, from `EXTENDS Apalache`). A module only
+    TLC checks may keep the recursive-function form (found while reviewing M1).
+13. **The translator does not prime variables inside `define` operators.** In a step that assigns
+    `x` and then calls a defined operator that reads `x`, the operator sees the value from the
+    *start* of the step. Pass the new value in as an argument instead (found while reviewing M4,
+    where a claim's flush was stamped with the clock from before its CAS).
 
 ## 3. From C++ to model steps
 
@@ -197,6 +206,13 @@ I_Scan1:                                       \* env.anyWork(): one slot per st
 Collapsing this into one step (`found := \E x \in Slots : AnyWorkNow(x)`) looks tidier. It would
 also hide exactly the interleavings that break termination detectors.
 
+The same goes *inside* one slot when the check reads more than one location. In the mark
+environment `anyWork()` reads a slot's deque (`emptyApprox`, `bottom_` then `top_`) and **then** its
+`priv` counter (`OldGenSpace.cpp:3498-3502`). An owner's publish (push, then `priv := 0`) can land
+between the two reads, so M2 models a slot check as two steps, deque first. Whether a pair of loads
+may stay one step is a judgement to write down: M2 keeps `emptyApprox`'s two loads in one step, and
+its plan says why.
+
 ### 3.4 Locks
 
 - **A critical section whose intermediate states nobody can see** becomes one step:
@@ -221,6 +237,14 @@ also hide exactly the interleavings that break termination detectors.
   Spurious wakeups need no extra modelling: `await` rechecks the predicate. A **lost wakeup** is
   modelled by making `notify` a separate step that only wakes threads already waiting, which is
   needed only where the code checks a predicate outside the lock.
+- **A wait's check-and-block is atomic only against threads that take the lock.** Modelling
+  `cv.wait(lk, pred)` as one `await` step is right while every writer of `pred` holds the lock. When
+  some writer may skip the lock (in the code, or in a mutant such as M6's `lost_wakeup`), model the
+  lock explicitly: the waiter holds it from the check step to the block step, so the unlocked
+  writer can interleave exactly where the real one can.
+- **An unlocked fast path is a separate step.** `wait()` first reads the job state with an acquire
+  load outside the lock (`GCHelperPool.cpp:238`); that read is its own step, and the data it
+  publishes is a W obligation, not a mutex handoff.
 
 ### 3.5 Threads that start, stop and fork
 
@@ -229,6 +253,10 @@ also hide exactly the interleavings that break termination detectors.
 - **fork()** is a step that snapshots the state for a child in which only the forking thread
   exists. M6 models the child as a copy of the relevant variables in which every other process is
   gone. That is enough to check that no job or mark entry is stranded there.
+- **Every step of a process that a fork can freeze needs `await Alive(self)`**, including steps
+  after a `call` returns and assert-like checks. A missing guard lets a thread that does not exist
+  in the child finish its work there, which hides exactly the stranded state the model is looking
+  for (found while reviewing M6).
 
 ### 3.6 Memory orders, and why the model can ignore them (mostly)
 
@@ -252,12 +280,23 @@ termination word being an RMW matters. A `relaxed` load gives no such guarantee:
 ### 3.7 Modelling a data race
 
 TLC checks properties; it does not know C++'s rule that a plain access racing with any other access
-is undefined behaviour. M4 adds that rule as an invariant, in three parts:
-- a plain read-modify-write sets `inflight[b] = self` between its read step and its write step;
-- every other access to `b` checks the flag;
-- `NoRace == \A b : inflight[b] # 0 => <no other process has a pending access to b>`.
+is undefined behaviour. M4 adds that rule with **vector clocks**, as ThreadSanitizer does:
+- each thread has a clock; a lock release, an acq_rel RMW on a shared word and a join carry clocks
+  between threads (relaxed atomics carry nothing);
+- every access to a tracked location is recorded with its thread's clock, and whether it is plain
+  and whether it writes;
+- an access **races** with a recorded access by another thread if one of them is plain, one of them
+  writes, and the recording thread's clock value is later than what the accessing thread knows of
+  it. Races are collected in a variable, and `NoRace…` invariants report them with a full trace.
 
-M4 §4 has the details.
+Two rules make it match C++:
+- **the location unit is the unit the code accesses**, and a wider access touches every unit it
+  covers. The bitmap scans read whole 64-bit words with a plain load, so a word read is a plain read
+  of every byte of that word, and it can race a `fetch_or` on any of them;
+- **a data race needs no particular interleaving of values**: the two accesses may be many steps
+  apart, which is why the detector keeps each thread's latest access per location.
+
+M4 §4.4 has the details.
 
 ## 4. Keeping models small enough to check
 
@@ -281,14 +320,20 @@ minutes, and a "deep" one in minutes to hours.
    model holds for the code.
    - The price is possible **spurious counterexamples**, behaviours the code cannot produce. Each
      counterexample must be checked against the code before it is filed as a bug.
-4. **Bound "adversarial" choices for liveness.** A steal that "found nothing although work exists"
-   is a legal outcome of the real four-pass `stealAny`. Allowed without limit, it would let TLC
-   build a behaviour where a thread never succeeds, and liveness would fail spuriously. The models
-   cap such choices (`MaxGiveUps`).
-5. **Symmetry.** If threads are interchangeable, declare them a symmetry set in the `.cfg` and TLC
+4. **Bound "adversarial" choices for liveness only.** A steal that "found nothing although work
+   exists" is a legal outcome of the real four-pass `stealAny`. Allowed without limit, it would let
+   TLC build a behaviour where a thread never succeeds, and liveness would fail spuriously. The
+   liveness configurations cap such choices (`MaxGiveUps`). **Safety configurations leave them
+   unbounded:** M2's `wrap` bug needs one thread to find nothing twice, and a cap of 1 hid it.
+5. **Replace a counter used only for equality by a "changed since I read it" flag.** M2's epoch is
+   compared, never ordered: the done-CAS asks "is the word still the one I read?". A per-reader
+   `dirty` flag is an exact abstraction and keeps the state space finite. A state constraint that
+   bounds the counter is not: TLC neither explores nor checks the states beyond it, and liveness
+   under a constraint is unreliable.
+6. **Symmetry.** If threads are interchangeable, declare them a symmetry set in the `.cfg` and TLC
    explores one representative of each permutation. Only use this when roles really are
    identical.
-6. **Split, don't grow.** If a model needs more than a few minutes at quick scope, split it along a
+7. **Split, don't grow.** If a model needs more than a few minutes at quick scope, split it along a
    contract (parent plan §5.0), rather than raising the bounds.
 
 ## 5. Negative controls: proving a model has teeth
@@ -312,7 +357,21 @@ I_Decide:                                      \* CAS(word: sw -> sw | done)
 
 `models.txt` records, per mutant, the invariant that must fail. The runner checks both TLC's exit
 status and the violated invariant's **name**. A mutant that "fails" by deadlocking, or by breaking
-a different invariant, does not count. Where a real bug once happened (the 5b two-load termination
+a different invariant, does not count.
+
+Three rules follow, all learnt in the review of the model plans:
+- **Write every checked property as a named invariant, never as a PlusCal `assert`.** A failed
+  `assert` has no invariant name for the runner to match, and it fires in every configuration,
+  so it can pre-empt another mutant's target. An owner or precondition check becomes an invariant
+  over `pc`: `pc[w] = "E_Read" => owner[eo[w]] = w`. (Where a deadlock *is* the expected outcome,
+  the runner matches TLC's "Deadlock reached", and the configuration must enable the deadlock
+  check.)
+- **A mutant's configuration lists only its target invariant.** Several invariants often fail in
+  the same state, and TLC reports the first one it checks.
+- **Hand-trace each mutant's shortest violating behaviour against the bounds before believing it.**
+  The review found mutants in five plans that could never reach their target: the one chunk had
+  enough cells that nobody took the lock, the wrap needed a minor more than the bound, a victim's
+  deque was always empty when the mutant skipped it. A mutant that cannot fail proves nothing. Where a real bug once happened (the 5b two-load termination
 race, the `JsonRoundtrip` stale copies), that bug is a mutant, so the model provably would have
 caught it.
 

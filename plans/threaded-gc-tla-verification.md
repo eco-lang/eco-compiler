@@ -2,13 +2,19 @@
 
 **Status:** PLANNED (2026-09-28): the master plan for this work, **plus implementation-ready model
 plans** (§5). Nothing is implemented. Done so far:
-- the dev Dockerfile carries the toolchain (§3); the image has not been built yet;
+- the dev image is built with the pinned toolchain (§3; checked 2026-09-28: the jar hashes match
+  the Dockerfile pins, TLC reports build 2026.09.25 rev 8f4bc8b, `apalache-mc version` is 0.62.2;
+  TLAPS and the weak-memory checkers are not installed);
 - the concurrency register exists (§8);
-- the primer and the model plans are written, and every PlusCal sketch in them passes the PlusCal
-  translator and SANY (tla2tools 1.8.0). **TLC has not been run on any of them.**
+- the primer and the model plans are written;
+- **every model plan has had an adversarial review against the current tree (2026-09-28)**: each
+  plan's last section lists what was found and changed, and §13 below summarises it. Every PlusCal
+  sketch, as corrected, passes the PlusCal translator and SANY (tla2tools 1.8.0), and every W
+  driver sketch compiles against the real headers. **TLC, Apalache and the C11 checkers have not
+  been run on any of them.**
 
-**Implementation starts only after the dev container has been rebuilt with the tools** (Step 0),
-so the work is repeatable from the image, not from a hand-installed scratch setup.
+**Implementation starts in the rebuilt dev container** (Step 0), so the work is repeatable from the
+image, not from a hand-installed scratch setup.
 
 **Documents:**
 
@@ -95,7 +101,7 @@ written down as one.
 | **A5 Trace validation** | Names the harness and the event vocabulary that the model's trace spec accepts. The event log is the refinement mapping made executable. |
 | **A6 Negative controls** | Each invariant has at least one mutant (a `MUTANT` constant or a variant `.cfg`) that TLC **must** reject with that invariant. Where a bug already happened (e.g. 5b's two-load termination), the historical bug is one of the mutants. A mutant that passes means the model is too abstract at that point. |
 | **A7 Traceability** | Spec invariants are named after their `invariants.csv` or IM ids, so one id links the CSV row, the spec invariant and the `ECO_HEAP_VALIDATE` check. Model-only properties get `MODEL_<Mn>_<k>` names. |
-| **A8 Scope and wrap** | States the small-scope bounds. Counters that wrap in the code are modelled with **tiny widths** so the wrap is reachable (the 31-bit epoch → 2 bits, the 21-bit shadow generation → 2 bits). Unbounded claims name the Apalache/TLAPS obligation that covers them. |
+| **A8 Scope and wrap** | States the small-scope bounds. Counters that wrap in the code are modelled with **tiny widths** so the wrap is reachable (the 31-bit epoch → `EpochMod` in M2's `wrap` configuration; the 21-bit shadow generation → a 1-bit field, `GenMod = 2`, in M5's `wrap`, where with three extents the first wrap needs 6 minors). A counter used only for equality is replaced by an exact "changed since I read it" flag rather than bounded by a state constraint (primer §4). Unbounded claims name the Apalache/TLAPS obligation that covers them. |
 | **A9 Canary coverage** | Lists the code regions (`TLA-REGION` markers), whole files, atomics censuses and footprint greps pinned for this model in `test/tla/manifest.txt` (§7). |
 
 ## 3. Toolchain
@@ -167,10 +173,14 @@ need TLAPS and is out of scope.
 
 | Contract | Provided (checked) by | Used by |
 |---|---|---|
-| **Drain**: a run ends with every grey entry scanned exactly once and nothing held privately; a stop leaves every unscanned entry in a deque | M2 | M1, M4 |
-| **CopyOnce**: each young object is copied at most once, and every slot ends up pointing at its unique copy | M3 | M4, M5 |
-| **LaunchJoin**: launch publishes every pause write to the members, join publishes every member write to the mutator, `running()` is exact on the mutator | M6 | M1, M2, M5 |
-| **SnapshotCycle**: the t0 greys, allocate-black and deferred frees give "everything reachable at the handoff is marked or allocated after t0" | M1 | M4, M5 |
+| **Drain**: a run ends with every grey entry scanned exactly once and nothing held privately; a stop leaves every unscanned entry in a deque | M2: `ScanOnce ∧ TerminationSafe ∧ Drain` | M1, M3, M5, M6 |
+| **CopyOnce**: each young object is copied at most once, and every slot ends up pointing at its unique copy | M3: `CopyOnceContract` (= `CopyOnce` ∧ at the join `SlotsAtCopy`) | M5 (M4 does not need it: it checks any sequence of promotion requests) |
+| **LaunchJoin**: join (and `stopAndJoin`, and `GCMarkGang::run`) returns only after every member returned; `running()` is false only after a join; a stop is honoured at the member's next item boundary | M6: `LJ_JoinExact`, `LJ_RunningExact`, `LJ_RunJoined`. "Launch/join **publishes** the other side's writes" is not SC-checkable: it is a W/TSan obligation (M6 A4). "Stop at the next item boundary" is an obligation on the job body, checked by M2 (marker loop) and M5 (tenure engines) | M1, M2, M3, M5 |
+| **PoolJob**: a posted job runs exactly once, in any order; `wait` returns only when the job is Done; Done publishes the runner's writes to the waiter (any waiting thread, not only the mutator) | M6: `PoolRunOnce`, `WaitSeesDone`, `ParentJobsFinish`; "publishes" is W's proposed `w_pool_done` (the fast path reads Done outside `m_`) | M7 |
+| **SnapshotCycle**: the t0 greys, allocate-black and deferred frees give "everything reachable at the handoff is marked or allocated after t0"; markers touch only t0-old cells | M1: `IM2` at `H_Free`, `NoReleaseInCycle`, `MarkerFootprint`. In region mode `MarkerFootprint` fails until CR-017 is fixed (`quick_region`) | M5; M4 uses only `MarkerFootprint` |
+| **TenureDisjoint**: the merge heals only slots of young objects (or young YLOS); during a cycle the markers' closure holds no young cell, no grant cell and no black copy; every copy made mid-cycle is black; the t0 young walk greys only allocated old cells | M5: `HealYoungOnly`, `MarkerDisjoint`, `YoungWalkValid` (the last fails until CR-017 is fixed: `cycle_major`) | M1 |
+| **BitFaithful**: a bit set by allocate-black or a marker is never lost, and cursor, chunk and grant bit sets never touch a t0 byte or another owner's word | M4: `NoLostRequiredBit`, `NoRaceBitmap`, `IM13`, `TV5`, `AllocMapExact` | M1, M5 (both model one mark bit per object) |
+| **ReleaseContract**: no released block is still referred to by a cursor, chunk, stash, grant or free-list cell | M4: `ReleasedSafe` (CR-014 and CR-016 are its expected violations) | M7 |
 
 ### 5.1 The model plans
 
@@ -188,20 +198,24 @@ Each model has its own implementation-ready plan. Every plan has the same parts:
 
 | Model | Plan | Protocol | Code | Contracts |
 |---|---|---|---|---|
-| M1 | `…-M1-snapshot-mark.md` | the snapshot mark cycle: t0 snapshot, allocate-black, deferred frees, background episodes, assists, closing, emergency join, handoff; the snapshot-closure lemma | `ThreadLocalHeap.cpp` cycle driver, `OldGenSpace.cpp` 4084–4760 | uses Drain, LaunchJoin; provides SnapshotCycle |
-| M2 | `…-M2-slice-control.md` | `runMarkerLoop`: tickets, private stacks, deques, termination word, Member/Assist roles, joiners, stop; in five environments | `MarkWork.hpp`, the five `Env`s | provides Drain |
-| M3 | `…-M3-minor-forwarding.md` | claim → BUSY → publish on header words, spine runs, YLOS colour test, LAB fillers; phase 6 and 7b | `MinorWork.hpp`, `NurseryParallel.cpp`, `NurseryRegion.cpp` | uses Drain; provides CopyOnce |
-| M4 | `…-M4-promotion-bitmap.md` | promotion chunks, the stash, sweep slices inside the promotion lock, allocate-black, grant blocks, **at mark-byte granularity with a data-race detector** | `OldGenSpace.cpp` 487–1600, 5220–5400; `OldGenTenure.cpp` | uses SnapshotCycle, CopyOnce |
-| M5 | `…-M5-tenuring.md` | region nursery epochs, the tenure job, shadow forwarding, exact and L3 engines, stop and help, merge and heal, STW-major redirect, t0 young walk, 07b ageing | `TenureWork.hpp`, `NurseryTenure.cpp`, `NurseryRegion.cpp`, `OldGenTenure.cpp` | uses Drain, LaunchJoin, SnapshotCycle |
-| M6 | `…-M6-lifecycle.md` | helper jobs, `GCMarkGang`, `GCBackgroundGang`, atfork handlers, exit, fork from a non-mutator thread | `GCHelperPool.cpp` | provides LaunchJoin |
-| M7 | `…-M7-pagework.md` | deferred decommit, commit-ahead, and the lock order `promo_mu_` → `thread_mutex_` → pool `m_` | `PageWork.cpp`, `Allocator.cpp` | uses LaunchJoin |
+| M1 | `…-M1-snapshot-mark.md` | the snapshot mark cycle: t0 snapshot, allocate-black, deferred frees, background episodes, assists, closing, emergency join, handoff; the snapshot-closure lemma | `ThreadLocalHeap.cpp` cycle driver, `OldGenSpace.cpp` 4084–4760 | uses Drain, LaunchJoin, TenureDisjoint, BitFaithful; provides SnapshotCycle |
+| M2 | `…-M2-slice-control.md` | `runMarkerLoop`: tickets, private stacks, deques, termination word, Member/Assist roles, joiners, stop; in five environments | `MarkWork.hpp`, the five `Env`s | uses LaunchJoin; provides Drain |
+| M3 | `…-M3-minor-forwarding.md` | claim → BUSY → publish on header words, spine runs, YLOS colour test; LAB fillers argued owner-only until the join (not modelled); phase 6 and 7b | `MinorWork.hpp`, `NurseryParallel.cpp`, `NurseryRegion.cpp` | uses Drain, LaunchJoin; provides CopyOnce |
+| M4 | `…-M4-promotion-bitmap.md` | promotion chunks, the stash, sweep slices inside the promotion lock, allocate-black, grant blocks, **at mark-byte granularity with a data-race detector** | `OldGenSpace.cpp` 487–1646, 2665–2716, 5220–5480, 5488–5810, 6369–6395; `BitmapScan.hpp`; `OldGenTenure.cpp` | uses M1's `MarkerFootprint`; provides BitFaithful, ReleaseContract |
+| M5 | `…-M5-tenuring.md` | region nursery epochs, the tenure job, shadow forwarding, exact and L3 engines, stop and help, merge and heal, STW-major redirect, t0 young walk, 07b ageing | `TenureWork.hpp`, `NurseryTenure.cpp`, `NurseryRegion.cpp`, `OldGenTenure.cpp` | uses Drain, LaunchJoin, SnapshotCycle, CopyOnce, BitFaithful; provides TenureDisjoint |
+| M6 | `…-M6-lifecycle.md` | helper jobs, `GCMarkGang`, `GCBackgroundGang`, atfork handlers, exit, fork from a non-mutator thread | `GCHelperPool.cpp` | uses Drain; provides LaunchJoin, PoolJob |
+| M7 | `…-M7-pagework.md` | deferred decommit, commit-ahead, and the lock order `promo_mu_` → `thread_mutex_` → pool `m_` | `PageWork.cpp`, `Allocator.cpp` | uses PoolJob, ReleaseContract |
 
 **Expected failures, by design.** Some configurations reproduce register entries and are expected
 to fail until the entry is fixed:
-- M2 `episode_stop` → CR-005;
-- M4's race detector and faithful sweep paths → CR-001, CR-002, and the suspected CR-014 / CR-016;
-- M5's `fork` configuration → CR-013 (if it is not dismissed with CR-004);
-- M6's non-mutator fork → CR-003, CR-015, possibly CR-004 and CR-005.
+- M1 `quick_region` (`MarkerFootprint`) and M5 `cycle_major` / `deep` (`YoungWalkValid`) → CR-017;
+- M2 `episode_stop` (`ClosingFinished`) → CR-005;
+- M4 `sweep_race_bitmap` → CR-002; `sweep_race_phase`, `sweep_release` → CR-001; `sweep_tail`,
+  `sweep_tail_release`, `sweep_tail_live` → CR-014; `sweep_large` → CR-016;
+- M5's `fork` configuration → CR-013 (its "possible exit" fails at teardown, see the register);
+- M6's non-mutator fork → CR-003, CR-015, possibly CR-004 and CR-005;
+- M7 `lock_order_stall` is a **witness** (expected to violate `MODEL_M7_StallWitness`, showing CR-007's
+  stall is reachable), not a defect reproduction.
 
 `models.txt` records them as "expected: violates X". Such an entry flips to "expected: pass" in the
 same change as the fix. This is the register's Reproduced → Guarded step (§8).
@@ -222,11 +236,12 @@ plan, including the concepts and the tool spike, is `plans/threaded-gc-tla-W-wea
 
 | Id | Pattern | Code | Used by |
 |---|---|---|---|
-| W1 | Chase–Lev push/take/steal/grow as implemented (element store release, steal acquire) | `MarkWork.hpp:63-195` | M2, M3 |
+| W1 | Chase–Lev push/take/steal/grow as implemented (element store release, steal acquire) | `MarkWork.hpp:63-195` | M2, M3, M5 |
 | W2 | Publish (push or `priv` store) → `goIdle` RMW vs the decider's acquire load + relaxed `anyWork` | `MarkWork.hpp:246-395` | M2 |
 | W3 | Mark byte: the marker's test-before-`fetch_or`, allocate-black `fetch_or`, the cursor's plain `setBit` (different byte, IM13), the gap sweep's plain `clearBit` (CR-002) | `OldGenSpace.cpp`/`.hpp` bit helpers | M1, M4 |
-| W4 | Block publication: `blocks_.add` → `mark_.assign` → `commitThrough` → page-index release store vs the marker's `blockIdFor` acquire loads; the relaxed grow-only region bounds; `committed_` release/acquire | `OldGenSpace.cpp:586-665`, `ReservedArray.hpp` | M1 |
+| W4 | Block publication, in the code's order: the region grows and the page index commits first (`resizePageIndexForRegion`), then `materializeBlock`; the page-index owner release store is the only edge publishing `BlockInfo` to the marker's `blockIdFor` acquire loads; the relaxed grow-only region bounds; `committed_` orders the commit syscall and has no C11 negative control | `OldGenSpace.cpp:586-665`, `ReservedArray.hpp` | M1, M4 |
 | W5 | Claim → copy → publish on a header word (phase 6) and on a shadow word (7c), including the exact engine's claim-free publish | `MinorWork.hpp:51-75`, `TenureWork.hpp` | M3, M5 |
+| proposed | `w_pool_done`: a pool job's `Done` (release, inside `m_`) read by `wait()`'s fast path or `isDone()` (acquire, outside `m_`); `w_running_chain`: member → `m_` → a foreign joiner's `running_` release → the owner's acquire in `tenureJoin`'s orphan test | `GCHelperPool.cpp:219, 238, 625`; `GCHelperPool.hpp:57, 258`; `NurseryTenure.cpp:613-615` | M6, M7, M5 |
 
 ## 6. Build system
 
@@ -235,7 +250,7 @@ plan, including the concepts and the tool spike, is `plans/threaded-gc-tla-W-wea
 | Target | Where defined | Runs | Needs | Budget |
 |---|---|---|---|---|
 | `tla-canary` | top-level `CMakeLists.txt`, in **ALL** (like `kernel-license-check`) | `test/scripts/check-tla-manifest.sh` | sh, awk, sha256sum | milliseconds |
-| `tla-check` | `test/tla/CMakeLists.txt` | SANY parse; PlusCal translation freshness; every `MC_quick.cfg`; every mutant (must fail with its named invariant) | Java 17, tla2tools | ≤ 5 min total |
+| `tla-check` | `test/tla/CMakeLists.txt` | SANY parse; PlusCal translation freshness; every quick configuration; every mutant and every expected failure (must fail with its named invariant) | Java 17, tla2tools | ≤ 5 min **per model**, configurations run in parallel (revised in the 2026-09-28 review: the model plans now have dozens of quick configurations and mutants between them, so a 5-minute total was never achievable; measure in Step 1 and move slow ones to deep) |
 | `tla-check-deep` | same | `MC_deep.cfg`, Apalache inductive checks, TLAPS proofs if `tlapm` is present | + Apalache, TLAPS | nightly / manual |
 | `tla-trace` | same | builds the TSan harnesses with `-DECO_TLA_TRACE=1`, runs them, validates each ndjson trace with TLC | + g++ | ≤ 15 min |
 | `genmc-check` | `test/genmc/` | W1–W5 | the chosen tool | ≤ 10 min |
@@ -247,7 +262,18 @@ plan, including the concepts and the tool spike, is `plans/threaded-gc-tla-W-wea
   fails if the committed translation differs. This works with either tla2tools version.
 - **Mutant expectations.** `models.txt` names each mutant's expected outcome. The runner checks
   TLC's exit status **and** the violated invariant's name. A mutant that passes, or that fails for a
-  different reason, fails `tla-check`.
+  different reason, fails `tla-check`. An expected outcome is one of: an invariant name, a
+  temporal property name, or `deadlock` (TLC's "Deadlock reached", only in a configuration that
+  enables the deadlock check). The review of the model plans (2026-09-28) added three rules:
+  - every checked property is a **named invariant**, never a PlusCal `assert` (a failed `assert`
+    has no name to match, and it fires in every configuration, pre-empting other targets);
+  - a mutant's configuration lists **only its target**;
+  - every mutant's plan row carries a hand-traced shortest violating behaviour that fits the
+    configuration's bounds, and the implementer confirms it with TLC. A mutant that cannot fail
+    proves nothing (the review found such mutants in five plans).
+- **Witness configurations.** Some configurations are expected to fail on purpose to show that a
+  state is reachable at all (M7's `MODEL_M7_StallWitness`, CR-007's stall). `models.txt` marks
+  them `witness`, and the runner treats them like mutants.
 - **Missing tools.** `tla-check` fails with a clear message ("use the dev image or set
   `TLA2TOOLS_JAR`"); it never skips silently. `-DECO_TLA=OFF` leaves the Java targets undefined on
   hosts without Java. The canary needs no Java and always runs.
@@ -441,7 +467,9 @@ Each step lands with its own gates. The model plans (§5.1) are the detailed wor
 **Why this order:**
 - M2 is first: it is the smallest, it is shared by five environments, and it has a real historical
   bug to validate against.
-- M1 depends on M2's Drain contract.
+- M1 uses M2's Drain contract, but it does not need M2's model to exist: it assumes the contract,
+  which M2 discharges whenever it lands. Building M1 right after Step 1 is equally valid, and M1 is
+  the model whose premise (the snapshot-closure lemma) everything else rests on.
 - M4 comes early because two register entries live in it.
 - M5 comes after the M1/M2 contracts it uses exist.
 
@@ -458,11 +486,11 @@ Each step lands with its own gates. The model plans (§5.1) are the detailed wor
 
 | Step | Status | Outcome / facts for later steps |
 |---|---|---|
-| Plans | **DONE (2026-09-28)** | primer, M1–M7, W; sketches pass `pcal` + SANY; TLC not run |
-| 0 Container and decisions | Dockerfile done (tla2tools 1.8.0 pin, fixed smoke spec); image not built | 1.8.0 vs 1.7.4 settled (§3) |
+| Plans | **DONE (2026-09-28)**; adversarial review **DONE (2026-09-28)** | primer, M1–M7, W; each plan corrected against the current tree (§13); corrected sketches pass `pcal` + SANY, W drivers compile; TLC, Apalache and C11 checkers not run |
+| 0 Container and decisions | image built and in use (2026-09-28: pinned jar hashes, TLC 2026.09.25 rev 8f4bc8b, Apalache 0.62.2 verified); weak-memory spike, census baseline and register triage not started | 1.8.0 vs 1.7.4 settled (§3); no TLAPS, GenMC, C11Tester or herd7 in the image |
 | 1 Scaffolding + canary | not started | |
-| 2 M2 | not started | exploration of an earlier draft: `minor` = 111,952 distinct states; a 5-node episode > 22 M unfinished; the epoch needs a state constraint (M2 plan §4.7, §6.1) |
-| 3 M1 | not started | |
+| 2 M2 | not started | exploration of an earlier draft: `minor` = 111,952 distinct states; a 5-node episode > 22 M unfinished. The review replaced the epoch's state constraint with exact per-participant `dirty` flags and cut the state space (M2 plan §6.1, §11) |
+| 3 M1 | not started | region mode (the default) is expected to fail `MarkerFootprint` in `quick_region` until CR-017 is fixed; `quick_region_nomajor` covers the rest of region mode meanwhile |
 | 4 M4 | not started | |
 | 5 M5 | not started | 7c merged and default-on (TG7d) |
 | 6 M3 | not started | |
@@ -491,10 +519,58 @@ Each step lands with its own gates. The model plans (§5.1) are the detailed wor
    AUDIT.md entry. A "no model change" verdict is fine; a missing verdict is not.
 7. **Believing TLC at small scope proves the unbounded claim.** A8 names the unbounded obligations.
    Wrapping counters are shrunk until the wrap is reachable.
-8. **Unbounded counters make the state space infinite.** M2's epoch grows without bound because
-   idle markers can re-wake forever. The runner must then time out, not report success. Every
-   model states its state constraints, and a configuration that hits the TLC time limit counts as
-   a failure.
+8. **Unbounded counters make the state space infinite.** M2's epoch grew without bound because
+   idle markers can re-wake forever. A counter used only for equality (M2's epoch) is abstracted
+   exactly by a per-observer "changed since I read it" flag, not bounded by a state constraint:
+   TLC neither explores nor checks states outside a constraint, and liveness under a constraint is
+   unreliable. Where a model still needs a constraint, it states it, and a configuration that hits
+   the TLC time limit counts as a failure, never as a pass.
 9. **Checking a model on a hand-installed toolchain.** The pins in the image are the reference.
    Results from any other tool version are not comparable, which is why Step 0 rebuilds the
    container first.
+10. **A mutant that cannot fail.** The adversarial review found mutants in five plans that could
+    never reach their target within their configuration's bounds (a chunk big enough that nobody
+    took the lock, a wrap one minor past the bound, a victim whose deque was always empty). Every
+    mutant row carries a hand-traced shortest behaviour, and TLC confirms it (§6.1).
+11. **A reduced driver or model that manufactures a failure.** Dropping a read over-approximates
+    for a property expected to *pass*, but can create a counterexample the code cannot produce for
+    a mutant expected to *fail*. W2's decider lost the real round's second work check, and
+    `w2_idle_before_publish` then "failed even under SC" when the code does not (W plan §14 R20).
+
+## 13. Adversarial review of the model plans (2026-09-28)
+
+Before implementation, each model plan had an adversarial review against the current tree. One
+reviewer per plan read the code the plan cites, checked every abstraction and step against it,
+hand-traced every mutant against its bounds, and corrected the plan in place. The orchestrator
+verified the key claims, reconciled conflicts between reviews, and made the cross-cutting changes.
+Each plan's last section has its full table. **TLC, Apalache and the C11 checkers were not run**:
+every expected outcome is still a prediction. Every corrected PlusCal sketch passes `pcal` and SANY,
+and the W drivers compile with g++ and clang++ against the real headers.
+
+| Plan | Blocker / Major rows | Headline corrections | Register |
+|---|---|---|---|
+| M1 | 1 / 5 | region mode (the default) was invisible: the t0 walk reads dead hand-over objects (`RegionMode`, `zombie`, `quick_region`, `quick_region_nomajor`); the handoff frees unmarked YLOS cells (`CellObjs`); the pressure check comes before the step; §4.7's `LemmaInv` was not inductive and Apalache rejects the recursive `Reach` | CR-017 (new) |
+| M2 | 2 / 7 | two mutants and `wrap` could never fail; `anyWork` split into a deque step and a `priv` step; the epoch's state constraint replaced by exact `dirty` flags; asserts became `AssistExact`, `ClosingFinished`; `Drain` is a named invariant | CR-005 reproduced by hand trace |
+| M3 | 2 / 5 | `ylos_unlocked` and `heads_walk` could never fail on the example heap; `CopyOnceContract` stated; canonical copy ids replace a global counter | CR-019, CR-020 (new); CR-011, CR-014 |
+| M4 | 6 / 7 | only one worker could ever reach the lock (CR-001/002 unreachable); the free list was FIFO (code: LIFO); the detector now uses vector clocks with word-wide reads; one configuration per register entry; CR-016 modelled | CR-018, CR-022 (new); CR-001, CR-002 (now Confirmed), CR-014, CR-016 |
+| M5 | 2 / 7 | two mutants could not reach their targets within the bounds; asserts became named invariants; `HealYoungOnly`, `MarkerDisjoint`, `YoungWalkValid` provide TenureDisjoint to M1 | CR-013, CR-017 |
+| M6 | 2 / 8 | the `exit` configuration would have failed (exit now runs on the mutator); missing `Alive` guards; LaunchJoin and PoolJob stated as named invariants; the wait holds the lock between check and block | CR-023, CR-024 (new); CR-003, CR-004, CR-005, CR-013, CR-015, CR-008 |
+| M7 | 1 / 9 | aging was deterministic and major-only, so trace validation would reject real traces; the lock model lacked the tenure teardown edge; a stall witness for CR-007 | CR-007, CR-012 |
+| W | 3 / 11 | four negative controls could not fire (W4's order was reversed, W5's help never read through, W1 needed two thieves, W2's mutant patched code the driver does not run); feasibility traps in the drivers; a coverage census; the two-scan decider (R20) | CR-021, CR-022 (new); CR-002, CR-009 |
+
+**Cross-cutting changes:**
+- §5.0: every contract names the invariants that discharge it; new contracts TenureDisjoint (M5 →
+  M1), PoolJob (M6 → M7), BitFaithful (M4 → M1, M5) and ReleaseContract (M4 → M7); M4 no longer
+  claims to use SnapshotCycle or CopyOnce.
+- §5.1: the expected failures name their configurations; CR-017 joins them.
+- §6.1: named invariants instead of asserts, one target per mutant configuration, witness
+  configurations, and a per-model time budget.
+- A8 and trap 8: exact abstraction of equality-only counters instead of state constraints.
+- The primer gained rules 12–13 (Apalache and recursion; unprimed variables in `define`
+  operators), the per-location `anyWork` rule, the vector-clock race detector, the lock-holding
+  wait, `Alive` guards, and the mutant rules.
+
+**Most urgent code findings** (full entries in the register): CR-018 (serial S1: an empty-block flip
+over live objects after the sweep, at any geometry, for an allocation of exactly
+`alloc_buffer_size` bytes), CR-017 (region mode, the default: the t0 walk can grey freed cells after a
+STW major), and CR-014 (now also a `live_bytes` race and a `large_body_index_` map race).
