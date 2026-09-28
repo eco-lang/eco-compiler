@@ -1,7 +1,5 @@
 build/
-build-val/
-build-static/
-build-profile/
+build-*/
 worktrees/
 debug/
 lean/
@@ -21,6 +19,7 @@ dist/
 .claude
 .serena
 projects/
+snapshots/
 
 # Machine-specific local dev container setup (managed separately)
 local-dev/
