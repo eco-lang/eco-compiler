@@ -206,18 +206,23 @@ public:
     // tag that cannot hold pointers (old gen, pinned), else Nursery when
     // size <= min(nursery_capacity / divisor, max size) and Ylos otherwise.
     // Pure, so tests can pass any nursery capacity.
+    // threaded-gc-07 (P§3.13): `region_cap` is the region nursery's cap (the
+    // largest old-gen size class); SIZE_MAX in legacy mode.
     static LargePlacement placeLargeFor(size_t size, uint32_t tag,
                                         size_t nursery_capacity,
-                                        const HeapConfig& cfg) {
+                                        const HeapConfig& cfg,
+                                        size_t region_cap = SIZE_MAX) {
         if (!tagMayHoldPointers(tag)) return LargePlacement::PointerFree;
         if (cfg.large_ptr_nursery_divisor == 0) return LargePlacement::Ylos;
         size_t cap = nursery_capacity / cfg.large_ptr_nursery_divisor;
         if (cfg.large_ptr_nursery_max_size != 0)
             cap = std::min(cap, cfg.large_ptr_nursery_max_size);
+        cap = std::min(cap, region_cap);
         return size <= cap ? LargePlacement::Nursery : LargePlacement::Ylos;
     }
     LargePlacement placeLarge(size_t size, uint32_t tag) const {
-        return placeLargeFor(size, tag, nursery_.capacityBytes(), *config_);
+        return placeLargeFor(size, tag, nursery_.capacityBytes(), *config_,
+                             nursery_.regionLargeCap());
     }
 
     /** threaded-gc-05a: true while an incremental mark cycle runs (HEAP_063). */

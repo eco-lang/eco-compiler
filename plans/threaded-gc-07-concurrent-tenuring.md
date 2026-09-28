@@ -1,6 +1,10 @@
 # Threaded GC 07 — Survivor regions (7b) and concurrent tenuring (7c)
 
-**Status:** PLANNED (2026-09-27). Written against the `keep-TG5c` tree **plus the phase 6 plan as
+**Status:** DONE (2026-09-28): 7b and 7c built and gated. The phase closed with the default left
+at `nursery_regions = 0` (P§10.17: E4 fails at one collector, E6 at four, E7 on its per-point
+rule); **the user then made mode 2 with one collector the default** (TG7d, P§10.17 addendum:
+`nursery_regions = 2` = auto, `tenure_mode = 2`, `tenure_collector_threads = 1`). Previously
+PLANNED (2026-09-27). Written against the `keep-TG5c` tree **plus the phase 6 plan as
 designed** (`plans/threaded-gc-06-parallel-minor.md`, PLANNED, not yet implemented). Nothing here
 is implemented. Step 0 re-derives every premise against the tree phase 6 actually leaves
 (`keep-TG6`).
@@ -1536,9 +1540,302 @@ default decided.
 
 ## 10. As-built deviations
 
-(Empty until implementation. Record here: 10.1 Step 0 facts, censuses and audits, 10.2 E0, 10.3
-E1, 10.4 E3/E7/E10 for 7b, 10.5 E2, 10.6 E3, 10.7 E4, 10.8 E5, 10.9 E6, 10.10 E7, 10.11 E8, 10.12
-E9, 10.13 E10, 10.14 E11, 10.15 E12, 10.16 gates, and every design deviation with its reason.)
+Implemented 2026-09-27 against `keep-TG6` (snapshot `try-TG7-pre` before any change; work in
+progress `try-TG7-wip1`, `try-TG7-wip2`). New sources: `NurseryRegions.hpp`,
+`NurseryRegion.cpp` (the ring, the region minor, TV2/TV7), `NurseryTenure.cpp` (the job, the
+merge, the collector, the parallel engines), `TenureWork.hpp` (std-only shadow protocol and the
+exact engine), `NurseryChildWalk.hpp`, `OldGenTenure.cpp` (the grant). Tests:
+`RegionMinorTest.cpp`, `ConcurrentTenureTest.cpp`, `TenureGrantTest.cpp`,
+`test/gc-helper-tsan/tenure_harness.cpp`, region scenarios in `test/gc-heap-tsan/heap_driver.cpp`.
+Measurement tools: `benchmarks/tg7-compare.py` (E1/E2), `benchmarks/tg7-summary.py` (one row per
+run).
+
+**Measurement binaries.** Lowering the self-compile MLIR takes ~15 minutes, so most arms use one
+object file (`eco-boot-native --emit=obj ecoTG6base.mlir`) relinked against each runtime build
+in ~1 s. **A relinked binary's object counters differ slightly from an exe-lowered binary's**
+(E0 below): 77 more objects allocated, first difference at minor 7. The lowering, not the runtime,
+is the difference; comparisons are therefore always between arms of ONE binary, and E0 uses an
+exe-lowered binary against the exe-lowered `eco-optTG6PT`.
+
+### 10.1 Step 0 facts, censuses and audits
+
+- **F1–F23 re-verified** against `keep-TG6` while building (names as in P§2; line numbers moved).
+  Phase 6's engine runs at n = 1 (`test_force_parallel_engine_`); its default is auto, cap 8.
+- **Item 3 (heal and start sets), measured in region mode** rather than with temporary legacy
+  counters (the region minor records exactly these lists): heal list p50 47, p99 24,958, max
+  67,277 slots per minor; start set p50 0, p99 45,851, max 63,204; heal list / survivors p50 1.7 %,
+  **p99 25 %** (the 30 % stop rule holds); pause heal p50 1.8 µs, p99 240 µs, max 0.83 ms.
+- **Item 4 (GC ratio): the stop rule fired.** Collector busy time / epoch per job: p50 0.036, p99
+  0.69–0.98, max 0.99 (mode 2, N = 8). Jobs are bimodal: most tenure ~14 K objects, ~16 % tenure
+  ~2 M objects (p50 45 ms of collector time) against a ~46 ms epoch. Per the rule, **lever L3 (B
+  > 1 collector threads) moved into this phase** (`tenure_collector_threads`, P§10.20).
+- **Item 5 (builders):** at most 1,464 builder bytes survive a self-compile minor (p50 0).
+- **Item 6 (size audit):** the default `large_object_threshold` (8 KiB) gives 37 size classes, so
+  the largest class is **8 KiB, not 64 KiB** (P§3.13 assumed 40 classes). Every nursery path was
+  audited: `ThreadLocalHeap::allocate` / `allocateSlow` place objects ≥ LOT (the region cap now
+  clamps to the largest class); `allocateSlowRaw` and `ensureNursery` are bounded far below;
+  closure-group regions hold small objects; `allocateFast` callers include
+  `eco_alloc_string_fast` with an unbounded length (no codegen caller), so `allocateFast` refuses
+  requests above the region cap in region mode (their slow paths place them). `validate()`
+  requires `large_object_threshold` ≤ the largest class + 8 in region mode.
+- **Item 7 (heap slots):** 8 region slots at the default 4 GiB region (5 × 128 MiB with eden flip
+  = 6). No unit, E2E or stress suite needed more (E2E and stress fork one heap per child); the
+  default region size is unchanged. The E11 spawn storm exposed that a destroyed heap's old-gen
+  blocks are never returned to the allocator (pre-existing), not a slot shortage.
+- **Item 8 (block-selection audit)** — readers that select blocks by `live_bytes`, `fully_swept`
+  or `alloc_state`, all now skip `kAllocTenure`: `maybeShrinkCapacity` passes 1 and 2 (the light
+  pass runs outside pauses via `lazySweep` → `onSweepComplete`), `allocateFromEmptyRegularBlocks`
+  (reachable from the mutator through `allocateLargeBlock`), `reclaimAllDeadBlocksFromMeta`,
+  `classifyBlocksAfterMark` (queueing), `selectEvacuationSet`. `detachFromAllocation`,
+  `freeUniformCell` and `resetAllocCursors` abort on one in every build; validate builds abort
+  when the mutator cursor, a mid-cycle allocation (`initObjectHeaderWithSize`) or a marker
+  (`testAndSetMark`, TV8) touches one. **A second hazard the audit did not predict:**
+  `classifyBlocksAfterMark` queues any uniform block with free cells that is not Queued — including
+  the mutator's own Current cursor block. The grant took it, and the collector and the mutator
+  then allocated in one block (found by the E2 unit test as a flaky placement difference). The
+  grant now skips the mutator's cursor block.
+- **Item 9 (minimum object size):** 0 survivor copies under 16 B on the self-compile (a counter in
+  the region banner), so a 16-byte shadow granule (L6) is admissible there; a 16-byte granule
+  aborts in every build on a smaller survivor.
+- **Items 10, 12:** `forEachChildSlot` (`NurseryChildWalk.hpp`) follows phase 6's `scanEntryP`
+  arms; T1–T11 hold as written, plus the L3 members' worker slots and grant cursors (T7).
+
+### 10.2 E0 — inert
+
+`nursery_regions = 0` against `eco-optTG6PT`, both exe-lowered, N = 1: **every counter and all
+1,924 per-minor rows identical, decisions included** (`tg6-compare.py --all`: MATCH). The
+relinked binary differs from both by lowering only (see above).
+
+### 10.3 E1 — the legacy oracle
+
+Same binary, N = 1, legacy vs region mode 1: **run totals (objects allocated, survived,
+promoted, minors, growth, maximum nursery size, bytes) and all 1,924 per-minor rows identical**,
+promoted compared with the one-minor shift (`tg7-compare.py e1`: MATCH). The decision class
+happened to match too (8 majors, same triggers). At N = 4: see below.
+
+### 10.5 E2 — determinism
+
+N = 1, exact engine, mode 1 vs mode 2 vs mode 2 + jitter 50 µs vs mode 2 + a forced stop after
+1,000 items: **every counter class identical** — objects, region columns, grant blocks and cells
+per minor, the major sequence, the banner's retention sections (`tg7-compare.py e2 --exact` and
+`tg6-compare.py --all`: MATCH). The mode 2 arms had 313–321 late jobs finished by the exact
+continuation in the next pause.
+
+### 10.13 E10 — heal cost
+
+See 10.1 item 3: the heal is at most 0.83 ms (p99 0.24 ms). `heal_parallel_min` stays 65,536:
+only a heal list of that length pays for waking the gang, and the self-compile's largest is
+67,277.
+
+### 10.14 E11 — robustness
+
+`testTenureRespawnAndForkStorm`: 100 heaps spawned on fresh threads (mode 2, two collector
+threads, each exiting with a job in flight) and 100 forks with a running job: no failure, no
+leaked threads. It found that the grant could fail near the old-gen cap (the spawned heaps' old
+gens are never returned to the allocator, so 100 of them fill the reservation): **the grant now
+falls back** — the job is run in that pause on the parallel engine, whose promotion ladder is the
+legacy one (`grant_fallbacks` in the banner). At the cap itself the legacy ladder's rung-7
+assertion (found, not fixed, in phase 6) is reached, as it is in legacy mode.
+
+E1 and E2 at N = 4 (same binary, object and region classes): legacy vs mode 1 MATCH on every
+per-minor row (shifted) and on the run totals, the decision class happened to match too (8
+majors); mode 1 vs mode 2, + jitter 50, + forced stop 1,000: object and region classes identical.
+
+### 10.4 7b measurement (region sync) and the 7b close-out
+
+All arms below: one phase-timer binary relinked from one object (`eco-optTG7PT2`), N = 8
+(phase 6's default), gf 0.70 through `ECO_HEAP_CONFIG` in every arm, equal-length environment
+values, strictly serial, output md5 933c3ff0d288 in every run (the fixed point). Triple medians:
+
+| arm | wall s | pause p99 / max ms | minor-only max ms | pauses total s | mutator CPU outside pauses s | old-gen peak MB | max RSS GB |
+|---|---|---|---|---|---|---|---|
+| legacy (phase 6 default) | 123.2 | 34.4 / 137.2 | 109.0 | 12.9 | 109.8 | 11,432 | 12.43 |
+| region, mode 1 (7b) | 135.9 | 113.9 / 143.6 | 141.1 | 36.7 | 98.7 | 11,837 | 13.27 |
+| region, mode 2, B = 1 (7c) | **112.8** | 30.1 / **87.5** | 67.2 | 11.1 | 101.1 | 11,931 | 13.37 |
+| region, mode 2, B = 4 (L3) | 120.3 | 21.6 / 123.7 | 71.6 | 9.7 | 110.0 | 12,028 | 13.47 |
+
+7b as predicted costs pause time (the job runs in the hand-over pause: +24 s of pauses, p99
+114 ms) and is not a candidate default by itself. Two results were not predicted:
+
+- **The region nursery makes the mutator faster:** mutator CPU outside pauses 98.7 s vs 109.8 s
+  (−10 %; at N = 1 97.7 vs 112.1 s, −13 %). Eden is one extent reused at the same addresses
+  every minor, and survivors live in their own extents instead of forming the prefix the mutator
+  allocates behind. This is most of 7c's wall gain.
+- **Old-gen retention follows promotion order again** (phase 6's E7 finding): at N = 1 the region
+  peak is 11,578 MB vs legacy's 9,251 MB; at N = 8 both are depth-first and differ by +3.5 % at gf
+  0.70. Breadth-first tenure order (`tenure_fifo_order`) does not help: 11,902 vs 11,931 MB at N = 8,
+  11,549 vs 11,578 at N = 1, and it is 3–5 % slower. It stays off.
+
+7b's default stays `nursery_regions = 0` (P§4 Step 8). Snapshot `keep-TG7b` is the tree as
+finally gated (7b and 7c ship together; there was no separate 7b tree).
+
+### 10.6 E3 — pauses and wall
+
+See the table in 10.4 (N = 8) and, at N = 1 (single runs): legacy 160.4 s (pause p99 113.4,
+max 182.9 ms), mode 2 136.3 s (126.9 / 157.6 ms). At N = 8 mode 2 cuts wall by 8.4 %, the
+worst pause by 36 % (137 → 88 ms), the minor-only worst by 38 %, total pause time by 14 %. The
+remaining pause: the merge (p50 42 µs, p99 9.5 ms: the heal is ≤ 0.83 ms, the rest is help of late
+jobs), the roots and the eden → fill copy. Pause anatomy of mode 2 (N = 8, `gc-event-log-summary.py`
+section (a), 9.9 s of minor pauses): eden → fill drain 68 %, the merge including help of late
+jobs 19 % (merge p50 0.04 ms, p99 9.8 ms), roots 8.4 % (`roots_ns / pause_ns` per minor is in the
+event logs, `tg7runs/e3-*.events.tsv`), stack walk 1.8 %, pre-drain sweep 2.3 %.
+
+### 10.7 E4 — keep-up (the GC ratio): FAILED at B = 1
+
+| arm | late minors (of 1,924) |
+|---|---|
+| mode 2, B = 1, idle | 312–342 (16–18 %) |
+| mode 2, B = 1, 12 spinning co-runners | 348 (18 %) |
+| mode 2, B = 1, one memory-streaming co-runner | 331 (17 %) |
+| mode 2, B = 4, idle / spin / memory | 1–2 / 1 / 2 (≤ 0.1 %) |
+
+Jobs are bimodal: ~16 % tenure ~2 M objects in ~45 ms against a ~46 ms epoch, so one collector
+cannot keep up at those minors whatever its priority. The exact engine is memory-latency bound
+(81 % of `tenure()` is one shadow-word miss); software prefetch, a 2 MiB-granule shadow and a
+16-byte granule did not move it. A late job is stopped and finished by the minor's gang in the
+next pause (p50 6 ms); `tenure_help_threads = 1` instead raises the pause p99 from 30 to 75 ms,
+so help stays on the minor's worker count. **B = 4 passes E4** (lever L3, built in this phase).
+Four 576 MB memory co-runners oversubscribed the 15 GB machine (multi-second pauses in every
+arm, legacy included); the table uses one co-runner, as phase 0 did.
+
+### 10.8 E5 — oversubscription (`taskset -c 0,1`, N = 2)
+
+Mode 1 150.3 s (minor max 155 ms), mode 2 130.7 s (123 ms), mode 2 B = 4 139.5 s (129 ms): no
+collapse, mode 2 faster than mode 1. Pass.
+
+### 10.9 E6 — interference: B = 1 passes, B = 4 fails
+
+Mutator CPU outside pauses vs mode 1 (98.7 s, triples): mode 2 B = 1 101.1 s (+2.4 %, at the
+limit), B = 4 110.0 s (+11.4 %, fail). Four collectors burn 47 s of CPU (B = 1: 20 s) and the
+mutator pays for the memory traffic; the parallel engine's per-object cost is ~2× the exact
+engine's (a CAS per claim, stealing, and shared shadow lines).
+
+### 10.10 E7 — retention: FAILED on the per-point rule
+
+gf sweep, N = 8, one run per point (old-gen peak MB, majors):
+
+| gf | legacy | mode 2, B = 1 |
+|---|---|---|
+| 0.65 | 10,193 (8) | 9,529 (8) |
+| 0.70 | 11,450 (8) | 11,882 (8) |
+| 0.75 | 9,471 (7) | 9,544 (7) |
+
+Sweep median −6.4 % (limit +3 %: pass); majors identical at every point (pass); max RSS sweep
+median −2.8 % (pass). **The gf 0.70 point is 3.8 % above legacy's sweep maximum** (triples:
+11,931 vs 11,432 MB, +4.4 %), which the rule forbids. At 0.70 max RSS is +7.6 % (13.37 vs 12.43
+GB): the nursery's own footprint is ~520 MB larger (eden 128 MB + survivor high-water 263 MB +
+shadow ~260 MB touched, vs 256 MB legacy). The retention bound held in every run: at most two
+survivor extents in use between minors.
+
+### 10.11 E8 — tight cap (`max_heap_size` 15G)
+
+Legacy peak 9,647 MB (85.6 % of the cap, 9 majors), mode 2 9,446 MB (83.9 %, 8 majors): −1.7
+points (limit +2). Stress 101/101 with 8,604 region minors on the pressure config and 1,090 on the
+pressure-parallel config, in both modes (P§10.16). Pass.
+
+### 10.12 E9 — mutator locality
+
+Mode 2's mutator CPU outside pauses is 8 % below legacy's (101.1 vs 109.8 s): the collector's
+depth-first promotion order does not hurt the mutator; the region nursery helps it (10.4).
+
+### 10.15 E12 — shadow granule
+
+0 survivors under 16 B on the self-compile, so `shadow_granule_log2 = 4` is admissible: max RSS
+−80 MB (13.24 vs 13.32 GB, one run each), collector time unchanged. It stays 3 (the 16-byte
+granule aborts on an 8-byte survivor, which other programs may have); it is the first lever for
+region mode's RSS.
+
+### 10.16 Gates
+
+| # | Gate | Result |
+|---|---|---|
+| G1 | unit | default tree 1,931/1,931 (regions off, region tests config-pinned in modes 1 and 2, B = 1/2/4, FIFO) |
+| G2 | elm-tests | P§10.18 |
+| G3 | `full` / E2E | E2E 942/942 with `ECO_NURSERY_REGIONS=1` in modes 1 and 2, default and GC-pressure configs; `full` in P§10.18 |
+| G4 | stress | 101/101 in both modes at N = 1 and 4 on the pressure (8,604 region minors) and pressure-parallel (1,090) configs |
+| G5 | validate tree | unit 1,932/1,932; E2E 942/942 and stress 101/101 on every arm (modes 1/2, N = 1/4, jitter 50, B = 4, FIFO, poison); the only `[heap-validate]` lines are phase 6's three negative controls and the skipped-heal control (TV2), all required to fire; P1 census build on a region self-compile: 1.49 billion survivor checks, 0 violations (N, O and W) |
+| G6 | stats-off | `eco-optTG7NS` self-compiles in region mode 2, output identical |
+| G7 | E0 | MATCH, every class (exe-lowered binaries) |
+| G8 | E1 | MATCH at N = 1 and N = 4 (object class; decisions matched too) |
+| G9 | E2 | MATCH, every class at N = 1 (mode 1 / 2 / jitter / forced stop); object + region classes at N = 4 |
+| G10 | TSan | `gc-tenure-tsan` (stop/resume identity, a concurrent reader, a 10,000-job storm on the real gang) and `gc-heap-tsan` (region mode 2 with B = 1 and B = 4, 5c cycles, 4 minor workers): PASS, 0 warnings across 6 heap runs (1 on 2 CPUs) and 3 tenure runs after two validate-only fixes, P§10.18 item 10 |
+| G11 | E3–E12 | recorded above: **E4 fails at B = 1, E6 fails at B = 4, E7 fails its per-point rule** |
+| G12 | fixed point | every run reproduced `out.mlir` 933c3ff0d288 |
+| G13 | static | no `hardware_concurrency` in the allocator; `evacuateR` copies only Eden / HandBuilders objects (every other role records, resolves or aborts); the collector reaches `OldGenSpace` only through `grantAllocate` / `grantAllocateShared` (the pause-only engine uses `allocatePromotion`) |
+
+### 10.17 The default: `nursery_regions = 0` (decision rules not met)
+
+No configuration passes every decision rule: B = 1 fails E4 (16–18 % late jobs; the rule is 1 %
+idle, 10 % under co-runners) and E7's per-point rule; B = 4 passes E4 but fails E6 (+11 %
+mutator CPU) and E7. Per P§11 the phase closes with the default left at
+`nursery_regions = 0`, `tenure_mode = 1`, `tenure_collector_threads = 1`. The measured best
+configuration for an override is **`nursery_regions = 1`, `tenure_mode = 2`,
+`tenure_collector_threads = 1`**: wall −8.4 % (123.2 → 112.8 s), worst pause −36 % (137 → 88
+ms), pause p99 34 → 30 ms, total pause −14 %; costs: old-gen peak +4.4 % and max RSS +7.6 % at gf
+0.70 (sweep medians −6.4 % / −2.8 %), 20 s of collector CPU, and 17 % of minors helping a late
+job. `ECO_NURSERY_REGIONS=1 ECO_TENURE_MODE=2` enables it.
+
+**Addendum (2026-09-28, TG7d): the user made that configuration the default**, overriding E4's
+keep-up rule as phase 6 overrode its retention gate. The flip needed three changes:
+- **`nursery_regions = 2` (auto), the new default.** It resolves when the Allocator adopts a config
+  (`HeapConfig::resolveNurseryRegions`, before `validate`): regions when the config meets the
+  region requirements (`regionIncompatibility()`: `promotion_age = 1`, bitmap allocation, a size
+  class for every nursery object, room for one heap slot), the legacy nursery otherwise. An
+  explicit `1` still throws on an incompatible config, and `ECO_NURSERY_REGIONS` accepts `2`.
+  Without auto, every config with `promotion_age > 1`, bitmap allocation off or a small heap
+  (17 unit tests) failed validation.
+- **`tenure_mode = 2`** (one collector is already the default).
+- **Unit tests pin the legacy nursery.** 58 tests assert legacy timing (promotion at the first
+  minor, semi-space shapes), so `initAllocator` sets `nursery_regions = 0`; the region tests use
+  `initRegionAllocator`, which takes their config as given. E2E, stress and the self-compile run
+  the new default. `gc-heap-tsan`'s legacy scenarios pin `0` for the same reason.
+The loop entry is TG7d in `benchmarks/gc-opt-loop.md`.
+
+### 10.18 Design deviations
+
+1. **Lever L3 was built in this phase** (`tenure_collector_threads`), as the Step 0 rule required:
+   B members run 5b's marker loop over their own worker slots and allocate from the grant by
+   claiming chunks with a CAS on a per-class word (block index << 32 | chunk). Chunks own ≥ 1,024
+   bitmap bits: 64-cell chunks of small classes put up to eight members' chunks in one bitmap cache
+   line, and the bit-set traffic made the allocator 77 % stalled on one load (fixed; B = 4 went
+   from 23 % to 0.1 % late). A stop leaves the unscanned work in the deques (5c's semantics) and
+   help drains it in the next pause on the minor's gang; the grant carries one chunk of slack per
+   participant. B = 1 remains the exact engine.
+2. **The exact engine publishes without a claim**: it is the only writer while it runs (help
+   starts after a join), so it skips the CAS.
+3. **The grant skips the mutator's cursor block** (10.1 item 8) and **falls back** to the in-pause
+   parallel engine when the old gen cannot supply virgin blocks (10.14).
+4. **A merge at a STW major is final**: the next minor's join finds the job Merged and does not
+   merge again, and the P1 census check runs at whichever join merges. `majorRedirect` greys a
+   copy only while the merged job's extent is still Tenuring (a STW major inside the hand-over
+   minor, before the launch, traverses that extent as young).
+5. **One pause engine for help and sync with n > 1** uses phase 6's `PromoCtx`; the concurrent L3
+   engine uses the grant. Both share `TenureParEnv`.
+6. **Stats:** `promoted` columns of region rows carry the tenured counts of the job merged at that
+   minor (the one-minor shift), and run totals include the last job via a stats-only merge before
+   the exit banner (`Allocator::finishTenureForExit`, and in `cleanupThread`).
+7. **Region tests are config-pinned** (as phase 6); in-process E2E heaps take the environment at
+   their first initialize, and E2E / stress run in forked children, so `ECO_NURSERY_REGIONS=1`
+   reaches them.
+8. **The collector threads are named `eco-tenure-N`** (a `GCBackgroundGang` name option).
+9. **Test infrastructure fix:** `allocateHeapGraphInOldGen` built 0-field Customs, which the
+   validate mark rejects (HEAP_044); seed-dependent, pre-existing. Padded as the nursery generator
+   already did.
+10. **Heap TSan found two validate-only defects** (fixed 2026-09-28; the release binary is
+    unaffected, since both are under `ECO_HEAP_VALIDATE`):
+    - *A race this phase introduced:* `validateOldGenMetadata` V8 (called from
+      `maybeShrinkCapacity`) and `validateCycleUniformLive` IM6 read the bitmaps of `kAllocTenure`
+      blocks while the collector's `grantAllocate` set bits. That reported a false
+      `popcount != live_bytes` failure (1 run in 3). Both validators now skip granted blocks: their
+      bits belong to the collector until the merge folds in the live bytes (HEAP_070).
+    - *A SEGV that predates this phase* (keep-TG6's driver fails 1 run in 4): the legacy
+      post-minor old-gen→nursery walk parsed MIXED blocks by header. With bitmap allocation,
+      the cursor fills a gap and leaves the gap's tail headerless (HEAP_056), so the walk entered a
+      dead 10 KB string's payload and decoded a 1.7 GB size. The walk now visits only set start
+      bits in mixed blocks too, stepping 8 bytes otherwise; HEAP_024 is amended.
+    After the fixes: `gc-heap-tsan` 5 runs plus 1 under `taskset -c 0,1`, all rc 0 with 0
+    warnings; `gc-tenure-tsan` 3 runs (one on 2 CPUs) with 0 warnings; validate unit 1939/1939;
+    validate stress 101/101 in the legacy, mode 2 and mode 2 B = 4 arms.
 
 ---
 

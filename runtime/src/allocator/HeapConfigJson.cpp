@@ -207,6 +207,17 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         "minor_parallel_min_bytes",
         "minor_prefetch_children",
         "minor_fifo_order",
+        "nursery_regions",
+        "nursery_region_eden_flip",
+        "tenure_mode",
+        "tenure_sync_threads",
+        "tenure_help",
+        "tenure_help_threads",
+        "tenure_priority",
+        "heal_parallel_min",
+        "shadow_granule_log2",
+        "tenure_collector_threads",
+        "tenure_fifo_order",
         "conc_mark",
         "conc_mark_threads",
         "conc_mark_threads_cap",
@@ -343,6 +354,29 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         cfg.minor_prefetch_children = parseBool(*it, "minor_prefetch_children");
     if (auto it = doc.find("minor_fifo_order"); it != doc.end())
         cfg.minor_fifo_order = parseBool(*it, "minor_fifo_order");
+    // threaded-gc-07
+    if (auto it = doc.find("nursery_regions"); it != doc.end())
+        cfg.nursery_regions = parseU32(*it, "nursery_regions");
+    if (auto it = doc.find("nursery_region_eden_flip"); it != doc.end())
+        cfg.nursery_region_eden_flip = parseI32(*it, "nursery_region_eden_flip");
+    if (auto it = doc.find("tenure_mode"); it != doc.end())
+        cfg.tenure_mode = parseU32(*it, "tenure_mode");
+    if (auto it = doc.find("tenure_sync_threads"); it != doc.end())
+        cfg.tenure_sync_threads = parseU32(*it, "tenure_sync_threads");
+    if (auto it = doc.find("tenure_help"); it != doc.end())
+        cfg.tenure_help = parseU32(*it, "tenure_help");
+    if (auto it = doc.find("tenure_help_threads"); it != doc.end())
+        cfg.tenure_help_threads = parseU32(*it, "tenure_help_threads");
+    if (auto it = doc.find("tenure_priority"); it != doc.end())
+        cfg.tenure_priority = parseI32(*it, "tenure_priority");
+    if (auto it = doc.find("heal_parallel_min"); it != doc.end())
+        cfg.heal_parallel_min = parseByteSize(*it, "heal_parallel_min");
+    if (auto it = doc.find("shadow_granule_log2"); it != doc.end())
+        cfg.shadow_granule_log2 = parseU32(*it, "shadow_granule_log2");
+    if (auto it = doc.find("tenure_collector_threads"); it != doc.end())
+        cfg.tenure_collector_threads = parseU32(*it, "tenure_collector_threads");
+    if (auto it = doc.find("tenure_fifo_order"); it != doc.end())
+        cfg.tenure_fifo_order = parseBool(*it, "tenure_fifo_order");
     // threaded-gc-05c
     if (auto it = doc.find("conc_mark"); it != doc.end())
         cfg.conc_mark = parseU32(*it, "conc_mark");
@@ -531,6 +565,29 @@ void applyConcMarkEnv(HeapConfig &cfg, const char *mode_value, const char *threa
     }
 }
 
+// threaded-gc-07: ECO_NURSERY_REGIONS ("0"/"1"/"2" = auto), ECO_TENURE_MODE ("1"/"2")
+// and ECO_NURSERY_EDEN_FLIP ("-1"/"0"/"1") win over JSON (nullptr = unset).
+void applyRegionEnv(HeapConfig &cfg, const char *regions_value, const char *mode_value,
+                    const char *flip_value) {
+    if (regions_value != nullptr && regions_value[0] != '\0') {
+        if (regions_value[1] != '\0' || regions_value[0] < '0' || regions_value[0] > '2')
+            throw std::invalid_argument("ECO_NURSERY_REGIONS must be 0, 1 or 2 (auto)");
+        cfg.nursery_regions = static_cast<uint32_t>(regions_value[0] - '0');
+    }
+    if (mode_value != nullptr && mode_value[0] != '\0') {
+        if (mode_value[1] != '\0' || (mode_value[0] != '1' && mode_value[0] != '2'))
+            throw std::invalid_argument("ECO_TENURE_MODE must be 1 or 2");
+        cfg.tenure_mode = static_cast<uint32_t>(mode_value[0] - '0');
+    }
+    if (flip_value != nullptr && flip_value[0] != '\0') {
+        const std::string f(flip_value);
+        if (f == "-1") cfg.nursery_region_eden_flip = -1;
+        else if (f == "0") cfg.nursery_region_eden_flip = 0;
+        else if (f == "1") cfg.nursery_region_eden_flip = 1;
+        else throw std::invalid_argument("ECO_NURSERY_EDEN_FLIP must be -1, 0 or 1");
+    }
+}
+
 void applyGcThreadEnv(HeapConfig &cfg, uint32_t &jitter_us) {
     applyGcThreadEnv(cfg, jitter_us, std::getenv("ECO_GC_THREAD"),
                      std::getenv("ECO_GC_HELPER_JITTER_US"));
@@ -538,6 +595,20 @@ void applyGcThreadEnv(HeapConfig &cfg, uint32_t &jitter_us) {
     applyMinorThreadsEnv(cfg, std::getenv("ECO_GC_MINOR_THREADS"));
     applyConcMarkEnv(cfg, std::getenv("ECO_GC_CONC_MARK"),
                      std::getenv("ECO_GC_CONC_MARK_THREADS"));
+    applyRegionEnv(cfg, std::getenv("ECO_NURSERY_REGIONS"), std::getenv("ECO_TENURE_MODE"),
+                   std::getenv("ECO_NURSERY_EDEN_FLIP"));
+    if (const char* e = std::getenv("ECO_TENURE_COLLECTORS"); e != nullptr && e[0] != '\0') {
+        char* end = nullptr;
+        const unsigned long v = std::strtoul(e, &end, 10);
+        if (end == e || *end != '\0' || v < 1 || v > 32)
+            throw std::invalid_argument("ECO_TENURE_COLLECTORS must be a decimal in [1, 32]");
+        cfg.tenure_collector_threads = static_cast<uint32_t>(v);
+    }
+    if (const char* e = std::getenv("ECO_TENURE_FIFO"); e != nullptr && e[0] != '\0') {
+        if (e[1] != '\0' || (e[0] != '0' && e[0] != '1'))
+            throw std::invalid_argument("ECO_TENURE_FIFO must be 0 or 1");
+        cfg.tenure_fifo_order = e[0] == '1';
+    }
 }
 
 } // namespace Elm

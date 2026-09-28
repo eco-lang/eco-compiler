@@ -31,8 +31,12 @@ static HeapConfig withTestMinorThreads(const HeapConfig& in) {
     return c;
 }
 
-Allocator& initAllocator(const HeapConfig& config_in) {
-    const HeapConfig config = withTestMinorThreads(config_in);
+// threaded-gc-07 (TG7d): the region nursery is the runtime default, but the
+// unit tests written against the legacy semi-space nursery assert its timing
+// (promotion at the first minor, from/to spaces, small nursery shapes), so
+// initAllocator pins nursery_regions = 0. The region tests opt in with
+// initRegionAllocator, which honours their config as given.
+static Allocator& initAllocatorWith(const HeapConfig& config) {
     auto& alloc = Allocator::instance();
     // Ensure the global heap mmap exists. On the first ever call this seeds
     // config_ with `config`; subsequent calls are no-ops because `initialize`
@@ -43,6 +47,16 @@ Allocator& initAllocator(const HeapConfig& config_in) {
     AllocatorTestAccess::reset(alloc, &config);
     alloc.initThread();
     return alloc;
+}
+
+Allocator& initAllocator(const HeapConfig& config_in) {
+    HeapConfig config = withTestMinorThreads(config_in);
+    config.nursery_regions = 0;
+    return initAllocatorWith(config);
+}
+
+Allocator& initRegionAllocator(const HeapConfig& config_in) {
+    return initAllocatorWith(withTestMinorThreads(config_in));
 }
 
 HeapConfig scaledHeapConfig(int rc_size) {

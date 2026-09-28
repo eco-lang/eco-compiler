@@ -51,6 +51,8 @@ PHASES = [
     "par_sweep_ns",
     "par_drain_ns",
     "par_close_ns",
+    # threaded-gc-07: the tenure join + merge before the nursery minor (incl. help).
+    "rg_merge_ns",
 ]
 
 
@@ -255,6 +257,26 @@ def summarise(path):
             "imbalance_units": sum(num(r.get("par_imbalance_units")) or 0 for r in par),
             "pause_pct_ns": pct_block([num(r["pause_ns"]) or 0 for r in par]),
         }
+    # (k) threaded-gc-07 region nursery / tenure jobs
+    rg = [r for r in minors if (num(r.get("rg_region")) or 0) > 0]
+    if rg:
+        def col(k):
+            return [num(r.get(k)) or 0 for r in rg]
+        busy, epoch = col("rg_busy_ns"), col("rg_epoch_ns")
+        util = sorted(b / e for b, e in zip(busy, epoch) if e > 0)
+        out["region"] = {
+            "count": len(rg),
+            "late": int(sum(col("rg_late"))),
+            "tenured": int(sum(col("rg_tenured"))),
+            "merge_pct_ns": pct_block(col("rg_merge_ns")),
+            "heal_pct_ns": pct_block(col("rg_heal_ns")),
+            "help_ns": sum(col("rg_help_ns")),
+            "heal_recorded_p99": percentile(sorted(col("rg_heal_recorded")), 0.99),
+            "starts_p99": percentile(sorted(col("rg_starts")), 0.99),
+            "util_p50": percentile(util, 0.5) if util else 0,
+            "util_p99": percentile(util, 0.99) if util else 0,
+            "util_max": util[-1] if util else 0,
+        }
     out["warnings"] = warnings
     return out
 
@@ -344,6 +366,17 @@ def print_text(s):
               "imbalance %d units, fillers %.1f MB" %
               (p["drain_ns"] / 1e9, p["sweep_ns"] / 1e9, p["close_ns"] / 1e9,
                p["mutex_wait_ns"] / 1e9, p["imbalance_units"], p["filler_bytes"] / 2**20))
+    if "region" in s:
+        g = s["region"]
+        print("\n(k) region nursery / tenure jobs (threaded-gc-07):")
+        print("  %d minors, %d tenured, %d late (%.1f %%), help %.3f s" %
+              (g["count"], g["tenured"], g["late"], 100.0 * g["late"] / max(1, g["count"]),
+               g["help_ns"] / 1e9))
+        print("  merge p50 %s p99 %s max %s; heal p50 %s p99 %s max %s" %
+              (ms(g["merge_pct_ns"]["p50"]), ms(g["merge_pct_ns"]["p99"]), ms(g["merge_pct_ns"]["max"]),
+               ms(g["heal_pct_ns"]["p50"]), ms(g["heal_pct_ns"]["p99"]), ms(g["heal_pct_ns"]["max"])))
+        print("  heal list p99 %d, start set p99 %d; collector utilization per job p50 %.3f p99 %.3f max %.3f" %
+              (g["heal_recorded_p99"], g["starts_p99"], g["util_p50"], g["util_p99"], g["util_max"]))
     for w in s["warnings"]:
         print("WARNING: " + w)
 

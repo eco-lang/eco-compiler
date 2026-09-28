@@ -35,7 +35,10 @@ i64 intOf(Allocator& a, HPointer hp) {
 // threaded-gc-06 Step 8: `minor` > 1 runs every minor on that many parallel
 // workers (a 1 MiB nursery side leaves room for their LABs), overlapping the
 // background markers' episodes.
-void scenario(unsigned bg, unsigned slices, uint64_t seed, unsigned minor = 1) {
+// threaded-gc-07 Step 10: `regions` runs the region nursery in tenure mode 2
+// with `collectors` tenure collector threads (1 = the exact engine; > 1 = L3).
+void scenario(unsigned bg, unsigned slices, uint64_t seed, unsigned minor = 1,
+              bool regions = false, unsigned collectors = 1) {
     HeapConfig cfg;
     cfg.alloc_buffer_size = 32 * 1024;
     cfg.nursery_block_count = minor > 1 ? 64 : 8;
@@ -56,6 +59,13 @@ void scenario(unsigned bg, unsigned slices, uint64_t seed, unsigned minor = 1) {
     cfg.conc_mark_threads = bg;
     cfg.conc_mark_priority = 0;
     cfg.conc_mark_assist_lag = 1;
+    cfg.nursery_regions = 0;   // TG7d: the default is auto; legacy scenarios pin it off
+    if (regions) {
+        cfg.nursery_regions = 1;
+        cfg.tenure_mode = 2;
+        cfg.tenure_collector_threads = collectors;
+        cfg.tenure_help_threads = 0;
+    }
     cfg.validate();
     auto& a = Allocator::instance();
     a.initialize(cfg);
@@ -113,6 +123,12 @@ void scenario(unsigned bg, unsigned slices, uint64_t seed, unsigned minor = 1) {
     }
     while (OldGenSpaceTestAccess::cycleActive(h->getOldGen())) a.minorGC();
     const ConcMarkStats& cm = h->getOldGen().getStats().cm;
+    if (regions) {
+        const RegionTenureStats& rg = h->getNursery().getStats().rg;
+        std::printf("region scenario collectors=%u: minors %llu, tenured %llu, late %llu, par runs %llu\n",
+                    collectors, (unsigned long long)rg.minors, (unsigned long long)rg.tenured,
+                    (unsigned long long)rg.late, (unsigned long long)rg.par_runs);
+    }
     std::printf("heap scenario B=%u T=%u minor=%u: %llu forced cycles ok (episodes %llu, bg units %llu, "
                 "assists %llu, closings with work %llu, early done %llu, parallel minors %llu)\n", bg, slices, minor,
                 (unsigned long long)cycles, (unsigned long long)cm.episodes_launched,
@@ -129,6 +145,10 @@ int main() {
     // threaded-gc-06: parallel minors overlapping background episodes.
     scenario(2, 4, 4, 4);
     scenario(4, 16, 5, 3);
+    // threaded-gc-07: the region nursery with concurrent tenuring (mode 2),
+    // a 5c cycle every ~40 minors, 4 parallel minor workers.
+    scenario(2, 4, 6, 4, /*regions=*/true, /*collectors=*/1);
+    scenario(2, 4, 7, 4, /*regions=*/true, /*collectors=*/4);
     std::printf("heap_driver PASS\n");
     return 0;
 }

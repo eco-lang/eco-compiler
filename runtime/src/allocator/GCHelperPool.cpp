@@ -544,7 +544,7 @@ void GCBackgroundGang::memberLoop(unsigned index) {
 #if !defined(_WIN32)
     {
         char name[16];
-        std::snprintf(name, sizeof name, "eco-cmark-%u", index);
+        std::snprintf(name, sizeof name, "%.10s-%u", opt_.name ? opt_.name : "eco-cmark", index);
 #  if defined(__APPLE__)
         pthread_setname_np(name);
 #  else

@@ -35,6 +35,10 @@ namespace TestHelpers {
 // Returns reference to the singleton for convenience.
 Allocator& initAllocator(const HeapConfig& config = HeapConfig());
 
+// threaded-gc-07: initAllocator pins the legacy nursery (nursery_regions = 0);
+// the region tests use this one, which takes the config as given.
+Allocator& initRegionAllocator(const HeapConfig& config);
+
 // Creates a HeapConfig scaled to the given RapidCheck size.
 // At size 0-100, uses minimum nursery (64KB).
 // At larger sizes, scales up to accommodate more/larger objects.

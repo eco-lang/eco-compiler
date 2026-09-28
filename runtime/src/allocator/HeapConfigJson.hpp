@@ -77,6 +77,9 @@ void applyMarkThreadsEnv(HeapConfig &cfg, const char *value);
 void applyMinorThreadsEnv(HeapConfig &cfg, const char *value);
 // threaded-gc-05c: ECO_GC_CONC_MARK / ECO_GC_CONC_MARK_THREADS (nullptr = unset).
 void applyConcMarkEnv(HeapConfig &cfg, const char *mode_value, const char *threads_value);
+// threaded-gc-07: ECO_NURSERY_REGIONS / ECO_TENURE_MODE / ECO_NURSERY_EDEN_FLIP (nullptr = unset).
+void applyRegionEnv(HeapConfig &cfg, const char *regions_value, const char *mode_value,
+                    const char *flip_value);
 void applyGcThreadEnv(HeapConfig &cfg, uint32_t &jitter_us,
                       const char *mode_value, const char *jitter_value);
 

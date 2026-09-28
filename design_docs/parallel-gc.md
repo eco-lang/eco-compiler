@@ -748,6 +748,31 @@ does it. Run the self-compile under the validator before committing to C.
 | **H-id** | Identity-negative comparisons (M6) must be linted out. |
 | **H-L3** | The collector competes with a latency-bound mutator for the shared L3. The net figures depend most on this term, and it is the least certain. **Measure it before building:** run a synthetic co-runner that streams ~25 MB per 59 ms of random 35-byte copies on another core during a normal self-compile, and read the mutator slowdown. |
 
+#### 7.4.5 As built (threaded-gc-07, 2026-09-27)
+
+Design C was built as `plans/threaded-gc-07-concurrent-tenuring.md` (HEAP_069/HEAP_070,
+FORBID_HEAP_004), with four changes from the text above:
+
+- **The heal is pause work, not collector work.** The collector records nothing and writes no
+  published object; the next minor heals the recorded slots (H_m) before anything else touches
+  the heap. The self-compile's heal lists are small (p50 47 slots, p99 25 K, max 67 K per minor;
+  p99 0.24 ms), so the pause heal costs almost nothing and keeps HEAP_006 / P1 literal.
+- **The collector allocates from a promotion grant**, not through the promotion lock: uniform
+  blocks in state `kAllocTenure`, sized in the pause from the tenuring extent's per-class object
+  counts, invisible to every allocator selection path until the merge. F11's light shrink runs
+  outside pauses, so the skip rule is load-bearing; so is excluding the mutator's own cursor
+  block, which `classifyBlocksAfterMark` can leave on the partial queue.
+- **Young large objects are handled by generation** (first reach at m, hand-over at m + 1,
+  promotion in place at the m + 2 merge), and the job reads a private sorted snapshot, never the
+  body index. H-body is solved by re-marking the hand-over extent's bodies at hand-over.
+- **Every nursery object must have a size class** (the grant allocates cells). The region cap on
+  large pointer objects is the largest old-gen class (8 KiB at the default
+  `large_object_threshold`), not 64 KiB.
+
+H-L3 was real and is the deciding term: the region nursery by itself makes the mutator faster
+(mutator CPU outside pauses 97.7 s vs 112.1 s legacy at N = 1), one concurrent collector costs
+about 2.4 s of it, four collectors about 13 s. See the plan's P§10 for the measurements.
+
 ### 7.5 Nursery comparison
 
 | | Parallel STW (§7.2) | En-masse prefix (§7.3) | C: concurrent tenuring | B: pipelined |

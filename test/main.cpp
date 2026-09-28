@@ -49,6 +49,9 @@
 #include "allocator/EnsureHeadroomTest.hpp"
 #include "allocator/NurseryFillerTest.hpp"
 #include "allocator/ParallelMinorTest.hpp"
+#include "allocator/RegionMinorTest.hpp"
+#include "allocator/ConcurrentTenureTest.hpp"
+#include "allocator/TenureGrantTest.hpp"
 #include "allocator/PromoBufferTest.hpp"
 #include "allocator/GCPauseStatsTest.hpp"
 #include "allocator/NurseryContiguityTest.hpp"
@@ -745,6 +748,38 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testParMinorForkChild);
     oldGenTests.add(testParMinorDuringCycle);
     oldGenTests.add(testParMinorNegativeControls);
+    // threaded-gc-07: region nursery + tenure jobs (HEAP_069/HEAP_070).
+    oldGenTests.add(testGrantCoversCounts);
+    oldGenTests.add(testGrantReturnToFront);
+    oldGenTests.add(testGrantAccountingMerge);
+    oldGenTests.add(testShrinkSkipsGranted);
+    oldGenTests.add(testRegionConfigValidation);
+    oldGenTests.add(testRegionGeometry);
+    oldGenTests.add(testRegionLegacyGeometryUnchanged);
+    oldGenTests.add(testRegionObjectsMatchLegacy);
+    oldGenTests.add(testRegionLongListTenured);
+    oldGenTests.add(testRegionRootResolve);
+    oldGenTests.add(testRegionEveryTagTenured);
+    oldGenTests.add(testRegionBuilderStaysInArea);
+    oldGenTests.add(testRegionLargeBodies);
+    oldGenTests.add(testRegionYlosGenerations);
+    oldGenTests.add(testRegionRetentionBound);
+    oldGenTests.add(testRegionStwMajorBetweenMinors);
+    oldGenTests.add(testParallelTenureObjectsEqualExact);
+    oldGenTests.add(testRegionParallelSuite);
+    oldGenTests.add(testRegionT0CoversTenuring);
+    oldGenTests.add(testTenureStopResumeSameLayout);
+    oldGenTests.add(testTenureModesAgreeOnCounters);
+    oldGenTests.add(testTenureLateHelpParallel);
+    oldGenTests.add(testTenureForkChild);
+    oldGenTests.add(testTenureExitWhileRunning);
+    oldGenTests.add(testTenureDuringCycle);
+    oldGenTests.add(testTenureNegativeControls);
+    oldGenTests.add(testTenureBodyRemarkControl);
+    oldGenTests.add(testTenureShrinkSkipsGranted);
+    oldGenTests.add(testTenureCollectorThreads);
+    oldGenTests.add(testTenureRespawnAndForkStorm);
+    oldGenTests.add(testTenureFifoOrder);
     oldGenTests.add(testParMarkNegativeSkipMergeWorker1);
     oldGenTests.add(testParMarkNegativePlainBits);
     oldGenTests.add(testParMarkNegativeStealWithoutTicket);

@@ -11,6 +11,7 @@
 #include "AllocatorCommon.hpp"
 #include "MarkWork.hpp"
 #include "MinorWork.hpp"
+#include "NurseryRegions.hpp"
 #include "P1Census.hpp"
 #include "GCStats.hpp"
 #include "OldGenSpace.hpp"
@@ -193,7 +194,53 @@ public:
         return n;
     }
     // True when no nursery allocation happened since the last minor GC.
-    bool survivorPrefixExact() const { return bump_.ptr == survivor_end_; }
+    bool survivorPrefixExact() const {
+        if (rg_) return bump_.ptr == rg_->eden_base;   // threaded-gc-07 IM7: eden is empty
+        return bump_.ptr == survivor_end_;
+    }
+
+    // ========== threaded-gc-07: the region nursery (HEAP_069/HEAP_070) ==========
+    bool regionMode() const { return rg_ != nullptr; }
+    RegionState* regionState() { return rg_.get(); }
+    const RegionState* regionState() const { return rg_.get(); }
+    // P§3.16 t0 young walk: every object (fillers skipped) of the Fresh
+    // extent's survivor part and builder area and the Tenuring extent's
+    // survivor part. Valid right after a minor (IM7: eden is empty).
+    // Legacy mode: forEachSurvivor.
+    template <typename F> size_t forEachYoung(F&& f, size_t* bytes_out = nullptr);
+    // P§3.15: joins the running or pending tenure job and MERGES it (heal,
+    // bodies, YLOS promotions, grant return, stats). `why`: 0 = minor start,
+    // 1 = STW major, 2 = teardown (stats-only merge: no heal).
+    void tenureJoin(OldGenSpace& oldgen, int why, MinorGCRecord* rec = nullptr);
+    // P§3.15: builds job m at the end of minor m (after the cycle decision)
+    // and runs it (mode 1) or launches it on the tenure collector (mode 2).
+    void tenureLaunch(OldGenSpace& oldgen);
+    // Heap teardown: stop / finish / stats-merge the last job, stop the gang.
+    void tenureTeardown(OldGenSpace& oldgen);
+    // P§3.16 STW major rule: a Tenuring object whose job is Merged -> its
+    // copy (TV1 aborts on a miss); anything else -> obj.
+    void* majorRedirect(void* obj) const;
+    // The effective large-pointer nursery cap in region mode (P§3.13).
+    size_t regionLargeCap() const { return region_large_cap_; }
+    // Test hooks (P§3.19 negative controls; written only between minors).
+    uint64_t test_tenure_skip_start_every_ = 0;
+    bool test_heal_skip_one_ = false;
+    bool test_no_body_remark_ = false;
+    uint64_t test_tenure_force_stop_after_ = 0;
+    uint64_t test_tenure_sleep_us_ = 0;
+    // Old-gen placement of every copy of the last merged jobs (tests:
+    // testTenureStopResumeSameLayout). Recorded only when enabled.
+    bool test_record_layout_ = false;
+    std::vector<uintptr_t> test_layout_;
+private:
+    std::vector<uintptr_t> J_layout_;   // the running job's placements (job-private)
+    std::unique_ptr<RegionState> rg_;
+    size_t region_large_cap_ = SIZE_MAX;
+    void initRegions();
+    void releaseRegions();
+    void minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stackmap_roots,
+                       MinorGCRecord* rec);
+    friend struct RegionEnvAccess;
 private:
 
     // Pre-computed `from_capacity_bytes_ * gc_threshold_`. The proactive-GC
@@ -317,6 +364,7 @@ private:
     // (isInFromSpaceAllocatedRegion / isInToSpaceAllocatedRegion declared
     // public above for free-helper access in the .cpp.)
     void debugAssertValidNurseryPointer(void* ptr) const;
+    void regionAssertValidPointer(void* ptr) const;   // threaded-gc-07 TV7
 #endif
 
     // Base of the current from-/to-space extent.
@@ -476,6 +524,45 @@ private:
     };
     struct MinorEnv;
     friend struct MinorEnv;
+    struct RegionEnv;
+    friend struct RegionEnv;
+    struct TenureHeapEnv;
+    friend struct TenureHeapEnv;
+    struct TenureParEnv;
+    friend struct TenureParEnv;
+    // threaded-gc-07 region drain (NurseryRegion.cpp).
+    enum : uint32_t { kColSurv = 0, kColYoungYlos = 1, kColBuilder = 2, kColHandYlos = 3, kColRoot = 4 };
+    void evacuateR(MinorWorker& w, region::RegionWorker& rw, HPointer& slot, uint32_t col);
+    void* copyClaimedR(MinorWorker& w, region::RegionWorker& rw, void* obj, uint64_t hw);
+    void scanEntryR(MinorWorker& w, uint64_t e);
+    void spineRunR(MinorWorker& w, region::RegionWorker& rw, Cons* prev, uint32_t col);
+    void reachYoungLargeR(MinorWorker& w, region::RegionWorker& rw, void* obj);
+    void* resolveRetire(void* t, region::RegionWorker* rw);
+    static void regionWorkerEntry(void* ctx, unsigned member);
+    void mergeJob(OldGenSpace& oldgen, bool heal, MinorGCRecord* rec);
+    void runJobExact(OldGenSpace& oldgen, const std::atomic<bool>* stop);
+    void runJobParallel(OldGenSpace& oldgen, unsigned n);
+    static void tenureEntry(void* ctx, unsigned member);
+    static void tenureParEntry(void* ctx, unsigned member);
+    static void tenureConcEntry(void* ctx, unsigned member);
+    void tenureParSetup(std::unique_ptr<MinorWorker>* ws, unsigned n);
+    void tenureParSetupExtra(unsigned B, unsigned V);
+    void tenureParDistribute(std::unique_ptr<MinorWorker>* ws, unsigned n);
+    void tenureParCollect(std::unique_ptr<MinorWorker>* ws, unsigned n);
+    void tenureConcLaunch(OldGenSpace& oldgen, unsigned B);
+    void tenureConcFinish(OldGenSpace& oldgen, unsigned help_n, bool on_this_thread);
+    // Lever L3: the collector members' worker slots, grant cursors, control.
+    std::unique_ptr<MinorWorker> tenure_workers_[OldGenSpace::kMaxMinorWorkers];
+    std::vector<OldGenSpace::TenureMemberCursor> tenure_mcs_;
+    std::unique_ptr<markwork::SliceControl> tenure_ctl_;
+    unsigned tenure_par_n_ = 0;
+    void regionCheckAndGrow();
+    void syncRegionStats();
+    void regionEndMinorValidate(OldGenSpace& oldgen);
+#if P1_CENSUS_COMPILED
+    void censusRecordRegion(OldGenSpace& oldgen);
+    void censusCheckRegion(OldGenSpace& oldgen);
+#endif
     std::unique_ptr<MinorWorker> minor_workers_[OldGenSpace::kMaxMinorWorkers];
     minorwork::ToSpace tospace_;
     OldGenSpace* par_oldgen_ = nullptr;
@@ -572,6 +659,14 @@ private:
 // For test code only - provides privileged access to NurserySpace internals.
 class NurserySpaceTestAccess {
 public:
+    // ---- threaded-gc-07 region nursery ----
+    // Joins and merges the pending tenure job now (tests: run totals then
+    // equal the legacy nursery's promoted totals, P§3.18).
+    static void tenureFlush(NurserySpace& nursery, OldGenSpace& oldgen) {
+        nursery.tenureJoin(oldgen, 0, nullptr);
+    }
+    static RegionState* region(NurserySpace& nursery) { return nursery.rg_.get(); }
+
     static bool contains(const NurserySpace& nursery, void* ptr) {
         return nursery.contains(ptr);
     }
@@ -692,6 +787,44 @@ public:
         nursery.bump_.end = nursery.bump_.ptr + headroom;
     }
 };
+
+// threaded-gc-07 P§3.16: the t0 young walk. Legacy mode: the survivor prefix.
+template <typename F>
+size_t NurserySpace::forEachYoung(F&& f, size_t* bytes_out) {
+    if (!rg_) return forEachSurvivor(f, bytes_out);
+    assert(bump_.ptr == rg_->eden_base && "IM7: eden is not empty; the young walk is not exact");
+    size_t n = 0, bytes = 0;
+    auto walk = [&](char* lo, char* hi) {
+        for (char* p = lo; p < hi;) {
+            const size_t sz = getObjectSize(p);
+#if ECO_HEAP_VALIDATE
+            if (getHeader(p)->tag > Tag_Forward || sz == 0 || p + sz > hi) {
+                std::fprintf(stderr, "[heap-validate] IM7: bad young object at %p (tag %u, size %zu)\n",
+                             static_cast<void*>(p), (unsigned)getHeader(p)->tag, sz);
+                std::fflush(stderr);
+                std::abort();
+            }
+#endif
+            if (getHeader(p)->tag != Tag_Free) {
+                f(static_cast<void*>(p));
+                ++n;
+                bytes += sz;
+            }
+            p += sz;
+        }
+    };
+    for (int i = 0; i < 3; ++i) {
+        region::Extent& X = rg_->x[i];
+        if (X.state == region::XState::Fresh) {
+            walk(X.base, X.surv_top);
+            walk(X.bld_lo, X.bld_hi);
+        } else if (X.state == region::XState::Tenuring) {
+            walk(X.base, X.surv_top);
+        }
+    }
+    if (bytes_out) *bytes_out = bytes;
+    return n;
+}
 
 } // namespace Elm
 

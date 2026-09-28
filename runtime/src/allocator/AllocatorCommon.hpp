@@ -247,6 +247,36 @@ constexpr bool     MINOR_FIFO_ORDER = false;
 constexpr uint32_t MINOR_CHUNK_ELEMS = 1024;
 constexpr uint32_t MINOR_SPINE_RUN = 512;
 
+// threaded-gc-07 (plans/threaded-gc-07-concurrent-tenuring.md, HEAP_069/HEAP_070):
+// the region nursery (an eden plus three survivor extents per heap) and its
+// tenure job. NURSERY_REGIONS 0 = the legacy semi-space nursery, unchanged.
+// TENURE_MODE 1 = sync (the job runs inside the hand-over pause: the exact
+// reference), 2 = concurrent (the job runs on the heap's tenure collector
+// during the next epoch). ECO_NURSERY_REGIONS / ECO_TENURE_MODE /
+// ECO_NURSERY_EDEN_FLIP override. NURSERY_REGIONS 2 = auto: the region
+// nursery whenever the config meets its requirements (promotion_age 1, bitmap
+// allocation, a class for every nursery object, room for one heap slot), the
+// legacy nursery otherwise; 1 = regions, and an incompatible config throws.
+// Default (2026-09-28, TG7d): auto, concurrent tenuring with one collector —
+// chosen over the E4 keep-up rule (16-18 % of minors help a late job), plan
+// P§10.17.
+constexpr uint32_t NURSERY_REGIONS = 2;
+constexpr int32_t  NURSERY_REGION_EDEN_FLIP = -1;     // -1 = on in validate builds
+constexpr uint32_t TENURE_MODE = 2;
+constexpr uint32_t TENURE_SYNC_THREADS = 1;           // 1 = exact engine; 0 = the minor's workers
+constexpr uint32_t TENURE_HELP = 1;                   // late job: 0 wait, 1 stop and finish in the pause
+constexpr uint32_t TENURE_HELP_THREADS = 0;           // 0 = the minor's worker count; 1 = exact
+constexpr int32_t  TENURE_PRIORITY = 0;               // 0 inherit (5c's trap: never lower by default)
+constexpr size_t   HEAL_PARALLEL_MIN = 65536;         // heal slots above which the heal runs on the gang
+constexpr uint32_t SHADOW_GRANULE_LOG2 = 3;           // 3 = one shadow word per 8 B granule
+// Lever L3 (P§9, moved into the phase by Step 0's utilization rule): collector
+// threads per heap in mode 2. 1 = the exact engine (mode 1's bit-exact twin);
+// > 1 = the concurrent parallel engine over a shared grant (layout class).
+constexpr uint32_t TENURE_COLLECTOR_THREADS = 1;
+// The exact engine's promotion order: true = breadth-first (FIFO), false =
+// depth-first (LIFO). Promotion order is a retention input (phase 6 E7).
+constexpr bool     TENURE_FIFO_ORDER = false;
+
 // threaded-gc-05c (plans/threaded-gc-05c-concurrent-marking.md, HEAP_065):
 // concurrent marking. CONC_MARK 0 = off (05b in-pause slices), 1 = sync (the
 // whole mark in the t0 pause: the determinism reference), 2 = concurrent
@@ -542,6 +572,21 @@ struct NurserySlicePair {
     size_t slot      = 0;         // slot index (bookkeeping / release)
 };
 
+/**
+ * threaded-gc-07 (HEAP_069): one heap's REGION nursery estate: `n` extents of
+ * one `capacity`, contiguous in the heap's slot block at a power-of-two
+ * stride, extent k at slot_base + (k << stride_log2). Growth extends all n
+ * extents in place, or none.
+ */
+struct NurserySliceSet {
+    char*    slot_base   = nullptr;
+    size_t   stride_log2 = 0;
+    unsigned n           = 0;
+    size_t   capacity    = 0;    // logical bytes of EACH extent (0 = failure / none)
+    size_t   slot        = 0;
+    char* extent(unsigned k) const { return slot_base + (static_cast<size_t>(k) << stride_log2); }
+};
+
 // ============================================================================
 // Heap Configuration
 // ============================================================================
@@ -674,6 +719,19 @@ struct HeapConfig {
     size_t   minor_parallel_min_bytes = MINOR_PARALLEL_MIN_BYTES;
     bool     minor_prefetch_children = MINOR_PREFETCH_CHILDREN;
     bool     minor_fifo_order = MINOR_FIFO_ORDER;
+
+    // threaded-gc-07 (HEAP_069/HEAP_070): region nursery and tenure jobs.
+    uint32_t nursery_regions = NURSERY_REGIONS;
+    int32_t  nursery_region_eden_flip = NURSERY_REGION_EDEN_FLIP;
+    uint32_t tenure_mode = TENURE_MODE;
+    uint32_t tenure_sync_threads = TENURE_SYNC_THREADS;
+    uint32_t tenure_help = TENURE_HELP;
+    uint32_t tenure_help_threads = TENURE_HELP_THREADS;
+    int32_t  tenure_priority = TENURE_PRIORITY;
+    size_t   heal_parallel_min = HEAL_PARALLEL_MIN;
+    uint32_t shadow_granule_log2 = SHADOW_GRANULE_LOG2;
+    uint32_t tenure_collector_threads = TENURE_COLLECTOR_THREADS;
+    bool     tenure_fifo_order = TENURE_FIFO_ORDER;
 
     // threaded-gc-05c (HEAP_065): concurrent marking.
     uint32_t conc_mark = CONC_MARK;
@@ -815,11 +873,78 @@ struct HeapConfig {
         return (nursery_block_count / 2) * alloc_buffer_size;
     }
 
+    // ---- Region nursery geometry (threaded-gc-07, HEAP_069) ----
+    //
+    // Eden flip in effect (the -1 default is on in validate builds only).
+    bool regionEdenFlip() const {
+        if (nursery_region_eden_flip >= 0) return nursery_region_eden_flip != 0;
+        return ECO_HEAP_VALIDATE != 0;
+    }
+    // Extents per heap slot: eden (two with eden flip) + three survivor extents.
+    unsigned regionExtents() const { return regionEdenFlip() ? 5u : 4u; }
+    // The extent stride X: the next power of two >= the per-heap growth
+    // ceiling ((nursery_max_block_count / 2) * alloc_buffer_size), so a
+    // pointer's extent index is one shift. Every extent's capacity is <= X.
+    size_t regionStrideBytes() const {
+        const size_t want = (nursery_max_block_count / 2) * alloc_buffer_size;
+        size_t x = OS_PAGE_SIZE;
+        while (x < want) x <<= 1;
+        return x;
+    }
+    // Heap slots of the region layout: region / (n * X).
+    size_t regionSlots() const {
+        const size_t per = regionExtents() * regionStrideBytes();
+        return per == 0 ? 0 : nurseryRegionBytes() / per;
+    }
+
     // Default constructor uses in-class member initializers.
     HeapConfig() = default;
 
     // Validates all configuration parameters.
     // Throws std::invalid_argument with descriptive message on validation failure.
+    // threaded-gc-07 (TG7d): why this config cannot run the region nursery,
+    // or nullptr when it can. validate() throws it for nursery_regions = 1;
+    // resolveNurseryRegions() turns auto (2) into 0 on it.
+    const char* regionIncompatibility() const {
+        if (promotion_age != 1) {
+            return
+                "nursery_regions = 1 requires promotion_age = 1 (tenure age k > 1 is "
+                "lever L1, plans/threaded-gc-07-concurrent-tenuring.md P§12)";
+        }
+        if (!old_gen_bitmap_alloc) {
+            return
+                "nursery_regions = 1 requires old_gen_bitmap_alloc (the promotion grant "
+                "allocates uniform bitmap cells)";
+        }
+        {
+            // P§3.13: every nursery object needs an old-gen size class, and
+            // objects below large_object_threshold never pass the placement
+            // cap, so the largest class must cover LOT - 8.
+            size_t largest = 256, cell = 512;
+            for (int i = 0; i < 8 && cell <= large_object_threshold; ++i, cell <<= 1) largest = cell;
+            if (large_object_threshold > largest + 8) {
+                return
+                    "nursery_regions = 1 requires large_object_threshold <= the largest "
+                    "old-gen size class + 8 (a power of two in [512, 64K]): every nursery "
+                    "object must have a size class (P§3.13)";
+            }
+        }
+        if (regionSlots() == 0) {
+            return
+                "nursery_regions = 1: the nursery region is smaller than one heap slot "
+                "(regionExtents() x the next power of two >= nursery_max_block_count / 2 "
+                "x alloc_buffer_size); raise max_heap_size or nursery_region_bytes, or "
+                "lower nursery_max_block_count";
+        }
+        return nullptr;
+    }
+
+    // Resolves nursery_regions = 2 (auto) to 1 or 0. The Allocator calls it on
+    // every config it adopts, before validate().
+    void resolveNurseryRegions() {
+        if (nursery_regions == 2) nursery_regions = regionIncompatibility() ? 0 : 1;
+    }
+
     void validate() const {
         // ========== 1. Basic Size Constraints ==========
 
@@ -1078,6 +1203,35 @@ struct HeapConfig {
         if (large_ptr_nursery_max_size % 8 != 0) {
             throw std::invalid_argument(
                 "large_ptr_nursery_max_size must be a multiple of 8");
+        }
+
+        // threaded-gc-07 (HEAP_069/HEAP_070): region nursery.
+        if (nursery_regions > 2) {
+            throw std::invalid_argument("nursery_regions must be 0, 1 or 2 (auto)");
+        }
+        if (nursery_region_eden_flip < -1 || nursery_region_eden_flip > 1) {
+            throw std::invalid_argument("nursery_region_eden_flip must be -1, 0 or 1");
+        }
+        if (tenure_mode < 1 || tenure_mode > 2) {
+            throw std::invalid_argument("tenure_mode must be 1 (sync) or 2 (concurrent)");
+        }
+        if (tenure_sync_threads > 64 || tenure_help_threads > 64) {
+            throw std::invalid_argument("tenure_sync_threads / tenure_help_threads must be <= 64");
+        }
+        if (tenure_help > 1) {
+            throw std::invalid_argument("tenure_help must be 0 (wait) or 1 (stop and finish)");
+        }
+        if (tenure_priority < 0 || tenure_priority > 20) {
+            throw std::invalid_argument("tenure_priority must be in [0, 20]");
+        }
+        if (tenure_collector_threads < 1 || tenure_collector_threads > 32) {
+            throw std::invalid_argument("tenure_collector_threads must be in [1, 32]");
+        }
+        if (shadow_granule_log2 != 3 && shadow_granule_log2 != 4) {
+            throw std::invalid_argument("shadow_granule_log2 must be 3 or 4");
+        }
+        if (nursery_regions == 1) {
+            if (const char* why = regionIncompatibility()) throw std::invalid_argument(why);
         }
 
         // ========== 5. Promotion Constraints ==========

@@ -236,6 +236,9 @@ void ThreadLocalHeap::noteLargeAlloc(LargePlacement where, size_t size, uint32_t
 }
 
 ThreadLocalHeap::~ThreadLocalHeap() {
+    // threaded-gc-07: stop / finish / stats-merge the last tenure job while
+    // the old gen (destroyed before the nursery) still exists.
+    nursery_.tenureTeardown(old_gen_);
     // threaded-gc-04: verify, then drop, this heap's P1 census table.
     p1::forget(old_gen_);
 }
@@ -310,6 +313,10 @@ void* ThreadLocalHeap::allocateFast(size_t size) {
     // Pure bump-pointer: no GC, no threshold check, no header init.
     // Returns nullptr when nursery has insufficient space.
     size = (size + 7) & ~static_cast<size_t>(7);
+    // threaded-gc-07 (P§3.13): in region mode every nursery object has an
+    // old-gen size class; a larger request takes the caller's slow path,
+    // which places it (SIZE_MAX in legacy mode).
+    if (__builtin_expect(size > nursery_.regionLargeCap(), 0)) return nullptr;
     return nursery_.allocate(size);
 }
 
@@ -712,12 +719,28 @@ void ThreadLocalHeap::minorGC() {
     rec.frames_walked = sw.frames_walked;
     rec.frames_matched = sw.frames_matched;
     rec.stack_slots = sw.slots;
+    // threaded-gc-07 (P§3.15): join and MERGE the previous tenure job
+    // before anything else touches the heap.
+    if (nursery_.regionMode()) {
+        rec.rg_region = 1;
+        nursery_.tenureJoin(old_gen_, 0, &rec);
+    }
     nursery_.minorGC(old_gen_, stack_map_roots_, &rec);
     recordMinorPhases(rec);
 #else
     (void)sw;
+    if (nursery_.regionMode()) nursery_.tenureJoin(old_gen_, 0, nullptr);
     nursery_.minorGC(old_gen_, stack_map_roots_, nullptr);
 #endif
+    // threaded-gc-07 (trap 2 / trap 6): the tenure job of this minor is built
+    // and launched on EVERY return path below, after any cycle start, cycle
+    // step, handoff or STW major of this pause.
+    struct TenureLaunchScope {
+        ThreadLocalHeap& h;
+        ~TenureLaunchScope() {
+            if (h.nursery_.regionMode()) h.nursery_.tenureLaunch(h.old_gen_);
+        }
+    } tenure_launch{*this};
     if (Allocator::heapTraceEnabled()) {
         parent_->dumpHeapState("minorGC end");
     }
@@ -763,6 +786,9 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
 #endif
     PauseEndHook pause_end(*this, parent_);
     pause_had_major_ = true;
+    // threaded-gc-07 (P§3.16): a STW major joins and merges the tenure job
+    // first; its mark then greys the copy of every forwarded tenuring object.
+    if (nursery_.regionMode()) nursery_.tenureJoin(old_gen_, 1, nullptr);
     // threaded-gc-05a (P§3.8): a join. A running incremental cycle frees only
     // what was dead at its t0; an allocation failure or an explicit major
     // needs everything dead now. Finish the cycle, then run the requested STW
@@ -1071,7 +1097,9 @@ void ThreadLocalHeap::startMarkCycle(GCStats::MajorReason reason) {
     size_t surv_bytes = 0;
     size_t survivors = 0;
     if (!test_snapshot_skip_young_walk_) {                        // negative control
-        survivors = nursery_.forEachSurvivor(
+        // threaded-gc-07 (P§3.16, trap 7): region mode walks Fresh AND
+        // Tenuring (young at t0, promoted after it by the next job).
+        survivors = nursery_.forEachYoung(
             [&](void* obj) { old_gen_.markChildren(obj); }, &surv_bytes);
     }
     old_gen_.setSnapshotMode(false);

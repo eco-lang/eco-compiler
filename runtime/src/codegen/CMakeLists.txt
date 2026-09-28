@@ -476,6 +476,9 @@ add_llvm_executable(ecoc
     ../allocator/HeapConfigJson.cpp
     ../allocator/NurserySpace.cpp
     ../allocator/NurseryParallel.cpp
+    ../allocator/NurseryRegion.cpp
+    ../allocator/NurseryTenure.cpp
+    ../allocator/OldGenTenure.cpp
     ../allocator/OldGenSpace.cpp
     ../allocator/PermanentSpace.cpp
     ../allocator/RootSet.cpp
@@ -600,6 +603,9 @@ add_mlir_library(EcoRunner
     ../allocator/HeapConfigJson.cpp
     ../allocator/NurserySpace.cpp
     ../allocator/NurseryParallel.cpp
+    ../allocator/NurseryRegion.cpp
+    ../allocator/NurseryTenure.cpp
+    ../allocator/OldGenTenure.cpp
     ../allocator/OldGenSpace.cpp
     ../allocator/PermanentSpace.cpp
     ../allocator/RootSet.cpp
@@ -685,6 +691,9 @@ add_library(EcoRuntimeStatic STATIC
     ../allocator/HeapConfigJson.cpp
     ../allocator/NurserySpace.cpp
     ../allocator/NurseryParallel.cpp
+    ../allocator/NurseryRegion.cpp
+    ../allocator/NurseryTenure.cpp
+    ../allocator/OldGenTenure.cpp
     ../allocator/OldGenSpace.cpp
     ../allocator/PermanentSpace.cpp
     ../allocator/RootSet.cpp

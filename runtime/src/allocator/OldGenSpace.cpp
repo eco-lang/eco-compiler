@@ -500,6 +500,14 @@ void OldGenSpace::initObjectHeaderWithSize(void* obj, size_t cell_bytes) {
             const BlockId block_id = blockIdFor(obj);
             if (block_id.valid()) {
 #if ECO_HEAP_VALIDATE
+                if (blocks_.info(block_id).alloc_state == kAllocTenure) {   // threaded-gc-07 TV5
+                    std::fprintf(stderr, "[heap-validate] TV5: a mutator allocation in tenure-granted "
+                                 "block %u\n", block_id.v);
+                    std::fflush(stderr);
+                    std::abort();
+                }
+#endif
+#if ECO_HEAP_VALIDATE
                 assertCellWasWhite(block_id, obj);   // IM4
 #endif
                 // threaded-gc-05c (H1): atomic -- a background marker may
@@ -672,7 +680,14 @@ void OldGenSpace::resetAllocCursors() {
         partial_head_[c] = 0;
     }
     for (size_t pos = 0; pos < blocks_.size(); ++pos) {
-        blocks_.info(blocks_.idAt(pos)).alloc_state = kAllocNone;
+        BlockInfo& b = blocks_.info(blocks_.idAt(pos));
+        if (__builtin_expect(b.alloc_state == kAllocTenure, 0)) {
+            std::fprintf(stderr, "[gc] FATAL: resetAllocCursors met a tenure-granted block "
+                         "(a mark started with a tenure job unmerged; HEAP_070)\n");
+            std::fflush(stderr);
+            std::abort();
+        }
+        b.alloc_state = kAllocNone;
     }
 }
 
@@ -680,6 +695,14 @@ void OldGenSpace::detachFromAllocation(BlockId id) {
     if (!id.valid()) return;
     BlockInfo& b = blocks_.info(id);
     if (b.alloc_state == kAllocNone) return;
+    if (__builtin_expect(b.alloc_state == kAllocTenure, 0)) {
+        // threaded-gc-07 TV5 (every build): a granted block belongs to a
+        // running tenure job; detaching it would not stop the collector.
+        std::fprintf(stderr, "[gc] FATAL: detachFromAllocation(%u) on a tenure-granted block "
+                     "(HEAP_070 skip rule violated)\n", id.v);
+        std::fflush(stderr);
+        std::abort();
+    }
     const size_t cls = b.size_class;
     assert(cls < NUM_SIZE_CLASSES && "detach: allocation state on a non-uniform block");
     if (b.alloc_state == kAllocCurrent) {
@@ -781,6 +804,14 @@ void* OldGenSpace::finalizeBitmapCell(AllocCursor& c, uint32_t k,
     const size_t cell = c.cell_bytes;
     char* p = c.base + static_cast<size_t>(k) * cell;
 #if ECO_HEAP_VALIDATE
+    if (blocks_.info(c.block).alloc_state == kAllocTenure) {   // threaded-gc-07 TV5
+        std::fprintf(stderr, "[heap-validate] TV5: the mutator cursor allocated in tenure-granted "
+                     "block %u\n", c.block.v);
+        std::fflush(stderr);
+        std::abort();
+    }
+#endif
+#if ECO_HEAP_VALIDATE
     assertCellWasWhite(c.block, p);   // threaded-gc-05a IM4
 #endif
     // P§3.1: the bit is the allocation record — set on EVERY allocation.
@@ -850,13 +881,13 @@ bool OldGenSpace::ensureBagPageAvailable() {
     return !unassigned_blocks_.empty();
 }
 
-bool OldGenSpace::startVirginBlock(size_t cls) {
+BlockId OldGenSpace::materializeVirginBlock(size_t cls) {
     const size_t cell_bytes = classToSize(cls);
-    if (!ensureBagPageAvailable()) return false;
+    if (!ensureBagPageAvailable()) return NO_BLOCK_ID;
     const auto extent = unassigned_blocks_.back();
     const size_t page_size = static_cast<size_t>(extent.second - extent.first);
     const size_t num_cells = page_size / cell_bytes;
-    if (num_cells == 0) return false;
+    if (num_cells == 0) return NO_BLOCK_ID;
     unassigned_blocks_.pop_back();
 
     // A virgin block is NOT sliced (the W6 benefit): no headers, no links.
@@ -870,6 +901,12 @@ bool OldGenSpace::startVirginBlock(size_t cls) {
     const BlockId id =
         materializeBlock(bi, {0, 0, /*fully_swept=*/true}, bitmapBytesForBlock(bi));
     onUniformBlockDedicated(id);
+    return id;
+}
+
+bool OldGenSpace::startVirginBlock(size_t cls) {
+    const BlockId id = materializeVirginBlock(cls);
+    if (!id.valid()) return false;
     assert(!cursor_[cls].block.valid() && "virgin block while a cursor is live");
     setCursor(cls, id);
 #if ENABLE_GC_STATS
@@ -924,6 +961,12 @@ void* OldGenSpace::allocateFromSizeClassBitmap(size_t cls, size_t requested_size
 
 void OldGenSpace::freeUniformCell(BlockId id, char* cell) {
     BlockInfo& b = blocks_.info(id);
+    if (__builtin_expect(b.alloc_state == kAllocTenure, 0)) {
+        std::fprintf(stderr, "[gc] FATAL: freeUniformCell on a tenure-granted block %u "
+                     "(HEAP_070)\n", id.v);
+        std::fflush(stderr);
+        std::abort();
+    }
     // The caller debits meta.live_bytes next: fold any pending bytes first.
     if (b.alloc_state == kAllocCurrent) flushCursor(b.size_class);
     const size_t cls = b.size_class;
@@ -1663,7 +1706,8 @@ void OldGenSpace::classifyBlocksAfterMark() {
             meta.fully_swept = true;
             const size_t cap =
                 static_cast<size_t>(cellsIn(b)) * classToSize(b.size_class);
-            if (meta.live_bytes < cap && b.alloc_state != kAllocQueued) {
+            if (meta.live_bytes < cap && b.alloc_state != kAllocQueued &&
+                b.alloc_state != kAllocTenure) {
                 // (threaded-gc-05a: a deferred free at the handoff may have
                 // queued it already through freeUniformCell.)
                 partial_[b.size_class].push_back(id);
@@ -2630,6 +2674,9 @@ void* OldGenSpace::allocateFromEmptyRegularBlocks(size_t size) {
         // threaded-gc-06: a worker cursor's block holds unflushed pending
         // bytes (its live_bytes may read 0) and is invisible to detach.
         if (par_promo_active_ && blocks_.info(i).alloc_state == kAllocCurrent) continue;
+        // threaded-gc-07 (trap 4): a granted block reads live_bytes 0 until
+        // the merge; the collector may be filling it right now.
+        if (blocks_.info(i).alloc_state == kAllocTenure) continue;
         if (blocks_.info(i).totalBytes() < size) continue;
 
         // Drop any embedded free cells before flipping is_large; otherwise
@@ -2990,6 +3037,14 @@ size_t OldGenSpace::markStackSize() const {
 
 template <class P>
 bool OldGenSpace::testAndSetMark(BlockId id, const void* obj) {
+#if ECO_HEAP_VALIDATE
+    if (id.valid() && blocks_.info(id).alloc_state == kAllocTenure) {   // threaded-gc-07 TV8
+        std::fprintf(stderr, "[heap-validate] TV8: a marker marked %p in tenure-granted block %u\n",
+                     obj, id.v);
+        std::fflush(stderr);
+        std::abort();
+    }
+#endif
     if constexpr (!P::kParallel) {
         return testAndSetMarkBitInBlock(id, obj);
     } else {
@@ -3066,10 +3121,16 @@ void OldGenSpace::greyObject(MarkWorker& w, void* obj) {
     }
     if constexpr (!P::kParallel) {
         if (nursery_->contains(obj)) {
-            if (nursery_visited_.insert(obj).second) {
-                pushGrey(w, markwork::objEntry(obj, 0));
+            // threaded-gc-07 (P§3.16): a tenuring object whose job has merged
+            // is dead after the next minor; grey the copy its shadow names.
+            void* r = __builtin_expect(nursery_->regionMode(), 0) ? nursery_->majorRedirect(obj) : obj;
+            if (r == obj) {
+                if (nursery_visited_.insert(obj).second) {
+                    pushGrey(w, markwork::objEntry(obj, 0));
+                }
+                return;
             }
-            return;
+            obj = r;
         }
     }
 
@@ -4775,6 +4836,7 @@ void OldGenSpace::validateCycleUniformLive(const char* where, bool exact) const 
         const BlockId id = blocks_.idAt(pos);
         const BlockInfo& b = blocks_.info(id);
         if (b.is_large || b.size_class >= num_size_classes_) continue;
+        if (b.alloc_state == kAllocTenure) continue;   // threaded-gc-07: collector-owned bits
         const uint8_t* bits = mark_.slot(id);
         const uint32_t n = cellsIn(b);
         const uint32_t m = static_cast<uint32_t>(classToSize(b.size_class) / 8);
@@ -5739,6 +5801,8 @@ void OldGenSpace::maybeShrinkCapacity(size_t desired_heap_bytes,
         const BufferMetadata& meta = blocks_.meta(id);
         if (!meta.fully_swept || meta.live_bytes != 0) continue;
         if (blocks_.info(id).is_large) continue;
+        // threaded-gc-07 (trap 4, F11): this light pass runs OUTSIDE pauses.
+        if (blocks_.info(id).alloc_state == kAllocTenure && !test_shrink_ignores_tenure_) continue;
         const size_t bytes = blocks_.info(id).totalBytes();
         if (!canRelease(bytes)) continue;
         to_release.push_back(i);
@@ -6144,6 +6208,7 @@ OldGenSpace::reclaimAllDeadBlocksFromMeta() {
         const BlockId id = blocks_.idAt(pos);
         if (blocks_.info(id).is_large) continue;
         if (blocks_.meta(id).live_bytes != 0) continue;
+        if (blocks_.info(id).alloc_state == kAllocTenure) continue;   // threaded-gc-07 trap 4
         const size_t bytes = blocks_.info(id).totalBytes();
         if (current_heap < bytes) continue;
         if (current_heap - bytes < min_heap) continue;
@@ -6382,6 +6447,7 @@ std::vector<BlockId> OldGenSpace::selectEvacuationSet(size_t max_live_to_move) {
         const BlockInfo& blk = blocks_.info(i);
 
         if (!meta.fully_swept) continue;
+        if (blk.alloc_state == kAllocTenure) continue;   // threaded-gc-07 trap 4
 
         // Skip the block we're currently bump-allocating into for evacuation.
         if (i == evac_block_index_) continue;
@@ -7598,6 +7664,9 @@ void OldGenSpace::validateOldGenMetadata(const char* where) const {
                 const BlockId id = blocks_.idAt(pos);
                 const BlockInfo& b = blocks_.info(id);
                 if (b.is_large || b.size_class >= num_size_classes_) continue;
+                // threaded-gc-07: a granted block's bits are the collector's
+                // until the merge folds its live bytes in (HEAP_070).
+                if (b.alloc_state == kAllocTenure) continue;
                 const uint32_t m = static_cast<uint32_t>(classToSize(b.size_class) / 8);
                 const uint32_t n = cellsIn(b);
                 const uint8_t* bits = mark_.slot(id);

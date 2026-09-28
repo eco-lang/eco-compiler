@@ -43,3 +43,15 @@ target_include_directories(gc-minor-tsan PRIVATE ${ECO_ALLOC})
 target_compile_options(gc-minor-tsan PRIVATE -fsanitize=thread -O1 -g -UNDEBUG)
 target_link_options(gc-minor-tsan PRIVATE -fsanitize=thread)
 target_link_libraries(gc-minor-tsan PRIVATE Threads::Threads)
+
+# threaded-gc-07 Steps 3 / 10: the tenure job's std-only core (TenureWork.hpp:
+# shadow claim / publish, the resumable exact engine) on the real
+# GCBackgroundGang, over a synthetic heap.
+#   build-tsan/gc-tenure-tsan [storm jobs]   (pass: "tenure_harness PASS", no TSan warning)
+add_executable(gc-tenure-tsan
+    tenure_harness.cpp
+    ${ECO_ALLOC}/GCHelperPool.cpp)
+target_include_directories(gc-tenure-tsan PRIVATE ${ECO_ALLOC})
+target_compile_options(gc-tenure-tsan PRIVATE -fsanitize=thread -O1 -g -UNDEBUG)
+target_link_options(gc-tenure-tsan PRIVATE -fsanitize=thread)
+target_link_libraries(gc-tenure-tsan PRIVATE Threads::Threads)

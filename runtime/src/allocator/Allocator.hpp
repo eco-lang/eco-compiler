@@ -94,6 +94,8 @@ public:
     // Cleans up the calling thread's heap space.
     // Should be called before the thread exits.
     void cleanupThread();
+    // threaded-gc-07: stats-only merge of the calling thread's last tenure job (exit).
+    void finishTenureForExit();
 
     // ========== Allocation ==========
 
@@ -352,6 +354,17 @@ private:
     };
     std::vector<NurserySliceSlot> nursery_slots_;
     size_t nursery_slice_bytes_;     // per-side slice size (0 before init)
+    // threaded-gc-07 (HEAP_069): the REGION layout, built instead of the pair
+    // table when config_.nursery_regions = 1. A slot is n extents at a
+    // power-of-two stride; retained commit is tracked per extent.
+    struct NurseryRegionSlot {
+        bool   in_use = false;
+        size_t retained[8] = {};
+    };
+    std::vector<NurseryRegionSlot> region_slots_;
+    size_t   region_stride_log2_ = 0;
+    unsigned region_extents_ = 0;
+    size_t   region_growth_bytes_ = 0;   // per-extent ceiling (<= stride)
     // Free list of previously-released old-gen blocks (pages or large blocks)
     // that have been returned by `releaseOldGenBlock`. The virtual mapping is
     // retained; physical RSS may have been dropped via `madvise(MADV_DONTNEED)`.
@@ -470,6 +483,20 @@ private:
     // Per-side slice size for the live geometry (0 before initialize()).
     size_t getNurserySliceBytes() const { return nursery_slice_bytes_; }
 
+    // ---- threaded-gc-07 region slice sets (HEAP_069). Thread-safe. ----
+    // Claims a free region slot with every extent at capacity `initial`
+    // (clamped to the per-extent ceiling); aborts loudly when every slot is
+    // taken. capacity 0 = a commit failed.
+    NurserySliceSet acquireNurserySliceSet(size_t initial);
+    // Grows EVERY extent by `delta`, or none (capacity untouched on failure).
+    bool growNurserySliceSet(NurserySliceSet& set, size_t delta);
+    void releaseNurserySliceSet(const NurserySliceSet& set);
+    // Region geometry of the live table (0 when the region table is empty).
+    size_t getRegionStrideLog2() const { return region_stride_log2_; }
+    unsigned getRegionExtents() const { return region_extents_; }
+    size_t getRegionGrowthBytes() const { return region_growth_bytes_; }
+    size_t getRegionSlotCount() const { return region_slots_.size(); }
+
     // Number of slice slots per side.
     size_t getNurserySliceSlotCount() const { return nursery_slots_.size(); }
 
@@ -569,6 +596,15 @@ public:
     static ThreadLocalHeap* getThreadHeap(Allocator& alloc) {
         return alloc.getThreadHeap();
     }
+
+    // threaded-gc-07: the region slice set API and geometry.
+    static NurserySliceSet acquireSliceSet(Allocator& a, size_t initial) { return a.acquireNurserySliceSet(initial); }
+    static bool growSliceSet(Allocator& a, NurserySliceSet& s, size_t d) { return a.growNurserySliceSet(s, d); }
+    static void releaseSliceSet(Allocator& a, const NurserySliceSet& s) { a.releaseNurserySliceSet(s); }
+    static size_t regionSlotCount(Allocator& a) { return a.getRegionSlotCount(); }
+    static size_t sliceBytes(Allocator& a) { return a.getNurserySliceBytes(); }
+    static size_t sliceSlotCount(Allocator& a) { return a.getNurserySliceSlotCount(); }
+    static size_t liveNurseryRegionBytes(Allocator& a) { return a.heap_reserved - a.nursery_offset; }
 
     // Heap base address (start of the reserved region) — exposed for tests.
     static char* getHeapBase(Allocator& alloc) {

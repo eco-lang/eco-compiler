@@ -890,6 +890,7 @@ void GCStats::combine(const GCStats& other) {
     helper.mergeMax(other.helper);
     lp.combine(other.lp);
     pmin.combine(other.pmin);
+    rg.combine(other.rg);
     im.combine(other.im);
     pm.combine(other.pm);
     cm.combine(other.cm);
@@ -1426,6 +1427,7 @@ void GCStats::print() const {
     printHelperBlock();
     printLargePtrBlock();   // threaded-gc-04b (only when non-zero)
     printParMinorBlock();   // threaded-gc-06 (only when non-zero)
+    printRegionBlock();     // threaded-gc-07 (only when region mode ran)
     printIncrMarkBlock();   // threaded-gc-05a (only when non-zero)
     printParMarkBlock();    // threaded-gc-05b (only when non-zero)
     printConcMarkBlock();   // threaded-gc-05c (only when non-zero)
@@ -1840,6 +1842,7 @@ void GCStats::reset() {
     helper = HelperStatsSnapshot{};
     lp = LargePtrStats{};
     pmin = ParMinorStats{};
+    rg = RegionTenureStats{};
     im = IncrMarkStats{};
     pm = ParMarkStats{};
     cm = ConcMarkStats{};
@@ -2486,6 +2489,14 @@ public:
         addNum(line, r.workers); addNum(line, r.par_sweep_ns); addNum(line, r.par_roots_ns);
         addNum(line, r.par_drain_ns); addNum(line, r.par_close_ns); addNum(line, r.filler_bytes);
         addNum(line, r.mutex_wait_ns); addNum(line, r.imbalance_units);
+        // threaded-gc-07 (P§3.20): region-nursery columns (zero in legacy mode).
+        const uint64_t rgc[kRegionCols] = {
+            r.rg_region, r.rg_merge_ns, r.rg_heal_slots, r.rg_heal_ns, r.rg_wait_ns, r.rg_help_ns,
+            r.rg_help_workers, r.rg_late, r.rg_tenured, r.rg_tenured_bytes, r.rg_busy_ns,
+            r.rg_ylos_promoted, r.rg_ylos_freed, r.rg_lb_promoted, r.rg_starts, r.rg_heal_recorded,
+            r.rg_resolved, r.rg_grant_blocks, r.rg_grant_cells, r.rg_grant_used,
+            r.rg_fill_obj_bytes, r.rg_bld_bytes, r.rg_epoch_ns};
+        for (uint64_t v : rgc) addNum(line, v);
         finish(line);
     }
 
@@ -2501,6 +2512,7 @@ public:
         addNum(line, total_ns); addNum(line, mark_ns); addNum(line, sweep_ns);
         addNum(line, roots_ns); addField(line, reason);
         dashes(line, kParCols);   // threaded-gc-06
+        dashes(line, kRegionCols);   // threaded-gc-07
         finish(line);
     }
 
@@ -2517,6 +2529,7 @@ public:
                                             "minor+t0", "minor+slice", "minor+handoff"};
         addField(line, kind < 6 ? kKind[kind] : "?");
         dashes(line, kParCols);   // threaded-gc-06
+        dashes(line, kRegionCols);   // threaded-gc-07
         finish(line);
     }
 
@@ -2534,6 +2547,7 @@ public:
         std::string r = std::string("stall:") + client + (in_pause ? ":pause" : "");
         addField(line, r.c_str());
         dashes(line, kParCols);   // threaded-gc-06
+        dashes(line, kRegionCols);   // threaded-gc-07
         finish(line);
     }
 
@@ -2556,6 +2570,7 @@ public:
         std::string r = std::string("job:") + client;
         addField(line, r.c_str());
         dashes(line, kParCols);   // threaded-gc-06
+        dashes(line, kRegionCols);   // threaded-gc-07
         finish(line);
     }
 
@@ -2576,6 +2591,7 @@ public:
         std::string r = std::string("cycle:") + finish_reason;
         addField(line, r.c_str());
         dashes(line, kParCols);   // threaded-gc-06
+        dashes(line, kRegionCols);   // threaded-gc-07
         finish(line);
     }
 
@@ -2589,6 +2605,7 @@ private:
     static constexpr int kMinorNumericCols = 27;
     // threaded-gc-06: parallel-minor columns after major_reason.
     static constexpr int kParCols = 8;
+    static constexpr int kRegionCols = 23;
 
     GCEventLogImpl() {
         const char* p = std::getenv("ECO_GC_EVENT_LOG");
@@ -2615,7 +2632,12 @@ private:
         h += "\text:late_ns\text:late_slots";
         h += "\tmajor_total_ns\tmajor_mark_ns\tmajor_sweep_ns\tmajor_roots_ns\tmajor_reason";
         h += "\tpar_workers\tpar_sweep_ns\tpar_roots_ns\tpar_drain_ns\tpar_close_ns"
-             "\tpar_filler_bytes\tpar_mutex_wait_ns\tpar_imbalance_units\n";
+             "\tpar_filler_bytes\tpar_mutex_wait_ns\tpar_imbalance_units"
+             "\trg_region\trg_merge_ns\trg_heal_slots\trg_heal_ns\trg_wait_ns\trg_help_ns"
+             "\trg_help_workers\trg_late\trg_tenured\trg_tenured_bytes\trg_busy_ns"
+             "\trg_ylos_promoted\trg_ylos_freed\trg_lb_promoted\trg_starts\trg_heal_recorded"
+             "\trg_resolved\trg_grant_blocks\trg_grant_cells\trg_grant_used\trg_fill_obj_bytes"
+             "\trg_bld_bytes\trg_epoch_ns\n";
         std::fputs(h.c_str(), file_);
         return true;
     }
@@ -2832,6 +2854,74 @@ void GCStats::printParMinorBlock() const {
                   (unsigned long long)p.promo_mutex_acquires, p.promo_mutex_wait_ns / 1e9,
                   p.drain_ns_sum / 1e9, p.sweep_ns_sum / 1e9, (unsigned long long)p.imbalance_units_sum,
                   p.member_cpu_ns / 1e9);
+    std::cout << buf << std::endl;
+}
+
+void GCStats::printRegionBlock() const {
+    if (!rg.any()) return;
+    const RegionTenureStats& r = rg;
+    std::cout << "\nRegion nursery / tenuring (threaded-gc-07):" << std::endl;
+    char buf[400];
+    std::snprintf(buf, sizeof buf,
+                  "  minors %llu, jobs %llu, merges %llu; tenured %llu objects, %.2f MB; starts %llu, "
+                  "heal slots %llu, resolved refs %llu",
+                  (unsigned long long)r.minors, (unsigned long long)r.jobs, (unsigned long long)r.merges,
+                  (unsigned long long)r.tenured, r.tenured_bytes / (1024.0 * 1024.0),
+                  (unsigned long long)r.starts, (unsigned long long)r.heal_slots,
+                  (unsigned long long)r.resolved);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  pause: merge %.3f s (heal %.3f s), wait %.3f s, help %.3f s (late minors %llu, "
+                  "stops %llu, help workers %llu), eden clear %.3f s",
+                  r.merge_ns / 1e9, r.heal_ns / 1e9, r.wait_ns / 1e9, r.help_ns / 1e9,
+                  (unsigned long long)r.late, (unsigned long long)r.stops,
+                  (unsigned long long)r.help_workers_sum, r.eden_clear_ns / 1e9);
+    std::cout << buf << std::endl;
+    std::vector<uint32_t> u = r.util_ppm;
+    std::sort(u.begin(), u.end());
+    auto pct = [&](double q) -> double {
+        if (u.empty()) return 0.0;
+        size_t i = static_cast<size_t>(q * static_cast<double>(u.size() - 1));
+        return u[i] / 1e6;
+    };
+    std::snprintf(buf, sizeof buf,
+                  "  collector: busy %.3f s over epochs %.3f s (utilization %.3f; per job p50 %.3f "
+                  "p99 %.3f max %.3f), CPU %.3f s; sync parallel jobs %llu",
+                  r.busy_ns / 1e9, r.epoch_ns / 1e9,
+                  r.epoch_ns ? (double)r.busy_ns / (double)r.epoch_ns : 0.0, pct(0.5), pct(0.99),
+                  u.empty() ? 0.0 : u.back() / 1e6, r.collector_cpu_ns / 1e9,
+                  (unsigned long long)r.sync_parallel_jobs);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  grants: blocks %llu (virgin %llu), cells %llu, used %llu; YLOS generation "
+                  "promoted %llu freed %llu; bodies transferred %llu; shadow wraps %llu",
+                  (unsigned long long)r.grant_blocks, (unsigned long long)r.grant_virgin,
+                  (unsigned long long)r.grant_cells, (unsigned long long)r.grant_used,
+                  (unsigned long long)r.ylos_gen_promoted, (unsigned long long)r.ylos_gen_freed,
+                  (unsigned long long)r.lb_promoted, (unsigned long long)r.shadow_wraps);
+    std::cout << buf << std::endl;
+    if (r.par_runs != 0) {
+        std::snprintf(buf, sizeof buf,
+                      "  parallel engines: runs %llu, entries %llu (busiest worker %.1f %%), steals %llu, "
+                      "idle spins %llu yields %llu sleeps %llu",
+                      (unsigned long long)r.par_runs, (unsigned long long)r.par_units,
+                      r.par_units ? 100.0 * (double)r.par_units_max_sum / (double)r.par_units : 0.0,
+                      (unsigned long long)r.par_steals, (unsigned long long)r.par_idle_spins,
+                      (unsigned long long)r.par_idle_yields, (unsigned long long)r.par_idle_sleeps);
+        std::cout << buf << std::endl;
+    }
+    std::snprintf(buf, sizeof buf, "  survivor copies < 16 B: %llu; parallel heals: %llu; grant fallbacks (old gen near its cap): %llu",
+                  (unsigned long long)r.copies_under16, (unsigned long long)r.heals_parallel,
+                  (unsigned long long)r.grant_fallbacks);
+    std::cout << buf << std::endl;
+    std::snprintf(buf, sizeof buf,
+                  "  retention: max non-Free survivor extents between minors %llu (+1 fill in a "
+                  "minor); nursery RSS estimate %.1f MB (eden %.1f + survivor high-water %.1f + "
+                  "shadow %.1f)",
+                  (unsigned long long)r.max_nonfree,
+                  (r.eden_capacity_bytes + r.survivor_hw_bytes + r.shadow_committed_bytes) / (1024.0 * 1024.0),
+                  r.eden_capacity_bytes / (1024.0 * 1024.0), r.survivor_hw_bytes / (1024.0 * 1024.0),
+                  r.shadow_committed_bytes / (1024.0 * 1024.0));
     std::cout << buf << std::endl;
 }
 

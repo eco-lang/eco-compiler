@@ -550,6 +550,9 @@ private:
     static constexpr uint8_t kAllocNone = 0;
     static constexpr uint8_t kAllocQueued = 1;
     static constexpr uint8_t kAllocCurrent = 2;
+    // threaded-gc-07 (HEAP_070): owned by one tenure job from grant to merge.
+    // No allocator path may select, detach or release such a block (trap 4).
+    static constexpr uint8_t kAllocTenure = 3;
     struct AllocCursor {
         BlockId  block = NO_BLOCK_ID;
         uint32_t next_cell = 0;     // first cell index not yet examined
@@ -654,6 +657,86 @@ public:
     // (the one-worker identity switch only; P§3.8.5).
     void* allocatePromotion(PromoWorker& pw, size_t size, bool per_alloc_sweep);
     bool parallelPromotionActive() const { return par_promo_active_; }
+
+    // ========== Promotion grant (threaded-gc-07 P§3.12, HEAP_070) ==========
+    //
+    // A tenure job allocates its copies ONLY from a grant: uniform blocks in
+    // state kAllocTenure, sized in the hand-over pause from the tenuring
+    // extent's per-class object counts, returned at the merge. A cursor
+    // caches everything the collector needs (block start, cell size, bitmap
+    // slot, cell count), so the collector never reads blocks_, the page
+    // index or any other shared allocator table (trap 5).
+    struct TenureCursor {
+        BlockId  block = NO_BLOCK_ID;
+        char*    base = nullptr;
+        uint8_t* bits = nullptr;
+        uint32_t next_cell = 0, num_cells = 0, cell_bytes = 0, stride_bits = 0;
+        uint64_t pending_live = 0, pending_allocs = 0;
+    };
+    struct TenureGrant {
+        std::vector<TenureCursor> blocks[NUM_SIZE_CLASSES];   // in grant order
+        uint32_t next[NUM_SIZE_CLASSES] = {};                  // index of the block in use
+        uint64_t allocated_bytes = 0, old_alloc_total = 0;     // deltas, merged at the return
+        uint64_t size_hist[GCStats::OLDGEN_ALLOC_BUCKETS] = {};
+        uint64_t size_16_24 = 0;
+        uint64_t granted_cells = 0, used_cells = 0, block_count = 0, virgin_blocks = 0;
+        bool active = false;
+#if ECO_HEAP_VALIDATE
+        bool cycle_active = false;                             // IM4 logging
+        std::vector<void*> cycle_alloc_log;
+#endif
+        // Lever L3 (several collector threads): members claim 64-cell chunks
+        // (whole bitmap bytes, so members never share a byte) by CAS on
+        // claim[cls] = block index << 32 | next unit, over the blocks above.
+        struct alignas(64) ClaimWord { std::atomic<uint64_t> w{0}; };
+        ClaimWord claim[NUM_SIZE_CLASSES];
+    };
+    // L3 chunk size in cells for a class of stride_bits (= cell / 8) bits:
+    // >= 1,024 bitmap bits (two cache lines), >= 64 cells.
+    static uint32_t tenureChunkCells(uint32_t stride_bits) {
+        const uint32_t c = 1024u / (stride_bits == 0 ? 1u : stride_bits);
+        return c < 64u ? 64u : (c & ~63u);
+    }
+    // A collector member's private allocation cursor over the grant (L3).
+    struct TenureMemberCursor {
+        struct Cls { int32_t bi = -1; uint32_t k = 0, kend = 0, used = 0; };
+        Cls c[NUM_SIZE_CLASSES];
+        struct Use { uint16_t cls; uint32_t bi; uint32_t cells; };
+        std::vector<Use> uses;                                 // folded at the merge
+        uint64_t size_hist[GCStats::OLDGEN_ALLOC_BUCKETS] = {};
+        uint64_t size_16_24 = 0;
+#if ECO_HEAP_VALIDATE
+        std::vector<void*> cycle_alloc_log;
+#endif
+        void reset() { *this = TenureMemberCursor{}; }
+    };
+    // Any thread owning a member cursor of the live grant: the next free cell
+    // of class cls from the member's chunk (claiming a new chunk as needed).
+    void* grantAllocateShared(TenureGrant& g, TenureMemberCursor& m, size_t cls, size_t requested_size);
+    // In a pause, after the members: folds their usage into the grant cursors.
+    void grantFoldMember(TenureGrant& g, TenureMemberCursor& m);
+    // In the pause: builds `g` (which must be inactive) covering count[c]
+    // cells of every class c. W6: partial_ front first, then virgin blocks.
+    // `slack_participants` (L3): every class also covers one chunk per
+    // participant (tenureChunkCells of the class). Returns false when the
+    // old gen cannot supply enough blocks (near its cap): the grant then
+    // holds what it got (active) and the caller returns it and falls back
+    // to the in-pause parallel engine, whose ladder is the legacy one.
+    bool grantTenure(const uint32_t count[NUM_SIZE_CLASSES], TenureGrant& g,
+                     uint32_t slack_participants = 0);
+    // Any thread owning `g` (the collector): the next free cell of class cls.
+    // Aborts when the grant is exhausted (its histogram was wrong).
+    void* grantAllocate(TenureGrant& g, size_t cls, size_t requested_size);
+    // In the pause, after the job: flushes, requeues blocks with free cells
+    // at the FRONT of partial_ (first-granted first), merges accounting.
+    void returnTenureGrant(TenureGrant& g);
+    // Live grants (TV5: no kAllocTenure block outside one).
+    unsigned activeTenureGrants() const { return active_tenure_grants_; }
+    // Test hooks (negative controls, P§3.19).
+    bool test_grant_t0_block_ = false;
+    bool test_shrink_ignores_tenure_ = false;
+    // TV5 (validate): every kAllocTenure block belongs to a live grant.
+    void validateTenureBlocks(const char* where) const;
 #if ECO_HEAP_VALIDATE
     // PM6: allocated_bytes before the drain, for the post-merge check.
     size_t pm6_allocated_before_ = 0;
@@ -686,6 +769,9 @@ private:
     void* cursorAllocate(size_t cls, size_t requested_size);
     void* finalizeBitmapCell(AllocCursor& c, uint32_t k, size_t requested_size);
     bool startVirginBlock(size_t cls);
+    // threaded-gc-07: the block-creation half of startVirginBlock (no cursor).
+    BlockId materializeVirginBlock(size_t cls);
+    unsigned active_tenure_grants_ = 0;
     bool ensureBagPageAvailable();
     void* allocateFromSizeClassBitmap(size_t cls, size_t requested_size);
     // Frees one cell of a uniform block (bitmap mode): clears its bit and
@@ -1113,6 +1199,8 @@ public:
     // old object governed by the major GC) and resets its age.
     void promoteYoungLarge(void* obj);
     size_t youngLargeCount() const { return ylo_count_; }
+    // threaded-gc-07: the body is still tracked by the index (nursery-owned).
+    bool largeBodyIndexed(void* body) const { return large_body_index_.count(body) != 0; }
     // Bumped at every major mark end (finalizeMetaAfterMark), after which a
     // dead YLOS cell may be retired and reused. The P1 census drops YLOS
     // records across a change.
@@ -2104,6 +2192,20 @@ public:
     static size_t partialQueueLength(const OldGenSpace& og, size_t cls) {
         return og.partial_[cls].size() - og.partial_head_[cls];
     }
+    // threaded-gc-07: the tenure grant.
+    static BlockId partialFront(const OldGenSpace& og, size_t cls) {
+        return og.partial_head_[cls] < og.partial_[cls].size() ? og.partial_[cls][og.partial_head_[cls]]
+                                                                : NO_BLOCK_ID;
+    }
+    static std::vector<BlockId> partialQueue(const OldGenSpace& og, size_t cls) {
+        return std::vector<BlockId>(og.partial_[cls].begin() + static_cast<std::ptrdiff_t>(og.partial_head_[cls]),
+                                    og.partial_[cls].end());
+    }
+    static void lightShrink(OldGenSpace& og, size_t desired) { og.maybeShrinkCapacity(desired, true); }
+    static void* allocFromEmptyRegular(OldGenSpace& og, size_t size) { return og.allocateFromEmptyRegularBlocks(size); }
+    static bool blockLive(const OldGenSpace& og, BlockId id) { return og.blocks_.isLive(id); }
+    static constexpr uint8_t kAllocTenure = OldGenSpace::kAllocTenure;
+    static uint32_t cellsIn(const OldGenSpace& og, BlockId id) { return OldGenSpace::cellsIn(og.blocks_.info(id)); }
     static uint8_t allocState(const OldGenSpace& og, BlockId id) {
         return og.blocks_.info(id).alloc_state;
     }

@@ -107,6 +107,9 @@ add_executable(test
         allocator/EnsureHeadroomTest.cpp
         allocator/NurseryFillerTest.cpp
         allocator/ParallelMinorTest.cpp
+        allocator/RegionMinorTest.cpp
+        allocator/ConcurrentTenureTest.cpp
+        allocator/TenureGrantTest.cpp
         allocator/PromoBufferTest.cpp
         allocator/FreeListBackLinkTest.cpp
         allocator/ReservedArrayTest.cpp

@@ -244,6 +244,7 @@ void Allocator::initialize(const HeapConfig& config) {
     applyHeapConfigFromEnv(config_);
     // threaded-gc-03: ECO_GC_THREAD / ECO_GC_HELPER_JITTER_US win over JSON.
     applyGcThreadEnv(config_, helper_jitter_us_);
+    config_.resolveNurseryRegions();   // threaded-gc-07 TG7d: auto -> 1 or 0
     config_.validate();
 
     heap_reserved = config_.max_heap_size;
@@ -360,6 +361,9 @@ void Allocator::cleanupThread() {
     auto thread_id = std::this_thread::get_id();
     auto it = thread_heaps_.find(thread_id);
     if (it != thread_heaps_.end()) {
+        // threaded-gc-07 (P§3.15): the last tenure job is finished and given
+        // a stats-only merge before the heap's stats are folded.
+        it->second->getNursery().tenureTeardown(it->second->getOldGen());
 #if ENABLE_GC_STATS
         // Accumulate stats from this thread heap before destroying it.
         accumulated_stats_.combine(it->second->getNursery().getStats());
@@ -370,6 +374,15 @@ void Allocator::cleanupThread() {
     }
 
     setThreadHeap(nullptr);
+}
+
+// threaded-gc-07 (P§3.15): at process exit, before the stats banner, the
+// calling thread's last tenure job is stopped or joined, finished on this
+// thread if needed and given a stats-only merge, so run totals include it.
+void Allocator::finishTenureForExit() {
+    if (tl_heap_ == nullptr) return;
+    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+    tl_heap_->getNursery().tenureTeardown(tl_heap_->getOldGen());
 }
 
 // Slow path for `getRootSet()` — used by external callers that may run
@@ -527,6 +540,100 @@ void Allocator::rebuildNurserySliceTable() {
     // assign() also drops every retained-commit record, which is required:
     // slot bases move whenever alloc_buffer_size or the block caps change.
     nursery_slots_.assign(slots, NurserySliceSlot{});
+
+    // threaded-gc-07 (HEAP_069): the region layout when the config selects
+    // it. The two tables describe the same addresses; only one is used per
+    // configuration, and both drop their retained records here.
+    region_slots_.clear();
+    region_stride_log2_ = 0;
+    region_extents_ = 0;
+    region_growth_bytes_ = 0;
+    if (config_.nursery_regions == 1) {
+        const size_t stride = config_.regionStrideBytes();
+        size_t lg = 0;
+        while ((size_t{1} << lg) < stride) ++lg;
+        region_stride_log2_ = lg;
+        region_extents_ = config_.regionExtents();
+        size_t g = (config_.nursery_max_block_count / 2) * config_.alloc_buffer_size;
+        if (config_.alloc_buffer_size != 0) g -= g % config_.alloc_buffer_size;
+        region_growth_bytes_ = g;
+        const size_t per_slot = static_cast<size_t>(region_extents_) << lg;
+        region_slots_.assign(per_slot == 0 ? 0 : nursery_space / per_slot, NurseryRegionSlot{});
+        // The nursery slice geometry the legacy table would report is the
+        // per-extent ceiling in region mode (NurserySpace's growth ceiling).
+        nursery_slice_bytes_ = region_growth_bytes_;
+    }
+}
+
+NurserySliceSet Allocator::acquireNurserySliceSet(size_t initial) {
+    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+    if (initial > region_growth_bytes_) initial = region_growth_bytes_;
+    size_t slot = SIZE_MAX;
+    for (size_t i = 0; i < region_slots_.size(); ++i) {
+        if (!region_slots_[i].in_use) { slot = i; break; }
+    }
+    if (slot == SIZE_MAX) {
+        std::fprintf(stderr,
+            "[eco] FATAL: region nursery heap slots exhausted (%zu slot(s) of %u extents x "
+            "%zu MiB, region %zu MiB). Raise max_heap_size (or nursery_region_bytes) to "
+            "widen the region, or lower nursery_max_block_count to shrink each extent "
+            "(threaded-gc-07 HEAP_069: region mode has half the legacy slots).\n",
+            region_slots_.size(), region_extents_,
+            (size_t{1} << region_stride_log2_) / (1024 * 1024),
+            (heap_reserved - nursery_offset) / (1024 * 1024));
+        std::fflush(stderr);
+        std::abort();
+    }
+    NurseryRegionSlot& s = region_slots_[slot];
+    NurserySliceSet set;
+    set.slot_base = heap_base + nursery_offset +
+                    slot * (static_cast<size_t>(region_extents_) << region_stride_log2_);
+    set.stride_log2 = region_stride_log2_;
+    set.n = region_extents_;
+    set.slot = slot;
+    set.capacity = 0;
+    for (unsigned k = 0; k < region_extents_; ++k) {
+        if (initial > s.retained[k]) {
+            const size_t add = initial - s.retained[k];
+            if (Elm::platform::commitAt(set.extent(k) + s.retained[k], add) == nullptr) {
+                if (heapTraceEnabled()) dumpHeapState("nursery region commit failed", add);
+                return set;                      // capacity 0 == failure
+            }
+            s.retained[k] = initial;
+            nursery_low_committed_ += add;
+        }
+    }
+    s.in_use = true;
+    set.capacity = initial;
+    if (heapTraceEnabled()) dumpHeapState("nursery region set acquired", initial);
+    return set;
+}
+
+bool Allocator::growNurserySliceSet(NurserySliceSet& set, size_t delta) {
+    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+    if (delta == 0) return false;
+    const size_t new_cap = set.capacity + delta;
+    if (new_cap > region_growth_bytes_) return false;
+    if (set.slot >= region_slots_.size()) return false;
+    NurseryRegionSlot& s = region_slots_[set.slot];
+    for (unsigned k = 0; k < set.n; ++k) {
+        if (new_cap > s.retained[k]) {
+            const size_t add = new_cap - s.retained[k];
+            if (Elm::platform::commitAt(set.extent(k) + s.retained[k], add) == nullptr) {
+                return false;   // earlier extents keep dormant retained commit; capacity untouched
+            }
+            s.retained[k] = new_cap;
+            nursery_low_committed_ += add;
+        }
+    }
+    set.capacity = new_cap;
+    if (heapTraceEnabled()) dumpHeapState("nursery region set grew", delta);
+    return true;
+}
+
+void Allocator::releaseNurserySliceSet(const NurserySliceSet& set) {
+    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+    if (set.slot < region_slots_.size()) region_slots_[set.slot].in_use = false;
 }
 
 NurserySlicePair Allocator::acquireNurserySlicePair(size_t initial) {
@@ -933,8 +1040,10 @@ void Allocator::reset(const HeapConfig* new_config) {
 
     // Update config if provided.
     if (new_config) {
-        new_config->validate();
-        config_ = *new_config;
+        HeapConfig c = *new_config;
+        c.resolveNurseryRegions();   // threaded-gc-07 TG7d: auto -> 1 or 0
+        c.validate();
+        config_ = c;
     }
 
 #if ENABLE_GC_STATS

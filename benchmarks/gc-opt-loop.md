@@ -2149,6 +2149,85 @@ Plan `plans/threaded-gc-06-parallel-minor.md` (as-built P§10). Phase-timer cand
   a spin lock, batched free-list pops, and adaptive chunked shared blocks (per-worker blocks
   moved the first major from minor 91 to 165).
 
+### TG7b — threaded-gc-07 region nursery, sync tenuring — **built, default OFF: every object counter equals the legacy nursery (tenured one minor later) on all 1,924 minors; sync tenuring costs pause time (p99 34 → 114 ms, wall 123.2 → 135.9 s) but the region nursery makes the mutator 10 % faster**
+
+Plan `plans/threaded-gc-07-concurrent-tenuring.md` (as-built P§10). Arms from one phase-timer
+binary relinked from one object (`eco-optTG7PT2`), N = 8, gf 0.70 via `ECO_HEAP_CONFIG` in every
+arm, equal-length env values; output 933c3ff0d288 in every run.
+
+- **E0** (exe-lowered vs exe-lowered `eco-optTG6PT`, regions off, N = 1): every class MATCH.
+  A binary relinked from `--emit=obj` differs from exe-lowered ones by lowering (77 objects).
+- **E1** (legacy vs region mode 1, N = 1 and 4): object class MATCH on every row (shifted).
+- Mutator CPU outside pauses 109.8 → 98.7 s (−10 %; −13 % at N = 1).
+
+### TG7c — threaded-gc-07 concurrent tenuring — **built, default OFF (decision rules not met); opt-in best: wall 123.2 → 112.8 s (−8.4 %), worst pause 137 → 88 ms, old-gen peak +4.4 % / RSS +7.6 % at gf 0.70**
+
+| arm (triple medians) | wall s | pause p99 / max ms | mutator out s | peak MB | RSS GB | late |
+|---|---|---|---|---|---|---|
+| legacy (phase 6 default) | 123.2 | 34.4 / 137.2 | 109.8 | 11,432 | 12.43 | — |
+| region mode 1 | 135.9 | 113.9 / 143.6 | 98.7 | 11,837 | 13.27 | — |
+| **region mode 2, 1 collector** | **112.8** | 30.1 / 87.5 | 101.1 | 11,931 | 13.37 | 17 % |
+| region mode 2, 4 collectors | 120.3 | 21.6 / 123.7 | 110.0 | 12,028 | 13.47 | 0.1 % |
+
+- **E2:** mode 1 = mode 2 = mode 2 + jitter = mode 2 + forced stops, every class, at N = 1.
+- **E4 fails at one collector** (16–18 % late minors idle and under co-runners): ~16 % of jobs
+  tenure ~2 M objects at a GC ratio ~1; the exact engine is latency-bound (81 % one shadow
+  miss). **E6 fails at four** (+11 % mutator CPU). **E7:** sweep median −6.4 %, majors equal, but
+  the 0.70 point is +3.8 % over legacy's sweep max.
+- Found: the grant must skip the mutator's cursor block that `classifyBlocksAfterMark`
+  re-queues (a real collector/mutator race); L3 chunks must own whole bitmap cache lines (77 %
+  of the allocator stalled on false sharing).
+
+### TG7d — threaded-gc-07 region nursery + concurrent tenuring as the DEFAULT — **WIN, kept: wall 123.30 → 112.09 s (−9.1 %), GC 12.75 → 8.31 s, minor max 110.7 → 56.8 ms; output byte-identical; costs max RSS +7.5 %, old-gen peak +4.4 %, 20 s of collector CPU outside GC time, 17 % of minors help a late job**
+
+The user made TG7c's best opt-in configuration the default (plan P§10.17 addendum):
+`nursery_regions = 2` (auto: regions when the config meets the region requirements, legacy
+otherwise), `tenure_mode = 2`, one collector. Runtime-only step: the reference MLIR
+(`ecoTG6base.mlir`, md5 933c3ff0d288) lowered against the changed runtime (`eco-optTG7d`, binary
++2,512 B). No GC environment in any run. Patch `snapshots/lss-loop/step-TG7d.patch` (468 lines:
+`AllocatorCommon.hpp`, `Allocator.cpp`, `HeapConfigJson.cpp`, four test files, the heap-TSan
+driver, `invariants.csv`, `THEORY.md`).
+
+| run | wall (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|
+| r1 | 113.46 | 8.31 | 1924 | 8 | 19862 | 13359296 | 13262272 | same |
+| r2 | 112.09 | 8.28 | 1924 | 8 | 19862 | 13359864 | 13262272 | same |
+| r3 | 111.68 | 8.34 | 1924 | 8 | 19862 | 13364524 | 13262272 | same |
+| **median** | **112.09** | **8.31** | 1924 | 8 | 19862 | 13359864 | 13262272 | same |
+| Δ vs TG6 (123.30 / 12.75 / 12426732) | **−11.21** | **−4.44** | 0 | 0 | 0 | +933132 | 0 | — |
+
+- **GC time excludes the tenure collector**: it copies on its own thread, busy 21.9 s and CPU 20.0 s
+  per run (utilization 0.21 of the epochs). Minor GC 12.25 → 7.80 s median; minor average 6.37 →
+  4.05 ms, minor max 110.67 → 56.82 ms. The minor figure includes the merge (2.08 s median), which is
+  almost all help of late jobs: 1.99 s over 330–339 late minors (17.2 %).
+- **Counters:** minors, majors and promoted objects/MiB equal TG6. `copied-in-nursery` differs by
+  16 objects (744,250,343 vs 744,250,327), identical in all three runs; not investigated (the
+  region nursery's counters are compared with legacy per minor in TG7b E1, not in this total).
+- **Costs:** old-gen peak 11,437 → 11,934 MB (+4.4 %) and max RSS 12.43 → 13.36 GB (+7.5 %), the
+  retention and footprint cost TG7c recorded; E4's keep-up rule is overridden (17 % late).
+- **Gates:** unit 1938/1938, E2E `--target check` PASSED, elm-tests 13,565 / 12 (the reference);
+  validate unit 1939/1939 and validate stress 101/101 at default, GC-pressure and
+  GC-pressure-parallel configs (regions active by auto); heap TSan 2 runs, 0 warnings.
+- **Pause percentiles** (phase-timer relink `eco-optTG7dPT` of `ecoTG6base.o`, medians of three runs
+  per arm, no GC environment; the legacy arm is the same binary with `ECO_NURSERY_REGIONS=0`;
+  wall 112.3 vs 122.0 s, output identical):
+
+  | pauses (ms) | arm | n | p50 | p90 | p99 | p99.9 | max | total s |
+  |---|---|---|---|---|---|---|---|---|
+  | all | TG7d | 1924 | 1.74 | 19.6 | 30.3 | 85.3 | 99.2 | 11.15 |
+  | all | legacy | 1924 | 1.97 | 21.1 | 34.2 | 106.6 | 133.2 | 12.88 |
+  | minor-only | TG7d | 1908 | 1.72 | 18.7 | 26.3 | 56.2 | 66.1 | 10.46 |
+  | minor-only | legacy | 1908 | 1.94 | 20.5 | 26.3 | 78.9 | 106.6 | 12.21 |
+  | minor + cycle t0 | TG7d / legacy | 8 | 64.0 / 41.0 | | | | 85.3 / 51.1 | |
+  | minor + cycle handoff | TG7d / legacy | 8 | 9.3 / 14.3 | | | | 99.2 / 133.2 | |
+
+  No pause contains a stop-the-world major; the 8 cycles' work sits in the t0 and handoff pauses,
+  which are the worst pauses in both arms. Region mode lengthens t0 (probably because its young walk covers Fresh
+  and Tenuring; not measured) and shortens the handoff.
+- **Unit-suite pin:** 58 legacy-mechanism tests assert legacy timing, so `initAllocator` pins
+  `nursery_regions = 0` and the region tests use `initRegionAllocator`. Without auto, 17 more
+  failed validation (`promotion_age > 1`, bitmap allocation off, heaps too small for a slot).
+
 ## 7. Findings
 
 (What this series learns, separated from the per-step records so the entries stay to ten lines.
@@ -2621,3 +2700,4 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | TG5b | 163.90 | -5.84 | 1924 | 7 | 19862 | 9845612 | WIN | TG5a |
 | TG5c | 162.60 | -0.99 | 1924 | 7 | 19862 | 9849108 | WIN (pause) | TG5b |
 | TG6 | 123.30 | -39.30 | 1924 | 8 | 19862 | 12426732 | WIN (wall, pause; retention gate overridden) | TG5c |
+| TG7d | 112.09 | -11.21 | 1924 | 8 | 19862 | 13359864 | WIN (wall, pause; keep-up gate overridden) | TG6 |

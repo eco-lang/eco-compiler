@@ -242,6 +242,7 @@ public:
         unsigned members = 1;     // [1, 63]
         int priority = 0;         // 0 inherit, 1..19 nice, 20 SCHED_IDLE (Linux)
         unsigned jitter_us = 0;   // determinism probe: random start delay per member
+        const char* name = "eco-cmark";   // thread name prefix (threaded-gc-07: "eco-tenure")
     };
     explicit GCBackgroundGang(const Options& opt);
     ~GCBackgroundGang();          // stopAndJoin(), joins the threads, unregisters

@@ -418,6 +418,9 @@ add_executable(ecor EXCLUDE_FROM_ALL
         runtime/src/allocator/OldGenSpace.cpp
         runtime/src/allocator/NurserySpace.cpp
         runtime/src/allocator/NurseryParallel.cpp
+        runtime/src/allocator/NurseryRegion.cpp
+        runtime/src/allocator/NurseryTenure.cpp
+        runtime/src/allocator/OldGenTenure.cpp
         runtime/src/allocator/Allocator.cpp
         runtime/src/allocator/GCHelperPool.cpp
         runtime/src/allocator/PageWork.cpp

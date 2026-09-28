@@ -116,6 +116,7 @@ NurserySpace::~NurserySpace() {
     if (allocator_ && slice_.capacity != 0) {
         allocator_->releaseNurserySlicePair(slice_);
     }
+    releaseRegions();   // threaded-gc-07: the owner ran tenureTeardown first
 }
 
 // Shared body of the two initialize() overloads. `allocator_`, `config_` and
@@ -137,6 +138,12 @@ void NurserySpace::initializeFromConfig() {
     // block design's `nursery_block_count / 2` blocks.
     size_t initial = config_->nurseryInitialPerSideBytes();
     if (initial > growth_ceiling_bytes_) initial = growth_ceiling_bytes_;
+
+    if (config_->nursery_regions == 1) {
+        // threaded-gc-07 (HEAP_069): the region nursery instead of the pair.
+        initRegions();
+        return;
+    }
 
     slice_ = allocator_->acquireNurserySlicePair(initial);
     assert(slice_.capacity != 0 && "Failed to acquire nursery slice pair");
@@ -196,6 +203,10 @@ void NurserySpace::reset(OldGenSpace &oldgen, const HeapConfig* new_config) {
     if (slice_.capacity != 0) {
         allocator_->releaseNurserySlicePair(slice_);
         slice_ = NurserySlicePair{};
+    }
+    if (rg_) {
+        tenureTeardown(oldgen);
+        releaseRegions();
     }
 
     // Update config if provided.
@@ -292,6 +303,12 @@ void NurserySpace::failSoftUnclamp() {
     // Same fail-soft shape as computeAllocEnd's already-full clause: give the
     // caller the whole remaining extent. Reachable only in tiny test configs
     // where threshold_total_bytes_ < n (see ThreadLocalHeap::ensureNursery).
+    if (rg_) {   // threaded-gc-07 P§3.8: eden may hold capacity - S_m bytes
+        const size_t room = rg_->S_m < from_capacity_bytes_ ? from_capacity_bytes_ - rg_->S_m : 0;
+        bump_.end = rg_->eden_base + room;
+        if (bump_.end < bump_.ptr) bump_.end = bump_.ptr;
+        return;
+    }
     if (!fromBase()) return;
     bump_.end = fromBase() + from_capacity_bytes_;
 }
@@ -300,6 +317,8 @@ void NurserySpace::failSoftUnclamp() {
 
 size_t NurserySpace::bytesAllocated() const {
     if (!bump_.ptr) return 0;
+    // threaded-gc-07 P§3.8: survived object bytes of the last minor plus eden.
+    if (rg_) return rg_->S_m + static_cast<size_t>(bump_.ptr - rg_->eden_base);
     return static_cast<size_t>(bump_.ptr - fromBase());
 }
 
@@ -316,12 +335,21 @@ void NurserySpace::refreshCapacityCaches() {
         heap_reserved_ = allocator_->getHeapReserved();
     }
 
-    from_capacity_bytes_ = slice_.capacity;
+    from_capacity_bytes_ = rg_ ? rg_->set.capacity : slice_.capacity;
     threshold_total_bytes_ =
         static_cast<size_t>(static_cast<double>(from_capacity_bytes_) * gc_threshold_);
 }
 
 char* NurserySpace::computeAllocEnd() {
+    if (rg_) {
+        // threaded-gc-07 P§3.8: eden gets threshold - S_m (legacy's survivor
+        // prefix is the same object bytes); fail-soft: capacity - S_m.
+        const size_t sm = rg_->S_m;
+        if (sm >= threshold_total_bytes_) {
+            return rg_->eden_base + (sm < from_capacity_bytes_ ? from_capacity_bytes_ - sm : 0);
+        }
+        return rg_->eden_base + (threshold_total_bytes_ - sm);
+    }
     char* base = fromBase();
     char* extent_end = base + from_capacity_bytes_;
     // threaded-gc-06 HEAP_068: OBJECT bytes. The survivor prefix may hold
@@ -368,6 +396,7 @@ bool NurserySpace::scanHasMore() const {
 }
 
 void NurserySpace::checkAndGrow() {
+    if (rg_) { regionCheckAndGrow(); return; }   // threaded-gc-07 P§3.8
     // To-space occupancy after copying. Contiguous, so this is pure survivor
     // bytes with no block-quantization waste in the numerator.
     // threaded-gc-06 HEAP_068: object bytes (the to-space prefix's fillers
@@ -456,6 +485,10 @@ void NurserySpace::checkAndGrow() {
  */
 void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_roots,
                            MinorGCRecord* rec) {
+    if (rg_) {   // threaded-gc-07 (HEAP_069): the region minor
+        minorGCRegion(oldgen, stackmap_roots, rec);
+        return;
+    }
 #if !ENABLE_GC_PHASE_TIMERS
     (void)rec;
 #endif
@@ -969,13 +1002,17 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
             // threaded-gc-02 (HEAP_024 reworded): in bitmap mode a uniform
             // block is NOT header-parsable — only cells whose start bit is set
             // hold objects (dead cells keep stale headers, virgin cells none).
-            const bool uniform_bitmap = oldgen.config_->old_gen_bitmap_alloc &&
-                !blk.is_large && blk.size_class < oldgen.num_size_classes_;
+            // A MIXED block is not header-parsable over dead space either
+            // (HEAP_056): the bitmap cursor fills a gap between set bits and
+            // leaves the gap's tail as stale bytes with no header, so the walk
+            // visits set start bits only and steps a granule otherwise.
+            const bool bitmap_walk = oldgen.config_->old_gen_bitmap_alloc && !blk.is_large;
+            const bool uniform_bitmap = bitmap_walk && blk.size_class < oldgen.num_size_classes_;
             const size_t ucell = uniform_bitmap
-                ? OldGenSpace::classToSize(blk.size_class) : 0;
+                ? OldGenSpace::classToSize(blk.size_class) : 8;
             while (scan < end) {
                 // threaded-gc-05c (H2): background markers may write these bytes.
-                if (uniform_bitmap && !oldgen.isMarkedInBlockRelaxed(blk_id, scan)) {
+                if (bitmap_walk && !oldgen.isMarkedInBlockRelaxed(blk_id, scan)) {
                     scan += ucell;
                     continue;
                 }
@@ -2452,16 +2489,19 @@ void NurserySpace::preEvacuationFromSpaceWalk() {
 
 bool NurserySpace::isInFromSpaceAllocatedRegion(void* ptr) const {
     char* p = static_cast<char*>(ptr);
+    if (rg_) return p >= rg_->eden_base && p < bump_.ptr;   // threaded-gc-07: eden
     return p >= fromBase() && p < bump_.ptr;
 }
 
 bool NurserySpace::isInToSpaceAllocatedRegion(void* ptr) const {
     char* p = static_cast<char*>(ptr);
+    if (rg_) return false;
     return p >= toBase() && p < copy_ptr_;
 }
 
 void NurserySpace::debugAssertValidNurseryPointer(void* ptr) const {
     assert(contains(ptr) && "debugAssertValidNurseryPointer called on non-nursery pointer");
+    if (rg_) { regionAssertValidPointer(ptr); return; }   // threaded-gc-07 TV7
 
     bool ok = false;
     if (!in_minor_gc_) {
@@ -2757,6 +2797,77 @@ void NurserySpace::censusCheck(OldGenSpace& oldgen) {
         g.hits[censusKey(tag, sub, word)]++;
     }
     census_.clear();
+}
+
+// threaded-gc-07 TV11: detector N in region form. At minor end every object
+// of the Fresh extent (survivor part and builder area), of the Tenuring
+// extent's survivor part and of the Fresh generation's YLOS objects is
+// hashed; tenureJoin re-hashes them BEFORE the heal (trap 9).
+void NurserySpace::censusRecordRegion(OldGenSpace& oldgen) {
+    RegionState& R = *rg_;
+    R.census.clear();
+    R.census_epoch = oldgen.majorEpoch();
+    auto rec = [&](char* p, size_t sz) {
+        const Header* h = getHeader(p);
+        if (h->tag == Tag_Free) return;
+        R.census.push_back(RegionState::CensusObj{p, static_cast<uint32_t>(sz),
+                                                  censusHash(p, sz), static_cast<uint8_t>(h->builder)});
+    };
+    auto walk = [&](char* lo, char* hi) {
+        for (char* p = lo; p < hi;) {
+            const size_t sz = getObjectSize(p);
+            if (sz == 0 || p + sz > hi) break;
+            rec(p, sz);
+            p += sz;
+        }
+    };
+    for (int i = 0; i < 3; ++i) {
+        region::Extent& X = R.x[i];
+        if (X.state == region::XState::Fresh) {
+            walk(X.base, X.surv_top);
+            walk(X.bld_lo, X.bld_hi);
+            for (void* y : X.ylos_gen) {
+                if (oldgen.isYoungLarge(y)) rec(static_cast<char*>(y), getObjectSize(y));
+            }
+        } else if (X.state == region::XState::Tenuring) {
+            walk(X.base, X.surv_top);
+        }
+    }
+    SurvivorWriteCensus& g = survivorCensus();
+    std::lock_guard<std::mutex> lock(g.mu);
+    if (!g.report_registered && census_forced_ < 0) {
+        g.report_registered = true;
+        std::atexit(survivorCensusReport);
+    }
+}
+
+void NurserySpace::censusCheckRegion(OldGenSpace& oldgen) {
+    RegionState& R = *rg_;
+    SurvivorWriteCensus& g = survivorCensus();
+    std::lock_guard<std::mutex> lock(g.mu);
+    g.minors++;
+    const bool ylos_valid = oldgen.majorEpoch() == R.census_epoch;
+    for (const RegionState::CensusObj& e : R.census) {
+        if (e.builder) { g.skipped_builder++; continue; }
+        if (!R.contains(e.obj)) {
+            if (!ylos_valid || !oldgen.isYoungLarge(e.obj)) continue;   // a YLOS object freed / retired
+            g.ylos_checked++;
+        }
+        g.checked++;
+        if (censusHash(e.obj, e.size) == e.hash) continue;
+        g.mismatched++;
+        const Header* vh = getHeader(e.obj);
+        if (census_forced_ < 0 && p1::mode() == 2) {
+            std::fprintf(stderr,
+                "[p1-census] VIOLATION (region survivor): object %p tag=%s size=%u was written "
+                "after surviving a minor GC (HEAP_SNAPSHOT_001)\n",
+                static_cast<void*>(e.obj), gcTagName(static_cast<int>(vh->tag)), e.size);
+            std::fflush(stderr);
+            std::abort();
+        }
+        g.hits[censusKey(static_cast<int>(vh->tag), 0, 0xFFFF)]++;
+    }
+    R.census.clear();
 }
 
 NurserySpaceTestAccess::CensusCounts NurserySpaceTestAccess::survivorWriteCensusCounts() {

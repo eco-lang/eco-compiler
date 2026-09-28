@@ -134,6 +134,30 @@ struct MinorGCRecord {
     uint64_t filler_bytes = 0;
     uint64_t mutex_wait_ns = 0;
     uint64_t imbalance_units = 0;      // max - min entries scanned per worker
+    // threaded-gc-07 (P§3.20): region-nursery columns (zero in legacy mode).
+    uint64_t rg_region = 0;
+    uint64_t rg_merge_ns = 0;
+    uint64_t rg_heal_slots = 0;
+    uint64_t rg_heal_ns = 0;
+    uint64_t rg_wait_ns = 0;
+    uint64_t rg_help_ns = 0;
+    uint64_t rg_help_workers = 0;
+    uint64_t rg_late = 0;
+    uint64_t rg_tenured = 0;
+    uint64_t rg_tenured_bytes = 0;
+    uint64_t rg_busy_ns = 0;
+    uint64_t rg_ylos_promoted = 0;
+    uint64_t rg_ylos_freed = 0;
+    uint64_t rg_lb_promoted = 0;
+    uint64_t rg_starts = 0;
+    uint64_t rg_heal_recorded = 0;
+    uint64_t rg_resolved = 0;
+    uint64_t rg_grant_blocks = 0;
+    uint64_t rg_grant_cells = 0;
+    uint64_t rg_grant_used = 0;
+    uint64_t rg_fill_obj_bytes = 0;
+    uint64_t rg_bld_bytes = 0;
+    uint64_t rg_epoch_ns = 0;
 };
 
 // One contiguous mutator stop on one thread.
@@ -250,6 +274,63 @@ struct ParMinorStats {
         imbalance_units_sum += o.imbalance_units_sum;
         drain_ns_sum += o.drain_ns_sum; sweep_ns_sum += o.sweep_ns_sum;
         member_cpu_ns += o.member_cpu_ns;
+    }
+};
+
+// threaded-gc-07 (plans/threaded-gc-07-concurrent-tenuring.md P§3.20): the
+// region nursery and its tenure jobs (HEAP_069/HEAP_070). Per-heap (the
+// nursery's GCStats, mirrored from its RegionState at every merge); combine()
+// sums counters, maxes the maxima and concatenates the utilisation samples.
+// The scalar part (POD: the E2E / stress runners copy it through shared
+// memory from forked children).
+struct RegionTenureCounters {
+    uint64_t minors = 0, jobs = 0, merges = 0;
+    uint64_t tenured = 0, tenured_bytes = 0, starts = 0, heal_slots = 0, resolved = 0;
+    uint64_t heal_ns = 0, merge_ns = 0, wait_ns = 0, help_ns = 0, late = 0, stops = 0;
+    uint64_t help_workers_sum = 0;
+    uint64_t busy_ns = 0, epoch_ns = 0, collector_cpu_ns = 0;
+    uint64_t grant_blocks = 0, grant_cells = 0, grant_used = 0, grant_virgin = 0;
+    uint64_t ylos_gen_promoted = 0, ylos_gen_freed = 0, lb_promoted = 0;
+    uint64_t shadow_wraps = 0, eden_clear_ns = 0;
+    uint64_t max_nonfree = 0;
+    uint64_t sync_parallel_jobs = 0;
+    uint64_t survivor_hw_bytes = 0, shadow_committed_bytes = 0, eden_capacity_bytes = 0;
+    // Parallel tenure engines (pause and L3): entries scanned, the busiest
+    // worker's share, steals, idle waits.
+    uint64_t par_runs = 0, par_units = 0, par_units_max_sum = 0, par_steals = 0;
+    uint64_t par_idle_spins = 0, par_idle_yields = 0, par_idle_sleeps = 0;
+    // Step 0 item 9 / lever L6: survivor copies smaller than 16 bytes (a
+    // 16-byte shadow granule needs zero), and heals run on the gang.
+    uint64_t copies_under16 = 0, heals_parallel = 0, grant_fallbacks = 0;
+    bool any() const { return minors != 0; }
+    void combine(const RegionTenureCounters& o) {
+        minors += o.minors; jobs += o.jobs; merges += o.merges;
+        tenured += o.tenured; tenured_bytes += o.tenured_bytes; starts += o.starts;
+        heal_slots += o.heal_slots; resolved += o.resolved; heal_ns += o.heal_ns;
+        merge_ns += o.merge_ns; wait_ns += o.wait_ns; help_ns += o.help_ns; late += o.late;
+        stops += o.stops; help_workers_sum += o.help_workers_sum; busy_ns += o.busy_ns;
+        epoch_ns += o.epoch_ns; collector_cpu_ns += o.collector_cpu_ns;
+        grant_blocks += o.grant_blocks; grant_cells += o.grant_cells; grant_used += o.grant_used;
+        grant_virgin += o.grant_virgin; ylos_gen_promoted += o.ylos_gen_promoted;
+        ylos_gen_freed += o.ylos_gen_freed; lb_promoted += o.lb_promoted;
+        shadow_wraps += o.shadow_wraps; eden_clear_ns += o.eden_clear_ns;
+        if (o.max_nonfree > max_nonfree) max_nonfree = o.max_nonfree;
+        sync_parallel_jobs += o.sync_parallel_jobs;
+        survivor_hw_bytes += o.survivor_hw_bytes;
+        shadow_committed_bytes += o.shadow_committed_bytes;
+        eden_capacity_bytes += o.eden_capacity_bytes;
+        par_runs += o.par_runs; par_units += o.par_units; par_units_max_sum += o.par_units_max_sum;
+        par_steals += o.par_steals; par_idle_spins += o.par_idle_spins;
+        par_idle_yields += o.par_idle_yields; par_idle_sleeps += o.par_idle_sleeps;
+        copies_under16 += o.copies_under16; heals_parallel += o.heals_parallel;
+        grant_fallbacks += o.grant_fallbacks;
+    }
+};
+struct RegionTenureStats : RegionTenureCounters {
+    std::vector<uint32_t> util_ppm;    // per merged job: busy / epoch (ppm)
+    void combine(const RegionTenureStats& o) {
+        RegionTenureCounters::combine(o);
+        util_ppm.insert(util_ppm.end(), o.util_ppm.begin(), o.util_ppm.end());
     }
 };
 
@@ -1035,6 +1116,8 @@ public:
     // threaded-gc-04b: large allocations by placement + YLOS life cycle.
     LargePtrStats lp;
     ParMinorStats pmin;   // threaded-gc-06
+    RegionTenureStats rg;   // threaded-gc-07
+    void printRegionBlock() const;
     IncrMarkStats im;   // threaded-gc-05a
     ParMarkStats pm;    // threaded-gc-05b
     ConcMarkStats cm;   // threaded-gc-05c
@@ -1155,6 +1238,21 @@ public:
             if (tag == Tag_Custom) custom_survived[customArityBucket(nfields)]++;
         }
         void reset() { *this = MinorCopyCounts{}; }
+        void add(const MinorCopyCounts& o) {   // threaded-gc-07: merge worker counts
+            survived += o.survived;
+            promoted += o.promoted;
+            for (int i = 0; i < NUM_ALLOC_TAGS; ++i) {
+                survived_count[i] += o.survived_count[i];
+                survived_bytes[i] += o.survived_bytes[i];
+                promoted_count[i] += o.promoted_count[i];
+                promoted_bytes[i] += o.promoted_bytes[i];
+            }
+            for (int b = 0; b < CUSTOM_ARITY_BUCKETS; ++b) {
+                custom_promoted[b] += o.custom_promoted[b];
+                custom_promoted_bytes[b] += o.custom_promoted_bytes[b];
+                custom_survived[b] += o.custom_survived[b];
+            }
+        }
     };
     void mergeCopyCounts(const MinorCopyCounts& c) {
         objects_survived += c.survived;
