@@ -74,6 +74,94 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 RUN git clone --depth=1 https://github.com/brendangregg/FlameGraph.git /opt/FlameGraph
 ENV PATH="/opt/FlameGraph:${PATH}"
 
+# ============================================================
+# TLA+ / PlusCal toolchain for the GC concurrency models
+# (plans/threaded-gc-tla-verification.md §3).
+#
+#   tlc / sany / pcal / tlatex  wrappers over tla2tools.jar, with the
+#                               CommunityModules on the classpath (the Json and
+#                               IOUtils modules are what trace validation reads)
+#   apalache-mc                 symbolic checker (inductive invariants, larger
+#                               parameters); needs Java 17+
+#   tlapm                       TLAPS proof manager, OPT-IN: the upstream tarball
+#                               is ~880 MB and is a rolling pre-release, so it
+#                               cannot be SHA-pinned. Build with
+#                               --build-arg INSTALL_TLAPS=1
+#   graphviz                    renders TLC -dump dot state graphs
+#
+# Every download except TLAPS is SHA256-pinned, like compiler/cmake/toolchain.cmake.
+# SHAs computed from the upstream release assets on 2026-09-28.
+#
+# tla2tools is 1.8.0, NOT the last stable release (1.7.4): current
+# CommunityModules fail on 1.7.4 with NoClassDefFoundError
+# (tlc2/value/impl/KSubsetValue), and trace validation needs them. Tested
+# 2026-09-28: TLC "2026.09.25.163503 (rev: 8f4bc8b)" + CommunityModules
+# 202609120237 model-checks the smoke spec below. v1.8.0 is a ROLLING
+# pre-release whose asset upstream re-uploads in place, so this pin WILL fail
+# the build some day. When it does, re-download, re-hash, bump the SHA on
+# purpose, and re-run `cmake --build build --target tla-check`.
+# CMake finds the jars through TLA_TOOLS_DIR (plans/threaded-gc-tla-verification.md §6).
+# ============================================================
+ARG TLA2TOOLS_VERSION=1.8.0
+ARG TLA2TOOLS_SHA256=ab4694601923fd5ac06452abbf847c366a5054a3d739552085edd6ed986c29ec
+ARG TLA_COMMUNITY_MODULES_VERSION=202609120237
+ARG TLA_COMMUNITY_MODULES_SHA256=3d9a282c360e90d55e9bbe99caa2987d508fef1556d652760b4af4455e283733
+ARG APALACHE_VERSION=0.62.2
+ARG APALACHE_SHA256=765f610537281a0f25b8c30f2554f19523e2859c824e80e62276653ee23c10e2
+ARG INSTALL_TLAPS=0
+
+# openjdk's postinst needs the man1 directory to exist.
+RUN mkdir -p /usr/share/man/man1 \
+ && apt-get update && apt-get install -y --no-install-recommends \
+    openjdk-17-jre-headless graphviz \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN set -eu; \
+    mkdir -p /opt/tlaplus; \
+    cd /opt/tlaplus; \
+    curl -fsSL -o tla2tools.jar \
+      "https://github.com/tlaplus/tlaplus/releases/download/v${TLA2TOOLS_VERSION}/tla2tools.jar"; \
+    echo "${TLA2TOOLS_SHA256}  tla2tools.jar" | sha256sum -c -; \
+    curl -fsSL -o CommunityModules-deps.jar \
+      "https://github.com/tlaplus/CommunityModules/releases/download/${TLA_COMMUNITY_MODULES_VERSION}/CommunityModules-deps-${TLA_COMMUNITY_MODULES_VERSION}.jar"; \
+    echo "${TLA_COMMUNITY_MODULES_SHA256}  CommunityModules-deps.jar" | sha256sum -c -; \
+    curl -fsSL -o /tmp/apalache.tgz \
+      "https://github.com/apalache-mc/apalache/releases/download/v${APALACHE_VERSION}/apalache-${APALACHE_VERSION}.tgz"; \
+    echo "${APALACHE_SHA256}  /tmp/apalache.tgz" | sha256sum -c -; \
+    mkdir -p /opt/apalache; \
+    tar -xzf /tmp/apalache.tgz -C /opt/apalache --strip-components=1; \
+    rm /tmp/apalache.tgz; \
+    CP='/opt/tlaplus/tla2tools.jar:/opt/tlaplus/CommunityModules-deps.jar'; \
+    printf '#!/bin/sh\nexec java -XX:+UseParallelGC ${TLC_JAVA_OPTS:-} -cp %s tlc2.TLC "$@"\n' "$CP" > /usr/local/bin/tlc; \
+    printf '#!/bin/sh\nexec java -cp %s tla2sany.SANY "$@"\n' "$CP" > /usr/local/bin/sany; \
+    printf '#!/bin/sh\nexec java -cp %s pcal.trans "$@"\n' "$CP" > /usr/local/bin/pcal; \
+    printf '#!/bin/sh\nexec java -cp %s tla2tex.TLA "$@"\n' "$CP" > /usr/local/bin/tlatex; \
+    printf '#!/bin/sh\nexec /opt/apalache/bin/apalache-mc "$@"\n' > /usr/local/bin/apalache-mc; \
+    chmod +x /usr/local/bin/tlc /usr/local/bin/sany /usr/local/bin/pcal \
+             /usr/local/bin/tlatex /usr/local/bin/apalache-mc; \
+    if [ "${INSTALL_TLAPS}" = "1" ]; then \
+      curl -fsSL -o /tmp/tlapm.tgz \
+        "https://github.com/tlaplus/tlapm/releases/download/1.6.0-pre/tlapm-1.6.0-pre-x86_64-linux-gnu.tar.gz"; \
+      mkdir -p /opt/tlapm; \
+      tar -xzf /tmp/tlapm.tgz -C /opt/tlapm --strip-components=1; \
+      rm /tmp/tlapm.tgz; \
+      [ -x /opt/tlapm/bin/tlapm ] || { echo "tlapm tarball layout changed" >&2; exit 1; }; \
+      ln -s /opt/tlapm/bin/tlapm /usr/local/bin/tlapm; \
+    fi; \
+    mkdir -p /tmp/tla-smoke; \
+    cd /tmp/tla-smoke; \
+    printf '%s\n' '---- MODULE Smoke ----' 'EXTENDS Naturals' 'VARIABLE x' \
+      'Init == x = 0' "Next == x' = 1 - x" 'Inv == x \in {0, 1}' '====' > Smoke.tla; \
+    printf 'INIT Init\nNEXT Next\nINVARIANT Inv\n' > Smoke.cfg; \
+    tlc -workers 1 -config Smoke.cfg Smoke.tla > smoke.log 2>&1 \
+      || { cat smoke.log >&2; echo "TLC smoke test failed" >&2; exit 1; }; \
+    apalache-mc version > /dev/null \
+      || { echo "Apalache smoke test failed" >&2; exit 1; }; \
+    cd /; \
+    rm -rf /tmp/tla-smoke
+
+ENV TLA_TOOLS_DIR=/opt/tlaplus
+
 # Workspace
 WORKDIR /work
 
