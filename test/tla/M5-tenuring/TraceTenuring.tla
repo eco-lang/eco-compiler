@@ -92,6 +92,9 @@ TJob(ee) ==
        /\ gen' = [gen EXCEPT ![1] = ng]
        /\ shadow' = IF wrap THEN [shadow EXCEPT ![1] = [c \in 1..SC |-> NoEntry]] ELSE shadow
        /\ ys' = [c \in 1..YC |-> Gen(1)]                \* the hand-over generation's YLOS
+       /\ yjoin' = [c \in 1..YC |-> 1]                  \* (ghost) ... which joined it
+       /\ ystale' = [c \in 1..YC |-> {}] /\ yrec' = [c \in 1..YC |-> FALSE]
+       /\ lbl' = [c \in 1..YC |-> {}] /\ ycol' = {} /\ bodyLids' = {}
        /\ job' = [st |-> "Running", x |-> 1]
        /\ jstarts' = [j \in 1..Len(J.starts) |-> Adr(J.starts[j])]
        /\ jheal' = [j \in 1..Len(J.heal) |-> <<<<"S", 2, J.heal[j][1] + 1>>, J.heal[j][2]>>]

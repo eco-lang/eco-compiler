@@ -1280,3 +1280,24 @@ publish and its BUSY abort; the gen bump and wrap discard in `tenureLaunch` (`Ne
 `(g + 1) & mask`, with 0 mapped to 1); `majorRedirect`'s three conditions; `forEachYoung` covering
 Young and Tenuring; every `tenureJoin` path (wait, stop and join, orphan, fork-stopped, L3); and
 the collector's footprint (census in §7 A3).
+
+## Progress note (2026-09-29): CR-034, the address-keyed lists, the major × region boundary
+
+Assessment only (no runtime change); details in `test/tla/M5-tenuring/AUDIT.md` (entry of this date)
+and MAPPING.md §9. The §8.2 extension kept generation members by object identity, which is fix
+candidate 1's behaviour, so it could not see CR-034. The model now keeps `Extent::ylos_gen` and
+`Extent::lb_bodies` by address (constants `YlosGen`, `LbKey`; the old behaviour is the default in every
+existing configuration, whose rows and state counts are unchanged), with large bodies (op `"lalloc"`)
+and the invariants `YlosGenIdentity` and `T0GreyAllocated`. Results:
+- CR-034 reproduced: `MC_ylos_aba` (`YlosGenIdentity`), `MC_ylos_aba_heap005` (`OldPointsOld`), and at
+  k = 2 through the ageing prep, where the claimed YLOS is not even scanned (`MC_k2_ylos_aba`,
+  `NoDangling`).
+- Fix candidates (`controls/`): dropping at the major and a never-reused stamp pass at k = 1 and 2;
+  the age ≥ 1 check passes at k = 1 only; the LargeBodyId is recycled and is no stamp.
+- `lb_bodies` has the same ABA, and it is S1 when the reused address holds a young YLOS not yet
+  reached (the prep's re-mark makes its first reach return "already reached"): `MC_lb_aba`.
+- New at k = 2 (benign today): a dead ageing-generation YLOS keeps an unhealed slot into a retired
+  extent, which the t0 snapshot reads (`MC_k2_ylos_walk`).
+- CR-017 also goes through a large header's own body (no tenured object needed).
+- The combined boundary (majors, cycles, YLOS, large bodies, builders or k = 2, reuse) passes with the
+  known defects looked past: `MC_deep_boundary` (40.4 M states), `MC_deep_boundary_k2` (14.1 M).

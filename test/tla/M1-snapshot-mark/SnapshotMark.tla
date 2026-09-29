@@ -100,6 +100,13 @@ define
     MarkerFootprint == CycleOn => /\ grey \subseteq t0Old
                                   /\ \A o \in grey \cap alloc :
                                         \A i \in Fields : fld[o][i] = Nil \/ gen[fld[o][i]] = "old"
+    \* MarkerFootprint's second conjunct on its own: a marker never holds an allocated
+    \* object with a young child. Scanning one aborts in every build (the parallel
+    \* markers' young_in_view checks in greyObject and scanObject). Named separately so
+    \* that a configuration can target it (ABA audit, 2026-09-29: a stale t0 grey entry
+    \* names a freed cell, and the cell is reallocated during the cycle).
+    MarkerNoYoungKid == CycleOn => \A o \in grey \cap alloc :
+                                      \A i \in Fields : fld[o][i] = Nil \/ gen[fld[o][i]] = "old"
     \* IM5: nothing that existed at t0 is freed or reused during the cycle.
     NoReleaseInCycle == CycleOn => (t0Old \cup t0Ylos) \subseteq alloc
     \* HEAP_005: no old -> young pointer.
@@ -201,7 +208,10 @@ begin
                  THEN (dead \cap YlosIds)
                       \cup (IF MUTANT = "defer_live_ylos" THEN ly \cap YlosIds ELSE {})
                  ELSE {},
-         freed = ((dead \ hand) \ defer) \cup zombie do
+         \* MUTANT defer_released (ABA audit): the deferred cell is released at once but
+         \* stays on the deferred list, so the handoff frees whatever occupies it by then
+         freed = ((dead \ hand) \ (IF MUTANT = "defer_released" THEN {} ELSE defer))
+                 \cup zombie do
         alloc := alloc \ freed;
         deferred := deferred \cup defer;
         zombie := hand;
@@ -492,6 +502,13 @@ MarkerFootprint == CycleOn => /\ grey \subseteq t0Old
                               /\ \A o \in grey \cap alloc :
                                     \A i \in Fields : fld[o][i] = Nil \/ gen[fld[o][i]] = "old"
 
+
+
+
+
+MarkerNoYoungKid == CycleOn => \A o \in grey \cap alloc :
+                                  \A i \in Fields : fld[o][i] = Nil \/ gen[fld[o][i]] = "old"
+
 NoReleaseInCycle == CycleOn => (t0Old \cup t0Ylos) \subseteq alloc
 
 NoOldToYoung == \A o \in OldObjs : \A i \in Fields :
@@ -638,7 +655,8 @@ P_Minor(self) == /\ pc[self] = "P_Minor"
                                          THEN (dead \cap YlosIds)
                                               \cup (IF MUTANT = "defer_live_ylos" THEN ly \cap YlosIds ELSE {})
                                          ELSE {} IN
-                              LET freed == ((dead \ hand) \ defer) \cup zombie IN
+                              LET freed == ((dead \ hand) \ (IF MUTANT = "defer_released" THEN {} ELSE defer))
+                                           \cup zombie IN
                                 /\ alloc' = alloc \ freed
                                 /\ deferred' = (deferred \cup defer)
                                 /\ zombie' = hand

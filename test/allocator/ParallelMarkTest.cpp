@@ -669,7 +669,11 @@ Testing::TestCase testParMarkNegativeSkipMergeWorker1(
                                               : "the skipped accumulator was not seen");
         }
 #if ECO_HEAP_VALIDATE
-        TEST_ASSERT(WIFSIGNALED(st));
+        // Validate builds: IM6 (validateCycleUniformLive at the handoff) checks UNIFORM
+        // blocks only, so it aborts only when marker 1's lost bytes sit in a uniform
+        // block; when they sit in mixed blocks, the child's own post-sweep comparison
+        // catches the loss (exit 0). Either is the fault being caught; exit 1 or 2 is not.
+        TEST_ASSERT(WIFSIGNALED(st) || (WIFEXITED(st) && WEXITSTATUS(st) == 0));
 #else
         TEST_ASSERT(WIFEXITED(st) && WEXITSTATUS(st) == 0);
 #endif

@@ -322,3 +322,81 @@ steps check out; the lemma is **proved** only at 5 objects (above). Each step co
 here at 6 objects, against 5–64 minutes at 5, so 8 objects is out of reach on this machine. The
 nightly workflow (`.github/workflows/tla-nightly.yml`, `lemma` matrix) runs the 5-object rows.
 
+
+## 2026-09-29 — ABA audit: a freed cell reused at the same id
+
+**Why:** register CR-034, a structure that remembered an object by address after a STW major freed
+it (ABA). The models name objects by logical ids, so they rarely reuse an id while something still
+refers to it. This entry checks M1's scope: deferred frees, the t0 YLOS snapshot, the cycle's grey
+entries and the cycle blocks. **Tree:** 2026-09-29.
+
+### Code verdicts (M1's scope)
+
+- `deferred_frees_` (`OldGenSpace.hpp:1501`; filled `sweepNurseryLargeBodies` `OGS:7656-7661`,
+  consumed `processDeferredFrees` `OGS:5077-5085` at the handoff, before reclaim): **safe**. The
+  deferral unlinks the index key and recycles the id, but the cell stays allocated until the
+  handoff, and IM5 (no release during a cycle) keeps its block. No other object can occupy the
+  address, so `freeLargeBodyCell`'s erase by address hits the same cell. The model says the same
+  with `DeferredOK` (`deferred ⊆ alloc`).
+- The t0 YLOS set (`snapshotYoungLarge` `OGS:4426`, validate-only `mark_view_.ylos_t0`):
+  **safe**. A t0 YLOS is either promoted in place (the same object) or deferred when it dies, so
+  its address is never reused before the handoff (`NoReleaseInCycle`).
+- `cycle_alloc_log_`, `cycle_t0_reach_`, `im11_t0_greys_` (validate-only): **safe**, for the same
+  reason (no free of a logged cell during a cycle; the checks run before the handoff frees).
+- `nursery_visited_` (`OGS:3345`): **safe**. It is cleared by every `prepareMark` (`OGS:3051`) and
+  used only by a serial STW mark, inside one pause, while nothing moves.
+- **The cycle's grey entries: hazard, a consequence of CR-017.** The t0 walk can grey an old cell
+  that a STW major freed (CR-017). That grey entry is an address kept across a point where the cell
+  can be reused. During the cycle the cell is handed out again through the mixed free lists:
+  `allocateFromSizeClassBitmap` rungs 2 and 4 (`OGS:977`, `:988`) and `allocateFromBagPage` step 1
+  (`OGS:2581`). `prepareMark` does not clear the free lists at t0. A background marker that pops the
+  stale entry after the reuse scans the new object, because `scanObject` skips only `Tag_Free` and
+  `Tag_Forward` (`OGS:3599`). The new object may be:
+  - a YLOS being filled by the mutator, or with young children. Then `greyObject<ParallelMark>`
+    aborts in every build ("parallel marker reached nursery object", `OGS:3310-3313`);
+  - a promoted copy in the middle of its minor. Its fields still name from-space objects until the
+    copy is scanned.
+
+  Either way the marker's reads race the writer's plain writes (S2). Validate builds abort earlier,
+  in IM4 (`assertCellWasWhite`), at the pop. CR-017's fix removes the stale entry and this with it.
+
+### Model changes
+
+- **New invariant `MarkerNoYoungKid`** (MODEL_M1_2): `MarkerFootprint`'s second conjunct, on its
+  own. A marker never holds an allocated object with a young child. It is split out so that a
+  configuration can target the reuse consequence: in CR-017's configuration the first conjunct
+  fails at t0, before any reuse.
+- **New configurations.** Each puts the old id 4 in `YlosIds`, so the mutator's `alloc` may give
+  the freed old cell 4 to a young large object. That is the one mutator allocation that lands in an
+  old-gen cell. No new constant; the existing rows are unchanged (`MC_quick` still has 3,005,665
+  states).
+  - `MC_quick_reuse` (legacy, one STW major, all nine invariants plus `MarkerNoYoungKid`): **pass**,
+    2,976,835 states, 82 s on 2 workers.
+  - `MC_quick_region_reuse` (region, one STW major, the story's operations): **violates
+    `MarkerNoYoungKid`**, 126,734 states, 20-state counterexample. Minor 1 ages 3 (alive through r2).
+    The mutator allocates YLOS 5 into r2, so 3 dies. A STW major frees 4. Minor 2 keeps the dead 3
+    as a zombie. The t0 walk greys the freed 4 (CR-017). The mutator reallocates 4 as a YLOS whose
+    field is 5, while the stale entry is still grey. This is exactly the code chain above.
+  - `MC_quick_region_reuse_live` (the same bounds, the other eight invariants): **pass**, 3,721,152
+    states, 111 s on 2 workers. In M1's abstraction the stale grey plus the reuse loses no reachable
+    object. The byte-level consequences are M4's (BitFaithful).
+- **New mutant `defer_released`:** `P_Minor` releases a deferred cell at once but keeps it on
+  `deferred`, so `H_Free` frees whatever holds the id by then. It **violates `NoLostObject`**:
+  291,679 states, 28-state counterexample (t0; YLOS 5 allocated and dropped; the next minor defers
+  and releases 5; 5 is reallocated and rooted; a pressure finish frees it). This shows M1 would see
+  the ABA if the code ever released a deferred cell early.
+- `MAPPING.md` §3 (the reuse row), §5 (`MarkerNoYoungKid`), §8.
+
+### Results
+
+- `run_models.py --model M1` (quick tier, 2 × 2 workers): **22/22 as expected** in 230 s. Every
+  earlier row's state count is unchanged (`MC_quick` 3,005,665; `MC_quick_region_nomajor`
+  1,066,396).
+- New rows (runner counts): `MC_quick_reuse` pass, 2,976,835 states; `MC_quick_region_reuse`
+  violates `MarkerNoYoungKid`, 121,924 states; `mutants/defer_released` violates `NoLostObject`,
+  298,511 states; `MC_quick_region_reuse_live` pass, 3,721,152 states.
+- `run_traces.py --model M1`: **18/18 as expected** in 23 s. The trace specs extend the model, and
+  the new invariant and mutant branch do not change them.
+
+Register: the stale-grey reuse is a new consequence of CR-017, reported to the orchestrator as a
+candidate entry. It flips to `pass` together with `MC_quick_region` in CR-017's fix.

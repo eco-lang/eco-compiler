@@ -444,3 +444,74 @@ name this model (3 census, 4 file, 15 grep, 40 region); the list is in MAPPING.m
 baseline: the pinned code is the code this model was checked against today (after the trace hooks,
 wave 3's fixes and the `TLA-REGION` markers landed). From now on, a pin that fires needs an entry
 here quoting the new hash prefix before `check-tla-manifest.sh --update` accepts it.
+
+## 2026-09-29 — ABA audit: a released block re-issued at the same id and start (`reuse_released`)
+
+**Why.** Register CR-034 is an ABA found outside the models (an address reused by another object
+after a STW major). M4's release contract `ReleasedSafe` treats a released block as gone for good,
+so it cannot see what happens once the block's id and extent are handed out again. In the code both
+are recycled: `BlockTable::add` takes the most recently freed id (LIFO, `BlockTable.hpp:158-186`),
+and `Allocator::acquireOldGenBlock` takes the first fitting extent of `old_gen_free_blocks_`
+(`Allocator.cpp:782-793`), which is the one just released when that list was empty.
+`releaseBlockToAllocator` (`OGS:6357`) detaches the block from `partial_` and the mutator cursor,
+unlinks its free-list cells and clears its page-index slots, but it cannot reach a worker's chunk
+or stash (CR-014, CR-016). No code checks that a re-issued id is a new block: `mark_.slot(id)` is
+the same arena slot (zeroed by `mark_.assign`, `BlockTable.hpp:310-319`), and `blockIdFor` maps the
+old cell's address to the new block.
+
+**Model change (constant-guarded, off in every earlier configuration).**
+- `W_Virgin` (`ladderFrom2W`'s `virgin()` → `startVirginBlockShared`, `OGS:1349`): with
+  `"reuse_released" \in MUTANT` and a released block that has chunk units, the worker may
+  re-materialise that block as the class's shared block: its mark bytes cleared (`mark_.assign`'s
+  memset, recorded as plain writes), `live_bytes` 0, fully swept, removed from `released`, then
+  published and claimed inside the hold, as for `VirginQ`. The other choice is the old one (a cell
+  outside the model). Only the code's virgin rung in a parallel minor re-issues a block here.
+- `MC.tla`: under `reuse_released` block D (the all-dead mixed block) has one chunk unit `{6, 7}`,
+  the cells of the virgin uniform block re-carved at its start; `MC_NAllocsReuse` (worker 1 gets one
+  promotion more than worker 2); `MC_NoFatal == fatal = {}`, used as a `CONSTRAINT` by the new
+  rows, because a FATAL ends the process and nothing after it is a behaviour of the code (the rows
+  list only `NoDoubleAlloc`, not `DetachNotCurrent`).
+
+**Results** (TLC, 2 workers, in `run_models.py --model M4`: 47/47 as expected in 123 s; every
+earlier row's state count unchanged, e.g. `cycle` 2,952, `minor_virgin` 500, `epoch_l3` 7,389):
+
+| Configuration | Expected | Result | States | Time |
+|---|---|---|---|---|
+| `MC_quick_sweep_tail_reuse` (`reuse_released`, NA = 3, worker 1: 4) | violates `NoDoubleAlloc` | as expected | 1,143,358 | 43 s |
+| `MC_quick_sweep_tail_nda` (the same, no re-issue) | pass | pass | 1,165,203 | 39 s |
+| `controls/tail_defers_reuse` (CR-014's fix candidate + re-issue) | pass | pass | 699,789 | 32 s |
+
+**The counterexample** (44 states, the code as it is: no fix candidate on). W1 (other class)
+sweeps D's dead run and `[1, 2]` and ends the slice. W1 claims U's unit 2 and allocates 11. W2
+fails to claim, locks and batch-pops `{1, 6}`: cell 6 (of D) is in its stash. W1 (other class)
+sweeps `[3]` and `[4, 5]` and completes on the **tail path** (CR-014): the light shrink releases D
+(fully swept, `live_bytes` 0) and unlinks 7. W2 finalizes 1, then (next promotion) its stashed 6,
+reading Idle: a White header, no bit, in released memory. W1 batch-pops 4, the last list cell. W2's
+third promotion finds no cell and no pending sweep: `virgin()` re-issues D (same id, same start,
+bitmap zeroed) as the shared block, W2 claims its chunk and allocates cell 6 again: **two promoted
+objects at one address, inside one minor.** Read against the code: every step is the code's
+(`allocatePromotion` → `ladderFrom2W` → `startVirginBlockShared` → `ensureBagPageAvailable` →
+`acquireOldGenBlock`), given the bag (`unassigned_blocks_`) empty — the light shrink's pass 3
+releases bag pages right after pass 1 — and D's extent the first fit. The id is certain (LIFO);
+the start depends on the order of `old_gen_free_blocks_`. With another start but the same id the
+stash cell lives in released memory (CR-014 as recorded) and a stale chunk's `c.bits` (= `mark_.slot(id)`)
+writes allocation bits into the new block's map.
+
+**What this adds to the register:** CR-014's silent release becomes an immediate S1 inside the same
+pause (a double allocation), not only a later reuse of released memory; `ReleasedSafe` cannot flag
+it once the id is live again (the release contract is ABA-blind by construction). CR-014's fix
+candidate `tail_defers` closes it (`controls/tail_defers_reuse`). Not reproduced within these
+bounds: the chunk variant (`sweep_virgin` + `reuse_released`, NA 4/3: pass, 1,805,592 states in
+scratch), which needs more promotions after the release than the model allows.
+
+**Code-reading findings of the same audit (no model change):**
+- IM5's handoff check (`checkT0BlocksUnchanged`, `OGS:5146`) compares `{id, start, size_class,
+  is_large}`: a t0 block released mid-cycle and re-materialised with the same id at the same start
+  and class (both LIFO) passes it. The primary guard is `assert(!cycleActive())` in every release
+  path (structurally, no release path runs during a cycle), so this is a blind spot of the
+  validate-only backstop, not a defect. A per-id generation counter in `BlockTable` would close it.
+- `endParallelPromotion` re-queues a worker's last chunk block by id (`OGS:1611-1618`); after
+  CR-014's release and a re-issue of that id as a mixed, large or other-class block it sets
+  `kAllocQueued` on a non-uniform block, and a later `detachFromAllocation` indexes
+  `partial_[size_class]` with `size_class = NUM_SIZE_CLASSES` (an assert, then an out-of-bounds read
+  in NDEBUG builds). Another CR-014 consequence; not modelled (one class of blocks).

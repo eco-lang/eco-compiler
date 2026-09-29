@@ -97,8 +97,9 @@ test/tla/
     Tenuring.tla         PlusCal source and its committed translation (the core; builders, YLOS
                          and k = 2 extensions switched by constants)
     MC.tla               extends the model (every constant is set by the .cfg files)
-    MC_*.cfg             quick and deep configurations, CR-017 / CR-013 reproductions
+    MC_*.cfg             quick and deep configurations, CR-017 / CR-013 / CR-034 reproductions
     mutants/*.cfg        negative controls, one per mutant, each listing only its target
+    controls/*.cfg       CR-034's fix candidates (the YlosGen / LbKey constants)
     TraceTenuring.tla/.cfg/.keep     trace (a): the engine storm (gc-tenure-trace), event by event
     TraceTenurePause.tla/.cfg/.keep  trace (b): the pause projection of the real allocator's
                                      region nursery (gc-heap-trace tenure)
@@ -108,6 +109,10 @@ test/tla/
                      test/gc-heap-tsan/fork_harness.cpp)
   M7-pagework/       M7: deferred decommit, commit-ahead (PageWork.tla) and the lock order
                      (LockOrder.tla); TracePageWork on gc-helper-trace
+  M8-block-lifecycle/ M8: the old generation's block lifecycle, serial (BlockLifecycle.tla):
+                     release and re-creation at the same start, live_bytes / fully_swept, the
+                     flip, the shrink, the gap sweep, the bag rung, large_body_index_ and young
+                     large objects (CR-018, CR-033, CR-035); CovMC.tla + coverage.cfg by hand
 ```
 
 Every model directory has the same parts as M1: the PlusCal module and its translation, `MC.tla`,

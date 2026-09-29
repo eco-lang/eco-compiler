@@ -105,14 +105,18 @@ History:
 Updated 2026-09-29, after the models, the weak-memory drivers, trace validation and the register
 guards were implemented (plans/threaded-gc-tla-verification.md §11). Sorted by status (open and
 guarded first, then reproduced, confirmed, suspected, fixed, not-a-bug), then severity. Every entry
-has its evidence and history below; CR-025 to CR-033 are new since the model plans' review.
+has its evidence and history below; CR-025 to CR-038 are new since the model plans' review.
 
 | Id | Title | Status | Sev | Model |
 |---|---|---|---|---|
-| CR-014 | lazySweep's tail completion path runs `onSweepComplete()` inside a parallel minor, bypassing the deferral (also races `live_bytes` and `large_body_index_`) | Reproduced (TLC); Guarded (model) | S1 + S2 | M4, M7, M3 |
+| CR-014 | lazySweep's tail completion path runs `onSweepComplete()` inside a parallel minor, bypassing the deferral (also races `live_bytes` and `large_body_index_`; with LIFO re-issue, a double allocation) | Reproduced (TLC); Guarded (model) | S1 + S2 | M4, M7, M3 |
 | CR-016 | Empty-regular-block flip under `promo_mu_` vs a worker's stash or claimed chunk (exact-size promotion; test geometries) | Reproduced (TLC; TSan with heap corruption); Guarded | S1 (test geometries) | M4 |
 | CR-017 | Region mode: the t0 young walk greys old cells that a STW major freed, through dead hand-over objects (at k = 2 also through dead ageing extents) | Reproduced (code, TLC); Guarded; S1 chain suspected | S1 (suspected) | M1, M5, M4 |
 | CR-018 | After the sweep, mixed-block allocations are not counted in `live_bytes`, so the empty-block flip can take a live block (**serial**, not a concurrency defect) | Reproduced (code); Guarded (xfail test) | S1 | — (unit test) |
+| CR-033 | `allocateFromBagPage`'s fresh-page carve leaves an 8-byte tail without a header (**serial**) | Reproduced (TLC); Guarded (model) | S1 in legacy allocation; benign in bitmap mode (default) | M8 |
+| CR-034 | Region mode: a YLOS address reused after a STW major is taken for a hand-over member (ABA); its slots dangle | Reproduced (code; TLC three ways, k = 1 and 2); Guarded (model) | S1 | M5, M3 |
+| CR-035 | The empty-block flip keeps stale large-body index entries, so a live body at the same address can be freed (**serial**) | Reproduced (TLC); Guarded (model) | S1 | M8, M4 |
+| CR-037 | Region mode: the hand-over's `lb_bodies` colouring by address hides a new YLOS at a reused address from the minor | Reproduced (TLC); Guarded (model) | S1 | M5 |
 | CR-001 | `gc_phase_` written under `promo_mu_`, read unlocked by other promotion workers; the allocate-black/accounting decision moved from pop to finalize | Reproduced (TLC, GenMC, TSan); Guarded | S2 + S1 | M4, W3 |
 | CR-002 | Gap sweep's plain word read shares a bitmap word with a batch-popped cell's `fetch_or` after the unlock | Reproduced (TLC, TSan, traces); Guarded | S2 | M4, W3 |
 | CR-019 | Legacy mode: a young YLOS header written under `ylos_mu_`, read by a sweep slice under `promo_mu_` | Reproduced (TSan, every run); Guarded | S2 | M3 |
@@ -125,8 +129,9 @@ has its evidence and history below; CR-025 to CR-033 are new since the model pla
 | CR-015 | `Allocator::thread_mutex_` has no atfork handler: a non-mutator fork while it is held leaves it locked in the child | Reproduced (TLC; code: 3–8% of host forks); Guarded | S4 | M6 |
 | CR-031 | A host-forked child's `exit()` tears down the dead mutator's heap (crashes on the torn `RootSet`) | Reproduced (fork harness); Guarded | S4 | M6 |
 | CR-032 | The validate-only P1 census has a mutex and tables with no atfork handler | Reproduced (fork harness); Guarded | S4 (validate) | M6 |
+| CR-038 | k ≥ 2: a dead ageing-generation YLOS keeps an unhealed slot into a retired extent, read by the t0 snapshot | Reproduced (TLC) | D (latent; opt-in k ≥ 2) | M5 |
 | CR-012 | Multi-mutator only: unlocked committed-bytes reads, process-wide decommit clocks and free list, `acquireOldGenRegion` vs commit-ahead, `validatePageWork` | Confirmed; **decision needed** (support or forbid multiple mutators) | S2 (precondition) | — |
-| CR-033 | `allocateFromBagPage`'s fresh-page carve leaves a tail under `MIN_FREE_CELL_SIZE` without a header (**serial**) | Suspected | S1 if reachable | — (unit test) |
+| CR-036 | IM5's t0-block check cannot see a same-id, same-start re-issue | Confirmed (shape) | G (validate) | M1, M4 |
 | CR-021 | Plain reads of region bounds and owner words while markers hold `atomic_ref`s ([atomics.ref.generic]/3) | Fixed | S2 (letter) | W4 |
 | CR-006 | gc-heap-tsan ran with `gc_thread_mode = 0`: the pool and concurrent marking were never under TSan together | Fixed (the `pool` arms, 0 warnings) | G | M6/M7 |
 | CR-008 | No harness covered fork, multiple heaps, or a gang thread waiting on a pool job | Fixed for fork and two heaps (the fork harness); the pool-wait part is CR-006's | G | M6/M7 |
@@ -615,6 +620,16 @@ History:
   never hit in 4 runs under gdb (against 35 and 56 in-loop completions in two of them), so CR-014
   is not reproduced on the real allocator yet. The scenario needs the M4 model's precondition: a
   Current block of another size class and the sweeper's own list empty after the last block.
+- 2026-09-29 Address-reuse (ABA) audit: a further consequence, **Reproduced (model)** in M4. The tail-path
+  shrink releases block D inside a parallel minor; the virgin rung then re-issues D's id (always:
+  the free list is LIFO) and often its start (`startVirginBlockShared`, first fit). A worker's
+  stashed cell of old D is then handed out a second time, so two promoted objects share one address;
+  `mark_.assign` also zeroes a stale chunk's bits. `run_models.py --model M4 --config
+  MC_quick_sweep_tail_reuse` violates `NoDoubleAlloc` (44 states); without the re-issue
+  (`MC_quick_sweep_tail_nda`) it passes, and the fix candidate `tail_defers` still passes with it
+  (`controls/tail_defers_reuse`). Also by reading: requeueing a re-issued non-uniform id makes it
+  kAllocQueued, so a later detach asserts, or in NDEBUG builds indexes `partial_[NUM_SIZE_CLASSES]`
+  out of bounds.
 
 ### CR-015 — `Allocator::thread_mutex_` has no atfork handler
 
@@ -985,6 +1000,10 @@ History:
     an explicit opt-in is set (benchmark mode, test harnesses); a unit test that it aborts and that
     the opt-in suppresses it; HEAP_007 to state one mutator per process; this entry Won't-fix with
     that guard.
+- 2026-09-29 Address-reuse audit: `Allocator::thread_heaps_` is keyed by `std::thread::id`
+  (`Allocator.hpp:410`, adopted at `Allocator.cpp` ~:335); if a mutator thread exits without
+  `cleanupThread` and the id is recycled, a new thread adopts the old heap. Multiple mutators only;
+  latent.
 
 ### CR-017 — region mode: the t0 young walk greys old cells that a STW major freed
 
@@ -1052,6 +1071,24 @@ History:
   `ECO_TEST_XFAIL=strict build/test/test --filter "xfail CR-017"`. Guarded by the two `[xfail
   CR-017]` tests. The S1 chain beyond the greyed cell (a lost bit in a rematerialised block) is
   still not shown.
+- 2026-09-29 **Not the cause of lss-payoff's reverted `k = 3.0` validate failure** (E2's HEAP_044
+  abort): instrumented, the run's 6 t0 walks grey no old cell from a dead young parent, and
+  suppressing every dead-parent grey (a superset of this entry's zap fix) turns the `[xfail CR-017]`
+  tests into XPASS but leaves E2's abort unchanged. That failure is CR-034 (a YLOS address reused
+  after a STW major). The same instrumentation does see this entry's grey in its xfail tests.
+- 2026-09-29 Address-reuse (ABA) audit: a concrete S1-class consequence, **Reproduced (model)** in M1
+  (`run_models.py --model M1 --config MC_quick_region_reuse`, violates `MarkerNoYoungKid` in 20
+  steps; the new invariant is `MarkerFootprint`'s second conjunct on its own). The stale t0 grey of a
+  freed cell survives into the cycle; the cell is popped again from a mixed free list during the
+  cycle (`prepareMark` does not clear the lists: `OldGenSpace.cpp` ~:977, :988, :2581); a
+  background marker then pops the stale entry and scans the **new** object (`scanObject` skips only
+  Free and Forward headers). For a YLOS being filled, or a copy made in the middle of a minor, that
+  is an abort in every build ("parallel marker reached nursery object", ~:3310) plus an S2 race with
+  the writer; validate builds abort earlier, in IM4, at the pop. With the reuse but no dangling grey
+  (`MC_quick_region_reuse_live`) nothing reachable is lost. This entry's fix removes the chain.
+- 2026-09-29 Wider than recorded (M5 boundary work): the freed old cell can be a large header's own
+  **body**, which the marker greys (`OldGenSpace.cpp` ~:3543-3548); no tenured object is needed. M5
+  `MC_cycle_major_t0grey` violates the new invariant `T0GreyAllocated` (47 states).
 
 ### CR-018 — after the sweep, mixed-block allocations are not counted, so the empty-block flip can take a live block
 
@@ -1086,6 +1123,12 @@ History:
   overwriting all three 16 KiB objects. Negative control: a scratch candidate fix (count mixed-block
   cells in `live_bytes` at Idle, in `initObjectHeaderWithSize`) gives XPASS and `live_bytes` reads
   49,152. Guarded by `[xfail CR-018]`.
+- 2026-09-29 **Reproduced (model)** too, M8 (`MC_quick_cr018`: `NoOverwriteLive`, 6 states;
+  `MC_quick_cr018_flip`: `FlipTrustsTruth`): a band request carves a fresh page P; the object dies; a
+  major keeps P by the `min_heap` floor and sweeps it; an Idle split in P adds nothing to
+  `live_bytes` (`OldGenSpace.cpp` ~:522); an exact-page request flips P over the live object. Fix
+  (a), counting the cell at Idle, passes. The same undercount applies to **every** mixed carve at
+  Idle, including CR-029's bag-rung carve.
 
 ### CR-019 — legacy mode: a young YLOS header written under `ylos_mu_`, read by a sweep slice under `promo_mu_`
 
@@ -1467,6 +1510,10 @@ History:
   Still open: (b) retry the exact pop in step 2; (c) reserve the publisher's first chunk in
   `startVirginBlockShared`; model the bag rung in M4; re-run the TSan `promo` scenario to confirm
   the parallel route no longer aborts.
+- 2026-09-29 M8 confirms the premise the fix relies on: the size-classed carve at the bag rung is
+  reachable serially (9 states: the reservation exhausted, rung 4 refuses a 1-granule remainder,
+  rung 7 step 1 carves the exact request) and keeps every M8 invariant (107k states). Its cell is
+  uncounted at Idle like any mixed carve (CR-018).
 
 ### CR-030 — three 05b/05c unit tests fail intermittently (two of them negative controls)
 
@@ -1509,6 +1556,13 @@ History:
   four other held tests went to 0/32. Negative controls with the fault removed: 185 fails 8/8
   (exit 2, "marker 1 marked nothing in 32 forced cycles"), 210 fails 8/8, 208 without the drain
   fails 57/64 at the new hold assert. Full unit portion: 619 tests, 0 failures.
+- 2026-09-29 The rewrite of test 185 (wave 3d) broke its **validate-build** branch, which still
+  demanded an abort (`WIFSIGNALED`): after draining the build-started cycle first, marker 1's lost
+  bytes sit in mixed blocks, which IM6 (`validateCycleUniformLive`, uniform blocks only) does not
+  check, so the child's own post-sweep comparison catches the loss and exits 0 (3/3 in a validate
+  tree). Fixed: the validate branch accepts either catcher (the IM6 abort or exit 0) and still fails
+  on exit 1 or 2; 5/5 in a validate build. This is also the second failure lss-payoff saw with
+  `k = 3.0` in the validate build: it is this test, not a GC defect.
 
 ### CR-031 — a host-forked child's `exit()` tears down the dead mutator's heap
 
@@ -1559,14 +1613,14 @@ History:
 
 | | |
 |---|---|
-| Status | Suspected (2026-09-29), by code reading; not reproduced |
-| Severity | S1 if reachable (an unparsable tail inside a mixed block breaks the block walk); **serial**, not a concurrency defect |
+| Status | Reproduced (model, TLC, 2026-09-29); Guarded at model level by M8 `MC_quick_cr033` |
+| Severity | S1 in legacy old-gen allocation (`old_gen_bitmap_alloc` off, by code reading); benign in bitmap mode, the default. **Serial** |
 | Found | 2026-09-29, wave 3d (while adding CR-029's guard) |
 | Where | `OldGenSpace::allocateFromBagPage`, the fresh-page step (`OldGenSpace.cpp` ~:2610-2617): `if (remainder >= MIN_FREE_CELL_SIZE) pushSpanOnFreeLists(...)` — a remainder in (0, `MIN_FREE_CELL_SIZE`) gets no header at all; compare `pushSpanOnFreeLists`, whose comment says trailing bytes under `MIN_FREE_CELL_SIZE` get a non-linked `Tag_Free` header "so block-walking sweep can still parse them" (tree of 2026-09-29) |
 | Models | none (serial) |
 | Invariants | HEAP_051 (mixed blocks parse by object size), HEAP_054 |
-| Repro | — (proposed: a unit test that allocates exactly `alloc_span - 8` through the fresh-page step, then sweeps or walks the block) |
-| Guard | — |
+| Repro | `test/tla/run_models.py --model M8 --config MC_quick_cr033` (`violates:BlockParseable`, one step) |
+| Guard | M8 `MC_quick_cr033` (expected-fail); the fix candidate passes as a control |
 | Fix | — (candidate: push any nonzero remainder through `pushSpanOnFreeLists`, which already writes a header for a small tail, as the split path at `:2394` avoids small remainders altogether) |
 
 A request of exactly `alloc_span - 8` (8-aligned, below `alloc_buffer_size`) carves the object at
@@ -1578,3 +1632,188 @@ thing the reproducing test must establish.
 History:
 - 2026-09-29 Suspected: noted by the wave 3d agent; the orchestrator read the fresh-page step and
   `pushSpanOnFreeLists`'s comment.
+- 2026-09-29 **Reproduced (model)**, M8 (`test/tla/M8-block-lifecycle/`), and reachable at every
+  geometry: a request of exactly `alloc_buffer_size − 8` (524,280 B at the default) takes Path 4;
+  steps 1–2 cannot split (its class is `NUM_SIZE_CLASSES`), and step 3 leaves an 8-byte tail with no
+  header. Who reads it decides the severity: in bitmap mode (the default) nothing does (the gap sweep
+  covers it and the validate walk reads set bits only), so it is benign; in legacy mode the header
+  sweep (`OldGenSpace.cpp` ~:5710) reads the zero word as a 16-byte `Tag_Int`, overshoots by 8, and
+  the flushed free run then overwrites the next page's first word: S1 (by code reading, not
+  modelled). The fix candidate (push any nonzero remainder through `pushSpanOnFreeLists`) passes.
+
+### CR-034 — region mode: a YLOS address reused after a STW major is taken for a hand-over member (ABA)
+
+| | |
+|---|---|
+| Status | Reproduced (2026-09-29): in code (a scratch validate build at k = 3.0, 5/5) and in the model (M5, three ways); Guarded at model level by M5's expected-fail rows |
+| Severity | S1: a live old object's slots dangle into a recycled nursery extent (HEAP_005, HEAP_062). Region mode, the default |
+| Found | 2026-09-29, while checking whether lss-payoff's reverted `k = 3.0` failure was CR-017 (it is not) |
+| Where | `NurserySpace::minorGCRegion`'s hand-over prep, `NurseryRegion.cpp:751-753` (`for (void* y : Hx.ylos_gen)`, `if (oldgen.youngLargeMeta(y) == nullptr) continue; // retired by a major in between (dead)`), the same pattern for the ageing extents at `:773`; `region::Extent::ylos_gen` (`NurseryRegions.hpp:79`); a STW major erases the YLOS's index entry but not its `ylos_gen` entry (`OldGenSpace::releaseBlockToAllocator`, reached from `reclaimAllDeadBlocksFromMeta`); `reachYoungLargeR` (`NurseryRegion.cpp` ~:511-518); the merge's in-place promotion (`mergeJob`, `NurseryTenure.cpp` ~:756-769) (tree of 2026-09-29) |
+| Models | M5 (constant `YlosGen = "code"` models `ylos_gen` by address; invariant `YlosGenIdentity`), M3 |
+| Invariants | HEAP_005, HEAP_062, HEAP_070; seen as HEAP_044 |
+| Repro | scratch tree `/tmp/k3/` (not in the repo): `MAJOR_GC_LIVE_BUDGET = 3.0`, `-DECO_HEAP_VALIDATE=ON`, `test --filter "E2 in a unit test"` → `OldGenSpace::scanObject` HEAP_044 assert ("live 0-field Tag_Custom") in the third explicit STW major, seed 42, tenure mode 1 (mode 2 hits the same ABA). At 4.5 it passes (3/3): k only changes block placement, which makes the address reuse happen |
+| Guard | M5 `MC_ylos_aba` (`violates:YlosGenIdentity`), `MC_ylos_aba_heap005` (`violates:OldPointsOld`), `MC_k2_ylos_aba` (`violates:NoDangling`); each flips with a fix |
+| Fix | — |
+
+The chain, from instrumented runs (every step logged with a sequence number):
+1. The mutator allocates YLOS A (an Array) at address X; minor m−1 reaches it, and X joins the
+   fill extent's `ylos_gen`.
+2. A STW major finds A dead; its block is all-dead and released; the large-body index entry is
+   erased, but X stays in that extent's `ylos_gen`.
+3. During the lazy sweep the block is re-created at the same start, and the mutator allocates a
+   different YLOS B at X.
+4. Minor m's hand-over prep looks X up with `youngLargeMeta(X)`, finds **B**, and treats B as a
+   member of the hand-over generation: it is scanned read-only and its young children are copied
+   into the new fill, but its slots are not healed.
+5. The tenure merge promotes B in place while its children are still young; nothing scans B again.
+   B is live (reached through more than 40 links from the roots), and its slots point into a nursery
+   extent that is later recycled. The next STW major's marker reads a word of an unboxed-Int Cons
+   there as a header (`Tag_Custom`, size 0): HEAP_044.
+
+The test "is it still ours?" by address alone is unsound whenever addresses can be reused between
+the two points. **Fix candidates:** drop a dead YLOS from every extent's `ylos_gen` when a major frees
+it; or store an identity stamp with each `ylos_gen` entry (the LargeBodyId, or an epoch) and compare
+it. A cheap check that fixed E2 in the scratch tree: a real member was aged to ≥ 1 when it joined, so
+skip a `ylos_gen` entry whose YLOS still has header age 0 (all 39 threaded-gc-07 tests pass with it).
+**Model gap:** M5's §8.2 extension represents `ylos_gen` members by object id, so an address reused
+by another object is invisible to it; extend it with a reused-id step (free + re-allocate at the same
+id across a STW major) to guard the fix at model level.
+
+This also unblocks the RSS lever `MAJOR_GC_LIVE_BUDGET = 3.0` (plans/gc-param-sweep): HEAP_057's
+"every k is policy-safe" holds; k = 3.0 only exposed this defect.
+
+History:
+- 2026-09-29 Reproduced in a scratch validate build (5/5 at k = 3.0, 0/3 at 4.5), root-caused with
+  validate-only instrumentation, and confirmed by a positive control (the age-0 guard makes E2 pass)
+  and a negative control (suppressing CR-017's dead-parent greys does not help).
+- 2026-09-29 **Reproduced in the model** (M5; `test/tla/M5-tenuring/AUDIT.md`). M5 had missed it because
+  its generation-YLOS extension tracked members by identity: a freed member simply vanished, which is
+  fix candidate 1's behaviour. With `ylos_gen` kept by address (`YlosGen = "code"`) and the new
+  invariant `YlosGenIdentity` (every member of a generation's snapshot joined that generation):
+  - `test/tla/run_models.py --model M5 --config MC_ylos_aba` violates `YlosGenIdentity` (38 states): the entry's steps 1–4;
+  - `MC_ylos_aba_heap005` violates `OldPointsOld` (HEAP_005, 63 states): step 5, B promoted with a
+    slot into the Fresh extent;
+  - **new path at k = 2:** `MC_k2_ylos_aba` violates `NoDangling` (50 states): the ageing prep
+    (`NurseryRegion.cpp` :773-775) claims B and the pause records it without scanning it
+    (:519-523), so B's eden child is lost at that minor.
+  Not modelled, but the same code: a claimed YLOS builder would be promoted while its kernel still
+  writes it.
+- 2026-09-29 **Fix-design evidence** (model controls, `controls/`; no code changed): dropping the freed
+  address from every `ylos_gen` at the major passes (k = 1 and k = 2), and so does a never-reused
+  stamp (a serial or epoch). The scratch tree's "skip header age 0" check passes at k = 1 (and over
+  the whole combined boundary, 40.4M states) but **fails at k = 2** (`YlosGenIdentity` in 59 states,
+  `OldPointsOld` in 95: the ageing prep skips B while it is age 0, B joins the next generation at
+  age 1, and the next hand-over claims it). The `LargeBodyId` is **not** a usable stamp: a release
+  pushes the freed id (`OldGenSpace.cpp` ~:6431) and the next registration pops it LIFO (~:7530),
+  so B gets A's id (fails in 38 states). Implementation note for candidate 1: every kind-1
+  retirement site of a major must drop the address; with `old_gen_bitmap_alloc` on (the default),
+  pruning every Young extent's lists at the end of the major is equivalent, but with it off the
+  lazy sweep retires entries after the mutator resumes, so that prune is not enough.
+
+### CR-035 — the empty-block flip keeps stale large-body index entries, so a live body at the same address can be freed
+
+| | |
+|---|---|
+| Status | Reproduced (model, TLC, 2026-09-29); Guarded at model level by M8 `MC_quick_cr035`, `MC_quick_cr035_lost` |
+| Severity | S1 (a live young large object or large body freed); **serial**, not a concurrency defect |
+| Found | 2026-09-29, the address-reuse (ABA) audit after CR-034 |
+| Where | `OldGenSpace::allocateFromEmptyRegularBlocks` (`OldGenSpace.cpp` ~:2855-2913) flips a block to large without purging `large_body_index_` for its range, unlike `releaseBlockToAllocator` (~:6424-6433), which does; `registerLargeBody` (~:7537, `large_body_index_[body] = id`) overwrites the key of a new body at the same address; `freeLargeBodyCell` (~:7695) erases by address (`large_body_index_.erase(m.body_base)`) before its `is_large` test (tree of 2026-09-29) |
+| Models | M4 (its `ReleasedSafe` is blind to address reuse by construction) |
+| Invariants | HEAP_026, HEAP_062 |
+| Repro | `test/tla/run_models.py --model M8 --config MC_quick_cr035` (`violates:IndexFaithful`) and `MC_quick_cr035_lost` (`violates:NoLostObject`, 13 states) |
+| Guard | the two M8 rows (expected-fail); purging the index at the flip passes both as a control |
+| Fix | — (candidate: purge `[start, end)` at the flip, as release does; CR-018's fix (a) also removes the precondition) |
+
+The chain: a dead YLOS or large body Y sits at the start X of a mixed page whose `live_bytes`
+reads 0 (the CR-018 precondition), so an exact-size allocation flips the page and places a new
+large object Z at X, re-registering key X for Z. At the next minor, Y's stale meta is freed, which
+erases key X, which is now Z's. At the following minor Z is not found through the index: it is not
+reached, not scanned and never recoloured, and the sweep frees its block while Z is live.
+
+Side notes from the same audit (not defects): recycled `LargeBodyId`s can stay listed in
+`nursery_owned_bodies_` after a release (duplicates are benign; about 24 bytes leak per retired id,
+and the "already there" comment on that path is wrong); a first-fit reuse of a larger free extent
+drops its tail, so committed bytes drift upward (`Allocator.cpp` ~:787-793).
+
+History:
+- 2026-09-29 Confirmed (shape): the ABA audit's reading; the orchestrator re-read the flip (no
+  index purge), release's purge and `freeLargeBodyCell`'s erase by address.
+- 2026-09-29 **Reproduced (model)**, M8: the S1 chain as described, in 13 states: a dead YLOS Y at page P's
+  **start** (precision: Y must be at the start); a page-sized YLOS Z flips P and takes key X while Y's
+  meta stays in `nursery_owned_bodies_` (`IndexFaithful` fails here); the next minor frees Y's meta,
+  and `erase(X)` removes Z's key; the minor after cannot find Z, frees it, and pushes P onto
+  `free_large_blocks_` while Z is live (`NoLostObject`). Purging the index at the flip passes both
+  rows.
+
+### CR-036 — IM5's t0-block check cannot see a same-id, same-start re-issue
+
+| | |
+|---|---|
+| Status | Confirmed (shape, 2026-09-29), by code reading |
+| Severity | G (validate-only coverage gap; not live today) |
+| Found | 2026-09-29, the address-reuse (ABA) audit |
+| Where | `OldGenSpace::checkT0BlocksUnchanged` and `isT0Block` (`OldGenSpace.hpp` ~:1474-1477; `cycle_t0_blocks_` filled at `OldGenSpace.cpp` ~:4418) compare id, start, class and `is_large` only (tree of 2026-09-29) |
+| Models | M1 (IM5 is `NoReleaseInCycle`), M4 |
+| Invariants | IM5, HEAP_063 |
+| Repro | n/a |
+| Guard | — |
+| Fix | — (candidate: a per-id generation counter captured in `T0Block`) |
+
+A release in the middle of a cycle followed by a re-issue of the same block id at the same start
+with the same class would pass IM5's check. It cannot happen today, because every release path
+asserts `!cycleActive()`; but CR-014 shows a release path that runs where the deferral was meant to
+apply, and IM5 is what a validate build relies on to notice such a regression.
+
+History:
+- 2026-09-29 Confirmed (shape): the ABA audit.
+- 2026-09-29 M8: a same-id, same-start re-issue is reachable within one major (witness
+  `MC_quick_reissue_witness`, 5 states) and harmless between cycles, consistent with this entry
+  (the gap only matters if a release ever happens during a cycle).
+
+### CR-037 — region mode: the hand-over's `lb_bodies` colouring by address hides a new YLOS at a reused address from the minor
+
+| | |
+|---|---|
+| Status | Reproduced (model, TLC, 2026-09-29); Guarded at model level by M5 `MC_lb_aba` |
+| Severity | S1 (a live young object is lost with eden). Region mode, the default, at k = 1 |
+| Found | 2026-09-29, M5's address-reuse work (the parallel audit had judged this list "floating garbage only"; that holds only when the address holds another body) |
+| Where | `NurserySpace::minorGCRegion`'s hand-over prep, `NurseryRegion.cpp` ~:749 and ~:771 (`for (b : Hx.lb_bodies) oldgen.markLargeBodySeen(b, minor_color_)`); `OldGenSpace::markLargeBodySeen` (`OldGenSpace.cpp` ~:7542-7552) colours whatever index entry is at the address, with no kind check; `reachYoungLargeR`'s "already reached this minor" return (`NurseryRegion.cpp` ~:526); the colour flip (~:675); a new YLOS registered with the old colour (`ThreadLocalHeap.cpp` ~:469) (tree of 2026-09-29) |
+| Models | M5 (constant `LbKey`) |
+| Invariants | HEAP_062, HEAP_070 |
+| Repro | `test/tla/run_models.py --model M5 --config MC_lb_aba` (52 states) |
+| Guard | M5 `MC_lb_aba` (expected-fail) |
+| Fix | — (model controls that pass: colour kind-0 index entries only; drop the address at the major; an identity stamp) |
+
+Same class as CR-034 (an address remembered across a STW major), a different list and a different
+mechanism. A large string's header is copied into the Fresh extent and its body address joins that
+extent's `lb_bodies`. The header dies, and a STW major frees the body. A new YLOS B, pointing at a
+young object e, is allocated at the same address. At the next hand-over the prep colours the index
+entry at that address, which is now B's, with this minor's colour; B's first reach then sees the
+colour, returns "already reached", and B is neither scanned nor aged, so e is lost with eden.
+
+History:
+- 2026-09-29 Reproduced (model): M5 `MC_lb_aba`; the auditor's "floating garbage" verdict corrected
+  by the model for the case where the address holds a young, not-yet-reached YLOS.
+
+### CR-038 — k ≥ 2: a dead ageing-generation YLOS keeps an unhealed slot into a retired extent, which the t0 snapshot reads
+
+| | |
+|---|---|
+| Status | Reproduced (model, TLC, 2026-09-29) |
+| Severity | D today (benign: the snapshot drops young targets by address range); S4 as a premise for any future walker. **Opt-in** tenure age k ≥ 2 only |
+| Found | 2026-09-29, M5's address-reuse and boundary work |
+| Where | `OldGenSpace::snapshotYoungLarge` (`OldGenSpace.cpp` ~:4426) walks every young YLOS at t0; 07b's zap in `mergeJob` (`NurseryTenure.cpp` ~:849-857) covers dead survivor objects only, not YLOS; the snapshot drops young targets by range (`OldGenSpace.cpp` ~:3325-3327) (tree of 2026-09-29) |
+| Models | M5 |
+| Invariants | HEAP_070 (07b's zap premise) |
+| Repro | `test/tla/run_models.py --model M5 --config MC_k2_ylos_walk` (88 states; no major needed) |
+| Guard | M5 `MC_k2_ylos_walk` (expected-fail) |
+| Fix | — |
+
+At k = 2, a YLOS of an ageing generation that dies keeps a slot pointing into an extent that has
+since been retired and recycled; nothing heals or zaps it, and the next t0 snapshot reads it. Today
+the read is harmless because the snapshot discards young targets by range, but it breaks the stated
+premise of the zap ("no dead object's slot is read after its extent is retired"), so any future
+walker that follows YLOS children would read a recycled extent.
+
+History:
+- 2026-09-29 Reproduced (model): M5 `MC_k2_ylos_walk`.

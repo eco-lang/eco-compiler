@@ -94,6 +94,8 @@ and `M_PostP`; the worker's loop is `goto W_Take`, and its Done store is `W_Body
 | Real thing | Model | Argument |
 |---|---|---|
 | extents of varied sizes; first-fit by size | one size; first fit = index 1; the exact swap-remove | page requests are all `alloc_buffer_size`. The size test, the page-request skips (`AL:778-779`) and a larger extent handed to a smaller request read no PageWork state; `onReuse` keys on the extent's base and covers it whole |
+| `pending_` / `posted_discard_` keyed by the extent's **start address** | an extent **id**; a re-release of the same extent is the same id (ABA at the same key: `pw_aba`, and the mutants `reuse_keeps_pending`, `reuse_no_wait`, `age_stale_entry`) | sound because the free list never splits or coalesces: an acquire takes a whole entry (`AL:780-793`), a release appends one (`AL:938`), and entries come from releases of disjoint owned blocks, so a start names one extent for its whole free-list life. An extent reacquired with a **different** start overlapping a tracked one is therefore not a code behaviour, and the model cannot express it; a change to first-fit or to the append (canary pins `AL.acquireOldGenBlock`, `AL.releaseOldGenBlock`) would need the extents to become ranges. The ABA audit (AUDIT.md, 2026-09-29) found the one oddity of the no-split rule: a larger extent's tail is lost to the free list (not a PageWork hazard) |
+| `pending_order_`'s `seq` stamp; `reap`'s `Posted::slot` check (`PW:100`) | `pw[x] = "Pending"` itself (non-mutant aging picks among live records); `postedIn[x] = s` in `Reap` / `ReapSomeDone` | the `seq` stamp is the identity guard that makes a stale order entry (cancelled, then re-released at the same start) invisible: modelled exactly, and `age_stale_entry` removes it. The slot check is redundant: with it removed (probe `reap_any_slot`, AUDIT.md 2026-09-29) the reachable state spaces of `pw_aba` and `pw_basic` are identical, because a reuse always reaps the old job before the extent can be posted again |
 | 8 job slots; "wait for the oldest" by `seq` | 2 slots (deep: 3; trace: 8); wait for any busy slot | a superset of the code's choice |
 | `reapDone`'s loop of per-slot acquire loads (`PW:115-124`) | one step reaping any subset of the slots Done at that instant (`ReapChoices`) | not atomic: a slot that turns Done after the loop passed it stays unreaped. Every outcome is a subset of the slots Done at the loop's end, so one step there covers it (primer §3.3). Found while mapping the trace (AUDIT.md, 2026-09-29) |
 | a discard's extents, `madvise`d in batch (release) order | one step per extent, in any order | the batch order is not modelled (the batch is a set) |
@@ -211,7 +213,7 @@ The models are sequentially consistent. They rely on:
 | A5 | `TracePageWork.tla` on `gc-helper-trace` (H2 and H3 scripts), 8 accepted rows and 7 negative controls in `traces.txt` (§10) |
 | A6 | AUDIT.md: every invariant and property has a mutant; the witness is its own row |
 | A7 | §6 |
-| A8 | 3–4 extents, 1–3 slots, 1–2 workers, 4–7 caller operations; 2–3 gang members. No counter wraps: the epochs are gone (aging is a free choice) and `seq` is only an order |
+| A8 | 3–4 extents, 1–3 slots, 1–2 workers, 4–7 caller operations (`pw_aba`: 10, with no window, for reuse cycles at one key); 2–3 gang members. No counter wraps: the epochs are gone (aging is a free choice) and `seq` is only an order |
 | A9 | not built yet (the canary is Step 1's). AUDIT.md lists the lines this model needs |
 
 ## 10. Trace validation (A5): `TracePageWork.tla`

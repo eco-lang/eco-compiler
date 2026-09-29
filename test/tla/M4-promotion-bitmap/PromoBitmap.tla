@@ -559,6 +559,35 @@ begin
         sharedvc := vc[self];
         vc[self][self] := vc[self][self] + 1;
         goto W_Claim;
+    elsif "reuse_released" \in MUTANT /\ {x \in released : Units(x) # <<>>} # {} then
+        \* ABA (reuse_released, 2026-09-29; off in every earlier configuration):
+        \* releaseBlockToAllocator (:6357) gave the block's id to BlockTable::free_
+        \* (LIFO, BlockTable.hpp:160-161) and its extent to the Allocator's
+        \* first-fit list (Allocator.cpp:782). startVirginBlockShared (:1349) ->
+        \* ensureBagPageAvailable -> acquireOldGenBlock with the bag empty can take
+        \* that extent back, and materializeBlock (:700) the same id: a virgin
+        \* block at the same start, its bitmap slot zeroed by mark_.assign
+        \* (BlockTable.hpp:310-319), fully swept, live_bytes 0, then published.
+        \* The released block is live again, so ReleasedSafe no longer sees a
+        \* stale chunk or stash cell in it.
+        either
+            with b \in {x \in released : Units(x) # <<>>},
+                 zb = {ByteOf(c) : c \in CellsOf(b)} do
+                Acc({Acc1(y, TRUE, TRUE) : y \in zb});   \* mark_.assign's memset
+                bits := [y \in Bytes |-> IF y \in zb THEN {} ELSE bits[y]];
+                liveBytes[b] := 0;
+                swept[b] := TRUE;
+                released := released \ {b};
+                shared := [b |-> b, u |-> 0];
+                sharedvc := vc[self];
+                vc[self][self] := vc[self][self] + 1;
+            end with;
+            goto W_Claim;
+        or
+            n := n + 1;                           \* another extent: a cell outside the model
+            LockRelease();
+            goto W_Loop;
+        end either;
     else
         n := n + 1;                               \* the bag or panic rung: a cell outside the model
         LockRelease();
@@ -1534,18 +1563,41 @@ W_Virgin(self) == /\ pc[self] = "W_Virgin"
                              /\ sharedvc' = vc[self]
                              /\ vc' = [vc EXCEPT ![self][self] = vc[self][self] + 1]
                              /\ pc' = [pc EXCEPT ![self] = "W_Claim"]
-                             /\ UNCHANGED << lock, lockvc, n >>
-                        ELSE /\ n' = [n EXCEPT ![self] = n[self] + 1]
-                             /\ lock' = 0
-                             /\ lockvc' = vc[self]
-                             /\ vc' = [vc EXCEPT ![self][self] = vc[self][self] + 1]
-                             /\ pc' = [pc EXCEPT ![self] = "W_Loop"]
-                             /\ UNCHANGED << shared, virginQ, sharedvc >>
-                  /\ UNCHANGED << bits, freeList, sweepQ, phase, liveBytes, 
-                                  swept, deferred, partialQ, chunk, chunkLive, 
-                                  stash, released, grantOn, grantLive, gclaim, 
-                                  gwork, fatal, allocs, need, marked, claimed, 
-                                  hist, races, cell, seen, ph, pos, fin, other, 
+                             /\ UNCHANGED << bits, liveBytes, swept, lock, 
+                                             released, lockvc, hist, races, n >>
+                        ELSE /\ IF "reuse_released" \in MUTANT /\ {x \in released : Units(x) # <<>>} # {}
+                                   THEN /\ \/ /\ \E b \in {x \in released : Units(x) # <<>>}:
+                                                   LET zb == {ByteOf(c) : c \in CellsOf(b)} IN
+                                                     /\ races' = (races \cup {ax.l : ax \in {ay \in ({Acc1(y, TRUE, TRUE) : y \in zb}) : Conflicts(self, vc[self], ay)}})
+                                                     /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1(y, TRUE, TRUE) : y \in zb}))]
+                                                     /\ bits' = [y \in Bytes |-> IF y \in zb THEN {} ELSE bits[y]]
+                                                     /\ liveBytes' = [liveBytes EXCEPT ![b] = 0]
+                                                     /\ swept' = [swept EXCEPT ![b] = TRUE]
+                                                     /\ released' = released \ {b}
+                                                     /\ shared' = [b |-> b, u |-> 0]
+                                                     /\ sharedvc' = vc[self]
+                                                     /\ vc' = [vc EXCEPT ![self][self] = vc[self][self] + 1]
+                                              /\ pc' = [pc EXCEPT ![self] = "W_Claim"]
+                                              /\ UNCHANGED <<lock, lockvc, n>>
+                                           \/ /\ n' = [n EXCEPT ![self] = n[self] + 1]
+                                              /\ lock' = 0
+                                              /\ lockvc' = vc[self]
+                                              /\ vc' = [vc EXCEPT ![self][self] = vc[self][self] + 1]
+                                              /\ pc' = [pc EXCEPT ![self] = "W_Loop"]
+                                              /\ UNCHANGED <<bits, liveBytes, swept, shared, released, sharedvc, hist, races>>
+                                   ELSE /\ n' = [n EXCEPT ![self] = n[self] + 1]
+                                        /\ lock' = 0
+                                        /\ lockvc' = vc[self]
+                                        /\ vc' = [vc EXCEPT ![self][self] = vc[self][self] + 1]
+                                        /\ pc' = [pc EXCEPT ![self] = "W_Loop"]
+                                        /\ UNCHANGED << bits, liveBytes, swept, 
+                                                        shared, released, 
+                                                        sharedvc, hist, races >>
+                             /\ UNCHANGED virginQ
+                  /\ UNCHANGED << freeList, sweepQ, phase, deferred, partialQ, 
+                                  chunk, chunkLive, stash, grantOn, grantLive, 
+                                  gclaim, gwork, fatal, allocs, need, marked, 
+                                  claimed, cell, seen, ph, pos, fin, other, 
                                   lastE, todo, gcell, gseen, gpos, gch, gk, 
                                   mcell, mseen >>
 

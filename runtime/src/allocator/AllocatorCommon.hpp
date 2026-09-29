@@ -355,7 +355,9 @@ constexpr double GARBAGE_DENOM_CAP = 0.0;
 // (HEAP_044 assertion in OldGenSpace::scanObject: a Tag_Custom of size 0 is marked, though the
 // workload allocates no such object) and "threaded-gc-05b: negative control — skipping marker 1's
 // accumulator is caught". HEAP_057 says every k is policy-safe, so this is a bug to root-cause
-// before k moves.
+// before k moves. Root-caused 2026-09-29 (plans/threaded-gc-concurrency-register.md): the E2 abort
+// is CR-034 (a YLOS address reused after a STW major is taken for a region hand-over member; k = 3.0
+// only changes block placement); the 05b failure is CR-030 (the test, fixed). Move k after CR-034.
 constexpr double MAJOR_GC_LIVE_BUDGET = 4.5;
 constexpr double LIVE_GROWTH_BOUND = 1.5;
 

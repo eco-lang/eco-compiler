@@ -31,7 +31,10 @@ Functions are named too, because lines drift. Abbreviations: `TW` = `TenureWork.
 | `xstate[x]`, `xage[x]` | extent state and age | `Extent::state`, `Extent::age` (`NRH:67-68`) | — (pause-only) |
 | `gen[x]` | shadow generation | `Extent::gen` (`NRH:72`) | T4 (read by the job as `J.gen`) |
 | `shadow[x][c]` | forwarding table, one entry per object start | `RegionState::shadow[x]` (`NRH:178`), words of `TW:51-95` | T4 |
-| `ys[c]` | YLOS state: Free, Y0 (age 0), `Gen(x)` (joined the generation of extent `x`), Old (promoted), Dead (unlinked mid-cycle) | `Header.age`, `Extent::ylos_gen`, `LargeBodyMeta` kind/colour, `deferred_frees_` | T3 |
+| `ys[c]` | YLOS state: Free, Y0 (age 0), `Gen(x)` (joined the generation of extent `x`, or claimed for it by a prep: see `ystale`), Old (promoted), Dead (unlinked mid-cycle) | `Header.age`, `Extent::ylos_gen`, `LargeBodyMeta` kind/colour, `deferred_frees_` | T3 |
+| `ystale[c]` | the Young extents whose `ylos_gen` still lists address `c` although `ys[c]` does not name that generation: the member that joined through `c` was freed by a STW major, or another list's prep claimed the occupant. Written only when `YlosGen` is address-keyed (`"code"`, `"age1"`, `"stamp"`, `"lbid"`); `{}` otherwise | `Extent::ylos_gen` (`NRH:79`): an address vector, filled at the fill minor (`NR:929`), read by the hand-over and ageing preps (`NR:751-757`, `:773-779`), cleared by `clearContents` (`NRH:82-89`) | T3 |
+| `yrec[c]` | `"lbid"` only: the occupant's LargeBodyId is the one its freed predecessor had | `free_large_body_ids_`: pushed by `releaseBlockToAllocator` (`OGS:6431`), popped LIFO by `registerLargeBody` (`OGS:7530`) | — |
+| `yjoin[c]` | **ghost**: the extent whose generation the occupant joined at its first reach (0: none); lids are never reused, so this is object identity | the object's first reach (`reachYoungLargeR`, `NR:531-537`) | — |
 | `job` | state (None / Running / Merged) and extent | `TenureJob::state`, `x` (`NRH:120-123`); Built/Done fold into Running | T7 |
 | `jstarts`, `jheal`, `jstack`, `ns`, `nh` | job inputs and progress | `SerialState::starts`, `heal`, `stack`, `next_start`, `next_heal` (`TW:113-122`) | T7 |
 | `jreached`, `jylos`, `ny` | reached generation YLOS, pending scans, next | `SerialState::reached`, `ylos_pending`, `ylos_next` (`TW:118-126`) | T3 / T7 |
@@ -52,21 +55,21 @@ Functions are named too, because lines drift. Abbreviations: `TW` = `TenureWork.
 
 | Label | Code (function, file:line) | Why one step | Footprint | Invariants checked there |
 |---|---|---|---|---|
-| `M_Epoch` alloc / balloc / yalloc / load / drop / bwrite / bclear | Elm code and kernels between pauses: `allocate`, `allocArrayBuilder` + writes + `clear_builder`, `allocateYoungLarge` (`TLH:460`) | one mutator operation; a load reads a field of an immutable object (P1); a builder write is one store into a young object | T1 (reads), T2 (reads), T8 | `NoDangling`, `GraphPreserved`, `YlosFreed` (in the epoch) |
+| `M_Epoch` alloc / balloc / yalloc / lalloc / load / drop / bwrite / bclear | Elm code and kernels between pauses: `allocate`, `allocArrayBuilder` + writes + `clear_builder`, `allocateYoungLarge` (`TLH:463-477`; the lowest free Y cell, so a freed address is reused), a large string (`allocateLargeBody` `OGS:7415-7441` + its header); a load never yields a body pointer | one mutator operation; a load reads a field of an immutable object (P1); a builder write is one store into a young object | T1 (reads), T2 (reads), T8 | `NoDangling`, `GraphPreserved`, `YlosFreed` (in the epoch) |
 | `MN_Join` → `JoinMerge` | `ThreadLocalHeap::minorGC` → `tenureJoin(…, 0)` (`TLH:726/732` region) | a call | — | — |
 | `J_Wait` (join branch) | `tenureJoin` (`NT:575`): `g->join()` (`NT:618`, `:622`), the orphan test `!g->running()` (`NT:614-615`), L3 `g->join()` (`NT:588`) | the join is one blocking wait under `m_` (`joinLocked`, `GHP:639`) | — | — |
 | `J_Wait` (stop branch), `J_Stop` | `g->stopAndJoin()` (`NT:625`, `:590`; `GHP:657`): store `stop`, then join | two steps: the stop store, then the join; the collector interleaves between them | — | — |
 | `J_Help` → `Engine(FALSE)` | `runJobExact(nullptr)` (`NT:403`, called at `:647-648`); L3: `tenureConcFinish` (`NT:1239`) | help runs in the pause, ignoring `stop` | T4, T5, T7 | — |
 | `J_Merge` | `mergeJob` (`NT:669-880`): grant return `:674-682`, YLOS promote + child resolve `:731-744`, heal `:745-800`, zap `:820-828`, `State::Merged` `:878` | exclusive pause step; nothing else runs (the collector is joined) | T2 (writes), T3 (writes), T5 (returned) | `TenuredEqualsLegacy`, `TV1_Heal`, `TV1_Ylos` (in the state where `pc = "J_Merge"`) |
-| `MN_Begin` | `minorGCRegion` beginMinor (`NR:699-724`): roles fill / hand / Age / retire / prev; the TV10 and "retire merged" checks | pause-only data | — | — |
-| `MN_Slot`, `MN_Classify`, `MN_Fwd`, `MN_Set`, `MN_Resolve`, `MN_Next` | roots (`NR:817-845`) and drain (`NR:853-875`) through `evacuateR` (`NR:429-490`): Eden/PrevBuilders copy (`copyClaimedR` `NR:372`; builders to the builder area `:384-391`); Hand → S or H (`:467-472`); Age → SA (`:473-478`); Retire → `resolveRetire` (`NR:352`); YLOS → `reachYoungLargeR` (`NR:492-532`) | one slot per step; the pause is exclusive (the collector was joined), so its parallel drain is sequentialised (M3's CopyOnce) | T8 | `TV1_Resolve` (at `MN_Classify`) |
-| `MN_Epilogue` | epilogue (`NR:1021-1073`): retire → Free, eden cleared; the YLOS sweep `sweepNurseryLargeBodies` (`NR:1132`, `OGS:7235`, deferred mid-cycle `OGS:7313`); endMinor (`NR:1075-1090`) | pause-only | T8 | — |
-| `MN_Cycle` | `TLH::minorGC` after the minor (`TLH:760-781` region): `stepMarkCycle` (`TLH:1148`) → handoff (`completeMarkCycle`), or `startMarkCycle` (`TLH:1068`): roots, `snapshotYoungLarge` (`OGS:4189`), the young walk `forEachYoung` (`NurserySpace.hpp:800-830`, called `TLH:1106`) | abstract cycle (M1's SnapshotCycle): t0 and handoff are pause steps | T11 | `YoungWalkValid` (at `MN_Cycle` when a t0 is possible), `MarkerDisjoint` (every state mid-cycle) |
+| `MN_Begin` | `minorGCRegion` beginMinor (`NR:716-741`): roles fill / hand / Age / retire / prev; the TV10 and "retire merged" checks; and the hand-over preparation (`NR:743-782`): each Young extent's `ylos_gen` becomes `hand_ylos` / `age_ylos` through `youngLargeMeta(y) != nullptr` alone (`NR:751-753`, `:773-775`). Address-keyed `YlosGen`: an entry in `ystale` is claimed for its list (`ys := Gen(x)`) when `PrepMatch` holds; hand-over first, as `reachYoungLargeR` (`NR:513`) and `markTarget` (`TW:382`) search `hand_ylos` / `st.ylos` first | pause-only data | T3 | `YlosGenIdentity` (every state) |
+| `MN_Slot`, `MN_Classify`, `MN_Fwd`, `MN_Set`, `MN_Resolve`, `MN_Next` | roots (`NR:817-845`) and drain (`NR:853-875`) through `evacuateR` (`NR:429-490`): Eden/PrevBuilders copy (`copyClaimedR` `NR:372`; builders to the builder area `:384-391`); Hand → S or H (`:467-472`); Age → SA (`:473-478`); Retire → `resolveRetire` (`NR:352`); YLOS → `reachYoungLargeR` (`NR:503-543`; a first reach of a YLOS already carrying this minor's colour returns unscanned, `NR:526`); a copied large header's body joins `ycol` (`lb_seen`) and the fill's `lbl` (`NR:421-426`) | one slot per step; the pause is exclusive (the collector was joined), so its parallel drain is sequentialised (M3's CopyOnce) | T8 | `TV1_Resolve` (at `MN_Classify`) |
+| `MN_Epilogue` | epilogue (`NR:1021-1073`): retire → Free, eden cleared; `ystale` keeps only extents still Young (a list is read only while its extent is Young); the YLOS sweep `sweepNurseryLargeBodies` (`NR:1132`, `OGS:7235`, deferred mid-cycle `OGS:7313`); endMinor (`NR:1075-1090`) | pause-only | T8 | — |
+| `MN_Cycle` | `TLH::minorGC` after the minor (`TLH:760-781` region): `stepMarkCycle` (`TLH:1148`) → handoff (`completeMarkCycle`), or `startMarkCycle` (`TLH:1068`): roots, `snapshotYoungLarge` (`OGS:4189`), the young walk `forEachYoung` (`NurserySpace.hpp:800-830`, called `TLH:1106`) | abstract cycle (M1's SnapshotCycle): t0 and handoff are pause steps | T11 | `YoungWalkValid`, `T0GreyAllocated` (at `MN_Cycle` when a t0 is possible), `MarkerDisjoint` (every state mid-cycle) |
 | `MN_Launch` | `TenureLaunchScope` (`TLH:740`) → `tenureLaunch` (`NT:428-573`): gen bump / wrap discard `:449-455`, inputs `:456-499`, grant `:540`, launch `:572` (L3: `tenureConcLaunch` `NT:1222`) | pause-only | T4 (gen), T5 (grant), T7 (inputs) | — |
 | `MN_Sync` → `Engine(FALSE)` | mode 1: `runJobExact(oldgen, nullptr)` in `tenureLaunch` (`NT:553-557`) | in the pause | T4, T5, T7 | — |
 | `MJ_Join` → `JoinMerge` | `ThreadLocalHeap::majorGC` → `tenureJoin(…, 1)` (`TLH:785`, the call after `pause_had_major_`) | as for a minor | — | — |
 | `MJ_Cycle` | `finishMarkCycleNow(Join)` (`TLH:800`) | pause | T11 | — |
-| `MJ_Mark` | `OldGenSpace::startMark` (roots only, `OGS:2868`) with `majorRedirect` (`NR:217`, called in `greyObject` (`OGS:3074`; the nursery branch with the redirect at `OGS:3127`)), then the sweep (frees unmarked old cells and YLOS cells: `lazySweep`'s large-cell branch, `markBlockAsFreeLarge` `OGS:5340`) | STW | T11 | `TV1_Major` (at `MJ_Mark`) |
+| `MJ_Mark` | (the address-keyed `YlosGen`: a freed member of a Young extent's generation leaves its address in that `ylos_gen`: `releaseBlockToAllocator` `OGS:6427-6433` or `retireDeadLargeBodies` `OGS:1793-1811` erase only the index entry) `OldGenSpace::startMark` (roots only, `OGS:2868`) with `majorRedirect` (`NR:217`, called in `greyObject` (`OGS:3074`; the nursery branch with the redirect at `OGS:3127`)), then the sweep (frees unmarked old cells and YLOS cells: `lazySweep`'s large-cell branch, `markBlockAsFreeLarge` `OGS:5340`) | STW | T11 | `TV1_Major` (at `MJ_Mark`) |
 | `C_Wait` | `GCBackgroundGang::memberLoop` (`GHP:553`): wait for `generation_ != seen` under `m_` | one wait | — | — |
 | `C_Run` → `Engine(TRUE)` | `tenureEntry` (`NT:415`) → `runJobExact(…, &J.stop)`; L3 `tenureConcEntry` (`NT:1209`) → `runMarkerLoop` | a call | — | — |
 | `C_Fin` | `++finished_` under `m_` (`GHP:605-610`) | one critical section | — | — |
@@ -103,7 +106,10 @@ Functions are named too, because lines drift. Abbreviations: `TW` = `TenureWork.
 | `finishedApprox()` | the join branch may always be taken | an over-approximation: `finishedApprox` only decides whether to stop first |
 | builders (`kColBuilder`) | `BC` builder cells per extent; kernels allocate, write held plain values into, and clear their builders; builders hold only plain values | HEAP_BUILDER_003: a builder is reachable only from its kernel's root until cleared. Builder → builder nesting is not modelled |
 | generation YLOS (`kColYoungYlos`, `kColHandYlos`, `hand_ylos`) | `YC` Y cells with `ys` | the pause's colour test is `ys`; the minor's sweep frees Y0 cells not reached and unreached cells of the retiring generation (deferred to the handoff mid-cycle) |
-| large bodies (`lb_bodies`, `lb_promoted`, `promoteLargeHeader`), YLOS builders, ageing YLOS | not modelled | pointer-free bodies do not affect forwarding; the H-body trap (07 trap 14) is a colour bug in the pause |
+| `Extent::ylos_gen` as an address list (CR-034) | `YlosGen`: `"identity"` keeps the pre-2026-09-29 model (a member is `ys = Gen(x)`; a freed member leaves nothing); the address-keyed values add `ystale` (addresses a Young extent still lists that `ys` does not express), recorded when `MJ_Mark` frees a member of a Young extent's generation, and claimed by `MN_Begin`'s prep through `PrepMatch` (`ys := Gen(x)`; the occupant's own list keeps an unexpressed entry) | exact for the prep: the only consumers of a list are the two preps (`NR:751`, `:773`) and the validate-only P1 census (§9). Only a STW major frees a member while its extent is Young (§9), so `MJ_Mark` is the only place stale entries arise. `yalloc` already picks the lowest free Y cell, so a freed address is reused whenever it can be |
+| the prep's fix checks | `PrepOK`: `"age1"` = `ys # Y0` (a member was aged to 1 at its first reach, `NR:535`); `"stamp"` = a never-reused stamp, so a stale entry never matches; `"lbid"` = the LargeBodyId, matching iff `yrec` (chosen at `yalloc` when the cell has a stale entry) | `"lbid"` over-approximates the LIFO free list by a free choice; the release pushes the freed id (`OGS:6431`) and the next registration pops the top (`OGS:7530`), so a match is possible whenever nothing registered in between (CR-034's chain) |
+| large bodies (`lb_bodies`, `lb_promoted`, `promoteLargeHeader`, `lb_seen`) | op `"lalloc"`: a body in a Y cell (`ys = YBody`, a kind-0 index entry, lid in `bodyLids`) and its header in eden (field 1); a copied header's body joins `ycol` (lb_seen) and, unless a builder, the fill's `lbl` list (`copyClaimedR`, `NR:421-426`); the prep colours the listed addresses (`ycol`, `NR:749`, `:771`); the minor's sweep frees Y cells whose colour is not this minor's; the merge promotes the bodies of the job's copies (`YOld`); the major and the handoff free unmarked bodies. `LbKey` as `YlosGen` (`"code"`, fixes `"kind"`, `"drop"`, `"identity"` = stamp) | Elm code never holds a body (the `load` guard, `IsBodyRef`); bodies are pointer-free. A body's colour is modelled only through `ycol` (this minor's colour or not), which is all the sweep and the first-reach test (`NR:526`) read. Not modelled: the H-body trap (07 trap 14), large bodies of builders beyond `lb_seen`, split headers inside YLOS |
+| YLOS builders, ageing-generation YLOS with builders | not modelled | a builder YLOS claimed by CR-034 would be promoted while its kernel still writes it (a further CR-034 consequence, by code reading) |
 | 07b ageing (k = 2) | `K = 2`: four extents; Age role → `SA`; the job's mark and sweep items; the merge's zap | exact engine only (`age_forced_exact`, `NT:533-534`); one sweep item covers a whole extent (the code's item is one bitmap word) |
 | eden flip (quarantine) | not modelled: eden is cleared at every minor | eden cells are never read after the minor |
 | a fork child | `calive := FALSE`; the model keeps the same mutator and launches no new collector | the child as if it had a mutator (CR-004's open question); `atforkChild` would start fresh threads on the next launch |
@@ -141,11 +147,13 @@ exchange `NT:1008-1009`), an ageing-mark word in the pause-only gang (`AgeParEnv
 | `OldPointsOld` | HEAP_005 (as amended for 7c) | TV6: `childOfCopy` (`TW:436`, every build), `mergeJob` (`NT:801-815`, validate builds) |
 | `HealYoungOnly` | 07 row T2, FORBID_HEAP_004 (M1's open question 3) | — |
 | `MarkerDisjoint` | TV8 + IM3 | `greyObject`'s young abort (`OGS` `greyObject`), TV5 in `grantTenure` (`OGT:101-108`) |
-| `YoungWalkValid` | CR-017; the k = 1 form of 07b's TV2Y | — (IM4 / IM6 fire later, validate builds) |
+| `YoungWalkValid` | CR-017; the k = 1 form of 07b's TV2Y (old and young targets) | — (IM4 / IM6 fire later, validate builds) |
+| `T0GreyAllocated` | CR-017's half of `YoungWalkValid`: only the targets the t0 snapshot greys (old addresses); young targets are dropped by range (`greyObject`'s snapshot branch, `OGS:3325-3327`) | — |
 | `TenuredEqualsLegacy` | TV2, E1 promoted-set equality; 07b's marked set | `regionEndMinorValidate` (TV2, validate builds) |
 | `TV1_Heal`, `TV1_Ylos`, `TV1_Resolve`, `TV1_Major` | TV1 (every build) | `resolveT` in `mergeJob` (`NT:725-729`, `:771`), `resolveRetire` (`NR:361-367`), `majorRedirect` (`NR:225-226`) |
 | `BuilderYoung` | HEAP_BUILDER_001, 07 trap 13 | `minorGCRegion`'s fill walk ("a builder in the fill's survivor part", `NR:989`, validate builds) |
 | `YlosFreed` | MODEL_M5_1: an unreached generation YLOS is freed with its extent | — |
+| `YlosGenIdentity` | MODEL_M5_2 (HEAP_062 / HEAP_070, CR-034): every member of a generation's YLOS snapshot is an object that joined that generation (`yjoin`, object identity) | — (proposed: a validate assert that a `hand_ylos` / `age_ylos` member is the object that joined, e.g. through a stamp) |
 
 ## 6. Contracts (parent plan §5.0)
 
@@ -157,6 +165,9 @@ exchange `NT:1008-1009`), an ageing-mark word in the pause-only gang (`AgeParEnv
   marker), and every copy made mid-cycle is black;
 - `YoungWalkValid`: the t0 walk reads only allocated cells. **Fails today** (CR-017):
   `MC_cycle_major`, `MC_deep`.
+  At k = 2 with generation YLOS it also fails without a major (`MC_k2_ylos_walk`): a dead ageing YLOS's
+  slot into a retired extent. The half M1 needs, `T0GreyAllocated` (every cell the t0 snapshot greys is
+  allocated), fails only through CR-017.
 
 **Used:**
 - **SnapshotCycle** (M1): the abstract cycle's handoff frees exactly what is outside
@@ -176,7 +187,7 @@ exchange `NT:1008-1009`), an ageing-mark word in the pause-only gang (`AgeParEnv
 | A3 | §4: T1–T11 and the census |
 | A4 | The model is SC. Relies on: **W5** (claim → copy → publish on a shadow word, the exact engine's relaxed load and release publish, the pause's acquire `lookup` after the join) — **PASS**: W5(b) (help after the join; stale entries claimed by the observed word) and `w5_parallel_tenure` (case p), with `W5_RELAXED_PUBLISH`, `W5_RELAXED_CLAIM_FAIL`, `SHADOW_RELAXED_PUBLISH` and `HELP_WITHOUT_JOIN` flagged; **W1** (the Chase–Lev deques of L3 and the ageing gang) — **PASS** (two thieves included); the gang launch/join publication (M6's LaunchJoin; `w_running_chain` for the orphan test) — **PASS**, covering both `!running()` sites of `tenureJoin` (the L3 branch `NT:584-585` and `NT:611-631`), with `RUNNING_RELAXED_STORE`, `RUNNING_RELAXED_LOAD`, `RUNNING_JOIN_EARLY` flagged. GenMC RC11, `test/genmc/AUDIT.md`, 2026-09-28 |
 | A5 | §8: `TraceTenuring` (the engine storm, `gc-tenure-trace`) and `TraceTenurePause` (the pause projection on the real allocator, `gc-heap-trace tenure`); rows in `test/tla/traces.txt` |
-| A6 | Every invariant has at least one mutant that TLC rejects with its name (AUDIT.md). `YoungWalkValid`'s are `skip_zap` and CR-017 itself (`MC_cycle_major`) |
+| A6 | Every invariant has at least one mutant that TLC rejects with its name (AUDIT.md). `YoungWalkValid`'s are `skip_zap` and CR-017 itself (`MC_cycle_major`); `T0GreyAllocated`'s is CR-017 (`MC_cycle_major_t0grey`); `YlosGenIdentity`'s are CR-034 itself (`MC_ylos_aba`) and the controls `ylos_age1_k2`, `ylos_lbid` |
 | A7 | §5 |
 | A8 | 3 survivor extents (4 with k = 2) of 1–3 cells, 1–2 fields, 3–6 minors, 1–4 mutator operations per run. The 21-bit generation shrinks to 3 bits (`GenMod = 8`) and to 1 bit in `MC_wrap` (every hand-over after the first discards). Unbounded claims: none are proved; the deep tier stretches one dimension at a time |
 | A9 | Not pinned yet (the canary is a later wave). Proposed lines: AUDIT.md "What is left" |
@@ -234,6 +245,31 @@ minors and STW majors.
 Hidden: the minor's and the major's own steps (computed by the model from its heap; the code's slot
 order and cell placement are not compared), `J_Wait`'s stop store, `J_Help` when the job is done,
 and every engine step (the storm checks those one by one).
+
+## 9. Address-keyed lists (2026-09-29, CR-034)
+
+Every list the M5 code keeps that names objects by address, checked against the tree of 2026-09-29:
+where it is filled and read, what can free the address and reuse it in between, and what identity
+check guards the read. "Safe" means no free-and-reuse path exists inside the window, with the
+argument.
+
+| List | Filled | Read | Free and reuse in between | Guard | Verdict |
+|---|---|---|---|---|---|
+| `Extent::ylos_gen` (`NRH:79`) | first reach (`reachYoungLargeR`, `NR:535-536`), merged into the fill (`NR:929`); cleared by `clearContents` (`NRH:88`) | hand-over prep (`NR:751-757`), ageing prep (`NR:773-779`), P1 census (below) | a STW major frees a dead member (its index entry erased by `releaseBlockToAllocator` `OGS:6427-6433` or `retireDeadLargeBodies` `OGS:1793-1811`, the address kept here); `allocateYoungLarge` registers a new YLOS at the address | `youngLargeMeta(y) != nullptr` only (`NR:752-753`, `:774-775`) | **hazard: CR-034**, modelled (`YlosGen`). k = 1: the hand-over path (`MC_ylos_aba`, `MC_ylos_aba_heap005`); k = 2: the ageing path, where the pause records the new YLOS in SA without scanning it (`NR:519-523`), so its eden children are never evacuated (`MC_k2_ylos_aba`) |
+| `R.hand_ylos`, `hand_ylos_reached` → `J.st.ylos`, `st.reached` | prep (`NR:744-760`); launch (`NT:481-482`) | `reachYoungLargeR` (`NR:513-518`), the job (`reachYlos` `TW:436-444`, `markTarget` `TW:382`), the merge (`NT:765-775`) | none: the prep colours each member (`NR:754`), so the minor's sweep keeps it; a STW major merges before it marks (`TLH:799`); the handoff never frees a young YLOS (black at t0) | — | safe inside its window [prep, merge]; it inherits CR-034 from its input |
+| `R.age_ylos` → `J.st.age_ylos`, `age_ylos_marked` | `NR:765-782`; `NT:500-504` | `NR:519-523`, `markAgeYlos` (`TW:354-363`) | as `hand_ylos` | — | safe; inherits CR-034 (k ≥ 2) |
+| `pend_S` → `st.starts` | `evacuateR`'s Hand case (`NR:480`) | the job, help | survivor cells are freed only when their extent retires, after the merge; neither the mutator nor a major frees a survivor cell | — | safe |
+| `pend_H` → `st.heal`, and the ageing mark's heal slots (`TW:378`) | `NR:479`; `TW:378` | the job (the value), the merge (the write) | fill copies: as `pend_S`; a first-reached YLOS or a marked ageing object: coloured this minor, and a major merges (heals) before it marks | — | safe |
+| `pend_SA` → `st.age_starts` | `NR:486`, `:523` | `markTarget` (`TW:348`) | as `age_ylos` | — | safe |
+| `Extent::lb_bodies` (`NRH:78`) | `copyClaimedR` (`NR:425`), merged (`NR:928`) | the preps' `markLargeBodySeen` (`NR:749`, `:771`) | a STW major frees a dead header's body; the address is re-registered by `allocateLargeBody` or `allocateYoungLarge` (one allocator and one index; `is_large` blocks are reused at their start) | none: `markLargeBodySeen` looks the address up and colours any entry, of either kind (`OGS:7542-7552`) | **hazard**, modelled (`LbKey`, `MC_lb_aba`). A body there: floating garbage for one minor (the parallel audit's verdict). **A young YLOS not yet reached: its first reach sees this minor's colour and returns "already reached" (`NR:526`, after the flip at `NR:675`; the YLOS was registered with the previous colour, `TLH:469`), so it is neither scanned nor aged, and its eden children are not evacuated (S1)** |
+| `J.lb_promoted` | `TenureHeapEnv::copy` (`NT:98`) | the merge (`NT:744-756`) | the body's header is a live copy; the prep coloured the body; a major merges first | — | safe |
+| worker `lb_seen` | `copyClaimedR` (`NR:422`) | after the drain (`NR:955`) | one pause | — | safe |
+| the shadow's FWD destinations | `publish` | `resolveRetire` (`NR:352`), the merge, `majorRedirect` (`NR:218-229`) | stale entries of earlier generations; a copy freed by a major is dead, and a dead original is never resolved | the generation in every entry, the wrap discard | modelled (`gen_not_bumped`, `wrap_no_discard`, `major_greys_original`) |
+| `st.zap` | `sweepStep` | the merge (`NT:856`) | survivor cells: as `pend_S` | — | safe |
+| `st.stack`, `promoted_log` | the job's copies | the job, the merge (TV6, validate) | granted `kAllocTenure` blocks are skipped by every other path until `returnTenureGrant` at the merge (T6, M4) | — | safe |
+| `young_large_scan_` (region mode) | `NR:935` | `censusRecord` (validate) | one pause | the census's major epoch | safe |
+| P1 census `R.census` from `X.ylos_gen` | `NurserySpace.cpp:2829-2831` (end of a minor) | `censusCheckRegion` at the next join | as `ylos_gen` | `isYoungLarge` at the take, the major epoch at the check (`NurserySpace.cpp:2849-2853`) | benign, validate only: at k ≥ 2 a stale entry read after a major records the new occupant, which is not written after publication |
+| `deferred_frees_` | `sweepNurseryLargeBodies` (`OGS:7659`) | `processDeferredFrees` at the handoff | the cell stays allocated until then | — | safe |
 
 <!-- canary-pins begin -->
 ## Canary pins (A9)
@@ -294,4 +330,7 @@ AUDIT.md entry quoting the new hash prefix (`test/tla/README.md`, "The canary").
 | grep | `-` | `T9` |
 | grep | `-` | `F.allocTenure` |
 | grep | `-` | `F.zapFiller` |
+| region | `runtime/src/allocator/OldGenSpace.cpp` | `OGS.releaseBlockToAllocator` |
+| region | `runtime/src/allocator/OldGenSpace.cpp` | `OGS.retireDeadLargeBodies` |
+| region | `runtime/src/allocator/OldGenSpace.hpp` | `OGH.youngLargeMeta` |
 <!-- canary-pins end -->

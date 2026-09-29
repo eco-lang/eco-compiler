@@ -58,6 +58,9 @@ MC_Units == [b \in MC_Blocks |->
     IF "chunk_unit_subbyte" \in MUTANT /\ b = "U" THEN <<{8}, {9, 10}, {11}>>
     ELSE CASE b = "U" -> <<{8, 9}, {10, 11}>>
            [] b = "V" -> <<{12, 13}>>
+           \* reuse_released: D, released by a shrink, comes back as a virgin uniform
+           \* block of the class at the same start (its cells re-carved: one chunk).
+           [] b = "D" /\ "reuse_released" \in MUTANT -> <<{6, 7}>>
            [] b = "Z" -> <<{14, 15}>>
            [] b = "G" /\ Scenario = "epoch_l3" -> <<{16, 17}, {20, 21}>>
            [] OTHER   -> <<>>]
@@ -78,6 +81,8 @@ MC_Collectors == CASE Scenario = "epoch" -> {4} [] Scenario = "epoch_l3" -> {4, 
 MC_Mutators   == IF IsEpoch THEN {5} ELSE {}
 MC_Mergers    == IF IsMinor THEN {6} ELSE {}
 MC_NAllocs    == [w \in MC_Workers |-> NA]
+\* reuse_released rows: the stash owner needs one promotion more than the reuser.
+MC_NAllocsReuse == [w \in MC_Workers |-> IF w = 1 THEN NA + 1 ELSE NA]
 \* A second size class only where a sweep is pending: the sweeper of another
 \* class leaves the flushed cells, and does not retire this class's shared block.
 \* sweep_1class (deep, three workers) is sweep with the modelled class only.
@@ -130,4 +135,7 @@ MC_InitLive == [b \in MC_Blocks |-> CASE (IsSweep \/ HasV) /\ b \in {"M", "U"} -
 MC_InitGrantOn == IsEpoch
 \* No virgin block in these heaps: the ladder's virgin rung allocates outside the model.
 MC_VirginQ == <<>>
+\* reuse_released rows (2026-09-29): a FATAL ends the process, so nothing after it
+\* is a behaviour of the code (their configurations list only NoDoubleAlloc).
+MC_NoFatal == fatal = {}
 =============================================================================

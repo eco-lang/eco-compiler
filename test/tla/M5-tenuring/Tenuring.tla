@@ -30,12 +30,32 @@ CONSTANTS
     CycleT,         \* minors from t0 to the handoff
     GenMod,         \* shadow generations are 1 .. GenMod-1, then wrap (2^21 in code)
     StopAllowed,    \* a fork prepare hook may stop the collector at any time
+    YlosGen,        \* how an extent's ylos_gen list names its generation's YLOS (CR-034):
+                    \*   "identity": by object (a member a STW major frees leaves no entry; the
+                    \*               model before 2026-09-29, and fix candidate 1's effect);
+                    \*   "code": by address, as the code does: the major leaves the address, and the
+                    \*           next prep takes whatever young YLOS sits there for a member
+                    \*           (NurseryRegion.cpp:751-753, :773-775);
+                    \*   fix controls (address-keyed + a check at the prep): "drop" (the major drops
+                    \*   the address from every list = "identity"), "age1" (skip an entry whose
+                    \*   YLOS has header age 0), "stamp" (a never-reused registration stamp), "lbid"
+                    \*   (the LargeBodyId as the stamp; the release recycles it LIFO)
+    Cr017Oracle,    \* model-only: the t0 walk skips dead survivor and builder objects, standing for
+                    \* any CR-017 fix, so a configuration can look past CR-017 (not a fix design)
+    LbKey,          \* the lb_bodies lists (large bodies, op "lalloc"), address-keyed in the code:
+                    \*   "code": the prep's markLargeBodySeen colours whatever index entry sits at the
+                    \*           address (NurseryRegion.cpp:749, :771), a young YLOS included;
+                    \*   fix controls: "kind" (colour kind-0 bodies only), "drop" (the major drops a
+                    \*   freed body from every list), "identity" (a never-reused stamp: a stale entry
+                    \*   never matches; also the value for configurations without "lalloc")
     MUTANT
 
 ASSUME K \in {1, 2} /\ (K = 2 => Collectors = 1)      \* age_forced_exact
 ASSUME SC >= EC + BC /\ OC >= MaxLid
+ASSUME YlosGen \in {"identity", "code", "drop", "age1", "stamp", "lbid"} /\ Cr017Oracle \in BOOLEAN
+ASSUME LbKey \in {"identity", "code", "kind", "drop"}
 
-OpKinds == {"alloc", "load", "drop", "balloc", "bwrite", "bclear", "yalloc"}
+OpKinds == {"alloc", "load", "drop", "balloc", "bwrite", "bclear", "yalloc", "lalloc"}
 X == 1..(K + 2)                           \* survivor extents (k + 2)
 EAddr == {<<"E", c>> : c \in 1..EC}
 SAddr == {<<"S", x, c>> : x \in X, c \in 1..SC}     \* survivor parts
@@ -57,6 +77,7 @@ YFree == <<"Free", 0>>                    \* YLOS states (one type, so TLC can c
 Y0 == <<"Y0", 0>>                         \* young, age 0: not reached by a minor yet
 YOld == <<"Old", 0>>                      \* promoted in place
 YDead == <<"Dead", 0>>                    \* unlinked by a minor mid-cycle; freed at the handoff
+YBody == <<"Body", 0>>                    \* a nursery-owned large body (kind 0; its header is young)
 YoungYS == {Y0} \cup {Gen(x) : x \in X}   \* YLOS states that are young (in the index)
 MutId == 0
 CollIds == 101..(100 + Collectors)
@@ -94,6 +115,23 @@ variables
     gen     = [x \in X |-> 0],                     \* Extent::gen
     shadow  = [x \in X |-> [c \in 1..SC |-> NoEntry]],   \* RegionState::shadow
     ys      = [c \in 1..YC |-> YFree],            \* YLOS: Free | Y0 (age 0) | Gen(x) | Old | Dead (unlinked, freed at the handoff)
+    \* CR-034 (YlosGen address-keyed only; constant otherwise): ystale[c] = the Young
+    \* extents whose ylos_gen still lists address c although ys[c] does not name that
+    \* generation (its member was freed by a STW major, or the prep of another list
+    \* claimed the occupant); yrec[c] = the occupant's LargeBodyId is the one its
+    \* freed predecessor had ("lbid" only); yjoin[c] = ghost: the extent whose
+    \* generation the occupant joined at its first reach (0: none).
+    ystale  = [c \in 1..YC |-> {}],
+    yrec    = [c \in 1..YC |-> FALSE],
+    yjoin   = [c \in 1..YC |-> 0],
+    \* Large bodies (op "lalloc"; constant otherwise): lbl[c] = the entries <<x, lid>> of
+    \* the Young extents x whose lb_bodies list names address c (lid: the body listed);
+    \* ycol = the Y cells whose index entry carries this minor's colour before the
+    \* reach (the prep's markLargeBodySeen) or from a copied header (lb_seen);
+    \* bodyLids = ghost: the lids that are bodies (Elm code never holds a body).
+    lbl     = [c \in 1..YC |-> {}],
+    ycol    = {},
+    bodyLids = {},
     job     = [st |-> "None", x |-> 0],            \* TenureJob::state, x
     jstarts = <<>>, jheal = <<>>, jstack = <<>>,   \* SerialState: starts, heal, stack (of copies)
     ns = 1, nh = 1,                                \* next_start, next_heal
@@ -136,15 +174,39 @@ define
     HealVal(s) == IF s[1][1] = "R" THEN root[s[1][2]] ELSE heap[s[1]].f[s[2]]
     AgeCells == IF ageX = 0 THEN {}
                 ELSE {a \in SAddr : a[2] = ageX} \cup {y \in YAddr : ys[y[2]] = Gen(ageX)}
-    \* forEachYoung + snapshotYoungLarge: survivor parts of Young and Tenuring
-    \* extents, the Fresh builder area, every young YLOS (non-free cells only).
-    Walk(skipTenuring) ==
-        {a \in SAddr : heap[a].lid # 0 /\ (xstate[a[2]] = "Young"
-                                           \/ (xstate[a[2]] = "Tenuring" /\ ~skipTenuring))}
-        \cup {a \in BAddr : heap[a].lid # 0 /\ xstate[a[2]] = "Young" /\ xage[a[2]] = 1}
-        \cup {y \in YAddr : YoungY(y)}
     Close(G) == CloseIn(G, heap)
     ReachAll == Close({root[r] : r \in Roots}) \ {Nil}
+    \* forEachYoung + snapshotYoungLarge: survivor parts of Young and Tenuring
+    \* extents, the Fresh builder area, every young YLOS (non-free cells only).
+    \* Cr017Oracle (model-only) drops the dead survivor and builder objects.
+    Walk(skipTenuring) ==
+        {a \in SAddr : heap[a].lid # 0 /\ (xstate[a[2]] = "Young"
+                                           \/ (xstate[a[2]] = "Tenuring" /\ ~skipTenuring))
+                       /\ (Cr017Oracle => a \in ReachAll)}
+        \cup {a \in BAddr : heap[a].lid # 0 /\ xstate[a[2]] = "Young" /\ xage[a[2]] = 1
+                            /\ (Cr017Oracle => a \in ReachAll)}
+        \cup {y \in YAddr : YoungY(y)}
+    \* CR-034: ylos_gen is keyed by address. The prep of a minor takes address
+    \* entry c of extent x's list for a member if youngLargeMeta(c) finds a young
+    \* YLOS there (NurseryRegion.cpp:751-753 hand-over, :773-775 ageing) and the
+    \* fix control's check passes. Reads ys / ystale / yrec as they were at the
+    \* start of the step (the prep runs before any reach).
+    AddrKeyed == YlosGen \notin {"identity", "drop"}
+    PrepOK(c) == CASE YlosGen = "age1"  -> ys[c] # Y0           \* header age >= 1
+                   [] YlosGen = "stamp" -> FALSE                \* a never-reused stamp never matches a stale entry
+                   [] YlosGen = "lbid"  -> yrec[c]              \* the LargeBodyId matches iff it was recycled
+                   [] OTHER             -> TRUE                 \* "code": youngLargeMeta only
+    PrepMatch(c, x) == x # 0 /\ x \in ystale[c] /\ ys[c] \in YoungYS /\ PrepOK(c)
+    \* Large bodies. markLargeBodySeen (OldGenSpace.cpp:7542-7552) colours the index
+    \* entry at the listed address, whatever its kind (a body or a young YLOS).
+    IsBodyRef(v) == v # Nil /\ IsY(v) /\ heap[v].lid \in bodyLids
+    LbMatch(c, en) == /\ ys[c] \in YoungYS \cup {YBody}          \* an index entry is there
+                      /\ CASE LbKey = "kind"     -> ys[c] = YBody
+                           [] LbKey = "identity" -> heap[<<"Y", c>>].lid = en[2]
+                           [] OTHER              -> TRUE        \* "code", "drop"
+    LbColoured(x) == {<<"Y", c>> : c \in {c2 \in 1..YC : \E en \in lbl[c2] : en[1] = x /\ LbMatch(c2, en)}}
+    \* promoteLargeHeader at the merge: the bodies of the headers this job copied (J.lb_promoted).
+    LbPromoted == {v \in YAddr : ys[v[2]] = YBody /\ \E a \in cw \cap OAddr, i \in Fields : heap[a].f[i] = v}
     OldClose(G) == Close(G) \ {Nil}
     \* majorRedirect: a merged job's extent is traversed through its copies.
     Redir(a) == IF a # Nil /\ job.st = "Merged" /\ IsS(a, job.x) /\ xstate[job.x] = "Tenuring"
@@ -188,6 +250,10 @@ define
         (pc[MutId] = "MN_Cycle" /\ CycleAllowed /\ cycle = "Idle") =>
             \A a \in Walk(FALSE) : \A i \in Fields :
                 heap[a].f[i] # Nil => Allocated(heap[a].f[i])
+    T0GreyAllocated ==                             \* CR-017's half of YoungWalkValid: every cell a possible
+        (pc[MutId] = "MN_Cycle" /\ CycleAllowed /\ cycle = "Idle") =>   \* t0 would grey is allocated (the t0
+            \A a \in Walk(FALSE) : \A i \in Fields :                    \* snapshot drops young targets by range)
+                (heap[a].f[i] # Nil /\ OldAddr(heap[a].f[i])) => Allocated(heap[a].f[i])
     TenuredEqualsLegacy ==                         \* E1 oracle / TV2, checked as the merge starts
         AtMerge =>
             /\ {a \in XObjs(job.x) : FwdOf(a) # Nil} = liveHand
@@ -209,6 +275,9 @@ define
         \A a \in Addr : (heap[a].lid # 0 /\ heap[a].b) => (IsE(a) \/ a[1] = "B")
     YlosFreed ==                                   \* an unreached generation YLOS is freed with its extent
         InEpoch => \A c \in 1..YC : ys[c] \in {Gen(x) : x \in X} => xstate[ys[c][2]] # "Free"
+    YlosGenIdentity ==                             \* CR-034 (HEAP_062/HEAP_070): a generation's YLOS
+        \A c \in 1..YC :                           \* members are the objects that joined it
+            ys[c] \in {Gen(x) : x \in X} => yjoin[c] = ys[c][2]
 end define;
 
 \* A minor's slot write (a root, or a field of a copy / YLOS the pause owns).
@@ -404,7 +473,10 @@ begin
         root := [r \in Roots |->                   \* only with the mutant root_in_heal
                    IF <<<<"R", r>>, 1>> \in Range(jheal) /\ IsS(root[r], job.x)
                    THEN FwdOf(root[r]) ELSE root[r]];
-        ys := [c \in 1..YC |-> IF <<"Y", c>> \in jreached /\ ys[c] = Gen(job.x) THEN YOld ELSE ys[c]];
+        yjoin := [c \in 1..YC |-> IF <<"Y", c>> \in jreached /\ ys[c] = Gen(job.x) THEN 0 ELSE yjoin[c]];
+        ys := [c \in 1..YC |-> IF \/ <<"Y", c>> \in jreached /\ ys[c] = Gen(job.x)
+                                  \/ <<"Y", c>> \in LbPromoted       \* (3) promoteLargeHeader
+                               THEN YOld ELSE ys[c]];
         job.st := "Merged";
         grant := {};
     end if;
@@ -440,17 +512,38 @@ begin
         or                                         \* allocateYoungLarge: a YLOS cell (allocate-black mid-cycle)
             await CanOp("yalloc") /\ nextLid <= MaxLid /\ \E c \in 1..YC : ys[c] = YFree;
             with c = CHOOSE c2 \in 1..YC : ys[c2] = YFree, r \in Roots,
-                 fv \in [Fields -> {Nil} \cup PlainHeld] do
+                 fv \in [Fields -> {Nil} \cup PlainHeld],
+                 \* "lbid": registerLargeBody pops free_large_body_ids_ (LIFO), onto which
+                 \* releaseBlockToAllocator pushed the freed member's id (OldGenSpace.cpp)
+                 rec \in (IF YlosGen = "lbid" /\ ystale[c] # {} THEN BOOLEAN ELSE {FALSE}) do
                 lheap[nextLid] := [i \in Fields |-> LidOf(fv[i])];
                 heap[<<"Y", c>>] := [lid |-> nextLid, f |-> fv, b |-> FALSE];
                 ys[c] := Y0;
+                yrec[c] := rec;
+                yjoin[c] := 0;
                 if cycle = "Marking" then black := black \cup {<<"Y", c>>}; end if;
                 root[r] := <<"Y", c>>; lroot[r] := nextLid;
                 nextLid := nextLid + 1; ops := ops + 1;
             end with;
-        or                                         \* load a field into a root
+        or                                         \* a large string: allocateLargeBody (a kind-0 index entry,
+            \* OldGenSpace.cpp:7415-7441) plus its header in eden, field 1 = the body
+            await CanOp("lalloc") /\ ebump <= EC /\ nextLid + 1 <= MaxLid /\ \E c \in 1..YC : ys[c] = YFree;
+            with c = CHOOSE c2 \in 1..YC : ys[c2] = YFree, r \in Roots do
+                lheap := [lheap EXCEPT ![nextLid] = [i \in Fields |-> IF i = 1 THEN nextLid + 1 ELSE 0],
+                                       ![nextLid + 1] = [i \in Fields |-> 0]];
+                heap := [heap EXCEPT ![<<"E", ebump>>] = [lid |-> nextLid, b |-> FALSE,
+                                                          f |-> [i \in Fields |-> IF i = 1 THEN <<"Y", c>> ELSE Nil]],
+                                     ![<<"Y", c>>] = [Empty EXCEPT !.lid = nextLid + 1]];
+                ys[c] := YBody;
+                bodyLids := bodyLids \cup {nextLid + 1};
+                if cycle = "Marking" then black := black \cup {<<"Y", c>>}; end if;
+                root[r] := <<"E", ebump>>; lroot[r] := nextLid;
+                ebump := ebump + 1; nextLid := nextLid + 2; ops := ops + 1;
+            end with;
+        or                                         \* load a field into a root (never a body pointer)
             await CanOp("load");
-            with r \in Roots, q \in {q2 \in Roots : root[q2] # Nil}, i \in Fields do
+            with r \in Roots, q \in {q2 \in Roots : root[q2] # Nil},
+                 i \in {i2 \in Fields : ~IsBodyRef(heap[root[q]].f[i2])} do
                 root[r] := heap[root[q]].f[i];
                 lroot[r] := IF lroot[q] = 0 THEN 0 ELSE lheap[lroot[q]][i];   \* 0 only in a broken state
                 ops := ops + 1;
@@ -497,6 +590,26 @@ begin
     prev := IF \E x \in X : xstate[x] = "Young" /\ xage[x] = 1       \* PrevBuilders: the last fill
             THEN CHOOSE x \in X : xstate[x] = "Young" /\ xage[x] = 1 ELSE 0;
     retire := IF \E x \in X : xstate[x] = "Tenuring" THEN CHOOSE x \in X : xstate[x] = "Tenuring" ELSE 0;
+    \* Hand-over preparation (NurseryRegion.cpp:743-782): the hand-over and ageing
+    \* extents' ylos_gen lists become this minor's YLOS snapshots (hand_ylos,
+    \* age_ylos), which ys expresses as Gen(hand) / Gen(agex). Address-keyed
+    \* (CR-034): an entry ys does not express (ystale) is claimed for its list
+    \* when the prep's check passes; hand_ylos is searched first everywhere
+    \* (reachYoungLargeR, markTarget), so the hand-over list wins. The occupant's
+    \* own list keeps its entry, now one ys does not express.
+    with mx = [c \in 1..YC |-> IF PrepMatch(c, hand) THEN hand
+                               ELSE IF PrepMatch(c, agex) THEN agex ELSE 0] do
+        ystale := [c \in 1..YC |->
+                     IF mx[c] = 0 THEN ystale[c]
+                     ELSE (ystale[c] \ {mx[c]})
+                          \cup (IF ys[c] \in {Gen(x) : x \in X} /\ xstate[ys[c][2]] = "Young"
+                                THEN {ys[c][2]} ELSE {})];
+        ys := [c \in 1..YC |-> IF mx[c] = 0 THEN ys[c] ELSE Gen(mx[c])];
+    end with;
+    \* The same preps re-mark the extents' large bodies by address (Hx.lb_bodies,
+    \* Ax.lb_bodies: markLargeBodySeen, NurseryRegion.cpp:749, :771), after the
+    \* colour flip (:675): whatever index entry sits there now carries this minor's colour.
+    ycol := LbColoured(hand) \cup LbColoured(agex);
     slots := SetToSeq({<<"root", r>> : r \in Roots});
   MN_Slot:                                         \* evacuateR, one slot per step
     while slots # <<>> do
@@ -507,17 +620,23 @@ begin
       MN_Classify:                                 \* TV1_Resolve holds here
         if IsE(t) \/ (prev # 0 /\ IsB(t, prev)) then   \* Eden / PrevBuilders: claim, copy (once)
             if efwd[t] = Nil then
-                if heap[t].b /\ BC > 0 /\ MUTANT # "builder_in_survivor" then
-                    heap[<<"B", fill, fbot>>] := heap[t];          \* the fill's builder area (age 0)
-                    efwd[t] := <<"B", fill, fbot>>;
-                    slots := slots \o FieldSlots(<<"B", fill, fbot>>, "bld");
-                    fbot := fbot + 1;
-                else
-                    heap[<<"S", fill, ftop>>] := heap[t];          \* the fill's survivor part (age 1)
-                    efwd[t] := <<"S", fill, ftop>>;
-                    slots := slots \o FieldSlots(<<"S", fill, ftop>>, "surv");
-                    ftop := ftop + 1;
-                end if;
+                \* a large header's body: lb_seen, and lb_bodies unless a builder (copyClaimedR, NR:421-426)
+                with bs = {heap[t].f[i] : i \in Fields} \cap {y \in YAddr : ys[y[2]] = YBody} do
+                    ycol := ycol \cup bs;
+                    if heap[t].b /\ BC > 0 /\ MUTANT # "builder_in_survivor" then
+                        heap[<<"B", fill, fbot>>] := heap[t];      \* the fill's builder area (age 0)
+                        efwd[t] := <<"B", fill, fbot>>;
+                        slots := slots \o FieldSlots(<<"B", fill, fbot>>, "bld");
+                        fbot := fbot + 1;
+                    else
+                        heap[<<"S", fill, ftop>>] := heap[t];      \* the fill's survivor part (age 1)
+                        efwd[t] := <<"S", fill, ftop>>;
+                        slots := slots \o FieldSlots(<<"S", fill, ftop>>, "surv");
+                        ftop := ftop + 1;
+                        lbl := [c \in 1..YC |-> IF <<"Y", c>> \in bs
+                                                THEN lbl[c] \cup {<<fill, heap[<<"Y", c>>].lid>>} ELSE lbl[c]];
+                    end if;
+                end with;
             end if;
           MN_Fwd:
             v := efwd[t];
@@ -539,8 +658,10 @@ begin
           MN_Resolve:
             if MUTANT # "no_resolve" then SetSlot(cur, v); end if;
         elsif IsY(t) then                          \* reachYoungLargeR (never moved)
-            if ys[t[2]] = Y0 then                \* first reach: joins generation m, scanned
+            if ys[t[2]] = Y0 /\ t \notin ycol then   \* first reach: joins generation m, scanned
+                                                   \* (colour already this minor's: "already reached", NR:526)
                 ys[t[2]] := Gen(fill);
+                yjoin[t[2]] := fill;               \* (ghost) and its address joins fill's ylos_gen
                 slots := slots \o FieldSlots(t, "yy");
             elsif hand # 0 /\ ys[t[2]] = Gen(hand) /\ t \notin ypr then   \* a hand-over member: reached
                 ypr := ypr \cup {t};
@@ -557,12 +678,19 @@ begin
                IF \/ IsE(a)
                   \/ retire # 0 /\ (IsS(a, retire) \/ IsB(a, retire))
                   \/ prev # 0 /\ IsB(a, prev)       \* the previous builder area: every builder re-copied
-                  \/ (IsY(a) /\ cycle # "Marking"
-                      /\ (ys[a[2]] = Y0 \/ (retire # 0 /\ ys[a[2]] = Gen(retire) /\ MUTANT # "keep_unreached_ylos")))
+                  \/ (IsY(a) /\ cycle # "Marking" /\ a \notin ycol
+                      /\ (ys[a[2]] \in {Y0, YBody} \/ (retire # 0 /\ ys[a[2]] = Gen(retire) /\ MUTANT # "keep_unreached_ylos")))
                THEN Empty ELSE heap[a]];
-    ys := [c \in 1..YC |->                         \* sweepNurseryLargeBodies (deferred mid-cycle)
-             IF ys[c] = Y0 \/ (retire # 0 /\ ys[c] = Gen(retire) /\ MUTANT # "keep_unreached_ylos")
+    yjoin := [c \in 1..YC |->
+                IF ys[c] = Y0 \/ (retire # 0 /\ ys[c] = Gen(retire) /\ MUTANT # "keep_unreached_ylos")
+                THEN 0 ELSE yjoin[c]];
+    ystale := [c \in 1..YC |-> {x \in ystale[c] : x # hand /\ x # retire}];   \* lists read only while Young
+    lbl := [c \in 1..YC |-> {en \in lbl[c] : en[1] # hand /\ en[1] # retire}];
+    ys := [c \in 1..YC |->                         \* sweepNurseryLargeBodies (deferred mid-cycle): colour
+             IF <<"Y", c>> \notin ycol                 \* not this minor's
+                /\ (ys[c] \in {Y0, YBody} \/ (retire # 0 /\ ys[c] = Gen(retire) /\ MUTANT # "keep_unreached_ylos"))
              THEN (IF cycle = "Marking" THEN YDead ELSE YFree) ELSE ys[c]];
+    ycol := {};
     xstate := [x \in X |-> IF x = fill THEN "Young"
                            ELSE IF x = hand THEN "Tenuring"
                            ELSE IF x = retire THEN "Free" ELSE xstate[x]];
@@ -578,7 +706,7 @@ begin
             heap := [a \in Addr |-> IF (OldAddr(a) /\ a \notin (OldClose(grey) \cup black))
                                        \/ (IsY(a) /\ ys[a[2]] = YDead)
                                     THEN Empty ELSE heap[a]];
-            ys := [c \in 1..YC |-> IF ys[c] = YDead \/ (ys[c] = YOld /\ <<"Y", c>> \notin (OldClose(grey) \cup black))
+            ys := [c \in 1..YC |-> IF ys[c] = YDead \/ (ys[c] \in {YOld, YBody} /\ <<"Y", c>> \notin (OldClose(grey) \cup black))
                                    THEN YFree ELSE ys[c]];
             cycle := "Idle"; grey := {}; black := {}; cage := 0;
         else
@@ -650,12 +778,20 @@ begin
         heap := [a \in Addr |-> IF (OldAddr(a) /\ a \notin (OldClose(grey) \cup black))
                                    \/ (IsY(a) /\ ys[a[2]] = YDead)
                                 THEN Empty ELSE heap[a]];
-        ys := [c \in 1..YC |-> IF ys[c] = YDead \/ (ys[c] = YOld /\ <<"Y", c>> \notin (OldClose(grey) \cup black))
+        ys := [c \in 1..YC |-> IF ys[c] = YDead \/ (ys[c] \in {YOld, YBody} /\ <<"Y", c>> \notin (OldClose(grey) \cup black))
                                THEN YFree ELSE ys[c]];
         cycle := "Idle"; grey := {}; black := {}; cage := 0;
     end if;
   MJ_Mark:                                         \* STW mark with majorRedirect; TV1_Major holds here
     heap := [a \in Addr |-> IF (IsO(a) \/ IsY(a)) /\ a \notin MajorLive THEN Empty ELSE heap[a]];
+    \* CR-034: the major erases a dead member's index entry (releaseBlockToAllocator /
+    \* retireDeadLargeBodies) but not its address in the extent's ylos_gen.
+    ystale := [c \in 1..YC |->
+                 IF AddrKeyed /\ <<"Y", c>> \notin MajorLive /\ ys[c] \in {Gen(x) : x \in X}
+                    /\ xstate[ys[c][2]] = "Young"
+                 THEN ystale[c] \cup {ys[c][2]} ELSE ystale[c]];
+    yjoin := [c \in 1..YC |-> IF <<"Y", c>> \notin MajorLive THEN 0 ELSE yjoin[c]];
+    lbl := [c \in 1..YC |-> IF LbKey = "drop" /\ <<"Y", c>> \notin MajorLive THEN {} ELSE lbl[c]];
     ys := [c \in 1..YC |-> IF <<"Y", c>> \notin MajorLive THEN YFree ELSE ys[c]];
     goto M_Epoch;
 end process;
@@ -697,10 +833,11 @@ end algorithm; *)
 \* BEGIN TRANSLATION
 CONSTANT defaultInitValue
 VARIABLES pc, heap, root, lheap, lroot, nextLid, ops, ebump, xstate, xage, 
-          gen, shadow, ys, job, jstarts, jheal, jstack, ns, nh, jreached, 
-          jylos, ny, ageX, jSA, nsa, astack, amark, swept, zap, grant, stop, 
-          running, calive, go, minors, majors, S, H, SA, ypr, cycle, grey, 
-          black, cage, liveHand, liveHandY, liveAge, cw, ncopy, stack
+          gen, shadow, ys, ystale, yrec, yjoin, lbl, ycol, bodyLids, job, 
+          jstarts, jheal, jstack, ns, nh, jreached, jylos, ny, ageX, jSA, nsa, 
+          astack, amark, swept, zap, grant, stop, running, calive, go, minors, 
+          majors, S, H, SA, ypr, cycle, grey, black, cage, liveHand, 
+          liveHandY, liveAge, cw, ncopy, stack
 
 (* define statement *)
 LidOf(a) == IF a = Nil THEN 0 ELSE heap[a].lid
@@ -726,15 +863,39 @@ PlainHeld == {root[q] : q \in {q2 \in Roots : ~IsBld(root[q2])}}
 HealVal(s) == IF s[1][1] = "R" THEN root[s[1][2]] ELSE heap[s[1]].f[s[2]]
 AgeCells == IF ageX = 0 THEN {}
             ELSE {a \in SAddr : a[2] = ageX} \cup {y \in YAddr : ys[y[2]] = Gen(ageX)}
+Close(G) == CloseIn(G, heap)
+ReachAll == Close({root[r] : r \in Roots}) \ {Nil}
+
 
 
 Walk(skipTenuring) ==
     {a \in SAddr : heap[a].lid # 0 /\ (xstate[a[2]] = "Young"
-                                       \/ (xstate[a[2]] = "Tenuring" /\ ~skipTenuring))}
-    \cup {a \in BAddr : heap[a].lid # 0 /\ xstate[a[2]] = "Young" /\ xage[a[2]] = 1}
+                                       \/ (xstate[a[2]] = "Tenuring" /\ ~skipTenuring))
+                   /\ (Cr017Oracle => a \in ReachAll)}
+    \cup {a \in BAddr : heap[a].lid # 0 /\ xstate[a[2]] = "Young" /\ xage[a[2]] = 1
+                        /\ (Cr017Oracle => a \in ReachAll)}
     \cup {y \in YAddr : YoungY(y)}
-Close(G) == CloseIn(G, heap)
-ReachAll == Close({root[r] : r \in Roots}) \ {Nil}
+
+
+
+
+
+AddrKeyed == YlosGen \notin {"identity", "drop"}
+PrepOK(c) == CASE YlosGen = "age1"  -> ys[c] # Y0
+               [] YlosGen = "stamp" -> FALSE
+               [] YlosGen = "lbid"  -> yrec[c]
+               [] OTHER             -> TRUE
+PrepMatch(c, x) == x # 0 /\ x \in ystale[c] /\ ys[c] \in YoungYS /\ PrepOK(c)
+
+
+IsBodyRef(v) == v # Nil /\ IsY(v) /\ heap[v].lid \in bodyLids
+LbMatch(c, en) == /\ ys[c] \in YoungYS \cup {YBody}
+                  /\ CASE LbKey = "kind"     -> ys[c] = YBody
+                       [] LbKey = "identity" -> heap[<<"Y", c>>].lid = en[2]
+                       [] OTHER              -> TRUE
+LbColoured(x) == {<<"Y", c>> : c \in {c2 \in 1..YC : \E en \in lbl[c2] : en[1] = x /\ LbMatch(c2, en)}}
+
+LbPromoted == {v \in YAddr : ys[v[2]] = YBody /\ \E a \in cw \cap OAddr, i \in Fields : heap[a].f[i] = v}
 OldClose(G) == Close(G) \ {Nil}
 
 Redir(a) == IF a # Nil /\ job.st = "Merged" /\ IsS(a, job.x) /\ xstate[job.x] = "Tenuring"
@@ -778,6 +939,10 @@ YoungWalkValid ==
     (pc[MutId] = "MN_Cycle" /\ CycleAllowed /\ cycle = "Idle") =>
         \A a \in Walk(FALSE) : \A i \in Fields :
             heap[a].f[i] # Nil => Allocated(heap[a].f[i])
+T0GreyAllocated ==
+    (pc[MutId] = "MN_Cycle" /\ CycleAllowed /\ cycle = "Idle") =>
+        \A a \in Walk(FALSE) : \A i \in Fields :
+            (heap[a].f[i] # Nil /\ OldAddr(heap[a].f[i])) => Allocated(heap[a].f[i])
 TenuredEqualsLegacy ==
     AtMerge =>
         /\ {a \in XObjs(job.x) : FwdOf(a) # Nil} = liveHand
@@ -799,17 +964,21 @@ BuilderYoung ==
     \A a \in Addr : (heap[a].lid # 0 /\ heap[a].b) => (IsE(a) \/ a[1] = "B")
 YlosFreed ==
     InEpoch => \A c \in 1..YC : ys[c] \in {Gen(x) : x \in X} => xstate[ys[c][2]] # "Free"
+YlosGenIdentity ==
+    \A c \in 1..YC :
+        ys[c] \in {Gen(x) : x \in X} => yjoin[c] = ys[c][2]
 
 VARIABLES canStop, tgt, fix, e, res, sc, si, scy, slots, efwd, fill, hand, 
           agex, prev, retire, ftop, fbot, cur, t, v
 
 vars == << pc, heap, root, lheap, lroot, nextLid, ops, ebump, xstate, xage, 
-           gen, shadow, ys, job, jstarts, jheal, jstack, ns, nh, jreached, 
-           jylos, ny, ageX, jSA, nsa, astack, amark, swept, zap, grant, stop, 
-           running, calive, go, minors, majors, S, H, SA, ypr, cycle, grey, 
-           black, cage, liveHand, liveHandY, liveAge, cw, ncopy, stack, 
-           canStop, tgt, fix, e, res, sc, si, scy, slots, efwd, fill, hand, 
-           agex, prev, retire, ftop, fbot, cur, t, v >>
+           gen, shadow, ys, ystale, yrec, yjoin, lbl, ycol, bodyLids, job, 
+           jstarts, jheal, jstack, ns, nh, jreached, jylos, ny, ageX, jSA, 
+           nsa, astack, amark, swept, zap, grant, stop, running, calive, go, 
+           minors, majors, S, H, SA, ypr, cycle, grey, black, cage, liveHand, 
+           liveHandY, liveAge, cw, ncopy, stack, canStop, tgt, fix, e, res, 
+           sc, si, scy, slots, efwd, fill, hand, agex, prev, retire, ftop, 
+           fbot, cur, t, v >>
 
 ProcSet == {MutId} \cup (CollIds) \cup {EnvId}
 
@@ -827,6 +996,12 @@ Init == (* Global variables *)
         /\ gen = [x \in X |-> 0]
         /\ shadow = [x \in X |-> [c \in 1..SC |-> NoEntry]]
         /\ ys = [c \in 1..YC |-> YFree]
+        /\ ystale = [c \in 1..YC |-> {}]
+        /\ yrec = [c \in 1..YC |-> FALSE]
+        /\ yjoin = [c \in 1..YC |-> 0]
+        /\ lbl = [c \in 1..YC |-> {}]
+        /\ ycol = {}
+        /\ bodyLids = {}
         /\ job = [st |-> "None", x |-> 0]
         /\ jstarts = <<>>
         /\ jheal = <<>>
@@ -909,7 +1084,8 @@ E_Loop(self) == /\ pc[self] = "E_Loop"
                            /\ UNCHANGED << stack, canStop, tgt, fix, e, res, 
                                            sc, si, scy >>
                 /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                                xstate, xage, gen, shadow, ys, job, jstarts, 
+                                xstate, xage, gen, shadow, ys, ystale, yrec, 
+                                yjoin, lbl, ycol, bodyLids, job, jstarts, 
                                 jheal, jstack, ns, nh, jreached, jylos, ny, 
                                 ageX, jSA, nsa, astack, amark, swept, zap, 
                                 grant, stop, running, calive, go, minors, 
@@ -1077,13 +1253,14 @@ E_Item(self) == /\ pc[self] = "E_Item"
                                                       nsa, astack, amark, 
                                                       swept, zap >>
                 /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                                xstate, xage, gen, shadow, ys, job, jstarts, 
-                                ageX, jSA, grant, stop, running, calive, go, 
-                                minors, majors, S, H, SA, ypr, cycle, grey, 
-                                black, cage, liveHand, liveHandY, liveAge, cw, 
-                                ncopy, stack, canStop, e, res, slots, efwd, 
-                                fill, hand, agex, prev, retire, ftop, fbot, 
-                                cur, t, v >>
+                                xstate, xage, gen, shadow, ys, ystale, yrec, 
+                                yjoin, lbl, ycol, bodyLids, job, jstarts, ageX, 
+                                jSA, grant, stop, running, calive, go, minors, 
+                                majors, S, H, SA, ypr, cycle, grey, black, 
+                                cage, liveHand, liveHandY, liveAge, cw, ncopy, 
+                                stack, canStop, e, res, slots, efwd, fill, 
+                                hand, agex, prev, retire, ftop, fbot, cur, t, 
+                                v >>
 
 E_Load(self) == /\ pc[self] = "E_Load"
                 /\ ~canStop[self] \/ calive
@@ -1110,7 +1287,8 @@ E_Load(self) == /\ pc[self] = "E_Load"
                                                  /\ res' = res
                            /\ UNCHANGED << jreached, jylos >>
                 /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                                xstate, xage, gen, shadow, ys, job, jstarts, 
+                                xstate, xage, gen, shadow, ys, ystale, yrec, 
+                                yjoin, lbl, ycol, bodyLids, job, jstarts, 
                                 jheal, jstack, ns, nh, ny, ageX, jSA, nsa, 
                                 astack, amark, swept, zap, grant, stop, 
                                 running, calive, go, minors, majors, S, H, SA, 
@@ -1127,7 +1305,8 @@ E_Claim(self) == /\ pc[self] = "E_Claim"
                        ELSE /\ pc' = [pc EXCEPT ![self] = "E_Load"]
                             /\ UNCHANGED shadow
                  /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                                 xstate, xage, gen, ys, job, jstarts, jheal, 
+                                 xstate, xage, gen, ys, ystale, yrec, yjoin, 
+                                 lbl, ycol, bodyLids, job, jstarts, jheal, 
                                  jstack, ns, nh, jreached, jylos, ny, ageX, 
                                  jSA, nsa, astack, amark, swept, zap, grant, 
                                  stop, running, calive, go, minors, majors, S, 
@@ -1141,16 +1320,17 @@ E_WaitBusy(self) == /\ pc[self] = "E_WaitBusy"
                     /\ (~canStop[self] \/ calive) /\ ~Busy(tgt[self])
                     /\ pc' = [pc EXCEPT ![self] = "E_Load"]
                     /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, 
-                                    ebump, xstate, xage, gen, shadow, ys, job, 
-                                    jstarts, jheal, jstack, ns, nh, jreached, 
-                                    jylos, ny, ageX, jSA, nsa, astack, amark, 
-                                    swept, zap, grant, stop, running, calive, 
-                                    go, minors, majors, S, H, SA, ypr, cycle, 
-                                    grey, black, cage, liveHand, liveHandY, 
-                                    liveAge, cw, ncopy, stack, canStop, tgt, 
-                                    fix, e, res, sc, si, scy, slots, efwd, 
-                                    fill, hand, agex, prev, retire, ftop, fbot, 
-                                    cur, t, v >>
+                                    ebump, xstate, xage, gen, shadow, ys, 
+                                    ystale, yrec, yjoin, lbl, ycol, bodyLids, 
+                                    job, jstarts, jheal, jstack, ns, nh, 
+                                    jreached, jylos, ny, ageX, jSA, nsa, 
+                                    astack, amark, swept, zap, grant, stop, 
+                                    running, calive, go, minors, majors, S, H, 
+                                    SA, ypr, cycle, grey, black, cage, 
+                                    liveHand, liveHandY, liveAge, cw, ncopy, 
+                                    stack, canStop, tgt, fix, e, res, sc, si, 
+                                    scy, slots, efwd, fill, hand, agex, prev, 
+                                    retire, ftop, fbot, cur, t, v >>
 
 E_Copy(self) == /\ pc[self] = "E_Copy"
                 /\ ~canStop[self] \/ calive
@@ -1166,7 +1346,8 @@ E_Copy(self) == /\ pc[self] = "E_Copy"
                                 /\ black' = black
                 /\ pc' = [pc EXCEPT ![self] = "E_Pub"]
                 /\ UNCHANGED << root, lheap, lroot, nextLid, ops, ebump, 
-                                xstate, xage, gen, shadow, ys, job, jstarts, 
+                                xstate, xage, gen, shadow, ys, ystale, yrec, 
+                                yjoin, lbl, ycol, bodyLids, job, jstarts, 
                                 jheal, jstack, ns, nh, jreached, jylos, ny, 
                                 ageX, jSA, nsa, astack, amark, swept, zap, 
                                 grant, stop, running, calive, go, minors, 
@@ -1182,8 +1363,9 @@ E_Pub(self) == /\ pc[self] = "E_Pub"
                /\ jstack' = Append(jstack, res[self])
                /\ pc' = [pc EXCEPT ![self] = "E_Fix"]
                /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                               xstate, xage, gen, ys, job, jstarts, jheal, ns, 
-                               nh, jreached, jylos, ny, ageX, jSA, nsa, astack, 
+                               xstate, xage, gen, ys, ystale, yrec, yjoin, lbl, 
+                               ycol, bodyLids, job, jstarts, jheal, ns, nh, 
+                               jreached, jylos, ny, ageX, jSA, nsa, astack, 
                                amark, swept, zap, grant, stop, running, calive, 
                                go, minors, majors, S, H, SA, ypr, cycle, grey, 
                                black, cage, liveHand, liveHandY, liveAge, cw, 
@@ -1211,8 +1393,9 @@ E_Fix(self) == /\ pc[self] = "E_Fix"
                /\ res' = [res EXCEPT ![self] = Nil]
                /\ pc' = [pc EXCEPT ![self] = "E_Loop"]
                /\ UNCHANGED << root, lheap, lroot, nextLid, ops, ebump, xstate, 
-                               xage, gen, shadow, ys, job, jstarts, jstack, ns, 
-                               nh, jreached, jylos, ny, ageX, jSA, nsa, astack, 
+                               xage, gen, shadow, ys, ystale, yrec, yjoin, lbl, 
+                               ycol, bodyLids, job, jstarts, jstack, ns, nh, 
+                               jreached, jylos, ny, ageX, jSA, nsa, astack, 
                                amark, swept, zap, grant, stop, running, calive, 
                                go, minors, majors, S, H, SA, ypr, cycle, grey, 
                                black, cage, liveHand, liveHandY, liveAge, 
@@ -1233,14 +1416,15 @@ E_Ret(self) == /\ pc[self] = "E_Ret"
                /\ canStop' = [canStop EXCEPT ![self] = Head(stack[self]).canStop]
                /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                               xstate, xage, gen, shadow, ys, job, jstarts, 
-                               jheal, jstack, ns, nh, jreached, jylos, ny, 
-                               ageX, jSA, nsa, astack, amark, swept, zap, 
-                               grant, stop, running, calive, go, minors, 
-                               majors, S, H, SA, ypr, cycle, grey, black, cage, 
-                               liveHand, liveHandY, liveAge, cw, ncopy, slots, 
-                               efwd, fill, hand, agex, prev, retire, ftop, 
-                               fbot, cur, t, v >>
+                               xstate, xage, gen, shadow, ys, ystale, yrec, 
+                               yjoin, lbl, ycol, bodyLids, job, jstarts, jheal, 
+                               jstack, ns, nh, jreached, jylos, ny, ageX, jSA, 
+                               nsa, astack, amark, swept, zap, grant, stop, 
+                               running, calive, go, minors, majors, S, H, SA, 
+                               ypr, cycle, grey, black, cage, liveHand, 
+                               liveHandY, liveAge, cw, ncopy, slots, efwd, 
+                               fill, hand, agex, prev, retire, ftop, fbot, cur, 
+                               t, v >>
 
 Engine(self) == E_Loop(self) \/ E_Item(self) \/ E_Load(self)
                    \/ E_Claim(self) \/ E_WaitBusy(self) \/ E_Copy(self)
@@ -1257,7 +1441,8 @@ J_Wait(self) == /\ pc[self] = "J_Wait"
                       ELSE /\ pc' = [pc EXCEPT ![self] = "J_Merge"]
                            /\ stop' = stop
                 /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                                xstate, xage, gen, shadow, ys, job, jstarts, 
+                                xstate, xage, gen, shadow, ys, ystale, yrec, 
+                                yjoin, lbl, ycol, bodyLids, job, jstarts, 
                                 jheal, jstack, ns, nh, jreached, jylos, ny, 
                                 ageX, jSA, nsa, astack, amark, swept, zap, 
                                 grant, running, calive, go, minors, majors, S, 
@@ -1293,7 +1478,8 @@ J_Help(self) == /\ pc[self] = "J_Help"
                            /\ UNCHANGED << stack, canStop, tgt, fix, e, res, 
                                            sc, si, scy >>
                 /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                                xstate, xage, gen, shadow, ys, job, jstarts, 
+                                xstate, xage, gen, shadow, ys, ystale, yrec, 
+                                yjoin, lbl, ycol, bodyLids, job, jstarts, 
                                 jheal, jstack, ns, nh, jreached, jylos, ny, 
                                 ageX, jSA, nsa, astack, amark, swept, zap, 
                                 grant, stop, running, calive, go, minors, 
@@ -1306,7 +1492,8 @@ J_Stop(self) == /\ pc[self] = "J_Stop"
                 /\ running = 0 \/ ~calive
                 /\ pc' = [pc EXCEPT ![self] = "J_Help"]
                 /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                                xstate, xage, gen, shadow, ys, job, jstarts, 
+                                xstate, xage, gen, shadow, ys, ystale, yrec, 
+                                yjoin, lbl, ycol, bodyLids, job, jstarts, 
                                 jheal, jstack, ns, nh, jreached, jylos, ny, 
                                 ageX, jSA, nsa, astack, amark, swept, zap, 
                                 grant, stop, running, calive, go, minors, 
@@ -1328,35 +1515,39 @@ J_Merge(self) == /\ pc[self] = "J_Merge"
                             /\ root' = [r \in Roots |->
                                           IF <<<<"R", r>>, 1>> \in Range(jheal) /\ IsS(root[r], job.x)
                                           THEN FwdOf(root[r]) ELSE root[r]]
-                            /\ ys' = [c \in 1..YC |-> IF <<"Y", c>> \in jreached /\ ys[c] = Gen(job.x) THEN YOld ELSE ys[c]]
+                            /\ yjoin' = [c \in 1..YC |-> IF <<"Y", c>> \in jreached /\ ys[c] = Gen(job.x) THEN 0 ELSE yjoin[c]]
+                            /\ ys' = [c \in 1..YC |-> IF \/ <<"Y", c>> \in jreached /\ ys[c] = Gen(job.x)
+                                                         \/ <<"Y", c>> \in LbPromoted
+                                                      THEN YOld ELSE ys[c]]
                             /\ job' = [job EXCEPT !.st = "Merged"]
                             /\ grant' = {}
                        ELSE /\ TRUE
-                            /\ UNCHANGED << heap, root, ys, job, grant >>
+                            /\ UNCHANGED << heap, root, ys, yjoin, job, grant >>
                  /\ pc' = [pc EXCEPT ![self] = "J_Ret"]
                  /\ UNCHANGED << lheap, lroot, nextLid, ops, ebump, xstate, 
-                                 xage, gen, shadow, jstarts, jheal, jstack, ns, 
-                                 nh, jreached, jylos, ny, ageX, jSA, nsa, 
-                                 astack, amark, swept, zap, stop, running, 
-                                 calive, go, minors, majors, S, H, SA, ypr, 
-                                 cycle, grey, black, cage, liveHand, liveHandY, 
-                                 liveAge, cw, ncopy, stack, canStop, tgt, fix, 
-                                 e, res, sc, si, scy, slots, efwd, fill, hand, 
-                                 agex, prev, retire, ftop, fbot, cur, t, v >>
+                                 xage, gen, shadow, ystale, yrec, lbl, ycol, 
+                                 bodyLids, jstarts, jheal, jstack, ns, nh, 
+                                 jreached, jylos, ny, ageX, jSA, nsa, astack, 
+                                 amark, swept, zap, stop, running, calive, go, 
+                                 minors, majors, S, H, SA, ypr, cycle, grey, 
+                                 black, cage, liveHand, liveHandY, liveAge, cw, 
+                                 ncopy, stack, canStop, tgt, fix, e, res, sc, 
+                                 si, scy, slots, efwd, fill, hand, agex, prev, 
+                                 retire, ftop, fbot, cur, t, v >>
 
 J_Ret(self) == /\ pc[self] = "J_Ret"
                /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                               xstate, xage, gen, shadow, ys, job, jstarts, 
-                               jheal, jstack, ns, nh, jreached, jylos, ny, 
-                               ageX, jSA, nsa, astack, amark, swept, zap, 
-                               grant, stop, running, calive, go, minors, 
-                               majors, S, H, SA, ypr, cycle, grey, black, cage, 
-                               liveHand, liveHandY, liveAge, cw, ncopy, 
-                               canStop, tgt, fix, e, res, sc, si, scy, slots, 
-                               efwd, fill, hand, agex, prev, retire, ftop, 
-                               fbot, cur, t, v >>
+                               xstate, xage, gen, shadow, ys, ystale, yrec, 
+                               yjoin, lbl, ycol, bodyLids, job, jstarts, jheal, 
+                               jstack, ns, nh, jreached, jylos, ny, ageX, jSA, 
+                               nsa, astack, amark, swept, zap, grant, stop, 
+                               running, calive, go, minors, majors, S, H, SA, 
+                               ypr, cycle, grey, black, cage, liveHand, 
+                               liveHandY, liveAge, cw, ncopy, canStop, tgt, 
+                               fix, e, res, sc, si, scy, slots, efwd, fill, 
+                               hand, agex, prev, retire, ftop, fbot, cur, t, v >>
 
 JoinMerge(self) == J_Wait(self) \/ J_Help(self) \/ J_Stop(self)
                       \/ J_Merge(self) \/ J_Ret(self)
@@ -1373,7 +1564,7 @@ M_Epoch == /\ pc[MutId] = "M_Epoch"
                         /\ nextLid' = nextLid + 1
                         /\ ops' = ops + 1
                  /\ pc' = [pc EXCEPT ![MutId] = "M_Epoch"]
-                 /\ UNCHANGED <<ys, black>>
+                 /\ UNCHANGED <<ys, yrec, yjoin, bodyLids, black>>
               \/ /\ CanOp("balloc") /\ ebump <= EC /\ nextLid <= MaxLid
                     /\ Cardinality({a \in Addr : heap[a].lid # 0 /\ heap[a].b}) < BC
                  /\ \E r \in Roots:
@@ -1386,40 +1577,64 @@ M_Epoch == /\ pc[MutId] = "M_Epoch"
                         /\ nextLid' = nextLid + 1
                         /\ ops' = ops + 1
                  /\ pc' = [pc EXCEPT ![MutId] = "M_Epoch"]
-                 /\ UNCHANGED <<ys, black>>
+                 /\ UNCHANGED <<ys, yrec, yjoin, bodyLids, black>>
               \/ /\ CanOp("yalloc") /\ nextLid <= MaxLid /\ \E c \in 1..YC : ys[c] = YFree
                  /\ LET c == CHOOSE c2 \in 1..YC : ys[c2] = YFree IN
                       \E r \in Roots:
                         \E fv \in [Fields -> {Nil} \cup PlainHeld]:
-                          /\ lheap' = [lheap EXCEPT ![nextLid] = [i \in Fields |-> LidOf(fv[i])]]
-                          /\ heap' = [heap EXCEPT ![<<"Y", c>>] = [lid |-> nextLid, f |-> fv, b |-> FALSE]]
-                          /\ ys' = [ys EXCEPT ![c] = Y0]
-                          /\ IF cycle = "Marking"
-                                THEN /\ black' = (black \cup {<<"Y", c>>})
-                                ELSE /\ TRUE
-                                     /\ black' = black
-                          /\ root' = [root EXCEPT ![r] = <<"Y", c>>]
-                          /\ lroot' = [lroot EXCEPT ![r] = nextLid]
-                          /\ nextLid' = nextLid + 1
-                          /\ ops' = ops + 1
+                          \E rec \in (IF YlosGen = "lbid" /\ ystale[c] # {} THEN BOOLEAN ELSE {FALSE}):
+                            /\ lheap' = [lheap EXCEPT ![nextLid] = [i \in Fields |-> LidOf(fv[i])]]
+                            /\ heap' = [heap EXCEPT ![<<"Y", c>>] = [lid |-> nextLid, f |-> fv, b |-> FALSE]]
+                            /\ ys' = [ys EXCEPT ![c] = Y0]
+                            /\ yrec' = [yrec EXCEPT ![c] = rec]
+                            /\ yjoin' = [yjoin EXCEPT ![c] = 0]
+                            /\ IF cycle = "Marking"
+                                  THEN /\ black' = (black \cup {<<"Y", c>>})
+                                  ELSE /\ TRUE
+                                       /\ black' = black
+                            /\ root' = [root EXCEPT ![r] = <<"Y", c>>]
+                            /\ lroot' = [lroot EXCEPT ![r] = nextLid]
+                            /\ nextLid' = nextLid + 1
+                            /\ ops' = ops + 1
                  /\ pc' = [pc EXCEPT ![MutId] = "M_Epoch"]
-                 /\ ebump' = ebump
+                 /\ UNCHANGED <<ebump, bodyLids>>
+              \/ /\ CanOp("lalloc") /\ ebump <= EC /\ nextLid + 1 <= MaxLid /\ \E c \in 1..YC : ys[c] = YFree
+                 /\ LET c == CHOOSE c2 \in 1..YC : ys[c2] = YFree IN
+                      \E r \in Roots:
+                        /\ lheap' = [lheap EXCEPT ![nextLid] = [i \in Fields |-> IF i = 1 THEN nextLid + 1 ELSE 0],
+                                                  ![nextLid + 1] = [i \in Fields |-> 0]]
+                        /\ heap' = [heap EXCEPT ![<<"E", ebump>>] = [lid |-> nextLid, b |-> FALSE,
+                                                                     f |-> [i \in Fields |-> IF i = 1 THEN <<"Y", c>> ELSE Nil]],
+                                                ![<<"Y", c>>] = [Empty EXCEPT !.lid = nextLid + 1]]
+                        /\ ys' = [ys EXCEPT ![c] = YBody]
+                        /\ bodyLids' = (bodyLids \cup {nextLid + 1})
+                        /\ IF cycle = "Marking"
+                              THEN /\ black' = (black \cup {<<"Y", c>>})
+                              ELSE /\ TRUE
+                                   /\ black' = black
+                        /\ root' = [root EXCEPT ![r] = <<"E", ebump>>]
+                        /\ lroot' = [lroot EXCEPT ![r] = nextLid]
+                        /\ ebump' = ebump + 1
+                        /\ nextLid' = nextLid + 2
+                        /\ ops' = ops + 1
+                 /\ pc' = [pc EXCEPT ![MutId] = "M_Epoch"]
+                 /\ UNCHANGED <<yrec, yjoin>>
               \/ /\ CanOp("load")
                  /\ \E r \in Roots:
                       \E q \in {q2 \in Roots : root[q2] # Nil}:
-                        \E i \in Fields:
+                        \E i \in {i2 \in Fields : ~IsBodyRef(heap[root[q]].f[i2])}:
                           /\ root' = [root EXCEPT ![r] = heap[root[q]].f[i]]
                           /\ lroot' = [lroot EXCEPT ![r] = IF lroot[q] = 0 THEN 0 ELSE lheap[lroot[q]][i]]
                           /\ ops' = ops + 1
                  /\ pc' = [pc EXCEPT ![MutId] = "M_Epoch"]
-                 /\ UNCHANGED <<heap, lheap, nextLid, ebump, ys, black>>
+                 /\ UNCHANGED <<heap, lheap, nextLid, ebump, ys, yrec, yjoin, bodyLids, black>>
               \/ /\ CanOp("drop")
                  /\ \E r \in {r2 \in Roots : root[r2] # Nil}:
                       /\ root' = [root EXCEPT ![r] = Nil]
                       /\ lroot' = [lroot EXCEPT ![r] = 0]
                       /\ ops' = ops + 1
                  /\ pc' = [pc EXCEPT ![MutId] = "M_Epoch"]
-                 /\ UNCHANGED <<heap, lheap, nextLid, ebump, ys, black>>
+                 /\ UNCHANGED <<heap, lheap, nextLid, ebump, ys, yrec, yjoin, bodyLids, black>>
               \/ /\ CanOp("bwrite")
                  /\ \E r \in {r2 \in Roots : IsBld(root[r2])}:
                       \E i \in Fields:
@@ -1431,31 +1646,31 @@ M_Epoch == /\ pc[MutId] = "M_Epoch"
                                      /\ lheap' = lheap
                           /\ ops' = ops + 1
                  /\ pc' = [pc EXCEPT ![MutId] = "M_Epoch"]
-                 /\ UNCHANGED <<root, lroot, nextLid, ebump, ys, black>>
+                 /\ UNCHANGED <<root, lroot, nextLid, ebump, ys, yrec, yjoin, bodyLids, black>>
               \/ /\ CanOp("bclear")
                  /\ \E r \in {r2 \in Roots : IsBld(root[r2])}:
                       /\ heap' = [heap EXCEPT ![root[r]].b = FALSE]
                       /\ ops' = ops + 1
                  /\ pc' = [pc EXCEPT ![MutId] = "M_Epoch"]
-                 /\ UNCHANGED <<root, lheap, lroot, nextLid, ebump, ys, black>>
+                 /\ UNCHANGED <<root, lheap, lroot, nextLid, ebump, ys, yrec, yjoin, bodyLids, black>>
               \/ /\ minors < MaxMinors
                  /\ pc' = [pc EXCEPT ![MutId] = "MN_Join"]
-                 /\ UNCHANGED <<heap, root, lheap, lroot, nextLid, ops, ebump, ys, black>>
+                 /\ UNCHANGED <<heap, root, lheap, lroot, nextLid, ops, ebump, ys, yrec, yjoin, bodyLids, black>>
               \/ /\ MajorAllowed /\ majors < MaxMajors
                  /\ pc' = [pc EXCEPT ![MutId] = "MJ_Join"]
-                 /\ UNCHANGED <<heap, root, lheap, lroot, nextLid, ops, ebump, ys, black>>
+                 /\ UNCHANGED <<heap, root, lheap, lroot, nextLid, ops, ebump, ys, yrec, yjoin, bodyLids, black>>
               \/ /\ minors >= MaxMinors
                  /\ TRUE
                  /\ pc' = [pc EXCEPT ![MutId] = "M_Epoch"]
-                 /\ UNCHANGED <<heap, root, lheap, lroot, nextLid, ops, ebump, ys, black>>
-           /\ UNCHANGED << xstate, xage, gen, shadow, job, jstarts, jheal, 
-                           jstack, ns, nh, jreached, jylos, ny, ageX, jSA, nsa, 
-                           astack, amark, swept, zap, grant, stop, running, 
-                           calive, go, minors, majors, S, H, SA, ypr, cycle, 
-                           grey, cage, liveHand, liveHandY, liveAge, cw, ncopy, 
-                           stack, canStop, tgt, fix, e, res, sc, si, scy, 
-                           slots, efwd, fill, hand, agex, prev, retire, ftop, 
-                           fbot, cur, t, v >>
+                 /\ UNCHANGED <<heap, root, lheap, lroot, nextLid, ops, ebump, ys, yrec, yjoin, bodyLids, black>>
+           /\ UNCHANGED << xstate, xage, gen, shadow, ystale, lbl, ycol, job, 
+                           jstarts, jheal, jstack, ns, nh, jreached, jylos, ny, 
+                           ageX, jSA, nsa, astack, amark, swept, zap, grant, 
+                           stop, running, calive, go, minors, majors, S, H, SA, 
+                           ypr, cycle, grey, cage, liveHand, liveHandY, 
+                           liveAge, cw, ncopy, stack, canStop, tgt, fix, e, 
+                           res, sc, si, scy, slots, efwd, fill, hand, agex, 
+                           prev, retire, ftop, fbot, cur, t, v >>
 
 MN_Join == /\ pc[MutId] = "MN_Join"
            /\ stack' = [stack EXCEPT ![MutId] = << [ procedure |->  "JoinMerge",
@@ -1463,14 +1678,15 @@ MN_Join == /\ pc[MutId] = "MN_Join"
                                                  \o stack[MutId]]
            /\ pc' = [pc EXCEPT ![MutId] = "J_Wait"]
            /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                           xstate, xage, gen, shadow, ys, job, jstarts, jheal, 
-                           jstack, ns, nh, jreached, jylos, ny, ageX, jSA, nsa, 
-                           astack, amark, swept, zap, grant, stop, running, 
-                           calive, go, minors, majors, S, H, SA, ypr, cycle, 
-                           grey, black, cage, liveHand, liveHandY, liveAge, cw, 
-                           ncopy, canStop, tgt, fix, e, res, sc, si, scy, 
-                           slots, efwd, fill, hand, agex, prev, retire, ftop, 
-                           fbot, cur, t, v >>
+                           xstate, xage, gen, shadow, ys, ystale, yrec, yjoin, 
+                           lbl, ycol, bodyLids, job, jstarts, jheal, jstack, 
+                           ns, nh, jreached, jylos, ny, ageX, jSA, nsa, astack, 
+                           amark, swept, zap, grant, stop, running, calive, go, 
+                           minors, majors, S, H, SA, ypr, cycle, grey, black, 
+                           cage, liveHand, liveHandY, liveAge, cw, ncopy, 
+                           canStop, tgt, fix, e, res, sc, si, scy, slots, efwd, 
+                           fill, hand, agex, prev, retire, ftop, fbot, cur, t, 
+                           v >>
 
 MN_Begin == /\ pc[MutId] = "MN_Begin"
             /\ minors' = minors + 1
@@ -1482,16 +1698,26 @@ MN_Begin == /\ pc[MutId] = "MN_Begin"
             /\ prev' = (IF \E x \in X : xstate[x] = "Young" /\ xage[x] = 1
                         THEN CHOOSE x \in X : xstate[x] = "Young" /\ xage[x] = 1 ELSE 0)
             /\ retire' = (IF \E x \in X : xstate[x] = "Tenuring" THEN CHOOSE x \in X : xstate[x] = "Tenuring" ELSE 0)
+            /\ LET mx == [c \in 1..YC |-> IF PrepMatch(c, hand') THEN hand'
+                                          ELSE IF PrepMatch(c, agex') THEN agex' ELSE 0] IN
+                 /\ ystale' = [c \in 1..YC |->
+                                 IF mx[c] = 0 THEN ystale[c]
+                                 ELSE (ystale[c] \ {mx[c]})
+                                      \cup (IF ys[c] \in {Gen(x) : x \in X} /\ xstate[ys[c][2]] = "Young"
+                                            THEN {ys[c][2]} ELSE {})]
+                 /\ ys' = [c \in 1..YC |-> IF mx[c] = 0 THEN ys[c] ELSE Gen(mx[c])]
+            /\ ycol' = (LbColoured(hand') \cup LbColoured(agex'))
             /\ slots' = SetToSeq({<<"root", r>> : r \in Roots})
             /\ pc' = [pc EXCEPT ![MutId] = "MN_Slot"]
             /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                            xstate, xage, gen, shadow, ys, job, jstarts, jheal, 
-                            jstack, ns, nh, jreached, jylos, ny, ageX, jSA, 
-                            nsa, astack, amark, swept, zap, grant, stop, 
-                            running, calive, go, majors, S, H, SA, ypr, cycle, 
-                            grey, black, cage, liveHand, liveHandY, liveAge, 
-                            cw, ncopy, stack, canStop, tgt, fix, e, res, sc, 
-                            si, scy, efwd, ftop, fbot, cur, t, v >>
+                            xstate, xage, gen, shadow, yrec, yjoin, lbl, 
+                            bodyLids, job, jstarts, jheal, jstack, ns, nh, 
+                            jreached, jylos, ny, ageX, jSA, nsa, astack, amark, 
+                            swept, zap, grant, stop, running, calive, go, 
+                            majors, S, H, SA, ypr, cycle, grey, black, cage, 
+                            liveHand, liveHandY, liveAge, cw, ncopy, stack, 
+                            canStop, tgt, fix, e, res, sc, si, scy, efwd, ftop, 
+                            fbot, cur, t, v >>
 
 MN_Slot == /\ pc[MutId] = "MN_Slot"
            /\ IF slots # <<>>
@@ -1503,34 +1729,38 @@ MN_Slot == /\ pc[MutId] = "MN_Slot"
                  ELSE /\ pc' = [pc EXCEPT ![MutId] = "MN_Epilogue"]
                       /\ UNCHANGED << slots, cur, t >>
            /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                           xstate, xage, gen, shadow, ys, job, jstarts, jheal, 
-                           jstack, ns, nh, jreached, jylos, ny, ageX, jSA, nsa, 
-                           astack, amark, swept, zap, grant, stop, running, 
-                           calive, go, minors, majors, S, H, SA, ypr, cycle, 
-                           grey, black, cage, liveHand, liveHandY, liveAge, cw, 
-                           ncopy, stack, canStop, tgt, fix, e, res, sc, si, 
-                           scy, efwd, fill, hand, agex, prev, retire, ftop, 
-                           fbot, v >>
+                           xstate, xage, gen, shadow, ys, ystale, yrec, yjoin, 
+                           lbl, ycol, bodyLids, job, jstarts, jheal, jstack, 
+                           ns, nh, jreached, jylos, ny, ageX, jSA, nsa, astack, 
+                           amark, swept, zap, grant, stop, running, calive, go, 
+                           minors, majors, S, H, SA, ypr, cycle, grey, black, 
+                           cage, liveHand, liveHandY, liveAge, cw, ncopy, 
+                           stack, canStop, tgt, fix, e, res, sc, si, scy, efwd, 
+                           fill, hand, agex, prev, retire, ftop, fbot, v >>
 
 MN_Classify == /\ pc[MutId] = "MN_Classify"
                /\ IF IsE(t) \/ (prev # 0 /\ IsB(t, prev))
                      THEN /\ IF efwd[t] = Nil
-                                THEN /\ IF heap[t].b /\ BC > 0 /\ MUTANT # "builder_in_survivor"
-                                           THEN /\ heap' = [heap EXCEPT ![<<"B", fill, fbot>>] = heap[t]]
-                                                /\ efwd' = [efwd EXCEPT ![t] = <<"B", fill, fbot>>]
-                                                /\ slots' = slots \o FieldSlots(<<"B", fill, fbot>>, "bld")
-                                                /\ fbot' = fbot + 1
-                                                /\ ftop' = ftop
-                                           ELSE /\ heap' = [heap EXCEPT ![<<"S", fill, ftop>>] = heap[t]]
-                                                /\ efwd' = [efwd EXCEPT ![t] = <<"S", fill, ftop>>]
-                                                /\ slots' = slots \o FieldSlots(<<"S", fill, ftop>>, "surv")
-                                                /\ ftop' = ftop + 1
-                                                /\ fbot' = fbot
+                                THEN /\ LET bs == {heap[t].f[i] : i \in Fields} \cap {y \in YAddr : ys[y[2]] = YBody} IN
+                                          /\ ycol' = (ycol \cup bs)
+                                          /\ IF heap[t].b /\ BC > 0 /\ MUTANT # "builder_in_survivor"
+                                                THEN /\ heap' = [heap EXCEPT ![<<"B", fill, fbot>>] = heap[t]]
+                                                     /\ efwd' = [efwd EXCEPT ![t] = <<"B", fill, fbot>>]
+                                                     /\ slots' = slots \o FieldSlots(<<"B", fill, fbot>>, "bld")
+                                                     /\ fbot' = fbot + 1
+                                                     /\ UNCHANGED << lbl, ftop >>
+                                                ELSE /\ heap' = [heap EXCEPT ![<<"S", fill, ftop>>] = heap[t]]
+                                                     /\ efwd' = [efwd EXCEPT ![t] = <<"S", fill, ftop>>]
+                                                     /\ slots' = slots \o FieldSlots(<<"S", fill, ftop>>, "surv")
+                                                     /\ ftop' = ftop + 1
+                                                     /\ lbl' = [c \in 1..YC |-> IF <<"Y", c>> \in bs
+                                                                                THEN lbl[c] \cup {<<fill, heap'[<<"Y", c>>].lid>>} ELSE lbl[c]]
+                                                     /\ fbot' = fbot
                                 ELSE /\ TRUE
-                                     /\ UNCHANGED << heap, slots, efwd, ftop, 
-                                                     fbot >>
+                                     /\ UNCHANGED << heap, lbl, ycol, slots, 
+                                                     efwd, ftop, fbot >>
                           /\ pc' = [pc EXCEPT ![MutId] = "MN_Fwd"]
-                          /\ UNCHANGED << ys, S, H, SA, ypr, v >>
+                          /\ UNCHANGED << ys, yjoin, S, H, SA, ypr, v >>
                      ELSE /\ IF hand # 0 /\ IsS(t, hand)
                                 THEN /\ IF cur[1] = "fld" /\ (cur[4] = "surv" \/ (cur[4] = "yy" /\ MUTANT # "ylos_slot_in_starts")
                                                               \/ (cur[4] = "bld" /\ MUTANT = "builder_in_heal"))
@@ -1545,22 +1775,25 @@ MN_Classify == /\ pc[MutId] = "MN_Classify"
                                                                       /\ S' = S
                                                            /\ H' = H
                                      /\ pc' = [pc EXCEPT ![MutId] = "MN_Next"]
-                                     /\ UNCHANGED << ys, SA, ypr, slots, v >>
+                                     /\ UNCHANGED << ys, yjoin, SA, ypr, slots, 
+                                                     v >>
                                 ELSE /\ IF agex # 0 /\ IsS(t, agex)
                                            THEN /\ SA' = (SA \cup {t})
                                                 /\ pc' = [pc EXCEPT ![MutId] = "MN_Next"]
-                                                /\ UNCHANGED << ys, ypr, slots, 
-                                                                v >>
+                                                /\ UNCHANGED << ys, yjoin, ypr, 
+                                                                slots, v >>
                                            ELSE /\ IF retire # 0 /\ IsS(t, retire)
                                                       THEN /\ v' = FwdOf(t)
                                                            /\ pc' = [pc EXCEPT ![MutId] = "MN_Resolve"]
                                                            /\ UNCHANGED << ys, 
+                                                                           yjoin, 
                                                                            SA, 
                                                                            ypr, 
                                                                            slots >>
                                                       ELSE /\ IF IsY(t)
-                                                                 THEN /\ IF ys[t[2]] = Y0
+                                                                 THEN /\ IF ys[t[2]] = Y0 /\ t \notin ycol
                                                                             THEN /\ ys' = [ys EXCEPT ![t[2]] = Gen(fill)]
+                                                                                 /\ yjoin' = [yjoin EXCEPT ![t[2]] = fill]
                                                                                  /\ slots' = slots \o FieldSlots(t, "yy")
                                                                                  /\ UNCHANGED << SA, 
                                                                                                  ypr >>
@@ -1574,37 +1807,40 @@ MN_Classify == /\ pc[MutId] = "MN_Classify"
                                                                                                        /\ SA' = SA
                                                                                             /\ UNCHANGED << ypr, 
                                                                                                             slots >>
-                                                                                 /\ ys' = ys
+                                                                                 /\ UNCHANGED << ys, 
+                                                                                                 yjoin >>
                                                                  ELSE /\ TRUE
                                                                       /\ UNCHANGED << ys, 
+                                                                                      yjoin, 
                                                                                       SA, 
                                                                                       ypr, 
                                                                                       slots >>
                                                            /\ pc' = [pc EXCEPT ![MutId] = "MN_Next"]
                                                            /\ v' = v
                                      /\ UNCHANGED << S, H >>
-                          /\ UNCHANGED << heap, efwd, ftop, fbot >>
+                          /\ UNCHANGED << heap, lbl, ycol, efwd, ftop, fbot >>
                /\ UNCHANGED << root, lheap, lroot, nextLid, ops, ebump, xstate, 
-                               xage, gen, shadow, job, jstarts, jheal, jstack, 
-                               ns, nh, jreached, jylos, ny, ageX, jSA, nsa, 
-                               astack, amark, swept, zap, grant, stop, running, 
-                               calive, go, minors, majors, cycle, grey, black, 
-                               cage, liveHand, liveHandY, liveAge, cw, ncopy, 
-                               stack, canStop, tgt, fix, e, res, sc, si, scy, 
-                               fill, hand, agex, prev, retire, cur, t >>
+                               xage, gen, shadow, ystale, yrec, bodyLids, job, 
+                               jstarts, jheal, jstack, ns, nh, jreached, jylos, 
+                               ny, ageX, jSA, nsa, astack, amark, swept, zap, 
+                               grant, stop, running, calive, go, minors, 
+                               majors, cycle, grey, black, cage, liveHand, 
+                               liveHandY, liveAge, cw, ncopy, stack, canStop, 
+                               tgt, fix, e, res, sc, si, scy, fill, hand, agex, 
+                               prev, retire, cur, t >>
 
 MN_Fwd == /\ pc[MutId] = "MN_Fwd"
           /\ v' = efwd[t]
           /\ pc' = [pc EXCEPT ![MutId] = "MN_Set"]
           /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                          xstate, xage, gen, shadow, ys, job, jstarts, jheal, 
-                          jstack, ns, nh, jreached, jylos, ny, ageX, jSA, nsa, 
-                          astack, amark, swept, zap, grant, stop, running, 
-                          calive, go, minors, majors, S, H, SA, ypr, cycle, 
-                          grey, black, cage, liveHand, liveHandY, liveAge, cw, 
-                          ncopy, stack, canStop, tgt, fix, e, res, sc, si, scy, 
-                          slots, efwd, fill, hand, agex, prev, retire, ftop, 
-                          fbot, cur, t >>
+                          xstate, xage, gen, shadow, ys, ystale, yrec, yjoin, 
+                          lbl, ycol, bodyLids, job, jstarts, jheal, jstack, ns, 
+                          nh, jreached, jylos, ny, ageX, jSA, nsa, astack, 
+                          amark, swept, zap, grant, stop, running, calive, go, 
+                          minors, majors, S, H, SA, ypr, cycle, grey, black, 
+                          cage, liveHand, liveHandY, liveAge, cw, ncopy, stack, 
+                          canStop, tgt, fix, e, res, sc, si, scy, slots, efwd, 
+                          fill, hand, agex, prev, retire, ftop, fbot, cur, t >>
 
 MN_Set == /\ pc[MutId] = "MN_Set"
           /\ IF cur[1] = "root"
@@ -1614,14 +1850,14 @@ MN_Set == /\ pc[MutId] = "MN_Set"
                      /\ root' = root
           /\ pc' = [pc EXCEPT ![MutId] = "MN_Next"]
           /\ UNCHANGED << lheap, lroot, nextLid, ops, ebump, xstate, xage, gen, 
-                          shadow, ys, job, jstarts, jheal, jstack, ns, nh, 
-                          jreached, jylos, ny, ageX, jSA, nsa, astack, amark, 
-                          swept, zap, grant, stop, running, calive, go, minors, 
-                          majors, S, H, SA, ypr, cycle, grey, black, cage, 
-                          liveHand, liveHandY, liveAge, cw, ncopy, stack, 
-                          canStop, tgt, fix, e, res, sc, si, scy, slots, efwd, 
-                          fill, hand, agex, prev, retire, ftop, fbot, cur, t, 
-                          v >>
+                          shadow, ys, ystale, yrec, yjoin, lbl, ycol, bodyLids, 
+                          job, jstarts, jheal, jstack, ns, nh, jreached, jylos, 
+                          ny, ageX, jSA, nsa, astack, amark, swept, zap, grant, 
+                          stop, running, calive, go, minors, majors, S, H, SA, 
+                          ypr, cycle, grey, black, cage, liveHand, liveHandY, 
+                          liveAge, cw, ncopy, stack, canStop, tgt, fix, e, res, 
+                          sc, si, scy, slots, efwd, fill, hand, agex, prev, 
+                          retire, ftop, fbot, cur, t, v >>
 
 MN_Resolve == /\ pc[MutId] = "MN_Resolve"
               /\ IF MUTANT # "no_resolve"
@@ -1634,8 +1870,9 @@ MN_Resolve == /\ pc[MutId] = "MN_Resolve"
                          /\ UNCHANGED << heap, root >>
               /\ pc' = [pc EXCEPT ![MutId] = "MN_Next"]
               /\ UNCHANGED << lheap, lroot, nextLid, ops, ebump, xstate, xage, 
-                              gen, shadow, ys, job, jstarts, jheal, jstack, ns, 
-                              nh, jreached, jylos, ny, ageX, jSA, nsa, astack, 
+                              gen, shadow, ys, ystale, yrec, yjoin, lbl, ycol, 
+                              bodyLids, job, jstarts, jheal, jstack, ns, nh, 
+                              jreached, jylos, ny, ageX, jSA, nsa, astack, 
                               amark, swept, zap, grant, stop, running, calive, 
                               go, minors, majors, S, H, SA, ypr, cycle, grey, 
                               black, cage, liveHand, liveHandY, liveAge, cw, 
@@ -1649,26 +1886,34 @@ MN_Next == /\ pc[MutId] = "MN_Next"
            /\ v' = Nil
            /\ pc' = [pc EXCEPT ![MutId] = "MN_Slot"]
            /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                           xstate, xage, gen, shadow, ys, job, jstarts, jheal, 
-                           jstack, ns, nh, jreached, jylos, ny, ageX, jSA, nsa, 
-                           astack, amark, swept, zap, grant, stop, running, 
-                           calive, go, minors, majors, S, H, SA, ypr, cycle, 
-                           grey, black, cage, liveHand, liveHandY, liveAge, cw, 
-                           ncopy, stack, canStop, tgt, fix, e, res, sc, si, 
-                           scy, slots, efwd, fill, hand, agex, prev, retire, 
-                           ftop, fbot >>
+                           xstate, xage, gen, shadow, ys, ystale, yrec, yjoin, 
+                           lbl, ycol, bodyLids, job, jstarts, jheal, jstack, 
+                           ns, nh, jreached, jylos, ny, ageX, jSA, nsa, astack, 
+                           amark, swept, zap, grant, stop, running, calive, go, 
+                           minors, majors, S, H, SA, ypr, cycle, grey, black, 
+                           cage, liveHand, liveHandY, liveAge, cw, ncopy, 
+                           stack, canStop, tgt, fix, e, res, sc, si, scy, 
+                           slots, efwd, fill, hand, agex, prev, retire, ftop, 
+                           fbot >>
 
 MN_Epilogue == /\ pc[MutId] = "MN_Epilogue"
                /\ heap' = [a \in Addr |->
                              IF \/ IsE(a)
                                 \/ retire # 0 /\ (IsS(a, retire) \/ IsB(a, retire))
                                 \/ prev # 0 /\ IsB(a, prev)
-                                \/ (IsY(a) /\ cycle # "Marking"
-                                    /\ (ys[a[2]] = Y0 \/ (retire # 0 /\ ys[a[2]] = Gen(retire) /\ MUTANT # "keep_unreached_ylos")))
+                                \/ (IsY(a) /\ cycle # "Marking" /\ a \notin ycol
+                                    /\ (ys[a[2]] \in {Y0, YBody} \/ (retire # 0 /\ ys[a[2]] = Gen(retire) /\ MUTANT # "keep_unreached_ylos")))
                              THEN Empty ELSE heap[a]]
+               /\ yjoin' = [c \in 1..YC |->
+                              IF ys[c] = Y0 \/ (retire # 0 /\ ys[c] = Gen(retire) /\ MUTANT # "keep_unreached_ylos")
+                              THEN 0 ELSE yjoin[c]]
+               /\ ystale' = [c \in 1..YC |-> {x \in ystale[c] : x # hand /\ x # retire}]
+               /\ lbl' = [c \in 1..YC |-> {en \in lbl[c] : en[1] # hand /\ en[1] # retire}]
                /\ ys' = [c \in 1..YC |->
-                           IF ys[c] = Y0 \/ (retire # 0 /\ ys[c] = Gen(retire) /\ MUTANT # "keep_unreached_ylos")
+                           IF <<"Y", c>> \notin ycol
+                              /\ (ys[c] \in {Y0, YBody} \/ (retire # 0 /\ ys[c] = Gen(retire) /\ MUTANT # "keep_unreached_ylos"))
                            THEN (IF cycle = "Marking" THEN YDead ELSE YFree) ELSE ys[c]]
+               /\ ycol' = {}
                /\ xstate' = [x \in X |-> IF x = fill THEN "Young"
                                          ELSE IF x = hand THEN "Tenuring"
                                          ELSE IF x = retire THEN "Free" ELSE xstate[x]]
@@ -1681,13 +1926,14 @@ MN_Epilogue == /\ pc[MutId] = "MN_Epilogue"
                /\ fbot' = 1
                /\ pc' = [pc EXCEPT ![MutId] = "MN_Cycle"]
                /\ UNCHANGED << root, lheap, lroot, nextLid, ops, gen, shadow, 
-                               job, jstarts, jheal, jstack, ns, nh, jreached, 
-                               jylos, ny, ageX, jSA, nsa, astack, amark, swept, 
-                               zap, grant, stop, running, calive, go, minors, 
-                               majors, S, H, SA, ypr, cycle, grey, black, cage, 
-                               liveHand, liveHandY, liveAge, cw, ncopy, stack, 
-                               canStop, tgt, fix, e, res, sc, si, scy, slots, 
-                               fill, hand, agex, prev, retire, cur, t, v >>
+                               yrec, bodyLids, job, jstarts, jheal, jstack, ns, 
+                               nh, jreached, jylos, ny, ageX, jSA, nsa, astack, 
+                               amark, swept, zap, grant, stop, running, calive, 
+                               go, minors, majors, S, H, SA, ypr, cycle, grey, 
+                               black, cage, liveHand, liveHandY, liveAge, cw, 
+                               ncopy, stack, canStop, tgt, fix, e, res, sc, si, 
+                               scy, slots, fill, hand, agex, prev, retire, cur, 
+                               t, v >>
 
 MN_Cycle == /\ pc[MutId] = "MN_Cycle"
             /\ IF cycle = "Marking"
@@ -1695,7 +1941,7 @@ MN_Cycle == /\ pc[MutId] = "MN_Cycle"
                              THEN /\ heap' = [a \in Addr |-> IF (OldAddr(a) /\ a \notin (OldClose(grey) \cup black))
                                                                 \/ (IsY(a) /\ ys[a[2]] = YDead)
                                                              THEN Empty ELSE heap[a]]
-                                  /\ ys' = [c \in 1..YC |-> IF ys[c] = YDead \/ (ys[c] = YOld /\ <<"Y", c>> \notin (OldClose(grey) \cup black))
+                                  /\ ys' = [c \in 1..YC |-> IF ys[c] = YDead \/ (ys[c] \in {YOld, YBody} /\ <<"Y", c>> \notin (OldClose(grey) \cup black))
                                                             THEN YFree ELSE ys[c]]
                                   /\ cycle' = "Idle"
                                   /\ grey' = {}
@@ -1719,13 +1965,14 @@ MN_Cycle == /\ pc[MutId] = "MN_Cycle"
                        /\ UNCHANGED << heap, ys >>
             /\ pc' = [pc EXCEPT ![MutId] = "MN_Launch"]
             /\ UNCHANGED << root, lheap, lroot, nextLid, ops, ebump, xstate, 
-                            xage, gen, shadow, job, jstarts, jheal, jstack, ns, 
-                            nh, jreached, jylos, ny, ageX, jSA, nsa, astack, 
-                            amark, swept, zap, grant, stop, running, calive, 
-                            go, minors, majors, S, H, SA, ypr, liveHand, 
-                            liveHandY, liveAge, cw, ncopy, stack, canStop, tgt, 
-                            fix, e, res, sc, si, scy, slots, efwd, fill, hand, 
-                            agex, prev, retire, ftop, fbot, cur, t, v >>
+                            xage, gen, shadow, ystale, yrec, yjoin, lbl, ycol, 
+                            bodyLids, job, jstarts, jheal, jstack, ns, nh, 
+                            jreached, jylos, ny, ageX, jSA, nsa, astack, amark, 
+                            swept, zap, grant, stop, running, calive, go, 
+                            minors, majors, S, H, SA, ypr, liveHand, liveHandY, 
+                            liveAge, cw, ncopy, stack, canStop, tgt, fix, e, 
+                            res, sc, si, scy, slots, efwd, fill, hand, agex, 
+                            prev, retire, ftop, fbot, cur, t, v >>
 
 MN_Launch == /\ pc[MutId] = "MN_Launch"
              /\ IF \E x \in X : xstate[x] = "Tenuring"
@@ -1783,10 +2030,11 @@ MN_Launch == /\ pc[MutId] = "MN_Launch"
              /\ ypr' = {}
              /\ pc' = [pc EXCEPT ![MutId] = "MN_Sync"]
              /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                             xstate, xage, ys, calive, minors, majors, cycle, 
-                             grey, black, cage, stack, canStop, tgt, fix, e, 
-                             res, sc, si, scy, slots, efwd, fill, hand, agex, 
-                             prev, retire, ftop, fbot, cur, t, v >>
+                             xstate, xage, ys, ystale, yrec, yjoin, lbl, ycol, 
+                             bodyLids, calive, minors, majors, cycle, grey, 
+                             black, cage, stack, canStop, tgt, fix, e, res, sc, 
+                             si, scy, slots, efwd, fill, hand, agex, prev, 
+                             retire, ftop, fbot, cur, t, v >>
 
 MN_Sync == /\ pc[MutId] = "MN_Sync"
            /\ IF TenureMode = 1 /\ job.st = "Running" /\ ~JobDone
@@ -1814,25 +2062,27 @@ MN_Sync == /\ pc[MutId] = "MN_Sync"
                       /\ UNCHANGED << stack, canStop, tgt, fix, e, res, sc, si, 
                                       scy >>
            /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                           xstate, xage, gen, shadow, ys, job, jstarts, jheal, 
-                           jstack, ns, nh, jreached, jylos, ny, ageX, jSA, nsa, 
-                           astack, amark, swept, zap, grant, stop, running, 
-                           calive, go, minors, majors, S, H, SA, ypr, cycle, 
-                           grey, black, cage, liveHand, liveHandY, liveAge, cw, 
-                           ncopy, slots, efwd, fill, hand, agex, prev, retire, 
-                           ftop, fbot, cur, t, v >>
+                           xstate, xage, gen, shadow, ys, ystale, yrec, yjoin, 
+                           lbl, ycol, bodyLids, job, jstarts, jheal, jstack, 
+                           ns, nh, jreached, jylos, ny, ageX, jSA, nsa, astack, 
+                           amark, swept, zap, grant, stop, running, calive, go, 
+                           minors, majors, S, H, SA, ypr, cycle, grey, black, 
+                           cage, liveHand, liveHandY, liveAge, cw, ncopy, 
+                           slots, efwd, fill, hand, agex, prev, retire, ftop, 
+                           fbot, cur, t, v >>
 
 MN_Done == /\ pc[MutId] = "MN_Done"
            /\ pc' = [pc EXCEPT ![MutId] = "M_Epoch"]
            /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                           xstate, xage, gen, shadow, ys, job, jstarts, jheal, 
-                           jstack, ns, nh, jreached, jylos, ny, ageX, jSA, nsa, 
-                           astack, amark, swept, zap, grant, stop, running, 
-                           calive, go, minors, majors, S, H, SA, ypr, cycle, 
-                           grey, black, cage, liveHand, liveHandY, liveAge, cw, 
-                           ncopy, stack, canStop, tgt, fix, e, res, sc, si, 
-                           scy, slots, efwd, fill, hand, agex, prev, retire, 
-                           ftop, fbot, cur, t, v >>
+                           xstate, xage, gen, shadow, ys, ystale, yrec, yjoin, 
+                           lbl, ycol, bodyLids, job, jstarts, jheal, jstack, 
+                           ns, nh, jreached, jylos, ny, ageX, jSA, nsa, astack, 
+                           amark, swept, zap, grant, stop, running, calive, go, 
+                           minors, majors, S, H, SA, ypr, cycle, grey, black, 
+                           cage, liveHand, liveHandY, liveAge, cw, ncopy, 
+                           stack, canStop, tgt, fix, e, res, sc, si, scy, 
+                           slots, efwd, fill, hand, agex, prev, retire, ftop, 
+                           fbot, cur, t, v >>
 
 MJ_Join == /\ pc[MutId] = "MJ_Join"
            /\ stack' = [stack EXCEPT ![MutId] = << [ procedure |->  "JoinMerge",
@@ -1840,14 +2090,15 @@ MJ_Join == /\ pc[MutId] = "MJ_Join"
                                                  \o stack[MutId]]
            /\ pc' = [pc EXCEPT ![MutId] = "J_Wait"]
            /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                           xstate, xage, gen, shadow, ys, job, jstarts, jheal, 
-                           jstack, ns, nh, jreached, jylos, ny, ageX, jSA, nsa, 
-                           astack, amark, swept, zap, grant, stop, running, 
-                           calive, go, minors, majors, S, H, SA, ypr, cycle, 
-                           grey, black, cage, liveHand, liveHandY, liveAge, cw, 
-                           ncopy, canStop, tgt, fix, e, res, sc, si, scy, 
-                           slots, efwd, fill, hand, agex, prev, retire, ftop, 
-                           fbot, cur, t, v >>
+                           xstate, xage, gen, shadow, ys, ystale, yrec, yjoin, 
+                           lbl, ycol, bodyLids, job, jstarts, jheal, jstack, 
+                           ns, nh, jreached, jylos, ny, ageX, jSA, nsa, astack, 
+                           amark, swept, zap, grant, stop, running, calive, go, 
+                           minors, majors, S, H, SA, ypr, cycle, grey, black, 
+                           cage, liveHand, liveHandY, liveAge, cw, ncopy, 
+                           canStop, tgt, fix, e, res, sc, si, scy, slots, efwd, 
+                           fill, hand, agex, prev, retire, ftop, fbot, cur, t, 
+                           v >>
 
 MJ_Cycle == /\ pc[MutId] = "MJ_Cycle"
             /\ majors' = majors + 1
@@ -1855,7 +2106,7 @@ MJ_Cycle == /\ pc[MutId] = "MJ_Cycle"
                   THEN /\ heap' = [a \in Addr |-> IF (OldAddr(a) /\ a \notin (OldClose(grey) \cup black))
                                                      \/ (IsY(a) /\ ys[a[2]] = YDead)
                                                   THEN Empty ELSE heap[a]]
-                       /\ ys' = [c \in 1..YC |-> IF ys[c] = YDead \/ (ys[c] = YOld /\ <<"Y", c>> \notin (OldClose(grey) \cup black))
+                       /\ ys' = [c \in 1..YC |-> IF ys[c] = YDead \/ (ys[c] \in {YOld, YBody} /\ <<"Y", c>> \notin (OldClose(grey) \cup black))
                                                  THEN YFree ELSE ys[c]]
                        /\ cycle' = "Idle"
                        /\ grey' = {}
@@ -1865,27 +2116,34 @@ MJ_Cycle == /\ pc[MutId] = "MJ_Cycle"
                        /\ UNCHANGED << heap, ys, cycle, grey, black, cage >>
             /\ pc' = [pc EXCEPT ![MutId] = "MJ_Mark"]
             /\ UNCHANGED << root, lheap, lroot, nextLid, ops, ebump, xstate, 
-                            xage, gen, shadow, job, jstarts, jheal, jstack, ns, 
-                            nh, jreached, jylos, ny, ageX, jSA, nsa, astack, 
-                            amark, swept, zap, grant, stop, running, calive, 
-                            go, minors, S, H, SA, ypr, liveHand, liveHandY, 
+                            xage, gen, shadow, ystale, yrec, yjoin, lbl, ycol, 
+                            bodyLids, job, jstarts, jheal, jstack, ns, nh, 
+                            jreached, jylos, ny, ageX, jSA, nsa, astack, amark, 
+                            swept, zap, grant, stop, running, calive, go, 
+                            minors, S, H, SA, ypr, liveHand, liveHandY, 
                             liveAge, cw, ncopy, stack, canStop, tgt, fix, e, 
                             res, sc, si, scy, slots, efwd, fill, hand, agex, 
                             prev, retire, ftop, fbot, cur, t, v >>
 
 MJ_Mark == /\ pc[MutId] = "MJ_Mark"
            /\ heap' = [a \in Addr |-> IF (IsO(a) \/ IsY(a)) /\ a \notin MajorLive THEN Empty ELSE heap[a]]
+           /\ ystale' = [c \in 1..YC |->
+                           IF AddrKeyed /\ <<"Y", c>> \notin MajorLive /\ ys[c] \in {Gen(x) : x \in X}
+                              /\ xstate[ys[c][2]] = "Young"
+                           THEN ystale[c] \cup {ys[c][2]} ELSE ystale[c]]
+           /\ yjoin' = [c \in 1..YC |-> IF <<"Y", c>> \notin MajorLive THEN 0 ELSE yjoin[c]]
+           /\ lbl' = [c \in 1..YC |-> IF LbKey = "drop" /\ <<"Y", c>> \notin MajorLive THEN {} ELSE lbl[c]]
            /\ ys' = [c \in 1..YC |-> IF <<"Y", c>> \notin MajorLive THEN YFree ELSE ys[c]]
            /\ pc' = [pc EXCEPT ![MutId] = "M_Epoch"]
            /\ UNCHANGED << root, lheap, lroot, nextLid, ops, ebump, xstate, 
-                           xage, gen, shadow, job, jstarts, jheal, jstack, ns, 
-                           nh, jreached, jylos, ny, ageX, jSA, nsa, astack, 
-                           amark, swept, zap, grant, stop, running, calive, go, 
-                           minors, majors, S, H, SA, ypr, cycle, grey, black, 
-                           cage, liveHand, liveHandY, liveAge, cw, ncopy, 
-                           stack, canStop, tgt, fix, e, res, sc, si, scy, 
-                           slots, efwd, fill, hand, agex, prev, retire, ftop, 
-                           fbot, cur, t, v >>
+                           xage, gen, shadow, yrec, ycol, bodyLids, job, 
+                           jstarts, jheal, jstack, ns, nh, jreached, jylos, ny, 
+                           ageX, jSA, nsa, astack, amark, swept, zap, grant, 
+                           stop, running, calive, go, minors, majors, S, H, SA, 
+                           ypr, cycle, grey, black, cage, liveHand, liveHandY, 
+                           liveAge, cw, ncopy, stack, canStop, tgt, fix, e, 
+                           res, sc, si, scy, slots, efwd, fill, hand, agex, 
+                           prev, retire, ftop, fbot, cur, t, v >>
 
 Mutator == M_Epoch \/ MN_Join \/ MN_Begin \/ MN_Slot \/ MN_Classify
               \/ MN_Fwd \/ MN_Set \/ MN_Resolve \/ MN_Next \/ MN_Epilogue
@@ -1897,7 +2155,8 @@ C_Wait(self) == /\ pc[self] = "C_Wait"
                 /\ go' = [go EXCEPT ![self] = FALSE]
                 /\ pc' = [pc EXCEPT ![self] = "C_Run"]
                 /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                                xstate, xage, gen, shadow, ys, job, jstarts, 
+                                xstate, xage, gen, shadow, ys, ystale, yrec, 
+                                yjoin, lbl, ycol, bodyLids, job, jstarts, 
                                 jheal, jstack, ns, nh, jreached, jylos, ny, 
                                 ageX, jSA, nsa, astack, amark, swept, zap, 
                                 grant, stop, running, calive, minors, majors, 
@@ -1929,28 +2188,29 @@ C_Run(self) == /\ pc[self] = "C_Run"
                /\ scy' = [scy EXCEPT ![self] = FALSE]
                /\ pc' = [pc EXCEPT ![self] = "E_Loop"]
                /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                               xstate, xage, gen, shadow, ys, job, jstarts, 
-                               jheal, jstack, ns, nh, jreached, jylos, ny, 
-                               ageX, jSA, nsa, astack, amark, swept, zap, 
-                               grant, stop, running, calive, go, minors, 
-                               majors, S, H, SA, ypr, cycle, grey, black, cage, 
-                               liveHand, liveHandY, liveAge, cw, ncopy, slots, 
-                               efwd, fill, hand, agex, prev, retire, ftop, 
-                               fbot, cur, t, v >>
+                               xstate, xage, gen, shadow, ys, ystale, yrec, 
+                               yjoin, lbl, ycol, bodyLids, job, jstarts, jheal, 
+                               jstack, ns, nh, jreached, jylos, ny, ageX, jSA, 
+                               nsa, astack, amark, swept, zap, grant, stop, 
+                               running, calive, go, minors, majors, S, H, SA, 
+                               ypr, cycle, grey, black, cage, liveHand, 
+                               liveHandY, liveAge, cw, ncopy, slots, efwd, 
+                               fill, hand, agex, prev, retire, ftop, fbot, cur, 
+                               t, v >>
 
 C_Fin(self) == /\ pc[self] = "C_Fin"
                /\ running' = running - 1
                /\ pc' = [pc EXCEPT ![self] = "C_Wait"]
                /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                               xstate, xage, gen, shadow, ys, job, jstarts, 
-                               jheal, jstack, ns, nh, jreached, jylos, ny, 
-                               ageX, jSA, nsa, astack, amark, swept, zap, 
-                               grant, stop, calive, go, minors, majors, S, H, 
-                               SA, ypr, cycle, grey, black, cage, liveHand, 
-                               liveHandY, liveAge, cw, ncopy, stack, canStop, 
-                               tgt, fix, e, res, sc, si, scy, slots, efwd, 
-                               fill, hand, agex, prev, retire, ftop, fbot, cur, 
-                               t, v >>
+                               xstate, xage, gen, shadow, ys, ystale, yrec, 
+                               yjoin, lbl, ycol, bodyLids, job, jstarts, jheal, 
+                               jstack, ns, nh, jreached, jylos, ny, ageX, jSA, 
+                               nsa, astack, amark, swept, zap, grant, stop, 
+                               calive, go, minors, majors, S, H, SA, ypr, 
+                               cycle, grey, black, cage, liveHand, liveHandY, 
+                               liveAge, cw, ncopy, stack, canStop, tgt, fix, e, 
+                               res, sc, si, scy, slots, efwd, fill, hand, agex, 
+                               prev, retire, ftop, fbot, cur, t, v >>
 
 Collector(self) == C_Wait(self) \/ C_Run(self) \/ C_Fin(self)
 
@@ -1965,14 +2225,15 @@ F_Maybe == /\ pc[EnvId] = "F_Maybe"
                  /\ UNCHANGED <<stop, calive>>
            /\ pc' = [pc EXCEPT ![EnvId] = "Done"]
            /\ UNCHANGED << heap, root, lheap, lroot, nextLid, ops, ebump, 
-                           xstate, xage, gen, shadow, ys, job, jstarts, jheal, 
-                           jstack, ns, nh, jreached, jylos, ny, ageX, jSA, nsa, 
-                           astack, amark, swept, zap, grant, running, go, 
-                           minors, majors, S, H, SA, ypr, cycle, grey, black, 
-                           cage, liveHand, liveHandY, liveAge, cw, ncopy, 
-                           stack, canStop, tgt, fix, e, res, sc, si, scy, 
-                           slots, efwd, fill, hand, agex, prev, retire, ftop, 
-                           fbot, cur, t, v >>
+                           xstate, xage, gen, shadow, ys, ystale, yrec, yjoin, 
+                           lbl, ycol, bodyLids, job, jstarts, jheal, jstack, 
+                           ns, nh, jreached, jylos, ny, ageX, jSA, nsa, astack, 
+                           amark, swept, zap, grant, running, go, minors, 
+                           majors, S, H, SA, ypr, cycle, grey, black, cage, 
+                           liveHand, liveHandY, liveAge, cw, ncopy, stack, 
+                           canStop, tgt, fix, e, res, sc, si, scy, slots, efwd, 
+                           fill, hand, agex, prev, retire, ftop, fbot, cur, t, 
+                           v >>
 
 Env == F_Maybe
 

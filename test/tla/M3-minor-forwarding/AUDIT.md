@@ -293,3 +293,51 @@ name this model (6 census, 4 file, 13 grep, 17 region); the list is in MAPPING.m
 baseline: the pinned code is the code this model was checked against today (after the trace hooks,
 wave 3's fixes and the `TLA-REGION` markers landed). From now on, a pin that fires needs an entry
 here quoting the new hash prefix before `check-tla-manifest.sh --update` accepts it.
+
+## 2026-09-29 — ABA audit (addresses reused after a free): no model change
+
+This entry follows CR-034 (a YLOS address reused after a STW major, then taken for the old object).
+It asks whether anything in M3's window can free an object and let a **different** object take its
+address or large-body id before a consumer looks it up. Verdict: **no**, so M3 is unchanged. The
+new MAPPING.md §3 row states the argument; it applies to every address list M3 covers:
+`young_large_scan_`, `promoted_buf_`, the per-worker `promoted_log`, `ylos_young`, `lb_seen`,
+`lb_promoted`, and the `youngLargeMeta` lookup in `reachYoungLarge{,P,R}`.
+- **The window is one pause.** Every list above is cleared at minor start. It is consumed before
+  `NurserySpace::minorGC` returns, by the drain, the merge (`NP:797-833`, `NR:931-955`) and
+  `censusRecord` (`NurserySpace.cpp:1177`, before `sweepNurseryLargeBodies` at `:1219`). No major runs inside a
+  minor: the nursery never calls `majorGC`, and a failed promotion aborts. A STW major or handoff
+  in the same pause runs after `minorGC` returns, when nothing reads these lists any more.
+- **Only the mutator adds index entries** (`registerLargeBody` `OGS:7526`, from
+  `allocateYoungLarge` and `allocateLargeBody`). Inside a pause the index only loses entries:
+  in-place promotion, and CR-014's release under `promo_mu_`. So a lookup by an address read in the
+  pause cannot find a newer object. It can only fail to find one.
+- **Every address is read from a slot the pause reaches**: a root, a copy, a reached YLOS or a
+  builder. The object at that address is therefore live. A lazy-sweep slice inside the drain frees
+  only cells that were dead at the last mark. `retireDeadLargeBodies` (`OGS:1793`) had already
+  erased their index entries before any reuse, and the header walk erases them as it passes
+  (`OGS:5639`, `:5740`).
+- **Across pauses**, only the P1 census keeps YLOS addresses (`census_ylos_`, `R.census`). It
+  drops them when `majorEpoch()` changes (`NurserySpace.cpp:2726`, `:2849`). `major_epoch_` is bumped in
+  `finalizeMetaAfterMark`, before any retire or free of a major or a handoff, and it is never
+  reset. `Allocator::reset` destroys the heaps, so the census lists do not survive a reset either.
+  Deferred frees happen after the bump.
+
+A faithful "free, then reallocate at the same id" step has nothing to model here: no action in the
+pause can reallocate an id that is still in use.
+
+Found on the way. These are outside M3's scope and were reported to the orchestrator for the
+register:
+- **The empty-block flip keeps stale large-body index entries** (`allocateFromEmptyRegularBlocks`
+  `OGS:2855-2913`, which has no cleanup like `releaseBlockToAllocator`'s at `:6403-6437`). Take a
+  dead YLOS or body Y at a mixed block's start, still indexed and uncounted (CR-018's Idle gate).
+  An exact-`alloc_buffer_size` YLOS or body Z flipped onto that block takes Y's address, and
+  `registerLargeBody` overwrites the index key. At the next minor Y's stale meta is freed:
+  `freeLargeBodyCell` erases the key (now Z's) before its `is_large` test (`:7695`). Z then drops
+  out of the minor (not scanned, so its young children dangle), and one minor later its meta, never
+  recoloured, frees Z's whole block while Z is live. This is S1 and serial.
+- Ids retired by a major (`retireIndexEntry`) are never recycled, because
+  `sweepNurseryLargeBodies` drops the stale entry without a push (`:7636-7645`). That leaks 24 B of
+  `large_bodies_` per retired body (a growth leak, not ABA).
+- `releaseBlockToAllocator` recycles an id that may still sit in `nursery_owned_bodies_`, so a
+  re-registered id can appear there twice. This is benign: no id is pushed twice, and every
+  consumer tolerates a duplicate.

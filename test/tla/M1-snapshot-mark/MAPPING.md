@@ -71,6 +71,7 @@ allocation's mark in `M_Choose`. Young large objects are allocated through the s
 | pacing (assist, pressure) | nondeterministic choices | every real schedule is a model schedule; the fixed schedule (handoff at minor t0 + T + 1) is kept exactly |
 | old garbage collected before the cycle | only by `MajorPause`'s STW step (which also frees unreachable YLOS cells) | adds nothing to the snapshot argument, except in region mode, where it is what leaves a zombie's field dangling (CR-017) |
 | a freed id reused | allowed | `NoLostObject` is checked in every state, so a wrongful free is caught before any reuse |
+| a freed **old-gen cell** reused by a different object at the same address (ABA audit, 2026-09-29) | a configuration with the old id 4 in `YlosIds` (`MC_quick_reuse`, `MC_quick_region_reuse*`): the mutator's `alloc` may then give 4 to a young large object, the one mutator allocation that lands in an old-gen cell | the code hands a freed cell out again through the mixed free lists at any time, during a cycle too: `allocateFromSizeClassBitmap` rungs 2 and 4 (`tryPopFromFreeList`, `tryAllocateBySplittingLarger`, `OGS:973-994`), `allocateFromBagPage` step 1 (`OGS:2581`); `prepareMark` does not clear the free lists at t0. With 4 outside `YlosIds` the model still reuses 4, as a nursery object (not faithful to addresses, harmless to `NoLostObject`). A promotion into a freed cell (a copy of a *different* object) is not expressible: a promotion keeps its id. The structures that remember an id across a free (`deferred`, `t0Ylos`, `grey`, `zombie`) are exactly the code's `deferred_frees_`, `mark_view_.ylos_t0`, the grey entries and the unzapped hand-over extent |
 | `bg_ep_` and the gang's `running()` | one variable `episode` | the fork hook's `stopAndJoin` and the next reap (`done == false` → `None`) are one `Forker` step. In between, the code's `bg_ep_` is still `Running` with no member running, and the code's assist scans nothing; the model's `Assist` may scan there or stop at once. Scanning over-approximates marking progress, and the closing drain empties the grey set either way |
 | 5b in-pause slices (`conc_mark = 0`) | not a separate mode | a slice is `Assist` with no background episode: every slices-mode behaviour is a concurrent-mode behaviour in which `Marker` never steps |
 | region mode (`nursery_regions = 1`, k = 1) | `RegionMode`: `P_Minor` keeps dead age-1 objects as `zombie`s for one minor; `P_T0` walks them | exactly the code's window: the Tenuring extent's dead objects are not zapped before t0 (only 07b's ageing extents are, `mergeJob` `NurseryTenure.cpp:816-825`), and `forEachYoung` skips only `Tag_Free`. Live hand-over objects are promoted in `P_Minor`, one minor early and black; a 7c copy is black too (`grantAllocate`). **The tenure job itself is assumed disjoint from the markers: M5's TenureDisjoint contract** (`HealYoungOnly`, `MarkerDisjoint`, `YoungWalkValid`) |
@@ -106,6 +107,7 @@ allocation's mark in `M_Choose`. Young large objects are allocated through the s
 | `IM2` (at `H_Free`) | IM2 | `assertAllMarked`, `OGS:4792`, at `:1199` |
 | `IM9` (at `H_Free`) | IM9, IM14 | `markStackEmpty` asserts in `handoffMarkCycle` (`OGS:4260`) |
 | `MarkerFootprint` | IM3 (+ the one-step-minor premise) | `greyObject`'s young abort, `OGS:3094` |
+| `MarkerNoYoungKid` | MODEL_M1_2 (`MarkerFootprint`'s second conjunct, named on its own, 2026-09-29) | the every-build aborts of a parallel marker that reaches or scans a young object: `greyObject<ParallelMark>` `OGS:3310-3313`, `scanObject<ParallelMark>` `OGS:3615-3617` (tree of 2026-09-29) |
 | `NoReleaseInCycle` | IM5 | the `!cycleActive()` asserts: `freeLargeBodyCell` `OGS:7316`, `releaseBlockToAllocator` `:5995`, `:6136`, `:6416`, `:6490` |
 | `NoOldToYoung` | HEAP_005 | PM5 (`NurseryParallel.cpp:276-286`) |
 | `SnapshotClosure` | the parallel-gc.md §2.1 lemma | — |
@@ -151,6 +153,11 @@ release/acquire).
   `defer_live_ylos` (`DeferredOK`).
 - `A_Loop` may stop early (2026-09-29, found by trace validation): the sketch's assist had to scan
   while any grey entry was left, which the code's assist does not.
+- ABA audit (2026-09-29, AUDIT.md): the invariant `MarkerNoYoungKid`; the mutant `defer_released`
+  (`P_Minor` releases a deferred cell at once but keeps it on the deferred list, so `H_Free` frees
+  whatever occupies the id by then; the code keeps it allocated until `processDeferredFrees`,
+  `OGS:5077`); the configurations `MC_quick_reuse`, `MC_quick_region_reuse` and
+  `MC_quick_region_reuse_live` (old id 4 in `YlosIds`, §3).
 
 ## 9. SnapshotLemma.tla (the unbounded lemma) ↔ SnapshotMark.tla
 

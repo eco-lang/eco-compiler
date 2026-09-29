@@ -533,3 +533,208 @@ name this model (6 census, 3 file, 8 grep, 33 region); the list is in MAPPING.md
 baseline: the pinned code is the code this model was checked against today (after the trace hooks,
 wave 3's fixes and the `TLA-REGION` markers landed). From now on, a pin that fires needs an entry
 here quoting the new hash prefix before `check-tla-manifest.sh --update` accepts it.
+
+## 2026-09-29 — CR-034: address-keyed YLOS and large-body lists; the major × region boundary
+
+**Tree:** 2026-09-29 (CR-034's tree). **Tools:** as above. Assessment only: no runtime, harness or
+register change. Runs: quick rows with 4 TLC workers in scratch; deep rows under
+`flock /tmp/tla-deep.lock`, `nice -n 10`, 4 workers, `-Xmx5g -XX:MaxDirectMemorySize=2g`.
+
+### Why M5 missed CR-034
+
+The generation-YLOS extension represented a member by its state `ys = Gen(x)`, i.e. by object
+identity: when a STW major freed a member, the membership vanished with it, and a new YLOS at the
+same cell started as `Y0`. That is fix candidate 1 ("drop at the major"), not the code: the code keeps
+the address in `Extent::ylos_gen` (`NRH:79`), and the next prep takes whatever young YLOS sits there
+(`youngLargeMeta(y) != nullptr` is the only check, `NR:751-753`, `:773-775`). The model already reused
+freed Y cells (`yalloc` picks the lowest free one); what it lacked was the stale address.
+
+### What was added (switched off in every existing configuration)
+
+- Constants `YlosGen` (`"identity"` = the model before today, the default; `"code"`; the fix
+  controls `"drop"`, `"age1"`, `"stamp"`, `"lbid"`), `LbKey` (`"identity"` default; `"code"`, `"kind"`,
+  `"drop"`), `Cr017Oracle` (`FALSE` default). Every existing `.cfg` (and both trace `.cfg`s) sets the
+  defaults; `TraceTenuring`'s `TJob` sets the new variables.
+- `ystale`, `yrec`, the ghost `yjoin`: `MJ_Mark` records a freed member's address in its Young
+  extent's list; `MN_Begin`'s prep claims it for its list through `PrepMatch` (hand-over first, as
+  `reachYoungLargeR` and `markTarget` search `hand_ylos` first); `MN_Epilogue` drops lists of extents
+  that stop being Young. MAPPING.md §1-§3.
+- Large bodies (op `"lalloc"`, `ys = YBody`, `lbl`, `ycol`, `bodyLids`): the lb_bodies lists, the
+  prep's `markLargeBodySeen`, `lb_seen`, the colour test of the minor's sweep and of the first reach
+  (`NR:526`), `promoteLargeHeader` at the merge, the major's and the handoff's frees.
+- Invariants: `YlosGenIdentity` (MODEL_M5_2: every member of a generation's snapshot joined that
+  generation; fires at the prep, the earliest point), `T0GreyAllocated` (CR-017's half of
+  `YoungWalkValid`: the cells the t0 snapshot greys; young targets are dropped by range,
+  `OGS:3325-3327`).
+- **No existing row changed:** with the defaults the new variables are constant or a function of
+  `ys`, so the state counts are unchanged (`MC_quick_ylos_major` 702,352, `MC_quick_exact` 478,828,
+  as in the first entry; the whole quick tier below).
+
+### CR-034 reproduced (`YlosGen = "code"`)
+
+| Configuration | Invariant | Counterexample | Distinct states (at the violation) |
+|---|---|---|---|
+| `MC_ylos_aba` (quick_ylos_major's bounds: k = 1, mode 1, 3 minors, 1 major, 3 ops) | `YlosGenIdentity` | 38 states | ~91 K |
+| `MC_ylos_aba_heap005` (the same, one Y cell) | `OldPointsOld` (HEAP_005) | 63 states | ~196 K |
+| `MC_k2_ylos_aba` (k = 2, 4 minors) | `NoDangling` | 50 states | ~59 K |
+
+- `MC_ylos_aba`: A = `yalloc` into Y1 (root 1); minor 1 first-reaches A (joins X1's generation);
+  `alloc` e over root 1 (A dead); the STW major frees A, leaving Y1 in X1's list; `yalloc` B into Y1
+  (the lowest free cell); minor 2's hand-over prep (X1 hand) finds B through the stale entry and
+  claims it (`ys = Gen(1)`, `yjoin = 0`). The register's steps 1-4.
+- `MC_ylos_aba_heap005`: the same with B → e. Minor 2 reaches B as a hand-over member (`kColHandYlos`:
+  scanned, e copied into the fill X2 and B's slot rewritten, nothing recorded in H); minor 3's merge
+  promotes B in place (`YOld`) with B.f → e's copy in X2: an old object pointing young, step 5. With two
+  Y cells TLC's shortest path gives B a YLOS child instead (the same HEAP_005 violation).
+- `MC_k2_ylos_aba` (**k = 2, the ageing prep, `NR:773`**): X1 is ageing at minor 2, so B is claimed
+  for `age_ylos`; `reachYoungLargeR` then only records it in SA (`NR:519-523`), it is never scanned, and
+  e (held only by B) is not evacuated: B dangles into eden at the end of minor 2. In steady state the
+  job's ageing mark then scans B and aborts in TV6 (`youngElsewhere`, every build); at start-up (no
+  job yet) nothing notices.
+
+### Fix-candidate controls (`controls/`)
+
+| Control | k | Result | States / counterexample |
+|---|---|---|---|
+| `ylos_drop` (candidate 1: the major drops a freed YLOS from every list; = `"identity"`) | 1 | pass | 702,352 |
+| `ylos_drop_k2` (deep) | 2 | pass | 2,575,180 (70 s) |
+| `ylos_stamp` (candidate 2 with a never-reused stamp: a registration serial or epoch) | 1 | pass | 713,090 |
+| `ylos_stamp_k2` (deep) | 2 | pass | 2,611,186 (50 s) |
+| `ylos_age1` (skip an entry whose YLOS has header age 0; the scratch tree's fix) | 1 | pass | 713,090 |
+| `ylos_age1_k2` | 2 | **violates `YlosGenIdentity`** | 59 states |
+| `ylos_age1_k2_heap005` | 2 | **violates `OldPointsOld`** | 95 states |
+| `ylos_lbid` (candidate 2 with the LargeBodyId as the stamp) | 1 | **violates `YlosGenIdentity`** | 38 states |
+
+- **The age ≥ 1 check is enough at k = 1 only.** At k = 1 a stale entry is read once, at the very
+  next minor's hand-over prep, before the new YLOS can be reached and aged. At k = 2 the entry is read
+  twice: the ageing prep skips B (age 0), B then joins the new fill's generation (age 1), and at the
+  next minor the freed member's extent, now the hand-over, claims B (age 1 passes). The merge promotes B
+  while its slot points into its own (ageing) generation's extent (`ylos_age1_k2_heap005`: minors 1-4,
+  1 major).
+- **The LargeBodyId is not an identity.** `releaseBlockToAllocator` pushes a freed entry's id on
+  `free_large_body_ids_` (`OGS:6431`) and `registerLargeBody` pops the last one (`OGS:7530`): in
+  CR-034's chain (the block all-dead and released) the new YLOS gets the old id. (Ids retired by
+  `retireDeadLargeBodies` or the lazy sweep are not recycled, so there the id would happen to work.)
+- Candidate 1, as an implementation: every kind-1 retirement by a major must drop the address
+  (`OGS:1805`, `:1831`, `:5641`, `:5742`, `:6427-6433`). With `old_gen_bitmap_alloc` on (the default)
+  all of them have run when `runPostMarkTail` returns, so pruning every Young extent's `ylos_gen` and
+  `lb_bodies` by an index lookup at the end of a STW major is equivalent; with it off the lazy sweep
+  retires entries after the mutator resumes, and a prune at the major's end is not enough.
+
+### The lb_bodies lists (the parallel audit's item)
+
+`Extent::lb_bodies` has CR-034's shape: the prep re-marks each listed body by address
+(`markLargeBodySeen`, `NR:749`, `:771`), and `markLargeBodySeen` colours whatever index entry is at that
+address, of either kind (`OGS:7542-7552`). The parallel audit's verdict ("floating garbage only") holds
+when the address is reused by another body. **It does not hold when it is reused by a young YLOS not
+yet reached:** the minor flips its colour first (`NR:675`), a new YLOS carries the previous colour
+(`TLH:469`), and the prep's re-mark gives it this minor's colour, so its first reach returns "already
+reached this minor" (`NR:526`): it is neither scanned nor aged, and its eden children are not
+evacuated. Modelled (`LbKey`): `MC_lb_aba` violates `NoDangling` (52 states: `lalloc` h + body in Y1;
+minor 1 copies h into X1 and lists Y1; h dies; the major frees the body; `yalloc` B → e into Y1; minor
+2's prep colours B; B's first reach is skipped; e is lost with eden). `lb_kind` (colour kind-0 entries
+only), `lb_drop` and `lb_stamp` pass (636,386 each). At k = 2 the same happens through the ageing prep
+(`MC_deep_boundary_k2_lb`, 52 states).
+
+### The other address-keyed lists
+
+MAPPING.md §9 has the table: `hand_ylos` / `st.ylos` / `reached[]`, `age_ylos`, `pend_S`, `pend_H` (and the
+ageing heal slots), `pend_SA`, `J.lb_promoted`, `lb_seen`, the shadow, `st.zap`, `st.stack` /
+`promoted_log`, `young_large_scan_`, `deferred_frees_`: **safe**, each with its argument (no free and
+reuse inside its window: the prep colours what the sweep would free, a STW major merges before it
+marks, the handoff frees no young YLOS, survivor cells are freed only at retirement); the shadow is
+already modelled (generations). The validate-only P1 census reads `ylos_gen` too: benign.
+
+### The major × region boundary, all at once (deep)
+
+| Configuration | Bounds | Result | Distinct states | Time |
+|---|---|---|---|---|
+| `MC_deep_boundary` | k = 1, mode 2, builders (BC = 1), 2 YLOS cells, large bodies, EC = 2, SC = 3, OC = 4, MaxLid = 4, 4 minors, 1 major, cycles (T = 1), stops, 3 ops of 8 kinds; `"stamp"`, `"kind"`, oracle | pass | 40,436,211 | 12 min 6 s |
+| `MC_deep_boundary_cr017` / `_cr034` | the same bounds, the code | `T0GreyAllocated` (47 states) / `YlosGenIdentity` (38) | — | 14 s / 7 s |
+| `MC_deep_boundary_k2` | k = 2, mode 2, 1 YLOS cell, large bodies, EC = SC = 1, OC = 4, MaxLid = 4, 5 minors, 1 major, cycles, 3 ops of 5 kinds; the same fixes and oracle; `T0GreyAllocated` for `YoungWalkValid` | pass | 14,080,348 | 3 min 11 s |
+| `MC_deep_boundary_k2_cr017` / `_cr034` / `_lb` | the same bounds, the code | `T0GreyAllocated` (47) / `YlosGenIdentity` (38) / `NoDangling` (52) | — | 1-2 s |
+| `MC_deep_boundary_k2_m2` | `MC_deep_boundary_k2` with two STW majors | pass | 24,099,550 | 5 min 16 s |
+| `controls/ylos_age1_boundary` | `MC_deep_boundary` with the age ≥ 1 check instead of the stamp | pass | 40,436,211 | 12 min 11 s |
+
+Every `_cr017` / `_cr034` / `_lb` row is the hunter's bounds with the code: each fails as expected, so
+the bounds admit CR-017's and CR-034's chains. The hunters look past the known defects: CR-034 with the
+fix controls, CR-017 with `Cr017Oracle` (the t0 walk skips dead survivor and builder objects; a
+model-only stand-in for any CR-017 fix, not a design), and at k = 2 the finding below by checking
+`T0GreyAllocated` instead of `YoungWalkValid`. Size: 3 operations and one Y cell (k = 2) or two (k = 1)
+keep the rows under the ~40 M-state disk guide; 4 operations would be about 7 times more. Not in the
+boundary: L3 (`Collectors = 2`, excluded at k = 2 by `age_forced_exact`), forks.
+
+**The boundary counterexamples, read:**
+- `_cr017` (k = 1 and 2, 47 states): **CR-017 through a large header's own body.** `lalloc` h; minor 1
+  copies h into X1; h dies; the STW major frees h's body (h is unreachable, so the body is unmarked);
+  minor 2's t0 walks the dead h and greys the freed body cell (the marker greys a large header's body,
+  `OGS:3543-3548`). No tenured object is needed: any large string or bytes value whose header dies
+  after surviving one minor, followed by a STW major and a t0 at the next minor.
+- `_cr034` (38 states): `MC_ylos_aba`'s chain; `_lb` (52 states): `MC_lb_aba`'s chain, at k = 2 through
+  the ageing prep (`NR:771`).
+- **The first run of `MC_deep_boundary_k2` (with `YoungWalkValid`) failed: a new path, not CR-017 or
+  CR-034** (88 states in its minimal form `MC_k2_ylos_walk`: k = 2, no major, no reuse). o is copied into
+  X1 at minor 1; Y (a YLOS) → o is allocated; minor 2 first-reaches Y (it joins X2's generation) and
+  records o in SA (X1 is ageing); Y dies in epoch 2; at minor 3 X1 is handed over and X2 ages, but Y is
+  dead, so the ageing mark never scans it and Y's slot into X1 is never healed; minor 4 retires X1, and
+  the t0 at minor 4 walks every young YLOS (`snapshotYoungLarge`, `OGS:4426-4446`), dead Y included,
+  whose slot names a cell of the retired X1. 07b's zap (`NT:849-857`) fills dead ageing *survivor*
+  objects "so no walker reads their possibly dangling slots"; dead ageing-generation YLOS are not
+  zapped. **Benign today by code reading:** the snapshot's `greyObject` drops a young target by range
+  before any load (`OGS:3325-3327`), the P1 census only hashes the YLOS, and no mutator-side check sees a
+  dead object. `T0GreyAllocated` holds in every boundary row.
+
+### Findings (for the orchestrator; the register is not edited here)
+
+1. **CR-034, extended.** (a) k ≥ 2: the ageing prep (`NR:773-779`) claims the new YLOS for `age_ylos`,
+   and the pause never scans it (`NR:519-523`): its eden children are lost at that same minor
+   (`MC_k2_ylos_aba`; TV6 in the job at steady state, silent at start-up). (b) The scratch tree's age ≥ 1
+   check is sound at k = 1 only (`ylos_age1_k2`). (c) The LargeBodyId is recycled LIFO
+   (`OGS:6431` → `OGS:7530`), so it is not an identity stamp (`ylos_lbid`). (d) Sound: dropping the
+   address at every kind-1 retirement of a major, or a never-reused stamp (both pass at k = 1 and 2,
+   and across the whole boundary). (e) Unmodelled but by the same code: a YLOS *builder* claimed this
+   way is promoted while its kernel still writes it.
+2. **New, S1 (Reproduced in the model; region mode, default k = 1): `lb_bodies` has CR-034's ABA, and
+   it can hide a live YLOS from the minor.** Where: `NurserySpace::minorGCRegion`'s preps,
+   `markLargeBodySeen(b, minor_color_)` over `Hx.lb_bodies` / `Ax.lb_bodies` (`NR:749`, `:771`);
+   `OldGenSpace::markLargeBodySeen` colours any index entry, no kind check (`OGS:7542-7552`);
+   `reachYoungLargeR`'s "already reached this minor" return (`NR:526`); the colour flip (`NR:675`) and a
+   new YLOS's registration colour (`ThreadLocalHeap::allocateYoungLarge`, `TLH:469`). Interleaving:
+   header h of a large string copied into F at minor j (its body address Z joins `F.lb_bodies`,
+   `NR:425`/`:928`); h dies; a STW major frees the body (index entry erased, Z kept in the list); a new
+   YLOS B → e is allocated at Z; minor j+1's prep colours B; B's first reach returns unscanned and unaged;
+   e (held only by B) is not evacuated and B's slot dangles into eden; B is also skipped for its Hand
+   targets. Fixes that pass: colour kind-0 entries only in `markLargeBodySeen` (or check the kind at the
+   prep), drop at the major, or a stamp. Suggest adding it to CR-034 (same root cause, second list) or a
+   sibling entry.
+3. **New, S4/D (Reproduced in the model; k ≥ 2 only, opt-in):** a dead ageing-generation YLOS keeps an
+   unhealed young slot into a retired extent that `snapshotYoungLarge` reads at the next t0
+   (`MC_k2_ylos_walk`); benign today (`OGS:3325-3327`), but it breaks the premise 07b's zap comment states
+   (`NT:849-852`) for YLOS: a future walker that checks young YLOS children (TV7) would trip.
+4. **CR-017, wider:** the freed old child can be a large header's own body (`_cr017` rows), so CR-017
+   needs no tenured object.
+5. Nothing else failed: every boundary hunter passes with the defects above looked past.
+
+### Canary (A9) lines to add for this model (not edited here)
+
+M5 now depends on `OGS.releaseBlockToAllocator` (the id push, the index erase), `OGS.retireDeadLargeBodies`,
+`OGH.youngLargeMeta`: add `M5` to those pins. `registerLargeBody`, `markLargeBodySeen` and
+`allocateYoungLarge` (`OldGenSpace.cpp`, `ThreadLocalHeap.cpp`) have no `TLA-REGION` markers yet; they
+should get pins naming M5.
+
+### Checks
+
+- Quick tier, `run_models.py --model M5 --jobs 2 --workers 2` (SANY, translation freshness, 64 rows):
+  **64/64 as expected** in 340 s. The 12 passing configurations of the first entry have exactly its
+  state counts; the new rows as in the tables above.
+- Deep: the boundary rows and `controls/ylos_*_k2` / `ylos_age1_boundary` as in the tables (run by hand
+  under the lock, each once; the deep tier's older rows were not re-run: their configurations only
+  gained the defaults, which leave the state space unchanged).
+- Trace validation, `run_traces.py --model M5 --jobs 2 --workers 2`: **27/27 as expected** (10 accepted logs, 17 rejected negative controls) in 25 s.
+
+### Files
+
+`Tenuring.tla` (PlusCal and translation), every `.cfg` (the three new constants' defaults),
+`TraceTenuring.tla` (`TJob`), new `MC_ylos_aba*.cfg`, `MC_k2_ylos_aba.cfg`, `MC_lb_aba.cfg`,
+`MC_k2_ylos_walk.cfg`, `MC_cycle_major_t0grey.cfg`, `MC_deep_boundary*.cfg`, `controls/*.cfg`;
+MAPPING.md (§1-§3, §5, §6, new §9); `test/tla/models.txt` (M5's rows); `test/tla/README.md` (layout).

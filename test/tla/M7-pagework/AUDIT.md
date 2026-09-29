@@ -307,3 +307,76 @@ name this model (9 census, 6 file, 6 grep, 23 region); the list is in MAPPING.md
 baseline: the pinned code is the code this model was checked against today (after the trace hooks,
 wave 3's fixes and the `TLA-REGION` markers landed). From now on, a pin that fires needs an entry
 here quoting the new hash prefix before `check-tla-manifest.sh --update` accepts it.
+
+## 2026-09-29 — ABA audit (a key reused after a free), and `pw_aba`
+
+**Why:** CR-034 is an ABA defect (a structure remembered an object by address; the address was
+freed and reused by a different object; a later lookup took the new object for the old). The
+models use logical ids, so this class is a blind spot. This entry audits every PageWork /
+free-extent structure that holds an address across a release and a reuse. **Tree:** 2026-09-29.
+Line numbers: `PW` = `PageWork.cpp`, `AL` = `Allocator.cpp`.
+
+### Verdicts (code reading)
+
+| Structure | Filled | Consumed / cleared | Identity guard | Verdict |
+|---|---|---|---|---|
+| `pending_` (key: extent start) | `onRelease` `PW:168-170` | `onReuse` cancel `PW:181-188`; aging `PW:278-298`; `drainAll(true)` `PW:311-321` | one record per start: `onRelease` aborts on a tracked start (`PW:165-167`); every removal from `old_gen_free_blocks_` calls `onReuse` first (`AL:782-799`, the only removal); the free list never splits or coalesces (below) | safe |
+| `pending_order_` (start, seq) | `PW:170` | aging `PW:278-283` | `seq` stamp: an entry whose record was cancelled and re-released at the same start is skipped (`PW:281`) | safe; the stamp is load-bearing (mutant `age_stale_entry`) |
+| `posted_discard_` (start → slot) | `postDiscardBatch` `PW:231-234` | `reap` `PW:96-103` (via `awaitSlot` from `onReuse` `PW:190-192`, `takeSlot`, `reapDone`) | a reuse of a Posted start waits for and reaps its job before the extent is touched; `reap` also checks `Posted::slot` (`PW:100`) | safe; the slot check is redundant (probe below) |
+| `PageJob::extents`, `lo`/`hi` | post (`PW:229`, `PW:260-261`) | `runJob` `PW:65-81`, `reap` | a posted discard's extents stay in the free list and a reuse waits (HEAP_059); a populate is above the bump and a release waits for an overlapping one (HEAP_060, `PW:151-157`) | safe (modelled) |
+| `window_end_` | `topUpWindow` `PW:254` | `onFreshBump` `PW:206`, `topUpWindow` `PW:248` | only grows; new windows start at `max(window_end_, bump)`, above every released extent (the bump never moves back, `AL:927-937`) | safe |
+| `epoch_`, `major_epoch_`, `next_release_seq_`, `next_seq_` | sync points; release; post | aging; "oldest slot" | 64-bit, monotone, never an identity except `seq` above | safe |
+| `old_gen_free_blocks_` (start, size) | `releaseOldGenBlock` `AL:938` | `acquireOldGenBlock` first fit `AL:782-793`; `reset` `AL:1083` | entries come from releases of disjoint owned blocks; an acquire takes a whole entry (no split, `AL:780-793`) and a release appends (no coalesce, `AL:938`), so a start names exactly one extent for its whole free-list life, and V2a (`AL:1318-1327`) checks the record and the entry agree in size | safe |
+| `validatePageWork`'s `used` (`AL:1307`) | per call | per call | rebuilt under `thread_mutex_` each call | safe (its unlocked reads of other heaps are CR-012) |
+
+`Allocator::reset` (`AL:1037-1052`) drains every job and discards every Pending extent before the
+free list is cleared (`AL:1083`) and `PageWork` is rebuilt (`rebuildPageWork`), so no record
+survives into the next heap at the same addresses; `heap_generation_` plays no part in PageWork.
+Several heaps: every PageWork call is under `thread_mutex_`, so heap B reusing heap A's released
+extent cancels or waits exactly as the owner would (MAPPING.md §3); CR-012 keeps the unlocked
+counters and `acquireOldGenRegion`'s re-map of a window.
+
+**No hazard in M7's scope.** An overlap with a *different* start (a split or coalesced extent
+reacquired while a record for another start covers part of it) is the one shape keying by start
+could miss, and the code cannot produce it. That premise is now written into MAPPING.md §3; a
+change to the free list's first-fit or append is caught by the canary pins `AL.acquireOldGenBlock`
+and `AL.releaseOldGenBlock`, and would need the model's extents to become ranges.
+
+**Side finding (not ABA, not concurrency; for the orchestrator):** a first-fit reuse of a
+**larger** free extent hands out the whole extent (`AL:787-793`, `old_gen_in_use_bytes_ +=
+block_size` at `AL:834`), but the caller records only the size it asked for (`populateFromBlock`,
+`ensureBagPageAvailable`, `allocateFromBagPage`: `alloc_buffer_size`; `allocateLargeBlock`:
+`bi.end = block_base + block_size` of its own request, `OldGenSpace.cpp:2946`) and later releases
+only that (`releaseBlockToAllocator` → `releaseOldGenBlock(blk.start, total)`). The tail is
+lost from the free list until `reset` (resident, never discarded, never reused), and
+`old_gen_in_use_bytes_` (`getOldGenCommittedBytes`, the pressure triggers' numerator) grows by the
+tail each time. Reachable whenever a released large block's extent is first in the list for a page
+request. The plan (`plans/oldgen-capacity-shrink-and-large-reuse.md` Step 1) put splitting out of
+scope; the permanent loss and the accounting drift are not written down anywhere.
+
+### Model change: `pw_aba.cfg` (quick, pass)
+
+The model already lets an extent id (= its start, the maps' key) be released, reused and
+released again; `reuse_keeps_pending` (V1), `reuse_no_wait` (HEAP_059) and `age_stale_entry`
+(NoOwnedPosted) are the ABA mutants (same start, stale record). `pw_basic`'s 5 operations reach
+only about two reuse cycles, with the window taking some of them. `pw_aba` gives the depth to the
+cycles: 3 extents all owned, no window (`InitFresh = {}`), 2 slots, 2 workers, 10 operations, every
+invariant. No PlusCal change (the translation is unchanged).
+
+| Run | Result | States | Time |
+|---|---|---|---|
+| `pw_aba` | pass (depth 44) | 238,633 | 3.4 s (2 workers) |
+| `age_stale_entry` at `pw_aba`'s constants (scratch) | violates `NoOwnedPosted` | 463 at the stop | < 1 s |
+| `reuse_keeps_pending` at `pw_aba`'s constants (scratch) | violates `V1` | 43 at the stop | < 1 s |
+| `reuse_no_wait` at `pw_aba`'s constants (scratch) | violates `HEAP_059` | 1,047 at the stop | < 1 s |
+| probe `reap_any_slot` (scratch only: `Reap` and `ReapSomeDone` forget a Posted extent whatever `postedIn` says, i.e. `reap` without `PW:100`'s slot check), at `pw_aba` and `pw_basic` | pass | 238,633 and 22,518: **the same state spaces** | — |
+
+The probe's identical state counts show the slot check never changes a behaviour: a Posted
+extent's job is always reaped before the extent can be reused, re-released and posted again (the
+reuse waits and reaps, `PW:190-192`). It is a defensive guard, not a load-bearing one, so the probe
+is recorded here and not kept as a mutant (a mutant must fail, rule A6).
+
+Quick tier after the change: `run_models.py --model M7 --jobs 2 --workers 2
+--java-opts="-Xmx3g -XX:MaxDirectMemorySize=1g"`: **19/19 as expected** in 9 s. Trace validation:
+`run_traces.py --model M7`: **15/15 as expected** (the accept rows accept; the negative controls
+reject). No canary pin changed (no code change).
