@@ -13,10 +13,21 @@ Runs go to completion unless `--wall-seconds` caps them.
 Each invocation creates one timestamped folder under
     <results_root>/<machine>/<YYYY-MM-DDTHH-MM-SSZ>__<label>/
 containing:
-  - report.md                   Markdown summary linking the per-block TSVs
-  - runs.tsv                    one summary row per variant (resume marker)
+  - report.md                   Markdown summary (medians per cell)
+  - runs.tsv                    one MEDIAN row per cell (resume marker)
+  - runs_raw.tsv                every run: metrics, rc, signal, output hash,
+                                validity (resumes a cell mid-way)
   - args.json                   CLI args, resolved paths, rebuild outcome
-  - variants/<name>/            with per-variant TSVs and logs.
+  - variants/<name>/            heap-config.json, summary.tsv, runs.tsv, and
+                                r<N>/ per run: stdout.log (stats banner),
+                                stderr.log, time.txt (GNU time -v), TSVs.
+
+Each cell runs `--repeat` times (default 3), strictly serially, under GNU
+`time -v`. Metrics: wall, CPU (user + sys), max RSS, pause p50/p90/p99/p99.9/
+max and MMU (phase-timer builds: `--build-tree build-phasetimers`), promoted
+and tenured bytes, old-gen peak, minors/majors, GC time, mutator and
+collector CPU. A run counts only if it exits 0, takes no signal, and emits
+output byte-identical to the sitting's first valid run.
 
 `<results_root>` and `<machine>` come from `heap-profile.local.json` next to
 this script (created on first run via interactive prompt) or from CLI flags.
@@ -61,6 +72,45 @@ DEFAULT_HEAP_CONFIG = REPO_ROOT / "build/compiler/build-kernel/heap-config.json"
 LOCAL_CONFIG = REPO_ROOT / "heap-profile.local.json"
 ECO_STUFF = BUILD_KERNEL / "eco-stuff"
 
+# The build tree whose runtime libraries the profiled compiler is LINKED
+# against (`--build-tree`, default `build`). The object file is always lowered
+# by the primary tree's eco-boot-native: lowering does not depend on the GC
+# stats / phase-timer switches. It is then linked by the selected tree's
+# eco-boot-native, which picks up that tree's own archives. With
+# `--build-tree build-phasetimers` this is the "phase-timer relink" the
+# threaded-GC experiments used: the same code, plus the pause log that the
+# pause percentiles and MMU columns are parsed from.
+PRIMARY_TREE = REPO_ROOT / "build"
+BUILD_TREE = PRIMARY_TREE
+ECO_BOOT_NATIVE_LINK = ECO_BOOT_NATIVE
+
+
+# Set by `--compiler-mlir`: lower THIS file instead of the bootstrap product.
+COMPILER_MLIR_OVERRIDE: Path | None = None
+
+
+def select_build_tree(tree: str, compiler_mlir: str | None = None) -> None:
+    """Point the link step (and the linked binary's name) at `tree`, and
+    optionally the lowering input at `compiler_mlir`. Each (MLIR, tree) pair
+    gets its own object and binary name, so switching either never reuses an
+    artefact built from the other."""
+    global BUILD_TREE, ECO_BOOT_NATIVE_LINK, ECO_COMPILER
+    global ECO_COMPILER_MLIR, ECO_COMPILER_OBJ, COMPILER_MLIR_OVERRIDE
+    BUILD_TREE = REPO_ROOT / tree
+    ECO_BOOT_NATIVE_LINK = BUILD_TREE / "runtime/src/codegen/eco-boot-native"
+    stem = "eco-compiler"
+    if compiler_mlir is not None:
+        COMPILER_MLIR_OVERRIDE = Path(compiler_mlir).resolve()
+        ECO_COMPILER_MLIR = COMPILER_MLIR_OVERRIDE
+        # Cached next to the bootstrap artefacts, named after the MLIR, so an
+        # existing `<stem>.o` from earlier experiments is reused as-is.
+        ECO_COMPILER_OBJ = BUILD_KERNEL / "bin" / f"{COMPILER_MLIR_OVERRIDE.stem}.o"
+        stem = f"eco-compiler-{COMPILER_MLIR_OVERRIDE.stem}"
+    if BUILD_TREE != PRIMARY_TREE:
+        stem = f"{stem}-{BUILD_TREE.name}"
+    ECO_COMPILER = BUILD_KERNEL / "bin" / stem
+
+
 # `timeout(1)` arguments, used ONLY when --wall-seconds is given. The default
 # is no budget at all: a run goes to completion. The 60 s sampling window this
 # script was born with predates the compiler being able to finish a self-compile
@@ -73,63 +123,122 @@ KILL_AFTER_S = 10
 # ---------------------------------------------------------------------------
 
 # An exact mirror of the compiled-in HeapConfig defaults in
-# runtime/src/allocator/AllocatorCommon.hpp — every field of the struct, at the
-# value the runtime uses when no ECO_HEAP_CONFIG is set. Field order follows the
-# struct: heap-wide, string / rope, nursery, old generation, small-class
-# budgeting, sweep & mark pacing.
+# runtime/src/allocator/AllocatorCommon.hpp — all 88 keys the ECO_HEAP_CONFIG
+# parser accepts (HeapConfigJson.cpp kKnownKeys), at the value the runtime uses
+# when no ECO_HEAP_CONFIG is set. Grouped as in docs/options.md.
 #
 # Keeping this a COMPLETE mirror is what makes the `baseline` sweep cell the
 # shipped configuration: a field omitted here would silently fall back to the
 # struct default, so a drift between the two could not be seen in the results.
 # `compiler/cmake/bootstrap/build-kernel/heap-config.json` (copied into the
-# build tree at CMake configure time) carries the same 41 values.
+# build tree at CMake configure time) carries the same 88 values. Both were
+# generated from a default-constructed HeapConfig and checked to round-trip
+# through applyHeapConfigJsonFile field for field (2026-09-28; regenerated
+# 2026-09-29 for the retuned defaults). Regenerate
+# them whenever a default in AllocatorCommon.hpp changes or a key is added.
+#
+# "auto" values are written as the auto sentinel, not the resolved number:
+# thread counts 0 (min(cap, available CPUs)), nursery_regions 2, and
+# nursery_region_eden_flip -1, so the baseline resolves exactly as the
+# shipped binary does on the machine it runs on.
 BASELINE_HEAP = {
-    # Heap-wide.
+    # Heap-wide and large-object placement.
     "max_heap_size":                     "24G",
-    # 0 = policy: min(4 GiB, max_heap_size / 2)  (HEAP_043).
     "nursery_region_bytes":              0,
     "alloc_buffer_size":                 "512K",
     "large_object_threshold":            "8K",
-    # String / rope heuristics.
-    "string_flatten_limit":              "32K",
+    "large_ptr_nursery_divisor":         8,
+    "large_ptr_nursery_max_size":        "128K",
+    # String / rope heuristics (not GC, same file).
+    "string_flatten_limit":              "128K",
     "string_tiny_slice_limit":           128,
     "utf8_view_min_len":                 32,
     "utf8_strings_enabled":              True,
     "rope_max_height":                   32,
     "rope_leaf_count_limit":             64,
     "rope_min_leaf_size":                128,
-    # Nursery.
+    # Nursery and minor GC (parallel minor: TG6).
     "nursery_block_count":               256,
-    "nursery_max_block_count":           512,
+    "nursery_max_block_count":           384,
     "nursery_gc_threshold":              0.95,
-    "nursery_growth_threshold":          0.20,
+    "nursery_growth_threshold":          0.2,
     "promotion_age":                     1,
     "use_hybrid_dfs":                    True,
-    # Old generation.
+    "gc_minor_threads":                  0,
+    "gc_minor_threads_cap":              8,
+    "minor_lab_bytes":                   "8K",
+    "minor_parallel_min_bytes":          "4M",
+    "minor_prefetch_children":           True,
+    "minor_fifo_order":                  False,
+    # Region nursery and concurrent tenuring (TG7). nursery_regions 2 = auto (resolves to 1);
+    # nursery_region_eden_flip -1 = on only in ECO_HEAP_VALIDATE builds.
+    "nursery_regions":                   2,
+    "nursery_region_eden_flip":          -1,
+    "tenure_mode":                       2,
+    "tenure_sync_threads":               1,
+    "tenure_help":                       1,
+    "tenure_help_threads":               0,
+    "tenure_priority":                   0,
+    "heal_parallel_min":                 65536,
+    "shadow_granule_log2":               3,
+    "tenure_collector_threads":          1,
+    "tenure_fifo_order":                 False,
+    # Old generation and major-GC triggers (LiveBudget / demote: TG2; headroom: TG5c).
     "initial_old_gen_size":              "16M",
     "major_gc_initiating_occupancy":     0.95,
     "major_gc_global_pressure_fraction": 0.85,
-    "major_gc_target_utilization":       0.50,
-    "major_gc_garbage_fraction":         0.70,
+    "major_gc_target_utilization":       0.5,
+    "major_gc_garbage_fraction":         0.7,
+    "major_gc_live_budget":              4.5,
+    "live_growth_bound":                 1.5,
+    "major_gc_live_budget_paced":        True,
+    "major_gc_headroom_margin":          1.5,
+    "major_gc_garbage_backstop":         0.0,
+    "garbage_denom_cap":                 0.0,
+    "demote_live_fraction":              0.3,
+    "old_gen_bitmap_alloc":              True,
+    # Marking: incremental (TG5a), parallel (TG5b), concurrent (TG5c). Thread counts 0 = auto
+    # (min(cap, available CPUs)).
+    "incremental_mark":                  True,
+    "incremental_mark_slices":           32,
+    "incremental_mark_min_slice_units":  16384,
+    "incremental_mark_predict_growth":   1.25,
+    "incremental_mark_finish_fraction":  0.95,
+    "gc_mark_threads":                   0,
+    "gc_mark_threads_cap":               16,
+    "conc_mark":                         2,
+    "conc_mark_threads":                 0,
+    "conc_mark_threads_cap":             4,
+    "conc_mark_priority":                0,
+    "conc_mark_assist_lag":              8,
+    # Helper thread, deferred decommit, commit-ahead (TG3). decommit_delay_syncs 4294967295 = never.
     "decommit_on_oldgen_release":        True,
+    "gc_thread_mode":                    2,
+    "gc_helper_threads":                 1,
+    "gc_helper_cpu":                     -1,
+    "decommit_delay_syncs":              4294967295,
+    "decommit_pending_max_bytes":        0,
+    "decommit_delay_majors":             1,
+    "commit_ahead_bytes":                "128M",
     # Small-class page budgeting.
     "small_class_heap_budget_bytes":     "1G",
     "small_class_cell_max_bytes":        "8K",
-    # Old-gen sweep & mark pacing.
+    # Old-gen sweep pacing. mark_work_ratio has no effect (kept so old files parse).
     "sweep_work_budget":                 "4K",
+    "minor_sweep_divisor":               1,
     "initial_sweep_budget":              "64K",
     "mark_work_ratio":                   2,
     "sweep_bytes_per_alloc_byte":        2.0,
     "max_sweep_bytes_per_alloc":         "1M",
     "max_sweep_bytes_hard":              "4M",
-    "sweep_cap_ratio_low":               0.50,
+    "sweep_cap_ratio_low":               0.5,
     "sweep_cap_ratio_medium":            0.75,
-    "sweep_cap_ratio_high":              0.90,
+    "sweep_cap_ratio_high":              0.9,
     "sweep_scale_low":                   1.0,
     "sweep_scale_medium":                2.0,
     "sweep_scale_high":                  4.0,
     "sweep_scale_crit":                  8.0,
-    "sweep_unswept_ratio_boost":         0.50,
+    "sweep_unswept_ratio_boost":         0.5,
     "sweep_unswept_scale":               2.0,
     "panic_sweep_slice_bytes":           "1M",
 }
@@ -141,11 +250,11 @@ VARIANTS = [
     ("A_nb32",       "nursery_block_count=32",         {"nursery_block_count": 32}),
     ("A_nb128",      "nursery_block_count=128",        {"nursery_block_count": 128}),
     # B. Promotion age
-    ("B_age1",       "promotion_age=1",                {"promotion_age": 1}),
+    ("B_age2",       "promotion_age=2",                {"promotion_age": 2}),
     ("B_age3",       "promotion_age=3",                {"promotion_age": 3}),
     # C. Major GC trigger / shrink
     ("C1_early",     "init=0.50 target=0.30",          {"major_gc_initiating_occupancy": 0.50, "major_gc_target_utilization": 0.30}),
-    ("C2_late",      "init=0.85",                      {"major_gc_initiating_occupancy": 0.85}),
+    ("C2_mio085",    "init=0.85 (default 0.95)",       {"major_gc_initiating_occupancy": 0.85}),
     ("C3_tight",     "target=0.70",                    {"major_gc_target_utilization": 0.70}),
     # D. Large-object threshold
     ("D1_lot4K",     "LOT=4K",                         {"large_object_threshold": "4K"}),
@@ -182,19 +291,42 @@ def load_variants_file(path: Path) -> list[tuple[str, str, dict]]:
         out.append((name, change, overrides))
     return out
 
-SUMMARY_COLUMNS = [
-    "name", "change",
-    "wall_s", "major_gcs", "minor_gcs",
-    "major_s", "minor_s",
-    "helper_min_s", "helper_mut_s", "helper_s",
-    "nursery_alloc_s",
-    "post_sweep_shrink_s", "shrink_heavy_s", "shrink_light_s",
-    "mutator_s", "mutator_pct",
-    "bytes_alloc_MB", "alloc_MBps", "objs_alloc",
-    "peak_commit_MB", "final_live_MB",
+# Per-run metrics. Units are in the names. A metric the binary does not print
+# (pause percentiles and MMU need an ECO_GC_PHASE_TIMERS build; the region,
+# concurrent-mark and mutator-CPU lines need those engines active) is written
+# as an EMPTY cell, never 0, so a missing number cannot pass for a measurement
+# and medians skip it.
+METRIC_COLUMNS = [
+    # GNU `time -v` (whole process tree).
+    "wall_s", "cpu_s", "user_s", "sys_s", "max_rss_GB",
+    # Pause log (phase-timer builds only).
+    "pause_n", "pause_total_s",
+    "pause_p50_ms", "pause_p90_ms", "pause_p99_ms", "pause_p999_ms",
+    "pause_max_ms", "minor_pause_max_ms",
+    "mmu_100ms_pct", "mmu_200ms_pct", "mmu_500ms_pct",
+    # Promotion and old-gen memory.
+    "promoted_MiB", "objs_promoted", "tenured_MB", "oldgen_peak_MB",
+    # Collection counts and in-pause GC time.
+    "minor_gcs", "major_gcs", "gc_total_s", "major_s", "minor_s",
+    "helper_s", "nursery_alloc_s",
+    # Thread CPU. The mutator figure comes from the runtime's own CPU clock:
+    # with concurrent marking and tenuring, "wall - GC" is no longer mutator
+    # time, so that derived column was dropped.
+    "mutator_cpu_s", "mutator_cpu_out_s", "conc_mark_cpu_s",
+    "collector_cpu_s", "late_minors",
+    # Allocation.
+    "bytes_alloc_MB", "objs_alloc", "peak_commit_MB", "final_live_MB",
     "registry_ms",
-    "out_bytes", "out_md5", "signal",
 ]
+
+# One row per run (runs_raw.tsv, variants/<name>/runs.tsv).
+RAW_COLUMNS = ["name", "rep", "change", *METRIC_COLUMNS,
+               "rc", "signal", "out_bytes", "out_md5", "valid"]
+
+# One row per cell: the MEDIAN of each metric over the cell's valid runs
+# (runs.tsv, variants/<name>/summary.tsv). runs.tsv is also the resume marker.
+SUMMARY_COLUMNS = ["name", "change", "runs", "valid_runs", *METRIC_COLUMNS,
+                   "out_md5"]
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +405,7 @@ def load_or_prompt_local_config(no_prompt: bool) -> dict:
 def resolve_paths(args) -> tuple[str, Path]:
     cfg = load_or_prompt_local_config(args.no_prompt)
     machine = args.machine or cfg.get("machine_name")
-    results_root = Path(args.results_root or cfg.get("results_root"))
+    results_root = Path(args.results_root or cfg.get("results_root")).resolve()
     if not machine or not results_root:
         sys.exit("ERROR: machine_name and results_root must be set.")
     return machine, results_root
@@ -322,10 +454,11 @@ def _link_eco_compiler_obj() -> None:
         sys.exit(f"ERROR: {ECO_COMPILER_OBJ} not found; cannot relink "
                  "eco-compiler. Run --emit=obj first.")
     print(f"[heap-profile] linking {ECO_COMPILER.name} from "
-          f"{ECO_COMPILER_OBJ.name} (eco-boot-native link-only)...",
+          f"{ECO_COMPILER_OBJ.name} against {BUILD_TREE.name}/ archives "
+          f"(eco-boot-native link-only)...",
           flush=True)
     subprocess.run(
-        [str(ECO_BOOT_NATIVE), str(ECO_COMPILER_OBJ),
+        [str(ECO_BOOT_NATIVE_LINK), str(ECO_COMPILER_OBJ),
          "-o", str(ECO_COMPILER)],
         cwd=REPO_ROOT, check=True)
 
@@ -409,22 +542,39 @@ def _full_bootstrap_to_stage6() -> None:
     _link_eco_compiler_obj()
 
 
-def ensure_binaries_fresh(skip: bool) -> dict:
+def _newest_archive_mtime(tree: Path) -> float:
+    """Newest static archive the link step pulls from `tree`."""
+    newest = 0.0
+    for sub in ("runtime", "elm-kernel-cpp", "eco-kernel-cpp"):
+        root = tree / sub
+        if root.is_dir():
+            for a in root.rglob("*.a"):
+                newest = max(newest, a.stat().st_mtime)
+    return newest
+
+
+def ensure_binaries_fresh(skip: bool, allow_bootstrap: bool = False) -> dict:
     """Bring all build artefacts up to date in dependency order:
 
-      1. Rebuild eco-boot-native if any runtime C++ source is newer.
-      2. If any compiler/src .elm source is newer than eco-compiler.mlir,
-         wipe `compiler/build-kernel/bin/` and run the full bootstrap
-         (Stages 1-6 from guides/bootstrap.md). Stage 6 emits a fresh
-         eco-compiler.o cache and links the eco-compiler ELF, so steps 3
-         and 4 are skipped.
+      1. `cmake --build` (ALL targets) on the primary tree and, if different,
+         the selected `--build-tree`. Every runtime archive must be current,
+         not just eco-boot-native: on 2026-09-28 a stale libEcoEntryStatic.a
+         (old GCStats layout) linked into a candidate compiler printed a full
+         banner and then SIGSEGV'd at exit. A no-op build costs a second.
+      2. Without --compiler-mlir: if eco-compiler.mlir is missing or older
+         than any compiler/src .elm source, stop — unless --bootstrap was
+         given, in which case wipe `compiler/build-kernel/bin/` and run the
+         full bootstrap (Stages 1-6 from guides/bootstrap.md).
       3. Refresh the cached eco-compiler.o (Stage 6 minus link) if it's
          missing or older than eco-compiler.mlir.
-      4. Re-link eco-compiler if it's missing or older than the .o cache,
-         eco-boot-native, or any runtime C++ source. This is the fast
-         path for C++-only edits: the heavy MLIR/LLVM lowering is reused
-         from the cached .o, and only the clang++ link step runs."""
-    outcome = {"checked": True, "rebuilt_eco_boot_native": False,
+      4. Re-link the profiled compiler if it's missing or older than the .o
+         cache, the linking eco-boot-native, or any archive in the selected
+         tree. This is the fast path for C++-only edits: the heavy MLIR/LLVM
+         lowering is reused from the cached .o, and only the link runs."""
+    outcome = {"checked": True,
+               "build_tree": BUILD_TREE.name,
+               "compiler": str(ECO_COMPILER),
+               "built_trees": [],
                "relinked_eco_compiler": False,
                "rebuilt_compiler_mlir": False,
                "rebuilt_compiler_obj": False,
@@ -435,27 +585,50 @@ def ensure_binaries_fresh(skip: bool) -> dict:
         outcome["skipped"] = True
         return outcome
 
-    src_mtime = _newest_mtime_under(RUNTIME_SRC, (".cpp", ".hpp", ".h"))
+    trees = [PRIMARY_TREE] + ([BUILD_TREE] if BUILD_TREE != PRIMARY_TREE else [])
+    for tree in trees:
+        if not (tree / "CMakeCache.txt").exists():
+            sys.exit(f"ERROR: {tree} is not a configured build tree")
+        print(f"[heap-profile] cmake --build {tree.name} (all targets)...",
+              flush=True)
+        subprocess.run(["cmake", "--build", str(tree)], cwd=REPO_ROOT,
+                       check=True)
+        outcome["built_trees"].append(tree.name)
+    if not ECO_BOOT_NATIVE_LINK.exists():
+        sys.exit(f"ERROR: {ECO_BOOT_NATIVE_LINK} not found after the build")
 
-    boot_mtime = ECO_BOOT_NATIVE.stat().st_mtime if ECO_BOOT_NATIVE.exists() else 0.0
-    if not ECO_BOOT_NATIVE.exists() or boot_mtime < src_mtime:
-        print("[heap-profile] runtime sources newer than eco-boot-native — "
-              "rebuilding...", flush=True)
-        subprocess.run(
-            ["cmake", "--build", "build", "--target", "eco-boot-native"],
-            cwd=REPO_ROOT, check=True)
-        outcome["rebuilt_eco_boot_native"] = True
-        boot_mtime = ECO_BOOT_NATIVE.stat().st_mtime
-
-    elm_mtime = _newest_mtime_under(COMPILER_SRC, (".elm",))
+    if COMPILER_MLIR_OVERRIDE is not None:
+        if not ECO_COMPILER_MLIR.exists():
+            sys.exit(f"ERROR: --compiler-mlir {ECO_COMPILER_MLIR} not found")
+        outcome["compiler_mlir"] = str(ECO_COMPILER_MLIR)
+        outcome["compiler_mlir_md5"] = hashlib.md5(
+            ECO_COMPILER_MLIR.read_bytes()).hexdigest()
+        stale_mlir = False
+    else:
+        elm_mtime = _newest_mtime_under(COMPILER_SRC, (".elm",))
+        stale_mlir = (not ECO_COMPILER_MLIR.exists()
+                      or ECO_COMPILER_MLIR.stat().st_mtime < elm_mtime)
+    if stale_mlir and not allow_bootstrap:
+        # The bootstrap below DELETES build/compiler/build-kernel/bin/, which
+        # also holds every experiment's snapshot binaries (46 GB on
+        # 2026-09-28, including the baseline eco-optTA2). Never do that as a
+        # side effect of starting a profile.
+        sys.exit(f"ERROR: {ECO_COMPILER_MLIR} is missing or older than the "
+                 f"Elm sources. Either pass --compiler-mlir <file> to profile "
+                 f"an existing compiler MLIR (for the threaded-GC baseline: "
+                 f"snapshots/lss-loop/keep-TA2/bin/ecoTG6base.mlir), or pass "
+                 f"--bootstrap to WIPE {BUILD_KERNEL / 'bin'} and rebuild it "
+                 f"through bootstrap Stages 1-6.")
     mlir_mtime = (ECO_COMPILER_MLIR.stat().st_mtime
                   if ECO_COMPILER_MLIR.exists() else 0.0)
-    if not ECO_COMPILER_MLIR.exists() or mlir_mtime < elm_mtime:
+    if stale_mlir:
         _full_bootstrap_to_stage6()
         outcome["ran_full_bootstrap"] = True
         outcome["rebuilt_compiler_mlir"] = True
         outcome["rebuilt_compiler_obj"] = True
         outcome["relinked_eco_compiler"] = True
+        # Stage 6 links through _link_eco_compiler_obj, i.e. against the
+        # selected tree already.
         return outcome
 
     obj_mtime = (ECO_COMPILER_OBJ.stat().st_mtime
@@ -467,11 +640,10 @@ def ensure_binaries_fresh(skip: bool) -> dict:
         outcome["rebuilt_compiler_obj"] = True
         obj_mtime = ECO_COMPILER_OBJ.stat().st_mtime
 
+    link_inputs_mtime = max(ECO_BOOT_NATIVE_LINK.stat().st_mtime,
+                            _newest_archive_mtime(BUILD_TREE), obj_mtime)
     compiler_mtime = ECO_COMPILER.stat().st_mtime if ECO_COMPILER.exists() else 0.0
-    if (not ECO_COMPILER.exists()
-            or compiler_mtime < boot_mtime
-            or compiler_mtime < src_mtime
-            or compiler_mtime < obj_mtime):
+    if not ECO_COMPILER.exists() or compiler_mtime < link_inputs_mtime:
         _link_eco_compiler_obj()
         outcome["relinked_eco_compiler"] = True
     return outcome
@@ -513,15 +685,71 @@ def _first_time_seconds(text: str, pattern: str) -> float:
     return _t_to_s(float(m.group(1)), m.group(2))
 
 
-def parse_summary(out_text: str, err_text: str, wall_s: float) -> dict:
+def _opt_float(text: str, pattern: str, flags=0) -> float | None:
+    m = re.search(pattern, text, flags)
+    return float(m.group(1)) if m else None
+
+
+def _opt_int(text: str, pattern: str, flags=0) -> int | None:
+    m = re.search(pattern, text, flags)
+    return int(m.group(1)) if m else None
+
+
+def _bytes_to_mib(value: float, unit: str) -> float:
+    return value * {"B": 1.0 / 1048576, "KiB": 1.0 / 1024, "MiB": 1.0,
+                    "GiB": 1024.0}[unit]
+
+
+def _fmt(v, digits: int) -> str:
+    """Empty for a metric the run did not print; fixed-point otherwise."""
+    if v is None:
+        return ""
+    if isinstance(v, int):
+        return str(v)
+    return f"{v:.{digits}f}"
+
+
+def parse_time_v(text: str) -> dict:
+    """Parse GNU `time -v` output: CPU is user + sys of the whole process
+    tree (every GC and helper thread included), RSS is the peak of any
+    process in it."""
+    wall = None
+    m = re.search(r"Elapsed \(wall clock\) time \(h:mm:ss or m:ss\): (\S+)", text)
+    if m:
+        wall = 0.0
+        for part in m.group(1).split(":"):
+            wall = wall * 60 + float(part)
+    user = _opt_float(text, r"User time \(seconds\): ([0-9.]+)")
+    sys_ = _opt_float(text, r"System time \(seconds\): ([0-9.]+)")
+    rss_kb = _opt_int(text, r"Maximum resident set size \(kbytes\): (\d+)")
+    return {
+        "time_wall_s": wall,
+        "user_s": user,
+        "sys_s": sys_,
+        "cpu_s": (user + sys_) if user is not None and sys_ is not None else None,
+        "max_rss_GB": rss_kb / 1e6 if rss_kb is not None else None,
+    }
+
+
+# `printPauseLine` in GCStats.cpp: label, n, total (s), p50/p90/p99/p99.9/max (ms).
+_PAUSE_LINE_RE = (r"\s+n=(\d+)\s+total=([0-9.]+) s\s+p50=([0-9.]+) ms\s+"
+                  r"p90=([0-9.]+) ms\s+p99=([0-9.]+) ms\s+p99\.9=([0-9.]+) ms\s+"
+                  r"max=([0-9.]+) ms")
+
+
+def parse_summary(out_text: str, err_text: str, wall_s: float,
+                  time_v: dict) -> dict:
     major_gcs = _first_int(out_text, r"Major GC cycles:\s+(\d+)")
     minor_gcs = _first_int(out_text, r"Minor GC cycles:\s+(\d+)")
     bytes_mb = _first_float(out_text, r"Bytes allocated:\s+([0-9.]+)\s*MB")
     objs = _first_int(out_text, r"Objects allocated:\s+(\d+)")
+    objs_promoted = _opt_int(out_text, r"Objects promoted:\s+(\d+)")
     major_s = _first_time_seconds(
         out_text, r"Major GC Timing:.*?Total time:\s+" + _TIME_RE)
     minor_s = _first_time_seconds(
         out_text, r"Minor GC Timing:.*?Total time:\s+" + _TIME_RE)
+    m = re.search(r"Total GC/Alloc time:\s+" + _TIME_RE, out_text)
+    gc_total_s = _t_to_s(float(m.group(1)), m.group(2)) if m else None
     # The runtime prints two top-level allocator-timing blocks:
     #   "Allocator Timings:" — top-level mutually-exclusive buckets
     #   "Allocator Nested Timings (...):" — sub-counters, do not sum
@@ -534,31 +762,45 @@ def parse_summary(out_text: str, err_text: str, wall_s: float) -> dict:
         top_body, r"Old-gen alloc in mutator:\s+" + _TIME_RE)
     nursery_alloc_s = _first_time_seconds(
         top_body, r"Nursery alloc in mutator:\s+" + _TIME_RE)
-
     nested_block_re = (r"Allocator Nested Timings[^:\n]*:\n"
                        r"(?P<body>(?:.*\n)+?)\n")
     m_nest = re.search(nested_block_re, out_text)
     nested_body = m_nest.group("body") if m_nest else ""
     helper_in_minor_s = _first_time_seconds(
         nested_body, r"In minor pauses[^:]*:\s+" + _TIME_RE)
-    post_sweep_shrink_s = _first_time_seconds(
-        nested_body, r"Post-sweep shrink[^:]*:\s+" + _TIME_RE)
-    shrink_heavy_s = _first_time_seconds(
-        nested_body, r"maybeShrink heavy[^:]*:\s+" + _TIME_RE)
-    shrink_light_s = _first_time_seconds(
-        nested_body, r"maybeShrink light[^:]*:\s+" + _TIME_RE)
-
     helper_s = helper_in_minor_s + helper_in_mutator_s
-    # Accounting identity: wall = minor + major + nursery_alloc
-    #                          + oldgen_alloc_in_mutator + true_mutator.
-    # helper_in_minor is already subtracted from minor_s by NurserySpace
-    # before the histogram records the cycle, so it's reflected in minor_s
-    # already and must not be subtracted a second time here.
-    raw_mutator_s = (wall_s - major_s - minor_s
-                     - helper_in_mutator_s - nursery_alloc_s)
-    mutator_s = max(0.0, raw_mutator_s)
-    mutator_pct = (mutator_s / wall_s * 100.0) if wall_s > 0 else 0.0
-    alloc_mbps = bytes_mb / wall_s if wall_s > 0 else 0.0
+
+    # Pause log (ECO_GC_PHASE_TIMERS builds only).
+    pause = re.search(r"all pauses" + _PAUSE_LINE_RE, out_text)
+    minor_pause = re.search(r"minor-only pauses" + _PAUSE_LINE_RE, out_text)
+    # The first MMU block covers pauses only; the optional second one
+    # ("MMU incl. helper stalls") is not what the columns report.
+    mmu = {}
+    m_mmu = re.search(r"Minimum mutator utilisation \(MMU\):\n"
+                      r"(?P<body>(?:\s+MMU\s+\d+ ms:\s+[0-9.]+%\n)+)", out_text)
+    if m_mmu:
+        for w, u in re.findall(r"MMU\s+(\d+) ms:\s+([0-9.]+)%",
+                               m_mmu.group("body")):
+            mmu[int(w)] = float(u)
+
+    # Promotion: the retention block's promoted bytes (every build with
+    # stats); region-mode tenuring and the old-gen in-use peak.
+    promoted_mib = None
+    m = re.search(r"totals: promoted \d+ \(([0-9.]+) (B|KiB|MiB|GiB)\)", out_text)
+    if m:
+        promoted_mib = _bytes_to_mib(float(m.group(1)), m.group(2))
+    tenured_mb = _opt_float(out_text, r"tenured \d+ objects, ([0-9.]+) MB")
+    oldgen_peak_mb = _opt_float(out_text, r"Old-gen in-use peak:\s+([0-9.]+) MB")
+
+    # Thread CPU from the runtime's own clocks.
+    m = re.search(r"mutator CPU ([0-9.]+) s, of which in pauses [0-9.]+ s; "
+                  r"outside pauses ([0-9.]+) s", out_text)
+    mutator_cpu_s = float(m.group(1)) if m else None
+    mutator_cpu_out_s = float(m.group(2)) if m else None
+    conc_mark_cpu_s = _opt_float(out_text, r"background CPU ([0-9.]+) s")
+    collector_cpu_s = _opt_float(
+        out_text, r"collector: busy [0-9.]+ s over epochs .*?\), CPU ([0-9.]+) s")
+    late_minors = _opt_int(out_text, r"late minors (\d+)")
 
     # Time the compiler spent in the package-registry POST. Must be 0:
     # _freeze_registry_ttl() suppresses the call. See its docstring.
@@ -568,32 +810,50 @@ def parse_summary(out_text: str, err_text: str, wall_s: float) -> dict:
 
     peak = 0.0
     for m in re.finditer(r"tl\.committed=([0-9.]+)\s*MB", err_text):
-        v = float(m.group(1))
-        if v > peak:
-            peak = v
+        peak = max(peak, float(m.group(1)))
     live_matches = re.findall(r"tl\.live=([0-9.]+)\s*MB", err_text)
     final_live = float(live_matches[-1]) if live_matches else 0.0
 
     return {
-        "wall_s": f"{wall_s:.1f}",
-        "major_gcs": major_gcs,
+        "wall_s": _fmt(wall_s, 2),
+        "cpu_s": _fmt(time_v.get("cpu_s"), 2),
+        "user_s": _fmt(time_v.get("user_s"), 2),
+        "sys_s": _fmt(time_v.get("sys_s"), 2),
+        "max_rss_GB": _fmt(time_v.get("max_rss_GB"), 3),
+        "pause_n": int(pause.group(1)) if pause else "",
+        "pause_total_s": _fmt(float(pause.group(2)) if pause else None, 3),
+        "pause_p50_ms": _fmt(float(pause.group(3)) if pause else None, 3),
+        "pause_p90_ms": _fmt(float(pause.group(4)) if pause else None, 3),
+        "pause_p99_ms": _fmt(float(pause.group(5)) if pause else None, 3),
+        "pause_p999_ms": _fmt(float(pause.group(6)) if pause else None, 3),
+        "pause_max_ms": _fmt(float(pause.group(7)) if pause else None, 3),
+        "minor_pause_max_ms": _fmt(
+            float(minor_pause.group(7)) if minor_pause else None, 3),
+        # 100/200/500 ms: at the TA2 baseline every window up to 50 ms reads
+        # 0 % (the p99.9 pause is ~88 ms), so shorter windows cannot rank.
+        "mmu_100ms_pct": _fmt(mmu.get(100), 2),
+        "mmu_200ms_pct": _fmt(mmu.get(200), 2),
+        "mmu_500ms_pct": _fmt(mmu.get(500), 2),
+        "promoted_MiB": _fmt(promoted_mib, 1),
+        "objs_promoted": _fmt(objs_promoted, 0),
+        "tenured_MB": _fmt(tenured_mb, 1),
+        "oldgen_peak_MB": _fmt(oldgen_peak_mb, 1),
         "minor_gcs": minor_gcs,
-        "major_s": f"{major_s:.2f}",
-        "minor_s": f"{minor_s:.2f}",
-        "helper_min_s": f"{helper_in_minor_s:.2f}",
-        "helper_mut_s": f"{helper_in_mutator_s:.2f}",
-        "helper_s": f"{helper_s:.2f}",
-        "nursery_alloc_s": f"{nursery_alloc_s:.2f}",
-        "post_sweep_shrink_s": f"{post_sweep_shrink_s:.2f}",
-        "shrink_heavy_s": f"{shrink_heavy_s:.2f}",
-        "shrink_light_s": f"{shrink_light_s:.2f}",
-        "mutator_s": f"{mutator_s:.2f}",
-        "mutator_pct": f"{mutator_pct:.1f}",
-        "bytes_alloc_MB": f"{bytes_mb:.2f}",
-        "alloc_MBps": f"{alloc_mbps:.2f}",
+        "major_gcs": major_gcs,
+        "gc_total_s": _fmt(gc_total_s, 2),
+        "major_s": _fmt(major_s, 2),
+        "minor_s": _fmt(minor_s, 2),
+        "helper_s": _fmt(helper_s, 2),
+        "nursery_alloc_s": _fmt(nursery_alloc_s, 2),
+        "mutator_cpu_s": _fmt(mutator_cpu_s, 2),
+        "mutator_cpu_out_s": _fmt(mutator_cpu_out_s, 2),
+        "conc_mark_cpu_s": _fmt(conc_mark_cpu_s, 2),
+        "collector_cpu_s": _fmt(collector_cpu_s, 2),
+        "late_minors": _fmt(late_minors, 0),
+        "bytes_alloc_MB": _fmt(bytes_mb, 2),
         "objs_alloc": objs,
-        "peak_commit_MB": f"{peak:.2f}",
-        "final_live_MB": f"{final_live:.2f}",
+        "peak_commit_MB": _fmt(peak, 2),
+        "final_live_MB": _fmt(final_live, 2),
         "registry_ms": registry_ms,
     }
 
@@ -1061,17 +1321,39 @@ def _freeze_registry_ttl() -> list[Path]:
     return touched
 
 
-def run_variant(*, name: str, change: str, heap_config: dict,
-                variant_dir: Path, wall_seconds: int | None, tee: bool,
-                heap_trace: bool, preserve_eco_stuff: bool) -> dict:
-    """Runs the binary once and writes all per-variant TSVs. Returns the
-    summary row (a dict keyed by SUMMARY_COLUMNS)."""
-    variant_dir.mkdir(parents=True, exist_ok=True)
-    cfg_path = variant_dir / "heap-config.json"
-    cfg_path.write_text(json.dumps(heap_config, indent=2) + "\n")
+def _pids_running(exe: Path) -> list[str]:
+    """PIDs whose executable IS `exe` (/proc/<pid>/exe), not merely processes
+    whose command line mentions the path."""
+    target = str(exe.resolve())
+    pids = []
+    for d in Path("/proc").iterdir():
+        if d.name.isdigit():
+            try:
+                if os.readlink(d / "exe") == target:
+                    pids.append(d.name)
+            except OSError:
+                continue
+    return pids
 
-    out_path = variant_dir / "stdout.log"
-    err_path = variant_dir / "stderr.log"
+
+def run_once(*, name: str, rep: int, change: str, cfg_path: Path,
+             rep_dir: Path, wall_seconds: int | None, tee: bool,
+             heap_trace: bool, preserve_eco_stuff: bool) -> dict:
+    """Runs the compiler once under GNU `time -v` and writes this run's logs
+    and TSVs into `rep_dir`. Returns the raw row (keyed by RAW_COLUMNS);
+    validity against the reference output is decided by the caller."""
+    # A killed harness (e.g. Claude Code's memory-pressure reaper) leaves its
+    # compiler child running in its own session. A resumed sweep would then
+    # time every run against that orphan, so refuse to start instead.
+    others = _pids_running(ECO_COMPILER)
+    if others:
+        sys.exit(f"ERROR: {ECO_COMPILER.name} is already running (pid "
+                 f"{', '.join(others)}), probably left over from a killed "
+                 f"sweep. Stop it before resuming; its run was never recorded.")
+    rep_dir.mkdir(parents=True, exist_ok=True)
+    out_path = rep_dir / "stdout.log"
+    err_path = rep_dir / "stderr.log"
+    time_path = rep_dir / "time.txt"
 
     if not preserve_eco_stuff:
         _clear_eco_stuff()
@@ -1092,7 +1374,12 @@ def run_variant(*, name: str, change: str, heap_config: dict,
     budget = ([] if wall_seconds is None else
               ["/usr/bin/timeout", f"--kill-after={KILL_AFTER_S}s",
                str(wall_seconds)])
+    # time(1) sits outermost so its rusage covers the whole tree (timeout's
+    # child included). It stays in the child's process group, so Ctrl+C's
+    # SIGTERM still reaches eco-compiler, and it writes to its own file, so
+    # the compiler's stderr is untouched.
     cmd = [
+        "/usr/bin/time", "-v", "-o", str(time_path),
         *budget,
         str(ECO_COMPILER), "make",
         "--optimize",
@@ -1104,13 +1391,15 @@ def run_variant(*, name: str, change: str, heap_config: dict,
 
     budget_desc = ("to completion" if wall_seconds is None
                    else f"wall_seconds={wall_seconds}")
-    print(f"\n=== {name}  ({change}) — {budget_desc} ===", flush=True)
+    print(f"\n=== {name} r{rep}  ({change}) — {budget_desc} ===", flush=True)
     t0 = time.time()
     rc = _run_capturing(cmd, cwd=BUILD_KERNEL, env=env,
                         out_path=out_path, err_path=err_path, tee=tee)
     elapsed = time.time() - t0
     out_text = out_path.read_text(errors="replace")
     err_text = err_path.read_text(errors="replace")
+    time_v = parse_time_v(time_path.read_text(errors="replace")
+                          if time_path.exists() else "")
 
     # The runtime's fatal-signal handler writes this marker before printing
     # stats. Checking it is NOT redundant with rc: on 2026-09-22 `abuf_128K`
@@ -1122,44 +1411,44 @@ def run_variant(*, name: str, change: str, heap_config: dict,
     truncated = rc == 124
     wall_s = float(wall_seconds) if truncated else elapsed
     if truncated:
-        print(f"WARNING: {name} hit the {wall_seconds}s budget — the run is "
-              f"TRUNCATED; its GC totals cover only that window.", flush=True)
+        print(f"WARNING: {name} r{rep} hit the {wall_seconds}s budget — the "
+              f"run is TRUNCATED; its GC totals cover only that window.",
+              flush=True)
     elif rc != 0:
-        print(f"WARNING: {name} exited rc={rc} — check "
-              f"{err_path.relative_to(variant_dir.parent.parent)}", flush=True)
-
+        print(f"WARNING: {name} r{rep} exited rc={rc} — the run is INVALID "
+              f"even if its output hash matches. Check {err_path}", flush=True)
     if crashed:
-        print(f"WARNING: {name} took {crashed.group(1)} (rc={rc}) — the run did "
-              f"NOT complete; its wall and GC totals cover only the time before "
-              f"the crash and must not be read as a result.", flush=True)
+        print(f"WARNING: {name} r{rep} took {crashed.group(1)} (rc={rc}) — the "
+              f"run did NOT complete; its wall and GC totals cover only the "
+              f"time before the crash and must not be read as a result.",
+              flush=True)
 
-    summary = parse_summary(out_text, err_text, wall_s)
-    summary["name"] = name
-    summary["change"] = change
-    summary["signal"] = crashed.group(1) if crashed else ""
+    row = parse_summary(out_text, err_text, wall_s, time_v)
+    row["name"] = name
+    row["rep"] = rep
+    row["change"] = change
+    row["rc"] = rc
+    row["signal"] = crashed.group(1) if crashed else ""
     # Fingerprint the compiler's OUTPUT. A heap config must not change what the
     # compiler emits; if one does, that is a miscompile, and without this it
     # would read as a win (the fastest cell is exactly where the risk bites).
-    # Every cell overwrites this path, so the hash has to be taken per run.
+    # Every run overwrites this path, so the hash has to be taken per run.
     if boot_mlir.exists():
         data = boot_mlir.read_bytes()
-        summary["out_bytes"] = len(data)
-        summary["out_md5"] = hashlib.md5(data).hexdigest()
+        row["out_bytes"] = len(data)
+        row["out_md5"] = hashlib.md5(data).hexdigest()
     else:
-        summary["out_bytes"] = 0
-        summary["out_md5"] = "MISSING"
-        print(f"WARNING: {name} produced no {boot_mlir.name} — the compile did "
-              f"not reach its output stage.", flush=True)
-    if summary["registry_ms"]:
-        print(f"WARNING: {name} made a package-registry network call costing "
-              f"{summary['registry_ms'] / 1000:.1f}s — that time is INSIDE "
-              f"wall_s and mutator_s. See _freeze_registry_ttl().", flush=True)
-
-    gc_timing_cols = ["wall_s", "major_s", "minor_s",
-                      "helper_min_s", "helper_mut_s", "helper_s",
-                      "mutator_s", "mutator_pct"]
-    write_tsv(variant_dir / "gc_timing.tsv", gc_timing_cols,
-              [{c: summary[c] for c in gc_timing_cols}])
+        row["out_bytes"] = 0
+        row["out_md5"] = "MISSING"
+        print(f"WARNING: {name} r{rep} produced no {boot_mlir.name} — the "
+              f"compile did not reach its output stage.", flush=True)
+    if row["registry_ms"]:
+        print(f"WARNING: {name} r{rep} made a package-registry network call "
+              f"costing {row['registry_ms'] / 1000:.1f}s — that time is INSIDE "
+              f"wall_s. See _freeze_registry_ttl().", flush=True)
+    # Provisional: rc, signal and output presence. run_cell adds the
+    # comparison against the reference hash.
+    row["valid"] = (rc == 0 and not crashed and row["out_md5"] != "MISSING")
 
     nursery_rows = parse_alloc_histogram(
         out_text, "Nursery Allocation Size Histogram")
@@ -1167,11 +1456,11 @@ def run_variant(*, name: str, change: str, heap_config: dict,
         out_text, "Old-Gen Allocation Size Histogram")
     string_rows = parse_alloc_histogram(
         out_text, "String Allocation Size Histogram")
-    write_tsv(variant_dir / "alloc_size_nursery.tsv",
+    write_tsv(rep_dir / "alloc_size_nursery.tsv",
               ["bucket", "count", "percent"], nursery_rows)
-    write_tsv(variant_dir / "alloc_size_oldgen.tsv",
+    write_tsv(rep_dir / "alloc_size_oldgen.tsv",
               ["bucket", "count", "percent"], oldgen_rows)
-    write_tsv(variant_dir / "alloc_size_strings.tsv",
+    write_tsv(rep_dir / "alloc_size_strings.tsv",
               ["bucket", "count", "percent"], string_rows)
 
     resid_cols = ["kind", "label", "pages", "page_bytes", "live_bytes",
@@ -1181,23 +1470,129 @@ def run_variant(*, name: str, change: str, heap_config: dict,
         out_text, "cumulative")
     latest_buckets, latest_totals = parse_residency_histogram(
         out_text, "latest: most recent major-GC end")
-    write_tsv(variant_dir / "residency_cumulative.tsv", resid_cols,
+    write_tsv(rep_dir / "residency_cumulative.tsv", resid_cols,
               cum_buckets + cum_totals)
-    write_tsv(variant_dir / "residency_latest.tsv", resid_cols,
+    write_tsv(rep_dir / "residency_latest.tsv", resid_cols,
               latest_buckets + latest_totals)
 
     fl_cols = ["label", "cells", "bytes", "percent_bytes"]
-    write_tsv(variant_dir / "freelist_cumulative.tsv", fl_cols,
+    write_tsv(rep_dir / "freelist_cumulative.tsv", fl_cols,
               parse_freelist_histogram(out_text, "cumulative"))
-    write_tsv(variant_dir / "freelist_latest.tsv", fl_cols,
+    write_tsv(rep_dir / "freelist_latest.tsv", fl_cols,
               parse_freelist_histogram(
                   out_text, "latest: most recent major-GC end"))
 
-    write_tsv(variant_dir / "summary.tsv", SUMMARY_COLUMNS, [summary])
-    print(f"rc={rc}  wall={wall_s:.1f}s  major={summary['major_s']}s  "
-          f"minor={summary['minor_s']}s  mutator%={summary['mutator_pct']}",
+    print(f"rc={rc}  wall={row['wall_s']}s  cpu={row['cpu_s']}s  "
+          f"rss={row['max_rss_GB']}GB  p99={row['pause_p99_ms'] or '-'}ms  "
+          f"max={row['pause_max_ms'] or '-'}ms  promoted={row['promoted_MiB']}MiB",
           flush=True)
+    return row
+
+
+def _median(values: list[str]) -> float | None:
+    nums = []
+    for v in values:
+        if v in ("", None):
+            continue
+        try:
+            nums.append(float(v))
+        except ValueError:
+            continue
+    if not nums:
+        return None
+    nums.sort()
+    n = len(nums)
+    return nums[n // 2] if n % 2 else (nums[n // 2 - 1] + nums[n // 2]) / 2
+
+
+def median_row(name: str, change: str, rows: list[dict]) -> dict:
+    """The cell's summary: each metric's median over its VALID runs. Integer
+    counters stay integers when every run agrees (they are exact per binary),
+    so a median that is not a whole number is visible as such."""
+    valid = [r for r in rows if str(r.get("valid")) in ("True", "true")]
+    out = {"name": name, "change": change, "runs": len(rows),
+           "valid_runs": len(valid)}
+    for col in METRIC_COLUMNS:
+        med = _median([r.get(col, "") for r in valid])
+        if med is None:
+            out[col] = ""
+        elif med == int(med) and all(
+                "." not in str(r.get(col, "")) for r in valid):
+            out[col] = int(med)
+        else:
+            out[col] = f"{med:.3f}"
+    md5s = {r.get("out_md5") for r in rows}
+    out["out_md5"] = md5s.pop() if len(md5s) == 1 else "MIXED"
+    return out
+
+
+def _read_tsv_rows(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    with path.open() as f:
+        cols = f.readline().rstrip("\n").split("\t")
+        return [dict(zip(cols, line.rstrip("\n").split("\t"))) for line in f]
+
+
+def run_cell(*, name: str, change: str, heap_config: dict, group_dir: Path,
+             repeat: int, ref: dict, wall_seconds: int | None, tee: bool,
+             heap_trace: bool, preserve_eco_stuff: bool) -> dict:
+    """Runs one cell `repeat` times, strictly serially, and returns its
+    median row. Repeats already in `group_dir/runs_raw.tsv` are reused, so an
+    interrupted sweep resumes mid-cell. `ref` holds the reference output hash
+    (the first valid run of the sitting, normally `baseline`): a run whose
+    output differs is a MISCOMPILE and is excluded from the medians."""
+    variant_dir = group_dir / "variants" / name
+    variant_dir.mkdir(parents=True, exist_ok=True)
+    cfg_path = variant_dir / "heap-config.json"
+    cfg_path.write_text(json.dumps(heap_config, indent=2) + "\n")
+
+    raw_path = group_dir / "runs_raw.tsv"
+    rows = [r for r in _read_tsv_rows(raw_path) if r.get("name") == name]
+    done = {int(r["rep"]) for r in rows if r.get("rep", "").isdigit()}
+    for rep in range(1, repeat + 1):
+        if rep in done:
+            print(f"SKIP {name} r{rep} (already in runs_raw.tsv)", flush=True)
+            continue
+        row = run_once(name=name, rep=rep, change=change, cfg_path=cfg_path,
+                       rep_dir=variant_dir / f"r{rep}",
+                       wall_seconds=wall_seconds, tee=tee,
+                       heap_trace=heap_trace,
+                       preserve_eco_stuff=preserve_eco_stuff)
+        if row["valid"]:
+            if ref.get("md5") is None:
+                ref["md5"], ref["name"] = row["out_md5"], f"{name} r{rep}"
+            elif row["out_md5"] != ref["md5"]:
+                row["valid"] = False
+                print(f"WARNING: {name} r{rep} OUTPUT DIFFERS from {ref['name']} "
+                      f"({row['out_md5']} vs {ref['md5']}). A heap config must "
+                      f"not change the emitted code — this run is a MISCOMPILE, "
+                      f"not a result, and is excluded from the medians.",
+                      flush=True)
+        append_tsv_row(raw_path, RAW_COLUMNS, row)
+        rows.append(row)
+
+    rows.sort(key=lambda r: int(r["rep"]))
+    write_tsv(variant_dir / "runs.tsv", RAW_COLUMNS, rows)
+    summary = median_row(name, change, rows)
+    write_tsv(variant_dir / "summary.tsv", SUMMARY_COLUMNS, [summary])
+    if summary["valid_runs"] < summary["runs"]:
+        print(f"WARNING: {name}: only {summary['valid_runs']} of "
+              f"{summary['runs']} runs are valid; the medians use those only.",
+              flush=True)
+    print(f"--- {name} median of {summary['valid_runs']}: "
+          f"wall={summary['wall_s']}s cpu={summary['cpu_s']}s "
+          f"rss={summary['max_rss_GB']}GB p99={summary['pause_p99_ms'] or '-'}ms "
+          f"max={summary['pause_max_ms'] or '-'}ms", flush=True)
     return summary
+
+
+def reference_from_raw(group_dir: Path) -> dict:
+    """On resume, the reference hash is the first valid run already recorded."""
+    for r in _read_tsv_rows(group_dir / "runs_raw.tsv"):
+        if r.get("valid") in ("True", "true") and r.get("out_md5") not in ("", "MISSING"):
+            return {"md5": r["out_md5"], "name": f"{r['name']} r{r['rep']}"}
+    return {"md5": None, "name": None}
 
 
 # ---------------------------------------------------------------------------
@@ -1206,60 +1601,54 @@ def run_variant(*, name: str, change: str, heap_config: dict,
 
 def write_report(group_dir: Path, *, mode: str, machine: str, ts: str,
                  wall_seconds: int | None, command_line: list[str],
-                 summary_rows: list[dict]) -> None:
+                 summary_rows: list[dict], repeat: int) -> None:
     md = []
     md.append(f"# heap-profile {mode} report")
     md.append("")
     md.append(f"- machine: `{machine}`")
     md.append(f"- timestamp: `{ts}` (UTC)")
+    md.append(f"- build tree: `{BUILD_TREE.name}` (binary `{ECO_COMPILER.name}`)")
+    md.append(f"- compiler MLIR: `{ECO_COMPILER_MLIR}`")
+    md.append(f"- runs per cell: {repeat}; every figure below is the MEDIAN "
+              "over the cell's valid runs (rc 0, no signal, output hash equal "
+              "to the reference)")
     md.append("- wall budget: "
               + ("`none` (each run went to completion)" if wall_seconds is None
                  else f"`{wall_seconds}s` (runs truncated at the budget)"))
     md.append(f"- command: `{' '.join(command_line)}`")
     md.append("")
+    md.append("Empty pause/MMU cells mean the binary has no pause log (not an "
+              "`ECO_GC_PHASE_TIMERS` build). CPU is user + sys of the whole "
+              "process tree; RSS is its peak.")
+    md.append("")
     md.append("## Summary")
     md.append("")
-    md.append("| name | change | wall_s | major_s | minor_s | helper_s | "
-              "mutator_s | mutator% | alloc_MB | peak_MB | final_live_MB | "
-              "details |")
-    md.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
+    md.append("| name | change | valid | wall s | CPU s | RSS GB | pause p50 / p99 / max ms "
+              "| MMU 200 ms % | promoted MiB | minors / majors | GC s "
+              "| mutator CPU out s | collector CPU s | out_md5 |")
+    md.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
     for r in summary_rows:
-        rel = f"variants/{r['name']}"
         md.append(
-            f"| {r['name']} | {r['change']} | {r['wall_s']} | {r['major_s']} | "
-            f"{r['minor_s']} | {r['helper_s']} | {r['mutator_s']} | "
-            f"{r['mutator_pct']} | {r['bytes_alloc_MB']} | "
-            f"{r['peak_commit_MB']} | {r['final_live_MB']} | "
-            f"[summary]({rel}/summary.tsv) "
-            f"· [residency latest]({rel}/residency_latest.tsv) "
-            f"· [freelist latest]({rel}/freelist_latest.tsv) |")
+            f"| [{r['name']}](variants/{r['name']}/runs.tsv) | {r['change']} "
+            f"| {r['valid_runs']}/{r['runs']} | {r['wall_s']} | {r['cpu_s']} "
+            f"| {r['max_rss_GB']} "
+            f"| {r['pause_p50_ms']} / {r['pause_p99_ms']} / {r['pause_max_ms']} "
+            f"| {r['mmu_200ms_pct']} | {r['promoted_MiB']} "
+            f"| {r['minor_gcs']} / {r['major_gcs']} | {r['gc_total_s']} "
+            f"| {r['mutator_cpu_out_s']} | {r['collector_cpu_s']} "
+            f"| `{str(r['out_md5'])[:8]}` |")
     md.append("")
-    md.append("## Variants")
-    md.append("")
-    for r in summary_rows:
-        rel = f"variants/{r['name']}"
-        md.append(f"### {r['name']} — {r['change']}")
-        md.append("")
-        md.append(f"- wall: {r['wall_s']} s · major: {r['major_s']} s · "
-                  f"minor: {r['minor_s']} s · helper: {r['helper_s']} s · "
-                  f"mutator: {r['mutator_s']} s ({r['mutator_pct']}%)")
-        md.append(f"- alloc: {r['bytes_alloc_MB']} MB · "
-                  f"peak commit: {r['peak_commit_MB']} MB · "
-                  f"final live: {r['final_live_MB']} MB")
-        md.append("- files:")
-        for fname in ("heap-config.json", "stdout.log", "stderr.log",
-                      "summary.tsv", "gc_timing.tsv",
-                      "alloc_size_nursery.tsv", "alloc_size_oldgen.tsv",
-                      "alloc_size_strings.tsv",
-                      "residency_cumulative.tsv", "residency_latest.tsv",
-                      "freelist_cumulative.tsv", "freelist_latest.tsv"):
-            md.append(f"  - [`{fname}`]({rel}/{fname})")
-        md.append("")
     md.append("## Files")
     md.append("")
-    md.append("- [`runs.tsv`](runs.tsv) — combined per-variant summary "
-              "(also the resume marker)")
+    md.append("- [`runs.tsv`](runs.tsv) — one MEDIAN row per cell (also the "
+              "resume marker)")
+    md.append("- [`runs_raw.tsv`](runs_raw.tsv) — every run, with rc, signal, "
+              "output hash and validity")
     md.append("- [`args.json`](args.json) — CLI arguments + rebuild outcome")
+    md.append("- `variants/<name>/` — `heap-config.json`, `summary.tsv` "
+              "(median), `runs.tsv` (raw), and `r<N>/` per run: "
+              "`stdout.log` (stats banner), `stderr.log`, `time.txt` "
+              "(`time -v`), allocation / residency / free-list TSVs")
     md.append("")
     md.append("All `.tsv` files use `\\t` as the field separator.")
     md.append("")
@@ -1274,6 +1663,9 @@ def make_group_dir(results_root: Path, machine: str, mode: str,
                    label: str | None,
                    resume_dir: Path | None) -> tuple[Path, str]:
     if resume_dir is not None:
+        # Absolute: the compiler runs with cwd = build-kernel, so a relative
+        # group dir breaks `time -o` and ECO_HEAP_CONFIG (every run rc 125).
+        resume_dir = resume_dir.resolve()
         if not resume_dir.exists():
             sys.exit(f"ERROR: --resume-dir {resume_dir} does not exist")
         ts = resume_dir.name.split("__", 1)[0]
@@ -1304,7 +1696,7 @@ def previously_done_names(group_dir: Path) -> set[str]:
 
 
 def cmd_run(args, machine: str, results_root: Path) -> None:
-    rebuild = ensure_binaries_fresh(args.skip_rebuild)
+    rebuild = ensure_binaries_fresh(args.skip_rebuild, args.bootstrap)
     cfg_path = Path(args.config or DEFAULT_HEAP_CONFIG)
     if not cfg_path.exists():
         sys.exit(f"ERROR: heap config {cfg_path} does not exist")
@@ -1313,17 +1705,16 @@ def cmd_run(args, machine: str, results_root: Path) -> None:
     group_dir, ts = make_group_dir(results_root, machine, "run",
                                    args.label, args.resume_dir)
     name = args.label or "default"
-    variant_dir = group_dir / "variants" / name
 
     done = previously_done_names(group_dir)
     if name in done:
         print(f"SKIP {name} (already in {group_dir / 'runs.tsv'})", flush=True)
         return
 
-    summary = run_variant(
+    summary = run_cell(
         name=name, change=f"config={cfg_path.name}",
-        heap_config=heap_config,
-        variant_dir=variant_dir, wall_seconds=args.wall_seconds,
+        heap_config=heap_config, group_dir=group_dir, repeat=args.repeat,
+        ref=reference_from_raw(group_dir), wall_seconds=args.wall_seconds,
         tee=args.tee, heap_trace=args.heap_trace,
         preserve_eco_stuff=args.preserve_eco_stuff)
 
@@ -1334,13 +1725,14 @@ def cmd_run(args, machine: str, results_root: Path) -> None:
         "results_root": str(results_root),
         "timestamp_utc": ts,
         "wall_seconds": args.wall_seconds,
+        "repeat": args.repeat,
         "config": str(cfg_path),
         "rebuild": rebuild,
     }, indent=2))
     write_report(group_dir, mode="run", machine=machine, ts=ts,
                  wall_seconds=args.wall_seconds,
                  command_line=sys.argv,
-                 summary_rows=[summary])
+                 summary_rows=[summary], repeat=args.repeat)
     print(f"\nReport: {group_dir / 'report.md'}", flush=True)
 
 
@@ -1358,11 +1750,16 @@ def _detect_variant(run_dir: Path, label: str | None) -> Path:
         if not chosen.is_dir():
             raise SystemExit(f"variant {label!r} not under {vroot}; "
                              f"available: {[c.name for c in candidates]}")
-        return chosen
-    if len(candidates) > 1:
+    elif len(candidates) > 1:
         raise SystemExit(f"multiple variants in {vroot} — pass --variant-* "
                          f"to disambiguate: {[c.name for c in candidates]}")
-    return candidates[0]
+    else:
+        chosen = candidates[0]
+    # Repeated runs keep their TSVs in r<N>/. Allocation histograms are
+    # identical across the repeats of a cell, so the first one stands in.
+    if (chosen / "r1").is_dir() and not (chosen / "alloc_size_nursery.tsv").exists():
+        return chosen / "r1"
+    return chosen
 
 
 def _read_alloc_tsv(path: Path) -> dict[str, int]:
@@ -1445,7 +1842,7 @@ def cmd_diff(args) -> None:
 
 
 def cmd_sweep(args, machine: str, results_root: Path) -> None:
-    rebuild = ensure_binaries_fresh(args.skip_rebuild)
+    rebuild = ensure_binaries_fresh(args.skip_rebuild, args.bootstrap)
     selected = None
     if args.variants:
         selected = set(s.strip() for s in args.variants.split(",") if s.strip())
@@ -1454,14 +1851,8 @@ def cmd_sweep(args, machine: str, results_root: Path) -> None:
     group_dir, ts = make_group_dir(results_root, machine, "sweep",
                                    args.label, args.resume_dir)
     done = previously_done_names(group_dir)
-
-    summary_rows: list[dict] = []
-    if (group_dir / "runs.tsv").exists():
-        with (group_dir / "runs.tsv").open() as f:
-            cols = f.readline().rstrip("\n").split("\t")
-            for line in f:
-                cells = line.rstrip("\n").split("\t")
-                summary_rows.append(dict(zip(cols, cells)))
+    summary_rows = _read_tsv_rows(group_dir / "runs.tsv")
+    ref = reference_from_raw(group_dir)
 
     for name, change, overrides in variants:
         if selected is not None and name not in selected:
@@ -1469,26 +1860,19 @@ def cmd_sweep(args, machine: str, results_root: Path) -> None:
         if name in done:
             print(f"SKIP {name} (already in runs.tsv)", flush=True)
             continue
-        heap_config = BASELINE_HEAP | overrides
-        variant_dir = group_dir / "variants" / name
-        summary = run_variant(
-            name=name, change=change, heap_config=heap_config,
-            variant_dir=variant_dir, wall_seconds=args.wall_seconds,
-            tee=args.tee, heap_trace=args.heap_trace,
+        summary = run_cell(
+            name=name, change=change, heap_config=BASELINE_HEAP | overrides,
+            group_dir=group_dir, repeat=args.repeat, ref=ref,
+            wall_seconds=args.wall_seconds, tee=args.tee,
+            heap_trace=args.heap_trace,
             preserve_eco_stuff=args.preserve_eco_stuff)
         append_tsv_row(group_dir / "runs.tsv", SUMMARY_COLUMNS, summary)
-        # Compare against the first cell that actually PRODUCED output: a
-        # crashed cell has out_md5 "MISSING", and using it as the reference
-        # reports every healthy cell afterwards as a miscompile.
-        ref = next((r for r in summary_rows
-                    if r.get("out_md5") not in (None, "", "MISSING")), None)
-        if ref is not None and summary["out_md5"] != "MISSING":
-            if summary["out_md5"] != ref["out_md5"]:
-                print(f"WARNING: {name} OUTPUT DIFFERS from {ref['name']} "
-                      f"({summary['out_md5']} vs {ref['out_md5']}). A heap "
-                      f"config must not change the emitted code — treat this "
-                      f"cell as a MISCOMPILE, not a result.", flush=True)
         summary_rows.append(summary)
+        # Rewrite the report after every cell so a long sweep can be read
+        # while it runs.
+        write_report(group_dir, mode="sweep", machine=machine, ts=ts,
+                     wall_seconds=args.wall_seconds, command_line=sys.argv,
+                     summary_rows=summary_rows, repeat=args.repeat)
 
     (group_dir / "args.json").write_text(json.dumps({
         "argv": sys.argv,
@@ -1496,14 +1880,16 @@ def cmd_sweep(args, machine: str, results_root: Path) -> None:
         "results_root": str(results_root),
         "timestamp_utc": ts,
         "wall_seconds": args.wall_seconds,
+        "repeat": args.repeat,
         "variants_file": str(args.variants_file) if args.variants_file else None,
         "variants_filter": sorted(selected) if selected else None,
+        "reference_output": ref,
         "rebuild": rebuild,
     }, indent=2))
     write_report(group_dir, mode="sweep", machine=machine, ts=ts,
                  wall_seconds=args.wall_seconds,
                  command_line=sys.argv,
-                 summary_rows=summary_rows)
+                 summary_rows=summary_rows, repeat=args.repeat)
     print(f"\nReport: {group_dir / 'report.md'}", flush=True)
 
 
@@ -1537,6 +1923,23 @@ def build_parser() -> argparse.ArgumentParser:
                         "from the same cold cache.")
     p.add_argument("--list-variants", action="store_true",
                    help="print the sweep variants table and exit")
+    p.add_argument("--compiler-mlir",
+                   help="lower this compiler MLIR (cached as "
+                        "build-kernel/bin/<stem>.o) instead of the bootstrap "
+                        "product eco-compiler.mlir. The threaded-GC baseline "
+                        "is snapshots/lss-loop/keep-TA2/bin/ecoTG6base.mlir.")
+    p.add_argument("--bootstrap", action="store_true",
+                   help="allow a missing/stale eco-compiler.mlir to be "
+                        "rebuilt by bootstrap Stages 1-6. This DELETES "
+                        "build/compiler/build-kernel/bin/ first, including "
+                        "any snapshot binaries kept there.")
+    p.add_argument("--build-tree", default="build",
+                   help="build tree whose runtime archives the profiled "
+                        "compiler is linked against (default: build). Use "
+                        "build-phasetimers for pause percentiles and MMU: "
+                        "the object file is still lowered by build/, only "
+                        "the link differs. The binary is "
+                        "eco-compiler-<tree> for a non-default tree.")
 
     sub = p.add_subparsers(dest="cmd", required=False)
 
@@ -1549,6 +1952,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "none — the run goes to completion. A budget "
                          "TRUNCATES the workload, so its GC totals are a "
                          "sample of the opening window, not the whole run.")
+    pr.add_argument("--repeat", type=int, default=3,
+                    help="runs per cell, strictly serial (default 3); the "
+                         "cell's summary is the median over its valid runs")
     pr.add_argument("--resume-dir", type=Path,
                     help="reuse an existing run-group directory")
     pr.add_argument("--dry-run", action="store_true",
@@ -1566,6 +1972,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "none — the run goes to completion. A budget "
                          "TRUNCATES the workload, so its GC totals are a "
                          "sample of the opening window, not the whole run.")
+    ps.add_argument("--repeat", type=int, default=3,
+                    help="runs per cell, strictly serial (default 3); the "
+                         "cell's summary is the median over its valid runs")
     ps.add_argument("--resume-dir", type=Path,
                     help="reuse an existing run-group directory")
     ps.add_argument("--dry-run", action="store_true",
@@ -1600,6 +2009,9 @@ def main():
         cmd_diff(args)
         return
 
+    select_build_tree(args.build_tree, args.compiler_mlir)
+    if getattr(args, "repeat", 1) < 1:
+        parser.error("--repeat must be >= 1")
     machine, results_root = resolve_paths(args)
 
     if args.dry_run:
@@ -1608,6 +2020,12 @@ def main():
             "machine": machine,
             "results_root": str(results_root),
             "wall_seconds": args.wall_seconds,
+            "repeat": args.repeat,
+            "build_tree": str(BUILD_TREE),
+            "compiler": str(ECO_COMPILER),
+            "compiler_mlir": str(ECO_COMPILER_MLIR),
+            "compiler_obj": str(ECO_COMPILER_OBJ),
+            "link_with": str(ECO_BOOT_NATIVE_LINK),
         }, indent=2))
         return
 

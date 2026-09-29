@@ -24,7 +24,7 @@ wildcard and keeps the kernel call. Either way the answer must not change.
 -- CHECK: strEmptyR: "foo"
 -- CHECK: strEmptyL: "foo"
 -- CHECK: strBothEmpty: ""
--- CHECK: ropeLen: 40000
+-- CHECK: ropeLen: 140000
 -- CHECK: sliceAppend: "llohel"
 -- CHECK: ropeThenSlice: "ab"
 -- CHECK: lists: [1, 2, 3, 4]
@@ -46,12 +46,12 @@ strs =
     "foo" ++ "bar"
 
 
-{-| Above STRING\_FLATTEN\_LIMIT (32768 units): append builds a rope rather than
+{-| Above STRING\_FLATTEN\_LIMIT (131072 units): append builds a rope rather than
 flattening, so the result is a Tag\_StringRope.
 -}
 ropeStr : String
 ropeStr =
-    String.repeat 20000 "a" ++ String.repeat 20000 "b"
+    String.repeat 70000 "a" ++ String.repeat 70000 "b"
 
 
 {-| Both operands are interior views over the same source string.
@@ -65,7 +65,7 @@ sliceAppend =
 -}
 ropeThenSlice : String
 ropeThenSlice =
-    String.slice 19999 20001 ropeStr
+    String.slice 69999 70001 ropeStr
 
 
 {-| Cons spines from literals.

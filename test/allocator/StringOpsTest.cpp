@@ -476,8 +476,10 @@ static std::string makeAsciiPattern(size_t len) {
 static void test_append_above_flatten_limit_builds_rope() {
     rc::check("append over FLATTEN_LIMIT produces a rope", []() {
         auto& alloc = initAllocator();
-        // Each side ~half FLATTEN_LIMIT so total > FLATTEN_LIMIT.
-        const size_t halfLimit = 20000;
+        // Each side just over half FLATTEN_LIMIT so total > FLATTEN_LIMIT.
+        // Derived from the config: a literal broke when the default moved
+        // 32K -> 128K (2026-09-29).
+        const size_t halfLimit = alloc.getConfig().string_flatten_limit / 2 + 1000;
         std::string left = makeAsciiPattern(halfLimit);
         std::string right = makeAsciiPattern(halfLimit);
 

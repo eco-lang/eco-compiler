@@ -1,0 +1,39 @@
+[
+  {"name": "baseline",        "change": "(shipped defaults, BASELINE_HEAP = all 88 keys)", "overrides": {}},
+
+  {"name": "nmbc_128",        "change": "nursery_max_block_count=128 (64 MiB ceiling; nbc=128 to stay <= nmbc)", "overrides": {"nursery_max_block_count": 128, "nursery_block_count": 128}},
+  {"name": "nmbc_192",        "change": "nursery_max_block_count=192 (96 MiB ceiling; nbc=192)",                 "overrides": {"nursery_max_block_count": 192, "nursery_block_count": 192}},
+  {"name": "nmbc_384",        "change": "nursery_max_block_count=384 (192 MiB ceiling)",                         "overrides": {"nursery_max_block_count": 384}},
+
+  {"name": "gpf_0.55",        "change": "major_gc_global_pressure_fraction=0.55 (trigger at 11.0 GB old gen)",   "overrides": {"major_gc_global_pressure_fraction": 0.55}},
+  {"name": "gpf_0.60",        "change": "major_gc_global_pressure_fraction=0.60 (12.0 GB)",                      "overrides": {"major_gc_global_pressure_fraction": 0.60}},
+  {"name": "gpf_0.65",        "change": "major_gc_global_pressure_fraction=0.65 (13.0 GB)",                      "overrides": {"major_gc_global_pressure_fraction": 0.65}},
+  {"name": "mhs_18G",         "change": "max_heap_size=18G (old-gen cap 14 GB)",                                  "overrides": {"max_heap_size": "18G"}},
+  {"name": "mhs_20G",         "change": "max_heap_size=20G (old-gen cap 16 GB)",                                  "overrides": {"max_heap_size": "20G"}},
+
+  {"name": "impg_1.0",        "change": "incremental_mark_predict_growth=1.0",   "overrides": {"incremental_mark_predict_growth": 1.0}},
+  {"name": "impg_2.0",        "change": "incremental_mark_predict_growth=2.0",   "overrides": {"incremental_mark_predict_growth": 2.0}},
+  {"name": "imff_0.90",       "change": "incremental_mark_finish_fraction=0.90", "overrides": {"incremental_mark_finish_fraction": 0.90}},
+  {"name": "imff_1.0",        "change": "incremental_mark_finish_fraction=1.0",  "overrides": {"incremental_mark_finish_fraction": 1.0}},
+  {"name": "imsu_4096",       "change": "incremental_mark_min_slice_units=4096", "overrides": {"incremental_mark_min_slice_units": 4096}},
+  {"name": "imsu_65536",      "change": "incremental_mark_min_slice_units=65536","overrides": {"incremental_mark_min_slice_units": 65536}},
+
+  {"name": "baseline_mid",    "change": "(shipped defaults, drift check)", "overrides": {}},
+
+  {"name": "sfl_8K",          "change": "string_flatten_limit=8K",       "overrides": {"string_flatten_limit": "8K"}},
+  {"name": "sfl_128K",        "change": "string_flatten_limit=128K",     "overrides": {"string_flatten_limit": "128K"}},
+  {"name": "tiny_32",         "change": "string_tiny_slice_limit=32",    "overrides": {"string_tiny_slice_limit": 32}},
+  {"name": "tiny_512",        "change": "string_tiny_slice_limit=512",   "overrides": {"string_tiny_slice_limit": 512}},
+  {"name": "u8view_16",       "change": "utf8_view_min_len=16",          "overrides": {"utf8_view_min_len": 16}},
+  {"name": "u8view_128",      "change": "utf8_view_min_len=128",         "overrides": {"utf8_view_min_len": 128}},
+  {"name": "utf8_off",        "change": "utf8_strings_enabled=false (UTF-16 strings only)", "overrides": {"utf8_strings_enabled": false}},
+
+  {"name": "lot_2K",          "change": "large_object_threshold=2K",     "overrides": {"large_object_threshold": "2K"}},
+  {"name": "lot_32K",         "change": "large_object_threshold=32K",    "overrides": {"large_object_threshold": "32K"}},
+  {"name": "lot_64K",         "change": "large_object_threshold=64K",    "overrides": {"large_object_threshold": "64K"}},
+  {"name": "lpdiv_0",         "change": "large_ptr_nursery_divisor=0 (large pointer objects always to YLOS)", "overrides": {"large_ptr_nursery_divisor": 0}},
+  {"name": "lpdiv_2",         "change": "large_ptr_nursery_divisor=2",   "overrides": {"large_ptr_nursery_divisor": 2}},
+  {"name": "lpmax_0",         "change": "large_ptr_nursery_max_size=0 (no fixed bound)", "overrides": {"large_ptr_nursery_max_size": 0}},
+
+  {"name": "baseline_end",    "change": "(shipped defaults, drift check)", "overrides": {}}
+]

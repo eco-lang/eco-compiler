@@ -1,0 +1,71 @@
+[
+  {"name": "baseline",        "change": "(shipped defaults, BASELINE_HEAP = all 88 keys)", "overrides": {}},
+
+  {"name": "abuf_128K",       "change": "alloc_buffer_size=128K",        "overrides": {"alloc_buffer_size": "128K"}},
+  {"name": "abuf_256K",       "change": "alloc_buffer_size=256K",        "overrides": {"alloc_buffer_size": "256K"}},
+  {"name": "nmbc_256",        "change": "nursery_max_block_count=256",   "overrides": {"nursery_max_block_count": 256}},
+  {"name": "nmbc_1024",       "change": "nursery_max_block_count=1024",  "overrides": {"nursery_max_block_count": 1024}},
+  {"name": "nbc_128",         "change": "nursery_block_count=128",       "overrides": {"nursery_block_count": 128}},
+  {"name": "nbc_512",         "change": "nursery_block_count=512",       "overrides": {"nursery_block_count": 512}},
+  {"name": "ngct_0.85",       "change": "nursery_gc_threshold=0.85",     "overrides": {"nursery_gc_threshold": 0.85}},
+  {"name": "ngct_0.99",       "change": "nursery_gc_threshold=0.99",     "overrides": {"nursery_gc_threshold": 0.99}},
+  {"name": "ngrt_0.10",       "change": "nursery_growth_threshold=0.10", "overrides": {"nursery_growth_threshold": 0.10}},
+  {"name": "ngrt_0.40",       "change": "nursery_growth_threshold=0.40", "overrides": {"nursery_growth_threshold": 0.40}},
+  {"name": "lot_4K",          "change": "large_object_threshold=4K",     "overrides": {"large_object_threshold": "4K"}},
+  {"name": "lot_16K",         "change": "large_object_threshold=16K",    "overrides": {"large_object_threshold": "16K"}},
+  {"name": "hdfs_off",        "change": "use_hybrid_dfs=false",          "overrides": {"use_hybrid_dfs": false}},
+
+  {"name": "minth_4",         "change": "gc_minor_threads=4",            "overrides": {"gc_minor_threads": 4}},
+  {"name": "minth_12",        "change": "gc_minor_threads=12",           "overrides": {"gc_minor_threads": 12}},
+  {"name": "lab_4K",          "change": "minor_lab_bytes=4K",            "overrides": {"minor_lab_bytes": "4K"}},
+  {"name": "lab_32K",         "change": "minor_lab_bytes=32K",           "overrides": {"minor_lab_bytes": "32K"}},
+  {"name": "mpmin_1M",        "change": "minor_parallel_min_bytes=1M",   "overrides": {"minor_parallel_min_bytes": "1M"}},
+  {"name": "mpmin_16M",       "change": "minor_parallel_min_bytes=16M",  "overrides": {"minor_parallel_min_bytes": "16M"}},
+  {"name": "prefetch_off",    "change": "minor_prefetch_children=false", "overrides": {"minor_prefetch_children": false}},
+
+  {"name": "tcoll_2",         "change": "tenure_collector_threads=2",    "overrides": {"tenure_collector_threads": 2}},
+  {"name": "thelp_0",         "change": "tenure_help=0 (wait for a late job)", "overrides": {"tenure_help": 0}},
+  {"name": "thelpth_1",       "change": "tenure_help_threads=1",         "overrides": {"tenure_help_threads": 1}},
+  {"name": "shadow_16",       "change": "shadow_granule_log2=4",         "overrides": {"shadow_granule_log2": 4}},
+
+  {"name": "lpmax_32K",       "change": "large_ptr_nursery_max_size=32K",  "overrides": {"large_ptr_nursery_max_size": "32K"}},
+  {"name": "lpmax_512K",      "change": "large_ptr_nursery_max_size=512K", "overrides": {"large_ptr_nursery_max_size": "512K"}},
+  {"name": "lpdiv_4",         "change": "large_ptr_nursery_divisor=4",   "overrides": {"large_ptr_nursery_divisor": 4}},
+  {"name": "lpdiv_16",        "change": "large_ptr_nursery_divisor=16",  "overrides": {"large_ptr_nursery_divisor": 16}},
+
+  {"name": "baseline_mid",    "change": "(shipped defaults, drift check)", "overrides": {}},
+
+  {"name": "mio_0.90",        "change": "major_gc_initiating_occupancy=0.90", "overrides": {"major_gc_initiating_occupancy": 0.90}},
+  {"name": "mgf_0.60",        "change": "major_gc_garbage_fraction=0.60", "overrides": {"major_gc_garbage_fraction": 0.60}},
+  {"name": "mgf_0.65",        "change": "major_gc_garbage_fraction=0.65", "overrides": {"major_gc_garbage_fraction": 0.65}},
+  {"name": "mgf_0.75",        "change": "major_gc_garbage_fraction=0.75", "overrides": {"major_gc_garbage_fraction": 0.75}},
+  {"name": "mgf_0.80",        "change": "major_gc_garbage_fraction=0.80", "overrides": {"major_gc_garbage_fraction": 0.80}},
+  {"name": "lb_3.0",          "change": "major_gc_live_budget=3.0",      "overrides": {"major_gc_live_budget": 3.0}},
+  {"name": "lb_6.0",          "change": "major_gc_live_budget=6.0",      "overrides": {"major_gc_live_budget": 6.0}},
+  {"name": "lgb_1.25",        "change": "live_growth_bound=1.25",        "overrides": {"live_growth_bound": 1.25}},
+  {"name": "lgb_2.0",         "change": "live_growth_bound=2.0",         "overrides": {"live_growth_bound": 2.0}},
+  {"name": "hroom_0",         "change": "major_gc_headroom_margin=0 (Headroom trigger off)", "overrides": {"major_gc_headroom_margin": 0.0}},
+  {"name": "hroom_3.0",       "change": "major_gc_headroom_margin=3.0",  "overrides": {"major_gc_headroom_margin": 3.0}},
+  {"name": "demote_0.15",     "change": "demote_live_fraction=0.15",     "overrides": {"demote_live_fraction": 0.15}},
+  {"name": "demote_0.5",      "change": "demote_live_fraction=0.5",      "overrides": {"demote_live_fraction": 0.5}},
+  {"name": "gdcap_2",         "change": "garbage_denom_cap=2",           "overrides": {"garbage_denom_cap": 2.0}},
+
+  {"name": "markth_8",        "change": "gc_mark_threads=8",             "overrides": {"gc_mark_threads": 8}},
+  {"name": "markth_24",       "change": "gc_mark_threads=24",            "overrides": {"gc_mark_threads": 24}},
+  {"name": "cmth_2",          "change": "conc_mark_threads=2",           "overrides": {"conc_mark_threads": 2}},
+  {"name": "cmth_8",          "change": "conc_mark_threads=8",           "overrides": {"conc_mark_threads": 8}},
+  {"name": "lag_4",           "change": "conc_mark_assist_lag=4",        "overrides": {"conc_mark_assist_lag": 4}},
+  {"name": "lag_32",          "change": "conc_mark_assist_lag=32",       "overrides": {"conc_mark_assist_lag": 32}},
+  {"name": "slices_16",       "change": "incremental_mark_slices=16",    "overrides": {"incremental_mark_slices": 16}},
+  {"name": "slices_64",       "change": "incremental_mark_slices=64",    "overrides": {"incremental_mark_slices": 64}},
+  {"name": "concmark_0",      "change": "conc_mark=0 (in-pause slices, reference)", "overrides": {"conc_mark": 0}},
+
+  {"name": "cahead_0",        "change": "commit_ahead_bytes=0",          "overrides": {"commit_ahead_bytes": 0}},
+  {"name": "cahead_512M",     "change": "commit_ahead_bytes=512M",       "overrides": {"commit_ahead_bytes": "512M"}},
+  {"name": "ddm_0",           "change": "decommit_delay_majors=0",       "overrides": {"decommit_delay_majors": 0}},
+  {"name": "ddm_3",           "change": "decommit_delay_majors=3",       "overrides": {"decommit_delay_majors": 3}},
+
+  {"name": "legacy_nursery",  "change": "nursery_regions=0 (legacy semi-space, reference)", "overrides": {"nursery_regions": 0}},
+
+  {"name": "baseline_end",    "change": "(shipped defaults, drift check)", "overrides": {}}
+]

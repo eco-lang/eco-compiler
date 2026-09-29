@@ -13,7 +13,7 @@ Forms reached, and why each construction reaches it (thresholds from
 AllocatorCommon.hpp): a bare ASCII literal is a `Tag_StringUtf8Leaf`; a literal
 with non-ASCII is a UTF-16 `Tag_String`; `slice` above STRING\_TINY\_SLICE\_LIMIT
 (128 units) allocates a `Tag_StringSlice`/`Tag_StringUtf8View` rather than
-copying; `append` above STRING\_FLATTEN\_LIMIT (32768 units) builds a
+copying; `append` above STRING\_FLATTEN\_LIMIT (131072 units) builds a
 `Tag_StringRope` instead of flattening; and a string at or above
 (8192-8)/2 = 4092 units is a split-header `Tag_LargeStringHeader`. The empty
 string is an embedded constant, which is the guard arm of the inline diamond
@@ -26,7 +26,7 @@ and the one case that never dereferences.
 -- CHECK: utf16: 11
 -- CHECK: large: 5000
 -- CHECK: slice: 290
--- CHECK: rope: 40000
+-- CHECK: rope: 140000
 -- CHECK: sliceOfLarge: 4000
 -- CHECK: emptySlice: 0
 
@@ -69,11 +69,11 @@ sliceStr =
     String.slice 10 300 (String.repeat 500 "y")
 
 
-{-| Above 32768 units: append builds a Tag_StringRope instead of flattening.
+{-| Above 131072 units: append builds a Tag_StringRope instead of flattening.
 -}
 ropeStr : String
 ropeStr =
-    String.repeat 20000 "a" ++ String.repeat 20000 "b"
+    String.repeat 70000 "a" ++ String.repeat 70000 "b"
 
 
 {-| A view over a large string — the interior-pointer case.

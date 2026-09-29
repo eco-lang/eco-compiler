@@ -1,0 +1,162 @@
+[
+ {
+  "name": "baseline",
+  "change": "(shipped defaults)",
+  "overrides": {}
+ },
+ {
+  "name": "base_gf0.65",
+  "change": "baseline at major_gc_garbage_fraction=0.65 (chaos reference)",
+  "overrides": {
+   "major_gc_garbage_fraction": 0.65
+  }
+ },
+ {
+  "name": "base_gf0.75",
+  "change": "baseline at major_gc_garbage_fraction=0.75 (chaos reference)",
+  "overrides": {
+   "major_gc_garbage_fraction": 0.75
+  }
+ },
+ {
+  "name": "n192_s16",
+  "change": "nursery_max_block_count=192 + shadow_granule_log2=4",
+  "overrides": {
+   "nursery_max_block_count": 192,
+   "nursery_block_count": 192,
+   "shadow_granule_log2": 4
+  }
+ },
+ {
+  "name": "n256_s16",
+  "change": "nursery_max_block_count=256 + shadow_granule_log2=4",
+  "overrides": {
+   "nursery_max_block_count": 256,
+   "shadow_granule_log2": 4
+  }
+ },
+ {
+  "name": "n384_s16",
+  "change": "nursery_max_block_count=384 + shadow_granule_log2=4",
+  "overrides": {
+   "nursery_max_block_count": 384,
+   "shadow_granule_log2": 4
+  }
+ },
+ {
+  "name": "baseline_mid",
+  "change": "(shipped defaults, drift check)",
+  "overrides": {}
+ },
+ {
+  "name": "n192_s16_sfl",
+  "change": "nursery_max_block_count=192 + shadow_granule_log2=4 + string_flatten_limit=128K",
+  "overrides": {
+   "nursery_max_block_count": 192,
+   "nursery_block_count": 192,
+   "shadow_granule_log2": 4,
+   "string_flatten_limit": "128K"
+  }
+ },
+ {
+  "name": "n256_s16_sfl",
+  "change": "nursery_max_block_count=256 + shadow_granule_log2=4 + string_flatten_limit=128K",
+  "overrides": {
+   "nursery_max_block_count": 256,
+   "shadow_granule_log2": 4,
+   "string_flatten_limit": "128K"
+  }
+ },
+ {
+  "name": "n384_s16_sfl",
+  "change": "nursery_max_block_count=384 + shadow_granule_log2=4 + string_flatten_limit=128K",
+  "overrides": {
+   "nursery_max_block_count": 384,
+   "shadow_granule_log2": 4,
+   "string_flatten_limit": "128K"
+  }
+ },
+ {
+  "name": "n256_s16_gf0.65",
+  "change": "lead (n256 + s16) at major_gc_garbage_fraction=0.65",
+  "overrides": {
+   "nursery_max_block_count": 256,
+   "shadow_granule_log2": 4,
+   "major_gc_garbage_fraction": 0.65
+  }
+ },
+ {
+  "name": "n256_s16_gf0.75",
+  "change": "lead (n256 + s16) at major_gc_garbage_fraction=0.75",
+  "overrides": {
+   "nursery_max_block_count": 256,
+   "shadow_granule_log2": 4,
+   "major_gc_garbage_fraction": 0.75
+  }
+ },
+ {
+  "name": "n256_s16_lgb1.25_gf0.65",
+  "change": "lead + live_growth_bound=1.25 at major_gc_garbage_fraction=0.65",
+  "overrides": {
+   "nursery_max_block_count": 256,
+   "shadow_granule_log2": 4,
+   "live_growth_bound": 1.25,
+   "major_gc_garbage_fraction": 0.65
+  }
+ },
+ {
+  "name": "n256_s16_lgb1.25_gf0.7",
+  "change": "lead + live_growth_bound=1.25 at major_gc_garbage_fraction=0.7",
+  "overrides": {
+   "nursery_max_block_count": 256,
+   "shadow_granule_log2": 4,
+   "live_growth_bound": 1.25,
+   "major_gc_garbage_fraction": 0.7
+  }
+ },
+ {
+  "name": "n256_s16_lgb1.25_gf0.75",
+  "change": "lead + live_growth_bound=1.25 at major_gc_garbage_fraction=0.75",
+  "overrides": {
+   "nursery_max_block_count": 256,
+   "shadow_granule_log2": 4,
+   "live_growth_bound": 1.25,
+   "major_gc_garbage_fraction": 0.75
+  }
+ },
+ {
+  "name": "n256_s16_lb3.0_gf0.65",
+  "change": "lead + major_gc_live_budget=3.0 at major_gc_garbage_fraction=0.65",
+  "overrides": {
+   "nursery_max_block_count": 256,
+   "shadow_granule_log2": 4,
+   "major_gc_live_budget": 3.0,
+   "major_gc_garbage_fraction": 0.65
+  }
+ },
+ {
+  "name": "n256_s16_lb3.0_gf0.7",
+  "change": "lead + major_gc_live_budget=3.0 at major_gc_garbage_fraction=0.7",
+  "overrides": {
+   "nursery_max_block_count": 256,
+   "shadow_granule_log2": 4,
+   "major_gc_live_budget": 3.0,
+   "major_gc_garbage_fraction": 0.7
+  }
+ },
+ {
+  "name": "n256_s16_lb3.0_gf0.75",
+  "change": "lead + major_gc_live_budget=3.0 at major_gc_garbage_fraction=0.75",
+  "overrides": {
+   "nursery_max_block_count": 256,
+   "shadow_granule_log2": 4,
+   "major_gc_live_budget": 3.0,
+   "major_gc_garbage_fraction": 0.75
+  }
+ },
+ {
+  "name": "baseline_end",
+  "change": "(shipped defaults, drift check)",
+  "overrides": {}
+ }
+]

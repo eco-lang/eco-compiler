@@ -105,7 +105,9 @@ constexpr size_t LARGE_PTR_NURSERY_MAX_SIZE = 128 * 1024;
 // ---- String / rope heuristics ----
 
 // Concat results <= this many UTF-16 code units flatten to a single leaf; larger totals build a Tag_StringRope.
-constexpr size_t STRING_FLATTEN_LIMIT = 32 * 1024;
+  // Tuned 2026-09-29 (plans/gc-param-sweep/sensitivity-2026-09-28.md §12): 32K -> 128K, part of the
+  // combined config at NURSERY_MAX_BLOCKS (8K lost 6.3 s; 128K alone was -1.3 s, CPU -1.8 s).
+constexpr size_t STRING_FLATTEN_LIMIT = 128 * 1024;
 
 // slice() ranges <= this many UTF-16 code units flatten directly instead of allocating a Tag_StringSlice.
 constexpr size_t STRING_TINY_SLICE_LIMIT = 128;
@@ -137,7 +139,13 @@ constexpr size_t NURSERY_BLOCK_COUNT = 256;
   // Tuned 2026-09-22 (plans/gc-param-sweep/combinations-2026-09-22-results.md):
   // 1024 -> 512 (nursery ceiling 512 -> 256 MiB), worth -17.6 s alone. Measured together as one config on the Stage-7 self-compile:
   // 233.8 s -> 195.8 s (-16.3 %), GC 115.5 -> 85.4 s, output byte-identical.
-constexpr size_t NURSERY_MAX_BLOCKS = 512;
+  // Tuned 2026-09-29 (plans/gc-param-sweep/sensitivity-2026-09-28.md §12): 512 -> 384 (ceiling 256 -> 192 MiB).
+  // Minor pause length follows the ceiling (p99 8 ms at 64 MiB ... 65 ms at 512 MiB).
+  // Measured with STRING_FLATTEN_LIMIT 128K (and a 16-byte shadow granule, not shipped): at N = 5
+  // on the self-compile, wall 110.7 -> 106.8 s, CPU -8.0 s, pause p99 28.5 -> 18.0 ms, promoted
+  // +2.3 %, output byte-identical (§12 row n384_s16_sfl). Without the granule expect about 1 s and
+  // 3-5 s CPU less gain (its solo effect).
+constexpr size_t NURSERY_MAX_BLOCKS = 384;
 
 // Nursery occupancy fraction that triggers a minor GC.
 constexpr float NURSERY_GC_THRESHOLD = 0.95f;
@@ -268,7 +276,13 @@ constexpr uint32_t TENURE_HELP = 1;                   // late job: 0 wait, 1 sto
 constexpr uint32_t TENURE_HELP_THREADS = 0;           // 0 = the minor's worker count; 1 = exact
 constexpr int32_t  TENURE_PRIORITY = 0;               // 0 inherit (5c's trap: never lower by default)
 constexpr size_t   HEAL_PARALLEL_MIN = 65536;         // heal slots above which the heal runs on the gang
-constexpr uint32_t SHADOW_GRANULE_LOG2 = 3;           // 3 = one shadow word per 8 B granule
+// 3 = one shadow word per 8 B granule. 4 (16 B) halves the shadow tables and was worth CPU -5.5 s
+// on the self-compile (plans/gc-param-sweep/sensitivity-2026-09-28.md §12), but it REQUIRES every
+// region-nursery survivor to be >= 16 B and aborts otherwise. Made the default on 2026-09-29 and
+// REVERTED the same day: the gc-pressure stress run of stress-elm/BytesRoundtripNestedBytes keeps an
+// header-only 8-byte survivor alive, tag not yet identified ("a survivor under 16 B with a
+// 16-byte shadow granule"). See /work/2-gc-bugs.md.
+constexpr uint32_t SHADOW_GRANULE_LOG2 = 3;
 // Lever L3 (P§9, moved into the phase by Step 0's utilization rule): collector
 // threads per heap in mode 2. 1 = the exact engine (mode 1's bit-exact twin);
 // > 1 = the concurrent parallel engine over a shared grant (layout class).
@@ -335,6 +349,13 @@ constexpr double GARBAGE_DENOM_CAP = 0.0;
 // bytes allocated since the last major reach MAJOR_GC_LIVE_BUDGET * live_ref,
 // live_ref = min(L_i, LIVE_GROWTH_BOUND * L_{i-1}) (L = mark-derived live at
 // the end of mark). 0 disables each.
+// k = 3.0 was the one deterministic RSS lever of plans/gc-param-sweep/sensitivity-2026-09-28.md
+// (§11-12: 9.3-9.5 GB at every gf, -19 % RSS) and was made the default on 2026-09-29, then REVERTED
+// the same day: with k = 3.0 the validate build fails "threaded-gc-07: E2 ... modes 1 and 2 agree"
+// (HEAP_044 assertion in OldGenSpace::scanObject: a Tag_Custom of size 0 is marked, though the
+// workload allocates no such object) and "threaded-gc-05b: negative control — skipping marker 1's
+// accumulator is caught". HEAP_057 says every k is policy-safe, so this is a bug to root-cause
+// before k moves.
 constexpr double MAJOR_GC_LIVE_BUDGET = 4.5;
 constexpr double LIVE_GROWTH_BOUND = 1.5;
 

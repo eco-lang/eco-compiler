@@ -408,8 +408,10 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         cfg.incremental_mark_finish_fraction =
             parseDouble(*it, "incremental_mark_finish_fraction");
     if (auto it = doc.find("demote_live_fraction"); it != doc.end())
+        // parseDouble, not parseFraction: the field is a double, and a float
+        // round-trip turns 0.3 into 0.30000001 (validate() checks [0, 1]).
         cfg.demote_live_fraction =
-            parseFraction(*it, "demote_live_fraction");
+            parseDouble(*it, "demote_live_fraction");
     if (auto it = doc.find("garbage_denom_cap"); it != doc.end())
         cfg.garbage_denom_cap = parseDouble(*it, "garbage_denom_cap");
     if (auto it = doc.find("major_gc_live_budget"); it != doc.end())

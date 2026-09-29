@@ -617,7 +617,7 @@ All runtime heap/GC tuning lives in one struct, `Elm::HeapConfig` (`runtime/src/
 
 **No compiled-in JSON exists.** `compiler/cmake/bootstrap/build-kernel/heap-config.json` is copied to `build/compiler/build-kernel/heap-config.json` at configure time (`compiler/CMakeLists.txt:193-200`). The runtime never reads it on its own. It takes effect only when a harness sets `ECO_HEAP_CONFIG` to it, e.g. `heap-profile.py:60,1085`.
 
-That file lists only the **41 legacy keys**, and all 41 values equal the current struct defaults. The same 41 appear in `heap-profile.py` `BASELINE_HEAP`, lines 76-135. Its comment still calls this "every field of the struct", which is now stale: the parser accepts 88 keys. The other 47 keys fall back to struct defaults in any harness run.
+That file lists all **88** keys at their current struct defaults, and so does `heap-profile.py` `BASELINE_HEAP`. Both are generated from a default-constructed `HeapConfig` and checked to round-trip through `applyHeapConfigJsonFile`, so a harness baseline is exactly the shipped configuration. "Auto" values are written as their sentinels (thread counts `0`, `nursery_regions` `2`, `nursery_region_eden_flip` `-1`). Regenerate both files when a default in `AllocatorCommon.hpp` changes.
 
 **Unit-test caveat (verified).** `TestHelpers::initAllocatorWith` (`test/allocator/TestHelpers.cpp:39-50`) calls `initialize(config)` and then `AllocatorTestAccess::reset(alloc, &config)`. `Allocator::reset` (`Allocator.cpp:1023-1047`) re-applies only `resolveNurseryRegions()` and `validate()`; it never re-reads `ECO_HEAP_CONFIG` or `ECO_GC_*`. As a result:
 
@@ -646,7 +646,7 @@ That file lists only the **41 legacy keys**, and all 41 values equal the current
 
 | Name | Type / units | Default | Effect | Source |
 |---|---|---|---|---|
-| `string_flatten_limit` | UTF-16 units (byte-size parser) | 32K (32768) | Concat results at or below this flatten to a leaf; larger ones build a rope. | `AllocatorCommon.hpp:108,635` |
+| `string_flatten_limit` | UTF-16 units (byte-size parser) | **128K** (131072; 32K until 2026-09-29) | Concat results at or below this flatten to a leaf; larger ones build a rope. | `AllocatorCommon.hpp:110,655` |
 | `string_tiny_slice_limit` | UTF-16 units | 128 | Slices at or below this are copied instead of allocating a `StringSlice`. | `:111,638` |
 | `utf8_view_min_len` | bytes | 32 | Minimum ASCII payload for a zero-copy `StringUtf8View`. | `:116,642` |
 | `utf8_strings_enabled` | bool | true | Master switch for UTF-8 string forms. | `:120,645` |
@@ -659,7 +659,7 @@ That file lists only the **41 legacy keys**, and all 41 values equal the current
 | Name | Type / units | Default | Effect | Source |
 |---|---|---|---|---|
 | `nursery_block_count` | count (even, ≥ 2) | 256 (= 64 MiB per side) | Initial nursery size in blocks. Must be ≤ `nursery_max_block_count`, and the initial per-side size must fit one slice. | `AllocatorCommon.hpp:134,659` |
-| `nursery_max_block_count` | count (even) | **512** (256 MiB total; tuned from 1024 on 2026-09-22) | Adaptive growth ceiling. It also sets the region-nursery extent stride: the next power of two ≥ `(nmbc/2)*abuf`, i.e. 128 MiB. Regions per slot = region bytes / (extents × stride). | `:140,662,896-905` |
+| `nursery_max_block_count` | count (even) | **384** (192 MiB total; 1024 → 512 on 2026-09-22, 512 → 384 on 2026-09-29) | Adaptive growth ceiling; sets minor pause length (p99 8 ms at 128 blocks … 65 ms at 1024). It also sets the region-nursery extent stride: the next power of two ≥ `(nmbc/2)*abuf`, i.e. 128 MiB. Regions per slot = region bytes / (extents × stride). | `:148,682` |
 | `nursery_gc_threshold` | fraction (0, 1] | 0.95 | Nursery occupancy that triggers a minor GC. | `:143,665`; `NurserySpace.cpp:126,340` |
 | `nursery_growth_threshold` | fraction (0, 1) | 0.20 | Post-minor survivor occupancy above which the nursery grows. Used by both the legacy and region nursery. | `:146,668`; `NurserySpace.cpp:410`, `NurseryRegion.cpp:193` |
 | `promotion_age` | u32, 1..3 | **1** (tuned from 2 on 2026-09-22) | Legacy nursery: survivals before promotion. **Region nursery: tenure age k** (TG7b). It also sets geometry: survivor extents = k + 2. The region nursery requires k ∈ 1..3. | `:152,671,884-888` |
@@ -678,7 +678,7 @@ That file lists only the **41 legacy keys**, and all 41 values equal the current
 | `tenure_help_threads` | u32, 0..64 | 0 = the minor's worker count | Threads used when helping a late job. 1 = exact. | `:268,729` |
 | `tenure_priority` | i32, 0..20 | 0 = inherit | Nice value of the tenure collector thread; 20 = SCHED_IDLE. Never lowered by default: that was the 5c trap. | `:269,730` |
 | `heal_parallel_min` | count (heal slots) | 65536 | Above this many heal slots, the heal runs on the gang. | `:270,731` |
-| `shadow_granule_log2` | u32: 3 or 4 | 3 (8-byte granule) | Granule of the region nursery's shadow map. | `:271,732`; `NurseryRegion.cpp:134` |
+| `shadow_granule_log2` | u32: 3 or 4 | 3 (8-byte granule) | Granule of the region nursery's shadow map. 4 halves the shadow but **requires every survivor ≥ 16 B**: a smaller one aborts in every build, and 8-byte survivors do occur (unsafe as a default). 3 has no limit. | `:284,752`; `NurseryRegion.cpp:134,402` |
 | `tenure_collector_threads` | u32, 1..32 | 1 | Tenure collector threads per heap in mode 2. 1 = exact engine; > 1 = concurrent parallel engine. | `:275,733` |
 | `tenure_fifo_order` | bool | false (LIFO) | Promotion order of the exact tenure engine. This is a retention input. | `:278,734` |
 
@@ -691,7 +691,7 @@ That file lists only the **41 legacy keys**, and all 41 values equal the current
 | `major_gc_global_pressure_fraction` | fraction (0, 1] | 0.85 | GlobalPressure trigger (anti-ballooning backstop) as a fraction of the old-gen cap. | `:177,685` |
 | `major_gc_target_utilization` | fraction (0, 1) | 0.50 | Post-major live/committed target that drives cap growth. | `:180,688` |
 | `major_gc_garbage_fraction` | fraction [0, 1) | 0.70 | Garbage-fraction trigger: bytes allocated since the last major, as a fraction of committed. 0 disables it. The major trigger is **chaotic** (small gf changes move major count and old-gen peak non-monotonically, see `plans/threaded-gc-07b-tenure-ageing.md` §7): judge it on a sweep, never one point. | `:183,691` |
-| `major_gc_live_budget` | double ≥ 0 | 4.5 | LiveBudget trigger: a major fires when bytes allocated since the last major reach k × live_ref. 0 = off. | `:338,764` |
+| `major_gc_live_budget` | double ≥ 0 | 4.5 | LiveBudget trigger: a major fires when bytes allocated since the last major reach k × live_ref. 0 = off. The one deterministic RSS lever (lower k = more majors, lower peak); 3.0 currently fails a validate-build test (see HEAP_057). | `:358,784` |
 | `live_growth_bound` | double, 0 or ≥ 1 | 1.5 | live_ref = min(L_i, r × L_{i−1}). 0 = off. | `:339,765` |
 | `major_gc_live_budget_paced` | bool | true | Measure LiveBudget at the hand-off instead of t0 (5c Part B). | `:307,745` |
 | `major_gc_headroom_margin` | double, 0..8 | 1.5 | Enables the Headroom trigger (> 0). It starts the cycle earlier when near the cap. | `:306,744` |

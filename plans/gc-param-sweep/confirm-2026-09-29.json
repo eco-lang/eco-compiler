@@ -1,0 +1,9 @@
+[
+  {"name": "baseline",           "change": "(shipped defaults)", "overrides": {}},
+  {"name": "n384_s16_sfl",       "change": "nursery_max_block_count=384 + shadow_granule_log2=4 + string_flatten_limit=128K",
+   "overrides": {"nursery_max_block_count": 384, "shadow_granule_log2": 4, "string_flatten_limit": "128K"}},
+  {"name": "n256_s16_sfl",       "change": "nursery_max_block_count=256 + shadow_granule_log2=4 + string_flatten_limit=128K",
+   "overrides": {"nursery_max_block_count": 256, "shadow_granule_log2": 4, "string_flatten_limit": "128K"}},
+  {"name": "n384_s16_sfl_lb3.0", "change": "n384_s16_sfl + major_gc_live_budget=3.0 (memory variant)",
+   "overrides": {"nursery_max_block_count": 384, "shadow_granule_log2": 4, "string_flatten_limit": "128K", "major_gc_live_budget": 3.0}}
+]
