@@ -2827,7 +2827,7 @@ void NurserySpace::censusRecordRegion(OldGenSpace& oldgen) {
             walk(X.base, X.surv_top);
             if (X.age == 1) walk(X.bld_lo, X.bld_hi);
             for (void* y : X.ylos_gen) {
-                if (oldgen.isYoungLarge(y)) rec(static_cast<char*>(y), getObjectSize(y));
+                if (oldgen.youngLargeMember(y, X.gen_minor) != nullptr) rec(static_cast<char*>(y), getObjectSize(y));
             }
         } else if (X.state == region::XState::Tenuring) {
             walk(X.base, X.surv_top);

@@ -771,6 +771,7 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testRegionT0CoversTenuring);
     oldGenTests.add(testTenureStopResumeSameLayout);
     oldGenTests.add(testTenureModesAgreeOnCounters);
+    oldGenTests.add(testTenureYlosCellReuse);
     oldGenTests.add(testTenureLateHelpParallel);
     oldGenTests.add(testTenureForkChild);
     oldGenTests.add(testTenureExitWhileRunning);

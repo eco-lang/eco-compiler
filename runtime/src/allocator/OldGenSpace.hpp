@@ -1165,6 +1165,12 @@ public:
         bool   is_large;    // True iff the body sits in a dedicated is_large block.
         bool   color;       // Last minor_color that observed a live header.
         uint8_t kind = 0;   // 0 = split-header body; 1 = young large object (YLOS).
+        // Region nursery (HEAP_072): the minor at which this YLOS incarnation
+        // joined a generation (0 = not yet). An extent's ylos_gen list names
+        // objects by ADDRESS, and a major may free a dead member whose cell a
+        // new YLOS then reuses before the list is next read; the stamp tells
+        // the two incarnations apart (youngLargeMember).
+        uint64_t join_minor = 0;
     };
 
     // ---- threaded-gc-04b HEAP_062: the young large-object space (YLOS) ----
@@ -1194,6 +1200,14 @@ public:
     }
     bool isYoungLarge(const void* p) {
         return youngLargeMeta(p) != nullptr;
+    }
+    // The kind-1 entry at `p` only if it is the incarnation that joined the
+    // generation filled at `gen_minor` (HEAP_072), else nullptr: a member
+    // freed by a major is either gone from the index or its cell now holds
+    // a newer YLOS object (unjoined, or joined at a later minor).
+    LargeBodyMeta* youngLargeMember(const void* p, uint64_t gen_minor) {
+        LargeBodyMeta* m = youngLargeMeta(p);
+        return (m != nullptr && m->join_minor == gen_minor) ? m : nullptr;
     }
     // Promotes a YLOS object in place: drops its entry (it is now an ordinary
     // old object governed by the major GC) and resets its age.

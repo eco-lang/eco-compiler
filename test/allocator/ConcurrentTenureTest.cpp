@@ -493,3 +493,79 @@ Testing::TestCase testTenureFifoOrder(
             if (!sameRun(r, ref, "fifo stop/resume")) TEST_FAIL("FIFO mode 2 with forced stops differs from FIFO mode 1");
         }
     });
+
+// HEAP_072 (2-gc-bugs.md bug 2): an extent's ylos_gen list names its
+// generation's YLOS objects by address. A major frees a dead member; a new
+// YLOS object reusing that cell before the next minor must NOT be taken for
+// the generation's member (it was: scanned read-only as hand-over, promoted in
+// place at the merge with its children still in the nursery -- an old->young
+// pointer the next major read as garbage, "HEAP_044 size-0 Custom").
+Testing::TestCase testTenureYlosCellReuse(
+    "threaded-gc-07: a new YLOS object in a generation member's freed cell stays young (HEAP_072)",
+    []() {
+        auto& a = initRegionAllocator(tenureConfig(1));
+        OldGenSpace& og = oldgenOf(a);
+        constexpr size_t kElems = 1600;   // 12.8 KB > large_object_threshold: a YLOS array
+        auto freshArray = [&](int64_t base) {
+            HPointer tmp = alloc::listNil();
+            a.getRootSet().addRoot(&tmp);
+            std::vector<HPointer> e(kElems);
+            for (size_t i = 0; i < kElems; ++i) {
+                e[i] = alloc::allocInt(base + static_cast<i64>(i));
+                tmp = alloc::cons(alloc::boxed(e[i]), tmp, true);   // keeps the Ints alive
+            }
+            // The cons list roots the Ints across the array allocation; re-read
+            // them from it (a GC may have moved them).
+            size_t i = kElems;
+            for (HPointer c = tmp; c.ptr_ind == 0;) {
+                Cons* cell = static_cast<Cons*>(a.resolve(c));
+                e[--i] = cell->head.p;
+                c = cell->tail;
+            }
+            HPointer arr = alloc::arrayFromPointers(e);
+            a.getRootSet().removeRoot(&tmp);
+            return arr;
+        };
+
+        // A joins a generation at its first minor, then dies and a major frees it.
+        HPointer A = freshArray(0);
+        a.getRootSet().addRoot(&A);
+        void* a_obj = a.resolve(A);
+        TEST_ASSERT(og.isYoungLarge(a_obj));
+        a.minorGC();
+        TEST_ASSERT(og.isYoungLarge(a_obj));
+        a.getRootSet().removeRoot(&A);
+        a.majorGC();
+        TEST_ASSERT(!og.isYoungLarge(a_obj));
+
+        // B takes A's cell (same size class, LIFO reuse) before the next minor.
+        HPointer B = freshArray(100000);
+        a.getRootSet().addRoot(&B);
+        void* b_obj = a.resolve(B);
+        if (b_obj != a_obj) {
+            a.getRootSet().removeRoot(&B);
+            TEST_FAIL("B did not reuse A's cell: the scenario is not exercised");
+        }
+        // Hand-over of A's generation, then its merge; then B's own tenure.
+        for (int m = 0; m < 4; ++m) {
+            a.minorGC();
+            // While B is young its children may be young; once promoted, none may be.
+            if (!og.isYoungLarge(b_obj)) {
+                ElmArray* arr = static_cast<ElmArray*>(b_obj);
+                for (u32 i = 0; i < arr->length; ++i) {
+                    void* c = AllocatorTestAccess::fromPointer(arr->elements[i].p);
+                    if (a.isInNursery(c)) {
+                        a.getRootSet().removeRoot(&B);
+                        TEST_FAIL("B was promoted with a child still in the nursery");
+                    }
+                }
+            }
+        }
+        a.majorGC();
+        ElmArray* arr = static_cast<ElmArray*>(a.resolve(B));
+        for (u32 i = 0; i < arr->length; ++i) {
+            ElmInt* v = static_cast<ElmInt*>(a.resolve(arr->elements[i].p));
+            TEST_ASSERT(getHeader(v)->tag == Tag_Int && v->value == 100000 + static_cast<i64>(i));
+        }
+        a.getRootSet().removeRoot(&B);
+    });

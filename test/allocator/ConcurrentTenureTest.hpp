@@ -16,3 +16,4 @@ extern Testing::TestCase testTenureShrinkSkipsGranted;
 extern Testing::TestCase testTenureCollectorThreads;
 extern Testing::TestCase testTenureRespawnAndForkStorm;
 extern Testing::TestCase testTenureFifoOrder;
+extern Testing::TestCase testTenureYlosCellReuse;

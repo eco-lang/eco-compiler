@@ -645,7 +645,7 @@ Testing::TestCase testParMarkNegativeSkipMergeWorker1(
             for (auto& r : roots) a.getRootSet().addRoot(&r);
             og(a).test_skip_merge_worker1_ = true;
             startCycle(a);
-            runToHandoff(a);                         // IM6 equality aborts here (validate)
+            runToHandoff(a);                         // HEAP_051 post-merge check aborts here (validate)
             return OA::postSweepLive(og(a)) < ref_live ? 0 : 1;
         });
 #if ECO_HEAP_VALIDATE

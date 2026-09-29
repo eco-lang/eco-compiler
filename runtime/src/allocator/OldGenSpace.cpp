@@ -3002,6 +3002,21 @@ void OldGenSpace::markLiveMergeAll() {
         if (i == 1 && test_skip_merge_worker1_) continue;   // negative control
         markers_[i]->live.mergeInto(blocks_);
     }
+#if ECO_HEAP_VALIDATE
+    // HEAP_051 at the merge itself: every accumulator is drained here. The
+    // mark-start check (V5, resetBufferMetaForMark) only fires if another
+    // cycle follows, so a skipped merge before the last cycle went unseen.
+    for (size_t pos = 0; pos < blocks_.size(); ++pos) {
+        const BlockId id = blocks_.idAt(pos);
+        if (markLivePeek(id) != 0) {
+            std::fprintf(stderr, "[heap-validate] HEAP_051: id %u has %llu "
+                "unmerged marker live bytes after the merge\n", id.v,
+                (unsigned long long)markLivePeek(id));
+            std::fflush(stderr);
+            std::abort();
+        }
+    }
+#endif
 }
 
 bool OldGenSpace::markStackEmpty() const {

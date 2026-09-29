@@ -524,6 +524,7 @@ void NurserySpace::reachYoungLargeR(MinorWorker& w, region::RegionWorker& rw, vo
                 if (h->age != 0) regionFatal("a young large object reached first with age != 0", obj, nullptr, h->age);
 #endif
                 h->age = 1;
+                m->join_minor = R.minor_seq;          // HEAP_072: this incarnation's generation
                 rw.ylos_gen.push_back(obj);           // joins generation m
                 w.ylos_young.push_back(obj);
                 e = mk::objEntry(obj, kColYoungYlos);
@@ -734,8 +735,11 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
             for (const HPointer& b : Hx.lb_bodies) oldgen.markLargeBodySeen(b, minor_color_);
         }
         for (void* y : Hx.ylos_gen) {
-            OldGenSpace::LargeBodyMeta* m = oldgen.youngLargeMeta(y);
-            if (m == nullptr) continue;   // retired by a major in between (dead)
+            // Freed by a major in between (dead): gone from the index, or its
+            // cell reused by a newer YLOS object (HEAP_072), which is NOT a
+            // generation member and must be reached and scanned as young.
+            OldGenSpace::LargeBodyMeta* m = oldgen.youngLargeMember(y, Hx.gen_minor);
+            if (m == nullptr) continue;
             m->color = minor_color_;
             R.hand_ylos.push_back(tw::YlosEntry{static_cast<const char*>(y),
                                                 static_cast<const char*>(y) + getObjectSize(y)});
@@ -756,7 +760,7 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
             for (const HPointer& b : Ax.lb_bodies) oldgen.markLargeBodySeen(b, minor_color_);
         }
         for (void* y : Ax.ylos_gen) {
-            OldGenSpace::LargeBodyMeta* m = oldgen.youngLargeMeta(y);
+            OldGenSpace::LargeBodyMeta* m = oldgen.youngLargeMember(y, Ax.gen_minor);   // HEAP_072
             if (m == nullptr) continue;
             m->color = minor_color_;
             R.age_ylos.push_back(tw::YlosEntry{static_cast<const char*>(y),

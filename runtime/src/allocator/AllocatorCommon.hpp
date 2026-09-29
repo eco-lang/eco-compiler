@@ -355,8 +355,10 @@ constexpr double GARBAGE_DENOM_CAP = 0.0;
 // the same day: with k = 3.0 the validate build fails "threaded-gc-07: E2 ... modes 1 and 2 agree"
 // (HEAP_044 assertion in OldGenSpace::scanObject: a Tag_Custom of size 0 is marked, though the
 // workload allocates no such object) and "threaded-gc-05b: negative control — skipping marker 1's
-// accumulator is caught". HEAP_057 says every k is policy-safe, so this is a bug to root-cause
-// before k moves.
+// accumulator is caught". Both are root-caused and fixed (2-gc-bugs.md bug 2): the first was a
+// region-nursery YLOS address-reuse bug (HEAP_072), the second a negative control that only a
+// later cycle could catch (now caught at the merge, HEAP_051). The validate gate passes at k = 3.0;
+// the default stays 4.5 until k is re-decided.
 constexpr double MAJOR_GC_LIVE_BUDGET = 4.5;
 constexpr double LIVE_GROWTH_BOUND = 1.5;
 
