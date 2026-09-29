@@ -1,0 +1,4 @@
+#include <mutex>
+std::atomic<uint64_t> priv{0};
+std::mutex ylos_mu_;
+void runJobExact(OldGenSpace& oldgen, const std::atomic<bool>* stop);

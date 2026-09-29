@@ -185,6 +185,11 @@ RUN set -eu; \
 
 ENV TLA_TOOLS_DIR=/opt/tlaplus
 
+# GenMC (the C11 model checker of test/genmc, target genmc-check) is NOT in this
+# image: it is an opt-in layer, docker/eco-dev-genmc.Dockerfile (built FROM this
+# image), so CI's eco-dev build does not depend on the GenMC image.
+
+
 # Workspace
 WORKDIR /work
 

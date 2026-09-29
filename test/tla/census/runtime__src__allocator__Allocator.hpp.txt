@@ -1,0 +1,5 @@
+#include <mutex>
+* - getCombinedStats() acquires mutex to iterate all thread heaps
+* - initThread() acquires mutex to allocate regions
+mutable std::recursive_mutex thread_mutex_;
+std::unordered_map<std::thread::id, std::unique_ptr<ThreadLocalHeap>> thread_heaps_;

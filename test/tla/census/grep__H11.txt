@@ -1,0 +1,9 @@
+runtime/src/allocator/OldGenSpace.cpp: ParMarkStats& pm = alloc_stats_.pm;
+runtime/src/allocator/OldGenSpace.cpp: ParMarkStats& pm = alloc_stats_.pm;
+runtime/src/allocator/OldGenSpace.cpp: ParMarkStats& pm = alloc_stats_.pm;
+runtime/src/allocator/OldGenSpace.cpp: alloc_stats_.pm.chunks_pushed += markers_[i]->chunks;
+runtime/src/allocator/OldGenSpace.cpp: alloc_stats_.pm.chunks_pushed += markers_[i]->chunks;
+runtime/src/allocator/OldGenSpace.cpp: alloc_stats_.pm.member_cpu_ns = gc::GCMarkGang::instance().stats().member_cpu_ns.load();
+runtime/src/allocator/OldGenSpace.cpp: alloc_stats_.pm.run_ns_total += ns;
+runtime/src/allocator/OldGenSpace.cpp: if (!mark_parallel_) alloc_stats_.pm.chunks_pushed += w0().chunks, w0().chunks = 0;
+runtime/src/allocator/OldGenSpace.cpp: if (ns > alloc_stats_.pm.run_ns_max) alloc_stats_.pm.run_ns_max = ns;

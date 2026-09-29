@@ -1,0 +1,26 @@
+runtime/src/allocator/NurseryRegion.cpp: ++rw.ylos_handover_reached;
+runtime/src/allocator/NurseryRegion.cpp: R.hand_ylos_reached.assign(R.hand_ylos.size(), 0);
+runtime/src/allocator/NurseryRegion.cpp: R.hand_ylos_reached.clear();
+runtime/src/allocator/NurseryRegion.cpp: R.hand_ylos_reached[static_cast<size_t>(k)] = 1;
+runtime/src/allocator/NurseryRegion.cpp: if (R.hand_ylos_reached[static_cast<size_t>(k)]) return;
+runtime/src/allocator/NurseryRegion.cpp: if (d == nullptr) regionFatal("TV1: a STW major reached an untenured object of the tenured extent", obj);
+runtime/src/allocator/NurseryRegion.cpp: if (h->age != 0) regionFatal("a young large object reached first with age != 0", obj, nullptr, h->age);
+runtime/src/allocator/NurseryRegions.hpp: resolved = n_bld = b_bld = n_fill = b_fill = ylos_handover_reached = under16 = 0;
+runtime/src/allocator/NurseryRegions.hpp: std::vector<uint8_t> hand_ylos_reached;
+runtime/src/allocator/NurseryRegions.hpp: uint64_t ylos_handover_reached = 0;
+runtime/src/allocator/NurseryTenure.cpp: ++o.ylos_reached;
+runtime/src/allocator/NurseryTenure.cpp: J.st.reached = R.hand_ylos_reached;
+runtime/src/allocator/NurseryTenure.cpp: if (!st.reached[k]) { ++ylos_freed; continue; }
+runtime/src/allocator/NurseryTenure.cpp: if (oldgen.youngLargeMeta(y) == nullptr) tenureFatal("a reached generation YLOS object left the index", y);
+runtime/src/allocator/NurseryTenure.cpp: st.ylos_reached += o.ylos_reached;
+runtime/src/allocator/NurseryTenure.cpp: st.ylos_reached += w.ylos_scans;
+runtime/src/allocator/NurseryTenure.cpp: std::atomic_ref<uint8_t> r(J.st.reached[static_cast<size_t>(k)]);
+runtime/src/allocator/NurseryTenure.cpp: std::atomic_ref<uint8_t> r(st.reached[static_cast<size_t>(k)]);
+runtime/src/allocator/NurseryTenure.cpp: uint64_t marked = 0, marked_bytes = 0, heal_n = 0, ylos_reached = 0;
+runtime/src/allocator/TenureWork.hpp: ++st_.ylos_reached;
+runtime/src/allocator/TenureWork.hpp: ECO_TLA_TRACE("treach", "obj", ::Elm::tlatrace::obj(t), "new", st_.reached[static_cast<size_t>(k)] == 0);
+runtime/src/allocator/TenureWork.hpp: if (st_.reached[static_cast<size_t>(k)]) return;
+runtime/src/allocator/TenureWork.hpp: st_.reached[static_cast<size_t>(k)] = 1;
+runtime/src/allocator/TenureWork.hpp: std::vector<uint8_t> reached;
+runtime/src/allocator/TenureWork.hpp: tenured = tenured_bytes = items = spine_runs = ylos_reached = 0;
+runtime/src/allocator/TenureWork.hpp: uint64_t tenured = 0, tenured_bytes = 0, items = 0, spine_runs = 0, ylos_reached = 0;

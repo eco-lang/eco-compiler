@@ -20,13 +20,18 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <random>
+#include <string>
 #include <thread>
 #include <vector>
 
 using namespace Elm;
 using namespace Elm::markwork;
+#if ECO_TLA_TRACE_ENABLED
+namespace tlatrace = Elm::tlatrace;
+#endif
 
 static void fail(const char* what) {
     std::fprintf(stderr, "mark_harness FAIL: %s\n", what);
@@ -135,32 +140,51 @@ struct SynthHeap {
         std::atomic<uint64_t> priv{0};
         uint64_t pops = 0;
         MarkerCounters ctr;
+        unsigned slot = 0;
     };
     std::vector<std::unique_ptr<Worker>> w;
+    unsigned pace_us = 0;             // M2's trace scenarios: a random pause per scan
     SynthHeap(const Graph& gr, unsigned members) : g(gr), n(members),
         marks(new std::atomic<uint8_t>[gr.kids.size()]) {
         for (size_t i = 0; i < gr.kids.size(); ++i) marks[i].store(0);
-        for (unsigned i = 0; i < members; ++i) w.push_back(std::make_unique<Worker>());
+        for (unsigned i = 0; i < members; ++i) {
+            w.push_back(std::make_unique<Worker>());
+            w.back()->slot = i;
+        }
     }
+    // The M2 trace events (test/tla/M2-slice-control/MAPPING.md): each deque
+    // push of a publish ("mw.pub", which the steal of that entry follows), the
+    // priv store that ends it ("mw.priv"), and each private push ("mw.push").
     static constexpr size_t kPublishMin = 64;
     void publishHalf(Worker& x) {
         if (x.stack.size() < kPublishMin || !x.dq.emptyApprox()) return;
         const size_t half = x.stack.size() / 2;
-        for (size_t i = 0; i < half; ++i) x.dq.push(x.stack[i]);
+        for (size_t i = 0; i < half; ++i) {
+            x.dq.push(x.stack[i]);
+            ECO_TLA_TRACE("mw.pub", "w", x.slot, "e", x.stack[i],
+                          "put", tlatrace::key("mwe", static_cast<int64_t>(x.stack[i])));
+        }
         x.stack.erase(x.stack.begin(), x.stack.begin() + static_cast<std::ptrdiff_t>(half));
         x.priv.store(x.stack.size(), std::memory_order_relaxed);
+        ECO_TLA_TRACE("mw.priv", "w", x.slot, "cnt", x.stack.size());
     }
     void pushGrey(unsigned self, uint64_t e) {
         Worker& x = *w[self];
         x.stack.push_back(e);
         x.priv.store(x.stack.size(), std::memory_order_relaxed);
+        ECO_TLA_TRACE("mw.push", "w", self, "e", e);
         if ((x.stack.size() & 31) == 0) publishHalf(x);
     }
     void publishAll(unsigned self) {
         Worker& x = *w[self];
-        for (uint64_t e : x.stack) x.dq.push(e);
+        ECO_TLA_TRACE_ONLY(const bool some = !x.stack.empty();)
+        for (uint64_t e : x.stack) {
+            x.dq.push(e);
+            ECO_TLA_TRACE("mw.pub", "w", self, "e", e, "put", tlatrace::key("mwe", static_cast<int64_t>(e)));
+        }
         x.stack.clear();
         x.priv.store(0, std::memory_order_relaxed);
+        ECO_TLA_TRACE_ONLY(if (some)) ECO_TLA_TRACE("mw.priv", "w", self, "cnt", 0);
     }
     uint64_t takeOwn(unsigned self) {
         Worker& x = *w[self];
@@ -177,6 +201,12 @@ struct SynthHeap {
         for (auto& x : w) if (!x->dq.emptyApprox() || !x->stack.empty()) return false;
         return true;
     }
+    void pace() const {
+        thread_local uint64_t r = 0x9E3779B97F4A7C15ull ^ reinterpret_cast<uintptr_t>(&r);
+        r ^= r << 13; r ^= r >> 7; r ^= r << 17;
+        const unsigned us = static_cast<unsigned>(r % (pace_us + 1));
+        if (us > pace_us / 2) std::this_thread::sleep_for(std::chrono::microseconds(us));
+    }
     // Entries: object = index + 1; chunk = kChunkBit | (index + 1) | (c << 40).
     void grey(unsigned self, uint32_t idx) {
         if (marks[idx].exchange(1, std::memory_order_relaxed) != 0) return;
@@ -188,6 +218,11 @@ struct SynthHeap {
     void scan(unsigned self, uint64_t e) {
         const uint32_t idx = static_cast<uint32_t>((e & kAddrMask) - 1);
         const auto& ks = g.kids[idx];
+        // Pause only while holding no private work: with priv counted, an idle
+        // member re-wakes, fails to steal and idles again for as long as another
+        // holds private work (a real cost of ParallelEnv's anyWork), and a pause
+        // there made one trace 22,000 events long.
+        if (pace_us != 0 && w[self]->stack.empty()) pace();
         if (isChunk(e)) {
             const uint32_t c = entryField(e);
             scanRange(self, idx, c * kChunk, std::min<uint32_t>(ks.size(), (c + 1) * kChunk));
@@ -591,7 +626,257 @@ static void bgGangStorm(unsigned launches, unsigned stops) {
     std::printf("bg gang storm: %u launches, %u stops per size ok\n", launches / 4, stops / 4);
 }
 
-int main() {
+// ---------------------------------------------------------------------------
+// (7) M2's TLA+ trace scenarios (plans/threaded-gc-tla-M2-slice-control.md §8;
+// test/tla/M2-slice-control/MAPPING.md, "Trace validation"). Small instances of
+// (3)/(4) and (5) on SynthHeap: in the TRACE build (gc-mark-trace,
+// -DECO_TLA_TRACE=1) each run is recorded to $ECO_TLA_TRACE_OUT (MarkWork.hpp's
+// "mw." hooks, SynthHeap's push/publish events, the gangs' ordering events).
+//
+// The graph: root 0 -> {1, hub}; the chain 1 -> 2 -> ... -> L; node 2 -> hub
+// too (two parents: the mark test-and-set can race); hub -> F leaves (F <= 64,
+// so no chunk entries; F = 64 makes pushGrey's publishHalf reachable). Kids in
+// ascending id order: the model greys children in id order. Model ids are
+// index + 1 (SynthHeap's object entries).
+//
+//   slices <n> <L> <F> <slices> <max budget> <seed> <pace us>
+//       n Members (GCMarkGang; member 0 is this thread), the root on slot 0's
+//       private stack; up to <slices> slices of 1..<max budget> tickets, then
+//       a drain (kDrainBudget) if work is left.
+//   episode <B> <L> <F> <assists> <assist budget> <end> <seed> <pace us>
+//       a drain episode of B background Members (slots 1..B; the root in slot
+//       1's deque, as launchBackground), this thread as slot 0: <assists>
+//       assists of <assist budget> tickets, then <end> 0: the closing join;
+//       1: a stop (stopAndJoin); 2: the closing join once the members have
+//       returned (closingFinish's join when finishedApprox lags: the join
+//       finds the control done).
+// ---------------------------------------------------------------------------
+static Graph traceGraph(uint32_t L, uint32_t F) {
+    Graph g;
+    const uint32_t hub = L + 1;
+    g.kids.resize(L + 2 + F);
+    g.kids[0].push_back(1);
+    if (F > 0) g.kids[0].push_back(hub);
+    for (uint32_t i = 1; i < L; ++i) g.kids[i].push_back(i + 1);
+    if (F > 0 && L >= 2) g.kids[2].push_back(hub);
+    for (uint32_t k = 0; k < F; ++k) g.kids[hub].push_back(hub + 1 + k);
+    for (auto& ks : g.kids) std::sort(ks.begin(), ks.end());
+    g.roots.push_back(0);
+    return g;
+}
+
+static std::string traceGraphJson(const Graph& g) {
+    std::string j = "\"nodes\":" + std::to_string(g.kids.size()) + ",\"edges\":[";
+    bool first = true;
+    for (size_t i = 0; i < g.kids.size(); ++i)
+        for (uint32_t k : g.kids[i]) {
+            j += (first ? "[" : ",[") + std::to_string(i + 1) + "," + std::to_string(k + 1) + "]";
+            first = false;
+        }
+    return j + "]";
+}
+
+static std::string traceSeq(const std::vector<uint64_t>& v) {
+    std::string j = "[";
+    for (size_t i = 0; i < v.size(); ++i) j += (i ? "," : "") + std::to_string(v[i]);
+    return j + "]";
+}
+
+static uint64_t reachEntries(const Graph& g) {
+    std::vector<uint8_t> reach(g.kids.size(), 0);
+    std::vector<uint32_t> st(g.roots.begin(), g.roots.end());
+    uint64_t entries = 0;
+    while (!st.empty()) {
+        const uint32_t i = st.back();
+        st.pop_back();
+        if (reach[i]) continue;
+        reach[i] = 1;
+        ++entries;
+        for (uint32_t k : g.kids[i]) st.push_back(k);
+    }
+    return entries;
+}
+
+static void traceBegin(const std::string& hdr) {
+#if ECO_TLA_TRACE_ENABLED
+    tlatrace::nameThread("mut", -1);
+    tlatrace::begin(hdr, "mw.,gang.");
+#else
+    (void)hdr;
+#endif
+}
+
+static void traceEnd() {
+#if ECO_TLA_TRACE_ENABLED
+    if (!tlatrace::end(nullptr)) fail("trace: cannot write the log");
+#endif
+}
+
+static void traceSlices(unsigned n, uint32_t L, uint32_t F, int slices, int maxb, uint64_t seed,
+                        unsigned pace) {
+    if (n < 1 || n > 8 || F > kChunk || maxb < 1) fail("slices: bad arguments");
+    const Graph g = traceGraph(L, F);
+    auto& gang = gc::GCMarkGang::instance();
+    if (gang.configured()) gang.shutdownForTesting();
+    gang.configure(n, 0);
+    SynthHeap h(g, n);
+    h.pace_us = pace;
+    h.grey(0, 0);                                    // the t0 grey, on slot 0's private stack
+    traceBegin("{\"model\":\"M2\",\"scenario\":\"slices\",\"n\":" + std::to_string(n) + "," +
+               traceGraphJson(g) + ",\"stack0\":" + traceSeq(h.w[0]->stack) + "}");
+    std::mt19937_64 rng(seed);
+    const uint64_t entries = reachEntries(g);
+    uint64_t done = 0;
+    for (int k = 0; k <= slices && !h.empty(); ++k) {
+        const bool drain = k == slices;
+        const int64_t b = drain ? kDrainBudget : 1 + static_cast<int64_t>(rng() % static_cast<uint64_t>(maxb));
+        SliceControl c(b, n, 0);
+        for (unsigned i = 0; i < n; ++i) h.w[i]->ctr.resetRun(i);
+        ECO_TLA_TRACE("mw.ctl", "ctl", c.tla_ctl, "budget", drain ? 0 : b, "drain", drain, "active", n,
+                      "victims", n);
+        RunArgs args{&h, &c};
+        gang.run(&markerFn, &args, n);
+        uint64_t units = 0;
+        for (auto& x : h.w) { units += x->ctr.units; x->dq.retireOldArrays(); }
+        ECO_TLA_TRACE("mw.end", "ctl", c.tla_ctl, "units", units, "left", drain ? 0 : c.budget.load(),
+                      "done", c.done());
+        if (!drain && static_cast<int64_t>(units) != b - c.budget.load()) fail("slices: units != consumed tickets");
+        if (c.active() != 0 || !c.done()) fail("slices: a marker left the slice active");
+        if (units != std::min<uint64_t>(static_cast<uint64_t>(b), entries - done)) fail("slices: early end");
+        done += units;
+    }
+    if (!h.empty() || done != entries) fail("slices: work left");
+    traceEnd();
+    std::printf("mark_harness PASS (slices: n = %u, %llu entries)\n", n, (unsigned long long)entries);
+}
+
+struct TraceEpisodeCtx {
+    SynthHeap* h;
+    SliceControl* c;
+    std::atomic<int64_t>* pool;
+};
+
+static void traceEpisode(unsigned B, uint32_t L, uint32_t F, int assists, int64_t abudget, int end,
+                         uint64_t seed, unsigned pace) {
+    if (B < 1 || B > 8 || F > kChunk || abudget < 1 || end < 0 || end > 2) fail("episode: bad arguments");
+    const bool stop = end == 1;
+    const Graph g = traceGraph(L, F);
+    const unsigned slots = 1 + B;
+    auto& fg = gc::GCMarkGang::instance();
+    if (fg.configured()) fg.shutdownForTesting();
+    fg.configure(1, 0);
+    gc::GCBackgroundGang::Options o;
+    o.members = B;
+    gc::GCBackgroundGang bg(o);
+    SynthHeap h(g, slots);
+    h.pace_us = pace;
+    h.grey(0, 0);                                    // the t0 grey on slot 0 ...
+    h.publishAll(0);                                 // ... round-robin into the background
+    for (uint64_t j = 0;; ++j) {                     // deques (launchBackground)
+        const uint64_t e = h.w[0]->dq.take();
+        if (e == kEmpty) break;
+        h.w[1 + j % B]->dq.push(e);
+    }
+    std::string deques = "[";
+    for (unsigned i = 0; i < slots; ++i) {
+        std::vector<uint64_t> d;
+        if (i == 1) d.push_back(1);                  // the root (one entry: slot 1)
+        deques += (i ? "," : "") + traceSeq(d);
+    }
+    deques += "]";
+    traceBegin("{\"model\":\"M2\",\"scenario\":\"episode\",\"B\":" + std::to_string(B) + "," +
+               traceGraphJson(g) + ",\"deque0\":" + deques + ",\"assists\":" + std::to_string(assists) +
+               ",\"abudget\":" + std::to_string(abudget) + ",\"stop\":" + (stop ? "true" : "false") + "}");
+    std::mt19937_64 rng(seed);
+    SliceControl c(kDrainBudget, slots, 0, static_cast<int64_t>(B));
+    for (unsigned i = 0; i < slots; ++i) h.w[i]->ctr.resetRun(i);
+    ECO_TLA_TRACE("mw.ctl", "ctl", c.tla_ctl, "budget", 0, "drain", true, "active", B, "victims", slots);
+    TraceEpisodeCtx ctx{&h, &c, nullptr};
+    bg.launch([](void* p, unsigned j) {
+        auto* x = static_cast<TraceEpisodeCtx*>(p);
+        SynthEnv env{*x->h};
+        runMarkerLoop(env, 1 + j, *x->c, x->c->budget, Role::Member, false);
+    }, &ctx, &c.stop);
+    uint64_t units = 0;
+    for (int a = 0; a < assists; ++a) {
+        std::this_thread::sleep_for(std::chrono::microseconds(rng() % (pace + 1)));
+        std::atomic<int64_t> pool{abudget};
+        TraceEpisodeCtx ac{&h, &c, &pool};
+        ECO_TLA_TRACE("mw.assist", "budget", abudget);
+        c.share_epoch.fetch_add(1, std::memory_order_relaxed);
+        h.w[0]->ctr.resetRun(0);
+        fg.run([](void* p, unsigned i) {
+            auto* x = static_cast<TraceEpisodeCtx*>(p);
+            SynthEnv env{*x->h};
+            runMarkerLoop(env, i, *x->c, *x->pool, Role::Assist, true);
+        }, &ac, 1);
+        const uint64_t u = h.w[0]->ctr.units;
+        ECO_TLA_TRACE("mw.assistEnd", "units", u, "left", pool.load());
+        if (static_cast<int64_t>(u) != abudget - pool.load()) fail("episode: assist units != consumed tickets");
+        if (!h.w[0]->stack.empty() || h.w[0]->priv.load() != 0) fail("episode: private work after an assist");
+        units += u;
+    }
+    std::this_thread::sleep_for(std::chrono::microseconds(rng() % (pace + 1)));
+    if (stop) {
+        ECO_TLA_TRACE("mw.stopReq", "put", tlatrace::key("stop", c.tla_ctl));
+        bg.stopAndJoin();
+    } else {
+        if (end == 2) {
+            while (!bg.finishedApprox()) std::this_thread::yield();
+        }
+        TraceEpisodeCtx cl{&h, &c, nullptr};
+        ECO_TLA_TRACE("mw.closing");
+        c.share_epoch.fetch_add(1, std::memory_order_relaxed);
+        h.w[0]->ctr.resetRun(0);
+        fg.run([](void* p, unsigned i) {
+            auto* x = static_cast<TraceEpisodeCtx*>(p);
+            SynthEnv env{*x->h};
+            runMarkerLoop(env, i, *x->c, x->c->budget, Role::Member, true);
+        }, &cl, 1);
+        units += h.w[0]->ctr.units;
+        bg.join();
+    }
+    for (unsigned i = 1; i < slots; ++i) units += h.w[i]->ctr.units;
+    uint64_t left = 0;
+    for (auto& x : h.w) left += x->dq.sizeApprox();
+    ECO_TLA_TRACE("mw.joined", "done", c.done(), "units", units, "left", left);
+    for (auto& x : h.w)
+        if (!x->stack.empty() || x->priv.load() != 0) fail("episode: private work after the episode");
+    const uint64_t entries = reachEntries(g);
+    uint64_t marked = 0;
+    for (size_t i = 0; i < g.kids.size(); ++i) marked += h.marks[i].load() != 0;
+    if (!stop && (!c.done() || left != 0 || units != entries)) fail("episode: the closing did not finish");
+    if (units + left != marked) fail("episode: a greyed entry is neither scanned nor in a deque (Drain)");
+    traceEnd();
+    std::printf("mark_harness PASS (episode: B = %u, %d assists, %s, %llu units, %llu left)\n", B, assists,
+                stop ? "stopped" : end == 2 ? "closed after the members" : "closed", (unsigned long long)units, (unsigned long long)left);
+}
+
+int main(int argc, char** argv) {
+    if (argc > 1 && std::strcmp(argv[1], "slices") == 0) {
+        if (argc != 9) {
+            std::fprintf(stderr, "usage: %s slices <n> <L> <F> <slices> <max budget> <seed> <pace us>\n", argv[0]);
+            return 2;
+        }
+        traceSlices(static_cast<unsigned>(std::atoi(argv[2])), static_cast<uint32_t>(std::atoi(argv[3])),
+                    static_cast<uint32_t>(std::atoi(argv[4])), std::atoi(argv[5]), std::atoi(argv[6]),
+                    std::strtoull(argv[7], nullptr, 10), static_cast<unsigned>(std::atoi(argv[8])));
+        gc::GCMarkGang::instance().shutdownForTesting();
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "episode") == 0) {
+        if (argc != 10) {
+            std::fprintf(stderr, "usage: %s episode <B> <L> <F> <assists> <assist budget> <end 0|1|2> <seed> "
+                                 "<pace us>\n", argv[0]);
+            return 2;
+        }
+        traceEpisode(static_cast<unsigned>(std::atoi(argv[2])), static_cast<uint32_t>(std::atoi(argv[3])),
+                     static_cast<uint32_t>(std::atoi(argv[4])), std::atoi(argv[5]), std::atoll(argv[6]),
+                     std::atoi(argv[7]), std::strtoull(argv[8], nullptr, 10),
+                     static_cast<unsigned>(std::atoi(argv[9])));
+        gc::GCMarkGang::instance().shutdownForTesting();
+        return 0;
+    }
     terminationStress(8, 40000);
     terminationStress(16, 40000);
     dequeStorm(3, 400000);

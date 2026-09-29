@@ -1,0 +1,4 @@
+promo_mutex_acquires += o.promo_mutex_acquires;
+promo_mutex_wait_ns += o.promo_mutex_wait_ns;
+uint64_t mutex_wait_ns = 0;
+uint64_t promo_mutex_acquires = 0, promo_mutex_wait_ns = 0;

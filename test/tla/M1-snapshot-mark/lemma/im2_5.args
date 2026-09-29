@@ -1,0 +1,3 @@
+# SnapshotLemma, the consequence: in every state satisfying LemmaInv, a cycle whose grey set is
+# empty has every reachable old-gen cell marked (IM2), so the sweep frees only garbage.
+--cinit=CInit5 --init=IndInit --next=Next --inv=LemmaImpliesIM2 --length=0

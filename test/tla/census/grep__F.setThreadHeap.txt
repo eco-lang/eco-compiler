@@ -1,0 +1,6 @@
+runtime/src/allocator/Allocator.cpp: setThreadHeap(heap.get());
+runtime/src/allocator/Allocator.cpp: setThreadHeap(nullptr);
+runtime/src/allocator/Allocator.cpp: setThreadHeap(nullptr);
+runtime/src/allocator/Allocator.cpp: setThreadHeap(thread_heaps_[thread_id].get());
+runtime/src/allocator/Allocator.cpp: void Allocator::setThreadHeap(ThreadLocalHeap* h) {
+runtime/src/allocator/Allocator.hpp: static void setThreadHeap(ThreadLocalHeap* h);

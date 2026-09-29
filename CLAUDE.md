@@ -24,6 +24,10 @@ Key representation rules:
 - Bool is always `!eco.value` in heap/closure storage (True/False are embedded HPointer constants)
 - SSA representation, ABI representation, and Heap representation are independent unless explicitly linked by an invariant
 
+Before modifying GC concurrency code (`runtime/src/allocator/`), read `test/tla/README.md`: the
+TLA+ models under `test/tla/` describe that code. A `tla-canary` failure means investigate the
+models it names first (GC_MODEL_001); never just repair the hash.
+
 ## Start up
 
 When Clause Code first starts running:

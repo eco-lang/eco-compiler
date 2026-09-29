@@ -1,0 +1,55 @@
+runtime/src/allocator/NurseryRegion.cpp: R.rs.heal_slots += H_all.size();
+runtime/src/allocator/NurseryRegion.cpp: rec->rg_heal_recorded = R.pend_H.size();
+runtime/src/allocator/NurseryTenure.cpp: (void)healed;
+runtime/src/allocator/NurseryTenure.cpp: ++R.rs.heals_parallel;
+runtime/src/allocator/NurseryTenure.cpp: ++healed;
+runtime/src/allocator/NurseryTenure.cpp: ++o.heal_n;
+runtime/src/allocator/NurseryTenure.cpp: ECO_TLA_TRACE("tj.launch", "x", t, "gen", X.gen, "starts", ds.size(), "heal", J.st.heal.size(),
+runtime/src/allocator/NurseryTenure.cpp: ECO_TLA_TRACE("tj.merge", "heal", heal, "tenured", st.tenured, "healed", healed,
+runtime/src/allocator/NurseryTenure.cpp: HPointer& hp = *reinterpret_cast<HPointer*>((*h.heal)[i]);
+runtime/src/allocator/NurseryTenure.cpp: J.st.heal.swap(R.pend_H);
+runtime/src/allocator/NurseryTenure.cpp: R.rs.age_heal += st.age_heal;
+runtime/src/allocator/NurseryTenure.cpp: R.rs.heal_ns += dh;
+runtime/src/allocator/NurseryTenure.cpp: R.rs.heal_ns += dh;
+runtime/src/allocator/NurseryTenure.cpp: bool skip_one = test_heal_skip_one_;
+runtime/src/allocator/NurseryTenure.cpp: const size_t len = h.heal->size();
+runtime/src/allocator/NurseryTenure.cpp: const std::vector<uint64_t*>* heal;
+runtime/src/allocator/NurseryTenure.cpp: const unsigned heal_n = std::min<unsigned>(oldgen.minorThreads(), OldGenSpace::kMaxMinorWorkers);
+runtime/src/allocator/NurseryTenure.cpp: const unsigned n = std::min(heal_n, gang.members());
+runtime/src/allocator/NurseryTenure.cpp: for (size_t i = st.next_heal; i < st.heal.size(); ++i) {
+runtime/src/allocator/NurseryTenure.cpp: for (uint64_t* s : st.heal) {
+runtime/src/allocator/NurseryTenure.cpp: healed = st.heal.size();
+runtime/src/allocator/NurseryTenure.cpp: if (J.state == TenureJob::State::Done) mergeJob(oldgen, /*heal=*/false, nullptr);
+runtime/src/allocator/NurseryTenure.cpp: if (d == nullptr) tenureFatal("TV1: resolve found no forwarding in the parallel heal", c2);
+runtime/src/allocator/NurseryTenure.cpp: if (heal && !st.zap.empty()) {
+runtime/src/allocator/NurseryTenure.cpp: if (heal && heal_n > 1 && st.heal.size() > config_->heal_parallel_min && !test_heal_skip_one_) {
+runtime/src/allocator/NurseryTenure.cpp: if (heal) {
+runtime/src/allocator/NurseryTenure.cpp: if (heal) {
+runtime/src/allocator/NurseryTenure.cpp: if (heal) {
+runtime/src/allocator/NurseryTenure.cpp: if (rec) { rec->rg_heal_ns = dh; rec->rg_heal_slots = st.heal.size(); }
+runtime/src/allocator/NurseryTenure.cpp: if (rec) { rec->rg_heal_ns = dh; rec->rg_heal_slots = st.heal.size(); }
+runtime/src/allocator/NurseryTenure.cpp: mergeJob(oldgen, /*heal=*/why != 2, rec);
+runtime/src/allocator/NurseryTenure.cpp: o.heal.push_back(s);
+runtime/src/allocator/NurseryTenure.cpp: st.age_heal += o.heal_n;
+runtime/src/allocator/NurseryTenure.cpp: st.heal.insert(st.heal.end(), o.heal.begin(), o.heal.end());
+runtime/src/allocator/NurseryTenure.cpp: st.next_heal = st.heal.size();
+runtime/src/allocator/NurseryTenure.cpp: std::memcpy(&hp, st.heal[i], sizeof(hp));
+runtime/src/allocator/NurseryTenure.cpp: std::vector<uint64_t*> heal;
+runtime/src/allocator/NurseryTenure.cpp: tenureFatal("a heal slot no longer points into the tenured extent (P1 violated)", s, c);
+runtime/src/allocator/NurseryTenure.cpp: uint64_t healed = 0;
+runtime/src/allocator/NurseryTenure.cpp: uint64_t marked = 0, marked_bytes = 0, heal_n = 0, ylos_reached = 0;
+runtime/src/allocator/NurseryTenure.cpp: void NurserySpace::mergeJob(OldGenSpace& oldgen, bool heal, MinorGCRecord* rec) {
+runtime/src/allocator/NurseryTenure.cpp: } else if (heal) {
+runtime/src/allocator/NurseryTenure.cpp: } hc{&st.heal, &J, heal_n};
+runtime/src/allocator/TenureWork.hpp: ++st_.age_heal;
+runtime/src/allocator/TenureWork.hpp: ECO_TLA_TRACE("titem", "k", "heal", "idx", st_.next_heal - 1, "tgt", ::Elm::tlatrace::obj(t));
+runtime/src/allocator/TenureWork.hpp: age_marked = age_marked_bytes = age_heal = zapped = zapped_bytes = 0;
+runtime/src/allocator/TenureWork.hpp: const uint64_t v = *st_.heal[st_.next_heal++];
+runtime/src/allocator/TenureWork.hpp: if (st_.next_heal + 16 < st_.heal.size()) __builtin_prefetch(st_.heal[st_.next_heal + 16], 0, 3);
+runtime/src/allocator/TenureWork.hpp: if (st_.next_heal < st_.heal.size()) {
+runtime/src/allocator/TenureWork.hpp: next_heal >= heal.size() && ylos_next >= ylos_pending.size();
+runtime/src/allocator/TenureWork.hpp: next_start = next_heal = 0;
+runtime/src/allocator/TenureWork.hpp: size_t next_heal = 0;
+runtime/src/allocator/TenureWork.hpp: st_.heal.push_back(s);
+runtime/src/allocator/TenureWork.hpp: std::vector<uint64_t*> heal;
+runtime/src/allocator/TenureWork.hpp: uint64_t age_marked = 0, age_marked_bytes = 0, age_heal = 0, zapped = 0, zapped_bytes = 0;

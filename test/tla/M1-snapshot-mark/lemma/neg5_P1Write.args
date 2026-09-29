@@ -1,0 +1,3 @@
+# SnapshotLemma negative control: a kernel write to an old object (P1 broken) must break the
+# inductive step, in the tri-colour part (LemmaCore excludes FieldsFrozen, which states P1).
+--cinit=CInit5 --init=IndInit --next=P1Write --inv=LemmaCoreStep --length=1

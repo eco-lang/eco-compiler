@@ -1,0 +1,7 @@
+Elm::platform::commitAt(base_.load(std::memory_order_relaxed) +
+base_.store(static_cast<char *>(p), std::memory_order_release);
+if (base_.load(std::memory_order_relaxed) != nullptr)
+std::lock_guard<std::mutex> lock(mutex_);
+std::size_t used = used_.load(std::memory_order_relaxed);
+used_.store(used + bytes, std::memory_order_release);
+void *r = base_.load(std::memory_order_relaxed) + used;

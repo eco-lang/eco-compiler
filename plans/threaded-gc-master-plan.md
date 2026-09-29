@@ -83,6 +83,14 @@ descriptions into mini-plans.
 - **Assert the invariant you are deleting or relying on.** Every structural premise gets an
   `ECO_HEAP_VALIDATE` check that re-derives it, exercised by the validate-tree unit tests, E2E and
   GC-pressure stress (not the self-compile, which is too slow under the validator).
+- **Keep the concurrency models in step** (added 2026-09-28, `plans/threaded-gc-tla-verification.md`
+  §6.2, GC_MODEL_001). A phase that changes a protocol modelled under `test/tla/` (or a weak-memory
+  driver under `test/genmc/`) updates the model, its MAPPING.md and AUDIT.md in the same change, and
+  passes `tla-check` and `tla-trace`. The `tla-canary` check in every build names the models a code
+  change touches; each named model needs an AUDIT.md verdict before the manifest accepts the new
+  code. `tla-check-deep` and `genmc-check` run at each model's close-out and before a phase flips
+  to default-on. A defect a model, trace or driver finds goes into
+  `plans/threaded-gc-concurrency-register.md`.
 
 ## 3. Phases
 

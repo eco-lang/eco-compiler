@@ -41,6 +41,7 @@ inline void padSlack(void* obj, size_t requested_size, size_t cell_size) {
 
 }  // namespace
 
+// TLA-REGION(OGT.grantTenure) begin
 bool OldGenSpace::grantTenure(const uint32_t count[NUM_SIZE_CLASSES], TenureGrant& g,
                               uint32_t slack_participants) {
     assert(config_->old_gen_bitmap_alloc && "the tenure grant needs bitmap allocation");
@@ -149,7 +150,9 @@ bool OldGenSpace::grantTenure(const uint32_t count[NUM_SIZE_CLASSES], TenureGran
     ++active_tenure_grants_;
     return true;
 }
+// TLA-REGION(OGT.grantTenure) end
 
+// TLA-REGION(OGT.grantAllocate) begin
 void* OldGenSpace::grantAllocate(TenureGrant& g, size_t cls, size_t requested_size) {
     std::vector<TenureCursor>& v = g.blocks[cls];
     for (;;) {
@@ -193,13 +196,17 @@ void* OldGenSpace::grantAllocate(TenureGrant& g, size_t cls, size_t requested_si
         return p;
     }
 }
+// TLA-REGION(OGT.grantAllocate) end
 
+// TLA-REGION(OGT.grantAllocateShared) begin
 void* OldGenSpace::grantAllocateShared(TenureGrant& g, TenureMemberCursor& m, size_t cls,
                                        size_t requested_size) {
     // A chunk owns >= 128 bitmap bytes (two cache lines): 64-cell chunks of
     // small classes are 8-16 bitmap bytes, and members setting bits in one
     // line ping-ponged it (measured: 77 % of this function on the load).
-    // Always a multiple of 64 cells (whole bitmap bytes).
+    // Always a multiple of 64 cells, so a chunk owns whole 64-bit bitmap
+    // words: the scans read a word at a time (bitscan::loadWord), so whole
+    // bytes would not be enough (CR-022).
     std::vector<TenureCursor>& v = g.blocks[cls];
     TenureMemberCursor::Cls& mc = m.c[cls];
     for (;;) {
@@ -256,6 +263,7 @@ void* OldGenSpace::grantAllocateShared(TenureGrant& g, TenureMemberCursor& m, si
         }
     }
 }
+// TLA-REGION(OGT.grantAllocateShared) end
 
 void OldGenSpace::grantFoldMember(TenureGrant& g, TenureMemberCursor& m) {
     for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
@@ -285,6 +293,7 @@ void OldGenSpace::grantFoldMember(TenureGrant& g, TenureMemberCursor& m) {
 #endif
 }
 
+// TLA-REGION(OGT.returnTenureGrant) begin
 void OldGenSpace::returnTenureGrant(TenureGrant& g) {
     if (!g.active) return;
     for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
@@ -335,6 +344,7 @@ void OldGenSpace::returnTenureGrant(TenureGrant& g) {
     if (active_tenure_grants_ == 0) validateTenureBlocks("merge");
 #endif
 }
+// TLA-REGION(OGT.returnTenureGrant) end
 
 void OldGenSpace::validateTenureBlocks(const char* where) const {
     if (active_tenure_grants_ != 0) return;

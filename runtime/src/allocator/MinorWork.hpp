@@ -14,8 +14,10 @@
 //
 // Deliberately standalone (includes nothing from the allocator) so the TSan
 // harness (test/gc-helper-tsan/minor_harness.cpp) runs the same code. The
-// word layout is pinned against Heap.hpp's bitfields in NurseryParallel.cpp
-// (static_assert on the tag, runtime test on the composed words).
+// word layout is pinned against Heap.hpp's bitfields: a static_assert on the
+// tag (NurseryParallel.cpp) and a runtime test on the composed words
+// (testForwardWordMatchesBitfields, test/allocator/ConcurrencyRegisterTest.cpp,
+// CR-011).
 
 #include <atomic>
 #include <chrono>
@@ -24,6 +26,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+
+#include "TlaTrace.hpp"   // compiled-out hooks (trace builds only: M3's trace, test/tla/)
 
 namespace Elm::minorwork {
 
@@ -48,6 +52,14 @@ inline char* fwdAddr(uint64_t w) {
     return reinterpret_cast<char*>(static_cast<uintptr_t>(((w >> kFwdShift) & kFwdMask) << 3));
 }
 
+#if ECO_TLA_TRACE_ENABLED
+// M3 trace validation (test/tla/M3-minor-forwarding): a header word as the
+// model sees it, 0 unforwarded, 1 BUSY, 2 forwarded to tlaFwdTo(w). The hooks
+// also log the raw word ("W<word>") for the merger's per-location order.
+inline int tlaWordKind(uint64_t w) { return !isForwardWord(w) ? 0 : (w == kBusy ? 1 : 2); }
+inline const void* tlaFwdTo(uint64_t w) { return tlaWordKind(w) == 2 ? fwdAddr(w) : nullptr; }
+#endif
+
 inline std::atomic_ref<uint64_t> headerRef(void* obj) {
     return std::atomic_ref<uint64_t>(*static_cast<uint64_t*>(obj));
 }
@@ -56,12 +68,24 @@ inline uint64_t loadHeader(void* obj) {
 }
 // CAS the header word from `h` to BUSY. On failure `h` holds the observed word.
 inline bool claim(void* obj, uint64_t& h) {
-    return headerRef(obj).compare_exchange_strong(h, kBusy, std::memory_order_acq_rel,
-                                                  std::memory_order_acquire);
+    const bool ok = headerRef(obj).compare_exchange_strong(h, kBusy, std::memory_order_acq_rel,
+                                                           std::memory_order_acquire);
+    if (ok)
+        ECO_TLA_TRACE("claim", "obj", tlatrace::obj(obj), "ok", true, "rmw", tlatrace::key("h", obj),
+                      "old", tlatrace::key("W", static_cast<int64_t>(h)),
+                      "new", tlatrace::key("W", static_cast<int64_t>(kBusy)));
+    else
+        ECO_TLA_TRACE("claim", "obj", tlatrace::obj(obj), "ok", false, "rd", tlatrace::key("h", obj),
+                      "val", tlatrace::key("W", static_cast<int64_t>(h)), "w", tlaWordKind(h),
+                      "to", tlatrace::obj(tlaFwdTo(h)));
+    return ok;
 }
 // Publish the forward word (release: orders the copy before the address).
 inline void publish(void* obj, const void* dst, uint64_t color) {
     headerRef(obj).store(fwdWord(dst, color), std::memory_order_release);
+    ECO_TLA_TRACE("publish", "obj", tlatrace::obj(obj), "dst", tlatrace::obj(dst),
+                  "rmw", tlatrace::key("h", obj), "old", tlatrace::key("W", static_cast<int64_t>(kBusy)),
+                  "new", tlatrace::key("W", static_cast<int64_t>(fwdWord(dst, color))));
 }
 // Waits until the header word is no longer BUSY and returns it. `pause(round)`
 // is the caller's backoff (markwork::backoff); each call counts one round.
@@ -69,7 +93,12 @@ template <class Pause>
 inline uint64_t waitPublished(void* obj, Pause&& pause) {
     for (unsigned round = 0;; ++round) {
         const uint64_t w = loadHeader(obj);
-        if (w != kBusy) return w;
+        if (w != kBusy) {
+            ECO_TLA_TRACE("wait", "obj", tlatrace::obj(obj), "rd", tlatrace::key("h", obj),
+                          "val", tlatrace::key("W", static_cast<int64_t>(w)), "w", tlaWordKind(w),
+                          "to", tlatrace::obj(tlaFwdTo(w)));
+            return w;
+        }
         pause(round);
     }
 }

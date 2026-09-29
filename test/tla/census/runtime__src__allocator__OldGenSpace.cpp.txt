@@ -1,0 +1,61 @@
+#include <mutex>
+++pw.mutex_acquires;
+++pw.mutex_acquires;
+.fetch_add(c.pending_live, std::memory_order_relaxed);
+.fetch_add(cell_bytes, std::memory_order_relaxed);
+.fetch_add(cell_size, std::memory_order_relaxed);
+ECO_TLA_TRACE_ONLY(const uint64_t m4_old = promo_ctx_->shared[cls].w.load(std::memory_order_relaxed);)
+alloc_stats_.cm.bg_cpu_ns = bg_->stats().member_cpu_ns.load(std::memory_order_relaxed);
+bg_ctl_->share_epoch.fetch_add(1, std::memory_order_relaxed);
+bg_ctl_->share_epoch.fetch_add(1, std::memory_order_relaxed);
+const int64_t left = bg_ctl_->budget.load(std::memory_order_relaxed);
+const uint64_t sw = ctx.shared[cls].w.load(std::memory_order_relaxed);
+const uint64_t w = sh.load(std::memory_order_relaxed);
+const uint64_t w = sh.load(std::memory_order_relaxed);
+ctx.shared[cls].w.store(0, std::memory_order_relaxed);
+ctx.shared[cls].w.store(0, std::memory_order_relaxed);
+for (unsigned w = 0; w < ctx.n; ++w) under_lock += ctx.w[w].mutex_charges;
+if (!im10_armed_.load(std::memory_order_acquire) || !im10_) return;
+if (!w.deque.emptyApprox() || w.priv.load(std::memory_order_relaxed) != 0) return true;
+if (!w.deque.emptyApprox() || w.priv.load(std::memory_order_relaxed) != 0) return true;
+if (!w.stack.empty() || w.priv.load(std::memory_order_relaxed) != 0) {
+if (b.load(std::memory_order_relaxed) & mask) return true;
+if (lm.load(std::memory_order_relaxed) != 0) return true;
+if (sh.compare_exchange_weak(w, w + units, std::memory_order_acq_rel,
+im10_armed_.store(false, std::memory_order_release);
+im10_armed_.store(false, std::memory_order_release);
+im10_armed_.store(true, std::memory_order_release);
+markers_[i]->priv.store(0, std::memory_order_relaxed);
+markers_[i]->priv.store(0, std::memory_order_relaxed);
+mutex_acquires = mutex_wait_ns = 0;
+mutex_charges = 0;
+pw.mutex_charges += allocated_bytes - charged0;
+pw.mutex_charges += allocated_bytes - charged0;
+pw.mutex_wait_ns += GCStats::nowSinceProcessStartNs() - t0;
+return (b.fetch_or(mask, std::memory_order_relaxed) & mask) != 0;
+return lm.exchange(1, std::memory_order_relaxed) != 0;
+sh.store(0, std::memory_order_relaxed);
+std::atomic<int64_t> pool{budget};
+std::atomic<int64_t>* pool;
+std::atomic<uint64_t>& sh = promo_ctx_->shared[cls].w;
+std::atomic<uint64_t>& sh = promo_ctx_->shared[cls].w;
+std::atomic<uint64_t>& sh = promo_ctx_->shared[cls].w;
+std::atomic_ref<uint64_t>(blocks_.meta(block_id).live_bytes)
+std::atomic_ref<uint64_t>(blocks_.meta(c.block).live_bytes)
+std::atomic_ref<uint64_t>(blocks_.meta(id).live_bytes)
+std::atomic_ref<uint8_t> b(mark_.slot(id)[byte_index]);
+std::atomic_ref<uint8_t> lm(blocks_.largeMark(id));
+std::lock_guard<minorwork::SpinMutex> lk(promo_mu_);
+std::lock_guard<std::mutex> lk(sh.m);
+std::lock_guard<std::mutex> lk(sh.m);
+std::lock_guard<std::mutex> lk(sh.m);
+std::lock_guard<std::mutex> lk(sh.m);
+std::memory_order_acquire)) {
+std::memory_order_relaxed);
+std::memory_order_release);
+std::mutex m;
+std::unique_lock<minorwork::SpinMutex> lk(promo_mu_, std::try_to_lock);
+test_bg_hold_.store(false, std::memory_order_release);
+uint64_t w = sh.load(std::memory_order_acquire);
+w.priv.store(w.stack.size(), std::memory_order_relaxed);
+while (og->test_bg_hold_.load(std::memory_order_acquire) &&

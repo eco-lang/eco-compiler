@@ -1,20 +1,22 @@
 # Threaded GC — TLA+ models of the concurrent heap protocols
 
-**Status:** PLANNED (2026-09-28): the master plan for this work, **plus implementation-ready model
-plans** (§5). Nothing is implemented. Done so far:
-- the dev image is built with the pinned toolchain (§3; checked 2026-09-28: the jar hashes match
-  the Dockerfile pins, TLC reports build 2026.09.25 rev 8f4bc8b, `apalache-mc version` is 0.62.2;
-  TLAPS and the weak-memory checkers are not installed);
-- the concurrency register exists (§8);
-- the primer and the model plans are written;
-- **every model plan has had an adversarial review against the current tree (2026-09-28)**: each
-  plan's last section lists what was found and changed, and §13 below summarises it. Every PlusCal
-  sketch, as corrected, passes the PlusCal translator and SANY (tla2tools 1.8.0), and every W
-  driver sketch compiles against the real headers. **TLC, Apalache and the C11 checkers have not
-  been run on any of them.**
+**Status:** IMPLEMENTED (2026-09-29). Every model plan (M1–M7), the weak-memory plan (W1–W5 plus
+`w_pool_done` and `w_running_chain`), trace validation, the canary and the local gates are built (none of the model checks runs in
+GitHub CI: owner's decision, 2026-09-29);
+§11 has the per-step detail and §10's "done means" is met except where noted there. Gate results at
+close-out (2026-09-29):
+- `tla-canary` (in ALL): green, 224 pins (GC_MODEL_001);
+- `tla-check`: 219/219 as expected (565 s); `tla-check-deep` TLC rows: 48/48 (6,530 s at one row at a
+  time); M1's snapshot-closure lemma proved inductive at 5 objects (Apalache); at 6 objects the base case,
+  IM2 and 4 of 15 steps pass (stopped, 3–4 h per step), 8 objects not feasible on this machine;
+- `tla-trace`: 135/135 as expected (283 s);
+- `genmc-check`: 60/60 as expected (22 s);
+- the register grew to 33 entries; every entry that existed at Step 0 is Guarded, Fixed, or has a
+  written exit (CR-012 awaits the owner's decision on multiple mutators; CR-004 is a proposed
+  Not-a-bug).
 
-**Implementation starts in the rebuilt dev container** (Step 0), so the work is repeatable from the
-image, not from a hand-installed scratch setup.
+History: the plans and their adversarial review were written on 2026-09-28 (§13); implementation
+started in the rebuilt dev container the same day.
 
 **Documents:**
 
@@ -116,6 +118,7 @@ written down as one.
 | Apalache | 0.62.2 | SHA256 | `apalache-mc`: inductive invariants, larger parameters |
 | TLAPS `tlapm` | 1.6.0-pre | **no** (rolling pre-release, ~880 MB) | opt-in: `--build-arg INSTALL_TLAPS=1` |
 | graphviz | apt | apt | renders TLC `-dump dot` state graphs |
+| GenMC | **v0.19.0** (commit `9f6c4c0`), RC11 | git commit; LLVM 19.1.7 from Debian bookworm (`1:19.1.7-3~deb12u1`); a temporary GCC 14.4.0 (SHA256, gpg-checked) builds it and ships its `libstdc++` in `/opt/genmc/lib` | W1–W5, `genmc-check` (`test/genmc/`) | `docker/install-genmc.sh`; builder image `docker/genmc.Dockerfile` (`eco-genmc:0.19.0-llvm19`), copied to `/opt/genmc` by the **opt-in** layer `docker/eco-dev-genmc.Dockerfile` (eco-dev + GenMC; eco-dev itself and CI do not include it); the project's LLVM 21 is untouched |
 
 `TLA_TOOLS_DIR=/opt/tlaplus` is exported. The image build model-checks a smoke spec and runs
 `apalache-mc version`.
@@ -135,9 +138,11 @@ written down as one.
 - **Non-Docker hosts** (`mac-build`, `win-build`). CMake finds Java with `find_package(Java 17)`
   and the jars through `TLA_TOOLS_DIR` or `-DTLA2TOOLS_JAR=`. It falls back to `eco_fetch` into
   `build/toolchain/` using the same SHA pins. Java itself stays a host prerequisite.
-- **The weak-memory tool** (`plans/threaded-gc-tla-W-weak-memory.md`). GenMC is the first choice,
-  with C11Tester and herd7 litmus tests as fallbacks. Install nothing until its feasibility spike
-  passes.
+- ~~**The weak-memory tool**~~ **Decided 2026-09-28: GenMC** (W plan §4.2 step 4). The real headers
+  compile unchanged: the runner compiles each driver to LLVM IR with clang-19 and the system
+  headers (GenMC's own C `pthread.h`/`stdio.h` break libstdc++'s C++20 `<atomic>`), then runs
+  `genmc -rc11`. `genmc-check`: 49/49 rows as expected in 22 s. GenMC cannot run `pause`,
+  `sched_yield` or `nanosleep`, so the real spin loops are straight-lined in the drivers.
 
 ## 4. Repository layout
 
@@ -149,7 +154,11 @@ test/tla/
   run_models.py           runner: exit status + expected-violation matching, mutants
   manifest.txt            canary manifest (§7)
   footprint-greps.txt     footprint row id -> path glob + regex (the phase plans' Step 0 greps)
-  common/                 shared modules: Bag-deque, abstract heap graph, race-detector helper
+  census/                 the text each census and grep pin hashes (a failure prints the +/- lines)
+  common/                 shared modules: TraceLog / TraceInOrder / TraceAnyOrder (trace specs)
+  trace/                  TlaTrace.cpp (the recorder linked into trace builds), merge_trace.py
+  traces.txt              trace registry: harness targets, trace rows (accept / reject, mutate=)
+  run_traces.py           trace runner (tla-trace): build, run, merge, validate with TLC
   M<n>-<name>/
     <Name>.tla            PlusCal source + committed translation
     MC_quick.cfg          tier quick (seconds; runs in tla-check)
@@ -251,8 +260,8 @@ plan, including the concepts and the tool spike, is `plans/threaded-gc-tla-W-wea
 |---|---|---|---|---|
 | `tla-canary` | top-level `CMakeLists.txt`, in **ALL** (like `kernel-license-check`) | `test/scripts/check-tla-manifest.sh` | sh, awk, sha256sum | milliseconds |
 | `tla-check` | `test/tla/CMakeLists.txt` | SANY parse; PlusCal translation freshness; every quick configuration; every mutant and every expected failure (must fail with its named invariant) | Java 17, tla2tools | ≤ 5 min **per model**, configurations run in parallel (revised in the 2026-09-28 review: the model plans now have dozens of quick configurations and mutants between them, so a 5-minute total was never achievable; measure in Step 1 and move slow ones to deep) |
-| `tla-check-deep` | same | `MC_deep.cfg`, Apalache inductive checks, TLAPS proofs if `tlapm` is present | + Apalache, TLAPS | nightly / manual |
-| `tla-trace` | same | builds the TSan harnesses with `-DECO_TLA_TRACE=1`, runs them, validates each ndjson trace with TLC | + g++ | ≤ 15 min |
+| `tla-check-deep` | same | `MC_deep.cfg`, Apalache inductive checks, TLAPS proofs if `tlapm` is present | + Apalache, TLAPS | manual (in the dev container), at model close-out and before a phase flip |
+| `tla-trace` | same | builds separate **trace targets** of the harness projects (`-DECO_TLA_TRACE=1`, linked with `test/tla/trace/TlaTrace.cpp`, no TSan), runs them, merges each log, validates it with TLC (`test/tla/traces.txt`, `run_traces.py`) | + g++ | ≤ 15 min |
 | `genmc-check` | `test/genmc/` | W1–W5 | the chosen tool | ≤ 10 min |
 
 - **SANY's exit status is not a verdict.** SANY exits 0 even when it prints `*** Errors: N`, so the
@@ -289,14 +298,21 @@ plan, including the concepts and the tool spike, is `plans/threaded-gc-tla-W-wea
   under `test/tla/` updates the model, its MAPPING.md and AUDIT.md in the same change, and passes
   `tla-check` and `tla-trace`."*
 - `tla-check-deep` and `genmc-check` run at each model's close-out and before each phase flips to
-  default-on.
+  default-on, locally in the dev container. **None of the model checks runs in GitHub CI** (decided
+  2026-09-29: far too heavy); only the canary, which is a hash check in ALL, runs in every build
+  there too.
 
 ### 6.3 Trace validation mechanics
 
-- **Hooks.** An `ECO_TLA_TRACE(evt, …)` macro in the std-only headers (`MarkWork.hpp`,
-  `MinorWork.hpp`, `GCHelperPool.cpp`), with a few calls in `OldGenSpace.cpp`/`NurseryParallel.cpp`.
-  It compiles to nothing unless `ECO_TLA_TRACE` is defined, which only harness builds do. Production
-  code and counters are unchanged, and `out.mlir` stays byte-identical.
+- **Hooks.** `ECO_TLA_TRACE("ev", "key", value, …)` from `runtime/src/allocator/TlaTrace.hpp`
+  (std-only, declarations only), called in the protocol files (`MarkWork.hpp`, `MinorWork.hpp`,
+  `GCHelperPool.cpp`, `PageWork.cpp`) and at a few points in `OldGenSpace.cpp`,
+  `ThreadLocalHeap.cpp`, `NurseryParallel.cpp`. It is `((void)0)` unless compiled with
+  `-DECO_TLA_TRACE=1`, which only trace targets do; arguments are evaluated only when an event is
+  recorded. Production code and counters are unchanged, and `out.mlir` stays byte-identical
+  (checked by preprocessing each touched file with the production flags: no trace token, one
+  `((void)0)` per hook). The recorder (`test/tla/trace/TlaTrace.cpp`) keeps a buffer per thread
+  and writes ndjson at the harness's `end()`.
 - **Ordering.** Each thread writes events to a private buffer with a sequence number.
   - Events that are RMWs on a shared word log the value they observed and wrote. RMWs on one
     location are totally ordered, and the state word's epoch field is a ready-made clock.
@@ -305,10 +321,21 @@ plan, including the concepts and the tool spike, is `plans/threaded-gc-tla-W-wea
   - A global seq_cst sequence counter is **not** used in TSan builds: it adds happens-before edges
     that would hide the races TSan exists to find. Trace builds and TSan builds are separate
     configurations.
+  - Implemented by `test/tla/trace/merge_trace.py`: per-thread order; `put`/`get` keys (every
+    getter follows every putter); `rmw` value chains per location (initial value inferred or from
+    `locinit`, with backtracking on repeated values); `rd`/`val` reads-from; `clk`/`tick` total
+    orders. Each merged event carries a vector clock, so a spec may match in log order
+    (`TraceInOrder`) or in any order the clocks allow (`TraceAnyOrder`).
 - **Spec side.** `Trace<Name>.tla` reads the ndjson with CommunityModules `Json`, and constrains
   `Next` to match each logged event, allowing hidden steps where logging is partial. The trace is
   accepted iff TLC finds a behaviour that matches it. This is the pattern of Cirstea, Kuppe, Merz
   et al. (2024), as used for etcd-raft and CCF.
+  - **Acceptance criterion:** the `.cfg` checks one invariant, "some event is still unmatched"
+    (`TLUnmatched` / `TPUnmatched`). TLC reporting it violated means a behaviour matched the whole
+    log: the trace is accepted. TLC finishing with no error means rejected; the runner prints the
+    furthest event matched.
+  - **Negative controls:** a `mutate=drop|set|swap:…` row doctors the raw log and must be
+    rejected, so a trace spec that accepts everything fails `tla-trace`.
 - **A rejected trace is a finding.** Either the code did something the design forbids (register
   entry), or the model is inaccurate (fix the model and write an AUDIT.md entry). Both outcomes are
   recorded.
@@ -462,7 +489,7 @@ Each step lands with its own gates. The model plans (§5.1) are the detailed wor
 | **5** M5 tenuring + W5 | the M5 plan's checklist | all four links for M5 |
 | **6** M3 forwarding | the M3 plan's checklist | all four links for M3 |
 | **7** M6 + M7 | both plans' checklists; the fork harness (CR-008) | CR-003/004/005/007 reproduced or dismissed |
-| **8** Deep tier, nightly | `tla-check-deep` and `genmc-check` in the nightly routine; the master plan §2 amendment lands | models gate phase flips |
+| **8** Deep tier as a gate | `tla-check-deep` and `genmc-check` run locally at each model's close-out and before a phase flips to default-on (not in GitHub CI: too heavy, owner's decision 2026-09-29); the master plan §2 amendment lands | models gate phase flips |
 
 **Why this order:**
 - M2 is first: it is the smallest, it is shared by five environments, and it has a real historical
@@ -487,15 +514,15 @@ Each step lands with its own gates. The model plans (§5.1) are the detailed wor
 | Step | Status | Outcome / facts for later steps |
 |---|---|---|
 | Plans | **DONE (2026-09-28)**; adversarial review **DONE (2026-09-28)** | primer, M1–M7, W; each plan corrected against the current tree (§13); corrected sketches pass `pcal` + SANY, W drivers compile; TLC, Apalache and C11 checkers not run |
-| 0 Container and decisions | image built and in use (2026-09-28: pinned jar hashes, TLC 2026.09.25 rev 8f4bc8b, Apalache 0.62.2 verified); weak-memory spike, census baseline and register triage not started | 1.8.0 vs 1.7.4 settled (§3); no TLAPS, GenMC, C11Tester or herd7 in the image |
-| 1 Scaffolding + canary | not started | |
-| 2 M2 | not started | exploration of an earlier draft: `minor` = 111,952 distinct states; a 5-node episode > 22 M unfinished. The review replaced the epoch's state constraint with exact per-participant `dirty` flags and cut the state space (M2 plan §6.1, §11) |
-| 3 M1 | not started | region mode (the default) is expected to fail `MarkerFootprint` in `quick_region` until CR-017 is fixed; `quick_region_nomajor` covers the rest of region mode meanwhile |
-| 4 M4 | not started | |
-| 5 M5 | not started | 7c merged and default-on (TG7d) |
-| 6 M3 | not started | |
-| 7 M6 + M7 | not started | |
-| 8 Deep tier | not started | |
+| 0 Container and decisions | **DONE (2026-09-29)** | image built and in use (2026-09-28: pinned jar hashes, TLC 2026.09.25 rev 8f4bc8b, Apalache 0.62.2 verified). Weak-memory spike done: GenMC 0.19 / LLVM 19, installed by `docker/install-genmc.sh` (the local `/opt/genmc` is a clean build by that script), packaged as the opt-in layer `docker/eco-dev-genmc.Dockerfile` on top of eco-dev, so the standard image and CI do not depend on it. Census baseline: the canary's `test/tla/census/` (25 files) and footprint greps, first pinned 2026-09-29. Register triaged: every Suspected entry settled by a model, a harness or a written analysis (only CR-033, found late, is still Suspected). No TLAPS, C11Tester or herd7 |
+| 1 Scaffolding + canary | **DONE (2026-09-29)** | the `test/tla/` layout, `run_models.py` (SANY error text, translation freshness, TLC and Apalache rows, `violates:`/`witness:`/`deadlock` outcomes, `--tool`, `--java-opts`), `models.txt`, `tla-check` / `tla-check-deep` (`ECO_TLA`), the README, the toy `LostBit`. The canary: `test/scripts/check-tla-manifest.sh` (hash, marker, model, footprint and census coverage; `--update` refuses a changed hash without an AUDIT.md entry in every named model; `ECO_TLA_CANARY=warn`), `test/tla/manifest.txt` (224 pins: 16 files, 128 `TLA-REGION` regions, 25 censuses, 54 greps), `footprint-greps.txt`, `census/`, the `tla-canary` target in ALL (top-level `CMakeLists.txt`), GC_MODEL_001 in `invariants.csv`, the CLAUDE.md line |
+| 2 M2 | **model done, trace validation done (2026-09-29)**; W1/W2 PASS; canary not started | `tla-check` 33/33 in 245 s (largest 2.5 M states); deep `deep_episode` 3.0 M and `liveness_slice3` 2.9 M pass; CR-005 reproduced (`episode_stop`). Three plan predictions were wrong: `two_word` and `wrap` need three participants for a trace the code can produce (`slice3`), and `anywork_participants_only` on `help` can never fail realizably (dropped); expected-failure configs now allow only realizable give-ups. The W2 cross-check matches row for row (`priv` and the double scan are both needed under SC; the order matters under C11). Trace `gc-mark-trace`: 20/20 with 19 hooks in `MarkWork.hpp`, 44 more runs accepted; no code defect. CR-010 needs slot-range asserts (assist and closing reset foreground slots while the gang runs) |
+| 3 M1 | **model and lemma done (2026-09-28)**; **trace validation done (2026-09-29)**; **W3/W4 PASS (GenMC, 2026-09-28)**; the canary not started | `tla-check`: 20/20 as expected in 55 s (M1's `MC_quick` 2,915,545 states). Deep: `ops3` 32.0M, `long` 22.0M, `wide` 36.4M, `region` 9.0M states, all pass; `CycleEnds` passes. CR-017 reproduced by TLC (`MC_quick_region`). Quick bounds had to become a per-run op budget (`MaxTotalOps`) with per-mutant operation sets (AUDIT.md). The snapshot-closure lemma is **proved inductive at 5 objects** (Apalache: base, 15 action steps, IM2 consequence; the P1 negative control fails in `OldSHClosed`); at 6 objects the base case, IM2, the negative control and 4 of 15 steps pass (run stopped; 3–4 h per step); 8 objects not feasible here. Trace validation (2026-09-29): the cycle projection and the tiny-graph traces are accepted, and they corrected M1's `Assist`; deep TLC re-run after the fix passes |
+| 4 M4 | **model done (2026-09-29)**; W3/W3f/W4b PASS (GenMC); **trace validation and the TSan scenario done (2026-09-29)**; the canary not started | `tla-check`: 44/44 as expected in 180 s (largest row 875 K states). Deep: 8 rows pass (largest 10.1 M states, 4 min). TLC reproduces CR-001 (race and S1 half), CR-002, CR-014 (FATAL, silent release, `live_bytes` race) and CR-016 (stash, and retired chunk with no sweep). CR-014's FATAL needs a second size class. Fix candidates `finalize_in_lock`, `phase_atomic` + `count_until_shrink` and `tail_defers` each pass; CR-016 has no candidate. New D entry CR-027 (the 06 audit table). Wave 2: the TSan scenario `gc-heap-tsan promo` reproduces CR-001, CR-002 and CR-016 on the real allocator (CR-016 with heap corruption), not CR-014 (the tail path was never reached); trace validation 12/12 as expected on five runs (5 accept rows, 7 `mutate=` controls), and a hand-run race-detector trace config shows CR-002 in all 16 multi-threaded logs; the traces added the ladder's virgin rung to the model and removed a retry the code never does (quick 44/44 again, sweep rows ~841K → ~15K states). New entries CR-028 (validate-only V11 walk race) and CR-029 (bag-rung assert, 5/21 runs) |
+| 5 M5 | **model done, trace validation done (2026-09-29)**; W1, W5 and `w_running_chain` PASS (GenMC); the canary not started | tla-check 49/49 as expected (~6 min at `--jobs 2`); deep 8/8 (largest `deep_ext` 56.4 M states, 26 min). CR-017 reproduced (`cycle_major`, `deep`) and shown for k = 2 too (`k2_cycle_major`: the fix must cover every Young extent); CR-013 reproduced 3 ways (`fork`, `fork_orphan_copy`, `fork_l3` = an L3 help/teardown hang). TenureDisjoint: `HealYoungOnly` and `MarkerDisjoint` hold everywhere; `YoungWalkValid` fails wherever majors and cycles meet. Builders, generation YLOS and k = 2 extensions done. The plan's L3 deep bounds exceeded the disk (135 M states, 50 GB); deep tier restructured. Trace validation: 27 rows as expected — the engine storm (`TraceTenuring`, `gc-tenure-trace tiny`: 5 traces, 9 controls; real loads of an earlier generation's shadow entries) and the pause projection on the real allocator (`TraceTenurePause`, `tiny_tenure.cpp`: 5 traces, 8 controls); the first real run found a model error (the engine checks `stop` before asking for an item), fixed, quick and deep re-run with the same counts. Not traced yet: L3, ageing, builders, forks |
+| 6 M3 | **model done (2026-09-28)**; **trace validation done (2026-09-29)**; W5(a)/W1 PASS (GenMC); the canary not started | `tla-check` M3: 12/12 as expected in 42 s (`legacy` and `region` 225,963 states each). Deep: `legacy3` and `region3` 10.4M states each, pass; `Termination` passes. Every mutant counterexample was read against its story. Changes: the sketch's string header states broke TLC (now model values); `spineRunP`'s `needs_heads` is modelled (heap `4 = Cons(9, 5)`); the region heap keeps both YLOS parents. No protocol defect. Register: CR-019 → Confirmed (shape) by code reading; CR-014's footprint narrowed; CR-011 unchanged. Trace validation (`gc-minor-trace`, `minor_harness.cpp` tiny mode with a YLOS kind): 6 accept rows and 9 `mutate=` controls as expected, 115 more logs accepted (with lost claims, BUSY waits, lost YLOS reaches); no model or code finding. `gc-minor-tsan` with the YLOS kind: 0 TSan reports (CR-020's harness half) |
+| 7 M6 + M7 | **M6 model, fork harness and trace validation done (2026-09-29)**, W `w_pool_done` and `w_running_chain` PASS; **M7 model done (2026-09-28), trace validation done (2026-09-29)**, W `w_pool_done` and W3f PASS; its canary lines not started | M6: `tla-check` 43/43 in 64 s (largest quick row 29,192 states); deep 18/18 (largest 782,327 states, 97 s). CR-003, CR-005 (a wider window), CR-015, CR-023 reproduced; CR-004's window confirmed and proposed Not-a-bug (`ChildHeapSafe` holds for every mutator fork); CR-013's window confirmed at gang level. LaunchJoin and PoolJob discharged. Step 7 recommends the fork contract (a) with its guard before `thread_mutex_`, plus CR-005's fix. Wave 2: the fork harness (`gc-fork-harness`, CR-008) reproduces CR-003, CR-004, CR-005, CR-015 and CR-023 in real code (deterministic arms 5/5; `mut`, the supported contract, 302 clean forks) and found CR-031 (a host child's `exit()` tears down the dead mutator's heap) and CR-032 (validate builds: the P1 census has no atfork handler); trace validation (`TracePool`, `TraceGangs`) 28/28 with 12 controls, including three real CR-023 logs. M7: `tla-check` 18/18 as expected in 20 s (`pw_basic` 26,496 states); deep `pw_deep` 25.5M states pass in 12 min, `pw_deep_liveness` 3.96M pass. CR-007 split: the deadlock hypothesis is Not-a-bug by M7b (the lock graph, tenure teardown's join included, is acyclic; three lock mutants deadlock); the stall is reachable (witness `lock_order_stall`); CR-025 (stall misattribution) and CR-026 (HEAP_058 wording) are new D entries. 4 mutants and `PostIdle` added for A6. Trace validation (`gc-helper-trace`, H2 fake ops and H3 real mmap, 1–4 workers): 8 accept rows and 7 `mutate=` controls as expected, 17 more runs accepted; it corrected two model steps (`reapDone` reads each slot separately; discard bodies run in batch order), after which quick is 18/18 and deep passes again |
+| 8 Deep tier as a gate | **DONE (2026-09-29)** | `tla-check-deep` (48 TLC rows + 18 Apalache rows) and `genmc-check` are local gates, run in the dev container at a model's close-out and before a phase flips to default-on (§6.2); they are **not** in GitHub CI (owner's decision, 2026-09-29: a nightly workflow was drafted and removed). The master plan §2 standing rule is amended ("Keep the concurrency models in step"). Close-out run: deep TLC 48/48 (6,530 s), genmc-check 60/60 |
 
 ## 12. Traps
 
@@ -536,6 +563,15 @@ Each step lands with its own gates. The model plans (§5.1) are the detailed wor
     for a property expected to *pass*, but can create a counterexample the code cannot produce for
     a mutant expected to *fail*. W2's decider lost the real round's second work check, and
     `w2_idle_before_publish` then "failed even under SC" when the code does not (W plan §14 R20).
+12. **A model step that cannot stop where the code's can.** A model loop that must run to a fixed
+    bound under-approximates the code, and model checking alone never notices, because the missing
+    behaviours only make properties easier to satisfy. M1's `Assist` had to keep scanning while grey
+    entries remained; the code's assist leaves when it finds no work it can take (one joined to a
+    stopped control scans nothing). Trace validation found it (2026-09-29): real runs with an assist,
+    a fork stop and a relaunch were rejected. Give every loop the exits the code has.
+13. **A pgrep that matches itself.** `while pgrep -f 'X'` in a shell whose own command line contains
+    `X` never ends. Use `pgrep -f '[X]…'` or wait on a PID. It stalled one model track for an hour
+    (2026-09-28).
 
 ## 13. Adversarial review of the model plans (2026-09-28)
 

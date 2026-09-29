@@ -1,0 +1,10 @@
+DrainResult run(const std::atomic<bool>* stop) {
+const uint64_t e = ref(w).load(std::memory_order_acquire);
+if (stop != nullptr && stop->load(std::memory_order_relaxed)) {
+inline DrainResult tenureDrainSerial(SerialState& st, Env& env, const std::atomic<bool>* stop) {
+inline std::atomic_ref<uint64_t> ref(uint64_t* w) { return std::atomic_ref<uint64_t>(*w); }
+ref(w).store(make(dst, kStateFwd, gen), std::memory_order_release);
+return fwdOf(ref(w).load(std::memory_order_acquire), gen);
+return ref(w).compare_exchange_strong(observed, make(nullptr, kStateBusy, gen),
+std::memory_order_acq_rel, std::memory_order_acquire);
+uint64_t e = ref(w).load(std::memory_order_relaxed);

@@ -1,0 +1,16 @@
+#include <mutex>
+* Allocation is mutex-serialized (multiple Elm threads can intern/promote
+c < b + used_.load(std::memory_order_acquire);
+const char *b = base_.load(std::memory_order_acquire);
+std::atomic<char *> base_{nullptr};
+std::atomic<std::size_t> used_{0};
+std::atomic<std::uint64_t> bytes_abandoned{0};
+std::atomic<std::uint64_t> bytes_copied{0};
+std::atomic<std::uint64_t> interned_bytes{0};
+std::atomic<std::uint64_t> interned_objects{0};
+std::atomic<std::uint64_t> objects_copied{0};
+std::atomic<std::uint64_t> slots_rooted{0};
+std::atomic<std::uint64_t> values_constant{0};
+std::atomic<std::uint64_t> values_declined{0};
+std::atomic<std::uint64_t> values_promoted{0};
+std::mutex mutex_;

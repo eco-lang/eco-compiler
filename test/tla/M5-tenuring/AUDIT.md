@@ -1,0 +1,535 @@
+# M5 — audit log
+
+Dated entries, newest last. Each records what was checked against which tree, the verdicts, and
+every change to the model. A canary re-audit (parent plan §7.4) adds an entry here quoting the new
+hash prefix. The canary is not built yet.
+
+## 2026-09-29 — first implementation (plan §10 steps 1–7)
+
+**Tree:** 2026-09-28/29, post-7c. The M5 files (`TenureWork.hpp`, `NurseryTenure.cpp`,
+`NurseryRegion.cpp`, `NurseryRegions.hpp`, `NurserySpace.hpp`, `OldGenTenure.cpp`) are the tree the
+plan's review used; `ThreadLocalHeap.cpp`, `OldGenSpace.cpp` and `GCHelperPool.cpp` gained
+`ECO_TLA_TRACE` hooks during this work (lines shift by 1–20; no logic changed). **Tools:** the dev
+image: tla2tools 1.8.0 (TLC 2026.09.25 rev 8f4bc8b). Every run used 2 TLC workers (quick) or 4
+(deep) on a shared, loaded 12-core machine, so the times are rough.
+
+### Results
+
+Quick tier (`tla-check`), 49 rows, run as `run_models.py --model M5 --jobs 2 --workers 2
+--java-opts=-Xmx3g`: **49/49 as expected** (48 rows in 330 s, then `MC_k2_cycle_major` in 17 s;
+the closing re-run of all 49 with `--jobs 1`: 49/49 in 586 s).
+The state counts are TLC's distinct states; a violation's length is its counterexample's.
+
+| Configuration | Expected | Result | Distinct states | Time |
+|---|---|---|---|---|
+| `MC_quick_exact` | pass | pass | 478,828 | 18.6 s |
+| `MC_quick_sync` | pass | pass | 134,547 | 7.2 s |
+| `MC_quick_major` | pass | pass | 418,202 | 15.6 s |
+| `MC_quick_cycle` | pass | pass | 291,242 | 11.7 s |
+| `MC_quick_l3` | pass | pass | 1,599,062 | 80.5 s |
+| `MC_gen` | pass | pass | 509,256 | 17.9 s |
+| `MC_wrap` | pass | pass | 491,676 | 18.3 s |
+| `MC_quick_builders` | pass | pass | 949,410 | 50.4 s |
+| `MC_quick_ylos` | pass | pass | 1,094,237 | 54.3 s |
+| `MC_quick_ylos_cycle` | pass | pass | 1,639,026 | 69.7 s |
+| `MC_quick_ylos_major` | pass | pass | 702,352 | 30.9 s |
+| `MC_quick_k2` | pass | pass | 659,562 | 26.6 s |
+| `MC_cycle_major` | violates `YoungWalkValid` (CR-017) | as expected, 47 states | 130,112 | 5.3 s |
+| `MC_k2_cycle_major` | violates `YoungWalkValid` (CR-017, k = 2) | as expected, 108 states | 684,922 | 16.6 s |
+| `MC_fork` | violates `TenuredEqualsLegacy` (CR-013) | as expected, 52 states | 43,381 | 3.1 s |
+| `MC_fork_orphan_copy` | violates `ExactlyOnce` (CR-013) | as expected, 64 states | 26,300 | 3.3 s |
+| `MC_fork_l3` | deadlock (CR-013) | as expected, 63 states | 411,320 | 15.0 s |
+
+The 32 mutants, each with only its target invariant on the `INVARIANTS` line and only the
+operations its story needs (all rejected with the named invariant; 1.7 s to 62 s each):
+
+| Mutant (`mutants/*.cfg`) | Represents | Target | Distinct states | Counterexample |
+|---|---|---|---|---|
+| `skip_start` | the engine skips a start (`test_tenure_skip_start_every_`) | `TenuredEqualsLegacy` | 1,422 | 57 states |
+| `skip_start_resolve` | the same; the next minor's resolve | `TV1_Resolve` | 1,570 | 60 states |
+| `skip_start_major` | the same; a STW major's redirect | `TV1_Major` | 2,220 | 56 states |
+| `skip_heal` | the merge skips one heal slot (`test_heal_skip_one_`) | `NoDangling` | 20,663 | 83 states |
+| `no_root_starts` | roots into Hand not recorded in S | `TenuredEqualsLegacy` | 1,017 | 52 states |
+| `no_resolve` | references into Retire not resolved | `NoDangling` | 2,395 | 79 states |
+| `merge_before_join` | the merge does not join the collector | `CollectorPrivate` | 18,402 | 60 states |
+| `merge_before_join_tv1` | the same, before the publish | `TV1_Heal` | 8,821 | 52 states |
+| `collector_heals` | the collector writes the heal slot (07 trap 1) | `CollectorPrivate` | 8,582 | 55 states |
+| `skip_fix` | `childOfCopy` does not fix the copy's slot | `OldPointsOld` | 17,744 | 75 states |
+| `copy_slot_in_heal` | a copy's slot handed to the heal | `HealYoungOnly` | 12,097 | 61 states |
+| `root_in_heal` | a root slot recorded in H (07 trap 8) | `GraphPreserved` | 145,756 | 78 states |
+| `gen_not_bumped` | no generation bump (timeline (c)) | `GraphPreserved` | 266,685 | 162 states |
+| `wrap_no_discard` | the generation wraps without a discard | `GraphPreserved` | 267,489 | 161 states |
+| `major_greys_original` | no `majorRedirect` | `NoDangling` | 3,808 | 82 states |
+| `t0_skips_tenuring` | the t0 walk skips Tenuring (07 trap 7) | `NoDangling` | 28,640 | 75 states |
+| `copy_not_black` | copies not allocate-black (`test_skip_allocate_black_`) | `MarkerDisjoint` | 1,218 | 46 states |
+| `copy_not_black_live` | the same; the handoff frees the copy | `NoDangling` | 2,574 | 75 states |
+| `t0_keeps_young` | t0 keeps young targets | `MarkerDisjoint` | 217 | 22 states |
+| `grant_t0_cells` | the grant takes t0-live cells (`test_grant_t0_block_`) | `MarkerDisjoint` | 757 | 36 states |
+| `l3_no_claim` | L3 without the claim CAS | `ExactlyOnce` | 124,222 | 59 states |
+| `builder_in_survivor` | a builder in the survivor part (07 trap 13) | `GraphPreserved` | 41,368 | 50 states |
+| `builder_in_survivor_young` | the same | `BuilderYoung` | 72 | 10 states |
+| `builder_in_heal` | a builder slot recorded in H (07 trap 8) | `GraphPreserved` | 1,792,873 | 85 states |
+| `ylos_slot_in_starts` | a young YLOS slot recorded in S (07 trap 8) | `NoDangling` | 600,638 | 87 states |
+| `skip_ylos_resolve` | the merge does not resolve a promoted YLOS's slots | `OldPointsOld` | 37,798 | 70 states |
+| `skip_scan_ylos` | the engine does not scan a reached YLOS | `TV1_Ylos` | 486,214 | 76 states |
+| `job_skips_ylos` | the engine does not mark a YLOS it reaches | `NoDangling` | 557,362 | 82 states |
+| `keep_unreached_ylos` | the sweep keeps unreached generation YLOS | `YlosFreed` | 8,849 | 66 states |
+| `t0_greys_ylos` | t0 greys young YLOS | `MarkerDisjoint` | 179 | 20 states |
+| `skip_zap` | no zap (`test_skip_zap_`) | `YoungWalkValid` | 135,050 | 90 states |
+| `age_mark_no_heal` | the ageing mark drops a marked holder's heal slot | `NoDangling` | 15,887 | 97 states |
+
+Deep tier (`tla-check-deep`), each row once, under the machine-wide lock
+(`flock /tmp/tla-deep.lock`, `nice -n 10`, 4 workers, `-Xmx5g`, 2-hour limit):
+
+| Configuration | What it stretches | Expected | Result | Distinct states | Time |
+|---|---|---|---|---|---|
+| `MC_deep` | the plan's all-on configuration: L3, 3-cell extents, 2 fields, 6 minors, majors and cycles (T = 2), 3 operations | violates `YoungWalkValid` (CR-017) | as expected, 50 states | 6,622,199 | 2 min 8 s |
+| `MC_deep_major` | the plan's heap (3-cell extents, 2 fields, 6 minors, seed), majors, mode 2, exact engine, 2 operations | pass | pass | 5,409,434 | 2 min 21 s |
+| `MC_deep_cycle` | the same with cycles (T = 2) instead of majors | pass | pass | 5,779,452 | 2 min 33 s |
+| `MC_deep_l3` | `quick_l3` with 3 operations | pass | pass | 18,018,284 | 5 min 39 s |
+| `MC_deep_ops4` | `quick_exact` with 4 operations | pass | pass | 3,683,200 | 56 s |
+| `MC_deep_nf2` | `quick_exact` with 2 fields | pass | pass | 2,550,988 | 1 min 14 s |
+| `MC_deep_k2` | k = 2 (the plan's `ageing_k2`): 2-cell extents, 6 minors, stops, cycles, 4 operations | pass | pass | 37,922,800 | 18 min 34 s |
+| `MC_deep_ext` | builders and generation YLOS together, 4 operations | pass | pass | 56,432,788 | 26 min 5 s |
+
+**Disk, not time, bounds the deep tier.** The first `MC_deep_major` had 3 operations. It reached
+134.9 M distinct states at depth 162 in 53 minutes, with 2.4 M states still queued and TLC's state
+files at 50 GB on a disk shared with six agents (20 GB left). It was stopped, and `deep_major` and
+`deep_cycle` run 2 operations; the operation dimension is `deep_ops4`'s. A deep row should stay
+below about 40 M states here. (`MC_deep_k2` and `MC_deep_ext` were first run at 3 operations: 1.5 M
+and 3.75 M states in under 70 s, too small for the deep tier; the committed rows run 4.)
+
+Every invariant has at least one mutant (rule A6): `NoDangling` 8, `GraphPreserved` 5,
+`MarkerDisjoint` 4, `TenuredEqualsLegacy` 2 (+ `MC_fork`), `CollectorPrivate` 2, `OldPointsOld` 2,
+`ExactlyOnce` 1 (+ `MC_fork_orphan_copy`), `YoungWalkValid` 1 (+ CR-017 itself), and one each for
+`HealYoungOnly`, `TV1_Heal`, `TV1_Resolve`, `TV1_Major`, `TV1_Ylos`, `BuilderYoung`, `YlosFreed`.
+Every existing 7c/07b test hook that the model can express has its mutant (`skip_start`,
+`skip_heal`, `copy_not_black`, `grant_t0_cells`, `skip_zap`; `t0_skips_tenuring` is the partial form
+of `test_snapshot_skip_young_walk_`); `test_no_body_remark_` needs large bodies, which are not
+modelled.
+
+### Counterexamples
+
+Every counterexample was read, to check that it is the intended story and not another path to the
+same invariant. Numbers are TLC's (breadth-first, so each is a shortest one); "lids" counts
+logical objects, A/B/C are extents 1/2/3, O1.. old cells, Y1 a YLOS cell.
+
+**Register reproductions.**
+- **`MC_cycle_major` → `YoungWalkValid` (CR-017), 2 minors, 1 major, 2 lids.** y → seed
+  is allocated into the seed's own root, so the seed is held only by y. Minor 1 copies y into A.
+  The mutator drops y. The STW major (marking from roots only) frees the seed. Minor 2 hands A over
+  (Tenuring, dead y still in it), and at `MN_Cycle`, where a t0 is possible, y's field names the
+  freed seed. This is the plan's story exactly, and M1's `MC_quick_region` seen from M5's side.
+- **`MC_deep` → `YoungWalkValid` (CR-017), 50 states.** The same chain in the all-on deep
+  configuration (y's second field holds the seed).
+- **`MC_k2_cycle_major` → `YoungWalkValid` (CR-017 with k = 2), 4 minors, 1 major, 2 lids.** h in
+  A; minor 2 ages A; e → h is allocated over h's root; minor 3 copies e into C (Fresh) and records
+  e.f in H; t0 at minor 3; job 3 tenures h and a STW major merges it (e.f healed to h's copy); e is
+  dropped, so the major frees h's copy; minor 4 ages C to 2, and its t0 walk reads the dead e,
+  whose field names the freed copy. C's first ageing mark runs in job 4, after that t0, so 07b's
+  zap cannot help: with k = 2 the window covers every object that died since its extent's last
+  mark, or before its first.
+- **`MC_fork` → `TenuredEqualsLegacy` (CR-013), 3 minors, 1 lid.** Root → o; minor 1
+  copies o into A; minor 2 hands A over with S = {o}; the collector takes o's start (`ns` = 2) and
+  vanishes (`calive = FALSE`) before its shadow load. Minor 3's join finds no running collector (the
+  orphan path) and `JobDone` (the start was taken), so help does nothing and the merge runs without
+  o. The next step would be TV1 at minor 3's resolve.
+- **`MC_fork_orphan_copy` → `ExactlyOnce` (CR-013), 3 minors, 2 lids.** o is both a
+  start and a heal target. The collector takes the start, copies o into O1 and vanishes before the
+  publish. Help takes the heal item, finds o unvisited and copies it again into O2 (TV3/TV4 in
+  validate builds; in release builds an orphan grant cell whose fields point into the extent).
+- **`MC_fork_l3` → deadlock (CR-013 with L3), 2 minors, 2 lids.** Member 101 claims o
+  (BUSY) and vanishes; help takes the heal item for o, sees BUSY and waits in `waitPublished`
+  forever. The same wait happens at exit: `tenureTeardown` → `tenureConcFinish` → `runMarkerLoop`
+  → `TenureParEnv::tenure`.
+
+**Mutants** (core; host in brackets):
+- `skip_start` [quick_exact] → `TenuredEqualsLegacy`: root → o; A handed over at minor
+  2 with S = {o}; the engine skips it; minor 3 at `J_Merge`. `_resolve` → `TV1_Resolve`:
+  the same, one step later at minor 3's resolve of the root. `_major` [quick_major] →
+  `TV1_Major`: the same, then a STW major after minor 2.
+- `skip_heal` → `NoDangling`, 3 minors, 2 lids: o in A; e → o allocated into o's root;
+  minor 2 records e'.f in H; the job copies o through the heal item; minor 3 skips the heal and
+  frees A; the next epoch reaches e'.f.
+- `no_root_starts` → `TenuredEqualsLegacy`: the root into A at minor 2 is not recorded;
+  job 2 has no work; minor 3 at `J_Merge`.
+- `no_resolve` → `NoDangling`: root → o; job 2 copies o; minor 3 does not resolve the
+  root, and frees A.
+- `merge_before_join` → `CollectorPrivate`, 1 lid (the plan expected 2): the collector
+  copies o; minor 3 merges without joining; the collector publishes; minor 3 resolves the root to
+  the copy while the collector still runs. `_tv1` → `TV1_Heal`: minor 3 merges before
+  the collector published o's copy.
+- `collector_heals` → `CollectorPrivate`, 2 minors: the collector's heal item stores
+  the copy into e'.f itself (07 trap 1).
+- `skip_fix` → `OldPointsOld`: o1 → o2, both copied into A at minor 1; job 2 copies both;
+  the copy of o1 keeps its slot into A; minor 3's merge makes it an old object pointing young.
+- `copy_slot_in_heal` → `HealYoungOnly`, 2 minors: the scan of o1's copy appends
+  `<<O1, 1>>` to the heal list.
+- `root_in_heal` → `GraphPreserved`, 3 minors, 2 lids (07 trap 8): the root into A at
+  minor 2 goes to H; in epoch 2 the mutator reuses that root slot for a new e → o; the collector
+  reads the reused slot (e, not in the extent) and never tenures o; minor 3 resolves e'.f into A to
+  nothing.
+- `gen_not_bumped` [gen] → `GraphPreserved`, 6 minors, 2 lids (timeline (c)): a in A.1
+  tenured by job 2 (FWD, gen 1); b copied into A.1 at minor 4; A's second hand-over at minor 5
+  keeps gen 1, so job 5 believes a's stale entry for b; minor 6 resolves b's root to a's copy.
+  The plan's version went through a heal slot; the root's resolve is shorter.
+- `wrap_no_discard` [wrap] → `GraphPreserved`: the same, with the 1-bit generation
+  wrapping back to 1 without a discard.
+- `major_greys_original` [quick_major] → `NoDangling`: job 2 copies o; a STW major
+  greys the original, so the copy is freed; minor 3 resolves the root to the freed copy.
+- `t0_skips_tenuring` [quick_cycle] → `NoDangling`, 3 minors, 1 op: t → seed allocated
+  into the seed's root; t0 at minor 2 does not walk A; job 2's black copy of t is never scanned;
+  minor 3's handoff frees the seed.
+- `copy_not_black` [quick_cycle] → `MarkerDisjoint`: t0 at minor 2, then job 2 (in the
+  pause, mode 1) copies o white. `_live` → `NoDangling`: minor 3's handoff frees the
+  white copy that the root was just resolved to.
+- `t0_keeps_young` [quick_cycle] → `MarkerDisjoint`: t0 at minor 1 greys the fill copy a
+  root holds.
+- `grant_t0_cells` [quick_cycle] → `MarkerDisjoint`: t0 at minor 2 greys the seed; job
+  2's grant contains it.
+- `l3_no_claim` [quick_l3] → `ExactlyOnce`: o is a start and a heal target; member 101
+  takes the start, member 102 the heal item; both copy.
+
+**Mutants** (extensions):
+- `builder_in_survivor` [quick_builders] → `GraphPreserved`, 2 minors: a builder copied
+  into A's survivor part (07 trap 13); a kernel stores eden object x into it in epoch 1; minor 2 does
+  not rescan survivor-part objects (A is the hand-over extent), so the slot still names x's eden
+  cell, which the minor clears. The plan's story (the collector reading the builder while the
+  kernel writes it) is longer; this one is the same trap's other consequence. `_young` →
+  `BuilderYoung`: the builder in a survivor part at minor 1.
+- `builder_in_heal` [quick_builders] → `GraphPreserved`, 3 minors, 2 lids (07 trap 8,
+  builder form): x in A; builder bb → x allocated over x's root; minor 2 re-copies bb and records
+  bb.f → x in H instead of S; in epoch 2 the kernel loads x into a root and stores Nil into bb.f
+  before the collector reads the heal slot; x is never tenured; minor 3 resolves the root to nothing.
+- `ylos_slot_in_starts` [quick_ylos] → `NoDangling`, 3 minors, 3 lids (07 trap 8, YLOS
+  form): h in A; y → h and e → y allocated; minor 2 copies e, first reaches y (generation B), and
+  records y.f → h in S instead of H; job 2 tenures h but the merge never heals y.f; minor 3 frees A,
+  and y (reached only through e', a hand-over object, so not rescanned) keeps y.f into A.
+- `skip_ylos_resolve` [quick_ylos] → `OldPointsOld`: y → h reached at minor 1 (h copied
+  into A); minor 2 reaches y as a hand-over member; minor 3 promotes y without resolving y.f.
+- `skip_scan_ylos` [quick_ylos] → `TV1_Ylos`: t, y → t, o → y; minor 1 copies o and t
+  into A and reaches y; job 2 reaches y through o's copy but does not scan it, so t is never
+  tenured; minor 3's merge would resolve y.f to nothing.
+- `job_skips_ylos` [quick_ylos] → `NoDangling`: o → y; job 2 copies o but does not mark
+  y reached; minor 3 frees y as unreached while o's copy (the root's target) points at it.
+- `keep_unreached_ylos` [quick_ylos] → `YlosFreed`: a dead y of generation A survives
+  minor 3's sweep, although A is freed.
+- `t0_greys_ylos` [quick_ylos_cycle] → `MarkerDisjoint`: t0 at minor 1 greys a young
+  YLOS instead of marking it.
+- `skip_zap` [quick_k2] → `YoungWalkValid`, 4 minors, 2 lids: h in A; o → h allocated over
+  h's root; minor 2 copies o into B and records h in SA (A is ageing); o is dropped; job 3 (A
+  tenuring, B ageing) marks nothing and lists o in `zap`; minor 4's merge skips the zap and frees A;
+  the t0 walk reads the dead o, whose field names A's freed cell.
+- `age_mark_no_heal` [quick_k2] → `NoDangling`, 4 minors, 2 lids: the same shape with o
+  live: job 3 marks o but does not add o.f to the heal list; h is never tenured; minor 4 frees A.
+
+### Changes from the plan's sketch (plan §4.5), and why
+
+1. **A per-run operation budget.** With the mutator's loads and drops unbounded, `quick_exact` had
+   8.6 million distinct states after 4 minutes, still growing. Measured on `quick_exact` (exact
+   engine, 4 minors): 1 operation 4,572 states; 2 operations 55,250; 3 operations 478,828 (26 s);
+   4 operations 3,683,200 (2 min 39 s). New constants, as in M1:
+   - `MaxTotalOps` (mutator operations per run);
+   - `Ops` (the operation kinds explored).
+
+   Quick configurations use 3 operations (L3: 2), deep ones 3 or 4. Each mutant enables only the
+   operations its story needs, which is sound for a negative control.
+2. **An idle step at the end of the run** (`await minors >= MaxMinors; skip`). With a budget the
+   mutator eventually has nothing to do; the idle step keeps `CHECK_DEADLOCK TRUE` meaningful in
+   every passing configuration: a deadlock can then only be a pause that blocks (help waiting on a
+   BUSY entry, a join that never returns, `E_Copy` with an empty grant).
+3. **`go[c]` flags instead of `claunch` / `seen`.** The gang compares `generation_ != seen`
+   only for equality; a per-member "launch not yet seen" flag is exact (primer §4.5) and keeps two
+   counters out of the state.
+4. **L3's item order is a bag.** The sketch gave L3 members the exact engine's order (stack, then
+   starts, then heals). Real members take from their own deque and steal from others', so any
+   pending entry may come next; the model lets a member (and the claiming help) take any pending
+   copy, start, heal target or YLOS entry (M2's Drain contract). This is the plan's "one shared
+   `jstack` bag", made literal. It is the main cost of `quick_l3` (1.6 M states at 2 operations).
+5. **L3 reads heal values later than the code.** `tenureParDistribute` (`NT:1121-1127`) reads the
+   heal slots' values in the launch pause; the model's members read them when they take the entry.
+   The slots are immutable until the merge (P1), so both reads return the same value.
+6. **`CollectorPrivate` counts only a live collector** (`running > 0 /\ calive`). A fork child's
+   dead collector leaves `running` stuck above 0, and every later merge would otherwise violate it.
+7. **`YoungWalkValid` covers every target, not only old ones**, and every object the t0 walk visits
+   (young YLOS and the Fresh builder area included), as plan §8.3 asks for k = 2. It holds for
+   k = 1 without majors (all quick configurations), so it is applied to every configuration.
+8. **Dead-state hygiene** (primer §4.2): the fill tops `ftop` / `fbot` are mutator locals reset
+   after the minor (the sketch kept `xtop` global); `cage` is reset at the handoff; `drop` only
+   picks a non-empty root.
+9. **One value type per variable.** YLOS states are tuples (`<<"Free", 0>>`, `<<"G", x>>`, ...):
+   TLC cannot compare a string with a tuple ("Attempted to check equality of the function
+   <<"G", 1>> with the value ...", found on the first `quick_ylos` run).
+10. **A PlusCal comment may not contain `*)`.** `(HEAP_BUILDER_*)` in a comment closed the algorithm
+    block; the translator still said "Translation completed" (SANY then reported a lexical error).
+11. **Names.** The sketch's `grant_t0_block` is the §5 table's `grant_t0_cells`; `root_in_heal`
+    (07 trap 8) is in the core, with root heal entries `<<<<"R", r>>, 1>>`, and `builder_in_heal`
+    is its builder form.
+12. **The extensions (§8.1–§8.3)**, which the plan gives only as deltas, were built in the same
+    module, switched off by `BC = 0`, `YC = 0`, `K = 1`; switched off, their variables stay
+    constant and add no states (`quick_exact` went from 495,856 states with the core-only module to
+    478,828, the difference being change 8's hygiene). The choices made:
+    - builders: `BC` builder cells per extent; a kernel allocates a builder (fields from held
+      plain values), stores held plain values into it and clears it; a builder is reachable only
+      from its kernel's root (HEAP_BUILDER_003), and builders do not nest. The previous fill's
+      builder area (PrevBuilders) is evacuated like eden and cleared after the minor;
+    - generation YLOS: `YC` Y cells whose state `ys` is the pause's colour and generation. The
+      minor's first reach joins generation m and scans with `kColYoungYlos`; a hand-over member is
+      reached and scanned with `kColHandYlos`; the job reaches members through copies and scans them
+      read-only; the merge promotes the reached and resolves their slots into the extent; the
+      minor's sweep frees Y0 cells not reached and unreached members of the retiring generation
+      (deferred to the handoff mid-cycle, `YDead`). The t0 snapshot marks every young YLOS black
+      and greys its old children (`snapshotYoungLarge`); a STW major frees unmarked YLOS cells;
+      allocation mid-cycle is black;
+    - ageing (k = 2): four extents, the Age role records `SA`, the job's mark (`astack`, `amark`,
+      heal slots of marked holders, age-generation YLOS) and sweep (`zap`), the merge's zap. A mark
+      item scans one whole object (it reads only immutable objects and writes job-private state);
+      a sweep item covers a whole extent (the code's item is one bitmap word). New marks are
+      pushed, and heal slots appended, in `SetToSeq` order, which equals field order at `NF = 1`
+      (trace validation needs field order at `NF > 1`).
+13. **Invariants added:** `TV1_Ylos` (the merge's YLOS resolve), `BuilderYoung` (HEAP_BUILDER_001),
+    `YlosFreed` (an unreached generation YLOS is freed with its extent); `TenuredEqualsLegacy` gained
+    two conjuncts (the reached YLOS set and the ageing mark equal the live sets at the hand-over);
+    `HealYoungOnly` accepts slots of young YLOS and of marked ageing objects; `MarkerDisjoint`'s
+    "old cells only" became "`OldAddr`" (old cells and non-young YLOS cells).
+14. **Mutants added** beyond the plan's table, so every new invariant and every extension path has
+    one: `builder_in_survivor_young`, `builder_in_heal`, `ylos_slot_in_starts`, `skip_ylos_resolve`,
+    `skip_scan_ylos`, `job_skips_ylos`, `keep_unreached_ylos`, `t0_greys_ylos`, `age_mark_no_heal`;
+    and two more CR-013 facets, `MC_fork_orphan_copy` and `MC_fork_l3`.
+15. **Tiering.**
+    - `quick_l3` runs 2 operations (3 had more than 3.3 M states after 3 minutes); `deep_l3` runs 3.
+    - `quick_k2` is in the quick tier (28 s), although the plan kept ageing out of it: the ageing
+      paths are cheap at one-cell extents, and `skip_zap` needs a host there anyway. The plan's
+      `ageing_k2` is `MC_deep_k2`.
+    - **The plan's deep tier did not fit.** Its `deep_major` / `deep_cycle` (L3, 3-cell extents, 2
+      fields, 6 minors) had more than 4.5 M states after 4.5 minutes at 2 operations, still growing;
+      the L3 bag with 2 fields is the cost (4 minors grow just as fast). With the exact engine and 3
+      operations it still passed 135 M states without finishing (the deep table). The deep tier
+      stretches one dimension at a time instead: `deep_major` and `deep_cycle` keep the plan's heap
+      (3-cell extents, 2 fields, 6 minors, a seeded old object) with the exact engine and 2
+      operations; `deep_l3` is L3 at 3 operations; `deep_ops4` and `deep_nf2` stretch the operations
+      and the fields; `deep_k2` and `deep_ext` the extensions. `deep` keeps the plan's all-on
+      parameters: it fails CR-017 early, breadth-first, so it is cheap.
+16. **`fork`** is `quick_exact` with 3 minors (the story needs 3).
+
+### The code against the plan (checked while building)
+
+Every file:line the plan cites was checked against the tree. They match, except:
+- `ThreadLocalHeap.cpp`, `OldGenSpace.cpp`, `GCHelperPool.cpp`: shifted by the new trace hooks
+  (MAPPING.md uses the current lines).
+- **L3 reads the heal values in the pause** (`tenureParDistribute`), not on the collector (the plan's
+  §2.3 describes the exact engine). No correctness consequence (change 5).
+- **The t0 snapshot also walks every young YLOS** (`snapshotYoungLarge`, `OGS:4189`: marks the cell
+  and greys its old children, dead members included), which the plan's §2 does not mention. Dead
+  young YLOS do not add a CR-017 path of their own: a STW major frees every unmarked YLOS cell
+  (`lazySweep`'s large-cell branch), so none survives to the next t0; but a dead Tenuring object
+  whose YLOS child a major freed is CR-017's chain again.
+- **`tenureJoin` helps after a plain join too** when the job is not done ("stopped by a fork hook",
+  `NT:631`); the model's `J_Help` follows both join branches.
+- **The minor's YLOS sweep defers frees mid-cycle** (`deferred_frees_`, `OGS:7313`), modelled as
+  `YDead`.
+- **CR-017 is not confined to k = 1.** 07b's zap removes ageing objects dead at the job's mark; an
+  object that dies after the mark is walked at the next t0 like a dead k = 1 Tenuring object
+  (`MC_k2_cycle_major`).
+
+### Register-relevant findings (for the orchestrator; the register is not edited here)
+
+- **CR-017: reproduced from M5's side** (`MC_cycle_major`, 47 states; `MC_deep`), and **extended**:
+  with tenure age k = 2 the same chain goes through an ageing extent (`MC_k2_cycle_major`), because
+  07b's zap covers only objects dead at a job's mark. A fix must zap (or not walk) dead objects of
+  every Young extent a STW major did not reach, not only of the Tenuring one.
+- **CR-013: reproduced at model level, three facets** (`MC_fork`: a taken start never tenured;
+  `MC_fork_orphan_copy`: an orphan copy and a second copy; `MC_fork_l3`: help waits forever on a
+  dead member's BUSY entry). The register's open question ("wait on a half-published shadow word,
+  M5 to assess") is answered: **yes for L3**, at the child's next minor and at exit
+  (`tenureTeardown` → `tenureConcFinish`, `NT:905-907`, runs the same claiming engine). With the
+  exact engine, by code reading (teardown is not in the model): `tenureTeardown` finishes the job
+  with `runJobExact` and merges with `heal = false`, which skips TV3/TV4, the YLOS resolve and the
+  heal (`NT:686-744`); no check on that path trips over the lost item, so only a child that runs
+  another minor hits TV1.
+- No new code defect was found. Every other checked property passes in every configuration.
+
+### What is left
+
+- **Trace validation** (plan §9, step 8): a later wave. The harness exists: `gc-tenure-tsan`
+  (`test/gc-helper-tsan/tenure_harness.cpp`, target at `test/gc-helper-tsan/CMakeLists.txt:51`); it
+  runs the real `SerialEngine` on the real `GCBackgroundGang` over a synthetic heap of node and cons
+  cells (ageing arenas on even seeds). `test/gc-heap-tsan/heap_driver.cpp` has the region scenarios
+  (1 and 4 collectors). The shared infrastructure now exists: the `ECO_TLA_TRACE` header
+  (`runtime/src/allocator/TlaTrace.hpp`), the recorder and merger (`test/tla/trace/`), the
+  registry and runner (`test/tla/traces.txt`, `run_traces.py`), and the gang events
+  (`gang.launch`, `gang.start`, `gang.exit`, `gang.join`, `stop`). M5 needs a TRACE-build target
+  for the tenure harness (today `gc-tenure-tsan` is a TSan build only; trace builds must be
+  separate), a `harness` line and `trace` rows in `traces.txt`, `TraceTenuring.tla` (and a `.keep`
+  list), and these hooks.
+  M5 still needs hooks for: `launch` (`tenureLaunch`, before `R.collector->launch`, `NT:572`,
+  `:1234`), `item` (`SerialEngine::step`, `TW:277-320`), `load` (`TW:255`, `NT:971`), `claim`
+  (`NT:979`), `copy` (`TW:262`, `NT:983-985`), `publish` (`TW:265`, `NT:1001`), `fix` (`TW:434`,
+  spine writes `TW:480`, `:488`), `stopSeen` (`TW:218`), `join`/`help` (`tenureJoin`, `NT:581-654`),
+  `merge` (`NT:800`), `resolve` (`NR:352`), and for the extensions `reach` (`TW:421`, `NT:1005`),
+  `mark`/`sweep` (`TW:323`), `zap` (`NT:820`). The trace spec must take placement from the `copy`
+  event (the model's exact engine uses `CHOOSE`), start with node-only seeds (the model has no cons
+  cells, so `spineRun`'s order cannot match), use field order for the ageing mark's pushes at
+  `NF > 1` (change 12), and read `NF` per object (the harness's nodes have varying slot counts).
+- **The canary (A9)** is a later wave. The lines M5 asks for, for `test/tla/manifest.txt`:
+  - `file`: `runtime/src/allocator/TenureWork.hpp`, `runtime/src/allocator/NurseryRegions.hpp`;
+  - `region` (`TLA-REGION(<id>)` markers around these functions): in `NurseryTenure.cpp`
+    `TenureHeapEnv`, `runJobExact` + `tenureEntry`, `tenureLaunch`, `tenureJoin`, `mergeJob`,
+    `tenureTeardown`, `TenureParEnv` (its `tenure`, `reachYlos`, `childOfCopy`, `spineRun`, `scan`),
+    `tenureParDistribute` + `tenureParCollect` + `runJobParallel`, `tenureConcEntry` +
+    `tenureConcLaunch` + `tenureConcFinish`; in `NurseryRegion.cpp` `majorRedirect`,
+    `resolveRetire`, `copyClaimedR`, `evacuateR`, `reachYoungLargeR`, and `minorGCRegion`'s
+    beginMinor + hand-over preparation, S/H/SA merge, and epilogue + endMinor blocks; in
+    `NurserySpace.hpp` `forEachYoung`; in `OldGenTenure.cpp` `grantTenure`, `grantAllocate`,
+    `grantAllocateShared`, `returnTenureGrant` (shared with M4); in `OldGenSpace.cpp`
+    `greyObject`'s nursery branch (the `majorRedirect` call), `snapshotYoungLarge`,
+    `promoteYoungLarge`, and `sweepNurseryLargeBodies`' deferred-free branch; in
+    `ThreadLocalHeap.cpp` `minorGC`'s `tenureJoin` call and `TenureLaunchScope`, `majorGC`'s
+    `tenureJoin` + `finishMarkCycleNow(Join)`, and `startMarkCycle`'s `snapshotYoungLarge` +
+    `forEachYoung` calls; `GCHelperPool.cpp` is M6's `file` line, which M5 should also name;
+  - `census`: `NurseryTenure.cpp`, `NurseryRegion.cpp`, `OldGenTenure.cpp`, `TenureWork.hpp`,
+    `NurseryRegions.hpp`;
+  - `grep`: rows T1–T5 and T9 of `test/tla/footprint-greps.txt` (T6–T8, T10, T11 are written
+    abstractions; MAPPING.md §4 covers all eleven). Worth adding there: `kAllocTenure` over all
+    allocator files (every block-selection skip, T6), `pend_S|pend_H|pend_SA`,
+    `hand_ylos_reached`, `X.gen =`, and `writeFiller` in `NurseryTenure.cpp` (the zap).
+- **Weak memory (A4):** W5 and W1, and `w_running_chain`, are W pending.
+- **Not modelled:** large bodies (`lb_bodies`, `lb_promoted`, 07 traps 14/15), YLOS builders,
+  ageing-generation YLOS with k = 2 together, `runJobParallel`'s `PromoCtx` allocation, the
+  `!granted` fallback, eden flip, the STW major inside the hand-over minor (plan §8.4), the
+  refinement R1 (§8.5), and the fork child's fresh collector threads.
+
+## 2026-09-29 — wave 2: trace validation (plan §10 step 8)
+
+**Tree:** as above, plus this wave's compiled-out hooks. **Tools:** as above; `merge_trace.py`,
+`run_traces.py`, `common/TraceAnyOrder.tla` from the shared infrastructure.
+
+### What was added
+
+- **Hooks** (`ECO_TLA_TRACE`, `((void)0)` in production builds; checked by preprocessing and
+  syntax-checking `NurseryTenure.cpp`, `NurseryRegion.cpp`, `NurserySpace.cpp` and
+  `ThreadLocalHeap.cpp` with `build/`'s `EcoRuntimeStatic` flags: no `tlatrace` reference is left,
+  one `((void)0)` per hook, no new diagnostic):
+  - `TenureWork.hpp` (11, the engine): `tstop` and `tend` in `run`, `titem` (start, heal) in
+    `step`, `tload`, `tcopy`, `tpub` in `tenure`, `treach` in `reachYlos`, `tchild` and `tfix` in
+    `childOfCopy`, `tchild` in `scanYlos`. The header now includes `TlaTrace.hpp` (std-only).
+  - `NurseryTenure.cpp` (the pause): `tj.launch` on each of `tenureLaunch`'s five paths (a
+    trace-only helper, `ECO_TLA_TRACE_ONLY`), `tj.help` in `tenureJoin` (exact and L3), `tj.merge`
+    at the end of `mergeJob`.
+  - `NurseryRegion.cpp`: none (the minor is checked through its outcome, below).
+- **Harnesses:** `gc-tenure-trace` (`test/gc-helper-tsan`: `tenure_harness.cpp`'s new `tiny` mode
+  and a CMake target under `option(ECO_TLA_TRACE)`), and `gc-heap-trace tenure`
+  (`test/gc-heap-tsan/tiny_tenure.cpp`, new, wired into `heap_driver.cpp` and the CMakeLists).
+- **Specs:** `TraceTenuring.tla` (the engine storm, event by event) and `TraceTenurePause.tla` (the
+  pause projection of the real allocator), both `EXTENDS Tenuring, TraceAnyOrder`; MAPPING.md §8
+  has both event tables.
+- **Rows** in `test/tla/traces.txt`: 10 accepted traces and 17 negative controls.
+
+### Results
+
+`run_traces.py --model M5 --jobs 2 --workers 2 --java-opts=-Xmx3g`, run three times: **27/27 as
+expected** each time (47 s, 46 s, 47 s once the harnesses were built). The event counts vary by
+at most one between runs (the schedule); TLC's time per row is 2 to 9 s.
+
+| Row | Harness args | Events (3 runs) | Stops / helps (seed's run) |
+|---|---|---|---|
+| storm 1 | `tiny,1,20,4,2,1,1,2,50,20` | 823–824 | 9 / 8 |
+| storm 2 | `tiny,2,20,4,2,1,1,2,60,30` | 859–860 | 8 / 8 |
+| storm 3 | `tiny,3,20,5,2,1,2,1,70,20` | 594–595 | 15 / 14 (one stop with no work left) |
+| storm 4 | `tiny,4,30,6,3,1,2,2,40,10` | 1,723 | 15 / 15 |
+| storm 5 | `tiny,5,20,3,1,0,0,1,100,50` | 472–473 | 20 / 15 |
+| pause 1 | `tenure,1,40,1500,15` | 270–271 | see below |
+| pause 2 | `tenure,2,40,1500,15` | 267 | |
+| pause 3 | `tenure,3,40,300,15` | 262–263 | |
+| pause 5 | `tenure,5,40,3000,25` | 243 | |
+| pause 6 | `tenure,6,60,1500,10` | 411–412 | |
+
+A 40-step pause run (six seeds counted) has 34–36 minors and 4–6 STW majors, 17–23 of its joins are
+stops, 2–4 jobs are helped in the pause, 3–6 objects are tenured and 0–2 heal slots healed.
+
+What the storm covers, counted on two logs: stale shadow entries (a load that sees the FWD word of
+an earlier generation, then copies: 63 and 48 loads), current-generation FWD hits, first-time
+copies, YLOS reach and scan (21 reaches, 16 resolved YLOS slots in storm 2), stops before start,
+mid-job and after the last item, and help.
+
+**Negative controls** (every one rejected, at the event it doctors):
+- storm, on seed 1: `set:tload:1:st=1` (a BUSY entry; the exact engine never claims),
+  `drop:tpub:1`, `set:titem:1:idx=9`, `drop:tstop:1` (a collector that returns without seeing the
+  stop), `swap:tchild:1`, `set:tfix:1:val=0`, `set:treach:1:new=false`,
+  `set:gang.join:1:stop=true` (job 1 is joined without a stop in every run: the stop decisions
+  come from the seed), `set:tshadow:1:g=7777`;
+- projection, on seed 1: `set:tj.launch:1:gen=9`, `set:tj.launch:2:starts=5`,
+  `set:tj.merge:1:tenured=7`, `drop:tj.merge:1`, `drop:minor:3`, `set:troots:1:reach=510`,
+  `swap:tj.launch:1`, `set:alloc:1:v=7`.
+
+### Finding: a model error, corrected (the engine's stop check)
+
+The first storm logs were accepted; storm seed 3 (`tiny,3,20,5,2,1,2,1,70,20`) was **rejected** by
+the model as committed in the first entry, at event 323: the collector finished the last item of
+job 12, then `run()` saw the stop flag and returned Stopped (`tstop`), and the pause found the job
+done and did not help. The model's engine loop was `while ~JobDone \/ sc # Nil do (stop check;
+item)`, so with no work left it could only leave through "done" (`E_Ret`), never through the stop
+check. The code (`SerialEngine::run`, `TenureWork.hpp:218-236`) checks the flag first, then asks
+`step()` for an item. **Model error, not a code defect:** the two exits lead to the same state, and
+both are legal. The engine loop now checks the stop first (`E_Loop`: stop between items, else
+`E_Ret` when no item is left, else an item), as the code does. With it, every storm and pause log
+is accepted.
+
+Re-checked after the change: the quick tier (`run_models.py --model M5`) is 49/49 as expected
+again, with the same state counts as before (the two exits reach the same states); the deep rows
+re-run under the lock: **8/8 as expected**, with the earlier state counts: `deep` violates
+`YoungWalkValid` (CR-017; 6,892,752 states when found), `deep_nf2` 2,550,988, `deep_ops4`
+3,683,200, `deep_major` 5,409,434, `deep_cycle` 5,779,452, `deep_l3` 18,018,284 (8 min 36 s),
+`deep_k2` 37,922,800 (15 min 35 s), `deep_ext` 56,432,788 (20 min 48 s).
+
+A harness error found on the way (not a model or code finding): the first pause driver allocated
+up to three objects per *step*, but a STW major does not empty eden, so two steps separated by a
+major put more objects in eden than the model's `EC`; those logs were rightly rejected at the
+allocation. The driver now bounds allocations between minors.
+
+### How the two specs relate the code to the model
+
+- **Storm (event by event).** The harness replaces the minor: its `job` event is matched by
+  `TJob`, a trace-spec action that loads the job's heap and inputs from the header and applies
+  `MN_Launch`'s own generation bump (or wrap discard) and launch, with the harness's start and heal
+  order. Everything after that is the model's own steps. Copies are matched by name: the model's
+  exact engine chooses its cells (`CHOOSE`), and `cmap` records which cell each logged copy is.
+  The stale-generation logic is checked for real: the harness rebuilds each job at the same
+  addresses, so the shadow's earlier entries are there, and every `tload` must see exactly the
+  model's entry (state and generation; the destination when current).
+- **Pause projection (outcome by outcome).** The real minor's slot order and cell placement differ
+  from the model's (roots in the root set's order, a LIFO drain, LABs), so the minor's and the
+  engine's steps are hidden, and the model's heap is compared through logical ids and counts: the
+  launch's extent, generation, distinct starts and heal slots; the merge's forwarded objects and
+  healed slots; after every collection each root's id and generation and the reachable ids. The
+  model finds the collector interleaving (and the stop store) that explains the pause's join, help
+  and merge.
+
+### Not covered (and why)
+
+- **L3** (`TenureParEnv`): not in the std-only harness; the projection runs one exact collector.
+  A projection row with `tenure_collector_threads > 1` on a large extent is possible later
+  (`tj.launch` logs path `l3`), with the model's `Collectors = 2`.
+- **Ageing (k = 2)** and **builders**: the storm's ageing arena and the model's mark items are not
+  matched yet (the model pushes marks and heal slots in `SetToSeq` order, the code in field order:
+  equal only at `NF = 1`; the code's sweep is one item per bitmap word, the model's one per extent).
+  The projection driver allocates no builders.
+- **Per-object minor events** (`resolveRetire`, the S/H recording): order-sensitive against the
+  model's slot order, so the projection checks their outcome (roots, reachability, launch sizes)
+  instead; `NurseryRegion.cpp` has no hook.
+- **Forks**: the projection driver does not fork (M5's `Env` stops once; M6 traces the gang).
+
+### Canary lines for the hooks' files (for `test/tla/manifest.txt`, later wave)
+
+`file runtime/src/allocator/TenureWork.hpp M5` (now with the engine hooks); `region` markers in
+`NurseryTenure.cpp` around `tenureLaunch` (incl. the `tla_launch` helper), `tenureJoin` and
+`mergeJob` (M5); `census runtime/src/allocator/NurseryTenure.cpp M5`. The harness files are test
+code and need no pin.
+
+## 2026-09-29 — canary baseline (GC_MODEL_001)
+
+The canary (`test/tla/manifest.txt`, `tla-canary` in every build) was first pinned today: 50 pins
+name this model (6 census, 3 file, 8 grep, 33 region); the list is in MAPPING.md's "Canary pins (A9)" block. This is the
+baseline: the pinned code is the code this model was checked against today (after the trace hooks,
+wave 3's fixes and the `TLA-REGION` markers landed). From now on, a pin that fires needs an entry
+here quoting the new hash prefix before `check-tla-manifest.sh --update` accepts it.

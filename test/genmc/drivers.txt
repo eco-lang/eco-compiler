@@ -1,0 +1,105 @@
+# Weak-memory driver registry (plans/threaded-gc-tla-W-weak-memory.md §11), read by
+# run_drivers.py (target genmc-check).
+#
+# name  file  options  expected
+#   options:  "-", or a comma-separated list of
+#               NAME / NAME=VALUE   a -D define (driver variants, driver mutants MUTANT_*)
+#               mutate:<MUTANT>     a header mutant (mutate.sh), applied in order
+#               genmc:<flag>        an extra GenMC flag (every row runs -rc11)
+#   expected: the rest of the line: pass, or one or more of the following, separated
+#             by | (one weakened order can be reported either way, depending on the
+#             execution GenMC reaches first):
+#               assert:<expression>   a failed assert with that expression
+#               race:<variable>       a data race; a racing event's variable as GenMC
+#                                     names it (a prefix up to [ or . also matches)
+#               race:@<code>          a data race; a racing event's source line
+#                                     contains <code> (heap objects have no name in
+#                                     GenMC's report)
+#               uninit:<var|@code>    GenMC's "read from uninitialized memory": a
+#                                     plain read of freshly allocated memory with no
+#                                     initializing write visible to it, i.e. a race
+#                                     with that write (AUDIT.md, "Tool facts")
+#
+# Every mutant row must be flagged with a listed outcome; a mutant that passes, or
+# fails another way, fails genmc-check (parent plan §2 rule A6). CR rows flip to
+# pass-expected when the register entry is fixed; the old shape stays as a mutant.
+
+# ---- W1: Chase-Lev deque (MarkWork.hpp:63-195), §5 ----
+w1_deque                 w1_deque.cpp        -                                                   pass
+w1_deque_2thieves        w1_deque.cpp        W1_THIEVES=2                                        pass
+w1_deque_paper           w1_deque.cpp        mutate:W1_PAPER                                     pass
+w1_deque_paper_2thieves  w1_deque.cpp        W1_THIEVES=2,mutate:W1_PAPER                        pass
+W1_NO_TAKE_FENCE         w1_deque.cpp        W1_THIEVES=2,mutate:W1_NO_TAKE_FENCE                assert:n == 1
+# review R3: with ONE thief the last element is always CASed, so the missing fence cannot show
+w1_no_take_fence_1thief  w1_deque.cpp        mutate:W1_NO_TAKE_FENCE                             pass
+W1_RELAXED_PUBLISH       w1_deque.cpp        mutate:W1_RELAXED_PUBLISH                           race:payload | assert:n == 1
+W1_STEAL_RELAXED_BOTTOM  w1_deque.cpp        mutate:W1_PAPER,mutate:W1_STEAL_RELAXED_BOTTOM      race:payload | assert:n == 1
+W1_RELAXED_ARRAY         w1_deque.cpp        mutate:W1_RELAXED_ARRAY                             uninit:@a->buf[t & a->mask] | race:@a->buf[t & a->mask]
+
+# ---- W2: termination, publish -> goIdle vs the decider (MarkWork.hpp:246-395), §6 ----
+w2_termination                     w2_termination.cpp  -                                         pass
+w2_priv                            w2_termination.cpp  W2_PRIV                                   pass
+w2_reactivate                      w2_termination.cpp  W2_REACTIVATE                             pass
+w2_returned_tickets                w2_termination.cpp  W2_RETURNED_TICKETS                       pass
+w2_idle_before_publish             w2_termination.cpp  W2_IDLE_BEFORE_PUBLISH                    assert:!(decided && left)
+# trap 11: the two-scan decider is safe under SC; only the one-scan reduction fails there
+w2_idle_before_publish_sc          w2_termination.cpp  W2_IDLE_BEFORE_PUBLISH,genmc:-sc          pass
+w2_idle_before_publish_onescan_sc  w2_termination.cpp  W2_IDLE_BEFORE_PUBLISH,W2_ONE_SCAN,genmc:-sc  assert:!(decided && left)
+W2_RELAXED_GOIDLE                  w2_termination.cpp  mutate:W2_RELAXED_GOIDLE                  assert:!(decided && left)
+W2_RELAXED_GOIDLE_TICKETS          w2_termination.cpp  W2_RETURNED_TICKETS,mutate:W2_RELAXED_GOIDLE  assert:!(decided && left)
+W2_RELAXED_DECIDER_LOAD            w2_termination.cpp  MUTANT_W2_RELAXED_DECIDER_LOAD            assert:!(decided && left)
+W2_PUBLISH_AFTER_IDLE_MINOR        w2_termination.cpp  W2_PRIV,W2_MINOR_ANYWORK                  assert:!(decided && left)
+W2_DONE_STORE                      w2_termination.cpp  W2_REACTIVATE,MUTANT_W2_DONE_STORE        assert:!(decided && reactivated)
+
+# ---- W3: mark bytes, promo_mu_, CR-001 / CR-002 (BitmapScan.hpp, MinorWork.hpp:85-113), §7 ----
+w3a_marker_alloc_black   w3_markbyte.cpp     W3_CASE='a'                                         pass
+w3b_cursor_own_slot      w3_markbyte.cpp     W3_CASE='b'                                         pass
+w3c_CR002_gap_sweep      w3_markbyte.cpp     W3_CASE='c'                                         race:bits
+w3d_CR001_gc_phase       w3_markbyte.cpp     W3_CASE='d'                                         race:phase_idle
+w3e_grant_chunks         w3_markbyte.cpp     W3_CASE='e'                                         pass
+w3f_promo_mu             w3_markbyte.cpp     W3_CASE='f'                                         pass
+W3_PLAIN_ALLOCATE_BLACK  w3_markbyte.cpp     W3_CASE='a',MUTANT_W3_PLAIN_ALLOCATE_BLACK          race:bits | assert:bits[0] == 0x03
+W3_CURSOR_ON_T0_BYTE     w3_markbyte.cpp     W3_CASE='b',MUTANT_W3_CURSOR_ON_T0_BYTE             race:bits
+W3_SMALL_CHUNK           w3_markbyte.cpp     W3_CASE='e',MUTANT_W3_SMALL_CHUNK                   race:bits
+W3_BYTE_CHUNK            w3_markbyte.cpp     W3_CASE='e',MUTANT_W3_BYTE_CHUNK                    race:bits
+W3_SPIN_RELAXED_UNLOCK   w3_markbyte.cpp     W3_CASE='f',mutate:W3_SPIN_RELAXED_UNLOCK           race:counter | assert:counter == 2
+W3_SPIN_RELAXED_TRYLOCK  w3_markbyte.cpp     W3_CASE='f',mutate:W3_SPIN_RELAXED_TRYLOCK          race:counter | assert:counter == 2
+
+# ---- W4: block publication (a pinned reduction of OldGenSpace.cpp), §8 ----
+w4_publication           w4_publication.cpp  -                                                   pass
+w4_commit                w4_publication.cpp  W4_COMMITTED0=2                                     pass
+W4_RELAXED_OWNER         w4_publication.cpp  MUTANT_W4_RELAXED_OWNER                             race:info
+W4_RELAXED_OWNER_COMMIT  w4_publication.cpp  W4_COMMITTED0=2,MUTANT_W4_RELAXED_OWNER             race:info
+W4_REGION_SHRINK         w4_publication.cpp  MUTANT_W4_REGION_SHRINK                             assert:blockIdFor(heap + 72) == 0
+W4_RECOMPUTE_PLAIN       w4_publication.cpp  MUTANT_W4_RECOMPUTE_PLAIN                           race:region_end
+w4b_shared_chunk         w4b_shared_chunk.cpp  genmc:-disable-spin-assume                        pass
+W4_RELAXED_SHARED        w4b_shared_chunk.cpp  MUTANT_W4_RELAXED_SHARED,genmc:-disable-spin-assume  race:info | race:mark
+W4_RELAXED_CLAIM_FAIL    w4b_shared_chunk.cpp  MUTANT_W4_RELAXED_CLAIM_FAIL,genmc:-disable-spin-assume  race:info
+
+# ---- W5: claim -> copy -> publish (MinorWork.hpp:51-75, TenureWork.hpp:73-95, 248-268), §9 ----
+w5_forwarding_a          w5_forwarding.cpp   W5_CASE='a',genmc:-disable-spin-assume              pass
+w5_forwarding_b          w5_forwarding.cpp   W5_CASE='b',genmc:-disable-spin-assume              pass
+w5_parallel_tenure       w5_forwarding.cpp   W5_CASE='p',genmc:-disable-spin-assume              pass
+W5_RELAXED_PUBLISH       w5_forwarding.cpp   W5_CASE='a',mutate:W5_RELAXED_PUBLISH,genmc:-disable-spin-assume     race:@assert(d->f1 == 11 && d->f2 == 22) | assert:d->f1 == 11 && d->f2 == 22
+W5_RELAXED_CLAIM_FAIL    w5_forwarding.cpp   W5_CASE='a',mutate:W5_RELAXED_CLAIM_FAIL,genmc:-disable-spin-assume  race:@assert(d->f1 == 11 && d->f2 == 22) | assert:d->f1 == 11 && d->f2 == 22
+W5_HELP_WITHOUT_JOIN     w5_forwarding.cpp   W5_CASE='b',MUTANT_W5_HELP_WITHOUT_JOIN,genmc:-disable-spin-assume   assert:copiesCol + copiesHelpA == 1
+W5_SHADOW_RELAXED_PUBLISH  w5_forwarding.cpp W5_CASE='p',mutate:W5_SHADOW_RELAXED_PUBLISH,genmc:-disable-spin-assume  race:@assert(o->f1 == src->f1 && o->f2 == src->f2) | assert:o->f1 == src->f1 && o->f2 == src->f2
+
+# ---- w_pool_done: a pool job's Done, release inside m_ -> acquire outside m_ (GCHelperPool.cpp:220,
+# 239; GCHelperPool.hpp:57), W plan §10.1; M6/M7 A4; the guard of CR-026 ----
+w_pool_done              w_pool_done.cpp     -                                                   pass
+w_pool_done_reapdone     w_pool_done.cpp     POOL_REAPDONE                                       pass
+# the post half is published by the mutex, not by post's CAS: weakening the CAS changes nothing
+w_pool_done_relaxed_cas  w_pool_done.cpp     POOL_REAPDONE,MUTANT_POOL_RELAXED_CAS               pass
+POOL_RELAXED_DONE        w_pool_done.cpp     MUTANT_POOL_RELAXED_DONE                            race:job | assert:s.failures == 10 | assert:s.end_ns == 3
+POOL_RELAXED_DONE_REAP   w_pool_done.cpp     POOL_REAPDONE,MUTANT_POOL_RELAXED_DONE              race:job | assert:s.failures == 10 | assert:s.end_ns == 3
+POOL_RELAXED_FASTPATH    w_pool_done.cpp     MUTANT_POOL_RELAXED_FASTPATH                        race:job | assert:s.failures == 10 | assert:s.end_ns == 3
+POOL_RELAXED_ISDONE      w_pool_done.cpp     POOL_REAPDONE,mutate:POOL_RELAXED_ISDONE            race:job | assert:s.failures == 10 | assert:s.end_ns == 3
+
+# ---- w_running_chain: member -> m_ -> a foreign joiner's running_ release -> the owner's acquire in
+# tenureJoin's orphan test (GCHelperPool.cpp:644, GCHelperPool.hpp:258, NurseryTenure.cpp:614-615),
+# W plan §10.1 (review R21); M6 A4 (2) ----
+w_running_chain          w_running_chain.cpp  -                                                  pass
+RUNNING_RELAXED_STORE    w_running_chain.cpp  MUTANT_RUNNING_RELAXED_STORE                       race:job_next | assert:owner_seen == member_final
+RUNNING_RELAXED_LOAD     w_running_chain.cpp  MUTANT_RUNNING_RELAXED_LOAD                        race:job_next | assert:owner_seen == member_final
+RUNNING_JOIN_EARLY       w_running_chain.cpp  MUTANT_RUNNING_JOIN_EARLY                          race:job_next | assert:owner_seen == member_final

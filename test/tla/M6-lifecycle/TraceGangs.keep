@@ -1,0 +1,5 @@
+# The events TraceGangs.tla matches: M1's cycle events, the gangs' events (GCHelperPool.cpp), and
+# M6's fork events.
+minor t0 t0end launch gang.launch relaunch reap step gang.run gang.runEnd closing handoff
+gang.start gang.exit gang.stop gang.join stop fork.mprep fork.bgreg fork.bglock
+fork.mparent fork.bparent fork.mchild fork.bchild

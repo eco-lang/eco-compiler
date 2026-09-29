@@ -1,0 +1,16 @@
+runtime/src/allocator/NurseryRegion.cpp: if (!oldgen.isMarkedInBlockRelaxed(id, p)) continue;
+runtime/src/allocator/NurserySpace.cpp: if (bitmap_walk && !oldgen.isMarkedInBlockRelaxed(blk_id, scan)) {
+runtime/src/allocator/OldGenSpace.cpp: assertCellWasWhite(block_id, obj);
+runtime/src/allocator/OldGenSpace.cpp: assertCellWasWhite(c.block, p);
+runtime/src/allocator/OldGenSpace.cpp: assertCellWasWhite(c.block, p);
+runtime/src/allocator/OldGenSpace.cpp: assertCellWasWhite(id, result);
+runtime/src/allocator/OldGenSpace.cpp: const bool marked = isMarkedInBlockRelaxed(id, obj);
+runtime/src/allocator/OldGenSpace.cpp: if (!isMarkedInBlockRelaxed(id, result))
+runtime/src/allocator/OldGenSpace.cpp: if (cycleActive()) noteCycleAllocation(result);
+runtime/src/allocator/OldGenSpace.cpp: if (isMarkedInBlockRelaxed(id, obj))
+runtime/src/allocator/OldGenSpace.cpp: if (isMarkedInBlockRelaxed(id, obj))
+runtime/src/allocator/OldGenSpace.cpp: void OldGenSpace::assertCellWasWhite(BlockId id, const void* obj) const {
+runtime/src/allocator/OldGenSpace.cpp: void OldGenSpace::noteCycleAllocation(void* obj) {
+runtime/src/allocator/OldGenSpace.hpp: bool isMarkedInBlockRelaxed(BlockId id, const void* obj) const {
+runtime/src/allocator/OldGenSpace.hpp: void assertCellWasWhite(BlockId id, const void* obj) const;
+runtime/src/allocator/OldGenSpace.hpp: void noteCycleAllocation(void* obj);

@@ -214,6 +214,7 @@ void NurserySpace::regionCheckAndGrow() {
 #endif
 }
 
+// TLA-REGION(NR.majorRedirect) begin
 void* NurserySpace::majorRedirect(void* obj) const {
     RegionState& R = *rg_;
     const region::TenureJob& J = R.job;
@@ -226,6 +227,7 @@ void* NurserySpace::majorRedirect(void* obj) const {
     if (d == nullptr) regionFatal("TV1: a STW major reached an untenured object of the tenured extent", obj);
     return d;
 }
+// TLA-REGION(NR.majorRedirect) end
 
 // ---------------------------------------------------------------------------
 // TV7: the region form of the stale-pointer detector
@@ -277,6 +279,7 @@ void NurserySpace::regionAssertValidPointer(void* ptr) const {
 // The region drain (P§3.5 steps 3-6)
 // ---------------------------------------------------------------------------
 
+// TLA-REGION(NR.RegionEnv) begin
 struct NurserySpace::RegionEnv {
     static constexpr bool kParallel = true;
     NurserySpace& ns;
@@ -335,6 +338,7 @@ struct NurserySpace::RegionEnv {
     void scan(unsigned self, uint64_t e) { ns.scanEntryR(*ns.minor_workers_[self], e); }
     void publishAll(unsigned self) { ns.publishAllP(*ns.minor_workers_[self]); }
 };
+// TLA-REGION(NR.RegionEnv) end
 
 namespace {
 struct RegionRunArgs {
@@ -349,6 +353,7 @@ void NurserySpace::regionWorkerEntry(void* ctx, unsigned member) {
     mk::runMarkerLoop(env, member, *a->ctl);
 }
 
+// TLA-REGION(NR.resolveRetire) begin
 void* NurserySpace::resolveRetire(void* t, region::RegionWorker* rw) {
     RegionState& R = *rg_;
     const int xi = R.retire;
@@ -368,7 +373,9 @@ void* NurserySpace::resolveRetire(void* t, region::RegionWorker* rw) {
     if (rw) ++rw->resolved;
     return d;
 }
+// TLA-REGION(NR.resolveRetire) end
 
+// TLA-REGION(NR.copyClaimedR) begin
 void* NurserySpace::copyClaimedR(MinorWorker& w, region::RegionWorker& rw, void* obj, uint64_t hw) {
     RegionState& R = *rg_;
     Header hd = headerOfWord(hw);
@@ -425,7 +432,9 @@ void* NurserySpace::copyClaimedR(MinorWorker& w, region::RegionWorker& rw, void*
     (void)col;
     return dst;
 }
+// TLA-REGION(NR.copyClaimedR) end
 
+// TLA-REGION(NR.evacuateR) begin
 void NurserySpace::evacuateR(MinorWorker& w, region::RegionWorker& rw, HPointer& slot, uint32_t col) {
 #if ECO_HEAP_VALIDATE
     {
@@ -488,7 +497,9 @@ void NurserySpace::evacuateR(MinorWorker& w, region::RegionWorker& rw, HPointer&
                         static_cast<uint64_t>(R.roleOf(obj)), col);
     }
 }
+// TLA-REGION(NR.evacuateR) end
 
+// TLA-REGION(NR.reachYoungLargeR) begin
 void NurserySpace::reachYoungLargeR(MinorWorker& w, region::RegionWorker& rw, void* obj) {
     RegionState& R = *rg_;
     uint64_t e = 0;
@@ -530,7 +541,9 @@ void NurserySpace::reachYoungLargeR(MinorWorker& w, region::RegionWorker& rw, vo
     }
     pushGreyP(w, e);
 }
+// TLA-REGION(NR.reachYoungLargeR) end
 
+// TLA-REGION(NR.spineRunR) begin
 void NurserySpace::spineRunR(MinorWorker& w, region::RegionWorker& rw, Cons* prev, uint32_t col) {
     RegionState& R = *rg_;
     Cons* first = nullptr;
@@ -576,7 +589,9 @@ void NurserySpace::spineRunR(MinorWorker& w, region::RegionWorker& rw, Cons* pre
         }
     }
 }
+// TLA-REGION(NR.spineRunR) end
 
+// TLA-REGION(NR.scanEntryR) begin
 void NurserySpace::scanEntryR(MinorWorker& w, uint64_t e) {
     region::RegionWorker& rw = rg_->rw[w.index];
     void* obj = mk::entryAddr(e);
@@ -642,11 +657,13 @@ void NurserySpace::scanEntryR(MinorWorker& w, uint64_t e) {
             break;
     }
 }
+// TLA-REGION(NR.scanEntryR) end
 
 // ---------------------------------------------------------------------------
 // The region minor (P§3.5)
 // ---------------------------------------------------------------------------
 
+// TLA-REGION(NR.minorGCRegion) begin
 void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stackmap_roots,
                                  MinorGCRecord* rec) {
 #if !ENABLE_GC_PHASE_TIMERS
@@ -1145,6 +1162,7 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
     R.last_minor_end_ns = GCStats::nowSinceProcessStartNs();
     syncRegionStats();
 }
+// TLA-REGION(NR.minorGCRegion) end
 
 #if ECO_HEAP_VALIDATE
 // TV2: hand-over closure. Every child of every object in the new Tenuring

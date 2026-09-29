@@ -20,6 +20,7 @@
 #include "GCHelperPool.hpp"
 #include "NurseryChildWalk.hpp"
 #include "OldGenSpace.hpp"
+#include "TlaTrace.hpp"   // compiled-out hooks (trace builds only: M5's pause projection, test/tla/)
 
 namespace Elm {
 
@@ -50,6 +51,7 @@ inline uint64_t nowNs() {
 // objects) or job-private; everything it writes is its shadow, its grant's
 // cells and its job state (rule 4).
 // ---------------------------------------------------------------------------
+// TLA-REGION(NT.TenureHeapEnv) begin
 struct NurserySpace::TenureHeapEnv {
     TenureJob& J;
     OldGenSpace& og;
@@ -150,6 +152,7 @@ struct NurserySpace::TenureHeapEnv {
     }
     const uint64_t* ageBits(unsigned i) const { return J.age[i].bits; }
 };
+// TLA-REGION(NT.TenureHeapEnv) end
 
 // ---------------------------------------------------------------------------
 // threaded-gc-07b: the ageing mark on the minor's gang (a pause: help, the
@@ -167,6 +170,7 @@ struct AgeOut {
 };
 }  // namespace
 
+// TLA-REGION(NT.AgeParEnv) begin
 struct NurserySpace::AgeParEnv {
     static constexpr bool kParallel = true;
     NurserySpace& ns;
@@ -265,6 +269,7 @@ struct NurserySpace::AgeParEnv {
         });
     }
 };
+// TLA-REGION(NT.AgeParEnv) end
 
 void NurserySpace::ageParEntry(void* ctx, unsigned member) {
     struct Args { AgeParEnv* env; mk::SliceControl* ctl; };
@@ -400,6 +405,7 @@ void NurserySpace::finishJobMarkPhases(OldGenSpace& oldgen, unsigned n) {
     ++rg_->rs.age_par_marks;
 }
 
+// TLA-REGION(NT.runJobExact) begin
 void NurserySpace::runJobExact(OldGenSpace& oldgen, const std::atomic<bool>* stop) {
     TenureJob& J = rg_->job;
     if (!J.grant.active) tenureFatal("the exact engine ran without a grant");
@@ -410,8 +416,10 @@ void NurserySpace::runJobExact(OldGenSpace& oldgen, const std::atomic<bool>* sto
     J.busy_ns += nowNs() - t0;
     if (r == tw::DrainResult::Stopped) ++J.stops;
 }
+// TLA-REGION(NT.runJobExact) end
 
 // The collector's entry: runs the exact engine until done or stopped.
+// TLA-REGION(NT.tenureEntry) begin
 void NurserySpace::tenureEntry(void* ctx, unsigned member) {
     if (member != 0) return;   // a B-member collector running an exact (single) job
     NurserySpace* ns = static_cast<NurserySpace*>(ctx);
@@ -420,11 +428,13 @@ void NurserySpace::tenureEntry(void* ctx, unsigned member) {
     ns->runJobExact(*ns->rg_->tenure_og, &J.stop);
     J.cpu_ns += gc::GCHelperPool::threadCpuNs() - c0;
 }
+// TLA-REGION(NT.tenureEntry) end
 
 // ---------------------------------------------------------------------------
 // Launch (end of minor m) and join (start of minor m+1 / STW major / exit)
 // ---------------------------------------------------------------------------
 
+// TLA-REGION(NT.tenureLaunch) begin
 void NurserySpace::tenureLaunch(OldGenSpace& oldgen) {
     if (!rg_) return;
     RegionState& R = *rg_;
@@ -515,11 +525,23 @@ void NurserySpace::tenureLaunch(OldGenSpace& oldgen) {
     J_layout_.clear();
     R.tenure_og = &oldgen;
     ++R.rs.jobs;
+#if ECO_TLA_TRACE_ENABLED
+    // M5 trace (the pause projection): the job's extent, generation and input
+    // sizes (distinct starts: the model's S is a set), and how it runs.
+    auto tla_launch = [&](const char* path) {
+        std::vector<void*> ds(J.st.starts.begin(), J.st.starts.end());
+        std::sort(ds.begin(), ds.end());
+        ds.erase(std::unique(ds.begin(), ds.end()), ds.end());
+        ECO_TLA_TRACE("tj.launch", "x", t, "gen", X.gen, "starts", ds.size(), "heal", J.st.heal.size(),
+                      "path", path);
+    };
+#endif
 
     const bool mode2 = config_->tenure_mode == 2;
     const unsigned sync_n = config_->tenure_sync_threads == 0 ? oldgen.minorThreads()
                                                              : config_->tenure_sync_threads;
     if (!mode2 && sync_n > 1) {
+        ECO_TLA_TRACE_ONLY(tla_launch("syncpar");)
         runJobParallel(oldgen, sync_n);   // P§3.11: the pause-only parallel engine
         J.state = TenureJob::State::Done;
         ++R.rs.sync_parallel_jobs;
@@ -546,11 +568,13 @@ void NurserySpace::tenureLaunch(OldGenSpace& oldgen) {
         // job now, in the pause, on the parallel engine (the promotion
         // ladder: free lists, splits, sweep-on-demand, the panic sweep).
         ++R.rs.grant_fallbacks;
+        ECO_TLA_TRACE_ONLY(tla_launch("fallback");)
         runJobParallel(oldgen, std::max(1u, oldgen.minorThreads()));
         J.state = TenureJob::State::Done;
         return;
     }
     if (!mode2) {
+        ECO_TLA_TRACE_ONLY(tla_launch("sync");)
         runJobExact(oldgen, nullptr);
         if (!J.st.done()) runJobExact(oldgen, nullptr);   // a forced test stop: finish it
         J.state = TenureJob::State::Done;
@@ -565,13 +589,17 @@ void NurserySpace::tenureLaunch(OldGenSpace& oldgen) {
         R.collector = std::make_unique<gc::GCBackgroundGang>(o);
     }
     if (conc_par) {
+        ECO_TLA_TRACE_ONLY(tla_launch("l3");)
         tenureConcLaunch(oldgen, B);
         return;
     }
     J.state = TenureJob::State::Running;
+    ECO_TLA_TRACE_ONLY(tla_launch("exact");)
     R.collector->launch(&NurserySpace::tenureEntry, this, &J.stop);
 }
+// TLA-REGION(NT.tenureLaunch) end
 
+// TLA-REGION(NT.tenureJoin) begin
 void NurserySpace::tenureJoin(OldGenSpace& oldgen, int why, MinorGCRecord* rec) {
     if (!rg_) return;
     RegionState& R = *rg_;
@@ -595,6 +623,7 @@ void NurserySpace::tenureJoin(OldGenSpace& oldgen, int why, MinorGCRecord* rec) 
             if (rec) rec->rg_wait_ns += nowNs() - t0;
         }
         if (!tenure_ctl_->done()) {
+            ECO_TLA_TRACE("tj.help", "engine", "l3", "why", why);   // M5 trace: help in the pause
             const uint64_t t0 = nowNs();
             const unsigned hn = config_->tenure_help_threads == 0 ? oldgen.minorThreads()
                                                                  : config_->tenure_help_threads;
@@ -639,6 +668,8 @@ void NurserySpace::tenureJoin(OldGenSpace& oldgen, int why, MinorGCRecord* rec) 
                 R.x[J.x].obj_bytes < config_->minor_parallel_min_bytes) {
                 hn = 1;
             }
+            ECO_TLA_TRACE("tj.help", "engine", hn > 1 && why != 2 ? "parallel" : "exact",
+                          "why", why);   // M5 trace: help in the pause
             if (hn > 1 && why != 2) {
                 runJobParallel(oldgen, hn);
                 R.rs.help_workers_sum += hn;
@@ -662,10 +693,12 @@ void NurserySpace::tenureJoin(OldGenSpace& oldgen, int why, MinorGCRecord* rec) 
     if (rec) rec->rg_merge_ns += nowNs() - tj0;
     R.rs.merge_ns += nowNs() - tj0;
 }
+// TLA-REGION(NT.tenureJoin) end
 
 // ---------------------------------------------------------------------------
 // The merge (P§3.5): applies job m's outputs at the start of minor m+1.
 // ---------------------------------------------------------------------------
+// TLA-REGION(NT.mergeJob) begin
 void NurserySpace::mergeJob(OldGenSpace& oldgen, bool heal, MinorGCRecord* rec) {
     RegionState& R = *rg_;
     TenureJob& J = R.job;
@@ -875,9 +908,12 @@ void NurserySpace::mergeJob(OldGenSpace& oldgen, bool heal, MinorGCRecord* rec) 
     J_layout_.clear();
     (void)healed;
     R.rs.collector_cpu_ns += J.cpu_ns;
+    ECO_TLA_TRACE("tj.merge", "heal", heal, "tenured", st.tenured, "healed", healed,
+                  "ylos", ylos_prom);   // M5 trace: the merge's outcome
     J.state = TenureJob::State::Merged;
     syncRegionStats();
 }
+// TLA-REGION(NT.mergeJob) end
 
 void NurserySpace::syncRegionStats() {
 #if ENABLE_GC_STATS
@@ -897,6 +933,7 @@ void NurserySpace::syncRegionStats() {
 #endif
 }
 
+// TLA-REGION(NT.tenureTeardown) begin
 void NurserySpace::tenureTeardown(OldGenSpace& oldgen) {
     if (!rg_) return;
     RegionState& R = *rg_;
@@ -913,6 +950,7 @@ void NurserySpace::tenureTeardown(OldGenSpace& oldgen) {
     if (J.state == TenureJob::State::Done) mergeJob(oldgen, /*heal=*/false, nullptr);
     R.collector.reset();
 }
+// TLA-REGION(NT.tenureTeardown) end
 
 // ---------------------------------------------------------------------------
 // The pause-only parallel engine (P§3.11; Step 7). Used by mode 1 with
@@ -928,6 +966,7 @@ constexpr uint32_t kEntTenure = 2;  // a start / heal target to tenure
 constexpr uint32_t kEntYlos = 3;    // a snapshot YLOS object to scan read-only
 }  // namespace
 
+// TLA-REGION(NT.TenureParEnv) begin
 struct NurserySpace::TenureParEnv {
     static constexpr bool kParallel = true;
     NurserySpace& ns;
@@ -1076,6 +1115,7 @@ struct NurserySpace::TenureParEnv {
         forEachChildSlot(obj, [&](HPointer& hp) { childOfCopy(w, obj, hp); });
     }
 };
+// TLA-REGION(NT.TenureParEnv) end
 
 namespace {
 struct TenureParArgs {
@@ -1101,6 +1141,7 @@ void NurserySpace::tenureParSetup(std::unique_ptr<MinorWorker>* ws, unsigned n) 
 
 // The job's remaining serial state, round-robin into the workers' deques (no
 // worker runs yet; the gang launch publishes it).
+// TLA-REGION(NT.tenureParDistribute) begin
 void NurserySpace::tenureParDistribute(std::unique_ptr<MinorWorker>* ws, unsigned n) {
     TenureJob& J = rg_->job;
     tw::SerialState& st = J.st;
@@ -1130,8 +1171,10 @@ void NurserySpace::tenureParDistribute(std::unique_ptr<MinorWorker>* ws, unsigne
         give(mk::objEntry(st.ylos[st.ylos_pending[i]].obj, kEntYlos));
     st.ylos_next = st.ylos_pending.size();
 }
+// TLA-REGION(NT.tenureParDistribute) end
 
 // After the last run: every worker's outputs into the job (in worker order).
+// TLA-REGION(NT.tenureParCollect) begin
 void NurserySpace::tenureParCollect(std::unique_ptr<MinorWorker>* ws, unsigned n) {
     TenureJob& J = rg_->job;
     tw::SerialState& st = J.st;
@@ -1163,8 +1206,10 @@ void NurserySpace::tenureParCollect(std::unique_ptr<MinorWorker>* ws, unsigned n
     }
     rs.par_units_max_sum += umax;
 }
+// TLA-REGION(NT.tenureParCollect) end
 
 // The pause-only engine over phase 6's promotion context.
+// TLA-REGION(NT.runJobParallel) begin
 void NurserySpace::runJobParallel(OldGenSpace& oldgen, unsigned n) {
     RegionState& R = *rg_;
     TenureJob& J = R.job;
@@ -1198,6 +1243,7 @@ void NurserySpace::runJobParallel(OldGenSpace& oldgen, unsigned n) {
     J.parallel_used = true;
     J.busy_ns += nowNs() - t0;
 }
+// TLA-REGION(NT.runJobParallel) end
 
 // ---------------------------------------------------------------------------
 // Lever L3: B collector threads outside the pause (mode 2, B > 1). The job's
@@ -1206,6 +1252,7 @@ void NurserySpace::runJobParallel(OldGenSpace& oldgen, unsigned n) {
 // leaves the unscanned work in the deques (5c's stop semantics), which help
 // drains in the next pause on the minor's gang.
 // ---------------------------------------------------------------------------
+// TLA-REGION(NT.tenureConcEntry) begin
 void NurserySpace::tenureConcEntry(void* ctx, unsigned member) {
     NurserySpace* ns = static_cast<NurserySpace*>(ctx);
     TenureJob& J = ns->rg_->job;
@@ -1218,7 +1265,9 @@ void NurserySpace::tenureConcEntry(void* ctx, unsigned member) {
     std::atomic_ref<uint64_t>(J.cpu_ns).fetch_add(gc::GCHelperPool::threadCpuNs() - c0, std::memory_order_relaxed);
     if (member == 0) J.busy_ns += dt;   // member 0's wall time (the job's span)
 }
+// TLA-REGION(NT.tenureConcEntry) end
 
+// TLA-REGION(NT.tenureConcLaunch) begin
 void NurserySpace::tenureConcLaunch(OldGenSpace& oldgen, unsigned B) {
     RegionState& R = *rg_;
     TenureJob& J = R.job;
@@ -1233,9 +1282,11 @@ void NurserySpace::tenureConcLaunch(OldGenSpace& oldgen, unsigned B) {
     J.conc_parallel = true;
     R.collector->launch(&NurserySpace::tenureConcEntry, this, &tenure_ctl_->stop);
 }
+// TLA-REGION(NT.tenureConcLaunch) end
 
 // After the gang joined: finish the run in the pause (help) when it was
 // stopped, then collect and fold the members' grant usage.
+// TLA-REGION(NT.tenureConcFinish) begin
 void NurserySpace::tenureConcFinish(OldGenSpace& oldgen, unsigned help_n, bool on_this_thread) {
     TenureJob& J = rg_->job;
     const unsigned B = tenure_par_n_;
@@ -1267,6 +1318,7 @@ void NurserySpace::tenureConcFinish(OldGenSpace& oldgen, unsigned help_n, bool o
     J.conc_parallel = false;
     J.parallel_used = true;
 }
+// TLA-REGION(NT.tenureConcFinish) end
 
 // Worker slots [B, V) for helpers beyond the collector's members (their
 // deques are empty; they steal from [0, B)).

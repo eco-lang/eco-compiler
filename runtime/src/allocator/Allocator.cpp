@@ -215,6 +215,7 @@ Allocator::Allocator() :
     // Initialization happens in initialize() method.
 }
 
+// TLA-REGION(AL.destructor) begin
 Allocator::~Allocator() {
     // Clean up all thread heaps.
     {
@@ -228,6 +229,7 @@ Allocator::~Allocator() {
         Elm::platform::releaseReservation(heap_base, heap_reserved);
     }
 }
+// TLA-REGION(AL.destructor) end
 
 // Initializes the allocator with the given configuration.
 // Validates config and reserves address space. Physical memory committed lazily.
@@ -351,6 +353,7 @@ void Allocator::initThread() {
 }
 
 // Cleans up the calling thread's heap space.
+// TLA-REGION(AL.cleanupThread) begin
 void Allocator::cleanupThread() {
     if (tl_heap_ == nullptr) {
         return;  // Nothing to clean up.
@@ -375,15 +378,18 @@ void Allocator::cleanupThread() {
 
     setThreadHeap(nullptr);
 }
+// TLA-REGION(AL.cleanupThread) end
 
 // threaded-gc-07 (P§3.15): at process exit, before the stats banner, the
 // calling thread's last tenure job is stopped or joined, finished on this
 // thread if needed and given a stats-only merge, so run totals include it.
+// TLA-REGION(AL.finishTenureForExit) begin
 void Allocator::finishTenureForExit() {
     if (tl_heap_ == nullptr) return;
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
     tl_heap_->getNursery().tenureTeardown(tl_heap_->getOldGen());
 }
+// TLA-REGION(AL.finishTenureForExit) end
 
 // Slow path for `getRootSet()` — used by external callers that may run
 // before `initThread()` has been called on the current thread (e.g.
@@ -749,6 +755,7 @@ void Allocator::releaseNurserySlicePair(const NurserySlicePair& pair) {
 // Acquires a block from the old gen region.
 // Thread-safe: acquires thread_mutex_ to update shared committed counters.
 // First-fit reuse: scan the free list for a released block with size >= request.
+// TLA-REGION(AL.acquireOldGenBlock) begin
 char* Allocator::acquireOldGenBlock(size_t size) {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 
@@ -884,10 +891,12 @@ char* Allocator::acquireOldGenBlock(size_t size) {
 
     return block_base;
 }
+// TLA-REGION(AL.acquireOldGenBlock) end
 
 // Returns a previously-acquired old-gen block for reuse. The virtual mapping
 // is retained; physical RSS may be released via madvise. Caller must not
 // hold thread_mutex_ (the lock is acquired here).
+// TLA-REGION(AL.releaseOldGenBlock) begin
 void Allocator::releaseOldGenBlock(char* block, size_t size) {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 
@@ -937,16 +946,19 @@ void Allocator::releaseOldGenBlock(char* block, size_t size) {
         dumpHeapState("oldgen released block", size);
     }
 }
+// TLA-REGION(AL.releaseOldGenBlock) end
 
 void Allocator::ensureOldGenCapacityFor(OldGenSpace& space,
                                         size_t new_capacity_bytes) {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 
     auto currentCapacity = [&]() -> size_t {
-        if (space.region_base_ == nullptr || space.region_end_ == nullptr) {
+        char* const base = space.regionBase();   // CR-021: through atomic_ref
+        char* const end = space.regionEnd();
+        if (base == nullptr || end == nullptr) {
             return 0;
         }
-        return static_cast<size_t>(space.region_end_ - space.region_base_);
+        return static_cast<size_t>(end - base);
     };
 
     if (new_capacity_bytes <= currentCapacity()) return;
@@ -967,10 +979,10 @@ void Allocator::ensureOldGenCapacityFor(OldGenSpace& space,
         // out and materialize a BlockInfo on first use.
         space.unassigned_blocks_.emplace_back(block_base, block_base + block_size);
 
-        if (space.region_base_ == nullptr || block_base < space.region_base_) {
+        if (char* const rb = space.regionBase(); rb == nullptr || block_base < rb) {
             space.setRegionBase(block_base);
         }
-        if (block_base + block_size > space.region_end_) {
+        if (block_base + block_size > space.regionEnd()) {
             space.setRegionEnd(block_base + block_size);
         }
     }
@@ -986,6 +998,7 @@ void Allocator::ensureOldGenCapacityFor(OldGenSpace& space,
 // the BBoP region in a single mmap. The `max_size` parameter is retained for
 // signature compatibility but only `initial_size` is committed and reserved.
 // Pre-condition: caller must hold thread_mutex_.
+// TLA-REGION(AL.acquireOldGenRegion) begin
 char* Allocator::acquireOldGenRegion(size_t initial_size, size_t /*max_size*/) {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 
@@ -1017,6 +1030,7 @@ char* Allocator::acquireOldGenRegion(size_t initial_size, size_t /*max_size*/) {
     noteOldGenInUsePeak();
     return region_base;
 }
+// TLA-REGION(AL.acquireOldGenRegion) end
 
 // Resets the allocator to initial state, optionally with a new configuration.
 // Accumulates stats from all thread heaps before destroying them.
@@ -1203,10 +1217,17 @@ size_t Allocator::nurseryCapacityBytes() const {
     return tl_heap_ != nullptr ? tl_heap_->getNursery().capacityBytes() : 0;
 }
 
+// TLA-REGION(AL.callerInPause) begin
 bool Allocator::callerInPause() const {
-    return tl_heap_ != nullptr && tl_heap_->inPause();
+    // CR-025: a GCMarkGang member (a parallel-minor or pause-tenure worker
+    // waiting on a helper job under promo_mu_) has no ThreadLocalHeap, but
+    // every gang run is inside its owner's pause (HEAP_058), so its stall is
+    // a pause stall, not a stall_outside_pause / MMU stall.
+    return (tl_heap_ != nullptr && tl_heap_->inPause()) || gc::GCMarkGang::onMemberRun();
 }
+// TLA-REGION(AL.callerInPause) end
 
+// TLA-REGION(AL.rebuildPageWork) begin
 void Allocator::rebuildPageWork() {
     page_work_.reset();
     if (config_.gc_thread_mode == 0) return;   // mode 0: today's inline path
@@ -1239,7 +1260,9 @@ void Allocator::rebuildPageWork() {
     hooks.on_job_reaped = &pageHookJobReaped;
     page_work_ = std::make_unique<gc::PageWork>(ops, cfg, pool, hooks);
 }
+// TLA-REGION(AL.rebuildPageWork) end
 
+// TLA-REGION(AL.onGCPauseEnd) begin
 void Allocator::onGCPauseEnd(ThreadLocalHeap& heap, bool had_major) {
     (void)heap;
 #if ECO_HEAP_VALIDATE
@@ -1260,11 +1283,14 @@ void Allocator::onGCPauseEnd(ThreadLocalHeap& heap, bool had_major) {
     validatePageWork("onGCPauseEnd");
 #endif
 }
+// TLA-REGION(AL.onGCPauseEnd) end
 
+// TLA-REGION(AL.drainHelperWork) begin
 void Allocator::drainHelperWork() {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
     if (page_work_) page_work_->drainAll(/*discard_pending=*/false);
 }
+// TLA-REGION(AL.drainHelperWork) end
 
 #if ECO_HEAP_VALIDATE
 // V2 + V3 (plans/threaded-gc-03-helper-threads.md Step 6). Caller holds

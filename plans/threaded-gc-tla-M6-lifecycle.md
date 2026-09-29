@@ -1,6 +1,18 @@
 # Threaded GC — TLA+ model M6: thread lifecycle, fork and exit
 
-**Status:** IMPLEMENTATION-READY PLAN (2026-09-28). **Adversarial review on 2026-09-28 against the
+**Status:** IMPLEMENTED (2026-09-28) in `test/tla/M6-lifecycle/`: steps 1–5 of §9 are done, the
+`models.txt` part of step 6, and the modelling side of step 7 (no code change). **Step 8 done
+(2026-09-29):** the fork harness (`test/gc-heap-tsan/fork_harness.cpp`, CR-008; random arms with
+rates and deterministic guards for CR-003/004/005/015) and trace validation (`TracePool.tla`,
+`TraceGangs.tla`, 28 rows in `test/tla/traces.txt`, all as expected). The canary part of step 6
+is not done. The quick tier (43 rows: 16 passing
+configurations, the expected failures for CR-003, CR-004, CR-005, CR-013's window, CR-015,
+CR-023 and the candidate-fix analysis, 15 mutants) and the deep tier behave as expected.
+`AUDIT.md` there records the results, the counterexamples, the step-7 verdict, and every way the
+implemented model differs from the sketch below; `MAPPING.md` is the model ↔ code map. The
+sketch in §4.6 is kept as the reviewed design text; the committed model is authoritative.
+
+History: IMPLEMENTATION-READY PLAN (2026-09-28). **Adversarial review on 2026-09-28 against the
 current tree** (§11): the sketches were corrected, and the corrected text in §4.6 passes the PlusCal
 translator and SANY (tla2tools 1.8.0). **TLC has not run on them.** The "expected" results in §5
 and §6 are predictions from reading the code; the first TLC run confirms or corrects each one.
@@ -1278,6 +1290,10 @@ the fork's handler steps; the reviewer's estimate is 10^4–10^5 states, well in
   "child"` branch.
 
 ## 9. Implementation steps
+
+**Progress (2026-09-29):** steps 1–5 done (see `test/tla/M6-lifecycle/AUDIT.md`); step 6's `models.txt` rows are in, its `manifest.txt` part
+is not; step 7's modelling is done (AUDIT.md, "Plan §9 step 7"), no code change; step 8 done
+(AUDIT.md, 2026-09-29: the fork harness and both trace specs).
 
 1. Create `test/tla/M6-lifecycle/` with both modules (§4.6), `MC.tla`, the §6 configurations,
    MAPPING.md (§4.7 plus A3's table) and AUDIT.md.

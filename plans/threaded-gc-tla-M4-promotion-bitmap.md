@@ -1,8 +1,18 @@
 # Threaded GC — TLA+ model M4: old-gen allocation and mark-bitmap bytes
 
-**Status:** IMPLEMENTATION-READY PLAN (2026-09-28). Had an adversarial review on 2026-09-28
-against the current tree (§11): the sketch was revised and passes the translator and SANY again;
-TLC has not run.
+**Status:** IMPLEMENTED (2026-09-29) in `test/tla/M4-promotion-bitmap/`: steps 1–6 of §9 are done;
+step 7 (the gc-heap-tsan scenario, trace validation) and step 8's canary lines are left for the next
+wave. The quick tier (44 rows: 9 passing configurations, 8 register reproductions, 14 mutants in
+19 rows, 8 fix-candidate controls) and the deep tier behave as expected. TLC reproduces CR-001 (race
+and S1 half), CR-002, CR-014 (FATAL, silent release, `live_bytes` race) and CR-016 (the stash
+variant and a retired-chunk variant that needs no sweep). `AUDIT.md` there records the results, the
+counterexamples, and every way the implemented model differs from the sketch below; the biggest is
+a second size class, without which CR-014's FATAL is unreachable. `MAPPING.md` there is the model ↔
+code map. The sketch in §4.6 is kept as the reviewed design text; the committed model is
+authoritative.
+
+History: had an adversarial review on 2026-09-28 against the current tree (§11): the sketch was
+revised and passed the translator and SANY.
 
 **Parents:** `plans/threaded-gc-tla-verification.md` (§2 rules A1–A9, §5.1 index) and
 `plans/threaded-gc-tla-primer.md`. Read primer §3.2 (plain read-modify-writes), §3.4 (locks
@@ -1259,6 +1269,10 @@ replays the events against the model's steps. The vector-clock race detector run
 behaviour too, so a trace can show a race that TSan missed in the same run.
 
 ## 9. Implementation steps
+
+**Progress (2026-09-29):** steps 1–6 done (AUDIT.md in the model directory has the results and
+the deviations). Step 3's register updates go to the orchestrator. Step 7 and step 8's manifest
+lines are the next wave; step 8's `models.txt` rows are in.
 
 1. Create `test/tla/M4-promotion-bitmap/` with `PromoBitmap.tla` (§4.6), `MC.tla`, the §6
    configurations, MAPPING.md (§4.5 + A3's rows) and AUDIT.md.

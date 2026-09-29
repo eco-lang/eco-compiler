@@ -1,0 +1,4 @@
+# The events TraceMinorForwarding.tla matches (run_traces.py keeps only these after the merge;
+# the gang events order the root phase before the members and are then dropped, their ordering
+# kept in the vector clocks).
+load claim wait copy publish slot link trunc heads scan ylos ypush

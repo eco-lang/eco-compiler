@@ -1,0 +1,2 @@
+std::atomic<bool> stop{false};
+std::atomic<char*> bld_bottom{nullptr};

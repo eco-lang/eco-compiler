@@ -1,0 +1,16 @@
+runtime/src/allocator/OldGenSpace.cpp: (void)refillCursor(b.size_class);
+runtime/src/allocator/OldGenSpace.cpp: bool OldGenSpace::refillCursor(size_t cls) {
+runtime/src/allocator/OldGenSpace.cpp: bool OldGenSpace::refillCursorW(AllocCursor& c, size_t cls, PromoWorker& pw) {
+runtime/src/allocator/OldGenSpace.cpp: if (!refillCursor(cls)) return nullptr;
+runtime/src/allocator/OldGenSpace.cpp: setCursor(cls, id);
+runtime/src/allocator/OldGenSpace.cpp: setCursor(cls, id);
+runtime/src/allocator/OldGenSpace.cpp: setCursor(cls, id);
+runtime/src/allocator/OldGenSpace.cpp: setCursorW(c, cls, id, pw);
+runtime/src/allocator/OldGenSpace.cpp: setCursorW(c, cls, id, pw);
+runtime/src/allocator/OldGenSpace.cpp: void OldGenSpace::setCursor(size_t cls, BlockId id) {
+runtime/src/allocator/OldGenSpace.cpp: void OldGenSpace::setCursorW(AllocCursor& c, size_t cls, BlockId id, PromoWorker& pw) {
+runtime/src/allocator/OldGenSpace.cpp: while (result == nullptr && refillCursorW(c, cls, pw)) {
+runtime/src/allocator/OldGenSpace.hpp: bool refillCursor(size_t cls);
+runtime/src/allocator/OldGenSpace.hpp: bool refillCursorW(AllocCursor& c, size_t cls, PromoWorker& pw);
+runtime/src/allocator/OldGenSpace.hpp: void setCursor(size_t cls, BlockId id);
+runtime/src/allocator/OldGenSpace.hpp: void setCursorW(AllocCursor& c, size_t cls, BlockId id, PromoWorker& pw);

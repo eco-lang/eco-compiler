@@ -1,0 +1,16 @@
+runtime/src/allocator/OldGenSpace.cpp: (decodeOwner(loadOwnerRelaxed(page_index_[sl].primary)) != id &&
+runtime/src/allocator/OldGenSpace.cpp: const BlockId a = decodeOwner(loadOwner(slot.primary));
+runtime/src/allocator/OldGenSpace.cpp: const BlockId b = decodeOwner(loadOwner(slot.secondary));
+runtime/src/allocator/OldGenSpace.cpp: const uint32_t prim = loadOwnerRelaxed(slot.primary);
+runtime/src/allocator/OldGenSpace.cpp: const uint32_t prim = loadOwnerRelaxed(slot.primary);
+runtime/src/allocator/OldGenSpace.cpp: const uint32_t sec = loadOwnerRelaxed(slot.secondary);
+runtime/src/allocator/OldGenSpace.cpp: const uint32_t sec = loadOwnerRelaxed(slot.secondary);
+runtime/src/allocator/OldGenSpace.cpp: decodeOwner(loadOwnerRelaxed(page_index_[sl].secondary)) != id)) {
+runtime/src/allocator/OldGenSpace.cpp: for (uint32_t enc : {loadOwnerRelaxed(page_index_[sl].primary),
+runtime/src/allocator/OldGenSpace.cpp: loadOwnerRelaxed(page_index_[sl].secondary)}) {
+runtime/src/allocator/OldGenSpace.cpp: storeOwner(slot.primary, enc);
+runtime/src/allocator/OldGenSpace.cpp: storeOwner(slot.primary, sec);
+runtime/src/allocator/OldGenSpace.cpp: storeOwner(slot.secondary, 0);
+runtime/src/allocator/OldGenSpace.cpp: storeOwner(slot.secondary, 0);
+runtime/src/allocator/OldGenSpace.cpp: storeOwner(slot.secondary, enc);
+runtime/src/allocator/OldGenSpace.cpp: storeOwner(slot.secondary, enc);

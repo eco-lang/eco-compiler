@@ -158,6 +158,27 @@ The constructs the model plans use:
     `x` and then calls a defined operator that reads `x`, the operator sees the value from the
     *start* of the step. Pass the new value in as an argument instead (found while reviewing M4,
     where a claim's flush was stamped with the clock from before its CAS).
+14. **A disjunction in an action is a branch, not a guard.** TLC evaluates *every* disjunct of an
+    action to enumerate successors, so `await x = Nil \/ ~f[x]` still applies `f` to `Nil`, and
+    TLC stops with "not in the domain of the function". SANY cannot see it. Write a guarded
+    operator (`IsB(v) == v # Nil /\ f[v]`, then `await ~IsB(x)`) or an `IF` (found implementing M1).
+15. **Apalache: generate with `\in`, check with `\subseteq`.** `x \in SUBSET S` and
+    `f \in [S -> T]` are cheap as *generators* in an `--init` predicate, but as *checked*
+    invariants Apalache expands the whole set. Keep two forms of the type predicate: `TypeGen` for
+    the inductive check's `IndInit`, and `TypeInv` (with `\subseteq` and pointwise ranges) inside
+    the invariant (found implementing M1's lemma).
+16. **Apalache: keep SMT queries small.** For an inductive step:
+    - check an **action invariant** `Step == Inv'` with `--length=1`. It is checked on the
+      transition only, so Apalache does not re-check `Inv` on the `IndInit` state;
+    - run **one action per check** (`--next=A`), in parallel;
+    - write reachability as a **boolean vector over the concrete id set**, iterated N times
+      (`v[o] \/ \E p \in Obj : v[p] /\ f[p][i] = o`), and filter over concrete sets
+      (`{c \in Obj : ...}`). Do not fold set comprehensions over symbolic sets.
+
+    M1's first encoding had not finished a single `Drop` step after 35 minutes (on a heavily
+    loaded machine, so the figure is rough). The re-encoded one proved all 15 actions at N = 5,
+    with ten checks sharing 12 cores. Each took 5 to 22 minutes, except `Alloc`, `MinorIdle` and
+    `BWrite` (25 to 33 minutes) and the two minor-with-cycle steps (about an hour each).
 
 ## 3. From C++ to model steps
 

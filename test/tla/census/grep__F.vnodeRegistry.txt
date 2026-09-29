@@ -1,0 +1,5 @@
+elm-kernel-cpp/src/virtual-dom/VirtualDom.cpp: if (index >= vnodeRegistry.size()) return nullptr;
+elm-kernel-cpp/src/virtual-dom/VirtualDom.cpp: return vnodeRegistry[index];
+elm-kernel-cpp/src/virtual-dom/VirtualDom.cpp: static std::vector<VNodePtr> vnodeRegistry;
+elm-kernel-cpp/src/virtual-dom/VirtualDom.cpp: u32 index = static_cast<u32>(vnodeRegistry.size());
+elm-kernel-cpp/src/virtual-dom/VirtualDom.cpp: vnodeRegistry.push_back(node);

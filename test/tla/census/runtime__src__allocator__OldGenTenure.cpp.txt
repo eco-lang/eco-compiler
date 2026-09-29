@@ -1,0 +1,5 @@
+for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) g.claim[cls].w.store(0, std::memory_order_relaxed);
+if (cw.compare_exchange_weak(w, nw, std::memory_order_relaxed)) w = nw;
+if (cw.compare_exchange_weak(w, w + 1, std::memory_order_relaxed)) {
+std::atomic<uint64_t>& cw = g.claim[cls].w;
+uint64_t w = cw.load(std::memory_order_relaxed);

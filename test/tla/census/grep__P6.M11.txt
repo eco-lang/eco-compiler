@@ -1,0 +1,9 @@
+runtime/src/allocator/NurserySpace.cpp: updateBounds();
+runtime/src/allocator/NurserySpace.cpp: updateBounds();
+runtime/src/allocator/NurserySpace.cpp: void NurserySpace::updateBounds() {
+runtime/src/allocator/NurserySpace.hpp: void updateBounds();
+runtime/src/allocator/OldGenSpace.cpp: if (ylo_count_ != 0) recomputeYoungLargeBounds();
+runtime/src/allocator/OldGenSpace.cpp: recomputeYoungLargeBounds();
+runtime/src/allocator/OldGenSpace.cpp: recomputeYoungLargeBounds();
+runtime/src/allocator/OldGenSpace.cpp: void OldGenSpace::recomputeYoungLargeBounds() {
+runtime/src/allocator/OldGenSpace.hpp: void recomputeYoungLargeBounds();

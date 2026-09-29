@@ -1,0 +1,66 @@
+Array* a = array_.load(std::memory_order_acquire);
+Array* a = array_.load(std::memory_order_relaxed);
+Array* a = array_.load(std::memory_order_relaxed);
+Array::destroy(array_.load(std::memory_order_relaxed));
+ECO_TLA_TRACE_ONLY(const uint64_t o =) state.fetch_sub(1, std::memory_order_acq_rel);
+a->buf = new std::atomic<uint64_t>[static_cast<size_t>(n)];
+a->buf[b & a->mask].store(e, std::memory_order_release);
+alignas(64) std::atomic<Array*> array_{nullptr};
+alignas(64) std::atomic<int64_t> bottom_{0};
+alignas(64) std::atomic<int64_t> top_{0};
+array_.store(Array::make(log_initial), std::memory_order_relaxed);
+array_.store(na, std::memory_order_release);
+bool done() const { return (state.load(std::memory_order_acquire) & kDone) != 0; }
+bool stopRequested() const { return stop.load(std::memory_order_relaxed); }
+bottom_.store(0, std::memory_order_relaxed);
+bottom_.store(b + 1, std::memory_order_relaxed);
+bottom_.store(b + 1, std::memory_order_relaxed);
+bottom_.store(b + 1, std::memory_order_relaxed);
+bottom_.store(b, std::memory_order_relaxed);
+budget.store(b, std::memory_order_relaxed);
+const bool work = c.budget.load(std::memory_order_acquire) > 0 && env.anyWork();
+const int64_t b = bottom_.load(std::memory_order_acquire);
+const int64_t b = bottom_.load(std::memory_order_relaxed) - 1;
+const int64_t b = bottom_.load(std::memory_order_relaxed);
+const int64_t d = bottom_.load(std::memory_order_relaxed) -
+const int64_t t = top_.load(std::memory_order_acquire);
+const uint32_t se = c.share_epoch.load(std::memory_order_relaxed);
+const uint64_t e = a->buf[t & a->mask].load(std::memory_order_acquire);
+const uint64_t s = c.state.load(std::memory_order_acquire);
+e = a->buf[b & a->mask].load(std::memory_order_relaxed);
+if (!top_.compare_exchange_strong(t, t + 1, std::memory_order_seq_cst,
+if (!top_.compare_exchange_strong(t, t + 1, std::memory_order_seq_cst,
+if (c.budget.load(std::memory_order_acquire) > 0 && env.anyWork()) {
+if (c.state.compare_exchange_strong(expect, s | SliceControl::kDone,
+if (pool.compare_exchange_weak(b, b - take, std::memory_order_relaxed)) {
+if (state.compare_exchange_weak(s, s + 1 + kEpochOne, std::memory_order_acq_rel,
+inline bool claimTicket(MarkerCounters& w, std::atomic<int64_t>& pool) {
+inline void returnTickets(MarkerCounters& w, std::atomic<int64_t>& pool) {
+int64_t b = pool.load(std::memory_order_relaxed);
+int64_t t = top_.load(std::memory_order_acquire);
+int64_t t = top_.load(std::memory_order_relaxed);
+na->buf[i & na->mask].store(a->buf[i & a->mask].load(std::memory_order_relaxed),
+pool.fetch_add(static_cast<int64_t>(w.tickets), std::memory_order_relaxed);
+return bottom_.load(std::memory_order_relaxed) <= top_.load(std::memory_order_relaxed);
+return n.fetch_add(1, std::memory_order_relaxed) + 1;
+return static_cast<uint32_t>(state.load(std::memory_order_acquire) & kActiveMask);
+static std::atomic<int64_t> n{0};
+std::atomic<bool> stop{false};
+std::atomic<int64_t> budget{0};
+std::atomic<int64_t>& pool, Role role, bool joined) {
+std::atomic<uint32_t> share_epoch{0};
+std::atomic<uint64_t> state{0};
+std::atomic<uint64_t>* buf;
+std::atomic_thread_fence(std::memory_order_release);
+std::atomic_thread_fence(std::memory_order_seq_cst);
+std::atomic_thread_fence(std::memory_order_seq_cst);
+std::memory_order_acq_rel,
+std::memory_order_acquire)) {
+std::memory_order_acquire)) {
+std::memory_order_relaxed)) {
+std::memory_order_relaxed)) {
+std::memory_order_relaxed);
+std::memory_order_release);
+top_.load(std::memory_order_relaxed);
+top_.store(0, std::memory_order_relaxed);
+uint64_t s = state.load(std::memory_order_acquire);

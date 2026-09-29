@@ -18,6 +18,7 @@
 
 #include "GCHelperPool.hpp"
 #include "PageWork.hpp"
+#include "TlaTrace.hpp"   // ECO_TLA_TRACE_ENABLED: the trace build (gc-helper-trace, M7)
 
 using namespace Elm::gc;
 
@@ -163,8 +164,26 @@ void checkPattern(World& w, size_t k, uint64_t gen) {
     }
 }
 
+#if ECO_TLA_TRACE_ENABLED
+// M7's trace (test/tla/M7-pagework/TracePageWork.tla): PageWork's events name an
+// extent by its 1-based index (the model's extent id); an address one past the
+// last extent (a window's end) is N + 1.
+const World* g_trace_world = nullptr;
+size_t g_trace_n = 0;
+int64_t traceExtentId(const void* p) {
+    const World* w = g_trace_world;
+    if (w == nullptr) return -1;
+    const char* c = static_cast<const char*>(p);
+    if (c < w->base || c > w->base + g_trace_n * kExt) return -1;
+    return static_cast<int64_t>((c - w->base) / kExt) + 1;
+}
+#endif
+
+// n_ext: the extents the script uses (kExtents by default); seed 0: the fixed
+// default seeds; trace: record the run (trace build only, M7's H2/H3 traces).
 void script(HelperMode mode, unsigned threads, unsigned jitter, bool real, int steps,
-            size_t ahead) {
+            size_t ahead, size_t n_ext = kExtents, uint64_t seed = 0, bool trace = false,
+            uint32_t delay = 2, unsigned reuse_pct = 35) {
     auto& pool = freshPool(mode, threads, jitter);
     World w;
     w.real = real;
@@ -184,14 +203,31 @@ void script(HelperMode mode, unsigned threads, unsigned jitter, bool real, int s
     ops.ctx = &w;
     PageWorkConfig cfg;
     cfg.decommit = true;
-    cfg.delay = 2;
+    cfg.delay = delay;
     cfg.pending_cap = 16 * kExt;
     cfg.ahead_bytes = ahead;
     std::mutex big_lock;   // stands in for Allocator::thread_mutex_
     std::vector<uint64_t> gen(kExtents, 0);
+    const size_t bump_limit = trace ? n_ext : n_ext - 8;
     {
         PageWork pw(ops, cfg, pool);
-        std::mt19937_64 rng(real ? 3 : 2);
+        std::mt19937_64 rng(seed != 0 ? seed : (real ? 3 : 2));
+#if ECO_TLA_TRACE_ENABLED
+        if (trace) {
+            g_trace_world = &w;
+            g_trace_n = n_ext;
+            ::Elm::tlatrace::setObjId(&traceExtentId);
+            ::Elm::tlatrace::nameThread("mut", -1);
+            char hdr[256];
+            std::snprintf(hdr, sizeof hdr,
+                          "{\"harness\":\"pagework\",\"N\":%zu,\"slots\":%zu,\"pool\":%u,"
+                          "\"jitter\":%u,\"real\":%s,\"steps\":%d,\"ahead\":%zu,\"seed\":%" PRIu64
+                          ",\"delay\":%u,\"reuse\":%u}",
+                          n_ext, PageWork::kJobSlots, threads, jitter, real ? "true" : "false", steps,
+                          ahead / kExt, seed, delay, reuse_pct);
+            ::Elm::tlatrace::begin(hdr);
+        }
+#endif
         size_t bump = 0;                   // next never-used extent
         std::vector<size_t> in_use;
         std::vector<size_t> free_list;     // first-fit order, swap-remove (like acquire)
@@ -199,7 +235,7 @@ void script(HelperMode mode, unsigned threads, unsigned jitter, bool real, int s
         for (int step = 0; step < steps; ++step) {
             std::lock_guard<std::mutex> lk(big_lock);
             const unsigned r = rng() % 100;
-            if (r < 35 && !free_list.empty()) {
+            if (r < reuse_pct && !free_list.empty()) {
                 // Reuse the first free extent.
                 const size_t k = free_list.front();
                 free_list.front() = free_list.back();
@@ -208,7 +244,7 @@ void script(HelperMode mode, unsigned threads, unsigned jitter, bool real, int s
                 w.state[k].store(InUse);
                 writePattern(w, k, ++gen[k]);
                 in_use.push_back(k);
-            } else if (r < 55 && bump < kExtents - 8) {
+            } else if (r < reuse_pct + 20 && bump < bump_limit) {
                 char* p = w.base + bump * kExt;
                 char* from = nullptr;
                 const size_t n = pw.onFreshBump(p, kExt, &from);
@@ -227,13 +263,20 @@ void script(HelperMode mode, unsigned threads, unsigned jitter, bool real, int s
                 w.state[k].store(Free);
                 free_list.push_back(k);
             } else {
-                pw.syncPoint(++epoch, w.base + bump * kExt, w.base + kExtents * kExt, true);
+                pw.syncPoint(++epoch, w.base + bump * kExt, w.base + n_ext * kExt, true);
             }
             // Owned extents keep their pattern, whatever the helpers do.
             if (real && step % 64 == 0) {
                 for (size_t k : in_use) checkPattern(w, k, gen[k]);
             }
         }
+#if ECO_TLA_TRACE_ENABLED
+        if (trace) {
+            pool.drain();                                 // every job Done: quiescent
+            if (!::Elm::tlatrace::end(nullptr)) die("trace: cannot write the log");
+            g_trace_world = nullptr;
+        }
+#endif
         std::lock_guard<std::mutex> lk(big_lock);
         pw.drainAll(true);
         for (size_t k : in_use) checkPattern(w, k, gen[k]);
@@ -244,7 +287,36 @@ void script(HelperMode mode, unsigned threads, unsigned jitter, bool real, int s
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+#if ECO_TLA_TRACE_ENABLED
+    // The trace build (gc-helper-trace): one recorded H2/H3 script, Concurrent mode.
+    //   gc-helper-trace pagework <fake|real> <threads> <jitter us> <steps> <extents>
+    //                   <ahead extents> <seed> [<decommit delay syncs> [<reuse %>]]
+    //   (defaults 2 and 35, the H2/H3 script's own)
+    if (argc >= 9 && argc <= 11 && std::strcmp(argv[1], "pagework") == 0) {
+        const bool real = std::strcmp(argv[2], "real") == 0;
+        const unsigned threads = static_cast<unsigned>(std::atoi(argv[3]));
+        const unsigned jitter = static_cast<unsigned>(std::atoi(argv[4]));
+        const int steps = std::atoi(argv[5]);
+        const size_t n = static_cast<size_t>(std::atoi(argv[6]));
+        const size_t ahead = static_cast<size_t>(std::atoi(argv[7])) * kExt;
+        const uint64_t seed = std::strtoull(argv[8], nullptr, 10);
+        const uint32_t delay = argc >= 10 ? static_cast<uint32_t>(std::atoi(argv[9])) : 2;
+        const unsigned reuse = argc >= 11 ? static_cast<unsigned>(std::atoi(argv[10])) : 35;
+        if (threads < 1 || n < 2 || n > kExtents || steps < 1 || seed == 0 || reuse > 55)
+            die("pagework: bad arguments");
+        script(HelperMode::Concurrent, threads, jitter, real, steps, ahead, n, seed, /*trace=*/true,
+               delay, reuse);
+        std::printf("pagework trace PASS\n");
+        return 0;
+    }
+    std::fprintf(stderr, "usage: %s pagework <fake|real> <threads> <jitter us> <steps> <extents> "
+                         "<ahead extents> <seed> [<decommit delay syncs> [<reuse %%>]]\n", argv[0]);
+    return 2;
+#else
+    (void)argc;
+    (void)argv;
+#endif
     const unsigned kThreads[] = {1, 2, 4};
     const unsigned kJitter[] = {0, 300};
     for (unsigned t : kThreads) {

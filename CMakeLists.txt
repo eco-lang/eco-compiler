@@ -1160,6 +1160,73 @@ add_custom_command(
 add_custom_target(kernel-license-check ALL
         DEPENDS "${CMAKE_BINARY_DIR}/kernel-license-manifest.stamp")
 
+# ============================================================================
+# GC_MODEL_001: the TLA+ model canary (plans/threaded-gc-tla-verification.md
+# section 7, test/tla/README.md "The canary").
+#
+# The TLA+ models under test/tla/ and the weak-memory drivers under test/genmc/
+# each describe some GC concurrency code. test/tla/manifest.txt pins that code
+# (whole files, TLA-REGION marked regions, per-file censuses of every atomic and
+# lock line, and the footprint rows' re-derivation greps). When pinned code
+# changes, the build fails until every model the pin names has an AUDIT.md
+# verdict for the new code. Like kernel-license-check it lives HERE, in ALL,
+# because test/ is EXCLUDE_FROM_ALL. It needs only sh, awk and sha256sum, and
+# costs about a second, only when an input changed.
+#
+# DEPENDS covers every allocator source (the census coverage check must see a
+# new atomic in ANY of them), every file the manifest pins, and the registries.
+# A new TLA-REGION marker outside those files needs a reconfigure; the marker
+# coverage check catches the case where that was forgotten.
+# ============================================================================
+set(TLA_CANARY_MANIFEST "${CMAKE_SOURCE_DIR}/test/tla/manifest.txt")
+set(TLA_CANARY_CHECKER "${CMAKE_SOURCE_DIR}/test/scripts/check-tla-manifest.sh")
+if(EXISTS "${TLA_CANARY_MANIFEST}")
+    file(GLOB _tla_canary_alloc
+            "${CMAKE_SOURCE_DIR}/runtime/src/allocator/*.cpp"
+            "${CMAKE_SOURCE_DIR}/runtime/src/allocator/*.hpp"
+            "${CMAKE_SOURCE_DIR}/runtime/src/allocator/*.h")
+    file(GLOB _tla_canary_maps "${CMAKE_SOURCE_DIR}/test/tla/*/MAPPING.md")
+    set(TLA_CANARY_DEPS
+            "${TLA_CANARY_CHECKER}"
+            "${TLA_CANARY_MANIFEST}"
+            "${CMAKE_SOURCE_DIR}/test/tla/footprint-greps.txt"
+            "${CMAKE_SOURCE_DIR}/test/tla/models.txt"
+            ${_tla_canary_alloc}
+            ${_tla_canary_maps})
+    if(EXISTS "${CMAKE_SOURCE_DIR}/test/genmc/drivers.txt")
+        list(APPEND TLA_CANARY_DEPS "${CMAKE_SOURCE_DIR}/test/genmc/drivers.txt")
+    endif()
+    file(STRINGS "${TLA_CANARY_MANIFEST}" _tla_canary_lines
+            REGEX "^(file|region|census) +[0-9a-f-]+ +[^ ]+ ")
+    foreach(_line IN LISTS _tla_canary_lines)
+        # "<kind>  <sha256>  <repo-relative path>  <id>  <models>"
+        string(REGEX REPLACE "^[a-z]+ +[0-9a-f-]+ +([^ ]+) .*$" "\\1" _tla_pinned "${_line}")
+        # Only existing files: a missing one is reported by the checker itself.
+        if(EXISTS "${CMAKE_SOURCE_DIR}/${_tla_pinned}")
+            list(APPEND TLA_CANARY_DEPS "${CMAKE_SOURCE_DIR}/${_tla_pinned}")
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES TLA_CANARY_DEPS)
+    add_custom_command(
+            OUTPUT "${CMAKE_BINARY_DIR}/tla-canary.stamp"
+            COMMAND sh "${TLA_CANARY_CHECKER}" "${CMAKE_SOURCE_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E touch "${CMAKE_BINARY_DIR}/tla-canary.stamp"
+            DEPENDS ${TLA_CANARY_DEPS}
+            COMMENT "Checking the TLA+ model canary (GC_MODEL_001, test/tla/manifest.txt)"
+            VERBATIM
+    )
+    add_custom_target(tla-canary ALL
+            DEPENDS "${CMAKE_BINARY_DIR}/tla-canary.stamp")
+endif()
+
+# TLA+ models of the threaded GC's concurrent protocols (test/tla/README.md,
+# plans/threaded-gc-tla-verification.md §6): the tla-check and tla-check-deep
+# targets. Not in ALL; they need Java and tla2tools.jar when they run.
+option(ECO_TLA "Define the TLA+ model-checking targets tla-check / tla-check-deep" ON)
+if(ECO_TLA)
+    add_subdirectory(test/tla)
+endif()
+
 # Convenience targets for common workflows.
 
 # Usage: cmake --build build --target rebuild

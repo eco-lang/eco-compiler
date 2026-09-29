@@ -1,0 +1,5 @@
+runtime/src/allocator/OldGenSpace.cpp: assertSlotsQuiescent("ensureMarkers");
+runtime/src/allocator/OldGenSpace.cpp: ensureMarkers();
+runtime/src/allocator/OldGenSpace.cpp: ensureMarkers();
+runtime/src/allocator/OldGenSpace.cpp: void OldGenSpace::ensureMarkers() {
+runtime/src/allocator/OldGenSpace.hpp: void ensureMarkers();

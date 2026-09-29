@@ -1,0 +1,6 @@
+committed_.store(0, std::memory_order_relaxed);
+committed_.store(0, std::memory_order_relaxed);
+committed_.store(c, std::memory_order_release);
+if (n <= committed_.load(std::memory_order_relaxed)) return;
+size_t committed() const { return committed_.load(std::memory_order_acquire); }
+std::atomic<size_t> committed_{0};

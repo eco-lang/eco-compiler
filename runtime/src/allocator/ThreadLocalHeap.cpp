@@ -11,6 +11,7 @@
 #include "StackMap.hpp"
 #include "StackUnwind.hpp"
 #include "HeapChildWalk.hpp"
+#include "TlaTrace.hpp"   // compiled-out hooks (trace builds only)
 #include <unordered_set>
 #include <cassert>
 #include <chrono>
@@ -235,6 +236,7 @@ void ThreadLocalHeap::noteLargeAlloc(LargePlacement where, size_t size, uint32_t
 #endif
 }
 
+// TLA-REGION(TLH.destructor) begin
 ThreadLocalHeap::~ThreadLocalHeap() {
     // threaded-gc-07: stop / finish / stats-merge the last tenure job while
     // the old gen (destroyed before the nursery) still exists.
@@ -242,6 +244,7 @@ ThreadLocalHeap::~ThreadLocalHeap() {
     // threaded-gc-04: verify, then drop, this heap's P1 census table.
     p1::forget(old_gen_);
 }
+// TLA-REGION(TLH.destructor) end
 
 void* ThreadLocalHeap::allocate(size_t size, Tag tag) {
     // Align to 8 bytes up front so the threshold comparison is meaningful
@@ -703,6 +706,7 @@ struct PauseEndHook {
     }
 };
 
+// TLA-REGION(TLH.minorGC) begin
 void ThreadLocalHeap::minorGC() {
 #if ENABLE_GC_PHASE_TIMERS
     GCPauseScope pause_scope(*this, /*is_major=*/false);
@@ -710,6 +714,7 @@ void ThreadLocalHeap::minorGC() {
     rec.start_ns = GCStats::nowSinceProcessStartNs();
 #endif
     PauseEndHook pause_end(*this, parent_);
+    ECO_TLA_TRACE("minor", "cyc", old_gen_.cycleActive());   // M1 trace: P_Minor
     if (Allocator::heapTraceEnabled()) {
         parent_->dumpHeapState("minorGC begin");
     }
@@ -779,12 +784,15 @@ void ThreadLocalHeap::minorGC() {
         }
     }
 }
+// TLA-REGION(TLH.minorGC) end
 
+// TLA-REGION(TLH.majorGC) begin
 void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
 #if ENABLE_GC_PHASE_TIMERS
     GCPauseScope pause_scope(*this, /*is_major=*/true);
 #endif
     PauseEndHook pause_end(*this, parent_);
+    ECO_TLA_TRACE("major", "cyc", old_gen_.cycleActive());   // M1 trace: J_Join
     pause_had_major_ = true;
     // threaded-gc-07 (P§3.16): a STW major joins and merges the tenure job
     // first; its mark then greys the copy of every forwarded tenuring object.
@@ -1006,6 +1014,7 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
 
     parent_->dumpHeapState("majorGC end");
 }
+// TLA-REGION(TLH.majorGC) end
 
 bool ThreadLocalHeap::isNurseryNearFull(float threshold) const {
     // LIVE per-side capacity, not the CONFIGURED one: the nursery grows
@@ -1062,6 +1071,7 @@ void ThreadLocalHeap::notePauseCycleWork(int what) {
 #endif
 }
 
+// TLA-REGION(TLH.startMarkCycle) begin
 void ThreadLocalHeap::startMarkCycle(GCStats::MajorReason reason) {
     const uint64_t t_start = cycleNowNs();
 #if ENABLE_GC_STATS
@@ -1079,6 +1089,7 @@ void ThreadLocalHeap::startMarkCycle(GCStats::MajorReason reason) {
     // run the mark on N markers -- T = 0, the whole cycle in this pause.
     const uint32_t slices = config_->incremental_mark ? config_->incremental_mark_slices : 0;
     old_gen_.beginMarkCycle(*parent_, slices);
+    ECO_TLA_TRACE("t0", "T", slices);   // M1 trace: P_T0 (the snapshot's greys follow)
     cycle_t0_wall_ns_ = t_start;
     cycle_mark_ns_ = 0;
     cycle_inpause_ns_ = 0;
@@ -1122,6 +1133,7 @@ void ThreadLocalHeap::startMarkCycle(GCStats::MajorReason reason) {
     // (conc_mark 2) or mark it all now (conc_mark 1). After every other t0
     // action, IM1's record half included: nothing the mutator does in this
     // pause may race with a marker.
+    ECO_TLA_TRACE("t0end", "greys", old_gen_.markStackSize());   // no marker runs yet (IM14)
     old_gen_.afterSnapshot();
     notePauseCycleWork(0);
     const uint64_t dur = cycleNowNs() - t_start;
@@ -1139,7 +1151,9 @@ void ThreadLocalHeap::startMarkCycle(GCStats::MajorReason reason) {
         finishMarkCycleNow(OldGenSpace::CycleFinish::Schedule);
     }
 }
+// TLA-REGION(TLH.startMarkCycle) end
 
+// TLA-REGION(TLH.stepMarkCycle) begin
 void ThreadLocalHeap::stepMarkCycle() {
     old_gen_.noteCycleMinorEnd();
     if (old_gen_.cycleState() == OldGenSpace::CycleState::HandoffDue) {
@@ -1174,10 +1188,15 @@ void ThreadLocalHeap::stepMarkCycle() {
     }
 #endif
 }
+// TLA-REGION(TLH.stepMarkCycle) end
 
+// TLA-REGION(TLH.finishMarkCycleNow) begin
 void ThreadLocalHeap::finishMarkCycleNow(OldGenSpace::CycleFinish why) {
     assert(old_gen_.cycleActive());
     assert(!old_gen_.in_slice_ && "IM9: a join inside a mark slice");
+    ECO_TLA_TRACE(why == OldGenSpace::CycleFinish::Pressure ? "pressure"
+                  : why == OldGenSpace::CycleFinish::Join ? "join" : "finish",
+                  "marking", old_gen_.cycleState() == OldGenSpace::CycleState::Marking);
     if (old_gen_.cycleState() == OldGenSpace::CycleState::Marking) {
         const uint64_t t_start = cycleNowNs();
         old_gen_.drainCycleMark();
@@ -1187,7 +1206,9 @@ void ThreadLocalHeap::finishMarkCycleNow(OldGenSpace::CycleFinish why) {
     }
     completeMarkCycle(why);
 }
+// TLA-REGION(TLH.finishMarkCycleNow) end
 
+// TLA-REGION(TLH.completeMarkCycle) begin
 void ThreadLocalHeap::completeMarkCycle(OldGenSpace::CycleFinish why) {
 #if ECO_HEAP_VALIDATE
     // IM1 (check half) and IM2, before anything is freed.
@@ -1218,6 +1239,10 @@ void ThreadLocalHeap::completeMarkCycle(OldGenSpace::CycleFinish why) {
 #else
     old_gen_.handoffMarkCycle(nullptr, &prof);
 #endif
+    // M1 trace: H_Free (logged after the tail, whose "tail" probe records the marks it frees by)
+    ECO_TLA_TRACE("handoff", "k", span_minors,
+                  "why", why == OldGenSpace::CycleFinish::Pressure ? "pressure"
+                         : why == OldGenSpace::CycleFinish::Join ? "join" : "schedule");
     pause_had_major_ = true;   // one major per cycle for the decommit clock
     notePauseCycleWork(2);
     const uint64_t dur = cycleNowNs() - t_start;
@@ -1282,6 +1307,7 @@ void ThreadLocalHeap::completeMarkCycle(OldGenSpace::CycleFinish why) {
     (void)span_minors;
     (void)units;
 }
+// TLA-REGION(TLH.completeMarkCycle) end
 
 #if ECO_HEAP_VALIDATE
 // IM1/IM2: an INDEPENDENT tracer (its own visited set, visitHeapChildren

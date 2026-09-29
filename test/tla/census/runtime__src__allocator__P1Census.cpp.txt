@@ -1,0 +1,14 @@
+#include <mutex>
+std::lock_guard<std::mutex> lk(g.mu);
+std::lock_guard<std::mutex> lk(g.mu);
+std::lock_guard<std::mutex> lk(g.mu);
+std::lock_guard<std::mutex> lk(g.mu);
+std::lock_guard<std::mutex> lk(g.mu);
+std::lock_guard<std::mutex> lk(g.mu);
+std::lock_guard<std::mutex> lk(g.mu);
+std::lock_guard<std::mutex> lk(g.mu);
+std::lock_guard<std::mutex> lk(g.mu);
+std::lock_guard<std::mutex> lk(g.mu);
+std::lock_guard<std::mutex> lk(g.mu);
+std::lock_guard<std::mutex> lk(g.mu);
+std::mutex mu;

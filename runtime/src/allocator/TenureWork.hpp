@@ -43,6 +43,8 @@
 #include <thread>
 #include <vector>
 
+#include "TlaTrace.hpp"   // compiled-out hooks (trace builds only: M5's trace, test/tla/)
+
 namespace Elm::tenurework {
 
 // ---------------------------------------------------------------------------
@@ -215,12 +217,19 @@ public:
 
     DrainResult run(const std::atomic<bool>* stop) {
         for (;;) {
-            if (stop != nullptr && stop->load(std::memory_order_relaxed)) return DrainResult::Stopped;
+            if (stop != nullptr && stop->load(std::memory_order_relaxed)) {
+                // M5 trace: the stop request (keyed by the flag and the job's gen) is before this.
+                ECO_TLA_TRACE("tstop", "get", ::Elm::tlatrace::key("S", stop, static_cast<int64_t>(env_.gen())));
+                return DrainResult::Stopped;
+            }
             if (st_.test_stop_after != 0 && st_.items >= st_.test_stop_after) {
                 st_.test_stop_after = 0;          // a one-shot forced stop
                 return DrainResult::Stopped;
             }
-            if (!step()) return DrainResult::Done;
+            if (!step()) {
+                ECO_TLA_TRACE("tend");            // M5 trace: no item left
+                return DrainResult::Done;
+            }
             ++st_.items;
             if (st_.test_sleep_us_per_item != 0) sleepUs(st_.test_sleep_us_per_item);
         }
@@ -253,6 +262,8 @@ public:
         // needs no claim: FWD is published once, after the copy. Readers
         // (the pause after the join) synchronise through the join.
         uint64_t e = ref(w).load(std::memory_order_relaxed);
+        ECO_TLA_TRACE("tload", "obj", ::Elm::tlatrace::obj(obj), "st", stateOf(e), "g", genOf(e),
+                      "dst", ::Elm::tlatrace::obj(fwdOf(e, g)));   // M5 trace: the entry observed
         if (char* d = fwdOf(e, g)) return d;
         if (genOf(e) == (g & kGenMask) && stateOf(e) == kStateBusy) {
             std::fprintf(stderr, "[tenure] FATAL: BUSY shadow entry in the exact engine (%p)\n", obj);
@@ -260,9 +271,11 @@ public:
         }
         const size_t size = env_.sizeOf(obj);
         char* dst = static_cast<char*>(env_.copy(obj, size));
+        ECO_TLA_TRACE("tcopy", "obj", ::Elm::tlatrace::obj(obj), "dst", ::Elm::tlatrace::obj(dst));
         ++st_.tenured;
         st_.tenured_bytes += size;
         publish(w, dst, g);
+        ECO_TLA_TRACE("tpub", "obj", ::Elm::tlatrace::obj(obj), "dst", ::Elm::tlatrace::obj(dst));
         if (push) st_.stack.push_back(dst);
         return dst;
     }
@@ -300,6 +313,7 @@ private:
         }
         if (st_.next_start < st_.starts.size()) {
             const size_t i = st_.next_start++;
+            ECO_TLA_TRACE("titem", "k", "start", "idx", i, "tgt", ::Elm::tlatrace::obj(st_.starts[i]));
             if (i + 8 < st_.starts.size()) prefetchTarget(st_.starts[i + 8]);
             if (st_.test_skip_start_every != 0 && (i + 1) % st_.test_skip_start_every == 0) return true;
             tenure(st_.starts[i]);
@@ -309,6 +323,7 @@ private:
             if (st_.next_heal + 16 < st_.heal.size()) __builtin_prefetch(st_.heal[st_.next_heal + 16], 0, 3);
             const uint64_t v = *st_.heal[st_.next_heal++];   // immutable under P1
             void* t = env_.target(v);
+            ECO_TLA_TRACE("titem", "k", "heal", "idx", st_.next_heal - 1, "tgt", ::Elm::tlatrace::obj(t));
             if (t != nullptr && env_.inTenuring(t)) tenure(t);
             return true;
         }
@@ -421,6 +436,7 @@ private:
     void reachYlos(const void* t) {
         const long k = ylosFind(st_.ylos, t);
         if (k < 0) return;   // a YLOS object outside the snapshot: TV6 at the merge (validate)
+        ECO_TLA_TRACE("treach", "obj", ::Elm::tlatrace::obj(t), "new", st_.reached[static_cast<size_t>(k)] == 0);
         if (st_.reached[static_cast<size_t>(k)]) return;
         st_.reached[static_cast<size_t>(k)] = 1;
         ++st_.ylos_reached;
@@ -430,8 +446,17 @@ private:
     // A child slot of one of the job's own copies: the only slots it writes.
     void childOfCopy(void* parent, uint64_t* s) {
         void* t = env_.target(*s);
+        ECO_TLA_TRACE("tchild", "par", ::Elm::tlatrace::obj(parent), "off",
+                      static_cast<int64_t>(reinterpret_cast<char*>(s) - static_cast<char*>(parent)),
+                      "tgt", ::Elm::tlatrace::obj(t));   // M5 trace: one slot of a copy's scan
         if (t == nullptr) return;
-        if (env_.inTenuring(t)) { *s = env_.word(tenure(t)); return; }
+        if (env_.inTenuring(t)) {
+            *s = env_.word(tenure(t));
+            ECO_TLA_TRACE("tfix", "par", ::Elm::tlatrace::obj(parent), "off",
+                          static_cast<int64_t>(reinterpret_cast<char*>(s) - static_cast<char*>(parent)),
+                          "val", ::Elm::tlatrace::obj(env_.target(*s)));
+            return;
+        }
         if (env_.ylosMaybe(t)) { reachYlos(t); return; }
         if (env_.youngElsewhere(t)) env_.abortYoungChild(parent, t);   // TV6 (every build)
     }
@@ -502,6 +527,9 @@ private:
         void* y = const_cast<char*>(st_.ylos[k].obj);
         env_.forEachChildSlot(y, [&](uint64_t* s) {
             void* t = env_.target(*s);
+            ECO_TLA_TRACE("tchild", "par", ::Elm::tlatrace::obj(y), "off",
+                          static_cast<int64_t>(reinterpret_cast<char*>(s) - static_cast<char*>(y)),
+                          "tgt", ::Elm::tlatrace::obj(t));   // M5 trace: one slot of a YLOS scan
             if (t == nullptr) return;
             if (env_.inTenuring(t)) { (void)tenure(t); return; }
             if (env_.ylosMaybe(t)) reachYlos(t);

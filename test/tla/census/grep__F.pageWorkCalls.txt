@@ -1,0 +1,26 @@
+runtime/src/allocator/Allocator.cpp: char* Allocator::acquireOldGenBlock(size_t size) {
+runtime/src/allocator/Allocator.cpp: char* block_base = acquireOldGenBlock(block_size);
+runtime/src/allocator/Allocator.cpp: const auto r = page_work_->onReuse(block, block_size, callerInPause());
+runtime/src/allocator/Allocator.cpp: if (page_work_) commit_bytes = page_work_->onFreshBump(block_base, size, &commit_from);
+runtime/src/allocator/Allocator.cpp: page_work_->onRelease(block, size, callerInPause());
+runtime/src/allocator/Allocator.cpp: page_work_->syncPoint(sync_epoch_, major_epoch_, heap_base + old_gen_committed,
+runtime/src/allocator/Allocator.cpp: void Allocator::releaseOldGenBlock(char* block, size_t size) {
+runtime/src/allocator/Allocator.hpp: char* acquireOldGenBlock(size_t size);
+runtime/src/allocator/Allocator.hpp: void releaseOldGenBlock(char* block, size_t size);
+runtime/src/allocator/OldGenSpace.cpp: allocator_->releaseOldGenBlock(blk.start, total);
+runtime/src/allocator/OldGenSpace.cpp: allocator_->releaseOldGenBlock(start, bytes);
+runtime/src/allocator/OldGenSpace.cpp: char* base = allocator_->acquireOldGenBlock(config_->alloc_buffer_size);
+runtime/src/allocator/OldGenSpace.cpp: char* base = allocator_->acquireOldGenBlock(config_->alloc_buffer_size);
+runtime/src/allocator/OldGenSpace.cpp: char* base = allocator_->acquireOldGenBlock(config_->alloc_buffer_size);
+runtime/src/allocator/OldGenSpace.cpp: char* base = allocator_->acquireOldGenBlock(config_->alloc_buffer_size);
+runtime/src/allocator/OldGenSpace.cpp: char* block_base = allocator_->acquireOldGenBlock(block_size);
+runtime/src/allocator/PageWork.cpp: PageWork::Reuse PageWork::onReuse(char* p, size_t n, bool in_pause) {
+runtime/src/allocator/PageWork.cpp: size_t PageWork::onFreshBump(char* p, size_t n, char** commit_from) {
+runtime/src/allocator/PageWork.cpp: void PageWork::onRelease(char* p, size_t n, bool in_pause) {
+runtime/src/allocator/PageWork.cpp: void PageWork::syncPoint(uint64_t epoch, uint64_t major_epoch, char* bump, char* cap_end,
+runtime/src/allocator/PageWork.hpp: Reuse onReuse(char* p, size_t n, bool in_pause);
+runtime/src/allocator/PageWork.hpp: size_t onFreshBump(char* p, size_t n, char** commit_from);
+runtime/src/allocator/PageWork.hpp: syncPoint(epoch, major_epoch_, bump, cap_end, in_pause);
+runtime/src/allocator/PageWork.hpp: void onRelease(char* p, size_t n, bool in_pause);
+runtime/src/allocator/PageWork.hpp: void syncPoint(uint64_t epoch, char* bump, char* cap_end, bool in_pause) {
+runtime/src/allocator/PageWork.hpp: void syncPoint(uint64_t epoch, uint64_t major_epoch, char* bump, char* cap_end,

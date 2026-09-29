@@ -1,0 +1,81 @@
+# Footprint rows and their re-derivation greps (plans/threaded-gc-tla-verification.md 7.1, 7.2).
+# Read by test/scripts/check-tla-manifest.sh. TAB-separated, ASCII only:
+#
+#   <row id> TAB <path globs, space-separated, repo-relative> TAB <awk ERE, or - for none>
+#
+# Rows come from the phase plans' shared-state audits:
+#   H1..H15      05c P3.6  (what a background marker reads, or the mutator writes, during an episode)
+#   P6.M1..M15   06  P3.11 (what a parallel-minor worker touches while others run)
+#   T1..T11      07  P3.17 (the concurrent tenure collector's footprint)
+# The greps are the plans' own, turned into ERE ("\|" -> "|", "\(" -> "[(]"); the T rows had none,
+# so theirs are derived from the code's names (2026-09-28). A row whose grep is "-" is a written
+# abstraction only: it needs no grep pin, but it must still appear in some model's MAPPING.md.
+# The grep pin (kind grep in manifest.txt) fires when a line matching the grep is added, removed
+# or changed anywhere in the globs: a new write site of a footprint location needs a verdict.
+H1	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	setMarkBitInBlock|bitscan::setBit|largeMark[(]
+H1b	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	setCursor|refillCursor
+H2	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	isMarkedInBlockRelaxed|assertCellWasWhite|noteCycleAllocation
+H3	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	[.]primary|[.]secondary
+H4	runtime/src/allocator/ReservedArray.hpp	committed_
+H5	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	region_end_ =|region_base_ =
+H6	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	nursery_->contains
+H7	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	cycle_state_|snapshot_mode_
+H8	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	isYoungLarge|mayBeYoungLarge
+H9	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	blocks_[.]add|[.]is_large =|[.]size_class =|materializeBlock
+H10	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	retireOldArrays|deque[.]reset|[.]ctr[.]
+H11	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	alloc_stats_[.]pm
+H12	runtime/src/allocator/OldGenSpace.hpp	test_[a-z0-9_]+_
+H13	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	ensureMarkers
+H14	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	-
+H15	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	index_base_ =
+P6.M1	runtime/src/allocator/NurserySpace.cpp runtime/src/allocator/NurseryParallel.cpp runtime/src/allocator/MinorWork.hpp	hdr->tag == Tag_Forward|Forward [*]fwd
+P6.M2	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	-
+P6.M3	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	-
+P6.M4	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	copy_ptr_|copyToSpace
+P6.M5	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	cursor_[[]
+P6.M6	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	allocateFromSizeClassBitmap
+P6.M7	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	allocated_bytes [+]=
+P6.M8	runtime/src/allocator/NurserySpace.cpp runtime/src/allocator/NurseryParallel.cpp	recordSurvival|recordPromotion
+P6.M9	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	large_body_index_
+P6.M10	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	-
+P6.M11	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	updateBounds|recomputeYoungLargeBounds
+P6.M12	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	g_scan_
+P6.M13	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	promo_instr_
+P6.M14	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	-
+P6.M15	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	-
+T1	runtime/src/allocator/TenureWork.hpp runtime/src/allocator/NurseryTenure.cpp runtime/src/allocator/NurseryRegion.cpp runtime/src/allocator/NurseryRegions.hpp runtime/src/allocator/OldGenTenure.cpp	surv_top
+T2	runtime/src/allocator/TenureWork.hpp runtime/src/allocator/NurseryTenure.cpp runtime/src/allocator/NurseryRegion.cpp runtime/src/allocator/NurseryRegions.hpp runtime/src/allocator/OldGenTenure.cpp	heal
+T3	runtime/src/allocator/TenureWork.hpp runtime/src/allocator/NurseryTenure.cpp runtime/src/allocator/NurseryRegion.cpp runtime/src/allocator/NurseryRegions.hpp runtime/src/allocator/OldGenTenure.cpp	reached
+T4	runtime/src/allocator/TenureWork.hpp runtime/src/allocator/NurseryTenure.cpp runtime/src/allocator/NurseryRegion.cpp runtime/src/allocator/NurseryRegions.hpp runtime/src/allocator/OldGenTenure.cpp	shadow
+T5	runtime/src/allocator/TenureWork.hpp runtime/src/allocator/NurseryTenure.cpp runtime/src/allocator/NurseryRegion.cpp runtime/src/allocator/NurseryRegions.hpp runtime/src/allocator/OldGenTenure.cpp	TenureCursor|kAllocTenure|grantAllocate
+T6	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	-
+T7	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	-
+T8	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	-
+T9	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	g_heap_base
+T10	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	-
+T11	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	-
+# Added with the models (2026-09-29): P6.M16/P6.M17 (06 table rows M16/M17),
+# and the F.* canary greps the models' A9 rows name.
+P6.M16	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	live_bytes
+P6.M17	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	MinorWorker|minor_ctl_|MinorRunArgs
+F.gc_phase	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	gc_phase_ =
+F.bitscan	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	bitscan::(clearBit|loadWord|nextSetBit|nextFreeCell)
+F.allocTenure	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	alloc_state == kAllocTenure
+F.parPromoActive	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	par_promo_active_
+F.roles	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	role_of_k[[]
+F.ylobox	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	ylo_(lo|hi)_ =
+F.deferredFrees	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	deferred_frees_
+F.cycleState	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	cycle_state_ =
+F.bgEp	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	bg_ep_ =
+F.externalRoots	runtime/src/*/*.cpp runtime/src/*/*.hpp runtime/src/*.cpp elm-kernel-cpp/src/*/*.cpp elm-kernel-cpp/src/*/*.hpp eco-kernel-cpp/src/*/*.cpp eco-kernel-cpp/src/*/*.hpp	addExternalRootScanner
+F.zapFiller	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	writeFiller[(]z[.]p
+F.vnodeRegistry	runtime/src/*/*.cpp runtime/src/*/*.hpp runtime/src/*.cpp elm-kernel-cpp/src/*/*.cpp elm-kernel-cpp/src/*/*.hpp eco-kernel-cpp/src/*/*.cpp eco-kernel-cpp/src/*/*.hpp	vnodeRegistry
+F.atfork	runtime/src/*/*.cpp runtime/src/*/*.hpp runtime/src/*.cpp elm-kernel-cpp/src/*/*.cpp elm-kernel-cpp/src/*/*.hpp eco-kernel-cpp/src/*/*.cpp eco-kernel-cpp/src/*/*.hpp	pthread_atfork
+F.atexit	runtime/src/*/*.cpp runtime/src/*/*.hpp runtime/src/*.cpp elm-kernel-cpp/src/*/*.cpp elm-kernel-cpp/src/*/*.hpp eco-kernel-cpp/src/*/*.cpp eco-kernel-cpp/src/*/*.hpp	std::atexit|[^_]atexit[(]
+F.fork	runtime/src/*/*.cpp runtime/src/*/*.hpp runtime/src/*.cpp elm-kernel-cpp/src/*/*.cpp elm-kernel-cpp/src/*/*.hpp eco-kernel-cpp/src/*/*.cpp eco-kernel-cpp/src/*/*.hpp	[^A-Za-z_]fork[(]
+F.promoMu	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	promo_mu_
+F.threadMutex	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	thread_mutex_
+F.pageWorkCalls	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	acquireOldGenBlock[(]|releaseOldGenBlock[(]|onReuse[(]|onRelease[(]|onFreshBump[(]|syncPoint[(]
+F.stopAndJoin	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	stopAndJoin[(]
+F.oldGenFreeBlocks	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	old_gen_free_blocks_
+F.setThreadHeap	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	setThreadHeap[(]

@@ -1,0 +1,5 @@
+# The events TracePromoBitmap.tla matches (run_traces.py keeps only these after the merge; the
+# gang events order the threads and are then dropped, their ordering kept in the vector clocks).
+m4.begin m4.cur m4.set m4.rph m4.exh m4.claim m4.nclaim m4.lock m4.unlock m4.pub m4.retire
+m4.batch m4.ladder m4.npop m4.sw m4.clr m4.swend m4.pop m4.fin m4.finb m4.merge m4.shreset
+m4.split m4.large m4.rel m4.shrink

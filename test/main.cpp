@@ -59,6 +59,7 @@
 #include "allocator/SliceRepresentationTest.hpp"
 #include "allocator/AddressSpaceReservationTest.hpp"
 #include "allocator/HPointerLayoutTest.hpp"
+#include "allocator/ConcurrencyRegisterTest.hpp"
 #include "kernel/KernelExportsTest.hpp"
 #include "codegen/CodegenIsolatedTest.hpp"
 #include "bf-codegen/BFCodegenTest.hpp"
@@ -818,6 +819,7 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testConcMarkNegativeLeavePrivate);
     oldGenTests.add(testConcMarkNegativeCursorT0Block);
     oldGenTests.add(testConcMarkNegativePlainAllocateBlack);
+    oldGenTests.add(testConcMarkNegativeAssistResetsBgCounter);
     oldGenTests.add(testConcMarkScaleBench);
     oldGenTests.add(testPromoRateEwmaDeterministic);
     oldGenTests.add(testOldAllocTotalMonotone);
@@ -1012,6 +1014,18 @@ int main(int argc, char* argv[]) {
     hpointerLayoutTests.add(testHPointerForwardPtrRoundTrip);
     hpointerLayoutTests.add(testHPointerBitsRoundTrip);
 
+    // Regression guards for plans/threaded-gc-concurrency-register.md
+    // (CR-NNN in each name). "[xfail CR-NNN]" guards pass while the defect
+    // reproduces; ECO_TEST_XFAIL=strict makes them fail on today's code.
+    Testing::TestSuite concurrencyRegisterTests("ConcurrencyRegister");
+    concurrencyRegisterTests.add(testForwardWordMatchesBitfields);
+    concurrencyRegisterTests.add(testCR018EmptyBlockFlipKeepsLiveCells);
+    concurrencyRegisterTests.add(testCR017RegionT0WalkSkipsFreedCellK1);
+    concurrencyRegisterTests.add(testCR017RegionT0WalkSkipsFreedCellK2);
+    concurrencyRegisterTests.add(testCR025GangMemberStallInPause);
+    concurrencyRegisterTests.add(testCR029BagRungSizeClassedBitmap);
+    concurrencyRegisterTests.add(testCR029BagRungSizeClassedLegacy);
+
     // Kernel extern-"C" ABI tests (encoder/decoder/string ABI).
     Testing::TestSuite kernelExportsTests("KernelExports");
     registerKernelExportsTests(kernelExportsTests);
@@ -1140,6 +1154,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(sliceReprTests));
     suite.add(std::move(addressReservationTests));
     suite.add(std::move(hpointerLayoutTests));
+    suite.add(std::move(concurrencyRegisterTests));
     suite.add(std::move(kernelExportsTests));
     suite.add(std::move(gcPressureTests));
     suite.add(std::move(codegenTests));

@@ -1,0 +1,2 @@
+# SnapshotLemma, base case: LemmaInv holds in the starting heap (5 objects).
+--cinit=CInit5 --init=Init --next=Next --inv=LemmaInv --length=0

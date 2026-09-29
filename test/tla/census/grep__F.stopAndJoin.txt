@@ -1,0 +1,11 @@
+runtime/src/allocator/GCHelperPool.cpp: for (GCBackgroundGang* g : bgRegistry()) g->stopAndJoin();
+runtime/src/allocator/GCHelperPool.cpp: g->stopAndJoin();
+runtime/src/allocator/GCHelperPool.cpp: stopAndJoin();
+runtime/src/allocator/GCHelperPool.cpp: void GCBackgroundGang::stopAndJoin() {
+runtime/src/allocator/GCHelperPool.hpp: void stopAndJoin();
+runtime/src/allocator/NurseryTenure.cpp: g->stopAndJoin();
+runtime/src/allocator/NurseryTenure.cpp: g->stopAndJoin();
+runtime/src/allocator/NurseryTenure.cpp: if (R.collector) R.collector->stopAndJoin();
+runtime/src/allocator/OldGenSpace.cpp: bg_->stopAndJoin();
+runtime/src/allocator/OldGenSpace.cpp: if (bg_) bg_->stopAndJoin();
+runtime/src/allocator/OldGenSpace.cpp: if (bg_) bg_->stopAndJoin();

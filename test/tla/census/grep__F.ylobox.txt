@@ -1,0 +1,9 @@
+runtime/src/allocator/OldGenSpace.cpp: if (hi > ylo_hi_) ylo_hi_ = hi;
+runtime/src/allocator/OldGenSpace.cpp: if (lo < ylo_lo_) ylo_lo_ = lo;
+runtime/src/allocator/OldGenSpace.cpp: ylo_hi_ = hi;
+runtime/src/allocator/OldGenSpace.cpp: ylo_hi_ = hi;
+runtime/src/allocator/OldGenSpace.cpp: ylo_lo_ = lo;
+runtime/src/allocator/OldGenSpace.cpp: ylo_lo_ = lo;
+runtime/src/allocator/OldGenSpace.cpp: ylo_lo_ = ylo_hi_ = nullptr;
+runtime/src/allocator/OldGenSpace.hpp: char* ylo_hi_ = nullptr;
+runtime/src/allocator/OldGenSpace.hpp: char* ylo_lo_ = nullptr;

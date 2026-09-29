@@ -1,0 +1,3 @@
+runtime/src/allocator/OldGenSpace.cpp: std::lock_guard<minorwork::SpinMutex> lk(promo_mu_);
+runtime/src/allocator/OldGenSpace.cpp: std::unique_lock<minorwork::SpinMutex> lk(promo_mu_, std::try_to_lock);
+runtime/src/allocator/OldGenSpace.hpp: minorwork::SpinMutex promo_mu_;

@@ -1,0 +1,11 @@
+runtime/src/allocator/GCHelperPool.cpp: std::atexit(&GCBackgroundGang::stopAllAtExit);
+runtime/src/allocator/GCStats.cpp: std::atexit([] { GCEventLogImpl::instance().flush(); });
+runtime/src/allocator/NurserySpace.cpp: std::atexit(survivorCensusReport);
+runtime/src/allocator/NurserySpace.cpp: std::atexit(survivorCensusReport);
+runtime/src/allocator/P1Census.cpp: std::atexit(atexitReport);
+runtime/src/allocator/RuntimeExports.cpp: if (tables.empty()) std::atexit(callCensusDumpImpl);
+runtime/src/allocator/RuntimeExports.cpp: std::atexit([] {
+runtime/src/allocator/RuntimeExports.cpp: std::atexit(closureStatsDumpImpl);
+runtime/src/allocator/RuntimeExports.cpp: std::atexit(dispatchStatsDumpImpl);
+runtime/src/codegen/eco_entry.cpp: std::atexit(atexitPrintStats);
+runtime/src/embed/eco_embed.cpp: std::atexit(atexitStopEcoThread);

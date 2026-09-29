@@ -1,0 +1,14 @@
+runtime/src/allocator/ReservedArray.hpp: char* from = reinterpret_cast<char*>(base_) + committed_bytes_;
+runtime/src/allocator/ReservedArray.hpp: committed_.store(0, std::memory_order_relaxed);
+runtime/src/allocator/ReservedArray.hpp: committed_.store(0, std::memory_order_relaxed);
+runtime/src/allocator/ReservedArray.hpp: committed_.store(c, std::memory_order_release);
+runtime/src/allocator/ReservedArray.hpp: committed_bytes_ = 0;
+runtime/src/allocator/ReservedArray.hpp: committed_bytes_ = 0;
+runtime/src/allocator/ReservedArray.hpp: committed_bytes_ = want;
+runtime/src/allocator/ReservedArray.hpp: const size_t len = want - committed_bytes_;
+runtime/src/allocator/ReservedArray.hpp: if (n <= committed_.load(std::memory_order_relaxed)) return;
+runtime/src/allocator/ReservedArray.hpp: size_t c = committed_bytes_ / sizeof(T);
+runtime/src/allocator/ReservedArray.hpp: size_t committed() const { return committed_.load(std::memory_order_acquire); }
+runtime/src/allocator/ReservedArray.hpp: size_t committedBytes() const { return committed_bytes_; }
+runtime/src/allocator/ReservedArray.hpp: size_t committed_bytes_ = 0;
+runtime/src/allocator/ReservedArray.hpp: std::atomic<size_t> committed_{0};

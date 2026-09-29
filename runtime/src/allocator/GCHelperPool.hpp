@@ -11,9 +11,17 @@
 // Protocol (mutator-initiated post/collect, report §3.2):
 //   - the mutator posts a job at a slow path; in Sync mode the job runs inline
 //     on the caller, in Concurrent mode on a worker;
-//   - the mutator collects by wait(), which blocks only if the job is not Done
-//     yet (a "stall", accounted);
-//   - publication is the pool mutex's release/acquire: no fences anywhere else.
+//   - the owner collects by wait(), which blocks only if the job is not Done
+//     yet (a "stall", accounted). The waiter is the mutator at an allocator
+//     slow path or (threaded-gc-06/07, CR-026) a GCMarkGang member inside a
+//     minor pause holding promo_mu_ (the parallel minor's and the pause tenure
+//     engine's block acquisition, CR-007), whose stall is a pause stall
+//     (GCMarkGang::onMemberRun, CR-025);
+//   - publication: post() hands a job to a worker through the pool mutex; the
+//     worker stores Done with release, and wait()'s fast path, isDone() and
+//     isIdle() load it with acquire OUTSIDE the mutex, so a job's effects
+//     reach the owner through that release/acquire pair, not through the
+//     mutex (GenMC guard test/genmc/w_pool_done.cpp). No fences anywhere else.
 // GC_DET_001: a job's state may be read only to WAIT for it, never to choose
 // between two outcomes. Only GCHelperPool and PageWork read HelperJob::state.
 
@@ -188,7 +196,14 @@ public:
     // Test-only: joins the threads and returns to unconfigured (stats zeroed).
     void shutdownForTesting();
 
+    // CR-025: true on a gang member thread while it runs a job (member >= 1;
+    // member 0 is the caller, whose own heap state applies). Every run is
+    // inside a GC pause, so a helper-job wait made here is a pause stall
+    // (Allocator::callerInPause: a member thread has no ThreadLocalHeap).
+    static bool onMemberRun() { return tl_member_run_; }
+
 private:
+    static inline thread_local bool tl_member_run_ = false;
     GCMarkGang() = default;
     void memberLoop(unsigned index);
     void startThreadsLocked();
@@ -232,8 +247,10 @@ private:
 // seconds and must not serialise other heaps' in-pause GCMarkGang runs).
 // fork(): atforkPrepare stops and joins every running instance (the owner
 // relaunches at its next cycle step); the child abandons its threads and
-// restarts them lazily. Process exit: stopAllAtExit (std::atexit, registered at
-// the first launch) runs before static destructors could unmap a heap.
+// restarts them lazily. Process exit: stopAllAtExit (std::atexit) runs before
+// static destructors could unmap a heap. It and the atfork handlers are
+// registered once, by the first GCBackgroundGang's constructor (not at a first
+// launch), so a gang that was built but never launched is covered too (CR-024).
 // ---------------------------------------------------------------------------
 class GCBackgroundGang {
 public:

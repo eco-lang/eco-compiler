@@ -1,0 +1,13 @@
+runtime/src/allocator/OldGenSpace.cpp: if (__builtin_expect(b.alloc_state == kAllocTenure, 0)) {
+runtime/src/allocator/OldGenSpace.cpp: if (__builtin_expect(b.alloc_state == kAllocTenure, 0)) {
+runtime/src/allocator/OldGenSpace.cpp: if (__builtin_expect(b.alloc_state == kAllocTenure, 0)) {
+runtime/src/allocator/OldGenSpace.cpp: if (b.alloc_state == kAllocTenure) continue;
+runtime/src/allocator/OldGenSpace.cpp: if (b.alloc_state == kAllocTenure) continue;
+runtime/src/allocator/OldGenSpace.cpp: if (blk.alloc_state == kAllocTenure) continue;
+runtime/src/allocator/OldGenSpace.cpp: if (blocks_.info(block_id).alloc_state == kAllocTenure) {
+runtime/src/allocator/OldGenSpace.cpp: if (blocks_.info(c.block).alloc_state == kAllocTenure) {
+runtime/src/allocator/OldGenSpace.cpp: if (blocks_.info(i).alloc_state == kAllocTenure) continue;
+runtime/src/allocator/OldGenSpace.cpp: if (blocks_.info(id).alloc_state == kAllocTenure && !test_shrink_ignores_tenure_) continue;
+runtime/src/allocator/OldGenSpace.cpp: if (blocks_.info(id).alloc_state == kAllocTenure) continue;
+runtime/src/allocator/OldGenSpace.cpp: if (id.valid() && blocks_.info(id).alloc_state == kAllocTenure) {
+runtime/src/allocator/OldGenTenure.cpp: if (blocks_.info(id).alloc_state == kAllocTenure) {

@@ -1,0 +1,3 @@
+# The events TraceCycle.tla matches (run_traces.py keeps only these after the merge;
+# the harness records only these in the cycle scenarios anyway).
+minor major t0 t0end launch relaunch step reap stop pressure join finish assist closing handoff

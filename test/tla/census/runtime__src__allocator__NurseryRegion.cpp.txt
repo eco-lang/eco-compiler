@@ -1,0 +1,11 @@
+(p >= R.bld_bottom.load(std::memory_order_relaxed) && p < R.fill_end));
+R.bld_bottom.store(R.fill_end, std::memory_order_relaxed);
+char* b = R.bld_bottom.fetch_sub(size, std::memory_order_relaxed) - size;
+char* const bld_lo = R.bld_bottom.load(std::memory_order_relaxed);
+char* const top = tospace_.top.load(std::memory_order_relaxed);
+const uint64_t cpu0 = gang ? gang->stats().member_cpu_ns.load(std::memory_order_relaxed) : 0;
+if (gang) p.member_cpu_ns += gang->stats().member_cpu_ns.load(std::memory_order_relaxed) - cpu0;
+ok = R.in_minor && ((p >= R.fill_base && p < tospace_.top.load(std::memory_order_relaxed)) ||
+std::lock_guard<std::mutex> g(ylos_mu_);
+w.priv.store(w.stack.size() - w.head, std::memory_order_relaxed);
+w0.priv.store(0, std::memory_order_relaxed);

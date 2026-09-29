@@ -163,6 +163,7 @@ public:
     // every object. Valid only before the mutator allocates again; asserts
     // bump_.ptr == survivor_end_ (in every build) and that the walk ends
     // exactly at bump_.ptr. Returns the number of objects visited.
+    // TLA-REGION(NSH.forEachSurvivor) begin
     template <typename F> size_t forEachSurvivor(F&& f, size_t* bytes_out = nullptr) {
         assert(bump_.ptr == survivor_end_ &&
                "IM7: nursery allocated since the last minor; the survivor prefix is not exact");
@@ -193,6 +194,7 @@ public:
         if (bytes_out) *bytes_out = static_cast<size_t>(end - fromBase()) - fillers;
         return n;
     }
+    // TLA-REGION(NSH.forEachSurvivor) end
     // True when no nursery allocation happened since the last minor GC.
     bool survivorPrefixExact() const {
         if (rg_) return bump_.ptr == rg_->eden_base;   // threaded-gc-07 IM7: eden is empty
@@ -796,6 +798,7 @@ public:
 };
 
 // threaded-gc-07 P§3.16: the t0 young walk. Legacy mode: the survivor prefix.
+// TLA-REGION(NSH.forEachYoung) begin
 template <typename F>
 size_t NurserySpace::forEachYoung(F&& f, size_t* bytes_out) {
     if (!rg_) return forEachSurvivor(f, bytes_out);
@@ -834,6 +837,7 @@ size_t NurserySpace::forEachYoung(F&& f, size_t* bytes_out) {
     if (bytes_out) *bytes_out = bytes;
     return n;
 }
+// TLA-REGION(NSH.forEachYoung) end
 
 } // namespace Elm
 

@@ -1,0 +1,17 @@
+.load(std::memory_order_relaxed);
+J.stop.store(false, std::memory_order_relaxed);
+const uint64_t e = tw::ref(sw(t)).load(std::memory_order_acquire);
+if (r.load(std::memory_order_relaxed) != 0 || r.exchange(1, std::memory_order_acq_rel) != 0) return;
+if (r.load(std::memory_order_relaxed) == 0 && r.exchange(1, std::memory_order_acq_rel) == 0) {
+if (r.load(std::memory_order_relaxed) == 0 && r.exchange(1, std::memory_order_acq_rel) == 0) {
+if (w.load(std::memory_order_relaxed) & m) return false;
+return (w.fetch_or(m, std::memory_order_acq_rel) & m) == 0;
+std::atomic_ref<uint64_t> w(J.age[i].bits[g >> 6]);
+std::atomic_ref<uint64_t>(J.cpu_ns).fetch_add(gc::GCHelperPool::threadCpuNs() - c0, std::memory_order_relaxed);
+std::atomic_ref<uint8_t> r(J.st.reached[static_cast<size_t>(k)]);
+std::atomic_ref<uint8_t> r(st.age_ylos_marked[static_cast<size_t>(k)]);
+std::atomic_ref<uint8_t> r(st.reached[static_cast<size_t>(k)]);
+uint64_t e = tw::ref(s).load(std::memory_order_acquire);
+void NurserySpace::runJobExact(OldGenSpace& oldgen, const std::atomic<bool>* stop) {
+w.priv.store(w.stack.size() - w.head, std::memory_order_relaxed);
+w.priv.store(w.stack.size() - w.head, std::memory_order_relaxed);

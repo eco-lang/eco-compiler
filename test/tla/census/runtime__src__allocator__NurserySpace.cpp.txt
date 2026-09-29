@@ -1,0 +1,11 @@
+#include <mutex>
+std::lock_guard<std::mutex> lock(g.mu);
+std::lock_guard<std::mutex> lock(g.mu);
+std::lock_guard<std::mutex> lock(g.mu);
+std::lock_guard<std::mutex> lock(g.mu);
+std::lock_guard<std::mutex> lock(g.mu);
+std::lock_guard<std::mutex> lock(g.mu);
+std::lock_guard<std::mutex> lock(g.mu);
+std::lock_guard<std::mutex> lock(g.mu);
+std::lock_guard<std::mutex> lock(g.mu);
+std::mutex mu;

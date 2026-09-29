@@ -1,6 +1,18 @@
 # Threaded GC — TLA+ model M5: the region nursery and concurrent tenuring (7b/7c)
 
-**Status:** IMPLEMENTATION-READY PLAN (2026-09-28). **Adversarial review on 2026-09-28 against the
+**Status:** IMPLEMENTED (2026-09-29) in `test/tla/M5-tenuring/`: steps 1–7 of §10 are done
+(the core and the three §8.1–§8.3 extensions, switched by constants), and the `models.txt` rows of
+step 9. Step 8 (trace validation) done in wave 2 (2026-09-29): the engine storm on
+`gc-tenure-trace` and a pause projection of the real allocator (`gc-heap-trace tenure`), 27 rows in
+`test/tla/traces.txt`, all as expected; it found one model error, since corrected (the engine
+checks `stop` before asking for an item; AUDIT.md). Not done: step 9's `manifest.txt` lines (the
+canary; AUDIT.md lists them), step 10. The quick tier (49 rows: 12 passing configurations, CR-017
+twice, CR-013 three ways, 32 mutants) behaves as expected; `AUDIT.md` there has the results, the
+counterexamples, the deep tier, and every way the implemented model differs from the sketch below.
+`MAPPING.md` there is the model ↔ code map. The sketch in §4.5 is kept as the reviewed design text;
+the committed model is authoritative.
+
+History: **Adversarial review on 2026-09-28 against the
 current tree** (§12): the sketch, properties, mutants and configurations were corrected, and the
 corrected sketch in §4.5 passes the translator and SANY (tla2tools 1.8.0); TLC has not run. The
 model is built from the **merged** 7b/7c/07b code, which has been default-on since TG7d
@@ -1182,6 +1194,14 @@ observed values, and allows the unlogged mutator epoch steps in between.
   would have rejected them.)
 
 ## 10. Implementation steps
+
+**Progress (2026-09-29):** steps 1–7 done; step 9 done for `models.txt` and the first AUDIT.md
+entry (the `manifest.txt` lines wait for the canary; the parent plan's §11 row is the
+orchestrator's); step 8 done in wave 2 (the storm and the pause projection, not ageing, builders
+or L3; AUDIT.md), step 10 not started. Step 5 ran as a restructured deep tier (the plan's L3
+deep parameters did not fit in two hours; AUDIT.md "Tiering"). Step 4: `fork` fails as expected
+(plus two more CR-013 facets, `fork_orphan_copy` and `fork_l3`), `cycle_major` fails as expected
+(plus `k2_cycle_major`: CR-017 also with k = 2).
 
 1. Create `test/tla/M5-tenuring/` with `Tenuring.tla` (§4.5), `MC.tla`, the configurations of §6,
    MAPPING.md (§4.4 plus the A3 rows) and AUDIT.md.
