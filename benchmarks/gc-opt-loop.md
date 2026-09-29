@@ -2326,6 +2326,78 @@ runtime to `eco-optSG4`. Patch `snapshots/lss-loop/step-SG4.patch` (1,111 lines,
   flip, gc-pressure stress at granule 4 was 101/101, including the former repro.
   `eco-opt-prev -> eco-optSG4`; reference snapshot `keep-SG4`.
 
+### LB3 — `major_gc_live_budget` 3.0 as the default, after the bug-2 fixes — **WIN, kept: wall FLAT (106.54 → 106.42 s), max RSS 12.99 → 10.87 GB (−16.3 %), old-gen peak −19 %, worst pause 115 → 86 ms (phase-timer relink); +2 majors, every other counter identical, output identical**
+
+k = 3.0 was the sweep's one deterministic RSS lever (`plans/gc-param-sweep/sensitivity-2026-09-28.md`
+§11-12). It shipped on 2026-09-29 and was reverted the same day on two validate failures
+(`/work/2-gc-bugs.md` bug 2). Both are now fixed: a region-nursery YLOS address-reuse bug
+(HEAP_072: `LargeBodyMeta::join_minor`, `youngLargeMember`), and a negative control that only a
+later cycle could catch (a HEAP_051 check right after `markLiveMergeAll`). With the fixes the
+default is 3.0 in `AllocatorCommon.hpp`, `heap-profile.py`, `docs/options.md` and HEAP_057. No JSON
+config sets the key. Runtime-only step: `ecoSG4.mlir` (unchanged compiler source) was lowered
+against the changed runtime to `eco-optLB3`. **The step also carries the bug-2 fixes, which have no
+row of their own**, so a same-session arm of the same binary with
+`ECO_HEAP_CONFIG=benchmarks/heapcfg/lb-k45.json` (`{"major_gc_live_budget": 4.5}`) was run beside
+the candidate, which ran with no GC environment. Patch `snapshots/lss-loop/step-LB3.patch` (258 lines,
+vs `keep-SG4`).
+
+| run | wall (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|
+| r1 | 105.80 | 7.63 | 2521 | 10 | 20320 | 10870280 | 13264597 | same |
+| r2 | 106.42 | 7.64 | 2521 | 10 | 20320 | 10878156 | 13264597 | same |
+| r3 | 107.46 | 7.63 | 2521 | 10 | 20320 | 10862180 | 13264597 | same |
+| **median** | **106.42** | **7.63** | 2521 | 10 | 20320 | **10870280** | 13264597 | same |
+| Δ vs SG4 (106.54 / 7.64 / 12985716) | −0.12 | −0.01 | 0 | +2 | 0 | **−2115436** | 0 | — |
+| k45 r1 / r2 / r3 | 106.87 / 106.80 / 105.98 | 7.58 / 7.60 / 7.65 | 2521 | 8 | 20320 | 13316888 / 13322948 / 12977100 | 13264597 | same |
+| **k45 median** | **106.80** | **7.60** | 2521 | 8 | 20320 | 13316888 | 13264597 | same |
+| **Δ k 3.0 vs 4.5 (same session)** | −0.38 | +0.03 | 0 | +2 | 0 | **−2446608** | 0 | — |
+
+- **Verdict vs SG4: WIN under rule 2.** The wall move (−0.12 s) is FLAT, inside the band (spreads
+  1.66 / 2.25 s), and max RSS improves by 2.12 GB. The same-session arm makes it −0.38 s and −2.45 GB
+  (−18.4 %), matching the sweep's −19 %.
+- **The bug-2 fixes are inert on the self-compile.** The k45 arm reproduces SG4: 8 majors,
+  every counter identical, wall 106.80 vs 106.54, RSS 13.32 vs 12.99 GB inside SG4's own spread.
+  That is expected, because the compiler makes no large pointer allocations (TG4b), so no YLOS
+  generation list is ever read.
+- **Memory:** old-gen in-use peak 9,802 MB vs 12,152 MB (−19.3 %). RSS is also tight: 10.86–10.88 GB
+  across the three runs, against 12.98–13.32 GB at 4.5, the "deterministic lever" the sweep found. Major
+  page faults were 0 / 4 / 0 vs 78 / 60 / 7. This box has 15 GB of RAM, so 4.5 runs at the edge of swap.
+- **Pauses** (phase-timer relink `eco-optLB3PT` of `ecoTG6base.o` against `build-phasetimers`, the
+  same code as `ecoSG4.mlir`. Per-pause rows came from `ECO_GC_EVENT_LOG`. Arms were run interleaved,
+  3 runs each: `ptLB3` with no GC environment, and `ptSG4` = the same binary with `lb-k45.json`, which
+  reproduces SG4 because the bug-2 fix is inert here. Output was identical in all six runs. Wall was
+  106.31 vs 105.60 s and RSS 10.88 vs 13.00 GB, medians. Pause medians of three, in ms:
+
+  | pauses | arm | n | total s | p50 | p90 | p99 | p99.9 | max |
+  |---|---|---|---|---|---|---|---|---|
+  | all | SG4 (k 4.5) | 2521 | 10.22 | 1.32 | 12.9 | 16.9 | 69.4 | 115.3 |
+  | all | **LB3 (k 3.0)** | 2521 | 10.20 | 1.35 | 12.9 | 17.1 | 72.4 | **85.7** |
+  | minor-only | SG4 / LB3 | 2500 / 2501 | 9.44 / 9.51 | 1.30 / 1.33 | 12.8 / 12.7 | 14.9 / 15.5 | 58.6 / 48.9 | 100.0 / 84.3 |
+  | minor + cycle t0 | SG4 / LB3 | 8 / 10 | 0.33 / 0.40 | 50.2 / 48.6 | 56.0 / 57.0 | | | 58.2 / 61.1 |
+  | minor + mark slice | SG4 / LB3 | 5 / 0 | 0.17 / — | 27.5 / — | | | | 48.4 / — |
+  | minor + cycle handoff | SG4 / LB3 | 8 / 10 | 0.27 / 0.29 | 14.2 / 17.2 | 83.1 / 73.5 | | | **115.3 / 85.7** |
+
+  The body of the distribution is unchanged: p50 through p99.9 all differ by less than run-to-run
+  noise, and pause time totals 10.2 s in both. Histogram of all pauses, per run: 0-1 ms 962 / 951,
+  1-2 ms 554 / 558, 2-5 ms 331 / 333, 5-10 ms 337 / 352, 10-20 ms 317 / 308, 20-50 ms 10.3 / 9.7, 50-100 ms 8.7 / 9.7,
+  100-150 ms 1.0 / 0 (SG4 / LB3). The change is in the **tail**: the worst pause drops from 115 to 86 ms,
+  and it is also steadier (per run 116 / 115 / 99 vs 86 / 85 / 86 ms). The two extra cycles make the
+  handoffs smaller (max 115 → 86 ms), and none of LB3's cycles falls back to an in-pause mark
+  slice (SG4: 5 per run). Pauses of 50 ms or more: 9.7 per run in both arms.
+- **CORRECTION to the first version of this entry:** it reported the "worst major pause" as 273 →
+  130 ms. Those figures are the stats banner's `Major GC Timing` maximum, which records per cycle
+  the SUM of that cycle's in-pause major work (`cycle_inpause_ns_`: t0 + slices + handoff,
+  `ThreadLocalHeap.cpp:1242`). They are not single pauses. Read pauses only from a phase-timer
+  build. Likewise, the stats build's minor-max column (81.2 vs 54.4 ms) was noise. The phase-timer minor-only maximum
+  is 84.3 (LB3) vs 100.0 ms (SG4).
+- **Other:** user CPU is flat (179.04 vs 179.14 s), sys −0.58 s, collector busy flat (19.77 vs
+  19.84 s), total major in-pause time 537 vs 578 ms per run.
+- **Gates:** release unit + E2E (`--target check`) 1948/1948. Validate unit 1949/1949 (including the
+  new HEAP_072 regression test). Validate stress 101/101 at default, gc-pressure and
+  gc-pressure-parallel. No RapidCheck falsification. elm-tests 13,565 / 12 (the reference). All
+  test runs used `ulimit -c 0`, because the validate suite's negative controls otherwise leave
+  ~21 GB of core files in /work. `eco-opt-prev -> eco-optLB3`; reference snapshot `keep-LB3`.
+
 ## 7. Findings
 
 (What this series learns, separated from the per-step records so the entries stay to ten lines.
@@ -2802,3 +2874,4 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | TA | 119.60 | +7.51 | 1924 | 7 | 18476 | 11982016 | LOSS (k = 2, v1) | TG7d |
 | TA2 | 112.45 | +0.36 | 1924 | 8 | 19862 | 13349532 | FLAT (kept, k = 1; k = 2 118.11 / k = 3 123.39 LOSS) | TG7d |
 | SG4 | 106.54 | -5.91 | 2521 | 8 | 20320 | 12985716 | WIN (incl. untracked 09-29 nmbc384/sfl128K; granule alone FLAT wall, RSS -446 MB, CPU -4.4 s) | TA2 |
+| LB3 | 106.42 | -0.12 | 2521 | 10 | 20320 | 10870280 | WIN (flat wall, RSS -2.12 GB / -16.3 %, worst pause 115 -> 86 ms, p50-p99.9 unchanged; incl. untracked bug-2 fix, inert here) | SG4 |

@@ -357,9 +357,9 @@ constexpr double GARBAGE_DENOM_CAP = 0.0;
 // workload allocates no such object) and "threaded-gc-05b: negative control — skipping marker 1's
 // accumulator is caught". Both are root-caused and fixed (2-gc-bugs.md bug 2): the first was a
 // region-nursery YLOS address-reuse bug (HEAP_072), the second a negative control that only a
-// later cycle could catch (now caught at the merge, HEAP_051). The validate gate passes at k = 3.0;
-// the default stays 4.5 until k is re-decided.
-constexpr double MAJOR_GC_LIVE_BUDGET = 4.5;
+// later cycle could catch (now caught at the merge, HEAP_051). With both fixed the validate gate
+// passes at k = 3.0, and 3.0 is the default again (2026-09-29, gc-opt-loop row LB3).
+constexpr double MAJOR_GC_LIVE_BUDGET = 3.0;
 constexpr double LIVE_GROWTH_BOUND = 1.5;
 
 // Default cap on bytes committed to uniform small-class pages before splitting larger free cells.

@@ -189,7 +189,7 @@ BASELINE_HEAP = {
     "major_gc_global_pressure_fraction": 0.85,
     "major_gc_target_utilization":       0.5,
     "major_gc_garbage_fraction":         0.7,
-    "major_gc_live_budget":              4.5,
+    "major_gc_live_budget":              3.0,
     "live_growth_bound":                 1.5,
     "major_gc_live_budget_paced":        True,
     "major_gc_headroom_margin":          1.5,

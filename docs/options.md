@@ -691,7 +691,7 @@ That file lists all **88** keys at their current struct defaults, and so does `h
 | `major_gc_global_pressure_fraction` | fraction (0, 1] | 0.85 | GlobalPressure trigger (anti-ballooning backstop) as a fraction of the old-gen cap. | `:177,685` |
 | `major_gc_target_utilization` | fraction (0, 1) | 0.50 | Post-major live/committed target that drives cap growth. | `:180,688` |
 | `major_gc_garbage_fraction` | fraction [0, 1) | 0.70 | Garbage-fraction trigger: bytes allocated since the last major, as a fraction of committed. 0 disables it. The major trigger is **chaotic** (small gf changes move major count and old-gen peak non-monotonically, see `plans/threaded-gc-07b-tenure-ageing.md` §7): judge it on a sweep, never one point. | `:183,691` |
-| `major_gc_live_budget` | double ≥ 0 | 4.5 | LiveBudget trigger: a major fires when bytes allocated since the last major reach k × live_ref. 0 = off. The one deterministic RSS lever (lower k = more majors, lower peak); 3.0 currently fails a validate-build test (see HEAP_057). | `:358,784` |
+| `major_gc_live_budget` | double ≥ 0 | 3.0 | LiveBudget trigger: a major fires when bytes allocated since the last major reach k × live_ref. 0 = off. The one deterministic RSS lever (lower k = more majors, lower peak). 3.0 since 2026-09-29, when the validate failures it exposed (HEAP_072, HEAP_051) were fixed; 4.5 before. | `:362,788` |
 | `live_growth_bound` | double, 0 or ≥ 1 | 1.5 | live_ref = min(L_i, r × L_{i−1}). 0 = off. | `:339,765` |
 | `major_gc_live_budget_paced` | bool | true | Measure LiveBudget at the hand-off instead of t0 (5c Part B). | `:307,745` |
 | `major_gc_headroom_margin` | double, 0..8 | 1.5 | Enables the Headroom trigger (> 0). It starts the cycle earlier when near the cap. | `:306,744` |
