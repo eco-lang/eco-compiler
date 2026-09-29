@@ -678,7 +678,7 @@ That file lists all **88** keys at their current struct defaults, and so does `h
 | `tenure_help_threads` | u32, 0..64 | 0 = the minor's worker count | Threads used when helping a late job. 1 = exact. | `:268,729` |
 | `tenure_priority` | i32, 0..20 | 0 = inherit | Nice value of the tenure collector thread; 20 = SCHED_IDLE. Never lowered by default: that was the 5c trap. | `:269,730` |
 | `heal_parallel_min` | count (heal slots) | 65536 | Above this many heal slots, the heal runs on the gang. | `:270,731` |
-| `shadow_granule_log2` | u32: 3 or 4 | 3 (8-byte granule) | Granule of the region nursery's shadow map. 4 halves the shadow but **requires every survivor ≥ 16 B**: a smaller one aborts in every build, and 8-byte survivors do occur (unsafe as a default). 3 has no limit. | `:284,752`; `NurseryRegion.cpp:134,402` |
+| `shadow_granule_log2` | u32: 3 or 4 | 4 (16-byte granule) | Granule of the region nursery's shadow map. 4 halves the shadow versus 3 and **requires every survivor ≥ 16 B**: a smaller one aborts in every build. HEAP_071 guarantees it, because an empty String or Bytes is the Empty constant, never a heap object. 3 (8-byte granule) has no limit. | `:286,754`; `NurseryRegion.cpp:134,404` |
 | `tenure_collector_threads` | u32, 1..32 | 1 | Tenure collector threads per heap in mode 2. 1 = exact engine; > 1 = concurrent parallel engine. | `:275,733` |
 | `tenure_fifo_order` | bool | false (LIFO) | Promotion order of the exact tenure engine. This is a retention input. | `:278,734` |
 

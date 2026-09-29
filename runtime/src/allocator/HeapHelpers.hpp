@@ -204,6 +204,10 @@ inline HPointer unit()        { return empty(); }  // ()
 inline HPointer nothing()     { return empty(); }  // Nothing
 inline HPointer emptyString() { return empty(); }  // ""
 inline HPointer emptyRecord() { return empty(); }  // {}
+// Empty Bytes (plans/empty-bytes-embedded-constant.md, HEAP_071): like "", an
+// empty ByteBuffer is the merged Empty constant, never an 8-byte header-only
+// heap object. Readers see it as (nullptr, 0) via resolveBytesOrNull.
+inline HPointer emptyBytes()  { return empty(); }
 
 /**
  * Returns an HPointer representing the True boolean (word 0x5): ptr_ind set,
@@ -1561,6 +1565,7 @@ inline HPointer record(const std::vector<Unboxable>& values, u64 unboxed_mask) {
  * @return HPointer to the allocated ByteBuffer.
  */
 inline HPointer allocByteBuffer(const u8* data, size_t length) {
+    if (length == 0) return emptyBytes();
     auto& allocator = Allocator::instance();
     size_t total_size = sizeof(ByteBuffer) + length;
     total_size = (total_size + 7) & ~7;
@@ -1602,16 +1607,15 @@ struct BlankByteBuffer {
  * the body is pinned in old gen and `bytes` remains stable.
  */
 inline BlankByteBuffer allocByteBufferBlank(size_t length) {
+    // Empty Bytes is the embedded constant (HEAP_071); nothing to write.
+    if (length == 0) return BlankByteBuffer{emptyBytes(), nullptr, 0};
     auto& allocator = Allocator::instance();
 
     size_t total_size = sizeof(ByteBuffer) + length;
     total_size = (total_size + 7) & ~7;
 
     // Mirror allocByteBuffer's split: only payloads at/over the LOT take
-    // the split-header path. A zero-length buffer still has an 8-byte
-    // ByteBuffer header (sizeof(ByteBuffer) == sizeof(Header)) which lives
-    // happily in the nursery; routing it through allocLargeByteBuffer would
-    // create a body too small for the old-gen size-class machinery.
+    // the split-header path.
     if (total_size >= allocator.getLargeObjectThreshold()) {
         HPointer hp = allocator.allocLargeByteBuffer(nullptr, length);
         void* header_obj = allocator.resolve(hp);
@@ -1634,6 +1638,7 @@ inline BlankByteBuffer allocByteBufferBlank(size_t length) {
  * @return HPointer to the allocated ByteBuffer.
  */
 inline HPointer allocByteBufferZero(size_t length) {
+    if (length == 0) return emptyBytes();
     auto& allocator = Allocator::instance();
     size_t total_size = sizeof(ByteBuffer) + length;
     total_size = (total_size + 7) & ~7;
@@ -1669,6 +1674,7 @@ inline size_t byteBufferLength(void* buf) {
  * Tag_ByteBufferSlice to base + offset.
  */
 inline const u8* byteBufferData(void* buf) {
+    if (!buf) return nullptr;
     Header* hdr = static_cast<Header*>(buf);
     if (hdr->tag == Tag_ByteBufferSlice) {
         ElmByteBufferSlice* slc = static_cast<ElmByteBufferSlice*>(buf);
@@ -2298,14 +2304,23 @@ inline ByteBufferView byteBufferView(void* obj) {
 }
 
 /**
+ * Constant-safe resolve for a Bytes value. Empty Bytes is the embedded Empty
+ * constant (HEAP_071), which Allocator::resolve must never see; it resolves
+ * here to nullptr, which byteBufferView / byteBufferLength read as (nullptr, 0).
+ */
+inline void* resolveBytesOrNull(HPointer hp) {
+    if (hp.ptr_ind != 0) return nullptr;
+    return Allocator::instance().resolve(hp);
+}
+
+/**
  * Allocates a Tag_ByteBufferSlice over `base` for `length` bytes starting
  * at `offset`. Slice-of-slice collapses: if `base` resolves to another
  * Tag_ByteBufferSlice, the resulting slice points at the inner base with
  * `offset + inner.offset`. If `base` is a Tag_LargeByteHeader the slice
  * keeps that as its base — the view layer follows the indirection.
  *
- * Returns the embedded empty-byte-buffer constant for length==0 (via
- * allocByteBuffer(nullptr, 0)).
+ * Returns the embedded empty-Bytes constant for length==0 (HEAP_071).
  *
  * Threshold: for very small slices (under MAKE_BYTEBUFFER_SLICE_MIN_LEN)
  * the slice header itself wastes more space than a direct copy, so we
@@ -2315,7 +2330,7 @@ static constexpr size_t MAKE_BYTEBUFFER_SLICE_MIN_LEN = 32;
 
 inline HPointer makeByteBufferSlice(HPointer base, u32 offset, u32 length) {
     auto& allocator = Allocator::instance();
-    if (length == 0) return allocByteBuffer(nullptr, 0);
+    if (length == 0) return emptyBytes();
 
     // Collapse slice-of-slice. Resolve base; if it's another slice,
     // absorb its offset.

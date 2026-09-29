@@ -23,9 +23,36 @@ static void test_empty_has_zero_length() {
         initAllocator();
 
         HPointer buf = BytesOps::empty();
-        void* obj = Allocator::instance().resolve(buf);
+        void* obj = Elm::alloc::resolveBytesOrNull(buf);
 
         RC_ASSERT(BytesOps::length(obj) == 0);
+    });
+}
+
+// HEAP_071 (plans/empty-bytes-embedded-constant.md): no producer makes an
+// 8-byte header-only ByteBuffer; empty Bytes is always the Empty constant.
+static void test_empty_bytes_is_constant() {
+    rc::check("every empty-Bytes producer returns the embedded constant", []() {
+        initAllocator();
+
+        RC_ASSERT(alloc::isConstant(BytesOps::empty()));
+        RC_ASSERT(alloc::isConstant(alloc::allocByteBuffer(nullptr, 0)));
+        RC_ASSERT(alloc::isConstant(alloc::allocByteBufferZero(0)));
+        alloc::BlankByteBuffer bb = alloc::allocByteBufferBlank(0);
+        RC_ASSERT(alloc::isConstant(bb.hp));
+        RC_ASSERT(bb.bytes == nullptr && bb.length == 0);
+        RC_ASSERT(alloc::isConstant(BytesOps::fromVector({})));
+        RC_ASSERT(alloc::isConstant(BytesOps::concat(alloc::listNil())));
+
+        HPointer buf = BytesOps::fromVector({1, 2, 3, 4});
+        RC_ASSERT(alloc::isConstant(BytesOps::slice(alloc::resolveBytesOrNull(buf), 2, 2)));
+        RC_ASSERT(alloc::isConstant(alloc::makeByteBufferSlice(buf, 1, 0)));
+
+        // Appending two empties must not wrap a null object.
+        HPointer e = BytesOps::empty();
+        RC_ASSERT(alloc::isConstant(BytesOps::append(alloc::resolveBytesOrNull(e),
+                                                     alloc::resolveBytesOrNull(e))));
+        RC_ASSERT(BytesOps::equal(alloc::resolveBytesOrNull(e), alloc::resolveBytesOrNull(e)));
     });
 }
 
@@ -42,7 +69,7 @@ static void test_fromData_preserves_bytes() {
         );
 
         HPointer buf = BytesOps::fromData(data.data(), data.size());
-        void* obj = Allocator::instance().resolve(buf);
+        void* obj = Elm::alloc::resolveBytesOrNull(buf);
 
         std::vector<u8> result = BytesOps::toVector(obj);
 
@@ -59,7 +86,7 @@ static void test_fromVector_preserves_bytes() {
         );
 
         HPointer buf = BytesOps::fromVector(data);
-        void* obj = Allocator::instance().resolve(buf);
+        void* obj = Elm::alloc::resolveBytesOrNull(buf);
 
         std::vector<u8> result = BytesOps::toVector(obj);
 
@@ -80,7 +107,7 @@ static void test_length_matches_input() {
         );
 
         HPointer buf = BytesOps::fromVector(data);
-        void* obj = Allocator::instance().resolve(buf);
+        void* obj = Elm::alloc::resolveBytesOrNull(buf);
 
         RC_ASSERT(BytesOps::length(obj) == static_cast<i64>(data.size()));
     });
@@ -102,7 +129,7 @@ static void test_getAt_returns_correct_byte() {
         size_t idx = *rc::gen::inRange<size_t>(0, data.size());
 
         HPointer buf = BytesOps::fromVector(data);
-        void* obj = Allocator::instance().resolve(buf);
+        void* obj = Elm::alloc::resolveBytesOrNull(buf);
 
         i64 result = BytesOps::getAt(obj, static_cast<i64>(idx));
 
@@ -119,7 +146,7 @@ static void test_getAt_out_of_bounds_returns_minus_one() {
         );
 
         HPointer buf = BytesOps::fromVector(data);
-        void* obj = Allocator::instance().resolve(buf);
+        void* obj = Elm::alloc::resolveBytesOrNull(buf);
 
         // Test past end
         RC_ASSERT(BytesOps::getAt(obj, static_cast<i64>(data.size())) == -1);
@@ -146,10 +173,10 @@ static void test_slice_extracts_subbuffer() {
         size_t end = *rc::gen::inRange<size_t>(start, data.size() + 1);
 
         HPointer buf = BytesOps::fromVector(data);
-        void* obj = Allocator::instance().resolve(buf);
+        void* obj = Elm::alloc::resolveBytesOrNull(buf);
 
         HPointer result = BytesOps::slice(obj, static_cast<i64>(start), static_cast<i64>(end));
-        void* resultObj = Allocator::instance().resolve(result);
+        void* resultObj = Elm::alloc::resolveBytesOrNull(result);
 
         std::vector<u8> actual = BytesOps::toVector(resultObj);
         std::vector<u8> expected(data.begin() + start, data.begin() + end);
@@ -167,11 +194,11 @@ static void test_slice_clamps_to_bounds() {
         );
 
         HPointer buf = BytesOps::fromVector(data);
-        void* obj = Allocator::instance().resolve(buf);
+        void* obj = Elm::alloc::resolveBytesOrNull(buf);
 
         // Slice with out-of-bounds indices should clamp
         HPointer result = BytesOps::slice(obj, 0, 10000);
-        void* resultObj = Allocator::instance().resolve(result);
+        void* resultObj = Elm::alloc::resolveBytesOrNull(result);
 
         RC_ASSERT(BytesOps::toVector(resultObj) == data);
     });
@@ -189,10 +216,10 @@ static void test_encode_decode_unsigned_int_8() {
 
         for (auto endian : {BytesOps::Endianness::LE, BytesOps::Endianness::BE}) {
             HPointer encoded = BytesOps::encodeUnsignedInt(val, BytesOps::Width::W8, endian);
-            void* encObj = Allocator::instance().resolve(encoded);
+            void* encObj = Elm::alloc::resolveBytesOrNull(encoded);
 
             HPointer decoded = BytesOps::decodeUnsignedInt(encObj, 0, BytesOps::Width::W8, endian);
-            void* decObj = Allocator::instance().resolve(decoded);
+            void* decObj = Elm::alloc::resolveBytesOrNull(decoded);
 
             // Should be Just(val)
             Custom* custom = static_cast<Custom*>(decObj);
@@ -210,10 +237,10 @@ static void test_encode_decode_unsigned_int_16() {
 
         for (auto endian : {BytesOps::Endianness::LE, BytesOps::Endianness::BE}) {
             HPointer encoded = BytesOps::encodeUnsignedInt(val, BytesOps::Width::W16, endian);
-            void* encObj = Allocator::instance().resolve(encoded);
+            void* encObj = Elm::alloc::resolveBytesOrNull(encoded);
 
             HPointer decoded = BytesOps::decodeUnsignedInt(encObj, 0, BytesOps::Width::W16, endian);
-            void* decObj = Allocator::instance().resolve(decoded);
+            void* decObj = Elm::alloc::resolveBytesOrNull(decoded);
 
             Custom* custom = static_cast<Custom*>(decObj);
             RC_ASSERT(custom->ctor == 0);
@@ -230,10 +257,10 @@ static void test_encode_decode_unsigned_int_32() {
 
         for (auto endian : {BytesOps::Endianness::LE, BytesOps::Endianness::BE}) {
             HPointer encoded = BytesOps::encodeUnsignedInt(val, BytesOps::Width::W32, endian);
-            void* encObj = Allocator::instance().resolve(encoded);
+            void* encObj = Elm::alloc::resolveBytesOrNull(encoded);
 
             HPointer decoded = BytesOps::decodeUnsignedInt(encObj, 0, BytesOps::Width::W32, endian);
-            void* decObj = Allocator::instance().resolve(decoded);
+            void* decObj = Elm::alloc::resolveBytesOrNull(decoded);
 
             Custom* custom = static_cast<Custom*>(decObj);
             RC_ASSERT(custom->ctor == 0);
@@ -250,10 +277,10 @@ static void test_encode_decode_signed_int_8() {
 
         for (auto endian : {BytesOps::Endianness::LE, BytesOps::Endianness::BE}) {
             HPointer encoded = BytesOps::encodeSignedInt(val, BytesOps::Width::W8, endian);
-            void* encObj = Allocator::instance().resolve(encoded);
+            void* encObj = Elm::alloc::resolveBytesOrNull(encoded);
 
             HPointer decoded = BytesOps::decodeSignedInt(encObj, 0, BytesOps::Width::W8, endian);
-            void* decObj = Allocator::instance().resolve(decoded);
+            void* decObj = Elm::alloc::resolveBytesOrNull(decoded);
 
             Custom* custom = static_cast<Custom*>(decObj);
             RC_ASSERT(custom->ctor == 0);
@@ -270,10 +297,10 @@ static void test_encode_decode_signed_int_16() {
 
         for (auto endian : {BytesOps::Endianness::LE, BytesOps::Endianness::BE}) {
             HPointer encoded = BytesOps::encodeSignedInt(val, BytesOps::Width::W16, endian);
-            void* encObj = Allocator::instance().resolve(encoded);
+            void* encObj = Elm::alloc::resolveBytesOrNull(encoded);
 
             HPointer decoded = BytesOps::decodeSignedInt(encObj, 0, BytesOps::Width::W16, endian);
-            void* decObj = Allocator::instance().resolve(decoded);
+            void* decObj = Elm::alloc::resolveBytesOrNull(decoded);
 
             Custom* custom = static_cast<Custom*>(decObj);
             RC_ASSERT(custom->ctor == 0);
@@ -296,10 +323,10 @@ static void test_encode_decode_float32() {
 
         for (auto endian : {BytesOps::Endianness::LE, BytesOps::Endianness::BE}) {
             HPointer encoded = BytesOps::encodeFloat32(val, endian);
-            void* encObj = Allocator::instance().resolve(encoded);
+            void* encObj = Elm::alloc::resolveBytesOrNull(encoded);
 
             HPointer decoded = BytesOps::decodeFloat32(encObj, 0, endian);
-            void* decObj = Allocator::instance().resolve(decoded);
+            void* decObj = Elm::alloc::resolveBytesOrNull(decoded);
 
             Custom* custom = static_cast<Custom*>(decObj);
             RC_ASSERT(custom->ctor == 0);  // Just
@@ -319,10 +346,10 @@ static void test_encode_decode_float64() {
 
         for (auto endian : {BytesOps::Endianness::LE, BytesOps::Endianness::BE}) {
             HPointer encoded = BytesOps::encodeFloat64(val, endian);
-            void* encObj = Allocator::instance().resolve(encoded);
+            void* encObj = Elm::alloc::resolveBytesOrNull(encoded);
 
             HPointer decoded = BytesOps::decodeFloat64(encObj, 0, endian);
-            void* decObj = Allocator::instance().resolve(decoded);
+            void* decObj = Elm::alloc::resolveBytesOrNull(decoded);
 
             Custom* custom = static_cast<Custom*>(decObj);
             RC_ASSERT(custom->ctor == 0);
@@ -350,12 +377,12 @@ static void test_append_concatenates() {
         HPointer bufB = BytesOps::fromVector(b);
 
         auto& alloc = Allocator::instance();
-        HPointer result = BytesOps::append(alloc.resolve(bufA), alloc.resolve(bufB));
+        HPointer result = BytesOps::append(Elm::alloc::resolveBytesOrNull(bufA), Elm::alloc::resolveBytesOrNull(bufB));
 
         std::vector<u8> expected = a;
         expected.insert(expected.end(), b.begin(), b.end());
 
-        RC_ASSERT(BytesOps::toVector(alloc.resolve(result)) == expected);
+        RC_ASSERT(BytesOps::toVector(Elm::alloc::resolveBytesOrNull(result)) == expected);
     });
 }
 
@@ -371,9 +398,9 @@ static void test_append_empty_left() {
         HPointer buf = BytesOps::fromVector(data);
 
         auto& alloc = Allocator::instance();
-        HPointer result = BytesOps::append(alloc.resolve(empty), alloc.resolve(buf));
+        HPointer result = BytesOps::append(Elm::alloc::resolveBytesOrNull(empty), Elm::alloc::resolveBytesOrNull(buf));
 
-        RC_ASSERT(BytesOps::toVector(alloc.resolve(result)) == data);
+        RC_ASSERT(BytesOps::toVector(Elm::alloc::resolveBytesOrNull(result)) == data);
     });
 }
 
@@ -389,9 +416,9 @@ static void test_append_empty_right() {
         HPointer empty = BytesOps::empty();
 
         auto& alloc = Allocator::instance();
-        HPointer result = BytesOps::append(alloc.resolve(buf), alloc.resolve(empty));
+        HPointer result = BytesOps::append(Elm::alloc::resolveBytesOrNull(buf), Elm::alloc::resolveBytesOrNull(empty));
 
-        RC_ASSERT(BytesOps::toVector(alloc.resolve(result)) == data);
+        RC_ASSERT(BytesOps::toVector(Elm::alloc::resolveBytesOrNull(result)) == data);
     });
 }
 
@@ -408,7 +435,7 @@ static void test_equal_reflexive() {
         );
 
         HPointer buf = BytesOps::fromVector(data);
-        void* obj = Allocator::instance().resolve(buf);
+        void* obj = Elm::alloc::resolveBytesOrNull(buf);
 
         RC_ASSERT(BytesOps::equal(obj, obj) == true);
     });
@@ -426,8 +453,8 @@ static void test_equal_symmetric() {
         HPointer buf2 = BytesOps::fromVector(data);
 
         auto& alloc = Allocator::instance();
-        bool eq1 = BytesOps::equal(alloc.resolve(buf1), alloc.resolve(buf2));
-        bool eq2 = BytesOps::equal(alloc.resolve(buf2), alloc.resolve(buf1));
+        bool eq1 = BytesOps::equal(Elm::alloc::resolveBytesOrNull(buf1), Elm::alloc::resolveBytesOrNull(buf2));
+        bool eq2 = BytesOps::equal(Elm::alloc::resolveBytesOrNull(buf2), Elm::alloc::resolveBytesOrNull(buf1));
 
         RC_ASSERT(eq1 == eq2);
     });
@@ -450,7 +477,7 @@ static void test_equal_detects_different() {
         HPointer bufB = BytesOps::fromVector(b);
 
         auto& alloc = Allocator::instance();
-        RC_ASSERT(BytesOps::equal(alloc.resolve(bufA), alloc.resolve(bufB)) == false);
+        RC_ASSERT(BytesOps::equal(Elm::alloc::resolveBytesOrNull(bufA), Elm::alloc::resolveBytesOrNull(bufB)) == false);
     });
 }
 
@@ -470,8 +497,8 @@ static void test_hash_consistent() {
         HPointer buf2 = BytesOps::fromVector(data);
 
         auto& alloc = Allocator::instance();
-        u32 h1 = BytesOps::hash(alloc.resolve(buf1));
-        u32 h2 = BytesOps::hash(alloc.resolve(buf2));
+        u32 h1 = BytesOps::hash(Elm::alloc::resolveBytesOrNull(buf1));
+        u32 h2 = BytesOps::hash(Elm::alloc::resolveBytesOrNull(buf2));
 
         RC_ASSERT(h1 == h2);
     });
@@ -495,15 +522,15 @@ static void test_base64_roundtrip() {
         HPointer buf = BytesOps::fromVector(data);
         auto& alloc = Allocator::instance();
 
-        HPointer b64 = BytesOps::toBase64(alloc.resolve(buf));
-        HPointer decoded = BytesOps::fromBase64(alloc.resolve(b64));
+        HPointer b64 = BytesOps::toBase64(Elm::alloc::resolveBytesOrNull(buf));
+        HPointer decoded = BytesOps::fromBase64(Elm::alloc::resolveBytesOrNull(b64));
 
         // fromBase64 returns Just(bytes)
-        void* decodedObj = alloc.resolve(decoded);
+        void* decodedObj = Elm::alloc::resolveBytesOrNull(decoded);
         Custom* custom = static_cast<Custom*>(decodedObj);
         RC_ASSERT(custom->ctor == 0);  // Just
 
-        void* innerBuf = alloc.resolve(custom->values[0].p);
+        void* innerBuf = Elm::alloc::resolveBytesOrNull(custom->values[0].p);
         RC_ASSERT(BytesOps::toVector(innerBuf) == data);
     });
 }
@@ -515,7 +542,7 @@ static void test_base64_empty() {
         HPointer buf = BytesOps::empty();
         auto& alloc = Allocator::instance();
 
-        HPointer b64 = BytesOps::toBase64(alloc.resolve(buf));
+        HPointer b64 = BytesOps::toBase64(Elm::alloc::resolveBytesOrNull(buf));
 
         // Should be empty string constant
         RC_ASSERT(alloc::isConstant(b64));
@@ -532,7 +559,7 @@ static void test_base64_invalid_returns_nothing() {
         HPointer str = alloc::allocString(invalid);
 
         auto& alloc = Allocator::instance();
-        HPointer result = BytesOps::fromBase64(alloc.resolve(str));
+        HPointer result = BytesOps::fromBase64(Elm::alloc::resolveBytesOrNull(str));
 
         // Should be Nothing
         RC_ASSERT(alloc::isConstant(result));
@@ -558,15 +585,15 @@ static void test_hex_roundtrip() {
         HPointer buf = BytesOps::fromVector(data);
         auto& alloc = Allocator::instance();
 
-        HPointer hex = BytesOps::toHex(alloc.resolve(buf));
-        HPointer decoded = BytesOps::fromHex(alloc.resolve(hex));
+        HPointer hex = BytesOps::toHex(Elm::alloc::resolveBytesOrNull(buf));
+        HPointer decoded = BytesOps::fromHex(Elm::alloc::resolveBytesOrNull(hex));
 
         // fromHex returns Just(bytes)
-        void* decodedObj = alloc.resolve(decoded);
+        void* decodedObj = Elm::alloc::resolveBytesOrNull(decoded);
         Custom* custom = static_cast<Custom*>(decodedObj);
         RC_ASSERT(custom->ctor == 0);  // Just
 
-        void* innerBuf = alloc.resolve(custom->values[0].p);
+        void* innerBuf = Elm::alloc::resolveBytesOrNull(custom->values[0].p);
         RC_ASSERT(BytesOps::toVector(innerBuf) == data);
     });
 }
@@ -578,7 +605,7 @@ static void test_hex_empty() {
         HPointer buf = BytesOps::empty();
         auto& alloc = Allocator::instance();
 
-        HPointer hex = BytesOps::toHex(alloc.resolve(buf));
+        HPointer hex = BytesOps::toHex(Elm::alloc::resolveBytesOrNull(buf));
 
         // Should be empty string constant
         RC_ASSERT(alloc::isConstant(hex));
@@ -600,8 +627,8 @@ static void test_hex_length_is_double() {
         HPointer buf = BytesOps::fromVector(data);
         auto& alloc = Allocator::instance();
 
-        HPointer hex = BytesOps::toHex(alloc.resolve(buf));
-        ElmString* str = static_cast<ElmString*>(alloc.resolve(hex));
+        HPointer hex = BytesOps::toHex(Elm::alloc::resolveBytesOrNull(buf));
+        ElmString* str = static_cast<ElmString*>(Elm::alloc::resolveBytesOrNull(hex));
 
         RC_ASSERT(str->header.size == data.size() * 2);
     });
@@ -616,7 +643,7 @@ static void test_hex_invalid_returns_nothing() {
         HPointer str = alloc::allocString(invalid);
 
         auto& alloc = Allocator::instance();
-        HPointer result = BytesOps::fromHex(alloc.resolve(str));
+        HPointer result = BytesOps::fromHex(Elm::alloc::resolveBytesOrNull(str));
 
         // Should be Nothing
         RC_ASSERT(alloc::isConstant(result));
@@ -632,7 +659,7 @@ static void test_hex_odd_length_returns_nothing() {
         HPointer str = alloc::allocString(invalid);
 
         auto& alloc = Allocator::instance();
-        HPointer result = BytesOps::fromHex(alloc.resolve(str));
+        HPointer result = BytesOps::fromHex(Elm::alloc::resolveBytesOrNull(str));
 
         RC_ASSERT(alloc::isConstant(result));
         RC_ASSERT(Elm::alloc::isEmptyString(result));
@@ -654,10 +681,10 @@ static void test_toList_fromList_roundtrip() {
         HPointer buf = BytesOps::fromVector(data);
         auto& alloc = Allocator::instance();
 
-        HPointer list = BytesOps::toList(alloc.resolve(buf));
+        HPointer list = BytesOps::toList(Elm::alloc::resolveBytesOrNull(buf));
         HPointer buf2 = BytesOps::fromList(list);
 
-        RC_ASSERT(BytesOps::toVector(alloc.resolve(buf2)) == data);
+        RC_ASSERT(BytesOps::toVector(Elm::alloc::resolveBytesOrNull(buf2)) == data);
     });
 }
 
@@ -668,7 +695,7 @@ static void test_toList_empty() {
         HPointer buf = BytesOps::empty();
         auto& alloc = Allocator::instance();
 
-        HPointer list = BytesOps::toList(alloc.resolve(buf));
+        HPointer list = BytesOps::toList(Elm::alloc::resolveBytesOrNull(buf));
 
         RC_ASSERT(alloc::isNil(list));
     });
@@ -694,15 +721,15 @@ static void test_utf8_roundtrip_ascii() {
         HPointer str = alloc::allocString(u16);
         auto& alloc = Allocator::instance();
 
-        HPointer utf8 = BytesOps::encodeUtf8(alloc.resolve(str));
-        HPointer decoded = BytesOps::decodeUtf8(alloc.resolve(utf8));
+        HPointer utf8 = BytesOps::encodeUtf8(Elm::alloc::resolveBytesOrNull(str));
+        HPointer decoded = BytesOps::decodeUtf8(Elm::alloc::resolveBytesOrNull(utf8));
 
         // decodeUtf8 returns Just(string)
-        void* decodedObj = alloc.resolve(decoded);
+        void* decodedObj = Elm::alloc::resolveBytesOrNull(decoded);
         Custom* custom = static_cast<Custom*>(decodedObj);
         RC_ASSERT(custom->ctor == 0);  // Just
 
-        ElmString* result = static_cast<ElmString*>(alloc.resolve(custom->values[0].p));
+        ElmString* result = static_cast<ElmString*>(Elm::alloc::resolveBytesOrNull(custom->values[0].p));
         std::u16string resultStr(reinterpret_cast<const char16_t*>(result->chars), result->header.size);
 
         RC_ASSERT(resultStr == u16);
@@ -727,7 +754,7 @@ static void test_bytebuffer_survives_gc() {
 
         alloc.minorGC();
 
-        RC_ASSERT(BytesOps::toVector(alloc.resolve(buf)) == data);
+        RC_ASSERT(BytesOps::toVector(Elm::alloc::resolveBytesOrNull(buf)) == data);
 
         alloc.getRootSet().removeRoot(&buf);
     });
@@ -747,7 +774,7 @@ static void test_appended_buffer_survives_gc() {
         HPointer bufA = BytesOps::fromVector(a);
         HPointer bufB = BytesOps::fromVector(b);
 
-        HPointer combined = BytesOps::append(alloc.resolve(bufA), alloc.resolve(bufB));
+        HPointer combined = BytesOps::append(Elm::alloc::resolveBytesOrNull(bufA), Elm::alloc::resolveBytesOrNull(bufB));
 
         alloc.getRootSet().addRoot(&combined);
 
@@ -756,7 +783,7 @@ static void test_appended_buffer_survives_gc() {
         std::vector<u8> expected = a;
         expected.insert(expected.end(), b.begin(), b.end());
 
-        RC_ASSERT(BytesOps::toVector(alloc.resolve(combined)) == expected);
+        RC_ASSERT(BytesOps::toVector(Elm::alloc::resolveBytesOrNull(combined)) == expected);
 
         alloc.getRootSet().removeRoot(&combined);
     });
@@ -775,19 +802,19 @@ static void test_encoded_buffer_survives_gc() {
 
         HPointer buf = BytesOps::fromVector(data);
 
-        HPointer hex = BytesOps::toHex(alloc.resolve(buf));
+        HPointer hex = BytesOps::toHex(Elm::alloc::resolveBytesOrNull(buf));
 
         alloc.getRootSet().addRoot(&hex);
 
         alloc.minorGC();
 
         // Verify hex string is still valid
-        HPointer decoded = BytesOps::fromHex(alloc.resolve(hex));
-        void* decodedObj = alloc.resolve(decoded);
+        HPointer decoded = BytesOps::fromHex(Elm::alloc::resolveBytesOrNull(hex));
+        void* decodedObj = Elm::alloc::resolveBytesOrNull(decoded);
         Custom* custom = static_cast<Custom*>(decodedObj);
         RC_ASSERT(custom->ctor == 0);
 
-        void* innerBuf = alloc.resolve(custom->values[0].p);
+        void* innerBuf = Elm::alloc::resolveBytesOrNull(custom->values[0].p);
         RC_ASSERT(BytesOps::toVector(innerBuf) == data);
 
         alloc.getRootSet().removeRoot(&hex);
@@ -801,6 +828,7 @@ static void test_encoded_buffer_survives_gc() {
 void registerBytesOpsTests(Testing::TestSuite& suite) {
     // Empty tests
     suite.add(Testing::TestCase("BytesOps::empty has zero length", test_empty_has_zero_length));
+    suite.add(Testing::TestCase("BytesOps: empty Bytes is the embedded constant (HEAP_071)", test_empty_bytes_is_constant));
 
     // fromData/toVector tests
     suite.add(Testing::TestCase("BytesOps::fromData preserves bytes", test_fromData_preserves_bytes));

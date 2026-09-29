@@ -276,13 +276,14 @@ constexpr uint32_t TENURE_HELP = 1;                   // late job: 0 wait, 1 sto
 constexpr uint32_t TENURE_HELP_THREADS = 0;           // 0 = the minor's worker count; 1 = exact
 constexpr int32_t  TENURE_PRIORITY = 0;               // 0 inherit (5c's trap: never lower by default)
 constexpr size_t   HEAL_PARALLEL_MIN = 65536;         // heal slots above which the heal runs on the gang
-// 3 = one shadow word per 8 B granule. 4 (16 B) halves the shadow tables and was worth CPU -5.5 s
-// on the self-compile (plans/gc-param-sweep/sensitivity-2026-09-28.md §12), but it REQUIRES every
-// region-nursery survivor to be >= 16 B and aborts otherwise. Made the default on 2026-09-29 and
-// REVERTED the same day: the gc-pressure stress run of stress-elm/BytesRoundtripNestedBytes keeps an
-// header-only 8-byte survivor alive, tag not yet identified ("a survivor under 16 B with a
-// 16-byte shadow granule"). See /work/2-gc-bugs.md.
-constexpr uint32_t SHADOW_GRANULE_LOG2 = 3;
+// 4 = one shadow word per 16 B granule (3 = per 8 B). 4 halves the shadow tables and was worth
+// CPU -5.5 s on the self-compile (plans/gc-param-sweep/sensitivity-2026-09-28.md §12), but it
+// REQUIRES every region-nursery survivor to be >= 16 B and aborts otherwise. First made the default
+// on 2026-09-29 and reverted the same day: an empty Tag_ByteBuffer (8 B, header only) survived in
+// stress-elm/BytesRoundtripNestedBytes. Empty Bytes is now the Empty constant, so no heap object is
+// under 16 B (HEAP_071, plans/empty-bytes-embedded-constant.md), and 4 is the default again
+// (2026-09-29, gc-opt-loop row SG4). See /work/2-gc-bugs.md.
+constexpr uint32_t SHADOW_GRANULE_LOG2 = 4;
 // Lever L3 (P§9, moved into the phase by Step 0's utilization rule): collector
 // threads per heap in mode 2. 1 = the exact engine (mode 1's bit-exact twin);
 // > 1 = the concurrent parallel engine over a shared grant (layout class).

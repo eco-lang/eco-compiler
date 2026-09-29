@@ -250,12 +250,11 @@ HPointer toList(void* buf) {
 
 // Concatenates a list of ByteBuffers into a single ByteBuffer.
 HPointer concat(HPointer bufferList) {
-    auto& allocator = Allocator::instance();
 
     // First pass: calculate total length (no allocation, pointers stable)
     size_t total_len = 0;
     for (alloc::ListCursor lc(bufferList); !lc.done(); lc.next()) {
-        void* bufObj = allocator.resolve(lc.current().p);
+        void* bufObj = alloc::resolveBytesOrNull(lc.current().p);
         if (bufObj) {
             total_len += alloc::byteBufferLength(bufObj);
         }
@@ -276,7 +275,7 @@ HPointer concat(HPointer bufferList) {
     // Second pass: copy buffers (bufferList updated by GC if needed)
     size_t offset = 0;
     for (alloc::ListCursor lc(bufferList); !lc.done(); lc.next()) {
-        void* bufObj = allocator.resolve(lc.current().p);
+        void* bufObj = alloc::resolveBytesOrNull(lc.current().p);
         if (bufObj) {
             auto vbuf = alloc::byteBufferView(bufObj);
             std::memcpy(dst.bytes + offset, vbuf.data, vbuf.length);

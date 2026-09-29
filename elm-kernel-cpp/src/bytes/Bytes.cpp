@@ -286,6 +286,8 @@ HPointer write_bytes(void* bytes) {
     // ByteBuffers are immutable; share by reference rather than copying.
     // The legacy form did fromData(b->bytes, b->header.size) which
     // round-tripped the entire payload through a fresh allocation.
+    // A null object is the empty-Bytes constant (HEAP_071).
+    if (!bytes) return alloc::emptyBytes();
     return Allocator::instance().wrap(bytes);
 }
 

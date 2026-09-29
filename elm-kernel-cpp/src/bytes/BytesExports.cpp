@@ -80,10 +80,8 @@ static uint64_t makeTuple2_ip(int64_t a, HPointer b) {
 // transparently, so callers downstream can index `data[offset]` regardless
 // of the source structure.
 static alloc::ByteBufferView resolveByteBufferView(uint64_t bytes) {
-    auto& allocator = Allocator::instance();
-    HPointer hp = Export::decode(bytes);
-    void* obj = allocator.resolve(hp);
-    return alloc::byteBufferView(obj);
+    // Empty Bytes is the embedded constant (HEAP_071) -> (nullptr, 0).
+    return alloc::byteBufferView(alloc::resolveBytesOrNull(Export::decode(bytes)));
 }
 
 // ============================================================================
@@ -130,7 +128,7 @@ static size_t encoderSize(Custom* c) {
         case ENC_SEQ:  return static_cast<size_t>(c->values[0].i);
         case ENC_UTF8: return static_cast<size_t>(c->values[0].i);
         case ENC_BYTES: {
-            void* bbPtr = Allocator::instance().resolve(c->values[0].p);
+            void* bbPtr = alloc::resolveBytesOrNull(c->values[0].p);
             return alloc::byteBufferLength(bbPtr);
         }
         default: return 0;
@@ -264,9 +262,9 @@ static void writeEncoder(Custom* encoder, u8* buf, size_t& offset) {
             break;
         }
         case ENC_BYTES: {
-            void* bbPtr = allocator.resolve(encoder->values[0].p);
+            void* bbPtr = alloc::resolveBytesOrNull(encoder->values[0].p);
             auto vbb = alloc::byteBufferView(bbPtr);
-            std::memcpy(buf + offset, vbb.data, vbb.length);
+            if (vbb.length > 0) std::memcpy(buf + offset, vbb.data, vbb.length);
             offset += vbb.length;
             break;
         }
@@ -595,7 +593,7 @@ HPtr Elm_Kernel_Bytes_read_string(int64_t length, HPtr bytes, int64_t offset) {
     // the buffer before any allocation, so a raw pointer is safe there; the
     // post-allocation copy must re-resolve through the rooted handle.
     HPointer srcHP = Export::decode(bytes.toBits());
-    auto src_view = alloc::byteBufferView(allocator.resolve(srcHP));
+    auto src_view = alloc::byteBufferView(alloc::resolveBytesOrNull(srcHP));
     // Bounds-check offset/length against the buffer, like every sibling reader
     // (read_bytes at ~:581). Guards both the UTF-8 fast path and the legacy
     // transcode against an out-of-bounds read on malformed length-prefixed

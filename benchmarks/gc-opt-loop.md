@@ -2278,6 +2278,54 @@ Pause distribution (phase-timer relink `eco-optTA2PT`, medians of three):
   the old `GCStats` layout made every run SIGSEGV at exit, after a complete banner. Those nine runs
   were discarded.
 
+### SG4 — `shadow_granule_log2` 4 as the default, after HEAP_071 (empty Bytes is the Empty constant) — **WIN, kept: wall 112.45 → 106.54 s (−5.91 s); the granule's own share is FLAT on wall and GC time but −4.4 s user CPU, −1.55 s collector busy and −446 MB max RSS, with every counter identical; output identical apart from 25 audit strings**
+
+The 16-byte shadow granule was recommended by `plans/gc-param-sweep/sensitivity-2026-09-28.md` §12,
+shipped on 2026-09-29 and reverted the same day: an empty `Tag_ByteBuffer`, an 8-byte header-only
+object, survived in `stress-elm/BytesRoundtripNestedBytes` under gc-pressure (`/work/2-gc-bugs.md`
+bug 1). `plans/empty-bytes-embedded-constant.md` makes the empty Bytes the merged Empty constant.
+HEAP_071 now holds that no heap object is under 16 B, and validate builds abort on a smaller survivor at
+any granule. With that, the default is 4 in `AllocatorCommon.hpp`, `heap-profile.py` and
+`docs/options.md`. The gc-pressure JSONs set no granule, so they inherit it. **This step also carries the
+09-29 ship (`nursery_max_block_count` 384, `string_flatten_limit` 128K), which never had a row
+here**, so the step was measured in two arms of the same binary. The candidate ran with no GC
+environment. The attribution arm set `ECO_HEAP_CONFIG=benchmarks/heapcfg/sg-g3.json`
+(`{"shadow_granule_log2": 3}`). MLIR `ecoSG4.mlir` (13,264,597 B) is the current source compiled by
+`eco-optTA2`. It differs from `ecoTG6base.mlir` only by the 25 KernelSetFacts re-audit notes:
+25 × 93 B = +2,325 B exactly, and it contains no code change. It was lowered against the changed
+runtime to `eco-optSG4`. Patch `snapshots/lss-loop/step-SG4.patch` (1,111 lines, vs `keep-TA2`).
+
+| run | wall (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|
+| r1 | 108.09 | 7.74 | 2521 | 8 | 20320 | 12972812 | 13264597 | same |
+| r2 | 105.84 | 7.52 | 2521 | 8 | 20320 | 13322900 | 13264597 | same |
+| r3 | 106.54 | 7.64 | 2521 | 8 | 20320 | 12985716 | 13264597 | same |
+| **median** | **106.54** | **7.64** | 2521 | 8 | 20320 | 12985716 | 13264597 | same |
+| Δ vs TA2 (112.45 / 7.84 / 13349532) | **−5.91** | −0.20 | +597 | 0 | +458 | −363816 | +2325 | — |
+| g3 r1 / r2 / r3 | 109.08 / 107.25 / 107.37 | 7.69 / 7.55 / 7.55 | 2521 | 8 | 20320 | 13437752 / 13429264 / 13431832 | 13264597 | same |
+| **g3 median** | **107.37** | **7.55** | 2521 | 8 | 20320 | 13431832 | 13264597 | same |
+| **Δ granule 4 vs 3 (same session)** | −0.83 | +0.09 | 0 | 0 | 0 | **−446116** | 0 | — |
+
+- **Verdict vs TA2: WIN.** −5.91 s is outside the band (the larger spread is 2.25 s). Most of it is
+  the untracked 09-29 ship, not the granule: the g3 arm is −5.08 s vs TA2 by itself.
+- **The granule alone** (same binary and session, only the granule differs) is FLAT on wall
+  (−0.83 s, inside the 2.25 s band) and on GC time (+0.09 s), so under rule 2 it wins on max RSS
+  (−446 MB, −3.3 %). It also cuts user CPU from 183.20 to 178.81 s (−4.39 s), sys from 5.31 to
+  4.88 s, and tenure-collector busy time from 21.63 to 20.09 s. The sweep's −5.5 s CPU estimate
+  reproduces. GC time excludes the collector thread, so the CPU saving shows up there and not in GC time.
+- **Counters:** both arms are identical in every run: minors 2,521, majors 8, promoted 693,127,705
+  objects (20,320 MiB), copied-in-nursery 758,412,033, `survivor copies < 16 B: 0`. The granule passes
+  the counter gate. The move against TA2 (+597 minors, +458 MiB promoted) comes from the smaller
+  nursery cap of the 09-29 ship, and is recorded here for the first time.
+- **Watch:** the minor-max pause spread is wider with 4: 54 / 83 / 99 ms (median 82.6) against
+  57 / 58 / 60 ms for g3. Minor total is 7.10 vs 6.99 s. A max is one pause per run, and this is a stats build
+  with no phase timers, so no percentiles were taken. Re-check with a phase-timer relink before
+  reading anything into it.
+- **Gates:** unit + E2E (`--target check`) 1947/1947. Validate unit 1948/1948. Validate stress 101/101
+  at default, gc-pressure and gc-pressure-parallel. elm-tests 13,565 / 12 (the reference). Before the
+  flip, gc-pressure stress at granule 4 was 101/101, including the former repro.
+  `eco-opt-prev -> eco-optSG4`; reference snapshot `keep-SG4`.
+
 ## 7. Findings
 
 (What this series learns, separated from the per-step records so the entries stay to ten lines.
@@ -2753,3 +2801,4 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | TG7d | 112.09 | -11.21 | 1924 | 8 | 19862 | 13359864 | WIN (wall, pause; keep-up gate overridden) | TG6 |
 | TA | 119.60 | +7.51 | 1924 | 7 | 18476 | 11982016 | LOSS (k = 2, v1) | TG7d |
 | TA2 | 112.45 | +0.36 | 1924 | 8 | 19862 | 13349532 | FLAT (kept, k = 1; k = 2 118.11 / k = 3 123.39 LOSS) | TG7d |
+| SG4 | 106.54 | -5.91 | 2521 | 8 | 20320 | 12985716 | WIN (incl. untracked 09-29 nmbc384/sfl128K; granule alone FLAT wall, RSS -446 MB, CPU -4.4 s) | TA2 |

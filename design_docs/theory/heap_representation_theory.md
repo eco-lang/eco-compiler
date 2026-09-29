@@ -480,7 +480,8 @@ void scanObject(void* obj) {
 semi-spaces. Representation consequences: a survivor extent is parsed exactly like the legacy
 to-space (objects and `Tag_Free` fillers from its base), plus a top-down builder area; no header
 in a survivor part ever holds a forward (the tenure job's forwarding lives in a per-extent shadow
-table, one word per 8-byte granule); every nursery object has an old-gen size class, so pointer
+table, one word per 16-byte granule by default, sound because no heap object is under 16 B,
+HEAP_071); every nursery object has an old-gen size class, so pointer
 objects above the largest class (8 KiB by default) are young large objects (HEAP_062); and a
 tenured copy is the same bytes with `age = 0` and `color = White`, exactly as a legacy promotion.
 

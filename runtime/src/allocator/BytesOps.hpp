@@ -54,7 +54,8 @@ enum class Width {
 // ============================================================================
 
 /**
- * Creates an empty ByteBuffer.
+ * Returns the empty Bytes value: the embedded Empty constant (HEAP_071),
+ * never a heap object.
  */
 inline HPointer empty() {
     return alloc::allocByteBuffer(nullptr, 0);
@@ -370,7 +371,8 @@ inline HPointer append(void* a, void* b) {
     size_t len_a = alloc::byteBufferLength(a);
     size_t len_b = alloc::byteBufferLength(b);
 
-    if (len_a == 0) return allocator.wrap(b);
+    // A null side is the empty-Bytes constant (HEAP_071); never wrap(nullptr).
+    if (len_a == 0) return b ? allocator.wrap(b) : alloc::emptyBytes();
     if (len_b == 0) return allocator.wrap(a);
 
     size_t total_len = len_a + len_b;

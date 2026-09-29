@@ -187,6 +187,8 @@ bool tryMakeAsciiString(const char* data, size_t len, HPointer* out) {
 }
 
 AsciiOut allocAsciiOut(size_t len) {
+    // A zero-length leaf would be a header-only 8-byte object (HEAP_071).
+    assert(len > 0 && "allocAsciiOut: empty strings are the Empty constant");
     auto& allocator = Allocator::instance();
     size_t leafSize = (sizeof(ElmStringUtf8Leaf) + len + 7) & ~static_cast<size_t>(7);
     if (leafSize < allocator.getLargeObjectThreshold()) {

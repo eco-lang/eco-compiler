@@ -180,7 +180,7 @@ BASELINE_HEAP = {
     "tenure_help_threads":               0,
     "tenure_priority":                   0,
     "heal_parallel_min":                 65536,
-    "shadow_granule_log2":               3,
+    "shadow_granule_log2":               4,
     "tenure_collector_threads":          1,
     "tenure_fifo_order":                 False,
     # Old generation and major-GC triggers (LiveBudget / demote: TG2; headroom: TG5c).

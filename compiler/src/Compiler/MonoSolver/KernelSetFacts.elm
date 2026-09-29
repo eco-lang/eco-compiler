@@ -979,182 +979,182 @@ facts =
           , Positional
                 { params = [ PSFApplies, PSFOpaque ]
                 , result = PSFOpaque
-                , evidence = "class: full | entry: BytesExports.cpp:Elm_Kernel_Bytes_decode:414-463 | B1: apply-only via eco_apply_closure_typed :427, decoder never stored or copied | result opaque: A2 — :434-437 routes on an out-of-band Nothing sentinel the callback's (Int, a) type does not describe | audited: 2026-08-20"
+                , evidence = "class: full | entry: BytesExports.cpp:Elm_Kernel_Bytes_decode:412-461 | B1: apply-only via eco_apply_closure_typed :425, decoder never stored or copied | result opaque: A2 — :432-435 routes on an out-of-band Nothing sentinel the callback's (Int, a) type does not describe | audited: 2026-08-20"
                 }
           )
         , ( ( "Bytes", "decodeFailure" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_decodeFailure:465-467 | type: elm/bytes/1.0.8/src/Bytes/Decode.elm (the failure marker behind `fail : Decoder a`) | B1: vacuous - NO arguments, returns a constant marker; `a` is phantom AND nothing can ever be written to it from here | B2: no store | B3: no allocClosure | audited: 2026-08-25"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_decodeFailure:463-465 | type: elm/bytes/1.0.8/src/Bytes/Decode.elm (the failure marker behind `fail : Decoder a`) | B1: vacuous - NO arguments, returns a constant marker; `a` is phantom AND nothing can ever be written to it from here | B2: no store | B3: no allocClosure | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "encode" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_encode:391-412 | helpers: encoderSize:120-138, writeEncoder:140-274 | type: elm/bytes/1.0.8/src/Bytes/Encode.elm:96 (Encoder -> Bytes) | B1: vacuous (no function-capable position) | B2: result alloc only :403-405 | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_encode:389-410 | helpers: encoderSize:118-136, writeEncoder:138-272 | type: elm/bytes/1.0.8/src/Bytes/Encode.elm:96 (Encoder -> Bytes) | B1: vacuous (no function-capable position) | B2: result alloc only :401-403 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "getHostEndianness" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_getHostEndianness:299-303 | type: elm/bytes/1.0.8/src/Bytes.elm (Endianness) | B1: vacuous - NO arguments; returns fromBits(isLE ? 0 : 1), a concrete enum | B2: no store | B3: no allocClosure | audited: 2026-08-25"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_getHostEndianness:297-301 | type: elm/bytes/1.0.8/src/Bytes.elm (Endianness) | B1: vacuous - NO arguments; returns fromBits(isLE ? 0 : 1), a concrete enum | B2: no store | B3: no allocClosure | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "getStringWidth" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_getStringWidth:305-362 | helpers: none | type: elm/bytes/1.0.8/src/Bytes/Encode.elm:250 (String -> Int) | B1: vacuous (no function-capable position) | B2: C++-stack u16string :333, no Elm retention | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_getStringWidth:303-360 | helpers: none | type: elm/bytes/1.0.8/src/Bytes/Encode.elm:250 (String -> Int) | B1: vacuous (no function-capable position) | B2: C++-stack u16string :331, no Elm retention | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "read_bytes" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_bytes:569-580 | helpers: makeTuple2_ip:65-76 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:146 (Int -> Bytes -> Int -> (Int, Bytes)) | B1: vacuous (no function-capable position) | B2: slice + Tuple2 result only | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_bytes:567-578 | helpers: makeTuple2_ip:65-76 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:146 (Int -> Bytes -> Int -> (Int, Bytes)) | B1: vacuous (no function-capable position) | B2: slice + Tuple2 result only | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "read_f32" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_f32:545-555 | helpers: makeTuple2_if:55-63 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:128 (Bool -> Bytes -> Int -> (Int, Float)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_f32:543-553 | helpers: makeTuple2_if:55-63 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:128 (Bool -> Bytes -> Int -> (Int, Float)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "read_f64" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_f64:557-567 | helpers: makeTuple2_if:55-63 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:135 (Bool -> Bytes -> Int -> (Int, Float)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_f64:555-565 | helpers: makeTuple2_if:55-63 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:135 (Bool -> Bytes -> Int -> (Int, Float)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "read_i16" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_i16:503-512 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:85 (Bool -> Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_i16:501-510 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:85 (Bool -> Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "read_i32" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_i32:514-523 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:92 (Bool -> Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_i32:512-521 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:92 (Bool -> Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "read_i8" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_i8:488-493 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:78 (Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only :46-47 | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_i8:486-491 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:78 (Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only :46-47 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "read_string" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_string:582-709 | helpers: makeTuple2_ip:65-76 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:175 (Int -> Bytes -> Int -> (Int, String)) | B1: vacuous (no function-capable position) | B2: body + Tuple2 result rooted :666-668 | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_string:580-707 | helpers: makeTuple2_ip:65-76 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:175 (Int -> Bytes -> Int -> (Int, String)) | B1: vacuous (no function-capable position) | B2: body + Tuple2 result rooted :664-666 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "read_u16" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_u16:525-533 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:110 (Bool -> Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_u16:523-531 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:110 (Bool -> Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "read_u32" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_u32:535-543 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:117 (Bool -> Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_u32:533-541 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:117 (Bool -> Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "read_u8" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_u8:495-499 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:103 (Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_u8:493-497 | helpers: makeTuple2_ii:45-53 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:103 (Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "width" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_width:295-297 | helpers: ElmBytesRuntime.cpp:elm_bytebuffer_len:78-85 | type: elm/bytes/1.0.8/src/Bytes.elm:77 (Bytes -> Int) | B1: vacuous (no function-capable position) | B2: read-only length probe, no statics | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_width:293-295 | helpers: ElmBytesRuntime.cpp:elm_bytebuffer_len:78-85 | type: elm/bytes/1.0.8/src/Bytes.elm:77 (Bytes -> Int) | B1: vacuous (no function-capable position) | B2: read-only length probe, no statics | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "write_bytes" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_bytes:867-869 | helpers: makeEncoderBytes:817-833 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:298 (C++ Bytes -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: arg into result :831, rooted :823-827 | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_bytes:865-867 | helpers: makeEncoderBytes:815-831 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:298 (C++ Bytes -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: arg into result :829, rooted :821-825 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "write_f32" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_f32:859-861 | helpers: makeEncoder2_pf:753-770 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:294 (C++ Endianness -> Float -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :759-763 | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_f32:857-859 | helpers: makeEncoder2_pf:751-768 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:294 (C++ Endianness -> Float -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :757-761 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "write_f64" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_f64:863-865 | helpers: makeEncoder2_pf:753-770 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:295 (C++ Endianness -> Float -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :759-763 | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_f64:861-863 | helpers: makeEncoder2_pf:751-768 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:295 (C++ Endianness -> Float -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :757-761 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "write_i16" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_i16:839-841 | helpers: makeEncoder2_pi:734-751 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:289 (C++ Endianness -> Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :740-744 | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_i16:837-839 | helpers: makeEncoder2_pi:732-749 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:289 (C++ Endianness -> Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :738-742 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "write_i32" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_i32:843-845 | helpers: makeEncoder2_pi:734-751 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:290 (C++ Endianness -> Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :740-744 | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_i32:841-843 | helpers: makeEncoder2_pi:732-749 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:290 (C++ Endianness -> Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :738-742 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "write_i8" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_i8:835-837 | helpers: makeEncoder1:715-725 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:288 (C++ Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :718-719 | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_i8:833-835 | helpers: makeEncoder1:713-723 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:288 (C++ Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :716-717 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "write_string" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_string:871-873 | helpers: makeEncoderUtf8:792-812 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:297 (C++ String -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: arg+width into result :809-810, rooted :800-805 | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_string:869-871 | helpers: makeEncoderUtf8:790-810 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:297 (C++ String -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: arg+width into result :807-808, rooted :798-803 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "write_u16" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_u16:851-853 | helpers: makeEncoder2_pi:734-751 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:292 (C++ Endianness -> Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :740-744 | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_u16:849-851 | helpers: makeEncoder2_pi:732-749 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:292 (C++ Endianness -> Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :738-742 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "write_u32" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_u32:855-857 | helpers: makeEncoder2_pi:734-751 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:293 (C++ Endianness -> Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :740-744 | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_u32:853-855 | helpers: makeEncoder2_pi:732-749 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:293 (C++ Endianness -> Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :738-742 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Bytes", "write_u8" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
-                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_u8:847-849 | helpers: makeEncoder1:715-725 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:291 (C++ Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :718-719 | B3: no closure alloc | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_u8:845-847 | helpers: makeEncoder1:713-723 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:291 (C++ Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :716-717 | B3: no closure alloc | audited: 2026-09-29 (re-audit: empty-Bytes constant, resolveBytesOrNull; plans/empty-bytes-embedded-constant.md)"
                 }
           )
         , ( ( "Char", "fromCode" )

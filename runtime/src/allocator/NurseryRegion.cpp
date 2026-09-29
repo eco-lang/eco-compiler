@@ -399,7 +399,9 @@ void* NurserySpace::copyClaimedR(MinorWorker& w, region::RegionWorker& rw, void*
         if (size < 16) {
             ++rw.under16;
             // A 16-byte shadow granule (lever L6) needs every survivor >= 16 B.
-            if (R.shadow_shift > 3) regionFatal("a survivor under 16 B with a 16-byte shadow granule", obj, nullptr, size);
+            // HEAP_071 makes that hold for every heap: validate builds abort at
+            // any granule so a new header-only layout fails the validate gate.
+            if (ECO_HEAP_VALIDATE || R.shadow_shift > 3) regionFatal("a survivor under 16 B with a 16-byte shadow granule", obj, nullptr, size, hd.tag);
         }
         ++rw.class_count[cls];
         ++rw.n_fill;
