@@ -1,0 +1,44 @@
+# Fork-harness guard registry (plans/threaded-gc-register-repros-impl.md Step 27), read by
+# run_fork_arms.py. Same convention as test/tla/models.txt: an `xfail` row reproduces a register
+# entry on today's tree and flips to `clean` in the change that fixes it.
+#
+# flavor tier   arm                   trials seed expected   # CR
+#   flavor:   plain (gc-fork-harness), trace (gc-fork-trace, -DECO_TLA_TRACE=ON: the det-* arms) or
+#             tsan (gc-heap-tsan, the deterministic TSan race arms; arm arguments joined with ':';
+#             the runner runs `trials` trials itself; seed unused; `match=<fn>` must appear in the
+#             TSan report for a trial to count as reproduced)
+#   tier:     quick (register-guards) or stress (register-guards-stress; never gating)
+#   expected: clean  the arm exits 0 (nothing reproduced)
+#             xfail  the arm exits 1 (the entry reproduced in every trial)
+#             reach  the arm exits 1 (a window is reached; not a defect by itself)
+#             flaky  report only
+# Arm exit codes: 0 not reproduced, 1 reproduced, 4 a precondition was missed (reached=0), any
+# other code / signal / timeout: an error.
+plain  quick  mut                    3  1  clean
+trace  quick  det-cr003              3  1  xfail       # CR-003
+trace  quick  det-cr004              3  1  reach       # CR-004 (Not-a-bug; the window CR-013 needs)
+trace  quick  det-cr005              3  1  xfail       # CR-005
+trace  quick  det-cr015              3  1  xfail       # CR-015
+trace  quick  det-cr013-start        3  1  xfail       # CR-013 lost start (TV1)
+trace  quick  det-cr013-start-exit   3  1  clean       # CR-013 control (the teardown merge uses heal=false)
+trace  quick  det-cr013-copy         3  1  xfail       # CR-013 double copy (TV3/TV4)
+trace  quick  det-cr013-copy-scan    3  1  xfail       # CR-013 unscanned copy (TV6)
+trace  quick  det-cr013-l3-exit      3  1  xfail       # CR-013 L3 hang at exit (code 15)
+trace  quick  det-cr013-l3-minor     3  1  xfail       # CR-013 L3 hang in the child's minor (code 13)
+trace  quick  det-cr031              3  1  xfail       # CR-031 foreign teardown (code 16)
+trace  quick  det-cr032              3  1  xfail       # CR-032 census mutex at exit (code 14)
+tsan   quick  det-cr014-live         3  0  xfail  match=flushCursorW          # CR-014 live_bytes race (NoRaceLive)
+tsan   quick  det-cr001:rf:inloop    3  0  xfail  match=finalizeBitmapCellW   # CR-001 gc_phase_ race, in-loop write
+tsan   quick  det-cr001:wf:inloop    3  0  xfail  match=finalizeBitmapCellW   # CR-001, reverse order
+tsan   quick  det-cr001:rf:tail      3  0  xfail  match=finalizeBitmapCellW   # CR-001, tail write
+tsan   quick  det-cr001:wf:tail      3  0  xfail  match=finalizeBitmapCellW   # CR-001, tail write, reverse order
+tsan   quick  det-cr002              3  0  xfail  match=setMarkBitAtomic      # CR-002 sweep word read vs fetch_or
+tsan   quick  det-cr019:t1first      3  0  xfail  match=promoteYoungLarge     # CR-019 YLOS header write vs sweep read
+tsan   quick  det-cr019:t2first      3  0  xfail  match=promoteYoungLarge     # CR-019, reverse order
+tsan   quick  cr012:a                3  0  xfail  match=cyclePressureFinishDue # CR-012(a) old_gen_in_use_bytes_
+tsan   quick  cr012:e                3  0  xfail  match=validatePageWork      # CR-012(e) validator vs virgin block
+plain  stress host-exit             20  1  flaky       # CR-031
+plain  stress host                  10  1  flaky       # CR-003/015 (census env row: CR-032)
+plain  stress relaunch              20  1  flaky       # CR-023
+plain  stress tenure-storm          20  1  flaky       # CR-013
+plain  stress tenure-storm-l3       20  1  flaky       # CR-013

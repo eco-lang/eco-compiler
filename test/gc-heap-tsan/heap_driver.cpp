@@ -77,6 +77,14 @@ struct Knobs {
     // Register CR-020 (`ylos` arm): every `ylos_every` steps a young large
     // object family (buildFamily below); 0 = none.
     int ylos_every = 0;
+    // Register CR-037 / CR-017 (`lbaba` arm, plans/threaded-gc-register-repros-
+    // impl.md Step 30). The defaults leave every other scenario unchanged.
+    int cycle_at = 0;                              // force at step % cycle_every == cycle_at
+    int idle_major_every = 0, idle_major_at = 0;   // an explicit STW major, cycle or not
+    int lb_every = 0;                              // CR-037: a dying large string, 8+2L == 16+8*ylos_len
+    int doom_every = 0;                            // CR-017: young x -> old doomed Tuple2; both die next period step
+    size_t ylos_len = 0;                           // the families' fixed length (0 = random)
+    int verify_every = 25;
 };
 
 // CR-020: a young large object family. A pointer-bearing Array above
@@ -249,6 +257,15 @@ void scenario(unsigned bg, unsigned slices, uint64_t seed, unsigned minor = 1,
     std::mt19937_64 frng(seed * 7919 + 1);   // families only: the base churn is unchanged
     int64_t serial = 0;
     uint64_t fam_ylos = 0, fam_large = 0;
+    // CR-017 (lbaba): old Tuple2s, each in turn the target of one young x
+    // (x_slot) and dropped together with it one step later.
+    std::vector<std::unique_ptr<Root>> doomed;
+    if (kn.doom_every > 0)
+        for (int i = 0; i < 4096; ++i)
+            doomed.push_back(std::make_unique<Root>(
+                a, alloc::tuple2(alloc::unboxedInt(i), alloc::unboxedInt(-i), 0x3)));
+    std::unique_ptr<Root> lb_slot, x_slot;   // CR-037's dying string, CR-017's young x
+    size_t doom_next = 0;
 #if ECO_TLA_TRACE_ENABLED
     if (kn.trace != nullptr) {
         // Start between collections: no cycle may be half recorded.
@@ -281,12 +298,22 @@ void scenario(unsigned bg, unsigned slices, uint64_t seed, unsigned minor = 1,
             keep.push_back(std::make_unique<Root>(a, alloc::allocString(big.data(), big.size())));
             want.push_back(-1);
         }
+        // lbaba (CR-037 / CR-017): the previous period's string, x and doomed
+        // Tuple2 die now; an idle STW major frees them (so the next family can
+        // reuse the string's cell).
+        if (kn.lb_every && step % kn.lb_every == 1) lb_slot.reset();
+        if (kn.doom_every && step % kn.doom_every == 1) {
+            x_slot.reset();
+            if (doom_next) doomed[doom_next - 1].reset();
+        }
+        if (kn.idle_major_every && step % kn.idle_major_every == kn.idle_major_at) a.majorGC();
         if (kn.ylos_every > 0 && step % kn.ylos_every == 0) {
             // CR-020: a new family replaces the oldest (whose Array, by now
             // promoted in place, becomes old garbage).
             ++serial;
             const bool large = frng() % 8 == 0;
-            const size_t len = large ? 4100 + frng() % 1900    // 32.8-48 KiB: a large block
+            const size_t len = kn.ylos_len ? kn.ylos_len
+                             : large ? 4100 + frng() % 1900    // 32.8-48 KiB: a large block
                                      : 1030 + frng() % 2600;   // 8.1-29 KiB: a mixed bag page
             Family& prev = fams[static_cast<size_t>(serial - 1) % kFamilyRing];
             const bool chained = serial % 4 != 0 && !prev.parents.empty();
@@ -302,7 +329,18 @@ void scenario(unsigned bg, unsigned slices, uint64_t seed, unsigned minor = 1,
             if (large) ++fam_large;
             if (h->getOldGen().isYoungLarge(a.resolve(familyArray(a, f)))) ++fam_ylos;
         }
-        if (step % kn.cycle_every == 0 && !OldGenSpaceTestAccess::cycleActive(h->getOldGen())) {
+        // CR-037: a large string whose body (8 + 2L bytes) is the family
+        // Array's size, so after the idle major the next family can land in
+        // its freed cell (a reused lb_bodies address).
+        if (kn.lb_every && step % kn.lb_every == 0) {
+            std::vector<u16> lb(4 * kn.ylos_len + 4, u'l');
+            lb_slot = std::make_unique<Root>(a, alloc::allocString(lb.data(), lb.size()));
+        }
+        // CR-017: a young x pointing at the next doomed old Tuple2.
+        if (kn.doom_every && step >= 8 && step % kn.doom_every == 0 && doom_next < doomed.size())
+            x_slot = std::make_unique<Root>(
+                a, alloc::tuple2(alloc::boxed(doomed[doom_next++]->h), alloc::boxed(alloc::allocInt(step)), 0));
+        if (step % kn.cycle_every == kn.cycle_at && !OldGenSpaceTestAccess::cycleActive(h->getOldGen())) {
             h->test_force_major_trigger_ = true;
             ++cycles;
         }
@@ -319,8 +357,14 @@ void scenario(unsigned bg, unsigned slices, uint64_t seed, unsigned minor = 1,
             a.majorGC();
         }
 #endif
+        // lbaba: this step's family, right after the minor that follows the
+        // idle major (the reused-address window, CR-037).
+        if (kn.lb_every && step % kn.lb_every == 1 && kn.ylos_every > 0) {
+            const Family& f = fams[static_cast<size_t>(serial) % kFamilyRing];
+            if (!f.parents.empty()) checkFamily(a, f);
+        }
         // Verify everything rooted.
-        if (step % 25 == 0) {
+        if (step % kn.verify_every == 0) {
             for (size_t k = 0; k < keep.size(); ++k) {
                 void* o = a.resolve(keep[k]->h);
                 if (!o) fail("a rooted value vanished");
@@ -451,6 +495,11 @@ int main(int argc, char** argv) { return traceMain(argc, argv); }
 #else
 int promoSweepMain(int argc, char** argv);   // promo_sweep.cpp (M4; not in the default run)
 int ylosSweepMain(int argc, char** argv);    // ylos_sweep.cpp (CR-019; not in the default run)
+// Register reproductions, Phase C (plans/threaded-gc-register-repros-impl.md
+// §5): deterministic TSan pairs, not in the default run (each reports by design).
+int promoDetMain(int argc, char** argv);     // promo_sweep.cpp: det-cr014-live, det-cr001, det-cr002
+int ylosDetMain(int argc, char** argv);      // ylos_sweep.cpp: det-cr019
+int cr012Main(int argc, char** argv);        // cr012_two_heap.cpp: cr012 a|e
 namespace {
 // The default run's nine scenarios, for the arms below.
 struct ListEntry {
@@ -490,6 +539,43 @@ int armMain(int argc, char** argv) {
     std::printf("heap_driver %s PASS\n", argv[1]);
     return 0;
 }
+// Register CR-037 / CR-017 (plans/threaded-gc-register-repros-impl.md Step
+// 30): `gc-heap-tsan lbaba [jitter_us [seed0]]`. Region nursery (mode 2, one
+// collector), ages 1 and 2, B = 1..4 background markers, fixed family lengths
+// 1600 and 4500 (12,816 / 36,016 B: a bag cell and a large block). Every third
+// step a large string of the family Array's size dies and an idle STW major
+// frees it, so the next family's YLOS Array can take its freed lb_bodies cell
+// (CR-037); a young x -> an old doomed Tuple2, both dying one step later
+// (CR-017); cycles forced off the idle major's step. Oracles: "a family's young
+// element changed" or TV7 (CR-037); IM4 or "parallel marker reached nursery
+// object" (CR-017); TSan reports. Expected to FAIL today; not in the default run.
+int lbabaMain(int argc, char** argv) {
+    if (argc > 2 && std::strcmp(argv[2], "0") != 0) setenv("ECO_GC_HELPER_JITTER_US", argv[2], 1);
+    const uint64_t seed0 = argc > 3 ? std::strtoull(argv[3], nullptr, 10) : 1;
+    uint64_t n = 0;
+    for (unsigned age : {1u, 2u}) {
+        for (unsigned bg = 1; bg <= 4; ++bg) {
+            for (size_t len : {size_t{1600}, size_t{4500}}) {
+                Knobs kn;
+                kn.steps = 600;
+                kn.old_pairs = 20000;
+                kn.cycle_every = 2 + static_cast<int>(n % 3);
+                kn.cycle_at = 1 % kn.cycle_every;
+                kn.idle_major_every = 3;
+                kn.idle_major_at = 1;
+                kn.lb_every = kn.doom_every = 3;
+                kn.ylos_every = 1;
+                kn.ylos_len = len;
+                kn.verify_every = 3;
+                std::printf("lbaba run %llu: age %u, B %u, ylos_len %zu\n", (unsigned long long)n, age, bg, len);
+                std::fflush(stdout);
+                scenario(bg, 4, seed0 + n++, /*minor=*/1, /*regions=*/true, 1, age, kn);
+            }
+        }
+    }
+    std::printf("heap_driver lbaba PASS\n");
+    return 0;
+}
 }  // namespace
 int main(int argc, char** argv) {
     // M4: `gc-heap-tsan promo [seed [rounds [workers [jitter_us [exact
@@ -500,10 +586,18 @@ int main(int argc, char** argv) {
     // CR-006 / CR-020 arms (armMain above).
     if (argc >= 2 && (std::strcmp(argv[1], "pool") == 0 || std::strcmp(argv[1], "ylos") == 0))
         return armMain(argc, argv);
+    // CR-037 / CR-017: `gc-heap-tsan lbaba [jitter_us [seed0]]` (lbabaMain above).
+    if (argc >= 2 && std::strcmp(argv[1], "lbaba") == 0) return lbabaMain(argc, argv);
     // CR-019: `gc-heap-tsan ylos-sweep [seed [rounds [workers [jitter_us [age
     // [sweep_bytes]]]]]]` (ylos_sweep.cpp): a legacy parallel minor sweeps a
     // mixed block holding a young large object that another worker ages.
     if (argc >= 2 && std::strcmp(argv[1], "ylos-sweep") == 0) return ylosSweepMain(argc - 1, argv + 1);
+    // Register reproductions (Phase C): `det-cr014-live`, `det-cr001 {rf|wf}
+    // {inloop|tail}`, `det-cr002`, `det-cr019 {t1first|t2first}`, `cr012 {a|e}`.
+    // Exit 0 clean, 3 NOT REACHED, 66 a TSan report (expected today).
+    if (argc >= 2 && std::strcmp(argv[1], "det-cr019") == 0) return ylosDetMain(argc - 1, argv + 1);
+    if (argc >= 2 && std::strncmp(argv[1], "det-cr0", 7) == 0) return promoDetMain(argc - 1, argv + 1);
+    if (argc >= 2 && std::strcmp(argv[1], "cr012") == 0) return cr012Main(argc - 1, argv + 1);
     scenario(2, 4, 1);
     scenario(4, 16, 2);
     scenario(3, 8, 3);

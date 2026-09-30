@@ -61,6 +61,7 @@ inline uint64_t nsBetween(
 }  // namespace
 
 namespace Elm {
+ECO_TLA_TRACE_ONLY(namespace gc { extern bool tla_m6; })   // GCHelperPool.cpp: M6 probes log while set
 
 #if ENABLE_GC_STATS
 // Bumps the per-thread counter that matches the trigger reason returned by
@@ -238,6 +239,8 @@ void ThreadLocalHeap::noteLargeAlloc(LargePlacement where, size_t size, uint32_t
 
 // TLA-REGION(TLH.destructor) begin
 ThreadLocalHeap::~ThreadLocalHeap() {
+    // M6 fork harness (det-cr031): a child's exit() reached this heap's teardown (CR-031).
+    ECO_TLA_TRACE_ONLY(if (::Elm::gc::tla_m6) ::Elm::tlatrace::probe("m6.tlh.dtor");)
     // threaded-gc-07: stop / finish / stats-merge the last tenure job while
     // the old gen (destroyed before the nursery) still exists.
     nursery_.tenureTeardown(old_gen_);

@@ -19,7 +19,7 @@ nocode  -  -  toy  toy
 # ---- whole files ----
 file    f9f513b63a00a6fde24af5c119a805936243c2918693b9e7cbee13e1a9b69524  runtime/src/allocator/MarkWork.hpp  -  M2,W1,W2
 file    a86c86e1c9538711798d868d401214ea5f77c8383af0872b521ae5dcd3296727  runtime/src/allocator/MinorWork.hpp  -  M3,M4,W3,W5
-file    4feed5b99be6d57f629f105610c2027317de301db78e160fef75d5438aea23d6  runtime/src/allocator/TenureWork.hpp  -  M5,W5,w_running_chain
+file    1b0803bf3a66004882837313763ac275232d05c407d6d1c50de2777f904517af  runtime/src/allocator/TenureWork.hpp  -  M5,W5,w_running_chain
 file    ee73fb426f65d89e04eee111b11380bd3f29c1a97b17974b3c3fbd1b85931685  runtime/src/allocator/BitmapScan.hpp  -  M4,W3,W4
 file    023648a81ce325c1da5bd4ed35fa7953b9876ce3eb5f8b8b0f27c769a17e96a5  runtime/src/allocator/GCHelperPool.hpp  -  M6,M7,w_pool_done,w_running_chain
 file    d5a9126214fff1a38fd77ec10f606188e3458a5d2c27fc2316aeb336313821e3  runtime/src/allocator/GCHelperPool.cpp  -  M6,M7,w_pool_done,w_running_chain
@@ -29,7 +29,7 @@ file    89f964a455dcd1a3daf5d3e2a7e3b173ba9bd2e6444e8a6b98ec6a45bce284b1  runtim
 file    f3cb469656fbb90a688227aefc61187f93bce62a0677420668c6cc2384f0849f  runtime/src/allocator/ReservedArray.hpp  -  W4,M1
 file    d82cd2a83ddb41e3b9d7ce6040da732a15555eec68688d13a8fac1580187cf09  runtime/src/allocator/TlaTrace.hpp  -  M1,M2,M3,M4,M5,M6,M7
 file    cec4fff2f05c971982c1b0ec2820ade29e8160c2c5ab7a35d7d822c64c597fbd  test/gc-heap-tsan/tiny_graph.cpp  -  M1
-file    f202665be8054446d9b0ecb65a24c5ac91cfa36f9c7759ea3ae62115dc5ad6b7  test/gc-heap-tsan/promo_sweep.cpp  -  M4
+file    d7dbcbdf5c41a258f9457681ab97b87fbc02ca10c95873f44b9455ce821e8aca  test/gc-heap-tsan/promo_sweep.cpp  -  M4
 file    7888eb785b39ba4eb956513fc4b7001c92c1279c98b1ea245c8b7ac59d512334  test/gc-helper-tsan/harness.cpp  -  M7
 file    cc23ed539ced765847b5e27c6a52f5cae73a04a1c1e580588ddd09b4ec1d7caf  test/gc-helper-tsan/minor_harness.cpp  -  M3
 file    5bcf9065bd75d9801cd6c7fc35e8b9ab3964ecb989d234b7543831e2d61828a5  test/gc-helper-tsan/mark_harness.cpp  -  M2
@@ -91,7 +91,7 @@ region  a9fe85a95c904ca5ffc4f0301f904c64918abac77bfb261703f5a892880c9af8  runtim
 region  b8e21de4fba74c7c016660393d44ece4d3eec58dccb36237b8c6437153621c7f  runtime/src/allocator/OldGenSpace.cpp  OGS.allocateFromBagPage  M4,M7,M8
 region  fdde8107398a5750cd5410267afe6faa5b1ee6fcaac25caabe99f24fb611bdd4  runtime/src/allocator/OldGenSpace.cpp  OGS.allocateFromEmptyRegularBlocks  M4,M8
 region  68d67003be92e069147d24e851e2330e7b2f5dc8ce35a296e05105e02918bd3b  runtime/src/allocator/OldGenSpace.cpp  OGS.pushSpanOnFreeLists  M4,M8
-region  d8233791428c8c0e108eab587b2543323474a16e89a858d85f7bc5e44a561612  runtime/src/allocator/OldGenSpace.cpp  OGS.lazySweep  M4,M7,M8,W3
+region  3019e316a80192dfa674712de9b1eff06bfa60472f42957265e2265fda51c993  runtime/src/allocator/OldGenSpace.cpp  OGS.lazySweep  M4,M7,M8,W3
 region  282765affa67c56ae439d92d8cc2d02309ce90b080e01d879b25bed3032c362f  runtime/src/allocator/OldGenSpace.cpp  OGS.onSweepComplete  M4,M8
 region  6a3ce1cdb7a3931341c7948085a8986cffd678edac6ef5f58389863991a805ff  runtime/src/allocator/OldGenSpace.cpp  OGS.maybeShrinkCapacity  M4,M8
 region  cb44421883c3584d017b1e9ef650e0ef54c8da9158628afd27687c99e8da0448  runtime/src/allocator/OldGenSpace.cpp  OGS.computeFragmentationStats  M4,M8
@@ -123,7 +123,7 @@ region  e089cd52124e93a910f8de68bc11fa4cfb96030c8db8901aa397be88b2c31d54  runtim
 region  f57df5d9b5056118350e4015ce900b9b358661a09b1bfbbaeb9a2c427b7eac91  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.stepMarkCycle  M1
 region  c6fd113f19729e4fa0f2684a008fc9424e865a28d3e397bbcc768ff6f7386aa8  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.finishMarkCycleNow  M1
 region  219f5150bc3f830dfc635616f9cf80b1f5d4e8d92b583cf5318c31b259f6769f  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.completeMarkCycle  M1
-region  c38de33823a2ffaf57fd52dfdac0e8af0d1cd5cd863a461bd83ba9c401772220  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.destructor  M6
+region  e50c08c7f202a7dd15bc4dcfa4d06423815dac28817f0bd8000c91203e5acfca  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.destructor  M6
 region  f5620a4d92860019d4eaaff7d71f495e951b62176cb9495176dfb1d6eff60e44  runtime/src/allocator/NurserySpace.hpp  NSH.forEachYoung  M1,M5
 region  84d977b32a71cbfe1bc35a4287a6dbb1c35a976fa05e09ca13525ccb9934ffea  runtime/src/allocator/NurserySpace.hpp  NSH.forEachSurvivor  M1
 region  cfcb774ee62d5997a0ea640bbc62e6744564bb5df740cf23bf5611dcbe38b0c4  runtime/src/allocator/NurseryParallel.cpp  NP.MinorEnv  M2,M3
@@ -150,7 +150,7 @@ region  83c397bbb62ded7a0ea9b9d74906670efa8ea62ada16e5cdda837696544d7169  runtim
 region  7aa6e6cef0bcaf60cf6e47061aa26e6da21c94847210cd0add668e579cc28124  runtime/src/allocator/NurseryTenure.cpp  NT.tenureJoin  M5,M6,w_running_chain
 region  560d8e7c3f08aaf06d48aa55c82404679bbd424c3f13938e3d2048ff5153181f  runtime/src/allocator/NurseryTenure.cpp  NT.mergeJob  M1,M5
 region  ef8d3b675e250d8dfb5f8fdd41de80592e9239642039e1f410309452e4e3d5af  runtime/src/allocator/NurseryTenure.cpp  NT.tenureTeardown  M5,M6,M7
-region  f93f45589279f4de2223ed170d696e1f60f07039a3bb1bc95ac50f7d776432d1  runtime/src/allocator/NurseryTenure.cpp  NT.TenureParEnv  M2,M5,M7,W5
+region  53fc7d8f27b86926d194f3f8c205068ad4b647e52aa435d3f3b2a078b2486066  runtime/src/allocator/NurseryTenure.cpp  NT.TenureParEnv  M2,M5,M7,W5
 region  c7962acf2a5c1d1b43b09d95c8455f5e2214a03e45cfb852d64f63e415b481de  runtime/src/allocator/NurseryTenure.cpp  NT.tenureParDistribute  M2,M5
 region  68b71bc4b76c7513da5c2c4d2ae868c6aa3b0ef20f37893b3d6ce1d89132e308  runtime/src/allocator/NurseryTenure.cpp  NT.tenureParCollect  M5
 region  2635c53af0ef507ab779d63d0d4f48000342a34ecf004d5899cad9b2d4e5df7a  runtime/src/allocator/NurseryTenure.cpp  NT.runJobParallel  M5,M7
@@ -170,7 +170,7 @@ region  abeb5ac1fa568b07c2738d167c956e25993cf77742e25c1e8d58163cd30c952a  runtim
 
 # ---- censuses: every allocator file with a concurrency line ----
 census  d89b027bfb530cf870b009dde331ee68356e00aef281ae1d67c8990afe29ff0d  runtime/src/allocator/Allocator.cpp  -  M6,M7
-census  ecf74dcc448e6a7abd77f123f55f6723e35eecc8997318329831121e0cf82e8f  runtime/src/allocator/Allocator.hpp  -  M6,M7
+census  bedee6e4aa9171df3baa6898b8a61754fc965d59b8dae5ecf9f063e39b691730  runtime/src/allocator/Allocator.hpp  -  M6,M7
 census  abe1f2170051de9447ff8258063798e108a0f0c10853493af976df8226098af5  runtime/src/allocator/GCHelperPool.cpp  -  M6,M7
 census  ecbe293207eb32ead6cdcecc2fdc9f90084c0202e800b1c31263b5a146675f9c  runtime/src/allocator/GCHelperPool.hpp  -  M6,M7
 census  be56d2c9e7019c48d59fb27bf52419140bc4488b9006a77beba368244652def4  runtime/src/allocator/GCStats.cpp  -  M7
@@ -232,7 +232,7 @@ grep    5cef15aa00415ab076a35a90e8ed0c986a08cbdb951826fff435a3cadca7c0d4  -  P6.
 grep    77727b0a854d2fe8b846c843adca3e8c0827c5f863d0b9fb69805451a9104222  -  F.gc_phase  M4
 grep    6c839077c1589b1aa01680f60c6df04a72b0026aa160b765e774e4ed931efe6c  -  F.bitscan  M4,W3
 grep    1bdbf8da33c4a0cb38e223f9f0a0bf6202495e468ccc3915203757d21c784f20  -  F.allocTenure  M4,M5
-grep    cf12ea5402b4ac8675c9f6a1bdcaec1365fa006579706828a39514a7a1ff961e  -  F.parPromoActive  M4
+grep    dd3dd6ba15deb0d496206836407425123632850310cf400f3a16af62bde4d59a  -  F.parPromoActive  M4
 grep    ddd388532f3330e49737fdab318ac63dd0f8c1abc01a65f4c599140d08c58574  -  F.roles  M3
 grep    0f0329f49dab752a7f972b588c1cd0d0690ac6c8a50b2e2c8b463dbdddd56301  -  F.ylobox  M3
 grep    bd1d8d0f2c41df9df3b92587c0397fb6cfd890f9edd433340c08ecfdd5ccf927  -  F.deferredFrees  M1
@@ -244,9 +244,9 @@ grep    ec251bf08300c9d83c10e2b65a9b3ca31a883a86e95d1ca8ba547bfc7fd0b451  -  F.v
 grep    d7e6805d756e69c30db5cbb49da48b2e01b2f6b4a732744e06e4565283ea015b  -  F.atfork  M6
 grep    c348085dbe58545bdfa2fd3b90abeac47e4a394cd12957bf513041688f8d9ab8  -  F.atexit  M6
 grep    c347743372973b091ba458ca1c1ccc4456a808b72fe6b35d8a3f0ab5e59a4b18  -  F.fork  M6
-grep    80cedb5b70af11026ac9ecd07725dac7d10c46ea160292fd9f0fe151cbda255d  -  F.promoMu  M4,M7
-grep    8c2b57ec375e623591cae527ea091216f866be15b41a05c1f3a880b43b7a4c5d  -  F.threadMutex  M6,M7
-grep    7ebd3196dafe6138bfed20cbf1bf4727d8ce1153ded436c63492b8d1cebc513d  -  F.pageWorkCalls  M7
+grep    2da021596e6c45076f374d5deffdd52811161df7bc02dab79206ce9d0356ea95  -  F.promoMu  M4,M7
+grep    e1f93bebd03988135a835a483cbb97c20370662b0b6170fbf438e5ebe7c4c9f2  -  F.threadMutex  M6,M7
+grep    8f281f438097c26a8744bc64ef0627162d7fedb808e947ded8c4b42eb3f589f3  -  F.pageWorkCalls  M7
 grep    adbb472b9292effc2fa5e6a2c15be8ece929b90eee8ce6edbcfc513363228557  -  F.stopAndJoin  M6,M7
-grep    353a9dc78dc562001bee38dfb36dd1640beabcca2fc1b044420abc10e564f573  -  F.oldGenFreeBlocks  M7
-grep    1a7bfe3ac6e39df96829efdc9d8978296b01e1545af36ec6d912270761f61be3  -  F.setThreadHeap  M7
+grep    9df02db9364c41b9e6b614701935112081a7a54bb7da9977b425ca23d4de9a59  -  F.oldGenFreeBlocks  M7
+grep    01d12addfacac781baac82ec18ca99ca43b687e916c0c93e25d0853d168ed610  -  F.setThreadHeap  M7

@@ -47,6 +47,12 @@
 
 namespace Elm::tenurework {
 
+#if ECO_TLA_TRACE_ENABLED
+// Set by the M6 fork harness (test/gc-heap-tsan/fork_harness.cpp, det-cr013-*):
+// the m5.* probes below are its pause points (trace builds only; CR-013).
+inline bool tla_probes = false;
+#endif
+
 // ---------------------------------------------------------------------------
 // Shadow entries (P§3.10)
 // ---------------------------------------------------------------------------
@@ -274,6 +280,7 @@ public:
         ECO_TLA_TRACE("tcopy", "obj", ::Elm::tlatrace::obj(obj), "dst", ::Elm::tlatrace::obj(dst));
         ++st_.tenured;
         st_.tenured_bytes += size;
+        ECO_TLA_TRACE_ONLY(if (tla_probes) ::Elm::tlatrace::probe("m5.item.copied");)   // copied, unpublished
         publish(w, dst, g);
         ECO_TLA_TRACE("tpub", "obj", ::Elm::tlatrace::obj(obj), "dst", ::Elm::tlatrace::obj(dst));
         if (push) st_.stack.push_back(dst);
@@ -308,11 +315,13 @@ private:
                 c = st_.stack.back();
                 st_.stack.pop_back();
             }
+            ECO_TLA_TRACE_ONLY(if (tla_probes) ::Elm::tlatrace::probe("m5.item.popped");)   // popped, unscanned
             scanCopy(c);
             return true;
         }
         if (st_.next_start < st_.starts.size()) {
             const size_t i = st_.next_start++;
+            ECO_TLA_TRACE_ONLY(if (tla_probes) ::Elm::tlatrace::probe("m5.item.taken");)   // taken, not copied
             ECO_TLA_TRACE("titem", "k", "start", "idx", i, "tgt", ::Elm::tlatrace::obj(st_.starts[i]));
             if (i + 8 < st_.starts.size()) prefetchTarget(st_.starts[i + 8]);
             if (st_.test_skip_start_every != 0 && (i + 1) % st_.test_skip_start_every == 0) return true;

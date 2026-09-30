@@ -32,13 +32,21 @@
 //   closing-early  the mutator asks for a fork just before the closing step's
 //              minor, while the member is inside a slow item (CR-005's wider
 //              window: a stop the closing's first reap does not see finished).
+//   tenure-storm, tenure-storm-l3  region nursery; host forks at random while the
+//              tenure collector relaunches every minor (CR-013, stress; see trialStorm).
+//   trace build: det-cr013-{start,start-exit,copy,copy-scan,l3-exit,l3-minor},
+//              det-cr031, det-cr032 (the register guards; see driverRegister).
 //
 // Output: one "RESULT ..." line per trial (the driver prints them) and a summary.
 #include "Allocator.hpp"
 #include "GCHelperPool.hpp"
 #include "HeapHelpers.hpp"
+#include "NurseryRegions.hpp"
+#include "NurserySpace.hpp"
 #include "OldGenSpace.hpp"
+#include "P1Census.hpp"
 #include "PageWork.hpp"
+#include "TenureWork.hpp"
 #include "ThreadLocalHeap.hpp"
 #include "TlaTrace.hpp"
 
@@ -117,6 +125,7 @@ enum ChildCode : int {
     kHangHeap = 13,     // phase 3: the child's own heap did not make progress
     kHangAtexit = 14,   // phase 4: exit()'s atexit handlers (stopAllAtExit) hung
     kHangDtor = 15,     // phase 5: exit()'s static destructors (~Allocator) hung
+    kForeignTeardown = 16,   // trace build: the child's exit() began tearing down a heap it does not own (CR-031)
 };
 
 const char* codeName(int st) {
@@ -129,6 +138,7 @@ const char* codeName(int st) {
         case kHangHeap: return "hang-heap";
         case kHangAtexit: return "hang-atexit";
         case kHangDtor: return "hang-dtor";
+        case kForeignTeardown: return "foreign-teardown";
         default: return "fail";
     }
 }
@@ -181,6 +191,12 @@ struct Opts {
     int big_arrays = 0;            // old arrays of 20k pointers: slow items for the markers
     int alloc_per_step = 300;
     bool pool = true;              // gc_thread_mode 2 (the helper pool); false: 0
+    // The region nursery (threaded-gc-07; CR-013 arms): k = 1, tenure mode 2, one
+    // exact collector (tenure_b = 1) or L3 with tenure_b members (> 1), help on.
+    bool regions = false;
+    unsigned tenure_b = 1;
+    bool conc = true;              // false: no mark cycle machinery (conc_mark 0, STW majors only)
+    size_t blocks = 0;             // nursery_block_count (0: the default below)
 };
 
 HeapConfig makeConfig(const Opts& o) {
@@ -208,7 +224,20 @@ HeapConfig makeConfig(const Opts& o) {
     cfg.conc_mark_threads = 1;
     cfg.conc_mark_priority = 0;
     cfg.conc_mark_assist_lag = 4096;   // no paced assists: only the closing runs the mark gang
-    cfg.nursery_regions = 0;
+    cfg.nursery_regions = o.regions ? 1 : 0;
+    if (o.regions) {
+        cfg.tenure_mode = 2;
+        cfg.promotion_age = 1;
+        cfg.tenure_help = 1;
+        cfg.tenure_help_threads = 0;
+        cfg.tenure_collector_threads = o.tenure_b;   // > 1: lever L3 (minor_parallel_min_bytes is 0)
+    }
+    if (!o.conc) {
+        cfg.conc_mark = 0;
+        cfg.incremental_mark = false;
+        cfg.gc_mark_threads = 1;
+    }
+    if (o.blocks != 0) cfg.nursery_block_count = o.blocks;
     cfg.validate();
     return cfg;
 }
@@ -393,12 +422,13 @@ struct Host {
 
 void printCounts(const char* arm, const Host& ho) {
     std::printf("RESULT arm=%s forks=%d clean=%d hang_tm=%d hang_drain=%d hang_heap=%d hang_atexit=%d "
-                "hang_dtor=%d killed=%d abort_or_signal=%d other=%d\n",
+                "hang_dtor=%d foreign_teardown=%d killed=%d abort_or_signal=%d other=%d\n",
                 arm, ho.forks, ho.counts[kClean], ho.counts[kHangTm], ho.counts[kHangDrain],
-                ho.counts[kHangHeap], ho.counts[kHangAtexit], ho.counts[kHangDtor], ho.counts[31],
-                ho.counts[30], ho.forks - ho.counts[kClean] - ho.counts[kHangTm] - ho.counts[kHangDrain] -
-                ho.counts[kHangHeap] - ho.counts[kHangAtexit] - ho.counts[kHangDtor] - ho.counts[31] -
-                ho.counts[30]);
+                ho.counts[kHangHeap], ho.counts[kHangAtexit], ho.counts[kHangDtor], ho.counts[kForeignTeardown],
+                ho.counts[31], ho.counts[30],
+                ho.forks - ho.counts[kClean] - ho.counts[kHangTm] - ho.counts[kHangDrain] - ho.counts[kHangHeap] -
+                    ho.counts[kHangAtexit] - ho.counts[kHangDtor] - ho.counts[kForeignTeardown] - ho.counts[31] -
+                    ho.counts[30]);
     for (int s = 0; s < 64; ++s)
         if (ho.signals[s] != 0) std::printf("  children killed by signal %d (%s): %d\n", s, strsignal(s), ho.signals[s]);
 }
@@ -557,6 +587,97 @@ int trialRelaunch(uint64_t seed) {
     return hp.verify() ? 0 : 1;
 }
 
+// tenure-storm / tenure-storm-l3 (CR-013, stress; plans/threaded-gc-register-repros-impl.md
+// Step 31): the region nursery's tenure collector relaunched at every minor while a host
+// forks at random. The tenure gang registers before the mark gang (the registry is
+// stopped in registration order: M6 two_gangs_window), and the harness's prepare hooks
+// run first and last, so g_r1 says the tenure collector was running when prepare
+// ended: a relaunch inside the window. Only such children are tested:
+//   storm  the child adopts the dead mutator's heap and runs two minors (outside the
+//          fork contract; a child forked mid-pause can fail for other reasons, so the
+//          driver counts only TV1 / TV3 / TV6 aborts as CR-013);
+//   l3     the child calls exit() (L3: a dead member's BUSY entry hangs the teardown).
+int trialStorm(uint64_t seed, bool l3) {
+    std::atexit(&markAtexitDone);
+    pthread_atfork(&prepLast, nullptr, nullptr);   // before every GC hook: runs last
+    setenv("ECO_GC_HELPER_JITTER_US", "200", 1);
+    Opts o;
+    o.regions = true;
+    o.conc = true;
+    o.big_arrays = 6;
+    o.blocks = 2;
+    o.pool = false;                                // CR-003's drain would hang the child first
+    o.tenure_b = l3 ? 2 : 1;
+    Allocator& a = initHeap(o);
+    Heap hp(a, seed, o);
+    RegionState* R = NurserySpaceTestAccess::region(hp.h->getNursery());
+    if (R == nullptr) die("tenure-storm: no region nursery");
+    for (int k = 0; k < 400 && !R->collector; ++k) { hp.churn(50, 0); a.minorGC(); }
+    if (!R->collector) die("tenure-storm: no tenure collector");
+    g_gang = R->collector.get();                   // registered first
+    for (int k = 0; k < 400 && !OA::hasBgGang(hp.og()); ++k) {
+        hp.h->test_force_major_trigger_ = true;
+        hp.churn(50, 0);
+        a.minorGC();
+    }
+    if (!OA::hasBgGang(hp.og())) die("tenure-storm: no background mark gang");
+    hp.finishCycle();
+    pthread_atfork(&prepFirst, nullptr, nullptr);   // after the gangs: runs first
+    constexpr int kRing = 2000;
+    std::vector<std::unique_ptr<Root>> ring;
+    std::vector<int64_t> ring_want(kRing, 0);
+    for (int i = 0; i < kRing; ++i) ring.push_back(std::make_unique<Root>(a, alloc::allocInt(0)));
+    ThreadLocalHeap* heap = hp.h;
+    auto ringOk = [&a, &ring, &ring_want] {
+        for (int i = 0; i < kRing; ++i) {
+            void* t = a.resolve(ring[i]->h);
+            if (t == nullptr || getHeader(t)->tag != Tag_Tuple2) return false;
+            void* x = a.resolve(static_cast<Tuple2*>(t)->a.p);
+            if (x == nullptr || getHeader(x)->tag != Tag_Int || static_cast<ElmInt*>(x)->value != ring_want[i])
+                return false;
+        }
+        return true;
+    };
+    Host ho;
+    ho.classify = true;
+    ho.min_us = 50;
+    ho.max_us = 500;
+    ho.child = [&a, &hp, heap, l3, &ringOk] {
+        if (!g_r1.load()) _exit(kClean);           // only children forked inside the window
+        signal(SIGALRM, onAlarm);
+        if (l3) {
+            armAlarm(4, 3);
+            std::exit(kClean);
+        }
+        AllocatorTestAccess::adoptThreadHeap(a, heap);
+        armAlarm(3, 3);
+        a.minorGC();
+        a.minorGC();
+        alarm(0);
+        _exit(hp.verify() && ringOk() ? kClean : 4);
+    };
+    ho.run(seed * 37 + 11);
+    for (int s = 0; s < 400; ++s) {
+        for (int i = 0; i < kRing; ++i) {
+            const int64_t v = static_cast<int64_t>(s) * kRing + i;
+            Root x(a, alloc::allocInt(v));
+            Root y(a, alloc::allocInt(-v));
+            ring[i]->h = alloc::tuple2(alloc::boxed(x.h), alloc::boxed(y.h), 0);
+            ring_want[i] = v;
+        }
+        a.minorGC();
+    }
+    ho.finish();
+    hp.finishCycle();
+    const bool ok = hp.verify() && ringOk();
+    std::printf("RESULT arm=%s forks=%d window=%d launch_in_prepare=%d clean=%d fail=%d hang_heap=%d "
+                "hang_atexit=%d hang_dtor=%d killed=%d abort_or_signal=%d parent=%s\n",
+                l3 ? "tenure-storm-l3" : "tenure-storm", ho.forks, ho.window, ho.launched, ho.counts[kClean],
+                ho.counts[4], ho.counts[kHangHeap], ho.counts[kHangAtexit], ho.counts[kHangDtor], ho.counts[31],
+                ho.counts[30], ok ? "ok" : "BAD");
+    return ok ? 0 : 1;
+}
+
 int trialClosing(uint64_t seed, bool early) {
     Opts o;
     o.old_pairs = early ? 20000 : 60000;
@@ -613,7 +734,9 @@ int trialClosing(uint64_t seed, bool early) {
 //   gc-fork-trace gangs <none|host|mut-parent|mut-child> <seed> <T> <mark threads> <bg_first|mark_first> <hold>
 //   (hold 1: the background members wait until the closing, so the closing join marks)
 // ===========================================================================
-enum DetArm : int { kDetNone = 0, kDetCr015 = 1, kDetCr003 = 2, kDetCr005 = 3, kDetCr004 = 4 };
+enum DetArm : int { kDetNone = 0, kDetCr015 = 1, kDetCr003 = 2, kDetCr005 = 3, kDetCr004 = 4,
+                    kDet13Start = 5, kDet13StartExit, kDet13Copy, kDet13CopyScan, kDet13L3Exit, kDet13L3Minor,
+                    kDetCr031, kDetCr032 };
 std::atomic<int> g_det{kDetNone};
 std::atomic<bool> g_det_fired{false};       // a pause point is used once per trial
 std::atomic<bool> g_det_mut_go{false};      // host -> mutator: act now
@@ -622,9 +745,49 @@ std::atomic<bool> g_det_armed_post{false};  // det-cr003: the next post counts
 std::atomic<bool> g_det_posted{false};
 std::atomic<bool> g_det_stopset{false};
 Host* g_host = nullptr;
+// det-cr013-*: the collector's pause point (the first matching m5.* probe after
+// minor B's launch), and who is who.
+std::atomic<bool> g_det_arm_item{false};    // mutator -> collector: minor B's job counts
+std::atomic<bool> g_det_in_item{false};     // collector -> mutator: paused mid-item
+std::atomic<bool> g_det_closed{false};      // det-cr032: the fork waited out the pause point
+thread_local bool tl_mut = false;           // the heap's mutator (its own help runs the same engine)
+RegionState* g_R = nullptr;                 // the mutator's region state
+const void* g_det_o = nullptr;              // det-cr013-copy: o and p in the hand-over extent
+const void* g_det_p = nullptr;
 
 void spinUntil(const std::atomic<bool>& f) {
     while (!f.load()) std::this_thread::yield();
+}
+// Bounded: a fix may block the other side (a prepare that waits out the item), so
+// a fixed tree gives "window=closed", never a hung trial.
+bool spinFor(const std::atomic<bool>& f, uint64_t ms) {
+    const uint64_t end = nowNs() + ms * 1'000'000;
+    while (!f.load()) {
+        if (nowNs() > end) return false;
+        std::this_thread::yield();
+    }
+    return true;
+}
+
+bool is13(int d) { return d >= kDet13Start && d <= kDet13L3Minor; }
+const char* itemProbe(int d) {
+    return d <= kDet13StartExit ? "m5.item.taken"
+         : d == kDet13Copy      ? "m5.item.copied"
+         : d == kDet13CopyScan  ? "m5.item.popped"
+                                : "m5.l3.claimed";
+}
+// det-cr013-copy: the copy in flight must be o's (the object p points to), whatever
+// order the root set lists the two starts in. It is o's when o is the start being
+// taken, or when p is already forwarded (the copy is o's, from p's scan). Reads only
+// the job's state, on the collector thread that owns it.
+bool copyIsO() {
+    const region::TenureJob& J = g_R->job;
+    const tenurework::SerialState& st = J.st;
+    if (st.next_start > 0 && st.starts[st.next_start - 1] == g_det_o) return true;
+    const char* p = static_cast<const char*>(g_det_p);
+    if (p < J.base || p >= J.surv_top) return false;
+    uint64_t* w = J.shadow + (static_cast<size_t>(p - J.base) >> J.shadow_shift);
+    return tenurework::lookup(w, J.gen) != nullptr;
 }
 
 void onProbe(const char* where) {
@@ -648,6 +811,18 @@ void onProbe(const char* where) {
                !g_det_fired.exchange(true)) {
         g_det_mut_go.store(true);               // let the mutator relaunch before the m_ lock
         spinUntil(g_det_mut_done);
+    } else if (is13(d) && tl_host && std::strcmp(where, "m6.bg.stopped") == 0 && !g_det_fired.exchange(true)) {
+        g_det_mut_go.store(true);               // minor B: join, hand over, relaunch the collector
+        spinFor(g_det_mut_done, 3000);          // bounded: a fixed launch may wait for this fork
+    } else if (is13(d) && !tl_host && !tl_mut && g_det_arm_item.load() && std::strcmp(where, itemProbe(d)) == 0 &&
+               (d != kDet13Copy || copyIsO()) && !g_det_in_item.exchange(true)) {
+        spinUntil(g_host->det_forked);          // stay mid-item until fork() has returned
+    } else if (d == kDetCr032 && !tl_host && std::strcmp(where, "m6.census.locked") == 0 &&
+               !g_det_fired.exchange(true)) {
+        g_host->go.store(true);                 // fork while this thread holds the census mutex
+        if (!spinFor(g_host->det_forked, 3000)) g_det_closed.store(true);   // a fixed prepare waits for it
+    } else if (d == kDetCr031 && tl_host && std::strcmp(where, "m6.tlh.dtor") == 0) {
+        _exit(kForeignTeardown);                // the child's exit() reached the mutator's heap
     }
 }
 
@@ -662,9 +837,14 @@ void growStep(Heap& hp) {
 
 int trialDet(int which, uint64_t seed) {
     if (which == kDetCr003) setenv("ECO_GC_HELPER_JITTER_US", "20000", 1);   // keep the posted job in flight
+    const bool exit_arm = which == kDetCr031 || which == kDetCr032;
+    if (exit_arm) std::atexit(&markAtexitDone);          // before any GC hook: runs last, sets phase 5
+    // CR-032: the census on (main turns it off; census() reads the env lazily, at its first use).
+    if (which == kDetCr032) setenv("ECO_P1_CENSUS", "1", 1);
     Opts o;
     o.old_pairs = 4000;
     o.slices = 6;
+    if (exit_arm) o.pool = false;                        // CR-003's drain would hang the child first
     Allocator& a = initHeap(o);
     Heap hp(a, seed, o);
     Elm::tlatrace::setProbe(&onProbe);
@@ -676,6 +856,10 @@ int trialDet(int which, uint64_t seed) {
     ho.child = [&a, which] {
         signal(SIGALRM, onAlarm);
         if (which == kDetCr015 || which == kDetCr003) probeAllocator(a);
+        if (which == kDetCr031 || which == kDetCr032) {
+            armAlarm(4, 3);                              // < Host::waitChild's 5000 ms
+            std::exit(kClean);                           // atexit handlers, then ~Allocator
+        }
     };
     ho.run(seed * 23 + 1);
     g_det.store(which);
@@ -722,15 +906,168 @@ int trialDet(int which, uint64_t seed) {
         spinUntil(ho.det_forked);
         ho.window = relaunched ? 1 : 0;
         what = relaunched ? "relaunch-between-stop-and-lock" : "no-relaunch";
+    } else if (which == kDetCr031) {
+        // The mutator forks nothing: it runs a few minors (its RootSet and tables in use),
+        // then waits, between minors, while the host forks. The child calls exit().
+        int minors = 0;
+        while (minors < 3) { hp.churn(50, 0); a.minorGC(); ++minors; ++steps; }
+        ho.go.store(true);
+        const bool forked = spinFor(ho.det_forked, 3000);
+        what = forked ? "fork-between-minors" : "no-fork";
+    } else if (which == kDetCr032) {
+        // Legacy promotion reaches p1::recordPromoted; its probe (census mutex held) forks.
+        while (!g_det_fired.load() && steps < 3000) { hp.churn(50, 0); a.minorGC(); ++steps; }
+        what = g_det_fired.load() ? "fork-under-census-mutex" : "no-census-record";
     }
     ho.finish();
     g_det.store(kDetNone);
     gc::tla_m6 = false;
     Elm::tlatrace::end("/dev/null");
     hp.finishCycle();
+    if (exit_arm) {
+        // reached: the fork happened at the chosen point. window=closed: the fork did not
+        // happen while the census mutex was held (a fixed prepare waited for it).
+        const bool reached = which == kDetCr031 ? std::strcmp(what, "fork-between-minors") == 0
+                                                : g_det_fired.load() && ho.forks == 1;
+        std::printf("RESULT arm=det what=%s reached=%d window=%s steps=%d forks=%d clean=%d hang_atexit=%d "
+                    "hang_dtor=%d foreign_teardown=%d killed=%d abort_or_signal=%d\n",
+                    what, reached ? 1 : 0, g_det_closed.load() ? "closed" : "open", steps, ho.forks, ho.counts[kClean],
+                    ho.counts[kHangAtexit], ho.counts[kHangDtor], ho.counts[kForeignTeardown], ho.counts[31],
+                    ho.counts[30]);
+        return hp.verify() ? 0 : 5;
+    }
     std::printf("RESULT arm=det what=%s steps=%d forks=%d clean=%d hang_tm=%d hang_drain=%d cr004_window=%d\n",
                 what, steps, ho.forks, ho.counts[kClean], ho.counts[kHangTm], ho.counts[kHangDrain], ho.window);
     return 0;
+}
+
+// ---------------------------------------------------------------------------
+// det-cr013-* (CR-013; M5 `fork`, `fork_orphan_copy`, `fork_l3`; M6 two_gangs_window):
+// the host's prepare pauses after stopAllForFork (m6.bg.stopped); the mutator runs
+// minor B, which hands a young graph over and relaunches the tenure collector; the
+// collector pauses mid-item (an m5.* probe) and the host forks. The child inherits a
+// job whose bookkeeping says the item was taken, with no thread to finish it.
+// ---------------------------------------------------------------------------
+// The young graph (rooted in g), per arm:
+//   start, start-exit  r1 -> o, r2 -> p, no edges      (the lost start: TV1)
+//   copy               r1 -> o, r2 -> p, p.a = o        (o copied twice: TV3/TV4)
+//   copy-scan          r1 -> o(a = q1), r2 -> p(a = q2) (a popped copy never scanned: TV6)
+//   l3-*               64 roots -> o                    (a dead member's BUSY entry: hang)
+void buildGraph(Allocator& a, int which, std::vector<std::unique_ptr<Root>>& g) {
+    using namespace alloc;
+    auto root = [&](HPointer v) { g.push_back(std::make_unique<Root>(a, v)); return g.back()->h; };
+    if (which == kDet13L3Exit || which == kDet13L3Minor) {
+        Root x(a, allocInt(1301));
+        Root y(a, allocInt(1302));
+        root(tuple2(boxed(x.h), boxed(y.h), 0));
+        for (int k = 1; k < 64; ++k) root(g[0]->h);
+        return;
+    }
+    if (which == kDet13CopyScan) {
+        Root q1(a, allocInt(1311));
+        Root q2(a, allocInt(1312));
+        Root i1(a, allocInt(1313));
+        Root i2(a, allocInt(1314));
+        root(tuple2(boxed(q1.h), boxed(i1.h), 0));
+        root(tuple2(boxed(q2.h), boxed(i2.h), 0));
+        return;
+    }
+    if (which == kDet13Copy) {
+        Root z(a, allocInt(1321));
+        HPointer o = root(allocInt(1322));
+        root(tuple2(boxed(o), boxed(z.h), 0));
+        return;
+    }
+    root(allocInt(1331));                                   // start, start-exit
+    root(allocInt(1332));
+}
+
+int trialDetCr013(int which, uint64_t seed) {
+    std::atexit(&markAtexitDone);                 // before any GC hook: runs last, sets phase 5
+    setenv("ECO_GC_HELPER_JITTER_US", "0", 1);    // the collector starts at once
+    const bool l3 = which == kDet13L3Exit || which == kDet13L3Minor;
+    const bool exit_child = which == kDet13StartExit || which == kDet13L3Exit;
+    Opts o;
+    o.old_pairs = 2000;
+    o.regions = true;
+    o.conc = false;
+    o.pool = false;
+    o.tenure_b = l3 ? 2 : 1;
+    Allocator& a = initHeap(o);
+    Heap hp(a, seed, o);
+    tl_mut = true;
+    RegionState* R = NurserySpaceTestAccess::region(hp.h->getNursery());
+    g_R = R;
+    auto notReached = [](const char* why) {
+        std::printf("RESULT arm=det13 reached=0 why=%s\n", why);
+        return 0;
+    };
+    if (R == nullptr) return notReached("no-regions");
+    // Warm-up: the collector exists (minor B must not construct it: its constructor
+    // takes bgRegistryMutex, which the paused host holds), the Heap's graph is old.
+    for (int k = 0; k < 6 || (!R->collector && k < 200); ++k) { hp.churn(20, 0); a.minorGC(); }
+    if (!R->collector) return notReached("no-collector");
+    a.minorGC();                                  // an empty eden: the graph needs no minor
+    std::vector<std::unique_ptr<Root>> g;
+    const uint64_t m0 = R->minor_seq;
+    buildGraph(a, which, g);
+    if (R->minor_seq != m0) return notReached("minor-during-build");
+    a.minorGC();                                  // A: the graph is copied into the fill extent
+    g_det_o = AllocatorTestAccess::fromPointer(g[0]->h);
+    g_det_p = g.size() > 1 ? AllocatorTestAccess::fromPointer(g[1]->h) : nullptr;
+    Elm::tlatrace::setProbe(&onProbe);
+    Elm::tlatrace::begin("{\"harness\":\"gc-fork-trace\",\"kind\":\"det13\"}", "m6.nothing.");   // probes only
+    gc::tla_m6 = true;
+    tenurework::tla_probes = true;
+    Host ho;
+    g_host = &ho;
+    ho.on_signal = true;
+    ThreadLocalHeap* heap = hp.h;
+    ho.child = [&a, &hp, heap, exit_child] {
+        signal(SIGALRM, onAlarm);
+        if (exit_child) {
+            armAlarm(4, 3);                       // phase 4 (atexit), then 5 (static destructors)
+            std::exit(kClean);
+        }
+        // Outside the fork contract (CR-013 §1 item 13): the child adopts the dead
+        // mutator's heap and runs its minors (the orphan path).
+        AllocatorTestAccess::adoptThreadHeap(a, heap);
+        armAlarm(3, 3);                           // < Host::waitChild's 5000 ms
+        a.minorGC();
+        a.minorGC();
+        alarm(0);
+        _exit(hp.verify() ? kClean : 4);
+    };
+    ho.run(seed * 31 + 7);
+    g_det.store(which);
+    const uint64_t mb = R->minor_seq;
+    ho.go.store(true);                            // the host forks; it pauses at m6.bg.stopped
+    spinUntil(g_det_mut_go);
+    g_det_arm_item.store(true);
+    a.minorGC();                                  // B: hands the graph over, relaunches the collector
+    const bool closed = ho.det_forked.load();     // a fixed launch waited out the fork
+    const bool in_item = spinFor(g_det_in_item, 2000);
+    const bool reached = closed || (in_item && R->minor_seq == mb + 1 && (!l3 || R->job.conc_parallel));
+    const int job_state = static_cast<int>(R->job.state);
+    const bool conc_par = R->job.conc_parallel;
+    const size_t starts = R->job.st.starts.size();
+    g_det_mut_done.store(true);                   // the host locks m_ and forks
+    spinUntil(ho.det_forked);
+    ho.finish();
+    g_det.store(kDetNone);
+    gc::tla_m6 = false;
+    tenurework::tla_probes = false;
+    Elm::tlatrace::end("/dev/null");
+    for (int k = 0; k < 3; ++k) a.minorGC();      // the parent joins the resumed job
+    bool graph_ok = true;
+    for (auto& r : g) graph_ok = graph_ok && a.resolve(r->h) != nullptr;
+    std::printf("RESULT arm=det13 reached=%d window=%s in_item=%d job_state=%d conc_parallel=%d starts=%zu "
+                "forks=%d clean=%d fail=%d hang_heap=%d hang_atexit=%d hang_dtor=%d killed=%d "
+                "abort_or_signal=%d\n",
+                reached ? 1 : 0, closed ? "closed" : "open", in_item ? 1 : 0, job_state, conc_par ? 1 : 0, starts,
+                ho.forks, ho.counts[kClean], ho.counts[4], ho.counts[kHangHeap], ho.counts[kHangAtexit],
+                ho.counts[kHangDtor], ho.counts[31], ho.counts[30]);
+    return (hp.verify() && graph_ok) ? 0 : 5;     // the parent is the control
 }
 
 // ---------------------------------------------------------------------------
@@ -888,7 +1225,80 @@ TrialOut runTrial(const std::function<int()>& body, int deadline_s) {
 
 bool hasLine(const std::string& s, const char* what) { return s.find(what) != std::string::npos; }
 
+long fieldOf(const std::string& line, const char* key) {   // "key=<n>" in a RESULT line, -1 if absent
+    const std::string k = std::string(" ") + key + "=";
+    const size_t p = line.find(k);
+    return p == std::string::npos ? -1 : std::atol(line.c_str() + p + k.size());
+}
+
+#if ECO_TLA_TRACE_ENABLED
+// The register-guard arms (plans/threaded-gc-register-repros-impl.md Step 24):
+// every trial must reach its precondition (reached=1) and leave the parent sound
+// (the trial exits 0); each trial either reproduces the entry (its oracle) or not.
+// Exit: 1 every trial reproduced, 0 none did (or the window was closed: the fix),
+// 4 a precondition was missed (never a pass), 3 a trial failed otherwise
+// (timeout, the parent's verify, a mix of reproduced and not).
+int driverRegister(const std::string& arm, int which, int trials, uint64_t seed) {
+    int hit = 0, miss = 0, closed = 0, not_reached = 0, errors = 0;
+    for (int t = 0; t < trials; ++t) {
+        const uint64_t s = seed + static_cast<uint64_t>(t);
+        const TrialOut r = runTrial([which, s] { return is13(which) ? trialDetCr013(which, s) : trialDet(which, s); },
+                                    120);
+        std::string line;
+        const size_t at = r.out.find("RESULT ");
+        if (at != std::string::npos) line = r.out.substr(at, r.out.find('\n', at) - at);
+        const bool reached = fieldOf(line, "reached") == 1;
+        const bool win_closed = line.find(" window=closed") != std::string::npos;
+        // The oracle: what the child did (its stderr reaches the trial's pipe).
+        const char* oracle = "?";
+        bool rep = false;
+        switch (which) {
+            case kDet13Start: oracle = "TV1: resolve found no forwarding"; rep = hasLine(r.out, oracle); break;
+            case kDet13Copy: oracle = "TV3/TV4: forwarded objects != tenured"; rep = hasLine(r.out, oracle); break;
+            case kDet13CopyScan:
+                oracle = "TV6: a tenured copy has a young child after the merge";
+                rep = hasLine(r.out, oracle);
+                break;
+            case kDet13StartExit: oracle = "child not clean"; rep = fieldOf(line, "clean") != fieldOf(line, "forks"); break;
+            case kDet13L3Exit: oracle = "hang_dtor (code 15)"; rep = fieldOf(line, "hang_dtor") > 0; break;
+            case kDet13L3Minor: oracle = "hang_heap (code 13)"; rep = fieldOf(line, "hang_heap") > 0; break;
+            case kDetCr031: oracle = "foreign_teardown (code 16)"; rep = fieldOf(line, "foreign_teardown") > 0; break;
+            case kDetCr032: oracle = "hang_atexit (code 14)"; rep = fieldOf(line, "hang_atexit") > 0; break;
+        }
+        const bool ok_exit = !r.timed_out && WIFEXITED(r.status) && WEXITSTATUS(r.status) == 0;
+        const char* verdict;
+        if (!ok_exit) { ++errors; verdict = r.timed_out ? "ERROR (timeout)" : "ERROR (trial failed)"; }
+        else if (!reached) { ++not_reached; verdict = "NOT REACHED"; }
+        else if (win_closed) { ++closed; verdict = "window closed"; }
+        else if (rep) { ++hit; verdict = "REPRODUCED"; }
+        else { ++miss; verdict = "not reproduced"; }
+        std::printf("trial %d seed %llu: %s [oracle: %s] %s\n", t, static_cast<unsigned long long>(s), verdict,
+                    oracle, line.c_str());
+        if (g_backtrace || !ok_exit) {
+            std::printf("  --- trial output (tail) ---\n%s\n",
+                        r.out.substr(r.out.size() > 3000 ? r.out.size() - 3000 : 0).c_str());
+        }
+    }
+    std::printf("SUMMARY arm=%s trials=%d reproduced=%d not_reproduced=%d window_closed=%d not_reached=%d "
+                "errors=%d\n", arm.c_str(), trials, hit, miss, closed, not_reached, errors);
+    if (not_reached > 0) return 4;
+    if (errors > 0) return 3;
+    if (hit == trials) return 1;
+    if (hit == 0) return 0;
+    return 3;                                     // not deterministic
+}
+#endif
+
 int driver(const std::string& arm, int trials, uint64_t seed) {
+#if ECO_TLA_TRACE_ENABLED
+    static const std::pair<const char*, int> kRegisterArms[] = {
+        {"det-cr013-start", kDet13Start},       {"det-cr013-start-exit", kDet13StartExit},
+        {"det-cr013-copy", kDet13Copy},         {"det-cr013-copy-scan", kDet13CopyScan},
+        {"det-cr013-l3-exit", kDet13L3Exit},    {"det-cr013-l3-minor", kDet13L3Minor},
+        {"det-cr031", kDetCr031},               {"det-cr032", kDetCr032}};
+    for (const auto& ra : kRegisterArms)
+        if (arm == ra.first) return driverRegister(arm, ra.second, trials, seed);
+#endif
     std::function<int(uint64_t)> body;
     int deadline = 240;
     if (arm == "mut") body = [](uint64_t s) { return trialMut(s); };
@@ -898,6 +1308,8 @@ int driver(const std::string& arm, int trials, uint64_t seed) {
     else if (arm == "relaunch") body = [](uint64_t s) { return trialRelaunch(s); };
     else if (arm == "closing") body = [](uint64_t s) { return trialClosing(s, false); };
     else if (arm == "closing-early") body = [](uint64_t s) { return trialClosing(s, true); };
+    else if (arm == "tenure-storm") body = [](uint64_t s) { return trialStorm(s, false); };
+    else if (arm == "tenure-storm-l3") body = [](uint64_t s) { return trialStorm(s, true); };
 #if ECO_TLA_TRACE_ENABLED
     else if (arm == "det-cr015") body = [](uint64_t s) { return trialDet(kDetCr015, s); };
     else if (arm == "det-cr003") body = [](uint64_t s) { return trialDet(kDetCr003, s); };
@@ -906,10 +1318,12 @@ int driver(const std::string& arm, int trials, uint64_t seed) {
 #endif
     else return 2;
     int aborted_cr005 = 0, other_fail = 0, timeouts = 0;
+    long cr013_aborts = 0;   // tenure-storm*: child aborts whose output names TV1, TV3/TV4 or TV6
+    const bool storm = arm == "tenure-storm" || arm == "tenure-storm-l3";
     long tot[16] = {0};
     const char* keys[] = {"forks=", "clean=", "hang_tm=", "hang_drain=", "hang_heap=", "hang_atexit=",
                           "hang_dtor=", "killed=", "abort_or_signal=", "launch_in_prepare=", "cr004_window=",
-                          "cr023_stall=", "ok=", "bad="};
+                          "cr023_stall=", "ok=", "bad=", " window=", "fail="};
     const int nkeys = sizeof keys / sizeof keys[0];
     for (int t = 0; t < trials; ++t) {
         const uint64_t s = seed + static_cast<uint64_t>(t);
@@ -924,6 +1338,11 @@ int driver(const std::string& arm, int trials, uint64_t seed) {
                     cr005 ? "ABORT closingFinish assert(bg_ep_ == Finished) (CR-005) "
                           : (WIFSIGNALED(r.status) ? "SIGNAL " : ""),
                     line.c_str());
+        if (storm) {
+            for (const char* tv : {"FATAL: tenure: TV1:", "FATAL: tenure: TV3", "FATAL: tenure: TV6:", "TV1: resolve found no forwarding for"}) {
+                for (size_t p = r.out.find(tv); p != std::string::npos; p = r.out.find(tv, p + 1)) ++cr013_aborts;
+            }
+        }
         if (g_backtrace) std::printf("  --- trial output ---\n%s\n", r.out.c_str());
         if (r.timed_out) ++timeouts;
         else if (cr005) ++aborted_cr005;
@@ -940,7 +1359,14 @@ int driver(const std::string& arm, int trials, uint64_t seed) {
                 timeouts, aborted_cr005, other_fail);
     for (int k = 0; k < nkeys; ++k)
         if (tot[k] != 0) std::printf(" %s%ld", keys[k], tot[k]);
+    if (storm) std::printf(" cr013_tv_aborts=%ld", cr013_aborts);
     std::printf("\n");
+    // tenure-storm*: never gating (flaky); 1 when a CR-013 oracle fired (a TV abort, or
+    // for -l3 a hang in exit()'s teardown), 3 when the parent failed.
+    if (storm) {
+        if (timeouts > 0 || other_fail > 0) return 3;
+        return (cr013_aborts > 0 || (arm == "tenure-storm-l3" && tot[6] > 0)) ? 1 : 0;
+    }
     // Guards: exit 1 when the arm reproduced its register entry (or failed).
     if (arm == "mut") return (timeouts == 0 && other_fail == 0 && aborted_cr005 == 0) ? 0 : 1;
     if (arm == "closing" || arm == "closing-early" || arm == "det-cr005") return aborted_cr005 > 0 ? 1 : 0;
@@ -956,7 +1382,8 @@ int driver(const std::string& arm, int trials, uint64_t seed) {
 int main(int argc, char** argv) {
     if (argc < 2) {
         std::fprintf(stderr, "usage: %s <mut|host|host-exit|two-heap|relaunch|closing|closing-early> "
-                             "[trials [seed]]\n  trace build also: det-cr015|det-cr003|det-cr005|det-cr004 "
+                             "[trials [seed]]\n  also: tenure-storm|tenure-storm-l3\n  trace build also: det-cr015|det-cr003|det-cr005|det-cr004, "
+                             "det-cr013-{start,start-exit,copy,copy-scan,l3-exit,l3-minor}|det-cr031|det-cr032 "
                              "[trials [seed]]; gangs <mode> <seed> <T> <mark threads> <order>\n", argv[0]);
         return 2;
     }

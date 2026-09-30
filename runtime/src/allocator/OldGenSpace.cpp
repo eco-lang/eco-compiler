@@ -5833,6 +5833,10 @@ size_t OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
         ECO_M4_TRACE("m4.swend", "cb", target_class < NUM_SIZE_CLASSES ? classToSize(target_class) : 0,
                      "path", 3, "par", par_promo_active_, "rmw", "phase", "old", m4_old, "new", 0);
 #if ENABLE_GC_STATS
+        // CR-014 (register repros Step 28): written under promo_mu_ inside a
+        // parallel promotion, so the counters add no race.
+        alloc_stats_.bm.sweep_tail_completions++;
+        if (par_promo_active_) alloc_stats_.bm.sweep_tail_in_promotion++;
         auto t0_shrink = GC_STATS_TIMER_START();
 #endif
         onSweepComplete();

@@ -608,6 +608,25 @@ public:
         alloc.ensureOldGenCapacityFor(space, bytes);
     }
 
+    // CR-007 / CR-012: the private block-supply calls (each takes thread_mutex_).
+    static char* acquireOldGenBlock(Allocator& a, size_t n) { return a.acquireOldGenBlock(n); }
+    static void releaseOldGenBlock(Allocator& a, char* p, size_t n) { a.releaseOldGenBlock(p, n); }
+    // CR-007 / CR-012(b): the process-wide released-extent list (read with no mutator running).
+    static const std::vector<std::pair<char*, size_t>>& freeBlocks(const Allocator& a) {
+        return a.old_gen_free_blocks_;
+    }
+    // CR-007: true when ANOTHER thread holds thread_mutex_ (recursive: false on the holder).
+    static bool threadMutexHeldElsewhere(Allocator& a) {
+        if (!a.thread_mutex_.try_lock()) return true;
+        a.thread_mutex_.unlock();
+        return false;
+    }
+    // CR-013 (fork harness only): the calling thread, a host-forked child's only
+    // thread, runs heap h, whose mutator does not exist in the child. OUTSIDE the
+    // fork contract (HEAP_007); sound only when the mutator was parked outside any
+    // pause and any RootSet update at the fork.
+    static void adoptThreadHeap(Allocator&, ThreadLocalHeap* h) { Allocator::setThreadHeap(h); }
+
     // threaded-gc-07: the region slice set API and geometry.
     static NurserySliceSet acquireSliceSet(Allocator& a, size_t initial) { return a.acquireNurserySliceSet(initial); }
     static bool growSliceSet(Allocator& a, NurserySliceSet& s, size_t d) { return a.growNurserySliceSet(s, d); }

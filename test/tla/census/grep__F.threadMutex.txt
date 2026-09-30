@@ -16,4 +16,6 @@ runtime/src/allocator/Allocator.cpp: std::lock_guard<std::recursive_mutex> lock(
 runtime/src/allocator/Allocator.cpp: std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 runtime/src/allocator/Allocator.cpp: std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 runtime/src/allocator/Allocator.cpp: std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+runtime/src/allocator/Allocator.hpp: a.thread_mutex_.unlock();
+runtime/src/allocator/Allocator.hpp: if (!a.thread_mutex_.try_lock()) return true;
 runtime/src/allocator/Allocator.hpp: mutable std::recursive_mutex thread_mutex_;

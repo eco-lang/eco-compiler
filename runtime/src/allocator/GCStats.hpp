@@ -193,6 +193,12 @@ struct BitmapAllocStats {
     // major-GC end, cumulative. These cells are no longer on free lists, so
     // the residency histogram counts them as garbage in bitmap mode.
     uint64_t bitmap_free_bytes_at_major = 0;
+    // Register CR-014 (plans/threaded-gc-register-repros-impl.md Step 28): the
+    // lazy sweep's TAIL completion (the slice's budget ran out exactly at the
+    // last block's end; onSweepComplete runs in lazySweep), and those of them
+    // inside a parallel promotion (on a worker, under promo_mu_).
+    uint64_t sweep_tail_completions = 0;
+    uint64_t sweep_tail_in_promotion = 0;
     void merge(const BitmapAllocStats& o) {
         bitmap_allocs += o.bitmap_allocs;
         bitmap_alloc_bytes += o.bitmap_alloc_bytes;
@@ -209,6 +215,8 @@ struct BitmapAllocStats {
         blocks_classified_large += o.blocks_classified_large;
         blocks_classified_mixed += o.blocks_classified_mixed;
         bitmap_free_bytes_at_major += o.bitmap_free_bytes_at_major;
+        sweep_tail_completions += o.sweep_tail_completions;
+        sweep_tail_in_promotion += o.sweep_tail_in_promotion;
     }
     bool any() const {
         return bitmap_allocs | virgin_blocks | cursor_refills |

@@ -23,7 +23,7 @@ file(GLOB ECO_ALLOC_SRC ${ECO_ALLOC}/*.cpp)
 list(FILTER ECO_ALLOC_SRC EXCLUDE REGEX "(PlatformVirtualMemory_win32|StackUnwind)\\.cpp$")
 find_package(Threads REQUIRED)
 if(NOT ECO_TLA_TRACE)
-add_executable(gc-heap-tsan heap_driver.cpp promo_sweep.cpp ylos_sweep.cpp stub_unwind.cpp ${ECO_ALLOC_SRC})
+add_executable(gc-heap-tsan heap_driver.cpp promo_sweep.cpp ylos_sweep.cpp cr012_two_heap.cpp stub_unwind.cpp ${ECO_ALLOC_SRC})
 target_include_directories(gc-heap-tsan PRIVATE ${ECO_ALLOC}
     ${CMAKE_CURRENT_SOURCE_DIR}/../../runtime/src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../elm-kernel-cpp/vendor)
@@ -57,13 +57,31 @@ target_include_directories(gc-fork-harness PRIVATE ${ECO_ALLOC}
 target_compile_definitions(gc-fork-harness PRIVATE ECO_HEAP_VALIDATE=1 ENABLE_GC_STATS=1)
 target_compile_options(gc-fork-harness PRIVATE -O1 -g -UNDEBUG)
 target_link_libraries(gc-fork-harness PRIVATE Threads::Threads)
+# The register guards (fork_arms.txt, run_fork_arms.py; plans/threaded-gc-register-repros-impl.md
+# Step 27): this flavour's rows. Not in ALL; the arms fork and abort by design.
+add_custom_target(fork-det
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/run_fork_arms.py --tier quick --flavor plain
+            --exe $<TARGET_FILE:gc-fork-harness> --build-dir ${CMAKE_CURRENT_BINARY_DIR}/fork-det
+    DEPENDS gc-fork-harness USES_TERMINAL VERBATIM)
+# The deterministic TSan race arms of the register (fork_arms.txt, flavour tsan).
+add_custom_target(tsan-det
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/run_fork_arms.py --tier quick --flavor tsan
+            --exe $<TARGET_FILE:gc-heap-tsan> --build-dir ${CMAKE_CURRENT_BINARY_DIR}/tsan-det
+    DEPENDS gc-heap-tsan USES_TERMINAL VERBATIM)
 else()
-add_executable(gc-fork-trace EXCLUDE_FROM_ALL fork_harness.cpp stub_unwind.cpp ${ECO_ALLOC_SRC}
-    ${CMAKE_CURRENT_SOURCE_DIR}/../tla/trace/TlaTrace.cpp)
+# TlaTrace.cpp FIRST: its statics are then constructed first and destroyed last, so a
+# forked child's exit() can run ~Allocator (whose hooks call tlatrace::wants) while
+# recording (det-cr013-*-exit, det-cr031).
+add_executable(gc-fork-trace EXCLUDE_FROM_ALL ${CMAKE_CURRENT_SOURCE_DIR}/../tla/trace/TlaTrace.cpp
+    fork_harness.cpp stub_unwind.cpp ${ECO_ALLOC_SRC})
 target_include_directories(gc-fork-trace PRIVATE ${ECO_ALLOC}
     ${CMAKE_CURRENT_SOURCE_DIR}/../../runtime/src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../elm-kernel-cpp/vendor)
 target_compile_definitions(gc-fork-trace PRIVATE ECO_TLA_TRACE=1 ECO_HEAP_VALIDATE=1 ENABLE_GC_STATS=1)
 target_compile_options(gc-fork-trace PRIVATE -O1 -g -UNDEBUG)
 target_link_libraries(gc-fork-trace PRIVATE Threads::Threads)
+add_custom_target(fork-det
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/run_fork_arms.py --tier quick --flavor trace
+            --exe $<TARGET_FILE:gc-fork-trace> --build-dir ${CMAKE_CURRENT_BINARY_DIR}/fork-det
+    DEPENDS gc-fork-trace USES_TERMINAL VERBATIM)
 endif()

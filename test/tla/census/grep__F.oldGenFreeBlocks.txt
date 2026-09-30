@@ -8,4 +8,5 @@ runtime/src/allocator/Allocator.cpp: old_gen_free_blocks_.clear();
 runtime/src/allocator/Allocator.cpp: old_gen_free_blocks_.emplace_back(block, size);
 runtime/src/allocator/Allocator.cpp: old_gen_free_blocks_.pop_back();
 runtime/src/allocator/Allocator.cpp: old_gen_free_blocks_.size(),
+runtime/src/allocator/Allocator.hpp: return a.old_gen_free_blocks_;
 runtime/src/allocator/Allocator.hpp: std::vector<std::pair<char*, size_t>> old_gen_free_blocks_;

@@ -45,6 +45,7 @@
 #include <cstring>
 #include <memory>
 #include <random>
+#include <string>
 #include <vector>
 
 using namespace Elm;
@@ -211,7 +212,17 @@ int promoSweepMain(int argc, char** argv) {
     const int rounds = argc > 2 ? std::atoi(argv[2]) : 40;
     const unsigned workers = argc > 3 ? static_cast<unsigned>(std::atoi(argv[3])) : 4;
     if (argc > 4) setenv("ECO_GC_HELPER_JITTER_US", argv[4], 1);
-    const bool exact_arrays = argc > 5 ? std::atoi(argv[5]) != 0 : true;
+    // Register CR-014 (plans/threaded-gc-register-repros-impl.md Step 29):
+    // tail = 1 aims the workers' sweep-on-demand at the TAIL completion (an
+    // 8-byte slice that ends exactly at the last block's end: onSweepComplete
+    // on a worker inside the parallel minor). No exact Arrays, 8-byte slices, a
+    // 32 MiB floor (no release swap-removes the last block), a fresh live bag
+    // page last at every major, and the mutator pre-sweeps up to that page's
+    // final slice, so the first worker ladder that sweeps on demand runs it
+    // (before it could append a virgin block, which would move the completion
+    // to the in-loop path).
+    const bool tail = argc > 7 && std::atoi(argv[7]) != 0;
+    const bool exact_arrays = !tail && (argc > 5 ? std::atoi(argv[5]) != 0 : true);
     const bool debug = std::getenv("PROMO_DEBUG") != nullptr;   // per-minor sweep progress
     HeapConfig cfg = promoConfig(workers);
     if (argc > 6) {   // the sweep slice (bytes): larger slices complete the sweep inside minors
@@ -220,6 +231,13 @@ int promoSweepMain(int argc, char** argv) {
         cfg.max_sweep_bytes_per_alloc = cfg.max_sweep_bytes_hard = budget;
         cfg.panic_sweep_slice_bytes = budget;
     }
+    if (tail) {
+        cfg.sweep_work_budget = cfg.initial_sweep_budget = 8;
+        cfg.max_sweep_bytes_per_alloc = cfg.max_sweep_bytes_hard = 8;
+        cfg.panic_sweep_slice_bytes = 8;
+        cfg.initial_old_gen_size = 32ULL << 20;
+        cfg.max_heap_size = 256ULL << 20;   // the floor must lie below the old-gen region
+    }
     cfg.validate();
     auto& a = Allocator::instance();
     a.initialize(cfg);
@@ -227,6 +245,10 @@ int promoSweepMain(int argc, char** argv) {
     a.initThread();
     ThreadLocalHeap* h = AllocatorTestAccess::getThreadHeap(a);
     std::mt19937_64 rng(seed);
+    // Tail mode: the bag object (a live mixed bag page appended last before
+    // each major).
+    std::unique_ptr<PRoot> bag;
+    uint64_t tail_eligible = 0, tail_hits = 0, tail_hits_all = 0;
     // A pointer-bearing Array of exactly alloc_buffer_size bytes.
     const size_t array_cap = (cfg.alloc_buffer_size - sizeof(ElmArray)) / sizeof(Unboxable);
     std::vector<std::unique_ptr<PRoot>> old_set, young;
@@ -258,15 +280,54 @@ int promoSweepMain(int argc, char** argv) {
         }
         old_set.swap(keep);
         keep.clear();   // the dropped roots die here, before the major
+        if (tail) {
+            // The bag object: a fresh bag page appended last (the previous
+            // round's dies now).
+            bag.reset();
+            std::vector<u16> bchars(1900, u'b');
+            bag = std::make_unique<PRoot>(a, alloc::allocString(bchars.data(), bchars.size()), next++, 3);
+        }
         // (3) A STW major: a lazy sweep is pending afterwards.
         a.majorGC();
+        if (tail) {
+            // Pre-sweep on the mutator until one slice is left, ending at the
+            // last block's end: then the first worker whose ladder reaches
+            // sweep-on-demand in the next minors runs it, and (unless the gap
+            // it pushes is of the worker's own class: the early exit) completes
+            // the sweep on the tail path, onSweepComplete on that worker.
+            OldGenSpace& og = h->getOldGen();
+            const BlockTable& bt = OldGenSpaceTestAccess::getBlockTable(og);
+            auto oneSliceLeft = [&]() {
+                const size_t nb = bt.size();
+                if (nb == 0 || OldGenSpaceTestAccess::getSweepBufferIndex(og) != nb - 1) return false;
+                const BlockId last = bt.idAt(nb - 1);
+                const char* cur = OldGenSpaceTestAccess::getSweepCursor(og);
+                if (cur == nullptr || bt.meta(last).fully_swept || !OldGenSpaceTestAccess::demoted(og, last))
+                    return false;
+                char* start = bt.info(last).start;
+                char* end = bt.info(last).end_of_objects;
+                size_t len = 0;
+                const uint8_t* bits = OldGenSpaceTestAccess::getMarkBitsForBlock(og, last, &len);
+                const size_t from = static_cast<size_t>(cur - start) / 8, to = static_cast<size_t>(end - start) / 8;
+                size_t first = to;
+                for (size_t b = from; b < to && (b >> 3) < len; ++b)
+                    if ((bits[b >> 3] >> (b & 7)) & 1u) { first = b; break; }
+                if (first == to) return true;   // only the trailing gap
+                // One live object at the cursor that ends the block.
+                return first == from && start + first * 8 + getObjectSize(start + first * 8) >= end;
+            };
+            for (int g = 0; g < 1000000 && OldGenSpaceTestAccess::gcPhase(og) == GCPhase::Sweeping &&
+                            !oneSliceLeft(); ++g)
+                OldGenSpaceTestAccess::lazySweep(og, NUM_SIZE_CLASSES, 8);
+        }
         // (4) Parallel minors that promote young trees (leaves of every class)
         //     while the sweep is pending; now and then an exact-size Array leaf.
         for (int m = 0; m < 6; ++m) {
             const int trees = completion ? 64 : 24;
             for (int i = 0; i < trees; ++i) {
                 const int depth = 3 + static_cast<int>(rng() % 2);   // 15 or 31 objects
-                size_t cap = (exact_arrays && i == 0 && rng() % 2 == 0) ? array_cap : 0;
+                // CR-016: an exact-size Array in every minor (was every other).
+                size_t cap = (exact_arrays && i == 0) ? array_cap : 0;
                 if (cap != 0) ++exact;
                 young.push_back(std::make_unique<PRoot>(a, youngMixed(depth, next, rng, cap), depth, 6));
             }
@@ -278,7 +339,22 @@ int promoSweepMain(int argc, char** argv) {
                              round, m, OldGenSpaceTestAccess::getSweepBufferIndex(og),
                              OldGenSpaceTestAccess::getSweepTotalBlocks(og),
                              OldGenSpaceTestAccess::getSweepPendingBlocks(og));
+#if ENABLE_GC_STATS
+            const uint64_t tail0 = OldGenSpaceTestAccess::bitmapStats(og).sweep_tail_in_promotion;
+            const uint64_t tailall0 = OldGenSpaceTestAccess::bitmapStats(og).sweep_tail_completions;
+#endif
+            if (tail && was_sweeping) {
+                const size_t nb = OldGenSpaceTestAccess::blockCount(og);
+                const BlockId last = nb ? OldGenSpaceTestAccess::blockIdAt(og, nb - 1) : NO_BLOCK_ID;
+                if (last.valid() && !OldGenSpaceTestAccess::getBlockTable(og).meta(last).fully_swept &&
+                    OldGenSpaceTestAccess::demoted(og, last))
+                    ++tail_eligible;
+            }
             a.minorGC();
+#if ENABLE_GC_STATS
+            tail_hits += OldGenSpaceTestAccess::bitmapStats(og).sweep_tail_in_promotion - tail0;
+            tail_hits_all += OldGenSpaceTestAccess::bitmapStats(og).sweep_tail_completions - tailall0;
+#endif
             if (debug)
                 std::fprintf(stderr, " index %zu, phase %d, old gen blocks %zu\n",
                              OldGenSpaceTestAccess::getSweepBufferIndex(og),
@@ -306,8 +382,326 @@ int promoSweepMain(int argc, char** argv) {
                 static_cast<unsigned long long>(sweeping_minors),
                 static_cast<unsigned long long>(completed_in_minor),
                 static_cast<unsigned long long>(exact));
+    if (tail)
+        std::printf("promo_sweep tail mode: minors with the last block unswept and mixed (tail-eligible) %llu, "
+                    "tail completions inside a parallel minor (tail hits) %llu (all tail completions in minors %llu)\n",
+                    static_cast<unsigned long long>(tail_eligible), static_cast<unsigned long long>(tail_hits),
+                    static_cast<unsigned long long>(tail_hits_all));
     return 0;
 }
+
+#if !ECO_TLA_TRACE_ENABLED
+// ============================================================================
+// Register reproductions, Phase C (plans/threaded-gc-register-repros-impl.md
+// Steps 17-20): deterministic TSan pairs. Two plain std::threads drive two
+// promotion workers of ONE heap (no initThread: there is no thread affinity in
+// allocatePromotion at gc_thread_mode 0), ordered by DetHandshake.hpp's relaxed
+// atomics, so the only happens-before edges are the runtime's own locks.
+//
+//   gc-heap-tsan det-cr014-live              CR-014 NoRaceLive: flushCursorW vs
+//                                            the tail completion's computeFragmentationStats
+//   gc-heap-tsan det-cr001 {rf|wf} {inloop|tail}
+//                                            CR-001: finalizeBitmapCellW's gc_phase_
+//                                            read vs lazySweep's completion write
+//   gc-heap-tsan det-cr002                   CR-002: nextSetBit's word read vs a
+//                                            stashed cell's setMarkBitAtomic
+//
+// Exit: 0 clean, 3 NOT REACHED, 66 (TSan) a report. Each arm prints
+// "<arm>: REACHED ..." or "<arm>: NOT REACHED: <why>".
+// ============================================================================
+#include "DetHandshake.hpp"
+
+#include <thread>
+
+namespace {
+
+using OA = OldGenSpaceTestAccess;
+
+int detNotReached(const std::string& arm, const char* why) {
+    std::printf("%s: NOT REACHED: %s\n", arm.c_str(), why);
+    std::fflush(stdout);
+    return det::kNotReached;
+}
+
+void setBudgets(HeapConfig& cfg, size_t b) {
+    cfg.sweep_work_budget = cfg.initial_sweep_budget = b;
+    cfg.max_sweep_bytes_per_alloc = cfg.max_sweep_bytes_hard = b;
+    cfg.panic_sweep_slice_bytes = b;
+}
+
+// A promoted cell as a pointer-free object (allocatePromotion leaves the
+// caller to write the object, as copyClaimed does).
+void formatCell(void* p, size_t sz) {
+    std::memset(p, 0, sz);
+    Header* h = getHeader(p);
+    h->tag = Tag_ByteBuffer;
+    h->size = static_cast<u32>(sz - sizeof(ByteBuffer));
+}
+
+// Step 17: the shared tail fixture. Blocks, in order:
+//   U  class 64, uniform, 7/8 live, Queued (partialFront(c64));
+//   I  class 16, uniform, 7/8 live, Queued: a second rung-1 block, so a worker
+//      can make one allocation that finalizes UNDER promo_mu_ (a release edge
+//      that orders its earlier fast-path reads before the other worker's lock);
+//   M  class 32, alternate cells live (demoted, mixed), LAST.
+// Then a STW major and a pre-sweep up to M's cell `stop`.
+struct TailFixture {
+    BlockId U, I, M;
+    char* Ustart = nullptr;
+    char* Mstart = nullptr;
+    std::vector<std::unique_ptr<PRoot>> u, i, m;
+};
+
+int buildTail(Allocator& a, OldGenSpace& og, const std::string& arm, int stop, TailFixture& F) {
+    const size_t c64 = OA::sizeClass(64), c32 = OA::sizeClass(32), c16 = OA::sizeClass(16);
+    const size_t c128 = OA::sizeClass(128);
+    if (OA::classToSize(c64) != 64 || OA::classToSize(c32) != 32 || OA::classToSize(c16) != 16)
+        return detNotReached(arm, "size classes 16/32/64 are not exact");
+    const size_t cap6 = (64 - sizeof(ElmArray)) / sizeof(Unboxable);
+    for (int k = 0; k < 64; ++k) F.u.push_back(std::make_unique<PRoot>(a, alloc::allocArray(cap6), k, 4));
+    a.minorGC();
+    a.minorGC();
+    for (int k = 0; k < 256; ++k) F.i.push_back(std::make_unique<PRoot>(a, makeObj(0, 50000 + k, 0), 50000 + k, 0));
+    a.minorGC();
+    a.minorGC();
+    for (int k = 0; k < 128; ++k) F.m.push_back(std::make_unique<PRoot>(a, makeObj(2, 60000 + k, 0), 60000 + k, 2));
+    a.minorGC();
+    a.minorGC();
+    auto oneBlock = [&](const std::vector<std::unique_ptr<PRoot>>& v, BlockId& id) {
+        id = OA::blockOf(og, a.resolve(v[0]->h));
+        for (const auto& r : v)
+            if (OA::blockOf(og, a.resolve(r->h)) != id) return false;
+        return id.valid();
+    };
+    if (!oneBlock(F.u, F.U) || OA::cellsIn(og, F.U) != 64) return detNotReached(arm, "U is not one 64-cell block");
+    if (!oneBlock(F.i, F.I) || OA::cellsIn(og, F.I) != 256) return detNotReached(arm, "I is not one 256-cell block");
+    if (!oneBlock(F.m, F.M) || OA::cellsIn(og, F.M) != 128) return detNotReached(arm, "M is not one 128-cell block");
+    const BlockTable& bt = OA::getBlockTable(og);
+    F.Ustart = bt.info(F.U).start;
+    F.Mstart = bt.info(F.M).start;
+    // (3) Drop: U and I keep 7/8 (uniform), M keeps the even cells (demoted).
+    auto cellOf = [&](const PRoot& r, char* start, size_t cb) {
+        return static_cast<size_t>(static_cast<char*>(a.resolve(r.h)) - start) / cb;
+    };
+    auto drop = [&](std::vector<std::unique_ptr<PRoot>>& v, char* start, size_t cb, auto dead) {
+        std::vector<std::unique_ptr<PRoot>> keep;
+        for (auto& r : v)
+            if (!dead(cellOf(*r, start, cb))) keep.push_back(std::move(r));
+        v.swap(keep);
+    };
+    drop(F.u, F.Ustart, 64, [](size_t k) { return k % 8 == 3; });
+    drop(F.i, bt.info(F.I).start, 16, [](size_t k) { return k % 8 == 5; });
+    drop(F.m, F.Mstart, 32, [](size_t k) { return k % 2 == 1; });
+    a.majorGC();
+    // (5) The post-major state.
+    if (OA::gcPhase(og) != GCPhase::Sweeping) return detNotReached(arm, "no sweep pending after the major");
+    if (!OA::demoted(og, F.M) || OA::demoted(og, F.U) || OA::demoted(og, F.I))
+        return detNotReached(arm, "M is not demoted, or U/I are");
+    if (OA::blockIdAt(og, OA::blockCount(og) - 1) != F.M) return detNotReached(arm, "M is not the last block");
+    if (OA::partialFront(og, c64) != F.U || OA::partialFront(og, c16) != F.I)
+        return detNotReached(arm, "U / I are not at the front of their partial queues");
+    if (OA::cursorBlock(og, c64).valid() || OA::cursorBlock(og, c32).valid() ||
+        OA::cursorBlock(og, c128).valid() || OA::cursorBlock(og, c16).valid())
+        return detNotReached(arm, "a mutator cursor is open in c16/c32/c64/c128");
+    if (OA::getFreeList(og, c128) != nullptr || OA::partialQueueLength(og, c128) != 0)
+        return detNotReached(arm, "class 128 has a free cell or a queued block");
+    for (size_t c = OA::numSizeClasses(og); c < NUM_SIZE_CLASSES; ++c)
+        if (OA::getFreeList(og, c)) return detNotReached(arm, "a mixed-only class has a free cell (split rung)");
+    // (6) Pre-sweep up to M's cell `stop`.
+    char* const at = F.Mstart + static_cast<size_t>(stop) * 32;
+    for (int g = 0; OA::getSweepCursor(og) != at; ++g) {
+        if (g > 1000 || !OA::hasPendingSweepWork(og)) return detNotReached(arm, "the pre-sweep missed M's cell");
+        OA::lazySweep(og, NUM_SIZE_CLASSES, 8);
+    }
+    if (OA::gcPhase(og) != GCPhase::Sweeping) return detNotReached(arm, "the pre-sweep completed the sweep");
+    if (OA::getFreeList(og, c64) != nullptr || OA::getFreeList(og, c128) != nullptr)
+        return detNotReached(arm, "class 64/128 has a free-list cell after the pre-sweep");
+    return det::kClean;
+}
+
+HeapConfig detConfig(size_t budget) {
+    HeapConfig cfg = promoConfig(1);   // gc_minor_threads 1: serial setup minors, deterministic blocks
+    cfg.conc_mark = 0;
+    cfg.demote_live_fraction = 0.6;
+    setBudgets(cfg, budget);
+    cfg.validate();
+    return cfg;
+}
+
+Allocator& detInit(const HeapConfig& cfg) {
+    auto& a = Allocator::instance();
+    a.initialize(cfg);
+    AllocatorTestAccess::reset(a, &cfg);
+    a.initThread();
+    return a;
+}
+
+// Step 18: CR-014 NoRaceLive. T1 fills U's only chunk (8 free cells; the
+// pending live bytes stay unflushed in its cursor), then makes one class-16
+// allocation that finalizes under promo_mu_ (so T2's lock orders T1's earlier
+// gc_phase_ reads: no CR-001 report here). T2's class-128 promotion sweeps M's
+// last gap on demand with an 8-byte slice: the tail completion runs
+// onSweepComplete -> computeFragmentationStats on T2 and reads U's live_bytes
+// plainly. Then T1's 9th class-64 call exhausts its cursor and flushes
+// (flushCursorW's atomic fetch_add) BEFORE it takes the lock.
+int detCr014Live() {
+    const std::string arm = "det-cr014-live";
+    auto& a = detInit(detConfig(8));
+    OldGenSpace& og = AllocatorTestAccess::getThreadHeap(a)->getOldGen();
+    TailFixture F;
+    if (int rc = buildTail(a, og, arm, 127, F)) return rc;
+    auto& ctx = og.promoCtx();
+    og.beginParallelPromotion(ctx, 2);
+    std::atomic<int> step{0};
+    void* p1[9] = {};
+    void* pi = nullptr;
+    void* p2 = nullptr;
+    std::thread t1([&] {
+        auto& w = ctx.w[0];
+        for (int i = 0; i < 8; ++i) {
+            p1[i] = og.allocatePromotion(w, 64, false);
+            if (p1[i]) formatCell(p1[i], 64);
+        }
+        pi = og.allocatePromotion(w, 16, false);   // I: rung 1 under promo_mu_
+        if (pi) formatCell(pi, 16);
+        det::post(step, 1);
+        det::waitFor(step, 2);
+        p1[8] = og.allocatePromotion(w, 64, false);   // cursorAllocateW -> flushCursorW (RACE), then the lock
+        if (p1[8]) formatCell(p1[8], 64);
+    });
+    std::thread t2([&] {
+        det::waitFor(step, 1);
+        p2 = og.allocatePromotion(ctx.w[1], 128, false);   // ladder -> sweepOnDemandAllocate -> tail completion
+        if (p2) formatCell(p2, 128);
+        det::post(step, 2);
+    });
+    t1.join();
+    t2.join();
+    bool inU = true;
+    for (int i = 0; i < 8; ++i) inU = inU && p1[i] && OA::blockOf(og, p1[i]) == F.U;
+    const uint64_t bm = ctx.w[0].bm_allocs;
+    const bool idle = OA::gcPhase(og) == GCPhase::Idle;
+    const bool deferred = OA::sweepCompleteDeferred(og);
+    const bool okI = pi && OA::blockOf(og, pi) == F.I;
+    og.endParallelPromotion(ctx);
+    if (!inU) return detNotReached(arm, "T1's first eight cells are not U's");
+    if (!okI) return detNotReached(arm, "T1's class-16 cell is not I's");
+    if (bm != 8) return detNotReached(arm, "T1's ninth call did not flush U's eight cells");
+    if (!idle) return detNotReached(arm, "T2 did not complete the sweep");
+    if (deferred) return detNotReached(arm, "the completion was in-loop (deferred), not the tail path");
+    std::printf("%s: REACHED (T2 completed the sweep on the tail path while T1's U cursor held 8 unflushed "
+                "cells; T1 flushed after it)\n", arm.c_str());
+    return det::kClean;
+}
+
+// Step 19: CR-001, the race half. T1 claims U's chunk under the lock (call 1),
+// then makes one fast-path allocation whose finalizeBitmapCellW reads
+// gc_phase_ with no lock: after T2's completion write (rf) or before it (wf).
+// inloop: B = 64, the in-loop completion write (deferred); tail: B = 8.
+int detCr001(bool rf, bool inloop) {
+    const std::string arm = std::string("det-cr001 ") + (rf ? "rf" : "wf") + (inloop ? " inloop" : " tail");
+    auto& a = detInit(detConfig(inloop ? 64 : 8));
+    OldGenSpace& og = AllocatorTestAccess::getThreadHeap(a)->getOldGen();
+    TailFixture F;
+    if (int rc = buildTail(a, og, arm, 127, F)) return rc;
+    auto& ctx = og.promoCtx();
+    og.beginParallelPromotion(ctx, 2);
+    std::atomic<int> step{0};
+    void *p = nullptr, *q = nullptr, *p2 = nullptr;
+    std::thread t1([&] {
+        auto& w = ctx.w[0];
+        p = og.allocatePromotion(w, 64, false);   // the lock; claims U's chunk
+        if (p) formatCell(p, 64);
+        if (rf) {
+            det::post(step, 1);
+            det::waitFor(step, 2);
+            q = og.allocatePromotion(w, 64, false);   // fast path: finalizeBitmapCellW reads gc_phase_
+        } else {
+            q = og.allocatePromotion(w, 64, false);
+            det::post(step, 1);
+        }
+        if (q) formatCell(q, 64);
+    });
+    std::thread t2([&] {
+        det::waitFor(step, 1);
+        p2 = og.allocatePromotion(ctx.w[1], 128, false);   // sweep-on-demand completes: gc_phase_ = Idle
+        if (p2) formatCell(p2, 128);
+        det::post(step, 2);
+    });
+    t1.join();
+    t2.join();
+    const bool okq = p && q && OA::blockOf(og, p) == F.U && OA::blockOf(og, q) == F.U;
+    const bool idle = OA::gcPhase(og) == GCPhase::Idle;
+    const bool deferred = OA::sweepCompleteDeferred(og);
+    og.endParallelPromotion(ctx);
+    if (!okq) return detNotReached(arm, "T1's cells are not U's");
+    if (!idle) return detNotReached(arm, "T2 did not complete the sweep");
+    if (inloop != deferred)
+        return detNotReached(arm, inloop ? "the completion was not in-loop (deferred)"
+                                         : "the completion was in-loop, not the tail path");
+    std::printf("%s: REACHED (T2 completed the sweep %s; T1's fast-path finalize read gc_phase_ %s it)\n",
+                arm.c_str(), inloop ? "in the loop" : "on the tail path", rf ? "after" : "before");
+    return det::kClean;
+}
+
+// Step 20: CR-002. After the pre-sweep to M's cell 3, M's only class-32 free
+// cell is g1 = cell 1 (bit 4) and the cursor is at cell 3 (bit 12): both in
+// bitmap word 0. T1 batch-pops g1 under the lock and finalizes it after
+// unlocking (setMarkBitAtomic: fetch_or on byte 0); T2 then sweeps on demand
+// from bit 12 (nextSetBit's plain load of word 0).
+int detCr002() {
+    const std::string arm = "det-cr002";
+    auto& a = detInit(detConfig(8));
+    OldGenSpace& og = AllocatorTestAccess::getThreadHeap(a)->getOldGen();
+    TailFixture F;
+    if (int rc = buildTail(a, og, arm, 3, F)) return rc;
+    const size_t c32 = OA::sizeClass(32);
+    char* const g1 = F.Mstart + 32;
+    FreeCell* head = OA::getFreeList(og, c32);
+    if (reinterpret_cast<char*>(head) != g1 || head->next_in_class != nullptr)
+        return detNotReached(arm, "M's cell 1 is not the only class-32 free cell");
+    if (OA::partialQueueLength(og, c32) != 0) return detNotReached(arm, "class 32 has a queued block");
+    auto& ctx = og.promoCtx();
+    og.beginParallelPromotion(ctx, 2);
+    std::atomic<int> step{0};
+    void *r1 = nullptr, *r2 = nullptr;
+    std::thread t1([&] {
+        r1 = og.allocatePromotion(ctx.w[0], 32, false);   // batch pop g1; finalize outside the lock
+        det::post(step, 1);
+        det::waitFor(step, 2);
+        if (r1) formatCell(r1, 32);
+    });
+    std::thread t2([&] {
+        det::waitFor(step, 1);
+        r2 = og.allocatePromotion(ctx.w[1], 32, false);   // lazySweep(c32, 8) from bit 12: word 0
+        det::post(step, 2);
+    });
+    t1.join();
+    t2.join();
+    if (r2) formatCell(r2, 32);
+    og.endParallelPromotion(ctx);
+    if (r1 != g1) return detNotReached(arm, "T1 did not take M's cell 1");
+    if (r2 != F.Mstart + 3 * 32) return detNotReached(arm, "T2 did not sweep M's cell 3 on demand");
+    std::printf("%s: REACHED (T1 finalized M's cell 1 outside the lock; T2's sweep read bitmap word 0 "
+                "and took cell 3)\n", arm.c_str());
+    return det::kClean;
+}
+
+}  // namespace
+
+int promoDetMain(int argc, char** argv) {
+    const std::string which = argv[0];
+    if (which == "det-cr014-live") return detCr014Live();
+    if (which == "det-cr002") return detCr002();
+    if (which == "det-cr001") {
+        const bool rf = !(argc > 1 && std::strcmp(argv[1], "wf") == 0);
+        const bool inloop = !(argc > 2 && std::strcmp(argv[2], "tail") == 0);
+        return detCr001(rf, inloop);
+    }
+    std::fprintf(stderr, "usage: gc-heap-tsan det-cr014-live | det-cr001 {rf|wf} {inloop|tail} | det-cr002\n");
+    return 2;
+}
+#endif  // !ECO_TLA_TRACE_ENABLED
 
 #if ECO_TLA_TRACE_ENABLED
 // ============================================================================

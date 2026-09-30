@@ -1018,6 +1018,7 @@ struct NurserySpace::TenureParEnv {
             if (tw::claim(s, e, J.gen)) break;
             ++w.claim_races;
         }
+        ECO_TLA_TRACE_ONLY(if (tw::tla_probes) ::Elm::tlatrace::probe("m5.l3.claimed");)   // BUSY, uncopied
         const size_t size = getObjectSize(obj);
         char* dst = ctx != nullptr
             ? static_cast<char*>(og.allocatePromotion(ctx->w[w.index], size, /*per_alloc_sweep=*/false))

@@ -196,17 +196,8 @@ void* famArray(Allocator& a, const Fam& f, bool full) {
     return arr;
 }
 
-}  // namespace
-
-int ylosSweepMain(int argc, char** argv) {
-    const uint64_t seed = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 1;
-    const int rounds = argc > 2 ? std::atoi(argv[2]) : 12;
-    const unsigned workers = argc > 3 ? static_cast<unsigned>(std::atoi(argv[3])) : 4;
-    if (argc > 4 && std::strcmp(argv[4], "0") != 0) setenv("ECO_GC_HELPER_JITTER_US", argv[4], 1);
-    const unsigned age = argc > 5 ? static_cast<unsigned>(std::atoi(argv[5])) : 2;
-    const size_t sweep_bytes = argc > 6 ? std::strtoull(argv[6], nullptr, 10) : 1024;
-    const int families = 24, trees = 24, minors = 6;
-
+// The ylos-sweep geometry (shared with det-cr019).
+HeapConfig ylosConfig(unsigned workers, unsigned age, size_t sweep_bytes) {
     HeapConfig cfg;
     cfg.alloc_buffer_size = 4096;              // small blocks: a bag page per YLOS
     cfg.large_object_threshold = 2048;         // largest size class 2 KiB: the YLOS band is (2 KiB, 4 KiB)
@@ -229,6 +220,21 @@ int ylosSweepMain(int argc, char** argv) {
     cfg.sweep_work_budget = cfg.initial_sweep_budget = sweep_bytes;
     cfg.max_sweep_bytes_per_alloc = cfg.max_sweep_bytes_hard = sweep_bytes;
     cfg.panic_sweep_slice_bytes = sweep_bytes;
+    return cfg;
+}
+
+}  // namespace
+
+int ylosSweepMain(int argc, char** argv) {
+    const uint64_t seed = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 1;
+    const int rounds = argc > 2 ? std::atoi(argv[2]) : 12;
+    const unsigned workers = argc > 3 ? static_cast<unsigned>(std::atoi(argv[3])) : 4;
+    if (argc > 4 && std::strcmp(argv[4], "0") != 0) setenv("ECO_GC_HELPER_JITTER_US", argv[4], 1);
+    const unsigned age = argc > 5 ? static_cast<unsigned>(std::atoi(argv[5])) : 2;
+    const size_t sweep_bytes = argc > 6 ? std::strtoull(argv[6], nullptr, 10) : 1024;
+    const int families = 24, trees = 24, minors = 6;
+
+    HeapConfig cfg = ylosConfig(workers, age, sweep_bytes);
     cfg.validate();
     auto& a = Allocator::instance();
     a.initialize(cfg);
@@ -334,4 +340,149 @@ int ylosSweepMain(int argc, char** argv) {
                 static_cast<unsigned long long>(lo.ylos_promoted_in_place),
                 static_cast<unsigned long long>(lh.ylos_allocs));
     return 0;
+}
+
+// ============================================================================
+// Register reproductions, Phase C Step 21 (plans/threaded-gc-register-repros-
+// impl.md): CR-019 as a deterministic TSan pair.
+//
+//   gc-heap-tsan det-cr019 {t1first|t2first}
+//
+// A YLOS Array Y (3,088 B, its own mixed bag page) is marked by a STW major and
+// the lazy sweep is pre-driven until Y is the next live object it reaches. Two
+// promotion workers of one heap, ordered by relaxed atomics only: T1 promotes
+// Y in place (promoteYoungLarge: large_body_index_ erase + the header's age = 0,
+// no lock; the minor would hold ylos_mu_, which T2 never takes), T2 promotes a
+// cell of an empty class, so its ladder sweeps on demand over Y (lazySweep's
+// getObjectSize(Y), under promo_mu_, which T1 never takes). No value oracle
+// (the header's tag and size are rewritten unchanged: undefined behaviour
+// only). Exit 0 clean, 3 NOT REACHED, 66 (TSan) a report.
+// ============================================================================
+#include "DetHandshake.hpp"
+
+#include <string>
+#include <sys/mman.h>
+#include <thread>
+
+int ylosDetMain(int argc, char** argv) {
+    using OA = OldGenSpaceTestAccess;
+    const bool t1first = !(argc > 1 && std::strcmp(argv[1], "t2first") == 0);
+    const std::string arm = std::string("det-cr019 ") + (t1first ? "t1first" : "t2first");
+    auto notReached = [&](const char* why) {
+        std::printf("%s: NOT REACHED: %s\n", arm.c_str(), why);
+        std::fflush(stdout);
+        return det::kNotReached;
+    };
+    HeapConfig cfg = ylosConfig(2, 2, 8);
+    cfg.gc_minor_threads = 1;   // serial setup minors: deterministic placement
+    cfg.validate();
+    auto& a = Allocator::instance();
+    a.initialize(cfg);
+    AllocatorTestAccess::reset(a, &cfg);
+    a.initThread();
+    ThreadLocalHeap* h = AllocatorTestAccess::getThreadHeap(a);
+    OldGenSpace& og = h->getOldGen();
+    // (1) An old population, promoted.
+    std::vector<std::unique_ptr<YRoot>> olds;
+    int64_t next = 1;
+    for (int i = 0; i < 256; ++i) olds.push_back(std::make_unique<YRoot>(a, leaf(i % 4, next++)));
+    for (int m = 0; m < 3; ++m) a.minorGC();
+    // (2) D: a pointer-free large string (its own page; absorbs the major's initial slice).
+    std::vector<u16> dchars(1450, u'd');
+    YRoot D(a, alloc::allocString(dchars.data(), dchars.size()));
+    // (3) Y: a YLOS Array of 384 old pointers (3,088 B) on its own page after D.
+    std::vector<HPointer> e;
+    for (size_t i = 0; i < 384; ++i) e.push_back(olds[i % olds.size()]->h);
+    YRoot Yr(a, alloc::arrayFromPointers(e));
+    void* Y = a.resolve(Yr.h);
+    if (!og.isYoungLarge(Y)) return notReached("Y is not a YLOS object at birth");
+    // (4) A STW major: Y is marked, a lazy sweep is pending over its page.
+    a.majorGC();
+    Y = a.resolve(Yr.h);
+    const BlockId idY = OA::blockOf(og, Y);
+    if (!og.isYoungLarge(Y)) return notReached("Y is not young after the major");
+    if (OA::gcPhase(og) != GCPhase::Sweeping) return notReached("no sweep pending after the major");
+    if (!idY.valid() || !OA::sweepWillReach(og, idY, Y)) return notReached("the sweep will not reach Y");
+    // Pre-sweep until the next live object the sweep reaches is Y.
+    const BlockTable& bt = OA::getBlockTable(og);
+    auto nextLiveIsY = [&]() {
+        const size_t pos0 = OA::getSweepBufferIndex(og);
+        size_t pos = pos0;
+        while (pos < bt.size() && bt.meta(bt.idAt(pos)).fully_swept) ++pos;
+        if (pos >= bt.size() || bt.idAt(pos) != idY) return false;
+        char* start = bt.info(idY).start;
+        const char* cur = OA::getSweepCursor(og);
+        const size_t from = static_cast<size_t>(((pos == pos0 && cur) ? cur : start) - start) / 8;
+        size_t len = 0;
+        const uint8_t* bits = OA::getMarkBitsForBlock(og, idY, &len);
+        for (size_t b = from; (b >> 3) < len; ++b)
+            if ((bits[b >> 3] >> (b & 7)) & 1u) return b == static_cast<size_t>(static_cast<char*>(Y) - start) / 8;
+        return false;
+    };
+    for (int g = 0; !nextLiveIsY(); ++g) {
+        if (g > 5000 || OA::gcPhase(og) != GCPhase::Sweeping || !OA::sweepWillReach(og, idY, Y))
+            return notReached("the pre-sweep passed Y or never reached it");
+        OA::lazySweep(og, NUM_SIZE_CLASSES, 8);
+    }
+    // An empty class: no free cell, no queued block, no cursor after the pre-sweep (2048 expected).
+    size_t c = OA::numSizeClasses(og);
+    while (c-- > 0) {
+        if (OA::getFreeList(og, c) == nullptr && OA::partialQueueLength(og, c) == 0 &&
+            !OA::cursorBlock(og, c).valid())
+            break;
+    }
+    if (c >= OA::numSizeClasses(og)) return notReached("no empty size class");
+    for (size_t k = OA::numSizeClasses(og); k < NUM_SIZE_CLASSES; ++k)
+        if (OA::getFreeList(og, k)) return notReached("a mixed-only class has a free cell (split rung)");
+    // TSan keeps four shadow slots per 8-byte granule and, when a new access
+    // finds none free and none of its own, overwrites a pseudo-random one
+    // (chosen by the thread's trace position, which a spin makes random). The
+    // setup's many main-thread accesses fill Y's header granule, so in t2first
+    // T2's size read or T1's read half of `age = 0` evicted T2's tag read in
+    // about one run in five and the report was lost. Re-map Y's page in place
+    // (MAP_FIXED: TSan's mmap interceptor resets the range's shadow) and copy
+    // its bytes back: the main thread then holds ONE slot per granule, and
+    // T2's two reads plus T1's read fit without an eviction. The page's
+    // contents, protection and address are unchanged; no other thread exists.
+    {
+        const size_t pg = 4096;
+        char* page = reinterpret_cast<char*>(reinterpret_cast<uintptr_t>(Y) & ~(uintptr_t)(pg - 1));
+        std::vector<char> save(page, page + pg);
+        if (mmap(page, pg, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) != page)
+            return notReached("re-mapping Y's page failed");
+        std::memcpy(page, save.data(), pg);
+    }
+    // (5) The pair.
+    auto& ctx = og.promoCtx();
+    og.beginParallelPromotion(ctx, 2);
+    std::atomic<int> step{0};
+    void* p2 = nullptr;
+    const size_t csz = OA::classToSize(c);
+    std::thread t1([&] {
+        if (!t1first) det::waitFor(step, 1);
+        og.promoteYoungLarge(Y);   // no lock: large_body_index_ erase, header age = 0
+        if (t1first) det::post(step, 1);
+    });
+    std::thread t2([&] {
+        if (t1first) det::waitFor(step, 1);
+        p2 = og.allocatePromotion(ctx.w[1], csz, false);   // ladder -> sweepOnDemandAllocate -> lazySweep over Y
+        if (!t1first) det::post(step, 1);
+    });
+    t1.join();
+    t2.join();
+    if (p2) {
+        std::memset(p2, 0, csz);
+        getHeader(p2)->tag = Tag_ByteBuffer;
+        getHeader(p2)->size = static_cast<u32>(csz - sizeof(ByteBuffer));
+    }
+    const bool promoted = !og.isYoungLarge(Y);
+    const bool passed = !OA::sweepWillReach(og, idY, Y);
+    og.endParallelPromotion(ctx);
+    og.recomputeYoungLargeBounds();
+    if (!p2) return notReached("T2's promotion failed");
+    if (!promoted) return notReached("Y is still young");
+    if (!passed) return notReached("T2's sweep did not pass Y");
+    std::printf("%s: REACHED (T2's sweep stepped over Y while T1 promoted it in place, class %zu)\n",
+                arm.c_str(), csz);
+    return det::kClean;
 }

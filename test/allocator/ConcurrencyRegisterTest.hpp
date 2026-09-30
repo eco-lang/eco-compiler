@@ -22,3 +22,36 @@ extern Testing::TestCase testCR017RegionT0WalkSkipsFreedCellK2;    // CR-017 (xf
 extern Testing::TestCase testCR025GangMemberStallInPause;          // CR-025
 extern Testing::TestCase testCR029BagRungSizeClassedBitmap;        // CR-029
 extern Testing::TestCase testCR029BagRungSizeClassedLegacy;        // CR-029
+extern Testing::TestCase testCR014TailShrinkN2;                    // CR-014 A (xfail)
+extern Testing::TestCase testCR014TailShrinkN1;                    // CR-014 A (xfail)
+extern Testing::TestCase testCR014TailReleasesStashedBlock;        // CR-014 B (xfail)
+extern Testing::TestCase testCR014TailReissueDoubleAlloc;          // CR-014 C (xfail)
+extern Testing::TestCase testCR001Recount;                         // CR-001 (a) (xfail)
+extern Testing::TestCase testCR001Release;                         // CR-001 (b) (xfail)
+extern Testing::TestCase testCR016FlipChunk;                       // CR-016 (xfail)
+extern Testing::TestCase testCR016FlipStash;                       // CR-016 (xfail)
+extern Testing::TestCase testCR028V11ParsesPoppedCell;             // CR-028 (xfail, validate)
+extern Testing::TestCase testCR037ReusedYlosK1;                    // CR-037 (xfail)
+extern Testing::TestCase testCR037ReusedYlosK2;                    // CR-037 (xfail)
+extern Testing::TestCase testCR037Control;                         // CR-037 negative control
+extern Testing::TestCase testCR017R1YlosIntoGreyedCell;            // CR-017 R1 (xfail)
+extern Testing::TestCase testCR017R1Control;                       // CR-017 R1 negative control
+extern Testing::TestCase testCR017R1YlosIntoGreyedCellK2;          // CR-017 R1 k=2 (xfail)
+extern Testing::TestCase testCR017R1ControlK2;                     // CR-017 R1 k=2 negative control
+extern Testing::TestCase testCR017R2MarkOnFreeCell;                // CR-017 R2 (xfail)
+extern Testing::TestCase testCR017R2Control;                       // CR-017 R2 negative control
+extern Testing::TestCase testCR007PromoMuHelperWait;               // CR-007 (xfail)
+extern Testing::TestCase testCR023ForeignStopRelaunch;             // CR-023 (xfail)
+extern Testing::TestCase testCR012aFinishTrigger;                  // CR-012(a) (xfail)
+extern Testing::TestCase testCR012bFreeList;                       // CR-012(b) (xfail)
+extern Testing::TestCase testCR012cDecommitClock;                  // CR-012(c) (xfail)
+extern Testing::TestCase testCR012dPopulateWindow;                 // CR-012(d) (xfail)
+extern Testing::TestCase testCR033FreshPageTailParses;             // CR-033 (xfail)
+extern Testing::TestCase testCR033Control;                         // CR-033 negative control
+extern Testing::TestCase testCR033LegacySweepS1;                   // CR-033 S1 (xfail, legacy)
+extern Testing::TestCase testCR033S1Control;                       // CR-033 S1 negative control
+extern Testing::TestCase testCR035StaleIndexAtFlip;                // CR-035 (xfail)
+extern Testing::TestCase testCR035LostObject;                      // CR-035 (xfail)
+extern Testing::TestCase testCR036ReissueWitness;                  // CR-036 witness (xfail)
+extern Testing::TestCase testCR038DeadYlosSlotIntoRetired;         // CR-038 premise-drift witness (xfail)
+extern Testing::TestCase testCR038Control;                         // CR-038 negative control

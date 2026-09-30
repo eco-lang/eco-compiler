@@ -2066,6 +2066,16 @@ public:
     }
     static BlockId blockOf(OldGenSpace& og, const void* p) { return og.blockIdFor(p); }
     static void setKeepWorkerCursor(OldGenSpace& og, bool on) { og.test_keep_worker_cursor_ = on; }
+    // CR-001: the in-loop completion held onSweepComplete for the merge.
+    static bool sweepCompleteDeferred(const OldGenSpace& og) { return og.sweep_complete_deferred_; }
+    // CR-007: try_lock probe of the promotion lock (a success is undone at once).
+    static bool promoMuHeld(OldGenSpace& og) {
+        if (!og.promo_mu_.try_lock()) return true;
+        og.promo_mu_.unlock();
+        return false;
+    }
+    // CR-012(a): the handoff trigger that reads old_gen_in_use_bytes_ unlocked.
+    static bool cyclePressureFinishDue(const OldGenSpace& og) { return og.cyclePressureFinishDue(); }
     static size_t numBlocks(const OldGenSpace& og) { return og.blocks_.size(); }
     static uint64_t committedBytes(const OldGenSpace& og) { return og.getCommittedBytes(); }
     // FNV-1a over (block start, size class, alloc state, bitmap bytes) of every

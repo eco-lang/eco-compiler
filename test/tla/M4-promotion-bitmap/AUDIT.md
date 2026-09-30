@@ -515,3 +515,35 @@ scratch), which needs more promotions after the release than the model allows.
   `kAllocQueued` on a non-uniform block, and a later `detachFromAllocation` indexes
   `partial_[size_class]` with `size_class = NUM_SIZE_CLASSES` (an assert, then an out-of-bounds read
   in NDEBUG builds). Another CR-014 consequence; not modelled (one class of blocks).
+
+
+## 2026-09-30 — canary re-audit: register reproductions (GC_MODEL_001)
+
+Pins fired: OGS.lazySweep (3019e316a801), file promo_sweep.cpp (d7dbcbdf5c41), greps F.parPromoActive (dd3dd6ba15de), F.promoMu (2da021596e6c).
+
+Change (plans/threaded-gc-register-repros-impl.md, register reproductions; snapshot of the
+prior tree `snapshots/register-repros/pre-impl-2026-09-30.tgz`). Code-level guards were added for
+the open register entries. The runtime changes are of three kinds only, and none adds, removes or
+reorders an atomic step, a lock, a shared location or a memory order on a production path:
+- **test accessors** (`AllocatorTestAccess`: `acquireOldGenBlock`, `releaseOldGenBlock`,
+  `freeBlocks`, `threadMutexHeldElsewhere`, `adoptThreadHeap`; `OldGenSpaceTestAccess`:
+  `sweepCompleteDeferred`, `promoMuHeld`, `cyclePressureFinishDue`). They forward to existing
+  functions or read existing fields; unit tests and harnesses call them only. They fire the
+  footprint greps `F.promoMu`, `F.threadMutex`, `F.pageWorkCalls`, `F.oldGenFreeBlocks`,
+  `F.setThreadHeap`, `F.parPromoActive` and the `Allocator.hpp` census by name only.
+- **trace-only probes** (`ECO_TLA_TRACE_ONLY`, compiled out of every other build):
+  `m5.item.taken`, `m5.item.copied`, `m5.item.popped` (`TenureWork.hpp`, gated by the new
+  `tla_probes`, default false), `m5.l3.claimed` (`NT.TenureParEnv`), `m6.tlh.dtor`
+  (`TLH.destructor`), `m6.census.locked` (`P1Census.cpp`). `tlatrace::probe` emits no event;
+  it only calls the harness's callback while recording, so no recorded trace changes.
+- **a stats-only counter** in `OGS.lazySweep`'s tail completion (`sweep_tail_completions`,
+  `sweep_tail_in_promotion`), inside the existing `#if ENABLE_GC_STATS` block in the same
+  `promo_mu_` section as the existing `total_post_sweep_shrink_ns` write.
+`test/gc-heap-tsan/promo_sweep.cpp` gained non-trace arms (`promoDetMain`, tail mode, exact arrays
+every minor); its trace section (`promoTraceMain`, the M4 trace harness) is byte-identical.
+
+Runs (2026-09-30, this tree): `run_traces.py` (every harness rebuilt): **135/135 as expected** in 83 s.
+
+The counter is stats-only and adds no step to M4's sweep or completion actions (the tail path's phase write and `onSweepComplete` call are unchanged). The M4 trace scenario is byte-identical. The new code-level guards reproduce M4's CR-014 (`sweep_tail`, `sweep_tail_release`, `sweep_tail_live`), CR-001, CR-002, CR-016 and CR-028 counterexamples on the real allocator; see the register.
+
+**Verdict: no model change needed.**

@@ -21,8 +21,10 @@
 #include "OldGenSpace.hpp"
 #include "RuntimeExports.h"
 #include "ThreadLocalHeap.hpp"
+#include "TlaTrace.hpp"   // compiled-out hooks (trace builds only: the M6 fork harness)
 
 namespace Elm {
+ECO_TLA_TRACE_ONLY(namespace gc { extern bool tla_m6; })   // GCHelperPool.cpp
 namespace p1 {
 
 // Befriended by OldGenSpace: the only way the census reads mark bits.
@@ -318,6 +320,8 @@ void recordPromoted(const OldGenSpace* og, const std::vector<void*>& promoted) {
     const uint32_t s = sample();
     std::lock_guard<std::mutex> lk(g.mu);
     registerReportLocked(g);
+    // M6 fork harness (det-cr032): a pause point while g.mu is held (CR-032).
+    ECO_TLA_TRACE_ONLY(if (::Elm::gc::tla_m6) ::Elm::tlatrace::probe("m6.census.locked");)
     std::vector<OEntry>& t = g.tables[og];
     for (void* p : promoted) {
         if (!sampled(p, s)) continue;

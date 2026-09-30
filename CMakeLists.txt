@@ -1245,6 +1245,33 @@ if(ECO_TLA)
     add_subdirectory(test/tla)
 endif()
 
+# Register guards (plans/threaded-gc-register-repros-impl.md Step 27): the unit xfail
+# guards (`test --filter "xfail CR-"`) and the fork-harness arms
+# (test/gc-heap-tsan/fork_arms.txt, run_fork_arms.py: separate g++ sub-builds in
+# ${CMAKE_BINARY_DIR}/fork-det). OPT-IN: out of ALL, check and full (Gate A); the
+# guards fork, abort by design and run for minutes. ECO_TEST_XFAIL=strict makes every
+# reproduced xfail row fail (unit guards, the validate-only CR-028, the fork and trace arms and
+# the TSan race arms): the whole list of open register defects, red until each is fixed.
+#   cmake --build build --target register-guards          (quick tier)
+#   cmake --build build --target register-guards-stress   (stress tier, never gating)
+# CR-028's guard needs ECO_HEAP_VALIDATE (its V11 walk is compiled out otherwise), so the
+# target also builds the unit test binary in a validate tree: ECO_REGISTER_VALIDATE_DIR
+# (default build-validate beside this tree's source), configured here if it has no cache.
+set(ECO_REGISTER_VALIDATE_DIR "${CMAKE_SOURCE_DIR}/build-validate" CACHE PATH
+    "Build tree with ECO_HEAP_VALIDATE=ON used by register-guards for the validate-only guards")
+add_custom_target(register-guards
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/run_register_guards.sh
+            $<TARGET_FILE:test> ${ECO_REGISTER_VALIDATE_DIR} ${CMAKE_SOURCE_DIR} ${CMAKE_COMMAND}
+            ${CMAKE_C_COMPILER} ${CMAKE_CXX_COMPILER} ${CMAKE_BINARY_DIR}/fork-det
+    DEPENDS test
+    COMMENT "Register guards: unit xfail CR- guards, CR-028 in the validate tree, harness arms (fork, trace, TSan)"
+    USES_TERMINAL VERBATIM)
+add_custom_target(register-guards-stress
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/test/gc-heap-tsan/run_fork_arms.py --tier stress
+            --build-dir=${CMAKE_BINARY_DIR}/fork-det
+    COMMENT "Register guards, stress tier (fork-harness storms; report only)"
+    USES_TERMINAL VERBATIM)
+
 # Convenience targets for common workflows.
 
 # Usage: cmake --build build --target rebuild

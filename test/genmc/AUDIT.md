@@ -379,3 +379,35 @@ name the drivers: W1 2, W2 4, W3 15, W4 19, W5 9, w_pool_done 3, w_running_chain
 `MarkWork.hpp`, `MinorWork.hpp`, `TenureWork.hpp`, `BitmapScan.hpp`, `GCHelperPool.*`, `PageWork.cpp`,
 and `TLA-REGION` regions for the reduced functions). A pin that fires and names a driver needs an
 entry here quoting the new hash prefix before `check-tla-manifest.sh --update` accepts it.
+
+
+## 2026-09-30 — canary re-audit: register reproductions (GC_MODEL_001)
+
+Pins fired: W3: OGS.lazySweep (3019e316a801); W5, w_running_chain: file TenureWork.hpp (1b0803bf3a66); W5: NT.TenureParEnv (53fc7d8f27b8).
+
+Change (plans/threaded-gc-register-repros-impl.md, register reproductions; snapshot of the
+prior tree `snapshots/register-repros/pre-impl-2026-09-30.tgz`). Code-level guards were added for
+the open register entries. The runtime changes are of three kinds only, and none adds, removes or
+reorders an atomic step, a lock, a shared location or a memory order on a production path:
+- **test accessors** (`AllocatorTestAccess`: `acquireOldGenBlock`, `releaseOldGenBlock`,
+  `freeBlocks`, `threadMutexHeldElsewhere`, `adoptThreadHeap`; `OldGenSpaceTestAccess`:
+  `sweepCompleteDeferred`, `promoMuHeld`, `cyclePressureFinishDue`). They forward to existing
+  functions or read existing fields; unit tests and harnesses call them only. They fire the
+  footprint greps `F.promoMu`, `F.threadMutex`, `F.pageWorkCalls`, `F.oldGenFreeBlocks`,
+  `F.setThreadHeap`, `F.parPromoActive` and the `Allocator.hpp` census by name only.
+- **trace-only probes** (`ECO_TLA_TRACE_ONLY`, compiled out of every other build):
+  `m5.item.taken`, `m5.item.copied`, `m5.item.popped` (`TenureWork.hpp`, gated by the new
+  `tla_probes`, default false), `m5.l3.claimed` (`NT.TenureParEnv`), `m6.tlh.dtor`
+  (`TLH.destructor`), `m6.census.locked` (`P1Census.cpp`). `tlatrace::probe` emits no event;
+  it only calls the harness's callback while recording, so no recorded trace changes.
+- **a stats-only counter** in `OGS.lazySweep`'s tail completion (`sweep_tail_completions`,
+  `sweep_tail_in_promotion`), inside the existing `#if ENABLE_GC_STATS` block in the same
+  `promo_mu_` section as the existing `total_post_sweep_shrink_ns` write.
+`test/gc-heap-tsan/promo_sweep.cpp` gained non-trace arms (`promoDetMain`, tail mode, exact arrays
+every minor); its trace section (`promoTraceMain`, the M4 trace harness) is byte-identical.
+
+Runs (2026-09-30, this tree): `run_traces.py` (every harness rebuilt): **135/135 as expected** in 83 s.
+
+The drivers compile without ECO_TLA_TRACE, so every probe is absent from them; the counter is outside every reduced function's logic.
+
+**Verdict: no model change needed.**
