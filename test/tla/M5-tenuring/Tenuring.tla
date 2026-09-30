@@ -33,13 +33,20 @@ CONSTANTS
     YlosGen,        \* how an extent's ylos_gen list names its generation's YLOS (CR-034):
                     \*   "identity": by object (a member a STW major frees leaves no entry; the
                     \*               model before 2026-09-29, and fix candidate 1's effect);
-                    \*   "code": by address, as the code does: the major leaves the address, and the
-                    \*           next prep takes whatever young YLOS sits there for a member
-                    \*           (NurseryRegion.cpp:751-753, :773-775);
-                    \*   fix controls (address-keyed + a check at the prep): "drop" (the major drops
-                    \*   the address from every list = "identity"), "age1" (skip an entry whose
-                    \*   YLOS has header age 0), "stamp" (a never-reused registration stamp), "lbid"
-                    \*   (the LargeBodyId as the stamp; the release recycles it LIFO)
+                    \*   "stamp": THE CODE since HEAP_072 (2026-09-29): by address plus a stamp
+                    \*           that a stale entry never matches. reachYoungLargeR stamps
+                    \*           LargeBodyMeta::join_minor = minor_seq at the first reach
+                    \*           (NurseryRegion.cpp:538), the preps accept an entry only through
+                    \*           youngLargeMember(y, X.gen_minor) (:758, :780). Never reused:
+                    \*           minor_seq is bumped before any stamp (:716), and registerLargeBody
+                    \*           builds a fresh meta (join_minor = 0) even for a recycled id;
+                    \*   "addr": by address alone, the code BEFORE HEAP_072 (CR-034): the major
+                    \*           leaves the address, and the next prep takes whatever young YLOS
+                    \*           sits there for a member. Kept as the regression mutant of the fix;
+                    \*   other controls (address-keyed + a check at the prep): "drop" (the major
+                    \*   drops the address from every list = "identity"), "age1" (skip an entry
+                    \*   whose YLOS has header age 0), "lbid" (the LargeBodyId as the stamp; the
+                    \*   release recycles it LIFO)
     Cr017Oracle,    \* model-only: the t0 walk skips dead survivor and builder objects, standing for
                     \* any CR-017 fix, so a configuration can look past CR-017 (not a fix design)
     LbKey,          \* the lb_bodies lists (large bodies, op "lalloc"), address-keyed in the code:
@@ -52,7 +59,7 @@ CONSTANTS
 
 ASSUME K \in {1, 2} /\ (K = 2 => Collectors = 1)      \* age_forced_exact
 ASSUME SC >= EC + BC /\ OC >= MaxLid
-ASSUME YlosGen \in {"identity", "code", "drop", "age1", "stamp", "lbid"} /\ Cr017Oracle \in BOOLEAN
+ASSUME YlosGen \in {"identity", "addr", "drop", "age1", "stamp", "lbid"} /\ Cr017Oracle \in BOOLEAN
 ASSUME LbKey \in {"identity", "code", "kind", "drop"}
 
 OpKinds == {"alloc", "load", "drop", "balloc", "bwrite", "bclear", "yalloc", "lalloc"}
@@ -187,15 +194,16 @@ define
                             /\ (Cr017Oracle => a \in ReachAll)}
         \cup {y \in YAddr : YoungY(y)}
     \* CR-034: ylos_gen is keyed by address. The prep of a minor takes address
-    \* entry c of extent x's list for a member if youngLargeMeta(c) finds a young
-    \* YLOS there (NurseryRegion.cpp:751-753 hand-over, :773-775 ageing) and the
-    \* fix control's check passes. Reads ys / ystale / yrec as they were at the
+    \* entry c of extent x's list for a member if a young YLOS is there and the
+    \* check of YlosGen passes: "stamp" is the code's youngLargeMember
+    \* (NurseryRegion.cpp:758 hand-over, :780 ageing; HEAP_072), "addr" the
+    \* pre-fix youngLargeMeta alone. Reads ys / ystale / yrec as they were at the
     \* start of the step (the prep runs before any reach).
     AddrKeyed == YlosGen \notin {"identity", "drop"}
     PrepOK(c) == CASE YlosGen = "age1"  -> ys[c] # Y0           \* header age >= 1
-                   [] YlosGen = "stamp" -> FALSE                \* a never-reused stamp never matches a stale entry
+                   [] YlosGen = "stamp" -> FALSE                \* the code (HEAP_072): join_minor never matches a stale entry
                    [] YlosGen = "lbid"  -> yrec[c]              \* the LargeBodyId matches iff it was recycled
-                   [] OTHER             -> TRUE                 \* "code": youngLargeMeta only
+                   [] OTHER             -> TRUE                 \* "addr": youngLargeMeta only (pre-HEAP_072)
     PrepMatch(c, x) == x # 0 /\ x \in ystale[c] /\ ys[c] \in YoungYS /\ PrepOK(c)
     \* Large bodies. markLargeBodySeen (OldGenSpace.cpp:7542-7552) colours the index
     \* entry at the listed address, whatever its kind (a body or a young YLOS).
@@ -875,6 +883,7 @@ Walk(skipTenuring) ==
     \cup {a \in BAddr : heap[a].lid # 0 /\ xstate[a[2]] = "Young" /\ xage[a[2]] = 1
                         /\ (Cr017Oracle => a \in ReachAll)}
     \cup {y \in YAddr : YoungY(y)}
+
 
 
 

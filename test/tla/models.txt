@@ -207,10 +207,10 @@ M5  M5-tenuring  MC  MC_k2_cycle_major.cfg               quick  tlc  violates:Yo
 M5  M5-tenuring  MC  MC_fork.cfg                         quick  tlc  violates:TenuredEqualsLegacy # CR-013
 M5  M5-tenuring  MC  MC_fork_orphan_copy.cfg             quick  tlc  violates:ExactlyOnce         # CR-013
 M5  M5-tenuring  MC  MC_fork_l3.cfg                      quick  tlc  deadlock                     # CR-013
-M5  M5-tenuring  MC  MC_ylos_aba.cfg                     quick  tlc  violates:YlosGenIdentity     # CR-034
-M5  M5-tenuring  MC  MC_ylos_aba_heap005.cfg             quick  tlc  violates:OldPointsOld        # CR-034 (the damage)
-M5  M5-tenuring  MC  MC_k2_ylos_aba.cfg                  quick  tlc  violates:NoDangling          # CR-034 (k = 2, ageing prep)
-M5  M5-tenuring  MC  MC_lb_aba.cfg                       quick  tlc  violates:NoDangling          # CR-034's shape on lb_bodies
+M5  M5-tenuring  MC  MC_ylos_aba.cfg                     quick  tlc  violates:YlosGenIdentity     # CR-034 pre-fix code ("addr"): regression mutant of HEAP_072
+M5  M5-tenuring  MC  MC_ylos_aba_heap005.cfg             quick  tlc  violates:OldPointsOld        # CR-034 pre-fix ("addr", the damage): mutant of HEAP_072
+M5  M5-tenuring  MC  MC_k2_ylos_aba.cfg                  quick  tlc  violates:NoDangling          # CR-034 pre-fix ("addr", k = 2, ageing prep): mutant of HEAP_072
+M5  M5-tenuring  MC  MC_lb_aba.cfg                       quick  tlc  violates:NoDangling          # CR-037 (CR-034's shape on lb_bodies; open)
 M5  M5-tenuring  MC  MC_k2_ylos_walk.cfg                 quick  tlc  violates:YoungWalkValid      # k = 2: a dead ageing YLOS's slot (AUDIT.md)
 M5  M5-tenuring  MC  MC_cycle_major_t0grey.cfg           quick  tlc  violates:T0GreyAllocated     # CR-017
 M5  M5-tenuring  MC  mutants/skip_start.cfg              quick  tlc  violates:TenuredEqualsLegacy
@@ -246,8 +246,9 @@ M5  M5-tenuring  MC  mutants/t0_greys_ylos.cfg           quick  tlc  violates:Ma
 M5  M5-tenuring  MC  mutants/skip_zap.cfg                quick  tlc  violates:YoungWalkValid
 M5  M5-tenuring  MC  mutants/age_mark_no_heal.cfg        quick  tlc  violates:NoDangling
 # M5 controls/: CR-034's fix candidates (fix-design evidence; the model's YlosGen constant).
+# ylos_stamp / ylos_stamp_k2 are THE CODE since HEAP_072 (2026-09-29): the CR-034 rows proper.
 M5  M5-tenuring  MC  controls/ylos_drop.cfg              quick  tlc  pass                         # CR-034 fix candidate 1
-M5  M5-tenuring  MC  controls/ylos_stamp.cfg             quick  tlc  pass                         # CR-034 fix candidate 2 (never-reused stamp)
+M5  M5-tenuring  MC  controls/ylos_stamp.cfg             quick  tlc  pass                         # THE CODE (HEAP_072 join_minor stamp; was candidate 2)
 M5  M5-tenuring  MC  controls/ylos_age1.cfg              quick  tlc  pass                         # the age >= 1 check, k = 1
 M5  M5-tenuring  MC  controls/ylos_age1_k2.cfg           quick  tlc  violates:YlosGenIdentity     # ... is not enough at k = 2
 M5  M5-tenuring  MC  controls/ylos_age1_k2_heap005.cfg   quick  tlc  violates:OldPointsOld
@@ -267,19 +268,19 @@ M5  M5-tenuring  MC  MC_deep_nf2.cfg                     deep   tlc  pass
 M5  M5-tenuring  MC  MC_deep_k2.cfg                      deep   tlc  pass
 M5  M5-tenuring  MC  MC_deep_ext.cfg                     deep   tlc  pass
 M5  M5-tenuring  MC  controls/ylos_drop_k2.cfg           deep   tlc  pass                         # CR-034 fix candidate 1, k = 2
-M5  M5-tenuring  MC  controls/ylos_stamp_k2.cfg          deep   tlc  pass                         # CR-034 fix candidate 2, k = 2
+M5  M5-tenuring  MC  controls/ylos_stamp_k2.cfg          deep   tlc  pass                         # THE CODE (HEAP_072), k = 2
 M5  M5-tenuring  MC  controls/ylos_age1_boundary.cfg     deep   tlc  pass                         # the age >= 1 check, whole boundary, k = 1
 # The STW major x region-nursery boundary, all at once (AUDIT.md 2026-09-29, CR-034 entry): `boundary`
-# rows look past CR-017 / CR-034 (oracle walk, fix controls); the _cr017 / _cr034 / _lb rows are the
-# same bounds with the code.
+# rows look past CR-017 / CR-037 (oracle walk, kind check) and run the code's HEAP_072 stamp; the
+# _cr017 / _lb rows are the same bounds with the code, _cr034 with the pre-HEAP_072 code ("addr").
 M5  M5-tenuring  MC  MC_deep_boundary.cfg                deep   tlc  pass
 M5  M5-tenuring  MC  MC_deep_boundary_cr017.cfg          deep   tlc  violates:T0GreyAllocated     # CR-017
-M5  M5-tenuring  MC  MC_deep_boundary_cr034.cfg          deep   tlc  violates:YlosGenIdentity     # CR-034
+M5  M5-tenuring  MC  MC_deep_boundary_cr034.cfg          deep   tlc  violates:YlosGenIdentity     # CR-034 pre-fix code ("addr"): regression mutant of HEAP_072
 M5  M5-tenuring  MC  MC_deep_boundary_k2.cfg             deep   tlc  pass
 M5  M5-tenuring  MC  MC_deep_boundary_k2_m2.cfg          deep   tlc  pass
 M5  M5-tenuring  MC  MC_deep_boundary_k2_cr017.cfg       deep   tlc  violates:T0GreyAllocated     # CR-017 (k = 2)
-M5  M5-tenuring  MC  MC_deep_boundary_k2_cr034.cfg       deep   tlc  violates:YlosGenIdentity     # CR-034 (k = 2)
-M5  M5-tenuring  MC  MC_deep_boundary_k2_lb.cfg          deep   tlc  violates:NoDangling          # CR-034's shape on lb_bodies
+M5  M5-tenuring  MC  MC_deep_boundary_k2_cr034.cfg       deep   tlc  violates:YlosGenIdentity     # CR-034 pre-fix ("addr", k = 2): mutant of HEAP_072
+M5  M5-tenuring  MC  MC_deep_boundary_k2_lb.cfg          deep   tlc  violates:NoDangling          # CR-037 (CR-034's shape on lb_bodies; open)
 
 # M6: helper pool, gangs, fork and exit (plans/threaded-gc-tla-M6-lifecycle.md)
 # M6a HelperPool.tla (the pool, its atfork handlers, thread_mutex_); M6b Gangs.tla (background

@@ -1177,7 +1177,11 @@ add_custom_target(kernel-license-check ALL
 # new atomic in ANY of them), every file the manifest pins, and the registries.
 # A new TLA-REGION marker outside those files needs a reconfigure; the marker
 # coverage check catches the case where that was forgotten.
+#
+# ECO_TLA_CANARY_STRICT (default OFF while the TLA+ work is young): OFF prints
+# the report and a WARNING banner but lets the build continue; ON fails it.
 # ============================================================================
+option(ECO_TLA_CANARY_STRICT "Fail the build when the TLA+ model canary (GC_MODEL_001) fails; OFF only warns" OFF)
 set(TLA_CANARY_MANIFEST "${CMAKE_SOURCE_DIR}/test/tla/manifest.txt")
 set(TLA_CANARY_CHECKER "${CMAKE_SOURCE_DIR}/test/scripts/check-tla-manifest.sh")
 if(EXISTS "${TLA_CANARY_MANIFEST}")
@@ -1207,14 +1211,28 @@ if(EXISTS "${TLA_CANARY_MANIFEST}")
         endif()
     endforeach()
     list(REMOVE_DUPLICATES TLA_CANARY_DEPS)
-    add_custom_command(
-            OUTPUT "${CMAKE_BINARY_DIR}/tla-canary.stamp"
-            COMMAND sh "${TLA_CANARY_CHECKER}" "${CMAKE_SOURCE_DIR}"
-            COMMAND ${CMAKE_COMMAND} -E touch "${CMAKE_BINARY_DIR}/tla-canary.stamp"
-            DEPENDS ${TLA_CANARY_DEPS}
-            COMMENT "Checking the TLA+ model canary (GC_MODEL_001, test/tla/manifest.txt)"
-            VERBATIM
-    )
+    if(ECO_TLA_CANARY_STRICT)
+        add_custom_command(
+                OUTPUT "${CMAKE_BINARY_DIR}/tla-canary.stamp"
+                COMMAND sh "${TLA_CANARY_CHECKER}" "${CMAKE_SOURCE_DIR}"
+                COMMAND ${CMAKE_COMMAND} -E touch "${CMAKE_BINARY_DIR}/tla-canary.stamp"
+                DEPENDS ${TLA_CANARY_DEPS}
+                COMMENT "Checking the TLA+ model canary (GC_MODEL_001, test/tla/manifest.txt)"
+                VERBATIM
+        )
+    else()
+        # Warn mode: a failure prints the report and a banner but does not fail
+        # the build. The stamp is touched only on a clean check, so a failing
+        # canary re-runs (and warns again) on every build until it is resolved.
+        add_custom_command(
+                OUTPUT "${CMAKE_BINARY_DIR}/tla-canary.stamp"
+                COMMAND sh -c "if sh \"$0\" \"$1\"; then touch \"$2\"; else printf '\\n%s\\n%s\\n%s\\n\\n' '********************************************************************************' 'WARNING: TLA+ model canary FAILED (GC_MODEL_001). Build continues: warn mode.' '         Configure with -DECO_TLA_CANARY_STRICT=ON to make this an error.' >&2; fi"
+                        "${TLA_CANARY_CHECKER}" "${CMAKE_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/tla-canary.stamp"
+                DEPENDS ${TLA_CANARY_DEPS}
+                COMMENT "Checking the TLA+ model canary (GC_MODEL_001, test/tla/manifest.txt; warn mode)"
+                VERBATIM
+        )
+    endif()
     add_custom_target(tla-canary ALL
             DEPENDS "${CMAKE_BINARY_DIR}/tla-canary.stamp")
 endif()

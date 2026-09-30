@@ -7538,6 +7538,7 @@ void OldGenSpace::retireIndexEntry(LargeBodyId id) {
     large_bodies_[id].body_base = nullptr;
 }
 
+// TLA-REGION(OGS.registerLargeBody) begin
 OldGenSpace::LargeBodyId OldGenSpace::registerLargeBody(
         void* body, size_t cell_size, bool is_large, bool minor_color, uint8_t kind) {
     LargeBodyId id;
@@ -7553,6 +7554,7 @@ OldGenSpace::LargeBodyId OldGenSpace::registerLargeBody(
     nursery_owned_bodies_.push_back(id);
     return id;
 }
+// TLA-REGION(OGS.registerLargeBody) end
 
 void OldGenSpace::markLargeBodySeen(HPointer body_hp, bool minor_color) {
     if (body_hp.ptr_ind != 0) return;

@@ -315,3 +315,37 @@ name this model (6 census, 3 file, 5 grep, 17 region); the list is in MAPPING.md
 baseline: the pinned code is the code this model was checked against today (after the trace hooks,
 wave 3's fixes and the `TLA-REGION` markers landed). From now on, a pin that fires needs an entry
 here quoting the new hash prefix before `check-tla-manifest.sh --update` accepts it.
+
+
+## 2026-09-30 — canary: HEAP_071 and HEAP_072 merged (GC_MODEL_001)
+
+New hash prefixes: 3c350fb64616 (`NR.minorGCRegion`).
+
+The canary fired after the SG4 and LB3 changes (gc-opt-loop rows, 2026-09-29) were merged onto the
+TLA+ tree, which had been pinned from `keep-TA2`. The two changes are the two fixes of `2-gc-bugs.md`.
+Snapshots `keep-TA2` and `keep-LB3` show the exact diff: reversing the edits below reproduces every
+old manifest hash, and the current `NurseryRegion.cpp` is `keep-LB3`'s apart from the markers.
+
+- **Bug 1, HEAP_071** (SG4): no header-only heap object; the default shadow granule is 16 B.
+  `copyClaimedR` (`NR:406-412`): the "survivor under 16 B" abort also fires in validate builds at any
+  granule, and reports the tag. This is a validate-only check before the copy, not a protocol step.
+- **Bug 2, CR-034 → HEAP_072** (LB3): a region generation's YLOS member is an incarnation, not an
+  address. `reachYoungLargeR` stamps `LargeBodyMeta::join_minor = R.minor_seq` inside the existing
+  `ylos_mu_` section (`NR:538`). The hand-over and ageing preps of `minorGCRegion` accept an entry
+  only through `youngLargeMember(y, X.gen_minor)` (`NR:758`, `:780`), and so does the validate-only
+  P1 census (`NurserySpace.cpp:2830`, which is why grep H8 lost that line).
+
+Neither fix adds an atomic, a lock, a memory order or a shared location (the censuses did not
+fire). The rest of both changes is not pinned: `youngLargeMember` and the `join_minor` field
+(`OldGenSpace.hpp`), a validate-only HEAP_051 check at the end of `markLiveMergeAll`, the empty-Bytes
+constant in the kernels and heap helpers, and the defaults (`shadow_granule_log2` 4,
+`major_gc_live_budget` 3.0).
+
+**Verdict: no model change.** The edits are in the hand-over prep, which runs in the pause before
+any worker starts. The slice, episode and help control that M2 describes is unchanged.
+
+Runs (2026-09-30, this tree): `run_models.py --tier quick`, 3 jobs × 4 workers: M5 64/64 in 159 s,
+M1 22/22 in 63 s, M2 33/33 in 57 s, M3 12/12 in 8 s, all as expected. M5 deep rows `--config boundary`,
+`ylos_stamp_k2` and `ylos_drop_k2`, one row at a time, 8 workers: 11/11 as expected in 1,173 s, with
+state counts identical to the entries of 2026-09-29. `tla-trace` (harnesses rebuilt on this tree):
+135/135 as expected in 140 s.

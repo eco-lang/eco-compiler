@@ -58,6 +58,7 @@ region  6ce3b46ceefb94fafc3b8f99e087e3fa744402bf7478fd525a472a9a9d908ea1  runtim
 region  974f316fb9b92b4d313333d3740f8b7457cdcb3d8f24f907a733e28e95fe3a8c  runtime/src/allocator/OldGenSpace.cpp  OGS.sweepNurseryLargeBodies  M1,M5,M8
 region  a0ec1dba41eb9052707afd62b49546f10cadd7057076b7fef5910bc5208cd070  runtime/src/allocator/OldGenSpace.cpp  OGS.freeLargeBodyCell  M1,M8
 region  3a78ea82be60bb50467f559e42eb04f0d176673aa2984f9ebfb9a6ac693f879b  runtime/src/allocator/OldGenSpace.cpp  OGS.promoteYoungLarge  M1,M3,M5,M8
+region  4a6f86eb1a52868795d36c48894a07de058ce720c4573528c173d5383b893d15  runtime/src/allocator/OldGenSpace.cpp  OGS.registerLargeBody  M3,M5,M8
 region  1e74aaf9f0af8ad81b34d272f49a6ea7b16ef0779853bf69e5ac051f57fca45f  runtime/src/allocator/OldGenSpace.cpp  OGS.ensureGang  M6
 region  249d2c3046aec31cab85efff72b575cf954e7683f738a7b2e0469b7881e1507e  runtime/src/allocator/OldGenSpace.cpp  OGS.resolveMarkThreads  M6
 region  1147253a3dbba06d003f851bdff739fd6be5168ec3dce9435c6208240d2971ce  runtime/src/allocator/OldGenSpace.cpp  OGS.resolveMinorThreads  M4,M6
@@ -110,6 +111,8 @@ region  58b9330928802f03b1d080d53ab1f1c3d2e244254c63dc8de8ee8720564a403d  runtim
 region  d505b1603b3a611537c41e0869c0c170f4b9622c6c407fc2ec091269cd0313b4  runtime/src/allocator/OldGenSpace.hpp  OGH.publishGrey  M2,W2
 region  8340d58c0cbb78d9672cd7599b43e4b52cd5fb91c00a35d34903a2fd9e42bb68  runtime/src/allocator/OldGenSpace.hpp  OGH.hasPendingSweepWork  M4,M8
 region  2f95fd2abbfd9f83fbaa37323e7d37487e13fe888f653407f4d8e5a35e1476e8  runtime/src/allocator/OldGenSpace.hpp  OGH.youngLargeMeta  M3,M5,M8
+region  c816b3045138be0c33abcca98058f84f43aed287d5e38e865d995f825fe8d7bd  runtime/src/allocator/OldGenSpace.hpp  OGH.youngLargeMember  M5
+region  30b92a7d1152ad984c82e5b0b7c073df99ad6168661ac037ed072ec253f30f09  runtime/src/allocator/OldGenSpace.hpp  OGH.LargeBodyMeta  M5,M8
 region  6d6b8a1386d1d6189cdb38aca2dfd6ddece69cd1acd61499effdac925ced2f6d  runtime/src/allocator/OldGenTenure.cpp  OGT.grantTenure  M4,M5
 region  ff5a5c22afef0e396f0084d662b8af2021452f2fc11298d8e9d94eaea30564d9  runtime/src/allocator/OldGenTenure.cpp  OGT.grantAllocate  M1,M4,M5
 region  bb6ee6083acc18aded120238c4f40e2959bbc0b34da65eb2df5c11e7a2a4f1c9  runtime/src/allocator/OldGenTenure.cpp  OGT.grantAllocateShared  M1,M4,M5,W3
@@ -132,12 +135,12 @@ region  5aef887f9e590c17bc8e3da73649994e1d58478de16fe9bdbebcd3f0907d32bd  runtim
 region  da28facd24d58e94fa954afa8d89d931d287a2ddb1f79288243ec506c1391921  runtime/src/allocator/NurseryParallel.cpp  NP.minorGCParallel  M2,M3
 region  a85e18fdce4ac8c8ae3f9a1b497877566edbd068236fbd4025034183d9d391d3  runtime/src/allocator/NurseryRegion.cpp  NR.RegionEnv  M2,M3
 region  73761e70e69c09f96e34d4c230e75ba46f2447453e8e2a48880e3d41e4a4baf3  runtime/src/allocator/NurseryRegion.cpp  NR.resolveRetire  M3,M5
-region  975b3e37a9b161390a2a64b8a96e4241209d3fba90b1a96b282ce2e94372bea1  runtime/src/allocator/NurseryRegion.cpp  NR.copyClaimedR  M3,M5
+region  325187bc686f764b75abf92262d9b4d4728f7d3b9f849f81d82e322d73d87a4f  runtime/src/allocator/NurseryRegion.cpp  NR.copyClaimedR  M3,M5
 region  9e490454ef62fb1ed6eeb411ccf7e8e825aaff148fca9156851cd1a9fa87515d  runtime/src/allocator/NurseryRegion.cpp  NR.evacuateR  M3,M5
-region  ffed126d04779d4614c8ba3842871208ea3af13b520b6dbc72290707543deace  runtime/src/allocator/NurseryRegion.cpp  NR.reachYoungLargeR  M3,M5
+region  1dcbb38f752b2c8995ace38ab40fa8b2b12ef4632ededd9045712723770cf6ad  runtime/src/allocator/NurseryRegion.cpp  NR.reachYoungLargeR  M3,M5
 region  1d44d05402bbce9b096a7ca9475309af9c926b963d2e0eea1941dcfc2226fc9d  runtime/src/allocator/NurseryRegion.cpp  NR.spineRunR  M3
 region  3e0b28239c0f3cd0d1ac6556313ad048a85d7ec2fdb8b2ac7d422f0cf2051b48  runtime/src/allocator/NurseryRegion.cpp  NR.scanEntryR  M3
-region  492809148628b1c1a1c6b74302e9546d121e057af878698131832ddf4cc6c69c  runtime/src/allocator/NurseryRegion.cpp  NR.minorGCRegion  M1,M2,M3,M5
+region  3c350fb64616fbc2276d540f1e5ca4cc0c9da5103bccef03c623e8fb31b66521  runtime/src/allocator/NurseryRegion.cpp  NR.minorGCRegion  M1,M2,M3,M5
 region  6107464febf34fed7d19d433b74ff200ae0f436bb50b1d9a0083b7cff7effd9e  runtime/src/allocator/NurseryRegion.cpp  NR.majorRedirect  M5
 region  a2130be78136f139d553eae6a56cc91fa5409e80d3b410ab02f7afb0b06b111b  runtime/src/allocator/NurseryTenure.cpp  NT.TenureHeapEnv  M5
 region  3f527ab4fc1d3fc69965867703eb5e98cf0523204491ca856994266ce276151f  runtime/src/allocator/NurseryTenure.cpp  NT.AgeParEnv  M2,M5
@@ -201,7 +204,7 @@ grep    9262f939364919042dcc2aade68af705f2e68d8b81d836f36518cbd8004cd4ad  -  H4 
 grep    e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  -  H5  M1,W4
 grep    ea6d30e59224f1c32dbc95737cc06d50548490f143e004b9becee9dfea458b96  -  H6  M1
 grep    79a2cce760d1cafb05c7c63a37a5e120c696bcc045fe2c37c2081abf7692027f  -  H7  M1
-grep    2051645685a3e1774d93676fc8dac0287d755a3b4bae588d96a151578ecac74f  -  H8  M1
+grep    dbff5f1887fb64cde300382f9fef7defecc3bf059b4ab6aadd6dbc34926ec4a0  -  H8  M1
 grep    389dabaeea32671ffa4a1c37a605bab637943f40e40817670a41fe7304dc3fc0  -  H9  M1,M4
 grep    454a34d7178bcbb6ba5cd34b8d6e2d85d5d22b140c5d87c21b8fcdea49710bad  -  H10  M1,M2
 grep    25fe9ca8efd54cfcac934caac5e3702262df84e8a37b1ce98378d2a43b208e73  -  H11  M2
@@ -221,7 +224,7 @@ grep    aeaea3c86caec733d0c5dfd8365998d7c0b626781f6f3806f5f84302ad73bf12  -  P6.
 grep    bd401654da17e5e99a6a75091d0cb02914d29c39186f11b15f00928198b1bc13  -  T1  M5
 grep    368f1e89b74d8fe6d030e4b066a49180a9b92e2b61f0ef03089ce0773cdb308e  -  T2  M5
 grep    011996dd81fb8998edaf6040aa8da4d27b486deb061bc76625641af1fa246387  -  T3  M5
-grep    937ac5efbabd26829261ffaf3962dde7de98ab564942c81ada4e0584ed97dfb2  -  T4  M5
+grep    b463014eb99953cb3f5ffd72c53050ca56c5826edaa8ceb9ac6285d86f6fae54  -  T4  M5
 grep    73962c18b34cab42e546604d0087896cc580ec710773f29abf26bb5b79ba1184  -  T5  M4,M5
 grep    4caf2b41c9fd1611d4fd7119f99500d6a3df38430ddb1a0f51228ca0a029aeb5  -  T9  M5
 grep    c5ecaa4eee49eb6b3e01f91264c81c8ea3e082cf3eb0a1c5f7a81597acfd74ea  -  P6.M16  M4

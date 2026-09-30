@@ -284,6 +284,7 @@ AUDIT.md entry quoting the new hash prefix (`test/tla/README.md`, "The canary").
 | file | `test/gc-helper-tsan/minor_harness.cpp` | `-` |
 | region | `runtime/src/allocator/OldGenSpace.cpp` | `OGS.promoteYoungLarge` |
 | region | `runtime/src/allocator/OldGenSpace.hpp` | `OGH.youngLargeMeta` |
+| region | `runtime/src/allocator/OldGenSpace.cpp` | `OGS.registerLargeBody` |
 | region | `runtime/src/allocator/NurseryParallel.cpp` | `NP.MinorEnv` |
 | region | `runtime/src/allocator/NurseryParallel.cpp` | `NP.copyClaimed` |
 | region | `runtime/src/allocator/NurseryParallel.cpp` | `NP.evacuateP` |

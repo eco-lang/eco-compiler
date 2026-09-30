@@ -1187,6 +1187,7 @@ private:
 public:
     using LargeBodyId = uint32_t;
 
+    // TLA-REGION(OGH.LargeBodyMeta) begin
     struct LargeBodyMeta {
         void*  body_base;   // Raw pointer to the body's Header (Tag_String / Tag_ByteBuffer).
         size_t cell_size;   // Total cell footprint in bytes (includes Header).
@@ -1200,6 +1201,7 @@ public:
         // the two incarnations apart (youngLargeMember).
         uint64_t join_minor = 0;
     };
+    // TLA-REGION(OGH.LargeBodyMeta) end
 
     // ---- threaded-gc-04b HEAP_062: the young large-object space (YLOS) ----
     // A large pointer-bearing object too big for the nursery is allocated in
@@ -1235,10 +1237,12 @@ public:
     // generation filled at `gen_minor` (HEAP_072), else nullptr: a member
     // freed by a major is either gone from the index or its cell now holds
     // a newer YLOS object (unjoined, or joined at a later minor).
+    // TLA-REGION(OGH.youngLargeMember) begin
     LargeBodyMeta* youngLargeMember(const void* p, uint64_t gen_minor) {
         LargeBodyMeta* m = youngLargeMeta(p);
         return (m != nullptr && m->join_minor == gen_minor) ? m : nullptr;
     }
+    // TLA-REGION(OGH.youngLargeMember) end
     // Promotes a YLOS object in place: drops its entry (it is now an ordinary
     // old object governed by the major GC) and resets its age.
     void promoteYoungLarge(void* obj);

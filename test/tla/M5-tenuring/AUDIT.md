@@ -738,3 +738,67 @@ should get pins naming M5.
 `TraceTenuring.tla` (`TJob`), new `MC_ylos_aba*.cfg`, `MC_k2_ylos_aba.cfg`, `MC_lb_aba.cfg`,
 `MC_k2_ylos_walk.cfg`, `MC_cycle_major_t0grey.cfg`, `MC_deep_boundary*.cfg`, `controls/*.cfg`;
 MAPPING.md (§1-§3, §5, §6, new §9); `test/tla/models.txt` (M5's rows); `test/tla/README.md` (layout).
+
+
+## 2026-09-30 — canary: HEAP_071 and HEAP_072 merged (GC_MODEL_001)
+
+New hash prefixes: 325187bc686f (`NR.copyClaimedR`), 1dcbb38f752b (`NR.reachYoungLargeR`), 3c350fb64616 (`NR.minorGCRegion`), b463014eb999 (grep T4).
+
+The canary fired after the SG4 and LB3 changes (gc-opt-loop rows, 2026-09-29) were merged onto the
+TLA+ tree, which had been pinned from `keep-TA2`. The two changes are the two fixes of `2-gc-bugs.md`.
+Snapshots `keep-TA2` and `keep-LB3` show the exact diff: reversing the edits below reproduces every
+old manifest hash, and the current `NurseryRegion.cpp` is `keep-LB3`'s apart from the markers.
+
+- **Bug 1, HEAP_071** (SG4): no header-only heap object; the default shadow granule is 16 B.
+  `copyClaimedR` (`NR:406-412`): the "survivor under 16 B" abort also fires in validate builds at any
+  granule, and reports the tag. This is a validate-only check before the copy, not a protocol step.
+- **Bug 2, CR-034 → HEAP_072** (LB3): a region generation's YLOS member is an incarnation, not an
+  address. `reachYoungLargeR` stamps `LargeBodyMeta::join_minor = R.minor_seq` inside the existing
+  `ylos_mu_` section (`NR:538`). The hand-over and ageing preps of `minorGCRegion` accept an entry
+  only through `youngLargeMember(y, X.gen_minor)` (`NR:758`, `:780`), and so does the validate-only
+  P1 census (`NurserySpace.cpp:2830`, which is why grep H8 lost that line).
+
+Neither fix adds an atomic, a lock, a memory order or a shared location (the censuses did not
+fire). The rest of both changes is not pinned: `youngLargeMember` and the `join_minor` field
+(`OldGenSpace.hpp`), a validate-only HEAP_051 check at the end of `markLiveMergeAll`, the empty-Bytes
+constant in the kernels and heap helpers, and the defaults (`shadow_granule_log2` 4,
+`major_gc_live_budget` 3.0).
+
+**Verdict: model updated (CR-034 is fixed in the code).** The pre-fix prep, `youngLargeMeta(y)` alone,
+was `YlosGen = "code"`. The fix is the existing `"stamp"` control ("a never-reused stamp never matches
+a stale entry"), for two reasons checked in the code:
+- `registerLargeBody` builds a fresh `LargeBodyMeta{...}` even for a recycled id (`OGS:7547`), so a new
+  occupant starts with `join_minor = 0`. `"lbid"`'s failure (a recycled id taken for a stamp) does not
+  carry over.
+- `++R.minor_seq` (`NR:716`) runs before any stamp or `gen_minor` is written, so every generation
+  number is at least 1 and an unjoined occupant never matches. An occupant registered after the major
+  that freed the member joins at a later minor, if it joins at all.
+
+Changes:
+- `Tenuring.tla`: `"code"` renamed `"addr"` (the pre-HEAP_072 code, kept as CR-034's regression mutant);
+  `"stamp"` documented as the code (the `YlosGen` comment, `ASSUME`, `PrepOK` comments). The
+  translation was regenerated (`pcal -nocfg`); it differs by one blank line only.
+- Configs: `MC_deep_boundary_cr017` and `_k2_cr017` ("the code") now use `"stamp"`, and still violate
+  `T0GreyAllocated` (CR-017 is open). `MC_ylos_aba`, `_heap005`, `MC_k2_ylos_aba`,
+  `MC_deep_boundary_cr034` and `_k2_cr034` use `"addr"` with unchanged expectations, as mutants.
+  `controls/ylos_stamp` and `_k2` are now the CR-034 rows. Headers updated.
+- `models.txt` comments; `MAPPING.md`: `MN_Begin`, the reach row, the prep-checks row, `LbKey`'s row,
+  `YlosGenIdentity` (enforced by construction since HEAP_072), A6 (the `"addr"` rows are
+  `YlosGenIdentity`'s mutants), §9's `ylos_gen`, `hand_ylos`, `age_ylos` and P1-census rows, and the
+  shadow-granule row, which now cites HEAP_071 (the 16-byte granule needs every survivor >= 16 B).
+- **CR-037 (`lb_bodies`) is not fixed**: `markLargeBodySeen` still colours by address.
+  `MC_lb_aba` and `MC_deep_boundary_k2_lb` still violate `NoDangling`. CR-017 and CR-038 are open too.
+- T4 (bug 1): the shadow protocol is unchanged; the edit is a validate-only abort before the copy.
+
+Coverage gap (for the canary, not the model): `youngLargeMember`, the `join_minor` field and the reset
+in `registerLargeBody` sit outside every pin, and H8's regex does not match `youngLargeMember`. The
+fix depends on all three. **Closed the same day**: new region pins `OGH.youngLargeMember` (M5),
+`OGH.LargeBodyMeta` (M5, M8; the `join_minor = 0` default) and `OGS.registerLargeBody` (M3, M5, M8),
+added with `--update` (228 pins). Negative control: `join_minor = 1` and `>=` in `youngLargeMember`,
+in a copy of the tree, fire `OGH.LargeBodyMeta` and `OGH.youngLargeMember`.
+
+Runs (2026-09-30, this tree): `run_models.py --tier quick`, 3 jobs × 4 workers: M5 64/64 in 159 s,
+M1 22/22 in 63 s, M2 33/33 in 57 s, M3 12/12 in 8 s, all as expected. M5 deep rows `--config boundary`,
+`ylos_stamp_k2` and `ylos_drop_k2`, one row at a time, 8 workers: 11/11 as expected in 1,173 s, with
+state counts identical to the entries of 2026-09-29. `tla-trace` (harnesses rebuilt on this tree):
+135/135 as expected in 140 s.

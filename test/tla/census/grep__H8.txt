@@ -7,7 +7,6 @@ runtime/src/allocator/NurserySpace.cpp: if (!oldgen.isYoungLarge(e.obj)) continu
 runtime/src/allocator/NurserySpace.cpp: if (!ylos_valid || !oldgen.isYoungLarge(e.obj)) continue;
 runtime/src/allocator/NurserySpace.cpp: if (__builtin_expect(oldgen.mayBeYoungLarge(obj), 0))
 runtime/src/allocator/NurserySpace.cpp: if (contains(child) || oldgen.isYoungLarge(child)) {
-runtime/src/allocator/NurserySpace.cpp: if (oldgen.isYoungLarge(y)) rec(static_cast<char*>(y), getObjectSize(y));
 runtime/src/allocator/NurserySpace.cpp: if (oldgen.mayBeYoungLarge(obj))
 runtime/src/allocator/NurseryTenure.cpp: return R.contains(c) || oldgen.isYoungLarge(c);
 runtime/src/allocator/OldGenSpace.cpp: assert((!hdr->builder || isYoungLarge(obj)) &&

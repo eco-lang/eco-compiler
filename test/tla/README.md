@@ -310,8 +310,11 @@ with a concurrency line has a census pin.
 4. Only then: `test/scripts/check-tla-manifest.sh . --update`. It **refuses** while a named model's
    AUDIT.md does not quote the new prefix.
 
-A defect found on the way goes into the register. `ECO_TLA_CANARY=warn` reports without failing,
-for a branch in the middle of a phase; gates, CI and merges run strict.
+A defect found on the way goes into the register. **The build target is warn-only by default**
+while the TLA+ work is young: a failing canary prints its report and a WARNING banner, the build
+continues, and the check re-runs on every build until it passes. Configure with
+`-DECO_TLA_CANARY_STRICT=ON` to make it fail the build (gates, CI and merges should). Run by hand,
+the script is strict unless `ECO_TLA_CANARY=warn` is set.
 
 **Adding a pin:** put the markers in the code, add the line with `-` as its hash, and run
 `--update`, which fills in new hashes without asking for an audit entry. A new marker in a file

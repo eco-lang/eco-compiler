@@ -210,6 +210,8 @@ AUDIT.md entry quoting the new hash prefix (`test/tla/README.md`, "The canary").
 | region | `runtime/src/allocator/OldGenSpace.cpp` | `OGS.blockIdFor` |
 | region | `runtime/src/allocator/OldGenSpace.hpp` | `OGH.hasPendingSweepWork` |
 | region | `runtime/src/allocator/OldGenSpace.hpp` | `OGH.youngLargeMeta` |
+| region | `runtime/src/allocator/OldGenSpace.hpp` | `OGH.LargeBodyMeta` |
+| region | `runtime/src/allocator/OldGenSpace.cpp` | `OGS.registerLargeBody` |
 | region | `runtime/src/allocator/ThreadLocalHeap.cpp` | `TLH.minorGC` |
 | region | `runtime/src/allocator/ThreadLocalHeap.cpp` | `TLH.majorGC` |
 | region | `runtime/src/allocator/Allocator.cpp` | `AL.acquireOldGenBlock` |

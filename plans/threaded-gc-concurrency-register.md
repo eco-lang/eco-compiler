@@ -114,7 +114,7 @@ has its evidence and history below; CR-025 to CR-038 are new since the model pla
 | CR-017 | Region mode: the t0 young walk greys old cells that a STW major freed, through dead hand-over objects (at k = 2 also through dead ageing extents) | Reproduced (code, TLC); Guarded; S1 chain suspected | S1 (suspected) | M1, M5, M4 |
 | CR-018 | After the sweep, mixed-block allocations are not counted in `live_bytes`, so the empty-block flip can take a live block (**serial**, not a concurrency defect) | Reproduced (code); Guarded (xfail test) | S1 | — (unit test) |
 | CR-033 | `allocateFromBagPage`'s fresh-page carve leaves an 8-byte tail without a header (**serial**) | Reproduced (TLC); Guarded (model) | S1 in legacy allocation; benign in bitmap mode (default) | M8 |
-| CR-034 | Region mode: a YLOS address reused after a STW major is taken for a hand-over member (ABA); its slots dangle | Reproduced (code; TLC three ways, k = 1 and 2); Guarded (model) | S1 | M5, M3 |
+| CR-034 | Region mode: a YLOS address reused after a STW major is taken for a hand-over member (ABA); its slots dangle | Fixed (HEAP_072, `join_minor` stamp); Guarded (model + unit test) | S1 | M5, M3 |
 | CR-035 | The empty-block flip keeps stale large-body index entries, so a live body at the same address can be freed (**serial**) | Reproduced (TLC); Guarded (model) | S1 | M8, M4 |
 | CR-037 | Region mode: the hand-over's `lb_bodies` colouring by address hides a new YLOS at a reused address from the minor | Reproduced (TLC); Guarded (model) | S1 | M5 |
 | CR-001 | `gc_phase_` written under `promo_mu_`, read unlocked by other promotion workers; the allocate-black/accounting decision moved from pop to finalize | Reproduced (TLC, GenMC, TSan); Guarded | S2 + S1 | M4, W3 |
@@ -1666,15 +1666,15 @@ History:
 
 | | |
 |---|---|
-| Status | Reproduced (2026-09-29): in code (a scratch validate build at k = 3.0, 5/5) and in the model (M5, three ways); Guarded at model level by M5's expected-fail rows |
+| Status | Reproduced (2026-09-29): in code (a scratch validate build at k = 3.0, 5/5) and in the model (M5, three ways). **Fixed** (2026-09-29, HEAP_072, gc-opt-loop row LB3; model audit 2026-09-30, M5 AUDIT.md) |
 | Severity | S1: a live old object's slots dangle into a recycled nursery extent (HEAP_005, HEAP_062). Region mode, the default |
 | Found | 2026-09-29, while checking whether lss-payoff's reverted `k = 3.0` failure was CR-017 (it is not) |
 | Where | `NurserySpace::minorGCRegion`'s hand-over prep, `NurseryRegion.cpp:751-753` (`for (void* y : Hx.ylos_gen)`, `if (oldgen.youngLargeMeta(y) == nullptr) continue; // retired by a major in between (dead)`), the same pattern for the ageing extents at `:773`; `region::Extent::ylos_gen` (`NurseryRegions.hpp:79`); a STW major erases the YLOS's index entry but not its `ylos_gen` entry (`OldGenSpace::releaseBlockToAllocator`, reached from `reclaimAllDeadBlocksFromMeta`); `reachYoungLargeR` (`NurseryRegion.cpp` ~:511-518); the merge's in-place promotion (`mergeJob`, `NurseryTenure.cpp` ~:756-769) (tree of 2026-09-29) |
-| Models | M5 (constant `YlosGen = "code"` models `ylos_gen` by address; invariant `YlosGenIdentity`), M3 |
+| Models | M5 (constant `YlosGen`: `"stamp"` = the code since HEAP_072, `"addr"` = the pre-fix code, by address alone; invariant `YlosGenIdentity`), M3 |
 | Invariants | HEAP_005, HEAP_062, HEAP_070; seen as HEAP_044 |
 | Repro | scratch tree `/tmp/k3/` (not in the repo): `MAJOR_GC_LIVE_BUDGET = 3.0`, `-DECO_HEAP_VALIDATE=ON`, `test --filter "E2 in a unit test"` → `OldGenSpace::scanObject` HEAP_044 assert ("live 0-field Tag_Custom") in the third explicit STW major, seed 42, tenure mode 1 (mode 2 hits the same ABA). At 4.5 it passes (3/3): k only changes block placement, which makes the address reuse happen |
-| Guard | M5 `MC_ylos_aba` (`violates:YlosGenIdentity`), `MC_ylos_aba_heap005` (`violates:OldPointsOld`), `MC_k2_ylos_aba` (`violates:NoDangling`); each flips with a fix |
-| Fix | — |
+| Guard | M5 `controls/ylos_stamp`, `ylos_stamp_k2` and the `MC_deep_boundary*` rows (the code, `pass`); the pre-fix code kept as regression mutants: `MC_ylos_aba` (`violates:YlosGenIdentity`), `MC_ylos_aba_heap005` (`violates:OldPointsOld`), `MC_k2_ylos_aba` (`violates:NoDangling`), `MC_deep_boundary_cr034`, `_k2_cr034`; unit test "a new YLOS object in a generation member's freed cell stays young" (`test/allocator/ConcurrentTenureTest.cpp`). the canary: region pins `OGH.youngLargeMember`, `OGH.LargeBodyMeta`, `OGS.registerLargeBody` (2026-09-30) |
+| Fix | HEAP_072: `LargeBodyMeta::join_minor` (`OldGenSpace.hpp`), stamped `= minor_seq` at the first reach (`reachYoungLargeR`, `NurseryRegion.cpp:538`); both preps and the P1 census accept an entry only through `OldGenSpace::youngLargeMember(y, X.gen_minor)` (`NurseryRegion.cpp:758`, `:780`; `NurserySpace.cpp:2830`) (tree of 2026-09-30) |
 
 The chain, from instrumented runs (every step logged with a sequence number):
 1. The mutator allocates YLOS A (an Array) at address X; minor m−1 reaches it, and X joins the

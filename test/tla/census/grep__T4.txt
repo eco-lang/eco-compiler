@@ -5,7 +5,7 @@ runtime/src/allocator/NurseryRegion.cpp: char* d = tw::lookup(R.shadowWord(xi, t
 runtime/src/allocator/NurseryRegion.cpp: const size_t entries = (size_t{1} << R.stride_log2) >> R.shadow_shift;
 runtime/src/allocator/NurseryRegion.cpp: for (unsigned i = 0; i < R.n_surv; ++i) R.shadow[i].ensureCommitted(R.set.capacity >> R.shadow_shift);
 runtime/src/allocator/NurseryRegion.cpp: if (!R.shadow[i].reserve(entries)) regionFatal("shadow reservation failed", nullptr, nullptr, entries);
-runtime/src/allocator/NurseryRegion.cpp: if (R.shadow_shift > 3) regionFatal("a survivor under 16 B with a 16-byte shadow granule", obj, nullptr, size);
+runtime/src/allocator/NurseryRegion.cpp: if (ECO_HEAP_VALIDATE || R.shadow_shift > 3) regionFatal("a survivor under 16 B with a 16-byte shadow granule", obj, nullptr, size, hd.tag);
 runtime/src/allocator/NurseryRegions.hpp: ReservedArray<uint64_t> shadow[region::kMaxSurv];
 runtime/src/allocator/NurseryRegions.hpp: const size_t i = static_cast<size_t>(static_cast<const char*>(obj) - x[xi].base) >> shadow_shift;
 runtime/src/allocator/NurseryRegions.hpp: return shadow[xi].data() + i;
