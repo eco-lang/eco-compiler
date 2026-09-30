@@ -844,8 +844,8 @@ History:
 | Models | M1, W4 |
 | Invariants | HEAP_049, IM5 |
 | Repro | n/a |
-| Guard | the canary's footprint grep H5 (`region_end_ =\|region_base_ =`), which now matches only the setters; GenMC `W4_RECOMPUTE_PLAIN` states the hazard |
-| Fix | `recomputeRegionBounds` (`OldGenSpace.cpp:574-581`) calls `setRegionEnd(new_end)` |
+| Guard | the canary's region pin `OGS.recomputeRegionBounds` (W4): restoring the direct write fails `tla-canary` (checked 2026-09-30). Not the footprint grep H5 (`region_end_ =\|region_base_ =`): it matches nothing now, and it did not match the original line either (two spaces before `=`). GenMC `W4_RECOMPUTE_PLAIN` states the hazard |
+| Fix | `recomputeRegionBounds` (`OldGenSpace.cpp:577-597`, tree of 2026-09-30) calls `setRegionEnd(new_end)` |
 
 Row H5 of the 05c audit relies on every `region_base_`/`region_end_` write going through
 `setRegionBase/End` (relaxed `atomic_ref` stores). `recomputeRegionBounds` calls `setRegionBase`
@@ -864,6 +864,11 @@ History:
   the write through `setRegionEnd`.
 - 2026-09-29 Fixed (wave 3a). Every region-bound write now goes through the setters; the grep
   `region_end_ =|region_base_ =` matches nothing outside them. Unit tests and GenMC (60/60) pass.
+- 2026-09-30 Guard checked by reverting the fix in a copy of the tree to be merged
+  (`/tmp/cr-register/`). Restoring `region_end_  = new_end;` fails `tla-canary`, but only through
+  the region pin `OGS.recomputeRegionBounds`. H5 does not fire: its ERE needs exactly one space
+  before `=`, and the original line has two. So H5 would not have caught this defect.
+  `region_(base|end)_ *=` would match any spacing. Status unchanged.
 
 ### CR-010 — IM14 (slot quiescence) is asserted only at launch
 
@@ -1227,8 +1232,8 @@ History:
 | Models | W4 |
 | Invariants | HEAP_049 |
 | Repro | n/a (no C11 tool reports it: it is not a data race) |
-| Guard | the canary's census and grep pins on the accessors (no C11 tool can report a read/read) |
-| Fix | every plain read of `region_base_`/`region_end_` goes through `regionBase()`/`regionEnd()` (`OldGenSpace.cpp` `ensureBagPageAvailable`, `allocateFromBagPage`, `populateFromBlock`, `allocateLargeBlock`, `adjustCapacityAfterMajorGC`, `releaseBlockToAllocator`, `releaseUnassignedBlockToAllocator`, `allocateForEvacuation`; `OldGenSpace.hpp` `getCommittedBytes`, `resizePageIndexForRegion`; `Allocator.cpp` `ensureOldGenCapacityFor`); owner-word reads use `loadOwnerRelaxed` (`OldGenSpace.hpp:454`) in `assignPageIndexForBlock`, `clearPageIndexForBlock` and the V2 validator |
+| Guard | `tla-canary`, but only partly (checked 2026-09-30; see History). Reverting the whole fix fails it through footprint grep H3 (`[.]primary\|[.]secondary`, every owner-word access), H5 (which happens to match a restored `region_base_ ==` test) and the region pins. A plain read restored alone, on a line without `==` and outside every pinned region, passes: for example `getCommittedBytes` or `resizePageIndexForRegion`. The census does not help, because these lines have no atomic keyword. No C11 tool can report a read/read |
+| Fix | every plain read of `region_base_`/`region_end_` goes through `regionBase()`/`regionEnd()` (`OldGenSpace.cpp` `ensureBagPageAvailable`, `allocateFromBagPage`, `populateFromBlock`, `allocateLargeBlock`, `adjustCapacityAfterMajorGC`, `releaseBlockToAllocator`, `releaseUnassignedBlockToAllocator`, `allocateForEvacuation`; `OldGenSpace.hpp` `getCommittedBytes`, `resizePageIndexForRegion`; `Allocator.cpp` `ensureOldGenCapacityFor`); owner-word reads use `loadOwnerRelaxed` (`OldGenSpace.hpp:458`, tree of 2026-09-30) in `assignPageIndexForBlock`, `clearPageIndexForBlock` and the V2 validator |
 
 C++20 [atomics.ref.generic]/3: while any `atomic_ref` to an object exists, every access to it must
 go through an `atomic_ref`. The single writer reads these words plainly while a background marker
@@ -1243,6 +1248,22 @@ History:
 - 2026-09-29 Fixed (wave 3a), `region_base_` reads included (the same hazard). The disassembly of
   every changed function was compared before and after: no locked instruction or fence was added;
   at most a couple of reload `mov`s differ. Unit tests and GenMC (60/60) pass.
+- 2026-09-30 Guard checked by reverting fix sites in a copy of the tree to be merged
+  (`/tmp/cr-register/`), one site per run:
+  - `tla-canary` fails for `ensureBagPageAvailable` (its region pin and H5), `clearPageIndexForBlock`
+    (H3), `adjustCapacityAfterMajorGC` and `Allocator::ensureOldGenCapacityFor` (both through H5,
+    only because each restored line has a `region_base_ ==` test).
+  - It passes for `getCommittedBytes` and `resizePageIndexForRegion` (`OldGenSpace.hpp`: no pinned
+    region, no `==`).
+  - By the same reading, a restored `> region_end_` test or the capacity line would also pass on its
+    own in `populateFromBlock`, `allocateForEvacuation`, `adjustCapacityAfterMajorGC` and
+    `Allocator::ensureOldGenCapacityFor`.
+  The Guard field above used to claim the census and grep pins covered this. It now says what does.
+  Status stays Fixed: no plain read of `region_base_`/`region_end_` is left outside the accessors,
+  the setters and the constructor.
+  A canary grep row `region_(base|end)_` over `runtime/src/allocator/*.{cpp,hpp}` would guard every
+  site. It would pin 7 lines today: the two member declarations, the constructor's initialiser,
+  and the two accessors and two setters.
 
 ### CR-022 — comments justify promotion chunks as "whole bitmap bytes"; the scans need whole words
 
@@ -1256,7 +1277,7 @@ History:
 | Invariants | HEAP_054, HEAP_067 |
 | Repro | n/a |
 | Guard | M4 `chunk_unit_subword`; GenMC `W3_BYTE_CHUNK` (8-cell chunks race through the scans' word read) |
-| Fix | the comments at `OldGenSpace.hpp:638, 649, 700`, `OldGenTenure.cpp:202`, the 07 plan §10.18 item 1 and its T5 row, and HEAP_054 now say whole 64-bit words |
+| Fix | the comments at `OldGenSpace.hpp:640, 651, 704`, `OldGenTenure.cpp:207` (tree of 2026-09-30), the 07 plan §10.18 item 1 and its T5 row, and HEAP_054 now say whole 64-bit words |
 
 Chunks are 64 cells, so each owns whole 64-bit bitmap words, which is what `nextFreeCell` and
 `nextSetBit` need: they read a word with a plain load. The comments say chunks own "whole bitmap
@@ -1317,7 +1338,7 @@ History:
 | Models | M6 (its exit configuration models the code: registration at construction) |
 | Invariants | — |
 | Repro | n/a |
-| Guard | — |
+| Guard | the canary's whole-file pin on `GCHelperPool.hpp` (M6, M7, `w_pool_done`, `w_running_chain`): any edit to the file, this comment included, fails `tla-canary` until those models are re-audited |
 | Fix | the comment at `GCHelperPool.hpp:249-253` |
 
 The header says `stopAllAtExit` is registered "at the first launch"; the code registers it (and the
@@ -1340,7 +1361,7 @@ History:
 | Invariants | HEAP_058 |
 | Repro | n/a (a statistic) |
 | Guard | `testCR025GangMemberStallInPause` (`build/test/test --filter CR-025`) |
-| Fix | `GCMarkGang::onMemberRun()` (a `thread_local` set by `memberLoop` around the job, `GCHelperPool.hpp:199-206`, `GCHelperPool.cpp:445-447`); `Allocator::callerInPause()` also returns true when it is set (`Allocator.cpp:1208-1214`) |
+| Fix | `GCMarkGang::onMemberRun()` (a `thread_local` set by `memberLoop` around the job, `GCHelperPool.hpp:199-206`, `GCHelperPool.cpp:445-447`); `Allocator::callerInPause()` also returns true when it is set (`Allocator.cpp:1221-1227`, tree of 2026-09-30) |
 
 `tl_heap_` is thread-local and null on `GCMarkGang` threads. When a parallel-minor or pause
 tenure-engine member waits on a helper job under `promo_mu_` (CR-007's routes), `callerInPause()`
@@ -1373,7 +1394,7 @@ History:
 | Invariants | HEAP_058 |
 | Repro | n/a |
 | Guard | GenMC `w_pool_done` (passes on the code; its four mutants, which weaken the `Done` store or the fast-path loads to relaxed, race on the job's payload) |
-| Fix | HEAP_058 and the `GCHelperPool.hpp:11-21` comment now say waits also happen on gang threads under `promo_mu_`, and that the fast path publishes `Done` by release/acquire outside `m_`, citing `w_pool_done` |
+| Fix | HEAP_058 and the `GCHelperPool.hpp:11-24` (tree of 2026-09-30) comment now say waits also happen on gang threads under `promo_mu_`, and that the fast path publishes `Done` by release/acquire outside `m_`, citing `w_pool_done` |
 
 Two claims no longer match the code:
 - HEAP_058 says jobs are "posted and collected only at mutator slow paths". Waits also happen on
@@ -1409,7 +1430,7 @@ History:
 | Invariants | HEAP_054, HEAP_067 |
 | Repro | n/a |
 | Guard | M4's `NoRaceLive` and `NoRacePhase` (they check the accesses the table omits) |
-| Fix | the 06 plan P§3.11 (row M5 at word granularity, row M6's `gc_phase_` rule as it is, new row M16 for `live_bytes`) and the `OldGenSpace.cpp` comment (now at `:1947`) |
+| Fix | the 06 plan P§3.11 (row M5 at word granularity, row M6's `gc_phase_` rule as it is, new row M16 for `live_bytes`) and the `OldGenSpace.cpp` comment in `allocate` (now at `:2011-2020`, tree of 2026-09-30) |
 
 The audit tables are the premises every footprint argument starts from (parent plan rule A3), and
 four statements in and around them are wrong:
@@ -1468,7 +1489,7 @@ History:
 | Invariants | HEAP_051 |
 | Repro | `build-heap-tsan/gc-heap-tsan promo …` (`test/gc-heap-tsan/promo_sweep.cpp`) |
 | Guard | `CR-029: … (bitmap ladder, rung 7)` and `(legacy ladder, step 6)` in `test/allocator/ConcurrencyRegisterTest.cpp` (`build/test/test --filter "CR-029"`): pass on the new code, abort on the old (4/4) |
-| Fix | `OldGenSpace::allocateFromBagPage` (`OldGenSpace.cpp:2477-2505`): the assert is now `requested_size < alloc_buffer_size && (requested_size & 7) == 0`, and the comment lists all five callers and the exact-size carve argument. A test-access wrapper of `ensureOldGenCapacityFor` was added at `Allocator.hpp:605` so a test can exhaust the reservation |
+| Fix | `OldGenSpace::allocateFromBagPage` (`OldGenSpace.cpp:2545-2572`, tree of 2026-09-30): the assert is now `requested_size < alloc_buffer_size && (requested_size & 7) == 0`, and the comment lists all five callers and the exact-size carve argument. A test-access wrapper of `ensureOldGenCapacityFor` was added at `Allocator.hpp:605` so a test can exhaust the reservation |
 
 The ladder's last rungs are: sweep on demand, a virgin block, the bag page, then the panic sweep.
 The likely path: a worker publishes a fresh virgin block, and the other workers' chunk claims empty
