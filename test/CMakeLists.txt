@@ -129,6 +129,7 @@ add_executable(test
         allocator/SliceRepresentationTest.cpp
         allocator/AddressSpaceReservationTest.cpp
         allocator/HPointerLayoutTest.cpp
+        allocator/ConcurrencyRegisterTest.cpp
         kernel/KernelExportsTest.cpp
 )
 
@@ -381,3 +382,7 @@ add_custom_target(run-aot-e2e
         COMMENT "Running AOT E2E tests via eco-boot-2.js + eco-boot-native"
 )
 endif() # NOT WIN32 (mlir-equivalence + aot-e2e-runner)
+
+# Weak-memory companions W1-W5 of the GC's TLA+ models: the genmc-check target
+# (test/genmc/CMakeLists.txt; option ECO_GENMC).
+add_subdirectory(genmc)

@@ -1,0 +1,14 @@
+" promo mutex: acquires %llu, wait %.3f s; drain %.3f s, pre-drain sweep %.3f s, "
+"\tpar_filler_bytes\tpar_mutex_wait_ns\tpar_imbalance_units"
+#include <mutex>
+(unsigned long long)p.promo_mutex_acquires, p.promo_mutex_wait_ns / 1e9,
+addNum(line, r.mutex_wait_ns); addNum(line, r.imbalance_units);
+static std::atomic<uint64_t> next{0};
+std::lock_guard<std::mutex> lock(mu_);
+std::lock_guard<std::mutex> lock(mu_);
+std::lock_guard<std::mutex> lock(mu_);
+std::lock_guard<std::mutex> lock(mu_);
+std::lock_guard<std::mutex> lock(mu_);
+std::lock_guard<std::mutex> lock(mu_);
+std::lock_guard<std::mutex> lock(mu_);
+std::mutex mu_;

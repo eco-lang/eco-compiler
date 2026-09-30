@@ -1,0 +1,38 @@
+runtime/src/allocator/OldGenSpace.cpp: "new", ((static_cast<uint64_t>(cursor_[cls].block.v) + 1) << 32) |
+runtime/src/allocator/OldGenSpace.cpp: "u", cursor_[cls].next_cell / kChunkUnitCells,
+runtime/src/allocator/OldGenSpace.cpp: (cursor_[cls].next_cell / kChunkUnitCells));
+runtime/src/allocator/OldGenSpace.cpp: (cursor_[cls].next_cell / kChunkUnitCells),
+runtime/src/allocator/OldGenSpace.cpp: ? cursor_[b.size_class].pending_live : 0;
+runtime/src/allocator/OldGenSpace.cpp: AllocCursor& c = cursor_[cls];
+runtime/src/allocator/OldGenSpace.cpp: AllocCursor& c = cursor_[cls];
+runtime/src/allocator/OldGenSpace.cpp: AllocCursor& c = cursor_[cls];
+runtime/src/allocator/OldGenSpace.cpp: ECO_M4_TRACE("m4.begin", "cb", classToSize(cls), "blk", cursor_[cls].block.v,
+runtime/src/allocator/OldGenSpace.cpp: assert(!cursor_[cls].block.valid() && "virgin block while a cursor is live");
+runtime/src/allocator/OldGenSpace.cpp: blocks_.info(cursor_[b.size_class].block).alloc_state = kAllocNone;
+runtime/src/allocator/OldGenSpace.cpp: const AllocCursor& c = cursor_[b.size_class];
+runtime/src/allocator/OldGenSpace.cpp: const AllocCursor& c = cursor_[cls];
+runtime/src/allocator/OldGenSpace.cpp: const uint64_t pend = (cursor_[b.size_class].block == id)
+runtime/src/allocator/OldGenSpace.cpp: ctx.shared[cls].w.store(((static_cast<uint64_t>(cursor_[cls].block.v) + 1) << 32) |
+runtime/src/allocator/OldGenSpace.cpp: ctx.w[0].cur[cls] = cursor_[cls];
+runtime/src/allocator/OldGenSpace.cpp: cursor_[b.size_class] = AllocCursor{};
+runtime/src/allocator/OldGenSpace.cpp: cursor_[c] = AllocCursor{};
+runtime/src/allocator/OldGenSpace.cpp: cursor_[c] = AllocCursor{};
+runtime/src/allocator/OldGenSpace.cpp: cursor_[cls] = AllocCursor{};
+runtime/src/allocator/OldGenSpace.cpp: cursor_[cls] = AllocCursor{};
+runtime/src/allocator/OldGenSpace.cpp: cursor_[cls] = AllocCursor{};
+runtime/src/allocator/OldGenSpace.cpp: cursor_[cls] = pw.cur[cls];
+runtime/src/allocator/OldGenSpace.cpp: cursor_[cls].next_cell = 0;
+runtime/src/allocator/OldGenSpace.cpp: cursor_[cls].next_cell = k;
+runtime/src/allocator/OldGenSpace.cpp: for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) cursor_[cls] = ctx.w[0].cur[cls];
+runtime/src/allocator/OldGenSpace.cpp: if (b.alloc_state == kAllocCurrent && cursor_[b.size_class].block != id) {
+runtime/src/allocator/OldGenSpace.cpp: if (b.is_large || b.size_class >= NUM_SIZE_CLASSES || cursor_[b.size_class].block != id) {
+runtime/src/allocator/OldGenSpace.cpp: if (cursor_[b.size_class].block == id) continue;
+runtime/src/allocator/OldGenSpace.cpp: if (cursor_[b.size_class].block.valid())
+runtime/src/allocator/OldGenSpace.cpp: if (cursor_[cls].block == id && k < cursor_[cls].next_cell) {
+runtime/src/allocator/OldGenSpace.cpp: if (cursor_[cls].block == id) {
+runtime/src/allocator/OldGenSpace.cpp: pw.cur[cls] = cursor_[cls];
+runtime/src/allocator/OldGenSpace.cpp: } else if (cursor_[cls].block.valid()) {
+runtime/src/allocator/OldGenSpace.hpp: AllocCursor cursor_[NUM_SIZE_CLASSES];
+runtime/src/allocator/OldGenSpace.hpp: const BlockId b = og.cursor_[cls].block;
+runtime/src/allocator/OldGenSpace.hpp: return og.cursor_[cls].block;
+runtime/src/allocator/OldGenTenure.cpp: if (cursor_[cls].block == id) continue;

@@ -1,0 +1,20 @@
+runtime/src/allocator/HeapHelpers.hpp: Allocator::instance().getCurrentThreadHeap()->getOldGen().isYoungLarge(h)) &&
+runtime/src/allocator/NurseryParallel.cpp: const bool parent_old = !contains(obj) && !par_oldgen_->mayBeYoungLarge(obj);
+runtime/src/allocator/NurseryParallel.cpp: if (__builtin_expect(par_oldgen_->mayBeYoungLarge(obj), 0)) reachYoungLargeP(w, obj, parent_old);
+runtime/src/allocator/NurseryRegion.cpp: if (__builtin_expect(par_oldgen_->mayBeYoungLarge(obj), 0)) reachYoungLargeR(w, rw, obj);
+runtime/src/allocator/NurserySpace.cpp: !oldgen.mayBeYoungLarge(p) || !oldgen.mayBeYoungLarge(p + getObjectSize(obj) - 1)) {
+runtime/src/allocator/NurserySpace.cpp: if (!oldgen.isYoungLarge(e.obj)) continue;
+runtime/src/allocator/NurserySpace.cpp: if (!ylos_valid || !oldgen.isYoungLarge(e.obj)) continue;
+runtime/src/allocator/NurserySpace.cpp: if (__builtin_expect(oldgen.mayBeYoungLarge(obj), 0))
+runtime/src/allocator/NurserySpace.cpp: if (contains(child) || oldgen.isYoungLarge(child)) {
+runtime/src/allocator/NurserySpace.cpp: if (oldgen.isYoungLarge(y)) rec(static_cast<char*>(y), getObjectSize(y));
+runtime/src/allocator/NurserySpace.cpp: if (oldgen.mayBeYoungLarge(obj))
+runtime/src/allocator/NurseryTenure.cpp: return R.contains(c) || oldgen.isYoungLarge(c);
+runtime/src/allocator/OldGenSpace.cpp: assert((!hdr->builder || isYoungLarge(obj)) &&
+runtime/src/allocator/OldGenSpace.cpp: if (!o || !contains(o) || nursery_->contains(o) || isYoungLarge(o)) return;
+runtime/src/allocator/OldGenSpace.cpp: if (mayBeYoungLarge(obj) && isYoungLarge(obj)) return;
+runtime/src/allocator/OldGenSpace.cpp: if (nursery_->contains(obj) || isYoungLarge(obj)) {
+runtime/src/allocator/OldGenSpace.hpp: bool isYoungLarge(const void* p) {
+runtime/src/allocator/OldGenSpace.hpp: bool mayBeYoungLarge(const void* p) const {
+runtime/src/allocator/OldGenSpace.hpp: if (!mayBeYoungLarge(p)) return nullptr;
+runtime/src/allocator/P1Census.cpp: !in_nursery && tlh != nullptr && tlh->getOldGen().isYoungLarge(obj);

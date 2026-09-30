@@ -1,0 +1,3 @@
+# SnapshotLemma, inductive step for the action Handoff (5 objects): from any state satisfying
+# LemmaInv, every Handoff step leads to a state satisfying it (LemmaStep == LemmaInv').
+--cinit=CInit5 --init=IndInit --next=Handoff --inv=LemmaStep --length=1

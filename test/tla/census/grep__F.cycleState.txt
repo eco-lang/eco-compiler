@@ -1,0 +1,8 @@
+runtime/src/allocator/OldGenSpace.cpp: assert(cycle_state_ == CycleState::Marking);
+runtime/src/allocator/OldGenSpace.cpp: assert(cycle_state_ == CycleState::Marking);
+runtime/src/allocator/OldGenSpace.cpp: cycle_state_ = CycleState::HandoffDue;
+runtime/src/allocator/OldGenSpace.cpp: cycle_state_ = CycleState::HandoffDue;
+runtime/src/allocator/OldGenSpace.cpp: cycle_state_ = CycleState::Idle;
+runtime/src/allocator/OldGenSpace.cpp: cycle_state_ = CycleState::Idle;
+runtime/src/allocator/OldGenSpace.cpp: cycle_state_ = CycleState::Marking;
+runtime/src/allocator/OldGenSpace.hpp: CycleState cycle_state_ = CycleState::Idle;

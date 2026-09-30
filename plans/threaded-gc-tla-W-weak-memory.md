@@ -1,6 +1,15 @@
 # Threaded GC: weak-memory companions W1–W5
 
-**Status:** IMPLEMENTATION-READY PLAN (2026-09-28). **Adversarial review on 2026-09-28 against the
+**Progress (2026-09-28, implementation):** §12 steps 1–6 DONE, and step 7 except the canary
+manifest lines and the other models' MAPPING.md A4 tables (both owned elsewhere). GenMC v0.19.0
+(RC11) runs every driver on the **real, unmodified headers**. `genmc-check`: 49/49 rows as expected
+in 22 s; with the two proposed drivers of §10.1 (`w_pool_done`, `w_running_chain`), 60/60. Every as-written driver passes; every mutant is flagged with its named report;
+`w2_idle_before_publish` fails under RC11 and passes under SC (R20); W3c/W3d report the
+CR-002/CR-001 races. The tool facts are in §4.2 step 4. Deviations, GenMC's bugs and traps, every
+counterexample and the register evidence are in `test/genmc/AUDIT.md`. The sketches below are the
+plan as reviewed; the drivers in `test/genmc/` differ where AUDIT.md says so.
+
+**Status (plan):** IMPLEMENTATION-READY PLAN (2026-09-28). **Adversarial review on 2026-09-28 against the
 current tree** (§14): four negative controls that could not fire were fixed, W4's reduction was
 reordered to the code's order, and a coverage census (§10.1) was added. Driver sketches are
 syntax-checked only; no checker has run. Every sketch in §5–§9, and every `-D` variant and mutant
@@ -214,7 +223,7 @@ claims to test, and fails `genmc-check` (parent plan §2 rule A6).
 
 | Tool | What it is | Pro | Con / to verify |
 |---|---|---|---|
-| **GenMC** (first choice) | stateless model checker over LLVM IR for RC11/IMM/SC; exhaustive for bounded programs | explores all executions; reports races and assertion failures with the execution graph | **(spike)** supported LLVM versions (ours is 21; GenMC pins its own); C++ support is partial. To confirm: `std::atomic_ref` (C++20; in clang's IR it is ordinary `load atomic`/`atomicrmw i8`/`cmpxchg` on the plain object, so the question is only whether GenMC's own clang accepts the header); templates; `new`/`delete`, `new[]` of atomics, `std::vector::push_back` (`grow()`'s `retired_`) and its exception paths; **aligned** `operator new` (the deque's `alignas(64)` members; the sketches avoid it with placement new); `calloc`; `llvm.memcpy`/`llvm.memset` next to word and byte accesses (mixed size, §7.6); whether a weak CAS is modelled as strong (safe for safety checks) |
+| **GenMC** (first choice; **chosen, spike passed 2026-09-28**: v0.19.0 on LLVM 19, see §4.2 step 4) | stateless model checker over LLVM IR for RC11/IMM/SC; exhaustive for bounded programs | explores all executions; reports races and assertion failures with the execution graph | **(spike)** supported LLVM versions (ours is 21; GenMC pins its own); C++ support is partial. To confirm: `std::atomic_ref` (C++20; in clang's IR it is ordinary `load atomic`/`atomicrmw i8`/`cmpxchg` on the plain object, so the question is only whether GenMC's own clang accepts the header); templates; `new`/`delete`, `new[]` of atomics, `std::vector::push_back` (`grow()`'s `retired_`) and its exception paths; **aligned** `operator new` (the deque's `alignas(64)` members; the sketches avoid it with placement new); `calloc`; `llvm.memcpy`/`llvm.memset` next to word and byte accesses (mixed size, §7.6); whether a weak CAS is modelled as strong (safe for safety checks) |
 | **C11Tester** | dynamic tester: an instrumenting LLVM pass plus a runtime that controls scheduling and weak-memory reads | handles bigger programs; C++ friendly **(spike)** | random exploration, not exhaustive: it can miss a bad execution, so a pass is weaker evidence; mixed-size and plain-vs-atomic access on one byte **(spike)** |
 | **herd7** (litmus, RC11 `.cat` model) | exhaustive enumeration of hand-written litmus tests | the reference semantics; tiny tests are exact | tests are hand-derived from the code, so drift is only caught by the canary regions (§11). Its C11 model is not known to support mixed-size accesses, so it likely cannot express a byte `fetch_or` against a word read (W3c, W3e), nor, perhaps, one location accessed both plainly and atomically **(spike)**. It cannot run any real header |
 | CDSChecker, Dartagnan | older exhaustive C11 checker / bounded model checker for weak memory | alternatives if the above fail | not evaluated |
@@ -247,6 +256,48 @@ Goal: one working W1 run and one flagged W1 mutant, reproducible in the dev imag
    - the command line, e.g. `genmc --rc11 --check-liveness=false -- -std=c++20 -I... w1_deque.cpp`
      **(spike)**;
    - the time per driver.
+
+   **Facts (2026-09-28; the parent plan §3 row is proposed to the orchestrator, who owns that
+   file):**
+   - **Tool:** GenMC **v0.19.0**, commit `9f6c4c0772d0c42b325681581acc6a0f3eb9b5f7`, RC11. 0.18
+     added the CAS failure order and weak CAS, which `W4_RELAXED_CLAIM_FAIL` and
+     `W5_RELAXED_CLAIM_FAIL` need.
+   - **LLVM:** 19.1.7 from Debian bookworm's own archive (`llvm-toolchain-19`, pinned
+     `1:19.1.7-3~deb12u1`), for GenMC only; LLVM 21 is untouched. GenMC is C++23, so the script
+     builds a temporary GCC 14.4.0 (SHA256-pinned GNU tarball) to compile it and ships GCC 14's
+     `libstdc++.so.6` in `/opt/genmc/lib` (`DT_RPATH`).
+   - **Install:** `docker/install-genmc.sh` (`build` / `runtime` / `smoke`);
+     `docker/genmc.Dockerfile` (image `eco-genmc:0.19.0-llvm19`); the **opt-in** layer
+     `docker/eco-dev-genmc.Dockerfile` (built FROM eco-dev) copies `/opt/genmc` and runs
+     `install-genmc.sh runtime`. eco-dev itself and CI do not include GenMC (2026-09-29: the model
+     checks are local gates, not CI jobs). **This container's `/opt/genmc` was
+     installed by the same committed script** (`install-genmc.sh build`), so the image and this
+     environment match. The smoke test checks a pass and a flagged mutant.
+   - **Headers:** the real headers compile **unchanged**; no shim or transliteration. GenMC's own
+     compile step cannot compile them (its C `pthread.h`/`stdio.h` come first on the include path
+     and break libstdc++'s C++20 `<atomic>`), so `run_drivers.py` compiles each driver to IR
+     with GenMC's clang-19 and the ordinary system headers, and `test/genmc/wdriver.hpp` routes
+     threads, the mutex, assume and assert to GenMC's `__VERIFIER_*` functions.
+   - **Command line:** `clang++-19 -std=c++20 -fno-exceptions -g -fno-discard-value-names -Xclang
+     -disable-O0-optnone -DWDRIVER_GENMC -I<mutants> -I runtime/src/allocator -idirafter
+     /opt/genmc/include/genmc/runtime -S -emit-llvm`, then `genmc -rc11 -disable-estimation
+     -disable-ipr -disable-sr [-disable-spin-assume for W4b and W5] <driver>.ll`.
+   - **Time:** 49 rows in 20–22 s (3 at a time); the slowest are `w1_deque_2thieves` and its paper
+     variant, about 1 s and 1,055 executions each.
+   - **Addresses (step 2):** GenMC heap addresses are `(thread << 32) | offset`, below 2^43;
+     statics have bit 63 set. W5's forwarding targets are heap objects, and its round-trip asserts
+     pass.
+   - **Answers to §13:** Q1 yes (`atomic_ref`, templates, `new[]` through a replacement operator,
+     `std::vector::push_back`). Q2: only overlapping atomics must have one size; a plain word read
+     against a byte `fetch_or` is a race per byte, so no byte-read fallback is needed. Q3/Q7: no;
+     `llvm.x86.sse2.pause` aborts GenMC and `sched_yield`/`nanosleep` are unknown, so the real
+     spin loops cannot run and `w2_real_loop` is not added. Q4: both mutants are flagged, but
+     `W5_RELAXED_CLAIM_FAIL` only with spin-assume off (with the code's `for (;;)` and
+     spin-assume on it passes silently). Q6: addresses fit.
+   - **GenMC bugs worked around** (AUDIT.md "Tool facts"): the assertion text is not printed (the
+     runner reads it from the source line); `memset` to a constant-expression address aborts
+     (W4 uses a byte loop); an undefined external global (`stderr`) crashes it (`wdriver.hpp`
+     defines it).
 5. If GenMC cannot be made to work in a reasonable effort, use **C11Tester** for W1–W5, with a high
    iteration count and a fixed seed list (a pass is then "no violation in N random executions"),
    **plus herd7 litmus tests** for the core of each W (§5.3, §6.3, …). herd7 alone is the last
@@ -1155,8 +1206,8 @@ argument; the census check (§11) fires when a line is added or removed.
 | post-join shadow readers | `NurseryRegion.cpp:225, 361` (`lookup`, acquire), `NurseryTenure.cpp:694-695` (validator, relaxed) | reads after `tenureJoin` | no W beyond W5 (b): the mutex join orders them (M6 LaunchJoin) |
 | indivisibility-only RMWs | ticket pools (`MarkWork.hpp:287-300`, the assist `pool`), to-space top (`MinorWork.hpp:153-168`), builder bottom (`NurseryRegion.cpp:385`), grant chunk claims (`OldGenTenure.cpp:235-249`), 07b age mark words (`NurseryTenure.cpp:209-210`, `acq_rel`, stronger than needed) and reached flags (`:233, 244, 1009`), `live_bytes` (`OldGenSpace.cpp:527, 1034, 1085`) | the models assume only that each RMW is indivisible | no W: SC and C11 agree on RMW atomicity (primer §3.6 item 2). What a winner then writes travels by another edge (a forward word, the deque, the join). `live_bytes` is read by the shrink only after the join |
 | stop and share hints | `SliceControl::stop` (`MarkWork.hpp:245`; set by `stopAndJoin`, `GCHelperPool.cpp:641`, release; cleared before launch, `NurseryTenure.cpp:514`), the exact engine's stop check (`TenureWork.hpp:218`), `share_epoch` (`OldGenSpace.cpp:4538, 4579`; `MarkWork.hpp:425`) | a stop ends a run without `done`; a share makes private work stealable | no W: a stale value only delays the reaction (liveness), and the work left behind is handed over by the join (mutex). A checker of safety cannot show "eventually visible", which C++ only recommends ([atomics.order]/11) |
-| gang and episode hints | `finished_pub_`, `running_` (`GCHelperPool.cpp:593, 602-625`, `GCHelperPool.hpp:258`); `bg_ep_` (plain, mutator-only) | `running()` exact on the mutator; members' writes visible after `join()` | **Partly covered.** Most consumers of member data call `join()` (mutex) first, and `W5_HELP_WITHOUT_JOIN` shows what skipping it costs. One does not: `tenureJoin`'s orphan test (`NurseryTenure.cpp:613-615`) reads the job's state after `running()` (acquire, `GCHelperPool.hpp:258`) returns false, without joining. When a foreign `stopAndJoin` (fork prepare, exit) did the join, the members' writes reach the owner only through the chain member → `m_` → foreign joiner → `running_` release store (`GCHelperPool.cpp:625`) → the owner's acquire load. Proposed (M6 review): a 3-thread reduction `w_running_chain.cpp` (mutant: the `running_` store relaxed → the owner may read a stale job state), used by M5 and M6 |
-| **pool job state** | `HelperJob::state`: post CAS (`GCHelperPool.cpp:154-155`), worker `Running`/`Done` stores (`:214, 219`; Sync mode `:163-165`), `wait()`'s fast path (`:238`), `isDone()`/`isIdle()` (`GCHelperPool.hpp:56-57`), `resetForReuse` (`:59-61`) | a waiter that sees `Done` sees the job's outputs (M7: `failures`) | **Not covered.** The `Done` store is `release` inside `m_`, but `wait()`'s fast path and `isDone()` read it with `acquire` **without** the mutex, so the outputs travel by that pair alone: a message-passing assumption, not "the pool mutex" as M7's A4 row says. Proposed: a 2-thread reduction `w_pool_done.cpp` (worker: write `failures`, store `Done` release under a mutex; waiter: acquire load, read `failures`; mutant: `Done` relaxed → race), added at M7's close-out |
+| gang and episode hints | `finished_pub_`, `running_` (`GCHelperPool.cpp:593, 602-625`, `GCHelperPool.hpp:258`); `bg_ep_` (plain, mutator-only) | `running()` exact on the mutator; members' writes visible after `join()` | **Covered (2026-09-28): `w_running_chain` passes; its three mutants are flagged (test/genmc/AUDIT.md). The orphan test has a second site, the L3 branch at `NurseryTenure.cpp:584-585`.** Before: Most consumers of member data call `join()` (mutex) first, and `W5_HELP_WITHOUT_JOIN` shows what skipping it costs. One does not: `tenureJoin`'s orphan test (`NurseryTenure.cpp:613-615`) reads the job's state after `running()` (acquire, `GCHelperPool.hpp:258`) returns false, without joining. When a foreign `stopAndJoin` (fork prepare, exit) did the join, the members' writes reach the owner only through the chain member → `m_` → foreign joiner → `running_` release store (`GCHelperPool.cpp:625`) → the owner's acquire load. Proposed (M6 review): a 3-thread reduction `w_running_chain.cpp` (mutant: the `running_` store relaxed → the owner may read a stale job state), used by M5 and M6 |
+| **pool job state** | `HelperJob::state`: post CAS (`GCHelperPool.cpp:154-155`), worker `Running`/`Done` stores (`:214, 219`; Sync mode `:163-165`), `wait()`'s fast path (`:238`), `isDone()`/`isIdle()` (`GCHelperPool.hpp:56-57`), `resetForReuse` (`:59-61`) | a waiter that sees `Done` sees the job's outputs (M7: `failures`) | **Covered (2026-09-28): `w_pool_done` passes; its four mutants are flagged; the post half is the mutex (`post`'s CAS order is not needed). The guard of CR-026.** Before: The `Done` store is `release` inside `m_`, but `wait()`'s fast path and `isDone()` read it with `acquire` **without** the mutex, so the outputs travel by that pair alone: a message-passing assumption, not "the pool mutex" as M7's A4 row says. Proposed: a 2-thread reduction `w_pool_done.cpp` (worker: write `failures`, store `Done` release under a mutex; waiter: acquire load, read `failures`; mutant: `Done` relaxed → race), added at M7's close-out |
 | validators and test hooks | `im10_armed_` (`OldGenSpace.cpp:383, 3636, 4136, 4314`), `test_bg_hold_` (`:4407, 4585`), H2 validator reads (`OldGenSpace.hpp:1840, 1847`), TV7 (`NurseryRegion.cpp:255-256`) | none | out of scope |
 | pause-only and single-threaded | deque `reset`, `SliceControl` constructor, shared-word and grant-claim resets (`OldGenSpace.cpp:1395, 1404, 1468-1469`, `OldGenTenure.cpp:80`), `closeLabs` (`MinorWork.hpp:219, 222`), `copy_ptr_` (`NurseryParallel.cpp:777`), `ReservedArray::reserve/release` | none | no concurrent access |
 | relaxed counters a decision reads | `bgConsumedApprox` (`OldGenSpace.cpp:4392`, the running episode's budget: pacing), `sizeApprox`/`markStackSize` (pause) | policy, not safety (parent plan §0 non-goals) | no W |
@@ -1182,8 +1233,8 @@ argument; the census check (§11) fires when a line is added or removed.
     message when it is missing (`-DECO_GENMC=OFF` to leave it undefined).
   - It runs every `drivers.txt` row through `run_drivers.py` (the shape of `test/tla/run_models.py`)
     with a per-driver timeout.
-  - Budget: ≤ 10 minutes total (parent §6.1). It runs at each model's close-out and nightly, not
-    in `check`/`full`.
+  - Budget: ≤ 10 minutes total (parent §6.1). It runs locally at each model's close-out and
+    before a phase flips to default-on, not in `check`/`full` and not in GitHub CI.
 - **Canary** (`test/tla/manifest.txt`, parent §7). W1–W5 appear as "models" in the manifest's
   model column:
   - `file` lines: `MarkWork.hpp` (W1, W2, M2), `MinorWork.hpp` (W3f, W5, M3), `TenureWork.hpp`
@@ -1207,6 +1258,19 @@ argument; the census check (§11) fires when a line is added or removed.
     models.
 
 ## 12. Implementation steps
+
+**Progress (2026-09-28):**
+
+| Step | Status | Where |
+|---|---|---|
+| 1 Spike | DONE: GenMC v0.19.0 / LLVM 19, installed from `docker/install-genmc.sh`; W1 passes, `W1_RELAXED_PUBLISH` and `W1_NO_TAKE_FENCE` (2 thieves) flagged; W5's address asserts pass | §4.2 step 4 |
+| 2 W1 | DONE: as written, paper orders, 1 and 2 thieves pass; 4 mutants flagged; R3 confirmed (the fence mutant passes with one thief) | `w1_deque.cpp` |
+| 3 W2 | DONE: base, `w2_priv`, `w2_reactivate`, `w2_returned_tickets` pass; `w2_idle_before_publish` fails under RC11 with both scans present and passes under SC (R20); 5 mutants flagged. The cross-check against M2's `idle_before_publish` result waits for M2 | `w2_termination.cpp` |
+| 4 W5 | DONE: (a), (b) and the 3-thread variant pass; 4 mutants flagged | `w5_forwarding.cpp` (`W5_CASE`) |
+| 5 W3 | DONE: a, b, e, f pass; W3c (CR-002) and W3d (CR-001) race; 6 mutants flagged. Graphs in AUDIT.md; the register update is the orchestrator's | `w3_markbyte.cpp` |
+| 6 W4, W4b | DONE: both pass (pre-committed and committing); 6 mutants flagged. The canary pins wait for the canary | `w4_publication.cpp`, `w4b_shared_chunk.cpp` |
+| 7b The proposed drivers | DONE (orchestrator's follow-up): `w_pool_done` (CR-026's guard) and `w_running_chain`, 11 rows, all as expected; §10.1's census groups all have a W or a written disposition | `w_pool_done.cpp`, `w_running_chain.cpp` |
+| 7 Wiring | DONE: `drivers.txt`, `run_drivers.py`, `mutate.sh`, `genmc-check` (`test/genmc/CMakeLists.txt`, option `ECO_GENMC`), AUDIT.md. **Not done here:** the manifest lines (the canary is built later) and the MAPPING.md A4 tables of M1–M5/M7 (their owners fill them from the W statuses reported to the orchestrator) | `test/genmc/` |
 
 1. **Step 0, the spike** (§4.2): the GenMC Docker stage, W1 as written, `W1_RELAXED_PUBLISH` and
    `W1_NO_TAKE_FENCE` (on the two-thief variant) flagged, and W5's address-width asserts. Record

@@ -1,0 +1,21 @@
+runtime/src/allocator/NurseryParallel.cpp: if (oldgen.gc_phase_ == GCPhase::Sweeping) {
+runtime/src/allocator/NurseryRegion.cpp: if (oldgen.gc_phase_ == GCPhase::Sweeping) {
+runtime/src/allocator/OldGenSpace.cpp: "scheduleCompaction: sweep must be complete (gc_phase_ == Idle)");
+runtime/src/allocator/OldGenSpace.cpp: (gc_phase_ == GCPhase::Sweeping) &&
+runtime/src/allocator/OldGenSpace.cpp: * and start lazy sweep. Returns with `gc_phase_ == Sweeping` for any
+runtime/src/allocator/OldGenSpace.cpp: assert((gc_phase_ == GCPhase::Sweeping || gc_phase_ == GCPhase::Idle) &&
+runtime/src/allocator/OldGenSpace.cpp: gc_phase_ = GCPhase::Idle;
+runtime/src/allocator/OldGenSpace.cpp: gc_phase_ = GCPhase::Idle;
+runtime/src/allocator/OldGenSpace.cpp: gc_phase_ = GCPhase::Idle;
+runtime/src/allocator/OldGenSpace.cpp: gc_phase_ = GCPhase::Idle;
+runtime/src/allocator/OldGenSpace.cpp: gc_phase_ = GCPhase::Marking;
+runtime/src/allocator/OldGenSpace.cpp: gc_phase_ = GCPhase::Sweeping;
+runtime/src/allocator/OldGenSpace.cpp: if ((gc_phase_ == GCPhase::Sweeping &&
+runtime/src/allocator/OldGenSpace.cpp: if (gc_phase_ == GCPhase::Sweeping) {
+runtime/src/allocator/OldGenSpace.cpp: if (gc_phase_ == GCPhase::Sweeping) {
+runtime/src/allocator/OldGenSpace.cpp: if (per_alloc_sweep && gc_phase_ == GCPhase::Sweeping) {
+runtime/src/allocator/OldGenSpace.cpp: while (gc_phase_ == GCPhase::Sweeping) {
+runtime/src/allocator/OldGenSpace.cpp: while (gc_phase_ == GCPhase::Sweeping) {
+runtime/src/allocator/OldGenSpace.cpp: while (work_done < work_budget && gc_phase_ == GCPhase::Sweeping) {
+runtime/src/allocator/OldGenSpace.hpp: return gc_phase_ == GCPhase::Sweeping && sweep_pending_blocks_ > 0;
+runtime/src/allocator/OldGenSpace.hpp: while (og.gc_phase_ == GCPhase::Sweeping) {

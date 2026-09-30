@@ -348,9 +348,9 @@ public:
 
     // Returns committed capacity of this thread-local old gen (bytes).
     size_t getCommittedBytes() const {
-        return (region_end_ > region_base_)
-                   ? static_cast<size_t>(region_end_ - region_base_)
-                   : 0;
+        char* const base = regionBase();   // CR-021: through atomic_ref
+        char* const end = regionEnd();
+        return (end > base) ? static_cast<size_t>(end - base) : 0;
     }
 
     // Reason `evaluateMajorGCTrigger` fired (or `None` if no trigger is live).
@@ -400,9 +400,12 @@ public:
     }
     // threaded-gc-05c (H5): the region bounds are read by background markers
     // while the mutator extends the region; every write goes through
-    // setRegionBase/setRegionEnd (relaxed atomics: plain moves on x86). During
+    // setRegionBase/setRegionEnd (CR-009) and every read, the owner's own
+    // included, through regionBase/regionEnd (CR-021: [atomics.ref.generic]/3)
+    // -- relaxed atomics, plain moves on x86. During
     // a cycle the region only grows, so a stale value still covers every
     // block that existed at t0.
+    // TLA-REGION(OGH.regionAndOwnerAccessors) begin
     char* regionBase() const {
         return std::atomic_ref<char*>(const_cast<char*&>(region_base_)).load(std::memory_order_relaxed);
     }
@@ -449,6 +452,13 @@ public:
     static uint32_t loadOwner(const uint32_t& w) {
         return std::atomic_ref<uint32_t>(const_cast<uint32_t&>(w)).load(std::memory_order_acquire);
     }
+    // CR-021: the writer's own reads of an owner word. It is the only writer,
+    // so relaxed suffices; while a marker may hold an atomic_ref to the word
+    // ([atomics.ref.generic]/3) the read must still go through one.
+    static uint32_t loadOwnerRelaxed(const uint32_t& w) {
+        return std::atomic_ref<uint32_t>(const_cast<uint32_t&>(w)).load(std::memory_order_relaxed);
+    }
+    // TLA-REGION(OGH.regionAndOwnerAccessors) end
     static constexpr BlockId decodeOwner(uint32_t o) { return BlockId{o - 1}; }
 
 private:
@@ -627,9 +637,10 @@ public:
         // N > 1 (as built, P§10.1): workers share ONE current block per class
         // and claim chunks of it by CAS on shared[cls] = (block id + 1) << 32 |
         // next unit index (0 = no block), a unit being kChunkUnitCells cells.
-        // A unit of 64 cells of any 8-byte-multiple size covers whole bitmap
-        // bytes, so workers never share one; open-block slack is N chunks, not
-        // N blocks.
+        // A unit of 64 cells of any 8-byte-multiple size covers whole 64-bit
+        // bitmap words (not just bytes: the scans read a word at a time,
+        // bitscan::loadWord, CR-022), so workers never share one; open-block
+        // slack is N chunks, not N blocks.
         bool chunked = false;
         // One cache line per class: hot classes are claimed by every worker,
         // and packed words made each claim invalidate its neighbours' line.
@@ -637,13 +648,17 @@ public:
         SharedWord shared[NUM_SIZE_CLASSES];
     };
     // Chunks are counted in units of kChunkUnitCells (64 cells of any
-    // 8-byte-multiple size = whole bitmap bytes). A worker's claim for a class
+    // 8-byte-multiple size = whole 64-bit bitmap words, the unit
+    // bitscan::nextFreeCell/nextSetBit read: CR-022; a unit below 64 cells
+    // would let two workers' scans share a word). A worker's claim for a class
     // starts at 1 unit each minor and doubles up to kChunkMaxUnits (1,024
     // cells): classes a worker barely uses leave little open slack (the
     // committed bytes the garbage-fraction trigger reads), hot classes claim
     // rarely (E2 as built: fixed 256 cost +9 % minor time, fixed 1,024 moved
     // the first major from minor 91 to 145).
+    // TLA-REGION(OGH.kChunkUnitCells) begin
     static constexpr uint32_t kChunkUnitCells = 64;
+    // TLA-REGION(OGH.kChunkUnitCells) end
     static constexpr uint32_t kChunkMaxUnits = 16;
     // Lazily allocated; valid for the heap's lifetime.
     PromoCtx& promoCtx();
@@ -686,17 +701,20 @@ public:
         std::vector<void*> cycle_alloc_log;
 #endif
         // Lever L3 (several collector threads): members claim 64-cell chunks
-        // (whole bitmap bytes, so members never share a byte) by CAS on
+        // (whole 64-bit bitmap words, the unit the scans read, so members
+        // never share one: CR-022) by CAS on
         // claim[cls] = block index << 32 | next unit, over the blocks above.
         struct alignas(64) ClaimWord { std::atomic<uint64_t> w{0}; };
         ClaimWord claim[NUM_SIZE_CLASSES];
     };
     // L3 chunk size in cells for a class of stride_bits (= cell / 8) bits:
     // >= 1,024 bitmap bits (two cache lines), >= 64 cells.
+    // TLA-REGION(OGH.tenureChunkCells) begin
     static uint32_t tenureChunkCells(uint32_t stride_bits) {
         const uint32_t c = 1024u / (stride_bits == 0 ? 1u : stride_bits);
         return c < 64u ? 64u : (c & ~63u);
     }
+    // TLA-REGION(OGH.tenureChunkCells) end
     // A collector member's private allocation cursor over the grant (L3).
     struct TenureMemberCursor {
         struct Cls { int32_t bi = -1; uint32_t k = 0, kend = 0, used = 0; };
@@ -964,6 +982,7 @@ private:
     static constexpr size_t kPublishMin = 64;
     // Publish the OLDEST half of w's private stack to its stealable deque
     // when the deque is empty (owner only).
+    // TLA-REGION(OGH.publishGrey) begin
     void publishHalf(MarkWorker& w) {
         if (w.stack.size() < kPublishMin || !w.deque.emptyApprox()) return;
         const size_t half = w.stack.size() / 2;
@@ -990,6 +1009,7 @@ private:
             if ((w.stack.size() & 31) == 0) publishHalf(w);
         }
     }
+    // TLA-REGION(OGH.publishGrey) end
     // Runs marking with `budget` tickets (markwork::kDrainBudget = drain) on
     // mark_threads_ markers when mark_parallel_, else serially on worker 0.
     // Returns the units consumed (exact, P§3.3).
@@ -1082,7 +1102,10 @@ private:
     };
     void assertNotInDecision(const char* what) const;
 #endif
-    void assertSlotsQuiescent(const char* where) const;
+    // IM14: aborts if a gang runs on any of slots [lo, hi) (the foreground
+    // gang on [0, F), the background gang on [F, F + B)). The default range
+    // is every slot: no gang runs at all (the launch's check).
+    void assertSlotsQuiescent(const char* where, unsigned lo = 0, unsigned hi = kMaxMarkers) const;
 public:
     // Stops and joins a running background episode (reset, destruction, tests).
     void stopBackground();
@@ -1092,6 +1115,11 @@ public:
     bool test_cursor_takes_t0_block_ = false;
     bool test_plain_allocate_black_ = false;
     std::atomic<bool> test_bg_hold_{false};   // bg members wait while set
+#if ECO_HEAP_VALIDATE
+    // Negative control (IM14, register CR-010): an assist also resets
+    // background slot F's counter while the background gang runs.
+    bool test_assist_resets_bg_ctr_ = false;
+#endif
 public:
     // Negative-control hooks (tests only; P§3.11).
     bool test_skip_merge_worker1_ = false;
@@ -1187,6 +1215,7 @@ public:
     // Cheap filter: false for every pointer outside the bounding box of the
     // kind-1 entries (and always false when there are none). Conservative:
     // true does not imply a YLOS object (use youngLargeMeta).
+    // TLA-REGION(OGH.youngLargeMeta) begin
     bool mayBeYoungLarge(const void* p) const {
         return p >= ylo_lo_ && p < ylo_hi_;
     }
@@ -1198,6 +1227,7 @@ public:
         LargeBodyMeta& m = large_bodies_[it->second];
         return (m.kind == 1 && m.body_base == p) ? &m : nullptr;
     }
+    // TLA-REGION(OGH.youngLargeMeta) end
     bool isYoungLarge(const void* p) {
         return youngLargeMeta(p) != nullptr;
     }
@@ -1402,7 +1432,13 @@ private:
     // Shared by startMark and beginMarkCycle.
     void prepareMark(Allocator& alloc);
     // Snapshot mode (P§3.2): pushMarkRoot drops nursery and YLOS targets.
-    void setSnapshotMode(bool on) { snapshot_mode_ = on; }
+    void setSnapshotMode(bool on) {
+#if ECO_HEAP_VALIDATE
+        // IM14: the snapshot pushes the t0 greys onto slot 0 as its owner.
+        if (on) assertSlotsQuiescent("the t0 snapshot", 0, 1);
+#endif
+        snapshot_mode_ = on;
+    }
     // One JIT root word (startMark's JIT loop body).
     void markJitRootRaw(uint64_t val, Allocator& alloc);
     // t0: mark every YLOS cell and grey its old-gen children.
@@ -1496,9 +1532,11 @@ private:
     // True if the current GC cycle still has blocks that haven't been fully
     // swept. False when gc_phase_ != Sweeping or when every BufferMetadata
     // entry has fully_swept == true.
+    // TLA-REGION(OGH.hasPendingSweepWork) begin
     bool hasPendingSweepWork() const {
         return gc_phase_ == GCPhase::Sweeping && sweep_pending_blocks_ > 0;
     }
+    // TLA-REGION(OGH.hasPendingSweepWork) end
     bool sweepComplete() const {
         return gc_phase_ != GCPhase::Sweeping || sweep_pending_blocks_ == 0;
     }
@@ -1700,7 +1738,7 @@ private:
     // Commits the page index through region_end_. Called after any
     // commit/grow that moves region_end_ forward (formerly
     // resizePageIndexForRegion).
-    void resizePageIndexForRegion() { commitPageIndexThrough(region_end_); }
+    void resizePageIndexForRegion() { commitPageIndexThrough(regionEnd()); }
 
     // Returns the first / last page slot the block covers, or SIZE_MAX if
     // the index is not set up / the block lies below index_base_.
@@ -1774,6 +1812,7 @@ private:
         *mask = static_cast<uint8_t>(1u << (slot & 7));
     }
 
+    // TLA-REGION(OGH.markBitHelpers) begin
     bool isMarkedInBlock(BlockId id, const void* obj) const {
         if (!id.valid()) return false;
         if (blocks_.info(id).is_large) {
@@ -1860,6 +1899,7 @@ private:
         return (std::atomic_ref<uint8_t>(const_cast<uint8_t&>(mark_.slot(id)[byte_index]))
                     .load(std::memory_order_relaxed) & mask) != 0;
     }
+    // TLA-REGION(OGH.markBitHelpers) end
 
     // Tests the bit for `obj`, clears it, and returns whether it was set.
     // Used by sweep so that the bitmap is left all-zero post-sweep
@@ -1904,7 +1944,7 @@ private:
     void resetBufferMetaForMark();
 
     // Demotes uniform size-class blocks whose mark-derived live_bytes is at
-    // most HeapConfig::demote_live_fraction (default 0.5; 0.0 = never) of their
+    // most HeapConfig::demote_live_fraction (default 0.3; 0.0 = never) of their
     // total bytes to mixed (`size_class = NUM_SIZE_CLASSES`).
     // Run after `finalizeMetaAfterMark` and before `transitionToSweeping` so
     // that (a) the residency snapshot still sees the pre-demotion class

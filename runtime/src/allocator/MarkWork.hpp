@@ -26,7 +26,34 @@
 #include <time.h>
 #endif
 
+#include "TlaTrace.hpp"   // compiled-out hooks (trace builds only: M2's trace, test/tla/)
+
 namespace Elm::markwork {
+
+#if ECO_TLA_TRACE_ENABLED
+// Trace builds only (test/tla/M2-slice-control/MAPPING.md, "Trace validation"):
+// a serial per SliceControl (the location of its state word and its budget in
+// the log), and the run on this thread (its slot, its control, and whether its
+// ticket pool is the control's budget), for the hooks' fields.
+inline int64_t tlaNextCtl() {
+    static std::atomic<int64_t> n{0};
+    return n.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+struct TlaRun { int64_t slot = -1; int64_t ctl = -1; bool shared = false; };
+inline thread_local TlaRun tla_run;
+// A ticket-pool event: the control's budget is one location of the log (its
+// RMWs chain by value); an assist's pool is not (it is not chained).
+#define ECO_MW_TRACE_POOL(ev, o, nw, ...)                                                    \
+    do {                                                                                     \
+        if (::Elm::markwork::tla_run.shared)                                                 \
+            ECO_TLA_TRACE(ev, "rmw", ::Elm::tlatrace::key("B", ::Elm::markwork::tla_run.ctl),  \
+                          "old", (o), "new", (nw), "pool", "budget", __VA_ARGS__);           \
+        else                                                                                 \
+            ECO_TLA_TRACE(ev, "old", (o), "new", (nw), "pool", "assist", __VA_ARGS__);       \
+    } while (0)
+#else
+#define ECO_MW_TRACE_POOL(...) ((void)0)
+#endif
 
 // ---------------------------------------------------------------------------
 // The mark entry (P§3.1)
@@ -230,6 +257,7 @@ struct SliceControl {
     uint32_t              n = 1;
     unsigned              jitter_us = 0;
     bool                  steal_without_ticket = false;   // negative-control hook only
+    ECO_TLA_TRACE_ONLY(int64_t tla_ctl = tlaNextCtl();)   // trace builds: this control's serial
     // `active` = participants counted active at the start (default: members).
     explicit SliceControl(int64_t b, uint32_t members = 1, unsigned jitter = 0,
                           int64_t active = -1)
@@ -243,14 +271,24 @@ struct SliceControl {
         return static_cast<uint32_t>(state.load(std::memory_order_acquire) & kActiveMask);
     }
     bool stopRequested() const { return stop.load(std::memory_order_relaxed); }
-    void goIdle() { state.fetch_sub(1, std::memory_order_acq_rel); }
+    void goIdle() {
+        ECO_TLA_TRACE_ONLY(const uint64_t o =) state.fetch_sub(1, std::memory_order_acq_rel);
+        ECO_TLA_TRACE("mw.idle", "w", tla_run.slot, "rmw", ::Elm::tlatrace::key("S", tla_ctl),
+                      "old", o, "new", o - 1, "act", (o - 1) & kActiveMask);
+    }
     // false when the slice is already done.
     bool reactivate() {
         uint64_t s = state.load(std::memory_order_acquire);
         for (;;) {
-            if (s & kDone) return false;
+            if (s & kDone) {
+                ECO_TLA_TRACE("mw.reactDone", "w", tla_run.slot,
+                              "rd", ::Elm::tlatrace::key("S", tla_ctl), "val", s);
+                return false;
+            }
             if (state.compare_exchange_weak(s, s + 1 + kEpochOne, std::memory_order_acq_rel,
                                             std::memory_order_acquire)) {
+                ECO_TLA_TRACE("mw.react", "w", tla_run.slot, "rmw", ::Elm::tlatrace::key("S", tla_ctl),
+                              "old", s, "new", s + 1 + kEpochOne, "act", (s + 1) & kActiveMask);
                 return true;
             }
         }
@@ -289,6 +327,7 @@ inline bool claimTicket(MarkerCounters& w, std::atomic<int64_t>& pool) {
         const int64_t take = b < kTicketBatch ? b : kTicketBatch;
         if (pool.compare_exchange_weak(b, b - take, std::memory_order_relaxed)) {
             w.tickets = static_cast<uint64_t>(take - 1);
+            ECO_MW_TRACE_POOL("mw.claim", b, b - take, "w", tla_run.slot, "took", take);
             return true;
         }
     }
@@ -297,7 +336,10 @@ inline bool claimTicket(MarkerCounters& w, std::atomic<int64_t>& pool) {
 inline bool claimTicket(MarkerCounters& w, SliceControl& c) { return claimTicket(w, c.budget); }
 inline void returnTickets(MarkerCounters& w, std::atomic<int64_t>& pool) {
     if (w.tickets) {
+        ECO_TLA_TRACE_ONLY(const int64_t o =)
         pool.fetch_add(static_cast<int64_t>(w.tickets), std::memory_order_relaxed);
+        ECO_MW_TRACE_POOL("mw.ret", o, o + static_cast<int64_t>(w.tickets), "w", tla_run.slot,
+                          "cnt", w.tickets);
         w.tickets = 0;
     }
 }
@@ -347,7 +389,10 @@ inline void backoff(unsigned round, MarkerCounters& w) {
 template <class Env>
 inline uint64_t stealAny(Env& env, unsigned self, SliceControl& c, MarkerCounters& w) {
     const unsigned n = c.n;
-    if (n <= 1) return kEmpty;
+    if (n <= 1) {
+        ECO_TLA_TRACE("mw.stealNone", "w", self);
+        return kEmpty;
+    }
     for (int pass = 0; pass < 4; ++pass) {
         bool aborted = false;
         const unsigned start = static_cast<unsigned>(w.next() % n);
@@ -356,11 +401,17 @@ inline uint64_t stealAny(Env& env, unsigned self, SliceControl& c, MarkerCounter
             if (v == self) continue;
             const uint64_t e = env.stealFrom(v);
             if (e == kAbort) { aborted = true; ++w.steal_aborts; continue; }
-            if (e != kEmpty) { ++w.steals; return e; }
+            if (e != kEmpty) {
+                ++w.steals;
+                ECO_TLA_TRACE("mw.steal", "w", self, "v", v, "e", e,
+                              "get", ::Elm::tlatrace::key("mwe", static_cast<int64_t>(e)));
+                return e;
+            }
         }
         if (!aborted) break;
     }
     ++w.steal_empty;
+    ECO_TLA_TRACE("mw.stealNone", "w", self);
     return kEmpty;
 }
 
@@ -370,8 +421,15 @@ template <class Env>
 inline bool idleUntilWorkOrDone(Env& env, SliceControl& c, MarkerCounters& w) {
     for (unsigned round = 0;; ++round) {
         const uint64_t s = c.state.load(std::memory_order_acquire);
-        if (s & SliceControl::kDone) return false;
-        if (c.stopRequested()) return false;          // 05c: leave idle on a stop
+        if (s & SliceControl::kDone) {
+            ECO_TLA_TRACE("mw.seeDone", "w", tla_run.slot, "rd", ::Elm::tlatrace::key("S", c.tla_ctl),
+                          "val", s);
+            return false;
+        }
+        if (c.stopRequested()) {                      // 05c: leave idle on a stop
+            ECO_TLA_TRACE("mw.seeStop", "w", tla_run.slot, "get", ::Elm::tlatrace::key("stop", c.tla_ctl));
+            return false;
+        }
         if (c.budget.load(std::memory_order_acquire) > 0 && env.anyWork()) {
             if (!c.reactivate()) return false;
             return true;
@@ -385,8 +443,13 @@ inline bool idleUntilWorkOrDone(Env& env, SliceControl& c, MarkerCounters& w) {
                 if (c.state.compare_exchange_strong(expect, s | SliceControl::kDone,
                                                     std::memory_order_acq_rel,
                                                     std::memory_order_acquire)) {
+                    ECO_TLA_TRACE("mw.decide", "w", tla_run.slot, "ok", true,
+                                  "rmw", ::Elm::tlatrace::key("S", c.tla_ctl), "old", s,
+                                  "new", s | SliceControl::kDone);
                     return false;
                 }
+                ECO_TLA_TRACE("mw.decide", "w", tla_run.slot, "ok", false,
+                              "rd", ::Elm::tlatrace::key("S", c.tla_ctl), "val", expect);
             }
             continue;
         }
@@ -408,8 +471,14 @@ template <class Env>
 inline void runMarkerLoop(Env& env, unsigned self, SliceControl& c,
                           std::atomic<int64_t>& pool, Role role, bool joined) {
     MarkerCounters& w = env.counters(self);
+    ECO_TLA_TRACE_ONLY(tla_run = TlaRun{self, c.tla_ctl, &pool == &c.budget};)
+    ECO_TLA_TRACE("mw.run", "w", self, "ctl", c.tla_ctl, "assist", role == Role::Assist,
+                  "joined", joined);
     if constexpr (Env::kParallel) {
-        if (joined && !c.reactivate()) return;
+        if (joined && !c.reactivate()) {
+            ECO_TLA_TRACE("mw.exit", "w", self, "why", "join");
+            return;
+        }
     }
     uint64_t ring[kRingDepth];
     size_t head = 0, count = 0;
@@ -429,6 +498,7 @@ inline void runMarkerLoop(Env& env, unsigned self, SliceControl& c,
         while (!stopping && count < kRingDepth) {
             if (!claimTicket(w, pool)) break;
             const uint64_t e = env.takeOwn(self);
+            ECO_TLA_TRACE("mw.take", "w", self, "e", e);
             if (e == kEmpty) { ++w.tickets; break; }
             ringPush(e);
         }
@@ -437,6 +507,7 @@ inline void runMarkerLoop(Env& env, unsigned self, SliceControl& c,
             const uint64_t e = ring[head];
             head = (head + 1) & (kRingDepth - 1);
             --count;
+            ECO_TLA_TRACE("mw.scan", "w", self, "e", e);
             env.scan(self, e);
             ++w.units;
             if (c.jitter_us != 0 && (w.units & 4095) == 0) {
@@ -451,6 +522,7 @@ inline void runMarkerLoop(Env& env, unsigned self, SliceControl& c,
                 const uint64_t e = stealAny(env, self, c, w);
                 if (e != kEmpty) {
                     if (claimTicket(w, pool)) { ringPush(e); continue; }
+                    ECO_TLA_TRACE("mw.scan", "w", self, "e", e);
                     env.scan(self, e);   // deliberately unaccounted: the hook's bug
                     continue;
                 }
@@ -476,11 +548,14 @@ inline void runMarkerLoop(Env& env, unsigned self, SliceControl& c,
             env.publishAll(self);
             returnTickets(w, pool);
             c.goIdle();
+            ECO_TLA_TRACE("mw.exit", "w", self, "why", "active",
+                          "get", ::Elm::tlatrace::key(c.stopRequested() ? "stop" : "nostop", c.tla_ctl));
             return;
         }
         env.publishAll(self);   // after termination: nobody runs; normally a no-op
     }
     returnTickets(w, pool);
+    ECO_TLA_TRACE("mw.exit", "w", self, "why", "idle");
 }
 
 // 5b entry point: a Member counted in the initial active set, drawing on c.budget.

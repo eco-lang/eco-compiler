@@ -1,0 +1,5 @@
+# The events TraceSliceControl.tla matches (run_traces.py keeps only these after the merge;
+# the gang events order the threads and are then dropped, their ordering kept in the vector clocks).
+mw.ctl mw.end mw.run mw.claim mw.take mw.scan mw.push mw.pub mw.priv mw.steal mw.stealNone
+mw.ret mw.idle mw.react mw.reactDone mw.seeDone mw.seeStop mw.decide mw.exit
+mw.assist mw.assistEnd mw.closing mw.stopReq mw.joined

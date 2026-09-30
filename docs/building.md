@@ -39,6 +39,19 @@ docker build -f docker/static-dev.Dockerfile -t eco-static-dev:local .
 
 Each consumer image (1b/1c/1d) only needs its corresponding base from 1a.
 
+**Optional: GenMC for the GC's weak-memory checks** (`test/genmc/`, target
+`genmc-check`; not used by CI). GenMC is an opt-in layer on top of eco-dev, so the
+standard image and CI do not depend on it. The builder image compiles a temporary
+GCC 14 and GenMC on LLVM 19; rebuild it only when `docker/install-genmc.sh` changes
+a pin (and bump the tag with it):
+
+```bash
+docker build -f docker/genmc.Dockerfile -t eco-genmc:0.19.0-llvm19 .
+docker build -f docker/eco-dev-genmc.Dockerfile -t eco-dev-genmc .   # eco-dev + GenMC
+```
+
+Run `eco-dev-genmc` exactly as `eco-dev`.
+
 The static binary is fully static — zero shared-library dependencies, so it
 runs on any Linux distribution. To extract and confirm it:
 

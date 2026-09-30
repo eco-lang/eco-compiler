@@ -10,13 +10,16 @@
 
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <random>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -113,6 +116,15 @@ void startCycle(Allocator& a) {
     runToHandoff(a);
     tlh(a)->test_force_major_trigger_ = true;
     a.minorGC();
+}
+// Holds the background members of the NEXT cycle (test_bg_hold_). A cycle
+// the build started is finished first: startCycle would run it to its
+// handoff, and a closing step that joins a running episode (closingFinish)
+// clears the hold, so the forced cycle's members would start unheld
+// (register CR-030). Callers assert the hold is still set after startCycle.
+void holdNextCycle(Allocator& a) {
+    runToHandoff(a);
+    og(a).test_bg_hold_.store(true);
 }
 
 i64 intValue(Allocator& a, HPointer hp) {
@@ -493,8 +505,9 @@ Testing::TestCase testConcMarkRunsDuringMinorGCs(
         for (auto& r : roots) a.getRootSet().addRoot(&r);
         // Hold the members for the first few minors so the episode overlaps
         // the promotions below (mixed and uniform cells, large string bodies).
-        og(a).test_bg_hold_.store(true);
+        holdNextCycle(a);
         startCycle(a);
+        TEST_ASSERT(og(a).test_bg_hold_.load());
         TEST_ASSERT(OA::bgEpisode(og(a)) == BE::Running);
         std::vector<std::unique_ptr<Root>> keep;
         std::mt19937_64 rng(5);
@@ -556,11 +569,12 @@ Testing::TestCase testConcMarkAssistWhenLate(
         std::vector<HPointer> roots;
         buildGraph(a, 60000, 4321, roots, 40);
         for (auto& r : roots) a.getRootSet().addRoot(&r);
+        holdNextCycle(a);   // before the baseline: a drained build cycle may assist
 #if ENABLE_GC_STATS
         const uint64_t assists0 = cm(a).assists;
 #endif
-        og(a).test_bg_hold_.store(true);
         startCycle(a);
+        TEST_ASSERT(og(a).test_bg_hold_.load());
         uint32_t handoff_k = 0;
         while (OA::cycleActive(og(a))) {
             if (OA::cycleK(og(a)) == 15) og(a).test_bg_hold_.store(false);
@@ -674,8 +688,9 @@ Testing::TestCase testConcMarkJoinOnExplicitMajor(
         buildGraph(a, 30000, 8, roots, 20);
         for (auto& r : roots) a.getRootSet().addRoot(&r);
         Root keep(a, roots[0]);
-        og(a).test_bg_hold_.store(true);
+        holdNextCycle(a);
         startCycle(a);
+        TEST_ASSERT(og(a).test_bg_hold_.load());
         TEST_ASSERT(OA::bgEpisode(og(a)) == BE::Running);
 #if ENABLE_GC_STATS
         const uint64_t joins0 = im(a).finish_join;
@@ -727,8 +742,9 @@ Testing::TestCase testConcMarkResetMidEpisode(
             auto& a = initAllocator(cfg);
             std::vector<HPointer> roots;
             buildGraph(a, 20000, 3, roots, 20);
-            og(a).test_bg_hold_.store(true);
+            holdNextCycle(a);
             startCycle(a);
+            TEST_ASSERT(og(a).test_bg_hold_.load());
             TEST_ASSERT(OA::bgEpisode(og(a)) == BE::Running);
         }
         auto& a = initAllocator(cfg);
@@ -798,8 +814,9 @@ Testing::TestCase testConcMarkT0DistributesToBackground(
         std::vector<HPointer> roots;
         buildGraph(a, 20000, 12, roots, 60);
         for (auto& r : roots) a.getRootSet().addRoot(&r);
-        og(a).test_bg_hold_.store(true);
+        holdNextCycle(a);
         startCycle(a);
+        TEST_ASSERT(og(a).test_bg_hold_.load());   // the members are still held
         TEST_ASSERT(OA::markSlots(og(a)) == 5);
         TEST_ASSERT(OA::slotDequeSize(og(a), 0) == 0);
         TEST_ASSERT(OA::slotDequeSize(og(a), 1) == 0);
@@ -837,17 +854,28 @@ Testing::TestCase testConcMarkNegativeSkipBgMerge(
         EnvGuard env;
         const Decisions ref = graphScenario(0, 0, 40000, 1, 8);
         const uint64_t want = ref.cycle_units[0];
+        // One background member (B = 1): the t0 greys all go to its deque and
+        // it marks them before waitBackground returns, so skipping its merge
+        // always loses units. With B = 2 the skipped member could mark nothing
+        // (register CR-030). A build-started cycle is finished unhooked first.
+        // Exit 2: the member never finished (the control did not run).
         const int st = runInChild([want]() -> int {
-            auto& a = initAllocator(concConfig(2, 2, 2, 8));
+            auto& a = initAllocator(concConfig(2, 2, 1, 8));
             std::vector<HPointer> roots;
             buildGraph(a, 40000, 4321, roots, 40);
             for (auto& r : roots) a.getRootSet().addRoot(&r);
+            runToHandoff(a);
             og(a).test_skip_bg_merge_ = true;
             startCycle(a);
-            waitBackground(a);
+            if (!waitBackground(a)) return 2;
             runToHandoff(a);                        // IM12 aborts here (validate)
             return OA::prevCycleUnits(og(a)) < want ? 0 : 1;
         });
+        if (WIFEXITED(st) && WEXITSTATUS(st) != 0) {
+            std::fprintf(stderr, "    DIAG: child exit %d (%s)\n", WEXITSTATUS(st),
+                         WEXITSTATUS(st) == 2 ? "the background member never finished"
+                                              : "the skipped merge was not seen");
+        }
 #if ECO_HEAP_VALIDATE
         TEST_ASSERT(WIFSIGNALED(st));
 #else
@@ -942,6 +970,98 @@ Testing::TestCase testConcMarkNegativePlainAllocateBlack(
         }
         // Not asserted (P§3.9): the lost update needs an exact interleaving.
         std::printf("    (plain allocate-black control fired in %d of %d attempts)\n", fired, attempts);
+#endif
+    });
+
+// IM14 per slot (register CR-010): validate builds check every mutator touch
+// of owner-only slot state for exactly the slots it touches. An assist resets
+// the foreground counters while the background gang legitimately runs on the
+// other slots; the hook widens that reset to background slot F.
+#if !defined(_WIN32) && ECO_HEAP_VALIDATE
+namespace {
+// runInChild, with the child's stderr kept in `path` (which validator fired).
+int runInChildStderrTo(const std::function<int()>& fn, const char* path) {
+    std::fflush(stdout);
+    std::fflush(stderr);
+    pid_t pid = fork();
+    if (pid == 0) {
+        int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (fd >= 0) dup2(fd, 2);
+        int rc = 3;
+        try {
+            rc = fn();
+        } catch (...) {
+            rc = 4;
+        }
+        _exit(rc);
+    }
+    int st = 0;
+    waitpid(pid, &st, 0);
+    return st;
+}
+
+std::string slurp(const char* path) {
+    std::ifstream f(path);
+    return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+}
+
+// testConcMarkAssistWhenLate's shape: the background is held, so the steps
+// assist while its gang runs. 0 = the cycle handed off after an assist.
+int assistWhileBackgroundRuns(bool reset_bg_ctr) {
+    HeapConfig cfg = concConfig(2, 2, 2, 16);
+    cfg.conc_mark_assist_lag = 2;
+    cfg.incremental_mark_min_slice_units = 16;
+    auto& a = initAllocator(cfg);
+    std::vector<HPointer> roots;
+    buildGraph(a, 40000, 4321, roots, 40);
+    for (auto& r : roots) a.getRootSet().addRoot(&r);
+    runToHandoff(a);                              // a cycle the build itself started
+#if ENABLE_GC_STATS
+    const uint64_t assists0 = cm(a).assists;
+#endif
+    og(a).test_assist_resets_bg_ctr_ = reset_bg_ctr;
+    og(a).test_bg_hold_.store(true);
+    startCycle(a);
+    while (OA::cycleActive(og(a))) {
+        if (OA::cycleK(og(a)) == 15) og(a).test_bg_hold_.store(false);
+        for (int i = 0; i < 200; ++i) (void)alloc::allocInt(i);
+        a.minorGC();
+    }
+    for (auto& r : roots) a.getRootSet().removeRoot(&r);
+#if ENABLE_GC_STATS
+    if (cm(a).assists == assists0) return 2;      // the scenario never assisted
+#endif
+    return 0;
+}
+}  // namespace
+#endif
+
+Testing::TestCase testConcMarkNegativeAssistResetsBgCounter(
+    "threaded-gc-05c: negative control — an assist resetting a background slot's counter is caught (IM14, CR-010)",
+    []() {
+#if !defined(_WIN32) && ECO_HEAP_VALIDATE
+        EnvGuard env;
+        char path[] = "/tmp/eco-cr010-XXXXXX";
+        const int fd = mkstemp(path);
+        TEST_ASSERT(fd >= 0);
+        close(fd);
+        // The normal path: assists run beside the background gang; IM14 is quiet.
+        const int ok = runInChildStderrTo([]() { return assistWhileBackgroundRuns(false); }, path);
+        const std::string ok_err = slurp(path);
+        // The hook: the first assist's reset also touches background slot F.
+        const int st = runInChildStderrTo([]() { return assistWhileBackgroundRuns(true); }, path);
+        const std::string err = slurp(path);
+        unlink(path);
+        if (!WIFEXITED(ok) || WEXITSTATUS(ok) != 0 || !WIFSIGNALED(st)) {
+            std::fprintf(stderr, "    DIAG control status %d (%s); hooked status %d (%s)\n",
+                         ok, ok_err.c_str(), st, err.c_str());
+        }
+        TEST_ASSERT(WIFEXITED(ok) && WEXITSTATUS(ok) == 0);
+        TEST_ASSERT(ok_err.find("IM14") == std::string::npos);
+        TEST_ASSERT(WIFSIGNALED(st) && WTERMSIG(st) == SIGABRT);
+        TEST_ASSERT(err.find("IM14: slots [0, ") != std::string::npos);
+        TEST_ASSERT(err.find("at an assist's counter reset while the background gang runs") !=
+                    std::string::npos);
 #endif
     });
 

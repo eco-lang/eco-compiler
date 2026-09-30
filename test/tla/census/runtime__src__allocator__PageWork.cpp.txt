@@ -1,0 +1,2 @@
+#define PW_TRACE(ev, ...) ECO_TLA_TRACE(ev, "clk", "pw", "tick", g_pw_tick.fetch_add(1) __VA_OPT__(, ) __VA_ARGS__)
+std::atomic<uint64_t> g_pw_tick{0};

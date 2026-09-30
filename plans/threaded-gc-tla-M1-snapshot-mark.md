@@ -1,11 +1,22 @@
 # Threaded GC — TLA+ model M1: the snapshot marking cycle
 
-**Status:** IMPLEMENTATION-READY PLAN (2026-09-28). **Adversarial review on 2026-09-28 against the
-current tree** (§11): the sketch was corrected (pressure order, handoff frees unmarked YLOS cells,
-region mode's dead hand-over objects, a meaningful `lazy_external`, the two "to add" mutants), the
-§4.7 invariant was strengthened, and a suspected code defect was found (§2.5, §10 Q4). The
-corrected sketch passes the translator and SANY (tla2tools 1.8.0); TLC has not run. Every
-"expected" result below is a prediction for the implementer to confirm.
+**Status:** IMPLEMENTED (2026-09-28/29) in `test/tla/M1-snapshot-mark/`: all of §9 is done — the
+model and lemma (steps 1–7), trace validation (step 8) and the canary lines (step 9: 69 pins in
+`test/tla/manifest.txt` name M1; W3/W4 PASS under GenMC). The lemma is proved at 5 objects;
+at 6 objects the base case, the IM2 consequence, the negative control and 4 of the 15 inductive
+steps passed before the run was stopped (AUDIT.md); 8 objects is out of reach on this machine. The quick tier
+(`tla-check`: 3 passing configurations, CR-017's expected failure, 14 mutants) and the deep tier
+(`tla-check-deep`) behave as expected; `tla-trace` accepts every trace of the real allocator and
+rejects every doctored one (§8). `AUDIT.md` there records the results, the counterexamples,
+and every way the implemented model differs from the sketch below. `MAPPING.md` there is the
+model ↔ code map. The sketch in §4.5 is kept as the reviewed design text; the committed model is
+authoritative (trace validation corrected its `Assist`, §8).
+
+History: **adversarial review on 2026-09-28 against the current tree** (§11). The sketch was
+corrected: pressure order, the handoff frees unmarked YLOS cells, region mode's dead hand-over
+objects, a meaningful `lazy_external`, and the two "to add" mutants. The §4.7 invariant was
+strengthened, and a suspected code defect was found (§2.5, §10 Q4), now CR-017, reproduced by
+TLC.
 
 **Parents:** `plans/threaded-gc-tla-verification.md` (§2 rules A1–A9, §5.1 index) and
 `plans/threaded-gc-tla-primer.md`. Read the primer first if TLA+ or the GC terms are new. Its
@@ -858,6 +869,18 @@ falls within `T` minors of `MaxMinors`, because the bounded mutator stops before
 
 ### 4.7 The unbounded obligation: the snapshot-closure lemma and the tri-colour invariant
 
+**Implemented (2026-09-28): `test/tla/M1-snapshot-mark/SnapshotLemma.tla`, proved inductive at 5
+objects with Apalache.** All of the following are in AUDIT.md:
+- the base case;
+- the inductive step for each of the 15 actions;
+- the IM2 consequence;
+- the P1 negative control, which fails.
+
+The implemented invariant adds `IdleClean` and `YlosShapes`, and restricts `AgeOrder` to live
+objects: these were the counterexamples to induction the runs found. It is re-encoded for SMT:
+boolean-vector reachability, `TypeGen` / `TypeInv`, and an action invariant checked per action.
+The text below is the reviewed design.
+
 TLC checks M1 for heaps of five or six objects. The lemma itself should hold for any heap, so it
 gets an inductive proof. **Inductive** means: if the invariant holds in some state, it holds after
 any single step, and it holds initially. That proves it for every reachable state, whatever the
@@ -1063,13 +1086,43 @@ reduce in this order, since each keeps every §2.4 story reachable:
 | A2 | One mark bit per object. Byte sharing is M4's, and this is written in MAPPING.md so nobody assumes M1 covers it. |
 | A3 | 05c audit rows: H1 (mark bytes of t0 blocks → `mark`), H1b (post-t0 blocks → "promotions are black and never grey"), H6/H8 (MarkView, YLOS at t0 → `gen`, `t0Ylos`), H7 (`cycle_state_` → `cycle`), H9/H5 (block identity, region bounds → abstracted by IM5 / `NoReleaseInCycle`), H10/H13 (slots → the Drain contract), H14 (S_H fields → `fld` frozen unless `p1_violation`). Plus `deferred_frees_` → `deferred`; every root kind and external scanner → `root`, `cell` (HEAP_SNAPSHOT_002); builders; `bg_ep_` → `episode`. Also: the tail's `retireDeadLargeBodies` (unmarked YLOS cells are freed → `CellObjs`), and region mode's unzapped dead hand-over objects (→ `zombie`). |
 | A4 | W3 (allocate-black `fetch_or` against a marker's `fetch_or` on one byte) and W4 (publication of new blocks and page-index entries to markers). The t0-to-marker handoff of the grey set and the join back are M6's LaunchJoin contract (mutex release/acquire). |
-| A5 | Two traces (§8): the **cycle projection** from `gc-heap-tsan` (real allocator), and a **tiny-graph** driver for heap content. |
+| A5 | Two traces (§8): the **cycle projection** from `gc-heap-tsan` (real allocator), and a **tiny-graph** driver for heap content. **Done (2026-09-29):** `TraceCycle.tla` (5 scenarios) and `TraceHeap.tla` (4 seeds), 9 negative controls, in `tla-trace`; events and hook points in MAPPING.md §10. |
 | A6 | §5: twelve mutants, all in the sketch, plus the expected-fail `quick_region` configuration (a suspected defect, §10 Q4). Five of them mirror existing C++ negative controls (`test_snapshot_skip_young_walk_`, `test_snapshot_skip_external_`, `test_skip_allocate_black_`, the release and join tests). |
 | A7 | `IM1`, `IM2`, `IM9` (+IM14), `MarkerFootprint` = IM3, `NoReleaseInCycle` = IM5, `DeferredOK` = IM8, `NoOldToYoung` = HEAP_005, `NoLostObject` = MODEL_M1_1, `SnapshotClosure` = the parallel-gc.md §2.1 lemma. Related rows: HEAP_063, HEAP_065, HEAP_SNAPSHOT_001/002, HEAP_BUILDER_001/002, HEAP_062. |
 | A8 | 5 ids, 1 field, 2 roots, 1 store, T = 2, 4 minors, 2 operations per epoch, 1 stop, 1 major (deep: 6 ids, 2 fields, 6 minors). No counters wrap. The lemma is unbounded via §4.7 (Apalache, then TLAPS). |
 | A9 | `region` markers: `ThreadLocalHeap::startMarkCycle`, `stepMarkCycle`, `finishMarkCycleNow`, `completeMarkCycle`, the join lines of `majorGC`; `OldGenSpace::beginMarkCycle`, `snapshotYoungLarge`, `afterSnapshot`, `launchBackground`, `reapBackground`, `runCycleStepConcurrent`, `closingFinish`, `drainCycleMark`, `handoffMarkCycle`, the cycle branch of `initObjectHeaderWithSize`, `finalizeBitmapCell`, `finalizeBitmapCellW`, `finalizePoppedCellW`, `sweepNurseryLargeBodies` (the deferral), `freeLargeBodyCell`, the four release-path IM5 asserts, `greyObject` (young abort), `scanObject` (`Tag_Free` skip); `NurserySpace::forEachYoung`/`forEachSurvivor`; `OldGenSpace::grantAllocate`/`grantAllocateShared` (black copies). `census`: `OldGenSpace.cpp`, `ThreadLocalHeap.cpp`, `OldGenTenure.cpp`. `grep`: `deferred_frees_`, `cycle_state_ =`, `bg_ep_ =`, `addExternalRootScanner` (every new off-heap store must be a t0 root). Added in the review: `OldGenSpace::retireDeadLargeBodies` and `classifyBlocksAfterMark` (the tail frees unmarked YLOS cells), `NurserySpace::mergeJob`'s zap and YLOS-promotion blocks (`NurseryTenure.cpp:731-743`, `:816-825`), the hand-over transition in `minorGCRegion` (`NurseryRegion.cpp:1075-1085`), and the order of the pressure check and `cycleStep` in `stepMarkCycle`. `grep`: `writeFiller(z.p` (which extents are zapped), `vnodeRegistry` (a latent unregistered store, §10 Q2). |
 
 ## 8. Trace validation
+
+**Implemented (2026-09-29).** Both parts run in `tla-trace` (`test/tla/traces.txt`): `TraceCycle.tla`
+on five `gc-heap-trace cycle` scenarios (legacy with 2 and 4 background members, parallel minors,
+region mode, a small heap with pressure finishes; forks and explicit majors mid-cycle), and
+`TraceHeap.tla` on four `gc-heap-trace tiny` seeds, each set with its negative controls. Every run
+of the real allocator is accepted: 15 repeated cycle runs and 28 tiny-graph seeds. The events,
+hook points and mapping are in MAPPING.md §10, the results in AUDIT.md (2026-09-29). What changed
+from the text below, and why:
+- **A model error, found by trace (a) and fixed:** the model's `Assist` had to keep scanning while
+  any grey entry was left; the code's assist leaves when it finds no work it can take, or scans
+  nothing when it joins a stopped control (`runMarkerLoop`, `MarkWork.hpp:461-462`). A real run
+  (assist, then a fork stop, then a relaunch with work left) was rejected. `A_Loop` may now stop
+  early.
+- **Events.** `t0` is logged at the start of the snapshot (it is `P_T0`, and the snapshot's greys
+  are checked against it) and `t0end` before `afterSnapshot`; the step logs one `step` event (k and
+  the episode after the reap and relaunch) besides `reap` and `relaunch`; `handoff` is logged after
+  `handoffMarkCycle`; `stop` after `stopAndJoin`; `major` at `majorGC`'s entry. Background exits
+  are not logged in (a): the reap reports them.
+- **(b) needs no address table:** each object carries its id (an unboxed field), and the hooks log
+  ids through a harness callback. `promoteBlack` and `free` are replaced by a harness probe at
+  `runPostMarkTail`'s entry (the marks there are the liveness decision: every allocated old id is
+  reported marked or not, at a handoff and at a STW major) and a `heap` event after every
+  collection; together they check allocate-black and every free against the model. Outside a
+  cycle the mark bitmap is not the allocation record, so reading bits after the pause would not do.
+- **Ordering in (b)** comes from the gangs' launch / start / exit / join / run events (put/get
+  keys) and a grey → scan key per object and cycle, not from mark-byte values: M1's steps on
+  different objects commute, so the byte order adds nothing M1 can check (it is M4's). The trace
+  spec admits every order those keys allow (`TraceAnyOrder`).
+
+The rest of this section is the design as planned.
 
 M1's trace validation has two parts, because the real heap is too large to replay object by
 object.
@@ -1123,6 +1176,22 @@ only through the mark bytes they read and write:
 Other cross-thread pairs are left unordered, and the trace spec allows either order.
 
 ## 9. Implementation steps
+
+**Progress (2026-09-28):** steps 1–7 done (see `test/tla/M1-snapshot-mark/AUDIT.md`); 8 and the
+canary part of 9 not started; the `models.txt` rows are in.
+**Progress (2026-09-29):** step 8 done (§8; AUDIT.md), with the shared trace infrastructure
+(`test/tla/README.md`, "Trace validation"); the `traces.txt` rows are in. The canary part of 9 is
+not started.
+
+**Progress (2026-09-29, later):** step 9 done. The canary pins M1's code: 69 pins (the regions of
+§7's A9 row as `TLA-REGION` markers, the census of `OldGenSpace.cpp`, `ThreadLocalHeap.cpp` and the
+others, the greps `F.deferredFrees`, `F.cycleState`, `F.bgEp`, `F.externalRoots`, `F.zapFiller`,
+`F.vnodeRegistry`, and the footprint rows H1–H15); the `models.txt` rows and the parent plan's §11
+row are in. W3 and W4 (M1's A4 row) PASS under GenMC. The lemma at 6 objects: the base case, the
+IM2 consequence and the P1 negative control behave as at 5; the inductive steps take 3–4 hours each
+at 6 objects on this machine: `Alloc`, `BAlloc`, `Closing` and `CellW` pass; the run was stopped
+on the owner's request with the other 11 steps unfinished (AUDIT.md). 8 objects is not feasible here: the step time grows
+several-fold per object.
 
 1. Create `test/tla/M1-snapshot-mark/` with `SnapshotMark.tla` (§4.5), `MC.tla` (§6), the
    configurations of §6, one configuration per mutant (`MUTANT` + target invariant only),

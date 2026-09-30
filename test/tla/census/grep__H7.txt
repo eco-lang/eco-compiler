@@ -1,0 +1,29 @@
+runtime/src/allocator/OldGenSpace.cpp: "val", static_cast<int>(cycle_state_ != CycleState::Idle ? GCPhase::Marking : GCPhase::Sweeping));
+runtime/src/allocator/OldGenSpace.cpp: ? static_cast<int>(cycle_state_ != CycleState::Idle ? GCPhase::Marking : GCPhase::Sweeping) : 0);
+runtime/src/allocator/OldGenSpace.cpp: ? static_cast<int>(cycle_state_ != CycleState::Idle ? GCPhase::Marking : GCPhase::Sweeping) : 0);
+runtime/src/allocator/OldGenSpace.cpp: ECO_TLA_TRACE_ONLY(if (cycle_state_ != CycleState::Idle))
+runtime/src/allocator/OldGenSpace.cpp: ECO_TLA_TRACE_ONLY(if (cycle_state_ != CycleState::Idle))
+runtime/src/allocator/OldGenSpace.cpp: assert(cycle_state_ == CycleState::Marking);
+runtime/src/allocator/OldGenSpace.cpp: assert(cycle_state_ == CycleState::Marking);
+runtime/src/allocator/OldGenSpace.cpp: assert(snapshot_mode_ && "snapshotYoungLarge outside the t0 snapshot");
+runtime/src/allocator/OldGenSpace.cpp: const bool snap = !P::kParallel && snapshot_mode_;
+runtime/src/allocator/OldGenSpace.cpp: const bool snap = !P::kParallel && snapshot_mode_;
+runtime/src/allocator/OldGenSpace.cpp: cycle_state_ = CycleState::HandoffDue;
+runtime/src/allocator/OldGenSpace.cpp: cycle_state_ = CycleState::HandoffDue;
+runtime/src/allocator/OldGenSpace.cpp: cycle_state_ = CycleState::Idle;
+runtime/src/allocator/OldGenSpace.cpp: cycle_state_ = CycleState::Idle;
+runtime/src/allocator/OldGenSpace.cpp: cycle_state_ = CycleState::Marking;
+runtime/src/allocator/OldGenSpace.cpp: if (__builtin_expect(cycle_state_ != CycleState::Idle, 0)) {
+runtime/src/allocator/OldGenSpace.cpp: if (cycle_state_ != CycleState::Idle) cycle_units_ += units;
+runtime/src/allocator/OldGenSpace.cpp: if (cycle_state_ != CycleState::Idle) cycle_units_ += units;
+runtime/src/allocator/OldGenSpace.cpp: if (cycle_state_ != CycleState::Idle) return MajorGCTriggerReason::None;
+runtime/src/allocator/OldGenSpace.cpp: if (snapshot_mode_) {
+runtime/src/allocator/OldGenSpace.cpp: snapshot_mode_ = false;
+runtime/src/allocator/OldGenSpace.cpp: } else if (__builtin_expect(cycle_state_ != CycleState::Idle, 0)) {
+runtime/src/allocator/OldGenSpace.hpp: CycleState cycleState() const { return cycle_state_; }
+runtime/src/allocator/OldGenSpace.hpp: CycleState cycle_state_ = CycleState::Idle;
+runtime/src/allocator/OldGenSpace.hpp: bool cycleActive() const { return cycle_state_ != CycleState::Idle; }
+runtime/src/allocator/OldGenSpace.hpp: bool snapshot_mode_ = false;
+runtime/src/allocator/OldGenSpace.hpp: if (snapshot_mode_) im11_t0_greys_.push_back(e);
+runtime/src/allocator/OldGenSpace.hpp: snapshot_mode_ = on;
+runtime/src/allocator/OldGenSpace.hpp: static OldGenSpace::CycleState cycleState(const OldGenSpace& og) { return og.cycle_state_; }

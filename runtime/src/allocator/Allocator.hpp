@@ -384,7 +384,9 @@ private:
     // (Re)creates page_work_ from config_ (nullptr in mode 0) and configures
     // the helper pool (restarting it if idle and configured differently).
     void rebuildPageWork();
-    // True when the calling thread's heap is inside a GC pause.
+    // True when the calling thread's heap is inside a GC pause, or the caller
+    // is a GCMarkGang member running a job (always inside a pause, CR-025).
+    // The in_pause value of every helper-job wait (stall accounting only).
     bool callerInPause() const;
 #if ECO_HEAP_VALIDATE
     void validatePageWork(const char* where) const;
@@ -595,6 +597,15 @@ public:
     // Access thread-local heap for testing.
     static ThreadLocalHeap* getThreadHeap(Allocator& alloc) {
         return alloc.getThreadHeap();
+    }
+
+    // CR-025: the pause state a helper-job wait on this thread is charged with.
+    static bool callerInPause(const Allocator& alloc) { return alloc.callerInPause(); }
+
+    // CR-029: grows `space`'s bag toward `bytes` of capacity; with SIZE_MAX it
+    // takes pages until acquireOldGenBlock refuses (the reservation is spent).
+    static void ensureOldGenCapacityFor(Allocator& alloc, OldGenSpace& space, size_t bytes) {
+        alloc.ensureOldGenCapacityFor(space, bytes);
     }
 
     // threaded-gc-07: the region slice set API and geometry.

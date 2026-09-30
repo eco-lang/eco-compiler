@@ -1,0 +1,5 @@
+runtime/src/allocator/OldGenSpace.cpp: if (index_base_ == nullptr || end == nullptr || end <= index_base_) return;
+runtime/src/allocator/OldGenSpace.cpp: if (index_base_ == nullptr) return std::numeric_limits<size_t>::max();
+runtime/src/allocator/OldGenSpace.cpp: if (index_base_ == nullptr) return std::numeric_limits<size_t>::max();
+runtime/src/allocator/OldGenSpace.cpp: index_base_ = allocator_->getHeapBase();
+runtime/src/allocator/OldGenSpace.hpp: char* index_base_ = nullptr;

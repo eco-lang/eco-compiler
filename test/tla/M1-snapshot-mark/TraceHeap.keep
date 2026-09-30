@@ -1,0 +1,4 @@
+# The events TraceHeap.tla matches (run_traces.py keeps only these after the merge; the
+# gang events order the threads and are then dropped, their ordering kept in the vector clocks).
+minor major t0 t0end launch relaunch step reap stop pressure join assist closing handoff
+grey scan load drop cellw cellr alloc heap marks

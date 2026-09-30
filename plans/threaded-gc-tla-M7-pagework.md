@@ -1,9 +1,19 @@
 # Threaded GC — TLA+ model M7: PageWork (deferred decommit, commit-ahead) and the lock order
 
-**Status:** IMPLEMENTATION-READY PLAN (2026-09-28). Adversarial review on 2026-09-28 against the
-current tree (§11): the sketches in §4.6 were revised and the revised text passes the PlusCal
-translator and SANY (tla2tools 1.8.0). **TLC has not run on them.** Expected results in §5 and §6
-are predictions from reading the code.
+**Status:** IMPLEMENTED (2026-09-28) in `test/tla/M7-pagework/`: steps 1–4 of §9 are done, with
+step 5's `models.txt` rows and step 6's modelling verdict (in `AUDIT.md` there; the register is
+updated separately). Step 7 (trace validation) is done too (2026-09-29): `TracePageWork.tla` on
+the H2/H3 scripts, 8 accepted rows and 7 negative controls in `traces.txt`, no code defect, two
+model corrections (`reapDone` is not atomic; discard bodies run in batch order). Step 5's
+`manifest.txt` lines (listed in `AUDIT.md`) are not done. The quick tier (4 passing configurations, the `lock_order_stall`
+witness, 13 mutants) and the deep tier behave as expected. `AUDIT.md` records the results, the
+counterexamples, and every way the implemented model differs from the sketch below (four mutants
+and the invariant `PostIdle` added; both "to add" mutants built; the deep configuration split
+into safety and liveness). `MAPPING.md` there is the model ↔ code map. The sketch in §4.6 is kept
+as the reviewed design text; the committed model is authoritative.
+
+History: adversarial review on 2026-09-28 against the current tree (§11): the sketches in §4.6
+were revised and the revised text passed the PlusCal translator and SANY (tla2tools 1.8.0).
 
 **Parents:** `plans/threaded-gc-tla-verification.md` (rules A1–A9, §5.0 contracts) and
 `plans/threaded-gc-tla-primer.md`. The layout follows `plans/threaded-gc-tla-M2-slice-control.md`.
@@ -804,6 +814,11 @@ every mutant.
   exactly H3's pattern check, stated formally.
 
 ## 9. Implementation steps
+
+**Progress (2026-09-28):** steps 1–4 done (see `test/tla/M7-pagework/AUDIT.md`); step 5's
+`models.txt` rows are in, its `manifest.txt` lines are listed in `AUDIT.md` for the canary wave;
+step 6's modelling verdict is in `AUDIT.md` (the register itself is updated separately); step 7
+done (2026-09-29, `AUDIT.md`).
 
 1. Create `test/tla/M7-pagework/` with both modules (§4.6), `MC.tla`, the §6 configurations,
    MAPPING.md (§4.5 plus A3) and AUDIT.md.

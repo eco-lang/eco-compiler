@@ -10,6 +10,7 @@
 #include "OldGenSpace.hpp"
 #include "GCHelperPool.hpp"
 #include "HeapChildWalk.hpp"
+#include "TlaTrace.hpp"   // compiled-out hooks (trace builds only)
 #include <mutex>
 #include "Allocator.hpp"
 #include "NurserySpace.hpp"
@@ -41,6 +42,22 @@ namespace Elm {
 
 // Global heap base (defined in Allocator.cpp).
 extern char* g_heap_base;
+
+// M6's trace-build switch (defined in GCHelperPool.cpp): its probe below fires only while set.
+ECO_TLA_TRACE_ONLY(namespace gc { extern bool tla_m6; })
+
+// M4 trace hooks (test/tla/M4-promotion-bitmap/TracePromoBitmap.tla; plans/
+// threaded-gc-tla-M4-promotion-bitmap.md §8). Compiled out except in trace
+// builds, and even there recorded only while the M4 harness sets tla_m4 (other
+// harnesses leave it off, so these events and their ordering fields never enter
+// their logs). tla_m4_tick is the promo_mu_ clock: only touched under the lock.
+ECO_TLA_TRACE_ONLY(bool tla_m4 = false; int64_t tla_m4_tick = 0; thread_local int64_t tla_m4_flip = -1;)
+#define ECO_M4_TRACE(...) ECO_TLA_TRACE_ONLY(if (::Elm::tla_m4)) ECO_TLA_TRACE(__VA_ARGS__)
+// A cell of an OldGenSpace member's heap, as the M4 trace names it: its block
+// id and the index of its first mark bit in that block (used in hooks only).
+#define ECO_M4_BLK(p) blockIdFor(p).v
+#define ECO_M4_BIT(p) static_cast<int64_t>((reinterpret_cast<const char*>(p) - \
+                          blocks_.info(blockIdFor(p)).start) / MARK_ALIGNMENT)
 
 // Forward decl — defined later in this TU; called from member functions
 // above the definition.
@@ -226,6 +243,7 @@ OldGenSpace::OldGenSpace() :
     ensureMarkers();   // threaded-gc-05b: worker 0 always exists
 }
 
+// TLA-REGION(OGS.destructor) begin
 OldGenSpace::~OldGenSpace() {
     // threaded-gc-05c: no background member may outlive the state it reads
     // (bg_ctl_ is destroyed before bg_; stop explicitly first).
@@ -241,6 +259,7 @@ OldGenSpace::~OldGenSpace() {
         if (markers_[i]) markers_[i]->live.release();
     }
 }
+// TLA-REGION(OGS.destructor) end
 
 OldGenSpace::OldGenGeometry
 OldGenSpace::geometryFor(size_t reservation_bytes, size_t page) {
@@ -364,10 +383,14 @@ void OldGenSpace::initialize(Allocator* allocator, const HeapConfig* config) {
 
 // contains() is now inline in the header.
 
+// TLA-REGION(OGS.reset) begin
 void OldGenSpace::reset(const HeapConfig* new_config) {
     // threaded-gc-05c: stop a running background episode before anything it
     // reads is torn down; the gang is recreated for the new configuration.
     if (bg_) bg_->stopAndJoin();
+#if ECO_HEAP_VALIDATE
+    assertSlotsQuiescent("reset");   // IM14: every slot is cleared below
+#endif
     bg_.reset();
     bg_ctl_.reset();
     bg_ep_ = BgEpisode::None;
@@ -470,6 +493,7 @@ void OldGenSpace::reset(const HeapConfig* new_config) {
     fixup_buffer_index_ = 0;
     fixup_cursor_ = nullptr;
 }
+// TLA-REGION(OGS.reset) end
 
 // ---------------------------------------------------------------------------
 // Header initialization helper.
@@ -484,6 +508,7 @@ void OldGenSpace::initObjectHeader(void* obj) {
 // the owning block's `live_bytes` so it isn't reported as all-dead during
 // the next finalize/reclaim/shrink. Mark-time `live_bytes` attribution only
 // covers cells discovered by `markOneObject`; mid-cycle cells bypass mark.
+// TLA-REGION(OGS.initObjectHeaderWithSize) begin
 void OldGenSpace::initObjectHeaderWithSize(void* obj, size_t cell_bytes) {
     // Note: an object at heap_base+0 is fine under absolute addressing — its
     // HPointer word equals heap_base, a valid non-null pointer (the heap is
@@ -532,11 +557,13 @@ void OldGenSpace::initObjectHeaderWithSize(void* obj, size_t cell_bytes) {
         hdr->color = static_cast<u32>(Color::White);
     }
 }
+// TLA-REGION(OGS.initObjectHeaderWithSize) end
 
 // ---------------------------------------------------------------------------
 // Page-index helpers (Step 1).
 // ---------------------------------------------------------------------------
 
+// TLA-REGION(OGS.commitPageIndexThrough) begin
 void OldGenSpace::commitPageIndexThrough(const char* end) {
     if (index_base_ == nullptr || end == nullptr || end <= index_base_) return;
     const size_t page_size = config_->alloc_buffer_size;
@@ -544,7 +571,9 @@ void OldGenSpace::commitPageIndexThrough(const char* end) {
     const size_t want = std::min(slot + 1, page_index_.capacity());
     page_index_.ensureCommitted(want);
 }
+// TLA-REGION(OGS.commitPageIndexThrough) end
 
+// TLA-REGION(OGS.recomputeRegionBounds) begin
 void OldGenSpace::recomputeRegionBounds() {
     char* new_base = nullptr;
     char* new_end = nullptr;
@@ -557,13 +586,16 @@ void OldGenSpace::recomputeRegionBounds() {
         if (new_base == nullptr || e.first < new_base) new_base = e.first;
         if (e.second > new_end) new_end = e.second;
     }
+    // CR-009 (05c G12, row H5): every region-bound write goes through the
+    // setters (relaxed atomic_ref stores), this one included.
     setRegionBase(new_base);
-    region_end_  = new_end;
+    setRegionEnd(new_end);
     // threaded-gc-01 (HEAP_049): the page index is keyed from index_base_,
     // so a region-bounds change no longer rebuilds it. Committing through
     // the (possibly moved) end is a no-op unless the region grew.
-    commitPageIndexThrough(region_end_);
+    commitPageIndexThrough(new_end);
 }
+// TLA-REGION(OGS.recomputeRegionBounds) end
 
 size_t OldGenSpace::firstPageIndex(const BlockInfo& block) const {
     if (index_base_ == nullptr) return std::numeric_limits<size_t>::max();
@@ -583,6 +615,7 @@ size_t OldGenSpace::lastPageIndex(const BlockInfo& block) const {
     return static_cast<size_t>(block.end - index_base_ - 1) / page_size;
 }
 
+// TLA-REGION(OGS.assignPageIndexForBlock) begin
 void OldGenSpace::assignPageIndexForBlock(BlockId id) {
     if (!id.valid()) return;
     const BlockInfo& block = blocks_.info(id);
@@ -596,7 +629,12 @@ void OldGenSpace::assignPageIndexForBlock(BlockId id) {
     const uint32_t enc = encodeOwner(id);
     for (size_t p = first; p <= last; ++p) {
         PageOwners& slot = page_index_[p];
-        if (slot.primary == enc || slot.secondary == enc) {
+        // CR-021: this thread is the only writer, but background markers may
+        // hold an atomic_ref to the words (loadOwner in blockIdFor), so its
+        // own reads go through one too (relaxed: plain moves on x86).
+        const uint32_t prim = loadOwnerRelaxed(slot.primary);
+        const uint32_t sec = loadOwnerRelaxed(slot.secondary);
+        if (prim == enc || sec == enc) {
             // Already recorded.
             continue;
         }
@@ -604,9 +642,9 @@ void OldGenSpace::assignPageIndexForBlock(BlockId id) {
         // release -- the BlockInfo and mark slot written by materializeBlock
         // before this are visible to a background marker that loads the owner
         // with acquire in blockIdFor.
-        if (slot.primary == 0) {
+        if (prim == 0) {
             storeOwner(slot.primary, enc);
-        } else if (slot.secondary == 0) {
+        } else if (sec == 0) {
             storeOwner(slot.secondary, enc);
         } else {
 #if ECO_HEAP_VALIDATE
@@ -616,7 +654,7 @@ void OldGenSpace::assignPageIndexForBlock(BlockId id) {
             std::fprintf(stderr,
                 "[heap-validate] HEAP_049: page slot %zu already has two "
                 "owners (ids %u, %u) when assigning id %u\n",
-                p, slot.primary - 1, slot.secondary - 1, id.v);
+                p, prim - 1, sec - 1, id.v);
             std::fflush(stderr);
             std::abort();
 #endif
@@ -628,6 +666,7 @@ void OldGenSpace::assignPageIndexForBlock(BlockId id) {
         }
     }
 }
+// TLA-REGION(OGS.assignPageIndexForBlock) end
 
 void OldGenSpace::clearPageIndexForBlock(BlockId id) {
     if (!id.valid()) return;
@@ -645,15 +684,19 @@ void OldGenSpace::clearPageIndexForBlock(BlockId id) {
     for (size_t p = first; p <= end; ++p) {
         PageOwners& slot = page_index_[p];
         // Clear whichever owner matches; leave the other owner in place.
-        if (slot.primary == enc) {
-            storeOwner(slot.primary, slot.secondary);
+        // CR-021: the owner's reads go through atomic_ref (relaxed).
+        const uint32_t prim = loadOwnerRelaxed(slot.primary);
+        const uint32_t sec = loadOwnerRelaxed(slot.secondary);
+        if (prim == enc) {
+            storeOwner(slot.primary, sec);
             storeOwner(slot.secondary, 0);
-        } else if (slot.secondary == enc) {
+        } else if (sec == enc) {
             storeOwner(slot.secondary, 0);
         }
     }
 }
 
+// TLA-REGION(OGS.materializeBlock) begin
 BlockId OldGenSpace::materializeBlock(const BlockInfo& bi,
                                       const BufferMetadata& m,
                                       size_t mark_bytes) {
@@ -663,6 +706,7 @@ BlockId OldGenSpace::materializeBlock(const BlockInfo& bi,
     assignPageIndexForBlock(id);
     return id;
 }
+// TLA-REGION(OGS.materializeBlock) end
 
 // Defined further down (size-class fast path); used by the bitmap path.
 static inline void padCellSlack(void* obj, size_t requested_size,
@@ -672,6 +716,7 @@ static inline void padCellSlack(void* obj, size_t requested_size,
 // Bitmap allocation (threaded-gc-02, HEAP_054). Cursor / queue bookkeeping.
 // ---------------------------------------------------------------------------
 
+// TLA-REGION(OGS.resetAllocCursors) begin
 void OldGenSpace::resetAllocCursors() {
     syncCursorLiveBytes();
     for (size_t c = 0; c < NUM_SIZE_CLASSES; ++c) {
@@ -690,7 +735,9 @@ void OldGenSpace::resetAllocCursors() {
         b.alloc_state = kAllocNone;
     }
 }
+// TLA-REGION(OGS.resetAllocCursors) end
 
+// TLA-REGION(OGS.detachFromAllocation) begin
 void OldGenSpace::detachFromAllocation(BlockId id) {
     if (!id.valid()) return;
     BlockInfo& b = blocks_.info(id);
@@ -733,6 +780,7 @@ void OldGenSpace::detachFromAllocation(BlockId id) {
     }
     b.alloc_state = kAllocNone;
 }
+// TLA-REGION(OGS.detachFromAllocation) end
 
 void OldGenSpace::flushCursor(size_t cls) {
     AllocCursor& c = cursor_[cls];
@@ -799,6 +847,7 @@ bool OldGenSpace::refillCursor(size_t cls) {
     return false;
 }
 
+// TLA-REGION(OGS.finalizeBitmapCell) begin
 void* OldGenSpace::finalizeBitmapCell(AllocCursor& c, uint32_t k,
                                       size_t requested_size) {
     const size_t cell = c.cell_bytes;
@@ -834,6 +883,7 @@ void* OldGenSpace::finalizeBitmapCell(AllocCursor& c, uint32_t k,
     padCellSlack(p, requested_size, cell);   // a later demotion walks mixed (F8)
     return p;
 }
+// TLA-REGION(OGS.finalizeBitmapCell) end
 
 void* OldGenSpace::cursorAllocate(size_t cls, size_t requested_size) {
     AllocCursor& c = cursor_[cls];
@@ -863,6 +913,7 @@ void* OldGenSpace::cursorAllocate(size_t cls, size_t requested_size) {
     }
 }
 
+// TLA-REGION(OGS.ensureBagPageAvailable) begin
 bool OldGenSpace::ensureBagPageAvailable() {
     // Same fall-through as populateFromBlock (left untouched so the flag-off
     // path stays byte-identical): acquire a fresh page from the OS if the bag
@@ -871,8 +922,8 @@ bool OldGenSpace::ensureBagPageAvailable() {
         char* base = allocator_->acquireOldGenBlock(config_->alloc_buffer_size);
         if (base != nullptr) {
             unassigned_blocks_.emplace_back(base, base + config_->alloc_buffer_size);
-            if (region_base_ == nullptr || base < region_base_) setRegionBase(base);
-            if (base + config_->alloc_buffer_size > region_end_) {
+            if (char* const rb = regionBase(); rb == nullptr || base < rb) setRegionBase(base);
+            if (base + config_->alloc_buffer_size > regionEnd()) {
                 setRegionEnd(base + config_->alloc_buffer_size);
             }
             resizePageIndexForRegion();
@@ -880,6 +931,7 @@ bool OldGenSpace::ensureBagPageAvailable() {
     }
     return !unassigned_blocks_.empty();
 }
+// TLA-REGION(OGS.ensureBagPageAvailable) end
 
 BlockId OldGenSpace::materializeVirginBlock(size_t cls) {
     const size_t cell_bytes = classToSize(cls);
@@ -1026,6 +1078,7 @@ OldGenSpace::PromoCtx& OldGenSpace::promoCtx() {
     return *promo_ctx_;
 }
 
+// TLA-REGION(OGS.flushCursorW) begin
 void OldGenSpace::flushCursorW(AllocCursor& c, PromoWorker& pw) {
     if (c.block.valid() && c.pending_allocs != 0) {
         // Atomic: with chunked cursors (N > 1) several workers flush into one
@@ -1038,6 +1091,7 @@ void OldGenSpace::flushCursorW(AllocCursor& c, PromoWorker& pw) {
     c.pending_live = 0;
     c.pending_allocs = 0;
 }
+// TLA-REGION(OGS.flushCursorW) end
 
 void OldGenSpace::setCursorW(AllocCursor& c, size_t cls, BlockId id, PromoWorker& pw) {
 #if ECO_HEAP_VALIDATE
@@ -1066,6 +1120,7 @@ void OldGenSpace::setCursorW(AllocCursor& c, size_t cls, BlockId id, PromoWorker
 // this worker or atomic: the header and slack (the cell is ours), the mark
 // bit mid-cycle (atomic fetch_or, 5c H1), the block's live_bytes (atomic
 // add, as initObjectHeaderWithSize now does), and the byte charges (pw).
+// TLA-REGION(OGS.finalizePoppedCellW) begin
 void* OldGenSpace::finalizePoppedCellW(FreeCell* cell, size_t cls, size_t requested_size,
                                        PromoWorker& pw) {
     void* result = static_cast<void*>(cell);
@@ -1074,6 +1129,9 @@ void* OldGenSpace::finalizePoppedCellW(FreeCell* cell, size_t cls, size_t reques
     std::memset(hdr, 0, sizeof(Header));
     if (marking_active || gc_phase_ != GCPhase::Idle) {
         hdr->color = static_cast<u32>(Color::Black);
+        ECO_M4_TRACE("m4.fin", "cb", cell_size, "blk", ECO_M4_BLK(result), "c", ECO_M4_BIT(result),
+                     "black", true, "rd", "phase",
+                     "val", static_cast<int>(cycle_state_ != CycleState::Idle ? GCPhase::Marking : GCPhase::Sweeping));
         if (contains(result)) {
             const BlockId id = blockIdFor(result);
             if (id.valid()) {
@@ -1083,10 +1141,13 @@ void* OldGenSpace::finalizePoppedCellW(FreeCell* cell, size_t cls, size_t reques
                 if (!test_skip_allocate_black_) setMarkBitAtomic(id, result);
                 std::atomic_ref<uint64_t>(blocks_.meta(id).live_bytes)
                     .fetch_add(cell_size, std::memory_order_relaxed);
+                ECO_M4_TRACE("m4.finb", "blk", id.v, "c", ECO_M4_BIT(result));
             }
         }
     } else {
         hdr->color = static_cast<u32>(Color::White);
+        ECO_M4_TRACE("m4.fin", "cb", cell_size, "blk", ECO_M4_BLK(result), "c", ECO_M4_BIT(result),
+                     "black", false, "rd", "phase", "val", 0);
     }
     padCellSlack(result, requested_size, cell_size);
     pw.allocated_bytes += cell_size;
@@ -1094,6 +1155,7 @@ void* OldGenSpace::finalizePoppedCellW(FreeCell* cell, size_t cls, size_t reques
     ++pw.list_pops;
     return result;
 }
+// TLA-REGION(OGS.finalizePoppedCellW) end
 
 // Under promo_mu_ (it pops the shared partial_ queue).
 bool OldGenSpace::refillCursorW(AllocCursor& c, size_t cls, PromoWorker& pw) {
@@ -1118,6 +1180,7 @@ bool OldGenSpace::refillCursorW(AllocCursor& c, size_t cls, PromoWorker& pw) {
     return false;
 }
 
+// TLA-REGION(OGS.finalizeBitmapCellW) begin
 void* OldGenSpace::finalizeBitmapCellW(AllocCursor& c, uint32_t k, size_t requested_size,
                                        PromoWorker& pw) {
     const size_t cell = c.cell_bytes;
@@ -1129,10 +1192,16 @@ void* OldGenSpace::finalizeBitmapCellW(AllocCursor& c, uint32_t k, size_t reques
     // a cycle: no marker writes these bitmap bytes, so a plain set is safe.
     if (!test_skip_allocate_black_)
         bitscan::setBit(c.bits, static_cast<size_t>(k) * c.stride_bits);
+    ECO_M4_TRACE("m4.set", "cb", c.cell_bytes, "blk", c.block.v, "c", static_cast<size_t>(k) * c.stride_bits);
     Header* hdr = reinterpret_cast<Header*>(p);
     std::memset(hdr, 0, sizeof(Header));
     hdr->color = static_cast<u32>(
         (marking_active || gc_phase_ != GCPhase::Idle) ? Color::Black : Color::White);
+    // The phase this decision read (Sweeping outside a cycle), for the merger's
+    // reads-from order on gc_phase_ (CR-001).
+    ECO_M4_TRACE("m4.rph", "cb", c.cell_bytes, "black", hdr->color == static_cast<u32>(Color::Black),
+                 "rd", "phase", "val", hdr->color == static_cast<u32>(Color::Black)
+                     ? static_cast<int>(cycle_state_ != CycleState::Idle ? GCPhase::Marking : GCPhase::Sweeping) : 0);
     c.pending_live += cell;
     c.pending_allocs++;
     pw.allocated_bytes += cell;
@@ -1140,23 +1209,30 @@ void* OldGenSpace::finalizeBitmapCellW(AllocCursor& c, uint32_t k, size_t reques
     padCellSlack(p, requested_size, cell);
     return p;
 }
+// TLA-REGION(OGS.finalizeBitmapCellW) end
 
 // Rung 1 inside the worker's current block only. nullptr when the block is
 // exhausted (it is then retired to kAllocNone and the cursor emptied).
+// TLA-REGION(OGS.cursorAllocateW) begin
 void* OldGenSpace::cursorAllocateW(AllocCursor& c, size_t requested_size, PromoWorker& pw) {
     if (!c.block.valid()) return nullptr;
     if (c.next_cell < c.num_cells) {
         const size_t bit = static_cast<size_t>(c.next_cell) * c.stride_bits;
         if (((c.bits[bit >> 3] >> (bit & 7)) & 1u) == 0) {
             const uint32_t k = c.next_cell++;
+            ECO_M4_TRACE("m4.cur", "cb", c.cell_bytes, "blk", c.block.v, "c", bit, "fast", true);
             return finalizeBitmapCellW(c, k, requested_size, pw);
         }
     }
     const uint32_t k = bitscan::nextFreeCell(c.bits, c.stride_bits, c.next_cell, c.num_cells);
     if (k < c.num_cells) {
+        ECO_M4_TRACE("m4.cur", "cb", c.cell_bytes, "blk", c.block.v,
+                     "c", static_cast<size_t>(k) * c.stride_bits, "fast", false);
         c.next_cell = k + 1;
         return finalizeBitmapCellW(c, k, requested_size, pw);
     }
+    ECO_M4_TRACE("m4.exh", "cb", c.cell_bytes, "blk", c.block.v,
+                 "flush", c.pending_allocs != 0 ? c.pending_live / c.cell_bytes : 0);
     flushCursorW(c, pw);
     // One worker per block (N = 1): retire it here. Chunked (N > 1): the
     // shared block's state is advanced under the lock (advanceSharedW).
@@ -1164,24 +1240,35 @@ void* OldGenSpace::cursorAllocateW(AllocCursor& c, size_t requested_size, PromoW
     c = AllocCursor{};
     return nullptr;
 }
+// TLA-REGION(OGS.cursorAllocateW) end
 
 // Chunked cursors (N > 1). Lock-free: claims the next chunk of the class's
 // shared block into the worker's cursor. false when there is no block or it
 // is exhausted (the caller then advances under the lock).
+// TLA-REGION(OGS.claimChunkW) begin
 bool OldGenSpace::claimChunkW(size_t cls, AllocCursor& c, PromoWorker& pw) {
     std::atomic<uint64_t>& sh = promo_ctx_->shared[cls].w;
     uint64_t w = sh.load(std::memory_order_acquire);
     for (;;) {
-        if (w == 0) return false;
+        if (w == 0) {
+            ECO_M4_TRACE("m4.nclaim", "cb", classToSize(cls), "rd", ::Elm::tlatrace::key("sh", cls), "val", w);
+            return false;
+        }
         const BlockId id{static_cast<uint32_t>(w >> 32) - 1};
         const uint32_t k = static_cast<uint32_t>(w);
         const BlockInfo& b = blocks_.info(id);
         const uint32_t ncell = cellsIn(b);
         const uint64_t lo = static_cast<uint64_t>(k) * kChunkUnitCells;
-        if (lo >= ncell) return false;
+        if (lo >= ncell) {
+            ECO_M4_TRACE("m4.nclaim", "cb", classToSize(cls), "rd", ::Elm::tlatrace::key("sh", cls), "val", w);
+            return false;
+        }
         const uint32_t units = pw.chunk_units[cls];
         if (sh.compare_exchange_weak(w, w + units, std::memory_order_acq_rel,
                                      std::memory_order_acquire)) {
+            ECO_M4_TRACE("m4.claim", "cb", classToSize(cls), "blk", id.v, "u", k, "units", units,
+                         "lo", lo, "hi", std::min<uint64_t>(lo + static_cast<uint64_t>(units) * kChunkUnitCells, ncell),
+                         "rmw", ::Elm::tlatrace::key("sh", cls), "old", w, "new", w + units);
             if (units < kChunkMaxUnits) pw.chunk_units[cls] = static_cast<uint8_t>(units * 2);
             flushCursorW(c, pw);
             c.block = id;
@@ -1196,8 +1283,10 @@ bool OldGenSpace::claimChunkW(size_t cls, AllocCursor& c, PromoWorker& pw) {
         }
     }
 }
+// TLA-REGION(OGS.claimChunkW) end
 
 // Under promo_mu_. Makes `id` the class's shared block, chunk 0.
+// TLA-REGION(OGS.publishShared) begin
 void OldGenSpace::publishShared(size_t cls, BlockId id) {
 #if ECO_HEAP_VALIDATE
     if (isT0Block(id)) {   // IM13 for the shared chunked cursor
@@ -1208,14 +1297,21 @@ void OldGenSpace::publishShared(size_t cls, BlockId id) {
     }
 #endif
     blocks_.info(id).alloc_state = kAllocCurrent;
+    ECO_TLA_TRACE_ONLY(const uint64_t m4_old = promo_ctx_->shared[cls].w.load(std::memory_order_relaxed);)
     promo_ctx_->shared[cls].w.store((static_cast<uint64_t>(id.v) + 1) << 32,
                                   std::memory_order_release);
+    // M4: logged after the store, so a reader that loaded the old value is not
+    // timestamped after it (the merger prefers timestamp order).
+    ECO_M4_TRACE("m4.pub", "cb", classToSize(cls), "blk", id.v, "rmw", ::Elm::tlatrace::key("sh", cls),
+                 "old", m4_old, "new", (static_cast<uint64_t>(id.v) + 1) << 32);
 }
+// TLA-REGION(OGS.publishShared) end
 
 // Under promo_mu_. true when a claimable chunk is available afterwards: either
 // another worker already advanced, or the partial_ queue supplied a block
 // (rung 1 refill). The exhausted block is retired (kAllocNone); at the merge
 // the workers' last chunks re-queue it if cells are left.
+// TLA-REGION(OGS.advanceSharedW) begin
 bool OldGenSpace::advanceSharedW(size_t cls) {
     std::atomic<uint64_t>& sh = promo_ctx_->shared[cls].w;
     const uint64_t w = sh.load(std::memory_order_relaxed);
@@ -1225,6 +1321,8 @@ bool OldGenSpace::advanceSharedW(size_t cls) {
         if (lo < cellsIn(blocks_.info(id))) return true;
         blocks_.info(id).alloc_state = kAllocNone;
         sh.store(0, std::memory_order_relaxed);
+        ECO_M4_TRACE("m4.retire", "cb", classToSize(cls), "blk", id.v,
+                     "rmw", ::Elm::tlatrace::key("sh", cls), "old", w, "new", 0);
     }
     std::vector<BlockId>& q = partial_[cls];
     size_t& h = partial_head_[cls];
@@ -1244,8 +1342,10 @@ bool OldGenSpace::advanceSharedW(size_t cls) {
     h = 0;
     return false;
 }
+// TLA-REGION(OGS.advanceSharedW) end
 
 // Under promo_mu_: a virgin block becomes the class's shared block.
+// TLA-REGION(OGS.startVirginBlockShared) begin
 bool OldGenSpace::startVirginBlockShared(size_t cls) {
     const size_t cell_bytes = classToSize(cls);
     if (!ensureBagPageAvailable()) return false;
@@ -1274,8 +1374,10 @@ bool OldGenSpace::startVirginBlockShared(size_t cls) {
 #endif
     return true;
 }
+// TLA-REGION(OGS.startVirginBlockShared) end
 
 // Under promo_mu_.
+// TLA-REGION(OGS.startVirginBlockW) begin
 bool OldGenSpace::startVirginBlockW(AllocCursor& c, size_t cls, PromoWorker& pw) {
     const size_t cell_bytes = classToSize(cls);
     if (!ensureBagPageAvailable()) return false;
@@ -1300,9 +1402,11 @@ bool OldGenSpace::startVirginBlockW(AllocCursor& c, size_t cls, PromoWorker& pw)
 #endif
     return true;
 }
+// TLA-REGION(OGS.startVirginBlockW) end
 
 // Rungs (2)..(8) of allocateFromSizeClassBitmap, under promo_mu_, with the
 // virgin-block rungs feeding the WORKER's cursor (the W6 rule: same order).
+// TLA-REGION(OGS.ladderFrom2W) begin
 void* OldGenSpace::ladderFrom2W(size_t cls, size_t requested_size, PromoWorker& pw) {
     AllocCursor& c = pw.cur[cls];
     if (FreeCell* cell = tryPopFromFreeList(cls)) {
@@ -1331,8 +1435,11 @@ void* OldGenSpace::ladderFrom2W(size_t cls, size_t requested_size, PromoWorker& 
 #if ENABLE_GC_STATS
         alloc_stats_.bm.split_allocs++;
 #endif
+        ECO_M4_TRACE("m4.split", "cb", classToSize(cls), "blk", ECO_M4_BLK(r), "c", ECO_M4_BIT(r));
         return r;
     }
+    ECO_M4_TRACE("m4.ladder", "cb", classToSize(cls), "pend", hasPendingSweepWork(),
+                 "rd", "phase", "val", static_cast<int>(gc_phase_));
     if (hasPendingSweepWork()) {
         if (void* r = sweepOnDemandAllocate(cls, requested_size)) {
 #if ENABLE_GC_STATS
@@ -1345,6 +1452,7 @@ void* OldGenSpace::ladderFrom2W(size_t cls, size_t requested_size, PromoWorker& 
     if (void* r = allocateFromBagPage(requested_size)) return r;
     return panicSweepAndRetryAllocation(cls, requested_size);
 }
+// TLA-REGION(OGS.ladderFrom2W) end
 
 void OldGenSpace::requeueFront(size_t cls, BlockId id) {
     std::vector<BlockId>& q = partial_[cls];
@@ -1358,6 +1466,7 @@ void OldGenSpace::requeueFront(size_t cls, BlockId id) {
 // concurrently: hand worker 0's accounting and cursors back, run the shrink
 // exactly where allocate() would have, and take them again (the one-worker
 // identity, P§3.8.5). With more workers the merge runs it (deferred).
+// TLA-REGION(OGS.sweepCompleteInPromotion) begin
 void OldGenSpace::sweepCompleteInPromotion() {
     PromoCtx& ctx = *promo_ctx_;
     if (ctx.n > 1) {
@@ -1383,7 +1492,9 @@ void OldGenSpace::sweepCompleteInPromotion() {
         cursor_[cls] = AllocCursor{};
     }
 }
+// TLA-REGION(OGS.sweepCompleteInPromotion) end
 
+// TLA-REGION(OGS.beginParallelPromotion) begin
 void OldGenSpace::beginParallelPromotion(PromoCtx& ctx, unsigned n) {
     assert(config_->old_gen_bitmap_alloc && "parallel promotion needs bitmap allocation");
     assert(n >= 1 && n <= kMaxPromoWorkers);
@@ -1399,6 +1510,11 @@ void OldGenSpace::beginParallelPromotion(PromoCtx& ctx, unsigned n) {
             // The mutator's block becomes the shared block, from the chunk of
             // its next cell (cells below it are allocated or rewound into it).
             flushCursor(cls);
+            ECO_M4_TRACE("m4.begin", "cb", classToSize(cls), "blk", cursor_[cls].block.v,
+                         "u", cursor_[cls].next_cell / kChunkUnitCells,
+                         "rmw", ::Elm::tlatrace::key("sh", cls), "old", 0,
+                         "new", ((static_cast<uint64_t>(cursor_[cls].block.v) + 1) << 32) |
+                                    (cursor_[cls].next_cell / kChunkUnitCells));
             ctx.shared[cls].w.store(((static_cast<uint64_t>(cursor_[cls].block.v) + 1) << 32) |
                                       (cursor_[cls].next_cell / kChunkUnitCells),
                                   std::memory_order_relaxed);
@@ -1412,10 +1528,13 @@ void OldGenSpace::beginParallelPromotion(PromoCtx& ctx, unsigned n) {
 #endif
     par_promo_active_ = true;
 }
+// TLA-REGION(OGS.beginParallelPromotion) end
 
+// TLA-REGION(OGS.endParallelPromotion) begin
 void OldGenSpace::endParallelPromotion(PromoCtx& ctx) {
     assert(par_promo_active_);
     par_promo_active_ = false;
+    ECO_M4_TRACE("m4.merge", "deferred", sweep_complete_deferred_);
     uint64_t alloc_delta = 0, total_delta = 0;
     for (unsigned w = 0; w < ctx.n; ++w) {
         PromoWorker& pw = ctx.w[w];
@@ -1466,6 +1585,9 @@ void OldGenSpace::endParallelPromotion(PromoCtx& ctx) {
         bool kept_one = false;   // negative control: leave one shared block Current, unowned
         for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
             const uint64_t sw = ctx.shared[cls].w.load(std::memory_order_relaxed);
+            ECO_TLA_TRACE_ONLY(if (sw != 0))
+                ECO_M4_TRACE("m4.shreset", "cb", classToSize(cls),
+                             "rmw", ::Elm::tlatrace::key("sh", cls), "old", sw, "new", 0);
             ctx.shared[cls].w.store(0, std::memory_order_relaxed);
             BlockId keep = NO_BLOCK_ID;
             if (sw != 0) {
@@ -1532,7 +1654,9 @@ void OldGenSpace::endParallelPromotion(PromoCtx& ctx) {
         onSweepComplete();
     }
 }
+// TLA-REGION(OGS.endParallelPromotion) end
 
+// TLA-REGION(OGS.allocatePromotion) begin
 void* OldGenSpace::allocatePromotion(PromoWorker& pw, size_t size, bool per_alloc_sweep) {
     size = (size + 7) & ~static_cast<size_t>(7);
 #if ENABLE_GC_STATS
@@ -1546,13 +1670,17 @@ void* OldGenSpace::allocatePromotion(PromoWorker& pw, size_t size, bool per_allo
         // large path, under the lock.
         std::lock_guard<minorwork::SpinMutex> lk(promo_mu_);
         ++pw.mutex_acquires;
+        ECO_M4_TRACE("m4.lock", "cb", size, "large", true, "clk", "promo", "tick", ++::Elm::tla_m4_tick);
 #if ECO_HEAP_VALIDATE
         const size_t charged0 = allocated_bytes;
 #endif
+        ECO_TLA_TRACE_ONLY(::Elm::tla_m4_flip = -1;)
         void* r = allocateLargeBlock(size);
 #if ECO_HEAP_VALIDATE
         pw.mutex_charges += allocated_bytes - charged0;
 #endif
+        ECO_M4_TRACE("m4.large", "flip", ::Elm::tla_m4_flip);
+        ECO_M4_TRACE("m4.unlock", "clk", "promo", "tick", ++::Elm::tla_m4_tick);
         return r;
     }
     // The one-worker identity switch reproduces allocate()'s per-promotion
@@ -1595,6 +1723,8 @@ void* OldGenSpace::allocatePromotion(PromoWorker& pw, size_t size, bool per_allo
 #endif
         }
         ++pw.mutex_acquires;
+        ECO_M4_TRACE("m4.lock", "cb", cls < num_size_classes_ ? classToSize(cls) : size, "large", false,
+                     "clk", "promo", "tick", ++::Elm::tla_m4_tick);
 #if ECO_HEAP_VALIDATE
         const DecisionScope im16(*this);
         const size_t charged0 = allocated_bytes;
@@ -1622,6 +1752,9 @@ void* OldGenSpace::allocatePromotion(PromoWorker& pw, size_t size, bool per_allo
                     if (more == nullptr) break;
                     pw.stash[cls][pw.stash_n[cls]++] = more;
                 }
+                ECO_TLA_TRACE_ONLY(if (popped != nullptr))
+                    ECO_M4_TRACE("m4.batch", "cb", classToSize(cls), "cnt", 1 + pw.stash_n[cls],
+                                 "blk", ECO_M4_BLK(popped), "c", ECO_M4_BIT(popped));
             }
             if (result == nullptr && popped == nullptr) result = ladderFrom2W(cls, size, pw);
         } else {
@@ -1630,6 +1763,7 @@ void* OldGenSpace::allocatePromotion(PromoWorker& pw, size_t size, bool per_allo
 #if ECO_HEAP_VALIDATE
         pw.mutex_charges += allocated_bytes - charged0;
 #endif
+        ECO_M4_TRACE("m4.unlock", "clk", "promo", "tick", ++::Elm::tla_m4_tick);
     }
     if (result == nullptr && popped != nullptr) result = finalizePoppedCellW(popped, cls, size, pw);
 done:
@@ -1644,6 +1778,7 @@ done:
 #endif
     return result;
 }
+// TLA-REGION(OGS.allocatePromotion) end
 
 bool OldGenSpace::sweepWillReach(BlockId id, const char* addr) const {
     if (gc_phase_ != GCPhase::Sweeping) return false;
@@ -1654,6 +1789,7 @@ bool OldGenSpace::sweepWillReach(BlockId id, const char* addr) const {
     return sweep_cursor_ == nullptr || addr >= sweep_cursor_;
 }
 
+// TLA-REGION(OGS.retireDeadLargeBodies) begin
 void OldGenSpace::retireDeadLargeBodies() {
     // P§3.5 / HEAP_056: the gap sweep and the cursor never read dead headers,
     // so the header sweep's duty of retiring dead nursery-owned bodies moves
@@ -1673,7 +1809,9 @@ void OldGenSpace::retireDeadLargeBodies() {
         }
     }
 }
+// TLA-REGION(OGS.retireDeadLargeBodies) end
 
+// TLA-REGION(OGS.classifyBlocksAfterMark) begin
 void OldGenSpace::classifyBlocksAfterMark() {
     retireDeadLargeBodies();
     for (size_t pos = 0; pos < blocks_.size(); ++pos) {
@@ -1742,6 +1880,7 @@ void OldGenSpace::classifyBlocksAfterMark() {
     }
 #endif
 }
+// TLA-REGION(OGS.classifyBlocksAfterMark) end
 
 // ---------------------------------------------------------------------------
 // Small-class block budget bookkeeping.
@@ -1794,6 +1933,7 @@ bool OldGenSpace::shouldPreferBagForSmallClass(size_t cls) const {
     return committedToCapRatio() < 1.0;
 }
 
+// TLA-REGION(OGS.blockIdFor) begin
 BlockId OldGenSpace::blockIdFor(const void* obj) const {
     const char* p = static_cast<const char*>(obj);
     // threaded-gc-05c (H3-H5): background markers call this while the mutator
@@ -1817,6 +1957,7 @@ BlockId OldGenSpace::blockIdFor(const void* obj) const {
     }
     return NO_BLOCK_ID;
 }
+// TLA-REGION(OGS.blockIdFor) end
 
 /**
  * Allocates memory in the old generation.
@@ -1868,10 +2009,14 @@ void *OldGenSpace::allocate(size_t size) {
 #endif
 
     // W0 item 13: the allocation-paced marking branch that stood here was
-    // DEAD. It ran under `gc_phase_ == GCPhase::Marking`, and gc_phase_ is
-    // assigned at exactly four sites — Idle (initialize), Sweeping
-    // (transitionToSweeping), Idle (reclaim), Idle (reset) — and never
-    // Marking. Marking is driven synchronously by finishMarkAndSweep, which
+    // DEAD. It ran under `gc_phase_ == GCPhase::Marking`, and when it was
+    // removed gc_phase_ was assigned at four sites — Idle (initialize),
+    // Sweeping (transitionToSweeping), Idle (reclaim), Idle (reset) — and
+    // never Marking. (No longer so, CR-027: since threaded-gc-05a
+    // beginMarkCycle sets Marking for an incremental cycle, and
+    // handoffMarkCycle and a completing lazySweep set Idle. A cycle's marking
+    // is driven by its steps, never per allocation, so the branch stays
+    // gone.) A STW major marks synchronously in finishMarkAndSweep, which
     // still calls incrementalMark; only this per-allocation branch is gone.
     // Confirmed empirically before removal: the 2026-09-22 sensitivity sweep
     // ran mark_work_ratio at 1 / 2 / 4 and every GC counter was bit-identical,
@@ -2001,6 +2146,7 @@ static inline void padCellSlack(void* obj, size_t requested_size,
 
 // Pure free-list pop. Splitting and finalisation are split helpers below
 // so the small-class budget path can interpose between exact-fit and split.
+// TLA-REGION(OGS.tryPopFromFreeList) begin
 FreeCell* OldGenSpace::tryPopFromFreeList(size_t cls) {
     assert(cls < NUM_SIZE_CLASSES);
     FreeCell* cell = free_lists_[cls];
@@ -2019,23 +2165,32 @@ FreeCell* OldGenSpace::tryPopFromFreeList(size_t cls) {
     }
     return cell;
 }
+// TLA-REGION(OGS.tryPopFromFreeList) end
 
 // Finalises a popped free cell into a usable object: writes the header,
 // pads any slack, and accounts for the cell's bytes.
+// TLA-REGION(OGS.finalizePoppedCell) begin
 void* OldGenSpace::finalizePoppedCell(FreeCell* cell, size_t cls,
                                       size_t requested_size) {
     void* result = static_cast<void*>(cell);
     const size_t cell_size = classToSize(cls);
     initObjectHeaderWithSize(result, cell_size);
+    // The in-lock pop: the colour is initObjectHeaderWithSize's phase decision.
+    ECO_M4_TRACE("m4.pop", "cb", cell_size, "blk", ECO_M4_BLK(result), "c", ECO_M4_BIT(result),
+                 "black", getHeader(result)->color == static_cast<u32>(Color::Black), "rd", "phase",
+                 "val", getHeader(result)->color == static_cast<u32>(Color::Black)
+                     ? static_cast<int>(cycle_state_ != CycleState::Idle ? GCPhase::Marking : GCPhase::Sweeping) : 0);
     padCellSlack(result, requested_size, cell_size);
     allocated_bytes += cell_size;
     old_alloc_total_ += cell_size;   // 05c P-hat (monotone)
     return result;
 }
+// TLA-REGION(OGS.finalizePoppedCell) end
 
 // Free-list-only allocation. Pure refactor of the original first two
 // paragraphs of allocateFromSizeClass — does NOT consume a bag page or
 // grow committed capacity.
+// TLA-REGION(OGS.tryAllocateFromFreeLists) begin
 void* OldGenSpace::tryAllocateFromFreeLists(size_t cls, size_t requested_size) {
     assert(cls < NUM_SIZE_CLASSES);
 
@@ -2045,11 +2200,13 @@ void* OldGenSpace::tryAllocateFromFreeLists(size_t cls, size_t requested_size) {
 
     if (void* result = tryAllocateBySplittingLarger(cls, classToSize(cls))) {
         padCellSlack(result, requested_size, classToSize(cls));
+        ECO_M4_TRACE("m4.split", "cb", classToSize(cls), "blk", ECO_M4_BLK(result), "c", ECO_M4_BIT(result));
         return result;
     }
 
     return nullptr;
 }
+// TLA-REGION(OGS.tryAllocateFromFreeLists) end
 
 // Approximate committed-to-cap ratio. Numerator is this thread's old-gen
 // committed bytes; denominator is the global old-gen cap
@@ -2133,10 +2290,12 @@ size_t OldGenSpace::computeSweepBudgetForAlloc(size_t requested_size) const {
 // uses `work_budget` as a byte budget for `work_done`, so charging `slice`
 // directly may slightly over-estimate when sweep ends mid-slice (safe
 // direction for pacing).
+// TLA-REGION(OGS.sweepOnDemandAllocate) begin
 void* OldGenSpace::sweepOnDemandAllocate(size_t cls, size_t requested_size) {
     if (void* obj = tryAllocateFromFreeLists(cls, requested_size)) {
         return obj;
     }
+    ECO_M4_TRACE("m4.npop", "cb", classToSize(cls));
     if (!hasPendingSweepWork()) return nullptr;
 
     const size_t max_sweep_bytes = computeSweepBudgetForAlloc(requested_size);
@@ -2152,15 +2311,18 @@ void* OldGenSpace::sweepOnDemandAllocate(size_t cls, size_t requested_size) {
         if (void* obj = tryAllocateFromFreeLists(cls, requested_size)) {
             return obj;
         }
+        ECO_M4_TRACE("m4.npop", "cb", classToSize(cls));
     }
     return nullptr;
 }
+// TLA-REGION(OGS.sweepOnDemandAllocate) end
 
 // Panic-mode sweep: drives any remaining lazy-sweep work to completion in
 // panic_sweep_slice_bytes slices and retries the free-list path between
 // slices. The "growth impossible" precondition lives at the call site —
 // `allocateFromSizeClass` only invokes this once `allocateFromBagPage` has
 // already failed to grow capacity.
+// TLA-REGION(OGS.panicSweepAndRetryAllocation) begin
 void* OldGenSpace::panicSweepAndRetryAllocation(size_t cls,
                                                 size_t requested_size) {
     if (!hasPendingSweepWork()) return nullptr;
@@ -2173,9 +2335,11 @@ void* OldGenSpace::panicSweepAndRetryAllocation(size_t cls,
         if (void* obj = tryAllocateFromFreeLists(cls, requested_size)) {
             return obj;
         }
+        ECO_M4_TRACE("m4.npop", "cb", classToSize(cls));
     }
     return nullptr;
 }
+// TLA-REGION(OGS.panicSweepAndRetryAllocation) end
 
 void* OldGenSpace::allocateFromSizeClass(size_t cls, size_t requested_size) {
     assert(cls < num_size_classes_ && "size class out of range");
@@ -2360,6 +2524,7 @@ void* OldGenSpace::tryAllocateBySplittingLarger(size_t target_cls,
 // ---------------------------------------------------------------------------
 // Page-as-single-cell + split path.
 // ---------------------------------------------------------------------------
+// TLA-REGION(OGS.allocateFromBagPage) begin
 void* OldGenSpace::allocateFromBagPage(size_t requested_size) {
     // ----- Reuse ladder for the (LOT, alloc_buffer_size) band -----
     //
@@ -2377,11 +2542,34 @@ void* OldGenSpace::allocateFromBagPage(size_t requested_size) {
     // of `allocateFromSizeClass` for size-classed requests.
 
     const size_t request_cls = sizeClass(requested_size);
-    // Branch (C) is the only caller; the routing in `OldGenSpace::allocate`
-    // ensures `request_cls >= num_size_classes_`.
-    assert(request_cls >= num_size_classes_ &&
-           "allocateFromBagPage: caller must route size-classed requests "
-           "through allocateFromSizeClass");
+    // Callers (register CR-029):
+    //   * `allocate`'s large-object path (Path 4: the (LOT, alloc_buffer_size)
+    //     band, request_cls >= num_size_classes_);
+    //   * `allocatePromotion`'s large-object branch (the same band, under
+    //     promo_mu_);
+    //   * the bitmap mutator ladder's rung 7 (`allocateFromSizeClassBitmap`);
+    //   * `ladderFrom2W`'s bag rung (a promotion worker, under promo_mu_);
+    //   * legacy `allocateFromSizeClass` step 6.
+    // The last three pass a SIZE-CLASSED request (request_cls <
+    // num_size_classes_) once their virgin-block / populateFromBlock rung has
+    // failed: the bag is empty and acquireOldGenBlock failed (the old-gen
+    // reservation is exhausted), or, in a parallel promotion, the other
+    // workers' chunk claims emptied the block this worker had just published.
+    // Such a request takes the same steps as one in the band. Every step
+    // carves exactly `requested_size` bytes out of a MIXED block (a cell of a
+    // mixed-only free-list class, or offset 0 of a fresh page materialized as
+    // a mixed block) and returns the tail as Tag_Free cells. In a mixed block
+    // the walk (walkStepFor) and the mark attribution (markOneObject) use the
+    // object's own size, never classToSize, so a carve smaller than the
+    // class's cell leaves the block parseable and its live_bytes exact; a
+    // mid-cycle carve is black and counted in live_bytes
+    // (initObjectHeaderWithSize). The precondition is therefore only the one
+    // every caller establishes: `allocate` and `allocatePromotion` round the
+    // size up to 8 and send anything >= alloc_buffer_size to
+    // allocateLargeBlock before any ladder runs.
+    assert(requested_size < config_->alloc_buffer_size &&
+           (requested_size & 7) == 0 &&
+           "allocateFromBagPage: request must be 8-byte aligned and below alloc_buffer_size");
 
     // Step 1: split or exact-fit from the mixed-only free lists. The widened
     // `start_cls = max(target_cls, num_size_classes_)` in
@@ -2430,8 +2618,8 @@ void* OldGenSpace::allocateFromBagPage(size_t requested_size) {
         char* base = allocator_->acquireOldGenBlock(config_->alloc_buffer_size);
         if (base != nullptr) {
             unassigned_blocks_.emplace_back(base, base + config_->alloc_buffer_size);
-            if (region_base_ == nullptr || base < region_base_) setRegionBase(base);
-            if (base + config_->alloc_buffer_size > region_end_) {
+            if (char* const rb = regionBase(); rb == nullptr || base < rb) setRegionBase(base);
+            if (base + config_->alloc_buffer_size > regionEnd()) {
                 setRegionEnd(base + config_->alloc_buffer_size);
             }
             resizePageIndexForRegion();
@@ -2502,6 +2690,7 @@ void* OldGenSpace::allocateFromBagPage(size_t requested_size) {
     old_alloc_total_ += requested_size;   // 05c P-hat (monotone)
     return result;
 }
+// TLA-REGION(OGS.allocateFromBagPage) end
 
 // ---------------------------------------------------------------------------
 // Population from a bag page (uniform fixed-cell slicing for a class).
@@ -2519,8 +2708,8 @@ bool OldGenSpace::populateFromBlock(size_t cls) {
         char* base = allocator_->acquireOldGenBlock(config_->alloc_buffer_size);
         if (base != nullptr) {
             unassigned_blocks_.emplace_back(base, base + config_->alloc_buffer_size);
-            if (region_base_ == nullptr || base < region_base_) setRegionBase(base);
-            if (base + config_->alloc_buffer_size > region_end_) {
+            if (char* const rb = regionBase(); rb == nullptr || base < rb) setRegionBase(base);
+            if (base + config_->alloc_buffer_size > regionEnd()) {
                 setRegionEnd(base + config_->alloc_buffer_size);
             }
             resizePageIndexForRegion();
@@ -2662,6 +2851,7 @@ void* OldGenSpace::allocateFromFreeLargeBlocks(size_t size) {
     return nullptr;
 }
 
+// TLA-REGION(OGS.allocateFromEmptyRegularBlocks) begin
 void* OldGenSpace::allocateFromEmptyRegularBlocks(size_t size) {
     syncCursorLiveBytes();   // threaded-gc-02: readers of live_bytes
     size = (size + 7) & ~7;
@@ -2699,6 +2889,7 @@ void* OldGenSpace::allocateFromEmptyRegularBlocks(size_t size) {
         }
 #endif
         const size_t total = blk.totalBytes();
+        ECO_TLA_TRACE_ONLY(::Elm::tla_m4_flip = i.v;)   // M4: the empty-block flip (CR-016)
         blk.is_large = true;
         blk.size_class = NUM_SIZE_CLASSES;
         blk.end_of_objects = blk.start + size;
@@ -2721,7 +2912,9 @@ void* OldGenSpace::allocateFromEmptyRegularBlocks(size_t size) {
     }
     return nullptr;
 }
+// TLA-REGION(OGS.allocateFromEmptyRegularBlocks) end
 
+// TLA-REGION(OGS.allocateLargeBlock) begin
 void* OldGenSpace::allocateLargeBlock(size_t size) {
     assert(allocator_ && "OldGenSpace not initialized with Allocator");
     assert(size >= config_->alloc_buffer_size && "allocateLargeBlock used for small size");
@@ -2762,10 +2955,10 @@ void* OldGenSpace::allocateLargeBlock(size_t size) {
     // Maintain the cached contains() bounds BEFORE materializing, so the
     // page index is committed through the new region end when the block's
     // slots are assigned (the former code assigned after the resize too).
-    if (region_base_ == nullptr || block_base < region_base_) {
+    if (char* const rb = regionBase(); rb == nullptr || block_base < rb) {
         setRegionBase(block_base);
     }
-    if (block_base + block_size > region_end_) {
+    if (block_base + block_size > regionEnd()) {
         setRegionEnd(block_base + block_size);
     }
     // Commit the page index through the grown region, then materialize: the
@@ -2780,6 +2973,7 @@ void* OldGenSpace::allocateLargeBlock(size_t size) {
     initObjectHeader(block_base);
     return static_cast<void*>(block_base);
 }
+// TLA-REGION(OGS.allocateLargeBlock) end
 
 /**
  * Starts the marking phase of a major GC.
@@ -2845,6 +3039,9 @@ void OldGenSpace::prepareMark(Allocator &alloc) {
 
     marking_active = true;
     current_epoch++;
+#if ECO_HEAP_VALIDATE
+    assertSlotsQuiescent("prepareMark's slot reset", 0, mark_slots_);   // IM14
+#endif
     for (unsigned i = 0; i < mark_slots_; ++i) {
         markers_[i]->stack.clear();
         markers_[i]->priv.store(0, std::memory_order_relaxed);
@@ -2919,6 +3116,7 @@ void OldGenSpace::markJitRootRaw(uint64_t val, Allocator &alloc) {
 // Chase-Lev deques (parallel), chosen by mark_parallel_ at beginMarkCycle.
 // ===========================================================================
 
+// TLA-REGION(OGS.resolveMarkThreads) begin
 unsigned OldGenSpace::resolveMarkThreads(const HeapConfig& cfg) {
     // Parallel marking runs only inside incremental cycles, which need
     // bitmap allocation (HEAP_063).
@@ -2928,10 +3126,12 @@ unsigned OldGenSpace::resolveMarkThreads(const HeapConfig& cfg) {
     if (n > kMaxMarkers) n = kMaxMarkers;
     return n == 0 ? 1 : n;
 }
+// TLA-REGION(OGS.resolveMarkThreads) end
 
 // threaded-gc-06 (HEAP_067): parallel minors run on the same gang as the
 // foreground markers; it is sized for the larger of the two (P§3.14). Only
 // tests reconfigure (a heap reset to a new worker count).
+// TLA-REGION(OGS.ensureGang) begin
 gc::GCMarkGang& OldGenSpace::ensureGang() {
     gc::GCMarkGang& gang = gc::GCMarkGang::instance();
     const unsigned jitter = allocator_ != nullptr ? allocator_->helperJitterUs() : 0;
@@ -2942,7 +3142,9 @@ gc::GCMarkGang& OldGenSpace::ensureGang() {
     }
     return gang;
 }
+// TLA-REGION(OGS.ensureGang) end
 
+// TLA-REGION(OGS.resolveMinorThreads) begin
 unsigned OldGenSpace::resolveMinorThreads(const HeapConfig& cfg) {
     // The per-worker promotion cursor is a bitmap cursor (HEAP_054).
     if (!cfg.old_gen_bitmap_alloc) return 1;
@@ -2951,7 +3153,9 @@ unsigned OldGenSpace::resolveMinorThreads(const HeapConfig& cfg) {
     if (n > kMaxMinorWorkers) n = kMaxMinorWorkers;
     return n == 0 ? 1 : n;
 }
+// TLA-REGION(OGS.resolveMinorThreads) end
 
+// TLA-REGION(OGS.resolveConcMarkThreads) begin
 unsigned OldGenSpace::resolveConcMarkThreads(const HeapConfig& cfg, unsigned fg) {
     // threaded-gc-05c P§3.12: background markers only in concurrent mode with
     // multi-minor cycles; auto excludes the mutator's own core.
@@ -2965,8 +3169,12 @@ unsigned OldGenSpace::resolveConcMarkThreads(const HeapConfig& cfg, unsigned fg)
     if (b > kMaxMarkers - fg) b = kMaxMarkers - fg;
     return b;
 }
+// TLA-REGION(OGS.resolveConcMarkThreads) end
 
 void OldGenSpace::ensureMarkers() {
+#if ECO_HEAP_VALIDATE
+    assertSlotsQuiescent("ensureMarkers");   // IM14: creates and destroys slots
+#endif
     const unsigned want = mark_slots_ == 0 ? 1 : mark_slots_;
     for (unsigned i = 0; i < kMaxMarkers; ++i) {
         if (i < want) {
@@ -2985,6 +3193,9 @@ uint64_t OldGenSpace::markLivePeek(BlockId id) const {
 }
 
 uint64_t OldGenSpace::markLiveTake(BlockId id) {
+#if ECO_HEAP_VALIDATE
+    assertSlotsQuiescent("markLiveTake", 0, mark_slots_);   // IM14: every slot's accumulator
+#endif
     uint64_t v = 0;
     for (unsigned i = 0; i < mark_slots_; ++i) v += markers_[i]->live.take(id);
     return v;
@@ -2998,6 +3209,9 @@ uint64_t OldGenSpace::markLiveSum() const {
 
 void OldGenSpace::markLiveMergeAll() {
     // Index order (plan trap 5): integer sums, identical to one accumulator.
+#if ECO_HEAP_VALIDATE
+    assertSlotsQuiescent("markLiveMergeAll", 0, mark_slots_);   // IM14: every slot's accumulator
+#endif
     for (unsigned i = 0; i < mark_slots_; ++i) {
         if (i == 1 && test_skip_merge_worker1_) continue;   // negative control
         markers_[i]->live.mergeInto(blocks_);
@@ -3050,6 +3264,7 @@ size_t OldGenSpace::markStackSize() const {
     return n;
 }
 
+// TLA-REGION(OGS.testAndSetMark) begin
 template <class P>
 bool OldGenSpace::testAndSetMark(BlockId id, const void* obj) {
 #if ECO_HEAP_VALIDATE
@@ -3083,7 +3298,9 @@ bool OldGenSpace::testAndSetMark(BlockId id, const void* obj) {
         return (b.fetch_or(mask, std::memory_order_relaxed) & mask) != 0;
     }
 }
+// TLA-REGION(OGS.testAndSetMark) end
 
+// TLA-REGION(OGS.greyObject) begin
 template <class P>
 void OldGenSpace::greyObject(MarkWorker& w, void* obj) {
     // Major GC must not write into nursery headers; minor GC owns those.
@@ -3158,11 +3375,18 @@ void OldGenSpace::greyObject(MarkWorker& w, void* obj) {
 
     // Item 40: one test-and-set instead of isMarkedInBlock + setMarkBitInBlock.
     if (testAndSetMark<P>(block_id, obj)) return;
+    // M1 trace (b): a newly greyed object during a cycle; its scan gets the key.
+    // (Markers run only inside a cycle; the mutator's serial greys outside
+    // one are a STW major's.)
+    ECO_TLA_TRACE_ONLY(if (cycle_state_ != CycleState::Idle))
+        ECO_TLA_TRACE("grey", "obj", ::Elm::tlatrace::obj(obj),
+                      "put", ::Elm::tlatrace::key("g", obj, ::Elm::tlatrace::bound(this, 1)));
     // Cache the block id on the entry so scanObject can skip a second
     // blockIdFor lookup when attributing live bytes.
     const uint64_t e = markwork::objEntry(obj, block_id.v + 1);
     pushGrey(w, e);
 }
+// TLA-REGION(OGS.greyObject) end
 
 template <class P>
 void OldGenSpace::greyHPointer(MarkWorker& w, HPointer& ptr) {
@@ -3378,6 +3602,7 @@ void OldGenSpace::scanChunk(MarkWorker& w, void* obj, uint32_t chunk) {
     }
 }
 
+// TLA-REGION(OGS.scanObject) begin
 template <class P>
 bool OldGenSpace::scanObject(MarkWorker& w, void* obj, BlockId block_index) {
     if (!obj) return false;
@@ -3458,7 +3683,9 @@ bool OldGenSpace::scanObject(MarkWorker& w, void* obj, BlockId block_index) {
     scanChildren<P>(w, obj);
     return true;
 }
+// TLA-REGION(OGS.scanObject) end
 
+// TLA-REGION(OGS.scanEntry) begin
 template <class P>
 void OldGenSpace::scanEntry(MarkWorker& w, uint64_t e) {
 #if ECO_HEAP_VALIDATE
@@ -3470,8 +3697,13 @@ void OldGenSpace::scanEntry(MarkWorker& w, uint64_t e) {
         return;
     }
     const uint32_t f = markwork::entryField(e);
+    // M1 trace (b): one grey entry scanned (whole objects; M1 has no chunks).
+    ECO_TLA_TRACE_ONLY(if (cycle_state_ != CycleState::Idle))
+        ECO_TLA_TRACE("scan", "obj", ::Elm::tlatrace::obj(obj),
+                      "get", ::Elm::tlatrace::key("g", obj, ::Elm::tlatrace::bound(this, 1)));
     (void)scanObject<P>(w, obj, f != 0 ? BlockId{f - 1} : NO_BLOCK_ID);
 }
+// TLA-REGION(OGS.scanEntry) end
 
 // The two environments of markwork::runMarkerLoop (P§3.3).
 struct OldGenSpace::SerialEnv {
@@ -3492,6 +3724,7 @@ struct OldGenSpace::SerialEnv {
     void publishAll(unsigned) {}
 };
 
+// TLA-REGION(OGS.ParallelEnv) begin
 struct OldGenSpace::ParallelEnv {
     static constexpr bool kParallel = true;
     OldGenSpace& og;
@@ -3525,6 +3758,7 @@ struct OldGenSpace::ParallelEnv {
         og.publishAll(*og.markers_[self]);
     }
 };
+// TLA-REGION(OGS.ParallelEnv) end
 
 namespace {
 struct MarkRunArgs {
@@ -3539,6 +3773,7 @@ void OldGenSpace::markerEntry(void* ctx, unsigned member) {
     markwork::runMarkerLoop(env, member, *a->c);
 }
 
+// TLA-REGION(OGS.runMarkers) begin
 uint64_t OldGenSpace::runMarkers(int64_t budget) {
     if (budget <= 0) return 0;
     assert(bg_ep_ != BgEpisode::Running &&
@@ -3547,6 +3782,9 @@ uint64_t OldGenSpace::runMarkers(int64_t budget) {
     uint64_t units = 0;
     if (!mark_parallel_) {
         markwork::SliceControl c(budget, 1, 0);
+#if ECO_HEAP_VALIDATE
+        assertSlotsQuiescent("a serial run", 0, 1);   // IM14: the mutator is slot 0's owner
+#endif
         w0().ctr.resetRun(0);
         SerialEnv env{*this};
         markwork::runMarkerLoop(env, 0, c);
@@ -3561,6 +3799,9 @@ uint64_t OldGenSpace::runMarkers(int64_t budget) {
         // participants = the F foreground members.
         markwork::SliceControl c(budget, mark_slots_, jitter, mark_threads_);
         c.steal_without_ticket = test_steal_without_ticket_;
+#if ECO_HEAP_VALIDATE
+        assertSlotsQuiescent("a foreground run's counter reset", 0, mark_threads_);   // IM14
+#endif
         for (unsigned i = 0; i < mark_threads_; ++i) {
             markers_[i]->ctr.resetRun(i);
             markers_[i]->chunks = 0;
@@ -3573,6 +3814,9 @@ uint64_t OldGenSpace::runMarkers(int64_t budget) {
         uint64_t umax = 0;
         // Old deque arrays: only when no thread can hold one (05c trap 6).
         if (bg_ep_ != BgEpisode::Running) retireAllDequeArrays();
+#if ECO_HEAP_VALIDATE
+        assertSlotsQuiescent("a foreground run's counter merge", 0, mark_threads_);   // IM14
+#endif
         for (unsigned i = 0; i < mark_threads_; ++i) {
             MarkWorker& m = *markers_[i];
             units += m.ctr.units;
@@ -3623,6 +3867,7 @@ uint64_t OldGenSpace::runMarkers(int64_t budget) {
     if (cycle_state_ != CycleState::Idle) cycle_units_ += units;
     return units;
 }
+// TLA-REGION(OGS.runMarkers) end
 
 #if ECO_HEAP_VALIDATE
 // ---------------------------------------------------------------------------
@@ -3862,7 +4107,7 @@ void OldGenSpace::finalizeMetaAfterMark() {
 }
 
 // Walks `blocks_` once and demotes any non-large uniform block whose
-// mark-derived `live_bytes` is at most `demote_live_fraction` (default 0.5;
+// mark-derived `live_bytes` is at most `demote_live_fraction` (default 0.3;
 // 0.0 disables demotion) of the block's total bytes.
 // "Demotion" flips `block.size_class` to NUM_SIZE_CLASSES so the next
 // lazy-sweep walk parses the block by `getObjectSize` (mixed-block step)
@@ -3959,6 +4204,9 @@ void OldGenSpace::prepareMetaForLazySweep() {
 // (HEAP_063) runs the same tail. `stats` / `profile` may be null; with both
 // null this is exactly the former no-stats, no-profile tail.
 void OldGenSpace::runPostMarkTail(GCStats* stats, MajorGCPhaseProfile* profile) {
+    // M1 trace (b): the marks are the liveness decision here; a harness probe
+    // may read them (a cycle's handoff, or a STW major).
+    ECO_TLA_TRACE_ONLY(::Elm::tlatrace::probe(cycle_tail_uses_traced_live_ ? "handoff" : "stw");)
     auto t_sweep_start = std::chrono::high_resolution_clock::now();
 
     finalizeMetaAfterMark();
@@ -4096,6 +4344,7 @@ void OldGenSpace::finishMarkAndSweep(MajorGCPhaseProfile &profile) {
 // ThreadLocalHeap (startMarkCycle / stepMarkCycle / finishMarkCycleNow).
 // ===========================================================================
 
+// TLA-REGION(OGS.beginMarkCycle) begin
 void OldGenSpace::beginMarkCycle(Allocator &alloc, uint32_t slices) {
     assert(!cycleActive() && !marking_active &&
            "beginMarkCycle: a mark is already in progress");
@@ -4150,6 +4399,8 @@ void OldGenSpace::beginMarkCycle(Allocator &alloc, uint32_t slices) {
     std::sort(mark_view_.ylos_t0.begin(), mark_view_.ylos_t0.end());
     im10_armed_.store(true, std::memory_order_release);
 #endif
+    // M1 trace (b): a fresh cycle number for the grey -> scan ordering keys.
+    ECO_TLA_TRACE_ONLY((void)::Elm::tlatrace::bind(this, 1);)
     // Every existing mid-cycle branch (allocate-black, fully_swept on new
     // blocks) keys off gc_phase_ != Idle (F10).
     gc_phase_ = GCPhase::Marking;
@@ -4184,7 +4435,9 @@ void OldGenSpace::beginMarkCycle(Allocator &alloc, uint32_t slices) {
               [](const T0Block& a, const T0Block& b) { return a.id < b.id; });   // isT0Block
 #endif
 }
+// TLA-REGION(OGS.beginMarkCycle) end
 
+// TLA-REGION(OGS.snapshotYoungLarge) begin
 void OldGenSpace::snapshotYoungLarge() {
     assert(snapshot_mode_ && "snapshotYoungLarge outside the t0 snapshot");
     forEachYoungLarge([&](void* obj, LargeBodyMeta&) {
@@ -4206,7 +4459,9 @@ void OldGenSpace::snapshotYoungLarge() {
 #endif
     });
 }
+// TLA-REGION(OGS.snapshotYoungLarge) end
 
+// TLA-REGION(OGS.drainCycleMark) begin
 size_t OldGenSpace::drainCycleMark() {
     // threaded-gc-05c: with a background episode this cycle, the drain is the
     // closing join (P§3.5: pressure finish, join).
@@ -4214,6 +4469,7 @@ size_t OldGenSpace::drainCycleMark() {
     // runMarkers adds to cycle_units_ itself (every path, IM12).
     return markStackEmpty() ? 0 : static_cast<size_t>(runMarkers(markwork::kDrainBudget));
 }
+// TLA-REGION(OGS.drainCycleMark) end
 
 size_t OldGenSpace::runCycleSlice() {
     assert(cycle_state_ == CycleState::Marking);
@@ -4270,10 +4526,14 @@ bool OldGenSpace::cyclePressureFinishDue() const {
            config_->incremental_mark_finish_fraction;
 }
 
+// TLA-REGION(OGS.handoffMarkCycle) begin
 void OldGenSpace::handoffMarkCycle(GCStats* stats, MajorGCPhaseProfile* profile) {
     assert(cycleActive() && "handoff without a cycle");
     assert(markStackEmpty() && "IM9: handoff with a non-empty mark stack");
     assert(!in_slice_);
+#if ECO_HEAP_VALIDATE
+    assertSlotsQuiescent("the handoff (accumulator sum)", 0, mark_slots_);   // IM14
+#endif
     // P§3.6 step 2: fold the cursors' pending bytes (post-t0 virgin blocks)
     // into live_bytes and detach every block, as startMark does, BEFORE the
     // tail reads live_bytes (trap 2).
@@ -4321,6 +4581,9 @@ void OldGenSpace::handoffMarkCycle(GCStats* stats, MajorGCPhaseProfile* profile)
     cycle_tail_uses_traced_live_ = false;
     prev_cycle_units_ = cycle_units_;
     assert(bg_ep_ != BgEpisode::Running && "IM14: handoff with a running background episode");
+#if ECO_HEAP_VALIDATE
+    assertSlotsQuiescent("the handoff's deque reset", 0, mark_slots_);   // IM14
+#endif
     for (unsigned i = 0; i < mark_slots_; ++i) markers_[i]->deque.reset();
     mark_parallel_ = false;
     bg_ep_ = BgEpisode::None;
@@ -4332,6 +4595,7 @@ void OldGenSpace::handoffMarkCycle(GCStats* stats, MajorGCPhaseProfile* profile)
     alloc_stats_.im.cycles++;
 #endif
 }
+// TLA-REGION(OGS.handoffMarkCycle) end
 
 
 // ===========================================================================
@@ -4373,17 +4637,28 @@ void OldGenSpace::assertNoPrivateWork(const char* where) const {
     }
 }
 
-void OldGenSpace::assertSlotsQuiescent(const char* where) const {
-    // IM14 (every build): the mutator touches a slot's owner-only state only
-    // while no thread runs on it.
-    if ((bg_ && bg_->running()) || fg_run_active_) {
-        std::fprintf(stderr, "[gc] IM14: slot state touched at %s while a marker runs\n", where);
+void OldGenSpace::assertSlotsQuiescent(const char* where, unsigned lo, unsigned hi) const {
+    // IM14: the mutator touches the owner-only state of slots [lo, hi) only
+    // while no thread runs on them. The foreground gang runs on [0, F) while
+    // fg_run_active_; the background gang on [F, F + B) from launch to join.
+    // The default range (every slot) is the launch's check (every build);
+    // the per-touch calls with a range are validate-only (register CR-010).
+    const unsigned F = mark_threads_;
+    const bool fg = fg_run_active_ && lo < hi && lo < F;
+    const bool bg = bg_ && bg_->running() && lo < hi && hi > F && lo < F + bg_->members();
+    if (fg || bg) {
+        std::fprintf(stderr, "[gc] IM14: slots [%u, %u) touched at %s while the %s gang runs on them\n",
+                     lo, hi, where, fg ? "foreground" : "background");
         std::fflush(stderr);
         std::abort();
     }
 }
 
 void OldGenSpace::retireAllDequeArrays() {
+#if ECO_HEAP_VALIDATE
+    // Trap 6: any running marker may hold any slot's old array (a steal).
+    assertSlotsQuiescent("retireAllDequeArrays", 0, mark_slots_);
+#endif
     for (unsigned i = 0; i < mark_slots_; ++i) markers_[i]->deque.retireOldArrays();
 }
 
@@ -4443,6 +4718,7 @@ void OldGenSpace::closingEntry(void* ctx, unsigned member) {
                             /*joined=*/true);
 }
 
+// TLA-REGION(OGS.launchBackground) begin
 void OldGenSpace::launchBackground() {
     assert(conc_threads_ > 0 && mark_parallel_);
     assertSlotsQuiescent("launch");
@@ -4479,14 +4755,19 @@ void OldGenSpace::launchBackground() {
     }
     bg_launch_ns_ = gc::GCHelperPool::nowNs();
     bg_ep_ = BgEpisode::Running;
+    ECO_TLA_TRACE("launch", "gang", ::Elm::tlatrace::key("B", bg_.get()));   // M1 trace
     bg_->launch(&OldGenSpace::bgEntry, this, &bg_ctl_->stop);
 #if ENABLE_GC_STATS
     alloc_stats_.cm.episodes_launched++;
 #endif
 }
+// TLA-REGION(OGS.launchBackground) end
 
 void OldGenSpace::mergeBackgroundCounters() {
     // After a join only: members' counters are published by the join.
+#if ECO_HEAP_VALIDATE
+    assertSlotsQuiescent("the background merge", mark_threads_, mark_slots_);   // IM14
+#endif
     uint64_t units = 0;
     for (unsigned i = mark_threads_; i < mark_slots_; ++i) {
         MarkWorker& m = *markers_[i];
@@ -4517,6 +4798,7 @@ void OldGenSpace::mergeBackgroundCounters() {
 #endif
 }
 
+// TLA-REGION(OGS.reapBackground) begin
 void OldGenSpace::reapBackground(bool wait) {
 #if ECO_HEAP_VALIDATE
     assertNotInDecision("reapBackground (finishedApprox)");
@@ -4525,6 +4807,7 @@ void OldGenSpace::reapBackground(bool wait) {
     if (!wait && bg_->running() && !bg_->finishedApprox()) return;
     bg_->join();                              // exact publication
     const bool done = bg_ctl_->done();
+    ECO_TLA_TRACE("reap", "done", done, "wait", wait);   // M1 trace
     mergeBackgroundCounters();
     assertNoPrivateWork("background join");
     retireAllDequeArrays();
@@ -4539,18 +4822,32 @@ void OldGenSpace::reapBackground(bool wait) {
         bg_ep_ = BgEpisode::None;             // stopped (fork, test): relaunch below
     }
 }
+// TLA-REGION(OGS.reapBackground) end
 
+// TLA-REGION(OGS.stopBackground) begin
 void OldGenSpace::stopBackground() {
     if (bg_ep_ != BgEpisode::Running) return;
     bg_->stopAndJoin();
     reapBackground(/*wait=*/true);
 }
+// TLA-REGION(OGS.stopBackground) end
 
+// TLA-REGION(OGS.assistEpisode) begin
 void OldGenSpace::assistEpisode(int64_t budget) {
     assert(bg_ep_ == BgEpisode::Running && budget > 0);
     std::atomic<int64_t> pool{budget};
     ConcArgs args{this, bg_ctl_.get(), &pool};
     bg_ctl_->share_epoch.fetch_add(1, std::memory_order_relaxed);   // make private work stealable
+#if ECO_HEAP_VALIDATE
+    {
+        // IM14: this step resets slots [0, hi): the foreground ones only (the
+        // background gang runs on the others). The negative control (CR-010)
+        // also resets background slot F, as a wrong reset range would.
+        const unsigned hi = mark_threads_ + (test_assist_resets_bg_ctr_ ? 1u : 0u);
+        assertSlotsQuiescent("an assist's counter reset", 0, hi);
+        for (unsigned i = mark_threads_; i < hi; ++i) markers_[i]->ctr.resetRun(i);
+    }
+#endif
     for (unsigned i = 0; i < mark_threads_; ++i) {
         markers_[i]->ctr.resetRun(i);
         markers_[i]->chunks = 0;
@@ -4561,6 +4858,9 @@ void OldGenSpace::assistEpisode(int64_t budget) {
     fg_run_active_ = false;
     assertNoPrivateWork("an assist");
     uint64_t units = 0;
+#if ECO_HEAP_VALIDATE
+    assertSlotsQuiescent("an assist's counter merge", 0, mark_threads_);   // IM14
+#endif
     for (unsigned i = 0; i < mark_threads_; ++i) {
         units += markers_[i]->ctr.units;
 #if ENABLE_GC_STATS
@@ -4574,24 +4874,33 @@ void OldGenSpace::assistEpisode(int64_t budget) {
     cycle_units_ += units;
     cyc_prog_.assists++;
     cyc_prog_.assist_units += units;
+    ECO_TLA_TRACE("assist", "units", units);   // M1 trace: A_Done
     // Deque arrays are NOT retired here: background thieves may hold them (trap 6).
 #if ENABLE_GC_STATS
     alloc_stats_.cm.assists++;
     alloc_stats_.cm.assist_units += units;
 #endif
 }
+// TLA-REGION(OGS.assistEpisode) end
 
+// TLA-REGION(OGS.closingFinish) begin
 size_t OldGenSpace::closingFinish() {
     // k = T (and the pressure / join finishes): the mark must be complete
     // when this returns (P§3.5).
     const auto t_start = std::chrono::steady_clock::now();
     uint64_t fg_units = 0;                    // marked INSIDE this pause
     reapBackground(/*wait=*/false);
+    // M6: a harness pause point: the episode still runs as the closing join starts (CR-005).
+    // Only while an M6 harness sets gc::tla_m6: other harnesses' probe callbacks never see it.
+    ECO_TLA_TRACE_ONLY(if (::Elm::gc::tla_m6 && bg_ep_ == BgEpisode::Running) ::Elm::tlatrace::probe("m6.closing");)
     bool with_work = false;
     if (bg_ep_ == BgEpisode::Running) {
         with_work = true;
         ConcArgs args{this, bg_ctl_.get(), nullptr};
         bg_ctl_->share_epoch.fetch_add(1, std::memory_order_relaxed);   // make private work stealable
+#if ECO_HEAP_VALIDATE
+        assertSlotsQuiescent("the closing's counter reset", 0, mark_threads_);   // IM14
+#endif
         for (unsigned i = 0; i < mark_threads_; ++i) {
             markers_[i]->ctr.resetRun(i);
             markers_[i]->chunks = 0;
@@ -4601,6 +4910,9 @@ size_t OldGenSpace::closingFinish() {
         fg_run_active_ = true;
         gang.run(&OldGenSpace::closingEntry, &args, mark_threads_);
         fg_run_active_ = false;
+#if ECO_HEAP_VALIDATE
+        assertSlotsQuiescent("the closing's counter merge", 0, mark_threads_);   // IM14
+#endif
         for (unsigned i = 0; i < mark_threads_; ++i) {
             fg_units += markers_[i]->ctr.units;
             markers_[i]->ctr.resetRun(i);
@@ -4648,8 +4960,10 @@ size_t OldGenSpace::closingFinish() {
     (void)t_start;
 #endif
     bg_ep_ = BgEpisode::None;
+    ECO_TLA_TRACE("closing", "units", fg_units, "work", with_work);   // M1 trace: D_Done
     return static_cast<size_t>(fg_units);
 }
+// TLA-REGION(OGS.closingFinish) end
 
 std::string OldGenSpace::pacingSnapshot() const {
     char buf[160];
@@ -4661,6 +4975,7 @@ std::string OldGenSpace::pacingSnapshot() const {
     return buf;
 }
 
+// TLA-REGION(OGS.afterSnapshot) begin
 void OldGenSpace::afterSnapshot() {
     if (cycle_slices_ == 0) return;
     if (concurrentCycle()) {
@@ -4671,7 +4986,9 @@ void OldGenSpace::afterSnapshot() {
         runMarkers(markwork::kDrainBudget);
     }
 }
+// TLA-REGION(OGS.afterSnapshot) end
 
+// TLA-REGION(OGS.runCycleStepConcurrent) begin
 size_t OldGenSpace::runCycleStepConcurrent() {
     assert(cycle_state_ == CycleState::Marking);
     assert(cycle_k_ >= 1 && cycle_k_ <= cycle_slices_);
@@ -4703,6 +5020,7 @@ size_t OldGenSpace::runCycleStepConcurrent() {
     reapBackground(/*wait=*/false);
     if (bg_ep_ == BgEpisode::None && !markStackEmpty()) {
         // Stopped (a fork): relaunch; the work is already in the deques.
+        ECO_TLA_TRACE("relaunch");   // M1 trace
         launchBackground();
 #if ENABLE_GC_STATS
         alloc_stats_.cm.episodes_relaunched++;
@@ -4712,6 +5030,10 @@ size_t OldGenSpace::runCycleStepConcurrent() {
         bg_ep_ = BgEpisode::Finished;
         if (bg_done_k_ == 0) bg_done_k_ = cycle_k_;
     }
+    // M1 trace: P_Marking (k++, then the reap / relaunch above), and the episode after it.
+    ECO_TLA_TRACE("step", "k", cycle_k_, "ep",
+                  bg_ep_ == BgEpisode::Running ? "running"
+                  : bg_ep_ == BgEpisode::Finished ? "finished" : "none");
     if (cycle_k_ >= cycle_slices_) {
         done = closingFinish();
         cycle_state_ = CycleState::HandoffDue;
@@ -4765,6 +5087,7 @@ size_t OldGenSpace::runCycleStepConcurrent() {
 #endif
     return done;
 }
+// TLA-REGION(OGS.runCycleStepConcurrent) end
 
 void OldGenSpace::processDeferredFrees() {
     if (deferred_frees_.empty()) return;
@@ -4900,6 +5223,7 @@ namespace {
 // sentinel as a hard run boundary so the cell isn't coalesced/rewritten.
 // When false (default), `age = 0` (coalescable). See Heap.hpp for the
 // `Header.age` repurposing convention.
+// TLA-REGION(OGS.pushSpanOnFreeLists) begin
 inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
                                 size_t span_bytes,
                                 BlockInfo* block,
@@ -5068,6 +5392,7 @@ inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
         else              hdr->age = 0;
     }
 }
+// TLA-REGION(OGS.pushSpanOnFreeLists) end
 
 inline void pushCoalescedFreeCell(FreeCell** free_lists, char* span_start,
                                   size_t span_bytes,
@@ -5232,6 +5557,7 @@ void OldGenSpace::markBlockFullySwept(BlockId block_index) {
  * Lazy sweep - sweep a bounded amount of heap to find free space.
  * Coalesces adjacent garbage spans into Tag_Free cells, just like sweep().
  */
+// TLA-REGION(OGS.lazySweep) begin
 size_t OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
     size_t work_done = 0;
 
@@ -5259,7 +5585,12 @@ size_t OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
     while (work_done < work_budget && gc_phase_ == GCPhase::Sweeping) {
         if (sweep_cursor_ == nullptr) {
             if (sweep_buffer_index_ >= blocks_.size()) {
+                // M4: the in-loop completion (path 2), the plain gc_phase_
+                // write of CR-001, as a link of its modification order.
                 gc_phase_ = GCPhase::Idle;
+                ECO_M4_TRACE("m4.swend", "cb", target_class < NUM_SIZE_CLASSES ? classToSize(target_class) : 0,
+                             "path", 2, "par", par_promo_active_,
+                             "rmw", "phase", "old", static_cast<int>(GCPhase::Sweeping), "new", 0);
 #if ENABLE_GC_STATS
                 auto t0_shrink = GC_STATS_TIMER_START();
 #endif
@@ -5371,8 +5702,16 @@ size_t OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
                 // A live object: flush the pending gap, clear its bit (same
                 // post-state as testAndClear), step over it reading ONLY its
                 // own header.
+                ECO_TLA_TRACE_ONLY(const int64_t m4_rs = run_start == nullptr ? -1
+                                       : static_cast<int64_t>((run_start - block.start) / MARK_ALIGNMENT);
+                                   const size_t m4_rb = run_start == nullptr ? 0 : run_bytes;)
                 flushRun(sweep_buffer_index_);
+                // M4: one gap-sweep iteration (nextSetBit's word read, the gap
+                // pushed), then the plain clearBit store.
+                ECO_M4_TRACE("m4.sw", "blk", cur_id.v, "rs", m4_rs, "rb", m4_rb, "l", nb,
+                             "end", live_obj + walkStep(block, getObjectSize(live_obj)) >= used_end);
                 bitscan::clearBit(gbits, nb);
+                ECO_M4_TRACE("m4.clr", "blk", cur_id.v, "l", nb);
                 const size_t step = walkStep(block, getObjectSize(live_obj));
                 sweep_cursor_ = live_obj + step;
                 work_done += step;
@@ -5437,6 +5776,10 @@ size_t OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
 
         if (sweep_cursor_ >= used_end) {
             // Block boundary -- flush any trailing garbage run.
+            ECO_TLA_TRACE_ONLY(if (run_start != nullptr))   // M4: the trailing run's iteration
+                ECO_M4_TRACE("m4.sw", "blk", cur_id.v,
+                             "rs", static_cast<int64_t>((run_start - block.start) / MARK_ALIGNMENT),
+                             "rb", run_bytes, "l", -1, "end", true);
             flushRun(sweep_buffer_index_);
 #if ECO_HEAP_VALIDATE
             if (gap_sweep) {
@@ -5471,6 +5814,7 @@ size_t OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
             // Flush any in-progress run so we don't leave it dangling across
             // an early return.
             flushRun(sweep_buffer_index_);
+            ECO_M4_TRACE("m4.swend", "cb", classToSize(target_class), "path", 1, "par", par_promo_active_);
             return work_done;
         }
     }
@@ -5479,8 +5823,15 @@ size_t OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
     // the next call).
     flushRun(sweep_buffer_index_);
 
+    ECO_TLA_TRACE_ONLY(if (sweep_buffer_index_ < blocks_.size()))   // M4: the slice ends (budget)
+        ECO_M4_TRACE("m4.swend", "cb", target_class < NUM_SIZE_CLASSES ? classToSize(target_class) : 0,
+                     "path", 0, "par", par_promo_active_);
     if (sweep_buffer_index_ >= blocks_.size()) {
+        // M4: the tail completion (path 3, CR-014): onSweepComplete right here.
+        ECO_TLA_TRACE_ONLY(const int m4_old = static_cast<int>(gc_phase_);)
         gc_phase_ = GCPhase::Idle;
+        ECO_M4_TRACE("m4.swend", "cb", target_class < NUM_SIZE_CLASSES ? classToSize(target_class) : 0,
+                     "path", 3, "par", par_promo_active_, "rmw", "phase", "old", m4_old, "new", 0);
 #if ENABLE_GC_STATS
         auto t0_shrink = GC_STATS_TIMER_START();
 #endif
@@ -5492,6 +5843,7 @@ size_t OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
     }
     return work_done;
 }
+// TLA-REGION(OGS.lazySweep) end
 
 /**
  * Called when lazy sweeping completes.
@@ -5500,6 +5852,7 @@ size_t OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
  * splitting after the heavy post-mark shrink. Compaction is decided on
  * the post-sweep stats.
  */
+// TLA-REGION(OGS.onSweepComplete) begin
 void OldGenSpace::onSweepComplete() {
     sweep_pending_blocks_ = 0;
     sweep_total_blocks_ = 0;
@@ -5515,7 +5868,11 @@ void OldGenSpace::onSweepComplete() {
               static_cast<double>(live) / static_cast<double>(target)))
         : 0;
     maybeShrinkCapacity(desired_heap, /*light_pass=*/true);
+    // M4: the light shrink is over (its m4.rel events name what it released);
+    // par: on a worker inside a parallel minor (CR-014's tail path).
+    ECO_M4_TRACE("m4.shrink", "par", par_promo_active_);
 }
+// TLA-REGION(OGS.onSweepComplete) end
 
 OldGenSpace::MajorGCTriggerReason
 OldGenSpace::evaluateMajorGCTrigger() const {
@@ -5656,9 +6013,11 @@ void OldGenSpace::adjustCapacityAfterMajorGC() {
     assert((gc_phase_ == GCPhase::Sweeping || gc_phase_ == GCPhase::Idle) &&
            "adjustCapacityAfterMajorGC: unexpected gc_phase_");
 
-    if (region_base_ == nullptr || region_end_ <= region_base_) return;
+    char* const region_base = regionBase();   // CR-021: through atomic_ref
+    char* const region_end = regionEnd();
+    if (region_base == nullptr || region_end <= region_base) return;
 
-    const size_t capacity = static_cast<size_t>(region_end_ - region_base_);
+    const size_t capacity = static_cast<size_t>(region_end - region_base);
     const size_t live     = frag_stats_.live_bytes;
     if (capacity == 0) return;
 
@@ -5711,6 +6070,7 @@ void OldGenSpace::adjustCapacityAfterMajorGC() {
 // inside the Allocator. The shrink path runs at the end of major GC, with
 // the mutator stopped — so `removeFreeCellsForBlock` and the swap-remove
 // from `blocks_` cannot race against `allocateFromEmptyRegularBlocks`.
+// TLA-REGION(OGS.maybeShrinkCapacity) begin
 void OldGenSpace::maybeShrinkCapacity(size_t desired_heap_bytes,
                                       bool light_pass) {
     syncCursorLiveBytes();   // threaded-gc-02: readers of live_bytes
@@ -5909,6 +6269,7 @@ void OldGenSpace::maybeShrinkCapacity(size_t desired_heap_bytes,
     validateOldGenMetadata("maybeShrinkCapacity");
 #endif
 }
+// TLA-REGION(OGS.maybeShrinkCapacity) end
 
 void OldGenSpace::removeFreeCellsForBlock(BlockId block_index) {
     if (!block_index.valid()) return;
@@ -6007,9 +6368,11 @@ void OldGenSpace::fixupCursorsAfterOrderMove(size_t old_pos, size_t new_pos) {
     if (fixup_buffer_index_ == old_pos) fixup_buffer_index_ = new_pos;
 }
 
+// TLA-REGION(OGS.releaseBlockToAllocator) begin
 void OldGenSpace::releaseBlockToAllocator(BlockId block_index) {
     assert(!cycleActive() && "IM5: release/compaction during an incremental mark cycle");
     if (!block_index.valid()) return;
+    ECO_M4_TRACE("m4.rel", "blk", block_index.v, "state", blocks_.info(block_index).alloc_state);
     if (config_->old_gen_bitmap_alloc) detachFromAllocation(block_index);
 
     // The heap-base block is released like any other block. (It was formerly
@@ -6142,11 +6505,13 @@ void OldGenSpace::releaseBlockToAllocator(BlockId block_index) {
     // batch mode (shrink path) we let the caller recompute once at the end
     // to avoid an O(N²) per-release cost.
     if (batch_release_depth_ == 0 &&
-        (blk.start == region_base_ || blk.end == region_end_)) {
+        (blk.start == regionBase() || blk.end == regionEnd())) {
         recomputeRegionBounds();
     }
 }
+// TLA-REGION(OGS.releaseBlockToAllocator) end
 
+// TLA-REGION(OGS.releaseUnassignedBlockToAllocator) begin
 void OldGenSpace::releaseUnassignedBlockToAllocator(size_t unassigned_index) {
     assert(!cycleActive() && "IM5: release/compaction during an incremental mark cycle");
     if (unassigned_index >= unassigned_blocks_.size()) return;
@@ -6177,10 +6542,11 @@ void OldGenSpace::releaseUnassignedBlockToAllocator(size_t unassigned_index) {
     // Recompute bounds if anchored to the released extent. Slot indices are
     // computed from (start - region_base_) / page_size, so when region_base_
     // shifts we also have to rebuild the page index.
-    if (start == region_base_ || end == region_end_) {
+    if (start == regionBase() || end == regionEnd()) {
         recomputeRegionBounds();
     }
 }
+// TLA-REGION(OGS.releaseUnassignedBlockToAllocator) end
 
 // ---------------------------------------------------------------------------
 // All-dead block fast path (Step 3).
@@ -6381,6 +6747,7 @@ void OldGenSpace::gatherResidencySnapshotFrom(
 /**
  * Computes heap-wide fragmentation statistics from per-block metadata.
  */
+// TLA-REGION(OGS.computeFragmentationStats) begin
 void OldGenSpace::computeFragmentationStats() {
     syncCursorLiveBytes();   // threaded-gc-02: readers of live_bytes
     frag_stats_.live_bytes = 0;
@@ -6408,6 +6775,7 @@ void OldGenSpace::computeFragmentationStats() {
     post_sweep_live_bytes_ = (post_sweep_live_bytes_ > baseline_black_bytes_)
                                  ? post_sweep_live_bytes_ - baseline_black_bytes_ : 0;
 }
+// TLA-REGION(OGS.computeFragmentationStats) end
 
 /**
  * Returns true if compaction should be triggered.
@@ -6636,8 +7004,8 @@ void* OldGenSpace::allocateForEvacuation(size_t size) {
             char* base = allocator_->acquireOldGenBlock(config_->alloc_buffer_size);
             if (base != nullptr) {
                 unassigned_blocks_.emplace_back(base, base + config_->alloc_buffer_size);
-                if (region_base_ == nullptr || base < region_base_) setRegionBase(base);
-                if (base + config_->alloc_buffer_size > region_end_) {
+                if (char* const rb = regionBase(); rb == nullptr || base < rb) setRegionBase(base);
+                if (base + config_->alloc_buffer_size > regionEnd()) {
                     setRegionEnd(base + config_->alloc_buffer_size);
                 }
                 resizePageIndexForRegion();
@@ -7119,6 +7487,7 @@ void* OldGenSpace::allocateYoungLarge(size_t size, Tag tag, bool initial_color) 
     return obj;
 }
 
+// TLA-REGION(OGS.promoteYoungLarge) begin
 void OldGenSpace::promoteYoungLarge(void* obj) {
     auto it = large_body_index_.find(obj);
     if (it == large_body_index_.end()) return;
@@ -7142,6 +7511,7 @@ void OldGenSpace::promoteYoungLarge(void* obj) {
     alloc_stats_.lp.ylos_promoted_in_place++;
 #endif
 }
+// TLA-REGION(OGS.promoteYoungLarge) end
 
 void OldGenSpace::recomputeYoungLargeBounds() {
     char* lo = nullptr;
@@ -7222,6 +7592,7 @@ void OldGenSpace::promoteLargeHeader(HPointer body_hp) {
     }
 }
 
+// TLA-REGION(OGS.sweepNurseryLargeBodies) begin
 size_t OldGenSpace::sweepNurseryLargeBodies(bool minor_color) {
     // W0 item 50: the common case is an empty list — leave before the asserts
     // and the compaction-phase branch rather than after them.
@@ -7324,7 +7695,9 @@ size_t OldGenSpace::sweepNurseryLargeBodies(bool minor_color) {
     recomputeYoungLargeBounds();
     return freed;
 }
+// TLA-REGION(OGS.sweepNurseryLargeBodies) end
 
+// TLA-REGION(OGS.freeLargeBodyCell) begin
 void OldGenSpace::freeLargeBodyCell(LargeBodyMeta& m) {
     if (m.body_base == nullptr) return;
     // IM5 (HEAP_063): nothing that existed at t0 is freed under a cycle.
@@ -7508,6 +7881,7 @@ void OldGenSpace::freeLargeBodyCell(LargeBodyMeta& m) {
 
     m.body_base = nullptr;
 }
+// TLA-REGION(OGS.freeLargeBodyCell) end
 
 // ===========================================================================
 // threaded-gc-01 metadata validators (ECO_HEAP_VALIDATE only).
@@ -7616,8 +7990,8 @@ void OldGenSpace::validateOldGenMetadata(const char* where) const {
         const size_t first = firstPageIndex(b), last = lastPageIndex(b);
         for (size_t sl = first; sl <= last; ++sl) {
             if (sl >= page_index_.committed() ||
-                (decodeOwner(page_index_[sl].primary) != id &&
-                 decodeOwner(page_index_[sl].secondary) != id)) {
+                (decodeOwner(loadOwnerRelaxed(page_index_[sl].primary)) != id &&
+                 decodeOwner(loadOwnerRelaxed(page_index_[sl].secondary)) != id)) {
                 std::fprintf(stderr, "[heap-validate] %s: block id %u "
                     "[%p,%p) missing from page slot %zu\n", where, id.v,
                     (void*)b.start, (void*)b.end, sl);
@@ -7628,7 +8002,8 @@ void OldGenSpace::validateOldGenMetadata(const char* where) const {
     for (size_t sl = 0; sl < page_index_.committed(); ++sl) {
         const char* lo = index_base_ + sl * page;
         const char* hi = lo + page;
-        for (uint32_t enc : {page_index_[sl].primary, page_index_[sl].secondary}) {
+        for (uint32_t enc : {loadOwnerRelaxed(page_index_[sl].primary),
+                             loadOwnerRelaxed(page_index_[sl].secondary)}) {
             if (enc == 0) continue;
             const BlockId id = decodeOwner(enc);
             if (!blocks_.isLive(id)) {

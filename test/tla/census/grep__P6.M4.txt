@@ -1,0 +1,29 @@
+runtime/src/allocator/NurseryParallel.cpp: copy_ptr_ = tospace_.top.load(std::memory_order_relaxed);
+runtime/src/allocator/NurseryParallel.cpp: for (char* p = toBase(); p < copy_ptr_;) {
+runtime/src/allocator/NurseryParallel.cpp: if (sz == 0 || p + sz > copy_ptr_) pmFail("PM3: to-space object overruns the top", p, copy_ptr_, sz);
+runtime/src/allocator/NurseryParallel.cpp: scan_ptr_ = copy_ptr_;
+runtime/src/allocator/NurseryParallel.cpp: toBase(), copy_ptr_, objs, n_surv);
+runtime/src/allocator/NurseryRegion.cpp: copy_ptr_ = top;
+runtime/src/allocator/NurserySpace.cpp: (void*)tb, (void*)(tb + from_capacity_bytes_), (void*)copy_ptr_,
+runtime/src/allocator/NurserySpace.cpp: * 2. Cheney scan: `scan_ptr_ < copy_ptr_` over one contiguous region.
+runtime/src/allocator/NurserySpace.cpp: bump_.ptr = copy_ptr_;
+runtime/src/allocator/NurserySpace.cpp: char* end = copy_ptr_;
+runtime/src/allocator/NurserySpace.cpp: const size_t bytes_used = static_cast<size_t>(copy_ptr_ - toBase()) - filler_bytes_to_;
+runtime/src/allocator/NurserySpace.cpp: copy_ptr_ += size;
+runtime/src/allocator/NurserySpace.cpp: copy_ptr_ = toBase();
+runtime/src/allocator/NurserySpace.cpp: copy_ptr_(nullptr), copy_end_(nullptr), scan_ptr_(nullptr),
+runtime/src/allocator/NurserySpace.cpp: if (copy_ptr_ + size <= copy_end_) {
+runtime/src/allocator/NurserySpace.cpp: if (copy_ptr_ < end) {
+runtime/src/allocator/NurserySpace.cpp: new_obj = copyToSpace(size);
+runtime/src/allocator/NurserySpace.cpp: new_obj = copyToSpace(size);
+runtime/src/allocator/NurserySpace.cpp: new_obj = copyToSpace(size);
+runtime/src/allocator/NurserySpace.cpp: return p >= toBase() && p < copy_ptr_;
+runtime/src/allocator/NurserySpace.cpp: return scan_ptr_ < copy_ptr_;
+runtime/src/allocator/NurserySpace.cpp: static_cast<size_t>(end - copy_ptr_));
+runtime/src/allocator/NurserySpace.cpp: std::memset(copy_ptr_, 0, static_cast<size_t>(end - copy_ptr_));
+runtime/src/allocator/NurserySpace.cpp: std::memset(copy_ptr_, poison ? 0xD8 : 0,
+runtime/src/allocator/NurserySpace.cpp: void* NurserySpace::copyToSpace(size_t size) {
+runtime/src/allocator/NurserySpace.cpp: void* result = copy_ptr_;
+runtime/src/allocator/NurserySpace.hpp: char* copy_ptr_;
+runtime/src/allocator/NurserySpace.hpp: nursery.copy_ptr_ = nursery.toBase() + raw;
+runtime/src/allocator/NurserySpace.hpp: void* copyToSpace(size_t size);

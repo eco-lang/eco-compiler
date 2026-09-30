@@ -1,0 +1,32 @@
+runtime/src/allocator/NurseryRegion.cpp: R.shadow[i].ensureCommitted(R.set.capacity >> R.shadow_shift);
+runtime/src/allocator/NurseryRegion.cpp: R.shadow_shift = config_->shadow_granule_log2;
+runtime/src/allocator/NurseryRegion.cpp: char* d = tw::lookup(R.shadowWord(J.x, obj), X.gen);
+runtime/src/allocator/NurseryRegion.cpp: char* d = tw::lookup(R.shadowWord(xi, t), X.gen);
+runtime/src/allocator/NurseryRegion.cpp: const size_t entries = (size_t{1} << R.stride_log2) >> R.shadow_shift;
+runtime/src/allocator/NurseryRegion.cpp: for (unsigned i = 0; i < R.n_surv; ++i) R.shadow[i].ensureCommitted(R.set.capacity >> R.shadow_shift);
+runtime/src/allocator/NurseryRegion.cpp: if (!R.shadow[i].reserve(entries)) regionFatal("shadow reservation failed", nullptr, nullptr, entries);
+runtime/src/allocator/NurseryRegion.cpp: if (R.shadow_shift > 3) regionFatal("a survivor under 16 B with a 16-byte shadow granule", obj, nullptr, size);
+runtime/src/allocator/NurseryRegions.hpp: ReservedArray<uint64_t> shadow[region::kMaxSurv];
+runtime/src/allocator/NurseryRegions.hpp: const size_t i = static_cast<size_t>(static_cast<const char*>(obj) - x[xi].base) >> shadow_shift;
+runtime/src/allocator/NurseryRegions.hpp: return shadow[xi].data() + i;
+runtime/src/allocator/NurseryRegions.hpp: uint64_t* shadow = nullptr;
+runtime/src/allocator/NurseryRegions.hpp: uint64_t* shadowWord(int xi, const void* obj) {
+runtime/src/allocator/NurseryRegions.hpp: unsigned shadow_shift = 3;
+runtime/src/allocator/NurseryRegions.hpp: unsigned shadow_shift = 3;
+runtime/src/allocator/NurseryTenure.cpp: ++R.rs.shadow_wraps;
+runtime/src/allocator/NurseryTenure.cpp: J.shadow = R.shadow[t].data();
+runtime/src/allocator/NurseryTenure.cpp: J.shadow_shift = R.shadow_shift;
+runtime/src/allocator/NurseryTenure.cpp: R.shadow[t].discard(0, R.shadow[t].committed());
+runtime/src/allocator/NurseryTenure.cpp: char* d = tw::lookup(J.shadow + (static_cast<size_t>(c2 - J.base) >> J.shadow_shift), J.gen);
+runtime/src/allocator/NurseryTenure.cpp: char* d = tw::lookup(J.shadow + (static_cast<size_t>(static_cast<char*>(t) - J.base) >> J.shadow_shift), J.gen);
+runtime/src/allocator/NurseryTenure.cpp: const uint64_t e = tw::ref(J.shadow + (static_cast<size_t>(p - J.base) >> J.shadow_shift))
+runtime/src/allocator/NurseryTenure.cpp: if (tw::stateOf(e) == tw::kStateBusy) tenureFatal("TV3: a BUSY shadow entry at the merge", p);
+runtime/src/allocator/NurseryTenure.cpp: return J.shadow + (static_cast<size_t>(static_cast<const char*>(obj) - J.base) >> J.shadow_shift);
+runtime/src/allocator/NurseryTenure.cpp: return J.shadow + (static_cast<size_t>(static_cast<const char*>(obj) - J.base) >> J.shadow_shift);
+runtime/src/allocator/NurseryTenure.cpp: sh += R.shadow[i].committedBytes();
+runtime/src/allocator/NurseryTenure.cpp: stats.rg.shadow_committed_bytes = sh;
+runtime/src/allocator/NurseryTenure.cpp: uint64_t* shadow(const void* obj) const {
+runtime/src/allocator/TenureWork.hpp: __builtin_prefetch(env_.shadow(t), 0, 3);
+runtime/src/allocator/TenureWork.hpp: if (char* d = lookup(env_.shadow(t), env_.gen())) { *tail = env_.word(d); break; }
+runtime/src/allocator/TenureWork.hpp: std::fprintf(stderr, "[tenure] FATAL: BUSY shadow entry in the exact engine (%p)\n", obj);
+runtime/src/allocator/TenureWork.hpp: uint64_t* w = env_.shadow(obj);

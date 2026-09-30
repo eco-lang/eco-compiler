@@ -1,0 +1,28 @@
+runtime/src/allocator/NurseryParallel.cpp: extern thread_local Elm::u32 g_scan_size;
+runtime/src/allocator/NurseryParallel.cpp: extern thread_local int g_scan_tag;
+runtime/src/allocator/NurseryParallel.cpp: extern thread_local void* g_scan_parent;
+runtime/src/allocator/NurseryParallel.cpp: g_scan_parent = obj;
+runtime/src/allocator/NurseryParallel.cpp: g_scan_size = hdr->size;
+runtime/src/allocator/NurseryParallel.cpp: g_scan_tag = hdr->tag;
+runtime/src/allocator/NurserySpace.cpp: (unsigned)promotion_age_, g_scan_parent, g_scan_tag);
+runtime/src/allocator/NurserySpace.cpp: Header *phdr = getHeader(g_scan_parent);
+runtime/src/allocator/NurserySpace.cpp: for (int x = 0; x < (int)g_scan_size + 2 && x < 10; x++) {
+runtime/src/allocator/NurserySpace.cpp: for (int x = 0; x < (int)g_scan_size + 3 && x < 12; x++) {
+runtime/src/allocator/NurserySpace.cpp: for (int x = 0; x < (int)g_scan_size + 3 && x < 12; x++) {
+runtime/src/allocator/NurserySpace.cpp: g_scan_parent = obj;
+runtime/src/allocator/NurserySpace.cpp: g_scan_parent, g_scan_tag, (unsigned)g_scan_size);
+runtime/src/allocator/NurserySpace.cpp: g_scan_parent, g_scan_tag, (unsigned)g_scan_size);
+runtime/src/allocator/NurserySpace.cpp: g_scan_parent, g_scan_tag, (unsigned)g_scan_size);
+runtime/src/allocator/NurserySpace.cpp: g_scan_parent, g_scan_tag, (unsigned)g_scan_size,
+runtime/src/allocator/NurserySpace.cpp: g_scan_size = hdr->size;
+runtime/src/allocator/NurserySpace.cpp: g_scan_tag = hdr->tag;
+runtime/src/allocator/NurserySpace.cpp: if (g_scan_parent) {
+runtime/src/allocator/NurserySpace.cpp: if (g_scan_parent) {
+runtime/src/allocator/NurserySpace.cpp: if (g_scan_parent) {
+runtime/src/allocator/NurserySpace.cpp: if (g_scan_parent) {
+runtime/src/allocator/NurserySpace.cpp: thread_local Elm::u32 g_scan_size = 0;
+runtime/src/allocator/NurserySpace.cpp: thread_local int g_scan_tag = -1;
+runtime/src/allocator/NurserySpace.cpp: thread_local void* g_scan_parent = nullptr;
+runtime/src/allocator/NurserySpace.cpp: uint64_t *pw = reinterpret_cast<uint64_t*>(g_scan_parent);
+runtime/src/allocator/NurserySpace.cpp: uint64_t* pw = reinterpret_cast<uint64_t*>(g_scan_parent);
+runtime/src/allocator/NurserySpace.cpp: uint64_t* pw = reinterpret_cast<uint64_t*>(g_scan_parent);

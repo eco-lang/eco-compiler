@@ -1,0 +1,26 @@
+runtime/src/allocator/NurseryRegion.cpp: "(a stale builder-area pointer)", t, X.surv_top);
+runtime/src/allocator/NurseryRegion.cpp: F.surv_top = top;
+runtime/src/allocator/NurseryRegion.cpp: R.x[i].k, (int)R.x[i].state, R.x[i].age, (void*)R.x[i].base, (void*)R.x[i].surv_top,
+runtime/src/allocator/NurseryRegion.cpp: auto inSurv = [&](int i) { return i >= 0 && p >= R.x[i].base && p < R.x[i].surv_top; };
+runtime/src/allocator/NurseryRegion.cpp: check(X.base, X.surv_top);
+runtime/src/allocator/NurseryRegion.cpp: for (char* p = X.base; p < X.surv_top;) {
+runtime/src/allocator/NurseryRegion.cpp: if (Xr.surv_top > Xr.base) std::memset(Xr.base, 0xDD, static_cast<size_t>(Xr.surv_top - Xr.base));
+runtime/src/allocator/NurseryRegion.cpp: if (c >= X.base && c < X.surv_top) return;
+runtime/src/allocator/NurseryRegion.cpp: if (c >= Y.base && c < Y.surv_top) return true;
+runtime/src/allocator/NurseryRegion.cpp: if (p < X.base || p >= X.surv_top) return obj;
+runtime/src/allocator/NurseryRegion.cpp: if (p < X.base || p >= X.surv_top) {
+runtime/src/allocator/NurseryRegions.hpp: char* surv_top = nullptr;
+runtime/src/allocator/NurseryRegions.hpp: char* surv_top = nullptr;
+runtime/src/allocator/NurseryRegions.hpp: surv_top = base;
+runtime/src/allocator/NurseryTenure.cpp: J.age[J.n_age++] = TenureJob::AgeRange{A.base, A.surv_top, A.mark_bits.data()};
+runtime/src/allocator/NurseryTenure.cpp: J.base, J.surv_top, fwd, st.tenured);
+runtime/src/allocator/NurseryTenure.cpp: J.surv_top = X.surv_top;
+runtime/src/allocator/NurseryTenure.cpp: const size_t granules = static_cast<size_t>(A.surv_top - A.base) >> 3;
+runtime/src/allocator/NurseryTenure.cpp: for (char* p = J.base; p < J.surv_top;) {
+runtime/src/allocator/NurseryTenure.cpp: if (c < J.base || c >= J.surv_top) {
+runtime/src/allocator/NurseryTenure.cpp: if (c >= J.base && c < J.surv_top) hp = Allocator::toPointerRaw(resolveT(c));
+runtime/src/allocator/NurseryTenure.cpp: if (c2 < J.base || c2 >= J.surv_top) continue;
+runtime/src/allocator/NurseryTenure.cpp: if (parent != nullptr && q >= J.base && q < J.surv_top) {
+runtime/src/allocator/NurseryTenure.cpp: return q >= J.base && q < J.surv_top;
+runtime/src/allocator/NurseryTenure.cpp: return q >= J.base && q < J.surv_top;
+runtime/src/allocator/NurseryTenure.cpp: return q >= J.base && q < J.surv_top;

@@ -31,4 +31,5 @@ extern Testing::TestCase testConcMarkNegativeSkipBgMerge;
 extern Testing::TestCase testConcMarkNegativeLeavePrivate;
 extern Testing::TestCase testConcMarkNegativeCursorT0Block;
 extern Testing::TestCase testConcMarkNegativePlainAllocateBlack;
+extern Testing::TestCase testConcMarkNegativeAssistResetsBgCounter;   // IM14 per slot (CR-010)
 extern Testing::TestCase testConcMarkScaleBench;

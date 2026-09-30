@@ -2,6 +2,7 @@
 // plans/threaded-gc-03-helper-threads.md P§3.1-3.4.
 
 #include "GCHelperPool.hpp"
+#include "TlaTrace.hpp"   // compiled-out hooks (trace builds only)
 
 #include <cassert>
 #include <chrono>
@@ -29,6 +30,22 @@
 #endif
 
 namespace Elm::gc {
+
+// TLA+ model M6's trace hooks (test/tla/M6-lifecycle/MAPPING.md, A5): the pool's
+// job protocol and the fork handlers. Compiled out unless ECO_TLA_TRACE; in a
+// trace build they log only while an M6 harness sets tla_m6, so other models'
+// logs are unchanged. A job's state is logged versioned by the serial of its
+// current post (serial * 4 + state), so no two writes of it store one value.
+#if ECO_TLA_TRACE_ENABLED
+bool tla_m6 = false;
+std::atomic<int64_t> tla_m6_tick{0};
+#define M6_TRACE(...) do { if (::Elm::gc::tla_m6) ECO_TLA_TRACE(__VA_ARGS__); } while (0)
+#define M6_TICK ::Elm::gc::tla_m6_tick.fetch_add(1)
+#define M6_JV(job, st) (::Elm::tlatrace::bound(&(job), 6) * 4 + static_cast<int64_t>(st))
+#define M6_JKEY(job) ::Elm::tlatrace::key("J", &(job))
+#else
+#define M6_TRACE(...) ((void)0)
+#endif
 
 namespace {
 
@@ -59,6 +76,8 @@ void HelperJob::resetForReuse() {
     const uint32_t s = state.load(std::memory_order_acquire);
     if (s != Done && s != Idle) poolAbort("resetForReuse: job is still posted or running");
     state.store(Idle, std::memory_order_relaxed);
+    M6_TRACE("pool.reset", "job", ::Elm::tlatrace::obj(this), "rmw", M6_JKEY(*this),
+             "old", M6_JV(*this, s), "new", M6_JV(*this, Idle));
     next = nullptr;
 }
 
@@ -155,6 +174,12 @@ void GCHelperPool::post(HelperJob& job) {
                                            std::memory_order_acq_rel)) {
         poolAbort("post: job is not Idle");
     }
+    // M6: the CAS, outside m_ (M_PostCas); the probe is a harness pause point (CR-003's CAS window).
+    // (old is read before bind() gives the post its serial: argument order is unspecified.)
+    ECO_TLA_TRACE_ONLY(const int64_t m6_old = ::Elm::gc::tla_m6 ? M6_JV(job, HelperJob::Idle) : 0;)
+    M6_TRACE("pool.cas", "job", ::Elm::tlatrace::obj(&job), "rmw", M6_JKEY(job),
+             "old", m6_old, "new", ::Elm::tlatrace::bind(&job, 6) * 4 + HelperJob::Posted);
+    ECO_TLA_TRACE_ONLY(if (::Elm::gc::tla_m6) ::Elm::tlatrace::probe("m6.post.cas");)
     if (job.run == nullptr) poolAbort("post: job has no run function");
     stats_.posts.fetch_add(1, std::memory_order_relaxed);
     job.post_ns = nowNs();
@@ -173,11 +198,13 @@ void GCHelperPool::post(HelperJob& job) {
         if (tail_) tail_->next = &job; else head_ = &job;
         tail_ = &job;
         ++outstanding_;
+        M6_TRACE("pool.enq", "job", ::Elm::tlatrace::obj(&job), "out", outstanding_, "clk", "m6", "tick", M6_TICK);
     }
     cv_work_.notify_one();
 }
 
 void GCHelperPool::workerLoop(unsigned index) {
+    ECO_TLA_TRACE_ONLY(::Elm::tlatrace::nameThread("eco-gc", index);)   // M7's trace
 #if !defined(_WIN32)
     {
         char name[16];
@@ -212,10 +239,16 @@ void GCHelperPool::workerLoop(unsigned index) {
                 poolAbort("worker: dequeued a job that is not Posted");
             }
             job->state.store(HelperJob::Running, std::memory_order_relaxed);
+            M6_TRACE("pool.take", "job", ::Elm::tlatrace::obj(job), "rmw", M6_JKEY(*job),
+                     "old", M6_JV(*job, HelperJob::Posted), "new", M6_JV(*job, HelperJob::Running),
+                     "clk", "m6", "tick", M6_TICK);
         }
         runJob(*job, /*on_worker=*/true, &rng);
         {
             std::lock_guard<std::mutex> lk(m_);
+            M6_TRACE("pool.done", "job", ::Elm::tlatrace::obj(job), "out", outstanding_ - 1, "rmw", M6_JKEY(*job),
+                     "old", M6_JV(*job, HelperJob::Running), "new", M6_JV(*job, HelperJob::Done),
+                     "clk", "m6", "tick", M6_TICK);
             job->state.store(HelperJob::Done, std::memory_order_release);
             --outstanding_;
         }
@@ -236,12 +269,17 @@ void GCHelperPool::noteStall(uint64_t dur_ns, bool in_pause) {
 GCHelperPool::StallRecord GCHelperPool::wait(HelperJob& job, bool in_pause) {
     StallRecord rec;
     const uint32_t s = job.state.load(std::memory_order_acquire);
+    M6_TRACE("pool.wfast", "job", ::Elm::tlatrace::obj(&job), "st", s, "rd", M6_JKEY(job), "val", M6_JV(job, s));
     if (s == HelperJob::Done) return rec;
     if (s == HelperJob::Idle) poolAbort("wait: job was never posted");
     rec.start_ns = nowNs();
     {
         std::unique_lock<std::mutex> lk(m_);
         cv_done_.wait(lk, [&] {
+            // M6: every check of the predicate under m_ (WR_Lock; a re-check after a wake-up).
+            ECO_TLA_TRACE_ONLY(const uint32_t m6_s = job.state.load(std::memory_order_acquire);)
+            M6_TRACE("pool.wchk", "job", ::Elm::tlatrace::obj(&job), "st", m6_s, "rd", M6_JKEY(job),
+                     "val", M6_JV(job, m6_s), "clk", "m6", "tick", M6_TICK);
             return job.state.load(std::memory_order_acquire) == HelperJob::Done;
         });
     }
@@ -255,16 +293,21 @@ void GCHelperPool::drain() {
     if (mode_ != HelperMode::Concurrent) return;   // Sync jobs are Done at post
     std::unique_lock<std::mutex> lk(m_);
     cv_done_.wait(lk, [this] { return outstanding_ == 0; });
+    M6_TRACE("pool.drained", "clk", "m6", "tick", M6_TICK);   // M6: F_Drain
 }
 
 void GCHelperPool::atforkPrepare() {
     GCHelperPool& p = instance();
     // No job may be half-done across fork: the child could never finish it.
     if (p.configured_.load(std::memory_order_acquire)) p.drain();
+    // M6: a harness pause point between the drain and the lock (CR-003's window).
+    ECO_TLA_TRACE_ONLY(if (::Elm::gc::tla_m6) ::Elm::tlatrace::probe("m6.pool.drained");)
     p.m_.lock();
+    M6_TRACE("pool.plock", "clk", "m6", "tick", M6_TICK);    // M6: F_Lock
 }
 
 void GCHelperPool::atforkParent() {
+    M6_TRACE("pool.parent", "clk", "m6", "tick", M6_TICK);   // M6: F_Fork, parent
     instance().m_.unlock();
 }
 
@@ -284,6 +327,7 @@ void GCHelperPool::atforkChild() {
     p.stopping_ = false;
     p.head_ = p.tail_ = nullptr;
     p.outstanding_ = 0;
+    M6_TRACE("pool.child", "clk", "m6", "tick", M6_TICK);    // M6: F_Fork, child
 }
 
 void GCHelperPool::shutdownForTesting() {
@@ -366,6 +410,7 @@ void GCMarkGang::memberLoop(unsigned index) {
 #  endif
     }
 #endif
+    ECO_TLA_TRACE_ONLY(::Elm::tlatrace::nameThread("eco-mark", index);)
     uint64_t seen = 0;
     uint64_t rng = 0xD1B54A32D192ED03ull ^ (static_cast<uint64_t>(index) * 0x9E3779B97F4A7C15ull);
     for (;;) {
@@ -395,7 +440,13 @@ void GCMarkGang::memberLoop(unsigned index) {
             std::this_thread::sleep_for(std::chrono::microseconds(rng % (jitter_us_ + 1)));
         }
         const uint64_t c0 = GCHelperPool::threadCpuNs();
+        ECO_TLA_TRACE("gang.start", "gang", ::Elm::tlatrace::key("F", this), "gen", seen, "m", index,
+                      "get", ::Elm::tlatrace::key("R", this, static_cast<int64_t>(seen)));
+        tl_member_run_ = true;    // CR-025: this thread is inside a pause now
         fn(ctx, index);
+        tl_member_run_ = false;
+        ECO_TLA_TRACE("gang.exit", "gang", ::Elm::tlatrace::key("F", this), "gen", seen, "m", index,
+                      "put", ::Elm::tlatrace::key("RX", this, static_cast<int64_t>(seen)));
         stats_.member_cpu_ns.fetch_add(GCHelperPool::threadCpuNs() - c0, std::memory_order_relaxed);
         {
             std::lock_guard<std::mutex> lk(m_);
@@ -422,12 +473,16 @@ void GCMarkGang::run(Fn fn, void* ctx, unsigned n) {
         finished_ = 0;
         post_ns_ = GCHelperPool::nowNs();
         ++generation_;
+        ECO_TLA_TRACE("gang.run", "gang", ::Elm::tlatrace::key("F", this), "gen", generation_, "members", n,
+                      "put", ::Elm::tlatrace::key("R", this, static_cast<int64_t>(generation_)));
     }
     cv_start_.notify_all();
     stats_.runs.fetch_add(1, std::memory_order_relaxed);
     fn(ctx, 0);
     std::unique_lock<std::mutex> lk(m_);
     cv_done_.wait(lk, [&] { return finished_ == n - 1; });
+    ECO_TLA_TRACE("gang.runEnd", "gang", ::Elm::tlatrace::key("F", this), "gen", generation_,
+                  "get", ::Elm::tlatrace::key("RX", this, static_cast<int64_t>(generation_)));
 }
 
 void GCMarkGang::shutdownForTesting() {
@@ -461,10 +516,12 @@ void GCMarkGang::atforkPrepare() {
     // taking run_m_ waits out any run and keeps new ones from starting.
     g.run_m_.lock();
     g.m_.lock();
+    M6_TRACE("fork.mprep", "clk", "m6", "tick", M6_TICK);    // M6: G_Mark1 / G_RunM
 }
 
 void GCMarkGang::atforkParent() {
     GCMarkGang& g = instance();
+    M6_TRACE("fork.mparent", "clk", "m6", "tick", M6_TICK);  // M6: G_Fork, parent
     g.m_.unlock();
     g.run_m_.unlock();
 }
@@ -479,6 +536,7 @@ void GCMarkGang::atforkChild() {
     g.started_ = false;
     g.stopping_ = false;
     g.running_n_ = g.finished_ = 0;
+    M6_TRACE("fork.mchild", "clk", "m6", "tick", M6_TICK);   // M6: G_Fork, child
 }
 
 // ===========================================================================
@@ -567,6 +625,7 @@ void GCBackgroundGang::memberLoop(unsigned index) {
         if (index < tids_.size()) tids_[index] = tid;
     }
 #endif
+    ECO_TLA_TRACE_ONLY(::Elm::tlatrace::nameThread(opt_.name ? opt_.name : "eco-cmark", index);)
     uint64_t seen = 0;
     uint64_t rng = 0xA0761D6478BD642Full ^ (static_cast<uint64_t>(index + 1) * 0x9E3779B97F4A7C15ull);
     for (;;) {
@@ -585,7 +644,11 @@ void GCBackgroundGang::memberLoop(unsigned index) {
                 std::chrono::microseconds(xorshift(&rng) % (opt_.jitter_us + 1)));
         }
         const uint64_t c0 = GCHelperPool::threadCpuNs();
+        ECO_TLA_TRACE("gang.start", "gang", ::Elm::tlatrace::key("B", this), "gen", seen, "m", index,
+                      "get", ::Elm::tlatrace::key("L", this, static_cast<int64_t>(seen)));
         fn(ctx, index);
+        ECO_TLA_TRACE("gang.exit", "gang", ::Elm::tlatrace::key("B", this), "gen", seen, "m", index,
+                      "put", ::Elm::tlatrace::key("X", this, static_cast<int64_t>(seen)));
         stats_.member_cpu_ns.fetch_add(GCHelperPool::threadCpuNs() - c0, std::memory_order_relaxed);
         {
             std::lock_guard<std::mutex> lk(m_);
@@ -610,6 +673,8 @@ void GCBackgroundGang::launch(Fn fn, void* ctx, std::atomic<bool>* stop) {
         finished_pub_.store(0, std::memory_order_relaxed);
         ++generation_;
         running_.store(true, std::memory_order_release);
+        ECO_TLA_TRACE("gang.launch", "gang", ::Elm::tlatrace::key("B", this), "gen", generation_,
+                      "put", ::Elm::tlatrace::key("L", this, static_cast<int64_t>(generation_)));
     }
     cv_start_.notify_all();
     stats_.launches.fetch_add(1, std::memory_order_relaxed);
@@ -622,6 +687,8 @@ bool GCBackgroundGang::finishedApprox() const {
 void GCBackgroundGang::joinLocked(std::unique_lock<std::mutex>& lk, bool stopping) {
     const uint64_t t0 = GCHelperPool::nowNs();
     cv_done_.wait(lk, [&] { return finished_ >= opt_.members; });
+    ECO_TLA_TRACE("gang.join", "gang", ::Elm::tlatrace::key("B", this), "gen", generation_, "stop", stopping,
+                  "get", ::Elm::tlatrace::key("X", this, static_cast<int64_t>(generation_)));
     running_.store(false, std::memory_order_release);
     const uint64_t d = GCHelperPool::nowNs() - t0;
     stats_.join_wait_ns_total.fetch_add(d, std::memory_order_relaxed);
@@ -639,6 +706,9 @@ void GCBackgroundGang::stopAndJoin() {
     std::unique_lock<std::mutex> lk(m_);
     if (!running_.load(std::memory_order_relaxed)) return;
     if (stop_ != nullptr) stop_->store(true, std::memory_order_release);
+    // M6: SJ_Lock (the stop, under m_); the probe tells a harness the stop is set.
+    M6_TRACE("gang.stop", "gang", ::Elm::tlatrace::key("B", this), "gen", generation_, "clk", "m6", "tick", M6_TICK);
+    ECO_TLA_TRACE_ONLY(if (::Elm::gc::tla_m6) ::Elm::tlatrace::probe("m6.stopset");)
     joinLocked(lk, true);
 }
 
@@ -651,6 +721,7 @@ void GCBackgroundGang::stopAllForFork() {
     for (GCBackgroundGang* g : bgRegistry()) {
         if (g->running()) {
             g->stopAndJoin();
+            ECO_TLA_TRACE("stop", "gang", ::Elm::tlatrace::key("B", g));   // M1 trace (a)
             g->stats_.fork_stops.fetch_add(1, std::memory_order_relaxed);
         }
     }
@@ -663,12 +734,17 @@ void GCBackgroundGang::stopAllAtExit() {
 
 void GCBackgroundGang::atforkPrepare() {
     bgRegistryMutex().lock();
+    M6_TRACE("fork.bgreg", "clk", "m6", "tick", M6_TICK);    // M6: G_Reg
     stopAllForFork();
+    // M6: a harness pause point after the stops, before the m_ locks (CR-004's window).
+    ECO_TLA_TRACE_ONLY(if (::Elm::gc::tla_m6) ::Elm::tlatrace::probe("m6.bg.stopped");)
     // Hold every instance's mutex across fork so the child's copy is consistent.
     for (GCBackgroundGang* g : bgRegistry()) g->m_.lock();
+    M6_TRACE("fork.bglock", "clk", "m6", "tick", M6_TICK);   // M6: G_Lock1 (and G_Lock2)
 }
 
 void GCBackgroundGang::atforkParent() {
+    M6_TRACE("fork.bparent", "clk", "m6", "tick", M6_TICK);  // M6: G_Fork, parent
     for (GCBackgroundGang* g : bgRegistry()) g->m_.unlock();
     bgRegistryMutex().unlock();
 }
@@ -687,6 +763,7 @@ void GCBackgroundGang::atforkChild() {
         g->tids_.clear();
     }
     new (&bgRegistryMutex()) std::mutex();
+    M6_TRACE("fork.bchild", "clk", "m6", "tick", M6_TICK);   // M6: G_Fork, child
 }
 
 unsigned availableCpus() {

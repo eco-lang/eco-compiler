@@ -1,0 +1,18 @@
+runtime/src/allocator/NurseryRegion.cpp: if (blk.alloc_state == OldGenSpace::kAllocTenure) continue;
+runtime/src/allocator/NurseryTenure.cpp: : static_cast<char*>(og.grantAllocateShared(J.grant, mcs[w.index], OldGenSpace::sizeClass(size), size));
+runtime/src/allocator/NurseryTenure.cpp: char* dst = static_cast<char*>(og.grantAllocate(J.grant, cls, size));
+runtime/src/allocator/OldGenTenure.cpp: TenureCursor tc;
+runtime/src/allocator/OldGenTenure.cpp: TenureCursor& c = g.blocks[u.cls][u.bi];
+runtime/src/allocator/OldGenTenure.cpp: TenureCursor& c = v[g.next[cls]];
+runtime/src/allocator/OldGenTenure.cpp: TenureCursor& c = v[i - 1];
+runtime/src/allocator/OldGenTenure.cpp: b.alloc_state = kAllocTenure;
+runtime/src/allocator/OldGenTenure.cpp: const TenureCursor& b = v[static_cast<size_t>(mc.bi)];
+runtime/src/allocator/OldGenTenure.cpp: for (TenureCursor& c : v) {
+runtime/src/allocator/OldGenTenure.cpp: if (b.alloc_state != kAllocTenure) {
+runtime/src/allocator/OldGenTenure.cpp: if (blocks_.info(id).alloc_state == kAllocTenure) {
+runtime/src/allocator/OldGenTenure.cpp: std::fprintf(stderr, "[heap-validate] TV5 (%s): block %u is kAllocTenure with no "
+runtime/src/allocator/OldGenTenure.cpp: std::vector<TenureCursor>& v = g.blocks[cls];
+runtime/src/allocator/OldGenTenure.cpp: std::vector<TenureCursor>& v = g.blocks[cls];
+runtime/src/allocator/OldGenTenure.cpp: std::vector<TenureCursor>& v = g.blocks[cls];
+runtime/src/allocator/OldGenTenure.cpp: void* OldGenSpace::grantAllocate(TenureGrant& g, size_t cls, size_t requested_size) {
+runtime/src/allocator/OldGenTenure.cpp: void* OldGenSpace::grantAllocateShared(TenureGrant& g, TenureMemberCursor& m, size_t cls,

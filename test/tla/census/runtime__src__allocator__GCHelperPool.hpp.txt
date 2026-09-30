@@ -1,0 +1,48 @@
+#include <condition_variable>
+#include <mutex>
+bool configured() const { return configured_.load(std::memory_order_acquire); }
+bool configured() const { return configured_.load(std::memory_order_acquire); }
+bool isDone() const { return state.load(std::memory_order_acquire) == Done; }
+bool isIdle() const { return state.load(std::memory_order_acquire) == Idle; }
+bool running() const { return running_.load(std::memory_order_acquire); }
+mutable std::mutex m_;
+std::atomic<bool> configured_{false};
+std::atomic<bool> configured_{false};
+std::atomic<bool> running_{false};
+std::atomic<bool>* stop_ = nullptr;
+std::atomic<uint32_t> state{Idle};
+std::atomic<uint64_t> bytes{0};
+std::atomic<uint64_t> cpu_ns{0};
+std::atomic<uint64_t> fork_stops{0};
+std::atomic<uint64_t> inline_cpu_ns{0};
+std::atomic<uint64_t> jobs{0};
+std::atomic<uint64_t> join_wait_ns_max{0};
+std::atomic<uint64_t> join_wait_ns_total{0};
+std::atomic<uint64_t> launches{0};
+std::atomic<uint64_t> member_cpu_ns{0};
+std::atomic<uint64_t> member_cpu_ns{0};
+std::atomic<uint64_t> posts{0};
+std::atomic<uint64_t> runs{0};
+std::atomic<uint64_t> stall_count{0};
+std::atomic<uint64_t> stall_max_ns{0};
+std::atomic<uint64_t> stall_ns{0};
+std::atomic<uint64_t> stall_outside_pause_ns{0};
+std::atomic<uint64_t> stall_outside_pause{0};
+std::atomic<uint64_t> stop_wait_ns_max{0};
+std::atomic<uint64_t> wake_ns_max{0};
+std::atomic<uint64_t> wake_ns_total{0};
+std::atomic<unsigned> finished_pub_{0};
+std::condition_variable cv_done_;
+std::condition_variable cv_done_;
+std::condition_variable cv_done_;
+std::condition_variable cv_start_;
+std::condition_variable cv_start_;
+std::condition_variable cv_work_;
+std::mutex m_;
+std::mutex m_;
+std::mutex run_m_;
+std::vector<std::thread>* threads_ = new std::vector<std::thread>();
+std::vector<std::thread>* threads_ = new std::vector<std::thread>();
+std::vector<std::thread>* workers_ = new std::vector<std::thread>();
+void joinLocked(std::unique_lock<std::mutex>& lk, bool stopping);
+void launch(Fn fn, void* ctx, std::atomic<bool>* stop);

@@ -1,0 +1,105 @@
+!stats_.wake_ns_max.compare_exchange_weak(prev, wake, std::memory_order_relaxed)) {
+#define M6_TICK ::Elm::gc::tla_m6_tick.fetch_add(1)
+(on_worker ? cs.cpu_ns : cs.inline_cpu_ns).fetch_add(cpu, std::memory_order_relaxed);
+ECO_TLA_TRACE_ONLY(const uint32_t m6_s = job.state.load(std::memory_order_acquire);)
+configured_.store(false, std::memory_order_release);
+configured_.store(false, std::memory_order_release);
+configured_.store(true, std::memory_order_release);
+configured_.store(true, std::memory_order_release);
+const uint32_t s = job.state.load(std::memory_order_acquire);
+const uint32_t s = state.load(std::memory_order_acquire);
+cs.bytes.fetch_add(job.bytes, std::memory_order_relaxed);
+cs.jobs.fetch_add(1, std::memory_order_relaxed);
+finished_pub_.store(0, std::memory_order_relaxed);
+finished_pub_.store(finished_, std::memory_order_release);
+for (std::thread& t : *threads_) {
+for (std::thread& t : *threads_) {
+g->finished_pub_.store(0, std::memory_order_relaxed);
+g->running_.store(false, std::memory_order_relaxed);
+g->stats_.fork_stops.fetch_add(1, std::memory_order_relaxed);
+g->threads_ = new std::vector<std::thread>();
+g.threads_ = new std::vector<std::thread>();
+if (!configured_.load(std::memory_order_acquire) || mode_ == HelperMode::Off) {
+if (!configured_.load(std::memory_order_acquire) || n > members_) {
+if (!job.state.compare_exchange_strong(expect, HelperJob::Posted,
+if (!running_.load(std::memory_order_relaxed)) return;
+if (!running_.load(std::memory_order_relaxed)) return;
+if (configured_.load(std::memory_order_relaxed)) {
+if (configured_.load(std::memory_order_relaxed)) {
+if (job->state.load(std::memory_order_relaxed) != HelperJob::Posted) {
+if (p.configured_.load(std::memory_order_acquire)) p.drain();
+if (running_.load(std::memory_order_relaxed)) {
+if (stop_ != nullptr) stop_->store(true, std::memory_order_release);
+job->state.store(HelperJob::Done, std::memory_order_release);
+job->state.store(HelperJob::Running, std::memory_order_relaxed);
+job.state.store(HelperJob::Done, std::memory_order_release);
+job.state.store(HelperJob::Running, std::memory_order_relaxed);
+new (&bgRegistryMutex()) std::mutex();
+new (&g->cv_done_) std::condition_variable();
+new (&g->cv_start_) std::condition_variable();
+new (&g->m_) std::mutex();
+new (&g.cv_done_) std::condition_variable();
+new (&g.cv_start_) std::condition_variable();
+new (&g.m_) std::mutex();
+new (&g.run_m_) std::mutex();
+new (&p.cv_done_) std::condition_variable();
+new (&p.cv_work_) std::condition_variable();
+new (&p.m_) std::mutex();
+p.workers_ = new std::vector<std::thread>();
+pthread_atfork(&GCBackgroundGang::atforkPrepare, &GCBackgroundGang::atforkParent,
+pthread_atfork(&GCHelperPool::atforkPrepare, &GCHelperPool::atforkParent,
+pthread_atfork(&GCMarkGang::atforkPrepare, &GCMarkGang::atforkParent,
+return finished_pub_.load(std::memory_order_acquire) >= opt_.members;
+return job.state.load(std::memory_order_acquire) == HelperJob::Done;
+running_.store(false, std::memory_order_release);
+running_.store(true, std::memory_order_release);
+state.store(Idle, std::memory_order_relaxed);
+static std::mutex* m = new std::mutex();
+stats_.join_wait_ns_total.fetch_add(d, std::memory_order_relaxed);
+stats_.launches.fetch_add(1, std::memory_order_relaxed);
+stats_.member_cpu_ns.fetch_add(GCHelperPool::threadCpuNs() - c0, std::memory_order_relaxed);
+stats_.member_cpu_ns.fetch_add(GCHelperPool::threadCpuNs() - c0, std::memory_order_relaxed);
+stats_.posts.fetch_add(1, std::memory_order_relaxed);
+stats_.runs.fetch_add(1, std::memory_order_relaxed);
+stats_.stall_count.fetch_add(1, std::memory_order_relaxed);
+stats_.stall_ns.fetch_add(dur_ns, std::memory_order_relaxed);
+stats_.stall_outside_pause.fetch_add(1, std::memory_order_relaxed);
+stats_.stall_outside_pause_ns.fetch_add(dur_ns, std::memory_order_relaxed);
+stats_.wake_ns_total.fetch_add(wake, std::memory_order_relaxed);
+std::atomic<int64_t> tla_m6_tick{0};
+std::lock_guard<std::mutex> lk(bgRegistryMutex());
+std::lock_guard<std::mutex> lk(bgRegistryMutex());
+std::lock_guard<std::mutex> lk(bgRegistryMutex());
+std::lock_guard<std::mutex> lk(m_);
+std::lock_guard<std::mutex> lk(m_);
+std::lock_guard<std::mutex> lk(m_);
+std::lock_guard<std::mutex> lk(m_);
+std::lock_guard<std::mutex> lk(m_);
+std::lock_guard<std::mutex> lk(m_);
+std::lock_guard<std::mutex> lk(m_);
+std::lock_guard<std::mutex> lk(m_);
+std::lock_guard<std::mutex> lk(m_);
+std::lock_guard<std::mutex> lk(m_);
+std::lock_guard<std::mutex> lk(m_);
+std::lock_guard<std::mutex> lk(m_);
+std::lock_guard<std::mutex> lk(m_);
+std::lock_guard<std::mutex> lk(m_);
+std::lock_guard<std::mutex> lk(m_);
+std::lock_guard<std::mutex> run_lk(run_m_);
+std::lock_guard<std::mutex> run_lk(run_m_);
+std::memory_order_acq_rel)) {
+std::mutex& bgRegistryMutex() {
+std::unique_lock<std::mutex> lk(m_);
+std::unique_lock<std::mutex> lk(m_);
+std::unique_lock<std::mutex> lk(m_);
+std::unique_lock<std::mutex> lk(m_);
+std::unique_lock<std::mutex> lk(m_);
+std::unique_lock<std::mutex> lk(m_);
+std::unique_lock<std::mutex> lk(m_);
+std::unique_lock<std::mutex> lk(m_);
+uint64_t cur = a.load(std::memory_order_relaxed);
+uint64_t prev = stats_.wake_ns_max.load(std::memory_order_relaxed);
+void GCBackgroundGang::joinLocked(std::unique_lock<std::mutex>& lk, bool stopping) {
+void GCBackgroundGang::launch(Fn fn, void* ctx, std::atomic<bool>* stop) {
+void fetchMax(std::atomic<uint64_t>& a, uint64_t v) {
+while (v > cur && !a.compare_exchange_weak(cur, v, std::memory_order_relaxed)) {

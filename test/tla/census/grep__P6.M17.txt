@@ -1,0 +1,83 @@
+runtime/src/allocator/NurseryParallel.cpp: MinorRunArgs args{this, &ctl};
+runtime/src/allocator/NurseryParallel.cpp: MinorRunArgs* a = static_cast<MinorRunArgs*>(ctx);
+runtime/src/allocator/NurseryParallel.cpp: MinorWorker& w = *minor_workers_[i];
+runtime/src/allocator/NurseryParallel.cpp: MinorWorker& w = *minor_workers_[i];
+runtime/src/allocator/NurseryParallel.cpp: MinorWorker& w = *ns.minor_workers_[i];
+runtime/src/allocator/NurseryParallel.cpp: MinorWorker& w0 = *minor_workers_[0];
+runtime/src/allocator/NurseryParallel.cpp: if (!minor_workers_[i]) minor_workers_[i] = std::make_unique<MinorWorker>();
+runtime/src/allocator/NurseryParallel.cpp: minorwork::Lab labs[OldGenSpace::kMaxMinorWorkers];
+runtime/src/allocator/NurseryParallel.cpp: struct MinorRunArgs {
+runtime/src/allocator/NurseryParallel.cpp: uint64_t NurserySpace::waitPublishedP(MinorWorker& w, void* obj) {
+runtime/src/allocator/NurseryParallel.cpp: unsigned NurserySpace::chooseMinorWorkers(OldGenSpace& oldgen) {
+runtime/src/allocator/NurseryParallel.cpp: void NurserySpace::MinorWorker::resetRun() {
+runtime/src/allocator/NurseryParallel.cpp: void NurserySpace::evacuateP(MinorWorker& w, HPointer& slot, bool parent_old) {
+runtime/src/allocator/NurseryParallel.cpp: void NurserySpace::evacuateRawP(MinorWorker& w, uint64_t& raw) {
+runtime/src/allocator/NurseryParallel.cpp: void NurserySpace::publishAllP(MinorWorker& w) {
+runtime/src/allocator/NurseryParallel.cpp: void NurserySpace::publishHalfP(MinorWorker& w) {
+runtime/src/allocator/NurseryParallel.cpp: void NurserySpace::pushGreyP(MinorWorker& w, uint64_t e) {
+runtime/src/allocator/NurseryParallel.cpp: void NurserySpace::reachYoungLargeP(MinorWorker& w, void* obj, bool parent_old) {
+runtime/src/allocator/NurseryParallel.cpp: void NurserySpace::scanEntryP(MinorWorker& w, uint64_t e) {
+runtime/src/allocator/NurseryParallel.cpp: void NurserySpace::spineRunP(MinorWorker& w, Cons* prev) {
+runtime/src/allocator/NurseryParallel.cpp: void* NurserySpace::copyClaimed(MinorWorker& w, void* obj, uint64_t hw, bool parent_old) {
+runtime/src/allocator/NurseryRegion.cpp: MinorWorker& w = *minor_workers_[i];
+runtime/src/allocator/NurseryRegion.cpp: MinorWorker& w = *minor_workers_[i];
+runtime/src/allocator/NurseryRegion.cpp: MinorWorker& w = *ns.minor_workers_[i];
+runtime/src/allocator/NurseryRegion.cpp: MinorWorker& w0 = *minor_workers_[0];
+runtime/src/allocator/NurseryRegion.cpp: R.rw.resize(OldGenSpace::kMaxMinorWorkers);
+runtime/src/allocator/NurseryRegion.cpp: if (!minor_workers_[i]) minor_workers_[i] = std::make_unique<MinorWorker>();
+runtime/src/allocator/NurseryRegion.cpp: minorwork::Lab labs[OldGenSpace::kMaxMinorWorkers];
+runtime/src/allocator/NurseryRegion.cpp: void NurserySpace::evacuateR(MinorWorker& w, region::RegionWorker& rw, HPointer& slot, uint32_t col) {
+runtime/src/allocator/NurseryRegion.cpp: void NurserySpace::reachYoungLargeR(MinorWorker& w, region::RegionWorker& rw, void* obj) {
+runtime/src/allocator/NurseryRegion.cpp: void NurserySpace::scanEntryR(MinorWorker& w, uint64_t e) {
+runtime/src/allocator/NurseryRegion.cpp: void NurserySpace::spineRunR(MinorWorker& w, region::RegionWorker& rw, Cons* prev, uint32_t col) {
+runtime/src/allocator/NurseryRegion.cpp: void* NurserySpace::copyClaimedR(MinorWorker& w, region::RegionWorker& rw, void* obj, uint64_t hw) {
+runtime/src/allocator/NurserySpace.cpp: const unsigned par_n = chooseMinorWorkers(oldgen);
+runtime/src/allocator/NurserySpace.hpp: std::unique_ptr<MinorWorker> minor_workers_[OldGenSpace::kMaxMinorWorkers];
+runtime/src/allocator/NurserySpace.hpp: std::unique_ptr<MinorWorker> tenure_workers_[OldGenSpace::kMaxMinorWorkers];
+runtime/src/allocator/NurserySpace.hpp: struct MinorWorker {
+runtime/src/allocator/NurserySpace.hpp: uint64_t waitPublishedP(MinorWorker& w, void* obj);
+runtime/src/allocator/NurserySpace.hpp: unsigned chooseMinorWorkers(OldGenSpace& oldgen);
+runtime/src/allocator/NurserySpace.hpp: void evacuateP(MinorWorker& w, HPointer& slot, bool parent_old);
+runtime/src/allocator/NurserySpace.hpp: void evacuateR(MinorWorker& w, region::RegionWorker& rw, HPointer& slot, uint32_t col);
+runtime/src/allocator/NurserySpace.hpp: void evacuateRawP(MinorWorker& w, uint64_t& raw);
+runtime/src/allocator/NurserySpace.hpp: void publishAllP(MinorWorker& w);
+runtime/src/allocator/NurserySpace.hpp: void publishHalfP(MinorWorker& w);
+runtime/src/allocator/NurserySpace.hpp: void pushGreyP(MinorWorker& w, uint64_t e);
+runtime/src/allocator/NurserySpace.hpp: void reachYoungLargeP(MinorWorker& w, void* obj, bool parent_old);
+runtime/src/allocator/NurserySpace.hpp: void reachYoungLargeR(MinorWorker& w, region::RegionWorker& rw, void* obj);
+runtime/src/allocator/NurserySpace.hpp: void scanEntryP(MinorWorker& w, uint64_t e);
+runtime/src/allocator/NurserySpace.hpp: void scanEntryR(MinorWorker& w, uint64_t e);
+runtime/src/allocator/NurserySpace.hpp: void spineRunP(MinorWorker& w, Cons* prev);
+runtime/src/allocator/NurserySpace.hpp: void spineRunR(MinorWorker& w, region::RegionWorker& rw, Cons* prev, uint32_t col);
+runtime/src/allocator/NurserySpace.hpp: void tenureParCollect(std::unique_ptr<MinorWorker>* ws, unsigned n);
+runtime/src/allocator/NurserySpace.hpp: void tenureParDistribute(std::unique_ptr<MinorWorker>* ws, unsigned n);
+runtime/src/allocator/NurserySpace.hpp: void tenureParSetup(std::unique_ptr<MinorWorker>* ws, unsigned n);
+runtime/src/allocator/NurserySpace.hpp: void* copyClaimed(MinorWorker& w, void* obj, uint64_t hw, bool parent_old);
+runtime/src/allocator/NurserySpace.hpp: void* copyClaimedR(MinorWorker& w, region::RegionWorker& rw, void* obj, uint64_t hw);
+runtime/src/allocator/NurseryTenure.cpp: MinorWorker& W(unsigned i) { return *ws[i]; }
+runtime/src/allocator/NurseryTenure.cpp: MinorWorker& W(unsigned i) { return *ws[i]; }
+runtime/src/allocator/NurseryTenure.cpp: MinorWorker& w = *minor_workers_[i];
+runtime/src/allocator/NurseryTenure.cpp: MinorWorker& w = *ws[i];
+runtime/src/allocator/NurseryTenure.cpp: MinorWorker& w = W(i);
+runtime/src/allocator/NurseryTenure.cpp: MinorWorker& w = W(i);
+runtime/src/allocator/NurseryTenure.cpp: MinorWorker& w = W(self);
+runtime/src/allocator/NurseryTenure.cpp: MinorWorker& w = W(self);
+runtime/src/allocator/NurseryTenure.cpp: char* tenure(MinorWorker& w, void* obj, bool push) {
+runtime/src/allocator/NurseryTenure.cpp: const unsigned heal_n = std::min<unsigned>(oldgen.minorThreads(), OldGenSpace::kMaxMinorWorkers);
+runtime/src/allocator/NurseryTenure.cpp: if (!tenure_workers_[i]) tenure_workers_[i] = std::make_unique<MinorWorker>();
+runtime/src/allocator/NurseryTenure.cpp: if (!ws[i]) ws[i] = std::make_unique<MinorWorker>();
+runtime/src/allocator/NurseryTenure.cpp: if (n > OldGenSpace::kMaxMinorWorkers) n = OldGenSpace::kMaxMinorWorkers;
+runtime/src/allocator/NurseryTenure.cpp: if (tenure_mcs_.size() < OldGenSpace::kMaxMinorWorkers) tenure_mcs_.resize(OldGenSpace::kMaxMinorWorkers);
+runtime/src/allocator/NurseryTenure.cpp: n = std::min<unsigned>({n, gang->members(), static_cast<unsigned>(OldGenSpace::kMaxMinorWorkers)});
+runtime/src/allocator/NurseryTenure.cpp: std::unique_ptr<MinorWorker>* ws;
+runtime/src/allocator/NurseryTenure.cpp: std::unique_ptr<MinorWorker>* ws;
+runtime/src/allocator/NurseryTenure.cpp: void NurserySpace::tenureParCollect(std::unique_ptr<MinorWorker>* ws, unsigned n) {
+runtime/src/allocator/NurseryTenure.cpp: void NurserySpace::tenureParDistribute(std::unique_ptr<MinorWorker>* ws, unsigned n) {
+runtime/src/allocator/NurseryTenure.cpp: void NurserySpace::tenureParSetup(std::unique_ptr<MinorWorker>* ws, unsigned n) {
+runtime/src/allocator/NurseryTenure.cpp: void childOfCopy(MinorWorker& w, void* parent, HPointer& hp) {
+runtime/src/allocator/NurseryTenure.cpp: void mark(MinorWorker& w, AgeOut& o, void* t, void* parent, uint64_t* s) {
+runtime/src/allocator/NurseryTenure.cpp: void reachYlos(MinorWorker& w, const void* t) {
+runtime/src/allocator/NurseryTenure.cpp: void spineRun(MinorWorker& w, Cons* prev) {
+runtime/src/allocator/OldGenSpace.cpp: if (n > kMaxMinorWorkers) n = kMaxMinorWorkers;
+runtime/src/allocator/OldGenSpace.hpp: static constexpr unsigned kMaxMinorWorkers = 64;
+runtime/src/allocator/OldGenSpace.hpp: static constexpr unsigned kMaxPromoWorkers = kMaxMinorWorkers;

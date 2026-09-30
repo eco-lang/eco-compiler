@@ -1,0 +1,4 @@
+runtime/src/allocator/NurseryRegion.cpp: role_of_k[X.k] = static_cast<uint8_t>(r);
+runtime/src/allocator/NurseryRegion.cpp: role_of_k[eden_k[eden_cur]] = static_cast<uint8_t>(Role::Eden);
+runtime/src/allocator/NurseryRegions.hpp: const region::Role r = static_cast<region::Role>(role_of_k[k]);
+runtime/src/allocator/NurseryRegions.hpp: uint8_t role_of_k[8] = {};

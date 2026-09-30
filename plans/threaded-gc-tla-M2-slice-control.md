@@ -1,6 +1,15 @@
 # Threaded GC — TLA+ model M2: the marker loop, tickets and termination
 
-**Status:** IMPLEMENTATION-READY PLAN (2026-09-28). **Adversarial review on 2026-09-28 against the
+**Status (2026-09-29): IMPLEMENTED**, steps 1–9 except the canary lines (`test/tla/manifest.txt`,
+not built yet; MAPPING.md §10 lists them). The model, results and every change from this plan are
+in `test/tla/M2-slice-control/` (MAPPING.md, AUDIT.md): `tla-check` 33/33 as expected; CR-005
+reproduced by `episode_stop`; trace validation on `gc-mark-trace` (`slices`, `episode`) accepts
+real runs and rejects every doctored log. Corrections to this plan found while implementing:
+`two_word` on `slice` and `wrap` on `slice` fail only through a steal the code cannot make (both
+moved to three participants), and `anywork_participants_only` on `help` cannot fail (dropped);
+see AUDIT.md, Finding 1. The text below is the plan as reviewed.
+
+**Plan status:** IMPLEMENTATION-READY PLAN (2026-09-28). **Adversarial review on 2026-09-28 against the
 current tree** (§11): two dead mutants, a dead `wrap` configuration, an assert-based check the runner
 cannot match, a merged `anyWork` load and a missing environment shape were corrected. The PlusCal
 sketch in §4.5 is the corrected one; it passes the PlusCal translator and SANY (tla2tools 1.8.0,

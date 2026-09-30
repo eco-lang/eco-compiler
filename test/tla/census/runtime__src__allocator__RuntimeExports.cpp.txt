@@ -1,0 +1,58 @@
+#include <mutex>
+.fetch_add(1, std::memory_order_relaxed);
+case DispatchKind::Fast: entry.fast.fetch_add(1, std::memory_order_relaxed); break;
+case DispatchKind::Fast: g_dispatch_fast_total.fetch_add(1, std::memory_order_relaxed); break;
+case DispatchKind::Generic: entry.gen.fetch_add(1, std::memory_order_relaxed); break;
+case DispatchKind::Generic: g_dispatch_gen_total.fetch_add(1, std::memory_order_relaxed); break;
+case DispatchKind::Sat: entry.sat.fetch_add(1, std::memory_order_relaxed); break;
+case DispatchKind::Sat: g_dispatch_sat_total.fetch_add(1, std::memory_order_relaxed); break;
+g_closure_creates_total.fetch_add(1, std::memory_order_relaxed);
+g_closure_creates_total.load(std::memory_order_relaxed)),
+g_closure_extends_total.fetch_add(1, std::memory_order_relaxed);
+g_closure_extends_total.load(std::memory_order_relaxed)),
+g_closure_stats_overflow.fetch_add(1, std::memory_order_relaxed);
+g_closure_stats_overflow.load(std::memory_order_relaxed)));
+g_closure_stats_table[i].creates.load(std::memory_order_relaxed),
+g_closure_stats_table[i].extends.load(std::memory_order_relaxed)});
+g_dispatch_stats_overflow.fetch_add(1, std::memory_order_relaxed);
+g_dispatch_stats_table[i].fast.load(std::memory_order_relaxed)});
+g_dispatch_stats_table[i].gen.load(std::memory_order_relaxed),
+g_dispatch_stats_table[i].sat.load(std::memory_order_relaxed),
+if (!entry.fp.compare_exchange_strong(expected, fp,
+if (!entry.fp.compare_exchange_strong(expected, fp,
+if (g_call_census_dumped.exchange(true)) return;
+if (g_closure_stats_dumped.exchange(true)) return;
+if (g_dispatch_stats_dumped.exchange(true)) return;
+static_cast<unsigned long long>(g_dispatch_fast_total.load(std::memory_order_relaxed)),
+static_cast<unsigned long long>(g_dispatch_stats_overflow.load(std::memory_order_relaxed)));
+std::atomic<bool> g_call_census_dumped{false};
+std::atomic<bool> g_closure_stats_dumped{false};
+std::atomic<bool> g_dispatch_stats_dumped{false};
+std::atomic<uint64_t> creates{0};
+std::atomic<uint64_t> extends{0};
+std::atomic<uint64_t> fast{0};
+std::atomic<uint64_t> fp{0};
+std::atomic<uint64_t> fp{0};
+std::atomic<uint64_t> g_closure_creates_total{0};
+std::atomic<uint64_t> g_closure_extends_total{0};
+std::atomic<uint64_t> g_closure_stats_overflow{0};
+std::atomic<uint64_t> g_dispatch_fast_total{0};
+std::atomic<uint64_t> g_dispatch_gen_total{0};
+std::atomic<uint64_t> g_dispatch_sat_total{0};
+std::atomic<uint64_t> g_dispatch_stats_overflow{0};
+std::atomic<uint64_t> gen{0};
+std::atomic<uint64_t> sat{0};
+std::lock_guard<std::mutex> l(g_consSiteMu);
+std::lock_guard<std::mutex> l(g_consSiteMu);
+std::lock_guard<std::mutex> l(g_consSiteMu);
+std::lock_guard<std::mutex> lock(g_kernel_desc_mutex);
+std::memory_order_relaxed)) {
+std::memory_order_relaxed)) {
+std::mutex g_consSiteMu;
+std::mutex g_kernel_desc_mutex;
+uint64_t cur = entry.fp.load(std::memory_order_relaxed);
+uint64_t cur = entry.fp.load(std::memory_order_relaxed);
+uint64_t fp = g_closure_stats_table[i].fp.load(std::memory_order_relaxed);
+uint64_t fp = g_dispatch_stats_table[i].fp.load(std::memory_order_relaxed);
+uint64_t gen_total = g_dispatch_gen_total.load(std::memory_order_relaxed);
+uint64_t sat_total = g_dispatch_sat_total.load(std::memory_order_relaxed);

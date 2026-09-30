@@ -1,0 +1,4 @@
+# The events TraceTenuring.tla matches (run_traces.py keeps only these after the merge; gang.launch
+# orders the job before the collector's start and is then dropped, its ordering kept in the
+# vector clocks).
+job gang.start gang.exit gang.join tstopreq titem tchild tload treach tcopy tpub tfix tstop tend tmerge theal tyres tshadow

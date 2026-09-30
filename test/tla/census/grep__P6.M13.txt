@@ -1,0 +1,10 @@
+runtime/src/allocator/OldGenSpace.cpp: const bool sample_alloc = in_minor_gc_ && promo_instr_.alloc.shouldSample();
+runtime/src/allocator/OldGenSpace.cpp: if (promo_instr_.sweep.shouldSample()) {
+runtime/src/allocator/OldGenSpace.cpp: promo_instr_.alloc.sampled_calls++;
+runtime/src/allocator/OldGenSpace.cpp: promo_instr_.alloc.sampled_ns += GCStats::nowSinceProcessStartNs() - t_alloc0;
+runtime/src/allocator/OldGenSpace.cpp: promo_instr_.sweep.sampled_calls++;
+runtime/src/allocator/OldGenSpace.cpp: promo_instr_.sweep.sampled_ns += GCStats::nowSinceProcessStartNs() - t0;
+runtime/src/allocator/OldGenSpace.cpp: promo_instr_.sweep_bytes += lazySweep(cls_for_sweep, budget);
+runtime/src/allocator/OldGenSpace.cpp: promo_instr_.sweep_bytes += lazySweep(cls_for_sweep, budget);
+runtime/src/allocator/OldGenSpace.hpp: PromoInstr promo_instr_;
+runtime/src/allocator/OldGenSpace.hpp: const PromoInstr& promoInstr() const { return promo_instr_; }

@@ -1,0 +1,2 @@
+# The events TracePool.tla matches (GCHelperPool.cpp's M6 pool hooks).
+pool.cas pool.enq pool.take pool.done pool.wfast pool.wchk pool.reset pool.drained pool.plock pool.parent pool.child

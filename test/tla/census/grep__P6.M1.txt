@@ -1,0 +1,8 @@
+runtime/src/allocator/NurserySpace.cpp: Forward *fwd = static_cast<Forward *>(obj);
+runtime/src/allocator/NurserySpace.cpp: Forward *fwd = static_cast<Forward *>(obj);
+runtime/src/allocator/NurserySpace.cpp: Forward *fwd = static_cast<Forward *>(obj);
+runtime/src/allocator/NurserySpace.cpp: Forward *fwd = static_cast<Forward *>(obj);
+runtime/src/allocator/NurserySpace.cpp: if (hdr->tag == Tag_Forward) {
+runtime/src/allocator/NurserySpace.cpp: if (hdr->tag == Tag_Forward) {
+runtime/src/allocator/NurserySpace.cpp: if (hdr->tag == Tag_Forward) {
+runtime/src/allocator/NurserySpace.cpp: if (tgthdr->tag == Tag_Forward) {

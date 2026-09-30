@@ -1,0 +1,3 @@
+runtime/src/allocator/OldGenSpace.cpp: return allocateFromSizeClassBitmap(cls, requested_size);
+runtime/src/allocator/OldGenSpace.cpp: void* OldGenSpace::allocateFromSizeClassBitmap(size_t cls, size_t requested_size) {
+runtime/src/allocator/OldGenSpace.hpp: void* allocateFromSizeClassBitmap(size_t cls, size_t requested_size);

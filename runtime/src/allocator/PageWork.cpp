@@ -7,6 +7,21 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "TlaTrace.hpp"   // compiled-out hooks (trace builds only: M7's trace, test/tla/)
+
+// M7's trace (test/tla/M7-pagework/TracePageWork.tla): every PageWork event is
+// stamped from one process-wide seq_cst counter, so the merged log is one total
+// order in which each stamp sits where its model step does (plan §8).
+#if ECO_TLA_TRACE_ENABLED
+#include <atomic>
+namespace {
+std::atomic<uint64_t> g_pw_tick{0};
+}  // namespace
+#define PW_TRACE(ev, ...) ECO_TLA_TRACE(ev, "clk", "pw", "tick", g_pw_tick.fetch_add(1) __VA_OPT__(, ) __VA_ARGS__)
+#else
+#define PW_TRACE(...) ((void)0)
+#endif
+
 namespace Elm::gc {
 
 namespace {
@@ -49,17 +64,20 @@ PageWork::~PageWork() {
 
 void PageWork::runJob(HelperJob* j) {
     auto* s = static_cast<PageJob*>(j);
+    PW_TRACE("start", "seq", s->seq, "kind", s->kind);
     const PageOps& ops = *s->ops;
     s->failures = 0;
     if (s->kind == Kind::Discard) {
         for (const Extent& e : s->extents) {
             if (!ops.discard(ops.ctx, e.p, e.n)) ++s->failures;
+            PW_TRACE("body", "seq", s->seq, "x", ::Elm::tlatrace::obj(e.p));
         }
     } else if (s->kind == Kind::Populate) {
         if (!ops.populate(ops.ctx, s->lo, static_cast<size_t>(s->hi - s->lo))) {
             ++s->failures;
         }
     }
+    PW_TRACE("jobdone", "seq", s->seq);
 }
 
 bool PageWork::allSlotsIdle() const {
@@ -95,9 +113,14 @@ void PageWork::reap(PageJob& s) {
 }
 
 void PageWork::reapDone() {
+    ECO_TLA_TRACE_ONLY(uint32_t tla_mask = 0;)
     for (auto& s : slots_) {
-        if (!s.isIdle() && s.isDone()) reap(s);
+        if (!s.isIdle() && s.isDone()) {
+            ECO_TLA_TRACE_ONLY(tla_mask |= 1u << static_cast<unsigned>(&s - slots_);)
+            reap(s);
+        }
     }
+    PW_TRACE("reaped", "mask", tla_mask);
 }
 
 void PageWork::awaitSlot(PageJob& s, bool in_pause, uint64_t& wait_counter) {
@@ -108,6 +131,7 @@ void PageWork::awaitSlot(PageJob& s, bool in_pause, uint64_t& wait_counter) {
         if (hooks_.on_stall) hooks_.on_stall(hooks_.ctx, r.start_ns, r.dur_ns, s.client, in_pause);
     }
     reap(s);
+    PW_TRACE("await", "slot", &s - slots_);
 }
 
 PageWork::PageJob& PageWork::takeSlot(bool in_pause) {
@@ -133,6 +157,7 @@ void PageWork::awaitPopulateOverlapping(char* p, size_t n, bool in_pause) {
 }
 
 void PageWork::onRelease(char* p, size_t n, bool in_pause) {
+    PW_TRACE("rel", "x", ::Elm::tlatrace::obj(p));
     awaitPopulateOverlapping(p, n, in_pause);
     counters_.released_bytes += n;
     counters_.released_extents += 1;
@@ -146,15 +171,20 @@ void PageWork::onRelease(char* p, size_t n, bool in_pause) {
     counters_.pending_bytes += n;
     counters_.pending_peak_bytes =
         std::max(counters_.pending_peak_bytes, counters_.pending_bytes);
+    PW_TRACE("pend", "x", ::Elm::tlatrace::obj(p));
 }
 
 PageWork::Reuse PageWork::onReuse(char* p, size_t n, bool in_pause) {
+    PW_TRACE("acq", "x", ::Elm::tlatrace::obj(p),
+             "st", pending_.count(p) != 0 ? 1 : (posted_discard_.count(p) != 0 ? 2 : 0),
+             "slot", posted_discard_.count(p) != 0 ? int{posted_discard_.at(p).slot} : -1);
     if (auto it = pending_.find(p); it != pending_.end()) {
         // U1's win: the pages are still resident, no refault.
         counters_.pending_bytes -= it->second.size;
         counters_.cancelled_bytes += it->second.size;
         counters_.cancelled_extents += 1;
         pending_.erase(it);          // its pending_order_ entry goes stale
+        PW_TRACE("reused", "x", ::Elm::tlatrace::obj(p), "r", "Cancelled");
         return Reuse::Cancelled;
     }
     if (auto it = posted_discard_.find(p); it != posted_discard_.end()) {
@@ -162,13 +192,16 @@ PageWork::Reuse PageWork::onReuse(char* p, size_t n, bool in_pause) {
         // reap() erased the entry.
     } else if (!cfg_.decommit) {
         counters_.reuse_never_discarded_bytes += n;
+        PW_TRACE("reused", "x", ::Elm::tlatrace::obj(p), "r", "NeverDiscarded");
         return Reuse::NeverDiscarded;
     }
     counters_.reuse_after_discard_bytes += n;
+    PW_TRACE("reused", "x", ::Elm::tlatrace::obj(p), "r", "AfterDiscard");
     return Reuse::AfterDiscard;
 }
 
 size_t PageWork::onFreshBump(char* p, size_t n, char** commit_from) {
+    PW_TRACE("fresh", "x", ::Elm::tlatrace::obj(p));
     char* end = p + n;
     if (window_end_ != nullptr && window_end_ > p) {
         if (window_end_ >= end) {
@@ -204,6 +237,7 @@ void PageWork::postDiscardBatch(std::vector<Extent>& batch, bool in_pause) {
     counters_.discard_posted_extents += batch.size();
     counters_.discard_jobs += 1;
     batch.clear();
+    PW_TRACE("post", "slot", idx, "seq", s.seq, "kind", s.kind);
     pool_.post(s);
 }
 
@@ -218,6 +252,7 @@ void PageWork::topUpWindow(char* bump, char* cap_end, bool in_pause) {
         return;
     }
     window_end_ = target;
+    PW_TRACE("window", "lo", ::Elm::tlatrace::obj(lo), "hi", ::Elm::tlatrace::obj(target));
     PageJob& s = takeSlot(in_pause);
     s.kind = Kind::Populate;
     s.client = HelperClient::Populate;
@@ -228,6 +263,7 @@ void PageWork::topUpWindow(char* bump, char* cap_end, bool in_pause) {
     s.seq = next_seq_++;
     counters_.populate_posted_bytes += s.bytes;
     counters_.populate_jobs += 1;
+    PW_TRACE("post", "slot", &s - slots_, "seq", s.seq, "kind", s.kind);
     pool_.post(s);
 }
 
@@ -255,10 +291,12 @@ void PageWork::syncPoint(uint64_t epoch, uint64_t major_epoch, char* bump, char*
                               counters_.pending_bytes > cfg_.pending_cap;
         if (!aged && !over_cap) break;
         batch_.push_back(Extent{oe.p, it->second.size});
+        PW_TRACE("age", "x", ::Elm::tlatrace::obj(oe.p));
         counters_.pending_bytes -= it->second.size;
         pending_.erase(it);
         pending_order_.pop_front();
     }
+    PW_TRACE("sync", "size", batch_.size());
     // (c) Post the due discards as one job.
     postDiscardBatch(batch_, in_pause);
     // (d) U2: keep the commit-ahead window topped up.

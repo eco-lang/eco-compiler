@@ -638,18 +638,43 @@ Testing::TestCase testParMarkNegativeSkipMergeWorker1(
             for (auto& r : roots) a.getRootSet().removeRoot(&r);
             return v;
         }();
+        // Which markers get work is schedule-dependent: under load marker 1
+        // can mark nothing in a cycle, and skipping an empty accumulator loses
+        // nothing (register CR-030). So the child finishes any cycle the build
+        // started before setting the hook, then forces cycles until one loses
+        // marker 1's bytes (validate: HEAP_051's post-merge check aborts at that
+        // handoff). Exit 2: marker 1 marked nothing in 32 cycles, so the control
+        // never ran.
         const int st = runInChild([ref_live]() -> int {
             auto& a = initAllocator(parConfig(4));
             std::vector<HPointer> roots;
             buildGraph(a, 60000, 21, roots, 40);
             for (auto& r : roots) a.getRootSet().addRoot(&r);
+            runToHandoff(a);                         // a build-started cycle runs unhooked
             og(a).test_skip_merge_worker1_ = true;
-            startCycle(a);
-            runToHandoff(a);                         // HEAP_051 post-merge check aborts here (validate)
-            return OA::postSweepLive(og(a)) < ref_live ? 0 : 1;
+            for (int c = 1; c <= 32; ++c) {
+                startCycle(a);
+                runToHandoff(a);                     // HEAP_051 post-merge check aborts here (validate)
+                const size_t got = OA::postSweepLive(og(a));
+                if (got < ref_live) {                // marker 1's bytes are missing: caught
+                    std::fprintf(stderr, "    child: caught in forced cycle %d\n", c);
+                    return 0;
+                }
+                if (got != ref_live) return 1;       // a different live set: not this fault
+            }
+            return 2;
         });
+        if (WIFEXITED(st) && WEXITSTATUS(st) != 0) {
+            std::fprintf(stderr, "    DIAG: child exit %d (%s)\n", WEXITSTATUS(st),
+                         WEXITSTATUS(st) == 2 ? "marker 1 marked nothing in 32 forced cycles"
+                                              : "the skipped accumulator was not seen");
+        }
 #if ECO_HEAP_VALIDATE
-        TEST_ASSERT(WIFSIGNALED(st));
+        // Validate builds: HEAP_051's post-merge check (markLiveMergeAll) aborts at the
+        // first handoff whose skipped accumulator is non-empty, in any block. (IM6 alone
+        // checks UNIFORM blocks only; the child's own post-sweep comparison, exit 0, was
+        // the catcher for mixed blocks.) Either is the fault being caught; 1 or 2 is not.
+        TEST_ASSERT(WIFSIGNALED(st) || (WIFEXITED(st) && WEXITSTATUS(st) == 0));
 #else
         TEST_ASSERT(WIFEXITED(st) && WEXITSTATUS(st) == 0);
 #endif

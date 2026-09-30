@@ -1,0 +1,27 @@
+runtime/src/allocator/OldGenSpace.cpp: BlockId OldGenSpace::materializeBlock(const BlockInfo& bi,
+runtime/src/allocator/OldGenSpace.cpp: bi.is_large = false;
+runtime/src/allocator/OldGenSpace.cpp: bi.is_large = false;
+runtime/src/allocator/OldGenSpace.cpp: bi.is_large = false;
+runtime/src/allocator/OldGenSpace.cpp: bi.is_large = false;
+runtime/src/allocator/OldGenSpace.cpp: bi.is_large = false;
+runtime/src/allocator/OldGenSpace.cpp: bi.is_large = false;
+runtime/src/allocator/OldGenSpace.cpp: bi.is_large = true;
+runtime/src/allocator/OldGenSpace.cpp: bi.size_class = NUM_SIZE_CLASSES;
+runtime/src/allocator/OldGenSpace.cpp: bi.size_class = NUM_SIZE_CLASSES;
+runtime/src/allocator/OldGenSpace.cpp: bi.size_class = NUM_SIZE_CLASSES;
+runtime/src/allocator/OldGenSpace.cpp: bi.size_class = cls;
+runtime/src/allocator/OldGenSpace.cpp: bi.size_class = cls;
+runtime/src/allocator/OldGenSpace.cpp: bi.size_class = cls;
+runtime/src/allocator/OldGenSpace.cpp: bi.size_class = cls;
+runtime/src/allocator/OldGenSpace.cpp: blk.is_large = true;
+runtime/src/allocator/OldGenSpace.cpp: blk.size_class = NUM_SIZE_CLASSES;
+runtime/src/allocator/OldGenSpace.cpp: block.size_class = NUM_SIZE_CLASSES;
+runtime/src/allocator/OldGenSpace.cpp: const BlockId id = blocks_.add(bi, m);
+runtime/src/allocator/OldGenSpace.cpp: evac_block_index_ = materializeBlock(bi, {0, 0, true},
+runtime/src/allocator/OldGenSpace.cpp: materializeBlock(bi, {0, 0, /*fully_swept=*/true}, bitmapBytesForBlock(bi));
+runtime/src/allocator/OldGenSpace.cpp: materializeBlock(bi, {0, 0, /*fully_swept=*/true}, bitmapBytesForBlock(bi));
+runtime/src/allocator/OldGenSpace.cpp: materializeBlock(bi, {0, 0, /*fully_swept=*/true}, bitmapBytesForBlock(bi));
+runtime/src/allocator/OldGenSpace.cpp: materializeBlock(bi, {0, 0, mid_cycle}, bitmapBytesForBlock(bi));
+runtime/src/allocator/OldGenSpace.cpp: materializeBlock(bi, {0, 0, mid_cycle}, bitmapBytesForBlock(bi));
+runtime/src/allocator/OldGenSpace.cpp: materializeBlock(bi, {size, 0, mid_cycle_large}, 0);
+runtime/src/allocator/OldGenSpace.hpp: BlockId materializeBlock(const BlockInfo& bi, const BufferMetadata& m,

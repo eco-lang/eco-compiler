@@ -1,6 +1,18 @@
 # Threaded GC — TLA+ model M5: the region nursery and concurrent tenuring (7b/7c)
 
-**Status:** IMPLEMENTATION-READY PLAN (2026-09-28). **Adversarial review on 2026-09-28 against the
+**Status:** IMPLEMENTED (2026-09-29) in `test/tla/M5-tenuring/`: steps 1–7 of §10 are done
+(the core and the three §8.1–§8.3 extensions, switched by constants), and the `models.txt` rows of
+step 9. Step 8 (trace validation) done in wave 2 (2026-09-29): the engine storm on
+`gc-tenure-trace` and a pause projection of the real allocator (`gc-heap-trace tenure`), 27 rows in
+`test/tla/traces.txt`, all as expected; it found one model error, since corrected (the engine
+checks `stop` before asking for an item; AUDIT.md). Not done: step 9's `manifest.txt` lines (the
+canary; AUDIT.md lists them), step 10. The quick tier (49 rows: 12 passing configurations, CR-017
+twice, CR-013 three ways, 32 mutants) behaves as expected; `AUDIT.md` there has the results, the
+counterexamples, the deep tier, and every way the implemented model differs from the sketch below.
+`MAPPING.md` there is the model ↔ code map. The sketch in §4.5 is kept as the reviewed design text;
+the committed model is authoritative.
+
+History: **Adversarial review on 2026-09-28 against the
 current tree** (§12): the sketch, properties, mutants and configurations were corrected, and the
 corrected sketch in §4.5 passes the translator and SANY (tla2tools 1.8.0); TLC has not run. The
 model is built from the **merged** 7b/7c/07b code, which has been default-on since TG7d
@@ -1183,6 +1195,14 @@ observed values, and allows the unlogged mutator epoch steps in between.
 
 ## 10. Implementation steps
 
+**Progress (2026-09-29):** steps 1–7 done; step 9 done for `models.txt` and the first AUDIT.md
+entry (the `manifest.txt` lines wait for the canary; the parent plan's §11 row is the
+orchestrator's); step 8 done in wave 2 (the storm and the pause projection, not ageing, builders
+or L3; AUDIT.md), step 10 not started. Step 5 ran as a restructured deep tier (the plan's L3
+deep parameters did not fit in two hours; AUDIT.md "Tiering"). Step 4: `fork` fails as expected
+(plus two more CR-013 facets, `fork_orphan_copy` and `fork_l3`), `cycle_major` fails as expected
+(plus `k2_cycle_major`: CR-017 also with k = 2).
+
 1. Create `test/tla/M5-tenuring/` with `Tenuring.tla` (§4.5), `MC.tla`, the configurations of §6,
    MAPPING.md (§4.4 plus the A3 rows) and AUDIT.md.
 2. `pcal` + `sany`, then TLC on `quick_exact`, `quick_sync`, `quick_major`, `quick_cycle`,
@@ -1260,3 +1280,24 @@ publish and its BUSY abort; the gen bump and wrap discard in `tenureLaunch` (`Ne
 `(g + 1) & mask`, with 0 mapped to 1); `majorRedirect`'s three conditions; `forEachYoung` covering
 Young and Tenuring; every `tenureJoin` path (wait, stop and join, orphan, fork-stopped, L3); and
 the collector's footprint (census in §7 A3).
+
+## Progress note (2026-09-29): CR-034, the address-keyed lists, the major × region boundary
+
+Assessment only (no runtime change); details in `test/tla/M5-tenuring/AUDIT.md` (entry of this date)
+and MAPPING.md §9. The §8.2 extension kept generation members by object identity, which is fix
+candidate 1's behaviour, so it could not see CR-034. The model now keeps `Extent::ylos_gen` and
+`Extent::lb_bodies` by address (constants `YlosGen`, `LbKey`; the old behaviour is the default in every
+existing configuration, whose rows and state counts are unchanged), with large bodies (op `"lalloc"`)
+and the invariants `YlosGenIdentity` and `T0GreyAllocated`. Results:
+- CR-034 reproduced: `MC_ylos_aba` (`YlosGenIdentity`), `MC_ylos_aba_heap005` (`OldPointsOld`), and at
+  k = 2 through the ageing prep, where the claimed YLOS is not even scanned (`MC_k2_ylos_aba`,
+  `NoDangling`).
+- Fix candidates (`controls/`): dropping at the major and a never-reused stamp pass at k = 1 and 2;
+  the age ≥ 1 check passes at k = 1 only; the LargeBodyId is recycled and is no stamp.
+- `lb_bodies` has the same ABA, and it is S1 when the reused address holds a young YLOS not yet
+  reached (the prep's re-mark makes its first reach return "already reached"): `MC_lb_aba`.
+- New at k = 2 (benign today): a dead ageing-generation YLOS keeps an unhealed slot into a retired
+  extent, which the t0 snapshot reads (`MC_k2_ylos_walk`).
+- CR-017 also goes through a large header's own body (no tenured object needed).
+- The combined boundary (majors, cycles, YLOS, large bodies, builders or k = 2, reuse) passes with the
+  known defects looked past: `MC_deep_boundary` (40.4 M states), `MC_deep_boundary_k2` (14.1 M).

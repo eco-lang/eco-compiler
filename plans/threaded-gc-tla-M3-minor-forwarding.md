@@ -1,8 +1,18 @@
 # Threaded GC — TLA+ model M3: parallel minor forwarding (claim, copy, publish)
 
-**Status:** IMPLEMENTATION-READY PLAN (2026-09-28). Had an adversarial review on 2026-09-28 against
-the current tree (§12): the example heap, `MaxRun`, two mutants, the owner check and the copy ids
-were corrected, and the revised sketch passes the translator and SANY. TLC has not run.
+**Status:** IMPLEMENTED (2026-09-28) in `test/tla/M3-minor-forwarding/`: steps 1–3 of §10 are
+done, with step 4's `models.txt` rows and step 6's AUDIT.md entry. Step 5 (trace validation) and
+step 4's canary lines wait for the shared trace and canary infrastructure. The quick tier (3
+passing configurations, 9 mutant rows including a deadlock row) and the deep tier behave as
+expected; every mutant's counterexample was read against its §6 story. `AUDIT.md` there records
+the results and every way the implemented model differs from the sketch below (header states as
+model values, `spineRunP`'s `needs_heads`, the heap's `4 = Cons(9, 5)`, a region heap in which the
+YLOS keeps both parents). `MAPPING.md` there is the model ↔ code map. The sketch in §5.5 is kept as
+the reviewed design text; the committed model is authoritative.
+
+History: adversarial review on 2026-09-28 against the current tree (§12): the example heap,
+`MaxRun`, two mutants, the owner check and the copy ids were corrected, and the revised sketch
+passed the translator and SANY.
 
 **Parents:** `plans/threaded-gc-tla-verification.md` (§2 rules A1–A9, §5.1 index), and
 `plans/threaded-gc-tla-primer.md` (read it first if TLA+ or the GC terms are new). The structure
@@ -989,6 +999,16 @@ Production code is untouched: the hooks compile to nothing, and `out.mlir` and a
 unchanged.
 
 ## 10. Implementation steps
+
+**Progress (2026-09-28):** steps 1–3 done; step 4 done for `models.txt` (12 quick rows, 5 deep
+rows), the canary lines not yet; step 5 not started (it needs the shared trace infrastructure);
+step 6: AUDIT.md's first entry written, and the parent plan's §11 row proposed to the
+orchestrator. Details and measured state counts: `test/tla/M3-minor-forwarding/AUDIT.md`.
+**Step 5 (2026-09-29):** done. Hooks in `MinorWork.hpp` (`claim`, `publish`, `wait`; production
+disassembly unchanged), `minor_harness.cpp`'s tiny mode and YLOS kind, target `gc-minor-trace`,
+`TraceMinorForwarding.tla`, 15 rows in `test/tla/traces.txt` (6 accept, 9 negative controls):
+15/15 as expected on four passes, and 115 more logs accepted by hand. `load` is logged at the
+call sites rather than in `loadHeader` (AUDIT.md). Still open: the canary lines.
 
 1. Create `test/tla/M3-minor-forwarding/` with `MinorForwarding.tla` (§5.5), `MC.tla`, the §7
    configurations, MAPPING.md (§5.4 table plus A3's rows) and AUDIT.md.

@@ -1,0 +1,11 @@
+eco-kernel-cpp/src/eco/CellStore.cpp: Elm::Allocator::instance().getRootSet().addExternalRootScanner(
+eco-kernel-cpp/src/eco/MVar.cpp: Elm::Allocator::instance().getRootSet().addExternalRootScanner(
+eco-kernel-cpp/src/eco/Runtime.cpp: Elm::Allocator::instance().getRootSet().addExternalRootScanner(
+elm-kernel-cpp/src/http/HttpExports.cpp: Allocator::instance().getRootSet().addExternalRootScanner(
+elm-kernel-cpp/src/time/TimeEffectManager.cpp: Elm::Allocator::instance().getRootSet().addExternalRootScanner(
+runtime/src/allocator/RootSet.cpp: void RootSet::addExternalRootScanner(ExternalRootScanner scanner, const char* name) {
+runtime/src/allocator/RootSet.hpp: void addExternalRootScanner(ExternalRootScanner scanner,
+runtime/src/allocator/RuntimeExports.cpp: Allocator::instance().getRootSet().addExternalRootScanner(
+runtime/src/platform/PlatformRuntime.cpp: Allocator::instance().getRootSetSlow().addExternalRootScanner(
+runtime/src/platform/PortRuntime.cpp: Allocator::instance().getRootSetSlow().addExternalRootScanner(
+runtime/src/platform/Scheduler.cpp: Allocator::instance().getRootSetSlow().addExternalRootScanner(

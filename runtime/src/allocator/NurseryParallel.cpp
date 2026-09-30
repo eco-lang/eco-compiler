@@ -145,6 +145,7 @@ void NurserySpace::publishAllP(MinorWorker& w) {
     w.priv.store(0, std::memory_order_relaxed);
 }
 
+// TLA-REGION(NP.MinorEnv) begin
 struct NurserySpace::MinorEnv {
     static constexpr bool kParallel = true;
     NurserySpace& ns;
@@ -224,6 +225,7 @@ struct NurserySpace::MinorEnv {
     void scan(unsigned self, uint64_t e) { ns.scanEntryP(*ns.minor_workers_[self], e); }
     void publishAll(unsigned self) { ns.publishAllP(*ns.minor_workers_[self]); }
 };
+// TLA-REGION(NP.MinorEnv) end
 
 namespace {
 struct MinorRunArgs {
@@ -247,6 +249,7 @@ uint64_t NurserySpace::waitPublishedP(MinorWorker& w, void* obj) {
     return mw::waitPublished(obj, [&](unsigned round) { mk::backoff(round, w.ctr); });
 }
 
+// TLA-REGION(NP.copyClaimed) begin
 void* NurserySpace::copyClaimed(MinorWorker& w, void* obj, uint64_t hw, bool parent_old) {
     Header hd = headerOf(hw);
 #if ECO_HEAP_VALIDATE
@@ -311,7 +314,9 @@ void* NurserySpace::copyClaimed(MinorWorker& w, void* obj, uint64_t hw, bool par
     mw::publish(obj, dst, mw::colorOf(hw));
     return dst;
 }
+// TLA-REGION(NP.copyClaimed) end
 
+// TLA-REGION(NP.evacuateP) begin
 void NurserySpace::evacuateP(MinorWorker& w, HPointer& slot, bool parent_old) {
 #if ECO_HEAP_VALIDATE
     {
@@ -343,6 +348,7 @@ void NurserySpace::evacuateP(MinorWorker& w, HPointer& slot, bool parent_old) {
     slot = Allocator::toPointerRaw(dst);
     if (tagHasChildren(headerOf(hw).tag)) pushGreyP(w, mk::objEntry(dst, 0));
 }
+// TLA-REGION(NP.evacuateP) end
 
 // JIT roots: raw 64-bit addresses (roots only: worker 0, before the gang).
 void NurserySpace::evacuateRawP(MinorWorker& w, uint64_t& raw) {
@@ -356,6 +362,7 @@ void NurserySpace::evacuateRawP(MinorWorker& w, uint64_t& raw) {
     raw = reinterpret_cast<uint64_t>(Allocator::fromPointerRaw(hp));
 }
 
+// TLA-REGION(NP.reachYoungLargeP) begin
 void NurserySpace::reachYoungLargeP(MinorWorker& w, void* obj, bool parent_old) {
     bool promoted = false;
     {
@@ -389,11 +396,13 @@ void NurserySpace::reachYoungLargeP(MinorWorker& w, void* obj, bool parent_old) 
         pushGreyP(w, mk::objEntry(obj, 1));   // scanned in place as a young parent
     }
 }
+// TLA-REGION(NP.reachYoungLargeP) end
 
 // ---------------------------------------------------------------------------
 // Scanning an entry (P§3.7)
 // ---------------------------------------------------------------------------
 
+// TLA-REGION(NP.spineRunP) begin
 void NurserySpace::spineRunP(MinorWorker& w, Cons* prev) {
     Cons* first = nullptr;
     size_t k = 0;
@@ -440,7 +449,9 @@ void NurserySpace::spineRunP(MinorWorker& w, Cons* prev) {
         }
     }
 }
+// TLA-REGION(NP.spineRunP) end
 
+// TLA-REGION(NP.scanEntryP) begin
 void NurserySpace::scanEntryP(MinorWorker& w, uint64_t e) {
     void* obj = mk::entryAddr(e);
     Header* hdr = getHeader(obj);
@@ -585,6 +596,7 @@ void NurserySpace::scanEntryP(MinorWorker& w, uint64_t e) {
             break;
     }
 }
+// TLA-REGION(NP.scanEntryP) end
 
 // ---------------------------------------------------------------------------
 // The per-minor choice (P§3.2) and the parallel minor (P§3.1)
@@ -618,6 +630,7 @@ unsigned NurserySpace::chooseMinorWorkers(OldGenSpace& oldgen) {
     return n;
 }
 
+// TLA-REGION(NP.minorGCParallel) begin
 void NurserySpace::minorGCParallel(OldGenSpace& oldgen, const StackMapRoots& stackmap_roots,
                                    MinorGCRecord* rec, unsigned n) {
 #if ENABLE_GC_PHASE_TIMERS
@@ -887,5 +900,6 @@ void NurserySpace::minorGCParallel(OldGenSpace& oldgen, const StackMapRoots& sta
 #endif
     par_oldgen_ = nullptr;
 }
+// TLA-REGION(NP.minorGCParallel) end
 
 }  // namespace Elm

@@ -1,0 +1,17 @@
+(void)cpu0; (void)mutex_wait; (void)mutex_acq;
+const uint64_t cpu0 = gang ? gang->stats().member_cpu_ns.load(std::memory_order_relaxed) : 0;
+copy_ptr_ = tospace_.top.load(std::memory_order_relaxed);
+if (gang) p.member_cpu_ns += gang->stats().member_cpu_ns.load(std::memory_order_relaxed) - cpu0;
+mutex_acq += ctx.w[i].mutex_acquires;
+mutex_wait += ctx.w[i].mutex_wait_ns;
+p.promo_mutex_acquires += mutex_acq;
+p.promo_mutex_wait_ns += mutex_wait;
+priv.store(0, std::memory_order_relaxed);
+rec->mutex_wait_ns = mutex_wait;
+std::lock_guard<std::mutex> g(ylos_mu_);
+uint64_t mutex_wait = 0, mutex_acq = 0;
+w.priv.store(0, std::memory_order_relaxed);
+w.priv.store(n, std::memory_order_relaxed);
+w.priv.store(w.stack.size() - w.head, std::memory_order_relaxed);
+w.priv.store(w.stack.size() - w.head, std::memory_order_relaxed);
+w0.priv.store(0, std::memory_order_relaxed);

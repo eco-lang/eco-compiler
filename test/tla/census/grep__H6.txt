@@ -1,0 +1,6 @@
+runtime/src/allocator/OldGenSpace.cpp: assert(nursery_->contains(obj) == allocator_ref_->isInNursery(obj) &&
+runtime/src/allocator/OldGenSpace.cpp: if (!o || !contains(o) || nursery_->contains(o) || isYoungLarge(o)) return;
+runtime/src/allocator/OldGenSpace.cpp: if (nursery_->contains(obj) || isYoungLarge(obj)) {
+runtime/src/allocator/OldGenSpace.cpp: if (nursery_->contains(obj)) return;
+runtime/src/allocator/OldGenSpace.cpp: if (nursery_->contains(obj)) {
+runtime/src/allocator/OldGenSpace.cpp: } else if (nursery_ != nullptr && nursery_->contains(obj)) {

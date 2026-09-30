@@ -1,0 +1,23 @@
+runtime/src/allocator/BlockTable.hpp: t.largeMark(id) = 0;
+runtime/src/allocator/BlockTable.hpp: uint8_t largeMark(BlockId id) const { return lmark_[id.v]; }
+runtime/src/allocator/BlockTable.hpp: uint8_t& largeMark(BlockId id) { return lmark_[id.v]; }
+runtime/src/allocator/OldGenSpace.cpp: bitscan::setBit(c.bits, static_cast<size_t>(k) * c.stride_bits);
+runtime/src/allocator/OldGenSpace.cpp: bitscan::setBit(c.bits, static_cast<size_t>(k) * c.stride_bits);
+runtime/src/allocator/OldGenSpace.cpp: blocks_.largeMark(i) = 0;
+runtime/src/allocator/OldGenSpace.cpp: blocks_.largeMark(idx) = 0;
+runtime/src/allocator/OldGenSpace.cpp: blocks_.largeMark(idx) = 0;
+runtime/src/allocator/OldGenSpace.cpp: const bool marked = blocks_.info(id).is_large ? blocks_.largeMark(id) != 0
+runtime/src/allocator/OldGenSpace.cpp: setMarkBitInBlock(block_id, obj);
+runtime/src/allocator/OldGenSpace.cpp: std::atomic_ref<uint8_t> lm(blocks_.largeMark(id));
+runtime/src/allocator/OldGenSpace.hpp: bool setMarkBitInBlock(BlockId id, const void* obj) {
+runtime/src/allocator/OldGenSpace.hpp: return blocks_.largeMark(id) != 0;
+runtime/src/allocator/OldGenSpace.hpp: return og.blocks_.info(id).is_large ? og.blocks_.largeMark(id) != 0
+runtime/src/allocator/OldGenSpace.hpp: return oldgen.blocks_.largeMark(id);
+runtime/src/allocator/OldGenSpace.hpp: return oldgen.setMarkBitInBlock(id, obj);
+runtime/src/allocator/OldGenSpace.hpp: return std::atomic_ref<uint8_t>(const_cast<OldGenSpace*>(this)->blocks_.largeMark(id))
+runtime/src/allocator/OldGenSpace.hpp: std::atomic_ref<uint8_t>(blocks_.largeMark(id)).store(1, std::memory_order_relaxed);
+runtime/src/allocator/OldGenSpace.hpp: uint8_t& lm = blocks_.largeMark(id);
+runtime/src/allocator/OldGenSpace.hpp: uint8_t& lm = blocks_.largeMark(id);
+runtime/src/allocator/OldGenSpace.hpp: uint8_t& lm = blocks_.largeMark(id);
+runtime/src/allocator/OldGenTenure.cpp: bitscan::setBit(b.bits, static_cast<size_t>(k) * b.stride_bits);
+runtime/src/allocator/OldGenTenure.cpp: bitscan::setBit(c.bits, static_cast<size_t>(k) * c.stride_bits);

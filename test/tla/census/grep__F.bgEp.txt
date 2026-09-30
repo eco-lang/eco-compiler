@@ -1,0 +1,20 @@
+runtime/src/allocator/OldGenSpace.cpp: : bg_ep_ == BgEpisode::Finished ? "finished" : "none");
+runtime/src/allocator/OldGenSpace.cpp: ECO_TLA_TRACE_ONLY(if (::Elm::gc::tla_m6 && bg_ep_ == BgEpisode::Running) ::Elm::tlatrace::probe("m6.closing");)
+runtime/src/allocator/OldGenSpace.cpp: assert(bg_ep_ == BgEpisode::Finished);
+runtime/src/allocator/OldGenSpace.cpp: assert(bg_ep_ == BgEpisode::Running && budget > 0);
+runtime/src/allocator/OldGenSpace.cpp: bg_ep_ = BgEpisode::Finished;
+runtime/src/allocator/OldGenSpace.cpp: bg_ep_ = BgEpisode::Finished;
+runtime/src/allocator/OldGenSpace.cpp: bg_ep_ = BgEpisode::None;
+runtime/src/allocator/OldGenSpace.cpp: bg_ep_ = BgEpisode::None;
+runtime/src/allocator/OldGenSpace.cpp: bg_ep_ = BgEpisode::None;
+runtime/src/allocator/OldGenSpace.cpp: bg_ep_ = BgEpisode::None;
+runtime/src/allocator/OldGenSpace.cpp: bg_ep_ = BgEpisode::None;
+runtime/src/allocator/OldGenSpace.cpp: bg_ep_ = BgEpisode::Running;
+runtime/src/allocator/OldGenSpace.cpp: bg_ep_ == BgEpisode::Running ? "running"
+runtime/src/allocator/OldGenSpace.cpp: const unsigned n = (bg_ep_ == BgEpisode::Running) ? mark_threads_ : mark_slots_;
+runtime/src/allocator/OldGenSpace.cpp: if (bg_ep_ == BgEpisode::None && !markStackEmpty()) {
+runtime/src/allocator/OldGenSpace.cpp: if (bg_ep_ == BgEpisode::Running) {
+runtime/src/allocator/OldGenSpace.cpp: } else if (bg_ep_ == BgEpisode::None) {
+runtime/src/allocator/OldGenSpace.cpp: } else if (bg_ep_ == BgEpisode::Running) {
+runtime/src/allocator/OldGenSpace.hpp: BgEpisode bg_ep_ = BgEpisode::None;
+runtime/src/allocator/OldGenSpace.hpp: return og.bg_ep_ == OldGenSpace::BgEpisode::Running && og.bg_->finishedApprox();

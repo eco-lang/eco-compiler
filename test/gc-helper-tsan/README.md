@@ -42,3 +42,24 @@ Pass: exit 0, no ThreadSanitizer warning.
 
 Run it normally and under `taskset -c 0,1` (pass: `mark_harness PASS`, no TSan
 warning). The heap-level harness is `test/gc-heap-tsan` (the real allocator).
+
+## Parallel minor (`gc-minor-tsan`) and M3's trace (`gc-minor-trace`)
+
+`minor_harness.cpp` also has **young large objects** (YLOS): nodes in their own region, never
+copied, reached under a mutex (test-and-set of a reached flag, then promotion in place or ageing),
+pushed, and scanned in place, the shape of `reachYoungLargeP`. The random heaps have 20–60 of them
+with several parents each (CR-020).
+
+`minor_harness tiny <seed> <workers> <spine run> <pace us>` runs one tiny heap of M3's example kind
+(`test/tla/M3-minor-forwarding/MC.tla`; seed 0 is that heap). Configured with `-DECO_TLA_TRACE=ON`,
+this project also builds `gc-minor-trace`, the same harness without TSan and with the trace hooks,
+which `test/tla/run_traces.py` runs for M3's rows in `test/tla/traces.txt`.
+
+## M6's pool trace (`gc-pool-trace`, trace build only)
+
+`pool_trace.cpp`: the real `GCHelperPool` (Concurrent) with its M6 hooks, a scripted poster that
+posts and waits for 2–4 `HelperJob`s under a lock standing for `Allocator::thread_mutex_`, and at
+most one fork: by another thread (`host`, the parent's log), or by the poster (`mut-parent`, or
+`mut-child`: the child continues the script with the workers it starts, and writes the log).
+`gc-pool-trace <none|host|mut-parent|mut-child> <seed> <ops> <workers> <jobs> <jitter us>`;
+`test/tla/M6-lifecycle/TracePool.tla` checks it (`test/tla/traces.txt`).

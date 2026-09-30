@@ -1,0 +1,13 @@
+runtime/src/allocator/OldGenSpace.cpp: bit = bitscan::nextSetBit(bits, bit + 1, nbits)) {
+runtime/src/allocator/OldGenSpace.cpp: bitscan::clearBit(gbits, nb);
+runtime/src/allocator/OldGenSpace.cpp: bitscan::clearBit(mark_.slot(id), static_cast<size_t>(k) * (cell_bytes / 8));
+runtime/src/allocator/OldGenSpace.cpp: const size_t nb = bitscan::nextSetBit(gbits, from_bit, end_bit);
+runtime/src/allocator/OldGenSpace.cpp: const uint32_t k = bitscan::nextFreeCell(c.bits, c.stride_bits,
+runtime/src/allocator/OldGenSpace.cpp: const uint32_t k = bitscan::nextFreeCell(c.bits, c.stride_bits, 0, c.num_cells);
+runtime/src/allocator/OldGenSpace.cpp: const uint32_t k = bitscan::nextFreeCell(c.bits, c.stride_bits, c.next_cell, c.num_cells);
+runtime/src/allocator/OldGenSpace.cpp: for (size_t bit = bitscan::nextSetBit(bits, 0, nbits); bit < nbits;
+runtime/src/allocator/OldGenSpace.cpp: if (bitscan::nextFreeCell(c.bits, c.stride_bits, 0, n_cells) < n_cells)
+runtime/src/allocator/OldGenSpace.cpp: if (bitscan::nextFreeCell(mark_.slot(id), classToSize(cls) / 8, 0, n_cells) < n_cells) {
+runtime/src/allocator/OldGenTenure.cpp: const uint32_t k = bitscan::nextFreeCell(b.bits, b.stride_bits, mc.k, mc.kend);
+runtime/src/allocator/OldGenTenure.cpp: if (bitscan::nextFreeCell(c.bits, c.stride_bits, 0, c.num_cells) < c.num_cells) {
+runtime/src/allocator/OldGenTenure.cpp: k = bitscan::nextFreeCell(c.bits, c.stride_bits, k, c.num_cells);

@@ -852,7 +852,7 @@ This extends the template of 6-P§3.11 and 5c-P§3.6. Step 0 re-derives every ro
 | T2 | slots `*heal[i]` in Fresh objects and generation YLOS | the mutator reads | collector reads only; the heal writes them at the next merge |
 | T3 | generation-YLOS objects | the mutator reads; the pause recolors at the minor only | collector reads only; `reached[]` is the job's private array |
 | T4 | the tenuring extent's shadow | nobody (the pause reads it after the join) | claim CAS / release store (acquire load) |
-| T5 | granted blocks: cells, bitmap bytes, `TenureCursor` | nobody: `kAllocTenure` is skipped by every selection path; background markers never touch post-t0 blocks | owner-only; distinct blocks never share a bitmap byte (F11 of 6-P§2) |
+| T5 | granted blocks: cells, bitmap bytes, `TenureCursor` | nobody: `kAllocTenure` is skipped by every selection path; background markers never touch post-t0 blocks | owner-only; distinct blocks never share a bitmap word (F11 of 6-P§2: each block's bitmap is its own 64-byte-aligned arena slot), and with L3 the members' 64-cell-multiple chunks own whole 64-bit words, the unit the scans read (CR-022) |
 | T6 | `blocks_`, page index, `partial_`, free lists, `unassigned_blocks_`, sweep state, `large_body_index_`, `alloc_stats_`, `allocated_bytes`, `old_alloc_total_` | the mutator (allocation, lazy sweep, shrink) | **never touched by the collector**; the grant caches what it needs; deltas merge at the join |
 | T7 | job-private state (stack, lists, stats, logs) | nobody | owner-only; published by the join |
 | T8 | eden, the Fresh extent's builder area, roots, off-heap stores | the mutator writes | never touched by the collector |
@@ -1798,7 +1798,10 @@ The loop entry is TG7d in `benchmarks/gc-opt-loop.md`.
    claiming chunks with a CAS on a per-class word (block index << 32 | chunk). Chunks own ≥ 1,024
    bitmap bits: 64-cell chunks of small classes put up to eight members' chunks in one bitmap cache
    line, and the bit-set traffic made the allocator 77 % stalled on one load (fixed; B = 4 went
-   from 23 % to 0.1 % late). A stop leaves the unscanned work in the deques (5c's semantics) and
+   from 23 % to 0.1 % late). Every chunk is a multiple of 64 cells, so it owns whole 64-bit
+   bitmap words, and that (not whole bytes) is what keeps members apart: the scans
+   (`bitscan::nextFreeCell`, `nextSetBit`) read a whole word with a plain load
+   (`bitscan::loadWord`), so a chunk of 8 cells would race (CR-022). A stop leaves the unscanned work in the deques (5c's semantics) and
    help drains it in the next pause on the minor's gang; the grant carries one chunk of slack per
    participant. B = 1 remains the exact engine.
 2. **The exact engine publishes without a claim**: it is the only writer while it runs (help

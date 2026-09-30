@@ -1,0 +1,5 @@
+runtime/src/allocator/Allocator.cpp: char* g_heap_base = nullptr;
+runtime/src/allocator/Allocator.cpp: g_heap_base = heap_base;
+runtime/src/allocator/OldGenSpace.cpp: extern char* g_heap_base;
+runtime/src/allocator/OldGenSpace.cpp: fwd->header.forward_ptr = encodeForwardPtr(new_location, g_heap_base);
+runtime/src/allocator/OldGenSpace.cpp: return decodeForwardPtr(fwd->header.forward_ptr, g_heap_base);
