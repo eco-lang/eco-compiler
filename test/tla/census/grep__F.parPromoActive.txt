@@ -1,17 +1,21 @@
 runtime/src/allocator/OldGenSpace.cpp: "path", 0, "par", par_promo_active_);
-runtime/src/allocator/OldGenSpace.cpp: "path", 2, "par", par_promo_active_,
-runtime/src/allocator/OldGenSpace.cpp: "path", 3, "par", par_promo_active_, "rmw", "phase", "old", m4_old, "new", 0);
+runtime/src/allocator/OldGenSpace.cpp: "path", path, "par", par_promo_active_,
 runtime/src/allocator/OldGenSpace.cpp: ECO_M4_TRACE("m4.shrink", "par", par_promo_active_);
 runtime/src/allocator/OldGenSpace.cpp: ECO_M4_TRACE("m4.swend", "cb", classToSize(target_class), "path", 1, "par", par_promo_active_);
 runtime/src/allocator/OldGenSpace.cpp: assert(!par_promo_active_);
 runtime/src/allocator/OldGenSpace.cpp: assert(par_promo_active_);
 runtime/src/allocator/OldGenSpace.cpp: if (__builtin_expect(par_promo_active_, 0)) {
+runtime/src/allocator/OldGenSpace.cpp: if (__builtin_expect(par_promo_active_, 0)) {
+runtime/src/allocator/OldGenSpace.cpp: if (black || par_promo_active_) {
 runtime/src/allocator/OldGenSpace.cpp: if (par_promo_active_ && blocks_.info(i).alloc_state == kAllocCurrent) continue;
+runtime/src/allocator/OldGenSpace.cpp: if (par_promo_active_ && promo_ctx_ && promo_ctx_->n > 1)
+runtime/src/allocator/OldGenSpace.cpp: if (par_promo_active_ && promo_ctx_ && promo_ctx_->n > 1) {
 runtime/src/allocator/OldGenSpace.cpp: if (par_promo_active_) alloc_stats_.bm.sweep_tail_in_promotion++;
 runtime/src/allocator/OldGenSpace.cpp: if (par_promo_active_) sweepCompleteInPromotion();
 runtime/src/allocator/OldGenSpace.cpp: par_promo_active_ = false;
 runtime/src/allocator/OldGenSpace.cpp: par_promo_active_ = false;
 runtime/src/allocator/OldGenSpace.cpp: par_promo_active_ = true;
 runtime/src/allocator/OldGenSpace.cpp: par_promo_active_ = true;
+runtime/src/allocator/OldGenSpace.cpp: return (par_promo_active_ && promo_ctx_ && promo_ctx_->n > 1) ? AcquireWait::AvoidUnderPromo
 runtime/src/allocator/OldGenSpace.hpp: bool par_promo_active_ = false;
 runtime/src/allocator/OldGenSpace.hpp: bool parallelPromotionActive() const { return par_promo_active_; }

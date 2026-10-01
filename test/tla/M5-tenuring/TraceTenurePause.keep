@@ -1,3 +1,3 @@
 # The events TraceTenurePause.tla matches (the driver records only these, and gang.launch is not
 # among them: tj.launch comes just before the tenure gang's launch on the same thread).
-alloc load drop minor major tj.launch tj.help tj.merge gang.start gang.exit gang.join troots
+alloc load drop minor major mzap tj.launch tj.help tj.merge gang.start gang.exit gang.join troots

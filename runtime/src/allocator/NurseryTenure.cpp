@@ -595,7 +595,9 @@ void NurserySpace::tenureLaunch(OldGenSpace& oldgen) {
     }
     J.state = TenureJob::State::Running;
     ECO_TLA_TRACE_ONLY(tla_launch("exact");)
-    R.collector->launch(&NurserySpace::tenureEntry, this, &J.stop);
+    // CR-013 (§7.2 step 4, HEAP_070): refused while a fork's prepare holds the collector.
+    // The job stays Running with no member: tenureJoin's orphan branch finishes it.
+    if (!R.collector->launch(&NurserySpace::tenureEntry, this, &J.stop)) ++R.rs.fork_refusals;
 }
 // TLA-REGION(NT.tenureLaunch) end
 
@@ -858,6 +860,31 @@ void NurserySpace::mergeJob(OldGenSpace& oldgen, bool heal, MinorGCRecord* rec) 
         const uint64_t dz = nowNs() - tz;
         R.rs.zap_ns += dz;
         if (rec) rec->rg_zap_ns = dz;
+    }
+    // (5c) CR-038 / CR-039 (HEAP_070 amended): a dead ageing-generation YLOS keeps its
+    // slots until its own hand-over; a slot may name a Tenuring object (retired next
+    // minor) or an older-generation YLOS freed by this merge's minor sweep. The t0
+    // snapshot walks it (snapshotYoungLarge): clear its slots. The ageing mark is exact
+    // (M5: amark = liveAge), so an unmarked entry is dead.
+    if (heal && !test_skip_zap_ && !st.age_ylos.empty()) {
+        const uint64_t tz = nowNs();
+        HPointer nil{};
+        nil.ptr_ind = 1;
+        nil.constant = Const_Empty;
+        uint64_t cleared = 0;
+        for (size_t k = 0; k < st.age_ylos.size(); ++k) {
+            if (st.age_ylos_marked[k]) continue;
+            void* y = const_cast<char*>(st.age_ylos[k].obj);
+            if (oldgen.youngLargeMeta(y) == nullptr) tenureFatal("an ageing YLOS left the index before the merge", y);
+            forEachChildSlot(y, [&](HPointer& hp) {
+                if (hp.ptr_ind == 0 && hp.ptr != 0) hp = nil;
+            });
+            ++cleared;
+        }
+        R.rs.zapped_ylos += cleared;
+        const uint64_t dz = nowNs() - tz;
+        R.rs.zap_ns += dz;
+        if (rec) rec->rg_zap_ns += dz;
     }
     // (6) Stats: tenured counts (legacy's promoted, one minor later: P§3.18).
 #if ENABLE_GC_STATS
@@ -1281,7 +1308,9 @@ void NurserySpace::tenureConcLaunch(OldGenSpace& oldgen, unsigned B) {
     tenure_ctl_ = std::make_unique<mk::SliceControl>(mk::kDrainBudget, B, jitter, B);
     J.state = TenureJob::State::Running;
     J.conc_parallel = true;
-    R.collector->launch(&NurserySpace::tenureConcEntry, this, &tenure_ctl_->stop);
+    // CR-013 (§7.2 step 4): refused under a fork's hold, the L3 job is finished in the
+    // pause by tenureJoin (no member ran: !running(), then tenureConcFinish).
+    if (!R.collector->launch(&NurserySpace::tenureConcEntry, this, &tenure_ctl_->stop)) ++R.rs.fork_refusals;
 }
 // TLA-REGION(NT.tenureConcLaunch) end
 

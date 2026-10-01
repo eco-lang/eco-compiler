@@ -1627,3 +1627,16 @@ The sub-project also has a new `tsan-det` target for those arms alone.
 |---|---|---|---|---|
 | default | 29 of 29 pass as XFAIL | XFAIL | 20 XFAIL (10 fork/trace, 10 TSan, each TSan row 3/3) + 3 PASS | green |
 | `ECO_TEST_XFAIL=strict` | 28 fail (CR-028 skips outside validate) | fails | 20 FAIL + 3 PASS | red, "open register defects reproduce" |
+
+### 13.7 CR-039: the wider CR-038 variant (2026-09-30, register-fixes Step 0.4)
+
+M5 `MC_k2_ylos_walk2` (`YC = 2`) violates `T0GreyAllocated`, so the wider variant was registered as
+CR-039 and given a code guard, `cr038Z` (`ConcurrencyRegisterTest.cpp` `cr038ZScenario`), modelled
+on `cr038`:
+
+| Guard | Model row | Defect line |
+|---|---|---|
+| CR-039 `[xfail CR-039]` + control (Z live) | M5 `k2_ylos_walk2` | at minor 4's t0 the snapshot walked the dead Y; Z is FREED (Tag_Free, unindexed) and MARKED by t0 |
+
+The guard does not install `abortMeansNotReached`: a validate abort on the way (IM4/IM6) is the
+defect, as for CR-017. The control roots Z, so only Y dies: the same walk marks an allocated Z.

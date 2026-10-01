@@ -131,7 +131,12 @@ each hand-over means an object dead at hand-over h is gone before any walker run
 h + 1's merge, which is the same window k = 1 already has for its Tenuring extent (an object dead
 at minor h lives until its extent retires at h + 1). A STW major at pause p and the job of p see
 the same roots, and no t0 walk runs in the pause of a STW major, so nothing between p and the
-merge at p + 1 reads a zapped-to-be object's children.
+merge at p + 1 reads a zapped-to-be object's children. **Correction (2026-09-30, CR-017,
+plans/threaded-gc-register-fixes.md §5.2): the "same roots" argument covers only objects dead at a
+hand-over mark. An object that dies in an ageing extent after its extent's last mark (or before its
+first) is not zapped by any merge before the next t0, and a STW major in between frees its old
+children: the t0 walk then greys freed cells (M5 `MC_k2_cycle_major`). Fixed by HEAP_074: a
+region-mode STW major zaps every Young extent's survivor it did not reach, after its mark.**
 
 **Why not in the collector:** the census re-hashes every recorded survivor before the heal; a
 collector-side header write would be a census mismatch and would break FORBID_HEAP_004's literal
@@ -143,7 +148,13 @@ form. The pause cost is one 8-byte store per dead object (E3 measures it as `zap
   re-coloured at every minor until j + k, and is handed over with G_j. At the hand-over it is
   promoted in place if the tenure job or the mark reached it, otherwise freed by that minor's
   sweep, exactly as today. Every holder that is dead at the hand-over is zapped in the same merge
-  that frees it, or retires in the same minor.
+  that frees it, or retires in the same minor. **Correction (2026-09-30, CR-038 / CR-039,
+  plans/threaded-gc-register-fixes.md §5.3): false for YLOS holders. A dead ageing-generation YLOS
+  is not a survivor-extent object, so no zap removes it; it stays indexed and walked by the t0
+  snapshot (`snapshotYoungLarge`) until its own hand-over, and its slot can name a retired extent's
+  cell (CR-038) or an older-generation YLOS freed by the same minor (CR-039: t0 greys a freed
+  cell). Fixed by HEAP_070's amendment: the merge clears the slots of every ageing-generation YLOS
+  its mark did not reach (`mergeJob` step 5c).**
 - Large bodies of headers in Age extents are re-marked at every minor until their extent's
   hand-over. A dead header's body is freed after that hand-over; the header was zapped.
 

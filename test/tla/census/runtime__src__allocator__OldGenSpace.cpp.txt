@@ -40,6 +40,10 @@ std::atomic<int64_t>* pool;
 std::atomic<uint64_t>& sh = promo_ctx_->shared[cls].w;
 std::atomic<uint64_t>& sh = promo_ctx_->shared[cls].w;
 std::atomic<uint64_t>& sh = promo_ctx_->shared[cls].w;
+std::atomic_ref<GCPhase>(gc_phase_).load(std::memory_order_relaxed) != GCPhase::Idle)
+std::atomic_ref<GCPhase>(gc_phase_).load(std::memory_order_relaxed) != GCPhase::Idle;
+std::atomic_ref<GCPhase>(gc_phase_).load(std::memory_order_relaxed) == GCPhase::Sweeping &&
+std::atomic_ref<GCPhase>(gc_phase_).store(GCPhase::Idle, std::memory_order_relaxed);
 std::atomic_ref<uint64_t>(blocks_.meta(block_id).live_bytes)
 std::atomic_ref<uint64_t>(blocks_.meta(c.block).live_bytes)
 std::atomic_ref<uint64_t>(blocks_.meta(id).live_bytes)

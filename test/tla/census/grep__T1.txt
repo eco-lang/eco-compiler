@@ -4,11 +4,15 @@ runtime/src/allocator/NurseryRegion.cpp: R.x[i].k, (int)R.x[i].state, R.x[i].age
 runtime/src/allocator/NurseryRegion.cpp: auto inSurv = [&](int i) { return i >= 0 && p >= R.x[i].base && p < R.x[i].surv_top; };
 runtime/src/allocator/NurseryRegion.cpp: check(X.base, X.surv_top);
 runtime/src/allocator/NurseryRegion.cpp: for (char* p = X.base; p < X.surv_top;) {
+runtime/src/allocator/NurseryRegion.cpp: for (char* p = X.base; p < X.surv_top;) {
 runtime/src/allocator/NurseryRegion.cpp: if (Xr.surv_top > Xr.base) std::memset(Xr.base, 0xDD, static_cast<size_t>(Xr.surv_top - Xr.base));
 runtime/src/allocator/NurseryRegion.cpp: if (c >= X.base && c < X.surv_top) return;
 runtime/src/allocator/NurseryRegion.cpp: if (c >= Y.base && c < Y.surv_top) return true;
+runtime/src/allocator/NurseryRegion.cpp: if (gap != nullptr) flush(gap, X.surv_top);
 runtime/src/allocator/NurseryRegion.cpp: if (p < X.base || p >= X.surv_top) return obj;
 runtime/src/allocator/NurseryRegion.cpp: if (p < X.base || p >= X.surv_top) {
+runtime/src/allocator/NurseryRegion.cpp: if (sz == 0 || p + sz > X.surv_top)
+runtime/src/allocator/NurseryRegion.cpp: regionFatal("HEAP_074: a bad object in a Young extent's survivor part", p, X.surv_top, sz);
 runtime/src/allocator/NurseryRegions.hpp: char* surv_top = nullptr;
 runtime/src/allocator/NurseryRegions.hpp: char* surv_top = nullptr;
 runtime/src/allocator/NurseryRegions.hpp: surv_top = base;

@@ -55,10 +55,11 @@ T9	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	g_heap_base
 T10	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	-
 T11	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	-
 # Added with the models (2026-09-29): P6.M16/P6.M17 (06 table rows M16/M17),
-# and the F.* canary greps the models' A9 rows name.
+# and the F.* canary greps the models' A9 rows name. F.gc_phase re-derived 2026-09-30 (register-fixes
+# Phase 2, CR-001): the in-minor write and the unlocked reads became atomic_ref<GCPhase> accesses.
 P6.M16	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	live_bytes
 P6.M17	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	MinorWorker|minor_ctl_|MinorRunArgs
-F.gc_phase	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	gc_phase_ =
+F.gc_phase	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	gc_phase_ =|atomic_ref<GCPhase>
 F.bitscan	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	bitscan::(clearBit|loadWord|nextSetBit|nextFreeCell)
 F.allocTenure	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	alloc_state == kAllocTenure
 F.parPromoActive	runtime/src/allocator/*.cpp runtime/src/allocator/*.hpp	par_promo_active_

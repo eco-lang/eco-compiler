@@ -62,6 +62,19 @@ inline uint64_t wordOfHeader(const Header& h) {
     std::abort();
 }
 
+#if ECO_HEAP_VALIDATE
+// HEAP_074 tripwire (validate builds): a minor reached a Hand / Age survivor that a
+// STW major found dead and zapped: a Tag_Free header, or the zap's 0xD8 poison when
+// the reference points inside a coalesced filler. Only an unrooted reference held
+// across majorGC (a resurrection) can lead here.
+inline void regionZappedTripwire(void* obj, HPointer& slot) {
+    uint64_t hw;
+    std::memcpy(&hw, obj, sizeof(hw));
+    if (getHeader(obj)->tag == Tag_Free || hw == 0xD8D8D8D8D8D8D8D8ull)
+        regionFatal("HEAP_074: a reference to a survivor a STW major found dead (resurrected?)", obj, &slot);
+}
+#endif
+
 // Largest size class the old gen has for this config (HEAP_069's region cap,
 // P§3.13): classes cover 8..256 B, then 512 B << k up to the largest power of
 // two <= large_object_threshold (OldGenSpace's computeNumSizeClasses).
@@ -228,6 +241,60 @@ void* NurserySpace::majorRedirect(void* obj) const {
     return d;
 }
 // TLA-REGION(NR.majorRedirect) end
+
+// TLA-REGION(NR.zapDeadAfterMajor) begin
+void NurserySpace::zapDeadAfterMajor(OldGenSpace& og) {
+    RegionState& R = *rg_;
+    if (R.in_minor || (R.job.state != region::TenureJob::State::None &&
+                       R.job.state != region::TenureJob::State::Merged))
+        regionFatal("HEAP_074: zap with the tenure job unmerged or inside a minor", nullptr, nullptr,
+                    static_cast<uint64_t>(R.job.state), R.in_minor);
+    const uint64_t t0 = gc::GCHelperPool::nowNs();
+    uint64_t n = 0, bytes = 0;
+    auto flush = [&](char* lo, char* hi) {
+        // One filler per maximal dead run (u32 sizes: split a run over 2 GiB).
+        while (lo < hi) {
+            const size_t len = std::min<size_t>(static_cast<size_t>(hi - lo), size_t{1} << 31);
+            writeFiller(lo, len);
+#if ECO_HEAP_VALIDATE   // a resurrected reference then hits POISON / the Free check in evacuateR
+            if (len > sizeof(Header)) std::memset(lo + sizeof(Header), 0xD8, len - sizeof(Header));
+#endif
+            lo += len;
+        }
+    };
+    for (unsigned u = 0; u < R.n_surv; ++u) {
+        region::Extent& X = R.x[u];
+        if (X.state != region::XState::Young) continue;   // Tenuring: merged, retires next minor
+        char* gap = nullptr;
+        for (char* p = X.base; p < X.surv_top;) {
+            const size_t sz = getObjectSize(p);
+            if (sz == 0 || p + sz > X.surv_top)
+                regionFatal("HEAP_074: a bad object in a Young extent's survivor part", p, X.surv_top, sz);
+            const bool is_free = getHeader(p)->tag == Tag_Free;
+            if (is_free || !og.majorReachedNursery(p)) {
+                if (!is_free) { ++n; bytes += sz; }
+                if (gap == nullptr) gap = p;
+            } else if (gap != nullptr) {
+                flush(gap, p);
+                gap = nullptr;
+            }
+            p += sz;
+        }
+        if (gap != nullptr) flush(gap, X.surv_top);
+    }
+#if P1_CENSUS_COMPILED
+    R.census.clear();   // defensive: detector N re-hashes only at a join, which precedes this
+#endif
+    const uint64_t dt = gc::GCHelperPool::nowNs() - t0;
+    R.rs.major_zaps++;
+    R.rs.major_zapped += n;
+    R.rs.major_zapped_bytes += bytes;
+    R.rs.major_zap_ns += dt;
+    if (dt > R.rs.major_zap_ns_max) R.rs.major_zap_ns_max = dt;
+    syncRegionStats();
+    ECO_TLA_TRACE("mzap", "zapped", n);   // M5 trace: MJ_Mark's zap (TraceTenurePause)
+}
+// TLA-REGION(NR.zapDeadAfterMajor) end
 
 // ---------------------------------------------------------------------------
 // TV7: the region form of the stale-pointer detector
@@ -476,12 +543,18 @@ void NurserySpace::evacuateR(MinorWorker& w, region::RegionWorker& rw, HPointer&
             return;
         }
         case Role::Hand:
+#if ECO_HEAP_VALIDATE
+            regionZappedTripwire(obj, slot);   // HEAP_074
+#endif
             // P§3.6: heap slots the pause will not rescan -> H; roots and
             // builder slots (rescanned at the next minor) -> S (trap 8).
             if (col == kColSurv || col == kColYoungYlos) rw.H.push_back(reinterpret_cast<uint64_t*>(&slot));
             else rw.S.push_back(obj);
             return;
         case Role::Age:
+#if ECO_HEAP_VALIDATE
+            regionZappedTripwire(obj, slot);   // HEAP_074
+#endif
             // threaded-gc-07b: an ageing object stays; it is a mark source of
             // this minor's job (never a heal slot: a fill-copy holder is found
             // by the mark of its own target's hand-over).
@@ -527,14 +600,15 @@ void NurserySpace::reachYoungLargeR(MinorWorker& w, region::RegionWorker& rw, vo
         } else {
             if (m->color == minor_color_) return;   // already reached this minor
             m->color = minor_color_;
-            Header* h = getHeader(obj);
-            if (h->builder) {
+            Header hv = loadHeaderRelaxed(obj);   // CR-019: whole-word relaxed access (HEAP_062)
+            if (hv.builder) {
                 e = mk::objEntry(obj, kColBuilder);   // scanned in place every reach
             } else {
 #if ECO_HEAP_VALIDATE
-                if (h->age != 0) regionFatal("a young large object reached first with age != 0", obj, nullptr, h->age);
+                if (hv.age != 0) regionFatal("a young large object reached first with age != 0", obj, nullptr, hv.age);
 #endif
-                h->age = 1;
+                hv.age = 1;
+                storeHeaderRelaxed(obj, hv);
                 m->join_minor = R.minor_seq;          // HEAP_072: this incarnation's generation
                 rw.ylos_gen.push_back(obj);           // joins generation m
                 w.ylos_young.push_back(obj);
@@ -748,6 +822,9 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
     R.hand_ylos_reached.clear();
     if (R.hand >= 0) {
         region::Extent& Hx = R.x[R.hand];
+        // lb_bodies names bodies by ADDRESS; a major may have freed one and a YLOS
+        // may sit at its cell now: markLargeBodySeen colours kind-0 entries only
+        // (HEAP_072 amended, CR-037), so that YLOS is reached and scanned as young.
         if (!test_no_body_remark_) {
             for (const HPointer& b : Hx.lb_bodies) oldgen.markLargeBodySeen(b, minor_color_);
         }
@@ -773,6 +850,7 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
         const int i = static_cast<int>(u);
         region::Extent& Ax = R.x[u];
         if (Ax.state != region::XState::Young || i == R.hand) continue;
+        // As at the hand-over: kind-0 (body) entries only (CR-037, HEAP_072).
         if (!test_no_body_remark_) {
             for (const HPointer& b : Ax.lb_bodies) oldgen.markLargeBodySeen(b, minor_color_);
         }

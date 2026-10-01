@@ -64,6 +64,7 @@ runtime/src/allocator/OldGenSpace.cpp: ? post_sweep_live_bytes_ - baseline_black
 runtime/src/allocator/OldGenSpace.cpp: alloc_stats_.bm.bitmap_free_bytes_at_major += cap - meta.live_bytes;
 runtime/src/allocator/OldGenSpace.cpp: alloc_stats_.im.traced_live_bytes += cycle_traced_live_;
 runtime/src/allocator/OldGenSpace.cpp: allocated_bytes = frag_stats_.live_bytes;
+runtime/src/allocator/OldGenSpace.cpp: blocks_.meta(block_id).live_bytes += cell_bytes;
 runtime/src/allocator/OldGenSpace.cpp: blocks_.meta(c.block).live_bytes += c.pending_live;
 runtime/src/allocator/OldGenSpace.cpp: bm.live_bytes -= m.cell_size;
 runtime/src/allocator/OldGenSpace.cpp: bm.live_bytes -= m.cell_size;

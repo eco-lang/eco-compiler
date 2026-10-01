@@ -1,8 +1,9 @@
 // W3: one mark byte, many writers; promo_mu_ as a lock; and the access
 // patterns of register entries CR-001 and CR-002
 // (plans/threaded-gc-tla-W-weak-memory.md §7). One case per compile
-// (-DW3_CASE='a' .. 'f'): the checker stops at the first report, and W3c/W3d
-// are EXPECTED to race while the other cases must not.
+// (-DW3_CASE='a' .. 'f'): the checker stops at the first report. W3c/W3d raced
+// until CR-002 / CR-001 were fixed (2026-09-30); their pre-fix shapes are the
+// mutants MUTANT_W3_CR002_UNLOCKED_FINALIZE / MUTANT_W3_CR001_PLAIN_PHASE.
 //
 // Real code: bitscan::nextFreeCell / nextSetBit / setBit / clearBit
 // (BitmapScan.hpp) and minorwork::SpinMutex (MinorWork.hpp, promo_mu_'s type).
@@ -22,7 +23,7 @@
 // t0 mixed block (bytes 0..63), block 1 a post-t0 cursor block (bytes 64..127).
 alignas(64) static uint8_t bits[128];
 static Elm::minorwork::SpinMutex promo_mu;
-static int phase_idle;                       // stands for OldGenSpace::gc_phase_ (plain)
+static int phase_idle;                       // stands for OldGenSpace::gc_phase_ (atomic_ref at the racing sites, CR-001)
 static int counter;                          // a plain field guarded by promo_mu_
 
 // SpinMutex::lock() spins through __builtin_ia32_pause, yield and sleep_for
@@ -61,10 +62,12 @@ static void* b_cursor(void*) {
 }
 
 // c (CR-002): the gap sweep, under the lock, finds the live object with a
-// WORD read (nextSetBit, lazySweep OldGenSpace.cpp:5339) and plain-clears its
-// bit (:5360), while a stashed cell's allocate-black fetch_or on the SAME byte
-// runs outside the lock (finalizePoppedCellW :1083; the cell was popped in an
-// earlier lock hold).
+// WORD read (nextSetBit, lazySweep) and plain-clears its bit, while a popped
+// cell of the SAME block gets its allocate-black fetch_or on the same byte.
+// Fixed (register-fixes 4.3, HEAP_055): a cell of a block that is not fully
+// swept is finalized BEFORE promo_mu_ is released (cellInUnsweptBlock), so the
+// fetch_or is ordered with the sweeper's plain accesses by the lock.
+// MUTANT_W3_CR002_UNLOCKED_FINALIZE: the pre-fix batch (finalized after the unlock).
 static void* c_sweeper(void*) {
     lockPromo();
     const size_t nb = Elm::bitscan::nextSetBit(bits, 0, 64);
@@ -73,16 +76,41 @@ static void* c_sweeper(void*) {
     return nullptr;
 }
 static void* c_finalizer(void*) {
-    lockPromo();                             // the batch pop into the stash
+    lockPromo();                             // the batch pop
+#ifdef MUTANT_W3_CR002_UNLOCKED_FINALIZE
     promo_mu.unlock();
-    allocateBlack(&bits[0], 0x01);           // outside the lock
+    allocateBlack(&bits[0], 0x01);           // pre-fix: outside the lock
+#else
+    allocateBlack(&bits[0], 0x01);           // CR-002: before the unlock
+    promo_mu.unlock();
+#endif
     return nullptr;
 }
 
-// d (CR-001): lazySweep writes gc_phase_ under the lock (:5247); another worker
-// reads it without the lock (finalizePoppedCellW :1075, finalizeBitmapCellW :1135).
-static void* d_sweeper(void*) { lockPromo(); phase_idle = 1; promo_mu.unlock(); return nullptr; }
-static void* d_reader(void*) { const int p = phase_idle; (void)p; return nullptr; }
+// d (CR-001): lazySweep writes gc_phase_ under the lock (completeSweep); another
+// worker reads it without the lock (finalizePoppedCellW, finalizeBitmapCellW).
+// Fixed (register-fixes 4.2, HEAP_067): the write is a relaxed atomic_ref store
+// and the unlocked read a relaxed atomic_ref load. MUTANT_W3_CR001_PLAIN_PHASE:
+// the pre-fix plain accesses (a race on phase_idle).
+static void* d_sweeper(void*) {
+    lockPromo();
+#ifdef MUTANT_W3_CR001_PLAIN_PHASE
+    phase_idle = 1;
+#else
+    std::atomic_ref<int>(phase_idle).store(1, std::memory_order_relaxed);
+#endif
+    promo_mu.unlock();
+    return nullptr;
+}
+static void* d_reader(void*) {
+#ifdef MUTANT_W3_CR001_PLAIN_PHASE
+    const int p = phase_idle;
+#else
+    const int p = std::atomic_ref<int>(phase_idle).load(std::memory_order_relaxed);
+#endif
+    (void)p;
+    return nullptr;
+}
 
 // e: 7c L3 members in adjacent grant chunks (grantAllocateShared,
 // OldGenTenure.cpp:208-214). nextFreeCell reads whole 64-bit words, so chunks

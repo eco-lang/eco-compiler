@@ -1,0 +1,5 @@
+#include <mutex>
+const ForkHooks* h = g_layers[i].load(std::memory_order_acquire);
+g_layers[layer].store(&hooks, std::memory_order_release);
+std::atomic<const ForkHooks*> g_layers[kForkLayers];
+std::call_once(once, [] { pthread_atfork(&prep, &parent, &child); });

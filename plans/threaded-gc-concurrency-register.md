@@ -102,37 +102,38 @@ History:
 
 ## Summary
 
-Updated 2026-09-30: code-level guards for every open entry (plans/threaded-gc-register-repros-impl.md). Previously updated 2026-09-29, after the models, the weak-memory drivers, trace validation and the register
+Updated 2026-10-01 (Phase 5): plans/threaded-gc-register-fixes.md Phase 5 — CR-003, CR-004, CR-005, CR-013, CR-015, CR-023, CR-031 and CR-032 Fixed (one `pthread_atfork` registration, GCFork.cpp, HEAP_075 new; HEAP_007 fork contract; HEAP_058, HEAP_065, HEAP_070 amended); every register entry with a guard is now Fixed or Won't-fix (CR-012). Earlier 2026-10-01 (Phase 4): plans/threaded-gc-register-fixes.md Phase 4 — CR-019 and CR-007 Fixed; CR-012 Won't-fix (option F: one live mutator per process, HEAP_007), its item (d) Fixed (HEAP_060). Earlier 2026-09-30 (Phase 3): plans/threaded-gc-register-fixes.md Phase 3 — CR-037, CR-017, CR-038 and CR-039 Fixed (HEAP_072 amended, HEAP_074 new, HEAP_070 amended). Earlier 2026-09-30 (Phase 2): plans/threaded-gc-register-fixes.md Phase 2 — CR-014, CR-001 (race half; the entry is now Fixed), CR-002, CR-028 Fixed. Earlier 2026-09-30 (late): Phase 0 and Phase 1 — CR-039 registered (Step 0.4); CR-033, CR-018, CR-035, CR-016, CR-036 Fixed; CR-001's S1 half Fixed (its race half stays open). Earlier 2026-09-30: code-level guards for every open entry (plans/threaded-gc-register-repros-impl.md). Previously updated 2026-09-29, after the models, the weak-memory drivers, trace validation and the register
 guards were implemented (plans/threaded-gc-tla-verification.md §11). Sorted by status (open and
 guarded first, then reproduced, confirmed, suspected, fixed, not-a-bug), then severity. Every entry
 has its evidence and history below; CR-025 to CR-038 are new since the model plans' review.
 
 | Id | Title | Status | Sev | Model |
 |---|---|---|---|---|
-| CR-014 | lazySweep's tail completion path runs `onSweepComplete()` inside a parallel minor, bypassing the deferral (also races `live_bytes` and `large_body_index_`; with LIFO re-issue, a double allocation) | Reproduced (TLC; **code**: unit guards A/B/C incl. double allocation, TSan `det-cr014-live`); Guarded | S1 + S2 | M4, M7, M3 |
-| CR-016 | Empty-regular-block flip under `promo_mu_` vs a worker's stash or claimed chunk (exact-size promotion; test geometries) | Reproduced (TLC; TSan with heap corruption; **code**: unit guards chunk/stash); Guarded | S1 (test geometries) | M4 |
-| CR-017 | Region mode: the t0 young walk greys old cells that a STW major freed, through dead hand-over objects (at k = 2 also through dead ageing extents) | Reproduced (code: R1 k=1 and k=2 every-build abort, R2 free-cell mark bit; TLC); Guarded. S1 route corrected | S1 (every-build abort, R1) + S2 | M1, M5, M4 |
-| CR-018 | After the sweep, mixed-block allocations are not counted in `live_bytes`, so the empty-block flip can take a live block (**serial**, not a concurrency defect) | Reproduced (code); Guarded (xfail test) | S1 | — (unit test) |
-| CR-033 | `allocateFromBagPage`'s fresh-page carve leaves an 8-byte tail without a header (**serial**) | Reproduced (TLC; **code**: parse break, legacy S1); Guarded | S1 in legacy allocation; benign in bitmap mode (default) | M8 |
 | CR-034 | Region mode: a YLOS address reused after a STW major is taken for a hand-over member (ABA); its slots dangle | Fixed (HEAP_072, `join_minor` stamp); Guarded (model + unit test) | S1 | M5, M3 |
-| CR-035 | The empty-block flip keeps stale large-body index entries, so a live body at the same address can be freed (**serial**) | Reproduced (TLC; **code**: stale index, lost live object); Guarded | S1 | M8, M4 |
-| CR-037 | Region mode: the hand-over's `lb_bodies` colouring by address hides a new YLOS at a reused address from the minor | Reproduced (TLC; **code**, k = 1 and k = 2); Guarded | S1 | M5 |
-| CR-001 | `gc_phase_` written under `promo_mu_`, read unlocked by other promotion workers; the allocate-black/accounting decision moved from pop to finalize | Reproduced (TLC, GenMC, TSan; **code**: S1 half, block released with a promoted object); Guarded | S1 + S2 | M4, W3 |
-| CR-002 | Gap sweep's plain word read shares a bitmap word with a batch-popped cell's `fetch_or` after the unlock | Reproduced (TLC, TSan, traces; deterministic TSan arm); Guarded | S2 | M4, W3 |
-| CR-019 | Legacy mode: a young YLOS header written under `ylos_mu_`, read by a sweep slice under `promo_mu_` | Reproduced (TSan; deterministic arm, both orders); Guarded | S2 | M3 |
-| CR-028 | The validate-only V11 header walk in `lazySweep` races with workers writing popped cells | Reproduced (TSan; deterministic validate-build unit guard); Guarded | S2 (validate builds) | M4 |
-| CR-007 | A `promo_mu_` holder can block on a helper discard job (a stall; deadlock is Not-a-bug by M7b) | Reproduced (TLC witness; **code**: 200 ms stall under promo_mu_); Guarded | S3 | M7 |
-| CR-023 | A foreign `stopAndJoin` can wait out a whole relaunched episode | Reproduced (TLC; code, now deterministic); Guarded | S3 | M6 |
-| CR-003 | `GCHelperPool::atforkPrepare` drains and locks in two critical sections (also strands Running jobs; the child's `exit()` hangs) | Reproduced (TLC; code, deterministic arm); Guarded | S4 | M6 |
-| CR-005 | A foreign stop (e.g. a fork's prepare) before `closingFinish` trips `assert(bg_ep_ == Finished)` (on in the everyday `build` preset) | Reproduced (TLC; code: 14/40 trials); Guarded | S4 | M2, M6 |
-| CR-013 | Tenure-collector fork window: the child inherits a job stopped mid-item (lost start, double copy, or an L3 hang at exit) | Reproduced (TLC; **code**, 3 ways, deterministic fork arms); Guarded | S4 → S1 in the child | M5, M6 |
-| CR-015 | `Allocator::thread_mutex_` has no atfork handler: a non-mutator fork while it is held leaves it locked in the child | Reproduced (TLC; code: 3–8% of host forks); Guarded | S4 | M6 |
-| CR-031 | A host-forked child's `exit()` tears down the dead mutator's heap (crashes on the torn `RootSet`) | Reproduced (fork harness; deterministic arm); Guarded | S4 | M6 |
-| CR-032 | The validate-only P1 census has a mutex and tables with no atfork handler | Reproduced (fork harness; deterministic arm); Guarded | S4 (validate) | M6 |
-| CR-038 | k ≥ 2: a dead ageing-generation YLOS keeps an unhealed slot into a retired extent, read by the t0 snapshot | Reproduced (TLC; code witness); Guarded | D (latent; opt-in k ≥ 2) | M5 |
-| CR-012 | Multi-mutator only: unlocked committed-bytes reads, process-wide decommit clocks and free list, `acquireOldGenRegion` vs commit-ahead, `validatePageWork` | Reproduced (code: two-heap value guards (a)-(d), TSan (a), (e)); **decision needed** (support or forbid multiple mutators) | S2 (precondition) | — |
-| CR-036 | IM5's t0-block check cannot see a same-id, same-start re-issue | Confirmed (shape); witness reproduced in code; Guarded | G (validate) | M1, M4 |
+| CR-019 | Legacy mode: a young YLOS header written under `ylos_mu_`, read by a sweep slice under `promo_mu_` | Fixed (2026-10-01: relaxed atomic whole-word header access on both sides, HEAP_062); TSan arms clean | S2 | M3 |
+| CR-007 | A `promo_mu_` holder could block on a helper discard job (a stall; deadlock is Not-a-bug by M7b) | Fixed (2026-10-01: no-wait acquire for a promotion holder with n > 1 -- Pending extents, else a fresh bump, else the cap fallback; HEAP_059/HEAP_058); guards pass | S3 | M7 |
+| CR-003 | `GCHelperPool::atforkPrepare` drained and locked in two critical sections (also stranded Running jobs; the child's `exit()` hung) | Fixed (2026-10-01: CAS+enqueue and drain+lock each one `m_` section, `thread_mutex_` held first by GCFork, HEAP_058/HEAP_075); `det-cr003` clean | S4 | M6 |
+| CR-013 | Tenure-collector fork window: the child inherited a job stopped mid-item (lost start, double copy, or an L3 hang at exit) | Fixed (2026-10-01: a launch during a fork's prepare is refused, `fork_hold_`; the join's orphan path finishes the job, HEAP_065/HEAP_070); `det-cr013-*` clean | S4 → S1 in the child | M5, M6 |
+| CR-015 | `Allocator::thread_mutex_` had no atfork handler: a non-mutator fork while it was held left it locked in the child | Fixed (2026-10-01: GCFork allocator layer, re-created in the child; no teardown under it, HEAP_075); `det-cr015` clean | S4 | M6, M7 |
+| CR-031 | A host-forked child's `exit()` tore down the dead mutator's heap | Fixed (2026-10-01: `~Allocator` leaks heaps the forker does not own; validate owner check, HEAP_007); `det-cr031` clean | S4 | M6 |
+| CR-032 | The validate-only P1 census had a mutex and tables with no atfork handler | Fixed (2026-10-01: GCFork census layer; the child skips the report, HEAP_075); `det-cr032` clean | S4 (validate) | M6 |
+| CR-004 | Background-gang fork window: a launch could happen between `stopAllForFork` and the gang locks | Fixed (2026-10-01: the fork hold refuses it, HEAP_065); `det-cr004` clean (was Not-a-bug, proposed) | S4 | M6 |
+| CR-005 | A foreign stop (e.g. a fork's prepare) before `closingFinish` tripped `assert(bg_ep_ == Finished)` | Fixed (2026-10-01: `closingFinish` accepts a stopped episode and drains, HEAP_065); `det-cr005` clean | S4 | M2, M6 |
+| CR-023 | A foreign `stopAndJoin` could wait out a whole relaunched episode | Fixed (2026-10-01: it waits only for its own generation, HEAP_065); guard passes | S3 | M6 |
+| CR-017 | Region mode: the t0 young walk greyed old cells that a STW major freed, through dead hand-over objects (at k = 2 also through dead ageing extents) | Fixed (2026-09-30: a region-mode STW major zaps the Young extents' unreached survivors, HEAP_074; validate tripwire); guards pass | S1 (every-build abort, R1) + S2 | M1, M5, M4 |
+| CR-037 | Region mode: the hand-over's `lb_bodies` colouring by address hid a new YLOS at a reused address from the minor | Fixed (2026-09-30: `markLargeBodySeen` colours kind-0 entries only, HEAP_072 amended); guards pass | S1 | M5 |
+| CR-039 | k ≥ 2: the t0 snapshot greyed a **freed** YLOS cell through a dead younger-generation YLOS (the wider CR-038 variant) | Fixed (2026-09-30, with CR-038: the merge clears dead ageing-generation YLOS slots, HEAP_070 amended); guard passes | S1 (opt-in k ≥ 2) | M5 |
+| CR-038 | k ≥ 2: a dead ageing-generation YLOS kept an unhealed slot into a retired extent, read by the t0 snapshot | Fixed (2026-09-30: `mergeJob` step 5c clears its slots, HEAP_070 amended); guard passes | D (latent; opt-in k ≥ 2) | M5 |
+| CR-014 | lazySweep's tail completion path ran `onSweepComplete()` inside a parallel minor, bypassing the deferral (also raced `live_bytes` and `large_body_index_`; with LIFO re-issue, a double allocation) | Fixed (2026-09-30: every completion defers via `completeSweep`, HEAP_067; tripwire PM7); guards pass | S1 + S2 | M4, M7, M3 |
+| CR-001 | `gc_phase_` written under `promo_mu_`, read unlocked by other promotion workers; the allocate-black/accounting decision moved from pop to finalize | Fixed (2026-09-30): S1 half by CR-018 (HEAP_073), race half by relaxed `atomic_ref` accesses (HEAP_067); guards pass | S1 + S2 | M4, W3 |
+| CR-002 | Gap sweep's plain word read shared a bitmap word with a batch-popped cell's `fetch_or` after the unlock | Fixed (2026-09-30: unswept-block cells finalized under `promo_mu_`, never stashed, HEAP_055; PM8); guards pass | S2 | M4, W3 |
+| CR-028 | The validate-only V11 header walk in `lazySweep` raced with workers writing popped cells | Fixed (2026-09-30: V11 deferred to `endParallelPromotion` for N > 1, HEAP_055); guard passes | S2 (validate builds) | M4 |
+| CR-016 | Empty-regular-block flip under `promo_mu_` vs a worker's stash or claimed chunk (exact-size promotion; test geometries) | Fixed (2026-09-30: no flip with N > 1 promotion workers, HEAP_054); guards pass | S1 (test geometries) | M4 |
+| CR-018 | After the sweep, mixed-block allocations are not counted in `live_bytes`, so the empty-block flip can take a live block (**serial**, not a concurrency defect) | Fixed (2026-09-30: live_bytes counted in every phase, HEAP_073); guards pass | S1 | — (unit test) |
+| CR-033 | `allocateFromBagPage`'s fresh-page carve leaves an 8-byte tail without a header (**serial**) | Fixed (2026-09-30: every nonzero bag-page tail gets a header, HEAP_024); guards pass | S1 in legacy allocation; benign in bitmap mode (default) | M8 |
+| CR-035 | The empty-block flip keeps stale large-body index entries, so a live body at the same address can be freed (**serial**) | Fixed (2026-09-30: the flip retires its index range, HEAP_056; CR-018 removed the precondition); guards pass | S1 | M8, M4 |
 | CR-021 | Plain reads of region bounds and owner words while markers hold `atomic_ref`s ([atomics.ref.generic]/3) | Fixed | S2 (letter) | W4 |
+| CR-036 | IM5's t0-block check cannot see a same-id, same-start re-issue | Fixed (2026-09-30: per-id BlockTable generation in IM5's key); guards pass | G (validate) | M1, M4 |
 | CR-006 | gc-heap-tsan ran with `gc_thread_mode = 0`: the pool and concurrent marking were never under TSan together | Fixed (the `pool` arms, 0 warnings) | G | M6/M7 |
 | CR-008 | No harness covered fork, multiple heaps, or a gang thread waiting on a pool job | Fixed for fork and two heaps (the fork harness); the pool-wait part is CR-006's | G | M6/M7 |
 | CR-010 | IM14 (slot quiescence) was asserted only at launch | Fixed (slot-range asserts at every slot touch; negative control) | G | M1/M2 |
@@ -146,7 +147,7 @@ has its evidence and history below; CR-025 to CR-038 are new since the model pla
 | CR-026 | HEAP_058 and `GCHelperPool.hpp` described the helper handshake more narrowly than the code | Fixed | D | M7, M6, W |
 | CR-027 | The 06 shared-state table and a comment misdescribed `gc_phase_` and `live_bytes` | Fixed | D | M4 |
 | CR-029 | The bag rung (parallel ladder, serial heap exhaustion) sent size-classed requests to `allocateFromBagPage`, whose assert forbade them | Fixed (assert and comment; guard tests); options (b)/(c) open | D + abort in assert builds | M4 |
-| CR-004 | Background-gang fork window: a launch can happen between `stopAllForFork` and the gang locks | Not-a-bug (proposed, M6: `ChildHeapSafe` holds for every mutator fork) | S4 | M6 |
+| CR-012 | Multi-mutator only: unlocked committed-bytes reads, process-wide decommit clocks and free list, `acquireOldGenRegion` vs commit-ahead, `validatePageWork` | Won't-fix (2026-10-01, option F: a second live mutator aborts in `initThread`, HEAP_007; opt-in for benchmark/test only); item (d) Fixed (`acquireOldGenRegion` via `onFreshBump`); death guard + won't-fix guards | S2 (precondition) | — |
 
 ---
 
@@ -156,15 +157,15 @@ has its evidence and history below; CR-025 to CR-038 are new since the model pla
 
 | | |
 |---|---|
-| Status | Reproduced in code (2026-09-30), both halves: unit guards (a) recount and (b) release; TSan `det-cr001` (4 arms). Earlier: Reproduced (2026-09-29): TLC (M4, both halves), GenMC (W3d) and **TSan on the real allocator** (the race). Guarded (model rows; the TSan `promo` scenario) |
+| Status | **Fixed** (2026-09-30): S1 half by CR-018 (HEAP_073, Phase 1); race half by relaxed `atomic_ref` access to `gc_phase_` at the racing sites (plans/threaded-gc-register-fixes.md §4.2, HEAP_067): guards (a), (b), their tail variants and the four TSan `det-cr001` arms pass |
 | Severity | **S1** (settled 2026-09-30 by the code guard (b)); the race half is S2 |
 | Found | 2026-09-28, protocol mapping for the TLA+ plan |
 | Where | write: `OldGenSpace.cpp:5247` in `lazySweep()`; unlocked reads: `:1075` in `finalizePoppedCellW()`, `:1135` in `finalizeBitmapCellW()` (post-7c tree of 2026-09-28) |
 | Models | M4 (race detector, plain field `gc_phase_`; configs `sweep_race_phase`, `sweep_release`) |
 | Invariants | HEAP_051, HEAP_054, HEAP_067, IM4, PM6, GC_DET_001 |
 | Repro | race half: `test/genmc/run_drivers.py --only w3d` (GenMC RC11 reports the race on `phase_idle`: a plain write under the lock against the unlocked read). Heap level still proposed: a gc-heap-tsan scenario that forces sweep-on-demand, ladder rung 5/8, inside a parallel minor |
-| Guard | `ConcurrencyRegisterTest.cpp` `CR-001 [xfail CR-001]` (a), (b); `gc-heap-tsan` `det-cr001 {rf,wf} {inloop,tail}`; M4 `sweep_race_phase` (`violates:NoRacePhase`) and `sweep_release` (`violates:ReleasedSafe`); `test/genmc` row `w3d` (expected `race`). All fail on the current code by design and flip to pass with the fix |
-| Fix | — |
+| Guard | `ConcurrencyRegisterTest.cpp` `CR-001` (a), (b), (a, tail completion), (b, tail completion) (`runFixedGuard`); `gc-heap-tsan` `det-cr001 {rf,wf} {inloop,tail}` (`clean`, REACHED); M4 `sweep_race_phase` and `sweep_release` (`pass`) with A6 mutants `phase_plain` (NoRacePhase) and `idle_uncounted_release` (ReleasedSafe); GenMC row `w3d` (`pass`) with mutant `W3_CR001_PLAIN_PHASE` (`race:phase_idle`) |
+| Fix | S1 half: CR-018 (live_bytes counted in every phase, HEAP_073). Race half: the one in-minor write (`lazySweep`'s `completeSweep`) is `std::atomic_ref<GCPhase>(gc_phase_).store(Idle, relaxed)`; the unlocked reads in `finalizePoppedCellW` and `finalizeBitmapCellW` are relaxed `atomic_ref` loads; `static_assert(atomic_ref<GCPhase>::is_always_lock_free)`; pause writes and reads under `promo_mu_` stay plain. HEAP_067 amended, HEAP_051 cross-references HEAP_073 |
 
 **Evidence.** `gc_phase_` is a plain `GCPhase` field (`OldGenSpace.hpp:815`). Inside a parallel
 minor, ladder rungs 5/8 run `lazySweep` under `promo_mu_`. When the sweep finishes it does
@@ -256,21 +257,22 @@ History:
   `endParallelPromotion`'s deferred shrink then releases that block with the promoted 8 KiB object
   in it. TSan `det-cr001`: `finalizeBitmapCellW :1199` read vs `lazySweep :5590` / `:5832` write,
   every run, both orders.
-
+- 2026-09-30 **S1 half Fixed** by CR-018's fix (plans/threaded-gc-register-fixes.md §3.2, HEAP_073): the stash finalize counts at Idle too. Guards `CR-001 (a)` (D reads 8,192 live bytes) and `(b)` (D not released) are now `runFixedGuard` and pass; with `test_idle_uncounted_` defaulted on (a scratch revert) both fail. M4 `MC_quick_sweep_release` passes; A6 mutant `idle_uncounted_release` violates `ReleasedSafe`. The race half (`gc_phase_`, M4 `MC_quick_sweep_race_phase`, W3 `w3d`, the four `det-cr001` TSan rows) stays open for Phase 2 (§4.2).
+- 2026-09-30 **Race half Fixed** (plans/threaded-gc-register-fixes.md §4.2). Model first: M4 `PhasePlain == "phase_plain" \in MUTANT` (reads under `promo_mu_` modelled plain, `PhLocked`); `MC_quick_sweep_race_phase` passes, A6 mutant `phase_plain` violates `NoRacePhase`; `controls/phase_atomic*` and `finalize_in_lock_phase` deleted. Code: `atomic_ref` store in `completeSweep`, loads in the two finalizers. Guards: the four `det-cr001` TSan rows are `clean` (0 warnings, REACHED); new tail variants `CR-001 (a, tail)`, `(b, tail)` (B = 8, proven by the tail counter) pass. Revert check (plain accesses): all four TSan arms report the `finalizeBitmapCellW` race again (exit 66). GenMC W3d: relaxed `atomic_ref` store/load, row `pass`, mutant `W3_CR001_PLAIN_PHASE` (`race:phase_idle`) — **not run** (`genmc` is not installed here); audited by reading.
 
 ### CR-002 — plain `clearBit` and atomic `fetch_or` on the same mixed-block bitmap byte
 
 | | |
 |---|---|
-| Status | Deterministic TSan arm (2026-09-30): `det-cr002`, every run. Earlier: Reproduced (2026-09-29): TLC, TSan on the real allocator, and in real traces; Guarded (model row; the TSan `promo` scenario) |
+| Status | **Fixed** (2026-09-30, plans/threaded-gc-register-fixes.md §4.3, HEAP_055, PM8): a cell of a block the gap sweep has not finished is finalized before `promo_mu_` is released and never stashed; TSan `det-cr002` clean |
 | Severity | S2 |
 | Found | 2026-09-28, protocol mapping |
 | Where | `OldGenSpace.cpp:5360` `bitscan::clearBit(gbits, nb)` in `lazySweep()` (gap-sweep loop, under `promo_mu_`) vs `OldGenSpace.cpp:1083` `setMarkBitAtomic(id, result)` in `finalizePoppedCellW()` (outside the lock); also the sweeper's plain 64-bit word read `nextSetBit` (`:5339`, through `bitscan::loadWord`, `BitmapScan.hpp:25-29`) (post-7c tree) |
 | Models | M4 (config `sweep_race_bitmap`), W3 (W3c classifies the pattern) |
 | Invariants | HEAP_050, HEAP_055, IM4 |
 | Repro | `test/tla/run_models.py --model M4 --config sweep_race_bitmap` (`violates:NoRaceBitmap`, 23 states); GenMC W3c classifies the race |
-| Guard | `gc-heap-tsan` `det-cr002`; M4 `sweep_race_bitmap` (expected-fail; flips to pass with the fix) |
-| Fix | — |
+| Guard | `gc-heap-tsan` `det-cr002` (`clean`, REACHED: T1 still takes M's cell 1); M4 `sweep_race_bitmap` (`pass`) with A6 mutant `finalize_outside_lock` (NoRaceBitmap); M4 trace `TraceRace.cfg` (5 accept rows); validator PM8; GenMC row `w3c` (`pass`) with mutant `W3_CR002_UNLOCKED_FINALIZE` (`race:bits`) |
+| Fix | `OldGenSpace::cellInUnsweptBlock(cell)` (under `promo_mu_`: `gc_phase_ == Sweeping` and the cell's block not `fully_swept`). The rung-2 batch in `allocatePromotion`: a popped head in an unswept block is finalized (`finalizePoppedCellW`) before the unlock and nothing is stashed; otherwise the batch peeks and stashes only cells of swept blocks. PM8 (validate): a stash pop while Sweeping must be of a fully swept block. HEAP_055 amended |
 
 **Hypothesis.** A mark byte covers 8 slots (64 heap bytes); the sweeper's `nextSetBit` reads a
 whole 64-bit word (64 slots, 512 heap bytes), so the race window is a word, not a byte. The gap sweep advances in budgeted
@@ -316,21 +318,21 @@ History:
 - 2026-09-30 Deterministic TSan arm `det-cr002`: `bitscan::loadWord` ← `nextSetBit` (sweep) vs
   `setMarkBitAtomic` ← `finalizePoppedCellW`, one report per run (25/25). No value oracle (the lost
   bit is behind the cursor).
-
+- 2026-09-30 **Fixed** (plans/threaded-gc-register-fixes.md §4.3). Model first (NEW RULE): M4's batch finalizes an `Unswept` head (phase Sweeping and block not swept) under the lock (`W_Fin` → `W_StUnlock`) and otherwise stashes only the swept prefix (`SweptPrefix`); TLC passed it on every sweep row, `MC_quick_sweep_fixed` (`MUTANT = {}`) and all 8 deep rows before the code changed; the in-lock branch is reachable (witness). A6 mutant `finalize_outside_lock` violates `NoRaceBitmap` (the intended story: W1's outside-lock `fetch_or` on M1, then W2's word read). `controls/finalize_in_lock` deleted. Code: `cellInUnsweptBlock`, the rung-2 rewrite (the `m4.batch` event logs `inlock` before the finalize), PM8. `det-cr002` clean (0 warnings, REACHED); preconditions of CR-014 B/C, CR-001 and CR-016 (stash) still hold (their stashed cells are in fully swept blocks) and CR-028's `p1 == av` still holds. Revert check (no in-lock finalize, no peek): `det-cr002` reports `setMarkBitAtomic` again. `TraceRace.cfg` is now an accept row on all five registered runs (the traces take the in-lock branch in about half of their batches). Performance (§8 budget 3 % of minor GC time): not measured here (plan §12). GenMC W3c: `allocateBlack` before the unlock, row `pass`, mutant `W3_CR002_UNLOCKED_FINALIZE` — not run (`genmc` missing).
 
 ### CR-003 — `GCHelperPool::atforkPrepare`: drain and lock are separate critical sections
 
 | | |
 |---|---|
-| Status | Reproduced (2026-09-29): TLC (M6) and **in code** (fork harness, deterministic `det-cr003` 5/5); Guarded |
+| Status | **Fixed** (2026-10-01, plans/threaded-gc-register-fixes.md §7.2 step 3, HEAP_058/HEAP_075): `post`'s CAS and enqueue in one `m_` section, the pool prepare drains and keeps `m_` in one section, and GCFork's allocator layer holds `thread_mutex_` first; `det-cr003` clean (window closed). Earlier: Reproduced (TLC; code, deterministic arm); Guarded |
 | Severity | S4 |
 | Found | 2026-09-28, protocol mapping |
 | Where | `GCHelperPool.cpp:260-265` in `GCHelperPool::atforkPrepare()` |
 | Models | M6 |
 | Invariants | HEAP_058, HEAP_007 |
 | Repro | `test/tla/run_models.py --model M6 --config pool_host_fork_stranded` (`violates:ChildNoStranded`, 10 states); `pool_fix_drain`, `pool_fix_post` (each fix alone still fails) |
-| Guard | M6 `pool_host_fork_stranded` (expected-fail); `pool_fix_both` and `pool_host_child_fix_all` pass with the fixes modelled |
-| Fix | — |
+| Guard | M6 `pool_host_fork_stranded`, `pool_host_child_hang` (pass) with A6 mutants `pool_as_built_2026_09`, `pool_no_tm_cas_outside`, `pool_no_tm_drain_split` (ChildNoStranded); `gc-fork-trace` `det-cr003` (`clean`; its pause is inside the prepare, bounded, `window=closed`); TracePool rows |
+| Fix | `GCHelperPool::post` (Concurrent): the Idle->Posted CAS, the probe, `started_`, the enqueue and `++outstanding_` in one `m_` section (Sync keeps its CAS outside). `GCHelperPool::atforkPrepare` (GCFork's pool layer, the innermost): `m_.lock()`, then `cv_done_.wait(outstanding_ == 0)` keeping `m_`. GCFork's allocator layer locks `thread_mutex_` before it (every post holds it). Revert check: allocator layer and pool fix both off: `det-cr003` hangs in the child's drain 3/3; the pool fix alone off is masked in code by the allocator layer (as M6 `pool_host_fork_tm_first` predicted) and is caught by the M6 mutants |
 
 ```cpp
 void GCHelperPool::atforkPrepare() {
@@ -397,21 +399,22 @@ History:
   that holds `thread_mutex_`, so it surfaces as CR-015.
 - 2026-09-30 `det-cr003` wired into `fork_arms.txt` / `run_fork_arms.py` (targets `fork-det`,
   `register-guards`): XFAIL.
+- 2026-10-01 **Fixed** (plans/threaded-gc-register-fixes.md Phase 5, §7.1-7.2). Model first (M6 HelperPool: the fix the default, the old FIX rows A6 mutants); code; `det-cr003` clean; revert checks as in the Fix row.
 
 
 ### CR-004 — background-gang fork window: relaunch between `stopAllForFork` and the gang locks
 
 | | |
 |---|---|
-| Status | Not-a-bug (proposed 2026-09-29, from M6): the window exists and is wider than described, but nothing is lost in a child forked by the mutator |
+| Status | **Fixed** (2026-10-01, plans/threaded-gc-register-fixes.md §7.2 step 4, HEAP_065): a launch during a fork's prepare is REFUSED (`fork_hold_`, set before `stopAllForFork`); `det-cr004` clean (window closed). Earlier: Not-a-bug (proposed 2026-09-29, from M6) |
 | Severity | S4 → S1 in the child |
 | Found | 2026-09-28, protocol mapping |
 | Where | `GCHelperPool.cpp:664-669` (bg-gang `atforkPrepare`: `stopAllForFork` under the registry mutex, then lock every gang's `m_`); relaunch at `OldGenSpace.cpp:4689-4692` in `runCycleStepConcurrent()` (post-7c tree) |
 | Models | M6 |
 | Invariants | IM15, HEAP_065 |
 | Repro | — |
-| Guard | — |
-| Fix | — |
+| Guard | M6 `gangs_host_fork_window` (pass) with A6 mutant `no_fork_hold_window` (ChildHeldAny); `gc-fork-trace` `det-cr004` (`clean`: the relaunch inside the window is refused, `window=closed`; exit 4 if neither reached nor closed) |
+| Fix | `GCBackgroundGang::launch` returns `false` (counted in `stats_.fork_refusals`) while `fork_hold_`; GCFork's gangs layer sets `fork_hold_` under each gang's `m_` BEFORE `stopAllForFork`, the parent and child handlers clear it; `OldGenSpace::launchBackground` treats a refusal as a stopped episode (`bg_ep_ = None`, `cm.episodes_refused`; the next step relaunches, the closing drains). Revert check (hold never set): `det-cr004` reaches the window 3/3 again |
 
 **Hypothesis.** With a fork from a non-mutator thread:
 1. `stopAllForFork` stops and joins the running episodes.
@@ -451,20 +454,21 @@ History:
   it; `det-cr004` 5/5) and the supported contract holds (`mut`: 302 mutator forks, every child
   finishes its cycle and checks every rooted value). The Not-a-bug proposal stands: nothing is lost
   in a child forked by the mutator.
+- 2026-10-01 **Fixed** (plans/threaded-gc-register-fixes.md Phase 5, §7.2 step 4): the window is closed rather than argued harmless (the same hold closes CR-013). M6 rows flipped; `det-cr004` from `reach` to `clean`.
 
 ### CR-005 — fork-stop during the closing join trips `assert(bg_ep_ == Finished)`
 
 | | |
 |---|---|
-| Status | Reproduced (2026-09-29): TLC (M2, M6) and **in code** (fork harness `closing`: the parent aborts in `closingFinish` in 14 of 40 trials; `det-cr005` 5/5); Guarded |
+| Status | **Fixed** (2026-10-01, plans/threaded-gc-register-fixes.md §7.2 step 6, HEAP_065): `closingFinish` accepts a stopped episode and drains; `det-cr005` clean. Earlier: Reproduced (TLC; code); Guarded |
 | Severity | S4 (assert builds only, which include the everyday `build` preset: `-O2 -g -UNDEBUG`, `CMakePresets.json:34-35`; release builds fall through to a correct drain) |
 | Found | 2026-09-28, protocol mapping |
 | Where | `OldGenSpace.cpp:4598-4599` in `closingFinish()` (post-7c tree) |
 | Models | M2 (`episode_stop`, invariant `ClosingFinished`), M6 (`ClosingFinished`) |
 | Invariants | IM9, IM15 |
 | Repro | `test/tla/run_models.py --model M6 --config gangs_host_fork` (`violates:ClosingFinished`, 46 states; also `gangs_host_fork_1cpu_closing` and the `mark_first` deep row) |
-| Guard | M6 `gangs_host_fork` (expected-fail); the candidate fix (accept `None` after a fork-stop, then drain) passes as `gangs_host_fork_fix_closing` |
-| Fix | — |
+| Guard | M2 `MC_quick_episode_stop` (pass) with A6 mutant `member_exits_undone`; M6 `gangs_host_fork`, `_1cpu_closing`, deep `gangs_deep_host_fork_mark_first` (pass) with mutant `closing_asserts_finished`; `gc-fork-trace` `det-cr005` (`clean`) |
+| Fix | `closingFinish`: `assert(bg_ep_ == BgEpisode::Finished || bg_ep_ == BgEpisode::None)` after `reapBackground(true)` (a foreign stop: a fork's prepare, `stopAllAtExit`, `reset`), then the existing drain (`runMarkers`) completes the mark. Revert check (old assert): `det-cr005` aborts in the parent 3/3 |
 
 The closing join runs the foreground Members until termination, then calls
 `reapBackground(/*wait=*/true)` and asserts `bg_ep_ == Finished`. A fork-stop from another thread
@@ -494,21 +498,22 @@ History:
   `det-cr005`: 5 of 5.
 - 2026-09-30 `det-cr005` wired into `fork_arms.txt` / `run_fork_arms.py` (targets `fork-det`,
   `register-guards`): XFAIL.
+- 2026-10-01 **Fixed** (plans/threaded-gc-register-fixes.md Phase 5, §7.2 step 6). M2 `ClosingFinished` is `word.done \/ stop`; M6 accepts `None`.
 
 
 ### CR-013 — tenure-collector fork window: the child inherits a job stopped mid-item
 
 | | |
 |---|---|
-| Status | Reproduced in code (2026-09-30), all three ways: fork-trace arms `det-cr013-*`. Earlier: Reproduced (model, TLC, 2026-09-29), three ways; Guarded at model level by M5's expected-fail rows |
+| Status | **Fixed** (2026-10-01, plans/threaded-gc-register-fixes.md §7.2 step 4, HEAP_065/HEAP_070): a collector launch during a fork's prepare is REFUSED; the join's orphan path finishes the job; `det-cr013-*` clean. Earlier: Reproduced in code (2026-09-30), all three ways; Reproduced (model, TLC, 2026-09-29) |
 | Severity | S4 → S1 in the child |
 | Found | 2026-09-28, while writing the M5 plan (finding F1 there) |
 | Where | `GCHelperPool.cpp:664-669` (`GCBackgroundGang::atforkPrepare`: `stopAllForFork`, then lock each gang's `m_`); relaunch at `NurseryTenure.cpp:572` (`tenureLaunch`, exact engine) or `:1234` (`tenureConcLaunch`, L3); item bookkeeping at `TenureWork.hpp:301-305` (`SerialEngine::step`: `next_start++` before `tenure()`) and the stack pop before `scanCopy` (post-7c tree) |
 | Models | M5 (`fork` configuration, mutant `fork_mid_item`), M6 |
 | Invariants | TV1, HEAP_070, FORBID_HEAP_004 |
 | Repro | `test/tla/run_models.py --model M5 --config fork` (`violates:TenuredEqualsLegacy`), `fork_orphan_copy` (`violates:ExactlyOnce`), `fork_l3` (`deadlock`) |
-| Guard | `gc-fork-trace` (`fork_arms.txt`) `det-cr013-start`, `-copy`, `-copy-scan`, `-l3-exit`, `-l3-minor`; control `-start-exit`; stress `tenure-storm[-l3]`; the three M5 rows above (expected-fail; they flip to pass with a fix or with the fork contract's guard, see CR-003) |
-| Fix | — |
+| Guard | `gc-fork-trace` `det-cr013-start`, `-copy`, `-copy-scan`, `-l3-exit`, `-l3-minor` (`clean`; the `-minor` arms adopt the dead heap, outside the contract, and check the refused launch + orphan path: a child failure still counts as reproduced); control `-start-exit` (`clean`); stress `tenure-storm[-l3]` (flaky); M6 `gangs_two_gangs_window` (pass) with A6 mutants `no_fork_hold`, `hold_after_stop` (ChildHeldTenure); M5 `mutants/fork`, `fork_orphan_copy`, `fork_l3` (the pre-fix launch window) |
+| Fix | The fork hold (CR-004's Fix row); `NurserySpace::tenureLaunch` / `tenureConcLaunch` count a refusal in `rs.fork_refusals` and leave the job Running with no member: `tenureJoin`'s orphan branch (`!running()`) finishes it in the pause (exact: `finish_here`; L3: `tenureConcFinish`). Revert check (hold never set): start, copy, copy-scan and l3-minor reproduce TV1, TV3/TV4, TV6 and the L3 hang 3/3; l3-exit stays clean through CR-031's fix and reproduces with both reverted |
 
 **Hypothesis.** This is CR-004's window, but for the 7c tenure collector:
 1. A thread other than the mutator forks.
@@ -569,21 +574,22 @@ History:
   heap (`AllocatorTestAccess::adoptThreadHeap`), which is **outside the fork contract**; `-l3-exit`
   is the contract-relevant one. Lines corrected: launch `NurseryTenure.cpp:598`, orphan join
   `:642-660`, `TenureWork.hpp:218-235, 315`.
+- 2026-10-01 **Fixed** (plans/threaded-gc-register-fixes.md Phase 5, §7.2 step 4). M5's three rows moved to `mutants/` (verdicts unchanged); M6 rows flipped.
 
 
 ### CR-014 — lazySweep's tail completion path runs `onSweepComplete()` inside a parallel minor
 
 | | |
 |---|---|
-| Status | Reproduced in code (2026-09-30): unit guards CR-014 A (N=2, N=1) abort in `detachFromAllocation`, B releases a stashed cell's block; TSan `det-cr014-live` (`NoRaceLive`, 25/25). Earlier: Reproduced (TLC, 2026-09-29): the FATAL, the silent release and the `live_bytes` race; Guarded at model level by M4's expected-fail rows |
+| Status | **Fixed** (2026-09-30, plans/threaded-gc-register-fixes.md §4.1, HEAP_067, PM7): every completion inside a promotion defers; guards A (N=2, N=1), B, C and TSan `det-cr014-live` pass. Earlier: Reproduced in code (unit guards, TSan) and TLC |
 | Severity | S1 (suspected); an S2 race on `live_bytes` whenever the path runs |
 | Found | 2026-09-28, while writing the M4 plan (its suspicion 2); verified by reading |
 | Where | `OldGenSpace.cpp:5466-5472` in `lazySweep()` (tail path: `gc_phase_ = Idle; onSweepComplete();`), compared with the in-loop path at `:5247-5255` (`if (par_promo_active_) sweepCompleteInPromotion(); else onSweepComplete();`) (post-7c tree) |
 | Models | M4 (configs `sweep_tail`, `sweep_tail_release`, `sweep_tail_live`), M7 (a release route into its lock chain), M3 (footprint: `large_body_index_`) |
 | Invariants | HEAP_054, HEAP_067, PM4, PM6, IM5 |
 | Repro | `test/tla/run_models.py --model M4 --config sweep_tail` (`violates:DetachNotCurrent`, 25 states), `sweep_tail_release` (`ReleasedSafe`), `sweep_tail_live` (`NoRaceLive`, no mutant needed) |
-| Guard | `ConcurrencyRegisterTest.cpp` `CR-014 … (C)` (double allocation); `ConcurrencyRegisterTest.cpp` `CR-014 [xfail CR-014]` A (N=2), A (N=1), B; `gc-heap-tsan` `det-cr014-live`; stress `promo <seed> 40 4 0 0 8 1` (tail mode); the three M4 rows above (expected-fail; fix candidate `tail_defers` passes all three) |
-| Fix | — |
+| Guard | `ConcurrencyRegisterTest.cpp` `CR-014` A (N=2), A (N=1), B, C (`runFixedGuard`; B and C prove the tail path by `sweep_tail_in_promotion` rising by exactly one); `gc-heap-tsan` `det-cr014-live` (`clean`, REACHED); stress `promo <seed> 40 4 0 0 8 1` (tail mode: 36 tail hits per seed, 0 TSan warnings); M4 `sweep_tail`, `sweep_tail_release`, `sweep_tail_live`, `sweep_tail_reuse` (`pass`) with A6 mutants `tail_immediate{,_release,_live,_reuse}` |
+| Fix | `lazySweep` has one completion lambda `completeSweep(path)` (inside `TLA-REGION(OGS.lazySweep)`), used by the in-loop (2) and the tail (3) completion: `gc_phase_ = Idle` (atomic, CR-001), then `sweepCompleteInPromotion()` inside a promotion (N > 1: deferred to `endParallelPromotion`; N = 1: worker 0's cursors handed back first), else `onSweepComplete()`. Tripwire PM7 (every build): `onSweepComplete` aborts if `par_promo_active_`. HEAP_067 amended |
 
 `lazySweep` can finish the sweep in two places:
 1. Inside its loop, when the cursor finds no block left. This path checks `par_promo_active_` and
@@ -668,22 +674,21 @@ History:
   address, W2's fill overwritten). Correction: when the floor is what keeps D alive, the light
   shrink never empties the bag, so same-start reuse needs a second, lower release in the same shrink
   (or an already empty bag).
-
-
+- 2026-09-30 **Fixed** (plans/threaded-gc-register-fixes.md §4.1). Model first: M4's tail branch became `await "tail_immediate" \in MUTANT`; the four `sweep_tail*` rows pass, the A6 mutants `tail_immediate` (DetachNotCurrent), `_release` (ReleasedSafe), `_live` (NoRaceLive), `_reuse` (NoDoubleAlloc) violate; `controls/tail_defers*` deleted; `TracePromoBitmap` maps path 3 to a deferred completion. Code: `completeSweep` + the PM7 tripwire. Guards: A (N=2, N=1) and B, C are `runFixedGuard` (B/C/A preconditions reworked to the tail counter; C now pops the stash, merges and checks both objects intact and `allocStateConsistent`); `det-cr014-live` clean and REACHED; the `det-cr001` tail arms prove their path by the counter too. Revert check (old tail path, tripwire off): all four unit guards fail (A: abort, B: D released, C: the double allocation) and `det-cr014-live` reports `flushCursorW` again. Stress tail mode: 36 tail hits for seeds 1-3, no warnings.
 
 ### CR-015 — `Allocator::thread_mutex_` has no atfork handler
 
 | | |
 |---|---|
-| Status | Reproduced (2026-09-29): TLC (M6) and **in code** (fork harness: 3.2% of host-fork children, 7.9% with two heaps; `det-cr015` 5/5); Guarded |
+| Status | **Fixed** (2026-10-01, plans/threaded-gc-register-fixes.md §7.2 step 3, HEAP_058/HEAP_075): GCFork's allocator layer holds `thread_mutex_` across fork and re-creates it in the child; `det-cr015` clean. Earlier: Reproduced (TLC; code); Guarded |
 | Severity | S4 |
 | Found | 2026-09-28, while writing the M6 plan |
 | Where | `Allocator::thread_mutex_` (a `std::recursive_mutex`), held around every helper post and wait (HEAP_058; `Allocator.cpp:753, 892, 1253`); `pthread_atfork` registrations exist only in `GCHelperPool.cpp:112, 340, 508` (post-7c tree) |
 | Models | M6 (`ChildLocksFree`) |
 | Invariants | HEAP_058 |
 | Repro | `test/tla/run_models.py --model M6 --config pool_host_fork_locks` (`violates:ChildLocksFree`, 9 states) and `pool_host_child_hang` (`violates:HostChildProgress`, 14 states) |
-| Guard | the two M6 rows above (expected-fail) |
-| Fix | — |
+| Guard | M6 `pool_host_fork_locks`, `pool_host_child_hang` (pass) with A6 mutants `pool_no_tm` (ChildLocksFree), `pool_no_tm_child_hang` (HostChildProgress), `pool_tm_last` (MutatorProgress); M7 `lock_order_fork` (pass) with mutants `teardown_under_tm`, `fork_tm_first` (deadlock); `gc-fork-trace` `det-cr015` (`clean`; pause point now `m6.tm.held` in `onGCPauseEnd`, `thread_mutex_` only, bounded) |
+| Fix | `Allocator::forkPrepare/Parent/Child` (GCFork `kForkAllocator`, registered in `Allocator::initialize`): prepare `thread_mutex_.lock()` (after the gangs, before the census and the pool); parent `unlock()`; child `new (&thread_mutex_) std::recursive_mutex()`, `fork_child_ = true`, `fork_owner_ = std::this_thread::get_id()` (never unlocks the recursive mutex: its owner TID differs). No teardown holds `thread_mutex_` while it takes a gang lock (`cleanupThread`, `finishTenureForExit`, `reset`, `~Allocator`). Revert check (layer not registered): `det-cr015` children hang on `thread_mutex_` 3/3 |
 
 If a thread other than the mutator forks while the mutator holds `thread_mutex_` (inside a pause
 end, a block acquire or a release), the child inherits the mutex locked by a thread that does not
@@ -707,21 +712,22 @@ History:
   `det-cr015`: 5 of 5.
 - 2026-09-30 `det-cr015` wired into `fork_arms.txt` / `run_fork_arms.py` (targets `fork-det`,
   `register-guards`): XFAIL.
+- 2026-10-01 **Fixed** (plans/threaded-gc-register-fixes.md Phase 5, §7.2 steps 2-3). M7 LockOrder model checked before the handler (lock_order_fork pass; teardown_under_tm, fork_tm_first deadlock).
 
 
 ### CR-016 — empty-regular-block flip under `promo_mu_` vs a worker's stash (test geometries only)
 
 | | |
 |---|---|
-| Status | Reproduced in code (2026-09-30): unit guards chunk and stash variants (the flip takes V/D); stress exact arrays corrupt the heap in 4 of 7 runs. Earlier: Reproduced (2026-09-29): TLC, and **TSan on the real allocator, with heap corruption**, in test geometries; Guarded (model rows; the TSan `promo` scenario with exact-size Arrays) |
+| Status | Fixed (2026-09-30, plans/threaded-gc-register-fixes.md §3.4). Earlier: Reproduced (TLC; TSan with heap corruption; code: unit guards chunk/stash); Guarded |
 | Severity | S1, but only in test geometries |
 | Found | 2026-09-28, while writing the M4 plan (its suspicion 3) |
 | Where | `OldGenSpace.cpp:2665` `allocateFromEmptyRegularBlocks` (the `live_bytes == 0` test and skips at `:2676-2679`), stash return at `:1440-1443` (post-7c tree) |
 | Models | M4 |
 | Invariants | HEAP_054, PM6 |
 | Repro | `test/tla/run_models.py --model M4 --config sweep_large` (17 states) and `minor_large` (16 states, no sweep pending), both `violates:ReleasedSafe` |
-| Guard | `ConcurrencyRegisterTest.cpp` `CR-016 [xfail CR-016]` chunk, stash; `gc-heap-tsan` `promo <seed> 40 {4,6,8} 0 1`; M4 `sweep_large`, `minor_large` (expected-fail). No fix candidate yet: CR-016 still fails with every other fix on |
-| Fix | — |
+| Guard | `ConcurrencyRegisterTest.cpp` `CR-016 (chunk)`, `CR-016 (stash)` (fixed guards; each also asserts the exact-page promotion lands at the start of a NEW large block and, in stats builds, that `flip_skipped_parallel` rose by exactly 1); M4 `MC_quick_sweep_large`, `MC_quick_minor_large` (pass), `controls/flip_one_worker` (pass) and the A6 mutants `flip_in_parallel_stash`, `flip_in_parallel_chunk` |
+| Fix | First statement of `allocateFromEmptyRegularBlocks`: `if (par_promo_active_ && promo_ctx_ && promo_ctx_->n > 1) return nullptr;` (stats `flip_skipped_parallel`); `allocateLargeBlock` then takes a free large block or a fresh one. N = 1 keeps the flip (no stash, no chunks; the Current skip stays). HEAP_054 amended. M4 NEW RULE checked by TLC before the code |
 
 Under `promo_mu_`, a promotion of at least `alloc_buffer_size` bytes can flip an "empty" regular
 block to large. It judges emptiness by `live_bytes == 0`, so it can pick a mixed block whose free
@@ -761,7 +767,7 @@ History:
   exact-arrays stress arm (now every minor) aborts on `Invalid tag after forward resolution` in 4 of
   7 runs. Reachability refinement: unreachable at defaults; a non-default legacy nursery config may
   reach it at 512 KiB blocks (unverified).
-
+- 2026-09-30 **Fixed** (plans/threaded-gc-register-fixes.md §3.4): no empty-block flip inside a parallel promotion with more than one worker. TLC first (NEW RULE): `controls/flip_skips_parallel` (38,160 states), `_chunk` (2,010) and `flip_one_worker` (59; a flip is reachable at N = 1) passed before the code changed; then the rule became the default and `flip_in_parallel` the A6 mutant (stash 7,987 / chunk 2,794 states, `violates:ReleasedSafe`). Both guards pass (the big object lands in a new large block, the flip refused once); disabling the new test (a scratch revert) makes both fail. Stress: see plans/threaded-gc-register-fixes.md §11.
 
 ### CR-006 — the heap-level TSan harness never runs the helper pool
 
@@ -796,15 +802,15 @@ History:
 
 | | |
 |---|---|
-| Status | Reproduced in code (2026-09-30): unit guard, a latched Discard job stalls a second worker 200 ms. Earlier: Reproduced (model, TLC witness, 2026-09-28) and Guarded (the witness row flips if the stall goes away). The deadlock hypothesis is Not-a-bug (M7b). The misattribution was split off as CR-025 (Fixed), HEAP_058's wording as CR-026 (Fixed) |
+| Status | **Fixed** (2026-10-01, plans/threaded-gc-register-fixes.md §6.3): a promotion holder with n > 1 workers never waits on a helper job unless the old-gen cap forces the first-fit fallback. Earlier: Reproduced in code (2026-09-30): unit guard, a latched Discard job stalls a second worker 200 ms. Earlier: Reproduced (model, TLC witness, 2026-09-28) and Guarded (the witness row flips if the stall goes away). The deadlock hypothesis is Not-a-bug (M7b). The misattribution was split off as CR-025 (Fixed), HEAP_058's wording as CR-026 (Fixed) |
 | Severity | S3 (a stall, not a deadlock) |
 | Found | 2026-09-28, protocol mapping |
 | Where | `OldGenSpace.cpp:1249-1251` `startVirginBlockShared()` → `ensureBagPageAvailable` (`:866-871`) → `Allocator::acquireOldGenBlock` (`Allocator.cpp:752`) → `PageWork::onReuse` → `GCHelperPool::wait` (`PageWork.cpp:151-169`); `callerInPause()` at `Allocator.cpp:1206` (post-7c tree). Two more routes into the same chain (M7 review, 2026-09-28): the CR-014 tail path (`lazySweep`, `OldGenSpace.cpp:5466-5476`, reached under `promo_mu_` from the ladder at `:2147`, `:2169`, `:2410`) → `onSweepComplete` → `releaseOldGenBlock` → `PageWork::onRelease` → a wait on an overlapping populate; and the pause tenure engine, whose `GCMarkGang` members promote through `allocatePromotion` (`NurseryTenure.cpp:984`, `runJobParallel` `:1167`) |
 | Models | M7 (M7b: lock order, `MODEL_M7_StallWitness`) |
 | Invariants | HEAP_058, HEAP_059 |
 | Repro | `test/tla/run_models.py --model M7 --config lock_order_stall` (witness: `MODEL_M7_StallWitness` is violated, i.e. the stall state is reachable) |
-| Guard | `ConcurrencyRegisterTest.cpp` `CR-007 [xfail CR-007]`; M7 `lock_order` and `lock_order_3` (deadlock check + `AllFinish` over the whole lock graph) guard the no-deadlock verdict; the three lock mutants (`tm_then_promo`, `worker_takes_tm`, `collector_takes_tm`) show a deadlock would be caught |
-| Fix | — |
+| Guard | `ConcurrencyRegisterTest.cpp` `CR-007` (`runFixedGuard`: member 1's promotion under a latched Discard takes < H/2 and a fresh page, route witness `nowait_skipped_extents`) and `CR-007 cap fallback` (`runFixedGuard`); M7 `pw_nowait` (`NoWaitUnlessCap`), `lock_order_nostall`, mutants `nowait_skip_posted`, `nowait_first_fit`, `nowait_off`; earlier: M7 `lock_order` and `lock_order_3` (deadlock check + `AllFinish` over the whole lock graph) guard the no-deadlock verdict; the three lock mutants (`tm_then_promo`, `worker_takes_tm`, `collector_takes_tm`) show a deadlock would be caught |
+| Fix | `Allocator::acquireOldGenBlock(size, AcquireWait)`: with `AvoidUnderPromo` (`OldGenSpace::acquireWaitPolicy()`: a parallel promotion with n > 1, passed at `ensureBagPageAvailable`, `allocateFromBagPage`, `allocateLargeBlock`) and decommit on, it takes (1) the first fitting Pending extent (`PageWork::isPending`, job-blind; cancelled, no wait), else (2) a fresh bump, else (3) at the cap, today's first fit (may wait). Counters `nowait_*` in `PageWorkCounters`; validate: no `reuse_waits` rise on a no-wait Pending reuse, no release inside such a promotion. Model first: M7 `PageWork.tla` (`NoWait`, `gPend`, `NoWaitUnlessCap`, `PendGhost`), `LockOrder.tla` (`CapExhausted`), `TracePageWork` (`nw`). HEAP_059, HEAP_058, GC_DET_001 amended |
 
 A parallel-minor gang thread that holds the promotion spin lock can take `thread_mutex_` and then
 wait for a posted discard job. The lock order is `promo_mu_` → `thread_mutex_` → pool `m_`. Helper
@@ -849,6 +855,17 @@ History:
   gang member 1 reaches `onReuse` → `GCHelperPool::wait` holding `promo_mu_` and `thread_mutex_`,
   and member 0's own promotion then takes 201 ms (`mutex_wait` 201 ms, `stall_max` 200 ms,
   `reuse_waits` 1).
+- 2026-10-01 **Fixed** (plans/threaded-gc-register-fixes.md §6.3). Model first: M7 quick 24/24 (new
+  `pw_nowait` pass, `lock_order_nostall` pass, mutants `nowait_skip_posted` → `DetChoice`,
+  `nowait_first_fit` → `NoWaitUnlessCap`, `nowait_off` → `MODEL_M7_StallWitness`; `lock_order_stall`
+  stays a witness: the cap fallback), deep `pw_deep` / `pw_deep_liveness` pass, `run_traces.py` M7
+  20/20 (2 new accept, 3 new reject rows for the `nw` picks). Code: member 1's promotion under the
+  latched Discard now takes 0.5 ms (was 201 ms) and a fresh page (`nowait_skipped_extents` 1); the new
+  `CR-007 cap fallback` guard spends the reservation and gets b back through the fallback
+  (`nowait_fallback_waits` 1). Revert check (policy always `Allowed`): both guards fail (201 ms, b; no
+  fallback). GC_DET_001: modes 1, 2, 2+jitter, 2+ahead identical (also at ECO_TEST_MINOR_THREADS 2, 4, 8);
+  mode 0 now differs from them at N > 1 in placement counters only (by design: no PageWork, no
+  policy), and the test compares it on object-level quantities there.
 
 
 ### CR-008 — no harness covers fork, multiple heaps, or a gang thread waiting on a pool job
@@ -1009,15 +1026,15 @@ History:
 
 | | |
 |---|---|
-| Status | Reproduced in code (2026-09-30): value guards (a)-(d) and TSan `cr012 a`, `cr012 e`. Earlier: Confirmed (2026-09-28) for the accesses; the precondition (more than one mutator) holds only in the benchmark driver |
+| Status | **Won't-fix** (2026-10-01, option F, plans/threaded-gc-register-fixes.md §6.2): a second live mutator is forbidden (HEAP_007); item (d) **Fixed**. Earlier: Reproduced in code (2026-09-30), Confirmed (2026-09-28) |
 | Severity | S2 (precondition: more than one mutator) |
 | Found | 2026-09-28, protocol mapping |
 | Where | `Allocator.hpp:251` `getOldGenCommittedBytes()` returns `old_gen_in_use_bytes_` with no lock; read by triggers at `OldGenSpace.cpp:4124, 4253, 5547, 5770`. `Allocator::sync_epoch_`/`major_epoch_` (`Allocator.hpp:381-382`) are process-wide (post-7c tree) |
 | Models | — (M7 if multiple heaps are ever modelled) |
 | Invariants | HEAP_007, GC_DET_001, HEAP_059 |
 | Repro | — |
-| Guard | `ConcurrencyRegisterTest.cpp` `CR-012(a..d) [xfail CR-012]`; `gc-heap-tsan` `cr012 a`, `cr012 e`; — |
-| Fix | — |
+| Guard | `ConcurrencyRegisterTest.cpp`: `CR-012 forbid` (`runDeathGuard`: a second live `initThread` aborts), controls `CR-012 opt-in` and `CR-012 sequential` (`runFixedGuard`); `CR-012(a..c) [won't-fix CR-012: opt-in only]` (`runWontFixGuard`); `CR-012(d)` and `CR-012 (d) sequential` (`runFixedGuard`); `gc-heap-tsan` `cr012:a` `clean`, `cr012:e` `wontfix` |
+| Fix | Option F: `Allocator::allowMultipleMutators(bool)` (under `thread_mutex_`, reset by `reset()`); `initThread` aborts with a HEAP_007 message when `thread_heaps_` is non-empty and the opt-in is off; opted in: `main.cpp` (`--threads` > 1, with a warning), CRT `cr012Init`, `ConcurrentTenureTest`'s spawn loop, `fork_harness.cpp` `trialTwoHeap`, `cr012_two_heap.cpp`. (d): `acquireOldGenRegion` commits through `PageWork::onFreshBump`. Hardening: `old_gen_in_use_bytes_` is a relaxed `std::atomic<size_t>` (TSan (a) clean). HEAP_007, GC_DET_001, HEAP_060 amended; M7 MAPPING |
 
 With more than one mutator:
 - `old_gen_in_use_bytes_` is written by one heap's thread under `thread_mutex_` while another
@@ -1069,13 +1086,26 @@ History:
   extent; (d) B's `initThread` recommits A's populated window (64 → 0 resident pages). TSan:
   `old_gen_in_use_bytes_` (a), and `validatePageWork` vs `materializeVirginBlock` (e). (d) is not
   TSan-visible (`madvise` vs `mmap`). The decision (support or forbid) is still open.
-
+- 2026-09-30 **Decision (user): option F** — a second live mutator is forbidden. initThread will
+  abort unless Allocator::allowMultipleMutators(true) (benchmark driver and test harnesses only,
+  unsupported); the status becomes Won't-fix when plans/threaded-gc-register-fixes.md §6.2 lands,
+  with a death guard as the guard and (a)-(d) kept as won't-fix guards under the opt-in. Item (d) is
+  fixed in both options (acquireOldGenRegion through onFreshBump).
+- 2026-10-01 **Won't-fix** (option F landed, plans/threaded-gc-register-fixes.md §6.2): `initThread`
+  aborts on a second live heap without the opt-in (`CR-012 forbid` passes: SIGABRT with the HEAP_007
+  message); the opt-in and sequential controls pass; (a)-(c) pass as WONTFIX under the opt-in (the
+  accepted behaviour still reproduces: A's 479 pages make B's trigger due, A reuses B's extent, B's
+  pauses discard A's extent). **Item (d) Fixed**: `acquireOldGenRegion` goes through `onFreshBump`;
+  `CR-012(d)` (two heaps) and `CR-012 (d) sequential` keep all 64 window pages resident. Revert check
+  (abort and `onFreshBump` disabled): the death guard and both (d) guards fail. Optional hardening
+  landed: `old_gen_in_use_bytes_` relaxed atomic, TSan `cr012:a` clean; `cr012:e` (`validatePageWork`
+  vs `materializeVirginBlock`) is `wontfix`.
 
 ### CR-017 — region mode: the t0 young walk greys old cells that a STW major freed
 
 | | |
 |---|---|
-| Status | Reproduced in code (2026-09-30): R1 (every-build abort) and R2 (mark bit on a free cell of a post-t0 block), each with a negative control; stress `lbaba` (IM4). Earlier: Reproduced in code (2026-09-29, k = 1 and k = 2) and in the models (M1, M5); Guarded (expected-fail unit tests; model rows) |
+| Status | **Fixed (2026-09-30, plans/threaded-gc-register-fixes.md §5.2, HEAP_074)**; all five guards are fixed guards and pass. Earlier: Reproduced in code (2026-09-30): R1 (every-build abort) and R2 (mark bit on a free cell of a post-t0 block), each with a negative control; stress `lbaba` (IM4). Earlier: Reproduced in code (2026-09-29, k = 1 and k = 2) and in the models (M1, M5); Guarded (expected-fail unit tests; model rows) |
 | Severity | S1 (suspected, long precondition chain). Certain effects: floating garbage, spurious validate-build aborts. Also D: the 07 plan (P§3.16) calls the walk of dead objects "conservative and safe" |
 | Found | 2026-09-28, adversarial review of the M1 plan; checked by the orchestrator |
 | Where | `NurserySpace::forEachYoung`, `NurserySpace.hpp:800-830` (walks Young and Tenuring extents, skips only `Tag_Free`); `ThreadLocalHeap::startMarkCycle` `markChildren`, `ThreadLocalHeap.cpp:1102`; the only zap is 07b's, for ageing extents, `mergeJob` `NurseryTenure.cpp:816-825`; `OldGenSpace::startMark`, `OldGenSpace.cpp:2881-2889` (a STW major marks nursery objects from roots only) (post-7c tree) |
@@ -1083,7 +1113,7 @@ History:
 | Invariants | IM3, IM13, HEAP_063, HEAP_SNAPSHOT_001 |
 | Repro | `test/tla/run_models.py --model M1 --config MC_quick_region` (TLC, 17-state counterexample, `test/tla/M1-snapshot-mark/AUDIT.md`); `--model M5 --config cycle_major` and `k2_cycle_major` (`YoungWalkValid`). Code-level repro still proposed: a validate-build unit test in region mode, k = 1: x → c with c old, drop x, explicit major, then force the trigger at the next minor |
 | Guard | `ConcurrencyRegisterTest.cpp` `CR-017 … R1 (k=2)` and its control; `ConcurrencyRegisterTest.cpp` `CR-017 [xfail CR-017]` R1, R2 and their controls; `gc-heap-tsan` `lbaba`; model only: `models.txt` expects M1 `MC_quick_region` to violate `MarkerFootprint`, and M5 `cycle_major`, `k2_cycle_major` and `deep` to violate `YoungWalkValid`; each flips to `pass` in the fixing change. A code-level guard (the unit test above) is still needed for Guarded |
-| Fix | — |
+| Fix | A region-mode STW major, right after its mark and sweep and before the mutator resumes, turns every survivor-part object of every **Young** extent (ages 1..k) that it did not reach (`nursery_visited_`, `OldGenSpace::majorReachedNursery`) into `Tag_Free` fillers: `NurserySpace::zapDeadAfterMajor` (`NurseryRegion.cpp`, region pin `NR.zapDeadAfterMajor`), called in `ThreadLocalHeap::majorGC`. Never the Tenuring extent, builder areas or eden; never in a minor (it aborts). Validate builds poison the zapped bytes, and `evacuateR`'s Hand/Age cases abort on a zapped target (the resurrection tripwire). Invariant HEAP_074 (new); HEAP_069, HEAP_063, HEAP_SNAPSHOT_001 amended. Models first: M1 `J_STW` (`MC_quick_region`, `_reuse` pass; mutants `no_cr017_fix{,_reuse}`), M5 `MJ_Mark` (`MC_cycle_major`, `MC_k2_cycle_major`, `MC_cycle_major_t0grey`, `MC_deep` pass; `MC_deep_boundary{,_k2}_cr017` regression mutants; mutants `no_cr017_fix{,_k2,_t0grey}`, `zap_tenuring`, `zap_fresh_only`; the oracle walk is off in `MC_deep_boundary{,_k2,_k2_m2}`); M5 pause trace event `mzap`. Guards: `CR-017 (k=1)`, `(k=2)`, `R1`, `R1 (k=2)` (with a zap route witness), `R2` are fixed guards; the validate-only `HEAP_074 tripwire` death guards (k = 1, 2) and control; `gc-heap-tsan lbaba 200 1` |
 
 With the default region nursery and tenure age k = 1, the Tenuring extent at a minor is the one
 filled at the previous minor, so it holds objects that died during the last epoch. The 07b merge
@@ -1166,22 +1196,30 @@ History:
 - 2026-09-30 (later) R1 also reproduces **at k = 2** (M5 `deep_boundary_k2_cr017`, T0GreyAllocated):
   the dead header sits in an ageing extent (Young, age 2) at the trigger minor; same minor count as
   k = 1. IM4 (validate) / `parallel marker reached nursery object` (release).
-
+- 2026-09-30 **Fixed** (plans/threaded-gc-register-fixes.md §5.2): HEAP_074, the STW major's zap of
+  the Young extents' unreached survivors. Models first (M1, M5, NEW RULE passed TLC before any code).
+  The five guards became fixed guards (R1/R2 oracles reworked: t0 greying the freed cell is the
+  defect; R1 also witnesses the zap) and pass in `build` and `build-validate`; disabling the hook
+  makes all five fail again. Resurrection audit: `allocateYoungLarge` / `allocateLargePinned` run a
+  major only on allocation failure, every allocation is a GC point, and HeapHelpers' Pattern 1 roots
+  every stored pointer across it, so no caller holds an unrooted survivor across `majorGC`; the
+  validate tripwire would catch one. CR-037's precondition (the body address in `lb_bodies`) is not
+  removed by this fix; CR-037 has its own.
 
 
 ### CR-018 — after the sweep, mixed-block allocations are not counted, so the empty-block flip can take a live block
 
 | | |
 |---|---|
-| Status | Reproduced (code, 2026-09-29) and Guarded by an expected-fail unit test |
+| Status | Fixed (2026-09-30, plans/threaded-gc-register-fixes.md §3.2). Earlier: Reproduced (code and model, 2026-09-29), Guarded |
 | Severity | S1. **Serial, not a concurrency defect**: recorded here because this work found it and it is the common root of CR-016 and CR-001's S1 half. Its fix belongs to the old-gen allocator |
 | Found | 2026-09-28, adversarial review of the M4 plan; checked by the orchestrator |
 | Where | `OldGenSpace::initObjectHeaderWithSize`, `OldGenSpace.cpp:497` (`live_bytes` is added only while `marking_active \|\| gc_phase_ != Idle`); `allocateFromEmptyRegularBlocks`, `:2665-2716` (flips any `fully_swept && live_bytes == 0` block, `:2672`; drops its free cells and its bitmap slot, writes a large header at its start); reached from `allocate()` for `size >= alloc_buffer_size` (`:1931-1933` → `allocateLargeBlock` → `:2733`); all-dead blocks kept by the shrink's `min_heap` floor (`:6214`) (post-7c tree) |
 | Models | none (serial). M4 open question 3 |
 | Invariants | HEAP_051, HEAP_054 |
 | Repro | `ECO_TEST_XFAIL=strict build/test/test --filter "xfail CR-018"` (fails today) |
-| Guard | `[xfail CR-018]` in the test suite's expected-fail convention (`test/allocator/ConcurrencyRegisterTest.cpp`): the default run passes while the defect reproduces (and fails with XPASS once it stops); `ECO_TEST_XFAIL=strict` asserts the fixed behaviour, so it fails today |
-| Fix | — |
+| Guard | `ConcurrencyRegisterTest.cpp` `CR-018` (fixed guard: P's `live_bytes` == 3 x 16 KiB and the flip does not take P) and its negative control `CR-018 control (Idle uncounted hook)` (the pre-fix gate via `OldGenSpace::test_idle_uncounted_` must reproduce the overwrite); M8 `MC_quick_cr018`, `MC_quick_cr018_flip` (pass) and the A6 mutants `idle_uncounted`, `idle_uncounted_flip`; M4 `MC_quick_sweep_release` (pass) and mutant `idle_uncounted_release` |
+| Fix | Option (a): count in every phase. `initObjectHeaderWithSize` adds `cell_bytes` to `live_bytes` whatever the phase (a relaxed `atomic_ref` `fetch_add` while black or `par_promo_active_`, a plain owner add otherwise); colour and mark bit stay phase-gated. `finalizePoppedCellW`'s `fetch_add` left the black branch (one add per path). New HEAP_073 (LiveBytesUpperBound); HEAP_051 amended. Hook `test_idle_uncounted_` (`OA::setIdleUncounted`) = the pre-fix Idle gate. Also closes CR-001's S1 half and the `freeLargeBodyCell` Idle-subtraction asymmetry |
 
 After the sweep completes (`gc_phase_ = Idle`), an allocation popped from a mixed block's free run
 does not add to that block's `live_bytes`. A block that was all-dead at the mark, kept by the shrink
@@ -1208,12 +1246,14 @@ History:
   `live_bytes` (`OldGenSpace.cpp` ~:522); an exact-page request flips P over the live object. Fix
   (a), counting the cell at Idle, passes. The same undercount applies to **every** mixed carve at
   Idle, including CR-029's bag-rung carve.
+- 2026-09-30 **Fixed** (plans/threaded-gc-register-fixes.md §3.2): `live_bytes` counted in every phase (HEAP_073). Guard: P reads 49,152 live bytes and the 64 KiB allocation takes another block; the hook control reproduces the overwrite of all three objects. M8 `MC_quick_cr018`/`_flip` pass (2,316 states); mutants `idle_uncounted` (`NoOverwriteLive`, 1,098) and `idle_uncounted_flip` (`FlipTrustsTruth`, 1,274); `controls/cr018_count_idle` retired. M4 `Counts` split once (`CountsBit` + `IdleCounts`), `controls/count_until_shrink` deleted, `controls/phase_atomic_release` now passes. `run_traces.py --model M4` 12/12 (`m4.fin` carries `cnt`). Canary re-audited in M1, M4, M8, W3.
+
 
 ### CR-019 — legacy mode: a young YLOS header written under `ylos_mu_`, read by a sweep slice under `promo_mu_`
 
 | | |
 |---|---|
-| Status | Deterministic TSan arm (2026-09-30): `det-cr019`, both orders. Earlier: Reproduced (TSan, 2026-09-29) and Guarded (expected-fail arm) |
+| Status | **Fixed** (2026-10-01, plans/threaded-gc-register-fixes.md §6.1). Earlier: deterministic TSan arm (2026-09-30), Reproduced (TSan, 2026-09-29), Guarded |
 | Severity | S2 (legacy nursery only, not the default) |
 | Found | 2026-09-28, adversarial review of the M3 plan |
 | Where | writes: `NurserySpace::reachYoungLargeP`, `NurseryParallel.cpp:378` (`h->age++`), and `OldGenSpace::promoteYoungLarge`, `OldGenSpace.cpp:7125` (`age = 0`), both plain writes to the header word under `ylos_mu_`; read: the gap sweep's `walkStep(block, getObjectSize(live_obj))`, `OldGenSpace.cpp:5361`, inside `allocatePromotion` under `promo_mu_` (post-7c tree) |
@@ -1221,7 +1261,7 @@ History:
 | Invariants | HEAP_062, HEAP_067 |
 | Repro | `gc-heap-tsan ylos-sweep [seed [rounds [workers [jitter_us [age [sweep_bytes]]]]]]` (`test/gc-heap-tsan/ylos_sweep.cpp`): TSan reports the race in 30/30 runs at the default 1024 B sweep slice, 40/40 at 4096 B, 10/10 with jitter 50, 10/10 at age 3, 3/10 at 144 B |
 | Guard | `gc-heap-tsan` `det-cr019 {t1first,t2first}`; the `ylos-sweep` arm (expected-fail; not in the default run) |
-| Fix | — |
+| Fix | `loadHeaderRelaxed` / `storeHeaderRelaxed` (`AllocatorCommon.hpp`): the writers (`reachYoungLargeP`'s age++, `promoteYoungLarge`'s age = 0, region `reachYoungLargeR`'s age = 1) do a relaxed atomic whole-word load + store under `ylos_mu_`; `lazySweep`'s readers (gap sweep, header walk, large-block pin read) and the validate-only `validateV11` do one relaxed atomic load. Guards: `det-cr019 {t1first,t2first}` `clean` (REACHED, 0 warnings) and `ylos-sweep` expected clean, now in the default `gc-heap-tsan` run. HEAP_062 amended, HEAP_067 cross-reference |
 
 Two workers of a legacy parallel minor can touch one YLOS header under different locks: one ages
 or promotes it, the other steps over it in a sweep slice. The sweep only visits a marked cell, and a
@@ -1258,6 +1298,12 @@ History:
   shadow for Y's page, since TSan's four shadow slots otherwise evicted the pair about 1 run in 5).
   **No value oracle is possible**: the writer rewrites the tag and size bits unchanged, so this is
   undefined behaviour only.
+- 2026-10-01 **Fixed** (plans/threaded-gc-register-fixes.md §6.1): relaxed atomic whole-word header
+  access on both sides (the plan's helpers; region mode's `age = 1` and the V11 walk included).
+  `det-cr019` both orders: REACHED, 0 TSan warnings (`clean`); `ylos-sweep` (seed 1, defaults: 159
+  YLOS walked by the sweep in 36 minors) 0 warnings, now part of the default run. Revert check (the
+  three pre-fix source files): both det arms report `promoteYoungLarge` again and `ylos-sweep` reports 6
+  warnings. M3 footprint note only (no sweep in M3).
 
 
 ### CR-020 — no TSan harness runs the parallel YLOS reach with more than one worker
@@ -1374,15 +1420,15 @@ History:
 
 | | |
 |---|---|
-| Status | Reproduced in code (2026-09-30), deterministically: unit guard. Earlier: Reproduced (2026-09-29): TLC (M6) and **in code** (fork harness `relaunch`: 43 stalls in 11,653 forks; three recorded traces accepted by M6's trace spec); Guarded |
+| Status | **Fixed** (2026-10-01, plans/threaded-gc-register-fixes.md §7.2 step 5, HEAP_065): `stopAndJoin` waits only for its own generation; the unit guard passes. Earlier: Reproduced in code (2026-09-30), deterministically; Reproduced (TLC) |
 | Severity | S3 (a stall; nothing is lost). Precondition: a stop from a thread other than the owner (a non-mutator fork's prepare, or exit) |
 | Found | 2026-09-28, adversarial review of the M6 plan; checked by the orchestrator |
 | Where | `GCBackgroundGang::stopAndJoin` → `joinLocked`, `GCHelperPool.cpp:638-643`, `:622-626` (`cv_done_.wait` releases `m_` until `finished_ >= members`); `GCBackgroundGang::launch`, `:600-613` (`finished_ = 0`, a new `stop_`) (post-7c tree) |
 | Models | M6 (the interleaving is in the model; a bounded-wait property would expose it) |
 | Invariants | HEAP_065 |
 | Repro | `test/tla/run_models.py --model M6 --config gangs_host_fork_stall` (`violates:StopWaitsOwnEpisode`, 24 states) |
-| Guard | `ConcurrencyRegisterTest.cpp` `CR-023 [xfail CR-023]`; M6 `gangs_host_fork_stall` (expected-fail); the fork harness arm `relaunch` |
-| Fix | — |
+| Guard | `ConcurrencyRegisterTest.cpp` `CR-023` (`runFixedGuard`; also checks `gang.running()` and `stop2` after F returns); M6 `gangs_host_fork_stall`, `gangs_foreign_stop`, deep `gangs_deep_b2_foreign_stop` (pass) with A6 mutants `no_stop_gen` (ParentProgress), `stop_gen_clears_running` (LJ_RunningExact); the fork harness arm `relaunch` (stress) |
+| Fix | `GCBackgroundGang::stopAndJoin`: `my_gen = generation_` at the stop; `cv_done_.wait(generation_ != my_gen || finished_ >= members)`; `running_ = false` (and the trace `gang.join`) only when `generation_ == my_gen`; `launch` calls `cv_done_.notify_all()` after `++generation_`. `join()` keeps `joinLocked`. Revert checks: the generation-blind wait stalls the guard (F still blocked 200 ms later); clearing `running_` unconditionally makes the guard see `running() == false` for episode 2 |
 
 A foreign thread's `stopAndJoin` sets the running episode's stop flag and then waits in
 `joinLocked`, releasing `m_`. The members stop and finish, but the owner's own `join` (its reap) can
@@ -1408,6 +1454,7 @@ History:
 - 2026-09-30 **Reproduced in code, deterministically**: a one-member `GCBackgroundGang`; thread F in
   `stopAndJoin` is parked by a signal inside `cv_done_.wait`, the owner reaps and relaunches, and F,
   unparked, is still blocked 200 ms later waiting out episode 2 (`launches` 2, `stop2` unset).
+- 2026-10-01 **Fixed** (plans/threaded-gc-register-fixes.md Phase 5, §7.2 step 5). The guard became `runFixedGuard`.
 
 
 ### CR-024 — `GCHelperPool.hpp` says the background gang's `atexit` handler is registered at the first launch
@@ -1539,15 +1586,15 @@ History:
 
 | | |
 |---|---|
-| Status | Reproduced in code (2026-09-30): single-thread unit guard (validate builds), V11 abort. Earlier: Reproduced (TSan, 2026-09-29); Guarded (the `promo` scenario, expected-fail) |
+| Status | **Fixed** (2026-09-30, plans/threaded-gc-register-fixes.md §4.4, HEAP_055): V11 for a block completed inside a parallel promotion with N > 1 runs in `endParallelPromotion` after the join; validate guard passes |
 | Severity | S2 in validate builds only (`ECO_HEAP_VALIDATE`); it can also abort spuriously |
 | Found | 2026-09-29, M4 wave 2 (TSan scenario `promo`) |
 | Where | the V11 check inside `OldGenSpace::lazySweep` (validate builds), run under `promo_mu_` from the promotion ladder, against other promotion workers' writes into cells popped from the same block (tree of 2026-09-29) |
 | Models | M4 (the model has no validator steps) |
 | Invariants | HEAP_054 (V11), HEAP_067 |
 | Repro | `build-heap-tsan/gc-heap-tsan promo …` (`test/gc-heap-tsan/promo_sweep.cpp`): TSan flags it in 11 of 17 runs; one run aborted in V11 |
-| Guard | `ConcurrencyRegisterTest.cpp` `CR-028 [xfail CR-028]` (validate builds; skipped otherwise); the same scenario (expected-fail) |
-| Fix | — |
+| Guard | `ConcurrencyRegisterTest.cpp` `CR-028` (`runFixedGuard`, validate builds; skipped otherwise); `gc-heap-tsan promo … 0 1` (exact arrays: 0 TSan warnings) |
+| Fix | V11's body factored into `validateV11(BlockId)` (validate builds). At a gap-swept block boundary inside a parallel promotion with N > 1, `lazySweep` records `{id, start}` in `v11_deferred_` (validate-only, under `promo_mu_`, cleared in `beginParallelPromotion`); `endParallelPromotion` walks each still-live, same-start, non-large entry after the stash return and before the deferred `onSweepComplete`. HEAP_055 amended |
 
 The validator re-reads object headers while it sweeps a block. Inside a parallel minor, other
 workers are writing headers and bodies into cells they popped from that block's free runs, so the
@@ -1562,7 +1609,7 @@ History:
 - 2026-09-30 **Reproduced in code, deterministically**: worker 1 pops a gap cell and writes its body
   (header still the finalize's), worker 2's slice reaches the block end and V11 parses the body as a
   header: `[heap-validate] lazySweep: V11 block id 0 parse breaks`.
-
+- 2026-09-30 **Fixed** (plans/threaded-gc-register-fixes.md §4.4). No model change (M4 has no validator steps). The CR-028 guard is `runFixedGuard` and passes in `build-validate`; revert check (defer disabled): the guard aborts in V11 again. Negative check that the deferred walk runs: leaving W1's cell unformatted until the merge makes the deferred V11 abort in `endParallelPromotion`. `gc-heap-tsan promo <seed> 40 {4,8} 0 1` now runs with 0 TSan warnings (Phase 1 saw header-read reports from V11 there).
 
 ### CR-029 — the promotion ladder's bag rung sends size-classed requests to `allocateFromBagPage`, whose assert forbids them
 
@@ -1622,6 +1669,8 @@ History:
   reachable serially (9 states: the reservation exhausted, rung 4 refuses a 1-granule remainder,
   rung 7 step 1 carves the exact request) and keeps every M8 invariant (107k states). Its cell is
   uncounted at Idle like any mixed carve (CR-018).
+- 2026-09-30 Open proposals recorded (plans/threaded-gc-register-fixes.md §3.6, not in that plan): (b) retrying the exact pop is an efficiency tweak only; (c) the publisher reserving its first chunk needs an M4 `W_Virgin` change first.
+
 
 ### CR-030 — three 05b/05c unit tests fail intermittently (two of them negative controls)
 
@@ -1676,15 +1725,15 @@ History:
 
 | | |
 |---|---|
-| Status | Deterministic arm (2026-09-30): `det-cr031`. Earlier: Reproduced (2026-09-29, fork harness); Guarded (the `host-exit` arm, expected-fail) |
+| Status | **Fixed** (2026-10-01, plans/threaded-gc-register-fixes.md §7.2 step 7, HEAP_007): in a forked child `~Allocator` leaks the heaps the forker does not own; `det-cr031` clean. Earlier: Deterministic arm (2026-09-30); Reproduced (2026-09-29) |
 | Severity | S4 (precondition: a fork from a thread other than the heap's mutator, and a child that calls `exit()`) |
 | Found | 2026-09-29, M6 wave 2 (the fork harness) |
 | Where | the child's static destruction: `Allocator::~Allocator` → `ThreadLocalHeap::~ThreadLocalHeap` of a heap whose mutator thread does not exist in the child; the `RootSet` hash set was copied by `fork()` while the parent's mutator was updating it (tree of 2026-09-29) |
 | Models | M6 (the fork contract; a child's teardown of heaps it does not own is outside the model) |
 | Invariants | HEAP_007 |
 | Repro | `gc-fork-harness host-exit …` (`test/gc-heap-tsan/fork_harness.cpp`): of 1,372 host-fork children that call `exit()`, 4 crashed in `~ThreadLocalHeap` on the `RootSet` hash set and 1 aborted in malloc (0.7% in all; the harness updates roots on every allocation, which overstates the rate) |
-| Guard | `gc-fork-trace` (`fork_arms.txt`) `det-cr031`; the same arm (expected-fail) |
-| Fix | — |
+| Guard | `gc-fork-trace` `det-cr031` (`clean`); the `host-exit` stress arm (flaky); validate builds: `ThreadLocalHeap::owner_` checked at `minorGC` / `majorGC` entry |
+| Fix | `Allocator::dropForkDeadHeapsLocked` (under `thread_mutex_`): when `fork_child_`, every `thread_heaps_` entry whose key is not `fork_owner_` is released (leaked) and erased; called by `~Allocator` (which then tears the rest down OUTSIDE `thread_mutex_`) and by `initThread` (a child may start a fresh heap); `getCombinedStats` and `validatePageWork` skip dead heaps. The `atexit` handlers were audited: `atexitPrintStats` touches only the exiting thread's heap (`getCurrentThreadHeap`, `finishTenureForExit`) and the pool, then `getCombinedStats` (now skips dead heaps); `stopAllAtExit`, the census and event-log reports read no heap; the P1 census report returns in a child (CR-032). Validate builds: `ThreadLocalHeap::owner_` (set by `initThread` and `AllocatorTestAccess::adoptThreadHeap`), `minorGC`/`majorGC` abort "HEAP_007: heap used by a non-owner". Revert check (no drop): `det-cr031` reaches the dead heap's destructor 3/3 |
 
 The child inherits every heap, but only the forking thread. A heap whose mutator was another thread
 may have been mid-update of its non-thread-safe tables (the `RootSet` hash set, malloc's state) at
@@ -1698,21 +1747,22 @@ History:
 - 2026-09-30 Deterministic fork-trace arm `det-cr031`: a host-forked child's `exit()` reaches
   `~ThreadLocalHeap` for the dead mutator's heap (new probe `m6.tlh.dtor`, code 16) in every trial.
   A torn rehash would not crash (the destructor walks only the relinked chain).
+- 2026-10-01 **Fixed** (plans/threaded-gc-register-fixes.md Phase 5, §7.2 step 7; landed with the fork hold).
 
 
 ### CR-032 — the validate-only P1 census has a mutex and tables with no atfork handler
 
 | | |
 |---|---|
-| Status | Deterministic arm (2026-09-30): `det-cr032`. Earlier: Reproduced (2026-09-29, fork harness, validate builds); Guarded (the `host` arm with the census on, expected-fail) |
+| Status | **Fixed** (2026-10-01, plans/threaded-gc-register-fixes.md §7.2 step 8, HEAP_075): GCFork's census layer holds the census mutex (and detector N's) across fork; the child's `atexitReport` returns; `det-cr032` clean. Earlier: Deterministic arm (2026-09-30); Reproduced (2026-09-29) |
 | Severity | S4, validate builds only (`ECO_HEAP_VALIDATE`), with a host fork |
 | Found | 2026-09-29, M6 wave 2 |
 | Where | `runtime/src/allocator/P1Census.cpp` (`p1::recordPromoted`, `p1::forget`, the census mutex and tables) (tree of 2026-09-29) |
 | Models | M6 |
 | Invariants | HEAP_SNAPSHOT_001 (the census checks P1) |
 | Repro | `FORK_HARNESS_CENSUS=1 gc-fork-harness host …`: host children blocked in `p1::recordPromoted` or crashed in `p1::forget` (the harness turns the census off by default) |
-| Guard | `gc-fork-trace` (`fork_arms.txt`) `det-cr032`; the same arm with the census on (expected-fail) |
-| Fix | — |
+| Guard | `gc-fork-trace` `det-cr032` (`clean`; the prepare now waits for the census mutex, `window=closed`) |
+| Fix | `P1Census.cpp`: `kForkCensus` hooks (registered at the census's first construction, read through an atomic pointer, never through `census()`'s static guard): prepare `mu.lock()` and detector N's `survivorCensus().mu` (`nurseryCensusForkPrepare`, a sibling leaf); parent unlocks; child re-creates both in place and sets `Census::forked_child`; `atexitReport` returns when `forked_child` (its tables name heaps whose mutators do not exist there). Revert check (layer not registered): the child hangs in `atexitReport` 3/3 |
 
 Like `thread_mutex_` (CR-015), the census mutex is not reset in the child, and its tables can be
 torn. It only matters for validate builds that fork from a non-mutator thread; the fork contract's
@@ -1723,21 +1773,22 @@ History:
 - 2026-09-30 Deterministic fork-trace arm `det-cr032`: the host forks while the mutator holds the
   census mutex (new probe `m6.census.locked`); the child hangs in `atexitReport` (code 14) in every
   trial.
+- 2026-10-01 **Fixed** (plans/threaded-gc-register-fixes.md Phase 5, §7.2 step 8). Detector N's survivor-write census mutex (same family, opt-in) is covered by the same layer.
 
 
 ### CR-033 — `allocateFromBagPage`'s fresh-page carve leaves a tail under `MIN_FREE_CELL_SIZE` without a header
 
 | | |
 |---|---|
-| Status | Reproduced in code (2026-09-30): single-thread guards, parse break (bitmap) and **the S1 in legacy allocation** (a neighbour's header overwritten). Earlier: Reproduced (model, TLC, 2026-09-29); Guarded at model level by M8 `MC_quick_cr033` |
+| Status | Fixed (2026-09-30, plans/threaded-gc-register-fixes.md §3.1). Earlier: Reproduced in code (2026-09-30): parse break (bitmap) and the S1 in legacy allocation; Reproduced (model, TLC, 2026-09-29) |
 | Severity | S1 in legacy old-gen allocation (`old_gen_bitmap_alloc` off, by code reading); benign in bitmap mode, the default. **Serial** |
 | Found | 2026-09-29, wave 3d (while adding CR-029's guard) |
 | Where | `OldGenSpace::allocateFromBagPage`, the fresh-page step (`OldGenSpace.cpp` ~:2610-2617): `if (remainder >= MIN_FREE_CELL_SIZE) pushSpanOnFreeLists(...)` — a remainder in (0, `MIN_FREE_CELL_SIZE`) gets no header at all; compare `pushSpanOnFreeLists`, whose comment says trailing bytes under `MIN_FREE_CELL_SIZE` get a non-linked `Tag_Free` header "so block-walking sweep can still parse them" (tree of 2026-09-29) |
 | Models | none (serial) |
 | Invariants | HEAP_051 (mixed blocks parse by object size), HEAP_054 |
 | Repro | `test/tla/run_models.py --model M8 --config MC_quick_cr033` (`violates:BlockParseable`, one step) |
-| Guard | `ConcurrencyRegisterTest.cpp` `CR-033 [xfail CR-033]` parse, legacy S1, and two controls; M8 `MC_quick_cr033` (expected-fail); the fix candidate passes as a control |
-| Fix | — (candidate: push any nonzero remainder through `pushSpanOnFreeLists`, which already writes a header for a small tail, as the split path at `:2394` avoids small remainders altogether) |
+| Guard | `ConcurrencyRegisterTest.cpp` `CR-033` parse and `CR-033 S1 (legacy)` (fixed guards, `runFixedGuard`; the S1 guard accepts the tail's new 8-byte `Tag_Free` header as its route) and the two controls; M8 `MC_quick_cr033` (pass) and the A6 mutant `mutants/bag_tail_headerless.cfg` (`violates:BlockParseable`) |
+| Fix | `OldGenSpace::allocateFromBagPage` step 3: `if (remainder != 0)` (was `>= MIN_FREE_CELL_SIZE`) plus `assert((remainder & 7) == 0)`, so every nonzero tail goes through `pushSpanOnFreeLists`, whose mixed branch writes an unlinked `Tag_Free` header for a sub-`MIN_FREE_CELL_SIZE` tail. HEAP_024 amended. Model: M8 `FreshPage` default = the fix, mutant `bag_tail_headerless`. Negative control: reverting the test makes both fixed guards fail (checked 2026-09-30) |
 
 A request of exactly `alloc_span - 8` (8-aligned, below `alloc_buffer_size`) carves the object at
 the page's start and leaves an 8-byte tail whose bytes were never given a header. The next block
@@ -1761,7 +1812,7 @@ History:
   **Legacy allocation (`old_gen_bitmap_alloc = false`) S1 shown in code**: the tail abuts the next
   page's first object A, and after a major and a full sweep A's header word is 0 (overwritten). In
   bitmap mode A stays intact (control), as recorded.
-
+- 2026-09-30 **Fixed** (plans/threaded-gc-register-fixes.md §3.1): the carve heads every nonzero remainder. Both guards pass in `build` and `build-validate` (the tail word is now `0x800000019`: `Tag_Free`, 8 bytes; legacy S1: A intact); reverting the one-line fix makes both fail. M8: `MC_quick_cr033` passes (2,263 states), mutant `bag_tail_headerless` violates `BlockParseable` (43 states); `controls/cr033_tail_header` retired. Canary: `OGS.allocateFromBagPage` re-audited in M4, M7, M8 (8e85cd8f9aa1).
 
 ### CR-034 — region mode: a YLOS address reused after a STW major is taken for a hand-over member (ABA)
 
@@ -1836,15 +1887,15 @@ History:
 
 | | |
 |---|---|
-| Status | Reproduced in code (2026-09-30): single-thread guards, stale index entries and **the lost live object**. Earlier: Reproduced (model, TLC, 2026-09-29); Guarded at model level by M8 `MC_quick_cr035`, `MC_quick_cr035_lost` |
+| Status | Fixed (2026-09-30, plans/threaded-gc-register-fixes.md §3.3; CR-018's fix also removed the precondition). Earlier: Reproduced in code and model (2026-09-29/30) |
 | Severity | S1 (a live young large object or large body freed); **serial**, not a concurrency defect |
 | Found | 2026-09-29, the address-reuse (ABA) audit after CR-034 |
 | Where | `OldGenSpace::allocateFromEmptyRegularBlocks` (`OldGenSpace.cpp` ~:2855-2913) flips a block to large without purging `large_body_index_` for its range, unlike `releaseBlockToAllocator` (~:6424-6433), which does; `registerLargeBody` (~:7537, `large_body_index_[body] = id`) overwrites the key of a new body at the same address; `freeLargeBodyCell` (~:7695) erases by address (`large_body_index_.erase(m.body_base)`) before its `is_large` test (tree of 2026-09-29) |
 | Models | M4 (its `ReleasedSafe` is blind to address reuse by construction) |
 | Invariants | HEAP_026, HEAP_062 |
 | Repro | `test/tla/run_models.py --model M8 --config MC_quick_cr035` (`violates:IndexFaithful`) and `MC_quick_cr035_lost` (`violates:NoLostObject`, 13 states) |
-| Guard | `ConcurrencyRegisterTest.cpp` `CR-035 [xfail CR-035]` stale index, lost object; the two M8 rows (expected-fail); purging the index at the flip passes both as a control |
-| Fix | — (candidate: purge `[start, end)` at the flip, as release does; CR-018's fix (a) also removes the precondition) |
+| Guard | `ConcurrencyRegisterTest.cpp` `CR-035 (stale index)`, `CR-035 (lost object)` (fixed guards; they restore CR-018's pre-fix precondition with `OA::setIdleUncounted` to isolate CR-035) and `CR-035 (CR-018 precondition gone)` (no hook: P's `live_bytes` > 0 after Y's Idle carve); M8 `controls/cr035_flip_purges{,_lost}` (pass with `idle_uncounted`: the purge alone closes it) and the A6 mutants `flip_keeps_index{,_lost}` |
+| Fix | `allocateFromEmptyRegularBlocks` calls the new `OldGenSpace::retireIndexRange(start, end)` after `removeFreeCellsForBlock`: every index entry inside the flipped block is retired with `retireDeadLargeBodies`' semantics (erase, `body_base` cleared, id NOT recycled: release semantics would hand the id to the caller's `registerLargeBody` while `nursery_owned_bodies_` still lists it); validate builds re-check the block (message "flip"); stats `empty_block_flips`, `flip_index_retired`. HEAP_056, HEAP_026 amended |
 
 The chain: a dead YLOS or large body Y sits at the start X of a mixed page whose `live_bytes`
 reads 0 (the CR-018 precondition), so an exact-size allocation flips the page and places a new
@@ -1870,21 +1921,21 @@ History:
   NoLostObject), serially in the legacy nursery: after the empty-block flip, two nursery-owned YLOS
   index entries name X (dead Y's and Z's); after minor 1 key X is gone, and after minor 2 the live
   Z's cell is freed (tag 25) with its page on `free_large_blocks_`.
-
+- 2026-09-30 **Fixed** (plans/threaded-gc-register-fixes.md §3.3): the flip retires the block's index range. With the CR-018 hook, the stale-index guard now sees one entry at X (Z's) and the lost-object guard keeps Z intact through two minors; without the purge (a scratch revert) both fail again. Without the hook, CR-018's fix counts Y's carve (12,816 bytes), so the flip never takes P. M8: `MC_quick_cr035{,_lost}` moved to mutants `flip_keeps_index` (`IndexFaithful`, 4,090 states) and `flip_keeps_index_lost` (`NoLostObject`, 170,510); the controls pass with `MUTANT = {idle_uncounted}`. Canary: `OGS.allocateFromEmptyRegularBlocks` (M4, M8) and `P6.M9` (M3, M4) re-audited.
 
 ### CR-036 — IM5's t0-block check cannot see a same-id, same-start re-issue
 
 | | |
 |---|---|
-| Status | Reproduced in code (2026-09-30): serial witness of a same-id, same-start, same-class re-issue. Earlier: Confirmed (shape, 2026-09-29), by code reading |
+| Status | Fixed (2026-09-30, plans/threaded-gc-register-fixes.md §3.5). Earlier: Reproduced in code (witness), Confirmed (shape) |
 | Severity | G (validate-only coverage gap; not live today) |
 | Found | 2026-09-29, the address-reuse (ABA) audit |
 | Where | `OldGenSpace::checkT0BlocksUnchanged` and `isT0Block` (`OldGenSpace.hpp` ~:1474-1477; `cycle_t0_blocks_` filled at `OldGenSpace.cpp` ~:4418) compare id, start, class and `is_large` only (tree of 2026-09-29) |
 | Models | M1 (IM5 is `NoReleaseInCycle`), M4 |
 | Invariants | IM5, HEAP_063 |
 | Repro | n/a |
-| Guard | `ConcurrencyRegisterTest.cpp` `CR-036 [xfail CR-036]` (witness); — |
-| Fix | — (candidate: a per-id generation counter captured in `T0Block`) |
+| Guard | `ConcurrencyRegisterTest.cpp` `CR-036 witness` (fixed: a same-id, same-start, same-class re-issue has a different generation), `CR-036 IM5` (validate builds: `t0BlocksChangedWhy` reports "a t0 block id was released and re-issued mid-cycle") and its negative control `CR-036 IM5 control (no generation)` (the hook `test_im5_ignore_gen_` makes IM5 report "unchanged"); M8 `MC_quick_reissue_witness` stays a witness row (the re-issue is still reachable, by design) |
+| Fix | `BlockTable` keeps a per-id generation (`ReservedArray<uint32_t> gen_`, incremented in `add()`, never reset; `generation(id)`; `kStorageArrays = 8`); `T0Block` carries it; `checkT0BlocksUnchanged` now calls `t0BlocksChangedWhy()`, which compares the generation; `isT0Block` fails at once on an id match with another generation. HEAP_048, HEAP_063 and IM5 (05a plan) amended |
 
 A release in the middle of a cycle followed by a re-issue of the same block id at the same start
 with the same class would pass IM5's check. It cannot happen today, because every release path
@@ -1900,21 +1951,21 @@ History:
   reclaim returns as the next virgin block with the same id, start and class. Note: the guard's
   oracle is IM5's key, so it will not flip by itself when a per-id generation counter lands; extend
   it then.
-
+- 2026-09-30 **Fixed** (plans/threaded-gc-register-fixes.md §3.5): IM5 keys on the BlockTable generation. The witness sees D (id 1 gen 1) re-issued as id 1 gen 2 at the same start and class; in `build-validate` IM5 reports the re-issue, and with the generation compare disabled by the hook it reports "unchanged" (the gap as it was). Without the increment (a scratch revert) the witness and the IM5 guard fail. Canary: `BlockTable.hpp` (M8) and H12 (M2) re-audited.
 
 ### CR-037 — region mode: the hand-over's `lb_bodies` colouring by address hides a new YLOS at a reused address from the minor
 
 | | |
 |---|---|
-| Status | Reproduced in code (2026-09-30), k = 1 and k = 2: unit guards plus a negative control; stress `lbaba` (TV7). Earlier: Reproduced (model, TLC, 2026-09-29); Guarded at model level by M5 `MC_lb_aba` |
+| Status | **Fixed (2026-09-30, plans/threaded-gc-register-fixes.md §5.1, HEAP_072 amended)**; guards pass. Earlier: Reproduced in code (2026-09-30), k = 1 and k = 2: unit guards plus a negative control; stress `lbaba` (TV7). Earlier: Reproduced (model, TLC, 2026-09-29); Guarded at model level by M5 `MC_lb_aba` |
 | Severity | S1 (a live young object is lost with eden). Region mode, the default, at k = 1 and k = 2 (2026-09-30) |
 | Found | 2026-09-29, M5's address-reuse work (the parallel audit had judged this list "floating garbage only"; that holds only when the address holds another body) |
 | Where | `NurserySpace::minorGCRegion`'s hand-over prep, `NurseryRegion.cpp` ~:749 and ~:771 (`for (b : Hx.lb_bodies) oldgen.markLargeBodySeen(b, minor_color_)`); `OldGenSpace::markLargeBodySeen` (`OldGenSpace.cpp` ~:7542-7552) colours whatever index entry is at the address, with no kind check; `reachYoungLargeR`'s "already reached this minor" return (`NurseryRegion.cpp` ~:526); the colour flip (~:675); a new YLOS registered with the old colour (`ThreadLocalHeap.cpp` ~:469) (tree of 2026-09-29) |
 | Models | M5 (constant `LbKey`) |
 | Invariants | HEAP_062, HEAP_070 |
 | Repro | `test/tla/run_models.py --model M5 --config MC_lb_aba` (52 states) |
-| Guard | `ConcurrencyRegisterTest.cpp` `CR-037 [xfail CR-037]` k=1, k=2; control `test_no_body_remark_`; `gc-heap-tsan` `lbaba`; M5 `MC_lb_aba` (expected-fail) |
-| Fix | — (model controls that pass: colour kind-0 index entries only; drop the address at the major; an identity stamp) |
+| Guard | `ConcurrencyRegisterTest.cpp` `CR-037 (k=1)`, `CR-037 (k=2)` (fixed guards); control `test_no_body_remark_`; `gc-heap-tsan` `lbaba`; M5 `MC_lb_aba` and `MC_deep_boundary_k2_lb` (regression mutants, `LbKey = "addr"`) |
+| Fix | `OldGenSpace::markLargeBodySeen` colours a kind-0 (body) entry only, and only while `body_base` is the listed address (region pin `OGS.markLargeBodySeen`); a YLOS at a reused body address is reached and scanned as young. HEAP_072 amended. M5: `LbKey = "kind"` is the code (`controls/lb_kind`), the pre-fix value renamed `"addr"`. Revert check: without the kind check both guards fail again |
 
 Same class as CR-034 (an address remembered across a STW major), a different list and a different
 mechanism. A large string's header is copied into the Fresh extent and its body address joins that
@@ -1930,21 +1981,23 @@ History:
   STW major and reused by a same-size YLOS (n=1600); the next minor's prep colours it, and B stays
   at age 0 with its slot still into eden. **Also at k = 2** (the ageing prep,
   `NurseryRegion.cpp:776-778`), not only k = 1. The `lbaba` stress arm aborts on TV7 (seed 20).
+- 2026-09-30 **Fixed** (plans/threaded-gc-register-fixes.md §5.1): the kind check in `markLargeBodySeen`.
+  Guards k = 1 and k = 2 pass in `build` and `build-validate` (B aged, its slot healed).
 
 
 ### CR-038 — k ≥ 2: a dead ageing-generation YLOS keeps an unhealed slot into a retired extent, which the t0 snapshot reads
 
 | | |
 |---|---|
-| Status | Reproduced in code (2026-09-30): premise-drift witness (the t0 snapshot walks a dead ageing YLOS whose slot points into a retired extent). Earlier: Reproduced (model, TLC, 2026-09-29) |
+| Status | **Fixed (2026-09-30, plans/threaded-gc-register-fixes.md §5.3, HEAP_070 amended)**; guard passes. Earlier: Reproduced in code (2026-09-30): premise-drift witness (the t0 snapshot walks a dead ageing YLOS whose slot points into a retired extent). Earlier: Reproduced (model, TLC, 2026-09-29) |
 | Severity | D today (benign: the snapshot drops young targets by address range); S4 as a premise for any future walker. **Opt-in** tenure age k ≥ 2 only |
 | Found | 2026-09-29, M5's address-reuse and boundary work |
 | Where | `OldGenSpace::snapshotYoungLarge` (`OldGenSpace.cpp` ~:4426) walks every young YLOS at t0; 07b's zap in `mergeJob` (`NurseryTenure.cpp` ~:849-857) covers dead survivor objects only, not YLOS; the snapshot drops young targets by range (`OldGenSpace.cpp` ~:3325-3327) (tree of 2026-09-29) |
 | Models | M5 |
 | Invariants | HEAP_070 (07b's zap premise) |
 | Repro | `test/tla/run_models.py --model M5 --config MC_k2_ylos_walk` (88 states; no major needed) |
-| Guard | `ConcurrencyRegisterTest.cpp` `CR-038 [xfail CR-038]` and its control; M5 `MC_k2_ylos_walk` (expected-fail) |
-| Fix | — |
+| Guard | `ConcurrencyRegisterTest.cpp` `CR-038` (fixed guard: Y is still walked and its slot is now `Empty`) and its control; M5 `MC_k2_ylos_walk` (pass) and mutant `skip_ylos_zap` |
+| Fix | `mergeJob` step (5c), inside `NT.mergeJob` right after 07b's zap: every ageing-generation YLOS (`st.age_ylos`) the job's ageing mark did not reach gets every heap-pointer slot set to `Empty` (counted in `rs.zapped_ylos`, time in `zap_ns`); skipped with `test_skip_zap_`. Sound because the ageing mark is exact (M5 `amark = liveAge`). HEAP_070 and HEAP_SNAPSHOT_001 amended; plan 07b §2.6 corrected. Revert check: without step 5c the guard fails again |
 
 At k = 2, a YLOS of an ageing generation that dies keeps a slot pointing into an extent that has
 since been retired and recycled; nothing heals or zaps it, and the next t0 snapshot reads it. Today
@@ -1958,4 +2011,47 @@ History:
   walked dead Y (its mark bit, which only `snapshotYoungLarge` can set for a dead YLOS) while Y's
   slot points into the retired extent X1. Benign today (young targets are dropped by range), as
   recorded. Control: a live Y's slot is healed to old gen.
+- 2026-09-30 **Fixed** (plans/threaded-gc-register-fixes.md §5.3), model first: M5 `J_Merge` clears the
+  slots of unmarked `Gen(ageX)` YLOS; `MC_k2_ylos_walk` passes every invariant (3,556,232 states); mutant
+  `skip_ylos_zap` violates `YoungWalkValid`. Guard passes in both trees.
 
+
+### CR-039 — k ≥ 2: the t0 snapshot greys a freed YLOS cell through a dead younger-generation YLOS (the wider CR-038 variant)
+
+| | |
+|---|---|
+| Status | **Fixed (2026-09-30, with CR-038: plans/threaded-gc-register-fixes.md §5.3, HEAP_070 amended)**; guard passes. Earlier: Reproduced (TLC and code, 2026-09-30); Guarded |
+| Severity | S1-class (t0 marks a **freed** old-gen cell: CR-017 R1's hazard). Region mode, **opt-in** tenure age k ≥ 2 only |
+| Found | 2026-09-30, `plans/threaded-gc-register-fixes.md` Step 0.4 (the model row the plan's decision 2 asked for, run before any fix) |
+| Where | `OldGenSpace::snapshotYoungLarge` (`OldGenSpace.cpp` ~:4426) walks every indexed young YLOS at t0 and runs `markChildren` on it; `greyObject` drops a young target by address range only (~:3325-3327), and a freed YLOS cell is no longer young; 07b's zap in `mergeJob` (`NurseryTenure.cpp` ~:849-862) covers dead survivor objects, not YLOS slots (tree of 2026-09-30) |
+| Models | M5 |
+| Invariants | HEAP_070 (07b's zap premise), HEAP_063, IM4 |
+| Repro | `test/tla/run_models.py --model M5 --config MC_k2_ylos_walk2` (`violates:T0GreyAllocated`, 1.86M states, depth 86, 20 s); `build/test/test --filter "CR-039"` |
+| Guard | `ConcurrencyRegisterTest.cpp` `CR-039` (fixed guard; scenario `cr038ZScenario`, the plan's `cr038Z`) and its control `CR-039 control (Z live)` (now with `test_skip_zap_` at minor 4, so Y's slot still names the live Z); M5 `MC_k2_ylos_walk2` (pass) and mutant `skip_ylos_zap_2` |
+| Fix | CR-038's fix closes it, as planned: minor 4's merge (of the job whose ageing mark did not reach Y) clears Y's slots before minor 4's t0, so `snapshotYoungLarge` walks Y but greys nothing. No separate design was needed |
+
+CR-038 with two YLOS cells. CR-038 is benign because its dead YLOS's slot names a **young** cell,
+which the snapshot drops by range. Here the slot names another YLOS, which lives in old-gen memory:
+once it is freed it is no longer young, so the range test does not drop it and t0 greys the freed
+cell.
+
+TLC counterexample (M5, K = 2, YC = 2, no major; 86 states): Z (`Y1`) is allocated and joins
+generation 1 at minor 1; Y (`Y2`, slot → Z) is allocated and joins generation 2 at minor 2; both
+die in epoch 2; minor 3 hands X1 over (Z is not reached); minor 4 retires generation 1 and frees Z
+(`ys[1] = Free`) while Y, generation 2 (handed over at minor 4, freed only at minor 5), is still
+indexed; at minor 4's `MN_Cycle` the possible t0 walk reads Y's slot → Z, a freed old address:
+`T0GreyAllocated` fails. Code route: `snapshotYoungLarge` → `markChildren(Y)` → `greyObject(Z)`,
+a freed cell.
+
+History:
+- 2026-09-30 **Reproduced (model)**, Step 0.4: M5 `MC_k2_ylos_walk2` (a copy of `MC_k2_ylos_walk` with
+  `YC = 2` and `T0GreyAllocated` listed first) violates `T0GreyAllocated` (1,859,910 states, 20 s;
+  also found with `T0GreyAllocated` alone, 1,827,950 distinct states, depth 89).
+- 2026-09-30 **Reproduced in code** (guard `cr038Z`, region nursery at k = 2, serial): after minor
+  4's forced t0 the snapshot walked the dead Y (slot names Z), and Z's cell is `Tag_Free`,
+  unindexed, and **marked by t0**. Control: Z rooted (only Y dies), the same walk marks an
+  allocated Z (PASS). Guarded by `[xfail CR-039]`.
+- 2026-09-30 **Fixed** with CR-038 (plans/threaded-gc-register-fixes.md §5.3): `MC_k2_ylos_walk2` passes
+  every invariant (6,712,854 states); mutant `skip_ylos_zap_2` violates `T0GreyAllocated` (1,835,176
+  states). Code: after minor 4's t0, Y was walked, its slot is `Empty`, Z is freed and unmarked;
+  disabling step 5c makes the guard fail again (Z freed and marked by t0).

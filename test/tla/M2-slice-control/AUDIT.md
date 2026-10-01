@@ -381,3 +381,71 @@ Runs (2026-09-30, this tree): `run_traces.py` (every harness rebuilt): **135/135
 The one edit in the pinned region is the trace-only `m5.l3.claimed` probe after the claim loop; M2's slice, episode and help control is untouched.
 
 **Verdict: no model change needed.**
+
+## 2026-09-30 — register-fixes Phase 0, Step 0.3: test accessors (GC_MODEL_001)
+
+Pin fired: grep H12 (`OldGenSpace.hpp` test hooks), new hash prefix **3167be7a492d**.
+
+Change (plans/threaded-gc-register-fixes.md Step 0.3; snapshot `snapshots/register-fixes/pre-phase0.tgz`):
+a new negative-control field `OldGenSpace::test_idle_uncounted_` (default false; read by CR-018's
+fix in §3.2, nothing reads it yet) and two `OldGenSpaceTestAccess` accessors, `setIdleUncounted`
+(sets the hook) and `sweepTailInPromotion` (reads the existing stats counter
+`alloc_stats_.bm.sweep_tail_in_promotion`). Unit tests call them only. No atomic step, lock,
+shared location or memory order on any production path changes; M2's slice, episode and help
+control is untouched.
+
+**Verdict: test accessor, no model change.**
+
+## 2026-09-30 — register-fixes §3.5: CR-036 negative-control hook (GC_MODEL_001)
+
+Pin fired: grep H12 (`OldGenSpace.hpp` test hooks), new hash prefix **c9364ed6abde**.
+
+Change: a validate-only negative-control field `test_im5_ignore_gen_` (IM5 without the new
+generation compare) and its `OldGenSpaceTestAccess::setIm5IgnoreGeneration`; plus the test
+accessors `blockGeneration`, `captureT0Blocks`, `t0BlocksChangedWhy`, `clearT0Blocks`. Tests only;
+M2's slice, episode and help control is untouched.
+
+**Verdict: test accessor, no model change.**
+
+## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (GC_MODEL_001, one audit for the batch)
+
+Pins fired for M2: Census `runtime/src/allocator/OldGenSpace.cpp` (**2afe7bc4cf4d**: the relaxed `std::atomic_ref<GCPhase>(gc_phase_)` store in `lazySweep`'s `completeSweep` and the relaxed loads in `finalizePoppedCellW`, `finalizeBitmapCellW` and the validate-only PM8 check) and census `runtime/src/allocator/OldGenSpace.hpp` (**493c238780a8**: `static_assert(std::atomic_ref<GCPhase>::is_always_lock_free)`).
+
+The new atomic lines are `gc_phase_` accesses inside parallel promotion (M4's domain). M2's slice, ticket, episode and termination control is untouched; no new atomic or lock in its footprint.
+
+**Verdict: no model change needed.**
+
+
+## 2026-10-01 — register-fixes Phase 5: CR-005 closingFinish accepts a stopped episode (GC_MODEL_001)
+
+Pins fired: regions `OGS.launchBackground` (**011248915015**), `OGS.runCycleStepConcurrent` (**289cdccf4bd4**), `OGS.closingFinish` (**af1f59d07ebb**), `NT.tenureConcLaunch` (**873a1bb7f7be**).
+
+Change (plans/threaded-gc-register-fixes.md §7, Phase 5; HEAP_007 fork contract, HEAP_058, HEAP_065,
+HEAP_070 amended, HEAP_075 new): (1) `GCFork.{hpp,cpp}`: ONE `pthread_atfork` registration with fixed
+layers (gangs: registry -> each background gang's `m_` to set `fork_hold_` -> `stopAllForFork` -> each
+gang's `m_` held -> `GCMarkGang` `run_m_` -> its `m_`; allocator: `thread_mutex_`; census: the P1 census
+mutex and detector N's; pool: `GCHelperPool::m_`, drained and held); the three old registrations are
+gone. (2) No teardown holds `thread_mutex_` while it takes a gang lock (`cleanupThread`,
+`finishTenureForExit`, `reset`, `~Allocator`). (3) CR-003/015: `post`'s Idle->Posted CAS and the enqueue
+in one `m_` section; the pool prepare drains and keeps `m_` in one section; the allocator layer locks
+`thread_mutex_`, the child re-creates it and records `fork_child_` / `fork_owner_`. (4) CR-013/004:
+`GCBackgroundGang::launch` returns false (refuses) while `fork_hold_`; `launchBackground` then leaves
+`bg_ep_ = None` (`cm.episodes_refused`), `tenureLaunch` / `tenureConcLaunch` count `rs.fork_refusals`
+and the join's orphan path finishes the job. (5) CR-023: `stopAndJoin` waits for
+`generation_ != my_gen || finished_ >= members` and clears `running_` only for its own generation;
+`launch` notifies `cv_done_`. (6) CR-005: `closingFinish` accepts `bg_ep_ == None`. (7) CR-031:
+`~Allocator` (and `initThread`, `getCombinedStats`, `validatePageWork`) never touch a heap the forker
+does not own in a forked child; validate builds check `ThreadLocalHeap::owner_` in `minorGC` /
+`majorGC`. (8) CR-032: the census layer; `atexitReport` returns in a forked child. Trace-only: the
+probe `m6.tm.held` in `onGCPauseEnd` (under `thread_mutex_`), `fork.bghold`, `gang.refuse`, the step
+event's `refused` field and an M1 `stop` after a refused launch.
+
+Model updated FIRST (before the code): `ClosingFinished` (SliceControl.tla) is now
+`word.done \/ stop` for the closing check (closingFinish accepts an episode a foreign stop ended, and
+the drain finishes it: `episode_stop_drain` already passed); `MC_quick_episode_stop` flips from
+`violates:ClosingFinished` to **pass** (2,080,859 states; it now also checks TerminationSafe, ScanOnce,
+Drain). New A6 mutant `member_exits_undone` (an idle member leaves with neither done nor a stop, in
+`I_Stop`): **violates ClosingFinished** (529,943 states). PlusCal re-translated. `run_models.py --model
+M2`: 34/34 as expected. A refused launch never starts a member (no marker loop runs), so the Drain
+contract is unaffected; `tenureConcLaunch`'s refusal leaves the L3 job to `tenureConcFinish` in the
+pause (M2's `MC_quick_tenure_l3` help path). **Verdict: model updated (ClosingFinished, mutant).**

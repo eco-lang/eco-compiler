@@ -14,6 +14,7 @@ set(ECO_ALLOC ${CMAKE_CURRENT_SOURCE_DIR}/../../runtime/src/allocator)
 add_executable(gc-helper-tsan
     harness.cpp
     ${ECO_ALLOC}/GCHelperPool.cpp
+    ${ECO_ALLOC}/GCFork.cpp
     ${ECO_ALLOC}/PageWork.cpp)
 target_include_directories(gc-helper-tsan PRIVATE ${ECO_ALLOC})
 target_compile_options(gc-helper-tsan PRIVATE -fsanitize=thread -O1 -g -UNDEBUG)
@@ -26,7 +27,8 @@ target_link_libraries(gc-helper-tsan PRIVATE Threads::Threads)
 #   build-tsan/gc-mark-tsan   (pass: "mark_harness PASS", no TSan warning)
 add_executable(gc-mark-tsan
     mark_harness.cpp
-    ${ECO_ALLOC}/GCHelperPool.cpp)
+    ${ECO_ALLOC}/GCHelperPool.cpp
+    ${ECO_ALLOC}/GCFork.cpp)
 target_include_directories(gc-mark-tsan PRIVATE ${ECO_ALLOC})
 target_compile_options(gc-mark-tsan PRIVATE -fsanitize=thread -O1 -g -UNDEBUG)
 target_link_options(gc-mark-tsan PRIVATE -fsanitize=thread)
@@ -38,7 +40,8 @@ target_link_libraries(gc-mark-tsan PRIVATE Threads::Threads)
 #   build-tsan/gc-minor-tsan [heaps]   (pass: "minor_harness PASS", no TSan warning)
 add_executable(gc-minor-tsan
     minor_harness.cpp
-    ${ECO_ALLOC}/GCHelperPool.cpp)
+    ${ECO_ALLOC}/GCHelperPool.cpp
+    ${ECO_ALLOC}/GCFork.cpp)
 target_include_directories(gc-minor-tsan PRIVATE ${ECO_ALLOC})
 target_compile_options(gc-minor-tsan PRIVATE -fsanitize=thread -O1 -g -UNDEBUG)
 target_link_options(gc-minor-tsan PRIVATE -fsanitize=thread)
@@ -55,6 +58,7 @@ if(ECO_TLA_TRACE)
 add_executable(gc-minor-trace
     minor_harness.cpp
     ${ECO_ALLOC}/GCHelperPool.cpp
+    ${ECO_ALLOC}/GCFork.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../tla/trace/TlaTrace.cpp)
 target_include_directories(gc-minor-trace PRIVATE ${ECO_ALLOC})
 target_compile_definitions(gc-minor-trace PRIVATE ECO_TLA_TRACE=1)
@@ -68,7 +72,8 @@ endif()
 #   build-tsan/gc-tenure-tsan [storm jobs]   (pass: "tenure_harness PASS", no TSan warning)
 add_executable(gc-tenure-tsan
     tenure_harness.cpp
-    ${ECO_ALLOC}/GCHelperPool.cpp)
+    ${ECO_ALLOC}/GCHelperPool.cpp
+    ${ECO_ALLOC}/GCFork.cpp)
 target_include_directories(gc-tenure-tsan PRIVATE ${ECO_ALLOC})
 target_compile_options(gc-tenure-tsan PRIVATE -fsanitize=thread -O1 -g -UNDEBUG)
 target_link_options(gc-tenure-tsan PRIVATE -fsanitize=thread)
@@ -83,6 +88,7 @@ if(ECO_TLA_TRACE)
 add_executable(gc-tenure-trace
     tenure_harness.cpp
     ${ECO_ALLOC}/GCHelperPool.cpp
+    ${ECO_ALLOC}/GCFork.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../tla/trace/TlaTrace.cpp)
 target_include_directories(gc-tenure-trace PRIVATE ${ECO_ALLOC})
 target_compile_definitions(gc-tenure-trace PRIVATE ECO_TLA_TRACE=1)
@@ -99,6 +105,7 @@ if(ECO_TLA_TRACE)
 add_executable(gc-helper-trace
     harness.cpp
     ${ECO_ALLOC}/GCHelperPool.cpp
+    ${ECO_ALLOC}/GCFork.cpp
     ${ECO_ALLOC}/PageWork.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../tla/trace/TlaTrace.cpp)
 target_include_directories(gc-helper-trace PRIVATE ${ECO_ALLOC})
@@ -117,6 +124,7 @@ if(ECO_TLA_TRACE)
 add_executable(gc-mark-trace
     mark_harness.cpp
     ${ECO_ALLOC}/GCHelperPool.cpp
+    ${ECO_ALLOC}/GCFork.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../tla/trace/TlaTrace.cpp)
 target_include_directories(gc-mark-trace PRIVATE ${ECO_ALLOC})
 target_compile_definitions(gc-mark-trace PRIVATE ECO_TLA_TRACE=1)
@@ -134,6 +142,7 @@ if(ECO_TLA_TRACE)
 add_executable(gc-pool-trace
     pool_trace.cpp
     ${ECO_ALLOC}/GCHelperPool.cpp
+    ${ECO_ALLOC}/GCFork.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../tla/trace/TlaTrace.cpp)
 target_include_directories(gc-pool-trace PRIVATE ${ECO_ALLOC})
 target_compile_definitions(gc-pool-trace PRIVATE ECO_TLA_TRACE=1)

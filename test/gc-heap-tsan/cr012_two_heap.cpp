@@ -54,6 +54,7 @@ int cr012Main(int argc, char** argv) {
     a.initialize(cfg);
     AllocatorTestAccess::reset(a, &cfg);
     a.initThread();
+    a.allowMultipleMutators(true);   // CR-012 (HEAP_007): the two-heap harness opts in (unsupported)
     std::atomic<int> step{0};
     int due0 = -1, due1 = -1;
     void* pb = nullptr;

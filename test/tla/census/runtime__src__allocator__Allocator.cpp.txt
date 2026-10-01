@@ -1,3 +1,4 @@
+assert(old_gen_in_use_bytes_.load(std::memory_order_relaxed) >= size &&
 h.bytes[i] = ps.client[i].bytes.load(std::memory_order_relaxed);
 h.cpu_ns[i] = ps.client[i].cpu_ns.load(std::memory_order_relaxed);
 h.inline_cpu_ns[i] = ps.client[i].inline_cpu_ns.load(std::memory_order_relaxed);
@@ -8,6 +9,8 @@ h.stall_max_ns = ps.stall_max_ns.load(std::memory_order_relaxed);
 h.stall_ns = ps.stall_ns.load(std::memory_order_relaxed);
 h.stall_outside_pause = ps.stall_outside_pause.load(std::memory_order_relaxed);
 h.stall_outside_pause_ns = ps.stall_outside_pause_ns.load(std::memory_order_relaxed);
+new (&a.thread_mutex_) std::recursive_mutex();
+old_gen_in_use_bytes_.store(0, std::memory_order_relaxed);
 std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
@@ -25,4 +28,8 @@ std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
-std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+std::unique_lock<std::recursive_mutex> lock(thread_mutex_);
+std::unordered_map<std::thread::id, std::unique_ptr<ThreadLocalHeap>> doomed;
+std::unordered_map<std::thread::id, std::unique_ptr<ThreadLocalHeap>> doomed;
+void Allocator::forkParent() { instance().thread_mutex_.unlock(); }
+void Allocator::forkPrepare() { instance().thread_mutex_.lock(); }

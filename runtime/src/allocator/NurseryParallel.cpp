@@ -372,8 +372,10 @@ void NurserySpace::reachYoungLargeP(MinorWorker& w, void* obj, bool parent_old) 
         ++w.ylos_reach_calls;
         if (m->color == minor_color_) return;   // already reached this minor
         m->color = minor_color_;
-        Header* h = getHeader(obj);
-        if (!h->builder && h->age >= promotion_age_) {
+        // CR-019: a sweep slice under promo_mu_ may read this header word:
+        // relaxed atomic whole-word load/store (HEAP_062).
+        Header hv = loadHeaderRelaxed(obj);
+        if (!hv.builder && hv.age >= promotion_age_) {
             par_oldgen_->promoteYoungLarge(obj);   // invalidates m
             promoted = true;
         } else {
@@ -382,7 +384,7 @@ void NurserySpace::reachYoungLargeP(MinorWorker& w, void* obj, bool parent_old) 
 #else
             (void)parent_old;
 #endif
-            if (!h->builder) h->age++;
+            if (!hv.builder) { ++hv.age; storeHeaderRelaxed(obj, hv); }
             w.ylos_young.push_back(obj);
         }
     }

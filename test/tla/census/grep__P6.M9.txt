@@ -1,5 +1,6 @@
 runtime/src/allocator/OldGenSpace.cpp: "V12: unmarked body %p left in large_body_index_\n", body);
 runtime/src/allocator/OldGenSpace.cpp: "[heap-validate] large_body_index_ post-cleanup "
+runtime/src/allocator/OldGenSpace.cpp: "[heap-validate] large_body_index_ post-cleanup violation (flip): body_base=%p "
 runtime/src/allocator/OldGenSpace.cpp: auto it = large_body_index_.find(b.start);
 runtime/src/allocator/OldGenSpace.cpp: auto it = large_body_index_.find(body);
 runtime/src/allocator/OldGenSpace.cpp: auto it = large_body_index_.find(body);
@@ -8,6 +9,8 @@ runtime/src/allocator/OldGenSpace.cpp: auto it = large_body_index_.find(sweep_cu
 runtime/src/allocator/OldGenSpace.cpp: auto it = large_body_index_.find(sweep_cursor_);
 runtime/src/allocator/OldGenSpace.cpp: for (auto it = large_body_index_.begin();
 runtime/src/allocator/OldGenSpace.cpp: for (auto it = large_body_index_.begin(); it != large_body_index_.end();) {
+runtime/src/allocator/OldGenSpace.cpp: for (auto it = large_body_index_.begin(); it != large_body_index_.end();) {
+runtime/src/allocator/OldGenSpace.cpp: for (const auto& kv : large_body_index_) {
 runtime/src/allocator/OldGenSpace.cpp: for (const auto& kv : large_body_index_) {
 runtime/src/allocator/OldGenSpace.cpp: for (const auto& kv : large_body_index_) {
 runtime/src/allocator/OldGenSpace.cpp: if (it != large_body_index_.end()) {
@@ -17,6 +20,7 @@ runtime/src/allocator/OldGenSpace.cpp: if (it == large_body_index_.end()) return
 runtime/src/allocator/OldGenSpace.cpp: if (it == large_body_index_.end()) return;
 runtime/src/allocator/OldGenSpace.cpp: if (it == large_body_index_.end()) return;
 runtime/src/allocator/OldGenSpace.cpp: it != large_body_index_.end();) {
+runtime/src/allocator/OldGenSpace.cpp: it = large_body_index_.erase(it);
 runtime/src/allocator/OldGenSpace.cpp: it = large_body_index_.erase(it);
 runtime/src/allocator/OldGenSpace.cpp: it = large_body_index_.erase(it);
 runtime/src/allocator/OldGenSpace.cpp: large_body_index_.clear();

@@ -2660,6 +2660,10 @@ bool NurserySpace::censusEnabled() const {
     return p1::mode() != 0;   // ECO_P1_CENSUS (ECO_SURVIVOR_WRITE_CENSUS alias)
 }
 
+void nurseryCensusForkPrepare() { survivorCensus().mu.lock(); }
+void nurseryCensusForkParent() { survivorCensus().mu.unlock(); }
+void nurseryCensusForkChild() { new (&survivorCensus().mu) std::mutex(); }
+
 void nurseryCensusReport(bool from_signal) {
     SurvivorWriteCensus& g = survivorCensus();
     if (from_signal) {

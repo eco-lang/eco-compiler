@@ -4,6 +4,7 @@ bool configured() const { return configured_.load(std::memory_order_acquire); }
 bool configured() const { return configured_.load(std::memory_order_acquire); }
 bool isDone() const { return state.load(std::memory_order_acquire) == Done; }
 bool isIdle() const { return state.load(std::memory_order_acquire) == Idle; }
+bool launch(Fn fn, void* ctx, std::atomic<bool>* stop);
 bool running() const { return running_.load(std::memory_order_acquire); }
 mutable std::mutex m_;
 std::atomic<bool> configured_{false};
@@ -13,6 +14,7 @@ std::atomic<bool>* stop_ = nullptr;
 std::atomic<uint32_t> state{Idle};
 std::atomic<uint64_t> bytes{0};
 std::atomic<uint64_t> cpu_ns{0};
+std::atomic<uint64_t> fork_refusals{0};
 std::atomic<uint64_t> fork_stops{0};
 std::atomic<uint64_t> inline_cpu_ns{0};
 std::atomic<uint64_t> jobs{0};
@@ -38,6 +40,7 @@ std::condition_variable cv_done_;
 std::condition_variable cv_start_;
 std::condition_variable cv_start_;
 std::condition_variable cv_work_;
+std::lock_guard<std::mutex> lk(m_);
 std::mutex m_;
 std::mutex m_;
 std::mutex run_m_;
@@ -45,4 +48,3 @@ std::vector<std::thread>* threads_ = new std::vector<std::thread>();
 std::vector<std::thread>* threads_ = new std::vector<std::thread>();
 std::vector<std::thread>* workers_ = new std::vector<std::thread>();
 void joinLocked(std::unique_lock<std::mutex>& lk, bool stopping);
-void launch(Fn fn, void* ctx, std::atomic<bool>* stop);

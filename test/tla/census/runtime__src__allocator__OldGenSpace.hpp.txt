@@ -8,6 +8,7 @@ return std::atomic_ref<char*>(const_cast<char*&>(region_end_)).load(std::memory_
 return std::atomic_ref<uint32_t>(const_cast<uint32_t&>(w)).load(std::memory_order_acquire);
 return std::atomic_ref<uint32_t>(const_cast<uint32_t&>(w)).load(std::memory_order_relaxed);
 return std::atomic_ref<uint8_t>(const_cast<OldGenSpace*>(this)->blocks_.largeMark(id))
+static_assert(std::atomic_ref<GCPhase>::is_always_lock_free);
 std::atomic<bool> im10_armed_{false};
 std::atomic<bool> test_bg_hold_{false};
 std::atomic<uint64_t> priv{0};

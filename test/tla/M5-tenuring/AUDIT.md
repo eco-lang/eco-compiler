@@ -834,3 +834,148 @@ Runs (2026-09-30, this tree): `run_traces.py` (every harness rebuilt): **135/135
 Probes only, as pause points for the fork harness's `det-cr013-*` arms, which reproduce M5's three CR-013 fork counterexamples in code (TV1, TV3/TV4, TV6, L3 hang). CR-037 (`MC_lb_aba`) is reproduced in code at k = 1 and k = 2.
 
 **Verdict: no model change needed.**
+
+## 2026-09-30 — Step 0.4: the wider CR-038 variant (`MC_k2_ylos_walk2`) — CR-039 registered
+
+Row added (plans/threaded-gc-register-fixes.md Step 0.4, decision 2): `MC_k2_ylos_walk2.cfg`, a copy
+of `MC_k2_ylos_walk.cfg` with `YC = 2` (two YLOS cells) and `INVARIANTS T0GreyAllocated
+YoungWalkValid` (T0GreyAllocated first: when both fail in the same state TLC names the first).
+Quick tier.
+
+**Verdict: `violates:T0GreyAllocated`** (1,859,910 states, 20 s, 4 workers). With `T0GreyAllocated`
+alone: 1,827,950 distinct states, depth 89, the same chain. The counterexample is the suspected
+chain exactly: Z = `Y1` joins generation 1 at minor 1; Y = `Y2` (slot → `Y1`) joins generation 2 at
+minor 2; both die in epoch 2; minor 3 hands X1 over without reaching Z; minor 4 frees Z
+(`ys[1] = Free`) while Y (generation 2, `yjoin = 2`) is still indexed, and the t0 walk at minor 4's
+`MN_Cycle` reads Y's slot into the freed Z. Registered as **CR-039** (S1-class, opt-in k ≥ 2), with
+the code guard `cr038Z` (`CR-039 [xfail CR-039]`, reproduced: t0 marks Z's `Tag_Free` cell) and a
+control. §5.3 of the fix plan (the merge clears dead ageing-generation YLOS slots) covers it; its
+mutant `skip_ylos_zap_2` will be hosted on this row. No code change, so the canary does not fire.
+
+## 2026-09-30 — register-fixes Phase 3 (§5.1-§5.3): CR-037, CR-017, CR-038 and CR-039 fixed, models first (GC_MODEL_001, one audit for the batch)
+
+Pins fired for M5: region `TLH.majorGC` (**dde8f0dcca5e**), region `NR.evacuateR` (**1e4eb8b5439c**),
+region `NT.mergeJob` (**2892c92bf479**), grep `T1` (**c5204e1f0f08**: the zap's walk of a Young
+extent's `[base, surv_top)`), grep `T2` (**55313b0b0e81**: step 5c's guard line mentions `heal`);
+new region pins `OGS.markLargeBodySeen` (M5) and `NR.zapDeadAfterMajor` (M1, M5), added with `-`.
+
+**§5.1 CR-037 (model, then code).** `LbKey`'s pre-fix value is renamed `"code"` → `"addr"`; `"kind"`
+is THE CODE: `OGS.markLargeBodySeen` returns unless the entry is kind 0 with `body_base == body`.
+`MC_lb_aba` (157,323 states) and `MC_deep_boundary_k2_lb` (135,627) stay `violates:NoDangling`,
+re-commented as regression mutants of HEAP_072 (lb); `controls/lb_kind` = the code (pass, 636,386).
+The `_cr034` boundary rows carry `"addr"` (the code of their time); the `_cr017` rows now carry `"kind"`.
+
+**§5.2 CR-017 (NEW RULE: passed TLC before any code).** `MJ_Mark` frees, after the sweep, every S cell
+of a Young extent not in `MajorLive` (`MajorZapX`; mutants `no_cr017_fix` = no zap, `zap_tenuring` =
+Tenuring too, `zap_fresh_only` = age-1 only). Quick: `MC_cycle_major` pass, every invariant (866,366),
+`MC_k2_cycle_major` pass, every invariant (2,042,764), `MC_cycle_major_t0grey` pass (866,366); mutants
+`no_cr017_fix` YoungWalkValid (129,031), `_k2` YoungWalkValid (697,760), `_t0grey` T0GreyAllocated
+(130,872), `zap_tenuring` NoDangling (306,143: the major reaches a merged extent only through its
+copies, so the forwarded originals still named by roots would be zapped), `zap_fresh_only`
+YoungWalkValid (830,230). Deep: `Cr017Oracle = FALSE` in `MC_deep_boundary` (pass, 40,407,300, 390 s),
+`_k2` (pass, 14,167,540) and `_k2_m2` (pass, 24,369,088); `MC_deep_boundary_cr017` /
+`_k2_cr017` = `MUTANT = "no_cr017_fix"` with the code otherwise, `violates:T0GreyAllocated` (1,406,258 /
+86,892). The other deep rows: `deep_major` 5,412,606, `deep_cycle` 5,779,452, `deep_l3` 18,018,284,
+`deep_ops4` 3,683,200, `deep_nf2` 2,550,988, `deep_k2` 37,922,800, `deep_ext` 56,432,788, controls
+`ylos_drop_k2`, `ylos_stamp_k2`, `ylos_age1_boundary` (40,410,296) pass; `_cr034` rows violate
+`YlosGenIdentity` as before. **`MC_deep` re-hosted** (the plan's trap): with the early CR-017
+violation gone, the plan §6 bounds exceeded 58.8M distinct states and 9.5 GB of state files (the disk
+filled), the boundary bounds at 4 minors 122.4M states (depth 92, 4.7 GB) and at 3 minors 156.5M
+states, both unfinished within the disk. It now runs EC 2, SC 2, OC 4, MaxLid 4, NF 1, 3 minors,
+2 operations, Collectors 2, majors, cycles and stops: **pass, 18,313,899 states, 120 s**; the same
+bounds with `MUTANT = "no_cr017_fix"` (a scratch run) violate `YoungWalkValid` (105,978 states), so the
+re-hosted row still reaches CR-017's chain.
+
+**§5.3 CR-038 / CR-039.** `J_Merge` clears every slot of a `Gen(ageX)` YLOS not in `amark` (mergeJob
+step 5c; mutant `skip_ylos_zap`). `MC_k2_ylos_walk` pass, every invariant (3,556,232);
+`MC_k2_ylos_walk2` (CR-039) pass, every invariant (6,712,854): **the planned fix closes CR-039**, no
+separate design was needed (the clearing happens at the merge of the job whose ageing mark missed Y,
+which precedes the t0 that would read Y's slot to the freed Z). Mutants `skip_ylos_zap`
+YoungWalkValid (976,535), `skip_ylos_zap_2` T0GreyAllocated (1,835,176). `YoungWalkValid` is back in
+`MC_deep_boundary_k2` and `_k2_m2`.
+
+Quick tier 72/72 as expected (253 s). Trace: `TraceTenurePause` maps the new event `mzap zapped`
+into `MJ_Mark` (no longer hidden) and checks the zapped S-cell count; the harness records `mzap`; two
+new reject rows (`set:mzap:2:zapped=0`, `set:mzap:1:zapped=1`, seed 2) are rejected; `run_traces.py
+--model M5` 29/29. `T1`: the zap writes Young-extent survivor cells only in the major's pause (no job
+runs: the major's `tenureJoin` merged it; the zap aborts otherwise). `T2`: step 5c writes ageing YLOS
+slots in the merge, a pause step, never a heal slot of the running job. `NR.evacuateR`: a validate-only
+header load (no protocol change).
+
+**Verdict: model updated (MJ_Mark zap, J_Merge step 5c, LbKey rename), MAPPING.md updated (MJ_Mark,
+J_Merge, LbKey, the lb_bodies footprint row, A6, canary pins).**
+
+## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (GC_MODEL_001)
+
+Pins fired: region `OGS.promoteYoungLarge` (**ab64ef2a56ee**), region `NR.reachYoungLargeR` (**183e2cd3fb44**), grep `T3` (**6e200a1c6e88**: the validate check now reads the local copy `hv.age`).
+
+Change (plans/threaded-gc-register-fixes.md §6.1, CR-019; HEAP_062/HEAP_067 amended): every
+access to a header word that another thread may touch during a legacy parallel minor is a relaxed
+atomic whole-word access through the new helpers `loadHeaderRelaxed` / `storeHeaderRelaxed`
+(`AllocatorCommon.hpp`, newly census-pinned for M3, M4). Writers: `reachYoungLargeP` (age++ under
+`ylos_mu_`), `promoteYoungLarge` (age = 0), region `reachYoungLargeR` (age = 1). Readers:
+`lazySweep`'s gap sweep (one load per live object, reused for the trace event), the header walk
+(one load reused for tag, sentinel and pin), the large-block branch's pin read, and the
+validate-only `validateV11` walk. The values written are unchanged (tag/size/pin kept); no lock,
+step order or memory order beyond "relaxed" is added, so no happens-before edge changes. TSan:
+`det-cr019` both orders and `ylos-sweep` are clean (were: a report every run).
+
+Region mode: the first reach still sets age 1 under `ylos_mu_` and joins generation m in the same section; only the access is now a whole-word relaxed load/store. No M5 action or variable changes. **Verdict: no model change needed.**
+
+## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (GC_MODEL_001)
+
+Pins fired: region `OGS.releaseBlockToAllocator` (**2dc05c9c0440**).
+
+Change (plans/threaded-gc-register-fixes.md §6.3, CR-007; HEAP_058/HEAP_059 amended): a promotion
+holder of a parallel promotion with n > 1 workers (`OldGenSpace::acquireWaitPolicy()` =
+`AcquireWait::AvoidUnderPromo`, passed at `ensureBagPageAvailable`, `allocateFromBagPage` and
+`allocateLargeBlock`) gets the no-wait policy in `Allocator::acquireOldGenBlock` (modes 1/2 with
+decommit on): (1) the first fitting **Pending** extent (`PageWork::isPending`, job-blind; `onReuse`
+cancels it, never waits), (2) else a fresh bump, (3) else -- the old-gen cap leaves no bump room --
+today's first fit (may wait; counted). The first-fit body was factored into a `takeFreeAt` lambda
+(no behaviour change for `Allowed`). New PageWork API: `isPending`, `decommitOn`, `noteNoWait` (the
+counters `nowait_pending_reuse_bytes`, `nowait_fresh_bytes`, `nowait_fallback_waits` and the M7 trace
+event `nw`), `noteNoWaitSkip` (`nowait_skipped_extents`). Validate builds: a no-wait Pending reuse
+must not raise `reuse_waits`, and `releaseBlockToAllocator` / `releaseUnassignedBlockToAllocator` abort
+while `acquireWaitPolicy() != Allowed`. No lock, atomic or memory order is added; every new
+PageWork call runs under `thread_mutex_` like the old ones.
+
+The validate-only release abort; the pause tenure engine (`runJobParallel`) promotes through `allocatePromotion` and now gets the no-wait page policy, which changes which extent a page comes from, never a tenuring decision. **Verdict: no model change needed.**
+
+
+## 2026-10-01 — register-fixes Phase 5: CR-013 tenure launch refused under a fork hold (GC_MODEL_001)
+
+Pins fired: regions `TLH.minorGC` (**896f924a1e35**), `TLH.majorGC` (**69a04246e15b**), `NT.tenureLaunch` (**c844a0dfc358**), `NT.tenureConcLaunch` (**873a1bb7f7be**).
+
+Change (plans/threaded-gc-register-fixes.md §7, Phase 5; HEAP_007 fork contract, HEAP_058, HEAP_065,
+HEAP_070 amended, HEAP_075 new): (1) `GCFork.{hpp,cpp}`: ONE `pthread_atfork` registration with fixed
+layers (gangs: registry -> each background gang's `m_` to set `fork_hold_` -> `stopAllForFork` -> each
+gang's `m_` held -> `GCMarkGang` `run_m_` -> its `m_`; allocator: `thread_mutex_`; census: the P1 census
+mutex and detector N's; pool: `GCHelperPool::m_`, drained and held); the three old registrations are
+gone. (2) No teardown holds `thread_mutex_` while it takes a gang lock (`cleanupThread`,
+`finishTenureForExit`, `reset`, `~Allocator`). (3) CR-003/015: `post`'s Idle->Posted CAS and the enqueue
+in one `m_` section; the pool prepare drains and keeps `m_` in one section; the allocator layer locks
+`thread_mutex_`, the child re-creates it and records `fork_child_` / `fork_owner_`. (4) CR-013/004:
+`GCBackgroundGang::launch` returns false (refuses) while `fork_hold_`; `launchBackground` then leaves
+`bg_ep_ = None` (`cm.episodes_refused`), `tenureLaunch` / `tenureConcLaunch` count `rs.fork_refusals`
+and the join's orphan path finishes the job. (5) CR-023: `stopAndJoin` waits for
+`generation_ != my_gen || finished_ >= members` and clears `running_` only for its own generation;
+`launch` notifies `cv_done_`. (6) CR-005: `closingFinish` accepts `bg_ep_ == None`. (7) CR-031:
+`~Allocator` (and `initThread`, `getCombinedStats`, `validatePageWork`) never touch a heap the forker
+does not own in a forked child; validate builds check `ThreadLocalHeap::owner_` in `minorGC` /
+`majorGC`. (8) CR-032: the census layer; `atexitReport` returns in a forked child. Trace-only: the
+probe `m6.tm.held` in `onGCPauseEnd` (under `thread_mutex_`), `fork.bghold`, `gang.refuse`, the step
+event's `refused` field and an M1 `stop` after a refused launch.
+
+Model first: the three CR-013 rows `MC_fork`, `MC_fork_orphan_copy`, `MC_fork_l3` were moved to
+`mutants/fork.cfg`, `mutants/fork_orphan_copy.cfg`, `mutants/fork_l3.cfg` with their verdicts unchanged
+(`violates:TenuredEqualsLegacy` 41,129 states, `violates:ExactlyOnce` 26,767, `deadlock` 417,729),
+labelled "pre-fix launch window; closed by fork_hold_": with the fix a collector launch during a fork's
+prepare is refused (no member is mid-item at the fork; M6 `gangs_two_gangs_window` now passes, its
+mutants `no_fork_hold` / `hold_after_stop` violate ChildHeldTenure). A refused launch leaves the job
+Running with no member; `tenureJoin`'s orphan branch (`!running()`: `finish_here`) or, for L3,
+`tenureConcFinish` finishes it in the pause, which is M5's existing "stopped before any item" path.
+`TLH.minorGC` / `majorGC`: a validate-only owner check at entry. **Verdict: model rows moved to
+mutants (A6); no spec change needed.** Code guards: fork-trace arms `det-cr013-{start,copy,copy-scan,
+l3-exit,l3-minor}` clean (window closed by the refusal; the child's orphan path is sound); revert (no
+hold): start/copy/copy-scan/l3-minor reproduce TV1, TV3/TV4, TV6, the L3 hang again.

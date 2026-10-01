@@ -547,3 +547,196 @@ Runs (2026-09-30, this tree): `run_traces.py` (every harness rebuilt): **135/135
 The counter is stats-only and adds no step to M4's sweep or completion actions (the tail path's phase write and `onSweepComplete` call are unchanged). The M4 trace scenario is byte-identical. The new code-level guards reproduce M4's CR-014 (`sweep_tail`, `sweep_tail_release`, `sweep_tail_live`), CR-001, CR-002, CR-016 and CR-028 counterexamples on the real allocator; see the register.
 
 **Verdict: no model change needed.**
+
+## 2026-09-30 — register-fixes §3.1: CR-033 fixed (GC_MODEL_001)
+
+Pin fired: region `OGS.allocateFromBagPage`, new hash prefix **8e85cd8f9aa1**.
+
+Change (plans/threaded-gc-register-fixes.md §3.1; snapshot `snapshots/register-fixes/pre-phase1.tgz`):
+the fresh-page carve's remainder test `remainder >= MIN_FREE_CELL_SIZE` became `remainder != 0`
+(plus an 8-alignment assert), so an 8-byte tail goes through `pushSpanOnFreeLists` and gets an
+unlinked `Tag_Free` header (HEAP_024 amended). Serial code under the same locks as before; no atomic
+step, lock, shared location or memory order changes.
+
+M4 models the bag rung as one step of the locked ladder (`W_Virgin`'s else-branch); the carve's header layout is not state in M4. The rung still runs under `promo_mu_` exactly as before. **Verdict: no model change needed.**
+
+## 2026-09-30 — register-fixes §3.2: CR-018 fixed, CR-001's S1 half closed (GC_MODEL_001)
+
+Pins fired: region `OGS.initObjectHeaderWithSize` (**2d1af3f18a67**), region `OGS.finalizePoppedCellW`
+(**26356efabd55**), grep `P6.M16` (**dff5ec5a9d43**: the new plain owner add
+`blocks_.meta(block_id).live_bytes += cell_bytes;` at Idle outside a parallel promotion), grep
+`F.parPromoActive` (**453a067480d5**: the new read `if (black || par_promo_active_)` choosing the
+atomic add).
+
+Change (plans/threaded-gc-register-fixes.md §3.2; HEAP_073 new, HEAP_051 amended): every allocator
+path adds `live_bytes` in every phase. In `finalizePoppedCellW` the add left the black branch: it is
+now an unconditional relaxed `fetch_add` (one add per path); the colour and bit stay phase-gated,
+and the phase is still read plain (CR-001's race half, Phase 2). In `initObjectHeaderWithSize` the
+Idle add is atomic while `par_promo_active_` (workers add lock-free) and a plain owner write
+otherwise (no promotion worker, no marker at Idle: P6.M16 stays "atomic adds outside `promo_mu_`,
+plain reads under it"; the plain write happens only while no worker exists).
+
+**Model updated first (the M4 `Counts` split, made ONCE here as the plan requires):** `Counts(p)`
+became `CountsBit(p) == p # "Idle"` (colour and bit) plus `IdleCounts == "idle_uncounted" \notin
+MUTANT` (the live count). `FinPhase`'s Idle branch and `W_PopAfterSweep`'s Idle branch add
+`liveBytes[BlkOf(c)] + 1` with `Acc1("live", FALSE, TRUE)`; re-translated. `MC_quick_sweep_release`
+now passes (CR-001 S1; 15,172 states); A6 mutant `mutants/idle_uncounted_release.cfg` violates
+`ReleasedSafe` (14,931 states); `controls/count_until_shrink.cfg` and its row deleted and the name
+dropped from every config (the default is a superset). `controls/phase_atomic_release.cfg` now
+PASSES (was `violates:ReleasedSafe`): its failure was the phase-dependent count, exactly as §4.2
+predicted; the row is flipped with a note (Phase 2 deletes it). `TracePromoBitmap`: `m4.pop`'s
+colour is `CountsBit`; `m4.fin` carries `cnt` (the code emits it) and a not-black finalize raises its
+block's `liveBytes` by `cnt` = `IdleCounts`. Runs: M4 quick 47/47 as expected; `run_traces.py
+--model M4` 12/12 as expected.
+
+**Verdict: model updated.**
+
+## 2026-09-30 — register-fixes §3.3 + §3.4: CR-035 and CR-016 fixed (GC_MODEL_001, one audit)
+
+Pins fired: region `OGS.allocateFromEmptyRegularBlocks` (**241b815c0313**), grep `P6.M9`
+(**cc48c7eb8f67**: the flip's `retireIndexRange` loop over `large_body_index_` and its validate
+post-check), grep `F.parPromoActive` (**8c0450e863af**: the new first statement
+`if (par_promo_active_ && promo_ctx_ && promo_ctx_->n > 1)`).
+
+Change: (1) CR-016 (§3.4): `allocateFromEmptyRegularBlocks` flips nothing inside a parallel
+promotion with more than one worker; `allocateLargeBlock` then takes a free large block or a fresh
+one. (2) CR-035 (§3.3): the flip retires the index entries inside the block (M8's concern; M4 does
+not model the index). Both run under `promo_mu_` exactly as before (the flip's reads and its plain
+`live_bytes` write).
+
+**Model updated first (NEW RULE):** a MUTANT-gated guard in `W_Large` (`FlipCands` is empty when
+`Cardinality(Workers) > 1`) was checked BEFORE the code change: `controls/flip_skips_parallel`
+(sweep_large + the name, pass, 38,160 states), `controls/flip_skips_parallel_chunk` (minor_large + the
+name, pass, 2,010 states) and `controls/flip_one_worker` (minor_virgin, `NWorkers = 1`,
+`large_promo`, CR-018's count on; pass, 59 states; a flip is reachable there: a scratch
+`released = {}` witness fails in 40 states). `MC.tla`'s `MC_Workers` gained `NWorkers = 1 -> {1}`.
+Then the rule became the default and the old behaviour the A6 mutant `flip_in_parallel`:
+`MC_quick_sweep_large` (38,160 states) and `MC_quick_minor_large` (2,010) now pass;
+`mutants/flip_in_parallel_stash.cfg` (7,987) and `mutants/flip_in_parallel_chunk.cfg` (2,794)
+violate `ReleasedSafe`; the two `flip_skips_parallel*` controls were deleted (identical to the
+defaults); `flip_one_worker` stays. Re-translated. M4 quick 50/50 as expected. MAPPING's `W_Large`
+row updated.
+
+**Verdict: model updated.**
+
+## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (GC_MODEL_001, one audit for the batch)
+
+Pins fired for M4: file `test/gc-heap-tsan/promo_sweep.cpp` (**4f6ac56ce006**: the det arms' path
+witness is now `sweep_tail_in_promotion`, det-cr002's message), regions `OGS.finalizePoppedCellW`
+(**4d8b93453093**), `OGS.finalizeBitmapCellW` (**296d0825c9c5**), `OGS.beginParallelPromotion`
+(**61cd0f2c82b6**: `v11_deferred_.clear()`), `OGS.endParallelPromotion` (**edc1da416447**: the
+deferred V11 walk before the deferred shrink), `OGS.allocatePromotion` (**9551468c0f86**),
+`OGS.lazySweep` (**b033f3f0c837**), `OGS.onSweepComplete` (**9a0fe8aa36e1**), census
+`OldGenSpace.cpp` (**2afe7bc4cf4d**), census `OldGenSpace.hpp` (**493c238780a8**), grep `F.gc_phase`
+(**e0a73570b77c**, re-derived as `gc_phase_ =|atomic_ref<GCPhase>`: the two plain completion writes
+became one atomic store), grep `F.parPromoActive` (**abb69658de8b**: the tripwire, `completeSweep`'s
+trace field, CR-028's `par_promo_active_ && promo_ctx_ && promo_ctx_->n > 1`).
+
+**Model updated first, fix by fix (A6: the old behaviour is a mutant each time):**
+1. **CR-014 (§4.1).** The tail branch of `W_SweepEnd` is `await "tail_immediate" \in MUTANT`;
+   every completion sets `deferred`. `MC_quick_sweep_tail` (16,574 states), `_release`, `_live`
+   (14,912 each) and `_reuse` (635,554) pass; mutants `tail_immediate` (DetachNotCurrent, 13,444),
+   `tail_immediate_release` (ReleasedSafe, 13,338), `tail_immediate_live` (NoRaceLive, 4,249),
+   `tail_immediate_reuse` (+`reuse_released`, `CONSTRAINT MC_NoFatal`; NoDoubleAlloc, 1,158,754).
+   `controls/tail_defers*` deleted and the name dropped from every config. `W_Shrink` is reached
+   only under the mutant.
+2. **CR-001 race (§4.2).** `PhasePlain == "phase_plain" \in MUTANT`; reads under `promo_mu_`
+   (`Ladder`, `W_PopAfterSweep`, the batch) use `PhLocked` (plain, as the code). `MC_quick_sweep_race_phase`
+   passes; mutant `phase_plain` violates `NoRacePhase` (2,439). `controls/phase_atomic{,_release}`
+   and `finalize_in_lock_phase` deleted.
+3. **CR-002 (§4.3, NEW RULE).** `W_Locked`'s batch: `Unswept(h) == phase = "Sweeping" /\ ~swept[BlkOf(h)]`
+   → the head is finalized under the lock (`W_Fin` → `W_StUnlock`), nothing stashed; otherwise only
+   `SweptPrefix(freeList)` is stashed. `W_StLk` and the `finalize_in_lock` control are gone. TLC
+   passed the rule on every sweep row, `MC_quick_sweep_fixed` (now `MUTANT = {}`, 14,912) and the 8
+   deep rows **before** the runtime changed; a scratch witness (`pc # "W_StUnlock"`) shows the
+   in-lock branch is reachable (1,610 states). Mutant `finalize_outside_lock` violates
+   `NoRaceBitmap` (5,811): W1 finalizes an M cell outside the lock (W_StBit on M1), then W2's
+   `W_Sweep` word read — the intended story. `MC_quick_sweep_race_bitmap` passes.
+Every config lost the retired names (`tail_defers`, `phase_atomic`, `finalize_in_lock`); the fixed
+configs' comments say "the defaults". Re-translated after each step.
+
+**Runs.** Quick: 48/48 as expected. Deep: 8/8 pass (2 TLC workers): `sweep_n3` and
+`functional_n3` 208,230 states each, `sweep_w3` 13,247, `cycle_w3` 501,030, `minor_w3` 102,776,
+`sweep_1class_w3` 709,187, `sweep_breadth` 62,240, `virgin_breadth` 62,404. (The deep table at the
+top of this file predates later model changes: the pre-Phase-2 model gives `sweep_n3` 194,516,
+`sweep_w3` 13,487, `sweep_breadth` 62,276 distinct states, so the Phase 2 defaults did not shrink
+the deep rows.)
+
+**Trace spec.** `m4.swend` paths 2 and 3 both map to a deferred completion; `m4.batch` carries
+`inlock` (the code logs it before the in-lock finalize) and requires the lock still held iff
+`inlock`; `m4.unlock` also matches `W_StUnlock`; `W_StLk` removed from `m4.fin`.
+`TraceRace.cfg` is promoted to five `traces.txt` accept rows (the registered runs); `run_traces.py`
+names rows with a non-default config `…:<config stem>` so they do not collide. `run_traces.py
+--model M4`: 17/17 as expected (5 accept, 5 TraceRace accept, 7 mutate rejects); the registered
+logs take the in-lock branch in about half of their batches (e.g. 25 of 51 batch events in
+`promo,1,3,4`); no registered log completes the sweep.
+
+MAPPING.md updated (`phase`, `W_R1Ph`, `W_Stash`/`W_Fin`, `W_Locked`, `W_SweepEnd`, `W_Shrink`,
+P6.M6, §6 contracts, A4, A5, A6, §8 events).
+
+**Verdict: model updated.**
+
+## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (GC_MODEL_001)
+
+Pins fired: region `OGS.lazySweep`, new hash prefix **6066819cec59**; new census pin `AllocatorCommon.hpp`.
+
+Change (plans/threaded-gc-register-fixes.md §6.1, CR-019; HEAP_062/HEAP_067 amended): every
+access to a header word that another thread may touch during a legacy parallel minor is a relaxed
+atomic whole-word access through the new helpers `loadHeaderRelaxed` / `storeHeaderRelaxed`
+(`AllocatorCommon.hpp`, newly census-pinned for M3, M4). Writers: `reachYoungLargeP` (age++ under
+`ylos_mu_`), `promoteYoungLarge` (age = 0), region `reachYoungLargeR` (age = 1). Readers:
+`lazySweep`'s gap sweep (one load per live object, reused for the trace event), the header walk
+(one load reused for tag, sentinel and pin), the large-block branch's pin read, and the
+validate-only `validateV11` walk. The values written are unchanged (tag/size/pin kept); no lock,
+step order or memory order beyond "relaxed" is added, so no happens-before edge changes. TSan:
+`det-cr019` both orders and `ylos-sweep` are clean (were: a report every run).
+
+M4 models the gap sweep's step over a live object as reading that object's size (`W_SweepStep`); it never modelled the header word's other bits or a concurrent YLOS writer. The step now comes from one relaxed atomic load instead of a plain read; the size, the bit clear and the order of the trace events (`m4.sw` carries the same `end` value, computed from the same step) are unchanged. **Verdict: no model change needed.**
+
+## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (GC_MODEL_001)
+
+Pins fired: region `OGS.allocateFromBagPage` (**8707d299ec96**), grep `F.parPromoActive` (**4bd31a55ef87**: the new `acquireWaitPolicy()` reads `par_promo_active_` and `promo_ctx_->n`).
+
+Change (plans/threaded-gc-register-fixes.md §6.3, CR-007; HEAP_058/HEAP_059 amended): a promotion
+holder of a parallel promotion with n > 1 workers (`OldGenSpace::acquireWaitPolicy()` =
+`AcquireWait::AvoidUnderPromo`, passed at `ensureBagPageAvailable`, `allocateFromBagPage` and
+`allocateLargeBlock`) gets the no-wait policy in `Allocator::acquireOldGenBlock` (modes 1/2 with
+decommit on): (1) the first fitting **Pending** extent (`PageWork::isPending`, job-blind; `onReuse`
+cancels it, never waits), (2) else a fresh bump, (3) else -- the old-gen cap leaves no bump room --
+today's first fit (may wait; counted). The first-fit body was factored into a `takeFreeAt` lambda
+(no behaviour change for `Allowed`). New PageWork API: `isPending`, `decommitOn`, `noteNoWait` (the
+counters `nowait_pending_reuse_bytes`, `nowait_fresh_bytes`, `nowait_fallback_waits` and the M7 trace
+event `nw`), `noteNoWaitSkip` (`nowait_skipped_extents`). Validate builds: a no-wait Pending reuse
+must not raise `reuse_waits`, and `releaseBlockToAllocator` / `releaseUnassignedBlockToAllocator` abort
+while `acquireWaitPolicy() != Allowed`. No lock, atomic or memory order is added; every new
+PageWork call runs under `thread_mutex_` like the old ones.
+
+`acquireWaitPolicy()` reads `par_promo_active_` / `promo_ctx_->n` where the CR-016 test already does (under `promo_mu_` or before the workers start); M4 models the page source abstractly (`W_Virgin` / `W_Large` take "a fresh block"), so which extent the allocator returns is invisible to it. **Verdict: no model change needed.**
+
+
+## 2026-10-01 — register-fixes Phase 5: owner check at minorGC entry (GC_MODEL_001)
+
+Pins fired: region `TLH.minorGC` (**896f924a1e35**).
+
+Change (plans/threaded-gc-register-fixes.md §7, Phase 5; HEAP_007 fork contract, HEAP_058, HEAP_065,
+HEAP_070 amended, HEAP_075 new): (1) `GCFork.{hpp,cpp}`: ONE `pthread_atfork` registration with fixed
+layers (gangs: registry -> each background gang's `m_` to set `fork_hold_` -> `stopAllForFork` -> each
+gang's `m_` held -> `GCMarkGang` `run_m_` -> its `m_`; allocator: `thread_mutex_`; census: the P1 census
+mutex and detector N's; pool: `GCHelperPool::m_`, drained and held); the three old registrations are
+gone. (2) No teardown holds `thread_mutex_` while it takes a gang lock (`cleanupThread`,
+`finishTenureForExit`, `reset`, `~Allocator`). (3) CR-003/015: `post`'s Idle->Posted CAS and the enqueue
+in one `m_` section; the pool prepare drains and keeps `m_` in one section; the allocator layer locks
+`thread_mutex_`, the child re-creates it and records `fork_child_` / `fork_owner_`. (4) CR-013/004:
+`GCBackgroundGang::launch` returns false (refuses) while `fork_hold_`; `launchBackground` then leaves
+`bg_ep_ = None` (`cm.episodes_refused`), `tenureLaunch` / `tenureConcLaunch` count `rs.fork_refusals`
+and the join's orphan path finishes the job. (5) CR-023: `stopAndJoin` waits for
+`generation_ != my_gen || finished_ >= members` and clears `running_` only for its own generation;
+`launch` notifies `cv_done_`. (6) CR-005: `closingFinish` accepts `bg_ep_ == None`. (7) CR-031:
+`~Allocator` (and `initThread`, `getCombinedStats`, `validatePageWork`) never touch a heap the forker
+does not own in a forked child; validate builds check `ThreadLocalHeap::owner_` in `minorGC` /
+`majorGC`. (8) CR-032: the census layer; `atexitReport` returns in a forked child. Trace-only: the
+probe `m6.tm.held` in `onGCPauseEnd` (under `thread_mutex_`), `fork.bghold`, `gang.refuse`, the step
+event's `refused` field and an M1 `stop` after a refused launch.
+
+`TLH.minorGC` gained only a validate-only `assertOwner("minorGC")` before the pause starts (HEAP_007 /
+CR-031). No promotion, sweep or bitmap step changes. **Verdict: no model change needed.**

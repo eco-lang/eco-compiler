@@ -503,6 +503,7 @@ int trialTwoHeap(uint64_t seed) {
     Opts o;
     o.old_pairs = 8000;
     Allocator& a = initHeap(o);           // mutator A's heap (this thread)
+    a.allowMultipleMutators(true);        // CR-012 (HEAP_007): two live heaps, test harness opt-in
     std::atomic<bool> stop_b{false};
     std::atomic<bool> b_ready{false};
     std::thread b([&] {                   // mutator B: its own heap, its own pauses
@@ -714,10 +715,11 @@ int trialClosing(uint64_t seed, bool early) {
 //
 // (1) Deterministic guards. The runtime's M6 probe hooks are pause points at
 // the windows M6 found; the harness holds a thread there while another acts:
-//   det-cr015  the mutator is paused inside post() just after its CAS (it
-//              holds thread_mutex_): the host forks. The child finds
-//              thread_mutex_ held by a thread it does not have (CR-015; the
-//              job is also stranded in its CAS window, CR-003).
+//   det-cr015  the mutator is paused at its pause end holding thread_mutex_
+//              (probe m6.tm.held; before register-fixes Phase 5 the pause was
+//              post()'s CAS, which is now under the pool's m_ too): the host
+//              forks. The child finds thread_mutex_ held by a thread it does
+//              not have (CR-015). Fixed: the fork's prepare waits for it.
 //   det-cr003  the host is paused in the pool's prepare between drain() and
 //              m_.lock(): the mutator completes a post and leaves
 //              thread_mutex_. The child's drain waits for a job no thread
@@ -792,13 +794,17 @@ bool copyIsO() {
 
 void onProbe(const char* where) {
     const int d = g_det.load();
-    if (d == kDetCr015 && !tl_host && std::strcmp(where, "m6.post.cas") == 0 && !g_det_fired.exchange(true)) {
-        g_host->go.store(true);                 // fork while this post holds thread_mutex_
-        spinUntil(g_host->det_forked);
+    // Bounded (register-fixes §7.2 step 9): since the fix these probes fire under locks
+    // (m6.post.cas under the pool's m_ and thread_mutex_, m6.pool.drained under m_ with
+    // the forker holding thread_mutex_), so the other side may be blocked behind this
+    // pause: a timeout means the fix closed the window ("window=closed").
+    if (d == kDetCr015 && !tl_host && std::strcmp(where, "m6.tm.held") == 0 && !g_det_fired.exchange(true)) {
+        g_host->go.store(true);                 // fork while the mutator holds thread_mutex_ (only)
+        if (!spinFor(g_host->det_forked, 3000)) g_det_closed.store(true);   // the prepare waits for it
     } else if (d == kDetCr003 && tl_host && std::strcmp(where, "m6.pool.drained") == 0 &&
                !g_det_fired.exchange(true)) {
         g_det_mut_go.store(true);               // let the mutator post, between drain and lock
-        spinUntil(g_det_mut_done);
+        if (!spinFor(g_det_mut_done, 3000)) g_det_closed.store(true);   // it waits for thread_mutex_
     } else if (d == kDetCr003 && !tl_host && std::strcmp(where, "m6.post.cas") == 0 && g_det_armed_post.load()) {
         g_det_posted.store(true);
     } else if (d == kDetCr005 && !tl_host && std::strcmp(where, "m6.closing") == 0 &&
@@ -810,7 +816,7 @@ void onProbe(const char* where) {
     } else if (d == kDetCr004 && tl_host && std::strcmp(where, "m6.bg.stopped") == 0 &&
                !g_det_fired.exchange(true)) {
         g_det_mut_go.store(true);               // let the mutator relaunch before the m_ lock
-        spinUntil(g_det_mut_done);
+        if (!spinFor(g_det_mut_done, 3000)) g_det_closed.store(true);
     } else if (is13(d) && tl_host && std::strcmp(where, "m6.bg.stopped") == 0 && !g_det_fired.exchange(true)) {
         g_det_mut_go.store(true);               // minor B: join, hand over, relaunch the collector
         spinFor(g_det_mut_done, 3000);          // bounded: a fixed launch may wait for this fork
@@ -866,9 +872,9 @@ int trialDet(int which, uint64_t seed) {
     int steps = 0;
     const char* what = "none";
     if (which == kDetCr015) {
-        // The next PageWork post (a commit-ahead populate) pauses and the host forks.
+        // The next pause end (thread_mutex_ held) pauses and the host forks.
         while (!g_det_fired.load() && steps < 3000) { growStep(hp); a.minorGC(); ++steps; }
-        what = g_det_fired.load() ? "fork-inside-post" : "no-post";
+        what = g_det_fired.load() ? "fork-under-thread-mutex" : "no-pause-end";
     } else if (which == kDetCr003) {
         ho.go.store(true);                                   // the host forks; it pauses after drain()
         while (!g_det_mut_go.load()) { hp.churn(50, 0); a.minorGC(); ++steps; }
@@ -894,18 +900,22 @@ int trialDet(int which, uint64_t seed) {
         spinUntil(g_det_mut_go);
         gc::GCBackgroundGang* g = OA::bgGang(hp.og());
         const uint64_t l0 = g->stats().launches.load();
-        while (g->stats().launches.load() == l0 && hp.cycleActive() && steps < 100) {
+        const uint64_t r0 = g->stats().fork_refusals.load();
+        while (g->stats().launches.load() == l0 && g->stats().fork_refusals.load() == r0 && hp.cycleActive() &&
+               steps < 100) {
             hp.churn(100, 0);
             a.minorGC();                                     // reap (None) and relaunch
             ++steps;
         }
         const bool relaunched = g->stats().launches.load() > l0 && g->running();
+        // The fix (CR-004/013, §7.2 step 4): the relaunch inside the window is REFUSED.
+        if (ho.det_forked.load() || g->stats().fork_refusals.load() > r0) g_det_closed.store(true);
         hp.og().test_bg_hold_.store(false);                  // the relaunched member marks
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
         g_det_mut_done.store(true);                          // the host locks m_ and forks
         spinUntil(ho.det_forked);
         ho.window = relaunched ? 1 : 0;
-        what = relaunched ? "relaunch-between-stop-and-lock" : "no-relaunch";
+        what = relaunched ? "relaunch-between-stop-and-lock" : (g_det_closed.load() ? "relaunch-refused" : "no-relaunch");
     } else if (which == kDetCr031) {
         // The mutator forks nothing: it runs a few minors (its RootSet and tables in use),
         // then waits, between minors, while the host forks. The child calls exit().
@@ -936,8 +946,10 @@ int trialDet(int which, uint64_t seed) {
                     ho.counts[30]);
         return hp.verify() ? 0 : 5;
     }
-    std::printf("RESULT arm=det what=%s steps=%d forks=%d clean=%d hang_tm=%d hang_drain=%d cr004_window=%d\n",
-                what, steps, ho.forks, ho.counts[kClean], ho.counts[kHangTm], ho.counts[kHangDrain], ho.window);
+    std::printf("RESULT arm=det what=%s steps=%d forks=%d clean=%d hang_tm=%d hang_drain=%d cr004_window=%d "
+                "closed=%d window=%s\n",
+                what, steps, ho.forks, ho.counts[kClean], ho.counts[kHangTm], ho.counts[kHangDrain], ho.window,
+                g_det_closed.load() ? 1 : 0, g_det_closed.load() ? "closed" : "open");
     return 0;
 }
 
@@ -1041,12 +1053,15 @@ int trialDetCr013(int which, uint64_t seed) {
     ho.run(seed * 31 + 7);
     g_det.store(which);
     const uint64_t mb = R->minor_seq;
+    const uint64_t r0 = R->collector->stats().fork_refusals.load();
     ho.go.store(true);                            // the host forks; it pauses at m6.bg.stopped
     spinUntil(g_det_mut_go);
     g_det_arm_item.store(true);
     a.minorGC();                                  // B: hands the graph over, relaunches the collector
-    const bool closed = ho.det_forked.load();     // a fixed launch waited out the fork
-    const bool in_item = spinFor(g_det_in_item, 2000);
+    // The fix (CR-013, §7.2 step 4): the relaunch inside the window is REFUSED (the
+    // job waits for tenureJoin's orphan path), or the fork already happened.
+    const bool closed = ho.det_forked.load() || R->collector->stats().fork_refusals.load() > r0;
+    const bool in_item = !closed && spinFor(g_det_in_item, 2000);
     const bool reached = closed || (in_item && R->minor_seq == mb + 1 && (!l3 || R->job.conc_parallel));
     const int job_state = static_cast<int>(R->job.state);
     const bool conc_par = R->job.conc_parallel;
@@ -1096,7 +1111,9 @@ int gangsTrace(int argc, char** argv) {
     o.mark_threads = mt;
     o.old_pairs = 3000;
     o.pool = false;                                          // M6b: the gangs only
-    // Registration order decides the prepare order: prepare runs in reverse.
+    // Before GCFork (register-fixes §7.1) the registration order decided the prepare
+    // order. Now GCFork's gangs layer always runs bg_first: both registration orders
+    // are kept as arguments and the header records the order that actually runs.
     if (order == "bg_first") gc::GCMarkGang::instance().configure(mt, 0);   // before the gang
     Allocator& a = initHeap(o);
     Heap hp(a, seed, o);
@@ -1114,7 +1131,7 @@ int gangsTrace(int argc, char** argv) {
                   "{\"harness\":\"gc-fork-trace\",\"kind\":\"gangs\",\"mode\":\"%s\",\"seed\":%llu,\"T\":%u,"
                   "\"mark_threads\":%u,\"order\":\"%s\",\"forker\":\"%s\",\"side\":\"%s\",\"bgkey\":\"B%lld\","
                   "\"fgkey\":\"F%lld\",\"fork_step\":%d,\"hold\":%s}",
-                  mode.c_str(), static_cast<unsigned long long>(seed), T, mt, order.c_str(),
+                  mode.c_str(), static_cast<unsigned long long>(seed), T, mt, "bg_first",
                   mode == "host" ? "host" : (mode == "none" ? "none" : "mut"),
                   mode == "mut-child" ? "child" : "parent",
                   static_cast<long long>(reinterpret_cast<uintptr_t>(g)),
@@ -1269,8 +1286,8 @@ int driverRegister(const std::string& arm, int which, int trials, uint64_t seed)
         const char* verdict;
         if (!ok_exit) { ++errors; verdict = r.timed_out ? "ERROR (timeout)" : "ERROR (trial failed)"; }
         else if (!reached) { ++not_reached; verdict = "NOT REACHED"; }
+        else if (rep) { ++hit; verdict = "REPRODUCED"; }      // a closed window must still leave a sound child
         else if (win_closed) { ++closed; verdict = "window closed"; }
-        else if (rep) { ++hit; verdict = "REPRODUCED"; }
         else { ++miss; verdict = "not reproduced"; }
         std::printf("trial %d seed %llu: %s [oracle: %s] %s\n", t, static_cast<unsigned long long>(s), verdict,
                     oracle, line.c_str());
@@ -1320,10 +1337,10 @@ int driver(const std::string& arm, int trials, uint64_t seed) {
     int aborted_cr005 = 0, other_fail = 0, timeouts = 0;
     long cr013_aborts = 0;   // tenure-storm*: child aborts whose output names TV1, TV3/TV4 or TV6
     const bool storm = arm == "tenure-storm" || arm == "tenure-storm-l3";
-    long tot[16] = {0};
+    long tot[17] = {0};
     const char* keys[] = {"forks=", "clean=", "hang_tm=", "hang_drain=", "hang_heap=", "hang_atexit=",
                           "hang_dtor=", "killed=", "abort_or_signal=", "launch_in_prepare=", "cr004_window=",
-                          "cr023_stall=", "ok=", "bad=", " window=", "fail="};
+                          "cr023_stall=", "ok=", "bad=", " window=", "fail=", "closed="};
     const int nkeys = sizeof keys / sizeof keys[0];
     for (int t = 0; t < trials; ++t) {
         const uint64_t s = seed + static_cast<uint64_t>(t);
@@ -1370,11 +1387,17 @@ int driver(const std::string& arm, int trials, uint64_t seed) {
     // Guards: exit 1 when the arm reproduced its register entry (or failed).
     if (arm == "mut") return (timeouts == 0 && other_fail == 0 && aborted_cr005 == 0) ? 0 : 1;
     if (arm == "closing" || arm == "closing-early" || arm == "det-cr005") return aborted_cr005 > 0 ? 1 : 0;
-    if (arm == "det-cr004") return tot[10] > 0 ? 1 : 0;
+    // det-cr004 (§7.2 step 9): the window reached (1), or closed by the fork hold in every
+    // trial (0); neither is a missed precondition (4).
+    if (arm == "det-cr004") return tot[10] > 0 ? 1 : (tot[16] == trials ? 0 : 4);
     if (arm == "relaunch") return (tot[10] + tot[11] > 0) ? 1 : 0;
     // host, host-exit, two-heap: any child that hung or died.
     const long bad = tot[2] + tot[3] + tot[4] + tot[5] + tot[6] + tot[7] + tot[8];
-    return (bad > 0 || timeouts > 0 || other_fail > 0) ? 1 : 0;
+    if (bad > 0 || timeouts > 0 || other_fail > 0) return 1;
+    // det-cr015 / det-cr003: clean only when every trial reached the window and the fix
+    // closed it (the fork waited for the paused post / thread_mutex_).
+    if ((arm == "det-cr015" || arm == "det-cr003") && tot[16] != trials) return 4;
+    return 0;
 }
 
 }  // namespace

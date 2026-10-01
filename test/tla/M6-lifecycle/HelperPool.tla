@@ -15,25 +15,29 @@ CONSTANTS
     ChildUsesPool,   \* the host's child uses PageWork, or calls exit() (~Allocator drains)
     MaxOps,          \* bound on the mutator's operations
     NWorkers,        \* pool workers (threads_), 1 or 2
-    FIX,             \* candidate fixes (plan 9 step 7): "none", "drain_under_lock",
-                     \* "post_under_lock", "post_under_lock_and_drain", "tm_first",
-                     \* "tm_last", "all"
-    GUARD,           \* the "fork only from the mutator" guard in the child:
-                     \* "none", "before_tm", "after_tm"
+    GUARD,           \* the "fork only from the mutator" guard in the child (resolution
+                     \* (a) of CR-003, not adopted): "none", "before_tm", "after_tm"
     MUTANT           \* "none", "lost_wakeup", "wait_no_recheck", "no_dequeue",
-                     \* "no_start", "child_keeps_started"
+                     \* "no_start", "child_keeps_started"; and the pre-fix fork
+                     \* handlers (register-fixes §7.2 step 9, A6): "as_built_2026_09"
+                     \* (CR-003/015 as built), "no_tm_cas_outside", "no_tm_drain_split",
+                     \* "no_tm" (no thread_mutex_ layer), "tm_last" (it runs after the pool's)
 
 ForkerId == IF Forker = "mut" THEN "mut" ELSE "host"
 PWorkers == IF NWorkers = 1 THEN {"w1"} ELSE {"w1", "w2"}     \* parent pool workers
 CWorkers == IF NWorkers = 1 THEN {"cw1"} ELSE {"cw1", "cw2"}  \* workers the child starts
 Range(sq) == {sq[i] : i \in 1..Len(sq)}
-\* The candidate fixes. "tm_first" / "tm_last": an atfork handler for
-\* Allocator::thread_mutex_ whose prepare runs before / after the pool's (it
-\* locks thread_mutex_; the parent unlocks it; the child re-creates it).
-DrainHoldsLock == FIX \in {"drain_under_lock", "post_under_lock_and_drain", "all"}
-PostUnderLock  == FIX \in {"post_under_lock", "post_under_lock_and_drain", "all"}
-TmFirst        == FIX \in {"tm_first", "all"}
-TmHandler      == FIX \in {"tm_first", "tm_last", "all"}
+\* The fork design (register-fixes §7.1, CR-003/015, HEAP_058/HEAP_075), the
+\* default since 2026-10-01: post's CAS and enqueue in one m_ section
+\* (PostUnderLock); the pool's prepare drains and keeps m_ in one section
+\* (DrainHoldsLock); GCFork's allocator layer locks Allocator::thread_mutex_
+\* BEFORE the pool's prepare (TmFirst; the parent unlocks it, the child
+\* re-creates it). The mutants turn pieces off (the old FIX rows, A6).
+DrainHoldsLock == MUTANT \notin {"no_tm_drain_split", "as_built_2026_09"}
+PostUnderLock  == MUTANT \notin {"no_tm_cas_outside", "as_built_2026_09"}
+TmHandler      == MUTANT \notin {"no_tm_cas_outside", "no_tm_drain_split", "no_tm", "as_built_2026_09"}
+TmFirst        == TmHandler /\ MUTANT # "tm_last"
+TmLast         == MUTANT = "tm_last"
 
 (* --algorithm HelperPool
 variables
@@ -65,7 +69,7 @@ end define;
 \* The fork: the prepare handlers, then either the parent or the child branch.
 procedure DoFork()
 begin
-  F_Tm:                            \* FIX tm_first: thread_mutex_'s prepare, before the pool's
+  F_Tm:                            \* GCFork's allocator layer: thread_mutex_, before the pool's
     await Alive(self);
     if TmFirst then
         await tm = "none";
@@ -73,19 +77,19 @@ begin
     end if;
   F_Drain:                         \* atforkPrepare: drain() = cv_done_.wait(outstanding_ == 0)
     await Alive(self);
-    if DrainHoldsLock then         \* candidate fix: drain and keep m_ in ONE section
+    if DrainHoldsLock then         \* the fix: drain and keep m_ in ONE section
         await m = "none" /\ outstanding = 0;
         m := self;
         goto F_TmLast;
-    else                           \* as built: drain, release m_ ...
+    else                           \* pre-fix (mutants): drain, release m_ ...
         await m = "none" /\ outstanding = 0;
     end if;
   F_Lock:                          \* ... then m_.lock() separately (the CR-003 window)
     await Alive(self) /\ m = "none";
     m := self;
-  F_TmLast:                        \* FIX tm_last: thread_mutex_'s prepare, after the pool's
+  F_TmLast:                        \* mutant tm_last: thread_mutex_'s prepare, after the pool's
     await Alive(self);
-    if FIX = "tm_last" then
+    if TmLast then
         await tm = "none";
         tm := self;
     end if;
@@ -148,13 +152,13 @@ begin
             await tm = "none" /\ \E x \in Jobs : jstate[x] = "Idle";
             tm := "mut";
             with x \in {y \in Jobs : jstate[y] = "Idle"} do j := x; end with;
-          M_PostCas:                                   \* CAS Idle -> Posted, outside m_
+          M_PostCas:                                   \* CAS Idle -> Posted
             await Alive("mut");
             if PostUnderLock then
-                await m = "none";                      \* fix: the CAS moves under m_
+                await m = "none";                      \* the fix: CAS and enqueue in one m_ section
                 jstate[j] := "Posted";
                 runs[j] := 0;
-                if ~started then started := TRUE; spawned := TRUE; end if;
+                if ~started /\ MUTANT # "no_start" then started := TRUE; spawned := TRUE; end if;
                 queue := Append(queue, j);
                 outstanding := outstanding + 1;
                 goto M_PostDone;
@@ -369,7 +373,7 @@ F_Lock(self) == /\ pc[self] = "F_Lock"
 
 F_TmLast(self) == /\ pc[self] = "F_TmLast"
                   /\ Alive(self)
-                  /\ IF FIX = "tm_last"
+                  /\ IF TmLast
                         THEN /\ tm = "none"
                              /\ tm' = self
                         ELSE /\ TRUE
@@ -500,7 +504,7 @@ M_PostCas == /\ pc["mut"] = "M_PostCas"
                    THEN /\ m = "none"
                         /\ jstate' = [jstate EXCEPT ![j] = "Posted"]
                         /\ runs' = [runs EXCEPT ![j] = 0]
-                        /\ IF ~started
+                        /\ IF ~started /\ MUTANT # "no_start"
                               THEN /\ started' = TRUE
                                    /\ spawned' = TRUE
                               ELSE /\ TRUE

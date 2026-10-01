@@ -149,8 +149,9 @@ private:
     // in the child) threads without destroying joinable std::thread objects.
     std::vector<std::thread>* workers_ = new std::vector<std::thread>();
 
-    // fork() safety (pthread_atfork, registered at the first configure): the
-    // parent drains and holds m_ across fork; the child forgets its workers
+    // fork() safety (GCFork's innermost layer kForkPool, registered at the first
+    // configure; HEAP_075): the prepare drains and keeps m_ in ONE section (after the
+    // allocator layer took thread_mutex_, CR-003/015); the child forgets its workers
     // (only the forking thread survives) and restarts them on its next post.
     static void atforkPrepare();
     static void atforkParent();
@@ -203,6 +204,7 @@ public:
     static bool onMemberRun() { return tl_member_run_; }
 
 private:
+    friend class GCBackgroundGang;     // GCFork's gangs layer runs this gang's handlers
     static inline thread_local bool tl_member_run_ = false;
     GCMarkGang() = default;
     void memberLoop(unsigned index);
@@ -245,12 +247,14 @@ private:
 //
 // One instance per OldGenSpace (not a singleton: a background episode lasts
 // seconds and must not serialise other heaps' in-pause GCMarkGang runs).
-// fork(): atforkPrepare stops and joins every running instance (the owner
-// relaunches at its next cycle step); the child abandons its threads and
-// restarts them lazily. Process exit: stopAllAtExit (std::atexit) runs before
-// static destructors could unmap a heap. It and the atfork handlers are
-// registered once, by the first GCBackgroundGang's constructor (not at a first
-// launch), so a gang that was built but never launched is covered too (CR-024).
+// fork() (GCFork's gangs layer, HEAP_075): the prepare sets every instance's
+// fork_hold_ (a launch is then REFUSED, CR-013/004), stops and joins every
+// running instance (the owner relaunches at its next cycle step), and holds the
+// instances' m_ across fork; the child abandons its threads and restarts them
+// lazily. Process exit: stopAllAtExit (std::atexit) runs before static
+// destructors could unmap a heap. It and the gangs' fork layer are registered
+// by the first GCBackgroundGang's constructor (not at a first launch), so a gang
+// that was built but never launched is covered too (CR-024).
 // ---------------------------------------------------------------------------
 class GCBackgroundGang {
 public:
@@ -269,8 +273,10 @@ public:
     unsigned members() const { return opt_.members; }
     const Options& options() const { return opt_; }
     // Precondition: !running(). `stop` is the episode's stop flag (set by
-    // stopAndJoin and by the fork hook). Returns immediately.
-    void launch(Fn fn, void* ctx, std::atomic<bool>* stop);
+    // stopAndJoin and by the fork hook). Returns immediately: true when launched,
+    // false when REFUSED because a fork's prepare holds the gang (fork_hold_;
+    // CR-013/004, HEAP_065): the caller treats it as a stopped episode.
+    bool launch(Fn fn, void* ctx, std::atomic<bool>* stop);
     // Launched and not yet joined (a fork-prepare stop also joins).
     bool running() const { return running_.load(std::memory_order_acquire); }
     // Every member of the current launch returned. A HINT for the owner's
@@ -278,7 +284,9 @@ public:
     bool finishedApprox() const;
     // Blocks until every member returned; no-op when not running.
     void join();
-    // *stop = true, then join(). No-op when not running.
+    // *stop = true, then wait until that generation's members returned. No-op when not
+    // running. CR-023 (HEAP_065): waits only for the generation it stopped; if the owner
+    // joined it and relaunched meanwhile, returns without touching the new episode.
     void stopAndJoin();
 
     struct Stats {
@@ -288,11 +296,20 @@ public:
         std::atomic<uint64_t> join_wait_ns_max{0};
         std::atomic<uint64_t> stop_wait_ns_max{0};
         std::atomic<uint64_t> fork_stops{0};
+        std::atomic<uint64_t> fork_refusals{0};   // launches refused under fork_hold_ (CR-013/004)
     };
     const Stats& stats() const { return stats_; }
 
+    // Test hook (trace harnesses): set or clear fork_hold_ as a fork's prepare does, so a
+    // launch is refused without a fork (register-fixes Phase 5, the M1 refusal trace).
+    void setForkHoldForTesting(bool on) {
+        std::lock_guard<std::mutex> lk(m_);
+        fork_hold_ = on;
+    }
     static void stopAllForFork();
     static void stopAllAtExit();
+    // HEAP_075: registers GCFork's gangs layer (idempotent; call with no runtime lock held).
+    static void registerForkLayerOnce();
     // Test helper: the kernel thread ids of the started members (Linux; empty elsewhere).
     std::vector<long> memberTids() const;
 
@@ -303,6 +320,9 @@ private:
     static void atforkPrepare();
     static void atforkParent();
     static void atforkChild();
+    static void forkGangsPrepare();    // GCFork kForkGangs: background gangs, then the mark gang
+    static void forkGangsParent();
+    static void forkGangsChild();
 
     Options opt_;
     mutable std::mutex m_;
@@ -314,6 +334,7 @@ private:
     std::atomic<bool> running_{false};
     bool started_ = false;             // guarded by m_
     bool stopping_ = false;            // guarded by m_ (destruction)
+    bool fork_hold_ = false;           // guarded by m_: a fork's prepare holds the gang (launch refuses)
     Fn fn_ = nullptr;                  // guarded by m_
     void* ctx_ = nullptr;              // guarded by m_
     std::atomic<bool>* stop_ = nullptr;

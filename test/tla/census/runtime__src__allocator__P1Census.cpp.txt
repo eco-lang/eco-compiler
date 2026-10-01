@@ -1,4 +1,10 @@
 #include <mutex>
+g_census_for_fork.store(c, std::memory_order_release);
+if (Census* c = g_census_for_fork.load(std::memory_order_acquire)) c->mu.lock();
+if (Census* c = g_census_for_fork.load(std::memory_order_acquire)) c->mu.unlock();
+if (Census* c = g_census_for_fork.load(std::memory_order_acquire)) {
+new (&c->mu) std::mutex();
+std::atomic<Census*> g_census_for_fork{nullptr};
 std::lock_guard<std::mutex> lk(g.mu);
 std::lock_guard<std::mutex> lk(g.mu);
 std::lock_guard<std::mutex> lk(g.mu);

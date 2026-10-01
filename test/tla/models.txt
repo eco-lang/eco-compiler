@@ -13,7 +13,8 @@ toy  toy-lostbit  LostBit  mutants/plain.cfg  quick  tlc  violates:BothBitsSet
 M1  M1-snapshot-mark  MC  MC_quick.cfg                        quick  tlc  pass
 M1  M1-snapshot-mark  MC  MC_quick_sync.cfg                   quick  tlc  pass
 M1  M1-snapshot-mark  MC  MC_quick_region_nomajor.cfg         quick  tlc  pass
-M1  M1-snapshot-mark  MC  MC_quick_region.cfg                 quick  tlc  violates:MarkerFootprint   # CR-017
+M1  M1-snapshot-mark  MC  MC_quick_region.cfg                 quick  tlc  pass                       # CR-017 fixed (HEAP_074)
+M1  M1-snapshot-mark  MC  mutants/no_cr017_fix.cfg           quick  tlc  violates:MarkerFootprint   # CR-017 pre-fix code: regression mutant of HEAP_074
 M1  M1-snapshot-mark  MC  mutants/p1_violation.cfg            quick  tlc  violates:IM1
 M1  M1-snapshot-mark  MC  mutants/p1_violation_live.cfg       quick  tlc  violates:NoLostObject
 M1  M1-snapshot-mark  MC  mutants/no_alloc_black.cfg          quick  tlc  violates:IM2
@@ -32,7 +33,8 @@ M1  M1-snapshot-mark  MC  mutants/handoff_skips_drain.cfg     quick  tlc  violat
 # STW major and during a cycle; a deferred cell released early (mutant).
 M1  M1-snapshot-mark  MC  MC_quick_reuse.cfg                  quick  tlc  pass
 M1  M1-snapshot-mark  MC  MC_quick_region_reuse_live.cfg      quick  tlc  pass
-M1  M1-snapshot-mark  MC  MC_quick_region_reuse.cfg           quick  tlc  violates:MarkerNoYoungKid   # CR-017 + reuse
+M1  M1-snapshot-mark  MC  MC_quick_region_reuse.cfg           quick  tlc  pass                         # CR-017 + reuse, fixed (HEAP_074)
+M1  M1-snapshot-mark  MC  mutants/no_cr017_fix_reuse.cfg     quick  tlc  violates:MarkerNoYoungKid   # CR-017 + reuse, pre-fix code (mutant of HEAP_074)
 M1  M1-snapshot-mark  MC  mutants/defer_released.cfg          quick  tlc  violates:NoLostObject
 
 # M1 deep tier (tla-check-deep): each stretches one dimension beyond quick.
@@ -75,7 +77,7 @@ M2  M2-slice-control  MC  MC_quick_slice_dq.cfg                      quick  tlc 
 M2  M2-slice-control  MC  MC_quick_minor.cfg                         quick  tlc  pass
 M2  M2-slice-control  MC  MC_quick_episode.cfg                       quick  tlc  pass
 M2  M2-slice-control  MC  MC_quick_episode_bgstop.cfg                quick  tlc  pass
-M2  M2-slice-control  MC  MC_quick_episode_stop.cfg                  quick  tlc  violates:ClosingFinished   # CR-005
+M2  M2-slice-control  MC  MC_quick_episode_stop.cfg                  quick  tlc  pass                       # CR-005 fixed (register-fixes 7.2 step 6)
 M2  M2-slice-control  MC  MC_quick_episode_stop_drain.cfg            quick  tlc  pass
 M2  M2-slice-control  MC  MC_quick_tenure_l3.cfg                     quick  tlc  pass
 M2  M2-slice-control  MC  MC_quick_help.cfg                          quick  tlc  pass
@@ -102,6 +104,7 @@ M2  M2-slice-control  MC  mutants/stop_sets_done.cfg                 quick  tlc 
 M2  M2-slice-control  MC  mutants/anywork_participants_only.cfg      quick  tlc  violates:TerminationSafe
 M2  M2-slice-control  MC  mutants/budget_premise.cfg                 quick  tlc  violates:BudgetOK
 M2  M2-slice-control  MC  mutants/never_decide.cfg                   quick  tlc  violates:AllExit
+M2  M2-slice-control  MC  mutants/member_exits_undone.cfg            quick  tlc  violates:ClosingFinished   # CR-005 fix: an undone, unstopped end is still caught
 # M2 deep tier (tla-check-deep): the 5-node episode with a ring of 2; liveness with three participants.
 M2  M2-slice-control  MC  MC_deep_episode.cfg                        deep   tlc  pass
 M2  M2-slice-control  MC  MC_deep_liveness_slice3.cfg                deep   tlc  pass
@@ -139,18 +142,17 @@ M4  M4-promotion-bitmap  MC  MC_quick_sweep_functional.cfg        quick  tlc  pa
 M4  M4-promotion-bitmap  MC  MC_quick_sweep_fixed.cfg             quick  tlc  pass
 M4  M4-promotion-bitmap  MC  MC_quick_virgin_fixed.cfg            quick  tlc  pass
 M4  M4-promotion-bitmap  MC  MC_quick_minor_virgin.cfg            quick  tlc  pass
-M4  M4-promotion-bitmap  MC  MC_quick_sweep_race_bitmap.cfg       quick  tlc  violates:NoRaceBitmap      # CR-002
-M4  M4-promotion-bitmap  MC  MC_quick_sweep_race_phase.cfg        quick  tlc  violates:NoRacePhase       # CR-001 (race)
-M4  M4-promotion-bitmap  MC  MC_quick_sweep_release.cfg           quick  tlc  violates:ReleasedSafe      # CR-001 (S1 half)
-M4  M4-promotion-bitmap  MC  MC_quick_sweep_tail.cfg              quick  tlc  violates:DetachNotCurrent  # CR-014 (FATAL)
-M4  M4-promotion-bitmap  MC  MC_quick_sweep_tail_release.cfg      quick  tlc  violates:ReleasedSafe      # CR-014 (silent release)
-M4  M4-promotion-bitmap  MC  MC_quick_sweep_tail_live.cfg         quick  tlc  violates:NoRaceLive        # CR-014 (live_bytes race)
-M4  M4-promotion-bitmap  MC  MC_quick_sweep_large.cfg             quick  tlc  violates:ReleasedSafe      # CR-016 (stash)
-M4  M4-promotion-bitmap  MC  MC_quick_minor_large.cfg             quick  tlc  violates:ReleasedSafe      # CR-016 (retired chunk, no sweep)
+M4  M4-promotion-bitmap  MC  MC_quick_sweep_race_bitmap.cfg       quick  tlc  pass                       # CR-002 (fixed 2026-09-30: unswept-block cells finalized under promo_mu_, HEAP_055)
+M4  M4-promotion-bitmap  MC  MC_quick_sweep_race_phase.cfg        quick  tlc  pass                       # CR-001 (race; fixed 2026-09-30: atomic_ref, HEAP_067)
+M4  M4-promotion-bitmap  MC  MC_quick_sweep_release.cfg           quick  tlc  pass                       # CR-001 (S1 half; fixed by CR-018, HEAP_073)
+M4  M4-promotion-bitmap  MC  MC_quick_sweep_tail.cfg              quick  tlc  pass                       # CR-014 (FATAL; fixed 2026-09-30, HEAP_067)
+M4  M4-promotion-bitmap  MC  MC_quick_sweep_tail_release.cfg      quick  tlc  pass                       # CR-014 (silent release; fixed)
+M4  M4-promotion-bitmap  MC  MC_quick_sweep_tail_live.cfg         quick  tlc  pass                       # CR-014 (live_bytes race; fixed)
+M4  M4-promotion-bitmap  MC  MC_quick_sweep_large.cfg             quick  tlc  pass                       # CR-016 (stash; fixed: HEAP_054)
+M4  M4-promotion-bitmap  MC  MC_quick_minor_large.cfg             quick  tlc  pass                       # CR-016 (retired chunk, no sweep; fixed)
 # ABA (2026-09-29, reuse_released): a released block re-issued at the same id and start in the same minor.
-M4  M4-promotion-bitmap  MC  MC_quick_sweep_tail_reuse.cfg        quick  tlc  violates:NoDoubleAlloc     # CR-014 + re-issue: a stash cell handed out twice
+M4  M4-promotion-bitmap  MC  MC_quick_sweep_tail_reuse.cfg        quick  tlc  pass                       # CR-014 C + re-issue (fixed): no release inside the minor
 M4  M4-promotion-bitmap  MC  MC_quick_sweep_tail_nda.cfg          quick  tlc  pass                       # ... not without the re-issue
-M4  M4-promotion-bitmap  MC  controls/tail_defers_reuse.cfg       quick  tlc  pass                       # ... closed by CR-014's fix candidate
 M4  M4-promotion-bitmap  MC  mutants/plain_allocate_black.cfg     quick  tlc  violates:NoLostRequiredBit
 M4  M4-promotion-bitmap  MC  mutants/plain_allocate_black_race.cfg  quick  tlc  violates:NoRaceBitmap
 M4  M4-promotion-bitmap  MC  mutants/plain_stash_black.cfg        quick  tlc  violates:NoLostRequiredBit
@@ -170,14 +172,16 @@ M4  M4-promotion-bitmap  MC  mutants/marker_on_post_t0.cfg        quick  tlc  vi
 M4  M4-promotion-bitmap  MC  mutants/marker_on_post_t0_epoch.cfg  quick  tlc  violates:NoRaceBitmap
 M4  M4-promotion-bitmap  MC  mutants/launch_before_t0.cfg         quick  tlc  violates:NoGrantAtT0
 M4  M4-promotion-bitmap  MC  mutants/virgin_unswept.cfg           quick  tlc  violates:FreeBehindCursor
-M4  M4-promotion-bitmap  MC  controls/finalize_in_lock.cfg        quick  tlc  pass                       # CR-002 fix candidate
-M4  M4-promotion-bitmap  MC  controls/finalize_in_lock_phase.cfg  quick  tlc  violates:NoRacePhase       # ... does not fix CR-001
-M4  M4-promotion-bitmap  MC  controls/phase_atomic.cfg            quick  tlc  pass                       # CR-001 race fix candidate
-M4  M4-promotion-bitmap  MC  controls/phase_atomic_release.cfg    quick  tlc  violates:ReleasedSafe      # ... leaves CR-001's decision point
-M4  M4-promotion-bitmap  MC  controls/count_until_shrink.cfg      quick  tlc  pass                       # CR-001 S1 fix candidate
-M4  M4-promotion-bitmap  MC  controls/tail_defers.cfg             quick  tlc  pass                       # CR-014 fix candidate
-M4  M4-promotion-bitmap  MC  controls/tail_defers_release.cfg     quick  tlc  pass
-M4  M4-promotion-bitmap  MC  controls/tail_defers_live.cfg        quick  tlc  pass
+M4  M4-promotion-bitmap  MC  mutants/idle_uncounted_release.cfg   quick  tlc  violates:ReleasedSafe      # CR-018 / CR-001 S1 pre-fix (A6)
+M4  M4-promotion-bitmap  MC  mutants/flip_in_parallel_stash.cfg    quick  tlc  violates:ReleasedSafe      # CR-016 pre-fix (A6): stash
+M4  M4-promotion-bitmap  MC  mutants/flip_in_parallel_chunk.cfg    quick  tlc  violates:ReleasedSafe      # CR-016 pre-fix (A6): chunk
+M4  M4-promotion-bitmap  MC  mutants/tail_immediate.cfg         quick  tlc  violates:DetachNotCurrent  # CR-014 pre-fix (A6): the tail shrink on a worker
+M4  M4-promotion-bitmap  MC  mutants/tail_immediate_release.cfg  quick  tlc  violates:ReleasedSafe     # CR-014 pre-fix (A6)
+M4  M4-promotion-bitmap  MC  mutants/tail_immediate_live.cfg    quick  tlc  violates:NoRaceLive       # CR-014 pre-fix (A6)
+M4  M4-promotion-bitmap  MC  mutants/tail_immediate_reuse.cfg   quick  tlc  violates:NoDoubleAlloc    # CR-014 C pre-fix (A6): the re-issue double allocation
+M4  M4-promotion-bitmap  MC  mutants/phase_plain.cfg              quick  tlc  violates:NoRacePhase       # CR-001 race pre-fix (A6)
+M4  M4-promotion-bitmap  MC  mutants/finalize_outside_lock.cfg    quick  tlc  violates:NoRaceBitmap      # CR-002 pre-fix (A6)
+M4  M4-promotion-bitmap  MC  controls/flip_one_worker.cfg          quick  tlc  pass                       # CR-016 fix: N = 1 keeps the flip
 
 # M4 deep tier (tla-check-deep): three promotions per worker, three workers, the Breadth branches.
 M4  M4-promotion-bitmap  MC  MC_deep_cycle_w3.cfg                 deep   tlc  pass
@@ -202,17 +206,25 @@ M5  M5-tenuring  MC  MC_quick_ylos.cfg                   quick  tlc  pass
 M5  M5-tenuring  MC  MC_quick_ylos_cycle.cfg             quick  tlc  pass
 M5  M5-tenuring  MC  MC_quick_ylos_major.cfg             quick  tlc  pass
 M5  M5-tenuring  MC  MC_quick_k2.cfg                     quick  tlc  pass
-M5  M5-tenuring  MC  MC_cycle_major.cfg                  quick  tlc  violates:YoungWalkValid      # CR-017
-M5  M5-tenuring  MC  MC_k2_cycle_major.cfg               quick  tlc  violates:YoungWalkValid      # CR-017 (k = 2)
-M5  M5-tenuring  MC  MC_fork.cfg                         quick  tlc  violates:TenuredEqualsLegacy # CR-013
-M5  M5-tenuring  MC  MC_fork_orphan_copy.cfg             quick  tlc  violates:ExactlyOnce         # CR-013
-M5  M5-tenuring  MC  MC_fork_l3.cfg                      quick  tlc  deadlock                     # CR-013
+M5  M5-tenuring  MC  MC_cycle_major.cfg                  quick  tlc  pass                         # CR-017 fixed (HEAP_074)
+M5  M5-tenuring  MC  MC_k2_cycle_major.cfg               quick  tlc  pass                         # CR-017 (k = 2) fixed (HEAP_074)
+M5  M5-tenuring  MC  mutants/fork.cfg                    quick  tlc  violates:TenuredEqualsLegacy # CR-013 pre-fix launch window; closed by fork_hold_
+M5  M5-tenuring  MC  mutants/fork_orphan_copy.cfg        quick  tlc  violates:ExactlyOnce         # CR-013 pre-fix launch window; closed by fork_hold_
+M5  M5-tenuring  MC  mutants/fork_l3.cfg                 quick  tlc  deadlock                     # CR-013 pre-fix launch window; closed by fork_hold_
 M5  M5-tenuring  MC  MC_ylos_aba.cfg                     quick  tlc  violates:YlosGenIdentity     # CR-034 pre-fix code ("addr"): regression mutant of HEAP_072
 M5  M5-tenuring  MC  MC_ylos_aba_heap005.cfg             quick  tlc  violates:OldPointsOld        # CR-034 pre-fix ("addr", the damage): mutant of HEAP_072
 M5  M5-tenuring  MC  MC_k2_ylos_aba.cfg                  quick  tlc  violates:NoDangling          # CR-034 pre-fix ("addr", k = 2, ageing prep): mutant of HEAP_072
-M5  M5-tenuring  MC  MC_lb_aba.cfg                       quick  tlc  violates:NoDangling          # CR-037 (CR-034's shape on lb_bodies; open)
-M5  M5-tenuring  MC  MC_k2_ylos_walk.cfg                 quick  tlc  violates:YoungWalkValid      # k = 2: a dead ageing YLOS's slot (AUDIT.md)
-M5  M5-tenuring  MC  MC_cycle_major_t0grey.cfg           quick  tlc  violates:T0GreyAllocated     # CR-017
+M5  M5-tenuring  MC  MC_lb_aba.cfg                       quick  tlc  violates:NoDangling          # CR-037 pre-fix code ("addr"): regression mutant of HEAP_072 (lb)
+M5  M5-tenuring  MC  MC_k2_ylos_walk.cfg                 quick  tlc  pass                         # CR-038 fixed (HEAP_070 amended: merge clears dead ageing YLOS slots)
+M5  M5-tenuring  MC  MC_k2_ylos_walk2.cfg                quick  tlc  pass                         # CR-039 (CR-038 wider variant, Step 0.4) fixed with CR-038
+M5  M5-tenuring  MC  mutants/skip_ylos_zap.cfg           quick  tlc  violates:YoungWalkValid      # CR-038 pre-fix code: regression mutant of HEAP_070 (5c)
+M5  M5-tenuring  MC  mutants/skip_ylos_zap_2.cfg         quick  tlc  violates:T0GreyAllocated     # CR-039 pre-fix code: t0 greys a freed YLOS cell
+M5  M5-tenuring  MC  MC_cycle_major_t0grey.cfg           quick  tlc  pass                         # CR-017 fixed (HEAP_074)
+M5  M5-tenuring  MC  mutants/no_cr017_fix.cfg            quick  tlc  violates:YoungWalkValid      # CR-017 pre-fix code: regression mutant of HEAP_074
+M5  M5-tenuring  MC  mutants/no_cr017_fix_k2.cfg         quick  tlc  violates:YoungWalkValid      # ... k = 2
+M5  M5-tenuring  MC  mutants/no_cr017_fix_t0grey.cfg     quick  tlc  violates:T0GreyAllocated     # ... T0GreyAllocated
+M5  M5-tenuring  MC  mutants/zap_tenuring.cfg            quick  tlc  violates:NoDangling          # HEAP_074 never zaps the Tenuring extent
+M5  M5-tenuring  MC  mutants/zap_fresh_only.cfg          quick  tlc  violates:YoungWalkValid      # HEAP_074 zaps every Young extent (k = 2)
 M5  M5-tenuring  MC  mutants/skip_start.cfg              quick  tlc  violates:TenuredEqualsLegacy
 M5  M5-tenuring  MC  mutants/skip_start_resolve.cfg      quick  tlc  violates:TV1_Resolve
 M5  M5-tenuring  MC  mutants/skip_start_major.cfg        quick  tlc  violates:TV1_Major
@@ -253,13 +265,13 @@ M5  M5-tenuring  MC  controls/ylos_age1.cfg              quick  tlc  pass       
 M5  M5-tenuring  MC  controls/ylos_age1_k2.cfg           quick  tlc  violates:YlosGenIdentity     # ... is not enough at k = 2
 M5  M5-tenuring  MC  controls/ylos_age1_k2_heap005.cfg   quick  tlc  violates:OldPointsOld
 M5  M5-tenuring  MC  controls/ylos_lbid.cfg              quick  tlc  violates:YlosGenIdentity     # the LargeBodyId is recycled: not a stamp
-M5  M5-tenuring  MC  controls/lb_kind.cfg                quick  tlc  pass                         # lb_bodies fix candidates
+M5  M5-tenuring  MC  controls/lb_kind.cfg                quick  tlc  pass                         # THE CODE (CR-037 fix, HEAP_072 lb: kind-0 only); other lb_bodies candidates:
 M5  M5-tenuring  MC  controls/lb_drop.cfg                quick  tlc  pass
 M5  M5-tenuring  MC  controls/lb_stamp.cfg               quick  tlc  pass
 
 # M5 deep tier (tla-check-deep): each stretches one dimension beyond quick. `deep` is the plan's
-# all-on configuration; it fails CR-017 early (breadth-first), so it is cheap.
-M5  M5-tenuring  MC  MC_deep.cfg                         deep   tlc  violates:YoungWalkValid      # CR-017
+# all-on configuration (it failed CR-017 early until HEAP_074; now a full run).
+M5  M5-tenuring  MC  MC_deep.cfg                         deep   tlc  pass                         # CR-017 fixed (HEAP_074); re-hosted on the boundary bounds, 3 minors (AUDIT.md)
 M5  M5-tenuring  MC  MC_deep_major.cfg                   deep   tlc  pass
 M5  M5-tenuring  MC  MC_deep_cycle.cfg                   deep   tlc  pass
 M5  M5-tenuring  MC  MC_deep_l3.cfg                      deep   tlc  pass
@@ -271,16 +283,17 @@ M5  M5-tenuring  MC  controls/ylos_drop_k2.cfg           deep   tlc  pass       
 M5  M5-tenuring  MC  controls/ylos_stamp_k2.cfg          deep   tlc  pass                         # THE CODE (HEAP_072), k = 2
 M5  M5-tenuring  MC  controls/ylos_age1_boundary.cfg     deep   tlc  pass                         # the age >= 1 check, whole boundary, k = 1
 # The STW major x region-nursery boundary, all at once (AUDIT.md 2026-09-29, CR-034 entry): `boundary`
-# rows look past CR-017 / CR-037 (oracle walk, kind check) and run the code's HEAP_072 stamp; the
-# _cr017 / _lb rows are the same bounds with the code, _cr034 with the pre-HEAP_072 code ("addr").
+# rows run the code: HEAP_072's stamp, CR-037's kind check (LbKey "kind") and CR-017's major zap
+# (HEAP_074; the oracle walk is off since 2026-09-30); the _cr017 rows are the same bounds with CR-017's pre-fix code,
+# _lb with the pre-CR-037 lb_bodies code (LbKey "addr"), _cr034 with the pre-HEAP_072 code ("addr").
 M5  M5-tenuring  MC  MC_deep_boundary.cfg                deep   tlc  pass
-M5  M5-tenuring  MC  MC_deep_boundary_cr017.cfg          deep   tlc  violates:T0GreyAllocated     # CR-017
+M5  M5-tenuring  MC  MC_deep_boundary_cr017.cfg          deep   tlc  violates:T0GreyAllocated     # CR-017 pre-fix code: regression mutant of HEAP_074
 M5  M5-tenuring  MC  MC_deep_boundary_cr034.cfg          deep   tlc  violates:YlosGenIdentity     # CR-034 pre-fix code ("addr"): regression mutant of HEAP_072
 M5  M5-tenuring  MC  MC_deep_boundary_k2.cfg             deep   tlc  pass
 M5  M5-tenuring  MC  MC_deep_boundary_k2_m2.cfg          deep   tlc  pass
-M5  M5-tenuring  MC  MC_deep_boundary_k2_cr017.cfg       deep   tlc  violates:T0GreyAllocated     # CR-017 (k = 2)
+M5  M5-tenuring  MC  MC_deep_boundary_k2_cr017.cfg       deep   tlc  violates:T0GreyAllocated     # CR-017 pre-fix code (k = 2): regression mutant of HEAP_074
 M5  M5-tenuring  MC  MC_deep_boundary_k2_cr034.cfg       deep   tlc  violates:YlosGenIdentity     # CR-034 pre-fix ("addr", k = 2): mutant of HEAP_072
-M5  M5-tenuring  MC  MC_deep_boundary_k2_lb.cfg          deep   tlc  violates:NoDangling          # CR-037 (CR-034's shape on lb_bodies; open)
+M5  M5-tenuring  MC  MC_deep_boundary_k2_lb.cfg          deep   tlc  violates:NoDangling          # CR-037 pre-fix code ("addr", k = 2): regression mutant of HEAP_072 (lb)
 
 # M6: helper pool, gangs, fork and exit (plans/threaded-gc-tla-M6-lifecycle.md)
 # M6a HelperPool.tla (the pool, its atfork handlers, thread_mutex_); M6b Gangs.tla (background
@@ -290,35 +303,34 @@ M5  M5-tenuring  MC  MC_deep_boundary_k2_lb.cfg          deep   tlc  violates:No
 M6  M6-lifecycle  HelperPool  pool_basic.cfg                        quick  tlc  pass
 M6  M6-lifecycle  HelperPool  pool_mut_fork.cfg                     quick  tlc  pass
 M6  M6-lifecycle  HelperPool  pool_host_fork_parent.cfg             quick  tlc  pass
-M6  M6-lifecycle  HelperPool  pool_host_fork_stranded.cfg           quick  tlc  violates:ChildNoStranded     # CR-003
-M6  M6-lifecycle  HelperPool  pool_host_fork_locks.cfg              quick  tlc  violates:ChildLocksFree      # CR-015
-M6  M6-lifecycle  HelperPool  pool_host_fork_fix_drain.cfg          quick  tlc  violates:ChildNoStranded     # CR-003 fix 1 alone: not enough
-M6  M6-lifecycle  HelperPool  pool_host_fork_fix_post.cfg           quick  tlc  violates:ChildNoStranded     # CR-003 fix 2 alone: not enough
-M6  M6-lifecycle  HelperPool  pool_host_fork_fix_both.cfg           quick  tlc  pass
-M6  M6-lifecycle  HelperPool  pool_host_fork_tm_first.cfg           quick  tlc  pass
-M6  M6-lifecycle  HelperPool  pool_host_fork_tm_last.cfg            quick  tlc  violates:MutatorProgress     # wrong handler order deadlocks the parent
-M6  M6-lifecycle  HelperPool  pool_host_child_hang.cfg              quick  tlc  violates:HostChildProgress   # CR-015 (and CR-003): the child's exit() hangs
-M6  M6-lifecycle  HelperPool  pool_host_child_fix_both.cfg          quick  tlc  violates:HostChildProgress   # CR-015 without a thread_mutex_ handler
+M6  M6-lifecycle  HelperPool  pool_host_fork_stranded.cfg           quick  tlc  pass                        # CR-003 fixed (register-fixes 7.2); was violates:ChildNoStranded
+M6  M6-lifecycle  HelperPool  pool_host_fork_locks.cfg              quick  tlc  pass                        # CR-015 fixed (GCFork allocator layer); was violates:ChildLocksFree
+M6  M6-lifecycle  HelperPool  pool_host_child_hang.cfg              quick  tlc  pass                        # CR-003/015 fixed: the child's exit() does not hang; was violates:HostChildProgress
 M6  M6-lifecycle  HelperPool  pool_host_child_guard.cfg             quick  tlc  pass
-M6  M6-lifecycle  HelperPool  pool_host_child_fix_all.cfg           quick  tlc  pass
 M6  M6-lifecycle  HelperPool  mutants/pool_lost_wakeup.cfg          quick  tlc  violates:MutatorProgress
 M6  M6-lifecycle  HelperPool  mutants/pool_wait_no_recheck.cfg      quick  tlc  violates:WaitSeesDone
 M6  M6-lifecycle  HelperPool  mutants/pool_no_dequeue.cfg           quick  tlc  violates:PoolRunOnce
 M6  M6-lifecycle  HelperPool  mutants/pool_no_start.cfg             quick  tlc  violates:ParentJobsFinish
 M6  M6-lifecycle  HelperPool  mutants/pool_child_keeps_started.cfg  quick  tlc  violates:ChildProgress
 M6  M6-lifecycle  HelperPool  mutants/pool_guard_after_tm.cfg       quick  tlc  violates:HostChildProgress
+M6  M6-lifecycle  HelperPool  mutants/pool_as_built_2026_09.cfg     quick  tlc  violates:ChildNoStranded     # CR-003 as built (A6)
+M6  M6-lifecycle  HelperPool  mutants/pool_no_tm_cas_outside.cfg    quick  tlc  violates:ChildNoStranded     # drain fix alone (was fix_drain)
+M6  M6-lifecycle  HelperPool  mutants/pool_no_tm_drain_split.cfg    quick  tlc  violates:ChildNoStranded     # CAS fix alone (was fix_post)
+M6  M6-lifecycle  HelperPool  mutants/pool_no_tm.cfg                quick  tlc  violates:ChildLocksFree      # CR-015: no thread_mutex_ layer
+M6  M6-lifecycle  HelperPool  mutants/pool_no_tm_child_hang.cfg     quick  tlc  violates:HostChildProgress   # CR-015 at the child's exit() (was host_child_fix_both)
+M6  M6-lifecycle  HelperPool  mutants/pool_tm_last.cfg              quick  tlc  violates:MutatorProgress     # thread_mutex_ after the pool deadlocks the parent
 M6  M6-lifecycle  Gangs       gangs_episode.cfg                     quick  tlc  pass
 M6  M6-lifecycle  Gangs       gangs_mut_fork.cfg                    quick  tlc  pass
 M6  M6-lifecycle  Gangs       gangs_mut_fork_mark_first.cfg         quick  tlc  pass
 M6  M6-lifecycle  Gangs       gangs_mut_fork_1cpu.cfg               quick  tlc  pass
 M6  M6-lifecycle  Gangs       gangs_host_fork_safe.cfg              quick  tlc  pass
 M6  M6-lifecycle  Gangs       gangs_host_fork_1cpu.cfg              quick  tlc  pass
-M6  M6-lifecycle  Gangs       gangs_host_fork.cfg                   quick  tlc  violates:ClosingFinished     # CR-005
-M6  M6-lifecycle  Gangs       gangs_host_fork_1cpu_closing.cfg      quick  tlc  violates:ClosingFinished     # CR-005 on one CPU
-M6  M6-lifecycle  Gangs       gangs_host_fork_window.cfg            quick  tlc  violates:ChildHeldAny        # CR-004 window (harmless)
-M6  M6-lifecycle  Gangs       gangs_two_gangs_window.cfg            quick  tlc  violates:ChildHeldTenure     # CR-013 window
-M6  M6-lifecycle  Gangs       gangs_host_fork_stall.cfg             quick  tlc  violates:StopWaitsOwnEpisode # CR-023
-M6  M6-lifecycle  Gangs       gangs_host_fork_fix_closing.cfg       quick  tlc  pass
+M6  M6-lifecycle  Gangs       gangs_host_fork.cfg                   quick  tlc  pass                        # CR-005 fixed (register-fixes 7.2 step 6)
+M6  M6-lifecycle  Gangs       gangs_host_fork_1cpu_closing.cfg      quick  tlc  pass                        # CR-005 fixed, one CPU
+M6  M6-lifecycle  Gangs       gangs_host_fork_window.cfg            quick  tlc  pass                        # CR-004 window closed by the fork hold
+M6  M6-lifecycle  Gangs       gangs_two_gangs_window.cfg            quick  tlc  pass                        # CR-013 window closed by the fork hold
+M6  M6-lifecycle  Gangs       gangs_host_fork_stall.cfg             quick  tlc  pass                        # CR-023 fixed (fork hold + generation stopAndJoin)
+M6  M6-lifecycle  Gangs       gangs_foreign_stop.cfg                quick  tlc  pass                        # CR-023: a foreign stop with no hold (register-fixes 7.2 step 9)
 M6  M6-lifecycle  Gangs       gangs_exit.cfg                        quick  tlc  pass
 M6  M6-lifecycle  Gangs       gangs_exit_host_fork.cfg              quick  tlc  pass
 M6  M6-lifecycle  Gangs       mutants/gangs_running_after_notify.cfg  quick  tlc  violates:LJ_RunningExact
@@ -330,15 +342,20 @@ M6  M6-lifecycle  Gangs       mutants/gangs_run_no_wait_handoff.cfg quick  tlc  
 M6  M6-lifecycle  Gangs       mutants/gangs_join_in_run.cfg         quick  tlc  violates:ParentProgress
 M6  M6-lifecycle  Gangs       mutants/gangs_relaunch_unreaped.cfg   quick  tlc  violates:LaunchIdle
 M6  M6-lifecycle  Gangs       mutants/gangs_child_no_unlock.cfg     quick  tlc  violates:ChildProgress
+M6  M6-lifecycle  Gangs       mutants/gangs_no_fork_hold.cfg        quick  tlc  violates:ChildHeldTenure     # CR-013 as built (A6)
+M6  M6-lifecycle  Gangs       mutants/gangs_hold_after_stop.cfg     quick  tlc  violates:ChildHeldTenure     # hold after stopAllForFork
+M6  M6-lifecycle  Gangs       mutants/gangs_no_fork_hold_window.cfg quick  tlc  violates:ChildHeldAny        # CR-004 as built
+M6  M6-lifecycle  Gangs       mutants/gangs_no_stop_gen.cfg         quick  tlc  violates:ParentProgress      # CR-023 as built
+M6  M6-lifecycle  Gangs       mutants/gangs_stop_gen_clears_running.cfg quick  tlc  violates:LJ_RunningExact
+M6  M6-lifecycle  Gangs       mutants/gangs_closing_asserts_finished.cfg quick tlc  violates:ClosingFinished     # CR-005 as built
 
 # M6 deep tier: more workers, more operations, B = 2, two gangs, both prepare orders.
 M6  M6-lifecycle  HelperPool  pool_deep_2workers.cfg                deep   tlc  pass
 M6  M6-lifecycle  HelperPool  pool_deep_2workers_host.cfg           deep   tlc  pass
 M6  M6-lifecycle  HelperPool  pool_deep_ops6_host.cfg               deep   tlc  pass
 M6  M6-lifecycle  HelperPool  pool_deep_fix_all_2workers.cfg        deep   tlc  pass
-M6  M6-lifecycle  HelperPool  pool_deep_tm_first_2workers.cfg       deep   tlc  pass
 M6  M6-lifecycle  Gangs       gangs_deep_host_fork_mark_first_safe.cfg  deep  tlc  pass
-M6  M6-lifecycle  Gangs       gangs_deep_host_fork_mark_first.cfg   deep   tlc  violates:ClosingFinished     # CR-005
+M6  M6-lifecycle  Gangs       gangs_deep_host_fork_mark_first.cfg   deep   tlc  pass                        # CR-005 fixed
 M6  M6-lifecycle  Gangs       gangs_deep_host_fork_steps2.cfg       deep   tlc  pass
 M6  M6-lifecycle  Gangs       gangs_deep_two_gangs.cfg              deep   tlc  pass
 M6  M6-lifecycle  Gangs       gangs_deep_two_gangs_mut.cfg          deep   tlc  pass
@@ -350,19 +367,25 @@ M6  M6-lifecycle  Gangs       gangs_deep_wide.cfg                   deep   tlc  
 M6  M6-lifecycle  Gangs       gangs_deep_wide_mark_first.cfg        deep   tlc  pass
 M6  M6-lifecycle  Gangs       gangs_deep_wide_mut.cfg               deep   tlc  pass
 M6  M6-lifecycle  Gangs       gangs_deep_wide_exit.cfg              deep   tlc  pass
+M6  M6-lifecycle  Gangs       gangs_deep_b2_foreign_stop.cfg        deep   tlc  pass                        # CR-023 (register-fixes 7.2 step 9)
 
 # M7: deferred decommit, commit-ahead and the lock order (plans/threaded-gc-tla-M7-pagework.md)
 # M7a PageWork.tla (deferred decommit, commit-ahead); M7b LockOrder.tla (promo_mu_ -> thread_mutex_ -> pool wait)
 M7  M7-pagework  PageWork   pw_basic.cfg                               quick  tlc  pass
 M7  M7-pagework  PageWork   pw_two_workers.cfg                         quick  tlc  pass
 M7  M7-pagework  PageWork   pw_aba.cfg                                 quick  tlc  pass   # ABA audit: an extent's key re-recorded across reuse cycles
+M7  M7-pagework  PageWork   pw_nowait.cfg                              quick  tlc  pass   # CR-007 fix (register-fixes 6.3): NoWaitUnlessCap, job-blind skip
 M7  M7-pagework  LockOrder  lock_order.cfg                             quick  tlc  pass
 M7  M7-pagework  LockOrder  lock_order_3.cfg                           quick  tlc  pass
-M7  M7-pagework  LockOrder  lock_order_stall.cfg                       quick  tlc  witness:MODEL_M7_StallWitness   # CR-007's stall is reachable
+M7  M7-pagework  LockOrder  lock_order_stall.cfg                       quick  tlc  witness:MODEL_M7_StallWitness   # CR-007's stall: reachable only in the cap fallback (CapExhausted) since the fix
+M7  M7-pagework  LockOrder  lock_order_nostall.cfg                     quick  tlc  pass   # CR-007 fix: with bump room no holder waits
+M7  M7-pagework  LockOrder  lock_order_fork.cfg                        quick  tlc  pass   # HEAP_075: a fork's prepare vs a parallel minor and the teardown (register-fixes 7.2 step 2)
 M7  M7-pagework  PageWork   mutants/reuse_no_wait.cfg                  quick  tlc  violates:HEAP_059
 M7  M7-pagework  PageWork   mutants/release_no_await_populate.cfg      quick  tlc  violates:HEAP_060
 M7  M7-pagework  PageWork   mutants/release_no_await_populate_2w.cfg   quick  tlc  violates:HEAP_060
 M7  M7-pagework  PageWork   mutants/skip_posted_extents.cfg            quick  tlc  violates:DetChoice
+M7  M7-pagework  PageWork   mutants/nowait_skip_posted.cfg             quick  tlc  violates:DetChoice   # CR-007: a skip keyed on job state
+M7  M7-pagework  PageWork   mutants/nowait_first_fit.cfg               quick  tlc  violates:NoWaitUnlessCap   # CR-007: the pre-fix first fit
 M7  M7-pagework  PageWork   mutants/reuse_keeps_pending.cfg            quick  tlc  violates:V1
 M7  M7-pagework  PageWork   mutants/reuse_bypass.cfg                   quick  tlc  violates:TrackedInFree
 M7  M7-pagework  PageWork   mutants/age_stale_entry.cfg                quick  tlc  violates:NoOwnedPosted
@@ -370,8 +393,11 @@ M7  M7-pagework  PageWork   mutants/takeslot_no_wait.cfg               quick  tl
 M7  M7-pagework  PageWork   mutants/job_never_done.cfg                 quick  tlc  violates:MutatorFinishes
 M7  M7-pagework  LockOrder  mutants/tm_then_promo.cfg                  quick  tlc  deadlock
 M7  M7-pagework  LockOrder  mutants/worker_takes_tm.cfg                quick  tlc  deadlock
-M7  M7-pagework  LockOrder  mutants/collector_takes_tm.cfg             quick  tlc  deadlock
+M7  M7-pagework  LockOrder  mutants/collector_takes_tm.cfg             quick  tlc  deadlock   # with teardown_under_tm (the pre-fix hold)
+M7  M7-pagework  LockOrder  mutants/teardown_under_tm.cfg              quick  tlc  deadlock   # HEAP_075: teardown joins the collector under thread_mutex_ vs a fork
+M7  M7-pagework  LockOrder  mutants/fork_tm_first.cfg                  quick  tlc  deadlock   # HEAP_075: the fork's prepare takes thread_mutex_ before run_m_
 M7  M7-pagework  LockOrder  mutants/lost_wakeup.cfg                    quick  tlc  violates:AllFinish
+M7  M7-pagework  LockOrder  mutants/nowait_off.cfg                     quick  tlc  violates:MODEL_M7_StallWitness   # CR-007: the pre-fix policy
 
 # M7 deep tier (tla-check-deep): pw_deep is the plan's bounds for the invariants; liveness at 5 operations.
 M7  M7-pagework  PageWork   pw_deep.cfg                                deep   tlc  pass
@@ -387,16 +413,12 @@ M8  M8-block-lifecycle  MC  MC_quick_uniform_large.cfg            quick  tlc  pa
 M8  M8-block-lifecycle  MC  MC_quick_bagrung.cfg                  quick  tlc  pass                            # CR-029: the bag rung's carve is consistent
 M8  M8-block-lifecycle  MC  MC_quick_bagrung_witness.cfg          quick  tlc  witness:NoSizeClassedBagCarve   # CR-029: ... and reachable serially
 M8  M8-block-lifecycle  MC  MC_quick_reissue_witness.cfg          quick  tlc  witness:NoSameIdSameStartReissue  # CR-036's shape is reachable
-M8  M8-block-lifecycle  MC  MC_quick_cr018.cfg                    quick  tlc  violates:NoOverwriteLive        # CR-018
-M8  M8-block-lifecycle  MC  MC_quick_cr018_flip.cfg               quick  tlc  violates:FlipTrustsTruth        # CR-018
-M8  M8-block-lifecycle  MC  MC_quick_cr035.cfg                    quick  tlc  violates:IndexFaithful          # CR-035
-M8  M8-block-lifecycle  MC  MC_quick_cr035_lost.cfg               quick  tlc  violates:NoLostObject           # CR-035 (S1)
-M8  M8-block-lifecycle  MC  MC_quick_cr033.cfg                    quick  tlc  violates:BlockParseable         # CR-033
-M8  M8-block-lifecycle  MC  controls/cr018_count_idle.cfg         quick  tlc  pass                            # CR-018 fix candidate (a)
-M8  M8-block-lifecycle  MC  controls/cr035_flip_purges.cfg        quick  tlc  pass                            # CR-035 fix candidate
-M8  M8-block-lifecycle  MC  controls/cr035_lost_flip_purges.cfg   quick  tlc  pass
-M8  M8-block-lifecycle  MC  controls/cr033_tail_header.cfg        quick  tlc  pass                            # CR-033 fix candidate
-M8  M8-block-lifecycle  MC  controls/fixed_all.cfg                quick  tlc  pass                            # all three, every request size
+M8  M8-block-lifecycle  MC  MC_quick_cr018.cfg                    quick  tlc  pass                            # CR-018 (fixed: HEAP_073)
+M8  M8-block-lifecycle  MC  MC_quick_cr018_flip.cfg               quick  tlc  pass                            # CR-018 (fixed: HEAP_073)
+M8  M8-block-lifecycle  MC  MC_quick_cr033.cfg                    quick  tlc  pass                            # CR-033 (fixed: HEAP_024 tail header)
+M8  M8-block-lifecycle  MC  controls/cr035_flip_purges.cfg        quick  tlc  pass                            # CR-035 (fixed): the purge alone closes it (idle_uncounted on)
+M8  M8-block-lifecycle  MC  controls/cr035_lost_flip_purges.cfg   quick  tlc  pass                            # ... and its S1 chain
+M8  M8-block-lifecycle  MC  controls/fixed_all.cfg                quick  tlc  pass                            # the fixed code, every request size
 M8  M8-block-lifecycle  MC  mutants/reclaim_ignores_live.cfg      quick  tlc  violates:NoLostObject
 M8  M8-block-lifecycle  MC  mutants/cursor_ignores_bit.cfg        quick  tlc  violates:NoOverwriteLive
 M8  M8-block-lifecycle  MC  mutants/split_keeps_cell.cfg          quick  tlc  violates:NoDoubleAlloc
@@ -405,8 +427,13 @@ M8  M8-block-lifecycle  MC  mutants/release_keeps_index.cfg       quick  tlc  vi
 M8  M8-block-lifecycle  MC  mutants/release_keeps_free_cells.cfg  quick  tlc  violates:FreeListsInLiveBlocks
 M8  M8-block-lifecycle  MC  mutants/flip_ignores_live.cfg         quick  tlc  violates:FlipTrustsTruth
 M8  M8-block-lifecycle  MC  mutants/detach_skips_queue.cfg        quick  tlc  violates:SideTablesFaithful
+M8  M8-block-lifecycle  MC  mutants/bag_tail_headerless.cfg       quick  tlc  violates:BlockParseable         # CR-033 pre-fix (A6)
+M8  M8-block-lifecycle  MC  mutants/idle_uncounted.cfg            quick  tlc  violates:NoOverwriteLive        # CR-018 pre-fix (A6)
+M8  M8-block-lifecycle  MC  mutants/idle_uncounted_flip.cfg       quick  tlc  violates:FlipTrustsTruth        # CR-018 pre-fix (A6)
+M8  M8-block-lifecycle  MC  mutants/flip_keeps_index.cfg          quick  tlc  violates:IndexFaithful          # CR-035 pre-fix (A6; with idle_uncounted)
+M8  M8-block-lifecycle  MC  mutants/flip_keeps_index_lost.cfg     quick  tlc  violates:NoLostObject           # CR-035 pre-fix S1 (A6; with idle_uncounted)
 
-# M8 deep tier (tla-check-deep): three pages, seven operations; unfixed without the CR-018 /
-# CR-033 preconditions, and with the three fix candidates and every request size.
+# M8 deep tier (tla-check-deep): three pages, seven operations; broad without the former CR-018 /
+# CR-033 preconditions, and the fixed code (the defaults since 2026-09-30) with every request size.
 M8  M8-block-lifecycle  MC  MC_deep_broad.cfg                     deep   tlc  pass
 M8  M8-block-lifecycle  MC  MC_deep_fixed.cfg                     deep   tlc  pass

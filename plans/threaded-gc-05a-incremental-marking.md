@@ -588,7 +588,7 @@ row (per-kind max/p99, slices per cycle, closing-unit distribution).
 | IM2 | reachable-at-handoff ∩ old ⊆ marked | handoff | The same independent trace, from the roots and young objects **at the handoff**. |
 | IM3 | no young pointer outside snapshot mode | `pushMarkRoot` | `assert(snapshot_mode_ \|\| !cycleActive() \|\| (!nursery_->contains(obj) && !isYoungLarge(obj)))` |
 | IM4 | allocate-black on every entry point | 7 header-init sites + `allocate()` tail + handoff | P§3.4 |
-| IM5 | nothing pre-t0 changes identity | handoff; release/free sites | `releaseBlockToAllocator`, `releaseUnassignedBlockToAllocator` and `freeLargeBodyCell` assert `!cycleActive()`; `scheduleCompaction` and `incrementalCompactionSlice` assert `!cycleActive()`; at t0 record (validate) a hash of every t0 block's `(start, size_class, is_large)` and re-check it at the handoff |
+| IM5 | nothing pre-t0 changes identity | handoff; release/free sites | `releaseBlockToAllocator`, `releaseUnassignedBlockToAllocator` and `freeLargeBodyCell` assert `!cycleActive()`; `scheduleCompaction` and `incrementalCompactionSlice` assert `!cycleActive()`; at t0 record (validate) a hash of every t0 block's `(start, size_class, is_large)` and re-check it at the handoff. Amended 2026-09-30 (CR-036, plans/threaded-gc-register-fixes.md §3.5): the key includes the id's BlockTable generation, so a same-id, same-start re-issue is caught (`t0BlocksChangedWhy`; `isT0Block` fails at once on a generation mismatch) |
 | IM6 | uniform live bytes consistent mid-cycle | every `validateEveryNthMinor` during a cycle; equality at the handoff | For each uniform block: `popcount × cell ≥ meta.live_bytes + pending + mark_live_.peek(id)` (grey objects have bits but no attribution yet); at the handoff, after the closing drain, equality. The existing V8 stays skipped while `marking_active`. |
 | IM7 | the survivor prefix is exact at t0 | `forEachSurvivor` | P§3.2 (`bump_.ptr == survivor_end_`; tags in range; walk ends at `bump_.ptr`) |
 | IM8 | no deferred free is lost or doubled | handoff | every `deferred_frees_` entry's cell is still allocated (bit set or large byte set) before `processDeferredFrees`; no address appears twice |
@@ -980,7 +980,7 @@ Implemented 2026-09-26. Every step landed; the flag is **default-on, T = 32**.
      explicit root sets.
    - `startMarkCycle` pushes those two kinds itself. `startMark`'s preparation became
      `prepareMark`, which `beginMarkCycle` shares.
-4. **IM5** re-checks the list of t0 blocks (id, start, size_class, is_large) at the handoff
+4. **IM5** re-checks the list of t0 blocks (id, generation, start, size_class, is_large) at the handoff (the generation: CR-036, 2026-09-30, so a same-id, same-start re-issue is caught)
    instead of a hash.
 5. **IM1/IM2** trace with `visitHeapChildren`. Tags it declines are not followed, which gives
    false negatives only.

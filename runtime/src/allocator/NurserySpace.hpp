@@ -222,6 +222,11 @@ public:
     // P§3.16 STW major rule: a Tenuring object whose job is Merged -> its
     // copy (TV1 aborts on a miss); anything else -> obj.
     void* majorRedirect(void* obj) const;
+    // CR-017 / HEAP_074: after a STW major's mark (before the mutator resumes),
+    // every survivor-part object of every Young extent the major did not reach
+    // (OldGenSpace::majorReachedNursery) becomes a Tag_Free filler. Never the
+    // Tenuring extent, builder areas or eden; never inside a minor.
+    void zapDeadAfterMajor(OldGenSpace& og);
     // The effective large-pointer nursery cap in region mode (P§3.13).
     size_t regionLargeCap() const { return region_large_cap_; }
     // Test hooks (P§3.19 negative controls; written only between minors).
@@ -823,8 +828,9 @@ size_t NurserySpace::forEachYoung(F&& f, size_t* bytes_out) {
             p += sz;
         }
     };
-    // threaded-gc-07b: every Young extent (ageing ones included; dead ageing
-    // objects are zapped fillers) and Tenuring; only the Fresh builder area is live.
+    // threaded-gc-07b: every Young extent (ageing ones included) and Tenuring;
+    // dead objects are zapped fillers (07b merge; HEAP_074 STW major); only the
+    // Fresh builder area is live.
     for (unsigned i = 0; i < rg_->n_surv; ++i) {
         region::Extent& X = rg_->x[i];
         if (X.state == region::XState::Young) {

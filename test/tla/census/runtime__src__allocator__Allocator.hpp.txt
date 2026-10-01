@@ -2,6 +2,15 @@
 * - getCombinedStats() acquires mutex to iterate all thread heaps
 * - initThread() acquires mutex to allocate regions
 a.thread_mutex_.unlock();
+const size_t v = old_gen_in_use_bytes_.load(std::memory_order_relaxed);
 if (!a.thread_mutex_.try_lock()) return true;
 mutable std::recursive_mutex thread_mutex_;
+old_gen_in_use_bytes_.store(old_gen_in_use_bytes_.load(std::memory_order_relaxed) + n,
+old_gen_in_use_bytes_.store(old_gen_in_use_bytes_.load(std::memory_order_relaxed) - n,
+size_t getOldGenCommittedBytes() const { return old_gen_in_use_bytes_.load(std::memory_order_relaxed); }
+std::atomic<size_t> old_gen_in_use_bytes_;
+std::lock_guard<std::recursive_mutex> l(thread_mutex_);
+std::memory_order_relaxed);
+std::memory_order_relaxed);
+std::thread::id fork_owner_;
 std::unordered_map<std::thread::id, std::unique_ptr<ThreadLocalHeap>> thread_heaps_;

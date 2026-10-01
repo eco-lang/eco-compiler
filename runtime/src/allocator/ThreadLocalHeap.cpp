@@ -14,6 +14,7 @@
 #include "TlaTrace.hpp"   // compiled-out hooks (trace builds only)
 #include <unordered_set>
 #include <cassert>
+#include <cstdio>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -468,6 +469,9 @@ void* ThreadLocalHeap::allocateYoungLarge(size_t size, Tag tag) {
     // with the current minor color, so the next minor frees it unless it is
     // reached. No minor GC here: the caller's raw pointers stay valid unless
     // the old gen is full and a major runs first (before the cell exists).
+    // Even then nothing moves, but in region mode that major zaps every
+    // survivor it did not reach (HEAP_074): a pointer the caller stores into
+    // the new object must be rooted across this call (HeapHelpers Pattern 1).
     noteLargeAlloc(LargePlacement::Ylos, size, tag);
     void* obj = old_gen_.allocateYoungLarge(size, tag, nursery_.minor_color_);
     if (!obj) {
@@ -709,8 +713,21 @@ struct PauseEndHook {
     }
 };
 
+#if ECO_HEAP_VALIDATE
+void ThreadLocalHeap::assertOwner(const char* where) const {
+    if (owner_ != std::thread::id() && owner_ != std::this_thread::get_id()) {
+        std::fprintf(stderr, "[heap-validate] HEAP_007: heap used by a non-owner (%s; CR-031)\n", where);
+        std::fflush(stderr);
+        std::abort();
+    }
+}
+#endif
+
 // TLA-REGION(TLH.minorGC) begin
 void ThreadLocalHeap::minorGC() {
+#if ECO_HEAP_VALIDATE
+    assertOwner("minorGC");
+#endif
 #if ENABLE_GC_PHASE_TIMERS
     GCPauseScope pause_scope(*this, /*is_major=*/false);
     MinorGCRecord rec;
@@ -791,6 +808,9 @@ void ThreadLocalHeap::minorGC() {
 
 // TLA-REGION(TLH.majorGC) begin
 void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
+#if ECO_HEAP_VALIDATE
+    assertOwner("majorGC");
+#endif
 #if ENABLE_GC_PHASE_TIMERS
     GCPauseScope pause_scope(*this, /*is_major=*/true);
 #endif
@@ -900,6 +920,10 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
         old_gen_.finishMarkAndSweep();
     }
 #endif
+
+    // CR-017 / HEAP_074: nursery_visited_ is exactly the young objects this major reached;
+    // every other survivor of a Young extent is dead and its old children may now be free.
+    if (nursery_.regionMode()) nursery_.zapDeadAfterMajor(old_gen_);
 
     auto t_done = std::chrono::high_resolution_clock::now();
 

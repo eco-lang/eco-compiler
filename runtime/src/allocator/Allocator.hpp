@@ -1,6 +1,7 @@
 #ifndef ECO_ALLOCATOR_H
 #define ECO_ALLOCATOR_H
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -89,7 +90,20 @@ public:
     // Initializes the calling thread's heap space.
     // Creates a ThreadLocalHeap with dedicated nursery and old gen regions.
     // Thread-safe: acquires mutex to carve out regions from the unified heap.
+    // HEAP_007 / CR-012 (option F): at most one live ThreadLocalHeap per
+    // process; a second live mutator aborts in initThread. Sequential
+    // mutators (one cleans up, then the next initThread) stay legal.
     void initThread();
+
+    // CR-012: lets initThread create a second live ThreadLocalHeap. For the
+    // benchmark driver (main.cpp --threads) and test harnesses ONLY:
+    // UNSUPPORTED (process-wide committed bytes, decommit clocks and the
+    // released-extent list are shared, so per-heap GC_DET_001 does not hold).
+    // Reset to false by reset().
+    void allowMultipleMutators(bool on) {
+        std::lock_guard<std::recursive_mutex> l(thread_mutex_);
+        multi_mutator_opt_in_ = on;
+    }
 
     // Cleans up the calling thread's heap space.
     // Should be called before the thread exits.
@@ -248,7 +262,9 @@ public:
     size_t getOldGenAllocatedBytes() const;
 
     // Returns committed bytes in the shared old-gen region (all threads).
-    size_t getOldGenCommittedBytes() const { return old_gen_in_use_bytes_; }
+    // CR-012 hardening: a relaxed atomic, so an opted-in second mutator's
+    // unlocked trigger read is not a data race (the value is still shared).
+    size_t getOldGenCommittedBytes() const { return old_gen_in_use_bytes_.load(std::memory_order_relaxed); }
     // threaded-gc-05b: ECO_GC_HELPER_JITTER_US, also the mark gang's probe.
     uint32_t helperJitterUs() const { return helper_jitter_us_; }
 
@@ -323,7 +339,17 @@ private:
     // Bytes currently in use in the old gen — i.e. acquired minus released.
     // Decremented when a block is returned via `releaseOldGenBlock`. Used
     // by `getOldGenCommittedBytes()` and tests; not used for mmap arithmetic.
-    size_t old_gen_in_use_bytes_;
+    // Written only under thread_mutex_ (relaxed load + store), read
+    // unlocked by the triggers (CR-012 hardening: relaxed atomic).
+    std::atomic<size_t> old_gen_in_use_bytes_;
+    void addOldGenInUse(size_t n) {
+        old_gen_in_use_bytes_.store(old_gen_in_use_bytes_.load(std::memory_order_relaxed) + n,
+                                    std::memory_order_relaxed);
+    }
+    void subOldGenInUse(size_t n) {
+        old_gen_in_use_bytes_.store(old_gen_in_use_bytes_.load(std::memory_order_relaxed) - n,
+                                    std::memory_order_relaxed);
+    }
     // C0 census (TEMPORARY): running maximum of the field above, sampled at
     // every increment via noteOldGenInUsePeak(). Reset with it.
     size_t old_gen_in_use_peak_;
@@ -408,6 +434,21 @@ private:
 
     mutable std::recursive_mutex thread_mutex_;  // Protects thread_heaps_ map and region allocation.
     std::unordered_map<std::thread::id, std::unique_ptr<ThreadLocalHeap>> thread_heaps_;
+    bool multi_mutator_opt_in_ = false;   // guarded by thread_mutex_; benchmark/test only (CR-012)
+    // HEAP_007 / HEAP_075 (plans/threaded-gc-register-fixes.md §7.1): set by GCFork's
+    // allocator layer in a forked child. Only heaps whose thread_heaps_ key equals
+    // fork_owner_ (the forking thread: fork() keeps its pthread_t, so its
+    // std::thread::id) are live in the child; the others are dead (never collected,
+    // never torn down: ~Allocator leaks them, CR-031).
+    bool fork_child_ = false;
+    std::thread::id fork_owner_;
+    // GCFork's allocator layer (kForkAllocator): prepare locks thread_mutex_ (after the
+    // gangs, before the census and the pool); parent unlocks; child re-creates it in
+    // place (never unlock the recursive mutex in the child: its owner TID differs).
+    static void forkPrepare();
+    static void forkParent();
+    static void forkChild();
+    void dropForkDeadHeapsLocked();   // CR-031: leak the heaps the forker does not own
 
     // Thread-local cache for fast access to current thread's heap (avoids map lookup).
     // constinit: guarantees static initialization, so cross-TU accesses skip
@@ -451,8 +492,9 @@ private:
     // C0 census (TEMPORARY): call after every increment of
     // old_gen_in_use_bytes_. Callers already hold thread_mutex_.
     void noteOldGenInUsePeak() {
-        if (old_gen_in_use_bytes_ > old_gen_in_use_peak_) {
-            old_gen_in_use_peak_ = old_gen_in_use_bytes_;
+        const size_t v = old_gen_in_use_bytes_.load(std::memory_order_relaxed);
+        if (v > old_gen_in_use_peak_) {
+            old_gen_in_use_peak_ = v;
         }
     }
 
@@ -509,7 +551,10 @@ private:
     // size >= requested. On hit, optionally `madvise(MADV_WILLNEED)` and
     // re-add the size to `old_gen_committed`. Otherwise bumps the committed
     // pointer, calling `mmap` to materialize the page.
-    char* acquireOldGenBlock(size_t size);
+    // CR-007: `w = AvoidUnderPromo` (a promo_mu_ holder with n > 1 workers)
+    // selects the no-wait policy (AcquireWait, AllocatorCommon.hpp).
+    using AcquireWait = ::Elm::AcquireWait;
+    char* acquireOldGenBlock(size_t size, AcquireWait w = AcquireWait::Allowed);
 
     // Returns an old-gen block to the free list for reuse by a later
     // `acquireOldGenBlock`. The virtual mapping is retained; if
@@ -625,7 +670,8 @@ public:
     // thread, runs heap h, whose mutator does not exist in the child. OUTSIDE the
     // fork contract (HEAP_007); sound only when the mutator was parked outside any
     // pause and any RootSet update at the fork.
-    static void adoptThreadHeap(Allocator&, ThreadLocalHeap* h) { Allocator::setThreadHeap(h); }
+    // Validate builds: the adopting thread becomes the heap's owner (HEAP_007's check).
+    static void adoptThreadHeap(Allocator&, ThreadLocalHeap* h);
 
     // threaded-gc-07: the region slice set API and geometry.
     static NurserySliceSet acquireSliceSet(Allocator& a, size_t initial) { return a.acquireNurserySliceSet(initial); }
@@ -662,6 +708,13 @@ inline RootSet &Allocator::getRootSet() noexcept {
 // complete. Keep the null check — cold callers run before initThread().
 inline bool Allocator::isInNursery(void *ptr) {
     return tl_heap_ && tl_heap_->isInNursery(ptr);
+}
+
+inline void AllocatorTestAccess::adoptThreadHeap(Allocator&, ThreadLocalHeap* h) {
+    Allocator::setThreadHeap(h);
+#if ECO_HEAP_VALIDATE
+    if (h != nullptr) h->owner_ = std::this_thread::get_id();
+#endif
 }
 
 } // namespace Elm

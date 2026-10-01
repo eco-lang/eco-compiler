@@ -1,0 +1,1 @@
+if (owner_ != std::thread::id() && owner_ != std::this_thread::get_id()) {

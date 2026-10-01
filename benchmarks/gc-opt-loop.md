@@ -2398,6 +2398,64 @@ vs `keep-SG4`).
   test runs used `ulimit -c 0`, because the validate suite's negative controls otherwise leave
   ~21 GB of core files in /work. `eco-opt-prev -> eco-optLB3`; reference snapshot `keep-LB3`.
 
+### REGFIX — the concurrency-register fixes (`plans/threaded-gc-register-fixes.md`, Phases 0-5) — **FLAT, correctness step: wall +0.08 s, GC time +0.02 s (both inside the band), every counter identical to LB3 down to the object, max RSS −6 MB, output identical (fixed point)**
+
+This step fixes the 24 register entries plus CR-039, which a model row found (register:
+`plans/threaded-gc-concurrency-register.md`). It is a runtime-only step built exactly like LB3:
+`ecoSG4.mlir` was lowered against the changed runtime to `eco-optREGFIX`. `compiler/src`,
+`compiler/src-xhr`, `elm-kernel-cpp/src` and `eco-kernel-cpp/src` are byte-identical to `keep-LB3`.
+
+The runtime was built clean in `build/` (`ninja -t clean` of all 42 runtime/kernel archives and
+`eco-boot-native`, 255 files, then a rebuild with `CCACHE_DISABLE=1`). The configuration is the same
+as LB3's: RelWithDebInfo `-O2 -g -UNDEBUG`, `ECO_GC_STATS` ON (it supplies the GC-time column),
+`ECO_GC_PHASE_TIMERS` OFF, `ECO_HEAP_VALIDATE` OFF, `ECO_P1_CENSUS` OFF, and no `ECO_TLA_TRACE`, so
+every probe is compiled out. The runs used no GC environment.
+
+Patch `snapshots/lss-loop/step-REGFIX.patch` (17,107 lines, vs `keep-LB3`; `runtime/src` only). It
+also carries the TLA trace hooks added since `keep-LB3`; they are compiled out here. The A arm was not
+re-run: LB3's recorded medians are the reference, per §1 (same box, no day-to-day drift).
+
+| run | wall (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|
+| r1 | 106.50 | 7.65 | 2521 | 10 | 20320 | 10864068 | 13264597 | same |
+| r2 | 106.23 | 7.62 | 2521 | 10 | 20320 | 10870280 | 13264597 | same |
+| r3 | 107.14 | 7.68 | 2521 | 10 | 20320 | 10859364 | 13264597 | same |
+| **median** | **106.50** | **7.65** | 2521 | 10 | 20320 | **10864068** | 13264597 | same |
+| Δ vs LB3 (106.42 / 7.63 / 10870280) | +0.08 | +0.02 | 0 | 0 | 0 | −6212 | 0 | — |
+
+- **Verdict vs LB3: FLAT.** Wall +0.08 s is far inside the band (spreads 0.91 s here and 1.66 s for
+  LB3). GC time +0.02 s is inside the triple's own spread (0.06 s). Under §4's amendment, a flat
+  correct step ships. The fixes were never going to be judged on speed: the rule for this step is
+  correctness first, performance second.
+- **Counter gate: PASSED, identical to the object.** Minors 2,521, majors 10, promoted 693,127,705
+  objects (20,320 MiB), copied-in-nursery 758,412,033, in all three runs, and LB3 matches. Output is
+  byte-identical to `ecoSG4.mlir` and deterministic across the triple. No `[gc-stats] SIG` in any
+  stderr.
+- **Why the counters are untouched, despite behaviour changes:**
+  - **CR-018:** counting `live_bytes` at Idle changes no decision here.
+  - **CR-016:** the no-flip rule needs a block-sized promotion, which never happens.
+  - **CR-007:** the no-wait acquire needs a Posted extent at a promotion, and nothing reached it here.
+  - **CR-017's zap:** runs only on STW majors, and this workload's 10 majors are concurrent cycles.
+  - **CR-012's abort:** never fires (one mutator).
+  - The fork machinery is idle.
+  
+  The fixes that sit on the hot path (CR-001's relaxed `atomic_ref` loads, CR-002's in-lock
+  finalize of unswept-block cells, CR-019's whole-word header loads) cost nothing measurable on GC
+  time.
+- **Other:**
+  - user CPU 179.09 / 179.12 / 179.99 s (LB3 179.04);
+  - sys 4.46-4.55 s;
+  - old-gen in-use peak 9,796 / 9,801 / 9,792 MB (LB3 9,809 MB).
+  
+  Pauses were not measured: this is a stats build without phase timers (§LB3's correction). A
+  phase-timer relink is needed before reading any pause figure.
+- **Gates so far** (the fix plan's per-phase gates): unit 2,003/2,003; `register-guards` strict GREEN;
+  validate `threaded-gc-0` 168/168 at 1/4/8 minor threads; TLA quick and deep, trace validation and
+  canary green.
+- **Not yet run:** the §1 Phase 4 E2E gate (`--target check`) on this tree. `eco-opt-prev` is
+  therefore NOT promoted to `eco-optREGFIX` yet, and `keep-REGFIX` is not taken. Snapshot
+  `try-REGFIX`.
+
 ## 7. Findings
 
 (What this series learns, separated from the per-step records so the entries stay to ten lines.
@@ -2875,3 +2933,4 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | TA2 | 112.45 | +0.36 | 1924 | 8 | 19862 | 13349532 | FLAT (kept, k = 1; k = 2 118.11 / k = 3 123.39 LOSS) | TG7d |
 | SG4 | 106.54 | -5.91 | 2521 | 8 | 20320 | 12985716 | WIN (incl. untracked 09-29 nmbc384/sfl128K; granule alone FLAT wall, RSS -446 MB, CPU -4.4 s) | TA2 |
 | LB3 | 106.42 | -0.12 | 2521 | 10 | 20320 | 10870280 | WIN (flat wall, RSS -2.12 GB / -16.3 %, worst pause 115 -> 86 ms, p50-p99.9 unchanged; incl. untracked bug-2 fix, inert here) | SG4 |
+| REGFIX | 106.50 | +0.08 | 2521 | 10 | 20320 | 10864068 | FLAT (correctness: register fixes; counters identical, output identical; E2E gate pending) | LB3 |

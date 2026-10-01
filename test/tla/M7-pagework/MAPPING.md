@@ -28,6 +28,8 @@ drift. `PW` = `runtime/src/allocator/PageWork.cpp`, `AL` = `Allocator.cpp`, `OGS
 | `sstate[s]` | `Idle` / `Posted` / `Running` / `Done` | `HelperJob::state` of `slots_[s]` (`GCHelperPool.hpp:49`) |
 | `skind[s]`, `sext[s]` | job kind; its extents (Discard) or the window's extents (Populate) | `PageJob::kind`, `extents`, `lo`/`hi` (`PageWork.hpp:135-143`) |
 | `takenSlot` | `takeSlot`'s result, reset when dead | the `PageJob&` returned by `takeSlot` |
+| `gPend` | ghost (CR-007, 2026-10-01): Pending membership, kept by the caller's own steps (release adds, a cancel and the post of an aged batch remove) and never by a job step; `PendGhost` checks it equals `{x : pw[x] = "Pending"}` | `pending_` membership, read by the no-wait policy through `PageWork::isPending` |
+| `nwAcq`, `nwFallback` | the acquire in progress is a no-wait one (`AcquireWait::AvoidUnderPromo`); it took the cap fallback | the `w` argument of `acquireOldGenBlock`; the fallback branch (`noteNoWait(Fallback)`) |
 | `stale` | ghost, only written under `MUTANT = "age_stale_entry"`: extents whose `pending_order_` entry went stale at a cancel | a stale `pending_order_` entry (`PW:186`, skipped at `PW:280-283`) |
 | caller locals `n`, `ext`, `rs`, `rsel`, `batch`, `win` | operation count; the extent being released or reused; the overlapping populates still to wait for; the one being waited for; the aged batch; the window | locals of `onRelease`, `acquireOldGenBlock`, `syncPoint` |
 | procedure locals `as`, `ts` | `awaitSlot`'s slot; `takeSlot`'s chosen busy slot | `awaitSlot(s)`, `oldest` in `takeSlot` |
@@ -41,8 +43,12 @@ drift. `PW` = `runtime/src/allocator/PageWork.cpp`, `AL` = `Allocator.cpp`, `OGS
 | `tmOwner`, `tmDepth` | owner and recursion depth of `thread_mutex_` | `Allocator::thread_mutex_` (`std::recursive_mutex`, `Allocator.hpp:407`) |
 | `job` | the posted job the chain meets: `Posted` / `Running` / `Done` | the `HelperJob::state` of a Discard (onReuse) or Populate (onRelease) slot |
 | `reused` | the job's extent has been handed out (once) | first-fit picking that extent |
+| `CapExhausted` (constant) | the old-gen cap leaves no fresh bump room (CR-007's fallback) | `old_gen_committed + size > nursery_offset` in `acquireOldGenBlock` |
 | `waiting` | threads blocked in `cv_done_.wait` | `GCHelperPool::wait` (`HP:243-246`) |
 | `pc["coll"]` | the 7c collector has exited | the background gang's `running()` falling, joined by `stopAndJoin` |
+| `runM`, `runGo` | holder of the mark gang's run mutex; the run started its members (register-fixes Phase 5) | `GCMarkGang::run_m_` held by the parallel minor's caller across the run (`run`), the members' `cv_start_` wake-up |
+| `bm` | holder of the 7c collector gang's mutex | `GCBackgroundGang::m_` (taken by `stopAndJoin`, held across fork by GCFork's gangs layer) |
+| `Fork` (constant), process `fork` | a thread forks once: GCFork's prepare in its fixed layer order (HEAP_075) | `GCFork.cpp` `prep`: gangs (`stopAllForFork`, each gang's `m_`, `run_m_`), allocator (`thread_mutex_`), census, pool (drain under `m_`); the parent handlers release |
 
 The pool's `m_` is not a variable: it is a leaf lock, never held across a wait (`cv_done_.wait`
 releases it), so it cannot close a cycle.
@@ -63,7 +69,8 @@ and workers read only their own job's fields. So each call is one step, split on
 | `M_Choose` (reuse) | `AL:775-786` first-fit and swap-remove | the first extent; the ghost does the same |
 | `M_Reuse` | `PW:177-201` `onReuse` (`AL:792`) | cancel a Pending extent, or wait for a Posted one's job |
 | `M_Touch` | `AL:793-827` (V1 `AL:794-799`, V4 `AL:808`, `MADV_WILLNEED` `AL:820`) | V1 holds here; the heap owns the extent |
-| `M_Choose` (fresh) | `AL:837-885` bump path, `PW:203-220` `onFreshBump` | a fresh extent becomes the heap's; never waits |
+| `M_Choose` (fresh) | `AL:837-885` bump path, `PW:203-220` `onFreshBump`; also `acquireOldGenRegion` (a heap's initial region, through `onFreshBump` since 2026-10-01, CR-012(d)) | a fresh extent becomes the heap's; never waits; never re-maps the window (HEAP_060) |
+| `M_Choose` (no-wait acquire; `NoWait`) | CR-007 (2026-10-01): `acquireOldGenBlock(size, AcquireWait::AvoidUnderPromo)`'s policy block (`AL.acquireOldGenBlock`), called by `ensureBagPageAvailable`, `allocateFromBagPage` and `allocateLargeBlock` with `OldGenSpace::acquireWaitPolicy()` (a parallel promotion with n > 1) | (1) the first fitting **Pending** extent (`isPending`, job-blind) → `M_Reuse`, which cancels it; (2) else a fresh extent (never waits); (3) else (the cap: no fresh extent) today's first fit → `M_Reuse`, which may wait (`nwFallback`). The ghost `gFree` makes the same choice from `gPend` (`DetChoice`). `noteNoWaitSkip` / `noteNoWait` are counters and the `nw` trace event, no state |
 | `M_Choose` (sync) | `AL:1253-1258` `onGCPauseEnd`; `PW:273` `reapDone`, `PW:277-298` aging | reap some subset of the Done slots (`ReapChoices`, below), then choose the aged batch (`AgeChoices`: any subset of Pending) |
 | `M_Take`, `M_Post` | `PW:301` → `PW:222-242` `postDiscardBatch` (→ `takeSlot`) | take a slot; post the Discard job |
 | `M_Window`, `M_TakeP`, `M_PostP` | `PW:303` → `PW:244-268` `topUpWindow` | choose the window (any subset of the fresh extents); take a slot; post the Populate job |
@@ -82,7 +89,7 @@ and `M_PostP`; the worker's loop is `goto W_Take`, and its Done store is `W_Body
 |---|---|---|
 | `P_Promo` | `OGS:1587-1596` `allocatePromotion`'s `promo_mu_` (`SpinMutex::lock`, `MinorWork.hpp:91-107`); also the first section `OGS:1547` | acquire `promo_mu_` (spinning is an `await`) |
 | `P_Tm` | `AL:753` `acquireOldGenBlock` (via `ladderFrom2W` `OGS:1306` → `startVirginBlockShared` `OGS:1249` → `ensureBagPageAvailable` `OGS:866-871`, or `allocateFromBagPage` `OGS:2430`, or `allocateLargeBlock` `OGS:2743`); or `AL:892` `releaseOldGenBlock` (CR-014's route, §4) | acquire `thread_mutex_` (recursive) |
-| `P_Pick`, `P_Reuse` | `AL:775-792` first-fit → `onReuse` → `awaitSlot` (`PW:191`); or `onRelease` → `awaitPopulateOverlapping` (`PW:155`) | meet the posted job once; wait if it is not Done |
+| `P_Pick`, `P_Reuse` | `AL:775-792` first-fit → `onReuse` → `awaitSlot` (`PW:191`); or `onRelease` → `awaitPopulateOverlapping` (`PW:155`) | meet the posted job once; wait if it is not Done. Since CR-007's fix (2026-10-01) a member (n > 1) takes the Posted extent only when `CapExhausted` (the no-wait policy's fallback); otherwise it bumps a fresh extent and never meets the job (mutant `nowait_off`: the pre-fix first fit). The release half (`onRelease`'s populate wait) exists only with one worker since CR-014's fix (§4), so it is not a route with two or more members |
 | `PW_Lock`, `PW_Blocked` | `HP:236-252` `GCHelperPool::wait`: the acquire fast path (`:238`), then `cv_done_.wait` under `m_` (`:243-246`) | check under `m_`, else block; re-check on wake |
 | `P_Release`, `P_Unpromo` | the `lock_guard` and `unique_lock` destructors | release `thread_mutex_`, then `promo_mu_` |
 | `T_Tm`, `T_Join`, `T_Rel` | `AL:359` / `AL:384` (`cleanupThread`, `finishTenureForExit`) → `NT:900-904` `tenureTeardown` → `collector->stopAndJoin()` | the mutator holds `thread_mutex_` and joins the 7c collector |
@@ -100,7 +107,7 @@ and `M_PostP`; the worker's loop is `goto W_Take`, and its Done store is `W_Body
 | `reapDone`'s loop of per-slot acquire loads (`PW:115-124`) | one step reaping any subset of the slots Done at that instant (`ReapChoices`) | not atomic: a slot that turns Done after the loop passed it stays unreaped. Every outcome is a subset of the slots Done at the loop's end, so one step there covers it (primer §3.3). Found while mapping the trace (AUDIT.md, 2026-09-29) |
 | a discard's extents, `madvise`d in batch (release) order | one step per extent, in any order | the batch order is not modelled (the batch is a set) |
 | 1..64 FIFO pool workers | 1 or 2 workers that take **any** Posted job | M6's PoolJob contract promises no order, so this over-approximates FIFO. Where a mutant's counterexample needs a non-FIFO order, AUDIT.md says so and gives the FIFO-feasible one |
-| `thread_mutex_` around every PageWork call, from the mutator or a gang thread | implicit: one caller process makes every call | the mutex is held across the whole call, **waits included** (`lock_guard` at function entry), so the calls form one sequence whatever thread makes them. That also holds across heaps: the model's one caller stands for every heap's calls, and `owner = "heap"` means "owned by some heap". So HEAP_059, HEAP_060, V1, V2 and `PostIdle` hold for any number of heaps. `DetChoice` does not transfer: GC_DET_001 is per heap (CR-012) |
+| `thread_mutex_` around every PageWork call, from the mutator or a gang thread | implicit: one caller process makes every call | the mutex is held across the whole call, **waits included** (`lock_guard` at function entry), so the calls form one sequence whatever thread makes them. That also holds across heaps: the model's one caller stands for every heap's calls, and `owner = "heap"` means "owned by some heap". So HEAP_059, HEAP_060, V1, V2 and `PostIdle` hold for any number of heaps. `DetChoice` does not transfer: GC_DET_001 is per heap (CR-012). Since 2026-10-01 a second live heap is **forbidden** by HEAP_007 (CR-012 option F: `initThread` aborts unless `allowMultipleMutators(true)`, the benchmark driver and test harnesses only, unsupported), so one heap is the supported configuration and the model's one caller is exact |
 | aging: `delay_majors` (default 1), `delay_syncs` (default never), `pending_cap` (default 0), a prefix of `pending_order_` | at a sync point, any subset of the Pending extents | the rule reads only mutator state; no M7 invariant depends on when a discard is posted; the free choice covers every setting, including the H2/H3 harness's syncs-plus-cap |
 | the batch's `pending_` entries are erased before `takeSlot` waits (`PW:295-296` then `PW:224`) | the batch stays `Pending` until `M_Post` | the caller holds `thread_mutex_` throughout, and workers never read `pending_`, so nothing can observe the difference; the model is the more tracked of the two, and `TrackedInFree` holds either way |
 | the window `[max(window_end_, bump), roundUp(bump + ahead, 2 MiB))` | at a sync point, any subset of the fresh extents (possibly empty) | only the release wait depends on it; any subset over-approximates the real range, including an extent in two windows (a large block across a boundary). The code never repeats a window (`PW:248-249`); a mutant whose counterexample needs a repeat is given a configuration without windows (AUDIT.md, trap 11) |
@@ -119,8 +126,10 @@ Outside the model (a subset of the modelled behaviours, or another model's):
 - which blocks the old gen releases and when, and the ReleaseContract (M4; V2b at runtime);
 - partial overlaps of a bump request with the window's end (`onFreshBump` only splits the commit
   and never waits);
-- several heaps for determinism, `validatePageWork`'s reads of other heaps, and
-  `acquireOldGenRegion` re-mapping a window (CR-012).
+- several heaps for determinism and `validatePageWork`'s reads of other heaps: forbidden by
+  HEAP_007 since 2026-10-01 (CR-012 Won't-fix, option F; opt-in harnesses only). The third
+  CR-012 item, `acquireOldGenRegion` re-mapping a window, is **fixed** (it is now an `onFreshBump`
+  caller, i.e. an `M_Choose` fresh extent; with sequential mutators too).
 
 ## 4. Every route into M7b's chain (census of `promo_mu_`, `thread_mutex_`, the pool's `m_`)
 
@@ -132,20 +141,37 @@ Checked against the tree on 2026-09-28.
 | `ladderFrom2W` → `startVirginBlockW` (`OGS:1279-1281`), non-chunked, so one worker only | `OGS:1587` | the same; no other member exists to stall |
 | `ladderFrom2W` / `allocatePromotion` (`OGS:1345`, `1628`) → `allocateFromBagPage` (`OGS:2430`) | `OGS:1587` | the same |
 | `allocatePromotion`'s block-sized branch → `allocateLargeBlock` (`OGS:2743`) | `OGS:1547` (test geometries) | the same |
-| `sweepOnDemandAllocate` (`OGS:2147`), `panicSweepAndRetryAllocation` (`OGS:2169`), `allocateFromBagPage` (`OGS:2410`) → `lazySweep` tail (`OGS:5467-5476`) → `onSweepComplete` → `maybeShrinkCapacity` (`OGS:5502`) → `releaseBlockToAllocator` (`OGS:6101`) / `releaseUnassignedBlockToAllocator` (`OGS:6153`) | `OGS:1587` | `releaseOldGenBlock` → `onRelease` → a populate wait (CR-014) |
+| `sweepOnDemandAllocate` (`OGS:2147`), `panicSweepAndRetryAllocation` (`OGS:2169`), `allocateFromBagPage` (`OGS:2410`) → `lazySweep` tail (`OGS:5467-5476`) → `onSweepComplete` → `maybeShrinkCapacity` (`OGS:5502`) → `releaseBlockToAllocator` (`OGS:6101`) / `releaseUnassignedBlockToAllocator` (`OGS:6153`) | `OGS:1587` | `releaseOldGenBlock` → `onRelease` → a populate wait (CR-014). **Since CR-014's fix (2026-09-30, HEAP_067) only with ONE promotion worker**: every completion goes through `lazySweep`'s `completeSweep` → `sweepCompleteInPromotion`, which with N > 1 defers the shrink to `endParallelPromotion` (after the join, outside `promo_mu_`) and with N = 1 runs it on the only member (no other member to stall, as for `startVirginBlockW`); `onSweepComplete` aborts if `par_promo_active_` (PM7) |
 | callers: the parallel minor's gang; 7c's pause tenure engine `runJobParallel` (`NT:1168`, `allocatePromotion` at `NT:984`) | | |
 | `allocatePromotion`'s `per_alloc_sweep` slice (`OGS:1559-1563`) | **no** (one-worker identity) | `lazySweep` outside `promo_mu_`: not in the chain |
 
-Under `thread_mutex_` a thread may also block on a **background-gang join**: `tenureTeardown` →
+Under `thread_mutex_` a thread used to block on a **background-gang join**: `tenureTeardown` →
 `collector->stopAndJoin()` (`NT:904`) from `cleanupThread` (`AL:359-366`), `finishTenureForExit`
-(`AL:384-385`) and `reset` → `~ThreadLocalHeap`. The collector allocates only from its grant
+(`AL:384-385`) and `reset` → `~ThreadLocalHeap`. **Since register-fixes Phase 5 (§7.2 step 2,
+HEAP_075) none of them holds `thread_mutex_` across the teardown** (`cleanupThread` moves the heap out of
+the map under it and tears it down outside, re-locking only for the stats fold; `finishTenureForExit`
+takes no lock; `reset` and `~Allocator` swap the map out and destroy it after unlocking), because a
+fork's prepare holds the gangs' `m_` and then asks for `thread_mutex_` (M7b `lock_order_fork`; the
+pre-fix hold is mutant `teardown_under_tm`, which deadlocks with a fork). The collector allocates only from its grant
 (`NT:985`); nothing in `OldGenTenure.cpp`, `NurseryTenure.cpp` or `TenureWork.hpp` calls
 `acquireOldGenBlock`, `releaseOldGenBlock` or takes `thread_mutex_`. `tenureTeardown` runs the
 remaining work with one thread (`tenureConcFinish(..., on_this_thread = true)`, `NT:1249`), so no
 gang of more than one member runs under `thread_mutex_`.
 
-The lock graph is `promo_mu_` → `thread_mutex_` → {pool `m_` (a leaf), a background-gang join}.
-It is acyclic; `lock_order` checks it and three mutants show what would close a cycle.
+The lock graph is `run_m_` → `promo_mu_` → `thread_mutex_` → pool `m_` (a leaf); with a fork, the
+prepare adds registry → gang `m_` → `run_m_` → `thread_mutex_` → census → pool `m_` (HEAP_075). It is
+acyclic; `lock_order` and `lock_order_fork` check it and five mutants show what would close a cycle
+(`tm_then_promo`, `worker_takes_tm`, `collector_takes_tm` with the pre-fix teardown hold,
+`teardown_under_tm`, `fork_tm_first`).
+
+**CR-007's fix (2026-10-01, register-fixes §6.3).** The three acquire routes above that a member of a
+parallel promotion with n > 1 can take (`ensureBagPageAvailable`, `allocateFromBagPage`,
+`allocateLargeBlock`; the 7c pause tenure engine uses the same `beginParallelPromotion(ctx, n)`) pass
+`OldGenSpace::acquireWaitPolicy()` = `AvoidUnderPromo`, so `acquireOldGenBlock` reaches `onReuse`
+only for a Pending extent (a cancel, no wait) or, when the cap leaves no bump room, in the first-fit
+fallback (M7a `NoWaitUnlessCap`; M7b `lock_order_stall` is that fallback). `startVirginBlockW` and the
+N = 1 release route keep `Allowed` (one worker: no other member to stall; the one-worker identity).
+Validate builds abort a block or page release while `acquireWaitPolicy() != Allowed`.
 
 ## 5. Footprint rows (A3)
 
@@ -178,7 +204,9 @@ It is acyclic; `lock_order` checks it and three mutants show what would close a 
 | `MutatorFinishes` | M7a | liveness: every wait returns | — |
 | deadlock (TLC) | M7b | HEAP_058 ("the mutator may wait for a worker while holding it") | — |
 | `AllFinish` | M7b | liveness: every thread finishes | — |
-| `MODEL_M7_StallWitness` | M7b | witness: CR-007's stall is reachable | — |
+| `MODEL_M7_StallWitness` | M7b | witness: CR-007's stall is reachable **only in the cap fallback** (`lock_order_stall`, `CapExhausted = TRUE`); with bump room it holds (`lock_order_nostall`, pass; mutant `nowait_off` violates it) | the CRT guards `CR-007` (n = 2, fresh bump, no wait) and `CR-007 cap fallback` |
+| `NoWaitUnlessCap` | M7a | HEAP_058/HEAP_059 (CR-007): a no-wait acquire waits on a job only after the cap fallback | validate builds: `reuse_waits` unchanged across a no-wait Pending reuse (`AL.acquireOldGenBlock`); CRT `CR-007` |
+| `PendGhost` | M7a | GC_DET_001 (CR-007's skip test is job-blind) | `testDecommitModesAgreeOnCounters` (modes 1 and 2 agree) |
 
 V3 (populate bounds, addresses), V4 (poison on resident reuse), V5 (drained at reset) and V6
 (mode 0 inert) are runtime-only and outside the model.
@@ -210,7 +238,7 @@ The models are sequentially consistent. They rely on:
 | A2 | extents are the unit of both `madvise` and the free list; no sub-extent sharing |
 | A3 | §5 |
 | A4 | §8: the Done release/acquire outside `m_` and the post CAS → W `w_pool_done`: PASS (2026-09-28). `promo_mu_` as a lock: W3f PASS |
-| A5 | `TracePageWork.tla` on `gc-helper-trace` (H2 and H3 scripts), 8 accepted rows and 7 negative controls in `traces.txt` (§10) |
+| A5 | `TracePageWork.tla` on `gc-helper-trace` (H2 and H3 scripts), 10 accepted rows and 10 negative controls in `traces.txt` (§10; 2 + 3 of them for CR-007's `nw` picks) |
 | A6 | AUDIT.md: every invariant and property has a mutant; the witness is its own row |
 | A7 | §6 |
 | A8 | 3–4 extents, 1–3 slots, 1–2 workers, 4–7 caller operations (`pw_aba`: 10, with no window, for reuse cycles at one key); 2–3 gang members. No counter wraps: the epochs are gone (aging is a free choice) and `seq` is only an order |
@@ -222,10 +250,13 @@ The models are sequentially consistent. They rely on:
 extent is free before and after the discard" and "no populate over a released extent") and H3
 (real `mmap`/`madvise`, per-page patterns) script, built without TSan as `gc-helper-trace`
 (`test/gc-helper-tsan/CMakeLists.txt`, `-DECO_TLA_TRACE=ON`). `gc-helper-trace pagework
-<fake|real> <threads> <jitter us> <steps> <extents> <window extents> <seed> [<delay> [<reuse %>]]`
+<fake|real> <threads> <jitter us> <steps> <extents> <window extents> <seed> [<delay> [<reuse %> [<nowait %>]]]`
 runs one script in Concurrent mode between `tlatrace::begin` and `end` (after `pool.drain()`, so
 the workers are quiescent), with a lock standing in for `thread_mutex_`. The extent count, the
-decommit delay and the reuse percentage are the only knobs (defaults: the script's own).
+decommit delay, the reuse percentage and (CR-007, 2026-10-01) the share of reuses made under the
+no-wait policy are the only knobs (defaults: the script's own; nowait 0). A no-wait reuse runs the
+policy of `acquireOldGenBlock(…, AvoidUnderPromo)` over the script's free list (first Pending,
+else a fresh bump, else -- the script's bump limit is the cap -- first fit) and logs its pick.
 
 **Events** (`PageWork.cpp`'s `PW_TRACE` hooks; `nameThread("eco-gc", i)` in
 `GCHelperPool::workerLoop`). Every event carries a stamp from one process-wide seq_cst counter
@@ -239,6 +270,7 @@ in order (`TraceInOrder`).
 | `acq x st slot` | `onReuse` entry; `st` = `pending_` / `posted_discard_` membership, `slot` its job's | `M_Choose` (reuse): `ext = x` (first fit), and `pw[x]`, `postedIn[x]` must be the code's |
 | `reused x r` | `onReuse`'s returns | `M_Touch` |
 | `fresh x` | `onFreshBump` entry | `M_Choose` (fresh), `owner[x]`: fresh → heap |
+| `nw k x` | `PageWork::noteNoWait` (CR-007), before the `acq` / `fresh` it announces | recorded (`nwNext`); the next `acq` must be the no-wait branch with `nwFallback <=> k = 3` (k = 1 Pending, 3 fallback), the next `fresh` (k = 2) needs no Pending extent in the list; an `acq` with no `nw` is the first-fit branch (`~nwAcq`) |
 | `reaped mask` | `reapDone`'s end (the slots it reaped) | in `syncPoint`: recorded, reaped by the `sync` step; in `takeSlot`: `TS_ReapDone` |
 | `age x` | the aging loop, per aged extent | recorded (`x` must be Pending) |
 | `sync size` | after the aging loop | `M_Choose` (sync): the recorded reaps and batch |
@@ -253,7 +285,8 @@ Extents are logged by their 1-based index (the harness's `setObjId`); code slot 
 k + 1; a job is known by its post sequence number. **Hidden:** `M_RelWait`'s call and exit,
 `M_Reuse`, the `takeSlot` calls, `TS_Oldest` (the `await` then names the slot), a sync point
 without a window, and the loop's exit. **Checked on every matched step:** the model's
-invariants (`HEAP_059`, `HEAP_060`, `V1`, V2a/b, `DetChoice`, `PostIdle`), at the trace's scale
+invariants (`HEAP_059`, `HEAP_060`, `V1`, V2a/b, `DetChoice`, `PostIdle`, and since CR-007
+`NoWaitUnlessCap`, `PendGhost`), at the trace's scale
 (up to 64 extents, 8 slots, 4 workers). The configuration narrows the model's three free choices
 (`ReapChoices`, `AgeChoices`, `WindowChoices`) to the logged value, intersected with the model's
 own set, so TLC does not enumerate `SUBSET` of 64 fresh extents.
@@ -278,6 +311,7 @@ AUDIT.md entry quoting the new hash prefix (`test/tla/README.md`, "The canary").
 |---|---|---|
 | file | `runtime/src/allocator/GCHelperPool.hpp` | `-` |
 | file | `runtime/src/allocator/GCHelperPool.cpp` | `-` |
+| file | `runtime/src/allocator/GCFork.cpp` | `-` |
 | file | `runtime/src/allocator/PageWork.hpp` | `-` |
 | file | `runtime/src/allocator/PageWork.cpp` | `-` |
 | file | `runtime/src/allocator/TlaTrace.hpp` | `-` |
@@ -309,6 +343,7 @@ AUDIT.md entry quoting the new hash prefix (`test/tla/README.md`, "The canary").
 | census | `runtime/src/allocator/Allocator.hpp` | `-` |
 | census | `runtime/src/allocator/GCHelperPool.cpp` | `-` |
 | census | `runtime/src/allocator/GCHelperPool.hpp` | `-` |
+| census | `runtime/src/allocator/GCFork.cpp` | `-` |
 | census | `runtime/src/allocator/GCStats.cpp` | `-` |
 | census | `runtime/src/allocator/GCStats.hpp` | `-` |
 | census | `runtime/src/allocator/NurseryTenure.cpp` | `-` |

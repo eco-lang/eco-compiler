@@ -135,7 +135,7 @@ launch (LaunchJoin). The trace build adds `tlaNextCtl`'s counter and the thread-
 | `Drain` | IM15 plus the Drain contract (parent plan §5.0) | `assertNoPrivateWork` (`OGS:4452`); `closingFinish`'s `markStackEmpty` assert |
 | `TicketsExact` | IM12 / GC_DET_001 | `runMarkers`' `units == budget - c.budget` assert |
 | `AssistExact` | the assert in `assistEpisode` | `units == budget - pool` |
-| `ClosingFinished` | the assert in `closingFinish` (`OGS:4710`) | `assert(bg_ep_ == BgEpisode::Finished)` |
+| `ClosingFinished` | the assert in `closingFinish`; since register-fixes Phase 5 (CR-005, 2026-10-01) `word.done \/ stop` | `assert(bg_ep_ == BgEpisode::Finished \|\| bg_ep_ == BgEpisode::None)`: a foreign stop's leftovers are drained by `runMarkers` |
 | `BudgetOK` | MODEL_M2_1: the premise of the folded budget loads | — (the model's own abstraction) |
 | `AllExit` | MODEL_M2_2: every participant exits (liveness) | — |
 | `Postcondition` | `Drain /\ TicketsExact` (the plan's name; not listed separately in a configuration) | — |
@@ -240,7 +240,7 @@ M1's rows, AUDIT.md).
 | A3 | §5 |
 | A4 | §8: W1, W2 |
 | A5 | §9 |
-| A6 | every invariant has a mutant: `TerminationSafe` (`two_word`, `return_after_idle`, `idle_before_publish`, `idle_before_publish_onescan`, `joiner_no_reactivate`, `joiner_invisible`, `stop_sets_done`, `anywork_participants_only`), `ScanOnce` (`split_tas`), `Drain` (`skip_exit_publish`, on `episode_bgstop` and `tenure_l3`), `TicketsExact` (`steal_without_ticket`), `AssistExact` (`assist_returns_to_budget`), `ClosingFinished` (CR-005, `episode_stop`), `BudgetOK` (`budget_premise`), `AllExit` (`never_decide`). The historical bug is `two_word` |
+| A6 | every invariant has a mutant: `TerminationSafe` (`two_word`, `return_after_idle`, `idle_before_publish`, `idle_before_publish_onescan`, `joiner_no_reactivate`, `joiner_invisible`, `stop_sets_done`, `anywork_participants_only`), `ScanOnce` (`split_tas`), `Drain` (`skip_exit_publish`, on `episode_bgstop` and `tenure_l3`), `TicketsExact` (`steal_without_ticket`), `AssistExact` (`assist_returns_to_budget`), `ClosingFinished` (`member_exits_undone`; `episode_stop` passes since CR-005's fix), `BudgetOK` (`budget_premise`), `AllExit` (`never_decide`). The historical bug is `two_word` |
 | A7 | §6 |
 | A8 | 2–3 participants, 4–5 nodes, `TB = 2`, `RING = 1–2`, `PUB_MIN = 2`; no state constraint (the epoch is exact, every other variable bounded); the 1-bit epoch in `wrap` |
 | A9 | proposed canary lines (not in `manifest.txt` yet): `file` `MW`; `region`s: `ParallelEnv` (`OGS:3583-3614`), `publishHalf`/`publishAll`/`pushGrey` (`OGH:979-1002`), `pushGreyP`…`MinorEnv` (`NP:114-226`), `RegionEnv` (`NR:280-337`), `AgeParEnv` (`NT:171-198`), `TenureParEnv` (`NT:953-982`), `runMarkers`, `launchBackground`, `bgEntry`/`assistEntry`/`closingEntry`, `reapBackground`, `assistEpisode`, `closingFinish` (`OGS`), `tenureConcLaunch`/`tenureConcFinish` (`NT:1244-1293`), the round-robin distributions (`NP:727-735`, `NR:854-861`, `NT:294-298`, `tenureParDistribute`); `census`: `OGS`, `NP`, `NR`, `NT`, `GHP` |

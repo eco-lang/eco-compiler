@@ -412,3 +412,158 @@ Runs (2026-09-30, this tree): `run_traces.py` (every harness rebuilt): **135/135
 Accessor text and a trace-only probe only. The new CR-007 guard reproduces M7's `lock_order_stall` witness in code (a 200 ms stall behind a latched Discard job).
 
 **Verdict: no model change needed.**
+
+## 2026-09-30 — register-fixes §3.1: CR-033 fixed (GC_MODEL_001)
+
+Pin fired: region `OGS.allocateFromBagPage`, new hash prefix **8e85cd8f9aa1**.
+
+Change (plans/threaded-gc-register-fixes.md §3.1; snapshot `snapshots/register-fixes/pre-phase1.tgz`):
+the fresh-page carve's remainder test `remainder >= MIN_FREE_CELL_SIZE` became `remainder != 0`
+(plus an 8-alignment assert), so an 8-byte tail goes through `pushSpanOnFreeLists` and gets an
+unlinked `Tag_Free` header (HEAP_024 amended). Serial code under the same locks as before; no atomic
+step, lock, shared location or memory order changes.
+
+M7 models the page supply (`acquireOldGenBlock` via `ensureBagPageAvailable`, and the tail-completion release route); the carve change runs after the page is acquired and touches no page-work state, lock or counter. **Verdict: no model change needed.**
+
+## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (GC_MODEL_001, one audit for the batch)
+
+Pins fired for M7: region `OGS.allocatePromotion` (**9551468c0f86**: CR-002's rung-2 rewrite — an unswept-block head is finalized before the unlock, the batch peeks; PM8), region `OGS.lazySweep` (**b033f3f0c837**: CR-014's `completeSweep` for both completions, CR-028's deferred V11), census `OldGenSpace.cpp` (**2afe7bc4cf4d**).
+
+Change that matters to M7: CR-014's fix closes the release route from the tail completion under `promo_mu_` for N > 1 (the shrink now runs in `endParallelPromotion`, after the join and outside `promo_mu_`); with N = 1 the route stays through `sweepCompleteInPromotion`'s one-worker branch, where no other member exists to stall. `onSweepComplete` now aborts inside a parallel promotion (PM7). The in-lock finalize (CR-002) adds no acquire, release or wait: `finalizePoppedCellW` touches only the cell, its mark byte and `live_bytes`. The route census row (MAPPING.md §4) is updated. M7 models the route generically (`P_Tm` → `P_Reuse`), so no state changes.
+
+**Verdict: MAPPING.md updated; no model change needed.**
+
+## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (GC_MODEL_001)
+
+Pins fired: region `OGS.lazySweep`, new hash prefix **6066819cec59**.
+
+Change (plans/threaded-gc-register-fixes.md §6.1, CR-019; HEAP_062/HEAP_067 amended): every
+access to a header word that another thread may touch during a legacy parallel minor is a relaxed
+atomic whole-word access through the new helpers `loadHeaderRelaxed` / `storeHeaderRelaxed`
+(`AllocatorCommon.hpp`, newly census-pinned for M3, M4). Writers: `reachYoungLargeP` (age++ under
+`ylos_mu_`), `promoteYoungLarge` (age = 0), region `reachYoungLargeR` (age = 1). Readers:
+`lazySweep`'s gap sweep (one load per live object, reused for the trace event), the header walk
+(one load reused for tag, sentinel and pin), the large-block branch's pin read, and the
+validate-only `validateV11` walk. The values written are unchanged (tag/size/pin kept); no lock,
+step order or memory order beyond "relaxed" is added, so no happens-before edge changes. TSan:
+`det-cr019` both orders and `ylos-sweep` are clean (were: a report every run).
+
+M7 models the page supply and the release routes; the sweep's header reads acquire, release and wait for nothing. **Verdict: no model change needed.**
+
+## 2026-10-01 — register-fixes §6.2: CR-012 option F (a second live mutator is forbidden), CR-012(d) fixed (GC_MODEL_001)
+
+Pins fired: region `AL.acquireOldGenBlock` (**4f5f0b1d4dcd**), region `AL.releaseOldGenBlock` (**0fe08577fb84**), region `AL.acquireOldGenRegion` (**31cefe0c2ae5**), census `Allocator.cpp` (**88ca56595b84**), census `Allocator.hpp` (**1936ebd9fe0e**), grep `F.threadMutex` (**ac671f10dc1d**), grep `F.pageWorkCalls` (**cc75623b8fe3**: the new `onFreshBump` caller).
+
+Change (plans/threaded-gc-register-fixes.md §6.2, CR-012 option F; HEAP_007, HEAP_060, GC_DET_001
+amended): (1) `initThread` aborts when another `ThreadLocalHeap` is live unless
+`allowMultipleMutators(true)` (a new `thread_mutex_`-guarded flag, reset by `reset()`; opted in only by
+`main.cpp --threads N>1` and the two-heap test harnesses). (2) `acquireOldGenRegion` goes through
+`PageWork::onFreshBump` (and the commit observer) like `acquireOldGenBlock`'s bump, so a heap's
+initial region commits only the part above the commit-ahead window (CR-012(d), fixed with sequential
+mutators too). (3) Hardening (§6.2 step 6): `old_gen_in_use_bytes_` is a `std::atomic<size_t>`
+written only under `thread_mutex_` by a relaxed load + relaxed store (`addOldGenInUse` /
+`subOldGenInUse`), read relaxed by `getOldGenCommittedBytes` (the unlocked triggers): no RMW, no
+ordering, same values; TSan `cr012:a` is now clean. `allowMultipleMutators` takes `thread_mutex_` as a
+leaf (it calls nothing).
+
+The new `onFreshBump` call in `acquireOldGenRegion` runs under `thread_mutex_` like every PageWork call and is a fresh bump at the bump pointer, i.e. M7a's `M_Choose` fresh branch (owner fresh → heap, never waits, never re-maps the window): the code now matches the model's HEAP_060 claim on this route instead of contradicting it. The in-use counter is not a PageWork input. MAPPING.md: `M_Choose` (fresh) row names the route; the `thread_mutex_` row and "outside the model" record that several heaps are forbidden by HEAP_007 (opt-in only) and that CR-012(d) is fixed. The TracePageWork harness drives PageWork standalone (no Allocator), so no trace changes. **Verdict: no model change needed; MAPPING.md updated.**
+
+## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (GC_MODEL_001)
+
+Pins fired: file `PageWork.hpp` (**681db7309a0a**), file `PageWork.cpp` (**3b5ca6feb509**), file `test/gc-helper-tsan/harness.cpp` (**f3f06ed92a5e**), regions `OGS.allocateFromBagPage` (**8707d299ec96**), `OGS.ensureBagPageAvailable` (**37f3ac00eb2f**), `OGS.allocateLargeBlock` (**e2c48a27f642**), `OGS.releaseBlockToAllocator` (**2dc05c9c0440**), `OGS.releaseUnassignedBlockToAllocator` (**b1038520c58f**), `AL.acquireOldGenBlock` (**58fd49f66454**), greps `F.pageWorkCalls` (**9c2d8130d065**), `F.oldGenFreeBlocks` (**aa1d3a2debd5**).
+
+**Model first (before the code).** `PageWork.tla`: constant `NoWait`; ghosts `gPend` (Pending membership kept by
+caller steps only), `nwAcq`, `nwFallback`; a new `M_Choose` branch (the no-wait acquire: first
+Pending → `M_Reuse` (cancel), else a fresh extent, else the cap fallback = first fit → `M_Reuse`,
+which may wait); the ghost `gFree` makes the same choice from `gPend`; invariants `NoWaitUnlessCap`
+(`nwAcq /\ pc = AS_Wait => nwFallback`) and `PendGhost` (`gPend` = the Pending set); mutants
+`nowait_skip_posted` (a skip keyed on job state: takes a reaped extent) and `nowait_first_fit` (the
+pre-fix first fit). `LockOrder.tla`: constant `CapExhausted`; at `P_Pick` a member meets the Posted
+extent only if `CapExhausted` (mutant `nowait_off` restores the old pick). Re-translated both.
+`NoWait = TRUE` in `pw_basic`, `pw_two_workers`, `pw_aba`, `pw_deep`, `pw_deep_liveness` (with the two
+new invariants where the row lists invariants); `NoWait = FALSE` in the 9 older mutants (unchanged
+verdicts); `CapExhausted = TRUE` in `lock_order`, `lock_order_3`, `lock_order_stall` and the four lock
+mutants. Conservativeness: with `NoWait = FALSE` the new spec has exactly the old reachable set
+(`pw_basic` 22,518 distinct states, old and new; the 26,496 above predates later edits).
+
+TLC (quick, 24/24 as expected): `pw_nowait` (new) pass 48,319 states; `pw_basic` pass 23,567;
+`pw_two_workers` pass 41,953; `pw_aba` pass 285,088; `lock_order_nostall` (new, `CapExhausted =
+FALSE`) pass 290 (the witness invariant HOLDS); `lock_order_stall` still `witness:` (81);
+`mutants/nowait_skip_posted` violates `DetChoice` (3,452); `mutants/nowait_first_fit` violates
+`NoWaitUnlessCap` (698); `mutants/nowait_off` violates `MODEL_M7_StallWitness` (85). Non-vacuity
+(scratch invariants on `pw_nowait`): a no-wait Pending reuse reaching `M_Touch` and a cap-fallback
+wait in `AS_Wait` are both reachable. Deep: `pw_deep` pass 13,561,819 distinct states (depth 44,
+121 s, 4 workers), `pw_deep_liveness` pass 1,956,641 (59 s).
+
+**Trace.** `TracePageWork`: event `nw k x` (`PageWork::noteNoWait`, logged before the `acq` / `fresh`
+it announces) sets `nwNext`; the next `acq` must be the no-wait branch with `nwFallback <=> k = 3`, a
+`fresh` after `k = 2` needs no Pending extent in the list, an `acq` with no `nw` must be the
+first-fit branch; `NoWaitUnlessCap` and `PendGhost` join the per-step invariants. The harness
+(`harness.cpp`) gains a 12th argument, the share of reuses made under the policy (default 0: older
+rows replay unchanged). `.keep` gains `nw`. New rows: 2 accept (`fake,…,50`: 56 Pending, 3 fresh,
+7 fallback picks; `real,…,100`: 9 / 8 / 25) and 3 reject (`set:nw:2:k=3`, `set:nw:1:k=1`,
+`set:nw:12:k=2`). `run_traces.py --model M7`: 20/20 as expected.
+
+Change (plans/threaded-gc-register-fixes.md §6.3, CR-007; HEAP_058/HEAP_059 amended): a promotion
+holder of a parallel promotion with n > 1 workers (`OldGenSpace::acquireWaitPolicy()` =
+`AcquireWait::AvoidUnderPromo`, passed at `ensureBagPageAvailable`, `allocateFromBagPage` and
+`allocateLargeBlock`) gets the no-wait policy in `Allocator::acquireOldGenBlock` (modes 1/2 with
+decommit on): (1) the first fitting **Pending** extent (`PageWork::isPending`, job-blind; `onReuse`
+cancels it, never waits), (2) else a fresh bump, (3) else -- the old-gen cap leaves no bump room --
+today's first fit (may wait; counted). The first-fit body was factored into a `takeFreeAt` lambda
+(no behaviour change for `Allowed`). New PageWork API: `isPending`, `decommitOn`, `noteNoWait` (the
+counters `nowait_pending_reuse_bytes`, `nowait_fresh_bytes`, `nowait_fallback_waits` and the M7 trace
+event `nw`), `noteNoWaitSkip` (`nowait_skipped_extents`). Validate builds: a no-wait Pending reuse
+must not raise `reuse_waits`, and `releaseBlockToAllocator` / `releaseUnassignedBlockToAllocator` abort
+while `acquireWaitPolicy() != Allowed`. No lock, atomic or memory order is added; every new
+PageWork call runs under `thread_mutex_` like the old ones.
+
+**Verdict: model updated (PageWork, LockOrder, TracePageWork), MAPPING.md updated (variables, the
+no-wait `M_Choose` row, `P_Pick`, §4 route note, §6 invariants, §10 trace, A5).**
+
+
+## 2026-10-01 — register-fixes Phase 5: no teardown under thread_mutex_, the fork prepare order (HEAP_075) (GC_MODEL_001)
+
+Pins fired: files `GCHelperPool.hpp` (**376411c19869**), `GCHelperPool.cpp` (**22f4e3f2b546**); new file and census pins `GCFork.cpp`; regions `AL.onGCPauseEnd` (**21aae9bc0c5a**), `AL.cleanupThread` (**b3491e1c948b**), `AL.finishTenureForExit` (**1eb1d4117cf9**); censuses `Allocator.cpp` (**98ff871fcd48**), `Allocator.hpp` (**12959cd0b43c**), `GCHelperPool.cpp` (**98e0cc199b0b**), `GCHelperPool.hpp` (**297cf886ba5a**); greps `F.threadMutex` (**6cdf9fdc0767**), `F.setThreadHeap` (**792561bbb51f**).
+
+Change (plans/threaded-gc-register-fixes.md §7, Phase 5; HEAP_007 fork contract, HEAP_058, HEAP_065,
+HEAP_070 amended, HEAP_075 new): (1) `GCFork.{hpp,cpp}`: ONE `pthread_atfork` registration with fixed
+layers (gangs: registry -> each background gang's `m_` to set `fork_hold_` -> `stopAllForFork` -> each
+gang's `m_` held -> `GCMarkGang` `run_m_` -> its `m_`; allocator: `thread_mutex_`; census: the P1 census
+mutex and detector N's; pool: `GCHelperPool::m_`, drained and held); the three old registrations are
+gone. (2) No teardown holds `thread_mutex_` while it takes a gang lock (`cleanupThread`,
+`finishTenureForExit`, `reset`, `~Allocator`). (3) CR-003/015: `post`'s Idle->Posted CAS and the enqueue
+in one `m_` section; the pool prepare drains and keeps `m_` in one section; the allocator layer locks
+`thread_mutex_`, the child re-creates it and records `fork_child_` / `fork_owner_`. (4) CR-013/004:
+`GCBackgroundGang::launch` returns false (refuses) while `fork_hold_`; `launchBackground` then leaves
+`bg_ep_ = None` (`cm.episodes_refused`), `tenureLaunch` / `tenureConcLaunch` count `rs.fork_refusals`
+and the join's orphan path finishes the job. (5) CR-023: `stopAndJoin` waits for
+`generation_ != my_gen || finished_ >= members` and clears `running_` only for its own generation;
+`launch` notifies `cv_done_`. (6) CR-005: `closingFinish` accepts `bg_ep_ == None`. (7) CR-031:
+`~Allocator` (and `initThread`, `getCombinedStats`, `validatePageWork`) never touch a heap the forker
+does not own in a forked child; validate builds check `ThreadLocalHeap::owner_` in `minorGC` /
+`majorGC`. (8) CR-032: the census layer; `atexitReport` returns in a forked child. Trace-only: the
+probe `m6.tm.held` in `onGCPauseEnd` (under `thread_mutex_`), `fork.bghold`, `gang.refuse`, the step
+event's `refused` field and an M1 `stop` after a refused launch.
+
+**Model first (§7.2 step 2, checked before step 3).** `LockOrder.tla`: `MUTANT` is now a SET; the
+parallel minor is a `GCMarkGang` run (`R_Run`: the caller "mut" takes `run_m_` and starts the members;
+`R_Join`: after every member returned, `run_m_` is released); the teardown joins the collector through
+its gang `m_` (`T_JLock`, `T_Join`) with NO `thread_mutex_` (the pre-fix hold is mutant
+`teardown_under_tm`); a `Forker` process (constant `Fork`) runs GCFork's prepare: stopAndJoin of the
+collector (its `m_`, then the wait), the collector's `m_` held, `run_m_`, `thread_mutex_`, the pool drain
+(the job Done), then the parent handlers release (mutant `fork_tm_first`: `thread_mutex_` first). Results
+(TLC): new row `lock_order_fork` **pass** (1,188 states, deadlock check + AllFinish); mutants
+`teardown_under_tm` **deadlock** (1,176; mut holds thread_mutex_ at `T_JLock` waiting for the m_ the
+forker holds at `F_Tm`) and `fork_tm_first` **deadlock** (600; the forker holds thread_mutex_ at
+`F_RunM` while the run's member g1 waits for it under promo_mu_ and mut's run waits for g1). Since the
+teardown no longer holds thread_mutex_, `collector_takes_tm` alone deadlocks nothing; its row now runs
+with `teardown_under_tm` too (deadlock, 966). Every other row unchanged in verdict (`lock_order` 804,
+`lock_order_3` 2,382, `lock_order_stall` witness 408, `lock_order_nostall` 930). `run_models.py --model
+M7`: 27/27. Grep of every `lock_guard<std::recursive_mutex> lock(thread_mutex_)` site: none reaches
+`GCMarkGang::run`/`configure`, a `GCBackgroundGang` construction/launch/join/stopAndJoin or the registry
+after the change (`initThread` constructs a ThreadLocalHeap under it, which builds no gang; pool
+`configure` under it takes only the pool's m_, the innermost leaf). PageWork (M7a) is unchanged: every
+call still runs under `thread_mutex_`; the pool's `post` only moved its CAS into the existing `m_`
+section (workers still take only `m_`). The new trace-only probe `m6.tm.held` in `onGCPauseEnd` fires
+under `thread_mutex_` and changes no step. **Verdict: model updated (LockOrder, MAPPING.md).**

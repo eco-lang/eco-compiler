@@ -222,3 +222,171 @@ Runs (2026-09-30, this tree): `run_traces.py` (every harness rebuilt): **135/135
 The stats-only counter does not touch block state, lists or `live_bytes`.
 
 **Verdict: no model change needed.**
+
+## 2026-09-30 — register-fixes §3.1: CR-033 fixed (GC_MODEL_001)
+
+Pin fired: region `OGS.allocateFromBagPage`, new hash prefix **8e85cd8f9aa1**.
+
+Change (plans/threaded-gc-register-fixes.md §3.1; snapshot `snapshots/register-fixes/pre-phase1.tgz`):
+the fresh-page carve's remainder test `remainder >= MIN_FREE_CELL_SIZE` became `remainder != 0`
+(plus an 8-alignment assert), so an 8-byte tail goes through `pushSpanOnFreeLists` and gets an
+unlinked `Tag_Free` header (HEAP_024 amended). Serial code under the same locks as before; no atomic
+step, lock, shared location or memory order changes.
+
+M8 models this carve (`FreshPage`): **model updated first** - the fixed behaviour is the default and the pre-fix test is the A6 mutant `bag_tail_headerless` (`violates:BlockParseable`, 43 states); `MC_quick_cr033` now passes (2,263 states); `controls/cr033_tail_header` retired (it is the default now); `bag_tail_header` dropped from `fixed_all`, `MC_deep_fixed` and `coverage.cfg`. M8 quick tier 25/25 as expected (2026-09-30). **Verdict: model updated.**
+
+## 2026-09-30 — register-fixes §3.2: CR-018 fixed (GC_MODEL_001)
+
+Pin fired: region `OGS.initObjectHeaderWithSize`, new hash prefix **2d1af3f18a67**.
+
+Change (plans/threaded-gc-register-fixes.md §3.2; HEAP_073 new): `initObjectHeaderWithSize` adds
+`cell_bytes` to `live_bytes` in every phase (the colour and mark bit stay phase-gated). **Model updated
+first**: `Gate`'s Idle branch now adds the cell by default; the pre-fix gate is the A6 mutant
+`idle_uncounted` (`mutants/idle_uncounted.cfg` violates `NoOverwriteLive`, 1,098 states;
+`mutants/idle_uncounted_flip.cfg` violates `FlipTrustsTruth`, 1,274 states). `MC_quick_cr018` and
+`MC_quick_cr018_flip` now pass (2,316 states each); `controls/cr018_count_idle` retired (it is the
+default); `count_mixed_idle` dropped from `fixed_all`, `MC_deep_fixed`, `coverage.cfg`. CR-035's
+rows keep reproducing on CR-018's pre-fix precondition by carrying `MUTANT idle_uncounted` (§3.3
+then moves them to mutants). M8 quick 26/26 as expected.
+
+**Verdict: model updated.**
+
+## 2026-09-30 — register-fixes §3.3 + §3.4: CR-035 and CR-016 fixed (GC_MODEL_001, one audit)
+
+Pin fired: region `OGS.allocateFromEmptyRegularBlocks`, new hash prefix **241b815c0313**.
+
+Change (plans/threaded-gc-register-fixes.md §3.3, §3.4): (1) CR-035: after `removeFreeCellsForBlock`
+the flip calls the new `retireIndexRange(start, end)` (retire semantics as `retireDeadLargeBodies`:
+erase, `body_base` cleared, id NOT recycled; validate builds re-check that no key maps into the
+block, message "flip"; stats `empty_block_flips`, `flip_index_retired`). (2) CR-016: the function
+returns nullptr first when `par_promo_active_ && promo_ctx_->n > 1` (stats
+`flip_skipped_parallel`). M8 is serial (no parallel promotion), so (2) never applies in M8.
+
+**Model updated first** for (1): `Flip`'s index purge is the default; the pre-fix flip is the A6
+mutant `flip_keeps_index`. `MC_quick_cr035` / `MC_quick_cr035_lost` moved to
+`mutants/flip_keeps_index{,_lost}.cfg` with `MUTANT = {"idle_uncounted", "flip_keeps_index"}`
+(`violates:IndexFaithful`, 4,090 states / `violates:NoLostObject`, 170,510 states); the
+`controls/cr035_flip_purges*` rows keep `MUTANT = {"idle_uncounted"}` and pass (95,302 / 267,911
+states): the purge alone closes the chain. `fixed_all`, `MC_deep_fixed` and `coverage.cfg` now run
+`MUTANT = {}` (the fixed code is the default). M8 quick 26/26 as expected.
+
+**Verdict: model updated.**
+
+## 2026-09-30 — register-fixes §3.5: CR-036, BlockTable per-id generation (GC_MODEL_001)
+
+Pin fired: file `BlockTable.hpp`, new hash prefix **3400ac12ae09**.
+
+Change (plans/threaded-gc-register-fixes.md §3.5; HEAP_048, HEAP_063 amended): a new
+`ReservedArray<uint32_t> gen_` reserved, committed and released beside `live_`; `add()` increments
+`gen_[id]` (monotone, `clear()` keeps it); accessor `generation(id)`; `storageBase` case 7,
+`kStorageArrays = 8`. `BlockInfo` unchanged (40 bytes). Owner-only like the rest of the table; no
+atomic, lock or memory order. IM5 (validate) now keys on the generation. M8's id model is unchanged:
+ids are still re-issued LIFO, so `MC_quick_reissue_witness` stays a `witness:` row (5 states: the
+same-id, same-start re-issue is reachable, and harmless between cycles); what changed is that the
+validate check can now tell the two incarnations apart.
+
+**Verdict: no model change needed.**
+
+## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (GC_MODEL_001, one audit for the batch)
+
+Pins fired for M8: region `OGS.lazySweep` (**b033f3f0c837**), region `OGS.onSweepComplete` (**9a0fe8aa36e1**: the PM7 tripwire as its first statement).
+
+Change: both completions call one lambda (`completeSweep`), which inside a parallel promotion defers the shrink (CR-014); outside a promotion the serial path is exactly as before (`onSweepComplete` right away). V11 is factored into `validateV11` and deferred to the merge for N > 1 (CR-028). M8 is the serial block lifecycle: its sweep completion and shrink are the serial path, unchanged.
+
+**Verdict: no model change needed.**
+
+## 2026-09-30 — register-fixes Phase 3 (§5.1-§5.3): CR-037, CR-017, CR-038/CR-039 fixed (GC_MODEL_001, one audit for the batch)
+
+Pin fired for M8: region `TLH.majorGC`, new hash prefix **dde8f0dcca5e**.
+
+Change (plans/threaded-gc-register-fixes.md §5.2, HEAP_074): in region mode, right after
+`finishMarkAndSweep` and before the pause ends, `nursery_.zapDeadAfterMajor(old_gen_)` turns the
+Young extents' unreached survivors into `Tag_Free` fillers. It writes only nursery survivor-extent
+memory (never an old-gen block, a free list, `live_bytes`, the block table or the large-body index)
+and reads `nursery_visited_`. M8 models the old generation's block lifecycle serially; nothing it
+models changes.
+
+**Verdict: no model change needed.**
+
+## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (GC_MODEL_001)
+
+Pins fired: region `OGS.promoteYoungLarge` (**ab64ef2a56ee**), region `OGS.lazySweep` (**6066819cec59**).
+
+Change (plans/threaded-gc-register-fixes.md §6.1, CR-019; HEAP_062/HEAP_067 amended): every
+access to a header word that another thread may touch during a legacy parallel minor is a relaxed
+atomic whole-word access through the new helpers `loadHeaderRelaxed` / `storeHeaderRelaxed`
+(`AllocatorCommon.hpp`, newly census-pinned for M3, M4). Writers: `reachYoungLargeP` (age++ under
+`ylos_mu_`), `promoteYoungLarge` (age = 0), region `reachYoungLargeR` (age = 1). Readers:
+`lazySweep`'s gap sweep (one load per live object, reused for the trace event), the header walk
+(one load reused for tag, sentinel and pin), the large-block branch's pin read, and the
+validate-only `validateV11` walk. The values written are unchanged (tag/size/pin kept); no lock,
+step order or memory order beyond "relaxed" is added, so no happens-before edge changes. TSan:
+`det-cr019` both orders and `ylos-sweep` are clean (were: a report every run).
+
+M8 is serial over the block lifecycle; the parse, the run building, the index retire and the sentinel boundary see identical header values. **Verdict: no model change needed.**
+
+## 2026-10-01 — register-fixes §6.2: CR-012 option F (a second live mutator is forbidden), CR-012(d) fixed (GC_MODEL_001)
+
+Pins fired: region `AL.acquireOldGenBlock` (**4f5f0b1d4dcd**), region `AL.releaseOldGenBlock` (**0fe08577fb84**).
+
+Change (plans/threaded-gc-register-fixes.md §6.2, CR-012 option F; HEAP_007, HEAP_060, GC_DET_001
+amended): (1) `initThread` aborts when another `ThreadLocalHeap` is live unless
+`allowMultipleMutators(true)` (a new `thread_mutex_`-guarded flag, reset by `reset()`; opted in only by
+`main.cpp --threads N>1` and the two-heap test harnesses). (2) `acquireOldGenRegion` goes through
+`PageWork::onFreshBump` (and the commit observer) like `acquireOldGenBlock`'s bump, so a heap's
+initial region commits only the part above the commit-ahead window (CR-012(d), fixed with sequential
+mutators too). (3) Hardening (§6.2 step 6): `old_gen_in_use_bytes_` is a `std::atomic<size_t>`
+written only under `thread_mutex_` by a relaxed load + relaxed store (`addOldGenInUse` /
+`subOldGenInUse`), read relaxed by `getOldGenCommittedBytes` (the unlocked triggers): no RMW, no
+ordering, same values; TSan `cr012:a` is now clean. `allowMultipleMutators` takes `thread_mutex_` as a
+leaf (it calls nothing).
+
+Only the in-use byte counter's access changed (same values); the extent choice, the free list and the bump are unchanged. **Verdict: no model change needed.**
+
+## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (GC_MODEL_001)
+
+Pins fired: regions `OGS.allocateFromBagPage` (**8707d299ec96**), `OGS.ensureBagPageAvailable` (**37f3ac00eb2f**), `OGS.allocateLargeBlock` (**e2c48a27f642**), `OGS.releaseBlockToAllocator` (**2dc05c9c0440**), `OGS.releaseUnassignedBlockToAllocator` (**b1038520c58f**), `AL.acquireOldGenBlock` (**58fd49f66454**).
+
+Change (plans/threaded-gc-register-fixes.md §6.3, CR-007; HEAP_058/HEAP_059 amended): a promotion
+holder of a parallel promotion with n > 1 workers (`OldGenSpace::acquireWaitPolicy()` =
+`AcquireWait::AvoidUnderPromo`, passed at `ensureBagPageAvailable`, `allocateFromBagPage` and
+`allocateLargeBlock`) gets the no-wait policy in `Allocator::acquireOldGenBlock` (modes 1/2 with
+decommit on): (1) the first fitting **Pending** extent (`PageWork::isPending`, job-blind; `onReuse`
+cancels it, never waits), (2) else a fresh bump, (3) else -- the old-gen cap leaves no bump room --
+today's first fit (may wait; counted). The first-fit body was factored into a `takeFreeAt` lambda
+(no behaviour change for `Allowed`). New PageWork API: `isPending`, `decommitOn`, `noteNoWait` (the
+counters `nowait_pending_reuse_bytes`, `nowait_fresh_bytes`, `nowait_fallback_waits` and the M7 trace
+event `nw`), `noteNoWaitSkip` (`nowait_skipped_extents`). Validate builds: a no-wait Pending reuse
+must not raise `reuse_waits`, and `releaseBlockToAllocator` / `releaseUnassignedBlockToAllocator` abort
+while `acquireWaitPolicy() != Allowed`. No lock, atomic or memory order is added; every new
+PageWork call runs under `thread_mutex_` like the old ones.
+
+M8 models the block lifecycle serially and treats the page supply as "some extent"; which free extent or fresh bump an acquire returns is not an M8 choice, and the release paths only gained a validate-only abort. **Verdict: no model change needed.**
+
+
+## 2026-10-01 — register-fixes Phase 5: owner check at the GC entries (GC_MODEL_001)
+
+Pins fired: regions `TLH.minorGC` (**896f924a1e35**), `TLH.majorGC` (**69a04246e15b**).
+
+Change (plans/threaded-gc-register-fixes.md §7, Phase 5; HEAP_007 fork contract, HEAP_058, HEAP_065,
+HEAP_070 amended, HEAP_075 new): (1) `GCFork.{hpp,cpp}`: ONE `pthread_atfork` registration with fixed
+layers (gangs: registry -> each background gang's `m_` to set `fork_hold_` -> `stopAllForFork` -> each
+gang's `m_` held -> `GCMarkGang` `run_m_` -> its `m_`; allocator: `thread_mutex_`; census: the P1 census
+mutex and detector N's; pool: `GCHelperPool::m_`, drained and held); the three old registrations are
+gone. (2) No teardown holds `thread_mutex_` while it takes a gang lock (`cleanupThread`,
+`finishTenureForExit`, `reset`, `~Allocator`). (3) CR-003/015: `post`'s Idle->Posted CAS and the enqueue
+in one `m_` section; the pool prepare drains and keeps `m_` in one section; the allocator layer locks
+`thread_mutex_`, the child re-creates it and records `fork_child_` / `fork_owner_`. (4) CR-013/004:
+`GCBackgroundGang::launch` returns false (refuses) while `fork_hold_`; `launchBackground` then leaves
+`bg_ep_ = None` (`cm.episodes_refused`), `tenureLaunch` / `tenureConcLaunch` count `rs.fork_refusals`
+and the join's orphan path finishes the job. (5) CR-023: `stopAndJoin` waits for
+`generation_ != my_gen || finished_ >= members` and clears `running_` only for its own generation;
+`launch` notifies `cv_done_`. (6) CR-005: `closingFinish` accepts `bg_ep_ == None`. (7) CR-031:
+`~Allocator` (and `initThread`, `getCombinedStats`, `validatePageWork`) never touch a heap the forker
+does not own in a forked child; validate builds check `ThreadLocalHeap::owner_` in `minorGC` /
+`majorGC`. (8) CR-032: the census layer; `atexitReport` returns in a forked child. Trace-only: the
+probe `m6.tm.held` in `onGCPauseEnd` (under `thread_mutex_`), `fork.bghold`, `gang.refuse`, the step
+event's `refused` field and an M1 `stop` after a refused launch.
+
+Only a validate-only `assertOwner` at the entry of `minorGC` / `majorGC` (HEAP_007 / CR-031). No block
+lifecycle step changes. **Verdict: no model change needed.**

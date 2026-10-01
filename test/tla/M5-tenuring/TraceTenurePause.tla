@@ -20,8 +20,10 @@
 (*    (J_Merge: the objects forwarded and the slots healed);                *)
 (*  - GCHelperPool.cpp: gang.start and gang.exit (the collector: C_Wait,    *)
 (*    C_Fin), gang.join (the pause: J_Wait's join, or J_Stop after          *)
-(*    stopAndJoin's store).                                                 *)
-(* Hidden: the minor's and the major's own steps (the MN and MJ labels), which the    *)
+(*    stopAndJoin's store);                                                 *)
+(*  - NurseryRegion.cpp: mzap zapped (MJ_Mark: the sweep and HEAP_074 zap; *)
+(*    zapped = the dead Young survivors zapped; 2026-09-30, CR-017).       *)
+(* Hidden: the minor's and the major's other steps (MN labels, MJ_Join, MJ_Cycle), which the *)
 (* model computes from its heap (the code's slot order and placement are    *)
 (* not compared: the model's cells are matched through logical ids and     *)
 (* counts only), J_Wait's stop store, J_Help when the job is done, J_Ret,   *)
@@ -61,6 +63,9 @@ Matched(u, ee) ==
             M_Epoch /\ nextLid' = nextLid /\ ops' = ops + 1 /\ root' = [root EXCEPT ![Rt(ee.r)] = Nil]
       [] ee.ev = "minor" -> M_Epoch /\ pc'[MutId] = "MN_Join"
       [] ee.ev = "major" -> M_Epoch /\ pc'[MutId] = "MJ_Join"
+      [] ee.ev = "mzap" ->                        \* HEAP_074: the major's zap of dead Young survivors
+            /\ MJ_Mark
+            /\ Cardinality({a \in SAddr : heap[a].lid # 0 /\ heap'[a].lid = 0}) = ee.zapped
       [] ee.ev = "tj.launch" ->
             /\ ee.path = "exact"
             /\ MN_Launch /\ \E x \in X : xstate[x] = "Tenuring"
@@ -88,7 +93,7 @@ Hidden ==
     \/ MN_Join \/ MN_Begin \/ MN_Slot \/ MN_Classify \/ MN_Fwd \/ MN_Set \/ MN_Resolve \/ MN_Next
     \/ MN_Epilogue \/ MN_Cycle \/ MN_Sync \/ MN_Done
     \/ MN_Launch /\ ~(\E x \in X : xstate[x] = "Tenuring")
-    \/ MJ_Join \/ MJ_Cycle \/ MJ_Mark
+    \/ MJ_Join \/ MJ_Cycle
     \/ J_Wait(MutId) /\ job.st # "Running"
     \/ J_Wait(MutId) /\ pc'[MutId] = "J_Stop"            \* stopAndJoin's store; gang.join is its join
     \/ J_Help(MutId) /\ JobDone

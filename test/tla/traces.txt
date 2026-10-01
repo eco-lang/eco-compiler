@@ -20,12 +20,14 @@ trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,le
 trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,parminor-b2   accept
 trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,region-b2     accept
 trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,pressure-b2   accept
+trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,refuse-b2     accept   # register-fixes Phase 5: refused launches (t0, relaunch) = episodes a fork stopped at once
 # ... and its negative controls: each must be rejected.
 #   no closing join at k = T; a wrong k; a handoff without its minor; a reap before the pressure decision
 trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,legacy-b2     reject  mutate=drop:closing:1
 trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,legacy-b2     reject  mutate=set:step:2:k=5
 trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,legacy-b2     reject  mutate=drop:minor:6
 trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,pressure-b2   reject  mutate=swap:pressure:1
+trace  M1  M1-snapshot-mark  TraceCycle  TraceCycle.cfg  gc-heap-trace  cycle,refuse-b2     reject  mutate=drop:stop:1
 
 # M1 (b): the tiny graph on the real allocator (plan §8 (b)): <= 8 objects, every scan,
 # grey, mutator operation and liveness decision replayed against M1's Next, any order the
@@ -82,6 +84,14 @@ trace  M4  M4-promotion-bitmap  TracePromoBitmap  TracePromoBitmap.cfg  gc-heap-
 trace  M4  M4-promotion-bitmap  TracePromoBitmap  TracePromoBitmap.cfg  gc-heap-trace  promo,4,4,4      accept
 trace  M4  M4-promotion-bitmap  TracePromoBitmap  TracePromoBitmap.cfg  gc-heap-trace  promo,5,3,5      accept
 trace  M4  M4-promotion-bitmap  TracePromoBitmap  TracePromoBitmap.cfg  gc-heap-trace  promo,7,4,3,100  accept
+# ... and the same runs with the race detector and the safety invariants on the replay (TraceRace.cfg;
+# an accept row since CR-002 / CR-001 / CR-014 were fixed, 2026-09-30: before, every multi-threaded
+# log violated NoRaceBitmap, CR-002's pair)
+trace  M4  M4-promotion-bitmap  TracePromoBitmap  TraceRace.cfg         gc-heap-trace  promo,1,3,4      accept
+trace  M4  M4-promotion-bitmap  TracePromoBitmap  TraceRace.cfg         gc-heap-trace  promo,2,3,4      accept
+trace  M4  M4-promotion-bitmap  TracePromoBitmap  TraceRace.cfg         gc-heap-trace  promo,4,4,4      accept
+trace  M4  M4-promotion-bitmap  TracePromoBitmap  TraceRace.cfg         gc-heap-trace  promo,5,3,5      accept
+trace  M4  M4-promotion-bitmap  TracePromoBitmap  TraceRace.cfg         gc-heap-trace  promo,7,4,3,100  accept
 # ... and its negative controls: a sweep iteration without its clearBit; a sweep that skips to
 # the wrong live object; a cursor that finds a cell that is not the next free one; a stashed
 # cell finalized White while the phase read was Sweeping (CR-001's decision); a batch pop of
@@ -144,12 +154,16 @@ trace  M5  M5-tenuring  TraceTenurePause  TraceTenurePause.cfg  gc-heap-trace  t
 trace  M5  M5-tenuring  TraceTenurePause  TraceTenurePause.cfg  gc-heap-trace  tenure,1,40,1500,15  reject  mutate=set:troots:1:reach=510
 trace  M5  M5-tenuring  TraceTenurePause  TraceTenurePause.cfg  gc-heap-trace  tenure,1,40,1500,15  reject  mutate=swap:tj.launch:1
 trace  M5  M5-tenuring  TraceTenurePause  TraceTenurePause.cfg  gc-heap-trace  tenure,1,40,1500,15  reject  mutate=set:alloc:1:v=7
+# HEAP_074 (CR-017 fix, 2026-09-30): the major's zap count is checked (seed 2's second major zaps
+# one dead survivor): claiming none, or a zap where the model has none, must be rejected.
+trace  M5  M5-tenuring  TraceTenurePause  TraceTenurePause.cfg  gc-heap-trace  tenure,2,40,1500,15  reject  mutate=set:mzap:2:zapped=0
+trace  M5  M5-tenuring  TraceTenurePause  TraceTenurePause.cfg  gc-heap-trace  tenure,2,40,1500,15  reject  mutate=set:mzap:1:zapped=1
 
 # M7: PageWork on the helper pool (plans/threaded-gc-tla-M7-pagework.md §8): harness.cpp's H2
 # (fake page ops) and H3 (real mmap/madvise) scripts, Concurrent mode, every event on one
 # seq_cst clock, matched in order against M7a's Next. args: pagework,<fake|real>,<pool threads>,
-# <jitter us>,<steps>,<extents>,<window extents>,<seed>[,<decommit delay syncs>[,<reuse %>]]
-# (defaults 2 and 35, the script's own; delay 0 and reuse 5 keep jobs in flight until all
+# <jitter us>,<steps>,<extents>,<window extents>,<seed>[,<decommit delay syncs>[,<reuse %>[,<nowait %>]]]
+# (defaults 2, 35 and 0, the script's own; delay 0 and reuse 5 keep jobs in flight until all
 # 8 slots are busy, so takeSlot waits for the oldest).
 harness  gc-helper-trace  test/gc-helper-tsan  gc-helper-trace
 trace  M7  M7-pagework  TracePageWork  TracePageWork.cfg  gc-helper-trace  pagework,fake,1,0,300,16,4,1             accept
@@ -160,6 +174,11 @@ trace  M7  M7-pagework  TracePageWork  TracePageWork.cfg  gc-helper-trace  pagew
 trace  M7  M7-pagework  TracePageWork  TracePageWork.cfg  gc-helper-trace  pagework,real,2,300,300,16,4,5           accept
 trace  M7  M7-pagework  TracePageWork  TracePageWork.cfg  gc-helper-trace  pagework,real,1,5000,400,64,8,34,0,5     accept
 trace  M7  M7-pagework  TracePageWork  TracePageWork.cfg  gc-helper-trace  pagework,real,2,3000,400,64,8,35,1,10    accept
+# CR-007 (register-fixes 6.3): the no-wait acquire (the 12th argument: % of reuses that are a
+# promotion holder's, n > 1). Every pick (Pending, fresh, the cap fallback once the bump is spent)
+# is logged as `nw` before its acq / fresh and must be M_Choose's no-wait branch with that pick.
+trace  M7  M7-pagework  TracePageWork  TracePageWork.cfg  gc-helper-trace  pagework,fake,1,0,300,16,4,6,2,35,50     accept
+trace  M7  M7-pagework  TracePageWork  TracePageWork.cfg  gc-helper-trace  pagework,real,2,3000,400,32,8,37,0,10,100 accept
 # ... and its negative controls: each must be rejected. A wait the code must do (a reuse of a
 # Posted extent, a release over an in-flight populate, or a full slot); a tracking state the
 # model's cannot be; a reap of jobs that are not Done; a release that never becomes Pending;
@@ -171,6 +190,11 @@ trace  M7  M7-pagework  TracePageWork  TracePageWork.cfg  gc-helper-trace  pagew
 trace  M7  M7-pagework  TracePageWork  TracePageWork.cfg  gc-helper-trace  pagework,real,1,5000,400,64,8,34,0,5     reject  mutate=drop:start:1
 trace  M7  M7-pagework  TracePageWork  TracePageWork.cfg  gc-helper-trace  pagework,real,1,5000,400,64,8,34,0,5     reject  mutate=set:sync:1:size=99
 trace  M7  M7-pagework  TracePageWork  TracePageWork.cfg  gc-helper-trace  pagework,real,1,5000,400,64,8,34,0,5     reject  mutate=drop:jobdone:1
+# CR-007's no-wait picks: a Pending pick claimed as the cap fallback (Pending extents and bump
+# room exist), a fresh bump claimed as a Pending reuse, and a cap fallback claimed as a fresh bump.
+trace  M7  M7-pagework  TracePageWork  TracePageWork.cfg  gc-helper-trace  pagework,fake,1,0,300,16,4,6,2,35,50     reject  mutate=set:nw:2:k=3
+trace  M7  M7-pagework  TracePageWork  TracePageWork.cfg  gc-helper-trace  pagework,real,2,3000,400,32,8,37,0,10,100 reject  mutate=set:nw:1:k=1
+trace  M7  M7-pagework  TracePageWork  TracePageWork.cfg  gc-helper-trace  pagework,real,2,3000,400,32,8,37,0,10,100 reject  mutate=set:nw:12:k=2
 
 # M2: the marker loop (plans/threaded-gc-tla-M2-slice-control.md §8): mark_harness.cpp's small
 # scenarios on SynthHeap (a mirror of OldGenSpace::ParallelEnv), the REAL runMarkerLoop, every
@@ -221,10 +245,12 @@ trace  M6  M6-lifecycle  TracePool  TracePool.cfg  gc-pool-trace  host,4,20,2,3,
 trace  M6  M6-lifecycle  TracePool  TracePool.cfg  gc-pool-trace  mut-parent,5,16,1,2,300    accept
 trace  M6  M6-lifecycle  TracePool  TracePool.cfg  gc-pool-trace  mut-child,6,16,1,2,300     accept
 trace  M6  M6-lifecycle  TracePool  TracePool.cfg  gc-pool-trace  mut-child,7,20,2,3,500     accept
-# ... and its negative controls: each must be rejected. A take with nothing enqueued; a Done
+# ... and its negative controls: each must be rejected. An enqueue that leaves the wrong count
+# (since register-fixes 7.2 the CAS and the enqueue are one m_ section, so pool.enq is a check of
+# that section's count; the old "drop the enqueue" control matched nothing any more); a Done
 # that leaves the wrong count; an enqueue before its CAS; a wait on a job that was never
 # posted (the code aborts); a prepare that locks without draining; a child with no child handler.
-trace  M6  M6-lifecycle  TracePool  TracePool.cfg  gc-pool-trace  none,1,16,1,2,200          reject  mutate=drop:pool.enq:1
+trace  M6  M6-lifecycle  TracePool  TracePool.cfg  gc-pool-trace  none,1,16,1,2,200          reject  mutate=set:pool.enq:1:out=7
 trace  M6  M6-lifecycle  TracePool  TracePool.cfg  gc-pool-trace  none,1,16,1,2,200          reject  mutate=set:pool.done:1:out=7
 trace  M6  M6-lifecycle  TracePool  TracePool.cfg  gc-pool-trace  none,1,16,1,2,200          reject  mutate=swap:pool.cas:1
 trace  M6  M6-lifecycle  TracePool  TracePool.cfg  gc-pool-trace  none,1,16,1,2,200          reject  mutate=set:pool.wfast:1:st=0
@@ -236,7 +262,10 @@ trace  M6  M6-lifecycle  TracePool  TracePool.cfg  gc-pool-trace  mut-child,6,16
 # events, the gangs' events and M6's fork events matched against Gangs' Next in any order the
 # log allows. gangs,<none|host|mut-parent|mut-child>,<seed>,<T>,<mark threads>,<prepare order>,<hold>
 # (hold 1: the background member waits until the closing, so the closing join marks; mark
-# threads 1: the one-CPU closing, inline, no run_m_).
+# threads 1: the one-CPU closing, inline, no run_m_). Since GCFork (register-fixes 7.1, 2026-10-01)
+# the prepare order no longer follows registration order: <prepare order> only picks which gang
+# registers first, the header records bg_first (the order that runs), so the mark_first rows check
+# that the order is independent of registration.
 harness  gc-fork-trace  test/gc-heap-tsan  gc-fork-trace
 trace  M6  M6-lifecycle  TraceGangs  TraceGangs.cfg  gc-fork-trace  gangs,none,1,4,2,bg_first,1          accept
 trace  M6  M6-lifecycle  TraceGangs  TraceGangs.cfg  gc-fork-trace  gangs,host,1,4,2,bg_first,1          accept
@@ -255,4 +284,5 @@ trace  M6  M6-lifecycle  TraceGangs  TraceGangs.cfg  gc-fork-trace  gangs,host,1
 trace  M6  M6-lifecycle  TraceGangs  TraceGangs.cfg  gc-fork-trace  gangs,host,1,4,2,bg_first,1          reject  mutate=drop:fork.bglock:1
 trace  M6  M6-lifecycle  TraceGangs  TraceGangs.cfg  gc-fork-trace  gangs,host,1,4,2,bg_first,1          reject  mutate=drop:gang.stop:1
 trace  M6  M6-lifecycle  TraceGangs  TraceGangs.cfg  gc-fork-trace  gangs,host,1,4,2,bg_first,1          reject  mutate=drop:closing:1
+trace  M6  M6-lifecycle  TraceGangs  TraceGangs.cfg  gc-fork-trace  gangs,host,1,4,2,bg_first,1          reject  mutate=drop:fork.bghold:1
 trace  M6  M6-lifecycle  TraceGangs  TraceGangs.cfg  gc-fork-trace  gangs,mut-child,4,4,2,bg_first,1     reject  mutate=drop:fork.bglock:1

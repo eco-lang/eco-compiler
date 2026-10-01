@@ -11,32 +11,33 @@
 #   expected: clean  the arm exits 0 (nothing reproduced)
 #             xfail  the arm exits 1 (the entry reproduced in every trial)
 #             reach  the arm exits 1 (a window is reached; not a defect by itself)
+#             wontfix the arm exits 1 (accepted behaviour of a Won't-fix entry; passes in both modes, exit 0 = XPASS)
 #             flaky  report only
 # Arm exit codes: 0 not reproduced, 1 reproduced, 4 a precondition was missed (reached=0), any
 # other code / signal / timeout: an error.
 plain  quick  mut                    3  1  clean
-trace  quick  det-cr003              3  1  xfail       # CR-003
-trace  quick  det-cr004              3  1  reach       # CR-004 (Not-a-bug; the window CR-013 needs)
-trace  quick  det-cr005              3  1  xfail       # CR-005
-trace  quick  det-cr015              3  1  xfail       # CR-015
-trace  quick  det-cr013-start        3  1  xfail       # CR-013 lost start (TV1)
+trace  quick  det-cr003              3  1  clean       # CR-003 (fixed 2026-10-01: CAS+enqueue and drain+lock each one m_ section, thread_mutex_ held first; window=closed)
+trace  quick  det-cr004              3  1  clean       # CR-004 (fixed 2026-10-01: the fork hold refuses the relaunch; window=closed)
+trace  quick  det-cr005              3  1  clean       # CR-005 (fixed 2026-10-01: closingFinish accepts a stopped episode and drains)
+trace  quick  det-cr015              3  1  clean       # CR-015 (fixed 2026-10-01: GCFork allocator layer; window=closed)
+trace  quick  det-cr013-start        3  1  clean       # CR-013 lost start (TV1) -- outside contract: checks the refused launch + orphan path (fixed 2026-10-01)
 trace  quick  det-cr013-start-exit   3  1  clean       # CR-013 control (the teardown merge uses heal=false)
-trace  quick  det-cr013-copy         3  1  xfail       # CR-013 double copy (TV3/TV4)
-trace  quick  det-cr013-copy-scan    3  1  xfail       # CR-013 unscanned copy (TV6)
-trace  quick  det-cr013-l3-exit      3  1  xfail       # CR-013 L3 hang at exit (code 15)
-trace  quick  det-cr013-l3-minor     3  1  xfail       # CR-013 L3 hang in the child's minor (code 13)
-trace  quick  det-cr031              3  1  xfail       # CR-031 foreign teardown (code 16)
-trace  quick  det-cr032              3  1  xfail       # CR-032 census mutex at exit (code 14)
-tsan   quick  det-cr014-live         3  0  xfail  match=flushCursorW          # CR-014 live_bytes race (NoRaceLive)
-tsan   quick  det-cr001:rf:inloop    3  0  xfail  match=finalizeBitmapCellW   # CR-001 gc_phase_ race, in-loop write
-tsan   quick  det-cr001:wf:inloop    3  0  xfail  match=finalizeBitmapCellW   # CR-001, reverse order
-tsan   quick  det-cr001:rf:tail      3  0  xfail  match=finalizeBitmapCellW   # CR-001, tail write
-tsan   quick  det-cr001:wf:tail      3  0  xfail  match=finalizeBitmapCellW   # CR-001, tail write, reverse order
-tsan   quick  det-cr002              3  0  xfail  match=setMarkBitAtomic      # CR-002 sweep word read vs fetch_or
-tsan   quick  det-cr019:t1first      3  0  xfail  match=promoteYoungLarge     # CR-019 YLOS header write vs sweep read
-tsan   quick  det-cr019:t2first      3  0  xfail  match=promoteYoungLarge     # CR-019, reverse order
-tsan   quick  cr012:a                3  0  xfail  match=cyclePressureFinishDue # CR-012(a) old_gen_in_use_bytes_
-tsan   quick  cr012:e                3  0  xfail  match=validatePageWork      # CR-012(e) validator vs virgin block
+trace  quick  det-cr013-copy         3  1  clean       # CR-013 double copy (TV3/TV4) -- outside contract: the refused launch + orphan path (fixed 2026-10-01)
+trace  quick  det-cr013-copy-scan    3  1  clean       # CR-013 unscanned copy (TV6) -- outside contract: the refused launch + orphan path (fixed 2026-10-01)
+trace  quick  det-cr013-l3-exit      3  1  clean       # CR-013 L3 hang at exit (code 15) (fixed 2026-10-01: fork hold; ~Allocator leaks the dead heap)
+trace  quick  det-cr013-l3-minor     3  1  clean       # CR-013 L3 hang in the child's minor (code 13) -- outside contract: checks the refused launch + orphan path (fixed 2026-10-01)
+trace  quick  det-cr031              3  1  clean       # CR-031 foreign teardown (code 16) (fixed 2026-10-01: ~Allocator leaks heaps the forker does not own)
+trace  quick  det-cr032              3  1  clean       # CR-032 census mutex at exit (code 14) (fixed 2026-10-01: GCFork census layer; window=closed)
+tsan   quick  det-cr014-live         3  0  clean                              # CR-014 live_bytes race (NoRaceLive; fixed 2026-09-30: the shrink runs after the join)
+tsan   quick  det-cr001:rf:inloop    3  0  clean                              # CR-001 gc_phase_ race, in-loop write (fixed 2026-09-30: atomic_ref)
+tsan   quick  det-cr001:wf:inloop    3  0  clean                              # CR-001, reverse order (fixed 2026-09-30: atomic_ref)
+tsan   quick  det-cr001:rf:tail      3  0  clean                              # CR-001, tail write (fixed 2026-09-30: atomic_ref)
+tsan   quick  det-cr001:wf:tail      3  0  clean                              # CR-001, tail write, reverse order (fixed 2026-09-30: atomic_ref)
+tsan   quick  det-cr002              3  0  clean                              # CR-002 sweep word read vs fetch_or (fixed 2026-09-30: finalized under promo_mu_)
+tsan   quick  det-cr019:t1first      3  0  clean                              # CR-019 YLOS header write vs sweep read (fixed 2026-10-01: relaxed atomic header word)
+tsan   quick  det-cr019:t2first      3  0  clean                              # CR-019, reverse order (fixed 2026-10-01)
+tsan   quick  cr012:a                3  0  clean                              # CR-012(a) old_gen_in_use_bytes_ (relaxed atomic since 2026-10-01; the shared VALUE is won't-fix, CRT CR-012(a))
+tsan   quick  cr012:e                3  0  wontfix match=validatePageWork     # CR-012(e) validator vs virgin block (won't-fix: two live heaps need the opt-in, HEAP_007)
 plain  stress host-exit             20  1  flaky       # CR-031
 plain  stress host                  10  1  flaky       # CR-003/015 (census env row: CR-032)
 plain  stress relaunch              20  1  flaky       # CR-023

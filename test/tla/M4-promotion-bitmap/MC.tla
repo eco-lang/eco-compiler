@@ -21,7 +21,7 @@
 EXTENDS PromoBitmap
 
 CONSTANTS Scenario, CycleActive,
-          NWorkers,  \* promotion workers in a parallel minor: 2, or 3 (deep)
+          NWorkers,  \* promotion workers in a parallel minor: 2, 3 (deep), or 1 (flip_one_worker)
           NA         \* promotions per worker (every worker the same)
 
 IsSweep  == Scenario \in {"sweep", "sweep_virgin", "sweep_1class"}
@@ -75,7 +75,7 @@ MC_GrantBlock == CASE "grant_t0_block" \in MUTANT        -> "Z"
 \* marker_on_post_t0 (CR-017's worst case): stale greys in a post-t0 chunk
 \* (11), grant (16) or cursor (19) block.
 MC_MarkerTodo == MC_T0Live \cup (IF "marker_on_post_t0" \in MUTANT THEN {11, 16, 19} ELSE {})
-MC_Workers    == IF IsMinor THEN (IF NWorkers = 3 THEN {1, 2, 8} ELSE {1, 2}) ELSE {}
+MC_Workers    == IF IsMinor THEN (CASE NWorkers = 3 -> {1, 2, 8} [] NWorkers = 1 -> {1} [] OTHER -> {1, 2}) ELSE {}
 MC_Markers    == IF MC_T0Blocks # {} THEN {3} ELSE {}
 MC_Collectors == CASE Scenario = "epoch" -> {4} [] Scenario = "epoch_l3" -> {4, 7} [] OTHER -> {}
 MC_Mutators   == IF IsEpoch THEN {5} ELSE {}

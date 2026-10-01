@@ -744,6 +744,8 @@ mechanical check.
 | PM4 | **cursor discipline:** after `endParallelPromotion`, every `kAllocCurrent` block is some `cursor_[cls].block` | `endParallelPromotion` |
 | PM5 | **old parent, young child** (the serial `in_phase3_` assertion): in `evacuateP` / `reachYoungLargeP`, `parent_old` and the child stays young → abort, naming parent and child | during the drain |
 | PM6 | **allocator accounting:** `allocated_bytes` after the merge minus before equals `Σ pw.allocated_bytes` + the mutex-rung charges, which the rungs add to a validate-only counter | after the merge |
+| PM7 | **no shrink inside a promotion** (CR-014, `plans/threaded-gc-register-fixes.md` §4.1, 2026-09-30; **every build**, not only validate): `onSweepComplete` aborts with `[gc] FATAL: onSweepComplete inside a parallel promotion (CR-014)` if `par_promo_active_`; every sweep completion inside a promotion goes through `sweepCompleteInPromotion` | `onSweepComplete`, first statement |
+| PM8 | **stashed cells are swept** (CR-002, register-fixes §4.3, 2026-09-30): a cell taken from a worker's stash lies in a `fully_swept` block, else abort `[heap-validate] CR-002: stashed cell of an unswept block` | `allocatePromotion`'s stash branch |
 
 The existing validators run unchanged on parallel minors: V1, V2 (on the concatenated log), the
 epilogue walks, IM4, IM13, and `validateEveryNthMinor`.

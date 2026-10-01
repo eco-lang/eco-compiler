@@ -446,3 +446,124 @@ Runs (2026-09-30, this tree): `run_traces.py` (every harness rebuilt): **135/135
 The destructor's probe fires only in the fork harness's `det-cr031` arm (gated by `tla_m6`), which also records no event. `adoptThreadHeap` is a test-only accessor used by the fork harness's `-minor` arms, which run outside the fork contract on purpose. The M6 trace rows (TraceGangs, TracePool) all give their expected verdicts on the rebuilt `gc-fork-trace`.
 
 **Verdict: no model change needed.**
+
+## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (GC_MODEL_001, one audit for the batch)
+
+Pins fired for M6: census `runtime/src/allocator/OldGenSpace.cpp` (**2afe7bc4cf4d**: new relaxed `atomic_ref<GCPhase>` accesses of `gc_phase_` in promotion). No gang, pool, fork or lifecycle step changes; the new lines are M4's.
+
+**Verdict: no model change needed.**
+
+## 2026-10-01 — register-fixes §6.2: CR-012 option F (a second live mutator is forbidden), CR-012(d) fixed (GC_MODEL_001)
+
+Pins fired: region `AL.acquireOldGenBlock` (**4f5f0b1d4dcd**), region `AL.releaseOldGenBlock` (**0fe08577fb84**), census `Allocator.cpp` (**88ca56595b84**), census `Allocator.hpp` (**1936ebd9fe0e**), grep `F.threadMutex` (**ac671f10dc1d**: the new `allowMultipleMutators` lock_guard).
+
+Change (plans/threaded-gc-register-fixes.md §6.2, CR-012 option F; HEAP_007, HEAP_060, GC_DET_001
+amended): (1) `initThread` aborts when another `ThreadLocalHeap` is live unless
+`allowMultipleMutators(true)` (a new `thread_mutex_`-guarded flag, reset by `reset()`; opted in only by
+`main.cpp --threads N>1` and the two-heap test harnesses). (2) `acquireOldGenRegion` goes through
+`PageWork::onFreshBump` (and the commit observer) like `acquireOldGenBlock`'s bump, so a heap's
+initial region commits only the part above the commit-ahead window (CR-012(d), fixed with sequential
+mutators too). (3) Hardening (§6.2 step 6): `old_gen_in_use_bytes_` is a `std::atomic<size_t>`
+written only under `thread_mutex_` by a relaxed load + relaxed store (`addOldGenInUse` /
+`subOldGenInUse`), read relaxed by `getOldGenCommittedBytes` (the unlocked triggers): no RMW, no
+ordering, same values; TSan `cr012:a` is now clean. `allowMultipleMutators` takes `thread_mutex_` as a
+leaf (it calls nothing).
+
+M6 models the lifecycle locks (registry, gangs, pool, `thread_mutex_` in the fork prepare). The new `thread_mutex_` holder (`allowMultipleMutators`) takes no other lock and is called only at setup; the in-use counter accesses stay inside the existing `thread_mutex_` sections; the `initThread` abort runs under `thread_mutex_` with nothing else held. No lock order changes. **Verdict: no model change needed.**
+
+## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (GC_MODEL_001)
+
+Pins fired: region `AL.acquireOldGenBlock` (**58fd49f66454**).
+
+Change (plans/threaded-gc-register-fixes.md §6.3, CR-007; HEAP_058/HEAP_059 amended): a promotion
+holder of a parallel promotion with n > 1 workers (`OldGenSpace::acquireWaitPolicy()` =
+`AcquireWait::AvoidUnderPromo`, passed at `ensureBagPageAvailable`, `allocateFromBagPage` and
+`allocateLargeBlock`) gets the no-wait policy in `Allocator::acquireOldGenBlock` (modes 1/2 with
+decommit on): (1) the first fitting **Pending** extent (`PageWork::isPending`, job-blind; `onReuse`
+cancels it, never waits), (2) else a fresh bump, (3) else -- the old-gen cap leaves no bump room --
+today's first fit (may wait; counted). The first-fit body was factored into a `takeFreeAt` lambda
+(no behaviour change for `Allowed`). New PageWork API: `isPending`, `decommitOn`, `noteNoWait` (the
+counters `nowait_pending_reuse_bytes`, `nowait_fresh_bytes`, `nowait_fallback_waits` and the M7 trace
+event `nw`), `noteNoWaitSkip` (`nowait_skipped_extents`). Validate builds: a no-wait Pending reuse
+must not raise `reuse_waits`, and `releaseBlockToAllocator` / `releaseUnassignedBlockToAllocator` abort
+while `acquireWaitPolicy() != Allowed`. No lock, atomic or memory order is added; every new
+PageWork call runs under `thread_mutex_` like the old ones.
+
+M6 sees `acquireOldGenBlock` only as a `thread_mutex_` holder that may wait on a pool job; the policy removes waits (outside the cap) and adds no lock. **Verdict: no model change needed.**
+
+
+## 2026-10-01 — register-fixes Phase 5: the unified fork design (CR-003/004/005/013/015/023/031/032) (GC_MODEL_001)
+
+Pins fired: files `GCHelperPool.hpp` (**376411c19869**), `GCHelperPool.cpp` (**22f4e3f2b546**); new file and census pins `GCFork.cpp`; regions `OGS.launchBackground` (**011248915015**), `OGS.runCycleStepConcurrent` (**289cdccf4bd4**), `OGS.closingFinish` (**af1f59d07ebb**), `TLH.minorGC` (**896f924a1e35**), `NT.tenureLaunch` (**c844a0dfc358**), `NT.tenureConcLaunch` (**873a1bb7f7be**), `AL.onGCPauseEnd` (**21aae9bc0c5a**), `AL.destructor` (**4cd5c1af901a**); censuses `Allocator.cpp` (**98ff871fcd48**), `Allocator.hpp` (**12959cd0b43c**), `GCHelperPool.cpp` (**98e0cc199b0b**), `GCHelperPool.hpp` (**297cf886ba5a**), `NurserySpace.cpp` (**ac75856d10b4**), `P1Census.cpp` (**ce0924594df0**), new census pins `ThreadLocalHeap.{cpp,hpp}`; greps `F.bgEp` (**add33fc189d1**), `F.atfork` (**850ac4ab5ed2**), `F.threadMutex` (**6cdf9fdc0767**).
+
+Change (plans/threaded-gc-register-fixes.md §7, Phase 5; HEAP_007 fork contract, HEAP_058, HEAP_065,
+HEAP_070 amended, HEAP_075 new): (1) `GCFork.{hpp,cpp}`: ONE `pthread_atfork` registration with fixed
+layers (gangs: registry -> each background gang's `m_` to set `fork_hold_` -> `stopAllForFork` -> each
+gang's `m_` held -> `GCMarkGang` `run_m_` -> its `m_`; allocator: `thread_mutex_`; census: the P1 census
+mutex and detector N's; pool: `GCHelperPool::m_`, drained and held); the three old registrations are
+gone. (2) No teardown holds `thread_mutex_` while it takes a gang lock (`cleanupThread`,
+`finishTenureForExit`, `reset`, `~Allocator`). (3) CR-003/015: `post`'s Idle->Posted CAS and the enqueue
+in one `m_` section; the pool prepare drains and keeps `m_` in one section; the allocator layer locks
+`thread_mutex_`, the child re-creates it and records `fork_child_` / `fork_owner_`. (4) CR-013/004:
+`GCBackgroundGang::launch` returns false (refuses) while `fork_hold_`; `launchBackground` then leaves
+`bg_ep_ = None` (`cm.episodes_refused`), `tenureLaunch` / `tenureConcLaunch` count `rs.fork_refusals`
+and the join's orphan path finishes the job. (5) CR-023: `stopAndJoin` waits for
+`generation_ != my_gen || finished_ >= members` and clears `running_` only for its own generation;
+`launch` notifies `cv_done_`. (6) CR-005: `closingFinish` accepts `bg_ep_ == None`. (7) CR-031:
+`~Allocator` (and `initThread`, `getCombinedStats`, `validatePageWork`) never touch a heap the forker
+does not own in a forked child; validate builds check `ThreadLocalHeap::owner_` in `minorGC` /
+`majorGC`. (8) CR-032: the census layer; `atexitReport` returns in a forked child. Trace-only: the
+probe `m6.tm.held` in `onGCPauseEnd` (under `thread_mutex_`), `fork.bghold`, `gang.refuse`, the step
+event's `refused` field and an M1 `stop` after a refused launch.
+
+**Model first (before the code).**
+- **HelperPool.tla (M6a).** The `FIX` constant is gone: the fixed handlers are the default
+  (`DrainHoldsLock`, `PostUnderLock`, `TmFirst`), and `MUTANT` turns pieces off. Rows flipped to
+  **pass**: `pool_host_fork_stranded` (9,464 states; ChildNoStranded, ChildLocksFree, PoolRunOnce,
+  WaitSeesDone, ParentJobsFinish, MutatorProgress), `pool_host_fork_locks` (9,464), `pool_host_child_hang`
+  (10,556; HostChildProgress). A6 mutants (the old fix rows): `pool_as_built_2026_09` violates
+  ChildNoStranded (449), `pool_no_tm_cas_outside` ChildNoStranded (305), `pool_no_tm_drain_split`
+  ChildNoStranded (575), `pool_no_tm` ChildLocksFree (231), `pool_no_tm_child_hang` HostChildProgress
+  (5,508), `pool_tm_last` MutatorProgress (4,408); `pool_guard_after_tm` now runs with `no_tm` (the
+  guard's design) and still violates HostChildProgress. The `no_start` mutant also gates the start in the
+  merged post step. Rows `pool_host_fork_fix_*`, `_tm_first`, `_tm_last`, `pool_host_child_fix_*`,
+  `pool_deep_tm_first_2workers` were deleted (identical to the flipped rows or now mutants); the host-fork
+  deep rows also check ChildNoStranded / ChildLocksFree.
+- **Gangs.tla (M6b).** New `hold` (fork_hold_), `G_Hold` after `G_Reg` (each gang's m_, the hold set
+  BEFORE the stops), the refusal branch of `L_Lock` (CM: `bgEp := "None"`; TN: the job stays,
+  `U_TFinish` finishes it), `SJ_Wait` waiting for `finished >= NM \/ gen # sgen` and clearing `running`
+  only when `gen = sgen`, `ClosingFinished` accepting `None`, `FIX` removed; `ForeignStop` (a stop with
+  no fork, no hold) and `RelaunchWaitsStopper` (the relaunched member ends only after the stopper
+  returned; ghost `fstop`). `StopWaitsOwnEpisode` is now "same generation, or the stopper's wake-up is
+  enabled". The prepare order is `bg_first` in the code (GCFork); `PrepareOrder = "mark_first"` stays as a
+  variant the fix must also pass. Rows flipped to **pass**: `gangs_host_fork` (14,959), `_1cpu_closing`
+  (9,018), `gangs_host_fork_window` (14,959; also ChildHeldTenure, ParentProgress),
+  `gangs_two_gangs_window` (97,084), `gangs_host_fork_stall` (14,959), deep `gangs_deep_host_fork_mark_first`
+  (11,784); `gangs_host_fork_fix_closing` deleted (now the default). New rows: `gangs_foreign_stop` pass
+  (4,979; ParentProgress, StopWaitsOwnEpisode, LJ_*, ClosingFinished, HandoffClean), deep
+  `gangs_deep_b2_foreign_stop` pass (31,935). New A6 mutants: `no_fork_hold` ChildHeldTenure (4,921),
+  `hold_after_stop` ChildHeldTenure (4,243), `no_fork_hold_window` ChildHeldAny (1,135), `no_stop_gen`
+  ParentProgress (4,979), `stop_gen_clears_running` LJ_RunningExact (973), `closing_asserts_finished`
+  ClosingFinished (12,035).
+- `run_models.py --model M6`: quick 48/48; deep 18/18 (`gangs_deep_wide_exit` 1,032,905 states, the largest).
+- **Trace specs.** `TracePool`: `pool.cas` is the merged CAS-and-enqueue step (`M_PostCas`), `pool.enq` a
+  check of its count at `M_PostDone`; `pool.drained` is `F_Drain` (m_ kept) and `pool.plock` a check;
+  `pool_trace.cpp` registers a GCFork allocator layer for its `thread_mutex_` stand-in (F_Tm). The old
+  negative control `drop:pool.enq:1` matched nothing any more (the event is a check now) and became
+  `set:pool.enq:1:out=7` (reject). `TraceGangs`: `fork.bghold` = `G_Hold`, `gang.refuse` = `L_Lock`'s
+  refusal, a `step` with `refused` checks `bgEp = None`, a stopAndJoin whose generation was relaunched
+  returns with no `gang.join` (hidden `SJ_Wait`); `.keep` gains `fork.bghold`, `gang.refuse`; new
+  negative control `drop:fork.bghold:1` (reject). The `gangs` harness writes `order = bg_first` (the
+  order that runs) for both registration orders. `run_traces.py --model M6`: 29/29.
+
+**Code**: as above. A6 negative controls in code (revert checks, `run_fork_arms.py --flavor trace`):
+allocator layer off -> `det-cr015` hang_tm 3/3 (and `det-cr003` hang_tm: the forker took the pool's m_
+while the mutator held thread_mutex_); pool fix and allocator layer off -> `det-cr003` hang_drain 3/3
+(the pool fix alone is masked in code by the allocator layer, as `pool_host_fork_tm_first` predicted);
+hold off -> `det-cr004` window 3/3, `det-cr013-*` reproduce; closing assert restored -> `det-cr005`
+aborts 3/3; `~Allocator` drop off -> `det-cr031` 3/3 (and with the hold off too, `det-cr013-l3-exit`);
+census layer off -> `det-cr032` 3/3; `stopAndJoin` generation-blind -> CRT `CR-023` stalls, clearing
+running unconditionally -> CRT `CR-023` sees running() false. `det-cr015` now pauses at the new probe
+`m6.tm.held` (thread_mutex_ only): its old pause point, post's CAS, is under the pool's m_ since the fix.
+
+**Verdict: model updated (HelperPool, Gangs, TracePool, TraceGangs, MAPPING.md).**

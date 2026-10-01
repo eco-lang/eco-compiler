@@ -504,7 +504,7 @@ begin
         if ~StopAllowed then ToBudget1(); end if;    \* stop is constant: its load folds in
     end if;
   I_Stop:                                            \* c.stopRequested()
-    if stop then
+    if stop \/ MUTANT = "member_exits_undone" then    \* mutant: an idle member leaves undone, unstopped
         if MUTANT = "stop_sets_done" then word := [word EXCEPT !.done = TRUE]; end if;
         dirty[self] := FALSE;
         ExitIdle();
@@ -1594,7 +1594,7 @@ I_Load(self) == /\ pc[self] = "I_Load"
                                 uAssist, k >>
 
 I_Stop(self) == /\ pc[self] = "I_Stop"
-                /\ IF stop
+                /\ IF stop \/ MUTANT = "member_exits_undone"
                       THEN /\ IF MUTANT = "stop_sets_done"
                                  THEN /\ word' = [word EXCEPT !.done = TRUE]
                                  ELSE /\ TRUE
@@ -2363,9 +2363,13 @@ AssistExact ==
 
 \* The assert in OldGenSpace::closingFinish after reapBackground(true):
 \* bg_ep_ == Finished. Violated with StopAllowed and DoClosing: register CR-005.
+\* register-fixes §7.2 step 6 (CR-005): closingFinish accepts a STOPPED episode
+\* (a foreign stop: a fork's prepare, stopAllAtExit, reset) and drains its
+\* leftovers (episode_stop_drain); it is wrong only when the episode ended with
+\* neither done nor a stop (mutant member_exits_undone).
 ClosingFinished ==
     \A j \in JoinerSet :
-        (pc[j] = "J_ClosingCheck" /\ \A m \in BgSlots : pc[m] = "Done") => word.done
+        (pc[j] = "J_ClosingCheck" /\ \A m \in BgSlots : pc[m] = "Done") => word.done \/ stop
 
 \* The premise of the folded budget loads (BudgetNeverEmpty): in a drain run
 \* the budget never runs out, so `budget.load() > 0` always holds in the idle

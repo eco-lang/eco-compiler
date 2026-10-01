@@ -266,9 +266,9 @@ Pad(h, a, req, cell) ==
     THEN [h EXCEPT !.mem[a[1]][a[2] + req] = FH(cell - req)] ELSE h
 
 \* initObjectHeaderWithSize (OGS:512): only while marking_active || gc_phase_ != Idle
-\* is the cell black (its mark bit set) and cell_bytes added to live_bytes (CR-018).
-\* marking_active is TRUE only inside the atomic major. count_mixed_idle is CR-018's
-\* fix candidate (a): count the cell at Idle too.
+\* is the cell black (its mark bit set); cell_bytes is added to live_bytes in EVERY
+\* phase (CR-018 fixed, HEAP_073). marking_active is TRUE only inside the atomic major.
+\* idle_uncounted: the pre-fix code (live_bytes added only while not Idle).
 Gate(h, a, cell) ==
     LET id == BlockAt(h, a[1]) IN
     IF id = 0 THEN h
@@ -276,7 +276,7 @@ Gate(h, a, cell) ==
     THEN [h EXCEPT !.blk[id].marks = IF h.blk[id].lg THEN @ ELSE @ \cup {a[2]},
                    !.blk[id].lmark = IF h.blk[id].lg THEN TRUE ELSE @,
                    !.blk[id].lb = @ + cell]
-    ELSE IF "count_mixed_idle" \in MUTANT /\ ~h.blk[id].lg
+    ELSE IF "idle_uncounted" \notin MUTANT /\ ~h.blk[id].lg
     THEN [h EXCEPT !.blk[id].lb = @ + cell]
     ELSE IF cell > 0 /\ ~h.blk[id].lg THEN Ev(h, "idle_uncounted")
     ELSE h
@@ -532,8 +532,9 @@ Panic(h, c, req, o) == IF Pending(h) THEN PanicIter(Ev(h, "panic"), c, req, o) E
 (* the ladder's bag rung with a size-classed request (CR-029).              *)
 
 \* step 3: a fresh page, materialized mixed (fully_swept only mid-cycle), carved at
-\* offset 0; a remainder of at least MIN_FREE_CELL_SIZE goes through the packer, a
-\* smaller one gets no header (CR-033). bag_tail_header: CR-033's fix candidate.
+\* offset 0; any nonzero remainder goes through the packer, which gives a tail under
+\* MIN_FREE_CELL_SIZE an unlinked Tag_Free header (CR-033 fixed, HEAP_024).
+\* bag_tail_headerless: the pre-fix code (a remainder under MinCell gets no header).
 FreshPage(h, req, o) ==
     LET h1 == EnsureBag(h) IN
     IF h1.bag = <<>> THEN {Out(h1, Fail)}
@@ -541,7 +542,7 @@ FreshPage(h, req, o) ==
              m == Materialize([h1 EXCEPT !.bag = TruncLast(@)], s, Mixed, FALSE, G, 0,
                               h1.phase # "Idle")
              rem == G - req
-             h3 == IF rem >= MinCell \/ ("bag_tail_header" \in MUTANT /\ rem > 0)
+             h3 == IF rem >= MinCell \/ ("bag_tail_headerless" \notin MUTANT /\ rem > 0)
                    THEN Push(m.h, s, req, rem, m.id) ELSE m.h
              h4 == IF rem > 0 /\ rem < MinCell THEN Ev(h3, "bagtail") ELSE h3
          IN {Out([Gate(Ev(h4, "bagfresh"), <<s, 0>>, req) EXCEPT !.mem[s][0] = OH(o)], <<s, 0>>)}
@@ -595,7 +596,7 @@ Flip(h, id, req, o) ==
         lie == \/ \E x \in Objs : h.objs[x].st = "A" /\ h.objs[x].s = s /\ h.objs[x].root
                \/ \E m \in Range(h.owned) : h.meta[m].base # Null /\ h.meta[m].base[1] = s
         h1 == RemoveFreeCells(Detach(h, id), id, FALSE)
-        h2 == IF "flip_purges_index" \in MUTANT THEN PurgeIndex(h1, s) ELSE h1   \* CR-035 fix candidate
+        h2 == IF "flip_keeps_index" \in MUTANT THEN h1 ELSE PurgeIndex(h1, s)   \* CR-035 fixed: retireIndexRange
         h3 == [h2 EXCEPT !.blk[id].lg = TRUE, !.blk[id].cls = Mixed, !.blk[id].eoo = req,
                          !.blk[id].lb = req, !.blk[id].fs = TRUE, !.blk[id].marks = {},
                          !.blk[id].lmark = FALSE, !.lie = @ \/ lie]

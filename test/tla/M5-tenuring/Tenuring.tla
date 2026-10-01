@@ -48,19 +48,26 @@ CONSTANTS
                     \*   whose YLOS has header age 0), "lbid" (the LargeBodyId as the stamp; the
                     \*   release recycles it LIFO)
     Cr017Oracle,    \* model-only: the t0 walk skips dead survivor and builder objects, standing for
-                    \* any CR-017 fix, so a configuration can look past CR-017 (not a fix design)
+                    \* any CR-017 fix, so a configuration can look past CR-017 (not a fix design).
+                    \* Since CR-017's fix (HEAP_074, MajorZapX) the rows run with it FALSE; only the
+                    \* control ylos_age1_boundary still sets it
     LbKey,          \* the lb_bodies lists (large bodies, op "lalloc"), address-keyed in the code:
-                    \*   "code": the prep's markLargeBodySeen colours whatever index entry sits at the
-                    \*           address (NurseryRegion.cpp:749, :771), a young YLOS included;
-                    \*   fix controls: "kind" (colour kind-0 bodies only), "drop" (the major drops a
-                    \*   freed body from every list), "identity" (a never-reused stamp: a stale entry
-                    \*   never matches; also the value for configurations without "lalloc")
+                    \*   "kind": THE CODE since CR-037's fix (HEAP_072 amended, 2026-09-30): the
+                    \*           prep's markLargeBodySeen colours kind-0 (body) index entries only
+                    \*           (OGS.markLargeBodySeen), so a young YLOS at a reused body address is
+                    \*           reached and scanned as young;
+                    \*   "addr": the code BEFORE the fix (CR-037): whatever index entry sits at the
+                    \*           address is coloured (NurseryRegion.cpp:752, :777), a young YLOS
+                    \*           included. Kept as the regression mutant of the fix;
+                    \*   other controls: "drop" (the major drops a freed body from every list),
+                    \*   "identity" (a never-reused stamp: a stale entry never matches; also the
+                    \*   value for configurations without "lalloc")
     MUTANT
 
 ASSUME K \in {1, 2} /\ (K = 2 => Collectors = 1)      \* age_forced_exact
 ASSUME SC >= EC + BC /\ OC >= MaxLid
 ASSUME YlosGen \in {"identity", "addr", "drop", "age1", "stamp", "lbid"} /\ Cr017Oracle \in BOOLEAN
-ASSUME LbKey \in {"identity", "code", "kind", "drop"}
+ASSUME LbKey \in {"identity", "addr", "kind", "drop"}
 
 OpKinds == {"alloc", "load", "drop", "balloc", "bwrite", "bclear", "yalloc", "lalloc"}
 X == 1..(K + 2)                           \* survivor extents (k + 2)
@@ -205,13 +212,13 @@ define
                    [] YlosGen = "lbid"  -> yrec[c]              \* the LargeBodyId matches iff it was recycled
                    [] OTHER             -> TRUE                 \* "addr": youngLargeMeta only (pre-HEAP_072)
     PrepMatch(c, x) == x # 0 /\ x \in ystale[c] /\ ys[c] \in YoungYS /\ PrepOK(c)
-    \* Large bodies. markLargeBodySeen (OldGenSpace.cpp:7542-7552) colours the index
-    \* entry at the listed address, whatever its kind (a body or a young YLOS).
+    \* Large bodies. markLargeBodySeen (OGS.markLargeBodySeen) colours the index entry at
+    \* the listed address: a kind-0 body only ("kind", the code), or any kind ("addr", pre-CR-037).
     IsBodyRef(v) == v # Nil /\ IsY(v) /\ heap[v].lid \in bodyLids
     LbMatch(c, en) == /\ ys[c] \in YoungYS \cup {YBody}          \* an index entry is there
                       /\ CASE LbKey = "kind"     -> ys[c] = YBody
                            [] LbKey = "identity" -> heap[<<"Y", c>>].lid = en[2]
-                           [] OTHER              -> TRUE        \* "code", "drop"
+                           [] OTHER              -> TRUE        \* "addr", "drop"
     LbColoured(x) == {<<"Y", c>> : c \in {c2 \in 1..YC : \E en \in lbl[c2] : en[1] = x /\ LbMatch(c2, en)}}
     \* promoteLargeHeader at the merge: the bodies of the headers this job copied (J.lb_promoted).
     LbPromoted == {v \in YAddr : ys[v[2]] = YBody /\ \E a \in cw \cap OAddr, i \in Fields : heap[a].f[i] = v}
@@ -225,6 +232,16 @@ define
         LET N == G \cup {Redir(heap[a].f[i]) : a \in G \ {Nil}, i \in Fields}
         IN IF N = G THEN G ELSE CloseR(N)
     MajorLive == CloseR({Redir(root[r]) : r \in Roots})
+    \* CR-017 (HEAP_074, NR.zapDeadAfterMajor): after its mark a STW major zaps (fillers) every
+    \* survivor-part object of every Young extent it did not reach (ages 1 .. K; never the
+    \* Tenuring extent, merged and retiring at the next minor; never builder areas or eden).
+    \* Mutants: no_cr017_fix (the code before the fix: no zap), zap_tenuring (the Tenuring
+    \* extent too: resolveRetire and the heal still read its forwarded originals),
+    \* zap_fresh_only (the age-1 extent only: misses the ageing extents at K = 2).
+    MajorZapX(x) == CASE MUTANT = "no_cr017_fix"   -> FALSE
+                      [] MUTANT = "zap_tenuring"   -> xstate[x] \in {"Young", "Tenuring"}
+                      [] MUTANT = "zap_fresh_only" -> xstate[x] = "Young" /\ xage[x] = 1
+                      [] OTHER                     -> xstate[x] = "Young"
     MarkDone == astack = <<>> /\ nsa > Len(jSA) /\ swept
     JobDone == MarkDone /\ jstack = <<>> /\ ns > Len(jstarts) /\ nh > Len(jheal) /\ ny > Len(jylos)
     InEpoch == pc[MutId] = "M_Epoch"
@@ -470,9 +487,16 @@ begin
   J_Merge:                                         \* TV1_Heal, TV1_Ylos, TenuredEqualsLegacy hold here
     if job.st = "Running" then
         \* (4) generation YLOS: promote the reached, resolve their slots into the
-        \* extent; (5) heal; (5b) zap the dead ageing objects (fillers).
+        \* extent; (5) heal; (5b) zap the dead ageing objects (fillers); (5c) CR-038 /
+        \* CR-039 (HEAP_070 amended): clear every slot of an ageing-generation YLOS the
+        \* ageing mark did not reach (it stays walkable until its own hand-over; a slot
+        \* may name a retiring Tenuring object or a YLOS this merge's minor frees).
+        \* MUTANT skip_ylos_zap: the code before the fix.
         heap := [a \in Addr |->
                    IF a \in zap /\ MUTANT # "skip_zap" THEN Empty
+                   ELSE IF /\ a \in YAddr /\ ageX # 0 /\ ys[a[2]] = Gen(ageX) /\ a \notin amark
+                           /\ MUTANT # "skip_ylos_zap"
+                        THEN [heap[a] EXCEPT !.f = [i \in Fields |-> Nil]]
                    ELSE [heap[a] EXCEPT !.f = [i \in Fields |->
                        IF /\ IsS(heap[a].f[i], job.x)
                           /\ \/ <<a, i>> \in Range(jheal) /\ ~(MUTANT = "skip_heal" /\ <<a, i>> = jheal[1])
@@ -791,7 +815,11 @@ begin
         cycle := "Idle"; grey := {}; black := {}; cage := 0;
     end if;
   MJ_Mark:                                         \* STW mark with majorRedirect; TV1_Major holds here
-    heap := [a \in Addr |-> IF (IsO(a) \/ IsY(a)) /\ a \notin MajorLive THEN Empty ELSE heap[a]];
+    \* the sweep frees unreached old cells; then (CR-017, HEAP_074) the zap of the Young
+    \* extents' unreached survivors (MajorZapX), before the mutator resumes.
+    heap := [a \in Addr |-> IF \/ (IsO(a) \/ IsY(a)) /\ a \notin MajorLive
+                               \/ a \in SAddr /\ a \notin MajorLive /\ MajorZapX(a[2])
+                            THEN Empty ELSE heap[a]];
     \* CR-034: the major erases a dead member's index entry (releaseBlockToAllocator /
     \* retireDeadLargeBodies) but not its address in the extent's ylos_gen.
     ystale := [c \in 1..YC |->
@@ -915,6 +943,16 @@ CloseR(G) ==
     LET N == G \cup {Redir(heap[a].f[i]) : a \in G \ {Nil}, i \in Fields}
     IN IF N = G THEN G ELSE CloseR(N)
 MajorLive == CloseR({Redir(root[r]) : r \in Roots})
+
+
+
+
+
+
+MajorZapX(x) == CASE MUTANT = "no_cr017_fix"   -> FALSE
+                  [] MUTANT = "zap_tenuring"   -> xstate[x] \in {"Young", "Tenuring"}
+                  [] MUTANT = "zap_fresh_only" -> xstate[x] = "Young" /\ xage[x] = 1
+                  [] OTHER                     -> xstate[x] = "Young"
 MarkDone == astack = <<>> /\ nsa > Len(jSA) /\ swept
 JobDone == MarkDone /\ jstack = <<>> /\ ns > Len(jstarts) /\ nh > Len(jheal) /\ ny > Len(jylos)
 InEpoch == pc[MutId] = "M_Epoch"
@@ -1516,6 +1554,9 @@ J_Merge(self) == /\ pc[self] = "J_Merge"
                  /\ IF job.st = "Running"
                        THEN /\ heap' = [a \in Addr |->
                                           IF a \in zap /\ MUTANT # "skip_zap" THEN Empty
+                                          ELSE IF /\ a \in YAddr /\ ageX # 0 /\ ys[a[2]] = Gen(ageX) /\ a \notin amark
+                                                  /\ MUTANT # "skip_ylos_zap"
+                                               THEN [heap[a] EXCEPT !.f = [i \in Fields |-> Nil]]
                                           ELSE [heap[a] EXCEPT !.f = [i \in Fields |->
                                               IF /\ IsS(heap[a].f[i], job.x)
                                                  /\ \/ <<a, i>> \in Range(jheal) /\ ~(MUTANT = "skip_heal" /\ <<a, i>> = jheal[1])
@@ -2135,7 +2176,9 @@ MJ_Cycle == /\ pc[MutId] = "MJ_Cycle"
                             prev, retire, ftop, fbot, cur, t, v >>
 
 MJ_Mark == /\ pc[MutId] = "MJ_Mark"
-           /\ heap' = [a \in Addr |-> IF (IsO(a) \/ IsY(a)) /\ a \notin MajorLive THEN Empty ELSE heap[a]]
+           /\ heap' = [a \in Addr |-> IF \/ (IsO(a) \/ IsY(a)) /\ a \notin MajorLive
+                                         \/ a \in SAddr /\ a \notin MajorLive /\ MajorZapX(a[2])
+                                      THEN Empty ELSE heap[a]]
            /\ ystale' = [c \in 1..YC |->
                            IF AddrKeyed /\ <<"Y", c>> \notin MajorLive /\ ys[c] \in {Gen(x) : x \in X}
                               /\ xstate[ys[c][2]] = "Young"

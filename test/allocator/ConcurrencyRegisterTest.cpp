@@ -9,7 +9,12 @@
  *           ageing extent). Expected-fail.
  *   CR-018  after the sweep, mixed-block allocations are not counted in
  *           live_bytes, so the empty-regular-block flip takes a live block.
- *           Serial. Expected-fail.
+ *           Serial. FIXED 2026-09-30 (HEAP_073; plans/threaded-gc-register-
+ *           fixes.md §3.2), with a hook-driven negative control.
+ *
+ * Guard kinds: runXfailGuard (an open entry), runFixedGuard (a fixed entry or
+ * a control), runWontFixGuard (accepted behaviour: passes in both modes, XPASS
+ * if it changes) and runDeathGuard (the correct outcome is a SIGABRT).
  *   CR-025  helper-job waits on GCMarkGang members are attributed to the pause.
  *   CR-029  a size-classed request that reaches the bag rung
  *           (allocateFromBagPage) gets an exact-size, black, counted object in
@@ -169,6 +174,56 @@ void runFixedGuard(const char* id, const std::function<int()>& scenario) {
 #endif
 }
 
+// A guard for a WON'T-FIX entry (plans/threaded-gc-register-fixes.md Step 0.1):
+// the scenario documents ACCEPTED behaviour (e.g. CR-012 under its benchmark/test
+// opt-in). Reproducing it (kDefect, or SIGABRT) prints WONTFIX and passes in both
+// modes, so ECO_TEST_XFAIL=strict can go green; kCorrect fails as XPASS (the
+// accepted behaviour changed: re-open the entry); kNotReached fails.
+[[maybe_unused]] void runWontFixGuard(const char* id, const std::function<int()>& scenario) {
+#if defined(_WIN32)
+    (void)id;
+    (void)scenario;   // fork-based; POSIX only
+#else
+    const int st = runScenarioInChild(id, scenario);
+    std::string how;
+    if (WIFEXITED(st) && WEXITSTATUS(st) == kDefect) {
+        how = "the guard's check saw the accepted behaviour";
+    } else if (WIFSIGNALED(st) && WTERMSIG(st) == SIGABRT) {
+        how = "the child aborted (the accepted behaviour)";
+    } else if (WIFEXITED(st) && WEXITSTATUS(st) == kCorrect) {
+        TEST_FAIL(std::string(id) + " XPASS: the accepted behaviour changed "
+                  "(the heap behaved correctly; re-open the won't-fix entry)");
+    } else if (WIFEXITED(st) && WEXITSTATUS(st) == kNotReached) {
+        TEST_FAIL(std::string(id) + ": the scenario did not reach its precondition "
+                  "(the child's message says which)");
+    } else {
+        TEST_FAIL(std::string(id) + ": the child died unexpectedly (wait status " +
+                  std::to_string(st) + ")");
+    }
+    std::cout << "  WONTFIX " << id << ": " << how << " (passes in both modes)\n";
+#endif
+}
+
+// A guard whose CORRECT outcome is an abort (plans/threaded-gc-register-fixes.md
+// Step 0.2; e.g. CR-012's "a second mutator is forbidden"): a SIGABRT in the
+// child passes; any exit (kCorrect, kDefect, kNotReached) or another signal
+// fails. Scenarios run under it must NOT call abortMeansNotReached().
+[[maybe_unused]] void runDeathGuard(const char* id, const std::function<int()>& scenario) {
+#if defined(_WIN32)
+    (void)id;
+    (void)scenario;   // fork-based; POSIX only
+#else
+    const int st = runScenarioInChild(id, scenario);
+    if (WIFSIGNALED(st) && WTERMSIG(st) == SIGABRT) return;
+    if (WIFEXITED(st)) {
+        TEST_FAIL(std::string(id) + ": the child exited with " + std::to_string(WEXITSTATUS(st)) +
+                  " instead of aborting (the forbidden operation was allowed)");
+    }
+    TEST_FAIL(std::string(id) + ": the child died unexpectedly (wait status " +
+              std::to_string(st) + "), not by SIGABRT");
+#endif
+}
+
 void* allocByteBuf(Allocator& a, size_t total, uint8_t fill) {
     void* obj = a.allocate(total, Tag_ByteBuffer);
     if (obj == nullptr) throw std::runtime_error("allocByteBuf: allocation failed");
@@ -288,8 +343,10 @@ HeapConfig cr018Config() {
     return cfg;
 }
 
-int cr018Scenario() {
-    const char* id = "CR-018";
+// idleUncounted: the negative control -- OldGenSpace::test_idle_uncounted_
+// restores the pre-fix Idle gate (HEAP_073), and the flip must then take P.
+int cr018Scenario(bool idleUncounted) {
+    const char* id = idleUncounted ? "CR-018 control (Idle uncounted hook)" : "CR-018";
     const HeapConfig cfg = cr018Config();
     auto& a = initAllocator(cfg);
     OldGenSpace& og = AllocatorTestAccess::getThreadHeap(a)->getOldGen();
@@ -311,6 +368,7 @@ int cr018Scenario() {
     }
 
     // (3) Small objects into P's free runs, allocated after the sweep (Idle).
+    OA::setIdleUncounted(og, idleUncounted);
     std::vector<HPointer> small(3);
     for (size_t i = 0; i < small.size(); ++i) {
         void* o = allocByteBuf(a, mid, static_cast<uint8_t>(0xA0 + i));
@@ -318,8 +376,18 @@ int cr018Scenario() {
         a.getRootSet().addRoot(&small[i]);
         if (OA::blockOf(og, o) != P) return notReached(id, "a small object did not land in P");
     }
+    const size_t lbP = static_cast<size_t>(OA::metaOf(og, P).live_bytes);
     std::fprintf(stderr, "  %s child: P holds %zu live bytes; its live_bytes reads %zu\n", id,
-                 small.size() * mid, static_cast<size_t>(OA::metaOf(og, P).live_bytes));
+                 small.size() * mid, lbP);
+    // CR-018 fixed (HEAP_073): every Idle allocation is counted.
+    const bool counted = lbP == small.size() * mid;
+    if (!idleUncounted && !counted) {
+        std::fprintf(stderr, "  %s child: live_bytes != %zu: the Idle allocations were not counted\n", id,
+                     small.size() * mid);
+        for (auto& sp : small) a.getRootSet().removeRoot(&sp);
+        return kDefect;
+    }
+    if (idleUncounted && lbP != 0) return notReached(id, "the hook did not leave P's live_bytes at 0");
 
     // (4) Exactly alloc_buffer_size bytes: allocateLargeBlock -> allocateFromEmptyRegularBlocks.
     void* big = allocByteBuf(a, page, 0xEE);
@@ -347,14 +415,26 @@ int cr018Scenario() {
     }
     for (auto& s : small) a.getRootSet().removeRoot(&s);
     a.getRootSet().removeRoot(&bigp);
+    if (idleUncounted) {   // the negative control: the pre-fix gate must reproduce the flip
+        if (rc == kDefect) {
+            std::fprintf(stderr, "  %s child: with the pre-fix Idle gate the flip took P (the guard sees it)\n", id);
+            return kCorrect;
+        }
+        std::fprintf(stderr, "  %s child: with the pre-fix Idle gate the flip did NOT take P\n", id);
+        return kDefect;
+    }
     return rc;
 }
 
 }  // namespace
 
 Testing::TestCase testCR018EmptyBlockFlipKeepsLiveCells(
-    "CR-018 [xfail CR-018]: the empty-block flip never takes a mixed block refilled after its sweep",
-    []() { runXfailGuard("CR-018", cr018Scenario); });
+    "CR-018: the empty-block flip never takes a mixed block refilled after its sweep (live_bytes counts Idle allocations)",
+    []() { runFixedGuard("CR-018", [] { return cr018Scenario(false); }); });
+
+Testing::TestCase testCR018Control(
+    "CR-018: negative control, with the pre-fix Idle gate (test hook) the flip takes the refilled block",
+    []() { runFixedGuard("CR-018 control (Idle uncounted hook)", [] { return cr018Scenario(true); }); });
 
 // ============================================================================
 // CR-017 (region mode, the default nursery): x -> c with c old; x dies; an
@@ -446,12 +526,77 @@ int cr017Scenario(uint32_t k) {
 }  // namespace
 
 Testing::TestCase testCR017RegionT0WalkSkipsFreedCellK1(
-    "CR-017 [xfail CR-017]: region k=1, the t0 walk does not grey a cell a STW major freed (hand-over extent)",
-    []() { runXfailGuard("CR-017 (k=1)", [] { return cr017Scenario(1); }); });
+    "CR-017: region k=1, the t0 walk does not grey a cell a STW major freed (hand-over extent)",
+    []() { runFixedGuard("CR-017 (k=1)", [] { return cr017Scenario(1); }); });
 
 Testing::TestCase testCR017RegionT0WalkSkipsFreedCellK2(
-    "CR-017 [xfail CR-017]: region k=2, the t0 walk does not grey a cell a STW major freed (ageing extent)",
-    []() { runXfailGuard("CR-017 (k=2)", [] { return cr017Scenario(2); }); });
+    "CR-017: region k=2, the t0 walk does not grey a cell a STW major freed (ageing extent)",
+    []() { runFixedGuard("CR-017 (k=2)", [] { return cr017Scenario(2); }); });
+
+// HEAP_074's validate tripwire (evacuateR, Hand / Age): a reference to a
+// survivor the STW major found dead -- only an unrooted reference held across
+// majorGC (a resurrection) can make one -- aborts at the next minor. x is
+// copied into the Fresh extent, unrooted (its HPointer kept by value), zapped
+// by an explicit major, then rooted again; the next minor hands x's extent over
+// (k = 1) or ages it (k = 2) and meets the zapped x. Control: x stays rooted.
+namespace {
+
+// CR-017 route witness (HEAP_074): `p` lies inside a Tag_Free filler of extent
+// X's survivor part (the zap coalesces a dead run into one filler).
+bool insideFiller(const region::Extent& X, const void* p) {
+    for (char* q = X.base; q < X.surv_top;) {
+        const size_t sz = getObjectSize(q);
+        if (sz == 0) return false;
+        if (static_cast<const char*>(p) >= q && static_cast<const char*>(p) < q + sz)
+            return getHeader(q)->tag == Tag_Free;
+        q += sz;
+    }
+    return false;
+}
+
+int cr017TripwireScenario(uint32_t k, bool control) {
+    const char* id = control ? "HEAP_074 tripwire control" : "HEAP_074 tripwire";
+    auto& a = initRegionAllocator(cr017Config(k));
+    ThreadLocalHeap* h = AllocatorTestAccess::getThreadHeap(a);
+    NurserySpace& ns = h->getNursery();
+    RegionState* R = NurserySpaceTestAccess::region(ns);
+    if (!ns.regionMode() || R == nullptr) return notReached(id, "no region nursery");
+    HPointer x = alloc::tuple2(alloc::boxed(alloc::allocInt(0x74)), alloc::boxed(alloc::allocInt(0x75)), 0);
+    a.getRootSet().addRoot(&x);
+    a.minorGC();   // x -> the Fresh extent
+    const int j = R->extentOf(a.resolve(x));
+    if (j < 0 || R->x[j].state != region::XState::Young) return notReached(id, "x is not in a Young extent");
+    HPointer raw = x;   // by value: unrooted once x's root is gone
+    if (!control) {
+        a.getRootSet().removeRoot(&x);
+        x = alloc::listNil();
+    }
+    a.majorGC();
+    const bool zapped = insideFiller(R->x[j], AllocatorTestAccess::fromPointer(raw));
+    std::fprintf(stderr, "  %s child: after the major x %p is %s\n", id, AllocatorTestAccess::fromPointer(raw),
+                 zapped ? "ZAPPED" : "intact");
+    if (zapped == control) return notReached(id, control ? "the rooted x was zapped" : "the dead x was not zapped");
+    a.getRootSet().addRoot(&raw);   // the resurrection (control: a second root on the live x)
+    a.minorGC();                    // validate: evacuateR's HEAP_074 tripwire aborts here
+    a.getRootSet().removeRoot(&raw);
+    if (control) a.getRootSet().removeRoot(&x);
+    return kCorrect;
+}
+
+}  // namespace
+
+Testing::TestCase testHeap074Tripwire(
+    "CR-017: HEAP_074 tripwire, a reference to a zapped survivor aborts the next minor (validate builds)",
+    []() {
+#if ECO_HEAP_VALIDATE
+        runDeathGuard("HEAP_074 tripwire (k=1)", [] { return cr017TripwireScenario(1, false); });
+        runDeathGuard("HEAP_074 tripwire (k=2)", [] { return cr017TripwireScenario(2, false); });
+        runFixedGuard("HEAP_074 tripwire control", [] { return cr017TripwireScenario(1, true); });
+#else
+        (void)cr017TripwireScenario;
+        std::cout << "  (skipped: needs ECO_HEAP_VALIDATE=ON)\n";
+#endif
+    });
 
 // ============================================================================
 // CR-025: a GCMarkGang member has no ThreadLocalHeap, but every gang run is
@@ -831,6 +976,20 @@ void dumpBlocks(const char* id, OldGenSpace& og) {
     }
 }
 
+// CR-014 (register-fixes 4.1): both completion paths defer since the fix, so
+// sweepCompleteDeferred() no longer tells them apart. The tail path (lazySweep's
+// path 3) inside a promotion is proven by its stats counter rising by exactly
+// one across the call (stats builds; without stats the witness is vacuous).
+bool tailWitness(const OldGenSpace& og, uint64_t before) {
+#if ENABLE_GC_STATS
+    return OA::sweepTailInPromotion(og) == before + 1;
+#else
+    (void)og;
+    (void)before;
+    return true;
+#endif
+}
+
 }  // namespace
 
 // ----------------------------------------------------------------------------
@@ -881,8 +1040,10 @@ int cr014A(unsigned n) {
     }
     std::fprintf(stderr, "  %s child: V (block %u) is w[0]'s Current block; w[%u] promotes 64 B "
                  "(the sweep's last slice: the tail completion)\n", id, V.v, n - 1);
-    promo(og, ctx.w[n - 1], 64);   // today: tail path -> light shrink pass 1 -> detach(V) -> FATAL
+    const uint64_t tail0 = OA::sweepTailInPromotion(og);
+    promo(og, ctx.w[n - 1], 64);   // pre-fix: tail path -> light shrink pass 1 -> detach(V) -> FATAL
     if (OA::gcPhase(og) != GCPhase::Idle) { dumpBlocks(id, og); return notReached(id, "W2 did not complete the sweep"); }
+    if (!tailWitness(og, tail0)) return notReached(id, "the completion was not the tail path inside the promotion");
     int rc = OA::blockLive(og, V) && OA::blockOf(og, p1) == V ? kCorrect : kDefect;
     og.endParallelPromotion(ctx);
     if (!OA::blockLive(og, V) || !OA::allocStateConsistent(og)) rc = kDefect;
@@ -893,12 +1054,12 @@ int cr014A(unsigned n) {
 }  // namespace
 
 Testing::TestCase testCR014TailShrinkN2(
-    "CR-014 [xfail CR-014]: the tail completion never shrinks under a worker's Current block (A, N=2)",
-    []() { runXfailGuard("CR-014 A (N=2)", [] { return cr014A(2); }); });
+    "CR-014: the tail completion never shrinks under a worker's Current block (A, N=2)",
+    []() { runFixedGuard("CR-014 A (N=2)", [] { return cr014A(2); }); });
 
 Testing::TestCase testCR014TailShrinkN1(
-    "CR-014 [xfail CR-014]: the tail completion never shrinks under a worker's Current block (A, N=1)",
-    []() { runXfailGuard("CR-014 A (N=1)", [] { return cr014A(1); }); });
+    "CR-014: the tail completion never shrinks under a worker's Current block (A, N=1)",
+    []() { runFixedGuard("CR-014 A (N=1)", [] { return cr014A(1); }); });
 
 // ----------------------------------------------------------------------------
 // Steps 6-7: CR-014 B and CR-001. Layout [D][D'][M]: D and D' are demoted,
@@ -996,9 +1157,10 @@ int cr014B() {
     if (p1 != L.Dpcell || w1.stash_n[c8] != 1 || reinterpret_cast<char*>(w1.stash[c8][0]) != L.Dcell ||
         OA::metaOf(og, L.D).live_bytes != 0 || OA::gcPhase(og) != GCPhase::Sweeping)
         return notReached(id, "W1's batch pop did not stash D's cell");
+    const uint64_t tail0 = OA::sweepTailInPromotion(og);
     void* p2 = promo(og, w2, 64);   // one 8-byte slice: M's 24K gap -> the tail path
     if (OA::gcPhase(og) != GCPhase::Idle) { dumpBlocks(id, og); return notReached(id, "W2 did not complete the sweep"); }
-    if (OA::sweepCompleteDeferred(og)) return notReached(id, "the completion was in-loop (deferred), not the tail");
+    if (!tailWitness(og, tail0)) return notReached(id, "the completion was not the tail path inside the promotion");
     const bool dOk = OA::blockLive(og, L.D) && OA::getBlockTable(og).info(L.D).start == L.Dstart;
     if (!dOk) {
         std::fprintf(stderr, "  %s child: D released inside the minor; W1's stash still holds %p; "
@@ -1006,12 +1168,19 @@ int cr014B() {
                      OA::blockLive(og, L.D) ? "another block" : "nothing", p2);
         return kDefect;   // do NOT pop the stash: it would write released memory
     }
-    return kCorrect;
+    // CR-014 fixed: the tail completion deferred; the merge runs the shrink after the join.
+    if (!OA::sweepCompleteDeferred(og)) return kDefect;
+    og.endParallelPromotion(ctx);
+    return OA::allocStateConsistent(og) ? kCorrect : kDefect;
 }
 
-int cr001(bool releaseArm) {
-    const char* id = releaseArm ? "CR-001 (b)" : "CR-001 (a)";
-    auto& a = initAllocator(tailConfig(32 * 1024, 32 * 1024, 0.5));
+// tail (register-fixes 4.2): B = 8, so W2's slice completes the sweep on
+// lazySweep's TAIL path (proven by the tail counter); since CR-014's fix it
+// defers like the in-loop one, and the same oracles apply.
+int cr001(bool releaseArm, bool tail = false) {
+    const char* id = releaseArm ? (tail ? "CR-001 (b, tail)" : "CR-001 (b)")
+                                : (tail ? "CR-001 (a, tail)" : "CR-001 (a)");
+    auto& a = initAllocator(tailConfig(32 * 1024, tail ? 8 : 32 * 1024, 0.5));
     OldGenSpace& og = AllocatorTestAccess::getThreadHeap(a)->getOldGen();
     DPair L;
     if (int rc = buildDPair(a, og, id, L)) return rc;
@@ -1022,9 +1191,12 @@ int cr001(bool releaseArm) {
     void* p1 = promo(og, w1, 8192, 0xD1);
     if (p1 != L.Dpcell || w1.stash_n[c8] != 1 || OA::metaOf(og, L.D).live_bytes != 0)
         return notReached(id, "W1 did not stash D's cell");
-    promo(og, w2, 64);   // the in-loop completion -> deferred
+    const uint64_t tail0 = OA::sweepTailInPromotion(og);
+    promo(og, w2, 64);   // the in-loop (or, tail, the tail) completion -> deferred
     if (OA::gcPhase(og) != GCPhase::Idle || !OA::sweepCompleteDeferred(og))
-        return notReached(id, "the completion was not in-loop and deferred (tail path? budgets)");
+        return notReached(id, "the completion was not deferred (budgets?)");
+    if (tail ? !tailWitness(og, tail0) : OA::sweepTailInPromotion(og) != tail0)
+        return notReached(id, tail ? "the completion was not the tail path" : "the completion was not in-loop");
     if (!OA::blockLive(og, L.D) || OA::getBlockTable(og).info(L.D).start != L.Dstart)
         return notReached(id, "D was released before W1's finalize");
     void* p3 = promo(og, w1, 8192, 0xC1);   // stash pop: the finalize reads Idle
@@ -1078,12 +1250,28 @@ int cr014C() {
     if (p1 != L.Dpcell || w1.stash_n[c8] != 1 || reinterpret_cast<char*>(w1.stash[c8][0]) != L.Dcell ||
         OA::metaOf(og, L.D).live_bytes != 0 || OA::gcPhase(og) != GCPhase::Sweeping)
         return notReached(id, "W1's batch pop did not stash D's cell");
+    const uint64_t tail0 = OA::sweepTailInPromotion(og);
     void* p2 = promo(og, w2, 64, 0xB2);   // one 8-byte slice: M's 24K gap -> the tail path
     if (OA::gcPhase(og) != GCPhase::Idle) { dumpBlocks(id, og); return notReached(id, "W2 did not complete the sweep"); }
-    if (OA::sweepCompleteDeferred(og)) return notReached(id, "the completion was in-loop (deferred), not the tail");
-    // The release (CR-014 B's state) and the order the re-issue depends on.
-    if (OA::blockLive(og, L.D) && bt.info(L.D).start == L.Dstart)
-        return notReached(id, "D was not released inside the minor");
+    if (!tailWitness(og, tail0)) return notReached(id, "the completion was not the tail path inside the promotion");
+    // CR-014 fixed (register-fixes 4.1): the tail completion deferred, so D is
+    // not released inside the minor and nothing can re-issue it. W1's stashed
+    // cell is safe to pop now; the merge then runs the deferred shrink.
+    if (OA::blockLive(og, L.D) && bt.info(L.D).start == L.Dstart) {
+        std::signal(SIGABRT, SIG_DFL);
+        if (!OA::sweepCompleteDeferred(og)) return kDefect;
+        void* p3 = promo(og, w1, 8192, 0xC1);
+        if (p3 != L.Dcell) return notReached(id, "W1 did not take its stashed D cell");
+        og.endParallelPromotion(ctx);
+        const bool intact = byteBufIntact(p3, 8192, 0xC1) && byteBufIntact(p2, 64, 0xB2);
+        const bool dLive = OA::blockLive(og, L.D) && bt.info(L.D).start == L.Dstart;
+        std::fprintf(stderr, "  %s child: D not released inside the minor; W1 took its stashed cell %p; "
+                     "after the merge D %s, objects %s, alloc state %s\n", id, p3,
+                     dLive ? "live" : "RELEASED", intact ? "intact" : "OVERWRITTEN",
+                     OA::allocStateConsistent(og) ? "consistent" : "INCONSISTENT");
+        return (intact && dLive && OA::allocStateConsistent(og)) ? kCorrect : kDefect;
+    }
+    // Pre-fix: the release (CR-014 B's state) and the order the re-issue depends on.
     const auto& fb = AllocatorTestAccess::freeBlocks(a);
     const char* firstFit = nullptr;
     for (const auto& e : fb) {
@@ -1140,20 +1328,28 @@ int cr014C() {
 }  // namespace
 
 Testing::TestCase testCR014TailReleasesStashedBlock(
-    "CR-014 [xfail CR-014]: the tail completion never releases a block whose cell is in a worker's stash (B)",
-    []() { runXfailGuard("CR-014 B", cr014B); });
+    "CR-014: the tail completion never releases a block whose cell is in a worker's stash (B)",
+    []() { runFixedGuard("CR-014 B", cr014B); });
 
 Testing::TestCase testCR014TailReissueDoubleAlloc(
-    "CR-014 [xfail CR-014]: a stashed cell is never handed out twice after the tail shrink's block is re-issued at the same id and start (C)",
-    []() { runXfailGuard("CR-014 C", cr014C); });
+    "CR-014: a stashed cell is never handed out twice after the tail shrink's block is re-issued at the same id and start (C)",
+    []() { runFixedGuard("CR-014 C", cr014C); });
 
 Testing::TestCase testCR001Recount(
-    "CR-001 [xfail CR-001]: a cell popped while Sweeping is counted although the sweep completed before its finalize (a: recount)",
-    []() { runXfailGuard("CR-001 (a)", [] { return cr001(false); }); });
+    "CR-001: a cell popped while Sweeping is counted although the sweep completed before its finalize (a: recount)",
+    []() { runFixedGuard("CR-001 (a)", [] { return cr001(false); }); });
 
 Testing::TestCase testCR001Release(
-    "CR-001 [xfail CR-001]: the deferred shrink never releases a block holding a promoted object (b)",
-    []() { runXfailGuard("CR-001 (b)", [] { return cr001(true); }); });
+    "CR-001: the deferred shrink never releases a block holding a promoted object (b)",
+    []() { runFixedGuard("CR-001 (b)", [] { return cr001(true); }); });
+
+Testing::TestCase testCR001RecountTail(
+    "CR-001: a cell popped while Sweeping is counted although the sweep completed before its finalize (a, tail completion)",
+    []() { runFixedGuard("CR-001 (a, tail)", [] { return cr001(false, true); }); });
+
+Testing::TestCase testCR001ReleaseTail(
+    "CR-001: the deferred shrink never releases a block holding a promoted object (b, tail completion)",
+    []() { runFixedGuard("CR-001 (b, tail)", [] { return cr001(true, true); }); });
 
 // ----------------------------------------------------------------------------
 // Steps 8-9: CR-016. allocateFromEmptyRegularBlocks skips only Current blocks
@@ -1163,6 +1359,37 @@ Testing::TestCase testCR001Release(
 // ----------------------------------------------------------------------------
 
 namespace {
+
+// CR-016 fixed (HEAP_054): the exact-page promotion must land at the start of a
+// block that did not exist before it (a fresh large block; free_large_blocks_ is
+// empty in both scenarios), never on a flipped existing block.
+struct BlockStarts {
+    std::vector<char*> starts;
+    uint64_t skipped = 0;
+};
+BlockStarts snapshotStarts(OldGenSpace& og) {
+    BlockStarts b;
+    for (size_t pos = 0; pos < OA::blockCount(og); ++pos)
+        b.starts.push_back(OA::getBlockTable(og).info(OA::blockIdAt(og, pos)).start);
+#if ENABLE_GC_STATS
+    b.skipped = OA::bitmapStats(og).flip_skipped_parallel;
+#endif
+    return b;
+}
+bool inNewLargeBlock(const char* id, OldGenSpace& og, const BlockStarts& before, char* big) {
+    const BlockId b = OA::blockOf(og, big);
+    const bool isNew = b.valid() && OA::getBlockTable(og).info(b).is_large &&
+                       OA::getBlockTable(og).info(b).start == big &&
+                       std::find(before.starts.begin(), before.starts.end(), big) == before.starts.end();
+    bool skippedOnce = true;
+#if ENABLE_GC_STATS
+    skippedOnce = OA::bitmapStats(og).flip_skipped_parallel == before.skipped + 1;
+#endif
+    std::fprintf(stderr, "  %s child: the exact-page promotion landed at %p: %s; flip refused (stats) %s\n", id,
+                 static_cast<void*>(big), isNew ? "a NEW large block" : "NOT a new large block",
+                 skippedOnce ? "once" : "NOT once");
+    return isNew && skippedOnce;
+}
 
 HeapConfig cr016Config(double demote) {
     HeapConfig cfg;
@@ -1210,12 +1437,14 @@ int cr016Chunk() {
     if (c0.block != V || c0.next_cell >= c0.num_cells || c0.pending_live == 0)
         return notReached(id, "w0's cursor does not hold an open chunk of V with pending bytes");
     // Exactly alloc_buffer_size: allocateLargeBlock -> allocateFromEmptyRegularBlocks.
+    const BlockStarts before = snapshotStarts(og);
     char* big = static_cast<char*>(promo(og, w1, 32 * 1024, 0xEE));
     if (big == Vs) {
         std::fprintf(stderr, "  %s child: V flipped to large at %p under w0's open chunk (63 cells left)\n", id,
                      static_cast<void*>(big));
         return kDefect;
     }
+    if (!inNewLargeBlock(id, og, before, big)) return kDefect;
     char* p2 = static_cast<char*>(og.allocatePromotion(w0, 512, false));   // the stale cursor
     if ((p2 >= big && p2 < big + 32 * 1024) || !byteBufIntact(big, 32 * 1024, 0xEE)) return kDefect;
     formatAsBytes(p2, 512);
@@ -1264,12 +1493,14 @@ int cr016Stash() {
     if (p1 != Dpcell || w1.stash_n[c8] != 1 || reinterpret_cast<char*>(w1.stash[c8][0]) != Dcell ||
         OA::metaOf(og, D).live_bytes != 0 || OA::allocState(og, D) != 0)
         return notReached(id, "D's cell is not (only) in w1's stash");
+    const BlockStarts before = snapshotStarts(og);
     char* big = static_cast<char*>(promo(og, w0, 32 * 1024, 0xEE));
     if (big == Ds) {
         std::fprintf(stderr, "  %s child: D flipped to large at %p; w1's stashed cell %p is inside it\n", id,
                      static_cast<void*>(big), static_cast<void*>(Dcell));
         return kDefect;
     }
+    if (!inNewLargeBlock(id, og, before, big)) return kDefect;
     char* p3 = static_cast<char*>(promo(og, w1, 8192));
     if (p3 >= big && p3 < big + 32 * 1024) return kDefect;
     og.endParallelPromotion(ctx);
@@ -1280,12 +1511,12 @@ int cr016Stash() {
 }  // namespace
 
 Testing::TestCase testCR016FlipChunk(
-    "CR-016 [xfail CR-016]: the empty-block flip never takes a block whose chunk a worker holds (chunk)",
-    []() { runXfailGuard("CR-016 (chunk)", cr016Chunk); });
+    "CR-016: the empty-block flip never takes a block whose chunk a worker holds (chunk)",
+    []() { runFixedGuard("CR-016 (chunk)", cr016Chunk); });
 
 Testing::TestCase testCR016FlipStash(
-    "CR-016 [xfail CR-016]: the empty-block flip never takes a block whose cell is in a worker's stash (stash)",
-    []() { runXfailGuard("CR-016 (stash)", cr016Stash); });
+    "CR-016: the empty-block flip never takes a block whose cell is in a worker's stash (stash)",
+    []() { runFixedGuard("CR-016 (stash)", cr016Stash); });
 
 // ----------------------------------------------------------------------------
 // Step 10: CR-028 (validate builds). W1 pops M's first gap cell while M is
@@ -1343,14 +1574,15 @@ int cr028Scenario() {
     std::memcpy(p1 + 16, &fake, sizeof fake);
     std::fprintf(stderr, "  %s child: W1 holds M's gap cell %p mid-copy (header tag %u); W2 sweeps d to M's end\n",
                  id, static_cast<void*>(p1), static_cast<unsigned>(getHeader(p1)->tag));
-    void* p2 = og.allocatePromotion(ctx.w[0], 64, false);   // sweeps d -> M's boundary -> V11 abort
+    void* p2 = og.allocatePromotion(ctx.w[0], 64, false);   // sweeps d -> M's boundary (pre-fix: V11 abort here)
     if (OA::metaOf(og, M).fully_swept == false) {
         dumpBlocks(id, og);
         return notReached(id, "W2 did not sweep M to its end");
     }
     formatAsBytes(p1, 8192);
     if (p2 != nullptr) formatAsBytes(p2, 64);
-    og.endParallelPromotion(ctx);
+    og.endParallelPromotion(ctx);   // CR-028 fixed: the deferred V11 walks M here, after the copies
+    std::fprintf(stderr, "  %s child: M completed inside the minor; V11 ran after the join and parsed M\n", id);
     for (auto& r : roots) a.getRootSet().removeRoot(&r);
     return kCorrect;
 }
@@ -1358,10 +1590,10 @@ int cr028Scenario() {
 }  // namespace
 
 Testing::TestCase testCR028V11ParsesPoppedCell(
-    "CR-028 [xfail CR-028]: the V11 walk never parses a cell a worker popped from the block (validate builds)",
+    "CR-028: the V11 walk never parses a cell a worker popped from the block (validate builds)",
     []() {
 #if ECO_HEAP_VALIDATE
-        runXfailGuard("CR-028", cr028Scenario);
+        runFixedGuard("CR-028", cr028Scenario);
 #else
         (void)cr028Scenario;
         std::cout << "  (skipped: needs ECO_HEAP_VALIDATE=ON)\n";
@@ -1393,8 +1625,9 @@ bool lbHas(const region::Extent& X, void* body) {
 }
 
 // Minor 1 copies a large string's header into the fill F (X joins
-// F.lb_bodies); the string dies; an explicit major frees X.
-void* deadBodyAfterMajor(Allocator& a, int* ext, const char** why) {
+// F.lb_bodies); the string dies; an explicit major frees X (and, since CR-017's
+// fix, zaps the dead header copy: HEAP_074). `hdr_out`: the header copy in F.
+void* deadBodyAfterMajor(Allocator& a, int* ext, const char** why, void** hdr_out = nullptr) {
     ThreadLocalHeap* h = AllocatorTestAccess::getThreadHeap(a);
     OldGenSpace& og = h->getOldGen();
     RegionState* R = NurserySpaceTestAccess::region(h->getNursery());
@@ -1411,6 +1644,7 @@ void* deadBodyAfterMajor(Allocator& a, int* ext, const char** why) {
         *why = "X is not in a Young age-1 extent's lb_bodies";
         return nullptr;
     }
+    if (hdr_out != nullptr) *hdr_out = a.resolve(s);
     a.getRootSet().removeRoot(&s);
     s = alloc::listNil();
     a.majorGC();   // frees X; retireDeadLargeBodies erases its index entry
@@ -1462,12 +1696,12 @@ int cr037Scenario(uint32_t k, bool control) {
 }  // namespace
 
 Testing::TestCase testCR037ReusedYlosK1(
-    "CR-037 [xfail CR-037]: region k=1, a new YLOS at a freed lb_bodies address is reached at the hand-over minor",
-    []() { runXfailGuard("CR-037 (k=1)", [] { return cr037Scenario(1, false); }); });
+    "CR-037: region k=1, a new YLOS at a freed lb_bodies address is reached at the hand-over minor",
+    []() { runFixedGuard("CR-037 (k=1)", [] { return cr037Scenario(1, false); }); });
 
 Testing::TestCase testCR037ReusedYlosK2(
-    "CR-037 [xfail CR-037]: region k=2, a new YLOS at a freed lb_bodies address is reached (ageing extent)",
-    []() { runXfailGuard("CR-037 (k=2)", [] { return cr037Scenario(2, false); }); });
+    "CR-037: region k=2, a new YLOS at a freed lb_bodies address is reached (ageing extent)",
+    []() { runFixedGuard("CR-037 (k=2)", [] { return cr037Scenario(2, false); }); });
 
 Testing::TestCase testCR037Control(
     "CR-037: negative control, no body re-mark: the reused-address YLOS is reached and aged",
@@ -1521,8 +1755,12 @@ int cr017R1Scenario(bool control, uint32_t k = 1) {
     if (R == nullptr) return notReached(id, "no region nursery");
     int j = -1;
     const char* why = "";
-    void* X = deadBodyAfterMajor(a, &j, &why);
+    void* hdr = nullptr;
+    void* X = deadBodyAfterMajor(a, &j, &why, &hdr);
     if (X == nullptr) return notReached(id, why);
+    // Route witness: the major zapped the dead header copy (HEAP_074).
+    if (!insideFiller(R->x[j], hdr)) return notReached(id, "the major did not zap the dead header copy");
+    std::fprintf(stderr, "  %s child: the major zapped the dead header copy %p (extent %d)\n", id, hdr, j);
     const BlockId bx = OA::blockOf(og, X);
     if (!bx.valid() || !OA::blockLive(og, bx)) return notReached(id, "X's page was released (floor)");
     if (OA::isMarked(og, X)) return notReached(id, "X marked before t0");
@@ -1552,8 +1790,12 @@ int cr017R1Scenario(bool control, uint32_t k = 1) {
     const bool greyed = OA::isMarked(og, X);
     std::fprintf(stderr, "  %s child: t0 %s the freed body cell X %p (mark stack %s)\n", id,
                  greyed ? "GREYED" : "left unmarked", X, OA::markStackEmpty(og) ? "empty" : "non-empty");
-    if (!control && !greyed) return notReached(id, "t0 did not grey X");
     if (control && greyed) return notReached(id, "the control's t0 greyed X");
+    if (!control && greyed) {   // CR-017: t0 greyed a cell the major freed
+        og.test_bg_hold_.store(false);
+        waitBg(og);
+        return kDefect;
+    }
     const uint64_t seq = R->minor_seq;
     HPointer e = alloc::allocInt(0xE17);
     a.getRootSet().addRoot(&e);
@@ -1566,30 +1808,28 @@ int cr017R1Scenario(bool control, uint32_t k = 1) {
         return notReached(id, "B not at X, or a minor ran");
     }
     std::fprintf(stderr, "  %s child: YLOS B allocated at X; releasing the background marker\n", id);
-    // k = 2: X is still in F.lb_bodies and F is handed over at the next minor,
-    // whose prep would colour B (CR-037, TV7 in validate builds): keep that
-    // defect out of this guard's cleanup minors.
-    if (k == 2) h->getNursery().test_no_body_remark_ = true;
+    // k = 2: X is still in F.lb_bodies and F is handed over at the next minor;
+    // since CR-037's fix its prep no longer colours B (a kind-1 entry).
     og.test_bg_hold_.store(false);
     if (!waitBg(og)) return notReached(id, "the background episode never finished");
     for (int g = 0; g < 64 && og.cycleActive(); ++g) a.minorGC();
     a.getRootSet().removeRoot(&B);
-    return kCorrect;   // today: the marker scans B and aborts first
+    return kCorrect;   // before CR-017's fix: t0 greyed X (kDefect), or the marker scanned B and aborted
 }
 
 }  // namespace
 
 Testing::TestCase testCR017R1YlosIntoGreyedCell(
-    "CR-017 [xfail CR-017]: region k=1, a YLOS allocated into a body cell the t0 walk greyed (R1)",
-    []() { runXfailGuard("CR-017 R1", [] { return cr017R1Scenario(false); }); });
+    "CR-017: region k=1, a YLOS allocated into a body cell the t0 walk greyed (R1)",
+    []() { runFixedGuard("CR-017 R1", [] { return cr017R1Scenario(false); }); });
 
 Testing::TestCase testCR017R1Control(
     "CR-017: R1 negative control, no t0 young walk",
     []() { runFixedGuard("CR-017 R1 control", [] { return cr017R1Scenario(true); }); });
 
 Testing::TestCase testCR017R1YlosIntoGreyedCellK2(
-    "CR-017 [xfail CR-017]: region k=2, a YLOS allocated into a body cell the t0 walk greyed through an ageing extent (R1)",
-    []() { runXfailGuard("CR-017 R1 (k=2)", [] { return cr017R1Scenario(false, 2); }); });
+    "CR-017: region k=2, a YLOS allocated into a body cell the t0 walk greyed through an ageing extent (R1)",
+    []() { runFixedGuard("CR-017 R1 (k=2)", [] { return cr017R1Scenario(false, 2); }); });
 
 Testing::TestCase testCR017R1ControlK2(
     "CR-017: R1 negative control at k=2, no t0 young walk",
@@ -1724,7 +1964,9 @@ int cr017R2Scenario(bool control) {
     std::fprintf(stderr, "  %s child: t0 %s c's freed cell %p (-> d %p in released page %p)\n", id,
                  greyed ? "GREYED" : "left unmarked", static_cast<void*>(cA), static_cast<void*>(d),
                  static_cast<void*>(P));
-    if (greyed == control || !cIntact()) { release(); return notReached(id, "t0 greying of c not as expected, or c's image changed"); }
+    if (control && greyed) { release(); return notReached(id, "the control's t0 greyed c"); }
+    if (!control && greyed) { release(); return kDefect; }   // CR-017: t0 greyed c's freed cell
+    if (!cIntact()) { release(); return notReached(id, "c's image changed"); }
     std::vector<char*> t0starts;
     for (size_t pos = 0; pos < OA::blockCount(og); ++pos)
         t0starts.push_back(OA::getBlockTable(og).info(OA::blockIdAt(og, pos)).start);
@@ -1762,8 +2004,8 @@ int cr017R2Scenario(bool control) {
 }  // namespace
 
 Testing::TestCase testCR017R2MarkOnFreeCell(
-    "CR-017 [xfail CR-017]: region k=1, no mark bit lands on a free cell of a post-t0 block at a freed page (R2)",
-    []() { runXfailGuard("CR-017 R2", [] { return cr017R2Scenario(false); }); });
+    "CR-017: region k=1, no mark bit lands on a free cell of a post-t0 block at a freed page (R2)",
+    []() { runFixedGuard("CR-017 R2", [] { return cr017R2Scenario(false); }); });
 
 Testing::TestCase testCR017R2Control(
     "CR-017: R2 negative control, no t0 young walk",
@@ -1813,8 +2055,19 @@ HeapConfig cr007Config() {
     return cfg;
 }
 
-int cr007Scenario() {
-    const char* id = "CR-007";
+// cap = false: the guard. b is free with its Discard posted behind a latched
+// job; member 1 of a two-worker promotion needs a page. Before the fix it took
+// b (first fit) and waited for the job holding promo_mu_ and thread_mutex_
+// (CR-007); with the no-wait policy it skips b (not Pending) and takes a fresh
+// bump. Member 1's promotion is timed while the latch is held: >= H/2 is the
+// defect. The route counts as reached when nowait_skipped_extents rose (or,
+// before the fix, reuse_waits rose).
+// cap = true: the cap fallback. The old-gen reservation is spent first, so the
+// policy has no bump room: member 1 must fall back to b (first fit, which may
+// wait; the job is not latched) and get a correct object in it, with
+// nowait_fallback_waits == 1.
+int cr007Scenario(bool cap) {
+    const char* id = cap ? "CR-007 cap fallback" : "CR-007";
     abortMeansNotReached();
     constexpr uint64_t kHold = 200'000'000;   // H = 200 ms
     auto& pool = gc::GCHelperPool::instance();
@@ -1827,7 +2080,11 @@ int cr007Scenario() {
         pool.drain();
         pool.shutdownForTesting();   // zero the process-wide stats
     }
-    const HeapConfig cfg = cr007Config();
+    HeapConfig cfg = cr007Config();
+    if (cap) {
+        cfg.max_heap_size = 64ULL * 1024 * 1024;
+        cfg.validate();
+    }
     auto& a = initAllocator(cfg);
     ThreadLocalHeap* h = AllocatorTestAccess::getThreadHeap(a);
     OldGenSpace& og = h->getOldGen();
@@ -1843,10 +2100,17 @@ int cr007Scenario() {
     if (gang.members() < 2) return notReached(id, "the gang has fewer than 2 members");
     OA::drainUnassignedBlocksForTest(og);                          // (1) an empty bag
     char* b = AllocatorTestAccess::acquireOldGenBlock(a, page);    // (2) a fresh bump page
+    if (b == nullptr) return notReached(id, "no page for b");
+    size_t spent = 0;
+    if (cap) {                                                     //     cap: spend the reservation
+        while (AllocatorTestAccess::acquireOldGenBlock(a, page) != nullptr) ++spent;
+        if (a.getOldGenCommitHighWaterBytes() + page <= a.getOldGenMaxBytes())
+            return notReached(id, "the old-gen reservation is not spent");
+    }
     AllocatorTestAccess::releaseOldGenBlock(a, b, page);           //     -> Pending
     const auto& fl = AllocatorTestAccess::freeBlocks(a);
     if (fl.size() != 1 || fl[0].first != b) return notReached(id, "the free-extent list is not {b}");
-    std::atomic<bool> latch{false};
+    std::atomic<bool> latch{cap};
     FnJob blocker([&] { while (!latch.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1)); });
     pool.post(blocker);                                            // (3) the FIFO head
     a.onGCPauseEnd(*h, false);                                     // (4) posts b's Discard behind it
@@ -1857,64 +2121,69 @@ int cr007Scenario() {
         pool.wait(blocker, false);
         return notReached(id, "b's Discard was not posted");
     }
+    const gc::PageWorkCounters c0 = pw->counters();
     auto& ctx = og.promoCtx();
     og.beginParallelPromotion(ctx, 2);                             // (5)
     struct Run {
-        Allocator* a;
         OldGenSpace* og;
         OldGenSpace::PromoCtx* ctx;
         size_t sz;
-        void* p[2]{};
-        uint64_t wait_ns = 0;
-        bool reached = false;
-        std::atomic<bool> held{false};
-    } r{&a, &og, &ctx, sz};
+        void* p1 = nullptr;
+        uint64_t m1_ns = 0;
+        std::atomic<bool> started{false};
+    } r{&og, &ctx, sz};
     std::thread releaser([&] {                                     // (6) the latch opens after H
         const uint64_t dl = gc::GCHelperPool::nowNs() + 5'000'000'000ull;
-        while (!r.held.load() && gc::GCHelperPool::nowNs() < dl) std::this_thread::yield();
+        while (!r.started.load() && gc::GCHelperPool::nowNs() < dl) std::this_thread::yield();
         std::this_thread::sleep_for(std::chrono::nanoseconds(kHold));
         latch.store(true);
     });
     gang.run(
         [](void* v, unsigned m) {
             Run& r = *static_cast<Run*>(v);
-            if (m == 1) {   // reaches awaitSlot under promo_mu_ + thread_mutex_
-                r.p[1] = r.og->allocatePromotion(r.ctx->w[1], r.sz, false);
-                return;
-            }
-            const uint64_t dl = gc::GCHelperPool::nowNs() + 5'000'000'000ull;
-            while (!(OA::promoMuHeld(*r.og) && AllocatorTestAccess::threadMutexHeldElsewhere(*r.a))) {
-                if (gc::GCHelperPool::nowNs() > dl) return;
-                std::this_thread::yield();
-            }
-            r.reached = true;
-            r.held.store(true);
+            if (m != 1) return;   // member 1 needs a page under promo_mu_
+            r.started.store(true);
             const uint64_t t0 = gc::GCHelperPool::nowNs();
-            r.p[0] = r.og->allocatePromotion(r.ctx->w[0], r.sz, false);
-            r.wait_ns = gc::GCHelperPool::nowNs() - t0;
+            r.p1 = r.og->allocatePromotion(r.ctx->w[1], r.sz, false);
+            r.m1_ns = gc::GCHelperPool::nowNs() - t0;
         },
         &r, 2);
     latch.store(true);
     releaser.join();
     pool.wait(blocker, false);
-    const uint64_t mw = ctx.w[0].mutex_wait_ns;   // meaningful only with ENABLE_GC_STATS
-    for (void* p : r.p)
-        if (p != nullptr) formatAsBytes(p, sz);
+    if (r.p1 != nullptr) formatAsBytes(r.p1, sz);
     og.endParallelPromotion(ctx);
-    if (!r.reached || r.p[0] == nullptr || r.p[1] == nullptr)
-        return notReached(id, "member 1 never held both locks");
-    std::fprintf(stderr, "  %s child: member 0's promotion took %.1f ms (mutex_wait %.1f ms) while member 1 "
-                 "held promo_mu_ in acquireOldGenBlock's reuse wait; stall_max %.1f ms, reuse_waits %llu\n",
-                 id, r.wait_ns / 1e6, mw / 1e6, pool.stats().stall_max_ns.load() / 1e6,
-                 static_cast<unsigned long long>(pw->counters().reuse_waits));
-    return r.wait_ns >= kHold / 2 ? kDefect : kCorrect;
+    const gc::PageWorkCounters& c1 = pw->counters();
+    const uint64_t skipped = c1.nowait_skipped_extents - c0.nowait_skipped_extents;
+    const uint64_t waits = c1.reuse_waits - c0.reuse_waits;
+    const uint64_t fallbacks = c1.nowait_fallback_waits - c0.nowait_fallback_waits;
+    const uint64_t fresh = c1.nowait_fresh_bytes - c0.nowait_fresh_bytes;
+    const bool in_b = r.p1 != nullptr && static_cast<char*>(r.p1) >= b && static_cast<char*>(r.p1) < b + page;
+    std::fprintf(stderr, "  %s child: member 1's promotion took %.1f ms (H = %.0f ms)%s; its object is %s b; "
+                 "nowait skipped %llu, fresh %llu B, fallbacks %llu; reuse_waits +%llu; stall_max %.1f ms%s\n",
+                 id, r.m1_ns / 1e6, kHold / 1e6, cap ? "" : " while b's Discard was latched",
+                 r.p1 == nullptr ? "MISSING, not in" : in_b ? "IN" : "not in",
+                 static_cast<unsigned long long>(skipped), static_cast<unsigned long long>(fresh),
+                 static_cast<unsigned long long>(fallbacks), static_cast<unsigned long long>(waits),
+                 pool.stats().stall_max_ns.load() / 1e6,
+                 cap ? (" (reservation spent: " + std::to_string(spent) + " more pages)").c_str() : "");
+    if (r.p1 == nullptr) return notReached(id, "member 1's promotion failed");
+    if (cap) {
+        return (fallbacks == 1 && in_b) ? kCorrect : kDefect;   // the fallback takes b and works
+    }
+    if (skipped < 1 && waits < 1) return notReached(id, "member 1 never met b (no skip, no reuse wait)");
+    return (r.m1_ns >= kHold / 2 || in_b) ? kDefect : kCorrect;
 }
 
 }  // namespace
 
 Testing::TestCase testCR007PromoMuHelperWait(
-    "CR-007 [xfail CR-007]: a promotion worker never waits on a helper job while holding promo_mu_",
-    []() { runXfailGuard("CR-007", cr007Scenario); });
+    "CR-007: a promotion worker never waits on a helper job while holding promo_mu_ (n > 1)",
+    []() { runFixedGuard("CR-007", [] { return cr007Scenario(false); }); });
+
+Testing::TestCase testCR007CapFallback(
+    "CR-007 cap fallback: with no bump room the no-wait acquire falls back to first fit and works",
+    []() { runFixedGuard("CR-007 cap fallback", [] { return cr007Scenario(true); }); });
 
 // ----------------------------------------------------------------------------
 // Step 15: CR-023. A foreign thread F calls stopAndJoin on episode 1 and
@@ -2004,22 +2273,36 @@ int cr023Scenario() {
     g_cr023_unpark.store(true);                                                    // (5) F resumes
     std::this_thread::sleep_for(H);
     const bool stalled = !f_done.load();
+    // The fix (register-fixes §7.2 step 5): F returns on the generation change and must
+    // not clear episode 2's running_ (M6 mutant stop_gen_clears_running).
+    const bool running2 = gang.running();
     std::fprintf(stderr, "  %s child: %lld ms after it resumed, the foreign stopAndJoin is %s; episode 2 launched=%d "
-                 "launches=%llu stop2=%d\n", id, static_cast<long long>(H.count()),
+                 "launches=%llu stop2=%d running=%d\n", id, static_cast<long long>(H.count()),
                  stalled ? "STILL BLOCKED (waiting out episode 2)" : "returned", static_cast<int>(launched.load()),
-                 static_cast<unsigned long long>(gang.stats().launches.load()), static_cast<int>(stop2.load()));
+                 static_cast<unsigned long long>(gang.stats().launches.load()), static_cast<int>(stop2.load()),
+                 static_cast<int>(running2));
     e2.release.store(true);
     F.join();
     O.join();
     gang.join();
-    return (stalled && launched.load()) ? kDefect : kCorrect;
+    if (!launched.load()) return notReached(id, "episode 2 was not launched");
+    if (stalled) return kDefect;
+    if (!running2) {
+        std::fprintf(stderr, "  %s child: F cleared episode 2's running() (it stopped episode 1 only)\n", id);
+        return kDefect;
+    }
+    if (stop2.load()) {
+        std::fprintf(stderr, "  %s child: episode 2's stop flag was set by F\n", id);
+        return kDefect;
+    }
+    return kCorrect;
 }
 
 }  // namespace
 
 Testing::TestCase testCR023ForeignStopRelaunch(
-    "CR-023 [xfail CR-023]: a foreign stopAndJoin returns without waiting out a relaunched episode",
-    []() { runXfailGuard("CR-023", cr023Scenario); });
+    "CR-023: a foreign stopAndJoin returns without waiting out a relaunched episode",
+    []() { runFixedGuard("CR-023", cr023Scenario); });
 
 // ----------------------------------------------------------------------------
 // Step 16: CR-012 (a)-(d). Two mutators (heaps A and B) share process-wide
@@ -2130,7 +2413,9 @@ Allocator& cr012Init(const HeapConfig& cfg) {
     }
     HeapConfig c = cfg;
     c.validate();
-    return initAllocator(c);
+    Allocator& a = initAllocator(c);
+    a.allowMultipleMutators(true);   // CR-012 (HEAP_007): the two-heap guards opt in (unsupported)
+    return a;
 }
 
 int cr012a() {
@@ -2240,27 +2525,130 @@ int cr012d() {
     }
     const size_t after = residentPages(bump, win);
     std::fprintf(stderr, "  %s child: A's helper populated [%p, +256K): %zu pages resident before heap B's "
-                 "initThread, %zu after (MAP_FIXED recommit)\n", id, static_cast<void*>(bump), before, after);
+                 "initThread, %zu after (a MAP_FIXED recommit drops them)\n", id, static_cast<void*>(bump), before, after);
     return after < before ? kDefect : kCorrect;
 }
 
 }  // namespace
 
+// CR-012 option F (plans/threaded-gc-register-fixes.md 6.2, HEAP_007): a second
+// live mutator is FORBIDDEN (initThread aborts) except under the benchmark/test
+// opt-in Allocator::allowMultipleMutators(true). (a)-(c) document the accepted,
+// unsupported behaviour under that opt-in (won't-fix guards: they XPASS if it
+// ever changes). (d) is FIXED in both shapes: acquireOldGenRegion goes through
+// PageWork::onFreshBump, so a new heap's region never re-maps the window.
 Testing::TestCase testCR012aFinishTrigger(
-    "CR-012(a) [xfail CR-012]: a heap's finish trigger never reads another heap's committed bytes",
-    []() { runXfailGuard("CR-012(a)", cr012a); });
+    "CR-012(a) [won't-fix CR-012: opt-in only]: a heap's finish trigger reads another heap's committed bytes",
+    []() { runWontFixGuard("CR-012(a)", cr012a); });
 
 Testing::TestCase testCR012bFreeList(
-    "CR-012(b) [xfail CR-012]: a heap never reuses an extent another heap released",
-    []() { runXfailGuard("CR-012(b)", cr012b); });
+    "CR-012(b) [won't-fix CR-012: opt-in only]: a heap reuses an extent another heap released",
+    []() { runWontFixGuard("CR-012(b)", cr012b); });
 
 Testing::TestCase testCR012cDecommitClock(
-    "CR-012(c) [xfail CR-012]: another heap's pauses never age a heap's pending discard",
-    []() { runXfailGuard("CR-012(c)", cr012c); });
+    "CR-012(c) [won't-fix CR-012: opt-in only]: another heap's pauses age a heap's pending discard",
+    []() { runWontFixGuard("CR-012(c)", cr012c); });
 
 Testing::TestCase testCR012dPopulateWindow(
-    "CR-012(d) [xfail CR-012]: a new heap's initial region never drops the populate window",
-    []() { runXfailGuard("CR-012(d)", cr012d); });
+    "CR-012(d): a new heap's initial region never drops the populate window (two heaps, opt-in)",
+    []() { runFixedGuard("CR-012(d)", cr012d); });
+
+namespace {
+
+// The forbid check and its controls. kSecond: 0 = a second live heap without
+// the opt-in (must abort), 1 = with the opt-in (must work), 2 = sequential
+// mutators (main heap cleaned up first, then two threads one after the other).
+int cr012Forbid(int kind) {
+    const char* id = kind == 0 ? "CR-012 forbid" : kind == 1 ? "CR-012 opt-in" : "CR-012 sequential";
+    // NO abortMeansNotReached(): the forbid case's abort is its pass.
+    HeapConfig cfg = cr012Config(0);
+    cfg.validate();
+    auto& a = initAllocator(cfg);
+    ThreadLocalHeap* const mainHeap = AllocatorTestAccess::getThreadHeap(a);
+    if (mainHeap == nullptr) return notReached(id, "no main heap");
+    if (kind == 1) a.allowMultipleMutators(true);
+    if (kind == 2) a.cleanupThread();
+    const int rounds = kind == 2 ? 2 : 1;
+    for (int r = 0; r < rounds; ++r) {
+        ThreadLocalHeap* other = nullptr;
+        bool allocated = false;
+        std::thread t([&] {
+            a.initThread();   // kind 0: aborts here (HEAP_007)
+            other = AllocatorTestAccess::getThreadHeap(a);
+            allocated = other != nullptr && a.allocate(32, Tag_Int) != nullptr;
+            a.cleanupThread();
+        });
+        t.join();
+        std::fprintf(stderr, "  %s child: thread %d initThread returned (heap %p, main heap %s), allocation %s\n",
+                     id, r + 1, static_cast<void*>(other), kind == 2 ? "cleaned up" : "live",
+                     allocated ? "ok" : "FAILED");
+        if (other == nullptr || !allocated) return kDefect;
+    }
+    return kind == 0 ? kDefect /* allowed: the death guard fails on any exit */ : kCorrect;
+}
+
+// (d) with SEQUENTIAL mutators (no opt-in): after A's pause end opened (and
+// populated) the commit-ahead window over the bump, A cleans up and a new
+// thread's initThread takes its old-gen region at that bump: the window's
+// pages must stay resident (no MAP_FIXED re-map).
+int cr012dSequential() {
+    const char* id = "CR-012 (d) sequential";
+    HeapConfig cfg = cr012Config(2);
+    cfg.commit_ahead_bytes = 2ULL << 20;
+    auto& a = cr012Init(cfg);
+    a.allowMultipleMutators(false);   // sequential mutators need no opt-in
+    gc::PageWork* pw = a.pageWork();
+    if (pw == nullptr) return notReached(id, "no page work in mode 2");
+    a.minorGC();
+    a.drainHelperWork();
+    const size_t win = 256 * 1024;
+    char* bump = AllocatorTestAccess::getHeapBase(a) + a.getOldGenCommitHighWaterBytes();
+    const auto& c = pw->counters();
+    if (!c.populate_supported) return notReached(id, "MADV_POPULATE_WRITE is not supported");
+    if (c.populate_jobs < 1 || pw->windowEnd() < bump + win)
+        return notReached(id, "no populate window past the bump");
+    const size_t before = residentPages(bump, win);
+    if (before != win / 4096) return notReached(id, "the window past the bump is not resident");
+    a.cleanupThread();
+    a.drainHelperWork();
+    char* const bump2 = AllocatorTestAccess::getHeapBase(a) + a.getOldGenCommitHighWaterBytes();
+    if (bump2 != bump) return notReached(id, "A's cleanup moved the bump");
+    char* regionB = nullptr;
+    size_t after = 0;
+    std::thread t([&] {
+        a.initThread();   // B's old gen region at the bump
+        regionB = AllocatorTestAccess::getThreadHeap(a)->getOldGen().regionBase();
+        after = residentPages(bump, win);
+        a.cleanupThread();
+    });
+    t.join();
+    if (regionB != bump) {
+        std::fprintf(stderr, "  %s child: B's region %p, bump %p\n", id, static_cast<void*>(regionB),
+                     static_cast<void*>(bump));
+        return notReached(id, "B's initial region is not at the bump");
+    }
+    std::fprintf(stderr, "  %s child: A's helper populated [%p, +256K): %zu pages resident before the next "
+                 "mutator's initThread, %zu after\n", id, static_cast<void*>(bump), before, after);
+    return after < before ? kDefect : kCorrect;
+}
+
+}  // namespace
+
+Testing::TestCase testCR012Forbid(
+    "CR-012 forbid: a second live mutator's initThread aborts (HEAP_007)",
+    []() { runDeathGuard("CR-012 forbid", [] { return cr012Forbid(0); }); });
+
+Testing::TestCase testCR012OptIn(
+    "CR-012 opt-in: allowMultipleMutators(true) permits a second live mutator (benchmark/test only)",
+    []() { runFixedGuard("CR-012 opt-in", [] { return cr012Forbid(1); }); });
+
+Testing::TestCase testCR012Sequential(
+    "CR-012 sequential: mutators one after another need no opt-in",
+    []() { runFixedGuard("CR-012 sequential", [] { return cr012Forbid(2); }); });
+
+Testing::TestCase testCR012dSequential(
+    "CR-012 (d) sequential: the next mutator's initial region keeps the populate window resident",
+    []() { runFixedGuard("CR-012 (d) sequential", cr012dSequential); });
 
 // ============================================================================
 // Serial address-reuse and parse entries found by the TLA+ models (M8, M5,
@@ -2340,9 +2728,16 @@ int cr033S1(bool bitmap) {
         dumpBlocks(id, og);
         return notReached(id, "X's page does not end where A's page starts");
     }
+    // The tail word: the fresh page's zero before the CR-033 fix, an 8-byte
+    // unlinked Tag_Free header after it (HEAP_024). Anything else is another route.
     uint64_t tailWord = 0;
     std::memcpy(&tailWord, X + page - 8, 8);
-    if (tailWord != 0) return notReached(id, "the tail word is not the fresh page's zero");
+    const Header* th = getHeader(X + page - 8);
+    const bool tailHeadered = tailWord != 0 && th->tag == Tag_Free && th->size == 8;
+    if (tailWord != 0 && !tailHeadered)
+        return notReached(id, "the tail word is neither the fresh page's zero nor an 8-byte Tag_Free header");
+    std::fprintf(stderr, "  %s child: X's 8-byte tail %s\n", id,
+                 tailHeadered ? "has a Tag_Free header (CR-033 fixed)" : "is headerless (zero word)");
     std::vector<HPointer> roots = {AllocatorTestAccess::toPointer(A), AllocatorTestAccess::toPointer(X)};
     for (auto& r : roots) a.getRootSet().addRoot(&r);
     a.majorGC();
@@ -2367,16 +2762,16 @@ int cr033S1(bool bitmap) {
 }  // namespace
 
 Testing::TestCase testCR033FreshPageTailParses(
-    "CR-033 [xfail CR-033]: a fresh bag page carved at alloc_buffer_size - 8 parses by object size (bitmap mode)",
-    []() { runXfailGuard("CR-033", [] { return cr033Parse(8); }); });
+    "CR-033: a fresh bag page carved at alloc_buffer_size - 8 parses by object size (bitmap mode)",
+    []() { runFixedGuard("CR-033", [] { return cr033Parse(8); }); });
 
 Testing::TestCase testCR033Control(
     "CR-033: negative control, a 64-byte remainder gets a Tag_Free header and the page parses",
     []() { runFixedGuard("CR-033 control", [] { return cr033Parse(64); }); });
 
 Testing::TestCase testCR033LegacySweepS1(
-    "CR-033 [xfail CR-033]: legacy old gen, the header sweep of the headerless tail never overwrites the next page's object (S1)",
-    []() { runXfailGuard("CR-033 S1 (legacy)", [] { return cr033S1(false); }); });
+    "CR-033: legacy old gen, the header sweep of the carve's tail never overwrites the next page's object (S1)",
+    []() { runFixedGuard("CR-033 S1 (legacy)", [] { return cr033S1(false); }); });
 
 Testing::TestCase testCR033S1Control(
     "CR-033: S1 negative control, the bitmap gap sweep leaves the next page's object intact",
@@ -2395,8 +2790,12 @@ Testing::TestCase testCR033S1Control(
 
 namespace {
 
-int cr035Scenario(bool lostArm) {
-    const char* id = lostArm ? "CR-035 (lost object)" : "CR-035 (stale index)";
+// idleUncounted: OldGenSpace::test_idle_uncounted_ restores CR-018's pre-fix
+// precondition (HEAP_073) so the guard isolates CR-035; without it the plain
+// run checks that CR-018's fix removed the precondition (P counts Y).
+int cr035Scenario(bool lostArm, bool idleUncounted = true) {
+    const char* id = !idleUncounted ? "CR-035 (CR-018 precondition gone)"
+                                    : lostArm ? "CR-035 (lost object)" : "CR-035 (stale index)";
     abortMeansNotReached();
     HeapConfig cfg = cr018Config();
     cfg.large_ptr_nursery_divisor = 0;   // every pointer-bearing object >= LOT is a YLOS
@@ -2417,10 +2816,17 @@ int cr035Scenario(bool lostArm) {
         OA::metaOf(og, P).live_bytes != 0)
         return notReached(id, "P is not kept, fully swept and all-dead after the major");
     // (2) Y: a YLOS carved at P's start after the sweep; it dies at once.
+    OA::setIdleUncounted(og, idleUncounted);
     const HPointer nil = alloc::listNil();
     HPointer Yp = alloc::arrayFromPointers(std::vector<HPointer>(1600, nil));
     void* Y = AllocatorTestAccess::fromPointer(Yp);
     if (Y != X || !og.isYoungLarge(Y)) return notReached(id, "Y is not a YLOS at P's start");
+    if (!idleUncounted) {   // the plain run: CR-018's fix counts Y's Idle carve
+        const uint64_t lb = OA::metaOf(og, P).live_bytes;
+        std::fprintf(stderr, "  %s child: after Y's Idle carve P's live_bytes reads %llu\n", id,
+                     static_cast<unsigned long long>(lb));
+        return lb > 0 ? kCorrect : kDefect;
+    }
     if (!OA::metaOf(og, P).fully_swept || OA::metaOf(og, P).live_bytes != 0 || OA::getBlockTable(og).info(P).is_large)
         return notReached(id, "P's live_bytes counts Y (CR-018's precondition is gone)");
     // (3) Z: a page-sized YLOS; the empty-block flip places it at X.
@@ -2436,7 +2842,7 @@ int cr035Scenario(bool lostArm) {
     for (OldGenSpace::LargeBodyId b : OA::getNurseryOwnedBodies(og)) {
         if (b < lbs.size() && lbs[b].body_base == X && lbs[b].kind == 1) ++claim;
     }
-    std::fprintf(stderr, "  %s child: after the flip, %zu nursery-owned YLOS entries name X %p (Y's dead one and Z's)\n",
+    std::fprintf(stderr, "  %s child: after the flip, %zu nursery-owned YLOS entries name X %p (more than one: Y's dead one and Z's)\n",
                  id, claim, static_cast<void*>(X));
     if (!lostArm) {
         a.getRootSet().removeRoot(&Zp);
@@ -2469,12 +2875,16 @@ int cr035Scenario(bool lostArm) {
 }  // namespace
 
 Testing::TestCase testCR035StaleIndexAtFlip(
-    "CR-035 [xfail CR-035]: the empty-block flip leaves no stale large-body entry naming the new object's address",
-    []() { runXfailGuard("CR-035 (stale index)", [] { return cr035Scenario(false); }); });
+    "CR-035: the empty-block flip leaves no stale large-body entry naming the new object's address (CR-018's precondition by test hook)",
+    []() { runFixedGuard("CR-035 (stale index)", [] { return cr035Scenario(false); }); });
 
 Testing::TestCase testCR035LostObject(
-    "CR-035 [xfail CR-035]: a live YLOS placed by the empty-block flip survives the next two minors",
-    []() { runXfailGuard("CR-035 (lost object)", [] { return cr035Scenario(true); }); });
+    "CR-035: a live YLOS placed by the empty-block flip survives the next two minors (CR-018's precondition by test hook)",
+    []() { runFixedGuard("CR-035 (lost object)", [] { return cr035Scenario(true); }); });
+
+Testing::TestCase testCR035PreconditionGone(
+    "CR-035: without the test hook, CR-018's fix counts the Idle carve of a YLOS, so its page is not empty (live_bytes > 0)",
+    []() { runFixedGuard("CR-035 (CR-018 precondition gone)", [] { return cr035Scenario(false, false); }); });
 
 // ----------------------------------------------------------------------------
 // CR-036 (M8 MC_quick_reissue_witness, witness NoSameIdSameStartReissue). A
@@ -2482,16 +2892,19 @@ Testing::TestCase testCR035LostObject(
 // BlockTable ids), the same start (first-fit old_gen_free_blocks_) and the
 // same class: exactly the key IM5's t0-block check (checkT0BlocksUnchanged:
 // id, start, size_class, is_large) compares, so a release-and-re-issue inside
-// a cycle would pass it. A validator coverage gap, not a live defect; this
-// guard is a WITNESS that the re-issue is reachable. It flips when a re-issued
-// block becomes distinguishable (a per-id generation, the register's fix
-// candidate; extend the key below when one exists).
+// a cycle would pass it. A validator coverage gap, not a live defect. FIXED
+// (register-fixes §3.5): BlockTable keeps a per-id generation and IM5's key
+// includes it; the witness checks the key, and two validate-only guards check
+// IM5 itself (and, as a negative control, IM5 with the generation ignored).
 // ----------------------------------------------------------------------------
 
 namespace {
 
-int cr036Witness() {
-    const char* id = "CR-036 witness";
+// mode 0: the witness (IM5's key incl. the generation). mode 1: validate
+// builds, IM5's check itself (t0BlocksChangedWhy) must see the re-issue.
+// mode 2: its negative control, the generation compare disabled by a hook.
+int cr036Scenario(int mode) {
+    const char* id = mode == 0 ? "CR-036 witness" : mode == 1 ? "CR-036 IM5" : "CR-036 IM5 control (no generation)";
     abortMeansNotReached();
     HeapConfig cfg = cr018Config();
     cfg.initial_old_gen_size = 64 * 1024;   // the floor is one page: the major may release D
@@ -2511,6 +2924,16 @@ int cr036Witness() {
     const BlockInfo di = OA::getBlockTable(og).info(D);
     if (!D.valid() || !OA::inUniformBlock(og, d) || di.start == heapBase || !OA::getUnassignedBlocks(og).empty())
         return notReached(id, "D is not a uniform block off heap_base with the bag empty");
+    const uint32_t genD = OA::blockGeneration(og, D);
+#if ECO_HEAP_VALIDATE
+    if (mode != 0) {   // IM5's t0 capture with D live (as a cycle's t0 would take it)
+        OA::setIm5IgnoreGeneration(og, mode == 2);
+        OA::captureT0Blocks(og);
+        if (OA::t0BlocksChangedWhy(og) != nullptr) return notReached(id, "IM5 reports a change right after the capture");
+    }
+#else
+    if (mode != 0) return notReached(id, "needs ECO_HEAP_VALIDATE");
+#endif
     a.majorGC();   // reclaimAllDeadBlocksFromMeta releases D (above the floor)
     OA::driveSweepToCompletion(og);
     const bool released = !OA::blockLive(og, D) || OA::getBlockTable(og).info(D).start != di.start;
@@ -2522,20 +2945,55 @@ int cr036Witness() {
     formatAsBytes(e, 24);
     const BlockId E = OA::blockOf(og, e);
     const BlockInfo& ei = OA::getBlockTable(og).info(E);
-    const bool sameKey = E == D && ei.start == di.start && ei.size_class == di.size_class && ei.is_large == di.is_large;
-    std::fprintf(stderr, "  %s child: D (id %u, start %p, class %zu) released at the major; the next virgin block is "
-                 "id %u, start %p, class %zu%s\n", id, D.v, static_cast<void*>(di.start), di.size_class, E.v,
-                 static_cast<void*>(ei.start), ei.size_class,
-                 sameKey ? " -- IM5's key {id, start, class, is_large} cannot tell the two apart" : "");
+    const bool reissue = E == D && ei.start == di.start && ei.size_class == di.size_class && ei.is_large == di.is_large;
+    const uint32_t genE = OA::blockGeneration(og, E);
+    // CR-036 fixed (HEAP_048): IM5's key includes the generation.
+    const bool sameKey = reissue && genE == genD;
+    std::fprintf(stderr, "  %s child: D (id %u gen %u, start %p, class %zu) released at the major; the next virgin block "
+                 "is id %u gen %u, start %p, class %zu%s\n", id, D.v, genD, static_cast<void*>(di.start), di.size_class,
+                 E.v, genE, static_cast<void*>(ei.start), ei.size_class,
+                 sameKey ? " -- IM5's key {id, gen, start, class, is_large} cannot tell the two apart"
+                 : reissue ? " -- a same-id, same-start re-issue; the generation tells them apart" : "");
+    if (!reissue) return notReached(id, "no same-id, same-start, same-class re-issue happened");
     a.getRootSet().removeRoot(&k);
-    return sameKey ? kDefect : kCorrect;
+    if (mode == 0) return sameKey ? kDefect : kCorrect;
+#if ECO_HEAP_VALIDATE
+    const char* why = OA::t0BlocksChangedWhy(og);
+    std::fprintf(stderr, "  %s child: IM5 (t0BlocksChangedWhy) says: %s\n", id, why ? why : "unchanged");
+    OA::clearT0Blocks(og);
+    OA::setIm5IgnoreGeneration(og, false);
+    if (mode == 1) return why != nullptr ? kCorrect : kDefect;
+    return why == nullptr ? kCorrect : kDefect;   // the control: without the generation IM5 is blind
+#else
+    return kNotReached;
+#endif
 }
 
 }  // namespace
 
 Testing::TestCase testCR036ReissueWitness(
-    "CR-036 [xfail CR-036]: witness, a released block is never re-issued with the same id, start and class (IM5's key)",
-    []() { runXfailGuard("CR-036 witness", cr036Witness); });
+    "CR-036: witness, a released block re-issued with the same id, start and class differs in IM5's key (the generation)",
+    []() { runFixedGuard("CR-036 witness", [] { return cr036Scenario(0); }); });
+
+Testing::TestCase testCR036Im5SeesReissue(
+    "CR-036: IM5's t0-block check reports a same-id, same-start re-issue (validate builds)",
+    []() {
+#if ECO_HEAP_VALIDATE
+        runFixedGuard("CR-036 IM5", [] { return cr036Scenario(1); });
+#else
+        std::cout << "  (skipped: needs ECO_HEAP_VALIDATE=ON)\n";
+#endif
+    });
+
+Testing::TestCase testCR036Im5Control(
+    "CR-036: negative control, IM5 without the generation compare (test hook) reports the re-issue unchanged (validate builds)",
+    []() {
+#if ECO_HEAP_VALIDATE
+        runFixedGuard("CR-036 IM5 control (no generation)", [] { return cr036Scenario(2); });
+#else
+        std::cout << "  (skipped: needs ECO_HEAP_VALIDATE=ON)\n";
+#endif
+    });
 
 // ----------------------------------------------------------------------------
 // CR-038 (M5 MC_k2_ylos_walk, YoungWalkValid; k = 2, no major). A PREMISE-
@@ -2548,6 +3006,9 @@ Testing::TestCase testCR036ReissueWitness(
 // young target by range, so nothing is greyed; but 07b's zap premise ("no
 // dead object's slot is read after its extent is retired") does not hold for
 // YLOS. The control keeps Y alive: the ageing mark heals its slot.
+// FIXED (2026-09-30, HEAP_070 amended, mergeJob step 5c): the merge of the job
+// whose ageing mark did not reach Y (minor 4's start) clears Y's slots, so the
+// t0 snapshot still walks Y but its slot is the Empty constant.
 // ----------------------------------------------------------------------------
 
 namespace {
@@ -2610,26 +3071,132 @@ int cr038Scenario(bool control) {
     const bool retired = X1.state == region::XState::Free ||
                          (X1.state == region::XState::Young && X1.gen_minor > seq0);
     const uint64_t s = bits(arr->elements[0].p);
-    const bool intoX1 = inX(j1, AllocatorTestAccess::fromPointer(arr->elements[0].p));
+    const bool cleared = isEmptyBits(s);
+    const bool intoX1 = arr->elements[0].p.ptr_ind == 0 && inX(j1, AllocatorTestAccess::fromPointer(arr->elements[0].p));
     std::fprintf(stderr, "  %s child: at minor 4's t0 the snapshot %s Y %p; X1 (extent %d) is %s; Y's slot %#llx %s\n",
                  id, walked ? "walked" : "did NOT walk", Y, j1,
                  X1.state == region::XState::Free ? "Free (retired)" :
                  X1.state == region::XState::Tenuring ? "Tenuring" : "Young", static_cast<unsigned long long>(s),
-                 intoX1 ? "points into the RETIRED X1 (never healed)" : "does not point into X1");
+                 intoX1 ? "points into the RETIRED X1 (never healed)" :
+                 cleared ? "is Empty (cleared at the merge: CR-038 fix)" : "does not point into X1");
     if (!walked) return notReached(id, "the t0 snapshot did not walk Y");
     if (!retired) return notReached(id, "X1 is not retired at minor 4");
     for (int g = 0; g < 64 && og.cycleActive(); ++g) a.minorGC();
     if (control) a.getRootSet().removeRoot(&Yp);
     a.getRootSet().removeRoot(&o);
-    return intoX1 ? kDefect : kCorrect;
+    if (intoX1) return kDefect;
+    // Fixed: the dead Y's slot is Empty; the live Y's (control) was healed to o's copy.
+    if (!control && !cleared) return kDefect;
+    return kCorrect;
 }
 
 }  // namespace
 
 Testing::TestCase testCR038DeadYlosSlotIntoRetired(
-    "CR-038 [xfail CR-038]: premise-drift witness, k=2, no young YLOS the t0 snapshot walks holds a slot into a retired extent",
-    []() { runXfailGuard("CR-038", [] { return cr038Scenario(false); }); });
+    "CR-038: k=2, no young YLOS the t0 snapshot walks holds a slot into a retired extent (the dead Y's slot is Empty)",
+    []() { runFixedGuard("CR-038", [] { return cr038Scenario(false); }); });
 
 Testing::TestCase testCR038Control(
     "CR-038: negative control, a live ageing-generation YLOS's slot is healed before its target's extent retires",
     []() { runFixedGuard("CR-038 control (live Y)", [] { return cr038Scenario(true); }); });
+
+// ----------------------------------------------------------------------------
+// CR-039 (M5 MC_k2_ylos_walk2, T0GreyAllocated; k = 2, no major): the WIDER
+// CR-038 variant (plans/threaded-gc-register-fixes.md Step 0.4), S1-class.
+// A YLOS Z joins X1's generation at minor 1; a YLOS Y -> Z joins X2's at
+// minor 2; both die in epoch 2. At minor 3 X1 is handed over and Z is not
+// reached; minor 4 retires X1's generation and frees Z's cell, while the dead
+// Y (X2's generation, handed over at minor 4) is still indexed. That minor's
+// forced t0 (snapshotYoungLarge) walks Y and markChildren(Y) greys Z: Z is no
+// longer young, so greyObject's young-range filter does not drop it, and t0
+// marks a FREED old-gen cell (CR-017 R1's hazard). Validate builds may abort
+// on the way (IM4/IM6): that is the defect too. The control keeps Z rooted
+// (only Y dies) and skips the merge's clearing (test_skip_zap_) at minor 4:
+// the same walk greys an ALLOCATED Z through Y's kept slot.
+// FIXED (2026-09-30, with CR-038: HEAP_070 amended, mergeJob step 5c): minor 4's
+// merge clears the dead Y's slots before its t0, so Z is never greyed.
+// ----------------------------------------------------------------------------
+
+namespace {
+
+int cr038ZScenario(bool control) {
+    const char* id = control ? "CR-039 control (Z live)" : "CR-039";
+    auto& a = initRegionAllocator(cr017Config(2));
+    ThreadLocalHeap* h = AllocatorTestAccess::getThreadHeap(a);
+    NurserySpace& ns = h->getNursery();
+    OldGenSpace& og = h->getOldGen();
+    RegionState* R = NurserySpaceTestAccess::region(ns);
+    if (!ns.regionMode() || R == nullptr || R->tenure_age != 2) return notReached(id, "no region nursery at k = 2");
+    auto genOf = [&](void* y) {
+        for (unsigned u = 0; u < R->n_surv; ++u) {
+            const region::Extent& Ex = R->x[u];
+            if (Ex.state == region::XState::Young &&
+                std::find(Ex.ylos_gen.begin(), Ex.ylos_gen.end(), y) != Ex.ylos_gen.end()) return static_cast<int>(u);
+        }
+        return -1;
+    };
+    // Z: a YLOS with no heap children, reached first at minor 1 (X1's generation).
+    HPointer Zp = alloc::arrayFromPointers(std::vector<HPointer>(1600, alloc::listNil()));
+    a.getRootSet().addRoot(&Zp);
+    void* const Z = AllocatorTestAccess::fromPointer(Zp);
+    if (!og.isYoungLarge(Z)) return notReached(id, "Z is not a YLOS");
+    const uint64_t seq0 = R->minor_seq;
+    a.minorGC();   // minor 1
+    const int j1 = genOf(Z);
+    if (j1 < 0 || R->x[j1].age != 1) return notReached(id, "Z did not join a Young age-1 extent's generation (X1)");
+    // Y -> Z, a YLOS reached first at minor 2 (X2's generation); Z is held only by Y.
+    HPointer Yp = alloc::arrayFromPointers(std::vector<HPointer>(1600, Zp));
+    a.getRootSet().addRoot(&Yp);
+    void* const Y = AllocatorTestAccess::fromPointer(Yp);
+    if (!og.isYoungLarge(Y)) return notReached(id, "Y is not a YLOS");
+    if (!control) a.getRootSet().removeRoot(&Zp);
+    a.minorGC();   // minor 2: Y joins X2's generation; X1 ages
+    const int j2 = genOf(Y);
+    if (j2 < 0 || j2 == j1 || R->x[j2].age != 1 || R->x[j1].state != region::XState::Young || R->x[j1].age != 2 ||
+        genOf(Z) != j1)
+        return notReached(id, "Y did not join X2's generation with Z's X1 ageing");
+    a.getRootSet().removeRoot(&Yp);   // Y (and, unless control, Z) die in epoch 2
+    a.minorGC();   // minor 3: X1 handed over; Z not reached (unless control)
+    if (R->x[j1].state != region::XState::Tenuring || R->x[j2].state != region::XState::Young || R->x[j2].age != 2)
+        return notReached(id, "X1 is not Tenuring with X2 ageing after minor 3");
+    if (!og.isYoungLarge(Y)) return notReached(id, "Y is no longer a young YLOS after minor 3");
+    // minor 4: X1's generation retires (Z's cell is freed); a forced trigger's t0 walks Y.
+    if (og.cycleActive() || OA::isMarked(og, Z) || OA::isMarked(og, Y))
+        return notReached(id, "a cycle is active, or Y or Z is marked, before minor 4");
+    h->test_force_major_trigger_ = true;
+    ns.test_skip_zap_ = control;   // control: keep Y's slot (no step 5c at minor 4's merge)
+    a.minorGC();
+    ns.test_skip_zap_ = false;
+    if (R->minor_seq != seq0 + 4) return notReached(id, "an extra minor ran");
+    if (!og.cycleActive()) return notReached(id, "the forced trigger did not start a mark cycle");
+    const bool walked = OA::isMarked(og, Y);   // snapshotYoungLarge marks every young YLOS it walks
+    const bool zFreed = og.youngLargeMeta(Z) == nullptr && getHeader(Z)->tag == Tag_Free;
+    const bool zGreyed = OA::isMarked(og, Z);
+    const HPointer y0 = static_cast<ElmArray*>(Y)->elements[0].p;
+    const bool slotZ = y0.ptr_ind == 0 && AllocatorTestAccess::fromPointer(y0) == Z;
+    const bool slotEmpty = isEmptyBits(bits(static_cast<ElmArray*>(Y)->elements[0].p));
+    std::fprintf(stderr, "  %s child: at minor 4's t0 the snapshot %s the dead Y %p (slot %s Z); Z %p is %s and %s\n",
+                 id, walked ? "walked" : "did NOT walk", Y,
+                 slotZ ? "names" : slotEmpty ? "is Empty: cleared, does not name" : "does not name", Z,
+                 zFreed ? "FREED (Tag_Free, unindexed)" : "allocated",
+                 zGreyed ? "MARKED by t0" : "unmarked");
+    if (!walked) return notReached(id, "the t0 snapshot did not walk Y");
+    if (control && !slotZ) return notReached(id, "control: Y's slot does not name Z at minor 4's t0");
+    if (!control && !slotZ && !slotEmpty) return notReached(id, "Y's slot names neither Z nor Empty at minor 4's t0");
+    if (control && zFreed) return notReached(id, "control: the rooted Z was freed");
+    if (!control && !zFreed) return notReached(id, "Z's cell was not freed by minor 4");
+    // Run the cycle to its handoff (a validate build checks IM4/IM6 on the way).
+    for (int g = 0; g < 64 && og.cycleActive(); ++g) a.minorGC();
+    if (control) a.getRootSet().removeRoot(&Zp);
+    return (zFreed && zGreyed) ? kDefect : kCorrect;
+}
+
+}  // namespace
+
+Testing::TestCase testCR039DeadYlosGreysFreedYlos(
+    "CR-039: region k=2, the t0 snapshot never greys a YLOS cell freed at its generation's retirement through a dead younger YLOS",
+    []() { runFixedGuard("CR-039", [] { return cr038ZScenario(false); }); });
+
+Testing::TestCase testCR039Control(
+    "CR-039: negative control, a rooted Z greyed through the dead Y is allocated",
+    []() { runFixedGuard("CR-039 control (Z live)", [] { return cr038ZScenario(true); }); });

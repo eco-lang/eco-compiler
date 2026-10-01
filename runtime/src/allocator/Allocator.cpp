@@ -16,6 +16,7 @@
  */
 
 #include "Allocator.hpp"
+#include "GCFork.hpp"
 #include "GCHelperPool.hpp"
 #include "HeapConfigJson.hpp"
 #include "PageWork.hpp"
@@ -23,6 +24,7 @@
 #include "PermanentSpace.hpp"
 #include "PlatformVirtualMemory.hpp"
 #include "ThreadLocalHeap.hpp"
+#include "TlaTrace.hpp"   // compiled-out hooks (trace builds only: the M6 fork harness)
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -60,6 +62,7 @@ namespace {
 #endif
 
 namespace Elm {
+ECO_TLA_TRACE_ONLY(namespace gc { extern bool tla_m6; })   // GCHelperPool.cpp: M6 probes fire while set
 
 // Global heap base for pointer conversion (used by fromPointerRaw/toPointerRaw).
 char* g_heap_base = nullptr;
@@ -218,12 +221,17 @@ Allocator::Allocator() :
 // TLA-REGION(AL.destructor) begin
 Allocator::~Allocator() {
     // Clean up all thread heaps.
+    std::unordered_map<std::thread::id, std::unique_ptr<ThreadLocalHeap>> doomed;
     {
         std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
         // threaded-gc-03: no helper job may outlive the PageWork it points at.
         if (page_work_) page_work_->drainAll(/*discard_pending=*/false);
-        thread_heaps_.clear();
+        dropForkDeadHeapsLocked();   // CR-031 / HEAP_007: never tear down a dead heap
+        doomed.swap(thread_heaps_);
     }
+    // HEAP_075: the teardown (tenureTeardown -> stopAndJoin, ~GCBackgroundGang's
+    // registry) runs OUTSIDE thread_mutex_; a heap's destruction re-takes it per call.
+    doomed.clear();
 
     if (heap_base) {
         Elm::platform::releaseReservation(heap_base, heap_reserved);
@@ -234,6 +242,11 @@ Allocator::~Allocator() {
 // Initializes the allocator with the given configuration.
 // Validates config and reserves address space. Physical memory committed lazily.
 void Allocator::initialize(const HeapConfig& config) {
+    // HEAP_075: GCFork's allocator layer (thread_mutex_). Registered with no runtime
+    // lock held (GCFork.hpp); idempotent.
+    static const gc::ForkHooks kAllocatorHooks{&Allocator::forkPrepare, &Allocator::forkParent,
+                                               &Allocator::forkChild};
+    gc::registerForkLayer(gc::kForkAllocator, kAllocatorHooks);
     if (initialized) {
         return;
     }
@@ -301,6 +314,39 @@ void Allocator::initialize(const HeapConfig& config) {
     initialized = true;
 }
 
+// CR-031 / HEAP_007 (plans/threaded-gc-register-fixes.md §7.1, §7.2 step 7): in a
+// forked child only the forking thread's heap is live; the others' mutators do not
+// exist here, and their tables (RootSet, the tenure job, gang state) may have been
+// mid-update at the fork. They are leaked: never collected, never torn down, never
+// read. Caller holds thread_mutex_.
+void Allocator::dropForkDeadHeapsLocked() {
+    if (!fork_child_) return;
+    for (auto it = thread_heaps_.begin(); it != thread_heaps_.end();) {
+        if (it->first != fork_owner_) {
+            (void)it->second.release();
+            it = thread_heaps_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+// HEAP_075 / CR-015 (plans/threaded-gc-register-fixes.md §7.2 step 3): the allocator
+// layer of the one fork registration. It runs after the gangs layer (a gang member
+// may block on thread_mutex_ under promo_mu_ while its run holds run_m_) and before
+// the census and the pool (every post and wait holds thread_mutex_, so with it held
+// no post can land between the pool's drain and its lock).
+void Allocator::forkPrepare() { instance().thread_mutex_.lock(); }
+void Allocator::forkParent() { instance().thread_mutex_.unlock(); }
+void Allocator::forkChild() {
+    Allocator& a = instance();
+    // Re-create in place: unlocking the recursive mutex here would fail (glibc checks
+    // the owner TID, which differs in the child).
+    new (&a.thread_mutex_) std::recursive_mutex();
+    a.fork_child_ = true;
+    a.fork_owner_ = std::this_thread::get_id();
+}
+
 // Commits physical memory for a nursery region.
 void Allocator::commitNursery(char *nursery_base, size_t size) {
     void *result = Elm::platform::commitAt(nursery_base, size);
@@ -329,12 +375,27 @@ void Allocator::initThread() {
     }
 
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+    // HEAP_007: a forked child may call initThread for a fresh heap; dead heaps of
+    // threads that do not exist in it are not live mutators (CR-012's check below).
+    dropForkDeadHeapsLocked();
 
     // Double-check after acquiring lock.
     auto thread_id = std::this_thread::get_id();
     if (thread_heaps_.find(thread_id) != thread_heaps_.end()) {
         setThreadHeap(thread_heaps_[thread_id].get());
         return;
+    }
+
+    // HEAP_007 / CR-012 (option F): one live mutator per process. A second
+    // live ThreadLocalHeap shares the process-wide committed bytes, decommit
+    // clocks and released-extent list with the first (per-heap GC_DET_001
+    // breaks), so it is forbidden outside the benchmark/test opt-in.
+    if (!thread_heaps_.empty() && !multi_mutator_opt_in_) {
+        std::fprintf(stderr, "[eco] FATAL: a second mutator thread called initThread while "
+            "another ThreadLocalHeap is live (HEAP_007: one mutator per process; CR-012). "
+            "Only benchmark/test harnesses may call Allocator::allowMultipleMutators(true).\n");
+        std::fflush(stderr);
+        std::abort();
     }
 
     // Create ThreadLocalHeap.
@@ -348,6 +409,9 @@ void Allocator::initThread() {
         &config_
     );
 
+#if ECO_HEAP_VALIDATE
+    heap->owner_ = thread_id;   // HEAP_007 / CR-031: minorGC / majorGC check it
+#endif
     setThreadHeap(heap.get());
     thread_heaps_[thread_id] = std::move(heap);
 }
@@ -359,21 +423,33 @@ void Allocator::cleanupThread() {
         return;  // Nothing to clean up.
     }
 
-    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
-
-    auto thread_id = std::this_thread::get_id();
-    auto it = thread_heaps_.find(thread_id);
-    if (it != thread_heaps_.end()) {
+    // HEAP_075 (plans/threaded-gc-register-fixes.md §7.2 step 2): no teardown holds
+    // thread_mutex_ while it takes a gang lock (tenureTeardown -> stopAndJoin,
+    // ~GCBackgroundGang's registry): a fork's prepare holds the gangs and then asks
+    // for thread_mutex_ (M7 LockOrder, mutant teardown_under_tm).
+    std::unique_ptr<ThreadLocalHeap> doomed;
+    {
+        std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+        auto it = thread_heaps_.find(std::this_thread::get_id());
+        if (it != thread_heaps_.end()) {
+            doomed = std::move(it->second);
+            thread_heaps_.erase(it);
+        }
+    }
+    if (doomed) {
         // threaded-gc-07 (P§3.15): the last tenure job is finished and given
         // a stats-only merge before the heap's stats are folded.
-        it->second->getNursery().tenureTeardown(it->second->getOldGen());
+        doomed->getNursery().tenureTeardown(doomed->getOldGen());
 #if ENABLE_GC_STATS
-        // Accumulate stats from this thread heap before destroying it.
-        accumulated_stats_.combine(it->second->getNursery().getStats());
-        accumulated_stats_.combine(it->second->getOldGen().getStats());
-        accumulated_stats_.combine(it->second->getStats());
+        {
+            // Accumulate stats from this thread heap before destroying it.
+            std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+            accumulated_stats_.combine(doomed->getNursery().getStats());
+            accumulated_stats_.combine(doomed->getOldGen().getStats());
+            accumulated_stats_.combine(doomed->getStats());
+        }
 #endif
-        thread_heaps_.erase(it);
+        doomed.reset();
     }
 
     setThreadHeap(nullptr);
@@ -386,7 +462,7 @@ void Allocator::cleanupThread() {
 // TLA-REGION(AL.finishTenureForExit) begin
 void Allocator::finishTenureForExit() {
     if (tl_heap_ == nullptr) return;
-    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+    // HEAP_075: no thread_mutex_ around the teardown (it joins the tenure collector).
     tl_heap_->getNursery().tenureTeardown(tl_heap_->getOldGen());
 }
 // TLA-REGION(AL.finishTenureForExit) end
@@ -756,7 +832,7 @@ void Allocator::releaseNurserySlicePair(const NurserySlicePair& pair) {
 // Thread-safe: acquires thread_mutex_ to update shared committed counters.
 // First-fit reuse: scan the free list for a released block with size >= request.
 // TLA-REGION(AL.acquireOldGenBlock) begin
-char* Allocator::acquireOldGenBlock(size_t size) {
+char* Allocator::acquireOldGenBlock(size_t size, AcquireWait w) {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 
     // Align size to 8 bytes.
@@ -775,17 +851,17 @@ char* Allocator::acquireOldGenBlock(size_t size) {
         assert(size % kPageSize == 0 &&
                "acquireOldGenBlock: page request size must be OS-page-multiple");
     }
-
-    // First-fit reuse from previously-released old-gen blocks. Splitting an
-    // oversized cell is out of scope; we accept the slack on a larger reuse
-    // since current callers request whole pages or whole large-block extents.
-    for (auto it = old_gen_free_blocks_.begin();
-         it != old_gen_free_blocks_.end(); ++it) {
+    auto fits = [&](const std::pair<char*, size_t>& e) {
         if (page_request) {
-            if (it->first == heap_base) continue;       // pinned heap-base
-            if (it->second % kPageSize != 0) continue;  // alignment guard
+            if (e.first == heap_base) return false;       // pinned heap-base
+            if (e.second % kPageSize != 0) return false;  // alignment guard
         }
-        if (it->second >= size) {
+        return e.second >= size;
+    };
+
+    // Takes the free-list extent at `it` (swap-remove), runs onReuse BEFORE
+    // the pages are touched, and accounts for it.
+    auto takeFreeAt = [&](std::vector<std::pair<char*, size_t>>::iterator it) -> char* {
             char* block = it->first;
             size_t block_size = it->second;
             // swap-remove
@@ -831,13 +907,61 @@ char* Allocator::acquireOldGenBlock(size_t size) {
             // [heap_base, heap_base + old_gen_committed) bump range.
             // Track it as in-use so getOldGenCommittedBytes() reflects
             // the round-trip correctly.
-            old_gen_in_use_bytes_ += block_size;
+            addOldGenInUse(block_size);
             noteOldGenInUsePeak();
 
             if (heapTraceEnabled()) {
                 dumpHeapState("oldgen reused released block", block_size);
             }
             return block;
+    };
+
+    // CR-007 (HEAP_058/HEAP_059): a promo_mu_ holder of a parallel promotion
+    // with n > 1 workers never waits on a helper job unless the cap forces it.
+    // (1) the first fitting Pending extent (its discard is cancelled: no
+    // wait); (2) else a fresh bump; (3) else -- the old-gen cap leaves no bump
+    // room -- today's first fit, which may wait. The skip test is membership in
+    // pending_, which is job-blind (GC_DET_001): never a job's state.
+    bool skip_reuse = false;
+    if (w == AcquireWait::AvoidUnderPromo && page_work_ && page_work_->decommitOn()) {
+        char* first_fit = nullptr;
+        for (auto it = old_gen_free_blocks_.begin(); it != old_gen_free_blocks_.end(); ++it) {
+            if (!fits(*it)) continue;
+            if (!page_work_->isPending(it->first)) {
+                if (first_fit == nullptr) first_fit = it->first;
+                page_work_->noteNoWaitSkip();
+                continue;
+            }
+            page_work_->noteNoWait(gc::PageWork::NoWaitPick::PendingReuse, it->first, it->second);
+#if ECO_HEAP_VALIDATE
+            const uint64_t waits0 = page_work_->counters().reuse_waits;
+#endif
+            char* const b = takeFreeAt(it);   // onReuse -> Cancelled, never waits
+#if ECO_HEAP_VALIDATE
+            if (page_work_->counters().reuse_waits != waits0) {
+                std::fprintf(stderr, "[heap-validate] CR-007: a no-wait reuse of a Pending extent waited\n");
+                std::abort();
+            }
+#endif
+            return b;
+        }
+        if (old_gen_committed + size <= nursery_offset) {
+            page_work_->noteNoWait(gc::PageWork::NoWaitPick::Fresh, heap_base + old_gen_committed, size);
+            skip_reuse = true;                    // (2) the fresh bump below
+        } else if (first_fit != nullptr) {
+            // (3) the cap fallback: a discard-issued extent; the wait (if any) is
+            // a pause stall (CR-025) like any other reuse wait.
+            page_work_->noteNoWait(gc::PageWork::NoWaitPick::Fallback, first_fit, size);
+        }
+    }
+
+    // First-fit reuse from previously-released old-gen blocks. Splitting an
+    // oversized cell is out of scope; we accept the slack on a larger reuse
+    // since current callers request whole pages or whole large-block extents.
+    if (!skip_reuse) {
+        for (auto it = old_gen_free_blocks_.begin();
+             it != old_gen_free_blocks_.end(); ++it) {
+            if (fits(*it)) return takeFreeAt(it);
         }
     }
 
@@ -873,7 +997,7 @@ char* Allocator::acquireOldGenBlock(size_t size) {
 
     size_t before = old_gen_committed;
     old_gen_committed += size;
-    old_gen_in_use_bytes_ += size;
+    addOldGenInUse(size);
     noteOldGenInUsePeak();
 
     if (page_request) {
@@ -938,9 +1062,9 @@ void Allocator::releaseOldGenBlock(char* block, size_t size) {
     old_gen_free_blocks_.emplace_back(block, size);
 
     // Decrement the in-use byte counter so post-shrink reporting is correct.
-    assert(old_gen_in_use_bytes_ >= size &&
+    assert(old_gen_in_use_bytes_.load(std::memory_order_relaxed) >= size &&
            "releaseOldGenBlock: in-use underflow");
-    old_gen_in_use_bytes_ -= size;
+    subOldGenInUse(size);
 
     if (heapTraceEnabled()) {
         dumpHeapState("oldgen released block", size);
@@ -1016,7 +1140,19 @@ char* Allocator::acquireOldGenRegion(size_t initial_size, size_t /*max_size*/) {
 
     char* region_base = heap_base + old_gen_committed;
 
-    void* result = Elm::platform::commitAt(region_base, initial_size);
+    // HEAP_060 / CR-012(d): like acquireOldGenBlock's bump, the part of the
+    // region inside the commit-ahead window is already mapped (and maybe
+    // populated, or being populated) and must NOT be re-mapped MAP_FIXED.
+    // Needed with sequential mutators too (a later heap's region starts at
+    // the bump the previous heap's pause end opened a window over).
+    char* commit_from = region_base;
+    size_t commit_bytes = initial_size;
+    if (page_work_) commit_bytes = page_work_->onFreshBump(region_base, initial_size, &commit_from);
+    void* result = region_base;
+    if (commit_bytes > 0) {
+        if (commit_observer_for_testing) commit_observer_for_testing(commit_from, commit_bytes);
+        if (Elm::platform::commitAt(commit_from, commit_bytes) == nullptr) result = nullptr;
+    }
 
     if (result == nullptr) {
         if (heapTraceEnabled()) {
@@ -1026,7 +1162,7 @@ char* Allocator::acquireOldGenRegion(size_t initial_size, size_t /*max_size*/) {
     }
 
     old_gen_committed += initial_size;
-    old_gen_in_use_bytes_ += initial_size;
+    addOldGenInUse(initial_size);
     noteOldGenInUsePeak();
     return region_base;
 }
@@ -1035,7 +1171,7 @@ char* Allocator::acquireOldGenRegion(size_t initial_size, size_t /*max_size*/) {
 // Resets the allocator to initial state, optionally with a new configuration.
 // Accumulates stats from all thread heaps before destroying them.
 void Allocator::reset(const HeapConfig* new_config) {
-    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+    std::unique_lock<std::recursive_mutex> lock(thread_mutex_);
 
     ++heap_generation_;  // destroys all thread heaps/RootSets below; bump epoch
 
@@ -1069,13 +1205,24 @@ void Allocator::reset(const HeapConfig* new_config) {
     }
 #endif
 
-    // Clear all thread heaps.
-    thread_heaps_.clear();
-    setThreadHeap(nullptr);
+    // Clear all thread heaps. HEAP_075 (§7.2 step 2): swapped out under the lock and
+    // destroyed after unlocking -- a heap's teardown joins its gangs (tenureTeardown ->
+    // stopAndJoin, ~GCBackgroundGang's registry), which must not run under
+    // thread_mutex_. Each heap's destruction re-takes thread_mutex_ per call
+    // (releaseOldGenBlock, releaseNurserySlicePair) against the still-valid tables.
+    {
+        std::unordered_map<std::thread::id, std::unique_ptr<ThreadLocalHeap>> doomed;
+        doomed.swap(thread_heaps_);
+        setThreadHeap(nullptr);
+        lock.unlock();
+        doomed.clear();
+        lock.lock();
+    }
 
     // Reset committed memory tracking.
     old_gen_committed = 0;
-    old_gen_in_use_bytes_ = 0;
+    old_gen_in_use_bytes_.store(0, std::memory_order_relaxed);
+    multi_mutator_opt_in_ = false;   // CR-012: the opt-in is per reset
     old_gen_in_use_peak_ = 0;   // C0 census (TEMPORARY)
     nursery_low_committed_ = 0;
     nursery_high_committed_ = 0;
@@ -1274,6 +1421,9 @@ void Allocator::onGCPauseEnd(ThreadLocalHeap& heap, bool had_major) {
 #endif
     if (!page_work_) return;   // mode 0: one predictable branch per pause
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+    // M6 fork harness (det-cr015): a pause point holding thread_mutex_ only (CR-015; since
+    // GCFork's allocator layer a fork's prepare waits for it: the pause must be bounded).
+    ECO_TLA_TRACE_ONLY(if (::Elm::gc::tla_m6) ::Elm::tlatrace::probe("m6.tm.held");)
     if (!page_work_) return;
     ++sync_epoch_;
     if (had_major) ++major_epoch_;
@@ -1306,7 +1456,7 @@ void Allocator::validatePageWork(const char* where) const {
     // Sorted in-use ranges of every heap: materialized blocks + unassigned.
     std::vector<std::pair<char*, char*>> used;
     for (const auto& [tid, h] : thread_heaps_) {
-        (void)tid;
+        if (fork_child_ && tid != fork_owner_) continue;   // HEAP_007: a dead heap is never read
         const OldGenSpace& og = h->getOldGen();
         for (size_t pos = 0; pos < og.blocks_.size(); ++pos) {
             const BlockInfo& bi = og.blocks_.info(og.blocks_.idAt(pos));
@@ -1351,6 +1501,7 @@ GCStats Allocator::getCombinedStats() const {
 
     // Add stats from current thread heaps.
     for (const auto& [thread_id, heap] : thread_heaps_) {
+        if (fork_child_ && thread_id != fork_owner_) continue;   // HEAP_007: never read a dead heap
         // Combine nursery, old-gen (allocation-size histogram), and
         // thread-local heap (major-GC) stats.
         combined.combine(heap->getNursery().getStats());

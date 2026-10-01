@@ -86,6 +86,8 @@ class TraceRow:
     @property
     def name(self):
         n = f"{self.model}:{self.module}:{','.join(self.args)}"
+        if self.config != f"{self.module}.cfg":          # e.g. M4's TraceRace.cfg rows
+            n += f":{Path(self.config).stem}"
         return n + (f":{self.mutate}" if self.mutate else "")
 
 

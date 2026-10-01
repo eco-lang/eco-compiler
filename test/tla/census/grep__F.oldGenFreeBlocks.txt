@@ -1,5 +1,6 @@
 runtime/src/allocator/Allocator.cpp: *it = old_gen_free_blocks_.back();
 runtime/src/allocator/Allocator.cpp: for (auto it = old_gen_free_blocks_.begin();
+runtime/src/allocator/Allocator.cpp: for (auto it = old_gen_free_blocks_.begin(); it != old_gen_free_blocks_.end(); ++it) {
 runtime/src/allocator/Allocator.cpp: for (const auto& fb : old_gen_free_blocks_) free_blocks_bytes += fb.second;
 runtime/src/allocator/Allocator.cpp: for (const auto& fb : old_gen_free_blocks_) {
 runtime/src/allocator/Allocator.cpp: if (hits != 1) fail("tracked extent not exactly once in old_gen_free_blocks_", p);

@@ -318,11 +318,19 @@ begin
         call Handoff();
     end if;
   J_STW:                                   \* frees every unreachable old-gen cell (YLOS too)
-    with freed = CellObjs \ Live do
-        alloc := alloc \ freed;
-        fld := ScrubFld(freed);
-        age := ScrubAge(freed);
-        builder := ScrubBld(freed);
+    \* CR-017 (HEAP_074, NR.zapDeadAfterMajor): in region mode the major then turns every
+    \* survivor it did not reach (age 1, not a YLOS: the Young extents' survivor parts) into a
+    \* Tag_Free filler before the mutator resumes, so no later t0 walk reads a slot naming a
+    \* cell this major freed. The Tenuring extent's dead objects (zombie) are not touched: the
+    \* next minor retires them before any t0. MUTANT no_cr017_fix: the code before the fix.
+    with freed = CellObjs \ Live,
+         zap = IF RegionMode /\ MUTANT # "no_cr017_fix"
+               THEN {o \in YoungObjs \ Live : age[o] = 1 /\ o \notin YlosIds} ELSE {} do
+        alloc := alloc \ (freed \cup zap);
+        fld := ScrubFld(freed \cup zap);
+        age := ScrubAge(freed \cup zap);
+        builder := ScrubBld(freed \cup zap);
+        zombie := zombie \ zap;
         \* its own marks are dead once it ends, unless a cycle is still running
         \* (only under major_no_join)
         mark := IF CycleOn THEN [o \in Obj |-> o \in (Live \cap CellObjs)] ELSE NoMarks;
@@ -852,17 +860,20 @@ J_Handoff(self) == /\ pc[self] = "J_Handoff"
 
 J_STW(self) == /\ pc[self] = "J_STW"
                /\ LET freed == CellObjs \ Live IN
-                    /\ alloc' = alloc \ freed
-                    /\ fld' = ScrubFld(freed)
-                    /\ age' = ScrubAge(freed)
-                    /\ builder' = ScrubBld(freed)
-                    /\ mark' = IF CycleOn THEN [o \in Obj |-> o \in (Live \cap CellObjs)] ELSE NoMarks
+                    LET zap == IF RegionMode /\ MUTANT # "no_cr017_fix"
+                               THEN {o \in YoungObjs \ Live : age[o] = 1 /\ o \notin YlosIds} ELSE {} IN
+                      /\ alloc' = alloc \ (freed \cup zap)
+                      /\ fld' = ScrubFld(freed \cup zap)
+                      /\ age' = ScrubAge(freed \cup zap)
+                      /\ builder' = ScrubBld(freed \cup zap)
+                      /\ zombie' = zombie \ zap
+                      /\ mark' = IF CycleOn THEN [o \in Obj |-> o \in (Live \cap CellObjs)] ELSE NoMarks
                /\ majors' = majors + 1
                /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                /\ UNCHANGED << gen, root, cell, grey, cycle, k, episode, 
-                               deferred, zombie, minors, ops, opsTotal, t0Old, 
-                               t0Ylos, t0Reach, tSH, tNH, n, stops >>
+                               deferred, minors, ops, opsTotal, t0Old, t0Ylos, 
+                               t0Reach, tSH, tNH, n, stops >>
 
 MajorPause(self) == J_Join(self) \/ J_Handoff(self) \/ J_STW(self)
 

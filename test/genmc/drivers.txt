@@ -54,8 +54,8 @@ W2_DONE_STORE                      w2_termination.cpp  W2_REACTIVATE,MUTANT_W2_D
 # ---- W3: mark bytes, promo_mu_, CR-001 / CR-002 (BitmapScan.hpp, MinorWork.hpp:85-113), §7 ----
 w3a_marker_alloc_black   w3_markbyte.cpp     W3_CASE='a'                                         pass
 w3b_cursor_own_slot      w3_markbyte.cpp     W3_CASE='b'                                         pass
-w3c_CR002_gap_sweep      w3_markbyte.cpp     W3_CASE='c'                                         race:bits
-w3d_CR001_gc_phase       w3_markbyte.cpp     W3_CASE='d'                                         race:phase_idle
+w3c_CR002_gap_sweep      w3_markbyte.cpp     W3_CASE='c'                                         pass
+w3d_CR001_gc_phase       w3_markbyte.cpp     W3_CASE='d'                                         pass
 w3e_grant_chunks         w3_markbyte.cpp     W3_CASE='e'                                         pass
 w3f_promo_mu             w3_markbyte.cpp     W3_CASE='f'                                         pass
 W3_PLAIN_ALLOCATE_BLACK  w3_markbyte.cpp     W3_CASE='a',MUTANT_W3_PLAIN_ALLOCATE_BLACK          race:bits | assert:bits[0] == 0x03
@@ -64,6 +64,10 @@ W3_SMALL_CHUNK           w3_markbyte.cpp     W3_CASE='e',MUTANT_W3_SMALL_CHUNK  
 W3_BYTE_CHUNK            w3_markbyte.cpp     W3_CASE='e',MUTANT_W3_BYTE_CHUNK                    race:bits
 W3_SPIN_RELAXED_UNLOCK   w3_markbyte.cpp     W3_CASE='f',mutate:W3_SPIN_RELAXED_UNLOCK           race:counter | assert:counter == 2
 W3_SPIN_RELAXED_TRYLOCK  w3_markbyte.cpp     W3_CASE='f',mutate:W3_SPIN_RELAXED_TRYLOCK          race:counter | assert:counter == 2
+# CR-001 (race half) fixed 2026-09-30 (register-fixes 4.2): the pre-fix plain gc_phase_ accesses
+W3_CR001_PLAIN_PHASE     w3_markbyte.cpp     W3_CASE='d',MUTANT_W3_CR001_PLAIN_PHASE             race:phase_idle
+# CR-002 fixed 2026-09-30 (register-fixes 4.3): the pre-fix finalize after the unlock
+W3_CR002_UNLOCKED_FINALIZE  w3_markbyte.cpp  W3_CASE='c',MUTANT_W3_CR002_UNLOCKED_FINALIZE       race:bits
 
 # ---- W4: block publication (a pinned reduction of OldGenSpace.cpp), §8 ----
 w4_publication           w4_publication.cpp  -                                                   pass

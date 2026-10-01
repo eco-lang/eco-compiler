@@ -52,17 +52,17 @@ gang and tenure collectors sleep a random [0, n) µs).
 |---|---|---|---|
 | pool | `gc-heap-tsan pool` | CR-006 | `heap_driver pool PASS`, 0 TSan warnings |
 | pool, jitter | `gc-heap-tsan pool 50` | CR-006 | as above |
-| pool, long jitter | `gc-heap-tsan pool 20000 3 2` | CR-006, CR-007 | as above; about 21 reuses per scenario wait on a posted Discard job, about a third of them in a parallel minor on a promotion worker holding `promo_mu_` (`ladderFrom2W` → `startVirginBlockShared` → `acquireOldGenBlock` → `PageWork::onReuse` → `GCHelperPool::wait`: CR-007's stall; seen on gang member 0, the mutator thread) |
+| pool, long jitter | `gc-heap-tsan pool 20000 3 2` | CR-006, CR-007 | as above. **Since CR-007's fix (2026-10-01)** no reuse waits inside a pause: per scenario 7-8 reuse waits, all outside a pause (the mutator's `Allowed` path), and a `nowait:` line (about 2,000 skipped extents, 9-11 MiB of fresh bumps instead, 0 cap fallbacks; old-gen hiwater 12.2 / 14.4 MiB vs 12.3 / 14.0 MiB before). Before the fix: 21-25 reuse waits per scenario, 9 of them in a parallel minor on a promotion worker holding `promo_mu_` (`ladderFrom2W` → `startVirginBlockShared` → `acquireOldGenBlock` → `PageWork::onReuse` → `GCHelperPool::wait`: CR-007's stall) |
 | ylos | `gc-heap-tsan ylos` | CR-020 | `heap_driver ylos PASS`, 0 TSan warnings |
-| ylos-sweep | `gc-heap-tsan ylos-sweep` | CR-019 | **expected to fail**: TSan reports CR-019 in every run (below) |
-| det-cr014-live | `gc-heap-tsan det-cr014-live` | CR-014 | **expected to fail**: REACHED, `flushCursorW` (atomic `live_bytes` add) vs `computeFragmentationStats` ← `onSweepComplete` ← the tail completion in `lazySweep`, every run |
-| det-cr001 | `gc-heap-tsan det-cr001 {rf,wf} {inloop,tail}` | CR-001 | **expected to fail**: REACHED, `finalizeBitmapCellW`'s `gc_phase_` read vs `lazySweep`'s completion write (in-loop or tail), every run |
-| det-cr002 | `gc-heap-tsan det-cr002` | CR-002 | **expected to fail**: REACHED, `bitscan::loadWord` ← `nextSetBit` ← `lazySweep` vs `setMarkBitAtomic` ← `finalizePoppedCellW`, every run |
-| det-cr019 | `gc-heap-tsan det-cr019 {t1first,t2first}` | CR-019 | **expected to fail**: REACHED, `getObjectSizeFromHeader` ← `lazySweep` vs `promoteYoungLarge`, both orders, every run |
-| cr012 | `gc-heap-tsan cr012 {a,e}` | CR-012 | **expected to fail**: REACHED; (a) `acquireOldGenBlock` vs `cyclePressureFinishDue` on `old_gen_in_use_bytes_`; (e) `materializeVirginBlock` vs `validatePageWork` (two reports: `unassigned_blocks_`, `BlockTable`) |
-| promo, tail | `gc-heap-tsan promo <seed> 40 4 0 0 8 1` | CR-014 | prints tail-eligible and tail-hit counts (seeds 1-3: 35-39 tail hits in 40 rounds); fails under TSan (`computeFragmentationStats` vs `flushCursorW`) |
-| promo, exact | `gc-heap-tsan promo <seed> 40 {4,6,8} 0 1` | CR-016 | abort or corruption: `allocateFromEmptyRegularBlocks` flips a block a worker still allocates in (seen in 5 of 7 seed/worker runs; 4 aborted in `Allocator::resolve`) |
-| lbaba | `gc-heap-tsan lbaba [jitter_us [seed0]]` | CR-017, CR-037 | fails today |
+| ylos-sweep | `gc-heap-tsan ylos-sweep` | CR-019 | **clean since the fix (2026-10-01, relaxed atomic header word)**, and part of the default run (about 3 s): `ylos_sweep … PASS`, 0 TSan warnings; before it: TSan reported CR-019 in every run (below) |
+| det-cr014-live | `gc-heap-tsan det-cr014-live` | CR-014 | **clean since the fix (2026-09-30)**: REACHED (the tail path proven by `sweep_tail_in_promotion`), 0 warnings; before it: `flushCursorW` (atomic `live_bytes` add) vs `computeFragmentationStats` ← `onSweepComplete` ← the tail completion in `lazySweep`, every run |
+| det-cr001 | `gc-heap-tsan det-cr001 {rf,wf} {inloop,tail}` | CR-001 | **clean since the fix (2026-09-30, `atomic_ref`)**: REACHED, 0 warnings; before it: `finalizeBitmapCellW`'s `gc_phase_` read vs `lazySweep`'s completion write (in-loop or tail), every run |
+| det-cr002 | `gc-heap-tsan det-cr002` | CR-002 | **clean since the fix (2026-09-30: finalized under `promo_mu_`)**: REACHED, 0 warnings; before it: `bitscan::loadWord` ← `nextSetBit` ← `lazySweep` vs `setMarkBitAtomic` ← `finalizePoppedCellW`, every run |
+| det-cr019 | `gc-heap-tsan det-cr019 {t1first,t2first}` | CR-019 | **clean since the fix (2026-10-01: `loadHeaderRelaxed` / `storeHeaderRelaxed`)**: REACHED, 0 warnings, both orders; before it: `getObjectSizeFromHeader` ← `lazySweep` vs `promoteYoungLarge`, every run |
+| cr012 | `gc-heap-tsan cr012 {a,e}` | CR-012 | CR-012 is **Won't-fix** (2026-10-01, option F: a second live mutator aborts in `initThread` unless `allowMultipleMutators(true)`, which these arms set). (a) **clean** since `old_gen_in_use_bytes_` became a relaxed atomic (REACHED, 0 warnings; the shared value stays won't-fix); (e) `wontfix`: REACHED, `materializeVirginBlock` vs `validatePageWork` (two reports: `unassigned_blocks_`, `BlockTable`), accepted under the opt-in |
+| promo, tail | `gc-heap-tsan promo <seed> 40 4 0 0 8 1` | CR-014 | prints tail-eligible and tail-hit counts (seeds 1-3: 36 tail hits each on 2026-09-30); 0 TSan warnings since CR-014's fix (before: `computeFragmentationStats` vs `flushCursorW`) |
+| promo, exact | `gc-heap-tsan promo <seed> 40 {4,6,8} 0 1` | CR-016, CR-002, CR-028 | clean since register-fixes Phases 1-2 (2026-09-30): 0 "Invalid tag" aborts (CR-016's fix), and 0 TSan warnings at seeds 1-2 × {4, 8} workers (CR-002, CR-001, CR-028 fixed). Before: `allocateFromEmptyRegularBlocks` flipped a block a worker still allocated in (5 of 7 seed/worker runs; 4 aborted in `Allocator::resolve`) |
+| lbaba | `gc-heap-tsan lbaba [jitter_us [seed0]]` | CR-017, CR-037 | **PASS since the fixes (2026-09-30, register-fixes Phase 3: CR-037 kind check, CR-017 HEAP_074 zap)**: `lbaba 200 1` = 16 runs (ages 1 and 2 × B 1-4 × lengths 1600 / 4500, seeds 1-16, so seeds 1 and 7, the old IM4 failures, at age 1), `heap_driver lbaba PASS`, 0 TSan warnings, 14.4 min. Before: TV7 (CR-037) and IM4 / "parallel marker reached nursery object" (CR-017) |
 
 **Deterministic register arms** (`det-*`, `cr012`; plans/threaded-gc-register-repros-impl.md
 Phase C). Two plain threads drive two promotion workers (or two heaps) of the real allocator,
@@ -85,8 +85,9 @@ pending over their pages), then six parallel minors that promote young trees,
 so the workers sweep on demand while other workers age (`h->age++`) or promote
 (`age = 0`) the same Arrays. The summary line counts the young Arrays ahead of
 the sweep at each minor's start and those the sweep walked in that minor (the
-race's precondition). It runs only when the first argument is `ylos-sweep` and
-is **expected to fail** under TSan until CR-019 is fixed: every run with 4096-
+race's precondition). Since CR-019's fix (2026-10-01) it is clean and the default
+run ends with it (defaults: seed 1, 12 rounds, 4 workers, age 2, 1024-byte
+slices). Before the fix it failed under TSan: every run with 4096-
 or 1024-byte sweep slices (the default is 1024) reports the pair
 `getObjectSizeFromHeader` ← `lazySweep` (the gap sweep's
 `walkStep(block, getObjectSize(live_obj))`, and the validate-only V11 walk) ←

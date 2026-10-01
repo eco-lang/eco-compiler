@@ -552,6 +552,7 @@ int detCr014Live() {
     if (int rc = buildTail(a, og, arm, 127, F)) return rc;
     auto& ctx = og.promoCtx();
     og.beginParallelPromotion(ctx, 2);
+    const uint64_t tail0 = OA::sweepTailInPromotion(og);   // CR-014: both paths defer; the counter tells them apart
     std::atomic<int> step{0};
     void* p1[9] = {};
     void* pi = nullptr;
@@ -581,6 +582,7 @@ int detCr014Live() {
     for (int i = 0; i < 8; ++i) inU = inU && p1[i] && OA::blockOf(og, p1[i]) == F.U;
     const uint64_t bm = ctx.w[0].bm_allocs;
     const bool idle = OA::gcPhase(og) == GCPhase::Idle;
+    const bool tail = OA::sweepTailInPromotion(og) == tail0 + 1;
     const bool deferred = OA::sweepCompleteDeferred(og);
     const bool okI = pi && OA::blockOf(og, pi) == F.I;
     og.endParallelPromotion(ctx);
@@ -588,9 +590,10 @@ int detCr014Live() {
     if (!okI) return detNotReached(arm, "T1's class-16 cell is not I's");
     if (bm != 8) return detNotReached(arm, "T1's ninth call did not flush U's eight cells");
     if (!idle) return detNotReached(arm, "T2 did not complete the sweep");
-    if (deferred) return detNotReached(arm, "the completion was in-loop (deferred), not the tail path");
+    if (!tail) return detNotReached(arm, "the completion was not the tail path (sweep_tail_in_promotion)");
     std::printf("%s: REACHED (T2 completed the sweep on the tail path while T1's U cursor held 8 unflushed "
-                "cells; T1 flushed after it)\n", arm.c_str());
+                "cells; T1 flushed after it; the shrink %s)\n", arm.c_str(),
+                deferred ? "was deferred to the merge (CR-014 fixed)" : "ran on T2");
     return det::kClean;
 }
 
@@ -606,6 +609,7 @@ int detCr001(bool rf, bool inloop) {
     if (int rc = buildTail(a, og, arm, 127, F)) return rc;
     auto& ctx = og.promoCtx();
     og.beginParallelPromotion(ctx, 2);
+    const uint64_t tail0 = OA::sweepTailInPromotion(og);   // CR-014: both paths defer; the counter tells them apart
     std::atomic<int> step{0};
     void *p = nullptr, *q = nullptr, *p2 = nullptr;
     std::thread t1([&] {
@@ -632,13 +636,13 @@ int detCr001(bool rf, bool inloop) {
     t2.join();
     const bool okq = p && q && OA::blockOf(og, p) == F.U && OA::blockOf(og, q) == F.U;
     const bool idle = OA::gcPhase(og) == GCPhase::Idle;
+    const bool tail = OA::sweepTailInPromotion(og) == tail0 + 1;
     const bool deferred = OA::sweepCompleteDeferred(og);
     og.endParallelPromotion(ctx);
     if (!okq) return detNotReached(arm, "T1's cells are not U's");
     if (!idle) return detNotReached(arm, "T2 did not complete the sweep");
-    if (inloop != deferred)
-        return detNotReached(arm, inloop ? "the completion was not in-loop (deferred)"
-                                         : "the completion was in-loop, not the tail path");
+    if (inloop && (tail || !deferred)) return detNotReached(arm, "the completion was not in-loop (deferred)");
+    if (!inloop && !tail) return detNotReached(arm, "the completion was in-loop, not the tail path");
     std::printf("%s: REACHED (T2 completed the sweep %s; T1's fast-path finalize read gc_phase_ %s it)\n",
                 arm.c_str(), inloop ? "in the loop" : "on the tail path", rf ? "after" : "before");
     return det::kClean;
@@ -666,7 +670,7 @@ int detCr002() {
     std::atomic<int> step{0};
     void *r1 = nullptr, *r2 = nullptr;
     std::thread t1([&] {
-        r1 = og.allocatePromotion(ctx.w[0], 32, false);   // batch pop g1; finalize outside the lock
+        r1 = og.allocatePromotion(ctx.w[0], 32, false);   // batch pop g1 (pre-fix: finalized outside the lock)
         det::post(step, 1);
         det::waitFor(step, 2);
         if (r1) formatCell(r1, 32);
@@ -682,8 +686,10 @@ int detCr002() {
     og.endParallelPromotion(ctx);
     if (r1 != g1) return detNotReached(arm, "T1 did not take M's cell 1");
     if (r2 != F.Mstart + 3 * 32) return detNotReached(arm, "T2 did not sweep M's cell 3 on demand");
-    std::printf("%s: REACHED (T1 finalized M's cell 1 outside the lock; T2's sweep read bitmap word 0 "
-                "and took cell 3)\n", arm.c_str());
+    // CR-002 fixed (register-fixes 4.3): M is not fully swept, so T1 finalized
+    // g1 BEFORE releasing promo_mu_ (cellInUnsweptBlock); T2's sweep is ordered after it.
+    std::printf("%s: REACHED (T1 took M's cell 1 from the unswept block M (finalized under promo_mu_ since "
+                "CR-002's fix); T2's sweep read bitmap word 0 and took cell 3)\n", arm.c_str());
     return det::kClean;
 }
 

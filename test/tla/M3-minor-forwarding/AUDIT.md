@@ -380,3 +380,77 @@ M1 22/22 in 63 s, M2 33/33 in 57 s, M3 12/12 in 8 s, all as expected. M5 deep ro
 `ylos_stamp_k2` and `ylos_drop_k2`, one row at a time, 8 workers: 11/11 as expected in 1,173 s, with
 state counts identical to the entries of 2026-09-29. `tla-trace` (harnesses rebuilt on this tree):
 135/135 as expected in 140 s.
+
+## 2026-09-30 — register-fixes §3.3 + §3.4: the empty-block flip retires index entries (GC_MODEL_001)
+
+Pin fired: grep `P6.M9` (`large_body_index_`), new hash prefix **cc48c7eb8f67**.
+
+Change (plans/threaded-gc-register-fixes.md §3.3, CR-035): `allocateFromEmptyRegularBlocks` now
+erases the `large_body_index_` entries inside the block it flips (`retireIndexRange`: erase +
+`body_base = nullptr`, id not recycled), plus a validate-only read-only post-check. It runs where the
+flip always ran: on the owner (serial) or under `promo_mu_`, and since §3.4 (CR-016) never inside a
+parallel minor with more than one worker, so no promotion worker or minor-forwarding thread reads
+the map concurrently with these writes. M3's index-map race (CR-014's tail path) is unaffected.
+
+**Verdict: no model change needed.**
+
+## 2026-09-30 — register-fixes Phase 3 (§5.1-§5.3): CR-037, CR-017, CR-038/CR-039 fixed (GC_MODEL_001, one audit for the batch)
+
+Pin fired for M3: region `NR.evacuateR`, new hash prefix **1e4eb8b5439c**.
+
+Change (plans/threaded-gc-register-fixes.md §5.2 step 6, HEAP_074): a validate-only tripwire
+(`regionZappedTripwire`, `#if ECO_HEAP_VALIDATE`) at the top of the `Role::Hand` and `Role::Age`
+cases: a plain header-word load of the target and an abort when it is a `Tag_Free` filler (or the
+zap's 0xD8 poison). It reads a survivor extent object that no thread writes during the minor (the
+collector is joined, P1), adds no claim, publish, atomic or shared write, and does not change any
+role's outcome; in non-validate builds the code is byte-identical. M3's claim → BUSY → publish
+protocol (Eden / PrevBuilders) is untouched.
+
+**Verdict: no model change needed.**
+
+## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (GC_MODEL_001)
+
+Pins fired: region `OGS.promoteYoungLarge` (**ab64ef2a56ee**), region `NP.reachYoungLargeP` (**2b3de37fd8f0**), region `NR.reachYoungLargeR` (**183e2cd3fb44**); new census pin `AllocatorCommon.hpp`.
+
+Change (plans/threaded-gc-register-fixes.md §6.1, CR-019; HEAP_062/HEAP_067 amended): every
+access to a header word that another thread may touch during a legacy parallel minor is a relaxed
+atomic whole-word access through the new helpers `loadHeaderRelaxed` / `storeHeaderRelaxed`
+(`AllocatorCommon.hpp`, newly census-pinned for M3, M4). Writers: `reachYoungLargeP` (age++ under
+`ylos_mu_`), `promoteYoungLarge` (age = 0), region `reachYoungLargeR` (age = 1). Readers:
+`lazySweep`'s gap sweep (one load per live object, reused for the trace event), the header walk
+(one load reused for tag, sentinel and pin), the large-block branch's pin read, and the
+validate-only `validateV11` walk. The values written are unchanged (tag/size/pin kept); no lock,
+step order or memory order beyond "relaxed" is added, so no happens-before edge changes. TSan:
+`det-cr019` both orders and `ylos-sweep` are clean (were: a report every run).
+
+Footprint note (§6.1 step 5): M3 has no sweep, so the reader side is outside the model (MAPPING §4, A3). The `ylos_mu_` section stays one step (`Y_Lock`): its header access is now one relaxed whole-word load and, on the age branch, one relaxed store, both inside the lock as before, so `YlosOnce` and every invariant read the same states. MAPPING.md §4 and A3 now record CR-019 as fixed. **Verdict: no model change needed (footprint only); MAPPING.md updated.**
+
+
+## 2026-10-01 — register-fixes Phase 5: fork layer for detector N's mutex (GC_MODEL_001)
+
+Pins fired: census `NurserySpace.cpp` (**ac75856d10b4**).
+
+Change (plans/threaded-gc-register-fixes.md §7, Phase 5; HEAP_007 fork contract, HEAP_058, HEAP_065,
+HEAP_070 amended, HEAP_075 new): (1) `GCFork.{hpp,cpp}`: ONE `pthread_atfork` registration with fixed
+layers (gangs: registry -> each background gang's `m_` to set `fork_hold_` -> `stopAllForFork` -> each
+gang's `m_` held -> `GCMarkGang` `run_m_` -> its `m_`; allocator: `thread_mutex_`; census: the P1 census
+mutex and detector N's; pool: `GCHelperPool::m_`, drained and held); the three old registrations are
+gone. (2) No teardown holds `thread_mutex_` while it takes a gang lock (`cleanupThread`,
+`finishTenureForExit`, `reset`, `~Allocator`). (3) CR-003/015: `post`'s Idle->Posted CAS and the enqueue
+in one `m_` section; the pool prepare drains and keeps `m_` in one section; the allocator layer locks
+`thread_mutex_`, the child re-creates it and records `fork_child_` / `fork_owner_`. (4) CR-013/004:
+`GCBackgroundGang::launch` returns false (refuses) while `fork_hold_`; `launchBackground` then leaves
+`bg_ep_ = None` (`cm.episodes_refused`), `tenureLaunch` / `tenureConcLaunch` count `rs.fork_refusals`
+and the join's orphan path finishes the job. (5) CR-023: `stopAndJoin` waits for
+`generation_ != my_gen || finished_ >= members` and clears `running_` only for its own generation;
+`launch` notifies `cv_done_`. (6) CR-005: `closingFinish` accepts `bg_ep_ == None`. (7) CR-031:
+`~Allocator` (and `initThread`, `getCombinedStats`, `validatePageWork`) never touch a heap the forker
+does not own in a forked child; validate builds check `ThreadLocalHeap::owner_` in `minorGC` /
+`majorGC`. (8) CR-032: the census layer; `atexitReport` returns in a forked child. Trace-only: the
+probe `m6.tm.held` in `onGCPauseEnd` (under `thread_mutex_`), `fork.bghold`, `gang.refuse`, the step
+event's `refused` field and an M1 `stop` after a refused launch.
+
+The census lines added are `nurseryCensusForkPrepare/Parent/Child` (the survivor-write census mutex,
+held across fork by GCFork's census layer, re-created in the child). No claim, BUSY, publish or
+forwarding step changes; the census is a validate/census-build detector outside M3's protocol.
+**Verdict: no model change needed.** (The pin now also names M6, which models the fork layers.)

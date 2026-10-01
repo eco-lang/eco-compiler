@@ -200,6 +200,15 @@ PageWork::Reuse PageWork::onReuse(char* p, size_t n, bool in_pause) {
     return Reuse::AfterDiscard;
 }
 
+void PageWork::noteNoWait(NoWaitPick k, char* p, size_t n) {
+    PW_TRACE("nw", "k", static_cast<int>(k), "x", ::Elm::tlatrace::obj(p));
+    switch (k) {
+        case NoWaitPick::PendingReuse: counters_.nowait_pending_reuse_bytes += n; break;
+        case NoWaitPick::Fresh:        counters_.nowait_fresh_bytes += n; break;
+        case NoWaitPick::Fallback:     counters_.nowait_fallback_waits += 1; break;
+    }
+}
+
 size_t PageWork::onFreshBump(char* p, size_t n, char** commit_from) {
     PW_TRACE("fresh", "x", ::Elm::tlatrace::obj(p));
     char* end = p + n;

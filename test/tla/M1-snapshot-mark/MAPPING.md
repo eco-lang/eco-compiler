@@ -44,9 +44,9 @@ drift. `OGS` = `runtime/src/allocator/OldGenSpace.cpp`; `TLH` = `ThreadLocalHeap
 | `P_Sync` | `afterSnapshot` `OGS:4649` with `conc_mark = 1` | drain loop |
 | `D_Loop`, `A_Loop` | `closingEntry` / `assistEntry` members scanning (M2); `runMarkers` for a stopped episode or a 5b slice. `A_Loop` may stop early with grey entries left: an Assist leaves when it finds no work it can take (`runMarkerLoop`, `MarkWork.hpp:461-462`, "never idles: leave"), or scans nothing when it joins a stopped control (trace validation, AUDIT.md 2026-09-29) | one scan per step |
 | `D_Done` | the end of `closingFinish`: `bg_ep_ = None` | mutator-only |
-| `J_Join`, `J_Handoff`, `J_STW` | `TLH::majorGC` `:783`: tenure join (`:791`), `finishMarkCycleNow(Join)` (`:797`), then the STW mark (`OGS::startMark` `:2867`, marks nursery objects from roots only) and sweep | the STW part runs with everything stopped |
+| `J_Join`, `J_Handoff`, `J_STW` | `TLH::majorGC` `:783`: tenure join (`:791`), `finishMarkCycleNow(Join)` (`:797`), then the STW mark (`OGS::startMark` `:2867`, marks nursery objects from roots only) and sweep, then in region mode (CR-017, HEAP_074, 2026-09-30) `NurserySpace::zapDeadAfterMajor` (region `NR.zapDeadAfterMajor`): every survivor of a Young extent the mark did not reach (`nursery_visited_`) becomes a `Tag_Free` filler = `J_STW`'s `zap` (`YoungObjs \ Live`, age 1, not a YLOS: freed and scrubbed; mutant `no_cr017_fix`) | the STW part runs with everything stopped |
 | `K_Loop` | a background member (`bgEntry` `OGS:4404` → `runMarkerLoop` → `scanEntry` / `scanObject` `:3448` / `:3367`, which skips `Tag_Free` at `:3374`), or its termination (the done-CAS, with the reap's `Finished`) | one scan per step (§3) |
-| `F_Loop` | `GCBackgroundGang::stopAllForFork` (`GCHelperPool.cpp:650`) → `stopAndJoin`, plus the mutator's next reap to `None` (`OGS:4524`) | one store of `stop`, as M2 sees it; the reap is folded in (§3) |
+| `F_Loop` | `GCBackgroundGang::stopAllForFork` (`GCHelperPool.cpp:650`) → `stopAndJoin`, plus the mutator's next reap to `None` (`OGS:4524`); since register-fixes Phase 5 also a launch REFUSED under a fork's hold (`launchBackground` leaves `bg_ep_ = None`: an episode stopped at once) | one store of `stop`, as M2 sees it; the reap is folded in (§3) |
 
 Allocate-black sites: `initObjectHeaderWithSize` `OGS:487` (the cycle branch `:497`),
 `finalizeBitmapCell` `:802`, `finalizePoppedCellW` `:1069`, `finalizeBitmapCellW` `:1121`,
@@ -74,7 +74,7 @@ allocation's mark in `M_Choose`. Young large objects are allocated through the s
 | a freed **old-gen cell** reused by a different object at the same address (ABA audit, 2026-09-29) | a configuration with the old id 4 in `YlosIds` (`MC_quick_reuse`, `MC_quick_region_reuse*`): the mutator's `alloc` may then give 4 to a young large object, the one mutator allocation that lands in an old-gen cell | the code hands a freed cell out again through the mixed free lists at any time, during a cycle too: `allocateFromSizeClassBitmap` rungs 2 and 4 (`tryPopFromFreeList`, `tryAllocateBySplittingLarger`, `OGS:973-994`), `allocateFromBagPage` step 1 (`OGS:2581`); `prepareMark` does not clear the free lists at t0. With 4 outside `YlosIds` the model still reuses 4, as a nursery object (not faithful to addresses, harmless to `NoLostObject`). A promotion into a freed cell (a copy of a *different* object) is not expressible: a promotion keeps its id. The structures that remember an id across a free (`deferred`, `t0Ylos`, `grey`, `zombie`) are exactly the code's `deferred_frees_`, `mark_view_.ylos_t0`, the grey entries and the unzapped hand-over extent |
 | `bg_ep_` and the gang's `running()` | one variable `episode` | the fork hook's `stopAndJoin` and the next reap (`done == false` → `None`) are one `Forker` step. In between, the code's `bg_ep_` is still `Running` with no member running, and the code's assist scans nothing; the model's `Assist` may scan there or stop at once. Scanning over-approximates marking progress, and the closing drain empties the grey set either way |
 | 5b in-pause slices (`conc_mark = 0`) | not a separate mode | a slice is `Assist` with no background episode: every slices-mode behaviour is a concurrent-mode behaviour in which `Marker` never steps |
-| region mode (`nursery_regions = 1`, k = 1) | `RegionMode`: `P_Minor` keeps dead age-1 objects as `zombie`s for one minor; `P_T0` walks them | exactly the code's window: the Tenuring extent's dead objects are not zapped before t0 (only 07b's ageing extents are, `mergeJob` `NurseryTenure.cpp:816-825`), and `forEachYoung` skips only `Tag_Free`. Live hand-over objects are promoted in `P_Minor`, one minor early and black; a 7c copy is black too (`grantAllocate`). **The tenure job itself is assumed disjoint from the markers: M5's TenureDisjoint contract** (`HealYoungOnly`, `MarkerDisjoint`, `YoungWalkValid`) |
+| region mode (`nursery_regions = 1`, k = 1) | `RegionMode`: `P_Minor` keeps dead age-1 objects as `zombie`s for one minor; `P_T0` walks them | exactly the code's window: the Tenuring extent's dead objects are not zapped before t0 (only 07b's ageing extents are, `mergeJob` `NurseryTenure.cpp:816-825`), and `forEachYoung` skips only `Tag_Free`. Since CR-017's fix (HEAP_074) a STW major zaps the dead age-1 objects (`J_STW`), so a zombie's old child was never freed by a major: zombies are the objects dead at the hand-over minor, whose children the major after it cannot free before that minor's t0. Live hand-over objects are promoted in `P_Minor`, one minor early and black; a 7c copy is black too (`grantAllocate`). **The tenure job itself is assumed disjoint from the markers: M5's TenureDisjoint contract** (`HealYoungOnly`, `MarkerDisjoint`, `YoungWalkValid`) |
 | dead state | every free resets the freed id's fields, age, builder flag and mark; `mark` and `grey` are cleared outside a cycle | primer §4.2: nothing on a correct path reads them. `gen` is kept (see above) |
 
 ## 4. Footprint rows (A3)
@@ -108,7 +108,7 @@ allocation's mark in `M_Choose`. Young large objects are allocated through the s
 | `IM9` (at `H_Free`) | IM9, IM14 | `markStackEmpty` asserts in `handoffMarkCycle` (`OGS:4260`) |
 | `MarkerFootprint` | IM3 (+ the one-step-minor premise) | `greyObject`'s young abort, `OGS:3094` |
 | `MarkerNoYoungKid` | MODEL_M1_2 (`MarkerFootprint`'s second conjunct, named on its own, 2026-09-29) | the every-build aborts of a parallel marker that reaches or scans a young object: `greyObject<ParallelMark>` `OGS:3310-3313`, `scanObject<ParallelMark>` `OGS:3615-3617` (tree of 2026-09-29) |
-| `NoReleaseInCycle` | IM5 | the `!cycleActive()` asserts: `freeLargeBodyCell` `OGS:7316`, `releaseBlockToAllocator` `:5995`, `:6136`, `:6416`, `:6490` |
+| `NoReleaseInCycle` | IM5 | the `!cycleActive()` asserts: `freeLargeBodyCell` `OGS:7316`, `releaseBlockToAllocator` `:5995`, `:6136`, `:6416`, `:6490`; the validate re-check `checkT0BlocksUnchanged` / `t0BlocksChangedWhy` keys on (id, BlockTable generation, start, class, is_large) since 2026-09-30 (CR-036), so a release and same-id re-issue inside a cycle is caught too (the model's `NoReleaseInCycle` already forbids the release itself: no state change) |
 | `NoOldToYoung` | HEAP_005 | PM5 (`NurseryParallel.cpp:276-286`) |
 | `SnapshotClosure` | the parallel-gc.md §2.1 lemma | — |
 | `DeferredOK` | IM8 (model form) | — |
@@ -122,7 +122,8 @@ allocation's mark in `M_Choose`. Young large objects are allocated through the s
 - **BitFaithful** (M4): one bit per object is faithful to the code's bytes.
 
 M1 provides **SnapshotCycle**: `IM2` at `H_Free`, `NoReleaseInCycle` and `MarkerFootprint`. In
-region mode `MarkerFootprint` fails until CR-017 is fixed (`MC_quick_region.cfg`).
+region mode `MarkerFootprint` failed until CR-017 was fixed (2026-09-30, HEAP_074: `MC_quick_region.cfg` and
+`MC_quick_region_reuse.cfg` now pass every invariant; the pre-fix code is `mutants/no_cr017_fix{,_reuse}`).
 
 ## 7. Weak memory (A4)
 
@@ -179,7 +180,7 @@ Left out:
 - `episode`, the fork stop and `k`: they decide who scans and when the handoff comes. In the lemma,
   any scan and any handoff with an empty grey set are enabled at any time;
 - `SyncMark`: the whole mark inside the pause is a special schedule of `Scan`;
-- region mode: CR-017 breaks it;
+- region mode: CR-017 broke it (fixed by HEAP_074; the lemma has not been extended to region mode);
 - the mutants, except `P1Write` (the lemma's negative control, outside `Next`).
 
 The lemma's `Next` therefore allows more interleavings than the model: the mutator may act between
@@ -215,7 +216,7 @@ findings: AUDIT.md, 2026-09-29.
 | `assist` | `OGS::assistEpisode`, end `:4580` | `units` | `A_Done` | same |
 | `closing` | `OGS::closingFinish`, end, after `bg_ep_ = None` `:4655` | `units`, `work` | `D_Done` while marking (a join after the closing drains nothing: `D_Done` hidden) | same |
 | `handoff` | `TLH::completeMarkCycle`, after `handoffMarkCycle` `:1230` | `k`, `why` | `H_Free`; `schedule`: `k = T + 1` (the handoff minor's `k++`), else `k` | same |
-| `stop` | `GCBackgroundGang::stopAllForFork`, after `stopAndJoin` (`GHP:673`) | `gang` | the marking gang with `episode = "running"`: `F_Loop`; otherwise (another gang, or an episode that already finished) a no-op | same |
+| `stop` | `GCBackgroundGang::stopAllForFork`, after `stopAndJoin` (`GHP:673`); and (register-fixes Phase 5) right after a refused t0 launch (`afterSnapshot`) or after the `step` of a refused relaunch (whose `ep` is then logged `running`, field `refused`) | `gang` | the marking gang with `episode = "running"`: `F_Loop`; otherwise (another gang, or an episode that already finished) a no-op | same |
 | `grey` | `OGS::greyObject`, a newly set bit during a cycle `:3150` (key: cycle serial bound in `beginMarkCycle` `:4153`) | `obj`, `put` | — | check: a marked old object |
 | `scan` | `OGS::scanEntry`, during a cycle `:3466` | `obj`, `get` | — | background member: `K_Loop`; `mut` or a foreground member: `A_Loop` / `D_Loop`; the object must be grey |
 | probe `tail` → `marks` | `OGS::runPostMarkTail` entry `:3960` (a harness callback) | `where`, `marked` | — | `handoff`: at `H_Free`, the marked old objects = the model's; `stw`: at `J_STW`, = `Live ∩ CellObjs` |
@@ -323,4 +324,5 @@ AUDIT.md entry quoting the new hash prefix (`test/tla/README.md`, "The canary").
 | grep | `-` | `F.externalRoots` |
 | grep | `-` | `F.zapFiller` |
 | grep | `-` | `F.vnodeRegistry` |
+| region | `runtime/src/allocator/NurseryRegion.cpp` | `NR.zapDeadAfterMajor` |
 <!-- canary-pins end -->

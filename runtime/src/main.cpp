@@ -694,6 +694,12 @@ int main(int argc, char* argv[]) {
         config.max_heap_size = 2ULL * 1024 * 1024 * 1024;  // 2GB heap
         config.use_hybrid_dfs = use_hybrid_dfs;
         alloc.initialize(config);
+        // CR-012 (HEAP_007): more than one live mutator is unsupported; this
+        // benchmark driver is one of the two permitted opt-ins (test harnesses).
+        if (num_program_threads > 1) {
+            alloc.allowMultipleMutators(true);
+            std::cerr << "warning: >1 program thread is unsupported (CR-012); GC determinism is per process\n";
+        }
 
         std::cout << "Allocator initialized with " << num_program_threads << " thread(s) "
                   << "(major GC threshold: " << (major_gc_threshold * 100) << "% of "

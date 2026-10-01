@@ -411,3 +411,114 @@ Runs (2026-09-30, this tree): `run_traces.py` (every harness rebuilt): **135/135
 The drivers compile without ECO_TLA_TRACE, so every probe is absent from them; the counter is outside every reduced function's logic.
 
 **Verdict: no model change needed.**
+
+## 2026-09-30 — register-fixes §3.2: CR-018, `finalizePoppedCellW` (GC_MODEL_001)
+
+Pin fired: region `OGS.finalizePoppedCellW` (W3), new hash prefix **26356efabd55**.
+
+Change (plans/threaded-gc-register-fixes.md §3.2): the relaxed `live_bytes` `fetch_add` moved out of
+the black branch and now runs in every phase (one add per path); the `gc_phase_` read stays plain and
+the mark-bit `fetch_or` stays phase-gated. W3 reduces this function to its mark-byte accesses (cases
+a-c) and its `gc_phase_` read (case d, CR-001's race, still `race` until Phase 2); `live_bytes` is not
+in W3 (M4's `NoRaceLive` covers it). No W3 access changes.
+
+**Verdict: no model change needed.** (`w3d_CR001_gc_phase` still expects `race`.)
+
+## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (GC_MODEL_001, one audit for the batch)
+
+Pins fired naming W3 / W4: regions `OGS.finalizePoppedCellW` (**4d8b93453093**, W3),
+`OGS.finalizeBitmapCellW` (**296d0825c9c5**, W3), `OGS.lazySweep` (**b033f3f0c837**, W3), census
+`OldGenSpace.cpp` (**2afe7bc4cf4d**, W3 W4), census `OldGenSpace.hpp` (**493c238780a8**, W3 W4).
+
+**W3 updated** (the register fixes, same day):
+- case d (CR-001): `d_sweeper`'s write is a relaxed `std::atomic_ref<int>` store under the lock and
+  `d_reader`'s read a relaxed `atomic_ref` load, as the code's `completeSweep` store and the two
+  finalizers' loads. `w3d_CR001_gc_phase` now expects `pass`; new mutant row `W3_CR001_PLAIN_PHASE`
+  (`MUTANT_W3_CR001_PLAIN_PHASE`, the pre-fix plain accesses) expects `race:phase_idle`.
+- case c (CR-002): `c_finalizer` calls `allocateBlack` BEFORE `promo_mu.unlock()` (a cell of the
+  block under the sweep cursor is finalized in the lock hold that popped it). `w3c_CR002_gap_sweep`
+  expects `pass`; new mutant row `W3_CR002_UNLOCKED_FINALIZE` (`MUTANT_W3_CR002_UNLOCKED_FINALIZE`,
+  finalize after the unlock) expects `race:bits`.
+- Both variants of both cases compile (`g++ -std=c++20 -fsyntax-only`); `run_drivers.py --list`
+  parses the registry.
+- **GenMC was NOT run** (`genmc` is not installed in this environment; the eco-dev-genmc image has
+  it). Audited by reading: with the lock ordering the sweeper's plain `nextSetBit`/`clearBit` and
+  the finalizer's `fetch_or` (case c), and both `phase_idle` accesses atomic (case d), RC11 has no
+  race to report; the mutants restore exactly the shapes that GenMC flagged on 2026-09-28. Owed: a
+  `genmc-check` run of W3 (the two flipped rows and the two new mutants).
+
+**W4**: census only (the new `atomic_ref<GCPhase>` lines are not W4's publication pattern).
+**Verdict: W3 driver and registry updated (not run); W4 no change needed.**
+
+## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (GC_MODEL_001)
+
+Pins fired: W3: region `OGS.lazySweep`, new hash prefix **6066819cec59**.
+
+Change (plans/threaded-gc-register-fixes.md §6.1, CR-019; HEAP_062/HEAP_067 amended): every
+access to a header word that another thread may touch during a legacy parallel minor is a relaxed
+atomic whole-word access through the new helpers `loadHeaderRelaxed` / `storeHeaderRelaxed`
+(`AllocatorCommon.hpp`, newly census-pinned for M3, M4). Writers: `reachYoungLargeP` (age++ under
+`ylos_mu_`), `promoteYoungLarge` (age = 0), region `reachYoungLargeR` (age = 1). Readers:
+`lazySweep`'s gap sweep (one load per live object, reused for the trace event), the header walk
+(one load reused for tag, sentinel and pin), the large-block branch's pin read, and the
+validate-only `validateV11` walk. The values written are unchanged (tag/size/pin kept); no lock,
+step order or memory order beyond "relaxed" is added, so no happens-before edge changes. TSan:
+`det-cr019` both orders and `ylos-sweep` are clean (were: a report every run).
+
+W3 models the sweeper's bitmap-word reads/clears against the finalizer's `fetch_or` and the `gc_phase_` accesses; it has no header word. The new relaxed header load adds no ordering and touches no W3 location. **Verdict: W3 no change needed.**
+
+## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (GC_MODEL_001)
+
+Pins fired: `w_pool_done`: file `PageWork.cpp` (**3b5ca6feb509**); W4: regions `OGS.ensureBagPageAvailable` (**37f3ac00eb2f**), `OGS.allocateLargeBlock` (**e2c48a27f642**).
+
+Change (plans/threaded-gc-register-fixes.md §6.3, CR-007; HEAP_058/HEAP_059 amended): a promotion
+holder of a parallel promotion with n > 1 workers (`OldGenSpace::acquireWaitPolicy()` =
+`AcquireWait::AvoidUnderPromo`, passed at `ensureBagPageAvailable`, `allocateFromBagPage` and
+`allocateLargeBlock`) gets the no-wait policy in `Allocator::acquireOldGenBlock` (modes 1/2 with
+decommit on): (1) the first fitting **Pending** extent (`PageWork::isPending`, job-blind; `onReuse`
+cancels it, never waits), (2) else a fresh bump, (3) else -- the old-gen cap leaves no bump room --
+today's first fit (may wait; counted). The first-fit body was factored into a `takeFreeAt` lambda
+(no behaviour change for `Allowed`). New PageWork API: `isPending`, `decommitOn`, `noteNoWait` (the
+counters `nowait_pending_reuse_bytes`, `nowait_fresh_bytes`, `nowait_fallback_waits` and the M7 trace
+event `nw`), `noteNoWaitSkip` (`nowait_skipped_extents`). Validate builds: a no-wait Pending reuse
+must not raise `reuse_waits`, and `releaseBlockToAllocator` / `releaseUnassignedBlockToAllocator` abort
+while `acquireWaitPolicy() != Allowed`. No lock, atomic or memory order is added; every new
+PageWork call runs under `thread_mutex_` like the old ones.
+
+**w_pool_done**: the Done release / acquire pair, `post`'s CAS and `reap` are untouched; `noteNoWait` only bumps plain counters under `thread_mutex_` and emits a trace event. **W4**: the region-bounds publication pattern is unchanged; only the `acquireOldGenBlock` argument changed. GenMC is not installed here (as in Phases 1-2); audited by reading. **Verdict: no driver change needed.**
+
+
+## 2026-10-01 — register-fixes Phase 5: GCHelperPool fork changes (w_pool_done, w_running_chain) (GC_MODEL_001)
+
+Pins fired: files `GCHelperPool.hpp` (**376411c19869**), `GCHelperPool.cpp` (**22f4e3f2b546**).
+
+Change (plans/threaded-gc-register-fixes.md §7, Phase 5; HEAP_007 fork contract, HEAP_058, HEAP_065,
+HEAP_070 amended, HEAP_075 new): (1) `GCFork.{hpp,cpp}`: ONE `pthread_atfork` registration with fixed
+layers (gangs: registry -> each background gang's `m_` to set `fork_hold_` -> `stopAllForFork` -> each
+gang's `m_` held -> `GCMarkGang` `run_m_` -> its `m_`; allocator: `thread_mutex_`; census: the P1 census
+mutex and detector N's; pool: `GCHelperPool::m_`, drained and held); the three old registrations are
+gone. (2) No teardown holds `thread_mutex_` while it takes a gang lock (`cleanupThread`,
+`finishTenureForExit`, `reset`, `~Allocator`). (3) CR-003/015: `post`'s Idle->Posted CAS and the enqueue
+in one `m_` section; the pool prepare drains and keeps `m_` in one section; the allocator layer locks
+`thread_mutex_`, the child re-creates it and records `fork_child_` / `fork_owner_`. (4) CR-013/004:
+`GCBackgroundGang::launch` returns false (refuses) while `fork_hold_`; `launchBackground` then leaves
+`bg_ep_ = None` (`cm.episodes_refused`), `tenureLaunch` / `tenureConcLaunch` count `rs.fork_refusals`
+and the join's orphan path finishes the job. (5) CR-023: `stopAndJoin` waits for
+`generation_ != my_gen || finished_ >= members` and clears `running_` only for its own generation;
+`launch` notifies `cv_done_`. (6) CR-005: `closingFinish` accepts `bg_ep_ == None`. (7) CR-031:
+`~Allocator` (and `initThread`, `getCombinedStats`, `validatePageWork`) never touch a heap the forker
+does not own in a forked child; validate builds check `ThreadLocalHeap::owner_` in `minorGC` /
+`majorGC`. (8) CR-032: the census layer; `atexitReport` returns in a forked child. Trace-only: the
+probe `m6.tm.held` in `onGCPauseEnd` (under `thread_mutex_`), `fork.bghold`, `gang.refuse`, the step
+event's `refused` field and an M1 `stop` after a refused launch.
+
+**w_pool_done**: the Done store (release, under m_ in `workerLoop`) and the acquire loads (wait's fast
+path, `isDone`, `isIdle`) are unchanged; `post`'s Idle->Posted CAS (acq_rel) moved inside the existing
+`m_` section with the enqueue (Concurrent mode; Sync keeps it outside), which only adds ordering. The
+driver's post-then-wait shape is unchanged. **w_running_chain**: `running_` is still stored with
+release (launch; a stopAndJoin of its own generation) and read with acquire by `running()`; the new
+generation test in `stopAndJoin` (under `m_`) only removes a store (it no longer clears a relaunched
+episode's `running_`), and `launch`'s `cv_done_.notify_all()` is a wake-up, not a publication. The
+chain member -> m_ -> joiner -> running_ -> owner holds for the joiner of its own generation; a foreign
+stopper whose generation was relaunched publishes nothing. GenMC is not installed here (as in Phases
+1-4); audited by reading. **Verdict: no driver change needed.**

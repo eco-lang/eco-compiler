@@ -1,6 +1,8 @@
 runtime/src/allocator/OldGenSpace.hpp: bool test_assist_resets_bg_ctr_ = false;
 runtime/src/allocator/OldGenSpace.hpp: bool test_cursor_takes_t0_block_ = false;
 runtime/src/allocator/OldGenSpace.hpp: bool test_grant_t0_block_ = false;
+runtime/src/allocator/OldGenSpace.hpp: bool test_idle_uncounted_ = false;
+runtime/src/allocator/OldGenSpace.hpp: bool test_im5_ignore_gen_ = false;
 runtime/src/allocator/OldGenSpace.hpp: bool test_keep_worker_cursor_ = false;
 runtime/src/allocator/OldGenSpace.hpp: bool test_leave_private_on_exit_ = false;
 runtime/src/allocator/OldGenSpace.hpp: bool test_plain_allocate_black_ = false;
@@ -10,6 +12,8 @@ runtime/src/allocator/OldGenSpace.hpp: bool test_skip_allocate_black_ = false;
 runtime/src/allocator/OldGenSpace.hpp: bool test_skip_bg_merge_ = false;
 runtime/src/allocator/OldGenSpace.hpp: bool test_skip_merge_worker1_ = false;
 runtime/src/allocator/OldGenSpace.hpp: bool test_steal_without_ticket_ = false;
+runtime/src/allocator/OldGenSpace.hpp: static void setIdleUncounted(OldGenSpace& og, bool on) { og.test_idle_uncounted_ = on; }
+runtime/src/allocator/OldGenSpace.hpp: static void setIm5IgnoreGeneration(OldGenSpace& og, bool on) { og.test_im5_ignore_gen_ = on; }
 runtime/src/allocator/OldGenSpace.hpp: static void setKeepWorkerCursor(OldGenSpace& og, bool on) { og.test_keep_worker_cursor_ = on; }
 runtime/src/allocator/OldGenSpace.hpp: static void setSkipAllocateBlack(OldGenSpace& og, bool on) { og.test_skip_allocate_black_ = on; }
 runtime/src/allocator/OldGenSpace.hpp: std::atomic<bool> test_bg_hold_{false};

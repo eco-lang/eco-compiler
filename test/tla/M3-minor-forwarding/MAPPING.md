@@ -82,7 +82,7 @@ close (`MW:242-266` at `NP:765-779` / `NR:886-897`), the merge and deferred larg
 | chunk entries (arrays over 1,024 elements) | not modelled | a chunk is an entry over a disjoint slot range of one object; ownership is per range (plan §11 Q1) |
 | promotion inputs | `Promotes(v) == Mode = "legacy" /\ Age[v] >= PromoAge /\ v \notin Builders` | `shouldPromote` reads the saved header, which is immutable. The region minor never promotes (`copyClaimedR`, TV9 at `NR:381`) |
 | the PM5 premise | built into the heap's ages | a promoted parent's children are at least as old (generational ageing, HEAP_005) |
-| `ylos_mu_` section | one step (`Y_Lock`), then `Y_Push` | A1: one critical section is one step. Sound while nothing outside `ylos_mu_` writes the YLOS index or header during the drain: true in region mode; in legacy mode see §4 (CR-014, CR-019) |
+| `ylos_mu_` section | one step (`Y_Lock`), then `Y_Push` | A1: one critical section is one step. Sound while nothing outside `ylos_mu_` writes the YLOS index or header during the drain: true in region mode; in legacy mode see §4 (CR-014, CR-019; both fixed) |
 | `resolveRetire` | the constant map `RetireFwd` | `ThreadLocalHeap::minorGC` joins and merges the tenure job before the region minor (`ThreadLocalHeap.cpp:722-733`), and `minorGCRegion` checks `Merged` (TV1, `NR:716-718`) |
 | addresses are never reused inside the pause (ids are never recycled) | ids are fixed; `C_Alloc` never returns an id in use or `YlosIds` | ABA audit, 2026-09-29 (AUDIT.md): only the mutator registers a body or YLOS in `large_body_index_` (`registerLargeBody` `OGS:7526`, reached only from `allocateYoungLarge` / `allocateLargeBody`), and no major runs inside a minor pause (the nursery never calls `majorGC`; a failed promotion aborts, `NP:263-267`). During the drain the index only loses entries (CR-014's release). A cell a sweep slice frees for a promotion was dead at the last mark, so its index entry was already erased (`retireDeadLargeBodies` `OGS:1793`, before any reuse), and no slot the drain reads names it. So `youngLargeMeta(p)` in `Y_Lock` names the object the slot names |
 | Hand slots | recorded as `<<parent, index>>` | the H / S split (`NR:470-471`) is a per-entry colour, owner-only; recording completeness is M5's |
@@ -118,8 +118,13 @@ see them, since it has no sweep):
   (`OGS:5502`) → `releaseBlockToAllocator`, which iterates and erases `large_body_index_`
   (`OGS:6056-6073`) under `promo_mu_`. Every other `releaseBlockToAllocator` route also goes
   through `maybeShrinkCapacity` (`OGS:5873`, `:5890` via `releaseUnassignedBlockToAllocator`).
-- CR-019: the gap sweep's `getObjectSize(live_obj)` (`OGS:5361`) reads the header of a marked
-  young YLOS while `reachYoungLargeP` writes its age bits (`NP:378`, `OGS:7125`).
+- CR-019 (**fixed 2026-10-01**, register-fixes §6.1): the gap sweep read the header of a marked
+  young YLOS while `reachYoungLargeP` wrote its age bits (`h->age++`, `promoteYoungLarge`'s
+  `age = 0`). Both sides now use one relaxed atomic whole-word access (`loadHeaderRelaxed` /
+  `storeHeaderRelaxed`, `AllocatorCommon.hpp`; also region `reachYoungLargeR`'s `age = 1` and the
+  validate-only V11 walk). No ordering is needed: the writer keeps tag/size/pin and is the word's
+  only writer within the minor (`YlosOnce`). A footprint change only: the `ylos_mu_` section stays
+  one step (`Y_Lock`), and M3 still has no sweep.
 - Not writers during the drain: `lazySweep`'s header-walk erases (`OGS:5311`, `:5404`) run only
   without bitmap allocation, and the parallel minor requires it (`resolveMinorThreads`,
   `OGS:2948`); `retireDeadLargeBodies` / `classifyBlocksAfterMark` run at the mark handoff;
@@ -170,7 +175,7 @@ unit test CR-011 asks for is the guard.
 |---|---|
 | A1 | §2: each label is one atomic operation on shared memory or one owner-only change. The claim compares the observed word. The copy is allocation, body, header, publish. The `ylos_mu_` section is one step. Each cell of a spine run is its own load, claim, copy and link |
 | A2 | a header is one 64-bit word changed only by the CAS and the release store (colour lives inside the forward word). Slots are whole words, owner-only. The body `memcpy` is not atomic and needs no finer model: its source is immutable and its destination private until published and pushed |
-| A3 | §4. The legacy P6.M9 writers outside `ylos_mu_` (CR-014, CR-019) are outside M3's scope; recorded for the register |
+| A3 | §4. The legacy P6.M9 writers outside `ylos_mu_` (CR-014, CR-019) are outside M3's scope; recorded for the register. Both are fixed (CR-014 2026-09-30: the shrink runs after the join; CR-019 2026-10-01: relaxed atomic whole-word header access) |
 | A4 | §7: W5 (publish/load) and W1 (deque transfer) PASS under GenMC RC11 (2026-09-28). LaunchJoin from M6 |
 | A5 | `TraceMinorForwarding.tla` over `gc-minor-trace tiny ...` (`test/gc-helper-tsan/minor_harness.cpp`, trace build; `traces.txt`): the real `MinorWork.hpp` claim / publish / wait and `runMarkerLoop` on `GCMarkGang`, through the harness's replica of `evacuateP` / `spineRunP` / `copyClaimed` / `reachYoungLargeP`. Events and hooks in §11. Not traced: the production `NurseryParallel.cpp` / `NurseryRegion.cpp` functions (the canary covers drift between them and the replica), region mode, chunk entries |
 | A6 | every invariant has a mutant that TLC rejects with its name (§9); the deadlock check and `Termination` have `never_publish`. The region-only conjuncts of `AtJoin` (Hand recorded, Retire resolved) have no M3 mutant: they are sequential logic, and M5's recording mutants cover them |
@@ -300,6 +305,7 @@ AUDIT.md entry quoting the new hash prefix (`test/tla/README.md`, "The canary").
 | region | `runtime/src/allocator/NurseryRegion.cpp` | `NR.spineRunR` |
 | region | `runtime/src/allocator/NurseryRegion.cpp` | `NR.scanEntryR` |
 | region | `runtime/src/allocator/NurseryRegion.cpp` | `NR.minorGCRegion` |
+| census | `runtime/src/allocator/AllocatorCommon.hpp` | `-` |
 | census | `runtime/src/allocator/MinorWork.hpp` | `-` |
 | census | `runtime/src/allocator/NurseryParallel.cpp` | `-` |
 | census | `runtime/src/allocator/NurseryRegion.cpp` | `-` |

@@ -1021,8 +1021,10 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite concurrencyRegisterTests("ConcurrencyRegister");
     concurrencyRegisterTests.add(testForwardWordMatchesBitfields);
     concurrencyRegisterTests.add(testCR018EmptyBlockFlipKeepsLiveCells);
+    concurrencyRegisterTests.add(testCR018Control);
     concurrencyRegisterTests.add(testCR017RegionT0WalkSkipsFreedCellK1);
     concurrencyRegisterTests.add(testCR017RegionT0WalkSkipsFreedCellK2);
+    concurrencyRegisterTests.add(testHeap074Tripwire);
     concurrencyRegisterTests.add(testCR025GangMemberStallInPause);
     concurrencyRegisterTests.add(testCR029BagRungSizeClassedBitmap);
     concurrencyRegisterTests.add(testCR029BagRungSizeClassedLegacy);
@@ -1032,6 +1034,8 @@ int main(int argc, char* argv[]) {
     concurrencyRegisterTests.add(testCR014TailReissueDoubleAlloc);
     concurrencyRegisterTests.add(testCR001Recount);
     concurrencyRegisterTests.add(testCR001Release);
+    concurrencyRegisterTests.add(testCR001RecountTail);
+    concurrencyRegisterTests.add(testCR001ReleaseTail);
     concurrencyRegisterTests.add(testCR016FlipChunk);
     concurrencyRegisterTests.add(testCR016FlipStash);
     concurrencyRegisterTests.add(testCR028V11ParsesPoppedCell);
@@ -1045,20 +1049,30 @@ int main(int argc, char* argv[]) {
     concurrencyRegisterTests.add(testCR017R2MarkOnFreeCell);
     concurrencyRegisterTests.add(testCR017R2Control);
     concurrencyRegisterTests.add(testCR007PromoMuHelperWait);
+    concurrencyRegisterTests.add(testCR007CapFallback);
     concurrencyRegisterTests.add(testCR023ForeignStopRelaunch);
     concurrencyRegisterTests.add(testCR012aFinishTrigger);
     concurrencyRegisterTests.add(testCR012bFreeList);
     concurrencyRegisterTests.add(testCR012cDecommitClock);
     concurrencyRegisterTests.add(testCR012dPopulateWindow);
+    concurrencyRegisterTests.add(testCR012Forbid);
+    concurrencyRegisterTests.add(testCR012OptIn);
+    concurrencyRegisterTests.add(testCR012Sequential);
+    concurrencyRegisterTests.add(testCR012dSequential);
     concurrencyRegisterTests.add(testCR033FreshPageTailParses);
     concurrencyRegisterTests.add(testCR033Control);
     concurrencyRegisterTests.add(testCR033LegacySweepS1);
     concurrencyRegisterTests.add(testCR033S1Control);
     concurrencyRegisterTests.add(testCR035StaleIndexAtFlip);
     concurrencyRegisterTests.add(testCR035LostObject);
+    concurrencyRegisterTests.add(testCR035PreconditionGone);
     concurrencyRegisterTests.add(testCR036ReissueWitness);
+    concurrencyRegisterTests.add(testCR036Im5SeesReissue);
+    concurrencyRegisterTests.add(testCR036Im5Control);
     concurrencyRegisterTests.add(testCR038DeadYlosSlotIntoRetired);
     concurrencyRegisterTests.add(testCR038Control);
+    concurrencyRegisterTests.add(testCR039DeadYlosGreysFreedYlos);
+    concurrencyRegisterTests.add(testCR039Control);
 
     // Kernel extern-"C" ABI tests (encoder/decoder/string ABI).
     Testing::TestSuite kernelExportsTests("KernelExports");

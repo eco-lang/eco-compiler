@@ -18,6 +18,7 @@
 // Every operation mirrors one of M6a's M_Choose branches: post an Idle job, or
 // wait for a non-Idle one and reap it (resetForReuse), under the lock. The
 // header carries the constants TracePool.tla needs.
+#include "GCFork.hpp"
 #include "GCHelperPool.hpp"
 #include "TlaTrace.hpp"
 
@@ -30,6 +31,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <new>
 #include <random>
 #include <string>
 #include <thread>
@@ -71,6 +73,13 @@ void jobBody(HelperJob*) {
 
 std::mutex g_tm;    // stands for Allocator::thread_mutex_
 
+// ... and, like the real one, GCFork's allocator layer holds it across fork()
+// (HEAP_075: before the pool's prepare; M6a F_Tm), the child re-creates it.
+void tmForkPrepare() { g_tm.lock(); }
+void tmForkParent() { g_tm.unlock(); }
+void tmForkChild() { new (&g_tm) std::mutex(); }
+const ForkHooks kTmHooks{&tmForkPrepare, &tmForkParent, &tmForkChild};
+
 // Waits (without logging) until no job is Posted or Running: the workers are
 // then parked, and the log can be written.
 void quiesce() {
@@ -103,6 +112,7 @@ int main(int argc, char** argv) {
     const bool mutfork = mode == "mut-parent" || mode == "mut-child";
     for (int i = 0; i < g_njobs; ++i) g_jobs[i].run = &jobBody;
 
+    registerForkLayer(kForkAllocator, kTmHooks);
     GCHelperPool& pool = GCHelperPool::instance();
     pool.configure(HelperMode::Concurrent, workers, -1, 0);
     std::mt19937_64 rng(seed);

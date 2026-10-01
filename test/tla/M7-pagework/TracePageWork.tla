@@ -20,6 +20,11 @@
 (*                 slot), which must be the model's pw / postedIn          *)
 (*   reused x r    onReuse's return: M_Touch (the heap owns x)             *)
 (*   fresh x       onFreshBump: M_Choose (fresh bump)                      *)
+(*   nw k x        CR-007: the next acquire is a no-wait one (a promotion  *)
+(*                 holder, n > 1) and picked k: 1 a Pending extent, 2 a    *)
+(*                 fresh bump, 3 the cap fallback; recorded, then the next *)
+(*                 acq / fresh must be M_Choose's no-wait branch with that *)
+(*                 pick (an acq without nw is the first-fit branch)        *)
 (*   reaped mask   reapDone's end: in takeSlot, TS_ReapDone reaping        *)
 (*                 exactly mask; in syncPoint, recorded for the sync step  *)
 (*   age x         syncPoint's aging of x (x must be Pending): recorded    *)
@@ -46,7 +51,8 @@ EXTENDS PageWork, TraceInOrder
 
 VARIABLES reapAcc,        \* the sync point's reapDone mask, until its sync step
           ageAcc,         \* the extents the sync point aged, until its sync step
-          jobSeq          \* [Slots -> the post sequence number of its job; 0: none yet]
+          jobSeq,         \* [Slots -> the post sequence number of its job; 0: none yet]
+          nwNext          \* CR-007: the pick a logged "nw" announced (0: none)
 
 \* ---- constants from the log ------------------------------------------------
 TP_Extents == 1..TraceHdr.N
@@ -66,7 +72,8 @@ SlotOfSeq(q) == CHOOSE s \in Slots : jobSeq[s] = q
 ReapsExactly(R) == /\ R \subseteq {s \in Slots : sstate[s] = "Done"}
                    /\ sstate' = [s \in Slots |-> IF s \in R THEN "Idle" ELSE sstate[s]]
 Invariants == HEAP_059 /\ HEAP_060 /\ V1 /\ NoOwnedPosted /\ TrackedInFree /\ DetChoice /\ PostIdle
-Aux == <<reapAcc, ageAcc, jobSeq>>
+              /\ NoWaitUnlessCap /\ PendGhost
+Aux == <<reapAcc, ageAcc, jobSeq, nwNext>>
 IsWorker(e) == e.t \in Workers
 
 \* ---- the model's free choices, narrowed to the value the log dictates --------
@@ -93,31 +100,43 @@ Matched(e) ==
             ext' = e.x /\ M_Choose /\ pc'["mut"] = "M_RelWait" /\ UNCHANGED Aux
        [] e.ev = "pend" ->
             M_RelPend /\ ext = e.x /\ UNCHANGED Aux
+       [] e.ev = "nw" ->
+            /\ Mut = "M_Choose" /\ nwNext = 0 /\ e.k \in {1, 2, 3}
+            /\ nwNext' = e.k
+            /\ UNCHANGED <<vars, reapAcc, ageAcc, jobSeq>>
        [] e.ev = "acq" ->
             /\ pw[e.x] = Tracked(e.st)
             /\ e.st = 2 => postedIn[e.x] = Slot(e)
             /\ ext' = e.x /\ M_Choose /\ pc'["mut"] = "M_Reuse"
-            /\ UNCHANGED Aux
+            /\ IF nwNext = 0 THEN ~nwAcq'                      \* first fit (AcquireWait::Allowed)
+               ELSE /\ nwNext \in {1, 3} /\ nwAcq'          \* the no-wait branch, this pick
+                    /\ (nwFallback' <=> nwNext = 3)
+            /\ nwNext' = 0
+            /\ UNCHANGED <<reapAcc, ageAcc, jobSeq>>
        [] e.ev = "reused" ->
             M_Touch /\ ext = e.x /\ UNCHANGED Aux
        [] e.ev = "fresh" ->
-            M_Choose /\ owner[e.x] = "fresh" /\ owner'[e.x] = "heap" /\ UNCHANGED Aux
+            /\ M_Choose /\ owner[e.x] = "fresh" /\ owner'[e.x] = "heap"
+            /\ nwNext \in {0, 2}
+            /\ nwNext = 2 => \A i \in 1..Len(freeList) : pw[freeList[i]] # "Pending"   \* (2) only then
+            /\ nwNext' = 0
+            /\ UNCHANGED <<reapAcc, ageAcc, jobSeq>>
        [] e.ev = "reaped" /\ Mut = "M_Choose" ->          \* the sync point's reapDone
             /\ Mask(e.mask) \subseteq {s \in Slots : sstate[s] = "Done"}
             /\ reapAcc' = Mask(e.mask)
-            /\ UNCHANGED <<vars, ageAcc, jobSeq>>
+            /\ UNCHANGED <<vars, ageAcc, jobSeq, nwNext>>
        [] e.ev = "reaped" /\ Mut # "M_Choose" ->          \* takeSlot's reapDone
             ReapsExactly(Mask(e.mask)) /\ TS_ReapDone("mut") /\ UNCHANGED Aux
        [] e.ev = "age" ->
             /\ Mut = "M_Choose" /\ pw[e.x] = "Pending" /\ e.x \notin ageAcc
             /\ ageAcc' = ageAcc \cup {e.x}
-            /\ UNCHANGED <<vars, reapAcc, jobSeq>>
+            /\ UNCHANGED <<vars, reapAcc, jobSeq, nwNext>>
        [] e.ev = "sync" ->
             /\ Cardinality(ageAcc) = e.size
             /\ batch' = ageAcc
             /\ ReapsExactly(reapAcc)
             /\ M_Choose /\ pc'["mut"] \in {"M_Take", "M_Window"}
-            /\ reapAcc' = {} /\ ageAcc' = {} /\ UNCHANGED jobSeq
+            /\ reapAcc' = {} /\ ageAcc' = {} /\ UNCHANGED <<jobSeq, nwNext>>
        [] e.ev = "window" ->
             win' = e.lo..(e.hi - 1) /\ M_Window /\ UNCHANGED Aux
        [] e.ev = "await" ->
@@ -126,7 +145,7 @@ Matched(e) ==
             /\ takenSlot = Slot(e)
             /\ IF e.kind = 1 THEN M_Post ELSE e.kind = 2 /\ M_PostP
             /\ jobSeq' = [jobSeq EXCEPT ![Slot(e)] = e.seq]
-            /\ UNCHANGED <<reapAcc, ageAcc>>
+            /\ UNCHANGED <<reapAcc, ageAcc, nwNext>>
        [] e.ev = "start" ->
             /\ IsWorker(e) /\ HasSeq(e.seq)
             /\ W_Take(e.t) /\ cur'[e.t] = SlotOfSeq(e.seq)
@@ -155,6 +174,7 @@ Hidden ==
     \/ M_Choose /\ pc'["mut"] = "Done"                   \* the loop's exit
 
 TraceInit == Init /\ TLInit /\ reapAcc = {} /\ ageAcc = {} /\ jobSeq = [s \in Slots |-> 0]
+             /\ nwNext = 0
 TraceNext == \/ TLMatch(Matched)
-             \/ Hidden /\ UNCHANGED <<tl, reapAcc, ageAcc, jobSeq>>
+             \/ Hidden /\ UNCHANGED <<tl, reapAcc, ageAcc, jobSeq, nwNext>>
 =============================================================================

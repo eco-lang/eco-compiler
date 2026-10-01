@@ -22,6 +22,7 @@ runtime/src/allocator/NurseryTenure.cpp: healed = st.heal.size();
 runtime/src/allocator/NurseryTenure.cpp: if (J.state == TenureJob::State::Done) mergeJob(oldgen, /*heal=*/false, nullptr);
 runtime/src/allocator/NurseryTenure.cpp: if (d == nullptr) tenureFatal("TV1: resolve found no forwarding in the parallel heal", c2);
 runtime/src/allocator/NurseryTenure.cpp: if (heal && !st.zap.empty()) {
+runtime/src/allocator/NurseryTenure.cpp: if (heal && !test_skip_zap_ && !st.age_ylos.empty()) {
 runtime/src/allocator/NurseryTenure.cpp: if (heal && heal_n > 1 && st.heal.size() > config_->heal_parallel_min && !test_heal_skip_one_) {
 runtime/src/allocator/NurseryTenure.cpp: if (heal) {
 runtime/src/allocator/NurseryTenure.cpp: if (heal) {

@@ -423,6 +423,7 @@ add_executable(ecor EXCLUDE_FROM_ALL
         runtime/src/allocator/OldGenTenure.cpp
         runtime/src/allocator/Allocator.cpp
         runtime/src/allocator/GCHelperPool.cpp
+        runtime/src/allocator/GCFork.cpp
         runtime/src/allocator/PageWork.cpp
         runtime/src/allocator/P1Census.cpp
         ${ECO_ALLOCATOR_PLATFORM_SRCS}

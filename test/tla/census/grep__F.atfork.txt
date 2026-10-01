@@ -1,3 +1,1 @@
-runtime/src/allocator/GCHelperPool.cpp: pthread_atfork(&GCBackgroundGang::atforkPrepare, &GCBackgroundGang::atforkParent,
-runtime/src/allocator/GCHelperPool.cpp: pthread_atfork(&GCHelperPool::atforkPrepare, &GCHelperPool::atforkParent,
-runtime/src/allocator/GCHelperPool.cpp: pthread_atfork(&GCMarkGang::atforkPrepare, &GCMarkGang::atforkParent,
+runtime/src/allocator/GCFork.cpp: std::call_once(once, [] { pthread_atfork(&prep, &parent, &child); });

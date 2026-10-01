@@ -10,21 +10,26 @@
 (* "eco-gc<i>" (Worker), and in a child's log the workers the child        *)
 (* started (CWorker: the ones whose first event follows pool.child).       *)
 (* Events (GCHelperPool.cpp's M6 hooks) and the model step each one is:    *)
-(*   pool.cas job        post's CAS Idle -> Posted, outside m_: M_PostCas   *)
-(*   pool.enq job out    post's m_ section: M_PostQ (outstanding' = out)   *)
+(*   pool.cas job        post's CAS Idle -> Posted, under m_: M_PostCas     *)
+(*                       (since register-fixes 7.2 the CAS, the start and  *)
+(*                       the enqueue are one m_ section: one step)         *)
+(*   pool.enq job out    the same section's enqueue: a check at M_PostDone *)
+(*                       (outstanding = out)                               *)
 (*   pool.take job       workerLoop's dequeue (Running): W_Take / C_Take   *)
 (*   pool.done job out   workerLoop's Done under m_: W_Done / C_Done       *)
 (*   pool.wfast job st   wait's load outside m_: WR_Load (state st)        *)
 (*   pool.wchk job st    wait's predicate under m_: WR_Lock (state st)     *)
 (*   pool.reset job      resetForReuse: WR_Reap                            *)
-(*   pool.drained        prepare's drain: F_Drain                          *)
-(*   pool.plock          prepare's m_.lock(): F_Lock                       *)
+(*   pool.drained        prepare's m_.lock() and drain, one section:       *)
+(*                       F_Drain (register-fixes 7.2: m_ stays held)       *)
+(*   pool.plock          the same section, logged after the drain: a check *)
 (*   pool.parent         atforkParent: F_Fork, parent branch               *)
 (*   pool.child          atforkChild (in the child): F_Fork, child branch  *)
 (* Hidden: the Mutator's control steps (M_Loop, M_Choose, M_PostDone,      *)
 (* M_Wait, M_WaitDone, M_Next), the Host's (H_Fork, H_Child, H_End), the   *)
 (* condition wait's block and wake (WR_Block, WR_Blocked), the fork's      *)
-(* call and return (F_Tm, F_TmLast, F_Ret: no FIX), the workers' W_Loop,   *)
+(* call and return (F_Tm: the harness's thread_mutex_ stand-in, locked by *)
+(* its GCFork allocator layer; F_TmLast, F_Ret), the workers' W_Loop,      *)
 (* W_Run, W_Notify, C_Loop, C_Notify, and a spurious wake-up (below).      *)
 (***************************************************************************)
 EXTENDS HelperPool, TraceAnyOrder
@@ -53,7 +58,8 @@ Matched(u, e) ==
     CASE e.ev = "pool.cas" ->
             u = "mut" /\ j = J(e.job) /\ M_PostCas
       [] e.ev = "pool.enq" ->
-            u = "mut" /\ j = J(e.job) /\ M_PostQ /\ outstanding' = e.out
+            u = "mut" /\ j = J(e.job) /\ pc["mut"] = "M_PostDone" /\ outstanding = e.out
+            /\ UNCHANGED vars
       [] e.ev = "pool.take" ->
             IF u \in PWorkers THEN W_Take(u) /\ cur'[u] = J(e.job)
             ELSE u \in CWorkers /\ C_Take(u) /\ ccur'[u] = J(e.job)
@@ -68,7 +74,7 @@ Matched(u, e) ==
       [] e.ev = "pool.reset" ->
             wj[u] = J(e.job) /\ WR_Reap(u)
       [] e.ev = "pool.drained" -> F_Drain(u)
-      [] e.ev = "pool.plock" -> F_Lock(u)
+      [] e.ev = "pool.plock" -> pc[u] = "F_TmLast" /\ m = u /\ UNCHANGED vars
       [] e.ev = "pool.parent" -> F_Fork(u) /\ world' = "parent"
       [] e.ev = "pool.child" -> F_Fork(u) /\ world' = "child"
       [] OTHER -> FALSE                       \* an event this spec does not know

@@ -6,16 +6,19 @@
 #if P1_CENSUS_COMPILED
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <new>
 #include <unordered_map>
 #include <utility>
 
 #include <dlfcn.h>
 
 #include "Allocator.hpp"
+#include "GCFork.hpp"     // CR-032: the census layer of the one fork registration (HEAP_075)
 #include "GCStats.hpp"
 #include "Heap.hpp"
 #include "OldGenSpace.hpp"
@@ -81,7 +84,33 @@ struct Census {
 
     std::unordered_map<uintptr_t, uint32_t> eval_id;      // EvaluatorDesc* -> id
     std::vector<uintptr_t> eval_fn;                       // id -> generic fn
+    // CR-032 (§7.2 step 8): set by the census layer's child handler. The tables name
+    // objects of heaps whose mutators do not exist in a forked child: never verified there.
+    bool forked_child = false;
 };
+
+// CR-032 (plans/threaded-gc-register-fixes.md §7.2 step 8, HEAP_075): GCFork's census
+// layer (kForkCensus), a leaf after thread_mutex_. The census (and detector N's
+// mutex, its sibling) is held across fork() so the child's copy of the tables is
+// consistent and the mutexes are free there. The hooks read the census through this
+// pointer (set after construction), never through census()'s static guard.
+std::atomic<Census*> g_census_for_fork{nullptr};
+void censusForkPrepare() {
+    if (Census* c = g_census_for_fork.load(std::memory_order_acquire)) c->mu.lock();
+    nurseryCensusForkPrepare();
+}
+void censusForkParent() {
+    nurseryCensusForkParent();
+    if (Census* c = g_census_for_fork.load(std::memory_order_acquire)) c->mu.unlock();
+}
+void censusForkChild() {
+    nurseryCensusForkChild();
+    if (Census* c = g_census_for_fork.load(std::memory_order_acquire)) {
+        new (&c->mu) std::mutex();
+        c->forked_child = true;
+    }
+}
+const gc::ForkHooks kCensusHooks{&censusForkPrepare, &censusForkParent, &censusForkChild};
 
 Census& census() {
     // Leaked on purpose: must outlive every heap and still exist at atexit.
@@ -118,6 +147,8 @@ Census& census() {
             }
             c->every = static_cast<uint32_t>(v);
         }
+        g_census_for_fork.store(c, std::memory_order_release);
+        gc::registerForkLayer(gc::kForkCensus, kCensusHooks);
         return c;
     }();
     return *g;
@@ -262,6 +293,7 @@ void printTablesLocked(Census& g, FILE* f) {
 
 void atexitReport() {
     Census& g = census();
+    if (g.forked_child) return;   // CR-032: the tables name another process's heaps
     {
         std::lock_guard<std::mutex> lk(g.mu);
         for (auto& kv : g.tables) verifyTableLocked(g, kv.second, "exit");

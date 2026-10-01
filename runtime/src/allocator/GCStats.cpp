@@ -2872,10 +2872,11 @@ void GCStats::printRegionBlock() const {
     std::cout << buf << std::endl;
     std::snprintf(buf, sizeof buf,
                   "  pause: merge %.3f s (heal %.3f s), wait %.3f s, help %.3f s (late minors %llu, "
-                  "stops %llu, help workers %llu), eden clear %.3f s",
+                  "stops %llu, help workers %llu, fork refusals %llu), eden clear %.3f s",
                   r.merge_ns / 1e9, r.heal_ns / 1e9, r.wait_ns / 1e9, r.help_ns / 1e9,
                   (unsigned long long)r.late, (unsigned long long)r.stops,
-                  (unsigned long long)r.help_workers_sum, r.eden_clear_ns / 1e9);
+                  (unsigned long long)r.help_workers_sum, (unsigned long long)r.fork_refusals,
+                  r.eden_clear_ns / 1e9);
     std::cout << buf << std::endl;
     std::vector<uint32_t> u = r.util_ppm;
     std::sort(u.begin(), u.end());
@@ -2920,6 +2921,18 @@ void GCStats::printRegionBlock() const {
                       (unsigned long long)r.age_heal, (unsigned long long)r.zapped,
                       r.zapped_bytes / (1024.0 * 1024.0), r.zap_ns / 1e9,
                       (unsigned long long)r.age_forced_exact, (unsigned long long)r.age_par_marks);
+        std::cout << buf << std::endl;
+        std::snprintf(buf, sizeof buf, "  dead ageing-generation YLOS slots cleared at the merge (CR-038): %llu",
+                      (unsigned long long)r.zapped_ylos);
+        std::cout << buf << std::endl;
+    }
+    if (r.major_zaps > 0) {
+        std::snprintf(buf, sizeof buf,
+                      "  STW major zap (HEAP_074, CR-017): %llu passes, %llu dead survivors (%.2f MB), "
+                      "%.3f ms total, %.3f ms mean, %.3f ms max per major",
+                      (unsigned long long)r.major_zaps, (unsigned long long)r.major_zapped,
+                      r.major_zapped_bytes / (1024.0 * 1024.0), r.major_zap_ns / 1e6,
+                      r.major_zap_ns / 1e6 / (double)r.major_zaps, r.major_zap_ns_max / 1e6);
         std::cout << buf << std::endl;
     }
     std::snprintf(buf, sizeof buf, "  survivor copies < 16 B: %llu; parallel heals: %llu; grant fallbacks (old gen near its cap): %llu",
@@ -3005,9 +3018,10 @@ void GCStats::printConcMarkBlock() const {
     std::cout << "\nConcurrent Mark (threaded-gc-05c):" << std::endl;
     char buf[320];
     std::snprintf(buf, sizeof buf,
-                  "  episodes %llu (relaunched %llu, stopped %llu); background units %llu",
+                  "  episodes %llu (relaunched %llu, stopped %llu, refused %llu); background units %llu",
                   (unsigned long long)cm.episodes_launched, (unsigned long long)cm.episodes_relaunched,
-                  (unsigned long long)cm.episodes_stopped, (unsigned long long)cm.bg_units);
+                  (unsigned long long)cm.episodes_stopped, (unsigned long long)cm.episodes_refused,
+                  (unsigned long long)cm.bg_units);
     std::cout << buf << std::endl;
     std::snprintf(buf, sizeof buf,
                   "  assists %llu (units %llu, ms total %.3f max %.3f); closings with work %llu "

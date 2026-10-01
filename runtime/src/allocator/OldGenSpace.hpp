@@ -672,6 +672,18 @@ public:
     // (the one-worker identity switch only; P§3.8.5).
     void* allocatePromotion(PromoWorker& pw, size_t size, bool per_alloc_sweep);
     bool parallelPromotionActive() const { return par_promo_active_; }
+    // Under promo_mu_. CR-002 (plans/threaded-gc-register-fixes.md 4.3, HEAP_055):
+    // a cell of a block the gap sweep has not finished shares mark words with the
+    // sweeper's plain nextSetBit / clearBit, so it must be finalized before
+    // promo_mu_ is released and never stashed. The gap sweep touches mark words
+    // only while gc_phase_ == Sweeping, and nothing sets Sweeping inside a minor,
+    // so outside Sweeping no cell needs the lock (gc_phase_ is read plain: under
+    // promo_mu_, its only in-minor write is under it too).
+    bool cellInUnsweptBlock(void* cell) const {
+        if (gc_phase_ != GCPhase::Sweeping) return false;
+        const BlockId id = contains(cell) ? blockIdFor(cell) : NO_BLOCK_ID;
+        return id.valid() && !blocks_.meta(id).fully_swept;
+    }
 
     // ========== Promotion grant (threaded-gc-07 P§3.12, HEAP_070) ==========
     //
@@ -759,6 +771,13 @@ public:
     // PM6: allocated_bytes before the drain, for the post-merge check.
     size_t pm6_allocated_before_ = 0;
     bool pm6_skip_ = false;
+    // CR-028 (plans/threaded-gc-register-fixes.md 4.4, HEAP_055): gap-swept
+    // blocks completed inside a parallel promotion with N > 1, walked by V11 in
+    // endParallelPromotion after the join (a worker may still be writing a cell
+    // it popped from the block). Written under promo_mu_; cleared at begin.
+    std::vector<std::pair<BlockId, char*>> v11_deferred_;
+    // V11: the gap-swept block parses exactly by header over [start, end_of_objects).
+    void validateV11(BlockId id) const;
 #endif
 
 private:
@@ -783,6 +802,11 @@ private:
     minorwork::SpinMutex promo_mu_;   // short sections: spin, not futex (P§3.8.3)
     bool par_promo_active_ = false;
     bool sweep_complete_deferred_ = false;   // onSweepComplete held for the merge
+    // CR-007 (HEAP_058/HEAP_059): AvoidUnderPromo while a parallel promotion
+    // with more than one worker is active (the caller holds promo_mu_ or is a
+    // worker), else Allowed. Passed to every acquireOldGenBlock a promotion
+    // can reach (ensureBagPageAvailable, allocateFromBagPage, allocateLargeBlock).
+    AcquireWait acquireWaitPolicy() const;
     bool refillCursor(size_t cls);
     void* cursorAllocate(size_t cls, size_t requested_size);
     void* finalizeBitmapCell(AllocCursor& c, uint32_t k, size_t requested_size);
@@ -830,7 +854,13 @@ private:
 
     // ========== GC State Machine ==========
 
-    GCPhase gc_phase_;                // Current GC phase (Idle, Marking, or Sweeping).
+    // Current GC phase (Idle, Marking, or Sweeping). CR-001 (HEAP_067): inside
+    // a parallel promotion its one write (lazySweep's completeSweep) is a relaxed
+    // atomic_ref store and the reads outside promo_mu_ (finalizePoppedCellW,
+    // finalizeBitmapCellW) relaxed atomic_ref loads; every other access runs in a
+    // pause, serially or under promo_mu_ and stays plain.
+    GCPhase gc_phase_;
+    static_assert(std::atomic_ref<GCPhase>::is_always_lock_free);
 
     // ========== Marking State ==========
 
@@ -1051,6 +1081,9 @@ public:
 private:
     MarkView mark_view_;
     BgEpisode bg_ep_ = BgEpisode::None;
+    // M1 trace only: a refused launch in this cycle step (logged as a launched episode
+    // that a fork stopped at once: register-fixes §7.2 step 4).
+    bool bg_refused_step_ = false;
     std::unique_ptr<gc::GCBackgroundGang> bg_;
     std::unique_ptr<markwork::SliceControl> bg_ctl_;
     uint32_t bg_done_k_ = 0;           // stats: first step that saw it finished
@@ -1078,8 +1111,9 @@ private:
     bool isT0Block(BlockId id) const;
     std::atomic<bool> im10_armed_{false};
 #endif
-    // Background episode (P§3.5).
-    void launchBackground();
+    // Background episode (P§3.5). False when a fork's prepare held the gang (the
+    // launch was refused, CR-013/004): bg_ep_ is None, the work stays in the deques.
+    bool launchBackground();
     void reapBackground(bool wait);
     void mergeBackgroundCounters();
     void retireAllDequeArrays();
@@ -1243,6 +1277,12 @@ public:
         return (m != nullptr && m->join_minor == gen_minor) ? m : nullptr;
     }
     // TLA-REGION(OGH.youngLargeMember) end
+    // CR-017 (HEAP_074): whether the last STW major reached nursery object `p`
+    // (nursery_visited_). Valid from a STW major's mark end until the next
+    // prepareMark; NurserySpace::zapDeadAfterMajor reads it right after the mark.
+    bool majorReachedNursery(const void* p) const {
+        return nursery_visited_.count(const_cast<void*>(p)) != 0;
+    }
     // Promotes a YLOS object in place: drops its entry (it is now an ordinary
     // old object governed by the major GC) and resets its age.
     void promoteYoungLarge(void* obj);
@@ -1279,6 +1319,10 @@ private:
     // Clears an index entry that the major GC found dead: counts a kind-1
     // retirement. Does NOT recycle the id (see freeLargeBodyCell).
     void retireIndexEntry(LargeBodyId id);
+    // CR-035 (HEAP_056): retires every index entry whose body lies in [lo, hi)
+    // with retireDeadLargeBodies' semantics -- the id is NOT recycled;
+    // sweepNurseryLargeBodies drops its stale owned entry. Returns the count.
+    size_t retireIndexRange(char* lo, char* hi);
 
     // ========== Small-Class Block Budget ==========
     //
@@ -1487,12 +1531,17 @@ private:
     void noteCycleAllocation(void* obj);
     // IM6: uniform-block consistency during a cycle (equality when `exact`).
     void validateCycleUniformLive(const char* where, bool exact) const;
-    // IM5: every t0 block (id, start, size_class, is_large), re-checked at
-    // the handoff.
-    struct T0Block { uint32_t id; char* start; size_t size_class; bool is_large; };
+    // IM5: every t0 block (id, generation, start, size_class, is_large),
+    // re-checked at the handoff. CR-036: the key includes the id's BlockTable
+    // generation, so a same-id, same-start re-issue is caught.
+    struct T0Block { uint32_t id; uint32_t gen; char* start; size_t size_class; bool is_large; };
     std::vector<T0Block> t0Blocks() const;
+    // nullptr when every t0 block is unchanged; else the IM5 message (and the
+    // block's t0 start in *where).
+    const char* t0BlocksChangedWhy(char** where = nullptr) const;
     void checkT0BlocksUnchanged() const;
     std::vector<T0Block> cycle_t0_blocks_;
+    bool test_im5_ignore_gen_ = false;   // CR-036 negative control: IM5 without the generation
     // IM1/IM2 hooks, run by ThreadLocalHeap with an independent tracer.
     void assertAllMarked(const std::vector<void*>& objs, const char* what) const;
     std::vector<void*> cycle_t0_reach_;     // IM1: old objects reached at t0
@@ -1501,6 +1550,7 @@ private:
     // Test hooks for the negative controls (P§3.13).
     bool test_skip_allocate_black_ = false;
     bool test_keep_worker_cursor_ = false;    // threaded-gc-06 PM4 negative control
+    bool test_idle_uncounted_ = false;        // CR-018 (HEAP_073) negative control: Idle allocations skip live_bytes
 
     // threaded-gc-05a cycle state (HEAP_063).
     CycleState cycle_state_ = CycleState::Idle;
@@ -2068,6 +2118,32 @@ public:
     static void setKeepWorkerCursor(OldGenSpace& og, bool on) { og.test_keep_worker_cursor_ = on; }
     // CR-001: the in-loop completion held onSweepComplete for the merge.
     static bool sweepCompleteDeferred(const OldGenSpace& og) { return og.sweep_complete_deferred_; }
+    // CR-014 (register-fixes Step 0.3): lazySweep tail completions inside a parallel
+    // promotion (stats builds; 0 otherwise). Proves the tail path once both paths defer.
+    static uint64_t sweepTailInPromotion(const OldGenSpace& og) {
+#if ENABLE_GC_STATS
+        return og.alloc_stats_.bm.sweep_tail_in_promotion;
+#else
+        (void)og;
+        return 0;
+#endif
+    }
+    // CR-018 (register-fixes Step 0.3 / §3.2): negative-control hook; Idle allocations
+    // skip their live_bytes add (the pre-fix behaviour of HEAP_073).
+    static void setIdleUncounted(OldGenSpace& og, bool on) { og.test_idle_uncounted_ = on; }
+    // CR-036 (register-fixes §3.5): the per-id BlockTable generation.
+    static uint32_t blockGeneration(const OldGenSpace& og, BlockId id) { return og.blocks_.generation(id); }
+#if ECO_HEAP_VALIDATE
+    // CR-036: IM5's t0-block capture and check, callable outside a cycle.
+    static void captureT0Blocks(OldGenSpace& og) {
+        og.cycle_t0_blocks_ = og.t0Blocks();
+        std::sort(og.cycle_t0_blocks_.begin(), og.cycle_t0_blocks_.end(),
+                  [](const OldGenSpace::T0Block& x, const OldGenSpace::T0Block& y) { return x.id < y.id; });
+    }
+    static const char* t0BlocksChangedWhy(const OldGenSpace& og) { return og.t0BlocksChangedWhy(); }
+    static void clearT0Blocks(OldGenSpace& og) { og.cycle_t0_blocks_.clear(); }
+    static void setIm5IgnoreGeneration(OldGenSpace& og, bool on) { og.test_im5_ignore_gen_ = on; }
+#endif
     // CR-007: try_lock probe of the promotion lock (a success is undone at once).
     static bool promoMuHeld(OldGenSpace& og) {
         if (!og.promo_mu_.try_lock()) return true;

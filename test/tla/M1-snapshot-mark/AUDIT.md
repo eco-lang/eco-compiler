@@ -438,3 +438,128 @@ M1 22/22 in 63 s, M2 33/33 in 57 s, M3 12/12 in 8 s, all as expected. M5 deep ro
 `ylos_stamp_k2` and `ylos_drop_k2`, one row at a time, 8 workers: 11/11 as expected in 1,173 s, with
 state counts identical to the entries of 2026-09-29. `tla-trace` (harnesses rebuilt on this tree):
 135/135 as expected in 140 s.
+
+## 2026-09-30 — register-fixes §3.2: CR-018 fixed, live_bytes counted in every phase (GC_MODEL_001)
+
+Pins fired: region `OGS.initObjectHeaderWithSize` (new hash prefix **2d1af3f18a67**), region
+`OGS.finalizePoppedCellW` (new hash prefix **26356efabd55**).
+
+Change (plans/threaded-gc-register-fixes.md §3.2; HEAP_073 new, HEAP_051 amended): both functions
+now add the cell's bytes to `BufferMetadata::live_bytes` in EVERY phase (before: only while
+`marking_active || gc_phase_ != Idle`). The allocate-black part M1 models (colour, the TV5/IM4
+checks, `setMarkBitAtomic`) is unchanged and still gated on the phase; during a cycle the add is the
+same relaxed `atomic_ref` `fetch_add` as before. At Idle (no cycle, so no marker exists) the add is
+a plain owner write in `initObjectHeaderWithSize` (atomic while `par_promo_active_`) and a relaxed
+`fetch_add` in `finalizePoppedCellW`. No step of M1's cycle (t0, slices, handoff, IM4/IM5) reads or
+writes `live_bytes` outside that window differently. A negative-control flag
+`test_idle_uncounted_` restores the pre-fix Idle gate (tests only).
+
+**Verdict: no model change needed.**
+
+## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (GC_MODEL_001, one audit for the batch)
+
+Pins fired for M1: region `OGS.finalizePoppedCellW` (**4d8b93453093**), region `OGS.finalizeBitmapCellW` (**296d0825c9c5**), Census `runtime/src/allocator/OldGenSpace.cpp` (**2afe7bc4cf4d**: the relaxed `std::atomic_ref<GCPhase>(gc_phase_)` store in `lazySweep`'s `completeSweep` and the relaxed loads in `finalizePoppedCellW`, `finalizeBitmapCellW` and the validate-only PM8 check) and census `runtime/src/allocator/OldGenSpace.hpp` (**493c238780a8**: `static_assert(std::atomic_ref<GCPhase>::is_always_lock_free)`).
+
+Change: the two promotion finalizers read `gc_phase_` with a relaxed `atomic_ref` load instead of a plain read (CR-001's race half, HEAP_067); the allocate-black decision (`marking_active || phase != Idle`), the colour, the `setMarkBitAtomic` and IM4 are unchanged. M1 models the cycle's allocate-black as a decision of the phase; how the phase word is loaded is not M1 state (M4's `NoRacePhase` and W3d cover the access).
+
+**Verdict: no model change needed.**
+
+## 2026-09-30 — register-fixes Phase 3 (§5.2): CR-017 fixed, model first (HEAP_074; GC_MODEL_001)
+
+Pins fired for M1: region `TLH.majorGC` (**dde8f0dcca5e**), region `NT.mergeJob` (**2892c92bf479**),
+and the new region pin `NR.zapDeadAfterMajor` (M1, M5; added with `-`, hash filled by `--update`).
+
+**Model updated first (NEW RULE, passed TLC before any code).** `J_STW` (PlusCal, re-translated): in
+region mode, unless `MUTANT = "no_cr017_fix"`, the major also frees and scrubs
+`zap == {o \in YoungObjs \ Live : age[o] = 1 /\ o \notin YlosIds}` (the Young extents' survivors the
+mark did not reach = `NR.zapDeadAfterMajor` over `nursery_visited_`), and `zombie := zombie \ zap`
+(a no-op: zombies are not in `YoungObjs`; the Tenuring extent is never zapped).
+- `MC_quick_region`: **pass** with every invariant (all nine plus `MarkerNoYoungKid`), 3,076,632 states
+  (was `violates:MarkerFootprint`). `MC_quick_region_reuse`: **pass**, every invariant, 3,695,406 states
+  (was `violates:MarkerNoYoungKid`).
+- New mutants (A6): `mutants/no_cr017_fix.cfg` violates `MarkerFootprint` (117,025 states);
+  `mutants/no_cr017_fix_reuse.cfg` violates `MarkerNoYoungKid` (152,512 states).
+- Quick tier 24/24 as expected (87 s). Deep `MC_deep_region` pass, 9,354,285 states, 50 s (it has
+  `MaxMajors = 0`: unchanged by construction). Apalache `lemma/step5_MajorIdle` pass (141 s; the
+  lemma is legacy-mode only and does not include `SnapshotMark`, so its rows cannot change).
+- `NT.mergeJob` (CR-038's step 5c, slot clearing of dead ageing-generation YLOS): M1 has no ageing
+  generations (k = 1); no M1 change. `TLH.majorGC`: the zap hook, as above.
+- Trace: `TraceCycle` keeps only cycle events (`.keep`), so the new `mzap` event is dropped there;
+  the cycle rows still pass (see the M5 entry for the run).
+
+**Verdict: model updated (J_STW zap), MAPPING.md updated (J_STW row, region-mode row, the lemma note,
+canary pin `NR.zapDeadAfterMajor`).**
+
+## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (GC_MODEL_001)
+
+Pins fired: region `OGS.promoteYoungLarge`, new hash prefix **ab64ef2a56ee**.
+
+Change (plans/threaded-gc-register-fixes.md §6.1, CR-019; HEAP_062/HEAP_067 amended): every
+access to a header word that another thread may touch during a legacy parallel minor is a relaxed
+atomic whole-word access through the new helpers `loadHeaderRelaxed` / `storeHeaderRelaxed`
+(`AllocatorCommon.hpp`, newly census-pinned for M3, M4). Writers: `reachYoungLargeP` (age++ under
+`ylos_mu_`), `promoteYoungLarge` (age = 0), region `reachYoungLargeR` (age = 1). Readers:
+`lazySweep`'s gap sweep (one load per live object, reused for the trace event), the header walk
+(one load reused for tag, sentinel and pin), the large-block branch's pin read, and the
+validate-only `validateV11` walk. The values written are unchanged (tag/size/pin kept); no lock,
+step order or memory order beyond "relaxed" is added, so no happens-before edge changes. TSan:
+`det-cr019` both orders and `ylos-sweep` are clean (were: a report every run).
+
+M1 reads no YLOS header bit (its snapshot keys on the mark bitmap and the body index); the age write is the same value change as before, now one atomic word store. **Verdict: no model change needed.**
+
+## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (GC_MODEL_001)
+
+Pins fired: regions `OGS.releaseBlockToAllocator` (**2dc05c9c0440**), `OGS.releaseUnassignedBlockToAllocator` (**b1038520c58f**).
+
+Change (plans/threaded-gc-register-fixes.md §6.3, CR-007; HEAP_058/HEAP_059 amended): a promotion
+holder of a parallel promotion with n > 1 workers (`OldGenSpace::acquireWaitPolicy()` =
+`AcquireWait::AvoidUnderPromo`, passed at `ensureBagPageAvailable`, `allocateFromBagPage` and
+`allocateLargeBlock`) gets the no-wait policy in `Allocator::acquireOldGenBlock` (modes 1/2 with
+decommit on): (1) the first fitting **Pending** extent (`PageWork::isPending`, job-blind; `onReuse`
+cancels it, never waits), (2) else a fresh bump, (3) else -- the old-gen cap leaves no bump room --
+today's first fit (may wait; counted). The first-fit body was factored into a `takeFreeAt` lambda
+(no behaviour change for `Allowed`). New PageWork API: `isPending`, `decommitOn`, `noteNoWait` (the
+counters `nowait_pending_reuse_bytes`, `nowait_fresh_bytes`, `nowait_fallback_waits` and the M7 trace
+event `nw`), `noteNoWaitSkip` (`nowait_skipped_extents`). Validate builds: a no-wait Pending reuse
+must not raise `reuse_waits`, and `releaseBlockToAllocator` / `releaseUnassignedBlockToAllocator` abort
+while `acquireWaitPolicy() != Allowed`. No lock, atomic or memory order is added; every new
+PageWork call runs under `thread_mutex_` like the old ones.
+
+Only a validate-only abort was added at the top of the two release functions (no release inside a parallel promotion with n > 1, already true since CR-014/CR-016). Nothing M1 models changes. **Verdict: no model change needed.**
+
+
+## 2026-10-01 — register-fixes Phase 5: fork, exit and gangs (CR-003/004/005/013/015/023/031/032) (GC_MODEL_001)
+
+Pins fired: regions `OGS.afterSnapshot` (**3bea1fd891bb**), `OGS.launchBackground` (**011248915015**), `OGS.runCycleStepConcurrent` (**289cdccf4bd4**), `OGS.closingFinish` (**af1f59d07ebb**), `TLH.minorGC` (**896f924a1e35**), `TLH.majorGC` (**69a04246e15b**); census `P1Census.cpp` (**ce0924594df0**); grep `F.bgEp` (**add33fc189d1**).
+
+Change (plans/threaded-gc-register-fixes.md §7, Phase 5; HEAP_007 fork contract, HEAP_058, HEAP_065,
+HEAP_070 amended, HEAP_075 new): (1) `GCFork.{hpp,cpp}`: ONE `pthread_atfork` registration with fixed
+layers (gangs: registry -> each background gang's `m_` to set `fork_hold_` -> `stopAllForFork` -> each
+gang's `m_` held -> `GCMarkGang` `run_m_` -> its `m_`; allocator: `thread_mutex_`; census: the P1 census
+mutex and detector N's; pool: `GCHelperPool::m_`, drained and held); the three old registrations are
+gone. (2) No teardown holds `thread_mutex_` while it takes a gang lock (`cleanupThread`,
+`finishTenureForExit`, `reset`, `~Allocator`). (3) CR-003/015: `post`'s Idle->Posted CAS and the enqueue
+in one `m_` section; the pool prepare drains and keeps `m_` in one section; the allocator layer locks
+`thread_mutex_`, the child re-creates it and records `fork_child_` / `fork_owner_`. (4) CR-013/004:
+`GCBackgroundGang::launch` returns false (refuses) while `fork_hold_`; `launchBackground` then leaves
+`bg_ep_ = None` (`cm.episodes_refused`), `tenureLaunch` / `tenureConcLaunch` count `rs.fork_refusals`
+and the join's orphan path finishes the job. (5) CR-023: `stopAndJoin` waits for
+`generation_ != my_gen || finished_ >= members` and clears `running_` only for its own generation;
+`launch` notifies `cv_done_`. (6) CR-005: `closingFinish` accepts `bg_ep_ == None`. (7) CR-031:
+`~Allocator` (and `initThread`, `getCombinedStats`, `validatePageWork`) never touch a heap the forker
+does not own in a forked child; validate builds check `ThreadLocalHeap::owner_` in `minorGC` /
+`majorGC`. (8) CR-032: the census layer; `atexitReport` returns in a forked child. Trace-only: the
+probe `m6.tm.held` in `onGCPauseEnd` (under `thread_mutex_`), `fork.bghold`, `gang.refuse`, the step
+event's `refused` field and an M1 `stop` after a refused launch.
+
+M1's cycle sees a stopped episode as the Forker's step (`F_Loop`: `episode := "none"`, the work stays
+grey). A launch refused under a fork's hold is exactly that: the episode was launched and stopped at
+once; the next step relaunches, the closing drains. So no M1 step changes. The M1 trace logs a refusal
+that way: `launch`, then (t0) a `stop` right away, or (relaunch) the step with `ep = "running"` and then
+a `stop`. New trace row `cycle,refuse-b2` (a test-hook hold around the t0 minor of every second cycle
+and around the relaunch after each fork; 15 refusals in the run): **accept** (398 events, 9,377 states),
+and its negative control `drop:stop:1` **reject**. `run_traces.py --model M1`: 20/20. The closing's
+assert now accepts `None` (M1's `D_Done` already models a drain after a stopped episode). The P1 census
+gained a fork layer (a mutex held across fork, a flag set in the child): no census decision changes.
+`TLH.minorGC` / `majorGC` gained a validate-only owner check at entry. **Verdict: no model change
+needed (trace projection extended for refusals).**

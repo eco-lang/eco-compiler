@@ -470,6 +470,7 @@ add_llvm_executable(ecoc
     ../allocator/RuntimeExports.cpp
     ../allocator/Allocator.cpp
     ../allocator/GCHelperPool.cpp
+    ../allocator/GCFork.cpp
     ../allocator/PageWork.cpp
     ../allocator/P1Census.cpp
     ${ECO_ALLOCATOR_PLATFORM_SRCS_RELATIVE}
@@ -597,6 +598,7 @@ add_mlir_library(EcoRunner
     ../allocator/RuntimeExports.cpp
     ../allocator/Allocator.cpp
     ../allocator/GCHelperPool.cpp
+    ../allocator/GCFork.cpp
     ../allocator/PageWork.cpp
     ../allocator/P1Census.cpp
     ${ECO_ALLOCATOR_PLATFORM_SRCS_RELATIVE}
@@ -685,6 +687,7 @@ add_library(EcoRuntimeStatic STATIC
     ../allocator/RuntimeExports.cpp
     ../allocator/Allocator.cpp
     ../allocator/GCHelperPool.cpp
+    ../allocator/GCFork.cpp
     ../allocator/PageWork.cpp
     ../allocator/P1Census.cpp
     ${ECO_ALLOCATOR_PLATFORM_SRCS_RELATIVE}

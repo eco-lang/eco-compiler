@@ -67,6 +67,12 @@ struct PageWorkCounters {
     uint64_t populate_posted_bytes = 0, populate_jobs = 0, populate_failures = 0;
     uint64_t window_commit_failures = 0;
     uint64_t reuse_waits = 0, release_waits = 0, slot_full_waits = 0;
+    // CR-007 (HEAP_059): the no-wait acquire of a promotion holder with n > 1
+    // workers (Allocator::acquireOldGenBlock, AcquireWait::AvoidUnderPromo).
+    uint64_t nowait_pending_reuse_bytes = 0;   // Pending extents taken (cancelled, no wait)
+    uint64_t nowait_skipped_extents = 0;       // fitting extents skipped: not Pending
+    uint64_t nowait_fresh_bytes = 0;           // fresh bumps taken instead
+    uint64_t nowait_fallback_waits = 0;        // cap fallbacks to first fit (may wait)
     bool     populate_supported = false;
 };
 
@@ -113,6 +119,19 @@ public:
 
     const PageWorkCounters& counters() const { return counters_; }
     char* windowEnd() const { return window_end_; }
+
+    // ---- CR-007's no-wait acquire policy (Allocator::acquireOldGenBlock under
+    // AcquireWait::AvoidUnderPromo; the caller holds thread_mutex_) ----
+    // Membership in pending_ is JOB-BLIND (it changes only in onRelease,
+    // onReuse and the sync point's aging), so a choice keyed on it keeps
+    // GC_DET_001; never key a choice on posted_discard_ or a job's state.
+    bool isPending(char* p) const { return pending_.count(p) != 0; }
+    bool decommitOn() const { return cfg_.decommit; }
+    enum class NoWaitPick : uint8_t { PendingReuse = 1, Fresh = 2, Fallback = 3 };
+    // Records the policy's pick (counters; M7 trace event "nw" before the
+    // onReuse / onFreshBump it precedes).
+    void noteNoWait(NoWaitPick k, char* p, size_t n);
+    void noteNoWaitSkip() { ++counters_.nowait_skipped_extents; }
 
     // ---- Validation / test queries (never used by policy code) ----
     enum TrackState : int { kPending = 1, kPostedDiscard = 2 };

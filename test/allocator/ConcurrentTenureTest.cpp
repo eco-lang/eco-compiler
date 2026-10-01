@@ -428,6 +428,9 @@ Testing::TestCase testTenureRespawnAndForkStorm(
             a.minorGC();
         }
         const size_t threads0 = threadCount();
+        // CR-012 (HEAP_007): the spawned heaps run while this thread's heap is
+        // live, a second mutator, so this harness opts in (unsupported mode).
+        Allocator::instance().allowMultipleMutators(true);
         // Spawn-heavy: each thread claims a region slot (Issue #40 reuse), runs
         // mode-2 minors with jobs in flight, and exits with a job running.
         for (int it = 0; it < 100; ++it) {

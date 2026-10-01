@@ -14,9 +14,14 @@
 (*   minor, t0, t0end  a pause starts; the t0 snapshot (checks only)       *)
 (*   launch            launchBackground: U_Launch at t0, else a check      *)
 (*   gang.launch       GCBackgroundGang::launch's m_ section: L_Lock       *)
+(*   gang.refuse       launch refused under a fork hold: L_Lock's refusal  *)
+(*                     (register-fixes §7.2 step 4; the M1 projection then  *)
+(*                     logs the step as "running" with refused = TRUE and  *)
+(*                     a "stop": the events of a fork-stopped episode)     *)
 (*   relaunch          runCycleStepConcurrent's relaunch: U_Relaunch       *)
 (*   reap done wait    reapBackground after its join: RP_Set               *)
-(*   step k ep         the end of the cycle step: U_Next (ep = bgEp)       *)
+(*   step k ep refused the end of the cycle step: U_Next (ep = bgEp, or a *)
+(*                     refused relaunch: bgEp = None)                      *)
 (*   gang.run/runEnd   GCMarkGang::run (the closing join): U_RunLock,      *)
 (*                     U_FgWait; the drain's run: checks at U_Drain        *)
 (*   closing           closingFinish's end: U_Drain                        *)
@@ -24,10 +29,14 @@
 (*   gang.start/exit   memberLoop around fn: B_Wait / B_Fin (FG_Wait /     *)
 (*                     FG_Fin for the closing run; checks for the drain's) *)
 (*   gang.stop         stopAndJoin's stop under m_: SJ_Lock                *)
-(*   gang.join stop    joinLocked after its wait: SJ_Wait or J_Wait        *)
+(*   gang.join stop    joinLocked after its wait: SJ_Wait or J_Wait; a     *)
+(*                     stopAndJoin whose generation was joined and         *)
+(*                     relaunched by the owner returns with no gang.join   *)
+(*                     (SJ_Wait with gen # sgen, hidden: CR-023's fix)     *)
 (*   stop              stopAllForFork after a stopAndJoin (a check)        *)
 (*   fork.mprep        GCMarkGang's prepare: G_Mark1 or G_RunM             *)
 (*   fork.bgreg        the gangs' prepare, registry locked: G_Reg          *)
+(*   fork.bghold       ... every gang's fork_hold_ set: G_Hold             *)
 (*   fork.bglock       ... every gang's m_ locked: G_Lock1                 *)
 (*   fork.mparent/bparent, fork.mchild/bchild                              *)
 (*                     the first of the two is G_Fork (parent / child),   *)
@@ -69,10 +78,11 @@ Matched(u, e) ==
   CASE e.ev = "minor" -> p = "mut" /\ pc["mut"] \in {"U_Launch", "U_Tenure", "U_Handoff"} /\ UNCHANGED vars
     [] e.ev \in {"t0", "t0end"} -> pc["mut"] = "U_Launch" /\ UNCHANGED vars
     [] e.ev = "launch" -> IF pc["mut"] = "U_Launch" THEN U_Launch ELSE pc["mut"] = "L_Lock" /\ UNCHANGED vars
-    [] e.ev = "gang.launch" -> p = "mut" /\ lg["mut"] = CM /\ L_Lock("mut")
+    [] e.ev = "gang.launch" -> p = "mut" /\ lg["mut"] = CM /\ ~hold[CM] /\ L_Lock("mut")
+    [] e.ev = "gang.refuse" -> p = "mut" /\ lg["mut"] = CM /\ hold[CM] /\ L_Lock("mut")
     [] e.ev = "relaunch" -> U_Relaunch /\ pc'["mut"] = "L_Lock"
     [] e.ev = "reap" -> ctl[CM].done = e.done /\ wait["mut"] = e.wait /\ RP_Set("mut")
-    [] e.ev = "step" -> EpName(bgEp) = e.ep /\ U_Next
+    [] e.ev = "step" -> (IF e.refused THEN bgEp = "None" ELSE EpName(bgEp) = e.ep) /\ U_Next
     [] e.ev = "gang.run" -> IF pc["mut"] = "U_RunLock" THEN U_RunLock
                             ELSE pc["mut"] = "U_Drain" /\ UNCHANGED vars
     [] e.ev = "gang.runEnd" -> IF pc["mut"] = "U_FgWait" THEN U_FgWait
@@ -96,6 +106,7 @@ Matched(u, e) ==
     [] e.ev = "stop" -> UNCHANGED vars
     [] e.ev = "fork.mprep" -> IF PrepareOrder = "mark_first" THEN G_Mark1(p) ELSE G_RunM(p)
     [] e.ev = "fork.bgreg" -> G_Reg(p)
+    [] e.ev = "fork.bghold" -> G_Hold(p)
     [] e.ev = "fork.bglock" -> G_Lock1(p)
     [] e.ev \in {"fork.mparent", "fork.bparent"} ->
             IF pc[p] = "G_Fork" THEN G_Fork(p) /\ world' = "parent" ELSE UNCHANGED vars
@@ -113,6 +124,8 @@ Hidden ==
           \/ RP_Check(p) \/ RP_Hint(p) \/ RP_Join(p)
           \/ J_Lock(p)                                        \* join()'s lock and check (logs nothing)
           \/ SJ_Lock(p) /\ pc'[p] # "SJ_Wait"                 \* stopAndJoin(): not running, returns
+          \/ SJ_Wait(p) /\ gen[sg[p]] # sgen[p]               \* my_gen joined by the owner: no gang.join
+          \/ G_Hold2(p)                                       \* the hold is G_Hold's (no mutant here)
           \/ PrepareOrder = "bg_first" /\ G_Mark1(p)
           \/ PrepareOrder = "mark_first" /\ G_RunM(p)
           \/ G_Stop1(p) \/ G_Stop2(p) \/ G_Lock2(p) \/ G_Ret(p)

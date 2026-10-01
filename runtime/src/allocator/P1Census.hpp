@@ -114,6 +114,11 @@ inline void reportNow() {}
 #if P1_CENSUS_COMPILED
 // Detector N's report (NurserySpace.cpp); reportNow() prints it too.
 void nurseryCensusReport(bool from_signal);
+// CR-032 (HEAP_075): detector N's mutex, held across fork() by the census layer
+// (P1Census.cpp) next to the census mutex; the child re-creates it.
+void nurseryCensusForkPrepare();
+void nurseryCensusForkParent();
+void nurseryCensusForkChild();
 #endif
 
 } // namespace Elm

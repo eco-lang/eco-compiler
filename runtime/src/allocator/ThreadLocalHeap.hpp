@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 #include <unordered_set>
 #include "AllocatorCommon.hpp"
 #include "NurserySpace.hpp"
@@ -278,6 +279,14 @@ public:
     size_t getOldGenAllocatedBytes() const { return old_gen_.getAllocatedBytes(); }
 
 #if ECO_HEAP_VALIDATE
+    /** HEAP_007 / CR-031 (plans/threaded-gc-register-fixes.md §7.1): the thread that
+     *  owns this heap, set by Allocator::initThread (and the fork harness's test hook
+     *  AllocatorTestAccess::adoptThreadHeap). minorGC / majorGC abort when another
+     *  thread runs them (a host-forked child must never use a heap it does not own).
+     *  A default id (a heap made outside initThread) is not checked. */
+    std::thread::id owner_;
+    void assertOwner(const char* where) const;
+
     /** Stale-pointer tripwire: aborts if `ptr` is in the nursery but not in
      *  any allocated region (i.e. points at post-swap to-space-free).
      *  Compiled in only under ECO_HEAP_VALIDATE. */

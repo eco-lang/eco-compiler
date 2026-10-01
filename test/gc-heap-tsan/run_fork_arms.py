@@ -12,11 +12,15 @@ TSAN_OPTIONS=halt_on_error=0; a trial reproduces when it prints REACHED, exits 6
 and the report names the row's `match=` function (so an unrelated race cannot pass for the
 entry); exit 0 with REACHED is "not reproduced", exit 3 (NOT REACHED) is a missed precondition.
 
-  arm exit                    clean row   xfail row                   reach row   strict (ECO_TEST_XFAIL=strict)
-  0 (not reproduced)          PASS        XPASS: fails, flip the row  FAIL        an xfail row passes
-  1 (reproduced)              FAIL        XFAIL                       PASS        an xfail row fails
+  arm exit                    clean row   xfail row                   reach row   wontfix row          strict (ECO_TEST_XFAIL=strict)
+  0 (not reproduced)          PASS        XPASS: fails, flip the row  FAIL        XPASS: fails         an xfail row passes
+  1 (reproduced)              FAIL        XFAIL                       PASS        WONTFIX (passes)     an xfail row fails
   4 (precondition missed),
-  other, timeout              ERROR       ERROR                       ERROR       ERROR
+  other, timeout              ERROR       ERROR                       ERROR       ERROR                ERROR
+
+A `wontfix` row documents ACCEPTED behaviour (a register entry closed as Won't-fix, e.g. CR-012
+under its benchmark/test opt-in; plans/threaded-gc-register-fixes.md Step 0.1): reproducing is
+WONTFIX, which passes in both modes; exit 0 is XPASS ("the accepted behaviour changed"), which fails.
 
 `flaky` rows only report. Exit status: 0 when every gating row is PASS or XFAIL, else 1.
 
@@ -53,12 +57,12 @@ def parse_registry(path):
         flavor, tier, arm, trials, seed, expected = f
         if flavor not in TARGETS:
             sys.exit(f"{path}:{n}: flavor must be plain, trace or tsan, not {flavor}")
-        if flavor == "tsan" and expected == "xfail" and not match:
-            sys.exit(f"{path}:{n}: a tsan xfail row needs match=<function in the report>")
+        if flavor == "tsan" and expected in ("xfail", "wontfix") and not match:
+            sys.exit(f"{path}:{n}: a tsan {expected} row needs match=<function in the report>")
         if tier not in ("quick", "stress"):
             sys.exit(f"{path}:{n}: tier must be quick or stress, not {tier}")
-        if expected not in ("clean", "xfail", "reach", "flaky"):
-            sys.exit(f"{path}:{n}: expected must be clean, xfail, reach or flaky, not {expected}")
+        if expected not in ("clean", "xfail", "reach", "wontfix", "flaky"):
+            sys.exit(f"{path}:{n}: expected must be clean, xfail, reach, wontfix or flaky, not {expected}")
         tag = raw.split("#", 1)[1].strip() if "#" in raw else ""
         rows.append(dict(line=n, flavor=flavor, tier=tier, arm=arm, trials=int(trials), seed=int(seed),
                          expected=expected, tag=tag, match=match))
@@ -147,6 +151,8 @@ def judge(expected, rc, strict):
         return "PASS" if rc == 0 else "FAIL"
     if expected == "reach":
         return "PASS" if rc == 1 else "FAIL"
+    if expected == "wontfix":   # accepted behaviour: passes in both modes; a change is XPASS
+        return "WONTFIX" if rc == 1 else "XPASS"
     # xfail
     if strict:
         return "PASS" if rc == 0 else "FAIL"

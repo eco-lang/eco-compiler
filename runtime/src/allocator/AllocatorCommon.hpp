@@ -13,6 +13,8 @@
 #ifndef ECO_ALLOCATOR_COMMON_H
 #define ECO_ALLOCATOR_COMMON_H
 
+#include <atomic>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -569,6 +571,32 @@ inline size_t getObjectSizeFromHeader(const Header *hdr) {
 // Returns the size of a heap object in bytes (8-byte aligned).
 inline size_t getObjectSize(void *obj) {
     return getObjectSizeFromHeader(getHeader(obj));
+}
+
+// CR-007 (HEAP_058/HEAP_059): how Allocator::acquireOldGenBlock may treat a
+// free-list extent whose discard job is posted. AvoidUnderPromo is passed by a
+// promo_mu_ holder of a parallel promotion with more than one worker
+// (OldGenSpace::acquireWaitPolicy): it takes only Pending extents (cancelled,
+// never waits), else a fresh bump, and reuses (and may wait on) a
+// discard-issued extent only when the old-gen cap leaves no bump room.
+enum class AcquireWait : uint8_t { Allowed, AvoidUnderPromo };
+
+// CR-019 (HEAP_062/HEAP_067): a header word read or written while another
+// thread may touch the same word -- a young YLOS header aged or promoted under
+// ylos_mu_ (reachYoungLargeP, promoteYoungLarge, region reachYoungLargeR) vs a
+// sweep slice that steps over it under promo_mu_ (lazySweep, V11). The header's
+// bit-fields form ONE memory location, so both sides use a relaxed atomic
+// whole-word access. No ordering is needed: the writer never changes tag,
+// size or pin, and ylos_mu_ plus the colour test make it the word's only
+// writer within the minor (M3 YlosOnce). Not for the copy paths
+// (getObjectSize / getObjectSizeFromHeader stay plain).
+inline Header loadHeaderRelaxed(const void* obj) {
+    auto* w = static_cast<uint64_t*>(const_cast<void*>(obj));   // atomic_ref<const T> is not C++20
+    return std::bit_cast<Header>(std::atomic_ref<uint64_t>(*w).load(std::memory_order_relaxed));
+}
+inline void storeHeaderRelaxed(void* obj, Header h) {
+    std::atomic_ref<uint64_t>(*static_cast<uint64_t*>(obj))
+        .store(std::bit_cast<uint64_t>(h), std::memory_order_relaxed);
 }
 
 // ============================================================================

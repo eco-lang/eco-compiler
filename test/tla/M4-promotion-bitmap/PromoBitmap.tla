@@ -107,7 +107,7 @@ variables
     bits      = InitBits,                 \* mark bytes: the set bits (cells) of each byte
     freeList  = InitFree,                 \* the modelled class's free list, head first (LIFO)
     sweepQ    = InitQ,                    \* gap sweep: loop iterations [g, l, e] not yet run
-    phase     = InitPhase,                \* gc_phase_ (a PLAIN field)
+    phase     = InitPhase,                \* gc_phase_ (atomic_ref at the racing sites, CR-001)
     liveBytes = InitLive,                 \* BufferMetadata::live_bytes, in cells
     swept     = InitSwept,                \* BufferMetadata::fully_swept
     deferred  = FALSE,                    \* sweep_complete_deferred_
@@ -138,13 +138,26 @@ variables
 
 define
     Allocated  == {c \in Cells : allocs[c] > 0}
-    PhasePlain == "phase_atomic" \notin MUTANT     \* gc_phase_ is a plain field today
+    \* CR-001 fixed (HEAP_067): the in-minor write (completeSweep) and every read
+    \* outside promo_mu_ are relaxed atomic_ref accesses; reads under promo_mu_ stay
+    \* plain (PhLocked). phase_plain: the pre-fix code (every access plain).
+    PhasePlain == "phase_plain" \in MUTANT
+    PhLocked   == TRUE
     SetBits    == UNION {bits[y] : y \in Bytes}
     CanClaim   == shared.b # "none" /\ shared.u < Len(Units(shared.b))
-    \* A finalize counts the cell (allocate-black bit + live_bytes) when the
-    \* phase it read is not Idle (initObjectHeaderWithSize :497, finalizePoppedCellW
-    \* :1075); the fix candidate count_until_shrink also counts while deferred.
-    Counts(p) == p # "Idle" \/ ("count_until_shrink" \in MUTANT /\ deferred)
+    \* CR-002 fixed (HEAP_055): the rung-2 batch stashes only the prefix of the list
+    \* whose cells lie in fully swept blocks (the head's block is swept here), at
+    \* most BatchMax cells (cellInUnsweptBlock's peek, OldGenSpace.hpp).
+    Unswept(c)      == phase = "Sweeping" /\ ~swept[BlkOf(c)]
+    SweptPrefix(fl) == LET m == Min(BatchMax, Len(fl)) IN
+                       CHOOSE k \in 1..m : /\ \A i \in 1..k : ~Unswept(fl[i])
+                                           /\ (k = m \/ Unswept(fl[k + 1]))
+    \* A finalize sets the allocate-black bit (and a Black header) when the phase
+    \* it read is not Idle (initObjectHeaderWithSize, finalizePoppedCellW). Its
+    \* live_bytes add runs in EVERY phase (CR-018 fixed, HEAP_073): IdleCounts.
+    \* idle_uncounted: the pre-fix code (no live_bytes add at Idle; CR-001's S1 half).
+    CountsBit(p) == p # "Idle"
+    IdleCounts   == "idle_uncounted" \notin MUTANT
     \* maybeShrinkCapacity pass 1 (:5796-5810): fully swept, live_bytes 0, not
     \* large, not granted (unless shrink_ignores_tenure). Current blocks are NOT skipped.
     ShrinkCands(lb) == {b \in Present : swept[b] /\ lb[b] = 0 /\ b \notin released
@@ -255,7 +268,7 @@ end macro;
 \* ladderFrom2W (:1306) after advanceSharedW and the batch pop found nothing:
 \* hasPendingSweepWork() reads gc_phase_ under the lock (:1336).
 macro Ladder() begin
-    Acc({Acc1("phase", PhasePlain, FALSE)});
+    Acc({Acc1("phase", PhLocked, FALSE)});         \* under promo_mu_: a plain read
     if phase = "Sweeping" /\ sweepQ # <<>> then
         either
             goto W_Sweep;                         \* sweepOnDemandAllocate (:2136)
@@ -276,17 +289,25 @@ macro Ladder() begin
     end if;
 end macro;
 
-\* finalizePoppedCellW (:1069): the colour decision is a plain read of
-\* gc_phase_ (:1075); the bit and live_bytes follow in the next step.
+\* finalizePoppedCellW (:1069): the colour decision is a relaxed atomic_ref
+\* load of gc_phase_ (CR-001 fixed; plain under phase_plain); the bit and
+\* live_bytes follow in the next step.
 macro FinPhase(fc) begin
-    Acc({Acc1("phase", PhasePlain, FALSE)});
-    if Counts(phase) then
+    if CountsBit(phase) then
+        Acc({Acc1("phase", PhasePlain, FALSE)});
         cell := fc;
         ph := phase;
         fin := 0;
         goto W_StBit;
     else
-        \* Idle: a White header, no bit, no live_bytes
+        \* Idle: a White header, no bit; the live_bytes fetch_add runs in every
+        \* phase (CR-018 / HEAP_073), unless idle_uncounted (the pre-fix code)
+        if IdleCounts then
+            liveBytes[BlkOf(fc)] := liveBytes[BlkOf(fc)] + 1;
+            Acc({Acc1("phase", PhasePlain, FALSE), Acc1("live", FALSE, TRUE)});
+        else
+            Acc({Acc1("phase", PhasePlain, FALSE)});
+        end if;
         allocs[fc] := allocs[fc] + 1;
         stash[self] := stash[self] \ {fc};
         n := n + 1;
@@ -349,7 +370,7 @@ begin
     chunkLive[self] := chunkLive[self] + 1;
     pos := NextPos(chunk[self], cell);
     seen := {};
-  W_R1Ph:                                       \* finalizeBitmapCellW's colour (:1135): plain read
+  W_R1Ph:                                       \* finalizeBitmapCellW's colour: a relaxed atomic_ref load (CR-001)
     Acc({Acc1("phase", PhasePlain, FALSE)});
     if phase = "Marking" then need := need \cup {cell}; end if;
     n := n + 1;
@@ -380,22 +401,15 @@ begin
         vc[self] := [u \in Threads |-> Max(vc[self][u], sharedvc[u])];
         if lock = self then goto W_Locked; else goto W_Stash; end if;
     end if;
-  W_Stash:                                      \* rung 2 cached (:1580-1583): a stashed cell
-    if stash[self] # {} /\ "finalize_in_lock" \notin MUTANT then
-        with x \in stash[self] do                 \* the stash's LIFO order is abstracted
+  W_Stash:                                      \* rung 2 cached: a stashed cell, finalized outside
+    if stash[self] # {} then                      \* the lock (every stashed cell's block is fully
+        with x \in stash[self] do                 \* swept: CR-002); the stash's LIFO order is abstracted
             FinPhase(x);
         end with;
-    elsif stash[self] # {} then
-        LockAcquire();                            \* fix candidate: finalize under promo_mu_
-        goto W_StLk;
     else
-        LockAcquire();                            \* :1587
+        LockAcquire();
         goto W_Locked;
     end if;
-  W_StLk:
-    with x \in stash[self] do
-        FinPhase(x);
-    end with;
   W_StBit:                                      \* setMarkBitAtomic (:1083) + live_bytes fetch_add (:1084)
     if "plain_stash_black" \in MUTANT then
         seen := bits[ByteOf(cell)];               \* a plain set: the load ...
@@ -425,7 +439,7 @@ begin
     seen := {};
     ph := "Idle";
     if lock = self then goto W_StUnlock; else goto W_Loop; end if;
-  W_StUnlock:                                   \* finalize_in_lock only
+  W_StUnlock:                                   \* after an in-lock finalize (CR-002)
     LockRelease();
     goto W_Loop;
   W_Locked:                                     \* under promo_mu_ (:1587-1631)
@@ -444,14 +458,29 @@ begin
         \* (:1617-1624): 1 + up to BatchMax - 1 more cells (1 + 16 in the code)
         shared := [b |-> "none", u |-> 0];
         sharedvc := Zero;
-        with h = Head(freeList), k = Min(BatchMax, Len(freeList)) do
-            stash[self] := stash[self] \cup Range(SubSeq(freeList, 1, k));
-            freeList := SubSeq(freeList, k + 1, Len(freeList));
-            fin := h;
-            if "finalize_in_lock" \in MUTANT then
-                goto W_Fin;                       \* fix candidate: finalized before the unlock
+        with h = Head(freeList) do
+            \* cellInUnsweptBlock (OldGenSpace.hpp): gc_phase_, read plain under the lock,
+            \* is Sweeping (only then does the gap sweep touch mark words, and nothing
+            \* sets it back to Sweeping inside a minor) and the cell's block is not fully swept
+            Acc({Acc1("phase", PhLocked, FALSE)});
+            if Unswept(h) /\ "finalize_outside_lock" \notin MUTANT then
+                \* CR-002 fixed (HEAP_055): a cell of the block under the sweep cursor
+                \* shares mark words with the sweeper's plain nextSetBit / clearBit: it
+                \* is finalized BEFORE the unlock (W_Fin -> W_StUnlock) and nothing is stashed
+                stash[self] := stash[self] \cup {h};
+                freeList := Tail(freeList);
+                fin := h;
+                goto W_Fin;
             else
-                LockRelease();                    \* finalized right after the unlock (:1634)
+                \* a swept head: the batch takes the swept prefix (finalize_outside_lock,
+                \* the pre-fix code: any 1 + up to BatchMax - 1 cells, finalized after the unlock)
+                with k = IF "finalize_outside_lock" \in MUTANT THEN Min(BatchMax, Len(freeList))
+                         ELSE SweptPrefix(freeList) do
+                    stash[self] := stash[self] \cup Range(SubSeq(freeList, 1, k));
+                    freeList := SubSeq(freeList, k + 1, Len(freeList));
+                end with;
+                fin := h;
+                LockRelease();                    \* finalized right after the unlock
                 goto W_Fin;
             end if;
         end with;
@@ -503,12 +532,16 @@ begin
                     await other;
                     skip;                         \* early exit (the other class's list)
                 or
-                    phase := "Idle";              \* completion: a plain write under the lock
+                    phase := "Idle";              \* completion: a relaxed atomic_ref store under the lock (CR-001)
                     Acc({Acc1("phase", PhasePlain, TRUE)});
+                    \* CR-014 fixed (HEAP_067): every completion inside a promotion, in-loop
+                    \* or tail, goes through completeSweep -> sweepCompleteInPromotion: the
+                    \* shrink is deferred to the merge. tail_immediate: the pre-fix tail
+                    \* path, onSweepComplete on this worker NOW.
                     either
-                        deferred := TRUE;         \* in-loop path: sweepCompleteInPromotion (:1361)
+                        deferred := TRUE;         \* completeSweep -> sweepCompleteInPromotion
                     or
-                        await "tail_defers" \notin MUTANT;   \* tail path: onSweepComplete NOW
+                        await "tail_immediate" \in MUTANT;
                         goto W_Shrink;
                     end either;
                 end either;
@@ -524,14 +557,17 @@ begin
         \* finalizePoppedCell -> initObjectHeaderWithSize (:487), under the lock
         with c = Head(freeList) do
             freeList := Tail(freeList);
-            if Counts(phase) then
+            if CountsBit(phase) then
                 bits[ByteOf(c)] := bits[ByteOf(c)] \cup {c};
                 liveBytes[BlkOf(c)] := liveBytes[BlkOf(c)] + 1;
-                Acc({Acc1("phase", PhasePlain, FALSE), Acc1(ByteOf(c), FALSE, TRUE),
+                Acc({Acc1("phase", PhLocked, FALSE), Acc1(ByteOf(c), FALSE, TRUE),
                      Acc1("live", FALSE, TRUE)});
                 if phase = "Marking" then need := need \cup {c}; end if;
+            elsif IdleCounts then                 \* CR-018 / HEAP_073: counted at Idle too
+                liveBytes[BlkOf(c)] := liveBytes[BlkOf(c)] + 1;
+                Acc({Acc1("phase", PhLocked, FALSE), Acc1("live", FALSE, TRUE)});
             else
-                Acc({Acc1("phase", PhasePlain, FALSE)});
+                Acc({Acc1("phase", PhLocked, FALSE)});
             end if;
             allocs[c] := allocs[c] + 1;
         end with;
@@ -593,7 +629,7 @@ begin
         LockRelease();
         goto W_Loop;
     end if;
-  W_Shrink:                                     \* the tail path's onSweepComplete (:5488) on this worker
+  W_Shrink:                                     \* tail_immediate only: the pre-fix tail onSweepComplete on this worker
     with rel \in SUBSET ShrinkCands(liveBytes) do   \* the sizing picks any subset
         \* releaseBlockToAllocator -> detachFromAllocation: FATAL on a Current
         \* block during a parallel minor (:712-717, every build)
@@ -605,7 +641,11 @@ begin
     Acc({Acc1("live", TRUE, FALSE)});             \* computeFragmentationStats :6378, pass 1 :5802
     goto W_PopAfterSweep;
   W_Large:                                      \* allocateLargeBlock (:2725) under the lock (:1542-1553)
-    with f \in FlipCands \cup {"none"} do          \* "none": a free large block or a fresh one
+    \* CR-016 fixed (2026-09-30, HEAP_054): with more than one worker
+    \* allocateFromEmptyRegularBlocks flips nothing (chunks and stashes are invisible
+    \* to it); one worker keeps the flip. flip_in_parallel: the pre-fix code.
+    with f \in (IF "flip_in_parallel" \notin MUTANT /\ Cardinality(Workers) > 1 THEN {} ELSE FlipCands)
+                \cup {"none"} do                   \* "none": a free large block or a fresh one
         if f # "none" then
             released := released \cup {f};        \* flipped to large; its cells are dropped
             freeList := SelectSeq(freeList, LAMBDA x : BlkOf(x) # f);
@@ -854,13 +894,26 @@ VARIABLES pc, bits, freeList, sweepQ, phase, liveBytes, swept, deferred,
 
 (* define statement *)
 Allocated  == {c \in Cells : allocs[c] > 0}
-PhasePlain == "phase_atomic" \notin MUTANT
+
+
+
+PhasePlain == "phase_plain" \in MUTANT
+PhLocked   == TRUE
 SetBits    == UNION {bits[y] : y \in Bytes}
 CanClaim   == shared.b # "none" /\ shared.u < Len(Units(shared.b))
 
 
 
-Counts(p) == p # "Idle" \/ ("count_until_shrink" \in MUTANT /\ deferred)
+Unswept(c)      == phase = "Sweeping" /\ ~swept[BlkOf(c)]
+SweptPrefix(fl) == LET m == Min(BatchMax, Len(fl)) IN
+                   CHOOSE k \in 1..m : /\ \A i \in 1..k : ~Unswept(fl[i])
+                                       /\ (k = m \/ Unswept(fl[k + 1]))
+
+
+
+
+CountsBit(p) == p # "Idle"
+IdleCounts   == "idle_uncounted" \notin MUTANT
 
 
 ShrinkCands(lb) == {b \in Present : swept[b] /\ lb[b] = 0 /\ b \notin released
@@ -1163,69 +1216,46 @@ W_Claim(self) == /\ pc[self] = "W_Claim"
                                  gpos, gch, gk, mcell, mseen >>
 
 W_Stash(self) == /\ pc[self] = "W_Stash"
-                 /\ IF stash[self] # {} /\ "finalize_in_lock" \notin MUTANT
+                 /\ IF stash[self] # {}
                        THEN /\ \E x \in stash[self]:
-                                 /\ races' = (races \cup {ax.l : ax \in {ay \in ({Acc1("phase", PhasePlain, FALSE)}) : Conflicts(self, vc[self], ay)}})
-                                 /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1("phase", PhasePlain, FALSE)}))]
-                                 /\ IF Counts(phase)
-                                       THEN /\ cell' = [cell EXCEPT ![self] = x]
-                                            /\ ph' = [ph EXCEPT ![self] = phase]
-                                            /\ fin' = [fin EXCEPT ![self] = 0]
-                                            /\ pc' = [pc EXCEPT ![self] = "W_StBit"]
-                                            /\ UNCHANGED << stash, allocs, n >>
-                                       ELSE /\ allocs' = [allocs EXCEPT ![x] = allocs[x] + 1]
-                                            /\ stash' = [stash EXCEPT ![self] = stash[self] \ {x}]
-                                            /\ n' = [n EXCEPT ![self] = n[self] + 1]
-                                            /\ fin' = [fin EXCEPT ![self] = 0]
-                                            /\ IF lock = self
-                                                  THEN /\ pc' = [pc EXCEPT ![self] = "W_StUnlock"]
-                                                  ELSE /\ pc' = [pc EXCEPT ![self] = "W_Loop"]
-                                            /\ UNCHANGED << cell, ph >>
+                                 IF CountsBit(phase)
+                                    THEN /\ races' = (races \cup {ax.l : ax \in {ay \in ({Acc1("phase", PhasePlain, FALSE)}) : Conflicts(self, vc[self], ay)}})
+                                         /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1("phase", PhasePlain, FALSE)}))]
+                                         /\ cell' = [cell EXCEPT ![self] = x]
+                                         /\ ph' = [ph EXCEPT ![self] = phase]
+                                         /\ fin' = [fin EXCEPT ![self] = 0]
+                                         /\ pc' = [pc EXCEPT ![self] = "W_StBit"]
+                                         /\ UNCHANGED << liveBytes, stash, 
+                                                         allocs, n >>
+                                    ELSE /\ IF IdleCounts
+                                               THEN /\ liveBytes' = [liveBytes EXCEPT ![BlkOf(x)] = liveBytes[BlkOf(x)] + 1]
+                                                    /\ races' = (races \cup {ax.l : ax \in {ay \in ({Acc1("phase", PhasePlain, FALSE), Acc1("live", FALSE, TRUE)}) : Conflicts(self, vc[self], ay)}})
+                                                    /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1("phase", PhasePlain, FALSE), Acc1("live", FALSE, TRUE)}))]
+                                               ELSE /\ races' = (races \cup {ax.l : ax \in {ay \in ({Acc1("phase", PhasePlain, FALSE)}) : Conflicts(self, vc[self], ay)}})
+                                                    /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1("phase", PhasePlain, FALSE)}))]
+                                                    /\ UNCHANGED liveBytes
+                                         /\ allocs' = [allocs EXCEPT ![x] = allocs[x] + 1]
+                                         /\ stash' = [stash EXCEPT ![self] = stash[self] \ {x}]
+                                         /\ n' = [n EXCEPT ![self] = n[self] + 1]
+                                         /\ fin' = [fin EXCEPT ![self] = 0]
+                                         /\ IF lock = self
+                                               THEN /\ pc' = [pc EXCEPT ![self] = "W_StUnlock"]
+                                               ELSE /\ pc' = [pc EXCEPT ![self] = "W_Loop"]
+                                         /\ UNCHANGED << cell, ph >>
                             /\ UNCHANGED << lock, vc >>
-                       ELSE /\ IF stash[self] # {}
-                                  THEN /\ lock = 0
-                                       /\ lock' = self
-                                       /\ vc' = [vc EXCEPT ![self] = [u \in Threads |-> Max(vc[self][u], lockvc[u])]]
-                                       /\ pc' = [pc EXCEPT ![self] = "W_StLk"]
-                                  ELSE /\ lock = 0
-                                       /\ lock' = self
-                                       /\ vc' = [vc EXCEPT ![self] = [u \in Threads |-> Max(vc[self][u], lockvc[u])]]
-                                       /\ pc' = [pc EXCEPT ![self] = "W_Locked"]
-                            /\ UNCHANGED << stash, allocs, hist, races, n, 
-                                            cell, ph, fin >>
-                 /\ UNCHANGED << bits, freeList, sweepQ, phase, liveBytes, 
-                                 swept, deferred, shared, partialQ, virginQ, 
-                                 chunk, chunkLive, released, grantOn, 
-                                 grantLive, gclaim, gwork, fatal, need, marked, 
-                                 claimed, lockvc, sharedvc, seen, pos, other, 
-                                 lastE, todo, gcell, gseen, gpos, gch, gk, 
-                                 mcell, mseen >>
-
-W_StLk(self) == /\ pc[self] = "W_StLk"
-                /\ \E x \in stash[self]:
-                     /\ races' = (races \cup {ax.l : ax \in {ay \in ({Acc1("phase", PhasePlain, FALSE)}) : Conflicts(self, vc[self], ay)}})
-                     /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1("phase", PhasePlain, FALSE)}))]
-                     /\ IF Counts(phase)
-                           THEN /\ cell' = [cell EXCEPT ![self] = x]
-                                /\ ph' = [ph EXCEPT ![self] = phase]
-                                /\ fin' = [fin EXCEPT ![self] = 0]
-                                /\ pc' = [pc EXCEPT ![self] = "W_StBit"]
-                                /\ UNCHANGED << stash, allocs, n >>
-                           ELSE /\ allocs' = [allocs EXCEPT ![x] = allocs[x] + 1]
-                                /\ stash' = [stash EXCEPT ![self] = stash[self] \ {x}]
-                                /\ n' = [n EXCEPT ![self] = n[self] + 1]
-                                /\ fin' = [fin EXCEPT ![self] = 0]
-                                /\ IF lock = self
-                                      THEN /\ pc' = [pc EXCEPT ![self] = "W_StUnlock"]
-                                      ELSE /\ pc' = [pc EXCEPT ![self] = "W_Loop"]
-                                /\ UNCHANGED << cell, ph >>
-                /\ UNCHANGED << bits, freeList, sweepQ, phase, liveBytes, 
-                                swept, deferred, shared, partialQ, virginQ, 
-                                lock, chunk, chunkLive, released, grantOn, 
-                                grantLive, gclaim, gwork, fatal, need, marked, 
-                                claimed, vc, lockvc, sharedvc, seen, pos, 
-                                other, lastE, todo, gcell, gseen, gpos, gch, 
-                                gk, mcell, mseen >>
+                       ELSE /\ lock = 0
+                            /\ lock' = self
+                            /\ vc' = [vc EXCEPT ![self] = [u \in Threads |-> Max(vc[self][u], lockvc[u])]]
+                            /\ pc' = [pc EXCEPT ![self] = "W_Locked"]
+                            /\ UNCHANGED << liveBytes, stash, allocs, hist, 
+                                            races, n, cell, ph, fin >>
+                 /\ UNCHANGED << bits, freeList, sweepQ, phase, swept, 
+                                 deferred, shared, partialQ, virginQ, chunk, 
+                                 chunkLive, released, grantOn, grantLive, 
+                                 gclaim, gwork, fatal, need, marked, claimed, 
+                                 lockvc, sharedvc, seen, pos, other, lastE, 
+                                 todo, gcell, gseen, gpos, gch, gk, mcell, 
+                                 mseen >>
 
 W_StBit(self) == /\ pc[self] = "W_StBit"
                  /\ IF "plain_stash_black" \in MUTANT
@@ -1319,25 +1349,30 @@ W_Locked(self) == /\ pc[self] = "W_Locked"
                                               THEN /\ shared' = [b |-> "none", u |-> 0]
                                                    /\ sharedvc' = Zero
                                                    /\ LET h == Head(freeList) IN
-                                                        LET k == Min(BatchMax, Len(freeList)) IN
-                                                          /\ stash' = [stash EXCEPT ![self] = stash[self] \cup Range(SubSeq(freeList, 1, k))]
-                                                          /\ freeList' = SubSeq(freeList, k + 1, Len(freeList))
-                                                          /\ fin' = [fin EXCEPT ![self] = h]
-                                                          /\ IF "finalize_in_lock" \in MUTANT
-                                                                THEN /\ pc' = [pc EXCEPT ![self] = "W_Fin"]
-                                                                     /\ UNCHANGED << lock, 
-                                                                                     vc, 
-                                                                                     lockvc >>
-                                                                ELSE /\ lock' = 0
-                                                                     /\ lockvc' = vc[self]
-                                                                     /\ vc' = [vc EXCEPT ![self][self] = vc[self][self] + 1]
-                                                                     /\ pc' = [pc EXCEPT ![self] = "W_Fin"]
-                                                   /\ UNCHANGED << hist, races, 
-                                                                   n, other >>
+                                                        /\ races' = (races \cup {ax.l : ax \in {ay \in ({Acc1("phase", PhLocked, FALSE)}) : Conflicts(self, vc[self], ay)}})
+                                                        /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1("phase", PhLocked, FALSE)}))]
+                                                        /\ IF Unswept(h) /\ "finalize_outside_lock" \notin MUTANT
+                                                              THEN /\ stash' = [stash EXCEPT ![self] = stash[self] \cup {h}]
+                                                                   /\ freeList' = Tail(freeList)
+                                                                   /\ fin' = [fin EXCEPT ![self] = h]
+                                                                   /\ pc' = [pc EXCEPT ![self] = "W_Fin"]
+                                                                   /\ UNCHANGED << lock, 
+                                                                                   vc, 
+                                                                                   lockvc >>
+                                                              ELSE /\ LET k == IF "finalize_outside_lock" \in MUTANT THEN Min(BatchMax, Len(freeList))
+                                                                               ELSE SweptPrefix(freeList) IN
+                                                                        /\ stash' = [stash EXCEPT ![self] = stash[self] \cup Range(SubSeq(freeList, 1, k))]
+                                                                        /\ freeList' = SubSeq(freeList, k + 1, Len(freeList))
+                                                                   /\ fin' = [fin EXCEPT ![self] = h]
+                                                                   /\ lock' = 0
+                                                                   /\ lockvc' = vc[self]
+                                                                   /\ vc' = [vc EXCEPT ![self][self] = vc[self][self] + 1]
+                                                                   /\ pc' = [pc EXCEPT ![self] = "W_Fin"]
+                                                   /\ UNCHANGED << n, other >>
                                               ELSE /\ shared' = [b |-> "none", u |-> 0]
                                                    /\ sharedvc' = Zero
-                                                   /\ races' = (races \cup {ax.l : ax \in {ay \in ({Acc1("phase", PhasePlain, FALSE)}) : Conflicts(self, vc[self], ay)}})
-                                                   /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1("phase", PhasePlain, FALSE)}))]
+                                                   /\ races' = (races \cup {ax.l : ax \in {ay \in ({Acc1("phase", PhLocked, FALSE)}) : Conflicts(self, vc[self], ay)}})
+                                                   /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1("phase", PhLocked, FALSE)}))]
                                                    /\ IF phase = "Sweeping" /\ sweepQ # <<>>
                                                          THEN /\ \/ /\ pc' = [pc EXCEPT ![self] = "W_Sweep"]
                                                                     /\ UNCHANGED <<lock, vc, lockvc, n, other>>
@@ -1372,8 +1407,8 @@ W_Locked(self) == /\ pc[self] = "W_Locked"
                                   gpos, gch, gk, mcell, mseen >>
 
 W_LadderB(self) == /\ pc[self] = "W_LadderB"
-                   /\ races' = (races \cup {ax.l : ax \in {ay \in ({Acc1("phase", PhasePlain, FALSE)}) : Conflicts(self, vc[self], ay)}})
-                   /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1("phase", PhasePlain, FALSE)}))]
+                   /\ races' = (races \cup {ax.l : ax \in {ay \in ({Acc1("phase", PhLocked, FALSE)}) : Conflicts(self, vc[self], ay)}})
+                   /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1("phase", PhLocked, FALSE)}))]
                    /\ IF phase = "Sweeping" /\ sweepQ # <<>>
                          THEN /\ \/ /\ pc' = [pc EXCEPT ![self] = "W_Sweep"]
                                     /\ UNCHANGED <<lock, vc, lockvc, n, other>>
@@ -1403,15 +1438,22 @@ W_LadderB(self) == /\ pc[self] = "W_LadderB"
                                    gpos, gch, gk, mcell, mseen >>
 
 W_Fin(self) == /\ pc[self] = "W_Fin"
-               /\ races' = (races \cup {ax.l : ax \in {ay \in ({Acc1("phase", PhasePlain, FALSE)}) : Conflicts(self, vc[self], ay)}})
-               /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1("phase", PhasePlain, FALSE)}))]
-               /\ IF Counts(phase)
-                     THEN /\ cell' = [cell EXCEPT ![self] = fin[self]]
+               /\ IF CountsBit(phase)
+                     THEN /\ races' = (races \cup {ax.l : ax \in {ay \in ({Acc1("phase", PhasePlain, FALSE)}) : Conflicts(self, vc[self], ay)}})
+                          /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1("phase", PhasePlain, FALSE)}))]
+                          /\ cell' = [cell EXCEPT ![self] = fin[self]]
                           /\ ph' = [ph EXCEPT ![self] = phase]
                           /\ fin' = [fin EXCEPT ![self] = 0]
                           /\ pc' = [pc EXCEPT ![self] = "W_StBit"]
-                          /\ UNCHANGED << stash, allocs, n >>
-                     ELSE /\ allocs' = [allocs EXCEPT ![fin[self]] = allocs[fin[self]] + 1]
+                          /\ UNCHANGED << liveBytes, stash, allocs, n >>
+                     ELSE /\ IF IdleCounts
+                                THEN /\ liveBytes' = [liveBytes EXCEPT ![BlkOf(fin[self])] = liveBytes[BlkOf(fin[self])] + 1]
+                                     /\ races' = (races \cup {ax.l : ax \in {ay \in ({Acc1("phase", PhasePlain, FALSE), Acc1("live", FALSE, TRUE)}) : Conflicts(self, vc[self], ay)}})
+                                     /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1("phase", PhasePlain, FALSE), Acc1("live", FALSE, TRUE)}))]
+                                ELSE /\ races' = (races \cup {ax.l : ax \in {ay \in ({Acc1("phase", PhasePlain, FALSE)}) : Conflicts(self, vc[self], ay)}})
+                                     /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1("phase", PhasePlain, FALSE)}))]
+                                     /\ UNCHANGED liveBytes
+                          /\ allocs' = [allocs EXCEPT ![fin[self]] = allocs[fin[self]] + 1]
                           /\ stash' = [stash EXCEPT ![self] = stash[self] \ {fin[self]}]
                           /\ n' = [n EXCEPT ![self] = n[self] + 1]
                           /\ fin' = [fin EXCEPT ![self] = 0]
@@ -1419,12 +1461,12 @@ W_Fin(self) == /\ pc[self] = "W_Fin"
                                 THEN /\ pc' = [pc EXCEPT ![self] = "W_StUnlock"]
                                 ELSE /\ pc' = [pc EXCEPT ![self] = "W_Loop"]
                           /\ UNCHANGED << cell, ph >>
-               /\ UNCHANGED << bits, freeList, sweepQ, phase, liveBytes, swept, 
-                               deferred, shared, partialQ, virginQ, lock, 
-                               chunk, chunkLive, released, grantOn, grantLive, 
-                               gclaim, gwork, fatal, need, marked, claimed, vc, 
-                               lockvc, sharedvc, seen, pos, other, lastE, todo, 
-                               gcell, gseen, gpos, gch, gk, mcell, mseen >>
+               /\ UNCHANGED << bits, freeList, sweepQ, phase, swept, deferred, 
+                               shared, partialQ, virginQ, lock, chunk, 
+                               chunkLive, released, grantOn, grantLive, gclaim, 
+                               gwork, fatal, need, marked, claimed, vc, lockvc, 
+                               sharedvc, seen, pos, other, lastE, todo, gcell, 
+                               gseen, gpos, gch, gk, mcell, mseen >>
 
 W_Sweep(self) == /\ pc[self] = "W_Sweep"
                  /\ freeList' = Head(sweepQ).g \o freeList
@@ -1488,7 +1530,7 @@ W_SweepEnd(self) == /\ pc[self] = "W_SweepEnd"
                                                      /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1("phase", PhasePlain, TRUE)}))]
                                                      /\ \/ /\ deferred' = TRUE
                                                            /\ pc' = [pc EXCEPT ![self] = "W_PopAfterSweep"]
-                                                        \/ /\ "tail_defers" \notin MUTANT
+                                                        \/ /\ "tail_immediate" \in MUTANT
                                                            /\ pc' = [pc EXCEPT ![self] = "W_Shrink"]
                                                            /\ UNCHANGED deferred
                                ELSE /\ IF le # "none" /\ ~other[self] /\ freeList # <<>>
@@ -1512,22 +1554,25 @@ W_PopAfterSweep(self) == /\ pc[self] = "W_PopAfterSweep"
                          /\ IF ~other[self] /\ freeList # <<>>
                                THEN /\ LET c == Head(freeList) IN
                                          /\ freeList' = Tail(freeList)
-                                         /\ IF Counts(phase)
+                                         /\ IF CountsBit(phase)
                                                THEN /\ bits' = [bits EXCEPT ![ByteOf(c)] = bits[ByteOf(c)] \cup {c}]
                                                     /\ liveBytes' = [liveBytes EXCEPT ![BlkOf(c)] = liveBytes[BlkOf(c)] + 1]
-                                                    /\ races' = (races \cup {ax.l : ax \in {ay \in ({Acc1("phase", PhasePlain, FALSE), Acc1(ByteOf(c), FALSE, TRUE),
+                                                    /\ races' = (races \cup {ax.l : ax \in {ay \in ({Acc1("phase", PhLocked, FALSE), Acc1(ByteOf(c), FALSE, TRUE),
                                                                                                      Acc1("live", FALSE, TRUE)}) : Conflicts(self, vc[self], ay)}})
-                                                    /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1("phase", PhasePlain, FALSE), Acc1(ByteOf(c), FALSE, TRUE),
+                                                    /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1("phase", PhLocked, FALSE), Acc1(ByteOf(c), FALSE, TRUE),
                                                                                                                  Acc1("live", FALSE, TRUE)}))]
                                                     /\ IF phase = "Marking"
                                                           THEN /\ need' = (need \cup {c})
                                                           ELSE /\ TRUE
                                                                /\ need' = need
-                                               ELSE /\ races' = (races \cup {ax.l : ax \in {ay \in ({Acc1("phase", PhasePlain, FALSE)}) : Conflicts(self, vc[self], ay)}})
-                                                    /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1("phase", PhasePlain, FALSE)}))]
-                                                    /\ UNCHANGED << bits, 
-                                                                    liveBytes, 
-                                                                    need >>
+                                               ELSE /\ IF IdleCounts
+                                                          THEN /\ liveBytes' = [liveBytes EXCEPT ![BlkOf(c)] = liveBytes[BlkOf(c)] + 1]
+                                                               /\ races' = (races \cup {ax.l : ax \in {ay \in ({Acc1("phase", PhLocked, FALSE), Acc1("live", FALSE, TRUE)}) : Conflicts(self, vc[self], ay)}})
+                                                               /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1("phase", PhLocked, FALSE), Acc1("live", FALSE, TRUE)}))]
+                                                          ELSE /\ races' = (races \cup {ax.l : ax \in {ay \in ({Acc1("phase", PhLocked, FALSE)}) : Conflicts(self, vc[self], ay)}})
+                                                               /\ hist' = [loc \in Locs |-> Recorded(self, vc[self], loc, ({Acc1("phase", PhLocked, FALSE)}))]
+                                                               /\ UNCHANGED liveBytes
+                                                    /\ UNCHANGED << bits, need >>
                                          /\ allocs' = [allocs EXCEPT ![c] = allocs[c] + 1]
                                     /\ n' = [n EXCEPT ![self] = n[self] + 1]
                                     /\ other' = [other EXCEPT ![self] = FALSE]
@@ -1622,7 +1667,8 @@ W_Shrink(self) == /\ pc[self] = "W_Shrink"
                                   gch, gk, mcell, mseen >>
 
 W_Large(self) == /\ pc[self] = "W_Large"
-                 /\ \E f \in FlipCands \cup {"none"}:
+                 /\ \E f \in (IF "flip_in_parallel" \notin MUTANT /\ Cardinality(Workers) > 1 THEN {} ELSE FlipCands)
+                              \cup {"none"}:
                       IF f # "none"
                          THEN /\ released' = (released \cup {f})
                               /\ freeList' = SelectSeq(freeList, LAMBDA x : BlkOf(x) # f)
@@ -1646,12 +1692,12 @@ W_Large(self) == /\ pc[self] = "W_Large"
                                  mcell, mseen >>
 
 Worker(self) == W_Loop(self) \/ W_R1(self) \/ W_R1Set(self) \/ W_R1Ph(self)
-                   \/ W_Claim(self) \/ W_Stash(self) \/ W_StLk(self)
-                   \/ W_StBit(self) \/ W_StPlainSet(self)
-                   \/ W_StUnlock(self) \/ W_Locked(self) \/ W_LadderB(self)
-                   \/ W_Fin(self) \/ W_Sweep(self) \/ W_SweepClr(self)
-                   \/ W_SweepEnd(self) \/ W_PopAfterSweep(self)
-                   \/ W_Virgin(self) \/ W_Shrink(self) \/ W_Large(self)
+                   \/ W_Claim(self) \/ W_Stash(self) \/ W_StBit(self)
+                   \/ W_StPlainSet(self) \/ W_StUnlock(self)
+                   \/ W_Locked(self) \/ W_LadderB(self) \/ W_Fin(self)
+                   \/ W_Sweep(self) \/ W_SweepClr(self) \/ W_SweepEnd(self)
+                   \/ W_PopAfterSweep(self) \/ W_Virgin(self)
+                   \/ W_Shrink(self) \/ W_Large(self)
 
 K_Loop(self) == /\ pc[self] = "K_Loop"
                 /\ IF todo[self] # {}

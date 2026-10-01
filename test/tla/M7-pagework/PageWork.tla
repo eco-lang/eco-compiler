@@ -22,11 +22,14 @@ CONSTANTS
     Slots,           \* PageWork::slots_ (kJobSlots = 8 in the code)
     Workers,         \* pool workers (gc_helper_threads, default 1)
     MaxOps,          \* bound on caller operations
+    NoWait,          \* TRUE: the caller may also be a promotion holder of a parallel
+                     \* minor with n > 1 workers, whose acquireOldGenBlock uses the
+                     \* no-wait policy (CR-007, AcquireWait::AvoidUnderPromo)
     MUTANT           \* "none", or one of the negative controls (AUDIT.md):
                      \* "reuse_no_wait", "release_no_await_populate",
                      \* "skip_posted_extents", "reuse_keeps_pending",
                      \* "reuse_bypass", "age_stale_entry", "takeslot_no_wait",
-                     \* "job_never_done"
+                     \* "job_never_done", "nowait_skip_posted", "nowait_first_fit"
 
 TruncLast(sq) == SubSeq(sq, 1, Len(sq) - 1)
 Range(sq) == {sq[i] : i \in 1..Len(sq)}
@@ -36,6 +39,13 @@ RemoveAt(sq, i) == IF i = Len(sq) THEN TruncLast(sq)
 \* MUTANT skip_posted_extents: the first extent whose discard is not Posted.
 FirstNotPosted(sq, st) ==
     CHOOSE i \in 1..Len(sq) : st[sq[i]] # "Posted" /\ \A k \in 1..(i - 1) : st[sq[k]] = "Posted"
+
+\* The first index of sq whose element is in S (CR-007's job-blind ghost choice).
+FirstIn(sq, S) ==
+    CHOOSE i \in 1..Len(sq) : sq[i] \in S /\ \A k \in 1..(i - 1) : sq[k] \notin S
+\* The first free-list extent whose discard is Pending (PageWork::isPending).
+FirstPend(sq, st) ==
+    CHOOSE i \in 1..Len(sq) : st[sq[i]] = "Pending" /\ \A k \in 1..(i - 1) : st[sq[k]] # "Pending"
 
 (* --algorithm PageWork
 variables
@@ -49,8 +59,12 @@ variables
     skind     = [s \in Slots |-> "None"],   \* PageJob::kind: None / Discard / Populate
     sext      = [s \in Slots |-> {}],       \* extents (Discard) or window extents (Populate)
     takenSlot = 0,                          \* TakeSlot's result (0 when dead)
-    stale     = {};                         \* ghost, MUTANT age_stale_entry only: extents
+    stale     = {},                         \* ghost, MUTANT age_stale_entry only: extents
                                             \* whose pending_order_ entry went stale at a cancel
+    gPend     = {},                         \* ghost: pending_ membership, maintained by caller
+                                            \* steps only (job-blind; CR-007's skip test)
+    nwAcq     = FALSE,                      \* the acquire in progress is a no-wait one (CR-007)
+    nwFallback = FALSE;                     \* ... that took the cap fallback (may wait)
 
 define
     PopulateInFlightOver(e) ==
@@ -68,6 +82,12 @@ define
     ReapChoices   == SUBSET {s \in Slots : sstate[s] = "Done"}            \* reapDone
     AgeChoices    == SUBSET ({x \in Extents : pw[x] = "Pending"} \cup stale) \* aging
     WindowChoices == SUBSET {x \in Extents : owner[x] = "fresh"}          \* topUpWindow
+    \* CR-007 (HEAP_058/HEAP_059): a no-wait acquire (a promo_mu_ holder with n > 1
+    \* workers) waits on a helper job only after the cap fallback.
+    NoWaitUnlessCap == (nwAcq /\ pc["mut"] = "AS_Wait") => nwFallback
+    \* The skip test's input is job-blind: Pending membership is exactly what the
+    \* caller's own steps (release, reuse, aging) made it.
+    PendGhost == gPend = {x \in Extents : pw[x] = "Pending"}
 end define;
 
 \* PageWork::reap(s): observed Done; forget the slot's posted extents; slot Idle.
@@ -154,6 +174,7 @@ begin
           M_RelPend:                                      \* onRelease: Pending; the free list
             owner[ext] := "free";
             pw[ext] := "Pending";
+            gPend := gPend \cup {ext};
             freeList := Append(freeList, ext);
             gFree := Append(gFree, ext);
             ext := 0; rs := {}; rsel := 0;
@@ -173,6 +194,7 @@ begin
             elsif pw[ext] = "Pending" then
                 if MUTANT # "reuse_keeps_pending" then
                     pw[ext] := "none";                    \* Cancelled: still resident
+                    gPend := gPend \ {ext};
                 end if;
                 if MUTANT = "age_stale_entry" then
                     stale := stale \cup {ext};            \* its pending_order_ entry is stale
@@ -186,7 +208,44 @@ begin
             end if;
           M_Touch:                                        \* (V1 holds here) the heap owns it
             owner[ext] := "heap";
+            nwAcq := FALSE;
+            nwFallback := FALSE;
             ext := 0;
+        or                                                \* acquireOldGenBlock(AvoidUnderPromo),
+                                                          \* CR-007: never waits unless the cap
+            await NoWait /\ (freeList # <<>> \/ \E x \in Extents : owner[x] = "fresh");
+            \* The job-blind ghost's choice (GC_DET_001): Pending membership only.
+            if \E i \in 1..Len(gFree) : gFree[i] \in gPend then
+                gFree := RemoveAt(gFree, FirstIn(gFree, gPend));
+            elsif ~\E x \in Extents : owner[x] = "fresh" then
+                gFree := RemoveAt(gFree, 1);
+            end if;
+            if MUTANT = "nowait_first_fit" /\ freeList # <<>> then
+                ext := freeList[1];                       \* today's first fit (may wait)
+                freeList := RemoveAt(freeList, 1);
+                nwAcq := TRUE;
+                goto M_Reuse;
+            elsif MUTANT = "nowait_skip_posted" /\ \E i \in 1..Len(freeList) : pw[freeList[i]] # "Posted" then
+                ext := freeList[FirstNotPosted(freeList, pw)];   \* a skip keyed on JOB state
+                freeList := RemoveAt(freeList, FirstNotPosted(freeList, pw));
+                nwAcq := TRUE;
+                goto M_Reuse;
+            elsif \E i \in 1..Len(freeList) : pw[freeList[i]] = "Pending" then
+                ext := freeList[FirstPend(freeList, pw)];  \* (1) first-fit Pending: cancelled
+                freeList := RemoveAt(freeList, FirstPend(freeList, pw));
+                nwAcq := TRUE;
+                goto M_Reuse;
+            elsif \E x \in Extents : owner[x] = "fresh" then
+                with x \in {y \in Extents : owner[y] = "fresh"} do
+                    owner[x] := "heap";                   \* (2) a fresh bump: never waits
+                end with;
+            else
+                ext := freeList[1];                       \* (3) the cap: today's first fit
+                freeList := RemoveAt(freeList, 1);
+                nwAcq := TRUE;
+                nwFallback := TRUE;
+                goto M_Reuse;
+            end if;
         or                                                \* acquireOldGenBlock: fresh bump
             await \E x \in Extents : owner[x] = "fresh";
             with x \in {y \in Extents : owner[y] = "fresh"} do
@@ -205,6 +264,7 @@ begin
                 skind[takenSlot] := "Discard";
                 sext[takenSlot] := batch;
                 pw := [x \in Extents |-> IF x \in batch THEN "Posted" ELSE pw[x]];
+                gPend := gPend \ batch;
                 postedIn := [x \in Extents |-> IF x \in batch THEN takenSlot ELSE postedIn[x]];
                 sstate[takenSlot] := "Posted";
                 takenSlot := 0;
@@ -258,7 +318,7 @@ end algorithm; *)
 \* BEGIN TRANSLATION
 CONSTANT defaultInitValue
 VARIABLES pc, owner, freeList, gFree, pw, postedIn, sstate, skind, sext, 
-          takenSlot, stale, stack
+          takenSlot, stale, gPend, nwAcq, nwFallback, stack
 
 (* define statement *)
 PopulateInFlightOver(e) ==
@@ -277,11 +337,17 @@ ReapChoices   == SUBSET {s \in Slots : sstate[s] = "Done"}
 AgeChoices    == SUBSET ({x \in Extents : pw[x] = "Pending"} \cup stale)
 WindowChoices == SUBSET {x \in Extents : owner[x] = "fresh"}
 
+
+NoWaitUnlessCap == (nwAcq /\ pc["mut"] = "AS_Wait") => nwFallback
+
+
+PendGhost == gPend = {x \in Extents : pw[x] = "Pending"}
+
 VARIABLES as, ts, n, ext, rs, rsel, batch, win, cur, todo
 
 vars == << pc, owner, freeList, gFree, pw, postedIn, sstate, skind, sext, 
-           takenSlot, stale, stack, as, ts, n, ext, rs, rsel, batch, win, cur, 
-           todo >>
+           takenSlot, stale, gPend, nwAcq, nwFallback, stack, as, ts, n, ext, 
+           rs, rsel, batch, win, cur, todo >>
 
 ProcSet == {"mut"} \cup (Workers)
 
@@ -297,6 +363,9 @@ Init == (* Global variables *)
         /\ sext = [s \in Slots |-> {}]
         /\ takenSlot = 0
         /\ stale = {}
+        /\ gPend = {}
+        /\ nwAcq = FALSE
+        /\ nwFallback = FALSE
         (* Procedure AwaitSlot *)
         /\ as = [ self \in ProcSet |-> defaultInitValue]
         (* Procedure TakeSlot *)
@@ -330,8 +399,9 @@ AS_Wait(self) == /\ pc[self] = "AS_Wait"
                  /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                  /\ as' = [as EXCEPT ![self] = Head(stack[self]).as]
                  /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-                 /\ UNCHANGED << owner, freeList, gFree, takenSlot, stale, ts, 
-                                 n, ext, rs, rsel, batch, win, cur, todo >>
+                 /\ UNCHANGED << owner, freeList, gFree, takenSlot, stale, 
+                                 gPend, nwAcq, nwFallback, ts, n, ext, rs, 
+                                 rsel, batch, win, cur, todo >>
 
 AwaitSlot(self) == AS_Wait(self)
 
@@ -353,8 +423,9 @@ TS_ReapDone(self) == /\ pc[self] = "TS_ReapDone"
                                 /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                            ELSE /\ pc' = [pc EXCEPT ![self] = "TS_Oldest"]
                                 /\ UNCHANGED << takenSlot, stack, ts >>
-                     /\ UNCHANGED << owner, freeList, gFree, stale, as, n, ext, 
-                                     rs, rsel, batch, win, cur, todo >>
+                     /\ UNCHANGED << owner, freeList, gFree, stale, gPend, 
+                                     nwAcq, nwFallback, as, n, ext, rs, rsel, 
+                                     batch, win, cur, todo >>
 
 TS_Oldest(self) == /\ pc[self] = "TS_Oldest"
                    /\ \E s \in Slots:
@@ -362,8 +433,8 @@ TS_Oldest(self) == /\ pc[self] = "TS_Oldest"
                    /\ pc' = [pc EXCEPT ![self] = "TS_Wait"]
                    /\ UNCHANGED << owner, freeList, gFree, pw, postedIn, 
                                    sstate, skind, sext, takenSlot, stale, 
-                                   stack, as, n, ext, rs, rsel, batch, win, 
-                                   cur, todo >>
+                                   gPend, nwAcq, nwFallback, stack, as, n, ext, 
+                                   rs, rsel, batch, win, cur, todo >>
 
 TS_Wait(self) == /\ pc[self] = "TS_Wait"
                  /\ IF MUTANT = "takeslot_no_wait"
@@ -377,8 +448,9 @@ TS_Wait(self) == /\ pc[self] = "TS_Wait"
                                                                     \o stack[self]]
                             /\ pc' = [pc EXCEPT ![self] = "AS_Wait"]
                  /\ UNCHANGED << owner, freeList, gFree, pw, postedIn, sstate, 
-                                 skind, sext, takenSlot, stale, ts, n, ext, rs, 
-                                 rsel, batch, win, cur, todo >>
+                                 skind, sext, takenSlot, stale, gPend, nwAcq, 
+                                 nwFallback, ts, n, ext, rs, rsel, batch, win, 
+                                 cur, todo >>
 
 TS_Got(self) == /\ pc[self] = "TS_Got"
                 /\ takenSlot' = ts[self]
@@ -386,8 +458,8 @@ TS_Got(self) == /\ pc[self] = "TS_Got"
                 /\ ts' = [ts EXCEPT ![self] = Head(stack[self]).ts]
                 /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                 /\ UNCHANGED << owner, freeList, gFree, pw, postedIn, sstate, 
-                                skind, sext, stale, as, n, ext, rs, rsel, 
-                                batch, win, cur, todo >>
+                                skind, sext, stale, gPend, nwAcq, nwFallback, 
+                                as, n, ext, rs, rsel, batch, win, cur, todo >>
 
 TakeSlot(self) == TS_ReapDone(self) \/ TS_Oldest(self) \/ TS_Wait(self)
                      \/ TS_Got(self)
@@ -400,7 +472,7 @@ M_Choose == /\ pc["mut"] = "M_Choose"
                                   ext' = x
                              /\ rs' = {s \in Slots : skind[s] = "Populate" /\ sstate[s] # "Idle" /\ ext' \in sext[s]}
                              /\ pc' = [pc EXCEPT !["mut"] = "M_RelWait"]
-                             /\ UNCHANGED <<owner, freeList, gFree, pw, postedIn, sstate, skind, sext, stale, batch>>
+                             /\ UNCHANGED <<owner, freeList, gFree, pw, postedIn, sstate, skind, sext, stale, nwAcq, nwFallback, batch>>
                           \/ /\ freeList # <<>>
                              /\ IF MUTANT = "skip_posted_extents" /\ \E i \in 1..Len(freeList) : pw[freeList[i]] # "Posted"
                                    THEN /\ ext' = freeList[FirstNotPosted(freeList, pw)]
@@ -409,12 +481,54 @@ M_Choose == /\ pc["mut"] = "M_Choose"
                                         /\ freeList' = RemoveAt(freeList, 1)
                              /\ gFree' = RemoveAt(gFree, 1)
                              /\ pc' = [pc EXCEPT !["mut"] = "M_Reuse"]
-                             /\ UNCHANGED <<owner, pw, postedIn, sstate, skind, sext, stale, rs, batch>>
+                             /\ UNCHANGED <<owner, pw, postedIn, sstate, skind, sext, stale, nwAcq, nwFallback, rs, batch>>
+                          \/ /\ NoWait /\ (freeList # <<>> \/ \E x \in Extents : owner[x] = "fresh")
+                             /\ IF \E i \in 1..Len(gFree) : gFree[i] \in gPend
+                                   THEN /\ gFree' = RemoveAt(gFree, FirstIn(gFree, gPend))
+                                   ELSE /\ IF ~\E x \in Extents : owner[x] = "fresh"
+                                              THEN /\ gFree' = RemoveAt(gFree, 1)
+                                              ELSE /\ TRUE
+                                                   /\ gFree' = gFree
+                             /\ IF MUTANT = "nowait_first_fit" /\ freeList # <<>>
+                                   THEN /\ ext' = freeList[1]
+                                        /\ freeList' = RemoveAt(freeList, 1)
+                                        /\ nwAcq' = TRUE
+                                        /\ pc' = [pc EXCEPT !["mut"] = "M_Reuse"]
+                                        /\ UNCHANGED << owner, nwFallback >>
+                                   ELSE /\ IF MUTANT = "nowait_skip_posted" /\ \E i \in 1..Len(freeList) : pw[freeList[i]] # "Posted"
+                                              THEN /\ ext' = freeList[FirstNotPosted(freeList, pw)]
+                                                   /\ freeList' = RemoveAt(freeList, FirstNotPosted(freeList, pw))
+                                                   /\ nwAcq' = TRUE
+                                                   /\ pc' = [pc EXCEPT !["mut"] = "M_Reuse"]
+                                                   /\ UNCHANGED << owner, 
+                                                                   nwFallback >>
+                                              ELSE /\ IF \E i \in 1..Len(freeList) : pw[freeList[i]] = "Pending"
+                                                         THEN /\ ext' = freeList[FirstPend(freeList, pw)]
+                                                              /\ freeList' = RemoveAt(freeList, FirstPend(freeList, pw))
+                                                              /\ nwAcq' = TRUE
+                                                              /\ pc' = [pc EXCEPT !["mut"] = "M_Reuse"]
+                                                              /\ UNCHANGED << owner, 
+                                                                              nwFallback >>
+                                                         ELSE /\ IF \E x \in Extents : owner[x] = "fresh"
+                                                                    THEN /\ \E x \in {y \in Extents : owner[y] = "fresh"}:
+                                                                              owner' = [owner EXCEPT ![x] = "heap"]
+                                                                         /\ pc' = [pc EXCEPT !["mut"] = "M_Choose"]
+                                                                         /\ UNCHANGED << freeList, 
+                                                                                         nwAcq, 
+                                                                                         nwFallback, 
+                                                                                         ext >>
+                                                                    ELSE /\ ext' = freeList[1]
+                                                                         /\ freeList' = RemoveAt(freeList, 1)
+                                                                         /\ nwAcq' = TRUE
+                                                                         /\ nwFallback' = TRUE
+                                                                         /\ pc' = [pc EXCEPT !["mut"] = "M_Reuse"]
+                                                                         /\ owner' = owner
+                             /\ UNCHANGED <<pw, postedIn, sstate, skind, sext, stale, rs, batch>>
                           \/ /\ \E x \in Extents : owner[x] = "fresh"
                              /\ \E x \in {y \in Extents : owner[y] = "fresh"}:
                                   owner' = [owner EXCEPT ![x] = "heap"]
                              /\ pc' = [pc EXCEPT !["mut"] = "M_Choose"]
-                             /\ UNCHANGED <<freeList, gFree, pw, postedIn, sstate, skind, sext, stale, ext, rs, batch>>
+                             /\ UNCHANGED <<freeList, gFree, pw, postedIn, sstate, skind, sext, stale, nwAcq, nwFallback, ext, rs, batch>>
                           \/ /\ \E R \in ReapChoices:
                                   /\ pw' = [x \in Extents |-> IF \E s \in R : skind[s] = "Discard"
                                                                     /\ x \in sext[s] /\ postedIn[x] = s /\ pw[x] = "Posted"
@@ -431,12 +545,13 @@ M_Choose == /\ pc["mut"] = "M_Choose"
                              /\ IF batch' # {}
                                    THEN /\ pc' = [pc EXCEPT !["mut"] = "M_Take"]
                                    ELSE /\ pc' = [pc EXCEPT !["mut"] = "M_Window"]
-                             /\ UNCHANGED <<owner, freeList, gFree, ext, rs>>
+                             /\ UNCHANGED <<owner, freeList, gFree, nwAcq, nwFallback, ext, rs>>
                   ELSE /\ pc' = [pc EXCEPT !["mut"] = "Done"]
                        /\ UNCHANGED << owner, freeList, gFree, pw, postedIn, 
-                                       sstate, skind, sext, stale, n, ext, rs, 
-                                       batch >>
-            /\ UNCHANGED << takenSlot, stack, as, ts, rsel, win, cur, todo >>
+                                       sstate, skind, sext, stale, nwAcq, 
+                                       nwFallback, n, ext, rs, batch >>
+            /\ UNCHANGED << takenSlot, gPend, stack, as, ts, rsel, win, cur, 
+                            todo >>
 
 M_RelWait == /\ pc["mut"] = "M_RelWait"
              /\ IF MUTANT # "release_no_await_populate" /\ rs # {}
@@ -451,12 +566,13 @@ M_RelWait == /\ pc["mut"] = "M_RelWait"
                    ELSE /\ pc' = [pc EXCEPT !["mut"] = "M_RelPend"]
                         /\ UNCHANGED << stack, as, rs, rsel >>
              /\ UNCHANGED << owner, freeList, gFree, pw, postedIn, sstate, 
-                             skind, sext, takenSlot, stale, ts, n, ext, batch, 
-                             win, cur, todo >>
+                             skind, sext, takenSlot, stale, gPend, nwAcq, 
+                             nwFallback, ts, n, ext, batch, win, cur, todo >>
 
 M_RelPend == /\ pc["mut"] = "M_RelPend"
              /\ owner' = [owner EXCEPT ![ext] = "free"]
              /\ pw' = [pw EXCEPT ![ext] = "Pending"]
+             /\ gPend' = (gPend \cup {ext})
              /\ freeList' = Append(freeList, ext)
              /\ gFree' = Append(gFree, ext)
              /\ ext' = 0
@@ -464,18 +580,20 @@ M_RelPend == /\ pc["mut"] = "M_RelPend"
              /\ rsel' = 0
              /\ pc' = [pc EXCEPT !["mut"] = "M_Choose"]
              /\ UNCHANGED << postedIn, sstate, skind, sext, takenSlot, stale, 
-                             stack, as, ts, n, batch, win, cur, todo >>
+                             nwAcq, nwFallback, stack, as, ts, n, batch, win, 
+                             cur, todo >>
 
 M_Reuse == /\ pc["mut"] = "M_Reuse"
            /\ IF MUTANT = "reuse_bypass"
                  THEN /\ TRUE
                       /\ pc' = [pc EXCEPT !["mut"] = "M_Touch"]
-                      /\ UNCHANGED << pw, stale, stack, as >>
+                      /\ UNCHANGED << pw, stale, gPend, stack, as >>
                  ELSE /\ IF pw[ext] = "Pending"
                             THEN /\ IF MUTANT # "reuse_keeps_pending"
                                        THEN /\ pw' = [pw EXCEPT ![ext] = "none"]
+                                            /\ gPend' = gPend \ {ext}
                                        ELSE /\ TRUE
-                                            /\ pw' = pw
+                                            /\ UNCHANGED << pw, gPend >>
                                  /\ IF MUTANT = "age_stale_entry"
                                        THEN /\ stale' = (stale \cup {ext})
                                        ELSE /\ TRUE
@@ -497,18 +615,20 @@ M_Reuse == /\ pc["mut"] = "M_Reuse"
                                                        /\ pw' = pw
                                        ELSE /\ pc' = [pc EXCEPT !["mut"] = "M_Touch"]
                                             /\ UNCHANGED << pw, stack, as >>
-                                 /\ stale' = stale
+                                 /\ UNCHANGED << stale, gPend >>
            /\ UNCHANGED << owner, freeList, gFree, postedIn, sstate, skind, 
-                           sext, takenSlot, ts, n, ext, rs, rsel, batch, win, 
-                           cur, todo >>
+                           sext, takenSlot, nwAcq, nwFallback, ts, n, ext, rs, 
+                           rsel, batch, win, cur, todo >>
 
 M_Touch == /\ pc["mut"] = "M_Touch"
            /\ owner' = [owner EXCEPT ![ext] = "heap"]
+           /\ nwAcq' = FALSE
+           /\ nwFallback' = FALSE
            /\ ext' = 0
            /\ pc' = [pc EXCEPT !["mut"] = "M_Choose"]
            /\ UNCHANGED << freeList, gFree, pw, postedIn, sstate, skind, sext, 
-                           takenSlot, stale, stack, as, ts, n, rs, rsel, batch, 
-                           win, cur, todo >>
+                           takenSlot, stale, gPend, stack, as, ts, n, rs, rsel, 
+                           batch, win, cur, todo >>
 
 M_Take == /\ pc["mut"] = "M_Take"
           /\ stack' = [stack EXCEPT !["mut"] = << [ procedure |->  "TakeSlot",
@@ -518,19 +638,21 @@ M_Take == /\ pc["mut"] = "M_Take"
           /\ ts' = [ts EXCEPT !["mut"] = 0]
           /\ pc' = [pc EXCEPT !["mut"] = "TS_ReapDone"]
           /\ UNCHANGED << owner, freeList, gFree, pw, postedIn, sstate, skind, 
-                          sext, takenSlot, stale, as, n, ext, rs, rsel, batch, 
-                          win, cur, todo >>
+                          sext, takenSlot, stale, gPend, nwAcq, nwFallback, as, 
+                          n, ext, rs, rsel, batch, win, cur, todo >>
 
 M_Post == /\ pc["mut"] = "M_Post"
           /\ skind' = [skind EXCEPT ![takenSlot] = "Discard"]
           /\ sext' = [sext EXCEPT ![takenSlot] = batch]
           /\ pw' = [x \in Extents |-> IF x \in batch THEN "Posted" ELSE pw[x]]
+          /\ gPend' = gPend \ batch
           /\ postedIn' = [x \in Extents |-> IF x \in batch THEN takenSlot ELSE postedIn[x]]
           /\ sstate' = [sstate EXCEPT ![takenSlot] = "Posted"]
           /\ takenSlot' = 0
           /\ pc' = [pc EXCEPT !["mut"] = "M_Window"]
-          /\ UNCHANGED << owner, freeList, gFree, stale, stack, as, ts, n, ext, 
-                          rs, rsel, batch, win, cur, todo >>
+          /\ UNCHANGED << owner, freeList, gFree, stale, nwAcq, nwFallback, 
+                          stack, as, ts, n, ext, rs, rsel, batch, win, cur, 
+                          todo >>
 
 M_Window == /\ pc["mut"] = "M_Window"
             /\ \E w \in WindowChoices:
@@ -540,8 +662,9 @@ M_Window == /\ pc["mut"] = "M_Window"
                   THEN /\ pc' = [pc EXCEPT !["mut"] = "M_TakeP"]
                   ELSE /\ pc' = [pc EXCEPT !["mut"] = "M_Choose"]
             /\ UNCHANGED << owner, freeList, gFree, pw, postedIn, sstate, 
-                            skind, sext, takenSlot, stale, stack, as, ts, n, 
-                            ext, rs, rsel, cur, todo >>
+                            skind, sext, takenSlot, stale, gPend, nwAcq, 
+                            nwFallback, stack, as, ts, n, ext, rs, rsel, cur, 
+                            todo >>
 
 M_TakeP == /\ pc["mut"] = "M_TakeP"
            /\ stack' = [stack EXCEPT !["mut"] = << [ procedure |->  "TakeSlot",
@@ -551,8 +674,8 @@ M_TakeP == /\ pc["mut"] = "M_TakeP"
            /\ ts' = [ts EXCEPT !["mut"] = 0]
            /\ pc' = [pc EXCEPT !["mut"] = "TS_ReapDone"]
            /\ UNCHANGED << owner, freeList, gFree, pw, postedIn, sstate, skind, 
-                           sext, takenSlot, stale, as, n, ext, rs, rsel, batch, 
-                           win, cur, todo >>
+                           sext, takenSlot, stale, gPend, nwAcq, nwFallback, 
+                           as, n, ext, rs, rsel, batch, win, cur, todo >>
 
 M_PostP == /\ pc["mut"] = "M_PostP"
            /\ skind' = [skind EXCEPT ![takenSlot] = "Populate"]
@@ -561,8 +684,9 @@ M_PostP == /\ pc["mut"] = "M_PostP"
            /\ takenSlot' = 0
            /\ win' = {}
            /\ pc' = [pc EXCEPT !["mut"] = "M_Choose"]
-           /\ UNCHANGED << owner, freeList, gFree, pw, postedIn, stale, stack, 
-                           as, ts, n, ext, rs, rsel, batch, cur, todo >>
+           /\ UNCHANGED << owner, freeList, gFree, pw, postedIn, stale, gPend, 
+                           nwAcq, nwFallback, stack, as, ts, n, ext, rs, rsel, 
+                           batch, cur, todo >>
 
 Mutator == M_Choose \/ M_RelWait \/ M_RelPend \/ M_Reuse \/ M_Touch
               \/ M_Take \/ M_Post \/ M_Window \/ M_TakeP \/ M_PostP
@@ -575,8 +699,9 @@ W_Take(self) == /\ pc[self] = "W_Take"
                      /\ todo' = [todo EXCEPT ![self] = IF skind[s] = "Discard" THEN sext[s] ELSE {}]
                 /\ pc' = [pc EXCEPT ![self] = "W_Body"]
                 /\ UNCHANGED << owner, freeList, gFree, pw, postedIn, skind, 
-                                sext, takenSlot, stale, stack, as, ts, n, ext, 
-                                rs, rsel, batch, win >>
+                                sext, takenSlot, stale, gPend, nwAcq, 
+                                nwFallback, stack, as, ts, n, ext, rs, rsel, 
+                                batch, win >>
 
 W_Body(self) == /\ pc[self] = "W_Body"
                 /\ IF todo[self] # {}
@@ -592,8 +717,9 @@ W_Body(self) == /\ pc[self] = "W_Body"
                            /\ pc' = [pc EXCEPT ![self] = "W_Take"]
                            /\ todo' = todo
                 /\ UNCHANGED << owner, freeList, gFree, pw, postedIn, skind, 
-                                sext, takenSlot, stale, stack, as, ts, n, ext, 
-                                rs, rsel, batch, win >>
+                                sext, takenSlot, stale, gPend, nwAcq, 
+                                nwFallback, stack, as, ts, n, ext, rs, rsel, 
+                                batch, win >>
 
 Worker(self) == W_Take(self) \/ W_Body(self)
 

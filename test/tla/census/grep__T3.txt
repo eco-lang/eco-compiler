@@ -4,7 +4,7 @@ runtime/src/allocator/NurseryRegion.cpp: R.hand_ylos_reached.clear();
 runtime/src/allocator/NurseryRegion.cpp: R.hand_ylos_reached[static_cast<size_t>(k)] = 1;
 runtime/src/allocator/NurseryRegion.cpp: if (R.hand_ylos_reached[static_cast<size_t>(k)]) return;
 runtime/src/allocator/NurseryRegion.cpp: if (d == nullptr) regionFatal("TV1: a STW major reached an untenured object of the tenured extent", obj);
-runtime/src/allocator/NurseryRegion.cpp: if (h->age != 0) regionFatal("a young large object reached first with age != 0", obj, nullptr, h->age);
+runtime/src/allocator/NurseryRegion.cpp: if (hv.age != 0) regionFatal("a young large object reached first with age != 0", obj, nullptr, hv.age);
 runtime/src/allocator/NurseryRegions.hpp: resolved = n_bld = b_bld = n_fill = b_fill = ylos_handover_reached = under16 = 0;
 runtime/src/allocator/NurseryRegions.hpp: std::vector<uint8_t> hand_ylos_reached;
 runtime/src/allocator/NurseryRegions.hpp: uint64_t ylos_handover_reached = 0;

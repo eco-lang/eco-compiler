@@ -69,8 +69,9 @@ Matched(e) ==
           W_Claim(w) /\ pc'[w] \in {"W_Stash", "W_Locked"}
     [] e.ev = "m4.lock" /\ IsA(e) /\ ~e.large ->         \* promo_mu_, after the stash check
           W_Stash(w) /\ pc'[w] = "W_Locked"
-    [] e.ev = "m4.unlock" ->                            \* the model released in the step before
-          lock # w /\ UNCHANGED vars
+    [] e.ev = "m4.unlock" ->                            \* the model released in the step before,
+          \/ lock # w /\ UNCHANGED vars                  \* or releases now after an in-lock
+          \/ W_StUnlock(w)                               \* finalize (CR-002)
     [] e.ev = "m4.pub" /\ IsA(e) ->                     \* a queued block (advanceSharedW) or a virgin one
           (W_Locked(w) \/ W_Virgin(w)) /\ shared'.b = Blk(e.blk) /\ pc'[w] = "W_Claim"
     [] e.ev = "m4.retire" /\ IsA(e) ->                  \* advanceSharedW retires the exhausted block
@@ -78,6 +79,7 @@ Matched(e) ==
     [] e.ev = "m4.batch" /\ IsA(e) ->                   \* rung 2 in a batch
           /\ W_Locked(w) /\ pc'[w] = "W_Fin"
           /\ fin'[w] = C(e) /\ Len(freeList) - Len(freeList') = e.cnt
+          /\ (lock' = w) = e.inlock                       \* CR-002: finalized before the unlock
     [] e.ev = "m4.ladder" /\ IsA(e) ->                  \* ladderFrom2W: hasPendingSweepWork()
           /\ W_Locked(w) /\ e.val = PhaseVal(phase)
           /\ IF e.pend THEN pc'[w] = "W_Sweep" ELSE pc'[w] = "W_Virgin"
@@ -90,21 +92,21 @@ Matched(e) ==
           /\ (Head(sweepQ).e # "none") = e.end
     [] e.ev = "m4.clr" ->                               \* clearBit
           W_SweepClr(w) /\ cell[w] = Cid(e.blk, e.l)
-    [] e.ev = "m4.swend" /\ e.path = 2 ->               \* the in-loop completion: deferred
-          W_SweepEnd(w) /\ phase' = "Idle" /\ deferred' /\ pc'[w] = "W_PopAfterSweep"
-    [] e.ev = "m4.swend" /\ e.path = 3 ->               \* the tail completion: the shrink now
-          W_SweepEnd(w) /\ phase' = "Idle" /\ pc'[w] = "W_Shrink"
+    [] e.ev = "m4.swend" /\ e.path \in {2, 3} ->        \* a completion (in-loop 2, tail 3): deferred
+          W_SweepEnd(w) /\ phase' = "Idle" /\ deferred' /\ pc'[w] = "W_PopAfterSweep"   \* (CR-014 fixed: both)
     [] e.ev = "m4.swend" ->                             \* the slice ended (budget, early exit)
           UNCHANGED vars
     [] e.ev = "m4.pop" /\ IsA(e) ->                     \* the in-lock pop after the slice
           /\ W_PopAfterSweep(w) /\ ~other[w]
           /\ freeList # <<>> /\ Head(freeList) = C(e)
-          /\ e.val = PhaseVal(phase) /\ e.black = Counts(phase)
+          /\ e.val = PhaseVal(phase) /\ e.black = CountsBit(phase)
     [] e.ev = "m4.fin" /\ IsA(e) ->                     \* finalizePoppedCellW's colour
-          /\ W_Stash(w) \/ W_StLk(w) \/ W_Fin(w)
+          /\ W_Stash(w) \/ W_Fin(w)
           /\ C(e) \in stash[w] /\ e.val = PhaseVal(phase)
           /\ IF e.black THEN pc'[w] = "W_StBit" /\ cell'[w] = C(e)
-                        ELSE pc'[w] \in {"W_Loop", "W_StUnlock"} /\ stash'[w] = stash[w] \ {C(e)}
+                        ELSE /\ pc'[w] \in {"W_Loop", "W_StUnlock"} /\ stash'[w] = stash[w] \ {C(e)}
+                             /\ e.cnt = IdleCounts          \* CR-018 / HEAP_073: counted at Idle too
+                             /\ liveBytes'[BlkOf(C(e))] = liveBytes[BlkOf(C(e))] + (IF e.cnt THEN 1 ELSE 0)
     [] e.ev = "m4.finb" ->                              \* setMarkBitAtomic + live_bytes fetch_add
           W_StBit(w) /\ cell[w] = Cid(e.blk, e.c)
     [] e.ev = "m4.merge" ->                             \* endParallelPromotion after the join

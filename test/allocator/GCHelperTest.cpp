@@ -646,6 +646,18 @@ struct ModeRun {
     uint64_t minors, majors, promoted, allocated, bytes_alloc, inuse_peak, hiwater;
     uint64_t released, fresh, reuse_total, cancelled;
     uint64_t checksum;
+    // CR-007: the no-wait acquire's decisions (modes 1/2 with decommit on, in
+    // a parallel promotion with n > 1): Pending reuses + fresh bumps +
+    // fallbacks. Zero in mode 0 and at n = 1.
+    uint64_t nowait = 0;
+    // Object-level quantities only (GC_DET_001 at N > 1: placement counters
+    // -- hiwater, fresh, reuse -- may differ from mode 0, which has no
+    // PageWork and so no no-wait policy).
+    bool sameObjects(const ModeRun& o) const {
+        return minors == o.minors && majors == o.majors && promoted == o.promoted &&
+               allocated == o.allocated && bytes_alloc == o.bytes_alloc &&
+               released == o.released && checksum == o.checksum;
+    }
     bool operator==(const ModeRun& o) const {
         return minors == o.minors && majors == o.majors && promoted == o.promoted &&
                allocated == o.allocated && bytes_alloc == o.bytes_alloc &&
@@ -716,6 +728,10 @@ ModeRun runModeWorkload(uint32_t mode, uint32_t jitter, size_t ahead = 0) {
     m.reuse_total = s.page_supply.reuse_resident_bytes + s.page_supply.reuse_after_discard_bytes;
     m.cancelled = s.helper.cancelled_bytes;
     m.checksum = checksum;
+    if (const gc::PageWork* pw = alloc.pageWork()) {
+        const gc::PageWorkCounters& c = pw->counters();
+        m.nowait = c.nowait_pending_reuse_bytes + c.nowait_fresh_bytes + c.nowait_fallback_waits;
+    }
     return m;
 }
 
@@ -742,10 +758,23 @@ Testing::TestCase testDecommitModesAgreeOnCounters(
                 (unsigned long long)m.fresh, (unsigned long long)m.reuse_total,
                 (unsigned long long)m.cancelled, (unsigned long long)m.checksum);
         };
-        if (!(m0 == m1 && m1 == m2 && m2 == m2j && m2 == m2a)) {
+        // CR-007 (register-fixes 6.3): with parallel minors (ECO_TEST_MINOR_THREADS
+        // > 1) modes 1/2 apply the no-wait acquire policy and mode 0 does not, so
+        // mode 0 is compared on object-level quantities only; modes 1, 2, 2+jitter
+        // and 2+ahead must stay identical in every counter, the policy's included
+        // (it reads pending_ membership only: job-blind).
+        const bool nowait_ran = m1.nowait != 0;
+        if (!((nowait_ran ? m0.sameObjects(m1) : m0 == m1) && m1 == m2 && m2 == m2j && m2 == m2a) ||
+            nowait_ran) {
             dump("m0", m0); dump("m1", m1); dump("m2", m2); dump("m2j", m2j); dump("m2a", m2a);
+            std::fprintf(stderr, "  no-wait decisions: m1 %llu m2 %llu m2j %llu m2a %llu\n",
+                         (unsigned long long)m1.nowait, (unsigned long long)m2.nowait,
+                         (unsigned long long)m2j.nowait, (unsigned long long)m2a.nowait);
         }
-        TEST_ASSERT(m0 == m1);
+        if (nowait_ran) TEST_ASSERT(m0.sameObjects(m1));
+        else TEST_ASSERT(m0 == m1);
+        TEST_ASSERT(m0.nowait == 0);
+        TEST_ASSERT(m1.nowait == m2.nowait && m2.nowait == m2j.nowait && m2.nowait == m2a.nowait);
         TEST_ASSERT(m1 == m2);
         TEST_ASSERT(m2 == m2j);
         TEST_ASSERT(m2 == m2a);

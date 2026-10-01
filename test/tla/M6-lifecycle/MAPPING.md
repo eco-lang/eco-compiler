@@ -1,6 +1,6 @@
 # M6 — helper pool, gangs, fork and exit: model ↔ code
 
-Two modules, sharing no variables (the pool's atfork prepare runs last and takes no gang lock):
+Two modules, sharing no variables (the pool's prepare is GCFork's innermost layer and takes no gang lock):
 - `HelperPool.tla` (M6a): `GCHelperPool`'s jobs, `post` / worker / `wait`, the pool's atfork
   handlers, `Allocator::thread_mutex_`, the mutator's posts and waits, a thread that forks.
 - `Gangs.tla` (M6b): `GCBackgroundGang` (5c markers, and the 7c tenure collector as an optional
@@ -27,7 +27,7 @@ numbers when the canary pins these regions. `GHP` = `runtime/src/allocator/GCHel
 |---|---|---|
 | `world` | `"parent"`, or `"child"` after the fork step takes the child branch | the address space |
 | `m` | holder of the pool mutex | `GCHelperPool::m_` |
-| `tm` | holder of the allocator mutex | `Allocator::thread_mutex_` (a `recursive_mutex`, no atfork handler) |
+| `tm` | holder of the allocator mutex | `Allocator::thread_mutex_` (a `recursive_mutex`; since register-fixes Phase 5, GCFork's allocator layer locks it in the prepare, before the pool's, `Allocator::forkPrepare`) |
 | `queue`, `outstanding`, `started` | the FIFO, the count, the lazy start flag | `head_`/`tail_`/`HelperJob::next`, `outstanding_`, `started_` (all under `m_`) |
 | `spawned` | ghost: this address space's worker threads exist | `workers_` (the child abandons the parent's) |
 | `jstate[x]` | `Idle → Posted → Running → Done`, back to `Idle` on reuse | `HelperJob::state` |
@@ -67,8 +67,8 @@ thread), `bg1`/`bg2` and `tb1` (parent members), `fg1` (the mark gang's member 1
 | Label | Code | Why one step |
 |---|---|---|
 | `M_Choose` (post) | the caller takes `thread_mutex_` (A:753 `acquireOldGenBlock`, A:892 `releaseOldGenBlock`, A:1253 `onGCPauseEnd`) and picks an Idle slot (`PageWork::takeSlot`, PW:113) | lock acquisition; the slot choice is owner-only PageWork state |
-| `M_PostCas` | `GCHelperPool::post`: CAS Idle → Posted (GHP:155), **outside `m_`** | one CAS. With `FIX` post-under-lock, the CAS moves into the next step |
-| `M_PostQ` | `post`'s `m_` section: start the workers (GHP:172), enqueue, `++outstanding_` (GHP:171-177) | one critical section |
+| `M_PostCas` | `GCHelperPool::post` (Concurrent): since register-fixes Phase 5 (CR-003) ONE `m_` section: the CAS Idle → Posted, start the workers, enqueue, `++outstanding_` | one critical section. Mutants `as_built_2026_09` / `no_tm_cas_outside`: the pre-fix CAS outside `m_`, then `M_PostQ` |
+| `M_PostQ` | (mutants only) the pre-fix `m_` section after an outside CAS | one critical section |
 | `M_PostDone` | `cv_work_.notify_one` (GHP:178); the caller releases `thread_mutex_` | the notify needs no step of its own: nobody checks `cv_work_`'s predicate outside `m_` |
 | `M_Choose` (wait), `M_Wait` | `PageWork::awaitSlot` (PW:103), from `takeSlot`'s wait for the oldest slot, `onReuse` or `drainAll` (PW:268) | lock acquisition, then the call |
 | `WR_Load` | `wait`'s fast path `state.load(acquire)` (GHP:239), or `HelperJob::isDone` (hpp:57) from `PageWork::reapDone` (PW:97) | one acquire load |
@@ -76,11 +76,11 @@ thread), `bg1`/`bg2` and `tb1` (parent members), `fg1` (the mark gang's member 1
 | `WR_Reap` | `PageWork::reap` (PW:76) → `HelperJob::resetForReuse` (GHP:59) | owner-only; `WaitSeesDone` is evaluated here |
 | `M_WaitDone` | the caller releases `thread_mutex_` | |
 | `M_Choose` (fork) | the mutator forks between pauses (`eco-kernel-cpp/src/eco/Process.cpp:70, 124`) | |
-| `F_Tm` | (`FIX` `tm_first`, `all`) a proposed `thread_mutex_` atfork prepare that runs before the pool's | one lock acquisition |
-| `F_Drain` | `GCHelperPool::atforkPrepare` (GHP:261) → `drain()` (GHP:255): `cv_done_.wait(outstanding_ == 0)` | one critical section (every writer of `outstanding_` holds `m_`). With a drain fix it keeps `m_` |
-| `F_Lock` | `atforkPrepare`'s `m_.lock()` (GHP:265) | lock acquisition: **the CR-003 window is between `F_Drain` and `F_Lock`** |
-| `F_TmLast` | (`FIX` `tm_last`) the same handler, run after the pool's | |
-| `F_Fork` | `atforkParent` (GHP:268) or `atforkChild` (GHP:272-288: re-create `m_`/condvars, forget workers, empty queue, `outstanding_ = 0`, `started_ = false`) | `fork()` with its handlers is atomic for the other threads |
+| `F_Tm` | GCFork's allocator layer (`Allocator::forkPrepare`: `thread_mutex_.lock()`), which runs before the pool's layer (`GCFork.cpp` `prep`: layers in increasing order) | one lock acquisition (off in mutants `as_built_2026_09`, `no_tm*`, `tm_last`) |
+| `F_Drain` | `GCHelperPool::atforkPrepare`: `m_.lock()`, then `cv_done_.wait(outstanding_ == 0)` with `m_` kept (one section, register-fixes Phase 5) | one critical section (every writer of `outstanding_` holds `m_`). Mutants `as_built_2026_09` / `no_tm_drain_split`: the pre-fix `drain()` that releases `m_` |
+| `F_Lock` | (mutants only) the pre-fix separate `m_.lock()` | lock acquisition: **the CR-003 window was between `F_Drain` and `F_Lock`** |
+| `F_TmLast` | (mutant `tm_last`) the allocator layer run after the pool's | |
+| `F_Fork` | `atforkParent` or `atforkChild` (re-create `m_`/condvars, forget workers, empty queue, `outstanding_ = 0`, `started_ = false`), and the allocator layer's parent (unlock) / child (re-create `thread_mutex_` in place, `fork_child_`, `fork_owner_`) | `fork()` with its handlers is atomic for the other threads |
 | `W_Take` | `workerLoop`'s first `m_` section (GHP:205-216): wait for work, dequeue, the not-Posted abort (GHP:213), `Running` | one critical section |
 | `W_Run` | `runJob` (GHP:217) | the body, no lock |
 | `W_Done` | `workerLoop`'s second `m_` section (GHP:219-222): `Done` (release, GHP:220), `--outstanding_` | see §3, `W_Done` |
@@ -88,23 +88,24 @@ thread), `bg1`/`bg2` and `tb1` (parent members), `fg1` (the mark gang's member 1
 | `C_Take`, `C_Done`, `C_Notify` | the same `workerLoop`, on workers the child starts at its first post | |
 | `H_Fork` | another thread's `fork()`: an embedding host, or a second heap's mutator (`Process.cpp`) | |
 | `H_Tm`, `H_Pick`, `H_Wait`, `H_Unlock` | the host child's first allocator call, or its `exit()`: `~Allocator` (A:218-224) locks `thread_mutex_` and runs `drainAll` | |
-| `H_Child` (with `GUARD`) | the step-7 guard: a use of a heap the forking thread does not own aborts | proposed, not in the code |
+| `H_Child` (with `GUARD`) | the step-7 guard (resolution a): a use of a heap the forking thread does not own aborts | not adopted as the fix (register-fixes Phase 5 fixed the code); validate builds check `ThreadLocalHeap::owner_` in `minorGC`/`majorGC` (HEAP_007), which a host child never reaches with the contract |
 
 ### M6b
 
 | Label | Code | Why one step |
 |---|---|---|
 | `K_Step`, `K_Again` (`Mark`) | the job body: `bgEntry` (OGS:4417) → `runMarkerLoop` (`MarkWork.hpp`), `closingEntry` (OGS:4437), the tenure engines (`tenureEntry`, `tenureConcEntry`, NT) | M2's Drain contract (§3) |
-| `L_Lock` (`Launch`) | 5c: `launchBackground` (OGS:4444-4484): fresh `bg_ctl_` (OGS:4472), `bg_ep_ = Running` (OGS:4479), then `GCBackgroundGang::launch` (GHP:614-631: the already-running abort, start threads, `finished_ = 0`, `++generation_`, `running_ = true` inside `m_`, GHP:627). 7c: `tenureLaunch` (NT:428-573, launch NT:572) or `tenureConcLaunch` (NT:1222, launch NT:1234) | the mutator-owned writes before the lock are invisible to members (§3); then one critical section |
+| `L_Lock` (`Launch`) | 5c: `launchBackground`: fresh `bg_ctl_`, `bg_ep_ = Running`, then `GCBackgroundGang::launch` (the already-running abort, start threads, `finished_ = 0`, `++generation_`, `running_ = true` inside `m_`). 7c: `tenureLaunch` or `tenureConcLaunch`. **Refusal** (register-fixes Phase 5, CR-013/004): first thing under `m_`, `if (fork_hold_) return false` (`stats_.fork_refusals`); `launchBackground` then sets `bg_ep_ = None` (`cm.episodes_refused`), the 7c launches count `rs.fork_refusals` and leave the job to `tenureJoin`'s orphan path | the mutator-owned writes before the lock are invisible to members (§3); then one critical section |
 | `L_Late` | mutant `running_after_notify` only | |
 | `J_Lock`, `J_Wait` (`Join`) | `join` (GHP:651-655): under `m_`, return if `!running_`; `joinLocked` (GHP:639-649): `cv_done_.wait(finished_ >= members)`, `running_ = false` (GHP:644) | check-under-lock, then the wait's wake-up (§3: no waiter set) |
-| `SJ_Lock`, `SJ_Wait` (`StopAndJoin`) | `stopAndJoin` (GHP:657-662): under `m_`, return if `!running_`; `stop_->store(true)` (GHP:660); `joinLocked` | as `Join` |
+| `SJ_Lock`, `SJ_Wait` (`StopAndJoin`) | `stopAndJoin`: under `m_`, return if `!running_`; `stop_->store(true)`; `my_gen = generation_`; since register-fixes Phase 5 (CR-023) `cv_done_.wait(generation_ != my_gen \|\| finished_ >= members)` and `running_ = false` only if `generation_ == my_gen` (`launch` notifies `cv_done_`). Mutants `no_stop_gen` (the pre-fix `joinLocked`), `stop_gen_clears_running` | as `Join` |
 | `RP_Check`, `RP_Hint`, `RP_Join`, `RP_Set` (`Reap`) | `reapBackground` (OGS:4519-4541): the hint `running() && !finishedApprox()` (OGS:4524), `join`, then `bg_ep_` = Finished or None | `RP_Hint` merges two acquire loads (§3) |
-| `G_Mark1` / `G_RunM` | `GCMarkGang::atforkPrepare` (GHP:468): `run_m_.lock()`, then its `m_` (not modelled, §3); first (`mark_first`) or last (`bg_first`) | lock acquisition |
-| `G_Reg` | `GCBackgroundGang::atforkPrepare` (GHP:684): `bgRegistryMutex().lock()` | lock acquisition |
+| `G_Mark1` / `G_RunM` | `GCMarkGang::atforkPrepare`: `run_m_.lock()`, then its `m_` (not modelled, §3). Since GCFork (register-fixes §7.1) the gangs layer runs it LAST (`bg_first`, `GCBackgroundGang::forkGangsPrepare`); `mark_first` is the pre-GCFork registration-dependent order, kept as a variant | lock acquisition |
+| `G_Reg` | `GCBackgroundGang::atforkPrepare`: `bgRegistryMutex().lock()` | lock acquisition |
+| `G_Hold` | then, under each gang's `m_`, `fork_hold_ = true` (CR-013/004: BEFORE the stops; one step for all gangs: each is a short `m_` section no modelled thread observes mid-way). Mutants `no_fork_hold`, `hold_after_stop` (`G_Hold2`, after the stops) | lock acquisitions |
 | `G_Stop1`, `G_Stop2` | `stopAllForFork` (GHP:669-677): per registered gang, `if (g->running()) g->stopAndJoin()` | one acquire load of `running_`, then the call |
 | `G_Lock1`, `G_Lock2` | then `g->m_.lock()` for every gang (GHP:688): **the CR-004 / CR-013 window is between `G_Stop*` and `G_Lock*`** | one lock acquisition per gang |
-| `G_Fork` | parent: `atforkParent` (GHP:476, GHP:691); child: `atforkChild` (GHP:482, GHP:696: re-create the mutexes, forget threads, `finished_ = 0`, `running_ = false`, re-create the registry mutex) | |
+| `G_Fork` | parent: the gangs layer's parent (mark gang unlock, then each gang `fork_hold_ = false` and unlock, then the registry); child: re-create the mutexes, forget threads, `finished_ = 0`, `running_ = false`, `fork_hold_ = false`, re-create the registry mutex | |
 | `X_Reg`, `X_Stop1`, `X_Stop2`, `X_Done` | `stopAllAtExit` (GHP:679-682), registered with `std::atexit` by the first gang's constructor (GHP:521), run by the mutator's `exit()` (`Process.cpp:231`) | |
 | `U_Launch`, `U_Launch2` | the t0 pause: `afterSnapshot` → `launchBackground` (OGS:4669); the pause's end: `tenureLaunch` (TLH:743) | |
 | `U_MaybeFork` | between pauses: the mutator forks, calls `exit()`, or neither | |
@@ -118,7 +119,7 @@ thread), `bg1`/`bg2` and `tb1` (parent members), `fg1` (the mark gang's member 1
 | `B_Wait`, `B_Run`, `B_Fin` | `GCBackgroundGang::memberLoop` (GHP:553-612): `cv_start_.wait(generation_ != seen)` (GHP:588); `fn`; under `m_` `++finished_`, `finished_pub_` (GHP:608), `notify_all` | two critical sections around the body |
 | `FG_Wait`, `FG_Run`, `FG_Fin` | `GCMarkGang::memberLoop` (GHP:358-411): wait (GHP:380), `fn`, `++finished_ == n - 1` → notify (GHP:408) | |
 | `CB_*`, `CF_*` | the same member loops, on threads a mutator's child starts at its first launch or run (`startThreadsLocked`) | |
-| `H_Act` | another thread's `fork()` | |
+| `H_Act` | another thread's `fork()`, or (`ForeignStop`) its `stopAndJoin` on the 5c gang with no fork (exit's `stopAllAtExit`, `reset`, a test: no hold protects it; CR-023). `RelaunchWaitsStopper`: a relaunched member finishes only after the stopper returned (ghost `fstop`, the CR-023 guard's shape) | |
 
 ## 3. Abstractions, and why each is sound
 
@@ -187,13 +188,13 @@ Footprint rows (`test/tla/footprint-greps.txt`):
 | `LJ_RunningExact` | M6b | invariant | MODEL_M6_10 (LaunchJoin LJ2) | — |
 | `LJ_RunJoined` | M6b | invariant | MODEL_M6_11 (LaunchJoin LJ1, `GCMarkGang::run`) | — |
 | `LaunchIdle` | M6b | invariant | MODEL_M6_12 | `launch`'s `poolAbort("already running")` (GHP:617-619); IM14 `assertSlotsQuiescent("launch")` |
-| `ClosingFinished` | M6b | invariant | the code's assert (CR-005) | `closingFinish` `assert(bg_ep_ == Finished)` (OGS:4615) |
+| `ClosingFinished` | M6b | invariant | the code's assert (CR-005; since register-fixes Phase 5 it accepts `None`: a foreign stop, then the drain) | `closingFinish` `assert(bg_ep_ == Finished \|\| bg_ep_ == None)` |
 | `HandoffClean` | M6b | invariant | IM15 at the handoff | `assertNoPrivateWork("closing")`, `assert(markStackEmpty())` (OGS:4625) |
 | `ChildHeapSafe` | M6b | invariant | MODEL_M6_13 | — |
 | `ChildHeldAny` | M6b | invariant | MODEL_M6_14 (CR-004 window) | — |
 | `ChildHeldTenure` | M6b | invariant | MODEL_M6_15 (CR-013 window) | — |
 | `ExitSafe` | M6b | invariant | MODEL_M6_16 | — |
-| `StopWaitsOwnEpisode` | M6b | invariant | MODEL_M6_17 (CR-023) | — |
+| `StopWaitsOwnEpisode` | M6b | invariant | MODEL_M6_17 (CR-023): the stopper's generation is current, or its wake-up is enabled | — |
 | `ParentProgress` | M6b | liveness | MODEL_M6_18 | — |
 | `ChildProgress` | M6b | liveness | MODEL_M6_19 | — |
 
@@ -236,7 +237,9 @@ properties are defined after the translation, because they read procedure or pro
 - The closing step does its own reap and relaunch before `closingFinish`, as
   `runCycleStepConcurrent` does; `Steps` counts the ordinary steps before it.
 - `MarkThreads = 1` (one CPU: the closing runs inline without `run_m_`), `TwoGangs` (the 7c
-  collector and `tenureJoin`), `B = 2`, and `FIX` / `GUARD` for the step-7 resolutions.
+  collector and `tenureJoin`), `B = 2`, and `GUARD` for the step-7 resolution (a). The `FIX` constants
+  of both modules were removed by register-fixes Phase 5 (2026-10-01): the fixes are the default and
+  the pre-fix behaviours are `MUTANT` values (A6); `ForeignStop` / `RelaunchWaitsStopper` added.
 - `launch`'s `assert` became the invariant `LaunchIdle`; `MaxGen` is gone; `spawned` separates
   "threads exist" from `started_`.
 - New properties: `ChildProgress` (both), `HostChildProgress`, `LaunchIdle`, `ChildHeldTenure`,
@@ -246,19 +249,21 @@ properties are defined after the translation, because they read procedure or pro
 
 | Spec | Harness | Events (hooks) | Matched steps | Hidden |
 |---|---|---|---|---|
-| `TracePool.tla` | `gc-pool-trace` (`test/gc-helper-tsan/pool_trace.cpp`) | `pool.cas`, `pool.enq`, `pool.take`, `pool.done`, `pool.wfast`, `pool.wchk`, `pool.reset`, `pool.drained`, `pool.plock`, `pool.parent`, `pool.child` (`GCHelperPool.cpp`, M6 hooks) | `M_PostCas`, `M_PostQ`, `W_Take`/`C_Take`, `W_Done`/`C_Done`, `WR_Load`, `WR_Lock`, `WR_Reap`, `F_Drain`, `F_Lock`, `F_Fork` | the Mutator's control steps, `WR_Block`/`WR_Blocked`, the workers' loop steps, `F_Tm`/`F_TmLast`/`F_Ret`, the Host's steps, a spurious wake-up (trace spec only) |
-| `TraceGangs.tla` | `gc-fork-trace gangs` (`test/gc-heap-tsan/fork_harness.cpp`) | M1's `minor`, `t0`, `t0end`, `launch`, `relaunch`, `reap`, `step`, `closing`, `handoff`, `stop`; `gang.launch/start/exit/join/run/runEnd` (shared); M6's `gang.stop`, `fork.mprep`, `fork.bgreg`, `fork.bglock`, `fork.mparent/bparent`, `fork.mchild/bchild` | `U_Launch`, `L_Lock`, `U_Relaunch`, `RP_Set`, `U_Next`, `U_RunLock`, `U_FgWait`, `U_Drain`, `U_Handoff`, `B_Wait`/`CB_Wait`, `B_Fin`/`CB_Fin`, `FG_Wait`/`CF_Wait`, `FG_Fin`/`CF_Fin`, `SJ_Lock`, `SJ_Wait`, `J_Wait`, `G_Mark1`/`G_RunM`, `G_Reg`, `G_Lock1`, `G_Fork` | the Mutator's control steps and calls, the early returns of `Reap`, `Join` (`J_Lock`) and `StopAndJoin`, the prepare's no-op steps, the marker loop (`Mark`), `H_Act` |
+| `TracePool.tla` | `gc-pool-trace` (`test/gc-helper-tsan/pool_trace.cpp`; its `thread_mutex_` stand-in has a GCFork allocator layer) | `pool.cas`, `pool.enq`, `pool.take`, `pool.done`, `pool.wfast`, `pool.wchk`, `pool.reset`, `pool.drained`, `pool.plock`, `pool.parent`, `pool.child` (`GCHelperPool.cpp`, M6 hooks) | `M_PostCas` (the merged CAS-and-enqueue section; `pool.enq` a check at `M_PostDone`), `W_Take`/`C_Take`, `W_Done`/`C_Done`, `WR_Load`, `WR_Lock`, `WR_Reap`, `F_Drain` (`pool.plock` a check), `F_Fork` | the Mutator's control steps, `WR_Block`/`WR_Blocked`, the workers' loop steps, `F_Tm`/`F_TmLast`/`F_Ret`, the Host's steps, a spurious wake-up (trace spec only) |
+| `TraceGangs.tla` | `gc-fork-trace gangs` (`test/gc-heap-tsan/fork_harness.cpp`) | M1's `minor`, `t0`, `t0end`, `launch`, `relaunch`, `reap`, `step`, `closing`, `handoff`, `stop`; `gang.launch/start/exit/join/run/runEnd` (shared); M6's `gang.stop`, `gang.refuse`, `fork.mprep`, `fork.bgreg`, `fork.bghold`, `fork.bglock`, `fork.mparent/bparent`, `fork.mchild/bchild` | `U_Launch`, `L_Lock` (and its refusal), `U_Relaunch`, `RP_Set`, `U_Next` (a `refused` step: `bgEp = None`), `U_RunLock`, `U_FgWait`, `U_Drain`, `U_Handoff`, `B_Wait`/`CB_Wait`, `B_Fin`/`CB_Fin`, `FG_Wait`/`CF_Wait`, `FG_Fin`/`CF_Fin`, `SJ_Lock`, `SJ_Wait` (with no `gang.join` when its generation was relaunched: hidden), `J_Wait`, `G_Mark1`/`G_RunM`, `G_Reg`, `G_Hold`, `G_Lock1`, `G_Fork` | the Mutator's control steps and calls, the early returns of `Reap`, `Join` (`J_Lock`) and `StopAndJoin`, the prepare's no-op steps, the marker loop (`Mark`), `H_Act` |
 
 Thread names map to the model's processes: `mut`, `host`; pool workers `eco-gc<i>` (the child's:
 those whose first event follows `pool.child`); `eco-cmark0` = `bg1` (the child's = `cbg1`),
 `eco-mark1` = `fg1` (`cfg1`), told apart by the gang key in the header (`bgkey`, `fgkey`).
 
 The fork harness's deterministic guards use M6's probe hooks as pause points:
-`m6.post.cas` (post, after its CAS: CR-015 and CR-003's CAS window), `m6.pool.drained` (the pool's
-prepare between `drain()` and `m_.lock()`: CR-003), `m6.closing` (`closingFinish` with the episode
-running: CR-005), `m6.stopset` (`stopAndJoin` after the stop), `m6.bg.stopped` (the gangs' prepare
-between `stopAllForFork` and the `m_` locks: the CR-004 window). They fire only while
-`gc::tla_m6` is set.
+`m6.post.cas` (post, after its CAS, now under the pool's `m_` and `thread_mutex_`), `m6.tm.held`
+(`onGCPauseEnd` holding `thread_mutex_` only: CR-015), `m6.pool.drained` (the pool's prepare, now
+inside `m_` with the forker holding `thread_mutex_`: CR-003), `m6.closing` (`closingFinish` with the
+episode running: CR-005), `m6.stopset` (`stopAndJoin` after the stop), `m6.bg.stopped` (the gangs'
+prepare between `stopAllForFork` and the `m_` locks, after the hold: the CR-004 window, closed by the
+refusal). They fire only while `gc::tla_m6` is set. Since the fixes fire probes under locks, every
+harness pause is bounded (`spinFor`, 3 s): a timeout means the fix closed the window (`window=closed`).
 
 <!-- canary-pins begin -->
 ## Canary pins (A9)
@@ -271,6 +276,7 @@ AUDIT.md entry quoting the new hash prefix (`test/tla/README.md`, "The canary").
 |---|---|---|
 | file | `runtime/src/allocator/GCHelperPool.hpp` | `-` |
 | file | `runtime/src/allocator/GCHelperPool.cpp` | `-` |
+| file | `runtime/src/allocator/GCFork.cpp` | `-` |
 | file | `runtime/src/allocator/TlaTrace.hpp` | `-` |
 | region | `runtime/src/allocator/OldGenSpace.cpp` | `OGS.launchBackground` |
 | region | `runtime/src/allocator/OldGenSpace.cpp` | `OGS.reapBackground` |
@@ -300,6 +306,11 @@ AUDIT.md entry quoting the new hash prefix (`test/tla/README.md`, "The canary").
 | census | `runtime/src/allocator/Allocator.hpp` | `-` |
 | census | `runtime/src/allocator/GCHelperPool.cpp` | `-` |
 | census | `runtime/src/allocator/GCHelperPool.hpp` | `-` |
+| census | `runtime/src/allocator/GCFork.cpp` | `-` |
+| census | `runtime/src/allocator/ThreadLocalHeap.cpp` | `-` |
+| census | `runtime/src/allocator/ThreadLocalHeap.hpp` | `-` |
+| census | `runtime/src/allocator/P1Census.cpp` | `-` |
+| census | `runtime/src/allocator/NurserySpace.cpp` | `-` |
 | census | `runtime/src/allocator/NurseryTenure.cpp` | `-` |
 | census | `runtime/src/allocator/OldGenSpace.cpp` | `-` |
 | grep | `-` | `F.bgEp` |

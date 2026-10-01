@@ -65,6 +65,10 @@ struct Knobs {
     int cycle_every = 40;               // force a cycle at step % cycle_every == 0 when idle
     int old_pairs = 60000;
     int fork_every = 0, fork_at = 0;    // fork (the child _exits) while a cycle runs
+    // plans/threaded-gc-register-fixes.md Phase 5 (CR-013/004): a fork's hold set by the
+    // test hook around the minor right after each fork (its relaunch is REFUSED) and
+    // around every second cycle's t0 minor once the gang exists (the t0 launch refused).
+    bool refuse = false;
     int major_every = 0, major_at = 0;  // an explicit STW major while a cycle runs
     double finish_fraction = 0;         // incremental_mark_finish_fraction; 0 = the default
     float global_fraction = 0;          // major_gc_global_pressure_fraction; 0 = the default
@@ -344,13 +348,19 @@ void scenario(unsigned bg, unsigned slices, uint64_t seed, unsigned minor = 1,
             h->test_force_major_trigger_ = true;
             ++cycles;
         }
+        gc::GCBackgroundGang* held = nullptr;   // a test fork hold around this minor
 #if ECO_TLA_TRACE_ENABLED
         if (kn.fork_every > 0 && step % kn.fork_every == kn.fork_at &&
             OldGenSpaceTestAccess::cycleActive(h->getOldGen())) {
             forkNow();
+            if (kn.refuse) held = OldGenSpaceTestAccess::bgGang(h->getOldGen());   // the relaunch
         }
+        if (kn.refuse && h->test_force_major_trigger_ && cycles % 2 == 0)
+            held = OldGenSpaceTestAccess::bgGang(h->getOldGen());                 // the t0 launch
 #endif
+        if (held != nullptr) held->setForkHoldForTesting(true);
         a.minorGC();
+        if (held != nullptr) held->setForkHoldForTesting(false);
 #if ECO_TLA_TRACE_ENABLED
         if (kn.major_every > 0 && step % kn.major_every == kn.major_at &&
             OldGenSpaceTestAccess::cycleActive(h->getOldGen())) {
@@ -393,9 +403,10 @@ void scenario(unsigned bg, unsigned slices, uint64_t seed, unsigned minor = 1,
                     (unsigned long long)rg.late, (unsigned long long)rg.par_runs,
                     (unsigned long long)rg.age_marked, (unsigned long long)rg.zapped);
     }
-    std::printf("heap scenario B=%u T=%u minor=%u: %llu forced cycles ok (episodes %llu, bg units %llu, "
+    std::printf("heap scenario B=%u T=%u minor=%u: %llu forced cycles ok (episodes %llu, refused %llu, bg units %llu, "
                 "assists %llu, closings with work %llu, early done %llu, parallel minors %llu)\n", bg, slices, minor,
                 (unsigned long long)cycles, (unsigned long long)cm.episodes_launched,
+                (unsigned long long)cm.episodes_refused,
                 (unsigned long long)cm.bg_units, (unsigned long long)cm.assists,
                 (unsigned long long)cm.closings_with_work, (unsigned long long)cm.done_k_hist[0],
                 (unsigned long long)h->getNursery().getStats().pmin.minors_parallel);
@@ -426,6 +437,14 @@ void scenario(unsigned bg, unsigned slices, uint64_t seed, unsigned minor = 1,
                     (unsigned long long)pc.reuse_waits, (unsigned long long)pc.release_waits,
                     (unsigned long long)pc.slot_full_waits, (unsigned long long)ps.posts.load(),
                     (unsigned long long)ps.stall_count.load(), (unsigned long long)ps.stall_outside_pause.load());
+        // CR-007 (register-fixes 6.3): the no-wait acquire of a promotion holder (n > 1).
+        std::printf("  nowait: pending reuses %llu KiB, skipped %llu extents, fresh %llu KiB, cap fallbacks %llu; "
+                    "process pool stall_max %.1f ms; old-gen hiwater %llu KiB\n",
+                    (unsigned long long)(pc.nowait_pending_reuse_bytes >> 10),
+                    (unsigned long long)pc.nowait_skipped_extents,
+                    (unsigned long long)(pc.nowait_fresh_bytes >> 10),
+                    (unsigned long long)pc.nowait_fallback_waits, ps.stall_max_ns.load() / 1e6,
+                    (unsigned long long)(a.getOldGenCommitHighWaterBytes() >> 10));
     }
 }
 #if ECO_TLA_TRACE_ENABLED
@@ -459,12 +478,20 @@ Knobs pressureKnobs() {
     k.finish_fraction = 0.7;
     return k;
 }
+// Register-fixes Phase 5 (CR-013/004): launches refused under a (test) fork hold, at t0
+// and at the relaunch after a fork stop -- to M1, episodes a fork stopped at once.
+Knobs refuseKnobs() {
+    Knobs k = traceKnobs(2, 23);
+    k.refuse = true;
+    return k;
+}
 const TraceScenario kTraceScenarios[] = {
     {"legacy-b2", 2, 4, 1, false, traceKnobs(2, 23)},
     {"legacy-b4-t8", 4, 8, 1, false, traceKnobs(1, 25)},
     {"parminor-b2", 2, 4, 4, false, traceKnobs(3, 41)},
     {"region-b2", 2, 4, 4, true, traceKnobs(2, 43)},
     {"pressure-b2", 2, 8, 1, false, pressureKnobs()},
+    {"refuse-b2", 2, 4, 1, false, refuseKnobs()},
 };
 
 int traceMain(int argc, char** argv) {
@@ -494,7 +521,7 @@ int traceMain(int argc, char** argv) {
 int main(int argc, char** argv) { return traceMain(argc, argv); }
 #else
 int promoSweepMain(int argc, char** argv);   // promo_sweep.cpp (M4; not in the default run)
-int ylosSweepMain(int argc, char** argv);    // ylos_sweep.cpp (CR-019; not in the default run)
+int ylosSweepMain(int argc, char** argv);    // ylos_sweep.cpp (CR-019; in the default run since its fix)
 // Register reproductions, Phase C (plans/threaded-gc-register-repros-impl.md
 // §5): deterministic TSan pairs, not in the default run (each reports by design).
 int promoDetMain(int argc, char** argv);     // promo_sweep.cpp: det-cr014-live, det-cr001, det-cr002
@@ -548,7 +575,8 @@ int armMain(int argc, char** argv) {
 // (CR-037); a young x -> an old doomed Tuple2, both dying one step later
 // (CR-017); cycles forced off the idle major's step. Oracles: "a family's young
 // element changed" or TV7 (CR-037); IM4 or "parallel marker reached nursery
-// object" (CR-017); TSan reports. Expected to FAIL today; not in the default run.
+// object" (CR-017); TSan reports. Passes since register-fixes Phase 3 (2026-09-30: CR-037 and CR-017
+// fixed); not in the default run.
 int lbabaMain(int argc, char** argv) {
     if (argc > 2 && std::strcmp(argv[2], "0") != 0) setenv("ECO_GC_HELPER_JITTER_US", argv[2], 1);
     const uint64_t seed0 = argc > 3 ? std::strtoull(argv[3], nullptr, 10) : 1;
@@ -620,6 +648,14 @@ int main(int argc, char** argv) {
     pool_ylos.ylos_every = 2;
     scenario(2, 4, 10, 4, /*regions=*/false, 1, 1, pool_ylos);
     scenario(2, 4, 11, 4, /*regions=*/true, 1, 1, pool_ylos);
+    // Register CR-019 (fixed 2026-10-01, register-fixes 6.1): the ylos-sweep
+    // arm at its defaults (a legacy parallel minor sweeps a mixed block whose
+    // young YLOS another worker ages; about 3 s), expected clean.
+    {
+        char a0[] = "ylos-sweep";
+        char* av[] = {a0, nullptr};
+        if (const int rc = ylosSweepMain(1, av)) return rc;
+    }
     std::printf("heap_driver PASS\n");
     return 0;
 }

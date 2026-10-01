@@ -15,7 +15,8 @@
 //
 // Recorded: the driver's operations; the runtime's minor / major events (M1's
 // hooks in ThreadLocalHeap.cpp); the tenure job's launch, help and merge
-// (NurseryTenure.cpp: tj.launch, tj.help, tj.merge); the tenure gang's start,
+// (NurseryTenure.cpp: tj.launch, tj.help, tj.merge); a STW major's zap of the
+// dead Young survivors (NurseryRegion.cpp: mzap, HEAP_074); the tenure gang's start,
 // exit and join (GCHelperPool.cpp); and after every collection the roots (the
 // id each holds and whether it is old) and the reachable ids. The engine's own
 // events (TenureWork.hpp) are not recorded here: the storm (gc-tenure-trace) checks
@@ -156,7 +157,7 @@ int tinyTenureMain(int argc, char** argv) {
     std::snprintf(hdr, sizeof hdr,
                   "{\"harness\":\"gc-heap-trace\",\"kind\":\"tenure\",\"seed\":%llu,\"maxid\":%d,\"ec\":%d}",
                   static_cast<unsigned long long>(seed), kMaxId, kEdenOps);
-    tlatrace::begin(hdr, "alloc,load,drop,minor,major,tj.,gang.start,gang.exit,gang.join,troots");
+    tlatrace::begin(hdr, "alloc,load,drop,minor,major,mzap,tj.,gang.start,gang.exit,gang.join,troots");
 
     // At most kEdenOps allocations between two minors (a STW major leaves eden
     // as it is), early in the run, so that a new object often points at one

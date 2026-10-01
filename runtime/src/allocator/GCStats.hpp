@@ -199,6 +199,13 @@ struct BitmapAllocStats {
     // inside a parallel promotion (on a worker, under promo_mu_).
     uint64_t sweep_tail_completions = 0;
     uint64_t sweep_tail_in_promotion = 0;
+    // plans/threaded-gc-register-fixes.md §3.3/§3.4: empty-regular-block flips
+    // (allocateFromEmptyRegularBlocks), the large-body index entries a flip
+    // retired (CR-035), and the flips refused inside a parallel minor with more
+    // than one worker (CR-016).
+    uint64_t empty_block_flips = 0;
+    uint64_t flip_index_retired = 0;
+    uint64_t flip_skipped_parallel = 0;
     void merge(const BitmapAllocStats& o) {
         bitmap_allocs += o.bitmap_allocs;
         bitmap_alloc_bytes += o.bitmap_alloc_bytes;
@@ -217,6 +224,9 @@ struct BitmapAllocStats {
         bitmap_free_bytes_at_major += o.bitmap_free_bytes_at_major;
         sweep_tail_completions += o.sweep_tail_completions;
         sweep_tail_in_promotion += o.sweep_tail_in_promotion;
+        empty_block_flips += o.empty_block_flips;
+        flip_index_retired += o.flip_index_retired;
+        flip_skipped_parallel += o.flip_skipped_parallel;
     }
     bool any() const {
         return bitmap_allocs | virgin_blocks | cursor_refills |
@@ -314,6 +324,14 @@ struct RegionTenureCounters {
     // threaded-gc-07b (tenure age k > 1): the ageing mark and the zap.
     uint64_t tenure_age = 1, age_starts = 0, age_marked = 0, age_marked_bytes = 0, age_heal = 0;
     uint64_t zapped = 0, zapped_bytes = 0, zap_ns = 0, age_forced_exact = 0, age_par_marks = 0;
+    // plans/threaded-gc-register-fixes.md Phase 3: CR-017 (HEAP_074) a STW major's zap of the
+    // Young extents' unreached survivors (passes, objects, bytes, time, the slowest pass), and
+    // CR-038 (HEAP_070) the merge's slot clearing of dead ageing-generation YLOS.
+    uint64_t major_zaps = 0, major_zapped = 0, major_zapped_bytes = 0, major_zap_ns = 0, major_zap_ns_max = 0;
+    uint64_t zapped_ylos = 0;
+    // plans/threaded-gc-register-fixes.md Phase 5: CR-013 tenure launches refused under a
+    // fork's hold (the join's orphan path finishes the job, HEAP_070).
+    uint64_t fork_refusals = 0;
     bool any() const { return minors != 0; }
     void combine(const RegionTenureCounters& o) {
         minors += o.minors; jobs += o.jobs; merges += o.merges;
@@ -336,11 +354,16 @@ struct RegionTenureCounters {
         par_idle_yields += o.par_idle_yields; par_idle_sleeps += o.par_idle_sleeps;
         copies_under16 += o.copies_under16; heals_parallel += o.heals_parallel;
         grant_fallbacks += o.grant_fallbacks;
+        fork_refusals += o.fork_refusals;
         if (o.tenure_age > tenure_age) tenure_age = o.tenure_age;
         age_starts += o.age_starts; age_marked += o.age_marked;
         age_marked_bytes += o.age_marked_bytes; age_heal += o.age_heal;
         zapped += o.zapped; zapped_bytes += o.zapped_bytes; zap_ns += o.zap_ns;
         age_forced_exact += o.age_forced_exact; age_par_marks += o.age_par_marks;
+        major_zaps += o.major_zaps; major_zapped += o.major_zapped;
+        major_zapped_bytes += o.major_zapped_bytes; major_zap_ns += o.major_zap_ns;
+        if (o.major_zap_ns_max > major_zap_ns_max) major_zap_ns_max = o.major_zap_ns_max;
+        zapped_ylos += o.zapped_ylos;
     }
 };
 struct RegionTenureStats : RegionTenureCounters {
@@ -416,6 +439,7 @@ struct ParMarkStats {
 // PROGRESS counters: they may differ across conc_mark modes (P§3.10).
 struct ConcMarkStats {
     uint64_t episodes_launched = 0, episodes_relaunched = 0, episodes_stopped = 0;
+    uint64_t episodes_refused = 0;   // launches refused under a fork's hold (CR-013/004)
     uint64_t bg_units = 0;
     uint64_t assists = 0, assist_units = 0, assist_ns_total = 0, assist_ns_max = 0;
     uint64_t closings_with_work = 0, closing_units = 0, closing_ns_total = 0, closing_ns_max = 0;
@@ -427,6 +451,7 @@ struct ConcMarkStats {
     void combine(const ConcMarkStats& o) {
         episodes_launched += o.episodes_launched; episodes_relaunched += o.episodes_relaunched;
         episodes_stopped += o.episodes_stopped; bg_units += o.bg_units;
+        episodes_refused += o.episodes_refused;
         assists += o.assists; assist_units += o.assist_units;
         assist_ns_total += o.assist_ns_total;
         if (o.assist_ns_max > assist_ns_max) assist_ns_max = o.assist_ns_max;

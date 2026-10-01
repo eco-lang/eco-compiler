@@ -6,9 +6,11 @@
 #   run_register_guards.sh <test-exe> <validate-dir> <source-dir> <cmake> <cc> <cxx> <fork-build-dir>
 #
 # Steps:
-#   1. unit xfail guards        <test-exe> --filter "xfail CR-"
-#   2. validate-only guards     CR-028 in <validate-dir> (configured with ECO_HEAP_VALIDATE=ON
-#                               if it has no cache), built and run
+#   1. unit guards              <test-exe> --filter "CR-0": every register guard -- the xfail
+#                               ones, the fixed ones (plans/threaded-gc-register-fixes.md: a
+#                               converted guard must keep passing), won't-fix ones and controls
+#   2. validate-only guards     CR-028 and CR-036 (IM5) in <validate-dir> (configured with
+#                               ECO_HEAP_VALIDATE=ON if it has no cache), built and run
 #   3. harness arms             run_fork_arms.py --tier quick: fork (plain), trace (det-*), TSan
 #
 # Default mode: a reproduced defect is XFAIL (passes); a guard whose defect has gone is XPASS
@@ -29,7 +31,7 @@ step() {   # step <name> <command...>
   $r  $name"
 }
 
-step "unit xfail guards (build)" "$test_exe" --filter "xfail CR-"
+step "unit guards, xfail and fixed (build)" "$test_exe" --filter "CR-0"
 
 configure_validate() {
     [ -f "$vdir/CMakeCache.txt" ] && return 0
@@ -42,9 +44,12 @@ validate_guards() {
     grep -q '^ECO_HEAP_VALIDATE:BOOL=ON' "$vdir/CMakeCache.txt" || {
         echo "register-guards: $vdir is not an ECO_HEAP_VALIDATE=ON tree"; return 1; }
     "$cmake" --build "$vdir" --target test || return 1
-    "$vdir/test/test" --filter "xfail CR-028"
+    vrc=0
+    "$vdir/test/test" --filter "CR-028" || vrc=1   # run both even when one fails (strict)
+    "$vdir/test/test" --filter "CR-036" || vrc=1
+    return $vrc
 }
-step "validate-only guards (CR-028, $vdir)" validate_guards
+step "validate-only guards (CR-028, CR-036, $vdir)" validate_guards
 
 step "harness arms (fork, trace, TSan)" python3 "$src/test/gc-heap-tsan/run_fork_arms.py" \
     --tier quick "--build-dir=$forkdir"

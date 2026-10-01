@@ -114,7 +114,7 @@ public:
         if (!info_.reserve(max_blocks) || !meta_.reserve(max_blocks) ||
             !lmark_.reserve(max_blocks) || !live_.reserve(max_blocks) ||
             !pos_of_.reserve(max_blocks) || !order_.reserve(max_blocks) ||
-            !free_.reserve(max_blocks)) {
+            !free_.reserve(max_blocks) || !gen_.reserve(max_blocks)) {
             releaseStorage();
             return false;
         }
@@ -124,7 +124,7 @@ public:
 
     void releaseStorage() {
         info_.release(); meta_.release(); lmark_.release(); live_.release();
-        pos_of_.release(); order_.release(); free_.release();
+        pos_of_.release(); order_.release(); free_.release(); gen_.release();
         capacity_ = 0; size_ = 0; free_count_ = 0; high_water_ = 0;
     }
 
@@ -142,6 +142,10 @@ public:
     bool isLive(BlockId id) const {
         return id.v < high_water_ && live_[id.v] != 0;
     }
+    // CR-036 (HEAP_048): the id's incarnation, incremented at every
+    // materialization (add) and never reset (clear() keeps it): a same-id,
+    // same-start re-issue has a different generation.
+    uint32_t generation(BlockId id) const { return gen_[id.v]; }
 
     BlockInfo& info(BlockId id) { return info_[id.v]; }
     const BlockInfo& info(BlockId id) const { return info_[id.v]; }
@@ -173,12 +177,14 @@ public:
             info_.ensureCommitted(n); meta_.ensureCommitted(n);
             lmark_.ensureCommitted(n); live_.ensureCommitted(n);
             pos_of_.ensureCommitted(n); free_.ensureCommitted(n);
+            gen_.ensureCommitted(n);
         }
         order_.ensureCommitted(size_ + 1);
         info_[id.v] = bi;
         meta_[id.v] = m;
         lmark_[id.v] = 0;
         live_[id.v] = 1;
+        ++gen_[id.v];   // CR-036: a new incarnation of the id (fresh commits are 0: the first is 1)
         pos_of_[id.v] = static_cast<uint32_t>(size_);
         order_[size_] = id;
         ++size_;
@@ -213,7 +219,7 @@ public:
     }
 
     // Empties the table; the next id handed out is 0 again. Storage stays
-    // reserved and committed.
+    // reserved and committed. gen_ is NOT reset: the counter is monotone.
     void clear() {
         for (uint32_t i = 0; i < high_water_; ++i) live_[i] = 0;
         size_ = 0;
@@ -230,10 +236,11 @@ public:
             case 3: return live_.data();
             case 4: return pos_of_.data();
             case 5: return order_.data();
-            default: return free_.data();
+            case 6: return free_.data();
+            default: return gen_.data();
         }
     }
-    static constexpr int kStorageArrays = 7;
+    static constexpr int kStorageArrays = 8;
 
 private:
     void retireId(BlockId id) {
@@ -248,6 +255,7 @@ private:
     ReservedArray<uint32_t>       pos_of_;
     ReservedArray<BlockId>        order_;
     ReservedArray<BlockId>        free_;    // LIFO stack of released ids
+    ReservedArray<uint32_t>       gen_;     // CR-036: per-id generation (monotone)
     size_t   capacity_   = 0;
     size_t   size_       = 0;
     size_t   free_count_ = 0;

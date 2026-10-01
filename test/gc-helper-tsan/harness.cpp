@@ -183,7 +183,7 @@ int64_t traceExtentId(const void* p) {
 // default seeds; trace: record the run (trace build only, M7's H2/H3 traces).
 void script(HelperMode mode, unsigned threads, unsigned jitter, bool real, int steps,
             size_t ahead, size_t n_ext = kExtents, uint64_t seed = 0, bool trace = false,
-            uint32_t delay = 2, unsigned reuse_pct = 35) {
+            uint32_t delay = 2, unsigned reuse_pct = 35, unsigned nowait_pct = 0) {
     auto& pool = freshPool(mode, threads, jitter);
     World w;
     w.real = real;
@@ -222,9 +222,9 @@ void script(HelperMode mode, unsigned threads, unsigned jitter, bool real, int s
             std::snprintf(hdr, sizeof hdr,
                           "{\"harness\":\"pagework\",\"N\":%zu,\"slots\":%zu,\"pool\":%u,"
                           "\"jitter\":%u,\"real\":%s,\"steps\":%d,\"ahead\":%zu,\"seed\":%" PRIu64
-                          ",\"delay\":%u,\"reuse\":%u}",
+                          ",\"delay\":%u,\"reuse\":%u,\"nowait\":%u}",
                           n_ext, PageWork::kJobSlots, threads, jitter, real ? "true" : "false", steps,
-                          ahead / kExt, seed, delay, reuse_pct);
+                          ahead / kExt, seed, delay, reuse_pct, nowait_pct);
             ::Elm::tlatrace::begin(hdr);
         }
 #endif
@@ -235,16 +235,41 @@ void script(HelperMode mode, unsigned threads, unsigned jitter, bool real, int s
         for (int step = 0; step < steps; ++step) {
             std::lock_guard<std::mutex> lk(big_lock);
             const unsigned r = rng() % 100;
-            if (r < reuse_pct && !free_list.empty()) {
-                // Reuse the first free extent.
-                const size_t k = free_list.front();
-                free_list.front() = free_list.back();
+            // CR-007: Allocator::acquireOldGenBlock's no-wait policy (a promotion
+            // holder with n > 1 workers): the first Pending extent, else a fresh
+            // bump, else (the "cap": bump_limit) first fit. Drawn only when
+            // nowait_pct > 0, so the older scripts replay unchanged.
+            const bool nowait = r < reuse_pct && !free_list.empty() && nowait_pct > 0 &&
+                                rng() % 100 < nowait_pct;
+            size_t pick = SIZE_MAX;   // free-list index to reuse; SIZE_MAX: none
+            bool nowait_fresh = false;
+            if (nowait) {
+                for (size_t i = 0; i < free_list.size(); ++i) {
+                    if (pw.isPending(w.base + free_list[i] * kExt)) { pick = i; break; }
+                    pw.noteNoWaitSkip();
+                }
+                if (pick != SIZE_MAX) {
+                    pw.noteNoWait(PageWork::NoWaitPick::PendingReuse, w.base + free_list[pick] * kExt, kExt);
+                } else if (bump < bump_limit) {
+                    nowait_fresh = true;
+                    pw.noteNoWait(PageWork::NoWaitPick::Fresh, w.base + bump * kExt, kExt);
+                } else {
+                    pick = 0;
+                    pw.noteNoWait(PageWork::NoWaitPick::Fallback, w.base + free_list[0] * kExt, kExt);
+                }
+            } else if (r < reuse_pct && !free_list.empty()) {
+                pick = 0;   // first fit
+            }
+            if (pick != SIZE_MAX) {
+                // Reuse free_list[pick] (swap-remove, like acquire).
+                const size_t k = free_list[pick];
+                free_list[pick] = free_list.back();
                 free_list.pop_back();
                 pw.onReuse(w.base + k * kExt, kExt, rng() % 2);
                 w.state[k].store(InUse);
                 writePattern(w, k, ++gen[k]);
                 in_use.push_back(k);
-            } else if (r < reuse_pct + 20 && bump < bump_limit) {
+            } else if (nowait_fresh || (r < reuse_pct + 20 && bump < bump_limit)) {
                 char* p = w.base + bump * kExt;
                 char* from = nullptr;
                 const size_t n = pw.onFreshBump(p, kExt, &from);
@@ -291,9 +316,9 @@ int main(int argc, char** argv) {
 #if ECO_TLA_TRACE_ENABLED
     // The trace build (gc-helper-trace): one recorded H2/H3 script, Concurrent mode.
     //   gc-helper-trace pagework <fake|real> <threads> <jitter us> <steps> <extents>
-    //                   <ahead extents> <seed> [<decommit delay syncs> [<reuse %>]]
-    //   (defaults 2 and 35, the H2/H3 script's own)
-    if (argc >= 9 && argc <= 11 && std::strcmp(argv[1], "pagework") == 0) {
+    //                   <ahead extents> <seed> [<decommit delay syncs> [<reuse %> [<nowait %>]]]
+    //   (defaults 2, 35 and 0, the H2/H3 script's own; nowait %: CR-007's no-wait acquires)
+    if (argc >= 9 && argc <= 12 && std::strcmp(argv[1], "pagework") == 0) {
         const bool real = std::strcmp(argv[2], "real") == 0;
         const unsigned threads = static_cast<unsigned>(std::atoi(argv[3]));
         const unsigned jitter = static_cast<unsigned>(std::atoi(argv[4]));
@@ -303,15 +328,16 @@ int main(int argc, char** argv) {
         const uint64_t seed = std::strtoull(argv[8], nullptr, 10);
         const uint32_t delay = argc >= 10 ? static_cast<uint32_t>(std::atoi(argv[9])) : 2;
         const unsigned reuse = argc >= 11 ? static_cast<unsigned>(std::atoi(argv[10])) : 35;
-        if (threads < 1 || n < 2 || n > kExtents || steps < 1 || seed == 0 || reuse > 55)
+        const unsigned nowait = argc >= 12 ? static_cast<unsigned>(std::atoi(argv[11])) : 0;
+        if (threads < 1 || n < 2 || n > kExtents || steps < 1 || seed == 0 || reuse > 55 || nowait > 100)
             die("pagework: bad arguments");
         script(HelperMode::Concurrent, threads, jitter, real, steps, ahead, n, seed, /*trace=*/true,
-               delay, reuse);
+               delay, reuse, nowait);
         std::printf("pagework trace PASS\n");
         return 0;
     }
     std::fprintf(stderr, "usage: %s pagework <fake|real> <threads> <jitter us> <steps> <extents> "
-                         "<ahead extents> <seed> [<decommit delay syncs> [<reuse %%>]]\n", argv[0]);
+                         "<ahead extents> <seed> [<decommit delay syncs> [<reuse %%> [<nowait %%>]]]\n", argv[0]);
     return 2;
 #else
     (void)argc;

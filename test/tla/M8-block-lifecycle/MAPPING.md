@@ -82,11 +82,11 @@ heaps it can end in; free choices stand for the thresholds the model cannot see 
 | `Ladder`, `Rung2`…`Rung8` | `allocateFromSizeClassBitmap` `OGS:973`: cursor `:975`, exact pop `:977`, bag-first virgin `:984`, split `:988`, sweep-on-demand `:996`, virgin `:1005`, bag rung `:1009`, panic `:1011` |
 | `CursorAlloc`, `Refill`, `SetCursor`, `FinalizeBitmapCell` | `cursorAllocate` `OGS:888`, `refillCursor` `:828`, `setCursor` `:803`, `finalizeBitmapCell` `:851` (bit always set, `pending_live`) |
 | `VirginThenCursor`, `EnsureBag` | `materializeVirginBlock` `OGS:936` + `startVirginBlock` `:959`; `ensureBagPageAvailable` `:917` |
-| `PopFinalize`, `Gate`, `Pad` | `tryPopFromFreeList` `OGS:2150` + `finalizePoppedCell` `:2173`; `initObjectHeaderWithSize` `OGS:512` (the phase gate `:522`, the `live_bytes` add `:552`); `padCellSlack` `:2127` |
+| `PopFinalize`, `Gate`, `Pad` | `tryPopFromFreeList` `OGS:2150` + `finalizePoppedCell` `:2173`; `initObjectHeaderWithSize` `OGS:512` (the phase gate `:522` decides colour and bit only; the `live_bytes` add runs in every phase: CR-018 fixed 2026-09-30, HEAP_073; mutant `idle_uncounted` = the pre-fix Idle gate); `padCellSlack` `:2127` |
 | `Split`, `SplitCands` | `tryAllocateBySplittingLarger` `OGS:2409` (classes from `max(target, num_size_classes_)`, remainder 0 or ≥ `MIN_FREE_CELL_SIZE`) |
 | `TryFL`, `SweepOnDemand`/`SODIter`, `Panic`/`PanicIter` | `tryAllocateFromFreeLists` `OGS:2194`, `sweepOnDemandAllocate` `:2294`, `panicSweepAndRetryAllocation` `:2326` |
-| `BagPage`, `BagSweep`, `FreshPage` | `allocateFromBagPage` `OGS:2528`: step 1 split `:2581`, step 2 slices `:2592-2608`, step 3 fresh page `:2617-2692` (the remainder test `:2678`: CR-033) |
-| `LargeBlock`, `FromFreeLarge`, `Flip`, `FreshLarge` | `allocateLargeBlock` `OGS:2918`; `allocateFromFreeLargeBlocks` `:2813`; `allocateFromEmptyRegularBlocks` `:2855` (the test `:2862`, `detachFromAllocation`, `removeFreeCellsForBlock` `:2876`, the flip `:2893-2911`; no `large_body_index_` purge: CR-035); the fresh block `:2929-2975` |
+| `BagPage`, `BagSweep`, `FreshPage` | `allocateFromBagPage` `OGS:2528`: step 1 split `:2581`, step 2 slices `:2592-2608`, step 3 fresh page `:2617-2692` (the remainder test `:2678`: any nonzero remainder goes through `pushSpanOnFreeLists`, CR-033 fixed 2026-09-30; mutant `bag_tail_headerless` = the pre-fix `>= MIN_FREE_CELL_SIZE` test) |
+| `LargeBlock`, `FromFreeLarge`, `Flip`, `FreshLarge` | `allocateLargeBlock` `OGS:2918`; `allocateFromFreeLargeBlocks` `:2813`; `allocateFromEmptyRegularBlocks` `:2855` (the test `:2862`, `detachFromAllocation`, `removeFreeCellsForBlock` `:2876`, `retireIndexRange` over the block (CR-035 fixed 2026-09-30: retire semantics, the id is not recycled; mutant `flip_keeps_index` = the pre-fix flip), the flip `:2893-2911`); the fresh block `:2929-2975` |
 | `Push`, `Pack`, `Slice`, `PlaceCell` | `pushSpanOnFreeLists` `OGS:5212` (uniform branch `:5337`, packer `:5358`, the sub-`MIN_FREE_CELL_SIZE` tail header `:5370`) |
 | `SweepLoop`, `Inner`, `GapStep`, `FlushRun`, `EarlyOr`, `Finish`, `Complete` | `lazySweep` `OGS:5546`: loop head `:5570`, in-loop completion `:5572`, the `fully_swept` skip `:5598`, the gap sweep `:5662-5707` (inner head `:5667`), block boundary `:5762`, early exit `:5796`, the flush and tail completion `:5807-5827`; `onSweepComplete` `:5841` |
 | `Drain` | `prepareMark`'s drain `OGS:2991-2996` (a budget of `SIZE_MAX / 2`: no stop by budget) |
@@ -137,7 +137,7 @@ is the same table, serially; `H9` (`BlockInfo` of reachable blocks, the flip) �
 | `BlockParseable` | HEAP_024 (a mixed block parses by header over `[start, end_of_objects)`), HEAP_055 (the gap sweep reads only live headers) | V11 (after a block's gap sweep) |
 | `IndexFaithful` | HEAP_026, HEAP_056, HEAP_062 | V12, the post-release index check `OGS:6438-6459` (validate) |
 | `FreeListsInLiveBlocks` | HEAP_052 | `removeFreeCellsForBlock`'s LEAK probe (validate) |
-| `FlipTrustsTruth` | HEAP_051 (what `live_bytes == 0` and `fully_swept` claim) | none: CR-018 |
+| `FlipTrustsTruth` | HEAP_051, HEAP_073 (what `live_bytes == 0` and `fully_swept` claim) | none (CR-018 fixed by counting in every phase) |
 | `SideTablesFaithful` | HEAP_048, HEAP_049, HEAP_054 | V7 / `validateOldGenMetadata` |
 | witnesses `NoSizeClassedBagCarve`, `NoSameIdSameStartReissue` | CR-029's route, CR-036's shape | — |
 
@@ -149,8 +149,9 @@ release (reclaim, shrink), a rooted object.
 
 ## 6. Contracts
 
-- **Provided: BlockLifecycleSerial** (to M4, M1, M5): with CR-018, CR-033 and CR-035's fix
-  candidates on, the serial lifecycle keeps every invariant above (`controls/fixed_all`,
+- **Provided: BlockLifecycleSerial** (to M4, M1, M5): with CR-018, CR-033 and CR-035's fixes
+  (the spec's defaults since 2026-09-30; their pre-fix code is the mutants `idle_uncounted`,
+  `bag_tail_headerless`, `flip_keeps_index`), the serial lifecycle keeps every invariant above (`controls/fixed_all`,
   `MC_deep_fixed`). M4's `ReleasedSafe` assumes the serial release and re-issue are sound; M8
   checks them with address reuse (`MC_quick_reuse`, the re-issue witness).
 - **Assumed**: nothing from other models (serial).
