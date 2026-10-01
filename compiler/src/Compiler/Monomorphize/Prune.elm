@@ -1,4 +1,4 @@
-module Compiler.Monomorphize.Prune exposing (pruneUnreachableSpecs, pruneAfterInline)
+module Compiler.Monomorphize.Prune exposing (pruneUnreachableSpecs, pruneAfterInline, restrictToSccEdges)
 
 {-| Prune unreachable specializations from MonoGraph.
 
@@ -18,7 +18,7 @@ self-compile's emitted text. It re-collects edges from the REWRITTEN bodies
 (`callEdges` is `Array.empty` after the inliner) and does no closing: residual
 number vars were already discharged and crash-checked at mono time.
 
-@docs pruneUnreachableSpecs, pruneAfterInline
+@docs pruneUnreachableSpecs, pruneAfterInline, restrictToSccEdges
 
 -}
 
@@ -26,6 +26,7 @@ import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Data.BitSet as BitSet exposing (BitSet)
+import Compiler.Graph as Graph
 import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.MonoTraverse as Traverse
 import Compiler.Monomorphize.State as State
@@ -162,14 +163,119 @@ reads it by `layoutMapGet`, never by iteration.
 -}
 pruneAfterInline : Mono.MonoGraph -> Mono.MonoGraph
 pruneAfterInline ((Mono.MonoGraph record) as graph) =
-    pruneUnreachableWith
-        (Traverse.collectSpecEdges record.nodes)
-        { node = identity
-        , tipe = identity
-        , hasResidual = always False
-        , ctorShapes = \shapes _ -> shapes
-        }
-        graph
+    case
+        pruneUnreachableWith
+            (Traverse.collectSpecEdges record.nodes)
+            { node = identity
+            , tipe = identity
+            , hasResidual = always False
+            , ctorShapes = \shapes _ -> shapes
+            }
+            graph
+    of
+        Mono.MonoGraph pruned ->
+            -- Row 8 (plans/frontend-heap-release.md §7.4, CGEN_069/MONO_022):
+            -- the graph carries ONLY the intra-SCC edges from here on.
+            Mono.MonoGraph { pruned | callEdges = restrictToSccEdges pruned.callEdges }
+
+
+{-| Keep only the edges whose two ends lie in the same strongly connected
+component (self-loops included), preserving each row's order and its
+`Nothing`/`Just` shape.
+
+The one downstream reader of `callEdges` is `MonoInlineSimplify.buildBodyLookup`
+at codegen, which needs only `isRecursive` — membership of a cycle in the graph
+INDUCED on the codegen-time nodes (GlobalOpt/CafHoist add and remove specs, so
+that set differs from this one). Every edge of a cycle lies inside one SCC, so
+a subgraph induced from the restricted edges has exactly the cycles the one
+induced from the full edges has: `isRecursive` is unchanged for every spec,
+and the cross-SCC edges (the bulk of the array) are not carried to codegen.
+
+-}
+restrictToSccEdges : Array (Maybe (List Int)) -> Array (Maybe (List Int))
+restrictToSccEdges edges =
+    let
+        n =
+            Array.length edges
+
+        inRange t =
+            t >= 0 && t < n
+
+        fwd : Array (List Int)
+        fwd =
+            Array.map (\entry -> List.filter inRange (Maybe.withDefault [] entry)) edges
+
+        trans : Array (List Int)
+        trans =
+            Array.foldl
+                (\targets ( src, acc ) ->
+                    ( src + 1
+                    , List.foldl
+                        (\t a ->
+                            case Array.get t a of
+                                Just preds ->
+                                    Array.set t (src :: preds) a
+
+                                Nothing ->
+                                    a
+                        )
+                        acc
+                        targets
+                    )
+                )
+                ( 0, Array.repeat n [] )
+                fwd
+                |> Tuple.second
+
+        selfLoops : BitSet
+        selfLoops =
+            Array.foldl
+                (\targets ( src, acc ) ->
+                    ( src + 1
+                    , if List.member src targets then
+                        BitSet.insert src acc
+
+                      else
+                        acc
+                    )
+                )
+                ( 0, BitSet.emptyWithSize n )
+                fwd
+                |> Tuple.second
+
+        -- Component id per vertex (acyclic singletons get their own id too).
+        component : Array Int
+        component =
+            List.foldl
+                (\scc ( nextComp, acc ) ->
+                    case scc of
+                        Graph.AcyclicSCC v ->
+                            ( nextComp + 1, Array.set v nextComp acc )
+
+                        Graph.CyclicSCC vs ->
+                            ( nextComp + 1, List.foldl (\v a -> Array.set v nextComp a) acc vs )
+                )
+                ( 0, Array.repeat n (-1) )
+                (Graph.stronglyConnCompInt { fwd = fwd, trans = trans, selfLoops = selfLoops, size = n })
+                |> Tuple.second
+
+        compOf v =
+            Maybe.withDefault (-1) (Array.get v component)
+    in
+    Array.indexedMap
+        (\src entry ->
+            case entry of
+                Just targets ->
+                    let
+                        c =
+                            compOf src
+                    in
+                    Just (List.filter (\t -> inRange t && compOf t == c) targets)
+
+                Nothing ->
+                    Nothing
+        )
+        edges
 
 
 {-| Prune MonoGraph and SpecializationRegistry to keep only

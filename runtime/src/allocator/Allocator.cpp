@@ -53,6 +53,9 @@
 // to harmless integers. Callers don't inspect the return value.
 #if !defined(_WIN32)
 #include <sys/mman.h>
+#if defined(__GLIBC__)
+#include <malloc.h>   // malloc_trim (collectMajorAndRelease)
+#endif
 #else
 namespace {
 [[maybe_unused]] constexpr int MADV_WILLNEED = 0;
@@ -1441,6 +1444,121 @@ void Allocator::drainHelperWork() {
     if (page_work_) page_work_->drainAll(/*discard_pending=*/false);
 }
 // TLA-REGION(AL.drainHelperWork) end
+
+// ========== Explicit collections (plans/frontend-heap-release.md §3.5, HEAP_076) ==========
+
+namespace {
+uint64_t explicitNowNs() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+[[noreturn]] void explicitFatal(const char* what) {
+    std::fprintf(stderr, "[gc] FATAL: %s (HEAP_076)\n", what);
+    std::fflush(stderr);
+    std::abort();
+}
+}  // namespace
+
+GCReport Allocator::collectMajorAndRelease() {
+    ThreadLocalHeap* h = tl_heap_;
+    if (h == nullptr) explicitFatal("collectMajorAndRelease without a thread heap");
+    if (h->inPause()) explicitFatal("collectMajorAndRelease inside a GC pause");
+    GCReport r;
+    r.kind = GCReport::Kind::Major;
+    const uint64_t t0 = explicitNowNs();
+    r.rss_before = platform::processResidentBytes();
+    uint64_t rel0 = 0, dis0 = 0;
+    {   // snapshot only
+        std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+        rel0 = page_supply_.released_bytes;
+        dis0 = page_work_ ? page_work_->counters().discard_posted_bytes
+                          : page_supply_.discarded_bytes;
+        r.old_pending_before = page_work_ ? page_work_->counters().pending_bytes : 0;
+    }
+    r.old_in_use_before = getOldGenCommittedBytes();
+    const uint64_t ep0 = h->getOldGen().majorEpoch();
+    // NO lock held across the collection and the shrink (HEAP_075).
+    const ThreadLocalHeap::ReleaseTimings t = h->majorGCAndShrink();
+    const uint64_t td = explicitNowNs();
+    // TLA-REGION(AL.releaseDiscard) begin
+    {
+        std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+        // Waits for every slot, then discards every Pending extent (with
+        // decommit off nothing is Pending: the config is respected).
+        if (page_work_) page_work_->drainAll(/*discard_pending=*/page_work_->decommitOn());
+#if ECO_HEAP_VALIDATE
+        validatePageWork("collectMajorAndRelease");
+#endif
+        r.released_bytes = page_supply_.released_bytes - rel0;
+        r.discarded_bytes = (page_work_ ? page_work_->counters().discard_posted_bytes
+                                        : page_supply_.discarded_bytes) - dis0;
+        r.old_pending_after = page_work_ ? page_work_->counters().pending_bytes : 0;
+        r.nursery_committed = nursery_low_committed_ + nursery_high_committed_;
+        r.old_high_water = old_gen_committed;
+    }
+    // TLA-REGION(AL.releaseDiscard) end
+    r.discard_ns = explicitNowNs() - td;
+    r.rss_after_discard = platform::processResidentBytes();
+#if defined(__GLIBC__)
+    {   // outside thread_mutex_: it can take milliseconds
+        const uint64_t tt = explicitNowNs();
+        r.trim_result = malloc_trim(0);
+        r.trim_ns = explicitNowNs() - tt;
+    }
+#endif
+    r.gc_ns = t.gc_ns;
+    r.sweep_ns = t.sweep_ns;
+    r.shrink_ns = t.shrink_ns;
+    r.shrink_released_bytes = t.shrink_released;
+    r.old_in_use_after = getOldGenCommittedBytes();
+    r.major_count = h->getOldGen().majorEpoch();
+    r.majors_run = r.major_count - ep0;
+    if (r.majors_run > 0) r.live_after_mark = h->getOldGen().majorLiveBytes();
+    r.minor_count = h->getNursery().minorSeq();
+    r.rss_after = platform::processResidentBytes();
+    r.total_ns = explicitNowNs() - t0;
+    return r;
+}
+
+GCReport Allocator::collectMinor() {
+    ThreadLocalHeap* h = tl_heap_;
+    if (h == nullptr) explicitFatal("collectMinor without a thread heap");
+    if (h->inPause()) explicitFatal("collectMinor inside a GC pause");
+    GCReport r;
+    r.kind = GCReport::Kind::Minor;
+    const uint64_t t0 = explicitNowNs();
+    r.rss_before = platform::processResidentBytes();
+    uint64_t rel0 = 0, dis0 = 0;
+    {   // snapshot only
+        std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+        rel0 = page_supply_.released_bytes;
+        dis0 = page_work_ ? page_work_->counters().discard_posted_bytes
+                          : page_supply_.discarded_bytes;
+        r.old_pending_before = page_work_ ? page_work_->counters().pending_bytes : 0;
+    }
+    r.old_in_use_before = getOldGenCommittedBytes();
+    const uint64_t ep0 = h->getOldGen().majorEpoch();
+    h->minorGC();                                // may chain into a major (majors_run)
+    r.gc_ns = explicitNowNs() - t0;
+    {   // snapshot only
+        std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+        r.released_bytes = page_supply_.released_bytes - rel0;
+        r.discarded_bytes = (page_work_ ? page_work_->counters().discard_posted_bytes
+                                        : page_supply_.discarded_bytes) - dis0;
+        r.old_pending_after = page_work_ ? page_work_->counters().pending_bytes : 0;
+        r.nursery_committed = nursery_low_committed_ + nursery_high_committed_;
+        r.old_high_water = old_gen_committed;
+    }
+    r.old_in_use_after = getOldGenCommittedBytes();
+    r.major_count = h->getOldGen().majorEpoch();
+    r.majors_run = r.major_count - ep0;
+    if (r.majors_run > 0) r.live_after_mark = h->getOldGen().majorLiveBytes();
+    r.minor_count = h->getNursery().minorSeq();
+    r.rss_after_discard = r.rss_after = platform::processResidentBytes();
+    r.total_ns = explicitNowNs() - t0;
+    return r;
+}
 
 #if ECO_HEAP_VALIDATE
 // V2 + V3 (plans/threaded-gc-03-helper-threads.md Step 6). Caller holds

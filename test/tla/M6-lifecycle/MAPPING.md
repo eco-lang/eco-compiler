@@ -301,6 +301,7 @@ AUDIT.md entry quoting the new hash prefix (`test/tla/README.md`, "The canary").
 | region | `runtime/src/allocator/Allocator.cpp` | `AL.onGCPauseEnd` |
 | region | `runtime/src/allocator/Allocator.cpp` | `AL.rebuildPageWork` |
 | region | `runtime/src/allocator/Allocator.cpp` | `AL.drainHelperWork` |
+| region | `runtime/src/allocator/Allocator.cpp` | `AL.releaseDiscard` |
 | region | `runtime/src/allocator/Allocator.cpp` | `AL.destructor` |
 | census | `runtime/src/allocator/Allocator.cpp` | `-` |
 | census | `runtime/src/allocator/Allocator.hpp` | `-` |

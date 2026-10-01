@@ -6060,7 +6060,7 @@ void OldGenSpace::onSweepComplete() {
         ? static_cast<size_t>(std::ceil(
               static_cast<double>(live) / static_cast<double>(target)))
         : 0;
-    maybeShrinkCapacity(desired_heap, /*light_pass=*/true);
+    maybeShrinkCapacity(desired_heap, ShrinkPass::Light);
     // M4: the light shrink is over (its m4.rel events name what it released);
     // par: on a worker inside a parallel minor (CR-014's tail path).
     ECO_M4_TRACE("m4.shrink", "par", par_promo_active_);
@@ -6233,7 +6233,7 @@ void OldGenSpace::adjustCapacityAfterMajorGC() {
     // applies (1.2x desired), but the global-pressure bypass kicks in when
     // committed is approaching the cap.
     if (live == 0 || occupancy <= target) {
-        maybeShrinkCapacity(desired_heap, /*light_pass=*/false);
+        maybeShrinkCapacity(desired_heap, ShrinkPass::Heavy);
         return;
     }
 
@@ -6252,10 +6252,15 @@ void OldGenSpace::adjustCapacityAfterMajorGC() {
 // adjustCapacityAfterMajorGC; this function applies the floor, hysteresis,
 // and global-pressure bypass on top.
 //
-// `light_pass=true` is used at onSweepComplete — it skips releases unless
+// ShrinkPass::Light is used at onSweepComplete — it skips releases unless
 // current_heap is well above desired (1.5x), since the heavy post-mark
 // pass already ran and we just want to mop up blocks that became empty
 // through padCellSlack/splitting after that.
+//
+// ShrinkPass::Forced is the explicit release (shrinkToFloorForRelease,
+// HEAP_076): no hysteresis, the same floor, and nothing at all unless the
+// sweep is finished and no compaction or mark cycle is in progress. Passes
+// 1-3 are unchanged (including the kAllocTenure skip).
 //
 // Locking: this function MUST NOT be called while holding
 // `Allocator::thread_mutex_`. Each `releaseOldGenBlock` /
@@ -6265,14 +6270,17 @@ void OldGenSpace::adjustCapacityAfterMajorGC() {
 // from `blocks_` cannot race against `allocateFromEmptyRegularBlocks`.
 // TLA-REGION(OGS.maybeShrinkCapacity) begin
 void OldGenSpace::maybeShrinkCapacity(size_t desired_heap_bytes,
-                                      bool light_pass) {
+                                      ShrinkPass pass) {
     syncCursorLiveBytes();   // threaded-gc-02: readers of live_bytes
 #if ENABLE_GC_STATS
     auto t0_shrink = GC_STATS_TIMER_START();
     auto bill = [&]() {
         uint64_t ns = GC_STATS_TIMER_ELAPSED_NS(t0_shrink);
-        if (light_pass) alloc_stats_.total_maybe_shrink_light_ns += ns;
-        else            alloc_stats_.total_maybe_shrink_heavy_ns += ns;
+        switch (pass) {
+            case ShrinkPass::Light:  alloc_stats_.total_maybe_shrink_light_ns += ns; break;
+            case ShrinkPass::Heavy:  alloc_stats_.total_maybe_shrink_heavy_ns += ns; break;
+            case ShrinkPass::Forced: alloc_stats_.total_maybe_shrink_forced_ns += ns; break;
+        }
     };
     struct Billing {
         std::function<void()> bill;
@@ -6282,6 +6290,9 @@ void OldGenSpace::maybeShrinkCapacity(size_t desired_heap_bytes,
 
     if (compact_phase_ != CompactionPhase::Idle) return;
     if (allocator_     == nullptr)               return;
+    // Forced (HEAP_076): only on a fully swept heap outside any mark cycle.
+    if (pass == ShrinkPass::Forced &&
+        (gc_phase_ != GCPhase::Idle || cycleActive())) return;
     // Note: gc_phase_ may now be Sweeping when called from finishMarkAndSweep
     // (heavy pass) or Idle when called from onSweepComplete (light pass).
     // The Marking phase guard is unnecessary because finishMarkAndSweep has
@@ -6323,7 +6334,9 @@ void OldGenSpace::maybeShrinkCapacity(size_t desired_heap_bytes,
     // Otherwise the global pressure trigger in `shouldTriggerMajorGC`
     // re-fires the GC every safepoint without ever freeing committed bytes,
     // looping until we hit the cap for real.
-    if (light_pass) {
+    if (pass == ShrinkPass::Forced) {
+        // no hysteresis: release down to the floor
+    } else if (pass == ShrinkPass::Light) {
         if (current_heap <= desired_heap + (desired_heap / 2)) return;
     } else {
         const double occupancy = current_heap > 0
@@ -6463,6 +6476,21 @@ void OldGenSpace::maybeShrinkCapacity(size_t desired_heap_bytes,
 #endif
 }
 // TLA-REGION(OGS.maybeShrinkCapacity) end
+
+// The explicit release (plans/frontend-heap-release.md §3.3, HEAP_076).
+void OldGenSpace::finishSweepForRelease() {
+    if (cycleActive()) {
+        std::fprintf(stderr, "[gc] FATAL: finishSweepForRelease during a mark cycle (HEAP_076)\n");
+        std::abort();
+    }
+    while (gc_phase_ != GCPhase::Idle) {   // "!=" keeps the F.gc_phase grep quiet
+        lazySweep(NUM_SIZE_CLASSES, std::numeric_limits<size_t>::max() / 2);
+    }
+}
+
+void OldGenSpace::shrinkToFloorForRelease() {
+    maybeShrinkCapacity(0, ShrinkPass::Forced);
+}
 
 void OldGenSpace::removeFreeCellsForBlock(BlockId block_index) {
     if (!block_index.valid()) return;

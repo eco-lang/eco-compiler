@@ -13,6 +13,7 @@
 #include "OldGenSpace.hpp"
 #include "RootSet.hpp"
 #include "GCStats.hpp"
+#include "GCReport.hpp"
 
 namespace Elm {
 class ThreadLocalHeap;
@@ -205,6 +206,22 @@ public:
 
     // Triggers a major GC on the thread-local old gen.
     void majorGC();
+
+    // ========== Explicit collections (plans/frontend-heap-release.md §3.5, HEAP_076) ==========
+    // Called only from a kernel Task binding (Eco.GC) or a test, on the
+    // owning mutator, outside any GC pause (fatal otherwise). Each returns a
+    // GCReport whose rss_*, *_ns and trim_result are observations only.
+
+    // A full release: ThreadLocalHeap::majorGCAndShrink (one pause, one sync
+    // point: STW major, sweep to Idle, forced shrink), then under
+    // thread_mutex_ only PageWork::drainAll(true) (every Pending extent
+    // discarded now; mode 0 already discarded inline; nothing with decommit
+    // off), then malloc_trim(0) on glibc.
+    GCReport collectMajorAndRelease();
+
+    // A minor GC (it may chain into a major; majors_run reports it), with the
+    // same before/after snapshots. No sweep, shrink, discard or trim.
+    GCReport collectMinor();
 
     // ========== Root Management ==========
 

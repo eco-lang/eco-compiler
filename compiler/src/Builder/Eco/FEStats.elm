@@ -2,7 +2,7 @@ module Builder.Eco.FEStats exposing
     ( Handle
     , PhaseName(..), ModuleStage(..)
     , init, finalize, disabled
-    , withPhase, withModuleStage
+    , withPhase, withPhaseLazy, withModuleStage
     , prettyPrint
     )
 
@@ -19,7 +19,7 @@ thread safety. Phase-level updates run single-threaded.
 @docs Handle
 @docs PhaseName, ModuleStage
 @docs init, finalize, disabled
-@docs withPhase, withModuleStage
+@docs withPhase, withPhaseLazy, withModuleStage
 @docs prettyPrint
 
 -}
@@ -228,6 +228,46 @@ withPhase handle phase task =
                 |> Task.andThen
                     (\beforePosix ->
                         task
+                            |> Task.andThen
+                                (\result ->
+                                    Task.io Time.now
+                                        |> Task.andThen
+                                            (\afterPosix ->
+                                                Task.io
+                                                    (modifyState mvar
+                                                        (recordPhase phase
+                                                            (Time.posixToMillis beforePosix)
+                                                            (Time.posixToMillis afterPosix)
+                                                        )
+                                                    )
+                                                    |> Task.map (\_ -> result)
+                                            )
+                                )
+                    )
+
+
+{-| Like `withPhase`, but the phase's task is built by a thunk that is only
+called INSIDE the timing step (plans/frontend-heap-release.md §7.1, E0).
+
+`withPhase` receives its task argument already evaluated, so any pure work done
+while BUILDING that task (e.g. `case selectMonomorphizer … of`) runs before
+"Starting <phase>" and is billed to no phase. Worse for memory, it runs inside
+the CALLER's `andThen` callback, whose argument stays rooted the whole time.
+Here the thunk runs in its own step, even when stats are disabled.
+
+-}
+withPhaseLazy : Handle -> PhaseName -> (() -> Task x a) -> Task x a
+withPhaseLazy handle phase thunk =
+    case handle of
+        Disabled ->
+            Task.succeed () |> Task.andThen thunk
+
+        Enabled mvar ->
+            Task.io (IO.writeLn IO.stderr ("Starting " ++ phaseLabel phase ++ "..."))
+                |> Task.andThen (\_ -> Task.io Time.now)
+                |> Task.andThen
+                    (\beforePosix ->
+                        thunk ()
                             |> Task.andThen
                                 (\result ->
                                     Task.io Time.now

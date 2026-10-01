@@ -1,7 +1,7 @@
 module Compiler.Eco.Config exposing
     ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig
     , default, decoder, hash, clamp
-    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, ListConfig, LssConfig, LssStampConfig, MonoConfig, MonoEngine(..), SpecLimits, borrowReifyFromString, defaultLimits, defaultLss, monoEngineFromString
+    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, GcConfig, ListConfig, LssConfig, LssStampConfig, MonoConfig, MonoEngine(..), SpecLimits, borrowReifyFromString, defaultLimits, defaultLss, monoEngineFromString
     )
 
 {-| Project-level tunable compiler settings, read from `eco-config.json`
@@ -49,6 +49,22 @@ type alias EcoConfig =
     , kernelGcLeaf : Bool -- kernel-opt-08 (CGEN_072(f)/KERNEL_FACTS_001): stamp `eco.gc_leaf` on the func.func decl of every kernel whose KernelFacts row is gcLeafEligible, so the backend may attach gc-leaf-function and RS4GC skips statepointing its call sites. DEFAULT-ON since 2026-08-12 (10 of the 14 eligible kernels still have stubs to stamp -- the other 4 lost their call sites to kernel-opt-03/04/06; +2,223 de-statepointed sites, binary -287,952 B of which 99% is .llvm_stackmaps; wall FLAT at -1.25%); env kill switch ECO_KERNEL_GCLEAF_EMIT=0; artifact-affecting (hash token "kgcl=1"). The BACKEND kill switch ECO_KERNEL_GCLEAF=0 separately ignores an attr already in the .mlir
     , callPurityAttrs : Bool -- kernel-opt-12 (plans/kernel-opt-12-eco-call-purity-attr.md): stamp `eco.cse_safe` on direct eco.call ops whose KernelFacts row derives `droppable` (cseSafe AND totality == Total); licenses MLIR merge+DCE of those calls before EcoGCPrepare, which strips the attr. DEFAULT-ON since 2026-08-13 (Run R: byte-identical binary with CSE off, exe -16 KB and bit-identical counters with CSE on -- free either way); env kill switch ECO_CALL_PURITY=0; artifact-affecting (hash token "cpur=1")
     , cse : CseConfig
+    , gc : GcConfig -- plans/frontend-heap-release.md §6.1: the explicit Eco.GC release before the native back end. EXCLUDED from `hash`: a collection never changes output. Env ECO_GC_PRE_LINK / ECO_GC_REPORT
+    }
+
+
+{-| Explicit-collection knobs (plans/frontend-heap-release.md §6.1).
+
+`preLink` runs a full release immediately before `Eco.NativeDriver.lowerAndLink`
+(default on; `ECO_GC_PRE_LINK=0` is an A/B opt-out); `report` prints one
+`[gc-report]` line per collection on stderr (`ECO_GC_REPORT=1`). The optional
+phase-boundary points were removed after measurement (benchmarks/fhr-gc-points.md). **Excluded from `hash`**:
+a collection never changes the compiler's output.
+
+-}
+type alias GcConfig =
+    { preLink : Bool
+    , report : Bool
     }
 
 
@@ -696,6 +712,7 @@ default =
         }
     , callPurityAttrs = True
     , cse = { enabled = False, report = False, minCost = 5, maxPerDef = 64 }
+    , gc = { preLink = True, report = False }
     , bytesFusion = { enabled = True }
     , logicalTypes = { customMaxFields = 8 }
     , cafMemo = { enabled = True, census = False, dedupe = False, hoist = { enabled = False, minNodes = 3, maxHoists = 8192 } }
@@ -751,6 +768,16 @@ decoder =
         |> D.apply (D.optionalField "kernelGcLeaf" D.bool default.kernelGcLeaf)
         |> D.apply (D.optionalField "callPurityAttrs" D.bool default.callPurityAttrs)
         |> D.apply (D.optionalField "cse" cseDecoder default.cse)
+        |> D.apply (D.optionalField "gc" gcDecoder default.gc)
+
+
+{-| Decode the `gc` block.
+-}
+gcDecoder : D.Decoder x GcConfig
+gcDecoder =
+    D.pure GcConfig
+        |> D.apply (D.optionalField "preLink" D.bool default.gc.preLink)
+        |> D.apply (D.optionalField "report" D.bool default.gc.report)
 
 
 {-| Decode the `list` block. `chunks`, `consIntrinsic` and `mapTemplate` are
@@ -990,6 +1017,8 @@ when the config changes. Comparison is plain string equality; an absent file
 -}
 hash : EcoConfig -> String
 hash cfg =
+    -- `cfg.gc` is deliberately NOT hashed: an explicit collection never
+    -- changes the output (plans/frontend-heap-release.md §0.4).
     String.join "|"
         ([ "v1"
          , "preThr=" ++ String.fromInt cfg.inline.preMonoThreshold
@@ -1205,7 +1234,6 @@ hash cfg =
 
                       else
                         []
-
                     , if lss.stamp.maxInstances /= defaultLss.stamp.maxInstances then
                         [ "lssIQM=" ++ String.fromInt lss.stamp.maxInstances ]
 
@@ -1258,7 +1286,6 @@ hash cfg =
 
                       else
                         []
-
                     ]
                )
             -- Chunked-list token appears ONLY when enabled (the default since

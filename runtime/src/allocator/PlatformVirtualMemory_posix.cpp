@@ -5,6 +5,10 @@
 
 #include <cstdint>
 #include <sys/mman.h>
+#if defined(__linux__)
+#include <cstdio>
+#include <unistd.h>
+#endif
 
 // Darwin has no MAP_NORESERVE — its VM never reserves swap for PROT_NONE
 // mappings, so the flag's effect is the default behavior there.
@@ -104,6 +108,21 @@ bool populatePagesWrite(void* addr, std::size_t size) {
 #else
     (void)addr; (void)size;
     return false;
+#endif
+}
+
+std::size_t processResidentBytes() {
+#if defined(__linux__)
+    std::FILE* f = std::fopen("/proc/self/statm", "r");
+    if (!f) return 0;
+    unsigned long long size_pages = 0, resident_pages = 0;
+    const int n = std::fscanf(f, "%llu %llu", &size_pages, &resident_pages);
+    std::fclose(f);
+    if (n != 2) return 0;
+    const long page = sysconf(_SC_PAGESIZE);
+    return page > 0 ? static_cast<std::size_t>(resident_pages) * static_cast<std::size_t>(page) : 0;
+#else
+    return 0;
 #endif
 }
 

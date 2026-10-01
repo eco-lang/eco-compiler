@@ -250,7 +250,16 @@ assignIds useSolverRoots censusOn (TOpt.GlobalGraph nodes fields annotations all
         ( newNodes, state2 ) =
             rewriteNodes useSolverRoots dummyCompare varSupers allSchemeRoots nodes state1
     in
-    ( TOpt.GlobalGraph newNodes fields newAnnotations allSchemeRoots varSupers, state2 )
+    -- Row 6 (plans/frontend-heap-release.md §7.3): `allSchemeRoots` and
+    -- `varSupers` are consumed HERE (they seeded every binder above) and every
+    -- later consumer of the assigned graph matches them as `_` (the engines'
+    -- entries, the pre-mono passes only pass them through); `rootEnv` and
+    -- `arrowRootEnv` are read only by the `ensure*Root` helpers of this pass.
+    -- Emitting them would keep them live to the end of monomorphization.
+    -- `lamLabels` is still read (census `Dict.size`) and is kept.
+    ( TOpt.GlobalGraph newNodes fields newAnnotations DMap.empty Dict.empty
+    , { state2 | rootEnv = Dict.empty, arrowRootEnv = Dict.empty }
+    )
 
 
 {-| Assign MVarIds to a single canonical type. Useful for testing.

@@ -56,6 +56,7 @@ import Builder.Eco.Config as EcoConfigLoader
 import Builder.Eco.FEStats as FEStats
 import Builder.Elm.Details as Details
 import Builder.File as File
+import Builder.GcPoints as GcPoints
 import Builder.Generate as Generate
 import Builder.Reporting as Reporting
 import Builder.Reporting.Exit as Exit
@@ -331,6 +332,12 @@ handleMlirOutput ctx target artifacts =
                 rootNames =
                     Build.getRootNames artifacts
 
+                -- Bound here so the final closure captures `style`, not `ctx`
+                -- (whose `details` can hold whole graphs):
+                -- plans/frontend-heap-release.md §7.7 row 16.
+                style =
+                    ctx.style
+
                 writeTask =
                     if ctx.textMlir then
                         Generate.writeMonoMlirStreaming
@@ -363,7 +370,7 @@ handleMlirOutput ctx target artifacts =
                 |> Task.andThen (\_ -> writeTask |> Task.mapError Exit.MakeBadGenerate)
                 |> Task.andThen
                     (\_ ->
-                        Task.io (Reporting.reportGenerate ctx.style rootNames target)
+                        Task.io (Reporting.reportGenerate style rootNames target)
                     )
 
         name :: names ->
@@ -388,6 +395,15 @@ handleElfOutput ctx target artifacts =
             let
                 rootNames =
                     Build.getRootNames artifacts
+
+                -- Bound here so the closures pending during the pre-link
+                -- collection capture these, not `ctx` (whose `details` can
+                -- hold whole graphs): plans/frontend-heap-release.md §6.3.
+                style =
+                    ctx.style
+
+                gcCfg =
+                    ctx.ecoConfig.gc
 
                 -- Root module name baked into .node outputs as
                 -- __eco_root_module so the N-API addon exposes
@@ -445,6 +461,10 @@ handleElfOutput ctx target artifacts =
                             (Utils.dirCreateDirectoryIfMissing True tempMlirDir)
                     )
                 |> Task.andThen (\_ -> writeMlirTask)
+                -- A full release in its OWN step (plans/frontend-heap-release.md
+                -- §6.3): the step that captured `writeMlirTask` (and with it
+                -- `artifacts`) has returned, so codegen's values are garbage.
+                |> Task.andThen (\_ -> GcPoints.preLink gcCfg)
                 |> Task.andThen
                     (\_ ->
                         -- lowerAndLink is `Task String ()` so the kernel's
@@ -465,7 +485,7 @@ handleElfOutput ctx target artifacts =
                     )
                 |> Task.andThen
                     (\_ ->
-                        Task.io (Reporting.reportGenerate ctx.style rootNames target)
+                        Task.io (Reporting.reportGenerate style rootNames target)
                     )
 
         name :: names ->

@@ -485,6 +485,7 @@ void NurserySpace::checkAndGrow() {
  */
 void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_roots,
                            MinorGCRecord* rec) {
+    ++minor_seq_;   // GCReport::minor_count (HEAP_076): both nursery modes
     if (rg_) {   // threaded-gc-07 (HEAP_069): the region minor
         minorGCRegion(oldgen, stackmap_roots, rec);
         return;

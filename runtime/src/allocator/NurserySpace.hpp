@@ -155,9 +155,14 @@ private:
     // equal). Kept as a field so the threshold math and the validators don't
     // reach through the slice each time.
     size_t from_capacity_bytes_;
+    uint64_t minor_seq_ = 0;   // minors run (minorSeq), counted at minorGC entry
 public:
     // threaded-gc-04: per-side capacity (bounds builder-built chunk chains).
     size_t capacityBytes() const { return from_capacity_bytes_; }
+    // Minors run so far on this nursery, in every build and both nursery
+    // modes; GCReport::minor_count (HEAP_076). (census_minor_seq_ exists only
+    // in P1 census builds, so this is its own always-on counter.)
+    uint64_t minorSeq() const { return minor_seq_; }
     // threaded-gc-05a (P§3.2, IM7): walks the survivor prefix
     // [fromBase(), bump_.ptr) left by the last minor GC, calling f(obj) for
     // every object. Valid only before the mutator allocates again; asserts

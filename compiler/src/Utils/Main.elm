@@ -1209,17 +1209,23 @@ newChan toEncoder =
 
 
 {-| Read a value from a channel, blocking if the channel is empty.
+
+The consumed hole is taken and then dropped: an MVar is an off-heap GC root
+until dropped (HEAP_005), so a hole left full would pin its item until exit
+(plans/frontend-heap-release.md §7.2 row 2). This is safe because there is no
+`dupChan` (a second reader would need the hole) and the writer never touches
+a hole again after its single `putMVar`.
+
 -}
 readChan : Bytes.Decode.Decoder a -> Chan a -> Task Never a
 readChan decoder (Chan readVar _) =
     modifyMVar mVarDecoder mVarEncoder readVar <|
         \read_end ->
-            readMVar (chItemDecoder decoder) read_end
-                |> Task.map
+            takeMVar (chItemDecoder decoder) read_end
+                |> Task.andThen
                     (\(ChItem val new_read_end) ->
-                        -- Use readMVar here, not takeMVar,
-                        -- else dupChan doesn't work
-                        ( new_read_end, val )
+                        dropMVar read_end
+                            |> Task.map (\_ -> ( new_read_end, val ))
                     )
 
 

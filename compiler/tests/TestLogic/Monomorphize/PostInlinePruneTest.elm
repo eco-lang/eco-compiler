@@ -25,6 +25,7 @@ to extend when a new cross-spec reference shape is introduced.
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
+import Compiler.Data.BitSet as BitSet
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -40,10 +41,12 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.Eco.Config as Config
+import Compiler.Graph as Graph
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Compiler.Monomorphize.Prune as Prune
 import Expect
+import Fuzz
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
@@ -51,7 +54,8 @@ import TestLogic.TestPipeline as Pipeline
 suite : Test
 suite =
     Test.describe "post-inline dead-spec prune"
-        [ Test.describe "T1 — an orphaned spec is removed"
+        [ sccRestrictionTest
+        , Test.describe "T1 — an orphaned spec is removed"
             [ Test.test "the inlined-away callee's spec is gone and nothing references it" <|
                 \_ ->
                     withGraphs inlineAwayModule
@@ -388,3 +392,108 @@ localPartialModule =
         ]
         []
         []
+
+
+{-| Row 8 (plans/frontend-heap-release.md §7.4): `restrictToSccEdges` keeps
+only intra-SCC edges, and that must leave the CYCLIC vertex set of every
+induced subgraph unchanged — codegen's `buildBodyLookup` computes
+`isRecursive` over the graph induced on the codegen-time nodes, which differ
+from the prune-time ones.
+-}
+sccRestrictionTest : Test
+sccRestrictionTest =
+    Test.fuzz3
+        (Fuzz.intRange 1 16)
+        (Fuzz.list (Fuzz.pair (Fuzz.intRange 0 15) (Fuzz.intRange 0 15)))
+        (Fuzz.list Fuzz.bool)
+        "restrictToSccEdges preserves the cyclic set of every induced subgraph"
+    <|
+        \n pairs mask ->
+            let
+                edges =
+                    List.foldl
+                        (\( s, t ) acc ->
+                            let
+                                src =
+                                    modBy n s
+                            in
+                            case Array.get src acc of
+                                Just (Just ts) ->
+                                    Array.set src (Just (modBy n t :: ts)) acc
+
+                                _ ->
+                                    acc
+                        )
+                        (Array.initialize n (\i -> if modBy 5 i == 4 then Nothing else Just []))
+                        pairs
+
+                keep v =
+                    case List.drop v mask of
+                        k :: _ ->
+                            k
+
+                        [] ->
+                            True
+
+                restricted =
+                    Prune.restrictToSccEdges edges
+            in
+            Expect.all
+                [ \_ -> Expect.equal (cyclicSet n keep edges) (cyclicSet n keep restricted)
+                , \_ -> Expect.equal (cyclicSet n (always True) edges) (cyclicSet n (always True) restricted)
+                , \_ -> Expect.equal (Array.map (Maybe.map (always ())) edges) (Array.map (Maybe.map (always ())) restricted)
+                ]
+                ()
+
+
+cyclicSet : Int -> (Int -> Bool) -> Array.Array (Maybe (List Int)) -> List Int
+cyclicSet n keep edges =
+    let
+        fwd =
+            Array.indexedMap
+                (\s entry ->
+                    if keep s then
+                        List.filter keep (Maybe.withDefault [] entry)
+
+                    else
+                        []
+                )
+                edges
+
+        trans =
+            Array.foldl
+                (\ts ( s, acc ) ->
+                    ( s + 1
+                    , List.foldl (\t a -> Array.set t (s :: Maybe.withDefault [] (Array.get t a)) a) acc ts
+                    )
+                )
+                ( 0, Array.repeat n [] )
+                fwd
+                |> Tuple.second
+
+        selfLoops =
+            Array.foldl
+                (\ts ( s, acc ) ->
+                    ( s + 1
+                    , if List.member s ts then
+                        BitSet.insert s acc
+
+                      else
+                        acc
+                    )
+                )
+                ( 0, BitSet.emptyWithSize n )
+                fwd
+                |> Tuple.second
+    in
+    Graph.stronglyConnCompInt { fwd = fwd, trans = trans, selfLoops = selfLoops, size = n }
+        |> List.concatMap
+            (\scc ->
+                case scc of
+                    Graph.CyclicSCC vs ->
+                        vs
+
+                    Graph.AcyclicSCC _ ->
+                        []
+            )
+        |> List.sort

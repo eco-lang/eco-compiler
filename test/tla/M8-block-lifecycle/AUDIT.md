@@ -390,3 +390,24 @@ event's `refused` field and an M1 `stop` after a refused launch.
 
 Only a validate-only `assertOwner` at the entry of `minorGC` / `majorGC` (HEAP_007 / CR-031). No block
 lifecycle step changes. **Verdict: no model change needed.**
+
+## 2026-10-01 — frontend-heap-release P1: explicit release, ShrinkPass::Forced (GC_MODEL_001)
+
+Pins fired: regions `OGS.onSweepComplete` (**fecf4917088c**), `OGS.maybeShrinkCapacity` (**16f2d7bb56c4**).
+New pin: region `TLH.majorGCAndShrink` (M1, M4, M8).
+
+plans/frontend-heap-release.md P1 (§3, HEAP_076): the explicit release. New `ThreadLocalHeap::majorGCAndShrink` (TLA-REGION `TLH.majorGCAndShrink`): ONE pause and ONE sync point (an outermost `PauseEndHook` around a nested `majorGC(MajorReason::Explicit)`, then `OldGenSpace::finishSweepForRelease` (lazy sweep driven to Idle, `while (gc_phase_ != GCPhase::Idle)`, aborts if a cycle is active) and `shrinkToFloorForRelease` = `maybeShrinkCapacity(0, ShrinkPass::Forced)`). New `Allocator::collectMajorAndRelease` (after that pause, under `thread_mutex_` only: TLA-REGION `AL.releaseDiscard` = `page_work_->drainAll(decommitOn())` + counter reads; `malloc_trim` after the lock) and `Allocator::collectMinor` (two `thread_mutex_` snapshot sections around a plain `minorGC`). Both are fatal inside a pause (`pause_depth_ != 0`).
+
+What changed in the pinned regions: `bool light_pass` → `ShrinkPass { Heavy, Light, Forced }` (the two
+existing callers unchanged in behaviour), and the `Forced` arm: no hysteresis, the same floor
+`max(initial_old_gen_size, alloc_buffer_size)`, nothing at all during a compaction, an unfinished sweep
+(`gc_phase_ != GCPhase::Idle`) or a mark cycle.
+
+Re-audit. M8's `Shrink`/`ShrinkPass`/`ShrinkPick`/`BagPass` already abstract `maybeShrinkCapacity`'s
+hysteresis gates and `desired_heap` as "any desired size from the floor up" (MAPPING §3), so the forced
+pass (desired = the floor, no gate) is one of the modelled runs; its guards only add early returns. Its
+caller is a new serial path: STW major → `finishSweepForRelease` (the same `lazySweep` the model's sweep
+loop is, run to `Complete`, whose `onSweepComplete` light shrink is unchanged) → the forced shrink, all on the
+mutator inside one pause, which M8 (serial) covers as a sequence of its existing steps: `fully_swept`,
+`live_bytes == 0` (HEAP_073) and the flip/reclaim interplay are unchanged, and no block is released that
+the heavy or light pass could not release with a lower `desired_heap`. **Verdict: no model change needed.**

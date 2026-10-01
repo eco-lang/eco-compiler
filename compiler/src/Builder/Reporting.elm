@@ -486,9 +486,15 @@ type alias BResult a =
 
 
 {-| Tracks build progress with the given style, displaying compilation status.
+
+The progress channel carries `BResult ()`, never the build's result itself
+(plans/frontend-heap-release.md §7.2 row 2): the reader only needs Ok/Err and
+the problem to print the final message, and an off-heap channel hole holding
+the whole `Build.Artifacts` would pin it until exit.
+
 -}
-trackBuild : Bytes.Decode.Decoder a -> (a -> Bytes.Encode.Encoder) -> Style -> (BKey -> Task Never (BResult a)) -> Task Never (BResult a)
-trackBuild decoder encoder style callback =
+trackBuild : Style -> (BKey -> Task Never (BResult a)) -> Task Never (BResult a)
+trackBuild style callback =
     case style of
         Silent ->
             callback (Key (\_ -> Task.succeed ()))
@@ -498,32 +504,32 @@ trackBuild decoder encoder style callback =
 
         Terminal mvar ->
             Utils.newChan Utils.mVarEncoder
-                |> Task.andThen (trackBuildWithChan decoder encoder mvar callback)
+                |> Task.andThen (trackBuildWithChan mvar callback)
 
 
-trackBuildWithChan : Bytes.Decode.Decoder a -> (a -> Bytes.Encode.Encoder) -> MVar () -> (BKey -> Task Never (BResult a)) -> Chan (Result BMsg (BResult a)) -> Task Never (BResult a)
-trackBuildWithChan decoder encoder mvar callback chan =
-    let
-        chanEncoder : Result BMsg (BResult a) -> Bytes.Encode.Encoder
-        chanEncoder =
-            BE.result bMsgEncoder (bResultEncoder encoder)
-    in
-    Utils.forkIO (runBuildWorker decoder mvar chan)
-        |> Task.andThen (\_ -> callback (Key (Utils.writeChan chanEncoder chan << Err)))
-        |> Task.andThen (signalBuildComplete chanEncoder chan)
+trackBuildWithChan : MVar () -> (BKey -> Task Never (BResult a)) -> Chan (Result BMsg (BResult ())) -> Task Never (BResult a)
+trackBuildWithChan mvar callback chan =
+    Utils.forkIO (runBuildWorker mvar chan)
+        |> Task.andThen (\_ -> callback (Key (Utils.writeChan buildChanEncoder chan << Err)))
+        |> Task.andThen (signalBuildComplete chan)
 
 
-runBuildWorker : Bytes.Decode.Decoder a -> MVar () -> Chan (Result BMsg (BResult a)) -> Task Never ()
-runBuildWorker decoder mvar chan =
+buildChanEncoder : Result BMsg (BResult ()) -> Bytes.Encode.Encoder
+buildChanEncoder =
+    BE.result bMsgEncoder (bResultEncoder BE.unit)
+
+
+runBuildWorker : MVar () -> Chan (Result BMsg (BResult ())) -> Task Never ()
+runBuildWorker mvar chan =
     Utils.takeMVar (Bytes.Decode.succeed ()) mvar
         |> Task.andThen (\_ -> putStrFlush "Compiling ...")
-        |> Task.andThen (\_ -> buildLoop decoder chan 0)
+        |> Task.andThen (\_ -> buildLoop chan 0)
         |> Task.andThen (\_ -> Utils.putMVar (\_ -> BE.bool True) mvar ())
 
 
-signalBuildComplete : (Result BMsg (BResult a) -> Bytes.Encode.Encoder) -> Chan (Result BMsg (BResult a)) -> BResult a -> Task Never (BResult a)
-signalBuildComplete chanEncoder chan result =
-    Utils.writeChan chanEncoder chan (Ok result)
+signalBuildComplete : Chan (Result BMsg (BResult ())) -> BResult a -> Task Never (BResult a)
+signalBuildComplete chan result =
+    Utils.writeChan buildChanEncoder chan (Ok (Result.map (\_ -> ()) result))
         |> Task.map (\_ -> result)
 
 
@@ -533,26 +539,26 @@ type BMsg
     = BDone
 
 
-buildLoop : Bytes.Decode.Decoder a -> Chan (Result BMsg (BResult a)) -> Int -> Task Never ()
-buildLoop decoder chan done =
-    Utils.readChan (BD.result bMsgDecoder (bResultDecoder decoder)) chan
-        |> Task.andThen (handleBuildMessage decoder chan done)
+buildLoop : Chan (Result BMsg (BResult ())) -> Int -> Task Never ()
+buildLoop chan done =
+    Utils.readChan (BD.result bMsgDecoder (bResultDecoder BD.unit)) chan
+        |> Task.andThen (handleBuildMessage chan done)
 
 
-handleBuildMessage : Bytes.Decode.Decoder a -> Chan (Result BMsg (BResult a)) -> Int -> Result BMsg (BResult a) -> Task Never ()
-handleBuildMessage decoder chan done msg =
+handleBuildMessage : Chan (Result BMsg (BResult ())) -> Int -> Result BMsg (BResult ()) -> Task Never ()
+handleBuildMessage chan done msg =
     case msg of
         Err BDone ->
-            updateBuildProgress decoder chan (done + 1)
+            updateBuildProgress chan (done + 1)
 
         Ok result ->
             printFinalBuildMessage done result
 
 
-updateBuildProgress : Bytes.Decode.Decoder a -> Chan (Result BMsg (BResult a)) -> Int -> Task Never ()
-updateBuildProgress decoder chan done =
+updateBuildProgress : Chan (Result BMsg (BResult ())) -> Int -> Task Never ()
+updateBuildProgress chan done =
     putStrFlush ("\u{000D}Compiling (" ++ String.fromInt done ++ ")")
-        |> Task.andThen (\_ -> buildLoop decoder chan done)
+        |> Task.andThen (\_ -> buildLoop chan done)
 
 
 printFinalBuildMessage : Int -> BResult a -> Task Never ()

@@ -321,4 +321,5 @@ AUDIT.md entry quoting the new hash prefix (`test/tla/README.md`, "The canary").
 | grep | `-` | `F.allocTenure` |
 | grep | `-` | `F.parPromoActive` |
 | grep | `-` | `F.promoMu` |
+| region | `runtime/src/allocator/ThreadLocalHeap.cpp` | `TLH.majorGCAndShrink` |
 <!-- canary-pins end -->

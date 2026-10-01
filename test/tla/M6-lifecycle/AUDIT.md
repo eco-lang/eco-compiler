@@ -567,3 +567,22 @@ running unconditionally -> CRT `CR-023` sees running() false. `det-cr015` now pa
 `m6.tm.held` (thread_mutex_ only): its old pause point, post's CAS, is under the pool's m_ since the fix.
 
 **Verdict: model updated (HelperPool, Gangs, TracePool, TraceGangs, MAPPING.md).**
+
+## 2026-10-01 — frontend-heap-release P1: explicit release takes thread_mutex_ (GC_MODEL_001)
+
+Pins fired: census `Allocator.cpp` (**7d5d75af1902**: four new
+`std::lock_guard<std::recursive_mutex> lock(thread_mutex_)` lines), grep `F.threadMutex` (**00cb061f21bd**,
+the same four lines). New pin: region `AL.releaseDiscard` (M6, M7).
+
+plans/frontend-heap-release.md P1 (§3, HEAP_076): the explicit release. New `ThreadLocalHeap::majorGCAndShrink` (TLA-REGION `TLH.majorGCAndShrink`): ONE pause and ONE sync point (an outermost `PauseEndHook` around a nested `majorGC(MajorReason::Explicit)`, then `OldGenSpace::finishSweepForRelease` (lazy sweep driven to Idle, `while (gc_phase_ != GCPhase::Idle)`, aborts if a cycle is active) and `shrinkToFloorForRelease` = `maybeShrinkCapacity(0, ShrinkPass::Forced)`). New `Allocator::collectMajorAndRelease` (after that pause, under `thread_mutex_` only: TLA-REGION `AL.releaseDiscard` = `page_work_->drainAll(decommitOn())` + counter reads; `malloc_trim` after the lock) and `Allocator::collectMinor` (two `thread_mutex_` snapshot sections around a plain `minorGC`). Both are fatal inside a pause (`pause_depth_ != 0`).
+
+Re-audit. The four sections: `collectMajorAndRelease`'s snapshot (counter reads only) and its drain
+(`AL.releaseDiscard`: `PageWork::drainAll(true)` waits for every pool job of the PageWork slots, then
+discards the Pending extents inline), and `collectMinor`'s two snapshots. All run on the owning mutator
+outside any pause (fatal otherwise), after the collection and shrink returned: no gang lock, `run_m_`,
+`promo_mu_` or registry is held, and none is taken under `thread_mutex_` (HEAP_075's order: gangs →
+`thread_mutex_` → census → pool `m_`). Under `thread_mutex_` the drain waits only on pool jobs, whose
+workers take only the pool's `m_` (HEAP_058), exactly like `drainHelperWork` and the sync point's
+`takeSlot` waits, so a fork's prepare that waits for `thread_mutex_` is bounded by the pool's progress (the
+CR-015 shape, `pool_host_fork_*` rows). No new atomic, thread, job kind or fork-handler state.
+**Verdict: no model change needed** (M7 models the drain step itself: `DiscardAllPending`).

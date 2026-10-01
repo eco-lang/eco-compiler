@@ -650,26 +650,36 @@ struct ModeRun {
     // a parallel promotion with n > 1): Pending reuses + fresh bumps +
     // fallbacks. Zero in mode 0 and at n = 1.
     uint64_t nowait = 0;
+    // HEAP_076 (explicit_every > 0): the explicit releases' reports, summed.
+    uint64_t x_calls = 0, x_live = 0, x_inuse_after = 0, x_released = 0;
+    uint64_t x_pending_nonzero = 0;   // calls that left pending bytes behind (must be 0)
     // Object-level quantities only (GC_DET_001 at N > 1: placement counters
     // -- hiwater, fresh, reuse -- may differ from mode 0, which has no
     // PageWork and so no no-wait policy).
     bool sameObjects(const ModeRun& o) const {
         return minors == o.minors && majors == o.majors && promoted == o.promoted &&
                allocated == o.allocated && bytes_alloc == o.bytes_alloc &&
-               released == o.released && checksum == o.checksum;
+               released == o.released && checksum == o.checksum &&
+               x_calls == o.x_calls && x_live == o.x_live && x_released == o.x_released;
     }
     bool operator==(const ModeRun& o) const {
         return minors == o.minors && majors == o.majors && promoted == o.promoted &&
                allocated == o.allocated && bytes_alloc == o.bytes_alloc &&
                inuse_peak == o.inuse_peak && hiwater == o.hiwater &&
                released == o.released && fresh == o.fresh &&
-               reuse_total == o.reuse_total && checksum == o.checksum;
+               reuse_total == o.reuse_total && checksum == o.checksum &&
+               x_calls == o.x_calls && x_live == o.x_live &&
+               x_inuse_after == o.x_inuse_after && x_released == o.x_released;
     }
 };
 
 // Deterministic churn: cohorts of rooted Ints live for two rounds, so every
 // major releases whole all-dead blocks that the following minors reacquire.
-ModeRun runModeWorkload(uint32_t mode, uint32_t jitter, size_t ahead = 0) {
+// explicit_every = k > 0 (HEAP_076): at r % k == k - 1, after the round's
+// minors, collectMinor() then collectMajorAndRelease() in place of the
+// round's major.
+ModeRun runModeWorkload(uint32_t mode, uint32_t jitter, size_t ahead = 0,
+                        int explicit_every = 0) {
     HeapConfig cfg = modeConfig(mode, ahead);
     auto& pool = GCHelperPool::instance();
     if (pool.configured()) {
@@ -684,6 +694,7 @@ ModeRun runModeWorkload(uint32_t mode, uint32_t jitter, size_t ahead = 0) {
     constexpr int kPerRound = 12000;
     std::deque<std::vector<HPointer>> cohorts;
     uint64_t checksum = 0;
+    ModeRun m{};
     for (int r = 0; r < kRounds; ++r) {
         cohorts.emplace_back();
         auto& c = cohorts.back();
@@ -706,7 +717,27 @@ ModeRun runModeWorkload(uint32_t mode, uint32_t jitter, size_t ahead = 0) {
         }
         alloc.minorGC();
         alloc.minorGC();
-        if (r % 3 == 2) alloc.majorGC();
+        const bool explicit_round =
+            explicit_every > 0 && r % explicit_every == explicit_every - 1;
+        // An explicit round replaces the round's own major (r % 6 == 5 is
+        // always an r % 3 == 2 round): otherwise that major has released
+        // everything and the explicit call measures nothing.
+        if (r % 3 == 2 && !explicit_round) alloc.majorGC();
+        if (explicit_round) {
+            const GCReport mi = alloc.collectMinor();
+            TEST_ASSERT(mi.kind == GCReport::Kind::Minor);
+            const GCReport x = alloc.collectMajorAndRelease();
+            TEST_ASSERT(x.kind == GCReport::Kind::Major);
+            TEST_ASSERT(x.majors_run >= 1);
+            ++m.x_calls;
+            m.x_live += x.live_after_mark;
+            m.x_inuse_after += x.old_in_use_after;
+            m.x_released += x.released_bytes;
+            const gc::PageWork* pw = alloc.pageWork();
+            if (x.old_pending_after != 0 || (pw && pw->counters().pending_bytes != 0)) {
+                ++m.x_pending_nonzero;
+            }
+        }
     }
     for (auto& c : cohorts) {
         for (auto& h : c) {
@@ -715,7 +746,6 @@ ModeRun runModeWorkload(uint32_t mode, uint32_t jitter, size_t ahead = 0) {
         }
     }
     GCStats s = alloc.getCombinedStats();
-    ModeRun m{};
     m.minors = s.minor_gc_count - base.minor_gc_count;
     m.majors = s.major_gc_count - base.major_gc_count;
     m.promoted = s.objects_promoted - base.objects_promoted;
@@ -782,6 +812,128 @@ Testing::TestCase testDecommitModesAgreeOnCounters(
         TEST_ASSERT(m1.cancelled > 0);
         TEST_ASSERT(m1.cancelled == m2.cancelled);
         TEST_ASSERT(m2.cancelled == m2j.cancelled);
+        initAllocator(modeConfig(0));
+        closePool();
+#endif
+    });
+
+Testing::TestCase testExplicitReleaseModesAgree(
+    "GC_DET_001: collectMajorAndRelease makes identical decisions in modes 0, 1, 2 and 2+jitter",
+    []() {
+#if ENABLE_GC_STATS
+        const ModeRun m0 = runModeWorkload(0, 0, 0, 6);
+        const ModeRun m1 = runModeWorkload(1, 0, 0, 6);
+        const ModeRun m2 = runModeWorkload(2, 0, 0, 6);
+        const ModeRun m2j = runModeWorkload(2, 200, 0, 6);
+        auto dump = [](const char* n, const ModeRun& m) {
+            std::fprintf(stderr, "  %s: minors %llu majors %llu promoted %llu peak %llu hw %llu rel %llu fresh %llu reuse %llu"
+                         " | x %llu live %llu inuse %llu released %llu pend!=0 %llu\n",
+                n, (unsigned long long)m.minors, (unsigned long long)m.majors,
+                (unsigned long long)m.promoted, (unsigned long long)m.inuse_peak,
+                (unsigned long long)m.hiwater, (unsigned long long)m.released,
+                (unsigned long long)m.fresh, (unsigned long long)m.reuse_total,
+                (unsigned long long)m.x_calls, (unsigned long long)m.x_live,
+                (unsigned long long)m.x_inuse_after, (unsigned long long)m.x_released,
+                (unsigned long long)m.x_pending_nonzero);
+        };
+        const bool nowait_ran = m1.nowait != 0;
+        const bool agree = (nowait_ran ? m0.sameObjects(m1) : m0 == m1) && m1 == m2 && m2 == m2j;
+        if (!agree) { dump("m0", m0); dump("m1", m1); dump("m2", m2); dump("m2j", m2j); }
+        TEST_ASSERT(m0.x_calls == 4);
+        TEST_ASSERT(m0.x_released > 0);
+        TEST_ASSERT(m0.x_live > 0);
+        // pending bytes are 0 immediately after every call, in every mode
+        TEST_ASSERT(m0.x_pending_nonzero == 0 && m1.x_pending_nonzero == 0 &&
+                    m2.x_pending_nonzero == 0 && m2j.x_pending_nonzero == 0);
+        // every decision (and the majors after each call) agrees across modes
+        if (nowait_ran) TEST_ASSERT(m0.sameObjects(m1));
+        else TEST_ASSERT(m0 == m1);
+        TEST_ASSERT(m1 == m2);
+        TEST_ASSERT(m2 == m2j);
+        TEST_ASSERT(m1.nowait == m2.nowait && m2.nowait == m2j.nowait);
+        initAllocator(modeConfig(0));
+        closePool();
+#endif
+    });
+
+Testing::TestCase testExplicitReleaseReturnsMemory(
+    "HEAP_076: collectMajorAndRelease returns a dead 256 MB old gen to the OS (statm)",
+    []() {
+#if defined(__linux__)
+        auto statmResident = []() -> size_t {
+            FILE* f = std::fopen("/proc/self/statm", "r");
+            if (!f) return 0;
+            unsigned long long sz = 0, res = 0;
+            const int n = std::fscanf(f, "%llu %llu", &sz, &res);
+            std::fclose(f);
+            return n == 2 ? static_cast<size_t>(res) * static_cast<size_t>(sysconf(_SC_PAGESIZE)) : 0;
+        };
+        constexpr size_t kMiB = 1024 * 1024;
+        // 256 x 1 MiB, rooted, then dropped; the drop must be >= half of it.
+        // The old-gen cap is first-init-wins for the test process (the
+        // reservation), so a filtered run that first initialised a small heap
+        // scales the heap down to half the cap.
+        // Mode 0 (inline discard) and mode 2 with the production decommit
+        // schedule (delay one MAJOR, never by syncs): without the explicit
+        // drain the shrink's releases would stay resident until the next major.
+        for (uint32_t mode : {0u, 2u}) {
+            HeapConfig cfg = modeConfig(mode);
+            cfg.max_heap_size = 1024ULL * kMiB;
+            cfg.decommit_delay_syncs = UINT32_MAX;
+            cfg.decommit_delay_majors = 1;
+            cfg.validate();
+            auto& pool = GCHelperPool::instance();
+            if (pool.configured()) {
+                initAllocator(modeConfig(0));
+                pool.shutdownForTesting();
+            }
+            if (mode != 0) pool.configure(static_cast<HelperMode>(mode), 1, -1, 0);
+            auto& alloc = initAllocator(cfg);
+            const size_t cap_mib = alloc.getOldGenMaxBytes() / kMiB;
+            const size_t kBuffers = std::min<size_t>(256, cap_mib > 64 ? cap_mib / 2 - 16 : 0);
+            if (kBuffers < 32) {
+                std::fprintf(stderr, "  SKIP: old-gen cap %zu MiB too small for the release test\n", cap_mib);
+                break;
+            }
+            const size_t kMinDrop = kBuffers / 2 * kMiB;
+            std::vector<HPointer> keep;
+            keep.reserve(kBuffers);   // stable root addresses
+            for (size_t i = 0; i < kBuffers; ++i) {
+                const size_t payload = kMiB;
+                void* obj = alloc.allocate(sizeof(ByteBuffer) + payload, Tag_ByteBuffer);
+                TEST_ASSERT(obj != nullptr);
+                ByteBuffer* buf = static_cast<ByteBuffer*>(obj);
+                buf->header.size = static_cast<u32>(payload);
+                std::memset(buf->bytes, 0xAB, payload);   // resident
+                keep.push_back(AllocatorTestAccess::toPointer(obj));
+                alloc.getRootSet().addRoot(&keep.back());
+            }
+            alloc.minorGC();
+            for (auto& h : keep) alloc.getRootSet().removeRoot(&h);
+            const size_t before = statmResident();
+            const GCReport r = alloc.collectMajorAndRelease();
+            const size_t after = statmResident();
+            const bool ok = before > after && before - after >= kMinDrop &&
+                            r.rss_after_discard < r.rss_before && r.old_pending_after == 0;
+            if (!ok) {
+                std::fprintf(stderr, "  mode %u: statm %zu -> %zu MiB; report rss %llu > %llu > %llu MiB,"
+                             " released %llu MiB, discarded %llu MiB, shrink %llu MiB, pending %llu\n",
+                             mode, before / kMiB, after / kMiB,
+                             (unsigned long long)(r.rss_before / kMiB),
+                             (unsigned long long)(r.rss_after_discard / kMiB),
+                             (unsigned long long)(r.rss_after / kMiB),
+                             (unsigned long long)(r.released_bytes / kMiB),
+                             (unsigned long long)(r.discarded_bytes / kMiB),
+                             (unsigned long long)(r.shrink_released_bytes / kMiB),
+                             (unsigned long long)r.old_pending_after);
+            }
+            TEST_ASSERT(before > after && before - after >= kMinDrop);
+            TEST_ASSERT(r.rss_after_discard < r.rss_before);
+            TEST_ASSERT(r.old_pending_after == 0);
+            TEST_ASSERT(r.released_bytes >= kMinDrop);
+            TEST_ASSERT(r.discarded_bytes >= kMinDrop);
+            TEST_ASSERT(r.majors_run >= 1);
+        }
         initAllocator(modeConfig(0));
         closePool();
 #endif

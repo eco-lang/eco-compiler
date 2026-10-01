@@ -16,6 +16,10 @@ runtime/src/allocator/Allocator.cpp: std::lock_guard<std::recursive_mutex> lock(
 runtime/src/allocator/Allocator.cpp: std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 runtime/src/allocator/Allocator.cpp: std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 runtime/src/allocator/Allocator.cpp: std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+runtime/src/allocator/Allocator.cpp: std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+runtime/src/allocator/Allocator.cpp: std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+runtime/src/allocator/Allocator.cpp: std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+runtime/src/allocator/Allocator.cpp: std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 runtime/src/allocator/Allocator.cpp: std::unique_lock<std::recursive_mutex> lock(thread_mutex_);
 runtime/src/allocator/Allocator.cpp: void Allocator::forkParent() { instance().thread_mutex_.unlock(); }
 runtime/src/allocator/Allocator.cpp: void Allocator::forkPrepare() { instance().thread_mutex_.lock(); }

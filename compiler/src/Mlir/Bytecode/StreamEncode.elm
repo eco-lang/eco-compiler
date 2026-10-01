@@ -23,7 +23,7 @@ import Mlir.Bytecode.DialectSection as DialectSection exposing (DialectRegistry)
 import Mlir.Bytecode.IrSection as IrSection
 import Mlir.Bytecode.Section as Section
 import Mlir.Bytecode.StringTable as StringTable exposing (StringTable)
-import Mlir.Bytecode.VarInt exposing (encodeVarInt)
+import Mlir.Bytecode.VarInt exposing (encodeVarInt, varIntWidth)
 import Mlir.Loc exposing (Loc)
 import Mlir.Mlir
     exposing
@@ -112,6 +112,16 @@ collectAndEncodeOps ops (StreamTables st) =
 
 {-| Assemble the final bytecode from completed stream tables.
 Finalizes all tables, builds the module structure, and produces the output bytes.
+
+The IR section is framed ARITHMETICALLY (plans/frontend-heap-release.md §7.6
+row 15): its two nested section lengths are computed from the varint widths
+and the summed `Bytes.width` of the pre-encoded ops, and the whole module is
+then encoded ONCE. Framing it with `Section.encodeSection` encoded the
+ops' bytes three more times (region content, region section, IR section) and
+then copied them into the module, so the module was materialised up to four
+times beside `encodedOps`. `Section.encodeSection` has no padding (id byte,
+varint length, content), so the bytes are identical.
+
 -}
 assembleModule : StreamTables -> Loc -> Bytes
 assembleModule (StreamTables st) moduleLoc =
@@ -135,10 +145,6 @@ assembleModule (StreamTables st) moduleLoc =
 
         ( attrTypeSectionBody, attrTypeOffsetSectionBody ) =
             AttrType.encodeDataAndOffsets stringTable dialectRegistry attrTypeTable
-
-        -- Encode IR section
-        irSectionBody =
-            assembleIrSection dialectRegistry attrTypeTable st.numOps (List.reverse st.encodedOps) moduleLoc
     in
     BE.encode <|
         BE.sequence
@@ -160,7 +166,7 @@ assembleModule (StreamTables st) moduleLoc =
             , Section.encodeSection Section.sectionId.dialect dialectSectionBody
             , Section.encodeSection Section.sectionId.attrType attrTypeSectionBody
             , Section.encodeSection Section.sectionId.attrTypeOffset attrTypeOffsetSectionBody
-            , Section.encodeSection Section.sectionId.ir irSectionBody
+            , irSection dialectRegistry attrTypeTable st.numOps st.encodedOps moduleLoc
 
             -- Empty resource sections
             , Section.encodeSection Section.sectionId.resource (BE.sequence [])
@@ -177,15 +183,26 @@ bytecodeVersion =
 -- ==== IR Section Assembly ====
 
 
-{-| Assemble the IR section from pre-encoded op bytes.
-Wraps everything in a builtin.module op with an isolated region.
+{-| The whole IR section (id, length, body) as one encoder over the
+pre-encoded op bytes, which it references but never copies.
+
+Wraps everything in a builtin.module op with an isolated region. The layout is
+exactly what `Section.encodeSection` produced for the nested framing:
+
+    u8 ir, varint irBodyLen,
+        blockHeader, moduleNameIdx, 0x10, moduleLocIdx, regionEncoding,
+        u8 ir, varint regionLen,
+            varint 1, varint 0, bodyBlockHeader, op bytes...
+
+`encodedOpsNewestFirst` is in reverse order (newest first), as accumulated.
+
 -}
-assembleIrSection : DialectRegistry -> AttrTypeTable -> Int -> List Bytes -> Loc -> BE.Encoder
-assembleIrSection dialectReg attrTypeTable numOps encodedOps moduleLoc =
+irSection : DialectRegistry -> AttrTypeTable -> Int -> List Bytes -> Loc -> BE.Encoder
+irSection dialectReg attrTypeTable numOps encodedOpsNewestFirst moduleLoc =
     let
         -- Module block header: 1 op (the module op), no block args
-        blockHeader =
-            encodeVarInt (Bitwise.shiftLeftBy 1 1)
+        blockHeaderValue =
+            Bitwise.shiftLeftBy 1 1
 
         -- Module op encoding
         moduleNameIdx =
@@ -195,32 +212,58 @@ assembleIrSection dialectReg attrTypeTable numOps encodedOps moduleLoc =
             AttrType.locIndex moduleLoc attrTypeTable
 
         -- regionEncoding: (numRegions << 1) | isIsolated = (1 << 1) | 1 = 3
-        regionEncoding =
-            encodeVarInt (Bitwise.or (Bitwise.shiftLeftBy 1 1) 1)
+        regionEncodingValue =
+            Bitwise.or (Bitwise.shiftLeftBy 1 1) 1
 
         -- Region content: 1 block, 0 values, block with all ops
-        bodyBlockHeader =
-            encodeVarInt (Bitwise.shiftLeftBy 1 numOps)
+        bodyBlockHeaderValue =
+            Bitwise.shiftLeftBy 1 numOps
 
-        regionContent =
-            BE.encode <|
-                BE.sequence
-                    (encodeVarInt 1
-                        :: encodeVarInt 0
-                        :: bodyBlockHeader
-                        :: List.map BE.bytes encodedOps
-                    )
+        -- Oldest first, wrapped as encoders (no byte copies), plus their
+        -- total width — one pass over the newest-first list.
+        ( opEncoders, opsWidth ) =
+            List.foldl
+                (\b ( acc, w ) -> ( BE.bytes b :: acc, w + Bytes.width b ))
+                ( [], 0 )
+                encodedOpsNewestFirst
 
-        regionSection =
-            Section.encodeSection Section.sectionId.ir (BE.bytes regionContent)
+        regionLen =
+            varIntWidth 1
+                + varIntWidth 0
+                + varIntWidth bodyBlockHeaderValue
+                + opsWidth
+
+        irBodyLen =
+            varIntWidth blockHeaderValue
+                + varIntWidth moduleNameIdx
+                + 1
+                + varIntWidth moduleLocIdx
+                + varIntWidth regionEncodingValue
+                + 1
+                + varIntWidth regionLen
+                + regionLen
     in
     BE.sequence
-        [ blockHeader
-        , encodeVarInt moduleNameIdx
-        , BE.unsignedInt8 0x10 -- kHasInlineRegions
-        , encodeVarInt moduleLocIdx
-        , regionEncoding
-        , regionSection
+        [ BE.sequence
+            [ -- IR section header
+              BE.unsignedInt8 Section.sectionId.ir
+            , encodeVarInt irBodyLen
+
+            -- builtin.module op
+            , encodeVarInt blockHeaderValue
+            , encodeVarInt moduleNameIdx
+            , BE.unsignedInt8 0x10 -- kHasInlineRegions
+            , encodeVarInt moduleLocIdx
+            , encodeVarInt regionEncodingValue
+
+            -- Region section header + region content header
+            , BE.unsignedInt8 Section.sectionId.ir
+            , encodeVarInt regionLen
+            , encodeVarInt 1
+            , encodeVarInt 0
+            , encodeVarInt bodyBlockHeaderValue
+            ]
+        , BE.sequence opEncoders
         ]
 
 

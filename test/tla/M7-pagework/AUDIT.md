@@ -567,3 +567,34 @@ after the change (`initThread` constructs a ThreadLocalHeap under it, which buil
 call still runs under `thread_mutex_`; the pool's `post` only moved its CAS into the existing `m_`
 section (workers still take only `m_`). The new trace-only probe `m6.tm.held` in `onGCPauseEnd` fires
 under `thread_mutex_` and changes no step. **Verdict: model updated (LockOrder, MAPPING.md).**
+
+## 2026-10-01 — frontend-heap-release P1: DiscardAllPending, the explicit release's drainAll(true) (GC_MODEL_001)
+
+Pins fired: census `Allocator.cpp` (**7d5d75af1902**), grep `F.threadMutex` (**00cb061f21bd**): four new
+`thread_mutex_` lock_guards. New pin: region `AL.releaseDiscard` (M6, M7). `PageWork.{hpp,cpp}` (file pins)
+are unchanged: `drainAll` was already public.
+
+plans/frontend-heap-release.md P1 (§3, HEAP_076): the explicit release. New `ThreadLocalHeap::majorGCAndShrink` (TLA-REGION `TLH.majorGCAndShrink`): ONE pause and ONE sync point (an outermost `PauseEndHook` around a nested `majorGC(MajorReason::Explicit)`, then `OldGenSpace::finishSweepForRelease` (lazy sweep driven to Idle, `while (gc_phase_ != GCPhase::Idle)`, aborts if a cycle is active) and `shrinkToFloorForRelease` = `maybeShrinkCapacity(0, ShrinkPass::Forced)`). New `Allocator::collectMajorAndRelease` (after that pause, under `thread_mutex_` only: TLA-REGION `AL.releaseDiscard` = `page_work_->drainAll(decommitOn())` + counter reads; `malloc_trim` after the lock) and `Allocator::collectMinor` (two `thread_mutex_` snapshot sections around a plain `minorGC`). Both are fatal inside a pause (`pause_depth_ != 0`).
+
+MAPPING.md said `drainAll` ran only at reset and teardown (outside the model). The explicit release calls
+`drainAll(true)` on a live heap, so it is now a modelled mutator step (the plan's preferred option, §3.8),
+not an AUDIT argument. `PageWork.tla`: a new `M_Choose` branch **DiscardAllPending** = `M_DrainSlots`
+(`awaitSlot` on every slot in slot order: wait until Idle or Done, reap; loop) then `M_DrainDiscard` (every
+Pending extent → `none`, discarded inline by the mutator, still in the free list; `gPend` and `stale`
+cleared, as `pending_` / `pending_order_` are). New invariant `DrainSafe`: at `M_DrainDiscard` every slot is
+Idle and every Pending extent is free (HEAP_059 for the inline discard). New mutant `drain_no_await` (the
+slot loop skipped) violates it: counterexample (746 states) = a sync point posts a Populate job for the
+window, then the drain reaches `M_DrainDiscard` with that slot still Posted — the intended story. The step
+is unconditional (no new constant), so every existing row now also explores it; `DrainSafe` was added to
+`pw_basic`, `pw_two_workers`, `pw_aba`, `pw_nowait`, `pw_deep`. Re-translated (pcal).
+
+Results (`run_models.py --model M7`, TLC): quick 28/28 as expected — `pw_basic` pass 26,956 states,
+`pw_two_workers` 47,380, `pw_aba` 353,875, `pw_nowait` 55,810; every older mutant keeps its verdict;
+`mutants/drain_no_await` violates `DrainSafe`. Deep: `pw_deep` pass 14,679,327 states (135 s, 6 workers;
+was 13,561,819), `pw_deep_liveness` pass 2,064,629 (57 s; `MutatorFinishes`: the drain's waits return).
+Non-vacuity (scratch invariants on `pw_basic`): `M_DrainDiscard` is reached with a Pending extent, and the
+drain's `AS_Wait` is reached on a busy slot. HEAP_060, V1, TrackedInFree, NoOwnedPosted, DetChoice,
+PendGhost, PostIdle and NoWaitUnlessCap hold with the new step (the drain changes neither the free list nor
+its ghost, so GC_DET_001's `DetChoice` is untouched: `drainAll(true)` empties `pending_` identically in modes
+1 and 2). LockOrder (M7b) is unchanged: the drain adds no edge beyond the existing `thread_mutex_` → pool
+`m_`. **Verdict: model updated (PageWork.tla, MAPPING.md, models.txt).**

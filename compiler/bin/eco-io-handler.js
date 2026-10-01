@@ -112,6 +112,40 @@ function wakeUpMVarWaiters(mvar) {
 }
 
 /**
+ * Run an explicit garbage collection for Eco.GC (plans/frontend-heap-release.md
+ * §5.2) and build the GCReport object (same keys as Eco/GC.elm's decoder and
+ * the C++ kernel). Without node --expose-gc no collection runs: collected = 0.
+ * Report values are observations only (HEAP_076).
+ * @param {boolean} major - true for a full (last-resort) collection
+ * @returns {object} the GCReport
+ */
+function runGc(major) {
+  const g = typeof globalThis.gc === "function" ? globalThis.gc : null;
+  const b = process.memoryUsage();
+  const t0 = process.hrtime.bigint();
+  if (g) {
+    try {
+      g(major ? { type: "major", execution: "sync", flavor: "last-resort" }
+              : { type: "minor", execution: "sync" });
+    } catch (_) {
+      g(); // older V8: options unsupported -> full GC
+    }
+  }
+  const ns = g ? Number(process.hrtime.bigint() - t0) : 0;
+  const a = process.memoryUsage();
+  return {
+    kind: major ? "major" : "minor", collected: g ? 1 : 0,
+    totalNs: ns, gcNs: ns, sweepNs: 0, shrinkNs: 0, discardNs: 0, trimNs: 0,
+    rssBefore: b.rss, rssAfterDiscard: a.rss, rssAfter: a.rss,
+    oldInUseBefore: b.heapUsed, oldInUseAfter: a.heapUsed,
+    oldPendingBefore: 0, oldPendingAfter: 0, oldHighWater: a.heapTotal,
+    liveAfterMark: g && major ? a.heapUsed : 0,
+    releasedBytes: 0, shrinkReleasedBytes: 0, discardedBytes: 0, nurseryCommitted: 0,
+    minorCount: 0, majorCount: 0, majorsRun: g && major ? 1 : 0, trimResult: -1,
+  };
+}
+
+/**
  * Handle an eco-io JSON request.
  * @param {object} parsed - The parsed JSON request { op, args }
  * @param {function} respond - Function to send the response: respond(statusCode, body)
@@ -500,6 +534,13 @@ function handleEcoIO(parsed, respond) {
 
     case "Runtime.loadState": {
       respond(200, JSON.stringify({ value: global._ecoReplState || null }));
+      break;
+    }
+
+    // --- GC (Eco.GC) ---
+    case "GC.minor":
+    case "GC.major": {
+      respond(200, JSON.stringify({ value: runGc(op === "GC.major") }));
       break;
     }
 

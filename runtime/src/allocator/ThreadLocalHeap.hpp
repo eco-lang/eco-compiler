@@ -194,6 +194,17 @@ public:
     // no change and land in the log as `forced`.
     void majorGC(GCStats::MajorReason reason = GCStats::MajorReason::Forced);
 
+    /** The explicit release's pause (plans/frontend-heap-release.md §3.4, HEAP_076):
+     *  ONE pause and ONE sync point holding a STW major (MajorReason::Explicit),
+     *  the lazy sweep driven to Idle and a forced shrink to the floor. Only
+     *  from the owning mutator outside any pause (fatal otherwise). The caller
+     *  (Allocator::collectMajorAndRelease) discards the released pages after it. */
+    struct ReleaseTimings {
+        uint64_t gc_ns = 0, sweep_ns = 0, shrink_ns = 0;
+        size_t shrink_released = 0;   // in-use bytes the forced shrink released
+    };
+    ReleaseTimings majorGCAndShrink();
+
     // ========== Accessors ==========
 
     // threaded-gc-04b (plans/threaded-gc-04b-young-large-objects.md P§3.1):

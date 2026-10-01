@@ -292,7 +292,7 @@ add_custom_command(
     # absolute build-tree path so non-default CMake build dirs (e.g. debug/)
     # resolve correctly.
     COMMAND ${CMAKE_COMMAND} -E env "GUIDA_JS_PATH=${COMPILER_OUTPUT}"
-        ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=16384
+        ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=16384 --expose-gc
         ${COMPILER_DIR}/bin/index.js make
         --optimize
         --kernel-package eco/compiler
@@ -321,7 +321,7 @@ set(ECO_BOOT_2_RUNNER_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco-boot-2-runner.js")
 # invoke the runner.
 add_custom_command(
     OUTPUT ${ECO_BOOT_2_OUTPUT} ${ECO_BOOT_2_RUNNER_OUTPUT}
-    COMMAND ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=16384
+    COMMAND ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=16384 --expose-gc
         bin/eco-boot-runner.js make
         --optimize
         --kernel-package eco/compiler
@@ -352,7 +352,7 @@ set(ECO_BOOT_3_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco-boot-3.js")
 
 add_custom_command(
     OUTPUT ${ECO_BOOT_3_OUTPUT}
-    COMMAND ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=16384
+    COMMAND ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=16384 --expose-gc
         bin/eco-boot-2-runner.js make
         --optimize
         --kernel-package eco/compiler
@@ -422,7 +422,7 @@ add_custom_command(
     # (benchmarks/lss-opt.md); on a 15 GB host run the JS-hosted stages with
     # ECO_MONO_ENGINE=subst (the compiler reads it at runtime).
     COMMAND ${_stage5_time_prefix}
-        ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=16384
+        ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=16384 --expose-gc
         bin/eco-boot-2-runner.js make
         --optimize
         --kernel-package eco/compiler
@@ -750,7 +750,7 @@ function(eco_apply_unified_link target)
             ElmKernel_Parser ElmKernel_Regex ElmKernel_Time ElmKernel_Url
             ElmKernel_EffectRegistry
             EcoKernel_File EcoKernel_Console EcoKernel_Env EcoKernel_Process
-            EcoKernel_MVar EcoKernel_CellStore EcoKernel_Hash EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_Http
+            EcoKernel_MVar EcoKernel_CellStore EcoKernel_Hash EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_GC EcoKernel_Http
             EcoKernel_Crash
             # Vendored libzip (FetchContent target) + brew openssl@3 statics.
             # Both not in the SDK; mirrored from the AOT link in
@@ -810,7 +810,7 @@ function(eco_apply_unified_link target)
             ElmKernel_Parser ElmKernel_Regex ElmKernel_Time ElmKernel_Url
             ElmKernel_EffectRegistry
             EcoKernel_File EcoKernel_Console EcoKernel_Env EcoKernel_Process
-            EcoKernel_MVar EcoKernel_CellStore EcoKernel_Hash EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_Http
+            EcoKernel_MVar EcoKernel_CellStore EcoKernel_Hash EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_GC EcoKernel_Http
             EcoKernel_Crash
             # Vendored statics: libcurl (schannel TLS), libzip, zlib. No
             # OpenSSL on Windows (SHA via BCrypt). Same set as the AOT link.
@@ -845,7 +845,7 @@ function(eco_apply_unified_link target)
         ElmKernel_Parser ElmKernel_Regex ElmKernel_Time ElmKernel_Url
         ElmKernel_EffectRegistry
         EcoKernel_File EcoKernel_Console EcoKernel_Env EcoKernel_Process
-        EcoKernel_MVar EcoKernel_CellStore EcoKernel_Hash EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_Http
+        EcoKernel_MVar EcoKernel_CellStore EcoKernel_Hash EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_GC EcoKernel_Http
         EcoKernel_Crash
         # --whole-archive forces every object in EcoNativeDriverStatic into
         # the link so the strong eco_native_lower_and_link overrides the weak

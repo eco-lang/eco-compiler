@@ -563,3 +563,15 @@ assert now accepts `None` (M1's `D_Done` already models a drain after a stopped 
 gained a fork layer (a mutex held across fork, a flag set in the child): no census decision changes.
 `TLH.minorGC` / `majorGC` gained a validate-only owner check at entry. **Verdict: no model change
 needed (trace projection extended for refusals).**
+
+## 2026-10-01 — frontend-heap-release P1: new pin TLH.majorGCAndShrink (GC_MODEL_001)
+
+New pin (no hash fired in M1): region `TLH.majorGCAndShrink` (M1, M4, M8).
+
+plans/frontend-heap-release.md P1 (§3, HEAP_076): the explicit release. New `ThreadLocalHeap::majorGCAndShrink` (TLA-REGION `TLH.majorGCAndShrink`): ONE pause and ONE sync point (an outermost `PauseEndHook` around a nested `majorGC(MajorReason::Explicit)`, then `OldGenSpace::finishSweepForRelease` (lazy sweep driven to Idle, `while (gc_phase_ != GCPhase::Idle)`, aborts if a cycle is active) and `shrinkToFloorForRelease` = `maybeShrinkCapacity(0, ShrinkPass::Forced)`). New `Allocator::collectMajorAndRelease` (after that pause, under `thread_mutex_` only: TLA-REGION `AL.releaseDiscard` = `page_work_->drainAll(decommitOn())` + counter reads; `malloc_trim` after the lock) and `Allocator::collectMinor` (two `thread_mutex_` snapshot sections around a plain `minorGC`). Both are fatal inside a pause (`pause_depth_ != 0`).
+
+Re-audit (M1's part): the nested `majorGC` is the existing STW major (`J_Join` when a cycle is active:
+`finishMarkCycleNow(Join)` then the STW mark, `J_STW`); the outer `PauseEndHook` only defers the sync
+point to the end of the outer pause, and the sweep-to-Idle and the forced shrink run after the mark with
+no cycle active (`finishSweepForRelease` aborts if one is). Nothing in M1's mark cycle (t0 snapshot,
+slices, handoff, join) changes. **Verdict: no model change needed.**

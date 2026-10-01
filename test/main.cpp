@@ -847,6 +847,8 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testPageWorkDrainAllDiscardsPending);
     oldGenTests.add(testPageWorkPopulateUnsupported);
     oldGenTests.add(testDecommitModesAgreeOnCounters);
+    oldGenTests.add(testExplicitReleaseModesAgree);
+    oldGenTests.add(testExplicitReleaseReturnsMemory);
     oldGenTests.add(testCommitAheadNeverRemapsWindow);
     oldGenTests.add(testPageWorkValidatorCatchesOwnedTrackedExtent);
     oldGenTests.add(testMmuIncludesHelperStalls);

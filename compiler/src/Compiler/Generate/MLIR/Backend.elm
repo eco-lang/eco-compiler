@@ -277,9 +277,17 @@ writeOps ops writeChunk =
 
 
 {-| Generate MLIR bytecode using the streaming encoder.
-Processes funcs one at a time via Task chaining so the GC can reclaim
-each func's MlirOps before the next is generated. Peak memory is
-dominated by tables + the largest single func rather than all funcs.
+
+The node loop runs as a chain of Task steps, `codegenBatchSize` nodes per
+step (plans/frontend-heap-release.md §7.6 row 12). Calling this function only
+builds the codegen context and the node list (step A); after it returns, the
+`MonoGraph` itself is no longer referenced (the continuations capture `main`,
+`ports` and `flagsDecoder` separately), and each step's root is just
+`( ctx, remaining nodes, tables )`, so the nodes already emitted become
+garbage while the rest are generated. Ops, ctx and tables are threaded in
+exactly the order of the former pure recursion, so the output is
+byte-identical.
+
 -}
 streamMlirBytecode :
     Config.EcoConfig
@@ -313,94 +321,137 @@ streamMlirBytecode ecoConfig mode monoGraph0 target =
         initTables =
             StreamEncode.emptyStreamTables
     in
-    -- Phase 1: Stream node functions — collect tables + encode per func
-    streamNodesCollectEncode ctx nodesList initTables
-        |> Task.andThen
-            (\( ctxAfterNodes, tablesAfterNodes ) ->
-                let
-                    -- Process lambdas
-                    ( lambdaOps, finalCtx ) =
-                        Lambdas.processLambdas ctxAfterNodes
-
-                    tablesAfterLambdas =
-                        StreamEncode.collectAndEncodeOps lambdaOps tablesAfterNodes
-
-                    -- Main entry
-                    ( mainOps, ctxAfterMain ) =
-                        case main of
-                            Just mainInfo ->
-                                Functions.generateMainEntry finalCtx ports flagsDecoder mainInfo
-
-                            Nothing ->
-                                ( [], finalCtx )
-
-                    tablesAfterMain =
-                        StreamEncode.collectAndEncodeOps mainOps tablesAfterLambdas
-
-                    -- Kernel declarations
-                    ( kernelDeclOps, _ ) =
-                        Dict.foldl
-                            (\_ info ( accOps, accCtx ) ->
-                                let
-                                    ( newCtx, declOp ) =
-                                        Functions.generateKernelDecl accCtx info
-                                in
-                                ( declOp :: accOps, newCtx )
-                            )
-                            ( [], ctxAfterMain )
-                            ctxAfterMain.kernelDecls
-
-                    tablesAfterKernels =
-                        StreamEncode.collectAndEncodeOps (List.reverse kernelDeclOps) tablesAfterMain
-
-                    -- Type table
-                    typeTableOp =
-                        TypeTable.generateTypeTable finalCtx
-
-                    finalTables =
-                        StreamEncode.collectAndEncodeOps [ typeTableOp ] tablesAfterKernels
-
-                    -- Assemble final bytecode
-                    bytecodeBytes =
-                        StreamEncode.assembleModule finalTables Loc.unknown
-                in
-                Utils.dirCreateDirectoryIfMissing True (Utils.fpTakeDirectory target)
-                    |> Task.andThen (\_ -> Eco.File.writeBytes target bytecodeBytes |> IO.crashOnError)
-            )
+    -- Phase 1: Stream node functions — collect tables + encode per func, in
+    -- batches, each batch its own step.
+    Task.succeed ( ctx, nodesList, initTables )
+        |> Task.andThen streamNodesStep
+        |> Task.andThen (finishBytecode main ports flagsDecoder target)
 
 
-{-| Stream through nodes, collecting into tables and encoding each func's ops.
-Uses Task.andThen chaining so the runtime can GC each func's MlirOps
-before processing the next.
+{-| Nodes generated per Task step. Any value gives the same output; it only
+bounds how many already-emitted nodes a step keeps rooted.
 -}
-streamNodesCollectEncode :
-    Ctx.Context
-    -> List ( Int, Maybe Mono.MonoNode )
-    -> StreamEncode.StreamTables
+codegenBatchSize : Int
+codegenBatchSize =
+    256
+
+
+{-| One step of the node loop: emit a batch, then continue in a NEW step whose
+root no longer holds the emitted nodes.
+-}
+streamNodesStep :
+    ( Ctx.Context, List ( Int, Maybe Mono.MonoNode ), StreamEncode.StreamTables )
     -> Task Never ( Ctx.Context, StreamEncode.StreamTables )
-streamNodesCollectEncode ctx0 remaining tables =
+streamNodesStep ( ctx0, remaining, tables ) =
     case remaining of
         [] ->
             Task.succeed ( ctx0, tables )
 
-        ( _, Nothing ) :: rest ->
-            streamNodesCollectEncode ctx0 rest tables
+        _ :: _ ->
+            Task.succeed (encodeNodeBatch codegenBatchSize ctx0 remaining tables)
+                |> Task.andThen streamNodesStep
 
-        ( specId, Just node ) :: rest ->
-            let
-                ( nodeOps, newCtx ) =
-                    Functions.generateNode ctx0 specId node
 
-                cleanCtx =
-                    { newCtx
-                        | decoderExprs = Dict.empty
-                        , externBoxedVars = Set.empty
-                    }
+{-| Generate and encode up to `budget` node-list entries (pure, tail
+recursive). Same per-node work, in the same order, as the former
+`streamNodesCollectEncode`.
+-}
+encodeNodeBatch :
+    Int
+    -> Ctx.Context
+    -> List ( Int, Maybe Mono.MonoNode )
+    -> StreamEncode.StreamTables
+    -> ( Ctx.Context, List ( Int, Maybe Mono.MonoNode ), StreamEncode.StreamTables )
+encodeNodeBatch budget ctx0 remaining tables =
+    if budget <= 0 then
+        ( ctx0, remaining, tables )
 
-                newTables =
-                    StreamEncode.collectAndEncodeOps nodeOps tables
-            in
-            streamNodesCollectEncode cleanCtx rest newTables
+    else
+        case remaining of
+            [] ->
+                ( ctx0, [], tables )
+
+            ( _, Nothing ) :: rest ->
+                encodeNodeBatch (budget - 1) ctx0 rest tables
+
+            ( specId, Just node ) :: rest ->
+                let
+                    ( nodeOps, newCtx ) =
+                        Functions.generateNode ctx0 specId node
+
+                    cleanCtx =
+                        { newCtx
+                            | decoderExprs = Dict.empty
+                            , externBoxedVars = Set.empty
+                        }
+
+                    newTables =
+                        StreamEncode.collectAndEncodeOps nodeOps tables
+                in
+                encodeNodeBatch (budget - 1) cleanCtx rest newTables
+
+
+{-| After the node loop: lambdas, main entry, kernel declarations, type table,
+then assemble and write the module. A top-level function so the pending
+continuation captures exactly these arguments, never the MonoGraph.
+-}
+finishBytecode :
+    Maybe Mono.MainInfo
+    -> List Mono.PortRegistration
+    -> Maybe Mono.SpecId
+    -> String
+    -> ( Ctx.Context, StreamEncode.StreamTables )
+    -> Task Never ()
+finishBytecode main ports flagsDecoder target ( ctxAfterNodes, tablesAfterNodes ) =
+    let
+        -- Process lambdas
+        ( lambdaOps, finalCtx ) =
+            Lambdas.processLambdas ctxAfterNodes
+
+        tablesAfterLambdas =
+            StreamEncode.collectAndEncodeOps lambdaOps tablesAfterNodes
+
+        -- Main entry
+        ( mainOps, ctxAfterMain ) =
+            case main of
+                Just mainInfo ->
+                    Functions.generateMainEntry finalCtx ports flagsDecoder mainInfo
+
+                Nothing ->
+                    ( [], finalCtx )
+
+        tablesAfterMain =
+            StreamEncode.collectAndEncodeOps mainOps tablesAfterLambdas
+
+        -- Kernel declarations
+        ( kernelDeclOps, _ ) =
+            Dict.foldl
+                (\_ info ( accOps, accCtx ) ->
+                    let
+                        ( newCtx, declOp ) =
+                            Functions.generateKernelDecl accCtx info
+                    in
+                    ( declOp :: accOps, newCtx )
+                )
+                ( [], ctxAfterMain )
+                ctxAfterMain.kernelDecls
+
+        tablesAfterKernels =
+            StreamEncode.collectAndEncodeOps (List.reverse kernelDeclOps) tablesAfterMain
+
+        -- Type table
+        typeTableOp =
+            TypeTable.generateTypeTable finalCtx
+
+        finalTables =
+            StreamEncode.collectAndEncodeOps [ typeTableOp ] tablesAfterKernels
+
+        -- Assemble final bytecode
+        bytecodeBytes =
+            StreamEncode.assembleModule finalTables Loc.unknown
+    in
+    Utils.dirCreateDirectoryIfMissing True (Utils.fpTakeDirectory target)
+        |> Task.andThen (\_ -> Eco.File.writeBytes target bytecodeBytes |> IO.crashOnError)
 
 
 {-| U-T1.3.3 result-promotion selection (census-revised rule,

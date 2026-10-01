@@ -270,6 +270,17 @@ HPtr Eco_Kernel_Runtime_saveState(HPtr state);
 HPtr Eco_Kernel_Runtime_loadState();
 
 //===----------------------------------------------------------------------===//
+// GC Module - explicit collections (plans/frontend-heap-release.md §4, HEAP_076)
+//===----------------------------------------------------------------------===//
+
+// Task Never String: a minor GC; the String is the GCReport as JSON.
+HPtr Eco_Kernel_GC_minorGC();
+
+// Task Never String: the full release (Allocator::collectMajorAndRelease);
+// the String is the GCReport as JSON.
+HPtr Eco_Kernel_GC_majorGC();
+
+//===----------------------------------------------------------------------===//
 // GC root registration hooks. Must be called once per Elm thread, after
 // Allocator::initThread() and before any Elm code runs.
 //===----------------------------------------------------------------------===//

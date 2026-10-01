@@ -457,6 +457,16 @@ applyEnvOverrides cfg =
                 (Utils.envLookupEnv "ECO_CALL_PURITY" |> Task.mapError never)
                     |> Task.map (\v -> applyCallPurityOverride v cfgCpur)
             )
+        |> Task.andThen
+            (\cfgGcPreLink ->
+                (Utils.envLookupEnv "ECO_GC_PRE_LINK" |> Task.mapError never)
+                    |> Task.map (\v -> applyGcBoolOverride (\b g -> { g | preLink = b }) v cfgGcPreLink)
+            )
+        |> Task.andThen
+            (\cfgGcReport ->
+                (Utils.envLookupEnv "ECO_GC_REPORT" |> Task.mapError never)
+                    |> Task.map (\v -> applyGcBoolOverride (\b g -> { g | report = b }) v cfgGcReport)
+            )
 
 
 {-| `ECO_AGG_PROMOTE=1|true|yes`: U-T1.3.1 aggregate promotion — emit
@@ -581,6 +591,30 @@ applyCallPurityOverride maybeVal cfg =
 
             else if t == "0" || t == "off" then
                 { cfg | callPurityAttrs = False }
+
+            else
+                cfg
+
+
+{-| `ECO_GC_PRE_LINK=0|1` and `ECO_GC_REPORT=0|1`. Unknown values are ignored.
+GC settings never affect `hash`.
+-}
+applyGcBoolOverride : (Bool -> Config.GcConfig -> Config.GcConfig) -> Maybe String -> EcoConfig -> EcoConfig
+applyGcBoolOverride set maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | gc = set True cfg.gc }
+
+            else if t == "0" || t == "false" || t == "no" || t == "off" then
+                { cfg | gc = set False cfg.gc }
 
             else
                 cfg

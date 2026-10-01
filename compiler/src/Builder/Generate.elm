@@ -705,9 +705,25 @@ buildMonoGraph ecoConfig stats root maybeBuildDir maybeLocal details (Build.Arti
         modules =
             List.map stripUntypedGraph artifacts.modules
     in
-    loadTypedObjects root maybeBuildDir maybeLocal details modules
+    -- Row 4 (plans/frontend-heap-release.md §7.2): drop the cached-interface
+    -- MVars first. Nothing on the MLIR path reads them (only the JS debug
+    -- path's `loadTypes` does), and an MVar is an off-heap GC root until
+    -- dropped (HEAP_005). Never drop them inside Build: `checkRoot`'s
+    -- `loadInterfaces` takes them.
+    Task.io (Utils.listTraverse_ dropCachedInterfaceMVar artifacts.modules)
+        |> Task.andThen (\_ -> loadTypedObjects root maybeBuildDir maybeLocal details modules)
         |> Task.andThen finalizeAndMergeTypedObjects
         |> Task.andThen (buildMonoGraphFromMerged ecoConfig stats roots)
+
+
+dropCachedInterfaceMVar : Build.Module -> Task Never ()
+dropCachedInterfaceMVar modul =
+    case modul of
+        Build.Cached _ _ mvar ->
+            Utils.dropMVar mvar
+
+        Build.Fresh _ _ _ _ _ ->
+            Task.succeed ()
 
 
 {-| Remove the untyped Opt.LocalGraph from a Fresh module.
@@ -733,8 +749,25 @@ buildMonoGraphFromMerged ecoConfig stats roots (MergedTypedData mergedGraph merg
         globalTypeEnv : TypeEnv.GlobalTypeEnv
         globalTypeEnv =
             List.foldl addRootTypeEnv mergedEnv (NE.toList roots)
+
+        -- PHASE 0 — `AssignMVarIds` runs HERE, in front of the pre-mono
+        -- passes, so they operate on `MVarId`s rather than on names
+        -- (`plans/pre-mono-lss-transforms-00-assign-mvar-ids-first.md`). It
+        -- also synthesizes the entry's flags decoder, exactly as it did at
+        -- each engine's own entry point. Identity therefore EXISTS during the
+        -- pre-mono passes: anything they create or copy must mint through
+        -- `PreMono.Fresh`, and `validateMinted` checks that under
+        -- `mono.validate`.
+        assigned : EntryPrep.Assigned
+        assigned =
+            EntryPrep.assign (assignFlagsFor ecoConfig) "main" typedGraph
     in
-    runMonoOptPipeline ecoConfig stats typedGraph globalTypeEnv
+    -- Row 5 (plans/frontend-heap-release.md §7.3): assignment is its OWN step.
+    -- This callback's argument (the merged Name-typed graph) is rooted until
+    -- it returns, so handing `( assigned, globalTypeEnv )` to a following step
+    -- is what lets the Name-typed graph die before the pre-mono rewrites.
+    Task.succeed ( assigned, globalTypeEnv )
+        |> Task.andThen (\( a, env ) -> runMonoOptPipeline ecoConfig stats env a)
 
 
 {-| Run the monomorphization → inline+simplify → global optimization pipeline.
@@ -745,20 +778,12 @@ pinning data from earlier phases (e.g., TypedObjects, typedGraph, globalTypeEnv)
 through subsequent phases where they are no longer needed.
 
 -}
-runMonoOptPipeline : Config.EcoConfig -> FEStats.Handle -> TOpt.GlobalGraph Name -> TypeEnv.GlobalTypeEnv -> Task Exit.Generate MonoBuildResult
-runMonoOptPipeline ecoConfig stats typedGraph globalTypeEnv =
+runMonoOptPipeline : Config.EcoConfig -> FEStats.Handle -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Task Exit.Generate MonoBuildResult
+runMonoOptPipeline ecoConfig stats globalTypeEnv assignedRaw =
     let
-        -- PHASE 0 — `AssignMVarIds` now runs HERE, in front of the pre-mono
-        -- passes, so they operate on `MVarId`s rather than on names
-        -- (`plans/pre-mono-lss-transforms-00-assign-mvar-ids-first.md`). It
-        -- also synthesizes the entry's flags decoder, exactly as it did at
-        -- each engine's own entry point. Identity therefore EXISTS during the
-        -- pre-mono passes: anything they create or copy must mint through
-        -- `PreMono.Fresh`, and `validateMinted` checks that under
-        -- `mono.validate`.
-        assignedRaw =
-            EntryPrep.assign (assignFlagsFor ecoConfig) "main" typedGraph
-
+        -- `assignedRaw` is `EntryPrep.assign`'s result, computed in the
+        -- previous step (`buildMonoGraphFromMerged`, row 5).
+        --
         -- PRE-MONO ALIAS FORWARDING
         -- (plans/pre-mono-lss-transforms-04-alias-forwarding.md §3.6). Slot 2:
         -- FIRST after assignment, before η-expansion — item 1 reads the
@@ -1004,9 +1029,10 @@ validatePruned ecoConfig (Mono.MonoGraph record) =
 
 monoPipelineFrom : Config.EcoConfig -> FEStats.Handle -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Task Exit.Generate MonoBuildResult
 monoPipelineFrom ecoConfig stats globalTypeEnv assigned =
-    FEStats.withPhase stats
+    FEStats.withPhaseLazy stats
         FEStats.PhaseMono
-        (case selectMonomorphizer ecoConfig globalTypeEnv assigned of
+        (\() ->
+            case selectMonomorphizer ecoConfig globalTypeEnv assigned of
             Err err ->
                 Task.throw (Exit.GenerateMonomorphizationError err)
 
@@ -1073,9 +1099,10 @@ selectMonomorphizer ecoConfig globalTypeEnv assigned =
 -}
 runInlineSimplifyPhase : Config.EcoConfig -> FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
 runInlineSimplifyPhase ecoConfig stats monoGraph0 =
-    FEStats.withPhase stats
+    FEStats.withPhaseLazy stats
         FEStats.PhaseInlineSimplify
-        (let
+        (\() ->
+         let
             -- list.chunks: keep the shunted combinators' call sites intact —
             -- their tiny delegate bodies (reverse = foldl cons [] etc.) are
             -- otherwise threshold-inlined everywhere, and the generation-time
@@ -1129,49 +1156,64 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
 
                 else
                     ( monoGraph0, MonoInlineSimplify.emptyMetrics )
-
-            -- POST-INLINE DEAD-SPEC PRUNE
-            -- (plans/post-inline-dead-spec-prune.md). The inliner orphans a
-            -- specialization whenever it inlines the only reference to it, and
-            -- nothing removed those: `Prune` runs at the END of
-            -- monomorphization and the inliner returns `callEdges =
-            -- Array.empty`. HERE is the only position where a
-            -- `MonoVarGlobal`-reachability is exact — everything that
-            -- references a spec by another route (AbiCloning's
-            -- `fastEvaluatorSpec`, post-settle devirt targets, CafHoist's
-            -- mints) runs after `runGlobalOptPhase` below.
-            simplifiedGraph =
-                if ecoConfig.inline.pruneDead then
-                    Prune.pruneAfterInline inlinedGraph
-
-                else
-                    inlinedGraph
          in
-         if ecoConfig.inline.report then
-            -- Inline census (inline.report / ECO_INLINE_REPORT=1): pass
-            -- metrics + the static count of closures surviving the pass
-            -- (HOF-elimination plan H0.2). stderr, like the LSS census.
-            --
-            -- Rendered over the PRUNED graph: `closuresRemaining` and the
-            -- residual taxonomy counted closures in dead specs until the prune
-            -- existed, so every one of those figures steps down once when it
-            -- lands (plan §4 R3 — a correction, not a regression).
-            Task.io
-                (System.IO.writeLn System.IO.stderr
-                    (renderInlineReportWith ecoConfig.inline inlineMetrics simplifiedGraph
-                        ++ "\n"
-                        ++ renderPruneReport inlinedGraph simplifiedGraph
-                    )
-                )
-                |> Task.andThen (\_ -> validatePruned ecoConfig simplifiedGraph)
-                |> Task.map (\_ -> simplifiedGraph)
-
-         else
-            validatePruned ecoConfig simplifiedGraph
-                |> Task.map (\_ -> simplifiedGraph)
+         -- E-a (plans/frontend-heap-release.md §7.4): the prune and the census
+         -- run in the NEXT step. This thunk captures `monoGraph0`, and the
+         -- running callback stays rooted until it returns, so doing the prune
+         -- here would keep the pre-inline graph live through it.
+         Task.succeed ( inlinedGraph, inlineMetrics )
+            |> Task.andThen (pruneAndReportInline ecoConfig)
         )
         -- Hand off to a separate function so monoGraph0 goes out of scope
         |> Task.andThen (runGlobalOptPhase ecoConfig ecoConfig.mono.lss.report ecoConfig.list.report ecoConfig.borrow ecoConfig.cafMemo ecoConfig.cse stats)
+
+
+{-| The second step of the inline phase (E-a): the post-inline dead-spec prune,
+the inline census and the prune validator. A top-level function so the step
+captures only `ecoConfig`, never the pre-inline graph.
+-}
+pruneAndReportInline : Config.EcoConfig -> ( Mono.MonoGraph, MonoInlineSimplify.Metrics ) -> Task Exit.Generate Mono.MonoGraph
+pruneAndReportInline ecoConfig ( inlinedGraph, inlineMetrics ) =
+    let
+        -- POST-INLINE DEAD-SPEC PRUNE
+        -- (plans/post-inline-dead-spec-prune.md). The inliner orphans a
+        -- specialization whenever it inlines the only reference to it, and
+        -- nothing removed those: `Prune` runs at the END of
+        -- monomorphization and the inliner returns `callEdges =
+        -- Array.empty`. HERE is the only position where a
+        -- `MonoVarGlobal`-reachability is exact — everything that
+        -- references a spec by another route (AbiCloning's
+        -- `fastEvaluatorSpec`, post-settle devirt targets, CafHoist's
+        -- mints) runs after `runGlobalOptPhase`.
+        simplifiedGraph =
+            if ecoConfig.inline.pruneDead then
+                Prune.pruneAfterInline inlinedGraph
+
+            else
+                inlinedGraph
+    in
+    if ecoConfig.inline.report then
+        -- Inline census (inline.report / ECO_INLINE_REPORT=1): pass
+        -- metrics + the static count of closures surviving the pass
+        -- (HOF-elimination plan H0.2). stderr, like the LSS census.
+        --
+        -- Rendered over the PRUNED graph: `closuresRemaining` and the
+        -- residual taxonomy counted closures in dead specs until the prune
+        -- existed, so every one of those figures steps down once when it
+        -- lands (plan §4 R3 — a correction, not a regression).
+        Task.io
+            (System.IO.writeLn System.IO.stderr
+                (renderInlineReportWith ecoConfig.inline inlineMetrics simplifiedGraph
+                    ++ "\n"
+                    ++ renderPruneReport inlinedGraph simplifiedGraph
+                )
+            )
+            |> Task.andThen (\_ -> validatePruned ecoConfig simplifiedGraph)
+            |> Task.map (\_ -> simplifiedGraph)
+
+    else
+        validatePruned ecoConfig simplifiedGraph
+            |> Task.map (\_ -> simplifiedGraph)
 
 
 {-| Census line for pre-mono alias forwarding
@@ -1678,228 +1720,339 @@ renderInlineReportWith inlineConfig m graph =
 
 
 {-| Global optimization phase in its own scope so inline+simplify inputs are GC-eligible.
+
+E-b (plans/frontend-heap-release.md §7.5): each pass is its OWN step —
+GlobalOpt, CSE, CAF dedupe, CAF hoist — so a pass's input graph dies as soon as
+the next pass has produced its output, instead of every intermediate being kept
+by one eager `let` rooted at `simplifiedGraph`. The census lines that need an
+intermediate graph are rendered to a `Maybe String` IN the step where that graph
+is live (the `if` is outside any closure, §10 trap 2), and every stderr line is
+still written in the original order by the last step.
+
 -}
 runGlobalOptPhase : Config.EcoConfig -> Bool -> Bool -> Config.BorrowConfig -> Config.CafMemoConfig -> Config.CseConfig -> FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
 runGlobalOptPhase mapTemplateCfg lssReport listReport borrowCfg cafMemo cseCfg stats simplifiedGraph =
-    FEStats.withPhase stats
+    let
+        cfg : GlobalOptCfg
+        cfg =
+            { mapTemplateCfg = mapTemplateCfg
+            , lssReport = lssReport
+            , listReport = listReport
+            , borrowCfg = borrowCfg
+            , cafMemo = cafMemo
+            , cseCfg = cseCfg
+            }
+    in
+    FEStats.withPhaseLazy stats
         FEStats.PhaseGlobalOpt
-        (let
-            ( goGraph, goStats ) =
-                MonoGlobalOptimize.globalOptimizeWithStats mapTemplateCfg.mono.lss.stamp.census borrowCfg simplifiedGraph
-
-            -- kernel-opt-13 C2: bounded-scope CSE of pure calls. Runs HERE,
-            -- post-annotation, because it adds MonoLet bindings and
-            -- annotateCallStaging is O(2^let-depth); and BEFORE CafDedupe, so
-            -- CSE never has to reason about specs dedupe is about to merge away.
-            ( cseGraph, cseStats ) =
-                if cseCfg.enabled then
-                    MonoCse.run
-                        { minCost = cseCfg.minCost, maxPerDef = cseCfg.maxPerDef }
-                        goGraph
-
-                else
-                    ( goGraph, MonoCse.emptyStats )
-
-            -- CAF spec dedupe (cafMemo.dedupe / ECO_CAF_DEDUPE=1): merge
-            -- structurally identical nullary specs BEFORE census/hoist so
-            -- downstream counts see the deduped graph. Its stats line IS
-            -- the dedupe census.
-            ( optimizedGraph, dedupeStats ) =
-                if cafMemo.dedupe then
-                    CafDedupe.run cseGraph
-
-                else
-                    ( cseGraph, CafDedupe.emptyStats )
-
-            -- CAF hoisting (plans/caf-hoist-closed-expressions.md DQ3 order:
-            -- GlobalOpt → census(pre) → hoist → hoist stats → census(post)).
-            ( hoistedGraph, hoistStats ) =
-                if cafMemo.hoist.enabled then
-                    CafHoist.run
-                        { minNodes = cafMemo.hoist.minNodes
-                        , maxHoists = cafMemo.hoist.maxHoists
-                        }
-                        optimizedGraph
-
-                else
-                    ( optimizedGraph, CafHoist.emptyStats )
-
-            censusCfg =
-                { minNodes = cafMemo.hoist.minNodes }
-
-            result =
-                { monoGraph = hoistedGraph
-                , mode = Mode.Dev Nothing
-                }
-
-            writeLnErr line =
-                Task.io (System.IO.writeLn System.IO.stderr line)
-         in
-         (if cafMemo.dedupe then
-            writeLnErr (CafDedupe.renderStats dedupeStats)
-
-          else
-            Task.succeed ()
-         )
-            |> Task.andThen
-                (\_ ->
-                    if cseCfg.enabled then
-                        writeLnErr (MonoCse.renderStats cseStats)
-
-                    else
-                        Task.succeed ()
+        (\() ->
+            Task.succeed
+                (MonoGlobalOptimize.globalOptimizeWithStats
+                    mapTemplateCfg.mono.lss.stamp.census
+                    borrowCfg
+                    mapTemplateCfg.list.mapTemplate
+                    simplifiedGraph
                 )
-            |> Task.andThen
-                (\_ ->
-                    if cseCfg.report then
-                        -- kernel-opt-13 C1 census, on `goGraph` -- the same
-                        -- object `MonoCse.run` consumes, so the census numbers
-                        -- and the pass's input are the same graph. Output-only.
-                        writeLnErr (CseCensus.report "" cseCfg.minCost goGraph)
-
-                    else
-                        Task.succeed ()
-                )
-            |> Task.andThen
-                (\_ ->
-                    if cafMemo.census then
-                        -- Inner-CAF opportunity census (cafMemo.census /
-                        -- ECO_CAF_CENSUS=1) over the PRE-hoist graph: the
-                        -- opportunity baseline. stderr, like the LSS census.
-                        writeLnErr (CafCensus.report "caf-census" censusCfg optimizedGraph)
-
-                    else
-                        Task.succeed ()
-                )
-            |> Task.andThen
-                (\_ ->
-                    if cafMemo.hoist.enabled then
-                        writeLnErr (CafHoist.renderStats hoistStats)
-
-                    else
-                        Task.succeed ()
-                )
-            |> Task.andThen
-                (\_ ->
-                    if cafMemo.census && cafMemo.hoist.enabled then
-                        -- POST-hoist residue: the H2 collapse gate.
-                        writeLnErr (CafCensus.report "caf-census(post-hoist)" censusCfg hoistedGraph)
-
-                    else
-                        Task.succeed ()
-                )
-            |> Task.andThen
-                (\_ ->
-                    if listReport then
-                        -- List-combinator recognition census (list.report /
-                        -- ECO_LIST_REPORT=1; chunked-list plan §6 L1.1).
-                        -- stderr, like the LSS census; compared against the
-                        -- L0 static census (§11.a) as the recognition gate.
-                        writeLnErr (ListCombinators.report hoistedGraph)
-
-                    else
-                        Task.succeed ()
-                )
-            |> Task.andThen
-                (\_ ->
-                    if listReport then
-                        -- List.map template licence census
-                        -- (plans/list-map-mlir-template.md Gate 3:
-                        -- licensed + declined* == recognized). Rides on the
-                        -- same env flag as the combinator census and is
-                        -- derived from the SAME graph codegen will see, so the
-                        -- printed numbers are the numbers emission acts on.
-                        -- The derivation is repeated here rather than threaded
-                        -- out of Backend: this is a census-only path, and
-                        -- paying CsePurity.analyze twice under
-                        -- ECO_LIST_REPORT=1 is cheaper than a plumbing seam
-                        -- that could drift from what emission actually used.
-                        writeLnErr
-                            (MapTemplate.report
-                                (MapTemplate.derive mapTemplateCfg hoistedGraph)
-                            )
-
-                    else
-                        Task.succeed ()
-                )
-            |> Task.andThen
-                (\_ ->
-                    if lssReport then
-                        -- GlobalOpt census line (stderr, like the mono census above):
-                        -- staging wrapper insertions + AbiCloning singleton-upgrade
-                        -- outcomes (design §9.4's retirement counters).
-                        Task.io
-                            (System.IO.writeLn System.IO.stderr
-                                ("lss globalopt: wrappersInserted="
-                                    ++ String.fromInt goStats.wrappersInserted
-                                    ++ " dispatchUpgraded="
-                                    ++ String.fromInt goStats.abiCloning.dispatchUpgraded
-                                    ++ " stampedPapPrefix="
-                                    ++ String.fromInt goStats.abiCloning.stampedPapPrefix
-                                    ++ " stampedPapGlobal="
-                                    ++ String.fromInt goStats.abiCloning.stampedPapGlobal
-                                    ++ " stampedStaged="
-                                    ++ String.fromInt goStats.abiCloning.stampedStaged
-                                    ++ " declinedBlocked="
-                                    ++ String.fromInt goStats.abiCloning.declinedBlocked
-                                    ++ " declinedNoInstance="
-                                    ++ String.fromInt goStats.abiCloning.declinedNoInstance
-                                    ++ " declinedShape="
-                                    ++ String.fromInt goStats.abiCloning.declinedShape
-                                    ++ " (arity="
-                                    ++ String.fromInt goStats.abiCloning.declinedShapeArity
-                                    ++ " [zero="
-                                    ++ String.fromInt goStats.abiCloning.declinedShapeArityZero
-                                    ++ " under="
-                                    ++ String.fromInt goStats.abiCloning.declinedShapeArityUnder
-                                    ++ " over="
-                                    ++ String.fromInt goStats.abiCloning.declinedShapeArityOver
-                                    ++ "] bucketMiss="
-                                    ++ String.fromInt goStats.abiCloning.declinedShapeBucketMiss
-                                    ++ " layout="
-                                    ++ String.fromInt goStats.abiCloning.declinedShapeLayout
-                                    ++ " char="
-                                    ++ String.fromInt goStats.abiCloning.declinedShapeChar
-                                    ++ " nonArrow="
-                                    ++ String.fromInt goStats.abiCloning.declinedShapeNonArrow
-                                    ++ ") declinedAbiMismatch="
-                                    ++ String.fromInt goStats.abiCloning.declinedAbiMismatch
-                                    ++ " declinedBodyMismatch="
-                                    ++ String.fromInt goStats.abiCloning.declinedBodyMismatch
-                                    ++ " devirtPost(fn/ctor/noSpec/ambiguous)="
-                                    ++ String.fromInt goStats.abiCloning.devirtPost.fn
-                                    ++ "/"
-                                    ++ String.fromInt goStats.abiCloning.devirtPost.ctor
-                                    ++ "/"
-                                    ++ String.fromInt goStats.abiCloning.devirtPost.noSpec
-                                    ++ "/"
-                                    ++ String.fromInt goStats.abiCloning.devirtPost.ambiguous
-                                    ++ " multiInstanceGroups="
-                                    ++ String.fromInt goStats.abiCloning.multiInstanceGroups
-                                    ++ " stampedWrapperInstances="
-                                    ++ String.fromInt goStats.abiCloning.stampedWrapperInstances
-                                    ++ "\n"
-                                    ++ abiCensusLines goStats.abiCloning
-                                )
-                            )
-                            |> Task.map (\_ -> result)
-
-                    else
-                        Task.succeed result
-                )
-            |> Task.andThen
-                (\_ ->
-                    -- Borrow-inference census (borrow.report / ECO_BORROW_REPORT):
-                    -- the real B2 uniqueness/sharing oracle census. stderr,
-                    -- graph-inert.
-                    if borrowCfg.report then
-                        writeLnErr (Borrow.renderStats goStats.borrow)
-                            |> Task.map (\_ -> result)
-
-                    else
-                        Task.succeed result
-                )
+                |> Task.andThen (globalOptCseStep cfg)
+                |> Task.andThen (globalOptDedupeStep cfg)
+                |> Task.andThen (globalOptHoistStep cfg)
+                |> Task.andThen (globalOptReportStep cfg)
         )
+
+
+{-| The configuration the GlobalOpt steps read (E-b). Flags and small records
+only — never a graph.
+-}
+type alias GlobalOptCfg =
+    { mapTemplateCfg : Config.EcoConfig
+    , lssReport : Bool
+    , listReport : Bool
+    , borrowCfg : Config.BorrowConfig
+    , cafMemo : Config.CafMemoConfig
+    , cseCfg : Config.CseConfig
+    }
+
+
+{-| What the GlobalOpt steps carry besides the current graph: pass stats and
+census lines already rendered from graphs that are now dead.
+-}
+type alias GlobalOptCarry =
+    { goStats : MonoGlobalOptimize.GlobalOptStats
+    , cseStats : MonoCse.Stats
+    , cseCensus : Maybe String
+    , dedupeStats : CafDedupe.Stats
+    , cafCensusPre : Maybe String
+    , hoistStats : CafHoist.Stats
+    }
+
+
+{-| kernel-opt-13 C2: bounded-scope CSE of pure calls. Runs HERE,
+post-annotation, because it adds MonoLet bindings and annotateCallStaging is
+O(2^let-depth); and BEFORE CafDedupe, so CSE never has to reason about specs
+dedupe is about to merge away.
+-}
+globalOptCseStep : GlobalOptCfg -> ( Mono.MonoGraph, MonoGlobalOptimize.GlobalOptStats ) -> Task x ( Mono.MonoGraph, GlobalOptCarry )
+globalOptCseStep cfg ( goGraph, goStats ) =
+    let
+        -- kernel-opt-13 C1 census, on `goGraph` -- the same object
+        -- `MonoCse.run` consumes, so the census numbers and the pass's input
+        -- are the same graph. Output-only.
+        cseCensus =
+            if cfg.cseCfg.report then
+                Just (CseCensus.report "" cfg.cseCfg.minCost goGraph)
+
+            else
+                Nothing
+
+        ( cseGraph, cseStats ) =
+            if cfg.cseCfg.enabled then
+                MonoCse.run
+                    { minCost = cfg.cseCfg.minCost, maxPerDef = cfg.cseCfg.maxPerDef }
+                    goGraph
+
+            else
+                ( goGraph, MonoCse.emptyStats )
+    in
+    Task.succeed
+        ( cseGraph
+        , { goStats = goStats
+          , cseStats = cseStats
+          , cseCensus = cseCensus
+          , dedupeStats = CafDedupe.emptyStats
+          , cafCensusPre = Nothing
+          , hoistStats = CafHoist.emptyStats
+          }
+        )
+
+
+{-| CAF spec dedupe (cafMemo.dedupe / ECO\_CAF\_DEDUPE=1): merge structurally
+identical nullary specs BEFORE census/hoist so downstream counts see the deduped
+graph. Its stats line IS the dedupe census.
+-}
+globalOptDedupeStep : GlobalOptCfg -> ( Mono.MonoGraph, GlobalOptCarry ) -> Task x ( Mono.MonoGraph, GlobalOptCarry )
+globalOptDedupeStep cfg ( cseGraph, carry ) =
+    let
+        ( optimizedGraph, dedupeStats ) =
+            if cfg.cafMemo.dedupe then
+                CafDedupe.run cseGraph
+
+            else
+                ( cseGraph, CafDedupe.emptyStats )
+
+        -- Inner-CAF opportunity census (cafMemo.census / ECO_CAF_CENSUS=1)
+        -- over the PRE-hoist graph: the opportunity baseline. stderr, like
+        -- the LSS census.
+        cafCensusPre =
+            if cfg.cafMemo.census then
+                Just (CafCensus.report "caf-census" { minNodes = cfg.cafMemo.hoist.minNodes } optimizedGraph)
+
+            else
+                Nothing
+    in
+    Task.succeed ( optimizedGraph, { carry | dedupeStats = dedupeStats, cafCensusPre = cafCensusPre } )
+
+
+{-| CAF hoisting (plans/caf-hoist-closed-expressions.md DQ3 order: GlobalOpt →
+census(pre) → hoist → hoist stats → census(post)).
+-}
+globalOptHoistStep : GlobalOptCfg -> ( Mono.MonoGraph, GlobalOptCarry ) -> Task x ( Mono.MonoGraph, GlobalOptCarry )
+globalOptHoistStep cfg ( optimizedGraph, carry ) =
+    let
+        ( hoistedGraph, hoistStats ) =
+            if cfg.cafMemo.hoist.enabled then
+                CafHoist.run
+                    { minNodes = cfg.cafMemo.hoist.minNodes
+                    , maxHoists = cfg.cafMemo.hoist.maxHoists
+                    }
+                    optimizedGraph
+
+            else
+                ( optimizedGraph, CafHoist.emptyStats )
+    in
+    Task.succeed ( hoistedGraph, { carry | hoistStats = hoistStats } )
+
+
+{-| The last GlobalOpt step: every stderr line, in the original order, then the
+result. Only the final (hoisted) graph is live here.
+-}
+globalOptReportStep : GlobalOptCfg -> ( Mono.MonoGraph, GlobalOptCarry ) -> Task Exit.Generate MonoBuildResult
+globalOptReportStep cfg ( hoistedGraph, carry ) =
+    let
+        { lssReport, listReport, borrowCfg, cafMemo, cseCfg, mapTemplateCfg } =
+            cfg
+
+        { goStats, cseStats, dedupeStats, hoistStats } =
+            carry
+
+        censusCfg =
+            { minNodes = cafMemo.hoist.minNodes }
+
+        result =
+            { monoGraph = hoistedGraph
+            , mode = Mode.Dev Nothing
+            }
+
+        writeLnErr line =
+            Task.io (System.IO.writeLn System.IO.stderr line)
+
+        writeMaybe maybeLine =
+            case maybeLine of
+                Just line ->
+                    writeLnErr line
+
+                Nothing ->
+                    Task.succeed ()
+
+        cseCensus =
+            carry.cseCensus
+
+        cafCensusPre =
+            carry.cafCensusPre
+    in
+    (if cafMemo.dedupe then
+        writeLnErr (CafDedupe.renderStats dedupeStats)
+
+     else
+        Task.succeed ()
+    )
+        |> Task.andThen
+            (\_ ->
+                if cseCfg.enabled then
+                    writeLnErr (MonoCse.renderStats cseStats)
+
+                else
+                    Task.succeed ()
+            )
+        |> Task.andThen (\_ -> writeMaybe cseCensus)
+        |> Task.andThen (\_ -> writeMaybe cafCensusPre)
+        |> Task.andThen
+            (\_ ->
+                if cafMemo.hoist.enabled then
+                    writeLnErr (CafHoist.renderStats hoistStats)
+
+                else
+                    Task.succeed ()
+            )
+        |> Task.andThen
+            (\_ ->
+                if cafMemo.census && cafMemo.hoist.enabled then
+                    -- POST-hoist residue: the H2 collapse gate.
+                    writeLnErr (CafCensus.report "caf-census(post-hoist)" censusCfg hoistedGraph)
+
+                else
+                    Task.succeed ()
+            )
+        |> Task.andThen
+            (\_ ->
+                if listReport then
+                    -- List-combinator recognition census (list.report /
+                    -- ECO_LIST_REPORT=1; chunked-list plan §6 L1.1).
+                    -- stderr, like the LSS census; compared against the
+                    -- L0 static census (§11.a) as the recognition gate.
+                    writeLnErr (ListCombinators.report hoistedGraph)
+
+                else
+                    Task.succeed ()
+            )
+        |> Task.andThen
+            (\_ ->
+                if listReport then
+                    -- List.map template licence census
+                    -- (plans/list-map-mlir-template.md Gate 3:
+                    -- licensed + declined* == recognized). Rides on the
+                    -- same env flag as the combinator census and is
+                    -- derived from the SAME graph codegen will see, so the
+                    -- printed numbers are the numbers emission acts on.
+                    -- The derivation is repeated here rather than threaded
+                    -- out of Backend: this is a census-only path, and
+                    -- paying CsePurity.analyze twice under
+                    -- ECO_LIST_REPORT=1 is cheaper than a plumbing seam
+                    -- that could drift from what emission actually used.
+                    writeLnErr
+                        (MapTemplate.report
+                            (MapTemplate.derive mapTemplateCfg hoistedGraph)
+                        )
+
+                else
+                    Task.succeed ()
+            )
+        |> Task.andThen
+            (\_ ->
+                if lssReport then
+                    -- GlobalOpt census line (stderr, like the mono census above):
+                    -- staging wrapper insertions + AbiCloning singleton-upgrade
+                    -- outcomes (design §9.4's retirement counters).
+                    Task.io
+                        (System.IO.writeLn System.IO.stderr
+                            ("lss globalopt: wrappersInserted="
+                                ++ String.fromInt goStats.wrappersInserted
+                                ++ " dispatchUpgraded="
+                                ++ String.fromInt goStats.abiCloning.dispatchUpgraded
+                                ++ " stampedPapPrefix="
+                                ++ String.fromInt goStats.abiCloning.stampedPapPrefix
+                                ++ " stampedPapGlobal="
+                                ++ String.fromInt goStats.abiCloning.stampedPapGlobal
+                                ++ " stampedStaged="
+                                ++ String.fromInt goStats.abiCloning.stampedStaged
+                                ++ " declinedBlocked="
+                                ++ String.fromInt goStats.abiCloning.declinedBlocked
+                                ++ " declinedNoInstance="
+                                ++ String.fromInt goStats.abiCloning.declinedNoInstance
+                                ++ " declinedShape="
+                                ++ String.fromInt goStats.abiCloning.declinedShape
+                                ++ " (arity="
+                                ++ String.fromInt goStats.abiCloning.declinedShapeArity
+                                ++ " [zero="
+                                ++ String.fromInt goStats.abiCloning.declinedShapeArityZero
+                                ++ " under="
+                                ++ String.fromInt goStats.abiCloning.declinedShapeArityUnder
+                                ++ " over="
+                                ++ String.fromInt goStats.abiCloning.declinedShapeArityOver
+                                ++ "] bucketMiss="
+                                ++ String.fromInt goStats.abiCloning.declinedShapeBucketMiss
+                                ++ " layout="
+                                ++ String.fromInt goStats.abiCloning.declinedShapeLayout
+                                ++ " char="
+                                ++ String.fromInt goStats.abiCloning.declinedShapeChar
+                                ++ " nonArrow="
+                                ++ String.fromInt goStats.abiCloning.declinedShapeNonArrow
+                                ++ ") declinedAbiMismatch="
+                                ++ String.fromInt goStats.abiCloning.declinedAbiMismatch
+                                ++ " declinedBodyMismatch="
+                                ++ String.fromInt goStats.abiCloning.declinedBodyMismatch
+                                ++ " devirtPost(fn/ctor/noSpec/ambiguous)="
+                                ++ String.fromInt goStats.abiCloning.devirtPost.fn
+                                ++ "/"
+                                ++ String.fromInt goStats.abiCloning.devirtPost.ctor
+                                ++ "/"
+                                ++ String.fromInt goStats.abiCloning.devirtPost.noSpec
+                                ++ "/"
+                                ++ String.fromInt goStats.abiCloning.devirtPost.ambiguous
+                                ++ " multiInstanceGroups="
+                                ++ String.fromInt goStats.abiCloning.multiInstanceGroups
+                                ++ " stampedWrapperInstances="
+                                ++ String.fromInt goStats.abiCloning.stampedWrapperInstances
+                                ++ "\n"
+                                ++ abiCensusLines goStats.abiCloning
+                            )
+                        )
+                        |> Task.map (\_ -> result)
+
+                else
+                    Task.succeed result
+            )
+        |> Task.andThen
+            (\_ ->
+                -- Borrow-inference census (borrow.report / ECO_BORROW_REPORT):
+                -- the real B2 uniqueness/sharing oracle census. stderr,
+                -- graph-inert.
+                if borrowCfg.report then
+                    writeLnErr (Borrow.renderStats goStats.borrow)
+                        |> Task.map (\_ -> result)
+
+                else
+                    Task.succeed result
+            )
 
 
 {-| Census lines (2026-07-21, plans/lss-dispatch-value-extraction.md open
@@ -2214,9 +2367,10 @@ writeMonoMlirStreaming ecoConfig stats _ _ root maybeBuildDir maybeLocal details
     buildMonoGraph ecoConfig stats root maybeBuildDir maybeLocal details artifacts
         |> Task.andThen
             (\{ monoGraph, mode } ->
-                FEStats.withPhase stats
+                FEStats.withPhaseLazy stats
                     FEStats.PhaseMlir
-                    (File.withStreamingWriter target
+                    (\() ->
+                        File.withStreamingWriter target
                         (\writeChunk ->
                             MLIR.streamMlirToWriter ecoConfig mode monoGraph writeChunk
                         )
@@ -2244,9 +2398,10 @@ writeMonoMlirStreamingBytecode ecoConfig stats _ _ root maybeBuildDir maybeLocal
     buildMonoGraph ecoConfig stats root maybeBuildDir maybeLocal details artifacts
         |> Task.andThen
             (\{ monoGraph, mode } ->
-                FEStats.withPhase stats
+                FEStats.withPhaseLazy stats
                     FEStats.PhaseMlir
-                    (MLIR.streamMlirBytecode ecoConfig mode monoGraph target
+                    (\() ->
+                        MLIR.streamMlirBytecode ecoConfig mode monoGraph target
                         |> Task.mapError never
                     )
             )

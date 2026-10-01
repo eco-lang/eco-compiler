@@ -713,6 +713,47 @@ struct PauseEndHook {
     }
 };
 
+// TLA-REGION(TLH.majorGCAndShrink) begin
+// plans/frontend-heap-release.md §3.4 (HEAP_076): one pause, one sync point.
+// The outermost PauseEndHook here makes the nested majorGC's hook an inner
+// one, so its sync point (onGCPauseEnd, had_major = true) runs once, after
+// the sweep and the forced shrink, and the shrink's releases are Pending
+// before it. The caller discards them after the pause (AL.releaseDiscard).
+ThreadLocalHeap::ReleaseTimings ThreadLocalHeap::majorGCAndShrink() {
+#if ECO_HEAP_VALIDATE
+    assertOwner("majorGCAndShrink");
+#endif
+    if (pause_depth_ != 0) {
+        std::fprintf(stderr, "[gc] FATAL: explicit release inside a GC pause (HEAP_076)\n");
+        std::fflush(stderr);
+        std::abort();
+    }
+#if ENABLE_GC_PHASE_TIMERS
+    GCPauseScope pause_scope(*this, /*is_major=*/true);
+#endif
+    PauseEndHook pause_end(*this, parent_);   // outermost: ONE onGCPauseEnd, had_major = true
+    auto now = []() -> uint64_t {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    };
+    ReleaseTimings t{};
+    uint64_t s = now();
+    // Nested (depth 2): joins the tenure job and finishes a live cycle by Join.
+    majorGC(GCStats::MajorReason::Explicit);
+    t.gc_ns = now() - s;
+    s = now();
+    old_gen_.finishSweepForRelease();
+    t.sweep_ns = now() - s;
+    s = now();
+    const size_t u0 = parent_->getOldGenCommittedBytes();
+    old_gen_.shrinkToFloorForRelease();
+    const size_t u1 = parent_->getOldGenCommittedBytes();
+    t.shrink_released = u0 > u1 ? u0 - u1 : 0;
+    t.shrink_ns = now() - s;
+    return t;
+}
+// TLA-REGION(TLH.majorGCAndShrink) end
+
 #if ECO_HEAP_VALIDATE
 void ThreadLocalHeap::assertOwner(const char* where) const {
     if (owner_ != std::thread::id() && owner_ != std::this_thread::get_id()) {

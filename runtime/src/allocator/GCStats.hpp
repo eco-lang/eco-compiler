@@ -996,6 +996,7 @@ public:
     //     heavy-pass case nests inside major_s (called from
     //     adjustCapacityAfterMajorGC); the light-pass case nests inside
     //     total_oldgen_alloc_in_mutator_ns or total_post_sweep_shrink_ns.
+    //     total_maybe_shrink_forced_ns: the explicit release's forced pass.
     //
     // Identity (after subtracting nested counters):
     //   wall_s = minor + major + nursery_alloc_in_mutator
@@ -1004,6 +1005,9 @@ public:
     uint64_t total_post_sweep_shrink_ns       = 0;
     uint64_t total_maybe_shrink_heavy_ns      = 0;
     uint64_t total_maybe_shrink_light_ns      = 0;
+    // ShrinkPass::Forced (OldGenSpace::shrinkToFloorForRelease, HEAP_076):
+    // nested in the explicit release's pause.
+    uint64_t total_maybe_shrink_forced_ns     = 0;
 
     // ========== Nursery-side allocator attribution ==========
     //
@@ -1097,6 +1101,7 @@ public:
         Forced         = 5,
         LiveBudget     = 6,  // threaded-gc-02 trigger experiment
         Headroom       = 7,  // threaded-gc-05c Part B (P§3.11)
+        Explicit       = 8,  // Allocator::collectMajorAndRelease (HEAP_076)
     };
 
     struct MajorGCEvent {

@@ -25,6 +25,7 @@ specialization is the new solver engine.
 
 -}
 
+import Eco.CellStore as CellStore
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Intern as Intern
@@ -198,7 +199,13 @@ monomorphizeWithReportAssigned lssConfig limits entryPointName globalTypeEnv ass
                             else
                                 Nothing
                     in
-                    Ok ( graph, report )
+                    -- Row 7 (plans/frontend-heap-release.md §7.4): the final
+                    -- point store is off-heap and a GC root until disposed
+                    -- (HEAP_047), and nothing reads it once `graph` and
+                    -- `report` exist (strict `let`: both are computed before
+                    -- this call). Disposal is threaded through the result so
+                    -- it is a data dependency; `disposeThen` is idempotent.
+                    Ok (CellStore.disposeThen sFinal.store.ioRefsPoint ( graph, report ))
 
 
 {-| destrAnno FIX B — the post-drain ctor-row settle (§9.8). For every

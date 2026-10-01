@@ -76,6 +76,8 @@ and workers read only their own job's fields. So each call is one step, split on
 | `M_Window`, `M_TakeP`, `M_PostP` | `PW:303` → `PW:244-268` `topUpWindow` | choose the window (any subset of the fresh extents); take a slot; post the Populate job |
 | `AS_Wait` | `PW:126-135` `awaitSlot`: `isIdle`, `pool.wait` (`HP:236-252`), `reap` (`PW:94-113`) | return when Idle or Done; reap if Done |
 | `TS_ReapDone`, `TS_Oldest`, `TS_Wait`, `TS_Got` | `PW:137-149` `takeSlot` | reapDone (a subset of the Done slots), the lowest Idle slot; else wait for a busy one |
+| `M_Choose` (explicit release) → `M_DrainSlots` | HEAP_076 (2026-10-01): `Allocator::collectMajorAndRelease`'s `AL.releaseDiscard` section, after `ThreadLocalHeap::majorGCAndShrink`'s pause, under `thread_mutex_`: `page_work_->drainAll(decommitOn())` → `PW:316-319` (`awaitSlot` on every slot, in slot order) | **DiscardAllPending**, the mutator step: wait for each slot in turn (Idle, or Done then reaped); loop |
+| `M_DrainDiscard` | `PW:320-330` (`drainAll`'s `discard_pending` branch: `ops_.discard` inline for every live `pending_order_` entry, then `pending_`, `pending_order_` cleared, `pending_bytes = 0`) | every Pending extent → `none` (discarded inline by the mutator; it stays in the free list); `gPend`, `stale` cleared. With decommit off nothing is Pending, so the code's `drainAll(false)` is the same step |
 | `W_Take` | `HP:203-215` `workerLoop`'s dequeue under `m_` | take any Posted job, `Running` |
 | `W_Body` | `HP:216` → `PW:65-81` `runJob` (one `ops.discard` per extent, `PW:71-74`, in batch order); then `HP:217-221` Done under `m_` | one discard `madvise` per step, any remaining extent; when none is left (a populate has none), the `Done` store (release) |
 
@@ -121,7 +123,8 @@ and `M_PostP`; the worker's loop is `goto W_Take`, and its Done store is `W_Body
 Outside the model (a subset of the modelled behaviours, or another model's):
 - `decommit_on_oldgen_release = false`, mode 1 (`post` runs the job inline, `HP:162-167`), a
   failed window commit, populate unsupported;
-- `reset()`, `~Allocator`, `drainHelperWork` (`drainAll`, V5), the double-release abort
+- `reset()`, `~Allocator`, `drainHelperWork` (`drainAll(false)`, V5), the double-release abort
+  (the explicit release's `drainAll(true)` IS modelled: `M_DrainSlots`/`M_DrainDiscard`, 2026-10-01)
   (`PW:165-167`);
 - which blocks the old gen releases and when, and the ReleaseContract (M4; V2b at runtime);
 - partial overlaps of a bump request with the window's end (`onFreshBump` only splits the commit
@@ -163,6 +166,12 @@ prepare adds registry → gang `m_` → `run_m_` → `thread_mutex_` → census 
 acyclic; `lock_order` and `lock_order_fork` check it and five mutants show what would close a cycle
 (`tm_then_promo`, `worker_takes_tm`, `collector_takes_tm` with the pre-fix teardown hold,
 `teardown_under_tm`, `fork_tm_first`).
+
+**The explicit release (HEAP_076, 2026-10-01).** `collectMajorAndRelease` and `collectMinor` take
+`thread_mutex_` only for their counter snapshots and (the major) for the drain (`AL.releaseDiscard`);
+they run on the owning mutator outside any pause (`pause_depth_ == 0`, fatal otherwise), so they hold no
+`promo_mu_`, `run_m_` or gang lock, and the collection and shrink run before the lock is taken
+(HEAP_075). Under it the drain waits only on pool jobs (a leaf), exactly like `drainHelperWork`.
 
 **CR-007's fix (2026-10-01, register-fixes §6.3).** The three acquire routes above that a member of a
 parallel promotion with n > 1 can take (`ensureBagPageAvailable`, `allocateFromBagPage`,
@@ -207,6 +216,7 @@ Validate builds abort a block or page release while `acquireWaitPolicy() != Allo
 | `MODEL_M7_StallWitness` | M7b | witness: CR-007's stall is reachable **only in the cap fallback** (`lock_order_stall`, `CapExhausted = TRUE`); with bump room it holds (`lock_order_nostall`, pass; mutant `nowait_off` violates it) | the CRT guards `CR-007` (n = 2, fresh bump, no wait) and `CR-007 cap fallback` |
 | `NoWaitUnlessCap` | M7a | HEAP_058/HEAP_059 (CR-007): a no-wait acquire waits on a job only after the cap fallback | validate builds: `reuse_waits` unchanged across a no-wait Pending reuse (`AL.acquireOldGenBlock`); CRT `CR-007` |
 | `PendGhost` | M7a | GC_DET_001 (CR-007's skip test is job-blind) | `testDecommitModesAgreeOnCounters` (modes 1 and 2 agree) |
+| `DrainSafe` | M7a | HEAP_076 / HEAP_059: the explicit release's inline discard (`drainAll(true)`) runs with every slot Idle and only over free-list extents (mutant `drain_no_await`) | validate builds: `validatePageWork("collectMajorAndRelease")` right after the drain; `testExplicitReleaseModesAgree` (pending 0 after every call) |
 
 V3 (populate bounds, addresses), V4 (poison on resident reuse), V5 (drained at reset) and V6
 (mode 0 inert) are runtime-only and outside the model.
@@ -339,6 +349,7 @@ AUDIT.md entry quoting the new hash prefix (`test/tla/README.md`, "The canary").
 | region | `runtime/src/allocator/Allocator.cpp` | `AL.cleanupThread` |
 | region | `runtime/src/allocator/Allocator.cpp` | `AL.finishTenureForExit` |
 | region | `runtime/src/allocator/Allocator.cpp` | `AL.callerInPause` |
+| region | `runtime/src/allocator/Allocator.cpp` | `AL.releaseDiscard` |
 | census | `runtime/src/allocator/Allocator.cpp` | `-` |
 | census | `runtime/src/allocator/Allocator.hpp` | `-` |
 | census | `runtime/src/allocator/GCHelperPool.cpp` | `-` |

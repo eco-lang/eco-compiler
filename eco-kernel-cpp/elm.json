@@ -9,6 +9,7 @@
         "Eco.Console",
         "Eco.Crash",
         "Eco.Env",
+        "Eco.GC",
         "Eco.File",
         "Eco.Hash",
         "Eco.Http",

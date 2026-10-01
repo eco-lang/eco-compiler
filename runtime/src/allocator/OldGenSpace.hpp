@@ -1293,6 +1293,18 @@ public:
     // dead YLOS cell may be retired and reused. The P1 census drops YLOS
     // records across a change.
     uint64_t majorEpoch() const { return major_epoch_; }
+    // Mark-derived live bytes at the end of the last major (the LiveBudget
+    // trigger's input); GCReport::live_after_mark (HEAP_076). 0 before any.
+    size_t majorLiveBytes() const { return major_live_; }
+
+    // ---- The explicit release (plans/frontend-heap-release.md §3.3, HEAP_076) ----
+    // Drives the lazy sweep to Idle (pattern: OldGenSpaceTestAccess::
+    // driveSweepToCompletion). Called inside ThreadLocalHeap::majorGCAndShrink's
+    // pause, after the STW major, never during a mark cycle.
+    void finishSweepForRelease();
+    // maybeShrinkCapacity(0, ShrinkPass::Forced): releases every fully-swept
+    // live_bytes == 0 block and unassigned page down to the floor.
+    void shrinkToFloorForRelease();
     // Recomputes ylo_lo_/ylo_hi_/ylo_count_ from the live kind-1 entries.
     void recomputeYoungLargeBounds();
     // Calls f(obj, meta) for every live kind-1 entry.
@@ -1781,11 +1793,15 @@ private:
     // Inspects post-mark live/heap and, if heap is well above the desired
     // capacity, releases fully-free pages until heap ≈ desired_heap_bytes.
     // The caller (adjustCapacityAfterMajorGC) computes desired_heap_bytes
-    // from mark-derived live bytes. `light_pass=true` skips releases unless
+    // from mark-derived live bytes. ShrinkPass::Light skips releases unless
     // current_heap > desired_heap * 1.5 — used at onSweepComplete to avoid
     // double-shrink churn after the heavy pass already ran post-mark.
+    // ShrinkPass::Forced (the explicit release, HEAP_076) skips the
+    // hysteresis, keeps the floor, and does nothing during a compaction, an
+    // unfinished sweep or a mark cycle.
+    enum class ShrinkPass : uint8_t { Heavy, Light, Forced };
     void maybeShrinkCapacity(size_t desired_heap_bytes,
-                             bool light_pass = false);
+                             ShrinkPass pass = ShrinkPass::Heavy);
 
     // ========== Page-index helpers (Step 1) ==========
 
@@ -2345,7 +2361,9 @@ public:
         return std::vector<BlockId>(og.partial_[cls].begin() + static_cast<std::ptrdiff_t>(og.partial_head_[cls]),
                                     og.partial_[cls].end());
     }
-    static void lightShrink(OldGenSpace& og, size_t desired) { og.maybeShrinkCapacity(desired, true); }
+    static void lightShrink(OldGenSpace& og, size_t desired) {
+        og.maybeShrinkCapacity(desired, OldGenSpace::ShrinkPass::Light);
+    }
     static void* allocFromEmptyRegular(OldGenSpace& og, size_t size) { return og.allocateFromEmptyRegularBlocks(size); }
     static bool blockLive(const OldGenSpace& og, BlockId id) { return og.blocks_.isLive(id); }
     static constexpr uint8_t kAllocTenure = OldGenSpace::kAllocTenure;

@@ -2449,12 +2449,38 @@ re-run: LB3's recorded medians are the reference, per §1 (same box, no day-to-d
   
   Pauses were not measured: this is a stats build without phase timers (§LB3's correction). A
   phase-timer relink is needed before reading any pause figure.
-- **Gates so far** (the fix plan's per-phase gates): unit 2,003/2,003; `register-guards` strict GREEN;
-  validate `threaded-gc-0` 168/168 at 1/4/8 minor threads; TLA quick and deep, trace validation and
-  canary green.
-- **Not yet run:** the §1 Phase 4 E2E gate (`--target check`) on this tree. `eco-opt-prev` is
-  therefore NOT promoted to `eco-optREGFIX` yet, and `keep-REGFIX` is not taken. Snapshot
-  `try-REGFIX`.
+- **Gates (2026-10-01): all green.**
+  - `--target full` (clean rebuild, unit and JIT E2E, Gate A): 2003/2003.
+  - Validate C++ suite: 2004/2004.
+  - Unit: 2,003/2,003.
+  - `register-guards` with `ECO_TEST_XFAIL=strict`: GREEN.
+  - Validate `threaded-gc-0`: 168/168 at 1, 4 and 8 minor threads.
+  - TLA quick and deep, trace validation and the canary: green.
+  - Full clean bootstrap:
+    - JS fixed point (4b): passed.
+    - Gate B: 898/900, where the two failures are the known AOT-harness gaps `FlagsRecordTest` and `PortEchoTest`.
+    - Native fixed point (8c): `eco-compiler-boot == eco-compiler-boot-2`, passed.
+    - Stage 9b: run separately under a memory sampler. Exit 0, 11:54, peak RSS 15.27 GB, near this box's limit; see `plans/frontend-heap-release.md` §0.
+    - The bootstrapped compiler's Stage 7a MLIR is byte-identical to `ecoSG4.mlir`.
+- **Kept.** `eco-opt-prev -> eco-optREGFIX` (symlink re-pointed from `eco-optLB3`). Reference snapshot
+  `keep-REGFIX`; `keep-REGFIX/bin/` holds `eco-optREGFIX` and `ecoSG4.mlir`.
+
+### FHR — front-end heap release (`plans/frontend-heap-release.md`, P0-P6) — **WIN on RSS (flat wall): max RSS 10.86 → 9.84 GB (−9.4 %), old-gen in-use peak 9,796 → 8,820 MB; wall +0.54 s and GC time +0.21 s; counters moved by design (exception, explained); output identical (fixed point)**
+
+A compiler-source step (Part E drops, `Eco.GC`, `Builder.GcPoints`) plus a runtime API (`collectMajorAndRelease`). Snapshot `try-FHR` (no `step-FHR.patch`: `keep-REGFIX` was wiped with `snapshots/`; git is the record). Runtime clean-built in `build/` like REGFIX (`ninja -t clean` of 43 archives + `eco-boot-native`, 258 files, `CCACHE_DISABLE=1`; same config). Phase 1.3: `eco-opt-prev` (REGFIX) → `ecoFHR.mlir`, `cmp`-identical to `ecoE2.mlir` (13,264,494 B). Phase 1.5: `eco-optFHR` → `ecoFHR-b.mlir` == `ecoFHR.mlir` (B==C), so the candidate is `eco-optFHR` (`nm`: `Eco_Kernel_GC_majorGC` present). No GC env in the runs.
+
+| run | wall (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|
+| r1 | 107.71 | 7.89 | 2558 | 11 | 20525 | 9840052 | 13264494 | same |
+| r2 | 107.04 | 7.86 | 2558 | 11 | 20525 | 9835860 | 13264494 | same |
+| r3 | 106.28 | 7.79 | 2558 | 11 | 20525 | 9842524 | 13264494 | same |
+| **median** | **107.04** | **7.86** | 2558 | 11 | 20525 | **9840052** | 13264494 | same |
+| Δ vs REGFIX (106.50 / 7.65 / 10864068) | +0.54 | +0.21 | +37 | +1 | +205 | −1024016 | −103 | — |
+
+- **Verdict: WIN under §4 rule 2** (flat wall, max RSS improved). Wall +0.54 s is inside the band (spread 1.43 s here, 0.91 s REGFIX). GC time +0.21 s is outside both spreads (0.10 / 0.06 s): a small real cost, from the extra major and minors below. User CPU 182.35-183.79 s (REGFIX 179.09). Deterministic, fixed point, no `[gc-stats] SIG`; `out.mlir` −103 B because the workload (the compiler's own source) moved.
+- **Counter gate: exception (plan §9.2 item 9), every move explained.** Minors +37 (+1.5 %) and promoted +205 MiB (+1.0 %, +7.0 M objects): the source grew (`Eco.GC`, `Builder.GcPoints`, the split Task steps of rows 2/3/5/12/E-a/E-b) and the extra `andThen` steps shift the allocation sequence. **Majors +1 (10 → 11), against the plan's expectation of a fall:** Part E shrinks the post-sweep live set in the second half (major at ~52 s: after = 1,754 MB vs REGFIX's 3,269-3,391 MB at its last two), so the live-budget trigger (3.0 × live) fires at a LOWER in-use level, i.e. earlier and once more. That is exactly why the **old-gen in-use peak falls 9,796 → 8,820 MB (−976 MB, −10 %; r2/r3 8,816 / 8,821)** and max RSS by 1.02 GB. The pre-link GC never runs here (the loop emits `.mlir`).
+- **Memory claim (Stage 9b, plan §11.5, single cold runs, unified `eco`):** C1 (default) peak RSS **9.73 GB** (baseline 15.27 GB), min MemAvailable **4.9 GB** (238 MB), major faults **2** (21,768), swap 0 (2.6 GB); C0 (`ECO_GC_PRE_LINK=0`) 14.63 GB. The pre-link release: live 3.3 MB, RSS 8,005 → 923 MB in 347 ms. The P7 traced re-run after the clean bootstrap is in the plan §11.6.
+- **Gates (plan §9.3), INCOMPLETE — stopped at the user's request, NOT promoted (`eco-opt-prev` still REGFIX):** `--target full` 2006/2006; 4b passed; Gate B 899/901 (the two known); Stage 5 with `ECO_GC_POINTS=all` byte-identical; Stage 7a and 8a MLIR == `ecoFHR.mlir`. Not run: 8c, 9b + traced 9b, elm-tests, validate unit + stress, register-guards, strict canary. Details: plan §11.6.
 
 ## 7. Findings
 
@@ -2933,4 +2959,5 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | TA2 | 112.45 | +0.36 | 1924 | 8 | 19862 | 13349532 | FLAT (kept, k = 1; k = 2 118.11 / k = 3 123.39 LOSS) | TG7d |
 | SG4 | 106.54 | -5.91 | 2521 | 8 | 20320 | 12985716 | WIN (incl. untracked 09-29 nmbc384/sfl128K; granule alone FLAT wall, RSS -446 MB, CPU -4.4 s) | TA2 |
 | LB3 | 106.42 | -0.12 | 2521 | 10 | 20320 | 10870280 | WIN (flat wall, RSS -2.12 GB / -16.3 %, worst pause 115 -> 86 ms, p50-p99.9 unchanged; incl. untracked bug-2 fix, inert here) | SG4 |
-| REGFIX | 106.50 | +0.08 | 2521 | 10 | 20320 | 10864068 | FLAT (correctness: register fixes; counters identical, output identical; E2E gate pending) | LB3 |
+| REGFIX | 106.50 | +0.08 | 2521 | 10 | 20320 | 10864068 | FLAT (kept; correctness: register fixes; counters identical, output identical; E2E 2003/2003) | LB3 |
+| FHR | 107.04 | +0.54 | 2558 | 11 | 20525 | 9840052 | WIN (flat wall, RSS -1.02 GB / -9.4 %, old-gen peak -976 MB; Stage 9b peak 15.27 -> 9.73 GB; gates INCOMPLETE, not promoted) | REGFIX |

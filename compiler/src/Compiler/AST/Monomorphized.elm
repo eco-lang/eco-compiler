@@ -8,7 +8,7 @@ module Compiler.AST.Monomorphized exposing
     , SpecKeyMap, specKeyMapEmpty, specKeyMapGet, specKeyMapInsert, specKeyMapSize, globalHash
     , LambdaId(..)
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry
-    , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType
+    , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType, clearLssTables
     , PortRegistration
     , MonoExpr(..), ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..)
     , MonoDtPath(..), dtPathType
@@ -175,7 +175,7 @@ import Array exposing (Array)
 import Char
 import Compiler.AST.DecisionTree.Test as DT
 import Compiler.AST.TypeIds as TypeIds exposing (MVarId)
-import Compiler.Data.BitSet exposing (BitSet)
+import Compiler.Data.BitSet as BitSet exposing (BitSet)
 import Compiler.Data.Id as Id
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
@@ -3096,6 +3096,45 @@ type MonoGraph
         , lssMemberOrigins : Dict Int MemberOrigin -- B3.5: LSS standalone-member origins (mid → global/ctor/kernel/accessor); Dict.empty under subst
         , lssMemberKinds : Dict Int String -- CENSUS ONLY (plans/lss-no-instance-declines.md): member id -> its FULL interned key (`String.left 1` is the kind: l/g/c/k/a/p). Populated ONLY under lss.report; Dict.empty otherwise and under subst. Exists because `lssMemberOrigins` covers standalone members only, so a member ABSENT from it could be a lambda, a PAP, or a pruned instance - and those want different repairs.
         , lssBlockedMembers : Dict Int () -- LSS_018: μ-tied member ids — AbiCloning force-blocks these (multi-demand instances; never rep-stamp); Dict.empty under subst
+        }
+
+
+{-| Drop the graph tables that have no reader after GlobalOpt Phase 4
+(AbiCloning), so they are not carried through Borrow, CSE, the CAF passes and
+codegen (plans/frontend-heap-release.md §7.5 rows 10 and 11).
+
+  - `lssMemberKinds` and `lssBlockedMembers` are read only by AbiCloning.
+  - `lssMemberOrigins` is also read by `Borrow.run` (`borrow.enabled`),
+    `Borrow.deriveFacts` (`borrow.oracleOpt`) and `MapTemplate.derive`
+    (`list.mapTemplate`, which is also the `list.report` census's licence
+    derivation), so the caller keeps it when any of those flags is on.
+  - Row 11: the registry's `mapping` and `countByGlobal` (already emptied by
+    `Prune`) and the `specHasEffects`/`specValueUsed` bitsets (already emptied
+    by the post-mono inliner when it runs) have no reader after GlobalOpt
+    either; clearing them here also covers `inline.postMono = False`.
+
+Output-neutral: nothing downstream reads any of these fields.
+
+-}
+clearLssTables : { keepOrigins : Bool } -> MonoGraph -> MonoGraph
+clearLssTables { keepOrigins } (MonoGraph record) =
+    let
+        registry =
+            record.registry
+    in
+    MonoGraph
+        { record
+            | lssMemberKinds = Dict.empty
+            , lssBlockedMembers = Dict.empty
+            , lssMemberOrigins =
+                if keepOrigins then
+                    record.lssMemberOrigins
+
+                else
+                    Dict.empty
+            , registry = { registry | mapping = specKeyMapEmpty, countByGlobal = Dict.empty }
+            , specHasEffects = BitSet.empty
+            , specValueUsed = BitSet.empty
         }
 
 

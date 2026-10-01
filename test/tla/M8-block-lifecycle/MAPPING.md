@@ -215,6 +215,7 @@ AUDIT.md entry quoting the new hash prefix (`test/tla/README.md`, "The canary").
 | region | `runtime/src/allocator/OldGenSpace.cpp` | `OGS.registerLargeBody` |
 | region | `runtime/src/allocator/ThreadLocalHeap.cpp` | `TLH.minorGC` |
 | region | `runtime/src/allocator/ThreadLocalHeap.cpp` | `TLH.majorGC` |
+| region | `runtime/src/allocator/ThreadLocalHeap.cpp` | `TLH.majorGCAndShrink` |
 | region | `runtime/src/allocator/Allocator.cpp` | `AL.acquireOldGenBlock` |
 | region | `runtime/src/allocator/Allocator.cpp` | `AL.releaseOldGenBlock` |
 <!-- canary-pins end -->

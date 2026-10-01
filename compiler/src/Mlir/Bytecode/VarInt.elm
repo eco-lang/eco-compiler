@@ -1,4 +1,4 @@
-module Mlir.Bytecode.VarInt exposing (encodeVarInt, encodeSignedVarInt)
+module Mlir.Bytecode.VarInt exposing (encodeVarInt, encodeSignedVarInt, varIntWidth)
 
 {-| PrefixVarInt encoding for the MLIR bytecode format.
 
@@ -18,7 +18,7 @@ first byte contributing to the value.
 
 Signed VarInts use zigzag encoding: (value << 1) ^ (value >> 63)
 
-@docs encodeVarInt, encodeSignedVarInt
+@docs encodeVarInt, encodeSignedVarInt, varIntWidth
 
 -}
 
@@ -77,6 +77,31 @@ encodeVarInt value =
     else
         -- For values >= 2^28, use multi-word encoding
         encodeLargeVarInt value
+
+
+{-| The number of bytes `encodeVarInt value` produces. Must follow
+`encodeVarInt`'s branches exactly (values >= 2^28 and negative values take
+the 9-byte form).
+-}
+varIntWidth : Int -> Int
+varIntWidth value =
+    if value < 0 then
+        9
+
+    else if value < 0x80 then
+        1
+
+    else if value < 0x4000 then
+        2
+
+    else if value < 0x00200000 then
+        3
+
+    else if value < 0x10000000 then
+        4
+
+    else
+        9
 
 
 {-| Encode values >= 2^28 using the 9-byte encoding.

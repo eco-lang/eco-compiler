@@ -109,7 +109,7 @@ Assumes MonoInlineSimplify.optimize has already been applied externally.
 -}
 globalOptimize : Mono.MonoGraph -> Mono.MonoGraph
 globalOptimize graph0a =
-    Tuple.first (globalOptimizeWithStats Config.default.mono.lss.stamp.census Config.default.borrow graph0a)
+    Tuple.first (globalOptimizeWithStats Config.default.mono.lss.stamp.census Config.default.borrow Config.default.list.mapTemplate graph0a)
 
 
 {-| GlobalOpt census counters (LSS report, design §9.4 retirement
@@ -130,18 +130,29 @@ stamping decision and no emitted output — only what the report can say. OFF by
 default so the mandated `ECO_MONO_LSS_REPORT=1` benchmark protocol does not pay
 a String key and a Dict insert at every consulted site.
 
+`listMapTemplate` is `list.mapTemplate`: with it (or `borrow.enabled` /
+`borrow.oracleOpt`) on, `lssMemberOrigins` has a reader after Phase 4 and is
+kept; otherwise it is cleared with the other AbiCloning-only tables
+(`Mono.clearLssTables`).
+
 -}
-globalOptimizeWithStats : Bool -> Config.BorrowConfig -> Mono.MonoGraph -> ( Mono.MonoGraph, GlobalOptStats )
-globalOptimizeWithStats census borrowCfg graph0a =
+globalOptimizeWithStats : Bool -> Config.BorrowConfig -> Bool -> Mono.MonoGraph -> ( Mono.MonoGraph, GlobalOptStats )
+globalOptimizeWithStats census borrowCfg listMapTemplate graph0a =
     let
         -- Phase 1: Wrap top-level function-typed values in closures
         -- (alias wrappers for globals/kernels, general closures for other exprs).
         graph1 =
             wrapTopLevelCallables graph0a
 
-        -- Phase 2: Staging analysis + graph rewrite (wrappers + types)
-        ( stagingSolution, graph2, wrappersInserted ) =
-            Staging.analyzeAndSolveStaging graph1
+        -- Phase 2: Staging analysis + graph rewrite (wrappers + types).
+        -- Row 9 (plans/frontend-heap-release.md §7.5): only `dynamicSlots` is
+        -- read later (Phase 5), so the rest of the solution (class
+        -- segmentations, producer/slot class maps) dies here rather than
+        -- being carried through Phases 3-4.
+        ( dynamicSlots, graph2, wrappersInserted ) =
+            case Staging.analyzeAndSolveStaging graph1 of
+                ( sol, g, w ) ->
+                    ( sol.dynamicSlots, g, w )
 
         -- Phase 3: Validate closure staging invariants (GOPT_001, GOPT_003)
         graph3 =
@@ -151,13 +162,22 @@ globalOptimizeWithStats census borrowCfg graph0a =
         -- §9.2/§9.3). MUST stay after Staging: the stamps denote value
         -- identity and Staging's Rewriter is the last pass that replaces
         -- values (wrapper closures, LSS_008).
-        ( graph4, abiStats ) =
+        ( graph4Full, abiStats ) =
             AbiCloning.abiCloningPass census graph3
+
+        -- Rows 10-11 (plans/frontend-heap-release.md §7.5): the LSS member
+        -- tables have no reader after AbiCloning, except `lssMemberOrigins`
+        -- under the flags that read it (Borrow below, the oracle facts and the
+        -- List.map template at codegen).
+        graph4 =
+            Mono.clearLssTables
+                { keepOrigins = borrowCfg.enabled || borrowCfg.oracleOpt || listMapTemplate }
+                graph4Full
 
         -- Phase 5: Annotate call staging metadata (with dynamic slots from solver).
         -- annotateExprCalls preserves the Phase-4 stamps when re-deriving CallInfo.
         graph5 =
-            annotateCallStaging stagingSolution.dynamicSlots graph4
+            annotateCallStaging dynamicSlots graph4
 
         -- Phase 6: Borrow inference (design §6). reify = ROff ⇒ graph6 == graph5
         -- (census/oracle only; graph-inert). Skipped entirely when disabled so

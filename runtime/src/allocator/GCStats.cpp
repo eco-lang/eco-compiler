@@ -743,6 +743,7 @@ const char* majorReasonName(GCStats::MajorReason r) {
         case GCStats::MajorReason::Forced:          return "forced";
         case GCStats::MajorReason::LiveBudget:      return "live-budget";
         case GCStats::MajorReason::Headroom:        return "headroom";
+        case GCStats::MajorReason::Explicit:        return "explicit";
         case GCStats::MajorReason::Unknown:         break;
     }
     return "unknown";
@@ -900,6 +901,7 @@ void GCStats::combine(const GCStats& other) {
     total_post_sweep_shrink_ns        += other.total_post_sweep_shrink_ns;
     total_maybe_shrink_heavy_ns       += other.total_maybe_shrink_heavy_ns;
     total_maybe_shrink_light_ns       += other.total_maybe_shrink_light_ns;
+    total_maybe_shrink_forced_ns      += other.total_maybe_shrink_forced_ns;
     total_nursery_alloc_in_mutator_ns += other.total_nursery_alloc_in_mutator_ns;
     total_lazy_sweep_bytes_in_mutator += other.total_lazy_sweep_bytes_in_mutator;
     total_panic_sweep_bytes           += other.total_panic_sweep_bytes;
@@ -1384,7 +1386,8 @@ void GCStats::print() const {
     // inside a parent bucket was spent — DO NOT add to the totals.
     if (total_post_sweep_shrink_ns > 0 ||
         total_maybe_shrink_heavy_ns > 0 ||
-        total_maybe_shrink_light_ns > 0) {
+        total_maybe_shrink_light_ns > 0 ||
+        total_maybe_shrink_forced_ns > 0) {
         std::cout << "\nAllocator Nested Timings (Already included in "
                      "Allocator Timings):" << std::endl;
         std::cout << "  Post-sweep shrink (nested in Old-gen alloc in mutator):  "
@@ -1396,6 +1399,11 @@ void GCStats::print() const {
         std::cout << "  maybeShrink light (nested in Post-sweep shrink):         "
                   << std::setw(15)
                   << formatTime(total_maybe_shrink_light_ns) << std::endl;
+        if (total_maybe_shrink_forced_ns > 0) {
+            std::cout << "  maybeShrink forced (explicit release, HEAP_076):         "
+                      << std::setw(15)
+                      << formatTime(total_maybe_shrink_forced_ns) << std::endl;
+        }
     }
 
     // ========== Adaptive Lazy-Sweep Pacing ==========
@@ -1850,6 +1858,7 @@ void GCStats::reset() {
     total_post_sweep_shrink_ns        = 0;
     total_maybe_shrink_heavy_ns       = 0;
     total_maybe_shrink_light_ns       = 0;
+    total_maybe_shrink_forced_ns      = 0;
     total_nursery_alloc_in_mutator_ns = 0;
     total_lazy_sweep_bytes_in_mutator = 0;
     total_panic_sweep_bytes           = 0;

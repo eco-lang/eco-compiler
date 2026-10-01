@@ -391,6 +391,7 @@ M7  M7-pagework  PageWork   mutants/reuse_bypass.cfg                   quick  tl
 M7  M7-pagework  PageWork   mutants/age_stale_entry.cfg                quick  tlc  violates:NoOwnedPosted
 M7  M7-pagework  PageWork   mutants/takeslot_no_wait.cfg               quick  tlc  violates:PostIdle
 M7  M7-pagework  PageWork   mutants/job_never_done.cfg                 quick  tlc  violates:MutatorFinishes
+M7  M7-pagework  PageWork   mutants/drain_no_await.cfg                 quick  tlc  violates:DrainSafe   # HEAP_076: drainAll(true) must await every slot first
 M7  M7-pagework  LockOrder  mutants/tm_then_promo.cfg                  quick  tlc  deadlock
 M7  M7-pagework  LockOrder  mutants/worker_takes_tm.cfg                quick  tlc  deadlock
 M7  M7-pagework  LockOrder  mutants/collector_takes_tm.cfg             quick  tlc  deadlock   # with teardown_under_tm (the pre-fix hold)

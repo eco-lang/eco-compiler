@@ -70,6 +70,12 @@ bool resetPagesToZero(void* addr, std::size_t size);
 bool discardPages(void* addr, std::size_t size);
 bool populatePagesWrite(void* addr, std::size_t size);
 
+// The process's resident set size in bytes, for observations only (GCReport
+// rss_*, plans/frontend-heap-release.md §3.2; no GC decision may read it,
+// HEAP_076). Linux: field 2 of /proc/self/statm times the page size. Other
+// platforms: 0 (unavailable).
+std::size_t processResidentBytes();
+
 // Release a whole reservation (must be the same `addr` that was returned by
 // reserveAddressSpace; `size` is the originally-requested size on POSIX,
 // ignored on Windows where MEM_RELEASE keys on the reservation base).

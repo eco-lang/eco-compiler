@@ -94,8 +94,8 @@ region  8707d299ec9695b25ccc58dad9a1a497eae2bec17875a1c071a743c687795262  runtim
 region  241b815c0313ace9016b3467d877e070674dd4d7361d6d8624e69be71b5b5782  runtime/src/allocator/OldGenSpace.cpp  OGS.allocateFromEmptyRegularBlocks  M4,M8
 region  68d67003be92e069147d24e851e2330e7b2f5dc8ce35a296e05105e02918bd3b  runtime/src/allocator/OldGenSpace.cpp  OGS.pushSpanOnFreeLists  M4,M8
 region  6066819cec594897776e037b664e643906c6def23d7769e5f127141954581de7  runtime/src/allocator/OldGenSpace.cpp  OGS.lazySweep  M4,M7,M8,W3
-region  9a0fe8aa36e1c745fa77c983aa06b6b58f6645caeda1af1f9a420c8971d18ab1  runtime/src/allocator/OldGenSpace.cpp  OGS.onSweepComplete  M4,M8
-region  6a3ce1cdb7a3931341c7948085a8986cffd678edac6ef5f58389863991a805ff  runtime/src/allocator/OldGenSpace.cpp  OGS.maybeShrinkCapacity  M4,M8
+region  fecf4917088c193e5d105a2b43df5ec598e5d2ab838ed01a762b180201ed0d43  runtime/src/allocator/OldGenSpace.cpp  OGS.onSweepComplete  M4,M8
+region  16f2d7bb56c4e519a92d4d84714d1840db8bb05670482deba06614fb2241ef95  runtime/src/allocator/OldGenSpace.cpp  OGS.maybeShrinkCapacity  M4,M8
 region  cb44421883c3584d017b1e9ef650e0ef54c8da9158628afd27687c99e8da0448  runtime/src/allocator/OldGenSpace.cpp  OGS.computeFragmentationStats  M4,M8
 region  37f3ac00eb2f2755b15e6b2fb753b137d019b534be11178bad7ae4a7ac1a05a5  runtime/src/allocator/OldGenSpace.cpp  OGS.ensureBagPageAvailable  M7,M8,W4
 region  e2c48a27f642223a9d959e1d6accccb21ca408aa38d1397d84ff9c3c9f9c7ed7  runtime/src/allocator/OldGenSpace.cpp  OGS.allocateLargeBlock  M7,M8,W4
@@ -121,6 +121,7 @@ region  bb6ee6083acc18aded120238c4f40e2959bbc0b34da65eb2df5c11e7a2a4f1c9  runtim
 region  b76cc201e7ecd7e09b092b279a881957f7f47dd9679fb65607848e10065d4794  runtime/src/allocator/OldGenTenure.cpp  OGT.returnTenureGrant  M4,M5
 region  896f924a1e351b7c4757782875590c6feddd698f67f14aca3bc010ace0c3a176  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.minorGC  M1,M4,M5,M6,M8
 region  69a04246e15b4942b5dae3cf8503a2483dd69eb00cd433b6498514ea3573aecc  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.majorGC  M1,M5,M8
+region  7666793086636f0d6bead6c77e7ef2ac981340be56c965639342e1e09bc62287  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.majorGCAndShrink  M1,M4,M8
 region  e089cd52124e93a910f8de68bc11fa4cfb96030c8db8901aa397be88b2c31d54  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.startMarkCycle  M1,M5
 region  f57df5d9b5056118350e4015ce900b9b358661a09b1bfbbaeb9a2c427b7eac91  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.stepMarkCycle  M1
 region  c6fd113f19729e4fa0f2684a008fc9424e865a28d3e397bbcc768ff6f7386aa8  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.finishMarkCycleNow  M1
@@ -168,12 +169,13 @@ region  b3dd2ee082b6399e83c5591297301622a2f778b155bbeef36652f3e6162f56b9  runtim
 region  b3491e1c948baa0706aee5d075ae18e6e331542a198c551ccdfd8b6b55277104  runtime/src/allocator/Allocator.cpp  AL.cleanupThread  M7
 region  1eb1d4117cf9828128a6475147a8f316f57895fdde25236e451b939995d85daa  runtime/src/allocator/Allocator.cpp  AL.finishTenureForExit  M7
 region  dd086d5a3c379f67cb76ed8a5ed5f99bf78baf845dc8f83ab5adaf905c41e6e4  runtime/src/allocator/Allocator.cpp  AL.callerInPause  M7
+region  77ab047a6ac54d4b46f1f77f6cb42635f182402fe484182f4f5372bf4bb42d80  runtime/src/allocator/Allocator.cpp  AL.releaseDiscard  M6,M7
 region  33f97981c8fc4860c4007756c539d1b95d121ae6a7c05221e03d01ae12432a4e  runtime/src/allocator/Allocator.cpp  AL.drainHelperWork  M6
 region  4cd5c1af901a5d909b8e23fc6af7f0a9165183bd390748efc1f21905206630cd  runtime/src/allocator/Allocator.cpp  AL.destructor  M6
 
 # ---- censuses: every allocator file with a concurrency line ----
 census  218043bef0ca3708f71a64c4b1a4e233f5f04c3ee0b1fe12f73c28663381078b  runtime/src/allocator/AllocatorCommon.hpp  -  M3,M4
-census  98ff871fcd489309af6fa83fc3cf3259c93ad825f0ffbc4339fc9c206f268b7a  runtime/src/allocator/Allocator.cpp  -  M6,M7
+census  7d5d75af1902202b2c6a4ec04099500f3c90ab2d6eece6a6728f09ad46ba8c58  runtime/src/allocator/Allocator.cpp  -  M6,M7
 census  12959cd0b43cb23049ed3601600a8e139f4d72e5b26e2357ebae5bee585db454  runtime/src/allocator/Allocator.hpp  -  M6,M7
 census  98e0cc199b0b1c25b1c5d0852164ff03797fd3e4db5e9368ac305f74af84cfbb  runtime/src/allocator/GCHelperPool.cpp  -  M6,M7
 census  641c36e036c6d52598dc6bd335d781404acb99bb3a22f89f0eb8e3f5d294d31b  runtime/src/allocator/GCFork.cpp  -  M6,M7
@@ -252,7 +254,7 @@ grep    850ac4ab5ed2fc800171f2724a8572a25286e8e5de604df12365aadb8d117285  -  F.a
 grep    c348085dbe58545bdfa2fd3b90abeac47e4a394cd12957bf513041688f8d9ab8  -  F.atexit  M6
 grep    c347743372973b091ba458ca1c1ccc4456a808b72fe6b35d8a3f0ab5e59a4b18  -  F.fork  M6
 grep    2da021596e6c45076f374d5deffdd52811161df7bc02dab79206ce9d0356ea95  -  F.promoMu  M4,M7
-grep    6cdf9fdc07672db658c7f423ec7fe2c8e6c6bd3f5d4410565f2d186bea9ccdc6  -  F.threadMutex  M6,M7
+grep    00cb061f21bdc5bf7972cff8c5fd2c64ea1fe1a1139a360bca68ecb1f4dd2bdc  -  F.threadMutex  M6,M7
 grep    9c2d8130d0651f462331a8aa420ca6dd3b1875371cc183cfc06a09a1bd70b214  -  F.pageWorkCalls  M7
 grep    adbb472b9292effc2fa5e6a2c15be8ece929b90eee8ce6edbcfc513363228557  -  F.stopAndJoin  M6,M7
 grep    aa1d3a2debd5c3522603c81149a6100db52316d4237dd11312eb85fc1d68dd22  -  F.oldGenFreeBlocks  M7

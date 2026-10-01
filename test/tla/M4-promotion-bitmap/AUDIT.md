@@ -740,3 +740,26 @@ event's `refused` field and an M1 `stop` after a refused launch.
 
 `TLH.minorGC` gained only a validate-only `assertOwner("minorGC")` before the pause starts (HEAP_007 /
 CR-031). No promotion, sweep or bitmap step changes. **Verdict: no model change needed.**
+
+## 2026-10-01 — frontend-heap-release P1: explicit release, ShrinkPass::Forced (GC_MODEL_001)
+
+Pins fired: regions `OGS.onSweepComplete` (**fecf4917088c**), `OGS.maybeShrinkCapacity` (**16f2d7bb56c4**).
+New pin: region `TLH.majorGCAndShrink` (M1, M4, M8).
+
+plans/frontend-heap-release.md P1 (§3, HEAP_076): the explicit release. New `ThreadLocalHeap::majorGCAndShrink` (TLA-REGION `TLH.majorGCAndShrink`): ONE pause and ONE sync point (an outermost `PauseEndHook` around a nested `majorGC(MajorReason::Explicit)`, then `OldGenSpace::finishSweepForRelease` (lazy sweep driven to Idle, `while (gc_phase_ != GCPhase::Idle)`, aborts if a cycle is active) and `shrinkToFloorForRelease` = `maybeShrinkCapacity(0, ShrinkPass::Forced)`). New `Allocator::collectMajorAndRelease` (after that pause, under `thread_mutex_` only: TLA-REGION `AL.releaseDiscard` = `page_work_->drainAll(decommitOn())` + counter reads; `malloc_trim` after the lock) and `Allocator::collectMinor` (two `thread_mutex_` snapshot sections around a plain `minorGC`). Both are fatal inside a pause (`pause_depth_ != 0`).
+
+What changed in the pinned regions: `maybeShrinkCapacity`'s `bool light_pass` became
+`enum class ShrinkPass { Heavy, Light, Forced }` (`onSweepComplete` passes `Light`, the heavy caller
+`Heavy`: identical behaviour and billing), plus the `Forced` arm: it returns at once if
+`gc_phase_ != GCPhase::Idle` or a cycle is active, skips the hysteresis gate, keeps the floor
+and bills `total_maybe_shrink_forced_ns`. Passes 1-3 are untouched, including the `kAllocTenure` skip (T6)
+and the `live_bytes == 0` / `fully_swept` candidate test (HEAP_073).
+
+Re-audit. M4's shrink steps (`W_Shrink`, `G_Shrink`, `U_Sweep*`) abstract the sizing and every gate as
+"any subset of the candidates" (MAPPING §3), so a pass without hysteresis is one of the modelled choices.
+The forced pass runs on the mutator inside its own STW pause, after a STW major that joined the tenure job
+and finished any cycle, with the sweep at Idle and no parallel promotion (`pause_depth_ == 0` at entry, so
+no minor and no gang is running: the CR-014 tripwire cannot fire); that is the mutator-side release
+`U_Sweep`/`G_Shrink` already covers (`ReleasedSafe`: only blocks with no live or in-flight cell, the
+granted `kAllocTenure` blocks skipped). No atomic, lock, shared location or memory order was added; the
+F.gc_phase and F.allocTenure greps are unchanged. **Verdict: no model change needed.**

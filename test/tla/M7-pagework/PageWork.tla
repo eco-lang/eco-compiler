@@ -29,7 +29,8 @@ CONSTANTS
                      \* "reuse_no_wait", "release_no_await_populate",
                      \* "skip_posted_extents", "reuse_keeps_pending",
                      \* "reuse_bypass", "age_stale_entry", "takeslot_no_wait",
-                     \* "job_never_done", "nowait_skip_posted", "nowait_first_fit"
+                     \* "job_never_done", "nowait_skip_posted", "nowait_first_fit",
+                     \* "drain_no_await"
 
 TruncLast(sq) == SubSeq(sq, 1, Len(sq) - 1)
 Range(sq) == {sq[i] : i \in 1..Len(sq)}
@@ -284,6 +285,22 @@ begin
                 takenSlot := 0;
                 win := {};
             end if;
+        or                                                \* Allocator::collectMajorAndRelease
+                                                          \* (HEAP_076): after its pause, under
+                                                          \* thread_mutex_, drainAll(true)
+            rs := Slots;
+          M_DrainSlots:                                   \* awaitSlot every slot, in slot order
+            if MUTANT # "drain_no_await" /\ rs # {} then
+                rsel := CHOOSE s \in rs : \A t \in rs : s <= t;
+                rs := rs \ {rsel};
+                call AwaitSlot(rsel);
+                goto M_DrainSlots;
+            end if;
+          M_DrainDiscard:                                 \* discard every Pending extent INLINE
+            pw := [x \in Extents |-> IF pw[x] = "Pending" THEN "none" ELSE pw[x]];
+            gPend := {};                                  \* pending_ / pending_order_ cleared
+            stale := {};
+            rs := {}; rsel := 0;
         end either;
     end while;
 end process;
@@ -546,6 +563,9 @@ M_Choose == /\ pc["mut"] = "M_Choose"
                                    THEN /\ pc' = [pc EXCEPT !["mut"] = "M_Take"]
                                    ELSE /\ pc' = [pc EXCEPT !["mut"] = "M_Window"]
                              /\ UNCHANGED <<owner, freeList, gFree, nwAcq, nwFallback, ext, rs>>
+                          \/ /\ rs' = Slots
+                             /\ pc' = [pc EXCEPT !["mut"] = "M_DrainSlots"]
+                             /\ UNCHANGED <<owner, freeList, gFree, pw, postedIn, sstate, skind, sext, stale, nwAcq, nwFallback, ext, batch>>
                   ELSE /\ pc' = [pc EXCEPT !["mut"] = "Done"]
                        /\ UNCHANGED << owner, freeList, gFree, pw, postedIn, 
                                        sstate, skind, sext, stale, nwAcq, 
@@ -688,8 +708,36 @@ M_PostP == /\ pc["mut"] = "M_PostP"
                            nwAcq, nwFallback, stack, as, ts, n, ext, rs, rsel, 
                            batch, cur, todo >>
 
+M_DrainSlots == /\ pc["mut"] = "M_DrainSlots"
+                /\ IF MUTANT # "drain_no_await" /\ rs # {}
+                      THEN /\ rsel' = (CHOOSE s \in rs : \A t \in rs : s <= t)
+                           /\ rs' = rs \ {rsel'}
+                           /\ /\ as' = [as EXCEPT !["mut"] = rsel']
+                              /\ stack' = [stack EXCEPT !["mut"] = << [ procedure |->  "AwaitSlot",
+                                                                        pc        |->  "M_DrainSlots",
+                                                                        as        |->  as["mut"] ] >>
+                                                                    \o stack["mut"]]
+                           /\ pc' = [pc EXCEPT !["mut"] = "AS_Wait"]
+                      ELSE /\ pc' = [pc EXCEPT !["mut"] = "M_DrainDiscard"]
+                           /\ UNCHANGED << stack, as, rs, rsel >>
+                /\ UNCHANGED << owner, freeList, gFree, pw, postedIn, sstate, 
+                                skind, sext, takenSlot, stale, gPend, nwAcq, 
+                                nwFallback, ts, n, ext, batch, win, cur, todo >>
+
+M_DrainDiscard == /\ pc["mut"] = "M_DrainDiscard"
+                  /\ pw' = [x \in Extents |-> IF pw[x] = "Pending" THEN "none" ELSE pw[x]]
+                  /\ gPend' = {}
+                  /\ stale' = {}
+                  /\ rs' = {}
+                  /\ rsel' = 0
+                  /\ pc' = [pc EXCEPT !["mut"] = "M_Choose"]
+                  /\ UNCHANGED << owner, freeList, gFree, postedIn, sstate, 
+                                  skind, sext, takenSlot, nwAcq, nwFallback, 
+                                  stack, as, ts, n, ext, batch, win, cur, todo >>
+
 Mutator == M_Choose \/ M_RelWait \/ M_RelPend \/ M_Reuse \/ M_Touch
               \/ M_Take \/ M_Post \/ M_Window \/ M_TakeP \/ M_PostP
+              \/ M_DrainSlots \/ M_DrainDiscard
 
 W_Take(self) == /\ pc[self] = "W_Take"
                 /\ \E s \in Slots : sstate[s] = "Posted"
@@ -764,6 +812,13 @@ TrackedInFree == \A x \in Extents : pw[x] # "none" => (x \in Range(freeList) \/ 
 \* written and posted only into an Idle slot, so the caller never rewrites
 \* the fields of a job a worker is running (PageWork.hpp's slot fields).
 PostIdle == pc["mut"] \in {"M_Post", "M_PostP"} => sstate[takenSlot] = "Idle"
+
+\* HEAP_076 / HEAP_059 (DiscardAllPending, the explicit release's drainAll(true)):
+\* the inline discard runs with every job slot Idle (no Discard job or populate in
+\* flight) and madvises only extents the free list holds (none is heap-owned).
+DrainSafe == pc["mut"] = "M_DrainDiscard" =>
+    /\ \A s \in Slots : sstate[s] = "Idle"
+    /\ \A x \in Extents : pw[x] = "Pending" => owner[x] = "free"
 
 \* Liveness: the caller's waits all return (worker fairness, PoolJob).
 MutatorFinishes == <>(pc["mut"] = "Done")

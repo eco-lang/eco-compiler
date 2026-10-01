@@ -222,7 +222,7 @@ incremental rebuilding based on modification times and interface changes.
 -}
 fromExposed : Bytes.Decode.Decoder docs -> (docs -> Bytes.Encode.Encoder) -> Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> DocsGoal docs -> FEStats.Handle -> NE.Nonempty ModuleName.Raw -> Task Never (Result Exit.BuildProblem docs)
 fromExposed docsDecoder docsEncoder style root maybeBuildDir maybeKernelPackage details docsGoal stats ((NE.Nonempty e es) as exposed) =
-    Reporting.trackBuild docsDecoder docsEncoder style <|
+    Reporting.trackBuild style <|
         \key ->
             makeEnv key root maybeBuildDir maybeKernelPackage details False stats
                 |> Task.andThen (crawlExposed root maybeBuildDir details docsGoal (e :: es))
@@ -260,8 +260,34 @@ waitForCrawlResults : MVar StatusDict -> StatusDict -> Task Never (Dict ModuleNa
 waitForCrawlResults mvar roots =
     Utils.putMVar statusDictEncoder mvar roots
         |> Task.andThen (\_ -> Utils.dictMapM__ (Utils.readMVar statusDecoder) roots)
-        |> Task.andThen (\_ -> Utils.readMVar statusDictDecoder mvar)
-        |> Task.andThen (Utils.dictTraverse (Utils.readMVar statusDecoder))
+        |> Task.andThen (\_ -> takeAndDropStatuses mvar)
+
+
+{-| Read every crawl status and release the crawl MVars
+(plans/frontend-heap-release.md §7.2 row 1). An `SChanged` status holds the
+module's source text and parsed AST, and an MVar is an off-heap GC root until
+dropped (HEAP_005), so without this they stay live until exit.
+
+Only call this once every root's status has been read: each module is forked by
+exactly one crawler, and each crawler waits for its forks before its own `put`,
+so by then no crawl is still running and nothing else reads these MVars. The
+roots are in the status dict too, so they are dropped here as well (a drop is
+idempotent).
+
+-}
+takeAndDropStatuses : MVar StatusDict -> Task Never (Dict ModuleName.Raw Status)
+takeAndDropStatuses smvar =
+    Utils.takeMVar statusDictDecoder smvar
+        |> Task.andThen
+            (\sdict ->
+                Utils.dictTraverse (Utils.readMVar statusDecoder) sdict
+                    |> Task.andThen
+                        (\statuses ->
+                            Utils.dictMapM__ Utils.dropMVar sdict
+                                |> Task.andThen (\_ -> Utils.dropMVar smvar)
+                                |> Task.map (\_ -> statuses)
+                        )
+            )
 
 
 buildCrawlResult : Env -> ( MVar (Maybe Dependencies), Dict ModuleName.Raw Status ) -> { dmvar : MVar (Maybe Dependencies), statuses : Dict ModuleName.Raw Status, env : Env }
@@ -362,7 +388,7 @@ and performs parallel incremental compilation.
 -}
 fromPaths : Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Bool -> FEStats.Handle -> NE.Nonempty FilePath -> Task Never (Result Exit.BuildProblem Artifacts)
 fromPaths style root maybeBuildDir maybeKernelPackage details needsTypedOpt stats paths =
-    Reporting.trackBuild artifactsDecoder artifactsEncoder style <|
+    Reporting.trackBuild style <|
         \key ->
             makeEnv key root maybeBuildDir maybeKernelPackage details needsTypedOpt stats
                 |> Task.andThen (findAndBuildFromPaths root maybeBuildDir details paths)
@@ -411,14 +437,26 @@ crawlPathRoots env lroots dmvar =
 crawlRootsAndCollect : Env -> NE.Nonempty RootLocation -> MVar (Maybe Dependencies) -> MVar StatusDict -> Task Never PathsBuildContext
 crawlRootsAndCollect env lroots dmvar smvar =
     Utils.nonEmptyListTraverse (fork rootStatusEncoder << crawlRoot env smvar) lroots
-        |> Task.andThen (Utils.nonEmptyListTraverse (Utils.readMVar rootStatusDecoder))
+        |> Task.andThen readAndDropRootStatuses
         |> Task.andThen (collectPathStatuses dmvar smvar)
+
+
+{-| Read the root statuses, then drop their MVars (§7.2 row 1): an
+`SOutsideOk` root status holds the root's source text and parsed AST.
+-}
+readAndDropRootStatuses : NE.Nonempty (MVar RootStatus) -> Task Never (NE.Nonempty RootStatus)
+readAndDropRootStatuses rootMVars =
+    Utils.nonEmptyListTraverse (Utils.readMVar rootStatusDecoder) rootMVars
+        |> Task.andThen
+            (\sroots ->
+                Utils.nonEmptyListTraverse Utils.dropMVar rootMVars
+                    |> Task.map (\_ -> sroots)
+            )
 
 
 collectPathStatuses : MVar (Maybe Dependencies) -> MVar StatusDict -> NE.Nonempty RootStatus -> Task Never PathsBuildContext
 collectPathStatuses dmvar smvar sroots =
-    Utils.readMVar statusDictDecoder smvar
-        |> Task.andThen (Utils.dictTraverse (Utils.readMVar statusDecoder))
+    takeAndDropStatuses smvar
         |> Task.map (\statuses -> { dmvar = dmvar, statuses = statuses, sroots = sroots })
 
 
@@ -456,7 +494,8 @@ compilePathsWithMVar env foreigns statuses sroots rmvar =
 
 
 type alias PathCompileState =
-    { resultsMVars : Dict ModuleName.Raw (MVar BResult)
+    { rmvar : MVar ResultDict
+    , resultsMVars : Dict ModuleName.Raw (MVar BResult)
     , rrootMVars : NE.Nonempty (MVar RootResult)
     }
 
@@ -465,16 +504,29 @@ checkRootsAndCollect : Env -> NE.Nonempty RootStatus -> MVar ResultDict -> Dict 
 checkRootsAndCollect env sroots rmvar resultsMVars =
     Utils.putMVar resultDictEncoder rmvar resultsMVars
         |> Task.andThen (\_ -> Utils.nonEmptyListTraverse (checkRoot env resultsMVars >> fork rootResultEncoder) sroots)
-        |> Task.map (\rrootMVars -> { resultsMVars = resultsMVars, rrootMVars = rrootMVars })
+        |> Task.map (\rrootMVars -> { rmvar = rmvar, resultsMVars = resultsMVars, rrootMVars = rrootMVars })
 
 
-finalizePathBuild : FilePath -> Maybe String -> Details.Details -> Env -> Dependencies -> { resultsMVars : Dict ModuleName.Raw (MVar BResult), rrootMVars : NE.Nonempty (MVar RootResult) } -> Task Never (Result Exit.BuildProblem Artifacts)
-finalizePathBuild root maybeBuildDir details env foreigns { resultsMVars, rrootMVars } =
+{-| Read every module result and root result, then drop all of those MVars and
+`rmvar` (plans/frontend-heap-release.md §7.2 row 3).
+
+The result MVars are dropped only AFTER the root results are read: a forked
+`checkRoot` for an `Outside` root reads them in `checkDeps`, and one that has
+not yet run would otherwise fail with "MVar not found" (this order was the
+other way round before). Once every root result is in, every `checkModule` and
+`checkRoot` has finished, so nothing reads `rmvar` or the result MVars again.
+
+-}
+finalizePathBuild : FilePath -> Maybe String -> Details.Details -> Env -> Dependencies -> PathCompileState -> Task Never (Result Exit.BuildProblem Artifacts)
+finalizePathBuild root maybeBuildDir details env foreigns { rmvar, resultsMVars, rrootMVars } =
     Utils.dictTraverse (Utils.readMVar bResultDecoder) resultsMVars
+        |> Task.andThen (writeDetailsAndCollectRoots root maybeBuildDir details rrootMVars)
         |> Task.andThen
-            (\results ->
+            (\collected ->
                 Utils.dictMapM__ Utils.dropMVar resultsMVars
-                    |> Task.andThen (\_ -> writeDetailsAndCollectRoots root maybeBuildDir details rrootMVars results)
+                    |> Task.andThen (\_ -> Utils.nonEmptyListTraverse Utils.dropMVar rrootMVars)
+                    |> Task.andThen (\_ -> Utils.dropMVar rmvar)
+                    |> Task.map (\_ -> collected)
             )
         |> Task.map (toArtifactsFromResults env foreigns)
 
@@ -1208,11 +1260,21 @@ loadInterface root ( name, ciMvar ) =
 -- ====== CHECK PROJECT ======
 
 
+{-| `dmvar` has a single reader (one of `checkMidpoint`/`checkMidpointAndRoots`'
+read paths, each run once per build), so take its value and drop the MVar
+(plans/frontend-heap-release.md §7.2 row 3): an MVar is a GC root until dropped.
+-}
+takeAndDropDependencies : MVar (Maybe Dependencies) -> Task Never (Maybe Dependencies)
+takeAndDropDependencies dmvar =
+    Utils.takeMVar maybeDependenciesDecoder dmvar
+        |> Task.andThen (\deps -> Utils.dropMVar dmvar |> Task.map (\_ -> deps))
+
+
 checkMidpoint : MVar (Maybe Dependencies) -> Dict ModuleName.Raw Status -> Task Never (Result Exit.BuildProjectProblem Dependencies)
 checkMidpoint dmvar statuses =
     case checkForCycles statuses of
         Nothing ->
-            Utils.readMVar maybeDependenciesDecoder dmvar
+            takeAndDropDependencies dmvar
                 |> Task.map
                     (\maybeForeigns ->
                         case maybeForeigns of
@@ -1224,7 +1286,7 @@ checkMidpoint dmvar statuses =
                     )
 
         Just (NE.Nonempty name names) ->
-            Utils.readMVar maybeDependenciesDecoder dmvar
+            takeAndDropDependencies dmvar
                 |> Task.map (\_ -> Err (Exit.BP_Cycle name names))
 
 
@@ -1234,7 +1296,7 @@ checkMidpointAndRoots dmvar statuses sroots =
         Nothing ->
             case checkUniqueRoots statuses sroots of
                 Nothing ->
-                    Utils.readMVar maybeDependenciesDecoder dmvar
+                    takeAndDropDependencies dmvar
                         |> Task.map
                             (\maybeForeigns ->
                                 case maybeForeigns of
@@ -1246,11 +1308,11 @@ checkMidpointAndRoots dmvar statuses sroots =
                             )
 
                 Just problem ->
-                    Utils.readMVar maybeDependenciesDecoder dmvar
+                    takeAndDropDependencies dmvar
                         |> Task.map (\_ -> Err problem)
 
         Just (NE.Nonempty name names) ->
-            Utils.readMVar maybeDependenciesDecoder dmvar
+            takeAndDropDependencies dmvar
                 |> Task.map (\_ -> Err (Exit.BP_Cycle name names))
 
 

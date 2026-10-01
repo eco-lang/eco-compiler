@@ -20,6 +20,9 @@ extern Testing::TestCase testPageWorkSlotFullWaits;
 extern Testing::TestCase testPageWorkDrainAllDiscardsPending;
 extern Testing::TestCase testPageWorkPopulateUnsupported;
 extern Testing::TestCase testDecommitModesAgreeOnCounters;
+// plans/frontend-heap-release.md §3.9 (HEAP_076): the explicit release.
+extern Testing::TestCase testExplicitReleaseModesAgree;
+extern Testing::TestCase testExplicitReleaseReturnsMemory;
 extern Testing::TestCase testCommitAheadNeverRemapsWindow;
 extern Testing::TestCase testPageWorkValidatorCatchesOwnedTrackedExtent;
 extern Testing::TestCase testPageWorkDelayMajors;

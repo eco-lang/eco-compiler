@@ -289,6 +289,7 @@ AUDIT.md entry quoting the new hash prefix (`test/tla/README.md`, "The canary").
 | region | `runtime/src/allocator/OldGenTenure.cpp` | `OGT.grantAllocateShared` |
 | region | `runtime/src/allocator/ThreadLocalHeap.cpp` | `TLH.minorGC` |
 | region | `runtime/src/allocator/ThreadLocalHeap.cpp` | `TLH.majorGC` |
+| region | `runtime/src/allocator/ThreadLocalHeap.cpp` | `TLH.majorGCAndShrink` |
 | region | `runtime/src/allocator/ThreadLocalHeap.cpp` | `TLH.startMarkCycle` |
 | region | `runtime/src/allocator/ThreadLocalHeap.cpp` | `TLH.stepMarkCycle` |
 | region | `runtime/src/allocator/ThreadLocalHeap.cpp` | `TLH.finishMarkCycleNow` |
