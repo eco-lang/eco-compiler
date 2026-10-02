@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Error.h"
 
@@ -248,6 +249,12 @@ llvm::Error runEcoBackend(llvm::Module &m, const EcoBackendJob &job,
 /// `!sharedLib && !emitObjOnly`. Must run BEFORE RS4GC so statepoints and the
 /// stackmap only cover live functions.
 void internalizeAndDCEForExecutable(llvm::Module &m);
+
+/// Internalize every definition except `keep`, then GlobalDCE the rest.
+/// internalizeAndDCEForExecutable is this with {eco_main, __eco_init_globals};
+/// eco-boot's --internalize-keep applies it to object output whose consumer
+/// (e.g. bootstrap Stage 9's unified `eco` link) references only `keep`.
+void internalizeAndDCE(llvm::Module &m, llvm::ArrayRef<std::string> keep);
 
 /// ECO_OPT_PASS_TIMES=1 diagnostic: print per-pass exclusive LLVM opt times
 /// summed over all partition workers (no-op when the variable is unset).

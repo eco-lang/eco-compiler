@@ -614,6 +614,7 @@ add_custom_command(
     COMMAND $<TARGET_FILE:eco-boot-native>
         ${ECO_COMPILER_MLIR}
         --emit=obj
+        --internalize-keep=eco_main,__eco_init_globals
         -o ${ECO_STAGE9_OBJ}
     # Ordering edge: gate Stage 9 on the Stage 8c native fixed-point stamp so
     # that building `eco` first runs the ENTIRE bootstrap chain — every gateway
@@ -921,6 +922,7 @@ add_custom_command(
     COMMAND $<TARGET_FILE:eco-boot-native>
         ${ECO_COMPILER_MLIR}
         --emit=obj
+        --internalize-keep=eco_main,__eco_init_globals
         -o ${ECO_STAGE9_QUICK_OBJ}
     # ECO_COMPILER_MLIR is deliberately NOT in DEPENDS — eco-quick is a
     # dev-iteration target and any dep edge that makes ninja rebuild the

@@ -57,7 +57,8 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/MDBuilder.h"
-#include "llvm/ADT/StringMap.h"                    // call-census name cache
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"                    // call-census name cache
 #include "llvm/Transforms/Utils/ModuleUtils.h"     // appendToGlobalCtors (call-census)
 #include "llvm/Transforms/Utils/BasicBlockUtils.h" // SplitBlockAndInsertIfThen
 #include "../allocator/Heap.hpp"                   // TAG_BITS, Elm::Tag_Forward
@@ -1293,9 +1294,15 @@ void internalizeAndDCEForExecutable(Module &m) {
     // __eco_root_module, string globals, ...) is reached only internally from
     // these two or their call graph, so internalizing them is safe and lets
     // GlobalDCE drop the unreachable remainder.
-    auto mustPreserve = [](const GlobalValue &GV) {
-        StringRef n = GV.getName();
-        return n == "eco_main" || n == "__eco_init_globals";
+    internalizeAndDCE(m, {"eco_main", "__eco_init_globals"});
+}
+
+void internalizeAndDCE(Module &m, ArrayRef<std::string> keep) {
+    StringSet<> keepSet;
+    for (const std::string &k : keep)
+        keepSet.insert(k);
+    auto mustPreserve = [&](const GlobalValue &GV) {
+        return keepSet.contains(GV.getName());
     };
     internalizeModule(m, mustPreserve);
 

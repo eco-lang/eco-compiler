@@ -237,6 +237,15 @@ static cl::opt<std::string> dumpPreRS4GCIR(
     cl::value_desc("filename"),
     cl::init(""));
 
+static cl::opt<std::string> internalizeKeep(
+    "internalize-keep",
+    cl::desc("Object output only: internalize every definition except this "
+             "comma-separated symbol list, then GlobalDCE (what executable "
+             "output does with eco_main,__eco_init_globals). For objects whose "
+             "consumer references only these symbols, e.g. bootstrap Stage 9"),
+    cl::value_desc("sym1,sym2,..."),
+    cl::init(""));
+
 static cl::opt<bool> printStats(
     "lowering-stats",
     cl::desc("Print lowering-pipeline timing breakdown to stderr at exit"),
@@ -825,6 +834,24 @@ int main(int argc, char **argv) {
     if (isExecutable) {
         eco::LoweringStats::Scope scope(stats, "Internalize + GlobalDCE");
         eco::internalizeAndDCEForExecutable(*llvmModule);
+    } else if (emitObjOnly && !internalizeKeep.empty()) {
+        // Opt-in for object output (--internalize-keep): the caller vouches
+        // that the object's consumer references only these symbols.
+        eco::LoweringStats::Scope scope(stats, "Internalize + GlobalDCE");
+        llvm::SmallVector<llvm::StringRef> parts;
+        llvm::StringRef(internalizeKeep).split(parts, ',', -1, false);
+        std::vector<std::string> keep;
+        for (llvm::StringRef k : parts)
+            keep.push_back(k.trim().str());
+        eco::internalizeAndDCE(*llvmModule, keep);
+    }
+
+    // Object output may also use the parallel split: the backend writes the
+    // partitions to a temporary base path and a relocatable link (`ld -r`)
+    // below combines them into the single requested object.
+    std::string objPartsBase;
+    if (emitObjOnly) {
+        objPartsBase = objFile + ".part0.o";
     }
 
     // Parallel codegen: the partition policy now lives in the shared backend
@@ -846,13 +873,13 @@ int main(int argc, char **argv) {
         job.postRS4GCDumpPath = dumpRS4GCIR;
         job.rs4gcAfterOpt = rs4gcAfterOpt;
         job.splitCodegen = splitCodegen;
-        job.splitEligible = isExecutable;
+        job.splitEligible = isExecutable || emitObjOnly;
         job.parallelOpt = parallelOpt;
         job.stats = &stats;
         job.lazySplit = lazySplit;
         job.devEmitCodeGenLevel = devEmitCG;
         job.devOptO1 = devOptO1;
-        job.objectFilePath = objFile;
+        job.objectFilePath = emitObjOnly ? objPartsBase : objFile;
         if (auto err = eco::runEcoBackend(*llvmModule, job, &backendResult)) {
             llvm::errs() << "Error: backend pipeline failed: " << err << "\n";
             if (!tempObjFile.empty())
@@ -872,11 +899,40 @@ int main(int argc, char **argv) {
                      << "\n";
 
     if (emitObjOnly) {
+        int rc = 0;
+        if (backendResult.objectFiles.size() == 1) {
+            if (auto ec = llvm::sys::fs::rename(backendResult.objectFiles[0],
+                                                objFile)) {
+                llvm::errs() << "Error: could not move object to '" << objFile
+                             << "': " << ec.message() << "\n";
+                rc = 1;
+            }
+        } else {
+            // Relocatable link of the partition objects into one object.
+            // Each partition's .llvm_stackmaps section is concatenated, as in
+            // the executable link (the runtime parses multiple blobs).
+            eco::LoweringStats::Scope scope(stats, "Relocatable link (ld -r)");
+            std::string linker = eco::config::systemLinker;
+            llvm::SmallVector<llvm::StringRef> args = {linker, "-r", "-o",
+                                                       objFile};
+            for (const std::string &f : backendResult.objectFiles)
+                args.push_back(f);
+            std::string errMsg;
+            rc = llvm::sys::ExecuteAndWait(linker, args, std::nullopt, {}, 0,
+                                           0, &errMsg);
+            if (rc != 0)
+                llvm::errs() << "Error: relocatable link failed (rc=" << rc
+                             << "): " << errMsg << "\n";
+            for (const std::string &f : backendResult.objectFiles)
+                llvm::sys::fs::remove(f);
+        }
+        for (auto &f : backendResult.ownedTempFiles)
+            llvm::sys::fs::remove(f);
         if (printStats) {
             stats.print(llvm::errs());
         }
-        ecoBootFinalExit(0);
-        return 0;
+        ecoBootFinalExit(rc);
+        return rc;
     }
 
     // Step 8: Link executable
