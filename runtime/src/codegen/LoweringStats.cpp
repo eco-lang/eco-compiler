@@ -8,12 +8,34 @@
 #include "llvm/Support/FormatVariadic.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <unistd.h>
+#include "mlir/IR/BuiltinOps.h"
 #include <unordered_map>
 #include <vector>
 
 using namespace mlir;
 
 namespace eco {
+
+namespace {
+const LoweringStats::Clock::time_point kProcessEpoch = LoweringStats::Clock::now();
+bool timelineEnabled() {
+    static const bool on = ::getenv("ECO_LOWERING_TIMELINE") != nullptr;
+    return on;
+}
+} // namespace
+
+void LoweringStats::timelineMark(llvm::StringRef name, bool begin) {
+    if (!timelineEnabled())
+        return;
+    double t = std::chrono::duration<double>(Clock::now() - kProcessEpoch).count();
+    std::string line = llvm::formatv("[timeline] {0:F3} {1} {2}{3}\n", t,
+                                     (unsigned long)::gettid(), begin ? "+" : "-",
+                                     name.trim())
+                           .str();
+    ::write(2, line.data(), line.size());
+}
 
 void LoweringStats::record(llvm::StringRef name, Duration duration) {
     std::lock_guard<std::mutex> lock(mu_);
@@ -158,10 +180,14 @@ public:
         // PassManager run, so a per-thread map keyed by Pass* is sufficient
         // even when MLIR parallelises nested pipelines across ops.
         startTimes()[pass] = LoweringStats::Clock::now();
+        if (isa<ModuleOp>(op))
+            LoweringStats::timelineMark(pass->getName(), /*begin=*/true);
     }
 
     void runAfterPass(Pass *pass, Operation *op) override {
         finalize(pass);
+        if (isa<ModuleOp>(op))
+            LoweringStats::timelineMark(pass->getName(), /*begin=*/false);
     }
 
     void runAfterPassFailed(Pass *pass, Operation *op) override {

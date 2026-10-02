@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/IR/Threading.h"
 #include "EcoGCLiveness.h"
 #include "EcoToLLVMInternal.h"
 #include "../EcoDialect.h"
@@ -187,7 +188,7 @@ struct MergeCensus {
 };
 } // namespace
 
-/// The module pass walks functions serially, so a plain global is enough.
+/// Only written with the census on, when the pass runs serially (B6).
 static MergeCensus gCensus;
 
 /// Classification predicate for the merge window: can a later allocation be
@@ -272,9 +273,22 @@ struct EcoGCPreparePass
     void runOnOperation() override {
         ModuleOp module = getOperation();
 
-        module.walk([&](func::FuncOp func) {
-            processFunction(func);
-        });
+        // B6 (plans/backend-lowering-optimization.md): the work is strictly
+        // per function (liveness, root sets, grouping attrs on the function's
+        // own ops; no module-level writes), so run it in parallel over the
+        // top-level functions. The census accumulates into the unsynchronised
+        // gCensus global, so census runs stay serial.
+        SmallVector<func::FuncOp> funcs;
+        for (func::FuncOp f : module.getOps<func::FuncOp>())
+            if (!f.isExternal())
+                funcs.push_back(f);
+        if (censusEnabled() || !getContext().isMultithreadingEnabled()) {
+            for (func::FuncOp f : funcs)
+                processFunction(f);
+        } else {
+            parallelForEach(&getContext(), funcs,
+                            [&](func::FuncOp f) { processFunction(f); });
+        }
 
         if (censusEnabled()) {
             llvm::errs() << "[gcprepare-census] blocks=" << gCensus.blocks

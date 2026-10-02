@@ -14,6 +14,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/Threading.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -1159,41 +1160,110 @@ struct EcoControlFlowToSCFPass
         return "Lower eligible Eco control flow ops to SCF dialect";
     }
 
-    // Kept as a module pass: the string-case pattern lazily declares
-    // Elm_Kernel_Utils_equal into the module symbol table (ensureEqualDeclared),
-    // which is unsafe under parallel per-function execution. A per-function
-    // rewrite was tried and measured NEUTRAL for the self-host workload (64k
-    // tiny functions — per-function scheduling overhead offsets the gain), so
-    // it was not worth the added complexity / symbol-collision risk.
+    // B5 (plans/backend-lowering-optimization.md): still a module pass, but
+    // it runs the greedy driver PER TOP-LEVEL OP in parallel chunks instead of
+    // over the whole module. The one module-level mutation, the string-case
+    // pattern's lazy Elm_Kernel_Utils_equal declaration, is hoisted: declared
+    // up front at the module start (where the pattern would put it) iff any
+    // string case exists, so ensureEqualDeclared only ever HITS (a read) in the
+    // parallel phase. An unused declaration is erased later by EcoToLLVM's
+    // unused-decl strip. Module-level region simplification never touches the
+    // function ops themselves, so per-op application is equivalent. (A per-
+    // function NESTED pass was measured neutral earlier: per-function pass
+    // scheduling cost; chunking builds the patterns once per chunk instead.)
     void runOnOperation() override {
         ModuleOp module = getOperation();
         auto *ctx = module.getContext();
 
-        // Set up patterns
-        RewritePatternSet patterns(ctx);
+        if (!valueEqStrCaseEnabled() &&
+            !module.lookupSymbol("Elm_Kernel_Utils_equal")) {
+            std::optional<Location> firstLoc;
+            module.walk([&](CaseOp op) {
+                if (isStringCase(op)) {
+                    firstLoc = op.getLoc();
+                    return WalkResult::interrupt();
+                }
+                return WalkResult::advance();
+            });
+            if (firstLoc) {
+                OpBuilder b = OpBuilder::atBlockBegin(module.getBody());
+                auto ecoValueTy = eco::ValueType::get(ctx);
+                auto funcTy =
+                    b.getFunctionType({ecoValueTy, ecoValueTy}, {ecoValueTy});
+                auto funcOp = b.create<func::FuncOp>(
+                    *firstLoc, "Elm_Kernel_Utils_equal", funcTy);
+                funcOp.setPrivate();
+            }
+        }
 
-        // Add patterns in priority order:
-        // 1. Joinpoint patterns first (higher benefit to consume case+joinpoint together)
-        // 2. Then case patterns for remaining cases
-        // 3. If-chain pattern last (fallback for int cases with negative tags)
-        // Shared memo for containsNestedStringCase; the driver-listener hook
-        // evicts erased ops so address reuse can't resurrect stale answers.
-        StringCaseMemo stringCaseMemo;
+        // The greedy driver needs an isolated-from-above root. Should a
+        // non-isolated top-level op ever hold case/joinpoint ops, fall back to
+        // the original whole-module application (correct, just serial).
+        SmallVector<Operation *> tops;
+        bool needModuleFallback = false;
+        for (Operation &op : *module.getBody()) {
+            if (op.getNumRegions() == 0 ||
+                llvm::none_of(op.getRegions(),
+                              [](Region &r) { return !r.empty(); }))
+                continue;
+            if (op.hasTrait<OpTrait::IsIsolatedFromAbove>()) {
+                tops.push_back(&op);
+                continue;
+            }
+            op.walk([&](Operation *inner) {
+                if (isa<CaseOp, JoinpointOp>(inner)) {
+                    needModuleFallback = true;
+                    return WalkResult::interrupt();
+                }
+                return WalkResult::advance();
+            });
+        }
+        if (needModuleFallback)
+            tops.assign(1, module.getOperation());
+        if (tops.empty())
+            return;
 
-        patterns.add<JoinpointToScfWhilePattern>(ctx, /*benefit=*/10);
-        patterns.add<CaseStringToScfIfChainPattern>(ctx, /*benefit=*/6);
-        patterns.add<CaseToScfIfPattern>(ctx, &stringCaseMemo, /*benefit=*/5);
-        patterns.add<CaseToScfIndexSwitchPattern>(ctx, &stringCaseMemo, /*benefit=*/5);
-        patterns.add<CaseToScfIfChainPattern>(ctx, &stringCaseMemo, /*benefit=*/4);
+        const size_t nChunks = std::max<size_t>(
+            1, std::min<size_t>(tops.size(), 8 * ctx->getNumThreads()));
+        auto runChunk = [&](size_t c) {
+            size_t lo = tops.size() * c / nChunks;
+            size_t hi = tops.size() * (c + 1) / nChunks;
 
-        // Apply patterns greedily (with folding disabled to prevent DCE)
-        GreedyRewriteConfig config;
-        config.enableFolding(false);
-        config.setListener(&stringCaseMemo);
+            // Patterns in priority order:
+            // 1. Joinpoint patterns first (higher benefit to consume
+            //    case+joinpoint together)
+            // 2. Then case patterns for remaining cases
+            // 3. If-chain pattern last (fallback for int cases with negative
+            //    tags)
+            // The memo for containsNestedStringCase is per chunk; its
+            // driver-listener hook evicts erased ops so address reuse can't
+            // resurrect stale answers.
+            StringCaseMemo stringCaseMemo;
+            RewritePatternSet patterns(ctx);
+            patterns.add<JoinpointToScfWhilePattern>(ctx, /*benefit=*/10);
+            patterns.add<CaseStringToScfIfChainPattern>(ctx, /*benefit=*/6);
+            patterns.add<CaseToScfIfPattern>(ctx, &stringCaseMemo, /*benefit=*/5);
+            patterns.add<CaseToScfIndexSwitchPattern>(ctx, &stringCaseMemo,
+                                                      /*benefit=*/5);
+            patterns.add<CaseToScfIfChainPattern>(ctx, &stringCaseMemo,
+                                                  /*benefit=*/4);
+            FrozenRewritePatternSet frozen(std::move(patterns));
 
-        if (failed(applyPatternsGreedily(module, std::move(patterns), config))) {
-            // Note: This may not be a hard error - some patterns might not match
-            // which is fine, as remaining ops will be handled by CF lowering
+            // Greedy with folding disabled (prevents DCE of folded values).
+            GreedyRewriteConfig config;
+            config.enableFolding(false);
+            config.setListener(&stringCaseMemo);
+            for (size_t i = lo; i < hi; ++i) {
+                // A failure is not a hard error: unmatched ops are handled by
+                // the CF lowering later.
+                (void)applyPatternsGreedily(tops[i], frozen, config);
+            }
+        };
+        if (ctx->isMultithreadingEnabled()) {
+            parallelFor(ctx, 0, nChunks, runChunk);
+        } else {
+            for (size_t c = 0; c < nChunks; ++c)
+                runChunk(c);
         }
     }
 };

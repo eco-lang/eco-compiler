@@ -15,7 +15,6 @@
 #include "llvm/IR/Module.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Passes/PassBuilder.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
@@ -42,10 +41,7 @@
 #include "llvm/Bitcode/BitcodeReader.h"
 #include <cstdlib>  // getenv/strtoul (E1.3 threshold override)
 #include <fstream>  // ECO_CAP_INLINE_LIST delta-debug hook
-#include <queue>
 #include <set>
-#include "llvm/Support/Format.h"
-#include <chrono>
 #include <string>
 #include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/GlobalIFunc.h"
@@ -531,12 +527,8 @@ void runCheapModuleIPO(Module &m, bool withFunctionAttrs,
         MPM.addPass(std::move(pass));
         MPM.run(m, MAM);
     };
-    // A1d: constant propagation only — no function specialization (the
-    // default IPSCCPOptions clone functions for constant arguments).
-    runTimed("    prologue: IPSCCP",
-             IPSCCPPass(IPSCCPOptions(/*AllowFuncSpec=*/false)));
-    // A1c: GlobalOpt dropped from the cgu prologue (3.6 s serial). Each
-    // partition's -O2 still runs GlobalOpt over what it owns.
+    runTimed("    prologue: IPSCCP", IPSCCPPass());
+    runTimed("    prologue: GlobalOpt", GlobalOptPass());
     runTimed("    prologue: GlobalDCE", GlobalDCEPass());
     // cgu (plans/backend-lowering-optimization.md A1): restore the attrs pair.
     // A partition sees its cross-partition callees only as declarations, so
@@ -552,67 +544,6 @@ void runCheapModuleIPO(Module &m, bool withFunctionAttrs,
     }
 }
 
-// ECO_OPT_PASS_TIMES=1: exclusive wall time per new-PM pass (and analysis),
-// summed over every partition worker, printed by eco-boot-native at exit.
-// Diagnostic only; nothing is registered when the variable is unset.
-bool optPassTimesEnabled() {
-    static const bool on = ::getenv("ECO_OPT_PASS_TIMES") != nullptr;
-    return on;
-}
-struct OptPassTimesGlobal {
-    std::mutex mu;
-    llvm::StringMap<std::pair<double, uint64_t>> total; // seconds, calls
-};
-OptPassTimesGlobal &optPassTimesGlobal() {
-    static OptPassTimesGlobal g;
-    return g;
-}
-// One pipeline run on one thread: a stack of open passes, so each pass is
-// charged its own time minus the time of the passes nested inside it.
-struct OptPassTimer {
-    using Clock = std::chrono::steady_clock;
-    struct Frame {
-        std::string name;
-        Clock::time_point start;
-        double child = 0;
-    };
-    std::vector<Frame> stack;
-    llvm::StringMap<std::pair<double, uint64_t>> local;
-
-    void push(std::string name) { stack.push_back({std::move(name), Clock::now()}); }
-    void pop() {
-        if (stack.empty())
-            return;
-        Frame f = std::move(stack.back());
-        stack.pop_back();
-        double el = std::chrono::duration<double>(Clock::now() - f.start).count();
-        auto &e = local[f.name];
-        e.first += el - f.child;
-        e.second += 1;
-        if (!stack.empty())
-            stack.back().child += el;
-    }
-    void attach(PassInstrumentationCallbacks &pic) {
-        pic.registerBeforeNonSkippedPassCallback(
-            [this](StringRef p, Any) { push(p.str()); });
-        pic.registerAfterPassCallback(
-            [this](StringRef, Any, const PreservedAnalyses &) { pop(); });
-        pic.registerAfterPassInvalidatedCallback(
-            [this](StringRef, const PreservedAnalyses &) { pop(); });
-        pic.registerBeforeAnalysisCallback(
-            [this](StringRef p, Any) { push(("analysis: " + p).str()); });
-        pic.registerAfterAnalysisCallback([this](StringRef, Any) { pop(); });
-    }
-    ~OptPassTimer() {
-        auto &g = optPassTimesGlobal();
-        std::lock_guard<std::mutex> lock(g.mu);
-        for (auto &kv : local) {
-            auto &e = g.total[kv.first()];
-            e.first += kv.second.first;
-            e.second += kv.second.second;
-        }
-    }
-};
 // No-inline per-partition pipeline (Dev tier): honour explicit `alwaysinline`
 // attrs, then run the standard per-function simplification pipeline
 // (InstCombine / SROA / GVN / SimplifyCFG / LICM / vectorizers …) with NO CGSCC
@@ -620,13 +551,7 @@ struct OptPassTimer {
 // wall-clock; dropping the inliner makes the rest embarrassingly parallel.
 Error runNoInlineFunctionPipeline(Module &m, TargetMachine *tm,
                                   CodeGenOptLevel optLevel, bool devOptO1) {
-    PassInstrumentationCallbacks pic;
-    std::optional<OptPassTimer> timer;
-    if (optPassTimesEnabled()) {
-        timer.emplace();
-        timer->attach(pic);
-    }
-    PassBuilder PB(tm, PipelineTuningOptions(), std::nullopt, &pic);
+    PassBuilder PB(tm);
     LoopAnalysisManager LAM;
     FunctionAnalysisManager FAM;
     CGSCCAnalysisManager CGAM;
@@ -667,11 +592,6 @@ Error runEcoModuleOpt(Module &m, TargetMachine *tm, CodeGenOptLevel optLevel) {
     pic.registerShouldRunOptionalPassCallback([](StringRef pass, Any) {
         return pass != "CalledValuePropagationPass";
     });
-    std::optional<OptPassTimer> timer;
-    if (optPassTimesEnabled()) {
-        timer.emplace();
-        timer->attach(pic);
-    }
 
     PassBuilder PB(tm, pto, std::nullopt, &pic);
     LoopAnalysisManager LAM;
@@ -928,57 +848,6 @@ Error emitObjectFilesSplitLazy(Module &m, unsigned numPartitions,
         raw_svector_ostream os(wholeBitcode);
         WriteBitcodeToFile(m, os);
     }
-    // C2 (plans/backend-lowering-optimization.md): size-balanced ownership of
-    // function definitions. FNV-1a % N balanced by function COUNT, leaving
-    // the slowest partition ~27 % over the mean at self-host scale. LPT
-    // greedy: heaviest function (by instruction count) first, onto the
-    // least-loaded partition; ties broken by name and lowest index, so the
-    // assignment is a pure function of the module (reproducible builds).
-    // Globals keep FNV ownership (negligible cost). Computed after
-    // externalizeAllLocals (names are final) and shared read-only.
-    llvm::StringMap<unsigned> fnOwner;
-    {
-        MaybeScope s(stats, "  partition balance (serial)");
-        struct FnCost { StringRef name; uint64_t cost; };
-        std::vector<FnCost> fns;
-        for (Function &F : m.functions()) {
-            if (F.isDeclaration())
-                continue;
-            uint64_t cost = 1;
-            for (BasicBlock &bb : F)
-                cost += bb.size();
-            fns.push_back({F.getName(), cost});
-        }
-        std::sort(fns.begin(), fns.end(), [](const FnCost &a, const FnCost &b) {
-            return a.cost != b.cost ? a.cost > b.cost : a.name < b.name;
-        });
-        using Load = std::pair<uint64_t, unsigned>; // (load, partition)
-        std::priority_queue<Load, std::vector<Load>, std::greater<Load>> heap;
-        for (unsigned p = 0; p < numPartitions; ++p)
-            heap.push({0, p});
-        for (const FnCost &f : fns) {
-            Load l = heap.top();
-            heap.pop();
-            fnOwner[f.name] = l.second;
-            heap.push({l.first + f.cost, l.second});
-        }
-    }
-
-    // C3 (plans/backend-lowering-optimization.md): the bitcode we just wrote
-    // carries a current "Debug Info Version" flag, so each worker's lazy load
-    // would run UpgradeDebugInfo -> a full verifyModule of its partition
-    // (~4 CPU-s total, pure waste on our own fresh bitcode). LLVM's
-    // -disable-auto-upgrade-debug-info switch skips exactly that.
-    static const bool upgradeOff = [] {
-        auto &opts = llvm::cl::getRegisteredOptions();
-        auto it = opts.find("disable-auto-upgrade-debug-info");
-        if (it == opts.end())
-            return false;
-        return !it->second->addOccurrence(0, "disable-auto-upgrade-debug-info",
-                                          "true");
-    }();
-    (void)upgradeOff;
-
     // Shared, read-only view of the bitcode; MUST outlive every worker (their
     // lazy modules read function bodies out of it on materialize()). It does:
     // wholeBitcode is joined-on below before this scope exits.
@@ -1013,7 +882,7 @@ Error emitObjectFilesSplitLazy(Module &m, unsigned numPartitions,
                 for (Function &F : mod->functions()) {
                     if (F.isDeclaration())
                         continue; // already an extern (runtime) decl
-                    if (fnOwner.lookup(F.getName()) == i) {
+                    if (partitionOfName(F.getName(), numPartitions) == i) {
                         if (F.isMaterializable())
                             if (auto e = F.materialize()) {
                                 errs[i] = "materialize failed p" +
@@ -3792,19 +3661,12 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
         return Error::success();
 
     case BackendKind::EmitObjectFile: {
-        if (parallelOptEnabled && job.parallelOpt == ParallelOpt::Dev) {
-            // dev tier: no serial IPO prologue at all (~6 s of IPSCCP on the
-            // critical path). dev trades code quality for lowering speed, and
-            // the exe path's internalize + GlobalDCE has already run.
-        } else if (parallelOptEnabled) {
+        if (parallelOptEnabled) {
             // Replace the whole-module -O2 with a cheap whole-module IPO
             // prologue; the heavy per-function work moves into the parallel
             // per-partition workers below (design doc §6.2/§6.3).
             MaybeScope s(job.stats, "  cheap-IPO prologue (serial)");
-            // A1b: no attrs pair — under cgu, RS4GC runs per partition BEFORE opt,
-            // so nearly every call to an eco function is a gc.statepoint whose
-            // callee attributes opt cannot use; 1.95 s serial for ~nothing.
-            runCheapModuleIPO(m, /*withFunctionAttrs=*/false, job.stats);
+            runCheapModuleIPO(m, job.parallelOpt == ParallelOpt::Cgu, job.stats);
         } else if (job.optLevel != CodeGenOptLevel::None && job.tm) {
             MaybeScope s(job.stats, "  whole-module opt (serial)");
             if (auto err = runEcoModuleOpt(m, job.tm, job.optLevel))
@@ -3927,29 +3789,3 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
 }
 
 } // namespace eco
-
-void eco::printOptPassTimes(llvm::raw_ostream &os) {
-    if (!optPassTimesEnabled())
-        return;
-    auto &g = optPassTimesGlobal();
-    std::lock_guard<std::mutex> lock(g.mu);
-    std::vector<std::pair<std::string, std::pair<double, uint64_t>>> rows;
-    double sum = 0;
-    for (auto &kv : g.total) {
-        rows.push_back({kv.first().str(), kv.second});
-        sum += kv.second.first;
-    }
-    std::sort(rows.begin(), rows.end(), [](const auto &a, const auto &b) {
-        return a.second.first > b.second.first;
-    });
-    os << "\n=== LLVM opt pass times (exclusive, summed over workers) ===\n";
-    for (auto &r : rows) {
-        if (r.second.first < 0.05)
-            break;
-        os << llvm::format("  %-60s %9.2f s  %5.1f%%  %9llu\n", r.first.c_str(),
-                           r.second.first, 100.0 * r.second.first / sum,
-                           (unsigned long long)r.second.second);
-    }
-    os << llvm::format("  %-60s %9.2f s\n", static_cast<const char *>("total"), sum);
-}
-

@@ -474,7 +474,9 @@ void eco::detail::createGlobalRootInitFunction(
     // them left every never-evaluated slot (61 % on the self-compile
     // workload) in the JIT root set forever, holding 0, swept every minor.
     SmallVector<LLVM::GlobalOp> ecoGlobals;
-    module.walk([&](LLVM::GlobalOp globalOp) {
+    // Globals are top-level only: iterate the module body, not a recursive
+    // walk over every op (plans/backend-lowering-optimization.md B8).
+    llvm::for_each(module.getOps<LLVM::GlobalOp>(), [&](LLVM::GlobalOp globalOp) {
         // eco.global creates internal linkage globals with i64 type
         if (globalOp.getLinkage() == LLVM::Linkage::Internal &&
             globalOp.getGlobalType().isInteger(64) &&
@@ -562,7 +564,8 @@ void eco::detail::createGlobalRootInitFunction(
 // slot as a JIT root when the value stays heap-resident (HEAP_036).
 //===----------------------------------------------------------------------===//
 
-LogicalResult eco::detail::installCafMemoGuard(LLVM::LLVMFuncOp func) {
+LogicalResult eco::detail::installCafMemoGuard(LLVM::LLVMFuncOp func,
+                                              bool &promoteDeclared) {
     if (func.isExternal())
         return success();
 
@@ -592,7 +595,8 @@ LogicalResult eco::detail::installCafMemoGuard(LLVM::LLVMFuncOp func) {
     // barrier-i64 crossing it is the authorized store-helper→gc-leaf-arg
     // pattern (EcoPtrIntVerify pattern 2; the return value is pattern 4).
     auto module = func->getParentOfType<ModuleOp>();
-    if (!module.lookupSymbol<LLVM::LLVMFuncOp>("eco_caf_promote")) {
+    if (!promoteDeclared &&
+        !module.lookupSymbol<LLVM::LLVMFuncOp>("eco_caf_promote")) {
         OpBuilder mb = OpBuilder::atBlockEnd(module.getBody());
         auto promoteTy = LLVM::LLVMFunctionType::get(i64Ty, {i64Ty, ptrTy});
         auto decl = mb.create<LLVM::LLVMFuncOp>(loc, "eco_caf_promote",
@@ -601,6 +605,7 @@ LogicalResult eco::detail::installCafMemoGuard(LLVM::LLVMFuncOp func) {
                       ArrayAttr::get(ctx, {StringAttr::get(
                                               ctx, "gc-leaf-function")}));
     }
+    promoteDeclared = true;
 
     // 1. Instrument every existing return FIRST, so the hit-path return
     //    created below is not instrumented. The miss path routes the value
@@ -788,7 +793,8 @@ static bool isStringLiteralAllocCallee(llvm::StringRef callee) {
            callee == "eco_alloc_string_literal";
 }
 
-void eco::detail::materializeStringLiteralSlots(ModuleOp module) {
+void eco::detail::materializeStringLiteralSlots(ModuleOp module,
+                                                llvm::StringSet<> &slots) {
     if (!strLitCacheEnabled())
         return;
 
@@ -800,9 +806,15 @@ void eco::detail::materializeStringLiteralSlots(ModuleOp module) {
 
     // Collect first (module order, so slot emission is deterministic), then
     // insert: we are appending to the very block being iterated.
+    // `slots` doubles as the existence check below: one module pass instead of
+    // a linear module.lookupSymbol per literal (quadratic at self-host scale).
     SmallVector<StringRef> literals;
     for (auto globalOp : module.getOps<LLVM::GlobalOp>()) {
         StringRef name = globalOp.getSymName();
+        if (name.starts_with("__eco_strlit$")) {
+            slots.insert(name);
+            continue;
+        }
         if (!name.starts_with("__eco_str_"))
             continue;
         if (globalOp.getLinkage() != LLVM::Linkage::Internal)
@@ -818,7 +830,7 @@ void eco::detail::materializeStringLiteralSlots(ModuleOp module) {
     OpBuilder builder = OpBuilder::atBlockEnd(module.getBody());
     for (StringRef name : literals) {
         std::string slotName = ("__eco_strlit$" + name).str();
-        if (module.lookupSymbol<LLVM::GlobalOp>(slotName))
+        if (!slots.insert(slotName).second)
             continue;
         builder.create<LLVM::GlobalOp>(loc, i64Ty, /*isConstant=*/false,
                                        LLVM::Linkage::Internal, slotName,
@@ -837,7 +849,8 @@ void eco::detail::materializeStringLiteralSlots(ModuleOp module) {
     }
 }
 
-void eco::detail::rewriteStringLiteralCallSitesFast(LLVM::LLVMFuncOp func) {
+void eco::detail::rewriteStringLiteralCallSitesFast(
+    LLVM::LLVMFuncOp func, const llvm::StringSet<> &slots) {
     if (func.isExternal() || !strLitCacheEnabled())
         return;
 
@@ -845,7 +858,6 @@ void eco::detail::rewriteStringLiteralCallSitesFast(LLVM::LLVMFuncOp func) {
     auto i64Ty = IntegerType::get(ctx, 64);
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     auto hptrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
-    auto module = func->getParentOfType<ModuleOp>();
 
     // Collect first: creating the scf.if relocates later ops.
     SmallVector<LLVM::CallOp> sites;
@@ -863,7 +875,7 @@ void eco::detail::rewriteStringLiteralCallSitesFast(LLVM::LLVMFuncOp func) {
         // Only rewrite when the slot was pre-materialized; a literal whose
         // global this pass never saw keeps the plain call.
         std::string slotName = ("__eco_strlit$" + addrOf.getGlobalName()).str();
-        if (!module.lookupSymbol<LLVM::GlobalOp>(slotName))
+        if (!slots.contains(slotName))
             return;
         sites.push_back(call);
     });

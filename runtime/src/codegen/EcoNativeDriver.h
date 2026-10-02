@@ -34,9 +34,10 @@ struct EcoNativeOptions {
 
     // Parallel-optimization tier (executable output only), mapped to
     // eco::ParallelOpt in the driver: 0 = none (whole-module -O2 then
-    // codegen-only split — default), 1 = dev (no-inline per-partition), 2 = cgu
-    // (full -O2 per partition). Kept as unsigned so this header stays LLVM-free.
-    unsigned parallelOpt = 0;
+    // codegen-only split), 1 = dev (no-inline per-partition), 2 = cgu (full -O2
+    // per partition — default, plans/backend-lowering-optimization.md A1).
+    // Kept as unsigned so this header stays LLVM-free.
+    unsigned parallelOpt = 2;
 
     // Lazy per-worker partition extraction (ThinLTO-importer pattern) instead
     // of llvm::SplitModule. On by default — validated symbol/functional-

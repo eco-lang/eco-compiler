@@ -372,6 +372,8 @@ struct EcoListTemplatePass
             if (!f.getBody().empty())
                 fns.push_back(f);
         unsigned unwindRewritten = 0;
+        useIndexBuilt = useIndexFailed = finishFwdMade = false;
+        useIndex.clear();
         UnwindBailStats ubAll, ubFoldrHelper;
         for (auto f : fns) {
             bool isFh =
@@ -404,6 +406,10 @@ struct EcoListTemplatePass
                         kv.first.c_str(), kv.second);
         }
     }
+
+    // Phase-2 symbol-use index (see tryRewriteUnwind); reset per run.
+    bool useIndexBuilt = false, useIndexFailed = false, finishFwdMade = false;
+    llvm::DenseMap<StringAttr, SmallVector<Operation *, 2>> useIndex;
 
     llvm::SmallVector<Operation *, 16> debugOtherOps;
     llvm::SmallVector<Operation *, 16> debugBaseUseOwners;
@@ -1156,14 +1162,31 @@ struct EcoListTemplatePass
         }
 
         // Every module-wide use must be a direct, non-musttail eco.call.
-        auto uses = SymbolTable::getSymbolUses(f, m);
-        if (!uses) {
+        // One module walk indexes every symbol's uses: a per-candidate
+        // SymbolTable::getSymbolUses(f, m) walked the whole module each time
+        // (quadratic at self-host scale). Phase-2 rewrites only add calls to
+        // the helper decls and erase cons ops (no symbol refs), so a
+        // candidate's uses never change after the index is built.
+        if (!useIndexBuilt) {
+            useIndexBuilt = true;
+            auto all = SymbolTable::getSymbolUses(&m.getBodyRegion());
+            useIndexFailed = !all;
+            if (all)
+                for (const SymbolTable::SymbolUse &u : *all)
+                    useIndex[u.getSymbolRef().getRootReference()].push_back(
+                        u.getUser());
+        }
+        if (useIndexFailed) {
             bump(&UnwindBailStats::useShape);
             return false;
         }
+        auto usersIt = useIndex.find(f.getSymNameAttr());
+        ArrayRef<Operation *> users;
+        if (usersIt != useIndex.end())
+            users = usersIt->second;
         SmallVector<eco::CallOp, 8> outerSites;
-        for (const SymbolTable::SymbolUse &u : *uses) {
-            auto call = dyn_cast<eco::CallOp>(u.getUser());
+        for (Operation *user : users) {
+            auto call = dyn_cast<eco::CallOp>(user);
             if (!call || !call.getCalleeAttr() ||
                 call.getCalleeAttr().getValue() != name) {
                 bump(&UnwindBailStats::useShape);
@@ -1203,7 +1226,9 @@ struct EcoListTemplatePass
                        FunctionType::get(ctx, {i64, value, i64}, {value}),
                        {"i64", "value", "i64"}, {"value"});
         }
-        if (!m.lookupSymbol<func::FuncOp>(kFinishFwdFn))
+        // Once per run, not per rewrite (B7): ensureDecl's lookup is a linear
+        // module scan and the decl sits at the module end.
+        if (!finishFwdMade && (finishFwdMade = true))
             ensureDecl(m, kFinishFwdFn,
                        FunctionType::get(ctx, {i64, value, i64}, {value}),
                        {"i64", "value", "i64"}, {"value"});

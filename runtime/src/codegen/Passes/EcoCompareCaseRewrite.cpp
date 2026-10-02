@@ -131,8 +131,15 @@ bool matchProducer(Operation *op, Producer &out) {
 /// (CGEN_011) runs after this pass and would fail the build without it.
 /// KERN_006: the types are authored here and reflected verbatim downstream.
 void ensureUtilsCmp3Decl(ModuleOp m) {
-    if (m.lookupSymbol<func::FuncOp>("Elm_Kernel_Utils_cmp3"))
-        return;
+    // Scan from the END (plans/backend-lowering-optimization.md B7): this is
+    // called once per rewritten compare site, and the decl this pass creates
+    // is appended at the module end, so after the first call the lookup is
+    // O(1) instead of ModuleOp::lookupSymbol's linear scan from the start.
+    // Symbol names are unique, so this is the same answer.
+    for (Operation &op : llvm::reverse(*m.getBody()))
+        if (auto f = dyn_cast<func::FuncOp>(op))
+            if (f.getSymName() == "Elm_Kernel_Utils_cmp3")
+                return;
     OpBuilder b(m.getContext());
     b.setInsertionPointToEnd(m.getBody());
     auto valueTy = ValueType::get(m.getContext());

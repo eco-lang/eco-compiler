@@ -175,15 +175,12 @@ void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // window minimal.
     pm.addPass(eco::createEcoBoxedStoreVerifyPass());
 #endif
-    // Tail conversions: scf->cf and arith->llvm are any-op-anchored upstream
-    // passes, so nest them on llvm.func — adjacent nested passes merge into
-    // one parallel sweep across the ~64k functions. cf->llvm stays module-
-    // anchored (stock pass) pending investigation of the fused custom
-    // conversion (see Passes/EcoTailConversions.cpp).
-    pm.addNestedPass<LLVM::LLVMFuncOp>(createSCFToControlFlowPass());
-    pm.addNestedPass<LLVM::LLVMFuncOp>(createArithToLLVMConversionPass());
-    pm.addPass(createConvertControlFlowToLLVMPass());
-    pm.addPass(createReconcileUnrealizedCastsPass());
+    // Tail conversions (plans/backend-lowering-optimization.md B2): one
+    // module pass converts scf->cf, then arith+cf->llvm, per function, in
+    // parallel chunks that build their converter/patterns once — replacing
+    // the nested SCFToControlFlow + ArithToLLVM sweeps (~98k x 2 pass
+    // invocations) and the serial module-anchored cf->llvm pass.
+    pm.addPass(eco::createEcoTailConversionsPass());  // also reconciles casts
 }
 
 } // namespace eco

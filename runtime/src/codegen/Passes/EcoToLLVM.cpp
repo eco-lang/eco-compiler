@@ -36,6 +36,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 
@@ -475,8 +476,11 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
                 return;
             }
         } else {
+            // 8 chunks per thread (B4): function sizes vary widely, and with
+            // one equal-COUNT chunk per thread the slowest chunk set the stage's
+            // wall; failableParallelForEach hands chunks out dynamically.
             unsigned numChunks =
-                std::max(1u, ctx->getThreadPool().getMaxConcurrency());
+                std::max(1u, 8 * ctx->getThreadPool().getMaxConcurrency());
             numChunks = std::min<unsigned>(numChunks, (unsigned)bodyFuncs.size());
             SmallVector<llvm::ArrayRef<LLVM::LLVMFuncOp>> chunks;
             if (numChunks <= 1) {
@@ -546,9 +550,14 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         // cold-edge decls must exist before the per-function rewrite below
         // references them, and the module may not be mutated from inside the
         // walk. Deterministic: module order in, module order out.
-        materializeStringLiteralSlots(module);
+        llvm::StringSet<> strLitSlots;
+        materializeStringLiteralSlots(module, strLitSlots);
 
-        module.walk([&](LLVM::LLVMFuncOp func) {
+        bool cafPromoteDeclared = false;
+        // Functions are top-level only: iterate the module body (same module
+        // order as the post-order walk) instead of recursing through every op
+        // (plans/backend-lowering-optimization.md B3a/B8).
+        llvm::for_each(module.getOps<LLVM::LLVMFuncOp>(), [&](LLVM::LLVMFuncOp func) {
             if (func.isExternal())
                 return;
             if (!func.getGarbageCollector())
@@ -560,7 +569,7 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             if (!cafMemoFuncs.empty() &&
                 cafMemoFuncs.contains(func.getSymName()) &&
                 !shadowRootFuncs.contains(func.getSymName())) {
-                if (failed(installCafMemoGuard(func))) {
+                if (failed(installCafMemoGuard(func, cafPromoteDeclared))) {
                     signalPassFailure();
                     return;
                 }
@@ -572,7 +581,7 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             }
             // Per-literal interning cache (step 18b): same diamond, keyed on
             // the literal's bytes global instead of a thunk symbol.
-            rewriteStringLiteralCallSitesFast(func);
+            rewriteStringLiteralCallSitesFast(func, strLitSlots);
             if (!shadowRootFuncs.empty() &&
                 shadowRootFuncs.contains(func.getSymName())) {
                 OpBuilder builder(func.getContext());
@@ -602,12 +611,54 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             // then O(1) per decl. (SymbolTable::symbolKnownUseEmpty is O(module)
             // PER call — 135 pre-declared decls x an 85k-function module was
             // ~213s.)
-            SymbolTableCollection symbolTables;
-            SymbolUserMap userMap(symbolTables, module.getOperation());
+            //
+            // B3b (plans/backend-lowering-optimization.md): the same use
+            // relation SymbolUserMap computes, collected IN PARALLEL over the
+            // module's top-level ops (each op's own attributes plus every use
+            // nested in its regions; the module is the only symbol table).
+            // getSymbolUses materialises an attribute dictionary per op, which
+            // made the serial map ~3 s at self-host scale. Falls back to the
+            // serial map if any op hides its uses (unknown symbol table).
+            SmallVector<Operation *> tops;
+            for (Operation &op : *module.getBody())
+                tops.push_back(&op);
+            const size_t nChunks = std::max<size_t>(
+                1, std::min<size_t>(tops.size(), 8 * ctx->getNumThreads()));
+            SmallVector<llvm::DenseSet<StringAttr>> chunkUsed(nChunks);
+            std::atomic<bool> unknownUses{false};
+            mlir::parallelFor(ctx, 0, nChunks, [&](size_t c) {
+                size_t lo = tops.size() * c / nChunks;
+                size_t hi = tops.size() * (c + 1) / nChunks;
+                auto &used = chunkUsed[c];
+                for (size_t i = lo; i < hi; ++i) {
+                    Operation *op = tops[i];
+                    op->getAttrDictionary().walk([&](SymbolRefAttr ref) {
+                        used.insert(ref.getRootReference());
+                    });
+                    auto uses = SymbolTable::getSymbolUses(op);
+                    if (!uses) {
+                        unknownUses = true;
+                        return;
+                    }
+                    for (const SymbolTable::SymbolUse &u : *uses)
+                        used.insert(u.getSymbolRef().getRootReference());
+                }
+            });
             SmallVector<LLVM::LLVMFuncOp> deadDecls;
-            for (LLVM::LLVMFuncOp fn : module.getOps<LLVM::LLVMFuncOp>())
-                if (fn.isExternal() && userMap.useEmpty(fn))
-                    deadDecls.push_back(fn);
+            if (!unknownUses) {
+                llvm::DenseSet<StringAttr> used;
+                for (auto &cu : chunkUsed)
+                    used.insert(cu.begin(), cu.end());
+                for (LLVM::LLVMFuncOp fn : module.getOps<LLVM::LLVMFuncOp>())
+                    if (fn.isExternal() && !used.contains(fn.getSymNameAttr()))
+                        deadDecls.push_back(fn);
+            } else {
+                SymbolTableCollection symbolTables;
+                SymbolUserMap userMap(symbolTables, module.getOperation());
+                for (LLVM::LLVMFuncOp fn : module.getOps<LLVM::LLVMFuncOp>())
+                    if (fn.isExternal() && userMap.useEmpty(fn))
+                        deadDecls.push_back(fn);
+            }
             for (LLVM::LLVMFuncOp fn : deadDecls)
                 fn.erase();
         }

@@ -40,6 +40,7 @@ static Value emitEvalDescAddrForFunc(OpBuilder &b, Location loc,
                                      const EcoRuntime &runtime,
                                      StringRef funcSymbol);
 static void getOrCreateEvalDescForFunc(OpBuilder &builder, ModuleOp module,
+                                       const EcoRuntime &runtime,
                                        StringRef funcSymbol, int64_t arity,
                                        uint64_t kindsBitmap, uint8_t resultKind,
                                        Location loc,
@@ -1739,7 +1740,9 @@ static void getOrCreateEvalDesc(OpBuilder &builder, ModuleOp module,
     auto *ctx = builder.getContext();
     evalDescName(wrapper.getSymName(), outName);
     StringRef name(outName.data(), outName.size());
-    if (module.lookupSymbol<LLVM::GlobalOp>(name))
+    // symCache, not module.lookupSymbol: the latter is a linear module scan,
+    // and every first creation is a miss — quadratic over ~85k functions.
+    if (runtime.lookupSymbol<LLVM::GlobalOp>(name))
         return;
 
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
@@ -1803,6 +1806,7 @@ static void getOrCreateEvalDesc(OpBuilder &builder, ModuleOp module,
     auto global = builder.create<LLVM::GlobalOp>(
         loc, descTy, /*isConstant=*/true, LLVM::Linkage::Internal, name,
         /*value=*/Attribute());
+    runtime.cacheSymbol(global);
 
     Block *blk = builder.createBlock(&global.getInitializerRegion());
     builder.setInsertionPointToStart(blk);
@@ -1939,6 +1943,7 @@ static void emitSatEnd(ConversionPatternRewriter &rewriter, Location loc,
 ///
 /// `sat[]` stays null: an args-array target has no typed flat entry to call.
 static void getOrCreateEvalDescForFunc(OpBuilder &builder, ModuleOp module,
+                                       const EcoRuntime &runtime,
                                        StringRef funcSymbol, int64_t arity,
                                        uint64_t kindsBitmap, uint8_t resultKind,
                                        Location loc,
@@ -1946,7 +1951,7 @@ static void getOrCreateEvalDescForFunc(OpBuilder &builder, ModuleOp module,
     auto *ctx = builder.getContext();
     evalDescName(funcSymbol, outName);
     StringRef name(outName.data(), outName.size());
-    if (module.lookupSymbol<LLVM::GlobalOp>(name))
+    if (runtime.lookupSymbol<LLVM::GlobalOp>(name))  // see getOrCreateEvalDesc
         return;
 
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
@@ -1964,6 +1969,7 @@ static void getOrCreateEvalDescForFunc(OpBuilder &builder, ModuleOp module,
     auto global = builder.create<LLVM::GlobalOp>(
         loc, descTy, /*isConstant=*/true, LLVM::Linkage::Internal, name,
         /*value=*/Attribute());
+    runtime.cacheSymbol(global);
     Block *blk = builder.createBlock(&global.getInitializerRegion());
     builder.setInsertionPointToStart(blk);
     Value agg = builder.create<LLVM::UndefOp>(loc, descTy);
@@ -1997,7 +2003,10 @@ static Value emitEvalDescAddrForFunc(OpBuilder &b, Location loc,
     auto ptrTy = LLVM::LLVMPointerType::get(b.getContext());
     llvm::SmallString<96> nameBuf;
     evalDescName(funcSymbol, nameBuf);
-    assert(runtime.module.lookupSymbol<LLVM::GlobalOp>(StringRef(nameBuf)) &&
+    // symCache (O(1), read-only after freeze()), never module.lookupSymbol:
+    // asserts are live in the default -UNDEBUG build and this runs per closure
+    // site in parallel Stage 2 (plans/backend-lowering-optimization.md B1).
+    assert(runtime.lookupSymbol<LLVM::GlobalOp>(StringRef(nameBuf)) &&
            "bare-function EvaluatorDesc not pre-materialized");
     return b.create<LLVM::AddressOfOp>(loc, ptrTy, StringRef(nameBuf));
 }
@@ -2011,7 +2020,7 @@ static Value emitEvalDescAddr(OpBuilder &b, Location loc,
     auto ptrTy = LLVM::LLVMPointerType::get(b.getContext());
     llvm::SmallString<96> nameBuf;
     evalDescName(wrapper.getSymName(), nameBuf);
-    assert(runtime.module.lookupSymbol<LLVM::GlobalOp>(StringRef(nameBuf)) &&
+    assert(runtime.lookupSymbol<LLVM::GlobalOp>(StringRef(nameBuf)) &&
            "EvaluatorDesc not pre-materialized: preMaterializeClosureArtifacts "
            "missed a wrapper, and the closure would hold a dangling evaluator");
     return b.create<LLVM::AddressOfOp>(loc, ptrTy, StringRef(nameBuf));
@@ -2126,7 +2135,9 @@ static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location
     // Referenced BY NAME only — the serial pre-pass minted it. A miss is not
     // silent: LLVM::AddressOfOp carries SymbolUserOpInterface, so a reference
     // to a global that does not exist is an MLIR verifier error here.
-    assert(runtime.module.lookupSymbol<LLVM::GlobalOp>(StringRef(nameBuf)) &&
+    // O(1): layouts live in evalLayoutNames, not symCache (see B1 above).
+    assert(runtime.evalLayoutNames.contains(
+               mlir::StringAttr::get(rewriter.getContext(), nameBuf)) &&
            "eval-layout not pre-materialized (plan §13.1)");
     return rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, StringRef(nameBuf));
 }
@@ -3236,12 +3247,14 @@ void eco::detail::preMaterializeClosureArtifacts(
                 // R7: bypass paths that store a bare function symbol still need
                 // a descriptor, or `evaluator` would hold a raw code pointer.
                 llvm::SmallString<96> n;
-                getOrCreateEvalDescForFunc(builder, module, ac.getFunction(),
+                getOrCreateEvalDescForFunc(builder, module, runtime,
+                                           ac.getFunction(),
                                            ac.getArity(), /*kinds=*/0,
                                            /*resultKind=*/0, ac.getLoc(), n);
             } else if (auto mc = dyn_cast<MakeClosureOp>(op)) {
                 llvm::SmallString<96> n;
-                getOrCreateEvalDescForFunc(builder, module, mc.getFunction(),
+                getOrCreateEvalDescForFunc(builder, module, runtime,
+                                           mc.getFunction(),
                                            mc.getArity(), /*kinds=*/0,
                                            /*resultKind=*/0, mc.getLoc(), n);
             } else if (auto pe = dyn_cast<PapExtendOp>(op)) {

@@ -31,6 +31,12 @@ namespace eco {
 
 class LoweringStats {
 public:
+    /// ECO_LOWERING_TIMELINE=1: print "[timeline] <sec> <tid> +|-<name>" to
+    /// stderr at every scope / module-level MLIR pass boundary, seconds since
+    /// process start, so CPU-usage samples can be mapped onto phases.
+    /// No-op (one cached getenv) when unset.
+    static void timelineMark(llvm::StringRef name, bool begin);
+
     using Clock = std::chrono::steady_clock;
     using Duration = Clock::duration;
 
@@ -43,8 +49,13 @@ public:
     class Scope {
     public:
         Scope(LoweringStats &stats, llvm::StringRef name)
-            : stats_(stats), name_(name.str()), start_(Clock::now()) {}
-        ~Scope() { stats_.record(name_, Clock::now() - start_); }
+            : stats_(stats), name_(name.str()), start_(Clock::now()) {
+            timelineMark(name_, /*begin=*/true);
+        }
+        ~Scope() {
+            stats_.record(name_, Clock::now() - start_);
+            timelineMark(name_, /*begin=*/false);
+        }
 
         Scope(const Scope &) = delete;
         Scope &operator=(const Scope &) = delete;

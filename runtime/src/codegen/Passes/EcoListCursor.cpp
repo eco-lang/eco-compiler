@@ -118,6 +118,7 @@ struct EcoListCursorPass
         bool debug = std::getenv("ECO_LIST_CURSOR_DEBUG") != nullptr;
         unsigned whiles = 0, rewritten = 0;
         dbg = debug;
+        declsMade = false;
 
         SmallVector<scf::WhileOp, 32> loops;
         m.walk([&](scf::WhileOp w) { loops.push_back(w); });
@@ -162,6 +163,7 @@ struct EcoListCursorPass
     }
 
     bool dbg = false;
+    bool declsMade = false;
     unsigned cPtrArgs = 0, cCondFwd = 0, cBadUse = 0, cNoStep = 0,
              cTreeFail = 0, cSharedTree = 0;
     SmallVector<Operation *, 16> badUseOps;
@@ -370,14 +372,21 @@ struct EcoListCursorPass
         Type i64 = b.getI64Type();
         auto as1 = LLVM::LLVMPointerType::get(ctx, 1);
 
-        ensureFn(m, kStepNode, as1, {as1, i64});
-        ensureFn(m, kStepIdx, i64, {as1, i64});
-        ensureFn(m, "__eco_list_cur_inline", as1, {as1, i64});
-        ensureFn(m, "__eco_list_cur_i64_inline", i64, {as1, i64});
-        ensureFn(m, "__eco_list_cur_f64_inline", b.getF64Type(), {as1, i64});
-        ensureFn(m, "__eco_list_cur_i16_inline", b.getIntegerType(16),
-                 {as1, i64});
-        ensureFn(m, kPosView, as1, {as1, i64});
+        // Once per run: each ensureFn is a linear module.lookupSymbol (the
+        // decls sit at the module END, so even a hit scans everything), and
+        // per-loop calls made this pass quadratic at self-host scale.
+        if (!declsMade) {
+            declsMade = true;
+            ensureFn(m, kStepNode, as1, {as1, i64});
+            ensureFn(m, kStepIdx, i64, {as1, i64});
+            ensureFn(m, "__eco_list_cur_inline", as1, {as1, i64});
+            ensureFn(m, "__eco_list_cur_i64_inline", i64, {as1, i64});
+            ensureFn(m, "__eco_list_cur_f64_inline", b.getF64Type(),
+                     {as1, i64});
+            ensureFn(m, "__eco_list_cur_i16_inline", b.getIntegerType(16),
+                     {as1, i64});
+            ensureFn(m, kPosView, as1, {as1, i64});
+        }
 
         unsigned n = w.getInits().size();
         unsigned k = walks.size();

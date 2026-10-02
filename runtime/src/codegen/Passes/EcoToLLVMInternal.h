@@ -20,6 +20,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
 #include <cstdlib>
 #include <vector>
 #include <mutex>
@@ -1247,7 +1248,10 @@ void createGlobalRootInitFunction(
 /// LLVM global). Must run in the serial post-Stage-2 phase, BEFORE
 /// createGlobalRootInitFunction (which roots the slot) and before the
 /// unused-decl strip (the barrier decls this references must count as used).
-mlir::LogicalResult installCafMemoGuard(mlir::LLVM::LLVMFuncOp func);
+/// `promoteDeclared` carries "eco_caf_promote exists" across calls so each
+/// guard does not pay a linear module.lookupSymbol (quadratic over all CAFs).
+mlir::LogicalResult installCafMemoGuard(mlir::LLVM::LLVMFuncOp func,
+                                        bool &promoteDeclared);
 
 /// CAF caller-side fast path (benchmarks/runtime-calls.md Run W): rewrite
 /// every zero-arg call to a `eco.caf_memo`-tagged thunk into a
@@ -1266,14 +1270,18 @@ void rewriteCafCallSitesFast(
 /// Serial post-Stage-2, BEFORE the per-function rewrite below and BEFORE
 /// createGlobalRootInitFunction (which must SKIP these slots — they only ever
 /// hold immortal PermanentSpace words). `ECO_STRLIT_CACHE=0` disables.
-void materializeStringLiteralSlots(mlir::ModuleOp module);
+/// `slots` receives the name of every slot global the module then holds, so
+/// the per-function rewrite never needs a (linear) module.lookupSymbol.
+void materializeStringLiteralSlots(mlir::ModuleOp module,
+                                   llvm::StringSet<> &slots);
 
 /// Rewrite every `eco_alloc_string_literal[_utf8](@__eco_str_N, len)` call
 /// into a slot-load/icmp diamond whose hit edge barrier-casts the cached word
 /// with no call and no statepoint, and whose miss edge calls the `*_fill`
 /// twin that publishes the word. Same shape and same safety argument as
 /// rewriteCafCallSitesFast. `ECO_STRLIT_CACHE=0` disables.
-void rewriteStringLiteralCallSitesFast(mlir::LLVM::LLVMFuncOp func);
+void rewriteStringLiteralCallSitesFast(mlir::LLVM::LLVMFuncOp func,
+                                       const llvm::StringSet<> &slots);
 
 /// Master switch for the caller-side fast path (default ON;
 /// `ECO_CAF_CALLER_FAST=0` is the escape / A-B lever — lowering-time only,

@@ -249,6 +249,10 @@ llvm::Error runEcoBackend(llvm::Module &m, const EcoBackendJob &job,
 /// stackmap only cover live functions.
 void internalizeAndDCEForExecutable(llvm::Module &m);
 
+/// ECO_OPT_PASS_TIMES=1 diagnostic: print per-pass exclusive LLVM opt times
+/// summed over all partition workers (no-op when the variable is unset).
+void printOptPassTimes(llvm::raw_ostream &os);
+
 } // namespace eco
 
 #endif // ECO_BACKEND_H
