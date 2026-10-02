@@ -181,6 +181,16 @@ void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // the nested SCFToControlFlow + ArithToLLVM sweeps (~98k x 2 pass
     // invocations) and the serial module-anchored cf->llvm pass.
     pm.addPass(eco::createEcoTailConversionsPass());  // also reconciles casts
+    // Closed-world reachability (CGEN_081): erase + internalize in MLIR so
+    // translation never sees the dead ~23 %. Before the capacity and gc-free
+    // planners, which then only see live functions (their answers on live
+    // functions are unchanged: nothing live references a dead symbol).
+    // ECO_REACH_MLIR=0 leaves it to the LLVM internalize + GlobalDCE.
+    if (opts.reachability && !opts.capRoots.empty()) {
+        const char *e = ::getenv("ECO_REACH_MLIR");
+        if (!(e && e[0] == '0' && e[1] == '\0'))
+            pm.addPass(eco::createEcoReachabilityPass(opts.capRoots));
+    }
     // Capacity hoisting plan (CGEN_074): Phases A-C on the final llvm-dialect
     // module, stamped as eco-cap-* passthrough + the eco-cap-plan module flag;
     // the backend verifies and consumes it (plan-given mode). Last, so it sees

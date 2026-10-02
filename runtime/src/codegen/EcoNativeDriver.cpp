@@ -57,6 +57,7 @@
 #include "EcoPipeline.h"
 #include "LoweringStats.h"
 #include "Passes.h"
+#include "Passes/EcoSymbolGraph.h"
 
 #include "eco/EcoBootConfig.h"
 
@@ -111,6 +112,8 @@ int runPipeline(ModuleOp module, eco::LoweringStats *stats,
     pipeOpts.capClosedWorld = capClosedWorld;
     if (capClosedWorld)
         pipeOpts.capRoots = {"main", "__eco_init_globals"};
+    // CGEN_081: closed-world output erases + internalizes in MLIR.
+    pipeOpts.reachability = capClosedWorld;
     eco::buildEcoToLLVMPipeline(pm, pipeOpts);
 
     if (failed(pm.run(module)))
@@ -189,11 +192,14 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
 
     llvm::LLVMContext llvmContext;
     std::unique_ptr<llvm::Module> llvmModule;
+    llvm::StringMap<bool> reachTaken; // plan 03 R5 validate
     {
         std::unique_ptr<eco::LoweringStats::Scope> scope;
         if (opts.stats)
             scope = std::make_unique<eco::LoweringStats::Scope>(
                 *opts.stats, "MLIR -> LLVM IR translation");
+        if (const char *e = ::getenv("ECO_REACH_VALIDATE"); e && *e && *e != '0')
+            reachTaken = eco::symgraph::addressTakenByName(*module);
         llvmModule = translateToLLVMIR(*module, llvmContext);
         if (!llvmModule)
             return 1;
@@ -209,10 +215,17 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
     // for this surgical edit).
     module = nullptr;
 
+    const bool emitObjOnly = pathEndsWith(outputPath, ".o");
+    const bool sharedLib = pathEndsWith(outputPath, ".so") ||
+                           pathEndsWith(outputPath, ".node");
+
     // Bake the root module name into the program as `__eco_root_module`.
     // The N-API addon declares it as a weak extern and uses it to name the
     // `Elm.<RootModule>` export; without it the addon falls back to "Main".
-    if (!opts.rootModule.empty()) {
+    // Shared libraries only: an executable never reads it (it used to be
+    // internalized and GlobalDCE'd), and MLIR reachability (CGEN_081) cannot
+    // see an LLVM-created global.
+    if (!opts.rootModule.empty() && sharedLib) {
         auto *init = llvm::ConstantDataArray::getString(
             llvmContext, opts.rootModule, /*AddNull=*/true);
         auto *strGV = new llvm::GlobalVariable(
@@ -235,14 +248,27 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
             return 1;
     }
 
-    const bool emitObjOnly = pathEndsWith(outputPath, ".o");
-    const bool sharedLib = pathEndsWith(outputPath, ".so") ||
-                           pathEndsWith(outputPath, ".node");
-
     // Executable output only: internalize + GlobalDCE before RS4GC/opt/codegen.
     // See internalizeAndDCEForExecutable — skipped for .o (relinked later) and
-    // .so/.node (need __eco_root_module / napi exports).
-    if (!emitObjOnly && !sharedLib) {
+    // .so/.node (need __eco_root_module / napi exports). When MLIR already did
+    // it (CGEN_081), only the dead-constant sweep remains.
+    if (!emitObjOnly && !sharedLib && eco::hasReachabilityStamp(*llvmModule)) {
+        std::unique_ptr<eco::LoweringStats::Scope> scope;
+        if (opts.stats)
+            scope = std::make_unique<eco::LoweringStats::Scope>(
+                *opts.stats, "Reachability finish (serial)");
+        if (auto err = eco::finishReachability(
+                *llvmModule, {"eco_main", "__eco_init_globals"})) {
+            llvm::errs() << "Error: " << llvm::toString(std::move(err)) << "\n";
+            return 1;
+        }
+        if (!reachTaken.empty())
+            if (auto err = eco::checkAddressTaken(*llvmModule, reachTaken)) {
+                llvm::errs() << "Error: " << llvm::toString(std::move(err))
+                             << "\n";
+                return 1;
+            }
+    } else if (!emitObjOnly && !sharedLib) {
         std::unique_ptr<eco::LoweringStats::Scope> scope;
         if (opts.stats)
             scope = std::make_unique<eco::LoweringStats::Scope>(

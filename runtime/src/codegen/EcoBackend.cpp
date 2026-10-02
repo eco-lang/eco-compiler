@@ -1324,6 +1324,88 @@ void internalizeAndDCEForExecutable(Module &m) {
     internalizeAndDCE(m, {"eco_main", "__eco_init_globals"});
 }
 
+bool hasReachabilityStamp(const Module &m) {
+    return m.getModuleFlag("eco-reach") != nullptr;
+}
+
+static void stripReachabilityStamp(Module &m);
+
+// CGEN_081 (plans/mlir-split-backend-03-reachability.md R5): EcoReachability
+// already erased and internalized in MLIR, so the LLVM side keeps only
+// GlobalDCE's dead-constant-user sanitizer (translation's folder can leave
+// dangling ConstantExprs that would flip Function::hasAddressTaken for
+// CGEN_074). Under ECO_REACH_VALIDATE=1 the old internalize + GlobalDCE runs
+// as an oracle and must change nothing.
+Error finishReachability(Module &m, ArrayRef<std::string> keep) {
+    if (!hasReachabilityStamp(m))
+        return createStringError(std::errc::invalid_argument,
+                                 "finishReachability: no eco-reach stamp");
+    stripReachabilityStamp(m);
+    for (Function &f : m)
+        f.removeDeadConstantUsers();
+    for (GlobalVariable &g : m.globals())
+        g.removeDeadConstantUsers();
+
+    static const bool validate = [] {
+        const char *e = ::getenv("ECO_REACH_VALIDATE");
+        return e && *e && !(e[0] == '0' && e[1] == '\0');
+    }();
+    if (!validate)
+        return Error::success();
+    StringMap<GlobalValue::LinkageTypes> before;
+    for (GlobalValue &gv : m.global_values())
+        before[gv.getName()] = gv.getLinkage();
+    const size_t nBefore = before.size();
+    internalizeAndDCE(m, keep);
+    size_t nAfter = 0;
+    unsigned changed = 0;
+    for (GlobalValue &gv : m.global_values()) {
+        ++nAfter;
+        auto it = before.find(gv.getName());
+        if (it == before.end() || it->second != gv.getLinkage()) {
+            if (++changed <= 20)
+                errs() << "[reach-validate] linkage changed: '"
+                       << gv.getName() << "'\n";
+        }
+    }
+    errs() << "[reach-validate] symbols=" << nBefore
+           << " removed_by_llvm=" << (nBefore - nAfter)
+           << " linkage_changed=" << changed << "\n";
+    if (nBefore != nAfter || changed)
+        return createStringError(
+            std::errc::invalid_argument,
+            "reachability validate: LLVM internalize + GlobalDCE changed the "
+            "MLIR-reached module (%zu removed, %u relinked)",
+            nBefore - nAfter, changed);
+    return Error::success();
+}
+
+Error checkAddressTaken(const Module &m, const StringMap<bool> &mlirTaken) {
+    unsigned compared = 0, mismatch = 0;
+    for (const Function &f : m) {
+        if (f.isDeclaration())
+            continue;
+        StringRef n = f.getName();
+        auto it = mlirTaken.find(n);
+        if (it == mlirTaken.end() && n == "eco_main")
+            it = mlirTaken.find("main"); // renamed after translation
+        if (it == mlirTaken.end())
+            continue; // LLVM-created
+        ++compared;
+        if (it->second != f.hasAddressTaken() && ++mismatch <= 20)
+            errs() << "[reach-validate] address-taken mismatch '" << n
+                   << "': mlir=" << it->second
+                   << " llvm=" << f.hasAddressTaken() << "\n";
+    }
+    errs() << "[reach-validate] compared=" << compared
+           << " addr_mismatch=" << mismatch << "\n";
+    if (mismatch)
+        return createStringError(std::errc::invalid_argument,
+                                 "reachability validate: %u address-taken "
+                                 "mismatches", mismatch);
+    return Error::success();
+}
+
 void internalizeAndDCE(Module &m, ArrayRef<std::string> keep) {
     StringSet<> keepSet;
     for (const std::string &k : keep)
@@ -3101,6 +3183,10 @@ static void stripModuleFlag(Module &m, StringRef key) {
         flags->addOperand(op);
 }
 
+static void stripReachabilityStamp(Module &m) {
+    stripModuleFlag(m, "eco-reach");
+}
+
 // Drop the plan's attributes and module flag once expandInlineAllocs has
 // consumed the decisions (P6.8): they are pass-local, and leaving them would
 // renumber `attributes #N` groups in -emit=llvm dumps.
@@ -4164,6 +4250,9 @@ static void spikeFoldThunks(Module &m, int level) {
 
 Error runEcoBackend(Module &m, const EcoBackendJob &job,
                     EcoBackendResult *result) {
+    // CGEN_081: a reachability stamp the driver did not consume (ecoc
+    // paths) must not reach the object.
+    stripReachabilityStamp(m);
     // Plan 02 (CGEN_072): did EcoGcFreePropagation stamp this module?
     std::optional<gcfree::Stamp> gcPlan;
     if (auto flag = moduleFlagString(m, gcfree::kPlanFlag)) {

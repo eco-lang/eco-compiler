@@ -20,6 +20,7 @@
 #include "../Passes.h"
 #include "EcoCapHoistCore.h"
 #include "EcoMarkerFacts.h"
+#include "EcoSymbolGraph.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
@@ -134,35 +135,26 @@ void EcoCapHoistPlanPass::runOnOperation() {
             return signalPassFailure();
         }
 
-    // 4. Index.
-    std::vector<SymNode> nodes;
-    llvm::DenseMap<StringAttr, int> index;
-    std::vector<Operation *> nonSymbolTops;
-    for (Operation &op : *module.getBody()) {
-        auto nameAttr =
-            op.getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
-        if (!nameAttr) {
-            nonSymbolTops.push_back(&op);
-            continue;
+    // 4-5. Index + references: the shared symbol graph (EcoSymbolGraph.h,
+    //      plan 03 R4). An edge "takes the address" exactly when LLVM's
+    //      Function::hasAddressTaken will say so: an addressof used other
+    //      than as the callee operand of a same-typed indirect llvm.call.
+    symgraph::Graph sg = symgraph::build(module);
+    std::vector<SymNode> nodes(sg.nodes.size());
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        const symgraph::Node &gn = sg.nodes[i];
+        SymNode &n = nodes[i];
+        n.op = gn.op;
+        n.isFunc = gn.isFunc;
+        n.defined = gn.isFunc && gn.isDef;
+        n.interposable = gn.interposable;
+        for (uint32_t e = sg.outBegin[i]; e < sg.outBegin[i + 1]; ++e) {
+            n.refs.push_back((int)sg.outTarget[e]);
+            if (symgraph::takesAddress(sg.outKind[e]))
+                n.addrRefs.push_back((int)sg.outTarget[e]);
         }
-        SymNode n;
-        n.op = &op;
-        if (auto f = dyn_cast<LLVM::LLVMFuncOp>(op)) {
-            n.isFunc = true;
-            n.defined = !f.isExternal();
-            auto l = f.getLinkage();
-            n.interposable = l == LLVM::Linkage::Weak ||
-                             l == LLVM::Linkage::Linkonce ||
-                             l == LLVM::Linkage::ExternWeak ||
-                             l == LLVM::Linkage::Common;
-        }
-        index[nameAttr] = (int)nodes.size();
-        nodes.push_back(std::move(n));
     }
-    auto lookup = [&](StringAttr s) {
-        auto it = index.find(s);
-        return it == index.end() ? -1 : it->second;
-    };
+    auto lookup = [&](StringAttr s) { return sg.lookup(s); };
     auto funcOf = [&](int i) -> LLVM::LLVMFuncOp {
         return i >= 0 ? dyn_cast<LLVM::LLVMFuncOp>(nodes[i].op)
                       : LLVM::LLVMFuncOp();
@@ -175,54 +167,11 @@ void EcoCapHoistPlanPass::runOnOperation() {
         if (ue >= 0 && isGcLeaf(nodes[ue].op))
             valueEqLeaf = true;
     }
-
-    // 5. References (parallel per top-level op).
-    auto collectRefs = [&](Operation *op, std::vector<int> &out) {
-        llvm::DenseSet<int> seen;
-        auto add = [&](StringAttr s) {
-            int i = lookup(s);
-            if (i >= 0 && seen.insert(i).second)
-                out.push_back(i);
-        };
-        op->getAttrDictionary().walk(
-            [&](SymbolRefAttr r) { add(r.getRootReference()); });
-        if (auto uses = SymbolTable::getSymbolUses(op))
-            for (const SymbolTable::SymbolUse &u : *uses)
-                add(u.getSymbolRef().getRootReference());
-    };
-    // An addressof takes the address unless EVERY use is the callee operand
-    // (operand 0) of an indirect llvm.call whose type matches the target's
-    // (then LLVM sees a direct call: Function::hasAddressTaken semantics).
-    auto collectTakes = [&](Operation *root, std::vector<int> &out) {
-        root->walk([&](LLVM::AddressOfOp ao) {
-            int g = lookup(ao.getGlobalNameAttr().getAttr());
-            if (g < 0 || ao->use_empty())
-                return;
-            LLVM::LLVMFuncOp gf = funcOf(g);
-            for (OpOperand &use : ao->getUses()) {
-                auto call = dyn_cast<LLVM::CallOp>(use.getOwner());
-                if (!gf || !call || call.getCallee() ||
-                    use.getOperandNumber() != 0 ||
-                    call.getCalleeFunctionType() != gf.getFunctionType()) {
-                    out.push_back(g);
-                    return;
-                }
-            }
-        });
-    };
-    std::vector<int> all(nodes.size());
-    for (size_t i = 0; i < all.size(); ++i)
-        all[i] = (int)i;
-    parallelForEach(ctx, all, [&](int i) {
-        collectRefs(nodes[i].op, nodes[i].refs);
-        collectTakes(nodes[i].op, nodes[i].addrRefs);
-    });
-    std::vector<std::vector<int>> nonSymRefs(nonSymbolTops.size()),
-        nonSymTakes(nonSymbolTops.size());
-    for (size_t k = 0; k < nonSymbolTops.size(); ++k) {
-        collectRefs(nonSymbolTops[k], nonSymRefs[k]);
-        collectTakes(nonSymbolTops[k], nonSymTakes[k]);
-    }
+    std::vector<std::vector<int>> nonSymRefs(1), nonSymTakes(1);
+    for (uint32_t r : sg.extraRoots)
+        nonSymRefs[0].push_back((int)r);
+    for (uint32_t t : sg.extraTakes)
+        nonSymTakes[0].push_back((int)t);
 
     // 6. Eligibility inputs: local + address-taken, closed or open world.
     std::vector<char> isRoot(nodes.size(), 0), reached(nodes.size(), 0),

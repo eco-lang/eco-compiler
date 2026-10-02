@@ -238,6 +238,21 @@ inline void runSubprocessTest(const std::string& testPath, const std::string& co
                                const std::string& emitMode) {
     std::string ecocPath = getEcocPath();
     std::string cmd = ecocPath + " \"" + testPath + "\" -emit=" + emitMode;
+    // Pass-through ecoc flags named on the RUN line (before the pipe).
+    // Whitelisted, so no existing fixture changes meaning.
+    {
+        std::istringstream lines(content);
+        std::string line;
+        while (std::getline(lines, line)) {
+            if (line.find("// RUN:") == std::string::npos)
+                continue;
+            const std::string head = line.substr(0, line.find('|'));
+            for (const char *flag : {"--exe-reachability"})
+                if (head.find(flag) != std::string::npos)
+                    cmd += std::string(" ") + flag;
+            break;
+        }
+    }
 #ifndef _WIN32
     // `// UNSETENV: NAME` runs ecoc without NAME — for fixtures that must not
     // inherit a gate-wide setting (e.g. forged cap-hoist plans, which

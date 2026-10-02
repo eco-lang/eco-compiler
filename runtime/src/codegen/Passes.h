@@ -161,6 +161,14 @@ createEcoCapHoistPlanPass(bool closedWorld, std::vector<std::string> roots);
 /// MUST be the last pass that changes llvm-dialect bodies.
 std::unique_ptr<mlir::Pass> createEcoGcFreePropagationPass();
 
+/// Closed-world reachability + internalization on the final llvm-dialect
+/// module (CGEN_081, plans/mlir-split-backend-03-reachability.md): erases
+/// every symbol op not reachable from `roots`, makes reached non-root
+/// definitions Internal, and records the eco-reach module flag. No-op when
+/// none of the roots exists.
+std::unique_ptr<mlir::Pass>
+createEcoReachabilityPass(std::vector<std::string> roots);
+
 //===----------------------------------------------------------------------===//
 // Pattern Population
 //===----------------------------------------------------------------------===//

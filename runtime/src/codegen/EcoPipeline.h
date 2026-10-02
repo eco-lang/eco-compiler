@@ -41,6 +41,10 @@ struct EcoPipelineOptions {
     bool capClosedWorld = false;
     /// MLIR symbol names that stay externally visible (`main`, not `eco_main`).
     std::vector<std::string> capRoots;
+    /// Closed-world reachability (CGEN_081): erase what `capRoots` cannot
+    /// reach and internalize the rest in MLIR. Set by every driver exactly
+    /// when capClosedWorld is (ecoc: --exe-reachability, open-world plan).
+    bool reachability = false;
 };
 
 /// Builds the Stage 1 pipeline: Eco -> Eco transformations.

@@ -1,7 +1,9 @@
 # MLIR split backend 03: reachability (internalize + GlobalDCE) on the MLIR side
 
-**Master plan:** `plans/mlir-split-backend.md`. **Status:** feasibility-level plan, 2026-10-02.
-Nothing is built. **Research:** `design_docs/mlir-level-partitioning-whole-program-steps.md` §2.
+**Master plan:** `plans/mlir-split-backend.md`. **Status:** IMPLEMENTED 2026-10-02 (placement A;
+placement B measured and refuted; results in "Implementation results" at the end of Part II).
+Part I is the feasibility analysis; Part II is the build specification.
+**Research:** `design_docs/mlir-level-partitioning-whole-program-steps.md` §2.
 **Loop doc:** `benchmarks/backend-opt-loop.md` (entries B3b, TL, DV1, IPO).
 
 ## 0. Verdict and headline findings
@@ -386,6 +388,245 @@ fixtures. Also: the bootstrap fixed point and a byte-identical ELF.
    duplicated unless descriptor identity is proven unobservable.
 4. Is placement B worth giving up the exact "same IR as LLVM DCE" property? ListCursor's unused
    decls would remain in IR dumps; there is no ELF effect.
+
+# Part II: implementation specification
+
+Part I is the feasibility analysis. Part II is the build specification. Plan 00 (SP4) has
+already answered §8:
+- **M1:** the MLIR reached set equals the LLVM survivors exactly (75,775). The exe-only DCE
+  removes 22,388 of 98,163 defined functions (**22.8 %**: 12,138 specs, 10,233 `$clo` variants,
+  17 kernel wrappers), 1 declaration and 44 eval-layout globals.
+- **M2:** 0 unused `addressof` ops.
+- **M3:** 0 phantom edges; only `callee` and `global_name` reference symbols.
+- **M4:** collection 0.36–0.38 s, BFS 0.009 s.
+- **M5:** `__eco_init_globals` registers no roots.
+
+With a 22.8 % dead fraction, placement A pays for translation (6.9 s serial × 0.23), and the
+conditional step 6 (an earlier placement) is triggered.
+
+## R0. Decisions taken (answers to §12 and the open choices)
+
+| Question | Decision | Why |
+|---|---|---|
+| Gate | `EcoPipelineOptions::reachability`, set by every driver exactly when `capClosedWorld` is (exe, or an object with `--internalize-keep`); roots = `capRoots` | 01 already computes this gate and its roots correctly, including the `--emit=llvm` trap (`eco-boot.cpp` `capClosedWorld`) |
+| How the backend knows MLIR did it | module flag `eco-reach` = `v1`, written by the pass | self-describing like 01/02; a no-op pass (no root present) leaves no flag, so the LLVM path runs as today |
+| Escape hatch | `ECO_REACH_MLIR=0`: the pass is not added; LLVM internalize + DCE as today | A/B and bisection |
+| Placement | **A first** (after `EcoTailConversions`, before `EcoCapHoistPlan`); placement B tried as a loop step (R7) | exactness gate first |
+| `.so`/`.node` reachability (§12 Q2) | out of scope | embedding exports are a contract question |
+| §12 Q1 (front end stops minting the variants) | out of scope; recorded in the results | front-end change |
+| Graph | `EcoSymbolGraph` (C++ object, rebuilt per consumer) shared by `EcoReachability`, `EcoCapHoistPlan` (replacing its private collection) and the validate cross-check | one definition of "edge" and "address-taken" |
+| LLVM side after 03 | `finishReachability`: strip the flag and run the `removeDeadConstantUsers` sweep (§9 step 5); under `ECO_REACH_VALIDATE=1` also run the old internalize + DCE and require that it removes nothing and changes no linkage | |
+
+## R1. Files
+
+| File | Change |
+|---|---|
+| `P/EcoSymbolGraph.h/.cpp` (new) | graph builder |
+| `P/EcoReachability.cpp` (new) | the pass |
+| `P/EcoCapHoistPlan.cpp` | use the graph for refs and takes |
+| `Passes.h`, `EcoPipeline.h/.cpp`, `CMakeLists.txt` | option, pass, build |
+| `EcoBackend.h/.cpp` | `finishReachability`, `crossCheckReachability` (validate), flag strip in `runEcoBackend` |
+| `eco-boot.cpp`, `EcoNativeDriver.cpp` | set the option; call `finishReachability` instead of `internalizeAndDCE*` when the flag is present; validate cross-check; `__eco_root_module` bake only for `.so`/`.node` |
+| `ecoc.cpp` | `--exe-reachability` (rejected with `-emit=jit`) |
+| `test/codegen/CodegenIsolatedTest.hpp` | pass `--exe-reachability` from the RUN line through to `ecoc` |
+| `test/codegen/reach_*.mlir` (new) | fixtures |
+| `design_docs/invariants.csv` | CGEN_074, HEAP_035, new CGEN_081 |
+
+## R2. `EcoSymbolGraph`
+
+```cpp
+namespace eco::symgraph {
+enum EdgeKind : uint8_t { Call = 1, CallMismatch = 2, Address = 4 };
+struct Node { Operation *op; StringAttr name; bool isFunc, isGlobal, isDef, interposable; };
+struct Graph {
+  std::vector<Node> nodes;                    // top-level symbol ops, module order
+  llvm::DenseMap<StringAttr, uint32_t> index;
+  std::vector<uint32_t> outBegin;             // CSR, size nodes+1
+  std::vector<uint32_t> outTarget;
+  std::vector<uint8_t>  outKind;              // OR of EdgeKind per (src, dst)
+  std::vector<uint32_t> extraRoots;           // refs held by non-symbol top-level ops
+  std::vector<std::vector<uint32_t>> extraTakes; // address-kind refs of those ops
+};
+Graph build(ModuleOp m);                      // parallel per top-level op
+}
+```
+
+**Edge collection** for a top-level op X (a walk over X and every nested op):
+- `llvm.mlir.addressof @g`:
+  - no uses → **no edge** (LLVM sees no use; M2);
+  - otherwise one edge X→g. Its kind is `Call` if **every** use is operand 0 of an
+    `llvm.call` without a `callee` attribute and with `getCalleeFunctionType()` equal to g's
+    `function_type`; `CallMismatch` if every use is such a callee operand but at least one has a
+    different type; otherwise `Address` (01's rule, §5.2).
+- every other op: each `SymbolRefAttr` in its attribute dictionary (properties included) →
+  edge of kind `Call` for `llvm.call`'s `callee`, otherwise `Address`.
+
+Edges are deduplicated per (X, g) with their kinds OR-ed. A function's **address-taken**
+flag (as LLVM `hasAddressTaken` will see it) = some edge into it, from a reached source, has
+`Address` or `CallMismatch` set. That is computed by the consumer, since "reached" is the
+consumer's notion.
+
+## R3. `EcoReachability` (`P/EcoReachability.cpp`)
+
+`createEcoReachabilityPass(std::vector<std::string> roots)`, argument `eco-reachability`.
+
+1. If `roots` is empty, return. Index the roots that exist; if none exists, return without
+   changes (§10 #12).
+2. Build the graph.
+3. **BFS** from the roots and `extraRoots`.
+4. **Assert:** no reached definition has linkage other than External, Internal or Private
+   (weak, linkonce, linkonce_odr, weak_odr, common, appending, extern_weak and
+   available_externally all fail the pass), and none has a non-default visibility.
+5. **Erase** every unreached symbol op (functions, globals, declarations). Bodies are dropped
+   in parallel (`Region::dropAllReferences` + clearing the blocks; each body is isolated from
+   above). The ops are then erased serially in module order.
+6. **Internalize** every reached definition that is not a root and has `External` linkage →
+   `Internal`. Definitions = `llvm.func` with a body, and `llvm.mlir.global` that has a value
+   attribute or an initializer region.
+7. Write the module flag `eco-reach` = `v1`.
+8. `ECO_REACH_STATS=1` prints `[reach] nodes=N reached=R erased=E internalized=I time=Ts`.
+
+**Placement:** directly after `EcoTailConversions`, before `EcoCapHoistPlan`. It is a no-op
+unless `opts.reachability` is set; with `ECO_REACH_MLIR=0` it is not added.
+
+## R4. `EcoCapHoistPlan` on the graph
+
+Replace steps 4–6 (index, refs, takes, closed-world BFS) with `symgraph::build`:
+- `refs` = graph out-edges;
+- takes = edges with `Address | CallMismatch`, plus `extraTakes`;
+- the closed-world BFS is unchanged in meaning. After 03 every remaining symbol is reached.
+
+Accept: byte-identical output, and 01's validate twin reports 0 diffs.
+
+## R5. The backend and the drivers
+
+- **`EcoBackend.cpp`**:
+  - `Error finishReachability(Module&, ArrayRef<std::string> keep)`: requires the `eco-reach`
+    flag. It strips the flag, then runs `removeDeadConstantUsers()` on every function and
+    global variable (the GlobalDCE sanitizer that `hasAddressTaken` relies on, §9 step 5).
+    Under `ECO_REACH_VALIDATE=1` it then counts definitions and declarations, records every
+    definition's linkage, runs the old `internalizeAndDCE(m, keep)`, and fails if any count
+    changed or any linkage differs.
+  - `runEcoBackend` strips a leftover `eco-reach` flag (ecoc paths).
+  - `bool hasReachabilityStamp(const Module&)`.
+- **Drivers** (eco-boot: exe and `--internalize-keep`; EcoNativeDriver: exe): when the
+  flag is present, call `finishReachability(m, keep)`; otherwise the old call. The phase banner
+  becomes `Reachability finish (serial)` on that path.
+- **Validate cross-check** (`ECO_REACH_VALIDATE=1`). The driver calls
+  `crossCheckReachability(ModuleOp, llvm::Module&, mainRenamed)` after translation while the MLIR
+  module is still alive:
+  - build the graph;
+  - for each MLIR definition, compute `taken` per R2;
+  - compare it with `F->hasAddressTaken()` on the LLVM function of the same name, *after* the
+    sweep; mismatches are fatal and the first 20 are listed;
+  - print `[reach-validate] compared=N addr_mismatch=0`.
+  
+  The sweep must run before the comparison, so the order is: translate → `finishReachability`
+  → cross-check → free MLIR.
+- `__eco_root_module` bake (EcoNativeDriver) only when `sharedLib`.
+- **ecoc:** `--exe-reachability` sets `reachability` and roots `{"main", "__eco_init_globals"}`.
+  It does **not** set `capClosedWorld`: 01 stays open-world, and after internalization the
+  open-world rule (local = Internal/Private) gives the same answer. With `-emit=jit` it is an
+  error.
+
+## R6. Fixtures and gates
+
+**Fixtures** (`ecoc %s -emit=mlir-llvm --exe-reachability`):
+
+| Fixture | Content | Expect |
+|---|---|---|
+| `reach_basic.mlir` | `main` → `@live`; `@dead` → `@deadcallee`; a global used only by `@dead`; a declaration used only by `@dead` | `@live` internal; `main` stays external (no `internal`); `@dead`, `@deadcallee`, the global and the declaration are gone; flag `eco-reach` |
+| `reach_global_init.mlir` | global `@gdead` whose initializer takes `addressof @fdead`, unreferenced; `@glive` initializer takes `@flive`, referenced from `main` | `@gdead` and `@fdead` gone; `@glive` and `@flive` kept and internal |
+| `reach_unused_addressof.mlir` | `main` holds an `addressof @f` with no uses | `@f` erased |
+| `reach_no_main.mlir` | no `main` | nothing erased, no flag |
+| `reach_jit_rejected.mlir` | `-emit=jit --exe-reachability` | `not`; error text |
+
+**Gates** (`ulimit -c 0`):
+1. **Byte-identical ELF:** the self-compile with the pre-change binary vs the new one; also an
+   `--internalize-keep` object (Stage 9a form) vs the pre-change binary.
+2. **Validate on the self-compile:** `ECO_REACH_VALIDATE=1 ECO_CAPHOIST_VALIDATE=1
+   ECO_GCFREE_VALIDATE=1`. The LLVM DCE removes nothing, `addr_mismatch=0`, and the
+   01/02 twins report 0 diffs.
+3. **`check`** with the three validate variables: previous count + new fixtures.
+4. **`run-aot-e2e`** with validate: 899/901 (this is the suite that exercises the exe path).
+5. **`stress`** with validate.
+6. **Bootstrap:** 4b/8c fixed points; 9b OK.
+7. **Timing:** translation, the new pass, the 01/02 passes (now on 77 % of the functions) and
+   the retired LLVM phase.
+
+## R7. Step 6 (placement B), run as a loop step
+
+Move the pass to directly after `EcoToLLVM` (before `EcoListCursor`). It removes no definition
+edge (§4.1). **Accept** only if:
+- the ELF is byte-identical (this covers ListCursor's module gate, §10 residual);
+- every gate in R6 passes;
+- the lowering wall time is lower than placement A by more than noise (two runs each).
+
+Otherwise revert to A and record why.
+
+## R8. Invariant text
+
+- **CGEN_074:** in closed-world output, "local" = a reached non-root definition, internalized by
+  `EcoReachability` in MLIR.
+- **HEAP_035:** CAF slots are rooted by `eco_caf_promote` when the thunk publishes;
+  `createGlobalRootInitFunction` skips `__eco_caf$*` and `__eco_strlit$*` (the previous text,
+  "registered by `__eco_init_globals`", is stale).
+- **CGEN_081 (new):** closed-world reachability and internalization happen in MLIR
+  (`EcoReachability`, roots `main`, `__eco_init_globals` or the `--internalize-keep` list). No
+  post-translation step may add a reference to a generated definition, and marker expansions
+  reference runtime symbols only. The LLVM side keeps only the `removeDeadConstantUsers` sweep
+  (plus the old DCE as a validate oracle). `__eco_root_module` is baked only for `.so`/`.node`.
+
+
+## Implementation results (2026-10-02)
+
+R1–R6 and R8 were built as specified, with placement A. R7 (placement B) was measured and
+**refuted**. Two smaller notes:
+- the `test/codegen` harness forwards a whitelisted `--exe-reachability` from the RUN line;
+- `reach_global_init.mlir`'s `main` must use the loaded pointer. Otherwise the pipeline drops
+  the load, and the global correctly dies.
+
+**Census, self-compile:** 150,548 symbol nodes, 128,114 reached, **22,434 erased** (SP4's 22,388
+functions + 1 declaration + 44 globals, plus one more), 33,787 internalized. The pass takes
+0.49–0.55 s.
+
+**Gates** (`ulimit -c 0`; `ECO_REACH_VALIDATE=1 ECO_CAPHOIST_VALIDATE=1 ECO_GCFREE_VALIDATE=1`
+exported for 2–5):
+
+| # | Gate | Result |
+|---|---|---|
+| 1 | Byte-identical vs `stats-backend-opt/eco-boot-native.pre03` | self-compile exe **identical**; Stage 9a `--internalize-keep` object **identical** |
+| 2 | Validate, self-compile | `removed_by_llvm=0 linkage_changed=0`; address-taken `compared=75775 addr_mismatch=0`; 01 twin 0 diffs; 02 twin `mlir=8558 llvm=8558`; same on the 9a object |
+| 3 | `check` | 2027 passed / 0 failed (2022 + 5 fixtures) |
+| 4 | `run-aot-e2e` | 899 / 901; the 2 failures are the known FlagsRecordTest and PortEchoTest. Spot check: 21 erased, oracle 0, `addr_mismatch=0`. As in plan 02, the first attempt failed 865 tests with "CORRUPT CACHE": every rebuild of `eco-boot.js` invalidates the per-test `eco-stuff` caches. Moving them aside fixed it; this is a front-end issue, not this plan |
+| 5 | `stress` | 101 / 101 |
+| 6 | Bootstrap | 4b and 8c fixed points, 9a and 9b OK (13 min 56 s; Stage 5 6:55) |
+| 7 | Timing (Stage 6 / Stage 7b single runs) | see below |
+
+**Timing (single lowerings of `eco-compiler-boot.mlir`):**
+
+| Phase | pre-03 | 03 |
+|---|---|---|
+| MLIR → LLVM translation | 6.57 s | 6.19–6.31 s |
+| Internalize + GlobalDCE → Reachability finish | 0.38 s | 0.11 s |
+| `EcoReachability` | — | 0.46–0.55 s |
+| `EcoCapHoistPlan` + `EcoGcFreePropagation` | 0.89 s | 0.73–0.77 s |
+| sum of top-level phases | 43.63 s | 43.38–43.63 s |
+| Stage 7b wall (bootstrap) | 44.93 s | 44.77 s |
+
+**Verdict: FLAT,** kept under the "deletes a serial LLVM pass" rule. The structural value is
+the shared graph and the closed-world facts the split needs. Translation saved only ~0.3 s for
+23 % fewer functions: the dead set is dominated by small `$clo` variants and specs.
+
+**R7, placement B (directly after `EcoToLLVM`), REFUTED.** The ELF is byte-identical, but:
+- the tail conversions are no faster (2.06 vs 2.04 s), since the dead functions are cheap to
+  convert;
+- the wall time is the same within noise (43.69/43.28 s against 43.38/43.63 s);
+- the LLVM oracle is no longer exact: ListCursor's `ensureFn` adds 2 unused declarations after
+  the pass.
+
+**Not done (out of scope, recorded):** §12 Q1 (stop minting the dead variants in the front end)
+and Q2 (`.so`/`.node` reachability).
 
 ## Adversarial review (2026-10-02)
 

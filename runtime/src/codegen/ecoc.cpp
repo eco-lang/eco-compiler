@@ -150,6 +150,16 @@ static cl::opt<bool> enableOpt(
     cl::desc("Enable LLVM optimizations"),
     cl::init(false));
 
+// CGEN_081 fixtures/censuses: closed-world reachability with the executable
+// roots (main, __eco_init_globals). The capacity plan stays open-world (the
+// backend here is never closed-world); after internalization the open-world
+// rule (local = Internal/Private) gives the same answer.
+static cl::opt<bool> exeReachability(
+    "exe-reachability",
+    cl::desc("Erase what main/__eco_init_globals cannot reach and "
+             "internalize the rest, as for an executable (not with -emit=jit)"),
+    cl::init(false));
+
 static cl::opt<bool> verifyDiagnostics(
     "verify-diagnostics",
     cl::desc("Check that emitted diagnostics match expected"),
@@ -197,6 +207,17 @@ static int runPipeline(ModuleOp module, Action action) {
 
     // Build the appropriate pipeline based on the emit action.
     eco::EcoPipelineOptions pipeOpts;
+    if (exeReachability) {
+        // The JIT's packFunctionArguments skips local-linkage functions, so
+        // internalizing would silently change the JIT interface.
+        if (action == RunJIT) {
+            llvm::errs() << "Error: --exe-reachability cannot be used with "
+                            "-emit=jit\n";
+            return 1;
+        }
+        pipeOpts.reachability = true;
+        pipeOpts.capRoots = {"main", "__eco_init_globals"};
+    }
     if (action == DumpMLIREco) {
         // -emit=mlir-eco: the eco-to-eco stage only. This previously built
         // NO pipeline at all, so "dump MLIR after eco-to-eco passes"

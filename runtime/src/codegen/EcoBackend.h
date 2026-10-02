@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Error.h"
 
@@ -261,6 +262,19 @@ void internalizeAndDCEForExecutable(llvm::Module &m);
 /// eco-boot's --internalize-keep applies it to object output whose consumer
 /// (e.g. bootstrap Stage 9's unified `eco` link) references only `keep`.
 void internalizeAndDCE(llvm::Module &m, llvm::ArrayRef<std::string> keep);
+
+/// CGEN_081: true when EcoReachability already erased + internalized in MLIR
+/// (module flag eco-reach).
+bool hasReachabilityStamp(const llvm::Module &m);
+/// The LLVM side of MLIR reachability: strip the stamp and sweep dead
+/// constant users; ECO_REACH_VALIDATE=1 also runs internalizeAndDCE(keep) as
+/// an oracle that must change nothing.
+llvm::Error finishReachability(llvm::Module &m,
+                               llvm::ArrayRef<std::string> keep);
+/// Validate (plan 03 R5): LLVM's hasAddressTaken per defined function must
+/// equal the MLIR symbol graph's answer (EcoSymbolGraph addressTakenByName).
+llvm::Error checkAddressTaken(const llvm::Module &m,
+                              const llvm::StringMap<bool> &mlirTaken);
 
 /// ECO_OPT_PASS_TIMES=1 diagnostic: print per-pass exclusive LLVM opt times
 /// summed over all partition workers (no-op when the variable is unset).
