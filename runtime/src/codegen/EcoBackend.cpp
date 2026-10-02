@@ -16,6 +16,7 @@
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
@@ -43,6 +44,7 @@
 #include <cstdlib>  // getenv/strtoul (E1.3 threshold override)
 #include <fstream>  // ECO_CAP_INLINE_LIST delta-debug hook
 #include <queue>
+#include <map>
 #include <set>
 #include "llvm/Support/Format.h"
 #include <chrono>
@@ -2822,6 +2824,14 @@ static void propagateGcFreeLeafAttrs(Module &m, GcFreeMode mode) {
         for (Function *f : freeFns)
             out << f->getName().str() << "\n";
     }
+    // Spike oracle (plans/mlir-split-backend-00-spikes.md): every function
+    // still DEFINED at this point (the $cap prepass deletes inlined bodies).
+    if (const char *dump = ::getenv("ECO_GCFREE_ALL_DUMP")) {
+        std::ofstream out(dump);
+        for (Function &f : m)
+            if (!f.isDeclaration())
+                out << f.getName().str() << "\n";
+    }
 
     if (mode == GcFreeMode::Stamp)
         for (Function *f : freeFns)
@@ -2953,6 +2963,19 @@ static void applyCapacityHoisting(Module &m, CapHoistMode mode,
     TargetLibraryInfoImpl TLII(m.getTargetTriple());
     TargetLibraryInfo TLI(TLII);
     const uint64_t K = capHoistMaxBytes();
+    // Spike oracle (plans/mlir-split-backend-00-spikes.md, I2): per-phase
+    // times and a full per-function dump, only when the variable is set.
+    const char *spikeDump = ::getenv("ECO_CAPHOIST_FULL_DUMP");
+    auto spikeT0 = std::chrono::steady_clock::now();
+    auto spikeT = [&]() {
+        auto now = std::chrono::steady_clock::now();
+        double s = std::chrono::duration<double>(now - spikeT0).count();
+        spikeT0 = now;
+        return s;
+    };
+    double tA = 0, tBC = 0, tD = 0;
+    unsigned spikeBrkBudget0 = 0;
+    std::map<std::string, unsigned> spikeBrkByCallee;
 
     // ---- Phase A: local scan -----------------------------------------
     DenseMap<Function *, CapHoistInfo> info;
@@ -3039,6 +3062,8 @@ static void applyCapacityHoisting(Module &m, CapHoistMode mode,
         }
     }
 
+    if (spikeDump)
+        tA = spikeT();
     // ---- Phase B: budget accumulation over call-graph SCCs ------------
     // Iterative Tarjan. SCCs are emitted in reverse topological order of
     // the condensation, i.e. callees before callers — exactly the order
@@ -3226,6 +3251,27 @@ static void applyCapacityHoisting(Module &m, CapHoistMode mode,
         covered.insert(fp);
         coverableFns.push_back(fp);
     }
+    if (spikeDump) {
+        tBC = spikeT();
+        std::ofstream out(spikeDump);
+        auto reasonStr = [](TopReason r) {
+            switch (r) {
+            case TopReason::None:   return "none";
+            case TopReason::Loop:   return "loop";
+            case TopReason::Cycle:  return "cycle";
+            case TopReason::Budget: return "budget";
+            default:                return "other";
+            }
+        };
+        for (Function *fp : defined) {
+            const CapHoistInfo &fi = info.find(fp)->second;
+            out << fp->getName().str() << ";" << (fi.top ? 1 : 0) << ";"
+                << reasonStr(fi.reason) << ";" << fi.budget << ";"
+                << fi.ownBytes << ";" << (fi.eligible ? 1 : 0) << ";"
+                << (fi.addrTaken ? 1 : 0) << ";" << (fi.nonLocal ? 0 : 1)
+                << ";" << (covered.count(fp) ? 1 : 0) << "\n";
+        }
+    }
 
     // ---- Phase D: run scan (phase 1 — scan and record, never emit) ----
     // Covered functions are NEVER scanned: their guarantee is their
@@ -3298,10 +3344,24 @@ static void applyCapacityHoisting(Module &m, CapHoistMode mode,
                 }
                 if (llvm::callsGCLeafFunction(cb, TLI))
                     continue; // transparent
+                if (spikeDump && callee && !callee->isDeclaration()) {
+                    auto it = info.find(callee);
+                    if (it != info.end() && !it->second.top &&
+                        it->second.budget == 0) {
+                        ++spikeBrkBudget0;
+                        ++spikeBrkByCallee[callee->getName().str()];
+                    }
+                }
                 flushRun();   // statepoint-capable: breaker
             }
             flushRun();
         }
+    }
+    if (spikeDump) {
+        tD = spikeT();
+        std::ofstream out(std::string(spikeDump) + ".breakers");
+        for (auto &kv : spikeBrkByCallee)
+            out << kv.first << ";" << kv.second << "\n";
     }
 
     // ---- Phase D2: verification + emission (transform mode only) ------
@@ -3486,6 +3546,12 @@ static void applyCapacityHoisting(Module &m, CapHoistMode mode,
                                    "also holds run-emitted markers");
     }
 
+    if (spikeDump) {
+        double tD2 = spikeT();
+        llvm::errs() << "[caphoist-spike] tA=" << tA << " tBC=" << tBC
+                     << " tD=" << tD << " tD2=" << tD2
+                     << " brk_budget0=" << spikeBrkBudget0 << "\n";
+    }
     // ---- Phase E: census ---------------------------------------------
     // Nullary-ctor slice: exactly one 16 B marker whose constant header
     // word carries Tag_Custom (size 16 alone is ambiguous — BoxedPrim and
@@ -3648,6 +3714,72 @@ static void runCapInlinePrepass(Module &m) {
     }
 }
 
+// plans/mlir-split-backend-00-spikes.md SP5: emulate front-end constant
+// thunks (plan 04) on LLVM IR, before the IPO prologue. Diagnostic only.
+static void spikeFoldThunks(Module &m, int level) {
+    const DataLayout &DL = m.getDataLayout();
+    unsigned replacedCalls = 0, foldedBodies = 0, rounds = 0;
+    SmallPtrSet<Function *, 32> constantThunks;
+    bool changed = true;
+    while (changed && rounds < 16) {
+        changed = false;
+        ++rounds;
+        for (Function &f : m) {
+            if (f.isDeclaration() || f.arg_size() != 0)
+                continue;
+            Type *rt = f.getReturnType();
+            if (!rt->isIntegerTy() && !rt->isFloatingPointTy())
+                continue;
+            if (level >= 2 && f.size() == 1) {
+                // Constant-fold the body (as LLVM would after substitution).
+                SmallVector<Instruction *, 16> insts;
+                for (Instruction &i : f.front())
+                    insts.push_back(&i);
+                for (Instruction *i : insts)
+                    if (Constant *c = ConstantFoldInstruction(i, DL)) {
+                        i->replaceAllUsesWith(c);
+                        i->eraseFromParent();
+                        changed = true;
+                    }
+            }
+            if (f.size() != 1)
+                continue;
+            auto *ret = dyn_cast<ReturnInst>(f.front().getTerminator());
+            Constant *cv = ret && ret->getReturnValue()
+                               ? dyn_cast<Constant>(ret->getReturnValue())
+                               : nullptr;
+            if (!cv)
+                continue;
+            bool pure = true;
+            for (Instruction &i : f.front())
+                if (&i != ret && i.mayHaveSideEffects())
+                    pure = false;
+            if (!pure)
+                continue;
+            if (constantThunks.insert(&f).second && level >= 2)
+                ++foldedBodies;
+            SmallVector<CallInst *, 16> calls;
+            for (Use &u : f.uses())
+                if (auto *cb = dyn_cast<CallInst>(u.getUser()))
+                    if (cb->getCalledOperand() == &f && cb->arg_size() == 0)
+                        calls.push_back(cb);
+            for (CallInst *cb : calls) {
+                cb->replaceAllUsesWith(cv);
+                cb->eraseFromParent();
+                ++replacedCalls;
+                changed = true;
+            }
+        }
+        if (level < 2)
+            break; // phase 1: literal bodies only, one round
+    }
+    llvm::errs() << "[thunkfold-spike] level=" << level
+                 << " constant_thunks=" << constantThunks.size()
+                 << " folded_bodies=" << foldedBodies
+                 << " replaced_calls=" << replacedCalls << " rounds=" << rounds
+                 << "\n";
+}
+
 Error runEcoBackend(Module &m, const EcoBackendJob &job,
                     EcoBackendResult *result) {
     // P2.5 R1b: expand get_tag markers FIRST (their heap arms emit
@@ -3792,7 +3924,20 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
         return Error::success();
 
     case BackendKind::EmitObjectFile: {
-        if (parallelOptEnabled && job.parallelOpt == ParallelOpt::Dev) {
+        // ECO_SPIKE_THUNK_FOLD=1|2 (plans/mlir-split-backend-00-spikes.md,
+        // SP5): emulate plan 04's front-end constant thunks on LLVM IR.
+        // 1 = phase 1 (calls to literal-bodied arity-0 thunks -> constant);
+        // 2 = phase 1+2 (closed scalar thunk bodies constant-folded too).
+        if (const char *e = ::getenv("ECO_SPIKE_THUNK_FOLD"))
+            spikeFoldThunks(m, std::atoi(e));
+        // ECO_IPO_PROLOGUE=0: diagnostic, skip the prologue under cgu too
+        // (measures the prologue's runtime value against the same tier).
+        static const bool prologueOff = [] {
+            const char *e = ::getenv("ECO_IPO_PROLOGUE");
+            return e && e[0] == '0' && e[1] == '\0';
+        }();
+        if (parallelOptEnabled &&
+            (job.parallelOpt == ParallelOpt::Dev || prologueOff)) {
             // dev tier: no serial IPO prologue at all (~6 s of IPSCCP on the
             // critical path). dev trades code quality for lowering speed, and
             // the exe path's internalize + GlobalDCE has already run.

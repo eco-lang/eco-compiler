@@ -54,7 +54,7 @@ ulimit -c 0
 BK=build/compiler/build-kernel
 BOOT=build/runtime/src/codegen/eco-boot-native
 IN=$BK/bin/ecoGCR.mlir
-L=benchmarks/backend-opt            # logs, kept for the whole series
+L=stats-backend-opt            # logs, kept for the whole series
 ID=<step id>                        # e.g. base, B1, B2a
 
 /usr/bin/time -v -o $L/$ID.time $BOOT $IN -o $BK/bin/eco-be-$ID > $L/$ID.stats 2>&1
@@ -153,8 +153,8 @@ existed, so they are part of the base tree. They are listed here so the history 
 
 Snapshot `be-base`. Measured 2026-10-01 on an idle box (step 0a of the plan). It replaces a
 provisional 215.83 s run that was taken while read-only agents were working; that run's whole
-5.9 s difference was in the serial opt stage. Full banner: `benchmarks/backend-opt/base.stats`.
-Extract any row's cells with `benchmarks/backend-opt/row.sh <id>`.
+5.9 s difference was in the serial opt stage. Full banner: `stats-backend-opt/base.stats`.
+Extract any row's cells with `stats-backend-opt/row.sh <id>`.
 
 ### 0b/0c: diagnostic legs (untimed)
 
@@ -1872,7 +1872,7 @@ MLIR passes (wall clock, may overlap with phases):
 
 **Self-compiles.** The base compiler (`bin/eco-be-base`, lowered at `be-base`) and the final
 compiler each compiled the compiler source twice, interleaved, using the gc-opt loop's §2
-command shape (`benchmarks/backend-opt/selfcompile.sh`):
+command shape (`stats-backend-opt/selfcompile.sh`):
 
 | run | wall | max RSS (kB) | output |
 |---|---|---|---|
@@ -1903,6 +1903,155 @@ command shape (`benchmarks/backend-opt/selfcompile.sh`):
     \`cgu\`/LPT path. They would only exercise A3's pipeline on the whole-module path.
   - The large-module path is covered by the four fixed-point self-compiles above.
   - Owed if a shipping gate requires it.
+
+### dev: `--parallel-opt=dev` comparison on the final tree (2026-10-02; not a step)
+
+This is one lowering of `ecoGCR.mlir` with `--parallel-opt=dev` on the `keep-B4` tree, then one
+self-compile with the produced compiler (`sc-dev-r1`).
+
+| | cgu (B4, default) | dev |
+|---|---|---|
+| lowering wall | 44.09 s | 43.09 s |
+| user CPU | 363.3 s | 303.2 s |
+| max RSS | 7,861,344 kB | 9,199,772 kB |
+| partition opt Σ | 136.2 s | 66.5 s |
+| partition emit Σ | 155.4 s | 161.8 s |
+| drain | 14.0 s | 11.3 s |
+| ELF | 91,046,088 B | 91,119,816 B |
+| self-compile | 108.81 / 108.98 s | 108.46 s |
+| fixed point | identical | identical |
+
+- **It works:** the fixed point holds.
+- **Lowering is 1 s faster** and uses 60 s less CPU. Emit now dominates each worker, so the
+  critical path drops only 2.7 s.
+- **RSS is +1.3 GB, not investigated.** One possible cause is extra malloc arenas, as in step CH.
+- **Generated code is not measurably slower** (one run). After RS4GC, nearly every call is a
+  `gc.statepoint` the inliner cannot touch, so the no-inline pipeline loses little.
+- **Not proposed as the default:** 1 s is not worth +1.3 GB on a 15 GB box. Confirm the tax with
+  more runs before reconsidering.
+
+### dev variants: lowering speed against code quality (2026-10-02; not steps)
+
+These are lowerings on the `keep-B4` tree, each followed by one self-compile with the produced
+compiler. Every variant reproduced `ecoGCR.mlir`.
+
+| variant | lowering wall | user CPU | partition opt Σ | partition emit Σ | drain | ELF | self-compile |
+|---|---|---|---|---|---|---|---|
+| cgu (default) | 44.09 s | 363 s | 136.2 s | 155.4 s | 14.0 s | 91.0 MB | 108.9 s |
+| dev | 43.09 s | 303 s | 66.5 s | 161.8 s | 11.3 s | 91.1 MB | 108.5 s |
+| dev `--dev-opt-o1` | 41.13 s | 275 s | 35.0 s | 166.2 s | 10.1 s | 92.8 MB | 110.8 s (+2.3 %) |
+| dev `--dev-opt-o1 --dev-emit-cg=0` | 36.19 s | 156 s | 34.5 s | 45.7 s | 5.0 s | 122.1 MB | **154.9 s (+43 %)** |
+| `-O 0` (no opt, serial RS4GC) | 37.96 s | 127 s | — | 58.1 s | 3.7 s | 134.3 MB | not run |
+
+- **Codegen level None** (FastISel plus the fast register allocator) is what cuts emit by 3.6×,
+  and it is also what costs 43 % at runtime.
+- **The IR-pipeline knobs** (`dev`, O1) save CPU but little wall: emit dominates each worker.
+- **Untested dev lever:** skip the serial IPSCCP prologue (about 6.3 s) under `dev`.
+
+### DV1: the dev tier skips the serial IPO prologue (2026-10-02; dev-only, cgu unchanged)
+
+Snapshot `try-DV2`, which also contains the `ECO_OPT_PASS_TIMES` diagnostic below.
+
+| variant | lowering | self-compile | fixed point |
+|---|---|---|---|
+| dev, with prologue | 43.09 s | 108.46 s | identical |
+| **dev, no prologue** | **35.74 s** | 110.64 s (+2.2 % against base) | identical |
+| dev `--dev-opt-o1`, no prologue | 34.43 s | 113.48 s (+4.8 %) | identical |
+
+Whole-module IPSCCP is worth about 2 % at runtime. The dev tier now trades it for 7.4 s of
+lowering.
+
+**`ECO_OPT_PASS_TIMES=1`** is a new diagnostic. It prints each new-PM pass's exclusive time,
+summed over workers (files `pt-cgu.stats` and `pt-dev.stats`). Partition opt totals: cgu 137.7 s
+against dev 66.7 s. The 71 s of cgu-only work is:
+
+| cgu-only work | Σ seconds |
+|---|---|
+| IPSCCP per partition | 16.2 |
+| GlobalOpt per partition | 11.7 |
+| a second InstCombine round | +12.2 (587k calls against 294k) |
+| InferFunctionAttrs + CallGraph + PostOrderFunctionAttrs + GlobalDCE + CGSCC adaptor | about 10 |
+| more SimplifyCFG and EarlyCSE | about 6 |
+
+Module-level IPO inside a partition sees only externalized functions, so it can do almost
+nothing; the useful IPSCCP is the whole-module prologue. This matches the equal self-compile
+times of cgu and dev.
+
+### TL: CPU timeline of a default (cgu) lowering (2026-10-02; diagnostic)
+
+Snapshot `try-TL` adds `ECO_LOWERING_TIMELINE=1`, which prints a timestamped `[timeline]` line
+at every stats scope and every module-level MLIR pass. `stats-backend-opt/cpu-timeline.py`
+samples per-thread CPU from `/proc` every 100 ms and joins it to those markers. Raw files:
+`tl-cgu.samples` and `tl-cgu.stderr`. Wall 44.07 s.
+
+| time (s) | phase | CPU | shape |
+|---|---|---|---|
+| 0.00–0.72 | MLIR parse | ~130 % | serial |
+| 0.72–7.35 | MLIR pipeline | 518 % avg | serial with 0.2–0.4 s bursts at 2,000–2,300 % |
+| 2.05–3.62 | EcoToLLVM Stage 0 + pre-materialization | 100 % | serial |
+| 3.72–4.02 | EcoToLLVM Stage 2 | ~1,900 % | parallel |
+| 4.83–4.93 | decl strip | ~1,300 % | parallel |
+| 5.53–5.83 | tail conversions | ~2,100 % | parallel |
+| **5.94–7.34** | **tail conversions, one straggler chunk** | **100 %, 1 thread** | serial |
+| 7.35–14.03 | MLIR → LLVM IR translation | 100 % | serial |
+| **14.03–15.20** | **unlabelled: MLIR context/module teardown (M6 scope end)** | 100 % | serial |
+| 15.20–15.57 | internalize + GlobalDCE | 100 % | serial |
+| **15.57–16.43** | **unlabelled: LLVM marker expansions** (get-tag, list, string-len, value-eq, inline-deref) | 100 % | serial |
+| 16.43–17.33 | capacity-hoist | 100 % | serial |
+| **17.33–17.79** | **unlabelled: expandInlineAllocs / root ranges / sat** | 100 % | serial |
+| 17.79–18.68 | `$cap` prepass + gc-free leaf propagation | 100 % | serial |
+| 18.68–24.88 | IPO prologue (IPSCCP 5.7 s) | 100 % | serial |
+| 24.89–28.55 | externalize + serialize | 100 % | serial |
+| 28.72–42.66 | partition drain | **2,310 % avg** | 24 threads busy until about 41.7 s, then about 1 s of ramp-down |
+| 42.67–43.83 | link (`ld`, a child process, not counted) | — | serial |
+
+**Totals:** about 28 s of the 44 s wall is single-core. About 15.5 s runs near 24 cores. No phase
+shows a contention signature (many threads, each partly busy). The "~500 %" readings are serial
+work mixed with short parallel bursts, below `top`'s sampling resolution.
+
+### IPO: what the IPSCCP prologue buys (2026-10-02; measurement, not a step)
+
+Snapshot `try-IPO` adds `ECO_IPO_PROLOGUE=0`, a diagnostic that skips the prologue under cgu.
+
+**What IPSCCP changes.** Measured on the real prologue input: `--dump-pre-rs4gc-ir`, then
+`opt -passes='ipsccp<no-func-spec>' -stats`. The input has 73,514 defined functions, all internal
+except `eco_main` and `__eco_init_globals`; 8.36M instructions. Scripts:
+`ipsccp-attr-calls.py` and `ipsccp-attr-diff.py`. Stats: `ipsccp-opt.stats`.
+
+| change | count |
+|---|---|
+| arguments constant-propagated | 2,662 (2,669 args unused afterwards, in 2,497 functions) |
+| basic blocks made unreachable | 1,615, in only 117 functions, mostly the `Mlir_Bytecode_*` encoders |
+| instructions removed | 15,123 (17,390 lines, about 0.2 % of the IR) |
+| instructions simplified | 2,898 |
+| arity-0 thunk call results folded | 28 call sites, 14 thunks |
+| functions changed | 16,611 after normalizing attribute numbering and comments. In a sample of 40, about 80 % only gained `nuw`/`nsw`/`nneg` flags from range inference |
+
+**Runtime value.** Self-compile with three interleaved runs per arm, all fixed point:
+
+| arm | runs | median |
+|---|---|---|
+| prologue on | 108.06 / 108.71 / 108.40 s | 108.40 s |
+| prologue off | 110.17 / 110.33 / 110.71 s | **110.33 s** |
+
+That is **+1.93 s (+1.8 %)** without the prologue; the two ranges do not overlap.
+
+**Where it comes from.** `perf` per-symbol samples for one self-compile of each arm; total CPU
+is equal at about 200 s:
+- **About 1.0 s:** `Array_shiftStep` + `Array_branchFactor` + `log@plt` + libm `log`. These thunks
+  are `ceiling (logBase 2 32)`, recomputed with a `log` call on every `Array.get`.
+- **About 0.8 s:** `mixHash` + `hashBase`. `hashBase()` returns the literal 2^26. With IPSCCP the
+  constant reaches `mixHash`, so its two `srem`s become power-of-two remainders. Without it they
+  are two 64-bit divisions by an unknown divisor, on every interning hash.
+
+**Conclusion.** All of the measurable value is the return values of two hot arity-0 thunks. The
+2,669 propagated arguments, the dead blocks and the wrap flags do not show at runtime on this
+workload. The front-end constant-thunk plan
+(`design_docs/mlir-level-partitioning-whole-program-steps.md` §5, A1) recovers it:
+- phase 1, literal bodies, gets `hashBase`;
+- phase 2, the exact evaluator, gets `shiftStep`/`branchFactor`.
+
+A2 (constant arguments) has no measured payoff here.
 
 ## 8. Summary
 

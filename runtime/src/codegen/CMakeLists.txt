@@ -1587,6 +1587,7 @@ if(NOT ECO_GLIBC_OUTPUT_RUNTIME) # MLIR half: the eco-boot-native CLI
 
 add_llvm_executable(eco-boot-native
     eco-boot.cpp
+    SpikeCensus.cpp  # plans/mlir-split-backend-00-spikes.md (diagnostic)
     PARTIAL_SOURCES_INTENDED
 )
 
