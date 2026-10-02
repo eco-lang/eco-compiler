@@ -2053,6 +2053,87 @@ workload. The front-end constant-thunk plan
 
 A2 (constant arguments) has no measured payoff here.
 
+### SPL: MLIR-split plans 01–04 landed (2026-10-02)
+
+| step | wall (s) | Δ vs ref (s) | user CPU (s) | max RSS (kB) | MLIR pipeline (s) | whole-module opt (s) | partition emit Σ (s) | verdict | ref |
+|---|---|---|---|---|---|---|---|---|---|
+| SPL | 38.61 | -5.48 | 370.50 | 7,582,164 | 8.15 | — | 157.01 | WIN (codegen-changing: prologue deleted) | B4 |
+
+Tree: plans `mlir-split-backend-01` … `-04` implemented (cap-hoist plan, gc-free plan and
+reachability in MLIR; the cgu IPSCCP prologue deleted after the front end took over constant
+thunks).
+- **Input substitution:** `ecoGCR.mlir` no longer exists (`build/` was recreated). The run used
+  `stats-backend-opt/p04/base.mlir`, the pre-04 compiler's self-compile output, which has the
+  series input's exact size (13,249,839 B). It was not hash-verified against the lost file.
+- **Effect:**
+  - the serial prologue (IPSCCP 5.6 s + GlobalDCE 0.5 s) is gone;
+  - internalize + GlobalDCE (0.38 s) is replaced by `Reachability finish` (0.11 s);
+  - gc-free propagation drops from 0.29 s to 8 ms;
+  - the MLIR pipeline gains `EcoReachability` / `EcoCapHoistPlan` / `EcoGcFreePropagation`
+    (≈1.3 s, mostly parallel; 6.65 → 8.15 s).
+- **Output:** the ELF is byte-identical to the plan-04 `ecoBaseOFF` arm (same input, prologue
+  off, lowered before plan 03). So plans 01–03 are output-neutral and the only codegen change is
+  the prologue removal. Its runtime tax was measured in plan 04: with folded thunks, 108.11 s
+  vs 108.25 s.
+
+<details><summary>--lowering-stats banner</summary>
+
+```
+/usr/bin/ld: /tmp/eco-part-892e25.o: warning: relocation against `Compiler_Monomorphize_MonoTraverse_mapExprTypes_$_36256' in read-only section `.llvm_stackmaps'
+/usr/bin/ld: warning: creating DT_TEXTREL in a PIE
+
+=== eco-boot-native lowering stats ===
+
+Phases (wall clock):
+  name                                        time         %      calls   
+  ------------------------------------------------------------------------
+    partition emit (sum over workers)             157.01 s   42.2%      24
+    partition opt (sum over workers)              136.64 s   36.8%      24
+  LLVM backend (RS4GC + opt + object emission)     20.88 s    5.6%       1
+    parallel opt+emit drain (post-serialize...     14.16 s    3.8%       1
+    partition RS4GC (sum over workers)             12.77 s    3.4%      24
+    lazy extract (sum over workers)                 8.44 s    2.3%      24
+  MLIR lowering pipeline                            8.15 s    2.2%       1
+  MLIR -> LLVM IR translation                       6.30 s    1.7%       1
+    externalize + serialize once (serial)           3.64 s    1.0%       1
+  Link (clang++ driver)                             1.12 s    0.3%       1
+    capacity-hoist analysis (serial)             921.18 ms    0.2%       1
+  MLIR parse + verify                            725.34 ms    0.2%       1
+    $cap inline prepass (serial)                 591.52 ms    0.2%       1
+    partition balance (serial)                   158.98 ms    0.0%       1
+  Reachability finish (serial)                   110.75 ms    0.0%       1
+    gc-free leaf propagation (serial)              8.33 ms    0.0%       1
+  TargetMachine init                               5.67 ms    0.0%       1
+  ------------------------------------------------------------------------
+  total                                           371.65 s
+
+MLIR passes (wall clock, may overlap with phases):
+  name                                        time         %      calls   
+  ------------------------------------------------------------------------
+  (anonymous namespace)::EcoToLLVMPass              3.06 s    0.8%       1
+  (anonymous namespace)::EcoTailConversions...      2.11 s    0.6%       1
+  (anonymous namespace)::EcoFoldProjectPass         1.15 s    0.3%   56944
+  (anonymous namespace)::EcoCapHoistPlanPass     570.22 ms    0.2%       1
+  (anonymous namespace)::EcoReachabilityPass     526.66 ms    0.1%       1
+  (anonymous namespace)::EcoListTemplatePass     394.58 ms    0.1%       1
+  (anonymous namespace)::EcoListCursorPass       393.11 ms    0.1%       1
+  (anonymous namespace)::EcoControlFlowToSC...   241.27 ms    0.1%       1
+  (anonymous namespace)::EcoGcFreePropagati...   207.82 ms    0.1%       1
+  mlir::detail::OpToOpPassAdaptor                178.22 ms    0.0%       1
+  (anonymous namespace)::EcoGCPreparePass        153.50 ms    0.0%       1
+  (anonymous namespace)::BFToLLVMPass            122.90 ms    0.0%       1
+  (anonymous namespace)::EcoPAPSimplifyPass       80.40 ms    0.0%       1
+  (anonymous namespace)::EcoMarkGCLeafCalls...    32.78 ms    0.0%       1
+  (anonymous namespace)::EcoCompareCaseRewr...    26.87 ms    0.0%       1
+  (anonymous namespace)::RCEliminationPass        23.29 ms    0.0%       1
+  (anonymous namespace)::UndefinedFunctionPass    20.51 ms    0.0%       1
+  (anonymous namespace)::JoinpointNormaliza...    15.24 ms    0.0%       1
+  ------------------------------------------------------------------------
+  total                                             9.30 s
+```
+
+</details>
+
 ## 8. Summary
 
 | step | wall (s) | Δ vs ref (s) | user CPU (s) | max RSS (kB) | MLIR pipeline (s) | whole-module opt (s) | partition emit Σ (s) | verdict | ref |
@@ -2082,3 +2163,4 @@ A2 (constant arguments) has no measured payoff here.
 | CH | 44.59 | +0.49 | 367.93 | 9,052,228 | 7.02 | — | 157.68 | FLAT, reverted (RSS +1.18 GB) | B6 |
 | B7 | 44.46 | +0.36 | 362.65 | 7,889,980 | 6.88 | — | 155.17 | FLAT, kept (removes quadratic scans) | B6 |
 | B4 | 44.09 | -0.01 | 363.33 | 7,861,344 | 6.65 | — | 155.35 | FLAT, kept (one-line) | B6 |
+| SPL | 38.61 | -5.48 | 370.50 | 7,582,164 | 8.15 | — | 157.01 | WIN (codegen-changing: prologue deleted) | B4 |
