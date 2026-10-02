@@ -1,4 +1,4 @@
-module Compiler.Generate.MLIR.Backend exposing (backend, generateMlirModule, streamMlirToWriter, streamMlirBytecode)
+module Compiler.Generate.MLIR.Backend exposing (backend, constThunkReport, generateMlirModule, streamMlirToWriter, streamMlirBytecode)
 
 {-| MLIR code generation backend for the Monomorphized IR.
 
@@ -15,6 +15,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.CtorTag as CtorTag
 import Compiler.Eco.Config as Config
 import Compiler.Generate.CodeGen as CodeGen
+import Compiler.Generate.MLIR.ConstThunks as ConstThunks
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Expr as Expr
 import Compiler.Generate.MLIR.Functions as Functions
@@ -177,6 +178,15 @@ streamMlirToWriter ecoConfig mode monoGraph0 writeChunk =
                 |> Ctx.withCtorBySpec (buildCtorBySpec nodes)
                 |> Ctx.withNullConsBySpec (buildNullConsBySpec registry nodes)
                 |> Ctx.withConstCtorBySpec (buildConstCtorBySpec registry nodes)
+                |> Ctx.withConstThunkBySpec
+                    (ConstThunks.build ecoConfig.constThunks
+                        registry
+                        signatures
+                        nodes
+                        main
+                        (buildNullConsBySpec registry nodes)
+                        (buildConstCtorBySpec registry nodes)
+                    )
                 |> Ctx.withSretPromoted (buildSretPromoted ecoConfig nodes)
                 |> Ctx.withPsplitPromoted (buildPsplitPromoted ecoConfig ctorShapes (buildCtorBySpec nodes) (buildSretPromoted ecoConfig nodes) nodes)
                 |> Ctx.withOracleFacts (deriveOracleFacts ecoConfig monoGraph0)
@@ -310,6 +320,15 @@ streamMlirBytecode ecoConfig mode monoGraph0 target =
                 |> Ctx.withCtorBySpec (buildCtorBySpec nodes)
                 |> Ctx.withNullConsBySpec (buildNullConsBySpec registry nodes)
                 |> Ctx.withConstCtorBySpec (buildConstCtorBySpec registry nodes)
+                |> Ctx.withConstThunkBySpec
+                    (ConstThunks.build ecoConfig.constThunks
+                        registry
+                        signatures
+                        nodes
+                        main
+                        (buildNullConsBySpec registry nodes)
+                        (buildConstCtorBySpec registry nodes)
+                    )
                 |> Ctx.withSretPromoted (buildSretPromoted ecoConfig nodes)
                 |> Ctx.withPsplitPromoted (buildPsplitPromoted ecoConfig ctorShapes (buildCtorBySpec nodes) (buildSretPromoted ecoConfig nodes) nodes)
                 |> Ctx.withOracleFacts (deriveOracleFacts ecoConfig monoGraph0)
@@ -1370,6 +1389,20 @@ buildCtorBySpec nodes =
             ( 0, Dict.empty )
             nodes
         )
+
+
+{-| The constant-thunk census (`ECO_CONST_THUNK_REPORT=1`, CGEN\_082) over the
+graph codegen is about to emit.
+-}
+constThunkReport : Config.EcoConfig -> Mono.MonoGraph -> String
+constThunkReport ecoConfig (Mono.MonoGraph { nodes, main, registry }) =
+    ConstThunks.report ecoConfig.constThunks
+        registry
+        (Ctx.buildSignatures nodes)
+        nodes
+        main
+        (buildNullConsBySpec registry nodes)
+        (buildConstCtorBySpec registry nodes)
 
 
 {-| SpecId -> ctor name for nullary specs that embed as a WELL-KNOWN constant.

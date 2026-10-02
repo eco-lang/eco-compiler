@@ -7,7 +7,7 @@ module Compiler.Generate.MLIR.Context exposing
     , isTypeVar, hasKernelImplementation
     , KernelDeclInfo
     , registerKernelInstance
-    , PsplitInfo, SlotPlan, SplitParamInfo, SplitSpec(..), SretInfo, residualResultType, withConstCtorBySpec, withNullConsBySpec, withPsplitPromoted, withSretPromoted
+    , PsplitInfo, SlotPlan, SplitParamInfo, SplitSpec(..), SretInfo, residualResultType, withConstCtorBySpec, withConstThunkBySpec, withNullConsBySpec, withPsplitPromoted, withSretPromoted
     )
 
 {-| MLIR code generation context.
@@ -222,6 +222,7 @@ type alias Context =
     , inlineBodies : Dict.Dict Int ( List ( Name.Name, Mono.MonoType ), Mono.MonoExpr )
     , ctorBySpec : Dict.Dict Int Mono.CtorShape -- U-T1.3.2: SpecId -> ctor shape for saturated-ctor-call promotion (make.custom)
     , nullConsBySpec : Dict.Dict Int Int -- HEAP_044/CGEN_079: SpecId -> effective tag for nullary-ctor/enum specs that embed as null-cons constants; generateVarGlobal emits the constant instead of the arity-0 call (a perf layer — the specs' func.funcs still return the same constant)
+    , constThunkBySpec : Dict.Dict Int Mono.MonoExpr -- CGEN_082 (plans/mlir-split-backend-04-constant-thunks.md): SpecId -> body of an arity-0 constant thunk (ConstThunks.build); generateVarGlobal emits the body at the reference under a fresh lexical scope instead of the eco.call. Same perf layer as the two maps around it: the thunk's func.func still returns the same value
     , constCtorBySpec : Dict.Dict Int String -- REP_CONSTANT_001/CGEN_019: SpecId -> ctor name for nullary specs that embed as a WELL-KNOWN constant (`Nothing` = the merged Empty), which `CtorTag.embedsAsNullCons` excludes from `nullConsBySpec` because they carry no null-cons tag. Same perf layer: generateVarGlobal emits `eco.constant` instead of the arity-0 call.
     , fwdRefdLetNames : Set.Set String -- U-T1.3.2 precise sibling recovery: names of the CURRENT let chain referenced by an EARLIER sibling's RHS (closure-mediated forward refs); computed once per chain head in generateLet, restored on chain exit
     , tailRecLetBody : Maybe Mono.MonoExpr -- U-T1.3.2t: TailRec.compileLetStep emits lets through a synthetic MonoUnit-body wrapper; this carries the REAL loop-body suffix so the promotion hook's escape walk can vet actual uses (Nothing everywhere else; cleared before nested emission)
@@ -320,6 +321,7 @@ initContext mode registry signatures initialCtorShapes =
     , ctorBySpec = Dict.empty
     , nullConsBySpec = Dict.empty
     , constCtorBySpec = Dict.empty
+    , constThunkBySpec = Dict.empty
     , fwdRefdLetNames = Set.empty
     , tailRecLetBody = Nothing
     , splitAggParams = Dict.empty
@@ -364,6 +366,13 @@ withNullConsBySpec d ctx =
 withConstCtorBySpec : Dict.Dict Int String -> Context -> Context
 withConstCtorBySpec d ctx =
     { ctx | constCtorBySpec = d }
+
+
+{-| Install the constant-thunk map (see `constThunkBySpec`, CGEN\_082).
+-}
+withConstThunkBySpec : Dict.Dict Int Mono.MonoExpr -> Context -> Context
+withConstThunkBySpec d ctx =
+    { ctx | constThunkBySpec = d }
 
 
 {-| Install the effective eco-config on a freshly-initialised Context.

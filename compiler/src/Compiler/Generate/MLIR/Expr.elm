@@ -681,6 +681,62 @@ generateLiteral ctx lit =
 -- ====== VARIABLE GENERATION ======
 
 
+{-| CGEN\_082 (plans/mlir-split-backend-04-constant-thunks.md T3): emit a
+constant thunk's body at a reference. Exactly what `Functions.generateDefine`
+emits for the thunk itself, minus the call: `generateExpr` on the body, then a
+coercion to the thunk's ABI return type, so no consumer can observe the change.
+
+The body is emitted under a FRESH LEXICAL SCOPE: every name-keyed scope field
+is reset (a substituted `let base = …` must neither see the caller's `base`
+nor reuse a same-named entry of the caller's `currentLetSiblings`, which
+`addPlaceholderMappings` would otherwise write), and restored afterwards. The
+accumulators (`nextVar`, `nextOpId`, pending lambdas/func ops, kernel decls,
+the type registry) thread through, and `definedSsaVars` is kept and grows:
+the new SSA values are defined in the caller's function.
+
+-}
+generateConstThunkRef : Ctx.Context -> Ctx.FuncSignature -> Mono.MonoExpr -> ExprResult
+generateConstThunkRef ctx sig body =
+    let
+        scoped =
+            { ctx
+                | varMappings = Dict.empty
+                , currentLetSiblings = Dict.empty
+                , externBoxedVars = Set.empty
+                , splitAggParams = Dict.empty
+                , decoderExprs = Dict.empty
+                , fwdRefdLetNames = Set.empty
+                , tailRecLetBody = Nothing
+                , sretTailLayout = Nothing
+            }
+
+        r =
+            generateExpr scoped body
+
+        retTy =
+            Types.monoTypeToAbi sig.returnType
+
+        ( coerceOps, finalVar, ctxC ) =
+            coerceResultToType r.ctx r.resultVar r.resultType retTy
+    in
+    { ops = r.ops ++ coerceOps
+    , resultVar = finalVar
+    , resultType = retTy
+    , ctx =
+        { ctxC
+            | varMappings = ctx.varMappings
+            , currentLetSiblings = ctx.currentLetSiblings
+            , externBoxedVars = ctx.externBoxedVars
+            , splitAggParams = ctx.splitAggParams
+            , decoderExprs = ctx.decoderExprs
+            , fwdRefdLetNames = ctx.fwdRefdLetNames
+            , tailRecLetBody = ctx.tailRecLetBody
+            , sretTailLayout = ctx.sretTailLayout
+        }
+    , isTerminated = False
+    }
+
+
 generateVarGlobal : Ctx.Context -> Mono.SpecId -> Mono.MonoType -> ExprResult
 generateVarGlobal ctx specId monoType =
     let
@@ -749,6 +805,17 @@ generateVarGlobal ctx specId monoType =
                                 }
 
                             Nothing ->
+                              case Dict.get specId ctx.constThunkBySpec of
+                               Just thunkBody ->
+                                -- CGEN_082: a constant thunk (literal, alias
+                                -- chain, or closed pure-arithmetic body) —
+                                -- emit its OWN body here instead of the call,
+                                -- so LLVM folds the constant and the call
+                                -- disappears. Same perf layer as the two arms
+                                -- above.
+                                generateConstThunkRef ctx sig thunkBody
+
+                               Nothing ->
                                 -- Zero-arity function (thunk): call directly instead of creating a PAP.
                                 -- papCreate requires arity > 0 (num_captured < arity invariant).
                                 let

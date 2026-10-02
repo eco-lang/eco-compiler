@@ -1,8 +1,9 @@
 # MLIR split backend 04: constant thunks in the Elm front-end (replaces the IPSCCP prologue)
 
-**Master plan:** `plans/mlir-split-backend.md`. **Status:** feasibility-deepened outline,
-2026-10-02. Nothing is built. Not implementation-ready: §8 Step 0 must confirm two Mono body
-shapes first.
+**Master plan:** `plans/mlir-split-backend.md`. **Status:** IMPLEMENTED 2026-10-02 (phases 1 +
+2A default-on; cgu IPSCCP prologue deleted; results in "Implementation results" at the end of
+Part II). Part I is the feasibility analysis; Part II is the build specification (Step 0's
+shape questions were answered by plan 00 SP5 and by reading `Expr.elm`, see Part II).
 
 **Research:** `design_docs/mlir-level-partitioning-whole-program-steps.md` §5.
 **Measurement:** `benchmarks/backend-opt-loop.md`, entry "IPO". Raw perf tables:
@@ -406,6 +407,264 @@ GlobalDCE. The attrs pair is off under cgu (`withFunctionAttrs=false`, A1b).
   the inliner) worth a re-prune? Only with a measured consumer.
 - **Q5:** Should the Pretty hex-float fix land first, so the text and bytecode paths are equally
   exact regardless of 04?
+
+# Part II: implementation specification
+
+Part I is the feasibility analysis. Part II is the build specification. Plan 00 (SP5) settled
+Step 0's open items:
+- the bodies of the four hot thunks;
+- the census (49 arity-0 scalar functions: 42 literal, 3 closed, 4 other);
+- the prologue-off value: OFF + phase 1+2 ≤ ON.
+
+One code fact found while specifying corrects §1/§4: **`logBase` is not inlined at Mono
+level.** After `AliasForward` it is a saturated `MonoVarKernel "Basics" "logBase"` call, which
+`Expr.generateSaturatedCallNoFusion` special-cases into two `eco.float.log` and an
+`eco.float.div` (`Expr.elm` `( "Basics", "logBase", … )` arm). So the 2A predicate must
+accept that callee shape by name. No let-bound `base`/`number` exists in `shiftStep`'s body,
+but the fresh-scope rule stays, because other closed thunks may bind lets.
+
+## T0. Decisions
+
+| Question | Decision | Why |
+|---|---|---|
+| Emission | **One mechanism for phase 1 and 2A.** At a reference, emit `generateExpr` on the thunk's own body under a fresh lexical scope, then `coerceResultToType` to `Types.monoTypeToAbi sig.returnType`. This is exactly what `Functions.generateDefine` does for the thunk itself, minus the call | identical ops, identical ABI by construction; Bool/Unit/Char need no special cases |
+| Phase selection | config `constThunks : Int`: 0 = off, 1 = phase 1 (literal, Unit, kernel constant, alias chains), 2 = phase 1 + 2A (default). Env `ECO_CONST_THUNKS=0/1/2`. Hash token `cthk=N` when N > 0 | phase arms for measurement; kill switch |
+| Census | env `ECO_CONST_THUNK_REPORT=1` (hash-excluded): stderr census of classes, refusal reasons, static reference sites, and the bodies of `hashBase`, `branchFactor`, `shiftStep`, `bitMask` | Step 0's census and body dump in one |
+| 2B (evaluator), Mono rewrite (Q4), String thunks (Q2), `MonoIf` | out of scope | Part I |
+| Q5 (Pretty hex floats) | separate item; 2A copies only existing literals | Part I §5.5 |
+| Prologue | Step 3 makes the cgu IPO prologue **default-off** (`ECO_IPO_PROLOGUE=1` re-enables it) once Steps 1–2 pass; Step 4 decides between deleting it and keeping a bare GlobalDCE, using Step 3's count | §8 |
+
+## T1. Files
+
+| File | Change |
+|---|---|
+| `compiler/src/Compiler/Generate/MLIR/ConstThunks.elm` (new) | `build`, `report`, predicate, body printer |
+| `compiler/src/Compiler/Generate/MLIR/Context.elm` | field `constThunkBySpec : Dict Int Mono.MonoExpr`, `withConstThunkBySpec` |
+| `compiler/src/Compiler/Generate/MLIR/Backend.elm` | install the map on both streaming paths |
+| `compiler/src/Compiler/Generate/MLIR/Expr.elm` | `generateVarGlobal` arity-0 arm; `generateConstThunkRef` |
+| `compiler/src/Compiler/Eco/Config.elm`, `compiler/src/Builder/Eco/Config.elm` | `constThunks`, `constThunksReport`, env overrides, hash token |
+| `compiler/src/Builder/Generate.elm` | write the census to stderr |
+| `test/elm/src/ConstThunkFoldTest.elm` (new) | E2E value + `CHECK-MLIR-NOT` pin |
+| `runtime/src/codegen/EcoBackend.cpp` | Step 3: prologue default-off; Step 4 cleanup |
+| `design_docs/invariants.csv` | new CGEN_082 (CGEN_081 is taken by plan 03) |
+
+## T2. `ConstThunks.build`
+
+```elm
+build : Int -> Mono.SpecializationRegistry -> Array (Maybe Ctx.FuncSignature)
+     -> Array (Maybe Mono.MonoNode) -> Maybe Mono.MainInfo
+     -> Dict Int Int -> Dict Int String -> Dict Int Mono.MonoExpr
+```
+
+Inputs: the phase, the registry, `Ctx.buildSignatures nodes`, the nodes, `main`, and the
+null-cons and const-ctor maps (alias chains may end there).
+
+A spec S is a **candidate** iff:
+- `nodes[S] = Just (MonoDefine body _)`;
+- `signatures[S]` has no params;
+- S is not `main`.
+
+**Admissibility**, `admit S` with memoization and an in-progress set (a cycle refuses):
+- **Phase 1:** `body` is one of:
+  - `MonoLiteral` of `LInt`, `LFloat`, `LChar` or `LBool` (not `LStr`);
+  - `MonoUnit`;
+  - `MonoVarKernel _ _ home name _` with `Intrinsics.kernelIntrinsic home name [] type = Just
+    (ConstantFloat _)`;
+  - `MonoVarGlobal _ T _` where T has an arity-0 signature and T is in the null-cons map, the
+    const-ctor map, or admitted itself (recursively).
+- **Phase 2 adds** `closed body` with a node budget of 24, where `closed e` is:
+  - every phase-1 shape above;
+  - `MonoVarLocal n` with n bound by an enclosing `MonoLet` inside the body;
+  - `MonoLet (MonoDef n e) b` with `closed e` and `closed b`;
+  - `MonoCall _ f args _ _` with every arg closed, and f one of:
+    - `MonoVarKernel _ _ "Basics" "logBase" _` with two args;
+    - `MonoVarKernel _ _ home name _` with `kernelIntrinsic home name (map typeOf args)
+      resultType` = `Just i` and `pureIntrinsic i`;
+    - `MonoVarGlobal _ T _` where T's registry key is an elm/core global `(module, name)`, its
+      signature arity equals `List.length args`, and `kernelIntrinsic module name …` =
+      `Just i` with `pureIntrinsic i`.
+
+`pureIntrinsic`: `UnaryInt`, `BinaryInt` (except `eco.int.pow`, a runtime call), `UnaryFloat`,
+`BinaryFloat`, `UnaryBool`, `BinaryBool`, `IntToFloat`, `FloatToInt`, `IntComparison`,
+`FloatComparison`, `CharComparison`, `FloatClassify`, `ConstantFloat`, `CharToInt`,
+`CharFromInt`. Everything that allocates, touches strings, lists or arrays, or compares
+structurally is refused.
+
+**Why it is safe:** the substituted ops are the ones the thunk's own body emits, so the value,
+poison and guard semantics are identical to calling the thunk. If `gateIntrinsic` declines at
+emission, the same kernel or core call the thunk body would make is emitted inline: still
+correct, only unfolded. The whitelist guarantees no allocation, no `Debug`, no user call and
+termination.
+
+The result maps each admitted S to its body.
+
+## T3. Emission (`Expr.generateVarGlobal`, arity-0 arm)
+
+After the null-cons and const-ctor arms, and before the call:
+
+```elm
+Nothing -> case Dict.get specId ctx.constThunkBySpec of
+    Just body -> generateConstThunkRef ctx sig body
+    Nothing -> {- today's eco.call -}
+```
+
+`generateConstThunkRef ctx sig body`:
+1. `scoped` = ctx with the **name-keyed scope fields reset**: `varMappings`,
+   `currentLetSiblings`, `externBoxedVars`, `splitAggParams` and `decoderExprs` emptied;
+   `fwdRefdLetNames` set to `Set.empty`; `tailRecLetBody` and `sretTailLayout` set to
+   `Nothing`. The accumulators (`nextVar`, `nextOpId`, `definedSsaVars`, `pendingLambdas`,
+   `pendingFuncOps`, `kernelDecls`, `typeRegistry`) thread through. `definedSsaVars` is
+   **not** reset: the new SSA values are defined in the caller's function.
+2. `r = generateExpr scoped body`.
+3. `(coerceOps, v, c) = coerceResultToType r.ctx r.resultVar r.resultType (Types.monoTypeToAbi
+   sig.returnType)`.
+4. Return `ops = r.ops ++ coerceOps`, `resultVar = v`, `resultType` = the ABI type, and `ctx`
+   = `c` with the scope fields restored from the caller's ctx.
+
+`generateMlirModule` (invariant tests) installs no map, so it remains the baseline.
+
+## T4. Config and census
+
+- `Compiler/Eco/Config.elm`: `constThunks : Int` (default 2) and `constThunksReport : Bool`
+  (default False, not hashed). The JSON field `constThunks`. Hash token `cthk=<n>` appears
+  only when n > 0.
+- `Builder/Eco/Config.elm`: `ECO_CONST_THUNKS` (`0`/`off`, `1`, `2`/`on`) and
+  `ECO_CONST_THUNK_REPORT`.
+- **Census** (`ConstThunks.report`), printed by `Builder/Generate.elm` after GlobalOpt on the
+  graph that codegen sees:
+  - `[const-thunks] phase=P candidates=C admitted=A literal=… unit=… kconst=… alias=… closed=…
+    refused: str=… call=… let=… if=… size=… other=… sites=S`;
+  - one line per hot thunk (`hashBase`, `branchFactor`, `shiftStep`, `bitMask`) with a compact
+    S-expression of its body and its verdict.
+
+## T5. Tests
+
+- **`test/elm/src/ConstThunkFoldTest.elm`:**
+  - top-level thunks: an Int literal, a Float literal, a Char literal, a Bool literal, Unit, an
+    alias of the Int literal, `pi`, `shiftLike = ceiling (logBase 2 (toFloat branchLike))`,
+    `maskLike = Bitwise.shiftRightZfBy (32 - shiftLike) 0xFFFFFFFF`, and a let-binding thunk
+    `letLike = let base = 7 in base * 3`;
+  - a caller whose own let group binds `base` and `number` and uses `letLike` and `shiftLike` in
+    sibling definitions (the R2 pin);
+  - checks the printed values;
+  - `CHECK-MLIR-NOT` on `eco.call @<Module>_<thunk>` for each folded thunk;
+  - a `CHECK-MLIR` that the thunks' `func.func`s still exist (perf layer, CGEN_082).
+- `elm-tests` stays green (no unit test touches emission).
+
+## T6. Steps and gates
+
+Run each test suite once, tee'd; `ulimit -c 0`.
+
+1. **Build** the front end (`elm-tests`, then `check`: the JIT E2E compiles through the new
+   Stage 3 JS compiler). Gates: `elm-tests` green; `check` = previous count + the new test.
+2. **Census** on the self-compile (a native compiler built by the new front end, with
+   `ECO_CONST_THUNK_REPORT=1`): record the table that replaces §6. The four hot thunks must be
+   admitted, or the blocker named.
+3. **Bootstrap** (the front end changed): 4b and 8c fixed points, 9b OK. The default flip needs
+   the extra turn the bootstrap already contains (Stage 5 is the JS compiler with the change;
+   Stage 7a is the native one).
+4. **Perf arms**, `selfcompile.sh`, interleaved, N = 3, in one session:
+   - `base-ON`: today's `eco-compiler-boot`, saved before Step 3;
+   - `base-OFF`: the same `.mlir` lowered with `ECO_IPO_PROLOGUE=0`;
+   - `P1-OFF`: the compiler compiled by the new native compiler with `ECO_CONST_THUNKS=1`,
+     lowered OFF;
+   - `P2-OFF` and `P2-ON`: the new `eco-compiler-boot.mlir`, lowered OFF and ON.
+
+   Accept per §8: P1-OFF ≤ base-OFF − 1.2 s, and P2-OFF ≤ base-ON within noise. If P2-ON <
+   P2-OFF beyond noise, stop and attribute. The `sc-*-out.mlir` of P1-OFF, P2-OFF and P2-ON must
+   be byte-identical to each other, and so must base-ON and base-OFF.
+5. **Step 3, prologue default-off** (`ECO_IPO_PROLOGUE=1` restores it). Gates:
+   - the lowering of `eco-compiler-boot.mlir` with and without the prologue: wall time, plus
+     counts of functions and instructions at externalize + serialize (`ECO_IPO_COUNT=1`);
+   - bootstrap fixed point;
+   - `run-aot-e2e`;
+   - the recursive tax (P2-OFF vs P2-ON) within 3 %.
+
+   If the prologue's GlobalDCE removes a material share (> 1 % of functions), keep a bare
+   GlobalDCE.
+6. **Step 4, cleanup:** delete `runCheapModuleIPO`, or reduce it to the bare GlobalDCE, and
+   delete the diagnostic. Update the master plan's TL row and the research §5 verdict.
+
+## T7. Invariant text
+
+**CGEN_082 (new):** constant-thunk folding is a codegen perf layer. `ConstThunks.build`
+admits arity-0 `MonoDefine` specs whose body is:
+- a literal (not String), Unit, a kernel float constant, or an alias chain ending at one of
+  those or at a null-cons / `Nothing` constant (phase 1);
+- or a closed body of those plus lets and saturated pure arithmetic intrinsics, including
+  kernel `logBase`, within 24 nodes (phase 2A).
+
+`generateVarGlobal` emits the thunk's own body at the reference under a fresh lexical scope
+(name-keyed scope fields reset, accumulators threaded, `definedSsaVars` kept) and coerces to
+the thunk's ABI. The thunk's `func.func` is unchanged and still returns the same value for any
+path not routed through the map. `main` is never folded.
+
+
+## Implementation results (2026-10-02)
+
+T1–T7 were built as specified. Step 4 (cleanup) was done in the same series, since 03 had
+already landed.
+
+**Correction to the T-preamble:** `shiftStep`'s final Mono body **does** bind lets. The census
+shows `(K.Basics.ceiling (let mono_inline_315 2 (let mono_inline_316 …)))`: the Mono inliner
+inlined `logBase`'s Elm body and let-bound its arguments. So the fresh-lexical-scope rule (T3)
+is load-bearing on the hottest thunk, not only a precaution. `ConstThunkFoldTest`'s
+`base`/`number` sibling pin covers it.
+
+**Census (self-compile, `ECO_CONST_THUNK_REPORT=1`):**
+- 1,243 arity-0 candidates; **50 admitted**: literal 45, alias 2, closed 3.
+- Refused: String 62, call 698, let 278, if 8, alias target 3, other 144.
+- 1,039 static reference sites.
+- All five hot thunks are admitted: `hashBase` 67108864, `branchFactor` 32, `wordSize` 32,
+  `shiftStep` closed, `bitMask` closed
+  (`(K.Bitwise.shiftRightZfBy (K.Basics.sub 32 @shiftStep) 4294967295)`).
+- The compiler's own `.mlir` grows 0.44 % (13.25 → 13.31 MB) from the substituted bodies.
+
+**Gates:**
+
+| Gate | Result |
+|---|---|
+| `elm-tests` | 13,566 passed / 12 failed, the long-standing baseline (POST_010 / TYPE_007 / golden-fingerprint type-checker tests, untouched) |
+| `ConstThunkFoldTest` discrimination | forced recompiles: `ECO_CONST_THUNKS=0` fails on `intLit` (every thunk called); `=1` fails on `shiftLike` (closed bodies still called); `=2` passes (only `compute`/`main` remain called) |
+| `check` (all three backend validate switches) | 2028 passed / 0 failed (+1 new test); re-run after the prologue deletion: 2028 / 0 |
+| `run-aot-e2e` | 900 / 902; the 2 failures are the known FlagsRecordTest and PortEchoTest |
+| Bootstrap with the 04 codegen (prologue still on) | 4b and 8c fixed points, 9a and 9b OK; Stage 5 7:09 |
+| Self-compile output determinism | the census run's output == the bootstrap's `eco-compiler-boot.mlir`; all 9 folding-arm self-compile outputs are byte-identical to it, and all 6 base-arm outputs are identical to each other |
+| Bootstrap without the prologue | 8c fixed point, 9a and 9b OK; Stage 7b (backend lowering) **39.55 s** (was 44.86 s with the prologue); Stage 7a 1:02.13 |
+
+**Perf arms** (`selfcompile.sh`, interleaved, N = 3, seconds):
+
+| Arm | r1 | r2 | r3 | Median |
+|---|---|---|---|---|
+| base-ON (pre-04 compiler, prologue on) | 108.70 | 108.25 | 106.48 | 108.25 |
+| base-OFF | 110.31 | 108.73 | 109.21 | 109.21 |
+| P1-OFF | 107.43 | 107.76 | 107.50 | **107.50** |
+| P2-OFF | 108.11 | 107.62 | 108.49 | **108.11** |
+| P2-ON | 107.56 | 107.68 | 107.63 | 107.63 |
+
+- **Step 1** (P1-OFF ≤ base-OFF − 1.2 s): −1.71 s. **PASS.**
+- **Step 2** (P2-OFF ≤ base-ON within noise): 108.11 ≤ 108.25. **PASS.**
+- **Attribution:** P2-ON − P2-OFF = −0.48 s (0.44 %), inside the 1.3 % band. Nothing else in
+  the prologue needs attributing.
+- **Recursive tax:** within 3 %. **PASS.**
+- **Honest note:** phase 2A shows no measurable gain over phase 1 here (107.50 vs 108.11,
+  overlapping ranges), where SP5's LLVM emulation predicted about 1.3 s. 2A ships because it
+  passes its gate, deletes the `shiftStep`/`bitMask` calls and costs nothing measurable.
+
+**Step 3, the prologue's GlobalDCE** (`ECO_IPO_COUNT`, P2 `.mlir`): with the prologue, 73,568
+functions and 6,881,763 instructions reach the split; without it, 73,602 and 6,899,750
+(+0.05 % / +0.26 %). That is far below the 1 % threshold, so **no bare GlobalDCE was kept**.
+
+**Step 4:**
+- `runCheapModuleIPO` and the `ECO_IPO_PROLOGUE` diagnostic are deleted. The cgu and dev tiers
+  run no serial whole-module IPO.
+- The final binary lowers `p2.mlir` to an ELF byte-identical to the measured P2-OFF arm.
+- Self-compile lowering: the LLVM backend phase drops from 27.05 s to **20.77 s**. The sum of
+  top-level phases goes from about 43.4 s to about 37.2 s.
+- Master plan TL row/M5 and the research §5 verdict are updated.
+
+**Not done (out of scope, recorded):** 2B, the Mono rewrite (Q4), String thunks (Q2), `MonoIf`
+bodies, and the Pretty hex-float fix (Q5, a separate item).
 
 ## Adversarial review (2026-10-02)
 

@@ -398,6 +398,16 @@ applyEnvOverrides cfg =
                     |> Task.map (\veVal -> applyValueEqOverride veVal cfg33)
             )
         |> Task.andThen
+            (\cfg33b ->
+                (Utils.envLookupEnv "ECO_CONST_THUNKS" |> Task.mapError never)
+                    |> Task.map (\ctVal -> applyConstThunksOverride ctVal cfg33b)
+            )
+        |> Task.andThen
+            (\cfg33c ->
+                (Utils.envLookupEnv "ECO_CONST_THUNK_REPORT" |> Task.mapError never)
+                    |> Task.map (\crVal -> applyConstThunksReportOverride crVal cfg33c)
+            )
+        |> Task.andThen
             (\cfgKgcl ->
                 (Utils.envLookupEnv "ECO_KERNEL_GCLEAF_EMIT" |> Task.mapError never)
                     |> Task.map (\kgVal -> applyKernelGcLeafEmitOverride kgVal cfgKgcl)
@@ -739,6 +749,52 @@ applyKernelGcLeafEmitOverride maybeVal cfg =
 
             else
                 cfg
+
+
+{-| `ECO_CONST_THUNKS=0|1|2` (CGEN_082, plans/mlir-split-backend-04-constant-thunks.md):
+constant-thunk folding phase. `0`/`off` disables, `1` folds literal / Unit /
+kernel-constant / alias-chain thunks, `2`/`on` (the default) also closed
+pure-arithmetic bodies. Artifact-affecting (hash token `cthk=N`).
+-}
+applyConstThunksOverride : Maybe String -> EcoConfig -> EcoConfig
+applyConstThunksOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+            in
+            if t == "0" || t == "off" then
+                { cfg | constThunks = 0 }
+
+            else if t == "1" then
+                { cfg | constThunks = 1 }
+
+            else if t == "2" || t == "on" || t == "true" || t == "yes" then
+                { cfg | constThunks = 2 }
+
+            else
+                cfg
+
+
+{-| `ECO_CONST_THUNK_REPORT=1|true|yes|on`: print the constant-thunk census
+(`ConstThunks.report`) on stderr. Output-only, not hashed.
+-}
+applyConstThunksReportOverride : Maybe String -> EcoConfig -> EcoConfig
+applyConstThunksReportOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+            in
+            { cfg | constThunksReport = t == "1" || t == "true" || t == "yes" || t == "on" }
 
 
 {-| `ECO_VALUE_EQ=1|true|yes|on` (`0|off` disables): kernel-opt-03 -- lower boxed

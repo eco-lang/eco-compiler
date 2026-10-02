@@ -429,69 +429,6 @@ OptimizationLevel toOptLevel(CodeGenOptLevel lvl) {
     }
 }
 
-// Cheap whole-module interprocedural passes worth keeping even when the CGSCC
-// inliner is disabled: IPSCCP (constant propagation across calls — especially
-// valuable on monomorphized specializations), GlobalOpt, function-attrs
-// inference, and GlobalDCE. These are O(module) and capture the cross-module
-// facts the parallel per-partition pipeline can then exploit locally. Runs
-// once, serially, before the split. GC-safe: strictly fewer transforms than
-// today's whole-module -O2, all after RS4GC (design doc §5/§6.3).
-void runCheapModuleIPO(Module &m, bool withFunctionAttrs,
-                       eco::LoweringStats *stats) {
-    PassBuilder PB;
-    LoopAnalysisManager LAM;
-    FunctionAnalysisManager FAM;
-    CGSCCAnalysisManager CGAM;
-    ModuleAnalysisManager MAM;
-    PB.registerModuleAnalyses(MAM);
-    PB.registerCGSCCAnalyses(CGAM);
-    PB.registerFunctionAnalyses(FAM);
-    PB.registerLoopAnalyses(LAM);
-    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
-
-    // M4 (measured): the function-attrs pair — PostOrderFunctionAttrs (~0.90s)
-    // + ReversePostOrderFunctionAttrs (~0.008s) — was dropped from this serial
-    // prologue. Effect: cheap-IPO -~1.06s, wall -~1s, exe +~0.28%, produced
-    // functional output byte-identical. Cross-module function attrs are
-    // re-derived by the per-partition -O2 in --parallel-opt=cgu and by the
-    // whole-module -O2 in =none (cheap-IPO does not run there), so only
-    // throwaway --parallel-opt=dev binaries lose them — an acceptable dev-tier
-    // trade. Kept: IPSCCP (~2.0s — constant propagation on monomorphized code,
-    // the dominant and load-bearing pass), GlobalOpt (~0.87s — unused-global
-    // elimination / fn merging), and GlobalDCE (~0.20s — strips the dead code
-    // IPSCCP/GlobalOpt create, before the whole-module serialize every worker
-    // re-parses; the driver-side internalize+DCE is for a different, exe-only
-    // reachability pass, so this is not redundant on the split path).
-    // One pass manager per pass so each gets its own --lowering-stats timer
-    // (plan D1); the analysis managers are shared, so this is the same
-    // pipeline as a single MPM.
-    auto runTimed = [&](const char *name, auto pass) {
-        MaybeScope s(stats, name);
-        ModulePassManager MPM;
-        MPM.addPass(std::move(pass));
-        MPM.run(m, MAM);
-    };
-    // A1d: constant propagation only — no function specialization (the
-    // default IPSCCPOptions clone functions for constant arguments).
-    runTimed("    prologue: IPSCCP",
-             IPSCCPPass(IPSCCPOptions(/*AllowFuncSpec=*/false)));
-    // A1c: GlobalOpt dropped from the cgu prologue (3.6 s serial). Each
-    // partition's -O2 still runs GlobalOpt over what it owns.
-    runTimed("    prologue: GlobalDCE", GlobalDCEPass());
-    // cgu (plans/backend-lowering-optimization.md A1): restore the attrs pair.
-    // A partition sees its cross-partition callees only as declarations, so
-    // its own -O2 cannot infer readnone/nounwind/... for them; derive them
-    // here, whole-module, before the split copies the attributes onto every
-    // partition's declarations.
-    if (withFunctionAttrs) {
-        runTimed("    prologue: PostOrderFunctionAttrs",
-                 createModuleToPostOrderCGSCCPassAdaptor(
-                     PostOrderFunctionAttrsPass()));
-        runTimed("    prologue: ReversePostOrderFunctionAttrs",
-                 ReversePostOrderFunctionAttrsPass());
-    }
-}
-
 // ECO_OPT_PASS_TIMES=1: exclusive wall time per new-PM pass (and analysis),
 // summed over every partition worker, printed by eco-boot-native at exit.
 // Diagnostic only; nothing is registered when the variable is unset.
@@ -4448,27 +4385,16 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
         // 2 = phase 1+2 (closed scalar thunk bodies constant-folded too).
         if (const char *e = ::getenv("ECO_SPIKE_THUNK_FOLD"))
             spikeFoldThunks(m, std::atoi(e));
-        // ECO_IPO_PROLOGUE=0: diagnostic, skip the prologue under cgu too
-        // (measures the prologue's runtime value against the same tier).
-        static const bool prologueOff = [] {
-            const char *e = ::getenv("ECO_IPO_PROLOGUE");
-            return e && e[0] == '0' && e[1] == '\0';
-        }();
-        if (parallelOptEnabled &&
-            (job.parallelOpt == ParallelOpt::Dev || prologueOff)) {
-            // dev tier: no serial IPO prologue at all (~6 s of IPSCCP on the
-            // critical path). dev trades code quality for lowering speed, and
-            // the exe path's internalize + GlobalDCE has already run.
-        } else if (parallelOptEnabled) {
-            // Replace the whole-module -O2 with a cheap whole-module IPO
-            // prologue; the heavy per-function work moves into the parallel
-            // per-partition workers below (design doc §6.2/§6.3).
-            MaybeScope s(job.stats, "  cheap-IPO prologue (serial)");
-            // A1b: no attrs pair — under cgu, RS4GC runs per partition BEFORE opt,
-            // so nearly every call to an eco function is a gc.statepoint whose
-            // callee attributes opt cannot use; 1.95 s serial for ~nothing.
-            runCheapModuleIPO(m, /*withFunctionAttrs=*/false, job.stats);
-        } else if (job.optLevel != CodeGenOptLevel::None && job.tm) {
+        // No serial whole-module IPO under the parallel tiers (cgu, dev).
+        // The cheap-IPO prologue (IPSCCP + GlobalDCE, ~6 s serial) was
+        // retired by plan 04 (plans/mlir-split-backend-04-constant-thunks.md,
+        // CGEN_082): its measured value was propagating constant thunks'
+        // return values, which the front end now folds at every reference,
+        // deleting the calls too (self-compile 108.11 s without it vs 108.25 s
+        // with it before 04); its GlobalDCE removed 0.05 % of the functions,
+        // since closed-world reachability already ran (CGEN_081).
+        if (!parallelOptEnabled && job.optLevel != CodeGenOptLevel::None &&
+            job.tm) {
             MaybeScope s(job.stats, "  whole-module opt (serial)");
             if (auto err = runEcoModuleOpt(m, job.tm, job.optLevel))
                 return err;

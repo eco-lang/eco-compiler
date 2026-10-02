@@ -34,7 +34,7 @@ per-partition LLVM work as precomputed facts.
 | Internalize + GlobalDCE reachability | 0.4 s, plus 0.5 s prologue DCE | **Fully movable** | MLIR pass after `EcoTailConversions` |
 | Capacity-hoisting budgets (CGEN_074) | 0.95 s, plus 0.63 s `$cap` prepass | **Movable, identical results**; rewriting stays per partition | MLIR plan pass, results as function attributes |
 | gc-free leaf propagation (CGEN_072) | 0.29 s | **Movable with conditions**: a marker "may-GC" table, a per-partition check, and it must run after the cap plan | MLIR pass, results as `gc-leaf-function` passthrough |
-| IPSCCP prologue | 5.7 s | **Probably movable to the Elm front-end.** Its value is unmeasured; measure first | Front-end constant thunks + constant arguments |
+| IPSCCP prologue | 5.7 s | **Moved to the Elm front-end and deleted (2026-10-02, plan 04).** Constant thunks are folded at every reference (CGEN_082); self-compile 108.11 s without the prologue vs 108.25 s with it before | Front-end constant thunks (`ConstThunks.elm`) |
 
 ## 2. Internalize + GlobalDCE reachability
 
@@ -180,6 +180,12 @@ corruption. The split must copy the passthrough attribute onto declarations. The
 order-independent, so the result is deterministic.
 
 ## 5. The IPSCCP prologue
+
+> **DONE 2026-10-02** (`plans/mlir-split-backend-04-constant-thunks.md`, implementation
+> results). The front end folds 50 constant thunks at 1,039 reference sites (CGEN_082) and the
+> cgu prologue is deleted. Self-compile medians (N = 3, interleaved): today-with-prologue
+> 108.25 s, without-prologue-and-without-04 109.21 s, without-prologue-with-04 108.11 s. The
+> prologue's GlobalDCE removed 0.05 % of the functions, so no bare GlobalDCE was kept.
 
 > **MEASURED 2026-10-02** (`benchmarks/backend-opt-loop.md`, entry "IPO").
 > - Without the prologue the self-compile is **+1.8 %** slower (110.33 s against 108.40 s, N = 3

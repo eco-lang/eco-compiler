@@ -64,7 +64,7 @@ link
 | 01 | Cap-hoist plan (MLIR) | budget/coverage fixpoint | Seven LLVM-behaviour emulations; five unsound holes found in review; global attribute-equality premise; new `$cap` copy mechanism; small standalone payoff | 03's "local / address-taken" facts (see below) |
 | 02 | gc-leaf propagation (MLIR) | poison fixpoint | GC-critical; the 01/02 ordering hazard; the three-column marker table | 01 (coverage bit), the marker table |
 | 03 | Reachability (MLIR) | internalize + GlobalDCE (additive; the decl strip stays) | Loud failures only; byte identity not proven; the exe path is covered only by AOT E2E and the bootstrap | — |
-| 04 | Constant thunks (front-end) | IPSCCP prologue (5.7 s), measured worth 1.8 % | Phase 2 let-name leak (fix known); phase 1 is low risk | — |
+| 04 | Constant thunks (front-end) | IPSCCP prologue (5.7 s), measured worth 1.8 % — **DONE 2026-10-02: prologue deleted**, self-compile 108.11 s vs 108.25 s with it, LLVM backend phase −6 s | Phase 2 let-name leak (fix known); phase 1 is low risk | — |
 
 **Why riskiest first.** If 01 or 02 cannot be made sound, the MLIR-level split loses its
 purpose. Finding that out early is cheaper than finishing 03 and 04 for a split that never
@@ -201,7 +201,7 @@ this outline where they differ.
 | M2 | 01 in validate mode, plus the `EcoSymbolGraph` slice of 03 | zero coverage or budget differences against the LLVM Phases A–C; byte-identical ELF |
 | M3 | 02 marker table + per-partition/F11 checks shipped; propagation in validate mode | MLIR stamped set ⊆ LLVM stamped set; all gates |
 | M4 | 03 shipped (MLIR erase + internalize; strip kept) | same ELF symbol set; loop step FLAT or WIN |
-| M5 | 04 phases 1–2 shipped; cgu prologue dropped if the tax holds | self-compile ≤ today's with the prologue off (N = 3) |
+| M5 | 04 phases 1–2 shipped; cgu prologue dropped if the tax holds | self-compile ≤ today's with the prologue off (N = 3) — **MET 2026-10-02** (P2-OFF 108.11 s ≤ base-ON 108.25 s; prologue deleted) |
 | M6 | The split (§4) default-on for exe output | all gates; lowering wall ≤ about 30 s |
 
 ## 7. Out of scope

@@ -48,6 +48,8 @@ type alias EcoConfig =
     , valueEq : Bool -- kernel-opt-03: lower boxed structural equality to eco.value.eq (word-equality / embedded-constant / kernel-call diamond) instead of a boxed Elm_Kernel_Utils_equal call + eco.unbox. DEFAULT-ON since 2026-08-11 (all 1,452 self-compile Utils_equal/notEqual sites convert; wall -1.84%, inside the noise band so recorded FLAT); env kill switch ECO_VALUE_EQ=0; artifact-affecting (hash token "veq=1"). Bool == is NOT gated by this -- it is unconditionally better
     , kernelGcLeaf : Bool -- kernel-opt-08 (CGEN_072(f)/KERNEL_FACTS_001): stamp `eco.gc_leaf` on the func.func decl of every kernel whose KernelFacts row is gcLeafEligible, so the backend may attach gc-leaf-function and RS4GC skips statepointing its call sites. DEFAULT-ON since 2026-08-12 (10 of the 14 eligible kernels still have stubs to stamp -- the other 4 lost their call sites to kernel-opt-03/04/06; +2,223 de-statepointed sites, binary -287,952 B of which 99% is .llvm_stackmaps; wall FLAT at -1.25%); env kill switch ECO_KERNEL_GCLEAF_EMIT=0; artifact-affecting (hash token "kgcl=1"). The BACKEND kill switch ECO_KERNEL_GCLEAF=0 separately ignores an attr already in the .mlir
     , callPurityAttrs : Bool -- kernel-opt-12 (plans/kernel-opt-12-eco-call-purity-attr.md): stamp `eco.cse_safe` on direct eco.call ops whose KernelFacts row derives `droppable` (cseSafe AND totality == Total); licenses MLIR merge+DCE of those calls before EcoGCPrepare, which strips the attr. DEFAULT-ON since 2026-08-13 (Run R: byte-identical binary with CSE off, exe -16 KB and bit-identical counters with CSE on -- free either way); env kill switch ECO_CALL_PURITY=0; artifact-affecting (hash token "cpur=1")
+    , constThunks : Int -- plans/mlir-split-backend-04-constant-thunks.md (CGEN_082): fold references to arity-0 constant thunks at codegen — 0 off, 1 literal/Unit/kernel-constant/alias chains, 2 (DEFAULT) also closed pure-arithmetic bodies (2A). Replaces the cgu IPSCCP prologue's thunk-return propagation and deletes the calls. Env ECO_CONST_THUNKS=0|1|2; artifact-affecting (hash token "cthk=N" when N > 0)
+    , constThunksReport : Bool -- env ECO_CONST_THUNK_REPORT=1: constant-thunk census on stderr (ConstThunks.report); output-only, excluded from hash
     , cse : CseConfig
     , gc : GcConfig -- plans/frontend-heap-release.md §6.1: the explicit Eco.GC release before the native back end. EXCLUDED from `hash`: a collection never changes output. Env ECO_GC_PRE_LINK / ECO_GC_REPORT
     }
@@ -738,6 +740,8 @@ default =
     , stringOrderIntrinsic = True
     , valueEq = True
     , kernelGcLeaf = True
+    , constThunks = 2
+    , constThunksReport = False
     }
 
 
@@ -767,6 +771,8 @@ decoder =
         |> D.apply (D.optionalField "valueEq" D.bool default.valueEq)
         |> D.apply (D.optionalField "kernelGcLeaf" D.bool default.kernelGcLeaf)
         |> D.apply (D.optionalField "callPurityAttrs" D.bool default.callPurityAttrs)
+        |> D.apply (D.optionalField "constThunks" D.int default.constThunks)
+        |> D.apply (D.optionalField "constThunksReport" D.bool default.constThunksReport)
         |> D.apply (D.optionalField "cse" cseDecoder default.cse)
         |> D.apply (D.optionalField "gc" gcDecoder default.gc)
 
@@ -1389,6 +1395,13 @@ hash cfg =
             -- kernel-opt-03: eco.value.eq emission rewrites the generated MLIR.
             ++ (if cfg.valueEq then
                     [ "veq=1" ]
+
+                else
+                    []
+               )
+            -- CGEN_082: constant-thunk folding rewrites every reference site.
+            ++ (if cfg.constThunks > 0 then
+                    [ "cthk=" ++ String.fromInt cfg.constThunks ]
 
                 else
                     []

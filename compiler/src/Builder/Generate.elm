@@ -2367,6 +2367,8 @@ writeMonoMlirStreaming ecoConfig stats _ _ root maybeBuildDir maybeLocal details
     buildMonoGraph ecoConfig stats root maybeBuildDir maybeLocal details artifacts
         |> Task.andThen
             (\{ monoGraph, mode } ->
+                constThunkCensus ecoConfig monoGraph
+                    |> Task.andThen (\_ ->
                 FEStats.withPhaseLazy stats
                     FEStats.PhaseMlir
                     (\() ->
@@ -2375,7 +2377,7 @@ writeMonoMlirStreaming ecoConfig stats _ _ root maybeBuildDir maybeLocal details
                             MLIR.streamMlirToWriter ecoConfig mode monoGraph writeChunk
                         )
                         |> Task.mapError never
-                    )
+                    ))
             )
 
 
@@ -2398,13 +2400,26 @@ writeMonoMlirStreamingBytecode ecoConfig stats _ _ root maybeBuildDir maybeLocal
     buildMonoGraph ecoConfig stats root maybeBuildDir maybeLocal details artifacts
         |> Task.andThen
             (\{ monoGraph, mode } ->
+                constThunkCensus ecoConfig monoGraph
+                    |> Task.andThen (\_ ->
                 FEStats.withPhaseLazy stats
                     FEStats.PhaseMlir
                     (\() ->
                         MLIR.streamMlirBytecode ecoConfig mode monoGraph target
                         |> Task.mapError never
-                    )
+                    ))
             )
+
+
+{-| CGEN\_082 census (`ECO_CONST_THUNK_REPORT=1`): stderr, before codegen.
+-}
+constThunkCensus : Config.EcoConfig -> Mono.MonoGraph -> Task x ()
+constThunkCensus ecoConfig monoGraph =
+    if ecoConfig.constThunksReport then
+        Task.io (System.IO.writeLn System.IO.stderr (MLIR.constThunkReport ecoConfig monoGraph))
+
+    else
+        Task.succeed ()
 
 
 addRootTypedGraph : Build.Root -> TOpt.GlobalGraph Name -> TOpt.GlobalGraph Name
