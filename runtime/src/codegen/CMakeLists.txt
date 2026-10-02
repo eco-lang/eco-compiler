@@ -376,6 +376,7 @@ add_mlir_library(EcoPasses
     Passes/EcoTailConversions.cpp
     Passes/EcoCapHoistCore.cpp
     Passes/EcoCapHoistPlan.cpp
+    Passes/EcoGcFreePropagation.cpp
     Passes/UndefinedFunction.cpp
     Passes/CheckEcoClosureCaptures.cpp
     # GC preparation pass (root sets, allocation grouping)

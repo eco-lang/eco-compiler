@@ -169,7 +169,7 @@ void EcoCapHoistPlanPass::runOnOperation() {
     };
 
     // The marker table's value-eq row depends on module content.
-    bool valueEqLeaf = envOn("ECO_VALUE_EQ_GCLEAF");
+    bool valueEqLeaf = valueEqGcLeafEnv();
     {
         int ue = lookup(StringAttr::get(ctx, "Elm_Kernel_Utils_equal"));
         if (ue >= 0 && isGcLeaf(nodes[ue].op))

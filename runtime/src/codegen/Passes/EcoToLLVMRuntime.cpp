@@ -936,8 +936,12 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateUtilsEqual(OpBuilder &builder) const {
     //
     // gc-leaf is the ONLY attribute this decl may carry: it takes !eco.value, so
     // memory(*)/speculatable/willreturn are FORBIDDEN pre-RS4GC (REP_LLVM_002).
+    //
+    // Routed through kernel-opt-08's switch (CGEN_072(f)) like every other
+    // KernelFacts row, so ECO_KERNEL_GCLEAF=0 unstamps it too (plan 02 Q0.1).
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, HPTR_TY});
-    return getOrCreateFunc(builder, "Elm_Kernel_Utils_equal", funcTy, /*gcLeaf=*/true);
+    return getOrCreateFunc(builder, "Elm_Kernel_Utils_equal", funcTy,
+                           /*gcLeaf=*/kernelGcLeafEnabled());
 }
 
 // eco.value.eq marker: __eco_value_eq(a: hptr, b: hptr) -> i1. DECLARE-ONLY --

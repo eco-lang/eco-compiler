@@ -72,6 +72,49 @@ inline Hoist hoistView(llvm::StringRef callee, bool valueEqLeaf) {
     return Hoist::FromDecl;
 }
 
+// Final view (plan 02 §5.1 / Part II Q3): may a call to `callee` reach a GC
+// once every pre-RS4GC expansion has run? Read by EcoGcFreePropagation.
+//   FromDecl      - not a marker: the declaration's gc-leaf / libm / intrinsic
+//   Leaf          - the expansion emits leaf-only code
+//   Poison        - the expansion emits a call that can GC (or an indirect call)
+//   UnlessCovered - leaf only in an eco-cap-covered function (unchecked bump)
+//   ValueEq       - leaf iff the planned value-eq predicate `veq` holds
+enum class Final { FromDecl, Leaf, Poison, UnlessCovered, ValueEq };
+
+inline bool isMarkerName(llvm::StringRef c) { return c.starts_with("__eco_"); }
+
+inline Final finalView(llvm::StringRef c) {
+    if (c == "__eco_alloc_inline")
+        return Final::UnlessCovered;
+    if (c == "__eco_list_tail_inline" || c == "__eco_sat_begin" ||
+        c == "__eco_sat_end")
+        return Final::Poison;
+    if (c == "__eco_value_eq")
+        return Final::ValueEq;
+    if (c == "__eco_resolve_fwd" || c == "__eco_get_tag_inline" ||
+        c == "__eco_list_head_inline" || c == "__eco_string_len_inline" ||
+        c == "__eco_slot_to_hptr" || c == "__eco_hptr_to_slot" ||
+        isCursorMarker(c) || isScratchHelper(c))
+        return Final::Leaf;
+    return Final::FromDecl;
+}
+
+// Expansion-callee column: what a declaration that a pre-RS4GC expansion
+// calls must carry. -1 = no row, 0 = must NOT be gc-leaf, 1 = must be gc-leaf.
+// Checked against the module's declarations (EcoBackend.cpp checkMarkerDecls).
+inline int expansionCalleeLeaf(llvm::StringRef c, bool veq) {
+    if (c == "eco_list_tail_hybrid" || c == "eco_alloc_inline_slow" ||
+        c == "eco_ensure_nursery_slow")
+        return 0;
+    if (c == "eco_list_head_hybrid" || c == "__eco_resolve_fwd" ||
+        c == "eco_follow_forward" || c == "__eco_slot_to_hptr" ||
+        c == "eco_bump_state" || isScratchHelper(c))
+        return 1;
+    if (c == "Elm_Kernel_Utils_equal")
+        return veq ? 1 : 0;
+    return -1;
+}
+
 // R1 gap (plan 01 §3, plan 02 F11): a declaration may carry gc-leaf without
 // any eco-cap-* fact only if it is a runtime / kernel / intrinsic / libm
 // name. A generated function whose copied declaration lost its eco-cap facts

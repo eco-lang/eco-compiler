@@ -71,6 +71,65 @@ bool capHoistFoldOwnMarkers() {
     return on;
 }
 
+bool valueEqGcLeafEnv() {
+    static const bool on = [] {
+        const char *e = ::getenv("ECO_VALUE_EQ_GCLEAF");
+        return e && e[0] == '1' && e[1] == '\0';
+    }();
+    return on;
+}
+
+bool gcFreeMlirEnabled() {
+    static const bool on = [] {
+        const char *e = ::getenv("ECO_GCFREE_MLIR");
+        return !(e && e[0] == '0' && e[1] == '\0');
+    }();
+    return on;
+}
+
+bool gcFreeValidateEnabled() {
+    static const bool on = [] {
+        const char *e = ::getenv("ECO_GCFREE_VALIDATE");
+        return e && *e && !(e[0] == '0' && e[1] == '\0');
+    }();
+    return on;
+}
+
+namespace gcfree {
+
+std::string encodeStamp(const Stamp &s) {
+    return std::string("v1;veq=") + (s.valueEqLeaf ? "1" : "0") +
+           ";cov=" + (s.covered ? "1" : "0");
+}
+
+std::optional<Stamp> parseStamp(llvm::StringRef s) {
+    llvm::SmallVector<llvm::StringRef, 4> parts;
+    s.split(parts, ';');
+    if (parts.empty() || parts[0] != "v1")
+        return std::nullopt;
+    Stamp st;
+    bool haveVeq = false, haveCov = false;
+    for (llvm::StringRef part : llvm::ArrayRef(parts).drop_front()) {
+        auto [k, v] = part.split('=');
+        if (v != "0" && v != "1")
+            return std::nullopt;
+        if (k == "veq") {
+            st.valueEqLeaf = v == "1";
+            haveVeq = true;
+        } else if (k == "cov") {
+            st.covered = v == "1";
+            haveCov = true;
+        } else {
+            return std::nullopt;
+        }
+    }
+    if (!haveVeq || !haveCov)
+        return std::nullopt;
+    return st;
+}
+
+} // namespace gcfree
+
 namespace caphoist {
 
 void solve(std::vector<Node> &nodes, uint64_t K) {

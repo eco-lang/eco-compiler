@@ -187,6 +187,10 @@ void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // every call the pipeline creates.
     pm.addPass(eco::createEcoCapHoistPlanPass(opts.capClosedWorld,
                                               opts.capRoots));
+    // GC-free leaf stamps (CGEN_072): reads eco-cap-covered. MUST stay the
+    // last pass that changes llvm-dialect bodies (plan 02 O8) — a later
+    // rewrite could invalidate a stamp that no per-partition check sees.
+    pm.addPass(eco::createEcoGcFreePropagationPass());
 }
 
 } // namespace eco

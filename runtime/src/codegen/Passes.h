@@ -153,6 +153,14 @@ std::unique_ptr<mlir::Pass> createEcoTailConversionsPass();
 std::unique_ptr<mlir::Pass>
 createEcoCapHoistPlanPass(bool closedWorld, std::vector<std::string> roots);
 
+/// GC-free leaf propagation on the final llvm-dialect module (CGEN_072,
+/// plans/mlir-split-backend-02-gc-leaf-propagation.md): stamps passthrough
+/// "gc-leaf-function" on every definition that cannot reach a GC once the
+/// backend expands its markers, and records the eco-gcfree-plan module flag.
+/// Reads eco-cap-covered, so it runs after createEcoCapHoistPlanPass, and it
+/// MUST be the last pass that changes llvm-dialect bodies.
+std::unique_ptr<mlir::Pass> createEcoGcFreePropagationPass();
+
 //===----------------------------------------------------------------------===//
 // Pattern Population
 //===----------------------------------------------------------------------===//

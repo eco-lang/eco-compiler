@@ -40,6 +40,25 @@ unsigned capHoistMaxBytes();
 // default on).
 bool capHoistFoldOwnMarkers();
 
+// ECO_VALUE_EQ_GCLEAF=1: stamp Elm_Kernel_Utils_equal gc-leaf even when the
+// module did not keep its MLIR declaration (value-eq arm 3, plan 02 O5).
+bool valueEqGcLeafEnv();
+// ECO_GCFREE_MLIR (plan 02): unset/other = the MLIR pass stamps (default),
+// "0" = the LLVM fixpoint stays the producer.
+bool gcFreeMlirEnabled();
+// ECO_GCFREE_VALIDATE=1: run the LLVM fixpoint as a twin of the MLIR stamps.
+bool gcFreeValidateEnabled();
+
+namespace gcfree {
+inline constexpr const char *kPlanFlag = "eco-gcfree-plan"; // module flag
+struct Stamp {
+    bool valueEqLeaf = false; // veq
+    bool covered = false;     // eco-cap-covered was read (cap plan present)
+};
+std::string encodeStamp(const Stamp &s);
+std::optional<Stamp> parseStamp(llvm::StringRef s);
+} // namespace gcfree
+
 namespace caphoist {
 
 enum class Reason : uint8_t { None, Loop, Cycle, Budget, Other };

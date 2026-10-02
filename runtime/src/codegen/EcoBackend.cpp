@@ -668,6 +668,60 @@ Error optimizePartitionModule(Module &m, TargetMachine *tm, ParallelOpt mode,
 //     through bitcode. Each partition emits a .llvm_stackmaps blob for its own
 //     functions; the linker concatenates them and StackMap::parse reads all
 //     blobs (multi-blob loop).
+// (X) join (plan 02 Q7, F5): a gc-leaf DECLARATION in one partition is only
+// as good as its owner's stamped DEFINITION in another; no per-partition check
+// can see that link. Each worker reports after its RS4GC; the driver joins.
+struct GcLeafPartitionReport {
+    std::vector<std::string> stampedDefs, allDefs, leafDecls;
+};
+
+static void collectGcLeafReport(const Module &m, GcLeafPartitionReport &r) {
+    if (gcFreeLeafMode() != GcFreeMode::Stamp)
+        return;
+    for (const Function &f : m) {
+        const bool leaf = f.hasFnAttribute("gc-leaf-function");
+        if (f.isDeclaration()) {
+            if (leaf)
+                r.leafDecls.push_back(f.getName().str());
+            continue;
+        }
+        r.allDefs.push_back(f.getName().str());
+        if (leaf)
+            r.stampedDefs.push_back(f.getName().str());
+    }
+}
+
+static Error checkCrossPartitionGcLeaf(
+    const std::vector<GcLeafPartitionReport> &reports) {
+    if (gcFreeLeafMode() != GcFreeMode::Stamp)
+        return Error::success();
+    llvm::StringSet<> defs, stamped;
+    for (const auto &r : reports) {
+        for (const auto &n : r.allDefs)
+            defs.insert(n);
+        for (const auto &n : r.stampedDefs)
+            stamped.insert(n);
+    }
+    unsigned decls = 0, checked = 0;
+    for (const auto &r : reports)
+        for (const auto &n : r.leafDecls) {
+            ++decls;
+            if (!defs.contains(n))
+                continue; // runtime / kernel declaration: trusted base
+            ++checked;
+            if (!stamped.contains(n))
+                return createStringError(
+                    std::errc::invalid_argument,
+                    "cross-partition gc-leaf declaration '%s' has an "
+                    "unstamped owner (CGEN_072 X)",
+                    n.c_str());
+        }
+    if (const char *e = ::getenv("ECO_GCFREE_PLAN_STATS"); e && *e && *e != '0')
+        errs() << "[gcfree-x] partitions=" << reports.size()
+               << " decls=" << decls << " checked=" << checked << "\n";
+    return Error::success();
+}
+
 Error emitObjectFilesSplit(Module &m, unsigned numPartitions,
                            const std::vector<std::string> &paths,
                            CodeGenOptLevel optLevel,
@@ -689,6 +743,7 @@ Error emitObjectFilesSplit(Module &m, unsigned numPartitions,
     std::vector<std::string> errs(numPartitions);
     std::vector<std::thread> threads;
     threads.reserve(numPartitions);
+    std::vector<GcLeafPartitionReport> gcReports(numPartitions);
 
     auto worker = [&, optLevel, perPartitionMode, devEmitCG, devOptO1](unsigned i) {
         LLVMContext ctx;
@@ -727,6 +782,7 @@ Error emitObjectFilesSplit(Module &m, unsigned numPartitions,
             MaybeScope s(stats, "  partition RS4GC (sum over workers)");
             runRS4GCAndMaybeFramePointers(*mod, *partitionRS4GC);
         }
+        collectGcLeafReport(*mod, gcReports[i]);
         // Parallel opt: optimize this partition on its own thread before
         // emission (the whole-module -O2 was skipped upstream).
         if (perPartitionMode != ParallelOpt::None) {
@@ -801,7 +857,7 @@ Error emitObjectFilesSplit(Module &m, unsigned numPartitions,
             if (!e.empty())
                 return createStringError(std::errc::io_error, "%s", e.c_str());
     }
-    return Error::success();
+    return checkCrossPartitionGcLeaf(gcReports);
 }
 
 // Stable, reproducible partition assignment for a symbol name: FNV-1a % N.
@@ -928,6 +984,7 @@ Error emitObjectFilesSplitLazy(Module &m, unsigned numPartitions,
     std::vector<std::string> errs(numPartitions);
     std::vector<std::thread> threads;
     threads.reserve(numPartitions);
+    std::vector<GcLeafPartitionReport> gcReports(numPartitions);
 
     for (unsigned i = 0; i < numPartitions; ++i) {
         threads.emplace_back([&, i, optLevel, perPartitionMode, devEmitCG, devOptO1] {
@@ -1009,6 +1066,7 @@ Error emitObjectFilesSplitLazy(Module &m, unsigned numPartitions,
                 MaybeScope s(stats, "  partition RS4GC (sum over workers)");
                 runRS4GCAndMaybeFramePointers(*mod, *partitionRS4GC);
             }
+            collectGcLeafReport(*mod, gcReports[i]);
             if (perPartitionMode != ParallelOpt::None) {
                 MaybeScope s(stats, "  partition opt (sum over workers)");
                 if (auto err = optimizePartitionModule(
@@ -1041,7 +1099,7 @@ Error emitObjectFilesSplitLazy(Module &m, unsigned numPartitions,
             if (!e.empty())
                 return createStringError(std::errc::io_error, "%s", e.c_str());
     }
-    return Error::success();
+    return checkCrossPartitionGcLeaf(gcReports);
 }
 
 // Decide how many object-emission partitions to use. This is the split policy
@@ -1115,9 +1173,41 @@ std::unique_ptr<TargetMachine> createEcoTargetMachine(Module &module,
     return std::unique_ptr<TargetMachine>(tm);
 }
 
+// Local check (plan 02 Q7, F6-F8): before RS4GC, in every flavour, every
+// stamped definition may only make calls RS4GC will not statepoint. This is
+// independent of hasGC(), so it also covers functions RS4GC never processes
+// (__eco_init_globals), where the post-RS4GC assert below is vacuous.
+static void checkStampedBodies(Module &m) {
+    TargetLibraryInfoImpl TLII(m.getTargetTriple());
+    TargetLibraryInfo TLI(TLII);
+    for (Function &f : m) {
+        if (f.isDeclaration() || !f.hasFnAttribute("gc-leaf-function"))
+            continue;
+        if (f.isInterposable() || f.hasAvailableExternallyLinkage())
+            report_fatal_error(Twine("[gcfree] stamped function '") +
+                               f.getName() +
+                               "' has interposable or available_externally "
+                               "linkage");
+        for (BasicBlock &bb : f)
+            for (Instruction &i : bb)
+                if (auto *cb = dyn_cast<CallBase>(&i))
+                    if (!llvm::callsGCLeafFunction(cb, TLI)) {
+                        const Function *c = cb->getCalledFunction();
+                        report_fatal_error(
+                            Twine("[gcfree] stamped function '") +
+                            f.getName() + "' calls '" +
+                            (c ? c->getName() : StringRef("<indirect>")) +
+                            "', which may GC");
+                    }
+    }
+}
+
 void runRS4GCAndMaybeFramePointers(Module &m, const RS4GCOptions &opts) {
     if (!opts.preDumpPath.empty())
         dumpIRTo(m, opts.preDumpPath, "pre-rs4gc");
+
+    if (gcFreeLeafMode() == GcFreeMode::Stamp)
+        checkStampedBodies(m);
 
     // RS4GC pipeline: inserts gc.statepoint/gc.relocate for all
     // GC-triggering calls in functions with gc "eco-gc".
@@ -2289,11 +2379,7 @@ static bool valueEqInlineEnabled() {  // ECO_VALUE_EQ_INLINE=0 -> bare call
 }
 
 static bool valueEqGcLeafEnabled() {  // ECO_VALUE_EQ_GCLEAF=1 -> stamp
-    static const bool on = [] {
-        const char *e = ::getenv("ECO_VALUE_EQ_GCLEAF");
-        return e && e[0] == '1' && e[1] == '\0';
-    }();
-    return on;
+    return valueEqGcLeafEnv(); // shared with the MLIR planners (plan 02 F10)
 }
 
 // Expand each `__eco_value_eq(a, b) -> i1` marker into the word-equality diamond
@@ -2316,7 +2402,11 @@ static bool valueEqGcLeafEnabled() {  // ECO_VALUE_EQ_GCLEAF=1 -> stamp
 // eventually landed the shipped default should be ECO_VALUE_EQ_INLINE=0 (the bare
 // call below). Nothing emits eco.value.eq today, so the default here is moot and
 // is left ON so the codegen fixture exercises the diamond.
-static void expandValueEqFastPath(Module &m) {
+// `planVeq`: the planned value-eq predicate (eco-gcfree-plan / eco-cap-plan
+// stamp). When it holds, the Utils_equal declaration is stamped even if this
+// module had to create it (plan 02 O5), so a module (or, later, a partition)
+// that lacks the MLIR declaration reaches the planner's answer.
+static void expandValueEqFastPath(Module &m, bool planVeq) {
     LLVMContext &ctx = m.getContext();
     Type *i1Ty = Type::getInt1Ty(ctx), *i64Ty = Type::getInt64Ty(ctx);
     PointerType *as1 = PointerType::get(ctx, 1);
@@ -2335,7 +2425,7 @@ static void expandValueEqFastPath(Module &m) {
     // need the stamp too. getFunction, NOT getOrInsertFunction: never conjure the
     // decl into a module that does not reference it.
     if (Function *eqFn = m.getFunction("Elm_Kernel_Utils_equal"))
-        if (valueEqGcLeafEnabled())
+        if (valueEqGcLeafEnabled() || planVeq)
             eqFn->addFnAttr("gc-leaf-function");  // NEVER memory(none)/speculatable
 
     if (!marker) return;  // pruned by EcoToLLVM.cpp when unused
@@ -2666,6 +2756,27 @@ static bool bodyIsGCCallFree(const Function &f) {
     return true;
 }
 
+// RS4GC's leaf predicate as the pre-stamp ANALYSES must read it (plan 02,
+// the E6 path). callsGCLeafFunction reads gc-leaf off the called OPERAND with
+// no type check, so once EcoGcFreePropagation has stamped definitions, a
+// type-mismatched (non-direct) call to a stamped GENERATED function reads as
+// leaf. Capacity hoisting and the gc-free twin must see such a call exactly
+// as before the stamps existed: not leaf. That is also the safe reading — a
+// GC-free function may still consume nursery headroom (it can call a
+// headroom breaker), so treating it as transparent inside a run would void
+// the run's guarantee. RS4GC itself keeps the literal predicate (sound: the
+// target cannot GC).
+static bool leafForAnalysis(const CallBase *cb, const TargetLibraryInfo &TLI) {
+    if (!cb->getCalledFunction())
+        if (auto *f = dyn_cast<Function>(
+                cb->getCalledOperand()->stripPointerCasts()))
+            if (!f->isDeclaration() ||
+                f->hasFnAttribute(caphoist::kAttrBudget) ||
+                f->hasFnAttribute(caphoist::kAttrTop))
+                return false;
+    return llvm::callsGCLeafFunction(cb, TLI);
+}
+
 // GC-free function propagation (plans/gc-free-function-propagation.md):
 // stamp gc-leaf-function on generated functions that provably cannot GC.
 // Runs once per module at the pre-RS4GC choke point; every RS4GC flavour
@@ -2683,7 +2794,15 @@ static bool bodyIsGCCallFree(const Function &f) {
 // inline-alloc diamond's slow edge (eco_alloc_inline_slow, deliberately
 // not gc-leaf), eco_gc_alloc_region_slow, the boxed eco_alloc_* family,
 // and kernel externs. There is no write barrier and no safepoint poll.
-static void propagateGcFreeLeafAttrs(Module &m, GcFreeMode mode) {
+//
+// Twin mode (`twinFree` non-null, plan 02 Q5): the validate oracle for the
+// MLIR producer. Nothing is stamped or reported; a call to a defined,
+// non-interposable callee is an edge BEFORE callsGCLeafFunction is consulted,
+// so the MLIR stamps already on definitions cannot make the twin agree
+// vacuously. The free set is returned in *twinFree.
+static void propagateGcFreeLeafAttrs(
+    Module &m, GcFreeMode mode,
+    DenseSet<const Function *> *twinFree = nullptr) {
     TargetLibraryInfoImpl TLII(m.getTargetTriple());
     TargetLibraryInfo TLI(TLII);
 
@@ -2713,7 +2832,14 @@ static void propagateGcFreeLeafAttrs(Module &m, GcFreeMode mode) {
                     poison = true;
                     break;
                 }
-                if (llvm::callsGCLeafFunction(cb, TLI))
+                if (twinFree) {
+                    Function *dc = cb->getCalledFunction();
+                    if (dc && !dc->isDeclaration() && !dc->isInterposable()) {
+                        callers[dc].insert(&f);
+                        continue;
+                    }
+                }
+                if (leafForAnalysis(cb, TLI))
                     continue; // RS4GC's own per-call-site predicate
                 Function *callee = cb->getCalledFunction();
                 if (callee && !callee->isDeclaration() &&
@@ -2739,6 +2865,13 @@ static void propagateGcFreeLeafAttrs(Module &m, GcFreeMode mode) {
         for (Function *caller : it->second)
             if (poisoned.insert(caller).second)
                 worklist.push_back(caller);
+    }
+
+    if (twinFree) {
+        for (Function &f : m)
+            if (!f.isDeclaration() && !poisoned.count(&f))
+                twinFree->insert(&f);
+        return;
     }
 
     // Census. numSites = direct call sites that will lose their statepoint;
@@ -2938,10 +3071,34 @@ static Expected<CapFact> readCapFact(const Function &f) {
     return cf;
 }
 
-static std::optional<std::string> capPlanFlag(const Module &m) {
-    if (auto *md = dyn_cast_or_null<MDString>(m.getModuleFlag(caphoist::kPlanFlag)))
+static std::optional<std::string> moduleFlagString(const Module &m,
+                                                   StringRef key) {
+    if (auto *md = dyn_cast_or_null<MDString>(m.getModuleFlag(key)))
         return md->getString().str();
     return std::nullopt;
+}
+
+static std::optional<std::string> capPlanFlag(const Module &m) {
+    return moduleFlagString(m, caphoist::kPlanFlag);
+}
+
+// Remove one string module flag (plan stamps are pass-local and must not
+// reach the object).
+static void stripModuleFlag(Module &m, StringRef key) {
+    NamedMDNode *flags = m.getModuleFlagsMetadata();
+    if (!flags || !m.getModuleFlag(key))
+        return;
+    SmallVector<MDNode *, 8> keep;
+    for (MDNode *op : flags->operands()) {
+        auto *k = op->getNumOperands() >= 2
+                      ? dyn_cast<MDString>(op->getOperand(1))
+                      : nullptr;
+        if (!k || k->getString() != key)
+            keep.push_back(op);
+    }
+    flags->clearOperands();
+    for (MDNode *op : keep)
+        flags->addOperand(op);
 }
 
 // Drop the plan's attributes and module flag once expandInlineAllocs has
@@ -2953,20 +3110,98 @@ static void stripCapPlan(Module &m) {
         f.removeFnAttr(caphoist::kAttrTop);
         f.removeFnAttr(caphoist::kAttrCovered);
     }
-    NamedMDNode *flags = m.getModuleFlagsMetadata();
-    if (!flags || !m.getModuleFlag(caphoist::kPlanFlag))
-        return;
-    SmallVector<MDNode *, 8> keep;
-    for (MDNode *op : flags->operands()) {
-        auto *key = op->getNumOperands() >= 2
-                        ? dyn_cast<MDString>(op->getOperand(1))
-                        : nullptr;
-        if (!key || key->getString() != caphoist::kPlanFlag)
-            keep.push_back(op);
+    stripModuleFlag(m, caphoist::kPlanFlag);
+}
+
+// The marker table's expansion-callee column (EcoMarkerFacts.h,
+// plan 02 Q3) checked against the module's DECLARATIONS: callsGCLeafFunction
+// on a direct call reduces to the callee's own attribute (Eco emits no
+// call-site gc-leaf), so this equals a per-call walk at O(#decls). `veq` is
+// the planned value-eq predicate; without a plan its row is not checked.
+static Error checkMarkerDecls(const Module &m, std::optional<bool> veq) {
+    for (const Function &f : m) {
+        if (!f.isDeclaration())
+            continue;
+        StringRef n = f.getName();
+        if (!veq && n == "Elm_Kernel_Utils_equal")
+            continue;
+        const int expect = markers::expansionCalleeLeaf(n, veq.value_or(false));
+        if (expect < 0)
+            continue;
+        if ((int)f.hasFnAttribute("gc-leaf-function") != expect)
+            return createStringError(
+                std::errc::invalid_argument,
+                "marker table disagrees with the expansion: declaration '%s' "
+                "is %sgc-leaf",
+                n.str().c_str(), expect ? "not " : "");
     }
-    flags->clearOperands();
-    for (MDNode *op : keep)
-        flags->addOperand(op);
+    return Error::success();
+}
+
+// Step 13 when EcoGcFreePropagation stamped the module (plan 02 Q5): the
+// stamps are already on the definitions, so this only checks, reports and
+// strips the plan flag.
+static Error finishGcFreePlan(Module &m) {
+    auto gcPlan = gcfree::parseStamp(*moduleFlagString(m, gcfree::kPlanFlag));
+    if (auto err = checkMarkerDecls(m, gcPlan->valueEqLeaf))
+        return err;
+
+    SmallVector<Function *, 64> stamped;
+    unsigned numDefined = 0;
+    for (Function &f : m) {
+        if (f.isDeclaration())
+            continue;
+        ++numDefined;
+        if (f.hasFnAttribute("gc-leaf-function"))
+            stamped.push_back(&f);
+    }
+
+    if (gcFreeValidateEnabled()) {
+        DenseSet<const Function *> twin;
+        propagateGcFreeLeafAttrs(m, GcFreeMode::Census, &twin);
+        DenseSet<const Function *> mlir(stamped.begin(), stamped.end());
+        unsigned mlirOnly = 0, llvmOnly = 0;
+        for (const Function *f : stamped)
+            if (!twin.count(f) && ++mlirOnly <= 20)
+                errs() << "[gcfree-validate] MLIR-only (UNSOUND) '"
+                       << f->getName() << "'\n";
+        for (const Function *f : twin)
+            if (!mlir.count(f) && ++llvmOnly <= 20)
+                errs() << "[gcfree-validate] LLVM-only '" << f->getName()
+                       << "'\n";
+        errs() << "[gcfree-validate] mlir=" << stamped.size()
+               << " llvm=" << twin.size() << " mlir_only=" << mlirOnly
+               << " llvm_only=" << llvmOnly << "\n";
+        if (mlirOnly)
+            return createStringError(
+                std::errc::invalid_argument,
+                "gc-free validate: %u MLIR-stamped functions can reach a GC",
+                mlirOnly);
+    }
+
+    if (const char *dump = ::getenv("ECO_GCFREE_LEAF_DUMP")) {
+        std::ofstream out(dump);
+        for (Function *f : stamped)
+            out << f->getName().str() << "\n";
+    }
+    if (envNamed("ECO_GCFREE_LEAF"))
+        errs() << "[gcfree] " << stamped.size() << "/" << numDefined
+               << " functions GC-free (mode=stamp, source=mlir)\n";
+    if (envNamed("ECO_CAP_GCLEAF_REPORT")) {
+        unsigned capTotal = 0, capLeaf = 0;
+        for (Function &f : m) {
+            if (f.isDeclaration() || !f.getName().ends_with("$cap"))
+                continue;
+            ++capTotal;
+            if (f.hasFnAttribute("gc-leaf-function"))
+                ++capLeaf;
+        }
+        errs() << "[cap-gcleaf] calleeGcLeaf{stamped=" << capLeaf
+               << " capClones=" << capTotal
+               << "} (population = all $cap clones; see EcoBackend note)\n";
+    }
+    stripModuleFlag(m, gcfree::kPlanFlag);
+    return Error::success();
 }
 
 static bool capHoistValidateEnabled() {
@@ -3034,10 +3269,12 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
         return planGiven && f && facts.count(f);
     };
 
-    if (!planGiven) {
-        // R2 mirror (02 O1): compute mode classifies a gc-leaf callee as
-        // transparent BEFORE testing "defined callee", which is only sound
-        // while no generated definition carries gc-leaf yet.
+    if (!planGiven && mode == CapHoistMode::On) {
+        // R2 mirror (02 O1): compute-mode Phase A is stamp-agnostic (it
+        // tests a generated defined callee BEFORE gc-leaf, plan 02 Q6), but
+        // the transform's Phase D still reads gc-leaf as transparent, which
+        // is only sound while no generated definition carries gc-leaf. The
+        // census (=c) never transforms, so stamped definitions are fine there.
         for (Function &f : m)
             if (!f.isDeclaration() && f.hasFnAttribute("gc-leaf-function") &&
                 !markers::isTrustedLeafDecl(f.getName()))
@@ -3046,7 +3283,7 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
                     "capacity hoisting: compute mode on a module whose "
                     "definition '%s' is already gc-leaf",
                     f.getName().str().c_str());
-    } else {
+    } else if (planGiven) {
         // R1 gap (02 F11): a declaration that is gc-leaf without eco-cap
         // facts must be a runtime/kernel name, or a generated callee whose
         // copied facts were lost would read as a transparent leaf.
@@ -3060,33 +3297,8 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
                     "without eco-cap facts",
                     f.getName().str().c_str());
         // P6.6: the marker table must agree with what the expansions emitted.
-        for (Function &f : m) {
-            for (BasicBlock &bb : f)
-                for (Instruction &i : bb) {
-                    auto *cb = dyn_cast<CallBase>(&i);
-                    Function *callee = cb ? cb->getCalledFunction() : nullptr;
-                    if (!callee)
-                        continue;
-                    StringRef n = callee->getName();
-                    int expect = -1; // -1 unchecked, 0 not leaf, 1 leaf
-                    if (n == "eco_list_tail_hybrid")
-                        expect = 0;
-                    else if (n == "eco_list_head_hybrid" ||
-                             n == "__eco_resolve_fwd" ||
-                             markers::isScratchHelper(n))
-                        expect = 1;
-                    else if (n == "Elm_Kernel_Utils_equal")
-                        expect = plan->valueEqLeaf ? 1 : 0;
-                    if (expect >= 0 &&
-                        (int)llvm::callsGCLeafFunction(cb, TLI) != expect)
-                        return createStringError(
-                            std::errc::invalid_argument,
-                            "capacity hoisting: marker table disagrees with "
-                            "the expansion: call to '%s' in '%s' is %sleaf",
-                            n.str().c_str(), f.getName().str().c_str(),
-                            expect ? "not " : "");
-                }
-        }
+        if (auto err = checkMarkerDecls(m, plan->valueEqLeaf))
+            return err;
     }
 
     // ---- Phase A: local scan -----------------------------------------
@@ -3168,7 +3380,19 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
                             fi.selfEdge = true;
                         continue;
                     }
-                    if (llvm::callsGCLeafFunction(cb, TLI))
+                    // Compute mode is stamp-agnostic (plan 02 Q6): a
+                    // generated defined callee is an edge BEFORE its gc-leaf
+                    // stamp is consulted. Unstamped, this is today's order
+                    // exactly (a defined callee is leaf only when stamped).
+                    if (!r1 && callee && !callee->isDeclaration() &&
+                        !callee->isInterposable() &&
+                        !markers::isTrustedLeafDecl(callee->getName())) {
+                        fi.callees.push_back({callee, blockInCycle});
+                        if (callee == &f)
+                            fi.selfEdge = true;
+                        continue;
+                    }
+                    if (leafForAnalysis(cb, TLI))
                         continue; // transparent
                     if (callee && !callee->isDeclaration() &&
                         !callee->isInterposable()) {
@@ -3478,7 +3702,7 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
                     flushRun();
                     continue;
                 }
-                if (llvm::callsGCLeafFunction(cb, TLI))
+                if (leafForAnalysis(cb, TLI))
                     continue; // transparent
                 if (spikeDump && callee && !callee->isDeclaration()) {
                     auto it = info.find(callee);
@@ -3528,7 +3752,7 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
                         (markerFn && callee == markerFn && ci && owns.count(ci)) ||
                         (callee && calleeCovered(callee) && ci && covs.count(ci)) ||
                         (!isHeadroomBreaker(callee) && !hasFacts(callee) &&
-                         llvm::callsGCLeafFunction(cb, TLI));
+                         leafForAnalysis(cb, TLI));
                     if (!ok)
                         report_fatal_error(
                             "applyCapacityHoisting: run in '" +
@@ -3685,7 +3909,7 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
                         if (covered.count(callee) || gcFree)
                             continue;
                     }
-                    if (llvm::callsGCLeafFunction(cb, TLI))
+                    if (leafForAnalysis(cb, TLI))
                         continue;
                     report_fatal_error(
                         "applyCapacityHoisting: covered function '" +
@@ -3940,6 +4164,39 @@ static void spikeFoldThunks(Module &m, int level) {
 
 Error runEcoBackend(Module &m, const EcoBackendJob &job,
                     EcoBackendResult *result) {
+    // Plan 02 (CGEN_072): did EcoGcFreePropagation stamp this module?
+    std::optional<gcfree::Stamp> gcPlan;
+    if (auto flag = moduleFlagString(m, gcfree::kPlanFlag)) {
+        gcPlan = gcfree::parseStamp(*flag);
+        if (!gcPlan)
+            return createStringError(std::errc::invalid_argument,
+                                     "malformed gc-free plan stamp '%s'",
+                                     flag->c_str());
+        if (gcFreeLeafMode() != GcFreeMode::Stamp)
+            return createStringError(
+                std::errc::invalid_argument,
+                "gc-free plan stamp without ECO_GCFREE_LEAF stamp mode");
+        auto capFlag = capPlanFlag(m);
+        if (gcPlan->covered && !capFlag)
+            return createStringError(
+                std::errc::invalid_argument,
+                "gc-free plan stamp says cov=1 but the module has no "
+                "capacity-hoisting plan");
+        if (capFlag) {
+            auto cs = caphoist::parsePlanStamp(*capFlag);
+            if (cs && cs->valueEqLeaf != gcPlan->valueEqLeaf)
+                return createStringError(
+                    std::errc::invalid_argument,
+                    "gc-free and capacity-hoisting plan stamps disagree on "
+                    "value-eq leafness");
+        }
+    }
+    bool planVeq = gcPlan && gcPlan->valueEqLeaf;
+    if (!gcPlan)
+        if (auto capFlag = capPlanFlag(m))
+            if (auto cs = caphoist::parsePlanStamp(*capFlag))
+                planVeq = cs->valueEqLeaf;
+
     // P2.5 R1b: expand get_tag markers FIRST (their heap arms emit
     // __eco_resolve_fwd calls the next expansion consumes).
     expandGetTagMarkers(m);
@@ -3954,7 +4211,7 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     // kernel-opt-03: eco.value.eq markers. Emits no __eco_resolve_fwd, but must
     // still precede RS4GC and propagateGcFreeLeafAttrs so arm 3 is seen as a call
     // to a gc-leaf declaration rather than an unknown marker.
-    expandValueEqFastPath(m);
+    expandValueEqFastPath(m, planVeq);
     // Scratch-stack helpers (chunked-list Tier-B templates): mark and the
     // pushes never GC-allocate, so exempt them from RS4GC statepointing.
     // eco_scratch_finish allocates and must statepoint normally.
@@ -4038,7 +4295,17 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     // flavour: serial, deferred, workers, single-partition inline).
     if (gcFreeLeafMode() != GcFreeMode::Off) {
         MaybeScope s(job.stats, "  gc-free leaf propagation (serial)");
-        propagateGcFreeLeafAttrs(m, gcFreeLeafMode());
+        if (gcPlan) {
+            // The MLIR stamps are the product (plan 02 Q5); the LLVM fixpoint
+            // only runs as their validate twin.
+            if (auto err = finishGcFreePlan(m))
+                return err;
+        } else {
+            propagateGcFreeLeafAttrs(m, gcFreeLeafMode());
+            if (gcFreeLeafMode() == GcFreeMode::Stamp)
+                if (auto err = checkMarkerDecls(m, std::nullopt))
+                    return err;
+        }
     }
 
     RS4GCOptions rs4gcOpts;
