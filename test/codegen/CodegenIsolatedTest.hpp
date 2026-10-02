@@ -238,6 +238,25 @@ inline void runSubprocessTest(const std::string& testPath, const std::string& co
                                const std::string& emitMode) {
     std::string ecocPath = getEcocPath();
     std::string cmd = ecocPath + " \"" + testPath + "\" -emit=" + emitMode;
+#ifndef _WIN32
+    // `// UNSETENV: NAME` runs ecoc without NAME — for fixtures that must not
+    // inherit a gate-wide setting (e.g. forged cap-hoist plans, which
+    // ECO_CAPHOIST_VALIDATE=1 would reject by design).
+    {
+        std::istringstream lines(content);
+        std::string line;
+        const std::string tag = "// UNSETENV:";
+        while (std::getline(lines, line)) {
+            auto pos = line.find(tag);
+            if (pos == std::string::npos)
+                continue;
+            std::istringstream names(line.substr(pos + tag.size()));
+            std::string name;
+            while (names >> name)
+                cmd = "env -u " + name + " " + cmd;
+        }
+    }
+#endif
 
     auto [exitCode, output] = executeCommand(cmd);
 

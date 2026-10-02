@@ -8,6 +8,8 @@
 #define ECO_PASSES_H
 
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace mlir {
 class Pass;
@@ -143,6 +145,13 @@ std::unique_ptr<mlir::Pass> createBFToLLVMPass();
 // its lowering would require module-level symbol insertion, which is what
 // forces the stock cf-to-llvm pass to be module-anchored).
 std::unique_ptr<mlir::Pass> createEcoTailConversionsPass();
+
+/// Capacity hoisting Phases A-C on llvm-dialect MLIR (CGEN_074,
+/// plans/mlir-split-backend-01-cap-hoist-plan.md P4). `closedWorld`: the output
+/// is an executable (or an object whose consumer references only `roots`), so
+/// every non-root definition is internalized by the backend.
+std::unique_ptr<mlir::Pass>
+createEcoCapHoistPlanPass(bool closedWorld, std::vector<std::string> roots);
 
 //===----------------------------------------------------------------------===//
 // Pattern Population

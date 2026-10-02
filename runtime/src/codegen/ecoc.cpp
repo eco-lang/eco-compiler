@@ -277,7 +277,7 @@ static int dumpLLVMIR(ModuleOp module) {
         job.needsFramePointerAttr = false;
         job.postRS4GCDumpPath = dumpRS4GCIR;
         if (auto err = eco::runEcoBackend(*llvmModule, job)) {
-            llvm::errs() << "RS4GC failed: " << err << "\n";
+            llvm::errs() << "RS4GC failed: " << llvm::toString(std::move(err)) << "\n";
             return 1;
         }
     }
@@ -286,7 +286,7 @@ static int dumpLLVMIR(ModuleOp module) {
     if (enableOpt) {
         auto optPipeline = makeOptimizingTransformer(3, 0, nullptr);
         if (auto err = optPipeline(llvmModule.get())) {
-            llvm::errs() << "Failed to optimize LLVM IR: " << err << "\n";
+            llvm::errs() << "Failed to optimize LLVM IR: " << llvm::toString(std::move(err)) << "\n";
             return 1;
         }
     }

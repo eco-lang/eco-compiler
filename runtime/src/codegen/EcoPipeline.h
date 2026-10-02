@@ -8,6 +8,9 @@
 #ifndef ECO_PIPELINE_H
 #define ECO_PIPELINE_H
 
+#include <string>
+#include <vector>
+
 namespace mlir {
 class PassManager;
 class MLIRContext;
@@ -30,7 +33,15 @@ void loadRequiredDialects(mlir::MLIRContext &context);
 
 /// Forward-compatible options struct. New flags are added here and
 /// default OFF so existing callers don't need to change.
-struct EcoPipelineOptions {};
+struct EcoPipelineOptions {
+    /// Capacity hoisting (CGEN_074): the output is closed-world: an
+    /// executable, or an object whose consumer references only `capRoots`
+    /// (bootstrap Stage 9 with --internalize-keep). Drives the MLIR plan's
+    /// eligibility; must match EcoBackendJob::capClosedWorld.
+    bool capClosedWorld = false;
+    /// MLIR symbol names that stay externally visible (`main`, not `eco_main`).
+    std::vector<std::string> capRoots;
+};
 
 /// Builds the Stage 1 pipeline: Eco -> Eco transformations.
 /// This includes:

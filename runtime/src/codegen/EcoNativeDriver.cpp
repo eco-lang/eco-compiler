@@ -85,7 +85,8 @@ OwningOpRef<ModuleOp> loadMLIRFromSourceMgr(MLIRContext &context,
     return module;
 }
 
-int runPipeline(ModuleOp module, eco::LoweringStats *stats) {
+int runPipeline(ModuleOp module, eco::LoweringStats *stats,
+                bool capClosedWorld) {
     PassManager pm(module->getName());
 
     // Skip applyPassManagerCLOptions — the library is invoked outside any
@@ -103,7 +104,13 @@ int runPipeline(ModuleOp module, eco::LoweringStats *stats) {
     if (stats)
         pm.addInstrumentation(stats->makePassInstrumentation());
 
+    // Capacity hoisting plan (CGEN_074): executables are closed-world with
+    // the two entry symbols eco_entry.cpp resolves; must match
+    // job.capClosedWorld below.
     eco::EcoPipelineOptions pipeOpts;
+    pipeOpts.capClosedWorld = capClosedWorld;
+    if (capClosedWorld)
+        pipeOpts.capRoots = {"main", "__eco_init_globals"};
     eco::buildEcoToLLVMPipeline(pm, pipeOpts);
 
     if (failed(pm.run(module)))
@@ -173,7 +180,10 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
         if (opts.stats)
             scope = std::make_unique<eco::LoweringStats::Scope>(
                 *opts.stats, "MLIR lowering pipeline");
-        if (runPipeline(*module, opts.stats) != 0)
+        const bool capClosedWorld = !pathEndsWith(outputPath, ".o") &&
+                                    !pathEndsWith(outputPath, ".so") &&
+                                    !pathEndsWith(outputPath, ".node");
+        if (runPipeline(*module, opts.stats, capClosedWorld) != 0)
             return 1;
     }
 
@@ -281,6 +291,7 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
         job.objectFilePath = objFile;
         job.splitCodegen = opts.splitCodegen;
         job.splitEligible = !emitObjOnly && !sharedLib;
+        job.capClosedWorld = !emitObjOnly && !sharedLib;
         job.parallelOpt = opts.parallelOpt == 1   ? eco::ParallelOpt::Dev
                           : opts.parallelOpt == 2 ? eco::ParallelOpt::Cgu
                                                   : eco::ParallelOpt::None;
@@ -289,7 +300,7 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
         job.devEmitCodeGenLevel = opts.devEmitCodeGenLevel;
         job.devOptO1 = opts.devOptO1;
         if (auto err = eco::runEcoBackend(*llvmModule, job, &backendResult)) {
-            llvm::errs() << "Error: backend pipeline failed: " << err << "\n";
+            llvm::errs() << "Error: backend pipeline failed: " << llvm::toString(std::move(err)) << "\n";
             llvm::sys::fs::remove(objFile);
             return 1;
         }

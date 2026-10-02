@@ -372,7 +372,8 @@ static OwningOpRef<ModuleOp> loadMLIR(MLIRContext &context,
     return module;
 }
 
-static int runPipeline(ModuleOp module, eco::LoweringStats &stats) {
+static int runPipeline(ModuleOp module, eco::LoweringStats &stats,
+                       const eco::EcoPipelineOptions &pipeOpts) {
     PassManager pm(module->getName());
 
     if (failed(applyPassManagerCLOptions(pm)))
@@ -391,7 +392,6 @@ static int runPipeline(ModuleOp module, eco::LoweringStats &stats) {
     // (including ones registered by buildEcoToLLVMPipeline) is observed.
     pm.addInstrumentation(stats.makePassInstrumentation());
 
-    eco::EcoPipelineOptions pipeOpts;
     eco::buildEcoToLLVMPipeline(pm, pipeOpts);
 
     if (failed(pm.run(module)))
@@ -459,6 +459,43 @@ static bool outputIsSharedLib(const std::string &outputPath) {
                outputPath.compare(outputPath.size() - n, n, suffix) == 0;
     };
     return endsWith(".so") || endsWith(".node");
+}
+
+// Capacity hoisting (CGEN_074, plans/mlir-split-backend-01-cap-hoist-plan.md
+// P5): is the output closed-world, and which MLIR symbols stay visible? Known
+// from the command line alone, so the MLIR plan can be computed before the
+// output-kind decision further down (which must agree: isExecutable /
+// --internalize-keep).
+static bool capOutputObjOnly(const std::string &output) {
+    return emitAction == EmitObj ||
+           (output.size() >= 2 &&
+            output.compare(output.size() - 2, 2, ".o") == 0);
+}
+static bool capClosedWorld(const std::string &output) {
+    if (emitAction != EmitExe && emitAction != EmitObj)
+        return false; // --emit=llvm / mlir: no internalization
+    const bool objOnly = capOutputObjOnly(output);
+    if (!objOnly)
+        return !outputIsSharedLib(output); // executable
+    return !internalizeKeep.empty();
+}
+static eco::EcoPipelineOptions capPipelineOptions(const std::string &output) {
+    eco::EcoPipelineOptions o;
+    o.capClosedWorld = capClosedWorld(output);
+    if (!o.capClosedWorld)
+        return o;
+    if (!capOutputObjOnly(output)) {
+        o.capRoots = {"main", "__eco_init_globals"};
+    } else {
+        llvm::SmallVector<llvm::StringRef> parts;
+        llvm::StringRef(internalizeKeep).split(parts, ',', -1, false);
+        for (llvm::StringRef k : parts) {
+            k = k.trim();
+            // eco-boot renames MLIR `main` to `eco_main` after translation.
+            o.capRoots.push_back(k == "eco_main" ? "main" : k.str());
+        }
+    }
+    return o;
 }
 
 static int linkExecutable(const std::string &objectFile,
@@ -713,7 +750,7 @@ int main(int argc, char **argv) {
     // Step 3: Run MLIR lowering pipeline (Eco -> LLVM dialect)
     {
         eco::LoweringStats::Scope scope(stats, "MLIR lowering pipeline");
-        if (runPipeline(*module, stats) != 0) {
+        if (runPipeline(*module, stats, capPipelineOptions(output)) != 0) {
             if (!tempMlirFile.empty())
                 llvm::sys::fs::remove(tempMlirFile);
             return 1;
@@ -766,7 +803,7 @@ int main(int argc, char **argv) {
             job.preRS4GCDumpPath = dumpPreRS4GCIR;
             job.postRS4GCDumpPath = dumpRS4GCIR;
             if (auto err = eco::runEcoBackend(*llvmModule, job)) {
-                llvm::errs() << "Error: RS4GC failed: " << err << "\n";
+                llvm::errs() << "Error: RS4GC failed: " << llvm::toString(std::move(err)) << "\n";
                 return 1;
             }
         }
@@ -775,7 +812,7 @@ int main(int argc, char **argv) {
             auto optPipeline = makeOptimizingTransformer(
                 optLevel, /*sizeLevel=*/0, /*targetMachine=*/tm.get());
             if (auto err = optPipeline(llvmModule.get())) {
-                llvm::errs() << "Error: LLVM optimization failed: " << err << "\n";
+                llvm::errs() << "Error: LLVM optimization failed: " << llvm::toString(std::move(err)) << "\n";
                 return 1;
             }
         }
@@ -874,6 +911,7 @@ int main(int argc, char **argv) {
         job.rs4gcAfterOpt = rs4gcAfterOpt;
         job.splitCodegen = splitCodegen;
         job.splitEligible = isExecutable || emitObjOnly;
+        job.capClosedWorld = capClosedWorld(output);
         job.parallelOpt = parallelOpt;
         job.stats = &stats;
         job.lazySplit = lazySplit;
@@ -881,7 +919,7 @@ int main(int argc, char **argv) {
         job.devOptO1 = devOptO1;
         job.objectFilePath = emitObjOnly ? objPartsBase : objFile;
         if (auto err = eco::runEcoBackend(*llvmModule, job, &backendResult)) {
-            llvm::errs() << "Error: backend pipeline failed: " << err << "\n";
+            llvm::errs() << "Error: backend pipeline failed: " << llvm::toString(std::move(err)) << "\n";
             if (!tempObjFile.empty())
                 llvm::sys::fs::remove(tempObjFile);
             for (auto &f : backendResult.ownedTempFiles)

@@ -1,7 +1,10 @@
 # MLIR split backend 01: capacity-hoisting plan on the MLIR side
 
-**Master plan:** `plans/mlir-split-backend.md`. **Status:** feasibility-deepened outline,
-2026-10-02. Nothing is built.
+**Master plan:** `plans/mlir-split-backend.md`. **Status:** IMPLEMENTED 2026-10-02 (I1–I8; S6
+split-time attribute copying deferred to the master plan's split milestone; results in
+"Implementation results" at the end of Part II). Specified 2026-10-02. Part I (§0–§11 plus its adversarial review) is the feasibility analysis; Part II
+is the build specification. Plan 00 (SP2) measured an **exact** MLIR/LLVM match on the
+self-compile (75,775 functions, once K = 512).
 
 **Research:** `design_docs/mlir-level-partitioning-whole-program-steps.md` §3.
 **Background:** `plans/capacity-check-hoisting.md` (CGEN_074), `plans/gc-free-function-propagation.md`
@@ -504,6 +507,344 @@ plan-given step.
   would be fewer ensures, but a deliberate output change. Out of scope here.
 - **Q6.** Does `passthrough` with key=value pairs survive translation onto *declarations*?
   gc-leaf (a bare string) does; key=value needs a one-line fixture in S3.
+
+# Part II: implementation specification
+
+Part II is what an engineer implements. It resolves every open item in Part I that blocks
+building, using the plan-00 measurements. Where Part I and Part II disagree, Part II wins.
+
+## P0. Scope
+
+**In scope**, all buildable on today's single-module pipeline, where they must produce a
+byte-identical ELF:
+- I1, the shared core;
+- I2, the marker table;
+- I3, the MLIR planning pass;
+- I4, driver plumbing;
+- I5, plan-given mode in the backend, with every Part I check;
+- I6, validate mode;
+- I7, the fixtures and gates;
+- I8, the invariant text.
+
+**Out of scope here:**
+- **S6** (split-time attribute copying, `$cap` copies and the equality check) is built as part
+  of the master plan's split milestone (M6). No split exists yet, so there is nothing to call
+  it from. I5 already makes every per-function check read callee facts from attributes,
+  including on declarations, so S6 only adds the copying and the equality check.
+- **S8 / R3′** is an optional output change, judged separately.
+
+**Facts from plan 00** that settle open questions:
+- **Q1:** translation keeps every block (0 mismatches). There are no unreachable blocks today.
+- **TLI-only leaf calls are 0,** so the TLI arm needs no emulation beyond a small libm name list.
+- **The match is exact** when the MLIR side uses exe-closed-world eligibility, with
+  address-taken counted from **reachable** referrers only, and K = 512.
+- **Q3:** sat markers in the hoisting view are leaf (exact match). The final view is 02's
+  concern.
+
+## P1. File and module layout
+
+| File | New or changed | Library | Contents |
+|---|---|---|---|
+| `runtime/src/codegen/Passes/EcoCapHoistCore.h/.cpp` | new | EcoPasses | env readers (moved from `EcoBackend.cpp`): `capHoistMode()`, `capHoistMaxBytes()`, `capHoistFoldOwnMarkers()`, `gcFreeLeafMode()`. `struct CapHoistNode`; `capHoistSolve()` (Phase B Tarjan + C coverage); plan-stamp encode and parse; attribute names |
+| `runtime/src/codegen/Passes/EcoMarkerFacts.h` | new | header-only | the marker table: hoisting-view override, headroom-breaker names, cursor / scratch / value-eq rows, trusted gc-leaf declaration names |
+| `runtime/src/codegen/Passes/EcoCapHoistPlan.cpp` | new | EcoPasses | the MLIR pass `createEcoCapHoistPlanPass(options)` |
+| `runtime/src/codegen/Passes.h` | changed | | pass factory declaration |
+| `runtime/src/codegen/EcoPipeline.h/.cpp` | changed | | `EcoPipelineOptions{capClosedWorld, capRoots}`; add the pass as the last pass of `buildEcoToLLVMPipeline` |
+| `runtime/src/codegen/EcoBackend.h/.cpp` | changed | | `EcoBackendJob::capClosedWorld`. `applyCapacityHoisting` returns `llvm::Error`, uses the core for B/C, and gains plan-given mode, validate mode, the §4.3 verification, R1/R3, §2.6 on declarations, the trusted-set assert, and the attribute and flag strip |
+| `eco-boot.cpp`, `EcoNativeDriver.cpp` | changed | | compute closed-world and roots **before** `runPipeline`; pass them to both the pipeline and the job |
+| `runtime/src/codegen/CMakeLists.txt` | changed | | add the two new `.cpp` files to the EcoPasses source list |
+| `test/codegen/caphoist_plan_*.mlir` | new | | fixtures (a)–(h), plus a positive and a validate fixture |
+| `design_docs/invariants.csv` | changed | | CGEN_074, HEAP_034, CGEN_072 text |
+
+## P2. I1: the shared core (`EcoCapHoistCore`)
+
+```text
+namespace eco::caphoist {
+enum class Reason : uint8_t { None, Loop, Cycle, Budget, Other };
+struct Node {                       // one defined function
+  uint64_t ownBytes = 0;
+  bool top = false; Reason reason = Reason::None;
+  bool eligible = false, selfEdge = false;
+  std::vector<std::pair<uint32_t,bool>> callees; // (node index, inLoop)
+  uint64_t budget = 0;              // output (valid iff !top)
+  bool covered = false;             // output
+};
+void solve(std::vector<Node> &nodes, uint64_t K);   // Phase B + C, exactly today's rules
+}
+```
+
+- `solve` is a verbatim lift of today's Phase B (iterative Tarjan, `contributionOf`, the cycle
+  and non-cycle rules) and Phase C (`covered = !top && budget > 0 && eligible`).
+- The census counters (`excl_*`) stay in `EcoBackend.cpp`. They are computed from the nodes
+  after `solve`.
+- **LLVM front end:** `applyCapacityHoisting` Phase A still fills `CapHoistInfo`. It then copies
+  each record into `Node` (ordered as `defined`, with callee `Function*` mapped to its index),
+  calls `solve`, and copies `top`/`reason`/`budget` back. Every later phase is unchanged.
+- **Gate:** byte-identical ELF and an identical `[caphoist]` line on the self-compile.
+- **Env readers:** move them (and `envNamed`, if used) into the core `.cpp`. Keep their exact
+  semantics and the `static const` caching. `EcoBackend.cpp` calls them through the header.
+
+## P3. I2: the marker table (`EcoMarkerFacts.h`)
+
+```text
+namespace eco::markers {
+enum class Hoist : uint8_t { FromDecl, Leaf, NotLeaf };
+// Hoisting view: how LLVM Phase A (after expansion steps 1-7) classifies a call to `callee`.
+Hoist hoistView(StringRef callee, bool valueEqLeaf);
+bool isHeadroomBreaker(StringRef callee);   // "eco_gc_alloc_region_fast", "eco_alloc_*_fast"
+bool isCursorMarker(StringRef);             // __eco_list_cur*_inline, __eco_list_step_{node,idx}_inline, eco_list_pos_view
+bool isScratchHelper(StringRef);            // eco_scratch_mark / _push_boxed / _push_scalar
+bool isLibmLeaf(StringRef);                 // TLI arm: asin acos atan atan2 sin cos tan exp log log2 log10 pow sqrt floor ceil trunc round fabs fmod ldexp
+bool isTrustedLeafDecl(StringRef);          // R1 gap: names allowed to be gc-leaf without eco-cap-*
+}
+```
+
+**Rows of `hoistView`:**
+
+| Callee | Result | Reason |
+|---|---|---|
+| `__eco_list_tail_inline` | `NotLeaf` | expands to `eco_list_tail_hybrid`, which is not leaf |
+| `__eco_value_eq` | `Leaf` iff `valueEqLeaf`, else `NotLeaf` | `valueEqLeaf = ECO_VALUE_EQ_GCLEAF=1 \|\| (module has a gc-leaf "Elm_Kernel_Utils_equal" declaration)`, evaluated on the module being planned |
+| cursor markers | `Leaf` | expand to leaf-only code; their MLIR declarations lack passthrough |
+| scratch helpers | `Leaf` | stamped by the backend before hoisting |
+| anything else | `FromDecl` | the callee declaration's passthrough decides |
+
+`isTrustedLeafDecl` is true for names starting `eco_`, `__eco_`, `Elm_Kernel_`, `Eco_Kernel_`,
+`llvm.`, plus `isLibmLeaf`.
+
+The LLVM side uses the same header in two places:
+- `isHeadroomBreaker` replaces the local copy;
+- the post-expansion assert (P6.6) checks the table against the expanded module.
+
+## P4. I3: the planning pass `EcoCapHoistPlan` (MLIR, llvm dialect)
+
+**Placement:** `pm.addPass(createEcoCapHoistPlanPass(opts))` as the **last** pass of
+`buildEcoToLLVMPipeline`, after `EcoTailConversions`. The module is then pure llvm dialect.
+
+**Options:**
+- `closedWorld` (bool);
+- `roots` (MLIR names; `eco_main` maps to `main`).
+
+**Algorithm:**
+1. **Gate.** Unless `capHoistMode()==On && gcFreeLeafMode()==Stamp`, return without changing
+   anything. LLVM then runs compute mode exactly as today.
+2. **Pre-planned input.** If the module already has an `eco-cap-plan` module flag (a
+   hand-written or re-lowered fixture), return without changing anything. If any `llvm.func`
+   carries an `eco-cap-*` passthrough and there is no flag, emit an error ("eco-cap attributes
+   without a plan stamp") and `signalPassFailure`.
+3. **R2.** Any defined `llvm.func` with a `gc-leaf-function` passthrough is an error ("defined
+   function already gc-leaf before planning").
+4. **Index.** Symbol nodes for every top-level op with a symbol name. Functions are defined
+   iff they have a body.
+5. **Reference collection,** in parallel per top-level op, as in plan 00's census:
+   - every `SymbolRefAttr` in the op's attribute dictionary;
+   - `SymbolTable::getSymbolUses(op)`;
+   - every `llvm.mlir.addressof` whose use is anything other than operand 0 of an `llvm.call`
+     whose callee function type equals the target's type is an **address take**. This includes
+     uses inside global initializers. An `addressof` with no uses is not a take.
+6. **Closed world** (`closedWorld == true`):
+   - BFS over all references from `roots` plus every non-symbol top-level op;
+   - `addrTaken(f)` = some **reached** referrer takes `f`'s address;
+   - `local(f)` = `f ∉ roots`.
+
+   **Open world:** `addrTaken(f)` = any referrer takes it; `local(f)` = the MLIR linkage is
+   `Internal` or `Private`.
+7. **Phase A,** in parallel per defined function. This replicates `EcoBackend.cpp` Phase A:
+   - **Cycles:** an entry-rooted SCC walk over blocks; a block is in a cycle if its SCC has
+     size > 1 or a self-loop.
+   - **Per `llvm.call`:**
+     - resolve the callee: the direct symbol, or `addressof @g` plus a type match (else
+       indirect);
+     - marker `__eco_alloc_inline`: the size comes from the `llvm.mlir.constant` operand; in
+       a cycle → ⊤ Loop; else `ownBytes += size`;
+     - breaker (direct) → ⊤ Other;
+     - hoisting view `Leaf`, or (`FromDecl` and the callee declaration has gc-leaf), or a
+       libm declaration → transparent;
+     - a mismatched-type `addressof` call to a gc-leaf declaration → transparent (the
+       called-operand arm);
+     - a direct call to a defined, non-interposable function → callee edge `(idx, inLoop)`,
+       `selfEdge` if it is the function itself;
+     - otherwise → ⊤ Other.
+   - `eligible = !interposable && !addrTaken && local`. Interposable means linkage weak,
+     linkonce, extern_weak or common.
+8. `caphoist::solve(nodes, capHoistMaxBytes())`.
+9. **Stamp** each defined function's `passthrough` (appended; existing entries kept):
+   - `["eco-cap-budget","<N>"]` if not ⊤;
+   - else the string `"eco-cap-top"`;
+   - plus `"eco-cap-covered"` if covered.
+10. **Module flag.** `llvm.module_flags` gets
+    `#llvm.mlir.module_flag<warning, "eco-cap-plan", "v1;K=<K>;m2=<0|1>;cw=<0|1>">`.
+    If a `llvm.module_flags` op already exists, append to its flag list.
+11. `ECO_CAPHOIST_PLAN_STATS=1` prints
+    `[caphoist-plan] defined=… covered=… top=… budget0=… time=…s`.
+
+## P5. I4: driver plumbing
+
+| Driver | closedWorld | roots | Job `capClosedWorld` |
+|---|---|---|---|
+| `eco-boot` exe output | true | `main`, `__eco_init_globals` | true |
+| `eco-boot` obj with `--internalize-keep=L` | true | L, with `eco_main` mapped to `main` | true |
+| `eco-boot` other (obj, `.so`/`.node`, `--emit=llvm`) | false | – | false |
+| `EcoNativeDriver`: not `.o` and not shared | true | `main`, `__eco_init_globals` | true |
+| `EcoNativeDriver` otherwise | false | – | false |
+| `ecoc`, `EcoRunner` | false | – | false (default) |
+
+`eco-boot` currently computes `emitObjOnly`/`isExecutable` after `runPipeline`. Hoist that
+computation (it depends only on `emitAction` and `output`) above the `runPipeline` call, and
+pass `EcoPipelineOptions` into `runPipeline`. `EcoNativeDriver` computes the same from
+`outputPath` before its `runPipeline`.
+
+## P6. I5: plan-given mode in `applyCapacityHoisting`
+
+The signature becomes `Error applyCapacityHoisting(Module&, CapHoistMode, CapHoistDecisions*,
+bool allowTls, bool closedWorld)`. The caller in `runEcoBackend` propagates the `Error`.
+
+1. **Mode selection.**
+   - Read the module flag `eco-cap-plan` (`m.getModuleFlag`, an `MDString`).
+   - If present: parse it; require `K == capHoistMaxBytes()`, `m2 == foldOwn` and
+     `cw == closedWorld`; otherwise return the error `plan stamp mismatch (...)`. That is
+     **plan-given**.
+   - If absent and any function has an `eco-cap-*` attribute: error.
+   - If absent otherwise: **compute mode** (today's code).
+   - **Compute mode R2 mirror:** if any *defined* function has `gc-leaf-function`, error
+     ("compute-mode hoisting on a module with stamped definitions").
+2. **Facts.** `struct CapFact { bool has, top, covered; uint64_t budget; }`, read from the
+   string attributes of **every** function, definitions and declarations. A malformed budget
+   attribute is an error.
+3. **Trusted-set assert (R1 gap).** Every *declaration* with `gc-leaf-function` and no
+   `eco-cap-*` attribute must satisfy `markers::isTrustedLeafDecl`; otherwise error.
+4. **Local Phase A (the §4.3 verification).** For each definition, run today's Phase A loop
+   with the **R1 order**:
+   - marker;
+   - breaker;
+   - **callee carries eco-cap facts → callee edge** (even if it also carries gc-leaf, and even
+     if it is a declaration);
+   - `callsGCLeafFunction` → transparent;
+   - defined non-interposable → edge (only reachable for a definition without facts, which is
+     an error in plan-given mode);
+   - else ⊤.
+
+   Then, with `contrib(g) = g.covered ? g.budget : (!g.top && g.budget == 0 ? 0 : TOP)`:
+   - **Covered f:**
+     - not ⊤ locally;
+     - no edge has `contrib == TOP`;
+     - no `inLoop` edge with `contrib > 0`;
+     - `ownBytes + Σ contrib ≤ f.budget` (`==` under validate);
+     - `hasLocalLinkage()`.
+   - **Budget-0 f:** not ⊤ locally; `ownBytes == 0`; every `contrib == 0`.
+
+   Any failure: error naming the function and the rule.
+5. **Install the plan.**
+   - `covered` = definitions with the covered fact;
+   - `info[f].budget/top` from the facts.
+   - Phase D, D2, §2.6 and Phase E then run on these.
+6. **Post-expansion table assert.** For every call whose callee name is
+   `eco_list_tail_hybrid`, `eco_list_head_hybrid`, `Elm_Kernel_Utils_equal`, a scratch helper
+   or `__eco_resolve_fwd`: the result of `callsGCLeafFunction` must equal the leafness the
+   table implies for the marker that produced it. That is: list-tail → non-leaf; list-head →
+   leaf; `Utils_equal` → `valueEqLeaf`; scratch → leaf; `resolve_fwd` → leaf. Otherwise error
+   ("marker table disagrees with expansion").
+7. **R1 in Phase D, D2 and §2.6 (both modes, a no-op without facts).**
+   - **Phase D:** if the callee has facts: covered → run element (budget from the fact); else
+     → breaker (R3). Otherwise today's rules.
+   - **D2 re-walk:** an element is acceptable iff it is an own marker, or a covered-fact
+     callee in `covs`, or (no facts, not a breaker, and `callsGCLeafFunction`).
+   - **§2.6(a):** iterate every function, **declaration or definition**, that is covered
+     (facts in plan-given mode, `covered` in compute mode). Each user must be a `CallInst`
+     with `getCalledFunction() == f`, inside a covered definition or recorded as a run
+     member.
+   - **§2.6(b):** a callee with facts is admissible iff covered or (`budget == 0 && !top`).
+     Without facts, today's rule applies.
+8. **Strip** after `expandInlineAllocs`: remove the `eco-cap-*` string attributes from every
+   function, and remove `eco-cap-plan` from `llvm.module.flags`. The ELF and `-emit=llvm`
+   dumps are then unchanged.
+
+## P7. I6: validate mode (`ECO_CAPHOIST_VALIDATE=1`)
+
+- In plan-given mode, before step 5, run today's compute-mode Phases A–C on the same module.
+  Ignore all facts and use today's classification order. This is safe because no definition is
+  gc-leaf yet: R2 holds until plan 02 lands.
+- Compare per definition: `top`, `budget` (when not ⊤) and `covered`. Print the first 20
+  differences, then the error `validate: N plan/compute differences`.
+- The §4.3 inequality uses `==`.
+- Prints `[caphoist-validate] compared=… diffs=0`.
+
+## P8. I7: fixtures and gates
+
+**Fixtures** (`test/codegen`, llvm-dialect input with a forged plan, run with `%ecoc %s
+-emit=llvm`; `ecoc` is open world, so the stamp says `cw=0`):
+
+| Fixture | Content | Expect |
+|---|---|---|
+| `caphoist_plan_decl_callee.mlir` (a) | internal `@f` with two markers, calling a covered **declaration** `@g` (budget 48) | ensure with `need = own + 48`; `eco_ensure_nursery_slow` present |
+| `caphoist_plan_gcleaf_covered.mlir` (b) | same, but `@g` also carries `gc-leaf-function` | the ensure still includes 48 (R1) |
+| `caphoist_plan_listtail_mistabled.mlir` (c) | covered internal `@f` calling `__eco_list_tail_inline` | `not`; message `covered function` … `non-transparent` |
+| `caphoist_plan_stale_k.mlir` (d) | stamp `K=1024` | `not`; `plan stamp mismatch` |
+| `caphoist_plan_markerfree.mlir` (e) | a function with no markers calling a covered declaration | ensure present |
+| `caphoist_plan_loop_covered.mlir` (f) | covered `@f` calling covered `@g` inside a loop | `not`; `in a loop` |
+| `caphoist_plan_external_covered.mlir` (g) | covered **external** definition | `not`; `local linkage` |
+| `caphoist_plan_untrusted_leaf.mlir` (h) | `@weird` declaration with gc-leaf and no `eco-cap-*` | `not`; `untrusted gc-leaf` |
+
+- **Positive end-to-end:** the existing suite already exercises the pass on every eco-dialect
+  fixture, where `ecoc` is open world: wrappers and `$sat` entries are internal and plan-able.
+- **Gates,** in order, `ulimit -c 0`:
+  1. **Byte-identical ELF:** lower `eco-compiler-boot.mlir` with the pre-change
+     `eco-boot-native` (saved copy) and with the new one; `cmp`.
+  2. **Validate on the self-compile lowering:** `ECO_CAPHOIST_VALIDATE=1`, 0 differences.
+  3. **`check`** (unit + JIT E2E + codegen fixtures), once with `ECO_CAPHOIST_VALIDATE=1`
+     exported. Must pass the same count as before plus the new fixtures.
+  4. **`stress`** with `ECO_CAPHOIST_VALIDATE=1`.
+  5. **`run-aot-e2e`** with `ECO_CAPHOIST_VALIDATE=1`. This is the closed-world AOT path.
+     893/895 is the known baseline (FlagsRecordTest, PortEchoTest).
+  6. **`elm-tests`:** unchanged (no front-end change), skipped.
+  7. **Bootstrap:** Stage 4b and 8c fixed points; Stage 9b succeeds.
+  8. **Lowering time:** record the `capacity-hoist analysis` phase and the new MLIR pass time.
+
+## P9. I8: invariant text
+
+- **CGEN_074:**
+  - Phases A–C are computed by `EcoCapHoistPlan` (MLIR) when hoisting is on; the results
+    travel as `eco-cap-budget`/`eco-cap-top`/`eco-cap-covered` passthrough plus the
+    `eco-cap-plan` module flag.
+  - `applyCapacityHoisting` in plan-given mode never recomputes eligibility. It verifies
+    every definition locally (§4.3), classifies callees with eco-cap facts before gc-leaf
+    (R1), checks §2.6(a) on covered declarations, and strips the attributes after
+    `expandInlineAllocs`.
+  - Compute mode remains for modules without a stamp (census, `ECO_ALLOC_HOIST` arms,
+    hand-written IR).
+- **HEAP_034:** unchanged placement. Add: "in plan-given mode the covered set comes from the
+  stamped attributes."
+- **CGEN_072:** add: "A covered function may also carry gc-leaf (plan 02); every classifier
+  tests eco-cap facts before gc-leaf (R1)."
+
+## Implementation results (2026-10-02)
+
+All of I1–I8 built as specified, with two deviations found by the gates:
+
+- **Unplanned definitions.** The JIT (`EcoRunner` → MLIR `ExecutionEngine`) synthesizes
+  `_mlir_*` packed-interface wrappers *after* the plan pass, so plan-given mode sees
+  definitions with no facts. They are installed as ⊤ (never covered, never budget-0), which
+  is conservative. Validate mode skips them and reports them as `unplanned=N` instead of
+  counting them as differences.
+- **Forged-plan fixtures vs validate.** Fixtures (a)–(h) deliberately carry plans that
+  disagree with compute mode, so they must not inherit a gate-wide `ECO_CAPHOIST_VALIDATE=1`.
+  The codegen harness gained a `// UNSETENV: NAME` directive (subprocess path,
+  `test/codegen/CodegenIsolatedTest.hpp`), and every `caphoist_plan_*.mlir` uses it.
+
+Gates (`ulimit -c 0`):
+
+| # | Gate | Result |
+|---|---|---|
+| 1 | Self-compile ELF vs pre-change `eco-boot-native` | byte-identical |
+| 2 | Validate on the self-compile | compared 75,775, diffs 0 |
+| 3 | `check` with validate | 2014 passed / 0 failed (2006 + 8 fixtures); 1234 validated modules, 16,928 compared, 0 diffs, 12,879 unplanned JIT wrappers |
+| 4 | `stress` with validate | 101 / 101 |
+| 5 | `run-aot-e2e` with validate | 899 / 901; the 2 failures are the known FlagsRecordTest and PortEchoTest |
+| 6 | `elm-tests` | skipped (no front-end change) |
+| 7 | Bootstrap | 4b and 8c fixed points hold, 9b OK (7 min 03 s; Stage 5 already current) |
+| 8 | Lowering time (Stage 6) | `EcoCapHoistPlanPass` 0.61 s (MLIR, parallel scan); `capacity-hoist analysis (serial)` 1.00 s |
+
+Self-compile plan census: `defined=98163 covered=16509 top=68603 budget0=5152 closed_world=1`.
 
 ## Adversarial review (2026-10-02)
 

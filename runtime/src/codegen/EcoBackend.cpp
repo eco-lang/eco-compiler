@@ -4,6 +4,8 @@
 
 #include "LoweringStats.h"
 #include "Passes/EcoPtrIntVerify.h" // for addEcoGCPipeline
+#include "Passes/EcoCapHoistCore.h"  // CGEN_074 core + config (shared with EcoCapHoistPlan)
+#include "Passes/EcoMarkerFacts.h"   // marker table (plan 01 P3)
 #include "Passes/EcoSlotCastBarriers.h" // REP_LLVM_002: barrier switch <-> gcfree-guard coupling
 
 #include "mlir/ExecutionEngine/OptUtils.h" // for makeOptimizingTransformer
@@ -114,75 +116,10 @@ bool envNamed(const char *key) {
 // Defined HERE (not next to propagateGcFreeLeafAttrs, ~:1419) because the
 // stamp-mode structural assert lives in runRS4GCAndMaybeFramePointers
 // (~:651), ~750 lines earlier than that function.
-enum class GcFreeMode { Off, Census, Stamp };
-
-GcFreeMode gcFreeLeafMode() {
-    static const GcFreeMode mode = [] {
-        const char *e = ::getenv("ECO_GCFREE_LEAF");
-        if (!e || !*e)
-            return GcFreeMode::Stamp; // default-ON since 2026-08-09
-        if (e[0] == '0' && e[1] == '\0')
-            return GcFreeMode::Off;
-        if (e[0] == 'c' && e[1] == '\0')
-            return GcFreeMode::Census;
-        return GcFreeMode::Stamp;
-    }();
-    return mode;
-}
-
-// Capacity-check hoisting (plans/capacity-check-hoisting.md).
-//
-// ECO_ALLOC_HOIST: unset (DEFAULT) or "1"/any other value = transform;
-// "0" = off (escape hatch); "c" = census only (analysis runs, NOTHING is
-// mutated). The transform additionally requires gcFreeLeafMode() == Stamp —
-// without the CGEN_072 fixpoint the harvest is nil — which also holds by
-// default; if someone disables ONLY gcfree while explicitly asking for
-// hoisting, that is reported loudly rather than silently no-op'ing.
-enum class CapHoistMode { Off, Census, On };
-
-CapHoistMode capHoistMode() {
-    static const CapHoistMode mode = [] {
-        const char *e = ::getenv("ECO_ALLOC_HOIST");
-        if (!e || !*e)
-            return CapHoistMode::On; // default-ON since 2026-08-09
-        if (e[0] == '0' && e[1] == '\0')
-            return CapHoistMode::Off;
-        if (e[0] == 'c' && e[1] == '\0')
-            return CapHoistMode::Census;
-        return CapHoistMode::On;
-    }();
-    return mode;
-}
-
-// Per-run byte budget cap K. Default 512 (~20 Cons cells) — far below the
-// 512 KiB nursery block and the 8 KiB large-object threshold. Clamped to
-// [8, 4096] (4096 = the HEAP_034 per-marker hard bound) then rounded DOWN
-// to a multiple of 8, since every budget is an 8-multiple.
-unsigned capHoistMaxBytes() {
-    static const unsigned k = [] {
-        unsigned v = 512;
-        if (const char *e = ::getenv("ECO_ALLOC_HOIST_MAX_BYTES"))
-            v = (unsigned)strtoul(e, nullptr, 10);
-        if (v < 8)
-            v = 8;
-        if (v > 4096)
-            v = 4096;
-        return v & ~7u;
-    }();
-    return k;
-}
-
-// M2 (folding a ROOT function's OWN markers into a run) can be switched off
-// independently of M1 for A/B attribution: ECO_ALLOC_HOIST_M2=0 leaves every
-// own marker with its HEAP_034 diamond and instruments only calls into
-// covered functions. Default on — the C0 census was measured this way.
-bool capHoistFoldOwnMarkers() {
-    static const bool on = [] {
-        const char *e = ::getenv("ECO_ALLOC_HOIST_M2");
-        return !(e && e[0] == '0' && e[1] == '\0');
-    }();
-    return on;
-}
+// GcFreeMode / gcFreeLeafMode(), CapHoistMode / capHoistMode(),
+// capHoistMaxBytes() and capHoistFoldOwnMarkers() live in
+// Passes/EcoCapHoistCore.{h,cpp}: the MLIR planning pass (EcoCapHoistPlan)
+// reads the same switches (plans/mlir-split-backend-01-cap-hoist-plan.md P2).
 
 void dumpIRTo(const Module &m, const std::string &path, const char *tag) {
     std::error_code ec;
@@ -2904,11 +2841,7 @@ static void propagateGcFreeLeafAttrs(Module &m, GcFreeMode mode) {
 // headroom despite their attr, so they void a capacity guarantee (plan
 // §2.1). eco_alloc_*_fast is declaration-only today; region_fast is live.
 static bool isHeadroomBreaker(const Function *f) {
-    if (!f)
-        return false;
-    StringRef n = f->getName();
-    return n == "eco_gc_alloc_region_fast" ||
-           (n.starts_with("eco_alloc_") && n.ends_with("_fast"));
+    return f && markers::isHeadroomBreaker(f->getName());
 }
 
 // Blocks that sit inside a CFG cycle: a marker there can execute an
@@ -2963,9 +2896,90 @@ struct CapHoistRun {
 };
 } // namespace
 
-static void applyCapacityHoisting(Module &m, CapHoistMode mode,
-                                  CapHoistDecisions *decisions,
-                                  bool allowTls = false) {
+// ---- Plan-given mode (plans/mlir-split-backend-01-cap-hoist-plan.md P6) ----
+// Facts the MLIR planner (EcoCapHoistPlan) stamped as passthrough string
+// attributes: "eco-cap-budget"="N" | "eco-cap-top", plus "eco-cap-covered".
+struct CapFact {
+    bool has = false;
+    bool top = false;
+    bool covered = false;
+    uint64_t budget = 0;
+};
+
+static Expected<CapFact> readCapFact(const Function &f) {
+    CapFact cf;
+    const AttributeList al = f.getAttributes();
+    if (al.hasFnAttr(caphoist::kAttrBudget)) {
+        StringRef v = al.getFnAttr(caphoist::kAttrBudget).getValueAsString();
+        if (v.getAsInteger(10, cf.budget))
+            return createStringError(std::errc::invalid_argument,
+                                     "capacity hoisting: malformed %s on '%s'",
+                                     caphoist::kAttrBudget,
+                                     f.getName().str().c_str());
+        cf.has = true;
+    }
+    if (al.hasFnAttr(caphoist::kAttrTop)) {
+        cf.top = true;
+        cf.has = true;
+    }
+    if (al.hasFnAttr(caphoist::kAttrCovered)) {
+        cf.covered = true;
+        cf.has = true;
+    }
+    if (cf.top && (cf.covered || al.hasFnAttr(caphoist::kAttrBudget)))
+        return createStringError(std::errc::invalid_argument,
+                                 "capacity hoisting: '%s' is both eco-cap-top "
+                                 "and budgeted/covered",
+                                 f.getName().str().c_str());
+    if (cf.covered && cf.budget == 0)
+        return createStringError(std::errc::invalid_argument,
+                                 "capacity hoisting: covered '%s' has budget 0",
+                                 f.getName().str().c_str());
+    return cf;
+}
+
+static std::optional<std::string> capPlanFlag(const Module &m) {
+    if (auto *md = dyn_cast_or_null<MDString>(m.getModuleFlag(caphoist::kPlanFlag)))
+        return md->getString().str();
+    return std::nullopt;
+}
+
+// Drop the plan's attributes and module flag once expandInlineAllocs has
+// consumed the decisions (P6.8): they are pass-local, and leaving them would
+// renumber `attributes #N` groups in -emit=llvm dumps.
+static void stripCapPlan(Module &m) {
+    for (Function &f : m) {
+        f.removeFnAttr(caphoist::kAttrBudget);
+        f.removeFnAttr(caphoist::kAttrTop);
+        f.removeFnAttr(caphoist::kAttrCovered);
+    }
+    NamedMDNode *flags = m.getModuleFlagsMetadata();
+    if (!flags || !m.getModuleFlag(caphoist::kPlanFlag))
+        return;
+    SmallVector<MDNode *, 8> keep;
+    for (MDNode *op : flags->operands()) {
+        auto *key = op->getNumOperands() >= 2
+                        ? dyn_cast<MDString>(op->getOperand(1))
+                        : nullptr;
+        if (!key || key->getString() != caphoist::kPlanFlag)
+            keep.push_back(op);
+    }
+    flags->clearOperands();
+    for (MDNode *op : keep)
+        flags->addOperand(op);
+}
+
+static bool capHoistValidateEnabled() {
+    static const bool on = [] {
+        const char *e = ::getenv("ECO_CAPHOIST_VALIDATE");
+        return e && *e && !(e[0] == '0' && e[1] == '\0');
+    }();
+    return on;
+}
+
+static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
+                                   CapHoistDecisions *decisions,
+                                   bool allowTls, bool closedWorld) {
     Function *markerFn = m.getFunction("__eco_alloc_inline");
     TargetLibraryInfoImpl TLII(m.getTargetTriple());
     TargetLibraryInfo TLI(TLII);
@@ -2984,255 +2998,344 @@ static void applyCapacityHoisting(Module &m, CapHoistMode mode,
     unsigned spikeBrkBudget0 = 0;
     std::map<std::string, unsigned> spikeBrkByCallee;
 
+    // ---- Mode selection (P6.1) ---------------------------------------
+    DenseMap<const Function *, CapFact> facts;
+    for (Function &f : m) {
+        auto cf = readCapFact(f);
+        if (!cf)
+            return cf.takeError();
+        if (cf->has)
+            facts[&f] = *cf;
+    }
+    std::optional<caphoist::PlanStamp> plan;
+    if (auto flag = capPlanFlag(m)) {
+        plan = caphoist::parsePlanStamp(*flag);
+        if (!plan)
+            return createStringError(std::errc::invalid_argument,
+                                     "capacity hoisting: malformed plan stamp "
+                                     "'%s'", flag->c_str());
+        if (plan->K != K || plan->m2 != capHoistFoldOwnMarkers() ||
+            plan->closedWorld != closedWorld || mode != CapHoistMode::On)
+            return createStringError(
+                std::errc::invalid_argument,
+                "capacity hoisting: plan stamp mismatch (stamp '%s'; backend "
+                "K=%u m2=%d cw=%d mode=%s)",
+                flag->c_str(), (unsigned)K, (int)capHoistFoldOwnMarkers(),
+                (int)closedWorld, mode == CapHoistMode::On ? "on" : "census");
+    } else if (!facts.empty()) {
+        return createStringError(std::errc::invalid_argument,
+                                 "capacity hoisting: eco-cap attributes "
+                                 "without a plan stamp (e.g. on '%s')",
+                                 facts.begin()->first->getName().str().c_str());
+    }
+    const bool planGiven = plan.has_value();
+    const bool validate = planGiven && capHoistValidateEnabled();
+    auto hasFacts = [&](const Function *f) {
+        return planGiven && f && facts.count(f);
+    };
+
+    if (!planGiven) {
+        // R2 mirror (02 O1): compute mode classifies a gc-leaf callee as
+        // transparent BEFORE testing "defined callee", which is only sound
+        // while no generated definition carries gc-leaf yet.
+        for (Function &f : m)
+            if (!f.isDeclaration() && f.hasFnAttribute("gc-leaf-function") &&
+                !markers::isTrustedLeafDecl(f.getName()))
+                return createStringError(
+                    std::errc::invalid_argument,
+                    "capacity hoisting: compute mode on a module whose "
+                    "definition '%s' is already gc-leaf",
+                    f.getName().str().c_str());
+    } else {
+        // R1 gap (02 F11): a declaration that is gc-leaf without eco-cap
+        // facts must be a runtime/kernel name, or a generated callee whose
+        // copied facts were lost would read as a transparent leaf.
+        for (Function &f : m)
+            if (f.isDeclaration() && !facts.count(&f) &&
+                f.hasFnAttribute("gc-leaf-function") &&
+                !markers::isTrustedLeafDecl(f.getName()))
+                return createStringError(
+                    std::errc::invalid_argument,
+                    "capacity hoisting: untrusted gc-leaf declaration '%s' "
+                    "without eco-cap facts",
+                    f.getName().str().c_str());
+        // P6.6: the marker table must agree with what the expansions emitted.
+        for (Function &f : m) {
+            for (BasicBlock &bb : f)
+                for (Instruction &i : bb) {
+                    auto *cb = dyn_cast<CallBase>(&i);
+                    Function *callee = cb ? cb->getCalledFunction() : nullptr;
+                    if (!callee)
+                        continue;
+                    StringRef n = callee->getName();
+                    int expect = -1; // -1 unchecked, 0 not leaf, 1 leaf
+                    if (n == "eco_list_tail_hybrid")
+                        expect = 0;
+                    else if (n == "eco_list_head_hybrid" ||
+                             n == "__eco_resolve_fwd" ||
+                             markers::isScratchHelper(n))
+                        expect = 1;
+                    else if (n == "Elm_Kernel_Utils_equal")
+                        expect = plan->valueEqLeaf ? 1 : 0;
+                    if (expect >= 0 &&
+                        (int)llvm::callsGCLeafFunction(cb, TLI) != expect)
+                        return createStringError(
+                            std::errc::invalid_argument,
+                            "capacity hoisting: marker table disagrees with "
+                            "the expansion: call to '%s' in '%s' is %sleaf",
+                            n.str().c_str(), f.getName().str().c_str(),
+                            expect ? "not " : "");
+                }
+        }
+    }
+
     // ---- Phase A: local scan -----------------------------------------
-    DenseMap<Function *, CapHoistInfo> info;
+    // `r1` selects the plan-given classification order (R1): a callee that
+    // carries eco-cap facts is a callee edge (its contribution comes from
+    // the facts), tested BEFORE callsGCLeafFunction, so a covered callee
+    // that is also gc-leaf can never be skipped as transparent.
     SmallVector<Function *, 256> defined;
     for (Function &f : m)
-        if (!f.isDeclaration()) {
+        if (!f.isDeclaration())
             defined.push_back(&f);
-            info.try_emplace(&f); // pre-populate: no rehash during the DFS
-        }
+    auto runPhaseA = [&](DenseMap<Function *, CapHoistInfo> &info, bool r1) {
+        for (Function *fp : defined)
+            info.try_emplace(fp); // pre-populate: no rehash during the DFS
+        for (Function *fp : defined) {
+            Function &f = *fp;
+            CapHoistInfo &fi = info.find(&f)->second;
+            fi.addrTaken = f.hasAddressTaken();
+            fi.nonLocal = !f.hasLocalLinkage();
+            // Non-eligible functions may still be ROOTS; they just cannot
+            // have their own checks hoisted into callers we cannot see.
+            fi.eligible = !f.isInterposable() && !fi.addrTaken && !fi.nonLocal;
+            if (f.isInterposable()) {
+                fi.top = true;
+                fi.reason = TopReason::Other;
+            }
 
-    for (Function *fp : defined) {
-        Function &f = *fp;
-        CapHoistInfo &fi = info.find(&f)->second;
-        fi.addrTaken = f.hasAddressTaken();
-        fi.nonLocal = !f.hasLocalLinkage();
-        // Non-eligible functions may still be ROOTS; they just cannot have
-        // their own checks hoisted into callers we cannot see.
-        fi.eligible = !f.isInterposable() && !fi.addrTaken && !fi.nonLocal;
-        if (f.isInterposable()) {
-            fi.top = true;
-            fi.reason = TopReason::Other;
-        }
+            SmallPtrSet<BasicBlock *, 16> inCycle;
+            computeBlockCycles(f, inCycle);
 
-        SmallPtrSet<BasicBlock *, 16> inCycle;
-        computeBlockCycles(f, inCycle);
+            for (BasicBlock &bb : f) {
+                const bool blockInCycle = inCycle.count(&bb) != 0;
+                for (Instruction &i : bb) {
+                    if (isa<LandingPadInst>(i)) { // EH: defensive
+                        fi.top = true;
+                        fi.reason = TopReason::Other;
+                        continue;
+                    }
+                    auto *cb = dyn_cast<CallBase>(&i);
+                    if (!cb)
+                        continue;
+                    if (!isa<CallInst>(cb)) { // invoke/callbr: defensive
+                        fi.top = true;
+                        fi.reason = TopReason::Other;
+                        continue;
+                    }
+                    Function *callee = cb->getCalledFunction();
 
-        for (BasicBlock &bb : f) {
-            const bool blockInCycle = inCycle.count(&bb) != 0;
-            for (Instruction &i : bb) {
-                if (isa<LandingPadInst>(i)) { // EH: defensive
-                    fi.top = true;
-                    fi.reason = TopReason::Other;
-                    continue;
-                }
-                auto *cb = dyn_cast<CallBase>(&i);
-                if (!cb)
-                    continue;
-                if (!isa<CallInst>(cb)) { // invoke/callbr: defensive
-                    fi.top = true;
-                    fi.reason = TopReason::Other;
-                    continue;
-                }
-                Function *callee = cb->getCalledFunction();
-
-                // The marker test MUST precede callsGCLeafFunction:
-                // __eco_alloc_inline is itself declared gc-leaf, and its
-                // expansion is what carries the statepoint.
-                if (markerFn && callee == markerFn) {
-                    auto *szC = dyn_cast<ConstantInt>(cb->getArgOperand(0));
-                    uint64_t sz = szC ? szC->getZExtValue() : 0;
-                    if (!szC || sz == 0 || (sz & 7) != 0 || sz > 4096)
-                        report_fatal_error(
-                            "applyCapacityHoisting: __eco_alloc_inline size "
-                            "must be a constant, 8-aligned, in (0, 4096]");
-                    if (blockInCycle) {
+                    // The marker test MUST precede callsGCLeafFunction:
+                    // __eco_alloc_inline is itself declared gc-leaf, and its
+                    // expansion is what carries the statepoint.
+                    if (markerFn && callee == markerFn) {
+                        auto *szC = dyn_cast<ConstantInt>(cb->getArgOperand(0));
+                        uint64_t sz = szC ? szC->getZExtValue() : 0;
+                        if (!szC || sz == 0 || (sz & 7) != 0 || sz > 4096)
+                            report_fatal_error(
+                                "applyCapacityHoisting: __eco_alloc_inline "
+                                "size must be a constant, 8-aligned, in "
+                                "(0, 4096]");
+                        if (blockInCycle) {
+                            fi.top = true;
+                            if (fi.reason == TopReason::None)
+                                fi.reason = TopReason::Loop;
+                        } else {
+                            fi.ownBytes += sz;
+                            fi.markers.push_back(cast<CallInst>(cb));
+                        }
+                        continue;
+                    }
+                    if (isHeadroomBreaker(callee)) {
                         fi.top = true;
                         if (fi.reason == TopReason::None)
-                            fi.reason = TopReason::Loop;
-                    } else {
-                        fi.ownBytes += sz;
-                        fi.markers.push_back(cast<CallInst>(cb));
+                            fi.reason = TopReason::Other;
+                        continue;
                     }
-                    continue;
-                }
-                if (isHeadroomBreaker(callee)) {
-                    fi.top = true;
+                    if (r1 && callee && facts.count(callee)) {
+                        fi.callees.push_back({callee, blockInCycle});
+                        if (callee == &f)
+                            fi.selfEdge = true;
+                        continue;
+                    }
+                    if (llvm::callsGCLeafFunction(cb, TLI))
+                        continue; // transparent
+                    if (callee && !callee->isDeclaration() &&
+                        !callee->isInterposable()) {
+                        fi.callees.push_back({callee, blockInCycle});
+                        if (callee == &f)
+                            fi.selfEdge = true;
+                        continue;
+                    }
+                    fi.top = true; // indirect, or non-leaf declaration
                     if (fi.reason == TopReason::None)
                         fi.reason = TopReason::Other;
-                    continue;
                 }
-                if (llvm::callsGCLeafFunction(cb, TLI))
-                    continue; // transparent
-                if (callee && !callee->isDeclaration() &&
-                    !callee->isInterposable()) {
-                    fi.callees.push_back({callee, blockInCycle});
-                    if (callee == &f)
-                        fi.selfEdge = true;
-                    continue;
-                }
-                fi.top = true; // indirect, or non-leaf declaration
-                if (fi.reason == TopReason::None)
-                    fi.reason = TopReason::Other;
             }
         }
-    }
-
-    if (spikeDump)
-        tA = spikeT();
-    // ---- Phase B: budget accumulation over call-graph SCCs ------------
-    // Iterative Tarjan. SCCs are emitted in reverse topological order of
-    // the condensation, i.e. callees before callers — exactly the order
-    // accumulation needs. Boolean optimism does NOT transfer to budgets:
-    // an allocating cycle has unbounded aggregate demand.
-    DenseMap<Function *, TarjanNode> tj;
-    for (Function *fp : defined)
-        tj.try_emplace(fp);
-    SmallVector<Function *, 64> sccStack;
-    unsigned nextIndex = 0;
-    struct Frame {
-        Function *f;
-        unsigned childIdx;
     };
 
-    auto contributionOf = [&](Function *g, bool &isTop) -> uint64_t {
-        const CapHoistInfo &gi = info.find(g)->second;
-        if (gi.top) {
-            isTop = true;
-            return 0;
+    // ---- Phase B + C (compute mode / validate twin): the shared core ------
+    auto solveInfo = [&](DenseMap<Function *, CapHoistInfo> &info) {
+        DenseMap<const Function *, uint32_t> idx;
+        for (uint32_t k = 0; k < defined.size(); ++k)
+            idx[defined[k]] = k;
+        std::vector<caphoist::Node> nodes(defined.size());
+        for (uint32_t k = 0; k < defined.size(); ++k) {
+            const CapHoistInfo &fi = info.find(defined[k])->second;
+            caphoist::Node &nd = nodes[k];
+            nd.ownBytes = fi.ownBytes;
+            nd.top = fi.top;
+            nd.reason = (caphoist::Reason)fi.reason;
+            nd.eligible = fi.eligible;
+            nd.selfEdge = fi.selfEdge;
+            for (const auto &e : fi.callees)
+                nd.callees.push_back({idx.find(e.first)->second, e.second});
         }
-        if (gi.eligible)
-            return gi.budget;
-        // Non-eligible callee: leaf-equivalent only when it allocates
-        // nothing (CGEN_072 will stamp it GC-free). NEVER propagate a
-        // nonzero budget through one — it keeps its own checked diamonds
-        // and its slow edge would void the caller's guarantee.
-        if (gi.budget == 0)
-            return 0;
-        isTop = true;
-        return 0;
+        caphoist::solve(nodes, K);
+        for (uint32_t k = 0; k < defined.size(); ++k) {
+            CapHoistInfo &fi = info.find(defined[k])->second;
+            fi.top = nodes[k].top;
+            fi.reason = (TopReason)nodes[k].reason;
+            fi.budget = nodes[k].budget;
+        }
     };
 
-    for (Function *root : defined) {
-        if (tj.find(root)->second.visited)
-            continue;
-        SmallVector<Frame, 32> work;
-        {
-            TarjanNode &rs = tj.find(root)->second;
-            rs.index = rs.low = nextIndex++;
-            rs.onStack = rs.visited = true;
-        }
-        sccStack.push_back(root);
-        work.push_back({root, 0});
-
-        while (!work.empty()) {
-            Function *f = work.back().f;
-            const unsigned ci = work.back().childIdx;
-            const CapHoistInfo &fi = info.find(f)->second;
-            if (ci < fi.callees.size()) {
-                work.back().childIdx = ci + 1; // write back BEFORE any push
-                Function *g = fi.callees[ci].first;
-                TarjanNode &gs = tj.find(g)->second;
-                if (!gs.visited) {
-                    gs.index = gs.low = nextIndex++;
-                    gs.onStack = gs.visited = true;
-                    sccStack.push_back(g);
-                    work.push_back({g, 0}); // no live refs held here
-                } else if (gs.onStack) {
-                    TarjanNode &fs = tj.find(f)->second;
-                    fs.low = std::min(fs.low, gs.index);
-                }
-                continue;
-            }
-            work.pop_back();
-            TarjanNode &fs = tj.find(f)->second;
-            if (!work.empty()) {
-                TarjanNode &ps = tj.find(work.back().f)->second;
-                ps.low = std::min(ps.low, fs.low);
-            }
-            if (fs.low != fs.index)
-                continue;
-
-            // Pop one SCC and resolve every member's budget.
-            SmallVector<Function *, 4> scc;
-            for (;;) {
-                Function *w = sccStack.pop_back_val();
-                tj.find(w)->second.onStack = false;
-                scc.push_back(w);
-                if (w == f)
-                    break;
-            }
-            const bool isCycle =
-                scc.size() > 1 || info.find(scc[0])->second.selfEdge;
-
-            if (isCycle) {
-                // Any allocation reachable from the cycle makes aggregate
-                // demand unbounded. A pure zero-byte cycle stays 0.
-                bool anyDemand = false;
-                SmallPtrSet<Function *, 8> members(scc.begin(), scc.end());
-                for (Function *w : scc) {
-                    const CapHoistInfo &wi = info.find(w)->second;
-                    if (wi.top || wi.ownBytes > 0) {
-                        anyDemand = true;
-                        break;
-                    }
-                    for (auto &e : wi.callees) {
-                        if (members.count(e.first))
-                            continue; // intra-SCC
-                        bool t = false;
-                        if (contributionOf(e.first, t) > 0 || t) {
-                            anyDemand = true;
-                            break;
-                        }
-                    }
-                    if (anyDemand)
-                        break;
-                }
-                for (Function *w : scc) {
-                    CapHoistInfo &wi = info.find(w)->second;
-                    if (anyDemand) {
-                        wi.top = true;
-                        if (wi.reason == TopReason::None)
-                            wi.reason = TopReason::Cycle;
-                    } else {
-                        wi.budget = 0;
-                    }
-                }
-                continue;
-            }
-
-            CapHoistInfo &si = info.find(scc[0])->second;
-            if (si.top)
-                continue;
-            uint64_t total = si.ownBytes;
-            bool isTop = false;
-            for (auto &e : si.callees) {
-                bool t = false;
-                uint64_t c = contributionOf(e.first, t);
-                if (t) {
-                    isTop = true;
-                    break;
-                }
-                // An in-loop call edge repeats unboundedly; only harmless
-                // when it contributes nothing.
-                if (e.second && c > 0) {
-                    isTop = true;
-                    break;
-                }
-                total += c;
-                if (total > K)
-                    break;
-            }
-            if (isTop) {
-                si.top = true;
-                if (si.reason == TopReason::None)
-                    si.reason = TopReason::Other;
-            } else if (total > K) {
-                si.top = true;
-                if (si.reason == TopReason::None)
-                    si.reason = TopReason::Budget;
-            } else {
-                si.budget = total;
-            }
-        }
-    }
-
-    // ---- Phase C: coverable set --------------------------------------
+    DenseMap<Function *, CapHoistInfo> info;
     DenseSet<Function *> covered;
     SmallVector<Function *, 64> coverableFns;
     unsigned exclAddr = 0, exclLinkage = 0, exclLoop = 0, exclCycle = 0,
              exclBudget = 0, exclOther = 0;
+
+    if (validate) {
+        // P7: today's compute-mode A-C on the same module, ignoring the plan;
+        // every definition must agree with its stamped facts.
+        DenseMap<Function *, CapHoistInfo> vinfo;
+        runPhaseA(vinfo, /*r1=*/false);
+        solveInfo(vinfo);
+        unsigned diffs = 0, compared = 0, unplanned = 0;
+        for (Function *fp : defined) {
+            const CapHoistInfo &vi = vinfo.find(fp)->second;
+            const bool vcov = !vi.top && vi.budget > 0 && vi.eligible;
+            auto it = facts.find(fp);
+            if (it == facts.end()) {
+                // Synthesized after planning (e.g. the JIT's _mlir_* packed
+                // wrappers): installed as ⊤ below, never covered, so there is
+                // nothing to compare.
+                ++unplanned;
+                continue;
+            }
+            const CapFact &pf = it->second;
+            ++compared;
+            if (pf.has && pf.top == vi.top && pf.covered == vcov &&
+                (vi.top || pf.budget == vi.budget))
+                continue;
+            if (++diffs <= 20)
+                errs() << "[caphoist-validate] diff '" << fp->getName()
+                       << "': plan " << (pf.top ? "top" : "budget=" + std::to_string(pf.budget))
+                       << (pf.covered ? " covered" : "") << " vs compute "
+                       << (vi.top ? "top" : "budget=" + std::to_string(vi.budget))
+                       << (vcov ? " covered" : "") << "\n";
+        }
+        errs() << "[caphoist-validate] compared=" << compared
+               << " diffs=" << diffs << " unplanned=" << unplanned << "\n";
+        if (diffs)
+            return createStringError(std::errc::invalid_argument,
+                                     "capacity hoisting validate: %u "
+                                     "plan/compute differences", diffs);
+    }
+
+    if (!planGiven) {
+        runPhaseA(info, /*r1=*/false);
+        if (spikeDump)
+            tA = spikeT();
+        solveInfo(info);
+    } else {
+        // ---- §4.3 local verification (P6.4) --------------------------
+        runPhaseA(info, /*r1=*/true);
+        if (spikeDump)
+            tA = spikeT();
+        constexpr uint64_t TOP = ~uint64_t(0);
+        auto contrib = [&](const Function *g) -> uint64_t {
+            auto it = facts.find(g);
+            if (it == facts.end())
+                return TOP;
+            const CapFact &gf = it->second;
+            if (gf.covered)
+                return gf.budget;
+            if (!gf.top && gf.budget == 0)
+                return 0;
+            return TOP;
+        };
+        for (Function *fp : defined) {
+            auto it = facts.find(fp);
+            if (it == facts.end())
+                continue; // unplanned definition: treated as ⊤ below
+            const CapFact &pf = it->second;
+            if (pf.top)
+                continue;
+            const CapHoistInfo &li = info.find(fp)->second;
+            auto fail = [&](const char *rule) {
+                return createStringError(
+                    std::errc::invalid_argument,
+                    "capacity hoisting: plan verification failed for %s "
+                    "function '%s': %s",
+                    pf.covered ? "covered" : "budget-0",
+                    fp->getName().str().c_str(), rule);
+            };
+            if (!pf.covered && pf.budget > 0)
+                continue; // finite but uncovered: keeps its own diamonds
+            if (li.top)
+                return fail("non-transparent call, breaker or in-loop marker");
+            uint64_t sum = li.ownBytes;
+            for (const auto &e : li.callees) {
+                const uint64_t c = contrib(e.first);
+                if (c == TOP)
+                    return fail("calls a callee whose contribution is "
+                                "unbounded");
+                if (e.second && c > 0)
+                    return fail("calls a budgeted callee in a loop");
+                sum += c;
+            }
+            if (pf.covered) {
+                if (sum > pf.budget || (validate && sum != pf.budget))
+                    return fail("own bytes plus callee budgets exceed (or, "
+                                "under validate, differ from) its budget");
+                if (!fp->hasLocalLinkage())
+                    return fail("covered function without local linkage");
+            } else if (sum != 0) {
+                return fail("allocates or calls an allocating callee");
+            }
+        }
+        // ---- install the plan --------------------------------------
+        for (Function *fp : defined) {
+            CapHoistInfo &fi = info.find(fp)->second;
+            auto it = facts.find(fp);
+            if (it == facts.end()) {
+                fi.top = true; // conservative: never covered, never budget-0
+                if (fi.reason == TopReason::None)
+                    fi.reason = TopReason::Other;
+                continue;
+            }
+            fi.top = it->second.top;
+            fi.budget = it->second.top ? 0 : it->second.budget;
+            fi.eligible = it->second.covered;
+        }
+    }
+    if (spikeDump)
+        tBC = spikeT();
+
+    // ---- Phase C: coverable set --------------------------------------
     for (Function *fp : defined) {
         const CapHoistInfo &fi = info.find(fp)->second;
         if (fi.top) {
@@ -3246,7 +3349,9 @@ static void applyCapacityHoisting(Module &m, CapHoistMode mode,
         }
         if (fi.budget == 0)
             continue; // already GC-free: CGEN_072's existing population
-        if (!fi.eligible) {
+        const bool isCov = planGiven ? facts.find(fp)->second.covered
+                                     : fi.eligible;
+        if (!isCov) {
             // Finite nonzero budget but uninstrumentable callers — the
             // population a v2 callee-cloning extension would recover.
             if (fi.addrTaken)
@@ -3258,8 +3363,24 @@ static void applyCapacityHoisting(Module &m, CapHoistMode mode,
         covered.insert(fp);
         coverableFns.push_back(fp);
     }
+    // Callee views used by Phase D / D2 / §2.6: in plan-given mode they come
+    // from the facts, so they work for DECLARATIONS too (a covered callee in
+    // another partition after the split).
+    auto calleeCovered = [&](Function *c) {
+        if (!c)
+            return false;
+        if (planGiven) {
+            auto it = facts.find(c);
+            return it != facts.end() && it->second.covered;
+        }
+        return covered.count(c) != 0;
+    };
+    auto calleeBudget = [&](Function *c) -> uint64_t {
+        if (planGiven)
+            return facts.find(c)->second.budget;
+        return info.find(c)->second.budget;
+    };
     if (spikeDump) {
-        tBC = spikeT();
         std::ofstream out(spikeDump);
         auto reasonStr = [](TopReason r) {
             switch (r) {
@@ -3341,12 +3462,20 @@ static void applyCapacityHoisting(Module &m, CapHoistMode mode,
                     flushRun();
                     continue;
                 }
-                if (callee && covered.count(callee)) {
-                    addElem(&i, info.find(callee)->second.budget);
+                if (callee && calleeCovered(callee)) {
+                    addElem(&i, calleeBudget(callee));
                     ++run.covCalls;
                     run.covCallSites.push_back(cast<CallInst>(cb));
                     ++sites;
-                    ++info.find(callee)->second.numSites;
+                    if (auto it = info.find(callee); it != info.end())
+                        ++it->second.numSites;
+                    continue;
+                }
+                // R1/R3: a generated callee (eco-cap facts) that is not
+                // covered is a breaker even if it is gc-leaf, exactly as an
+                // unstamped budget-0 callee is today.
+                if (hasFacts(callee)) {
+                    flushRun();
                     continue;
                 }
                 if (llvm::callsGCLeafFunction(cb, TLI))
@@ -3397,8 +3526,8 @@ static void applyCapacityHoisting(Module &m, CapHoistMode mode,
                     auto *ci = dyn_cast<CallInst>(cb);
                     const bool ok =
                         (markerFn && callee == markerFn && ci && owns.count(ci)) ||
-                        (callee && covered.count(callee) && ci && covs.count(ci)) ||
-                        (!isHeadroomBreaker(callee) &&
+                        (callee && calleeCovered(callee) && ci && covs.count(ci)) ||
+                        (!isHeadroomBreaker(callee) && !hasFacts(callee) &&
                          llvm::callsGCLeafFunction(cb, TLI));
                     if (!ok)
                         report_fatal_error(
@@ -3498,14 +3627,24 @@ static void applyCapacityHoisting(Module &m, CapHoistMode mode,
         DenseSet<const CallInst *> runMembers;
         for (const CapHoistRun &run : runs)
             runMembers.insert(run.covCallSites.begin(), run.covCallSites.end());
-        for (Function *f : covered) {
+        // Plan-given mode iterates covered DECLARATIONS too: after the split
+        // a covered callee in another partition is a declaration here, and
+        // this partition is the only one that sees its call sites.
+        SmallVector<Function *, 64> coveredUsersToCheck(covered.begin(),
+                                                        covered.end());
+        if (planGiven)
+            for (Function &f : m)
+                if (f.isDeclaration() && calleeCovered(&f))
+                    coveredUsersToCheck.push_back(&f);
+        for (Function *f : coveredUsersToCheck) {
             for (User *u : f->users()) {
                 auto *ci = dyn_cast<CallInst>(u);
                 if (!ci || ci->getCalledFunction() != f ||
                     (!covered.count(ci->getFunction()) && !runMembers.count(ci)))
-                    report_fatal_error(
+                    return createStringError(
+                        std::errc::invalid_argument,
                         "applyCapacityHoisting: unguaranteed use of covered "
-                        "function '" + Twine(f->getName()) + "'");
+                        "function '%s'", f->getName().str().c_str());
             }
         }
 
@@ -3527,6 +3666,17 @@ static void applyCapacityHoisting(Module &m, CapHoistMode mode,
                             "applyCapacityHoisting: covered function '" +
                             Twine(f->getName()) +
                             "' calls a headroom-breaking leaf");
+                    if (hasFacts(callee)) {
+                        const CapFact &cf = facts.find(callee)->second;
+                        if (cf.covered || (!cf.top && cf.budget == 0))
+                            continue;
+                        return createStringError(
+                            std::errc::invalid_argument,
+                            "applyCapacityHoisting: covered function '%s' "
+                            "calls '%s', which is neither covered nor "
+                            "budget-0", f->getName().str().c_str(),
+                            callee->getName().str().c_str());
+                    }
                     if (callee && !callee->isDeclaration()) {
                         auto it = info.find(callee);
                         const bool gcFree = it != info.end() &&
@@ -3635,6 +3785,7 @@ static void applyCapacityHoisting(Module &m, CapHoistMode mode,
     // run asked for a mode by name.
     if (mode == CapHoistMode::Census || envNamed("ECO_ALLOC_HOIST"))
         llvm::errs() << os.str();
+    return Error::success();
 }
 
 static void runCapInlinePrepass(Module &m) {
@@ -3836,9 +3987,11 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
                        "ECO_GCFREE_LEAF (stamp mode); it is currently off\n";
         } else {
             MaybeScope s(job.stats, "  capacity-hoist analysis (serial)");
-            applyCapacityHoisting(
-                m, capHoistMode(), &capHoist,
-                /*allowTls=*/job.kind == BackendKind::EmitObjectFile);
+            if (auto err = applyCapacityHoisting(
+                    m, capHoistMode(), &capHoist,
+                    /*allowTls=*/job.kind == BackendKind::EmitObjectFile,
+                    /*closedWorld=*/job.capClosedWorld))
+                return err;
         }
     }
 
@@ -3852,6 +4005,8 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     // initial-exec TLS reference from JIT'd code (plans/inline-bump-state-tls.md).
     expandInlineAllocs(m, &capHoist,
                        /*allowTls=*/job.kind == BackendKind::EmitObjectFile);
+    // The plan's attributes and module flag are consumed (P6.8).
+    stripCapPlan(m);
 
 
     // GC shadow-root-stack registration (plans/gc-root-registration-cost.md):

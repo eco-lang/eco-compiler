@@ -167,6 +167,12 @@ struct EcoBackendJob {
     /// caller already computes this for `internalizeAndDCEForExecutable`.
     /// Splitting is gated on this: shared libs / object-only output never split.
     bool splitEligible = false;
+    /// Capacity hoisting (CGEN_074): the output is closed-world (an executable,
+    /// or an object whose consumer references only the --internalize-keep
+    /// roots), so internalized functions have no callers outside the module.
+    /// Must equal the closed-world option the MLIR plan was computed with; a
+    /// mismatch with the stamped plan is a hard error.
+    bool capClosedWorld = false;
 
     /// Parallel-optimization tier. `None` (default) keeps whole-module `-O2`
     /// then codegen-only split. `Dev`/`Cgu` move optimization into the

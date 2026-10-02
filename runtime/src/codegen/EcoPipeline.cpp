@@ -181,6 +181,12 @@ void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // the nested SCFToControlFlow + ArithToLLVM sweeps (~98k x 2 pass
     // invocations) and the serial module-anchored cf->llvm pass.
     pm.addPass(eco::createEcoTailConversionsPass());  // also reconciles casts
+    // Capacity hoisting plan (CGEN_074): Phases A-C on the final llvm-dialect
+    // module, stamped as eco-cap-* passthrough + the eco-cap-plan module flag;
+    // the backend verifies and consumes it (plan-given mode). Last, so it sees
+    // every call the pipeline creates.
+    pm.addPass(eco::createEcoCapHoistPlanPass(opts.capClosedWorld,
+                                              opts.capRoots));
 }
 
 } // namespace eco
