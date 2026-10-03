@@ -131,6 +131,24 @@ enum class ParallelOpt {
 /// Backend job descriptor. Currently a thin façade over
 /// `runRS4GCAndMaybeFramePointers`; gains opt/emit/link fields in Phase 3.3
 /// and JIT-specific fields in Phase 4.
+/// (X) join (plan 02 Q7): what one partition's module stamps and declares.
+struct GcLeafPartitionReport {
+    std::vector<std::string> stampedDefs, allDefs, leafDecls;
+};
+
+/// Plan 05 (EcoSplit): a `runEcoBackend` call that lowers ONE MLIR-built
+/// partition. The worker pipeline is the single-object path in the parallel
+/// tier (`splitEligible = true`, `splitCodegen = 1`); this carries what only
+/// the split knows.
+struct PartitionWorkerInfo {
+    unsigned index = 0;
+    /// Owned functions referenced from another partition: made External +
+    /// hidden before the `$cap` prepass, so AlwaysInliner cannot delete them.
+    std::vector<std::string> exports;
+    /// Filled after RS4GC; joined by the driver (`joinPartitionGcLeafReports`).
+    GcLeafPartitionReport gcReport;
+};
+
 struct EcoBackendJob {
     BackendKind kind = BackendKind::DumpLLVMText;
 
@@ -198,14 +216,8 @@ struct EcoBackendJob {
     /// per-partition workers may record too.
     LoweringStats *stats = nullptr;
 
-    /// Use the lazy per-worker module extraction instead of llvm::SplitModule:
-    /// externalize + serialize the whole module ONCE, then each worker
-    /// lazy-loads the shared bitcode and materializes only its ~1/N functions
-    /// (the ThinLTO-importer pattern). Collapses the serial N-clone + N-serialize
-    /// cost of SplitModule to a single serialization. Only affects the
-    /// partitioned `EmitObjectFile` path (numParts > 1); output is functionally
-    /// equivalent to the SplitModule path.
-    bool lazySplit = false;
+    /// Plan 05: non-null when this call lowers one EcoSplit partition.
+    PartitionWorkerInfo *partition = nullptr;
 
     /// EXPERIMENTAL, off by default. Run RewriteStatepointsForGC AFTER the O2
     /// optimization pipeline instead of before it (upstream LLVM's intended
@@ -270,7 +282,20 @@ bool hasReachabilityStamp(const llvm::Module &m);
 /// constant users; ECO_REACH_VALIDATE=1 also runs internalizeAndDCE(keep) as
 /// an oracle that must change nothing.
 llvm::Error finishReachability(llvm::Module &m,
-                               llvm::ArrayRef<std::string> keep);
+                               llvm::ArrayRef<std::string> keep,
+                               bool partition = false);
+
+/// Plan 05 (EcoSplit) support.
+/// The split policy on a defined-function count (0 = auto, 1 = off, N).
+unsigned choosePartitionCountForCount(unsigned numDefinedFns, unsigned request,
+                                      bool eligible);
+/// Tag this thread as the worker of partition `i` (-1 = none): diagnostic
+/// files get a `.p<i>` suffix.
+void setPartitionIndex(int i);
+std::string partitionDumpPath(llvm::StringRef path);
+/// The (X) join over all partitions' reports.
+llvm::Error joinPartitionGcLeafReports(
+    const std::vector<GcLeafPartitionReport> &reports);
 /// Validate (plan 03 R5): LLVM's hasAddressTaken per defined function must
 /// equal the MLIR symbol graph's answer (EcoSymbolGraph addressTakenByName).
 llvm::Error checkAddressTaken(const llvm::Module &m,

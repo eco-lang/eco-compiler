@@ -202,7 +202,7 @@ this outline where they differ.
 | M3 | 02 marker table + per-partition/F11 checks shipped; propagation in validate mode | MLIR stamped set ⊆ LLVM stamped set; all gates |
 | M4 | 03 shipped (MLIR erase + internalize; strip kept) | same ELF symbol set; loop step FLAT or WIN |
 | M5 | 04 phases 1–2 shipped; cgu prologue dropped if the tax holds | self-compile ≤ today's with the prologue off (N = 3) — **MET 2026-10-02** (P2-OFF 108.11 s ≤ base-ON 108.25 s; prologue deleted) |
-| M6 | The split (§4) default-on for exe output | all gates; lowering wall ≤ about 30 s |
+| M6 | The split (§4) default-on for exe output | all gates; lowering wall ≤ about 30 s — **MET 2026-10-02** (plan 05 EcoSplit: 25.53 s; lazy bitcode split retired) |
 
 ## 7. Out of scope
 

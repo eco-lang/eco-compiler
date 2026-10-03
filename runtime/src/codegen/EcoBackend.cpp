@@ -80,6 +80,19 @@ using namespace llvm;
 
 namespace eco {
 
+// Plan 05 (EcoSplit): the partition a worker thread lowers; -1 outside a
+// partition worker. Every diagnostic file a worker writes gets a `.p<i>`
+// suffix so N threads never truncate the same path (review R9).
+static thread_local int tlPartitionIndex = -1;
+
+void setPartitionIndex(int i) { tlPartitionIndex = i; }
+
+std::string partitionDumpPath(StringRef path) {
+    if (tlPartitionIndex < 0)
+        return path.str();
+    return path.str() + ".p" + std::to_string(tlPartitionIndex);
+}
+
 namespace {
 
 // RAII sub-phase timing scope that is a no-op when `stats` is null.
@@ -121,7 +134,8 @@ bool envNamed(const char *key) {
 // Passes/EcoCapHoistCore.{h,cpp}: the MLIR planning pass (EcoCapHoistPlan)
 // reads the same switches (plans/mlir-split-backend-01-cap-hoist-plan.md P2).
 
-void dumpIRTo(const Module &m, const std::string &path, const char *tag) {
+void dumpIRTo(const Module &m, const std::string &path0, const char *tag) {
+    const std::string path = partitionDumpPath(path0);
     std::error_code ec;
     raw_fd_ostream out(path, ec);
     if (!ec) {
@@ -608,10 +622,6 @@ Error optimizePartitionModule(Module &m, TargetMachine *tm, ParallelOpt mode,
 // (X) join (plan 02 Q7, F5): a gc-leaf DECLARATION in one partition is only
 // as good as its owner's stamped DEFINITION in another; no per-partition check
 // can see that link. Each worker reports after its RS4GC; the driver joins.
-struct GcLeafPartitionReport {
-    std::vector<std::string> stampedDefs, allDefs, leafDecls;
-};
-
 static void collectGcLeafReport(const Module &m, GcLeafPartitionReport &r) {
     if (gcFreeLeafMode() != GcFreeMode::Stamp)
         return;
@@ -628,7 +638,7 @@ static void collectGcLeafReport(const Module &m, GcLeafPartitionReport &r) {
     }
 }
 
-static Error checkCrossPartitionGcLeaf(
+Error checkCrossPartitionGcLeaf(
     const std::vector<GcLeafPartitionReport> &reports) {
     if (gcFreeLeafMode() != GcFreeMode::Stamp)
         return Error::success();
@@ -797,16 +807,6 @@ Error emitObjectFilesSplit(Module &m, unsigned numPartitions,
     return checkCrossPartitionGcLeaf(gcReports);
 }
 
-// Stable, reproducible partition assignment for a symbol name: FNV-1a % N.
-// Must be a pure function of the name so every worker computes the SAME owner
-// independently (exactly-once cover). Deliberately NOT llvm::hash_value, which
-// is per-process-seeded and would break reproducible builds.
-unsigned partitionOfName(StringRef name, unsigned n) {
-    uint64_t h = 1469598103934665603ULL; // FNV offset basis
-    for (unsigned char c : name)
-        h = (h ^ c) * 1099511628211ULL;  // FNV prime
-    return static_cast<unsigned>(h % n);
-}
 
 // Externalize every module-local symbol to a single ExternalLinkage +
 // HiddenVisibility definition — replicates llvm::SplitModule's
@@ -834,210 +834,45 @@ void externalizeAllLocals(Module &m) {
         ext(I);
 }
 
-// Lazy per-worker module extraction — the ThinLTO-importer pattern. Instead of
-// llvm::SplitModule (N x CloneModule + N bitcode writes, all serial on the
-// parent), externalize + serialize the WHOLE module once, then each worker
-// lazy-loads the shared read-only bitcode into its own LLVMContext and
-// materializes ONLY the ~1/N functions it owns (deleteBody() strips the rest to
-// declarations without deserializing their bodies). Functionally equivalent to
-// emitObjectFilesSplit; collapses the ~N-clone serial cost to one serialization.
-Error emitObjectFilesSplitLazy(Module &m, unsigned numPartitions,
-                               const std::vector<std::string> &paths,
-                               CodeGenOptLevel optLevel,
-                               ParallelOpt perPartitionMode,
-                               unsigned devEmitCG, bool devOptO1,
-                               eco::LoweringStats *stats,
-                               const RS4GCOptions *partitionRS4GC) {
-    if (paths.size() != numPartitions)
-        return createStringError(std::errc::invalid_argument,
-            "emitObjectFilesSplitLazy: paths count != numPartitions");
 
-    // Externalize once, then serialize the whole module once (the only serial
-    // per-partition cost SplitModule paid — N clones + N writes — is gone).
-    SmallString<0> wholeBitcode;
-    {
-        MaybeScope s(stats, "  externalize + serialize once (serial)");
-        externalizeAllLocals(m);
-        raw_svector_ostream os(wholeBitcode);
-        WriteBitcodeToFile(m, os);
-    }
-    // C2 (plans/backend-lowering-optimization.md): size-balanced ownership of
-    // function definitions. FNV-1a % N balanced by function COUNT, leaving
-    // the slowest partition ~27 % over the mean at self-host scale. LPT
-    // greedy: heaviest function (by instruction count) first, onto the
-    // least-loaded partition; ties broken by name and lowest index, so the
-    // assignment is a pure function of the module (reproducible builds).
-    // Globals keep FNV ownership (negligible cost). Computed after
-    // externalizeAllLocals (names are final) and shared read-only.
-    llvm::StringMap<unsigned> fnOwner;
-    {
-        MaybeScope s(stats, "  partition balance (serial)");
-        struct FnCost { StringRef name; uint64_t cost; };
-        std::vector<FnCost> fns;
-        for (Function &F : m.functions()) {
-            if (F.isDeclaration())
-                continue;
-            uint64_t cost = 1;
-            for (BasicBlock &bb : F)
-                cost += bb.size();
-            fns.push_back({F.getName(), cost});
-        }
-        std::sort(fns.begin(), fns.end(), [](const FnCost &a, const FnCost &b) {
-            return a.cost != b.cost ? a.cost > b.cost : a.name < b.name;
-        });
-        using Load = std::pair<uint64_t, unsigned>; // (load, partition)
-        std::priority_queue<Load, std::vector<Load>, std::greater<Load>> heap;
-        for (unsigned p = 0; p < numPartitions; ++p)
-            heap.push({0, p});
-        for (const FnCost &f : fns) {
-            Load l = heap.top();
-            heap.pop();
-            fnOwner[f.name] = l.second;
-            heap.push({l.first + f.cost, l.second});
-        }
-    }
+} // namespace
 
-    // C3 (plans/backend-lowering-optimization.md): the bitcode we just wrote
-    // carries a current "Debug Info Version" flag, so each worker's lazy load
-    // would run UpgradeDebugInfo -> a full verifyModule of its partition
-    // (~4 CPU-s total, pure waste on our own fresh bitcode). LLVM's
-    // -disable-auto-upgrade-debug-info switch skips exactly that.
-    static const bool upgradeOff = [] {
-        auto &opts = llvm::cl::getRegisteredOptions();
-        auto it = opts.find("disable-auto-upgrade-debug-info");
-        if (it == opts.end())
-            return false;
-        return !it->second->addOccurrence(0, "disable-auto-upgrade-debug-info",
-                                          "true");
-    }();
-    (void)upgradeOff;
-
-    // Shared, read-only view of the bitcode; MUST outlive every worker (their
-    // lazy modules read function bodies out of it on materialize()). It does:
-    // wholeBitcode is joined-on below before this scope exits.
-    StringRef bcData(wholeBitcode.data(), wholeBitcode.size());
-
-    std::atomic<unsigned> nextFail{0};
-    std::vector<std::string> errs(numPartitions);
-    std::vector<std::thread> threads;
-    threads.reserve(numPartitions);
-    std::vector<GcLeafPartitionReport> gcReports(numPartitions);
-
-    for (unsigned i = 0; i < numPartitions; ++i) {
-        threads.emplace_back([&, i, optLevel, perPartitionMode, devEmitCG, devOptO1] {
-            LLVMContext ctx;
-            auto buf = MemoryBuffer::getMemBuffer(
-                bcData, "eco-whole", /*RequiresNullTerminator=*/false);
-            auto modOr = getLazyBitcodeModule(buf->getMemBufferRef(), ctx,
-                                              /*ShouldLazyLoadMetadata=*/false,
-                                              /*IsImporting=*/false);
-            if (!modOr) {
-                errs[i] = "getLazyBitcodeModule failed for partition " +
-                          std::to_string(i) + ": " +
-                          toString(modOr.takeError());
-                nextFail++;
-                return;
-            }
-            std::unique_ptr<Module> mod = std::move(*modOr);
-
-            // Extract this partition: materialize the functions we own, strip
-            // the rest to external declarations WITHOUT loading their bodies.
-            {
-                MaybeScope s(stats, "  lazy extract (sum over workers)");
-                for (Function &F : mod->functions()) {
-                    if (F.isDeclaration())
-                        continue; // already an extern (runtime) decl
-                    if (fnOwner.lookup(F.getName()) == i) {
-                        if (F.isMaterializable())
-                            if (auto e = F.materialize()) {
-                                errs[i] = "materialize failed p" +
-                                          std::to_string(i) + ": " +
-                                          toString(std::move(e));
-                                nextFail++;
-                                return;
-                            }
-                    } else {
-                        // Strips to `external` decl; body was never read, so
-                        // this only clears the (empty) BB list + materializable
-                        // bit + sets external linkage.
-                        F.deleteBody();
-                        F.setComdat(nullptr);
-                    }
-                }
-                // Globals: initializers are eager in a lazy module, so each
-                // worker holds them all — strip the ones it doesn't own to a
-                // single external declaration (owner keeps the definition).
-                for (GlobalVariable &G : mod->globals()) {
-                    if (G.isDeclaration())
-                        continue;
-                    if (partitionOfName(G.getName(), numPartitions) != i) {
-                        G.setInitializer(nullptr);
-                        G.setLinkage(GlobalValue::ExternalLinkage);
-                        G.setComdat(nullptr);
-                    }
-                }
-                // Detach the materializer; nothing left to materialize (owned
-                // done, non-owned marked non-materializable by deleteBody), so
-                // this is cheap and readies the module for passes + codegen.
-                if (auto e = mod->materializeAll()) {
-                    errs[i] = "materializeAll failed p" + std::to_string(i) +
-                              ": " + toString(std::move(e));
-                    nextFail++;
-                    return;
-                }
-            }
-
-            // Dev tier may emit at a cheaper CodeGen level than optLevel; this
-            // TM also feeds the dev IR pipeline's PassBuilder TTI (acceptable).
-            unsigned emitLevel = static_cast<unsigned>(optLevel);
-            if (perPartitionMode == ParallelOpt::Dev && devEmitCG != ~0u)
-                emitLevel = devEmitCG;
-            auto tm = createEcoTargetMachine(*mod, emitLevel);
-            if (!tm) {
-                errs[i] = "createEcoTargetMachine failed for partition " +
-                          std::to_string(i);
-                nextFail++;
-                return;
-            }
-            if (partitionRS4GC) {
-                MaybeScope s(stats, "  partition RS4GC (sum over workers)");
-                runRS4GCAndMaybeFramePointers(*mod, *partitionRS4GC);
-            }
-            collectGcLeafReport(*mod, gcReports[i]);
-            if (perPartitionMode != ParallelOpt::None) {
-                MaybeScope s(stats, "  partition opt (sum over workers)");
-                if (auto err = optimizePartitionModule(
-                        *mod, tm.get(), perPartitionMode, optLevel, devOptO1)) {
-                    errs[i] = "partition opt failed for partition " +
-                              std::to_string(i) + ": " +
-                              toString(std::move(err));
-                    nextFail++;
-                    return;
-                }
-            }
-            MaybeScope s(stats, "  partition emit (sum over workers)");
-            if (auto err = emitObjectFile(*mod, *tm, paths[i])) {
-                errs[i] = "emitObjectFile failed for partition " +
-                          std::to_string(i) + ": " + toString(std::move(err));
-                nextFail++;
-                return;
-            }
-        });
-    }
-
-    {
-        MaybeScope s(stats, "  parallel opt+emit drain (post-serialize wait)");
-        for (auto &t : threads)
-            t.join();
-    }
-
-    if (nextFail.load() != 0) {
-        for (auto &e : errs)
-            if (!e.empty())
-                return createStringError(std::errc::io_error, "%s", e.c_str());
-    }
-    return checkCrossPartitionGcLeaf(gcReports);
+// Plan 05 (EcoSplit): the driver-level join of the workers' gc-leaf reports.
+Error joinPartitionGcLeafReports(
+    const std::vector<GcLeafPartitionReport> &reports) {
+    return checkCrossPartitionGcLeaf(reports);
 }
+
+// The shared split policy on a defined-function count, so EcoSplit can apply
+// it to the MLIR module before translation (plan 05 U4).
+unsigned choosePartitionCountForCount(unsigned numDefinedFns, unsigned request,
+                                      bool eligible) {
+    if (!eligible || request == 1)
+        return 1;
+    // Only split modules with enough functions to amortize the per-partition
+    // thread + link overhead. ECO_SPLIT_MIN_FUNCS lowers the threshold so
+    // tests can force a split on small programs.
+    static const unsigned kMinFnsToSplit = [] {
+        if (const char *e = ::getenv("ECO_SPLIT_MIN_FUNCS"))
+            return (unsigned)strtoul(e, nullptr, 10);
+        return 4000u;
+    }();
+    if (numDefinedFns < kMinFnsToSplit)
+        return 1;
+    unsigned cores = std::max(1u, std::thread::hardware_concurrency());
+    // Auto uses all cores. The old min(cores,16) cap existed because
+    // llvm::SplitModule's serial split + N bitcode serializations grew with N
+    // and ate the emission gain past ~16. The default tiers now partition in
+    // MLIR (EcoSplit, plan 05: no serialization at all), and a 24-core
+    // self-host sweep showed backend time still dropping at N=24 (dev
+    // 12.4->10.1 s from N=16, no plateau). See backendstats-runs.txt.
+    unsigned want = (request == 0) ? cores : request;
+    // ~1 partition per 2000 functions, at least 2 once we've decided to split.
+    unsigned bySize = std::max(2u, numDefinedFns / 2000u);
+    return std::min(want, bySize);
+}
+
+namespace {
 
 // Decide how many object-emission partitions to use. This is the split policy
 // that used to live inline in eco-boot.cpp; hoisting it here means every driver
@@ -1046,29 +881,11 @@ Error emitObjectFilesSplitLazy(Module &m, unsigned numPartitions,
 // true only for plain executable output. See
 // design_docs/backend-parallel-optimization.md §8.1.
 unsigned choosePartitionCount(const Module &m, unsigned request, bool eligible) {
-    if (!eligible || request == 1)
-        return 1;
     unsigned numDefinedFns = 0;
     for (const Function &F : m)
         if (!F.isDeclaration())
             ++numDefinedFns;
-    // Only split modules with enough functions to amortize the per-partition
-    // bitcode-serialize + thread + link overhead.
-    constexpr unsigned kMinFnsToSplit = 4000;
-    if (numDefinedFns < kMinFnsToSplit)
-        return 1;
-    unsigned cores = std::max(1u, std::thread::hardware_concurrency());
-    // Auto uses all cores. The old min(cores,16) cap existed because
-    // llvm::SplitModule's serial split + N bitcode serializations grew with N
-    // and ate the emission gain past ~16. The lazy-split path (Phase 5)
-    // serializes the module ONCE (N-independent, ~1.3 s regardless of N), so
-    // partition-emit parallelism now scales cleanly to the core count: a 24-core
-    // self-host sweep showed backend time still dropping at N=24 (dev 12.4->10.1 s
-    // from N=16, no plateau). See backendstats-runs.txt (N-partition sweep).
-    unsigned want = (request == 0) ? cores : request;
-    // ~1 partition per 2000 functions, at least 2 once we've decided to split.
-    unsigned bySize = std::max(2u, numDefinedFns / 2000u);
-    return std::min(want, bySize);
+    return choosePartitionCountForCount(numDefinedFns, request, eligible);
 }
 
 } // namespace
@@ -1273,7 +1090,8 @@ static void stripReachabilityStamp(Module &m);
 // dangling ConstantExprs that would flip Function::hasAddressTaken for
 // CGEN_074). Under ECO_REACH_VALIDATE=1 the old internalize + GlobalDCE runs
 // as an oracle and must change nothing.
-Error finishReachability(Module &m, ArrayRef<std::string> keep) {
+Error finishReachability(Module &m, ArrayRef<std::string> keep,
+                         bool partition) {
     if (!hasReachabilityStamp(m))
         return createStringError(std::errc::invalid_argument,
                                  "finishReachability: no eco-reach stamp");
@@ -1287,7 +1105,9 @@ Error finishReachability(Module &m, ArrayRef<std::string> keep) {
         const char *e = ::getenv("ECO_REACH_VALIDATE");
         return e && *e && !(e[0] == '0' && e[1] == '\0');
     }();
-    if (!validate)
+    // Plan 05 R20: per partition the oracle would internalize + GlobalDCE
+    // away every definition only another partition references.
+    if (!validate || partition)
         return Error::success();
     StringMap<GlobalValue::LinkageTypes> before;
     for (GlobalValue &gv : m.global_values())
@@ -2661,8 +2481,12 @@ static void expandGetTagMarkers(Module &m) {
         // via the injected eco_enable_list_chunks call), so non-chunk
         // binaries keep today's diamond byte-for-byte.
         {
+            // Plan 05: under EcoSplit only `main`'s partition sees the
+            // injected call, so the whole-module fact also travels as the
+            // module flag `eco-list-chunks` (review R13).
             Function *chunksEnable = m.getFunction("eco_enable_list_chunks");
-            if (chunksEnable && !chunksEnable->use_empty()) {
+            if ((chunksEnable && !chunksEnable->use_empty()) ||
+                m.getModuleFlag("eco-list-chunks")) {
                 Value *isChunk = ob.CreateICmpEQ(
                     tag,
                     ConstantInt::get(i32Ty, (uint64_t)Elm::Tag_ConsChunk));
@@ -2916,14 +2740,14 @@ static void propagateGcFreeLeafAttrs(
     }
 
     if (const char *dump = ::getenv("ECO_GCFREE_LEAF_DUMP")) {
-        std::ofstream out(dump);
+        std::ofstream out(partitionDumpPath(dump));
         for (Function *f : freeFns)
             out << f->getName().str() << "\n";
     }
     // Spike oracle (plans/mlir-split-backend-00-spikes.md): every function
     // still DEFINED at this point (the $cap prepass deletes inlined bodies).
     if (const char *dump = ::getenv("ECO_GCFREE_ALL_DUMP")) {
-        std::ofstream out(dump);
+        std::ofstream out(partitionDumpPath(dump));
         for (Function &f : m)
             if (!f.isDeclaration())
                 out << f.getName().str() << "\n";
@@ -3164,7 +2988,7 @@ static Error checkMarkerDecls(const Module &m, std::optional<bool> veq) {
 // Step 13 when EcoGcFreePropagation stamped the module (plan 02 Q5): the
 // stamps are already on the definitions, so this only checks, reports and
 // strips the plan flag.
-static Error finishGcFreePlan(Module &m) {
+static Error finishGcFreePlan(Module &m, bool partition) {
     auto gcPlan = gcfree::parseStamp(*moduleFlagString(m, gcfree::kPlanFlag));
     if (auto err = checkMarkerDecls(m, gcPlan->valueEqLeaf))
         return err;
@@ -3179,7 +3003,10 @@ static Error finishGcFreePlan(Module &m) {
             stamped.push_back(&f);
     }
 
-    if (gcFreeValidateEnabled()) {
+    // Per partition the twin reads every cross-partition declaration's
+    // stamp as a leaf, so it would silently stop checking those edges
+    // (plan 05 R11): the whole-module path (ECO_MLIR_SPLIT=0) runs it.
+    if (gcFreeValidateEnabled() && !partition) {
         DenseSet<const Function *> twin;
         propagateGcFreeLeafAttrs(m, GcFreeMode::Census, &twin);
         DenseSet<const Function *> mlir(stamped.begin(), stamped.end());
@@ -3203,7 +3030,7 @@ static Error finishGcFreePlan(Module &m) {
     }
 
     if (const char *dump = ::getenv("ECO_GCFREE_LEAF_DUMP")) {
-        std::ofstream out(dump);
+        std::ofstream out(partitionDumpPath(dump));
         for (Function *f : stamped)
             out << f->getName().str() << "\n";
     }
@@ -3237,7 +3064,8 @@ static bool capHoistValidateEnabled() {
 
 static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
                                    CapHoistDecisions *decisions,
-                                   bool allowTls, bool closedWorld) {
+                                   bool allowTls, bool closedWorld,
+                                   bool partition) {
     Function *markerFn = m.getFunction("__eco_alloc_inline");
     TargetLibraryInfoImpl TLII(m.getTargetTriple());
     TargetLibraryInfo TLI(TLII);
@@ -3287,7 +3115,15 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
                                  facts.begin()->first->getName().str().c_str());
     }
     const bool planGiven = plan.has_value();
-    const bool validate = planGiven && capHoistValidateEnabled();
+    // Plan 05 R13: compute mode needs the whole program; a partition must
+    // carry the MLIR plan when hoisting transforms.
+    if (partition && !planGiven && mode == CapHoistMode::On)
+        return createStringError(
+            std::errc::invalid_argument,
+            "capacity hoisting: an EcoSplit partition without a plan stamp");
+    // The compute-mode twin cannot run on a partition (its cross-partition
+    // callees are declarations, plan 05 §1.7).
+    const bool validate = planGiven && capHoistValidateEnabled() && !partition;
     auto hasFacts = [&](const Function *f) {
         return planGiven && f && facts.count(f);
     };
@@ -3558,7 +3394,10 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
                 if (sum > pf.budget || (validate && sum != pf.budget))
                     return fail("own bytes plus callee budgets exceed (or, "
                                 "under validate, differ from) its budget");
-                if (!fp->hasLocalLinkage())
+                // An EcoSplit import copy (available_externally) is a copy
+                // of an owner that its own partition verifies (plan 05 §1.4).
+                if (!fp->hasLocalLinkage() &&
+                    !fp->hasAvailableExternallyLinkage())
                     return fail("covered function without local linkage");
             } else if (sum != 0) {
                 return fail("allocates or calls an allocating callee");
@@ -3628,7 +3467,7 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
         return info.find(c)->second.budget;
     };
     if (spikeDump) {
-        std::ofstream out(spikeDump);
+        std::ofstream out(partitionDumpPath(spikeDump));
         auto reasonStr = [](TopReason r) {
             switch (r) {
             case TopReason::None:   return "none";
@@ -3742,7 +3581,7 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
     }
     if (spikeDump) {
         tD = spikeT();
-        std::ofstream out(std::string(spikeDump) + ".breakers");
+        std::ofstream out(partitionDumpPath(std::string(spikeDump) + ".breakers"));
         for (auto &kv : spikeBrkByCallee)
             out << kv.first << ";" << kv.second << "\n";
     }
@@ -3993,7 +3832,7 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
     };
 
     if (const char *dump = ::getenv("ECO_ALLOC_HOIST_DUMP")) {
-        std::ofstream out(dump);
+        std::ofstream out(partitionDumpPath(dump));
         for (Function *fp : coverableFns) {
             const CapHoistInfo &fi = info.find(fp)->second;
             out << fp->getName().str() << ";" << fi.budget << ";"
@@ -4011,8 +3850,15 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
 
     std::string line;
     raw_string_ostream os(line);
-    os << "[caphoist] coverable=" << coverableFns.size()
-       << " defined=" << defined.size() << " sites=" << sites
+    unsigned importCopies = 0;
+    for (Function *fp : defined)
+        importCopies += fp->hasAvailableExternallyLinkage();
+    os << "[caphoist";
+    if (partition)
+        os << " p" << tlPartitionIndex;
+    os << "] coverable=" << coverableFns.size()
+       << " defined=" << defined.size() - importCopies
+       << " import_copies=" << importCopies << " sites=" << sites
        << " bytes_p50=" << pct(0.50) << " bytes_p90=" << pct(0.90)
        << " bytes_max=" << (budgets.empty() ? 0 : budgets.back())
        << " runs=" << runsTotal << " singleton=" << runsSingleton
@@ -4273,7 +4119,8 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
             if (auto err = applyCapacityHoisting(
                     m, capHoistMode(), &capHoist,
                     /*allowTls=*/job.kind == BackendKind::EmitObjectFile,
-                    /*closedWorld=*/job.capClosedWorld))
+                    /*closedWorld=*/job.capClosedWorld,
+                    /*partition=*/job.partition != nullptr))
                 return err;
         }
     }
@@ -4306,13 +4153,37 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     // arguments straight into the call, and RS4GC is what covers them there.
     expandSatMarkers(m);
 
+    // Plan 05 (EcoSplit) §1.3: owned functions another partition references
+    // become External + hidden BEFORE the prepass, so AlwaysInliner cannot
+    // delete an inlined internal `$cap` body that is still needed elsewhere.
+    if (job.partition) {
+        for (const std::string &name : job.partition->exports)
+            if (Function *f = m.getFunction(name))
+                if (f->hasLocalLinkage()) {
+                    f->setLinkage(GlobalValue::ExternalLinkage);
+                    f->setVisibility(GlobalValue::HiddenVisibility);
+                }
+    }
+
     // E1.3: `$cap` inline prepass — must precede EVERY RS4GC flavour (serial,
     // deferred, and per-partition; all are downstream of this point). Skipped
     // at -O0 only.
     if (job.optLevel != CodeGenOptLevel::None) {
-        MaybeScope s(job.stats, "  $cap inline prepass (serial)");
+        MaybeScope s(job.stats, job.partition
+                                    ? "  $cap inline prepass (sum over workers)"
+                                    : "  $cap inline prepass (serial)");
         runCapInlinePrepass(m);
     }
+
+    // Plan 05 §1.3: EcoSplit import copies (available_externally) exist only
+    // to be inlined by the prepass. Whatever survives becomes a declaration
+    // again — unconditionally (also at -O0): a statepointed copy must never
+    // reach the post-RS4GC inliner (02 F8 / E1.4).
+    for (Function &f : m)
+        if (!f.isDeclaration() && f.hasAvailableExternallyLinkage()) {
+            f.deleteBody();
+            f.setLinkage(GlobalValue::ExternalLinkage);
+        }
 
     // GC-free function propagation (plans/gc-free-function-propagation.md):
     // must run at THIS choke point — post-marker-expansion + post-$cap-
@@ -4324,7 +4195,7 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
         if (gcPlan) {
             // The MLIR stamps are the product (plan 02 Q5); the LLVM fixpoint
             // only runs as their validate twin.
-            if (auto err = finishGcFreePlan(m))
+            if (auto err = finishGcFreePlan(m, job.partition != nullptr))
                 return err;
         } else {
             propagateGcFreeLeafAttrs(m, gcFreeLeafMode());
@@ -4333,6 +4204,30 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
                     return err;
         }
     }
+
+    // Plan 05 R13: the whole-module chunks fact was consumed by the get-tag
+    // expansion; it must not reach the object.
+    stripModuleFlag(m, "eco-list-chunks");
+
+    // Plan 05 §1.5: per partition, today's late externalization (it used to
+    // run once, whole-module, before the bitcode serialize): every local
+    // becomes External + hidden so cross-partition references link.
+    if (job.partition) {
+        for (GlobalValue &gv : m.global_values())
+            if (!gv.hasName())
+                return createStringError(
+                    std::errc::invalid_argument,
+                    "EcoSplit partition holds an unnamed global (its "
+                    "externalized name would collide across partitions)");
+        externalizeAllLocals(m);
+    }
+    // Plan 05 R3: no import copy may reach RS4GC, in any mode.
+    for (Function &f : m)
+        if (f.hasAvailableExternallyLinkage())
+            return createStringError(
+                std::errc::invalid_argument,
+                "available_externally function '%s' reached RS4GC",
+                f.getName().str().c_str());
 
     RS4GCOptions rs4gcOpts;
     rs4gcOpts.preDumpPath = job.preRS4GCDumpPath;
@@ -4437,15 +4332,12 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
                 paths.emplace_back(p.str());
                 owned.emplace_back(p.str());
             }
-            // Lazy split's per-worker strip handles functions + globals only;
-            // aliases/ifuncs would be duplicated across partitions. eco's
-            // codegen never emits them, but fall back to SplitModule if any
-            // appear so the lazy path is always safe to enable.
-            const bool canLazy =
-                job.lazySplit && m.aliases().empty() && m.ifuncs().empty();
-            auto splitFn =
-                canLazy ? emitObjectFilesSplitLazy : emitObjectFilesSplit;
-            if (auto err = splitFn(
+            // The lazy bitcode split (externalize + serialize once + per-worker
+            // lazy re-parse) was retired by plan 05 (EcoSplit): the default
+            // tiers partition in MLIR before translation. This SplitModule
+            // path remains for --parallel-opt=none, --rs4gc-after-opt,
+            // ECO_MLIR_SPLIT=0 and single-threaded MLIR contexts.
+            if (auto err = emitObjectFilesSplit(
                     m, numParts, paths, job.optLevel, perPart,
                     job.devEmitCodeGenLevel, job.devOptO1, job.stats,
                     rs4gcInWorkers ? &rs4gcOpts : nullptr)) {
@@ -4464,9 +4356,17 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
         // chose a single partition (small module / split off), run the
         // per-partition pipeline here inline — the whole-module -O2 was
         // skipped (and RS4GC too when rs4gcInWorkers).
-        if (rs4gcInWorkers)
+        // Under EcoSplit (plan 05) this is the partition worker's pipeline;
+        // the scopes keep the old "(sum over workers)" stats rows.
+        LoweringStats *workerStats = job.partition ? job.stats : nullptr;
+        if (rs4gcInWorkers) {
+            MaybeScope s(workerStats, "  partition RS4GC (sum over workers)");
             runRS4GCAndMaybeFramePointers(m, rs4gcOpts);
+        }
+        if (job.partition)
+            collectGcLeafReport(m, job.partition->gcReport);
         if (perPart != ParallelOpt::None) {
+            MaybeScope s(workerStats, "  partition opt (sum over workers)");
             if (auto err = optimizePartitionModule(
                     m, job.tm, perPart, job.optLevel, job.devOptO1))
                 return err;
@@ -4475,6 +4375,7 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
             if (!job.tm)
                 return createStringError(std::errc::invalid_argument,
                     "EmitObjectFile requires a TargetMachine");
+            MaybeScope s(workerStats, "  partition emit (sum over workers)");
             if (auto err = emitObjectFile(m, *job.tm, job.objectFilePath))
                 return err;
         }

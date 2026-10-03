@@ -62,8 +62,11 @@ struct Graph {
     }
 };
 
-/// Builds the graph; per-op collection runs in parallel.
-Graph build(mlir::ModuleOp module);
+/// Builds the graph; per-op collection runs in parallel. With
+/// `keepUnusedAddressOf`, an `llvm.mlir.addressof` with no uses still yields
+/// an `Address` edge: EcoSplit needs every symbol a cloned body NAMES (the
+/// MLIR verifier and translation resolve it), not only what LLVM will use.
+Graph build(mlir::ModuleOp module, bool keepUnusedAddressOf = false);
 
 /// Validate support (plan 03 R5): every defined function's name mapped to
 /// whether LLVM's Function::hasAddressTaken() must be true after translation

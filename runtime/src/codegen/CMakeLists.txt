@@ -857,6 +857,7 @@ if(NOT ECO_GLIBC_OUTPUT_RUNTIME) # MLIR half: the AOT driver library
 add_library(EcoNativeDriverStatic STATIC
     EcoNativeDriver.cpp
     EcoBackend.cpp
+    EcoSplit.cpp  # plans/mlir-split-backend-05-ecosplit.md
     EcoPipeline.cpp
     LoweringStats.cpp
     EcoBootConfig.cpp

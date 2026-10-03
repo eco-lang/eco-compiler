@@ -55,6 +55,7 @@
 #include "EcoBackend.h"
 #include "EcoDialect.h"
 #include "EcoPipeline.h"
+#include "EcoSplit.h"
 #include "LoweringStats.h"
 #include "Passes.h"
 #include "Passes/EcoSymbolGraph.h"
@@ -190,6 +191,76 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
             return 1;
     }
 
+    // Plan 05 (EcoSplit, CGEN_083): partition in MLIR and translate + lower
+    // every partition in parallel — no whole-module translation, no bitcode
+    // serialize, no per-worker re-parse. Executable output only here (the
+    // driver's split-eligible kind).
+    {
+        const bool objOnly = pathEndsWith(outputPath, ".o");
+        const bool shared = pathEndsWith(outputPath, ".so") ||
+                            pathEndsWith(outputPath, ".node");
+        eco::EcoBackendJob job;
+        job.kind = eco::BackendKind::EmitObjectFile;
+        job.optLevel = opts.optLevel > 0
+                           ? static_cast<llvm::CodeGenOptLevel>(
+                                 std::min(opts.optLevel, 3u))
+                           : llvm::CodeGenOptLevel::None;
+        job.needsFramePointerAttr = true;
+        job.preRS4GCDumpPath = opts.preRS4GCDumpPath;
+        job.postRS4GCDumpPath = opts.postRS4GCDumpPath;
+        job.splitCodegen = opts.splitCodegen;
+        job.splitEligible = !objOnly && !shared;
+        job.capClosedWorld = !objOnly && !shared;
+        job.parallelOpt = opts.parallelOpt == 1   ? eco::ParallelOpt::Dev
+                          : opts.parallelOpt == 2 ? eco::ParallelOpt::Cgu
+                                                  : eco::ParallelOpt::None;
+        job.stats = opts.stats;
+        job.devEmitCodeGenLevel = opts.devEmitCodeGenLevel;
+        job.devOptO1 = opts.devOptO1;
+        const unsigned parts =
+            job.splitEligible ? eco::mlirSplitPartitionCount(*module, job) : 1;
+        if (parts > 1) {
+            llvm::SmallString<256> tempObjPath;
+            if (auto ec = llvm::sys::fs::createTemporaryFile(
+                    "eco-driver", "o", tempObjPath)) {
+                llvm::errs() << "Error: Could not create temp object file: "
+                             << ec.message() << "\n";
+                return 1;
+            }
+            job.objectFilePath = std::string(tempObjPath);
+            eco::EcoBackendResult backendResult;
+            {
+                std::unique_ptr<eco::LoweringStats::Scope> scope;
+                if (opts.stats)
+                    scope = std::make_unique<eco::LoweringStats::Scope>(
+                        *opts.stats,
+                        "LLVM backend (EcoSplit: translate + lower per "
+                        "partition)");
+                if (auto err = eco::lowerMlirSplit(*module, job, parts,
+                                                   &backendResult)) {
+                    llvm::errs() << "Error: backend pipeline failed: "
+                                 << llvm::toString(std::move(err)) << "\n";
+                    llvm::sys::fs::remove(job.objectFilePath);
+                    return 1;
+                }
+            }
+            module = nullptr;
+            int rc;
+            {
+                std::unique_ptr<eco::LoweringStats::Scope> scope;
+                if (opts.stats)
+                    scope = std::make_unique<eco::LoweringStats::Scope>(
+                        *opts.stats, "Link (system ld)");
+                rc = eco::linkExecutable(backendResult.objectFiles, outputPath,
+                                         opts, shared);
+            }
+            llvm::sys::fs::remove(job.objectFilePath);
+            for (auto &f : backendResult.ownedTempFiles)
+                llvm::sys::fs::remove(f);
+            return rc;
+        }
+    }
+
     llvm::LLVMContext llvmContext;
     std::unique_ptr<llvm::Module> llvmModule;
     llvm::StringMap<bool> reachTaken; // plan 03 R5 validate
@@ -322,7 +393,6 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
                           : opts.parallelOpt == 2 ? eco::ParallelOpt::Cgu
                                                   : eco::ParallelOpt::None;
         job.stats = opts.stats;
-        job.lazySplit = opts.lazySplit;
         job.devEmitCodeGenLevel = opts.devEmitCodeGenLevel;
         job.devOptO1 = opts.devOptO1;
         if (auto err = eco::runEcoBackend(*llvmModule, job, &backendResult)) {

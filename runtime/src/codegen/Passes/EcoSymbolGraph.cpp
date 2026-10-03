@@ -20,7 +20,8 @@ namespace {
 
 using EdgeList = std::vector<std::pair<uint32_t, uint8_t>>;
 
-void collect(Operation *root, const Graph &g, EdgeList &out) {
+void collect(Operation *root, const Graph &g, EdgeList &out,
+             bool keepUnusedAddressOf) {
     auto add = [&](StringAttr s, uint8_t kind) {
         int t = g.lookup(s);
         if (t >= 0)
@@ -28,8 +29,11 @@ void collect(Operation *root, const Graph &g, EdgeList &out) {
     };
     root->walk([&](Operation *op) {
         if (auto ao = dyn_cast<LLVM::AddressOfOp>(op)) {
-            if (ao->use_empty())
+            if (ao->use_empty()) {
+                if (keepUnusedAddressOf)
+                    add(ao.getGlobalNameAttr().getAttr(), Address);
                 return; // no LLVM use after translation
+            }
             StringAttr name = ao.getGlobalNameAttr().getAttr();
             int t = g.lookup(name);
             if (t < 0)
@@ -71,7 +75,7 @@ void collect(Operation *root, const Graph &g, EdgeList &out) {
 
 } // namespace
 
-Graph build(ModuleOp module) {
+Graph build(ModuleOp module, bool keepUnusedAddressOf) {
     Graph g;
     std::vector<Operation *> nonSymbol;
     for (Operation &op : *module.getBody()) {
@@ -105,7 +109,9 @@ Graph build(ModuleOp module) {
     for (uint32_t i = 0; i < idx.size(); ++i)
         idx[i] = i;
     parallelForEach(module.getContext(), idx,
-                    [&](uint32_t i) { collect(g.nodes[i].op, g, lists[i]); });
+                    [&](uint32_t i) {
+                        collect(g.nodes[i].op, g, lists[i], keepUnusedAddressOf);
+                    });
 
     g.outBegin.resize(g.nodes.size() + 1, 0);
     size_t total = 0;
@@ -124,7 +130,7 @@ Graph build(ModuleOp module) {
 
     for (Operation *op : nonSymbol) {
         EdgeList l;
-        collect(op, g, l);
+        collect(op, g, l, keepUnusedAddressOf);
         for (auto &e : l) {
             g.extraRoots.push_back(e.first);
             if (takesAddress(e.second))

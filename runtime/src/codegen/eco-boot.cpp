@@ -88,6 +88,7 @@
 #include "Passes.h"
 #include "EcoBackend.h"
 #include "EcoPipeline.h"
+#include "EcoSplit.h"
 #include "LoweringStats.h"
 
 #include "llvm/Analysis/TargetLibraryInfo.h"
@@ -196,14 +197,6 @@ static cl::opt<eco::ParallelOpt> parallelOpt(
                    "cheap IPO prologue + full -O2 per partition (parallel opt, "
                    "keeps intra-partition inlining; default)")),
     cl::init(eco::ParallelOpt::Cgu));
-
-static cl::opt<bool> lazySplit(
-    "lazy-split",
-    cl::desc("Partitioned codegen: extract each partition lazily from one "
-             "shared bitcode (ThinLTO-importer pattern) instead of "
-             "llvm::SplitModule's N clones. On by default; --lazy-split=0 "
-             "reverts to SplitModule. Executable output only"),
-    cl::init(true));
 
 static cl::opt<unsigned> devEmitCG(
     "dev-emit-cg",
@@ -762,6 +755,103 @@ int main(int argc, char **argv) {
         }
     }
 
+    // Step 4 (plan 05, EcoSplit, CGEN_083): for split-eligible object and
+    // executable output, partition in MLIR and translate + lower every
+    // partition in parallel. No whole-module translation, no bitcode
+    // serialize, no per-worker re-parse. Ends the run here.
+    if (emitAction == EmitExe || emitAction == EmitObj) {
+        const bool objOnly = capOutputObjOnly(output);
+        const bool isExe = !objOnly && !outputIsSharedLib(output);
+        eco::EcoBackendJob job;
+        job.kind = eco::BackendKind::EmitObjectFile;
+        job.optLevel = optLevel > 0
+            ? static_cast<llvm::CodeGenOptLevel>(std::min(optLevel.getValue(), 3u))
+            : llvm::CodeGenOptLevel::None;
+        job.needsFramePointerAttr = true;
+        job.preRS4GCDumpPath = dumpPreRS4GCIR;
+        job.postRS4GCDumpPath = dumpRS4GCIR;
+        job.rs4gcAfterOpt = rs4gcAfterOpt;
+        job.splitCodegen = splitCodegen;
+        job.splitEligible = isExe || objOnly;
+        job.capClosedWorld = capClosedWorld(output);
+        job.parallelOpt = parallelOpt;
+        job.stats = &stats;
+        job.devEmitCodeGenLevel = devEmitCG;
+        job.devOptO1 = devOptO1;
+        const unsigned parts = eco::mlirSplitPartitionCount(*module, job);
+        if (parts > 1) {
+            if (const char *spikeDir = ::getenv("ECO_SPIKE_DIR"))
+                eco::runSpikeCensus(*module, spikeDir);
+            std::string objFile;
+            std::string tempObjFile;
+            if (objOnly) {
+                objFile = output;
+                job.objectFilePath = objFile + ".part0.o";
+            } else {
+                llvm::SmallString<256> tempPath;
+                if (auto ec = llvm::sys::fs::createTemporaryFile(
+                        "eco-boot", "o", tempPath)) {
+                    llvm::errs() << "Error: Could not create temp file: "
+                                 << ec.message() << "\n";
+                    return 1;
+                }
+                tempObjFile = std::string(tempPath);
+                objFile = tempObjFile;
+                job.objectFilePath = objFile;
+            }
+            eco::EcoBackendResult backendResult;
+            {
+                eco::LoweringStats::Scope scope(
+                    stats, "LLVM backend (EcoSplit: translate + lower per "
+                           "partition)");
+                if (auto err = eco::lowerMlirSplit(*module, job, parts,
+                                                   &backendResult)) {
+                    llvm::errs() << "Error: backend pipeline failed: "
+                                 << llvm::toString(std::move(err)) << "\n";
+                    if (!tempObjFile.empty())
+                        llvm::sys::fs::remove(tempObjFile);
+                    if (!tempMlirFile.empty())
+                        llvm::sys::fs::remove(tempMlirFile);
+                    return 1;
+                }
+            }
+            if (!tempMlirFile.empty())
+                llvm::sys::fs::remove(tempMlirFile);
+            int rc = 0;
+            if (objOnly) {
+                // Relocatable link of the partition objects into one object,
+                // as the translate-whole path does.
+                eco::LoweringStats::Scope scope(stats,
+                                                "Relocatable link (ld -r)");
+                std::string linker = eco::config::systemLinker;
+                llvm::SmallVector<llvm::StringRef> args = {linker, "-r", "-o",
+                                                           objFile};
+                for (const std::string &f : backendResult.objectFiles)
+                    args.push_back(f);
+                std::string errMsg;
+                rc = llvm::sys::ExecuteAndWait(linker, args, std::nullopt, {},
+                                               0, 0, &errMsg);
+                if (rc != 0)
+                    llvm::errs() << "Error: relocatable link failed (rc=" << rc
+                                 << "): " << errMsg << "\n";
+                for (const std::string &f : backendResult.objectFiles)
+                    llvm::sys::fs::remove(f);
+            } else {
+                eco::LoweringStats::Scope scope(stats, "Link (clang++ driver)");
+                rc = linkExecutable(backendResult.objectFiles, output);
+                if (!tempObjFile.empty())
+                    llvm::sys::fs::remove(tempObjFile);
+            }
+            for (auto &f : backendResult.ownedTempFiles)
+                llvm::sys::fs::remove(f);
+            if (printStats)
+                stats.print(llvm::errs());
+            eco::printOptPassTimes(llvm::errs());
+            ecoBootFinalExit(rc);
+            return rc;
+        }
+    }
+
     // Step 4: Translate to LLVM IR
     {
         eco::LoweringStats::Scope scope(stats, "MLIR -> LLVM IR translation");
@@ -945,7 +1035,6 @@ int main(int argc, char **argv) {
         job.capClosedWorld = capClosedWorld(output);
         job.parallelOpt = parallelOpt;
         job.stats = &stats;
-        job.lazySplit = lazySplit;
         job.devEmitCodeGenLevel = devEmitCG;
         job.devOptO1 = devOptO1;
         job.objectFilePath = emitObjOnly ? objPartsBase : objFile;

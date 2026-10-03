@@ -2134,6 +2134,87 @@ MLIR passes (wall clock, may overlap with phases):
 
 </details>
 
+### ES: EcoSplit — partition in MLIR, translate and lower in parallel (plan 05, 2026-10-02)
+
+| step | wall (s) | Δ vs ref (s) | user CPU (s) | max RSS (kB) | MLIR pipeline (s) | whole-module opt (s) | partition emit Σ (s) | verdict | ref |
+|---|---|---|---|---|---|---|---|---|---|
+| ES | 25.53 | -13.08 | 365.09 | 7,694,944 | 8.16 | — | 156.24 | WIN (codegen-changing: partition assignment) | SPL |
+
+Tree: `plans/mlir-split-backend-05-ecosplit.md` implemented. Input as for SPL
+(`stats-backend-opt/p04/base.mlir`).
+- **What left the critical path:**
+  - the serial whole-module translation (6.30 s); translation now runs per partition in the
+    workers, 22.4 s CPU in total;
+  - the serial pre-RS4GC block (~3.0 s);
+  - externalize + bitcode serialize (3.64 s);
+  - the per-worker lazy re-parse/extract (8.44 s CPU);
+  - the MLIR teardown, now on a helper thread.
+- **Added:** the EcoSplit build, 0.73 s (parallel clone; about 1,011 `$cap` import copies per
+  partition).
+- **Correctness** (plan 05 gates):
+  - every function's pre-RS4GC IR equals the translate-whole path's, modulo phi incoming
+    order (73,602 / 73,602);
+  - deterministic;
+  - bootstrap fixed point, with all 5 lowering stages through EcoSplit;
+  - AOT E2E 900/902 both normally and with every program force-split.
+- **Runtime tax:** self-compile 108.54 s vs 110.50 s for the lazy-split compiler (N = 3).
+- **Codegen-changing:** ownership comes from MLIR op counts, so per-partition `-O2` sees
+  different neighbours.
+
+<details><summary>--lowering-stats banner</summary>
+
+```
+/usr/bin/ld: /tmp/eco-part-64ef56.o: warning: relocation against `Compiler_Monomorphize_MonoTraverse_mapExprTypes_$_36256' in read-only section `.llvm_stackmaps'
+/usr/bin/ld: warning: creating DT_TEXTREL in a PIE
+
+=== eco-boot-native lowering stats ===
+
+Phases (wall clock):
+  name                                        time         %      calls   
+  ------------------------------------------------------------------------
+    partition emit (sum over workers)             156.24 s   42.9%      24
+    partition opt (sum over workers)              127.26 s   34.9%      24
+    partition translate (sum over workers)         22.44 s    6.2%      24
+  LLVM backend (EcoSplit: translate + lower...     15.32 s    4.2%       1
+    parallel lower drain (post-split wait)         14.54 s    4.0%       1
+    partition RS4GC (sum over workers)             11.32 s    3.1%      24
+  MLIR lowering pipeline                            8.16 s    2.2%       1
+    capacity-hoist analysis (serial)                3.18 s    0.9%      24
+    $cap inline prepass (sum over workers)          2.36 s    0.6%      24
+  Link (clang++ driver)                             1.10 s    0.3%       1
+    gc-free leaf propagation (serial)               1.06 s    0.3%      24
+  MLIR parse + verify                            743.73 ms    0.2%       1
+    EcoSplit build (parallel clone)              734.77 ms    0.2%       1
+  ------------------------------------------------------------------------
+  total                                           364.45 s
+
+MLIR passes (wall clock, may overlap with phases):
+  name                                        time         %      calls   
+  ------------------------------------------------------------------------
+  (anonymous namespace)::EcoToLLVMPass              3.06 s    0.8%       1
+  (anonymous namespace)::EcoTailConversions...      2.06 s    0.6%       1
+  (anonymous namespace)::EcoFoldProjectPass         1.13 s    0.3%   56944
+  (anonymous namespace)::EcoCapHoistPlanPass     569.65 ms    0.2%       1
+  (anonymous namespace)::EcoReachabilityPass     525.35 ms    0.1%       1
+  (anonymous namespace)::EcoListTemplatePass     414.23 ms    0.1%       1
+  (anonymous namespace)::EcoListCursorPass       403.19 ms    0.1%       1
+  (anonymous namespace)::EcoControlFlowToSC...   242.54 ms    0.1%       1
+  (anonymous namespace)::EcoGcFreePropagati...   210.65 ms    0.1%       1
+  mlir::detail::OpToOpPassAdaptor                175.59 ms    0.0%       1
+  (anonymous namespace)::EcoGCPreparePass        160.17 ms    0.0%       1
+  (anonymous namespace)::BFToLLVMPass            121.97 ms    0.0%       1
+  (anonymous namespace)::EcoPAPSimplifyPass       79.03 ms    0.0%       1
+  (anonymous namespace)::EcoMarkGCLeafCalls...    36.95 ms    0.0%       1
+  (anonymous namespace)::EcoCompareCaseRewr...    29.94 ms    0.0%       1
+  (anonymous namespace)::RCEliminationPass        23.25 ms    0.0%       1
+  (anonymous namespace)::UndefinedFunctionPass    23.22 ms    0.0%       1
+  (anonymous namespace)::JoinpointNormaliza...    15.65 ms    0.0%       1
+  ------------------------------------------------------------------------
+  total                                             9.28 s
+```
+
+</details>
+
 ## 8. Summary
 
 | step | wall (s) | Δ vs ref (s) | user CPU (s) | max RSS (kB) | MLIR pipeline (s) | whole-module opt (s) | partition emit Σ (s) | verdict | ref |
@@ -2164,3 +2245,4 @@ MLIR passes (wall clock, may overlap with phases):
 | B7 | 44.46 | +0.36 | 362.65 | 7,889,980 | 6.88 | — | 155.17 | FLAT, kept (removes quadratic scans) | B6 |
 | B4 | 44.09 | -0.01 | 363.33 | 7,861,344 | 6.65 | — | 155.35 | FLAT, kept (one-line) | B6 |
 | SPL | 38.61 | -5.48 | 370.50 | 7,582,164 | 8.15 | — | 157.01 | WIN (codegen-changing: prologue deleted) | B4 |
+| ES | 25.53 | -13.08 | 365.09 | 7,694,944 | 8.16 | — | 156.24 | WIN (codegen-changing: partition assignment) | SPL |
