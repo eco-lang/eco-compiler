@@ -1,6 +1,6 @@
 module Utils.Bytes.Decode exposing
     ( unit, bool, int, float, string
-    , uintV, sintV
+    , uintV, sintV, int64
     , maybe, list, nonempty, result, oneOrMore
     , jsonPair, assocListDict, stdDict, everySet
     , map6, map8
@@ -15,7 +15,7 @@ enable reliable deserialization of the compiler's binary cache files and inter-p
 # Primitive Decoders
 
 @docs unit, bool, int, float, string
-@docs uintV, sintV
+@docs uintV, sintV, int64
 
 
 # Container Decoders
@@ -82,6 +82,15 @@ unit =
 int : BD.Decoder Int
 int =
     BD.float64 endian |> BD.map round
+
+
+{-| Decode an Int written by `Utils.Bytes.Encode.int64` (exact over i64 natively).
+-}
+int64 : BD.Decoder Int
+int64 =
+    BD.map2 (\hi lo -> hi * 4294967296 + lo)
+        (BD.signedInt32 endian)
+        (BD.unsignedInt32 endian)
 
 
 {-| Decode an unsigned LEB128 varint written by `Utils.Bytes.Encode.uintV`.

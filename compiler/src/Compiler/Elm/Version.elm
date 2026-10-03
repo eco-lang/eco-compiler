@@ -165,6 +165,10 @@ Initial release: `0.1.0`.
 -}
 compiler : Version
 compiler =
+    -- BUMPED 0.1.2 -> 0.1.3 on 2026-10-03: Int LITERALS (TOpt.Int, DT.IsInt) are
+    -- encoded exactly as i64 (Utils.Bytes int64) instead of float64, which
+    -- corrupted literals beyond 2^53 in cached modules (9223372036854775807
+    -- decoded as -9223372036854775808); typedGraphFormatVersion 2 -> 3.
     -- BUMPED 0.1.1 -> 0.1.2 on 2026-10-03 for the .ecot v2 TYPE TABLE
     -- (plans/cache-serialization-optimization.md S3, ECOT_003) and varint
     -- regions/indices (S10): typedGraphFormatVersion 1 -> 2.
@@ -179,7 +183,7 @@ compiler =
     -- `~/.eco/<version>/packages/...`, so bumping it invalidates every cache in
     -- one move. Cost, and it is unavoidable: one full package rebuild on every
     -- developer and CI machine.
-    Version 0 1 2
+    Version 0 1 3
 
 
 {-| The version of the Elm compiler this implementation targets: 0.19.1.

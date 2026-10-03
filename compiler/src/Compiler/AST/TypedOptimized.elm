@@ -875,7 +875,7 @@ exprEncoderS st tt expr =
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 3
                 , A.regionEncoderV region
-                , BE.int value
+                , BE.int64 value -- exact i64 (v3); BE.int is a float64
                 , TypeTable.ref tt meta.tipe
                 ]
 
@@ -1129,7 +1129,7 @@ exprDecoderS st tdt =
                     3 ->
                         Bytes.Decode.map3 Int
                             A.regionDecoderV
-                            BD.int
+                            BD.int64
                             (metaDecoderS st tdt)
 
                     4 ->
@@ -1600,7 +1600,7 @@ than misparsing.
 -}
 typedGraphFormatVersion : Int
 typedGraphFormatVersion =
-    2
+    3
 
 
 {-| Read and check the leading format-version byte; fail the whole decode on

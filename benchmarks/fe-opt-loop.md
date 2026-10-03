@@ -765,6 +765,34 @@ Default leg (flag off):
   `stampArrowRoots` too" may add more; it was not part of this step.
 - **Pending (batched):** G1 (plus the plan's `CanMemoTest`), G2, G4 fixed points, G5.
 
+### I64: exact i64 Int literals in `.ecot` (follow-up to G3/G8; v3, V.compiler 0.1.3): **FLAT, kept (correctness)**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 64.82 | 23.6 | 23.5 | 12.0 | 3.48 | 1168 | 6 | 6429 | 6526472 | 13374877 | same |
+| r2 | 65.37 | 23.6 | 23.8 | 12.0 | 3.53 | 1168 | 6 | 6429 | 6561080 | 13374877 | same |
+| r3 | 65.67 | 23.7 | 23.9 | 12.1 | 3.51 | 1168 | 6 | 6429 | 6528720 | 13374877 | same |
+| **median** | **65.37** | 23.6 | 23.8 | 12.0 | 3.51 | 1168 | 6 | 6429 | 6528720 | 13374877 | |
+| Δ vs S8 | +0.42 (flat) | +0.2 | +0.3 | −0.1 | +0.10 | 0 | 0 | +37 | −43,060 | (new source) | |
+
+- **Bug (reproduced natively before the fix):** `.ecot` stored Int literals as float64
+  (`BE.int`), so a module compiled once and then loaded from its cached `.ecot` got corrupted
+  literals: in a 2-module project (`Big.elm` defines the literals, `Main` is touched between a
+  cold and a warm build) the warm MLIR had `9007199254740993 -> 9007199254740992` and
+  `9223372036854775807 -> -9223372036854775808` (wraparound), i.e. silent wrong code on any
+  incremental build.
+- **Fix:** `Utils.Bytes.Encode.int64` / `Decode.int64` — signed 32-bit high word + unsigned 32-bit
+  low word, `n = hi * 2^32 + lo` with floored `modBy`, exact over the whole native i64 range and as
+  exact as the double under JS. Used for `TOpt.Int` literals and decision-tree `IsInt` tests (the
+  latter's codec is shared with `.eco`, also covered by the bump). `typedGraphFormatVersion` 2 -> 3,
+  `V.compiler` 0.1.2 -> 0.1.3 (caches relocate to `~/.eco/0.1.3`), ECOT_003 text updated,
+  benchmark scripts point at 0.1.3.
+- **Checks:** the repro is now `cold == warm` with both literals exact; new `int64` tests in
+  `VarintCodecTest` (JS-exact extremes ±(2^53−1), the 2^32 word edges, negatives, a fuzz, 8-byte
+  width) pass with `TypedOptimizedCodecTest` and `TypeTableTest` (161/161).
+- **Gates:** bootstrap PASS (10 m 01 s, 4b and 8c fixed points hold under v3); `--target full`
+  **2,032/2,032 PASS** (`/tmp/g2_full_i64.txt`), including the two new `Eco.File` kernel tests.
+
 ## 6a. Batched end-of-series gates (run once each, after S8)
 
 - **G5 `TypedOptimizedCodecTest` (new):** 135/135 standard-suite modules round-trip the v2 codec
@@ -1037,3 +1065,4 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | S4 | 68.37 | -0.35 | 1260 | 6 | 7730 | 7948624 | FLAT default leg; kept for the flag | S9 |
 | S4 --no-cache | 61.85 | -6.87 | 1217 | 7 | 7694 | 7499908 | WIN when used (opt-in one-shot; parse/check/build 27.0 -> 20.1 s) | S9 |
 | S8 | 64.95 | -3.42 | 1168 | 6 | 6392 | 6571668 | WIN (canType memo; parse/check/build 26.7 -> 23.4 s; promoted -1.34 GB; RSS -1.38 GB; .ecot/.eci byte-identical) | S4 |
+| I64 | 65.37 | +0.42 | 1168 | 6 | 6429 | 6528720 | FLAT, kept (exact i64 Int literals in .ecot; fixes cached-literal corruption; V 0.1.3) | S8 |

@@ -1,6 +1,6 @@
 module Utils.Bytes.Encode exposing
     ( unit, bool, int, float, string
-    , uintV, sintV
+    , uintV, sintV, int64
     , maybe, list, nonempty, result, oneOrMore
     , jsonPair, assocListDict, stdDict, everySet
     )
@@ -13,7 +13,7 @@ data to enable reliable deserialization.
 # Primitive Encoders
 
 @docs unit, bool, int, float, string
-@docs uintV, sintV
+@docs uintV, sintV, int64
 
 
 # Container Encoders
@@ -49,10 +49,37 @@ unit () =
 
 
 {-| Encodes an integer as a 64-bit float in big-endian byte order.
+
+Exact only within 2^53. Use `int64` for an Int that comes from user source (a
+literal), which may be any i64 natively.
 -}
 int : Int -> BE.Encoder
 int =
     toFloat >> BE.float64 endian
+
+
+{-| Encodes an integer EXACTLY over the full native i64 range: a signed 32-bit
+high word then an unsigned 32-bit low word, `n = hi * 2^32 + lo` with
+`0 <= lo < 2^32`. `modBy` is floored, so `n - lo` is an exact multiple of 2^32
+and `//` divides it exactly under both the native i64 and JS (where `//` is
+32-bit, and `hi` stays within 2^21 for any Int JS can hold). Under JS the value
+is only as exact as the double it already is.
+-}
+int64 : Int -> BE.Encoder
+int64 n =
+    let
+        lo : Int
+        lo =
+            modBy 4294967296 n
+
+        hi : Int
+        hi =
+            (n - lo) // 4294967296
+    in
+    BE.sequence
+        [ BE.signedInt32 endian hi
+        , BE.unsignedInt32 endian lo
+        ]
 
 
 {-| Unsigned LEB128 varint: 7 bits per byte, low group first, high bit =

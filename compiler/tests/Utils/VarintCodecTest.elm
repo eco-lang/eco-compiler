@@ -54,6 +54,18 @@ suite =
                     (Bytes.Decode.decode BD.uintV
                         (Bytes.Encode.encode (Bytes.Encode.sequence (List.repeat 5 (Bytes.Encode.unsignedInt8 0xFF) ++ [ Bytes.Encode.unsignedInt8 1 ])))
                     )
+        , Test.test "int64 round-trips exactly at the JS-exact extremes and the 2^32 word edges" <|
+            \_ ->
+                let
+                    ns =
+                        [ 0, 1, -1, 4294967295, 4294967296, -4294967296, -4294967297, 2147483647, -2147483648, 9007199254740991, -9007199254740991 ]
+                in
+                Expect.equal (List.map Just ns)
+                    (List.map (\n -> Bytes.Decode.decode BD.int64 (Bytes.Encode.encode (BE.int64 n))) ns)
+        , Test.fuzz (Fuzz.intRange -9007199254740991 9007199254740991) "int64 fuzz (JS-exact range)" <|
+            \n -> Expect.equal (Just n) (Bytes.Decode.decode BD.int64 (Bytes.Encode.encode (BE.int64 n)))
+        , Test.test "int64 is 8 bytes" <|
+            \_ -> Expect.equal 8 (Bytes.width (Bytes.Encode.encode (BE.int64 -5)))
         , Test.fuzz
             (Fuzz.map4 (\a b c d -> A.Region (A.Position a b) (A.Position c d))
                 (Fuzz.intRange 0 100000)

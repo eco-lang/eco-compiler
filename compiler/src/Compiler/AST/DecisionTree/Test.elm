@@ -154,7 +154,7 @@ testEncoderS st test =
         IsInt value ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 4
-                , BE.int value
+                , BE.int64 value -- a pattern literal: exact i64
                 ]
 
         IsChr value ->
@@ -202,7 +202,7 @@ testDecoderS st =
                         Bytes.Decode.succeed IsTuple
 
                     4 ->
-                        Bytes.Decode.map IsInt BD.int
+                        Bytes.Decode.map IsInt BD.int64
 
                     5 ->
                         Bytes.Decode.map IsChr (StringTable.stringDec st)
