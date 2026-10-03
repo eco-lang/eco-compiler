@@ -8,6 +8,7 @@
 
 #include "Passes/EcoCapHoistCore.h"
 #include "Passes/EcoSymbolGraph.h"
+#include "Passes/EcoParallel.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
@@ -121,10 +122,13 @@ llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports
         if (g.nodes[i].isFunc && g.nodes[i].isDef)
             defFns.push_back(i);
     std::vector<uint64_t> cost(n, 0);
-    parallelForEach(ctx, defFns, [&](uint32_t i) {
-        uint64_t c = 1;
-        g.nodes[i].op->walk([&](Operation *) { ++c; });
-        cost[i] = c;
+    eco::forEachChunk(ctx, defFns.size(), [&](size_t lo, size_t hi) {
+        for (size_t k = lo; k < hi; ++k) {
+            uint32_t i = defFns[k];
+            uint64_t c = 1;
+            g.nodes[i].op->walk([&](Operation *) { ++c; });
+            cost[i] = c;
+        }
     });
 
     // Ownership: LPT over functions (cost desc, then name), deterministic.

@@ -36,6 +36,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 
 #include "../Passes.h"
+#include "EcoParallel.h"
 
 #include <cstdlib>
 #include <map>
@@ -120,8 +121,26 @@ struct EcoListCursorPass
         dbg = debug;
         declsMade = false;
 
+        // Plan 07 P5: collect the loops per function in parallel chunks, then
+        // concatenate in module order — the same list (and post-order) the
+        // serial m.walk produced (only function bodies hold scf.while), so
+        // the serial analyze/rewrite below is unchanged. The walk over the
+        // ~4M ops was 90 % of this pass; the rewrites are cheap.
+        SmallVector<Operation *> tops;
+        for (Operation &op : *m.getBody())
+            if (op.getNumRegions() && !op.getRegion(0).empty())
+                tops.push_back(&op);
+        std::vector<SmallVector<scf::WhileOp, 0>> perTop(tops.size());
+        eco::forEachChunk(&getContext(), tops.size(),
+                          [&](size_t lo, size_t hi) {
+                              for (size_t i = lo; i < hi; ++i)
+                                  tops[i]->walk([&](scf::WhileOp w) {
+                                      perTop[i].push_back(w);
+                                  });
+                          });
         SmallVector<scf::WhileOp, 32> loops;
-        m.walk([&](scf::WhileOp w) { loops.push_back(w); });
+        for (auto &v : perTop)
+            loops.append(v.begin(), v.end());
 
         for (scf::WhileOp w : loops) {
             whiles++;

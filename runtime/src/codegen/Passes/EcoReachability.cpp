@@ -18,6 +18,7 @@
 //===----------------------------------------------------------------------===//
 #include "../Passes.h"
 #include "EcoSymbolGraph.h"
+#include "EcoParallel.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
@@ -136,11 +137,12 @@ void EcoReachabilityPass::runOnOperation() {
     for (size_t i = 0; i < g.nodes.size(); ++i)
         if (!reached[i])
             dead.push_back(g.nodes[i].op);
-    parallelForEach(ctx, dead, [](Operation *op) {
-        for (Region &r : op->getRegions()) {
-            r.dropAllReferences();
-            r.getBlocks().clear();
-        }
+    eco::forEachChunk(ctx, dead.size(), [&](size_t lo, size_t hi) {
+        for (size_t i = lo; i < hi; ++i)
+            for (Region &r : dead[i]->getRegions()) {
+                r.dropAllReferences();
+                r.getBlocks().clear();
+            }
     });
     for (Operation *op : dead)
         op->erase();

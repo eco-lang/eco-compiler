@@ -85,10 +85,22 @@ public:
     /// needing a friend declaration that wouldn't match the unnamed type.
     void recordPass(llvm::StringRef name, Duration duration);
 
+    LoweringStats();
+
 private:
-    mutable std::mutex mu_;
-    llvm::StringMap<Entry> phases_;
-    llvm::StringMap<Entry> passes_;
+    /// Plan 07 P1: per-thread commutative shards. record()/recordPass() add
+    /// into the calling thread's shard without a lock; print() merges every
+    /// shard by summing (order-independent). The shards are owned here, so a
+    /// shard outlives its thread (EcoSplit workers exit before the banner).
+    struct Shard {
+        llvm::StringMap<Entry> phases;
+        llvm::StringMap<Entry> passes;
+    };
+    Shard &localShard();
+
+    mutable std::mutex mu_;  // guards shards_ (registration + print)
+    std::vector<std::unique_ptr<Shard>> shards_;
+    const uint64_t gen_;     // unique per object: thread caches key on it
 };
 
 } // namespace eco

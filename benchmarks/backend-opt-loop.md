@@ -2282,6 +2282,86 @@ MLIR passes (wall clock, may overlap with phases):
 
 </details>
 
+### P07: MLIR pipeline parallelism (plan 07, 2026-10-03)
+
+| step | wall (s) | Δ vs ref (s) | user CPU (s) | max RSS (kB) | MLIR pipeline (s) | whole-module opt (s) | partition emit Σ (s) | verdict | ref |
+|---|---|---|---|---|---|---|---|---|---|
+| P07 | 20.04 | -5.06 | 345.74 | 6,681,892 | 2.74 | — | 153.06 | WIN (byte-identical output) | B4X tree, re-measured 25.10 s as P07base |
+
+Tree: `plans/mlir-split-backend-07-pipeline-parallelism.md`. It has eleven steps, each measured
+alone; the per-step table is in the plan.
+
+What changed:
+- FoldProject is now a module pass.
+- One chunked parallel helper replaces every per-element `parallelForEach`, whose
+  diagnostic-handler mutex was taken twice per element.
+- Symbol references are found without `getAttrDictionary` (the uniquer write lock).
+- SCF→CF is lowered by a listener-free rewriter, siblings last-first. The 1.4 s straggler was
+  O(#ifs × block length) recorded moves.
+- Loop and demand collection in ListCursor, ListTemplate, EcoToLLVM pre-materialization and
+  BFToLLVM now runs in parallel.
+- The EcoToLLVM epilogue runs in parallel.
+- EcoToLLVM stage 0 is sharded into scratch modules.
+
+Results:
+- **Every step's executable is byte-identical** to the reference (md5 `60fb7e14…`). So is the
+  post-pipeline MLIR, dumped with the new `ECO_DUMP_LOWERED_MLIR`.
+- Not codegen-changing, so no runtime-tax gate is needed.
+- Max RSS −1.0 GB, from the conversion driver's per-move rewrite records that are no longer kept.
+- Partition translate's CPU sum rose 22.6 → 32.0 s: upstream `legalizeDIExpressionsRecursively`
+  now creates the attribute dictionaries that `symgraph::build` used to pre-create. The drain rose
+  by +0.5 s.
+
+<details><summary>--lowering-stats banner</summary>
+
+```
+=== eco-boot-native lowering stats ===
+
+Phases (wall clock):
+  name                                        time         %      calls   
+  ------------------------------------------------------------------------
+    partition emit (sum over workers)             153.06 s   42.1%      24
+    partition opt (sum over workers)              125.07 s   34.4%      24
+    partition translate (sum over workers)         31.99 s    8.8%      24
+  LLVM backend (EcoSplit: translate + lower...     15.28 s    4.2%       1
+    parallel lower drain (post-split wait)         14.91 s    4.1%       1
+    partition RS4GC (sum over workers)             11.64 s    3.2%      24
+    capacity-hoist analysis (serial)                3.22 s    0.9%      24
+    $cap inline prepass (sum over workers)          2.79 s    0.8%      24
+  MLIR lowering pipeline                            2.74 s    0.8%       1
+  Link (clang++ driver)                             1.11 s    0.3%       1
+    gc-free leaf propagation (serial)            994.79 ms    0.3%      24
+  MLIR parse + verify                            731.67 ms    0.2%       1
+    EcoSplit build (parallel clone)              333.55 ms    0.1%       1
+  ------------------------------------------------------------------------
+  total                                           363.87 s
+
+MLIR passes (wall clock, may overlap with phases):
+  name                                        time         %      calls   
+  ------------------------------------------------------------------------
+  (anonymous namespace)::EcoToLLVMPass              1.27 s    0.3%       1
+  (anonymous namespace)::EcoTailConversions...   285.92 ms    0.1%       1
+  (anonymous namespace)::EcoControlFlowToSC...   241.53 ms    0.1%       1
+  (anonymous namespace)::EcoCapHoistPlanPass     193.86 ms    0.1%       1
+  (anonymous namespace)::EcoReachabilityPass     135.84 ms    0.0%       1
+  (anonymous namespace)::EcoListCursorPass       116.01 ms    0.0%       1
+  (anonymous namespace)::EcoGCPreparePass        112.55 ms    0.0%       1
+  (anonymous namespace)::EcoPAPSimplifyPass       84.69 ms    0.0%       1
+  (anonymous namespace)::EcoListTemplatePass      83.87 ms    0.0%       1
+  (anonymous namespace)::EcoGcFreePropagati...    67.85 ms    0.0%       1
+  (anonymous namespace)::EcoMarkGCLeafCalls...    32.16 ms    0.0%       1
+  (anonymous namespace)::EcoCompareCaseRewr...    28.13 ms    0.0%       1
+  (anonymous namespace)::RCEliminationPass        22.98 ms    0.0%       1
+  (anonymous namespace)::UndefinedFunctionPass    22.28 ms    0.0%       1
+  (anonymous namespace)::BFToLLVMPass             18.44 ms    0.0%       1
+  (anonymous namespace)::JoinpointNormaliza...    16.41 ms    0.0%       1
+  (anonymous namespace)::EcoFoldProjectPass        5.69 ms    0.0%       1
+  ------------------------------------------------------------------------
+  total                                             2.73 s
+```
+
+</details>
+
 ## 8. Summary
 
 | step | wall (s) | Δ vs ref (s) | user CPU (s) | max RSS (kB) | MLIR pipeline (s) | whole-module opt (s) | partition emit Σ (s) | verdict | ref |
@@ -2314,3 +2394,4 @@ MLIR passes (wall clock, may overlap with phases):
 | SPL | 38.61 | -5.48 | 370.50 | 7,582,164 | 8.15 | — | 157.01 | WIN (codegen-changing: prologue deleted) | B4 |
 | ES | 25.53 | -13.08 | 365.09 | 7,694,944 | 8.16 | — | 156.24 | WIN (codegen-changing: partition assignment) | SPL |
 | B4X | 25.59 | +0.06 | 361.69 | 7,691,812 | 8.32 | — | 154.09 | FLAT, kept (deletes work: 2,262 dead $cap bodies; −0.76 % binary) | ES |
+| P07 | 20.04 | -5.06 | 345.74 | 6,681,892 | 2.74 | — | 153.06 | WIN (byte-identical; plan 07, 11 steps) | B4X (re-measured 25.10) |

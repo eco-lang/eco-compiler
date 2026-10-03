@@ -4,12 +4,14 @@
 //
 //===----------------------------------------------------------------------===//
 #include "EcoSymbolGraph.h"
+#include "EcoParallel.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Threading.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <utility>
 
 using namespace mlir;
@@ -20,8 +22,61 @@ namespace {
 
 using EdgeList = std::vector<std::pair<uint32_t, uint8_t>>;
 
+/// Attribute kinds that never contain a symbol reference: skipped instead of
+/// walked (an Attribute::walk allocates its visited set).
+bool isSymbolFreeLeaf(Attribute a) {
+    return isa<IntegerAttr, FloatAttr, StringAttr, TypeAttr, UnitAttr,
+               DenseArrayAttr, DenseIntOrFPElementsAttr, LLVM::LinkageAttr,
+               LLVM::CConvAttr, LLVM::FastmathFlagsAttr>(a);
+}
+
+void visitAttr(Attribute a, bool isCallee,
+               llvm::function_ref<void(SymbolRefAttr, bool)> fn) {
+    if (!a || isSymbolFreeLeaf(a))
+        return;
+    if (auto r = dyn_cast<SymbolRefAttr>(a)) {
+        fn(r, isCallee);
+        return;
+    }
+    a.walk([&](SymbolRefAttr r) { fn(r, isCallee); });
+}
+
+enum class RefMode { Fast, Dictionary };
+
+void forEachRef(Operation *op, RefMode mode,
+                llvm::function_ref<void(SymbolRefAttr, bool)> fn) {
+    const bool isCall = isa<LLVM::CallOp>(op);
+    if (mode == RefMode::Dictionary) {
+        // The pre-plan-07 semantics, kept for the validate twin.
+        for (NamedAttribute na : op->getAttrDictionary())
+            na.getValue().walk([&](SymbolRefAttr r) {
+                fn(r, isCall && na.getName().getValue() == "callee");
+            });
+        return;
+    }
+    if (auto call = dyn_cast<LLVM::CallOp>(op)) {
+        // llvm.call's only symbol-carrying inherent attribute is `callee`;
+        // populating the rest would unique e.g. its operandSegmentSizes.
+        if (auto callee = call.getCalleeAttr())
+            fn(callee, true);
+        for (NamedAttribute na : op->getRawDictionaryAttrs())
+            visitAttr(na.getValue(), false, fn);
+        return;
+    }
+    if (op->getPropertiesStorage()) {
+        NamedAttrList inherent;
+        op->getName().populateInherentAttrs(op, inherent);
+        for (NamedAttribute na : inherent)
+            visitAttr(na.getValue(), false, fn);
+    }
+    // With properties the raw dictionary holds only the discardable
+    // attributes; without, it holds them all (== getAttrDictionary()).
+    for (NamedAttribute na : op->getRawDictionaryAttrs())
+        visitAttr(na.getValue(), false, fn);
+}
+
 void collect(Operation *root, const Graph &g, EdgeList &out,
-             bool keepUnusedAddressOf) {
+             bool keepUnusedAddressOf, RefMode mode = RefMode::Fast) {
     auto add = [&](StringAttr s, uint8_t kind) {
         int t = g.lookup(s);
         if (t >= 0)
@@ -53,13 +108,9 @@ void collect(Operation *root, const Graph &g, EdgeList &out,
             add(name, !allCallee ? Address : mismatch ? CallMismatch : Call);
             return;
         }
-        const bool isCall = isa<LLVM::CallOp>(op);
-        for (NamedAttribute na : op->getAttrDictionary()) {
-            const uint8_t kind =
-                isCall && na.getName().getValue() == "callee" ? Call : Address;
-            na.getValue().walk(
-                [&](SymbolRefAttr r) { add(r.getRootReference(), kind); });
-        }
+        forEachRef(op, mode, [&](SymbolRefAttr r, bool isCallee) {
+            add(r.getRootReference(), isCallee ? Call : Address);
+        });
     });
     // Dedup per target, OR-ing the kinds.
     std::sort(out.begin(), out.end());
@@ -71,6 +122,14 @@ void collect(Operation *root, const Graph &g, EdgeList &out,
             out[w++] = out[r];
     }
     out.resize(w);
+}
+
+bool symrefValidate() {
+    static const bool on = [] {
+        const char *e = ::getenv("ECO_SYMREF_VALIDATE");
+        return e && *e && *e != '0';
+    }();
+    return on;
 }
 
 } // namespace
@@ -105,13 +164,27 @@ Graph build(ModuleOp module, bool keepUnusedAddressOf) {
     }
 
     std::vector<EdgeList> lists(g.nodes.size());
-    std::vector<uint32_t> idx(g.nodes.size());
-    for (uint32_t i = 0; i < idx.size(); ++i)
-        idx[i] = i;
-    parallelForEach(module.getContext(), idx,
-                    [&](uint32_t i) {
-                        collect(g.nodes[i].op, g, lists[i], keepUnusedAddressOf);
-                    });
+    eco::forEachChunk(module.getContext(), g.nodes.size(),
+                      [&](size_t lo, size_t hi) {
+                          for (size_t i = lo; i < hi; ++i)
+                              collect(g.nodes[i].op, g, lists[i],
+                                      keepUnusedAddressOf);
+                      });
+    if (symrefValidate()) {
+        // Twin: the dictionary walk must find exactly the same edges.
+        for (size_t i = 0; i < g.nodes.size(); ++i) {
+            EdgeList ref;
+            collect(g.nodes[i].op, g, ref, keepUnusedAddressOf,
+                    RefMode::Dictionary);
+            if (ref != lists[i]) {
+                llvm::errs() << "ECO_SYMREF_VALIDATE: edge mismatch in @"
+                             << g.nodes[i].name.getValue() << " (fast "
+                             << lists[i].size() << " edges, dictionary "
+                             << ref.size() << ")\n";
+                ::abort();
+            }
+        }
+    }
 
     g.outBegin.resize(g.nodes.size() + 1, 0);
     size_t total = 0;
@@ -138,6 +211,11 @@ Graph build(ModuleOp module, bool keepUnusedAddressOf) {
         }
     }
     return g;
+}
+
+void forEachSymbolRef(Operation *op,
+                      llvm::function_ref<void(SymbolRefAttr, bool)> fn) {
+    forEachRef(op, RefMode::Fast, fn);
 }
 
 llvm::StringMap<bool> addressTakenByName(ModuleOp module) {

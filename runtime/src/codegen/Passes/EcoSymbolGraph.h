@@ -23,6 +23,7 @@
 #include "mlir/IR/BuiltinOps.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/StringMap.h"
 
 #include <cstdint>
@@ -67,6 +68,15 @@ struct Graph {
 /// an `Address` edge: EcoSplit needs every symbol a cloned body NAMES (the
 /// MLIR verifier and translation resolve it), not only what LLVM will use.
 Graph build(mlir::ModuleOp module, bool keepUnusedAddressOf = false);
+
+/// Call fn(ref, isCallee) for every symbol reference held in op's OWN
+/// attributes (inherent and discardable): the same references a walk of
+/// op->getAttrDictionary() finds, without uniquing a DictionaryAttr per op
+/// (that took the context's exclusive uniquer lock on almost every op; plan
+/// 07 P3). isCallee is true only for an llvm.call's `callee`.
+/// ECO_SYMREF_VALIDATE=1 cross-checks build() against the dictionary walk.
+void forEachSymbolRef(mlir::Operation *op,
+                      llvm::function_ref<void(mlir::SymbolRefAttr, bool)> fn);
 
 /// Validate support (plan 03 R5): every defined function's name mapped to
 /// whether LLVM's Function::hasAddressTaken() must be true after translation

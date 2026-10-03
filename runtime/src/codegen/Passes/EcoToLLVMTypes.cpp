@@ -179,59 +179,60 @@ void eco::detail::populateEcoTypePatterns(
 // map read by StringLiteralOpLowering during the (parallel) body stage.
 void eco::detail::preMaterializeStringLiterals(
     OpBuilder &builder, const EcoRuntime &runtime,
-    llvm::ArrayRef<LLVM::LLVMFuncOp> funcs) {
+    llvm::ArrayRef<PreMatDemand> demand) {
     auto *ctx = builder.getContext();
     auto i16Ty = IntegerType::get(ctx, 16);
     auto i8Ty = IntegerType::get(ctx, 8);
-    for (LLVM::LLVMFuncOp func : funcs) {
-        func.walk([&](StringLiteralOp op) {
-            StringRef value = op.getValue();
-            if (value.empty())
-                return;  // empty string is an embedded constant; no global
-            uint64_t index = runtime.stringLiteralCounter++;  // sole bump site
-            runtime.stringLiteralIndexForOp[op.getOperation()] = index;
-            std::string globalName = "__eco_str_" + std::to_string(index);
-            OpBuilder::InsertionGuard guard(builder);
-            builder.setInsertionPointToStart(runtime.module.getBody());
+    auto visit = [&](StringLiteralOp op) {
+        StringRef value = op.getValue();
+        if (value.empty())
+            return;  // empty string is an embedded constant; no global
+        uint64_t index = runtime.stringLiteralCounter++;  // sole bump site
+        runtime.stringLiteralIndexForOp[op.getOperation()] = index;
+        std::string globalName = "__eco_str_" + std::to_string(index);
+        OpBuilder::InsertionGuard guard(builder);
+        builder.setInsertionPointToStart(runtime.module.getBody());
 
-            if (isAsciiLiteral(value)) {
-                // ASCII -> [N x i8] of the raw bytes (consumed as a UTF-8 leaf).
-                size_t byteLen = value.size();
-                auto arrayTy = LLVM::LLVMArrayType::get(i8Ty, byteLen);
-                auto globalOp = builder.create<LLVM::GlobalOp>(
-                    op.getLoc(), arrayTy, /*isConstant=*/true,
-                    LLVM::Linkage::Internal, globalName, Attribute{});
-                Block *initBlock =
-                    builder.createBlock(&globalOp.getInitializerRegion());
-                builder.setInsertionPointToStart(initBlock);
-                SmallVector<int8_t> byteValues;
-                for (char c : value) byteValues.push_back(static_cast<int8_t>(c));
-                auto denseAttr = DenseElementsAttr::get(
-                    RankedTensorType::get({static_cast<int64_t>(byteLen)}, i8Ty),
-                    ArrayRef<int8_t>(byteValues));
-                Value arrayVal = builder.create<LLVM::ConstantOp>(
-                    op.getLoc(), arrayTy, denseAttr);
-                builder.create<LLVM::ReturnOp>(op.getLoc(), arrayVal);
-                return;
-            }
-
-            std::vector<uint16_t> utf16 = utf8ToUtf16(value);
-            size_t length = utf16.size();
-            auto arrayTy = LLVM::LLVMArrayType::get(i16Ty, length);
+        if (isAsciiLiteral(value)) {
+            // ASCII -> [N x i8] of the raw bytes (consumed as a UTF-8 leaf).
+            size_t byteLen = value.size();
+            auto arrayTy = LLVM::LLVMArrayType::get(i8Ty, byteLen);
             auto globalOp = builder.create<LLVM::GlobalOp>(
                 op.getLoc(), arrayTy, /*isConstant=*/true,
                 LLVM::Linkage::Internal, globalName, Attribute{});
             Block *initBlock =
                 builder.createBlock(&globalOp.getInitializerRegion());
             builder.setInsertionPointToStart(initBlock);
-            SmallVector<int16_t> charValues;
-            for (uint16_t c : utf16) charValues.push_back(static_cast<int16_t>(c));
+            SmallVector<int8_t> byteValues;
+            for (char c : value) byteValues.push_back(static_cast<int8_t>(c));
             auto denseAttr = DenseElementsAttr::get(
-                RankedTensorType::get({static_cast<int64_t>(length)}, i16Ty),
-                ArrayRef<int16_t>(charValues));
-            Value arrayVal =
-                builder.create<LLVM::ConstantOp>(op.getLoc(), arrayTy, denseAttr);
+                RankedTensorType::get({static_cast<int64_t>(byteLen)}, i8Ty),
+                ArrayRef<int8_t>(byteValues));
+            Value arrayVal = builder.create<LLVM::ConstantOp>(
+                op.getLoc(), arrayTy, denseAttr);
             builder.create<LLVM::ReturnOp>(op.getLoc(), arrayVal);
-        });
-    }
+            return;
+        }
+
+        std::vector<uint16_t> utf16 = utf8ToUtf16(value);
+        size_t length = utf16.size();
+        auto arrayTy = LLVM::LLVMArrayType::get(i16Ty, length);
+        auto globalOp = builder.create<LLVM::GlobalOp>(
+            op.getLoc(), arrayTy, /*isConstant=*/true,
+            LLVM::Linkage::Internal, globalName, Attribute{});
+        Block *initBlock =
+            builder.createBlock(&globalOp.getInitializerRegion());
+        builder.setInsertionPointToStart(initBlock);
+        SmallVector<int16_t> charValues;
+        for (uint16_t c : utf16) charValues.push_back(static_cast<int16_t>(c));
+        auto denseAttr = DenseElementsAttr::get(
+            RankedTensorType::get({static_cast<int64_t>(length)}, i16Ty),
+            ArrayRef<int16_t>(charValues));
+        Value arrayVal =
+            builder.create<LLVM::ConstantOp>(op.getLoc(), arrayTy, denseAttr);
+        builder.create<LLVM::ReturnOp>(op.getLoc(), arrayVal);
+    };
+    for (const PreMatDemand &d : demand)
+        for (Operation *o : d.literals)
+            visit(cast<StringLiteralOp>(o));
 }

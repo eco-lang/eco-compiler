@@ -3100,7 +3100,7 @@ mlir::Value eco::detail::emitEvalDescAddrForFuncSymbol(
 void eco::detail::preMaterializeClosureArtifacts(
     OpBuilder &builder, const EcoRuntime &runtime,
     const TypeConverter *typeConverter,
-    llvm::ArrayRef<LLVM::LLVMFuncOp> funcs) {
+    llvm::ArrayRef<PreMatDemand> demand) {
     ModuleOp module = runtime.module;
 
     // Plan §5.2: `$sat` entries are generated only for the newarg counts that
@@ -3139,56 +3139,57 @@ void eco::detail::preMaterializeClosureArtifacts(
                 it->second = captured;
         };
 
-        for (LLVM::LLVMFuncOp func : funcs) {
-            func.walk([&](Operation *op) {
-                if (auto pe = dyn_cast<PapExtendOp>(op)) {
-                    ++seenPe;
-                    // `papExtend`'s operand layout is
-                    // `[closure, newargs..., roots...]` and `getNewargs()`
-                    // returns the whole tail AFTER the closure — roots
-                    // included. The lowering drops them via splitAdaptedRoots;
-                    // counting them here inflated every site's N (no n=1 at
-                    // all, a spurious peak at n=5) and made every real
-                    // signature miss.
-                    auto all = pe.getNewargs();
-                    unsigned roots = pe.getGCRoots().size();
-                    if (all.size() < roots) return;
-                    note(all.take_front(all.size() - roots),
-                         typeConverter->convertType(pe.getResult().getType()));
-                } else if (auto call = dyn_cast<CallOp>(op)) {
-                    if (call.getCallee()) return;
-                    ++seenCall;
-                    unsigned rootCount = call.getGCRoots().size();
-                    auto operands = call.getOperands();
-                    unsigned realCount = operands.size() - rootCount;
-                    if (realCount < 1) return;
-                    Type rty = call.getNumResults() > 0
-                                   ? typeConverter->convertType(
-                                         call.getResult(0).getType())
-                                   : Type();
-                    note(operands.slice(1, realCount - 1), rty);
-                } else if (auto pc = dyn_cast<PapCreateOp>(op)) {
-                    StringRef sym;
-                    if (auto fe = pc->getAttrOfType<SymbolRefAttr>("_fast_evaluator"))
-                        sym = fe.getRootReference();
-                    else
-                        sym = pc.getFunction();
-                    noteCaptures(sym,
-                                 static_cast<unsigned>(pc.getNumCaptured()));
-                } else if (auto pg = dyn_cast<PapCreateGroupOp>(op)) {
-                    auto fes = pg.getFastEvaluators();
-                    auto ncs = pg.getNumCaptured();
-                    for (unsigned i = 0; i < fes.size(); ++i) {
-                        unsigned nc = 0;
-                        if (i < ncs.size())
-                            nc = static_cast<unsigned>(
-                                cast<IntegerAttr>(ncs[i]).getInt());
-                        noteCaptures(cast<FlatSymbolRefAttr>(fes[i]).getValue(),
-                                     nc);
-                    }
+        auto noteSite = [&](Operation *op) {
+            if (auto pe = dyn_cast<PapExtendOp>(op)) {
+                ++seenPe;
+                // `papExtend`'s operand layout is
+                // `[closure, newargs..., roots...]` and `getNewargs()`
+                // returns the whole tail AFTER the closure — roots
+                // included. The lowering drops them via splitAdaptedRoots;
+                // counting them here inflated every site's N (no n=1 at
+                // all, a spurious peak at n=5) and made every real
+                // signature miss.
+                auto all = pe.getNewargs();
+                unsigned roots = pe.getGCRoots().size();
+                if (all.size() < roots) return;
+                note(all.take_front(all.size() - roots),
+                     typeConverter->convertType(pe.getResult().getType()));
+            } else if (auto call = dyn_cast<CallOp>(op)) {
+                if (call.getCallee()) return;
+                ++seenCall;
+                unsigned rootCount = call.getGCRoots().size();
+                auto operands = call.getOperands();
+                unsigned realCount = operands.size() - rootCount;
+                if (realCount < 1) return;
+                Type rty = call.getNumResults() > 0
+                               ? typeConverter->convertType(
+                                     call.getResult(0).getType())
+                               : Type();
+                note(operands.slice(1, realCount - 1), rty);
+            } else if (auto pc = dyn_cast<PapCreateOp>(op)) {
+                StringRef sym;
+                if (auto fe = pc->getAttrOfType<SymbolRefAttr>("_fast_evaluator"))
+                    sym = fe.getRootReference();
+                else
+                    sym = pc.getFunction();
+                noteCaptures(sym,
+                             static_cast<unsigned>(pc.getNumCaptured()));
+            } else if (auto pg = dyn_cast<PapCreateGroupOp>(op)) {
+                auto fes = pg.getFastEvaluators();
+                auto ncs = pg.getNumCaptured();
+                for (unsigned i = 0; i < fes.size(); ++i) {
+                    unsigned nc = 0;
+                    if (i < ncs.size())
+                        nc = static_cast<unsigned>(
+                            cast<IntegerAttr>(ncs[i]).getInt());
+                    noteCaptures(cast<FlatSymbolRefAttr>(fes[i]).getValue(),
+                                 nc);
                 }
-            });
-        }
+            }
+        };
+        for (const PreMatDemand &d : demand)
+            for (Operation *op : d.closure)
+                noteSite(op);
         if (papHisto::enabled()) {
             llvm::errs() << "[sat-walk] papExtend=" << seenPe
                          << " indirectCall=" << seenCall << " nHist:";
@@ -3219,80 +3220,81 @@ void eco::detail::preMaterializeClosureArtifacts(
                             arity, kinds, rk, loc, descName);
     };
 
-    for (LLVM::LLVMFuncOp func : funcs) {
-        func.walk([&](Operation *op) {
-            if (auto pc = dyn_cast<PapCreateOp>(op)) {
-                StringRef funcSymbol;
-                if (auto fe = pc->getAttrOfType<SymbolRefAttr>("_fast_evaluator"))
-                    funcSymbol = fe.getRootReference();
-                else
-                    funcSymbol = pc.getFunction();
-                materialize(funcSymbol, pc.getArity(), 
-                            static_cast<uint8_t>(pc.get_resultKind()), pc.getLoc());
-            } else if (auto pg = dyn_cast<PapCreateGroupOp>(op)) {
-                auto fes = pg.getFastEvaluators();
-                auto arities = pg.getArities();
-                auto rks = pg.get_resultKindsAttr();
-                for (unsigned i = 0; i < fes.size(); ++i) {
-                    StringRef funcSymbol =
-                        cast<FlatSymbolRefAttr>(fes[i]).getValue();
-                    int64_t arity = cast<IntegerAttr>(arities[i]).getInt();
-                    uint8_t rk = 0;
-                    if (rks && i < rks.getValue().size())
-                        rk = static_cast<uint8_t>(
-                            cast<IntegerAttr>(rks.getValue()[i]).getInt());
-                    materialize(funcSymbol, arity, rk, pg.getLoc());
-                }
-            } else if (auto ac = dyn_cast<AllocateClosureOp>(op)) {
-                // R7: bypass paths that store a bare function symbol still need
-                // a descriptor, or `evaluator` would hold a raw code pointer.
-                llvm::SmallString<96> n;
-                getOrCreateEvalDescForFunc(builder, module, runtime,
-                                           ac.getFunction(),
-                                           ac.getArity(), /*kinds=*/0,
-                                           /*resultKind=*/0, ac.getLoc(), n);
-            } else if (auto mc = dyn_cast<MakeClosureOp>(op)) {
-                llvm::SmallString<96> n;
-                getOrCreateEvalDescForFunc(builder, module, runtime,
-                                           mc.getFunction(),
-                                           mc.getArity(), /*kinds=*/0,
-                                           /*resultKind=*/0, mc.getLoc(), n);
-            } else if (auto pe = dyn_cast<PapExtendOp>(op)) {
-                // `papExtend`'s operands are `[closure, newargs..., roots...]`
-                // and `getNewargs()` returns the whole tail after the closure,
-                // roots included; the lowering drops them via
-                // splitAdaptedRoots. Passing the padded range here derived the
-                // layout kind vector for `[kinds..., 0 x rootCount]`, a key NO
-                // site ever asks for — so every pre-minted papExtend layout was
-                // dead and every layout a site DID want was instead created
-                // lazily, under a lock, by whichever Stage-2 worker reached it
-                // first. Both `kinds` and the capture-ABI variant's
-                // zero padding derive from this range, so stripping once here
-                // fixes both. (The CallOp arm below already strips correctly.)
-                auto all = pe.getNewargs();
-                unsigned roots = pe.getGCRoots().size();
-                if (all.size() < roots)
-                    return;
-                preMaterializeApplyLayouts(
-                    builder, runtime, op,
-                    all.take_front(all.size() - roots),
-                    static_cast<uint8_t>(pe.get_resultKind()),
-                    pe->getAttrOfType<ArrayAttr>("_capture_abi"));
-            } else if (auto call = dyn_cast<CallOp>(op)) {
-                if (call.getCallee()) return;  // direct call: no closure layout
-                unsigned rootCount = call.getGCRoots().size();
-                auto operands = call.getOperands();
-                unsigned realCount = operands.size() - rootCount;
-                SmallVector<Value> newargs;
-                for (unsigned i = 1; i < realCount; ++i)
-                    newargs.push_back(operands[i]);
+    auto visit = [&](Operation *op) {
+        if (auto pc = dyn_cast<PapCreateOp>(op)) {
+            StringRef funcSymbol;
+            if (auto fe = pc->getAttrOfType<SymbolRefAttr>("_fast_evaluator"))
+                funcSymbol = fe.getRootReference();
+            else
+                funcSymbol = pc.getFunction();
+            materialize(funcSymbol, pc.getArity(), 
+                        static_cast<uint8_t>(pc.get_resultKind()), pc.getLoc());
+        } else if (auto pg = dyn_cast<PapCreateGroupOp>(op)) {
+            auto fes = pg.getFastEvaluators();
+            auto arities = pg.getArities();
+            auto rks = pg.get_resultKindsAttr();
+            for (unsigned i = 0; i < fes.size(); ++i) {
+                StringRef funcSymbol =
+                    cast<FlatSymbolRefAttr>(fes[i]).getValue();
+                int64_t arity = cast<IntegerAttr>(arities[i]).getInt();
                 uint8_t rk = 0;
-                if (auto a = call->getAttrOfType<IntegerAttr>("_result_kind"))
-                    rk = static_cast<uint8_t>(a.getInt());
-                preMaterializeApplyLayouts(builder, runtime, op,
-                                           ValueRange(newargs), rk,
-                                           /*captureAbi=*/nullptr);
+                if (rks && i < rks.getValue().size())
+                    rk = static_cast<uint8_t>(
+                        cast<IntegerAttr>(rks.getValue()[i]).getInt());
+                materialize(funcSymbol, arity, rk, pg.getLoc());
             }
-        });
-    }
+        } else if (auto ac = dyn_cast<AllocateClosureOp>(op)) {
+            // R7: bypass paths that store a bare function symbol still need
+            // a descriptor, or `evaluator` would hold a raw code pointer.
+            llvm::SmallString<96> n;
+            getOrCreateEvalDescForFunc(builder, module, runtime,
+                                       ac.getFunction(),
+                                       ac.getArity(), /*kinds=*/0,
+                                       /*resultKind=*/0, ac.getLoc(), n);
+        } else if (auto mc = dyn_cast<MakeClosureOp>(op)) {
+            llvm::SmallString<96> n;
+            getOrCreateEvalDescForFunc(builder, module, runtime,
+                                       mc.getFunction(),
+                                       mc.getArity(), /*kinds=*/0,
+                                       /*resultKind=*/0, mc.getLoc(), n);
+        } else if (auto pe = dyn_cast<PapExtendOp>(op)) {
+            // `papExtend`'s operands are `[closure, newargs..., roots...]`
+            // and `getNewargs()` returns the whole tail after the closure,
+            // roots included; the lowering drops them via
+            // splitAdaptedRoots. Passing the padded range here derived the
+            // layout kind vector for `[kinds..., 0 x rootCount]`, a key NO
+            // site ever asks for — so every pre-minted papExtend layout was
+            // dead and every layout a site DID want was instead created
+            // lazily, under a lock, by whichever Stage-2 worker reached it
+            // first. Both `kinds` and the capture-ABI variant's
+            // zero padding derive from this range, so stripping once here
+            // fixes both. (The CallOp arm below already strips correctly.)
+            auto all = pe.getNewargs();
+            unsigned roots = pe.getGCRoots().size();
+            if (all.size() < roots)
+                return;
+            preMaterializeApplyLayouts(
+                builder, runtime, op,
+                all.take_front(all.size() - roots),
+                static_cast<uint8_t>(pe.get_resultKind()),
+                pe->getAttrOfType<ArrayAttr>("_capture_abi"));
+        } else if (auto call = dyn_cast<CallOp>(op)) {
+            if (call.getCallee()) return;  // direct call: no closure layout
+            unsigned rootCount = call.getGCRoots().size();
+            auto operands = call.getOperands();
+            unsigned realCount = operands.size() - rootCount;
+            SmallVector<Value> newargs;
+            for (unsigned i = 1; i < realCount; ++i)
+                newargs.push_back(operands[i]);
+            uint8_t rk = 0;
+            if (auto a = call->getAttrOfType<IntegerAttr>("_result_kind"))
+                rk = static_cast<uint8_t>(a.getInt());
+            preMaterializeApplyLayouts(builder, runtime, op,
+                                       ValueRange(newargs), rk,
+                                       /*captureAbi=*/nullptr);
+        }
+    };
+    for (const PreMatDemand &d : demand)
+        for (Operation *op : d.closure)
+            visit(op);
 }

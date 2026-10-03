@@ -46,6 +46,8 @@
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
 #include "../Passes.h"
+#include "EcoParallel.h"
+#include "EcoSymbolGraph.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -352,17 +354,48 @@ struct EcoListTemplatePass
         // transforms independent -- the expansion's loop pushes directly and
         // carries no cons chain, so the while-rewriter below finds nothing to
         // do on it and cannot double-transform.
-        unsigned mapExpanded = expandListMaps(m, declsMade);
+        // Plan 07 P9: one parallel pre-scan flags the functions holding an
+        // eco.list.map or an scf.while, so the serial phases below walk only
+        // those, in module order, with the same per-function walks (the
+        // module-wide walks visited every op of every function serially).
+        // A function with a list map also gets a while (its expansion), so
+        // it is in both sets, as the module walk would have seen it.
+        SmallVector<func::FuncOp> withMap, withWhile;
+        {
+            SmallVector<func::FuncOp> all;
+            for (auto f : m.getBody()->getOps<func::FuncOp>())
+                if (!f.getBody().empty())
+                    all.push_back(f);
+            std::vector<uint8_t> flags(all.size(), 0);
+            eco::forEachChunk(m.getContext(), all.size(),
+                              [&](size_t lo, size_t hi) {
+                                  for (size_t i = lo; i < hi; ++i)
+                                      all[i].walk([&](Operation *op) {
+                                          if (isa<eco::ListMapOp>(op))
+                                              flags[i] |= 1;
+                                          else if (isa<scf::WhileOp>(op))
+                                              flags[i] |= 2;
+                                      });
+                              });
+            for (size_t i = 0; i < all.size(); ++i) {
+                if (flags[i] & 1)
+                    withMap.push_back(all[i]);
+                if (flags[i])
+                    withWhile.push_back(all[i]);
+            }
+        }
+        unsigned mapExpanded = expandListMaps(m, withMap, declsMade);
         if (debug)
             fprintf(stderr, "[eco-list-template] mapExpand{expanded=%u}\n",
                     mapExpanded);
         // Post-order walk: inner loops are transformed before outer ones,
         // which is what keeps nested mark/finish pairs balanced.
-        m.walk([&](scf::WhileOp w) {
-            bs.whiles++;
-            if (tryRewrite(m, w, declsMade, debug ? &bs : nullptr))
-                bs.rewritten++;
-        });
+        for (func::FuncOp f : withWhile)
+            f.walk([&](scf::WhileOp w) {
+                bs.whiles++;
+                if (tryRewrite(m, w, declsMade, debug ? &bs : nullptr))
+                    bs.rewritten++;
+            });
 
         // Phase 2: unwind-cons recursion (cons around a self-call result,
         // the foldr/encoder family). Snapshot the function list first --
@@ -892,9 +925,11 @@ struct EcoListTemplatePass
     }
 
     /// Expand every eco.list.map in the module. Returns how many fired.
-    unsigned expandListMaps(ModuleOp m, bool &declsMade) {
+    unsigned expandListMaps(ModuleOp m, ArrayRef<func::FuncOp> fns,
+                            bool &declsMade) {
         SmallVector<eco::ListMapOp, 16> ops;
-        m.walk([&](eco::ListMapOp op) { ops.push_back(op); });
+        for (func::FuncOp f : fns)
+            f.walk([&](eco::ListMapOp op) { ops.push_back(op); });
         if (ops.empty())
             return 0;
 
@@ -1169,12 +1204,28 @@ struct EcoListTemplatePass
         // candidate's uses never change after the index is built.
         if (!useIndexBuilt) {
             useIndexBuilt = true;
-            auto all = SymbolTable::getSymbolUses(&m.getBodyRegion());
-            useIndexFailed = !all;
-            if (all)
-                for (const SymbolTable::SymbolUse &u : *all)
-                    useIndex[u.getSymbolRef().getRootReference()].push_back(
-                        u.getUser());
+            // Plan 07 P9: collected in parallel chunks with
+            // symgraph::forEachSymbolRef (no dictionary uniquing), merged in
+            // module order. Only each symbol's user SET matters below.
+            SmallVector<Operation *> tops;
+            for (Operation &op : *m.getBody())
+                tops.push_back(&op);
+            std::vector<std::vector<std::pair<StringAttr, Operation *>>> per(
+                tops.size());
+            eco::forEachChunk(
+                m.getContext(), tops.size(), [&](size_t lo, size_t hi) {
+                    for (size_t i = lo; i < hi; ++i)
+                        tops[i]->walk([&](Operation *op) {
+                            eco::symgraph::forEachSymbolRef(
+                                op, [&](SymbolRefAttr r, bool) {
+                                    per[i].push_back(
+                                        {r.getRootReference(), op});
+                                });
+                        });
+                });
+            for (auto &v : per)
+                for (auto &[sym, user] : v)
+                    useIndex[sym].push_back(user);
         }
         if (useIndexFailed) {
             bump(&UnwindBailStats::useShape);

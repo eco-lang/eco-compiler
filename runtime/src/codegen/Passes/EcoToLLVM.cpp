@@ -14,12 +14,15 @@
 //===----------------------------------------------------------------------===//
 
 #include "EcoToLLVMInternal.h"
+#include "EcoSymbolGraph.h"
+#include "EcoParallel.h"
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
 #include "../BF/BFOps.h"
 #include "../Passes.h"
 
 #include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
+#include "llvm/ADT/BitVector.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -134,6 +137,29 @@ struct YieldOpTypeConversion : public OpConversionPattern<scf::YieldOp> {
 // Pass Definition
 //===----------------------------------------------------------------------===//
 
+void eco::detail::collectPreMatDemand(MLIRContext *ctx,
+                                      llvm::ArrayRef<LLVM::LLVMFuncOp> funcs,
+                                      std::vector<PreMatDemand> &out) {
+    out.assign(funcs.size(), PreMatDemand{});
+    eco::forEachChunk(ctx, funcs.size(), [&](size_t lo, size_t hi) {
+        for (size_t i = lo; i < hi; ++i) {
+            PreMatDemand &d = out[i];
+            LLVM::LLVMFuncOp func = funcs[i];
+            // ONE post-order walk: the order every former per-kind walk used.
+            func.walk([&](Operation *op) {
+                if (isa<StringLiteralOp>(op))
+                    d.literals.push_back(op);
+                else if (isa<CaseOp>(op))
+                    d.cases.push_back(op);
+                else if (isa<PapExtendOp, CallOp, PapCreateOp,
+                             PapCreateGroupOp, AllocateClosureOp,
+                             MakeClosureOp>(op))
+                    d.closure.push_back(op);
+            });
+        }
+    });
+}
+
 namespace {
 
 struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>> {
@@ -208,7 +234,8 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         // MUST run before Stage 0 (which erases every func::FuncOp).
         llvm::DenseSet<llvm::StringRef> shadowRootFuncs;
         llvm::DenseSet<llvm::StringRef> cafMemoFuncs;
-        module.walk([&](func::FuncOp funcOp) {
+        // func.func is top-level only: iterate the module body, not every op.
+        for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
             runtime.origFuncTypes[funcOp.getSymName()] = funcOp.getFunctionType();
             if (funcOp->hasAttr("eco.shadow_roots"))
                 shadowRootFuncs.insert(funcOp.getSymName());
@@ -219,7 +246,7 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             // bytecode, unlike a module attr).
             if (funcOp->hasAttr("eco.list_chunks"))
                 runtime.listChunks = true;
-        });
+        }
 
         // Chunked-list mode: inject `call @eco_enable_list_chunks()` at the
         // top of @main so kernel bulk builders switch to chunk production in
@@ -267,48 +294,126 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         // unreachable blocks; the pass verifier runs after the whole pass), and
         // Stage 2 finishes lowering every deferred op.
         {
+            auto buildSigTarget = [&](ConversionTarget &sigTarget) {
+                sigTarget.addLegalDialect<LLVM::LLVMDialect>();
+                sigTarget.addLegalOp<ModuleOp>();
+                sigTarget.addLegalOp<UnrealizedConversionCastOp>();
+                // Bodies are deferred to Stage 2: keep their dialects legal so
+                // the signature conversion converts only the func shell.
+                sigTarget.addLegalDialect<EcoDialect>();
+                sigTarget.addLegalDialect<scf::SCFDialect>();
+                sigTarget.addLegalDialect<arith::ArithDialect>();
+                sigTarget.addLegalDialect<cf::ControlFlowDialect>();
+                // func.call / func.return are body ops (their operands are
+                // produced and consumed by deferred eco ops); defer them so
+                // the producer eco op and the call/return convert together in
+                // Stage 2, exactly as in the single conversion. Only the
+                // func.func SHELL converts now.
+                sigTarget.addLegalDialect<func::FuncDialect>();
+                sigTarget.addIllegalOp<func::FuncOp>();
+                // Module-level Eco globals must lower serially at module scope
+                // (top-level replaceOp/eraseOp). Body-level load/store globals
+                // stay Eco-legal here and defer to Stage 2.
+                sigTarget.addIllegalOp<eco::GlobalOp>();
+                sigTarget.addIllegalOp<eco::TypeTableOp>();
+            };
+            auto buildSigPatterns = [&](EcoTypeConverter &tc,
+                                        RewritePatternSet &sigPatterns) {
+                // Kernel func.func -> extern llvm.func (benefit 10; MODULE
+                // mutation). Higher benefit than the signature pattern so
+                // kernel decls are handled here rather than shell-converted.
+                populateEcoFuncPatterns(tc, sigPatterns, runtime);
+                // Non-kernel func.func -> llvm.func SHELL (signature only).
+                // This is the isolated FuncOpConversionPattern that the full
+                // func-to-llvm set also carries; taken alone it moves the body
+                // region verbatim and type-converts the entry block args,
+                // bridging the still-Eco body with unrealized_conversion_cast
+                // arg materializations.
+                populateFuncToLLVMFuncOpConversionPattern(tc, sigPatterns);
+                // GlobalOpLowering + TypeTableOpLowering fire (module level);
+                // LoadGlobalOpLowering / StoreGlobalOpLowering are also added
+                // but stay inert (their Eco ops are legal/deferred here).
+                populateEcoGlobalPatterns(tc, sigPatterns);
+            };
+
+            const char *parEnv0 = ::getenv("ECO_ECO2LLVM_PARALLEL");
+            const bool shardStage0 =
+                ctx->isMultithreadingEnabled() &&
+                !(parEnv0 && parEnv0[0] == '0' && parEnv0[1] == '\0');
+
             ConversionTarget sigTarget(*ctx);
-            sigTarget.addLegalDialect<LLVM::LLVMDialect>();
-            sigTarget.addLegalOp<ModuleOp>();
-            sigTarget.addLegalOp<UnrealizedConversionCastOp>();
-            // Bodies are deferred to Stage 2: keep their dialects legal so the
-            // signature conversion converts only the func shell.
-            sigTarget.addLegalDialect<EcoDialect>();
-            sigTarget.addLegalDialect<scf::SCFDialect>();
-            sigTarget.addLegalDialect<arith::ArithDialect>();
-            sigTarget.addLegalDialect<cf::ControlFlowDialect>();
-            // func.call / func.return are body ops (their operands are produced
-            // and consumed by deferred eco ops); defer them so the producer eco
-            // op and the call/return convert together in Stage 2, exactly as in
-            // the single conversion. Only the func.func SHELL converts now.
-            sigTarget.addLegalDialect<func::FuncDialect>();
-            sigTarget.addIllegalOp<func::FuncOp>();
-            // Module-level Eco globals must lower serially at module scope
-            // (top-level replaceOp/eraseOp). Body-level load/store globals stay
-            // Eco-legal here and defer to Stage 2.
-            sigTarget.addIllegalOp<eco::GlobalOp>();
-            sigTarget.addIllegalOp<eco::TypeTableOp>();
-
+            buildSigTarget(sigTarget);
             RewritePatternSet sigPatterns(ctx);
-            // Kernel func.func -> extern llvm.func (benefit 10; MODULE
-            // mutation). Higher benefit than the signature pattern so kernel
-            // decls are handled here rather than shell-converted.
-            populateEcoFuncPatterns(typeConverter, sigPatterns, runtime);
-            // Non-kernel func.func -> llvm.func SHELL (signature only). This is
-            // the isolated FuncOpConversionPattern that the full func-to-llvm
-            // set also carries; taken alone it moves the body region verbatim
-            // and type-converts the entry block args, bridging the still-Eco
-            // body with unrealized_conversion_cast arg materializations.
-            populateFuncToLLVMFuncOpConversionPattern(typeConverter, sigPatterns);
-            // GlobalOpLowering + TypeTableOpLowering fire (module level);
-            // LoadGlobalOpLowering / StoreGlobalOpLowering are also added but
-            // stay inert (their Eco ops are legal/deferred here).
-            populateEcoGlobalPatterns(typeConverter, sigPatterns);
+            buildSigPatterns(typeConverter, sigPatterns);
+            FrozenRewritePatternSet sigFrozen(std::move(sigPatterns));
 
-            if (failed(applyFullConversion(module, sigTarget,
-                                           std::move(sigPatterns)))) {
-                signalPassFailure();
-                return;
+            if (!shardStage0) {
+                if (failed(applyFullConversion(module, sigTarget, sigFrozen))) {
+                    signalPassFailure();
+                    return;
+                }
+            } else {
+                // Plan 07 P8. The driver visits every op of every body
+                // (~4.2M) to convert ~75k shells, serially. Shard it:
+                //  1. Serially, in place and in module order: the kernel
+                //     decls (the only pattern that reads/writes symCache)
+                //     and eco.global / eco.type_table (module-level patterns
+                //     that insert at module start / lookupSymbol).
+                //  2. Move contiguous ranges of the top-level ops into
+                //     detached scratch modules and convert each in parallel
+                //     with its own converter/target/patterns. Only non-kernel
+                //     func.func shells are illegal by then; their patterns
+                //     replace the op in place and never look at the module.
+                //  3. Splice the shards back in order.
+                SmallVector<Operation *> serialOps;
+                for (Operation &op : *module.getBody()) {
+                    if (auto f = dyn_cast<func::FuncOp>(op)) {
+                        if (f->hasAttr("is_kernel"))
+                            serialOps.push_back(&op);
+                    } else if (isa<eco::GlobalOp, eco::TypeTableOp>(op)) {
+                        serialOps.push_back(&op);
+                    }
+                }
+                if (!serialOps.empty() &&
+                    failed(applyFullConversion(serialOps, sigTarget,
+                                               sigFrozen))) {
+                    signalPassFailure();
+                    return;
+                }
+
+                auto &topOps = module.getBody()->getOperations();
+                const size_t nTop = topOps.size();
+                const size_t nShards = std::max<size_t>(
+                    1, std::min<size_t>(8 * ctx->getNumThreads(), nTop / 64));
+                SmallVector<OwningOpRef<ModuleOp>> shards;
+                shards.reserve(nShards);
+                for (size_t k = 0; k < nShards; ++k) {
+                    size_t len = nTop * (k + 1) / nShards - nTop * k / nShards;
+                    OwningOpRef<ModuleOp> shard = ModuleOp::create(module.getLoc());
+                    auto first = topOps.begin();
+                    auto last = std::next(first, len);
+                    shard->getBody()->getOperations().splice(
+                        shard->getBody()->end(), topOps, first, last);
+                    shards.push_back(std::move(shard));
+                }
+                std::atomic<bool> shardFailed{false};
+                mlir::parallelFor(ctx, 0, nShards, [&](size_t k) {
+                    EcoTypeConverter tc(ctx);
+                    ConversionTarget target(*ctx);
+                    buildSigTarget(target);
+                    RewritePatternSet patterns(ctx);
+                    buildSigPatterns(tc, patterns);
+                    if (failed(applyFullConversion(*shards[k], target,
+                                                   std::move(patterns))))
+                        shardFailed = true;
+                });
+                for (auto &shard : shards)
+                    topOps.splice(topOps.end(),
+                                  shard->getBody()->getOperations());
+                if (shardFailed) {
+                    signalPassFailure();
+                    return;
+                }
             }
         }
 
@@ -342,10 +447,14 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             // read-only cache during parallel Stage 2 (unused ones are stripped
             // below so codegen CHECK-NOT fixtures still pass).
             runtime.materializeAllRuntimeDecls(preBuilder);
-            preMaterializeStringLiterals(preBuilder, runtime, bodyFuncs);
-            preMaterializeStringCases(preBuilder, runtime, bodyFuncs);
+            // Plan 07 P7: find every demand site in ONE parallel pass, then
+            // create serially in the same order the four walks did.
+            std::vector<PreMatDemand> demand;
+            collectPreMatDemand(ctx, bodyFuncs, demand);
+            preMaterializeStringLiterals(preBuilder, runtime, demand);
+            preMaterializeStringCases(preBuilder, runtime, demand);
             preMaterializeClosureArtifacts(preBuilder, runtime, &typeConverter,
-                                           bodyFuncs);
+                                           demand);
         }
         // Flip read-only: from here every getOrCreate*/wrapper/eval-layout/string
         // artifact MUST hit the cache; any create trips freeze()'s cacheSymbol
@@ -553,24 +662,42 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         llvm::StringSet<> strLitSlots;
         materializeStringLiteralSlots(module, strLitSlots);
 
-        bool cafPromoteDeclared = false;
+        // Plan 07 P6: the per-function work below is function-local except
+        // the one lazily created eco_caf_promote decl. Create it up front —
+        // at module END, right after the string-literal slots, exactly where
+        // the first guard used to put it (nothing else appends in between),
+        // with that first function's location — then run the functions in
+        // parallel chunks. Shadow-root frames (only @main) may create runtime
+        // decls on a cache miss, so they run serially afterwards.
+        SmallVector<LLVM::LLVMFuncOp> epiFuncs;
         // Functions are top-level only: iterate the module body (same module
         // order as the post-order walk) instead of recursing through every op
         // (plans/backend-lowering-optimization.md B3a/B8).
-        llvm::for_each(module.getOps<LLVM::LLVMFuncOp>(), [&](LLVM::LLVMFuncOp func) {
-            if (func.isExternal())
-                return;
+        for (LLVM::LLVMFuncOp func : module.getOps<LLVM::LLVMFuncOp>())
+            if (!func.isExternal())
+                epiFuncs.push_back(func);
+        auto wantsCafGuard = [&](LLVM::LLVMFuncOp func) {
+            return !cafMemoFuncs.empty() &&
+                   cafMemoFuncs.contains(func.getSymName()) &&
+                   !shadowRootFuncs.contains(func.getSymName());
+        };
+        for (LLVM::LLVMFuncOp func : epiFuncs)
+            if (wantsCafGuard(func)) {
+                declareCafPromote(module, func.getLoc());
+                break;
+            }
+        std::atomic<bool> epiFailed{false};
+        auto epilogue = [&](LLVM::LLVMFuncOp func) {
             if (!func.getGarbageCollector())
                 func.setGarbageCollector("eco-gc");
             // CAF memoization guard (plans/caf-memoization-implementation.md).
             // Shadow-root funcs (main) are skipped: the guard's hit-path early
             // return would bypass the frame push the epilogues balance. The
             // Elm side also strips the attr from main — belt and braces.
-            if (!cafMemoFuncs.empty() &&
-                cafMemoFuncs.contains(func.getSymName()) &&
-                !shadowRootFuncs.contains(func.getSymName())) {
-                if (failed(installCafMemoGuard(func, cafPromoteDeclared))) {
-                    signalPassFailure();
+            if (wantsCafGuard(func)) {
+                bool promoteDeclared = true; // declared above
+                if (failed(installCafMemoGuard(func, promoteDeclared))) {
+                    epiFailed = true;
                     return;
                 }
             }
@@ -582,8 +709,15 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             // Per-literal interning cache (step 18b): same diamond, keyed on
             // the literal's bytes global instead of a thunk symbol.
             rewriteStringLiteralCallSitesFast(func, strLitSlots);
-            if (!shadowRootFuncs.empty() &&
-                shadowRootFuncs.contains(func.getSymName())) {
+        };
+        eco::forEachChunk(ctx, epiFuncs.size(), [&](size_t lo, size_t hi) {
+            for (size_t i = lo; i < hi; ++i)
+                epilogue(epiFuncs[i]);
+        });
+        if (!shadowRootFuncs.empty()) {
+            for (LLVM::LLVMFuncOp func : epiFuncs) {
+                if (!shadowRootFuncs.contains(func.getSymName()))
+                    continue;
                 OpBuilder builder(func.getContext());
                 auto frame = installShadowRootPrologue(func, builder, runtime);
                 if (frame.basePtr) {
@@ -592,7 +726,11 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
                     emitShadowRootEpilogues(frame, func, builder, runtime);
                 }
             }
-        });
+        }
+        if (epiFailed) {
+            signalPassFailure();
+            return;
+        }
 
         ecoStageReport("4. GC-strategy + shadow-root walks");
 
@@ -619,46 +757,55 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             // getSymbolUses materialises an attribute dictionary per op, which
             // made the serial map ~3 s at self-host scale. Falls back to the
             // serial map if any op hides its uses (unknown symbol table).
+            //
+            // Plan 07 P3: only the external declarations are candidates, so
+            // index them first (a few hundred) and let each chunk set bits
+            // for the candidates it references, found with
+            // symgraph::forEachSymbolRef — the same references
+            // getAttrDictionary()/getSymbolUses find, without uniquing a
+            // dictionary per op (that serialized the chunks on the
+            // context's uniquer lock). The walk visits every op, so no
+            // symbol table can hide a use.
+            llvm::DenseMap<StringAttr, unsigned> cand;
+            SmallVector<LLVM::LLVMFuncOp> candFns;
+            for (LLVM::LLVMFuncOp fn : module.getOps<LLVM::LLVMFuncOp>())
+                if (fn.isExternal()) {
+                    cand.try_emplace(fn.getSymNameAttr(), candFns.size());
+                    candFns.push_back(fn);
+                }
             SmallVector<Operation *> tops;
             for (Operation &op : *module.getBody())
                 tops.push_back(&op);
             const size_t nChunks = std::max<size_t>(
                 1, std::min<size_t>(tops.size(), 8 * ctx->getNumThreads()));
-            SmallVector<llvm::DenseSet<StringAttr>> chunkUsed(nChunks);
-            std::atomic<bool> unknownUses{false};
-            mlir::parallelFor(ctx, 0, nChunks, [&](size_t c) {
+            SmallVector<llvm::BitVector> chunkUsed(
+                nChunks, llvm::BitVector(candFns.size()));
+            auto scan = [&](size_t c) {
                 size_t lo = tops.size() * c / nChunks;
                 size_t hi = tops.size() * (c + 1) / nChunks;
                 auto &used = chunkUsed[c];
-                for (size_t i = lo; i < hi; ++i) {
-                    Operation *op = tops[i];
-                    op->getAttrDictionary().walk([&](SymbolRefAttr ref) {
-                        used.insert(ref.getRootReference());
+                for (size_t i = lo; i < hi; ++i)
+                    tops[i]->walk([&](Operation *o) {
+                        eco::symgraph::forEachSymbolRef(
+                            o, [&](SymbolRefAttr ref, bool) {
+                                auto it = cand.find(ref.getRootReference());
+                                if (it != cand.end())
+                                    used.set(it->second);
+                            });
                     });
-                    auto uses = SymbolTable::getSymbolUses(op);
-                    if (!uses) {
-                        unknownUses = true;
-                        return;
-                    }
-                    for (const SymbolTable::SymbolUse &u : *uses)
-                        used.insert(u.getSymbolRef().getRootReference());
-                }
-            });
+            };
+            if (ctx->isMultithreadingEnabled())
+                mlir::parallelFor(ctx, 0, nChunks, scan);
+            else
+                for (size_t c = 0; c < nChunks; ++c)
+                    scan(c);
+            llvm::BitVector used(candFns.size());
+            for (auto &cu : chunkUsed)
+                used |= cu;
             SmallVector<LLVM::LLVMFuncOp> deadDecls;
-            if (!unknownUses) {
-                llvm::DenseSet<StringAttr> used;
-                for (auto &cu : chunkUsed)
-                    used.insert(cu.begin(), cu.end());
-                for (LLVM::LLVMFuncOp fn : module.getOps<LLVM::LLVMFuncOp>())
-                    if (fn.isExternal() && !used.contains(fn.getSymNameAttr()))
-                        deadDecls.push_back(fn);
-            } else {
-                SymbolTableCollection symbolTables;
-                SymbolUserMap userMap(symbolTables, module.getOperation());
-                for (LLVM::LLVMFuncOp fn : module.getOps<LLVM::LLVMFuncOp>())
-                    if (fn.isExternal() && userMap.useEmpty(fn))
-                        deadDecls.push_back(fn);
-            }
+            for (size_t i = 0; i < candFns.size(); ++i)
+                if (!used.test(i))
+                    deadDecls.push_back(candFns[i]);
             for (LLVM::LLVMFuncOp fn : deadDecls)
                 fn.erase();
         }

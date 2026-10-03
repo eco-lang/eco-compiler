@@ -18,6 +18,7 @@
 #include "../EcoOps.h"
 #include "../EcoTypes.h"
 #include "../Passes.h"
+#include "EcoParallel.h"
 
 #include "mlir/Analysis/Liveness.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -286,8 +287,11 @@ struct EcoGCPreparePass
             for (func::FuncOp f : funcs)
                 processFunction(f);
         } else {
-            parallelForEach(&getContext(), funcs,
-                            [&](func::FuncOp f) { processFunction(f); });
+            eco::forEachChunk(&getContext(), funcs.size(),
+                              [&](size_t lo, size_t hi) {
+                                  for (size_t i = lo; i < hi; ++i)
+                                      processFunction(funcs[i]);
+                              });
         }
 
         if (censusEnabled()) {

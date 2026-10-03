@@ -12,6 +12,7 @@
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
 #include "../Passes.h"
+#include "EcoParallel.h"
 
 #include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
@@ -1087,16 +1088,30 @@ struct BFToLLVMPass : public PassWrapper<BFToLLVMPass, OperationPass<ModuleOp>> 
         // a small fraction of any program. When the module has none, skip the
         // runtime-function declarations (a SymbolTable build + 10 dead decls)
         // and the whole-module conversion driver entirely.
+        //
+        // Plan 07 P10: find the top-level ops that hold a bf op with one
+        // parallel scan, and convert only those. Every other op is legal, so
+        // the whole-module driver only legality-checked ~4M ops serially.
         Dialect *bfDialect = ctx->getLoadedDialect<bf::BFDialect>();
-        bool hasBfOps = false;
-        module.walk([&](Operation *op) {
-            if (op->getDialect() == bfDialect) {
-                hasBfOps = true;
-                return WalkResult::interrupt();
-            }
-            return WalkResult::advance();
+        SmallVector<Operation *> tops;
+        for (Operation &op : *module.getBody())
+            tops.push_back(&op);
+        std::vector<uint8_t> hasBf(tops.size(), 0);
+        eco::forEachChunk(ctx, tops.size(), [&](size_t lo, size_t hi) {
+            for (size_t i = lo; i < hi; ++i)
+                tops[i]->walk([&](Operation *op) {
+                    if (op->getDialect() == bfDialect) {
+                        hasBf[i] = 1;
+                        return WalkResult::interrupt();
+                    }
+                    return WalkResult::advance();
+                });
         });
-        if (!hasBfOps)
+        SmallVector<Operation *> bfTops;
+        for (size_t i = 0; i < tops.size(); ++i)
+            if (hasBf[i])
+                bfTops.push_back(tops[i]);
+        if (bfTops.empty())
             return;
 
         // Ensure runtime functions are declared and cache their references
@@ -1149,7 +1164,7 @@ struct BFToLLVMPass : public PassWrapper<BFToLLVMPass, OperationPass<ModuleOp>> 
             ReadF64OpLowering
         >(typeConverter, ctx);
 
-        if (failed(applyPartialConversion(module, target, std::move(patterns))))
+        if (failed(applyPartialConversion(bfTops, target, std::move(patterns))))
             signalPassFailure();
     }
 };

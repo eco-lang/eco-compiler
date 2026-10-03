@@ -9,7 +9,8 @@
 // the canonicalizer at the M4 slot is precisely the measured ~0.5 s M4
 // regression the pipeline removed. This is one linear walk.
 //
-// Runs func-nested at the M4 slot, BEFORE EcoGCPrepare — after that pass the
+// Runs at the M4 slot (module pass, functions in parallel chunks; plan 07 P1),
+// BEFORE EcoGCPrepare — after that pass the
 // construct's operand list carries appended root operands, and (worse) the
 // projections this pass deletes would already be baked into root sets.
 //
@@ -18,6 +19,7 @@
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
 #include "../Passes.h"
+#include "EcoParallel.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -55,12 +57,66 @@ bool blockLocalOnly() {
     return e && *e && !(e[0] == '0' && e[1] == '\0');
 }
 
-/// Census totals across the ~64k per-function runs (the pass manager runs
-/// func-nested passes in parallel, so these must be atomic).
-std::atomic<uint64_t> gFolded{0}, gTagFolded{0}, gSkippedNonLocal{0};
+struct FoldCounts {
+    unsigned folded = 0, tagFolded = 0, skippedNonLocal = 0;
+};
 
+/// The per-function fold (unchanged from the func-nested pass). Function-local:
+/// RAUW + erase inside `func`, and the only creation is an arith.constant in
+/// the same block.
+void foldFunction(func::FuncOp func, FoldCounts &c) {
+    SmallVector<Operation *> dead;
+
+    // walk() visits ops in program order within a block, so a chain
+    // `%b = project(%a); %c = project(%b)` sees %b already RAUW'd when %c
+    // is visited and collapses in one sweep. Erasure is deferred so the
+    // walk is never invalidated; RAUW mid-walk only rewrites operands of
+    // not-yet-visited ops.
+    func.walk([&](Operation *op) {
+        if (!isa<CustomProjectOp, RecordProjectOp, Tuple2ProjectOp,
+                 Tuple3ProjectOp, ListHeadOp, ListTailOp, GetTagOp>(op))
+            return;
+        if (blockLocalOnly()) {
+            Operation *def = op->getOperand(0).getDefiningOp();
+            if (!def || def->getBlock() != op->getBlock()) {
+                ++c.skippedNonLocal;
+                return;
+            }
+        }
+        SmallVector<OpFoldResult, 1> results;
+        if (failed(op->fold(results)) || results.size() != 1)
+            return;
+        if (auto v = dyn_cast_if_present<Value>(results[0])) {
+            op->getResult(0).replaceAllUsesWith(v);
+            dead.push_back(op);
+            ++c.folded;
+            return;
+        }
+        // Attribute result: get_tag's constant ctor tag. A fold may not
+        // build IR, but this driver may — materialize the arith.constant
+        // right where the op sits.
+        if (auto attr = dyn_cast_if_present<Attribute>(results[0])) {
+            auto typed = dyn_cast<TypedAttr>(attr);
+            if (!typed)
+                return;
+            OpBuilder b(op);
+            Value cst = b.create<arith::ConstantOp>(op->getLoc(), typed);
+            op->getResult(0).replaceAllUsesWith(cst);
+            dead.push_back(op);
+            ++c.tagFolded;
+        }
+    });
+
+    for (Operation *op : dead)
+        op->erase();
+}
+
+/// Plan 07 P1: a MODULE pass that folds the functions in parallel chunks.
+/// It used to be func-nested: ~57k adaptor invocations, each under MLIR's
+/// global PassInstrumentor mutex plus the stats mutex, and the banner summed
+/// per-function times across threads (CPU time, not wall). Timed once here.
 struct EcoFoldProjectPass
-    : public PassWrapper<EcoFoldProjectPass, OperationPass<func::FuncOp>> {
+    : public PassWrapper<EcoFoldProjectPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EcoFoldProjectPass)
 
     StringRef getArgument() const override { return "eco-fold-project"; }
@@ -72,70 +128,27 @@ struct EcoFoldProjectPass
     void runOnOperation() override {
         if (!foldEnabled())
             return;
-        func::FuncOp func = getOperation();
-        if (func.isExternal())
-            return;
+        SmallVector<func::FuncOp> funcs;
+        for (func::FuncOp f : getOperation().getOps<func::FuncOp>())
+            if (!f.isExternal())
+                funcs.push_back(f);
 
-        SmallVector<Operation *> dead;
-        unsigned folded = 0, tagFolded = 0, skippedNonLocal = 0;
+        std::atomic<uint64_t> folded{0}, tagFolded{0}, skippedNonLocal{0};
+        eco::forEachChunk(&getContext(), funcs.size(),
+                          [&](size_t lo, size_t hi) {
+                              FoldCounts c;
+                              for (size_t i = lo; i < hi; ++i)
+                                  foldFunction(funcs[i], c);
+                              folded += c.folded;
+                              tagFolded += c.tagFolded;
+                              skippedNonLocal += c.skippedNonLocal;
+                          });
 
-        // walk() visits ops in program order within a block, so a chain
-        // `%b = project(%a); %c = project(%b)` sees %b already RAUW'd when %c
-        // is visited and collapses in one sweep. Erasure is deferred so the
-        // walk is never invalidated; RAUW mid-walk only rewrites operands of
-        // not-yet-visited ops.
-        func.walk([&](Operation *op) {
-            if (!isa<CustomProjectOp, RecordProjectOp, Tuple2ProjectOp,
-                     Tuple3ProjectOp, ListHeadOp, ListTailOp, GetTagOp>(op))
-                return;
-            if (blockLocalOnly()) {
-                Operation *def = op->getOperand(0).getDefiningOp();
-                if (!def || def->getBlock() != op->getBlock()) {
-                    ++skippedNonLocal;
-                    return;
-                }
-            }
-            SmallVector<OpFoldResult, 1> results;
-            if (failed(op->fold(results)) || results.size() != 1)
-                return;
-            if (auto v = dyn_cast_if_present<Value>(results[0])) {
-                op->getResult(0).replaceAllUsesWith(v);
-                dead.push_back(op);
-                ++folded;
-                return;
-            }
-            // Attribute result: get_tag's constant ctor tag. A fold may not
-            // build IR, but this driver may — materialize the arith.constant
-            // right where the op sits.
-            if (auto attr = dyn_cast_if_present<Attribute>(results[0])) {
-                auto typed = dyn_cast<TypedAttr>(attr);
-                if (!typed)
-                    return;
-                OpBuilder b(op);
-                Value c = b.create<arith::ConstantOp>(op->getLoc(), typed);
-                op->getResult(0).replaceAllUsesWith(c);
-                dead.push_back(op);
-                ++tagFolded;
-            }
-        });
-
-        for (Operation *op : dead)
-            op->erase();
-
-        if (foldCensus()) {
-            gFolded += folded;
-            gTagFolded += tagFolded;
-            gSkippedNonLocal += skippedNonLocal;
-            // Per-function lines would be ~64k interleaved prints; report the
-            // running totals only from functions that folded something, so the
-            // LAST line printed carries (approximately) the final totals.
-            if (folded || tagFolded)
-                llvm::errs() << "[eco-fold-project] total folded="
-                             << gFolded.load()
-                             << " tag_folded=" << gTagFolded.load()
-                             << " skipped_nonlocal=" << gSkippedNonLocal.load()
-                             << "\n";
-        }
+        if (foldCensus())
+            llvm::errs() << "[eco-fold-project] total folded=" << folded.load()
+                         << " tag_folded=" << tagFolded.load()
+                         << " skipped_nonlocal=" << skippedNonLocal.load()
+                         << "\n";
     }
 };
 

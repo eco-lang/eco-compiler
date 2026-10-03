@@ -1,6 +1,8 @@
 //===- LoweringStats.cpp - Phase/pass timing for eco-boot-native ----------===//
 #include "LoweringStats.h"
 
+#include <atomic>
+
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -37,16 +39,34 @@ void LoweringStats::timelineMark(llvm::StringRef name, bool begin) {
     ::write(2, line.data(), line.size());
 }
 
-void LoweringStats::record(llvm::StringRef name, Duration duration) {
+namespace {
+std::atomic<uint64_t> gNextStatsGen{1};
+} // namespace
+
+LoweringStats::LoweringStats() : gen_(gNextStatsGen++) {}
+
+LoweringStats::Shard &LoweringStats::localShard() {
+    // One cached shard per thread, keyed on the owning object's generation
+    // (an address could be reused by a later LoweringStats; a gen cannot).
+    thread_local uint64_t cachedGen = 0;
+    thread_local Shard *cached = nullptr;
+    if (cachedGen == gen_)
+        return *cached;
     std::lock_guard<std::mutex> lock(mu_);
-    auto &e = phases_[name];
+    shards_.push_back(std::make_unique<Shard>());
+    cached = shards_.back().get();
+    cachedGen = gen_;
+    return *cached;
+}
+
+void LoweringStats::record(llvm::StringRef name, Duration duration) {
+    auto &e = localShard().phases[name];
     e.total += duration;
     e.count += 1;
 }
 
 void LoweringStats::recordPass(llvm::StringRef name, Duration duration) {
-    std::lock_guard<std::mutex> lock(mu_);
-    auto &e = passes_[name];
+    auto &e = localShard().passes[name];
     e.total += duration;
     e.count += 1;
 }
@@ -155,6 +175,23 @@ void printSection(llvm::raw_ostream &os, llvm::StringRef title,
 
 void LoweringStats::print(llvm::raw_ostream &os) const {
     std::lock_guard<std::mutex> lock(mu_);
+
+    // Merge the per-thread shards. Totals and counts are sums, so the merge
+    // order cannot change a printed number. Requires every recording thread
+    // to have finished (the banner prints at exit, after the EcoSplit join).
+    llvm::StringMap<Entry> phases_, passes_;
+    for (const auto &sh : shards_) {
+        for (const auto &kv : sh->phases) {
+            auto &e = phases_[kv.getKey()];
+            e.total += kv.getValue().total;
+            e.count += kv.getValue().count;
+        }
+        for (const auto &kv : sh->passes) {
+            auto &e = passes_[kv.getKey()];
+            e.total += kv.getValue().total;
+            e.count += kv.getValue().count;
+        }
+    }
 
     // Sum top-level phases — used as the denominator for both tables so the
     // per-MLIR-pass percentages are comparable to the phase totals.

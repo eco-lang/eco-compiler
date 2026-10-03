@@ -10,6 +10,10 @@ because of the hazards identified; the numbering is also the implementation orde
 - `plans/mlir-split-backend-02-gc-leaf-propagation.md`
 - `plans/mlir-split-backend-03-reachability.md`
 - `plans/mlir-split-backend-04-constant-thunks.md`
+- `plans/mlir-split-backend-05-ecosplit.md`: the split itself (§4), implemented 2026-10-02.
+- `plans/mlir-split-backend-06-partition-boundaries.md`: EcoSplit follow-ups, 2026-10-03.
+- `plans/mlir-split-backend-07-pipeline-parallelism.md`: the serial MLIR pipeline made parallel,
+  2026-10-03 (byte-identical output; pipeline 8.02 → 2.74 s, wall 25.10 → 20.04 s).
 
 Renumbered on 2026-10-02. The old numbers were: 01 reachability, 02 cap-hoist, 03 gc-leaf,
 04 thunks. References inside every plan were updated to the new numbers.

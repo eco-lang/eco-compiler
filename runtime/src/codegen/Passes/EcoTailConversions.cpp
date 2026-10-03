@@ -56,6 +56,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Rewrite/PatternApplicator.h"
 #include "mlir/Transforms/DialectConversion.h"
 
 #include <atomic>
@@ -64,6 +65,78 @@
 using namespace mlir;
 
 namespace {
+
+bool isScfToLower(Operation *op) {
+    return isa<scf::ForallOp, scf::ForOp, scf::IfOp, scf::IndexSwitchOp,
+               scf::ParallelOp, scf::WhileOp, scf::ExecuteRegionOp>(op);
+}
+
+/// SCF -> CF for one function with the upstream SCFToControlFlow patterns,
+/// applied by a listener-free rewriter (see the loop for the order). Each
+/// pattern is a plain OpRewritePattern that only splits the op's block and
+/// inlines its regions, so the pointers collected up front stay valid. Patterns
+/// that would create NEW scf ops (forall/parallel lowering) are not expected
+/// in eco output; if any remains, the function falls back to the conversion
+/// driver, which handles it as it always did.
+/// Parents before children (a parent pattern may expect its regions' front
+/// block to still end in scf.yield), but siblings in one block LAST-FIRST.
+/// Each lowering is local — split the op's block at the op, inline its
+/// regions before the continuation — so sibling order does not change the
+/// final block layout (byte-identical output, checked), but a split then
+/// moves only the ops up to the next, already-lowered sibling: linear
+/// instead of O(#ifs x block length) parent-pointer updates (the 0.4 s
+/// single-thread tail left after the listener fix).
+void collectScfOps(Operation *op, SmallVectorImpl<Operation *> &out) {
+    for (Region &r : op->getRegions())
+        for (Block &b : r)
+            for (Operation &o : llvm::reverse(b)) {
+                if (isScfToLower(&o))
+                    out.push_back(&o);
+                if (o.getNumRegions())
+                    collectScfOps(&o, out);
+            }
+}
+
+LogicalResult lowerScfToCf(Operation *f, PatternApplicator &applicator,
+                           PatternRewriter &rewriter,
+                           SmallVectorImpl<Operation *> &ops,
+                           const ConversionTarget &target,
+                           const FrozenRewritePatternSet &frozen) {
+    ops.clear();
+    collectScfOps(f, ops);
+    if (ops.empty())
+        return success();
+    SmallVector<OpFoldResult> folded;
+    for (Operation *op : ops) {
+        // Fold first, as the conversion driver legalizes an illegal op
+        // (DialectConversionFoldingMode::BeforePatterns): scf.if's folder
+        // swaps `if (xor c, true)` into `if c` IN PLACE. Repeat while it
+        // folds in place. A replacing fold (none is expected for these ops)
+        // would erase nested ops still on the list, so hand the rest of the
+        // function to the conversion driver instead.
+        for (unsigned n = 0; n < 8; ++n) {
+            folded.clear();
+            if (failed(op->fold(folded)))
+                break;
+            if (!folded.empty())
+                return applyPartialConversion(f, target, frozen);
+        }
+        rewriter.setInsertionPoint(op);
+        if (failed(applicator.matchAndRewrite(op, rewriter)))
+            return op->emitError("eco-tail-conversions: no scf->cf lowering");
+    }
+    bool remaining = false;
+    f->walk([&](Operation *op) {
+        if (isScfToLower(op)) {
+            remaining = true;
+            return WalkResult::interrupt();
+        }
+        return WalkResult::advance();
+    });
+    if (remaining)
+        return applyPartialConversion(f, target, frozen);
+    return success();
+}
 
 struct EcoTailConversionsPass
     : public PassWrapper<EcoTailConversionsPass, OperationPass<ModuleOp>> {
@@ -123,10 +196,23 @@ struct EcoTailConversionsPass
             FrozenRewritePatternSet llvmFrozen(std::move(llvmPatterns));
             LLVMConversionTarget llvmTarget(*ctx);
 
+            // Plan 07 P4: step 1 applies the SAME patterns without the
+            // conversion driver. A ConversionPatternRewriter always has a
+            // listener, so every splitBlock moved the rest of the block one
+            // op at a time and recorded each move; a block with k scf.ifs and
+            // n ops cost O(k*n) recorded moves (~1,000 string-literal
+            // diamonds in one 34k-op block = a 1.4 s single-thread tail).
+            // A listener-free PatternRewriter splits with one ilist splice.
+            PatternApplicator scfApplicator(scfFrozen);
+            scfApplicator.applyDefaultCostModel();
+            PatternRewriter scfRewriter(ctx);
+            SmallVector<Operation *> scfOps;
+
             SmallVector<UnrealizedConversionCastOp> casts;
             for (size_t i = lo; i < hi; ++i) {
                 Operation *f = funcs[i];
-                if (failed(applyPartialConversion(f, scfTarget, scfFrozen)) ||
+                if (failed(lowerScfToCf(f, scfApplicator, scfRewriter, scfOps,
+                                        scfTarget, scfFrozen)) ||
                     failed(applyPartialConversion(f, llvmTarget, llvmFrozen))) {
                     failedAny = true;
                     return;

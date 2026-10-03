@@ -1184,70 +1184,71 @@ static bool isAsciiCasePattern(llvm::StringRef s) {
 
 void eco::detail::preMaterializeStringCases(
     OpBuilder &builder, const EcoRuntime &runtime,
-    llvm::ArrayRef<LLVM::LLVMFuncOp> funcs) {
+    llvm::ArrayRef<PreMatDemand> demand) {
     auto *ctx = builder.getContext();
     auto i16Ty = IntegerType::get(ctx, 16);
     auto i8Ty = IntegerType::get(ctx, 8);
     uint64_t caseCounter = 0;
-    for (LLVM::LLVMFuncOp func : funcs) {
-        func.walk([&](CaseOp op) {
-            auto ck = op.getCaseKindAttr();
-            if (!(ck && ck.getValue() == "str")) return;
-            auto pats = op.getStringPatternsAttr();
-            if (!pats) return;
-            uint64_t caseId = caseCounter++;
-            runtime.caseIdForOp[op.getOperation()] = caseId;
-            for (size_t i = 0; i < pats.size(); ++i) {
-                StringRef pattern = cast<StringAttr>(pats[i]).getValue();
-                if (pattern.empty()) continue;  // embedded empty-string const
-                llvm::SmallString<48> globalName;
-                {
-                    llvm::raw_svector_ostream os(globalName);
-                    os << "__eco_str_case_" << caseId << "_" << i;
-                }
-                OpBuilder::InsertionGuard guard(builder);
-                builder.setInsertionPointToStart(runtime.module.getBody());
+    auto visit = [&](CaseOp op) {
+        auto ck = op.getCaseKindAttr();
+        if (!(ck && ck.getValue() == "str")) return;
+        auto pats = op.getStringPatternsAttr();
+        if (!pats) return;
+        uint64_t caseId = caseCounter++;
+        runtime.caseIdForOp[op.getOperation()] = caseId;
+        for (size_t i = 0; i < pats.size(); ++i) {
+            StringRef pattern = cast<StringAttr>(pats[i]).getValue();
+            if (pattern.empty()) continue;  // embedded empty-string const
+            llvm::SmallString<48> globalName;
+            {
+                llvm::raw_svector_ostream os(globalName);
+                os << "__eco_str_case_" << caseId << "_" << i;
+            }
+            OpBuilder::InsertionGuard guard(builder);
+            builder.setInsertionPointToStart(runtime.module.getBody());
 
-                if (isAsciiCasePattern(pattern)) {
-                    size_t byteLen = pattern.size();
-                    auto arrayTy = LLVM::LLVMArrayType::get(i8Ty, byteLen);
-                    auto globalOp = builder.create<LLVM::GlobalOp>(
-                        op.getLoc(), arrayTy, /*isConstant=*/true,
-                        LLVM::Linkage::Internal, globalName, /*value=*/Attribute{});
-                    Block *initBlock =
-                        builder.createBlock(&globalOp.getInitializerRegion());
-                    builder.setInsertionPointToStart(initBlock);
-                    SmallVector<int8_t> byteValues;
-                    for (char c : pattern)
-                        byteValues.push_back(static_cast<int8_t>(c));
-                    auto denseAttr = DenseElementsAttr::get(
-                        RankedTensorType::get({static_cast<int64_t>(byteLen)}, i8Ty),
-                        ArrayRef<int8_t>(byteValues));
-                    auto initValue = builder.create<LLVM::ConstantOp>(
-                        op.getLoc(), arrayTy, denseAttr);
-                    builder.create<LLVM::ReturnOp>(op.getLoc(), initValue.getResult());
-                    continue;
-                }
-
-                std::vector<uint16_t> utf16 = utf8ToUtf16(pattern);
-                size_t length = utf16.size();
-                auto arrayTy = LLVM::LLVMArrayType::get(i16Ty, length);
+            if (isAsciiCasePattern(pattern)) {
+                size_t byteLen = pattern.size();
+                auto arrayTy = LLVM::LLVMArrayType::get(i8Ty, byteLen);
                 auto globalOp = builder.create<LLVM::GlobalOp>(
                     op.getLoc(), arrayTy, /*isConstant=*/true,
                     LLVM::Linkage::Internal, globalName, /*value=*/Attribute{});
                 Block *initBlock =
                     builder.createBlock(&globalOp.getInitializerRegion());
                 builder.setInsertionPointToStart(initBlock);
-                SmallVector<int16_t> charValues;
-                for (uint16_t c : utf16)
-                    charValues.push_back(static_cast<int16_t>(c));
+                SmallVector<int8_t> byteValues;
+                for (char c : pattern)
+                    byteValues.push_back(static_cast<int8_t>(c));
                 auto denseAttr = DenseElementsAttr::get(
-                    RankedTensorType::get({static_cast<int64_t>(length)}, i16Ty),
-                    ArrayRef<int16_t>(charValues));
-                auto initValue =
-                    builder.create<LLVM::ConstantOp>(op.getLoc(), arrayTy, denseAttr);
+                    RankedTensorType::get({static_cast<int64_t>(byteLen)}, i8Ty),
+                    ArrayRef<int8_t>(byteValues));
+                auto initValue = builder.create<LLVM::ConstantOp>(
+                    op.getLoc(), arrayTy, denseAttr);
                 builder.create<LLVM::ReturnOp>(op.getLoc(), initValue.getResult());
+                continue;
             }
-        });
-    }
+
+            std::vector<uint16_t> utf16 = utf8ToUtf16(pattern);
+            size_t length = utf16.size();
+            auto arrayTy = LLVM::LLVMArrayType::get(i16Ty, length);
+            auto globalOp = builder.create<LLVM::GlobalOp>(
+                op.getLoc(), arrayTy, /*isConstant=*/true,
+                LLVM::Linkage::Internal, globalName, /*value=*/Attribute{});
+            Block *initBlock =
+                builder.createBlock(&globalOp.getInitializerRegion());
+            builder.setInsertionPointToStart(initBlock);
+            SmallVector<int16_t> charValues;
+            for (uint16_t c : utf16)
+                charValues.push_back(static_cast<int16_t>(c));
+            auto denseAttr = DenseElementsAttr::get(
+                RankedTensorType::get({static_cast<int64_t>(length)}, i16Ty),
+                ArrayRef<int16_t>(charValues));
+            auto initValue =
+                builder.create<LLVM::ConstantOp>(op.getLoc(), arrayTy, denseAttr);
+            builder.create<LLVM::ReturnOp>(op.getLoc(), initValue.getResult());
+        }
+    };
+    for (const PreMatDemand &d : demand)
+        for (Operation *o : d.cases)
+            visit(cast<CaseOp>(o));
 }

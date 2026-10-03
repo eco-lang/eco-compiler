@@ -132,8 +132,11 @@ void buildEcoToOptPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // purity consumers MAY run anywhere in buildEcoToEcoPipeline or in
     // buildEcoToLLVMPipeline up to and including THIS slot, and nowhere
     // after it — `eco.cse_safe` is stripped by EcoGCPrepare precisely here.
+    // Plan 07 P1: FoldProject is a module pass that folds functions in
+    // parallel chunks — a nested pass ran ~57k times under MLIR's global
+    // PassInstrumentor mutex and reported summed CPU time, not wall.
     if (ecoFoldProjectEnabled())
-        pm.addNestedPass<func::FuncOp>(eco::createEcoFoldProjectPass());
+        pm.addPass(eco::createEcoFoldProjectPass());
     if (ecoMlirCseEnabled())
         pm.addNestedPass<func::FuncOp>(createCSEPass());
 }

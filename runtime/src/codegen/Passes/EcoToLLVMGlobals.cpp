@@ -564,6 +564,19 @@ void eco::detail::createGlobalRootInitFunction(
 // slot as a JIT root when the value stays heap-resident (HEAP_036).
 //===----------------------------------------------------------------------===//
 
+void eco::detail::declareCafPromote(ModuleOp module, Location loc) {
+    if (module.lookupSymbol<LLVM::LLVMFuncOp>("eco_caf_promote"))
+        return;
+    auto *ctx = module.getContext();
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+    OpBuilder mb = OpBuilder::atBlockEnd(module.getBody());
+    auto promoteTy = LLVM::LLVMFunctionType::get(i64Ty, {i64Ty, ptrTy});
+    auto decl = mb.create<LLVM::LLVMFuncOp>(loc, "eco_caf_promote", promoteTy);
+    decl->setAttr("passthrough",
+                  ArrayAttr::get(ctx, {StringAttr::get(ctx, "gc-leaf-function")}));
+}
+
 LogicalResult eco::detail::installCafMemoGuard(LLVM::LLVMFuncOp func,
                                               bool &promoteDeclared) {
     if (func.isExternal())
@@ -594,17 +607,8 @@ LogicalResult eco::detail::installCafMemoGuard(LLVM::LLVMFuncOp func,
     // GC, never re-enters Elm), so RS4GC adds no statepoint and the
     // barrier-i64 crossing it is the authorized store-helper→gc-leaf-arg
     // pattern (EcoPtrIntVerify pattern 2; the return value is pattern 4).
-    auto module = func->getParentOfType<ModuleOp>();
-    if (!promoteDeclared &&
-        !module.lookupSymbol<LLVM::LLVMFuncOp>("eco_caf_promote")) {
-        OpBuilder mb = OpBuilder::atBlockEnd(module.getBody());
-        auto promoteTy = LLVM::LLVMFunctionType::get(i64Ty, {i64Ty, ptrTy});
-        auto decl = mb.create<LLVM::LLVMFuncOp>(loc, "eco_caf_promote",
-                                                promoteTy);
-        decl->setAttr("passthrough",
-                      ArrayAttr::get(ctx, {StringAttr::get(
-                                              ctx, "gc-leaf-function")}));
-    }
+    if (!promoteDeclared)
+        declareCafPromote(func->getParentOfType<ModuleOp>(), loc);
     promoteDeclared = true;
 
     // 1. Instrument every existing return FIRST, so the hit-path return

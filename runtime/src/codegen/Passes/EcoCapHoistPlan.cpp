@@ -21,6 +21,7 @@
 #include "EcoCapHoistCore.h"
 #include "EcoMarkerFacts.h"
 #include "EcoSymbolGraph.h"
+#include "EcoParallel.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
@@ -215,7 +216,7 @@ void EcoCapHoistPlanPass::runOnOperation() {
             defs.push_back((int)i);
         }
     std::vector<caphoist::Node> cn(defs.size());
-    parallelForEach(ctx, defs, [&](int self) {
+    auto phaseA = [&](int self) {
         SymNode &sn = nodes[self];
         caphoist::Node &nd = cn[sn.defIdx];
         auto fn = cast<LLVM::LLVMFuncOp>(sn.op);
@@ -366,6 +367,10 @@ void EcoCapHoistPlanPass::runOnOperation() {
                 return;
             setTop(caphoist::Reason::Other);
         });
+    };
+    eco::forEachChunk(ctx, defs.size(), [&](size_t lo, size_t hi) {
+        for (size_t k = lo; k < hi; ++k)
+            phaseA(defs[k]);
     });
 
     // 8. Phase B + C.

@@ -24,6 +24,7 @@
 #include "../Passes.h"
 #include "EcoCapHoistCore.h"
 #include "EcoMarkerFacts.h"
+#include "EcoParallel.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
@@ -200,7 +201,7 @@ void EcoGcFreePropagationPass::runOnOperation() {
     std::vector<std::vector<int>> callees(nodes.size());
     std::vector<std::string> noRow(nodes.size());
 
-    parallelForEach(ctx, defs, [&](int self) {
+    auto scanFn = [&](int self) {
         SymNode &sn = nodes[self];
         auto fn = cast<LLVM::LLVMFuncOp>(sn.op);
         bool p = sn.interposable;
@@ -292,6 +293,10 @@ void EcoGcFreePropagationPass::runOnOperation() {
             return WalkResult::interrupt();
         });
         poison[self] = p;
+    };
+    eco::forEachChunk(ctx, defs.size(), [&](size_t lo, size_t hi) {
+        for (size_t k = lo; k < hi; ++k)
+            scanFn(defs[k]);
     });
 
     for (int i : defs)

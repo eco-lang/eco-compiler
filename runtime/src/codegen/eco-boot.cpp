@@ -754,6 +754,19 @@ int main(int argc, char **argv) {
             return 1;
         }
     }
+    // Plan 07 gate: ECO_DUMP_LOWERED_MLIR=<file> prints the module exactly as
+    // the MLIR pipeline left it (before EcoSplit), so a pipeline change can be
+    // checked for byte-identical output with `cmp`.
+    if (const char *dump = ::getenv("ECO_DUMP_LOWERED_MLIR"); dump && *dump) {
+        std::error_code ec;
+        llvm::raw_fd_ostream out(dump, ec, llvm::sys::fs::OF_None);
+        if (ec) {
+            llvm::errs() << "Error: cannot write " << dump << ": "
+                         << ec.message() << "\n";
+            return 1;
+        }
+        module->print(out);
+    }
 
     // Step 4 (plan 05, EcoSplit, CGEN_083): for split-eligible object and
     // executable output, partition in MLIR and translate + lower every

@@ -1180,16 +1180,33 @@ void populateEcoValueAggPatterns(
 // per-function body stage; see EcoToLLVM.cpp runOnOperation).
 //===----------------------------------------------------------------------===//
 
+/// Plan 07 P7: the demand sites of one body function, in walk (post-)order —
+/// the order the four pre-materialization walks visited them. Collected for
+/// all functions in ONE parallel pass (collectPreMatDemand); the creators
+/// below then iterate these lists serially, in function order, so counters,
+/// names and creation order are unchanged.
+struct PreMatDemand {
+    llvm::SmallVector<mlir::Operation *, 0> literals; // eco.string_literal
+    llvm::SmallVector<mlir::Operation *, 0> cases;    // eco.case
+    // papExtend, eco.call, papCreate, papCreateGroup, allocate_closure,
+    // make_closure
+    llvm::SmallVector<mlir::Operation *, 0> closure;
+};
+
+void collectPreMatDemand(mlir::MLIRContext *ctx,
+                         llvm::ArrayRef<mlir::LLVM::LLVMFuncOp> funcs,
+                         std::vector<PreMatDemand> &out);
+
 void preMaterializeStringLiterals(
     mlir::OpBuilder &builder, const EcoRuntime &runtime,
-    llvm::ArrayRef<mlir::LLVM::LLVMFuncOp> funcs);
+    llvm::ArrayRef<PreMatDemand> demand);
 void preMaterializeStringCases(
     mlir::OpBuilder &builder, const EcoRuntime &runtime,
-    llvm::ArrayRef<mlir::LLVM::LLVMFuncOp> funcs);
+    llvm::ArrayRef<PreMatDemand> demand);
 void preMaterializeClosureArtifacts(
     mlir::OpBuilder &builder, const EcoRuntime &runtime,
     const mlir::TypeConverter *typeConverter,
-    llvm::ArrayRef<mlir::LLVM::LLVMFuncOp> funcs);
+    llvm::ArrayRef<PreMatDemand> demand);
 
 //===----------------------------------------------------------------------===//
 // Shadow Root Frame (TCO-safe GC rooting for func.func parameters)
@@ -1250,6 +1267,10 @@ void createGlobalRootInitFunction(
 /// unused-decl strip (the barrier decls this references must count as used).
 /// `promoteDeclared` carries "eco_caf_promote exists" across calls so each
 /// guard does not pay a linear module.lookupSymbol (quadratic over all CAFs).
+/// Declare `eco_caf_promote` (gc-leaf) at module END unless it exists. Called
+/// by installCafMemoGuard on first use, or up front by EcoToLLVM before the
+/// epilogue runs in parallel (plan 07 P6), at the same position.
+void declareCafPromote(mlir::ModuleOp module, mlir::Location loc);
 mlir::LogicalResult installCafMemoGuard(mlir::LLVM::LLVMFuncOp func,
                                         bool &promoteDeclared);
 
