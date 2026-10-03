@@ -75,6 +75,24 @@ var _File_writeBytes = F2(function(path, bytes) {
     });
 });
 
+// Temp file + rename: readers never observe a partial file. 'wx' (O_EXCL)
+// never shares a temp; pid + sequence make the name unique per call.
+var _File_atomicSeq = 0;
+var _File_writeBytesAtomic = F2(function(path, bytes) {
+    return __Scheduler_binding(function(callback) {
+        var fs = require('fs');
+        var tmp = path + '.tmp-' + process.pid + '-' + (_File_atomicSeq++);
+        try {
+            fs.writeFileSync(tmp, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength), { flag: 'wx' });
+            fs.renameSync(tmp, path);
+            callback(__Scheduler_succeed(__Utils_Tuple0));
+        } catch (e) {
+            try { fs.unlinkSync(tmp); } catch (_) {}
+            callback(__Scheduler_fail(_File_ioErr(e)));
+        }
+    });
+});
+
 var _File_open = F2(function(path, mode) {
     return __Scheduler_binding(function(callback) {
         try {

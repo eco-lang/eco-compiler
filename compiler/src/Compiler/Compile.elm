@@ -85,7 +85,7 @@ enables type-directed optimizations and direct lowering to MLIR.
 type alias TypedArtifactsData =
     { canonical : Can.Module
     , annotations : Dict.Dict Name (Can.Annotation Name)
-    , objects : Opt.LocalGraph
+    , objects : Opt.LocalGraph -- Opt.emptyLocalGraph on the typed path (plan S5)
     , typedObjects : TOpt.LocalGraph Name
     , typeEnv : TypeEnv.ModuleTypeEnv
     }
@@ -172,9 +172,10 @@ phase _ _ =
 
 {-| Compiles an Elm module with typed optimization for native code generation.
 
-Performs all standard compilation phases plus typed optimization, producing:
+Performs canonicalization, type checking, nitpicking and typed optimization, producing:
 
-  - `Opt.LocalGraph` - Standard optimized IR for JavaScript backend
+  - `Opt.LocalGraph` - always `Opt.emptyLocalGraph`: the erased optimizer does not run
+    on the typed path (plan S5), because nothing on that path reads the erased graph
   - `TOpt.LocalGraph Name` - Typed optimized IR with preserved type information
 
 The typed optimization phase preserves type information needed for monomorphization
@@ -222,30 +223,27 @@ compileTyped pkg ifaces modul =
                                                     (\nitpickResult ->
                                                         case nitpickResult of
                                                             Ok () ->
-                                                                phase modName "optimize"
-                                                                    |> Task.map (\_ -> optimize modul annotations canonical)
-                                                                    |> Task.andThen
-                                                                        (\optResult ->
-                                                                            case optResult of
-                                                                                Ok objects ->
-                                                                                    phase modName "typed-opt"
-                                                                                        |> Task.map
-                                                                                            (\_ ->
-                                                                                                typedOptimizeFromTyped modul annotations nodeTypes nodeVars kernelEnv annotationVars allSchemeRoots typedCanonical
-                                                                                                    |> Result.map
-                                                                                                        (\typedObjects ->
-                                                                                                            TypedArtifacts
-                                                                                                                { canonical = canonical
-                                                                                                                , annotations = annotations
-                                                                                                                , objects = objects
-                                                                                                                , typedObjects = typedObjects
-                                                                                                                , typeEnv = moduleTypeEnv
-                                                                                                                }
-                                                                                                        )
-                                                                                            )
-
-                                                                                Err err ->
-                                                                                    Task.succeed (Err err)
+                                                                -- Plan S5: the erased optimizer no longer runs on the
+                                                                -- typed path. Its graph was never read there (no .eco
+                                                                -- write, stripUntypedGraph discarded it), and the
+                                                                -- typed optimizer raises the identical BadMains errors.
+                                                                phase modName "typed-opt"
+                                                                    |> Task.map
+                                                                        (\_ ->
+                                                                            typedOptimizeFromTyped modul annotations nodeTypes nodeVars kernelEnv annotationVars allSchemeRoots typedCanonical
+                                                                                |> Result.map
+                                                                                    (\typedObjects ->
+                                                                                        TypedArtifacts
+                                                                                            { canonical = canonical
+                                                                                            , annotations = annotations
+                                                                                            , objects =
+                                                                                                case typedObjects of
+                                                                                                    TOpt.LocalGraph d ->
+                                                                                                        Opt.typedPathStub (d.main /= Nothing)
+                                                                                            , typedObjects = typedObjects
+                                                                                            , typeEnv = moduleTypeEnv
+                                                                                            }
+                                                                                    )
                                                                         )
 
                                                             Err err ->

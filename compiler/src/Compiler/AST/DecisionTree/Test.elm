@@ -220,13 +220,13 @@ testDecoderS st =
 
 {-| Add string components of a Test to a collection set.
 -}
-collectStringsFromTest : Test -> Set String -> Set String
+collectStringsFromTest : Test -> StringTable.Collector -> StringTable.Collector
 collectStringsFromTest test acc =
     case test of
         IsCtor home name _ _ _ ->
             acc
                 |> ModuleName.collectStringsFromCanonical home
-                |> Set.insert name
+                |> StringTable.add name
 
         IsCons ->
             acc
@@ -241,10 +241,10 @@ collectStringsFromTest test acc =
             acc
 
         IsChr value ->
-            Set.insert value acc
+            StringTable.add value acc
 
         IsStr value ->
-            Set.insert value acc
+            StringTable.add value acc
 
         IsBool _ ->
             acc

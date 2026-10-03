@@ -1,5 +1,6 @@
 module Utils.Bytes.Decode exposing
     ( unit, bool, int, float, string
+    , uintV, sintV
     , maybe, list, nonempty, result, oneOrMore
     , jsonPair, assocListDict, stdDict, everySet
     , map6, map8
@@ -14,6 +15,7 @@ enable reliable deserialization of the compiler's binary cache files and inter-p
 # Primitive Decoders
 
 @docs unit, bool, int, float, string
+@docs uintV, sintV
 
 
 # Container Decoders
@@ -80,6 +82,53 @@ unit =
 int : BD.Decoder Int
 int =
     BD.float64 endian |> BD.map round
+
+
+{-| Decode an unsigned LEB128 varint written by `Utils.Bytes.Encode.uintV`.
+More than 5 bytes is corrupt and fails.
+-}
+uintV : BD.Decoder Int
+uintV =
+    BD.unsignedInt8
+        |> BD.andThen
+            (\b0 ->
+                if b0 < 0x80 then
+                    BD.succeed b0
+
+                else
+                    uintVMore (b0 - 0x80) 128 1
+            )
+
+
+uintVMore : Int -> Int -> Int -> BD.Decoder Int
+uintVMore acc scale k =
+    BD.unsignedInt8
+        |> BD.andThen
+            (\b ->
+                if b < 0x80 then
+                    BD.succeed (acc + b * scale)
+
+                else if k >= 4 then
+                    BD.fail
+
+                else
+                    uintVMore (acc + (b - 0x80) * scale) (scale * 128) (k + 1)
+            )
+
+
+{-| Decode a zigzag varint written by `Utils.Bytes.Encode.sintV`.
+-}
+sintV : BD.Decoder Int
+sintV =
+    BD.map
+        (\z ->
+            if modBy 2 z == 0 then
+                z // 2
+
+            else
+                -(z + 1) // 2
+        )
+        uintV
 
 
 {-| Decodes a 64-bit floating point number in big-endian byte order.

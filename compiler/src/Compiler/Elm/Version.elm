@@ -165,6 +165,9 @@ Initial release: `0.1.0`.
 -}
 compiler : Version
 compiler =
+    -- BUMPED 0.1.1 -> 0.1.2 on 2026-10-03 for the .ecot v2 TYPE TABLE
+    -- (plans/cache-serialization-optimization.md S3, ECOT_003) and varint
+    -- regions/indices (S10): typedGraphFormatVersion 1 -> 2.
     -- BUMPED 0.1.0 -> 0.1.1 on 2026-08-24 for the Phase 2b ARTIFACT FORMAT
     -- CHANGE (plans/lss-unknown-elimination.md §4.9 step 3): `Can.TLambda` now
     -- carries its solver-root index across `typeEncoderS`/`typeDecoderS`, so
@@ -176,7 +179,7 @@ compiler =
     -- `~/.eco/<version>/packages/...`, so bumping it invalidates every cache in
     -- one move. Cost, and it is unavoidable: one full package rebuild on every
     -- developer and CI machine.
-    Version 0 1 1
+    Version 0 1 2
 
 
 {-| The version of the Elm compiler this implementation targets: 0.19.1.

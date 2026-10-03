@@ -146,7 +146,7 @@ pathDecoderS st =
 
 {-| Add string components of a Path to a collection set.
 -}
-collectStringsFromPath : Path -> Set String -> Set String
+collectStringsFromPath : Path -> StringTable.Collector -> StringTable.Collector
 collectStringsFromPath path_ acc =
     case path_ of
         Index _ hint subPath ->
@@ -161,11 +161,11 @@ collectStringsFromPath path_ acc =
             acc
 
 
-collectStringsFromHint : ContainerHint -> Set String -> Set String
+collectStringsFromHint : ContainerHint -> StringTable.Collector -> StringTable.Collector
 collectStringsFromHint hint acc =
     case hint of
         HintCustom ctorName ->
-            Set.insert ctorName acc
+            StringTable.add ctorName acc
 
         _ ->
             acc

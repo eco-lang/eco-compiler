@@ -3,7 +3,7 @@ module Compiler.Reporting.Annotation exposing
     , at, toValue, toRegion
     , compareLocated, traverse, merge
     , mergeRegions, zero, one, isMultiline
-    , regionEncoder, regionDecoder
+    , regionEncoder, regionDecoder, regionEncoderV, regionDecoderV
     , locatedEncoder, locatedDecoder
     )
 
@@ -33,7 +33,7 @@ problems occur.
 
 # Serialization
 
-@docs regionEncoder, regionDecoder
+@docs regionEncoder, regionDecoder, regionEncoderV, regionDecoderV
 @docs locatedEncoder, locatedDecoder
 
 -}
@@ -216,6 +216,27 @@ regionDecoder =
     Bytes.Decode.map2 Region
         positionDecoder
         positionDecoder
+
+
+{-| Compact region encoding for the typed artifacts only (`.ecot`,
+`typed-artifacts.dat`; plan S10): `uintV startRow, uintV startCol,
+sintV (endRow - startRow), uintV endCol`. `.eci` and the other formats keep
+`regionEncoder`.
+-}
+regionEncoderV : Region -> Bytes.Encode.Encoder
+regionEncoderV (Region (Position r1 c1) (Position r2 c2)) =
+    Bytes.Encode.sequence [ BE.uintV r1, BE.uintV c1, BE.sintV (r2 - r1), BE.uintV c2 ]
+
+
+{-| Decode a region written by `regionEncoderV`.
+-}
+regionDecoderV : Bytes.Decode.Decoder Region
+regionDecoderV =
+    Bytes.Decode.map4 (\r1 c1 dr c2 -> Region (Position r1 c1) (Position (r1 + dr) c2))
+        BD.uintV
+        BD.uintV
+        BD.sintV
+        BD.uintV
 
 
 positionEncoder : Position -> Bytes.Encode.Encoder

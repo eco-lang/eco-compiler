@@ -3,11 +3,10 @@ module Builder.Stuff exposing
     , PackageCache, getPackageCache, getReplCache, package, isLocalPackage, localPackageSource, registry
     , resolveBundledKernel
     , typedPackageArtifacts, packageCacheEncoder, packageCacheDecoder
-    , eci, eco, ecot
     , testDir
     , withRootLock, withRootLockBuildDir, withRegistryLock
     , detailsWithBuildDir, eciWithBuildDir, ecoWithBuildDir
-    , ecotWithBuildDir, interfacesWithBuildDir, objectsWithBuildDir, typedObjectsWithBuildDir
+    , ecotWithBuildDir, interfacesWithBuildDir, objectsWithBuildDir
     , stuffWithBuildDir
     )
 
@@ -31,11 +30,6 @@ managing file locks.
 @docs typedPackageArtifacts, packageCacheEncoder, packageCacheDecoder
 
 
-# Build Artifacts
-
-@docs eci, eco, ecot
-
-
 # Special Directories
 
 @docs testDir
@@ -49,7 +43,7 @@ managing file locks.
 # Build Directory Variants
 
 @docs detailsWithBuildDir, eciWithBuildDir, ecoWithBuildDir
-@docs ecotWithBuildDir, interfacesWithBuildDir, objectsWithBuildDir, typedObjectsWithBuildDir
+@docs ecotWithBuildDir, interfacesWithBuildDir, objectsWithBuildDir
 @docs stuffWithBuildDir
 
 -}
@@ -109,13 +103,6 @@ objectsWithBuildDir root maybeBuildDir =
     stuffWithBuildDir root maybeBuildDir ++ "/o.dat"
 
 
-{-| Returns the path to the typed objects cache file with optional build subdirectory.
--}
-typedObjectsWithBuildDir : String -> Maybe String -> String
-typedObjectsWithBuildDir root maybeBuildDir =
-    stuffWithBuildDir root maybeBuildDir ++ "/to.dat"
-
-
 {-| Returns the path to the test output directory.
 -}
 testDir : String -> String
@@ -132,30 +119,10 @@ compilerVersion =
 -- ====== ECI and ECO ======
 
 
-{-| Returns the path to a module's .eci (interface) file.
--}
-eci : String -> ModuleName.Raw -> String
-eci root name =
-    toArtifactPath root name "eci"
-
-
-{-| Returns the path to a module's .eco (object) file.
--}
-eco : String -> ModuleName.Raw -> String
-eco root name =
-    toArtifactPath root name "eco"
-
-
-{-| Returns the path to a module's .ecot (typed object) file for MLIR backend.
--}
-ecot : String -> ModuleName.Raw -> String
-ecot root name =
-    toArtifactPath root name "ecot"
-
-
-toArtifactPath : String -> ModuleName.Raw -> String -> String
-toArtifactPath root name ext =
-    Utils.fpCombine (stuff root) (Utils.fpAddExtension (ModuleName.toHyphenPath name) ext)
+-- Per-module artifacts live under the build directory when one is given, next
+-- to that build's d.dat / i.dat / o.dat (cache-serialization plan S12b): Build
+-- and Generate must agree on the path, so there is deliberately no root-only
+-- variant.
 
 
 toArtifactPathWithBuildDir : String -> Maybe String -> ModuleName.Raw -> String -> String

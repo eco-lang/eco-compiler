@@ -150,12 +150,26 @@ HPointer makeUtf8LeafFromBytes(const u8* bytes, u32 len) {
 
     // `bytes` may point into a movable heap object (a ByteBuffer payload or a
     // UTF-8 leaf); the allocation below can trigger a minor GC that relocates
-    // it. Snapshot to the C stack first.
-    std::vector<u8> snapshot(bytes, bytes + len);
+    // it, so such a source is snapshotted first. Most callers (fromInt,
+    // fromFloat, fromChar, tinyFromU16, tryMakeAsciiString) pass C-stack,
+    // rodata or C-heap bytes that never move: those are copied directly, with
+    // no malloc. A short heap source goes to a C-stack buffer; len < LOT here.
+    const u8* src = bytes;
+    u8 small[256];
+    std::vector<u8> big;
+    if (allocator.isInHeap(const_cast<u8*>(bytes))) {
+        if (len <= sizeof(small)) {
+            std::memcpy(small, bytes, len);
+            src = small;
+        } else {
+            big.assign(bytes, bytes + len);
+            src = big.data();
+        }
+    }
     void* obj = eco_alloc_with_roots(Tag_StringUtf8Leaf, total_size, nullptr, 0, 0);
     ElmStringUtf8Leaf* leaf = static_cast<ElmStringUtf8Leaf*>(obj);
     leaf->header.size = len;
-    std::memcpy(leaf->bytes, snapshot.data(), len);
+    std::memcpy(leaf->bytes, src, len);
 #if ECO_HEAP_VALIDATE
     for (u32 i = 0; i < len; ++i)
         assert(!(leaf->bytes[i] & 0x80) && "UTF-8 leaf must be all-ASCII");
@@ -1231,6 +1245,85 @@ std::string toStdString(void* str) {
         }
     }
     return result;
+}
+
+
+// ============================================================================
+// Cold halves of equal / compare (plan S9): slices, large headers, ropes and
+// UTF-8-vs-UTF-16 pairs. The hot inline paths in StringOps.hpp have already
+// handled empty operands, the both-UTF-16-leaf case and the both-UTF-8 case.
+// ============================================================================
+
+bool equalSlow(void* a, void* b) {
+    Header* ha = static_cast<Header*>(a);
+    // Single-segment-on-each-side fast path (pure UTF-16): leaf / slice /
+    // large-split-header without flattening. UTF-8 forms return {nullptr,0}
+    // from singleSegmentView, so at least one side reaching here as UTF-8
+    // falls through to the width-aware walk below.
+    auto [aPtr, aLen] = singleSegmentView(a);
+    auto [bPtr, bLen] = singleSegmentView(b);
+    if (aPtr && bPtr) {
+        return std::memcmp(aPtr, bPtr, ha->size * sizeof(u16)) == 0;
+    }
+
+    // General width-aware lockstep: handles ropes that may mix UTF-8 and
+    // UTF-16 children, and any UTF-8-vs-UTF-16 pairing. Stable pointers,
+    // allocation-free beyond two small segment vectors.
+    std::vector<SegView> aSegs, bSegs;
+    aSegs.reserve(16); bSegs.reserve(16);
+    collectSegs(a, aSegs);
+    collectSegs(b, bSegs);
+
+    size_t ai = 0, bi = 0;
+    u32 aOff = 0, bOff = 0;
+    while (ai < aSegs.size() && bi < bSegs.size()) {
+        if (segElemAt(aSegs[ai], aOff) != segElemAt(bSegs[bi], bOff)) return false;
+        if (++aOff == aSegs[ai].len) { ++ai; aOff = 0; }
+        if (++bOff == bSegs[bi].len) { ++bi; bOff = 0; }
+    }
+    return ai == aSegs.size() && bi == bSegs.size();
+}
+
+int compareSlow(void* a, void* b) {
+    Header* ha = static_cast<Header*>(a);
+    Header* hb = static_cast<Header*>(b);
+    auto charCompare = [](const u16* pa, const u16* pb, size_t n) -> int {
+        for (size_t i = 0; i < n; ++i) {
+            if (pa[i] != pb[i]) {
+                return static_cast<int>(pa[i]) - static_cast<int>(pb[i]);
+            }
+        }
+        return 0;
+    };
+
+    // Single-segment-on-each-side fast path (pure UTF-16).
+    auto [aPtr, aLen] = singleSegmentView(a);
+    auto [bPtr, bLen] = singleSegmentView(b);
+    if (aPtr && bPtr) {
+        size_t min_len = std::min<size_t>(aLen, bLen);
+        int c = charCompare(aPtr, bPtr, min_len);
+        if (c != 0) return c;
+        return static_cast<int>(aLen) - static_cast<int>(bLen);
+    }
+
+    // General width-aware lockstep (ropes possibly mixing UTF-8 / UTF-16, or
+    // any UTF-8-vs-UTF-16 pairing). ASCII bytes widen to u16 units, matching
+    // UTF-16 unit order.
+    std::vector<SegView> aSegs, bSegs;
+    aSegs.reserve(16); bSegs.reserve(16);
+    collectSegs(a, aSegs);
+    collectSegs(b, bSegs);
+
+    size_t ai = 0, bi = 0;
+    u32 aOff = 0, bOff = 0;
+    while (ai < aSegs.size() && bi < bSegs.size()) {
+        u16 ca = segElemAt(aSegs[ai], aOff);
+        u16 cb = segElemAt(bSegs[bi], bOff);
+        if (ca != cb) return static_cast<int>(ca) - static_cast<int>(cb);
+        if (++aOff == aSegs[ai].len) { ++ai; aOff = 0; }
+        if (++bOff == bSegs[bi].len) { ++bi; bOff = 0; }
+    }
+    return static_cast<int>(ha->size) - static_cast<int>(hb->size);
 }
 
 } // namespace StringOps

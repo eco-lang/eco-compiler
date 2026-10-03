@@ -23,7 +23,10 @@
 #include "KernelDebug.hpp"
 #include "KernelHelpers.hpp"
 #include "TaskBinding.hpp"
+#include <atomic>
 #include <cerrno>
+#include <chrono>
+#include <thread>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -36,6 +39,8 @@
 #include <io.h>        // _open, _read, _write, _close, _fileno
 #include <sys/stat.h>
 #include <sys/utime.h> // _utime
+#include <process.h>   // _getpid
+#define ECO_GETPID _getpid
 // Windows path-separator and find-executable helpers. The Windows PATH uses
 // ';' (POSIX uses ':'), and executable detection is extension-driven
 // (.exe/.cmd/.bat/.com) rather than a per-file +x bit.
@@ -59,6 +64,7 @@ inline int _eco_read (int fd, void* b, size_t n)           {
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#define ECO_GETPID getpid
 namespace {
 constexpr char kPathListSep = ':';
 inline int     _eco_open (const char* p, int flags, int mode) { return ::open(p, flags, mode); }
@@ -139,14 +145,35 @@ HPointer readBytesBody(HPointer captured) {
                  pathStr.c_str(), err, std::strerror(err));
         return failErrno(err, pathStr, "could not open file for reading");
     }
-    auto size = file.tellg();
+    std::streamoff sz = file.tellg();
+    if (sz < 0) {
+        int err = errno;
+        return failErrno(err ? err : EIO, pathStr, "could not size file for reading");
+    }
+    if (static_cast<uint64_t>(sz) > UINT32_MAX) { // ByteBuffer header.size is u32
+        return failErrno(EFBIG, pathStr, "file too large for Bytes");
+    }
+    size_t size = static_cast<size_t>(sz);
+    if (size == 0) {
+        ECO_KLOG("file", "readBytes done path=%s size=0", pathStr.c_str());
+        return succeed(Elm::alloc::emptyBytes());
+    }
     file.seekg(0, std::ios::beg);
-    std::vector<uint8_t> buffer(static_cast<size_t>(size));
-    file.read(reinterpret_cast<char*>(buffer.data()), size);
-    ECO_KLOG("file", "readBytes done path=%s size=%zu",
-             pathStr.c_str(), buffer.size());
-    HPointer bytes = Elm::alloc::allocByteBuffer(buffer.data(), buffer.size());
-    return succeed(bytes);
+    // Allocate FIRST, then read straight into the payload (no std::vector
+    // staging copy). Nothing allocates on the Elm heap between here and
+    // succeed(): bb.bytes stays valid (BlankByteBuffer contract) and bufHp is
+    // not stale when succeed() roots it. At or above the large-object threshold
+    // the body is pinned in old gen and never moves (HEAP_026).
+    Elm::alloc::BlankByteBuffer bb = Elm::alloc::allocByteBufferBlank(size);
+    HPointer bufHp = bb.hp;
+    file.read(reinterpret_cast<char*>(bb.bytes), static_cast<std::streamsize>(size));
+    if (!file || static_cast<size_t>(file.gcount()) != size) {
+        int err = errno;
+        ECO_KLOG("file", "readBytes short-read path=%s errno=%d", pathStr.c_str(), err);
+        return failErrno(err ? err : EIO, pathStr, "could not read file contents");
+    }
+    ECO_KLOG("file", "readBytes done path=%s size=%zu", pathStr.c_str(), size);
+    return succeed(bufHp);
 }
 
 HPointer fileExistsBody(HPointer captured) {
@@ -492,7 +519,7 @@ HPointer writeBytesBody(HPointer captured) {
         bytesHP = tup->b.p;
     }
     std::string pathStr = toString(Export::encode(pathHP));
-    void* ptr = Elm::Allocator::instance().resolve(bytesHP);
+    void* ptr = Elm::alloc::isConstant(bytesHP) ? nullptr : Elm::Allocator::instance().resolve(bytesHP); // empty Bytes = embedded constant
     size_t len = Elm::alloc::byteBufferLength(ptr);
     const uint8_t* data = Elm::alloc::byteBufferData(ptr);
     ECO_KLOG("file", "writeBytes start path=%s size=%zu",
@@ -508,6 +535,76 @@ HPointer writeBytesBody(HPointer captured) {
     ECO_KLOG("file", "writeBytes done path=%s wrote=%zu",
              pathStr.c_str(), len);
     return succeedUnit();
+}
+
+// Per-process sequence for writeBytesAtomic temp names. A plain integer, not a
+// heap value.
+std::atomic<uint64_t> gAtomicWriteSeq{0};
+
+// Write to a sibling temp file, then rename it over the target, so a reader in
+// another process (or after a crash) never sees a partial file. Unlike
+// writeBytes, write and close errors (ENOSPC) are reported.
+HPointer writeBytesAtomicBody(HPointer captured) {
+    HPointer pathHP;
+    HPointer bytesHP;
+    {
+        Tuple2* tup = asTuple2(captured);
+        pathHP = tup->a.p;
+        bytesHP = tup->b.p;
+    }
+    std::string pathStr = toString(Export::encode(pathHP));
+    std::string tmp;
+    int fd = -1;
+    // O_EXCL: never share a temp, even across PID namespaces on one volume.
+    for (int tries = 0; fd < 0 && tries < 16; ++tries) {
+        tmp = pathStr + ".tmp-" + std::to_string(static_cast<long long>(ECO_GETPID())) + "-" +
+              std::to_string(gAtomicWriteSeq.fetch_add(1, std::memory_order_relaxed));
+        fd = _eco_open(tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_TRUNC, 0644);
+        if (fd < 0 && errno != EEXIST) break;
+    }
+    if (fd < 0) {
+        int err = errno;
+        ECO_KLOG("file", "writeBytesAtomic fail path=%s errno=%d msg=%s",
+                 pathStr.c_str(), err, std::strerror(err));
+        return failErrno(err, pathStr, "could not create temp file for writing");
+    }
+    // NO Elm allocation between resolve and the last write (as writeBytesBody).
+    void* ptr = Elm::alloc::isConstant(bytesHP) ? nullptr : Elm::Allocator::instance().resolve(bytesHP); // empty Bytes = embedded constant
+    size_t len = Elm::alloc::byteBufferLength(ptr);
+    const uint8_t* data = Elm::alloc::byteBufferData(ptr);
+    size_t off = 0;
+    int err = 0;
+    while (off < len) {
+        auto n = _eco_write(fd, data + off, len - off);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            err = errno;
+            break;
+        }
+        off += static_cast<size_t>(n);
+    }
+    if (_eco_close(fd) != 0 && err == 0) err = errno;
+    if (err == 0) {
+        std::error_code ec;
+        std::filesystem::rename(tmp, pathStr, ec); // POSIX rename(2): atomic replace
+#if defined(_WIN32)
+        // Sharing violation while a reader holds the target: bounded retry.
+        for (int i = 0; ec && i < 5; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10 << i));
+            ec.clear();
+            std::filesystem::rename(tmp, pathStr, ec);
+        }
+#endif
+        if (!ec) {
+            ECO_KLOG("file", "writeBytesAtomic done path=%s wrote=%zu", pathStr.c_str(), len);
+            return succeedUnit();
+        }
+        err = ec.value();
+    }
+    std::error_code ignored;
+    std::filesystem::remove(tmp, ignored); // best effort
+    ECO_KLOG("file", "writeBytesAtomic fail path=%s errno=%d", pathStr.c_str(), err);
+    return failErrno(err, pathStr, "could not write file atomically");
 }
 
 HPointer openBody(HPointer captured) {
@@ -623,6 +720,15 @@ uint64_t writeBytes(uint64_t path, uint64_t bytes) {
     HPointer payload = Elm::alloc::tuple2(
         Elm::alloc::boxed(pathHP), Elm::alloc::boxed(bytesHP), 0);
     return Export::encode(Eco::Kernel::makeBinding<writeBytesBody>(payload));
+}
+
+uint64_t writeBytesAtomic(uint64_t path, uint64_t bytes) {
+    HPointer pathHP = Export::decode(path);
+    HPointer bytesHP = Export::decode(bytes);
+    Elm::StackRootGuard g(&pathHP, &bytesHP);
+    HPointer payload = Elm::alloc::tuple2(
+        Elm::alloc::boxed(pathHP), Elm::alloc::boxed(bytesHP), 0);
+    return Export::encode(Eco::Kernel::makeBinding<writeBytesAtomicBody>(payload));
 }
 
 uint64_t open(uint64_t path, uint64_t mode) {

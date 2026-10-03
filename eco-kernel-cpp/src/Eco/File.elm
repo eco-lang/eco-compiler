@@ -1,5 +1,5 @@
 module Eco.File exposing
-    ( readString, writeString, readBytes, writeBytes
+    ( readString, writeString, readBytes, writeBytes, writeBytesAtomic
     , Handle(..), IOMode(..), open, close, size
     , lock, unlock
     , fileExists, dirExists, findExecutable, list, modificationTime, touch
@@ -17,7 +17,7 @@ the neutral `( classificationTag, path, message )` tuple (see IO_ERR_002) which
 
 # File I/O by Path
 
-@docs readString, writeString, readBytes, writeBytes
+@docs readString, writeString, readBytes, writeBytes, writeBytesAtomic
 
 
 # File Handles
@@ -96,6 +96,16 @@ readBytes path =
 writeBytes : String -> Bytes -> Task IOError ()
 writeBytes path bytes =
     Eco.Kernel.File.writeBytes path bytes
+        |> Task.mapError IOErr.ofKernelTuple
+
+
+{-| Write raw bytes to a temp file beside `path`, then rename it over `path`:
+readers (other processes, or a later run after a crash) never observe a
+partial file.
+-}
+writeBytesAtomic : String -> Bytes -> Task IOError ()
+writeBytesAtomic path bytes =
+    Eco.Kernel.File.writeBytesAtomic path bytes
         |> Task.mapError IOErr.ofKernelTuple
 
 

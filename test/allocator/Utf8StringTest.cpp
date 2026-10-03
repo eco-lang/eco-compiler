@@ -472,6 +472,91 @@ static void test_seed_constructors() {
     TEST_ASSERT(content(chain) == "bcx");
 }
 
+
+// S11c: makeUtf8LeafFromBytes copies a HEAP-resident source (a nursery
+// ByteBuffer payload) before its own allocation can move it. Under the
+// pressure config many of these leaf allocations trigger a minor GC; the test
+// requires that some did relocate the (rooted) source mid-call, so it is not
+// vacuous. A missing snapshot then reads from-space: in an ECO_HEAP_VALIDATE
+// build that memory is poisoned and the content check fails (negative
+// control); a normal build leaves it readable. Lengths straddle the 256-byte
+// C-stack buffer.
+static void test_leaf_from_heap_bytes_under_gc() {
+    auto& alloc = initAllocator(pressureHeapConfig());
+    const u32 lens[] = {1, 31, 128, 256, 257};
+    int moved = 0;
+    for (int iter = 0; iter < 4000; ++iter) {
+        u32 len = lens[iter % 5];
+        std::string want(len, ' ');
+        for (u32 i = 0; i < len; ++i) want[i] = static_cast<char>('a' + (i * 7 + iter) % 26);
+        HPointer bb = alloc::allocByteBuffer(reinterpret_cast<const u8*>(want.data()), len);
+        alloc.getRootSet().addRoot(&bb);
+        const u8* src = alloc::byteBufferData(Allocator::instance().resolve(bb));
+        TEST_ASSERT(alloc.isInHeap(const_cast<u8*>(src)));
+        HPointer leaf = StringOps::makeUtf8LeafFromBytes(src, len);
+        if (alloc::byteBufferData(Allocator::instance().resolve(bb)) != src) ++moved;
+        alloc.getRootSet().removeRoot(&bb);
+        TEST_ASSERT(content(leaf) == want);
+    }
+    TEST_ASSERT(moved > 0);
+}
+
+
+// S9: compare/equal split into an inline hot path (both UTF-8, both UTF-16
+// leaves) and out-of-line compareSlow/equalSlow. Every pair of forms —
+// UTF-16 leaf, UTF-8 leaf, UTF-8 view, slice, rope, large (>= 8 KiB) — must
+// agree with UTF-16 code-unit order, including prefix-equal pairs around the
+// 8-byte mark and non-ASCII / astral content.
+static void test_compare_split_all_forms() {
+    initAllocator();
+    std::vector<std::u16string> strs = {
+        u"", u"a", u"abc", u"abcd", u"abcdefg", u"abcdefgh", u"abcdefghi", u"abcdefgx",
+        u"b", u"é", u"aé", u"a\U0001F600", u"\U0001F600",
+        std::u16string(5000, u'm'), std::u16string(5000, u'm') + u"n",
+        std::u16string(4999, u'm') + u"l",
+    };
+    auto ascii = [](const std::u16string& u) {
+        for (char16_t c : u) if (c >= 0x80) return false;
+        return true;
+    };
+    auto narrow = [](const std::u16string& u) { return std::string(u.begin(), u.end()); };
+    auto forms = [&](const std::u16string& u) {
+        std::vector<HPointer> out;
+        out.push_back(alloc::allocString(u));                           // UTF-16 leaf / large
+        if (ascii(u)) {
+            out.push_back(makeU8Leaf(narrow(u)));                       // UTF-8 leaf (or widened)
+            out.push_back(makeU8View(narrow(u)));                       // UTF-8 view
+        }
+        {
+            std::u16string padded = u"XY" + u + u"Z";                   // slice of a UTF-16 leaf
+            HPointer base = alloc::allocString(padded);
+            out.push_back(StringOps::slice(rz(base), 2, 2 + static_cast<i64>(u.size())));
+        }
+        if (u.size() >= 2) {                                            // rope: UTF-8 ++ UTF-16
+            size_t h = u.size() / 2;
+            HPointer l = ascii(u.substr(0, h)) ? makeU8View(narrow(u.substr(0, h)))
+                                                : alloc::allocString(u.substr(0, h));
+            HPointer r = alloc::allocString(u.substr(h));
+            out.push_back(StringOps::append(rz(l), rz(r)));
+        }
+        return out;
+    };
+    int pairs = 0;
+    for (const auto& x : strs) {
+        for (const auto& y : strs) {
+            int want = sign(x.compare(y));
+            for (HPointer hx : forms(x)) {
+                for (HPointer hy : forms(y)) {
+                    TEST_ASSERT(sign(StringOps::compare(rz(hx), rz(hy))) == want);
+                    TEST_ASSERT(StringOps::equal(rz(hx), rz(hy)) == (x == y));
+                    ++pairs;
+                }
+            }
+        }
+    }
+    TEST_ASSERT(pairs > 1000);
+}
+
 void registerUtf8StringTests(Testing::TestSuite& suite) {
     suite.add(Testing::TestCase("Utf8String: seed constructors (fromChar/cons/fromList)",
                                 test_seed_constructors));
@@ -492,4 +577,8 @@ void registerUtf8StringTests(Testing::TestSuite& suite) {
     suite.add(Testing::TestCase("Utf8String: representation tags",
                                 test_representation_tags));
     suite.add(Testing::TestCase("Utf8String: survives GC", test_utf8_survives_gc));
+    suite.add(Testing::TestCase("Utf8String: compare/equal split, all forms (S9)",
+                                test_compare_split_all_forms));
+    suite.add(Testing::TestCase("Utf8String: leaf from heap bytes under GC (S11c)",
+                                test_leaf_from_heap_bytes_under_gc));
 }

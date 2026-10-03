@@ -1,6 +1,7 @@
 module Data.HashMap exposing
     ( HashMap
     , empty, insert, get, getBy, member, remove
+    , getHashed, insertNew
     , size, isEmpty
     , foldl, map, toList, values, fromList
     )
@@ -34,6 +35,7 @@ keys these maps replace, so output that depends on traversal order does change.
 
 @docs HashMap
 @docs empty, insert, get, getBy, member, remove
+@docs getHashed, insertNew
 @docs size, isEmpty
 @docs foldl, map, toList, values, fromList
 
@@ -55,6 +57,29 @@ type HashMap k v
 empty : HashMap k v
 empty =
     HashMap 0 0 Dict.empty
+
+
+{-| `get` with a precomputed hash, so a miss followed by `insertNew` hashes
+once (TypeTable, cache-serialization plan S3).
+-}
+getHashed : Int -> (k -> k -> Bool) -> k -> HashMap k v -> Maybe v
+getHashed h eq key (HashMap _ _ buckets) =
+    case Dict.get h buckets of
+        Nothing ->
+            Nothing
+
+        Just bucket ->
+            scanBucketBy eq key bucket
+
+
+{-| Insert a key known to be ABSENT (the caller just missed with
+`getHashed h`). It skips the replace scan `insert` does.
+-}
+insertNew : Int -> k -> v -> HashMap k v -> HashMap k v
+insertNew h key value (HashMap count nextSeq buckets) =
+    HashMap (count + 1)
+        (nextSeq + 1)
+        (Dict.insert h (( nextSeq, key, value ) :: Maybe.withDefault [] (Dict.get h buckets)) buckets)
 
 
 {-| Look up a key.

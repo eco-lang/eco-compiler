@@ -687,6 +687,9 @@ function handleEcoIO(parsed, respond) {
   }
 }
 
+// Sequence for File.writeBytesAtomic temp names (unique per server process).
+let atomicSeq = 0;
+
 /**
  * Handle an eco-io binary request (raw bytes in body, op in X-Eco-Op header).
  * @param {string} op - The operation name from X-Eco-Op header
@@ -706,6 +709,26 @@ function handleEcoIOBinary(op, request, respond) {
         fs.writeFileSync(filePath, buffer);
         respond(200, "");
       } catch (e) {
+        respond(500, ioErrorBody(e));
+      }
+      break;
+    }
+
+    case "File.writeBytesAtomic": {
+      // Temp file + rename (see Eco/Kernel/File.js). One server process serves
+      // concurrent requests, hence the module-level sequence.
+      const filePath = request.requestHeaders.getHeader("X-Eco-Path");
+      const tmp = filePath + ".tmp-" + process.pid + "-" + (atomicSeq++);
+      try {
+        const body = request.body;
+        const buffer = ArrayBuffer.isView(body)
+          ? Buffer.from(body.buffer, body.byteOffset, body.byteLength)
+          : Buffer.from(body);
+        fs.writeFileSync(tmp, buffer, { flag: "wx" });
+        fs.renameSync(tmp, filePath);
+        respond(200, "");
+      } catch (e) {
+        try { fs.unlinkSync(tmp); } catch (_) {}
         respond(500, ioErrorBody(e));
       }
       break;

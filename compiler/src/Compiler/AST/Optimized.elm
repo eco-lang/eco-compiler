@@ -3,7 +3,7 @@ module Compiler.AST.Optimized exposing
     , Def(..), Destructor(..), Path(..)
     , Decider(..), Choice(..)
     , GlobalGraph(..), LocalGraph(..), Node(..), Main(..), EffectsType(..)
-    , empty, toKernelGlobal
+    , empty, emptyLocalGraph, typedPathStub, toKernelGlobal
     , globalGraphEncoder, globalGraphDecoder
     , localGraphEncoder, localGraphDecoder
     )
@@ -41,7 +41,7 @@ Decision trees compile pattern matches into efficient branching:
 The compiler builds a graph of definitions for dead code elimination:
 
 @docs GlobalGraph, LocalGraph, Node, Main, EffectsType
-@docs empty, toKernelGlobal
+@docs empty, emptyLocalGraph, typedPathStub, toKernelGlobal
 
 
 # Binary Serialization
@@ -243,6 +243,31 @@ type EffectsType
 empty : GlobalGraph
 empty =
     GlobalGraph Data.Map.empty Dict.empty
+
+
+{-| An empty local graph: no main, no nodes, no fields. The typed path stores
+it in place of the erased graph it no longer computes (cache-serialization plan
+S5).
+-}
+emptyLocalGraph : LocalGraph
+emptyLocalGraph =
+    LocalGraph Nothing Data.Map.empty Dict.empty
+
+
+{-| The erased-graph stub of the typed path (plan S5): empty, except for a
+presence-only `main` marker (`Static`). Main detection must not depend on the
+TYPED graph's `main`, because the JS build moves modules through MVars by
+SERIALIZING them and `TOpt.localGraphEncoder` drops `main` (ECOT\_001); this
+graph's codec keeps it. Nothing reads the marker's content: the typed path never
+generates from the erased graph.
+-}
+typedPathStub : Bool -> LocalGraph
+typedPathStub hasMain =
+    if hasMain then
+        LocalGraph (Just Static) Data.Map.empty Dict.empty
+
+    else
+        emptyLocalGraph
 
 
 {-| Convert a kernel short name to a global reference.

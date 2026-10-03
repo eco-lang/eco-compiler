@@ -3,7 +3,7 @@ module Builder.Build exposing
     , ReplArtifacts(..), ReplArtifactsData
     , CachedInterface(..), Dependencies
     , DocsGoal(..), keepDocs, ignoreDocs, writeDocs
-    , fromExposed, fromPaths, fromRepl
+    , fromExposed, fromPaths, fromPathsWith, CacheMode(..), fromRepl
     , getRootNames, cachedInterfaceDecoder
     )
 
@@ -37,7 +37,7 @@ both application and package builds, including REPL sessions.
 
 # Build Entry Points
 
-@docs fromExposed, fromPaths, fromRepl
+@docs fromExposed, fromPaths, fromPathsWith, CacheMode, fromRepl
 
 
 # Utilities
@@ -106,6 +106,7 @@ type alias EnvData =
     , foreigns : Dict ModuleName.Raw Details.Foreign
     , needsTypedOpt : Bool
     , stats : FEStats.Handle
+    , cacheMode : CacheMode
     }
 
 
@@ -113,8 +114,18 @@ type Env
     = Env EnvData
 
 
-makeEnv : Reporting.BKey -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Bool -> FEStats.Handle -> Task Never Env
-makeEnv key root maybeBuildDir maybeKernelPackage (Details.Details detailsData) needsTypedOpt stats =
+{-| Whether a build persists its per-module caches. `OneShot` (`eco make
+--no-cache`) writes no `.eci`/`.eco`/`.ecot` and no local `d.dat`, so a later
+build sees exactly what it would have seen had this one never run
+(cache-serialization plan S4).
+-}
+type CacheMode
+    = WriteCaches
+    | OneShot
+
+
+makeEnv : CacheMode -> Reporting.BKey -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Bool -> FEStats.Handle -> Task Never Env
+makeEnv cacheMode key root maybeBuildDir maybeKernelPackage (Details.Details detailsData) needsTypedOpt stats =
     case detailsData.outline of
         Details.ValidApp givenSrcDirs ->
             Utils.listTraverse (toAbsoluteSrcDir root) (NE.toList givenSrcDirs)
@@ -137,6 +148,7 @@ makeEnv key root maybeBuildDir maybeKernelPackage (Details.Details detailsData) 
                             , foreigns = detailsData.foreigns
                             , needsTypedOpt = needsTypedOpt
                             , stats = stats
+                            , cacheMode = cacheMode
                             }
                     )
 
@@ -155,6 +167,7 @@ makeEnv key root maybeBuildDir maybeKernelPackage (Details.Details detailsData) 
                             , foreigns = detailsData.foreigns
                             , needsTypedOpt = needsTypedOpt
                             , stats = stats
+                            , cacheMode = cacheMode
                             }
                     )
 
@@ -224,7 +237,7 @@ fromExposed : Bytes.Decode.Decoder docs -> (docs -> Bytes.Encode.Encoder) -> Rep
 fromExposed docsDecoder docsEncoder style root maybeBuildDir maybeKernelPackage details docsGoal stats ((NE.Nonempty e es) as exposed) =
     Reporting.trackBuild style <|
         \key ->
-            makeEnv key root maybeBuildDir maybeKernelPackage details False stats
+            makeEnv WriteCaches key root maybeBuildDir maybeKernelPackage details False stats
                 |> Task.andThen (crawlExposed root maybeBuildDir details docsGoal (e :: es))
                 |> Task.andThen (compileExposed root maybeBuildDir details docsGoal exposed)
 
@@ -387,10 +400,17 @@ and performs parallel incremental compilation.
 
 -}
 fromPaths : Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Bool -> FEStats.Handle -> NE.Nonempty FilePath -> Task Never (Result Exit.BuildProblem Artifacts)
-fromPaths style root maybeBuildDir maybeKernelPackage details needsTypedOpt stats paths =
+fromPaths =
+    fromPathsWith WriteCaches
+
+
+{-| `fromPaths` with an explicit `CacheMode`.
+-}
+fromPathsWith : CacheMode -> Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Bool -> FEStats.Handle -> NE.Nonempty FilePath -> Task Never (Result Exit.BuildProblem Artifacts)
+fromPathsWith cacheMode style root maybeBuildDir maybeKernelPackage details needsTypedOpt stats paths =
     Reporting.trackBuild style <|
         \key ->
-            makeEnv key root maybeBuildDir maybeKernelPackage details needsTypedOpt stats
+            makeEnv cacheMode key root maybeBuildDir maybeKernelPackage details needsTypedOpt stats
                 |> Task.andThen (findAndBuildFromPaths root maybeBuildDir details paths)
 
 
@@ -520,7 +540,7 @@ other way round before). Once every root result is in, every `checkModule` and
 finalizePathBuild : FilePath -> Maybe String -> Details.Details -> Env -> Dependencies -> PathCompileState -> Task Never (Result Exit.BuildProblem Artifacts)
 finalizePathBuild root maybeBuildDir details env foreigns { rmvar, resultsMVars, rrootMVars } =
     Utils.dictTraverse (Utils.readMVar bResultDecoder) resultsMVars
-        |> Task.andThen (writeDetailsAndCollectRoots root maybeBuildDir details rrootMVars)
+        |> Task.andThen (writeDetailsAndCollectRoots (envCacheMode env) root maybeBuildDir details rrootMVars)
         |> Task.andThen
             (\collected ->
                 Utils.dictMapM__ Utils.dropMVar resultsMVars
@@ -531,11 +551,23 @@ finalizePathBuild root maybeBuildDir details env foreigns { rmvar, resultsMVars,
         |> Task.map (toArtifactsFromResults env foreigns)
 
 
-writeDetailsAndCollectRoots : FilePath -> Maybe String -> Details.Details -> NE.Nonempty (MVar RootResult) -> Dict ModuleName.Raw BResult -> Task Never ( Dict ModuleName.Raw BResult, NE.Nonempty RootResult )
-writeDetailsAndCollectRoots root maybeBuildDir details rrootMVars results =
-    writeDetails root maybeBuildDir details results
+writeDetailsAndCollectRoots : CacheMode -> FilePath -> Maybe String -> Details.Details -> NE.Nonempty (MVar RootResult) -> Dict ModuleName.Raw BResult -> Task Never ( Dict ModuleName.Raw BResult, NE.Nonempty RootResult )
+writeDetailsAndCollectRoots cacheMode root maybeBuildDir details rrootMVars results =
+    (case cacheMode of
+        WriteCaches ->
+            writeDetails root maybeBuildDir details results
+
+        OneShot ->
+            -- No local entries may claim artifacts this build did not write.
+            Task.succeed ()
+    )
         |> Task.andThen (\_ -> Utils.nonEmptyListTraverse (Utils.readMVar rootResultDecoder) rrootMVars)
         |> Task.map (\rroots -> ( results, rroots ))
+
+
+envCacheMode : Env -> CacheMode
+envCacheMode (Env envData) =
+    envData.cacheMode
 
 
 toArtifactsFromResults : Env -> Dependencies -> ( Dict ModuleName.Raw BResult, NE.Nonempty RootResult ) -> Result Exit.BuildProblem Artifacts
@@ -854,9 +886,9 @@ checkCachedModule :
     -> Details.BuildID
     -> Details.Local
     -> Task Never BResult
-checkCachedModule env root projectType resultsMVar name path time deps hasMain lastChange lastCompile local =
+checkCachedModule ((Env envData) as env) root projectType resultsMVar name path time deps hasMain lastChange lastCompile local =
     Utils.readMVar resultDictDecoder resultsMVar
-        |> Task.andThen (\resultDict -> checkDeps root resultDict deps lastCompile)
+        |> Task.andThen (\resultDict -> checkDeps root envData.maybeBuildDir resultDict deps lastCompile)
         |> Task.andThen (handleCachedDepsStatus env root projectType name path time deps hasMain lastChange local)
 
 
@@ -886,10 +918,10 @@ handleCachedDepsStatus ((Env envData) as env) root projectType name path time de
                 artifactPath : FilePath
                 artifactPath =
                     if envData.needsTypedOpt then
-                        Stuff.ecot root name
+                        Stuff.ecotWithBuildDir root envData.maybeBuildDir name
 
                     else
-                        Stuff.eco root name
+                        Stuff.ecoWithBuildDir root envData.maybeBuildDir name
             in
             File.exists artifactPath
                 |> Task.andThen (handleCachedWithArtifactCheck env root projectType name path time deps hasMain lastChange same cached)
@@ -921,7 +953,7 @@ handleCachedWithArtifactCheck :
     -> List CDep
     -> Bool
     -> Task Never BResult
-handleCachedWithArtifactCheck env root projectType name path time deps hasMain lastChange same cached artifactExists =
+handleCachedWithArtifactCheck ((Env envData) as env) root projectType name path time deps hasMain lastChange same cached artifactExists =
     if artifactExists then
         -- This backend's artifact exists, can use cached. The CachedInterface
         -- MVar starts as `Unneeded` (interface bytes not yet read from disk).
@@ -933,7 +965,7 @@ handleCachedWithArtifactCheck env root projectType name path time deps hasMain l
 
     else
         -- Artifact missing (e.g. compiled for the other backend); recompile.
-        loadInterfaces root same cached
+        loadInterfaces root envData.maybeBuildDir same cached
             |> Task.andThen (recompileIfInterfacesLoaded env root projectType name path time deps)
 
 
@@ -1003,9 +1035,9 @@ checkChangedModule :
     -> Src.Module
     -> DocsNeed
     -> Task Never BResult
-checkChangedModule env root resultsMVar name path time deps lastCompile local source imports modul docsNeed =
+checkChangedModule ((Env envData) as env) root resultsMVar name path time deps lastCompile local source imports modul docsNeed =
     Utils.readMVar resultDictDecoder resultsMVar
-        |> Task.andThen (\resultDict -> checkDeps root resultDict deps lastCompile |> Task.map (\status -> ( resultDict, status )))
+        |> Task.andThen (\resultDict -> checkDeps root envData.maybeBuildDir resultDict deps lastCompile |> Task.map (\status -> ( resultDict, status )))
         |> Task.andThen (\( resultDict, depsStatus ) -> handleChangedDepsStatus env resultDict root name path time local source imports modul docsNeed depsStatus)
 
 
@@ -1023,11 +1055,11 @@ handleChangedDepsStatus :
     -> DocsNeed
     -> DepsStatus
     -> Task Never BResult
-handleChangedDepsStatus env resultDict root name path time local source imports modul docsNeed depsStatus =
+handleChangedDepsStatus ((Env envData) as env) resultDict root name path time local source imports modul docsNeed depsStatus =
     case depsStatus of
         DepsSame same cached ->
             -- Source changed, need to compile even if deps are same
-            loadInterfaces root same cached
+            loadInterfaces root envData.maybeBuildDir same cached
                 |> Task.andThen (compileIfInterfacesLoaded env local source modul docsNeed)
 
         DepsChange ifaces ->
@@ -1082,9 +1114,9 @@ type DepsStatus
     | DepsNotFound (NE.Nonempty ( ModuleName.Raw, Import.Problem ))
 
 
-checkDeps : FilePath -> ResultDict -> List ModuleName.Raw -> Details.BuildID -> Task Never DepsStatus
-checkDeps root results deps lastCompile =
-    checkDepsHelp root results deps [] [] [] [] False 0 lastCompile
+checkDeps : FilePath -> Maybe String -> ResultDict -> List ModuleName.Raw -> Details.BuildID -> Task Never DepsStatus
+checkDeps root maybeBuildDir results deps lastCompile =
+    checkDepsHelp root maybeBuildDir results deps [] [] [] [] False 0 lastCompile
 
 
 type alias Dep =
@@ -1097,6 +1129,7 @@ type alias CDep =
 
 checkDepsHelp :
     FilePath
+    -> Maybe String
     -> ResultDict
     -> List ModuleName.Raw
     -> List Dep
@@ -1107,7 +1140,7 @@ checkDepsHelp :
     -> Details.BuildID
     -> Details.BuildID
     -> Task Never DepsStatus
-checkDepsHelp root results deps new same cached importProblems isBlocked lastDepChange lastCompile =
+checkDepsHelp root maybeBuildDir results deps new same cached importProblems isBlocked lastDepChange lastCompile =
     case deps of
         dep :: otherDeps ->
             Utils.readMVar bResultDecoder (Utils.dictFind dep results)
@@ -1115,31 +1148,31 @@ checkDepsHelp root results deps new same cached importProblems isBlocked lastDep
                     (\result ->
                         case result of
                             RNew (Details.Local localData) iface _ _ _ _ ->
-                                checkDepsHelp root results otherDeps (( dep, iface ) :: new) same cached importProblems isBlocked (max localData.lastChange lastDepChange) lastCompile
+                                checkDepsHelp root maybeBuildDir results otherDeps (( dep, iface ) :: new) same cached importProblems isBlocked (max localData.lastChange lastDepChange) lastCompile
 
                             RSame (Details.Local localData) iface _ _ _ _ ->
-                                checkDepsHelp root results otherDeps new (( dep, iface ) :: same) cached importProblems isBlocked (max localData.lastChange lastDepChange) lastCompile
+                                checkDepsHelp root maybeBuildDir results otherDeps new (( dep, iface ) :: same) cached importProblems isBlocked (max localData.lastChange lastDepChange) lastCompile
 
                             RCached _ lastChange mvar ->
-                                checkDepsHelp root results otherDeps new same (( dep, mvar ) :: cached) importProblems isBlocked (max lastChange lastDepChange) lastCompile
+                                checkDepsHelp root maybeBuildDir results otherDeps new same (( dep, mvar ) :: cached) importProblems isBlocked (max lastChange lastDepChange) lastCompile
 
                             RNotFound prob ->
-                                checkDepsHelp root results otherDeps new same cached (( dep, prob ) :: importProblems) True lastDepChange lastCompile
+                                checkDepsHelp root maybeBuildDir results otherDeps new same cached (( dep, prob ) :: importProblems) True lastDepChange lastCompile
 
                             RProblem _ ->
-                                checkDepsHelp root results otherDeps new same cached importProblems True lastDepChange lastCompile
+                                checkDepsHelp root maybeBuildDir results otherDeps new same cached importProblems True lastDepChange lastCompile
 
                             RBlocked ->
-                                checkDepsHelp root results otherDeps new same cached importProblems True lastDepChange lastCompile
+                                checkDepsHelp root maybeBuildDir results otherDeps new same cached importProblems True lastDepChange lastCompile
 
                             RForeign iface ->
-                                checkDepsHelp root results otherDeps new (( dep, iface ) :: same) cached importProblems isBlocked lastDepChange lastCompile
+                                checkDepsHelp root maybeBuildDir results otherDeps new (( dep, iface ) :: same) cached importProblems isBlocked lastDepChange lastCompile
 
                             RKernel ->
-                                checkDepsHelp root results otherDeps new same cached importProblems isBlocked lastDepChange lastCompile
+                                checkDepsHelp root maybeBuildDir results otherDeps new same cached importProblems isBlocked lastDepChange lastCompile
 
                             RKernelLocal _ ->
-                                checkDepsHelp root results otherDeps new same cached importProblems isBlocked lastDepChange lastCompile
+                                checkDepsHelp root maybeBuildDir results otherDeps new same cached importProblems isBlocked lastDepChange lastCompile
                     )
 
         [] ->
@@ -1155,7 +1188,7 @@ checkDepsHelp root results deps new same cached importProblems isBlocked lastDep
                         DepsSame same cached |> Task.succeed
 
                     else
-                        loadInterfaces root same cached
+                        loadInterfaces root maybeBuildDir same cached
                             |> Task.map
                                 (\maybeLoaded ->
                                     case maybeLoaded of
@@ -1208,9 +1241,9 @@ toImportErrors (Env envData) results imports problems =
 -- ====== LOAD CACHED INTERFACES ======
 
 
-loadInterfaces : FilePath -> List Dep -> List CDep -> Task Never (Maybe (Dict ModuleName.Raw I.Interface))
-loadInterfaces root same cached =
-    Utils.listTraverse (fork maybeDepEncoder << loadInterface root) cached
+loadInterfaces : FilePath -> Maybe String -> List Dep -> List CDep -> Task Never (Maybe (Dict ModuleName.Raw I.Interface))
+loadInterfaces root maybeBuildDir same cached =
+    Utils.listTraverse (fork maybeDepEncoder << loadInterface root maybeBuildDir) cached
         |> Task.andThen
             (\loading ->
                 Utils.listTraverse (Utils.readMVar maybeDepDecoder) loading
@@ -1226,8 +1259,8 @@ loadInterfaces root same cached =
             )
 
 
-loadInterface : FilePath -> CDep -> Task Never (Maybe Dep)
-loadInterface root ( name, ciMvar ) =
+loadInterface : FilePath -> Maybe String -> CDep -> Task Never (Maybe Dep)
+loadInterface root maybeBuildDir ( name, ciMvar ) =
     Utils.takeMVar cachedInterfaceDecoder ciMvar
         |> Task.andThen
             (\cachedInterface ->
@@ -1241,7 +1274,7 @@ loadInterface root ( name, ciMvar ) =
                             |> Task.map (\_ -> Just ( name, iface ))
 
                     Unneeded ->
-                        File.readBinary I.interfaceDecoder (Stuff.eci root name)
+                        File.readBinary I.interfaceDecoder (Stuff.eciWithBuildDir root maybeBuildDir name)
                             |> Task.andThen
                                 (\maybeIface ->
                                     case maybeIface of
@@ -1469,10 +1502,10 @@ compile (Env envData) docsNeed (Details.Local localData) source ifaces modul =
     in
     FEStats.withModuleStage envData.stats FEStats.Build modName <|
         if envData.needsTypedOpt then
-            compileWithTypedOpt envData.key envData.root pkg envData.buildID docsNeed localData.path localData.time localData.deps localData.hasMain localData.lastChange source ifaces modul
+            compileWithTypedOpt envData.key envData.root envData.maybeBuildDir envData.cacheMode pkg envData.buildID docsNeed localData.path localData.time localData.deps localData.hasMain localData.lastChange source ifaces modul
 
         else
-            compileWithoutTypedOpt envData.key envData.root pkg envData.buildID docsNeed localData.path localData.time localData.deps localData.hasMain localData.lastChange source ifaces modul
+            compileWithoutTypedOpt envData.key envData.root envData.maybeBuildDir envData.cacheMode pkg envData.buildID docsNeed localData.path localData.time localData.deps localData.hasMain localData.lastChange source ifaces modul
 
 
 {-| Context for compilation results, carrying all the values needed for finalization.
@@ -1480,6 +1513,8 @@ compile (Env envData) docsNeed (Details.Local localData) source ifaces modul =
 type alias CompileResultContext =
     { key : Reporting.BKey
     , root : FilePath
+    , maybeBuildDir : Maybe String
+    , cacheMode : CacheMode
     , buildID : Details.BuildID
     , path : FilePath
     , time : File.Time
@@ -1498,6 +1533,8 @@ type alias CompileResultContext =
 compileWithoutTypedOpt :
     Reporting.BKey
     -> FilePath
+    -> Maybe String
+    -> CacheMode
     -> Pkg.Name
     -> Details.BuildID
     -> DocsNeed
@@ -1510,14 +1547,16 @@ compileWithoutTypedOpt :
     -> Dict ModuleName.Raw I.Interface
     -> Src.Module
     -> Task Never BResult
-compileWithoutTypedOpt key root pkg buildID docsNeed path time deps main lastChange source ifaces modul =
+compileWithoutTypedOpt key root maybeBuildDir cacheMode pkg buildID docsNeed path time deps main lastChange source ifaces modul =
     Compile.compile pkg ifaces modul
-        |> Task.andThen (handleCompileResult key root pkg buildID docsNeed path time deps main lastChange source modul Nothing)
+        |> Task.andThen (handleCompileResult key root maybeBuildDir cacheMode pkg buildID docsNeed path time deps main lastChange source modul Nothing)
 
 
 handleCompileResult :
     Reporting.BKey
     -> FilePath
+    -> Maybe String
+    -> CacheMode
     -> Pkg.Name
     -> Details.BuildID
     -> DocsNeed
@@ -1531,7 +1570,7 @@ handleCompileResult :
     -> Maybe (TOpt.LocalGraph Name)
     -> Result Error.Error Compile.Artifacts
     -> Task Never BResult
-handleCompileResult key root pkg buildID docsNeed path time deps main lastChange source modul maybeTypedObjects result =
+handleCompileResult key root maybeBuildDir cacheMode pkg buildID docsNeed path time deps main lastChange source modul maybeTypedObjects result =
     case result of
         Err err ->
             Error.Module (Src.getName modul) path time source err |> RProblem |> Task.succeed
@@ -1546,6 +1585,8 @@ handleCompileResult key root pkg buildID docsNeed path time deps main lastChange
                         ctx =
                             { key = key
                             , root = root
+                            , maybeBuildDir = maybeBuildDir
+                            , cacheMode = cacheMode
                             , buildID = buildID
                             , path = path
                             , time = time
@@ -1565,29 +1606,64 @@ handleCompileResult key root pkg buildID docsNeed path time deps main lastChange
 
 writeObjectsAndFinalizeCompile : CompileResultContext -> Task Never BResult
 writeObjectsAndFinalizeCompile ctx =
-    writeUntypedObjectsIfNeeded ctx
-        |> Task.andThen (\_ -> writeTypedObjectsIfNeeded ctx)
-        |> Task.andThen (\_ -> checkInterfaceAndFinalize ctx)
+    -- The .eci goes FIRST: a later build treats the module as cached when its
+    -- .ecot/.eco exists (handleCachedDepsStatus), so the gating artifact is
+    -- written last and a crash in between never leaves an object without its
+    -- interface (cache-serialization plan S12c).
+    let
+        eciPath : FilePath
+        eciPath =
+            Stuff.eciWithBuildDir ctx.root ctx.maybeBuildDir ctx.name
+    in
+    File.readBinary I.interfaceDecoder eciPath
+        |> Task.andThen
+            (\maybeOld ->
+                let
+                    changed : Bool
+                    changed =
+                        maybeOld /= Just ctx.iface
+                in
+                (if changed && ctx.cacheMode == WriteCaches then
+                    File.writeBinary I.interfaceEncoder eciPath ctx.iface
+
+                 else
+                    Task.succeed ()
+                )
+                    |> Task.andThen (\_ -> writeUntypedObjectsIfNeeded ctx)
+                    |> Task.andThen (\_ -> writeTypedObjectsIfNeeded ctx)
+                    |> Task.andThen (\_ -> Reporting.report ctx.key Reporting.BDone)
+                    |> Task.map
+                        (\_ ->
+                            if changed then
+                                buildRNew ctx
+
+                            else
+                                buildRSame ctx
+                        )
+            )
 
 
 writeUntypedObjectsIfNeeded : CompileResultContext -> Task Never ()
 writeUntypedObjectsIfNeeded ctx =
-    case ctx.typedObjects of
-        Just _ ->
+    case ( ctx.cacheMode, ctx.typedObjects ) of
+        ( OneShot, _ ) ->
+            Task.succeed ()
+
+        ( WriteCaches, Just _ ) ->
             -- MLIR/ELF target: the typed graph (.ecot) is the sole input to
             -- monomorphization. The untyped Opt IR is never read on this
             -- path (see stripUntypedGraph in Builder/Generate.elm), so skip
             -- the .eco write to save I/O on bootstrap-scale builds.
             Task.succeed ()
 
-        Nothing ->
-            File.writeBinary Opt.localGraphEncoder (Stuff.eco ctx.root ctx.name) ctx.objects
+        ( WriteCaches, Nothing ) ->
+            File.writeBinary Opt.localGraphEncoder (Stuff.ecoWithBuildDir ctx.root ctx.maybeBuildDir ctx.name) ctx.objects
 
 
 writeTypedObjectsIfNeeded : CompileResultContext -> Task Never ()
 writeTypedObjectsIfNeeded ctx =
-    case ( ctx.typedObjects, ctx.typeEnv ) of
-        ( Just typedObjs, Just moduleEnv ) ->
+    case ( ctx.cacheMode, ctx.typedObjects, ctx.typeEnv ) of
+        ( WriteCaches, Just typedObjs, Just moduleEnv ) ->
             let
                 artifact : TMod.TypedModuleArtifact
                 artifact =
@@ -1595,43 +1671,11 @@ writeTypedObjectsIfNeeded ctx =
                     , typeEnv = moduleEnv
                     }
             in
-            File.writeBinary TMod.typedModuleArtifactEncoder (Stuff.ecot ctx.root ctx.name) artifact
+            File.writeBinary TMod.typedModuleArtifactEncoder (Stuff.ecotWithBuildDir ctx.root ctx.maybeBuildDir ctx.name) artifact
 
         _ ->
-            -- No typed info or type env (erased build); do not write .ecot
+            -- One-shot, or no typed info / type env (erased build): no .ecot
             Task.succeed ()
-
-
-checkInterfaceAndFinalize : CompileResultContext -> Task Never BResult
-checkInterfaceAndFinalize ctx =
-    let
-        eciPath =
-            Stuff.eci ctx.root ctx.name
-    in
-    File.readBinary I.interfaceDecoder eciPath
-        |> Task.andThen (finalizeBasedOnInterface ctx eciPath)
-
-
-finalizeBasedOnInterface : CompileResultContext -> FilePath -> Maybe I.Interface -> Task Never BResult
-finalizeBasedOnInterface ctx eciPath maybeOldi =
-    case maybeOldi of
-        Just oldi ->
-            if oldi == ctx.iface then
-                -- Interface unchanged, return RSame
-                Reporting.report ctx.key Reporting.BDone
-                    |> Task.map (\_ -> buildRSame ctx)
-
-            else
-                -- Interface changed, write new interface and return RNew
-                File.writeBinary I.interfaceEncoder eciPath ctx.iface
-                    |> Task.andThen (\_ -> Reporting.report ctx.key Reporting.BDone)
-                    |> Task.map (\_ -> buildRNew ctx)
-
-        Nothing ->
-            -- No old interface, write new interface and return RNew
-            File.writeBinary I.interfaceEncoder eciPath ctx.iface
-                |> Task.andThen (\_ -> Reporting.report ctx.key Reporting.BDone)
-                |> Task.map (\_ -> buildRNew ctx)
 
 
 buildRSame : CompileResultContext -> BResult
@@ -1669,6 +1713,8 @@ buildRNew ctx =
 compileWithTypedOpt :
     Reporting.BKey
     -> FilePath
+    -> Maybe String
+    -> CacheMode
     -> Pkg.Name
     -> Details.BuildID
     -> DocsNeed
@@ -1681,14 +1727,16 @@ compileWithTypedOpt :
     -> Dict ModuleName.Raw I.Interface
     -> Src.Module
     -> Task Never BResult
-compileWithTypedOpt key root pkg buildID docsNeed path time deps main lastChange source ifaces modul =
+compileWithTypedOpt key root maybeBuildDir cacheMode pkg buildID docsNeed path time deps main lastChange source ifaces modul =
     Compile.compileTyped pkg ifaces modul
-        |> Task.andThen (handleTypedCompileResult key root pkg buildID docsNeed path time deps main lastChange source modul)
+        |> Task.andThen (handleTypedCompileResult key root maybeBuildDir cacheMode pkg buildID docsNeed path time deps main lastChange source modul)
 
 
 handleTypedCompileResult :
     Reporting.BKey
     -> FilePath
+    -> Maybe String
+    -> CacheMode
     -> Pkg.Name
     -> Details.BuildID
     -> DocsNeed
@@ -1701,7 +1749,7 @@ handleTypedCompileResult :
     -> Src.Module
     -> Result Error.Error Compile.TypedArtifacts
     -> Task Never BResult
-handleTypedCompileResult key root pkg buildID docsNeed path time deps main lastChange source modul result =
+handleTypedCompileResult key root maybeBuildDir cacheMode pkg buildID docsNeed path time deps main lastChange source modul result =
     case result of
         Err err ->
             Error.Module (Src.getName modul) path time source err |> RProblem |> Task.succeed
@@ -1716,6 +1764,8 @@ handleTypedCompileResult key root pkg buildID docsNeed path time deps main lastC
                         ctx =
                             { key = key
                             , root = root
+                            , maybeBuildDir = maybeBuildDir
+                            , cacheMode = cacheMode
                             , buildID = buildID
                             , path = path
                             , time = time
@@ -2009,7 +2059,7 @@ artifacts suitable for interactive evaluation.
 -}
 fromRepl : FilePath -> Details.Details -> String -> Task Never (Result Exit.Repl ReplArtifacts)
 fromRepl root details source =
-    makeEnv Reporting.ignorer root Nothing Nothing details False FEStats.disabled
+    makeEnv WriteCaches Reporting.ignorer root Nothing Nothing details False FEStats.disabled
         |> Task.andThen
             (\((Env envData) as env) ->
                 case Parse.fromByteString envData.projectType source of
@@ -2084,7 +2134,7 @@ compileReplModules root maybeBuildDir details env source modul deps foreigns sta
                                 |> Task.andThen
                                     (\results ->
                                         writeDetails root maybeBuildDir details results
-                                            |> Task.andThen (\_ -> checkDeps root resultMVars deps 0)
+                                            |> Task.andThen (\_ -> checkDeps root maybeBuildDir resultMVars deps 0)
                                             |> Task.andThen (\depsStatus -> finalizeReplArtifacts env source modul depsStatus resultMVars results)
                                     )
                         )
@@ -2129,7 +2179,7 @@ finalizeReplArtifacts ((Env envData) as env) source ((Src.Module srcData) as mod
             compileInput ifaces
 
         DepsSame same cached ->
-            loadInterfaces envData.root same cached
+            loadInterfaces envData.root envData.maybeBuildDir same cached
                 |> Task.andThen
                     (\maybeLoaded ->
                         case maybeLoaded of
@@ -2407,7 +2457,7 @@ checkRoot ((Env envData) as env) results rootStatus =
             Task.succeed (ROutsideErr err)
 
         SOutsideOk ((Details.Local localData) as local) source ((Src.Module srcData) as modul) ->
-            checkDeps envData.root results localData.deps localData.lastCompile
+            checkDeps envData.root envData.maybeBuildDir results localData.deps localData.lastCompile
                 |> Task.andThen
                     (\depsStatus ->
                         case depsStatus of
@@ -2415,7 +2465,7 @@ checkRoot ((Env envData) as env) results rootStatus =
                                 compileOutside env local source ifaces modul
 
                             DepsSame same cached ->
-                                loadInterfaces envData.root same cached
+                                loadInterfaces envData.root envData.maybeBuildDir same cached
                                     |> Task.andThen
                                         (\maybeLoaded ->
                                             case maybeLoaded of

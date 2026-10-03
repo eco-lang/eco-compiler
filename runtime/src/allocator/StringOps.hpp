@@ -85,14 +85,14 @@ inline std::pair<const u8*, u32> utf8Bytes(void* o) {
     }
     // Tag_StringUtf8View
     ElmStringUtf8View* v = static_cast<ElmStringUtf8View*>(o);
-    void* base = Allocator::instance().resolve(v->base);
+    void* base = Allocator::resolveFast(v->base);
     if (!base) return {nullptr, 0};
     Header* bh = static_cast<Header*>(base);
     const u8* p;
     if (bh->tag == Tag_StringUtf8Leaf) {
         p = static_cast<ElmStringUtf8Leaf*>(base)->bytes;
     } else if (bh->tag == Tag_LargeByteHeader) {
-        void* body = Allocator::instance().resolve(
+        void* body = Allocator::resolveFast(
             static_cast<LargeByteHeader*>(base)->body);
         if (!body) return {nullptr, 0};
         p = static_cast<ByteBuffer*>(body)->bytes;
@@ -275,7 +275,6 @@ inline std::u16string toStdU16String(void* str);
 template <class F16, class F8>
 inline void forEachSegmentEx(void* str, F16&& u16cb, F8&& u8cb) {
     if (!str) return;
-    auto& allocator = Allocator::instance();
     Header* hdr = static_cast<Header*>(str);
 
     if (hdr->tag == Tag_String) {
@@ -285,7 +284,7 @@ inline void forEachSegmentEx(void* str, F16&& u16cb, F8&& u8cb) {
     }
     if (hdr->tag == Tag_LargeStringHeader) {
         LargeStringHeader* h = static_cast<LargeStringHeader*>(str);
-        void* body = allocator.resolve(h->body);
+        void* body = Allocator::resolveFast(h->body);
         if (!body) return;
         ElmString* leaf = static_cast<ElmString*>(body);
         if (leaf->header.size > 0)
@@ -295,11 +294,11 @@ inline void forEachSegmentEx(void* str, F16&& u16cb, F8&& u8cb) {
     if (hdr->tag == Tag_StringSlice) {
         ElmStringSlice* slc = static_cast<ElmStringSlice*>(str);
         if (slc->header.size == 0) return;
-        void* base = allocator.resolve(slc->base);
+        void* base = Allocator::resolveFast(slc->base);
         if (!base) return;
         if (static_cast<Header*>(base)->tag == Tag_LargeStringHeader) {
             LargeStringHeader* lh = static_cast<LargeStringHeader*>(base);
-            base = allocator.resolve(lh->body);
+            base = Allocator::resolveFast(lh->body);
             if (!base) return;
         }
         ElmString* leaf = static_cast<ElmString*>(base);
@@ -328,7 +327,7 @@ inline void forEachSegmentEx(void* str, F16&& u16cb, F8&& u8cb) {
                 u16cb(static_cast<const u16*>(s->chars), s->header.size);
         } else if (h->tag == Tag_LargeStringHeader) {
             LargeStringHeader* lh = static_cast<LargeStringHeader*>(top);
-            void* body = allocator.resolve(lh->body);
+            void* body = Allocator::resolveFast(lh->body);
             if (body) {
                 ElmString* leaf = static_cast<ElmString*>(body);
                 if (leaf->header.size > 0)
@@ -337,11 +336,11 @@ inline void forEachSegmentEx(void* str, F16&& u16cb, F8&& u8cb) {
         } else if (h->tag == Tag_StringSlice) {
             ElmStringSlice* slc = static_cast<ElmStringSlice*>(top);
             if (slc->header.size > 0) {
-                void* base = allocator.resolve(slc->base);
+                void* base = Allocator::resolveFast(slc->base);
                 if (base) {
                     if (static_cast<Header*>(base)->tag == Tag_LargeStringHeader) {
                         LargeStringHeader* lh = static_cast<LargeStringHeader*>(base);
-                        base = allocator.resolve(lh->body);
+                        base = Allocator::resolveFast(lh->body);
                     }
                     if (base) {
                         ElmString* leaf = static_cast<ElmString*>(base);
@@ -355,8 +354,8 @@ inline void forEachSegmentEx(void* str, F16&& u16cb, F8&& u8cb) {
             if (pr.second > 0) u8cb(pr.first, pr.second);
         } else if (h->tag == Tag_StringRope) {
             ElmStringRope* r = static_cast<ElmStringRope*>(top);
-            void* rightObj = allocator.resolve(r->right);
-            void* leftObj  = allocator.resolve(r->left);
+            void* rightObj = Allocator::resolveFast(r->right);
+            void* leftObj  = Allocator::resolveFast(r->left);
             if (rightObj) stack.push_back(rightObj);
             if (leftObj)  stack.push_back(leftObj);
         }
@@ -622,18 +621,18 @@ inline std::pair<const u16*, u32> singleSegmentView(void* str) {
     }
     if (hdr->tag == Tag_LargeStringHeader) {
         LargeStringHeader* h = static_cast<LargeStringHeader*>(str);
-        void* body = Allocator::instance().resolve(h->body);
+        void* body = Allocator::resolveFast(h->body);
         if (!body) return {nullptr, 0};
         ElmString* leaf = static_cast<ElmString*>(body);
         return {leaf->chars, leaf->header.size};
     }
     if (hdr->tag == Tag_StringSlice) {
         ElmStringSlice* slc = static_cast<ElmStringSlice*>(str);
-        void* base = Allocator::instance().resolve(slc->base);
+        void* base = Allocator::resolveFast(slc->base);
         if (!base) return {nullptr, 0};
         if (static_cast<Header*>(base)->tag == Tag_LargeStringHeader) {
             LargeStringHeader* lh = static_cast<LargeStringHeader*>(base);
-            base = Allocator::instance().resolve(lh->body);
+            base = Allocator::resolveFast(lh->body);
             if (!base) return {nullptr, 0};
         }
         ElmString* leaf = static_cast<ElmString*>(base);
@@ -1483,6 +1482,13 @@ inline u16 segElemAt(const SegView& s, u32 i) {
  * width-aware lockstep over collected segments handles slices, ropes, and any
  * UTF-8/UTF-16 mixture without flattening.
  */
+// Cold halves of equal/compare: everything that needs singleSegmentView or the
+// segment-vector lockstep. Out of line (StringOps.cpp) so their frames — the
+// vectors, five callee-saved registers — never merge into the hot inline path
+// (cache-serialization plan S9). Both are allocation-free on the GC heap.
+[[gnu::noinline, gnu::cold]] bool equalSlow(void* a, void* b);
+[[gnu::noinline, gnu::cold]] int compareSlow(void* a, void* b);
+
 inline bool equal(void* a, void* b) {
     if (!a || !b) return a == b;  // both nullptr means both EmptyString
     Header* ha = static_cast<Header*>(a);
@@ -1504,42 +1510,15 @@ inline bool equal(void* a, void* b) {
                std::memcmp(pa.first, pb.first, pa.second) == 0;
     }
 
-    // Single-segment-on-each-side fast path (pure UTF-16): leaf / slice /
-    // large-split-header without flattening. UTF-8 forms return {nullptr,0}
-    // from singleSegmentView, so at least one side reaching here as UTF-8
-    // falls through to the width-aware walk below.
-    auto [aPtr, aLen] = singleSegmentView(a);
-    auto [bPtr, bLen] = singleSegmentView(b);
-    if (aPtr && bPtr) {
-        return std::memcmp(aPtr, bPtr, ha->size * sizeof(u16)) == 0;
-    }
-
-    // General width-aware lockstep: handles ropes that may mix UTF-8 and
-    // UTF-16 children, and any UTF-8-vs-UTF-16 pairing. Stable pointers,
-    // allocation-free beyond two small segment vectors.
-    std::vector<SegView> aSegs, bSegs;
-    aSegs.reserve(16); bSegs.reserve(16);
-    collectSegs(a, aSegs);
-    collectSegs(b, bSegs);
-
-    size_t ai = 0, bi = 0;
-    u32 aOff = 0, bOff = 0;
-    while (ai < aSegs.size() && bi < bSegs.size()) {
-        if (segElemAt(aSegs[ai], aOff) != segElemAt(bSegs[bi], bOff)) return false;
-        if (++aOff == aSegs[ai].len) { ++ai; aOff = 0; }
-        if (++bOff == bSegs[bi].len) { ++bi; bOff = 0; }
-    }
-    return ai == aSegs.size() && bi == bSegs.size();
+    return equalSlow(a, b);
 }
 
 /**
- * Compares two strings lexicographically.
- * Returns negative if a < b, 0 if a == b, positive if a > b.
+ * Compares two strings lexicographically. Sign-only contract: negative if
+ * a < b, 0 if a == b, positive if a > b.
  *
- * Pure leaf+leaf path is unchanged. Otherwise, snapshots via toStdU16String
- * when the longest side fits in config.string_flatten_limit, falling back
- * to a charAt walk for very large mixed-form inputs
- * (// TODO: streaming compare).
+ * Hot inline path: both UTF-8 (memcmp) and both UTF-16 leaves. Slices, large
+ * headers, ropes and UTF-8-vs-UTF-16 pairs go to the out-of-line compareSlow.
  */
 inline int compare(void* a, void* b) {
     if (!a && !b) return 0;
@@ -1547,64 +1526,51 @@ inline int compare(void* a, void* b) {
     if (!b) return 1;
     Header* ha = static_cast<Header*>(a);
     Header* hb = static_cast<Header*>(b);
+    Tag ta = static_cast<Tag>(ha->tag);
+    Tag tb = static_cast<Tag>(hb->tag);
+    bool u8a = (ta == Tag_StringUtf8Leaf) | (ta == Tag_StringUtf8View);
+    bool u8b = (tb == Tag_StringUtf8Leaf) | (tb == Tag_StringUtf8View);
 
-    auto charCompare = [](const u16* pa, const u16* pb, size_t n) -> int {
-        for (size_t i = 0; i < n; ++i) {
-            if (pa[i] != pb[i]) {
-                return static_cast<int>(pa[i]) - static_cast<int>(pb[i]);
-            }
+    // Both UTF-8: byte compare. ASCII => byte order == UTF-16 unit order, so
+    // memcmp's sign is the correct lexicographic sign (HEAP_032).
+    if (__builtin_expect(u8a & u8b, 1)) {
+        const u8* pa;
+        u32 la;
+        const u8* pb;
+        u32 lb;
+        if (ta == Tag_StringUtf8Leaf) {
+            pa = static_cast<ElmStringUtf8Leaf*>(a)->bytes;
+            la = ha->size;
+        } else {
+            auto p = utf8Bytes(a);
+            pa = p.first;
+            la = p.second;
         }
-        return 0;
-    };
-
-    if (ha->tag == Tag_String && hb->tag == Tag_String) {
-        ElmString* sa = static_cast<ElmString*>(a);
-        ElmString* sb = static_cast<ElmString*>(b);
-        size_t min_len = std::min<size_t>(ha->size, hb->size);
-        int c = charCompare(sa->chars, sb->chars, min_len);
+        if (tb == Tag_StringUtf8Leaf) {
+            pb = static_cast<ElmStringUtf8Leaf*>(b)->bytes;
+            lb = hb->size;
+        } else {
+            auto p = utf8Bytes(b);
+            pb = p.first;
+            lb = p.second;
+        }
+        u32 m = la < lb ? la : lb;
+        int c = std::memcmp(pa, pb, m);
         if (c != 0) return c;
+        return static_cast<int>(la) - static_cast<int>(lb);
+    }
+
+    if (ta == Tag_String && tb == Tag_String) {
+        const u16* pa = static_cast<ElmString*>(a)->chars;
+        const u16* pb = static_cast<ElmString*>(b)->chars;
+        u32 m = ha->size < hb->size ? ha->size : hb->size;
+        for (u32 i = 0; i < m; ++i) {
+            if (pa[i] != pb[i]) return static_cast<int>(pa[i]) - static_cast<int>(pb[i]);
+        }
         return static_cast<int>(ha->size) - static_cast<int>(hb->size);
     }
 
-    // Both UTF-8: byte compare. ASCII => byte order == UTF-16 unit order, so
-    // memcmp's sign is the correct lexicographic sign.
-    if (isUtf8(a) && isUtf8(b)) {
-        auto pa = utf8Bytes(a);
-        auto pb = utf8Bytes(b);
-        size_t min_len = std::min<size_t>(pa.second, pb.second);
-        int c = std::memcmp(pa.first, pb.first, min_len);
-        if (c != 0) return c;
-        return static_cast<int>(pa.second) - static_cast<int>(pb.second);
-    }
-
-    // Single-segment-on-each-side fast path (pure UTF-16).
-    auto [aPtr, aLen] = singleSegmentView(a);
-    auto [bPtr, bLen] = singleSegmentView(b);
-    if (aPtr && bPtr) {
-        size_t min_len = std::min<size_t>(aLen, bLen);
-        int c = charCompare(aPtr, bPtr, min_len);
-        if (c != 0) return c;
-        return static_cast<int>(aLen) - static_cast<int>(bLen);
-    }
-
-    // General width-aware lockstep (ropes possibly mixing UTF-8 / UTF-16, or
-    // any UTF-8-vs-UTF-16 pairing). ASCII bytes widen to u16 units, matching
-    // UTF-16 unit order.
-    std::vector<SegView> aSegs, bSegs;
-    aSegs.reserve(16); bSegs.reserve(16);
-    collectSegs(a, aSegs);
-    collectSegs(b, bSegs);
-
-    size_t ai = 0, bi = 0;
-    u32 aOff = 0, bOff = 0;
-    while (ai < aSegs.size() && bi < bSegs.size()) {
-        u16 ca = segElemAt(aSegs[ai], aOff);
-        u16 cb = segElemAt(bSegs[bi], bOff);
-        if (ca != cb) return static_cast<int>(ca) - static_cast<int>(cb);
-        if (++aOff == aSegs[ai].len) { ++ai; aOff = 0; }
-        if (++bOff == bSegs[bi].len) { ++bi; bOff = 0; }
-    }
-    return static_cast<int>(ha->size) - static_cast<int>(hb->size);
+    return compareSlow(a, b);
 }
 
 } // namespace StringOps

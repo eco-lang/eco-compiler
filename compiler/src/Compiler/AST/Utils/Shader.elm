@@ -196,9 +196,9 @@ sourceDecoderS st =
 
 {-| Add the shader source string to a collection set.
 -}
-collectStringsFromSource : Source -> Set String -> Set String
+collectStringsFromSource : Source -> StringTable.Collector -> StringTable.Collector
 collectStringsFromSource (Source src) acc =
-    Set.insert src acc
+    StringTable.add src acc
 
 
 {-| Encode shader type information to binary format.

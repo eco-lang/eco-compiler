@@ -46,6 +46,7 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 -}
 
 import Array exposing (Array)
+import Compiler.AST.Canonical as Can
 import Eco.CellStore as CellStore
 import Compiler.Type.Vars as Vars exposing (Content(..), Descriptor, FlatType(..), LambdaSet(..), Mark(..), Point(..), PointCell(..), RootedVar, SortedRel(..), SuperType(..), Variable)
 import Data.Map as Dict exposing (Dict)
@@ -141,6 +142,7 @@ type alias NameState =
     , comparables : Int
     , appendables : Int
     , compAppends : Int
+    , canMemo : CoreDict.Dict Int (Can.Type String)
     }
 
 
@@ -148,7 +150,7 @@ type alias NameState =
 -}
 emptyNameState : NameState
 emptyNameState =
-    { taken = CoreDict.empty, normals = 0, numbers = 0, comparables = 0, appendables = 0, compAppends = 0 }
+    { taken = CoreDict.empty, normals = 0, numbers = 0, comparables = 0, appendables = 0, compAppends = 0, canMemo = CoreDict.empty }
 
 
 {-| Read the current fresh-name state.

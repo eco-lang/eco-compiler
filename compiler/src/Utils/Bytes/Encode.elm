@@ -1,5 +1,6 @@
 module Utils.Bytes.Encode exposing
     ( unit, bool, int, float, string
+    , uintV, sintV
     , maybe, list, nonempty, result, oneOrMore
     , jsonPair, assocListDict, stdDict, everySet
     )
@@ -12,6 +13,7 @@ data to enable reliable deserialization.
 # Primitive Encoders
 
 @docs unit, bool, int, float, string
+@docs uintV, sintV
 
 
 # Container Encoders
@@ -51,6 +53,45 @@ unit () =
 int : Int -> BE.Encoder
 int =
     toFloat >> BE.float64 endian
+
+
+{-| Unsigned LEB128 varint: 7 bits per byte, low group first, high bit =
+continuation, at most 5 bytes. PRECONDITION: `0 <= n < 2^31`, so `modBy` and
+`//` agree between JS (32-bit `//`) and native, keeping JS- and native-written
+bytes identical (cache-serialization plan S10).
+-}
+uintV : Int -> BE.Encoder
+uintV n =
+    if n < 0x80 then
+        BE.unsignedInt8 n
+
+    else if n < 0x4000 then
+        BE.sequence [ BE.unsignedInt8 (0x80 + modBy 128 n), BE.unsignedInt8 (n // 128) ]
+
+    else
+        BE.sequence (uintVBytes n)
+
+
+uintVBytes : Int -> List BE.Encoder
+uintVBytes n =
+    if n < 0x80 then
+        [ BE.unsignedInt8 n ]
+
+    else
+        BE.unsignedInt8 (0x80 + modBy 128 n) :: uintVBytes (n // 128)
+
+
+{-| Zigzag + `uintV` for a possibly negative Int (|n| < 2^30).
+-}
+sintV : Int -> BE.Encoder
+sintV n =
+    uintV
+        (if n >= 0 then
+            2 * n
+
+         else
+            -2 * n - 1
+        )
 
 
 {-| Encodes a 64-bit floating point number in big-endian byte order.

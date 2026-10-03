@@ -505,8 +505,8 @@ nameDecoderS st =
 
 {-| Add the two string components of a package name to a string-collection set.
 -}
-collectStringsFromName : Name -> Set String -> Set String
+collectStringsFromName : Name -> StringTable.Collector -> StringTable.Collector
 collectStringsFromName ( author, project ) acc =
     acc
-        |> Set.insert author
-        |> Set.insert project
+        |> StringTable.add author
+        |> StringTable.add project

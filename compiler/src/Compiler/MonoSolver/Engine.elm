@@ -2436,6 +2436,7 @@ freshStore () =
         , comparables = 0
         , appendables = 0
         , compAppends = 0
+        , canMemo = CoreDict.empty
         }
     , nodeIds =
         { mapping = Array.empty

@@ -1,5 +1,5 @@
 module Eco.File exposing
-    ( readString, writeString, readBytes, writeBytes
+    ( readString, writeString, readBytes, writeBytes, writeBytesAtomic
     , Handle(..), IOMode(..), open, close, size, hWriteString
     , lock, unlock
     , fileExists, dirExists, findExecutable, list, modificationTime, touch
@@ -15,7 +15,7 @@ Eco.Kernel.File directly.
 
 # File I/O by Path
 
-@docs readString, writeString, readBytes, writeBytes
+@docs readString, writeString, readBytes, writeBytes, writeBytesAtomic
 
 
 # File Handles
@@ -104,6 +104,17 @@ readBytes path =
 writeBytes : String -> Bytes -> Task IOError ()
 writeBytes path bytes =
     Eco.XHR.sendBytesTask "File.writeBytes"
+        [ Http.header "X-Eco-Path" path ]
+        bytes
+        |> Task.mapError IOErr.ofKernelTuple
+
+
+{-| Write raw bytes to a temp file beside `path`, then rename it over `path`:
+readers never observe a partial file.
+-}
+writeBytesAtomic : String -> Bytes -> Task IOError ()
+writeBytesAtomic path bytes =
+    Eco.XHR.sendBytesTask "File.writeBytesAtomic"
         [ Http.header "X-Eco-Path" path ]
         bytes
         |> Task.mapError IOErr.ofKernelTuple

@@ -493,8 +493,8 @@ canonicalDecoderS st =
 
 {-| Add the string components of a canonical module name to a collection set.
 -}
-collectStringsFromCanonical : Canonical -> Set String -> Set String
+collectStringsFromCanonical : Canonical -> StringTable.Collector -> StringTable.Collector
 collectStringsFromCanonical (Canonical pkgName name) acc =
     acc
         |> Pkg.collectStringsFromName pkgName
-        |> Set.insert name
+        |> StringTable.add name

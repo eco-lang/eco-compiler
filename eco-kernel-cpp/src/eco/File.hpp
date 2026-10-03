@@ -9,6 +9,7 @@ uint64_t readString(uint64_t path);
 uint64_t writeString(uint64_t path, uint64_t content);
 uint64_t readBytes(uint64_t path);
 uint64_t writeBytes(uint64_t path, uint64_t bytes);
+uint64_t writeBytesAtomic(uint64_t path, uint64_t bytes);
 uint64_t open(uint64_t path, uint64_t mode);
 uint64_t close(uint64_t handle);
 uint64_t size(uint64_t handle);

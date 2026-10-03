@@ -62,6 +62,8 @@ import Builder.Reporting as Reporting
 import Builder.Reporting.Exit as Exit
 import Builder.Stuff as Stuff
 import Compiler.AST.Optimized as Opt
+import Compiler.AST.TypedOptimized as TOpt
+import Compiler.Data.Name exposing (Name)
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Eco.Config as Config
 import Compiler.Elm.ModuleName as ModuleName
@@ -100,6 +102,7 @@ type alias FlagsData =
     , refreshRegistry : Bool
     , configPath : Maybe String
     , stats : Bool
+    , noCache : Bool
     }
 
 
@@ -195,35 +198,35 @@ runHelp root paths style stats (Flags flagsData) =
     Stuff.resolveBundledKernel flagsData.localPackage
         |> Task.andThen
             (\maybeLocalPackage ->
-                BW.withScope (runHelpWithScope root paths style stats flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs flagsData.showPackageErrors flagsData.buildDir flagsData.kernelPackage maybeLocalPackage flagsData.textMlir flagsData.configPath registryPolicy)
+                BW.withScope (runHelpWithScope root paths style stats flagsData.noCache flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs flagsData.showPackageErrors flagsData.buildDir flagsData.kernelPackage maybeLocalPackage flagsData.textMlir flagsData.configPath registryPolicy)
             )
 
 
-runHelpWithScope : FilePath -> List String -> Reporting.Style -> FEStats.Handle -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Maybe String -> Registry.RegistryPolicy -> BW.Scope -> Task Never (Result Exit.Make ())
-runHelpWithScope root paths style stats debug optimize withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope =
+runHelpWithScope : FilePath -> List String -> Reporting.Style -> FEStats.Handle -> Bool -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Maybe String -> Registry.RegistryPolicy -> BW.Scope -> Task Never (Result Exit.Make ())
+runHelpWithScope root paths style stats noCache debug optimize withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope =
     Stuff.withRootLockBuildDir root
         maybeBuildDir
         (Task.run
             (getMode debug optimize
-                |> Task.andThen (loadDetailsAndBuild root paths style stats withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope)
+                |> Task.andThen (loadDetailsAndBuild root paths style stats noCache withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope)
             )
         )
 
 
-loadDetailsAndBuild : FilePath -> List String -> Reporting.Style -> FEStats.Handle -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Maybe String -> Registry.RegistryPolicy -> BW.Scope -> DesiredMode -> Task Exit.Make ()
-loadDetailsAndBuild root paths style stats withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope desiredMode =
+loadDetailsAndBuild : FilePath -> List String -> Reporting.Style -> FEStats.Handle -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Maybe String -> Registry.RegistryPolicy -> BW.Scope -> DesiredMode -> Task Exit.Make ()
+loadDetailsAndBuild root paths style stats noCache withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope desiredMode =
     EcoConfigLoader.load maybeConfigPath root
         |> Task.andThen
             (\ecoConfig ->
                 FEStats.withPhase stats
                     FEStats.PhaseDeps
                     (Task.eio Exit.MakeBadDetails (Details.load style scope root maybeBuildDir (Just (Config.hash ecoConfig)) (shouldUseTypedOpt maybeOutput) showPackageErrors maybeLocalPackage registryPolicy))
-                    |> Task.andThen (buildWithDetails root paths style stats withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir ecoConfig desiredMode)
+                    |> Task.andThen (buildWithDetails root paths style stats noCache withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir ecoConfig desiredMode)
             )
 
 
-buildWithDetails : FilePath -> List String -> Reporting.Style -> FEStats.Handle -> Bool -> Maybe Output -> Maybe FilePath -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Config.EcoConfig -> DesiredMode -> Details.Details -> Task Exit.Make ()
-buildWithDetails root paths style stats withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir ecoConfig desiredMode details =
+buildWithDetails : FilePath -> List String -> Reporting.Style -> FEStats.Handle -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Config.EcoConfig -> DesiredMode -> Details.Details -> Task Exit.Make ()
+buildWithDetails root paths style stats noCache withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir ecoConfig desiredMode details =
     let
         ctx : BuildContext
         ctx =
@@ -235,7 +238,7 @@ buildWithDetails root paths style stats withSourceMaps maybeOutput maybeDocs may
                 |> Task.andThen (buildExposed style root maybeBuildDir maybeKernelPackage details maybeDocs stats)
 
         p :: ps ->
-            FEStats.withPhase stats FEStats.PhaseLocal (buildPaths style root maybeBuildDir maybeKernelPackage details (shouldUseTypedOpt maybeOutput) stats (NE.Nonempty p ps))
+            FEStats.withPhase stats FEStats.PhaseLocal (buildPaths noCache style root maybeBuildDir maybeKernelPackage details (shouldUseTypedOpt maybeOutput) stats (NE.Nonempty p ps))
                 |> Task.andThen (handleArtifacts ctx)
 
 
@@ -563,9 +566,16 @@ buildExposed style root maybeBuildDir maybeKernelPackage details maybeDocs stats
         )
 
 
-buildPaths : Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Bool -> FEStats.Handle -> NE.Nonempty FilePath -> Task Exit.Make Build.Artifacts
-buildPaths style root maybeBuildDir maybeKernelPackage details needsTypedOpt stats paths =
-    Build.fromPaths style root maybeBuildDir maybeKernelPackage details needsTypedOpt stats paths |> Task.eio Exit.MakeCannotBuild
+buildPaths : Bool -> Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Bool -> FEStats.Handle -> NE.Nonempty FilePath -> Task Exit.Make Build.Artifacts
+buildPaths noCache style root maybeBuildDir maybeKernelPackage details needsTypedOpt stats paths =
+    Build.fromPathsWith
+        (if noCache then
+            Build.OneShot
+
+         else
+            Build.WriteCaches
+        )
+        style root maybeBuildDir maybeKernelPackage details needsTypedOpt stats paths |> Task.eio Exit.MakeCannotBuild
 
 
 
@@ -587,16 +597,19 @@ getMain modules root =
             else
                 Nothing
 
-        Build.Outside name _ (Opt.LocalGraph maybeMain _ _) _ _ ->
-            maybeMain
-                |> Maybe.map (\_ -> name)
+        Build.Outside name _ objs typed _ ->
+            if graphHasMain objs typed then
+                Just name
+
+            else
+                Nothing
 
 
 isMain : ModuleName.Raw -> Build.Module -> Bool
 isMain targetName modul =
     case modul of
-        Build.Fresh name _ (Opt.LocalGraph maybeMain _ _) _ _ ->
-            Maybe.isJust maybeMain && name == targetName
+        Build.Fresh name _ objs typed _ ->
+            graphHasMain objs typed && name == targetName
 
         Build.Cached name mainIsDefined _ ->
             mainIsDefined && name == targetName
@@ -635,13 +648,29 @@ getNoMain modules root =
             else
                 Just name
 
-        Build.Outside name _ (Opt.LocalGraph maybeMain _ _) _ _ ->
-            case maybeMain of
-                Just _ ->
-                    Nothing
+        Build.Outside name _ objs typed _ ->
+            if graphHasMain objs typed then
+                Nothing
 
-                Nothing ->
-                    Just name
+            else
+                Just name
+
+
+{-| Whether a freshly compiled module defines `main`. On the typed (MLIR/ELF)
+path the erased graph is a stub whose `main` is a presence marker
+(`Opt.typedPathStub`, plan S5). The erased graph is the one to read: in the JS
+build a `Fresh` module crosses an MVar SERIALIZED, and the typed graph's codec
+drops `main` (ECOT\_001), so the typed graph's `main` is `Nothing` there. The
+typed graph is still consulted for a native in-memory module.
+-}
+graphHasMain : Opt.LocalGraph -> Maybe (TOpt.LocalGraph Name) -> Bool
+graphHasMain (Opt.LocalGraph maybeMain _ _) maybeTyped =
+    case maybeTyped of
+        Just (TOpt.LocalGraph data) ->
+            Maybe.isJust maybeMain || Maybe.isJust data.main
+
+        Nothing ->
+            Maybe.isJust maybeMain
 
 
 

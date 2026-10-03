@@ -21,7 +21,7 @@ ARMS=${2:-"A B C"}
 MUT_CPU=${MUT_CPU:-2}
 CO_CPU=${CO_CPU:-10}
 BK=build/compiler/build-kernel
-REG=~/.eco/0.1.1/packages/registry.dat
+REG=~/.eco/0.1.2/packages/registry.dat
 ENV="ECO_MONO_ENGINE=solver ECO_MONO_LSS=1"
 OUT=${OUT:-benchmarks/l3-corunner-results}
 mkdir -p "$OUT"

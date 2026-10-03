@@ -13,6 +13,7 @@ module Compiler.AST.Canonical exposing
     , fieldUpdateEncoder, fieldUpdateDecoder
     , annotationEncoderS, annotationDecoderS
     , typeEncoderS, typeDecoderS
+    , arrowSlotToInt, arrowSlotFromInt, freeVarsEncoderS, freeVarsDecoderS
     , unionEncoderS, unionDecoderS
     , collectStringsFromAnnotation, collectStringsFromType
     , collectStringsFromUnion
@@ -74,6 +75,7 @@ Cached data is marked with comments like `-- CACHE for exhaustiveness` or
 
 @docs annotationEncoderS, annotationDecoderS
 @docs typeEncoderS, typeDecoderS
+@docs arrowSlotToInt, arrowSlotFromInt, freeVarsEncoderS, freeVarsDecoderS
 @docs unionEncoderS, unionDecoderS
 @docs collectStringsFromAnnotation, collectStringsFromType
 @docs collectStringsFromUnion
@@ -1589,16 +1591,16 @@ caseBranchDecoder =
 
 {-| Add all strings emitted by `annotationEncoderS` to a collection set.
 -}
-collectStringsFromAnnotation : Annotation Name -> Set String -> Set String
+collectStringsFromAnnotation : Annotation Name -> StringTable.Collector -> StringTable.Collector
 collectStringsFromAnnotation (Forall freeVars tipe) acc =
     acc
-        |> (\a -> List.foldl Set.insert a (Dict.keys freeVars))
+        |> (\a -> List.foldl StringTable.add a (Dict.keys freeVars))
         |> collectStringsFromType tipe
 
 
 {-| Add all strings emitted by `typeEncoderS` to a collection set.
 -}
-collectStringsFromType : Type Name -> Set String -> Set String
+collectStringsFromType : Type Name -> StringTable.Collector -> StringTable.Collector
 collectStringsFromType type_ acc =
     case type_ of
         TLambda _ a b ->
@@ -1607,30 +1609,30 @@ collectStringsFromType type_ acc =
                 |> collectStringsFromType b
 
         TVar name ->
-            Set.insert name acc
+            StringTable.add name acc
 
         TType home name args ->
             List.foldl collectStringsFromType
                 (acc
                     |> ModuleName.collectStringsFromCanonical home
-                    |> Set.insert name
+                    |> StringTable.add name
                 )
                 args
 
         TRecord fields ext ->
             let
-                withFields : Set String
+                withFields : StringTable.Collector
                 withFields =
                     Dict.foldl
                         (\k (FieldType _ ft) a ->
-                            collectStringsFromType ft (Set.insert k a)
+                            collectStringsFromType ft (StringTable.add k a)
                         )
                         acc
                         fields
             in
             case ext of
                 Just s ->
-                    Set.insert s withFields
+                    StringTable.add s withFields
 
                 Nothing ->
                     withFields
@@ -1648,17 +1650,17 @@ collectStringsFromType type_ acc =
 
         TAlias home name args tipe ->
             let
-                withHead : Set String
+                withHead : StringTable.Collector
                 withHead =
                     acc
                         |> ModuleName.collectStringsFromCanonical home
-                        |> Set.insert name
+                        |> StringTable.add name
 
-                withArgs : Set String
+                withArgs : StringTable.Collector
                 withArgs =
                     List.foldl
                         (\( argName, argType ) a ->
-                            a |> Set.insert argName |> collectStringsFromType argType
+                            a |> StringTable.add argName |> collectStringsFromType argType
                         )
                         withHead
                         args
@@ -1666,7 +1668,7 @@ collectStringsFromType type_ acc =
             collectStringsFromAliasType tipe withArgs
 
 
-collectStringsFromAliasType : AliasType Name -> Set String -> Set String
+collectStringsFromAliasType : AliasType Name -> StringTable.Collector -> StringTable.Collector
 collectStringsFromAliasType at acc =
     case at of
         Holey tipe ->
@@ -1678,16 +1680,16 @@ collectStringsFromAliasType at acc =
 
 {-| Add all strings emitted by `unionEncoderS` to a collection set.
 -}
-collectStringsFromUnion : Union -> Set String -> Set String
+collectStringsFromUnion : Union -> StringTable.Collector -> StringTable.Collector
 collectStringsFromUnion (Union u) acc =
     let
-        withVars : Set String
+        withVars : StringTable.Collector
         withVars =
-            List.foldl Set.insert acc u.vars
+            List.foldl StringTable.add acc u.vars
     in
     List.foldl collectStringsFromCtor withVars u.alts
 
 
-collectStringsFromCtor : Ctor -> Set String -> Set String
+collectStringsFromCtor : Ctor -> StringTable.Collector -> StringTable.Collector
 collectStringsFromCtor (Ctor c) acc =
-    List.foldl collectStringsFromType (Set.insert c.name acc) c.args
+    List.foldl collectStringsFromType (StringTable.add c.name acc) c.args

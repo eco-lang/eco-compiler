@@ -113,7 +113,7 @@ bool preflight() {
 // `err: "NetworkError"` from libcurl failing to connect.
 //
 // Called before the per-test pre-clean (which wipes the per-package
-// `eco-stuff/1.0.0/` artifact cache), so each test re-compiles against the
+// `eco-stuff/<version>/` artifact caches), so each test re-compiles against the
 // current port.
 // ----------------------------------------------------------------------------
 void prepare_http_server() {
@@ -357,8 +357,9 @@ std::string truncated_tail(const std::string& s, std::size_t cap = 4096) {
 }
 
 ProcResult compile_to_mlir(const TestCase& tc, const std::string& mlir_out) {
-    // Per-test builddir name (under <pkg>/eco-stuff/<name>/) so concurrent
-    // compiles don't share caches.
+    // Per-test builddir name (under <pkg>/eco-stuff/<version>/<name>/, which
+    // holds that test's d.dat/i.dat AND its per-module .eci/.ecot) so
+    // concurrent compiles don't share caches.
     const std::string builddir = "aot_e2e_" + tc.stem;
 
     std::vector<std::string> argv = {
@@ -594,9 +595,11 @@ int main(int argc, char** argv) {
     // up the live port. Mirrors what main.cpp does for the JIT suite.
     prepare_http_server();
 
-    // Pre-clean per-test builddirs from prior runs in each touched AOT shadow.
-    // Without this, a stale `<pkg>/eco-stuff/aot_e2e_<stem>/` directory from a
-    // prior compiler version may contain incompatible cache files.
+    // Pre-clean every compiler-version dir (`<pkg>/eco-stuff/<version>/`, which
+    // holds the per-test builddirs `<version>/aot_e2e_<stem>/`) in each touched
+    // AOT shadow, keeping only the harness's own `mlir/` output dir. A stale
+    // builddir from a prior run used to survive here (the old check named
+    // `1.0.0` and `eco-stuff/aot_e2e_*`, neither of which exists).
     {
         std::unordered_set<std::string> seen;
         for (const auto& c : cases) {
@@ -607,7 +610,7 @@ int main(int argc, char** argv) {
                 for (auto& ent : fs::directory_iterator(eco_stuff, ec)) {
                     if (!ent.is_directory()) continue;
                     const std::string nm = ent.path().filename().string();
-                    if (nm == "1.0.0" || nm.rfind("aot_e2e_", 0) == 0) {
+                    if (nm != "mlir") {
                         fs::remove_all(ent.path(), ec);
                     }
                 }
@@ -616,8 +619,8 @@ int main(int argc, char** argv) {
     }
 
     // Two-phase execution mirroring mlir-equivalence: a serial warm-up of one
-    // test per package primes the shared `<pkg>/eco-stuff/1.0.0/` artifact
-    // cache, then the rest run in parallel. Without this, concurrent compiles
+    // test per package primes the shared `~/.eco` package caches, then the
+    // rest run in parallel. Without this, concurrent compiles
     // in the same package can race to populate the cache and surface
     // "CORRUPT CACHE" diagnostics.
     std::vector<TestCase> warmup;

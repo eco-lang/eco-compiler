@@ -511,7 +511,7 @@ type TypedLoadingObjects
 loadTypedObjects : FilePath -> Maybe String -> Maybe ( Pkg.Name, FilePath ) -> Details.Details -> List Build.Module -> Task Exit.Generate TypedLoadingObjects
 loadTypedObjects root maybeBuildDir maybeLocal details modules =
     Task.io
-        (Details.loadTypedObjects root maybeBuildDir maybeLocal details
+        (Details.loadTypedObjects maybeLocal details
             |> Task.andThen (loadTypedModuleObjects root maybeBuildDir modules)
         )
 

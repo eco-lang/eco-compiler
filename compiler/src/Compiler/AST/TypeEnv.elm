@@ -158,7 +158,7 @@ moduleTypeEnvEncoder env =
     let
         st : StringTable
         st =
-            StringTable.build (collectStringsFromModuleTypeEnv env Set.empty)
+            StringTable.build (StringTable.collected (collectStringsFromModuleTypeEnv env StringTable.collectAll))
     in
     Bytes.Encode.sequence
         [ StringTable.tableEncoder st
@@ -190,7 +190,7 @@ globalTypeEnvEncoder env =
     let
         st : StringTable
         st =
-            StringTable.build (collectStringsFromGlobalTypeEnv env Set.empty)
+            StringTable.build (StringTable.collected (collectStringsFromGlobalTypeEnv env StringTable.collectAll))
     in
     Bytes.Encode.sequence
         [ StringTable.tableEncoder st
@@ -238,14 +238,14 @@ moduleTypeEnvBodyDecoderS st =
 
 {-| Collect strings emitted by `moduleTypeEnvEncoder`'s body.
 -}
-collectStringsFromModuleTypeEnv : ModuleTypeEnv -> Set String -> Set String
+collectStringsFromModuleTypeEnv : ModuleTypeEnv -> StringTable.Collector -> StringTable.Collector
 collectStringsFromModuleTypeEnv env acc =
     acc
         |> ModuleName.collectStringsFromCanonical env.home
         |> (\a ->
                 Dict.foldl
                     (\name union a2 ->
-                        a2 |> Set.insert name |> Can.collectStringsFromUnion union
+                        a2 |> StringTable.add name |> Can.collectStringsFromUnion union
                     )
                     a
                     env.unions
@@ -254,7 +254,7 @@ collectStringsFromModuleTypeEnv env acc =
 
 {-| Collect strings emitted by `globalTypeEnvEncoder`'s body.
 -}
-collectStringsFromGlobalTypeEnv : GlobalTypeEnv -> Set String -> Set String
+collectStringsFromGlobalTypeEnv : GlobalTypeEnv -> StringTable.Collector -> StringTable.Collector
 collectStringsFromGlobalTypeEnv env acc =
     Data.Map.foldl ModuleName.compareCanonical
         (\home modEnv a ->

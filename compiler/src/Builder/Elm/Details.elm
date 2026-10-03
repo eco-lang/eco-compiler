@@ -295,26 +295,21 @@ loadObjects root maybeBuildDir (Details detailsData) =
 {-| Load typed global objects for MLIR backend.
 Loads both local typed objects and typed objects from all package dependencies.
 -}
-loadTypedObjects : FilePath -> Maybe String -> Maybe ( Pkg.Name, FilePath ) -> Details -> Task Never (MVar (Maybe PackageTypedArtifacts))
-loadTypedObjects root maybeBuildDir maybeLocal (Details detailsData) =
+loadTypedObjects : Maybe ( Pkg.Name, FilePath ) -> Details -> Task Never (MVar (Maybe PackageTypedArtifacts))
+loadTypedObjects maybeLocal (Details detailsData) =
     fork (Utils.maybeEncoder packageTypedArtifactsEncoder)
         (Stuff.getPackageCache maybeLocal
-            |> Task.andThen (loadAllTypedObjects root maybeBuildDir detailsData.deps)
+            |> Task.andThen (loadAllTypedObjects detailsData.deps)
         )
 
 
-{-| Load typed objects from local project and all packages.
+{-| Load the typed objects of all package dependencies (graph and type env).
+Local modules come from their per-module `.ecot` files (`Generate`); there is
+no project-level typed objects file.
 -}
-loadAllTypedObjects : FilePath -> Maybe String -> Dict Pkg.Name V.Version -> Stuff.PackageCache -> Task Never (Maybe PackageTypedArtifacts)
-loadAllTypedObjects root maybeBuildDir deps cache =
-    -- Load local typed objects (graph only - type envs come from Fresh modules)
-    File.readBinary TOpt.globalGraphDecoder (Stuff.typedObjectsWithBuildDir root maybeBuildDir)
-        |> Task.andThen
-            (\maybeLocal ->
-                -- Load typed objects from all dependencies (both graph and type env)
-                loadPackageTypedArtifacts cache deps
-                    |> Task.map (combineTypedArtifacts maybeLocal)
-            )
+loadAllTypedObjects : Dict Pkg.Name V.Version -> Stuff.PackageCache -> Task Never (Maybe PackageTypedArtifacts)
+loadAllTypedObjects deps cache =
+    loadPackageTypedArtifacts cache deps |> Task.map Just
 
 
 {-| Load typed objects from all package dependencies.
@@ -352,23 +347,6 @@ loadSinglePackageTypedArtifacts cache pkg vsn =
     in
     File.readBinary typedArtifactCacheDecoder path
         |> Task.map (Maybe.map project >> Maybe.withDefault { typedGraph = TOpt.emptyGlobalGraph, typeEnv = TypeEnv.emptyGlobalTypeEnv })
-
-
-{-| Combine local and package typed artifacts.
--}
-combineTypedArtifacts : Maybe (TOpt.GlobalGraph Name) -> PackageTypedArtifacts -> Maybe PackageTypedArtifacts
-combineTypedArtifacts maybeLocal packageArtifacts =
-    case maybeLocal of
-        Just local ->
-            Just
-                { typedGraph = GA.addTypedGlobalGraph local packageArtifacts.typedGraph
-                , typeEnv = packageArtifacts.typeEnv
-                }
-
-        Nothing ->
-            -- Return package artifacts (which may be empty)
-            Just packageArtifacts
-
 
 
 -- ====== PACKAGE TYPED ARTIFACTS ======
@@ -493,7 +471,7 @@ handleCachedDetails style scope root maybeBuildDir maybeConfigHash needsTypedOpt
                 regenerate
 
             else if needsTypedOpt /= detailsData.hasTypedOpt then
-                -- The cached details (and the global object graph in o.dat/to.dat)
+                -- The cached details (and the global object graph in o.dat)
                 -- are form-specific: a typed build populates the typed graph and
                 -- leaves the untyped one empty, and vice versa. Regenerate whenever
                 -- the requested form differs from the cached one, in EITHER

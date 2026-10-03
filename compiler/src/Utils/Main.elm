@@ -1283,7 +1283,7 @@ binaryDecodeFileOrFail decoder filename =
 -}
 binaryEncodeFile : (a -> Bytes.Encode.Encoder) -> FilePath -> a -> Task Never ()
 binaryEncodeFile toEncoder path value =
-    Eco.File.writeBytes path (Bytes.Encode.encode (toEncoder value))
+    Eco.File.writeBytesAtomic path (Bytes.Encode.encode (toEncoder value))
         |> IO.crashOnError
 
 

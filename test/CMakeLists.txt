@@ -166,6 +166,7 @@ target_compile_definitions(test PRIVATE
 # DynamicLibrarySearchGenerator can dlsym the `Eco_Kernel_MVar_*` kernel
 # symbols (test/eco-kernel E2E suite drives the MVar kernel directly).
 # EcoKernel_GC: test/eco-kernel/src/GcReportTest.elm calls Eco.GC.
+# EcoKernel_File: test/eco-kernel/src/File{WriteBytesAtomic,ReadBytesRoundtrip}Test.elm call Eco.File.
 if(APPLE)
     # ld64 has no --whole-archive; -force_load takes one archive path per
     # flag. The plain target names afterwards keep the CMake dependency
@@ -178,6 +179,7 @@ if(APPLE)
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_Runtime>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_Http>
         -Wl,-force_load,$<TARGET_FILE:EcoKernel_GC>
+        -Wl,-force_load,$<TARGET_FILE:EcoKernel_File>
         EcoRunner
         EcoKernel_MVar
         EcoKernel_CellStore
@@ -185,6 +187,7 @@ if(APPLE)
         EcoKernel_Runtime
         EcoKernel_Http
         EcoKernel_GC
+        EcoKernel_File
     )
 elseif(WIN32)
     # /WHOLEARCHIVE: needs the .lib filename — bare target names get
@@ -199,6 +202,7 @@ elseif(WIN32)
         EcoKernel_Runtime
         EcoKernel_Http
         EcoKernel_GC
+        EcoKernel_File
     )
     target_link_options(test PRIVATE
         /WHOLEARCHIVE:$<TARGET_FILE:EcoRunner>
@@ -208,6 +212,7 @@ elseif(WIN32)
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Runtime>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Http>
         /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_GC>
+        /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_File>
     )
 else()
     target_link_libraries(test rapidcheck
@@ -219,6 +224,7 @@ else()
             EcoKernel_Runtime
             EcoKernel_Http
             EcoKernel_GC
+            EcoKernel_File
         -Wl,--no-whole-archive
     )
 endif()

@@ -256,8 +256,9 @@ bool preflight() {
 
 // builddir_name returns a single-component directory name (no slashes) that
 // the eco compiler accepts for the --builddir flag. The compiler creates
-// `<cwd>/eco-stuff/<name>/` for cache storage; we keep one name per
-// (test, stage) pair so concurrent compiles don't share caches.
+// `<cwd>/eco-stuff/<version>/<name>/` for cache storage (d.dat/i.dat and the
+// per-module .eci/.ecot); we keep one name per (test, stage) pair so
+// concurrent compiles, and the JS and native compilers, don't share caches.
 std::string builddir_name(const std::string& test_stem, Side side) {
     return "mlir_eq_" + test_stem + (side == Side::Stage2 ? "_s2" : "_s6");
 }
@@ -466,13 +467,11 @@ int main(int argc, char** argv) {
     fs::path out_root = fs::path(REPO_ROOT) / "build" / "test" / "mlir-equivalence-out";
     fs::create_directories(out_root);
 
-    // Pre-cleanup: any leftover `<pkg>/eco-stuff/1.0.0/` from a previous run
-    // can be incompatible with the current Stage 2 compiler (e.g. stale .ecot
-    // files), causing the compiler to report `CORRUPT CACHE` on what would
-    // otherwise be a clean run. Likewise, leftover per-test builddirs
-    // `<pkg>/eco-stuff/mlir_eq_*` from prior runs of this very tool may
-    // contain partially-written cache files. Wipe both before starting so
-    // the warm-up builds the cache from scratch.
+    // Pre-cleanup: wipe every compiler-version dir `<pkg>/eco-stuff/<version>/`
+    // (it holds the per-test builddirs `<version>/mlir_eq_*`). Leftovers from a
+    // previous run can be incompatible with the current compilers (stale .ecot)
+    // or partially written, and surface as `CORRUPT CACHE`. The old check named
+    // `1.0.0` and `eco-stuff/mlir_eq_*`, neither of which exists.
     {
         std::unordered_set<std::string> seen;
         for (const auto& c : cases) {
@@ -483,7 +482,7 @@ int main(int argc, char** argv) {
                 for (auto& ent : fs::directory_iterator(eco_stuff, ec)) {
                     if (!ent.is_directory()) continue;
                     const std::string nm = ent.path().filename().string();
-                    if (nm == "1.0.0" || nm.rfind("mlir_eq_", 0) == 0) {
+                    if (nm != "mlir") {
                         fs::remove_all(ent.path(), ec);
                     }
                 }
@@ -492,13 +491,11 @@ int main(int argc, char** argv) {
     }
 
     // Split the test set into a warm-up batch (one test per package, runs
-    // serially) and the remainder (runs in parallel). The eco compiler's
-    // per-module artifact cache (`<pkg>/eco-stuff/1.0.0/*.eci/.eco/.ecot`)
-    // is shared across all builddirs in a package; if two concurrent compiles
-    // race to populate it, one of them sees a partially-written file and
-    // reports "CORRUPT CACHE". Compiling one test in each package to
-    // completion first leaves the cache warm and read-only for the parallel
-    // phase. This mirrors `ElmE2ETestBase.hpp::compileAllElmTests`.
+    // serially) and the remainder (runs in parallel). The warm-up primes the
+    // shared `~/.eco` package caches (elm/core etc. and the local eco/kernel
+    // typed artifacts), so the parallel phase only reads them; per-module
+    // artifacts live in each test's own builddir. This mirrors
+    // `ElmE2ETestBase.hpp::compileAllElmTests`.
     std::vector<std::size_t> warmup_indices;
     std::vector<std::size_t> rest_indices;
     {

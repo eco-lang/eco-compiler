@@ -3,7 +3,7 @@ module Compiler.Data.Index exposing
     , first, second, third, next
     , toMachine, toHuman
     , indexedMap, indexedZipWith, VerifiedList(..)
-    , zeroBasedEncoder, zeroBasedDecoder
+    , zeroBasedEncoder, zeroBasedDecoder, zeroBasedEncoderV, zeroBasedDecoderV
     )
 
 {-| Zero-based indexing with type safety and length-verified list operations.
@@ -35,7 +35,7 @@ when zipping lists.
 
 # Serialization
 
-@docs zeroBasedEncoder, zeroBasedDecoder
+@docs zeroBasedEncoder, zeroBasedDecoder, zeroBasedEncoderV, zeroBasedDecoderV
 
 -}
 
@@ -169,3 +169,17 @@ Reads an integer and wraps it in the ZeroBased type.
 zeroBasedDecoder : Bytes.Decode.Decoder ZeroBased
 zeroBasedDecoder =
     Bytes.Decode.map ZeroBased BD.int
+
+
+{-| Varint index encoding for the typed artifacts only (plan S10).
+-}
+zeroBasedEncoderV : ZeroBased -> Bytes.Encode.Encoder
+zeroBasedEncoderV (ZeroBased zeroBased) =
+    BE.uintV zeroBased
+
+
+{-| Decode an index written by `zeroBasedEncoderV`.
+-}
+zeroBasedDecoderV : Bytes.Decode.Decoder ZeroBased
+zeroBasedDecoderV =
+    Bytes.Decode.map ZeroBased BD.uintV

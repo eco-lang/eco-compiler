@@ -469,14 +469,81 @@ toCanTypeBatch nodeVars =
             )
 
 
+{-| Convert a solver variable to a canonical type.
+
+Memoized per naming scope (`IO.withFreshNames`) by union-find root, for
+structural and alias nodes only (cache-serialization plan S8). Valid because
+nothing unifies inside a scope and the first visit writes every generated name
+back into the descriptors, so a second conversion of the same root would build
+an equal tree and call no fresh-name generator: skipping it leaves the name
+state and the output unchanged.
+-}
 variableToCanType : Variable -> IO (Can.Type Name)
 variableToCanType variable =
+    UF.repr variable
+        |> IO.andThen
+            (\root ->
+                let
+                    (Vars.Pt rootIdx) =
+                        root
+                in
+                IO.getNames
+                    |> IO.andThen
+                        (\ns ->
+                            case Dict.get rootIdx ns.canMemo of
+                                Just t ->
+                                    IO.pure t
+
+                                Nothing ->
+                                    variableToCanTypeMiss rootIdx root
+                        )
+            )
+
+
+rememberCanType : Int -> Can.Type Name -> IO (Can.Type Name)
+rememberCanType rootIdx t =
+    -- Re-read the names: converting the subtree may have generated some.
+    IO.getNames
+        |> IO.andThen (\ns -> IO.putNames { ns | canMemo = Dict.insert rootIdx t ns.canMemo })
+        |> IO.map (\_ -> t)
+
+
+{-| Leaves (and nullary `App1`) are O(1) and not worth a Dict insert.
+-}
+worthMemo : FlatType -> Bool
+worthMemo term =
+    case term of
+        App1 _ _ args ->
+            not (List.isEmpty args)
+
+        Fun1 _ _ ->
+            True
+
+        FunL _ _ _ ->
+            True
+
+        Record1 _ _ ->
+            True
+
+        Tuple1 _ _ _ ->
+            True
+
+        _ ->
+            False
+
+
+variableToCanTypeMiss : Int -> Variable -> IO (Can.Type Name)
+variableToCanTypeMiss rootIdx variable =
     UF.get variable
         |> IO.andThen
             (\descProps ->
                 case descProps.content of
                     Structure term ->
-                        termToCanType term
+                        if worthMemo term then
+                            termToCanType term |> IO.andThen (rememberCanType rootIdx)
+
+                        else
+                            termToCanType term
 
                     FlexVar maybeName ->
                         case maybeName of
@@ -526,6 +593,7 @@ variableToCanType variable =
                                                 Can.TAlias home name canArgs (Can.Filled canType)
                                             )
                                 )
+                            |> IO.andThen (rememberCanType rootIdx)
 
                     Error ->
                         crash "cannot handle Error types in variableToCanType"
@@ -807,7 +875,7 @@ termToErrorType term =
 
 makeNameState : Dict Name Variable -> NameState
 makeNameState takenNames =
-    { taken = Dict.map (\_ _ -> ()) takenNames, normals = 0, numbers = 0, comparables = 0, appendables = 0, compAppends = 0 }
+    { taken = Dict.map (\_ _ -> ()) takenNames, normals = 0, numbers = 0, comparables = 0, appendables = 0, compAppends = 0, canMemo = Dict.empty }
 
 
 

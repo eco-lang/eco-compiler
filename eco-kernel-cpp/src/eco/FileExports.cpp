@@ -22,6 +22,10 @@ HPtr Eco_Kernel_File_writeBytes(HPtr path, HPtr bytes) {
     ECO_KERNEL_GUARD( return HPtr::fromBits(File::writeBytes(path.toBits(), bytes.toBits())); )
 }
 
+HPtr Eco_Kernel_File_writeBytesAtomic(HPtr path, HPtr bytes) {
+    ECO_KERNEL_GUARD( return HPtr::fromBits(File::writeBytesAtomic(path.toBits(), bytes.toBits())); )
+}
+
 HPtr Eco_Kernel_File_open(HPtr path, HPtr mode) {
     ECO_KERNEL_GUARD( return HPtr::fromBits(File::open(path.toBits(), mode.toBits())); )
 }

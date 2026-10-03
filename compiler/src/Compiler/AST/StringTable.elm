@@ -2,6 +2,7 @@ module Compiler.AST.StringTable exposing
     ( StringTable
     , disabled, build
     , string, stringDec
+    , Collector, collectAll, collectSupers, add, collected
     , tableEncoder, tableDecoder
     )
 
@@ -47,6 +48,11 @@ See ECOT\_002 in design\_docs/invariants.csv.
 @docs string, stringDec
 
 
+# Collection
+
+@docs Collector, collectAll, collectSupers, add, collected
+
+
 # Table preamble
 
 @docs tableEncoder, tableDecoder
@@ -57,6 +63,7 @@ import Array exposing (Array)
 import Bytes
 import Bytes.Decode as BD
 import Bytes.Encode as BE
+import Compiler.Data.Name as Name
 import Dict exposing (Dict)
 import Set exposing (Set)
 import Utils.Bytes.Decode as UBD
@@ -131,6 +138,85 @@ build strings =
     , idxToStr = finalArr
     , width = chosenWidth
     }
+
+
+
+-- COLLECTION
+
+
+{-| Accumulator of the string collectors (ECOT\_002).
+
+  - `CollectAll` gathers every emitted string, for the string-table build.
+  - `CollectSupers` keeps only the strings `TOpt.superOfName` maps to `Just`, so the
+    sweep that computes `varSupers` never builds the module-wide set
+    (cache-serialization plan S2).
+
+-}
+type Collector
+    = CollectAll (Set String)
+    | CollectSupers (Set String)
+
+
+{-| A collector gathering every string.
+-}
+collectAll : Collector
+collectAll =
+    CollectAll Set.empty
+
+
+{-| A collector keeping only super-constrained type-variable names.
+-}
+collectSupers : Collector
+collectSupers =
+    CollectSupers Set.empty
+
+
+{-| Add one emitted string.
+
+On a hit, return the SAME collector: no path copy and no rebalance, which
+`Set.insert` still pays for a present key. 99.9 % of collector inserts are
+repeats (plan S1).
+
+-}
+add : String -> Collector -> Collector
+add s c =
+    case c of
+        CollectAll set ->
+            if Set.member s set then
+                c
+
+            else
+                CollectAll (Set.insert s set)
+
+        CollectSupers set ->
+            if isSuperName s && not (Set.member s set) then
+                CollectSupers (Set.insert s set)
+
+            else
+                c
+
+
+{-| The collected strings.
+-}
+collected : Collector -> Set String
+collected c =
+    case c of
+        CollectAll set ->
+            set
+
+        CollectSupers set ->
+            set
+
+
+{-| MUST be the exact disjunction of the `Just` cases of `TOpt.superOfName`
+(pinned by `VarSupersEquivalenceTest`).
+-}
+isSuperName : String -> Bool
+isSuperName s =
+    Name.isNumberType s
+        || Name.isComparableType s
+        || Name.isAppendableType s
+        || Name.isCompappendType s
 
 
 
@@ -224,6 +310,10 @@ tableEncoder table =
 
 {-| Decode the table preamble. The returned `StringTable` is ready to be
 passed through to body decoders.
+
+A decoded table is DECODE-ONLY: its `strToIdx` is left empty (the decoders read
+only `idxToStr`), so `string` on it would emit index 0 for every string.
+
 -}
 tableDecoder : BD.Decoder StringTable
 tableDecoder =
@@ -236,18 +326,8 @@ tableDecoder =
                             decodeStrings count []
                                 |> BD.map
                                     (\strs ->
-                                        let
-                                            arr : Array String
-                                            arr =
-                                                Array.fromList strs
-
-                                            dict : Dict String Int
-                                            dict =
-                                                List.indexedMap (\i s -> ( s, i )) strs
-                                                    |> Dict.fromList
-                                        in
-                                        { strToIdx = dict
-                                        , idxToStr = arr
+                                        { strToIdx = Dict.empty
+                                        , idxToStr = Array.fromList strs
                                         , width = width
                                         }
                                     )
@@ -256,10 +336,14 @@ tableDecoder =
 
 
 decodeStrings : Int -> List String -> BD.Decoder (List String)
-decodeStrings n acc =
-    if n <= 0 then
-        BD.succeed (List.reverse acc)
+decodeStrings n acc0 =
+    -- BD.loop, not a recursive andThen chain: the chain overflows the JS stack
+    -- (bootstrap stages, elm-test) at tens of thousands of strings.
+    BD.loop ( n, acc0 )
+        (\( k, acc ) ->
+            if k <= 0 then
+                BD.succeed (BD.Done (List.reverse acc))
 
-    else
-        UBD.string
-            |> BD.andThen (\s -> decodeStrings (n - 1) (s :: acc))
+            else
+                BD.map (\s -> BD.Loop ( k - 1, s :: acc )) UBD.string
+        )

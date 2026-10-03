@@ -69,6 +69,8 @@ HPtr Eco_Kernel_File_readBytes(HPtr path);
 
 // Write raw bytes to file. Returns Task Never ().
 HPtr Eco_Kernel_File_writeBytes(HPtr path, HPtr bytes);
+// Write raw bytes via temp file + rename. Returns Task IOError ().
+HPtr Eco_Kernel_File_writeBytesAtomic(HPtr path, HPtr bytes);
 
 // Open file handle with IOMode. Returns Task Never Handle.
 HPtr Eco_Kernel_File_open(HPtr path, HPtr mode);
