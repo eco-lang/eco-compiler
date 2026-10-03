@@ -1,11 +1,27 @@
 # Bootstrap Pipeline
 
-The Eco compiler bootstraps through 9 stages. Stages 1–4 produce a fixed-point
-JS compiler; Stage 5 uses it to emit MLIR for the native code path; Stage 6
-compiles that MLIR to a native ELF executable; Stages 7–8 use the native
-compiler to self-compile and verify a native fixed point. Stage 9 fuses the
-front-end and the lowering back-end into a single user-facing `eco` binary that
-is a drop-in replacement for `elm make`.
+The Eco compiler bootstraps through 9 stages:
+- Stages 1–4 produce a fixed-point JS compiler.
+- Stage 5 uses it to emit MLIR for the native code path, with the light `subst`
+  monomorphization engine.
+- Stage 6 compiles that MLIR to a native ELF front-end.
+- Stage 7 uses the native compiler to re-emit itself with the optimizing
+  default engine (solver + LSS), and Stage 8 verifies a native fixed point.
+- Stage 9 lowers Stage 7's optimized MLIR into a single user-facing `eco`
+  binary: front-end and lowering back-end together, a drop-in replacement for
+  `elm make`.
+
+## Which MLIR feeds which binary
+
+| MLIR | Produced by | Mono engine | Lowered into |
+|---|---|---|---|
+| `eco-compiler.mlir` | Stage 5 (`eco-boot-2.js`, Node) | `subst` (`ECO_MONO_ENGINE=subst`, set by the recipe) | Stage 6 `eco-compiler` only |
+| `eco-compiler-boot.mlir` | Stage 7a (`eco-compiler`, native) | default: solver + LSS | Stage 7b `eco-compiler-boot` **and** Stage 9 `eco` |
+| `eco-compiler-boot-2.mlir` | Stage 8a (`eco-compiler-boot`, native) | default: solver + LSS | Stage 8b `eco-compiler-boot-2` (fixed-point check only) |
+
+Stage 5 uses `subst` because it is the lightest engine on the Node heap, and its
+only job is a *correct* native front-end. Its output is less optimized than
+solver + LSS, so nothing that ships is built from it.
 
 Each stage has a dedicated CMake target. Building any later stage transitively
 builds all preceding stages, so a clean tree can run the whole chain with a
@@ -101,8 +117,11 @@ cmake --build build --target run-aot-e2e
 ### Stage 5 — `eco-boot-2.js` → `eco-compiler.mlir`
 
 The fixed-point verified compiler compiles itself to MLIR, exercising the
-native code-generation path. (The recipe first wipes any stale `.ecot` typed-
-object caches, which Stages 2–4 do not invalidate.)
+native code-generation path.
+- The recipe first wipes any stale `.ecot` typed-object caches, which
+  Stages 2–4 do not invalidate.
+- It runs with `ECO_MONO_ENGINE=subst`, which keeps Node's heap pressure down.
+- This MLIR is used only to build the Stage 6 front-end.
 
 ```bash
 cmake --build build --target eco-compiler-mlir
@@ -124,8 +143,13 @@ Output: `build/compiler/build-kernel/bin/eco-compiler`
 
 ### Stage 7 — native compiler self-compiles → `eco-compiler-boot`
 
-The native ELF compiler from Stage 6 compiles itself to MLIR, then
-`eco-boot-native` lowers that MLIR to a fully bootstrapped native executable.
+- **7a:** the native ELF compiler from Stage 6 compiles itself to
+  `eco-compiler-boot.mlir`. It uses the compiler's default monomorphization
+  engine, solver + LSS, so this is the optimized MLIR.
+- **7b:** `eco-boot-native` lowers that MLIR to a fully bootstrapped native
+  executable.
+
+Stage 9 reuses the same MLIR.
 
 ```bash
 cmake --build build --target eco-compiler-boot
@@ -135,9 +159,15 @@ Output: `build/compiler/build-kernel/bin/eco-compiler-boot`
 
 ### Stage 8 — native fixed-point verification
 
-A second self-compilation round verifies the bootstrapped compiler reproduces
-itself identically, comparing the result byte-for-byte against
-`eco-compiler-boot`. The `bootstrap` aggregate target chains this in.
+A second self-compilation round verifies that the bootstrapped compiler
+reproduces itself identically.
+- **8a:** `eco-compiler-boot` compiles itself to `eco-compiler-boot-2.mlir`
+  (solver + LSS).
+- **8b:** `eco-boot-native` lowers it to `eco-compiler-boot-2`.
+- **8c:** the result is compared byte-for-byte against `eco-compiler-boot`. On
+  macOS and Windows the two `.mlir` files are compared instead.
+
+The `bootstrap` aggregate target chains this in.
 
 ```bash
 cmake --build build --target bootstrap
@@ -153,12 +183,20 @@ back-end (`eco-boot-native`'s MLIR → ELF pipeline) into a single ELF binary
 called `eco` — the user-facing drop-in replacement for `elm make`. After Stage
 9 there is one tool to install, not three.
 
-It reuses the `eco-compiler.mlir` from Stage 5: CMake runs `eco-boot-native
---emit=obj` on that MLIR, then links the object with `EcoEntryStatic`,
+It reuses Stage 7a's optimized `eco-compiler-boot.mlir`. This is the MLIR whose
+lowering passed the Stage 8 fixed point, not Stage 5's `subst`-engine output.
+- **9a:** CMake runs `eco-boot-native --emit=obj
+  --internalize-keep=eco_main,__eco_init_globals` on that MLIR, gated on the
+  Stage 8c stamp.
+- **9 link:** it links the object with `EcoEntryStatic`,
 `EcoRuntimeStatic`, every `ElmKernel_*` / `EcoKernel_*` static library, and
 `EcoNativeDriverStatic`. The link uses GNU ld (`-fuse-ld=bfd`) because lld
 rejects the absolute relocations the Elm-compiled object carries in its
 `.llvm_stackmaps` section.
+
+The `eco-quick` dev target relinks `eco` from the same `eco-compiler-boot.mlir`
+without the Stage 8c gate. Use it when iterating on runtime or kernel C++ after
+one full bootstrap.
 
 CLI shape — output kind dispatched by extension:
 

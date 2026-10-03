@@ -421,7 +421,15 @@ add_custom_command(
     # self-compile's V8 peak is ~11.8 GB and a 12 GiB cap GC-death-spirals
     # (benchmarks/lss-opt.md); on a 15 GB host run the JS-hosted stages with
     # ECO_MONO_ENGINE=subst (the compiler reads it at runtime).
+    #
+    # Stage 5 therefore pins ECO_MONO_ENGINE=subst: it is the lightest engine
+    # on the Node heap, and Stage 5's only job is to produce a CORRECT native
+    # front-end (Stage 6). Its MLIR is less optimized than the solver+LSS
+    # default, so nothing shipped is built from it: Stage 7a re-emits the
+    # compiler with the native front-end at the default engine (solver+LSS),
+    # and Stages 7b, 8 and 9a all lower THAT MLIR.
     COMMAND ${_stage5_time_prefix}
+        ${CMAKE_COMMAND} -E env ECO_MONO_ENGINE=subst
         ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=16384 --expose-gc
         bin/eco-boot-2-runner.js make
         --optimize
@@ -438,7 +446,7 @@ add_custom_command(
         ${ECO_BOOT_VERIFY_STAMP}
         ${ELM_SOURCES} ${KERNEL_SOURCES}
     WORKING_DIRECTORY ${BUILD_KERNEL_DIR}
-    COMMENT "Stage 5: eco-boot-2.js → eco-compiler.mlir (timed)"
+    COMMENT "Stage 5: eco-boot-2.js → eco-compiler.mlir (subst engine, timed)"
 )
 
 add_custom_target(eco-compiler-mlir DEPENDS ${ECO_COMPILER_MLIR})
@@ -468,7 +476,10 @@ add_custom_command(
 add_custom_target(eco-compiler DEPENDS ${ECO_COMPILER_ELF})
 
 # -- Stage 7a: eco-compiler self-compiles → eco-compiler-boot.mlir
-# Front-end MLIR emit wrapped in /usr/bin/time -v, paralleling Stage 5.
+# Front-end MLIR emit wrapped in /usr/bin/time -v, paralleling Stage 5. Runs at
+# the compiler's default mono engine (solver + LSS), so this is the optimized
+# MLIR: Stage 7b lowers it to eco-compiler-boot and Stage 9a lowers it into
+# the unified `eco`.
 set(ECO_COMPILER_BOOT_MLIR "${BUILD_KERNEL_DIR}/bin/eco-compiler-boot.mlir")
 set(STAGE7A_TIME_LOG       "${BUILD_KERNEL_DIR}/timing-stage7a.txt")
 
@@ -599,37 +610,41 @@ endif()
 # in-process MLIR -> ELF pipeline via the `Eco.NativeDriver.lowerAndLink`
 # kernel intrinsic backed by EcoNativeDriverStatic.
 #
-# Phase 1: build eco-compiler.mlir → eco-stage9.o (eco-boot-native --emit=obj)
+# Phase 1: build eco-compiler-boot.mlir → eco-stage9.o (eco-boot-native
+# --emit=obj). The input is Stage 7a's solver+LSS MLIR — the same MLIR whose
+# lowering (Stage 7b) passed the Stage 8c fixed point — NOT Stage 5's
+# subst-engine eco-compiler.mlir, which only exists to build Stage 6.
 # → link with EcoEntryStatic + EcoRuntimeStatic + all kernels +
 # EcoNativeDriverStatic (under --whole-archive so the strong
 # eco_native_lower_and_link symbol is pulled in to satisfy the weak undef
 # from EcoKernel_NativeDriver).
 # ============================================================================
 
-# -- Stage 9a: lower eco-compiler.mlir to a relocatable object for `eco`.
+# -- Stage 9a: lower eco-compiler-boot.mlir (Stage 7a, solver+LSS) to a
+#    relocatable object for `eco`.
 set(ECO_STAGE9_OBJ "${BUILD_KERNEL_DIR}/bin/eco-stage9.o")
 
 add_custom_command(
     OUTPUT ${ECO_STAGE9_OBJ}
     COMMAND $<TARGET_FILE:eco-boot-native>
-        ${ECO_COMPILER_MLIR}
+        ${ECO_COMPILER_BOOT_MLIR}
         --emit=obj
         --internalize-keep=eco_main,__eco_init_globals
         -o ${ECO_STAGE9_OBJ}
     # Ordering edge: gate Stage 9 on the Stage 8c native fixed-point stamp so
     # that building `eco` first runs the ENTIRE bootstrap chain — every gateway
     # and self-compilation check the `bootstrap` target enforces. Stage 9's own
-    # inputs (eco-compiler.mlir + eco-boot-native) are ready at the end of
-    # Stage 5, which would otherwise let Ninja race Stage 9 ahead of Stages
-    # 6–8. ${BOOTSTRAP_STAMP} (Stage 8c) transitively requires Stage 7b's ELF
+    # inputs (eco-compiler-boot.mlir + eco-boot-native) are ready at the end
+    # of Stage 7a, which would otherwise let Ninja race Stage 9 ahead of
+    # Stages 7b–8. ${BOOTSTRAP_STAMP} (Stage 8c) transitively requires Stage 7b's ELF
     # (eco-compiler-boot) AND Stage 8b's ELF (eco-compiler-boot-2) AND the
     # byte-equality diff between them, so depending on it forces the chain
     # through Stages 6, 7, and 8 — and therefore through BOTH fixed-point
     # checks: Stage 4b's JS check (pulled in transitively via Stage 5's
     # eco-boot-verify.stamp dep) and Stage 8c's native check here — before
     # eco-stage9.o is produced. This subsumes the previous Stage-7b-ELF gate.
-    DEPENDS ${ECO_COMPILER_MLIR} eco-boot-native ${BOOTSTRAP_STAMP}
-    COMMENT "Stage 9a: eco-compiler.mlir → eco-stage9.o"
+    DEPENDS ${ECO_COMPILER_BOOT_MLIR} eco-boot-native ${BOOTSTRAP_STAMP}
+    COMMENT "Stage 9a: eco-compiler-boot.mlir → eco-stage9.o"
 )
 
 # Mark as external so add_executable accepts it as a precompiled source.
@@ -909,8 +924,8 @@ endif()
 #
 # Same MLIR → .o lowering and same link line as `eco`, but the
 # eco-stage9-quick.o custom-command deliberately drops the BOOTSTRAP_STAMP
-# gate. eco-compiler.mlir is invariant under C++ edits (it's a Stage-5
-# product of Elm sources only), so once it exists from a prior successful
+# gate. eco-compiler-boot.mlir is invariant under C++ edits (Stage 7a's
+# product of the Elm sources), so once it exists from a prior successful
 # bootstrap we can re-link the unified binary against modified runtime /
 # kernel C++ without re-running Stages 6–8. Built explicitly via
 # `--target eco-quick`. Use `--target eco` for the production binary that
@@ -920,20 +935,20 @@ set(ECO_STAGE9_QUICK_OBJ "${BUILD_KERNEL_DIR}/bin/eco-stage9-quick.o")
 add_custom_command(
     OUTPUT ${ECO_STAGE9_QUICK_OBJ}
     COMMAND $<TARGET_FILE:eco-boot-native>
-        ${ECO_COMPILER_MLIR}
+        ${ECO_COMPILER_BOOT_MLIR}
         --emit=obj
         --internalize-keep=eco_main,__eco_init_globals
         -o ${ECO_STAGE9_QUICK_OBJ}
-    # ECO_COMPILER_MLIR is deliberately NOT in DEPENDS — eco-quick is a
+    # ECO_COMPILER_BOOT_MLIR is deliberately NOT in DEPENDS — eco-quick is a
     # dev-iteration target and any dep edge that makes ninja rebuild the
-    # MLIR would cascade through Stages 2–5 on every CMakeLists touch
+    # MLIR would cascade through Stages 2–7a on every CMakeLists touch
     # (auto-reconfigure bumps runner-script mtimes). The MLIR is still read
     # as an input at command time; if it does not exist eco-boot-native
     # surfaces a clear error. Users edit Elm sources by running
     # `--target bootstrap` to refresh the MLIR, then iterate on C++ via
     # `--target eco-quick`.
     DEPENDS eco-boot-native
-    COMMENT "Stage 9a (quick): eco-compiler.mlir → eco-stage9-quick.o"
+    COMMENT "Stage 9a (quick): eco-compiler-boot.mlir → eco-stage9-quick.o"
 )
 set_source_files_properties(${ECO_STAGE9_QUICK_OBJ} PROPERTIES
     GENERATED TRUE

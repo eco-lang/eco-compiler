@@ -78,7 +78,7 @@ Outputs land under `build/test/aot-e2e/<pkg>/` so they coexist with the JIT E2E 
 
 ### Stage 5: `eco-boot-2.js` → `eco-compiler.mlir`
 
-The fixed-point verified compiler compiles itself to MLIR, exercising the native code generation path.
+The fixed-point verified compiler compiles itself to MLIR, exercising the native code generation path. It runs with `ECO_MONO_ENGINE=subst` (set by the recipe), the lightest engine on the Node heap. This MLIR only builds the Stage 6 front-end; the optimized MLIR comes from Stage 7a.
 
 The target's recipe wipes any stale `.ecot` typed-object caches under `build/compiler/build-kernel/eco-stuff/` before running — Stages 2–4 (JS output) don't write or invalidate those caches, so leftovers from a previous MLIR build would otherwise cause crashes during monomorphization (e.g. `Union not found: SCC`).
 
@@ -102,7 +102,7 @@ Output: `build/compiler/build-kernel/bin/eco-compiler`
 
 ### Stage 7: Native compiler self-compiles → `eco-compiler-boot`
 
-The native ELF compiler from Stage 6 compiles itself to MLIR, then `eco-boot-native` lowers that MLIR to a fully bootstrapped native executable. Both sub-steps are bundled into a single CMake target:
+The native ELF compiler from Stage 6 compiles itself to MLIR (`eco-compiler-boot.mlir`) at the default monomorphization engine, solver + LSS. `eco-boot-native` then lowers that MLIR to a fully bootstrapped native executable. Stage 9 reuses the same MLIR. Both sub-steps are bundled into a single CMake target:
 
 ```bash
 cmake --build build --target eco-compiler-boot
@@ -128,7 +128,7 @@ The culmination of the bootstrap chain. Stage 9 fuses the front-end (Stage 6's `
 
 The two halves are bridged by a small C ABI (`eco_native_lower_and_link` in `runtime/src/codegen/EcoNativeAPI.h`), exposed to the Elm front-end through the `Eco.NativeDriver.lowerAndLink` kernel intrinsic (`EcoKernel_NativeDriver`, sourced from `eco-kernel-cpp/src/eco/NativeDriver.cpp`). When the front-end is asked for an `--output=<path>` whose extension isn't `.js` / `.html` / `.mlir`, `Terminal.Make.handleElfOutput` writes the MLIR text to a temp file under `eco-stuff/<ver>/build/` and invokes the in-process pipeline via the kernel intrinsic; the temp file is removed on success.
 
-`eco` reuses the `eco-compiler.mlir` produced by Stage 5. CMake invokes `eco-boot-native --emit=obj` on that MLIR to produce `eco-stage9.o`, then links the object together with `EcoEntryStatic`, `EcoRuntimeStatic`, every `ElmKernel_*` / `EcoKernel_*` static library, and `EcoNativeDriverStatic`. The strong `eco_native_lower_and_link` symbol from `EcoNativeDriverStatic` overrides the weak stub in `EcoEntryStatic` (see `eco_native_stub.cpp`), so the kernel intrinsic resolves to a working implementation only in `eco`; other AOT binaries fall back to the stub and surface a `Task` failure if the intrinsic is ever invoked.
+`eco` reuses Stage 7a's optimized `eco-compiler-boot.mlir` (solver + LSS), not Stage 5's `subst`-engine `eco-compiler.mlir`. CMake invokes `eco-boot-native --emit=obj --internalize-keep=eco_main,__eco_init_globals` on that MLIR to produce `eco-stage9.o`, gated on the Stage 8c stamp, then links the object together with `EcoEntryStatic`, `EcoRuntimeStatic`, every `ElmKernel_*` / `EcoKernel_*` static library, and `EcoNativeDriverStatic`. The strong `eco_native_lower_and_link` symbol from `EcoNativeDriverStatic` overrides the weak stub in `EcoEntryStatic` (see `eco_native_stub.cpp`), so the kernel intrinsic resolves to a working implementation only in `eco`; other AOT binaries fall back to the stub and surface a `Task` failure if the intrinsic is ever invoked.
 
 The link uses GNU ld (`-fuse-ld=bfd`) because lld rejects the absolute `R_X86_64_64` relocations the Elm-compiled object carries in its `.llvm_stackmaps` section (GC safepoint addresses tied to local function symbols).
 
