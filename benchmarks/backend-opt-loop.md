@@ -2215,6 +2215,73 @@ MLIR passes (wall clock, may overlap with phases):
 
 </details>
 
+### B4X: late export of dead-able `$cap` bodies (plan 06 B4, 2026-10-03)
+
+| step | wall (s) | Δ vs ref (s) | user CPU (s) | max RSS (kB) | MLIR pipeline (s) | whole-module opt (s) | partition emit Σ (s) | verdict | ref |
+|---|---|---|---|---|---|---|---|---|---|
+| B4X | 25.59 | +0.06 | 361.69 | 7,691,812 | 8.32 | — | 154.09 | FLAT, kept (deletes work: 2,262 dead $cap bodies; −0.76 % binary) | ES |
+
+Tree: `plans/mlir-split-backend-06-partition-boundaries.md` B4. An owned `$cap` that nothing
+takes the address of is exported only after its owner's prepass, and only if it survived. The 2,262
+bodies the whole-module path deleted are no longer emitted: function bodies equal the
+translate-whole path's, with no extras. Plan 06's C2 (LPT on a fitted instruction-count cost)
+was measured FLAT against this tree (medians 25.23 vs 25.19 s, no smaller finish spread) and
+reverted. A and D were not built (FLAT in S6).
+
+<details><summary>--lowering-stats banner</summary>
+
+```
+/usr/bin/ld: /tmp/eco-part-538eba.o: warning: relocation against `Compiler_Monomorphize_MonoTraverse_mapExprTypes_$_36256' in read-only section `.llvm_stackmaps'
+/usr/bin/ld: warning: creating DT_TEXTREL in a PIE
+
+=== eco-boot-native lowering stats ===
+
+Phases (wall clock):
+  name                                        time         %      calls   
+  ------------------------------------------------------------------------
+    partition emit (sum over workers)             154.09 s   42.7%      24
+    partition opt (sum over workers)              125.99 s   34.9%      24
+    partition translate (sum over workers)         22.67 s    6.3%      24
+  LLVM backend (EcoSplit: translate + lower...     15.24 s    4.2%       1
+    parallel lower drain (post-split wait)         14.46 s    4.0%       1
+    partition RS4GC (sum over workers)             11.24 s    3.1%      24
+  MLIR lowering pipeline                            8.32 s    2.3%       1
+    capacity-hoist analysis (serial)                3.17 s    0.9%      24
+    $cap inline prepass (sum over workers)          2.35 s    0.7%      24
+  Link (clang++ driver)                             1.12 s    0.3%       1
+    gc-free leaf propagation (serial)               1.01 s    0.3%      24
+    EcoSplit build (parallel clone)              741.60 ms    0.2%       1
+  MLIR parse + verify                            701.22 ms    0.2%       1
+  ------------------------------------------------------------------------
+  total                                           361.10 s
+
+MLIR passes (wall clock, may overlap with phases):
+  name                                        time         %      calls   
+  ------------------------------------------------------------------------
+  (anonymous namespace)::EcoToLLVMPass              3.17 s    0.9%       1
+  (anonymous namespace)::EcoTailConversions...      2.06 s    0.6%       1
+  (anonymous namespace)::EcoFoldProjectPass         1.12 s    0.3%   56944
+  (anonymous namespace)::EcoCapHoistPlanPass     602.61 ms    0.2%       1
+  (anonymous namespace)::EcoReachabilityPass     537.71 ms    0.1%       1
+  (anonymous namespace)::EcoListCursorPass       412.30 ms    0.1%       1
+  (anonymous namespace)::EcoListTemplatePass     408.44 ms    0.1%       1
+  (anonymous namespace)::EcoControlFlowToSC...   234.09 ms    0.1%       1
+  (anonymous namespace)::EcoGcFreePropagati...   217.81 ms    0.1%       1
+  mlir::detail::OpToOpPassAdaptor                179.21 ms    0.0%       1
+  (anonymous namespace)::EcoGCPreparePass        162.55 ms    0.0%       1
+  (anonymous namespace)::BFToLLVMPass            123.61 ms    0.0%       1
+  (anonymous namespace)::EcoPAPSimplifyPass       82.10 ms    0.0%       1
+  (anonymous namespace)::EcoMarkGCLeafCalls...    36.24 ms    0.0%       1
+  (anonymous namespace)::EcoCompareCaseRewr...    30.32 ms    0.0%       1
+  (anonymous namespace)::RCEliminationPass        22.89 ms    0.0%       1
+  (anonymous namespace)::UndefinedFunctionPass    22.77 ms    0.0%       1
+  (anonymous namespace)::JoinpointNormaliza...    16.27 ms    0.0%       1
+  ------------------------------------------------------------------------
+  total                                             9.44 s
+```
+
+</details>
+
 ## 8. Summary
 
 | step | wall (s) | Δ vs ref (s) | user CPU (s) | max RSS (kB) | MLIR pipeline (s) | whole-module opt (s) | partition emit Σ (s) | verdict | ref |
@@ -2246,3 +2313,4 @@ MLIR passes (wall clock, may overlap with phases):
 | B4 | 44.09 | -0.01 | 363.33 | 7,861,344 | 6.65 | — | 155.35 | FLAT, kept (one-line) | B6 |
 | SPL | 38.61 | -5.48 | 370.50 | 7,582,164 | 8.15 | — | 157.01 | WIN (codegen-changing: prologue deleted) | B4 |
 | ES | 25.53 | -13.08 | 365.09 | 7,694,944 | 8.16 | — | 156.24 | WIN (codegen-changing: partition assignment) | SPL |
+| B4X | 25.59 | +0.06 | 361.69 | 7,691,812 | 8.32 | — | 154.09 | FLAT, kept (deletes work: 2,262 dead $cap bodies; −0.76 % binary) | ES |

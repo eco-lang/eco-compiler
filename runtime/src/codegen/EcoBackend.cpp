@@ -3881,7 +3881,8 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
     return Error::success();
 }
 
-static void runCapInlinePrepass(Module &m) {
+static void runCapInlinePrepass(Module &m,
+                                std::set<std::string> *marked = nullptr) {
     unsigned maxInsts = 64;
     if (const char *e = ::getenv("ECO_CAP_INLINE_MAX_INSTS"))
         maxInsts = (unsigned)strtoul(e, nullptr, 10);
@@ -3922,6 +3923,8 @@ static void runCapInlinePrepass(Module &m) {
                     : (maxInsts && f.getInstructionCount() <= maxInsts &&
                        (!gcfreeOnly || bodyIsGCCallFree(f)))) {
             f.addFnAttr(Attribute::AlwaysInline);
+            if (marked)
+                marked->insert(f.getName().str());
             any = true;
             static const bool dbg =
                 (::getenv("ECO_CAP_INLINE_DEBUG") != nullptr);
@@ -4165,6 +4168,8 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
                 }
     }
 
+    std::set<std::string> capMarked; // plan 06 B4: what the prepass marked
+
     // E1.3: `$cap` inline prepass — must precede EVERY RS4GC flavour (serial,
     // deferred, and per-partition; all are downstream of this point). Skipped
     // at -O0 only.
@@ -4172,7 +4177,28 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
         MaybeScope s(job.stats, job.partition
                                     ? "  $cap inline prepass (sum over workers)"
                                     : "  $cap inline prepass (serial)");
-        runCapInlinePrepass(m);
+        runCapInlinePrepass(m, job.partition ? &capMarked : nullptr);
+    }
+
+    // Plan 06 B4: export the late `$cap`s that survived the prepass; record
+    // the deleted ones and any marked import copy that survived (the driver
+    // turns a marked survivor of a deleted body into a named error).
+    if (job.partition) {
+        for (Function &f : m)
+            if (!f.isDeclaration() && f.hasAvailableExternallyLinkage() &&
+                capMarked.count(f.getName().str()))
+                job.partition->markedSurvivors.push_back(f.getName().str());
+        for (const std::string &name : job.partition->exportsLate) {
+            Function *f = m.getFunction(name);
+            if (f && !f->isDeclaration()) {
+                if (f->hasLocalLinkage()) {
+                    f->setLinkage(GlobalValue::ExternalLinkage);
+                    f->setVisibility(GlobalValue::HiddenVisibility);
+                }
+            } else {
+                job.partition->deletedLate.push_back(name);
+            }
+        }
     }
 
     // Plan 05 §1.3: EcoSplit import copies (available_externally) exist only

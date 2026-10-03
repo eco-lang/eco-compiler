@@ -145,6 +145,16 @@ struct PartitionWorkerInfo {
     /// Owned functions referenced from another partition: made External +
     /// hidden before the `$cap` prepass, so AlwaysInliner cannot delete them.
     std::vector<std::string> exports;
+    /// Plan 06 B4: owned `$cap`s nothing takes the address of. Exported only
+    /// AFTER the prepass, and only if they survived it (when the owner's
+    /// AlwaysInliner deleted one, every importer inlined its copies too).
+    std::vector<std::string> exportsLate;
+    /// Out: `exportsLate` names the prepass deleted.
+    std::vector<std::string> deletedLate;
+    /// Out: import copies the prepass marked `alwaysinline` but could not
+    /// fully inline (expected empty; the driver checks them against
+    /// every owner's `deletedLate`).
+    std::vector<std::string> markedSurvivors;
     /// Filled after RS4GC; joined by the driver (`joinPartitionGcLeafReports`).
     GcLeafPartitionReport gcReport;
 };

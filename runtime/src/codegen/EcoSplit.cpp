@@ -19,6 +19,7 @@
 
 #include "llvm/ADT/Sequence.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
@@ -26,6 +27,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <fstream>
+#include <functional>
 #include <chrono>
 #include <cstdlib>
 #include <queue>
@@ -98,6 +101,9 @@ double secs(Clock::time_point t) {
 struct SplitPlan {
     std::vector<OwningOpRef<ModuleOp>> mods;
     std::vector<std::vector<std::string>> exports;
+    // Plan 06 B4: exported `$cap`s nothing takes the address of — exported
+    // only AFTER the owner's prepass, if they still exist.
+    std::vector<std::vector<std::string>> exportsLate;
 };
 
 // U1: ownership, imports, exports, clone, S6, census.
@@ -107,7 +113,9 @@ llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports
     symgraph::Graph g = symgraph::build(src, /*keepUnusedAddressOf=*/true);
     const size_t n = g.nodes.size();
 
-    // Op counts of the defined functions (the LPT cost).
+    // Op counts of the defined functions (the LPT cost). Plan 06 C2 measured a
+    // fitted instruction-count cost FLAT (better instruction balance, same
+    // finish spread and wall), so the plain op count stays.
     std::vector<uint32_t> defFns;
     for (uint32_t i = 0; i < n; ++i)
         if (g.nodes[i].isFunc && g.nodes[i].isDef)
@@ -222,6 +230,20 @@ llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports
                 g.nodes[i].isFunc)
                 exported[owner[i]][i] = 1;
 
+    // Plan 06 B4: a `$cap` with no Address/CallMismatch in-edge is referenced
+    // only by matched direct calls. Every partition holding a copy sees the
+    // same body after the same expansions, so the prepass marks it in all of
+    // them or in none; when the owner's AlwaysInliner deletes it, every
+    // importer inlined its copies too (S1: 2,262 / 2,262, 0 false). Such a
+    // function is exported late, by its owner, only if it survived.
+    std::vector<char> addressTaken(n, 0);
+    for (uint32_t i = 0; i < n; ++i)
+        for (uint32_t e = g.outBegin[i]; e < g.outBegin[i + 1]; ++e)
+            if (symgraph::takesAddress(g.outKind[e]))
+                addressTaken[g.outTarget[e]] = 1;
+    for (uint32_t t : g.extraTakes)
+        addressTaken[t] = 1;
+
     // The one whole-module expansion gate (review R13).
     bool listChunks = false;
     {
@@ -248,6 +270,7 @@ llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports
     SplitPlan plan;
     plan.mods.resize(N);
     plan.exports.resize(N);
+    plan.exportsLate.resize(N);
     std::vector<std::string> s6(N);
     parallelForEach(ctx, llvm::seq<unsigned>(0, N), [&](unsigned p) {
         OpBuilder b(ctx);
@@ -320,8 +343,13 @@ llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports
                                         StringAttr::get(ctx, "1"))}));
         plan.mods[p] = OwningOpRef<ModuleOp>(m);
         for (uint32_t i = 0; i < n; ++i)
-            if (exported[p][i])
-                plan.exports[p].push_back(g.nodes[i].name.getValue().str());
+            if (exported[p][i]) {
+                if (isCap(i) && !addressTaken[i])
+                    plan.exportsLate[p].push_back(
+                        g.nodes[i].name.getValue().str());
+                else
+                    plan.exports[p].push_back(g.nodes[i].name.getValue().str());
+            }
     });
 
     // 01 S6: a declaration or import copy must carry exactly its owner's
@@ -434,6 +462,7 @@ llvm::Error lowerMlirSplit(ModuleOp module, const EcoBackendJob &base,
     for (unsigned i = 0; i < N; ++i) {
         info[i].index = i;
         info[i].exports = std::move(plan.exports[i]);
+        info[i].exportsLate = std::move(plan.exportsLate[i]);
         threads.emplace_back([&, i] {
             setPartitionIndex((int)i);
             llvm::LLVMContext lctx;
@@ -511,6 +540,26 @@ llvm::Error lowerMlirSplit(ModuleOp module, const EcoBackendJob &base,
             if (!e.empty())
                 return llvm::createStringError(std::errc::io_error, "%s",
                                                e.c_str());
+    }
+    // Plan 06 B4: an importer that could not fully inline a marked copy of a
+    // body its owner deleted would leave an undefined reference at link —
+    // name it here instead.
+    {
+        llvm::StringSet<> deleted;
+        for (auto &pi : info)
+            for (auto &d : pi.deletedLate)
+                deleted.insert(d);
+        for (auto &pi : info)
+            for (auto &sv : pi.markedSurvivors)
+                if (deleted.contains(sv)) {
+                    for (auto &f : owned)
+                        llvm::sys::fs::remove(f);
+                    return llvm::createStringError(
+                        std::errc::invalid_argument,
+                        "EcoSplit B4: partition %u kept a marked copy of '%s', "
+                        "whose owner deleted the body",
+                        pi.index, sv.c_str());
+                }
     }
     std::vector<GcLeafPartitionReport> reports;
     reports.reserve(N);
