@@ -410,8 +410,7 @@ identical.
   measured: if each `symgraph::build` still costs > 50 ms, fuse.
 - **Partition translate uniquer contention** in upstream `legalizeDIExpressionsRecursively` needs an
   MLIR change.
-- **Parallel artifact construction** in pre-materialization (plan/build/insert with an ordered log) —
-  only if P7 leaves stage 2b > 0.3 s.
+- ~~**Parallel artifact construction** in pre-materialization~~ — BUILT as P11 (below).
 
 ## 6. Gates (batched, end of series, `ulimit -c 0`, strictly serial)
 
@@ -490,3 +489,60 @@ reference** (md5 `60fb7e14…`).
      multithreading (`mlirSplitPartitionCount` returns 1), so that path uses the old backend split.
 3. `ECO_SYMREF_VALIDATE=1` on the self-compile: no mismatch, and the executable is identical.
 4. E2E `check` and unit tests: see below.
+4. E2E `cmake --build build --target check`: **PASSED**, 2028 passed and 0 failed (`/tmp/test_output.txt`).
+5. Unit tests `build/test/test` (rebuilt): **PASSED**, 2028 passed and 0 failed.
+
+## P11: parallel artifact construction, insertion in order (2026-10-03, after the CPU timeline)
+
+After P7, stage 2b was the largest serial block, at 0.51 s:
+- string literals 50 ms;
+- closure artifacts (wrappers, `$sat` entries, descriptors, eval layouts) 447 ms.
+
+A DWARF profile showed the closure part is IR *construction*: `OpBuilder::create` 23 %, the
+creation-time `DictionaryAttr` uniquing 16 %, `StringAttr` for new names 14 %. Lookups and
+decisions were about a third.
+
+**Mechanism** (`EcoToLLVMInternal.h`: `EcoRuntime::topLog`, `pendingSymbols`, `emitTopLevel`,
+`placeTopLevel`, `deferredBodies`, `deferOrBuild`):
+
+1. **Plan (serial, program order).** Every creator keeps its decisions, counters, names and
+   dedup. Where it used to insert an op at module start, it appends an entry to the ordered log
+   instead: a builder that makes the op *detached*, body included.
+   - Logged-but-unbuilt cached names go into `pendingSymbols`, so the creators' dedup checks
+     (`isPending`) still see them.
+   - The rare extern decls for targets are made eagerly (`placeTopLevel`), so later lookups see a
+     real op; their insertion is still logged in order.
+   - `getOrCreateWrapper` reports the wrapper's name (`outName`), and `getOrCreateEvalDesc` takes
+     a name, so the plan never needs an unbuilt op.
+   - The `$sat` capture-ABI check moved ahead of creation; it used to `erase` a half-built entry.
+2. **Build (parallel).** One `forEachChunk` builds every logged op, plus the deferred
+   string-literal initializers. The symbol cache is frozen meanwhile: the jobs only read it.
+3. **Insert (serial).** The ops are `push_front()`ed in log order, which is exactly where
+   "insert at module start, in creation order" put them, then cached where the eager creator
+   cached them.
+
+Also added: exact memos for repeated `(target, arity, result kind)` and repeated bare-function
+descriptors, and `evalLayoutNames` keyed by string instead of `StringAttr`. Neither saves
+measurable time.
+
+`ECO_PREMAT_PARALLEL=0` runs the creators eagerly, as before.
+
+| | serial plan | parallel build + insert | stage 2b total | pipeline | wall |
+|---|---|---|---|---|---|
+| before (P4r) | — | — | 0.51 s | 2.74 s | 20.04 s |
+| P11 | 0.14 s | 0.11 s | 0.32 s | 2.52 s | 19.69 s |
+
+**The parallel build is contention-bound.**
+- It uses 1.44 CPU-seconds at about 10× parallelism, where the serial build took about 0.3 s.
+- Each new artifact uniques a new symbol name and a new attribute dictionary inside MLIR's
+  `Operation::create`, and those take the context's exclusive uniquer lock.
+- Fewer tasks did not help: 4, 8 and 12 tasks gave 173, 108 and 101 ms.
+- A further gain would need ops built through properties, avoiding the creation dictionary, or an
+  MLIR change.
+
+**Gates:**
+- **Byte identity:** the executable matches the reference md5 `60fb7e14…` (measured run and a
+  rerun). The lowered MLIR matches `6d0f526e…` in the default, `ECO_PREMAT_PARALLEL=0` and
+  `--mlir-disable-threading` runs.
+- **E2E `check` and unit tests:** see below.
+- E2E `check`: **PASSED**, 2028 passed and 0 failed. Unit tests (`build/test/test`, rebuilt): **PASSED**, 2028 passed and 0 failed.

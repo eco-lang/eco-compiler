@@ -293,7 +293,8 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module,
                                            int64_t arity, Location loc, const TypeConverter *typeConverter,
                                            const EcoRuntime &runtime,
                                            bool typedNewargs = false,
-                                           uint8_t resultKind = 0) {
+                                           uint8_t resultKind = 0,
+                                           std::string *outName = nullptr) {
     auto *ctx = rewriter.getContext();
     auto i64Ty = IntegerType::get(ctx, 64);
     auto f64Ty = Float64Type::get(ctx);
@@ -317,7 +318,16 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module,
         ("__closure_wrapper_" + funcName + kindSuffix).toVector(wrapperName);
     }
 
+    // Plan 07 P11: in the pre-pass a wrapper may be logged but not built yet;
+    // its name is all the pre-pass needs (outName).
+    if (runtime.isPending(wrapperName)) {
+        if (outName)
+            *outName = std::string(wrapperName);
+        return {};
+    }
     if (auto existingWrapper = runtime.lookupSymbol<LLVM::LLVMFuncOp>(StringRef(wrapperName))) {
+        if (outName)
+            *outName = std::string(wrapperName);
         return existingWrapper;
     }
 
@@ -339,6 +349,8 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module,
     if (!runtime.origFuncTypes.contains(funcName)) {
         if (auto existingFunc = runtime.lookupSymbol<LLVM::LLVMFuncOp>(funcName)) {
             if (usesArgsArrayConvention(existingFunc)) {
+                if (outName)
+                    *outName = funcName.str();
                 return existingFunc;
             }
         }
@@ -370,12 +382,12 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module,
         // Ensure the target function exists as an LLVM symbol (it may only be
         // in the pre-scan map from a papCreate reference with no func::FuncOp).
         if (!runtime.lookupSymbol(funcName)) {
-            OpBuilder::InsertionGuard declGuard(rewriter);
-            rewriter.setInsertionPointToStart(module.getBody());
+            // Made eagerly (later lookups must see it), placed in order.
+            OpBuilder declBuilder(ctx);
             auto externFuncType = LLVM::LLVMFunctionType::get(targetResultType, targetParamTypes, false);
-            auto externFunc = rewriter.create<LLVM::LLVMFuncOp>(loc, funcName, externFuncType);
+            auto externFunc = declBuilder.create<LLVM::LLVMFuncOp>(loc, funcName, externFuncType);
             externFunc.setLinkage(LLVM::Linkage::External);
-            runtime.cacheSymbol(externFunc);
+            placeTopLevel(runtime, externFunc);
         }
     } else if (auto funcFunc = runtime.lookupSymbol<func::FuncOp>(funcName)) {
         auto funcType = funcFunc.getFunctionType();
@@ -411,12 +423,11 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module,
         for (int64_t i = 0; i < arity; ++i) {
             targetParamTypes.push_back(i64Ty);
         }
-        OpBuilder::InsertionGuard declGuard(rewriter);
-        rewriter.setInsertionPointToStart(module.getBody());
+        OpBuilder declBuilder(ctx);
         auto targetFuncType = LLVM::LLVMFunctionType::get(targetResultType, targetParamTypes, false);
-        auto externFunc = rewriter.create<LLVM::LLVMFuncOp>(loc, funcName, targetFuncType);
+        auto externFunc = declBuilder.create<LLVM::LLVMFuncOp>(loc, funcName, targetFuncType);
         externFunc.setLinkage(LLVM::Linkage::External);
-        runtime.cacheSymbol(externFunc);
+        placeTopLevel(runtime, externFunc);
     }
 
     // Create wrapper function type. Return type matches `resultKind` so
@@ -431,246 +442,259 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module,
     }
     auto wrapperType = LLVM::LLVMFunctionType::get(wrapperReturnType, {ptrTy}, false);
 
-    // Insert wrapper at module level
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToStart(module.getBody());
+    // Plan 07 P11: everything above (name, dedup, target signature, extern
+    // decl) stays serial. The wrapper itself — built detached, body included,
+    // reading only the symbol cache — goes to module start now, or in the
+    // pre-pass is logged and built in parallel (EcoRuntime::topLog).
+    std::string funcNameStr = funcName.str();
+    std::string wrapperNameStr(wrapperName);
+    auto buildBody = [=, &runtime](OpBuilder &rewriter,
+                                   LLVM::LLVMFuncOp wrapperFunc) mutable {
+        StringRef funcName(funcNameStr);
 
-    auto wrapperFunc = rewriter.create<LLVM::LLVMFuncOp>(loc, StringRef(wrapperName), wrapperType);
-    wrapperFunc.setLinkage(LLVM::Linkage::Internal);
-    runtime.cacheSymbol(wrapperFunc);
+        Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+        rewriter.setInsertionPointToStart(entryBlock);
 
-    Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
-    rewriter.setInsertionPointToStart(entryBlock);
+        Value argsArray = entryBlock->getArgument(0);
+        auto i8Ty = IntegerType::get(ctx, 8);
 
-    Value argsArray = entryBlock->getArgument(0);
-    auto i8Ty = IntegerType::get(ctx, 8);
+        // Load arguments from args array and convert to the target function's types.
+        //
+        // Convention: ALL args in the void** array are HPointer-encoded i64.
+        // The wrapper uses original (pre-conversion) types to determine how to unbox:
+        //   - !eco.value → pass through (i64 HPointer, inner function expects i64)
+        //   - Int (i64)  → unbox: resolve HPointer → read i64 value at offset 8
+        //   - Float (f64) → unbox: resolve HPointer → read i64 at offset 8 → bitcast to f64
+        //   - Char (i16)  → unbox: resolve HPointer → read i64 at offset 8 → trunc to i16
+        //   - ptr         → inttoptr (for raw pointer args)
+        // When original types are unavailable, fall back to converted-type heuristics.
+        auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
+        bool hasOrigTypes = !origParamTypes.empty();
+        // P2.5 (plans/allocator-resolve-inlining.md): the legacy scalar-unbox
+        // arms below resolve a boxed Int/Float/Char argument; under the
+        // extended inline-deref they use the forwarding-check marker (AS1
+        // base + AS1 GEP) instead of the out-of-line eco_resolve_hptr call.
+        const bool wrapDerefExt = inlineDerefExtEnabled();
+        auto hptrTyW = getHPtrLLVMType(*ctx);
+        auto resolveScalarBase = [&](Value hptr) -> std::pair<Value, Type> {
+            if (wrapDerefExt)
+                return {inlineResolvedBase(rewriter, loc, hptr, runtime),
+                        static_cast<Type>(hptrTyW)};
+            auto rc = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{hptr});
+            return {rc.getResult(), static_cast<Type>(ptrTy)};
+        };
 
-    // Load arguments from args array and convert to the target function's types.
-    //
-    // Convention: ALL args in the void** array are HPointer-encoded i64.
-    // The wrapper uses original (pre-conversion) types to determine how to unbox:
-    //   - !eco.value → pass through (i64 HPointer, inner function expects i64)
-    //   - Int (i64)  → unbox: resolve HPointer → read i64 value at offset 8
-    //   - Float (f64) → unbox: resolve HPointer → read i64 at offset 8 → bitcast to f64
-    //   - Char (i16)  → unbox: resolve HPointer → read i64 at offset 8 → trunc to i16
-    //   - ptr         → inttoptr (for raw pointer args)
-    // When original types are unavailable, fall back to converted-type heuristics.
-    auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-    bool hasOrigTypes = !origParamTypes.empty();
-    // P2.5 (plans/allocator-resolve-inlining.md): the legacy scalar-unbox
-    // arms below resolve a boxed Int/Float/Char argument; under the
-    // extended inline-deref they use the forwarding-check marker (AS1
-    // base + AS1 GEP) instead of the out-of-line eco_resolve_hptr call.
-    const bool wrapDerefExt = inlineDerefExtEnabled();
-    auto hptrTyW = getHPtrLLVMType(*ctx);
-    auto resolveScalarBase = [&](Value hptr) -> std::pair<Value, Type> {
-        if (wrapDerefExt)
-            return {inlineResolvedBase(rewriter, loc, hptr, runtime),
-                    static_cast<Type>(hptrTyW)};
-        auto rc = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{hptr});
-        return {rc.getResult(), static_cast<Type>(ptrTy)};
-    };
+        SmallVector<Value, 8> liveRoots;
+        SmallVector<Value> callArgs;
+        // Single constant reused for all gc-live allocas below.
+        auto oneConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+            rewriter.getI64IntegerAttr(1));
+        for (int64_t i = 0; i < arity; ++i) {
+            auto idxConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, i);
+            auto argPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty, argsArray, ValueRange{idxConst});
+            Value argI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, argPtr);
 
-    SmallVector<Value, 8> liveRoots;
-    SmallVector<Value> callArgs;
-    // Single constant reused for all gc-live allocas below.
-    auto oneConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
-        rewriter.getI64IntegerAttr(1));
-    for (int64_t i = 0; i < arity; ++i) {
-        auto idxConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, i);
-        auto argPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty, argsArray, ValueRange{idxConst});
-        Value argI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, argPtr);
+            // Force each gc-live value through a wrapper-local stack alloca so it
+            // has a distinct SSA identity from the call argument. This prevents
+            // the register allocator from keeping gc-live roots in argument
+            // registers (which would produce 0 GC-live stack locations in the
+            // stackmap, causing stale pointers after GC relocation).
+            auto rootAlloca = rewriter.create<LLVM::AllocaOp>(
+                loc, ptrTy, i64Ty, oneConst);
+            rewriter.create<LLVM::StoreOp>(loc, argI64, rootAlloca);
+            auto gcLiveVal = rewriter.create<LLVM::LoadOp>(loc, i64Ty, rootAlloca);
+            liveRoots.push_back(gcLiveVal);
 
-        // Force each gc-live value through a wrapper-local stack alloca so it
-        // has a distinct SSA identity from the call argument. This prevents
-        // the register allocator from keeping gc-live roots in argument
-        // registers (which would produce 0 GC-live stack locations in the
-        // stackmap, causing stale pointers after GC relocation).
-        auto rootAlloca = rewriter.create<LLVM::AllocaOp>(
-            loc, ptrTy, i64Ty, oneConst);
-        rewriter.create<LLVM::StoreOp>(loc, argI64, rootAlloca);
-        auto gcLiveVal = rewriter.create<LLVM::LoadOp>(loc, i64Ty, rootAlloca);
-        liveRoots.push_back(gcLiveVal);
+            Type targetType = (i < (int64_t)targetParamTypes.size()) ? targetParamTypes[i] : i64Ty;
+            Type origType = (hasOrigTypes && i < (int64_t)origParamTypes.size())
+                                ? origParamTypes[i] : Type();
 
-        Type targetType = (i < (int64_t)targetParamTypes.size()) ? targetParamTypes[i] : i64Ty;
-        Type origType = (hasOrigTypes && i < (int64_t)origParamTypes.size())
-                            ? origParamTypes[i] : Type();
+            Value convertedArg = argI64;
 
-        Value convertedArg = argI64;
-
-        if (origType && isa<eco::ValueType>(origType)) {
-            // !eco.value param: arg is HPointer-encoded in the args slot
-            // (identical between the legacy and typed conventions).
-            // E1.3 v2: load the slot AT ptr addrspace(1) — GC-tracked from
-            // birth, no inttoptr for the pre-RS4GC inliner to annihilate
-            // against the callee's boundary ptrtoint when the `$cap` body is
-            // spliced in here (plan §5/E1.6). The i64 load above still feeds
-            // the gc-live root alloca protocol unchanged.
-            convertedArg = rewriter.create<LLVM::LoadOp>(loc, getHPtrLLVMType(*ctx), argPtr);
-        } else if (typedNewargs && origType && origType.isInteger(64)) {
-            // Typed Int slot: the wrapper args slot already carries the raw
-            // i64 value (no HPointer indirection).
-            convertedArg = argI64;
-        } else if (typedNewargs && origType && origType.isF64()) {
-            // Typed Float slot: slot bits are the f64 already; bitcast directly.
-            convertedArg = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, argI64);
-        } else if (typedNewargs && origType && isa<IntegerType>(origType) &&
-                   cast<IntegerType>(origType).getWidth() < 64) {
-            // Typed Char slot: slot bits are zero-extended into the i64; trunc back.
-            convertedArg = rewriter.create<LLVM::TruncOp>(loc, origType, argI64);
-        } else if (typedNewargs && !origType) {
-            // Typed convention with unknown orig type: fall back to type-based
-            // direct interpretation (raw bits, no HPointer resolve).
-            if (auto intTy = dyn_cast<IntegerType>(targetType); intTy && intTy.getWidth() < 64) {
-                convertedArg = rewriter.create<LLVM::TruncOp>(loc, targetType, argI64);
-            } else if (targetType == f64Ty) {
+            if (origType && isa<eco::ValueType>(origType)) {
+                // !eco.value param: arg is HPointer-encoded in the args slot
+                // (identical between the legacy and typed conventions).
+                // E1.3 v2: load the slot AT ptr addrspace(1) — GC-tracked from
+                // birth, no inttoptr for the pre-RS4GC inliner to annihilate
+                // against the callee's boundary ptrtoint when the `$cap` body is
+                // spliced in here (plan §5/E1.6). The i64 load above still feeds
+                // the gc-live root alloca protocol unchanged.
+                convertedArg = rewriter.create<LLVM::LoadOp>(loc, getHPtrLLVMType(*ctx), argPtr);
+            } else if (typedNewargs && origType && origType.isInteger(64)) {
+                // Typed Int slot: the wrapper args slot already carries the raw
+                // i64 value (no HPointer indirection).
+                convertedArg = argI64;
+            } else if (typedNewargs && origType && origType.isF64()) {
+                // Typed Float slot: slot bits are the f64 already; bitcast directly.
                 convertedArg = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, argI64);
-            } else if (isa<LLVM::LLVMPointerType>(targetType)) {
-                // E1.3 v2: typed slot load (see the !eco.value arm above).
-                convertedArg = rewriter.create<LLVM::LoadOp>(loc, targetType, argPtr);
-            }
-            // i64 target → pass through.
-        } else if (origType && origType.isInteger(64)) {
-            // Legacy Int param: arg is HPointer to ElmInt → resolve and read value at offset 8
-            Value hptr = wrapperLoadArgSlotToValue(rewriter, loc, argI64, getHPtrLLVMType(*ctx));
-            auto [rbase, rGepTy] = resolveScalarBase(hptr);
-            auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
-            auto valPtr = rewriter.create<LLVM::GEPOp>(loc, rGepTy, i8Ty,
-                                                        rbase, ValueRange{off8});
-            convertedArg = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
-        } else if (origType && origType.isF64()) {
-            // Legacy Float param: arg is HPointer to ElmFloat → resolve, read i64 at offset 8, bitcast
-            Value hptr = wrapperLoadArgSlotToValue(rewriter, loc, argI64, getHPtrLLVMType(*ctx));
-            auto [rbase, rGepTy] = resolveScalarBase(hptr);
-            auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
-            auto valPtr = rewriter.create<LLVM::GEPOp>(loc, rGepTy, i8Ty,
-                                                        rbase, ValueRange{off8});
-            Value loadedI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
-            convertedArg = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, loadedI64);
-        } else if (auto intTy = dyn_cast<IntegerType>(targetType); intTy && intTy.getWidth() < 64) {
-            // Legacy Char (i16/i32): arg is HPointer to ElmChar → resolve and read value at offset 8
-            Value hptr = wrapperLoadArgSlotToValue(rewriter, loc, argI64, getHPtrLLVMType(*ctx));
-            auto [rbase, rGepTy] = resolveScalarBase(hptr);
-            auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
-            auto valPtr = rewriter.create<LLVM::GEPOp>(loc, rGepTy, i8Ty,
-                                                        rbase, ValueRange{off8});
-            Value fullVal = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
-            convertedArg = rewriter.create<LLVM::TruncOp>(loc, targetType, fullVal);
-        } else if (targetType == f64Ty && !origType) {
-            // Legacy fallback: no orig types, target is f64 → unbox from HPointer
-            Value hptr = wrapperLoadArgSlotToValue(rewriter, loc, argI64, getHPtrLLVMType(*ctx));
-            auto [rbase, rGepTy] = resolveScalarBase(hptr);
-            auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
-            auto valPtr = rewriter.create<LLVM::GEPOp>(loc, rGepTy, i8Ty,
-                                                        rbase, ValueRange{off8});
-            Value loadedI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
-            convertedArg = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, loadedI64);
-        } else if (isa<LLVM::LLVMPointerType>(targetType)) {
-            convertedArg = wrapperLoadArgSlotToValue(rewriter, loc, argI64, targetType);
-        }
-        // else: i64 with no orig type or orig is eco.value — pass through as-is
-        callArgs.push_back(convertedArg);
-    }
-
-    // Emit safepoint marker before the target call so StatepointConversion
-    // wraps it in gc.statepoint, keeping loaded HPointers visible to GC.
-    emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
-
-    // Call the target function
-    auto targetFuncType = LLVM::LLVMFunctionType::get(targetResultType, targetParamTypes, false);
-    auto funcSymbolRef = FlatSymbolRefAttr::get(ctx, funcName);
-    auto call = rewriter.create<LLVM::CallOp>(loc, targetFuncType, funcSymbolRef, callArgs);
-
-    // Convert result to the wrapper's declared return type.
-    //
-    // For PK_Boxed (resultKind=0, the legacy path): the wrapper returns
-    // a `ptr` HPointer. Primitive inner-call results are boxed via
-    // `eco_alloc_*`; !eco.value results are passed through.
-    //
-    // For PK_Int/Float/Char (resultKind!=0, the typed-result path): the
-    // wrapper returns the primitive directly without boxing. The inner
-    // function's result type must already match (the frontend ensures
-    // this by emitting `_result_kind` = mlirTypeToParamKind(MonoResult)).
-    Value resultValue = call.getResult();
-    Value resultPtr;
-
-    if (resultKind != 0) {
-        // Primitive-return path: pass the inner result through unmodified
-        // (after any width adjustment between target and wrapper return ABI).
-        if (resultKind == 1) {
-            // PK_Int → i64. Inner already returns i64 for Int-typed results.
-            assert(targetResultType == i64Ty &&
-                   "PK_Int wrapper requires i64 target return type");
-            resultPtr = resultValue;
-        } else if (resultKind == 2) {
-            // PK_Float → f64. Inner returns f64 for Float-typed results.
-            assert(targetResultType == f64Ty &&
-                   "PK_Float wrapper requires f64 target return type");
-            resultPtr = resultValue;
-        } else if (resultKind == 3) {
-            // PK_Char → i16. Inner returns i16 (or smaller); narrow if needed.
-            if (auto intTy = dyn_cast<IntegerType>(targetResultType)) {
-                if (intTy.getWidth() == 16) {
-                    resultPtr = resultValue;
-                } else if (intTy.getWidth() < 16) {
-                    resultPtr = rewriter.create<LLVM::ZExtOp>(loc, i16Ty, resultValue);
-                } else {
-                    resultPtr = rewriter.create<LLVM::TruncOp>(loc, i16Ty, resultValue);
+            } else if (typedNewargs && origType && isa<IntegerType>(origType) &&
+                       cast<IntegerType>(origType).getWidth() < 64) {
+                // Typed Char slot: slot bits are zero-extended into the i64; trunc back.
+                convertedArg = rewriter.create<LLVM::TruncOp>(loc, origType, argI64);
+            } else if (typedNewargs && !origType) {
+                // Typed convention with unknown orig type: fall back to type-based
+                // direct interpretation (raw bits, no HPointer resolve).
+                if (auto intTy = dyn_cast<IntegerType>(targetType); intTy && intTy.getWidth() < 64) {
+                    convertedArg = rewriter.create<LLVM::TruncOp>(loc, targetType, argI64);
+                } else if (targetType == f64Ty) {
+                    convertedArg = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, argI64);
+                } else if (isa<LLVM::LLVMPointerType>(targetType)) {
+                    // E1.3 v2: typed slot load (see the !eco.value arm above).
+                    convertedArg = rewriter.create<LLVM::LoadOp>(loc, targetType, argPtr);
                 }
-            } else {
-                assert(false && "PK_Char wrapper requires integer target return type");
-                __builtin_unreachable();
+                // i64 target → pass through.
+            } else if (origType && origType.isInteger(64)) {
+                // Legacy Int param: arg is HPointer to ElmInt → resolve and read value at offset 8
+                Value hptr = wrapperLoadArgSlotToValue(rewriter, loc, argI64, getHPtrLLVMType(*ctx));
+                auto [rbase, rGepTy] = resolveScalarBase(hptr);
+                auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
+                auto valPtr = rewriter.create<LLVM::GEPOp>(loc, rGepTy, i8Ty,
+                                                            rbase, ValueRange{off8});
+                convertedArg = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
+            } else if (origType && origType.isF64()) {
+                // Legacy Float param: arg is HPointer to ElmFloat → resolve, read i64 at offset 8, bitcast
+                Value hptr = wrapperLoadArgSlotToValue(rewriter, loc, argI64, getHPtrLLVMType(*ctx));
+                auto [rbase, rGepTy] = resolveScalarBase(hptr);
+                auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
+                auto valPtr = rewriter.create<LLVM::GEPOp>(loc, rGepTy, i8Ty,
+                                                            rbase, ValueRange{off8});
+                Value loadedI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
+                convertedArg = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, loadedI64);
+            } else if (auto intTy = dyn_cast<IntegerType>(targetType); intTy && intTy.getWidth() < 64) {
+                // Legacy Char (i16/i32): arg is HPointer to ElmChar → resolve and read value at offset 8
+                Value hptr = wrapperLoadArgSlotToValue(rewriter, loc, argI64, getHPtrLLVMType(*ctx));
+                auto [rbase, rGepTy] = resolveScalarBase(hptr);
+                auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
+                auto valPtr = rewriter.create<LLVM::GEPOp>(loc, rGepTy, i8Ty,
+                                                            rbase, ValueRange{off8});
+                Value fullVal = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
+                convertedArg = rewriter.create<LLVM::TruncOp>(loc, targetType, fullVal);
+            } else if (targetType == f64Ty && !origType) {
+                // Legacy fallback: no orig types, target is f64 → unbox from HPointer
+                Value hptr = wrapperLoadArgSlotToValue(rewriter, loc, argI64, getHPtrLLVMType(*ctx));
+                auto [rbase, rGepTy] = resolveScalarBase(hptr);
+                auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
+                auto valPtr = rewriter.create<LLVM::GEPOp>(loc, rGepTy, i8Ty,
+                                                            rbase, ValueRange{off8});
+                Value loadedI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
+                convertedArg = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, loadedI64);
+            } else if (isa<LLVM::LLVMPointerType>(targetType)) {
+                convertedArg = wrapperLoadArgSlotToValue(rewriter, loc, argI64, targetType);
             }
+            // else: i64 with no orig type or orig is eco.value — pass through as-is
+            callArgs.push_back(convertedArg);
         }
-    } else if (origResultType && isa<eco::ValueType>(origResultType)) {
-        // !eco.value result: inner function returns ptr<1> → convert to ptr AS0
-        resultPtr = wrapperReturnValueToPtr0(rewriter, loc, resultValue, ptrTy);
-    } else if (origResultType && origResultType.isInteger(64)) {
-        // Int result: inner function returns raw i64 → box via eco_alloc_int
+
+        // Emit safepoint marker before the target call so StatepointConversion
+        // wraps it in gc.statepoint, keeping loaded HPointers visible to GC.
         emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
-        auto allocIntFunc = runtime.getOrCreateAllocInt(rewriter);
-        auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocIntFunc, ValueRange{resultValue});
-        resultPtr = wrapperReturnValueToPtr0(rewriter, loc, boxCall.getResult(), ptrTy);
-    } else if (origResultType && origResultType.isF64()) {
-        emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
-        auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
-        auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocFloatFunc, ValueRange{resultValue});
-        resultPtr = wrapperReturnValueToPtr0(rewriter, loc, boxCall.getResult(), ptrTy);
-    } else if (origResultType && isa<IntegerType>(origResultType) &&
-               cast<IntegerType>(origResultType).getWidth() < 64) {
-        emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
-        auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
-        auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{resultValue});
-        resultPtr = wrapperReturnValueToPtr0(rewriter, loc, boxCall.getResult(), ptrTy);
-    } else if (isa<LLVM::LLVMPointerType>(targetResultType)) {
-        // ptr or ptr<1> result: convert to ptr AS0
-        if (isHPtrLLVMType(targetResultType)) {
+
+        // Call the target function
+        auto targetFuncType = LLVM::LLVMFunctionType::get(targetResultType, targetParamTypes, false);
+        auto funcSymbolRef = FlatSymbolRefAttr::get(ctx, funcName);
+        auto call = rewriter.create<LLVM::CallOp>(loc, targetFuncType, funcSymbolRef, callArgs);
+
+        // Convert result to the wrapper's declared return type.
+        //
+        // For PK_Boxed (resultKind=0, the legacy path): the wrapper returns
+        // a `ptr` HPointer. Primitive inner-call results are boxed via
+        // `eco_alloc_*`; !eco.value results are passed through.
+        //
+        // For PK_Int/Float/Char (resultKind!=0, the typed-result path): the
+        // wrapper returns the primitive directly without boxing. The inner
+        // function's result type must already match (the frontend ensures
+        // this by emitting `_result_kind` = mlirTypeToParamKind(MonoResult)).
+        Value resultValue = call.getResult();
+        Value resultPtr;
+
+        if (resultKind != 0) {
+            // Primitive-return path: pass the inner result through unmodified
+            // (after any width adjustment between target and wrapper return ABI).
+            if (resultKind == 1) {
+                // PK_Int → i64. Inner already returns i64 for Int-typed results.
+                assert(targetResultType == i64Ty &&
+                       "PK_Int wrapper requires i64 target return type");
+                resultPtr = resultValue;
+            } else if (resultKind == 2) {
+                // PK_Float → f64. Inner returns f64 for Float-typed results.
+                assert(targetResultType == f64Ty &&
+                       "PK_Float wrapper requires f64 target return type");
+                resultPtr = resultValue;
+            } else if (resultKind == 3) {
+                // PK_Char → i16. Inner returns i16 (or smaller); narrow if needed.
+                if (auto intTy = dyn_cast<IntegerType>(targetResultType)) {
+                    if (intTy.getWidth() == 16) {
+                        resultPtr = resultValue;
+                    } else if (intTy.getWidth() < 16) {
+                        resultPtr = rewriter.create<LLVM::ZExtOp>(loc, i16Ty, resultValue);
+                    } else {
+                        resultPtr = rewriter.create<LLVM::TruncOp>(loc, i16Ty, resultValue);
+                    }
+                } else {
+                    assert(false && "PK_Char wrapper requires integer target return type");
+                    __builtin_unreachable();
+                }
+            }
+        } else if (origResultType && isa<eco::ValueType>(origResultType)) {
+            // !eco.value result: inner function returns ptr<1> → convert to ptr AS0
             resultPtr = wrapperReturnValueToPtr0(rewriter, loc, resultValue, ptrTy);
-        } else {
-            resultPtr = resultValue;
-        }
-    } else if (targetResultType == f64Ty && !origResultType) {
-        emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
-        auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
-        auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocFloatFunc, ValueRange{resultValue});
-        resultPtr = wrapperReturnValueToPtr0(rewriter, loc, boxCall.getResult(), ptrTy);
-    } else if (auto intTy = dyn_cast<IntegerType>(targetResultType); intTy && !origResultType) {
-        if (intTy.getWidth() < 64) {
+        } else if (origResultType && origResultType.isInteger(64)) {
+            // Int result: inner function returns raw i64 → box via eco_alloc_int
+            emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
+            auto allocIntFunc = runtime.getOrCreateAllocInt(rewriter);
+            auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocIntFunc, ValueRange{resultValue});
+            resultPtr = wrapperReturnValueToPtr0(rewriter, loc, boxCall.getResult(), ptrTy);
+        } else if (origResultType && origResultType.isF64()) {
+            emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
+            auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
+            auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocFloatFunc, ValueRange{resultValue});
+            resultPtr = wrapperReturnValueToPtr0(rewriter, loc, boxCall.getResult(), ptrTy);
+        } else if (origResultType && isa<IntegerType>(origResultType) &&
+                   cast<IntegerType>(origResultType).getWidth() < 64) {
             emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
             auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
             auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{resultValue});
             resultPtr = wrapperReturnValueToPtr0(rewriter, loc, boxCall.getResult(), ptrTy);
+        } else if (isa<LLVM::LLVMPointerType>(targetResultType)) {
+            // ptr or ptr<1> result: convert to ptr AS0
+            if (isHPtrLLVMType(targetResultType)) {
+                resultPtr = wrapperReturnValueToPtr0(rewriter, loc, resultValue, ptrTy);
+            } else {
+                resultPtr = resultValue;
+            }
+        } else if (targetResultType == f64Ty && !origResultType) {
+            emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
+            auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
+            auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocFloatFunc, ValueRange{resultValue});
+            resultPtr = wrapperReturnValueToPtr0(rewriter, loc, boxCall.getResult(), ptrTy);
+        } else if (auto intTy = dyn_cast<IntegerType>(targetResultType); intTy && !origResultType) {
+            if (intTy.getWidth() < 64) {
+                emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
+                auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
+                auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{resultValue});
+                resultPtr = wrapperReturnValueToPtr0(rewriter, loc, boxCall.getResult(), ptrTy);
+            } else {
+                // i64 with no orig type → assume HPointer, pass through
+                resultPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, ValueRange{resultValue});
+            }
         } else {
-            // i64 with no orig type → assume HPointer, pass through
             resultPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, ValueRange{resultValue});
         }
-    } else {
-        resultPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, ValueRange{resultValue});
-    }
 
-    rewriter.create<LLVM::ReturnOp>(loc, ValueRange{resultPtr});
-
-    return wrapperFunc;
+        rewriter.create<LLVM::ReturnOp>(loc, ValueRange{resultPtr});
+    };
+    if (outName)
+        *outName = wrapperNameStr;
+    return emitTopLevel<LLVM::LLVMFuncOp>(
+        runtime, wrapperNameStr, /*cache=*/true,
+        [=, buildBody = std::move(buildBody)]() mutable -> Operation * {
+            OpBuilder b(ctx);
+            auto wrapperFunc = b.create<LLVM::LLVMFuncOp>(
+                loc, StringRef(wrapperNameStr), wrapperType);
+            wrapperFunc.setLinkage(LLVM::Linkage::Internal);
+            buildBody(b, wrapperFunc);
+            return wrapperFunc;
+        });
 }
 
 struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
@@ -1670,55 +1694,69 @@ static bool getOrCreateSatEntry(OpBuilder &builder, ModuleOp module,
     Type retTy = targetTy.getReturnType();
     auto satTy = LLVM::LLVMFunctionType::get(retTy, satParams, /*isVarArg=*/false);
 
-    OpBuilder::InsertionGuard guard(builder);
-    builder.setInsertionPointToStart(module.getBody());
-    auto fn = builder.create<LLVM::LLVMFuncOp>(loc, name, satTy,
-                                               LLVM::Linkage::Internal);
-    Block *entry = fn.addEntryBlock(builder);
-    builder.setInsertionPointToStart(entry);
-
-    SmallVector<Value> callArgs;
-    Value self = entry->getArgument(0);
+    // Unhandled capture ABI: no entry rather than a guess. Checked BEFORE the
+    // shell exists (plan 07 P11: the body may be built later, in parallel).
     for (int64_t i = 0; i < captureCount; ++i) {
-        int64_t off = layout::ClosureValuesOffset + i * layout::PtrSize;
-        auto offConst = builder.create<LLVM::ConstantOp>(
-            loc, i64Ty, builder.getI64IntegerAttr(off));
-        auto slot = builder.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, self,
-                                                ValueRange{offConst});
-        uint8_t k = static_cast<uint8_t>((kindsBitmap >> (2 * i)) & 0x3);
         Type want = targetTy.getParamType(i);
-        Value v;
-        if (isa<LLVM::LLVMPointerType>(want)) {
-            // E1.3 v2: load pointer captures AT their pointer type so they are
-            // GC-tracked from birth (no inttoptr for RS4GC to lose).
-            v = builder.create<LLVM::LoadOp>(loc, want, slot);
-        } else if (want.isF64()) {
-            Value raw = builder.create<LLVM::LoadOp>(loc, i64Ty, slot);
-            v = builder.create<LLVM::BitcastOp>(loc, f64Ty, raw);
-        } else if (want.isInteger(16)) {
-            Value raw = builder.create<LLVM::LoadOp>(loc, i64Ty, slot);
-            v = builder.create<LLVM::TruncOp>(loc, IntegerType::get(ctx, 16), raw);
-        } else if (want.isInteger(64)) {
-            v = builder.create<LLVM::LoadOp>(loc, i64Ty, slot);
-        } else {
-            // Unhandled capture ABI: drop the entry rather than guess.
-            fn.erase();
+        if (!isa<LLVM::LLVMPointerType>(want) && !want.isF64() &&
+            !want.isInteger(16) && !want.isInteger(64))
             return false;
-        }
-        // The declared kind and the target's parameter type must agree, or the
-        // closure's own bitmap is lying about what its slots hold.
-        (void)k;
-        callArgs.push_back(v);
     }
-    for (unsigned i = 1; i < entry->getNumArguments(); ++i)
-        callArgs.push_back(entry->getArgument(i));
 
-    auto call = builder.create<LLVM::CallOp>(loc, target, callArgs);
-    if (isa<LLVM::LLVMVoidType>(retTy))
-        builder.create<LLVM::ReturnOp>(loc, ValueRange{});
-    else
-        builder.create<LLVM::ReturnOp>(loc, call.getResult());
+    std::string nameStr = name.str();
+    auto buildBody = [=](OpBuilder &builder, LLVM::LLVMFuncOp fn) mutable {
+        Block *entry = fn.addEntryBlock(builder);
+        builder.setInsertionPointToStart(entry);
 
+        SmallVector<Value> callArgs;
+        Value self = entry->getArgument(0);
+        for (int64_t i = 0; i < captureCount; ++i) {
+            int64_t off = layout::ClosureValuesOffset + i * layout::PtrSize;
+            auto offConst = builder.create<LLVM::ConstantOp>(
+                loc, i64Ty, builder.getI64IntegerAttr(off));
+            auto slot = builder.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, self,
+                                                    ValueRange{offConst});
+            uint8_t k = static_cast<uint8_t>((kindsBitmap >> (2 * i)) & 0x3);
+            Type want = targetTy.getParamType(i);
+            Value v;
+            if (isa<LLVM::LLVMPointerType>(want)) {
+                // E1.3 v2: load pointer captures AT their pointer type so they are
+                // GC-tracked from birth (no inttoptr for RS4GC to lose).
+                v = builder.create<LLVM::LoadOp>(loc, want, slot);
+            } else if (want.isF64()) {
+                Value raw = builder.create<LLVM::LoadOp>(loc, i64Ty, slot);
+                v = builder.create<LLVM::BitcastOp>(loc, f64Ty, raw);
+            } else if (want.isInteger(16)) {
+                Value raw = builder.create<LLVM::LoadOp>(loc, i64Ty, slot);
+                v = builder.create<LLVM::TruncOp>(loc, IntegerType::get(ctx, 16), raw);
+            } else if (want.isInteger(64)) {
+                v = builder.create<LLVM::LoadOp>(loc, i64Ty, slot);
+            }
+            // The declared kind and the target's parameter type must agree, or the
+            // closure's own bitmap is lying about what its slots hold.
+            (void)k;
+            callArgs.push_back(v);
+        }
+        for (unsigned i = 1; i < entry->getNumArguments(); ++i)
+            callArgs.push_back(entry->getArgument(i));
+
+        auto call = builder.create<LLVM::CallOp>(loc, target, callArgs);
+        if (isa<LLVM::LLVMVoidType>(retTy))
+            builder.create<LLVM::ReturnOp>(loc, ValueRange{});
+        else
+            builder.create<LLVM::ReturnOp>(loc, call.getResult());
+
+    };
+    // Not cached (it never was): nothing looks a `$sat` entry up by name.
+    emitTopLevel<LLVM::LLVMFuncOp>(
+        runtime, nameStr, /*cache=*/false,
+        [=, buildBody = std::move(buildBody)]() mutable -> Operation * {
+            OpBuilder b(ctx);
+            auto fn = b.create<LLVM::LLVMFuncOp>(loc, StringRef(nameStr), satTy,
+                                                 LLVM::Linkage::Internal);
+            buildBody(b, fn);
+            return fn;
+        });
     if (papHisto::enabled())
         papHisto::satEntriesN.fetch_add(1, std::memory_order_relaxed);
     return true;
@@ -1733,16 +1771,16 @@ static bool getOrCreateSatEntry(OpBuilder &builder, ModuleOp module,
 /// MUST be called only from the serial pre-pass: it creates module-level symbols.
 static void getOrCreateEvalDesc(OpBuilder &builder, ModuleOp module,
                                 const EcoRuntime &runtime,
-                                LLVM::LLVMFuncOp wrapper, StringRef targetSymbol,
+                                StringRef wrapperSym, StringRef targetSymbol,
                                 int64_t stageArity, uint64_t kindsBitmap,
                                 uint8_t resultKind, Location loc,
                                 llvm::SmallVectorImpl<char> &outName) {
     auto *ctx = builder.getContext();
-    evalDescName(wrapper.getSymName(), outName);
+    evalDescName(wrapperSym, outName);
     StringRef name(outName.data(), outName.size());
     // symCache, not module.lookupSymbol: the latter is a linear module scan,
     // and every first creation is a miss — quadratic over ~85k functions.
-    if (runtime.lookupSymbol<LLVM::GlobalOp>(name))
+    if (runtime.lookupSymbol<LLVM::GlobalOp>(name) || runtime.isPending(name))
         return;
 
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
@@ -1801,40 +1839,52 @@ static void getOrCreateEvalDesc(OpBuilder &builder, ModuleOp module,
     auto descTy = LLVM::LLVMStructType::getLiteral(
         ctx, {ptrTy, i64Ty, i8Ty, i8Ty, i16Ty, i32Ty, satArrTy});
 
-    OpBuilder::InsertionGuard guard(builder);
-    builder.setInsertionPointToStart(module.getBody());
-    auto global = builder.create<LLVM::GlobalOp>(
-        loc, descTy, /*isConstant=*/true, LLVM::Linkage::Internal, name,
-        /*value=*/Attribute());
-    runtime.cacheSymbol(global);
+    std::string nameStr = name.str();
 
-    Block *blk = builder.createBlock(&global.getInitializerRegion());
-    builder.setInsertionPointToStart(blk);
-    Value agg = builder.create<LLVM::UndefOp>(loc, descTy);
-    Value genericPtr =
-        builder.create<LLVM::AddressOfOp>(loc, ptrTy, wrapper.getSymName());
-    agg = builder.create<LLVM::InsertValueOp>(loc, agg, genericPtr,
-                                              ArrayRef<int64_t>{0});
-    auto put = [&](int64_t idx, Type ty, int64_t v) {
-        Value c = builder.create<LLVM::ConstantOp>(loc, ty,
-                                                   builder.getIntegerAttr(ty, v));
-        agg = builder.create<LLVM::InsertValueOp>(loc, agg, c,
-                                                  ArrayRef<int64_t>{idx});
+    // Plan 07 P11: the initializer is built later (in parallel) from copies.
+    SmallVector<std::string> satNames;
+    for (StringRef sym : satSyms)
+        satNames.push_back(sym.str());
+    std::string wrapperSymStr = wrapperSym.str();
+    auto buildBody = [=](OpBuilder &builder, LLVM::GlobalOp global) mutable {
+        Block *blk = builder.createBlock(&global.getInitializerRegion());
+        builder.setInsertionPointToStart(blk);
+        Value agg = builder.create<LLVM::UndefOp>(loc, descTy);
+        Value genericPtr =
+            builder.create<LLVM::AddressOfOp>(loc, ptrTy, wrapperSymStr);
+        agg = builder.create<LLVM::InsertValueOp>(loc, agg, genericPtr,
+                                                  ArrayRef<int64_t>{0});
+        auto put = [&](int64_t idx, Type ty, int64_t v) {
+            Value c = builder.create<LLVM::ConstantOp>(loc, ty,
+                                                       builder.getIntegerAttr(ty, v));
+            agg = builder.create<LLVM::InsertValueOp>(loc, agg, c,
+                                                      ArrayRef<int64_t>{idx});
+        };
+        put(1, i64Ty, static_cast<int64_t>(kindsBitmap));
+        put(2, i8Ty, static_cast<int64_t>(stageArity & 0xFF));
+        put(3, i8Ty, static_cast<int64_t>(resultKind & 0x3));
+        put(4, i16Ty, 0);
+        put(5, i32Ty, 0);
+        Value nullPtr = builder.create<LLVM::ZeroOp>(loc, ptrTy);
+        for (unsigned i = 0; i < satCount; ++i) {
+            Value slotVal = nullPtr;
+            if (!satNames[i].empty())
+                slotVal = builder.create<LLVM::AddressOfOp>(loc, ptrTy, satNames[i]);
+            agg = builder.create<LLVM::InsertValueOp>(
+                loc, agg, slotVal, ArrayRef<int64_t>{6, static_cast<int64_t>(i)});
+        }
+        builder.create<LLVM::ReturnOp>(loc, agg);
     };
-    put(1, i64Ty, static_cast<int64_t>(kindsBitmap));
-    put(2, i8Ty, static_cast<int64_t>(stageArity & 0xFF));
-    put(3, i8Ty, static_cast<int64_t>(resultKind & 0x3));
-    put(4, i16Ty, 0);
-    put(5, i32Ty, 0);
-    Value nullPtr = builder.create<LLVM::ZeroOp>(loc, ptrTy);
-    for (unsigned i = 0; i < satCount; ++i) {
-        Value slotVal = nullPtr;
-        if (!satSyms[i].empty())
-            slotVal = builder.create<LLVM::AddressOfOp>(loc, ptrTy, satSyms[i]);
-        agg = builder.create<LLVM::InsertValueOp>(
-            loc, agg, slotVal, ArrayRef<int64_t>{6, static_cast<int64_t>(i)});
-    }
-    builder.create<LLVM::ReturnOp>(loc, agg);
+    emitTopLevel<LLVM::GlobalOp>(
+        runtime, nameStr, /*cache=*/true,
+        [=, buildBody = std::move(buildBody)]() mutable -> Operation * {
+            OpBuilder b(ctx);
+            auto global = b.create<LLVM::GlobalOp>(
+                loc, descTy, /*isConstant=*/true, LLVM::Linkage::Internal,
+                StringRef(nameStr), /*value=*/Attribute());
+            buildBody(b, global);
+            return global;
+        });
 
     if (papHisto::enabled())
         papHisto::descN.fetch_add(1, std::memory_order_relaxed);
@@ -1951,7 +2001,7 @@ static void getOrCreateEvalDescForFunc(OpBuilder &builder, ModuleOp module,
     auto *ctx = builder.getContext();
     evalDescName(funcSymbol, outName);
     StringRef name(outName.data(), outName.size());
-    if (runtime.lookupSymbol<LLVM::GlobalOp>(name))  // see getOrCreateEvalDesc
+    if (runtime.lookupSymbol<LLVM::GlobalOp>(name) || runtime.isPending(name))  // see getOrCreateEvalDesc
         return;
 
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
@@ -1964,34 +2014,42 @@ static void getOrCreateEvalDescForFunc(OpBuilder &builder, ModuleOp module,
     auto descTy = LLVM::LLVMStructType::getLiteral(
         ctx, {ptrTy, i64Ty, i8Ty, i8Ty, i16Ty, i32Ty, satArrTy});
 
-    OpBuilder::InsertionGuard guard(builder);
-    builder.setInsertionPointToStart(module.getBody());
-    auto global = builder.create<LLVM::GlobalOp>(
-        loc, descTy, /*isConstant=*/true, LLVM::Linkage::Internal, name,
-        /*value=*/Attribute());
-    runtime.cacheSymbol(global);
-    Block *blk = builder.createBlock(&global.getInitializerRegion());
-    builder.setInsertionPointToStart(blk);
-    Value agg = builder.create<LLVM::UndefOp>(loc, descTy);
-    Value genericPtr = builder.create<LLVM::AddressOfOp>(loc, ptrTy, funcSymbol);
-    agg = builder.create<LLVM::InsertValueOp>(loc, agg, genericPtr,
-                                              ArrayRef<int64_t>{0});
-    auto put = [&](int64_t idx, Type ty, int64_t v) {
-        Value c = builder.create<LLVM::ConstantOp>(loc, ty,
-                                                   builder.getIntegerAttr(ty, v));
-        agg = builder.create<LLVM::InsertValueOp>(loc, agg, c,
-                                                  ArrayRef<int64_t>{idx});
+    std::string nameStr = name.str();
+    std::string funcSymbolStr = funcSymbol.str();
+    auto buildBody = [=](OpBuilder &builder, LLVM::GlobalOp global) mutable {
+        Block *blk = builder.createBlock(&global.getInitializerRegion());
+        builder.setInsertionPointToStart(blk);
+        Value agg = builder.create<LLVM::UndefOp>(loc, descTy);
+        Value genericPtr = builder.create<LLVM::AddressOfOp>(loc, ptrTy, funcSymbolStr);
+        agg = builder.create<LLVM::InsertValueOp>(loc, agg, genericPtr,
+                                                  ArrayRef<int64_t>{0});
+        auto put = [&](int64_t idx, Type ty, int64_t v) {
+            Value c = builder.create<LLVM::ConstantOp>(loc, ty,
+                                                       builder.getIntegerAttr(ty, v));
+            agg = builder.create<LLVM::InsertValueOp>(loc, agg, c,
+                                                      ArrayRef<int64_t>{idx});
+        };
+        put(1, i64Ty, static_cast<int64_t>(kindsBitmap));
+        put(2, i8Ty, static_cast<int64_t>(arity & 0xFF));
+        put(3, i8Ty, static_cast<int64_t>(resultKind & 0x3));
+        put(4, i16Ty, 0);
+        put(5, i32Ty, 0);
+        Value nullPtr = builder.create<LLVM::ZeroOp>(loc, ptrTy);
+        for (unsigned i = 0; i < satCount; ++i)
+            agg = builder.create<LLVM::InsertValueOp>(
+                loc, agg, nullPtr, ArrayRef<int64_t>{6, static_cast<int64_t>(i)});
+        builder.create<LLVM::ReturnOp>(loc, agg);
     };
-    put(1, i64Ty, static_cast<int64_t>(kindsBitmap));
-    put(2, i8Ty, static_cast<int64_t>(arity & 0xFF));
-    put(3, i8Ty, static_cast<int64_t>(resultKind & 0x3));
-    put(4, i16Ty, 0);
-    put(5, i32Ty, 0);
-    Value nullPtr = builder.create<LLVM::ZeroOp>(loc, ptrTy);
-    for (unsigned i = 0; i < satCount; ++i)
-        agg = builder.create<LLVM::InsertValueOp>(
-            loc, agg, nullPtr, ArrayRef<int64_t>{6, static_cast<int64_t>(i)});
-    builder.create<LLVM::ReturnOp>(loc, agg);
+    emitTopLevel<LLVM::GlobalOp>(
+        runtime, nameStr, /*cache=*/true,
+        [=, buildBody = std::move(buildBody)]() mutable -> Operation * {
+            OpBuilder b(ctx);
+            auto global = b.create<LLVM::GlobalOp>(
+                loc, descTy, /*isConstant=*/true, LLVM::Linkage::Internal,
+                StringRef(nameStr), /*value=*/Attribute());
+            buildBody(b, global);
+            return global;
+        });
     if (papHisto::enabled())
         papHisto::descN.fetch_add(1, std::memory_order_relaxed);
 }
@@ -2089,33 +2147,43 @@ static void ensureEvalLayoutGlobal(OpBuilder &builder, Location loc,
            "ensureEvalLayoutGlobal after freeze(): an eval-layout demand the "
            "serial pre-pass did not predict; creating it here would race the "
            "parallel Stage-2 workers");
-    auto key = mlir::StringAttr::get(ctx, name);
-    if (!runtime.evalLayoutNames.insert(key).second)
+    if (!runtime.evalLayoutNames.insert(name).second)
         return;  // already created
     auto arrayTy = LLVM::LLVMArrayType::get(i8Ty, n);
     auto structTy = LLVM::LLVMStructType::getLiteral(ctx, {i8Ty, i8Ty, arrayTy});
-    OpBuilder::InsertionGuard guard(builder);
-    builder.setInsertionPointToStart(module.getBody());
-    auto globalOp = builder.create<LLVM::GlobalOp>(
-        loc, structTy, /*isConstant=*/true, LLVM::Linkage::Private, name, Attribute{});
-    Block *initBlock = builder.createBlock(&globalOp.getInitializerRegion());
-    builder.setInsertionPointToStart(initBlock);
-    Value structVal = builder.create<LLVM::UndefOp>(loc, structTy);
-    auto numParamsConst = builder.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(n));
-    structVal = builder.create<LLVM::InsertValueOp>(loc, structTy, structVal, numParamsConst,
-                                                    ArrayRef<int64_t>{0});
-    auto resultKindConst = builder.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(resultKind));
-    structVal = builder.create<LLVM::InsertValueOp>(loc, structTy, structVal, resultKindConst,
-                                                    ArrayRef<int64_t>{1});
-    Value arrayVal = builder.create<LLVM::UndefOp>(loc, arrayTy);
-    for (uint32_t i = 0; i < n; ++i) {
-        auto kindConst = builder.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(kinds[i]));
-        arrayVal = builder.create<LLVM::InsertValueOp>(loc, arrayTy, arrayVal, kindConst,
-                                                       ArrayRef<int64_t>{static_cast<int64_t>(i)});
-    }
-    structVal = builder.create<LLVM::InsertValueOp>(loc, structTy, structVal, arrayVal,
-                                                    ArrayRef<int64_t>{2});
-    builder.create<LLVM::ReturnOp>(loc, structVal);
+    std::string nameStr = name.str();
+    SmallVector<uint8_t> kindsCopy(kinds.begin(), kinds.end());
+    auto buildBody = [=](OpBuilder &builder, LLVM::GlobalOp globalOp) mutable {
+        Block *initBlock = builder.createBlock(&globalOp.getInitializerRegion());
+        builder.setInsertionPointToStart(initBlock);
+        Value structVal = builder.create<LLVM::UndefOp>(loc, structTy);
+        auto numParamsConst = builder.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(n));
+        structVal = builder.create<LLVM::InsertValueOp>(loc, structTy, structVal, numParamsConst,
+                                                        ArrayRef<int64_t>{0});
+        auto resultKindConst = builder.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(resultKind));
+        structVal = builder.create<LLVM::InsertValueOp>(loc, structTy, structVal, resultKindConst,
+                                                        ArrayRef<int64_t>{1});
+        Value arrayVal = builder.create<LLVM::UndefOp>(loc, arrayTy);
+        for (uint32_t i = 0; i < n; ++i) {
+            auto kindConst = builder.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(kindsCopy[i]));
+            arrayVal = builder.create<LLVM::InsertValueOp>(loc, arrayTy, arrayVal, kindConst,
+                                                           ArrayRef<int64_t>{static_cast<int64_t>(i)});
+        }
+        structVal = builder.create<LLVM::InsertValueOp>(loc, structTy, structVal, arrayVal,
+                                                        ArrayRef<int64_t>{2});
+        builder.create<LLVM::ReturnOp>(loc, structVal);
+    };
+    // Not cached: layouts are deduped by evalLayoutNames, never looked up.
+    emitTopLevel<LLVM::GlobalOp>(
+        runtime, nameStr, /*cache=*/false,
+        [=, buildBody = std::move(buildBody)]() mutable -> Operation * {
+            OpBuilder b(ctx);
+            auto globalOp = b.create<LLVM::GlobalOp>(
+                loc, structTy, /*isConstant=*/true, LLVM::Linkage::Private,
+                StringRef(nameStr), Attribute{});
+            buildBody(b, globalOp);
+            return globalOp;
+        });
 }
 
 // Thin per-use wrapper: ensure the global exists (hits cache in Stage 2 since
@@ -2136,8 +2204,7 @@ static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location
     // silent: LLVM::AddressOfOp carries SymbolUserOpInterface, so a reference
     // to a global that does not exist is an MLIR verifier error here.
     // O(1): layouts live in evalLayoutNames, not symCache (see B1 above).
-    assert(runtime.evalLayoutNames.contains(
-               mlir::StringAttr::get(rewriter.getContext(), nameBuf)) &&
+    assert(runtime.evalLayoutNames.contains(StringRef(nameBuf)) &&
            "eval-layout not pre-materialized (plan §13.1)");
     return rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, StringRef(nameBuf));
 }
@@ -3206,16 +3273,24 @@ void eco::detail::preMaterializeClosureArtifacts(
 
     // Emits the descriptor beside a wrapper (Phase 2), plus its `$sat` entries
     // (Phase 3). Kept next to the wrapper creation so the two can never diverge.
+    // Plan 07 P11: a repeated (target, arity, result kind) is a no-op in
+    // every creator below (each returns on its cache hit before any side
+    // effect), so skip it before rebuilding names and re-uniquing lookups.
+    llvm::DenseSet<std::tuple<StringRef, int64_t, uint8_t>> materialized;
+    llvm::StringSet<> bareDescDone;
     auto materialize = [&](StringRef funcSymbol, int64_t arity, uint8_t rk,
                            Location loc) {
-        auto wrapper = getOrCreateWrapper(builder, module, funcSymbol, arity, loc,
-                                          typeConverter, runtime,
-                                          /*typedNewargs=*/true, rk);
+        if (!materialized.insert({funcSymbol, arity, rk}).second)
+            return;
+        std::string wrapperName;
+        getOrCreateWrapper(builder, module, funcSymbol, arity, loc,
+                           typeConverter, runtime,
+                           /*typedNewargs=*/true, rk, &wrapperName);
         bool isTyped = wrapperWillBeTypedNewargs(runtime, funcSymbol);
         uint64_t kinds =
             isTyped ? deriveAllParamKindsBitmap(runtime, funcSymbol, arity) : 0;
         llvm::SmallString<96> descName;
-        getOrCreateEvalDesc(builder, module, runtime, wrapper,
+        getOrCreateEvalDesc(builder, module, runtime, wrapperName,
                             /*targetSymbol=*/isTyped ? funcSymbol : StringRef(),
                             arity, kinds, rk, loc, descName);
     };
@@ -3246,12 +3321,20 @@ void eco::detail::preMaterializeClosureArtifacts(
         } else if (auto ac = dyn_cast<AllocateClosureOp>(op)) {
             // R7: bypass paths that store a bare function symbol still need
             // a descriptor, or `evaluator` would hold a raw code pointer.
+            // Same symbol => same descriptor name => the creator's cache
+            // hit (plan 07 P11): skip the name build + lookup.
+            if (!bareDescDone.insert(ac.getFunction()).second)
+                return;
             llvm::SmallString<96> n;
             getOrCreateEvalDescForFunc(builder, module, runtime,
                                        ac.getFunction(),
                                        ac.getArity(), /*kinds=*/0,
                                        /*resultKind=*/0, ac.getLoc(), n);
         } else if (auto mc = dyn_cast<MakeClosureOp>(op)) {
+            // Same symbol => same descriptor name => the creator's cache
+            // hit (plan 07 P11): skip the name build + lookup.
+            if (!bareDescDone.insert(mc.getFunction()).second)
+                return;
             llvm::SmallString<96> n;
             getOrCreateEvalDescForFunc(builder, module, runtime,
                                        mc.getFunction(),

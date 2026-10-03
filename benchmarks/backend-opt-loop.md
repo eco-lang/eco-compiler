@@ -2395,3 +2395,4 @@ MLIR passes (wall clock, may overlap with phases):
 | ES | 25.53 | -13.08 | 365.09 | 7,694,944 | 8.16 | — | 156.24 | WIN (codegen-changing: partition assignment) | SPL |
 | B4X | 25.59 | +0.06 | 361.69 | 7,691,812 | 8.32 | — | 154.09 | FLAT, kept (deletes work: 2,262 dead $cap bodies; −0.76 % binary) | ES |
 | P07 | 20.04 | -5.06 | 345.74 | 6,681,892 | 2.74 | — | 153.06 | WIN (byte-identical; plan 07, 11 steps) | B4X (re-measured 25.10) |
+| P11 | 19.69 | -0.35 | 347.68 | 6,734,428 | 2.52 | — | — | WIN (amendment-1: stage 2b 0.51→0.32 s; byte-identical) | P07 |

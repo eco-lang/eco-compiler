@@ -22,6 +22,7 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include <cstdlib>
+#include <functional>
 #include <vector>
 #include <mutex>
 
@@ -429,7 +430,8 @@ struct EcoRuntime {
     // Minted ONLY by the serial closure pre-pass, so no lock guards it
     // (plan §13.1: a full self-compile creates zero eval-layouts after
     // freeze(), so no Stage-2 worker ever writes here).
-    mutable llvm::DenseSet<mlir::StringAttr> evalLayoutNames;
+    // Keyed by the name string (plan 07 P11): no StringAttr uniquing per site.
+    mutable llvm::StringSet<> evalLayoutNames;
 
     /// Pre-scanned original function types (before LLVM type conversion).
     /// Maps function name -> original FunctionType (with eco::ValueType etc.).
@@ -466,6 +468,35 @@ struct EcoRuntime {
     /// freeze() is a completeness bug (an artifact a body pattern demands was
     /// not pre-created) and trips a debug assertion.
     mutable bool frozen = false;
+
+    /// Plan 07 P11. While set (only during the serial pre-materialization),
+    /// the artifact creators make each module-level op as a SHELL at its usual
+    /// position — every decision, name, dedup and cache entry stays serial —
+    /// and push the construction of its body / initializer here instead of
+    /// building it. EcoToLLVM then runs the jobs in parallel: each one builds
+    /// only inside its own op and only READS the (frozen) symbol cache.
+    mutable std::vector<std::function<void()>> *deferredBodies = nullptr;
+
+    /// Plan 07 P11: build in parallel, insert in order. While set (only
+    /// during the serial closure pre-pass), a creator that would insert a
+    /// module-level op at module START instead appends an entry here, in
+    /// creation order: either a builder that makes the op DETACHED (run
+    /// later, in parallel) or an op it already made (rare extern decls that
+    /// later lookups must see). EcoToLLVM then builds every entry and
+    /// push_front()s them in log order — the exact positions the eager
+    /// creators produced — and caches the ones marked `cache`. Names of
+    /// logged-but-unbuilt cached symbols sit in `pendingSymbols` so the
+    /// creators' dedup checks still see them.
+    struct TopLevelEntry {
+        std::function<mlir::Operation *()> make; // null when `op` is set
+        mlir::Operation *op = nullptr;           // made eagerly (detached)
+        bool cache = false;                      // cacheSymbol() on insert
+    };
+    mutable std::vector<TopLevelEntry> *topLog = nullptr;
+    mutable llvm::StringSet<> pendingSymbols;
+    bool isPending(llvm::StringRef name) const {
+        return topLog && pendingSymbols.contains(name);
+    }
 
     /// StringLiteralOp -> assigned literal index N (global "__eco_str_N").
     /// Filled by preMaterializeStringLiterals(); read by StringLiteralOpLowering.
@@ -1192,6 +1223,59 @@ struct PreMatDemand {
     // make_closure
     llvm::SmallVector<mlir::Operation *, 0> closure;
 };
+
+/// Build an artifact's body now, or defer it (see EcoRuntime::deferredBodies).
+/// `build` receives the builder to use and sets its own insertion point.
+template <typename Fn>
+inline void deferOrBuild(const EcoRuntime &runtime, mlir::MLIRContext *ctx,
+                         Fn &&build, mlir::OpBuilder &builder) {
+    if (runtime.deferredBodies) {
+        runtime.deferredBodies->push_back(
+            [ctx, build = std::forward<Fn>(build)]() mutable {
+                mlir::OpBuilder b(ctx);
+                build(b);
+            });
+        return;
+    }
+    mlir::OpBuilder::InsertionGuard guard(builder);
+    build(builder);
+}
+
+/// Create a module-level op that belongs at module START: now (inserted
+/// first, cached when `cache`), or — while runtime.topLog is set — logged for
+/// parallel construction and in-order insertion (returns a null op then).
+/// `make` builds the op DETACHED, body included, and returns it.
+template <typename OpT, typename Fn>
+inline OpT emitTopLevel(const EcoRuntime &runtime, llvm::StringRef name,
+                        bool cache, Fn &&make) {
+    if (runtime.topLog) {
+        EcoRuntime::TopLevelEntry e;
+        e.make = std::forward<Fn>(make);
+        e.cache = cache;
+        runtime.topLog->push_back(std::move(e));
+        if (cache)
+            runtime.pendingSymbols.insert(name);
+        return OpT();
+    }
+    mlir::Operation *op = make();
+    runtime.module.getBody()->push_front(op);
+    if (cache)
+        runtime.cacheSymbol(op);
+    return mlir::cast<OpT>(op);
+}
+
+/// An op made eagerly and DETACHED (cached now, so later lookups see it) that
+/// belongs at module START: inserted now, or logged for in-order insertion.
+inline void placeTopLevel(const EcoRuntime &runtime, mlir::Operation *op) {
+    runtime.cacheSymbol(op);
+    if (runtime.topLog) {
+        EcoRuntime::TopLevelEntry e;
+        e.op = op;
+        runtime.topLog->push_back(std::move(e));
+        return;
+    }
+    runtime.module.getBody()->push_front(op);
+}
 
 void collectPreMatDemand(mlir::MLIRContext *ctx,
                          llvm::ArrayRef<mlir::LLVM::LLVMFuncOp> funcs,

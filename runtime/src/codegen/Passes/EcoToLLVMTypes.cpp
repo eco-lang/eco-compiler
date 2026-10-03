@@ -200,17 +200,22 @@ void eco::detail::preMaterializeStringLiterals(
             auto globalOp = builder.create<LLVM::GlobalOp>(
                 op.getLoc(), arrayTy, /*isConstant=*/true,
                 LLVM::Linkage::Internal, globalName, Attribute{});
-            Block *initBlock =
-                builder.createBlock(&globalOp.getInitializerRegion());
-            builder.setInsertionPointToStart(initBlock);
-            SmallVector<int8_t> byteValues;
-            for (char c : value) byteValues.push_back(static_cast<int8_t>(c));
-            auto denseAttr = DenseElementsAttr::get(
-                RankedTensorType::get({static_cast<int64_t>(byteLen)}, i8Ty),
-                ArrayRef<int8_t>(byteValues));
-            Value arrayVal = builder.create<LLVM::ConstantOp>(
-                op.getLoc(), arrayTy, denseAttr);
-            builder.create<LLVM::ReturnOp>(op.getLoc(), arrayVal);
+            // Plan 07 P11: the initializer (the DenseElementsAttr) is built
+            // later, in parallel; `value` is attribute storage (stable).
+            Location loc = op.getLoc();
+            deferOrBuild(runtime, ctx, [=](OpBuilder &builder) mutable {
+                Block *initBlock =
+                    builder.createBlock(&globalOp.getInitializerRegion());
+                builder.setInsertionPointToStart(initBlock);
+                SmallVector<int8_t> byteValues;
+                for (char c : value) byteValues.push_back(static_cast<int8_t>(c));
+                auto denseAttr = DenseElementsAttr::get(
+                    RankedTensorType::get({static_cast<int64_t>(byteLen)}, i8Ty),
+                    ArrayRef<int8_t>(byteValues));
+                Value arrayVal =
+                    builder.create<LLVM::ConstantOp>(loc, arrayTy, denseAttr);
+                builder.create<LLVM::ReturnOp>(loc, arrayVal);
+            }, builder);
             return;
         }
 
@@ -220,17 +225,20 @@ void eco::detail::preMaterializeStringLiterals(
         auto globalOp = builder.create<LLVM::GlobalOp>(
             op.getLoc(), arrayTy, /*isConstant=*/true,
             LLVM::Linkage::Internal, globalName, Attribute{});
-        Block *initBlock =
-            builder.createBlock(&globalOp.getInitializerRegion());
-        builder.setInsertionPointToStart(initBlock);
-        SmallVector<int16_t> charValues;
-        for (uint16_t c : utf16) charValues.push_back(static_cast<int16_t>(c));
-        auto denseAttr = DenseElementsAttr::get(
-            RankedTensorType::get({static_cast<int64_t>(length)}, i16Ty),
-            ArrayRef<int16_t>(charValues));
-        Value arrayVal =
-            builder.create<LLVM::ConstantOp>(op.getLoc(), arrayTy, denseAttr);
-        builder.create<LLVM::ReturnOp>(op.getLoc(), arrayVal);
+        Location loc = op.getLoc();
+        deferOrBuild(runtime, ctx, [=](OpBuilder &builder) mutable {
+            Block *initBlock =
+                builder.createBlock(&globalOp.getInitializerRegion());
+            builder.setInsertionPointToStart(initBlock);
+            SmallVector<int16_t> charValues;
+            for (uint16_t c : utf16) charValues.push_back(static_cast<int16_t>(c));
+            auto denseAttr = DenseElementsAttr::get(
+                RankedTensorType::get({static_cast<int64_t>(length)}, i16Ty),
+                ArrayRef<int16_t>(charValues));
+            Value arrayVal =
+                builder.create<LLVM::ConstantOp>(loc, arrayTy, denseAttr);
+            builder.create<LLVM::ReturnOp>(loc, arrayVal);
+        }, builder);
     };
     for (const PreMatDemand &d : demand)
         for (Operation *o : d.literals)

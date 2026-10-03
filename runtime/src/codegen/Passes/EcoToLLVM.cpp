@@ -447,14 +447,66 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             // read-only cache during parallel Stage 2 (unused ones are stripped
             // below so codegen CHECK-NOT fixtures still pass).
             runtime.materializeAllRuntimeDecls(preBuilder);
+            ecoStageReport("2b.0 runtime decls");
             // Plan 07 P7: find every demand site in ONE parallel pass, then
             // create serially in the same order the four walks did.
             std::vector<PreMatDemand> demand;
             collectPreMatDemand(ctx, bodyFuncs, demand);
+            ecoStageReport("2b.1 demand collection");
+            // Plan 07 P11: build in parallel, insert in order. Every decision,
+            // counter, name and dedup stays serial and in program order.
+            //  - String literals: the global is placed now (a shell); its
+            //    initializer is deferred (runtime.deferredBodies).
+            //  - Closure artifacts (wrappers, `$sat` entries, descriptors,
+            //    eval layouts): logged in creation order (runtime.topLog),
+            //    built DETACHED in parallel, then push_front()ed in log order
+            //    — the positions the eager creators gave them — and cached.
+            // The jobs only READ the symbol cache, so it is frozen meanwhile
+            // (a miss that would create a symbol trips cacheSymbol's assert).
+            std::vector<std::function<void()>> bodies;
+            std::vector<EcoRuntime::TopLevelEntry> topLog;
+            const char *defEnv = ::getenv("ECO_PREMAT_PARALLEL");
+            const bool deferBodies =
+                ctx->isMultithreadingEnabled() &&
+                !(defEnv && defEnv[0] == '0' && defEnv[1] == '\0');
+            if (deferBodies) {
+                runtime.deferredBodies = &bodies;
+                runtime.topLog = &topLog;
+            }
             preMaterializeStringLiterals(preBuilder, runtime, demand);
+            ecoStageReport("2b.2 string literals");
             preMaterializeStringCases(preBuilder, runtime, demand);
+            ecoStageReport("2b.3 string cases");
             preMaterializeClosureArtifacts(preBuilder, runtime, &typeConverter,
                                            demand);
+            ecoStageReport("2b.4 closure artifacts (plan)");
+            runtime.deferredBodies = nullptr;
+            runtime.topLog = nullptr;
+            if (!bodies.empty() || !topLog.empty()) {
+                std::vector<Operation *> made(topLog.size());
+                runtime.freeze();
+                const size_t nb = bodies.size();
+                eco::forEachChunk(ctx, nb + topLog.size(),
+                                  [&](size_t lo, size_t hi) {
+                    for (size_t i = lo; i < hi; ++i) {
+                        if (i < nb) {
+                            bodies[i]();
+                            continue;
+                        }
+                        auto &e = topLog[i - nb];
+                        made[i - nb] = e.op ? e.op : e.make();
+                    }
+                });
+                runtime.frozen = false;
+                Block *top = module.getBody();
+                for (size_t i = 0; i < topLog.size(); ++i) {
+                    top->push_front(made[i]);
+                    if (topLog[i].cache)
+                        runtime.cacheSymbol(made[i]);
+                }
+                runtime.pendingSymbols.clear();
+            }
+            ecoStageReport("2b.5 artifacts built (parallel) + inserted");
         }
         // Flip read-only: from here every getOrCreate*/wrapper/eval-layout/string
         // artifact MUST hit the cache; any create trips freeze()'s cacheSymbol
