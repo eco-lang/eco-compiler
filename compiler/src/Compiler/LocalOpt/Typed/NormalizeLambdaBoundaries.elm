@@ -1,8 +1,8 @@
 module Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries exposing
     ( LambdaKind(..)
     , RenameCtx, RenameEnv
-    , normalizeLocalGraph
     , renameExpr
+    , normalizeLocalGraph
     )
 
 {-| Lambda Boundary Normalization Pass

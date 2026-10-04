@@ -1,8 +1,7 @@
 module Compiler.MonoSolver.Store exposing
-    ( loadType, monoTypeToVar, monoTypeToVarS, unifyStep, zonkToMono
+    ( loadType, monoTypeToVar, unifyStep, zonkToMono
     , rezonkSettled
-    , LoadCtx, SetWriteCtx, addSlotSource, unifyStrict, arrowParts, arrowSetSlot, classifyDirect, foldSetWrites, loadTypeC, loadTypeS, loadTypeIsolated, loadTypeIsolatedWithArrows, loadTypeWithArrows, poisonArrowSets, qInferenceCensus, qOnFor, qShadowCensus, resolveSlotMembers, resolveSlotMembersWith, setWriteCtx, testLoadCtx, unifyBestEffort, unifyBestEffortStoreS, unifyStrictS, unifySlotWithSet, unifySlotWithSetC
-    , groundHash, groundNoArrow, groundNoArrowWith, aliasKeyOf, aliasBodyEligible
+    , LoadCtx, SetWriteCtx, addSlotSource, aliasBodyEligible, aliasKeyOf, arrowParts, arrowSetSlot, classifyDirect, foldSetWrites, groundHash, groundNoArrow, groundNoArrowWith, loadTypeC, loadTypeIsolated, loadTypeIsolatedWithArrows, loadTypeS, loadTypeWithArrows, monoTypeToVarS, poisonArrowSets, qInferenceCensus, qOnFor, qShadowCensus, resolveSlotMembers, resolveSlotMembersWith, setWriteCtx, testLoadCtx, unifyBestEffort, unifyBestEffortStoreS, unifySlotWithSet, unifySlotWithSetC, unifyStrict, unifyStrictS
     )
 
 {-| The solver store operations: load a canonical type into the union-find,
@@ -32,15 +31,15 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.Data.Id as Id
 import Compiler.Elm.ModuleName as ModuleName
-import Data.HashMap as HashMap
-import Eco.Hash
 import Compiler.MonoSolver.Engine as Engine exposing (Failure(..), Step)
 import Compiler.Type.Error as TErr
 import Compiler.Type.Type as Type
 import Compiler.Type.Unify as Unify
 import Compiler.Type.UnionFind as UF
 import Compiler.Type.Vars as Vars
+import Data.HashMap as HashMap
 import Dict
+import Eco.Hash
 import System.TypeCheck.IO as IO
 
 
@@ -230,7 +229,7 @@ loadTypeS canType s =
 
 loadType : Can.Type TypeIds.MVarId -> Step Vars.Variable
 loadType canType s =
-    (loadTypeS canType s)
+    loadTypeS canType s
 
 
 {-| `loadType` additionally returning the minted arrow set slots in minting
@@ -242,11 +241,11 @@ annotation Points (the Σ self-reference rule).
 loadTypeWithArrows : Can.Type TypeIds.MVarId -> Engine.S -> ( ( Vars.Variable, Array Vars.Variable ), Engine.S )
 loadTypeWithArrows canType s =
     -- Step 10e: A1 explicit trailing-S, tuple-literal leaf.
-        let
-            ( v, c ) =
-                loadTypeC s.env.superStatic canType (sharedLoadCtx s)
-        in
-        ( ( v, Array.fromList (List.reverse c.arrowSlots) ), writeBackShared c s )
+    let
+        ( v, c ) =
+            loadTypeC s.env.superStatic canType (sharedLoadCtx s)
+    in
+    ( ( v, Array.fromList (List.reverse c.arrowSlots) ), writeBackShared c s )
 
 
 {-| `loadTypeIsolated` additionally returning the minted arrow set slots in
@@ -256,11 +255,11 @@ for the ordinal contract).
 loadTypeIsolatedWithArrows : Can.Type TypeIds.MVarId -> Engine.S -> ( ( Vars.Variable, Array Vars.Variable ), Engine.S )
 loadTypeIsolatedWithArrows canType s =
     -- Step 10e: A1 explicit trailing-S, tuple-literal leaf.
-        let
-            ( v, c ) =
-                loadTypeC s.env.superStatic canType (isolatedLoadCtx s)
-        in
-        ( ( v, Array.fromList (List.reverse c.arrowSlots) ), writeBackIsolated c s )
+    let
+        ( v, c ) =
+            loadTypeC s.env.superStatic canType (isolatedLoadCtx s)
+    in
+    ( ( v, Array.fromList (List.reverse c.arrowSlots) ), writeBackIsolated c s )
 
 
 {-| D8: load a scheme with an ISOLATED (empty) memo so its vars do not share
@@ -273,11 +272,11 @@ Points minted in the same order; store + revMemo updated; memo unchanged).
 loadTypeIsolated : Can.Type TypeIds.MVarId -> Engine.S -> ( Vars.Variable, Engine.S )
 loadTypeIsolated canType s =
     -- Step 10e: A1 explicit trailing-S, tuple-literal leaf.
-        let
-            ( v, c ) =
-                loadTypeC s.env.superStatic canType (isolatedLoadCtx s)
-        in
-        ( v, writeBackIsolated c s )
+    let
+        ( v, c ) =
+            loadTypeC s.env.superStatic canType (isolatedLoadCtx s)
+    in
+    ( v, writeBackIsolated c s )
 
 
 loadTypeC : Dict.Dict Int Vars.SuperType -> Can.Type TypeIds.MVarId -> LoadCtx -> ( Vars.Variable, LoadCtx )
@@ -798,7 +797,7 @@ monoTypeToVarS monoType s =
 
 monoTypeToVar : Mono.MonoType -> Step Vars.Variable
 monoTypeToVar monoType s =
-    (monoTypeToVarS monoType s)
+    monoTypeToVarS monoType s
 
 
 freshVarS : Vars.Content -> IO.State -> ( Vars.Variable, IO.State )
@@ -1166,6 +1165,7 @@ abort is a process abort with the same rendered text.
 
 `ctx` stays a thunk (D3): the diagnostic's recursive `canKind`/`monoKind` walks
 are built ONLY on the aborting path, never on the ~100 %-success hot path.
+
 -}
 unifyStrictS : (() -> String) -> Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 unifyStrictS ctx v1 v2 s0 =
@@ -2275,7 +2275,6 @@ poisonArrowSets v0 s0 =
 
 poisonGoC : Dict.Dict Int () -> List Vars.Variable -> SetWriteCtx -> SetWriteCtx
 poisonGoC seen worklist c0 =
-
     case worklist of
         [] ->
             c0
@@ -2511,50 +2510,50 @@ zonkToMono : Vars.Variable -> Engine.S -> ( Mono.MonoType, Engine.S )
 zonkToMono var s =
     -- Step 10e: A1 explicit trailing-S (was `\s -> …`), so every call is
     -- saturated and the result pair is `$sret`-promotable.
-        let
-            lssAcc =
-                -- Report-scoped since step 7: the accumulator holds COUNTERS
-                -- only, so off report there is nothing to accumulate and every
-                -- bump becomes a `case` on a constant `Nothing`. The policy
-                -- bits it used to carry are `lssOn` / `maxSetSize` on the ctx.
-                if s.env.lss.enabled && s.env.lss.report then
-                    Just { zonked = 0, widenedBySize = 0, hist = Dict.empty, widenedHist = Dict.empty, grounded = 0, groundingDeferred = 0, mixedFlex = 0, mixedFlexGc = 0, causeSet = 0, causePoison = 0, causeFlex = 0, causeEdgeSet = 0, causeEdgeEmpty = 0, causeEdgeTop = 0, causeUnknown = 0, multiSets = Dict.empty, varArrows = Dict.empty, setArrows = Dict.empty }
+    let
+        lssAcc =
+            -- Report-scoped since step 7: the accumulator holds COUNTERS
+            -- only, so off report there is nothing to accumulate and every
+            -- bump becomes a `case` on a constant `Nothing`. The policy
+            -- bits it used to carry are `lssOn` / `maxSetSize` on the ctx.
+            if s.env.lss.enabled && s.env.lss.report then
+                Just { zonked = 0, widenedBySize = 0, hist = Dict.empty, widenedHist = Dict.empty, grounded = 0, groundingDeferred = 0, mixedFlex = 0, mixedFlexGc = 0, causeSet = 0, causePoison = 0, causeFlex = 0, causeEdgeSet = 0, causeEdgeEmpty = 0, causeEdgeTop = 0, causeUnknown = 0, multiSets = Dict.empty, varArrows = Dict.empty, setArrows = Dict.empty }
 
-                else
-                    Nothing
-        in
-        case zonkToMonoC s.superTable s.revMemo var { store = s.store, next = s.nextMVarId, lssOn = s.env.lss.enabled, maxSetSize = s.env.lss.maxSetSize, lss = lssAcc, ecoReads = [], intern = s.intern, memberTable = s.lssMemberTable, nextMemberId = s.nextMemberId, arrowOf = s.itemAux.arrowOfSlot, varOf = Dict.empty, nextVar = 0 } of
-            ( mt, c ) ->
-                let
-                    s1 =
-                        case c.ecoReads of
-                            [] ->
-                                { s | store = c.store, nextMVarId = c.next, intern = c.intern, lssMemberTable = c.memberTable, nextMemberId = c.nextMemberId }
+            else
+                Nothing
+    in
+    case zonkToMonoC s.superTable s.revMemo var { store = s.store, next = s.nextMVarId, lssOn = s.env.lss.enabled, maxSetSize = s.env.lss.maxSetSize, lss = lssAcc, ecoReads = [], intern = s.intern, memberTable = s.lssMemberTable, nextMemberId = s.nextMemberId, arrowOf = s.itemAux.arrowOfSlot, varOf = Dict.empty, nextVar = 0 } of
+        ( mt, c ) ->
+            let
+                s1 =
+                    case c.ecoReads of
+                        [] ->
+                            { s | store = c.store, nextMVarId = c.next, intern = c.intern, lssMemberTable = c.memberTable, nextMemberId = c.nextMemberId }
 
-                            reads ->
-                                let
-                                    aux0 =
-                                        s.itemAux
-                                in
-                                { s | store = c.store, nextMVarId = c.next, intern = c.intern, lssMemberTable = c.memberTable, nextMemberId = c.nextMemberId, itemAux = { aux0 | ecoResidualReads = reads ++ aux0.ecoResidualReads } }
-
-                    -- §3.2: log the variable so `rezonkSettled` can replay this
-                    -- exact readback at `finishNode`. Report-gated, so the
-                    -- default path pays nothing. `rezonkSettled` calls
-                    -- `zonkToMonoC` directly and therefore never re-enters here
-                    -- — the log cannot feed itself.
-                    s2 =
-                        if s.env.lss.report then
+                        reads ->
                             let
-                                aux1 =
-                                    s1.itemAux
+                                aux0 =
+                                    s.itemAux
                             in
-                            { s1 | itemAux = { aux1 | zonkLog = var :: aux1.zonkLog } }
+                            { s | store = c.store, nextMVarId = c.next, intern = c.intern, lssMemberTable = c.memberTable, nextMemberId = c.nextMemberId, itemAux = { aux0 | ecoResidualReads = reads ++ aux0.ecoResidualReads } }
 
-                        else
-                            s1
-                in
-                ( mt, foldZonkStats c s2 )
+                -- §3.2: log the variable so `rezonkSettled` can replay this
+                -- exact readback at `finishNode`. Report-gated, so the
+                -- default path pays nothing. `rezonkSettled` calls
+                -- `zonkToMonoC` directly and therefore never re-enters here
+                -- — the log cannot feed itself.
+                s2 =
+                    if s.env.lss.report then
+                        let
+                            aux1 =
+                                s1.itemAux
+                        in
+                        { s1 | itemAux = { aux1 | zonkLog = var :: aux1.zonkLog } }
+
+                    else
+                        s1
+            in
+            ( mt, foldZonkStats c s2 )
 
 
 {-| POST-SETTLE RE-ZONK (plans/lss-post-mono-architecture.md §3.2, Item 2).
@@ -2649,33 +2648,33 @@ rezonkSettled s =
                         -- back, so the replay's path compression does not
                         -- survive either.
                         Engine.rollbackStore
-                        { sM
-                            | lssStats =
-                                { stats
-                                    | sigStats =
-                                        { sig
-                                            | settled =
-                                                { items = prev.items + 1
-                                                , zonked = prev.zonked + acc.zonked
-                                                , hist = Dict.foldl (\k v h -> Dict.insert k (v + Maybe.withDefault 0 (Dict.get k h)) h) prev.hist acc.hist
-                                                , widenedBySize = prev.widenedBySize + acc.widenedBySize
-                                                , causeTop = prev.causeTop + acc.causePoison + acc.causeEdgeTop
-                                                , causeVar = prev.causeVar + acc.causeFlex + acc.causeEdgeEmpty
-                                                , varArrows =
-                                                    Dict.foldl
-                                                        (\akey n tbl -> Dict.insert akey (n + Maybe.withDefault 0 (Dict.get akey tbl)) tbl)
-                                                        prev.varArrows
-                                                        acc.varArrows
-                                                , setArrows =
-                                                    Dict.foldl
-                                                        (\akey n tbl -> Dict.insert akey (n + Maybe.withDefault 0 (Dict.get akey tbl)) tbl)
-                                                        prev.setArrows
-                                                        acc.setArrows
-                                                , scratchDropped = prev.scratchDropped
-                                                }
-                                        }
-                                }
-                        }
+                            { sM
+                                | lssStats =
+                                    { stats
+                                        | sigStats =
+                                            { sig
+                                                | settled =
+                                                    { items = prev.items + 1
+                                                    , zonked = prev.zonked + acc.zonked
+                                                    , hist = Dict.foldl (\k v h -> Dict.insert k (v + Maybe.withDefault 0 (Dict.get k h)) h) prev.hist acc.hist
+                                                    , widenedBySize = prev.widenedBySize + acc.widenedBySize
+                                                    , causeTop = prev.causeTop + acc.causePoison + acc.causeEdgeTop
+                                                    , causeVar = prev.causeVar + acc.causeFlex + acc.causeEdgeEmpty
+                                                    , varArrows =
+                                                        Dict.foldl
+                                                            (\akey n tbl -> Dict.insert akey (n + Maybe.withDefault 0 (Dict.get akey tbl)) tbl)
+                                                            prev.varArrows
+                                                            acc.varArrows
+                                                    , setArrows =
+                                                        Dict.foldl
+                                                            (\akey n tbl -> Dict.insert akey (n + Maybe.withDefault 0 (Dict.get akey tbl)) tbl)
+                                                            prev.setArrows
+                                                            acc.setArrows
+                                                    , scratchDropped = prev.scratchDropped
+                                                    }
+                                            }
+                                    }
+                            }
 
 
 foldZonkStats : ZonkCtx -> Engine.S -> Engine.S
@@ -3356,7 +3355,7 @@ hasLssAcc c =
     c.lssOn
 
 
-{-| `resolveSlotMembers` with the LSS_026(a) honest-sources rule as an explicit
+{-| `resolveSlotMembers` with the LSS\_026(a) honest-sources rule as an explicit
 argument. Production always passes `True` — the rule has been unconditional
 since the 2026-08-23 escalation — and the store-level pins pass `False` to
 assert the shape the rule exists to reject. It used to be a field on the zonk
@@ -3834,6 +3833,7 @@ classifyAliasPlain topKind s aliasSubst args aliasType =
                             ( t, s2 )
 
 
+
 -- ====== STEP 4: GROUND, ARROW-FREE ALIAS SUBTREES ======
 
 
@@ -4060,7 +4060,6 @@ groundNoArrowWith aliasMemo t =
 
         Can.TLambda _ _ _ ->
             False
-
 
 
 classifyList : Int -> Engine.S -> Dict.Dict Int Mono.MonoType -> List (Can.Type TypeIds.MVarId) -> ( List Mono.MonoType, Engine.S )

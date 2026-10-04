@@ -255,12 +255,12 @@ restrictToSccEdges edges =
                         Graph.CyclicSCC vs ->
                             ( nextComp + 1, List.foldl (\v a -> Array.set v nextComp a) acc vs )
                 )
-                ( 0, Array.repeat n (-1) )
+                ( 0, Array.repeat n -1 )
                 (Graph.stronglyConnCompInt { fwd = fwd, trans = trans, selfLoops = selfLoops, size = n })
                 |> Tuple.second
 
         compOf v =
-            Maybe.withDefault (-1) (Array.get v component)
+            Maybe.withDefault -1 (Array.get v component)
     in
     Array.indexedMap
         (\src entry ->

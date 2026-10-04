@@ -477,6 +477,7 @@ nothing unifies inside a scope and the first visit writes every generated name
 back into the descriptors, so a second conversion of the same root would build
 an equal tree and call no fresh-name generator: skipping it leaves the name
 state and the output unchanged.
+
 -}
 variableToCanType : Variable -> IO (Can.Type Name)
 variableToCanType variable =

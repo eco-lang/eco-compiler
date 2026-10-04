@@ -753,7 +753,6 @@ type alias StampCtx =
     -- output — only what the report can say afterwards. The scalar counters
     -- are unaffected and always collected.
     , census : Bool
-
     }
 
 
@@ -850,18 +849,18 @@ abiCloningPass census ((Mono.MonoGraph record) as graph) =
             specsByGlobal =
                 Tuple.second
                     (Array.foldl
-                            (\maybeEntry ( i, acc ) ->
-                                case maybeEntry of
-                                    Just ( global, specType ) ->
-                                        ( i + 1
-                                        , Dict.update (Mono.toComparableGlobal global)
-                                            (\v -> Just (( i, specType ) :: Maybe.withDefault [] v))
-                                            acc
-                                        )
+                        (\maybeEntry ( i, acc ) ->
+                            case maybeEntry of
+                                Just ( global, specType ) ->
+                                    ( i + 1
+                                    , Dict.update (Mono.toComparableGlobal global)
+                                        (\v -> Just (( i, specType ) :: Maybe.withDefault [] v))
+                                        acc
+                                    )
 
-                                    Nothing ->
-                                        ( i + 1, acc )
-                            )
+                                Nothing ->
+                                    ( i + 1, acc )
+                        )
                         ( 0, Dict.empty )
                         record.registry.reverseMapping
                     )
@@ -2733,61 +2732,61 @@ type alias PapTarget =
 postSettleTarget : Int -> Mono.MonoExpr -> Int -> StampCtx -> PostSettleOutcome
 postSettleTarget m func argCount ctx =
     case Dict.get m ctx.origins of
-            Nothing ->
-                -- No origin recorded at all. `lssMemberOrigins` covers
-                -- STANDALONE members only, so this is a lambda (`l|`), a PAP
-                -- (`p|`) or something else with no instance in the index —
-                -- classes that want different repairs, hence the prefix split.
-                PsNotCandidate ("g1absent" ++ Maybe.withDefault "?" (Maybe.map (String.left 1) (Dict.get m ctx.memberKinds)))
+        Nothing ->
+            -- No origin recorded at all. `lssMemberOrigins` covers
+            -- STANDALONE members only, so this is a lambda (`l|`), a PAP
+            -- (`p|`) or something else with no instance in the index —
+            -- classes that want different repairs, hence the prefix split.
+            PsNotCandidate ("g1absent" ++ Maybe.withDefault "?" (Maybe.map (String.left 1) (Dict.get m ctx.memberKinds)))
 
-            Just (Mono.OriginPap g k) ->
-                -- LSS_040 (plans/lss-pap-fast-stamp.md §3.2). ONE guard chain
-                -- serves both the census and the stamp: `papResolve` returns
-                -- the target when every §3.3 guard passes AND the census key
-                -- either way, so what was measured is what ships.
-                case papResolve g k func argCount ctx of
-                    ( Just target, _ ) ->
-                        PsStampPap target
+        Just (Mono.OriginPap g k) ->
+            -- LSS_040 (plans/lss-pap-fast-stamp.md §3.2). ONE guard chain
+            -- serves both the census and the stamp: `papResolve` returns
+            -- the target when every §3.3 guard passes AND the census key
+            -- either way, so what was measured is what ships.
+            case papResolve g k func argCount ctx of
+                ( Just target, _ ) ->
+                    PsStampPap target
 
-                    ( Nothing, key ) ->
-                        PsNotCandidate key
+                ( Nothing, key ) ->
+                    PsNotCandidate key
 
-            Just origin ->
-                case originTarget origin of
-                    Nothing ->
-                        -- A kernel or accessor member. Both name a KNOWN
-                        -- symbol and both are capture-free, which is the
-                        -- property E9.5's soundness argument actually rests on
-                        -- — so this is a candidate population (R2), not a hard
-                        -- no.
-                        PsNotCandidate ("g1" ++ originKindName origin)
+        Just origin ->
+            case originTarget origin of
+                Nothing ->
+                    -- A kernel or accessor member. Both name a KNOWN
+                    -- symbol and both are capture-free, which is the
+                    -- property E9.5's soundness argument actually rests on
+                    -- — so this is a candidate population (R2), not a hard
+                    -- no.
+                    PsNotCandidate ("g1" ++ originKindName origin)
 
-                    Just ( target, isCtor ) ->
-                        case func of
-                            Mono.MonoVarLocal _ calleeType ->
-                                postSettleArity target isCtor calleeType argCount ctx
+                Just ( target, isCtor ) ->
+                    case func of
+                        Mono.MonoVarLocal _ calleeType ->
+                            postSettleArity target isCtor calleeType argCount ctx
 
-                            _ ->
-                                -- `g2global` is the SUCCESS case counted as a
-                                -- failure, not a missed opportunity: keying
-                                -- splits the HOF per lambda set and
-                                -- monomorphization then substitutes the global
-                                -- straight into the specialized body, so the
-                                -- callee is a `MonoVarGlobal` that ALREADY
-                                -- lowers to a direct `eco.call`. AbiCloning
-                                -- consults every call site and records
-                                -- "couldn't stamp" for calls that need no
-                                -- stamping. Verified by probe 2026-09-07: a
-                                -- recursive HOF at two sites with two
-                                -- non-inlinable globals emits
-                                -- `eco.call @Main_slowInc_$_3` directly, with
-                                -- `declinedNoInstance=2 g2global=2`.
-                                --
-                                -- An earlier "R3" admitted this shape and was
-                                -- REMOVED: it rewrote 10,193 sites, changed 43
-                                -- of them (picking an equivalent lower-numbered
-                                -- spec), and moved dispatch by exactly zero.
-                                PsNotCandidate ("g2" ++ calleeShape func)
+                        _ ->
+                            -- `g2global` is the SUCCESS case counted as a
+                            -- failure, not a missed opportunity: keying
+                            -- splits the HOF per lambda set and
+                            -- monomorphization then substitutes the global
+                            -- straight into the specialized body, so the
+                            -- callee is a `MonoVarGlobal` that ALREADY
+                            -- lowers to a direct `eco.call`. AbiCloning
+                            -- consults every call site and records
+                            -- "couldn't stamp" for calls that need no
+                            -- stamping. Verified by probe 2026-09-07: a
+                            -- recursive HOF at two sites with two
+                            -- non-inlinable globals emits
+                            -- `eco.call @Main_slowInc_$_3` directly, with
+                            -- `declinedNoInstance=2 g2global=2`.
+                            --
+                            -- An earlier "R3" admitted this shape and was
+                            -- REMOVED: it rewrote 10,193 sites, changed 43
+                            -- of them (picking an equivalent lower-numbered
+                            -- spec), and moved dispatch by exactly zero.
+                            PsNotCandidate ("g2" ++ calleeShape func)
 
 
 {-| G1: the two origin kinds E9.5 can name a direct call to today.

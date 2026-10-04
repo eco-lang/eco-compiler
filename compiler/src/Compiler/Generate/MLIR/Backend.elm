@@ -1,4 +1,7 @@
-module Compiler.Generate.MLIR.Backend exposing (backend, constThunkReport, generateMlirModule, streamMlirToWriter, streamMlirBytecode)
+module Compiler.Generate.MLIR.Backend exposing
+    ( backend, generateMlirModule, streamMlirToWriter, streamMlirBytecode
+    , constThunkReport
+    )
 
 {-| MLIR code generation backend for the Monomorphized IR.
 

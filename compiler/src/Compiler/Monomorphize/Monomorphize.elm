@@ -1,7 +1,6 @@
 module Compiler.Monomorphize.Monomorphize exposing
     ( monomorphize
-    , monomorphizeWithLimits
-    , monomorphizeWithLimitsAssigned
+    , monomorphizeWithLimits, monomorphizeWithLimitsAssigned
     )
 
 {-| This module transforms a TypedOptimized.GlobalGraph into a Monomorphized.MonoGraph

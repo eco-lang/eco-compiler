@@ -421,9 +421,6 @@ mkEnv lookup facts =
 -- (`plans/post-inline-dead-spec-prune.md`) collects the SAME relation: a
 -- second every-`MonoVarGlobal` walk that could drift from this one is exactly
 -- the hazard that plan's §3.1 records.
-
-
-
 -- SCC COMPUTATION (copied from MonoInlineSimplify.buildCallGraph, modified to
 -- return (indexToSpecId, sccs) — reverse-topological, callees first)
 

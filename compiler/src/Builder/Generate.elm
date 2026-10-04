@@ -1033,44 +1033,44 @@ monoPipelineFrom ecoConfig stats globalTypeEnv assigned =
         FEStats.PhaseMono
         (\() ->
             case selectMonomorphizer ecoConfig globalTypeEnv assigned of
-            Err err ->
-                Task.throw (Exit.GenerateMonomorphizationError err)
+                Err err ->
+                    Task.throw (Exit.GenerateMonomorphizationError err)
 
-            Ok ( monoGraph0, maybeLssReport ) ->
-                (case maybeLssReport of
-                    Just report ->
-                        -- LSS census (lss.report / ECO_MONO_LSS_REPORT=1):
-                        -- stderr side-channel, never stdout (MLIR text mode
-                        -- owns stdout).
-                        Task.io (System.IO.writeLn System.IO.stderr report)
-                            |> Task.map (\_ -> monoGraph0)
+                Ok ( monoGraph0, maybeLssReport ) ->
+                    (case maybeLssReport of
+                        Just report ->
+                            -- LSS census (lss.report / ECO_MONO_LSS_REPORT=1):
+                            -- stderr side-channel, never stdout (MLIR text mode
+                            -- owns stdout).
+                            Task.io (System.IO.writeLn System.IO.stderr report)
+                                |> Task.map (\_ -> monoGraph0)
 
-                    Nothing ->
-                        Task.succeed monoGraph0
-                )
-                    |> Task.andThen
-                        (\g ->
-                            -- MONO_029 layout-agreement validator
-                            -- (ECO_MONO_VALIDATE=1): engine-agnostic, fails
-                            -- the compile on any layout-disagreeing views.
-                            if ecoConfig.mono.validate then
-                                case ValidateLayout.validate g of
-                                    [] ->
-                                        Task.succeed g
+                        Nothing ->
+                            Task.succeed monoGraph0
+                    )
+                        |> Task.andThen
+                            (\g ->
+                                -- MONO_029 layout-agreement validator
+                                -- (ECO_MONO_VALIDATE=1): engine-agnostic, fails
+                                -- the compile on any layout-disagreeing views.
+                                if ecoConfig.mono.validate then
+                                    case ValidateLayout.validate g of
+                                        [] ->
+                                            Task.succeed g
 
-                                    violations ->
-                                        Task.throw
-                                            (Exit.GenerateMonomorphizationError
-                                                ("ECO_MONO_VALIDATE: "
-                                                    ++ String.fromInt (List.length violations)
-                                                    ++ " MONO_029 layout violations\n"
-                                                    ++ String.join "\n" violations
+                                        violations ->
+                                            Task.throw
+                                                (Exit.GenerateMonomorphizationError
+                                                    ("ECO_MONO_VALIDATE: "
+                                                        ++ String.fromInt (List.length violations)
+                                                        ++ " MONO_029 layout violations\n"
+                                                        ++ String.join "\n" violations
+                                                    )
                                                 )
-                                            )
 
-                            else
-                                Task.succeed g
-                        )
+                                else
+                                    Task.succeed g
+                            )
         )
         -- Hand off to a separate function so typedGraph and globalTypeEnv go out of scope
         |> Task.andThen (runInlineSimplifyPhase ecoConfig stats)
@@ -1102,67 +1102,67 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
     FEStats.withPhaseLazy stats
         FEStats.PhaseInlineSimplify
         (\() ->
-         let
-            -- list.chunks: keep the shunted combinators' call sites intact —
-            -- their tiny delegate bodies (reverse = foldl cons [] etc.) are
-            -- otherwise threshold-inlined everywhere, and the generation-time
-            -- kernel shunt (Generate.MLIR.Functions.listChunksShunt) only
-            -- rewrites the spec definitions, not pasted copies.
-            chunkBlacklist =
-                if ecoConfig.list.chunks then
-                    [ "List.reverse", "List.append", "List.concat", "List.take", "List.drop" ]
+            let
+                -- list.chunks: keep the shunted combinators' call sites intact —
+                -- their tiny delegate bodies (reverse = foldl cons [] etc.) are
+                -- otherwise threshold-inlined everywhere, and the generation-time
+                -- kernel shunt (Generate.MLIR.Functions.listChunksShunt) only
+                -- rewrites the spec definitions, not pasted copies.
+                chunkBlacklist =
+                    if ecoConfig.list.chunks then
+                        [ "List.reverse", "List.append", "List.concat", "List.take", "List.drop" ]
 
-                else
-                    []
+                    else
+                        []
 
-            -- list.mapTemplate: same reason, one rung up. The template
-            -- replaces the `List.map` spec DEFINITION at generation time, so a
-            -- foldr body already pasted into a caller would keep the old
-            -- lowering and silently escape the template. Blacklisting is
-            -- name-level and wholesale by necessity: entries are qualified
-            -- source names matched by `globalToQualifiedName`, and this pass
-            -- runs BEFORE GlobalOpt/AbiCloning, so the licensed SET does not
-            -- exist yet and per-spec blacklisting is impossible. Consequence,
-            -- stated honestly: with the flag on, UNLICENSED map sites are
-            -- behaviourally identical to today but not necessarily
-            -- byte-identical — their specs stop being inline candidates.
-            -- Byte-identity is certified flag-OFF only (plan Gate 2).
-            mapTemplateBlacklist =
-                if ecoConfig.list.mapTemplate then
-                    [ "List.map" ]
+                -- list.mapTemplate: same reason, one rung up. The template
+                -- replaces the `List.map` spec DEFINITION at generation time, so a
+                -- foldr body already pasted into a caller would keep the old
+                -- lowering and silently escape the template. Blacklisting is
+                -- name-level and wholesale by necessity: entries are qualified
+                -- source names matched by `globalToQualifiedName`, and this pass
+                -- runs BEFORE GlobalOpt/AbiCloning, so the licensed SET does not
+                -- exist yet and per-spec blacklisting is impossible. Consequence,
+                -- stated honestly: with the flag on, UNLICENSED map sites are
+                -- behaviourally identical to today but not necessarily
+                -- byte-identical — their specs stop being inline candidates.
+                -- Byte-identity is certified flag-OFF only (plan Gate 2).
+                mapTemplateBlacklist =
+                    if ecoConfig.list.mapTemplate then
+                        [ "List.map" ]
 
-                else
-                    []
+                    else
+                        []
 
-            effectiveInlineConfig =
-                case chunkBlacklist ++ mapTemplateBlacklist of
-                    [] ->
-                        ecoConfig.inline
+                effectiveInlineConfig =
+                    case chunkBlacklist ++ mapTemplateBlacklist of
+                        [] ->
+                            ecoConfig.inline
 
-                    extra ->
-                        let
-                            cfg =
-                                ecoConfig.inline
-                        in
-                        { cfg | blacklist = cfg.blacklist ++ extra }
+                        extra ->
+                            let
+                                cfg =
+                                    ecoConfig.inline
+                            in
+                            { cfg | blacklist = cfg.blacklist ++ extra }
 
-            -- `inline.postMono` (ECO_INLINE_POST_MONO=0) is the EARLY arm of
-            -- the position A/B (plans/pre-mono-inline-simplify.md §7): it
-            -- skips this pass so the pre-mono `InlineSimplify` is the only
-            -- inliner running. DEFAULT-ON, so the default path is unchanged.
-            ( inlinedGraph, inlineMetrics ) =
-                if ecoConfig.inline.postMono then
-                    MonoInlineSimplify.optimize effectiveInlineConfig monoGraph0
+                -- `inline.postMono` (ECO_INLINE_POST_MONO=0) is the EARLY arm of
+                -- the position A/B (plans/pre-mono-inline-simplify.md §7): it
+                -- skips this pass so the pre-mono `InlineSimplify` is the only
+                -- inliner running. DEFAULT-ON, so the default path is unchanged.
+                ( inlinedGraph, inlineMetrics ) =
+                    if ecoConfig.inline.postMono then
+                        MonoInlineSimplify.optimize effectiveInlineConfig monoGraph0
 
-                else
-                    ( monoGraph0, MonoInlineSimplify.emptyMetrics )
-         in
-         -- E-a (plans/frontend-heap-release.md §7.4): the prune and the census
-         -- run in the NEXT step. This thunk captures `monoGraph0`, and the
-         -- running callback stays rooted until it returns, so doing the prune
-         -- here would keep the pre-inline graph live through it.
-         Task.succeed ( inlinedGraph, inlineMetrics )
-            |> Task.andThen (pruneAndReportInline ecoConfig)
+                    else
+                        ( monoGraph0, MonoInlineSimplify.emptyMetrics )
+            in
+            -- E-a (plans/frontend-heap-release.md §7.4): the prune and the census
+            -- run in the NEXT step. This thunk captures `monoGraph0`, and the
+            -- running callback stays rooted until it returns, so doing the prune
+            -- here would keep the pre-inline graph live through it.
+            Task.succeed ( inlinedGraph, inlineMetrics )
+                |> Task.andThen (pruneAndReportInline ecoConfig)
         )
         -- Hand off to a separate function so monoGraph0 goes out of scope
         |> Task.andThen (runGlobalOptPhase ecoConfig ecoConfig.mono.lss.report ecoConfig.list.report ecoConfig.borrow ecoConfig.cafMemo ecoConfig.cse stats)
@@ -2368,16 +2368,18 @@ writeMonoMlirStreaming ecoConfig stats _ _ root maybeBuildDir maybeLocal details
         |> Task.andThen
             (\{ monoGraph, mode } ->
                 constThunkCensus ecoConfig monoGraph
-                    |> Task.andThen (\_ ->
-                FEStats.withPhaseLazy stats
-                    FEStats.PhaseMlir
-                    (\() ->
-                        File.withStreamingWriter target
-                        (\writeChunk ->
-                            MLIR.streamMlirToWriter ecoConfig mode monoGraph writeChunk
+                    |> Task.andThen
+                        (\_ ->
+                            FEStats.withPhaseLazy stats
+                                FEStats.PhaseMlir
+                                (\() ->
+                                    File.withStreamingWriter target
+                                        (\writeChunk ->
+                                            MLIR.streamMlirToWriter ecoConfig mode monoGraph writeChunk
+                                        )
+                                        |> Task.mapError never
+                                )
                         )
-                        |> Task.mapError never
-                    ))
             )
 
 
@@ -2401,13 +2403,15 @@ writeMonoMlirStreamingBytecode ecoConfig stats _ _ root maybeBuildDir maybeLocal
         |> Task.andThen
             (\{ monoGraph, mode } ->
                 constThunkCensus ecoConfig monoGraph
-                    |> Task.andThen (\_ ->
-                FEStats.withPhaseLazy stats
-                    FEStats.PhaseMlir
-                    (\() ->
-                        MLIR.streamMlirBytecode ecoConfig mode monoGraph target
-                        |> Task.mapError never
-                    ))
+                    |> Task.andThen
+                        (\_ ->
+                            FEStats.withPhaseLazy stats
+                                FEStats.PhaseMlir
+                                (\() ->
+                                    MLIR.streamMlirBytecode ecoConfig mode monoGraph target
+                                        |> Task.mapError never
+                                )
+                        )
             )
 
 

@@ -575,7 +575,15 @@ buildPaths noCache style root maybeBuildDir maybeKernelPackage details needsType
          else
             Build.WriteCaches
         )
-        style root maybeBuildDir maybeKernelPackage details needsTypedOpt stats paths |> Task.eio Exit.MakeCannotBuild
+        style
+        root
+        maybeBuildDir
+        maybeKernelPackage
+        details
+        needsTypedOpt
+        stats
+        paths
+        |> Task.eio Exit.MakeCannotBuild
 
 
 

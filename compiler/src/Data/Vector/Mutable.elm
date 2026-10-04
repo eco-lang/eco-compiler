@@ -88,6 +88,7 @@ write ioRef i x =
 to it. An empty slot, or an `index` out of range, is left unchanged.
 
 The function comes before the index, unlike `read` and `write`.
+
 -}
 modify : IORef (Array (Maybe (List Variable))) -> (List Variable -> List Variable) -> Int -> IO ()
 modify ioRef func index =

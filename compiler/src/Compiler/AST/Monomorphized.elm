@@ -1,32 +1,166 @@
 module Compiler.AST.Monomorphized exposing
-    ( MonoType(..), Literal(..), Constraint(..)
-    , layoutHashOf, specHashOf, eqKeySpec, eqKeyLayout
-    , LayoutMap, layoutMapEmpty, layoutMapGet, layoutMapMember, layoutMapInsert
-    , layoutMapSize, layoutMapIsEmpty, layoutMapFoldl, layoutMapMap, layoutMapToList, layoutMapValues, layoutMapFromList
-    , SpecMap, specMapEmpty, specMapGet, specMapMember, specMapInsert
-    , specMapSize, specMapIsEmpty, specMapFoldl, specMapToList, specMapValues, specMapRemove, specMapSingleton
-    , SpecKeyMap, specKeyMapEmpty, specKeyMapGet, specKeyMapInsert, specKeyMapSize, globalHash
-    , LambdaId(..)
-    , Global(..), SpecKey(..), SpecId, SpecializationRegistry
-    , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType, clearLssTables
-    , PortRegistration
-    , MonoExpr(..), ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..)
-    , MonoDtPath(..), dtPathType
-    , Decider(..), MonoChoice(..)
-    , ContainerKind(..)
-    , typeOf
-    , toComparableMonoType, toComparableGlobal
-    , getMonoPathType
-    , monoTypeToDebugString
-    , resolveNumberType, typeHasResidualNumber
-    , Segmentation, segmentLengths, stageParamTypes, stageReturnType
-    , chooseCanonicalSegmentation, buildSegmentedFunctionType
-    , decomposeFunctionType, isFunctionType, countTotalArity
-    , CallModel(..), CallKind(..), CallInfo, defaultCallInfo
-    , ClosureKindId(..), ClosureKind(..), MaybeClosureKind
+    ( AnnoCoverage
+    , CallInfo
+    , CallKind(..)
+    , CallModel(..)
     , CaptureABI
-    , containsAnyMVar, resultTypeOf
-    , AnnoCoverage, LambdaSetAnno(..), MemberOrigin(..), annoCoverage, annoCovers, collectAnnoMembers, emptyAnnoCoverage, enrichAnnotations, enrichAnnotationsTopOnly, eqLayout, eqModuloTopLabel, hasTopAnno, hasVarAnno, headAnno, isTopAnno, joinAnnotations, joinAnnotationsChanged, joinCollisionCells, mCustom, mFunction, mList, mRecord, mTuple, overlayAnnotations, recoverStoredSets, shallowLayoutKey, singletonHeadMember, tkAbi, tkClassCall, tkClassCase, tkClassDestr, tkClassIf, tkClassLambda, tkClassLet, tkClassLit, tkClassLocal, tkClassMisc, tkClassParam, tkConflict, tkDeclOther, tkDeclStoreC, tkDeclStoreS, tkDeclZonk, tkEdge, tkLegacy, tkPoison, tkRow, tkSynth, tkWiden, topAbi, topClassCall, topClassCase, topClassDestr, topClassIf, topClassLambda, topClassLet, topClassLit, topClassLocal, topClassMisc, topClassParam, topConflict, topDeclOther, topDeclStoreC, topDeclStoreS, topDeclZonk, topEdge, topKindLabel, topLegacy, topOfKind, topPoison, topRow, topSynth, topWiden, typeNodesWithin, unionAnno, unionSortedInts, widenSets
+    , ClosureInfo
+    , ClosureKind(..)
+    , ClosureKindId(..)
+    , Constraint(..)
+    , ContainerKind(..)
+    , CtorShape
+    , Decider(..)
+    , Global(..)
+    , LambdaId(..)
+    , LambdaSetAnno(..)
+    , LayoutMap
+    , Literal(..)
+    , MainInfo(..)
+    , MaybeClosureKind
+    , MemberOrigin(..)
+    , MonoChoice(..)
+    , MonoDef(..)
+    , MonoDestructor(..)
+    , MonoDtPath(..)
+    , MonoExpr(..)
+    , MonoGraph(..)
+    , MonoNode(..)
+    , MonoPath(..)
+    , MonoType(..)
+    , PortRegistration
+    , Segmentation
+    , SpecId
+    , SpecKey(..)
+    , SpecKeyMap
+    , SpecMap
+    , SpecializationRegistry
+    , annoCoverage
+    , annoCovers
+    , buildSegmentedFunctionType
+    , chooseCanonicalSegmentation
+    , clearLssTables
+    , collectAnnoMembers
+    , containsAnyMVar
+    , countTotalArity
+    , decomposeFunctionType
+    , defaultCallInfo
+    , dtPathType
+    , emptyAnnoCoverage
+    , enrichAnnotations
+    , enrichAnnotationsTopOnly
+    , eqKeyLayout
+    , eqKeySpec
+    , eqLayout
+    , eqModuloTopLabel
+    , getMonoPathType
+    , globalHash
+    , hasTopAnno
+    , hasVarAnno
+    , headAnno
+    , isFunctionType
+    , isTopAnno
+    , joinAnnotations
+    , joinAnnotationsChanged
+    , joinCollisionCells
+    , layoutHashOf
+    , layoutMapEmpty
+    , layoutMapFoldl
+    , layoutMapFromList
+    , layoutMapGet
+    , layoutMapInsert
+    , layoutMapIsEmpty
+    , layoutMapMap
+    , layoutMapMember
+    , layoutMapSize
+    , layoutMapToList
+    , layoutMapValues
+    , mCustom
+    , mFunction
+    , mList
+    , mRecord
+    , mTuple
+    , monoTypeToDebugString
+    , nodeType
+    , overlayAnnotations
+    , recoverStoredSets
+    , resolveNumberType
+    , resultTypeOf
+    , segmentLengths
+    , shallowLayoutKey
+    , singletonHeadMember
+    , specHashOf
+    , specKeyMapEmpty
+    , specKeyMapGet
+    , specKeyMapInsert
+    , specKeyMapSize
+    , specMapEmpty
+    , specMapFoldl
+    , specMapGet
+    , specMapInsert
+    , specMapIsEmpty
+    , specMapMember
+    , specMapRemove
+    , specMapSingleton
+    , specMapSize
+    , specMapToList
+    , specMapValues
+    , stageParamTypes
+    , stageReturnType
+    , tkAbi
+    , tkClassCall
+    , tkClassCase
+    , tkClassDestr
+    , tkClassIf
+    , tkClassLambda
+    , tkClassLet
+    , tkClassLit
+    , tkClassLocal
+    , tkClassMisc
+    , tkClassParam
+    , tkConflict
+    , tkDeclOther
+    , tkDeclStoreC
+    , tkDeclStoreS
+    , tkDeclZonk
+    , tkEdge
+    , tkLegacy
+    , tkPoison
+    , tkRow
+    , tkSynth
+    , tkWiden
+    , toComparableGlobal
+    , toComparableMonoType
+    , topAbi
+    , topClassCall
+    , topClassCase
+    , topClassDestr
+    , topClassIf
+    , topClassLambda
+    , topClassLet
+    , topClassLit
+    , topClassLocal
+    , topClassMisc
+    , topClassParam
+    , topConflict
+    , topDeclOther
+    , topDeclStoreC
+    , topDeclStoreS
+    , topDeclZonk
+    , topEdge
+    , topKindLabel
+    , topLegacy
+    , topOfKind
+    , topPoison
+    , topRow
+    , topSynth
+    , topWiden
+    , typeHasResidualNumber
+    , typeNodesWithin
+    , typeOf
+    , unionAnno
+    , unionSortedInts
+    , widenSets
     )
 
 {-| The native back end compiles a program in which every definition the
@@ -96,8 +230,8 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation exposing (Region)
 import Data.HashMap as HashMap
-import Eco.Hash
 import Dict exposing (Dict)
+import Eco.Hash
 
 
 

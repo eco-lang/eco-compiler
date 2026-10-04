@@ -279,7 +279,7 @@ waitForCrawlResults mvar roots =
 {-| Read every crawl status and release the crawl MVars
 (plans/frontend-heap-release.md §7.2 row 1). An `SChanged` status holds the
 module's source text and parsed AST, and an MVar is an off-heap GC root until
-dropped (HEAP_005), so without this they stay live until exit.
+dropped (HEAP\_005), so without this they stay live until exit.
 
 Only call this once every root's status has been read: each module is forked by
 exactly one crawler, and each crawler waits for its forks before its own `put`,

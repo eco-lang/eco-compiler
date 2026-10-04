@@ -24,7 +24,6 @@ to older pools or generalized to `noRank` (making them polymorphic).
 
 -}
 
-import Eco.CellStore as CellStore
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Name as Name exposing (Name)
@@ -44,6 +43,7 @@ import Data.IORef exposing (IORef)
 import Data.Vector as Vector
 import Data.Vector.Mutable as MVector
 import Dict exposing (Dict)
+import Eco.CellStore as CellStore
 import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils

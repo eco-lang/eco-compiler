@@ -751,7 +751,7 @@ applyKernelGcLeafEmitOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_CONST_THUNKS=0|1|2` (CGEN_082, plans/mlir-split-backend-04-constant-thunks.md):
+{-| `ECO_CONST_THUNKS=0|1|2` (CGEN\_082, plans/mlir-split-backend-04-constant-thunks.md):
 constant-thunk folding phase. `0`/`off` disables, `1` folds literal / Unit /
 kernel-constant / alias-chain thunks, `2`/`on` (the default) also closed
 pure-arithmetic bodies. Artifact-affecting (hash token `cthk=N`).

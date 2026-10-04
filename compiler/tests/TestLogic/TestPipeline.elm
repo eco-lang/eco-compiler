@@ -14,8 +14,8 @@ module TestLogic.TestPipeline exposing
     , runSubstMonoWithLimits
     , runToAssigned
     , runToGlobalOpt
-    , runToGlobalOptLssArrowIdOn
     , runToGlobalOptLssAllKeyedOn
+    , runToGlobalOptLssArrowIdOn
     , runToGlobalOptLssOn
     , runToGlobalOptLssOnStats
     , runToMlir

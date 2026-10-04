@@ -342,10 +342,7 @@ constructor's arguments, the type the constructor declares for it, in terms of
 its custom type's own type variables, and the pattern it is matched against.
 -}
 type PatternCtorArg
-    = PatternCtorArg
-        Index.ZeroBased
-        (Type Name)
-        Pattern
+    = PatternCtorArg Index.ZeroBased (Type Name) Pattern
 
 
 

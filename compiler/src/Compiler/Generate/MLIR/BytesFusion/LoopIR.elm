@@ -195,6 +195,7 @@ constants and additions of a zero constant removed.
 
 Only additions are simplified. A term that is not a `WConst` stays as it is,
 so the result is a single constant only when every term in `expr` is one.
+
 -}
 simplifyWidth : WidthExpr -> WidthExpr
 simplifyWidth expr =

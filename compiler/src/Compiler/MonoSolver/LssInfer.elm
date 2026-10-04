@@ -104,7 +104,7 @@ signatureFor global s0 =
                         -- signature — so after the chase, prefer this gkey's
                         -- freshly memoized signature over the target handle's.
                         case signatureFor target s0 of
-                            (  sigTarget, s1  ) ->
+                            ( sigTarget, s1 ) ->
                                 case HashMap.get TOpt.globalHash (==) global s1.lssSignatures of
                                     Just own ->
                                         ( own, s1 )
@@ -183,7 +183,7 @@ injectLambdaMemberQualified arity srcLam funcVar s0 =
     -- use for the id. Written as a case rather than `Engine.map` so it costs
     -- no closure.
     case injectLambdaMemberQualifiedId arity srcLam funcVar s0 of
-        (  _, s1  ) ->
+        ( _, s1 ) ->
             s1
 
 
@@ -199,7 +199,7 @@ LSS\_017's "stamped IDENTICALLY in its set injection and its
 argument.
 
 -}
-injectLambdaMemberQualifiedId : Int -> Maybe TypeIds.SrcLambdaId -> Vars.Variable -> Engine.S -> ( (Maybe Int), Engine.S )
+injectLambdaMemberQualifiedId : Int -> Maybe TypeIds.SrcLambdaId -> Vars.Variable -> Engine.S -> ( Maybe Int, Engine.S )
 injectLambdaMemberQualifiedId arity srcLam funcVar s0 =
     case srcLam of
         Nothing ->
@@ -388,7 +388,7 @@ type alias UnitMember =
 inferUnit : TOpt.Global -> String -> Engine.S -> ( Engine.LssSignature, Engine.S )
 inferUnit global gkey s0 =
     case resolveUnit global s0 of
-        (  members, s1  ) ->
+        ( members, s1 ) ->
             let
                 s2 =
                     { s1 | lssInProgress = HashMap.insert TOpt.globalHash (==) global () (List.foldl (\m acc -> HashMap.insert TOpt.globalHash (==) m.g () acc) s1.lssInProgress members) }
@@ -430,7 +430,7 @@ members); anything else is a singleton. Members without a walkable body
 (Ctor/Enum/Box/Kernel/Manager) get trivial signatures via a body-less member.
 Signature-source types are annotation-first (LSS\_006).
 -}
-resolveUnit : TOpt.Global -> Engine.S -> ( (List UnitMember), Engine.S )
+resolveUnit : TOpt.Global -> Engine.S -> ( List UnitMember, Engine.S )
 resolveUnit ((TOpt.Global home _) as global) s0 =
     case HashMap.get TOpt.globalHash (==) global s0.env.toptNodes of
         Nothing ->
@@ -546,7 +546,7 @@ preResolveGo unitKeys globals s0 =
 
             else
                 case signatureFor g s0 of
-                    (  _, s1  ) ->
+                    ( _, s1 ) ->
                         preResolveGo unitKeys rest s1
 
 
@@ -573,13 +573,13 @@ collectReferencedGlobals expr acc =
 -- ====== THE SCRATCH-STORE UNIT PASS ======
 
 
-inferUnitInScratch : List UnitMember -> Engine.S -> ( (List ( TOpt.Global, Engine.LssSignature )), Engine.S )
+inferUnitInScratch : List UnitMember -> Engine.S -> ( List ( TOpt.Global, Engine.LssSignature ), Engine.S )
 inferUnitInScratch members s0 =
     -- Load every member's signature type through the SHARED scratch memo,
     -- capturing per-member roots + arrow-slot arrays (self/sibling annotation
     -- vars share Points — the Σ rule).
     case loadMemberSlots members [] s0 of
-        (  loaded, s1  ) ->
+        ( loaded, s1 ) ->
             -- `loaded` is in member order by construction (one triple per
             -- member, body-less members included), so the zips align.
             case walkMembers (List.map2 Tuple.pair members loaded) s1 of
@@ -627,7 +627,7 @@ inferUnitInScratch members s0 =
                             ( sigs, { s4 | itemAux = { aux4 | qLog = [] } } )
 
 
-loadMemberSlots : List UnitMember -> List ( TOpt.Global, Vars.Variable, Array Vars.Variable ) -> Engine.S -> ( (List ( TOpt.Global, Vars.Variable, Array Vars.Variable )), Engine.S )
+loadMemberSlots : List UnitMember -> List ( TOpt.Global, Vars.Variable, Array Vars.Variable ) -> Engine.S -> ( List ( TOpt.Global, Vars.Variable, Array Vars.Variable ), Engine.S )
 loadMemberSlots members acc s0 =
     case members of
         [] ->
@@ -689,7 +689,7 @@ walkMembers pairs s0 =
                             bindParamsFromSpine m.tailArgs root CoreDict.empty CoreDict.empty s0
                     in
                     case walkExpr env0 body s1 of
-                        (  wp, s2  ) ->
+                        ( wp, s2 ) ->
                             case ( maybeTarget, wpPoint wp ) of
                                 ( Just target, Just p ) ->
                                     case joinArrowSetsSig target p s2 of
@@ -698,7 +698,9 @@ walkMembers pairs s0 =
 
                                 _ ->
                                     walkMembers rest s2
-zonkSignatures : List ( TOpt.Global, Maybe Int, Array Vars.Variable ) -> List ( TOpt.Global, Engine.LssSignature ) -> Engine.S -> ( (List ( TOpt.Global, Engine.LssSignature )), Engine.S )
+
+
+zonkSignatures : List ( TOpt.Global, Maybe Int, Array Vars.Variable ) -> List ( TOpt.Global, Engine.LssSignature ) -> Engine.S -> ( List ( TOpt.Global, Engine.LssSignature ), Engine.S )
 zonkSignatures pending acc s0 =
     case pending of
         [] ->
@@ -706,7 +708,7 @@ zonkSignatures pending acc s0 =
 
         ( gkey, selfId, slots ) :: rest ->
             case zonkOneSignature selfId slots s0 of
-                (  sig, s1  ) ->
+                ( sig, s1 ) ->
                     zonkSignatures rest (( gkey, sig ) :: acc) (censusSigFacts gkey sig s1)
 
 
@@ -814,9 +816,9 @@ zonkSigGo selfId slots n i factsRev s0 =
                     []
                     (List.indexedMap Tuple.pair facts)
         in
-            ( { arrows = Array.fromList facts, trivial = trivial, residual = residual }
-            , censusSignature n facts trivial s0
-            )
+        ( { arrows = Array.fromList facts, trivial = trivial, residual = residual }
+        , censusSignature n facts trivial s0
+        )
 
     else
         case Array.get i slots of
@@ -825,7 +827,7 @@ zonkSigGo selfId slots n i factsRev s0 =
 
             Just slot ->
                 case repOrdinal slots slot i 0 s0 of
-                    (  rep, s1  ) ->
+                    ( rep, s1 ) ->
                         let
                             ( store1, desc ) =
                                 UF.get slot s1.store
@@ -867,6 +869,7 @@ zonkSigGo selfId slots n i factsRev s0 =
 
                                         else
                                             ( Ok { rep = rep, members = ms, top = False, topKind = Mono.tkLegacy, sources = [] }, s2 )
+
                                     Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom ms0 srcs)) ->
                                         -- LSS_023 promote-or-internalize (the
                                         -- paper's Fig. 7 split, at the id
@@ -879,6 +882,7 @@ zonkSigGo selfId slots n i factsRev s0 =
                                         -- INTERNALIZED (members collected,
                                         -- its own srcs descended).
                                         ( Err ( ms0, srcs ), s2 )
+
                                     _ ->
                                         -- FlexVar: the body contributed nothing.
                                         ( Ok { rep = rep, members = [], top = False, topKind = Mono.tkLegacy, sources = [] }, s2 )
@@ -889,7 +893,7 @@ zonkSigGo selfId slots n i factsRev s0 =
 
                             Err ( ms0, srcs ) ->
                                 case sigResolveEdges selfId slots i ms0 srcs s3 of
-                                    (  resolved, s4  ) ->
+                                    ( resolved, s4 ) ->
                                         let
                                             ( done, s5 ) =
                                                 finishSigFact rep resolved s4
@@ -953,7 +957,7 @@ dropped from sources.
 sigResolveEdges : Maybe Int -> Array Vars.Variable -> Int -> List Int -> List Vars.Variable -> Engine.S -> ( { top : Bool, members : List Int, sources : List Int }, Engine.S )
 sigResolveEdges selfId slots i ms0 srcs s0 =
     case sigEdgesGo slots i srcs [] ms0 [] False s0 of
-        (  ( Nothing, _ ), s1  ) ->
+        ( ( Nothing, _ ), s1 ) ->
             ( { top = True, members = [], sources = [] }, s1 )
 
         ( ( Just ( members, ordinals ), sawFlex ), s1 ) ->
@@ -992,9 +996,9 @@ sigResolveEdges selfId slots i ms0 srcs s0 =
                 -- The all-empty case keeps today's empty fact (consumers
                 -- write nothing, the slot stays flex and reads ⊤ — sound,
                 -- and it preserves the trivial-signature mass).
-                    ( { top = True, members = [], sources = [] }
-                    , censusMixedSig filtered (Engine.bumpTopMixedFlexSig s1)
-                    )
+                ( { top = True, members = [], sources = [] }
+                , censusMixedSig filtered (Engine.bumpTopMixedFlexSig s1)
+                )
 
             else
                 ( { top = False, members = filtered, sources = List.sort ordinals }, s1 )
@@ -1035,7 +1039,7 @@ sigEdgesGo slots i pending visited accMembers accOrdinals sawFlex s0 =
 
             else
                 case ordinalOf slots i src s0 of
-                    (  Just j, s1  ) ->
+                    ( Just j, s1 ) ->
                         -- PROMOTE: record the ordinal, do not descend.
                         sigEdgesGo slots
                             i
@@ -1088,12 +1092,12 @@ sigEdgesGo slots i pending visited accMembers accOrdinals sawFlex s0 =
 {-| The signature ordinal a Point IS (UF-equivalent to `slots[j]`, `j /= i`),
 scanning ALL ordinals — unlike `repOrdinal`, which scans only below `i`.
 -}
-ordinalOf : Array Vars.Variable -> Int -> Vars.Variable -> Engine.S -> ( (Maybe Int), Engine.S )
+ordinalOf : Array Vars.Variable -> Int -> Vars.Variable -> Engine.S -> ( Maybe Int, Engine.S )
 ordinalOf slots i node s0 =
     ordinalOfGo slots i node 0 s0
 
 
-ordinalOfGo : Array Vars.Variable -> Int -> Vars.Variable -> Int -> Engine.S -> ( (Maybe Int), Engine.S )
+ordinalOfGo : Array Vars.Variable -> Int -> Vars.Variable -> Int -> Engine.S -> ( Maybe Int, Engine.S )
 ordinalOfGo slots i node j s0 =
     if j >= Array.length slots then
         ( Nothing, s0 )
@@ -1237,7 +1241,7 @@ walkExpr letEnv expr s0 =
 
         TOpt.Call _ func args meta ->
             case walkCall letEnv func args meta s0 of
-                (  wp, s1  ) ->
+                ( wp, s1 ) ->
                     case walkChildren letEnv (func :: args) s1 of
                         s2 ->
                             ( wp, s2 )
@@ -1314,7 +1318,7 @@ walkExpr letEnv expr s0 =
             case def of
                 TOpt.Def _ name rhs defType ->
                     case walkExpr letEnv rhs s0 of
-                        (  rhsWp, s1  ) ->
+                        ( rhsWp, s1 ) ->
                             case Store.loadTypeS defType s1 of
                                 ( rhsVar, s2 ) ->
                                     -- LSS_020 (B.2): flag-on, connect the
@@ -1343,7 +1347,7 @@ walkExpr letEnv expr s0 =
                                         s1
                             in
                             case walkExpr env1 rhs s2 of
-                                (  rhsWp, s3  ) ->
+                                ( rhsWp, s3 ) ->
                                     case ( maybeRes, wpPoint rhsWp ) of
                                         ( Just resVar, Just p ) ->
                                             case joinArrowSetsSig resVar p s3 of
@@ -1352,6 +1356,7 @@ walkExpr letEnv expr s0 =
 
                                         _ ->
                                             walkExpr (CoreDict.insert name rhsVar letEnv) body s3
+
         TOpt.Destruct _ body _ ->
             -- Propagate: a Destruct's value is its body's. Identical store
             -- ops to the old structural arm (directChildren = [ body ]).
@@ -1362,16 +1367,16 @@ walkExpr letEnv expr s0 =
             -- per pair, then finally), collecting the branch VALUES' flow;
             -- then the hub join (LSS_020 B.2; no-op flag-off).
             case walkIfPairs letEnv branches [] s0 of
-                (  branchWps, s1  ) ->
+                ( branchWps, s1 ) ->
                     case walkExpr letEnv finally s1 of
-                        (  finalWp, s2  ) ->
+                        ( finalWp, s2 ) ->
                             joinCfHub (finalWp :: branchWps) meta s2
 
         TOpt.Case _ _ decider jumps meta ->
             -- All Case children are branch VALUES (decider Inline leaves +
             -- jump bodies); same order as the structural arm.
             case walkCollect letEnv (deciderExprs decider ++ List.map Tuple.second jumps) [] s0 of
-                (  wps, s1  ) ->
+                ( wps, s1 ) ->
                     joinCfHub wps meta s1
 
         TOpt.TailCall _ tcArgs _ ->
@@ -1426,7 +1431,7 @@ walkFunction paramNames srcLam body meta letEnv s0 =
                             bindParamsFromSpine paramNames funcVar CoreDict.empty letEnv s2
                     in
                     case walkExpr letEnv1 body s3 of
-                        (  wp, s4  ) ->
+                        ( wp, s4 ) ->
                             case ( maybeRes, wpPoint wp ) of
                                 ( Just resVar, Just bodyPt ) ->
                                     case joinArrowSetsSig resVar bodyPt s4 of
@@ -1435,6 +1440,8 @@ walkFunction paramNames srcLam body meta letEnv s0 =
 
                                 _ ->
                                     ( WpHonest funcVar, s4 )
+
+
 {-| F4-sig (plans/lss-container-payload-transport.md §12.10.1): a record /
 tuple / list / update literal's WalkPoint. Flag-off: the structural arm
 verbatim (`WpNone`). Shipped as `lss.flow.litFacts`, DEFAULT-ON 2026-09-16 —
@@ -1458,9 +1465,9 @@ walkLiteral letEnv form elems maybeBase meta expr s0 =
 
     else
         case walkMaybe letEnv maybeBase s0 of
-            (  baseWp, s1  ) ->
+            ( baseWp, s1 ) ->
                 case walkKeyed letEnv elems [] s1 of
-                    (  wps, s2  ) ->
+                    ( wps, s2 ) ->
                         case Store.loadTypeS meta.tipe s2 of
                             ( litVar, s3 ) ->
                                 case joinLiteralBase litVar baseWp s3 of
@@ -1485,13 +1492,13 @@ walkLiteral letEnv form elems maybeBase meta expr s0 =
                                                     honest =
                                                         baseHonest && List.all elemHonest (List.map2 (\e ( _, wp ) -> ( e, wp )) elems wps)
                                                 in
-                                                    ( if honest then
-                                                        WpHonest litVar
+                                                ( if honest then
+                                                    WpHonest litVar
 
-                                                      else
-                                                        WpOpaque litVar
-                                                    , censusLitFacts form honest s5
-                                                    )
+                                                  else
+                                                    WpOpaque litVar
+                                                , censusLitFacts form honest s5
+                                                )
 
 
 isHonest : WalkPoint -> Bool
@@ -1504,7 +1511,7 @@ isHonest wp =
             False
 
 
-walkMaybe : LetEnv -> Maybe (TOpt.Expr TypeIds.MVarId) -> Engine.S -> ( (Maybe WalkPoint), Engine.S )
+walkMaybe : LetEnv -> Maybe (TOpt.Expr TypeIds.MVarId) -> Engine.S -> ( Maybe WalkPoint, Engine.S )
 walkMaybe letEnv maybeExpr s0 =
     case maybeExpr of
         Nothing ->
@@ -1516,7 +1523,7 @@ walkMaybe letEnv maybeExpr s0 =
                     ( Just wp, s1 )
 
 
-walkKeyed : LetEnv -> List ( String, TOpt.Expr TypeIds.MVarId ) -> List ( String, WalkPoint ) -> Engine.S -> ( (List ( String, WalkPoint )), Engine.S )
+walkKeyed : LetEnv -> List ( String, TOpt.Expr TypeIds.MVarId ) -> List ( String, WalkPoint ) -> Engine.S -> ( List ( String, WalkPoint ), Engine.S )
 walkKeyed letEnv elems acc s0 =
     case elems of
         [] ->
@@ -1674,7 +1681,7 @@ applyCalleeAt g funcFallbackType args meta s0 =
         case Store.loadTypeS srcType s0 of
             ( funcVar, s1 ) ->
                 case unifyCallShape funcVar args meta s1 of
-                    (  callVar, s2  ) ->
+                    ( callVar, s2 ) ->
                         injectPapMemberInfer g (List.length args) callVar s2
 
     else
@@ -1770,7 +1777,7 @@ Point (§7.4; local callees go through `joinCallArgs` instead).
 unifyCallShape : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( Vars.Variable, Engine.S )
 unifyCallShape funcVar args meta s0 =
     case unifyParamsBestEffort funcVar args s0 of
-        (  restVar, s1  ) ->
+        ( restVar, s1 ) ->
             case Store.loadTypeS meta.tipe s1 of
                 ( callVar, s2 ) ->
                     case Store.unifyBestEffortStoreS restVar callVar s2 of
@@ -1892,7 +1899,7 @@ localCalleeJoin letEnv name args meta s0 =
 
         Just fVar ->
             case joinCallArgs fVar args CoreDict.empty s0 of
-                (  maybeRest, s1  ) ->
+                ( maybeRest, s1 ) ->
                     case maybeRest of
                         Nothing ->
                             -- Over-applied/opaque spine: stop (sound —
@@ -1912,12 +1919,14 @@ localCalleeJoin letEnv name args meta s0 =
 
                             else
                                 ( WpNone, s1 )
+
+
 {-| Descend a family Point's arrow spine one arrow per argument, slot-joining
 each (arrow-bearing) arg's loaded type against the param position. Returns
 the spine position after the last arg (Nothing on early stop). The `seen`
 set guards the transparent-alias chase, mirroring `spineGoC`.
 -}
-joinCallArgs : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Dict Int () -> Engine.S -> ( (Maybe Vars.Variable), Engine.S )
+joinCallArgs : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Dict Int () -> Engine.S -> ( Maybe Vars.Variable, Engine.S )
 joinCallArgs v args seen s0 =
     case args of
         [] ->
@@ -2035,7 +2044,7 @@ kernelCallBoundary home name funcMeta args meta s0 =
                         case Store.loadTypeIsolated funcMeta.tipe s0 of
                             ( funcVar, s1 ) ->
                                 case unifyCallShape funcVar args meta s1 of
-                                    (  callVar, s2  ) ->
+                                    ( callVar, s2 ) ->
                                         ( WpOpaque callVar, Engine.bumpKernelLicensed s2 )
 
         Just (KernelSetFacts.Positional plan) ->
@@ -2044,7 +2053,7 @@ kernelCallBoundary home name funcMeta args meta s0 =
 
             else
                 case kernelArgsGo plan.params args False [] s0 of
-                    (  ( argPoisoned, tunnelsRev ), s1  ) ->
+                    ( ( argPoisoned, tunnelsRev ), s1 ) ->
                         case Store.loadTypeS meta.tipe s1 of
                             ( resVar, s2 ) ->
                                 let
@@ -2428,10 +2437,10 @@ injectPapSuccessorsFrom g startDepth v0 s0 =
 
         else
             case mintPapSuccessorIds g startDepth arity [] s0 of
-                (  midsRev, s1  ) ->
-                      Store.foldSetWrites
-                          (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
-                          (Engine.bumpArgFlowCensus "papInject|deepDone" s1)
+                ( midsRev, s1 ) ->
+                    Store.foldSetWrites
+                        (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
+                        (Engine.bumpArgFlowCensus "papInject|deepDone" s1)
 
 
 {-| Reference-spine PAP successors (plans/lss-ref-pap-spine.md):
@@ -2475,10 +2484,10 @@ injectPapSuccessors g v0 s0 =
             -- Mint the successor ids first (Step-level interning), then one
             -- ctx-threaded store pass writes them at their depths.
             case mintPapSuccessorIds g 1 arity [] s0 of
-                (  midsRev, s1  ) ->
-                      Store.foldSetWrites
-                          (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
-                          (Engine.bumpArgFlowCensus "refspine|inject" s1)
+                ( midsRev, s1 ) ->
+                    Store.foldSetWrites
+                        (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
+                        (Engine.bumpArgFlowCensus "refspine|inject" s1)
 
 
 {-| Depth-qualified successors for a ROOT-FOLDED def's OWN spine
@@ -2502,13 +2511,13 @@ injectFoldedSuccessors g arity v0 s0 =
 
     else
         case mintPapSuccessorIds g 1 arity [] s0 of
-            (  midsRev, s1  ) ->
-                  Store.foldSetWrites
-                      (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
-                      (Engine.bumpArgFlowCensus "rootFold|spineDepth" s1)
+            ( midsRev, s1 ) ->
+                Store.foldSetWrites
+                    (papSuccGoC (List.reverse midsRev) CoreDict.empty v0 (Store.setWriteCtx (Store.qOnFor s1) s1.store))
+                    (Engine.bumpArgFlowCensus "rootFold|spineDepth" s1)
 
 
-mintPapSuccessorIds : TOpt.Global -> Int -> Int -> List Int -> Engine.S -> ( (List Int), Engine.S )
+mintPapSuccessorIds : TOpt.Global -> Int -> Int -> List Int -> Engine.S -> ( List Int, Engine.S )
 mintPapSuccessorIds g d arity acc s0 =
     if d >= arity then
         ( acc, s0 )
@@ -2989,6 +2998,8 @@ sigFlowJoinInto target maybePoint s0 =
 
         Nothing ->
             s0
+
+
 joinArrowSetsList : (Engine.S -> Engine.S) -> List Vars.Variable -> List Vars.Variable -> Engine.S -> Engine.S
 joinArrowSetsList onPoison xs ys s0 =
     case ( xs, ys ) of
@@ -3200,7 +3211,7 @@ flowAllSig hub pts s0 =
                     flowAllSig hub rest s1
 
 
-walkIfPairs : LetEnv -> List ( TOpt.Expr TypeIds.MVarId, TOpt.Expr TypeIds.MVarId ) -> List WalkPoint -> Engine.S -> ( (List WalkPoint), Engine.S )
+walkIfPairs : LetEnv -> List ( TOpt.Expr TypeIds.MVarId, TOpt.Expr TypeIds.MVarId ) -> List WalkPoint -> Engine.S -> ( List WalkPoint, Engine.S )
 walkIfPairs letEnv pairs acc s0 =
     case pairs of
         [] ->
@@ -3208,13 +3219,13 @@ walkIfPairs letEnv pairs acc s0 =
 
         ( cond, branch ) :: rest ->
             case walkExpr letEnv cond s0 of
-                (  _, s1  ) ->
+                ( _, s1 ) ->
                     case walkExpr letEnv branch s1 of
-                        (  wp, s2  ) ->
+                        ( wp, s2 ) ->
                             walkIfPairs letEnv rest (wp :: acc) s2
 
 
-walkCollect : LetEnv -> List (TOpt.Expr TypeIds.MVarId) -> List WalkPoint -> Engine.S -> ( (List WalkPoint), Engine.S )
+walkCollect : LetEnv -> List (TOpt.Expr TypeIds.MVarId) -> List WalkPoint -> Engine.S -> ( List WalkPoint, Engine.S )
 walkCollect letEnv exprs acc s0 =
     case exprs of
         [] ->

@@ -1,4 +1,7 @@
-module Compiler.Monomorphize.EntryPrep exposing (Assigned, assign, flagsDecoderName, insertFlagsDecoderNode, findEntryPointId, findNodeAnnotationType)
+module Compiler.Monomorphize.EntryPrep exposing
+    ( Assigned, assign
+    , flagsDecoderName, insertFlagsDecoderNode, findEntryPointId, findNodeAnnotationType
+    )
 
 {-| Engine-agnostic monomorphization input preparation, shared by the two
 monomorphizer drivers (`Compiler.Monomorphize.Monomorphize` and

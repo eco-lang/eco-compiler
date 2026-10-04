@@ -50,8 +50,8 @@ vector makes a new table rather than changing the old one.
 -}
 
 import Array exposing (Array)
-import Eco.CellStore as CellStore
 import Compiler.Type.Vars as Vars
+import Eco.CellStore as CellStore
 import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Crash exposing (crash)
 

@@ -805,32 +805,32 @@ generateVarGlobal ctx specId monoType =
                                 }
 
                             Nothing ->
-                              case Dict.get specId ctx.constThunkBySpec of
-                               Just thunkBody ->
-                                -- CGEN_082: a constant thunk (literal, alias
-                                -- chain, or closed pure-arithmetic body) —
-                                -- emit its OWN body here instead of the call,
-                                -- so LLVM folds the constant and the call
-                                -- disappears. Same perf layer as the two arms
-                                -- above.
-                                generateConstThunkRef ctx sig thunkBody
+                                case Dict.get specId ctx.constThunkBySpec of
+                                    Just thunkBody ->
+                                        -- CGEN_082: a constant thunk (literal, alias
+                                        -- chain, or closed pure-arithmetic body) —
+                                        -- emit its OWN body here instead of the call,
+                                        -- so LLVM folds the constant and the call
+                                        -- disappears. Same perf layer as the two arms
+                                        -- above.
+                                        generateConstThunkRef ctx sig thunkBody
 
-                               Nothing ->
-                                -- Zero-arity function (thunk): call directly instead of creating a PAP.
-                                -- papCreate requires arity > 0 (num_captured < arity invariant).
-                                let
-                                    resultMlirType =
-                                        Types.monoTypeToAbi sig.returnType
+                                    Nothing ->
+                                        -- Zero-arity function (thunk): call directly instead of creating a PAP.
+                                        -- papCreate requires arity > 0 (num_captured < arity invariant).
+                                        let
+                                            resultMlirType =
+                                                Types.monoTypeToAbi sig.returnType
 
-                                    ( ctx2, callOp ) =
-                                        Ops.ecoCallNamed ctx1 (emitSafepointHints ctx1) var funcName [] resultMlirType
-                                in
-                                { ops = [ callOp ]
-                                , resultVar = var
-                                , resultType = resultMlirType
-                                , ctx = ctx2
-                                , isTerminated = False
-                                }
+                                            ( ctx2, callOp ) =
+                                                Ops.ecoCallNamed ctx1 (emitSafepointHints ctx1) var funcName [] resultMlirType
+                                        in
+                                        { ops = [ callOp ]
+                                        , resultVar = var
+                                        , resultType = resultMlirType
+                                        , ctx = ctx2
+                                        , isTerminated = False
+                                        }
 
             else
                 -- Function-typed global with arity > 0: create a closure (papCreate) with no captures
@@ -7094,6 +7094,7 @@ constructions dissolve under SROA; off the spine it is the ordinary ABI type.
 Extracted from `generateCase` by step 10a so `generateIf` can use the identical
 rule — the two join shapes must agree or a promoted spine mixing `case` and `if`
 would declare two different result types for one worker.
+
 -}
 spineResultMlirType : Ctx.Context -> Mono.MonoType -> MlirType
 spineResultMlirType ctx resultMonoType =

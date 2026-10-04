@@ -82,8 +82,8 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.DecisionTree.Test as DT
 import Compiler.AST.DecisionTree.TypedPath as DT
 import Compiler.AST.StringTable as StringTable exposing (StringTable)
-import Compiler.AST.TypeTable as TypeTable exposing (TypeTable)
 import Compiler.AST.TypeIds as TypeIds
+import Compiler.AST.TypeTable as TypeTable exposing (TypeTable)
 import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
@@ -93,9 +93,9 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.Vars as Vars
 import Data.Map
-import Eco.Hash
 import Data.Set exposing (EverySet)
 import Dict exposing (Dict)
+import Eco.Hash
 import Set exposing (Set)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -2016,8 +2016,13 @@ channel; monomorphization consumes the resulting `varSupers` / `RootedVar.super`
 data, never the names themselves. Mirrors `Compiler.Type.Type.toSuper`.
 
 -}
+
+
+
 -- `StringTable.isSuperName` MUST stay the exact disjunction of the `Just`
 -- cases below: the varSupers sweep runs the collectors in `collectSupers` mode.
+
+
 superOfName : Name -> Maybe Vars.SuperType
 superOfName name =
     if Name.isNumberType name then
@@ -2059,7 +2064,8 @@ computeVarSupers graph =
         tb =
             internTypesFromLocalGraph graph TypeTable.empty
     in
-    Set.foldl insertSuperOfName Dict.empty
+    Set.foldl insertSuperOfName
+        Dict.empty
         (StringTable.collected
             (TypeTable.collectStrings tb (collectStringsFromLocalGraph graph StringTable.collectSupers))
         )
@@ -2070,7 +2076,8 @@ computeVarSupers graph =
 -}
 varSupersOfType : Can.Type Name -> Dict Name Vars.SuperType
 varSupersOfType tipe =
-    Set.foldl insertSuperOfName Dict.empty
+    Set.foldl insertSuperOfName
+        Dict.empty
         (StringTable.collected (Can.collectStringsFromType tipe StringTable.collectSupers))
 
 

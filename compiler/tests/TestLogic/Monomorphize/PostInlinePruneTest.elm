@@ -68,7 +68,6 @@ live spec keeps its `reverseMapping` entry, although T4's label says so.
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import Compiler.Data.BitSet as BitSet
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -83,9 +82,10 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
+import Compiler.Data.BitSet as BitSet
 import Compiler.Eco.Config as Config
-import Compiler.Graph as Graph
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
+import Compiler.Graph as Graph
 import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Compiler.Monomorphize.Prune as Prune
 import Expect
@@ -479,7 +479,15 @@ sccRestrictionTest =
                                 _ ->
                                     acc
                         )
-                        (Array.initialize n (\i -> if modBy 5 i == 4 then Nothing else Just []))
+                        (Array.initialize n
+                            (\i ->
+                                if modBy 5 i == 4 then
+                                    Nothing
+
+                                else
+                                    Just []
+                            )
+                        )
                         pairs
 
                 keep v =

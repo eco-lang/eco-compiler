@@ -77,11 +77,11 @@ point as a key, and shared contents for the top lambda set.
 
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
-import Eco.CellStore as CellStore
 import Compiler.Type.Vars as Vars exposing (Content(..), Descriptor, FlatType(..), LambdaSet(..), Mark(..), Point(..), PointCell(..), RootedVar, SortedRel(..), SuperType(..), Variable)
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import Dict as CoreDict
+import Eco.CellStore as CellStore
 
 
 {-| Runs `ioA` on a state made by `freshState` and returns its result, discarding

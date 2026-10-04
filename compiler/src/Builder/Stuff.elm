@@ -117,8 +117,6 @@ compilerVersion =
 
 
 -- ====== ECI and ECO ======
-
-
 -- Per-module artifacts live under the build directory when one is given, next
 -- to that build's d.dat / i.dat / o.dat (cache-serialization plan S12b): Build
 -- and Generate must agree on the path, so there is deliberately no root-only

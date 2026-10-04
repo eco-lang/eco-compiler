@@ -89,9 +89,9 @@ import Compiler.MonoSolver.Engine as Engine
 import Compiler.MonoSolver.Store as Store
 import Compiler.Type.UnionFind as UF
 import Compiler.Type.Vars as Vars
-import Eco.CellStore as CellStore
 import Data.HashMap as HashMap
 import Dict
+import Eco.CellStore as CellStore
 import Expect
 import Test exposing (Test)
 

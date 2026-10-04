@@ -25,7 +25,6 @@ specialization is the new solver engine.
 
 -}
 
-import Eco.CellStore as CellStore
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Intern as Intern
@@ -59,6 +58,7 @@ import Data.HashMap as HashMap
 import Data.Map as DMap
 import Data.Set as EverySet
 import Dict
+import Eco.CellStore as CellStore
 import System.TypeCheck.IO as IO
 
 
@@ -345,7 +345,6 @@ inhabitant. A ⊤ contributor means unknown inhabitants: skip.
 ORDER IS LOAD-BEARING: this pass MUST run BEFORE `settleCtorRows`' ⊤-heal —
 the heal rewrites ⊤ positions to sets and would erase the contamination
 evidence this gate reads.
-
 
 LANDED 2026-08-31 as `lss.settle.varCtorRows`, default-ON (the flex gate
 protected 1,563 positions). Unconditional since 2026-09-18.
@@ -680,7 +679,6 @@ Deliberately an INDEPENDENT implementation of the cellmap walk from the
 `varfix3` census that measured this class: the census must not share a
 classifier with its mechanism (the Aug-26 audit rule), which keeps its
 `lwould = 568` a genuine upper bound — this pass must write no more.
-
 
 LANDED 2026-09-01 as `lss.settle.varLambda`, default-ON: 597 writes, 587 k1,
 `andThen` var −328. Unconditional since 2026-09-18.
@@ -1172,7 +1170,6 @@ Successor ids ride `LssInfer.papMemberKey`, the SAME key `injectPapMember`
 and `injectPapSuccessors` mint, so all paths unify (E9.2 one-identity).
 Bounded rounds: a write at depth d exposes the head for depth d+1 in the
 next round (the intra-row chains behind the census's 69.7 % interior mass).
-
 
 LANDED 2026-08-31 as `lss.settle.varSucc`, default-ON with `varCtorRows`:
 var −19.2 %, coverage +1.91 pp, ⊤ unchanged, accounting exact. Unconditional
@@ -4356,6 +4353,7 @@ processItem specId s =
                                                                                 -- Accessor keys: no self
                                                                                 -- global to stamp (AR-3).
                                                                                 joinedR
+
                                                                     -- P1 census: one cell per
                                                                     -- recovered position (report-
                                                                     -- gated inside the bump).

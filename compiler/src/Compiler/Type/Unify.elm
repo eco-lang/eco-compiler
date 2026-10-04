@@ -1,4 +1,7 @@
-module Compiler.Type.Unify exposing (unify, unifyBoolS, unifyS, Answer(..))
+module Compiler.Type.Unify exposing
+    ( unify, Answer(..)
+    , unifyBoolS, unifyS
+    )
 
 {-| Type unification for Hindley-Milner type inference.
 
