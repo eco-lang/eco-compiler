@@ -853,6 +853,53 @@ Default leg (flag off):
 - **Follow-ups (plan §7, no mutation, no monad):** skip known no-op writes, and pass the bare
   array through `reprS`/`unionS`/`freshS` instead of rebuilding `IO.State` on every write.
 
+### uf1: `UnionFind` on the bare cell array, `Int` point compares (plan remove-cellstore §7): **FLAT, reverted**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 67.86 | 24.5 | 25.2 | 12.1 | 2.75 | 1304 | 6 | 6366 | 6592084 | same |
+| r2 | 67.64 | 24.3 | 25.1 | 12.1 | 2.74 | 1304 | 6 | 6366 | 6600748 | same |
+| r3 | 66.85 | 24.1 | 25.1 | 12.0 | 2.66 | 1304 | 6 | 6366 | 6608880 | same |
+| **median** | **67.64** | 24.3 | 25.1 | 12.1 | 2.74 | 1304 | 6 | 6366 | 6600748 | |
+| Δ vs noCS | 0.00 | −0.2 | 0.0 | 0.0 | −0.01 | +2 | 0 | −3 | +47,060 | |
+
+- **Change:** `reprCells`, `unionS`, `getS`, `setS` and `modifyS` do their reads and writes on
+  `s.ioRefsPoint` and rebuild `IO.State` once per operation, not once per write or per
+  recursion level. `IORef.readCell`/`writeCell` replace `readPointCellS`/`writePointCellS`, and the
+  write drops the redundant bounds check. `Point`s are compared by their `Int`, because
+  `eco.value.eq` on two distinct `Pt` boxes falls through to `Elm_Kernel_Utils_equal`.
+  Patch `step-fe-uf1.patch`, 374 lines.
+- **Verdict:** FLAT (identical wall median; counters ±noise), and not a deletion, so it does not
+  ship. Reverted to `keep-fe-noCS`.
+- **Why (perf, untimed legs on eco-optnoCS vs eco-optuf1):** `eqHelp` self time is 2.15 % vs
+  2.13 %, so the point compares were not where generic equality is spent. The record rebuild is
+  a small allocation next to the trie path copies. The residual union-find cost is the persistent
+  array itself: `Array_getHelp` 1.1 %, `getS` 0.6 %, `eco_clone_array` 0.6 %, `Array_get` 0.45 %,
+  `reprS` 0.45 % self, which is about the size of the noCS regression.
+
+### uf2: `Solve.adjustRank` skips its unchanged-rank second write (plan remove-cellstore §7): **FLAT, reverted**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 68.57 | 24.5 | 25.6 | 12.5 | 2.79 | 1310 | 6 | 6364 | 6542764 | same |
+| r2 | 67.46 | 24.4 | 25.3 | 12.1 | 2.69 | 1310 | 6 | 6364 | 6515168 | same |
+| r3 | 69.14 | 24.8 | 25.9 | 12.3 | 2.78 | 1310 | 6 | 6364 | 6537156 | same |
+| **median** | **68.57** | 24.5 | 25.6 | 12.3 | 2.78 | 1310 | 6 | 6364 | 6537156 | |
+| Δ vs noCS | +0.93 (flat, spread 1.68) | 0.0 | +0.5 (drift: untouched) | +0.2 | +0.03 | +8 | 0 | −2 | −16,532 | |
+
+- **Change:** after `adjustRankContent`, skip `UF.set var (... maxRank visitMark ...)` when
+  `maxRank == props.rank`. The first write already holds that descriptor, because the content walk
+  stops at the now-`visitMark` class. This is the only no-op write found among the type checker's
+  `UF.set`/`modify` sites. The mono solver's set writes already skip theirs (`skip` counter);
+  the rest change a mark or a descriptor, or sit on the error path. Patch 22 lines.
+- **Verdict:** FLAT. Parse/check/build is unchanged, where any gain must show, and minor GC is
+  +8 (deterministic), so the skip did not cut allocation. Not a deletion, so reverted to
+  `keep-fe-noCS`.
+- **Conclusion for plan §7:** neither follow-up recovers the noCS cost. What remains is intrinsic
+  to a persistent array (trie descent on every read, path copy on every write). The only levers
+  left are fewer union-find operations (algorithmic) or mutation, which the user's immutability
+  rule excludes.
+
 ## 6a. Batched end-of-series gates (run once each, after S8)
 
 - **G5 `TypedOptimizedCodecTest` (new):** 135/135 standard-suite modules round-trip the v2 codec
@@ -1128,3 +1175,5 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | I64 | 65.37 | +0.42 | 1168 | 6 | 6429 | 6528720 | FLAT, kept (exact i64 Int literals in .ecot; fixes cached-literal corruption; V 0.1.3) | S8 |
 | tidy-check | 64.48 | -0.89 | 1130 | 6 | 6311 | 6514824 | — (post-tidy regression check: none; parse/check/build 23.3 s; fixed point + deterministic) | I64 |
 | noCS | 67.64 | +3.16 | 1302 | 6 | 6369 | 6553688 | LOSS by §4, SHIPS (remove Eco.CellStore, immutable Array store; user decision: immutability rule; pcb +1.2 s, mono +1.8 s, GC time −0.56 s) | tidy-check |
+| uf1 | 67.64 | 0.00 | 1304 | 6 | 6366 | 6600748 | LOSS (FLAT, not a deletion: UnionFind on bare array + Int compares; reverted) | noCS |
+| uf2 | 68.57 | +0.93 | 1310 | 6 | 6364 | 6537156 | LOSS (FLAT: adjustRank no-op write skip; pcb unchanged, minor +8; reverted) | noCS |

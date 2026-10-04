@@ -152,3 +152,9 @@ All of these keep the store immutable and passed explicitly:
   rebuilding the `IO.State` record on every write.
 - **Re-read loop entries `8a`/`8b`** (compression trade-offs): their premise changes back once
   writes copy again.
+
+**Result (2026-10-04, fe-opt-loop entries `uf1` and `uf2`): both measured FLAT and were reverted.**
+Passing the bare array (with `Int` point compares) left wall unchanged at 67.64 s. Skipping
+`adjustRank`'s unchanged-rank write left parse/check/build unchanged at 24.5 s, with minor GC +8.
+The profile puts the remaining cost in the persistent array itself (trie reads and path copies),
+which no immutable rewrite of these call sites removes.
