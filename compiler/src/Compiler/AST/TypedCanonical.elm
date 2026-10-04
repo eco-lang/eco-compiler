@@ -51,10 +51,10 @@ The module is pure data: it defines types and no functions.
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
+import Compiler.AST.TypeVars as Vars
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
-import Compiler.Type.Vars as Vars
 import Dict exposing (Dict)
 
 
@@ -73,7 +73,7 @@ type alias Expr =
 `TypedExpr` is the only constructor. `tipe` is the type of the whole
 expression. `tvar` is the type checker's variable for the expression, or
 `Nothing` where none is recorded; a `Vars.Variable` identifies a point only
-within the type checker's store that made it, as `Compiler.Type.Vars`
+within the type checker's store that made it, as `Compiler.AST.TypeVars`
 describes. The sub-expressions of `expr` are canonical, not typed.
 
 -}
@@ -177,7 +177,7 @@ none.
 
 This is a name for an `Array`, not a new type. A variable identifies a point
 only within the type checker's store that made it, so the table means something
-only alongside that store, as `Compiler.Type.Vars` describes.
+only alongside that store, as `Compiler.AST.TypeVars` describes.
 
 -}
 type alias ExprVars =

@@ -63,6 +63,7 @@ import Compiler.Generate.MLIR.Names as Names
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
+import Compiler.GlobalOpt.KernelIntrinsics as KernelIntrinsics
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.MonoTraverse as MonoTraverse
@@ -910,8 +911,8 @@ generateVarKernel ctx kernelPrefix home name monoType =
             kernelPrefix ++ "_Kernel_" ++ home ++ "_" ++ name
     in
     -- Check for intrinsic constants (pi, e)
-    case Intrinsics.kernelIntrinsic home name [] monoType of
-        Just (Intrinsics.ConstantFloat { value }) ->
+    case KernelIntrinsics.kernelIntrinsic home name [] monoType of
+        Just (KernelIntrinsics.ConstantFloat { value }) ->
             let
                 ( ctx2, floatOp ) =
                     Ops.arithConstantFloat ctx1 var value
@@ -1433,7 +1434,7 @@ boxToEcoValue ctx var mlirTy =
         ( [ boxOp ], boxedVar, ctx2 )
 
 
-{-| Config gate for flag-gated intrinsics, applied AFTER `Intrinsics.kernelIntrinsic`
+{-| Config gate for flag-gated intrinsics, applied AFTER `KernelIntrinsics.kernelIntrinsic`
 has classified the call. `Intrinsics` itself stays config-free — it answers "what
 op could this be", this answers "may we emit it here" — so a declining gate always
 falls through to today's kernel-call path (whitelist discipline).
@@ -1452,38 +1453,38 @@ String and List both cross every ABI as `!eco.value`, so there is no SSA-type
 disagreement to test for.
 
 -}
-gateIntrinsic : Ctx.Context -> List ( String, MlirType ) -> Intrinsics.Intrinsic -> Maybe Intrinsics.Intrinsic
+gateIntrinsic : Ctx.Context -> List ( String, MlirType ) -> KernelIntrinsics.Intrinsic -> Maybe KernelIntrinsics.Intrinsic
 gateIntrinsic ctx argsWithTypes intrinsic =
     case intrinsic of
-        Intrinsics.StringLength ->
+        KernelIntrinsics.StringLength ->
             if ctx.ecoConfig.stringLengthOp then
                 Just intrinsic
 
             else
                 Nothing
 
-        Intrinsics.AppendString ->
+        KernelIntrinsics.AppendString ->
             if ctx.ecoConfig.appendSplit then
                 Just intrinsic
 
             else
                 Nothing
 
-        Intrinsics.AppendList ->
+        KernelIntrinsics.AppendList ->
             if ctx.ecoConfig.appendSplit then
                 Just intrinsic
 
             else
                 Nothing
 
-        Intrinsics.StringOrderCompare _ ->
+        KernelIntrinsics.StringOrderCompare _ ->
             if ctx.ecoConfig.stringOrderIntrinsic then
                 Just intrinsic
 
             else
                 Nothing
 
-        Intrinsics.ValueEq _ ->
+        KernelIntrinsics.ValueEq _ ->
             -- Two conditions, and the SSA one is why this cannot live in
             -- Intrinsics: eco.value.eq needs BOTH operands to already be
             -- !eco.value, but aggregate promotion / psplit can hand a tuple or
@@ -1497,7 +1498,7 @@ gateIntrinsic ctx argsWithTypes intrinsic =
             else
                 Nothing
 
-        Intrinsics.ConstructList { headMlirType } ->
+        KernelIntrinsics.ConstructList { headMlirType } ->
             case ( ctx.ecoConfig.list.consIntrinsic, argsWithTypes ) of
                 ( True, [ ( _, headSsaTy ), _ ] ) ->
                     if Types.isEcoValueType headMlirType then
@@ -1521,10 +1522,10 @@ gateIntrinsic ctx argsWithTypes intrinsic =
 unboxes); every other intrinsic keeps exactly today's behaviour, so output is
 byte-identical when the flag is off and for all non-cons intrinsics when it is on.
 -}
-coerceIntrinsicArgs : Ctx.Context -> List ( String, MlirType ) -> Intrinsics.Intrinsic -> ( List MlirOp, List String, Ctx.Context )
+coerceIntrinsicArgs : Ctx.Context -> List ( String, MlirType ) -> KernelIntrinsics.Intrinsic -> ( List MlirOp, List String, Ctx.Context )
 coerceIntrinsicArgs ctx argsWithTypes intrinsic =
     case ( intrinsic, argsWithTypes ) of
-        ( Intrinsics.ConstructList { headMlirType }, [ ( headVar, headSsaTy ), ( tailVar, tailSsaTy ) ] ) ->
+        ( KernelIntrinsics.ConstructList { headMlirType }, [ ( headVar, headSsaTy ), ( tailVar, tailSsaTy ) ] ) ->
             let
                 ( headOps, headVar1, ctxH ) =
                     if Types.isEcoValueType headMlirType then
@@ -4009,7 +4010,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                 Just ( moduleName, name ) ->
                                     -- This is a core module function - check for intrinsic
                                     case
-                                        Intrinsics.kernelIntrinsic moduleName name argTypes resultType
+                                        KernelIntrinsics.kernelIntrinsic moduleName name argTypes resultType
                                             |> Maybe.andThen (gateIntrinsic ctx1 argsWithTypes)
                                     of
                                         Just intrinsic ->
@@ -4486,7 +4487,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
 
                 _ ->
                     case
-                        Intrinsics.kernelIntrinsic home name argTypes resultType
+                        KernelIntrinsics.kernelIntrinsic home name argTypes resultType
                             |> Maybe.andThen (gateIntrinsic ctx1 argsWithTypes)
                     of
                         Just intrinsic ->

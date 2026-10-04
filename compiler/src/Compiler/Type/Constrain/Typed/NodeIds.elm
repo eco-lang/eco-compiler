@@ -52,8 +52,8 @@ negative node id is never recorded.
 -}
 
 import Array exposing (Array)
+import Compiler.AST.TypeVars as Vars
 import Compiler.Data.Name as Name
-import Compiler.Type.Vars as Vars
 import Data.Set as EverySet
 import Dict
 import System.TypeCheck.IO as IO exposing (IO)

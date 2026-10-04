@@ -35,6 +35,7 @@ as `PostSolve` and the pattern exhaustiveness check, which are not run.
 import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
+import Compiler.AST.TypeVars as Vars
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name exposing (Name)
 import Compiler.Data.NonEmptyList as NE
@@ -47,7 +48,6 @@ import Compiler.Reporting.Result as Result
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.Error as T
 import Compiler.Type.Solve as Solve
-import Compiler.Type.Vars as Vars
 import Dict
 import Expect
 import System.TypeCheck.IO as IO

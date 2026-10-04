@@ -189,7 +189,7 @@ varKernelUtilsTuple2 expectFn _ =
 `Elm.Kernel.Basics.pi`.
 
 The case's label refers to the MLIR back end, where
-`Compiler.Generate.MLIR.Intrinsics` has a float-constant intrinsic for
+`Compiler.GlobalOpt.KernelIntrinsics` has a float-constant intrinsic for
 `Basics.pi`.
 
 -}
@@ -207,7 +207,7 @@ varKernelBasicsPi expectFn _ =
 `Elm.Kernel.Basics.add`, referenced without being called.
 
 The case's label refers to the MLIR back end, where
-`Compiler.Generate.MLIR.Intrinsics` has intrinsics for calls of `Basics.add`, a
+`Compiler.GlobalOpt.KernelIntrinsics` has intrinsics for calls of `Basics.add`, a
 kernel function that takes arguments.
 
 -}

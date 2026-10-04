@@ -30,6 +30,7 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Intern as Intern exposing (Intern)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds as TypeIds
+import Compiler.AST.TypeVars as Vars
 import Compiler.Data.Id as Id
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.MonoSolver.Engine as Engine exposing (Failure(..), Step)
@@ -37,7 +38,6 @@ import Compiler.Type.Error as TErr
 import Compiler.Type.Type as Type
 import Compiler.Type.Unify as Unify
 import Compiler.Type.UnionFind as UF
-import Compiler.Type.Vars as Vars
 import Data.HashMap as HashMap
 import Dict
 import Eco.Hash

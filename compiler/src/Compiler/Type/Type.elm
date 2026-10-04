@@ -65,6 +65,7 @@ Used by the solver to track generalization levels:
 
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
+import Compiler.AST.TypeVars as Vars exposing (Content(..), Descriptor, FlatType(..), Mark(..), SuperType(..), Variable)
 import Compiler.AST.Utils.Type as Type
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
@@ -72,7 +73,6 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Type as E
 import Compiler.Type.Error as ET
 import Compiler.Type.UnionFind as UF
-import Compiler.Type.Vars as Vars exposing (Content(..), Descriptor, FlatType(..), Mark(..), SuperType(..), Variable)
 import Dict exposing (Dict)
 import Maybe.Extra as Maybe
 import System.TypeCheck.IO as IO exposing (IO, NameState)

@@ -30,7 +30,7 @@ not there.
 -}
 
 import Array exposing (Array)
-import Compiler.Type.Vars as Vars exposing (Variable)
+import Compiler.AST.TypeVars as Vars exposing (Variable)
 import Data.IORef as IORef exposing (IORef)
 import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Crash exposing (crash)

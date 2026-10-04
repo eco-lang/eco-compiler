@@ -57,6 +57,7 @@ rather than as heap objects.
 
 -}
 
+import Compiler.AST.MonoAbi as MonoAbi
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
 import Dict exposing (Dict)
@@ -72,28 +73,28 @@ an embedded constant.
 -}
 ecoValue : MlirType
 ecoValue =
-    NamedStruct "eco.value"
+    MonoAbi.ecoValue
 
 
 {-| The type of an unboxed Int, a 64-bit integer.
 -}
 ecoInt : MlirType
 ecoInt =
-    I64
+    MonoAbi.ecoInt
 
 
 {-| The type of an unboxed Float, a 64-bit float.
 -}
 ecoFloat : MlirType
 ecoFloat =
-    F64
+    MonoAbi.ecoFloat
 
 
 {-| The type of an unboxed Char, a 16-bit integer.
 -}
 ecoChar : MlirType
 ecoChar =
-    I16
+    MonoAbi.ecoChar
 
 
 
@@ -125,26 +126,13 @@ function parameter or result, a closure capture, or an operand of a partial
 application.
 
 Int is `i64`, Float `f64`, Char `i16`, and a number type variable `i64`.
-Every other type, Bool included, is `!eco.value`.
+Every other type, Bool included, is `!eco.value`. The mapping is defined in
+`Compiler.AST.MonoAbi`, so that passes below the back end can use it too.
 
 -}
 monoTypeToAbi : Mono.MonoType -> MlirType
 monoTypeToAbi monoType =
-    case monoType of
-        Mono.MInt ->
-            ecoInt
-
-        Mono.MFloat ->
-            ecoFloat
-
-        Mono.MChar ->
-            ecoChar
-
-        Mono.MVar _ Mono.CNumber ->
-            I64
-
-        _ ->
-            ecoValue
+    MonoAbi.monoTypeToAbi monoType
 
 
 {-| Returns the operand type of a value of the given type: its MLIR type as an
@@ -237,12 +225,7 @@ countTotalArity monoType =
 -}
 isEcoValueType : MlirType -> Bool
 isEcoValueType ty =
-    case ty of
-        NamedStruct "eco.value" ->
-            True
-
-        _ ->
-            False
+    MonoAbi.isEcoValueType ty
 
 
 {-| Returns whether the MLIR type is a tuple value aggregate, a

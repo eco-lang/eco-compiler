@@ -21,6 +21,7 @@ type information on every expression.
 -}
 
 import Compiler.AST.Canonical as Can
+import Compiler.AST.TypeVars as Vars
 import Compiler.AST.TypedCanonical as TCan exposing (ExprTypes, ExprVars)
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.AST.Utils.Type as Type
@@ -37,7 +38,6 @@ import Compiler.Reporting.Result as ReportingResult
 import Compiler.Reporting.Warning as W
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.SolverRoots as SolverRoots
-import Compiler.Type.Vars as Vars
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)

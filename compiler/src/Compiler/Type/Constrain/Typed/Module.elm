@@ -15,6 +15,7 @@ state lives in `IO.State` and is seeded/collected here via `IO.withNodeIds`.
 -}
 
 import Compiler.AST.Canonical as Can
+import Compiler.AST.TypeVars as Vars
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
@@ -23,7 +24,6 @@ import Compiler.Type.Constrain.Typed.Expression as Expr
 import Compiler.Type.Constrain.Typed.NodeIds as NodeIds
 import Compiler.Type.Instantiate as Instantiate
 import Compiler.Type.Type as Type exposing (Constraint(..), Type(..), mkFlexVar, nameToRigid)
-import Compiler.Type.Vars as Vars
 import Data.Map as DMap
 import Dict
 import System.TypeCheck.IO as IO exposing (IO)

@@ -7,7 +7,7 @@ module Compiler.Type.UnionFind exposing
 keeps track of those decisions: it is the union-find structure over the points
 of the type checker's store.
 
-A _point_ is a type variable, as `Compiler.Type.Vars` describes, and the points
+A _point_ is a type variable, as `Compiler.AST.TypeVars` describes, and the points
 found to be equal form one _class_. Each class has one _root_, whose cell
 carries the class's descriptor and its _weight_, the number of points in the
 class. Every other point's cell is a link towards the root. Asking for a
@@ -44,7 +44,7 @@ The plain forms are wrappers over the `S` forms.
 
 -}
 
-import Compiler.Type.Vars as Vars exposing (Descriptor)
+import Compiler.AST.TypeVars as Vars exposing (Descriptor)
 import Data.IORef as IORef
 import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Crash exposing (crash)

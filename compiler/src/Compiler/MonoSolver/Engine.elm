@@ -49,6 +49,7 @@ import Compiler.AST.Intern as Intern exposing (Intern)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypeIds as TypeIds
+import Compiler.AST.TypeVars as Vars
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet exposing (BitSet)
 import Compiler.Data.Id as Id
@@ -57,7 +58,6 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Monomorphize.Registry as Registry
 import Compiler.Type.Type as Type
 import Compiler.Type.UnionFind as UF
-import Compiler.Type.Vars as Vars
 import Data.HashMap as HashMap
 import Data.Set as EverySet
 import Dict as CoreDict exposing (Dict)

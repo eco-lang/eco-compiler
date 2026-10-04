@@ -5,7 +5,7 @@ so that a compiler stage meets each of them with `Float` arguments or results.
 
 The MLIR back end can turn a call to a `Basics` operation into an intrinsic,
 chosen by the operation's name and its monomorphized argument types in the
-private `basicsIntrinsic` of `Compiler.Generate.MLIR.Intrinsics`. That function
+private `basicsIntrinsic` of `Compiler.GlobalOpt.KernelIntrinsics`. That function
 gives an intrinsic for every operation these programs call, at the types they
 call it at, except two: its `logBase` row gives none, and it has no row for
 `clamp`. These cases give each operation a small program that calls it at

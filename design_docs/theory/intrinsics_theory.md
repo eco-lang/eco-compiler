@@ -9,7 +9,9 @@ Compiler intrinsics are operations that bypass the normal kernel function call m
 **Pipeline Position**: During kernel call emission, before fallback to kernel ABI
 
 **Related Modules**:
-- `compiler/src/Compiler/Generate/MLIR/Intrinsics.elm`
+- `compiler/src/Compiler/GlobalOpt/KernelIntrinsics.elm` (selection: the `Intrinsic` type and `kernelIntrinsic`; also used by the inliner's cost model in `MonoInlineSimplify`)
+- `compiler/src/Compiler/Generate/MLIR/Intrinsics.elm` (emission: unboxing and op generation)
+- `compiler/src/Compiler/AST/MonoAbi.elm` (`monoTypeToAbi`, shared by selection and the back end)
 - `compiler/src/Compiler/Generate/MLIR/Expr.elm` (call site)
 - `runtime/src/codegen/Eco/EcoOps.td` (MLIR op definitions)
 
@@ -170,7 +172,7 @@ During expression codegen, kernel calls are checked for intrinsic matches:
 ```elm
 generateKernelCall : Context -> Name -> Name -> List MonoType -> MonoType -> List (String, MlirType) -> ...
 generateKernelCall ctx home name argTypes resultType args =
-    case Intrinsics.kernelIntrinsic home name argTypes resultType of
+    case KernelIntrinsics.kernelIntrinsic home name argTypes resultType of
         Just intrinsic ->
             -- Emit direct MLIR op
             let

@@ -21,7 +21,7 @@ actions, and the iterators run an action once for each element of a list, array
 or dictionary, handing the state each run leaves on to the next.
 
 The heart of the state is the _point store_, the union-find store itself, which
-holds one cell for each type variable; `Compiler.Type.Vars` describes points and
+holds one cell for each type variable; `Compiler.AST.TypeVars` describes points and
 their cells. The point store is an `Eco.CellStore`, which the native build
 changes in place, so a state is subject to that module's linearity contract:
 once a state has been given to an action, only the state the action returns is
@@ -39,7 +39,7 @@ and `forM_` go from the last element to the first. Each iterator loops through
 a self-tail-recursive helper, which Elm compiles to a loop, so a long list does
 not deepen the stack.
 
-The last group of functions serves lambda sets, which `Compiler.Type.Vars`
+The last group of functions serves lambda sets, which `Compiler.AST.TypeVars`
 defines, and is used by `Compiler.Type.Unify` and by the monomorphization
 solver: comparing and merging ascending lists of member ids, the index of a
 point as a key, and shared contents for the top lambda set.
@@ -77,7 +77,7 @@ point as a key, and shared contents for the top lambda set.
 
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
-import Compiler.Type.Vars exposing (Content(..), Descriptor, FlatType(..), LambdaSet(..), Mark, Point(..), PointCell, SortedRel(..), Variable)
+import Compiler.AST.TypeVars exposing (Content(..), Descriptor, FlatType(..), LambdaSet(..), Mark, Point(..), PointCell, SortedRel(..), Variable)
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import Dict as CoreDict
@@ -791,7 +791,7 @@ lsTopContentK k =
 
 
 {-| Returns how two lists of member ids relate as sets, as a
-`Compiler.Type.Vars.SortedRel`, in a single pass over both.
+`Compiler.AST.TypeVars.SortedRel`, in a single pass over both.
 
 The lists must be ascending and free of duplicates. The types cannot say so,
 and for lists that are not, the answer has no meaning.

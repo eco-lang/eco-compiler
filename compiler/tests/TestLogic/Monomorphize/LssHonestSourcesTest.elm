@@ -60,13 +60,13 @@ counted; and how a zonk reads a resolution back.
 
 import Compiler.AST.Intern as Intern
 import Compiler.AST.TypeIds as TypeIds
+import Compiler.AST.TypeVars as Vars
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.MonoSolver.Engine as Engine
 import Compiler.MonoSolver.Store as Store
 import Compiler.Type.Type as Type
 import Compiler.Type.UnionFind as UF
-import Compiler.Type.Vars as Vars
 import Dict
 import Expect
 import System.TypeCheck.IO as IO

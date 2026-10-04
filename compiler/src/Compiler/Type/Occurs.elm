@@ -19,8 +19,8 @@ tracking which variables have been seen.
 
 -}
 
+import Compiler.AST.TypeVars as Vars
 import Compiler.Type.UnionFind as UF
-import Compiler.Type.Vars as Vars
 import Dict
 import System.TypeCheck.IO as IO exposing (IO)
 

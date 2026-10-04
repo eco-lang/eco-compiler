@@ -1334,7 +1334,7 @@ known global is a PAP, and a saturated one is cheap only if the callee's body is
 under `inline.etaThreshold`. A kernel is cheap only in the `gcLeaf` cost class.
 
 The `inline` cost class of `MonoInlineSimplify.kernelCallCost` cannot be read
-here: `Intrinsics.kernelIntrinsic` keys on MONO types, which do not exist yet.
+here: `KernelIntrinsics.kernelIntrinsic` keys on MONO types, which do not exist yet.
 `CGcLeaf` is the pre-mono approximation and it is conservative in the safe
 direction — it declines sites, never admits extra ones.
 

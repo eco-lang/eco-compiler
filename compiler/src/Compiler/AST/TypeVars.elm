@@ -1,4 +1,4 @@
-module Compiler.Type.Vars exposing
+module Compiler.AST.TypeVars exposing
     ( Variable, Point(..), PointCell(..), RootedVar
     , Descriptor, Content(..), SuperType(..), Mark(..)
     , FlatType(..), LambdaSet(..), SortedRel(..)

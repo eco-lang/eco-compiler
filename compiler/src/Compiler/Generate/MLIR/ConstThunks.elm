@@ -29,7 +29,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.MLIR.Context as Ctx
-import Compiler.Generate.MLIR.Intrinsics as Intrinsics
+import Compiler.GlobalOpt.KernelIntrinsics as KernelIntrinsics
 import Compiler.Monomorphize.Registry as Registry
 import Dict
 import Set
@@ -228,8 +228,8 @@ phase1Class env inProgress body memo =
             ( Just "unit", memo )
 
         Mono.MonoVarKernel _ _ home name ty ->
-            case Intrinsics.kernelIntrinsic home name [] ty of
-                Just (Intrinsics.ConstantFloat _) ->
+            case KernelIntrinsics.kernelIntrinsic home name [] ty of
+                Just (KernelIntrinsics.ConstantFloat _) ->
                     ( Just "kconst", memo )
 
                 _ ->
@@ -328,7 +328,7 @@ pureCallee env callee args resultType =
             List.length args == 2
 
         Mono.MonoVarKernel _ _ home name _ ->
-            pureIntrinsic (Intrinsics.kernelIntrinsic home name argTypes resultType)
+            pureIntrinsic (KernelIntrinsics.kernelIntrinsic home name argTypes resultType)
 
         Mono.MonoVarGlobal _ target _ ->
             case ( Registry.lookupSpecKey target env.registry, Array.get target env.signatures ) of
@@ -337,7 +337,7 @@ pureCallee env callee args resultType =
                         == Pkg.core
                         && List.length sig.paramTypes
                         == List.length args
-                        && pureIntrinsic (Intrinsics.kernelIntrinsic moduleName name argTypes resultType)
+                        && pureIntrinsic (KernelIntrinsics.kernelIntrinsic moduleName name argTypes resultType)
 
                 _ ->
                     False
@@ -349,54 +349,54 @@ pureCallee env callee args resultType =
 {-| Intrinsics that lower to pure, non-allocating, LLVM-foldable arithmetic
 (no runtime call: `eco.int.pow` is `getOrCreateIntPow`).
 -}
-pureIntrinsic : Maybe Intrinsics.Intrinsic -> Bool
+pureIntrinsic : Maybe KernelIntrinsics.Intrinsic -> Bool
 pureIntrinsic mi =
     case mi of
         Just i ->
             case i of
-                Intrinsics.UnaryInt _ ->
+                KernelIntrinsics.UnaryInt _ ->
                     True
 
-                Intrinsics.BinaryInt { op } ->
+                KernelIntrinsics.BinaryInt { op } ->
                     op /= "eco.int.pow"
 
-                Intrinsics.UnaryFloat _ ->
+                KernelIntrinsics.UnaryFloat _ ->
                     True
 
-                Intrinsics.BinaryFloat _ ->
+                KernelIntrinsics.BinaryFloat _ ->
                     True
 
-                Intrinsics.UnaryBool _ ->
+                KernelIntrinsics.UnaryBool _ ->
                     True
 
-                Intrinsics.BinaryBool _ ->
+                KernelIntrinsics.BinaryBool _ ->
                     True
 
-                Intrinsics.IntToFloat ->
+                KernelIntrinsics.IntToFloat ->
                     True
 
-                Intrinsics.FloatToInt _ ->
+                KernelIntrinsics.FloatToInt _ ->
                     True
 
-                Intrinsics.IntComparison _ ->
+                KernelIntrinsics.IntComparison _ ->
                     True
 
-                Intrinsics.FloatComparison _ ->
+                KernelIntrinsics.FloatComparison _ ->
                     True
 
-                Intrinsics.CharComparison _ ->
+                KernelIntrinsics.CharComparison _ ->
                     True
 
-                Intrinsics.FloatClassify _ ->
+                KernelIntrinsics.FloatClassify _ ->
                     True
 
-                Intrinsics.ConstantFloat _ ->
+                KernelIntrinsics.ConstantFloat _ ->
                     True
 
-                Intrinsics.CharToInt ->
+                KernelIntrinsics.CharToInt ->
                     True
 
-                Intrinsics.CharFromInt ->
+                KernelIntrinsics.CharFromInt ->
                     True
 
                 _ ->

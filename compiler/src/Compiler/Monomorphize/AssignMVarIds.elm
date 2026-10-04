@@ -17,13 +17,13 @@ constraint information is recorded in a side table.
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.TypeIds as TypeIds
+import Compiler.AST.TypeVars as Vars
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Id as Id
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.SolverRoots as SolverRoots
-import Compiler.Type.Vars as Vars
 import Data.Map as DMap
 import Dict exposing (Dict)
 

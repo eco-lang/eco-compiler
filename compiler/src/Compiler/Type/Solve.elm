@@ -26,6 +26,7 @@ to older pools or generalized to `noRank` (making them polymorphic).
 
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
+import Compiler.AST.TypeVars as Vars exposing (Content, Descriptor, Mark, Variable)
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Reporting.Annotation as A
@@ -38,7 +39,6 @@ import Compiler.Type.Occurs as Occurs
 import Compiler.Type.Type as Type exposing (Constraint(..), Type, nextMark)
 import Compiler.Type.Unify as Unify
 import Compiler.Type.UnionFind as UF
-import Compiler.Type.Vars as Vars exposing (Content, Descriptor, Mark, Variable)
 import Data.IORef exposing (IORef)
 import Data.Vector as Vector
 import Data.Vector.Mutable as MVector

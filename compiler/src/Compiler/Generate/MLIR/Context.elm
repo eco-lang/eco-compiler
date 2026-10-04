@@ -4,7 +4,7 @@ module Compiler.Generate.MLIR.Context exposing
     , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, liveEcoValueVars, resetDefinedSsaVars
     , getOrCreateTypeIdForMonoType, registerKernelCall
     , buildSignatures, kernelFuncSignatureFromType
-    , isTypeVar, hasKernelImplementation
+    , hasKernelImplementation
     , KernelDeclInfo
     , registerKernelInstance
     , PsplitInfo, SlotPlan, SplitParamInfo, SplitSpec(..), SretInfo, residualResultType, withConstCtorBySpec, withConstThunkBySpec, withNullConsBySpec, withPsplitPromoted, withSretPromoted
@@ -43,7 +43,7 @@ state during MLIR code generation.
 
 # Type Inspection
 
-@docs isTypeVar, hasKernelImplementation
+@docs hasKernelImplementation
 
 
 # Kernel Declaration Info
@@ -166,19 +166,6 @@ kernelFuncSignatureFromType funcType =
 -- kernel ABI rollout (see plans/per-instance-kernel-abi.md, Phase A).
 -- Callers should use KernelAbi.AllBoxed / KernelAbi.ElmDerived /
 -- KernelAbi.kernelBackendAbiPolicy directly.
-
-
-{-| Check if a type is a type variable (MVar).
-Used for relaxed intrinsic matching when the result type might be polymorphic.
--}
-isTypeVar : Mono.MonoType -> Bool
-isTypeVar t =
-    case t of
-        Mono.MVar _ _ ->
-            True
-
-        _ ->
-            False
 
 
 {-| Check if a core module function has a kernel implementation to fall back to

@@ -18,6 +18,7 @@ carries a Can.Type Name annotation.
 
 import Array
 import Compiler.AST.Canonical as Can
+import Compiler.AST.TypeVars as Vars
 import Compiler.AST.TypedCanonical as TCan exposing (ExprTypes, ExprVars)
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.AST.Utils.Shader as Shader
@@ -29,7 +30,6 @@ import Compiler.LocalOpt.Typed.Case as Case
 import Compiler.LocalOpt.Typed.Names as Names
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.KernelTypes as KernelTypes
-import Compiler.Type.Vars as Vars
 import Compiler.TypedCanonical.Build as TCanBuild
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)

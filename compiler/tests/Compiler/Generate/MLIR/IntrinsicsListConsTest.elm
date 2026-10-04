@@ -1,6 +1,6 @@
 module Compiler.Generate.MLIR.IntrinsicsListConsTest exposing (suite)
 
-{-| Tests for the part of `Intrinsics.kernelIntrinsic` that decides whether a
+{-| Tests for the part of `KernelIntrinsics.kernelIntrinsic` that decides whether a
 call to the `List.cons` kernel can be replaced by an inline list construction
 (`ConstructList`), and what MLIR type the new cell's head slot gets.
 
@@ -49,8 +49,8 @@ variable, and every other kernel the classifier handles.
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds as TypeIds
-import Compiler.Generate.MLIR.Intrinsics as Intrinsics
 import Compiler.Generate.MLIR.Types as Types
+import Compiler.GlobalOpt.KernelIntrinsics as KernelIntrinsics
 import Expect
 import Test exposing (Test, describe, test)
 
@@ -70,9 +70,9 @@ listOfInt =
 {-| Asks the classifier about a two-argument `List.cons` call with the given head,
 tail and result types.
 -}
-consOf : Mono.MonoType -> Mono.MonoType -> Mono.MonoType -> Maybe Intrinsics.Intrinsic
+consOf : Mono.MonoType -> Mono.MonoType -> Mono.MonoType -> Maybe KernelIntrinsics.Intrinsic
 consOf headTy tailTy resultTy =
-    Intrinsics.kernelIntrinsic "List" "cons" [ headTy, tailTy ] resultTy
+    KernelIntrinsics.kernelIntrinsic "List" "cons" [ headTy, tailTy ] resultTy
 
 
 {-| The tests, in two groups: calls given a `ConstructList`, and calls declined.
@@ -84,23 +84,23 @@ suite =
             [ test "boxed head (String) -> !eco.value slot" <|
                 \_ ->
                     consOf Mono.MString (Mono.MList 0 Mono.MString) (Mono.MList 0 Mono.MString)
-                        |> Expect.equal (Just (Intrinsics.ConstructList { headMlirType = Types.ecoValue }))
+                        |> Expect.equal (Just (KernelIntrinsics.ConstructList { headMlirType = Types.ecoValue }))
             , test "Int head -> i64 slot (the _Int axis)" <|
                 \_ ->
                     consOf Mono.MInt listOfInt listOfInt
-                        |> Expect.equal (Just (Intrinsics.ConstructList { headMlirType = Types.ecoInt }))
+                        |> Expect.equal (Just (KernelIntrinsics.ConstructList { headMlirType = Types.ecoInt }))
             , test "Float head -> f64 slot (the _Float axis)" <|
                 \_ ->
                     consOf Mono.MFloat (Mono.MList 0 Mono.MFloat) (Mono.MList 0 Mono.MFloat)
-                        |> Expect.equal (Just (Intrinsics.ConstructList { headMlirType = Types.ecoFloat }))
+                        |> Expect.equal (Just (KernelIntrinsics.ConstructList { headMlirType = Types.ecoFloat }))
             , test "Char head -> i16 slot (the _Char axis)" <|
                 \_ ->
                     consOf Mono.MChar (Mono.MList 0 Mono.MChar) (Mono.MList 0 Mono.MChar)
-                        |> Expect.equal (Just (Intrinsics.ConstructList { headMlirType = Types.ecoChar }))
+                        |> Expect.equal (Just (KernelIntrinsics.ConstructList { headMlirType = Types.ecoChar }))
             , test "Bool head is boxed, not a primitive slot (REP: Bool is never unboxed in heap fields)" <|
                 \_ ->
                     consOf Mono.MBool (Mono.MList 0 Mono.MBool) (Mono.MList 0 Mono.MBool)
-                        |> Expect.equal (Just (Intrinsics.ConstructList { headMlirType = Types.ecoValue }))
+                        |> Expect.equal (Just (KernelIntrinsics.ConstructList { headMlirType = Types.ecoValue }))
             ]
         , describe "declines (⇒ the site keeps today's kernel call)"
             [ test "unsettled CNumber head — maps to i64 under monoTypeToAbi but is NOT the _Int axis" <|
@@ -117,19 +117,19 @@ suite =
                         |> Expect.equal Nothing
             , test "unsaturated / wrong arity" <|
                 \_ ->
-                    Intrinsics.kernelIntrinsic "List" "cons" [ Mono.MInt ] listOfInt
+                    KernelIntrinsics.kernelIntrinsic "List" "cons" [ Mono.MInt ] listOfInt
                         |> Expect.equal Nothing
             , test "no args at all (the unapplied `cons` value path, Expr.elm:775)" <|
                 \_ ->
-                    Intrinsics.kernelIntrinsic "List" "cons" [] listOfInt
+                    KernelIntrinsics.kernelIntrinsic "List" "cons" [] listOfInt
                         |> Expect.equal Nothing
             , test "a different List kernel is not claimed" <|
                 \_ ->
-                    Intrinsics.kernelIntrinsic "List" "reverse" [ listOfInt ] listOfInt
+                    KernelIntrinsics.kernelIntrinsic "List" "reverse" [ listOfInt ] listOfInt
                         |> Expect.equal Nothing
             , test "a different home is not claimed" <|
                 \_ ->
-                    Intrinsics.kernelIntrinsic "Platform" "cons" [ Mono.MInt, listOfInt ] listOfInt
+                    KernelIntrinsics.kernelIntrinsic "Platform" "cons" [ Mono.MInt, listOfInt ] listOfInt
                         |> Expect.equal Nothing
             ]
         ]

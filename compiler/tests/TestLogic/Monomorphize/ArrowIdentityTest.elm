@@ -74,11 +74,11 @@ Among what is not tested: which seed the four `Step`-typed load functions in
 import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.TypeIds as TypeIds
+import Compiler.AST.TypeVars as Vars
 import Compiler.Data.Id as Id
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.MonoSolver.Engine as Engine
 import Compiler.MonoSolver.Store as Store
-import Compiler.Type.Vars as Vars
 import Dict
 import Expect
 import System.TypeCheck.IO as IO

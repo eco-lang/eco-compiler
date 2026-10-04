@@ -24,6 +24,7 @@ import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypeIds as TypeIds
+import Compiler.AST.TypeVars as Vars
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Id as Id
 import Compiler.Data.Index as Index
@@ -43,7 +44,6 @@ import Compiler.Monomorphize.ResolveAccessorValues as ResolveAccessorValues
 import Compiler.Monomorphize.State as State
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.UnionFind as UF
-import Compiler.Type.Vars as Vars
 import Data.HashMap as HashMap
 import Data.Map as DMap
 import Data.Set as EverySet

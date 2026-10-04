@@ -84,6 +84,7 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Compiler.AST.TypeEnv as TypeEnv
+import Compiler.AST.TypeVars as Vars
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name exposing (Name)
@@ -109,7 +110,6 @@ import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
 import Compiler.Type.SolverRoots as SolverRoots
-import Compiler.Type.Vars as Vars
 import Compiler.TypedCanonical.Build as TCanBuild
 import Data.Map
 import Data.Set

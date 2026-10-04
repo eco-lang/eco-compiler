@@ -85,6 +85,7 @@ import Compiler.AST.DecisionTree.TypedPath as DT
 import Compiler.AST.StringTable as StringTable exposing (StringTable)
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.TypeTable as TypeTable exposing (TypeTable)
+import Compiler.AST.TypeVars as Vars
 import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
@@ -92,7 +93,6 @@ import Compiler.Elm.Kernel as K
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
-import Compiler.Type.Vars as Vars
 import Data.Map
 import Data.Set exposing (EverySet)
 import Dict exposing (Dict)

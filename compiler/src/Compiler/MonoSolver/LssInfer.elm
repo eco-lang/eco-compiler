@@ -52,6 +52,7 @@ import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds as TypeIds
+import Compiler.AST.TypeVars as Vars
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name exposing (Name)
 import Compiler.MonoSolver.Engine as Engine exposing (Failure(..))
@@ -59,7 +60,6 @@ import Compiler.MonoSolver.KernelSetFacts as KernelSetFacts
 import Compiler.MonoSolver.Store as Store
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.UnionFind as UF
-import Compiler.Type.Vars as Vars
 import Data.HashMap as HashMap
 import Data.Map as DMap
 import Dict as CoreDict exposing (Dict)

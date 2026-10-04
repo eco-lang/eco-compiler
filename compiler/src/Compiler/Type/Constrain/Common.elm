@@ -44,12 +44,12 @@ and Typed constraint generation pathways.
 -}
 
 import Compiler.AST.Canonical as Can
+import Compiler.AST.TypeVars as Vars
 import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Type as E
 import Compiler.Type.Type as Type exposing (Constraint, Type(..))
-import Compiler.Type.Vars as Vars
 import Data.Map as DataMap
 import Dict exposing (Dict)
 

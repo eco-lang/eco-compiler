@@ -6,7 +6,7 @@ them, a resolver that loops on a cycle of edges, misses a reachable ⊤, or drop
 the members of a source could go unnoticed.
 
 A lambda-set slot is a union-find point whose content is a lambda set, as
-`Compiler.Type.Vars.LambdaSet` describes. Three kinds of content matter here.
+`Compiler.AST.TypeVars.LambdaSet` describes. Three kinds of content matter here.
 `LsMembers` holds known member ids. `LsTop` is ⊤, meaning the members are not
 known. `LsFrom members sources` holds the slot's own members plus one edge per
 source slot, each edge saying that this slot includes every member of that
@@ -51,11 +51,11 @@ would be the same if D were visited twice.
 
 import Compiler.AST.Intern as Intern
 import Compiler.AST.TypeIds as TypeIds
+import Compiler.AST.TypeVars as Vars
 import Compiler.MonoSolver.Engine as Engine
 import Compiler.MonoSolver.Store as Store
 import Compiler.Type.Type as Type
 import Compiler.Type.UnionFind as UF
-import Compiler.Type.Vars as Vars
 import Dict
 import Expect
 import System.TypeCheck.IO as IO

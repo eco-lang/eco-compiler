@@ -12,7 +12,7 @@ of that store, taken after solving, and records those answers in data that
 does outlive it.
 
 The store and its terms, _point_, _class_ and _root_, are described in
-`Compiler.Type.Vars`, and the snapshot in `Compiler.Type.SolverSnapshot`. Two
+`Compiler.AST.TypeVars`, and the snapshot in `Compiler.Type.SolverSnapshot`. Two
 variables the solver unified are in one class and resolve to one root, so
 replacing every variable by its root gives each class one identity. A root is a
 point of the store the snapshot was taken from, and means nothing apart from
@@ -62,9 +62,9 @@ alias.
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.TypeIds as TypeIds
+import Compiler.AST.TypeVars as Vars
 import Compiler.Data.Name as Name
 import Compiler.Type.SolverSnapshot as SolverSnapshot exposing (SolverState)
-import Compiler.Type.Vars as Vars
 import Dict exposing (Dict)
 
 

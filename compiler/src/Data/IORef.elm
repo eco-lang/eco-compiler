@@ -11,7 +11,7 @@ module reads and writes them one entry at a time.
 The first is the _point store_, the union-find store that
 `System.TypeCheck.IO` describes. It holds one _point cell_ for each point:
 either the root of a class, carrying the class's weight and descriptor, or a
-link towards the root, as `Compiler.Type.Vars.PointCell` describes. A cell is
+link towards the root, as `Compiler.AST.TypeVars.PointCell` describes. A cell is
 addressed by its index alone. A new cell is always added at the end, so the
 store's cells are numbered from 0 in the order they are made. The point store
 is an `Eco.CellStore`, which the native build changes in place, so these
@@ -50,7 +50,7 @@ vector makes a new table rather than changing the old one.
 -}
 
 import Array exposing (Array)
-import Compiler.Type.Vars as Vars
+import Compiler.AST.TypeVars as Vars
 import Eco.CellStore as CellStore
 import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Crash exposing (crash)

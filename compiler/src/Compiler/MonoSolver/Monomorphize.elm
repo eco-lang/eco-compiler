@@ -31,6 +31,7 @@ import Compiler.AST.Intern as Intern
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypeIds as TypeIds
+import Compiler.AST.TypeVars as Vars
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet
 import Compiler.Data.CtorTag as CtorTag
@@ -53,7 +54,6 @@ import Compiler.Monomorphize.Registry as Registry
 import Compiler.Monomorphize.ResolveAccessorValues as ResolveAccessorValues
 import Compiler.Monomorphize.State as State
 import Compiler.Type.UnionFind as UF
-import Compiler.Type.Vars as Vars
 import Data.HashMap as HashMap
 import Data.Map as DMap
 import Data.Set as EverySet

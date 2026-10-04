@@ -51,6 +51,7 @@ Among what is not checked:
 import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
+import Compiler.AST.TypeVars as Vars
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Data.NonEmptyList as NE
@@ -64,7 +65,6 @@ import Compiler.Type.Constrain.Erased.Module as ConstrainErased
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.Error as T
 import Compiler.Type.Solve as Solve
-import Compiler.Type.Vars as Vars
 import Data.Map
 import Dict exposing (Dict)
 import Expect

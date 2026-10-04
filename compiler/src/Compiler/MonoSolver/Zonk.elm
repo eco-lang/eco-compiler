@@ -31,9 +31,9 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Intern as Intern exposing (Intern)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds as TypeIds
+import Compiler.AST.TypeVars as Vars
 import Compiler.Data.Id as Id
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Type.Vars as Vars
 import Dict exposing (Dict)
 
 

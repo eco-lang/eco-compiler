@@ -9,7 +9,7 @@ lets code outside that monad find the root of a type variable's class, by
 reading a copy of the store taken before then.
 
 The store and its terms, _point_, _class_, _root_ and the `Root` and `Chain`
-cells, are described in `Compiler.Type.Vars`. A _snapshot_ is an array of every
+cells, are described in `Compiler.AST.TypeVars`. A _snapshot_ is an array of every
 cell of one store. `Compiler.Type.Solve.runWithIds` returns one, taken after
 solving, when solving succeeds. Finding a root is then a matter of following
 `Chain` cells through the array.
@@ -24,12 +24,12 @@ different store gives a meaningless answer, and no error.
 -}
 
 import Array exposing (Array)
-import Compiler.Type.Vars as Vars
+import Compiler.AST.TypeVars as Vars
 
 
 {-| A type variable of the solver, which is a point of its union-find store.
 
-This is a name for `Compiler.Type.Vars.Variable`, not a new type, and the two
+This is a name for `Compiler.AST.TypeVars.Variable`, not a new type, and the two
 are interchangeable.
 
 -}

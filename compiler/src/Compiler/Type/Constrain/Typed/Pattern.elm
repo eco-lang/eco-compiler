@@ -38,6 +38,7 @@ Bounded (direct recursion OK):
 -}
 
 import Compiler.AST.Canonical as Can
+import Compiler.AST.TypeVars as Vars
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
@@ -47,7 +48,6 @@ import Compiler.Type.Constrain.Common as Common exposing (State(..), extractVarF
 import Compiler.Type.Constrain.Typed.NodeIds as NodeIds
 import Compiler.Type.Instantiate as Instantiate
 import Compiler.Type.Type as Type exposing (Type)
-import Compiler.Type.Vars as Vars
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO exposing (IO)
 

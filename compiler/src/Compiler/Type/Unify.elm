@@ -17,13 +17,13 @@ union-find data structures for efficient variable binding.
 
 -}
 
+import Compiler.AST.TypeVars as Vars
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Type.Error as Error
 import Compiler.Type.Occurs as Occurs
 import Compiler.Type.Type as Type
 import Compiler.Type.UnionFind as UF
-import Compiler.Type.Vars as Vars
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO exposing (IO)
 

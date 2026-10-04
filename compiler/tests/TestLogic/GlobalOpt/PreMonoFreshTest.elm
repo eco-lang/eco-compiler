@@ -58,13 +58,13 @@ than a single `Define`.
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.TypeIds as TypeIds
+import Compiler.AST.TypeVars as Vars
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Id as Id
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.GlobalOpt.PreMono.Fresh as Fresh
 import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
 import Compiler.Reporting.Annotation as A
-import Compiler.Type.Vars as Vars
 import Data.Map as DMap
 import Data.Set as EverySet
 import Dict

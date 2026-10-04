@@ -82,12 +82,12 @@ points that write back into the solver state.
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds as TypeIds
+import Compiler.AST.TypeVars as Vars
 import Compiler.Data.Id as Id
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.MonoSolver.Engine as Engine
 import Compiler.MonoSolver.Store as Store
 import Compiler.Type.UnionFind as UF
-import Compiler.Type.Vars as Vars
 import Data.HashMap as HashMap
 import Dict
 import Eco.CellStore as CellStore

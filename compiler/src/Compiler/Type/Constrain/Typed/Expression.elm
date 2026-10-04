@@ -77,6 +77,7 @@ Each spine is a two-phase `IO.loop`:
 -}
 
 import Compiler.AST.Canonical as Can
+import Compiler.AST.TypeVars as Vars
 import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
@@ -89,7 +90,6 @@ import Compiler.Type.Constrain.Typed.Pattern as Pattern
 import Compiler.Type.Instantiate as Instantiate
 import Compiler.Type.KernelIntrinsics as KernelIntrinsics
 import Compiler.Type.Type as Type exposing (Constraint(..), Type(..))
-import Compiler.Type.Vars as Vars
 import Data.Map as DMap
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO exposing (IO)

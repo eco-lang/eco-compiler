@@ -55,12 +55,12 @@ names to their types, enabling type-aware optimization.
 -}
 
 import Compiler.AST.Canonical as Can
+import Compiler.AST.TypeVars as Vars
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
-import Compiler.Type.Vars as Vars
 import Control.Loop exposing (Step(..))
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)

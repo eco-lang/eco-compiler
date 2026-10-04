@@ -30,8 +30,8 @@ import Compiler.Data.BitSet as BitSet
 import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Generate.MLIR.Intrinsics as Intrinsics
 import Compiler.GlobalOpt.KernelFacts as KernelFacts
+import Compiler.GlobalOpt.KernelIntrinsics as KernelIntrinsics
 import Compiler.Graph as Graph
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.MonoTraverse as Traverse
@@ -1362,7 +1362,7 @@ UNLISTED symbol keeps exactly that, so switching the flag on can only move rows
 the KernelFacts audit actually covers.
 
 Two axes, in priority order. A call that lowers to an inline op is not a call at
-all -- `Intrinsics.kernelIntrinsic` is the ground truth for that and is
+all -- `KernelIntrinsics.kernelIntrinsic` is the ground truth for that and is
 type-directed, which is correct post-mono; `Nothing` is treated as "not inline",
 the conservative answer. Otherwise the audited cost class decides, so a
 rope-allocating `Utils_append` no longer scores the same as an `eco.int.add`.
@@ -1370,7 +1370,7 @@ rope-allocating `Utils_append` no longer scores the same as an `eco.int.add`.
 -}
 kernelCallCost : Config.InlineConfig -> Name -> Name -> List MonoExpr -> Mono.MonoType -> Int
 kernelCallCost cfg home name args resultTy =
-    case Intrinsics.kernelIntrinsic home name (List.map Mono.typeOf args) resultTy of
+    case KernelIntrinsics.kernelIntrinsic home name (List.map Mono.typeOf args) resultTy of
         Just _ ->
             cfg.kernelCostInline
 

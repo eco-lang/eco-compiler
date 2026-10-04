@@ -73,12 +73,12 @@ import Compiler.AST.CanonicalBuilder
         )
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds as TypeIds
+import Compiler.AST.TypeVars as Vars
 import Compiler.Data.Id as Id
 import Compiler.Data.Name exposing (Name)
 import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.State as State
-import Compiler.Type.Vars as Vars
 import Dict
 import Expect
 import Test exposing (Test)

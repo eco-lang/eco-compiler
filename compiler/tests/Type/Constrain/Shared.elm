@@ -36,13 +36,13 @@ Most of this module is the expression-id walk over the canonical AST.
 
 import Array
 import Compiler.AST.Canonical as Can
+import Compiler.AST.TypeVars as Vars
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.Constrain.Erased.Module as ConstrainErased
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.Solve as Solve
-import Compiler.Type.Vars as Vars
 import Data.Map
 import Dict exposing (Dict)
 import Expect

@@ -22,10 +22,10 @@ when the same code would be reached through different pattern match paths.
 
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
+import Compiler.AST.TypeVars as Vars
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.LocalOpt.Typed.DecisionTree as DT
-import Compiler.Type.Vars as Vars
 import Prelude
 import Utils.Crash exposing (crash)
 

@@ -19,7 +19,7 @@ modifying a slot past the end does nothing, and so does modifying an empty slot.
 
 import Array exposing (Array)
 import Array.Extra as Array
-import Compiler.Type.Vars exposing (Variable)
+import Compiler.AST.TypeVars exposing (Variable)
 import Data.IORef as IORef exposing (IORef)
 import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Crash exposing (crash)
